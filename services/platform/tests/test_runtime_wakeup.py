@@ -1009,3 +1009,98 @@ def test_lightweight_run_detail_skips_artifact_queries(monkeypatch):
     # Snapshots and NodeRuns are the only list projections. A third query
     # would be the prohibited run-level Artifact history read.
     assert scalar_calls == 2
+
+
+def test_duplicate_runtime_artifact_audit_is_read_only_and_reports_references(monkeypatch):
+    """Historical duplicate candidates remain a confirmation-only report."""
+
+    run = SimpleNamespace(
+        id="automatic-1",
+        automation_plan_json={"node_plans": {"review": {"artifact_ids": {"report": "a-2"}}}},
+    )
+    responses = iter(
+        [
+            [{"attempt_id": "attempt-1", "field_key": "report", "content_hash": "h-1"}],
+            [
+                {
+                    "id": "a-1",
+                    "producer_attempt_id": "attempt-1",
+                    "field_key": "report",
+                    "version_no": 1,
+                    "content_hash": "h-1",
+                    "artifact_type": "FILE",
+                    "byte_size": 12,
+                    "mime_type": "text/plain",
+                    "runtime_completion_event_id": "finish-1",
+                    "created_at": datetime(2026, 9, 8, 9, 0, tzinfo=UTC),
+                },
+                {
+                    "id": "a-2",
+                    "producer_attempt_id": "attempt-1",
+                    "field_key": "report",
+                    "version_no": 2,
+                    "content_hash": "h-1",
+                    "artifact_type": "FILE",
+                    "byte_size": 12,
+                    "mime_type": "text/plain",
+                    "runtime_completion_event_id": "finish-1",
+                    "created_at": datetime(2026, 9, 8, 9, 1, tzinfo=UTC),
+                },
+            ],
+            [
+                {
+                    "artifact_version_id": "a-2",
+                    "attempt_id": "consumer-1",
+                    "input_field_key": "source",
+                    "binding_source": "PORT_MAPPING",
+                }
+            ],
+            [
+                {
+                    "id": "attempt-1",
+                    "node_run_id": "node-run-1",
+                    "workspace_ref": "/workspace/attempt-1",
+                }
+            ],
+            [{"node_attempt_id": "attempt-1", "count": 1}],
+        ]
+    )
+
+    class Result:
+        def __init__(self, rows):
+            self.rows = rows
+
+        def mappings(self):
+            return self.rows
+
+    class Db:
+        def scalar(self, _statement):
+            return 1
+
+        def execute(self, _statement):
+            return Result(next(responses))
+
+    monkeypatch.setattr(orchestration_service, "nested_automatic_run", lambda *_args: run)
+
+    report = orchestration_service.duplicate_runtime_artifact_audit(
+        Db(), "parent-1", run.id, page=1, page_size=20
+    )
+
+    assert report["read_only"] is True
+    assert report["cleanup"]["state"] == "CONFIRMATION_REQUIRED"
+    item = report["items"][0]
+    assert item["evidence"] == {
+        "kind": "FORMAL_COMPLETION_ID_REPLAY",
+        "runtime_completion_event_ids": ["finish-1"],
+    }
+    assert item["artifacts"][1]["input_references"] == [
+        {
+            "consumer_attempt_id": "consumer-1",
+            "input_field_key": "source",
+            "binding_source": "PORT_MAPPING",
+        }
+    ]
+    assert item["cleanup"]["proposed_action"] == "NO_ACTION_IN_THIS_RELEASE"
+    assert item["cleanup"]["plan_reference_artifact_ids"] == ["a-2"]
+    assert "storage_key" not in item["artifacts"][0]
+    assert "inline_content" not in item["artifacts"][0]

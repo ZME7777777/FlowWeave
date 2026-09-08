@@ -162,6 +162,22 @@ async def nested_automatic_run_artifacts(
     )
 
 
+@router.get("/flow-runs/{parent_run_id}/automatic-runs/{run_id}/artifact-audit")
+async def nested_automatic_run_artifact_audit(
+    parent_run_id: str,
+    run_id: str,
+    db: Db,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: service.duplicate_runtime_artifact_audit(
+            session, parent_run_id, run_id, page=page, page_size=page_size
+        ),
+    )
+
+
 @router.post("/flow-runs/{parent_run_id}/automatic-runs", status_code=201)
 async def create_nested_automatic_run(
     parent_run_id: str, payload: AutomaticRunDraftWrite, db: Db

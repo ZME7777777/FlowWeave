@@ -11,7 +11,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, cast
 from uuid import UUID, uuid4
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from flowweave.modules.agent_sessions import public as agent_sessions
@@ -982,6 +982,256 @@ def list_nested_automatic_run_artifacts(
         "total": total,
         "page": page,
         "page_size": page_size,
+    }
+
+
+def duplicate_runtime_artifact_audit(
+    db: Session,
+    parent_run_id: str,
+    run_id: str,
+    *,
+    page: int,
+    page_size: int,
+) -> dict[str, Any]:
+    """Report conservative duplicate-runtime-output candidates without mutation.
+
+    A matching content hash is evidence worth reviewing, not proof that any
+    historical Artifact can be removed.  This projection deliberately avoids
+    content and storage columns, performs no Runtime I/O, and never creates a
+    cleanup command.
+    """
+
+    run = nested_automatic_run(db, parent_run_id, run_id)
+    candidates = (
+        select(
+            ArtifactVersion.producer_attempt_id.label("attempt_id"),
+            ArtifactVersion.field_key.label("field_key"),
+            ArtifactVersion.content_hash.label("content_hash"),
+        )
+        .where(
+            ArtifactVersion.flow_run_id == run.id,
+            ArtifactVersion.source == "RUNTIME",
+            ArtifactVersion.producer_attempt_id.is_not(None),
+        )
+        .group_by(
+            ArtifactVersion.producer_attempt_id,
+            ArtifactVersion.field_key,
+            ArtifactVersion.content_hash,
+        )
+        .having(func.count(ArtifactVersion.id) > 1)
+    )
+    total = int(db.scalar(select(func.count()).select_from(candidates.subquery())) or 0)
+    group_rows = list(
+        db.execute(
+            candidates.order_by(
+                ArtifactVersion.producer_attempt_id,
+                ArtifactVersion.field_key,
+                ArtifactVersion.content_hash,
+            )
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        ).mappings()
+    )
+    if not group_rows:
+        return {
+            "items": [],
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "read_only": True,
+            "cleanup": {
+                "state": "CONFIRMATION_REQUIRED",
+                "message": "审计仅列出候选项；不会删除任何产物、工作区或执行记录。",
+            },
+        }
+
+    identities = [
+        and_(
+            ArtifactVersion.producer_attempt_id == row["attempt_id"],
+            ArtifactVersion.field_key == row["field_key"],
+            ArtifactVersion.content_hash == row["content_hash"],
+        )
+        for row in group_rows
+    ]
+    artifact_rows = list(
+        db.execute(
+            select(
+                ArtifactVersion.id,
+                ArtifactVersion.producer_attempt_id,
+                ArtifactVersion.field_key,
+                ArtifactVersion.version_no,
+                ArtifactVersion.content_hash,
+                ArtifactVersion.artifact_type,
+                ArtifactVersion.byte_size,
+                ArtifactVersion.mime_type,
+                ArtifactVersion.runtime_completion_event_id,
+                ArtifactVersion.created_at,
+            )
+            .where(
+                ArtifactVersion.flow_run_id == run.id,
+                ArtifactVersion.source == "RUNTIME",
+                or_(*identities),
+            )
+            .order_by(ArtifactVersion.version_no, ArtifactVersion.created_at, ArtifactVersion.id)
+        ).mappings()
+    )
+    artifact_ids = [str(row["id"]) for row in artifact_rows]
+    references_by_artifact: dict[str, list[dict[str, Any]]] = {}
+    if artifact_ids:
+        for reference in db.execute(
+            select(
+                AttemptInputBinding.artifact_version_id,
+                AttemptInputBinding.attempt_id,
+                AttemptInputBinding.input_field_key,
+                AttemptInputBinding.binding_source,
+            ).where(AttemptInputBinding.artifact_version_id.in_(artifact_ids))
+        ).mappings():
+            references_by_artifact.setdefault(str(reference["artifact_version_id"]), []).append(
+                {
+                    "consumer_attempt_id": str(reference["attempt_id"]),
+                    "input_field_key": str(reference["input_field_key"]),
+                    "binding_source": str(reference["binding_source"]),
+                }
+            )
+    attempt_ids = {str(row["attempt_id"]) for row in group_rows}
+    attempts = {
+        str(row["id"]): row
+        for row in db.execute(
+            select(NodeAttempt.id, NodeAttempt.node_run_id, NodeAttempt.workspace_ref)
+            .join(NodeRun, NodeRun.id == NodeAttempt.node_run_id)
+            .where(NodeAttempt.id.in_(attempt_ids), NodeRun.flow_run_id == run.id)
+        ).mappings()
+    }
+    if set(attempts) != attempt_ids:
+        raise DomainError(
+            "AUTOMATIC_ARTIFACT_AUDIT_SCOPE_INVALID",
+            "Artifact producer Attempt is outside the automatic record scope",
+            409,
+        )
+    work_directory_counts = {
+        str(row["node_attempt_id"]): int(row["count"])
+        for row in db.execute(
+            select(
+                AgentWorkDirectory.node_attempt_id,
+                func.count(AgentWorkDirectory.id).label("count"),
+            )
+            .where(
+                AgentWorkDirectory.flow_run_id == run.id,
+                AgentWorkDirectory.node_attempt_id.in_(attempt_ids),
+            )
+            .group_by(AgentWorkDirectory.node_attempt_id)
+        ).mappings()
+    }
+    artifacts_by_group: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+    for artifact in artifact_rows:
+        artifact_id = str(artifact["id"])
+        key = (
+            str(artifact["producer_attempt_id"]),
+            str(artifact["field_key"]),
+            str(artifact["content_hash"]),
+        )
+        artifacts_by_group.setdefault(key, []).append(
+            {
+                "id": artifact_id,
+                "version_no": int(artifact["version_no"]),
+                "artifact_type": str(artifact["artifact_type"]),
+                "byte_size": int(artifact["byte_size"]),
+                "mime_type": str(artifact["mime_type"]),
+                "runtime_completion_event_id": artifact["runtime_completion_event_id"],
+                "created_at": artifact["created_at"].isoformat(),
+                "input_references": references_by_artifact.get(artifact_id, []),
+            }
+        )
+    plan_artifact_ids = {
+        str(artifact_id)
+        for node_plan in cast(
+            dict[str, Any], (run.automation_plan_json or {}).get("node_plans") or {}
+        ).values()
+        if isinstance(node_plan, dict)
+        for artifact_id in cast(dict[str, Any], node_plan.get("artifact_ids") or {}).values()
+    }
+    items: list[dict[str, Any]] = []
+    for group in group_rows:
+        attempt_id = str(group["attempt_id"])
+        attempt = attempts[attempt_id]
+        key = (attempt_id, str(group["field_key"]), str(group["content_hash"]))
+        group_artifacts = artifacts_by_group[key]
+        completion_event_ids = sorted(
+            {
+                str(item["runtime_completion_event_id"])
+                for item in group_artifacts
+                if item["runtime_completion_event_id"] is not None
+            }
+        )
+        input_reference_count = sum(len(item["input_references"]) for item in group_artifacts)
+        plan_reference_ids = [
+            str(item["id"]) for item in group_artifacts if str(item["id"]) in plan_artifact_ids
+        ]
+        cleanup_reasons = [
+            "本端点只生成审计计划；本切片没有删除 Artifact、工作区、Attempt 或 FlowRun 的操作。",
+            "任何后续清理都必须逐项取得显式确认，并在写入前重新验证当前引用和工作区影响。",
+        ]
+        if not completion_event_ids:
+            cleanup_reasons.append(
+                "候选缺少正式 Runtime completion identity，只能以内容哈希作为历史核验线索。"
+            )
+        elif len(completion_event_ids) == 1:
+            cleanup_reasons.append(
+                "候选共享同一正式 Runtime completion identity，"
+                "但历史审计记录仍不得在未经确认时删除。"
+            )
+        else:
+            cleanup_reasons.append(
+                "候选对应多个正式 Runtime completion identity，"
+                "内容哈希相同不足以判断其中任一版本为冗余。"
+            )
+        if input_reference_count:
+            cleanup_reasons.append(
+                f"候选仍有 {input_reference_count} 个 Attempt 输入绑定引用，必须保留或显式迁移。"
+            )
+        if plan_reference_ids:
+            cleanup_reasons.append("候选仍被该自动运行的冻结计划引用，必须保留或显式更新计划。")
+        if work_directory_counts.get(attempt_id, 0) or attempt["workspace_ref"]:
+            cleanup_reasons.append(
+                "生产 Attempt 仍记录工作区影响；Artifact 清理不能隐含删除或修改该工作区。"
+            )
+        items.append(
+            {
+                "producer_attempt_id": attempt_id,
+                "producer_node_run_id": str(attempt["node_run_id"]),
+                "field_key": str(group["field_key"]),
+                "content_hash": str(group["content_hash"]),
+                "evidence": {
+                    "kind": (
+                        "FORMAL_COMPLETION_ID_REPLAY"
+                        if len(completion_event_ids) == 1
+                        else "CONTENT_HASH_MATCH_ONLY"
+                    ),
+                    "runtime_completion_event_ids": completion_event_ids,
+                },
+                "artifacts": group_artifacts,
+                "workspace_impact": {
+                    "workspace_ref_recorded": bool(attempt["workspace_ref"]),
+                    "work_directory_count": work_directory_counts.get(attempt_id, 0),
+                },
+                "cleanup": {
+                    "state": "CONFIRMATION_REQUIRED",
+                    "proposed_action": "NO_ACTION_IN_THIS_RELEASE",
+                    "plan_reference_artifact_ids": plan_reference_ids,
+                    "reasons": cleanup_reasons,
+                },
+            }
+        )
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "read_only": True,
+        "cleanup": {
+            "state": "CONFIRMATION_REQUIRED",
+            "message": "审计仅列出候选项；不会删除任何产物、工作区或执行记录。",
+        },
     }
 
 
