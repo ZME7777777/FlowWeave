@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`ACTIVE`
 > 当前执行切片：无
-> 下一可执行切片：无（事件增强链路已收口为只读观测）
+> 下一可执行切片：`FR-210`（会话列表 cursor 分页与批量读取）
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -3004,6 +3004,76 @@ REST 事件读取在不持久化 Conversation 状态的前提下，投影最近�
 Testcontainers PostgreSQL fixture 在 Docker daemon 不可用时于断言前阻断，未伪记为通过。完成后提交独立 Git commit
 并停止。
 
+### FR-209 资源治理与会话性能架构冻结 — DONE
+
+依赖：`FR-208`。
+
+目标：以 `docs/resource-governance-performance-design.md` 冻结 Agent Workspace、FlowRun 节点会话、stream-api、
+Runtime Provider、Worker、PostgreSQL 与 Compose 的统一资源治理边界。明确会话仅在发送时建流并在回合结束后保留
+5 分钟、列表每组首屏 5 条/展开追加 5 条/折叠重置、不得扫描完整 OpenHands 历史、保持一 FlowRun 一隔离 Runtime
+容器、tmux TTL、真实 worker 并发、共享 HTTP transport、数据库/SSE 预算、服务 CPU/内存/PID 起点、指标与分布式
+限流前置条件。此切片只新增设计和后续任务，不修改运行时代码、数据库或部署。
+
+验收：设计明确资源所有者、上限、取消/空闲回收、指标、失败语义和最终 load/soak 验收；任务状态唯一性与
+`git diff --check` 通过。完成后独立提交并停止。
+
+### FR-210 会话列表 cursor 分页、批量读取与五条渐进展示 — READY
+
+依赖：`FR-209`。服务端为 Agent Workspace 与 FlowRun 节点会话列表增加稳定 cursor、`limit <= 5` 与批量 DTO
+读取，删除工作目录/能力/活动摘要 N+1；Web 每组首次显示 5 条、展开每次追加 5 条、折叠后重置。不得以客户端
+截断替代服务端分页。
+
+### FR-211 OpenHands 事件窗口、官方 cursor 增量与历史按需读取 — PENDING
+
+依赖：`FR-209`。停止从游标起点分页至末尾；以固定 OpenHands 正式 cursor/事件身份读取当前活动分支窗口与
+增量，历史由显式分页触发。若上游无反向/窗口契约，保持只读降级并记录缺口，不建立 FlowWeave 事件副本。
+
+### FR-212 按需会话流生命周期与轮询收敛 — PENDING
+
+依赖：`FR-210`、`FR-211`。删除侧栏逐会话 1.5 秒轮询和全列表 observer；仅发送后的当前会话订阅实时流，
+回合结束后保留 5 分钟并由空闲策略回收。当前运行会话保留一个退避 readiness 兜底，页面不可见时暂停。
+
+### FR-213 Runtime Provider Relay Hub 与五分钟空闲宽限 — PENDING
+
+依赖：`FR-209`。以 Runtime generation/Conversation/channel 为键共享单个上游 relay，设置订阅者、队列、Hub
+与远程进程上限；generation 变化、取消、断开及 5 分钟空闲均可靠清理，不改变 FlowRun 容器隔离。
+
+### FR-214 共享 PostgreSQL LISTEN 与 SSE 有界扇出 — PENDING
+
+依赖：`FR-209`。将 SSE 客户端与 PostgreSQL 连接解耦为每 stream-api 进程一条 LISTEN 及有界 fanout；慢消费者
+丢弃并使用 cursor 重连，LISTEN 连接和客户端配额进入指标与数据库预算。
+
+### FR-215 持久 tmux 活动账本与 TTL 回收 — PENDING
+
+依赖：`FR-209`。增加 30 分钟空闲与 8 小时绝对 TTL，按 owner/附着连接安全回收 tmux、PTY 与临时资源，提供
+活动和回收指标。
+
+### FR-216 有界 worker_concurrency 与任务执行 lanes — PENDING
+
+依赖：`FR-209`。使 `worker_concurrency` 真正限制任务领取和执行；同步阻塞处理进入专用 executor，并按 Runtime、
+投递和维护类别隔离并发、取消与指标。
+
+### FR-217 进程级共享 HTTP transport 与连接池 — PENDING
+
+依赖：`FR-209`。为 OpenHands、Docker Controller 及相关出站调用复用有生命周期的 HTTP client，配置连接数、
+keepalive、超时和关闭；控制通道与普通读取独立限额。
+
+### FR-218 控制面资源限制、数据库连接预算与准入 — PENDING
+
+依赖：`FR-214`、`FR-216`、`FR-217`。将 CPU/内存/PID、Docker init、DB pool/overflow/timeout、PgBouncer 边界和
+SSE/Relay/终端/消息并发配额写入部署与应用配置；按实测 PostgreSQL 上限复核容量。
+
+### FR-219 指标、告警与分布式限流闭环 — PENDING
+
+依赖：`FR-212`–`FR-218`。增加 Prometheus 指标、仪表盘/告警与 Redis/Valkey 支持下的跨进程用户/会话限流和
+并发租约；没有分布式后端时明确降级为进程内保护。
+
+### FR-220 资源泄漏、故障恢复与性能最终门禁 — PENDING
+
+依赖：`FR-210`–`FR-219`。执行分页、事件增量、断连/重连/部署、Relay、SSE、tmux、Worker、HTTP/DB pool、
+服务限额和长时间 soak/load 的综合验收；冻结 p95/p99 和资源水位基线，证明回收后回到基线且单个 Runtime
+故障不拖慢控制面。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -3019,6 +3089,7 @@ Testcontainers PostgreSQL fixture 在 Docker daemon 不可用时于断言前阻�
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-08 | FR-209 | 完整读取 Runtime 设计与进度；现有会话、SSE、Relay、tmux、Worker、HTTP、Compose 资源边界审计；任务状态唯一性；`git diff --check` | PASS：新增资源治理与会话性能设计，冻结按需 WebSocket 及 5 分钟空闲宽限、5 条 cursor 列表分页、OpenHands 官方 cursor 历史窗口、保持一 FlowRun 一 Runtime 的 Relay Hub、共享 LISTEN fanout、tmux TTL、真实 Worker 并发、HTTP 池、服务资源/数据库预算、指标和分布式限流前置条件。FR-210 已 READY；无 CURRENT。 |
 | 2026-09-08 | FR-208 | 只读监控纯函数直接断言；受影响 Python Ruff check/format、`py_compile`；Web TypeScript typecheck；Alembic head；`git diff --check` | PASS：主 Agent 与子 Agent 的最近正式事件、墙钟无事件时长和“可能卡住”提示通过 REST 投影进入工作台；提示不控制 OpenHands。已退役 Task 超时 watchdog 的中断／Runtime replacement／父会话续跑执行入口，Runtime 读取失败不再触发自动恢复。触发器新版本仅接受无会话副作用动作，`0102` 将既有约束同步收紧。pytest 因本机 Docker daemon 不可用、Testcontainers fixture 在断言前失败，未伪记为通过。唯一 Alembic head 为 `0102_event_trigger_observation_actions`，无 `CURRENT`。 |
 | 2026-09-08 | FR-207 | Outbox ORM／迁移与事件投影 `py_compile`；受影响 Ruff check/format；定向 Pyright（新增服务 0 errors）；Alembic head；路由/元数据导入；`git diff --check` | PASS：统一编排 `_event` 写入后按启用触发器匹配并生成 `event_trigger_deliveries`，同一触发器版本、动作位置和正式事件身份使用稳定幂等键；载荷只保留关联 ID 和脱敏故障分类，未知来源 fail closed。未发送外部请求、未执行动作或恢复。完整 Pyright 仍包含编排服务既有诊断；新增 Outbox 路径无新增诊断。唯一 Alembic head 为 `0101_event_trigger_deliveries`，无 `CURRENT`。 |
 | 2026-09-08 | FR-206 | 触发器请求模型／服务／路由 `py_compile`；受影响 Ruff check/format、定向 Pyright（0 errors）；路由导入与 Pydantic 无数据库直接断言；`git diff --check` 与任务状态唯一性 | PASS：用户可创建首个触发器版本、读取当前版本并按相同 key 追加不可变版本；服务端按租户读取、有序投影动作，拒绝路径 key 不一致。请求限制过滤值与动作数量，递归拒绝 Secret 字段；无更新、删除、Outbox、事件消费或 Runtime 副作用。pytest 收集到 3 条新请求模型回归，但因本机 Docker daemon 不可用被统一 PostgreSQL autouse fixture 阻断，未伪记为通过。唯一 Alembic head 为 `0100_event_trigger_versions`，无 `CURRENT`。 |
