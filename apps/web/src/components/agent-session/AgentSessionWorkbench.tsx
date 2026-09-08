@@ -347,10 +347,11 @@ function ConversationStreamObserver({
 }
 
 function WorkspaceConversationRow({
-  item, selectedBindingId, runtimeWritable, removing, deleteDisabled, onSelect, onDelete,
+  item, selectedBindingId, running, runtimeWritable, removing, deleteDisabled, onSelect, onDelete,
 }: {
   item: AgentConversation;
   selectedBindingId?: string;
+  running: boolean;
   runtimeWritable: boolean;
   removing: boolean;
   deleteDisabled: boolean;
@@ -361,6 +362,7 @@ function WorkspaceConversationRow({
     <button type="button" className={`agent-workspace-conversation-select${item.id === selectedBindingId ? ' active' : ''}`} onClick={onSelect}>
       <CircleDot size={13}/><span><b>{conversationName(item)}</b></span>
     </button>
+    {running && <LoaderCircle className="agent-workspace-conversation-running" role="img" aria-label="会话正在运行" size={14}/>}
     {onDelete && <button type="button" className="agent-workspace-conversation-delete" aria-label={`删除会话 ${conversationName(item)}`} title={deleteDisabled ? '会话运行中，请先停止' : '删除会话'} disabled={!runtimeWritable || deleteDisabled || removing} onClick={onDelete}><Trash2 size={13}/></button>}
   </div>;
 }
@@ -1758,7 +1760,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const [attachmentRequest, setAttachmentRequest] = useState<{ key: string; attachment: AgentAttachment }>();
   const [candidatePreviewRequest, setCandidatePreviewRequest] = useState<CandidateFilePreviewRequest>();
   const [operationError, setOperationError] = useState<Error>();
-  const [loadingOlderEvents, setLoadingOlderEvents] = useState(false);
   const [streamHold, setStreamHold] = useState<{ bindingId: string; expiresAt: number }>();
   const [pageVisible, setPageVisible] = useState(() => document.visibilityState === 'visible');
   const [condensationStatus, setCondensationStatus] = useState<{ bindingId: string; state: 'running' | 'failed'; startedAt: number; message?: string }>();
@@ -1776,7 +1777,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const liveTextFrame = useRef<number | undefined>(undefined);
   const pendingLiveEvents = useRef<OpenHandsConversationEvent[]>([]);
   const liveEventsFrame = useRef<number | undefined>(undefined);
-  const initialHistoryPrefetches = useRef(new Set<string>());
+  const historyLoadingScopes = useRef(new Set<string>());
   const bootstrapTransitionScope = useRef<string | undefined>(undefined);
   const selectedBindingId = host.bindingIdFromPathname(withoutDeploymentBase(window.location.pathname));
   const previousComposerScope = useRef<string | undefined>(undefined);
@@ -1798,12 +1799,14 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     initialPageParam: undefined as string | undefined,
     getNextPageParam: page => page.next_cursor || undefined,
     enabled: Boolean(workspace),
-    // Title generation is an isolated one-shot metadata task. Poll only while
-    // at least one visible binding is pending so the generated title replaces
-    // its first-message fallback without requiring a page refresh.
-    refetchInterval: query => query.state.data?.pages.some(page => page.items.some(item => item.title_state === 'PENDING'))
-      ? 1000
-      : false,
+    refetchInterval: query => {
+      const pages = query.state.data?.pages ?? [];
+      // Title generation is an isolated one-shot metadata task. Poll only
+      // while it is pending; otherwise refresh the single native running-list
+      // snapshot at a bounded rate while the page is visible.
+      if (pages.some(page => page.items.some(item => item.title_state === 'PENDING'))) return 1000;
+      return pageVisible ? 10_000 : false;
+    },
   });
   const workDirectoriesQuery = useQuery({ queryKey: sessionQueryKey(host, 'work-directories', workspace?.id), queryFn: () => api.workDirectories(workspace!.id), enabled: Boolean(workspace && features.workDirectories) });
   const providersQuery = useQuery({ queryKey: ['model-providers'], queryFn: api.providers, enabled: Boolean(workspace && features.modelSelection) });
@@ -1921,35 +1924,42 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     queryKey: eventQueryKey, queryFn: () => api.conversationEvents(workspace!.id, selected!.id), enabled: Boolean(workspace && selected),
     retry: (count, error) => !(error instanceof ApiError && error.status < 500) && count < 2,
   });
-  const loadOlderEvents = useCallback(async () => {
-    const historyCursor = eventsQuery.data?.history_cursor;
-    if (!workspace || !selected || !historyCursor || loadingOlderEvents) return;
-    setLoadingOlderEvents(true);
+  const loadAllHistory = useCallback(async () => {
+    if (!workspace || !selected || !eventsQuery.data?.history_cursor) return;
+    const scope = selected.id;
+    if (historyLoadingScopes.current.has(scope)) return;
+    historyLoadingScopes.current.add(scope);
+    let historyCursor: string | null | undefined = eventsQuery.data.history_cursor;
     try {
-      const older = await api.conversationEvents(workspace.id, selected.id, undefined, historyCursor);
-      queryClient.setQueryData<OpenHandsConversationEventBatch>(eventQueryKey, current => current
-        ? { ...current, events: mergeConversationEvents(older.events, current.events), history_cursor: older.history_cursor }
-        : older,
-      );
+      // Keep the newest window interactive, then yield between native pages so
+      // long conversations do not monopolize the browser's event loop.
+      while (historyCursor) {
+        const cursor = historyCursor;
+        const older = await api.conversationEvents(workspace.id, scope, undefined, cursor);
+        queryClient.setQueryData<OpenHandsConversationEventBatch>(eventQueryKey, current => current
+          ? { ...current, events: mergeConversationEvents(older.events, current.events), history_cursor: older.history_cursor }
+          : older,
+        );
+        historyCursor = older.history_cursor;
+        if (historyCursor) await new Promise<void>(resolve => window.setTimeout(resolve, 0));
+      }
     } catch (error) {
-      reportOperationError(selected.id, error instanceof Error ? error : new Error('读取更早会话记录失败'));
+      reportOperationError(scope, error instanceof Error ? error : new Error('读取更早会话记录失败'));
     } finally {
-      setLoadingOlderEvents(false);
+      historyLoadingScopes.current.delete(scope);
     }
-  }, [api, eventQueryKey, eventsQuery.data?.history_cursor, loadingOlderEvents, queryClient, reportOperationError, selected, workspace]);
+  }, [api, eventQueryKey, eventsQuery.data?.history_cursor, queryClient, reportOperationError, selected, workspace]);
   useEffect(() => {
     const bindingId = selected?.id;
-    if (!bindingId || !eventsQuery.data?.history_cursor || loadingOlderEvents
-      || initialHistoryPrefetches.current.has(bindingId)) return;
-    // Render the newest native branch first.  One follow-up page is then
-    // fetched after paint so reopening a long conversation remains quick
-    // without turning every view into an unbounded history download.
+    if (!bindingId || !eventsQuery.data?.history_cursor || historyLoadingScopes.current.has(bindingId)) return;
+    // Render the newest native window first, then asynchronously drain every
+    // older OpenHands page. The browser is the read scheduler; FlowWeave does
+    // not cache or reconstruct conversation history on the server.
     const timer = window.setTimeout(() => {
-      initialHistoryPrefetches.current.add(bindingId);
-      void loadOlderEvents();
+      void loadAllHistory();
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [eventsQuery.data?.history_cursor, loadingOlderEvents, loadOlderEvents, selected?.id]);
+  }, [eventsQuery.data?.history_cursor, loadAllHistory, selected?.id]);
   const displayedEvents = useMemo(() => {
     const activeScope = selected?.id ?? conversationDraft?.id;
     const bootstrapEvent = optimisticBootstrapTurn && optimisticBootstrapTurn.scope === activeScope
@@ -2771,7 +2781,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   };
   const workDirectories = workDirectoriesQuery.data?.items ?? [];
   const conversationRow = (item: AgentConversation) => {
-    return <WorkspaceConversationRow key={item.id} item={item} selectedBindingId={selectedBindingId} runtimeWritable={runtimeWritable} removing={remove.isPending} deleteDisabled={item.id === selected?.id && (selectedConversationRunning || isGenerating)} onSelect={() => selectConversation(item.id)} onDelete={features.conversationDeletion ? () => void confirmDeletion('会话', conversationName(item)).then(ok => { if (ok) remove.mutate(item.id); }) : undefined}/>;
+    const running = item.execution_status === 'running' || (item.id === selected?.id && (selectedConversationRunning || isGenerating));
+    return <WorkspaceConversationRow key={item.id} item={item} selectedBindingId={selectedBindingId} running={running} runtimeWritable={runtimeWritable} removing={remove.isPending} deleteDisabled={running} onSelect={() => selectConversation(item.id)} onDelete={features.conversationDeletion ? () => void confirmDeletion('会话', conversationName(item)).then(ok => { if (ok) remove.mutate(item.id); }) : undefined}/>;
   };
   const openCurrentDirectoryDraft = () => {
     const directory = selected?.work_directory_id
@@ -2830,7 +2841,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       {selected && eventsQuery.data?.monitoring?.possibly_stuck && <section className="agent-activity-warning" role="status" aria-label="Agent 活动提醒"><CircleDot size={17}/><div><b>较长时间没有新事件</b><span>最近事件：{eventsQuery.data.monitoring.last_event_type || '未知'}{eventsQuery.data.monitoring.seconds_since_event != null ? ` · ${eventsQuery.data.monitoring.seconds_since_event} 秒前` : ''}。这只是观测提示，FlowWeave 不会自动中断或恢复会话。</span></div></section>}
       {selected && eventsQuery.data?.monitoring?.active_subagents.some(task => task.possibly_stuck) && <section className="agent-activity-warning subagent" role="status" aria-label="子智能体活动提醒"><Bot size={17}/><div><b>子智能体长时间没有新事件</b><span>{eventsQuery.data.monitoring.active_subagents.filter(task => task.possibly_stuck).length} 个子智能体可能仍在运行或等待 OpenHands 返回；请查看子智能体面板和最近事件。</span></div></section>}
       {selected && !compactionPolicyCurrent && <section className="agent-compaction-policy-warning" aria-label="历史压缩策略兼容保护"><ShieldAlert size={18}/><div><b>已启用历史会话兼容保护</b><span>此会话继承了旧的事件数压缩策略。继续发送或恢复执行前，系统会先调用 OpenHands 原生压缩并校验摘要；校验失败时不会发送新消息。</span>{features.workDirectories && <button type="button" className="primary" disabled={!canOpenConversation} onClick={openCurrentDirectoryDraft}><Plus size={14}/>在相同工作目录新建会话</button>}</div></section>}
-      {selected || conversationDraft ? <>{selected && eventsQuery.data?.history_cursor && <div className="agent-conversation-history"><button type="button" className="secondary" disabled={loadingOlderEvents} onClick={() => void loadOlderEvents()}>{loadingOlderEvents ? '正在读取更早记录…' : '加载更早记录'}</button></div>}<ConversationSurface key={selected?.id ?? conversationDraft?.id} events={displayedEvents} liveText={liveText} isGenerating={isGenerating} requestStartedAt={requestStartedAt} requestSubmitting={send.isPending || bootstrap.isPending || rewrite.isPending} condensationStatus={selected && condensationStatus?.bindingId === selected.id ? condensationStatus : undefined} onRetryCondensation={selected && canWrite && condensationStatus?.bindingId === selected.id && condensationStatus.state === 'failed' ? requestManualCompaction : undefined} onRewrite={selected && canWrite && features.rewrite ? requestRewrite : undefined} onFork={selected && canWrite && features.fork ? eventId => fork.mutate(eventId) : undefined} onOpenAttachment={features.attachments ? openAttachmentInDrawer : undefined} onPreviewCandidateFile={candidateOutputUrl && workspace ? openCandidateFileInDrawer : undefined} onAddReference={runtimeWritable ? reference => setReferences(current => current.some(item => item.eventId === reference.eventId && item.content === reference.content) ? current : [...current, reference]) : undefined} taskControl={eventsQuery.data?.task_control ?? []}/></> : <div className="agent-workbench-empty"><Bot size={32}/><b>新建会话开始协作</b><span>{features.workDirectories ? '每个会话共享同一工作区，但保留独立的对话与事件记录。' : '会话固定在当前节点 Attempt 的隔离工作目录。'}</span><button className="primary" disabled={!canOpenConversation} onClick={() => openConversationDraft({ displayName: features.workDirectories ? '根工作区' : '节点工作目录' })}><Plus size={15}/>新建会话</button></div>}
+      {selected || conversationDraft ? <ConversationSurface key={selected?.id ?? conversationDraft?.id} events={displayedEvents} liveText={liveText} isGenerating={isGenerating} requestStartedAt={requestStartedAt} requestSubmitting={send.isPending || bootstrap.isPending || rewrite.isPending} condensationStatus={selected && condensationStatus?.bindingId === selected.id ? condensationStatus : undefined} onRetryCondensation={selected && canWrite && condensationStatus?.bindingId === selected.id && condensationStatus.state === 'failed' ? requestManualCompaction : undefined} onRewrite={selected && canWrite && features.rewrite ? requestRewrite : undefined} onFork={selected && canWrite && features.fork ? eventId => fork.mutate(eventId) : undefined} onOpenAttachment={features.attachments ? openAttachmentInDrawer : undefined} onPreviewCandidateFile={candidateOutputUrl && workspace ? openCandidateFileInDrawer : undefined} onAddReference={runtimeWritable ? reference => setReferences(current => current.some(item => item.eventId === reference.eventId && item.content === reference.content) ? current : [...current, reference]) : undefined} taskControl={eventsQuery.data?.task_control ?? []}/> : <div className="agent-workbench-empty"><Bot size={32}/><b>新建会话开始协作</b><span>{features.workDirectories ? '每个会话共享同一工作区，但保留独立的对话与事件记录。' : '会话固定在当前节点 Attempt 的隔离工作目录。'}</span><button className="primary" disabled={!canOpenConversation} onClick={() => openConversationDraft({ displayName: features.workDirectories ? '根工作区' : '节点工作目录' })}><Plus size={15}/>新建会话</button></div>}
       {(selected || conversationDraft) && runtimeWritable && runtime?.state !== 'RECOVERING' && <div className={`agent-composer ${turnState !== 'idle' || pendingConfirmation ? 'busy' : ''}`}>
         {pendingConfirmation && <section className="agent-confirmation" aria-label="工具执行确认"><header><ShieldAlert size={17}/><div><b>工具正在等待你的确认</b><span>动作尚未执行。请核对整批内容后批准或拒绝。</span></div></header><div className="agent-confirmation-actions">{(pendingConfirmation.actions ?? []).map((action: AgentPendingConfirmationAction) => <article key={action.digest}><div><b>{action.summary || action.tool_name}</b><span>{action.security_risk || 'UNKNOWN'}</span></div>{Object.keys(action.arguments).length > 0 && <pre>{JSON.stringify(action.arguments, null, 2)}</pre>}</article>)}</div><textarea aria-label="工具确认理由" value={confirmationReason} maxLength={2000} placeholder="填写批准或拒绝理由…" onChange={event => setConfirmationReason(event.target.value)}/><footer><button type="button" className="danger" disabled={!confirmationReason.trim() || decideConfirmation.isPending} onClick={() => decideConfirmation.mutate(false)}><X size={14}/>拒绝整批</button><button type="button" className="primary" disabled={!confirmationReason.trim() || decideConfirmation.isPending} onClick={() => decideConfirmation.mutate(true)}><Check size={14}/>批准整批</button></footer></section>}
         {queuedMessages.length > 0 && <section className="agent-queued-messages" aria-label="已排队消息"><header><b>消息队列</b><span>{queuedMessages.length} 条将在当前回复完成后依次发送</span></header>{queuedMessages.map((message, index) => <article key={message.id}><small>{index + 1}</small><p>{message.content || (message.references.length ? `会话引用 ${message.references.length} 条` : '图片附件')}</p><span>{[message.items.length ? `${message.items.length} 个附件` : '', message.references.length ? `${message.references.length} 条会话引用` : ''].filter(Boolean).join(' · ')}</span><div><button type="button" aria-label={`编辑排队消息 ${index + 1}`} onClick={() => { setDraft(message.content); setAttachments(message.items); setReferences(message.references); setQueuedMessages(items => items.filter(item => item.id !== message.id)); }}>编辑</button><button type="button" aria-label={`移除排队消息 ${index + 1}`} onClick={() => setQueuedMessages(items => items.filter(item => item.id !== message.id))}><X size={13}/></button></div></article>)}</section>}

@@ -267,6 +267,14 @@ class MockRuntime:
             status = "running"
         return RuntimeInputReadiness(ready=ready, execution_status=status)
 
+    def running_conversation_ids(self, handle: RuntimeHandle) -> set[str]:
+        del handle
+        return {
+            conversation_id
+            for conversation_id, result in self._results.items()
+            if result.status == "RUNNING"
+        }
+
     def can_accept_input(self, handle: RuntimeHandle) -> bool:
         return self._results.get(handle.job_id, RuntimeResult(status="IDLE")).status != "RUNNING"
 

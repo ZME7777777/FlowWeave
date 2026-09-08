@@ -401,7 +401,7 @@ def _decode_node_session_page_cursor(cursor: str) -> tuple[datetime, datetime, s
 
 
 def _node_session_page_dicts(
-    db: Session, items: list[AgentConversationBinding]
+    db: Session, items: list[AgentConversationBinding], running_conversation_ids: set[str]
 ) -> list[dict[str, Any]]:
     version_ids = {
         item.work_directory_version_id
@@ -453,6 +453,9 @@ def _node_session_page_dicts(
             "working_directory": item.working_directory,
             "capabilities": capabilities_by_binding[item.id],
             "streaming_callback_ready": item.streaming_callback_ready,
+            "execution_status": (
+                "running" if item.openhands_conversation_id in running_conversation_ids else "idle"
+            ),
             "lifecycle": item.lifecycle,
             "created_at": item.created_at.isoformat(),
             "updated_at": item.updated_at.isoformat(),
@@ -605,8 +608,16 @@ def list_node_session_page(
     )
     has_more = len(items) > limit
     page_items = items[:limit]
+    running_conversation_ids: set[str] = set()
+    if page_items:
+        try:
+            running_conversation_ids = get_runtime().running_conversation_ids(
+                _handle(db, page_items[0].id)
+            )
+        except (AttributeError, DomainError):
+            pass
     return {
-        "items": _node_session_page_dicts(db, page_items),
+        "items": _node_session_page_dicts(db, page_items, running_conversation_ids),
         "next_cursor": _node_session_page_cursor(page_items[-1])
         if has_more and page_items
         else None,

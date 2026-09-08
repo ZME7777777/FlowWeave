@@ -3522,6 +3522,30 @@ class OpenHandsRuntime:
         }
         return RuntimeInputReadiness(ready=ready, execution_status=status or "unknown")
 
+    def running_conversation_ids(self, handle: RuntimeHandle) -> set[str]:
+        """Read native RUNNING conversations through OpenHands' list API."""
+
+        page_id: str | None = None
+        running: set[str] = set()
+        while True:
+            params: dict[str, str | int] = {"status": "running", "limit": 100}
+            if page_id:
+                params["page_id"] = page_id
+            page = self._request(
+                "GET",
+                "/api/conversations",
+                base_url=self._base_url_for_handle(handle),
+                session_api_key=self._session_key_for_handle(handle),
+                params=params,
+            )
+            for item in page.get("items", []):
+                if isinstance(item, dict) and isinstance(item.get("id"), str):
+                    running.add(item["id"])
+            next_page = page.get("next_page_id")
+            if not isinstance(next_page, str) or not next_page or next_page == page_id:
+                return running
+            page_id = next_page
+
     def can_accept_input(self, handle: RuntimeHandle) -> bool:
         return self.input_readiness(handle).ready
 

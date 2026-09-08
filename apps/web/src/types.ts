@@ -586,6 +586,7 @@ export interface AgentConversation {
   working_directory?: string | null;
   capabilities?: AgentSessionCapability[];
   streaming_callback_ready: boolean;
+  execution_status?: string | null;
   lifecycle: 'PROVISIONING' | 'ACTIVE' | 'DELETE_PENDING' | 'FAILED';
   created_at: string;
   updated_at: string;

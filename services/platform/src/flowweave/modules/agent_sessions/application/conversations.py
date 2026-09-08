@@ -227,7 +227,9 @@ def _decode_conversation_page_cursor(cursor: str) -> tuple[datetime, datetime, s
         raise DomainError("AGENT_CONVERSATION_CURSOR_INVALID", "会话列表游标无效", 422) from exc
 
 
-def _page_dicts(db: Session, items: list[AgentConversationBinding]) -> list[dict[str, Any]]:
+def _page_dicts(
+    db: Session, items: list[AgentConversationBinding], running_conversation_ids: set[str]
+) -> list[dict[str, Any]]:
     """Build list DTOs with two batch queries instead of per-row lookups."""
 
     version_ids = {
@@ -280,6 +282,9 @@ def _page_dicts(db: Session, items: list[AgentConversationBinding]) -> list[dict
             "working_directory": item.working_directory,
             "capabilities": capabilities_by_binding[item.id],
             "streaming_callback_ready": item.streaming_callback_ready,
+            "execution_status": (
+                "running" if item.openhands_conversation_id in running_conversation_ids else "idle"
+            ),
             "lifecycle": item.lifecycle,
             "created_at": item.created_at.isoformat(),
             "updated_at": item.updated_at.isoformat(),
@@ -633,8 +638,19 @@ def list_conversation_page(
     )
     has_more = len(items) > limit
     page_items = items[:limit]
+    running_conversation_ids: set[str] = set()
+    if page_items:
+        try:
+            running_conversation_ids = get_runtime().running_conversation_ids(
+                _handle(db, _workspace(db, workspace_id), page_items[0])
+            )
+        except (AttributeError, DomainError):
+            # A status marker must not make the paged Conversation list
+            # unavailable. The selected conversation still reads its native
+            # readiness through the explicit control endpoint.
+            pass
     return {
-        "items": _page_dicts(db, page_items),
+        "items": _page_dicts(db, page_items, running_conversation_ids),
         "next_cursor": _conversation_page_cursor(page_items[-1])
         if has_more and page_items
         else None,
