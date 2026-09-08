@@ -283,6 +283,30 @@ function conversationIsRunning(executionStatus: string | null | undefined): bool
   ].includes(executionStatus?.trim().toLowerCase() ?? '');
 }
 
+function unreadConversationStorageKey(hostId: string, workspaceId: string): string {
+  return `flowweave:agent-workspace-unread:${hostId}:${workspaceId}`;
+}
+
+function readUnreadConversationIds(storageKey: string | undefined): Set<string> {
+  if (!storageKey) return new Set();
+  try {
+    const stored = window.localStorage.getItem(storageKey);
+    const values: unknown = stored ? JSON.parse(stored) : [];
+    return new Set(Array.isArray(values) ? values.filter((value): value is string => typeof value === 'string') : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function writeUnreadConversationIds(storageKey: string | undefined, conversationIds: Set<string>) {
+  if (!storageKey) return;
+  try {
+    window.localStorage.setItem(storageKey, JSON.stringify([...conversationIds]));
+  } catch {
+    // Completion markers are browser-local presentation state.
+  }
+}
+
 const MAX_BOOTSTRAP_RECONCILIATION_ATTEMPTS = 3;
 const STREAM_IDLE_GRACE_MS = 5 * 60 * 1000;
 
@@ -347,11 +371,12 @@ function ConversationStreamObserver({
 }
 
 function WorkspaceConversationRow({
-  item, selectedBindingId, running, runtimeWritable, removing, deleteDisabled, onSelect, onDelete,
+  item, selectedBindingId, running, unread, runtimeWritable, removing, deleteDisabled, onSelect, onDelete,
 }: {
   item: AgentConversation;
   selectedBindingId?: string;
   running: boolean;
+  unread: boolean;
   runtimeWritable: boolean;
   removing: boolean;
   deleteDisabled: boolean;
@@ -363,6 +388,7 @@ function WorkspaceConversationRow({
       <CircleDot size={13}/><span><b>{conversationName(item)}</b></span>
     </button>
     {running && <LoaderCircle className="agent-workspace-conversation-running" role="img" aria-label="会话正在运行" size={14}/>}
+    {!running && unread && <span className="agent-workspace-conversation-unread" role="img" aria-label="会话已完成，有未读回复" title="会话已完成，有未读回复"/>}
     {onDelete && !running && <button type="button" className="agent-workspace-conversation-delete" aria-label={`删除会话 ${conversationName(item)}`} title={deleteDisabled ? '会话运行中，请先停止' : '删除会话'} disabled={!runtimeWritable || deleteDisabled || removing} onClick={onDelete}><Trash2 size={13}/></button>}
   </div>;
 }
@@ -1781,6 +1807,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const bootstrapTransitionScope = useRef<string | undefined>(undefined);
   const selectedBindingId = host.bindingIdFromPathname(withoutDeploymentBase(window.location.pathname));
   const previousComposerScope = useRef<string | undefined>(undefined);
+  const activityBaseline = useRef<Map<string, boolean>>(new Map());
+  const [unreadConversationIds, setUnreadConversationIds] = useState<Set<string>>(() => new Set());
   // A FlowRun may briefly report a recoverable 409 while its Attempt and
   // Runtime records are being published.  Do not leave the node workbench
   // permanently stuck on the first transient response.
@@ -1792,6 +1820,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     refetchOnWindowFocus: true,
   });
   const workspace = workspaceQuery.data;
+  const unreadStorageKey = workspace ? unreadConversationStorageKey(host.id, workspace.id) : undefined;
   const runtimeQuery = useQuery({ queryKey: sessionQueryKey(host, 'runtime', workspace?.id), queryFn: () => api.runtime(workspace!.id), enabled: Boolean(workspace), refetchInterval: query => query.state.data?.state === 'RECOVERING' ? 5000 : false });
   const conversationsQuery = useInfiniteQuery({
     queryKey: sessionQueryKey(host, 'conversations', workspace?.id),
@@ -1825,6 +1854,48 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     () => conversations.find(item => item.id === selectedBindingId) ?? selectedConversationQuery.data,
     [conversations, selectedBindingId, selectedConversationQuery.data],
   );
+  const updateUnreadConversationIds = useCallback((update: (current: Set<string>) => Set<string>) => {
+    setUnreadConversationIds(current => {
+      const next = update(current);
+      writeUnreadConversationIds(unreadStorageKey, next);
+      return next;
+    });
+  }, [unreadStorageKey]);
+  const markConversationRead = useCallback((bindingId: string) => {
+    updateUnreadConversationIds(current => {
+      if (!current.has(bindingId)) return current;
+      const next = new Set(current);
+      next.delete(bindingId);
+      return next;
+    });
+  }, [updateUnreadConversationIds]);
+  useEffect(() => {
+    activityBaseline.current = new Map();
+    setUnreadConversationIds(readUnreadConversationIds(unreadStorageKey));
+  }, [unreadStorageKey]);
+  useEffect(() => {
+    if (selectedBindingId) markConversationRead(selectedBindingId);
+  }, [markConversationRead, selectedBindingId]);
+  useEffect(() => {
+    // The paginated list is the single running snapshot. Detect only a
+    // witnessed running -> idle edge; an initial idle row is not a new reply.
+    const present = new Set(conversations.map(item => item.id));
+    for (const item of conversations) {
+      const running = conversationIsRunning(item.execution_status);
+      const previous = activityBaseline.current.get(item.id);
+      activityBaseline.current.set(item.id, running);
+      if (previous === true && !running && item.id !== selectedBindingId) {
+        updateUnreadConversationIds(current => current.has(item.id) ? current : new Set([...current, item.id]));
+      }
+    }
+    for (const bindingId of activityBaseline.current.keys()) {
+      if (!present.has(bindingId)) activityBaseline.current.delete(bindingId);
+    }
+    updateUnreadConversationIds(current => {
+      const next = new Set([...current].filter(bindingId => present.has(bindingId)));
+      return next.size === current.size ? current : next;
+    });
+  }, [conversations, selectedBindingId, updateUnreadConversationIds]);
   useEffect(() => {
     const onVisibilityChange = () => setPageVisible(document.visibilityState === 'visible');
     document.addEventListener('visibilitychange', onVisibilityChange);
@@ -2786,7 +2857,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     // a send/interrupt action and the next bounded list refresh.
     const running = conversationIsRunning(item.execution_status)
       || (item.id === selected?.id && (selectedConversationRunning || isGenerating));
-    return <WorkspaceConversationRow key={item.id} item={item} selectedBindingId={selectedBindingId} running={running} runtimeWritable={runtimeWritable} removing={remove.isPending} deleteDisabled={running} onSelect={() => selectConversation(item.id)} onDelete={features.conversationDeletion ? () => void confirmDeletion('会话', conversationName(item)).then(ok => { if (ok) remove.mutate(item.id); }) : undefined}/>;
+    return <WorkspaceConversationRow key={item.id} item={item} selectedBindingId={selectedBindingId} running={running} unread={unreadConversationIds.has(item.id)} runtimeWritable={runtimeWritable} removing={remove.isPending} deleteDisabled={running} onSelect={() => selectConversation(item.id)} onDelete={features.conversationDeletion ? () => void confirmDeletion('会话', conversationName(item)).then(ok => { if (ok) remove.mutate(item.id); }) : undefined}/>;
   };
   const openCurrentDirectoryDraft = () => {
     const directory = selected?.work_directory_id
