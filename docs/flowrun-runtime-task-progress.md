@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`ACTIVE`
 > 当前执行切片：无
-> 下一可执行切片：`FR-212`（按需会话流生命周期与轮询收敛）
+> 下一可执行切片：`FR-213`（Runtime Provider Relay Hub 与五分钟空闲宽限）
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -3029,10 +3029,11 @@ Runtime Provider、Worker、PostgreSQL 与 Compose 的统一资源治理边界�
 增量，历史由显式分页触发。固定 1.44 具有 `TIMESTAMP_DESC`/`page_id` 但没有 HEAD 分支反向迭代器，因此当前
 窗口只按 HEAD 及其单页父链构造，缺失父事件通过只读 `history_cursor` 按需继续；不建立 FlowWeave 事件副本。
 
-### FR-212 按需会话流生命周期与轮询收敛 — PENDING
+### FR-212 按需会话流生命周期与轮询收敛 — DONE
 
 依赖：`FR-210`、`FR-211`。删除侧栏逐会话 1.5 秒轮询和全列表 observer；仅发送后的当前会话订阅实时流，
-回合结束后保留 5 分钟并由空闲策略回收。当前运行会话保留一个退避 readiness 兜底，页面不可见时暂停。
+回合结束或暂停后保留 5 分钟并由空闲策略回收。当前运行会话保留一个退避 readiness 兜底，页面不可见时暂停。
+侧栏不再显示需逐会话探测的运行/未读状态；当前会话仍在运行时保留删除保护，其他会话继续由服务端执行最终状态校验。
 
 ### FR-213 Runtime Provider Relay Hub 与五分钟空闲宽限 — PENDING
 
@@ -3090,6 +3091,7 @@ SSE/Relay/终端/消息并发配额写入部署与应用配置；按实测 Postg
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-08 | FR-212 | Web ESLint、TypeScript typecheck；`git diff --check`、Alembic head、任务状态唯一性 | PASS：删除侧栏逐会话 1.5 秒 readiness 轮询和每个会话的 WebSocket observer，只在当前选中会话处于运行、暂停恢复或五分钟终态/暂停宽限时建立流。输入 readiness 仅为当前运行会话保留可见页的 2–10 秒失败退避兜底；事件、上下文与确认不再固定 REST 轮询。刷新中的运行会话仍由首次正式 readiness 读取恢复流订阅；当前运行会话保持删除禁用，未选中会话继续由服务端拒绝运行中删除。唯一 Alembic head 为 `0102_event_trigger_observers`，FR-213 已 PENDING；无 CURRENT。 |
 | 2026-09-08 | FR-211 | 固定 OpenHands `9a24f6c` 事件检索契约取证；`test_openhands.py`；受影响 Python `py_compile`、Ruff、Pyright；Web ESLint/TypeScript typecheck；`git diff --check`、任务状态唯一性 | PASS：适配层不再逐页扫描至事件末尾；当前会话从正式 HEAD 以 `TIMESTAMP_DESC`/`page_id` 读取单个 100 条窗口并只恢复该页可证明的父链，增量读取只取一个正式 cursor 页。缺失父事件以只读 `history_cursor` 供用户显式“加载更早记录”继续读取，未持久化事件或 cursor。固定上游不提供 HEAD 分支反向迭代器，已记录该只读窗口降级。`test_openhands.py` 106 passed，静态检查通过；FR-212 已 READY；无 CURRENT。 |
 | 2026-09-08 | FR-210 | 受影响 Python `py_compile`、Ruff check/format、Pyright；Web ESLint/TypeScript typecheck；`git diff --check`、任务状态唯一性 | PASS：Agent Workspace 与节点会话列表均改为 `limit <= 5` 的稳定 cursor 页；列表 DTO 用批量工作目录和能力查询替代逐条 N+1。共享 Workbench 使用按页加载、每组显示 5 条、显式“展开显示 5 个会话”，折叠后重置显示数；深层会话 URL 额外按 ID 读取，不会因其不在首屏而重定向。新增分页顺序/无重复回归。定向 pytest 因本机 Docker daemon 不可用、Testcontainers PostgreSQL fixture 在断言前失败，未伪记为通过。FR-211 已 READY；无 CURRENT。 |
 | 2026-09-08 | FR-209 | 完整读取 Runtime 设计与进度；现有会话、SSE、Relay、tmux、Worker、HTTP、Compose 资源边界审计；任务状态唯一性；`git diff --check` | PASS：新增资源治理与会话性能设计，冻结按需 WebSocket 及 5 分钟空闲宽限、5 条 cursor 列表分页、OpenHands 官方 cursor 历史窗口、保持一 FlowRun 一 Runtime 的 Relay Hub、共享 LISTEN fanout、tmux TTL、真实 Worker 并发、HTTP 池、服务资源/数据库预算、指标和分布式限流前置条件。FR-210 已 READY；无 CURRENT。 |
