@@ -715,6 +715,8 @@ def test_resume_node_conversation_recovers_an_end_blocked_attempt_when_openhands
             node_attempt_id=attempt_id,
             runtime_session_id=runtime_session_id,
             working_directory=attempt.workspace_ref,
+            model_provider_id="market-provider",
+            model_name="market-model",
             openhands_conversation_id="failed-paused-conversation",
             lifecycle="ACTIVE",
             create_idempotency_key=f"failed-paused:{attempt_id}",
@@ -723,7 +725,12 @@ def test_resume_node_conversation_recovers_an_end_blocked_attempt_when_openhands
         db.flush()
         attempt.conversation_id = binding.openhands_conversation_id
 
+        switched: list[object] = []
+
         class NativePausedRuntime:
+            def switch_model(self, _handle: object, provider: object) -> None:
+                switched.append(provider)
+
             def input_readiness(self, _handle: object) -> RuntimeInputReadiness:
                 return RuntimeInputReadiness(ready=True, execution_status="paused")
 
@@ -739,6 +746,8 @@ def test_resume_node_conversation_recovers_an_end_blocked_attempt_when_openhands
         monkeypatch.setattr(
             flow_node_conversations, "get_runtime", lambda: NativePausedRuntime()
         )
+        monkeypatch.setattr(flow_node_conversations, "config_from_binding", lambda *_args: object())
+        monkeypatch.setattr(flow_node_conversations, "provider_for_config", lambda *_args: "market")
 
         result = flow_node_conversations.resume_node_conversation(
             db,
@@ -760,6 +769,7 @@ def test_resume_node_conversation_recovers_an_end_blocked_attempt_when_openhands
             None,
         )
         assert run.state == "ACTIVE"
+        assert switched == ["market"]
         event = db.scalar(
             select(RunEvent)
             .where(RunEvent.attempt_id == attempt_id, RunEvent.event_type == "ATTEMPT_RESUMED")

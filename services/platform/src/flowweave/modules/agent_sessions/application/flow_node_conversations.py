@@ -2626,15 +2626,27 @@ def resume_node_conversation(
         db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
     )
     attempt = _attempt(db, attempt_id)
+    runtime = get_runtime()
+
+    def resume_runtime() -> RuntimeResult:
+        handle = _node_handle(
+            db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
+        )
+        provider = provider_for_config(db, config_from_binding(db, binding))
+        if provider is not None:
+            # OpenHands switch_llm is live-runtime state. Re-apply the
+            # persisted Conversation binding before resuming so a Runtime
+            # restart or native error cannot restore the creation-time model.
+            runtime.switch_model(handle, provider)
+        return runtime.run(handle)
+
     execution_conversation = attempt.conversation_id == binding.openhands_conversation_id
     if not execution_conversation:
         # An Attempt may have additional collaborative Conversations. They are
         # independently owned by OpenHands and may still be resumed, but they
         # are not the Attempt's output-producing Conversation and must never
         # mutate the node orchestration projection.
-        result = get_runtime().run(
-            _node_handle(db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id)
-        )
+        result = resume_runtime()
         finish(db)
         return {"accepted": True, "cursor": result.cursor}
     recover_blocked_attempt = attempt.state == AttemptState.END_BLOCKED
@@ -2646,7 +2658,7 @@ def resume_node_conversation(
         handle = _node_handle(
             db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
         )
-        readiness = get_runtime().input_readiness(handle)
+        readiness = runtime.input_readiness(handle)
         if readiness.execution_status.lower() != "paused":
             raise conflict(
                 "node attempt is not paused",
@@ -2704,9 +2716,7 @@ def resume_node_conversation(
         raise conflict("node attempt changed while resuming", attempt_id=attempt_id)
     db.expire_all()
     resuming = _attempt(db, attempt_id)
-    result = get_runtime().run(
-        _node_handle(db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id)
-    )
+    result = resume_runtime()
     running_id = db.scalar(
         update(NodeAttempt)
         .where(
