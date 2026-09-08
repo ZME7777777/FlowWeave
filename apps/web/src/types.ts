@@ -235,6 +235,21 @@ export interface ArtifactVersion {
 export interface ArtifactVersionPage {
   items: ArtifactVersion[]; total: number; page: number; page_size: number;
 }
+export interface RuntimeArtifactAuditPage {
+  items: Array<{
+    producer_attempt_id: string; producer_node_run_id: string; field_key: string; content_hash: string;
+    evidence: { kind: 'FORMAL_COMPLETION_ID_REPLAY' | 'CONTENT_HASH_MATCH_ONLY'; runtime_completion_event_ids: string[] };
+    artifacts: Array<{
+      id: string; version_no: number; artifact_type: string; byte_size: number; mime_type: string;
+      runtime_completion_event_id?: string | null; created_at: string;
+      input_references: Array<{ consumer_attempt_id: string; input_field_key: string; binding_source: string }>;
+    }>;
+    workspace_impact: { workspace_ref_recorded: boolean; work_directory_count: number };
+    cleanup: { state: 'CONFIRMATION_REQUIRED'; proposed_action: 'NO_ACTION_IN_THIS_RELEASE'; plan_reference_artifact_ids: string[]; reasons: string[] };
+  }>;
+  total: number; page: number; page_size: number; read_only: true;
+  cleanup: { state: 'CONFIRMATION_REQUIRED'; message: string };
+}
 export interface InputBinding {
   id: string; input_field_key: string; artifact_version_id: string; binding_source: string;
 }
