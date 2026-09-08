@@ -385,10 +385,12 @@ function WorkspaceConversationRow({
 }) {
   return <div className="agent-workspace-conversation">
     <button type="button" className={`agent-workspace-conversation-select${item.id === selectedBindingId ? ' active' : ''}`} onClick={onSelect}>
-      <CircleDot size={13}/><span><b>{conversationName(item)}</b></span>
+      {running
+        ? <LoaderCircle className="agent-workspace-conversation-running" role="img" aria-label="会话正在运行" size={14}/>
+        : unread
+          ? <span className="agent-workspace-conversation-unread" role="img" aria-label="会话已完成，有未读回复" title="会话已完成，有未读回复"/>
+          : <CircleDot size={13}/>}<span><b>{conversationName(item)}</b></span>
     </button>
-    {running && <LoaderCircle className="agent-workspace-conversation-running" role="img" aria-label="会话正在运行" size={14}/>}
-    {!running && unread && <span className="agent-workspace-conversation-unread" role="img" aria-label="会话已完成，有未读回复" title="会话已完成，有未读回复"/>}
     {onDelete && !running && <button type="button" className="agent-workspace-conversation-delete" aria-label={`删除会话 ${conversationName(item)}`} title={deleteDisabled ? '会话运行中，请先停止' : '删除会话'} disabled={!runtimeWritable || deleteDisabled || removing} onClick={onDelete}><Trash2 size={13}/></button>}
   </div>;
 }
@@ -1841,7 +1843,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const providersQuery = useQuery({ queryKey: ['model-providers'], queryFn: api.providers, enabled: Boolean(workspace && features.modelSelection) });
   const capabilityCatalogQuery = useQuery({ queryKey: sessionQueryKey(host, 'capability-catalog'), queryFn: api.capabilities, enabled: Boolean(workspace && features.capabilities) });
   const conversations = useMemo(
-    () => conversationsQuery.data?.pages.flatMap(page => page.items) ?? [],
+    () => [...(conversationsQuery.data?.pages.flatMap(page => page.items) ?? [])].sort(
+      (left, right) => right.created_at.localeCompare(left.created_at) || right.id.localeCompare(left.id),
+    ),
     [conversationsQuery.data],
   );
   const selectedConversationQuery = useQuery({

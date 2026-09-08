@@ -3238,6 +3238,12 @@ Runtime 或调用取消／删除路径。候选区分“同一正式 Runtime com
 `CONFIRMATION_REQUIRED`／`NO_ACTION_IN_THIS_RELEASE`；跨记录 Attempt 关联 fail closed，实际清理仍须在
 用户明确确认后另建独立切片。
 
+### FR-231 Agent 会话状态提示与创建时间排序 — DONE
+
+依赖：`FR-229`。会话列表必须以创建时间稳定排序，新消息、标题任务或连接时间更新都不得改变会话的位置。每个会话左侧状态位在 OpenHands 原生运行快照为运行中时显示旋转圆环；已观测到的后台会话完成后继续显示蓝色未读点，直至用户打开该会话。
+
+完成：服务端列表和分页 cursor 改为 `created_at DESC, id DESC`，前端在已加载页面合并后按同一稳定键显示。运行圆环和未读点均位于会话行左侧状态位，互斥呈现；删除按钮仍仅在闲置会话悬停时显示。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -3253,6 +3259,7 @@ Runtime 或调用取消／删除路径。候选区分“同一正式 Runtime com
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-08 | FR-231 | Web TypeScript typecheck、ESLint；受影响 Python Ruff check、`py_compile` 与 `git diff --check`；会话列表创建时间顺序定向 pytest | PASS（静态）：新消息更新 `updated_at` 后仍不改变会话列表与分页次序；运行态和完成未读态在同一左侧状态位互斥显示。定向 pytest 因本机 Docker daemon 未运行、Testcontainers PostgreSQL fixture 无法启动而未执行断言，未伪记为通过。 |
 | 2026-09-08 | FR-230 | 历史 Runtime Artifact 候选只读审计与受确认清理计划定向回归；受影响 Python Ruff format/check、`py_compile`、无 Docker fixture pytest；Alembic head、任务状态唯一性与 `git diff --check` | PASS：新增嵌套 `artifact-audit` 分页读取端点，仅投影候选 Artifact 元数据、Attempt 输入绑定、冻结计划引用和工作区计数；不读取内容或存储键、不触发 Runtime、任务、取消或删除。相同正式 completion identity 仅作为重放审计证据，仍输出 `CONFIRMATION_REQUIRED` 与 `NO_ACTION_IN_THIS_RELEASE`，内容哈希相同但 completion identity 不同／缺失时仅标为历史核验线索。跨 FlowRun Attempt 关联受限并 fail closed。`test_runtime_wakeup.py` 无 Docker fixture 模式 `18 passed`；唯一 Alembic head 为 `0103_runtime_artifact_proj_idem`。 |
 | 2026-09-08 | FR-226 | 自动 Gate `PASS`／`FAIL`／`ERROR`、终态恢复、完成身份幂等、摘要／轻量详情读取定向回归；受影响 Python Ruff format/check、`py_compile`；Web ESLint/TypeScript typecheck；Alembic head、任务状态唯一性与 `git diff --check` | PASS：`test_runtime_wakeup.py` 无 Docker fixture 模式 `17 passed`。Gate `PASS` 仅跨越持久 advance worker 边界；`FAIL` 仍只在三轮修订后转人工；`ERROR` 不伪装为输出失败或触发修订。旧终态不会重放输出或新增 Artifact，新正式事件才会恢复投影。连续记录 Rail 仍只读取摘要，详情及 Artifact 元数据均按需读取；本切片未调用 Artifact、工作区或自动记录删除路径。唯一 Alembic head 为 `0103_runtime_artifact_proj_idem`。 |
 | 2026-09-08 | FR-225 | 自动运行轻量详情／Artifact 分页静态回归；受影响 Python Ruff format/check、`py_compile`、无 Docker fixture pytest、Web ESLint/TypeScript typecheck；Alembic heads、任务状态唯一性与 `git diff --check` | PASS：连续运行 Rail 仅轮询摘要，选中后才请求受父 FlowRun 约束的详情；详情不再返回运行级或 Attempt 级完整 Artifact 数组。新增受父运行、Attempt 和可选精确 Artifact ID 作用域验证的分页元数据端点，元数据不返回 `storage_key`/`inline_content`，内容仍仅按单 Artifact 显式读取。自动运行输出页按当前 Attempt 分页，草稿编辑仅按已绑定 ID 读取输入元数据。`test_runtime_wakeup.py` 无 Docker 模式 15 passed，Web ESLint/typecheck 通过；唯一 Alembic head 为 `0103_runtime_artifact_proj_idem`。 |

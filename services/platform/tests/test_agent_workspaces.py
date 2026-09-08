@@ -2457,7 +2457,7 @@ def test_agent_workspace_message_failure_is_ambiguous_and_delete_is_tombstoned(
         assert conversations.list_conversations(db, workspace.id) == []
 
 
-def test_agent_workspace_recent_message_moves_conversation_to_top(
+def test_agent_workspace_conversation_order_stays_at_creation_time(
     settings, db_session_factory, monkeypatch
 ):
     monkeypatch.setattr(
@@ -2484,8 +2484,10 @@ def test_agent_workspace_recent_message_moves_conversation_to_top(
         newer_binding = db.get(AgentConversationBinding, newer["id"])
         assert older_binding is not None
         assert newer_binding is not None
-        older_binding.updated_at = baseline
-        newer_binding.updated_at = baseline + timedelta(hours=1)
+        older_binding.created_at = baseline
+        newer_binding.created_at = baseline + timedelta(hours=1)
+        older_binding.updated_at = baseline + timedelta(hours=2)
+        newer_binding.updated_at = baseline + timedelta(hours=3)
         db.flush()
         assert [item["id"] for item in conversations.list_conversations(db, workspace.id)] == [
             newer["id"],
@@ -2495,8 +2497,8 @@ def test_agent_workspace_recent_message_moves_conversation_to_top(
         conversations.message(db, workspace.id, older["id"], "继续更新较早会话")
 
         assert [item["id"] for item in conversations.list_conversations(db, workspace.id)] == [
-            older["id"],
             newer["id"],
+            older["id"],
         ]
         assert older_binding.updated_at > newer_binding.updated_at
 

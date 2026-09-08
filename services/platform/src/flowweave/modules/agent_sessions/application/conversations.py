@@ -205,24 +205,20 @@ def _conversation_page_cursor(item: AgentConversationBinding) -> str:
     """Return an opaque cursor for the stable conversation-list ordering."""
 
     payload = json.dumps(
-        [item.updated_at.isoformat(), item.created_at.isoformat(), item.id],
+        [item.created_at.isoformat(), item.id],
         separators=(",", ":"),
     ).encode("utf-8")
     return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
 
 
-def _decode_conversation_page_cursor(cursor: str) -> tuple[datetime, datetime, str]:
+def _decode_conversation_page_cursor(cursor: str) -> tuple[datetime, str]:
     try:
         padded = cursor + "=" * (-len(cursor) % 4)
         value = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")))
-        updated_at, created_at, binding_id = value
-        if (
-            not isinstance(updated_at, str)
-            or not isinstance(created_at, str)
-            or not isinstance(binding_id, str)
-        ):
+        created_at, binding_id = value
+        if not isinstance(created_at, str) or not isinstance(binding_id, str):
             raise ValueError("invalid cursor values")
-        return datetime.fromisoformat(updated_at), datetime.fromisoformat(created_at), binding_id
+        return datetime.fromisoformat(created_at), binding_id
     except (TypeError, ValueError, binascii.Error, json.JSONDecodeError) as exc:
         raise DomainError("AGENT_CONVERSATION_CURSOR_INVALID", "会话列表游标无效", 422) from exc
 
@@ -593,7 +589,6 @@ def list_conversations(db: Session, workspace_id: str) -> list[dict[str, Any]]:
                 AgentConversationBinding.lifecycle == "ACTIVE",
             )
             .order_by(
-                AgentConversationBinding.updated_at.desc(),
                 AgentConversationBinding.created_at.desc(),
                 AgentConversationBinding.id.desc(),
             )
@@ -612,16 +607,13 @@ def list_conversation_page(
         AgentConversationBinding.lifecycle == "ACTIVE",
     )
     if cursor:
-        updated_at, created_at, binding_id = _decode_conversation_page_cursor(cursor)
+        created_at, binding_id = _decode_conversation_page_cursor(cursor)
         query = query.where(
             or_(
-                AgentConversationBinding.updated_at < updated_at,
                 and_(
-                    AgentConversationBinding.updated_at == updated_at,
                     AgentConversationBinding.created_at < created_at,
                 ),
                 and_(
-                    AgentConversationBinding.updated_at == updated_at,
                     AgentConversationBinding.created_at == created_at,
                     AgentConversationBinding.id < binding_id,
                 ),
@@ -630,7 +622,6 @@ def list_conversation_page(
     items = list(
         db.scalars(
             query.order_by(
-                AgentConversationBinding.updated_at.desc(),
                 AgentConversationBinding.created_at.desc(),
                 AgentConversationBinding.id.desc(),
             ).limit(limit + 1)
