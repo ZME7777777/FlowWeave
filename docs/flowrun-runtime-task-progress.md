@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`ACTIVE`
 > 当前执行切片：无
-> 下一可执行切片：`FR-215`（持久 tmux 活动账本与 TTL 回收）
+> 下一可执行切片：`FR-216`（有界 worker_concurrency 与任务执行 lanes）
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -3050,10 +3050,16 @@ Runtime Provider、Worker、PostgreSQL 与 Compose 的统一资源治理边界�
 `503 RUN_EVENT_SSE_CAPACITY_EXHAUSTED`，慢消费者被标记并断开，浏览器使用 `Last-Event-ID` 和既有 cursor 查询补齐。
 应用关闭先取消监听任务、关闭订阅和独立连接，连接不进入 SQLAlchemy pool。SSE 的 cursor 查询继续是唯一事实源。
 
-### FR-215 持久 tmux 活动账本与 TTL 回收 — PENDING
+### FR-215 持久 tmux 活动账本与 TTL 回收 — DONE
 
 依赖：`FR-209`。增加 30 分钟空闲与 8 小时绝对 TTL，按 owner/附着连接安全回收 tmux、PTY 与临时资源，提供
 活动和回收指标。
+
+完成：持久 tmux 会话在自身 user options 中记录创建时间和最后附着活动时间，Provider 重启不会重置 TTL。
+Runtime Provider 的账本按受验证 container/session 记录附着数量，30 分钟空闲或 8 小时绝对 TTL 到期后仅在
+无附着连接时回收对应 tmux 和 PTY；显式关闭也先关闭该会话的附件。reaper 仅扫描当前 manager scope 下带
+`agent-runtime` ownership label 的容器和 `flowweave-*` 会话，容器消失时不跨 owner 处理。Compose 暴露
+`DOCKER_CONTROLLER_TERMINAL_IDLE_SECONDS=1800` 与 `DOCKER_CONTROLLER_TERMINAL_HARD_TTL_SECONDS=28800`。
 
 ### FR-216 有界 worker_concurrency 与任务执行 lanes — PENDING
 
@@ -3096,6 +3102,7 @@ SSE/Relay/终端/消息并发配额写入部署与应用配置；按实测 Postg
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-08 | FR-215 | tmux TTL 直接单元 smoke（附着保护、绝对 TTL、显式回收、持久账本扫描范围）；受影响 Python `py_compile`、Ruff、定向 Pyright；Compose 解析、`git diff --check`、Alembic head、任务状态唯一性 | PASS：tmux 在自身持久 options 保存创建和最近活动时间；Provider 账本将活跃附件作为回收保护。空闲 30 分钟或绝对 8 小时后，只有当前 scope 的 owned `agent-runtime` 容器内 `flowweave-*` tmux 被关闭；Provider 重启只关闭 PTY 附件，不删除持久 tmux。新增 pytest 回归可被收集，但仓库全局 Testcontainers PostgreSQL fixture 在本机 Docker daemon 不可用时会于断言前阻断，未伪记为通过；不依赖 Docker 的直接 smoke 与静态检查通过。唯一 Alembic head 为 `0102_event_trigger_observers`，FR-216 已 PENDING；无 CURRENT。 |
 | 2026-09-08 | FR-214 | 共享 LISTEN fanout 直接异步 smoke（单连接、多 Run 定向投递、慢消费者丢弃、容量拒绝、关闭回收）；受影响 Python `py_compile`、Ruff、定向 Pyright；`git diff --check`、Alembic head、任务状态唯一性 | PASS：每个实际提供 SSE 的进程按需建立一条 PostgreSQL LISTEN 连接，多个 SSE 客户端不再消耗数据库连接；按 Run ID 的本地队列隔离通知，慢客户端只被自身丢弃，使用 `Last-Event-ID` / cursor 自动补齐。默认上限为 256 个订阅者和每订阅者 8 个通知，达到上限返回 503。容器关闭会取消监听任务并关闭独立连接。新增 pytest 回归因仓库全局 Testcontainers PostgreSQL fixture 在断言前受本机 Docker daemon 不可用阻断，未伪记为通过；不依赖 Docker 的直接异步 smoke 通过。唯一 Alembic head 为 `0102_event_trigger_observers`，FR-215 已 PENDING；无 CURRENT。 |
 | 2026-09-08 | FR-213 | Provider relay Hub 直接异步 smoke（共享上游、generation 切换、五分钟空闲回收）；受影响 Python `py_compile`、Ruff、定向 Pyright；`git diff --check`、Alembic head、任务状态唯一性 | PASS：Provider 以受所有权校验后的 resource/container generation、Conversation 与 channel 作为 Hub 键；同键浏览器连接共享一条 `docker exec` 上游。每 Hub 最多 8 个订阅者、每订阅者最多 32 个帧、全进程最多 128 个 Hub；慢消费者被关闭并使用正式 cursor 重连，不能阻塞其他订阅者。最后一个订阅者离开后保留 5 分钟，代际 container 改变、应用关闭或上游取消均取消 relay，并沿既有屏蔽式清理终止远程进程；Runtime 内残留进程兜底由每通道最多 1 条收紧。新增 pytest 回归已覆盖共享、慢订阅者和 generation 切换，但仓库全局 Testcontainers PostgreSQL fixture 在断言前因本机 Docker daemon 不可用中断，未伪记为通过；直接异步 smoke 通过。唯一 Alembic head 为 `0102_event_trigger_observers`，FR-214 已 PENDING；无 CURRENT。 |
 | 2026-09-08 | FR-212 | Web ESLint、TypeScript typecheck；`git diff --check`、Alembic head、任务状态唯一性 | PASS：删除侧栏逐会话 1.5 秒 readiness 轮询和每个会话的 WebSocket observer，只在当前选中会话处于运行、暂停恢复或五分钟终态/暂停宽限时建立流。输入 readiness 仅为当前运行会话保留可见页的 2–10 秒失败退避兜底；事件、上下文与确认不再固定 REST 轮询。刷新中的运行会话仍由首次正式 readiness 读取恢复流订阅；当前运行会话保持删除禁用，未选中会话继续由服务端拒绝运行中删除。唯一 Alembic head 为 `0102_event_trigger_observers`，FR-213 已 PENDING；无 CURRENT。 |

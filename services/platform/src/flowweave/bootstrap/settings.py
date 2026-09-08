@@ -128,6 +128,9 @@ class Settings(BaseSettings):
     docker_controller_api_key: str = ""
     docker_controller_worker_api_key: str = ""
     docker_controller_terminal_idle_seconds: int = Field(default=1800, ge=60, le=86_400)
+    docker_controller_terminal_hard_ttl_seconds: int = Field(
+        default=28_800, ge=300, le=604_800
+    )
 
     @model_validator(mode="after")
     def validate_production_secrets(self) -> Settings:

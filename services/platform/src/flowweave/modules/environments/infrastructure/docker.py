@@ -9,6 +9,7 @@ import signal
 import struct
 import subprocess
 import termios
+import time
 from dataclasses import dataclass
 from typing import Any, cast
 
@@ -38,10 +39,15 @@ _TERMINAL_SHELL_SCRIPT = (
 )
 _TERMINAL_TMUX_SCRIPT = (
     'session="$1"; shell_script="$2"; columns="$3"; rows="$4"; '
+    'now=$(date +%s); '
     'if ! tmux has-session -t "$session" 2>/dev/null; then '
     'tmux new-session -d -x "$columns" -y "$rows" -s "$session" '
     'bash -c "$shell_script" '
     '|| tmux has-session -t "$session"; fi; '
+    'if ! tmux show-options -t "$session" -v @flowweave_terminal_created_at '
+    '>/dev/null 2>&1; then '
+    'tmux set-option -t "$session" @flowweave_terminal_created_at "$now"; fi; '
+    'tmux set-option -t "$session" @flowweave_terminal_last_activity_at "$now"; '
     # Let tmux receive pointer input so wheel events enter its persistent
     # copy-mode scrollback instead of being interpreted by the shell.
     'tmux set-option -t "$session" mouse on; '
@@ -568,6 +574,99 @@ def destroy_terminal_session(container_id: str, session_name: str) -> None:
         ],
         timeout=15,
     )
+
+
+def reap_managed_terminal_sessions(
+    *,
+    idle_seconds: int,
+    hard_ttl_seconds: int,
+    protected_sessions: dict[str, set[str]],
+) -> int:
+    """Reap idle marked tmux sessions from owned Agent Runtime containers.
+
+    The timestamps live in tmux user options, so a Runtime Provider restart does
+    not reset the TTL. Only FlowWeave-named sessions inside containers matching
+    the active manager scope and `agent-runtime` kind are eligible.
+    """
+
+    require_backend()
+    settings = get_settings()
+    identifiers = _run(
+        [
+            settings.docker_binary,
+            "ps",
+            "--quiet",
+            "--filter",
+            "label=flowweave.managed=true",
+            "--filter",
+            f"label=flowweave.manager-scope={settings.sandbox_manager_scope}",
+            "--filter",
+            "label=flowweave.kind=agent-runtime",
+        ],
+        timeout=30,
+    ).splitlines()
+    reaped = 0
+    now = int(time.time())
+    script = r'''
+set -eu
+now="$1"
+idle="$2"
+hard="$3"
+protected="${4:-}"
+reaped=0
+for session in $(tmux list-sessions -F '#S' 2>/dev/null || true); do
+  case "$session" in flowweave-*) ;; *) continue ;; esac
+  case ",$protected," in *,"$session",*) continue ;; esac
+  created=$(tmux show-options -t "$session" -v \
+    @flowweave_terminal_created_at 2>/dev/null || true)
+  active=$(tmux show-options -t "$session" -v \
+    @flowweave_terminal_last_activity_at 2>/dev/null || true)
+  case "$created" in
+    *[!0-9]*|'')
+      created="$now"
+      tmux set-option -t "$session" @flowweave_terminal_created_at "$now"
+      ;;
+  esac
+  case "$active" in
+    *[!0-9]*|'')
+      active="$created"
+      tmux set-option -t "$session" @flowweave_terminal_last_activity_at "$active"
+      ;;
+  esac
+  if [ $((now - created)) -ge "$hard" ] || [ $((now - active)) -ge "$idle" ]; then
+    tmux kill-session -t "$session" 2>/dev/null || true
+    reaped=$((reaped + 1))
+  fi
+done
+printf '%s' "$reaped"
+'''
+    for identifier in identifiers:
+        container_id = identifier.strip()
+        if not container_id:
+            continue
+        try:
+            output = _run(
+                [
+                    settings.docker_binary,
+                    "exec",
+                    container_id,
+                    "bash",
+                    "-c",
+                    script,
+                    "--",
+                    str(now),
+                    str(idle_seconds),
+                    str(hard_ttl_seconds),
+                    ",".join(sorted(protected_sessions.get(container_id, set()))),
+                ],
+                timeout=30,
+            ).strip()
+            reaped += int(output or "0")
+        except (DomainError, ValueError):
+            # A Runtime can disappear between the scoped listing and exec;
+            # lifecycle reconciliation owns that resource-level recovery.
+            continue
+    return reaped
 
 
 def resize_terminal(

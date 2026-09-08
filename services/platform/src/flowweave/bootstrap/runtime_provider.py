@@ -62,6 +62,7 @@ _RELAY_IDLE_GRACE_SECONDS = 300.0
 _RELAY_MAX_HUBS = 128
 _RELAY_MAX_SUBSCRIBERS_PER_HUB = 8
 _RELAY_SUBSCRIBER_QUEUE_SIZE = 32
+_TERMINAL_SESSION_NAME = re.compile(r"[^a-z0-9_.-]+")
 
 logger = logging.getLogger(__name__)
 
@@ -442,13 +443,30 @@ class _TerminalAttachment:
     master: int
     process: subprocess.Popen[bytes]
     last_activity: float
+    session_key: str | None = None
+
+
+@dataclass(slots=True)
+class _TerminalSession:
+    container_id: str
+    session_name: str
+    created_at: float
+    last_activity: float
+    attachments: int = 0
 
 
 class _TerminalManager:
-    def __init__(self, *, idle_seconds: int) -> None:
+    def __init__(self, *, idle_seconds: int, hard_ttl_seconds: int) -> None:
         self.idle_seconds = idle_seconds
+        self.hard_ttl_seconds = hard_ttl_seconds
         self.attachments: dict[str, _TerminalAttachment] = {}
+        self.sessions: dict[str, _TerminalSession] = {}
         self._lock = threading.RLock()
+
+    @staticmethod
+    def _session_key(container_id: str, session_name: str) -> str:
+        safe_session = _TERMINAL_SESSION_NAME.sub("-", session_name.lower()).strip("-.")[:64]
+        return f"{container_id}:{safe_session}"
 
     def start(
         self,
@@ -468,8 +486,27 @@ class _TerminalManager:
         )
         os.set_blocking(master, False)
         terminal_id = secrets.token_hex(24)
+        now = time.monotonic()
+        session_key = self._session_key(container_id, session_name) if session_name else None
         with self._lock:
-            self.attachments[terminal_id] = _TerminalAttachment(master, process, time.monotonic())
+            if session_key is not None:
+                assert session_name is not None
+                session = self.sessions.get(session_key)
+                if session is None:
+                    session = _TerminalSession(
+                        container_id=container_id,
+                        session_name=_TERMINAL_SESSION_NAME.sub("-", session_name.lower()).strip(
+                            ".-"
+                        )[:64],
+                        created_at=now,
+                        last_activity=now,
+                    )
+                    self.sessions[session_key] = session
+                session.last_activity = now
+                session.attachments += 1
+            self.attachments[terminal_id] = _TerminalAttachment(
+                master, process, now, session_key
+            )
         return terminal_id
 
     def get(self, terminal_id: str) -> _TerminalAttachment:
@@ -478,6 +515,10 @@ class _TerminalManager:
             if item is None:
                 raise DomainError("TERMINAL_NOT_FOUND", "Terminal attachment is unavailable", 404)
             item.last_activity = time.monotonic()
+            if item.session_key is not None:
+                session = self.sessions.get(item.session_key)
+                if session is not None:
+                    session.last_activity = item.last_activity
             return item
 
     def read(self, terminal_id: str) -> tuple[bytes, bool]:
@@ -504,6 +545,11 @@ class _TerminalManager:
     def close(self, terminal_id: str) -> None:
         with self._lock:
             item = self.attachments.pop(terminal_id, None)
+            if item is not None and item.session_key is not None:
+                session = self.sessions.get(item.session_key)
+                if session is not None:
+                    session.attachments = max(0, session.attachments - 1)
+                    session.last_activity = time.monotonic()
         if item is None:
             return
         if item.process.poll() is None:
@@ -523,14 +569,70 @@ class _TerminalManager:
                 for terminal_id, item in self.attachments.items()
                 if item.process.poll() is not None or now - item.last_activity >= self.idle_seconds
             ]
+            expired_sessions = [
+                session
+                for session in self.sessions.values()
+                if session.attachments == 0
+                and (
+                    now - session.last_activity >= self.idle_seconds
+                    or now - session.created_at >= self.hard_ttl_seconds
+                )
+            ]
         for terminal_id in expired:
             self.close(terminal_id)
+        for session in expired_sessions:
+            try:
+                environments_docker.destroy_terminal_session(
+                    session.container_id, session.session_name
+                )
+            except DomainError:
+                # The Runtime may already be gone; the ledger can still be
+                # retired because a later generation cannot own this session.
+                pass
+            finally:
+                with self._lock:
+                    self.sessions.pop(
+                        self._session_key(session.container_id, session.session_name), None
+                    )
+        with self._lock:
+            protected_sessions: dict[str, set[str]] = {}
+            for session in self.sessions.values():
+                if session.attachments:
+                    protected_sessions.setdefault(session.container_id, set()).add(
+                        session.session_name
+                    )
+        try:
+            environments_docker.reap_managed_terminal_sessions(
+                idle_seconds=self.idle_seconds,
+                hard_ttl_seconds=self.hard_ttl_seconds,
+                protected_sessions=protected_sessions,
+            )
+        except DomainError:
+            logger.warning("Persistent terminal reaper could not inspect owned Runtime sessions")
 
     def close_all(self) -> None:
         with self._lock:
             terminal_ids = list(self.attachments)
         for terminal_id in terminal_ids:
             self.close(terminal_id)
+        with self._lock:
+            self.sessions.clear()
+
+    def destroy_session(self, container_id: str, session_name: str) -> None:
+        """Close attachments and destroy one exact ledger-owned tmux session."""
+
+        session_key = self._session_key(container_id, session_name)
+        with self._lock:
+            terminal_ids = [
+                terminal_id
+                for terminal_id, attachment in self.attachments.items()
+                if attachment.session_key == session_key
+            ]
+        for terminal_id in terminal_ids:
+            self.close(terminal_id)
+        environments_docker.destroy_terminal_session(container_id, session_name)
+        with self._lock:
+            self.sessions.pop(session_key, None)
 
 
 _RUNTIME_EVENT_RELAY = r"""
@@ -1238,7 +1340,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         raise ValueError("DOCKER_CONTROLLER_WORKER_API_KEY must contain at least 32 characters")
     if configured.docker_controller_worker_api_key == configured.docker_controller_api_key:
         raise ValueError("Docker controller API and Worker keys must be different")
-    terminals = _TerminalManager(idle_seconds=configured.docker_controller_terminal_idle_seconds)
+    terminals = _TerminalManager(
+        idle_seconds=configured.docker_controller_terminal_idle_seconds,
+        hard_ttl_seconds=configured.docker_controller_terminal_hard_ttl_seconds,
+    )
     relay_hubs = _RuntimeEventRelayHubs(configured)
 
     @asynccontextmanager
@@ -1798,7 +1903,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "The Agent Runtime container no longer exists",
                     409,
                 )
-            environments_docker.destroy_terminal_session(container_id, payload.session_name)
+            terminals.destroy_session(container_id, payload.session_name)
 
         await asyncio.to_thread(destroy)
         return {"destroyed": True}
