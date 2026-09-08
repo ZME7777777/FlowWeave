@@ -30,6 +30,7 @@ def test_runtime_input_upload_uses_frozen_flow_run_generation_route(settings):
         conversation_id=conversation_id,
         runtime_sandbox_id="11111111-1111-4111-8111-111111111111",
         runtime_resource_name="flowweave-run-generation-7",
+        workspace_root="/runtime/workspace/22222222-2222-4222-8222-222222222222",
     )
 
     handle = _runtime_input_upload_handle(request)
@@ -38,6 +39,7 @@ def test_runtime_input_upload_uses_frozen_flow_run_generation_route(settings):
     assert handle.conversation_id == conversation_id
     assert handle.runtime_resource_id == request.runtime_sandbox_id
     assert handle.runtime_resource_name == request.runtime_resource_name
+    assert handle.workspace_root == request.workspace_root
     assert (
         OpenHandsRuntime(settings)._base_url_for_handle(handle)
         == "http://flowweave-run-generation-7:8000"
