@@ -3266,6 +3266,14 @@ Runtime 或调用取消／删除路径。候选区分“同一正式 Runtime com
 
 完成：`running_conversation_ids()` 改用 `/api/conversations/search?status=running`，并保留 OpenHands 分页游标；更新适配器定向测试，避免将按 ID 批量读取端点误作搜索端点。
 
+### FR-235 门禁失败诊断、自动重试与详情弹窗修复 — DONE
+
+依赖：`FR-234`。
+
+目标：门禁执行异常必须保留可诊断的错误证据；自动运行的技术性 `ERROR` 在同一冻结阶段最多重试三次，之后才转人工；门禁详情应明确显示尝试次数和技术原因，并保持弹窗上下留白。
+
+完成：Attempt 详情投影 `error_code` 对应的 `log_excerpt`，前端在异常门禁中显示错误代码、执行原因和审查会话不可用的明确说明。自动门禁 `ERROR`（配置错误除外）按阶段重新投递并记录 `AUTOMATIC_GATE_RETRY_SCHEDULED`，第三次仍失败才进入 `AUTOMATIC_GATE_EXECUTION_FAILED`；既有真实 `FAIL` 的三轮输出修订语义保持不变。详情弹窗高度扣除 backdrop 留白，避免顶部无间隙。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：

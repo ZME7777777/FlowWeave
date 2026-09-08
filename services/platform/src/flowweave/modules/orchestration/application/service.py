@@ -2089,8 +2089,46 @@ def _record_gate_results(
                 {result.error_code for result in execution_errors if result.error_code}
             )
             gate_stage_label = "启动" if stage == "START" else "完成"
+            max_execution_no = max(
+                (prepared.execution_no for prepared, _result in evaluations), default=0
+            )
+            retryable_execution_errors = all(
+                result.error_code != "GATE_CONFIG_INVALID" for result in execution_errors
+            )
+            if max_execution_no <= 3 and retryable_execution_errors:
+                # A technical gate ERROR is retryable independently of output
+                # remediation. Re-run the same frozen stage up to three times
+                # before handing control to an operator.
+                attempt.error_code = None
+                attempt.error_detail = (
+                    f"自动{gate_stage_label}门禁执行异常，正在进行第 "
+                    f"{max_execution_no + 1}/3 次重试。"
+                )
+                attempt.state = (
+                    AttemptState.START_GATES if stage == "START" else AttemptState.END_GATES
+                )
+                attempt.state_version += 1
+                run.state = FlowRunState.ACTIVE
+                _event(
+                    db,
+                    run.id,
+                    "AUTOMATIC_GATE_RETRY_SCHEDULED",
+                    {
+                        "stage": stage,
+                        "retry_no": max_execution_no + 1,
+                        "max_retries": 3,
+                        "gate_error_codes": error_codes,
+                    },
+                    node_run.id,
+                    attempt.id,
+                )
+                _dispatch_gates(db, attempt, stage)
+                return
             attempt.error_code = "AUTOMATIC_GATE_EXECUTION_FAILED"
-            attempt.error_detail = f"自动{gate_stage_label}门禁执行失败，请检查门禁配置或稍后重试。"
+            attempt.error_detail = (
+                f"自动{gate_stage_label}门禁重试 3 次后仍执行异常，已停止自动运行。"
+                "请查看门禁详情中的技术原因后重试。"
+            )
             attempt.state_version += 1
             run.state = FlowRunState.WAITING_HUMAN
             _event(
@@ -8755,6 +8793,7 @@ def attempt_detail(
                     is not None
                 ),
                 "error_code": x.error_code,
+                "log_excerpt": x.log_excerpt,
                 "created_at": x.created_at.isoformat(),
             }
             for x in gates

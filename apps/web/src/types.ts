@@ -265,7 +265,7 @@ export interface GateEvaluation {
     mappings: Array<{ source_output_key: string; target_input: { field_key: string; display_name?: string; data_type?: string; description?: string; declared?: boolean } }>
   }> ;
   conversation_available?: boolean;
-  error_code?: string | null; created_at: string;
+  error_code?: string | null; log_excerpt?: string; created_at: string;
 }
 export type AttemptState =
   | 'WAITING_INPUT' | 'START_GATES' | 'START_BLOCKED' | 'WAITING_START_CONFIRMATION'

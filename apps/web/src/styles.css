@@ -893,3 +893,8 @@ body:has(.login-page){min-width:0}
 .automatic-schedule-directory-records{display:grid;gap:5px;border-top:1px solid #e0e8e2;padding:6px}
 .automatic-schedule-directory-records>article{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:stretch;overflow:hidden;border:1px solid transparent;border-radius:6px;background:#fff}
 .automatic-schedule-directory-records>article.active{border-color:#b7ccbe;background:#e2ebe4}
+
+/* Keep the detail dialog inside the backdrop's reserved 28px breathing room. */
+.gate-conversation-backdrop{padding:28px}
+.gate-detail-dialog{height:min(820px,calc(100vh - 56px));max-height:calc(100vh - 56px)}
+.gate-detail-failure{border-color:#e5b9b3;background:#fff8f7}.gate-technical-details{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:6px 10px;margin:12px 0 0;border-top:1px solid #f0d9d5;padding-top:10px;color:#8c3e38;font-size:10px}.gate-technical-details dt{font-weight:650}.gate-technical-details dd{min-width:0;margin:0;overflow-wrap:anywhere}.gate-technical-details pre{max-height:150px;overflow:auto;margin:0;white-space:pre-wrap;font:10px/1.45 'DM Mono',ui-monospace,monospace}
