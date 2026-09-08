@@ -1,6 +1,6 @@
 import type {
   AuthUser,
-  AgentProfileVersion, ArtifactInput, ArtifactVersion, CapabilityAsset, CapabilityImportResult, FlowDefinition, FlowRun, FlowRunAutomaticRecord, FlowRunAutomaticRecordUpdate, FlowRunAutomaticRecordWrite, FlowRunConversation, FlowRunRuntimeOverview, FlowRunSummary, FlowWrite, MessageAttachmentInput, OpenHandsConversationEventBatch, McpSource, SkillSource,
+  AgentProfileVersion, ArtifactInput, ArtifactVersion, ArtifactVersionPage, CapabilityAsset, CapabilityImportResult, FlowDefinition, FlowRun, FlowRunAutomaticRecord, FlowRunAutomaticRecordUpdate, FlowRunAutomaticRecordWrite, FlowRunConversation, FlowRunRuntimeOverview, FlowRunSummary, FlowWrite, MessageAttachmentInput, OpenHandsConversationEventBatch, McpSource, SkillSource,
   BlockedNodeDelete, BlockedProviderDelete, BulkDeleteResult, CapabilityBulkDeleteResult, CodexDeviceAuthorization, CodexOAuthStatus, ModelProvider, ModelProviderDiscoveryWrite, ModelProviderUsage, ModelProviderWrite, NodeAsset, NodeAssetWrite, NodeAttempt, FlowRunAutomaticRecordSummary,
   AgentAttachment, AgentConversation, AgentConversationContext, AgentConversationInputReadiness, AgentConversationReference, AgentPendingConfirmation, AgentWorkDirectory, AgentWorkDirectoryList, AgentWorkspace, AgentWorkspaceCapability, AgentWorkspaceDetails, AgentWorkspaceMcpReadiness, AgentWorkspaceRuntime, CapabilityCollection, CapabilityCollectionWrite, ContextBundleManifest, MarketplaceCatalog, NodeDirectory, NodeRun, OpenHandsConversationEvent, PluginSourceResolution, RunEvent, RuntimeConfirmationBatch, TerminalEnvironment, TerminalEnvironmentWrite, EnvironmentSetupSession, EnvironmentVersion, GatePolicy, WebsiteCredential, WebsiteCredentialWrite, FlowRunSchedule, FlowRunScheduleOccurrencePage, FlowRunScheduleWrite, FlowRunScheduleTemplate,
 } from '../types';
@@ -413,6 +413,14 @@ export const api = {
     (await request<AutomaticRunResponse[]>(`/flow-runs/${encodeURIComponent(runId)}/automatic-runs`)).map(automaticRecord),
   automaticRecordSummaries: (runId: string) =>
     request<FlowRunAutomaticRecordSummary[]>(`/flow-runs/${encodeURIComponent(runId)}/automatic-runs/summaries`),
+  automaticRecord: async (runId: string, recordId: string) =>
+    automaticRecord(await request<AutomaticRunResponse>(`/flow-runs/${encodeURIComponent(runId)}/automatic-runs/${encodeURIComponent(recordId)}`)),
+  automaticRecordArtifacts: (runId: string, recordId: string, page: number, attemptId?: string, artifactIds: string[] = []) => {
+    const query = new URLSearchParams({ page: String(page), page_size: '20' });
+    if (attemptId) query.set('attempt_id', attemptId);
+    for (const artifactId of artifactIds) query.append('artifact_ids', artifactId);
+    return request<ArtifactVersionPage>(`/flow-runs/${encodeURIComponent(runId)}/automatic-runs/${encodeURIComponent(recordId)}/artifacts?${query}`);
+  },
   createAutomaticRecord: async (runId: string, body: FlowRunAutomaticRecordWrite) =>
     automaticRecord(await request<AutomaticRunResponse>(`/flow-runs/${encodeURIComponent(runId)}/automatic-runs`, json('POST', body))),
   updateAutomaticRecord: async (runId: string, recordId: string, body: FlowRunAutomaticRecordUpdate) =>

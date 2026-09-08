@@ -564,6 +564,27 @@ def _artifact_dict(item: ArtifactVersion) -> dict[str, Any]:
     }
 
 
+def _artifact_metadata_dict(item: ArtifactVersion) -> dict[str, Any]:
+    """Project immutable Artifact metadata without returning its content."""
+
+    return {
+        "id": item.id,
+        "flow_run_id": item.flow_run_id,
+        "producer_attempt_id": item.producer_attempt_id,
+        "consumer_node_key": item.consumer_node_key,
+        "field_key": item.field_key,
+        "version_no": item.version_no,
+        "artifact_type": item.artifact_type,
+        "uri": item.uri,
+        "content_hash": item.content_hash,
+        "byte_size": item.byte_size,
+        "mime_type": item.mime_type,
+        "source": item.source,
+        "metadata": item.metadata_json,
+        "created_at": item.created_at.isoformat(),
+    }
+
+
 @dataclass(frozen=True, slots=True)
 class PreparedArtifact:
     id: str
@@ -916,6 +937,52 @@ def artifact_content_reference(db: Session, artifact_id: str) -> ArtifactContent
         mime_type=item.mime_type,
         filename=filename,
     )
+
+
+def list_nested_automatic_run_artifacts(
+    db: Session,
+    parent_run_id: str,
+    run_id: str,
+    *,
+    page: int,
+    page_size: int,
+    attempt_id: str | None = None,
+    artifact_ids: list[str] | None = None,
+) -> dict[str, Any]:
+    """Page Artifact metadata for one scoped automatic record.
+
+    Artifact content is intentionally excluded. Clients use the existing
+    per-artifact content endpoint only after a user explicitly opens or
+    downloads an item.
+    """
+
+    run = nested_automatic_run(db, parent_run_id, run_id)
+    statement = select(ArtifactVersion).where(ArtifactVersion.flow_run_id == run.id)
+    if attempt_id:
+        attempt = _attempt(db, attempt_id)
+        if _node_run(db, attempt.node_run_id).flow_run_id != run.id:
+            raise not_found("node_attempt", attempt_id)
+        statement = statement.where(ArtifactVersion.producer_attempt_id == attempt.id)
+    if artifact_ids:
+        statement = statement.where(ArtifactVersion.id.in_(artifact_ids))
+    total = int(db.scalar(select(func.count()).select_from(statement.subquery())) or 0)
+    artifacts = list(
+        db.scalars(
+            statement.order_by(
+                ArtifactVersion.field_key,
+                ArtifactVersion.version_no.desc(),
+                ArtifactVersion.created_at.desc(),
+            )
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+    )
+    return {
+        "items": [_artifact_metadata_dict(item) for item in artifacts],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    }
 
 
 def read_artifact_content(reference: ArtifactContentReference) -> tuple[bytes, str, str]:
@@ -8123,7 +8190,9 @@ def _attempt_launch_capabilities(
     return projected
 
 
-def attempt_detail(db: Session, attempt_id: str) -> dict[str, Any]:
+def attempt_detail(
+    db: Session, attempt_id: str, *, include_artifacts: bool = True
+) -> dict[str, Any]:
     attempt = _attempt(db, attempt_id)
     node_run = _node_run(db, attempt.node_run_id)
     session_binding = db.scalar(
@@ -8187,12 +8256,16 @@ def attempt_detail(db: Session, attempt_id: str) -> dict[str, Any]:
         and item.get("text")
     )
     bindings = _bindings(db, attempt.id)
-    artifacts = list(
-        db.scalars(
-            select(ArtifactVersion)
-            .where(ArtifactVersion.producer_attempt_id == attempt.id)
-            .order_by(ArtifactVersion.field_key, ArtifactVersion.version_no)
+    artifacts = (
+        list(
+            db.scalars(
+                select(ArtifactVersion)
+                .where(ArtifactVersion.producer_attempt_id == attempt.id)
+                .order_by(ArtifactVersion.field_key, ArtifactVersion.version_no)
+            )
         )
+        if include_artifacts
+        else []
     )
     gates = list(
         db.scalars(
@@ -8240,7 +8313,7 @@ def attempt_detail(db: Session, attempt_id: str) -> dict[str, Any]:
             }
             for x in bindings
         ],
-        "artifacts": [_artifact_dict(x) for x in artifacts],
+        "artifacts": [_artifact_dict(x) for x in artifacts] if include_artifacts else [],
         "gate_evaluations": [
             {
                 "id": x.id,
@@ -8310,7 +8383,9 @@ def attempt_detail(db: Session, attempt_id: str) -> dict[str, Any]:
     }
 
 
-def node_run_detail(db: Session, node_run_id: str) -> dict[str, Any]:
+def node_run_detail(
+    db: Session, node_run_id: str, *, include_artifacts: bool = True
+) -> dict[str, Any]:
     item = _node_run(db, node_run_id)
     attempts = list(
         db.scalars(
@@ -8329,11 +8404,13 @@ def node_run_detail(db: Session, node_run_id: str) -> dict[str, Any]:
         "accepted_attempt_id": item.accepted_attempt_id,
         "created_from": item.created_from,
         "activated_at": item.activated_at.isoformat(),
-        "attempts": [attempt_detail(db, x.id) for x in attempts],
+        "attempts": [
+            attempt_detail(db, x.id, include_artifacts=include_artifacts) for x in attempts
+        ],
     }
 
 
-def run_detail(db: Session, run_id: str) -> dict[str, Any]:
+def run_detail(db: Session, run_id: str, *, include_artifacts: bool = True) -> dict[str, Any]:
     run = _run(db, run_id)
     schedule = db.get(FlowRunSchedule, run.schedule_id) if run.schedule_id else None
     environment = (
@@ -8353,12 +8430,16 @@ def run_detail(db: Session, run_id: str) -> dict[str, Any]:
             select(NodeRun).where(NodeRun.flow_run_id == run.id).order_by(NodeRun.sequence_no)
         )
     )
-    artifacts = list(
-        db.scalars(
-            select(ArtifactVersion)
-            .where(ArtifactVersion.flow_run_id == run.id)
-            .order_by(ArtifactVersion.created_at)
+    artifacts = (
+        list(
+            db.scalars(
+                select(ArtifactVersion)
+                .where(ArtifactVersion.flow_run_id == run.id)
+                .order_by(ArtifactVersion.created_at)
+            )
         )
+        if include_artifacts
+        else []
     )
     accepted = sum(x.state == NodeRunState.ACCEPTED for x in node_runs)
     terminal = sum(
@@ -8419,7 +8500,9 @@ def run_detail(db: Session, run_id: str) -> dict[str, Any]:
             }
             for x in snapshots
         ],
-        "node_runs": [node_run_detail(db, x.id) for x in node_runs],
+        "node_runs": [
+            node_run_detail(db, x.id, include_artifacts=include_artifacts) for x in node_runs
+        ],
         "artifacts": [_artifact_dict(x) for x in artifacts],
         "started_at": run.started_at.isoformat(),
         "finished_at": run.finished_at.isoformat() if run.finished_at else None,

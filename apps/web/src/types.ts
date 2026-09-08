@@ -232,6 +232,9 @@ export interface ArtifactVersion {
   content_hash: string; byte_size: number; mime_type: string; source: string;
   metadata: Record<string, unknown>; created_at: string;
 }
+export interface ArtifactVersionPage {
+  items: ArtifactVersion[]; total: number; page: number; page_size: number;
+}
 export interface InputBinding {
   id: string; input_field_key: string; artifact_version_id: string; binding_source: string;
 }

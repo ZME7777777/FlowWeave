@@ -126,6 +126,42 @@ async def nested_automatic_run_summaries(parent_run_id: str, db: Db) -> list[dic
     )
 
 
+@router.get("/flow-runs/{parent_run_id}/automatic-runs/{run_id}")
+async def nested_automatic_run_detail(parent_run_id: str, run_id: str, db: Db) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: service.run_detail(
+            session,
+            service.nested_automatic_run(session, parent_run_id, run_id).id,
+            include_artifacts=False,
+        ),
+    )
+
+
+@router.get("/flow-runs/{parent_run_id}/automatic-runs/{run_id}/artifacts")
+async def nested_automatic_run_artifacts(
+    parent_run_id: str,
+    run_id: str,
+    db: Db,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    attempt_id: str | None = None,
+    artifact_ids: Annotated[list[str] | None, Query()] = None,
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: service.list_nested_automatic_run_artifacts(
+            session,
+            parent_run_id,
+            run_id,
+            page=page,
+            page_size=page_size,
+            attempt_id=attempt_id,
+            artifact_ids=artifact_ids or None,
+        ),
+    )
+
+
 @router.post("/flow-runs/{parent_run_id}/automatic-runs", status_code=201)
 async def create_nested_automatic_run(
     parent_run_id: str, payload: AutomaticRunDraftWrite, db: Db
