@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
@@ -870,3 +871,48 @@ def test_automatic_gate_execution_error_stops_without_output_remediation(monkeyp
             {"stage": "END", "gate_error_codes": ["GATE_CONFIG_INVALID"]},
         ),
     ]
+
+
+def test_automatic_run_summary_never_contains_execution_history():
+    """The polling DTO stays bounded as a run's Artifacts and attempts grow."""
+
+    run = SimpleNamespace(
+        id="automatic-1",
+        parent_flow_run_id="parent-1",
+        run_no=3,
+        name="每日检查",
+        state="ACTIVE",
+        row_version=6,
+        schedule_id="schedule-1",
+        schedule_occurrence_id="occurrence-1",
+        started_at=datetime(2026, 9, 8, 9, 0, tzinfo=UTC),
+        finished_at=None,
+        automation_plan_json={
+            "start_node_key": "collect",
+            "reachable_node_keys": ["collect", "review"],
+            "node_plans": {"collect": {}, "review": {}},
+            "readiness": {"ready": False, "issues": [{"code": "INPUT_MISSING"}]},
+        },
+    )
+    schedule = SimpleNamespace(name="工作日 09:00")
+
+    summary = orchestration_service._automatic_run_summary(
+        run,
+        schedule,
+        {"ACCEPTED": 1, "FAILED": 1, "ACTIVE": 2},
+    )
+
+    assert summary["plan"] == {
+        "start_node_key": "collect",
+        "reachable_node_count": 2,
+        "configured_node_count": 2,
+        "readiness": {"ready": False, "issue_count": 1},
+    }
+    assert summary["progress"] == {"node_runs": 4, "accepted": 1, "terminal": 2, "active": 2}
+    assert {
+        "artifacts",
+        "snapshots",
+        "node_runs",
+        "gate_evaluations",
+        "automation_plan",
+    }.isdisjoint(summary)

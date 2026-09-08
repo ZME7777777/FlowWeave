@@ -3523,6 +3523,95 @@ def list_nested_automatic_runs(db: Session, parent_run_id: str) -> list[dict[str
     return [run_detail(db, child.id) for child in children]
 
 
+def _automatic_run_summary(
+    run: FlowRun,
+    schedule: FlowRunSchedule | None,
+    node_state_counts: dict[str, int],
+) -> dict[str, Any]:
+    """Project only the fields required by the automatic-record rail."""
+
+    plan = run.automation_plan_json or {}
+    node_plans = plan.get("node_plans")
+    reachable_node_keys = plan.get("reachable_node_keys")
+    readiness = plan.get("readiness")
+    readiness_issues = readiness.get("issues") if isinstance(readiness, dict) else []
+    total = sum(node_state_counts.values())
+    accepted = node_state_counts.get(NodeRunState.ACCEPTED, 0)
+    terminal = sum(
+        node_state_counts.get(state, 0)
+        for state in (NodeRunState.ACCEPTED, NodeRunState.FAILED, NodeRunState.CANCELLED)
+    )
+    return {
+        "id": run.id,
+        "flow_run_id": run.parent_flow_run_id,
+        "run_no": run.run_no,
+        "name": run.name,
+        "state": run.state,
+        "row_version": run.row_version,
+        "schedule_id": run.schedule_id,
+        "schedule_name": schedule.name if schedule else None,
+        "schedule_occurrence_id": run.schedule_occurrence_id,
+        "started_at": run.started_at.isoformat(),
+        "finished_at": run.finished_at.isoformat() if run.finished_at else None,
+        "plan": {
+            "start_node_key": str(plan.get("start_node_key") or ""),
+            "reachable_node_count": (
+                len(reachable_node_keys) if isinstance(reachable_node_keys, list) else 0
+            ),
+            "configured_node_count": len(node_plans) if isinstance(node_plans, dict) else 0,
+            "readiness": {
+                "ready": bool(readiness.get("ready")) if isinstance(readiness, dict) else False,
+                "issue_count": len(readiness_issues) if isinstance(readiness_issues, list) else 0,
+            },
+        },
+        "progress": {
+            "node_runs": total,
+            "accepted": accepted,
+            "terminal": terminal,
+            "active": total - terminal,
+        },
+    }
+
+
+def list_nested_automatic_run_summaries(db: Session, parent_run_id: str) -> list[dict[str, Any]]:
+    """List nested continuous-run summaries without loading execution history."""
+
+    parent = _run(db, parent_run_id)
+    children = list(
+        db.scalars(
+            select(FlowRun)
+            .where(
+                FlowRun.parent_flow_run_id == parent.id,
+                FlowRun.run_mode == "AUTOMATIC",
+            )
+            .order_by(FlowRun.started_at.desc())
+        )
+    )
+    if not children:
+        return []
+    child_ids = [child.id for child in children]
+    schedule_ids = [child.schedule_id for child in children if child.schedule_id]
+    schedules = (
+        list(db.scalars(select(FlowRunSchedule).where(FlowRunSchedule.id.in_(schedule_ids))))
+        if schedule_ids
+        else []
+    )
+    schedules_by_id = {schedule.id: schedule for schedule in schedules}
+    counts_by_run: dict[str, dict[str, int]] = {child.id: {} for child in children}
+    for flow_run_id, state, count in db.execute(
+        select(NodeRun.flow_run_id, NodeRun.state, func.count(NodeRun.id))
+        .where(NodeRun.flow_run_id.in_(child_ids))
+        .group_by(NodeRun.flow_run_id, NodeRun.state)
+    ):
+        counts_by_run[flow_run_id][state] = int(count)
+    return [
+        _automatic_run_summary(
+            child, schedules_by_id.get(child.schedule_id), counts_by_run[child.id]
+        )
+        for child in children
+    ]
+
+
 def nested_automatic_run(db: Session, parent_run_id: str, run_id: str) -> FlowRun:
     child = _run(db, run_id)
     if child.parent_flow_run_id != parent_run_id or child.run_mode != "AUTOMATIC":

@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`ACTIVE`
 > 当前执行切片：无
-> 下一可执行切片：`FR-224`（连续运行记录摘要 API）
+> 下一可执行切片：`FR-225`（连续运行详情按需加载与 Artifact 分页）
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -3174,12 +3174,16 @@ Fork 输出修订会话、消耗修订轮次或允许接受为输出风险；自
 Gate `FAIL` 与完成 Gate `FAIL` 在工作台分别展示。只有真实完成 Gate `FAIL` 才会触发自动输出修订；技术故障
 可重试当前阶段。
 
-### FR-224 连续运行记录摘要 API — PENDING
+### FR-224 连续运行记录摘要 API — DONE
 
 依赖：`FR-221`。
 
 目标：将连续运行列表收敛为摘要 DTO，只返回列表所需的运行、计划、进度与计数；不得在轮询响应中返回完整
 Artifact、Snapshot、NodeRun 或 Gate 详情。
+
+完成：新增 `GET /flow-runs/{parent_run_id}/automatic-runs/summaries`，按一次聚合查询返回连续运行列表所需的
+运行标识、名称、状态、定时信息、计划/就绪计数和 NodeRun 进度计数。摘要不包含 `automation_plan` 原文、
+Snapshot、NodeRun、Attempt、Artifact 或 Gate 详情；原完整详情端点保留给选中记录后的按需读取。
 
 ### FR-225 连续运行详情按需加载与 Artifact 分页 — PENDING
 
@@ -3210,6 +3214,7 @@ Attempt 级重复传输。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-08 | FR-224 | 连续运行摘要 DTO 定向回归；受影响 Python Ruff format/check、`py_compile`、无 Docker fixture pytest、Web ESLint、Alembic head、任务状态唯一性与 `git diff --check` | PASS：新增 `/flow-runs/{parent_run_id}/automatic-runs/summaries`，仅返回运行标识、状态、定时信息、计划/就绪计数和 NodeRun 进度计数；聚合查询不加载 Artifact、Snapshot、NodeRun 详情、Attempt 或 Gate 记录，原文 `automation_plan` 不进入摘要。`test_runtime_wakeup.py` 无 Docker 模式 `15 passed`，Web ESLint 通过。Web TypeScript typecheck 仍被既有 `AgentSessionWorkbench.tsx:2776` 缺少 `running` 属性诊断阻断；唯一 Alembic head 为 `0103_runtime_artifact_proj_idem`。 |
 | 2026-09-08 | FR-223 | 自动 Gate `ERROR` 与 `FAIL` 语义、自动返工与工作台操作反馈定向回归；受影响 Python Ruff format/check、`py_compile`、无 Docker fixture pytest、Web TypeScript typecheck/ESLint、Alembic head、任务状态唯一性与 `git diff --check` | PASS：自动 Gate 执行或配置错误保留 `ERROR` 审计，进入 `AUTOMATIC_GATE_EXECUTION_FAILED`、`END_BLOCKED/START_BLOCKED` 与 `WAITING_HUMAN`，不再被误判为输出不符合要求、触发 Fork 或计入三次输出修订。自动 Gate 投递故障与输出修订投递故障也有独立标题和可重试操作；只有真实 `FAIL` 可接受为 Gate 风险或自动修订。`test_runtime_wakeup.py` 在无 Docker fixture 模式下 `14 passed`，Web `typecheck` 与 `lint` 通过；唯一 Alembic head 为 `0103_runtime_artifact_proj_idem`。 |
 | 2026-09-08 | FR-222 | Runtime Artifact completion ID 幂等与增长熔断定向回归；受影响 Python／迁移 Ruff format/check、`py_compile`、Alembic head、任务状态唯一性与 `git diff --check` | PASS：迁移 `0103_runtime_artifact_proj_idem`（31 字符，兼容生产 `alembic_version.version_num VARCHAR(32)`）为 Runtime Artifact 新增正式 completion event ID 和 `(producer_attempt_id, field_key, completion_event_id)` 唯一约束；相同 completion ID 只复用既有版本并清理本次预准备文件，内容漂移 fail closed。默认十分钟内每个 Attempt/输出字段最多 4 个 Runtime 版本（初始输出加 3 轮正常自动修订）；达到上限即保留历史、清理本轮预准备文件、进入 `END_BLOCKED/RUNTIME_OUTPUT_VERSION_LIMIT_EXCEEDED` 并记录诊断事件。`test_runtime_wakeup.py` 在无 Docker fixture 模式下 `13 passed`；常规 pytest 仍会受 Testcontainers 前置条件和本机 Docker socket 缺失阻断。唯一 Alembic head 为 `0103_runtime_artifact_proj_idem`。 |
 | 2026-09-08 | FR-221 | 自动 Gate 冻结与终态投影定向回归；受影响 Python Ruff format/check、`py_compile`、Alembic head、任务状态唯一性与 `git diff --check` | PASS：自动计划冻结为每条 Gate 写入 UUID policy ID；历史缺失 ID 的冻结计划在分配 Runtime、写入 URL Artifact 或创建 NodeAttempt 前转入 `WAITING_HUMAN` 并记录可诊断事件，已存在的缺失 ID Attempt 也以 `GATE_POLICY_ID_MISSING` 受控失败。每次 Runtime 完成投影记录正式 OpenHands completion event ID；`END_BLOCKED` 再次读到同一 ID 时不恢复 Attempt、不准备输出、不写 Artifact、不派发 Gate，新的完成 ID 只有在已有完成投影审计后才可恢复。`test_runtime_wakeup.py` 在无 Docker fixture 模式下 `11 passed`；常规 pytest 受 Testcontainers 前置条件阻断（本机 Docker socket 不存在），未伪记为业务失败。唯一 Alembic head 为 `0102_event_trigger_observers`。 |

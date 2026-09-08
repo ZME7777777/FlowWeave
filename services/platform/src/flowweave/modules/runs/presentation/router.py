@@ -119,6 +119,13 @@ async def nested_automatic_runs(parent_run_id: str, db: Db) -> list[dict[str, An
     )
 
 
+@router.get("/flow-runs/{parent_run_id}/automatic-runs/summaries")
+async def nested_automatic_run_summaries(parent_run_id: str, db: Db) -> list[dict[str, Any]]:
+    return await run_sync(
+        db, lambda session: service.list_nested_automatic_run_summaries(session, parent_run_id)
+    )
+
+
 @router.post("/flow-runs/{parent_run_id}/automatic-runs", status_code=201)
 async def create_nested_automatic_run(
     parent_run_id: str, payload: AutomaticRunDraftWrite, db: Db

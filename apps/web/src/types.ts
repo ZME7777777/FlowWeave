@@ -322,6 +322,14 @@ export interface FlowRunAutomaticRecord extends FlowRun {
   node_plans: Record<string, AutomaticNodePlan>;
   readiness: { ready: boolean; issues: Array<{ code: string; node_key: string; message: string }> };
 }
+export interface FlowRunAutomaticRecordSummary {
+  id: string; flow_run_id?: string | null; run_no: number; name: string; state: FlowRun['state'];
+  row_version: number; schedule_id?: string | null; schedule_name?: string | null;
+  schedule_occurrence_id?: string | null; started_at: string; finished_at?: string | null;
+  plan: { start_node_key: string; reachable_node_count: number; configured_node_count: number;
+    readiness: { ready: boolean; issue_count: number } };
+  progress: { node_runs: number; accepted: number; terminal: number; active: number };
+}
 export interface FlowRunAutomaticRecordWrite {
   name?: string; environment_version_id: string; start_node_key: string;
   node_plans?: Record<string, AutomaticNodePlan>;
