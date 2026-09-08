@@ -367,6 +367,12 @@ def _freeze_automatic_plan(
             )
             frozen_gates.append(
                 {
+                    # ``GateWrite`` is deliberately an editable authoring
+                    # shape, so it has no persisted identity. An automatic
+                    # plan is different: it is the immutable policy snapshot
+                    # used by a later Attempt and every sidecar/audit record
+                    # needs a stable policy key.
+                    "id": str(uuid4()),
                     **gate,
                     "agent_preset": {
                         "model_provider_id": gate_config.model_provider_id,
@@ -1054,6 +1060,87 @@ def _observes_native_conversation(attempt: NodeAttempt) -> bool:
     )
 
 
+def _automatic_plan_gate_id_issues(node_plans: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return immutable-plan gate identities that cannot safely execute.
+
+    Pre-FR-221 frozen automatic plans did not persist the ``id`` added above.
+    Do not invent one while executing historical work: the policy identity is
+    part of its sidecar and evaluation audit lineage. The caller must stop
+    before materialising input Artifacts or an Attempt.
+    """
+
+    issues: list[dict[str, Any]] = []
+    for node_key, node_plan in node_plans.items():
+        if not isinstance(node_plan, dict):
+            continue
+        gates = node_plan.get("gates")
+        if not isinstance(gates, list):
+            continue
+        for position, gate in enumerate(gates):
+            if (
+                not isinstance(gate, dict)
+                or not isinstance(gate.get("id"), str)
+                or not gate["id"].strip()
+            ):
+                issues.append({"node_key": str(node_key), "position": position})
+    return issues
+
+
+def _completion_event_id(result: RuntimeResult, batch_cursor: str | None = None) -> str | None:
+    """Use only a formal OpenHands event identity for completion projection."""
+
+    candidate = result.cursor or batch_cursor
+    if not isinstance(candidate, str) or not candidate.strip():
+        return None
+    return candidate.strip()
+
+
+def _completion_already_projected(
+    db: Session | None, attempt_id: str, completion_event_id: str
+) -> bool:
+    """Check the durable audit marker written with a completed projection."""
+
+    if db is None:
+        return False
+    markers = db.scalars(
+        select(RunEvent.payload_json).where(
+            RunEvent.attempt_id == attempt_id,
+            RunEvent.event_type == "RUNTIME_COMPLETION_PROJECTED",
+        )
+    )
+    return any(
+        isinstance(marker, dict) and marker.get("completion_event_id") == completion_event_id
+        for marker in markers
+    )
+
+
+def _block_unknown_completion_identity(
+    db: Session,
+    attempt: NodeAttempt,
+    *,
+    observed_completion_event_id: str | None,
+) -> None:
+    """Fail closed for legacy blocked Attempts without a prior audit marker."""
+
+    node_run = _node_run(db, attempt.node_run_id)
+    run = _run(db, node_run.flow_run_id)
+    attempt.error_code = "RUNTIME_COMPLETION_IDENTITY_UNKNOWN"
+    attempt.error_detail = (
+        "The completed OpenHands event has no prior FlowWeave projection identity; "
+        "outputs were not registered again."
+    )
+    attempt.state_version += 1
+    run.state = FlowRunState.WAITING_HUMAN
+    _event(
+        db,
+        run.id,
+        "RUNTIME_COMPLETION_PROJECTION_BLOCKED",
+        {"completion_event_id": observed_completion_event_id},
+        node_run.id,
+        attempt.id,
+    )
+
+
 def process_runtime_wakeup(
     db: Session,
     attempt_id: str,
@@ -1690,6 +1777,14 @@ def _prepare_gate_stage(
     policies = [
         x for x in attempt.gate_policies_json if x["stage"] == stage and x.get("enabled", True)
     ]
+    for position, policy in enumerate(policies):
+        if not isinstance(policy.get("id"), str) or not policy["id"].strip():
+            raise DomainError(
+                "GATE_POLICY_ID_MISSING",
+                "The frozen gate policy has no stable identity and cannot be executed",
+                409,
+                {"stage": stage, "position": position},
+            )
     if stage == "END":
         # Output acceptance is always reviewed before author-configured end
         # gates.  The latter answer additional policy questions; they cannot
@@ -2626,6 +2721,23 @@ def process_start_automatic_run(db: Session, run_id: str, *, commit: bool = True
     existing = db.scalar(select(NodeRun.id).where(NodeRun.flow_run_id == run.id).limit(1))
     if existing is not None:
         return
+    start_node_key = str(plan.get("start_node_key") or "")
+    node_plans = cast(dict[str, Any], plan.get("node_plans") or {})
+    invalid_gate_ids = _automatic_plan_gate_id_issues(node_plans)
+    if invalid_gate_ids:
+        # A historical plan cannot be safely repaired in place because the
+        # gate identity participates in immutable audit and sidecar keys.
+        # Stop before it allocates a Runtime, materialises URL inputs, or
+        # creates a NodeAttempt.
+        run.state = FlowRunState.WAITING_HUMAN
+        _event(
+            db,
+            run.id,
+            "AUTOMATIC_PLAN_GATE_ID_MISSING",
+            {"gates": invalid_gate_ids},
+        )
+        _finish_transaction(db, commit)
+        return
     if run.environment_version_id is None:
         raise DomainError(
             "RUN_ENVIRONMENT_REQUIRED", "automatic run has no Environment Version", 409
@@ -2659,8 +2771,6 @@ def process_start_automatic_run(db: Session, run_id: str, *, commit: bool = True
             idempotency_key=f"provision-flow-run-runtime:{run.id}",
         )
         task.max_attempts = max(task.max_attempts, 20)
-    start_node_key = str(plan.get("start_node_key") or "")
-    node_plans = cast(dict[str, Any], plan.get("node_plans") or {})
     first_plan = _automatic_node_plan(node_plans, start_node_key)
     first_node = _node(snapshot, start_node_key)
     first_preset = _automatic_attempt_preset(first_node, first_plan)
@@ -4869,6 +4979,13 @@ def _apply_runtime_result(
             attempt.id,
         )
     elif result.status == "COMPLETED":
+        completion_event_id = _completion_event_id(result)
+        if completion_event_id is None:
+            raise DomainError(
+                "RUNTIME_COMPLETION_IDENTITY_MISSING",
+                "OpenHands completed without a formal completion event identity",
+                502,
+            )
         for prepared in prepared_outputs:
             _register_artifact(
                 db,
@@ -4879,6 +4996,14 @@ def _apply_runtime_result(
             )
         attempt.state = AttemptState.END_GATES
         attempt.runtime_phase = "COMPLETED"
+        _event(
+            db,
+            run.id,
+            "RUNTIME_COMPLETION_PROJECTED",
+            {"completion_event_id": completion_event_id},
+            node_run.id,
+            attempt.id,
+        )
         _dispatch_gates(db, attempt, "END")
     elif result.status == "RUNNING":
         attempt.runtime_phase = "RUNNING"
@@ -5007,6 +5132,9 @@ def process_poll_runtime(
     result = observed_result or runtime.inspect(
         replace(handle, cursor=batch.cursor or handle.cursor)
     )
+    completion_event_id = _completion_event_id(result, batch.cursor)
+    if result.cursor is None and completion_event_id is not None:
+        result = replace(result, cursor=completion_event_id)
     native_execution_status = (
         runtime.input_readiness(handle).execution_status.lower()
         if observing_blocked_attempt
@@ -5034,6 +5162,30 @@ def process_poll_runtime(
         # accepted here: the native active branch returns FAILED while its
         # error remains terminal, until a later FinishAction supersedes it.
         if result.status == "COMPLETED" and observed_result is not None:
+            if completion_event_id is None:
+                _block_unknown_completion_identity(db, current, observed_completion_event_id=None)
+                _finish_transaction(db, commit)
+                return
+            if _completion_already_projected(db, current.id, completion_event_id):
+                # A wake-up may repeatedly return the active terminal event.
+                # Its earlier projection already owns the Artifacts and END
+                # gate task, so retaining END_BLOCKED is the only safe action.
+                _finish_transaction(db, commit)
+                return
+            historical_marker = db is not None and db.scalar(
+                select(RunEvent.cursor)
+                .where(
+                    RunEvent.attempt_id == current.id,
+                    RunEvent.event_type == "RUNTIME_COMPLETION_PROJECTED",
+                )
+                .limit(1)
+            )
+            if db is not None and not historical_marker:
+                _block_unknown_completion_identity(
+                    db, current, observed_completion_event_id=completion_event_id
+                )
+                _finish_transaction(db, commit)
+                return
             resumed = _claim_runtime_phase(
                 db,
                 current_attempt_id,
@@ -5061,14 +5213,6 @@ def process_poll_runtime(
             prepared_outputs = _prepare_runtime_outputs(
                 result, resumed.output_targets_json or {}, handle
             )
-            if result.cursor is None and batch.cursor is not None:
-                result = RuntimeResult(
-                    status=result.status,
-                    outputs=result.outputs,
-                    human_question=result.human_question,
-                    cursor=batch.cursor,
-                    error=result.error,
-                )
             _apply_runtime_result(
                 db,
                 resumed,
@@ -5140,14 +5284,6 @@ def process_poll_runtime(
         return
     prepared_outputs = _prepare_runtime_outputs(result, claimed.output_targets_json or {}, handle)
     failure_code = "RUNTIME_FAILED"
-    if result.cursor is None and batch.cursor is not None:
-        result = RuntimeResult(
-            status=result.status,
-            outputs=result.outputs,
-            human_question=result.human_question,
-            cursor=batch.cursor,
-            error=result.error,
-        )
     _apply_runtime_result(
         db,
         claimed,

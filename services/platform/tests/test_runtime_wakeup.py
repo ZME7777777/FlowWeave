@@ -1,13 +1,17 @@
 from types import SimpleNamespace
 
+import pytest
+
 from flowweave.modules.orchestration.application import service as orchestration_service
 from flowweave.runtime.base import (
     RuntimeEventBatch,
+    RuntimeHandle,
     RuntimeInputReadiness,
     RuntimeResult,
     RuntimeWakeup,
 )
 from flowweave.runtime.dependencies import runtime_context
+from flowweave.shared.errors import DomainError
 from flowweave.shared.models import AttemptState
 from flowweave.shared.settings import Settings, settings_context
 
@@ -237,6 +241,87 @@ def test_native_completion_after_runtime_failure_reenters_artifact_projection(mo
     ]
 
 
+def test_repeated_native_completion_after_gate_block_does_not_replay_outputs(monkeypatch):
+    """The same formal terminal event must not become another Artifact version."""
+
+    attempt = SimpleNamespace(
+        id="attempt-1",
+        state=AttemptState.END_BLOCKED,
+        runtime_phase="COMPLETED",
+        conversation_id="conversation-1",
+        state_version=7,
+    )
+    claims: list[object] = []
+    prepared: list[object] = []
+
+    class RepeatedCompletionRuntime:
+        def read_active_events(self, _handle):
+            return RuntimeEventBatch(
+                events=(),
+                cursor="finish-1",
+                result=RuntimeResult(
+                    status="COMPLETED",
+                    outputs={"report": ("FILE", "/runtime/workspace/report.md")},
+                ),
+            )
+
+        def input_readiness(self, _handle):
+            return RuntimeInputReadiness(ready=True, execution_status="finished")
+
+    monkeypatch.setattr(orchestration_service, "_attempt", lambda *_args: attempt)
+    monkeypatch.setattr(
+        orchestration_service,
+        "_active_attempt_runtime_handle",
+        lambda *_args: SimpleNamespace(cursor=None),
+    )
+    monkeypatch.setattr(
+        orchestration_service, "_ensure_attempt_runtime_for_native_observation", lambda *_args: None
+    )
+    monkeypatch.setattr(
+        orchestration_service, "_release_worker_read_transaction", lambda *_args: None
+    )
+    monkeypatch.setattr(orchestration_service, "_require_current_lease", lambda *_args: None)
+    monkeypatch.setattr(orchestration_service, "_completion_already_projected", lambda *_args: True)
+    monkeypatch.setattr(
+        orchestration_service, "_claim_runtime_phase", lambda *_args, **_kwargs: claims.append(True)
+    )
+    monkeypatch.setattr(
+        orchestration_service, "_prepare_runtime_outputs", lambda *_args: prepared.append(True)
+    )
+    monkeypatch.setattr(
+        orchestration_service, "_finish_transaction", lambda *_args, **_kwargs: None
+    )
+
+    with runtime_context(RepeatedCompletionRuntime()):
+        orchestration_service.process_poll_runtime(None, "attempt-1", 2, commit=False)
+
+    assert claims == []
+    assert prepared == []
+
+
+def test_historical_gate_without_id_is_a_controlled_configuration_error(monkeypatch):
+    attempt = SimpleNamespace(
+        id="attempt-1",
+        node_run_id="node-run-1",
+        snapshot_id="snapshot-1",
+        gate_policies_json=[{"stage": "END", "position": 0, "enabled": True}],
+    )
+
+    monkeypatch.setattr(
+        orchestration_service,
+        "_node_run",
+        lambda *_args: SimpleNamespace(flow_node_snapshot_key="node"),
+    )
+    monkeypatch.setattr(orchestration_service, "_snapshot", lambda *_args: {})
+    monkeypatch.setattr(orchestration_service, "_node", lambda *_args: {})
+    monkeypatch.setattr(orchestration_service, "_gate_context", lambda *_args: {})
+
+    with pytest.raises(DomainError) as exc_info:
+        orchestration_service._prepare_gate_stage(None, attempt, "END")
+
+    assert exc_info.value.code == "GATE_POLICY_ID_MISSING"
+
+
 def test_inspect_completion_does_not_replay_old_outputs_after_gate_block(monkeypatch):
     """An inspect-only terminal snapshot is not a new native completion."""
 
@@ -266,7 +351,7 @@ def test_inspect_completion_does_not_replay_old_outputs_after_gate_block(monkeyp
     monkeypatch.setattr(
         orchestration_service,
         "_active_attempt_runtime_handle",
-        lambda *_args: SimpleNamespace(cursor=None),
+        lambda *_args: RuntimeHandle(job_id="job-1", conversation_id="conversation-1", cursor=None),
     )
     monkeypatch.setattr(
         orchestration_service,

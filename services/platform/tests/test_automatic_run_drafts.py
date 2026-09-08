@@ -1,5 +1,6 @@
 import base64
 from datetime import timedelta
+from uuid import UUID
 
 from sqlalchemy import delete, select
 
@@ -227,6 +228,44 @@ def test_automatic_run_draft_freezes_snapshot_without_runtime_or_node_runs(
     assert summary["run_mode"] == "AUTOMATIC"
     assert summary["runtime_status"] == "DRAFT"
     assert summary["runtime_write_available"] is False
+
+
+def test_automatic_run_draft_freezes_a_stable_identity_for_each_gate(client):
+    flow = _create_flow(client)
+    provider_id = _automatic_model_provider_id(client)
+    plan = _node_plan(
+        client,
+        "执行第一个节点",
+        input_url="https://example.com/source",
+        model_provider_id=provider_id,
+        model_name="gpt-auto",
+    )
+    plan["gates"] = [
+        {
+            "stage": "END",
+            "position": 0,
+            "gate_type": "PROMPT",
+            "config": {"prompt": "检查输出是否符合要求"},
+            "agent_preset": {
+                "model_provider_id": provider_id,
+                "model_name": "gpt-auto",
+            },
+        }
+    ]
+
+    response = client.post(
+        f"/api/v1/flows/{flow['id']}/automatic-runs",
+        json={
+            "environment_version_id": client.environment_version_id,
+            "start_node_key": "first",
+            "node_plans": {"first": plan},
+        },
+    )
+
+    assert response.status_code == 201, response.text
+    frozen_gate = response.json()["automation_plan"]["node_plans"]["first"]["gates"][0]
+    assert UUID(frozen_gate["id"])
+    assert frozen_gate["stage"] == "END"
 
 
 def test_automatic_run_draft_can_be_edited_but_not_manually_activated(client, db_session_factory):

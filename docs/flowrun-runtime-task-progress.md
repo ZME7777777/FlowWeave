@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`ACTIVE`
 > 当前执行切片：无
-> 下一可执行切片：无
+> 下一可执行切片：`FR-222`（输出登记幂等与异常增长熔断）
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -3125,6 +3125,55 @@ Worker 为 Up，页面、Agent 深链、静态资源、指标端点与 FastGPT �
 因此数据库/SSE、跨进程限流、真实 Runtime 重连/替换、容器资源水位、p95/p99、长时间 soak/load 与部署恢复矩阵
 转为实际使用期间的持续观测，不追溯伪记为已执行。完整 Pyright 既有跨模块类型基线诊断继续单独治理。
 
+### FR-221 自动门禁终态投影去重 — DONE
+
+依赖：`FR-220`。
+
+目标：修复自动／连续运行中自定义 Gate 缺少稳定 policy ID 时抛出 `KeyError: 'id'`，并阻止其失败后把同一
+OpenHands 已完成事件反复投影为新的 Runtime 完成、重复登记输出 Artifact 和重复派发结束门禁。自动计划冻结时必须
+为每条 Gate 生成稳定 ID；历史缺失 ID 的冻结计划不得以未处理异常失败，而应返回可诊断、不会写 Artifact 的受控错误。
+`END_BLOCKED` 状态只可由正式新完成事件身份（而非重复读取相同的 active terminal result）恢复执行。对同一
+Attempt 与同一正式完成身份，输出准备、Artifact 登记和 END Gate 派发必须只发生一次；现有会话读取／用户主动继续
+后产生的新正式完成事件仍可正常进入新一轮投影。不得修改 OpenHands、伪造 event identity 或清理既有 Artifact。
+
+验收：新增自动 Gate ID 冻结、缺失 ID fail-closed、相同完成事件重复读取不新增 Artifact／Gate 任务、以及正式
+新完成事件可恢复投影的定向回归；受影响 Python Ruff／`py_compile`、Alembic head、任务状态唯一性与
+`git diff --check`。完成后独立 Git commit 并停止；后续 `FR-222` 建立输出版本异常增长熔断。
+
+### FR-222 输出登记幂等与异常增长熔断 — PENDING
+
+依赖：`FR-221`。
+
+目标：为 Runtime 输出登记建立持久幂等边界，并在同一 Attempt／输出字段短时间异常增长时停止后续写入、保留
+诊断并进入可见故障态；不删除或静默合并历史 Artifact。
+
+### FR-223 自动门禁失败语义与操作反馈 — PENDING
+
+依赖：`FR-221`。
+
+目标：将自动门禁执行／投递故障与真实输出合同或 Gate `FAIL` 区分展示，避免把平台异常错误呈现为“节点输出不符合要求”。
+
+### FR-224 连续运行记录摘要 API — PENDING
+
+依赖：`FR-221`。
+
+目标：将连续运行列表收敛为摘要 DTO，只返回列表所需的运行、计划、进度与计数；不得在轮询响应中返回完整
+Artifact、Snapshot、NodeRun 或 Gate 详情。
+
+### FR-225 连续运行详情按需加载与 Artifact 分页 — PENDING
+
+依赖：`FR-224`。
+
+目标：前端列表改用摘要 API，选中记录后才读取完整运行详情；Artifact 元数据及内容按需分页／读取，避免运行级与
+Attempt 级重复传输。
+
+### FR-226 自动运行回归与历史重复数据处置 — PENDING
+
+依赖：`FR-222`–`FR-225`。
+
+目标：完成自动门禁、终态恢复、列表轮询和性能回归；为已受影响运行输出只读审计与受确认的精确清理方案，禁止
+未经确认删除历史 Artifact 或工作区数据。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -3140,6 +3189,7 @@ Worker 为 Up，页面、Agent 深链、静态资源、指标端点与 FastGPT �
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-08 | FR-221 | 自动 Gate 冻结与终态投影定向回归；受影响 Python Ruff format/check、`py_compile`、Alembic head、任务状态唯一性与 `git diff --check` | PASS：自动计划冻结为每条 Gate 写入 UUID policy ID；历史缺失 ID 的冻结计划在分配 Runtime、写入 URL Artifact 或创建 NodeAttempt 前转入 `WAITING_HUMAN` 并记录可诊断事件，已存在的缺失 ID Attempt 也以 `GATE_POLICY_ID_MISSING` 受控失败。每次 Runtime 完成投影记录正式 OpenHands completion event ID；`END_BLOCKED` 再次读到同一 ID 时不恢复 Attempt、不准备输出、不写 Artifact、不派发 Gate，新的完成 ID 只有在已有完成投影审计后才可恢复。`test_runtime_wakeup.py` 在无 Docker fixture 模式下 `11 passed`；常规 pytest 受 Testcontainers 前置条件阻断（本机 Docker socket 不存在），未伪记为业务失败。唯一 Alembic head 为 `0102_event_trigger_observers`。 |
 | 2026-09-08 | FR-220 | 用户授权的远端 platform 发布与基础运行验证：commit 绑定源码包 SHA-256、linux/amd64 镜像、migration、服务健康、页面/深链/静态资源、指标与日志扫描 | DONE（以部署基础验证收口）：commit `7f5673f` 已发布到 `root@192.168.91.154:/opt/flowweave`；migration `Exited (0)`，API、stream-api、Runtime Provider healthy，Worker Up，所有共享平台进程运行新镜像 `594f0af…`。FlowWeave 页面、`/flowweave/agent`、静态资源与 FastGPT 登录均返回 200；三个 `/metrics` 端点均为 200，近期平台日志未见 ERROR/CRITICAL/traceback。未认证 API 的 401 为正常鉴权行为。Redis/Valkey、长压、真实 Runtime 故障矩阵与 p95/p99 转为运行中持续观测。 |
 | 2026-09-08 | FR-220 | FR-217 HTTP transport 回归：`test_openhands.py`；受影响 Ruff、`py_compile`、`git diff --check`、Alembic head；资源治理定向 pytest 与 Docker 可用性探针 | PARTIAL：修复独立 `OpenHandsRuntime`/`DockerControllerClient` 错误复用进程全局 client、绕过 MockTransport 的回归。`test_openhands.py` 为 `107 passed`，其中包含 Container 注册 pool 复用与流 response 关闭回归。组合资源测试为 `107 passed, 6 errors`；6 个错误均发生在 Testcontainers 创建 PostgreSQL 前，根因是 `unix:///Users/zhengmengen/.docker/run/docker.sock` 不存在，无业务断言失败。Ruff、语法、whitespace 与唯一 Alembic head `0102_event_trigger_observers` 通过。完整 Pyright 仍被既有跨模块/解释器解析诊断阻断，未归因于本切片。Redis/Valkey、Prometheus、固定 OpenHands Runtime、Docker/PostgreSQL、真实部署和 soak/load 未执行；随后按用户决定以远端基础验证收口。 |
 | 2026-09-08 | FR-219 | 进程内限流/Prometheus 渲染直接 smoke、Compose/YAML/JSON 解析；受影响 Python `py_compile`、Ruff、定向 Pyright；`uv lock --check`、Alembic head、`git diff --check`、任务状态唯一性 | PASS：API 与 Runtime Provider 暴露低基数资源指标；Redis/Valkey 配置可提供跨进程固定窗口限流，缺失或故障时清晰降级为进程内限制；告警和 Grafana 概览覆盖慢请求、数据库、Relay 与限流。Redis 服务、Prometheus 抓取和跨进程压测留待 FR-220 实测；唯一 Alembic head 为 `0102_event_trigger_observers`，FR-220 已 PENDING；无 CURRENT。 |
