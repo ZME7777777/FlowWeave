@@ -68,8 +68,11 @@ def build_container(settings: Settings, *, role: Literal["api", "worker"]) -> Co
     else:
         raise ValueError(f"Unsupported runtime adapter: {settings.runtime_adapter}")
     database = Database(settings)
+    blocking_workers = (
+        settings.worker_concurrency if role == "worker" else settings.blocking_pool_size
+    )
     blocking_executor = ThreadPoolExecutor(
-        max_workers=settings.blocking_pool_size,
+        max_workers=blocking_workers,
         thread_name_prefix=f"flowweave-{role}-blocking",
     )
     blocking_control_executor = ThreadPoolExecutor(
@@ -93,7 +96,7 @@ def build_container(settings: Settings, *, role: Literal["api", "worker"]) -> Co
         ),
         audit_writer=AuditWriter(database.sessions),
         blocking_executor=blocking_executor,
-        blocking_io_slots=asyncio.Semaphore(settings.blocking_pool_size),
+        blocking_io_slots=asyncio.Semaphore(blocking_workers),
         blocking_control_executor=blocking_control_executor,
         blocking_control_slots=asyncio.Semaphore(1),
     )

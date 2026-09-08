@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import logging
 import signal
 import threading
@@ -48,6 +49,49 @@ from flowweave.shared.sandbox import sandbox_context
 from flowweave.shared.settings import settings_context
 
 logger = logging.getLogger(__name__)
+
+_RUNTIME_TASK_TYPES = frozenset(
+    {
+        "START_RUNTIME",
+        "PROVISION_FLOW_RUN_RUNTIME",
+        "PAUSE_FLOW_RUN_RUNTIME",
+        "PROVISION_AGENT_WORKSPACE_RUNTIME",
+        "POLL_RUNTIME",
+        "WAIT_RUNTIME_WAKEUP",
+        "RESUME_RUNTIME",
+        "RESPOND_RUNTIME_CONFIRMATION",
+        "CANCEL_RUNTIME",
+        "REPLACE_FLOW_RUN_RUNTIME",
+    }
+)
+_MAINTENANCE_TASK_TYPES = frozenset(
+    {
+        "MATERIALIZE_FLOW_RUN_SCHEDULE",
+        "DELETE_NODE_RUN_RECORD",
+        "DELETE_AUTOMATIC_RUN_RECORD",
+        "CLEANUP_SETUP_CONTAINER",
+        "CLEANUP_ENVIRONMENT_IMAGE",
+        "CLEANUP_ENVIRONMENT_CREDENTIALS",
+        "CLEANUP_CAPABILITY_IMPORT",
+        "EXPIRE_PLUGIN_SOURCE",
+    }
+)
+_DELIVERY_TASK_TYPES = frozenset(
+    {
+        "EVALUATE_READINESS",
+        "RUN_GATE_POLICY",
+        "START_AUTOMATIC_RUN",
+        "START_AUTOMATIC_ATTEMPT",
+        "ADVANCE_AUTOMATIC_ATTEMPT",
+        "GENERATE_AGENT_CONVERSATION_TITLE",
+        "WATCH_AGENT_TASK_TIMEOUT",
+        "CONFIRM_AGENT_TASK_TIMEOUT",
+        "RESUME_AGENT_TASK_TIMEOUT",
+        "BUILD_CAPABILITY_DEPENDENCIES",
+        "RESOLVE_PLUGIN_SOURCE",
+    }
+)
+_ALL_TASK_TYPES = _RUNTIME_TASK_TYPES | _MAINTENANCE_TASK_TYPES | _DELIVERY_TASK_TYPES
 
 
 class LeaseHeartbeat:
@@ -181,7 +225,7 @@ class TaskWorker:
                         await session.rollback()
                         raise
 
-    async def run_once(self) -> bool:
+    async def run_once(self, *, task_types: frozenset[str] | None = None) -> bool:
         settings, runtime, artifacts, dependency_builder, plugin_resolver, sandbox = (
             self._contexts()
         )
@@ -193,6 +237,7 @@ class TaskWorker:
                             db,
                             self.owner,
                             lease_seconds=self.container.settings.task_lease_seconds,
+                            task_types=task_types,
                             commit=False,
                         )
                     )
@@ -209,67 +254,94 @@ class TaskWorker:
                 lease_seconds=self.container.settings.task_lease_seconds,
             )
             renewer.start()
-            with self._task_tenant_context(task):
-                async with self.container.database.session() as session:
-                    try:
-                        await session.run_sync(
-                            lambda db: (mark_uow_owned(db), handle(db, task, lease))[1]
-                        )
-                    except Exception as exc:
-                        error = (
-                            f"{exc.code}: {exc.message}"
-                            if isinstance(exc, DomainError)
-                            else str(exc)
-                        )
-                        renewer.stop()
-                        await session.rollback()
-                        await session.run_sync(run_rollback_actions)
-                        if not renewer.lost.is_set():
-                            permanent = bool(
-                                isinstance(exc, DomainError)
-                                and (
-                                    (
-                                        task.task_type == "CLEANUP_ENVIRONMENT_IMAGE"
-                                        and exc.code
-                                        in {
-                                            "ENVIRONMENT_IMAGE_OWNERSHIP_MISMATCH",
-                                            "ENVIRONMENT_IMAGE_TAG_CONFLICT",
-                                        }
-                                    )
-                                    or (
-                                        task.task_type == "CLEANUP_ENVIRONMENT_CREDENTIALS"
-                                        and exc.code == "SANDBOX_RESOURCE_CONFLICT"
-                                    )
-                                )
-                            )
-                            failed = await session.run_sync(
-                                lambda db: fail(
-                                    db, lease, error, permanent=permanent, commit=False
-                                )
-                            )
-                            if failed:
-                                await session.run_sync(
-                                    lambda db: record_terminal_failure(
-                                        db, lease.task_id, error
-                                    )
-                                )
-                                await session.commit()
-                            else:
-                                await session.rollback()
-                    else:
-                        renewer.stop()
-                        if renewer.lost.is_set():
-                            await session.rollback()
-                            await session.run_sync(run_rollback_actions)
-                        elif await session.run_sync(
-                            lambda db: succeed(db, lease, commit=False)
-                        ):
-                            await session.commit()
-                            await session.run_sync(run_commit_actions)
-                        else:
-                            await session.rollback()
-                            await session.run_sync(run_rollback_actions)
+            execution = asyncio.create_task(self._execute_claimed_task(task, lease))
+            try:
+                await asyncio.shield(execution)
+            except asyncio.CancelledError:
+                # A task handler is running in a thread and cannot be safely
+                # preempted. Keep its lease alive until that thread settles;
+                # a later worker must never run the same task concurrently.
+                try:
+                    await execution
+                except Exception:
+                    pass
+                renewer.stop()
+                raise
+            except Exception as exc:
+                error = (
+                    f"{exc.code}: {exc.message}" if isinstance(exc, DomainError) else str(exc)
+                )
+                renewer.stop()
+                if not renewer.lost.is_set():
+                    await self._fail_task(lease, task, error, exc)
+            else:
+                renewer.stop()
             return True
+
+    async def _execute_claimed_task(self, task: Any, lease: Lease) -> bool:
+        """Run synchronous task work off-loop in the Worker-only bounded executor."""
+
+        def execute() -> bool:
+            with self._task_tenant_context(task):
+                with self.container.database.blocking_sessions() as session:
+                    mark_uow_owned(session)
+                    try:
+                        handle(session, task, lease)
+                        if not succeed(session, lease, commit=False):
+                            session.rollback()
+                            run_rollback_actions(session)
+                            return False
+                        session.commit()
+                    except BaseException:
+                        session.rollback()
+                        run_rollback_actions(session)
+                        raise
+                    run_commit_actions(session)
+                    return True
+
+        async with self.container.blocking_io_slots:
+            context = contextvars.copy_context()
+            return await asyncio.get_running_loop().run_in_executor(
+                self.container.blocking_executor,
+                context.run,
+                execute,
+            )
+
+    async def _fail_task(
+        self,
+        lease: Lease,
+        task: Any,
+        error: str,
+        exception: Exception,
+    ) -> None:
+        permanent = bool(
+            isinstance(exception, DomainError)
+            and (
+                (
+                    task.task_type == "CLEANUP_ENVIRONMENT_IMAGE"
+                    and exception.code
+                    in {
+                        "ENVIRONMENT_IMAGE_OWNERSHIP_MISMATCH",
+                        "ENVIRONMENT_IMAGE_TAG_CONFLICT",
+                    }
+                )
+                or (
+                    task.task_type == "CLEANUP_ENVIRONMENT_CREDENTIALS"
+                    and exception.code == "SANDBOX_RESOURCE_CONFLICT"
+                )
+            )
+        )
+        async with self.container.database.session() as session:
+            failed = await session.run_sync(
+                lambda db: fail(db, lease, error, permanent=permanent, commit=False)
+            )
+            if failed:
+                await session.run_sync(
+                    lambda db: record_terminal_failure(db, lease.task_id, error)
+                )
+                await session.commit()
+            else:
+                await session.rollback()
 
     async def run_maintenance(self) -> int:
         settings, runtime, artifacts, dependency_builder, plugin_resolver, sandbox = (
@@ -331,28 +403,72 @@ class TaskWorker:
 
         return bool(self._run_sync(self.run_once()))
 
-    async def run_until_stopped(self) -> None:
-        await self.recover_startup()
-        loop = asyncio.get_running_loop()
-        next_maintenance = (
-            loop.time() + self.container.settings.terminal_environment_cleanup_seconds
+    def _lane_specs(self) -> tuple[tuple[str, frozenset[str], int], ...]:
+        """Partition the configured process capacity into disjoint task classes."""
+
+        concurrency = self.container.settings.worker_concurrency
+        if concurrency == 1:
+            return (("all", _ALL_TASK_TYPES, 1),)
+        if concurrency == 2:
+            return (
+                ("runtime", _RUNTIME_TASK_TYPES, 1),
+                ("delivery", _DELIVERY_TASK_TYPES | _MAINTENANCE_TASK_TYPES, 1),
+            )
+        runtime_slots = max(1, concurrency // 2)
+        delivery_slots = concurrency - runtime_slots - 1
+        return (
+            ("runtime", _RUNTIME_TASK_TYPES, runtime_slots),
+            ("delivery", _DELIVERY_TASK_TYPES, delivery_slots),
+            ("maintenance", _MAINTENANCE_TASK_TYPES, 1),
         )
+
+    async def _run_lane(self, name: str, task_types: frozenset[str]) -> None:
         while not self._stopping.is_set():
-            if loop.time() >= next_maintenance:
-                try:
-                    await self.run_maintenance()
-                except Exception:
-                    # A transient Docker failure must not stop task delivery. The
-                    # setup row retains its container ID, so a later pass can retry.
-                    logger.exception("Terminal environment maintenance failed")
-                next_maintenance = (
-                    loop.time() + self.container.settings.terminal_environment_cleanup_seconds
-                )
-            if not await self.run_once():
+            try:
+                progressed = await self.run_once(task_types=task_types)
+            except Exception:
+                logger.exception("Worker %s lane failed while processing a task", name)
+                progressed = False
+            if not progressed:
                 try:
                     await asyncio.wait_for(self._stopping.wait(), timeout=0.5)
                 except TimeoutError:
                     pass
+
+    async def _maintenance_loop(self) -> None:
+        while not self._stopping.is_set():
+            try:
+                await asyncio.wait_for(
+                    self._stopping.wait(),
+                    timeout=self.container.settings.terminal_environment_cleanup_seconds,
+                )
+                return
+            except TimeoutError:
+                pass
+            try:
+                await self.run_maintenance()
+            except Exception:
+                # A transient Docker failure must not stop task delivery. The
+                # setup row retains its container ID, so a later pass can retry.
+                logger.exception("Terminal environment maintenance failed")
+
+    async def run_until_stopped(self) -> None:
+        await self.recover_startup()
+        workers = [
+            asyncio.create_task(self._run_lane(name, task_types), name=f"worker-{name}")
+            for name, task_types, slots in self._lane_specs()
+            for _ in range(slots)
+        ]
+        maintenance = asyncio.create_task(self._maintenance_loop(), name="worker-maintenance")
+        try:
+            await self._stopping.wait()
+        finally:
+            # Let claimed work settle and stop its lease heartbeat before the
+            # process disposes the bounded executor. The loops see _stopping
+            # after the current task and do not claim another one.
+            await asyncio.gather(*workers, return_exceptions=True)
+            maintenance.cancel()
+            await asyncio.gather(maintenance, return_exceptions=True)
 
 
 async def run_worker(settings: Settings) -> None:

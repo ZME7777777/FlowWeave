@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`ACTIVE`
 > 当前执行切片：无
-> 下一可执行切片：`FR-216`（有界 worker_concurrency 与任务执行 lanes）
+> 下一可执行切片：`FR-217`（进程级共享 HTTP transport 与连接池）
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -3061,10 +3061,16 @@ Runtime Provider 的账本按受验证 container/session 记录附着数量，30
 `agent-runtime` ownership label 的容器和 `flowweave-*` 会话，容器消失时不跨 owner 处理。Compose 暴露
 `DOCKER_CONTROLLER_TERMINAL_IDLE_SECONDS=1800` 与 `DOCKER_CONTROLLER_TERMINAL_HARD_TTL_SECONDS=28800`。
 
-### FR-216 有界 worker_concurrency 与任务执行 lanes — PENDING
+### FR-216 有界 worker_concurrency 与任务执行 lanes — DONE
 
 依赖：`FR-209`。使 `worker_concurrency` 真正限制任务领取和执行；同步阻塞处理进入专用 executor，并按 Runtime、
 投递和维护类别隔离并发、取消与指标。
+
+完成：Worker 以 `worker_concurrency` 创建同样数量的有界执行槽和专用线程池，并按 Runtime、投递、维护三类
+不重叠任务类型分别 `SKIP LOCKED` 领取；单并发时退化为一条通用 lane，双并发时为 Runtime 与其余任务各保留一条，
+三并发以上保留 Runtime 容量、投递容量与一条维护容量。同步 handler 使用 Worker 独立的非溢出数据库连接与 executor，
+不再阻塞 asyncio loop；成功状态与业务变更同一事务提交。停止时不取消已在线程中执行的任务，而是维持 lease heartbeat
+直到其收束，避免另一 Worker 并发领取同一任务。
 
 ### FR-217 进程级共享 HTTP transport 与连接池 — PENDING
 
@@ -3102,6 +3108,7 @@ SSE/Relay/终端/消息并发配额写入部署与应用配置；按实测 Postg
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-08 | FR-216 | Worker lane 直接回归（完整 handler 分区、无重叠、`worker_concurrency=1/4` 总槽位）；受影响 Python `py_compile`、Ruff、定向 Pyright；Alembic head、`git diff --check`、任务状态唯一性 | PASS：`worker_concurrency` 现在同时决定 Worker 任务线程池和实际 lane 数，默认 4 分为 2 Runtime、1 投递、1 维护槽；任务领取以 lane 类型过滤，所有 handler 恰好归属一类。同步 task handler 在独立有界 session/executor 执行，失败仍按 lease 条件回写，优雅停机等待已领取任务与 heartbeat 收束。新增 pytest 回归可被收集，但仓库全局 Testcontainers PostgreSQL fixture 在本机 Docker daemon 不可用时会于断言前阻断，未伪记为通过；无 Docker 的直接 lane 回归和静态检查通过。唯一 Alembic head 为 `0102_event_trigger_observers`，FR-217 已 PENDING；无 CURRENT。 |
 | 2026-09-08 | FR-215 | tmux TTL 直接单元 smoke（附着保护、绝对 TTL、显式回收、持久账本扫描范围）；受影响 Python `py_compile`、Ruff、定向 Pyright；Compose 解析、`git diff --check`、Alembic head、任务状态唯一性 | PASS：tmux 在自身持久 options 保存创建和最近活动时间；Provider 账本将活跃附件作为回收保护。空闲 30 分钟或绝对 8 小时后，只有当前 scope 的 owned `agent-runtime` 容器内 `flowweave-*` tmux 被关闭；Provider 重启只关闭 PTY 附件，不删除持久 tmux。新增 pytest 回归可被收集，但仓库全局 Testcontainers PostgreSQL fixture 在本机 Docker daemon 不可用时会于断言前阻断，未伪记为通过；不依赖 Docker 的直接 smoke 与静态检查通过。唯一 Alembic head 为 `0102_event_trigger_observers`，FR-216 已 PENDING；无 CURRENT。 |
 | 2026-09-08 | FR-214 | 共享 LISTEN fanout 直接异步 smoke（单连接、多 Run 定向投递、慢消费者丢弃、容量拒绝、关闭回收）；受影响 Python `py_compile`、Ruff、定向 Pyright；`git diff --check`、Alembic head、任务状态唯一性 | PASS：每个实际提供 SSE 的进程按需建立一条 PostgreSQL LISTEN 连接，多个 SSE 客户端不再消耗数据库连接；按 Run ID 的本地队列隔离通知，慢客户端只被自身丢弃，使用 `Last-Event-ID` / cursor 自动补齐。默认上限为 256 个订阅者和每订阅者 8 个通知，达到上限返回 503。容器关闭会取消监听任务并关闭独立连接。新增 pytest 回归因仓库全局 Testcontainers PostgreSQL fixture 在断言前受本机 Docker daemon 不可用阻断，未伪记为通过；不依赖 Docker 的直接异步 smoke 通过。唯一 Alembic head 为 `0102_event_trigger_observers`，FR-215 已 PENDING；无 CURRENT。 |
 | 2026-09-08 | FR-213 | Provider relay Hub 直接异步 smoke（共享上游、generation 切换、五分钟空闲回收）；受影响 Python `py_compile`、Ruff、定向 Pyright；`git diff --check`、Alembic head、任务状态唯一性 | PASS：Provider 以受所有权校验后的 resource/container generation、Conversation 与 channel 作为 Hub 键；同键浏览器连接共享一条 `docker exec` 上游。每 Hub 最多 8 个订阅者、每订阅者最多 32 个帧、全进程最多 128 个 Hub；慢消费者被关闭并使用正式 cursor 重连，不能阻塞其他订阅者。最后一个订阅者离开后保留 5 分钟，代际 container 改变、应用关闭或上游取消均取消 relay，并沿既有屏蔽式清理终止远程进程；Runtime 内残留进程兜底由每通道最多 1 条收紧。新增 pytest 回归已覆盖共享、慢订阅者和 generation 切换，但仓库全局 Testcontainers PostgreSQL fixture 在断言前因本机 Docker daemon 不可用中断，未伪记为通过；直接异步 smoke 通过。唯一 Alembic head 为 `0102_event_trigger_observers`，FR-214 已 PENDING；无 CURRENT。 |

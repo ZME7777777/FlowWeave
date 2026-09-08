@@ -75,7 +75,12 @@ def recover_expired(db: Session, *, commit: bool = True) -> int:
 
 
 def claim(
-    db: Session, owner: str, *, lease_seconds: int, commit: bool = True
+    db: Session,
+    owner: str,
+    *,
+    lease_seconds: int,
+    task_types: frozenset[str] | None = None,
+    commit: bool = True,
 ) -> tuple[BackgroundTask, Lease] | None:
     now = datetime.now(UTC)
     stmt = (
@@ -87,6 +92,8 @@ def claim(
         .order_by(BackgroundTask.available_at, BackgroundTask.created_at)
         .limit(1)
     )
+    if task_types is not None:
+        stmt = stmt.where(BackgroundTask.task_type.in_(task_types))
     task = db.scalar(stmt.with_for_update(skip_locked=True))
     if not task:
         return None
