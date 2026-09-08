@@ -281,7 +281,7 @@ def test_openhands_lists_every_native_running_conversation(openhands_settings, m
 
     def fake_request(method: str, path: str, **kwargs: object) -> dict[str, object]:
         assert method == "GET"
-        assert path == "/api/conversations"
+        assert path == "/api/conversations/search"
         params = kwargs.get("params")
         assert isinstance(params, dict)
         requests.append(params)

@@ -3533,7 +3533,7 @@ class OpenHandsRuntime:
                 params["page_id"] = page_id
             page = self._request(
                 "GET",
-                "/api/conversations",
+                "/api/conversations/search",
                 base_url=self._base_url_for_handle(handle),
                 session_api_key=self._session_key_for_handle(handle),
                 params=params,

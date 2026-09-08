@@ -3258,6 +3258,14 @@ Runtime 或调用取消／删除路径。候选区分“同一正式 Runtime com
 
 完成：运行圆环和未读蓝点从会话选择按钮左侧状态位移至行右侧绝对定位，保留运行态／未读态互斥和创建时间稳定排序。悬停会话行隐藏状态指示器并显示删除按钮，未选中会话与当前会话使用同一渲染路径。
 
+### FR-234 OpenHands 运行会话列表端点修复 — DONE
+
+依赖：`FR-233`。
+
+目标：让 Web 会话列表使用 OpenHands 正式的运行会话搜索端点，确保未选中的运行中会话也能获得运行态快照。
+
+完成：`running_conversation_ids()` 改用 `/api/conversations/search?status=running`，并保留 OpenHands 分页游标；更新适配器定向测试，避免将按 ID 批量读取端点误作搜索端点。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -3273,6 +3281,7 @@ Runtime 或调用取消／删除路径。候选区分“同一正式 Runtime com
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-08 | FR-234 | `test_openhands.py` 运行会话搜索定向测试；受影响 Python `py_compile`、Ruff、`git diff --check` 与任务状态唯一性 | PARTIAL：`py_compile`、`git diff --check` 和任务状态核对通过；本机未安装 `pytest`/`ruff` 可执行文件，定向测试与 Ruff 未能启动，未伪记为通过。 |
 | 2026-09-08 | FR-232 | 历史 Gate ID 复制／阻断／受控恢复定向 pytest；受影响 Python Ruff format/check、`py_compile`；Web TypeScript typecheck、ESLint；`git diff --check`、Alembic head 与任务状态唯一性 | PASS（静态）：旧计划复制会补齐 Gate ID；仅历史缺失 ID、冻结、零 NodeRun 的 `WAITING_HUMAN` 记录可经版本化命令重新投递启动；详情和工作台显示 FlowRun 级原因与节点／门禁位置。定向 pytest 因本机 Docker daemon 未运行、Testcontainers PostgreSQL fixture 无法启动而未执行断言，未伪记为通过。唯一 Alembic head 为 `0103_runtime_artifact_proj_idem`。 |
 | 2026-09-08 | FR-233 | Web TypeScript typecheck、ESLint、production build；`git diff --check` 与任务状态唯一性 | PASS：运行圆环和完成未读蓝点均在会话行右侧渲染，悬停时隐藏并显示同位置删除按钮；运行中会话不渲染删除按钮。Web typecheck、ESLint、production build 和 whitespace 检查通过。 |
 | 2026-09-08 | FR-231 | Web TypeScript typecheck、ESLint；受影响 Python Ruff check、`py_compile` 与 `git diff --check`；会话列表创建时间顺序定向 pytest | PASS（静态）：新消息更新 `updated_at` 后仍不改变会话列表与分页次序；运行态和完成未读态在同一左侧状态位互斥显示。定向 pytest 因本机 Docker daemon 未运行、Testcontainers PostgreSQL fixture 无法启动而未执行断言，未伪记为通过。 |
