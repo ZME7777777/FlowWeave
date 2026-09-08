@@ -62,6 +62,10 @@ from flowweave.shared.infrastructure.docker_controller import (
     controller_is_remote,
     validate_owned_runtime_plugin,
 )
+from flowweave.shared.infrastructure.http_transport import (
+    HttpTransportPool,
+    shared_http_transport,
+)
 
 logger = logging.getLogger(__name__)
 _INTERACTIVE_READ_TIMEOUT_SECONDS = 8.0
@@ -70,13 +74,16 @@ _INTERACTIVE_READ_TIMEOUT_SECONDS = 8.0
 class OpenHandsRuntime:
     """OpenHands Agent Server adapter backed by the node's configured model provider."""
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(
+        self, settings: Settings, *, http_transport: HttpTransportPool | None = None
+    ) -> None:
         self.settings = settings
         self.root_session_api_key = settings.openhands_session_api_key
         self.manager_scope = settings.sandbox_manager_scope
         self.workspace_root = settings.workspace_root.resolve()
         self.openhands_workspace_root = settings.openhands_workspace_root
         self._contracts: dict[str, list[dict[str, str]]] = {}
+        self._http_transport = http_transport or shared_http_transport(settings)
 
     @staticmethod
     def _environment_route(job_id: str) -> tuple[str, bool] | None:
@@ -152,28 +159,23 @@ class OpenHandsRuntime:
         started_at = time.monotonic()
         outcome = "error"
         try:
-            with httpx.Client(timeout=30, follow_redirects=False) as client:
-                response = client.request(
-                    method,
-                    f"{base_url.rstrip('/')}{path}",
-                    headers={"X-Session-API-Key": session_api_key},
-                    **kwargs,
-                )
-                if missing_ok and response.status_code == 404:
-                    return {"_flowweave_missing": True}
-                response.raise_for_status()
-                # OpenHands event history can contain persisted terminal or
-                # tool output with literal control characters. The fixed
-                # server's JSONResponse path can therefore emit a non-strict
-                # JSON string on a later events/search page. Accept only that
-                # JSON lexical compatibility here; every response is still
-                # required to be an object and event pages continue through
-                # the formal identity/shape validation in _events.
-                value = cast(object, json.loads(response.content, strict=False))
-                if not isinstance(value, dict):
-                    raise ValueError("OpenHands response must be an object")
-                outcome = "ok"
-                return cast(dict[str, Any], value)
+            response = self._http_transport.regular.request(
+                method,
+                f"{base_url.rstrip('/')}{path}",
+                headers={"X-Session-API-Key": session_api_key},
+                **kwargs,
+            )
+            if missing_ok and response.status_code == 404:
+                return {"_flowweave_missing": True}
+            response.raise_for_status()
+            # OpenHands event history can contain persisted terminal or tool
+            # output with literal control characters. Accept that JSON lexical
+            # compatibility; event pages still undergo identity validation.
+            value = cast(object, json.loads(response.content, strict=False))
+            if not isinstance(value, dict):
+                raise ValueError("OpenHands response must be an object")
+            outcome = "ok"
+            return cast(dict[str, Any], value)
         except httpx.HTTPStatusError as exc:
             # OpenHands initializes configured MCP servers before accepting the
             # first user event.  Preserve only this explicit, stable failure
@@ -549,7 +551,9 @@ class OpenHandsRuntime:
 
         try:
             if controller_is_remote(self.settings):
-                response = DockerControllerClient(self.settings).post(
+                response = DockerControllerClient(
+                    self.settings, http_transport=self._http_transport
+                ).post(
                     "/v1/runtimes/validate-plugin",
                     {
                         "resource_name": request.runtime_resource_name,
@@ -2844,7 +2848,9 @@ class OpenHandsRuntime:
                     "The isolated Runtime stream has no verified sandbox binding",
                     409,
                 )
-            stream = DockerControllerClient(self.settings).stream_runtime_events(
+            stream = DockerControllerClient(
+                self.settings, http_transport=self._http_transport
+            ).stream_runtime_events(
                 resource_name=handle.runtime_resource_name,
                 resource_id=handle.runtime_resource_id,
                 conversation_id=handle.conversation_id,
@@ -2907,7 +2913,9 @@ class OpenHandsRuntime:
                     "The isolated Runtime wake-up has no verified sandbox binding",
                     409,
                 )
-            return DockerControllerClient(self.settings).wait_runtime_event(
+            return DockerControllerClient(
+                self.settings, http_transport=self._http_transport
+            ).wait_runtime_event(
                 resource_name=handle.runtime_resource_name,
                 resource_id=handle.runtime_resource_id,
                 conversation_id=handle.conversation_id if channel == "CONVERSATION" else "",
@@ -3208,14 +3216,14 @@ class OpenHandsRuntime:
         workspace_root = self._validated_workspace_root(handle.workspace_root)
         target = f"{workspace_root}/uploads/{owner_id}-{uuid4().hex}--{safe_name}"
         try:
-            with httpx.Client(timeout=30, follow_redirects=False) as client:
-                response = client.post(
-                    f"{self._base_url_for_handle(handle)}/api/file/upload",
-                    headers={"X-Session-API-Key": self._session_key_for_handle(handle)},
-                    params={"path": target},
-                    files={"file": (safe_name, content, content_type)},
-                )
-                response.raise_for_status()
+            response = self._http_transport.regular.post(
+                f"{self._base_url_for_handle(handle)}/api/file/upload",
+                headers={"X-Session-API-Key": self._session_key_for_handle(handle)},
+                params={"path": target},
+                files={"file": (safe_name, content, content_type)},
+                timeout=30,
+            )
+            response.raise_for_status()
         except httpx.HTTPStatusError as exc:
             raise DomainError(
                 "EXECUTOR_UNAVAILABLE",
@@ -3233,13 +3241,13 @@ class OpenHandsRuntime:
         base_url = self._base_url_for_handle(handle)
         session_api_key = self._session_key_for_resource(handle.runtime_resource_name)
         try:
-            with httpx.Client(timeout=45, follow_redirects=False) as client:
-                response = client.get(
-                    f"{base_url}/api/file/archive",
-                    headers={"X-Session-API-Key": session_api_key},
-                    params={"path": path, "format": "tar.gz", "use_default_excludes": "true"},
-                )
-                response.raise_for_status()
+            response = self._http_transport.regular.get(
+                f"{base_url}/api/file/archive",
+                headers={"X-Session-API-Key": session_api_key},
+                params={"path": path, "format": "tar.gz", "use_default_excludes": "true"},
+                timeout=45,
+            )
+            response.raise_for_status()
         except httpx.HTTPError as exc:
             raise DomainError(
                 "EXECUTOR_UNAVAILABLE", "OpenHands 工作区文件索引不可用", 503
@@ -3298,13 +3306,13 @@ class OpenHandsRuntime:
         base_url = self._base_url_for_handle(handle)
         session_api_key = self._session_key_for_resource(handle.runtime_resource_name)
         try:
-            with httpx.Client(timeout=45, follow_redirects=False) as client:
-                response = client.get(
-                    f"{base_url}/api/file/download",
-                    headers={"X-Session-API-Key": session_api_key},
-                    params={"path": path},
-                )
-                response.raise_for_status()
+            response = self._http_transport.regular.get(
+                f"{base_url}/api/file/download",
+                headers={"X-Session-API-Key": session_api_key},
+                params={"path": path},
+                timeout=45,
+            )
+            response.raise_for_status()
         except httpx.HTTPError as exc:
             raise DomainError("EXECUTOR_UNAVAILABLE", "OpenHands 工作区文件不可用", 503) from exc
         return RuntimeWorkspaceFile(
@@ -3589,14 +3597,14 @@ class OpenHandsRuntime:
             None,
         )
         try:
-            with httpx.Client(timeout=timeout_seconds, follow_redirects=False) as client:
-                response = client.post(
-                    f"{base_url}/api/conversations/{handle.conversation_id}/ask_agent",
-                    headers={"X-Session-API-Key": session_api_key},
-                    json={"question": question},
-                )
-                response.raise_for_status()
-                value = cast(object, response.json())
+            response = self._http_transport.regular.post(
+                f"{base_url}/api/conversations/{handle.conversation_id}/ask_agent",
+                headers={"X-Session-API-Key": session_api_key},
+                json={"question": question},
+                timeout=timeout_seconds,
+            )
+            response.raise_for_status()
+            value = cast(object, response.json())
         except httpx.TimeoutException as exc:
             raise DomainError(
                 "RUNTIME_ASK_AGENT_TIMEOUT",

@@ -19,6 +19,10 @@ from flowweave.shared.infrastructure.docker_control import (
     DockerOwnershipError,
     inspect_owned_container,
 )
+from flowweave.shared.infrastructure.http_transport import (
+    HttpTransportPool,
+    shared_http_transport,
+)
 
 
 class DockerControllerError(RuntimeError):
@@ -167,16 +171,19 @@ class RemoteTerminal:
 class DockerControllerClient:
     """Synchronous client for fixed, high-level controller operations."""
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(
+        self, settings: Settings, *, http_transport: HttpTransportPool | None = None
+    ) -> None:
         self.base_url = settings.docker_controller_url.rstrip("/")
         self.api_key = settings.docker_controller_api_key
         self.manager_scope = settings.sandbox_manager_scope
+        self._http_transport = http_transport or shared_http_transport(settings)
 
     def _request(
         self, path: str, payload: dict[str, Any], *, timeout: float = 60
     ) -> dict[str, Any]:
         try:
-            response = httpx.post(
+            response = self._http_transport.control.post(
                 f"{self.base_url}{path}",
                 json={"manager_scope": self.manager_scope, **payload},
                 headers={"Authorization": f"Bearer {self.api_key}"},
@@ -303,37 +310,36 @@ class DockerControllerClient:
             "timeout_seconds": timeout_seconds,
         }
         try:
-            async with httpx.AsyncClient(timeout=None, follow_redirects=False) as client:
-                async with client.stream(
-                    "POST",
-                    f"{self.base_url}/v1/runtimes/events",
-                    json=payload,
-                    headers={"Authorization": f"Bearer {self.api_key}"},
-                ) as response:
-                    if response.is_error:
-                        await response.aread()
-                        try:
-                            raw = cast(object, response.json())
-                        except ValueError:
-                            raw = {}
-                        body = cast(dict[str, Any], raw) if isinstance(raw, dict) else {}
-                        error = body.get("error")
-                        detail = cast(dict[str, Any], error) if isinstance(error, dict) else {}
-                        raise DomainError(
-                            str(detail.get("code") or "DOCKER_CONTROLLER_FAILED"),
-                            str(detail.get("message") or "Docker controller operation failed"),
-                            response.status_code,
-                            cast(dict[str, Any], detail.get("details") or {}),
-                        )
-                    async for line in response.aiter_lines():
-                        if not line:
-                            continue
-                        try:
-                            value = cast(object, json.loads(line))
-                        except ValueError:
-                            continue
-                        if isinstance(value, dict):
-                            yield cast(dict[str, Any], value)
+            async with self._http_transport.async_control.stream(
+                "POST",
+                f"{self.base_url}/v1/runtimes/events",
+                json=payload,
+                headers={"Authorization": f"Bearer {self.api_key}"},
+            ) as response:
+                if response.is_error:
+                    await response.aread()
+                    try:
+                        raw = cast(object, response.json())
+                    except ValueError:
+                        raw = {}
+                    body = cast(dict[str, Any], raw) if isinstance(raw, dict) else {}
+                    error = body.get("error")
+                    detail = cast(dict[str, Any], error) if isinstance(error, dict) else {}
+                    raise DomainError(
+                        str(detail.get("code") or "DOCKER_CONTROLLER_FAILED"),
+                        str(detail.get("message") or "Docker controller operation failed"),
+                        response.status_code,
+                        cast(dict[str, Any], detail.get("details") or {}),
+                    )
+                async for line in response.aiter_lines():
+                    if not line:
+                        continue
+                    try:
+                        value = cast(object, json.loads(line))
+                    except ValueError:
+                        continue
+                    if isinstance(value, dict):
+                        yield cast(dict[str, Any], value)
         except DomainError:
             raise
         except httpx.HTTPError as exc:
@@ -359,17 +365,15 @@ class DockerControllerClient:
             "timeout_seconds": timeout_seconds,
         }
         try:
-            with httpx.Client(
-                timeout=httpx.Timeout(timeout_seconds + 15), follow_redirects=False
-            ) as client:
-                with client.stream(
-                    "POST",
-                    f"{self.base_url}/v1/runtimes/events",
-                    json=payload,
-                    headers={"Authorization": f"Bearer {self.api_key}"},
-                ) as response:
-                    response.raise_for_status()
-                    return any(line for line in response.iter_lines())
+            with self._http_transport.control.stream(
+                "POST",
+                f"{self.base_url}/v1/runtimes/events",
+                json=payload,
+                headers={"Authorization": f"Bearer {self.api_key}"},
+                timeout=timeout_seconds + 15,
+            ) as response:
+                response.raise_for_status()
+                return any(line for line in response.iter_lines())
         except httpx.HTTPError as exc:
             raise DockerControllerError("Docker controller wake-up is unavailable") from exc
 

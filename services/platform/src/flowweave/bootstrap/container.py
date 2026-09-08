@@ -20,6 +20,11 @@ from flowweave.shared.application.sandbox import SandboxPort
 from flowweave.shared.infrastructure.artifact_store import build_artifact_store
 from flowweave.shared.infrastructure.database import Database
 from flowweave.shared.infrastructure.dependency_builder import build_dependency_builder
+from flowweave.shared.infrastructure.http_transport import (
+    HttpTransportPool,
+    register_http_transport,
+    unregister_http_transport,
+)
 from flowweave.shared.infrastructure.plugin_resolver import build_plugin_resolver
 from flowweave.shared.infrastructure.sandbox import build_sandbox
 
@@ -30,6 +35,7 @@ class Container:
     role: Literal["api", "worker"]
     database: Database
     http: httpx.AsyncClient
+    http_transport: HttpTransportPool
     runtime: RuntimePort
     artifact_store: ArtifactStorePort
     dependency_builder: DependencyBuilderPort
@@ -45,7 +51,8 @@ class Container:
     async def close(self) -> None:
         await self.run_event_listener.close()
         await self.audit_writer.close()
-        await self.http.aclose()
+        await self.http_transport.aclose()
+        unregister_http_transport(self.settings, self.http_transport)
         await asyncio.to_thread(
             self.blocking_executor.shutdown,
             wait=True,
@@ -60,9 +67,10 @@ class Container:
 
 
 def build_container(settings: Settings, *, role: Literal["api", "worker"]) -> Container:
-    timeout = httpx.Timeout(connect=5, read=30, write=30, pool=5)
+    http_transport = HttpTransportPool.build()
+    register_http_transport(settings, http_transport)
     if settings.runtime_adapter == "openhands":
-        runtime: RuntimePort = OpenHandsRuntime(settings)
+        runtime: RuntimePort = OpenHandsRuntime(settings, http_transport=http_transport)
     elif settings.runtime_adapter == "mock":
         runtime = MockRuntime()
     else:
@@ -83,7 +91,8 @@ def build_container(settings: Settings, *, role: Literal["api", "worker"]) -> Co
         settings=settings,
         role=role,
         database=database,
-        http=httpx.AsyncClient(timeout=timeout, follow_redirects=False),
+        http=http_transport.async_regular,
+        http_transport=http_transport,
         runtime=runtime,
         artifact_store=build_artifact_store(settings),
         dependency_builder=build_dependency_builder(settings),
