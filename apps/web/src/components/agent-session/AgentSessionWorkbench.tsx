@@ -1776,6 +1776,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const liveTextFrame = useRef<number | undefined>(undefined);
   const pendingLiveEvents = useRef<OpenHandsConversationEvent[]>([]);
   const liveEventsFrame = useRef<number | undefined>(undefined);
+  const initialHistoryPrefetches = useRef(new Set<string>());
   const bootstrapTransitionScope = useRef<string | undefined>(undefined);
   const selectedBindingId = host.bindingIdFromPathname(withoutDeploymentBase(window.location.pathname));
   const previousComposerScope = useRef<string | undefined>(undefined);
@@ -1936,6 +1937,19 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       setLoadingOlderEvents(false);
     }
   }, [api, eventQueryKey, eventsQuery.data?.history_cursor, loadingOlderEvents, queryClient, reportOperationError, selected, workspace]);
+  useEffect(() => {
+    const bindingId = selected?.id;
+    if (!bindingId || !eventsQuery.data?.history_cursor || loadingOlderEvents
+      || initialHistoryPrefetches.current.has(bindingId)) return;
+    // Render the newest native branch first.  One follow-up page is then
+    // fetched after paint so reopening a long conversation remains quick
+    // without turning every view into an unbounded history download.
+    const timer = window.setTimeout(() => {
+      initialHistoryPrefetches.current.add(bindingId);
+      void loadOlderEvents();
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [eventsQuery.data?.history_cursor, loadingOlderEvents, loadOlderEvents, selected?.id]);
   const displayedEvents = useMemo(() => {
     const activeScope = selected?.id ?? conversationDraft?.id;
     const bootstrapEvent = optimisticBootstrapTurn && optimisticBootstrapTurn.scope === activeScope

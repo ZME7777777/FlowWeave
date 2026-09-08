@@ -3155,6 +3155,14 @@ Attempt 与同一正式完成身份，输出准备、Artifact 登记和 END Gate
 
 完成：Fork 先按正式事件 ID 读取目标 FinishAction，再以同一 ID 作为 OpenHands 原生事件搜索锚点，仅在其后的窗口内按 `action_id` 与 `tool_call_id` 寻找唯一 FinishObservation。长会话不再受最早 100 条历史事件窗口限制；已持久化完成边界可正常传入原生 Fork，事件身份和历史数据均不改写。
 
+### FR-228 Agent 会话首屏与空闲历史预取 — DONE
+
+依赖：`FR-211`、`FR-227`。共享 Agent 工作台必须优先展示 OpenHands 最新活动分支窗口；浏览器在首屏绘制后仅空闲请求一页更早正式事件，并继续保留用户触发的逐页“加载更早记录”。事件全量与历史唯一保留在 OpenHands，FlowWeave 不在后台补写、缓存或重建会话。运行中、直接会话与节点会话均适用。UI 的加载窗口不得参与 Fork 边界判断；Fork 只使用用户选择的正式事件 ID 和 OpenHands 正式关联字段。
+
+验收：Web TypeScript typecheck、production build、`git diff --check` 与任务状态唯一性通过；不改变 Runtime 事件身份或任何 OpenHands 历史数据。
+
+完成：共享工作台首次取得 `history_cursor` 后，以浏览器 `setTimeout(0)` 在首屏绘制后仅请求一页更早记录，并把该页与最新活动窗口合并显示。同一会话仅自动预取一次；仍有更早历史时继续显示逐页加载入口。该行为不读取或改变 Fork 输入，后端 Fork 仍只向 OpenHands 查询选中的正式事件及其执行边界。
+
 ### FR-223 自动门禁失败语义与操作反馈 — PENDING
 
 依赖：`FR-221`。
