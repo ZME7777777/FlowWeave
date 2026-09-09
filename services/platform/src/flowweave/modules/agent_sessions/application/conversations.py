@@ -17,6 +17,7 @@ from uuid import UUID, uuid4, uuid5
 from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
+from flowweave.modules.agent_sessions.application import usage as usage_projection
 from flowweave.modules.agent_sessions.application.deletion import delete_binding_records
 from flowweave.modules.agent_sessions.application.runtime_config import (
     build_agent_spec,
@@ -223,6 +224,7 @@ def _dict(db: Session, item: AgentConversationBinding) -> dict[str, Any]:
         "created_at": item.created_at.isoformat(),
         "updated_at": item.updated_at.isoformat(),
         "last_connected_at": item.last_connected_at.isoformat() if item.last_connected_at else None,
+        "usage": usage_projection.for_binding(db, item.id),
     }
 
 
@@ -318,6 +320,7 @@ def _page_dicts(
 
 
 def _workspace_dict(db: Session, workspace: AgentWorkspace) -> dict[str, Any]:
+    usage = usage_projection.capture(db, binding, batch.usage)
     return {
         "id": workspace.id,
         "display_name": workspace.display_name,
@@ -1702,6 +1705,7 @@ def events(
         ],
         "task_control": task_control_projection(db, binding.id),
         "monitoring": build_activity_summary(batch.events),
+        "usage": usage,
     }
 
 
