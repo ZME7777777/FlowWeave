@@ -113,6 +113,7 @@ from flowweave.shared.schemas import (
     AutomaticRunStartWrite,
     FlowRunScheduleStateWrite,
     FlowRunScheduleWrite,
+    GateRetryWithProviderWrite,
     GateRemediationWrite,
     GateRiskAcceptanceWrite,
     HumanInputWrite,
@@ -2035,6 +2036,15 @@ def _record_gate_results(
     for prepared, result in evaluations:
         policy = prepared.policy
         result_json = result.as_dict()
+        # A policy can be explicitly changed for a later retry. Preserve the
+        # exact model choice on every result so diagnosis never depends on a
+        # mutable current provider default.
+        preset = policy.get("agent_preset")
+        if isinstance(preset, dict):
+            result_json["_gate_agent_preset"] = {
+                key: preset.get(key)
+                for key in ("model_provider_id", "model_name", "reasoning_effort")
+            }
         if prepared.plan.sidecar_binding_id and result.sidecar_available:
             result_json["_gate_conversation_binding_id"] = prepared.plan.sidecar_binding_id
             binding = db.get(AgentConversationBinding, prepared.plan.sidecar_binding_id)
@@ -7977,6 +7987,79 @@ def retry_gates(db: Session, attempt_id: str, payload: AttemptVersionWrite) -> d
     return attempt_detail(db, attempt.id)
 
 
+def retry_gate_with_provider(
+    db: Session, attempt_id: str, payload: GateRetryWithProviderWrite
+) -> dict[str, Any]:
+    """Explicitly select the next model for one failed author gate and retry its stage.
+
+    The Attempt policy is the configuration for future work only.  Existing
+    GateEvaluation rows retain their own copied preset and are never rewritten.
+    """
+
+    current = _attempt(db, attempt_id)
+    evaluation = db.get(GateEvaluation, payload.evaluation_id)
+    if evaluation is None or evaluation.attempt_id != current.id:
+        raise not_found("gate_evaluation", payload.evaluation_id)
+    if evaluation.decision != "ERROR":
+        raise illegal("only a gate execution error can switch provider", decision=evaluation.decision)
+    expected_stage = (
+        "START" if current.state == AttemptState.START_BLOCKED else "END"
+        if current.state == AttemptState.END_BLOCKED
+        else None
+    )
+    if expected_stage is None or evaluation.stage != expected_stage:
+        raise illegal("gate evaluation is not in the current blocked stage", state=current.state)
+    policies = copy.deepcopy(current.gate_policies_json or [])
+    target = next(
+        (
+            item
+            for item in policies
+            if isinstance(item, dict)
+            and item.get("id") == evaluation.policy_snapshot_key
+            and item.get("stage") == evaluation.stage
+        ),
+        None,
+    )
+    if target is None:
+        raise illegal("platform-owned or historical gate cannot switch provider")
+    config = dict(target.get("config") or {})
+    if config.get("system_owned") is True:
+        raise illegal("platform-owned gate cannot switch provider")
+    resolved = agent_sessions.resolve_session_config(
+        db,
+        model_provider_id=payload.agent_preset.model_provider_id,
+        model_name=payload.agent_preset.model_name,
+        reasoning_effort=payload.agent_preset.reasoning_effort,
+        capability_version_ids=(),
+    )
+    previous = dict(target.get("agent_preset") or {})
+    target["agent_preset"] = {
+        "model_provider_id": resolved.model_provider_id,
+        "model_name": resolved.model_name,
+        "reasoning_effort": resolved.reasoning_effort,
+    }
+    current.gate_policies_json = policies
+    node_run = _node_run(db, current.node_run_id)
+    _event(
+        db,
+        _run(db, node_run.flow_run_id).id,
+        "GATE_PROVIDER_RETRY_CONFIGURED",
+        {
+            "evaluation_id": evaluation.id,
+            "stage": evaluation.stage,
+            "policy_snapshot_key": evaluation.policy_snapshot_key,
+            "previous_model_provider_id": previous.get("model_provider_id"),
+            "previous_model_name": previous.get("model_name"),
+            "model_provider_id": resolved.model_provider_id,
+            "model_name": resolved.model_name,
+            "reasoning_effort": resolved.reasoning_effort,
+        },
+        node_run.id,
+        current.id,
+    )
+    return retry_gates(db, attempt_id, payload)
+
+
 def sync_snapshot(
     db: Session, run_id: str, payload: SyncSnapshotWrite, idempotency_key: str
 ) -> dict[str, Any]:
@@ -8701,6 +8784,28 @@ def attempt_detail(
             .order_by(RuntimeConfirmationApproval.created_at.desc())
         )
     )
+
+    def gate_agent_preset(evaluation: GateEvaluation) -> dict[str, Any] | None:
+        recorded = evaluation.result_json.get("_gate_agent_preset")
+        if isinstance(recorded, dict):
+            return {
+                key: recorded.get(key)
+                for key in ("model_provider_id", "model_name", "reasoning_effort")
+            }
+        # Earlier results did not record a per-execution configuration. Their
+        # only truthful fallback is the Attempt's frozen gate policy; do not
+        # look up a workspace default or a currently selected node model.
+        policy = next(
+            (
+                item
+                for item in attempt.gate_policies_json or []
+                if isinstance(item, dict) and item.get("id") == evaluation.policy_snapshot_key
+            ),
+            None,
+        )
+        preset = policy.get("agent_preset") if isinstance(policy, dict) else None
+        return dict(preset) if isinstance(preset, dict) else None
+
     return {
         "id": attempt.id,
         "node_run_id": attempt.node_run_id,
@@ -8792,6 +8897,7 @@ def attempt_detail(
                     )
                     is not None
                 ),
+                "agent_preset": gate_agent_preset(x),
                 "error_code": x.error_code,
                 "log_excerpt": x.log_excerpt,
                 "created_at": x.created_at.isoformat(),

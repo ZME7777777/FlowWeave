@@ -265,6 +265,8 @@ export interface GateEvaluation {
     mappings: Array<{ source_output_key: string; target_input: { field_key: string; display_name?: string; data_type?: string; description?: string; declared?: boolean } }>
   }> ;
   conversation_available?: boolean;
+  /** The isolated Gate Agent configuration recorded for this execution. */
+  agent_preset?: GateAgentPreset | null;
   error_code?: string | null; log_excerpt?: string; created_at: string;
 }
 export type AttemptState =

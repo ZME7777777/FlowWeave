@@ -15,6 +15,7 @@ from flowweave.runtime.base import (
 from flowweave.runtime.dependencies import runtime_context
 from flowweave.shared.errors import DomainError
 from flowweave.shared.models import AttemptState
+from flowweave.shared.schemas import GateRetryWithProviderWrite
 from flowweave.shared.settings import Settings, settings_context
 
 
@@ -918,6 +919,95 @@ def test_automatic_gate_execution_error_stops_without_output_remediation(monkeyp
             "AUTOMATIC_GATE_EXECUTION_FAILED",
             {"stage": "END", "gate_error_codes": ["GATE_CONFIG_INVALID"]},
         ),
+    ]
+
+
+def test_retry_gate_with_provider_preserves_old_evaluation_and_updates_next_policy(monkeypatch):
+    attempt = SimpleNamespace(
+        id="attempt-1",
+        node_run_id="node-run-1",
+        state=AttemptState.END_BLOCKED,
+        gate_policies_json=[
+            {
+                "id": "gate-1",
+                "stage": "END",
+                "agent_preset": {
+                    "model_provider_id": "provider-old",
+                    "model_name": "old-model",
+                    "reasoning_effort": "low",
+                },
+            }
+        ],
+    )
+    evaluation = SimpleNamespace(
+        id="evaluation-1", attempt_id=attempt.id, decision="ERROR", stage="END",
+        policy_snapshot_key="gate-1",
+    )
+    events: list[tuple[str, dict[str, object]]] = []
+
+    class Db:
+        def get(self, _model, value):
+            return evaluation if value == evaluation.id else None
+
+    monkeypatch.setattr(orchestration_service, "_attempt", lambda *_args: attempt)
+    monkeypatch.setattr(
+        orchestration_service,
+        "_node_run",
+        lambda *_args: SimpleNamespace(id="node-run-1", flow_run_id="run-1"),
+    )
+    monkeypatch.setattr(orchestration_service, "_run", lambda *_args: SimpleNamespace(id="run-1"))
+    monkeypatch.setattr(
+        orchestration_service.agent_sessions,
+        "resolve_session_config",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            model_provider_id="provider-new", model_name="new-model", reasoning_effort="high"
+        ),
+    )
+    monkeypatch.setattr(
+        orchestration_service,
+        "_event",
+        lambda _db, _run_id, event_type, payload, *_args: events.append((event_type, payload)),
+    )
+    monkeypatch.setattr(
+        orchestration_service,
+        "retry_gates",
+        lambda _db, attempt_id, _payload: {"id": attempt_id, "state": "END_GATES"},
+    )
+
+    result = orchestration_service.retry_gate_with_provider(
+        Db(),
+        attempt.id,
+        GateRetryWithProviderWrite(
+            expected_state_version=3,
+            evaluation_id=evaluation.id,
+            agent_preset={
+                "model_provider_id": "provider-new",
+                "model_name": "new-model",
+                "reasoning_effort": "high",
+            },
+        ),
+    )
+
+    assert result == {"id": attempt.id, "state": "END_GATES"}
+    assert attempt.gate_policies_json[0]["agent_preset"] == {
+        "model_provider_id": "provider-new",
+        "model_name": "new-model",
+        "reasoning_effort": "high",
+    }
+    assert events == [
+        (
+            "GATE_PROVIDER_RETRY_CONFIGURED",
+            {
+                "evaluation_id": "evaluation-1",
+                "stage": "END",
+                "policy_snapshot_key": "gate-1",
+                "previous_model_provider_id": "provider-old",
+                "previous_model_name": "old-model",
+                "model_provider_id": "provider-new",
+                "model_name": "new-model",
+                "reasoning_effort": "high",
+            },
+        )
     ]
 
 

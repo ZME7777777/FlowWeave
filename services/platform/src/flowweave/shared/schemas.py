@@ -579,6 +579,13 @@ class AttemptVersionWrite(ApiModel):
     expected_state_version: int = Field(ge=1)
 
 
+class GateRetryWithProviderWrite(AttemptVersionWrite):
+    """Retry a failed author gate with one explicitly selected model configuration."""
+
+    evaluation_id: str = Field(min_length=1, max_length=36)
+    agent_preset: GateAgentPresetWrite
+
+
 class GateRiskAcceptanceWrite(AttemptVersionWrite):
     reason: str = Field(min_length=1, max_length=4000)
 

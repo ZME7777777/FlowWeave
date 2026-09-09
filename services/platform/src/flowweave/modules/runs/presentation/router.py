@@ -24,6 +24,7 @@ from flowweave.shared.schemas import (
     AutomaticRunStartWrite,
     FlowRunScheduleStateWrite,
     FlowRunScheduleWrite,
+    GateRetryWithProviderWrite,
     GateRemediationWrite,
     GateRiskAcceptanceWrite,
     HumanInputWrite,
@@ -700,6 +701,15 @@ async def reject(
 @router.post("/node-attempts/{attempt_id}/retry-gates")
 async def retry_gates(attempt_id: str, payload: AttemptVersionWrite, db: Db) -> dict[str, Any]:
     return await run_sync(db, lambda session: service.retry_gates(session, attempt_id, payload))
+
+
+@router.post("/node-attempts/{attempt_id}/gate-evaluations/retry-with-provider")
+async def retry_gate_with_provider(
+    attempt_id: str, payload: GateRetryWithProviderWrite, db: Db
+) -> dict[str, Any]:
+    return await run_sync(
+        db, lambda session: service.retry_gate_with_provider(session, attempt_id, payload)
+    )
 
 
 @router.post("/node-attempts/{attempt_id}/retry-runtime-cancel")
