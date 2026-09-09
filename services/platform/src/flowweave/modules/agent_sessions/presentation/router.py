@@ -82,7 +82,9 @@ class NodeConversationReference(_Write):
     start_offset: int = Field(ge=0, le=200_000)
     end_offset: int = Field(ge=1, le=200_000)
     source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    use: ConversationReferenceUse
+    # Legacy clients may still send this field.  It is deliberately ignored:
+    # source category is assigned after the server resolves the event locator.
+    use: ConversationReferenceUse | None = None
 
 
 class NodeSessionBootstrapFullWrite(_Write):
@@ -93,7 +95,8 @@ class NodeSessionBootstrapFullWrite(_Write):
     reasoning_effort: str | None = Field(default=None, max_length=30)
     work_directory_id: str | None = Field(default=None, min_length=1, max_length=36)
     content: str | list[dict[str, Any]] = Field(max_length=200_000)
-    message_kind: MessageKind = "QUESTION"
+    # Backward-compatible request shape; this value is no longer authoritative.
+    message_kind: MessageKind | None = None
     attachments: list[NodeAttachmentReference] = cast(
         list[NodeAttachmentReference], Field(default_factory=list, max_length=10)
     )
@@ -104,7 +107,7 @@ class NodeSessionBootstrapFullWrite(_Write):
 
 class NodeSessionMessageWrite(_Write):
     content: str = Field(max_length=200_000)
-    message_kind: MessageKind = "QUESTION"
+    message_kind: MessageKind | None = None
     attachments: list[NodeAttachmentReference] = cast(
         list[NodeAttachmentReference], Field(default_factory=list, max_length=10)
     )
@@ -385,7 +388,6 @@ async def bootstrap_node_session(
                 for item in payload.attachments
             ),
             references=tuple(item.model_dump() for item in payload.references),
-            message_kind=payload.message_kind,
             legacy_image_urls=tuple(legacy_image_urls),
             conversation_id=payload.conversation_id,
             work_directory_id=payload.work_directory_id,
@@ -750,7 +752,6 @@ async def node_session_message(
                 for item in payload.attachments
             ),
             references=tuple(item.model_dump() for item in payload.references),
-            message_kind=payload.message_kind,
         ),
     )
 

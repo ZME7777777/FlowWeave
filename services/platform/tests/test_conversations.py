@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -54,20 +55,31 @@ def test_conversation_reference_projection_hides_selected_text_from_message_body
     prompt, image_urls = session_conversations.message_payload(
         "请基于引用继续处理",
         (),
-        ({"event_id": "assistant-event-1", "use": "BACKGROUND", "content": selected_text},),
-        "CORRECTION",
+        (
+            {
+                "event_id": "assistant-event-1",
+                "source_category": "PRIOR_ASSISTANT_MESSAGE",
+                "content": selected_text,
+            },
+        ),
     )
 
     assert image_urls == ()
     assert prompt.index(selected_text) < prompt.index('"current_message"')
     assert "current_message" in prompt
-    assert '"kind":"CORRECTION"' in prompt
-    assert "引用是按用途提供的来源材料" in prompt
+    assert '"category":"CURRENT_USER_REQUEST"' in prompt
+    assert '"source_category":"PRIOR_ASSISTANT_MESSAGE"' in prompt
+    assert "本轮只执行 current_message" in prompt
     display_content, references = session_conversations.project_conversation_references(prompt)
     assert display_content == "请基于引用继续处理"
     assert selected_text not in display_content
     assert references == (
-        {"event_id": "assistant-event-1", "use": "BACKGROUND", "content": selected_text},
+        {
+            "event_id": "assistant-event-1",
+            "category": "REFERENCE",
+            "source_category": "PRIOR_ASSISTANT_MESSAGE",
+            "content": selected_text,
+        },
     )
 
 
@@ -94,14 +106,53 @@ def test_conversation_reference_projection_composes_with_attachment_context() ->
     prompt, _image_urls = session_conversations.message_payload(
         "",
         ({"path": attachment_path, "image_data_url": "data:image/png;base64,aGVsbG8="},),
-        ({"event_id": "assistant-event-2", "use": "CONSTRAINT", "content": "不要展开此引用"},),
+        (
+            {
+                "event_id": "assistant-event-2",
+                "source_category": "PRIOR_USER_MESSAGE",
+                "content": "不要展开此引用",
+            },
+        ),
     )
 
     display_content, references = session_conversations.project_conversation_references(prompt)
     assert display_content == f"请查看已上传到共享工作区的附件：\n- {attachment_path}"
     assert references == (
-        {"event_id": "assistant-event-2", "use": "CONSTRAINT", "content": "不要展开此引用"},
+        {
+            "event_id": "assistant-event-2",
+            "category": "REFERENCE",
+            "source_category": "PRIOR_USER_MESSAGE",
+            "content": "不要展开此引用",
+        },
     )
+
+
+def test_reference_source_category_is_derived_from_the_resolved_event() -> None:
+    source_text = "上一轮助手的内容不应变成本轮任务"
+    resolved = session_conversations._resolve_conversation_references(
+        (
+            SimpleNamespace(
+                event_type="MESSAGE",
+                cursor="prior-assistant-event",
+                payload={"source": "assistant", "content": source_text},
+            ),
+        ),
+        (
+            {
+                "event_id": "prior-assistant-event",
+                "start_offset": 0,
+                "end_offset": len(source_text),
+                "source_sha256": hashlib.sha256(source_text.encode("utf-8")).hexdigest(),
+                # A legacy client can send this, but it must not select the
+                # prompt category or override the resolved event source.
+                "use": "CONSTRAINT",
+            },
+        ),
+    )
+
+    assert resolved[0]["category"] == "REFERENCE"
+    assert resolved[0]["source_category"] == "PRIOR_ASSISTANT_MESSAGE"
+    assert "use" not in resolved[0]
 
 
 def _runtime_context(db: Session) -> tuple[str, str]:
