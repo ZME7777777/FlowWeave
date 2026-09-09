@@ -65,6 +65,25 @@ def test_runtime_provider_accepts_legacy_persistent_flow_run_spec() -> None:
     assert spec.project_record_id is None
 
 
+def test_runtime_provider_preserves_runtime_resource_limits() -> None:
+    spec = RuntimeProviderSpec(
+        port=8000,
+        flow_run_id=_OWNER_ID,
+        runtime_allocation_id=_ENVIRONMENT_ID,
+        runtime_allocation_relative=".flow-run-runtimes/" + "a" * 32 + "/" + _OWNER_ID,
+        runtime_secret_reference_id=_ENVIRONMENT_VERSION_ID,
+        cpu_limit="2.0",
+        memory_limit="2g",
+        storage_limit="4g",
+    )
+
+    assert spec.model_dump(include={"cpu_limit", "memory_limit", "storage_limit"}) == {
+        "cpu_limit": "2.0",
+        "memory_limit": "2g",
+        "storage_limit": "4g",
+    }
+
+
 def test_runtime_provider_rejects_partial_shared_project_without_record() -> None:
     with pytest.raises(ValueError, match="project record identity"):
         RuntimeProviderSpec(

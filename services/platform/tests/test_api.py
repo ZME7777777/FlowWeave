@@ -2346,16 +2346,9 @@ def test_full_product_run_attempt_revision_snapshot_and_lineage(client, skill_ca
 
     summary = client.get("/api/v1/flow-runs").json()[0]
     assert summary["active_snapshot_version"] == 1
-    assert summary["has_pending_action"] is True
-    assert summary["progress"] == {
-        "total": 1,
-        "accepted": 0,
-        "terminal": 0,
-        "active": 1,
-        "failed": 0,
-        "cancelled": 0,
-        "pending_action": 1,
-    }
+    assert "has_pending_action" not in summary
+    assert "progress" not in summary
+    assert summary["runtime_resource"] is None
     assert summary["runtime_status"] == "STARTING"
     assert summary["runtime_write_available"] is False
     assert summary["runtime_message"] is None

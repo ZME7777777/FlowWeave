@@ -25,6 +25,7 @@ from flowweave.shared.models import (
     NodeRun,
     RunEvent,
 )
+from flowweave.shared.settings import get_settings
 
 
 def _retention_policy() -> dict[str, Any]:
@@ -32,6 +33,32 @@ def _retention_policy() -> dict[str, Any]:
         "mode": "FLOW_RUN_LIFETIME",
         "workspace_preserved_during_replacement": True,
         "physical_delete_operation": "DELETE_FLOW_RUN",
+    }
+
+
+def _active_resource_summary(
+    resource: ManagedSandbox | None, generation: RuntimeGeneration | None
+) -> dict[str, Any] | None:
+    """Return only the active container's safe operational identity and limits."""
+
+    if (
+        resource is None
+        or generation is None
+        or generation.state != "READY"
+        or resource.observed_state != "RUNNING"
+        or not resource.backend_resource_id
+    ):
+        return None
+    settings = get_settings()
+    spec = resource.spec_json or {}
+    return {
+        "generation": generation.generation,
+        "container_id": resource.backend_resource_id.removeprefix("sha256:")[:12],
+        "image_reference": resource.image_reference,
+        "created_at": resource.created_at.isoformat(),
+        "cpu_limit": str(spec.get("cpu_limit") or settings.terminal_environment_cpus),
+        "memory_limit": str(spec.get("memory_limit") or settings.terminal_environment_memory),
+        "storage_limit": str(spec.get("storage_limit") or settings.sandbox_storage_size),
     }
 
 
@@ -126,21 +153,56 @@ def runtime_readiness_by_flow_run(
 
     if not flow_run_ids:
         return {}
-    sessions = db.scalars(
-        select(FlowRunRuntime).where(
-            FlowRunRuntime.flow_run_id.in_(flow_run_ids),
-            FlowRunRuntime.node_attempt_id.is_(None),
+    sessions = list(
+        db.scalars(
+            select(FlowRunRuntime).where(
+                FlowRunRuntime.flow_run_id.in_(flow_run_ids),
+                FlowRunRuntime.node_attempt_id.is_(None),
+            )
         )
     )
-    return {
-        item.flow_run_id: {
+    session_ids = [item.id for item in sessions]
+    generations = (
+        list(
+            db.scalars(
+                select(RuntimeGeneration).where(
+                    RuntimeGeneration.runtime_session_id.in_(session_ids)
+                )
+            )
+        )
+        if session_ids
+        else []
+    )
+    active_generations = {
+        (item.runtime_session_id, item.generation): item for item in generations
+    }
+    managed_ids = [item.managed_runtime_id for item in generations if item.managed_runtime_id]
+    resources = (
+        list(db.scalars(select(ManagedSandbox).where(ManagedSandbox.id.in_(managed_ids))))
+        if managed_ids
+        else []
+    )
+    resources_by_id = {item.id: item for item in resources}
+    readiness: dict[str, dict[str, Any]] = {}
+    for item in sessions:
+        active_generation = (
+            active_generations.get((item.id, item.active_generation))
+            if item.status == "ACTIVE"
+            else None
+        )
+        resource = (
+            resources_by_id.get(active_generation.managed_runtime_id)
+            if active_generation and active_generation.managed_runtime_id
+            else None
+        )
+        readiness[item.flow_run_id] = {
             "status": item.status,
             "write_available": item.status == "ACTIVE",
             "message": item.replacement_error_summary,
             "updated_at": item.updated_at,
+            "resource": _active_resource_summary(resource, active_generation),
         }
-        for item in sessions
-    }
+    return readiness
 
 
 def request_runtime_replacement(

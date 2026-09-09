@@ -209,7 +209,8 @@ def _create_managed_runtime(
     environment_version_no: int,
     workspace_relative: str = "",
 ) -> RuntimeProviderAllocation:
-    provider = DockerSandboxProvider(get_settings())
+    settings = get_settings()
+    provider = DockerSandboxProvider(settings)
     provider.require_enabled()
     flow_run_runtime = owner_type == "FLOW_RUN"
     node_attempt_runtime = owner_type == "FLOW_NODE_ATTEMPT"
@@ -423,6 +424,9 @@ def _create_managed_runtime(
                                 else None
                             ),
                             "project_record_id": project_record_id,
+                            "cpu_limit": str(settings.terminal_environment_cpus),
+                            "memory_limit": settings.terminal_environment_memory,
+                            "storage_limit": settings.sandbox_storage_size,
                         },
                         idle_expires_at=created_at
                         + timedelta(seconds=get_settings().sandbox_runtime_idle_ttl_seconds)

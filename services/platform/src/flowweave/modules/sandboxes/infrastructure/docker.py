@@ -53,6 +53,9 @@ _RUNTIME_SPEC_FIELDS = frozenset(
         "project_allocation_id",
         "project_allocation_relative",
         "project_record_id",
+        "cpu_limit",
+        "memory_limit",
+        "storage_limit",
     }
 )
 _PRE_SHARED_PROJECT_RUNTIME_SPEC_FIELDS = _RUNTIME_SPEC_FIELDS - {
@@ -845,6 +848,7 @@ chmod 0700 "$target"
             )
 
     def _common_run_command(self, resource: ManagedSandbox) -> list[str]:
+        spec = resource.spec_json or {}
         return [
             self.settings.docker_binary,
             "run",
@@ -859,7 +863,7 @@ chmod 0700 "$target"
             "--log-opt",
             "max-file=2",
             "--storage-opt",
-            f"size={self.settings.sandbox_storage_size}",
+            f"size={spec.get('storage_limit') or self.settings.sandbox_storage_size}",
             "--security-opt",
             "no-new-privileges",
             "--cap-drop",
@@ -867,9 +871,9 @@ chmod 0700 "$target"
             "--pids-limit",
             str(self.settings.terminal_environment_pids_limit),
             "--memory",
-            self.settings.terminal_environment_memory,
+            str(spec.get("memory_limit") or self.settings.terminal_environment_memory),
             "--cpus",
-            str(self.settings.terminal_environment_cpus),
+            str(spec.get("cpu_limit") or self.settings.terminal_environment_cpus),
             "--label",
             "flowweave.managed=true",
             "--label",

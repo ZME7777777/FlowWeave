@@ -9349,25 +9349,6 @@ def list_runs(db: Session) -> list[dict[str, Any]]:
         return []
 
     run_ids = [item.id for item in runs]
-    node_runs = list(
-        db.scalars(
-            select(NodeRun)
-            .where(NodeRun.flow_run_id.in_(run_ids))
-            .order_by(NodeRun.flow_run_id, NodeRun.sequence_no)
-        )
-    )
-    node_run_ids = [item.id for item in node_runs]
-    attempts = (
-        list(
-            db.scalars(
-                select(NodeAttempt)
-                .where(NodeAttempt.node_run_id.in_(node_run_ids))
-                .order_by(NodeAttempt.node_run_id, NodeAttempt.attempt_no)
-            )
-        )
-        if node_run_ids
-        else []
-    )
     snapshot_ids = [item.active_snapshot_id for item in runs if item.active_snapshot_id]
     snapshots = (
         list(db.scalars(select(RunSnapshot).where(RunSnapshot.id.in_(snapshot_ids))))
@@ -9375,58 +9356,17 @@ def list_runs(db: Session) -> list[dict[str, Any]]:
         else []
     )
     runtime_readiness = sandboxes.runtime_readiness_by_flow_run(db, run_ids)
-
-    nodes_by_run: dict[str, list[NodeRun]] = {item.id: [] for item in runs}
-    for node_run in node_runs:
-        nodes_by_run[node_run.flow_run_id].append(node_run)
-    attempts_by_node: dict[str, list[NodeAttempt]] = {item.id: [] for item in node_runs}
-    for attempt in attempts:
-        attempts_by_node[attempt.node_run_id].append(attempt)
-    latest_attempts_by_node = {
-        node_run_id: node_attempts[-1]
-        for node_run_id, node_attempts in attempts_by_node.items()
-        if node_attempts
-    }
     snapshots_by_id = {item.id: item for item in snapshots}
-    pending_states = {
-        AttemptState.WAITING_START_CONFIRMATION,
-        AttemptState.PAUSED,
-        AttemptState.WAITING_HUMAN,
-        AttemptState.WAITING_ACCEPTANCE,
-        AttemptState.START_BLOCKED,
-        AttemptState.END_BLOCKED,
-    }
 
     result: list[dict[str, Any]] = []
     for run in runs:
         runtime = runtime_readiness.get(run.id)
-        run_nodes = nodes_by_run[run.id]
         snapshot = snapshots_by_id.get(run.active_snapshot_id or "")
-        accepted = sum(item.state == NodeRunState.ACCEPTED for item in run_nodes)
-        active = sum(item.state == NodeRunState.ACTIVE for item in run_nodes)
-        failed = sum(item.state == NodeRunState.FAILED for item in run_nodes)
-        cancelled = sum(item.state == NodeRunState.CANCELLED for item in run_nodes)
-        terminal = sum(
-            item.state in {NodeRunState.ACCEPTED, NodeRunState.FAILED, NodeRunState.CANCELLED}
-            for item in run_nodes
-        )
-        pending_action_count = sum(
-            item.state == NodeRunState.ACTIVE
-            and (latest_attempt := latest_attempts_by_node.get(item.id)) is not None
-            and latest_attempt.state in pending_states
-            for item in run_nodes
-        )
         activity_times = [run.started_at]
         if runtime and isinstance(runtime.get("updated_at"), datetime):
             activity_times.append(cast(datetime, runtime["updated_at"]))
         if run.finished_at:
             activity_times.append(run.finished_at)
-        activity_times.extend(item.activated_at for item in run_nodes)
-        activity_times.extend(
-            attempt.updated_at
-            for node_run in run_nodes
-            for attempt in attempts_by_node.get(node_run.id, [])
-        )
         result.append(
             {
                 "id": run.id,
@@ -9460,16 +9400,7 @@ def list_runs(db: Session) -> list[dict[str, Any]]:
                     if runtime
                     else None
                 ),
-                "has_pending_action": pending_action_count > 0,
-                "progress": {
-                    "total": len(run_nodes),
-                    "accepted": accepted,
-                    "terminal": terminal,
-                    "active": active,
-                    "failed": failed,
-                    "cancelled": cancelled,
-                    "pending_action": pending_action_count,
-                },
+                "runtime_resource": runtime.get("resource") if runtime else None,
                 "started_at": run.started_at.isoformat(),
                 "updated_at": max(activity_times).isoformat(),
                 "finished_at": run.finished_at.isoformat() if run.finished_at else None,

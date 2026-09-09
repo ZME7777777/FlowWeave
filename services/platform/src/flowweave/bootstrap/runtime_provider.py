@@ -103,6 +103,9 @@ class RuntimeProviderSpec(_StrictModel):
         pattern=r"^[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*$",
     )
     port: Literal[8000]
+    cpu_limit: str | None = Field(default=None, max_length=32)
+    memory_limit: str | None = Field(default=None, max_length=32)
+    storage_limit: str | None = Field(default=None, max_length=32)
     environment_id: UUID | None = None
     environment_version_id: UUID | None = None
     environment_version_no: int | None = Field(default=None, ge=1)
