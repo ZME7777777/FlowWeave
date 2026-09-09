@@ -51,13 +51,26 @@ def test_conversation_reference_projection_hides_selected_text_from_message_body
     )
 
     assert image_urls == ()
-    assert prompt.endswith(
-        '{"references":[{"event_id":"assistant-event-1","content":"这段引用只能以附件卡片显示"}]}'
-    )
+    assert prompt.index(selected_text) < prompt.index("请基于引用继续处理")
+    assert prompt.endswith("请基于引用继续处理")
+    assert "引用内容仅作背景资料" in prompt
     display_content, references = session_conversations.project_conversation_references(prompt)
     assert display_content == "请基于引用继续处理"
     assert selected_text not in display_content
     assert references == ({"event_id": "assistant-event-1", "content": selected_text},)
+
+
+def test_conversation_reference_projection_supports_legacy_suffix_format() -> None:
+    prompt = (
+        "请基于引用继续处理"
+        + session_conversations._CONVERSATION_REFERENCE_MARKER
+        + '{"references":[{"event_id":"assistant-event-1","content":"旧引用"}]}'
+    )
+
+    display_content, references = session_conversations.project_conversation_references(prompt)
+
+    assert display_content == "请基于引用继续处理"
+    assert references == ({"event_id": "assistant-event-1", "content": "旧引用"},)
 
 
 def test_conversation_reference_projection_composes_with_attachment_context() -> None:
