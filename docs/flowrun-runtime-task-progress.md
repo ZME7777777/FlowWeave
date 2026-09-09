@@ -3320,6 +3320,19 @@ Runtime 或调用取消／删除路径。候选区分“同一正式 Runtime com
 storage key 或会话事件到控制面。END Gate 提示词明确 `outputs` 是候选产物来源，非空时逐项审查并引用
 Artifact ID。旧评估保留原状，页面会明确说明其当时没有可恢复的原生过程。
 
+### FR-240 门禁定义与审查历史分层展示 — DONE
+
+依赖：`FR-239`。
+
+目标：工作台门禁页先按冻结 Gate policy 展示三条可点击定义记录（判定提示词、可选 Python 脚本、模型），
+再按该 Gate 展示所有单次审查记录。审查记录按创建时间倒序并在客户端分页；`PASS`、业务判断 `FAIL` 与
+技术性 `ERROR` 均不得折叠或遗漏，每条均可进入其只读详情。
+
+完成：每个自定义 Gate 现在先展示冻结的“判定提示词／可选 Python 脚本／模型配置”三条记录，均可只读查看；
+其下按创建时间倒序分页展示每次审查。`PASS`、`FAIL` 与 `ERROR` 均保留独立行，技术失败显示为“执行异常”，
+旧 Gate 定义缺失的历史记录与平台确定性输出合同也保留各自的只读记录列表。单次详情的冻结标准改标为审计副本，
+避免与上方定义混淆。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -3335,6 +3348,7 @@ Artifact ID。旧评估保留原状，页面会明确说明其当时没有可恢
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-09 | FR-240 | Web TypeScript typecheck、production build、`git diff --check`、Alembic head 与任务状态唯一性 | PASS：自定义 Gate 先展示可查看的提示词、可选 Python 脚本和模型配置三项冻结定义；每个 Gate 的所有 `PASS`／`FAIL`／`ERROR` 审查均按创建时间倒序独立列出并按 5 条分页，记录详情继续包含单次审计证据和原生审查过程。平台确定性输出合同与定义缺失的历史 Gate 也不再折叠结果。唯一 Alembic head 为 `0103_runtime_artifact_proj_idem`，无迁移。 |
 | 2026-09-09 | FR-239 | Gate sidecar 原生事件保留、JSON 纠正与安全审查投影定向 pytest（9 passed）；Attempt Runtime Gate 路由定向 pytest（1 passed）；受影响 Python `py_compile`、Ruff 未定义名称检查、Web TypeScript typecheck／production build、Alembic head、`git diff --check` 与任务状态唯一性 | PASS：自定义 Gate 详情可显示冻结标准和安全证据，新执行通过 OpenHands 正式事件提供完整审查过程；旧 stateless `ask_agent` 评估如实标为无可恢复过程。唯一 Alembic head 为 `0103_runtime_artifact_proj_idem`，无迁移。 |
 | 2026-09-09 | FR-238 | Gate sidecar 围栏 JSON、损坏 JSON 纠正与不支持 `INSUFFICIENT_EVIDENCE` 决策纠正定向 pytest（3 passed）；受影响 Python `py_compile`、未定义名称 Ruff 检查、Alembic head、`git diff --check` 与任务状态唯一性 | PASS：无效枚举不再直接形成 `GATE_RESULT_INVALID` 技术错误；相同隔离会话只纠正一次并要求模型返回严格三值，证据不足收敛为 `FAIL`。无迁移。 |
 | 2026-09-09 | FR-237 | 连续记录最终失败节点定向 Playwright（1 passed）；Web TypeScript typecheck／production build；Alembic head、`git diff --check` 与任务状态唯一性 | PASS：打开连续运行记录后，最终失败节点成为默认选中和当前流转节点；查看已完成的历史节点不会移除最终节点的流转标识。唯一 Alembic head 为 `0103_runtime_artifact_proj_idem`。全量 Web ESLint 仍被既有 `AgentSessionWorkbench.tsx:1836` 的 Hook dependency warning 阻断，未伪记为通过。 |
