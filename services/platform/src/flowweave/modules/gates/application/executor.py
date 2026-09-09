@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass, replace
 from typing import Any, cast
 
@@ -495,24 +496,24 @@ def _sidecar_agent(plan: GateExecutionPlan) -> GateResult:
             )
         sidecar_available = True
         runtime.reload_conversation(handle)
-        answer = runtime.ask_agent(
-            handle, plan.sidecar_question, timeout_seconds=float(plan.timeout)
-        ).response
+        answer = _run_recorded_gate_turn(
+            runtime, handle, plan.sidecar_question, timeout_seconds=float(plan.timeout)
+        )
         try:
             result = _normalize(_decode_gate_response(answer))
         except (ValueError, json.JSONDecodeError):
             result = _error("Gate sidecar returned invalid JSON", code="GATE_RESULT_INVALID")
         if result.error_code != "GATE_RESULT_INVALID":
             return with_sidecar(result)
-        # ``ask_agent`` returns rendered model text rather than a structured
-        # response-format payload. A malformed JSON envelope or an otherwise
-        # valid JSON object with an unsupported decision must never be treated
-        # as a decision. Let this same isolated Gate Agent correct it once;
-        # the follow-up preserves the frozen review context while explicitly
-        # mapping insufficient evidence to the contract's FAIL decision.
-        corrected = runtime.ask_agent(
-            handle, _GATE_RESULT_RETRY_QUESTION, timeout_seconds=float(plan.timeout)
-        ).response
+        # A malformed JSON envelope or an otherwise valid JSON object with an
+        # unsupported decision must never be treated as a decision. Let this
+        # same isolated Gate Agent correct it once.  This is deliberately a
+        # second native user turn, rather than OpenHands' stateless
+        # ``ask_agent`` endpoint, so the retained sidecar Conversation remains
+        # an auditable record of both the original judgement and correction.
+        corrected = _run_recorded_gate_turn(
+            runtime, handle, _GATE_RESULT_RETRY_QUESTION, timeout_seconds=float(plan.timeout)
+        )
         return with_sidecar(_normalize(_decode_gate_response(corrected)))
     except (ValueError, json.JSONDecodeError) as exc:
         return with_sidecar(
@@ -536,6 +537,43 @@ def _sidecar_agent(plan: GateExecutionPlan) -> GateResult:
                 runtime.delete_conversation(handle)
             except Exception:
                 pass
+
+
+def _run_recorded_gate_turn(
+    runtime: Any, handle: Any, question: str, *, timeout_seconds: float
+) -> str:
+    """Send one native turn and return its formal final reply.
+
+    OpenHands' ``ask_agent`` API is expressly stateless: it neither persists
+    the request nor creates events.  It therefore cannot back the Gate detail
+    transcript.  A Gate is a retained, read-only Conversation, so its review
+    prompt and the Agent's answer must instead travel through the ordinary
+    native message/event lifecycle.
+    """
+
+    runtime.send_message(handle, question)
+    deadline = time.monotonic() + max(1.0, timeout_seconds)
+    while True:
+        observed = runtime.inspect(handle)
+        if observed.status == "COMPLETED":
+            answer = observed.final_message
+            if isinstance(answer, str) and answer.strip():
+                return answer
+            raise ValueError("Gate sidecar completed without a final response")
+        if observed.status in {
+            "FAILED",
+            "CANCELLED",
+            "CONFIRMATION_REQUIRED",
+            "HUMAN_INPUT_REQUIRED",
+        }:
+            detail = observed.error or observed.human_question or observed.status
+            raise ValueError(f"Gate sidecar native turn did not complete: {detail}")
+        if time.monotonic() >= deadline:
+            raise ValueError("Gate sidecar native turn timed out")
+        # ``send_message`` accepts a formal user event, but the Runtime owns
+        # completion and event persistence. Poll its current native state
+        # rather than inferring completion from transport acceptance.
+        time.sleep(0.1)
 
 
 def execute_gate(

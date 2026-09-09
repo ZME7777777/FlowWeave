@@ -1831,6 +1831,99 @@ def _review_artifact(item: ArtifactVersion) -> dict[str, Any]:
     return value
 
 
+def _gate_review_artifact_projection(value: dict[str, Any]) -> dict[str, Any]:
+    """Project one Gate input without retaining Artifact content in the DB.
+
+    The complete preview is deliberately sent only to the isolated OpenHands
+    review Conversation.  The control plane retains just enough immutable,
+    safe metadata to explain what the Agent was asked to review after that
+    Conversation is no longer convenient to inspect.
+    """
+
+    metadata = value.get("metadata")
+    filename = metadata.get("filename") if isinstance(metadata, dict) else None
+    projected = {
+        key: value.get(key)
+        for key in (
+            "id",
+            "field_key",
+            "version_no",
+            "artifact_type",
+            "content_hash",
+            "byte_size",
+            "mime_type",
+            "source",
+        )
+    }
+    if isinstance(filename, str) and filename:
+        projected["filename"] = filename
+    preview = value.get("review_preview")
+    if isinstance(preview, dict):
+        kind = str(preview.get("kind") or "")
+        if kind == "TEXT":
+            content = preview.get("content")
+            projected["review_preview"] = {
+                "kind": "TEXT",
+                "character_count": len(content) if isinstance(content, str) else 0,
+                "truncated": bool(preview.get("truncated")),
+            }
+        elif kind == "BINARY":
+            projected["review_preview"] = {
+                "kind": "BINARY",
+                "byte_count": preview.get("byte_count"),
+                "truncated": bool(preview.get("truncated")),
+            }
+        elif kind == "URL":
+            # The URL can be credential-bearing. Record that it was supplied,
+            # never its value; the immutable Artifact remains the authorized
+            # way to open it.
+            projected["review_preview"] = {"kind": "URL"}
+    return projected
+
+
+def _gate_review_projection(context: dict[str, Any], policy: dict[str, Any]) -> dict[str, Any]:
+    """Freeze the explainable, non-content portion of one Gate review."""
+
+    config = policy.get("config")
+    configured = config if isinstance(config, dict) else {}
+    input_bindings = context.get("input_bindings")
+    outputs = context.get("outputs")
+    node = context.get("node")
+    input_items = input_bindings if isinstance(input_bindings, list) else []
+    output_items = outputs if isinstance(outputs, list) else []
+    return {
+        "schema_version": 1,
+        "criteria": {
+            "instructions": str(configured.get("prompt") or "").strip(),
+            "script": str(configured.get("code") or "").strip(),
+        },
+        "review_context": {
+            "stage": context.get("stage"),
+            "node": {
+                key: node.get(key)
+                for key in ("instance_key", "alias", "asset_name", "inputs", "outputs")
+                if isinstance(node, dict) and key in node
+            },
+            "input_bindings": [
+                {
+                    "input_field_key": item.get("input_field_key"),
+                    "binding_source": item.get("binding_source"),
+                    "artifact": _gate_review_artifact_projection(item["artifact"]),
+                }
+                for item in input_items
+                if isinstance(item, dict) and isinstance(item.get("artifact"), dict)
+            ],
+            "candidate_outputs": [
+                _gate_review_artifact_projection(item)
+                for item in output_items if isinstance(item, dict)
+            ],
+            "downstream_consumers": context.get("downstream_consumers")
+            if isinstance(context.get("downstream_consumers"), list)
+            else [],
+        },
+    }
+
+
 def _downstream_consumers(snapshot: RunSnapshot, source_node_key: str) -> list[dict[str, Any]]:
     """Build the immutable downstream input contracts for one source node.
 
@@ -2069,6 +2162,8 @@ def _record_gate_results(
                 key: preset.get(key)
                 for key in ("model_provider_id", "model_name", "reasoning_effort")
             }
+        if policy.get("gate_type") != "PLATFORM_OUTPUT_CONTRACT":
+            result_json["_gate_review"] = _gate_review_projection(context, policy)
         if prepared.plan.sidecar_binding_id and result.sidecar_available:
             result_json["_gate_conversation_binding_id"] = prepared.plan.sidecar_binding_id
             binding = db.get(AgentConversationBinding, prepared.plan.sidecar_binding_id)
@@ -2539,6 +2634,15 @@ def _prepare_gate_plan(
 
     instructions = str(config.get("prompt") or "").strip()
     code = str(config.get("code") or "").strip()
+    evidence_rule = (
+        "候选产物识别规则：只能以门禁上下文的 outputs 数组作为本次 END 门禁的候选产物。"
+        "若 outputs 非空，必须逐项检查并在 evidence 中引用对应 Artifact ID；"
+        "不得声称“没有候选产物”。验收标准是上方门禁判定指令、冻结节点输出声明"
+        "和下游输入合同。"
+        if str(policy.get("stage") or "") == "END"
+        else "启动门禁只能根据 input_bindings、节点输入声明和上方门禁判定指令判断；"
+        "不得将不存在的候选输出作为启动条件。"
+    )
     question = (
         "你是一个隔离运行的工作流门禁 Agent。不得访问其他会话历史；只能基于"
         "下方提供的门禁上下文进行判断。你的整个回答会被解析为 JSON：只能输出"
@@ -2553,6 +2657,8 @@ def _prepare_gate_plan(
         "必须正确进行 JSON 转义。\n\n"
         f"门禁判定指令：\n{instructions or '（未提供额外的文字判定指令。）'}\n\n"
         + (f"可选 Python 脚本（可作为分析的一部分安全地检查或执行）：\n{code}\n\n" if code else "")
+        + evidence_rule
+        + "\n\n"
         + "门禁上下文：\n"
         + json.dumps(context, ensure_ascii=False)
     )
@@ -8829,6 +8935,17 @@ def attempt_detail(
         preset = policy.get("agent_preset") if isinstance(policy, dict) else None
         return dict(preset) if isinstance(preset, dict) else None
 
+    def gate_review_projection(evaluation: GateEvaluation) -> dict[str, Any] | None:
+        """Return only the frozen, safe Gate explanation projection.
+
+        Full prompts/answers remain OpenHands-native events. This projection
+        intentionally excludes Artifact inline content, storage keys, URLs and
+        all other unrestricted Artifact handles.
+        """
+
+        value = evaluation.result_json.get("_gate_review")
+        return value if isinstance(value, dict) else None
+
     return {
         "id": attempt.id,
         "node_run_id": attempt.node_run_id,
@@ -8910,8 +9027,9 @@ def attempt_detail(
                 "result": {
                     key: value
                     for key, value in x.result_json.items()
-                    if key != "_gate_conversation_binding_id"
+                    if not key.startswith("_gate_")
                 },
+                "review_projection": gate_review_projection(x),
                 "conversation_available": bool(
                     isinstance(x.result_json.get("_gate_conversation_binding_id"), str)
                     and db.get(

@@ -3305,6 +3305,21 @@ Runtime 或调用取消／删除路径。候选区分“同一正式 Runtime com
 `INSUFFICIENT_EVIDENCE` 必须表示为 `FAIL`，只有技术上无法审查时才使用 `ERROR`。节点 Gate 提示词同步
 固定该语义，旧失败审计保持不变，后续重试使用严格、可恢复的三值结果。
 
+### FR-239 Gate 审查可解释性与原生过程留存 — DONE
+
+依赖：`FR-238`。
+
+目标：自定义 Gate 的单次评估必须投影其冻结的判定标准以及安全裁剪后的审查输入，令用户能区分“没有输出”
+与“有输出但无法证明符合标准”。Gate 的完整审查过程必须由 OpenHands 原生会话事件承载；不得继续使用
+不会记录事件的 `ask_agent` 诊断接口冒充可审计对话，也不得在 FlowWeave 另存会话或事件历史。详情页必须
+清晰展示结论、标准、审查证据与只读原生过程；历史记录缺少这些冻结投影时应如实说明。
+
+完成：Gate 不再使用不会写入事件的 OpenHands `ask_agent`；每次审查和一次可能的契约纠正均作为同一
+隔离 Gate Conversation 的原生用户回合执行，详情可以读取其正式事件。每条新评估还会冻结并安全投影
+文字判定标准、可选脚本、输入／候选输出元信息、preview 类型和下游合同；不复制 Artifact 正文、URL、
+storage key 或会话事件到控制面。END Gate 提示词明确 `outputs` 是候选产物来源，非空时逐项审查并引用
+Artifact ID。旧评估保留原状，页面会明确说明其当时没有可恢复的原生过程。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -3320,6 +3335,7 @@ Runtime 或调用取消／删除路径。候选区分“同一正式 Runtime com
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-09 | FR-239 | Gate sidecar 原生事件保留、JSON 纠正与安全审查投影定向 pytest（9 passed）；Attempt Runtime Gate 路由定向 pytest（1 passed）；受影响 Python `py_compile`、Ruff 未定义名称检查、Web TypeScript typecheck／production build、Alembic head、`git diff --check` 与任务状态唯一性 | PASS：自定义 Gate 详情可显示冻结标准和安全证据，新执行通过 OpenHands 正式事件提供完整审查过程；旧 stateless `ask_agent` 评估如实标为无可恢复过程。唯一 Alembic head 为 `0103_runtime_artifact_proj_idem`，无迁移。 |
 | 2026-09-09 | FR-238 | Gate sidecar 围栏 JSON、损坏 JSON 纠正与不支持 `INSUFFICIENT_EVIDENCE` 决策纠正定向 pytest（3 passed）；受影响 Python `py_compile`、未定义名称 Ruff 检查、Alembic head、`git diff --check` 与任务状态唯一性 | PASS：无效枚举不再直接形成 `GATE_RESULT_INVALID` 技术错误；相同隔离会话只纠正一次并要求模型返回严格三值，证据不足收敛为 `FAIL`。无迁移。 |
 | 2026-09-09 | FR-237 | 连续记录最终失败节点定向 Playwright（1 passed）；Web TypeScript typecheck／production build；Alembic head、`git diff --check` 与任务状态唯一性 | PASS：打开连续运行记录后，最终失败节点成为默认选中和当前流转节点；查看已完成的历史节点不会移除最终节点的流转标识。唯一 Alembic head 为 `0103_runtime_artifact_proj_idem`。全量 Web ESLint 仍被既有 `AgentSessionWorkbench.tsx:1836` 的 Hook dependency warning 阻断，未伪记为通过。 |
 | 2026-09-09 | FR-236 | 受影响 Python `py_compile`；Web 定向 ESLint、TypeScript typecheck／production build；`git diff --check` 与任务状态核对 | PASS（静态）：详情页面投影每次门禁的冻结 Agent 配置，并只对当前阻断阶段的用户自定义技术错误显示“切换供应商后重试”；平台门禁没有该入口。`uv run pytest -k retry_gate_with_provider` 在 fixture 初始化时因本机 Docker daemon 未运行而无法启动 Testcontainers PostgreSQL，未伪记为通过。全量 Web lint 被既有 `AgentSessionWorkbench.tsx:1836` 的 React Hook dependency warning 阻断；本切片关联文件的定向 ESLint、typecheck 和 production build 均通过。 |

@@ -6,6 +6,7 @@ from flowweave.modules.gates.application.executor import (
     execute_gate,
     execute_gate_plan,
 )
+from flowweave.modules.orchestration.application.service import _gate_review_projection
 from flowweave.runtime.base import RuntimeAskAgentResult, StartAttemptRequest
 from flowweave.runtime.dependencies import runtime_context
 from flowweave.runtime.mock import MockRuntime
@@ -155,6 +156,11 @@ def test_agent_sidecar_gate_can_retain_created_conversation_for_audit():
         def __init__(self) -> None:
             super().__init__()
             self.deleted: list[str] = []
+            self.last_handle = None
+
+        def create_conversation(self, request):
+            self.last_handle = super().create_conversation(request)
+            return self.last_handle
 
         def delete_conversation(self, handle):
             self.deleted.append(handle.conversation_id)
@@ -184,6 +190,49 @@ def test_agent_sidecar_gate_can_retain_created_conversation_for_audit():
 
     assert result.sidecar_available is True
     assert runtime.deleted == []
+    assert runtime.last_handle is not None
+    events = runtime.read_events(runtime.last_handle)
+    assert [event.payload["source"] for event in events.events] == ["user", "agent"]
+
+
+def test_gate_review_projection_retains_criteria_and_evidence_not_artifact_contents():
+    projection = _gate_review_projection(
+        {
+            "stage": "END",
+            "node": {"instance_key": "repair", "outputs": [{"field_key": "report"}]},
+            "input_bindings": [],
+            "outputs": [
+                {
+                    "id": "artifact-1",
+                    "field_key": "report",
+                    "artifact_type": "FILE",
+                    "content_hash": "hash",
+                    "byte_size": 12,
+                    "mime_type": "text/plain",
+                    "metadata": {"filename": "report.md"},
+                    "inline_content": "secret artifact body",
+                    "review_preview": {
+                        "kind": "TEXT",
+                        "content": "secret artifact body",
+                        "truncated": False,
+                    },
+                }
+            ],
+            "downstream_consumers": [],
+        },
+        {"config": {"prompt": "检查报告是否完整", "code": "assert True"}},
+    )
+
+    assert projection["criteria"] == {"instructions": "检查报告是否完整", "script": "assert True"}
+    candidate = projection["review_context"]["candidate_outputs"][0]
+    assert candidate["filename"] == "report.md"
+    assert candidate["review_preview"] == {
+        "kind": "TEXT",
+        "character_count": 20,
+        "truncated": False,
+    }
+    assert "inline_content" not in candidate
+    assert "secret artifact body" not in str(projection)
 
 
 def test_agent_sidecar_gate_accepts_fenced_json_response():

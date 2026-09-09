@@ -265,9 +265,26 @@ export interface GateEvaluation {
     mappings: Array<{ source_output_key: string; target_input: { field_key: string; display_name?: string; data_type?: string; description?: string; declared?: boolean } }>
   }> ;
   conversation_available?: boolean;
+  /** Safe, immutable explanation of what this Gate Agent was asked to review. */
+  review_projection?: {
+    schema_version: number;
+    criteria: { instructions: string; script: string };
+    review_context: {
+      stage?: string;
+      node?: { instance_key?: string; alias?: string | null; asset_name?: string | null; inputs?: unknown[]; outputs?: unknown[] };
+      input_bindings: Array<{ input_field_key?: string; binding_source?: string; artifact: GateReviewArtifact }>;
+      candidate_outputs: GateReviewArtifact[];
+      downstream_consumers: Array<{ instance_key?: string; alias?: string | null; asset_name?: string | null; mappings?: unknown[] }>;
+    };
+  } | null;
   /** The isolated Gate Agent configuration recorded for this execution. */
   agent_preset?: GateAgentPreset | null;
   error_code?: string | null; log_excerpt?: string; created_at: string;
+}
+export interface GateReviewArtifact {
+  id?: string; field_key?: string; version_no?: number; filename?: string;
+  artifact_type?: string; content_hash?: string; byte_size?: number; mime_type?: string; source?: string;
+  review_preview?: { kind: 'TEXT' | 'BINARY' | 'URL'; character_count?: number; byte_count?: number; truncated?: boolean };
 }
 export type AttemptState =
   | 'WAITING_INPUT' | 'START_GATES' | 'START_BLOCKED' | 'WAITING_START_CONFIRMATION'

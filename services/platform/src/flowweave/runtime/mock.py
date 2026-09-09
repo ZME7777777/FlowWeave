@@ -9,6 +9,7 @@ from flowweave.runtime.base import (
     RuntimeAskAgentResult,
     RuntimeCondenser,
     RuntimeConversationIdentity,
+    RuntimeEvent,
     RuntimeEventBatch,
     RuntimeForkRecovery,
     RuntimeForkResult,
@@ -39,6 +40,7 @@ class MockRuntime:
 
     def __init__(self) -> None:
         self._results: dict[str, RuntimeResult] = {}
+        self._events: dict[str, list[RuntimeEvent]] = {}
         self._conversation_condensers: dict[str, RuntimeCondenser] = {}
 
     def probe_mcp(self, request: RuntimeMCPProbeRequest) -> RuntimeMCPProbeResult:
@@ -94,6 +96,7 @@ class MockRuntime:
             workspace_root=request.workspace_root,
         )
         self._results[handle.job_id] = RuntimeResult(status="RUNNING", cursor="1")
+        self._events[handle.job_id] = []
         return handle
 
     def conversation_title(self, handle: RuntimeHandle) -> str | None:
@@ -105,6 +108,7 @@ class MockRuntime:
 
     def delete_conversation(self, handle: RuntimeHandle) -> None:
         self._results.pop(handle.job_id, None)
+        self._events.pop(handle.job_id, None)
 
     def start(self, request: StartAttemptRequest) -> RuntimeHandle:
         handle = RuntimeHandle(
@@ -140,7 +144,10 @@ class MockRuntime:
         return handle
 
     def read_events(self, handle: RuntimeHandle) -> RuntimeEventBatch:
-        return RuntimeEventBatch(cursor=handle.cursor)
+        events = tuple(self._events.get(handle.job_id, []))
+        return RuntimeEventBatch(
+            events=events, cursor=events[-1].cursor if events else handle.cursor
+        )
 
     def reload_conversation(
         self,
@@ -394,10 +401,43 @@ class MockRuntime:
         self, handle: RuntimeHandle, content: str, image_urls: tuple[str, ...] = ()
     ) -> RuntimeResult:
         image_note = f" · {len(image_urls)} image(s)" if image_urls else ""
+        is_gate_turn = (
+            "workflow gate Agent" in content
+            or "工作流门禁 Agent" in content
+            or "previous gate result" in content
+            or "JSON gate result" in content
+        )
+        answer = f"Mock response: {content}{image_note}"
+        if is_gate_turn:
+            answer = self.ask_agent(handle, content, timeout_seconds=1).response
+            if answer.startswith("Mock diagnostic:"):
+                answer = json.dumps(
+                    {
+                        "decision": "PASS",
+                        "summary": "Mock 门禁审查通过",
+                        "reasons": [],
+                        "evidence": [],
+                        "details": {},
+                    }
+                )
+        events = self._events.setdefault(handle.job_id, [])
+        user_cursor = str(len(events) + 2)
+        assistant_cursor = str(len(events) + 3)
+        events.extend(
+            (
+                RuntimeEvent(user_cursor, "MESSAGE", {"source": "user", "content": content}),
+                RuntimeEvent(
+                    assistant_cursor,
+                    "MESSAGE",
+                    {"source": "agent", "content": answer, "parent_id": user_cursor},
+                ),
+            )
+        )
         result = RuntimeResult(
             status="COMPLETED",
-            outputs={"result": ("TEXT", f"Mock response: {content}{image_note}")},
-            cursor="3",
+            outputs={"result": ("TEXT", answer)},
+            final_message=answer,
+            cursor=assistant_cursor,
         )
         self._results[handle.job_id] = result
         return result
