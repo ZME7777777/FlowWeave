@@ -379,7 +379,7 @@ class TerminalStartWrite(SandboxDeleteWrite):
             relative = path.relative_to(PurePosixPath("/runtime/workspace"))
             if len(relative.parts) == 1:
                 identity = relative.parts[0]
-            elif relative.parts[:2] == ("project", "users") and len(relative.parts) == 3:
+            elif relative.parts[:2] == ("project", "users") and len(relative.parts) >= 3:
                 identity = relative.parts[2]
             else:
                 raise ValueError("working_dir must use a managed record or user workspace root")

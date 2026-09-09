@@ -5,9 +5,9 @@ import contextvars
 import logging
 from collections.abc import AsyncIterator, Callable
 from concurrent.futures import ThreadPoolExecutor
-from typing import Annotated, TypeVar
+from typing import Annotated, TypeVar, cast
 
-from fastapi import Depends, Header, WebSocketException
+from fastapi import Depends, Header, WebSocket, WebSocketException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 from starlette.requests import HTTPConnection
@@ -56,6 +56,7 @@ async def require_authenticated_connection(
             await session.commit()
     if principal is None:
         if connection.scope["type"] == "websocket":
+            await cast(WebSocket, connection).accept()
             raise WebSocketException(code=4401, reason="请先登录")
         raise DomainError("AUTHENTICATION_REQUIRED", "请先登录", 401)
     principal_token = bind_principal(principal)

@@ -1188,6 +1188,50 @@ def test_controller_opens_terminal_for_owned_agent_workspace_runtime(settings, m
     }
 
 
+def test_controller_accepts_managed_agent_workspace_subdirectory(settings, monkeypatch):
+    monkeypatch.setattr(
+        controller_module,
+        "inspect_owned_container",
+        lambda *args, **kwargs: "immutable-agent-runtime-container",
+    )
+    monkeypatch.setattr(
+        controller_module._TerminalManager,
+        "start",
+        lambda _self, container_id, session_name, rows, columns, *, working_dir=None: (
+            f"terminal:{container_id}:{working_dir}"
+        ),
+    )
+    workspace_root = "/runtime/workspace/project/users/6311561c-06e4-41ad-8afe-aac35cfa83ec"
+    payload = {
+        "manager_scope": _SCOPE,
+        "resource_name": "fw-sbx-agent-12345678123442349234123456789abc",
+        "resource_id": _RESOURCE_ID,
+        "session_name": "agent-workspace-subdirectory",
+        "working_dir": f"{workspace_root}/slow-interface-fix",
+    }
+
+    with TestClient(create_app(_settings(settings))) as client:
+        response = client.post("/v1/terminals/start", headers=_api_headers(), json=payload)
+
+    assert response.status_code == 200, response.text
+    assert response.json()["terminal_id"].endswith(f":{workspace_root}/slow-interface-fix")
+
+
+def test_controller_rejects_unmanaged_agent_workspace_subdirectory(settings):
+    payload = {
+        "manager_scope": _SCOPE,
+        "resource_name": "fw-sbx-agent-12345678123442349234123456789abc",
+        "resource_id": _RESOURCE_ID,
+        "session_name": "agent-workspace-invalid-subdirectory",
+        "working_dir": "/runtime/workspace/project/users/not-a-uuid/slow-interface-fix",
+    }
+
+    with TestClient(create_app(_settings(settings))) as client:
+        response = client.post("/v1/terminals/start", headers=_api_headers(), json=payload)
+
+    assert response.status_code == 422, response.text
+
+
 def test_blocking_terminal_read_does_not_block_controller_health(settings, monkeypatch):
     reading = threading.Event()
     release = threading.Event()

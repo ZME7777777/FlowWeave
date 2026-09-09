@@ -1348,6 +1348,18 @@ def test_terminal_websocket_resolves_application_container(client):
     assert caught.value.code == 4404
 
 
+def test_unauthenticated_agent_terminal_reports_websocket_login_close(anonymous_client):
+    """A rejected Upgrade must remain observable as 4401, not opaque HTTP 403."""
+
+    with pytest.raises(WebSocketDisconnect) as closed:
+        with anonymous_client.websocket_connect(
+            "/api/v1/agent-workspaces/00000000-0000-0000-0000-000000000000/terminal"
+        ) as terminal:
+            terminal.receive_text()
+
+    assert closed.value.code == 4401
+
+
 def test_setup_terminal_uses_session_scoped_persistent_tmux(client, monkeypatch):
     _mock_setup_provider(monkeypatch)
     environment = client.post(
