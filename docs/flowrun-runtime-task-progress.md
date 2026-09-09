@@ -3425,6 +3425,14 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 
 验收：受影响 Python `py_compile`、Ruff、候选集状态单元测试、迁移脚本解析、`git diff --check` 与任务状态唯一性通过；集成测试因本机 Docker daemon 不可用未运行。本切片使用独立 Git commit。
 
+### FR-248 FlowRun 列表执行概览去单节点化 — DONE
+
+依赖：`FR-247`。
+
+目标：FlowRun 列表不得将最后创建的 NodeRun 伪称为唯一“当前节点”，因为一个 Run 可同时保留多条节点执行记录、重试与人工等待。列表状态列只呈现 FlowRun／Runtime 状态；执行概览必须按全部 NodeRun 提供总数、未结束、已完成、失败、已取消和需人工处理计数，且“需人工处理”须汇总全部活动记录的最新 Attempt，不能只取最后一条记录。
+
+完成：`GET /flow-runs` 删除虚假的 `current_node_*` 与 `current_attempt_state` 摘要字段，修正 `active` 为真实的活动 NodeRun 数，并新增总数、失败、已取消和需人工处理计数。运行列表改为“运行状态／执行概览”，不再搜索或展示“当前节点”；无记录时如实显示“尚无执行记录”。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -3440,6 +3448,7 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-09 | FR-248 | 受影响 Python `py_compile`、Ruff；Web TypeScript typecheck、受影响文件 ESLint、production build、唯一 Alembic head、`git diff --check` 与任务状态唯一性 | PASS：FlowRun 列表不再从最后一条 NodeRun 推断“当前节点”；摘要按全部记录返回真实活动、终态与人工处理计数，页面改为运行状态与执行概览。唯一 Alembic head 为 `0104_candidate_output_sets`，无迁移。定向 API 回归因本机 Docker daemon 不可用、Testcontainers PostgreSQL 无法启动而未运行；全量 Web ESLint 仍被既有 warning 门禁阻断，受影响文件 lint 通过。 |
 | 2026-09-09 | FR-247 | 受影响 Python `py_compile`、Ruff、候选输出集单元测试收集、迁移脚本解析、`git diff --check` 与任务状态唯一性 | PASS：新增候选输出集模型及迁移；完成事件按正式身份幂等并冻结 Artifact ID，END 门禁和详情接口只读取当前集，Fork 自动替代旧集，下游映射拒绝未验收集并按冻结 ID 确定性流转。集成测试因本机 Docker daemon 不可用而未运行。 |
 | 2026-09-09 | FR-246 | Worker 确定性输出缺失分类直接断言、Python `py_compile`、受影响 Python Ruff；Web TypeScript typecheck、受影响 Web ESLint、production build、连续记录摘要滞后 Playwright、Alembic head、任务状态唯一性与 `git diff --check` | PASS：`RUNTIME_OUTPUT_MISSING` 仅在 `POLL_RUNTIME` 首次读取时终态化，不影响事件唤醒或新会话回合订阅；选中记录的 Rail 状态以详情为准。唯一 Alembic head 为 `0103_runtime_artifact_proj_idem`，无迁移、无 `CURRENT`。完整平台 pytest 因本机 Docker daemon 不可用、Testcontainers PostgreSQL 无法创建而未执行；全量 Web ESLint 仍被既有未改动的 `AgentSessionWorkbench.tsx:1836` Hook dependency warning 阻断，受影响文件 lint 通过。 |
 | 2026-09-09 | FR-240 | Web TypeScript typecheck、production build、`git diff --check`、Alembic head 与任务状态唯一性 | PASS：自定义 Gate 先展示可查看的提示词、可选 Python 脚本和模型配置三项冻结定义；每个 Gate 的所有 `PASS`／`FAIL`／`ERROR` 审查均按创建时间倒序独立列出并按 5 条分页，记录详情继续包含单次审计证据和原生审查过程。平台确定性输出合同与定义缺失的历史 Gate 也不再折叠结果。唯一 Alembic head 为 `0103_runtime_artifact_proj_idem`，无迁移。 |

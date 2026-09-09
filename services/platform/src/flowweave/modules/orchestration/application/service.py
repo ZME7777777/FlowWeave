@@ -9382,6 +9382,11 @@ def list_runs(db: Session) -> list[dict[str, Any]]:
     attempts_by_node: dict[str, list[NodeAttempt]] = {item.id: [] for item in node_runs}
     for attempt in attempts:
         attempts_by_node[attempt.node_run_id].append(attempt)
+    latest_attempts_by_node = {
+        node_run_id: node_attempts[-1]
+        for node_run_id, node_attempts in attempts_by_node.items()
+        if node_attempts
+    }
     snapshots_by_id = {item.id: item for item in snapshots}
     pending_states = {
         AttemptState.WAITING_START_CONFIRMATION,
@@ -9396,30 +9401,19 @@ def list_runs(db: Session) -> list[dict[str, Any]]:
     for run in runs:
         runtime = runtime_readiness.get(run.id)
         run_nodes = nodes_by_run[run.id]
-        current_node = run_nodes[-1] if run_nodes else None
-        current_attempts = attempts_by_node.get(current_node.id, []) if current_node else []
-        current_attempt = current_attempts[-1] if current_attempts else None
         snapshot = snapshots_by_id.get(run.active_snapshot_id or "")
-        snapshot_node = None
-        if snapshot and current_node:
-            snapshot_node = next(
-                (
-                    item
-                    for item in snapshot.definition_json.get("nodes", [])
-                    if item.get("instance_key") == current_node.flow_node_snapshot_key
-                ),
-                None,
-            )
-        current_name = None
-        if snapshot_node:
-            current_name = (
-                snapshot_node.get("alias")
-                or snapshot_node.get("asset", {}).get("name")
-                or snapshot_node.get("instance_key")
-            )
         accepted = sum(item.state == NodeRunState.ACCEPTED for item in run_nodes)
+        active = sum(item.state == NodeRunState.ACTIVE for item in run_nodes)
+        failed = sum(item.state == NodeRunState.FAILED for item in run_nodes)
+        cancelled = sum(item.state == NodeRunState.CANCELLED for item in run_nodes)
         terminal = sum(
             item.state in {NodeRunState.ACCEPTED, NodeRunState.FAILED, NodeRunState.CANCELLED}
+            for item in run_nodes
+        )
+        pending_action_count = sum(
+            item.state == NodeRunState.ACTIVE
+            and (latest_attempt := latest_attempts_by_node.get(item.id)) is not None
+            and latest_attempt.state in pending_states
             for item in run_nodes
         )
         activity_times = [run.started_at]
@@ -9449,9 +9443,6 @@ def list_runs(db: Session) -> list[dict[str, Any]]:
                 "completion_mode": run.completion_mode,
                 "environment_version_id": run.environment_version_id,
                 "active_snapshot_version": snapshot.version if snapshot else None,
-                "current_node_key": (current_node.flow_node_snapshot_key if current_node else None),
-                "current_node_name": current_name,
-                "current_attempt_state": current_attempt.state if current_attempt else None,
                 "runtime_status": (
                     "DRAFT"
                     if run.run_mode == "AUTOMATIC" and run.state == FlowRunState.DRAFT
@@ -9469,13 +9460,15 @@ def list_runs(db: Session) -> list[dict[str, Any]]:
                     if runtime
                     else None
                 ),
-                "has_pending_action": bool(
-                    current_attempt and current_attempt.state in pending_states
-                ),
+                "has_pending_action": pending_action_count > 0,
                 "progress": {
+                    "total": len(run_nodes),
                     "accepted": accepted,
                     "terminal": terminal,
-                    "active": len(run_nodes),
+                    "active": active,
+                    "failed": failed,
+                    "cancelled": cancelled,
+                    "pending_action": pending_action_count,
                 },
                 "started_at": run.started_at.isoformat(),
                 "updated_at": max(activity_times).isoformat(),

@@ -391,14 +391,13 @@ export interface FlowRunSummary {
   run_mode?: 'MANUAL' | 'AUTOMATIC';
   completion_mode?: string | null; active_snapshot_version?: number | null;
   environment_version_id?: string | null;
-  current_node_key?: string | null; current_node_name?: string | null;
-  current_attempt_state?: AttemptState | null; has_pending_action: boolean;
+  has_pending_action: boolean;
   runtime_status?: string | null; runtime_write_available?: boolean;
   runtime_message?: string | null;
-  progress: { accepted: number; terminal: number; active: number };
+  progress: { total: number; accepted: number; terminal: number; active: number; failed: number; cancelled: number; pending_action: number };
   started_at: string; updated_at: string; finished_at?: string | null;
 }
-export interface FlowRun extends FlowRunSummary {
+export interface FlowRun extends Omit<FlowRunSummary, 'progress'> {
   row_version: number; active_snapshot_id: string; active_snapshot_version: number;
   parent_flow_run_id?: string | null;
   schedule_id?: string | null; schedule_name?: string | null;

@@ -2346,11 +2346,16 @@ def test_full_product_run_attempt_revision_snapshot_and_lineage(client, skill_ca
 
     summary = client.get("/api/v1/flow-runs").json()[0]
     assert summary["active_snapshot_version"] == 1
-    assert summary["current_node_key"] == "design_a"
-    assert summary["current_node_name"] == "首轮方案"
-    assert summary["current_attempt_state"] == "WAITING_START_CONFIRMATION"
     assert summary["has_pending_action"] is True
-    assert summary["progress"] == {"accepted": 0, "terminal": 0, "active": 1}
+    assert summary["progress"] == {
+        "total": 1,
+        "accepted": 0,
+        "terminal": 0,
+        "active": 1,
+        "failed": 0,
+        "cancelled": 0,
+        "pending_action": 1,
+    }
     assert summary["runtime_status"] == "STARTING"
     assert summary["runtime_write_available"] is False
     assert summary["runtime_message"] is None
