@@ -15,6 +15,7 @@ from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from flowweave.modules.agent_sessions import public as agent_sessions
+from flowweave.modules.agent_sessions.application import usage as usage_projection
 from flowweave.modules.agent_sessions.public import (
     AgentConversationBinding,
     AgentConversationCapability,
@@ -2209,6 +2210,7 @@ def _record_gate_results(
             binding = db.get(AgentConversationBinding, prepared.plan.sidecar_binding_id)
             if binding is not None:
                 binding.lifecycle = "ACTIVE"
+                usage_projection.capture(db, binding, result.sidecar_usage)
         elif prepared.plan.sidecar_binding_id:
             # Reservation is durable before Runtime I/O. If creation never
             # produced a reloadable Conversation, do not publish a dead audit
@@ -9018,6 +9020,9 @@ def attempt_detail(
             .order_by(GateEvaluation.stage, GateEvaluation.policy_position)
         )
     )
+    attempt_usage = usage_projection.for_scope(db, field="node_attempt_id", ids=(attempt.id,)).get(
+        attempt.id, usage_projection.empty()
+    )
     confirmation_batches = list(
         db.scalars(
             select(RuntimeConfirmationApproval)
@@ -9076,6 +9081,7 @@ def attempt_detail(
         "frozen_agent_capabilities": launch_capabilities,
         "agent_preset": attempt.agent_preset_json,
         "gate_policies": attempt.gate_policies_json,
+        "usage": attempt_usage,
         "output_targets": attempt.output_targets_json,
         "candidate_output_set": (
             {
@@ -9163,6 +9169,9 @@ def attempt_detail(
                     )
                     is not None
                 ),
+                "usage": usage_projection.for_binding(
+                    db, str(x.result_json.get("_gate_conversation_binding_id") or "")
+                ),
                 "agent_preset": gate_agent_preset(x),
                 "error_code": x.error_code,
                 "log_excerpt": x.log_excerpt,
@@ -9187,6 +9196,9 @@ def node_run_detail(
             .order_by(NodeAttempt.attempt_no)
         )
     )
+    usage = usage_projection.for_scope(db, field="node_run_id", ids=(item.id,)).get(
+        item.id, usage_projection.empty()
+    )
     return {
         "id": item.id,
         "flow_run_id": item.flow_run_id,
@@ -9197,6 +9209,7 @@ def node_run_detail(
         "accepted_attempt_id": item.accepted_attempt_id,
         "created_from": item.created_from,
         "activated_at": item.activated_at.isoformat(),
+        "usage": usage,
         "attempts": [
             attempt_detail(db, x.id, include_artifacts=include_artifacts) for x in attempts
         ],
@@ -9271,6 +9284,9 @@ def run_detail(db: Session, run_id: str, *, include_artifacts: bool = True) -> d
                 "code": "AUTOMATIC_PLAN_GATE_ID_MISSING",
                 "gates": gates,
             }
+    usage = usage_projection.for_scope(db, field="flow_run_id", ids=(run.id,)).get(
+        run.id, usage_projection.empty()
+    )
     return {
         "id": run.id,
         "flow_definition_id": run.flow_definition_id,
@@ -9312,6 +9328,7 @@ def run_detail(db: Session, run_id: str, *, include_artifacts: bool = True) -> d
             (x.version for x in snapshots if x.id == run.active_snapshot_id), None
         ),
         "progress": {"accepted": accepted, "terminal": terminal, "active": len(node_runs)},
+        "usage": usage,
         "snapshots": [
             {
                 "id": x.id,
@@ -9356,6 +9373,7 @@ def list_runs(db: Session) -> list[dict[str, Any]]:
         else []
     )
     runtime_readiness = sandboxes.runtime_readiness_by_flow_run(db, run_ids)
+    usage_by_run = usage_projection.for_scope(db, field="flow_run_id", ids=run_ids)
     snapshots_by_id = {item.id: item for item in snapshots}
 
     result: list[dict[str, Any]] = []
@@ -9401,6 +9419,7 @@ def list_runs(db: Session) -> list[dict[str, Any]]:
                     else None
                 ),
                 "runtime_resource": runtime.get("resource") if runtime else None,
+                "usage": usage_by_run.get(run.id, usage_projection.empty()),
                 "started_at": run.started_at.isoformat(),
                 "updated_at": max(activity_times).isoformat(),
                 "finished_at": run.finished_at.isoformat() if run.finished_at else None,

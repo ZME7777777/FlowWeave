@@ -12,7 +12,7 @@ from flowweave.modules.model_providers.public import (
     PromptProviderSnapshot,
     prompt_provider_snapshot,
 )
-from flowweave.runtime.base import StartAttemptRequest
+from flowweave.runtime.base import RuntimeUsageSnapshot, StartAttemptRequest
 from flowweave.runtime.dependencies import get_runtime
 from flowweave.shared.application.sandbox import SandboxLanguage
 from flowweave.shared.sandbox import get_sandbox
@@ -32,6 +32,10 @@ class GateResult:
     # Internal execution fact. It is deliberately excluded from ``as_dict`` so
     # the public gate-result contract remains the Agent's decision only.
     sidecar_available: bool = False
+    # Captured from the retained native Conversation immediately after the
+    # review turn.  FlowWeave persists this projection with the GateEvaluation;
+    # it is not a second usage source and is never exposed in the gate payload.
+    sidecar_usage: tuple[RuntimeUsageSnapshot, ...] = ()
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -481,7 +485,20 @@ def _sidecar_agent(plan: GateExecutionPlan) -> GateResult:
     sidecar_available = False
 
     def with_sidecar(result: GateResult) -> GateResult:
-        return replace(result, sidecar_available=sidecar_available)
+        usage: tuple[RuntimeUsageSnapshot, ...] = ()
+        if sidecar_available and handle is not None:
+            try:
+                # A native event read is the formal OpenHands state projection
+                # that carries accumulated_token_usage for the whole sidecar
+                # tree (primary Agent, tasks and condenser).  Capture it now
+                # so a completed gate has an auditable cost even when nobody
+                # opens its transcript later.
+                usage = runtime.read_active_events(handle).usage
+            except Exception:
+                # Usage projection must not replace the Gate's authoritative
+                # decision or hide an otherwise valid completed review.
+                pass
+        return replace(result, sidecar_available=sidecar_available, sidecar_usage=usage)
 
     try:
         handle = runtime.create_conversation(plan.sidecar_request)

@@ -11,11 +11,11 @@ from datetime import datetime
 from typing import cast
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     CheckConstraint,
     DateTime,
     Integer,
-    BigInteger,
     Numeric,
     String,
     Text,

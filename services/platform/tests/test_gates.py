@@ -7,7 +7,12 @@ from flowweave.modules.gates.application.executor import (
     execute_gate_plan,
 )
 from flowweave.modules.orchestration.application.service import _gate_review_projection
-from flowweave.runtime.base import RuntimeAskAgentResult, StartAttemptRequest
+from flowweave.runtime.base import (
+    RuntimeAskAgentResult,
+    RuntimeEventBatch,
+    RuntimeUsageSnapshot,
+    StartAttemptRequest,
+)
 from flowweave.runtime.dependencies import runtime_context
 from flowweave.runtime.mock import MockRuntime
 
@@ -193,6 +198,56 @@ def test_agent_sidecar_gate_can_retain_created_conversation_for_audit():
     assert runtime.last_handle is not None
     events = runtime.read_events(runtime.last_handle)
     assert [event.payload["source"] for event in events.events] == ["user", "agent"]
+
+
+def test_agent_sidecar_gate_captures_native_usage_when_it_completes():
+    class UsageRuntime(MockRuntime):
+        def read_active_events(self, handle):
+            batch = super().read_active_events(handle)
+            return RuntimeEventBatch(
+                events=batch.events,
+                cursor=batch.cursor,
+                result=batch.result,
+                usage=(
+                    RuntimeUsageSnapshot(
+                        usage_id="flowweave:primary",
+                        model_name="test-model",
+                        accumulated_cost=0.12,
+                        prompt_tokens=100,
+                        completion_tokens=20,
+                        cache_read_tokens=30,
+                        cache_write_tokens=4,
+                        reasoning_tokens=6,
+                        context_window=16000,
+                        per_turn_tokens=120,
+                    ),
+                ),
+            )
+
+    request = StartAttemptRequest(
+        attempt_id="gate-sidecar-binding",
+        execution_key="gate-sidecar:usage",
+        node={},
+        bindings=[],
+        workspace_ref="/runtime/workspace/project",
+        conversation_id="gate-sidecar-usage-conversation",
+        interaction_mode="COLLABORATION",
+    )
+    plan = GateExecutionPlan(
+        "PROMPT",
+        {"prompt": "check"},
+        2,
+        sidecar_request=request,
+        sidecar_question="You are an isolated workflow gate Agent.",
+        retain_sidecar=True,
+    )
+
+    with runtime_context(UsageRuntime()):
+        result = execute_gate_plan(plan, {})
+
+    assert result.sidecar_available is True
+    assert len(result.sidecar_usage) == 1
+    assert result.sidecar_usage[0].prompt_tokens == 100
 
 
 def test_gate_review_projection_retains_criteria_and_evidence_not_artifact_contents():

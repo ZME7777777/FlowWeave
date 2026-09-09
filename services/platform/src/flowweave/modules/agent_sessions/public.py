@@ -18,6 +18,7 @@ from flowweave.modules.agent_sessions.infrastructure.models import (
     AgentConversationCapability,
     AgentConversationCommand,
     AgentConversationMessageAttachment,
+    AgentConversationUsageBucket,
 )
 
 
@@ -130,6 +131,7 @@ __all__ = [
     "AgentConversationCapability",
     "AgentConversationCommand",
     "AgentConversationMessageAttachment",
+    "AgentConversationUsageBucket",
     "AgentSessionHostContext",
     "AgentSessionPermission",
     "ACCESS_FILES",
