@@ -1319,6 +1319,18 @@ def _observation_dict(value: object) -> dict[str, Any] | None:
     }
 
 
+def _usage_dict(value: object) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    usage = cast(Any, value)
+    return {
+        "cpu_usage_percent": usage.cpu_usage_percent,
+        "memory_usage_bytes": usage.memory_usage_bytes,
+        "storage_usage_bytes": usage.storage_usage_bytes,
+        "storage_limit": usage.storage_limit,
+    }
+
+
 def _resource(payload: SandboxResourceWrite) -> ManagedSandbox:
     resource_id = str(payload.id)
     expected_name = backend_name(
@@ -1415,6 +1427,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             allowed_roles_by_path: dict[str, frozenset[str]] = {
                 "/v1/sandboxes/ensure": frozenset({"api", "worker"}),
                 "/v1/sandboxes/inspect": frozenset({"worker"}),
+                "/v1/sandboxes/usage": frozenset({"api", "worker"}),
                 "/v1/sandboxes/drain": frozenset({"worker"}),
                 # API performs the user-authorized, synchronous physical cleanup
                 # required before a FlowRun row can be permanently deleted.
@@ -1559,6 +1572,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise DomainError("SANDBOX_NAME_INVALID", "Sandbox name is not allowed", 422)
         observation = DockerSandboxProvider(configured).inspect(payload.resource_name)
         return {"observation": _observation_dict(observation)}
+
+    @app.post("/v1/sandboxes/usage")
+    async def usage(payload: SandboxDeleteWrite) -> dict[str, Any]:
+        check_scope(payload.manager_scope)
+        usage = DockerSandboxProvider(configured).usage(
+            payload.resource_name, str(payload.resource_id)
+        )
+        return {"usage": _usage_dict(usage)}
 
     @app.post("/v1/sandboxes/delete")
     async def delete(payload: SandboxDeleteWrite) -> dict[str, bool]:

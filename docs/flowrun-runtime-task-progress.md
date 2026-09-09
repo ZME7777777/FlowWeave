@@ -3441,6 +3441,14 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 
 完成：运行列表将“执行概览”替换为“运行资源”，不再返回或显示节点进度、当前节点或待处理计数。Runtime 资源摘要按 active generation 关联当前 ManagedSandbox，仅返回截短 Container ID、generation、镜像/创建时间和资源上限；新建 Runtime 将 CPU、内存与容器存储上限冻结到受控 Provider spec，replacement 复制相同 spec，新容器激活后列表自动切换。
 
+### FR-250 FlowRun 当前容器资源用量 — DONE
+
+依赖：`FR-249`。
+
+目标：运行资源不能只显示配置上限，必须同时展示当前绑定容器的 CPU 实时使用百分比、内存已用字节数和容器可写层已用字节数。用量必须经 Runtime Provider 从 Docker 当前观测读取，不能复用历史 generation、节点或 Attempt 数据。Docker 宿主不支持可写层配额时，不得将目标配置误报为已生效上限，应明确显示“无硬上限”。
+
+完成：Runtime Provider 新增受 scope、资源 ID 和所有权标签验证保护的只读 usage 接口；仅对当前 `RUNNING` Agent Runtime 返回 Docker `stats` 和 `inspect --size` 的 CPU、内存、可写层用量及真实存储配额。FlowRun 摘要必须同时取得该实时观测才展示容器信息；列表以“已用 / 上限”显示 CPU、内存和存储，对无 StorageOpt 的容器明确标注“无硬上限”。replacement 或统计读取失败期间不保留旧 generation 的资源值。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -3456,6 +3464,7 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-09 | FR-250 | 受影响 Python `py_compile`、Ruff；Web TypeScript typecheck、受影响文件 ESLint、production build、Alembic head、`git diff --check` 与任务状态唯一性 | PASS：运行资源使用当前 Docker `stats` 的 CPU 实时百分比和内存已用量，以及 `inspect --size` 的容器可写层已用量；仅经 scope、资源 ID 和所有权校验的当前 `RUNNING` Runtime 返回。存储上限读取实际 Docker `StorageOpt`，无配额时明确显示“无硬上限”。当前 Alembic head 为 `0105_conversation_token_usage`，本切片无迁移。定向 pytest 因本机 Docker daemon 不可用、Testcontainers PostgreSQL 无法初始化而未运行；受影响静态检查通过。 |
 | 2026-09-09 | FR-249 | 受影响 Python `py_compile`、Ruff；Web TypeScript typecheck、受影响文件 ESLint、production build、唯一 Alembic head、`git diff --check` 与任务状态唯一性 | PASS：FlowRun 列表只显示当前可用容器的截短 ID、generation、镜像引用、创建时间及 CPU／内存／容器可写层存储上限；摘要只关联 `ACTIVE` Runtime 的当前 `READY` generation，且仅在 Docker 观察为 `RUNNING` 后返回，因此替换或恢复期间不会显示旧容器，激活新 generation 后自动更新。唯一 Alembic head 为 `0104_candidate_output_sets`，无迁移。两条定向 pytest 因本机 Docker daemon 不可用、Testcontainers PostgreSQL 无法初始化而未运行；受影响静态检查通过。 |
 | 2026-09-09 | FR-248 | 受影响 Python `py_compile`、Ruff；Web TypeScript typecheck、受影响文件 ESLint、production build、唯一 Alembic head、`git diff --check` 与任务状态唯一性 | PASS：FlowRun 列表不再从最后一条 NodeRun 推断“当前节点”；摘要按全部记录返回真实活动、终态与人工处理计数，页面改为运行状态与执行概览。唯一 Alembic head 为 `0104_candidate_output_sets`，无迁移。定向 API 回归因本机 Docker daemon 不可用、Testcontainers PostgreSQL 无法启动而未运行；全量 Web ESLint 仍被既有 warning 门禁阻断，受影响文件 lint 通过。 |
 | 2026-09-09 | FR-247 | 受影响 Python `py_compile`、Ruff、候选输出集单元测试收集、迁移脚本解析、`git diff --check` 与任务状态唯一性 | PASS：新增候选输出集模型及迁移；完成事件按正式身份幂等并冻结 Artifact ID，END 门禁和详情接口只读取当前集，Fork 自动替代旧集，下游映射拒绝未验收集并按冻结 ID 确定性流转。集成测试因本机 Docker daemon 不可用而未运行。 |

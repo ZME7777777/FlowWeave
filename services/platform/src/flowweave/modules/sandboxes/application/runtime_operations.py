@@ -9,6 +9,10 @@ from flowweave.modules.sandboxes.application.runtime_owner import runtime_owner_
 from flowweave.modules.sandboxes.application.runtime_replacement import (
     enqueue_flow_run_runtime_replacement,
 )
+from flowweave.modules.sandboxes.infrastructure.docker import (
+    DockerResourceUsage,
+    DockerSandboxProvider,
+)
 from flowweave.modules.sandboxes.infrastructure.models import (
     FlowRunRuntime,
     ManagedSandbox,
@@ -37,7 +41,9 @@ def _retention_policy() -> dict[str, Any]:
 
 
 def _active_resource_summary(
-    resource: ManagedSandbox | None, generation: RuntimeGeneration | None
+    resource: ManagedSandbox | None,
+    generation: RuntimeGeneration | None,
+    usage: DockerResourceUsage | None,
 ) -> dict[str, Any] | None:
     """Return only the active container's safe operational identity and limits."""
 
@@ -47,6 +53,7 @@ def _active_resource_summary(
         or generation.state != "READY"
         or resource.observed_state != "RUNNING"
         or not resource.backend_resource_id
+        or usage is None
     ):
         return None
     settings = get_settings()
@@ -58,7 +65,10 @@ def _active_resource_summary(
         "created_at": resource.created_at.isoformat(),
         "cpu_limit": str(spec.get("cpu_limit") or settings.terminal_environment_cpus),
         "memory_limit": str(spec.get("memory_limit") or settings.terminal_environment_memory),
-        "storage_limit": str(spec.get("storage_limit") or settings.sandbox_storage_size),
+        "storage_limit": usage.storage_limit,
+        "cpu_usage_percent": usage.cpu_usage_percent,
+        "memory_usage_bytes": usage.memory_usage_bytes,
+        "storage_usage_bytes": usage.storage_usage_bytes,
     }
 
 
@@ -183,6 +193,7 @@ def runtime_readiness_by_flow_run(
         else []
     )
     resources_by_id = {item.id: item for item in resources}
+    provider = DockerSandboxProvider(get_settings())
     readiness: dict[str, dict[str, Any]] = {}
     for item in sessions:
         active_generation = (
@@ -195,12 +206,20 @@ def runtime_readiness_by_flow_run(
             if active_generation and active_generation.managed_runtime_id
             else None
         )
+        try:
+            usage = (
+                provider.usage(resource.backend_resource_name, resource.id)
+                if resource is not None
+                else None
+            )
+        except DomainError:
+            usage = None
         readiness[item.flow_run_id] = {
             "status": item.status,
             "write_available": item.status == "ACTIVE",
             "message": item.replacement_error_summary,
             "updated_at": item.updated_at,
-            "resource": _active_resource_summary(resource, active_generation),
+            "resource": _active_resource_summary(resource, active_generation, usage),
         }
     return readiness
 

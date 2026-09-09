@@ -16,6 +16,7 @@ from flowweave.bootstrap.runtime_provider import RuntimeProviderSpec, create_app
 from flowweave.modules.environments.infrastructure import docker as environments_docker
 from flowweave.modules.sandboxes.infrastructure.docker import (
     DockerObservation,
+    DockerResourceUsage,
     DockerSandboxProvider,
     backend_name,
 )
@@ -81,6 +82,38 @@ def test_runtime_provider_preserves_runtime_resource_limits() -> None:
         "cpu_limit": "2.0",
         "memory_limit": "2g",
         "storage_limit": "4g",
+    }
+
+
+def test_runtime_provider_returns_owned_runtime_usage(settings, monkeypatch) -> None:
+    def usage(self, resource_name, expected_resource_id):
+        assert resource_name == "fw-sbx-12345678123442349234123456789abc"
+        assert expected_resource_id == _RESOURCE_ID
+        return DockerResourceUsage(
+            cpu_usage_percent=12.5,
+            memory_usage_bytes=512 * 1024**2,
+            storage_usage_bytes=16 * 1024**2,
+            storage_limit=None,
+        )
+
+    monkeypatch.setattr(DockerSandboxProvider, "usage", usage)
+    payload = {
+        "manager_scope": _SCOPE,
+        "resource_name": "fw-sbx-12345678123442349234123456789abc",
+        "resource_id": _RESOURCE_ID,
+    }
+
+    with TestClient(create_app(_settings(settings))) as client:
+        response = client.post("/v1/sandboxes/usage", headers=_api_headers(), json=payload)
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        "usage": {
+            "cpu_usage_percent": 12.5,
+            "memory_usage_bytes": 512 * 1024**2,
+            "storage_usage_bytes": 16 * 1024**2,
+            "storage_limit": None,
+        }
     }
 
 

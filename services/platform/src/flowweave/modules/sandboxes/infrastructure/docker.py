@@ -80,6 +80,16 @@ class DockerObservation:
 
 
 @dataclass(frozen=True, slots=True)
+class DockerResourceUsage:
+    """A point-in-time usage observation for one owned Runtime container."""
+
+    cpu_usage_percent: float
+    memory_usage_bytes: int
+    storage_usage_bytes: int
+    storage_limit: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class DockerDrainResult:
     """Physical fencing result for one old Agent Server generation."""
 
@@ -1521,6 +1531,68 @@ chmod 0700 "$target"
             labels=labels,
         )
 
+    def usage(self, resource_name: str, expected_resource_id: str) -> DockerResourceUsage | None:
+        """Read live usage only after proving that the Runtime is still owned."""
+
+        if controller_is_remote(self.settings):
+            try:
+                raw = DockerControllerClient(self.settings).post(
+                    "/v1/sandboxes/usage",
+                    {"resource_name": resource_name, "resource_id": expected_resource_id},
+                    timeout=30,
+                ).get("usage")
+            except DockerControllerError as exc:
+                raise DomainError(
+                    "SANDBOX_BACKEND_UNAVAILABLE",
+                    "The Docker Runtime Provider is unavailable",
+                    503,
+                ) from exc
+            if raw is None:
+                return None
+            if not isinstance(raw, dict):
+                raise DomainError(
+                    "SANDBOX_DOCKER_PROTOCOL_ERROR", "Invalid controller usage data", 502
+                )
+            return self._usage_from_remote(cast(dict[str, object], raw))
+
+        observation = self.inspect(resource_name)
+        if observation is None:
+            return None
+        self._verify_owner(observation, expected_resource_id, self.settings.sandbox_manager_scope)
+        if (
+            observation.state != "RUNNING"
+            or observation.labels.get("flowweave.kind") != "agent-runtime"
+        ):
+            return None
+        try:
+            stats_raw = self._run(
+                [
+                    self.settings.docker_binary,
+                    "stats",
+                    "--no-stream",
+                    "--format",
+                    "{{json .}}",
+                    observation.resource_identifier,
+                ],
+                timeout=30,
+            )
+            inspect_raw = self._run(
+                [
+                    self.settings.docker_binary,
+                    "inspect",
+                    observation.resource_identifier,
+                    "--size",
+                    "--format",
+                    "{{json .}}",
+                ],
+                timeout=30,
+            )
+        except DomainError as exc:
+            if self._absent(exc):
+                return None
+            raise
+        return self._usage_from_local(stats_raw, inspect_raw)
+
     def drain_expected(self, resource_name: str, expected_resource_id: str) -> DockerDrainResult:
         """Disconnect writers, invoke OpenHands pause, then stop the old container."""
 
@@ -1852,6 +1924,104 @@ chmod 0700 "$target"
             self.settings.terminal_environment_backend == "docker"
             or self.settings.sandbox_backend == "docker"
             or self.settings.dependency_builder_backend == "docker"
+        )
+
+    @staticmethod
+    def _usage_from_remote(raw: dict[str, object]) -> DockerResourceUsage:
+        cpu_usage_percent = raw.get("cpu_usage_percent")
+        memory_usage_bytes = raw.get("memory_usage_bytes")
+        storage_usage_bytes = raw.get("storage_usage_bytes")
+        storage_limit = raw.get("storage_limit")
+        if (
+            isinstance(cpu_usage_percent, bool)
+            or not isinstance(cpu_usage_percent, int | float)
+            or isinstance(memory_usage_bytes, bool)
+            or not isinstance(memory_usage_bytes, int)
+            or isinstance(storage_usage_bytes, bool)
+            or not isinstance(storage_usage_bytes, int)
+            or (storage_limit is not None and not isinstance(storage_limit, str))
+            or cpu_usage_percent < 0
+            or memory_usage_bytes < 0
+            or storage_usage_bytes < 0
+        ):
+            raise DomainError("SANDBOX_DOCKER_PROTOCOL_ERROR", "Invalid controller usage data", 502)
+        return DockerResourceUsage(
+            cpu_usage_percent=float(cpu_usage_percent),
+            memory_usage_bytes=memory_usage_bytes,
+            storage_usage_bytes=storage_usage_bytes,
+            storage_limit=storage_limit,
+        )
+
+    @staticmethod
+    def _docker_byte_size(value: object) -> int | None:
+        match = re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)\s*([kmgt]?i?b)", str(value).strip(), re.I)
+        if match is None:
+            return None
+        magnitude = float(match.group(1))
+        if magnitude < 0:
+            return None
+        unit = match.group(2).lower()
+        multipliers = {
+            "b": 1,
+            "kb": 1000,
+            "mb": 1000**2,
+            "gb": 1000**3,
+            "tb": 1000**4,
+            "kib": 1024,
+            "mib": 1024**2,
+            "gib": 1024**3,
+            "tib": 1024**4,
+        }
+        return int(magnitude * multipliers[unit])
+
+    @classmethod
+    def _usage_from_local(cls, stats_raw: str, inspect_raw: str) -> DockerResourceUsage:
+        try:
+            stats_value = cast(object, json.loads(stats_raw))
+            inspect_value = cast(object, json.loads(inspect_raw))
+        except ValueError as exc:
+            raise DomainError(
+                "SANDBOX_DOCKER_PROTOCOL_ERROR", "Invalid Docker usage data", 502
+            ) from exc
+        if not isinstance(stats_value, dict) or not isinstance(inspect_value, dict):
+            raise DomainError("SANDBOX_DOCKER_PROTOCOL_ERROR", "Invalid Docker usage data", 502)
+        stats = cast(dict[str, object], stats_value)
+        inspect = cast(dict[str, object], inspect_value)
+        cpu = str(stats.get("CPUPerc") or "").strip()
+        memory = str(stats.get("MemUsage") or "").split(" /", 1)[0].strip()
+        try:
+            cpu_usage_percent = float(cpu.removesuffix("%"))
+        except ValueError as exc:
+            raise DomainError(
+                "SANDBOX_DOCKER_PROTOCOL_ERROR", "Invalid Docker CPU usage", 502
+            ) from exc
+        memory_usage_bytes = cls._docker_byte_size(memory)
+        size_rw = inspect.get("SizeRw")
+        storage_usage_bytes = (
+            int(size_rw)
+            if isinstance(size_rw, int) and not isinstance(size_rw, bool) and size_rw >= 0
+            else None
+        )
+        host_config = inspect.get("HostConfig")
+        storage_options = (
+            cast(dict[str, object], cast(dict[str, object], host_config).get("StorageOpt"))
+            if isinstance(host_config, dict)
+            and isinstance(cast(dict[str, object], host_config).get("StorageOpt"), dict)
+            else {}
+        )
+        storage_limit = storage_options.get("size")
+        if (
+            cpu_usage_percent < 0
+            or memory_usage_bytes is None
+            or storage_usage_bytes is None
+            or (storage_limit is not None and cls._docker_byte_size(storage_limit) is None)
+        ):
+            raise DomainError("SANDBOX_DOCKER_PROTOCOL_ERROR", "Invalid Docker usage data", 502)
+        return DockerResourceUsage(
+            cpu_usage_percent=cpu_usage_percent,
+            memory_usage_bytes=memory_usage_bytes,
+            storage_usage_bytes=storage_usage_bytes,
+            storage_limit=str(storage_limit) if storage_limit is not None else None,
         )
 
     @staticmethod

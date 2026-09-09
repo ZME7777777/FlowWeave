@@ -8,12 +8,18 @@ import { useWorkbenchStore } from '../store/workbench';
 import type { FlowDefinition, FlowRunSummary } from '../types';
 
 const STATUS_LABELS: Record<string, string> = { ACTIVE: '运行中', WAITING_HUMAN: '等待人工', COMPLETED: '已完成', FAILED: '失败', CANCELLED: '已取消' };
+const formatResourceBytes = (value: number) => {
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 ** 2) return `${(value / 1024).toFixed(1)} KiB`;
+  if (value < 1024 ** 3) return `${(value / 1024 ** 2).toFixed(1)} MiB`;
+  return `${(value / 1024 ** 3).toFixed(1)} GiB`;
+};
 const runtimeResourceSummary = (run: FlowRunSummary) => {
   const resource = run.runtime_resource;
   if (!resource) return { primary: '暂无可用容器', detail: '运行环境就绪后将显示当前绑定容器。' };
   return {
     primary: `容器 ${resource.container_id} · #${resource.generation}`,
-    detail: `${resource.cpu_limit} CPU · ${resource.memory_limit} 内存 · ${resource.storage_limit} 存储`,
+    detail: `CPU 已用 ${resource.cpu_usage_percent.toFixed(1)}%（实时）/ ${resource.cpu_limit} · 内存 ${formatResourceBytes(resource.memory_usage_bytes)} / ${resource.memory_limit} · 存储 ${formatResourceBytes(resource.storage_usage_bytes)}${resource.storage_limit ? ` / ${resource.storage_limit}` : '（无硬上限）'}`,
     provenance: `镜像 ${resource.image_reference} · 创建于 ${new Date(resource.created_at).toLocaleString()}`,
   };
 };
