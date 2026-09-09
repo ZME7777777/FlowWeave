@@ -343,22 +343,38 @@ function WorkspaceConversationGroup({ groupId, label, children, conversationCoun
 }
 
 function ConversationStreamObserver({
-  workspaceId, bindingId, enabled, onEvent, onStatus,
+  workspaceId, bindingId, enabled, onEvent, onStatus, onReconnect,
 }: {
   workspaceId: string;
   bindingId: string;
   enabled: boolean;
   onEvent: (event: { type: 'delta' | 'event' | 'message_complete'; content?: string; event?: OpenHandsConversationEvent }) => void;
   onStatus: (status: StreamStatus) => void;
+  onReconnect?: () => void;
 }) {
   const { subscribe } = useAgentSessionGateway();
   const onEventRef = useRef(onEvent);
   const onStatusRef = useRef(onStatus);
+  const onReconnectRef = useRef(onReconnect);
+  const connectedRef = useRef(false);
   onEventRef.current = onEvent;
   onStatusRef.current = onStatus;
+  onReconnectRef.current = onReconnect;
   useEffect(() => {
     if (!enabled) return;
-    return subscribe(workspaceId, bindingId, event => onEventRef.current(event), status => onStatusRef.current(status));
+    connectedRef.current = false;
+    return subscribe(
+      workspaceId,
+      bindingId,
+      event => onEventRef.current(event),
+      status => {
+        if (status === 'live') {
+          if (connectedRef.current) onReconnectRef.current?.();
+          connectedRef.current = true;
+        }
+        onStatusRef.current(status);
+      },
+    );
   }, [bindingId, enabled, subscribe, workspaceId]);
   return null;
 }
@@ -2178,6 +2194,13 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     // associated with activeTurnEventId are the authoritative terminal signal.
     if (event.type === 'message_complete') { clearLiveText(); refresh(); }
   }, [appendLiveEvent, appendLiveText, clearLiveText, refresh]);
+  const onStreamReconnect = useCallback(() => {
+    // A WebSocket is a live projection only. Events written while the browser
+    // was disconnected are recovered from the authoritative REST feed after
+    // the socket is live again; browser-only deltas/events remain merged in
+    // memory until their formal counterparts arrive.
+    refresh();
+  }, [refresh]);
   useEffect(() => {
     if (!streamEnabled) setStreamStatus('disabled');
   }, [streamEnabled]);
@@ -2890,7 +2913,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     } catch (reason) { reportOperationError('work-directory-delete', reason instanceof Error ? reason : new Error('删除工作区失败')); }
   };
   return <main className="agent-workbench-page">
-    {selected && <ConversationStreamObserver workspaceId={workspace.id} bindingId={selected.id} enabled={streamEnabled} onEvent={onStreamEvent} onStatus={setStreamStatus}/>}
+    {selected && <ConversationStreamObserver workspaceId={workspace.id} bindingId={selected.id} enabled={streamEnabled} onEvent={onStreamEvent} onStatus={setStreamStatus} onReconnect={onStreamReconnect}/>}
     <aside className="agent-workbench-rail">
       <header>{onReturnToSource && <button type="button" className="agent-session-return" aria-label="返回节点执行" title="返回节点执行" onClick={onReturnToSource}><ArrowLeft size={16}/></button>}<div className="agent-session-host-heading"><span className="eyebrow">{onReturnToSource ? 'FLOWRUN NODE WORKSPACE' : features.workDirectories ? 'AGENT WORKSPACE' : 'FLOWRUN NODE'}</span><h1>{onReturnToSource ? workspace?.display_name || '节点会话' : features.workDirectories ? 'Agent 会话' : '节点会话'}</h1></div><div className="agent-workbench-create-actions"><button className="primary" disabled={!canOpenConversation} onClick={() => openConversationDraft({ displayName: '根工作区' })}><Plus size={15}/>新建会话</button>{features.workDirectories && <button type="button" className="secondary" aria-label="新增工作区" disabled={!runtimeWritable} onClick={() => setWorkDirectoryCreatorOpen(true)}><FolderPlus size={14}/>新增工作区</button>}</div></header>
       <div className="agent-workbench-list">
@@ -2907,10 +2930,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       <header className="agent-workbench-header"><div><span className="eyebrow">DIRECT AGENT SESSION</span>{editing ? <div className="agent-title-edit"><input ref={titleInput} aria-label="会话标题" value={title} onChange={event => setTitle(event.target.value)} onBlur={() => { if (!rename.isPending) { setTitle(selected ? conversationName(selected) : ''); setEditing(false); } }} onKeyDown={event => { if (event.key === 'Enter' && title.trim()) { event.preventDefault(); rename.mutate(); } if (event.key === 'Escape') { setTitle(selected ? conversationName(selected) : ''); setEditing(false); } }}/></div> : !(hideDraftTitle && conversationDraft) && <h2 className="agent-session-title" title={selected ? conversationName(selected) : undefined} aria-label={selected && canWrite ? '双击修改标题' : undefined} onDoubleClick={() => { if (!selected || !canWrite) return; setTitle(conversationName(selected)); setEditing(true); }}><span>{selected ? conversationName(selected) : conversationDraft ? '新会话' : '开始一个新的会话'}</span></h2>}{features.modelSelection && (selected || conversationDraft) && <small className="agent-session-provider">当前供应商：{selected ? boundProviderInfo?.name ?? '未配置' : draftProviderInfo?.name ?? '请选择模型供应商'}{conversationDraft ? ` · ${conversationDraft.displayName}` : ''}</small>}</div><div className="agent-header-actions">{features.conversationDeletion && selected && <button type="button" className="danger" aria-label="删除会话" title={selectedConversationRunning ? '会话运行中，请先停止' : '删除会话'} disabled={!canWrite || selectedConversationRunning || remove.isPending} onClick={() => void confirmDeletion('会话', conversationName(selected)).then(ok => { if (ok) remove.mutate(selected.id); })}><Trash2 size={14}/></button>}</div></header>
       {runtime?.state === 'RECOVERING' && <section className="agent-runtime-recover"><LoaderCircle size={18}/><div><b>运行环境正在恢复</b><span>{runtime.message || '历史会话和工作区文件仍可查看；恢复完成后可继续发送消息和使用终端。'}</span></div></section>}
       {runtime && !runtime.write_available && runtime.state !== 'RECOVERING' && <section className="agent-runtime-recover"><ShieldAlert size={18}/><div><b>节点会话已切换为只读</b><span>{runtime.message || '节点执行已停止；历史会话和工作区文件仍可查看。'}</span></div></section>}
-      {selected && eventsQuery.data?.monitoring?.possibly_stuck && <section className="agent-activity-warning" role="status" aria-label="Agent 活动提醒"><CircleDot size={17}/><div><b>较长时间没有新事件</b><span>最近事件：{eventsQuery.data.monitoring.last_event_type || '未知'}{eventsQuery.data.monitoring.seconds_since_event != null ? ` · ${eventsQuery.data.monitoring.seconds_since_event} 秒前` : ''}。这只是观测提示，FlowWeave 不会自动中断或恢复会话。</span></div></section>}
-      {selected && eventsQuery.data?.monitoring?.active_subagents.some(task => task.possibly_stuck) && <section className="agent-activity-warning subagent" role="status" aria-label="子智能体活动提醒"><Bot size={17}/><div><b>子智能体长时间没有新事件</b><span>{eventsQuery.data.monitoring.active_subagents.filter(task => task.possibly_stuck).length} 个子智能体可能仍在运行或等待 OpenHands 返回；请查看子智能体面板和最近事件。</span></div></section>}
       {selected && !compactionPolicyCurrent && <section className="agent-compaction-policy-warning" aria-label="历史压缩策略兼容保护"><ShieldAlert size={18}/><div><b>已启用历史会话兼容保护</b><span>此会话继承了旧的事件数压缩策略。继续发送或恢复执行前，系统会先调用 OpenHands 原生压缩并校验摘要；校验失败时不会发送新消息。</span>{features.workDirectories && <button type="button" className="primary" disabled={!canOpenConversation} onClick={openCurrentDirectoryDraft}><Plus size={14}/>在相同工作目录新建会话</button>}</div></section>}
-      {selected || conversationDraft ? <ConversationSurface key={selected?.id ?? conversationDraft?.id} events={displayedEvents} liveText={liveText} isGenerating={isGenerating} requestStartedAt={requestStartedAt} requestSubmitting={send.isPending || bootstrap.isPending || rewrite.isPending} condensationStatus={selected && condensationStatus?.bindingId === selected.id ? condensationStatus : undefined} onRetryCondensation={selected && canWrite && condensationStatus?.bindingId === selected.id && condensationStatus.state === 'failed' ? requestManualCompaction : undefined} onRewrite={selected && canWrite && features.rewrite ? requestRewrite : undefined} onFork={selected && canWrite && features.fork ? eventId => fork.mutate(eventId) : undefined} onOpenAttachment={features.attachments ? openAttachmentInDrawer : undefined} onPreviewCandidateFile={candidateOutputUrl && workspace ? openCandidateFileInDrawer : undefined} onAddReference={runtimeWritable ? reference => setReferences(current => current.some(item => item.eventId === reference.eventId && item.content === reference.content) ? current : [...current, reference]) : undefined} taskControl={eventsQuery.data?.task_control ?? []}/> : <div className="agent-workbench-empty"><Bot size={32}/><b>新建会话开始协作</b><span>{features.workDirectories ? '每个会话共享同一工作区，但保留独立的对话与事件记录。' : '会话固定在当前节点 Attempt 的隔离工作目录。'}</span><button className="primary" disabled={!canOpenConversation} onClick={() => openConversationDraft({ displayName: features.workDirectories ? '根工作区' : '节点工作目录' })}><Plus size={15}/>新建会话</button></div>}
+      {selected || conversationDraft ? <ConversationSurface key={selected?.id ?? conversationDraft?.id} events={displayedEvents} liveText={liveText} isGenerating={isGenerating} requestStartedAt={requestStartedAt} requestSubmitting={send.isPending || bootstrap.isPending || rewrite.isPending} condensationStatus={selected && condensationStatus?.bindingId === selected.id ? condensationStatus : undefined} onRetryCondensation={selected && canWrite && condensationStatus?.bindingId === selected.id && condensationStatus.state === 'failed' ? requestManualCompaction : undefined} onRewrite={selected && canWrite && features.rewrite ? requestRewrite : undefined} onFork={selected && canWrite && features.fork ? eventId => fork.mutate(eventId) : undefined} onOpenAttachment={features.attachments ? openAttachmentInDrawer : undefined} onPreviewCandidateFile={candidateOutputUrl && workspace ? openCandidateFileInDrawer : undefined} onAddReference={runtimeWritable ? reference => setReferences(current => current.some(item => item.eventId === reference.eventId && item.content === reference.content) ? current : [...current, reference]) : undefined} taskControl={eventsQuery.data?.task_control ?? []} monitoring={eventsQuery.data?.monitoring} connectionState={inputReadinessQuery.isError ? 'unavailable' : streamStatus === 'recovering' ? 'recovering' : streamStatus === 'connecting' ? 'checking' : inputReadinessQuery.isFetching && !inputReadinessQuery.data ? 'checking' : 'connected'}/> : <div className="agent-workbench-empty"><Bot size={32}/><b>新建会话开始协作</b><span>{features.workDirectories ? '每个会话共享同一工作区，但保留独立的对话与事件记录。' : '会话固定在当前节点 Attempt 的隔离工作目录。'}</span><button className="primary" disabled={!canOpenConversation} onClick={() => openConversationDraft({ displayName: features.workDirectories ? '根工作区' : '节点工作目录' })}><Plus size={15}/>新建会话</button></div>}
       {(selected || conversationDraft) && runtimeWritable && runtime?.state !== 'RECOVERING' && <div className={`agent-composer ${turnState !== 'idle' || pendingConfirmation ? 'busy' : ''}`}>
         {pendingConfirmation && <section className="agent-confirmation" aria-label="工具执行确认"><header><ShieldAlert size={17}/><div><b>工具正在等待你的确认</b><span>动作尚未执行。请核对整批内容后批准或拒绝。</span></div></header><div className="agent-confirmation-actions">{(pendingConfirmation.actions ?? []).map((action: AgentPendingConfirmationAction) => <article key={action.digest}><div><b>{action.summary || action.tool_name}</b><span>{action.security_risk || 'UNKNOWN'}</span></div>{Object.keys(action.arguments).length > 0 && <pre>{JSON.stringify(action.arguments, null, 2)}</pre>}</article>)}</div><textarea aria-label="工具确认理由" value={confirmationReason} maxLength={2000} placeholder="填写批准或拒绝理由…" onChange={event => setConfirmationReason(event.target.value)}/><footer><button type="button" className="danger" disabled={!confirmationReason.trim() || decideConfirmation.isPending} onClick={() => decideConfirmation.mutate(false)}><X size={14}/>拒绝整批</button><button type="button" className="primary" disabled={!confirmationReason.trim() || decideConfirmation.isPending} onClick={() => decideConfirmation.mutate(true)}><Check size={14}/>批准整批</button></footer></section>}
         {queuedMessages.length > 0 && <section className="agent-queued-messages" aria-label="已排队消息"><header><b>消息队列</b><span>{queuedMessages.length} 条将在当前回复完成后依次发送</span></header>{queuedMessages.map((message, index) => <article key={message.id}><small>{index + 1}</small><p>{message.content || (message.references.length ? `会话引用 ${message.references.length} 条` : '图片附件')}</p><span>{[message.items.length ? `${message.items.length} 个附件` : '', message.references.length ? `${message.references.length} 条会话引用` : ''].filter(Boolean).join(' · ')}</span><div><button type="button" aria-label={`编辑排队消息 ${index + 1}`} onClick={() => { setDraft(message.content); setAttachments(message.items); setReferences(message.references); setQueuedMessages(items => items.filter(item => item.id !== message.id)); }}>编辑</button><button type="button" aria-label={`移除排队消息 ${index + 1}`} onClick={() => setQueuedMessages(items => items.filter(item => item.id !== message.id))}><X size={13}/></button></div></article>)}</section>}

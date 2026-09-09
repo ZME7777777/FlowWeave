@@ -441,6 +441,7 @@ test('terminal environment deletion preserves setup sessions when a FlowRun uses
 test('top-level Agent workspace creates a direct conversation and restores its URL', async ({ page }) => {
   let modelIsResponding = false;
   let interrupted = false;
+  let backfilledTaskAction = false;
   let agentStream: WebSocketRoute | undefined;
   let terminalSocket: WebSocketRoute | undefined;
   const terminalInputs: string[] = [];
@@ -666,6 +667,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
         events: modelIsResponding ? [
           { id: 'running-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'agent-reply', content: '正在处理的请求', timestamp: new Date(Date.now() - 12_000).toISOString().replace(/Z$/, '') } },
+          ...(backfilledTaskAction ? [{ id: 'recovered-task-action', event_type: 'TOOL_CALL', payload: { source: 'agent', parent_id: 'running-user', action_id: 'recovered-task-action', tool_call_id: 'recovered-task-call', tool_name: 'task', event_name: 'TaskAction', summary: '检查依赖关系', runtime_task: { phase: 'REQUESTED', action_event_id: 'recovered-task-action', tool_call_id: 'recovered-task-call', subagent_type: 'general-purpose', description: '检查依赖关系' }, timestamp: new Date().toISOString() } }] : []),
           ...(interrupted ? [{ id: 'paused-tool-error', event_type: 'ERROR', payload: { source_type: 'AgentErrorEvent', parent_id: 'running-user', content: 'Tool call interrupted before completion. The conversation was paused.' } }] : []),
         ] : conversations.length ? [
           { id: 'user-request', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '检查工作目录', timestamp: '2026-08-26T10:00:00Z' } },
@@ -694,7 +696,18 @@ test('top-level Agent workspace creates a direct conversation and restores its U
             { id: 'after-compaction-reply', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'after-compaction-result', content: '压缩后检查完成。', timestamp: '2026-08-26T10:10:20Z' } },
           ] : []),
           ...(manualCondensations && !compactionScenario ? [{ id: 'manual-condensation', event_type: 'CONDENSATION_COMPLETED', payload: { source: 'agent', parent_id: 'failure-event', event_name: 'Condensation', summary: '已压缩较早上下文', forgotten_event_ids: ['tool-request', 'tool-result'], condensation_reason: 'REQUEST', condensation_reason_detail: 'OpenHands 收到显式压缩请求；该请求可能来自手动压缩、上下文用量主动保护或模型上下文超限后的恢复。', condensation_triggered_at: '2026-08-26T10:04:58Z', condensation_completed_at: '2026-08-26T10:05:00Z', timestamp: '2026-08-26T10:05:00Z' } }] : []),
-        ] : [], next_cursor: null,
+        ] : [],
+        next_cursor: null,
+        monitoring: modelIsResponding ? {
+          last_event_id: 'running-user',
+          last_event_type: 'MESSAGE',
+          last_event_at: new Date(Date.now() - 90_000).toISOString(),
+          seconds_since_event: 90,
+          stale_after_seconds: 60,
+          possibly_stuck: true,
+          subagent_count: 0,
+          active_subagents: [],
+        } : undefined,
       }) });
       return;
     }
@@ -1130,8 +1143,15 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(activeProcess.getByText(/已耗时 \d+秒/)).toBeVisible();
   await expect(activeProcess.getByText(/已耗时 .*小时/)).toHaveCount(0);
   await expect(activeProcess.locator('.conversation-response-wait')).toHaveCount(0);
-  await expect(page.locator('.conversation-turn-status')).toHaveText(/正在思考/);
+  await expect(page.locator('.conversation-turn-status')).toHaveText('OpenHands 会话连接正常，等待模型响应（已 90 秒未收到新事件）');
+  await expect(page.getByLabel('Agent 活动提醒')).toHaveCount(0);
   await expect.poll(() => Boolean(agentStream)).toBe(true);
+  // A TaskAction can be persisted while the browser's live projection is
+  // disconnected. Reconnecting must refresh formal events automatically;
+  // pausing/resuming is not required to reveal the active subagent.
+  backfilledTaskAction = true;
+  await agentStream!.close({ code: 1011, reason: 'test stream interruption' });
+  await expect(activeProcess.getByText('子智能体 general-purpose · 检查依赖关系')).toBeVisible();
   agentStream!.send(JSON.stringify({ type: 'delta', content: '正在核对上下文。' }));
   await expect(activeProcess.getByText('正在核对上下文。')).toBeVisible();
   await expect(page.locator('.conversation-message.assistant').filter({ hasText: '正在核对上下文。' })).toHaveCount(0);
@@ -1148,8 +1168,8 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     event: { id: 'live-tool-result', event_type: 'TOOL_RESULT', payload: { parent_id: 'live-tool', action_id: 'live-tool', tool_call_id: 'live-call', tool_name: 'terminal', event_name: 'TerminalObservation', content: '/runtime/workspace/project', details: { command: 'pwd', exit_code: 0, is_error: false }, timestamp: new Date().toISOString() } },
   }));
   await expect(activeProcess.getByText('已运行 pwd')).toBeVisible();
-  await expect(page.locator('.conversation-turn-status')).toHaveText(/正在思考/);
-  await expect(activeProcess.locator('.conversation-activity-row.tool')).toHaveCount(1);
+  await expect(page.locator('.conversation-turn-status')).toHaveText('OpenHands 会话连接正常，等待模型响应（已 90 秒未收到新事件）');
+  await expect(activeProcess.locator('.conversation-activity-row.tool')).toHaveCount(2);
   const liveToolDetail = activeProcess.locator('.conversation-tool-detail');
   await expect(liveToolDetail).toHaveJSProperty('open', false);
   await liveToolDetail.locator(':scope > summary').click();

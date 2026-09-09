@@ -2,7 +2,7 @@ import { Check, ChevronDown, ChevronRight, CircleAlert, Copy, ExternalLink, File
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type PointerEvent as ReactPointerEvent } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import type { AgentAttachment, AgentConversationReference, OpenHandsConversationEvent, RuntimeTaskControlSnapshot } from '../types';
+import type { AgentActivitySummary, AgentAttachment, AgentConversationReference, OpenHandsConversationEvent, RuntimeTaskControlSnapshot } from '../types';
 import { deploymentBasePath } from '../deploymentPath';
 import { SubagentAvatar } from './SubagentAvatar';
 import { useEscapeClose } from './useEscapeClose';
@@ -773,14 +773,41 @@ function activeActivityLabel(entries: ActivityEntry[], requestSubmitting: boolea
   return '正在思考';
 }
 
-function CurrentTurnStatus({ items, liveText, requestSubmitting }: {
+type ConversationConnectionState = 'checking' | 'connected' | 'recovering' | 'unavailable';
+
+function staleActivityLabel(
+  fallback: string,
+  monitoring: AgentActivitySummary | undefined,
+  connectionState: ConversationConnectionState,
+): string {
+  if (connectionState === 'recovering') return '实时输出连接中断，正在恢复并补读会话事件';
+  if (connectionState === 'checking' && !monitoring?.possibly_stuck) return '正在建立 OpenHands 实时输出连接';
+  if (!monitoring?.possibly_stuck) return fallback;
+  if (connectionState === 'unavailable') return '暂时无法读取 OpenHands 会话状态，正在重试连接';
+  if (connectionState === 'checking') return '正在检查 OpenHands 会话连接';
+
+  const elapsed = monitoring.seconds_since_event == null
+    ? '较长时间未收到新事件'
+    : `已 ${monitoring.seconds_since_event} 秒未收到新事件`;
+  const stalledSubagent = monitoring.active_subagents.find(task => task.possibly_stuck);
+  if (stalledSubagent) return `子智能体仍在运行，等待其返回（${elapsed}）`;
+  if (fallback === '正在思考') return `OpenHands 会话连接正常，等待模型响应（${elapsed}）`;
+  return `${fallback}（${elapsed}）`;
+}
+
+function CurrentTurnStatus({ items, liveText, requestSubmitting, monitoring, connectionState = 'connected' }: {
   items: Item[];
   liveText: string;
   requestSubmitting: boolean;
+  monitoring?: AgentActivitySummary;
+  connectionState?: ConversationConnectionState;
 }) {
-  const label = liveText
+  const activityLabel = liveText
     ? '正在生成回复'
     : activeActivityLabel(groupedActivities(items), requestSubmitting);
+  const label = liveText || requestSubmitting
+    ? activityLabel
+    : staleActivityLabel(activityLabel, monitoring, connectionState);
   return <div className="conversation-turn-status" role="status" aria-label={label}>
     <span>{label}</span>
     <span className="conversation-turn-status-dots" aria-hidden="true"><i/><i/><i/></span>
@@ -933,7 +960,7 @@ function ConversationFailure({ item, taskControl = [] }: { item: Item; taskContr
   </article>;
 }
 
-export function ConversationSurface({ events, liveText, isGenerating, requestStartedAt, requestSubmitting = false, rewritePending = false, condensationStatus, onRetryCondensation, onRewrite, onFork, onOpenAttachment, onPreviewCandidateFile, onAddReference, taskControl = [] }: {
+export function ConversationSurface({ events, liveText, isGenerating, requestStartedAt, requestSubmitting = false, rewritePending = false, condensationStatus, onRetryCondensation, onRewrite, onFork, onOpenAttachment, onPreviewCandidateFile, onAddReference, taskControl = [], monitoring, connectionState }: {
   events: OpenHandsConversationEvent[];
   liveText: string;
   isGenerating: boolean;
@@ -948,6 +975,8 @@ export function ConversationSurface({ events, liveText, isGenerating, requestSta
   onPreviewCandidateFile?: (fieldKey: string, relativePath: string) => void;
   onAddReference?: (reference: ConversationReference) => void;
   taskControl?: RuntimeTaskControlSnapshot[];
+  monitoring?: AgentActivitySummary;
+  connectionState?: ConversationConnectionState;
 }) {
   const surface = useRef<HTMLElement>(null);
   const shell = useRef<HTMLDivElement>(null);
@@ -1136,12 +1165,14 @@ export function ConversationSurface({ events, liveText, isGenerating, requestSta
               finishedAt={block.finishedAt}
               avatarSlots={avatarSlots}
             />)}
-          {isCurrent && !turn.assistant && !failures.length && <CurrentTurnStatus items={turn.activity} liveText={liveText} requestSubmitting={requestSubmitting}/>}
+          {isCurrent && !turn.assistant && !failures.length && (
+            <CurrentTurnStatus items={turn.activity} liveText={liveText} requestSubmitting={requestSubmitting} monitoring={monitoring} connectionState={connectionState}/>
+          )}
           {turn.assistant && <AgentReply event={turn.assistant.event} content={turn.assistant.content} onFork={!isGenerating ? () => onFork?.(turn.assistant!.event.id) : undefined} onPreviewCandidateFile={onPreviewCandidateFile}/>}
           {failures.map(item => <ConversationFailure key={item.event.id} item={item} taskControl={taskControl}/>)}
         </section>;
       })}
-      {turns.length === 0 && (liveText || isGenerating) && <><ActivityGroup items={[]} active liveText={liveText} startedAt={requestStartedAt} avatarSlots={avatarSlots}/><CurrentTurnStatus items={[]} liveText={liveText} requestSubmitting={requestSubmitting}/></>}
+      {turns.length === 0 && (liveText || isGenerating) && <><ActivityGroup items={[]} active liveText={liveText} startedAt={requestStartedAt} avatarSlots={avatarSlots}/><CurrentTurnStatus items={[]} liveText={liveText} requestSubmitting={requestSubmitting} monitoring={monitoring} connectionState={connectionState}/></>}
       {condensationStatus && <article className={`conversation-condensation-progress ${condensationStatus.state}`} aria-label={condensationStatus.state === 'running' ? '正在压缩上下文' : '上下文压缩失败'} role="status">
         {condensationStatus.state === 'running' ? <LoaderCircle className="conversation-condensation-spinner" size={16}/> : <CircleAlert size={16}/>}
         <div><header><b>{condensationStatus.state === 'running' ? '正在压缩上下文' : '上下文压缩未完成'}</b>{condensationStatus.state === 'running' && <time>{formatDuration(condensationElapsed / 1_000)}</time>}</header>
