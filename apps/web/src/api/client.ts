@@ -476,14 +476,19 @@ export const api = {
     request<NodeAttempt>(`/node-attempts/${attemptId}/input-bindings`, json('PUT', { bindings, expected_state_version: version })),
   confirmStart: (attemptId: string, version: number, startup: { startup_mode: 'SKILL' | 'PROMPT'; capability_key?: string; prompt?: string }) => request<NodeAttempt>(`/node-attempts/${attemptId}/confirm-start`, json('POST', { expected_state_version: version, ...startup }, true)),
   humanInput: (attemptId: string, content: string, version: number) => request<NodeAttempt>(`/node-attempts/${attemptId}/human-input`, json('POST', { content, expected_state_version: version }, true)),
-  submitManualOutputs: (attemptId: string, version: number, outputs: Record<string, { artifact_type: 'URL'; uri: string } | { artifact_type: 'FILE'; path: string }>, forceAdvance = false) =>
+  submitManualOutputs: (attemptId: string, version: number, outputs: Record<string, { artifact_type: 'URL'; uri?: string; artifact_id?: string } | { artifact_type: 'FILE'; path?: string; artifact_id?: string }>, forceAdvance = false) =>
     request<NodeAttempt>(`/node-attempts/${attemptId}/manual-outputs`, json('POST', { expected_state_version: version, outputs, force_advance: forceAdvance }, true)),
   decideRuntimeConfirmation: (batchId: string, accept: boolean, reason: string) =>
     request<RuntimeConfirmationBatch>(`/runtime-confirmation-batches/${batchId}/decision`, json('POST', { accept, reason }, true)),
   acceptAttempt: (attemptId: string, version: number) => request<FlowRun>(`/node-attempts/${attemptId}/accept`, json('POST', { expected_state_version: version }, true)),
   acceptGateRisk: (attemptId: string, version: number, reason: string) => request<FlowRun>(`/node-attempts/${attemptId}/accept-gate-risk`, json('POST', { expected_state_version: version, reason }, true)),
   remediateGateFailure: (attemptId: string, version: number) => request<NodeAttempt>(`/node-attempts/${attemptId}/remediate-gate-failure`, json('POST', { expected_state_version: version }, true)),
-  gateEvaluationEvents: (attemptId: string, evaluationId: string, cursor?: string) => request<OpenHandsConversationEventBatch>(`/node-attempts/${attemptId}/gate-evaluations/${evaluationId}/conversation/events${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`),
+  gateEvaluationEvents: (attemptId: string, evaluationId: string, cursor?: string, historyCursor?: string) => {
+    const query = new URLSearchParams();
+    if (cursor) query.set('cursor', cursor);
+    if (historyCursor) query.set('history_cursor', historyCursor);
+    return request<OpenHandsConversationEventBatch>(`/node-attempts/${attemptId}/gate-evaluations/${evaluationId}/conversation/events${query.size ? `?${query}` : ''}`);
+  },
   rejectAttempt: (attemptId: string, reason: string, version: number) => request<NodeAttempt>(`/node-attempts/${attemptId}/reject`, json('POST', { reason, copy_input_bindings: true, expected_state_version: version }, true)),
   retryGates: (attemptId: string, version: number) => request<NodeAttempt>(`/node-attempts/${attemptId}/retry-gates`, json('POST', { expected_state_version: version })),
   retryGateWithProvider: (attemptId: string, evaluationId: string, version: number, agent_preset: import('../types').GateAgentPreset, prompt: string, code?: string | null) => request<NodeAttempt>(`/node-attempts/${attemptId}/gate-evaluations/retry-with-provider`, json('POST', { evaluation_id: evaluationId, expected_state_version: version, agent_preset, prompt, code: code || null }, true)),

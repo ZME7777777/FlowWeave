@@ -6195,6 +6195,54 @@ def submit_manual_outputs(
                     422,
                     {"field": field_key, "expected_type": expected_type},
                 )
+            if value.artifact_id:
+                source_artifact = db.get(ArtifactVersion, value.artifact_id)
+                node_attempt_ids = set(
+                    db.scalars(select(NodeAttempt.id).where(NodeAttempt.node_run_id == node_run.id))
+                )
+                if (
+                    source_artifact is None
+                    or source_artifact.flow_run_id != run.id
+                    or source_artifact.field_key != field_key
+                    or source_artifact.artifact_type != expected_type
+                    or source_artifact.producer_attempt_id not in node_attempt_ids
+                ):
+                    raise DomainError(
+                        "MANUAL_OUTPUT_ARTIFACT_INVALID",
+                        "所选节点输出不属于当前节点执行记录",
+                        422,
+                        {"field": field_key},
+                    )
+                if expected_type == "URL":
+                    prepared.append(
+                        prepare_artifact(
+                            ArtifactWrite(
+                                field_key=field_key,
+                                artifact_type="URL",
+                                uri=source_artifact.uri,
+                                metadata={
+                                    "manual_session_output": True,
+                                    "source_artifact_id": source_artifact.id,
+                                },
+                            )
+                        )
+                    )
+                else:
+                    reference = artifact_content_reference(db, source_artifact.id)
+                    content, mime_type, filename = read_artifact_content(reference)
+                    prepared.append(
+                        prepare_file_artifact(
+                            field_key=field_key,
+                            filename=filename,
+                            mime_type=mime_type,
+                            content=content,
+                            metadata={
+                                "manual_session_output": True,
+                                "source_artifact_id": source_artifact.id,
+                            },
+                        )
+                    )
+                continue
             if value.artifact_type == "URL":
                 prepared.append(
                     prepare_artifact(
@@ -7867,7 +7915,11 @@ def remediate_gate_failure(
 
 
 def gate_evaluation_events(
-    db: Session, attempt_id: str, evaluation_id: str, cursor: str | None = None
+    db: Session,
+    attempt_id: str,
+    evaluation_id: str,
+    cursor: str | None = None,
+    history_cursor: str | None = None,
 ) -> dict[str, Any]:
     """Read an immutable Gate Agent conversation through its evaluation."""
 
@@ -7885,6 +7937,7 @@ def gate_evaluation_events(
         attempt_id=attempt.id,
         binding_id=binding_id,
         cursor=cursor,
+        history_cursor=history_cursor,
     )
 
 

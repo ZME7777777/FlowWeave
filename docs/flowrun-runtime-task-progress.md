@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`ACTIVE`
 > 当前执行切片：无
-> 下一可执行切片：`FR-245 人工门禁结果调整、降级通过与详情收口`
+> 下一可执行切片：`FR-245 人工门禁结果调整、降级通过与降级输出选择`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -3398,6 +3398,14 @@ head、任务状态唯一性与 `git diff --check` 通过；Ruff 仅报告修改
 高度。三条冻结定义记录均设置了稳定的最小行高，内容过长时继续由弹窗正文滚动，不会压缩或遮蔽模型配置。
 Web TypeScript typecheck、production build、唯一 Alembic head `0103_runtime_artifact_proj_idem` 与
 `git diff --check` 通过；无迁移。
+
+### FR-245 降级流转改为选择已有节点输出 — DONE
+
+依赖：`FR-241`。
+
+完成：自动门禁失败不再进入隐藏三轮返工；新记录停在门禁阻断状态，人工可重新执行门禁、根据门禁结果调整并重试，或填写理由接受风险。历史三轮返工耗尽记录不做兼容改造，由人工按既有降级入口处理。降级强制流转改为从当前节点已有 Artifact 输出中按字段选择并复用，服务端按 FlowRun、节点执行记录、字段和类型校验产物归属后再创建人工降级产物，不要求用户填写 Runtime 文件路径。门禁 Agent 的结果契约和纠正提示统一要求中文，详情只显示中文结论和原生审查对话入口。
+
+Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；新增定向 API 回归覆盖同一节点输出复用和跨 FlowRun 产物拒绝。该回归在本机因 Docker daemon 不可用、Testcontainers PostgreSQL fixture 初始化失败而无法执行；无迁移。
 
 ## 7. 恢复工作检查表
 

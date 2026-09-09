@@ -658,10 +658,12 @@ async def gate_evaluation_conversation_events(
     evaluation_id: str,
     db: Db,
     cursor: str | None = Query(default=None, max_length=200),
+    history_cursor: str | None = Query(default=None, max_length=200),
 ) -> dict[str, Any]:
     return await run_sync(
-        db,
-        lambda session: service.gate_evaluation_events(session, attempt_id, evaluation_id, cursor),
+        db, lambda session: service.gate_evaluation_events(
+            session, attempt_id, evaluation_id, cursor, history_cursor
+        ),
     )
 
 

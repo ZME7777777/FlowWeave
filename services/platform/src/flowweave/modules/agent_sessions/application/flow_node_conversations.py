@@ -1638,6 +1638,7 @@ def read_gate_sidecar_events(
     attempt_id: str,
     binding_id: str,
     cursor: str | None = None,
+    history_cursor: str | None = None,
 ) -> dict[str, Any]:
     """Read a Gate Agent transcript without exposing a writable locator."""
 
@@ -1656,6 +1657,7 @@ def read_gate_sidecar_events(
             flow_run_id=flow_run_id,
             openhands_conversation_id=binding.openhands_conversation_id,
             cursor=cursor,
+            history_cursor=history_cursor,
             route_kind="COLLABORATION",
         )
     )

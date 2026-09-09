@@ -122,14 +122,12 @@ def _decode_gate_response(answer: str) -> object:
 
 
 _GATE_RESULT_RETRY_QUESTION = (
-    "Your previous gate result did not satisfy the required result contract and "
-    "cannot be used. Return a fresh, concise result now: exactly one RFC 8259 "
-    "JSON object and nothing else. Include decision, summary, reasons, evidence, "
-    "and details. decision must be exactly PASS, FAIL, or ERROR. If evidence is "
-    "missing, incomplete, conflicting, or insufficient to prove PASS, use FAIL; "
-    "never use an alternative value such as INSUFFICIENT_EVIDENCE. Use ERROR only "
-    "for a technical inability to perform the review. Do not quote or reproduce "
-    "any candidate artifact content."
+    "你上一轮的门禁结果不符合固定返回契约，不能使用。请现在重新返回一份简洁结果："
+    "只能输出一个 RFC 8259 JSON 对象，不能包含其他文字。对象必须包含 decision、summary、"
+    "reasons、evidence 和 details；decision 只能是 PASS、FAIL 或 ERROR。summary、"
+    "reasons 和 evidence 中所有面向人的文字必须使用中文。证据缺失、不完整、冲突或不足以"
+    "证明通过时必须使用 FAIL，不能使用 INSUFFICIENT_EVIDENCE 等其他值；只有技术上无法"
+    "完成审查时才能使用 ERROR。不得引用或复述候选产物正文。"
 )
 
 
@@ -215,8 +213,8 @@ def _prompt(plan: GateExecutionPlan, context: dict[str, Any]) -> GateResult:
             "Prompt gate provider is unavailable", code="GATE_CONFIG_INVALID"
         )
     system = (
-        "Evaluate a workflow gate. Return only JSON with decision PASS, FAIL, or "
-        "ERROR plus summary, reasons, evidence, and details."
+        "评估工作流门禁。只能返回一个 JSON 对象，其中包含 decision（PASS、FAIL 或 ERROR）、"
+        "summary、reasons、evidence 和 details；所有面向人的文字必须使用中文。"
     )
     user = prompt + "\n\nContext:\n" + json.dumps(context, ensure_ascii=False)
     payload = {

@@ -608,9 +608,14 @@ class ManualAttemptOutputWrite(ApiModel):
     artifact_type: Literal["URL", "FILE"]
     uri: str | None = None
     path: str | None = None
+    artifact_id: str | None = None
 
     @model_validator(mode="after")
     def validate_value(self) -> ManualAttemptOutputWrite:
+        if self.artifact_id:
+            if self.uri is not None or self.path is not None:
+                raise ValueError("artifact_id cannot be combined with uri or path")
+            return self
         if self.artifact_type == "URL":
             if self.path is not None or self.uri is None:
                 raise ValueError("URL output requires uri and does not accept path")

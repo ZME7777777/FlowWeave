@@ -1020,6 +1020,112 @@ def test_session_only_node_can_submit_explicit_outputs_and_enter_acceptance(
     assert client.get(f"/api/v1/flow-runs/{run['id']}").json()["node_runs"] == []
 
 
+def test_manual_output_can_reuse_only_an_output_from_its_current_node_run(
+    client, skill_capability, db_session_factory
+):
+    asset = create_asset(client, skill_capability, name="复用节点输出")
+    flow = create_flow(client, asset["id"])
+    run = client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={"environment_version_id": client.environment_version_id},
+    ).json()
+    attempt = client.post(
+        f"/api/v1/flow-runs/{run['id']}/nodes/design_a/runs",
+        json={"startup_mode": "CHAT"},
+    ).json()["attempts"][0]
+    source_id = str(uuid4())
+    with db_session_factory() as db:
+        db.add(
+            ArtifactVersion(
+                id=source_id,
+                flow_run_id=run["id"],
+                producer_attempt_id=attempt["id"],
+                consumer_node_key=None,
+                field_key="design",
+                version_no=1,
+                runtime_completion_event_id=None,
+                artifact_type="URL",
+                storage_key=None,
+                uri="https://example.test/existing-design",
+                inline_content=None,
+                content_hash="a" * 64,
+                byte_size=36,
+                mime_type="text/uri-list",
+                source="RUNTIME",
+                metadata_json={"filename": "existing-design"},
+            )
+        )
+        db.commit()
+
+    submitted = client.post(
+        f"/api/v1/node-attempts/{attempt['id']}/manual-outputs",
+        json={
+            "expected_state_version": attempt["state_version"],
+            "outputs": {"design": {"artifact_type": "URL", "artifact_id": source_id}},
+        },
+    )
+    assert submitted.status_code == 200, submitted.text
+    copied = next(
+        item
+        for item in submitted.json()["artifacts"]
+        if item["metadata"].get("source_artifact_id") == source_id
+    )
+    assert copied["uri"] == "https://example.test/existing-design"
+    assert copied["metadata"]["source_artifact_id"] == source_id
+
+
+def test_manual_output_rejects_an_artifact_from_another_flow_run(
+    client, skill_capability, db_session_factory
+):
+    asset = create_asset(client, skill_capability, name="拒绝跨运行输出")
+    flow = create_flow(client, asset["id"])
+    run = client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={"environment_version_id": client.environment_version_id},
+    ).json()
+    attempt = client.post(
+        f"/api/v1/flow-runs/{run['id']}/nodes/design_a/runs",
+        json={"startup_mode": "CHAT"},
+    ).json()["attempts"][0]
+    other_run = client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={"environment_version_id": client.environment_version_id},
+    ).json()
+    foreign_id = str(uuid4())
+    with db_session_factory() as db:
+        db.add(
+            ArtifactVersion(
+                id=foreign_id,
+                flow_run_id=other_run["id"],
+                producer_attempt_id=None,
+                consumer_node_key=None,
+                field_key="design",
+                version_no=1,
+                runtime_completion_event_id=None,
+                artifact_type="URL",
+                storage_key=None,
+                uri="https://example.test/foreign-design",
+                inline_content=None,
+                content_hash="b" * 64,
+                byte_size=35,
+                mime_type="text/uri-list",
+                source="HUMAN",
+                metadata_json={},
+            )
+        )
+        db.commit()
+
+    rejected = client.post(
+        f"/api/v1/node-attempts/{attempt['id']}/manual-outputs",
+        json={
+            "expected_state_version": attempt["state_version"],
+            "outputs": {"design": {"artifact_type": "URL", "artifact_id": foreign_id}},
+        },
+    )
+    assert rejected.status_code == 422, rejected.text
+    assert rejected.json()["error"]["code"] == "MANUAL_OUTPUT_ARTIFACT_INVALID"
+
+
 def test_session_only_file_output_is_copied_from_authorized_project(
     client, skill_capability, monkeypatch
 ):
