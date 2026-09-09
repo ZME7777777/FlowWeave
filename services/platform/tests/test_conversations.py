@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
@@ -17,6 +18,7 @@ from flowweave.modules.agent_sessions.application import (
     flow_node_host,
     flow_node_workspace,
 )
+from flowweave.modules.agent_sessions.application import usage as usage_projection
 from flowweave.modules.agent_sessions.application.host import CREATE_SESSIONS, READ_SESSIONS
 from flowweave.modules.agent_sessions.public import AgentConversationBinding
 from flowweave.modules.agent_workspaces.application import work_directories
@@ -40,6 +42,11 @@ from flowweave.shared.models import (
 )
 from flowweave.shared.schemas import FlowRunConversationCreateWrite
 from flowweave.shared.settings import settings_context
+
+
+def test_usage_cost_defaults_to_zero_before_orm_flush() -> None:
+    assert usage_projection._cost(None) == Decimal("0")
+    assert usage_projection._cost(0.125) == Decimal("0.125")
 
 
 def test_conversation_reference_projection_hides_selected_text_from_message_body() -> None:

@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Iterable
 from decimal import Decimal
-from typing import Iterable
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -16,7 +16,6 @@ from flowweave.modules.agent_sessions.infrastructure.models import (
 from flowweave.runtime.base import RuntimeUsageSnapshot
 from flowweave.shared.database import now
 
-
 _TOKEN_FIELDS = (
     "prompt_tokens",
     "completion_tokens",
@@ -24,6 +23,12 @@ _TOKEN_FIELDS = (
     "cache_write_tokens",
     "reasoning_tokens",
 )
+
+
+def _cost(value: object) -> Decimal:
+    """Normalize ORM defaults that are not populated until the first flush."""
+
+    return Decimal("0") if value is None else Decimal(str(value))
 
 
 def _kind(usage_id: str) -> str:
@@ -70,7 +75,7 @@ def _summary(items: Iterable[AgentConversationUsageBucket]) -> dict[str, int | f
             )
             result[field] = int(result[field]) + delta
         result["accumulated_cost"] = float(result["accumulated_cost"]) + float(
-            Decimal(item.observed_cost_usd) - Decimal(item.baseline_cost_usd)
+            _cost(item.observed_cost_usd) - _cost(item.baseline_cost_usd)
         )
         if latest is None or item.observed_at > latest:
             latest = item.observed_at
@@ -118,9 +123,13 @@ def capture(
             existing[source.usage_id] = item
         item.model_name = source.model_name
         item.usage_kind = _kind(source.usage_id)
-        item.observed_cost_usd = max(Decimal(item.observed_cost_usd), Decimal(str(source.accumulated_cost)))
+        item.observed_cost_usd = max(
+            _cost(item.observed_cost_usd), _cost(source.accumulated_cost)
+        )
         for field in _TOKEN_FIELDS:
-            setattr(item, f"observed_{field}", max(int(getattr(item, f"observed_{field}")), int(getattr(source, field))))
+            observed = int(getattr(item, f"observed_{field}"))
+            source_value = int(getattr(source, field))
+            setattr(item, f"observed_{field}", max(observed, source_value))
         item.observed_at = observed_at
     db.flush()
     return _summary(existing.values())
