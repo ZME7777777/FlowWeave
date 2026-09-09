@@ -20,6 +20,7 @@ import '../../pages/agent-workbench.css';
 import '../../pages/agent-workbench-layout.css';
 
 const WORKSPACE_FILE_TRANSFER_TYPE = 'application/x-flowweave-workspace-file-path';
+const ACTIVE_EVENT_RECOVERY_INTERVAL_MS = 4_000;
 type StreamStatus = 'connecting' | 'live' | 'recovering' | 'disabled';
 type TurnState = 'idle' | 'running' | 'pausing' | 'paused' | 'resuming';
 interface QueuedMessage {
@@ -2010,6 +2011,42 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     queryKey: eventQueryKey, queryFn: () => api.conversationEvents(workspace!.id, selected!.id), enabled: Boolean(workspace && selected),
     retry: (count, error) => !(error instanceof ApiError && error.status < 500) && count < 2,
   });
+  useEffect(() => {
+    if (!workspace || !selected || !isGenerating || !pageVisible || !eventsQuery.data?.next_cursor) return;
+    const workspaceId = workspace.id;
+    const bindingId = selected.id;
+    let cancelled = false;
+    let timer: number | undefined;
+    const recover = async () => {
+      const current = queryClient.getQueryData<OpenHandsConversationEventBatch>(eventQueryKey);
+      const cursor = current?.next_cursor ?? undefined;
+      if (cancelled || !cursor) return;
+      try {
+        const recovered = await api.conversationEvents(workspaceId, bindingId, cursor);
+        if (cancelled) return;
+        queryClient.setQueryData<OpenHandsConversationEventBatch>(eventQueryKey, existing => {
+          if (!existing) return existing;
+          const cursorUnchanged = existing.next_cursor === cursor;
+          return {
+            ...existing,
+            ...recovered,
+            events: mergeConversationEvents(existing.events, recovered.events),
+            next_cursor: cursorUnchanged ? (recovered.next_cursor ?? cursor) : existing.next_cursor,
+            history_cursor: existing.history_cursor ?? recovered.history_cursor,
+          };
+        });
+      } catch (error) {
+        void error;
+      } finally {
+        if (!cancelled) timer = window.setTimeout(() => { void recover(); }, ACTIVE_EVENT_RECOVERY_INTERVAL_MS);
+      }
+    };
+    timer = window.setTimeout(() => { void recover(); }, ACTIVE_EVENT_RECOVERY_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [api, eventQueryKey, eventsQuery.data?.next_cursor, isGenerating, pageVisible, queryClient, selected?.id, workspace?.id]);
   const loadAllHistory = useCallback(async () => {
     if (!workspace || !selected || !eventsQuery.data?.history_cursor) return;
     const scope = selected.id;
