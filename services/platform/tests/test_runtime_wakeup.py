@@ -1025,6 +1025,8 @@ def test_retry_gate_with_provider_preserves_old_evaluation_and_updates_next_poli
                 "model_name": "new-model",
                 "reasoning_effort": "high",
             },
+            prompt="修订后的判定提示词",
+            code="assert True",
         ),
     )
 
@@ -1034,9 +1036,12 @@ def test_retry_gate_with_provider_preserves_old_evaluation_and_updates_next_poli
         "model_name": "new-model",
         "reasoning_effort": "high",
     }
+    assert attempt.gate_policies_json[0]["config"] == {
+        "prompt": "修订后的判定提示词", "code": "assert True"
+    }
     assert events == [
         (
-            "GATE_PROVIDER_RETRY_CONFIGURED",
+            "GATE_RETRY_CONFIGURED",
             {
                 "evaluation_id": "evaluation-1",
                 "stage": "END",
@@ -1046,6 +1051,8 @@ def test_retry_gate_with_provider_preserves_old_evaluation_and_updates_next_poli
                 "model_provider_id": "provider-new",
                 "model_name": "new-model",
                 "reasoning_effort": "high",
+                "prompt_changed": True,
+                "script_changed": True,
             },
         )
     ]

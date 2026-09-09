@@ -8034,10 +8034,11 @@ def retry_gates(db: Session, attempt_id: str, payload: AttemptVersionWrite) -> d
 def retry_gate_with_provider(
     db: Session, attempt_id: str, payload: GateRetryWithProviderWrite
 ) -> dict[str, Any]:
-    """Explicitly select the next model for one failed author gate and retry its stage.
+    """Retry a Gate ERROR with the current Attempt's editable policy copy.
 
-    The Attempt policy is the configuration for future work only.  Existing
-    GateEvaluation rows retain their own copied preset and are never rewritten.
+    The policy belongs to this Attempt, having been copied from the node preset
+    at creation. Existing GateEvaluation rows retain their copied config and
+    model preset, so this cannot rewrite history or later node copies.
     """
 
     current = _attempt(db, attempt_id)
@@ -8045,7 +8046,7 @@ def retry_gate_with_provider(
     if evaluation is None or evaluation.attempt_id != current.id:
         raise not_found("gate_evaluation", payload.evaluation_id)
     if evaluation.decision != "ERROR":
-        raise illegal("only a gate execution error can switch provider", decision=evaluation.decision)
+        raise illegal("only a gate execution error can be retried", decision=evaluation.decision)
     expected_stage = (
         "START" if current.state == AttemptState.START_BLOCKED else "END"
         if current.state == AttemptState.END_BLOCKED
@@ -8065,10 +8066,10 @@ def retry_gate_with_provider(
         None,
     )
     if target is None:
-        raise illegal("platform-owned or historical gate cannot switch provider")
+        raise illegal("platform-owned or historical gate cannot be edited and retried")
     config = dict(target.get("config") or {})
     if config.get("system_owned") is True:
-        raise illegal("platform-owned gate cannot switch provider")
+        raise illegal("platform-owned gate cannot be edited and retried")
     resolved = agent_sessions.resolve_session_config(
         db,
         model_provider_id=payload.agent_preset.model_provider_id,
@@ -8077,6 +8078,18 @@ def retry_gate_with_provider(
         capability_version_ids=(),
     )
     previous = dict(target.get("agent_preset") or {})
+    previous_prompt = str(config.get("prompt") or "")
+    previous_code = str(config.get("code") or "")
+    config["prompt"] = payload.prompt.strip()
+    if payload.code and payload.code.strip():
+        config["code"] = payload.code
+    else:
+        config.pop("code", None)
+    # Imported filenames identify source content.  They cannot describe newly
+    # typed Attempt-only text, so avoid retaining misleading provenance.
+    config.pop("source_filename", None)
+    config.pop("script_filename", None)
+    target["config"] = config
     target["agent_preset"] = {
         "model_provider_id": resolved.model_provider_id,
         "model_name": resolved.model_name,
@@ -8087,7 +8100,7 @@ def retry_gate_with_provider(
     _event(
         db,
         _run(db, node_run.flow_run_id).id,
-        "GATE_PROVIDER_RETRY_CONFIGURED",
+        "GATE_RETRY_CONFIGURED",
         {
             "evaluation_id": evaluation.id,
             "stage": evaluation.stage,
@@ -8097,6 +8110,8 @@ def retry_gate_with_provider(
             "model_provider_id": resolved.model_provider_id,
             "model_name": resolved.model_name,
             "reasoning_effort": resolved.reasoning_effort,
+            "prompt_changed": previous_prompt != config["prompt"],
+            "script_changed": previous_code != str(config.get("code") or ""),
         },
         node_run.id,
         current.id,

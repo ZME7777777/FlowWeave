@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`ACTIVE`
 > 当前执行切片：无
-> 下一可执行切片：`FR-243 门禁执行异常的 Attempt 级配置编辑与重试`
+> 下一可执行切片：`FR-244 人工门禁结果调整、降级通过与详情收口`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -3349,6 +3349,23 @@ Artifact ID。旧评估保留原状，页面会明确说明其当时没有可恢
 倒序分页执行记录和单条详情入口，避免内部执行记录撑满侧栏。门禁失败操作文案同步改为“根据门禁结果调整”，
 不再提示自动返工。Web `typecheck`、生产构建和 `git diff --check` 通过；全量 ESLint 仍被既有
 `AgentSessionWorkbench.tsx:1836` Hook dependency warning 阻断，未伪记为本切片问题。
+
+### FR-243 门禁执行异常的 Attempt 级配置编辑与重试 — DONE
+
+依赖：`FR-242`。
+
+目标：自定义 Gate 的技术性 `ERROR` 可在当前 Attempt 中修改提示词、可选 Python 脚本和模型配置，然后重试
+当前 Gate 阶段。变更只能写入 `NodeAttempt.gate_policies_json` 的已复制副本，既有 GateEvaluation 保持不变，
+不得回写节点资产、流程预设或后续复制节点的预设。平台确定性校验与历史 Gate 一律不可编辑。
+
+验收：定向服务回归证明 Attempt 副本更新、旧评估不被改写、系统 Gate 拒绝修改；Web 类型检查／构建与
+`git diff --check`、任务状态唯一性通过。完成后独立提交并停止。
+
+完成：技术 `ERROR` 的自定义 Gate 详情现在允许编辑当前 Attempt 副本中的判定提示词、可选 Python 脚本和
+模型配置，再以同一状态版本重试当前阶段。服务端只更新 `NodeAttempt.gate_policies_json` 中匹配的 Gate，
+并在 `GATE_RETRY_CONFIGURED` 事件中记录模型与字段是否变化，不记录用户文本；旧 GateEvaluation 的配置和
+结果不变。平台确定性校验、历史 Gate 及业务 `FAIL` 均继续拒绝该入口。Attempt 级直接回归、Python 编译、
+Alembic head、Web typecheck／生产构建与 `git diff --check` 通过。
 
 ### FR-241 自动门禁业务失败停止 — DONE
 

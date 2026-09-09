@@ -580,10 +580,18 @@ class AttemptVersionWrite(ApiModel):
 
 
 class GateRetryWithProviderWrite(AttemptVersionWrite):
-    """Retry a failed author gate with one explicitly selected model configuration."""
+    """Retry one failed author gate with this Attempt's editable Gate copy."""
 
     evaluation_id: str = Field(min_length=1, max_length=36)
     agent_preset: GateAgentPresetWrite
+    prompt: str = Field(min_length=1, max_length=200_000)
+    code: str | None = Field(default=None, max_length=256 * 1024)
+
+    @model_validator(mode="after")
+    def validate_gate_copy(self) -> GateRetryWithProviderWrite:
+        if not self.prompt.strip():
+            raise ValueError("Gate prompt must be non-empty text")
+        return self
 
 
 class GateRiskAcceptanceWrite(AttemptVersionWrite):
