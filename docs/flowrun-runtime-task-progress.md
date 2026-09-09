@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`ACTIVE`
 > 当前执行切片：无
-> 下一可执行切片：`FR-244 人工门禁结果调整、降级通过与详情收口`
+> 下一可执行切片：`FR-245 人工门禁结果调整、降级通过与详情收口`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -3386,6 +3386,18 @@ Alembic head、任务状态唯一性与 `git diff --check` 通过。完成后独
 daemon 不可用、Testcontainers 数据库 fixture 初始化失败而未能执行。受影响模块 `py_compile`、Alembic 唯一
 head、任务状态唯一性与 `git diff --check` 通过；Ruff 仅报告修改前已存在的 import 排序及第 8048 行超长问题，
 本切片未扩大该无关差异。
+
+### FR-244 门禁历史弹窗可读性收口 — DONE
+
+依赖：`FR-243`。
+
+目标：门禁历史弹窗在较矮视口中仍应保留明确的顶部安全间距，完整展示三条门禁定义，并只保留右上角关闭
+入口；不应再用重复的底部“关闭”按钮占用执行记录的可视高度。
+
+完成：Gate 历史弹窗改为从视口顶部预留 48px，底部保留 28px；移除底部 footer 和重复关闭按钮，释放记录区
+高度。三条冻结定义记录均设置了稳定的最小行高，内容过长时继续由弹窗正文滚动，不会压缩或遮蔽模型配置。
+Web TypeScript typecheck、production build、唯一 Alembic head `0103_runtime_artifact_proj_idem` 与
+`git diff --check` 通过；无迁移。
 
 ## 7. 恢复工作检查表
 
