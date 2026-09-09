@@ -3292,6 +3292,19 @@ Runtime 或调用取消／删除路径。候选区分“同一正式 Runtime com
 
 完成：工作台按最大的 NodeRun `sequence_no` 解析稳定的当前流转位置，并在连续记录详情加载后选中其最新 Attempt；历史会话返回携带的精确 NodeRun 继续优先恢复。画布将当前流转标识与失败／完成状态独立渲染，失败的最终节点仍显示失败样式、可被默认选中并保持“当前流转节点”标记。新增三节点浏览器回归覆盖前两节点完成、第三节点失败后的默认选中以及查看历史节点不丢失流转标记。
 
+### FR-238 Gate 决策契约纠正重试 — DONE
+
+依赖：`FR-236`。
+
+目标：Gate Agent 返回合法 JSON 但使用 `INSUFFICIENT_EVIDENCE` 等非契约决策时，必须保持
+`PASS`／`FAIL`／`ERROR` 三值协议，不能把“证据不足”误投影为技术执行异常。门禁提示词应明确证据不足、
+不完整、冲突或不可验证时使用 `FAIL`；执行器对无效 JSON 和无效决策均只在同一隔离审查会话中纠正一次，
+不得猜测或放宽公共枚举。纠正仍无效时保留原有可诊断 `GATE_RESULT_INVALID`。
+
+完成：Gate sidecar 的一次纠正请求现在同时覆盖损坏 JSON、字段契约错误和不支持的 decision；纠正指令明确
+`INSUFFICIENT_EVIDENCE` 必须表示为 `FAIL`，只有技术上无法审查时才使用 `ERROR`。节点 Gate 提示词同步
+固定该语义，旧失败审计保持不变，后续重试使用严格、可恢复的三值结果。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -3307,6 +3320,7 @@ Runtime 或调用取消／删除路径。候选区分“同一正式 Runtime com
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-09 | FR-238 | Gate sidecar 围栏 JSON、损坏 JSON 纠正与不支持 `INSUFFICIENT_EVIDENCE` 决策纠正定向 pytest（3 passed）；受影响 Python `py_compile`、未定义名称 Ruff 检查、Alembic head、`git diff --check` 与任务状态唯一性 | PASS：无效枚举不再直接形成 `GATE_RESULT_INVALID` 技术错误；相同隔离会话只纠正一次并要求模型返回严格三值，证据不足收敛为 `FAIL`。无迁移。 |
 | 2026-09-09 | FR-237 | 连续记录最终失败节点定向 Playwright（1 passed）；Web TypeScript typecheck／production build；Alembic head、`git diff --check` 与任务状态唯一性 | PASS：打开连续运行记录后，最终失败节点成为默认选中和当前流转节点；查看已完成的历史节点不会移除最终节点的流转标识。唯一 Alembic head 为 `0103_runtime_artifact_proj_idem`。全量 Web ESLint 仍被既有 `AgentSessionWorkbench.tsx:1836` 的 Hook dependency warning 阻断，未伪记为通过。 |
 | 2026-09-09 | FR-236 | 受影响 Python `py_compile`；Web 定向 ESLint、TypeScript typecheck／production build；`git diff --check` 与任务状态核对 | PASS（静态）：详情页面投影每次门禁的冻结 Agent 配置，并只对当前阻断阶段的用户自定义技术错误显示“切换供应商后重试”；平台门禁没有该入口。`uv run pytest -k retry_gate_with_provider` 在 fixture 初始化时因本机 Docker daemon 未运行而无法启动 Testcontainers PostgreSQL，未伪记为通过。全量 Web lint 被既有 `AgentSessionWorkbench.tsx:1836` 的 React Hook dependency warning 阻断；本切片关联文件的定向 ESLint、typecheck 和 production build 均通过。 |
 | 2026-09-08 | FR-234 | `test_openhands.py` 运行会话搜索定向测试；受影响 Python `py_compile`、Ruff、`git diff --check` 与任务状态唯一性；远端平台部署与入口验证 | PASS（静态与远端）：`py_compile`、`git diff --check`、任务状态核对通过；本机未安装 `pytest`/`ruff` 可执行文件，定向测试与 Ruff 未能启动。远端 `ad8dd98` 平台镜像为 `linux/amd64`，Migration `Exited (0)`，API、Runtime Provider、stream-api healthy，Worker Up；公网/本地前缀页面和 Agent 深链返回 200，未认证 API 返回预期 401，近期日志无 ERROR/CRITICAL/Traceback。 |

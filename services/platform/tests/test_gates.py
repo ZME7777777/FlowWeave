@@ -91,9 +91,7 @@ def test_platform_output_contract_rejects_an_unbindable_mapping():
         GateExecutionPlan("PLATFORM_OUTPUT_CONTRACT", {}, 1),
         {
             "node": {"outputs": [{"field_key": "report", "data_type": "FILE"}]},
-            "outputs": [
-                {"id": "artifact-report", "field_key": "report", "artifact_type": "FILE"}
-            ],
+            "outputs": [{"id": "artifact-report", "field_key": "report", "artifact_type": "FILE"}],
             "downstream_consumers": [
                 {
                     "instance_key": "N2",
@@ -264,6 +262,56 @@ def test_agent_sidecar_gate_retries_once_for_malformed_json():
 
     assert result.decision == "PASS"
     assert len(runtime.questions) == 2
+
+
+def test_agent_sidecar_gate_retries_once_for_unsupported_decision():
+    class CorrectingRuntime(MockRuntime):
+        def __init__(self) -> None:
+            super().__init__()
+            self.questions: list[str] = []
+
+        def ask_agent(self, handle, question, *, timeout_seconds):
+            del handle, timeout_seconds
+            self.questions.append(question)
+            if len(self.questions) == 1:
+                return RuntimeAskAgentResult(
+                    response=(
+                        '{"decision":"INSUFFICIENT_EVIDENCE","summary":"证据不足",'
+                        '"reasons":[],"evidence":[],"details":{}}'
+                    )
+                )
+            return RuntimeAskAgentResult(
+                response=(
+                    '{"decision":"FAIL","summary":"证据不足，未通过",'
+                    '"reasons":["缺少可验证证据"],"evidence":[],"details":{}}'
+                )
+            )
+
+    runtime = CorrectingRuntime()
+    request = StartAttemptRequest(
+        attempt_id="gate-sidecar-binding",
+        execution_key="gate-sidecar:test",
+        node={},
+        bindings=[],
+        workspace_ref="/runtime/workspace/project",
+        conversation_id="gate-sidecar-conversation",
+        interaction_mode="COLLABORATION",
+    )
+    plan = GateExecutionPlan(
+        "PROMPT",
+        {"prompt": "check"},
+        2,
+        sidecar_request=request,
+        sidecar_question="You are an isolated workflow gate Agent.",
+    )
+
+    with runtime_context(runtime):
+        result = execute_gate_plan(plan, {})
+
+    assert result.decision == "FAIL"
+    assert result.error_code is None
+    assert len(runtime.questions) == 2
+    assert "INSUFFICIENT_EVIDENCE" in runtime.questions[1]
 
 
 def test_python_gate_rejects_imports_and_host_access(db_session_factory):
