@@ -320,7 +320,6 @@ def _page_dicts(
 
 
 def _workspace_dict(db: Session, workspace: AgentWorkspace) -> dict[str, Any]:
-    usage = usage_projection.capture(db, binding, batch.usage)
     return {
         "id": workspace.id,
         "display_name": workspace.display_name,
@@ -1682,6 +1681,7 @@ def events(
                 ]
         return {"id": event.cursor, "event_type": event.event_type, "payload": payload}
 
+    usage = usage_projection.capture(db, binding, batch.usage)
     return {
         "events": [projected_event(event) for event in batch.events],
         "next_cursor": batch.cursor,
