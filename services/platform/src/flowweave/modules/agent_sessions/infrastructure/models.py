@@ -15,6 +15,8 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     Integer,
+    BigInteger,
+    Numeric,
     String,
     Text,
     UniqueConstraint,
@@ -175,6 +177,61 @@ class AgentConversationCommand(Base):
     attempt_count: Mapped[int] = mapped_column(Integer, default=0)
     last_error_code: Mapped[str | None] = mapped_column(String(100))
     failure_summary: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
+class AgentConversationUsageBucket(Base):
+    """Durable, monotonic projection of one OpenHands usage bucket.
+
+    OpenHands keeps the authoritative absolute counters in Conversation state.
+    ``baseline_*`` freezes the counters inherited when this binding was created
+    (notably for forks); ``observed_*`` is the greatest valid source snapshot.
+    Aggregates therefore use ``observed - baseline`` and never add a repeated
+    event read twice.
+    """
+
+    __tablename__ = "agent_conversation_usage_buckets"
+    __table_args__ = (
+        UniqueConstraint("binding_id", "usage_id", name="uq_agent_conversation_usage_bucket"),
+        CheckConstraint(
+            "baseline_prompt_tokens >= 0 AND baseline_completion_tokens >= 0 "
+            "AND baseline_cache_read_tokens >= 0 AND baseline_cache_write_tokens >= 0 "
+            "AND baseline_reasoning_tokens >= 0 AND baseline_cost_usd >= 0 "
+            "AND observed_prompt_tokens >= baseline_prompt_tokens "
+            "AND observed_completion_tokens >= baseline_completion_tokens "
+            "AND observed_cache_read_tokens >= baseline_cache_read_tokens "
+            "AND observed_cache_write_tokens >= baseline_cache_write_tokens "
+            "AND observed_reasoning_tokens >= baseline_reasoning_tokens "
+            "AND observed_cost_usd >= baseline_cost_usd",
+            name="ck_agent_conversation_usage_monotonic",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    # The locator can be deleted after the cost has been attributed; do not use
+    # a database FK/cascade here or historical Attempt/NodeRun totals vanish.
+    binding_id: Mapped[str] = mapped_column(String(36), index=True)
+    flow_run_id: Mapped[str | None] = mapped_column(String(36), index=True)
+    node_run_id: Mapped[str | None] = mapped_column(String(36), index=True)
+    node_attempt_id: Mapped[str | None] = mapped_column(String(36), index=True)
+    openhands_conversation_id: Mapped[str] = mapped_column(String(100), index=True)
+    usage_id: Mapped[str] = mapped_column(String(200))
+    usage_kind: Mapped[str] = mapped_column(String(20), default="AUXILIARY")
+    model_name: Mapped[str] = mapped_column(String(200), default="default")
+    baseline_cost_usd: Mapped[float] = mapped_column(Numeric(20, 8), default=0)
+    observed_cost_usd: Mapped[float] = mapped_column(Numeric(20, 8), default=0)
+    baseline_prompt_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
+    observed_prompt_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
+    baseline_completion_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
+    observed_completion_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
+    baseline_cache_read_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
+    observed_cache_read_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
+    baseline_cache_write_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
+    observed_cache_write_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
+    baseline_reasoning_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
+    observed_reasoning_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
 

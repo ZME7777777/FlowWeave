@@ -1,0 +1,154 @@
+"""Token-usage attribution without taking ownership of OpenHands state."""
+
+from __future__ import annotations
+
+from collections import defaultdict
+from decimal import Decimal
+from typing import Iterable
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from flowweave.modules.agent_sessions.infrastructure.models import (
+    AgentConversationBinding,
+    AgentConversationUsageBucket,
+)
+from flowweave.runtime.base import RuntimeUsageSnapshot
+from flowweave.shared.database import now
+
+
+_TOKEN_FIELDS = (
+    "prompt_tokens",
+    "completion_tokens",
+    "cache_read_tokens",
+    "cache_write_tokens",
+    "reasoning_tokens",
+)
+
+
+def _kind(usage_id: str) -> str:
+    if usage_id.startswith("task:"):
+        return "SUBAGENT"
+    if usage_id in {"condenser", "planning_condenser"}:
+        return "CONDENSER"
+    if usage_id.startswith("flowweave:"):
+        return "PRIMARY"
+    return "AUXILIARY"
+
+
+def _empty() -> dict[str, int | float | str | None]:
+    return {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "reasoning_tokens": 0,
+        "total_tokens": 0,
+        "accumulated_cost": 0.0,
+        "session_count": 0,
+        "bucket_count": 0,
+        "observed_at": None,
+    }
+
+
+def empty() -> dict[str, int | float | str | None]:
+    """Return a DTO-shaped zero total without performing a database read."""
+
+    return _empty()
+
+
+def _summary(items: Iterable[AgentConversationUsageBucket]) -> dict[str, int | float | str | None]:
+    result = _empty()
+    bindings: set[str] = set()
+    latest = None
+    for item in items:
+        bindings.add(item.binding_id)
+        result["bucket_count"] = int(result["bucket_count"]) + 1
+        for field in _TOKEN_FIELDS:
+            delta = int(getattr(item, f"observed_{field}")) - int(
+                getattr(item, f"baseline_{field}")
+            )
+            result[field] = int(result[field]) + delta
+        result["accumulated_cost"] = float(result["accumulated_cost"]) + float(
+            Decimal(item.observed_cost_usd) - Decimal(item.baseline_cost_usd)
+        )
+        if latest is None or item.observed_at > latest:
+            latest = item.observed_at
+    result["session_count"] = len(bindings)
+    result["total_tokens"] = sum(int(result[field]) for field in _TOKEN_FIELDS)
+    result["observed_at"] = latest.isoformat() if latest else None
+    return result
+
+
+def capture(
+    db: Session, binding: AgentConversationBinding, snapshots: Iterable[RuntimeUsageSnapshot]
+) -> dict[str, int | float | str | None]:
+    """Store only monotonic source snapshots and return this session's total.
+
+    A Runtime replacement or repeated REST/SSE read returns the same absolute
+    OpenHands counters.  Taking a high-water mark makes those operations
+    idempotent.  A new binding starts at zero; OpenHands native forks in the
+    fixed Runtime explicitly reset metrics, so their history is not charged a
+    second time.
+    """
+
+    existing = {
+        item.usage_id: item
+        for item in db.scalars(
+            select(AgentConversationUsageBucket).where(
+                AgentConversationUsageBucket.binding_id == binding.id
+            )
+        )
+    }
+    observed_at = now()
+    for source in snapshots:
+        item = existing.get(source.usage_id)
+        if item is None:
+            item = AgentConversationUsageBucket(
+                binding_id=binding.id,
+                flow_run_id=binding.flow_run_id,
+                node_run_id=binding.node_run_id,
+                node_attempt_id=binding.node_attempt_id,
+                openhands_conversation_id=binding.openhands_conversation_id,
+                usage_id=source.usage_id,
+                usage_kind=_kind(source.usage_id),
+                model_name=source.model_name,
+            )
+            db.add(item)
+            existing[source.usage_id] = item
+        item.model_name = source.model_name
+        item.usage_kind = _kind(source.usage_id)
+        item.observed_cost_usd = max(Decimal(item.observed_cost_usd), Decimal(str(source.accumulated_cost)))
+        for field in _TOKEN_FIELDS:
+            setattr(item, f"observed_{field}", max(int(getattr(item, f"observed_{field}")), int(getattr(source, field))))
+        item.observed_at = observed_at
+    db.flush()
+    return _summary(existing.values())
+
+
+def for_binding(db: Session, binding_id: str) -> dict[str, int | float | str | None]:
+    return _summary(
+        db.scalars(
+            select(AgentConversationUsageBucket).where(
+                AgentConversationUsageBucket.binding_id == binding_id
+            )
+        )
+    )
+
+
+def for_scope(
+    db: Session, *, field: str, ids: Iterable[str]
+) -> dict[str, dict[str, int | float | str | None]]:
+    values = tuple(dict.fromkeys(ids))
+    if not values:
+        return {}
+    column = getattr(AgentConversationUsageBucket, field)
+    grouped: dict[str, list[AgentConversationUsageBucket]] = defaultdict(list)
+    for item in db.scalars(select(AgentConversationUsageBucket).where(column.in_(values))):
+        value = getattr(item, field)
+        if value:
+            grouped[str(value)].append(item)
+    return {value: _summary(grouped[value]) for value in values}
+
+
+__all__ = ("capture", "empty", "for_binding", "for_scope")
