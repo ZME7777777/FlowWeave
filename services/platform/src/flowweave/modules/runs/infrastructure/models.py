@@ -175,6 +175,7 @@ class NodeAttempt(Base):
     # A reusable Flow definition intentionally does not own this configuration.
     gate_policies_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
     output_targets_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    current_candidate_output_set_id: Mapped[str | None] = mapped_column(String(36), index=True)
     error_code: Mapped[str | None] = mapped_column(String(80))
     error_detail: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
@@ -224,6 +225,24 @@ class ArtifactVersion(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
+class CandidateOutputSet(Base):
+    __tablename__ = "candidate_output_sets"
+    __table_args__ = (
+        UniqueConstraint(
+            "attempt_id", "completion_event_id", name="uq_candidate_output_completion"
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    attempt_id: Mapped[str] = mapped_column(String(36), index=True)
+    completion_event_id: Mapped[str] = mapped_column(String(200))
+    status: Mapped[str] = mapped_column(String(24), default="PENDING_REVIEW", index=True)
+    artifact_ids_json: Mapped[list[str]] = mapped_column(JSON, default=list)
+    gate_error_code: Mapped[str | None] = mapped_column(String(80))
+    superseded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
 class AttemptInputBinding(Base):
     __tablename__ = "attempt_input_bindings"
     __table_args__ = (
@@ -251,6 +270,7 @@ class GateEvaluation(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
     attempt_id: Mapped[str] = mapped_column(String(36), index=True)
+    candidate_output_set_id: Mapped[str | None] = mapped_column(String(36), index=True)
     policy_snapshot_key: Mapped[str] = mapped_column(String(100))
     stage: Mapped[str] = mapped_column(String(10))
     policy_position: Mapped[int] = mapped_column(Integer)

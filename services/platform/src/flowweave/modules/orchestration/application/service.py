@@ -83,6 +83,7 @@ from flowweave.shared.models import (
     AttemptInputBinding,
     AttemptState,
     BackgroundTask,
+    CandidateOutputSet,
     EnvironmentVersion,
     FlowRun,
     FlowRunRuntime,
@@ -113,8 +114,8 @@ from flowweave.shared.schemas import (
     AutomaticRunStartWrite,
     FlowRunScheduleStateWrite,
     FlowRunScheduleWrite,
-    GateRetryWithProviderWrite,
     GateRemediationWrite,
+    GateRetryWithProviderWrite,
     GateRiskAcceptanceWrite,
     HumanInputWrite,
     InputBindingsWrite,
@@ -766,6 +767,29 @@ def _register_artifact(
     return item
 
 
+def _current_candidate_output_set(db: Session, attempt: NodeAttempt) -> CandidateOutputSet | None:
+    candidate_id = getattr(attempt, "current_candidate_output_set_id", None)
+    if not candidate_id:
+        return None
+    return db.get(CandidateOutputSet, candidate_id)
+
+
+def _candidate_artifacts(
+    db: Session, candidate: CandidateOutputSet | None
+) -> list[ArtifactVersion]:
+    if candidate is None or not candidate.artifact_ids_json:
+        return []
+    rows = list(
+        db.scalars(
+            select(ArtifactVersion).where(ArtifactVersion.id.in_(candidate.artifact_ids_json))
+        )
+    )
+    by_id = {row.id: row for row in rows}
+    return [
+        by_id[artifact_id] for artifact_id in candidate.artifact_ids_json if artifact_id in by_id
+    ]
+
+
 def _runtime_output_growth_violations(
     db: Session,
     attempt: NodeAttempt,
@@ -965,6 +989,16 @@ def list_nested_automatic_run_artifacts(
         if _node_run(db, attempt.node_run_id).flow_run_id != run.id:
             raise not_found("node_attempt", attempt_id)
         statement = statement.where(ArtifactVersion.producer_attempt_id == attempt.id)
+        candidate = _current_candidate_output_set(db, attempt)
+        if candidate is not None:
+            statement = statement.where(ArtifactVersion.id.in_(candidate.artifact_ids_json or []))
+        elif db.scalar(
+            select(func.count(ArtifactVersion.id)).where(
+                ArtifactVersion.producer_attempt_id == attempt.id,
+                ArtifactVersion.source == "RUNTIME",
+            )
+        ):
+            statement = statement.where(False)
     if artifact_ids:
         statement = statement.where(ArtifactVersion.id.in_(artifact_ids))
     total = int(db.scalar(select(func.count()).select_from(statement.subquery())) or 0)
@@ -1915,7 +1949,8 @@ def _gate_review_projection(context: dict[str, Any], policy: dict[str, Any]) -> 
             ],
             "candidate_outputs": [
                 _gate_review_artifact_projection(item)
-                for item in output_items if isinstance(item, dict)
+                for item in output_items
+                if isinstance(item, dict)
             ],
             "downstream_consumers": context.get("downstream_consumers")
             if isinstance(context.get("downstream_consumers"), list)
@@ -1998,13 +2033,8 @@ def _gate_context(
             )
         )
     }
-    outputs = list(
-        db.scalars(
-            select(ArtifactVersion)
-            .where(ArtifactVersion.producer_attempt_id == attempt.id)
-            .order_by(ArtifactVersion.field_key, ArtifactVersion.version_no)
-        )
-    )
+    candidate = _current_candidate_output_set(db, attempt) if stage == "END" else None
+    outputs = _candidate_artifacts(db, candidate) if stage == "END" else []
     bindings = [
         {
             "input_field_key": row.input_field_key,
@@ -2018,6 +2048,15 @@ def _gate_context(
         "schema_version": 2,
         "stage": stage,
         "attempt": {"id": attempt.id, "attempt_no": attempt.attempt_no},
+        "candidate_output_set": (
+            {
+                "id": candidate.id,
+                "status": candidate.status,
+                "completion_event_id": candidate.completion_event_id,
+            }
+            if candidate is not None
+            else None
+        ),
         "node": {
             "instance_key": node_run.flow_node_snapshot_key,
             "alias": node.get("alias"),
@@ -2150,6 +2189,7 @@ def _record_gate_results(
     next_state: str,
 ) -> None:
     node_run = _node_run(db, attempt.node_run_id)
+    candidate = _current_candidate_output_set(db, attempt) if stage == "END" else None
     for prepared, result in evaluations:
         policy = prepared.policy
         result_json = result.as_dict()
@@ -2177,6 +2217,7 @@ def _record_gate_results(
         db.add(
             GateEvaluation(
                 attempt_id=attempt.id,
+                candidate_output_set_id=candidate.id if candidate is not None else None,
                 policy_snapshot_key=str(policy["id"]),
                 stage=stage,
                 policy_position=int(policy["position"]),
@@ -2195,6 +2236,24 @@ def _record_gate_results(
                 error_code=result.error_code,
             )
         )
+    if candidate is not None:
+        decisions = [result.decision for _prepared, result in evaluations]
+        if "ERROR" in decisions:
+            candidate.status = "GATE_ERROR"
+            candidate.gate_error_code = next(
+                (
+                    result.error_code
+                    for _prepared, result in evaluations
+                    if result.decision == "ERROR" and result.error_code
+                ),
+                None,
+            )
+        elif "FAIL" in decisions:
+            candidate.status = "GATE_FAILED"
+            candidate.gate_error_code = None
+        else:
+            candidate.status = "GATE_PASSED"
+            candidate.gate_error_code = None
     attempt.state = next_state
     _event(
         db,
@@ -2471,9 +2530,7 @@ def _prepare_gate_plan(
         workspace = sandboxes.node_attempt_workspace_context(
             db, flow_run_id=run.id, node_attempt_id=attempt.id
         )
-        connection = _node_sidecar_connection(
-            db, flow_run_id=run.id, node_attempt_id=attempt.id
-        )
+        connection = _node_sidecar_connection(db, flow_run_id=run.id, node_attempt_id=attempt.id)
         if config.get("system_owned") is True:
             # The mandatory review must use exactly the model frozen on the
             # execution Conversation.  In particular it must not fall back to
@@ -5756,6 +5813,18 @@ def _apply_runtime_result(
             attempt.id,
         )
     elif result.status == "COMPLETED":
+        current_candidate = _current_candidate_output_set(db, attempt)
+        if (
+            current_candidate is not None
+            and current_candidate.status == "GATE_PASSED"
+            and (
+                attempt.state in {AttemptState.WAITING_ACCEPTANCE, AttemptState.ACCEPTED}
+                or node_run.accepted_attempt_id == attempt.id
+            )
+        ):
+            discard_prepared_artifacts(prepared_outputs)
+            _finish_transaction(db, commit)
+            return attempt_detail(db, attempt.id)
         completion_event_id = _completion_event_id(result)
         if completion_event_id is None:
             raise DomainError(
@@ -5763,20 +5832,48 @@ def _apply_runtime_result(
                 "OpenHands completed without a formal completion event identity",
                 502,
             )
+        existing_candidate = db.scalar(
+            select(CandidateOutputSet).where(
+                CandidateOutputSet.attempt_id == attempt.id,
+                CandidateOutputSet.completion_event_id == completion_event_id,
+            )
+        )
+        if existing_candidate is not None:
+            discard_prepared_artifacts(prepared_outputs)
+            if existing_candidate.status != "SUPERSEDED":
+                attempt.current_candidate_output_set_id = existing_candidate.id
+            _finish_transaction(db, commit)
+            return attempt_detail(db, attempt.id)
         growth_violations = _runtime_output_growth_violations(db, attempt, prepared_outputs)
         if growth_violations:
             _block_runtime_output_growth(db, attempt, prepared_outputs, growth_violations)
             _finish_transaction(db, commit)
             return attempt_detail(db, attempt.id)
+        registered: list[ArtifactVersion] = []
         for prepared in prepared_outputs:
-            _register_artifact(
-                db,
-                run.id,
-                prepared,
-                source="RUNTIME",
-                attempt_id=attempt.id,
-                runtime_completion_event_id=completion_event_id,
+            registered.append(
+                _register_artifact(
+                    db,
+                    run.id,
+                    prepared,
+                    source="RUNTIME",
+                    attempt_id=attempt.id,
+                    runtime_completion_event_id=completion_event_id,
+                )
             )
+        previous_candidate = _current_candidate_output_set(db, attempt)
+        if previous_candidate is not None:
+            previous_candidate.status = "SUPERSEDED"
+            previous_candidate.superseded_at = now()
+        candidate = CandidateOutputSet(
+            attempt_id=attempt.id,
+            completion_event_id=completion_event_id,
+            status="PENDING_REVIEW",
+            artifact_ids_json=[item.id for item in registered],
+        )
+        db.add(candidate)
+        db.flush()
+        attempt.current_candidate_output_set_id = candidate.id
         attempt.state = AttemptState.END_GATES
         attempt.runtime_phase = "COMPLETED"
         _event(
@@ -7273,6 +7370,7 @@ def _delete_node_run_records(
             delete(AttemptInputBinding).where(AttemptInputBinding.attempt_id.in_(attempt_ids))
         )
         db.execute(delete(GateEvaluation).where(GateEvaluation.attempt_id.in_(attempt_ids)))
+        db.execute(delete(CandidateOutputSet).where(CandidateOutputSet.attempt_id.in_(attempt_ids)))
     db.execute(delete(HumanAction).where(HumanAction.node_run_id == node_run.id))
     db.execute(delete(RunEvent).where(RunEvent.node_run_id == node_run.id))
     if artifact_ids:
@@ -7301,14 +7399,44 @@ def _create_configurable_targets(db: Session, run: FlowRun, accepted: NodeRun) -
 
     snapshot = _active_snapshot(db, run)
     definition = snapshot.definition_json
-    outputs = list(
-        db.scalars(
-            select(ArtifactVersion).where(
-                ArtifactVersion.producer_attempt_id == accepted.accepted_attempt_id
+    accepted_attempt = _attempt(db, accepted.accepted_attempt_id or "")
+    candidate = _current_candidate_output_set(db, accepted_attempt)
+    if candidate is None:
+        runtime_count = int(
+            db.scalar(
+                select(func.count(ArtifactVersion.id)).where(
+                    ArtifactVersion.producer_attempt_id == accepted_attempt.id,
+                    ArtifactVersion.source == "RUNTIME",
+                )
+            )
+            or 0
+        )
+        if runtime_count:
+            raise DomainError(
+                "ATTEMPT_OUTPUT_NOT_ACCEPTED",
+                "only a passing candidate output set can flow downstream",
+                409,
+            )
+        fallback = list(
+            db.scalars(
+                select(ArtifactVersion)
+                .where(ArtifactVersion.producer_attempt_id == accepted_attempt.id)
+                .order_by(
+                    ArtifactVersion.field_key, ArtifactVersion.version_no.desc(), ArtifactVersion.id
+                )
             )
         )
-    )
-    by_field = {item.field_key: item.id for item in outputs}
+    else:
+        if candidate.status != "GATE_PASSED":
+            raise DomainError(
+                "ATTEMPT_OUTPUT_NOT_ACCEPTED",
+                "only a passing candidate output set can flow downstream",
+                409,
+            )
+        fallback = _candidate_artifacts(db, candidate)
+    by_field: dict[str, str] = {}
+    for item in fallback:
+        by_field.setdefault(item.field_key, item.id)
     targets = sorted(
         {
             str(edge["target_instance_key"])
@@ -7442,14 +7570,17 @@ def _advance_automatic_targets(
     definition = snapshot.definition_json
     plan: dict[str, Any] = dict(run.automation_plan_json or {})
     node_plans = cast(dict[str, Any], plan.get("node_plans") or {})
-    source_outputs = {
-        item.field_key: item.id
-        for item in db.scalars(
-            select(ArtifactVersion).where(
-                ArtifactVersion.producer_attempt_id == accepted.accepted_attempt_id
-            )
+    accepted_attempt = _attempt(db, accepted.accepted_attempt_id or "")
+    candidate = _current_candidate_output_set(db, accepted_attempt)
+    if candidate is None or candidate.status != "GATE_PASSED":
+        raise DomainError(
+            "ATTEMPT_OUTPUT_NOT_ACCEPTED",
+            "only a passing candidate output set can flow downstream",
+            409,
         )
-    }
+    source_outputs: dict[str, str] = {}
+    for item in _candidate_artifacts(db, candidate):
+        source_outputs.setdefault(item.field_key, item.id)
     allowed = set(_automatic_successor_keys(db, run, accepted))
     unauthorized = sorted(set(selected_targets) - allowed)
     if unauthorized:
@@ -7838,6 +7969,11 @@ def _remediate_gate_failure(
     if not source_identity.event_id:
         raise DomainError("RUNTIME_EVENT_IDENTITY_INVALID", "主执行会话缺少可分叉的完成边界", 409)
     instruction, failed_ids = _gate_remediation_prompt(db, current, node_run)
+    previous_candidate = _current_candidate_output_set(db, current)
+    if previous_candidate is not None:
+        previous_candidate.status = "SUPERSEDED"
+        previous_candidate.superseded_at = now()
+        current.current_candidate_output_set_id = None
     forked = agent_sessions.flow_node_conversations.fork_node_conversation(
         db,
         flow_run_id=run.id,
@@ -8101,7 +8237,9 @@ def retry_gate_with_provider(
     if evaluation.decision != "ERROR":
         raise illegal("only a gate execution error can be retried", decision=evaluation.decision)
     expected_stage = (
-        "START" if current.state == AttemptState.START_BLOCKED else "END"
+        "START"
+        if current.state == AttemptState.START_BLOCKED
+        else "END"
         if current.state == AttemptState.END_BLOCKED
         else None
     )
@@ -8871,17 +9009,8 @@ def attempt_detail(
         and item.get("text")
     )
     bindings = _bindings(db, attempt.id)
-    artifacts = (
-        list(
-            db.scalars(
-                select(ArtifactVersion)
-                .where(ArtifactVersion.producer_attempt_id == attempt.id)
-                .order_by(ArtifactVersion.field_key, ArtifactVersion.version_no)
-            )
-        )
-        if include_artifacts
-        else []
-    )
+    candidate = _current_candidate_output_set(db, attempt)
+    artifacts = _candidate_artifacts(db, candidate) if include_artifacts else []
     gates = list(
         db.scalars(
             select(GateEvaluation)
@@ -8948,6 +9077,18 @@ def attempt_detail(
         "agent_preset": attempt.agent_preset_json,
         "gate_policies": attempt.gate_policies_json,
         "output_targets": attempt.output_targets_json,
+        "candidate_output_set": (
+            {
+                "id": candidate.id,
+                "completion_event_id": candidate.completion_event_id,
+                "status": candidate.status,
+                "artifact_ids": list(candidate.artifact_ids_json or []),
+                "gate_error_code": candidate.gate_error_code,
+                "created_at": candidate.created_at.isoformat(),
+            }
+            if candidate is not None
+            else None
+        ),
         "error_code": attempt.error_code,
         "error_detail": attempt.error_detail,
         "automatic_progress": _automatic_progress(db, attempt, _run(db, node_run.flow_run_id)),
@@ -8968,6 +9109,7 @@ def attempt_detail(
                 "stage": x.stage,
                 "policy_snapshot_key": x.policy_snapshot_key,
                 "policy_position": x.policy_position,
+                "candidate_output_set_id": x.candidate_output_set_id,
                 # The mandatory output-contract review is a platform-owned
                 # sidecar, not an author-configured END gate.  Project it as
                 # such so clients never expose its internal negative sort

@@ -67,6 +67,7 @@ from flowweave.modules.model_providers.infrastructure.models import (
 from flowweave.modules.runs.infrastructure.models import (
     ArtifactVersion,
     AttemptInputBinding,
+    CandidateOutputSet,
     FlowRun,
     FlowRunSchedule,
     FlowRunScheduleOccurrence,
@@ -93,6 +94,7 @@ from flowweave.shared.domain.enums import AttemptState, FlowRunState, NodeRunSta
 
 __all__ = (
     "ArtifactVersion",
+    "CandidateOutputSet",
     "AgentConversationBinding",
     "AgentConversationCapability",
     "AgentWorkspaceCapability",
