@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`ACTIVE`
 > 当前执行切片：无
-> 下一可执行切片：无（历史 Artifact 清理须由用户显式确认后另建切片）
+> 下一可执行切片：`FR-242 门禁执行异常的 Attempt 级配置编辑与重试`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -3332,6 +3332,26 @@ Artifact ID。旧评估保留原状，页面会明确说明其当时没有可恢
 其下按创建时间倒序分页展示每次审查。`PASS`、`FAIL` 与 `ERROR` 均保留独立行，技术失败显示为“执行异常”，
 旧 Gate 定义缺失的历史记录与平台确定性输出合同也保留各自的只读记录列表。单次详情的冻结标准改标为审计副本，
 避免与上方定义混淆。
+
+### FR-241 自动门禁业务失败停止 — DONE
+
+依赖：`FR-240`。
+
+目标：自动／连续运行中的 Gate 业务判断 `FAIL` 必须立即停止自动流转并保持当前 Attempt 的
+`START_BLOCKED` 或 `END_BLOCKED` 状态，进入 `WAITING_HUMAN`。不得再按次数自动 Fork 主节点会话、
+发送修订提示词、修改当前会话 locator，或把第三／第四次失败伪装成单条门禁记录。技术性 `ERROR` 保持
+其既有受控故障与人工重试边界；人工风险接受和后续显式“根据门禁结果调整”仍作为独立动作处理。
+
+验收：定向回归证明自动 END Gate `FAIL` 不调用修订 Fork、不会产生 `AUTOMATIC_OUTPUT_REMEDIATION_*`
+事件，并以 `AUTOMATIC_GATE_REVIEW_REQUIRED`／`decision=FAIL` 进入人工处理；受影响 Python 语法、Ruff、
+Alembic head、任务状态唯一性与 `git diff --check` 通过。完成后独立 Git commit 并停止。
+
+完成：自动运行的 `FAIL` 现在保留在当前 Gate 阻断状态，并把 FlowRun 置为 `WAITING_HUMAN`；不再创建
+自动修订 Fork、不再改写 Attempt 的主会话、也不再写入三轮修订耗尽事件。运行事件显式携带
+`decision=FAIL`，供工作台区分业务判断失败与技术执行异常。定向回归直接通过；完整 pytest 因本机 Docker
+daemon 不可用、Testcontainers 数据库 fixture 初始化失败而未能执行。受影响模块 `py_compile`、Alembic 唯一
+head、任务状态唯一性与 `git diff --check` 通过；Ruff 仅报告修改前已存在的 import 排序及第 8048 行超长问题，
+本切片未扩大该无关差异。
 
 ## 7. 恢复工作检查表
 

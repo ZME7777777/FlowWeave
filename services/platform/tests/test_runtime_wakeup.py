@@ -811,14 +811,13 @@ def test_gate_remediation_prompt_only_contains_actionable_output_corrections(mon
     assert "Fork" not in prompt
 
 
-def test_third_automatic_end_gate_failure_forks_a_third_repair_conversation(monkeypatch):
-    """The third failed gate round is still repaired from its latest Conversation."""
+def test_automatic_end_gate_failure_stops_for_human_review_without_fork(monkeypatch):
+    """A valid Gate FAIL never silently creates a repair Conversation."""
 
     attempt = SimpleNamespace(id="attempt-1", node_run_id="node-run-1", state_version=8)
     node_run = SimpleNamespace(id="node-run-1", flow_run_id="run-1")
     run = SimpleNamespace(id="run-1", run_mode="AUTOMATIC", state="ACTIVE")
     events: list[tuple[str, dict[str, object]]] = []
-    remediation_calls: list[dict[str, object]] = []
 
     class Db:
         def add(self, _item):
@@ -826,14 +825,6 @@ def test_third_automatic_end_gate_failure_forks_a_third_repair_conversation(monk
 
     monkeypatch.setattr(orchestration_service, "_node_run", lambda *_args: node_run)
     monkeypatch.setattr(orchestration_service, "_run", lambda *_args: run)
-    monkeypatch.setattr(
-        orchestration_service, "_automatic_gate_remediation_round", lambda *_args: 3
-    )
-    monkeypatch.setattr(
-        orchestration_service,
-        "_remediate_gate_failure",
-        lambda *_args, **kwargs: remediation_calls.append(kwargs),
-    )
     monkeypatch.setattr(
         orchestration_service,
         "_event",
@@ -850,79 +841,12 @@ def test_third_automatic_end_gate_failure_forks_a_third_repair_conversation(monk
     )
 
     assert attempt.state == AttemptState.END_BLOCKED
-    assert run.state == "ACTIVE"
-    assert remediation_calls == [
-        {
-            "expected_state_version": 8,
-            "idempotency_key": "automatic-gate-remediation:attempt-1:round3",
-            "automatic": True,
-        }
-    ]
-    assert events == [
-        ("GATE_STAGE_FINISHED", {"stage": "END", "state": AttemptState.END_BLOCKED}),
-    ]
-
-
-def test_fourth_automatic_end_gate_failure_stops_automation_for_human_override(monkeypatch):
-    """After three repair Conversations, the node remains available to a user."""
-
-    attempt = SimpleNamespace(
-        id="attempt-1",
-        node_run_id="node-run-1",
-        state_version=8,
-        error_code=None,
-        error_detail=None,
-    )
-    node_run = SimpleNamespace(id="node-run-1", flow_run_id="run-1", state="ACTIVE")
-    run = SimpleNamespace(
-        id="run-1", run_mode="AUTOMATIC", state="ACTIVE", row_version=4, finished_at=None
-    )
-    events: list[tuple[str, dict[str, object]]] = []
-
-    class Db:
-        def add(self, _item):
-            pass
-
-    monkeypatch.setattr(orchestration_service, "_node_run", lambda *_args: node_run)
-    monkeypatch.setattr(orchestration_service, "_run", lambda *_args: run)
-    monkeypatch.setattr(
-        orchestration_service, "_automatic_gate_remediation_round", lambda *_args: 4
-    )
-    monkeypatch.setattr(
-        orchestration_service,
-        "_event",
-        lambda _db, _run_id, event_type, payload, *_args: events.append((event_type, payload)),
-    )
-
-    orchestration_service._record_gate_results(
-        Db(),
-        attempt,
-        "END",
-        {},
-        [],
-        AttemptState.END_BLOCKED,
-    )
-
-    assert attempt.state == AttemptState.END_BLOCKED
-    assert attempt.error_code == "AUTOMATIC_OUTPUT_REMEDIATION_EXHAUSTED"
-    assert attempt.error_detail == "节点输出连续 3 次修订后仍不符合要求，连续运行已停止。"
-    assert attempt.state_version == 9
-    assert node_run.state == "FAILED"
     assert run.state == "WAITING_HUMAN"
-    assert run.row_version == 5
-    assert run.finished_at is None
     assert events == [
         ("GATE_STAGE_FINISHED", {"stage": "END", "state": AttemptState.END_BLOCKED}),
         (
-            "AUTOMATIC_OUTPUT_REMEDIATION_EXHAUSTED",
-            {
-                "max_remediation_rounds": 3,
-                "error_code": "AUTOMATIC_OUTPUT_REMEDIATION_EXHAUSTED",
-            },
-        ),
-        (
-            "AUTOMATIC_OUTPUT_REMEDIATION_REQUIRES_HUMAN",
-            {"reason": "AUTOMATIC_OUTPUT_REMEDIATION_EXHAUSTED"},
+            "AUTOMATIC_GATE_REVIEW_REQUIRED",
+            {"stage": "END", "state": AttemptState.END_BLOCKED, "decision": "FAIL"},
         ),
     ]
 

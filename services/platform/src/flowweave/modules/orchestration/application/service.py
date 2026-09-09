@@ -2275,64 +2275,15 @@ def _record_gate_results(
         if next_state == AttemptState.WAITING_ACCEPTANCE:
             _dispatch_automatic_advance(db, attempt)
             return
-        if stage == "END" and next_state == AttemptState.END_BLOCKED:
-            remediation_round = _automatic_gate_remediation_round(db, attempt)
-            if remediation_round <= 3:
-                try:
-                    _remediate_gate_failure(
-                        db,
-                        attempt,
-                        node_run,
-                        run,
-                        expected_state_version=attempt.state_version,
-                        idempotency_key=(
-                            f"automatic-gate-remediation:{attempt.id}:"
-                            f"round{_automatic_gate_remediation_round(db, attempt)}"
-                        ),
-                        automatic=True,
-                    )
-                    return
-                except DomainError as exc:
-                    _event(
-                        db,
-                        run.id,
-                        "AUTOMATIC_OUTPUT_REMEDIATION_DELIVERY_FAILED",
-                        {
-                            "stage": stage,
-                            "remediation_round": remediation_round,
-                            "error_code": exc.code,
-                        },
-                        node_run.id,
-                        attempt.id,
-                    )
-                    _fail_automatic_run_after_output_remediation(
-                        db,
-                        attempt,
-                        node_run,
-                        run,
-                        error_code="AUTOMATIC_OUTPUT_REMEDIATION_DELIVERY_FAILED",
-                        error_detail="无法创建输出修订会话，连续运行已停止。",
-                    )
-                    return
-            else:
-                _fail_automatic_run_after_output_remediation(
-                    db,
-                    attempt,
-                    node_run,
-                    run,
-                    error_code="AUTOMATIC_OUTPUT_REMEDIATION_EXHAUSTED",
-                    error_detail="节点输出连续 3 次修订后仍不符合要求，连续运行已停止。",
-                )
-                return
-        # Start-gate failures have no primary execution Conversation to fork.
-        # They retain the existing operator-visible path rather than claiming
-        # that an output repair was delivered.
+        # A business FAIL is a valid Gate judgement. It is not authorization
+        # for FlowWeave to create, fork, or direct an author Conversation.
+        # Keep the blocked Attempt until an operator explicitly acts.
         run.state = FlowRunState.WAITING_HUMAN
         _event(
             db,
             run.id,
             "AUTOMATIC_GATE_REVIEW_REQUIRED",
-            {"stage": stage, "state": next_state},
+            {"stage": stage, "state": next_state, "decision": "FAIL"},
             node_run.id,
             attempt.id,
         )
@@ -7791,42 +7742,6 @@ def _automatic_gate_remediation_round(db: Session, attempt: NodeAttempt) -> int:
             )
         )
         or 0
-    )
-
-
-def _fail_automatic_run_after_output_remediation(
-    db: Session,
-    attempt: NodeAttempt,
-    node_run: NodeRun,
-    run: FlowRun,
-    *,
-    error_code: str,
-    error_detail: str,
-) -> None:
-    """Close a continuous run after its bounded output-repair policy ends."""
-
-    attempt.error_code = error_code
-    attempt.error_detail = error_detail
-    attempt.state_version += 1
-    node_run.state = NodeRunState.FAILED
-    run.state = FlowRunState.WAITING_HUMAN
-    run.finished_at = None
-    run.row_version += 1
-    _event(
-        db,
-        run.id,
-        "AUTOMATIC_OUTPUT_REMEDIATION_EXHAUSTED",
-        {"max_remediation_rounds": 3, "error_code": error_code},
-        node_run.id,
-        attempt.id,
-    )
-    _event(
-        db,
-        run.id,
-        "AUTOMATIC_OUTPUT_REMEDIATION_REQUIRES_HUMAN",
-        {"reason": error_code},
-        node_run.id,
-        attempt.id,
     )
 
 
