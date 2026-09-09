@@ -276,7 +276,7 @@ function SnapshotGraph({ run, snapshotId, selectedKey, activeNodeRunId, onSelect
       const status = neutralView ? 'neutral'
         : !reachable.has(item.instance_key) ? 'out-of-scope'
         : !selectable.has(item.instance_key) ? 'automatic-locked'
-          : showExecutionState && latest?.state === 'ACTIVE' && blocked ? 'failed'
+          : showExecutionState && (latest?.state === 'FAILED' || (latest?.state === 'ACTIVE' && blocked)) ? 'failed'
           : configuredPlans.has(item.instance_key) ? 'automatic-configured'
           : missingPlans.has(item.instance_key) ? 'automatic-missing'
           : !showExecutionState ? 'neutral'

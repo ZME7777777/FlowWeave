@@ -3284,6 +3284,14 @@ Runtime 或调用取消／删除路径。候选区分“同一正式 Runtime com
 
 完成：每条新的 GateEvaluation 将本次实际使用的供应商、模型与思考强度写入结果审计；详情 DTO 优先读取该不可变记录，旧记录仅回退到同一 Attempt 的冻结门禁策略。技术性 `ERROR` 的当前自定义门禁可在详情中切换到显式选择的可用供应商／模型并重试当前阶段；平台输出合同和非当前历史评估没有该入口。原错误评估保持不变，下一次门禁使用新配置并写入 `GATE_PROVIDER_RETRY_CONFIGURED` 审计事件。详情弹窗提升至导航层之上，并保留 28px 顶部留白；自动门禁失败的概览文案改为覆盖用户自定义门禁、供应商及服务故障。
 
+### FR-237 连续运行当前流转节点保持与默认选中 — DONE
+
+依赖：`FR-236`。
+
+目标：连续运行记录打开时必须默认选择该记录最后一个已持久流转到的 NodeRun。该“当前流转节点”只随新的 NodeRun 流转，不能因节点失败、完成或整个记录进入终态而消失；执行结果仍以独立状态呈现。用户查看历史节点时，当前流转标识继续保留在最后流转节点。
+
+完成：工作台按最大的 NodeRun `sequence_no` 解析稳定的当前流转位置，并在连续记录详情加载后选中其最新 Attempt；历史会话返回携带的精确 NodeRun 继续优先恢复。画布将当前流转标识与失败／完成状态独立渲染，失败的最终节点仍显示失败样式、可被默认选中并保持“当前流转节点”标记。新增三节点浏览器回归覆盖前两节点完成、第三节点失败后的默认选中以及查看历史节点不丢失流转标记。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -3299,6 +3307,7 @@ Runtime 或调用取消／删除路径。候选区分“同一正式 Runtime com
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-09 | FR-237 | 连续记录最终失败节点定向 Playwright（1 passed）；Web TypeScript typecheck／production build；Alembic head、`git diff --check` 与任务状态唯一性 | PASS：打开连续运行记录后，最终失败节点成为默认选中和当前流转节点；查看已完成的历史节点不会移除最终节点的流转标识。唯一 Alembic head 为 `0103_runtime_artifact_proj_idem`。全量 Web ESLint 仍被既有 `AgentSessionWorkbench.tsx:1836` 的 Hook dependency warning 阻断，未伪记为通过。 |
 | 2026-09-09 | FR-236 | 受影响 Python `py_compile`；Web 定向 ESLint、TypeScript typecheck／production build；`git diff --check` 与任务状态核对 | PASS（静态）：详情页面投影每次门禁的冻结 Agent 配置，并只对当前阻断阶段的用户自定义技术错误显示“切换供应商后重试”；平台门禁没有该入口。`uv run pytest -k retry_gate_with_provider` 在 fixture 初始化时因本机 Docker daemon 未运行而无法启动 Testcontainers PostgreSQL，未伪记为通过。全量 Web lint 被既有 `AgentSessionWorkbench.tsx:1836` 的 React Hook dependency warning 阻断；本切片关联文件的定向 ESLint、typecheck 和 production build 均通过。 |
 | 2026-09-08 | FR-234 | `test_openhands.py` 运行会话搜索定向测试；受影响 Python `py_compile`、Ruff、`git diff --check` 与任务状态唯一性；远端平台部署与入口验证 | PASS（静态与远端）：`py_compile`、`git diff --check`、任务状态核对通过；本机未安装 `pytest`/`ruff` 可执行文件，定向测试与 Ruff 未能启动。远端 `ad8dd98` 平台镜像为 `linux/amd64`，Migration `Exited (0)`，API、Runtime Provider、stream-api healthy，Worker Up；公网/本地前缀页面和 Agent 深链返回 200，未认证 API 返回预期 401，近期日志无 ERROR/CRITICAL/Traceback。 |
 | 2026-09-08 | FR-232 | 历史 Gate ID 复制／阻断／受控恢复定向 pytest；受影响 Python Ruff format/check、`py_compile`；Web TypeScript typecheck、ESLint；`git diff --check`、Alembic head 与任务状态唯一性 | PASS（静态）：旧计划复制会补齐 Gate ID；仅历史缺失 ID、冻结、零 NodeRun 的 `WAITING_HUMAN` 记录可经版本化命令重新投递启动；详情和工作台显示 FlowRun 级原因与节点／门禁位置。定向 pytest 因本机 Docker daemon 未运行、Testcontainers PostgreSQL fixture 无法启动而未执行断言，未伪记为通过。唯一 Alembic head 为 `0103_runtime_artifact_proj_idem`。 |

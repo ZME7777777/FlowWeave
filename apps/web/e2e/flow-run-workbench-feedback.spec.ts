@@ -784,6 +784,80 @@ test('FR-130 running automatic records show execution facts and chat attempts su
   await expect(page.locator('.attempt-control').getByRole('button', { name: '取消本轮节点执行' })).toBeVisible();
 });
 
+test('continuous record defaults to its final flowed node even after that node fails', async ({ page }) => {
+  const thirdNode = {
+    id: 'flow-node-3', instance_key: 'third', node_asset_id: 'asset-3', alias: '测试节点3',
+    position_x: 880, position_y: 120, config_override: {}, gates: [],
+    asset: { ...asset, id: 'asset-3', name: '测试节点3' },
+  };
+  const threeNodeDefinition = {
+    ...definition,
+    nodes: [...definition.nodes, thirdNode],
+    edges: [...definition.edges, { id: 'edge-2', source_instance_key: 'second', target_instance_key: 'third', position: 1 }],
+  };
+  const threeNodeSnapshot = { ...snapshot, definition: threeNodeDefinition };
+  const completedFirst = {
+    ...nodeRun, id: 'automatic-first', flow_run_id: 'automatic-final-node', state: 'ACCEPTED', sequence_no: 1,
+    attempts: [{ ...attempt, id: 'automatic-first-attempt', node_run_id: 'automatic-first', snapshot_id: threeNodeSnapshot.id, state: 'ACCEPTED' }],
+  };
+  const completedSecond = {
+    ...nodeRun, id: 'automatic-second', flow_run_id: 'automatic-final-node', flow_node_snapshot_key: 'second', state: 'ACCEPTED', sequence_no: 2,
+    attempts: [{ ...attempt, id: 'automatic-second-attempt', node_run_id: 'automatic-second', snapshot_id: threeNodeSnapshot.id, state: 'ACCEPTED' }],
+  };
+  const failedThird = {
+    ...nodeRun, id: 'automatic-third', flow_run_id: 'automatic-final-node', flow_node_snapshot_key: 'third', state: 'FAILED', sequence_no: 3,
+    attempts: [{ ...attempt, id: 'automatic-third-attempt', node_run_id: 'automatic-third', snapshot_id: threeNodeSnapshot.id, state: 'END_BLOCKED', error_code: 'AUTOMATIC_GATE_EXECUTION_FAILED' }],
+  };
+  const finalRecord = {
+    ...frozenAutomaticBase,
+    id: 'automatic-final-node', name: '第三节点失败记录', state: 'FAILED', active_snapshot_id: threeNodeSnapshot.id,
+    snapshots: [threeNodeSnapshot], current_node_key: 'third', current_node_name: '测试节点3', current_attempt_state: 'END_BLOCKED',
+    progress: { accepted: 2, terminal: 3, active: 3 }, node_runs: [completedFirst, completedSecond, failedThird],
+    automation_plan: { ...frozenAutomaticBase.automation_plan, status: 'FROZEN', reachable_node_keys: ['first', 'second', 'third'], readiness: { ready: true, issues: [] } },
+  };
+  const finalSummary = {
+    id: finalRecord.id, flow_run_id: run.id, run_no: finalRecord.run_no, name: finalRecord.name, state: finalRecord.state,
+    row_version: finalRecord.row_version, schedule_id: null, schedule_name: null, schedule_occurrence_id: null,
+    started_at: now, finished_at: now, plan: { start_node_key: 'first', reachable_node_count: 3, configured_node_count: 3, readiness: { ready: true, issue_count: 0 } },
+    progress: { node_runs: 3, accepted: 2, terminal: 3, active: 3 },
+  };
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    const respond = (body: unknown, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
+    if (path.endsWith('/auth/me')) return respond(authenticatedUser);
+    if (path === '/api/v1/flow-runs') return respond([run]);
+    if (path === '/api/v1/flows') return respond([threeNodeDefinition]);
+    if (path === '/api/v1/terminal-environments' || path === '/api/v1/capabilities'
+      || path === '/api/v1/capability-collections' || path === '/api/v1/model-providers') return respond([]);
+    if (path === `/api/v1/flow-runs/${run.id}`) return respond(run);
+    if (path === `/api/v1/flows/${definition.id}`) return respond(threeNodeDefinition);
+    if (path === `/api/v1/flow-runs/${run.id}/automatic-runs/summaries`) return respond([finalSummary]);
+    if (path === `/api/v1/flow-runs/${run.id}/automatic-runs/${finalRecord.id}`) return respond(finalRecord);
+    return respond({ error: { code: 'RESOURCE_NOT_FOUND', message: `未配置测试路由：${path}`, details: {} } }, 404);
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: '流程运行', exact: true }).click();
+  await page.locator('.run-open').click();
+  await page.getByRole('tab', { name: '连续运行' }).click();
+  await page.locator('.automatic-record-select').filter({ hasText: '第三节点失败记录' }).click();
+
+  const graph = page.locator('.run-graph');
+  const third = graph.locator('.run-graph-node').filter({ hasText: '测试节点3' });
+  await expect(third).toHaveClass(/failed/);
+  await expect(third).toHaveClass(/flow-active-target/);
+  await expect(third).toHaveClass(/snapshot-selected/);
+  await expect(third).toContainText('当前流转节点');
+  await expect(page.getByTestId('attempt-state')).toHaveText('END_BLOCKED');
+
+  // Outcome and position remain separate: inspecting an earlier completed
+  // node must not erase the durable current-flow marker on the failed node.
+  await graph.locator('.run-graph-node').filter({ hasText: '测试节点2' }).click();
+  await expect(page.getByTestId('attempt-state')).toHaveText('ACCEPTED');
+  await expect(third).toHaveClass(/flow-active-target/);
+});
+
 test('returning from an automatic node session preserves the selected automatic record', async ({ page }) => {
   const conversation = {
     id: 'automatic-conversation-1', display_title: '自动运行会话', title_state: 'MANUAL', lifecycle: 'ACTIVE',
