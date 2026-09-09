@@ -11,6 +11,7 @@ from flowweave.runtime.base import (
     RuntimeInputReadiness,
     RuntimeResult,
     RuntimeWakeup,
+    StartAttemptRequest,
 )
 from flowweave.runtime.dependencies import runtime_context
 from flowweave.shared.errors import DomainError
@@ -323,6 +324,121 @@ def test_historical_gate_without_id_is_a_controlled_configuration_error(monkeypa
         orchestration_service._prepare_gate_stage(None, attempt, "END")
 
     assert exc_info.value.code == "GATE_POLICY_ID_MISSING"
+
+
+def test_gate_sidecar_uses_its_node_attempt_runtime_and_workspace(monkeypatch):
+    """Gate Conversations share the owning node Attempt's Runtime and root."""
+
+    attempt = SimpleNamespace(id="attempt-1", snapshot_id="snapshot-1")
+    node_run = SimpleNamespace(id="node-run-1", flow_run_id="nested-run-1")
+    run = SimpleNamespace(id="nested-run-1", environment_version_id="environment-version-1")
+    snapshot = SimpleNamespace(
+        environment_version_id="environment-version-1", runtime_manifest_hash="manifest-1"
+    )
+    environment = SimpleNamespace(
+        id="environment-version-1",
+        environment_id="environment-1",
+        version_no=1,
+        image_digest="sha256:image",
+    )
+    connection = SimpleNamespace(
+        runtime_session_id="runtime-session-1",
+        managed_runtime_id="managed-runtime-1",
+        resource_name="flow-run-runtime-1",
+    )
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(orchestration_service, "_run", lambda *_args: run)
+    monkeypatch.setattr(orchestration_service, "_snapshot", lambda *_args: snapshot)
+    monkeypatch.setattr(
+        orchestration_service, "lock_referenceable_version", lambda *_args: environment
+    )
+    def node_sidecar_connection(*_args, **kwargs):
+        captured["connection_flow_run_id"] = kwargs["flow_run_id"]
+        captured["connection_node_attempt_id"] = kwargs["node_attempt_id"]
+        return connection
+
+    monkeypatch.setattr(orchestration_service, "_node_sidecar_connection", node_sidecar_connection)
+    monkeypatch.setattr(
+        orchestration_service.sandboxes,
+        "node_attempt_workspace_context",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            attempt_owned=True,
+            runtime_mount_root="/runtime/workspace/node-record",
+        ),
+    )
+    monkeypatch.setattr(
+        orchestration_service.agent_sessions,
+        "resolve_session_config",
+        lambda *_args, **_kwargs: SimpleNamespace(),
+    )
+
+    def reserve_binding(*_args, **kwargs):
+        captured["binding_working_directory"] = kwargs["working_directory"]
+        return SimpleNamespace(
+            id="binding-1",
+            openhands_conversation_id="conversation-1",
+            working_directory=kwargs["working_directory"],
+        )
+
+    monkeypatch.setattr(
+        orchestration_service.agent_sessions, "reserve_flow_node_binding", reserve_binding
+    )
+    monkeypatch.setattr(
+        orchestration_service.agent_sessions,
+        "provider_for_config",
+        lambda *_args: SimpleNamespace(),
+    )
+    monkeypatch.setattr(
+        orchestration_service.agent_sessions, "build_agent_spec", lambda *_args, **kwargs: kwargs
+    )
+    monkeypatch.setattr(
+        orchestration_service.sandboxes,
+        "node_attempt_capability_path",
+        lambda *_args: "/host/node-capabilities",
+    )
+    monkeypatch.setattr(
+        orchestration_service.sandboxes,
+        "openhands_flow_run_capability_path",
+        lambda *_args: "/runtime/capabilities",
+    )
+
+    def build_request(*_args, **kwargs):
+        captured["workspace_ref"] = kwargs["workspace_ref"]
+        captured["node_attempt_id"] = kwargs["node_attempt_id"]
+        return StartAttemptRequest(
+            attempt_id="binding-1",
+            execution_key="gate-sidecar:attempt-1:gate-1:1",
+            node={},
+            bindings=[],
+            workspace_ref=kwargs["workspace_ref"],
+            conversation_id="conversation-1",
+        )
+
+    monkeypatch.setattr(orchestration_service, "build_runtime_request", build_request)
+
+    plan = orchestration_service._prepare_gate_plan(
+        None,
+        attempt=attempt,
+        node_run=node_run,
+        policy={
+            "id": "gate-1",
+            "gate_type": "PROMPT",
+            "agent_preset": {"model_provider_id": "provider-1", "model_name": "model-1"},
+        },
+        context={},
+        execution_no=1,
+    )
+
+    assert captured == {
+        "binding_working_directory": "/runtime/workspace/node-record",
+        "connection_flow_run_id": "nested-run-1",
+        "connection_node_attempt_id": "attempt-1",
+        "workspace_ref": "/runtime/workspace/node-record",
+        "node_attempt_id": "attempt-1",
+    }
+    assert plan.sidecar_request is not None
+    assert plan.sidecar_request.workspace_root == "/runtime/workspace/node-record"
 
 
 def test_runtime_output_registration_reuses_the_same_formal_completion(monkeypatch):

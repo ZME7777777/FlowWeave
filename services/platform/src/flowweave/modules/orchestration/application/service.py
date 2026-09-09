@@ -2018,6 +2018,30 @@ def _flow_run_sidecar_connection(db: Session, flow_run_id: str) -> _SidecarRunti
     )
 
 
+def _node_sidecar_connection(
+    db: Session, *, flow_run_id: str, node_attempt_id: str
+) -> _SidecarRuntimeConnection:
+    """Resolve a gate through the same Runtime that owns its node Attempt.
+
+    Gate Conversations persist their OpenHands state below the node Attempt's
+    mounted record root.  Routing them through the parent FlowRun Runtime
+    would make that root unavailable below its read-only filesystem.
+    """
+
+    if get_settings().runtime_adapter == "mock":
+        # MockRuntime has no Attempt-owned physical generation.  Its existing
+        # logical FlowRun locator is sufficient for unit-level execution.
+        return _flow_run_sidecar_connection(db, flow_run_id)
+    connection = sandboxes.active_node_runtime_connection(
+        db, flow_run_id=flow_run_id, node_attempt_id=node_attempt_id
+    )
+    return _SidecarRuntimeConnection(
+        runtime_session_id=connection.runtime_session_id,
+        managed_runtime_id=connection.managed_runtime_id,
+        resource_name=connection.resource_name,
+    )
+
+
 def _next_gate_state(stage: str, blocked: bool) -> str:
     if stage == "START":
         return AttemptState.START_BLOCKED if blocked else AttemptState.WAITING_START_CONFIRMATION
@@ -2398,7 +2422,12 @@ def _prepare_gate_plan(
             ),
         )
     try:
-        connection = _flow_run_sidecar_connection(db, run.id)
+        workspace = sandboxes.node_attempt_workspace_context(
+            db, flow_run_id=run.id, node_attempt_id=attempt.id
+        )
+        connection = _node_sidecar_connection(
+            db, flow_run_id=run.id, node_attempt_id=attempt.id
+        )
         if config.get("system_owned") is True:
             # The mandatory review must use exactly the model frozen on the
             # execution Conversation.  In particular it must not fall back to
@@ -2429,25 +2458,30 @@ def _prepare_gate_plan(
                 # context. Its only inputs are the explicit gate payload below.
                 capability_version_ids=(),
             )
+        sidecar_working_directory = str(workspace.runtime_mount_root)
         binding = agent_sessions.reserve_flow_node_binding(
             db,
             runtime_session_id=connection.runtime_session_id,
             flow_run_id=run.id,
             node_run_id=node_run.id,
             node_attempt_id=attempt.id,
-            working_directory=str(
-                sandboxes.node_attempt_workspace_context(
-                    db, flow_run_id=run.id, node_attempt_id=attempt.id
-                ).runtime_mount_root
-            ),
+            working_directory=sidecar_working_directory,
             create_idempotency_key=(f"gate-sidecar:{attempt.id}:{policy['id']}:{execution_no}"),
             display_title=f"门禁 {policy['id']} · 第 {execution_no} 次",
             config=session_config,
         )
         provider = agent_sessions.provider_for_config(db, session_config)
-        runtime_owner_id = sandboxes.runtime_owner_flow_run_id(db, run.id)
-        host_root = sandboxes.flow_run_capability_path(
-            runtime_owner_id, snapshot.runtime_manifest_hash, "gate-sidecars", binding.id
+        host_root = (
+            sandboxes.node_attempt_capability_path(
+                attempt.id, snapshot.runtime_manifest_hash, "gate-sidecars", binding.id
+            )
+            if workspace.attempt_owned
+            else sandboxes.flow_run_capability_path(
+                sandboxes.runtime_owner_flow_run_id(db, run.id),
+                snapshot.runtime_manifest_hash,
+                "gate-sidecars",
+                binding.id,
+            )
         )
         runtime_root = Path(
             sandboxes.openhands_flow_run_capability_path(
@@ -2458,29 +2492,19 @@ def _prepare_gate_plan(
             session_config,
             provider=provider,
             binding_id=binding.id,
-            working_directory=binding.working_directory
-            or str(
-                sandboxes.node_attempt_workspace_context(
-                    db, flow_run_id=run.id, node_attempt_id=attempt.id
-                ).runtime_mount_root
-            ),
+            working_directory=binding.working_directory or sidecar_working_directory,
             host_root=host_root,
             runtime_root=runtime_root,
         )
         request = build_runtime_request(
             db,
-            flow_run_id=runtime_owner_id,
+            flow_run_id=run.id,
             runtime_manifest_hash=snapshot.runtime_manifest_hash,
             attempt_id=binding.id,
             execution_key=f"gate-sidecar:{attempt.id}:{policy['id']}:{execution_no}",
             node={},
             bindings=[],
-            workspace_ref=binding.working_directory
-            or str(
-                sandboxes.node_attempt_workspace_context(
-                    db, flow_run_id=run.id, node_attempt_id=attempt.id
-                ).runtime_mount_root
-            ),
+            workspace_ref=binding.working_directory or sidecar_working_directory,
             interaction_mode="COLLABORATION",
             environment_image=environment.image_digest,
             environment_id=environment.environment_id,
@@ -2488,15 +2512,11 @@ def _prepare_gate_plan(
             environment_version_no=environment.version_no,
             agent_spec=agent_spec,
             conversation_id=binding.openhands_conversation_id,
+            node_attempt_id=attempt.id,
         )
         request = replace(
             request,
-            workspace_root=binding.working_directory
-            or str(
-                sandboxes.node_attempt_workspace_context(
-                    db, flow_run_id=run.id, node_attempt_id=attempt.id
-                ).runtime_mount_root
-            ),
+            workspace_root=binding.working_directory or sidecar_working_directory,
             runtime_sandbox_id=connection.managed_runtime_id,
             runtime_resource_name=connection.resource_name,
             runtime_base_url=f"http://{connection.resource_name}:8000",
