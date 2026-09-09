@@ -1144,7 +1144,7 @@ export function WorkbenchPage() {
   const query = useQuery({ queryKey: ['flow-run', selectedRunId], queryFn: () => api.flowRun(selectedRunId!), enabled: Boolean(selectedRunId), refetchInterval: 5000 });
   const flowId = query.data?.flow_definition_id;
   const flow = useQuery({ queryKey: ['flow', flowId], queryFn: () => api.flow(flowId!), enabled: Boolean(flowId), refetchInterval: 5000 });
-  const automatic = useQuery({ queryKey: ['flow-run-automatic-records', selectedRunId], queryFn: () => api.automaticRecordSummaries(selectedRunId!), enabled: Boolean(selectedRunId), refetchInterval: 5000 });
+  const automatic = useQuery({ queryKey: ['flow-run-automatic-records', selectedRunId], queryFn: () => api.automaticRecordSummaries(selectedRunId!), enabled: Boolean(selectedRunId), refetchInterval: selectedAutomaticId ? false : 5000 });
   const automaticDetail = useQuery({ queryKey: ['flow-run-automatic-record', selectedRunId, selectedAutomaticId], queryFn: () => api.automaticRecord(selectedRunId!, selectedAutomaticId!), enabled: Boolean(selectedRunId && selectedAutomaticId), refetchInterval: 5000 });
   const refresh = useCallback(() => { if (selectedRunId) void qc.invalidateQueries({ queryKey: ['flow-run', selectedRunId] }); if (flowId) void qc.invalidateQueries({ queryKey: ['flow', flowId] }); void qc.invalidateQueries({ queryKey: ['runs'] }); }, [flowId, qc, selectedRunId]);
   useEffect(() => {
@@ -1233,10 +1233,22 @@ export function WorkbenchPage() {
       return artifact ? [[mapping.target_input_key, artifact.id]] : [];
     }));
   })();
-  const automaticRecords = automatic.data ?? [];
+  const automaticSummaries = automatic.data ?? [];
   const selectedAutomatic = selectedAutomaticId
     ? automaticDrafts[selectedAutomaticId] ?? automaticDetail.data
     : undefined;
+  // The rail endpoint is deliberately compact while the detail endpoint
+  // carries the selected execution state. Do not let their independent poll
+  // responses briefly show contradictory states for the same selected record.
+  const automaticRecords: FlowRunAutomaticRecordSummary[] = selectedAutomatic
+    ? automaticSummaries.map(record => record.id === selectedAutomatic.id ? {
+      ...record,
+      state: selectedAutomatic.state as FlowRunAutomaticRecordSummary['state'],
+      row_version: selectedAutomatic.row_version,
+      finished_at: selectedAutomatic.finished_at,
+      progress: { ...record.progress, ...selectedAutomatic.progress },
+    } : record)
+    : automaticSummaries;
   const activeAutomaticNodeRun = selectedAutomatic?.state === 'DRAFT'
     ? undefined
     : activeFlowNodeRun(selectedAutomatic?.node_runs ?? []);

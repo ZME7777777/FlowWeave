@@ -816,7 +816,10 @@ test('continuous record defaults to its final flowed node even after that node f
     automation_plan: { ...frozenAutomaticBase.automation_plan, status: 'FROZEN', reachable_node_keys: ['first', 'second', 'third'], readiness: { ready: true, issues: [] } },
   };
   const finalSummary = {
-    id: finalRecord.id, flow_run_id: run.id, run_no: finalRecord.run_no, name: finalRecord.name, state: finalRecord.state,
+    // The compact rail endpoint can lag the selected record detail by one
+    // polling interval. The selected detail must win, rather than flickering
+    // between this stale ACTIVE state and its durable failure state.
+    id: finalRecord.id, flow_run_id: run.id, run_no: finalRecord.run_no, name: finalRecord.name, state: 'ACTIVE',
     row_version: finalRecord.row_version, schedule_id: null, schedule_name: null, schedule_occurrence_id: null,
     started_at: now, finished_at: now, plan: { start_node_key: 'first', reachable_node_count: 3, configured_node_count: 3, readiness: { ready: true, issue_count: 0 } },
     progress: { node_runs: 3, accepted: 2, terminal: 3, active: 3 },
@@ -850,6 +853,7 @@ test('continuous record defaults to its final flowed node even after that node f
   await expect(third).toHaveClass(/snapshot-selected/);
   await expect(third).toContainText('当前流转节点');
   await expect(page.getByTestId('attempt-state')).toHaveText('END_BLOCKED');
+  await expect(page.locator('.automatic-record-select').filter({ hasText: '第三节点失败记录' })).toContainText('运行失败');
 
   // Outcome and position remain separate: inspecting an earlier completed
   // node must not erase the durable current-flow marker on the failed node.

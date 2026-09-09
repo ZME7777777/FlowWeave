@@ -20,6 +20,19 @@ from flowweave.shared.schemas import GateRetryWithProviderWrite
 from flowweave.shared.settings import Settings, settings_context
 
 
+def test_runtime_output_missing_is_a_permanent_poll_failure():
+    from flowweave.bootstrap.worker import _is_permanent_task_failure
+
+    missing_output = DomainError(
+        "RUNTIME_OUTPUT_MISSING", "The Agent completed without every required output", 422
+    )
+
+    assert _is_permanent_task_failure(SimpleNamespace(task_type="POLL_RUNTIME"), missing_output)
+    assert not _is_permanent_task_failure(
+        SimpleNamespace(task_type="WAIT_RUNTIME_WAKEUP"), missing_output
+    )
+
+
 def test_runtime_wakeup_timeout_enqueues_bounded_rest_reconciliation(monkeypatch):
     """A quiet wake-up channel cannot leave a completed Runtime unobserved."""
 

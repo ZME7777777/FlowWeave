@@ -91,6 +91,34 @@ _DELIVERY_TASK_TYPES = frozenset(
         "RESOLVE_PLUGIN_SOURCE",
     }
 )
+
+
+def _is_permanent_task_failure(task: Any, exception: Exception) -> bool:
+    """Classify only deterministic task failures that cannot improve on retry."""
+
+    if not isinstance(exception, DomainError):
+        return False
+    if task.task_type == "POLL_RUNTIME" and exception.code == "RUNTIME_OUTPUT_MISSING":
+        # OpenHands has already completed this turn and supplied the complete
+        # output map. Re-reading the same Finish result cannot create a
+        # required Artifact, so surface the blocked Attempt immediately.
+        return True
+    return (
+        (
+            task.task_type == "CLEANUP_ENVIRONMENT_IMAGE"
+            and exception.code
+            in {
+                "ENVIRONMENT_IMAGE_OWNERSHIP_MISMATCH",
+                "ENVIRONMENT_IMAGE_TAG_CONFLICT",
+            }
+        )
+        or (
+            task.task_type == "CLEANUP_ENVIRONMENT_CREDENTIALS"
+            and exception.code == "SANDBOX_RESOURCE_CONFLICT"
+        )
+    )
+
+
 _ALL_TASK_TYPES = _RUNTIME_TASK_TYPES | _MAINTENANCE_TASK_TYPES | _DELIVERY_TASK_TYPES
 
 
@@ -314,23 +342,7 @@ class TaskWorker:
         error: str,
         exception: Exception,
     ) -> None:
-        permanent = bool(
-            isinstance(exception, DomainError)
-            and (
-                (
-                    task.task_type == "CLEANUP_ENVIRONMENT_IMAGE"
-                    and exception.code
-                    in {
-                        "ENVIRONMENT_IMAGE_OWNERSHIP_MISMATCH",
-                        "ENVIRONMENT_IMAGE_TAG_CONFLICT",
-                    }
-                )
-                or (
-                    task.task_type == "CLEANUP_ENVIRONMENT_CREDENTIALS"
-                    and exception.code == "SANDBOX_RESOURCE_CONFLICT"
-                )
-            )
-        )
+        permanent = _is_permanent_task_failure(task, exception)
         async with self.container.database.session() as session:
             failed = await session.run_sync(
                 lambda db: fail(db, lease, error, permanent=permanent, commit=False)

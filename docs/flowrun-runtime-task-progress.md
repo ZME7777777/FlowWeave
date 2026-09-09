@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`ACTIVE`
 > 当前执行切片：无
-> 下一可执行切片：`FR-245 人工门禁结果调整、降级通过与降级输出选择`
+> 下一可执行切片：无（等待新需求）
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -3407,6 +3407,16 @@ Web TypeScript typecheck、production build、唯一 Alembic head `0103_runtime_
 
 Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；新增定向 API 回归覆盖同一节点输出复用和跨 FlowRun 产物拒绝。该回归在本机因 Docker daemon 不可用、Testcontainers PostgreSQL fixture 初始化失败而无法执行；无迁移。
 
+### FR-246 终态输出缺失即时阻断与连续记录状态收敛 — DONE
+
+依赖：`FR-245`。
+
+目标：自动／连续运行已由 OpenHands 明确完成、但缺少冻结必填输出时，`RUNTIME_OUTPUT_MISSING` 必须被识别为确定性业务结果，首次确认即进入 `END_BLOCKED`／`WAITING_HUMAN`，不得按 Worker 的通用指数退避继续重复对账。保留在 `END_BLOCKED` 后对同一原生会话的新用户回合的正式事件订阅；只有新原生执行才能恢复 Attempt，不把历史 Finish 重复投影为运行。连续记录左栏摘要和右侧详情在选中同一记录时必须使用同一详情快照的状态，避免独立 5 秒轮询短暂显示“运行中”与“等待人工处理”互相跳变。
+
+验收：补充 Worker 对确定性缺输出的永久失败回归、连续记录选中详情的状态覆盖浏览器回归；受影响 Python／Web 静态检查、Alembic head、任务状态唯一性与 `git diff --check` 通过。无迁移，不修改 OpenHands。
+
+完成：Worker 将 `POLL_RUNTIME` 的 `RUNTIME_OUTPUT_MISSING` 分类为永久失败，首次读取到“本轮已完成但缺少必填输出”便由既有自动运行失败投影写入 `END_BLOCKED`／`WAITING_HUMAN`，不再进行 10 次指数退避；`END_BLOCKED` 的原生会话订阅与后续新回合恢复语义不变。选中连续记录后，左侧状态使用该记录详情快照，且暂停同一记录摘要的独立轮询，避免摘要滞后时与右侧详情反复显示冲突状态。新增确定性错误分类与摘要滞后浏览器回归。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -3422,6 +3432,7 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-09 | FR-246 | Worker 确定性输出缺失分类直接断言、Python `py_compile`、受影响 Python Ruff；Web TypeScript typecheck、受影响 Web ESLint、production build、连续记录摘要滞后 Playwright、Alembic head、任务状态唯一性与 `git diff --check` | PASS：`RUNTIME_OUTPUT_MISSING` 仅在 `POLL_RUNTIME` 首次读取时终态化，不影响事件唤醒或新会话回合订阅；选中记录的 Rail 状态以详情为准。唯一 Alembic head 为 `0103_runtime_artifact_proj_idem`，无迁移、无 `CURRENT`。完整平台 pytest 因本机 Docker daemon 不可用、Testcontainers PostgreSQL 无法创建而未执行；全量 Web ESLint 仍被既有未改动的 `AgentSessionWorkbench.tsx:1836` Hook dependency warning 阻断，受影响文件 lint 通过。 |
 | 2026-09-09 | FR-240 | Web TypeScript typecheck、production build、`git diff --check`、Alembic head 与任务状态唯一性 | PASS：自定义 Gate 先展示可查看的提示词、可选 Python 脚本和模型配置三项冻结定义；每个 Gate 的所有 `PASS`／`FAIL`／`ERROR` 审查均按创建时间倒序独立列出并按 5 条分页，记录详情继续包含单次审计证据和原生审查过程。平台确定性输出合同与定义缺失的历史 Gate 也不再折叠结果。唯一 Alembic head 为 `0103_runtime_artifact_proj_idem`，无迁移。 |
 | 2026-09-09 | FR-239 | Gate sidecar 原生事件保留、JSON 纠正与安全审查投影定向 pytest（9 passed）；Attempt Runtime Gate 路由定向 pytest（1 passed）；受影响 Python `py_compile`、Ruff 未定义名称检查、Web TypeScript typecheck／production build、Alembic head、`git diff --check` 与任务状态唯一性 | PASS：自定义 Gate 详情可显示冻结标准和安全证据，新执行通过 OpenHands 正式事件提供完整审查过程；旧 stateless `ask_agent` 评估如实标为无可恢复过程。唯一 Alembic head 为 `0103_runtime_artifact_proj_idem`，无迁移。 |
 | 2026-09-09 | FR-238 | Gate sidecar 围栏 JSON、损坏 JSON 纠正与不支持 `INSUFFICIENT_EVIDENCE` 决策纠正定向 pytest（3 passed）；受影响 Python `py_compile`、未定义名称 Ruff 检查、Alembic head、`git diff --check` 与任务状态唯一性 | PASS：无效枚举不再直接形成 `GATE_RESULT_INVALID` 技术错误；相同隔离会话只纠正一次并要求模型返回严格三值，证据不足收敛为 `FAIL`。无迁移。 |
