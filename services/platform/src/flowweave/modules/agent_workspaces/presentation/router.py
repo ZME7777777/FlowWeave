@@ -38,6 +38,15 @@ from flowweave.shared.settings import bind_settings, reset_settings
 
 router = APIRouter()
 ContainerDep = Annotated[Container, Depends(get_container)]
+MessageKind = Literal["EXECUTE", "QUESTION", "DECISION", "CORRECTION", "STATUS", "CONTINUE"]
+ConversationReferenceUse = Literal[
+    "IMPLEMENTATION_SPEC",
+    "CONSTRAINT",
+    "BACKGROUND",
+    "CORRECTION_SOURCE",
+    "EVIDENCE",
+    "OUTPUT_EXAMPLE",
+]
 
 
 class _Write(BaseModel):
@@ -91,7 +100,10 @@ class AgentAttachmentReference(_Write):
 
 class AgentConversationReference(_Write):
     event_id: str = Field(min_length=1, max_length=200)
-    content: str = Field(min_length=1, max_length=10_000)
+    start_offset: int = Field(ge=0, le=200_000)
+    end_offset: int = Field(ge=1, le=200_000)
+    source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    use: ConversationReferenceUse
 
 
 def _empty_attachment_references() -> list[AgentAttachmentReference]:
@@ -109,6 +121,7 @@ class AgentConversationBootstrapWrite(_Write):
     reasoning_effort: str | None = Field(default=None, max_length=30)
     work_directory_id: str | None = Field(default=None, min_length=1, max_length=36)
     content: str = Field(max_length=200_000)
+    message_kind: MessageKind = "QUESTION"
     attachments: list[AgentAttachmentReference] = Field(
         default_factory=_empty_attachment_references, max_length=10
     )
@@ -120,6 +133,7 @@ class AgentConversationBootstrapWrite(_Write):
 
 class AgentMessageWrite(_Write):
     content: str = Field(max_length=200_000)
+    message_kind: MessageKind = "QUESTION"
     attachments: list[AgentAttachmentReference] = Field(
         default_factory=_empty_attachment_references, max_length=10
     )
@@ -492,6 +506,7 @@ async def create_agent_conversation(
             content=payload.content,
             attachments=tuple(item.model_dump(exclude_none=True) for item in payload.attachments),
             references=tuple(item.model_dump() for item in payload.references),
+            message_kind=payload.message_kind,
             capability_version_ids=tuple(payload.capability_version_ids),
             idempotency_key=idempotency_key,
         ),
@@ -633,6 +648,7 @@ async def agent_message(
             payload.content,
             attachments=tuple(item.model_dump(exclude_none=True) for item in payload.attachments),
             references=tuple(item.model_dump() for item in payload.references),
+            message_kind=payload.message_kind,
         ),
     )
 

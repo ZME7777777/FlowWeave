@@ -16,6 +16,7 @@ from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from flowweave.modules.agent_sessions import public as agent_sessions
+from flowweave.modules.agent_sessions.application import usage as usage_projection
 from flowweave.modules.agent_sessions.application.conversations import (
     AGENT_WORKSPACE_CONDENSER_MAX_EVENTS,
     ATTACHMENT_PATH,
@@ -25,8 +26,9 @@ from flowweave.modules.agent_sessions.application.conversations import (
     initial_user_event_id,
     message_payload,
     normalized_first_sentence,
-    project_conversation_references,
+    project_message_context,
     record_message_attachments,
+    resolve_conversation_references,
     validate_attachment_owners,
 )
 from flowweave.modules.agent_sessions.application.deletion import delete_binding_records
@@ -373,6 +375,7 @@ def _node_session_dict(db: Session, item: AgentConversationBinding) -> dict[str,
         "last_connected_at": (
             item.last_connected_at.isoformat() if item.last_connected_at else None
         ),
+        "usage": usage_projection.for_binding(db, item.id),
     }
 
 
@@ -1272,7 +1275,8 @@ def bootstrap_node_conversation(
     attempt_id: str,
     content: str,
     attachments: tuple[dict[str, str | int], ...],
-    references: tuple[dict[str, str], ...] = (),
+    references: tuple[dict[str, Any], ...] = (),
+    message_kind: str = "QUESTION",
     legacy_image_urls: tuple[str, ...] = (),
     conversation_id: str | None,
     work_directory_id: str | None,
@@ -1284,6 +1288,8 @@ def bootstrap_node_conversation(
     text = content.strip()
     if not text and not attachments and not references and not legacy_image_urls:
         raise DomainError("AGENT_MESSAGE_EMPTY", "消息不能为空", 422)
+    if references:
+        raise DomainError("AGENT_CONVERSATION_REFERENCE_STALE", "引用来源不存在，请重新选择", 409)
     try:
         binding_id = str(UUID(conversation_id)) if conversation_id else str(uuid4())
     except ValueError as exc:
@@ -1294,7 +1300,7 @@ def bootstrap_node_conversation(
             if not value.startswith("data:image/"):
                 raise DomainError("AGENT_ATTACHMENT_INVALID", "图片附件无效", 422)
             base64.b64decode(value.partition(",")[2], validate=True)
-    prompt, image_urls = message_payload(text, attachments, references)
+    prompt, image_urls = message_payload(text, attachments, (), message_kind)
     if legacy_image_urls:
         image_urls = legacy_image_urls
     agent_sessions.resolve_flow_node_session_host(
@@ -1718,11 +1724,13 @@ def _event_batch_dict(
                 attempt_id=attempt.id,
                 binding_id=binding.id,
             )
-        display_content, references = project_conversation_references(
+        display_content, references, message_kind = project_message_context(
             str(payload.get("content") or "")
         )
         if references:
             payload["conversation_references"] = list(references)
+        if message_kind is not None:
+            payload["message_kind"] = message_kind
         attachments = attachments_by_event.get(event.cursor, [])
         if attachments:
             # Automatic starts record an empty display override: retain the
@@ -1743,6 +1751,7 @@ def _event_batch_dict(
             payload["display_content"] = display_content
         return {"id": event.cursor, "event_type": event.event_type, "payload": payload}
 
+    usage = usage_projection.capture(db, binding, batch.usage)
     return {
         "events": [project(event) for event in batch.events],
         "next_cursor": batch.cursor,
@@ -1767,6 +1776,7 @@ def _event_batch_dict(
         ],
         "task_control": task_control_projection(db, binding.id),
         "monitoring": build_activity_summary(batch.events),
+        "usage": usage,
     }
 
 
@@ -1882,7 +1892,8 @@ def send_node_message(
     binding_id: str,
     content: str,
     attachments: tuple[dict[str, str | int], ...] = (),
-    references: tuple[dict[str, str], ...] = (),
+    references: tuple[dict[str, Any], ...] = (),
+    message_kind: str = "QUESTION",
 ) -> dict[str, Any]:
     """Send the same attachment-aware native message as the outer workbench."""
 
@@ -1893,7 +1904,6 @@ def send_node_message(
         db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id, lock=True
     )
     validate_attachment_owners(binding.id, attachments)
-    prompt, image_urls = message_payload(content, attachments, references)
     handle = _node_handle(
         db,
         flow_run_id=flow_run_id,
@@ -1901,6 +1911,10 @@ def send_node_message(
         binding_id=binding_id,
     )
     runtime = get_runtime()
+    resolved_references = resolve_conversation_references(
+        runtime.read_active_events(handle).events, references
+    )
+    prompt, image_urls = message_payload(content, attachments, resolved_references, message_kind)
     readiness = runtime.input_readiness(handle)
     queued_during_turn = not readiness.ready
     if queued_during_turn:
@@ -2295,7 +2309,8 @@ def rerun_node_message(
     if parent_id is not None and not isinstance(parent_id, str):
         raise DomainError("RUNTIME_EVENT_IDENTITY_INVALID", "消息事件身份无效", 409)
     runtime.navigate(handle, parent_id)
-    result = runtime.send_message(handle, content.strip())
+    prompt, image_urls = message_payload(content.strip(), (), (), "CORRECTION")
+    result = runtime.send_message(handle, prompt, image_urls)
     _observe_task_watchdogs_after_send(db, binding, handle)
     activity_at = now()
     binding.last_connected_at = activity_at

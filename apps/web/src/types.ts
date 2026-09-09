@@ -279,6 +279,7 @@ export interface GateEvaluation {
   } | null;
   /** The isolated Gate Agent configuration recorded for this execution. */
   agent_preset?: GateAgentPreset | null;
+  usage?: TokenUsageSummary;
   error_code?: string | null; log_excerpt?: string; created_at: string;
 }
 export interface GateReviewArtifact {
@@ -338,13 +339,14 @@ export interface NodeAttempt {
   output_targets?: Record<string, { artifact_type: 'URL' | 'FILE'; display_name?: string; description?: string; title?: string }>;
   input_bindings: InputBinding[]; artifacts: ArtifactVersion[];
   gate_evaluations: GateEvaluation[]; runtime_confirmation_batches: RuntimeConfirmationBatch[];
+  usage?: TokenUsageSummary;
   created_at: string; updated_at: string;
 }
 export interface NodeRun {
   id: string; flow_run_id: string; flow_node_snapshot_key: string; sequence_no: number;
   name?: string | null;
   state: 'ACTIVE' | 'ACCEPTED' | 'FAILED' | 'CANCELLED'; accepted_attempt_id?: string | null;
-  created_from: string; activated_at: string; attempts: NodeAttempt[];
+  created_from: string; activated_at: string; attempts: NodeAttempt[]; usage?: TokenUsageSummary;
 }
 export interface AutomaticNodePlan {
   startup_prompt: string;
@@ -393,6 +395,7 @@ export interface FlowRunSummary {
   environment_version_id?: string | null;
   runtime_status?: string | null; runtime_write_available?: boolean;
   runtime_message?: string | null;
+  usage?: TokenUsageSummary;
   runtime_resource?: {
     generation: number;
     container_id: string;
@@ -400,7 +403,10 @@ export interface FlowRunSummary {
     created_at: string;
     cpu_limit: string;
     memory_limit: string;
-    storage_limit: string;
+    storage_limit: string | null;
+    cpu_usage_percent: number;
+    memory_usage_bytes: number;
+    storage_usage_bytes: number;
   } | null;
   started_at: string; updated_at: string; finished_at?: string | null;
 }
@@ -556,6 +562,18 @@ export interface RuntimeTaskUsageSnapshot {
   context_window: number;
   per_turn_tokens: number;
 }
+export interface TokenUsageSummary {
+  prompt_tokens: number;
+  completion_tokens: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
+  reasoning_tokens: number;
+  total_tokens: number;
+  accumulated_cost: number;
+  session_count: number;
+  bucket_count: number;
+  observed_at?: string | null;
+}
 /**
  * Host-neutral data consumed by the shared Agent session workbench. A host
  * adapter may expose the current Agent Workspace, a future node scope, or
@@ -607,9 +625,16 @@ export interface AgentPendingConfirmation {
 export interface AgentAttachment {
   filename: string; mime_type: string; byte_size: number; path: string; image_data_url?: string | null;
 }
+export type AgentMessageKind = 'EXECUTE' | 'QUESTION' | 'DECISION' | 'CORRECTION' | 'STATUS' | 'CONTINUE';
+export type AgentConversationReferenceUse = 'IMPLEMENTATION_SPEC' | 'CONSTRAINT' | 'BACKGROUND' | 'CORRECTION_SOURCE' | 'EVIDENCE' | 'OUTPUT_EXAMPLE';
 export interface AgentConversationReference {
   event_id: string;
-  content: string;
+  start_offset: number;
+  end_offset: number;
+  source_sha256: string;
+  use: AgentConversationReferenceUse;
+  /** Server-projected source text. It is never trusted or sent back as authority. */
+  content?: string;
 }
 export interface AgentConversationContext {
   used_tokens?: number | null; window_tokens?: number | null; cumulative_tokens?: number | null;
@@ -638,6 +663,7 @@ export interface AgentConversation {
   created_at: string;
   updated_at: string;
   last_connected_at?: string | null;
+  usage?: TokenUsageSummary;
 }
 export interface AgentConversationPage {
   items: AgentConversation[];
