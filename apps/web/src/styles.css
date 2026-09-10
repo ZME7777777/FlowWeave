@@ -366,6 +366,27 @@ html{-webkit-text-size-adjust:100%;text-rendering:optimizeLegibility}body{font-s
 /* Preserve the visual breathing room above the Hook title even when the form scrolls. */
 .hook-editor>header{padding-top:30px}@media(max-height:760px){.hook-editor>header{padding-top:22px}}
 
+/* The Hook form is a fixed, short configuration flow on desktop: keep all
+   choices visible together instead of making the primary path scroll. */
+.hook-editor{width:min(1120px,94vw)}
+.hook-editor>header{padding:24px 24px 10px}
+.hook-editor>header p{max-width:none;font-size:10px;line-height:1.4}
+.hook-form-grid{gap:9px;padding:2px 24px 12px}
+.hook-form-grid label{gap:4px}.hook-form-grid label small,.hook-form-grid section>header small{font-size:8px;line-height:1.3}
+.hook-form-grid input{padding:7px 9px}
+.hook-event-picker,.hook-mode-picker,.hook-matcher-field,.hook-native-note{padding:8px 10px}
+.hook-event-picker>header,.hook-mode-picker>header{display:flex;align-items:baseline;gap:7px}.hook-event-picker>header small,.hook-mode-picker>header small{margin:0}
+.hook-event-picker>div{grid-template-columns:repeat(6,minmax(0,1fr));gap:5px;margin-top:6px}
+.hook-event-picker button,.hook-mode-picker button{padding:6px 7px}.hook-event-picker button{min-height:58px}
+.hook-event-picker button b,.hook-mode-picker button b{font-size:9px}.hook-event-picker button small{display:-webkit-box;overflow:hidden;-webkit-box-orient:vertical;-webkit-line-clamp:2;font-size:7px;line-height:1.25}
+.hook-matcher-field{grid-template-columns:minmax(0,1fr) 310px;gap:10px}.hook-matcher-examples{gap:4px}.hook-matcher-examples button{padding:3px 6px;font-size:8px}.hook-matcher-examples code{font-size:7px}
+.hook-mode-picker>div{gap:6px;margin-top:6px}.hook-mode-picker button{min-height:52px}.hook-mode-picker button small{font-size:8px;line-height:1.25}
+.context-file-upload.hook-file-upload{padding:8px 10px}.context-file-upload.hook-file-upload em{padding:6px 8px}
+.hook-native-note{grid-template-columns:68px minmax(0,1fr);gap:8px;font-size:9px;line-height:1.35}
+.hook-editor>footer{padding:10px 24px 12px}
+@media(max-width:1180px){.hook-editor{width:min(960px,94vw)}.hook-event-picker>div{grid-template-columns:repeat(3,minmax(0,1fr))}.hook-event-picker button{min-height:0}}
+@media(max-height:760px){.hook-editor>header{padding:20px 18px 8px}.hook-form-grid{gap:7px;padding:2px 18px 9px}.hook-event-picker,.hook-mode-picker,.hook-matcher-field,.hook-native-note{padding:7px 8px}.hook-event-picker>div{gap:4px;margin-top:5px}.hook-event-picker button,.hook-mode-picker button{padding:5px 6px}.hook-event-picker button{min-height:0}.hook-mode-picker button small{display:-webkit-box;overflow:hidden;-webkit-box-orient:vertical;-webkit-line-clamp:2}.hook-editor>footer{padding:8px 18px 10px}}
+
 @media(max-width:980px){.capability-module-nav{grid-template-columns:repeat(3,minmax(0,1fr))}.capability-module-nav button:nth-child(3){border-right:0}.capability-module-nav button:nth-child(-n+3){border-bottom:1px solid var(--line)}}@media(max-width:640px){.capability-module-nav{grid-template-columns:repeat(2,minmax(0,1fr))}.capability-module-nav button:nth-child(3){border-right:1px solid var(--line)}.capability-module-nav button:nth-child(2n){border-right:0}.capability-module-nav button:nth-child(-n+4){border-bottom:1px solid var(--line)}.capability-module-head,.capability-bulk-tools{align-items:stretch;flex-direction:column}.capability-module-actions{justify-content:flex-start}.capability-module-actions>*{flex:1;justify-content:center}.capability-bulk-tools .bulk-actions{display:grid;grid-template-columns:1fr 1fr}.capability-bulk-tools .bulk-actions button{justify-content:center}}
 
 /* Keep the page controls in view; data regions own their scrolling. */
