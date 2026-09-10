@@ -52,6 +52,10 @@ html{-webkit-text-size-adjust:100%;text-rendering:optimizeLegibility}body{font-s
 
 /* Agent conversation workspace */
 
+/* Keep FlowRun progress counts compact, with total token usage readable below. */
+.flow-run-inner-rail .run-progress{grid-template-columns:repeat(3,minmax(0,1fr))}
+.flow-run-inner-rail .run-progress span:last-child{grid-column:1/-1;padding-inline:8px}
+
 .model-config-tools{display:flex;align-items:center;justify-content:space-between;margin:-7px 0 14px;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:#f8faf8}.model-config-tools>span{color:var(--muted);font-size:11px}.model-config-card.selected{border-color:#67a17f;box-shadow:0 0 0 2px #dcebe1}.model-config-card>header{grid-template-columns:auto minmax(0,1fr) auto}.model-provider-select{gap:7px!important}.model-provider-select .model-server-icon{flex:0 0 34px}.model-config-card .card-actions button[title="删除"]:hover{color:var(--red)}
 .model-card-actions{align-items:center;gap:7px}.model-config-card .model-card-actions .card-delete-button{min-height:36px;border:1px solid #ebcaca;background:#fff5f5;padding:8px 11px;color:var(--red);font-size:11px}.model-config-card .model-card-actions .card-delete-button:hover{border-color:#d99b9b;background:#ffeaea}
 .model-test-result{margin:8px 0 0;padding:8px 10px;border-radius:6px;font-size:11px;line-height:1.45}.model-test-result.testing{background:#eef2f5;color:#536c7f}.model-test-result.success{background:#e8f4eb;color:var(--green)}.model-test-result.error{background:#fff0f0;color:var(--red)}.spin{animation:spin .8s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}
