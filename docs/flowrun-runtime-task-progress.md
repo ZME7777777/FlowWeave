@@ -2,8 +2,8 @@
 
 > 创建日期：2026-08-21
 > 状态：`ACTIVE`
-> 当前执行切片：无
-> 下一可执行切片：无（等待新需求）
+> 当前执行切片：FR-271
+> 下一可执行切片：FR-271 Agent 会话模型无事件等待上限
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -3632,6 +3632,16 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 验收：定向 Runtime 对账回归覆盖无理由请求与无理由审计载荷；迁移语法解析与 Alembic 唯一 head 通过；受影响 Python 与 TypeScript 静态检查、Web 构建、`git diff --check` 和任务状态唯一性通过。
 
 完成：`POST /node-attempts/{attempt_id}/reconcile-runtime-completion` 现仅接受 `expected_state_version`，工作台删除“对账原因”输入并可直接确认补登。新增迁移 `0110_candidate_output_set_owner` 回填并强制 `candidate_output_sets.owner_user_id`，使部署中现有模型查询与 PostgreSQL 模式一致。
+
+### FR-271 Agent 会话模型无事件等待上限 — DONE
+
+依赖：无（运行稳定性修复）。
+
+目标：修复 Agent Workspace 与节点会话的流式模型请求将 OpenHands/LiteLLM `timeout` 传为 `None`，使上游在不产出 token、错误或正式事件时无限占用当前轮，已配置的重试链永远无法开始。统一 LLM payload 必须对每次请求使用 60 秒上限，并保留短退避的有界重试；超时后只能由 OpenHands 写入正式失败事件，禁止浏览器重发用户消息、伪造回复、修改会话事件或替换 Runtime。该规则同时覆盖新建会话、会话内换模、FlowRun 节点会话和 summarizing condenser。
+
+验收：OpenHands 适配器定向 pytest 断言标准模型、Codex OAuth Responses、会话内换模及 condenser 均使用 `timeout=60` 和 `num_retries=2`；受影响 Python 静态检查、`git diff --check`、Alembic head 和任务状态唯一性通过；本切片使用独立 Git commit。
+
+完成：统一 OpenHands LLM payload 不再禁用 HTTP 读超时，所有 FlowWeave 管理的流式模型调用均在 60 秒无响应后进入既有 OpenHands 重试／正式错误路径；不再要求用户手动暂停后继续才能解除无限等待。
 
 ## 7. 恢复工作检查表
 
