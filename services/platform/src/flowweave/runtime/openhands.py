@@ -817,15 +817,17 @@ class OpenHandsRuntime:
             # provider (notably Codex OAuth) does not inherit a callback-less
             # Conversation and get downgraded to a non-streaming request.
             "stream": True,
-            # FlowWeave owns the user-visible response deadline. Keep the
-            # provider request unbounded so a durable no-event watchdog can
-            # pause the native Conversation rather than surface a provider
-            # timeout as an execution failure.
+            # A stream which never yields an event must become a formal
+            # OpenHands failure. Leaving LiteLLM's read timeout unset lets a
+            # stalled upstream request hold a Conversation in RUNNING forever,
+            # preventing the configured retry chain from ever running. This
+            # shared payload covers FlowRun node sessions, direct Agent
+            # Workspace conversations, LLM switches, and condensers.
             "num_retries": 3,
             "retry_multiplier": 2.0,
             "retry_min_wait": 1,
             "retry_max_wait": 4,
-            "timeout": None,
+            "timeout": 120,
         }
         # This is pinned Runtime catalog metadata, not a platform estimate.
         # Supplying it before the first request makes OpenHands initialize the

@@ -95,15 +95,15 @@ from flowweave.shared.settings import get_settings
 
 
 def _observe_task_watchdogs_after_send(
-    db: Session, binding: AgentConversationBinding, user_event_id: str | None
+    db: Session, binding: AgentConversationBinding, handle: RuntimeHandle
 ) -> None:
-    """Schedule a no-event deadline after one formal user event."""
+    """Observe formal OpenHands state without issuing control actions."""
 
     from flowweave.modules.agent_workspaces.application.task_watchdog import (
-        enqueue_response_timeout,
+        observe_task_watchdogs_from_runtime,
     )
 
-    enqueue_response_timeout(db, binding, user_event_id)
+    observe_task_watchdogs_from_runtime(db, binding, handle)
 
 
 def _attempt(db: Session, attempt_id: str) -> NodeAttempt:
@@ -1425,14 +1425,14 @@ def bootstrap_node_conversation(
         delivered = runtime.send_message(handle, prompt, image_urls)
     except DomainError as exc:
         if exc.details.get("outcome_unknown") is True:
-            # Delivery may have succeeded before the transport failed. Only
-            # schedule after formal identity reconciliation.
+            # Delivery may have succeeded before the transport failed; retain
+            # the native observation before identity reconciliation.
+            _observe_task_watchdogs_after_send(db, binding, handle)
             try:
                 reconciled = initial_user_event_id(handle, previous_event_id)
             except DomainError:
                 reconciled = None
             if reconciled is not None:
-                _observe_task_watchdogs_after_send(db, binding, reconciled)
                 return _activate_node_bootstrap(
                     db,
                     binding=binding,
@@ -1459,6 +1459,7 @@ def bootstrap_node_conversation(
             pass
         _delete_node_bootstrap_reservation(db, binding, command)
         raise
+    _observe_task_watchdogs_after_send(db, binding, handle)
     try:
         initial_event_id = delivered.cursor or initial_user_event_id(handle, previous_event_id)
     except DomainError:
@@ -1473,7 +1474,6 @@ def bootstrap_node_conversation(
             504,
             {"binding_id": binding.id},
         )
-    _observe_task_watchdogs_after_send(db, binding, initial_event_id)
     return _activate_node_bootstrap(
         db,
         binding=binding,
@@ -1845,7 +1845,7 @@ def send_question(
     if provider is not None:
         runtime.switch_model(handle, provider)
     result = runtime.send_message(handle, text, image_urls)
-    _observe_task_watchdogs_after_send(db, item, result.cursor)
+    _observe_task_watchdogs_after_send(db, item, handle)
     db.add(
         HumanAction(
             flow_run_id=item.flow_run_id,
@@ -1947,8 +1947,7 @@ def send_node_message(
         if provider is not None:
             runtime.switch_model(handle, provider)
     result = runtime.send_message(handle, prompt, image_urls)
-    if not queued_during_turn:
-        _observe_task_watchdogs_after_send(db, binding, result.cursor)
+    _observe_task_watchdogs_after_send(db, binding, handle)
     _ensure_blocked_attempt_wakeup(
         db,
         attempt_id=attempt_id,
@@ -2322,7 +2321,7 @@ def rerun_node_message(
     runtime.navigate(handle, parent_id)
     prompt, image_urls = message_payload(content.strip(), (), ())
     result = runtime.send_message(handle, prompt, image_urls)
-    _observe_task_watchdogs_after_send(db, binding, result.cursor)
+    _observe_task_watchdogs_after_send(db, binding, handle)
     activity_at = now()
     binding.last_connected_at = activity_at
     binding.updated_at = activity_at
@@ -2655,22 +2654,6 @@ def _record_native_pause(
         )
     )
     return paused
-
-
-def record_confirmed_native_pause(
-    db: Session, *, binding: AgentConversationBinding
-) -> NodeAttempt | None:
-    """Project a watchdog-confirmed native pause for its owning Attempt."""
-
-    if not binding.node_attempt_id:
-        return None
-    attempt = _attempt(db, binding.node_attempt_id)
-    return _record_native_pause(
-        db,
-        attempt_id=attempt.id,
-        binding=binding,
-        expected_version=attempt.state_version,
-    )
 
 
 def resume_node_conversation(

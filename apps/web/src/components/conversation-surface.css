@@ -135,11 +135,10 @@
 @keyframes conversation-jump-dot{0%,100%{opacity:.24;transform:translateY(0)}
 50%{opacity:1;transform:translateY(-2px)}
 }
-.conversation-failure{display:flex;align-items:flex-start;gap:9px;margin:0;border:1px solid #f0d8d2;border-radius:10px;background:#fff8f6;padding:11px 12px;color:#79403a;font-size:12px;line-height:1.55}
-.conversation-failure>svg{flex:0 0 auto;margin-top:2px;color:#bd594d}
+.conversation-failure{display:flex;align-items:flex-start;gap:8px;margin:0;border:1px solid #f2dfda;border-radius:8px;background:#fffaf9;padding:9px 10px;color:#754842;font-size:12px;line-height:1.5}
+.conversation-failure>svg{flex:0 0 auto;margin-top:1px;color:#b96054}
 .conversation-failure b{font-size:12px}
 .conversation-failure p{margin:3px 0 0}
-.conversation-failure small{display:block;margin-top:5px;color:#a46a62;font:10px 'DM Mono',ui-monospace,monospace}
 .conversation-interruption{display:flex;align-items:flex-start;gap:9px;margin:0;border:1px solid #d8e6dc;border-radius:10px;background:#f5faf6;padding:11px 12px;color:#3f604c;font-size:12px;line-height:1.55}
 .conversation-interruption>svg{flex:0 0 auto;margin-top:2px;color:#4c9564}
 .conversation-interruption b{font-size:12px}

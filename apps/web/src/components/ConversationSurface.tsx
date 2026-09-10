@@ -916,6 +916,12 @@ function presentConversationFailure(code: string, detail: string): FailurePresen
   const hasCode = (...names: string[]) => names.some(name => normalizedCode === name.toLowerCase());
   const contains = (...terms: string[]) => terms.some(term => normalizedDetail.includes(term.toLowerCase()));
 
+  if (hasCode('BadGatewayError', 'GatewayTimeoutError', 'LLMServiceUnavailableError', 'ServiceUnavailableError') || contains('bad gateway', 'gateway timeout', '502', '503', '504', 'tengine')) {
+    return {
+      title: '模型服务暂时不可用',
+      content: '模型服务暂时没有响应。本轮已停止，请稍后重试或切换模型。',
+    };
+  }
   if (hasCode('LLMNoResponseError') && contains('ResponseIncompleteEvent', 'response incomplete', 'incomplete response')) {
     return {
       title: '模型返回不完整响应',
@@ -934,7 +940,7 @@ function presentConversationFailure(code: string, detail: string): FailurePresen
       content: '模型服务未能在允许时间内完成响应。本轮已停止；请稍后重试，或改用响应更快的模型配置。',
     };
   }
-  if (hasCode('LLMServiceUnavailableError', 'ServiceUnavailableError') || contains('service unavailable', 'upstream unavailable')) {
+  if (contains('service unavailable', 'upstream unavailable')) {
     return {
       title: '模型服务暂不可用',
       content: '当前模型服务或其上游网关暂时不可用。这是模型服务侧故障，不是浏览器页面断线；请稍后重试或切换模型配置。',
@@ -977,8 +983,8 @@ function presentConversationFailure(code: string, detail: string): FailurePresen
     };
   }
   return {
-    title: '本轮执行发生未分类错误',
-    content: detail || 'OpenHands 返回了未分类的执行错误；请依据下方错误码和模型配置继续排查。',
+    title: '本轮未能完成',
+    content: '模型服务未能完成本次请求。请稍后重试；若反复出现，可切换模型。',
   };
 }
 
@@ -1018,14 +1024,15 @@ function ConversationFailure({ item, taskControl = [] }: { item: Item; taskContr
   if (isLegacyAutoTitleFailure) return null;
   const presentation = presentConversationFailure(code, item.content);
   return <article className="conversation-failure" data-turn-terminal="true" data-event-id={item.event.id} role="status">
-    <CircleAlert size={15}/><div><b>{presentation.title}</b><p>{presentation.content}</p>{code && <small>{code}</small>}</div>
+    <CircleAlert size={15}/><div><b>{presentation.title}</b><p>{presentation.content}</p></div>
   </article>;
 }
 
-export function ConversationSurface({ events, liveText, isGenerating, isPaused = false, requestStartedAt, requestSubmitting = false, rewritePending = false, condensationStatus, onRetryCondensation, onRewrite, onFork, onOpenAttachment, onPreviewCandidateFile, onAddReference, taskControl = [], monitoring, connectionState }: {
+export function ConversationSurface({ events, liveText, isGenerating, isPaused: _isPaused = false, requestStartedAt, requestSubmitting = false, rewritePending = false, condensationStatus, onRetryCondensation, onRewrite, onFork, onOpenAttachment, onPreviewCandidateFile, onAddReference, taskControl = [], monitoring, connectionState }: {
   events: OpenHandsConversationEvent[];
   liveText: string;
   isGenerating: boolean;
+  /** Compatibility-only input; presentation follows OpenHands terminal events. */
   isPaused?: boolean;
   requestStartedAt?: number;
   requestSubmitting?: boolean;
@@ -1041,6 +1048,9 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused =
   monitoring?: AgentActivitySummary;
   connectionState?: ConversationConnectionState;
 }) {
+  // Kept only while older workbench callers still provide this field.
+  // Rendering never derives a timeout, pause, or retry decision from it.
+  void _isPaused;
   const surface = useRef<HTMLElement>(null);
   const shell = useRef<HTMLDivElement>(null);
   const initialPositioned = useRef(false);
@@ -1198,14 +1208,6 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused =
     }, 600);
   }, [viewingReference]);
   const lastUserEventId = useMemo(() => [...turns].reverse().find(turn => turn.user)?.user?.event.id, [turns]);
-  const responseTimeoutPaused = Boolean(
-    isPaused
-    && lastUserEventId
-    && taskControl.some(control => (
-      control.action_event_id === lastUserEventId
-      && control.control_state === 'TIMEOUT_PAUSED'
-    )),
-  );
   if (!turns.length && !liveText && !isGenerating && !condensationStatus) return <div className="conversation-surface-empty"><b>会话已就绪</b><span>发送第一条消息，开始与 Agent 协作。</span></div>;
   const showJumpToLatest = !isAtLatest && Boolean(turns.length || liveText || isGenerating);
   return <div ref={shell} className="conversation-surface-shell">
@@ -1261,9 +1263,6 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused =
         </section>;
       })}
       {turns.length === 0 && (liveText || isGenerating) && <><ActivityGroup items={[]} active liveText={liveText} startedAt={requestStartedAt} avatarSlots={avatarSlots}/><CurrentTurnStatus items={[]} liveText={liveText} requestSubmitting={requestSubmitting} monitoring={monitoring} connectionState={connectionState}/></>}
-      {responseTimeoutPaused && <article className="conversation-interruption conversation-timeout-paused" role="status">
-        <Check size={15}/><div><b>模型响应超时，已暂停</b><p>OpenHands 会话连接正常。你可以点击“继续”重试。</p></div>
-      </article>}
       {condensationStatus && <article className={`conversation-condensation-progress ${condensationStatus.state}`} aria-label={condensationStatus.state === 'running' ? '正在压缩上下文' : '上下文压缩失败'} role="status">
         {condensationStatus.state === 'running' ? <LoaderCircle className="conversation-condensation-spinner" size={16}/> : <CircleAlert size={16}/>}
         <div><header><b>{condensationStatus.state === 'running' ? '正在压缩上下文' : '上下文压缩未完成'}</b>{condensationStatus.state === 'running' && <time>{formatDuration(condensationElapsed / 1_000)}</time>}</header>

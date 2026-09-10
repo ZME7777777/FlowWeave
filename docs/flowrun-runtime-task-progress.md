@@ -3689,6 +3689,14 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 
 完成：门禁调整命令响应显式返回当前 Attempt 和新建 FlowWeave binding ID，并将该 binding 写入人工动作审计供同幂等键重放；历史动作缺少 binding 时可从当前 Attempt 的服务端 locator 安全恢复。Web 确认文案明确成功后会直接进入调整会话，提交期间显示“正在创建并进入调整会话”和阶段说明，成功后直接打开精确 binding 路由，不再等待旧 `END_BLOCKED` 页面自行刷新或按 Attempt ID 变化猜测结果。
 
+### FR-278 OpenHands 原生模型超时与会话故障呈现 — DONE
+
+依赖：`FR-275`。
+
+目标：撤回 FlowWeave 的用户事件无输出 watchdog，不再创建超时后台任务、调用 OpenHands interrupt、投影超时暂停或自动续跑。所有会话、节点会话、换模和 condenser 的模型请求统一由 OpenHands/LiteLLM 使用 `timeout=120`、`num_retries=3` 及既有指数退避处理；页面仅消费 OpenHands 正式事件。上游网关异常不得向用户泄露 502 HTML、LiteLLM 类名、错误码或调用栈。
+
+完成：FlowWeave 已移除会话响应超时设置、任务投递、worker handler 与原生 pause 投影，兼容读取仅返回空控制集。正式 OpenHands 事件仍是会话终态与手动暂停／继续的唯一事实来源。模型服务的 502／503／504、网关超时及未知失败统一收敛为简洁的中文提示；故障卡片不再显示原始错误码或文本，并缩小为紧凑提示。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -3704,6 +3712,7 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-11 | FR-278 | OpenHands 适配器定向 pytest；受影响 Python Ruff/格式、`py_compile`、Alembic head；Web ESLint、TypeScript typecheck、production build、`git diff --check` | PASS（本地）：OpenHands/LiteLLM 原生请求统一使用 120 秒超时、3 次重试和既有退避；FlowWeave 不再以计时器控制会话。上游 `BadGatewayError`/502 HTML 仅以“模型服务暂时不可用”呈现，用户界面不显示 LiteLLM、网关 HTML 或错误码。远端发布与验证按绑定 commit 单独执行。 |
 | 2026-09-10 | FR-277 | 门禁问答与调整会话定向 Playwright（1 passed）；首次创建、连续修订与幂等命令结果直接回归（3 passed）；Web TypeScript typecheck、受影响 ESLint、production build；受影响 Python Ruff format/check、`py_compile`；Alembic head、任务状态唯一性与 `git diff --check` | PASS：确认弹窗明确说明成功后自动进入新会话；请求期间按钮禁用并显示创建／进入状态及阶段提示；成功后使用服务端返回的安全 binding ID 直接进入新调整会话。命令首次创建和同幂等键重放均返回同一 binding，不暴露 OpenHands locator；历史动作缺失 binding 时可按当前 Attempt 作用域恢复。唯一 Alembic head 为 `0110_candidate_output_set_owner`，无 `CURRENT`。 |
 | 2026-09-10 | FR-276 | 门禁问答摘要定向 Playwright（1 passed）；共享 DTO 分叉与连续修订直接回归（2 passed）；Web TypeScript typecheck、受影响 ESLint、production build；受影响 Python Ruff format/check、`py_compile`；Alembic head、任务状态唯一性与 `git diff --check` | PASS：门禁详情固定呈现两条可点击问答摘要，提问使用安全展示内容、回复使用最终 Agent 消息，工具过程不嵌入详情，全文按记录独立打开。调整分叉从共享 DTO 的 binding ID 在服务端作用域解析 OpenHands 会话 ID，不向 Web 暴露内部 locator。常规定向 pytest 已启动但在业务断言前受本机 Docker socket 缺失、Testcontainers PostgreSQL 无法创建而阻断；两条不依赖数据库的目标回归通过直接执行验证。唯一 Alembic head 为 `0110_candidate_output_set_owner`，无 `CURRENT`。 |
 | 2026-09-10 | FR-275 | OpenHands 适配器 pytest（111 passed）；受影响 Python Ruff/format、`py_compile`、Alembic head 与 `git diff --check`；Web ESLint、TypeScript typecheck、production build | PASS（静态、适配器与构建）：OpenHands LLM payload 保持 `num_retries=3` 和原退避，但 `timeout=null`；FlowWeave 在用户事件后登记 120 秒持久 watchdog，只有该正式 event 仍为 native active leaf 且会话仍为 `running/executing` 时才调用原生 interrupt，确认 `paused` 后投影为可继续状态。会话只提示“模型响应超时，已暂停。OpenHands 会话连接正常。你可以点击‘继续’重试。”，不显示“多少秒未收到事件”，不自动继续或重放消息；FlowRun 节点同步 CAS 投影为 `PAUSED`。新增 watchdog 定向 pytest 受本机 Docker daemon 不可用阻塞：Testcontainers PostgreSQL fixture 在断言前失败，未伪记为通过。 |

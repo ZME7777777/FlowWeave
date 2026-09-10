@@ -88,7 +88,6 @@ _DELIVERY_TASK_TYPES = frozenset(
         "WATCH_AGENT_TASK_TIMEOUT",
         "CONFIRM_AGENT_TASK_TIMEOUT",
         "RESUME_AGENT_TASK_TIMEOUT",
-        "PAUSE_AGENT_CONVERSATION_ON_TIMEOUT",
         "BUILD_CAPABILITY_DEPENDENCIES",
         "RESOLVE_PLUGIN_SOURCE",
     }
@@ -211,7 +210,6 @@ class TaskWorker:
             "WATCH_AGENT_TASK_TIMEOUT",
             "CONFIRM_AGENT_TASK_TIMEOUT",
             "RESUME_AGENT_TASK_TIMEOUT",
-            "PAUSE_AGENT_CONVERSATION_ON_TIMEOUT",
         }:
             return tenant_user(task.owner_user_id)
         return tenant_bypass()

@@ -1062,15 +1062,15 @@ def _bootstrap_result(db: Session, binding: AgentConversationBinding) -> dict[st
 
 
 def _observe_task_watchdogs_after_send(
-    db: Session, binding: AgentConversationBinding, user_event_id: str | None
+    db: Session, binding: AgentConversationBinding, handle: RuntimeHandle
 ) -> None:
-    """Schedule a no-event deadline after one formal user event."""
+    """Observe formal OpenHands state without issuing control actions."""
 
     from flowweave.modules.agent_workspaces.application.task_watchdog import (
-        enqueue_response_timeout,
+        observe_task_watchdogs_from_runtime,
     )
 
-    enqueue_response_timeout(db, binding, user_event_id)
+    observe_task_watchdogs_from_runtime(db, binding, handle)
 
 
 def normalized_first_sentence(content: str) -> str:
@@ -1348,13 +1348,13 @@ def bootstrap_conversation(
     except DomainError as exc:
         if exc.details.get("outcome_unknown") is True:
             # The Runtime may have accepted the event before the transport
-            # failed. Only schedule after formal identity reconciliation.
+            # failed; retain the native observation before reconciliation.
+            _observe_task_watchdogs_after_send(db, binding, handle)
             try:
                 reconciled = _initial_user_event_id(handle, previous_event_id)
             except DomainError:
                 reconciled = None
             if reconciled is not None:
-                _observe_task_watchdogs_after_send(db, binding, reconciled)
                 return _activate_bootstrapped_conversation(
                     db, binding, command, reconciled, message_text, attachments
                 )
@@ -1376,6 +1376,7 @@ def bootstrap_conversation(
             pass
         _record_bootstrap_failure(db, binding, command, exc)
         raise
+    _observe_task_watchdogs_after_send(db, binding, handle)
     initial_event_id = delivered.cursor or _initial_user_event_id(handle, previous_event_id)
     if initial_event_id is None:
         command.state = "AMBIGUOUS"
@@ -1387,7 +1388,6 @@ def bootstrap_conversation(
             504,
             {"binding_id": binding.id},
         )
-    _observe_task_watchdogs_after_send(db, binding, initial_event_id)
     return _activate_bootstrapped_conversation(
         db, binding, command, initial_event_id, message_text, attachments
     )
@@ -2055,8 +2055,7 @@ def message(
                     "AGENT_MESSAGE_DELIVERY_AMBIGUOUS", "消息发送结果不确定，请先刷新会话", 504
                 ) from exc
             raise
-        # Queued native input belongs to the current turn. Its own response
-        # deadline starts only when it becomes the active branch leaf.
+        _observe_task_watchdogs_after_send(db, binding, handle)
         if result.cursor:
             _record_message_attachments(db, binding, result.cursor, content.strip(), attachments)
         activity_at = now()
@@ -2162,7 +2161,7 @@ def message(
                 "AGENT_MESSAGE_DELIVERY_AMBIGUOUS", "消息发送结果不确定，请先刷新会话", 504
             ) from exc
         raise
-    _observe_task_watchdogs_after_send(db, binding, result.cursor)
+    _observe_task_watchdogs_after_send(db, binding, handle)
     if result.cursor:
         _record_message_attachments(db, binding, result.cursor, content.strip(), attachments)
     activity_at = now()
@@ -2919,7 +2918,7 @@ def rewrite_message(
                 "AGENT_MESSAGE_DELIVERY_AMBIGUOUS", "重新发送结果不确定，请先刷新会话", 504
             ) from exc
         raise
-    _observe_task_watchdogs_after_send(db, binding, result.cursor)
+    _observe_task_watchdogs_after_send(db, binding, handle)
     activity_at = now()
     binding.last_connected_at = activity_at
     binding.updated_at = activity_at

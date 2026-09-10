@@ -5,7 +5,6 @@ from typing import Any, cast
 
 from sqlalchemy.orm import Session
 
-from flowweave.modules.agent_workspaces.application.task_watchdog import process_response_timeout
 from flowweave.modules.agent_workspaces.public import (
     process_agent_conversation_title,
     process_agent_workspace_runtime,
@@ -105,12 +104,6 @@ def _resume_agent_task_timeout(
     db: Session, aggregate_id: str, payload: dict[str, Any], lease: Lease
 ) -> None:
     """Retire historical Task recovery jobs without touching OpenHands."""
-
-
-def _pause_agent_conversation_on_timeout(
-    db: Session, aggregate_id: str, payload: dict[str, Any], lease: Lease
-) -> None:
-    process_response_timeout(db, aggregate_id, payload, lease)
 
 
 def _poll_runtime(db: Session, aggregate_id: str, payload: dict[str, Any], lease: Lease) -> None:
@@ -261,7 +254,6 @@ HANDLERS: dict[str, Handler] = {
     "WATCH_AGENT_TASK_TIMEOUT": _watch_agent_task_timeout,
     "CONFIRM_AGENT_TASK_TIMEOUT": _confirm_agent_task_timeout,
     "RESUME_AGENT_TASK_TIMEOUT": _resume_agent_task_timeout,
-    "PAUSE_AGENT_CONVERSATION_ON_TIMEOUT": _pause_agent_conversation_on_timeout,
     "POLL_RUNTIME": _poll_runtime,
     "WAIT_RUNTIME_WAKEUP": _wait_runtime_wakeup,
     "RESUME_RUNTIME": _resume_runtime,
