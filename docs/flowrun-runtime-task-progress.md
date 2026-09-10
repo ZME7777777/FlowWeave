@@ -2,8 +2,8 @@
 
 > 创建日期：2026-08-21
 > 状态：`ACTIVE`
-> 当前执行切片：FR-271
-> 下一可执行切片：FR-271 Agent 会话模型无事件等待上限
+> 当前执行切片：无
+> 下一可执行切片：无（等待新需求）
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
