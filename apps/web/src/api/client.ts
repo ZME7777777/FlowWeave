@@ -1,6 +1,6 @@
 import type {
   AuthUser,
-  AgentProfileVersion, ArtifactInput, ArtifactVersion, ArtifactVersionPage, RuntimeArtifactAuditPage, CapabilityAsset, CapabilityImportResult, FlowDefinition, FlowRun, FlowRunAutomaticRecord, FlowRunAutomaticRecordUpdate, FlowRunAutomaticRecordWrite, FlowRunConversation, FlowRunRuntimeOverview, FlowRunSummary, FlowWrite, MessageAttachmentInput, OpenHandsConversationEventBatch, McpSource, SkillSource,
+  AgentProfileVersion, ArtifactInput, ArtifactVersion, ArtifactVersionPage, RuntimeArtifactAuditPage, CapabilityAsset, CapabilityImportResult, FlowDefinition, FlowRun, FlowRunAutomaticRecord, FlowRunAutomaticRecordUpdate, FlowRunAutomaticRecordWrite, FlowRunConversation, FlowRunRuntimeOverview, FlowRunRuntimeResource, FlowRunSummary, FlowWrite, MessageAttachmentInput, OpenHandsConversationEventBatch, McpSource, SkillSource,
   BlockedNodeDelete, BulkDeleteResult, CapabilityBulkDeleteResult, CodexDeviceAuthorization, CodexOAuthStatus, ModelProvider, ModelProviderDiscoveryWrite, ModelProviderUsage, ModelProviderWrite, NodeAsset, NodeAssetWrite, NodeAttempt, FlowRunAutomaticRecordSummary, ProviderBulkDeleteResult,
   AgentAttachment, AgentConversation, AgentConversationContext, AgentConversationInputReadiness, AgentConversationReference, AgentPendingConfirmation, AgentWorkDirectory, AgentWorkDirectoryList, AgentWorkspace, AgentWorkspaceCapability, AgentWorkspaceDetails, AgentWorkspaceMcpReadiness, AgentWorkspaceRuntime, CapabilityCollection, CapabilityCollectionWrite, ContextBundleManifest, MarketplaceCatalog, NodeDirectory, NodeRun, OpenHandsConversationEvent, PluginSourceResolution, RunEvent, RuntimeConfirmationBatch, TerminalEnvironment, TerminalEnvironmentWrite, EnvironmentSetupSession, EnvironmentVersion, GatePolicy, WebsiteCredential, WebsiteCredentialWrite, FlowRunSchedule, FlowRunScheduleOccurrencePage, FlowRunScheduleWrite, FlowRunScheduleTemplate,
 } from '../types';
@@ -518,6 +518,7 @@ export const api = {
   stopConversation: (runId: string, conversationId: string) =>
     request<{ accepted: boolean }>(`/flow-runs/${runId}/conversations/${conversationId}/stop`, json('POST', undefined, true)),
   runtimeOverview: (runId: string) => request<FlowRunRuntimeOverview>(`/flow-runs/${runId}/runtime`),
+  runtimeResource: (runId: string) => request<FlowRunRuntimeResource>(`/flow-runs/${runId}/runtime/resource`),
   replaceRuntime: (runId: string, generation: number, sessionRowVersion: number) =>
     request<FlowRunRuntimeOverview>(`/flow-runs/${runId}/runtime/replacements`, json('POST', {
       expected_generation: generation, expected_session_row_version: sessionRowVersion,

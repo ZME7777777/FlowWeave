@@ -24,8 +24,8 @@ from flowweave.shared.schemas import (
     AutomaticRunStartWrite,
     FlowRunScheduleStateWrite,
     FlowRunScheduleWrite,
-    GateRetryWithProviderWrite,
     GateRemediationWrite,
+    GateRetryWithProviderWrite,
     GateRiskAcceptanceWrite,
     HumanInputWrite,
     InputBindingsWrite,
@@ -337,6 +337,11 @@ async def flow_run(run_id: str, db: Db) -> dict[str, Any]:
 @router.get("/flow-runs/{run_id}/runtime")
 async def flow_run_runtime(run_id: str, db: Db) -> dict[str, Any]:
     return await run_sync(db, lambda session: sandboxes.runtime_overview(session, run_id))
+
+
+@router.get("/flow-runs/{run_id}/runtime/resource")
+async def flow_run_runtime_resource(run_id: str, db: Db) -> dict[str, Any]:
+    return await run_sync(db, lambda session: sandboxes.runtime_resource_summary(session, run_id))
 
 
 @router.post("/flow-runs/{run_id}/runtime/replacements", status_code=202)
@@ -661,7 +666,8 @@ async def gate_evaluation_conversation_events(
     history_cursor: str | None = Query(default=None, max_length=200),
 ) -> dict[str, Any]:
     return await run_sync(
-        db, lambda session: service.gate_evaluation_events(
+        db,
+        lambda session: service.gate_evaluation_events(
             session, attempt_id, evaluation_id, cursor, history_cursor
         ),
     )

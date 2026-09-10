@@ -2376,6 +2376,9 @@ def test_full_product_run_attempt_revision_snapshot_and_lineage(client, skill_ca
     assert summary["runtime_write_available"] is False
     assert summary["runtime_message"] is None
     assert summary["updated_at"] >= summary["started_at"]
+    resource = client.get(f"/api/v1/flow-runs/{run['id']}/runtime/resource")
+    assert resource.status_code == 200, resource.text
+    assert resource.json() == {"flow_run_id": run["id"], "resource": None}
 
     execution = client.post(
         f"/api/v1/node-attempts/{attempt1['id']}/confirm-start",

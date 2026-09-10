@@ -28,6 +28,7 @@ from flowweave.modules.sandboxes.application.runtime_operations import (
     request_runtime_resume,
     runtime_overview,
     runtime_readiness_by_flow_run,
+    runtime_resource_summary,
 )
 from flowweave.modules.sandboxes.application.runtime_owner import runtime_owner_flow_run_id
 from flowweave.modules.sandboxes.application.runtime_replacement import (
@@ -124,6 +125,7 @@ __all__ = (
     "runtime_allocation_for_flow_run",
     "runtime_allocation_for_node_attempt",
     "runtime_readiness_by_flow_run",
+    "runtime_resource_summary",
     "runtime_overview",
     "runtime_owner_flow_run_id",
     "sandbox_dict",

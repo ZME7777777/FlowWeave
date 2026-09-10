@@ -735,6 +735,18 @@ export interface FlowRunRuntimeOverview {
     physical_delete_operation: 'DELETE_FLOW_RUN';
   };
 }
+export interface FlowRunRuntimeResource {
+  flow_run_id: string;
+  resource: {
+    generation: number;
+    container_id: string;
+    cpu_limit: string;
+    memory_limit: string;
+    cpu_usage_percent: number;
+    memory_usage_bytes: number;
+    host_project_mount_path: string | null;
+  } | null;
+}
 export interface AuthUser {
   id: string;
   username: string;

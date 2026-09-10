@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from sqlalchemy import or_, select
@@ -8,6 +10,10 @@ from sqlalchemy.orm import Session
 from flowweave.modules.sandboxes.application.runtime_owner import runtime_owner_flow_run_id
 from flowweave.modules.sandboxes.application.runtime_replacement import (
     enqueue_flow_run_runtime_replacement,
+)
+from flowweave.modules.sandboxes.infrastructure.docker import (
+    DockerResourceUsage,
+    DockerSandboxProvider,
 )
 from flowweave.modules.sandboxes.infrastructure.models import (
     FlowRunRuntime,
@@ -25,6 +31,12 @@ from flowweave.shared.models import (
     NodeRun,
     RunEvent,
 )
+from flowweave.shared.settings import get_settings
+
+_FLOW_RUN_ALLOCATION_RELATIVE = re.compile(
+    r"\.flow-run-runtimes/[0-9a-f]{32}/"
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+)
 
 
 def _retention_policy() -> dict[str, Any]:
@@ -32,6 +44,51 @@ def _retention_policy() -> dict[str, Any]:
         "mode": "FLOW_RUN_LIFETIME",
         "workspace_preserved_during_replacement": True,
         "physical_delete_operation": "DELETE_FLOW_RUN",
+    }
+
+
+def _host_project_mount_path(spec: dict[str, Any], host_root: Path) -> str | None:
+    """Return the exact FlowRun project bind source only for a canonical allocation."""
+
+    relative_value = spec.get("runtime_allocation_relative")
+    if not isinstance(relative_value, str) or not _FLOW_RUN_ALLOCATION_RELATIVE.fullmatch(
+        relative_value
+    ):
+        return None
+    relative = PurePosixPath(relative_value)
+    if not host_root.is_absolute() or relative.is_absolute():
+        return None
+    return str(host_root.joinpath(*relative.parts, "workspace", "project"))
+
+
+def _active_resource_summary(
+    resource: ManagedSandbox | None,
+    generation: RuntimeGeneration | None,
+    usage: DockerResourceUsage | None,
+) -> dict[str, Any] | None:
+    """Return safe resource data only for the currently active Runtime."""
+
+    if (
+        resource is None
+        or generation is None
+        or generation.state != "READY"
+        or resource.observed_state != "RUNNING"
+        or not resource.backend_resource_id
+        or usage is None
+    ):
+        return None
+    settings = get_settings()
+    spec = resource.spec_json or {}
+    return {
+        "generation": generation.generation,
+        "container_id": resource.backend_resource_id.removeprefix("sha256:")[:12],
+        "cpu_limit": str(spec.get("cpu_limit") or settings.terminal_environment_cpus),
+        "memory_limit": str(spec.get("memory_limit") or settings.terminal_environment_memory),
+        "cpu_usage_percent": usage.cpu_usage_percent,
+        "memory_usage_bytes": usage.memory_usage_bytes,
+        "host_project_mount_path": _host_project_mount_path(
+            spec, Path(settings.runtime_host_workspace_root)
+        ),
     }
 
 
@@ -110,6 +167,49 @@ def runtime_overview(db: Session, flow_run_id: str) -> dict[str, Any]:
             for item in generations
         ],
         "retention": _retention_policy(),
+    }
+
+
+def runtime_resource_summary(db: Session, flow_run_id: str) -> dict[str, Any]:
+    """Read Docker usage for one Runtime without delaying the run list."""
+
+    owner_id = runtime_owner_flow_run_id(db, flow_run_id)
+    session = db.scalar(
+        select(FlowRunRuntime).where(
+            FlowRunRuntime.flow_run_id == owner_id,
+            FlowRunRuntime.node_attempt_id.is_(None),
+        )
+    )
+    if session is None or session.status != "ACTIVE" or session.active_generation is None:
+        return {"flow_run_id": flow_run_id, "resource": None}
+    generation = db.scalar(
+        select(RuntimeGeneration).where(
+            RuntimeGeneration.runtime_session_id == session.id,
+            RuntimeGeneration.generation == session.active_generation,
+        )
+    )
+    resource = (
+        db.get(ManagedSandbox, generation.managed_runtime_id)
+        if generation is not None and generation.managed_runtime_id
+        else None
+    )
+    usage = None
+    if (
+        generation is not None
+        and generation.state == "READY"
+        and resource is not None
+        and resource.observed_state == "RUNNING"
+        and resource.backend_resource_id
+    ):
+        try:
+            usage = DockerSandboxProvider(get_settings()).usage(
+                resource.backend_resource_name, resource.id
+            )
+        except DomainError:
+            pass
+    return {
+        "flow_run_id": flow_run_id,
+        "resource": _active_resource_summary(resource, generation, usage),
     }
 
 
@@ -442,5 +542,6 @@ __all__ = (
     "request_runtime_replacement",
     "request_runtime_resume",
     "runtime_overview",
+    "runtime_resource_summary",
     "runtime_readiness_by_flow_run",
 )

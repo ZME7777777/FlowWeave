@@ -3491,6 +3491,14 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 
 完成：列表 readiness 投影移除了对每个 active Runtime 的 Docker usage 调用及关联容器查询，`runtime_resource` 不再出现在列表 DTO。前端删除“运行资源”列和实时 CPU／内存／宿主机路径展示，保留逻辑 Runtime 状态、暂停／启动操作和 Token 用量。
 
+### FR-256 FlowRun 列表异步容器资源加载 — DONE
+
+依赖：`FR-255`。
+
+目标：恢复运行资源列，但首个 `GET /flow-runs` 响应只能读取数据库投影并优先渲染记录。当前容器的 Docker usage、容器 ID 和宿主机挂载路径必须经单独、按 FlowRun 请求的只读接口异步加载，任何 Docker 慢响应或失败均不得延迟列表。
+
+完成：新增 `GET /flow-runs/{run_id}/runtime/resource`，仅在 owner Runtime 为 `ACTIVE`、当前 generation 为 `READY` 且受管容器仍为 `RUNNING` 时读取受所有权校验保护的 Docker usage；其他生命周期或 Docker 观测错误均安全返回 `resource: null`。运行列表先渲染数据库记录，随后只为 `ACTIVE` 条目独立请求资源信息；单元格加载时明确提示“不影响运行列表加载”，10 秒低频刷新，不随 1.5 秒列表轮询重复查询。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -3506,6 +3514,7 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-10 | FR-256 | 受影响 Python `py_compile`、Ruff、资源端点定向 pytest、Web typecheck／受影响文件 ESLint／production build、Alembic head、任务状态唯一性与 `git diff --check` | PASS（静态与构建）：`GET /flow-runs` 继续只读取数据库生命周期投影；Docker usage 只从独立的 `/flow-runs/{run_id}/runtime/resource` 读取，且仅对当前 `ACTIVE` Runtime 的 `READY`、`RUNNING` generation 执行。页面先显示记录和“正在读取容器资源”，资源单元格以 10 秒周期独立刷新。Python 编译、Ruff、Web typecheck、定向 ESLint、production build、唯一 Alembic head `0108_model_provider_api_protocol` 与 whitespace 检查通过。资源端点定向 API pytest 在所有断言之前因本机 Docker Unix socket 缺失、Testcontainers PostgreSQL 无法启动而阻断，未伪记为通过。 |
 | 2026-09-10 | FR-255 | 受影响 Python `py_compile`、Ruff、运行列表 API 定向 pytest、Web typecheck／受影响文件 ESLint／production build、Alembic head、任务状态唯一性与 `git diff --check` | PASS（静态与构建）：`runtime_readiness_by_flow_run()` 仅查询 FlowRun Runtime 生命周期，`GET /flow-runs` 不再读取 ManagedSandbox 或调用 Docker Runtime Provider usage；列表 DTO 和页面均不再含 `runtime_resource` 或“运行资源”列。Python 编译、Ruff、Web typecheck、定向 ESLint、production build、唯一 Alembic head `0108_model_provider_api_protocol` 与 whitespace 检查通过。定向 API pytest 在所有断言之前因本机 Docker Unix socket 缺失、Testcontainers PostgreSQL 无法启动而阻断，未伪记为通过。 |
 | 2026-09-10 | FR-254 | Responses API Key Runtime 定向 pytest（2 passed）；受影响 Python Ruff format/check、`py_compile`、定向 Pyright；Web typecheck、受影响文件 ESLint、production build；Alembic head、任务状态唯一性与 `git diff --check` | PASS（静态与定向）：删除模型服务不会阻塞，既有会话不会静默迁移；自动计划只在有已连接默认模型时稳定重配，否则要求显式配置。API Key 可选择 Chat Completions 或 Responses，Codex OAuth 固定 Responses。Pyright 仅剩 `openhands.py:3542-3543` 两个既有 unknown-type 诊断；本改动模块无新增诊断。三条 API 集成测试在 Testcontainers 初始化时受本机 Docker Unix socket 缺失阻断，未伪记为通过。 |
 | 2026-09-10 | FR-253 | 受影响 Python Ruff、`py_compile`、定向 Pyright；Alembic 迁移链解析、设置直接 smoke、`git diff --check` | PASS（静态）：Worker 维护循环会按持久化 due-time 对活跃 Agent／节点会话的正式 OpenHands 累计 usage 做有界、事务外对账；高水位写入幂等且按 binding owner 投影。定向 pytest 受本机 Docker daemon 不可用、Testcontainers PostgreSQL fixture 初始化失败阻断，未伪记为通过。`0107_usage_reconcile` 独立衔接 `0105_conversation_token_usage`，避免并行未提交的模型服务迁移进入本次发布。 |
