@@ -1,6 +1,6 @@
 """schedule periodic OpenHands usage reconciliation
 
-Revision ID: 0107_usage_reconciliation_schedule
+Revision ID: 0107_usage_reconcile
 Revises: 0105_conversation_token_usage
 """
 
@@ -9,7 +9,7 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0107_usage_reconciliation_schedule"
+revision = "0107_usage_reconcile"
 down_revision = "0105_conversation_token_usage"
 branch_labels = None
 depends_on = None
