@@ -16,7 +16,10 @@ from flowweave.runtime.base import (
 from flowweave.runtime.dependencies import runtime_context
 from flowweave.shared.errors import DomainError
 from flowweave.shared.models import AttemptState
-from flowweave.shared.schemas import GateRetryWithProviderWrite
+from flowweave.shared.schemas import (
+    GateRetryWithProviderWrite,
+    RuntimeCompletionReconciliationWrite,
+)
 from flowweave.shared.settings import Settings, settings_context
 
 
@@ -193,6 +196,7 @@ def test_native_completion_after_runtime_failure_reenters_artifact_projection(mo
                 result=RuntimeResult(
                     status="COMPLETED",
                     outputs={"report": ("FILE", "/runtime/workspace/report.md")},
+                    completion_event_id="finish-action-2",
                 ),
             )
 
@@ -240,8 +244,15 @@ def test_native_completion_after_runtime_failure_reenters_artifact_projection(mo
         ),
     )
 
+    # A historical FlowWeave projection may be absent. The formal FinishAction
+    # still authorizes one new projection; a local audit marker is only a
+    # derived idempotency record, never the source of completion truth.
+    monkeypatch.setattr(
+        orchestration_service, "_completion_already_projected", lambda *_args: False
+    )
+
     with runtime_context(NativeCompletedRuntime()):
-        orchestration_service.process_poll_runtime(None, "attempt-1", 1, commit=False)
+        orchestration_service.process_poll_runtime(object(), "attempt-1", 1, commit=False)
 
     assert run.state == "ACTIVE"
     assert events == [("ATTEMPT_RESUMED", {"reason": "NATIVE_COMPLETION_AFTER_BLOCKED_PROJECTION"})]
@@ -251,6 +262,7 @@ def test_native_completion_after_runtime_failure_reenters_artifact_projection(mo
             RuntimeResult(
                 status="COMPLETED",
                 outputs={"report": ("FILE", "/runtime/workspace/report.md")},
+                completion_event_id="finish-action-2",
                 cursor="finish-2",
             ),
             ["prepared"],
@@ -279,6 +291,7 @@ def test_repeated_native_completion_after_gate_block_does_not_replay_outputs(mon
                 result=RuntimeResult(
                     status="COMPLETED",
                     outputs={"report": ("FILE", "/runtime/workspace/report.md")},
+                    completion_event_id="finish-action-1",
                 ),
             )
 
@@ -314,6 +327,125 @@ def test_repeated_native_completion_after_gate_block_does_not_replay_outputs(mon
 
     assert claims == []
     assert prepared == []
+
+
+def test_manual_completion_reconciliation_uses_active_finish_action(monkeypatch):
+    current = SimpleNamespace(
+        id="attempt-1",
+        node_run_id="node-run-1",
+        state=AttemptState.END_BLOCKED,
+        runtime_phase="COMPLETED",
+        error_code="RUNTIME_COMPLETION_IDENTITY_UNKNOWN",
+        state_version=7,
+        output_targets_json={"report": {"artifact_type": "FILE"}},
+    )
+    claimed = SimpleNamespace(
+        id="attempt-1",
+        node_run_id="node-run-1",
+        output_targets_json=current.output_targets_json,
+    )
+    run = SimpleNamespace(id="run-1", state="WAITING_HUMAN")
+    actions: list[tuple[str, dict[str, object]]] = []
+    events: list[tuple[str, dict[str, object]]] = []
+    applied: list[tuple[object, RuntimeResult, object]] = []
+
+    class Db:
+        def scalar(self, _statement):
+            return None
+
+    class NativeCompletedRuntime:
+        def read_active_events(self, _handle):
+            return RuntimeEventBatch(
+                events=(),
+                cursor="finish-observation",
+                result=RuntimeResult(
+                    status="COMPLETED",
+                    outputs={"report": ("FILE", "/runtime/workspace/report.md")},
+                    completion_event_id="finish-action",
+                ),
+            )
+
+    monkeypatch.setattr(orchestration_service, "_attempt", lambda *_args: current)
+    monkeypatch.setattr(
+        orchestration_service, "_ensure_attempt_runtime_for_native_observation", lambda *_args: None
+    )
+    monkeypatch.setattr(
+        orchestration_service, "_active_attempt_runtime_handle", lambda *_args: SimpleNamespace()
+    )
+    monkeypatch.setattr(
+        orchestration_service, "_prepare_runtime_outputs", lambda *_args: ["prepared"]
+    )
+    monkeypatch.setattr(
+        orchestration_service, "_claim_runtime_phase", lambda *_args, **_kwargs: claimed
+    )
+    monkeypatch.setattr(
+        orchestration_service,
+        "_node_run",
+        lambda *_args: SimpleNamespace(id="node-run-1", flow_run_id="run-1"),
+    )
+    monkeypatch.setattr(orchestration_service, "_run", lambda *_args: run)
+    monkeypatch.setattr(
+        orchestration_service,
+        "_action",
+        lambda _db, _run_id, action_type, _key, payload, *_args: actions.append(
+            (action_type, payload)
+        ),
+    )
+    monkeypatch.setattr(
+        orchestration_service,
+        "_event",
+        lambda _db, _run_id, event_type, payload, *_args: events.append((event_type, payload)),
+    )
+    monkeypatch.setattr(
+        orchestration_service,
+        "_apply_runtime_result",
+        lambda _db, item, result, **kwargs: applied.append(
+            (item, result, kwargs["prepared_outputs"])
+        )
+        or {"id": item.id, "state": "END_GATES"},
+    )
+
+    with runtime_context(NativeCompletedRuntime()):
+        result = orchestration_service.reconcile_runtime_completion(
+            Db(),
+            current.id,
+            RuntimeCompletionReconciliationWrite(
+                expected_state_version=7, reason="历史投影丢失，需要按原生完成事件补登"
+            ),
+            "reconcile-1",
+        )
+
+    assert result == {"id": "attempt-1", "state": "END_GATES"}
+    assert run.state == "ACTIVE"
+    assert actions == [
+        (
+            "RECONCILE_RUNTIME_COMPLETION",
+            {
+                "reason": "历史投影丢失，需要按原生完成事件补登",
+                "completion_event_id": "finish-action",
+            },
+        )
+    ]
+    assert events == [
+        (
+            "RUNTIME_COMPLETION_RECONCILIATION_STARTED",
+            {
+                "completion_event_id": "finish-action",
+                "reason": "历史投影丢失，需要按原生完成事件补登",
+            },
+        )
+    ]
+    assert applied == [
+        (
+            claimed,
+            RuntimeResult(
+                status="COMPLETED",
+                outputs={"report": ("FILE", "/runtime/workspace/report.md")},
+                completion_event_id="finish-action",
+            ),
+            ["prepared"],
+        )
+    ]
 
 
 def test_historical_gate_without_id_is_a_controlled_configuration_error(monkeypatch):
@@ -366,6 +498,7 @@ def test_gate_sidecar_uses_its_node_attempt_runtime_and_workspace(monkeypatch):
     monkeypatch.setattr(
         orchestration_service, "lock_referenceable_version", lambda *_args: environment
     )
+
     def node_sidecar_connection(*_args, **kwargs):
         captured["connection_flow_run_id"] = kwargs["flow_run_id"]
         captured["connection_node_attempt_id"] = kwargs["node_attempt_id"]
@@ -993,7 +1126,10 @@ def test_retry_gate_with_provider_preserves_old_evaluation_and_updates_next_poli
         ],
     )
     evaluation = SimpleNamespace(
-        id="evaluation-1", attempt_id=attempt.id, decision="ERROR", stage="END",
+        id="evaluation-1",
+        attempt_id=attempt.id,
+        decision="ERROR",
+        stage="END",
         policy_snapshot_key="gate-1",
     )
     events: list[tuple[str, dict[str, object]]] = []
@@ -1050,7 +1186,8 @@ def test_retry_gate_with_provider_preserves_old_evaluation_and_updates_next_poli
         "reasoning_effort": "high",
     }
     assert attempt.gate_policies_json[0]["config"] == {
-        "prompt": "修订后的判定提示词", "code": "assert True"
+        "prompt": "修订后的判定提示词",
+        "code": "assert True",
     }
     assert events == [
         (

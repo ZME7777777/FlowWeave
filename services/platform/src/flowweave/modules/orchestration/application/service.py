@@ -126,6 +126,7 @@ from flowweave.shared.schemas import (
     RejectWrite,
     RunStart,
     RuntimeCancelRecoveryWrite,
+    RuntimeCompletionReconciliationWrite,
     RuntimeConfirmationDecisionWrite,
     SyncSnapshotWrite,
 )
@@ -1554,10 +1555,10 @@ def _upgrade_legacy_automatic_plan_gate_ids(plan: dict[str, Any]) -> list[dict[s
     return upgraded
 
 
-def _completion_event_id(result: RuntimeResult, batch_cursor: str | None = None) -> str | None:
-    """Use only a formal OpenHands event identity for completion projection."""
+def _completion_event_id(result: RuntimeResult) -> str | None:
+    """Return the formal OpenHands FinishAction identity, never a leaf cursor."""
 
-    candidate = result.cursor or batch_cursor
+    candidate = result.completion_event_id
     if not isinstance(candidate, str) or not candidate.strip():
         return None
     return candidate.strip()
@@ -1582,27 +1583,26 @@ def _completion_already_projected(
     )
 
 
-def _block_unknown_completion_identity(
+def _block_missing_completion_identity(
     db: Session,
     attempt: NodeAttempt,
     *,
     observed_completion_event_id: str | None,
 ) -> None:
-    """Fail closed for legacy blocked Attempts without a prior audit marker."""
+    """Fail closed only when OpenHands did not provide a formal FinishAction ID."""
 
     node_run = _node_run(db, attempt.node_run_id)
     run = _run(db, node_run.flow_run_id)
-    attempt.error_code = "RUNTIME_COMPLETION_IDENTITY_UNKNOWN"
+    attempt.error_code = "RUNTIME_COMPLETION_IDENTITY_MISSING"
     attempt.error_detail = (
-        "The completed OpenHands event has no prior FlowWeave projection identity; "
-        "outputs were not registered again."
+        "OpenHands completed without a formal FinishAction identity; outputs cannot be registered."
     )
     attempt.state_version += 1
     run.state = FlowRunState.WAITING_HUMAN
     _event(
         db,
         run.id,
-        "RUNTIME_COMPLETION_PROJECTION_BLOCKED",
+        "RUNTIME_COMPLETION_IDENTITY_MISSING",
         {"completion_event_id": observed_completion_event_id},
         node_run.id,
         attempt.id,
@@ -6020,9 +6020,11 @@ def process_poll_runtime(
     result = observed_result or runtime.inspect(
         replace(handle, cursor=batch.cursor or handle.cursor)
     )
-    completion_event_id = _completion_event_id(result, batch.cursor)
-    if result.cursor is None and completion_event_id is not None:
-        result = replace(result, cursor=completion_event_id)
+    completion_event_id = _completion_event_id(result)
+    # Keep the native leaf cursor as a read/navigation anchor. It is distinct
+    # from the FinishAction ID used for Artifact projection idempotency.
+    if result.cursor is None and batch.cursor is not None:
+        result = replace(result, cursor=batch.cursor)
     native_execution_status = (
         runtime.input_readiness(handle).execution_status.lower()
         if observing_blocked_attempt
@@ -6051,27 +6053,13 @@ def process_poll_runtime(
         # error remains terminal, until a later FinishAction supersedes it.
         if result.status == "COMPLETED" and observed_result is not None:
             if completion_event_id is None:
-                _block_unknown_completion_identity(db, current, observed_completion_event_id=None)
+                _block_missing_completion_identity(db, current, observed_completion_event_id=None)
                 _finish_transaction(db, commit)
                 return
             if _completion_already_projected(db, current.id, completion_event_id):
                 # A wake-up may repeatedly return the active terminal event.
                 # Its earlier projection already owns the Artifacts and END
                 # gate task, so retaining END_BLOCKED is the only safe action.
-                _finish_transaction(db, commit)
-                return
-            historical_marker = db is not None and db.scalar(
-                select(RunEvent.cursor)
-                .where(
-                    RunEvent.attempt_id == current.id,
-                    RunEvent.event_type == "RUNTIME_COMPLETION_PROJECTED",
-                )
-                .limit(1)
-            )
-            if db is not None and not historical_marker:
-                _block_unknown_completion_identity(
-                    db, current, observed_completion_event_id=completion_event_id
-                )
                 _finish_transaction(db, commit)
                 return
             resumed = _claim_runtime_phase(
@@ -6181,6 +6169,110 @@ def process_poll_runtime(
         pending_confirmation=pending_confirmation,
         failure_code=failure_code,
         commit=commit,
+    )
+
+
+def reconcile_runtime_completion(
+    db: Session,
+    attempt_id: str,
+    payload: RuntimeCompletionReconciliationWrite,
+    idempotency_key: str,
+) -> dict[str, Any]:
+    """Re-project one verified native FinishAction after a historical projection loss.
+
+    The operator supplies neither an event ID nor a file path. FlowWeave
+    rereads the active OpenHands branch and reuses the ordinary projection
+    path, whose CandidateOutputSet and Artifact uniqueness constraints make
+    this compensation idempotent.
+    """
+
+    current = _attempt(db, attempt_id)
+    permitted_errors = {
+        "RUNTIME_COMPLETION_IDENTITY_UNKNOWN",
+        "RUNTIME_COMPLETION_IDENTITY_MISSING",
+    }
+    if current.state != AttemptState.END_BLOCKED or current.error_code not in permitted_errors:
+        raise illegal(
+            "only a completion-projection-blocked attempt can be reconciled",
+            state=current.state,
+            error_code=current.error_code,
+        )
+    if current.state_version != payload.expected_state_version:
+        raise conflict(
+            "attempt was modified",
+            expected=payload.expected_state_version,
+            actual=current.state_version,
+        )
+    existing = db.scalar(select(HumanAction).where(HumanAction.idempotency_key == idempotency_key))
+    if existing is not None:
+        if (
+            existing.action_type != "RECONCILE_RUNTIME_COMPLETION"
+            or existing.attempt_id != attempt_id
+        ):
+            raise conflict("runtime completion reconciliation idempotency key is already used")
+        if existing.payload_json.get("reason") != payload.reason:
+            raise conflict("runtime completion reconciliation request does not match")
+        return attempt_detail(db, attempt_id)
+
+    _ensure_attempt_runtime_for_native_observation(db, current)
+    handle = _active_attempt_runtime_handle(db, current)
+    runtime = get_runtime()
+    read_active_events = getattr(runtime, "read_active_events", None)
+    batch = (
+        read_active_events(handle) if callable(read_active_events) else runtime.read_events(handle)
+    )
+    result = batch.result
+    completion_event_id = _completion_event_id(result) if result is not None else None
+    if result is None or result.status != "COMPLETED" or completion_event_id is None:
+        raise DomainError(
+            "RUNTIME_COMPLETION_RECONCILIATION_UNAVAILABLE",
+            "The active OpenHands branch has no formal FinishAction available for reconciliation",
+            409,
+        )
+    prepared = _prepare_runtime_outputs(result, current.output_targets_json or {}, handle)
+    claimed = _claim_runtime_phase(
+        db,
+        current.id,
+        payload.expected_state_version,
+        AttemptState.END_BLOCKED,
+        current.runtime_phase,
+        state=AttemptState.EXECUTING,
+        runtime_phase="RUNNING",
+        error_code=None,
+        error_detail=None,
+    )
+    if claimed is None:
+        discard_prepared_artifacts(prepared)
+        raise conflict("attempt was modified")
+    node_run = _node_run(db, claimed.node_run_id)
+    run = _run(db, node_run.flow_run_id)
+    _action(
+        db,
+        run.id,
+        "RECONCILE_RUNTIME_COMPLETION",
+        idempotency_key,
+        {"reason": payload.reason, "completion_event_id": completion_event_id},
+        node_run.id,
+        claimed.id,
+    )
+    run.state = FlowRunState.ACTIVE
+    _event(
+        db,
+        run.id,
+        "RUNTIME_COMPLETION_RECONCILIATION_STARTED",
+        {"completion_event_id": completion_event_id, "reason": payload.reason},
+        node_run.id,
+        claimed.id,
+    )
+    return _apply_runtime_result(
+        db,
+        claimed,
+        result,
+        prepared_outputs=prepared,
+        result_key=f"reconcile:{completion_event_id}",
+        pending_confirmation=None,
+        failure_code="RUNTIME_FAILED",
+        commit=True,
     )
 
 

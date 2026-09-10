@@ -35,6 +35,7 @@ from flowweave.shared.schemas import (
     RejectWrite,
     RunStart,
     RuntimeCancelRecoveryWrite,
+    RuntimeCompletionReconciliationWrite,
     RuntimeConfirmationDecisionWrite,
     RuntimeLifecycleWrite,
     RuntimeReplacementWrite,
@@ -653,6 +654,24 @@ async def remediate_gate_failure(
             attempt_id,
             payload,
             _key(idempotency_key, "remediate-gate-failure", attempt_id),
+        ),
+    )
+
+
+@router.post("/node-attempts/{attempt_id}/reconcile-runtime-completion")
+async def reconcile_runtime_completion(
+    attempt_id: str,
+    payload: RuntimeCompletionReconciliationWrite,
+    db: Db,
+    idempotency_key: IdempotencyKey = None,
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: service.reconcile_runtime_completion(
+            session,
+            attempt_id,
+            payload,
+            _key(idempotency_key, "reconcile-runtime-completion", attempt_id),
         ),
     )
 

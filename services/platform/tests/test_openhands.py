@@ -1787,6 +1787,34 @@ def test_openhands_active_head_does_not_replay_prior_error_after_new_user_turn(
     assert result is None
 
 
+def test_openhands_completion_uses_finish_action_identity_not_leaf_cursor(openhands_settings):
+    runtime = OpenHandsRuntime(openhands_settings)
+    result = runtime._result_from_events(
+        _handle(),
+        [
+            {
+                "kind": "ActionEvent",
+                "id": "finish-action",
+                "parent_id": "user-1",
+                "action": {"kind": "FinishAction", "message": "done"},
+            },
+            {
+                "kind": "ObservationEvent",
+                "id": "finish-observation",
+                "parent_id": "finish-action",
+                "action_id": "finish-action",
+                "observation": {"kind": "FinishObservation"},
+            },
+        ],
+        "finish-observation",
+    )
+
+    assert result is not None
+    assert result.status == "COMPLETED"
+    assert result.completion_event_id == "finish-action"
+    assert result.cursor == "finish-observation"
+
+
 def test_openhands_rejects_missing_persisted_event_anchor(openhands_settings, monkeypatch):
     """Event correlation must fail closed instead of guessing across missing anchors."""
 
@@ -2884,9 +2912,7 @@ def test_openhands_detects_legacy_fork_that_only_replayed_copied_finish(
     assert recovery.source_leaf_event_id == "source-finish-observation"
 
 
-def test_openhands_detects_legacy_fork_across_paginated_history(
-    openhands_settings, monkeypatch
-):
+def test_openhands_detects_legacy_fork_across_paginated_history(openhands_settings, monkeypatch):
     runtime = OpenHandsRuntime(openhands_settings)
     source_id = "10000000-0000-4000-8000-000000000003"
     fork_state = _state(

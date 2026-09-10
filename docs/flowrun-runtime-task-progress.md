@@ -3613,6 +3613,16 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 
 完成：在各自镜像安装层添加 `vim`，并将 OpenHands Runtime 的逐命令 fail-closed 探针纳入 `vim`。
 
+### FR-269 OpenHands 完成事件投影与人工对账 — DONE
+
+依赖：无（运行投影修复）。
+
+目标：以 OpenHands 当前活跃分支的正式 `ActionEvent(id) / FinishAction` 作为节点输出完成事实；FlowWeave 的完成投影仅为可重放、可审计的派生记录，不能作为承认新 OpenHands 完成事件的前提。修复历史 `END_BLOCKED / RUNTIME_COMPLETION_IDENTITY_UNKNOWN` 记录可由人工填写原因并触发受限对账：系统重新读取同一节点会话的活跃分支、冻结输出合同和受管工作区文件，以正式 FinishAction ID 幂等补登候选 Artifact 并重新进入完成门禁。不得接受人工指定事件 ID、路径、文件或直接数据库写入；缺少正式 FinishAction、合同不符、文件越界或内容读取失败必须拒绝补登。
+
+验收：OpenHands 适配器定向回归证明完成身份为 FinishAction ID 而非 leaf cursor；Runtime wakeup 定向回归覆盖无历史 FlowWeave 完成投影时的新正式 FinishAction 仍可投影、相同 FinishAction 不重放；人工对账命令只接受当前活跃分支正式完成、写入审计并复用正常 Artifact/Candidate/Gate 路径。受影响 Python Ruff/格式/`py_compile`、Web ESLint/typecheck/build、Alembic head、任务状态唯一性与 `git diff --check` 通过。
+
+完成：`RuntimeResult.completion_event_id` 现在只承载 OpenHands 正式 `FinishAction ActionEvent.id`，而 `cursor` 继续保留 leaf/读取锚点语义。`END_BLOCKED` 状态下的原生新完成不再要求存在历史 `RUNTIME_COMPLETION_PROJECTED` 记录；相同 FinishAction 仍由既有 Candidate/Artifact 唯一约束幂等拒绝重放。历史 `RUNTIME_COMPLETION_IDENTITY_UNKNOWN` 或 `RUNTIME_COMPLETION_IDENTITY_MISSING` 记录可通过要求原因的 `POST /node-attempts/{attempt_id}/reconcile-runtime-completion` 受控重放：服务端只读取当前活跃分支结果，重新校验冻结输出合同和受管工作区，并写入人工动作与运行审计。补登成功后直接进入既有 `_apply_runtime_result`，派发 END Gate；自动运行的 Gate PASS 保持既有 durable advance/后继节点流转，人工运行保持既有验收语义。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -3628,6 +3638,7 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-10 | FR-269 | OpenHands 完成身份定向 pytest；无需 Docker fixture 的 Runtime 投影／重复完成／人工对账定向 pytest；受影响 Python Ruff format/check、`py_compile`；Web typecheck、受影响 Web ESLint、production build；Alembic head、任务状态唯一性与 `git diff --check` | PASS：OpenHands 适配器将 FinishAction ID 与 finish observation leaf cursor 分离；缺失历史 FlowWeave 投影标记不再阻断新的正式 FinishAction，重复同一 ID 仍不重放。对账命令仅接受受阻 Attempt 的当前活跃正式完成，写入原因/FinishAction ID 审计并复用 Artifact/Candidate/END Gate 投影；没有人工路径、事件 ID 或文件路径旁路。`test_openhands.py` 为 111 passed，独立 Runtime 定向为 3 passed；完整 Runtime pytest collection 的 21 个数据库 fixture 在断言前受本机 Docker socket 缺失阻断，未伪记为功能失败。唯一 Alembic head 为 `0109_hook_capabilities`；Web 全局 lint 仍因 `AgentSessionWorkbench.tsx` 两条既有 Hook dependency warning 在 `--max-warnings=0` 下失败，受影响文件 ESLint/typecheck/build 均通过。 |
 | 2026-09-10 | FR-267 | CLI Node 测试、语法检查、npm pack 清单、12 个仓库 FlowWeave Skill frontmatter 检查、Alembic head、`git diff --check` 与任务状态唯一性 | PASS：`@flowweave-ai/cli@0.4.0` 的 12 项 Node 测试均通过；`event-trigger` 的读取、创建、追加版本，以及受控 Hook 元数据映射覆盖 dry-run URL／请求体与缺参拒绝。打包仅含 README、CLI 入口和 package metadata；唯一 Alembic head 为 `0109_hook_capabilities`，无 `CURRENT` 或 whitespace 错误。 |
 | 2026-09-10 | FR-266 | Web typecheck／production build、受影响 `CapabilitiesPage.tsx` ESLint、`git diff --check` 与任务状态唯一性 | PASS：Hook 专属选择器在既有 Modal/能力编辑器规则后锁定六项事件单排、两列主体和完整标题留白。 |
 | 2026-09-10 | FR-265 | Web typecheck／production build、受影响 `CapabilitiesPage.tsx` ESLint、`git diff --check` 与任务状态唯一性 | PASS：浏览器缩放后的中等桌面宽度固定保持六项事件同排与双列主体，标题上沿留白不被通用紧凑规则覆盖。 |

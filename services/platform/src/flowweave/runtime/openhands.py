@@ -2499,6 +2499,7 @@ class OpenHandsRuntime:
                     status="COMPLETED",
                     outputs=self._outputs(handle, text),
                     final_message=text,
+                    completion_event_id=self._event_identity(item)[0],
                     cursor=cursor,
                 )
             if self._event_type(item) == "ERROR":

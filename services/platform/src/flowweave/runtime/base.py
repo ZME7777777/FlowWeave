@@ -575,6 +575,9 @@ class RuntimeResult:
     outputs: dict[str, tuple[str, str]] = field(default_factory=_empty_outputs)
     final_message: str | None = None
     human_question: str | None = None
+    # This is an OpenHands ActionEvent.id for FinishAction, not a conversation
+    # leaf/cursor. Observations may advance the leaf after FinishAction.
+    completion_event_id: str | None = None
     cursor: str | None = None
     error: str | None = None
     schema_version: int = 1
@@ -586,6 +589,7 @@ class RuntimeResult:
             "outputs": {key: list(value) for key, value in self.outputs.items()},
             "final_message": self.final_message,
             "human_question": self.human_question,
+            "completion_event_id": self.completion_event_id,
             "cursor": self.cursor,
             "error": self.error,
         }

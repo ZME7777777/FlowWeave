@@ -139,7 +139,12 @@ class MockRuntime:
                         f" · {field_key}"
                     )
                 outputs[field_key] = (data_type, content)
-            result = RuntimeResult(status="COMPLETED", outputs=outputs, cursor="2")
+            result = RuntimeResult(
+                status="COMPLETED",
+                outputs=outputs,
+                completion_event_id="mock-finish-2",
+                cursor="2",
+            )
         self._results[handle.job_id] = result
         return handle
 
@@ -437,6 +442,7 @@ class MockRuntime:
             status="COMPLETED",
             outputs={"result": ("TEXT", answer)},
             final_message=answer,
+            completion_event_id=f"mock-finish-{assistant_cursor}",
             cursor=assistant_cursor,
         )
         self._results[handle.job_id] = result

@@ -607,6 +607,19 @@ class GateRemediationWrite(AttemptVersionWrite):
     pass
 
 
+class RuntimeCompletionReconciliationWrite(AttemptVersionWrite):
+    """Authorize one audited projection replay from a native FinishAction."""
+
+    reason: str = Field(min_length=1, max_length=4000)
+
+    @model_validator(mode="after")
+    def validate_reason(self) -> RuntimeCompletionReconciliationWrite:
+        self.reason = self.reason.strip()
+        if not self.reason:
+            raise ValueError("reconciliation reason must be non-empty text")
+        return self
+
+
 class ManualAttemptOutputWrite(ApiModel):
     artifact_type: Literal["URL", "FILE"]
     uri: str | None = None
