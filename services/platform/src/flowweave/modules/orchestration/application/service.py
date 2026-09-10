@@ -6210,8 +6210,6 @@ def reconcile_runtime_completion(
             or existing.attempt_id != attempt_id
         ):
             raise conflict("runtime completion reconciliation idempotency key is already used")
-        if existing.payload_json.get("reason") != payload.reason:
-            raise conflict("runtime completion reconciliation request does not match")
         return attempt_detail(db, attempt_id)
 
     _ensure_attempt_runtime_for_native_observation(db, current)
@@ -6251,7 +6249,7 @@ def reconcile_runtime_completion(
         run.id,
         "RECONCILE_RUNTIME_COMPLETION",
         idempotency_key,
-        {"reason": payload.reason, "completion_event_id": completion_event_id},
+        {"completion_event_id": completion_event_id},
         node_run.id,
         claimed.id,
     )
@@ -6260,7 +6258,7 @@ def reconcile_runtime_completion(
         db,
         run.id,
         "RUNTIME_COMPLETION_RECONCILIATION_STARTED",
-        {"completion_event_id": completion_event_id, "reason": payload.reason},
+        {"completion_event_id": completion_event_id},
         node_run.id,
         claimed.id,
     )

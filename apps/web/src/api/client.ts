@@ -482,7 +482,7 @@ export const api = {
   acceptAttempt: (attemptId: string, version: number) => request<FlowRun>(`/node-attempts/${attemptId}/accept`, json('POST', { expected_state_version: version }, true)),
   acceptGateRisk: (attemptId: string, version: number, reason: string) => request<FlowRun>(`/node-attempts/${attemptId}/accept-gate-risk`, json('POST', { expected_state_version: version, reason }, true)),
   remediateGateFailure: (attemptId: string, version: number) => request<NodeAttempt>(`/node-attempts/${attemptId}/remediate-gate-failure`, json('POST', { expected_state_version: version }, true)),
-  reconcileRuntimeCompletion: (attemptId: string, version: number, reason: string) => request<NodeAttempt>(`/node-attempts/${attemptId}/reconcile-runtime-completion`, json('POST', { expected_state_version: version, reason }, true)),
+  reconcileRuntimeCompletion: (attemptId: string, version: number) => request<NodeAttempt>(`/node-attempts/${attemptId}/reconcile-runtime-completion`, json('POST', { expected_state_version: version }, true)),
   gateEvaluationEvents: (attemptId: string, evaluationId: string, cursor?: string, historyCursor?: string) => {
     const query = new URLSearchParams();
     if (cursor) query.set('cursor', cursor);

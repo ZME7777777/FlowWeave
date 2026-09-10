@@ -409,9 +409,7 @@ def test_manual_completion_reconciliation_uses_active_finish_action(monkeypatch)
         result = orchestration_service.reconcile_runtime_completion(
             Db(),
             current.id,
-            RuntimeCompletionReconciliationWrite(
-                expected_state_version=7, reason="历史投影丢失，需要按原生完成事件补登"
-            ),
+            RuntimeCompletionReconciliationWrite(expected_state_version=7),
             "reconcile-1",
         )
 
@@ -420,19 +418,13 @@ def test_manual_completion_reconciliation_uses_active_finish_action(monkeypatch)
     assert actions == [
         (
             "RECONCILE_RUNTIME_COMPLETION",
-            {
-                "reason": "历史投影丢失，需要按原生完成事件补登",
-                "completion_event_id": "finish-action",
-            },
+            {"completion_event_id": "finish-action"},
         )
     ]
     assert events == [
         (
             "RUNTIME_COMPLETION_RECONCILIATION_STARTED",
-            {
-                "completion_event_id": "finish-action",
-                "reason": "历史投影丢失，需要按原生完成事件补登",
-            },
+            {"completion_event_id": "finish-action"},
         )
     ]
     assert applied == [

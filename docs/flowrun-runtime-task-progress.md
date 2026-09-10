@@ -3617,11 +3617,21 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 
 依赖：无（运行投影修复）。
 
-目标：以 OpenHands 当前活跃分支的正式 `ActionEvent(id) / FinishAction` 作为节点输出完成事实；FlowWeave 的完成投影仅为可重放、可审计的派生记录，不能作为承认新 OpenHands 完成事件的前提。修复历史 `END_BLOCKED / RUNTIME_COMPLETION_IDENTITY_UNKNOWN` 记录可由人工填写原因并触发受限对账：系统重新读取同一节点会话的活跃分支、冻结输出合同和受管工作区文件，以正式 FinishAction ID 幂等补登候选 Artifact 并重新进入完成门禁。不得接受人工指定事件 ID、路径、文件或直接数据库写入；缺少正式 FinishAction、合同不符、文件越界或内容读取失败必须拒绝补登。
+目标：以 OpenHands 当前活跃分支的正式 `ActionEvent(id) / FinishAction` 作为节点输出完成事实；FlowWeave 的完成投影仅为可重放、可审计的派生记录，不能作为承认新 OpenHands 完成事件的前提。修复历史 `END_BLOCKED / RUNTIME_COMPLETION_IDENTITY_UNKNOWN` 记录可由人工发起受限对账：系统重新读取同一节点会话的活跃分支、冻结输出合同和受管工作区文件，以正式 FinishAction ID 幂等补登候选 Artifact 并重新进入完成门禁。不得接受人工指定事件 ID、路径、文件或直接数据库写入；缺少正式 FinishAction、合同不符、文件越界或内容读取失败必须拒绝补登。
 
 验收：OpenHands 适配器定向回归证明完成身份为 FinishAction ID 而非 leaf cursor；Runtime wakeup 定向回归覆盖无历史 FlowWeave 完成投影时的新正式 FinishAction 仍可投影、相同 FinishAction 不重放；人工对账命令只接受当前活跃分支正式完成、写入审计并复用正常 Artifact/Candidate/Gate 路径。受影响 Python Ruff/格式/`py_compile`、Web ESLint/typecheck/build、Alembic head、任务状态唯一性与 `git diff --check` 通过。
 
-完成：`RuntimeResult.completion_event_id` 现在只承载 OpenHands 正式 `FinishAction ActionEvent.id`，而 `cursor` 继续保留 leaf/读取锚点语义。`END_BLOCKED` 状态下的原生新完成不再要求存在历史 `RUNTIME_COMPLETION_PROJECTED` 记录；相同 FinishAction 仍由既有 Candidate/Artifact 唯一约束幂等拒绝重放。历史 `RUNTIME_COMPLETION_IDENTITY_UNKNOWN` 或 `RUNTIME_COMPLETION_IDENTITY_MISSING` 记录可通过要求原因的 `POST /node-attempts/{attempt_id}/reconcile-runtime-completion` 受控重放：服务端只读取当前活跃分支结果，重新校验冻结输出合同和受管工作区，并写入人工动作与运行审计。补登成功后直接进入既有 `_apply_runtime_result`，派发 END Gate；自动运行的 Gate PASS 保持既有 durable advance/后继节点流转，人工运行保持既有验收语义。
+完成：`RuntimeResult.completion_event_id` 现在只承载 OpenHands 正式 `FinishAction ActionEvent.id`，而 `cursor` 继续保留 leaf/读取锚点语义。`END_BLOCKED` 状态下的原生新完成不再要求存在历史 `RUNTIME_COMPLETION_PROJECTED` 记录；相同 FinishAction 仍由既有 Candidate/Artifact 唯一约束幂等拒绝重放。历史 `RUNTIME_COMPLETION_IDENTITY_UNKNOWN` 或 `RUNTIME_COMPLETION_IDENTITY_MISSING` 记录可通过 `POST /node-attempts/{attempt_id}/reconcile-runtime-completion` 受控重放：服务端只读取当前活跃分支结果，重新校验冻结输出合同和受管工作区，并写入人工动作与运行审计。补登成功后直接进入既有 `_apply_runtime_result`，派发 END Gate；自动运行的 Gate PASS 保持既有 durable advance/后继节点流转，人工运行保持既有验收语义。
+
+### FR-270 无理由完成对账与候选输出集模式修复 — DONE
+
+依赖：FR-269。
+
+目标：完成事件对账仅需提交 Attempt 状态版本，禁止要求用户填写理由；补登审计只记录服务端验证得到的正式 FinishAction 身份。同时修复 `CandidateOutputSet` 继承租户基础模型却缺失 `owner_user_id` 数据库列的问题，确保历史候选集按所属 Attempt、NodeRun 和 FlowRun 的所有者回填，避免对账读取候选集时出现模式漂移。
+
+验收：定向 Runtime 对账回归覆盖无理由请求与无理由审计载荷；迁移语法解析与 Alembic 唯一 head 通过；受影响 Python 与 TypeScript 静态检查、Web 构建、`git diff --check` 和任务状态唯一性通过。
+
+完成：`POST /node-attempts/{attempt_id}/reconcile-runtime-completion` 现仅接受 `expected_state_version`，工作台删除“对账原因”输入并可直接确认补登。新增迁移 `0110_candidate_output_set_owner` 回填并强制 `candidate_output_sets.owner_user_id`，使部署中现有模型查询与 PostgreSQL 模式一致。
 
 ## 7. 恢复工作检查表
 
