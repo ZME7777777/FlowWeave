@@ -1159,7 +1159,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(activeProcess.getByText(/已耗时 \d+秒/)).toBeVisible();
   await expect(activeProcess.getByText(/已耗时 .*小时/)).toHaveCount(0);
   await expect(activeProcess.locator('.conversation-response-wait')).toHaveCount(0);
-  await expect(page.locator('.conversation-turn-status')).toHaveText('OpenHands 会话连接正常，等待模型响应（已 90 秒未收到新事件）');
+  await expect(page.locator('.conversation-turn-status')).toHaveText('OpenHands 会话连接正常，等待响应');
   await expect(page.getByLabel('Agent 活动提醒')).toHaveCount(0);
   await expect.poll(() => Boolean(agentStream)).toBe(true);
   // A socket can look live while an intermediary has silently stopped
@@ -1183,7 +1183,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     event: { id: 'live-tool-result', event_type: 'TOOL_RESULT', payload: { parent_id: 'live-tool', action_id: 'live-tool', tool_call_id: 'live-call', tool_name: 'terminal', event_name: 'TerminalObservation', content: '/runtime/workspace/project', details: { command: 'pwd', exit_code: 0, is_error: false }, timestamp: new Date().toISOString() } },
   }));
   await expect(activeProcess.getByText('已运行 pwd')).toBeVisible();
-  await expect(page.locator('.conversation-turn-status')).toHaveText('OpenHands 会话连接正常，等待模型响应（已 90 秒未收到新事件）');
+  await expect(page.locator('.conversation-turn-status')).toHaveText('OpenHands 会话连接正常，等待响应');
   await expect(activeProcess.locator('.conversation-activity-row.tool')).toHaveCount(2);
   await composer.fill('第一条排队消息');
   await composer.press('Enter');

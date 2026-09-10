@@ -786,13 +786,10 @@ function staleActivityLabel(
   if (connectionState === 'unavailable') return '暂时无法读取 OpenHands 会话状态，正在重试连接';
   if (connectionState === 'checking') return '正在检查 OpenHands 会话连接';
 
-  const elapsed = monitoring.seconds_since_event == null
-    ? '较长时间未收到新事件'
-    : `已 ${monitoring.seconds_since_event} 秒未收到新事件`;
   const stalledSubagent = monitoring.active_subagents.find(task => task.possibly_stuck);
-  if (stalledSubagent) return `子智能体仍在运行，等待其返回（${elapsed}）`;
-  if (fallback === '正在思考') return `OpenHands 会话连接正常，等待模型响应（${elapsed}）`;
-  return `${fallback}（${elapsed}）`;
+  if (stalledSubagent) return '子智能体仍在运行，等待其返回';
+  if (fallback === '正在思考') return 'OpenHands 会话连接正常，等待响应';
+  return fallback;
 }
 
 function CurrentTurnStatus({ items, liveText, requestSubmitting, monitoring, connectionState = 'connected' }: {
