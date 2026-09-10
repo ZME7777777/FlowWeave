@@ -3555,6 +3555,16 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 
 验收：Web TypeScript typecheck、production build、受影响 `CapabilitiesPage.tsx` ESLint 与 `git diff --check` 通过。
 
+### FR-264 Hook 紧凑布局标题留白优先级修复 — DONE
+
+依赖：`FR-263`。
+
+目标：防止 Hook 紧凑视口样式覆盖标题区的产品留白，确保在压缩表单密度后，“新建 Hook”仍与弹窗上沿保持清晰距离。
+
+完成：将标题区的顶部内边距置于 Hook 样式最后并固定为常规 30px、较矮视口 24px，使其不再被紧凑布局覆盖；其他区域保持 FR-263 的一次可见布局。
+
+验收：Web TypeScript typecheck、production build、受影响 `CapabilitiesPage.tsx` ESLint 与 `git diff --check` 通过。
+
 ### FR-261 动态 Runtime 共享只读 Maven 仓库与配置 — DONE
 
 依赖：无（部署运维新需求）。
@@ -3580,6 +3590,7 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-10 | FR-264 | Web typecheck／production build、受影响 `CapabilitiesPage.tsx` ESLint、`git diff --check` 与任务状态唯一性 | PASS：标题顶部留白在紧凑视口规则后仍保持常规 30px、较矮视口 24px，且不影响 FR-263 的一次可见主配置流。 |
 | 2026-09-10 | FR-263 | Web typecheck／production build、受影响 `CapabilitiesPage.tsx` ESLint、`git diff --check` 与任务状态唯一性 | PASS：Hook 主要桌面配置流压缩为一次可见布局，六个回调事件横向同排，Matcher／执行方式和文件上传／运行语义分别横排；回退布局仍保证窄/矮窗口可访问所有控件。 |
 | 2026-09-10 | FR-262 | Web typecheck／production build、受影响 `CapabilitiesPage.tsx` ESLint、`git diff --check` 与任务状态唯一性 | PASS：Hook 标题区在常规和较矮视口均保留明确顶部留白；表单独立滚动及底部发布操作栏保持不变。 |
 | 2026-09-10 | FR-260 | Web typecheck／production build、受影响 `CapabilitiesPage.tsx` ESLint、`git diff --check` 与任务状态唯一性 | PASS：Hook 编辑器的标题和底部操作栏不再随表单整体滚动；中段字段独立滚动，低高度视口收紧间距而不隐藏事件、Matcher、执行方式、上传或发布操作。 |
