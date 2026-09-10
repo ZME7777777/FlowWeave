@@ -3535,6 +3535,16 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 
 验收：Web TypeScript typecheck、production build、受影响 `CapabilitiesPage.tsx` ESLint 与 `git diff --check` 通过。
 
+### FR-262 Hook 编辑弹窗标题顶部留白修复 — DONE
+
+依赖：`FR-260`。
+
+目标：在保留标题与底部操作栏固定、中段表单独立滚动的前提下，恢复 Hook 编辑弹窗标题相对于弹窗上沿的产品留白，避免“新建 Hook”紧贴弹窗顶部。
+
+完成：常规视口的标题区顶部内边距提升到 30px；较矮视口仍保留 22px 的明确顶部留白，不再将标题压缩到弹窗边缘。
+
+验收：Web TypeScript typecheck、production build、受影响 `CapabilitiesPage.tsx` ESLint 与 `git diff --check` 通过。
+
 ### FR-261 动态 Runtime 共享只读 Maven 仓库与配置 — DONE
 
 依赖：无（部署运维新需求）。
@@ -3560,6 +3570,7 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-10 | FR-262 | Web typecheck／production build、受影响 `CapabilitiesPage.tsx` ESLint、`git diff --check` 与任务状态唯一性 | PASS：Hook 标题区在常规和较矮视口均保留明确顶部留白；表单独立滚动及底部发布操作栏保持不变。 |
 | 2026-09-10 | FR-260 | Web typecheck／production build、受影响 `CapabilitiesPage.tsx` ESLint、`git diff --check` 与任务状态唯一性 | PASS：Hook 编辑器的标题和底部操作栏不再随表单整体滚动；中段字段独立滚动，低高度视口收紧间距而不隐藏事件、Matcher、执行方式、上传或发布操作。 |
 | 2026-09-10 | FR-259 | 受影响 Python Ruff／format／`py_compile`、Alembic head、Hook 编译／脚本物化／会话冻结直接 smoke；Web typecheck／production build、`git diff --check` 与任务状态唯一性 | PASS（静态、构建与直接冒烟）：能力仓库新增 Hook 模块与无原生 select 的表单；工具事件保留精确、`*` 与正则 Matcher，并显示常用示例；提示词和 `.sh` 脚本只能上传其一。后端固定生成 OpenHands 1.44.0 原生 `hook_config`，脚本的摘要在物化前验证且结果只读；动态会话能力接口拒绝 Hook，创建会话时才冻结并注册。Ruff、格式、Python 编译、Web typecheck、production build、唯一 Alembic head `0109_hook_capabilities`、whitespace 检查与直接 smoke 均通过。定向 pytest 在收集前因 Docker Unix socket 缺失，Testcontainers PostgreSQL 无法启动，未伪记为通过。 |
 | 2026-09-10 | FR-258 | Web typecheck／受影响文件 ESLint／production build、Agent 会话失败分类 Playwright、Alembic head、任务状态唯一性与 `git diff --check` | PASS（静态与构建）：会话失败仅按 OpenHands 安全投影的 `error_code` 与 `content` 分类；`ResponseIncompleteEvent` 明确呈现为“模型返回不完整响应”，模型服务不可用、网关连接失败、超时、额度/限流、凭据、上下文、协议、安全策略与未知错误均有独立标题和操作说明，未知错误保留错误码。Web typecheck、受影响文件 ESLint、production build、唯一 Alembic head `0108_model_provider_api_protocol` 与 whitespace 检查均通过。定向 Playwright 使用隔离 Vite 服务时被已有实际 Agent 会话页面接管，路由 mock 未生效并持续等待旧部署文案；已终止该无结果运行，未伪记浏览器回归为通过。 |
