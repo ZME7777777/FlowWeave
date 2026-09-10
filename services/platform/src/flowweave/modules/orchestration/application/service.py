@@ -9424,7 +9424,6 @@ def list_runs(db: Session) -> list[dict[str, Any]]:
                     if runtime
                     else None
                 ),
-                "runtime_resource": runtime.get("resource") if runtime else None,
                 "usage": usage_by_run.get(run.id, usage_projection.empty()),
                 "started_at": run.started_at.isoformat(),
                 "updated_at": max(activity_times).isoformat(),

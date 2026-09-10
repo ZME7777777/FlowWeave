@@ -3483,6 +3483,14 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 
 完成：删除服务会保留会话绑定但清空 `model_provider_id`、模型名和推理强度；自动计划按服务名称、ID 稳定选择替代 `CONNECTED` 默认模型，或在没有可用替代时清空模型配置。删除响应返回会话和自动计划的重配统计。API Key 服务持久化 `CHAT_COMPLETIONS`／`RESPONSES` 协议，并将 Responses 配置贯通 Runtime、会话标题和 Prompt Gate；API Key 继续加密保存。模型服务弹窗提供对应协议选项及新的删除反馈。新增迁移 `0108_model_provider_api_protocol`，顺接 `0107_usage_reconcile`。
 
+### FR-255 FlowRun 列表移除同步容器监控 — DONE
+
+依赖：`FR-251`。
+
+目标：`GET /flow-runs` 必须只读取数据库中的 FlowRun、Snapshot、Runtime 生命周期和 Token 用量投影，不能为列表轮询同步读取 Docker Runtime 的 CPU、内存、存储、容器 ID 或宿主机路径。运行列表不再展示容器资源列；Runtime Provider 的受所有权保护 usage 接口保留给未来按需监控使用。
+
+完成：列表 readiness 投影移除了对每个 active Runtime 的 Docker usage 调用及关联容器查询，`runtime_resource` 不再出现在列表 DTO。前端删除“运行资源”列和实时 CPU／内存／宿主机路径展示，保留逻辑 Runtime 状态、暂停／启动操作和 Token 用量。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -3498,6 +3506,7 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-10 | FR-255 | 受影响 Python `py_compile`、Ruff、运行列表 API 定向 pytest、Web typecheck／受影响文件 ESLint／production build、Alembic head、任务状态唯一性与 `git diff --check` | PASS（静态与构建）：`runtime_readiness_by_flow_run()` 仅查询 FlowRun Runtime 生命周期，`GET /flow-runs` 不再读取 ManagedSandbox 或调用 Docker Runtime Provider usage；列表 DTO 和页面均不再含 `runtime_resource` 或“运行资源”列。Python 编译、Ruff、Web typecheck、定向 ESLint、production build、唯一 Alembic head `0108_model_provider_api_protocol` 与 whitespace 检查通过。定向 API pytest 在所有断言之前因本机 Docker Unix socket 缺失、Testcontainers PostgreSQL 无法启动而阻断，未伪记为通过。 |
 | 2026-09-10 | FR-254 | Responses API Key Runtime 定向 pytest（2 passed）；受影响 Python Ruff format/check、`py_compile`、定向 Pyright；Web typecheck、受影响文件 ESLint、production build；Alembic head、任务状态唯一性与 `git diff --check` | PASS（静态与定向）：删除模型服务不会阻塞，既有会话不会静默迁移；自动计划只在有已连接默认模型时稳定重配，否则要求显式配置。API Key 可选择 Chat Completions 或 Responses，Codex OAuth 固定 Responses。Pyright 仅剩 `openhands.py:3542-3543` 两个既有 unknown-type 诊断；本改动模块无新增诊断。三条 API 集成测试在 Testcontainers 初始化时受本机 Docker Unix socket 缺失阻断，未伪记为通过。 |
 | 2026-09-10 | FR-253 | 受影响 Python Ruff、`py_compile`、定向 Pyright；Alembic 迁移链解析、设置直接 smoke、`git diff --check` | PASS（静态）：Worker 维护循环会按持久化 due-time 对活跃 Agent／节点会话的正式 OpenHands 累计 usage 做有界、事务外对账；高水位写入幂等且按 binding owner 投影。定向 pytest 受本机 Docker daemon 不可用、Testcontainers PostgreSQL fixture 初始化失败阻断，未伪记为通过。`0107_usage_reconcile` 独立衔接 `0105_conversation_token_usage`，避免并行未提交的模型服务迁移进入本次发布。 |
 | 2026-09-10 | FR-251 | 受影响 Python Ruff、`py_compile`；Web production build；Alembic head、`git diff --check` 与任务状态唯一性 | PASS：资源区仅显示 CPU、内存和当前受管项目的宿主机挂载路径；相对分配路径必须匹配固定 FlowRun allocation 格式且宿主机根必须为绝对路径，否则安全降级为不可用。唯一 Alembic head 为 `0105_conversation_token_usage`，无迁移。定向 pytest 因本机 Docker daemon 不可用、Testcontainers PostgreSQL 无法初始化而未运行；Web production build 通过。 |

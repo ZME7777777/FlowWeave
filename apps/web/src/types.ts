@@ -406,19 +406,6 @@ export interface FlowRunSummary {
   runtime_status?: string | null; runtime_write_available?: boolean;
   runtime_message?: string | null;
   usage?: TokenUsageSummary;
-  runtime_resource?: {
-    generation: number;
-    container_id: string;
-    image_reference: string;
-    created_at: string;
-    cpu_limit: string;
-    memory_limit: string;
-    storage_limit: string | null;
-    cpu_usage_percent: number;
-    memory_usage_bytes: number;
-    storage_usage_bytes: number;
-    host_project_mount_path: string | null;
-  } | null;
   started_at: string; updated_at: string; finished_at?: string | null;
 }
 export interface FlowRun extends FlowRunSummary {

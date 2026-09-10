@@ -2371,7 +2371,7 @@ def test_full_product_run_attempt_revision_snapshot_and_lineage(client, skill_ca
     assert summary["active_snapshot_version"] == 1
     assert "has_pending_action" not in summary
     assert "progress" not in summary
-    assert summary["runtime_resource"] is None
+    assert "runtime_resource" not in summary
     assert summary["runtime_status"] == "STARTING"
     assert summary["runtime_write_available"] is False
     assert summary["runtime_message"] is None
