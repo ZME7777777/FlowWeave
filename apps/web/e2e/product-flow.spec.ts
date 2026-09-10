@@ -464,6 +464,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   let renameRequests = 0;
   let contextAvailable = false;
   let manualCondensations = 0;
+  let forkRequests = 0;
   const workspaceEntryCreates: Array<{ parent_path: string; name: string; kind: string }> = [];
   let compactionScenario = false;
   const longFinalReply = Array.from(
@@ -584,6 +585,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
       return;
     }
     if (path.endsWith('/fork') && request.method() === 'POST') {
+      forkRequests += 1;
       const created = {
         id: 'agent-conversation-fork-1', display_title: 'Fork · 检查工作目录', lifecycle: 'ACTIVE',
         model_provider_id: 'provider-1',
@@ -1082,6 +1084,14 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     return Boolean(process && failure && (process.compareDocumentPosition(failure) & Node.DOCUMENT_POSITION_FOLLOWING));
   })).toBe(true);
   await page.getByRole('button', { name: '从此处分叉会话' }).last().click();
+  const forkDialog = page.getByRole('alertdialog', { name: '从此处分叉会话？' });
+  await expect(forkDialog).toContainText('根工作区');
+  expect(forkRequests).toBe(0);
+  await forkDialog.getByRole('button', { name: '取消' }).click();
+  expect(forkRequests).toBe(0);
+  await page.getByRole('button', { name: '从此处分叉会话' }).last().click();
+  await page.getByRole('alertdialog', { name: '从此处分叉会话？' }).getByRole('button', { name: '创建分叉会话' }).click();
+  await expect.poll(() => forkRequests).toBe(1);
   await expect(page).toHaveURL(/\/agent\/conversations\/agent-conversation-fork-1$/);
   await expect(page.getByRole('heading', { name: 'Fork · 检查工作目录' })).toBeVisible();
   await expect(page.getByText('耗时 2分钟19秒')).toBeVisible();

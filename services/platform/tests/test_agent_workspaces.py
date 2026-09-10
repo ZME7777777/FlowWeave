@@ -3239,11 +3239,19 @@ def test_agent_workspace_forks_at_native_event_and_condenses_manually(
     runtime = ForkRuntime()
     with settings_context(settings), db_session_factory() as db, runtime_context(runtime):
         workspace = _ready_workspace_for_conversation(db)
+        project_root = _agent_project_root(settings, db, workspace)
+        (project_root / "backend").mkdir()
+        directory = work_directories.create_work_directory(
+            db, workspace.id, "后端服务", ("backend",)
+        )
         source = conversations.create_conversation(
             db, workspace.id, "源会话", workspace.default_model_provider_id, "create-key"
         )
         source_binding = db.get(AgentConversationBinding, source["id"])
         assert source_binding is not None
+        source_binding.work_directory_version_id = directory["current_version"]["id"]
+        source_binding.working_directory = "/runtime/workspace/project/backend"
+        db.flush()
         conversations.switch_conversation_model(
             db,
             workspace.id,
@@ -3262,6 +3270,9 @@ def test_agent_workspace_forks_at_native_event_and_condenses_manually(
         assert fork["model_name"] == "fork-model"
         assert fork["reasoning_effort"] == "high"
         assert fork["streaming_callback_ready"] is False
+        assert fork["work_directory_version_id"] == directory["current_version"]["id"]
+        assert fork["work_directory_id"] == directory["id"]
+        assert fork["working_directory"] == "/runtime/workspace/project/backend"
         assert runtime.fork_call == (
             "assistant-event",
             "assistant-event",

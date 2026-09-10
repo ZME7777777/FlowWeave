@@ -2717,6 +2717,11 @@ def _fork_conversation(
         host_id=workspace.id,
         conversation_scope_id=workspace.id,
         runtime_session_id=source.runtime_session_id,
+        # Forks continue in the source conversation's frozen work-directory
+        # version. Leaving these fields empty classifies the fork under the
+        # root-workspace group even though it continues in the source scope.
+        work_directory_version_id=source.work_directory_version_id,
+        working_directory=source.working_directory,
         model_provider_id=target_provider_id,
         model_name=target_model_name,
         reasoning_effort=target_reasoning_effort,
