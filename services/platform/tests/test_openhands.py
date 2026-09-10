@@ -4,6 +4,7 @@ import asyncio
 import json
 from dataclasses import replace
 from pathlib import Path
+from typing import cast
 
 import httpx
 import pytest
@@ -2881,6 +2882,102 @@ def test_openhands_detects_legacy_fork_that_only_replayed_copied_finish(
     assert recovery.requested_event_id == "finish-action"
     assert recovery.completed_event_id == "source-finish-observation"
     assert recovery.source_leaf_event_id == "source-finish-observation"
+
+
+def test_openhands_detects_legacy_fork_across_paginated_history(
+    openhands_settings, monkeypatch
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    source_id = "10000000-0000-4000-8000-000000000003"
+    fork_state = _state(
+        execution_status="finished",
+        leaf_event_id="replayed-observation",
+        forked_from_conversation_id=source_id,
+        forked_from_event_id="finish-action",
+    )
+    source_user = {
+        "kind": "MessageEvent",
+        "id": "source-user",
+        "parent_id": "__root__",
+        "source": "user",
+        "llm_message": {"role": "user", "content": "source request"},
+    }
+    copied_finish = {
+        "kind": "ActionEvent",
+        "id": "finish-action",
+        "parent_id": "source-user",
+        "source": "agent",
+        "tool_call_id": "finish-call",
+        "action": {"kind": "FinishAction", "message": "old reply"},
+    }
+    tail: list[dict[str, object]] = []
+    parent_id = "finish-action"
+    for index in range(465):
+        event_id = f"retry-{index:03d}"
+        tail.append(
+            {
+                "kind": "MessageEvent",
+                "id": event_id,
+                "parent_id": parent_id,
+                "source": "user",
+                "llm_message": {"role": "user", "content": "continue"},
+            }
+        )
+        parent_id = event_id
+    replayed_observation = {
+        "kind": "ObservationEvent",
+        "id": "replayed-observation",
+        "parent_id": parent_id,
+        "source": "environment",
+        "action_id": "finish-action",
+        "tool_call_id": "finish-call",
+        "observation": {"kind": "FinishObservation", "content": "old reply"},
+    }
+    fork_events = [source_user, copied_finish, *tail, replayed_observation]
+    source_observation = {
+        **replayed_observation,
+        "id": "source-finish-observation",
+        "parent_id": "finish-action",
+    }
+    pages: list[str | None] = []
+
+    def fake_request(method: str, path: str, **kwargs: object) -> dict[str, object]:
+        del method
+        if path.endswith("/events/finish-action"):
+            return copied_finish
+        if f"/conversations/{source_id}/events/search" in path:
+            return {"items": [copied_finish, source_observation]}
+        if path.endswith(f"/conversations/{source_id}"):
+            return {
+                **_state(leaf_event_id="source-finish-observation"),
+                "id": source_id,
+                "persistence_dir": (
+                    "/runtime/state/conversations/10000000000040008000000000000003"
+                ),
+            }
+        if path.endswith("/events/search"):
+            params = cast(dict[str, object], kwargs["params"])
+            page_id = cast(str | None, params.get("page_id"))
+            pages.append(page_id)
+            start = next(index for index, item in enumerate(fork_events) if item["id"] == page_id)
+            items = list(reversed(fork_events[max(0, start - 99) : start + 1]))
+            next_page_id = fork_events[start - 100]["id"] if start >= 100 else None
+            return {"items": items, "next_page_id": next_page_id}
+        return fork_state
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+
+    recovery = runtime.incomplete_fork_recovery(_handle("replayed-observation"))
+
+    assert recovery is not None
+    assert recovery.completed_event_id == "source-finish-observation"
+    assert pages == [
+        "replayed-observation",
+        "retry-365",
+        "retry-265",
+        "retry-165",
+        "retry-065",
+    ]
 
 
 def test_openhands_does_not_rebuild_fork_after_new_agent_progress(openhands_settings, monkeypatch):

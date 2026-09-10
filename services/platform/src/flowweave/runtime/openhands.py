@@ -2191,6 +2191,94 @@ class OpenHandsRuntime:
         branch.reverse()
         return branch
 
+    def _active_branch_through(
+        self,
+        conversation_id: str,
+        *,
+        leaf_event_id: str,
+        stop_event_id: str,
+        base_url: str,
+        session_api_key: str,
+    ) -> list[dict[str, Any]] | None:
+        """Read the native active branch backwards until ``stop_event_id``.
+
+        Event search pages are capped at 100 items. A fork can legitimately
+        contain far more copied events, so a single page must never be used to
+        reconstruct its active branch. Start from the formal HEAD and follow
+        formal parent identities across the server-provided descending pages.
+        """
+
+        current_event_id = leaf_event_id
+        page_id = leaf_event_id
+        page_ids_seen: set[str] = set()
+        event_ids_seen: set[str] = set()
+        branch_newest_first: list[dict[str, Any]] = []
+
+        while True:
+            if page_id in page_ids_seen:
+                raise DomainError(
+                    "RUNTIME_PROTOCOL_ERROR",
+                    "OpenHands event pagination cannot resolve the active branch",
+                    502,
+                    {"conversation_id": conversation_id, "event_id": current_event_id},
+                )
+            page_ids_seen.add(page_id)
+            data = self._request(
+                "GET",
+                f"/api/conversations/{conversation_id}/events/search",
+                base_url=base_url,
+                session_api_key=session_api_key,
+                params={"limit": 100, "sort_order": "TIMESTAMP_DESC", "page_id": page_id},
+                timeout=_INTERACTIVE_READ_TIMEOUT_SECONDS,
+            )
+            raw_items = data.get("items", [])
+            if not isinstance(raw_items, list) or any(
+                not isinstance(item, dict) for item in cast(list[object], raw_items)
+            ):
+                raise DomainError(
+                    "RUNTIME_EVENT_IDENTITY_INVALID",
+                    "OpenHands returned an invalid event identity page",
+                    502,
+                )
+            items = [cast(dict[str, Any], item) for item in cast(list[object], raw_items)]
+            by_id = {self._event_identity(item)[0]: item for item in items}
+            if len(by_id) != len(items):
+                raise DomainError(
+                    "RUNTIME_EVENT_IDENTITY_INVALID",
+                    "OpenHands returned duplicate formal event identities",
+                    502,
+                )
+
+            while current_event_id in by_id:
+                if current_event_id in event_ids_seen:
+                    raise DomainError(
+                        "RUNTIME_PROTOCOL_ERROR",
+                        "OpenHands event tree contains an invalid active branch",
+                        502,
+                        {"conversation_id": conversation_id, "event_id": current_event_id},
+                    )
+                event_ids_seen.add(current_event_id)
+                item = by_id[current_event_id]
+                branch_newest_first.append(item)
+                if current_event_id == stop_event_id:
+                    return list(reversed(branch_newest_first))
+                parent_id = self._formal_identity(
+                    item.get("parent_id"), field="parent_id", required=False
+                )
+                if parent_id in {None, "__root__"}:
+                    return None
+                current_event_id = parent_id
+
+            next_page_id = data.get("next_page_id")
+            if not isinstance(next_page_id, str) or not next_page_id:
+                raise DomainError(
+                    "RUNTIME_PROTOCOL_ERROR",
+                    "OpenHands active branch parent is missing from the event log",
+                    502,
+                    {"conversation_id": conversation_id, "event_id": current_event_id},
+                )
+            page_id = next_page_id
+
     @classmethod
     def _pending_actions(
         cls, events: list[dict[str, Any]], leaf_event_id: str | None
@@ -3809,25 +3897,17 @@ class OpenHandsRuntime:
             return None
         self._formal_identity(source_conversation_id, field="conversation_id", required=True)
         self._formal_identity(requested_event_id, field="id", required=True)
-        items, _ = self._events(
+        branch = self._active_branch_through(
             handle.conversation_id,
-            None,
+            leaf_event_id=leaf_event_id,
+            stop_event_id=requested_event_id,
             base_url=self._base_url_for_handle(handle),
             session_api_key=self._session_key_for_handle(handle),
         )
-        branch = self._active_branch(items, leaf_event_id)
-        requested_index = next(
-            (
-                index
-                for index, item in enumerate(branch)
-                if self._event_identity(item)[0] == requested_event_id
-            ),
-            None,
-        )
-        if requested_index is None or not self._is_finish_action(branch[requested_index]):
+        if branch is None or not self._is_finish_action(branch[0]):
             return None
-        requested_tool_call_id = self._event_identity(branch[requested_index])[3]
-        tail = branch[requested_index + 1 :]
+        requested_tool_call_id = self._event_identity(branch[0])[3]
+        tail = branch[1:]
         for item in tail:
             kind = str(item.get("kind") or "")
             if kind == "MessageEvent":
