@@ -307,6 +307,10 @@ function writeUnreadConversationIds(storageKey: string | undefined, conversation
 
 const MAX_BOOTSTRAP_RECONCILIATION_ATTEMPTS = 3;
 const STREAM_IDLE_GRACE_MS = 5 * 60 * 1000;
+// A newly accepted user event can briefly still report idle before OpenHands
+// starts its Agent loop.  Wait for a bounded second native snapshot before
+// treating idle as an abnormal end of a locally-running turn.
+const ABNORMAL_IDLE_RECONCILIATION_MS = 4_000;
 
 const AgentSessionGatewayContext = createContext<AgentSessionGateway>(agentWorkspaceSessionGateway);
 const AgentSessionHostContext = createContext<AgentSessionHost>(agentWorkspaceSessionHost);
@@ -1779,6 +1783,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   });
   const [hiddenEventIds, setHiddenEventIds] = useState<Set<string>>(() => new Set());
   const [turnState, setTurnState] = useState<TurnState>('idle');
+  const turnStateRef = useRef<TurnState>('idle');
+  turnStateRef.current = turnState;
   const [activeTurnEventId, setActiveTurnEventId] = useState<string>();
   const [requestStartedAt, setRequestStartedAt] = useState<number>();
   const [confirmationReason, setConfirmationReason] = useState('');
@@ -2311,6 +2317,30 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     if (!selected || inputReadinessQuery.data?.execution_status?.toLowerCase() !== 'paused') return;
     setTurnState(current => current === 'idle' ? 'paused' : current);
   }, [inputReadinessQuery.data?.execution_status, selected]);
+  useEffect(() => {
+    const executionStatus = inputReadinessQuery.data?.execution_status?.trim().toLowerCase();
+    const nativeTurnEnded = inputReadinessQuery.data?.ready === true
+      && ['idle', 'completed', 'stopped'].includes(executionStatus ?? '');
+    if (!selected || !nativeTurnEnded || (turnState !== 'running' && turnState !== 'resuming')) return;
+
+    // A formal assistant/error/Finish event remains the normal completion
+    // signal.  This is deliberately only a recovery path for a main Agent
+    // loop that ended without emitting one, so the rail cannot spin forever.
+    const activeUserEventId = activeTurnEventId ?? latestUnfinishedUserEventId(displayedEvents);
+    if (!activeUserEventId || hasFinishedTurn(displayedEvents, activeUserEventId)) return;
+
+    const timer = window.setTimeout(() => {
+      if (turnStateRef.current !== 'running' && turnStateRef.current !== 'resuming') return;
+      setActiveTurnEventId(undefined);
+      setRequestStartedAt(undefined);
+      clearLiveText();
+      setStreamHold({ bindingId: selected.id, expiresAt: Date.now() + STREAM_IDLE_GRACE_MS });
+      setOperationError(new Error('Agent 已异常停止，本轮结果未返回。你可以继续发送消息；历史记录已保留。'));
+      setTurnState('idle');
+      refresh();
+    }, ABNORMAL_IDLE_RECONCILIATION_MS);
+    return () => window.clearTimeout(timer);
+  }, [activeTurnEventId, clearLiveText, displayedEvents, inputReadinessQuery.data?.execution_status, inputReadinessQuery.data?.ready, refresh, selected, turnState]);
   useEffect(() => {
     // On first entry, the native readiness request can be delayed by a Runtime
     // reconnect. A persisted, unfinished formal user event already proves the
@@ -2972,8 +3002,16 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     // The list projection is the native OpenHands running snapshot for every
     // visible conversation. Local state only bridges the selected row between
     // a send/interrupt action and the next bounded list refresh.
-    const running = conversationIsRunning(item.execution_status)
-      || (item.id === selected?.id && (selectedConversationRunning || isGenerating));
+    // The selected conversation also has an explicit native readiness read.
+    // Once that authoritative read is terminal, do not let a delayed batch
+    // list snapshot keep its running marker spinning.
+    const selectedNativeIdle = item.id === selected?.id
+      && inputReadinessQuery.data?.ready === true
+      && ['idle', 'completed', 'stopped'].includes(
+        inputReadinessQuery.data.execution_status?.trim().toLowerCase() ?? '',
+      );
+    const running = !selectedNativeIdle && (conversationIsRunning(item.execution_status)
+      || (item.id === selected?.id && (selectedConversationRunning || isGenerating)));
     return <WorkspaceConversationRow key={item.id} item={item} selectedBindingId={selectedBindingId} running={running} unread={unreadConversationIds.has(item.id)} runtimeWritable={runtimeWritable} removing={remove.isPending} deleteDisabled={running} onSelect={() => selectConversation(item.id)} onDelete={features.conversationDeletion ? () => void confirmDeletion('会话', conversationName(item)).then(ok => { if (ok) remove.mutate(item.id); }) : undefined}/>;
   };
   const openCurrentDirectoryDraft = () => {

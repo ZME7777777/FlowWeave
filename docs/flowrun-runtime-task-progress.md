@@ -3661,6 +3661,14 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 
 完成：直接 Agent Workspace 的 resume 现与节点会话路径一致，会在正式 run 前重下发当前 binding 的冻结模型；历史会话用户手动暂停后继续即可获得 FR-271 的 60 秒有界等待策略。
 
+### FR-274 Agent 主会话异常终止状态收敛 — DONE
+
+依赖：FR-271。
+
+目标：当浏览器已观察到独立 Agent 或节点会话的主轮正在运行，但 OpenHands 随后明确返回可输入的终态，且该轮没有对应的正式 assistant、error 或 Finish 事件时，不得让浏览器本地 `running` 状态无限覆盖原生状态。会话列表的动态标识必须停止，输入恢复可用，并明确告知用户本轮结果未返回；不得伪造完成事件、重发用户消息、改写 OpenHands 历史或 Runtime。
+
+完成：工作台在原生 `ready + idle/completed/stopped` 连续保持四秒后，且当前轮仍无正式终止事件时，将浏览器临时运行态收敛为空闲，保留会话历史与短时流连接宽限，并显示“Agent 已异常停止，本轮结果未返回”。暂停和刚提交消息时 OpenHands 尚未进入运行态的正常竞态不受影响。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -3676,6 +3684,7 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-10 | FR-274 | Web ESLint、TypeScript typecheck、production build、`git diff --check`；Agent Workspace 定向 Playwright | 静态与构建 PASS：异常终止仅在 OpenHands 连续明确返回 `ready + idle/completed/stopped` 且本轮未见正式终止事件时收敛浏览器临时运行态，四秒保护窗口避免刚接受消息时的启动竞态。定向 Playwright 未进入新增断言：本地 Vite 服务显示登录页，既有长用例在等待“Agent 会话”导航按钮时达到 120 秒上限；该环境认证前置条件与本切片无关，未伪记为通过。 |
 | 2026-09-10 | FR-272 | Agent Workspace resume 定向 pytest；受影响 Python Ruff format/check、`py_compile`、Alembic head、任务状态唯一性与 `git diff --check` | 静态检查 PASS：Ruff、格式、Python 编译、唯一 Alembic head `0110_candidate_output_set_owner` 与 whitespace 检查通过。`tests/test_agent_workspaces.py` 已实际启动，但全部 68 项均在 Testcontainers PostgreSQL fixture 初始化阶段因本机 Docker Unix socket 缺失失败，新增 resume 回归尚未进入断言，未记为测试通过。 |
 | 2026-09-10 | FR-273 | 受影响 Python `py_compile`、Ruff format/check、历史／交互 lane 直接隔离 smoke；受影响 Web ESLint、TypeScript typecheck、production build；Compose 渲染、Alembic head、任务状态唯一性与 `git diff --check` | PASS（静态、构建与直接冒烟）：节点与独立 Agent 会话的旧 `history_cursor` 页进入独立单并发数据库／线程 lane，交互事件、`input-readiness` 与确认读取不会再被历史预取耗尽。首屏在最新窗口有未完成正式用户事件时维持“正在处理”，仅在 OpenHands 明确返回 `paused` 后显示继续；旧页只在原生运行态确认空闲后异步预取。Python 编译、Ruff、受影响 Web ESLint、Web typecheck/build、Compose 渲染、唯一 Alembic head、任务状态与 whitespace 检查通过；直接 lane smoke 证明被阻塞的历史读取不阻塞交互读取。`tests/test_http.py` 定向 pytest 在断言前因本机 Docker Unix socket 缺失、Testcontainers PostgreSQL 无法启动而阻断，未伪记为通过。 |
 | 2026-09-10 | FR-269 | OpenHands 完成身份定向 pytest；无需 Docker fixture 的 Runtime 投影／重复完成／人工对账定向 pytest；受影响 Python Ruff format/check、`py_compile`；Web typecheck、受影响 Web ESLint、production build；Alembic head、任务状态唯一性与 `git diff --check` | PASS：OpenHands 适配器将 FinishAction ID 与 finish observation leaf cursor 分离；缺失历史 FlowWeave 投影标记不再阻断新的正式 FinishAction，重复同一 ID 仍不重放。对账命令仅接受受阻 Attempt 的当前活跃正式完成，写入原因/FinishAction ID 审计并复用 Artifact/Candidate/END Gate 投影；没有人工路径、事件 ID 或文件路径旁路。`test_openhands.py` 为 111 passed，独立 Runtime 定向为 3 passed；完整 Runtime pytest collection 的 21 个数据库 fixture 在断言前受本机 Docker socket 缺失阻断，未伪记为功能失败。唯一 Alembic head 为 `0109_hook_capabilities`；Web 全局 lint 仍因 `AgentSessionWorkbench.tsx` 两条既有 Hook dependency warning 在 `--max-warnings=0` 下失败，受影响文件 ESLint/typecheck/build 均通过。 |

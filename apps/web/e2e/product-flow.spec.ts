@@ -1257,6 +1257,17 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.getByRole('button', { name: '跳转到最新回复' })).toHaveCount(0);
   await page.locator('.conversation-turn').last().locator('.conversation-activity-group > summary').click();
   await expect(page.getByText('核对已经完成，下面给出最终结果。')).toBeVisible();
+  // A Runtime can return to native idle after an abnormal main-loop exit
+  // without persisting a terminal event. The browser must not leave the
+  // selected conversation's running marker spinning indefinitely.
+  modelIsResponding = true;
+  await composer.fill('模拟主会话异常终止');
+  await composer.press('Enter');
+  await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toBeVisible();
+  modelIsResponding = false;
+  await expect(page.getByText('Agent 已异常停止，本轮结果未返回。你可以继续发送消息；历史记录已保留。')).toBeVisible({ timeout: 12_000 });
+  await expect(page.getByRole('button', { name: '发送消息' })).toBeVisible();
+  await expect(page.locator('.agent-workspace-conversation-running')).toHaveCount(0);
   await page.reload();
   await expect(page).toHaveURL(/\/agent\/conversations\/agent-conversation-streaming-1$/);
   await expect(page.getByRole('heading', { name: 'Fork · 检查工作目录' })).toBeVisible();
