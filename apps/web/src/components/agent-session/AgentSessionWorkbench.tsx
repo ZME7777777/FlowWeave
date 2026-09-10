@@ -402,7 +402,7 @@ function WorkspaceConversationRow({
 }) {
   return <div className="agent-workspace-conversation">
     <button type="button" className={`agent-workspace-conversation-select${item.id === selectedBindingId ? ' active' : ''}`} onClick={onSelect}>
-      <CircleDot size={13}/><span><b>{conversationName(item)}</b>{item.usage && <small>累计 {item.usage.total_tokens.toLocaleString('zh-CN')} Token · ${item.usage.accumulated_cost.toFixed(6)}</small>}</span>
+      <CircleDot size={13}/><span><b>{conversationName(item)}</b></span>
     </button>
     {running && <LoaderCircle className="agent-workspace-conversation-running" role="img" aria-label="会话正在运行" size={14}/>}
     {!running && unread && <span className="agent-workspace-conversation-unread" role="img" aria-label="会话已完成，有未读回复" title="会话已完成，有未读回复"/>}
