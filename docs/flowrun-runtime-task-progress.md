@@ -3575,6 +3575,16 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 
 验收：Web TypeScript typecheck、production build、受影响 `CapabilitiesPage.tsx` ESLint 与 `git diff --check` 通过。
 
+### FR-266 Hook 编辑器紧凑规则优先级收口 — DONE
+
+依赖：`FR-265`。
+
+目标：保证 Hook 专属紧凑布局不被通用能力编辑器或 Modal 样式覆盖：在当前桌面有效宽度保持六项事件一行、下方四个模块两列，以及稳定的标题顶部留白。
+
+完成：以 `section.modal.capability-source-editor.hook-editor` 和直接子元素选择器锁定编辑器宽度、六列事件网格、两列主体和标题完整内边距；不再依赖通用 `.hook-editor` 规则的层叠顺序。
+
+验收：Web TypeScript typecheck、production build、受影响 `CapabilitiesPage.tsx` ESLint 与 `git diff --check` 通过。
+
 ### FR-261 动态 Runtime 共享只读 Maven 仓库与配置 — DONE
 
 依赖：无（部署运维新需求）。
@@ -3600,6 +3610,7 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-10 | FR-266 | Web typecheck／production build、受影响 `CapabilitiesPage.tsx` ESLint、`git diff --check` 与任务状态唯一性 | PASS：Hook 专属选择器在既有 Modal/能力编辑器规则后锁定六项事件单排、两列主体和完整标题留白。 |
 | 2026-09-10 | FR-265 | Web typecheck／production build、受影响 `CapabilitiesPage.tsx` ESLint、`git diff --check` 与任务状态唯一性 | PASS：浏览器缩放后的中等桌面宽度固定保持六项事件同排与双列主体，标题上沿留白不被通用紧凑规则覆盖。 |
 | 2026-09-10 | FR-264 | Web typecheck／production build、受影响 `CapabilitiesPage.tsx` ESLint、`git diff --check` 与任务状态唯一性 | PASS：标题顶部留白在紧凑视口规则后仍保持常规 30px、较矮视口 24px，且不影响 FR-263 的一次可见主配置流。 |
 | 2026-09-10 | FR-263 | Web typecheck／production build、受影响 `CapabilitiesPage.tsx` ESLint、`git diff --check` 与任务状态唯一性 | PASS：Hook 主要桌面配置流压缩为一次可见布局，六个回调事件横向同排，Matcher／执行方式和文件上传／运行语义分别横排；回退布局仍保证窄/矮窗口可访问所有控件。 |
