@@ -406,6 +406,9 @@ def _decode_node_session_page_cursor(cursor: str) -> tuple[datetime, datetime, s
 def _node_session_page_dicts(
     db: Session, items: list[AgentConversationBinding], running_conversation_ids: set[str]
 ) -> list[dict[str, Any]]:
+    usage_by_binding = usage_projection.for_scope(
+        db, field="binding_id", ids=(item.id for item in items)
+    )
     version_ids = {
         item.work_directory_version_id
         for item in items
@@ -465,6 +468,7 @@ def _node_session_page_dicts(
             "last_connected_at": item.last_connected_at.isoformat()
             if item.last_connected_at
             else None,
+            "usage": usage_by_binding.get(item.id, usage_projection.empty()),
         }
         for item in items
     ]
@@ -635,6 +639,7 @@ def get_node_session_view(
     )
     item.last_connected_at = now()
     db.flush()
+    _capture_binding_usage(db, item)
     return _node_session_dict(db, item)
 
 
@@ -743,6 +748,7 @@ def get_conversation(db: Session, binding_id: str) -> dict[str, Any]:
     item = _binding(db, binding_id)
     item.last_connected_at = now()
     db.flush()
+    _capture_binding_usage(db, item)
     return _binding_dict(item)
 
 
@@ -750,6 +756,7 @@ def get_flow_run_conversation(db: Session, flow_run_id: str, binding_id: str) ->
     item = _binding_for_run(db, flow_run_id, binding_id)
     item.last_connected_at = now()
     db.flush()
+    _capture_binding_usage(db, item)
     return _binding_dict(item)
 
 
@@ -1532,6 +1539,18 @@ def _flow_run_handle(
 ) -> RuntimeHandle:
     _binding_for_run(db, flow_run_id, binding_id)
     return _handle(db, binding_id, cursor=cursor, history_cursor=history_cursor)
+
+
+def _capture_binding_usage(db: Session, binding: AgentConversationBinding) -> None:
+    """Best-effort snapshot for the selected node-session locator."""
+
+    try:
+        batch = get_runtime().read_active_events(_handle(db, binding.id))
+        usage_projection.capture(db, binding, batch.usage)
+    except Exception:
+        # Runtime replacement or a transient transport failure must not make
+        # a read-only locator unavailable. The next event read retries it.
+        pass
 
 
 def runtime_stream_details(db: Session, binding_id: str) -> tuple[str | None, RuntimeHandle]:

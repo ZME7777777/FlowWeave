@@ -252,6 +252,9 @@ def _page_dicts(
 ) -> list[dict[str, Any]]:
     """Build list DTOs with two batch queries instead of per-row lookups."""
 
+    usage_by_binding = usage_projection.for_scope(
+        db, field="binding_id", ids=(item.id for item in items)
+    )
     version_ids = {
         item.work_directory_version_id
         for item in items
@@ -311,6 +314,7 @@ def _page_dicts(
             "last_connected_at": item.last_connected_at.isoformat()
             if item.last_connected_at
             else None,
+            "usage": usage_by_binding.get(item.id, usage_projection.empty()),
         }
         for item in items
     ]
@@ -673,10 +677,18 @@ def list_conversation_page(
 
 
 def get_conversation(db: Session, workspace_id: str, binding_id: str) -> dict[str, Any]:
-    _workspace(db, workspace_id)
+    workspace = _workspace(db, workspace_id)
     item = _binding(db, workspace_id, binding_id)
     item.last_connected_at = now()
     db.flush()
+    try:
+        batch = get_runtime().read_active_events(_handle(db, workspace, item))
+        usage_projection.capture(db, item, batch.usage)
+    except Exception:
+        # Runtime availability must not make the read-only Conversation
+        # locator unavailable. A later event read retries the formal usage
+        # projection from OpenHands.
+        pass
     return _dict(db, item)
 
 
