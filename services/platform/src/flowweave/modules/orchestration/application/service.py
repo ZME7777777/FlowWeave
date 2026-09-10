@@ -8082,7 +8082,16 @@ def _remediate_gate_failure(
         idempotency_key=idempotency_key,
     )
     target_binding_id = str(forked["id"])
-    target_conversation_id = str(forked["openhands_conversation_id"])
+    # The shared Workbench DTO deliberately omits the physical OpenHands
+    # locator. Resolve the fork in its server-side scope instead of depending
+    # on a removed browser-facing field.
+    target_binding = agent_sessions.flow_node_conversations.node_conversation_binding(
+        db,
+        flow_run_id=run.id,
+        attempt_id=current.id,
+        binding_id=target_binding_id,
+    )
+    target_conversation_id = target_binding.openhands_conversation_id
     current.conversation_id = target_conversation_id
     agent_sessions.flow_node_conversations.send_node_message(
         db,

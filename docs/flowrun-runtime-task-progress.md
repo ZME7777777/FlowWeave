@@ -3669,6 +3669,16 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 
 完成：工作台在原生 `ready + idle/completed/stopped` 连续保持四秒后，且当前轮仍无正式终止事件时，将浏览器临时运行态收敛为空闲，保留会话历史与短时流连接宽限，并显示“Agent 已异常停止，本轮结果未返回”。暂停和刚提交消息时 OpenHands 尚未进入运行态的正常竞态不受影响。
 
+### FR-276 门禁审查问答摘要与调整分叉契约修复 — DONE
+
+依赖：`FR-239`、`FR-245`。
+
+目标：门禁详情不再嵌入完整 Agent 工作台会话流，而只展示一条审查提问和一条审查回复摘要；两条记录均可点击打开各自完整内容，技术过程事件继续保留在 OpenHands 原生会话中但不撑开审查弹窗。修复“根据门禁结果调整并重试”在原生 Fork 已返回共享 Workbench DTO 后仍读取已移除的 `openhands_conversation_id` 字段导致的 500；调用方必须用返回的 binding ID 在同一 FlowRun／Attempt 作用域重新解析内部 locator，不向 Web DTO 暴露 OpenHands 身份。既有 GateEvaluation、Conversation/Event、Artifact 和候选输出集保持不变。
+
+验收：服务层定向回归覆盖共享 DTO 不含 OpenHands ID 时仍可完成分叉和发送调整消息；Web 类型检查、受影响 ESLint、production build、门禁问答摘要浏览器回归、Alembic head、任务状态唯一性与 `git diff --check` 通过。本切片独立提交并停止。
+
+完成：门禁详情将原生审查会话收敛为固定的一条“审查提问”和一条“审查回复”摘要，点击后在只读弹窗查看对应全文，Tool／Thought 等技术过程事件不再撑开详情。完成门禁调整分叉只依赖共享 Workbench DTO 的 binding ID，并在同一 FlowRun／Attempt 作用域重新解析服务端 OpenHands locator，修复浏览器 DTO 移除内部会话 ID 后的 500，同时不扩大公开契约。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -3684,6 +3694,7 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-10 | FR-276 | 门禁问答摘要定向 Playwright（1 passed）；共享 DTO 分叉与连续修订直接回归（2 passed）；Web TypeScript typecheck、受影响 ESLint、production build；受影响 Python Ruff format/check、`py_compile`；Alembic head、任务状态唯一性与 `git diff --check` | PASS：门禁详情固定呈现两条可点击问答摘要，提问使用安全展示内容、回复使用最终 Agent 消息，工具过程不嵌入详情，全文按记录独立打开。调整分叉从共享 DTO 的 binding ID 在服务端作用域解析 OpenHands 会话 ID，不向 Web 暴露内部 locator。常规定向 pytest 已启动但在业务断言前受本机 Docker socket 缺失、Testcontainers PostgreSQL 无法创建而阻断；两条不依赖数据库的目标回归通过直接执行验证。唯一 Alembic head 为 `0110_candidate_output_set_owner`，无 `CURRENT`。 |
 | 2026-09-10 | FR-275 | OpenHands 适配器 pytest（111 passed）；受影响 Python Ruff/format、`py_compile`、Alembic head 与 `git diff --check`；Web ESLint、TypeScript typecheck、production build | PASS（静态、适配器与构建）：OpenHands LLM payload 保持 `num_retries=3` 和原退避，但 `timeout=null`；FlowWeave 在用户事件后登记 120 秒持久 watchdog，只有该正式 event 仍为 native active leaf 且会话仍为 `running/executing` 时才调用原生 interrupt，确认 `paused` 后投影为可继续状态。会话只提示“模型响应超时，已暂停。OpenHands 会话连接正常。你可以点击‘继续’重试。”，不显示“多少秒未收到事件”，不自动继续或重放消息；FlowRun 节点同步 CAS 投影为 `PAUSED`。新增 watchdog 定向 pytest 受本机 Docker daemon 不可用阻塞：Testcontainers PostgreSQL fixture 在断言前失败，未伪记为通过。 |
 | 2026-09-10 | FR-274 | Web ESLint、TypeScript typecheck、production build、`git diff --check`；Agent Workspace 定向 Playwright | 静态与构建 PASS：异常终止仅在 OpenHands 连续明确返回 `ready + idle/completed/stopped` 且本轮未见正式终止事件时收敛浏览器临时运行态，四秒保护窗口避免刚接受消息时的启动竞态。定向 Playwright 未进入新增断言：本地 Vite 服务显示登录页，既有长用例在等待“Agent 会话”导航按钮时达到 120 秒上限；该环境认证前置条件与本切片无关，未伪记为通过。 |
 | 2026-09-10 | FR-272 | Agent Workspace resume 定向 pytest；受影响 Python Ruff format/check、`py_compile`、Alembic head、任务状态唯一性与 `git diff --check` | 静态检查 PASS：Ruff、格式、Python 编译、唯一 Alembic head `0110_candidate_output_set_owner` 与 whitespace 检查通过。`tests/test_agent_workspaces.py` 已实际启动，但全部 68 项均在 Testcontainers PostgreSQL fixture 初始化阶段因本机 Docker Unix socket 缺失失败，新增 resume 回归尚未进入断言，未记为测试通过。 |

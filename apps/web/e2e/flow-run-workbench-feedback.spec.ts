@@ -1310,3 +1310,84 @@ test('completed continuous attempts load frozen input and candidate output metad
   await expect(output).toContainText(outputArtifact.uri);
   await expect(output).not.toContainText('等待本轮执行产出');
 });
+
+test('gate review conversation renders two compact records with full content on demand', async ({ page }) => {
+  const gatePolicy = {
+    id: 'gate-policy-1', stage: 'END', position: 0, gate_type: 'PROMPT', enabled: true,
+    timeout_seconds: 300, config: { prompt: '检查交付物是否满足验收标准。', code: '' },
+    agent_preset: { model_provider_id: 'provider-1', model_name: 'review-model', reasoning_effort: 'medium' },
+  };
+  const gateEvaluation = {
+    id: 'gate-evaluation-1', stage: 'END', policy_snapshot_key: gatePolicy.id, policy_position: 0,
+    evaluation_attempt: 1, state: 'COMPLETED', decision: 'FAIL',
+    result: { summary: '缺少验收证据', reasons: ['没有附上验证结果'] },
+    conversation_available: true, agent_preset: gatePolicy.agent_preset,
+    error_code: null, log_excerpt: '', created_at: now,
+  };
+  const gateAttempt = {
+    ...attempt, id: 'gate-attempt-1', state: 'END_BLOCKED', state_version: 5,
+    gate_policies: [gatePolicy], gate_evaluations: [gateEvaluation], error_code: null, error_detail: null,
+  };
+  const gateNodeRun = { ...nodeRun, id: 'gate-node-run-1', attempts: [gateAttempt] };
+  const gateDefinition = {
+    ...definition,
+    nodes: [{ ...definition.nodes[0], gates: [gatePolicy] }, definition.nodes[1]],
+  };
+  const gateSnapshot = { ...snapshot, definition: gateDefinition };
+  const gateRun = {
+    ...run, snapshots: [gateSnapshot], node_runs: [gateNodeRun],
+    current_attempt_state: 'END_BLOCKED', progress: { accepted: 0, terminal: 1, active: 1 },
+  };
+  const question = `${'请逐项审查本轮交付内容。'.repeat(12)}提问全文结束标记`;
+  const answer = `${'本轮交付缺少可复现的验证证据。'.repeat(12)}回复全文结束标记`;
+  const conversationEvents = [
+    { id: 'gate-message-user', event_type: 'MESSAGE', payload: { source: 'user', content: '内部审查提示词', display_content: question } },
+    { id: 'gate-tool-call', event_type: 'TOOL_CALL', payload: { source: 'agent', tool_name: 'terminal', content: '工具过程不应嵌入审查详情' } },
+    { id: 'gate-message-assistant', event_type: 'MESSAGE', payload: { source: 'agent', content: answer } },
+  ];
+
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    const respond = (body: unknown, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
+    if (path.endsWith('/auth/me')) return respond(authenticatedUser);
+    if (path === '/api/v1/flow-runs' && request.method() === 'GET') return respond([gateRun]);
+    if (path === '/api/v1/flows' && request.method() === 'GET') return respond([gateDefinition]);
+    if (path === '/api/v1/terminal-environments' || path === '/api/v1/capabilities'
+      || path === '/api/v1/capability-collections' || path === '/api/v1/model-providers') return respond([]);
+    if (path === `/api/v1/flow-runs/${gateRun.id}`) return respond(gateRun);
+    if (path === `/api/v1/flows/${gateDefinition.id}`) return respond(gateDefinition);
+    if (path === `/api/v1/flow-runs/${gateRun.id}/automatic-runs`) return respond([]);
+    if (path === `/api/v1/node-attempts/${gateAttempt.id}/gate-evaluations/${gateEvaluation.id}/conversation/events`) {
+      return respond({ events: conversationEvents, next_cursor: null, history_cursor: null });
+    }
+    return respond({ error: { code: 'RESOURCE_NOT_FOUND', message: `未配置测试路由：${path}`, details: {} } }, 404);
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: '流程运行', exact: true }).click();
+  await page.locator('.run-open').click();
+  await page.locator('.node-record-list .automatic-record-select').filter({ hasText: '测试节点' }).click();
+  const attemptPanel = page.locator('.attempt-control');
+  await attemptPanel.getByRole('button', { name: '门禁结果', exact: true }).click();
+  await attemptPanel.locator('.gate-overview-row').filter({ hasText: '门禁 1' }).click();
+  await page.getByRole('dialog', { name: '门禁 1详情' }).getByRole('button', { name: '查看详情' }).click();
+
+  const gateDialog = page.getByRole('dialog', { name: '门禁详情' });
+  const records = gateDialog.getByRole('group', { name: '完整审查问答' });
+  await expect(records.getByRole('button')).toHaveCount(2);
+  await expect(records).toContainText('审查提问');
+  await expect(records).toContainText('审查回复');
+  await expect(gateDialog).not.toContainText('工具过程不应嵌入审查详情');
+  await expect(gateDialog).not.toContainText('提问全文结束标记');
+  await expect(gateDialog).not.toContainText('回复全文结束标记');
+
+  await records.getByRole('button', { name: '查看审查提问完整内容' }).click();
+  const questionDialog = page.getByRole('dialog', { name: '审查提问完整内容' });
+  await expect(questionDialog.locator('pre')).toHaveText(question);
+  await questionDialog.getByRole('button', { name: '关闭审查提问完整内容' }).click();
+
+  await records.getByRole('button', { name: '查看审查回复完整内容' }).click();
+  const answerDialog = page.getByRole('dialog', { name: '审查回复完整内容' });
+  await expect(answerDialog.locator('pre')).toHaveText(answer);
+});

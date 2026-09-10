@@ -4,7 +4,6 @@ import { AlertTriangle, ArrowLeft, Bot, Boxes, Check, ChevronDown, ChevronRight,
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import { api, artifactContentUrl, subscribeToRun } from '../api/client';
-import { ConversationSurface } from '../components/ConversationSurface';
 import { flowMappingEdgeTypes, withMappingLabelOffsets } from '../components/flowMappingEdgeLayout';
 import { Pagination } from '../components/Pagination';
 import { useProductDialog } from '../components/ProductDialogContext';
@@ -401,6 +400,48 @@ function mergeGateConversationEvents(older: OpenHandsConversationEvent[], newer:
   return [...events.values()];
 }
 
+type GateConversationRecord = {
+  id: string;
+  kind: 'question' | 'answer';
+  title: string;
+  content: string;
+};
+
+function gateConversationRecords(events: OpenHandsConversationEvent[]): GateConversationRecord[] {
+  const questions: GateConversationRecord[] = [];
+  const answers: GateConversationRecord[] = [];
+  for (const event of events) {
+    const source = String(event.payload.source ?? '').toLowerCase();
+    const content = String(event.payload.content ?? '').trim();
+    if (event.event_type === 'MESSAGE' && (source === 'user' || source === 'human')) {
+      const displayContent = String(event.payload.display_content ?? content).trim();
+      if (displayContent) questions.push({ id: event.id, kind: 'question', title: '审查提问', content: displayContent });
+      continue;
+    }
+    const isAssistantMessage = event.event_type === 'MESSAGE' && source !== 'user' && source !== 'human';
+    const isFinishAnswer = event.event_type === 'COMPLETED' && event.payload.event_name === 'FinishAction';
+    if ((isAssistantMessage || isFinishAnswer) && content) {
+      answers.push({ id: event.id, kind: 'answer', title: '审查回复', content });
+    }
+  }
+  return [
+    questions[0] ?? { id: 'missing-question', kind: 'question', title: '审查提问', content: '该审查会话没有可展示的提问内容。' },
+    answers.at(-1) ?? { id: 'missing-answer', kind: 'answer', title: '审查回复', content: '该审查会话没有可展示的回复内容。' },
+  ];
+}
+
+function GateConversationRecordDialog({ record, onClose }: { record: GateConversationRecord; onClose: () => void }) {
+  useEscapeClose(onClose);
+  return <div className="modal-backdrop gate-transcript-record-backdrop" role="dialog" aria-modal="true" aria-label={`${record.title}完整内容`} onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}><section className="modal gate-transcript-record-dialog"><header><div><span className="eyebrow">GATE CONVERSATION</span><h2>{record.title}</h2><small>只读 · OpenHands 原生会话记录</small></div><button type="button" className="ghost" aria-label={`关闭${record.title}完整内容`} onClick={onClose}><X size={17}/></button></header><pre>{record.content}</pre></section></div>;
+}
+
+function GateConversationRecords({ events }: { events: OpenHandsConversationEvent[] }) {
+  const [selected, setSelected] = useState<GateConversationRecord>();
+  const records = useMemo(() => gateConversationRecords(events), [events]);
+  const summary = (content: string) => content.replace(/\s+/g, ' ').trim().slice(0, 120);
+  return <><div className="gate-transcript-records" role="group" aria-label="完整审查问答">{records.map(record => <button type="button" key={`${record.kind}:${record.id}`} className={record.kind} aria-label={`查看${record.title}完整内容`} onClick={() => setSelected(record)}><span><b>{record.title}</b><small>{summary(record.content)}</small></span><Eye size={15}/></button>)}</div>{selected && <GateConversationRecordDialog record={selected} onClose={() => setSelected(undefined)}/>}</>;
+}
+
 function GateDetailDialog({ attemptId, attemptStateVersion, evaluation, policy, canRetryWithProvider, onClose, onRetried }: { attemptId: string; attemptStateVersion: number; evaluation: GateEvaluation; policy?: GatePolicy; canRetryWithProvider: boolean; onClose: () => void; onRetried: (attempt: NodeAttempt) => void }) {
   useEscapeClose(onClose);
   const platformReview = evaluation.is_platform_output_review || evaluation.policy_snapshot_key === '__platform_output_contract__';
@@ -449,7 +490,7 @@ function GateDetailDialog({ attemptId, attemptStateVersion, evaluation, policy, 
   const technicalFailure = evaluation.decision === 'ERROR';
   const provider = providers.data?.find(item => item.id === executionPreset.model_provider_id);
   const retryable = technicalFailure && !platformReview && canRetryWithProvider && Boolean(retryPreset.model_provider_id && retryPreset.model_name && retryPrompt.trim());
-  return <div className="modal-backdrop gate-conversation-backdrop" role="dialog" aria-modal="true" aria-label="门禁详情" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}><section className="modal gate-detail-dialog"><header><div><h2>{platformReview ? '平台交付与映射校验详情' : '审查门禁详情'}</h2><small>只读 · {gateDecisionText(evaluation.decision)} · {platformReview ? '确定性平台校验' : '门禁审查记录'} · 第 {evaluation.evaluation_attempt} 次执行</small></div><button className="ghost" aria-label="关闭门禁详情" onClick={onClose}><X size={17}/></button></header><div className="gate-detail-body">{platformReview ? <section className="platform-check-details"><h3>逐项校验结果</h3><h4>输出校验</h4><ul>{outputChecks.length ? outputChecks.map((item, index) => checkRow(item, `output-${index}`)) : <li className="fail"><span>未找到冻结产物或逐项校验记录</span></li>}</ul><h4>下游端口映射</h4><ul>{mappingChecks.length ? mappingChecks.map((item, index) => checkRow(item, `mapping-${index}`)) : <li className="pass"><span>当前节点没有冻结的下游端口映射</span></li>}</ul><p className="platform-review-note">平台确定性校验不会创建审查 Agent 会话。</p></section> : <><section className={`gate-detail-summary${technicalFailure ? ' gate-detail-failure' : ''}`}><b>{gateResultText(evaluation.result.summary)}</b>{Array.isArray(evaluation.result.reasons) && evaluation.result.reasons.length > 0 && <ul>{evaluation.result.reasons.map((reason, index) => <li key={index}>{gateResultText(reason)}</li>)}</ul>}{technicalFailure && <dl className="gate-technical-details"><dt>错误代码</dt><dd>{evaluation.error_code || 'GATE_ERROR'}</dd>{evaluation.log_excerpt && <><dt>执行原因</dt><dd><pre>{evaluation.log_excerpt}</pre></dd></>}</dl>}</section><section className="gate-execution-config"><h3>本次门禁 Agent 配置</h3><p>{provider?.name || executionPreset.model_provider_id || '历史记录未保存供应商'} · {executionPreset.model_name || '未记录模型'}{executionPreset.reasoning_effort ? ` · ${executionPreset.reasoning_effort}` : ''}</p>{!evaluation.agent_preset && policy?.agent_preset && <small>该历史记录未保存单次配置，以上为本轮冻结门禁策略。</small>}</section>{technicalFailure && canRetryWithProvider && <section className="gate-provider-retry"><h3>修改本轮门禁后重试</h3><p>修改仅保存到当前执行记录的门禁副本，不会影响节点预设或以后复制的节点。</p><label>判定提示词<textarea aria-label="重试门禁判定提示词" value={retryPrompt} onChange={event => setRetryPrompt(event.target.value)}/></label><label>可选 Python 脚本<textarea aria-label="重试门禁 Python 脚本" className="code" value={retryCode} onChange={event => setRetryCode(event.target.value)}/></label><ModelPresetFields label="重试门禁" preset={retryPreset} onChange={setRetryPreset}/><button className="secondary full" disabled={!retryable || retry.isPending} onClick={() => retry.mutate()}>{retry.isPending ? '正在提交重试…' : '保存本轮配置并重试'}</button>{retry.error && <p className="error">{retry.error.message}</p>}</section>}<section className="gate-agent-transcript"><h3>完整审查对话</h3>{evaluation.conversation_available ? query.isLoading ? <div className="empty compact">正在读取完整对话…</div> : query.isError ? <p className="error">{query.error.message}</p> : events.length ? <div className="gate-conversation-body"><ConversationSurface events={events} liveText="" isGenerating={false}/></div> : <div className="empty compact">该历史评估没有返回可展示的原生审查对话。</div> : <div className="empty compact">门禁 Agent 未能创建可恢复的审查会话；上方技术原因可用于定位。</div>}</section></>}</div></section></div>;
+  return <div className="modal-backdrop gate-conversation-backdrop" role="dialog" aria-modal="true" aria-label="门禁详情" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}><section className="modal gate-detail-dialog"><header><div><h2>{platformReview ? '平台交付与映射校验详情' : '审查门禁详情'}</h2><small>只读 · {gateDecisionText(evaluation.decision)} · {platformReview ? '确定性平台校验' : '门禁审查记录'} · 第 {evaluation.evaluation_attempt} 次执行</small></div><button className="ghost" aria-label="关闭门禁详情" onClick={onClose}><X size={17}/></button></header><div className="gate-detail-body">{platformReview ? <section className="platform-check-details"><h3>逐项校验结果</h3><h4>输出校验</h4><ul>{outputChecks.length ? outputChecks.map((item, index) => checkRow(item, `output-${index}`)) : <li className="fail"><span>未找到冻结产物或逐项校验记录</span></li>}</ul><h4>下游端口映射</h4><ul>{mappingChecks.length ? mappingChecks.map((item, index) => checkRow(item, `mapping-${index}`)) : <li className="pass"><span>当前节点没有冻结的下游端口映射</span></li>}</ul><p className="platform-review-note">平台确定性校验不会创建审查 Agent 会话。</p></section> : <><section className={`gate-detail-summary${technicalFailure ? ' gate-detail-failure' : ''}`}><b>{gateResultText(evaluation.result.summary)}</b>{Array.isArray(evaluation.result.reasons) && evaluation.result.reasons.length > 0 && <ul>{evaluation.result.reasons.map((reason, index) => <li key={index}>{gateResultText(reason)}</li>)}</ul>}{technicalFailure && <dl className="gate-technical-details"><dt>错误代码</dt><dd>{evaluation.error_code || 'GATE_ERROR'}</dd>{evaluation.log_excerpt && <><dt>执行原因</dt><dd><pre>{evaluation.log_excerpt}</pre></dd></>}</dl>}</section><section className="gate-execution-config"><h3>本次门禁 Agent 配置</h3><p>{provider?.name || executionPreset.model_provider_id || '历史记录未保存供应商'} · {executionPreset.model_name || '未记录模型'}{executionPreset.reasoning_effort ? ` · ${executionPreset.reasoning_effort}` : ''}</p>{!evaluation.agent_preset && policy?.agent_preset && <small>该历史记录未保存单次配置，以上为本轮冻结门禁策略。</small>}</section>{technicalFailure && canRetryWithProvider && <section className="gate-provider-retry"><h3>修改本轮门禁后重试</h3><p>修改仅保存到当前执行记录的门禁副本，不会影响节点预设或以后复制的节点。</p><label>判定提示词<textarea aria-label="重试门禁判定提示词" value={retryPrompt} onChange={event => setRetryPrompt(event.target.value)}/></label><label>可选 Python 脚本<textarea aria-label="重试门禁 Python 脚本" className="code" value={retryCode} onChange={event => setRetryCode(event.target.value)}/></label><ModelPresetFields label="重试门禁" preset={retryPreset} onChange={setRetryPreset}/><button className="secondary full" disabled={!retryable || retry.isPending} onClick={() => retry.mutate()}>{retry.isPending ? '正在提交重试…' : '保存本轮配置并重试'}</button>{retry.error && <p className="error">{retry.error.message}</p>}</section>}<section className="gate-agent-transcript"><h3>完整审查对话</h3>{evaluation.conversation_available ? query.isLoading ? <div className="empty compact">正在读取完整对话…</div> : query.isError ? <p className="error">{query.error.message}</p> : events.length ? <GateConversationRecords events={events}/> : <div className="empty compact">该历史评估没有返回可展示的原生审查对话。</div> : <div className="empty compact">门禁 Agent 未能创建可恢复的审查会话；上方技术原因可用于定位。</div>}</section></>}</div></section></div>;
 }
 
 function ArtifactList({ artifacts, expectedFields = [] }: { artifacts: ArtifactVersion[]; expectedFields?: SnapshotFlowNode['asset']['outputs'] }) {

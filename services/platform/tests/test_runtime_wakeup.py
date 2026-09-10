@@ -732,6 +732,7 @@ def test_automatic_end_gate_forks_and_sends_the_latest_gate_report(monkeypatch):
     run = SimpleNamespace(id="run-1", run_mode="AUTOMATIC", state="ACTIVE")
     source = SimpleNamespace(id="binding-source", openhands_conversation_id="source-conversation")
     sent: list[dict[str, object]] = []
+    resolved: list[dict[str, object]] = []
     events: list[tuple[str, dict[str, object]]] = []
 
     class NativeRuntime:
@@ -762,9 +763,16 @@ def test_automatic_end_gate_forks_and_sends_the_latest_gate_report(monkeypatch):
         "fork_node_conversation",
         lambda *_args, **kwargs: {
             "id": "binding-target",
-            "openhands_conversation_id": "forked-conversation",
             "requested_event_id": kwargs["event_id"],
         },
+    )
+    monkeypatch.setattr(
+        orchestration_service.agent_sessions.flow_node_conversations,
+        "node_conversation_binding",
+        lambda *_args, **kwargs: (
+            resolved.append(kwargs)
+            or SimpleNamespace(openhands_conversation_id="forked-conversation")
+        ),
     )
     monkeypatch.setattr(
         orchestration_service.agent_sessions.flow_node_conversations,
@@ -789,6 +797,13 @@ def test_automatic_end_gate_forks_and_sends_the_latest_gate_report(monkeypatch):
         )
 
     assert attempt.conversation_id == "forked-conversation"
+    assert resolved == [
+        {
+            "flow_run_id": "run-1",
+            "attempt_id": "attempt-1",
+            "binding_id": "binding-target",
+        }
+    ]
     assert sent == [
         {
             "flow_run_id": "run-1",
@@ -845,10 +860,7 @@ def test_automatic_repairs_fork_from_the_latest_failed_conversation(monkeypatch)
     def fork(_db, **_kwargs):
         nonlocal fork_count
         fork_count += 1
-        return {
-            "id": f"binding-repair-{fork_count}",
-            "openhands_conversation_id": f"repair-{fork_count}",
-        }
+        return {"id": f"binding-repair-{fork_count}"}
 
     monkeypatch.setattr(
         orchestration_service.agent_sessions.flow_node_locator,
@@ -872,6 +884,13 @@ def test_automatic_repairs_fork_from_the_latest_failed_conversation(monkeypatch)
         orchestration_service.agent_sessions.flow_node_conversations,
         "fork_node_conversation",
         fork,
+    )
+    monkeypatch.setattr(
+        orchestration_service.agent_sessions.flow_node_conversations,
+        "node_conversation_binding",
+        lambda *_args, binding_id, **_kwargs: SimpleNamespace(
+            openhands_conversation_id=binding_id.removeprefix("binding-")
+        ),
     )
     monkeypatch.setattr(
         orchestration_service.agent_sessions.flow_node_conversations,
