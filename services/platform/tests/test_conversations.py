@@ -63,21 +63,17 @@ def test_conversation_reference_projection_hides_selected_text_from_message_body
     prompt, image_urls = session_conversations.message_payload(
         "请基于引用继续处理",
         (),
-        ({"event_id": "assistant-event-1", "use": "BACKGROUND", "content": selected_text},),
-        "CORRECTION",
+        ({"event_id": "assistant-event-1", "content": selected_text},),
     )
 
     assert image_urls == ()
-    assert prompt.index(selected_text) < prompt.index('"current_message"')
-    assert "current_message" in prompt
-    assert '"kind":"CORRECTION"' in prompt
-    assert "引用是按用途提供的来源材料" in prompt
+    assert prompt.index(selected_text) < prompt.index("请基于引用继续处理")
+    assert prompt.endswith("请基于引用继续处理")
+    assert "引用内容仅作背景资料" in prompt
     display_content, references = session_conversations.project_conversation_references(prompt)
     assert display_content == "请基于引用继续处理"
     assert selected_text not in display_content
-    assert references == (
-        {"event_id": "assistant-event-1", "use": "BACKGROUND", "content": selected_text},
-    )
+    assert references == ({"event_id": "assistant-event-1", "content": selected_text},)
 
 
 def test_conversation_reference_projection_supports_legacy_suffix_format() -> None:
@@ -90,9 +86,7 @@ def test_conversation_reference_projection_supports_legacy_suffix_format() -> No
     display_content, references = session_conversations.project_conversation_references(prompt)
 
     assert display_content == "请基于引用继续处理"
-    assert references == (
-        {"event_id": "assistant-event-1", "use": "BACKGROUND", "content": "旧引用"},
-    )
+    assert references == ({"event_id": "assistant-event-1", "content": "旧引用"},)
 
 
 def test_conversation_reference_projection_composes_with_attachment_context() -> None:
@@ -103,14 +97,12 @@ def test_conversation_reference_projection_composes_with_attachment_context() ->
     prompt, _image_urls = session_conversations.message_payload(
         "",
         ({"path": attachment_path, "image_data_url": "data:image/png;base64,aGVsbG8="},),
-        ({"event_id": "assistant-event-2", "use": "CONSTRAINT", "content": "不要展开此引用"},),
+        ({"event_id": "assistant-event-2", "content": "不要展开此引用"},),
     )
 
     display_content, references = session_conversations.project_conversation_references(prompt)
     assert display_content == f"请查看已上传到共享工作区的附件：\n- {attachment_path}"
-    assert references == (
-        {"event_id": "assistant-event-2", "use": "CONSTRAINT", "content": "不要展开此引用"},
-    )
+    assert references == ({"event_id": "assistant-event-2", "content": "不要展开此引用"},)
 
 
 def _runtime_context(db: Session) -> tuple[str, str]:
