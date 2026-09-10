@@ -3603,6 +3603,16 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 
 完成：增加 `MAVEN_SHARED_HOST_ROOT` 显式配置；Runtime Provider 仅在该根目录、`Repository/`、`conf/` 和 `conf/settings.xml` 均为非符号链接的受控路径时创建动态容器。共享根按同一绝对路径只读挂载，settings 同时只读挂载为容器默认 `~/.m2/settings.xml`，并导出 `MAVEN_ARGS`。空环境变量明确禁用功能，避免误将 Provider 当前目录作为宿主 Maven 根。远端部署后须由本切片 commit 绑定构建，已运行 FlowRun 通过正式 replacement、Agent Workspace 通过受管 recreate 更新挂载；不删除 Workspace、Volume 或 Conversation 状态。
 
+### FR-268 Runtime 基础工具链预装 Vim — DONE
+
+依赖：无（部署运维新需求）。
+
+目标：在所有 FlowWeave 自维护的默认镜像（平台、OpenHands Runtime、依赖构建器、两类 Sandbox、Web、PostgreSQL 和初始化 Alpine）的工具链中显式安装 `vim`。后续 Environment Setup、Agent Workspace 与基于新基础镜像发布的 FlowRun Runtime 可直接使用该命令。已发布 Environment Version 的镜像 digest 保持不可变；既有 FlowRun 通过新版本和正式 generation replacement 切换，Agent Workspace 通过受管 recreate 切换，禁止进入容器临时安装或直接操作历史 Attempt 容器。
+
+验收：所有 Dockerfile 的 commit 绑定远端 `linux/amd64` 构建及 `vim --version` 镜像探针通过；所有已运行 Compose 服务定向重建，使用正式受管生命周期验证新 Agent Workspace Runtime 与新发布 Environment Version 的 Runtime 均可解析 `vim`，且 Workspace、Volume 与 Conversation 状态不变。
+
+完成：在各自镜像安装层添加 `vim`，并将 OpenHands Runtime 的逐命令 fail-closed 探针纳入 `vim`。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：

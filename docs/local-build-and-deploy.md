@@ -143,7 +143,9 @@ docker build --no-cache -f infra/openhands/Dockerfile -t flowweave-openhands-run
 docker image inspect flowweave-openhands-runtime:1
 ```
 
-新镜像也会被后续动态 Agent Runtime 和终端环境草稿使用。已经运行的动态容器不会被原地替换。OpenHands 镜像必须继续满足 `source.lock.json`、包版本和契约探针约束，不要用浮动上游版本替代。
+新镜像也会被后续动态 Agent Runtime 和终端环境草稿使用；基础工具链预装 `vim`，可直接在这些 Runtime 中使用。已经运行的动态容器不会被原地替换。OpenHands 镜像必须继续满足 `source.lock.json`、包版本和契约探针约束，不要用浮动上游版本替代。
+
+所有 FlowWeave 自维护的默认镜像（平台、OpenHands Runtime、依赖构建器、两类 Sandbox、Web、PostgreSQL 和初始化 Alpine）同样预装 `vim`。镜像更新后，Compose 服务必须使用定向 `--force-recreate` 重建；动态 Runtime 则按其 FlowRun/Agent Workspace 正式生命周期替换。不要在已运行容器内临时安装包。
 
 ### 5.1.1 共享只读 Maven 仓库
 

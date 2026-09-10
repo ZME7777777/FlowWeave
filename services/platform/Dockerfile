@@ -14,7 +14,7 @@ FROM python:3.12.11-slim-bookworm@sha256:519591d6871b7bc437060736b9f7456b8731f14
 WORKDIR /app
 RUN sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/debian.sources \
  && apt-get -o Acquire::Retries=5 update \
- && apt-get -o Acquire::Retries=5 install -y --no-install-recommends curl ca-certificates git \
+ && apt-get -o Acquire::Retries=5 install -y --no-install-recommends curl ca-certificates git vim \
  && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /app/.venv /app/.venv
 COPY --from=docker_cli /usr/local/bin/docker /usr/bin/docker

@@ -24,7 +24,7 @@ RUN apt-get -o Acquire::Retries=5 update \
  && rm -rf /var/lib/apt/lists/*
 RUN apt-get -o Acquire::Retries=5 update \
  && apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
-      build-essential default-jdk-headless maven \
+      build-essential default-jdk-headless maven vim \
  && rm -rf /var/lib/apt/lists/*
 RUN python3.13 -m pip install --break-system-packages --no-cache-dir uv==0.7.8 \
  && npm install --global @larksuite/cli@1.0.84 \
@@ -88,7 +88,7 @@ RUN uv pip install --python /runtime/.venv/bin/python pip==25.1.1 \
 RUN set -eu; \
     for command in bash node npm npx python python3 pip pip3 uv java javac mvn mysql \
       git ssh curl wget jq zip unzip tar gzip make gcc g++ sed awk grep find xargs ps top \
-      ip ping nslookup nc tmux agent-server; do \
+      ip ping nslookup nc tmux vim agent-server; do \
       command -v "$command" >/dev/null; \
     done
 EXPOSE 8000
