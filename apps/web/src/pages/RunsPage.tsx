@@ -19,8 +19,10 @@ const runtimeResourceSummary = (run: FlowRunSummary) => {
   if (!resource) return { primary: '暂无可用容器', detail: '运行环境就绪后将显示当前绑定容器。' };
   return {
     primary: `容器 ${resource.container_id} · #${resource.generation}`,
-    detail: `CPU 已用 ${resource.cpu_usage_percent.toFixed(1)}%（实时）/ ${resource.cpu_limit} · 内存 ${formatResourceBytes(resource.memory_usage_bytes)} / ${resource.memory_limit} · 存储 ${formatResourceBytes(resource.storage_usage_bytes)}${resource.storage_limit ? ` / ${resource.storage_limit}` : '（无硬上限）'}`,
-    provenance: `镜像 ${resource.image_reference} · 创建于 ${new Date(resource.created_at).toLocaleString()}`,
+    detail: `CPU 已用 ${resource.cpu_usage_percent.toFixed(1)}%（实时）/ ${resource.cpu_limit} · 内存 ${formatResourceBytes(resource.memory_usage_bytes)} / ${resource.memory_limit}`,
+    provenance: resource.host_project_mount_path
+      ? `宿主机挂载 ${resource.host_project_mount_path} → /runtime/workspace/project`
+      : '宿主机挂载路径暂不可用',
   };
 };
 const runtimeEntryState = (run: FlowRunSummary) => {

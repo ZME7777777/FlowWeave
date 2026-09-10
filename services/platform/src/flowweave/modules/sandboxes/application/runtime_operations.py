@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from sqlalchemy import or_, select
@@ -31,6 +33,11 @@ from flowweave.shared.models import (
 )
 from flowweave.shared.settings import get_settings
 
+_FLOW_RUN_ALLOCATION_RELATIVE = re.compile(
+    r"\.flow-run-runtimes/[0-9a-f]{32}/"
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+)
+
 
 def _retention_policy() -> dict[str, Any]:
     return {
@@ -38,6 +45,20 @@ def _retention_policy() -> dict[str, Any]:
         "workspace_preserved_during_replacement": True,
         "physical_delete_operation": "DELETE_FLOW_RUN",
     }
+
+
+def _host_project_mount_path(spec: dict[str, Any], host_root: Path) -> str | None:
+    """Return the exact FlowRun project bind source only for a canonical allocation."""
+
+    relative_value = spec.get("runtime_allocation_relative")
+    if not isinstance(relative_value, str) or not _FLOW_RUN_ALLOCATION_RELATIVE.fullmatch(
+        relative_value
+    ):
+        return None
+    relative = PurePosixPath(relative_value)
+    if not host_root.is_absolute() or relative.is_absolute():
+        return None
+    return str(host_root.joinpath(*relative.parts, "workspace", "project"))
 
 
 def _active_resource_summary(
@@ -58,6 +79,9 @@ def _active_resource_summary(
         return None
     settings = get_settings()
     spec = resource.spec_json or {}
+    host_project_mount_path = _host_project_mount_path(
+        spec, Path(settings.runtime_host_workspace_root)
+    )
     return {
         "generation": generation.generation,
         "container_id": resource.backend_resource_id.removeprefix("sha256:")[:12],
@@ -69,6 +93,7 @@ def _active_resource_summary(
         "cpu_usage_percent": usage.cpu_usage_percent,
         "memory_usage_bytes": usage.memory_usage_bytes,
         "storage_usage_bytes": usage.storage_usage_bytes,
+        "host_project_mount_path": host_project_mount_path,
     }
 
 
