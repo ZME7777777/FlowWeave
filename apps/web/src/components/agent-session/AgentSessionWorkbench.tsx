@@ -2,7 +2,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { Terminal as XTerm } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, Bot, Boxes, Check, ChevronDown, ChevronRight, CircleDot, Copy, Download, FileCode2, FileText, Folder, FolderOpen, FolderPlus, /* GitBranch — Git repository summary is temporarily hidden; retain for its future enhancement. */ ImageIcon, Layers3, Link2, LoaderCircle, Maximize2, Minimize2, MonitorCog, PanelRightOpen, Play, Plus, Quote, Search, Send, ShieldAlert, Square, Trash2, X } from 'lucide-react';
+import { ArrowLeft, Bot, Boxes, Check, ChevronDown, ChevronRight, CircleDot, Copy, CornerDownRight, Download, Ellipsis, FileCode2, FileText, Folder, FolderOpen, FolderPlus, /* GitBranch — Git repository summary is temporarily hidden; retain for its future enhancement. */ GripVertical, ImageIcon, Layers3, Link2, LoaderCircle, Maximize2, Minimize2, MonitorCog, PanelRightOpen, Play, Plus, Quote, Search, Send, ShieldAlert, Square, Trash2, X } from 'lucide-react';
 import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type CSSProperties, type DragEvent as ReactDragEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { ApiError, randomId } from '../../api/client';
@@ -1782,6 +1782,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const [requestStartedAt, setRequestStartedAt] = useState<number>();
   const [confirmationReason, setConfirmationReason] = useState('');
   const [queuedMessages, setQueuedMessages] = useState<QueuedMessage[]>([]);
+  const [draggedQueuedMessageId, setDraggedQueuedMessageId] = useState<string>();
+  const [queuedMessageMenuId, setQueuedMessageMenuId] = useState<string>();
   const [pendingNativeGuidance, setPendingNativeGuidance] = useState<BoundQueuedMessage[]>([]);
   const [pendingRewrite, setPendingRewrite] = useState<{ eventId: string; content: string }>();
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -2748,8 +2750,19 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   }, [attachments, bootstrap, canBootstrap, canWrite, composerScope, conversationDraft, draft, migrateStreaming, pendingMigratedSend, references, selected, send, turnState]);
   const sendDraftDirectly = useCallback(() => {
     const content = draft.trim();
-    if ((!content && !attachments.length && !references.length) || !composerScope || conversationDraft
-      || !canWrite || migrateStreaming.isPending || pendingMigratedSend || turnState === 'pausing' || turnState === 'resuming') return;
+    const hasComposerMessage = Boolean(content || attachments.length || references.length);
+    if (!hasComposerMessage) {
+      const queuedMessage = queuedMessages[0];
+      if (!queuedMessage || !canWrite || conversationDraft || migrateStreaming.isPending || pendingMigratedSend
+        || turnState !== 'running' || !selected?.streaming_callback_ready || queuedMessage.scope !== selected.id) return;
+      setQueuedMessages(items => items.slice(1));
+      // With an empty composer, Command/Ctrl+Enter promotes the current queue
+      // head. It uses the same formal native-guidance route as "调整方向".
+      setPendingNativeGuidance(current => [{ ...queuedMessage, bindingId: selected.id, nativeGuidance: true }, ...current]);
+      return;
+    }
+    if (!composerScope || conversationDraft || !canWrite || migrateStreaming.isPending || pendingMigratedSend
+      || turnState === 'pausing' || turnState === 'resuming') return;
     const message = { id: randomId(), scope: composerScope, content, items: attachments, references };
     setDraft('');
     setAttachments([]);
@@ -2782,7 +2795,37 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     setDraft(content);
     setAttachments(attachments);
     setReferences(references);
-  }, [attachments, canWrite, composerScope, conversationDraft, draft, migrateStreaming, pendingMigratedSend, references, selected, send, turnState]);
+  }, [attachments, canWrite, composerScope, conversationDraft, draft, migrateStreaming, pendingMigratedSend, queuedMessages, references, selected, send, turnState]);
+  const sendQueuedMessageImmediately = useCallback((message: QueuedMessage) => {
+    if (!canWrite || turnState !== 'running' || !selected?.streaming_callback_ready || message.scope !== selected.id) return;
+    setQueuedMessages(items => items.filter(item => item.id !== message.id));
+    // Insert ahead of browser-queued native guidance. The active request, if
+    // any, finishes first; OpenHands still owns the formal turn lock.
+    setPendingNativeGuidance(current => [{ ...message, bindingId: selected.id, nativeGuidance: true }, ...current]);
+  }, [canWrite, selected, turnState]);
+  const moveQueuedMessage = useCallback((sourceId: string, targetId: string) => {
+    if (sourceId === targetId) return;
+    setQueuedMessages(items => {
+      const sourceIndex = items.findIndex(item => item.id === sourceId);
+      const targetIndex = items.findIndex(item => item.id === targetId);
+      if (sourceIndex < 0 || targetIndex < 0) return items;
+      const next = [...items];
+      const [source] = next.splice(sourceIndex, 1);
+      next.splice(sourceIndex < targetIndex ? targetIndex - 1 : targetIndex, 0, source);
+      return next;
+    });
+  }, []);
+  const moveQueuedMessageByOffset = useCallback((sourceId: string, offset: -1 | 1) => {
+    setQueuedMessages(items => {
+      const sourceIndex = items.findIndex(item => item.id === sourceId);
+      const targetIndex = sourceIndex + offset;
+      if (sourceIndex < 0 || targetIndex < 0 || targetIndex >= items.length) return items;
+      const next = [...items];
+      const [source] = next.splice(sourceIndex, 1);
+      next.splice(targetIndex, 0, source);
+      return next;
+    });
+  }, []);
   useEffect(() => {
     if (!pendingNativeGuidance.length || send.isPending || !selected?.streaming_callback_ready
       || (turnState !== 'running' && turnState !== 'idle')) return;
@@ -2973,7 +3016,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       {selected || conversationDraft ? <ConversationSurface key={selected?.id ?? conversationDraft?.id} events={displayedEvents} liveText={liveText} isGenerating={isGenerating} requestStartedAt={requestStartedAt} requestSubmitting={send.isPending || bootstrap.isPending || rewrite.isPending} condensationStatus={selected && condensationStatus?.bindingId === selected.id ? condensationStatus : undefined} onRetryCondensation={selected && canWrite && condensationStatus?.bindingId === selected.id && condensationStatus.state === 'failed' ? requestManualCompaction : undefined} onRewrite={selected && canWrite && features.rewrite ? requestRewrite : undefined} onFork={selected && canWrite && features.fork ? eventId => { if (fork.isPending) return; const directoryName = selected.work_directory_id ? workDirectories.find(directory => directory.id === selected.work_directory_id)?.display_name ?? '当前工作区' : '根工作区'; void dialog.confirm({ title: '从此处分叉会话？', message: `将保留当前会话在“${directoryName}”中的工作目录和截至此回复的历史记录，创建一条可独立继续的新会话。源会话不会被修改。`, confirmLabel: '创建分叉会话' }).then(confirmed => { if (confirmed) fork.mutate(eventId); }); } : undefined} onOpenAttachment={features.attachments ? openAttachmentInDrawer : undefined} onPreviewCandidateFile={candidateOutputUrl && workspace ? openCandidateFileInDrawer : undefined} onAddReference={runtimeWritable ? reference => setReferences(current => current.some(item => item.eventId === reference.eventId && item.content === reference.content) ? current : [...current, reference]) : undefined} taskControl={eventsQuery.data?.task_control ?? []} monitoring={eventsQuery.data?.monitoring} connectionState={inputReadinessQuery.isError ? 'unavailable' : streamStatus === 'recovering' ? 'recovering' : streamStatus === 'connecting' ? 'checking' : inputReadinessQuery.isFetching && !inputReadinessQuery.data ? 'checking' : 'connected'}/> : <div className="agent-workbench-empty"><Bot size={32}/><b>新建会话开始协作</b><span>{features.workDirectories ? '每个会话共享同一工作区，但保留独立的对话与事件记录。' : '会话固定在当前节点 Attempt 的隔离工作目录。'}</span><button className="primary" disabled={!canOpenConversation} onClick={() => openConversationDraft({ displayName: features.workDirectories ? '根工作区' : '节点工作目录' })}><Plus size={15}/>新建会话</button></div>}
       {(selected || conversationDraft) && runtimeWritable && runtime?.state !== 'RECOVERING' && <div className={`agent-composer ${turnState !== 'idle' || pendingConfirmation ? 'busy' : ''}`}>
         {pendingConfirmation && <section className="agent-confirmation" aria-label="工具执行确认"><header><ShieldAlert size={17}/><div><b>工具正在等待你的确认</b><span>动作尚未执行。请核对整批内容后批准或拒绝。</span></div></header><div className="agent-confirmation-actions">{(pendingConfirmation.actions ?? []).map((action: AgentPendingConfirmationAction) => <article key={action.digest}><div><b>{action.summary || action.tool_name}</b><span>{action.security_risk || 'UNKNOWN'}</span></div>{Object.keys(action.arguments).length > 0 && <pre>{JSON.stringify(action.arguments, null, 2)}</pre>}</article>)}</div><textarea aria-label="工具确认理由" value={confirmationReason} maxLength={2000} placeholder="填写批准或拒绝理由…" onChange={event => setConfirmationReason(event.target.value)}/><footer><button type="button" className="danger" disabled={!confirmationReason.trim() || decideConfirmation.isPending} onClick={() => decideConfirmation.mutate(false)}><X size={14}/>拒绝整批</button><button type="button" className="primary" disabled={!confirmationReason.trim() || decideConfirmation.isPending} onClick={() => decideConfirmation.mutate(true)}><Check size={14}/>批准整批</button></footer></section>}
-        {queuedMessages.length > 0 && <section className="agent-queued-messages" aria-label="已排队消息"><header><b>消息队列</b><span>{queuedMessages.length} 条将在当前回复完成后依次发送</span></header>{queuedMessages.map((message, index) => <article key={message.id}><small>{index + 1}</small><p>{message.content || (message.references.length ? `会话引用 ${message.references.length} 条` : '图片附件')}</p><span>{[message.items.length ? `${message.items.length} 个附件` : '', message.references.length ? `${message.references.length} 条会话引用` : ''].filter(Boolean).join(' · ')}</span><div><button type="button" aria-label={`编辑排队消息 ${index + 1}`} onClick={() => { setDraft(message.content); setAttachments(message.items); setReferences(message.references); setQueuedMessages(items => items.filter(item => item.id !== message.id)); }}>编辑</button><button type="button" aria-label={`移除排队消息 ${index + 1}`} onClick={() => setQueuedMessages(items => items.filter(item => item.id !== message.id))}><X size={13}/></button></div></article>)}</section>}
+        {queuedMessages.length > 0 && <section className="agent-queued-messages" aria-label="已排队消息"><header><b>消息队列</b><span>{queuedMessages.length} 条将在当前回复完成后依次发送</span></header>{queuedMessages.map((message, index) => <article key={message.id} draggable onDragStart={event => { if (!(event.target instanceof Element) || !event.target.closest('.queue-drag-handle')) { event.preventDefault(); return; } event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', message.id); setDraggedQueuedMessageId(message.id); }} onDragOver={event => { if (draggedQueuedMessageId && draggedQueuedMessageId !== message.id) event.preventDefault(); }} onDrop={event => { event.preventDefault(); const sourceId = event.dataTransfer.getData('text/plain') || draggedQueuedMessageId; if (sourceId) moveQueuedMessage(sourceId, message.id); setDraggedQueuedMessageId(undefined); }} onDragEnd={() => setDraggedQueuedMessageId(undefined)} className={draggedQueuedMessageId === message.id ? 'dragging' : undefined}><button type="button" className="queue-drag-handle" aria-label={`拖动排队消息 ${index + 1} 以调整顺序`} title="拖动调整顺序" tabIndex={-1}><GripVertical size={14}/></button><small>{index + 1}</small><p>{message.content || (message.references.length ? `会话引用 ${message.references.length} 条` : '图片附件')}</p><span>{[message.items.length ? `${message.items.length} 个附件` : '', message.references.length ? `${message.references.length} 条会话引用` : ''].filter(Boolean).join(' · ')}</span><div><button type="button" aria-label={`调整方向排队消息 ${index + 1}`} title="立即发送，调整当前回复方向" disabled={!canWrite || turnState !== 'running' || !selected?.streaming_callback_ready || message.scope !== selected.id} onClick={() => sendQueuedMessageImmediately(message)}><CornerDownRight size={12}/>调整方向</button><button type="button" className="queue-remove" aria-label={`移除排队消息 ${index + 1}`} onClick={() => setQueuedMessages(items => items.filter(item => item.id !== message.id))}><X size={13}/></button><button type="button" className="queue-more" aria-label={`更多排队消息操作 ${index + 1}`} title="更多操作" aria-expanded={queuedMessageMenuId === message.id} onClick={() => setQueuedMessageMenuId(current => current === message.id ? undefined : message.id)}><Ellipsis size={14}/></button>{queuedMessageMenuId === message.id && <div className="queue-menu" role="menu"><button type="button" role="menuitem" disabled={index === 0} onClick={() => { moveQueuedMessageByOffset(message.id, -1); setQueuedMessageMenuId(undefined); }}>上移</button><button type="button" role="menuitem" disabled={index === queuedMessages.length - 1} onClick={() => { moveQueuedMessageByOffset(message.id, 1); setQueuedMessageMenuId(undefined); }}>下移</button><button type="button" role="menuitem" onClick={() => { setDraft(message.content); setAttachments(message.items); setReferences(message.references); setQueuedMessages(items => items.filter(item => item.id !== message.id)); setQueuedMessageMenuId(undefined); }}>编辑</button></div>}</div></article>)}</section>}
         {condensationConfirmationOpen && selected && <section className="agent-condensation-confirmation" aria-label="确认低用量上下文压缩" role="alertdialog" aria-modal="false">
           <ShieldAlert size={17}/><div><b>当前上下文用量较低</b><p>Token {contextProgress?.usedLabel} / {contextProgress?.windowLabel}（{contextProgress?.percentage}%），事件 {activeEventCount.toLocaleString()} / {eventLimit.toLocaleString()}（{eventProgress}%）。现在压缩可能没有足够的可压缩区间，并且仍会调用摘要模型。</p><footer><button type="button" onClick={() => setCondensationConfirmationOpen(false)}>取消</button><button type="button" className="primary" onClick={() => condense.mutate()}>仍然压缩</button></footer></div>
         </section>}
