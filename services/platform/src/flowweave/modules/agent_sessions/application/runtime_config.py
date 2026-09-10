@@ -31,6 +31,7 @@ from flowweave.runtime.workspace import (
     agent_workspace_capability_marketplace_name,
     materialize_agent_workspace_capabilities,
     materialize_agent_workspace_capability_marketplace,
+    materialize_agent_workspace_hook_config,
 )
 from flowweave.shared.domain.agent_definition import normalize_agent_definition_document
 from flowweave.shared.domain.openhands import FIXED_RUNTIME_TOOL_NAMES
@@ -389,9 +390,7 @@ def frozen_agent_definitions(
                 description=str(document["description"]),
                 tools=tuple(str(item) for item in document["tools"]),
                 system_prompt=str(document["system_prompt"]),
-                when_to_use_examples=tuple(
-                    str(item) for item in document["when_to_use_examples"]
-                ),
+                when_to_use_examples=tuple(str(item) for item in document["when_to_use_examples"]),
                 permission_mode=str(document["permission_mode"]),
                 max_iteration_per_run=document["max_iteration_per_run"],
                 max_budget_per_run=document["max_budget_per_run"],
@@ -417,6 +416,15 @@ def build_agent_spec(
     )
     skills, plugins, mcp_servers = materialize_agent_workspace_capabilities(
         materialized, host_root=host_root, runtime_root=runtime_root
+    )
+    hook_config = materialize_agent_workspace_hook_config(
+        tuple(
+            item.materialization_config()
+            for item in config.capabilities
+            if item.capability_type == "HOOK"
+        ),
+        host_root=host_root,
+        runtime_root=runtime_root,
     )
     marketplace_name = agent_workspace_capability_marketplace_name(binding_id)
     materialize_agent_workspace_capability_marketplace(
@@ -458,6 +466,7 @@ def build_agent_spec(
         skills=skills,
         plugins=plugins,
         mcp_servers=mcp_servers,
+        hook_config=hook_config,
         agent_definitions=frozen_agent_definitions(config.capabilities),
         runtime_contract=agent_workspace_runtime_contract(tuple(tool.name for tool in TOOLS)),
     )

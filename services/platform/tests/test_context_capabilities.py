@@ -174,12 +174,85 @@ def test_agent_definition_is_compiled_only_into_new_conversation_spec(settings):
     ]
 
 
+def test_hook_is_compiled_only_into_new_conversation_spec(settings):
+    hook = FrozenSessionCapability(
+        version_id="hook-version",
+        capability_type="HOOK",
+        capability_key="terminal-review",
+        digest="c" * 64,
+        runtime_config={
+            "hook_set_schema_version": 2,
+            "openhands_version": "1.44.0",
+            "source_commit": "9a24f6c8866f353042a57df0514ccc900e3a0691",
+            "runtime_mutation": "FORBIDDEN",
+            "execution_mode": "PROMPT",
+            "event": "pre_tool_use",
+            "matcher": "terminal",
+            "pre_tool_use": [
+                {
+                    "matcher": "terminal",
+                    "hooks": [
+                        {
+                            "type": "prompt",
+                            "name": "flowweave/terminal-review",
+                            "command": "",
+                            "prompt": "Review the terminal action.",
+                            "timeout": 30,
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+    with settings_context(settings):
+        spec = build_agent_spec(
+            FrozenSessionConfig(None, None, None, None, (hook,)),
+            provider=None,
+            binding_id="hook-binding",
+            working_directory="/runtime/workspace/project",
+            host_root=settings.workspace_root / "hook-test" / "host",
+            runtime_root=Path("/runtime/capabilities/conversations/hook-binding"),
+        )
+
+    assert spec.hook_config == {
+        "pre_tool_use": [
+            {
+                "matcher": "terminal",
+                "hooks": [
+                    {
+                        "type": "prompt",
+                        "name": "flowweave/terminal-review",
+                        "command": "",
+                        "prompt": "Review the terminal action.",
+                        "timeout": 30,
+                    }
+                ],
+            }
+        ]
+    }
+
+
+def test_hook_is_allowed_only_during_conversation_creation(monkeypatch):
+    published = SimpleNamespace(
+        package=SimpleNamespace(capability_type="HOOK", capability_key="terminal-review"),
+        version=SimpleNamespace(id="hook-version", digest="c" * 64),
+    )
+    monkeypatch.setattr(conversations, "resolve_version", lambda *_args: published)
+
+    with pytest.raises(conversations.DomainError, match="Agent 会话不支持该能力类型"):
+        conversations._validated_capabilities(None, ("hook-version",))
+
+    assert conversations._validated_capabilities(
+        None,
+        ("hook-version",),
+        allowed_types=conversations._CREATION_CAPABILITY_TYPES,
+    ) == ((published, "HOOK"),)
+
+
 def test_agent_capability_validation_has_no_flowweave_count_limit(monkeypatch):
     published = {
         f"capability-{index}": SimpleNamespace(
-            package=SimpleNamespace(
-                capability_type="SKILL", capability_key=f"skill-{index}"
-            ),
+            package=SimpleNamespace(capability_type="SKILL", capability_key=f"skill-{index}"),
             version=SimpleNamespace(id=f"capability-{index}", digest=f"{index:064x}"),
         )
         for index in range(31)

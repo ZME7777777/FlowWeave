@@ -1316,6 +1316,116 @@ def materialize_agent_workspace_capabilities(
     return skills, plugins, mcp_servers
 
 
+def materialize_agent_workspace_hook_config(
+    capabilities: tuple[dict[str, Any], ...], *, host_root: Path, runtime_root: Path
+) -> dict[str, list[dict[str, Any]]]:
+    """Compile frozen Hook v2 files into the official OpenHands hook_config.
+
+    The script remains content-addressed in governed artifact storage until it
+    is copied to this binding's read-only capability mount. OpenHands executes
+    the resulting command and owns all hook lifecycle semantics.
+    """
+
+    hooks = tuple(item for item in capabilities if item.get("capability_type") == "HOOK")
+    if not hooks:
+        return {}
+    hook_root = host_root / "hooks"
+    _replace_managed_directory(hook_root, host_root)
+    merged: dict[str, list[dict[str, Any]]] = {}
+    for capability in hooks:
+        config = cast(dict[str, Any], capability.get("normalized_config") or {})
+        event = str(config.get("event") or "")
+        mode = str(config.get("execution_mode") or "")
+        if (
+            config.get("hook_set_schema_version") != 2
+            or config.get("openhands_version") != _HOOK_OPENHANDS_VERSION
+            or config.get("source_commit") != _HOOK_SOURCE_COMMIT
+            or config.get("runtime_mutation") != "FORBIDDEN"
+            or event not in _HOOK_EVENTS
+            or mode not in {"PROMPT", "SCRIPT"}
+        ):
+            raise DomainError(
+                "RUNTIME_CAPABILITY_UNAVAILABLE", "A frozen Hook version is invalid", 422
+            )
+        raw_matchers = config.get(event)
+        if not isinstance(raw_matchers, list) or len(raw_matchers) != 1:
+            raise DomainError(
+                "RUNTIME_CAPABILITY_UNAVAILABLE", "A frozen Hook event is invalid", 422
+            )
+        matcher = cast(dict[str, Any], raw_matchers[0])
+        matcher_value = str(matcher.get("matcher") or "")
+        if matcher_value != str(config.get("matcher") or ""):
+            raise DomainError(
+                "RUNTIME_CAPABILITY_UNAVAILABLE", "A frozen Hook matcher is invalid", 422
+            )
+        raw_hooks = matcher.get("hooks")
+        if (
+            not isinstance(raw_hooks, list)
+            or len(raw_hooks) != 1
+            or not isinstance(raw_hooks[0], dict)
+        ):
+            raise DomainError(
+                "RUNTIME_CAPABILITY_UNAVAILABLE", "A frozen Hook action is invalid", 422
+            )
+        action = dict(cast(dict[str, Any], raw_hooks[0]))
+        if mode == "PROMPT":
+            if (
+                action.get("type") != "prompt"
+                or not isinstance(action.get("name"), str)
+                or action.get("command") != ""
+                or not isinstance(action.get("prompt"), str)
+            ):
+                raise DomainError(
+                    "RUNTIME_CAPABILITY_UNAVAILABLE",
+                    "A frozen Hook prompt is invalid",
+                    422,
+                )
+        if mode == "SCRIPT":
+            filename = str(config.get("script_filename") or "")
+            digest = str(config.get("script_hash") or "")
+            storage_key = str(config.get("storage_key") or "")
+            if (
+                not filename
+                or Path(filename).name != filename
+                or not storage_key
+                or action.get("type") != "script"
+                or action.get("script") != filename
+                or not isinstance(action.get("name"), str)
+            ):
+                raise DomainError(
+                    "RUNTIME_CAPABILITY_UNAVAILABLE", "A frozen Hook script is invalid", 422
+                )
+            try:
+                content = get_artifact_store().read(storage_key)
+            except (FileNotFoundError, OSError) as exc:
+                raise DomainError(
+                    "RUNTIME_CAPABILITY_UNAVAILABLE",
+                    "A Hook script cannot be materialized",
+                    422,
+                ) from exc
+            if hashlib.sha256(content).hexdigest() != digest:
+                raise DomainError(
+                    "RUNTIME_CAPABILITY_UNAVAILABLE", "A Hook script digest does not match", 422
+                )
+            target_dir = hook_root / _segment(capability.get("capability_key"), "hook")
+            target = target_dir / filename
+            target_dir.mkdir(parents=True, exist_ok=True)
+            _atomic_write(target, content, mode=0o555)
+            action = {
+                "type": "command",
+                "name": action.get("name"),
+                "command": _hook_script_command(
+                    runtime_root
+                    / "hooks"
+                    / _segment(capability.get("capability_key"), "hook")
+                    / filename
+                ),
+                "timeout": 30,
+            }
+        merged.setdefault(event, []).append({"matcher": matcher_value, "hooks": [action]})
+    return merged
+
+
 def agent_workspace_capability_marketplace_name(binding_id: str) -> str:
     """Return the stable native Marketplace registration for one Conversation."""
 

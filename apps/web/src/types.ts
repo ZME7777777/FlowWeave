@@ -595,7 +595,7 @@ export type AgentWorkspaceRuntime = AgentSessionRuntime;
 
 export interface AgentSessionCapability {
   id: string;
-  capability_type: 'SKILL' | 'MCP' | 'PLUGIN' | 'CONTEXT' | 'AGENT_DEFINITION';
+  capability_type: 'SKILL' | 'MCP' | 'PLUGIN' | 'CONTEXT' | 'AGENT_DEFINITION' | 'HOOK';
   capability_key: string;
   digest: string;
 }

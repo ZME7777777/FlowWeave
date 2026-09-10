@@ -108,6 +108,8 @@ HOOK_SCRIPT_MAX_FILES = MCP_SCRIPT_MAX_FILES
 HOOK_SCRIPT_MAX_FILE_BYTES = MCP_SCRIPT_MAX_FILE_BYTES
 HOOK_SCRIPT_MAX_TOTAL_BYTES = MCP_SCRIPT_MAX_TOTAL_BYTES
 HOOK_SCRIPT_ALLOWED_SUFFIXES = {".py", ".js", ".mjs", ".cjs", ".sh"}
+SIMPLE_HOOK_PROMPT_SUFFIXES = {".md", ".markdown", ".txt"}
+SIMPLE_HOOK_SCRIPT_SUFFIXES = {".sh"}
 NESTED_ARCHIVE_SUFFIXES = {
     ".zip",
     ".tar",
@@ -1476,6 +1478,110 @@ def _hook_capabilities(parsed: dict[str, Any], fallback_name: str) -> list[dict[
     ]
 
 
+def _validate_hook_matcher(value: str) -> str:
+    """Validate the fixed OpenHands HookMatcher syntax without changing it.
+
+    OpenHands treats regex metacharacters as a full-match regex.  The form
+    intentionally exposes that exact contract, including ``*`` as the global
+    matcher, rather than inventing a FlowWeave-only glob language.
+    """
+
+    matcher = value.strip() or "*"
+    if matcher == "*":
+        return matcher
+    pattern = (
+        matcher[1:-1]
+        if matcher.startswith("/") and matcher.endswith("/") and len(matcher) > 2
+        else matcher
+    )
+    if any(char in matcher for char in "|.*+?[]()^$\\"):
+        try:
+            re.compile(pattern)
+        except re.error as exc:
+            raise _reject("Tool matcher is not a valid OpenHands regular expression") from exc
+    return matcher
+
+
+def _simple_hook_capability(payload: CapabilityValidateWrite, content: bytes) -> dict[str, Any]:
+    """Compile the single-event Hook form into an OpenHands-native config.
+
+    This intentionally supports exactly one uploaded prompt or shell script.
+    No JSON hook definitions, command fields, async execution or user-defined
+    timeouts cross the product boundary.
+    """
+
+    name = str(payload.hook_name or "").strip()
+    description = str(payload.hook_description or "").strip()
+    event = payload.hook_event
+    mode = payload.hook_mode
+    filename = Path(payload.filename).name
+    if filename != payload.filename or not filename:
+        raise _reject("Invalid Hook file name")
+    if not name or len(name) > 200:
+        raise _reject("Hook name is required")
+    if event not in HOOK_EVENT_KEYS or mode not in {"PROMPT", "SCRIPT"}:
+        raise _reject("Hook event and execution mode are required")
+    suffix = Path(filename).suffix.lower()
+    allowed = SIMPLE_HOOK_PROMPT_SUFFIXES if mode == "PROMPT" else SIMPLE_HOOK_SCRIPT_SUFFIXES
+    if suffix not in allowed:
+        raise _reject(
+            "Hook file type is not supported for the selected execution mode",
+            filename=filename,
+            allowed_extensions=sorted(allowed),
+        )
+    if not content or len(content) > CONFIG_MAX_BYTES:
+        raise _reject("Hook file must contain at most 1 MiB of UTF-8 text", filename=filename)
+    try:
+        text = content.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise _reject("Hook files must be UTF-8 text", filename=filename) from exc
+    if not text.strip():
+        raise _reject("Hook file cannot be empty", filename=filename)
+    matcher = _validate_hook_matcher(
+        str(payload.hook_matcher or "*") if event in {"pre_tool_use", "post_tool_use"} else "*"
+    )
+    definition: dict[str, Any]
+    if mode == "PROMPT":
+        definition = {
+            "type": "prompt",
+            "name": f"flowweave/{name}",
+            "command": "",
+            "prompt": text,
+            "timeout": 30,
+        }
+    else:
+        definition = {
+            "type": "script",
+            "name": f"flowweave/{name}",
+            "script": filename,
+            "timeout": 30,
+        }
+    normalized: dict[str, Any] = {
+        "hook_set_schema_version": 2,
+        "openhands_version": HOOK_OPENHANDS_VERSION,
+        "source_commit": HOOK_SOURCE_COMMIT,
+        "runtime_mutation": "FORBIDDEN",
+        "execution_mode": mode,
+        "event": event,
+        "matcher": matcher,
+        "description": description,
+        event: [{"matcher": matcher, "hooks": [definition]}],
+    }
+    if mode == "SCRIPT":
+        normalized.update(
+            {
+                "script_filename": filename,
+                "script_hash": hashlib.sha256(content).hexdigest(),
+                "package_format": "flowweave-hook-v2",
+            }
+        )
+    return {
+        "capabilities": [{"capability_key": name, "normalized_config": normalized}],
+        "config": normalized,
+        "script_count": 1 if mode == "SCRIPT" else 0,
+    }
+
+
 def _hook_bundle(
     config_content: bytes,
     capabilities: list[dict[str, Any]],
@@ -1578,11 +1684,9 @@ def _decode_and_validate(payload: CapabilityValidateWrite) -> tuple[bytes, dict[
     if filename != payload.filename or not filename:
         raise _reject("Invalid filename")
     if payload.capability_type == "HOOK":
-        raise DomainError(
-            "HOOK_CAPABILITY_RETIRED",
-            "Hook 已从 FlowWeave 产品中下线，不能再创建或导入",
-            410,
-        )
+        if payload.mcp_scripts or payload.hook_scripts:
+            raise _reject("Hook form accepts exactly one uploaded prompt or shell script")
+        return content, _simple_hook_capability(payload, content)
     if payload.capability_type in {"SKILL", "PLUGIN"}:
         if not filename.lower().endswith(".zip"):
             raise _reject(f"{payload.capability_type.title()} must be a ZIP")

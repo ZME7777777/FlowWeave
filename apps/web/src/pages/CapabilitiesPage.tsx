@@ -40,7 +40,17 @@ interface CapabilityLineage {
   versions: CapabilityAsset[];
 }
 
-const CAPABILITY_MODULES: CapabilityAssetType[] = ['SKILL', 'PLUGIN', 'MCP', 'AGENT_DEFINITION', 'CONTEXT'];
+const CAPABILITY_MODULES: CapabilityAssetType[] = ['SKILL', 'PLUGIN', 'MCP', 'AGENT_DEFINITION', 'CONTEXT', 'HOOK'];
+const HOOK_EVENTS = [
+  { value: 'pre_tool_use', label: '工具调用前', native: 'PreToolUse', description: '在 OpenHands 执行匹配工具前检查；可阻断调用。', toolScoped: true },
+  { value: 'post_tool_use', label: '工具调用后', native: 'PostToolUse', description: '在匹配工具返回后记录或检查；不会阻断既有调用。', toolScoped: true },
+  { value: 'user_prompt_submit', label: '用户提交消息', native: 'UserPromptSubmit', description: '用户消息进入 Agent 前运行；可阻断该次提交。', toolScoped: false },
+  { value: 'session_start', label: '会话启动', native: 'SessionStart', description: 'OpenHands 初始化会话时运行。', toolScoped: false },
+  { value: 'session_end', label: '会话结束', native: 'SessionEnd', description: 'OpenHands 关闭会话时运行。', toolScoped: false },
+  { value: 'stop', label: 'Agent 尝试结束', native: 'Stop', description: 'Agent 尝试结束时运行；可阻止结束。', toolScoped: false },
+] as const;
+type HookEvent = typeof HOOK_EVENTS[number]['value'];
+type HookMode = 'PROMPT' | 'SCRIPT';
 
 type McpEditorMode = 'FORM' | 'JSON';
 type McpTransport = 'http' | 'streamable-http' | 'sse' | 'stdio';
@@ -140,6 +150,7 @@ function typeLabel(type: CapabilityAssetType): string {
   if (type === 'PLUGIN') return 'Plugin';
   if (type === 'AGENT_DEFINITION') return 'Agent Definition';
   if (type === 'CONTEXT') return 'Context';
+  if (type === 'HOOK') return 'Hook';
   return type;
 }
 function capabilityModuleDescription(type: CapabilityAssetType): string {
@@ -148,6 +159,7 @@ function capabilityModuleDescription(type: CapabilityAssetType): string {
   if (type === 'MCP') return '受治理的 MCP Server 配置，运行前会检测连接状态。';
   if (type === 'AGENT_DEFINITION') return '可委派的原生 Agent 定义与运行预算。';
   if (type === 'CONTEXT') return '可上传并冻结到节点 OpenHands 系统上下文的文本。';
+  if (type === 'HOOK') return '选择原生回调事件，上传提示词或脚本后按会话冻结。';
   return '受治理、可追溯的不可变能力版本。';
 }
 function errorMessage(reason: unknown): string {
@@ -211,6 +223,14 @@ export function CapabilitiesPage() {
   useEscapeClose(() => setMcpOpen(false), mcpOpen);
   const [viewingAgentDefinition, setViewingAgentDefinition] = useState<CapabilityAsset>();
   useEscapeClose(() => setViewingAgentDefinition(undefined), Boolean(viewingAgentDefinition));
+  const [hookOpen, setHookOpen] = useState(false);
+  const [hookName, setHookName] = useState('');
+  const [hookDescription, setHookDescription] = useState('');
+  const [hookEvent, setHookEvent] = useState<HookEvent>('pre_tool_use');
+  const [hookMatcher, setHookMatcher] = useState('*');
+  const [hookMode, setHookMode] = useState<HookMode>('PROMPT');
+  const [hookFile, setHookFile] = useState<File>();
+  useEscapeClose(() => setHookOpen(false), hookOpen);
   const [gitPluginOpen, setGitPluginOpen] = useState(false);
   const [marketplaceOpen, setMarketplaceOpen] = useState(false);
   const [profileHistory, setProfileHistory] = useState<CapabilityLineage>();
@@ -382,6 +402,27 @@ export function CapabilitiesPage() {
       const committed = await api.commitCapability(validated.import_token);
       await refresh(); closeContextForm();
       setNotice(`已发布 Context“${committed.capabilities[0]?.capability_key ?? title}”。`);
+    } catch (reason) { setError(errorMessage(reason)); } finally { setImportingSkill(false); }
+  };
+  const closeHookForm = () => {
+    setHookOpen(false); setHookName(''); setHookDescription(''); setHookEvent('pre_tool_use'); setHookMatcher('*'); setHookMode('PROMPT'); setHookFile(undefined);
+  };
+  const createHook = async () => {
+    setImportingSkill(true); setError(''); setNotice('');
+    try {
+      const name = hookName.trim();
+      if (!name) throw new Error('请填写 Hook 名称。');
+      if (!hookFile) throw new Error('请上传一个提示词或脚本文件。');
+      if (hookFile.size > MCP_JSON_MAX_BYTES) throw new Error('Hook 文件不能超过 1 MiB。');
+      const event = HOOK_EVENTS.find(item => item.value === hookEvent);
+      const matcher = event?.toolScoped ? hookMatcher.trim() || '*' : '*';
+      const validated = await api.validateCapability({
+        capability_type: 'HOOK', filename: hookFile.name, content_base64: toBase64(await hookFile.arrayBuffer()),
+        hook_name: name, hook_description: hookDescription.trim(), hook_event: hookEvent, hook_matcher: matcher, hook_mode: hookMode,
+      });
+      const committed = await api.commitCapability(validated.import_token);
+      await refresh(); closeHookForm();
+      setNotice(`已发布 Hook“${committed.capabilities[0]?.capability_key ?? name}”。它会在新建会话时冻结并由 OpenHands 原生执行。`);
     } catch (reason) { setError(errorMessage(reason)); } finally { setImportingSkill(false); }
   };
   const openContextSource = async (item: CapabilityAsset) => {
@@ -567,11 +608,12 @@ export function CapabilitiesPage() {
     </section></div>}
     <div className="capability-module-scroll"><div className="capability-notice-layer">{notice && <div className="notice success capability-notice" role="status"><span>{notice}</span><button type="button" aria-label="关闭成功提示" title="关闭" onClick={() => setNotice('')}><X size={15}/></button></div>}</div>{error && <div className="notice error" role="alert">{error}</div>}
     {type === 'SKILL' && <section className="capability-collection-section skill-collection-section"><header><div><Layers3 size={19}/><span><b>Skill 组合</b><small>用于批量选择固定 Skill 版本。</small></span></div><div className="skill-collection-header-actions"><em>{capabilityCollections.length} 个组合</em><button className="secondary" disabled={importingSkill || busy} onClick={() => { setError(''); setEditingCollection(null); }}><Layers3 size={14}/>新建 Skill 组合</button></div></header>{collectionsLoading ? <div className="empty compact">加载 Skill 组合…</div> : capabilityCollections.length ? <><div className="capability-collection-list">{pagedCapabilityCollections.map(collection => <article key={collection.id}><span>{collection.category || '未分类'}</span><b>{collection.name}</b><em>{collection.members.length} 项</em><small title={collection.description}>{collection.description || '暂无说明'}</small><footer><button className="secondary" onClick={() => setEditingCollection(collection)}><Pencil size={12}/>编辑</button><button className="ghost" onClick={() => void removeCollection(collection)}><Trash2 size={12}/>删除</button></footer></article>)}</div><div className="skill-collection-pagination"><Pagination page={collectionPage} pageSize={collectionPageSize} total={capabilityCollections.length} onPageChange={setCollectionPage}/></div></> : <div className="capability-collection-empty"><span>还没有 Skill 组合。选择固定 Skill 版本后，可在会话中一键展开。</span><button className="secondary" onClick={() => setEditingCollection(null)}>创建第一个 Skill 组合</button></div>}</section>}
-    {!isLoading && <div className="capability-bulk-tools"><span>{repositoryQuery ? `找到 ${visible.length} 项匹配的 ${typeLabel(type)}` : `共 ${visible.length} 项 ${typeLabel(type)}`}{visible.some(group => group.latest.is_builtin) ? ` · ${visible.filter(group => group.latest.is_builtin).length} 项系统内置不可删除` : ''}</span><div className="capability-list-controls"><label className="capability-repository-search"><input aria-label="搜索当前能力模块" value={repositoryQuery} onChange={event => setRepositoryQuery(event.target.value)} placeholder={`搜索 ${typeLabel(type)} 名称、说明或文件…`}/>{repositoryQuery && <button type="button" aria-label="清除搜索" onClick={() => setRepositoryQuery('')}>×</button>}</label>{type === 'SKILL' && <label className="primary file-button"><Upload size={15}/>{importingSkill ? '上传中…' : '上传 Skill ZIP'}<input type="file" disabled={importingSkill || busy} accept=".zip" onChange={event => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void importFileCapability(file, 'SKILL'); }}/></label>}{type === 'PLUGIN' && <><label className="primary file-button"><Upload size={15}/>{importingSkill ? '上传中…' : '上传 Plugin ZIP'}<input type="file" disabled={importingSkill || busy} accept=".zip" onChange={event => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void importFileCapability(file, 'PLUGIN'); }}/></label><button className="secondary" disabled={busy || importingSkill} onClick={() => { setError(''); setNotice(''); setMarketplaceOpen(true); }}><PlugZap size={14}/>OpenHands Marketplace</button><button className="secondary" disabled={busy || importingSkill} onClick={() => { setError(''); setNotice(''); setGitPluginOpen(true); }}><PlugZap size={14}/>Git Plugin</button></>}{type === 'CONTEXT' && <button className="primary" disabled={importingSkill || busy} onClick={() => { setError(''); setNotice(''); setContextOpen(true); }}><Upload size={15}/>新增 Context</button>}{type === 'MCP' && <button className="primary" disabled={importingSkill || busy} onClick={() => void openMcpEditor()}><Braces size={15}/>新建 MCP</button>}{type === 'AGENT_DEFINITION' && <label className="primary file-button"><Upload size={15}/>{importingSkill ? '上传中…' : '上传 Agent Definition Markdown'}<input type="file" disabled={importingSkill || busy} accept=".md,.markdown,text/markdown" onChange={event => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void importFileCapability(file, 'AGENT_DEFINITION'); }}/></label>}</div><div className="bulk-actions"><button className="secondary" disabled={!selectableVisible.length || busy} onClick={toggleVisible}><CheckSquare size={14}/>{allVisibleSelected ? '取消全选' : '全选当前模块'}</button><button className="danger" disabled={!selectedVisible.length || busy} onClick={() => void remove(selectedVisible, true)}><Trash2 size={14}/>{busy ? '删除中…' : `批量删除 (${selectedVisible.length})`}</button></div></div>}
+    {!isLoading && <div className="capability-bulk-tools"><span>{repositoryQuery ? `找到 ${visible.length} 项匹配的 ${typeLabel(type)}` : `共 ${visible.length} 项 ${typeLabel(type)}`}{visible.some(group => group.latest.is_builtin) ? ` · ${visible.filter(group => group.latest.is_builtin).length} 项系统内置不可删除` : ''}</span><div className="capability-list-controls"><label className="capability-repository-search"><input aria-label="搜索当前能力模块" value={repositoryQuery} onChange={event => setRepositoryQuery(event.target.value)} placeholder={`搜索 ${typeLabel(type)} 名称、说明或文件…`}/>{repositoryQuery && <button type="button" aria-label="清除搜索" onClick={() => setRepositoryQuery('')}>×</button>}</label>{type === 'SKILL' && <label className="primary file-button"><Upload size={15}/>{importingSkill ? '上传中…' : '上传 Skill ZIP'}<input type="file" disabled={importingSkill || busy} accept=".zip" onChange={event => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void importFileCapability(file, 'SKILL'); }}/></label>}{type === 'PLUGIN' && <><label className="primary file-button"><Upload size={15}/>{importingSkill ? '上传中…' : '上传 Plugin ZIP'}<input type="file" disabled={importingSkill || busy} accept=".zip" onChange={event => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void importFileCapability(file, 'PLUGIN'); }}/></label><button className="secondary" disabled={busy || importingSkill} onClick={() => { setError(''); setNotice(''); setMarketplaceOpen(true); }}><PlugZap size={14}/>OpenHands Marketplace</button><button className="secondary" disabled={busy || importingSkill} onClick={() => { setError(''); setNotice(''); setGitPluginOpen(true); }}><PlugZap size={14}/>Git Plugin</button></>}{type === 'CONTEXT' && <button className="primary" disabled={importingSkill || busy} onClick={() => { setError(''); setNotice(''); setContextOpen(true); }}><Upload size={15}/>新增 Context</button>}{type === 'MCP' && <button className="primary" disabled={importingSkill || busy} onClick={() => void openMcpEditor()}><Braces size={15}/>新建 MCP</button>}{type === 'HOOK' && <button className="primary" disabled={importingSkill || busy} onClick={() => { setError(''); setNotice(''); setHookOpen(true); }}><Upload size={15}/>新建 Hook</button>}{type === 'AGENT_DEFINITION' && <label className="primary file-button"><Upload size={15}/>{importingSkill ? '上传中…' : '上传 Agent Definition Markdown'}<input type="file" disabled={importingSkill || busy} accept=".md,.markdown,text/markdown" onChange={event => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void importFileCapability(file, 'AGENT_DEFINITION'); }}/></label>}</div><div className="bulk-actions"><button className="secondary" disabled={!selectableVisible.length || busy} onClick={toggleVisible}><CheckSquare size={14}/>{allVisibleSelected ? '取消全选' : '全选当前模块'}</button><button className="danger" disabled={!selectedVisible.length || busy} onClick={() => void remove(selectedVisible, true)}><Trash2 size={14}/>{busy ? '删除中…' : `批量删除 (${selectedVisible.length})`}</button></div></div>}
     {isLoading ? <div className="empty">加载 {typeLabel(type)}…</div> : visible.length ? <><div className="capability-card-grid compact-capability-list">{pagedVisible.map(group => <CapabilityCard key={group.id} group={group} selected={selectedLineageIds.has(group.id)} onToggle={() => toggleLineage(group.id)} onEdit={() => group.latest.capability_type === 'MCP' ? void openMcpEditor(group.latest) : void openEditor(group.latest)} onViewContext={() => void openContextSource(group.latest)} onViewAgentDefinition={() => setViewingAgentDefinition(group.latest)} onProfileHistory={() => setProfileHistory(group)} onDelete={() => void remove([group])}/>)}</div><Pagination page={page} pageSize={pageSize} total={visible.length} onPageChange={setPage}/></> : <div className="empty"><FileArchive size={30}/><b>{repositoryQuery ? `没有匹配的 ${typeLabel(type)}` : `暂无 ${typeLabel(type)}`}</b><span>{repositoryQuery ? '调整搜索条件，或清除搜索查看全部能力。' : '使用本模块右上角的功能创建或导入。'}</span></div>}</div>
 
     {profileHistory && <AgentProfileHistoryDialog packageId={profileHistory.id} capabilityKey={profileHistory.latest.capability_key} onClose={() => setProfileHistory(undefined)}/>}
     {contextOpen && <ContextDialog title={contextTitle} description={contextDescription} file={contextFile} manifest={contextBundleManifest} busy={importingSkill} onTitleChange={setContextTitle} onDescriptionChange={setContextDescription} onFileChange={file => { setContextFile(file); setContextBundleManifest(undefined); }} onManifestChange={setContextBundleManifest} onClose={closeContextForm} onSave={() => void createContext()}/>}
+    {hookOpen && <HookEditorDialog name={hookName} description={hookDescription} event={hookEvent} matcher={hookMatcher} mode={hookMode} file={hookFile} busy={importingSkill} onNameChange={setHookName} onDescriptionChange={setHookDescription} onEventChange={setHookEvent} onMatcherChange={setHookMatcher} onModeChange={mode => { setHookMode(mode); setHookFile(undefined); }} onFileChange={setHookFile} onClose={closeHookForm} onSave={() => void createHook()}/>}
     {viewingContext && <div className="modal-backdrop"><section className="modal context-preview-dialog" role="dialog" aria-modal="true" aria-label={`查看 Context ${viewingContext.item.capability_key}`}><header><div><span className="eyebrow">{viewingContext.contentFormat === 'BUNDLE' ? 'FROZEN CONTEXT BUNDLE' : 'FROZEN CONTEXT'}</span><h2>{viewingContext.item.capability_key}</h2></div><button className="ghost" onClick={() => setViewingContext(undefined)}>关闭</button></header><p>{viewingContext.item.description || '暂无说明'} · {viewingContext.item.filename}</p>{viewingContext.manifest && <section className="context-bundle-preview-directory"><b>资料目录</b><small>入口：{viewingContext.manifest.entrypoint ?? '未指定'} · 全部文档均已加载</small><ol>{viewingContext.manifest.documents.map(document => <li key={document.path}><b>{document.title}</b><span>{document.path}</span></li>)}</ol></section>}<pre>{viewingContext.content}</pre><footer><button className="primary" onClick={() => setViewingContext(undefined)}>完成</button></footer></section></div>}
     {editing && <div className="modal-backdrop"><section className="modal capability-source-editor" role="dialog" aria-label={`编辑 Skill ${editing.capability_key}`}><header><div><span className="eyebrow">EDIT SKILL</span><h2>编辑 {editing.capability_key}</h2></div><button className="ghost" onClick={() => setEditing(undefined)}>关闭</button></header><p>保存会发布新的不可变 Skill 版本；已有节点和 Run Snapshot 继续引用原版本，升级必须显式重新绑定。</p><textarea aria-label="Skill 源码" value={source} onChange={event => setSource(event.target.value)}/><div className="dependency-policy"><b>声明依赖（写入 SKILL.md frontmatter）</b><code>{DEPENDENCY_EXAMPLE}</code><span>所有版本必须精确固定。CLI 必须在平台白名单中；不接受终端命令。</span></div><footer><button className="ghost" onClick={() => setEditing(undefined)}>取消</button><button className="primary" disabled={busy} onClick={() => void saveSource()}>{busy ? '保存中…' : '发布新版本'}</button></footer></section></div>}
     {editingCollection !== undefined && <CapabilityCollectionEditorDialog collection={editingCollection ?? undefined} capabilities={capabilities} busy={busy} onClose={() => setEditingCollection(undefined)} onSave={payload => void saveCollection(payload)}/>}
@@ -638,6 +680,32 @@ function McpEditorDialog(props: McpEditorDialogProps) {
     {jsonError && <p className="error" role="alert">{jsonError}</p>}
     <div className="mcp-security-note"><b>凭据与运行环境</b><span>配置禁止包含 token、secret、password、Authorization 等敏感字段。CLI 和依赖来自节点绑定并已发布的终端环境，不会根据配置自动安装。</span></div>
     <footer><button className="ghost" onClick={onClose}>取消</button><button className="primary" disabled={busy || !json.trim() || Boolean(jsonError)} onClick={onSave}>{busy ? '保存中…' : editing ? '发布新版本' : '校验并保存'}</button></footer>
+  </section></div>;
+}
+
+interface HookEditorDialogProps {
+  name: string; description: string; event: HookEvent; matcher: string; mode: HookMode; file?: File; busy: boolean;
+  onNameChange: (value: string) => void; onDescriptionChange: (value: string) => void; onEventChange: (value: HookEvent) => void;
+  onMatcherChange: (value: string) => void; onModeChange: (value: HookMode) => void; onFileChange: (file?: File) => void;
+  onClose: () => void; onSave: () => void;
+}
+
+function HookEditorDialog({ name, description, event, matcher, mode, file, busy, onNameChange, onDescriptionChange, onEventChange, onMatcherChange, onModeChange, onFileChange, onClose, onSave }: HookEditorDialogProps) {
+  const selectedEvent = HOOK_EVENTS.find(item => item.value === event) ?? HOOK_EVENTS[0];
+  const accept = mode === 'PROMPT' ? '.md,.markdown,.txt,text/markdown,text/plain' : '.sh,text/x-shellscript';
+  const validFile = file && (mode === 'PROMPT' ? /\.(?:md|markdown|txt)$/i.test(file.name) : /\.sh$/i.test(file.name));
+  return <div className="modal-backdrop"><section className="modal capability-source-editor hook-editor" role="dialog" aria-modal="true" aria-label="新建 Hook">
+    <header><div><span className="eyebrow">NEW OPENHANDS HOOK</span><h2>新建 Hook</h2><p>选择一个 OpenHands 原生回调事件，再上传一种执行规则。平台会冻结文件、编译官方 <code>hook_config</code>，并在新建会话时注册。</p></div><button className="ghost" onClick={onClose}>关闭</button></header>
+    <div className="hook-form-grid">
+      <label><span>名称 *</span><input aria-label="Hook 名称" value={name} maxLength={200} placeholder="例如 数据外发检查" onChange={item => onNameChange(item.target.value)}/></label>
+      <label><span>说明</span><input aria-label="Hook 说明" value={description} maxLength={2000} placeholder="说明何时执行、检查什么" onChange={item => onDescriptionChange(item.target.value)}/></label>
+      <section className="hook-event-picker full-row"><header><b>回调事件 *</b><small>选择 OpenHands 的正式生命周期事件。</small></header><div>{HOOK_EVENTS.map(item => <button type="button" key={item.value} className={event === item.value ? 'selected' : ''} aria-pressed={event === item.value} onClick={() => onEventChange(item.value)}><span><b>{item.label}</b><small>{item.native} · {item.description}</small></span></button>)}</div></section>
+      {selectedEvent.toolScoped && <section className="hook-matcher-field full-row"><label><span>工具匹配规则 *</span><input aria-label="工具匹配规则" value={matcher} placeholder="例如 terminal、browser、mcp_.* 或 *" onChange={item => onMatcherChange(item.target.value)}/><small>遵循 OpenHands Matcher：精确名称、<code>*</code>、正则或 <code>/正则/</code>。规则会对实际工具名作完整匹配。</small></label><div className="hook-matcher-examples"><span>常用示例</span>{[['所有工具', '*'], ['终端', 'terminal'], ['浏览器', 'browser'], ['全部 MCP', 'mcp_.*'], ['文件工具', 'file_.*']].map(([label, value]) => <button type="button" key={value} onClick={() => onMatcherChange(value)}>{label}<code>{value}</code></button>)}</div></section>}
+      <section className="hook-mode-picker full-row"><header><b>执行方式 *</b><small>提示词与脚本二选一，均从上传文件读取。</small></header><div><button type="button" className={mode === 'PROMPT' ? 'selected' : ''} aria-pressed={mode === 'PROMPT'} onClick={() => onModeChange('PROMPT')}><b>提示词 Hook</b><small>上传 Markdown 或文本，由当前会话模型按 OpenHands Prompt Hook 执行。</small></button><button type="button" className={mode === 'SCRIPT' ? 'selected' : ''} aria-pressed={mode === 'SCRIPT'} onClick={() => onModeChange('SCRIPT')}><b>脚本 Hook</b><small>上传一个 Shell 脚本，平台物化为只读文件并注册为 OpenHands Command Hook。</small></button></div></section>
+      <label className="context-file-upload hook-file-upload full-row"><input aria-label={mode === 'PROMPT' ? '提示词文件' : '脚本文件'} type="file" accept={accept} onChange={item => onFileChange(item.target.files?.[0])}/><span><b>{file ? file.name : mode === 'PROMPT' ? '选择提示词文件' : '选择 Shell 脚本'}</b><small>{file ? `${formatBytes(file.size)} · ${validFile ? '文件类型有效' : '文件类型不符合当前执行方式'}` : mode === 'PROMPT' ? '支持 UTF-8 .md、.markdown、.txt，最大 1 MiB。' : '仅支持 UTF-8 .sh，最大 1 MiB。'}</small></span><em>选择文件</em></label>
+      <div className="hook-native-note full-row"><b>运行语义</b><span>{selectedEvent.toolScoped ? `仅匹配“${matcher.trim() || '*'}”的工具。` : '该事件不匹配工具，平台固定使用 *。'} {mode === 'PROMPT' ? '提示词由 OpenHands 使用当前会话模型判定。' : '脚本 stdin 接收 OpenHands JSON 事件；exit 2 可按上游语义阻断支持阻断的事件。'}</span></div>
+    </div>
+    <footer><button className="ghost" onClick={onClose}>取消</button><button className="primary" disabled={busy || !name.trim() || !file || !validFile} onClick={onSave}>{busy ? '发布中…' : '发布 Hook'}</button></footer>
   </section></div>;
 }
 

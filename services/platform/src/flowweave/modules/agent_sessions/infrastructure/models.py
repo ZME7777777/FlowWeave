@@ -140,7 +140,7 @@ class AgentConversationCapability(Base):
             "binding_id", "position", name="uq_agent_conversation_capability_position"
         ),
         CheckConstraint(
-            "capability_type IN ('SKILL', 'MCP', 'PLUGIN', 'CONTEXT')",
+            "capability_type IN ('SKILL', 'MCP', 'PLUGIN', 'CONTEXT', 'AGENT_DEFINITION', 'HOOK')",
             name="ck_agent_conversation_capability_type",
         ),
         CheckConstraint("position >= 0", name="ck_agent_conversation_capability_position"),

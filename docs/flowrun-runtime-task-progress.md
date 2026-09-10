@@ -3515,6 +3515,16 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 
 完成：会话失败卡片改为分类标题和可操作说明；`LLMNoResponseError` 中含 `ResponseIncompleteEvent` 明确显示“模型返回不完整响应”，不再误导为浏览器断网。未知错误保留安全详情与错误码，并明确标为未分类执行错误。新增浏览器回归覆盖模型服务暂不可用与不完整流响应两个容易混淆的类别。
 
+### FR-259 简化 Hook 能力仓库与 OpenHands 原生注册 — DONE
+
+依赖：无（新需求切片）。
+
+目标：将 Hook 恢复为能力仓库的受治理能力，但只暴露一个固定的产品表单：名称、说明、一个正式 OpenHands 回调事件；对 `pre_tool_use` / `post_tool_use` 明确填写工具 Matcher 并提供 `*`、`terminal`、`browser`、`mcp_.*`、`file_.*` 示例；再从上传文件二选一配置提示词或 Shell 脚本。不得暴露 JSON HookSet、多事件、多 Hook、Agent Hook、异步、超时、命令或平台执行器。
+
+完成：前端使用能力仓库既有 modal、按钮选择器和文件上传样式增加第六个 Hook 模块，不使用原生 select。后端将 UTF-8 `.md` / `.markdown` / `.txt` 提示词或 `.sh` 脚本编译为固定 OpenHands 1.44.0 `hook_config`；提示词直接形成 Prompt Hook，脚本按 artifact digest 校验后物化到会话能力只读挂载，并形成 Command Hook。Hook 只允许在创建 Agent Conversation 时冻结，既有会话的动态能力接口拒绝 Hook。新增数据库约束迁移以保存 `HOOK`（并与现有创建期 Agent Definition 对齐）引用；OpenHands 仍是 Hook 生命周期、执行与事件的唯一所有者。
+
+验收：受影响 Python Ruff/格式检查、语法编译、Alembic 唯一 head、Web typecheck 和 production build、Hook 编译/脚本物化/会话冻结的无容器直接冒烟、`git diff --check` 与任务状态唯一性通过。定向 pytest 因本机 Docker daemon 未运行，无法启动其 PostgreSQL Testcontainers fixture；未将其记为通过。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -3530,6 +3540,7 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-10 | FR-259 | 受影响 Python Ruff／format／`py_compile`、Alembic head、Hook 编译／脚本物化／会话冻结直接 smoke；Web typecheck／production build、`git diff --check` 与任务状态唯一性 | PASS（静态、构建与直接冒烟）：能力仓库新增 Hook 模块与无原生 select 的表单；工具事件保留精确、`*` 与正则 Matcher，并显示常用示例；提示词和 `.sh` 脚本只能上传其一。后端固定生成 OpenHands 1.44.0 原生 `hook_config`，脚本的摘要在物化前验证且结果只读；动态会话能力接口拒绝 Hook，创建会话时才冻结并注册。Ruff、格式、Python 编译、Web typecheck、production build、唯一 Alembic head `0109_hook_capabilities`、whitespace 检查与直接 smoke 均通过。定向 pytest 在收集前因 Docker Unix socket 缺失，Testcontainers PostgreSQL 无法启动，未伪记为通过。 |
 | 2026-09-10 | FR-258 | Web typecheck／受影响文件 ESLint／production build、Agent 会话失败分类 Playwright、Alembic head、任务状态唯一性与 `git diff --check` | PASS（静态与构建）：会话失败仅按 OpenHands 安全投影的 `error_code` 与 `content` 分类；`ResponseIncompleteEvent` 明确呈现为“模型返回不完整响应”，模型服务不可用、网关连接失败、超时、额度/限流、凭据、上下文、协议、安全策略与未知错误均有独立标题和操作说明，未知错误保留错误码。Web typecheck、受影响文件 ESLint、production build、唯一 Alembic head `0108_model_provider_api_protocol` 与 whitespace 检查均通过。定向 Playwright 使用隔离 Vite 服务时被已有实际 Agent 会话页面接管，路由 mock 未生效并持续等待旧部署文案；已终止该无结果运行，未伪记浏览器回归为通过。 |
 | 2026-09-10 | FR-257 | Web typecheck／受影响文件 ESLint／production build、Alembic head、任务状态唯一性与 `git diff --check`；会话引用定位 Playwright | PASS（静态与构建）：引用预览依据正式 `event_id` 关闭后平滑定位对应用户或助手消息，并在滚动结束后短暂添加浅绿色描边高亮；重复定位和组件卸载均清理前次计时器，减少动态效果偏好保留静态强调。Web typecheck、受影响文件 ESLint、production build、唯一 Alembic head `0108_model_provider_api_protocol`、任务状态唯一性与 whitespace 检查均通过。定向 Playwright 在本机临时 Vite 环境中因既有用例未请求 `events`（会话详情／列表 mock 已响应但未产生事件读取）而无法走到引用交互断言；已保留该断言，未伪记为通过。 |
 | 2026-09-10 | FR-256 | 受影响 Python `py_compile`、Ruff、资源端点定向 pytest、Web typecheck／受影响文件 ESLint／production build、Alembic head、任务状态唯一性与 `git diff --check` | PASS（静态与构建）：`GET /flow-runs` 继续只读取数据库生命周期投影；Docker usage 只从独立的 `/flow-runs/{run_id}/runtime/resource` 读取，且仅对当前 `ACTIVE` Runtime 的 `READY`、`RUNNING` generation 执行。页面先显示记录和“正在读取容器资源”，资源单元格以 10 秒周期独立刷新。Python 编译、Ruff、Web typecheck、定向 ESLint、production build、唯一 Alembic head `0108_model_provider_api_protocol` 与 whitespace 检查通过。资源端点定向 API pytest 在所有断言之前因本机 Docker Unix socket 缺失、Testcontainers PostgreSQL 无法启动而阻断，未伪记为通过。 |

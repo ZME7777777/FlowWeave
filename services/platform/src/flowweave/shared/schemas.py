@@ -731,6 +731,24 @@ class CapabilityValidateWrite(ApiModel):
     context_bundle_manifest: ContextBundleManifestWrite | None = None
     mcp_scripts: list[MCPScriptWrite] = Field(default_factory=_empty_mcp_scripts, max_length=20)
     hook_scripts: list[HookScriptWrite] = Field(default_factory=_empty_hook_scripts, max_length=20)
+    # Hook v2 is deliberately a small product form, rather than an exposed
+    # OpenHands hooks.json editor. The uploaded file is either a prompt or a
+    # shell script; FlowWeave compiles the remaining native HookConfig fields.
+    hook_name: str | None = Field(default=None, max_length=200)
+    hook_description: str | None = Field(default=None, max_length=2000)
+    hook_event: (
+        Literal[
+            "pre_tool_use",
+            "post_tool_use",
+            "user_prompt_submit",
+            "session_start",
+            "session_end",
+            "stop",
+        ]
+        | None
+    ) = None
+    hook_matcher: str | None = Field(default=None, max_length=240)
+    hook_mode: Literal["PROMPT", "SCRIPT"] | None = None
 
 
 class CapabilityCommitWrite(ApiModel):

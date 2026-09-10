@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 from subprocess import CompletedProcess
 
 import pytest
@@ -50,17 +51,85 @@ def test_agent_definition_markdown_is_normalized_from_native_frontmatter() -> No
     ]
 
 
-def test_hook_import_is_explicitly_retired() -> None:
+def test_simple_prompt_hook_compiles_to_native_openhands_config() -> None:
     payload = CapabilityValidateWrite(
         capability_type="HOOK",
-        filename="hook.json",
-        content_base64=base64.b64encode(b"{}").decode(),
+        filename="review.md",
+        content_base64=base64.b64encode(b"Reject unsafe terminal actions.\n").decode(),
+        hook_name="terminal-review",
+        hook_description="Review terminal actions before execution",
+        hook_event="pre_tool_use",
+        hook_matcher="terminal|browser",
+        hook_mode="PROMPT",
     )
 
-    with pytest.raises(DomainError, match="Hook") as raised:
+    _, preview = capability_imports._decode_and_validate(payload)
+
+    config = preview["capabilities"][0]["normalized_config"]
+    assert config["hook_set_schema_version"] == 2
+    assert config["event"] == "pre_tool_use"
+    assert config["matcher"] == "terminal|browser"
+    assert config["pre_tool_use"] == [
+        {
+            "matcher": "terminal|browser",
+            "hooks": [
+                {
+                    "type": "prompt",
+                    "name": "flowweave/terminal-review",
+                    "command": "",
+                    "prompt": "Reject unsafe terminal actions.\n",
+                    "timeout": 30,
+                }
+            ],
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    ("filename", "matcher", "mode"),
+    [
+        ("hook.json", "*", "PROMPT"),
+        ("review.md", "[", "PROMPT"),
+        ("review.md", "*", "SCRIPT"),
+    ],
+)
+def test_simple_hook_rejects_invalid_file_or_tool_matcher(
+    filename: str, matcher: str, mode: str
+) -> None:
+    payload = CapabilityValidateWrite(
+        capability_type="HOOK",
+        filename=filename,
+        content_base64=base64.b64encode(b"echo check\n").decode(),
+        hook_name="review",
+        hook_event="pre_tool_use",
+        hook_matcher=matcher,
+        hook_mode=mode,
+    )
+
+    with pytest.raises(DomainError) as raised:
         capability_imports._decode_and_validate(payload)
 
-    assert raised.value.status == 410
+    assert raised.value.status == 422
+
+
+def test_simple_script_hook_retains_script_digest() -> None:
+    content = b"#!/bin/sh\necho hook\n"
+    payload = CapabilityValidateWrite(
+        capability_type="HOOK",
+        filename="check.sh",
+        content_base64=base64.b64encode(content).decode(),
+        hook_name="stop-audit",
+        hook_event="stop",
+        hook_mode="SCRIPT",
+    )
+
+    _, preview = capability_imports._decode_and_validate(payload)
+
+    config = preview["capabilities"][0]["normalized_config"]
+    assert config["execution_mode"] == "SCRIPT"
+    assert config["script_filename"] == "check.sh"
+    assert config["script_hash"] == hashlib.sha256(content).hexdigest()
+    assert config["stop"][0]["hooks"][0]["type"] == "script"
 
 
 def test_openhands_marketplace_head_is_resolved_before_catalog_browse(monkeypatch) -> None:

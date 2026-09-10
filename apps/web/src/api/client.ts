@@ -309,7 +309,7 @@ export const api = {
   updateNode: (id: string, body: NodeAssetWrite) => request<NodeAsset>(`/node-assets/${id}`, json('PUT', body)),
   deleteNode: (id: string) => request<void>(`/node-assets/${id}`, json('DELETE')),
   deleteNodes: (ids: string[]) => request<BulkDeleteResult<BlockedNodeDelete>>('/node-assets', json('DELETE', { ids })),
-  validateCapability: (body: { capability_type: string; filename: string; content_base64: string; context_title?: string; context_description?: string; context_bundle_manifest?: { entrypoint: string | null; documents: Array<{ path: string; title: string }>; conflict_policy: 'ORDERED_DOCUMENTS_LATER_WINS' }; mcp_scripts?: Array<{ server: string; filename: string; content_base64: string }>; hook_scripts?: Array<{ filename: string; content_base64: string }> }) =>
+  validateCapability: (body: { capability_type: string; filename: string; content_base64: string; context_title?: string; context_description?: string; context_bundle_manifest?: { entrypoint: string | null; documents: Array<{ path: string; title: string }>; conflict_policy: 'ORDERED_DOCUMENTS_LATER_WINS' }; mcp_scripts?: Array<{ server: string; filename: string; content_base64: string }>; hook_scripts?: Array<{ filename: string; content_base64: string }>; hook_name?: string; hook_description?: string; hook_event?: 'pre_tool_use' | 'post_tool_use' | 'user_prompt_submit' | 'session_start' | 'session_end' | 'stop'; hook_matcher?: string; hook_mode?: 'PROMPT' | 'SCRIPT' }) =>
     request<{
       import_token: string;
       preview: {
