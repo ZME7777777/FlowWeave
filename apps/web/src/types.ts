@@ -337,6 +337,11 @@ export interface NodeAttempt {
   agent_preset?: AgentPreset | null;
   gate_policies: GatePolicy[];
   output_targets?: Record<string, { artifact_type: 'URL' | 'FILE'; display_name?: string; description?: string; title?: string }>;
+  /** Immutable output IDs selected from this Attempt's current formal completion. */
+  candidate_output_set?: {
+    id: string; completion_event_id: string; status: string; artifact_ids: string[];
+    gate_error_code?: string | null; created_at: string;
+  } | null;
   input_bindings: InputBinding[]; artifacts: ArtifactVersion[];
   gate_evaluations: GateEvaluation[]; runtime_confirmation_batches: RuntimeConfirmationBatch[];
   usage?: TokenUsageSummary;

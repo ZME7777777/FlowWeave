@@ -1247,3 +1247,66 @@ test('selecting a historical attempt renders its own frozen graph snapshot', asy
   await expect(graph).not.toContainText('活动版本首节点');
   await expect(graph).toContainText('定义 Hash historic');
 });
+
+test('completed continuous attempts load frozen input and candidate output metadata on demand', async ({ page }) => {
+  const inputArtifact = {
+    id: 'completed-input-artifact', flow_run_id: 'automatic-completed', producer_attempt_id: null, consumer_node_key: 'first',
+    field_key: 'input_1', version_no: 1, artifact_type: 'URL', storage_key: null,
+    uri: 'https://example.com/final-input', inline_content: null, content_hash: 'completed-input-hash', byte_size: 30,
+    mime_type: 'text/uri-list', source: 'HUMAN_INPUT', metadata: { display_name: '冻结输入' }, created_at: now,
+  };
+  const outputArtifact = {
+    id: 'completed-output-artifact', flow_run_id: 'automatic-completed', producer_attempt_id: 'completed-attempt', consumer_node_key: null,
+    field_key: 'output_1', version_no: 1, artifact_type: 'URL', storage_key: null,
+    uri: 'https://example.com/final-output', inline_content: null, content_hash: 'completed-output-hash', byte_size: 31,
+    mime_type: 'text/uri-list', source: 'RUNTIME', metadata: { display_name: '已验收输出' }, created_at: now,
+  };
+  const completedAttempt = {
+    ...attempt, id: 'completed-attempt', node_run_id: 'completed-node-run', state: 'ACCEPTED', state_version: 8,
+    input_bindings: [{ id: 'completed-input-binding', input_field_key: 'input_1', artifact_version_id: inputArtifact.id, binding_source: 'AUTOMATIC_PORT_MAPPING' }],
+    candidate_output_set: { id: 'completed-candidate', completion_event_id: 'completed-event', status: 'GATE_PASSED', artifact_ids: [outputArtifact.id], gate_error_code: null, created_at: now },
+    artifacts: [],
+  };
+  const completedRecord = {
+    ...frozenAutomaticBase, id: 'automatic-completed', name: '已完成且保留产物的连续记录', state: 'COMPLETED',
+    runtime_status: 'READY', runtime_write_available: false, current_node_key: 'first', current_node_name: '测试节点', current_attempt_state: 'ACCEPTED',
+    progress: { accepted: 1, terminal: 1, active: 0 }, artifacts: [],
+    node_runs: [{ ...nodeRun, id: 'completed-node-run', flow_run_id: 'automatic-completed', state: 'ACCEPTED', accepted_attempt_id: completedAttempt.id, attempts: [completedAttempt] }],
+    automation_plan: { ...frozenAutomaticBase.automation_plan, status: 'FROZEN', readiness: { ready: true, issues: [] } },
+  };
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const path = url.pathname;
+    const respond = (body: unknown) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
+    if (path.endsWith('/auth/me')) return respond(authenticatedUser);
+    if (path === '/api/v1/flow-runs' && request.method() === 'GET') return respond([run]);
+    if (path === '/api/v1/flows' && request.method() === 'GET') return respond([definition]);
+    if (path === '/api/v1/terminal-environments' || path === '/api/v1/capabilities'
+      || path === '/api/v1/capability-collections' || path === '/api/v1/model-providers') return respond([]);
+    if (path === `/api/v1/flow-runs/${run.id}`) return respond(run);
+    if (path === `/api/v1/flows/${definition.id}`) return respond(definition);
+    if (path === `/api/v1/flow-runs/${run.id}/automatic-runs/summaries`) return respond([completedRecord]);
+    if (path === `/api/v1/flow-runs/${run.id}/automatic-runs/${completedRecord.id}`) return respond(completedRecord);
+    if (path === `/api/v1/flow-runs/${run.id}/automatic-runs/${completedRecord.id}/artifacts`) {
+      const requested = new Set(url.searchParams.getAll('artifact_ids'));
+      const items = [inputArtifact, outputArtifact].filter(item => requested.has(item.id));
+      return respond({ items, total: items.length, page: 1, page_size: 20 });
+    }
+    return route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ error: { code: 'RESOURCE_NOT_FOUND', message: path, details: {} } }) });
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: '流程运行', exact: true }).click();
+  await page.locator('.run-open').click();
+  await page.getByRole('tab', { name: '连续运行' }).click();
+  await page.locator('.automatic-record-select').filter({ hasText: completedRecord.name }).click();
+
+  const panel = page.locator('.attempt-control');
+  await expect(panel.getByRole('link', { name: inputArtifact.uri })).toBeVisible();
+  await expect(panel.locator('.input-summary article').filter({ hasText: 'input_1' })).not.toContainText('尚未填写');
+  await panel.getByRole('button', { name: '输出' }).click();
+  const output = panel.getByRole('region', { name: '节点输出' });
+  await expect(output).toContainText(outputArtifact.uri);
+  await expect(output).not.toContainText('等待本轮执行产出');
+});
