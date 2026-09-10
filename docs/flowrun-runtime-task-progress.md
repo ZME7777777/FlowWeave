@@ -3507,6 +3507,14 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 
 完成：引用定位先关闭预览并平滑滚动到由正式 `event_id` 标识的原消息，随后为该条用户或助手消息添加 1.8 秒短暂高亮；高亮自动清除，重复定位会重置计时器，组件卸载时清理计时器。减少动态效果偏好下保留静态短暂强调。新增浏览器回归覆盖定位、可视区和高亮自动清除。
 
+### FR-258 Agent 会话失败原因细分 — DONE
+
+依赖：`FR-257`。
+
+目标：Agent 会话不得把模型流不完整、空响应、超时、网关连接失败、服务不可用、额度/限流、凭据/权限、上下文限制、请求协议、安全策略或未知执行错误笼统呈现为“网络连接异常”。页面只依据 OpenHands 正式安全投影的 `error_code` 与 `content` 分类，不改写事件、持久化错误副本或推断物理 Runtime。
+
+完成：会话失败卡片改为分类标题和可操作说明；`LLMNoResponseError` 中含 `ResponseIncompleteEvent` 明确显示“模型返回不完整响应”，不再误导为浏览器断网。未知错误保留安全详情与错误码，并明确标为未分类执行错误。新增浏览器回归覆盖模型服务暂不可用与不完整流响应两个容易混淆的类别。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -3522,6 +3530,7 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-10 | FR-258 | Web typecheck／受影响文件 ESLint／production build、Agent 会话失败分类 Playwright、Alembic head、任务状态唯一性与 `git diff --check` | PASS（静态与构建）：会话失败仅按 OpenHands 安全投影的 `error_code` 与 `content` 分类；`ResponseIncompleteEvent` 明确呈现为“模型返回不完整响应”，模型服务不可用、网关连接失败、超时、额度/限流、凭据、上下文、协议、安全策略与未知错误均有独立标题和操作说明，未知错误保留错误码。Web typecheck、受影响文件 ESLint、production build、唯一 Alembic head `0108_model_provider_api_protocol` 与 whitespace 检查均通过。定向 Playwright 使用隔离 Vite 服务时被已有实际 Agent 会话页面接管，路由 mock 未生效并持续等待旧部署文案；已终止该无结果运行，未伪记浏览器回归为通过。 |
 | 2026-09-10 | FR-257 | Web typecheck／受影响文件 ESLint／production build、Alembic head、任务状态唯一性与 `git diff --check`；会话引用定位 Playwright | PASS（静态与构建）：引用预览依据正式 `event_id` 关闭后平滑定位对应用户或助手消息，并在滚动结束后短暂添加浅绿色描边高亮；重复定位和组件卸载均清理前次计时器，减少动态效果偏好保留静态强调。Web typecheck、受影响文件 ESLint、production build、唯一 Alembic head `0108_model_provider_api_protocol`、任务状态唯一性与 whitespace 检查均通过。定向 Playwright 在本机临时 Vite 环境中因既有用例未请求 `events`（会话详情／列表 mock 已响应但未产生事件读取）而无法走到引用交互断言；已保留该断言，未伪记为通过。 |
 | 2026-09-10 | FR-256 | 受影响 Python `py_compile`、Ruff、资源端点定向 pytest、Web typecheck／受影响文件 ESLint／production build、Alembic head、任务状态唯一性与 `git diff --check` | PASS（静态与构建）：`GET /flow-runs` 继续只读取数据库生命周期投影；Docker usage 只从独立的 `/flow-runs/{run_id}/runtime/resource` 读取，且仅对当前 `ACTIVE` Runtime 的 `READY`、`RUNNING` generation 执行。页面先显示记录和“正在读取容器资源”，资源单元格以 10 秒周期独立刷新。Python 编译、Ruff、Web typecheck、定向 ESLint、production build、唯一 Alembic head `0108_model_provider_api_protocol` 与 whitespace 检查通过。资源端点定向 API pytest 在所有断言之前因本机 Docker Unix socket 缺失、Testcontainers PostgreSQL 无法启动而阻断，未伪记为通过。 |
 | 2026-09-10 | FR-255 | 受影响 Python `py_compile`、Ruff、运行列表 API 定向 pytest、Web typecheck／受影响文件 ESLint／production build、Alembic head、任务状态唯一性与 `git diff --check` | PASS（静态与构建）：`runtime_readiness_by_flow_run()` 仅查询 FlowRun Runtime 生命周期，`GET /flow-runs` 不再读取 ManagedSandbox 或调用 Docker Runtime Provider usage；列表 DTO 和页面均不再含 `runtime_resource` 或“运行资源”列。Python 编译、Ruff、Web typecheck、定向 ESLint、production build、唯一 Alembic head `0108_model_provider_api_protocol` 与 whitespace 检查通过。定向 API pytest 在所有断言之前因本机 Docker Unix socket 缺失、Testcontainers PostgreSQL 无法启动而阻断，未伪记为通过。 |

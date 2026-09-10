@@ -908,14 +908,82 @@ function conversationReferenceForSelection(selection: Selection, surface: HTMLEl
   return eventId ? { eventId, content } : undefined;
 }
 
-const NETWORK_ERROR_CODES = new Set([
-  'LLMServiceUnavailableError',
-  'LLMTimeoutError',
-  'LLMNoResponseError',
-  'APIConnectionError',
-  'ReadTimeout',
-  'RequestError',
-]);
+interface FailurePresentation {
+  title: string;
+  content: string;
+}
+
+function presentConversationFailure(code: string, detail: string): FailurePresentation {
+  const normalizedCode = code.toLowerCase();
+  const normalizedDetail = detail.toLowerCase();
+  const hasCode = (...names: string[]) => names.some(name => normalizedCode === name.toLowerCase());
+  const contains = (...terms: string[]) => terms.some(term => normalizedDetail.includes(term.toLowerCase()));
+
+  if (hasCode('LLMNoResponseError') && contains('ResponseIncompleteEvent', 'response incomplete', 'incomplete response')) {
+    return {
+      title: '模型返回不完整响应',
+      content: '模型服务已开始返回结果，但没有发送可确认完成的响应。本轮已在重试后停止；请稍后重试，或切换模型配置。',
+    };
+  }
+  if (hasCode('LLMNoResponseError') || contains('without a completed response', 'response choices is less than 1', 'empty response')) {
+    return {
+      title: '模型没有返回有效内容',
+      content: '模型调用结束后未收到可用回复。这通常是模型服务或网关返回空响应，不代表浏览器网络已断开；请稍后重试或切换模型配置。',
+    };
+  }
+  if (hasCode('LLMTimeoutError', 'LiteLLMTimeout', 'ReadTimeout', 'TimeoutError') || contains('timed out', 'timeout')) {
+    return {
+      title: '模型响应超时',
+      content: '模型服务未能在允许时间内完成响应。本轮已停止；请稍后重试，或改用响应更快的模型配置。',
+    };
+  }
+  if (hasCode('LLMServiceUnavailableError', 'ServiceUnavailableError') || contains('service unavailable', 'upstream unavailable')) {
+    return {
+      title: '模型服务暂不可用',
+      content: '当前模型服务或其上游网关暂时不可用。这是模型服务侧故障，不是浏览器页面断线；请稍后重试或切换模型配置。',
+    };
+  }
+  if (hasCode('APIConnectionError', 'ConnectError', 'ConnectionRefused', 'RequestError') || contains('connection refused', 'connection reset', 'connection failed', 'connect error')) {
+    return {
+      title: '模型网关连接失败',
+      content: '运行时无法连接当前模型服务的网关。请检查模型服务连通性或切换模型配置；FlowWeave 会话本身不一定断开。',
+    };
+  }
+  if (hasCode('LLMRateLimitError', 'RateLimitError', 'UsageLimitReachedError') || contains('rate limit', 'usage limit', 'quota', 'insufficient quota')) {
+    return {
+      title: '模型账户额度或速率受限',
+      content: '模型服务拒绝了本次请求：当前账户额度不足或调用频率受限。请等待额度恢复，或选择有可用额度的模型配置后重新思考。',
+    };
+  }
+  if (hasCode('AuthenticationError', 'UnauthorizedError', 'PermissionDeniedError', 'InvalidAPIKeyError') || contains('invalid api key', 'authentication', 'unauthorized', 'forbidden')) {
+    return {
+      title: '模型凭据无效或无权限',
+      content: '当前模型配置的凭据无效、已过期或没有调用权限。请在模型配置中重新测试或更新授权后重试。',
+    };
+  }
+  if (hasCode('LLMContextWindowExceededError', 'ContextWindowExceededError') || contains('context window', 'maximum context length', 'too many tokens')) {
+    return {
+      title: '请求超出模型上下文限制',
+      content: '当前会话上下文超过了模型可接受的长度。请压缩上下文、拆分问题，或切换到上下文窗口更大的模型配置。',
+    };
+  }
+  if (hasCode('BadRequestError', 'InvalidRequestError', 'UnsupportedParamsError') || contains('invalid request', 'unsupported parameter', 'unsupported model')) {
+    return {
+      title: '模型请求不被接受',
+      content: '模型服务拒绝了本次请求的参数、模型或协议格式。请检查该模型配置与当前能力是否兼容后重试。',
+    };
+  }
+  if (hasCode('ContentPolicyViolationError', 'SafetyError') || contains('content policy', 'safety policy')) {
+    return {
+      title: '模型安全策略拒绝了请求',
+      content: '模型服务因其安全策略拒绝处理本次输入。请调整请求内容后再试。',
+    };
+  }
+  return {
+    title: '本轮执行发生未分类错误',
+    content: detail || 'OpenHands 返回了未分类的执行错误；请依据下方错误码和模型配置继续排查。',
+  };
+}
 
 function isPauseInterruption(item: Item): boolean {
   return isPauseInterruptionEvent(item.event);
@@ -951,13 +1019,9 @@ function ConversationFailure({ item, taskControl = [] }: { item: Item; taskContr
     && item.content.includes('OpenAIException')
     && item.content.includes('Error code: 404');
   if (isLegacyAutoTitleFailure) return null;
-  const content = code === 'LLMRateLimitError'
-    ? '模型服务拒绝了这次请求：当前配置的账户可用额度已用尽。请选择有可用额度的模型配置后，编辑并重新思考此消息。'
-    : NETWORK_ERROR_CODES.has(code)
-      ? '网络连接异常，模型服务在 5 次尝试后仍未响应。本轮已停止，请检查网络或模型服务后重试。'
-    : item.content || 'OpenHands 未能完成这一轮，请检查模型配置后重试。';
+  const presentation = presentConversationFailure(code, item.content);
   return <article className="conversation-failure" data-turn-terminal="true" data-event-id={item.event.id} role="status">
-    <CircleAlert size={15}/><div><b>本轮没有生成回复</b><p>{content}</p>{code && <small>{code}</small>}</div>
+    <CircleAlert size={15}/><div><b>{presentation.title}</b><p>{presentation.content}</p>{code && <small>{code}</small>}</div>
   </article>;
 }
 
