@@ -11,7 +11,7 @@ flowweave health --ready
 
 配置只保存基础 URL 到 `~/.config/flowweave/config.json`（可由 `FLOWWEAVE_CONFIG_PATH` 覆盖）。登录会话单独保存到同目录的 `auth.json`（可由 `FLOWWEAVE_AUTH_PATH` 覆盖），文件权限为 `0600`，并且只会发送给登录时的同一平台地址。使用 `flowweave auth status` 检查当前身份，使用 `flowweave auth logout` 撤销服务端会话并删除本地文件。默认登录会隐藏密码输入；非交互环境使用 `--password-stdin`，不要把密码写进命令参数、脚本或日志。
 
-页面域命令包括 `node`、`node-directory`、`capability`、`environment`、`credential`、`flow`、`run`、`schedule`、`model` 和 `agent`。它们分别覆盖节点资产、能力仓库、终端环境、网站认证条目、流程编排、FlowRun、周期调度、大模型配置与 Agent 工作台的常用原子操作。`credential` 管理网站凭据，不等于 `auth` 用户登录。每个命令的 JSON 请求体与在线 OpenAPI 一致；运行 `flowweave <域> --help` 查看映射。
+页面域命令包括 `node`、`node-directory`、`capability`、`event-trigger`、`environment`、`credential`、`flow`、`run`、`schedule`、`model` 和 `agent`。它们分别覆盖节点资产、能力仓库、运行事件触发器、终端环境、网站认证条目、流程编排、FlowRun、周期调度、大模型配置与 Agent 工作台的常用原子操作。`credential` 管理网站凭据，不等于 `auth` 用户登录。每个命令的 JSON 请求体与在线 OpenAPI 一致；运行 `flowweave <域> --help` 查看映射。
 
 常用命令示例：
 
@@ -23,7 +23,9 @@ flowweave health --ready
 
 周期任务使用 `schedule list/templates/occurrences/create/pause/resume/trigger/delete`。先用 `schedule templates` 读取可作为冻结母版的已就绪连续运行记录；创建请求必须使用在线 `FlowRunScheduleWrite` schema：只提交任务名称、母版 `source_flow_run_id` 和五段 `cron_expression`，节点、环境、输入和启动提示词均来自该记录的冻结母版。`schedule occurrences <schedule-id> --page 1 --page-size 10` 按需读取该调度的执行历史及其 FlowRun/NodeRun，而不预加载所有记录。暂停或恢复前从 `schedule list` 读取当前 `row_version`，再传入 `--expected-row-version`。手动触发会新增一次 occurrence，不会改写既有运行；删除生成的 FlowRun 不会删除调度，而有生成记录的调度删除会被平台拒绝。
 
-能力命令还支持受治理的 OpenHands Plugin Marketplace：`capability marketplace` 读取服务端固定到完整 commit 的公开目录；使用返回的 `source`、`commit`、`repo_path` 与插件名称调用 `capability marketplace-resolve --data-file ./marketplace-plugin.json`，随后读取 `capability plugin-resolution <resolution-id>`，并以当前 `state_version` 调用 `capability plugin-publish <resolution-id> --data '{"expected_state_version": 1}'`。自定义受信任 Marketplace 可先用 `capability marketplace-preview --data-file ./marketplace.json` 审阅目录。Agent Definition 只能以 UTF-8 `.md`/`.markdown` 的 OpenHands YAML frontmatter + Markdown 正文通过 `capability validate|import --type AGENT_DEFINITION --file <file>` 导入；Hook 已下线，新的 `--type HOOK` 导入会被明确拒绝。
+能力命令还支持受治理的 OpenHands Plugin Marketplace：`capability marketplace` 读取服务端固定到完整 commit 的公开目录；使用返回的 `source`、`commit`、`repo_path` 与插件名称调用 `capability marketplace-resolve --data-file ./marketplace-plugin.json`，随后读取 `capability plugin-resolution <resolution-id>`，并以当前 `state_version` 调用 `capability plugin-publish <resolution-id> --data '{"expected_state_version": 1}'`。自定义受信任 Marketplace 可先用 `capability marketplace-preview --data-file ./marketplace.json` 审阅目录。Agent Definition 只能以 UTF-8 `.md`/`.markdown` 的 OpenHands YAML frontmatter + Markdown 正文通过 `capability validate|import --type AGENT_DEFINITION --file <file>` 导入。Hook 使用受控表单参数：`capability validate --type HOOK --file ./hook.md --hook-name <name> --hook-event <event> --hook-mode <PROMPT|SCRIPT>`；可选 `--hook-description` 与工具事件的 `--hook-matcher` 会被编译为 OpenHands 原生 `hook_config`，不能提交任意 Hook JSON。
+
+事件触发器是用户拥有的不可变版本：先 `event-trigger list` 或 `event-trigger get <trigger-key>` 读取，再用 `event-trigger create --data-file ./trigger.json --dry-run` 创建，或用 `event-trigger version <trigger-key> --data-file ./trigger.json --dry-run` 新建版本。请求体必须使用在线 `EventTriggerWrite` schema；`actions[].config` 不得包含 token、password、secret 等明文凭据，Webhook/OAuth 等凭据应通过平台受控引用提供。
 
 `api`、`upload`、`ws` 是完整契约入口：任意当前或未来的 REST、multipart、WebSocket 原子接口均可直接调用，不需要等待 CLI 发布。三者都会使用当前 `auth login` 会话；不得用 `--header` 手工传 Cookie。写操作支持 `--dry-run`，并可使用 `-H 'Idempotency-Key: …'` 传入一次性幂等键。对于没有快捷命令的新接口，先运行 `flowweave openapi --paths`，再通过通用命令调用。
 

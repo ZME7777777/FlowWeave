@@ -293,3 +293,25 @@ test('能力快捷命令映射 OpenHands Marketplace 的冻结浏览、解析与
   assert.equal(publish.status, 0, publish.stderr);
   assert.equal(JSON.parse(publish.stdout).url, 'https://example.test/flowweave/api/v1/plugin-source-resolutions/resolution-1/publish');
 });
+
+test('事件触发器与受控 Hook 导入快捷命令保留公开契约', async () => {
+  const config = await configured();
+  invoke(config, 'config', 'init', '--base-url', 'https://example.test/flowweave');
+  const listed = invoke(config, 'event-trigger', 'list', '--dry-run');
+  assert.equal(listed.status, 0, listed.stderr);
+  assert.equal(JSON.parse(listed.stdout).url, 'https://example.test/flowweave/api/v1/event-triggers');
+  const created = invoke(config, 'event-trigger', 'create', '--data', '{"trigger_key":"notify.failure","name":"失败通知","actions":[{"action_type":"NOTIFY"}]}', '--dry-run');
+  assert.equal(created.status, 0, created.stderr);
+  assert.equal(JSON.parse(created.stdout).method, 'POST');
+  const version = invoke(config, 'event-trigger', 'version', 'notify.failure', '--data', '{"trigger_key":"notify.failure","name":"失败通知 v2","actions":[{"action_type":"NOTIFY"}]}', '--dry-run');
+  assert.equal(version.status, 0, version.stderr);
+  assert.equal(JSON.parse(version.stdout).url, 'https://example.test/flowweave/api/v1/event-triggers/notify.failure/versions');
+  const hook = invoke(config, 'capability', 'validate', '--type', 'HOOK', '--file', './package.json', '--hook-name', '审查工具调用', '--hook-event', 'pre_tool_use', '--hook-matcher', 'terminal', '--hook-mode', 'PROMPT', '--dry-run');
+  assert.equal(hook.status, 0, hook.stderr);
+  const hookPayload = JSON.parse(hook.stdout).payload;
+  assert.equal(hookPayload.capability_type, 'HOOK');
+  assert.equal(hookPayload.filename, 'package.json');
+  assert.ok(hookPayload.content_base64);
+  assert.deepEqual({ hook_name: hookPayload.hook_name, hook_description: hookPayload.hook_description, hook_event: hookPayload.hook_event, hook_matcher: hookPayload.hook_matcher, hook_mode: hookPayload.hook_mode }, { hook_name: '审查工具调用', hook_description: '', hook_event: 'pre_tool_use', hook_matcher: 'terminal', hook_mode: 'PROMPT' });
+  assert.equal(invoke(config, 'capability', 'validate', '--type', 'HOOK', '--file', './package.json', '--hook-name', '缺参数', '--dry-run').status, 2);
+});

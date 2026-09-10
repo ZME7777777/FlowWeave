@@ -29,6 +29,7 @@ Skill 以产品页面拆分，分别指导用户登录、节点资产、能力�
 | --- | --- | --- |
 | 节点资产 | `node`、`node-directory` | list/get/create/update/delete、目录创建和删除 |
 | 能力仓库 | `capability` | list/validate/commit/import |
+| 运行事件触发器 | `event-trigger` | list/get/create/version（不可变版本） |
 | 终端环境 | `environment` | create/update/delete、setup/publish（可选 `--description`）/stop/version-delete |
 | 认证管理 | `credential` | list/create/update/delete、`delete-many --id <id>` 批量删除 |
 | 流程编排 | `flow` | list/get/create/update/validate/delete |
@@ -57,7 +58,8 @@ flowweave run start --flow <flow-id> --environment-version <ready-version-id>
 
 - `flowweave`：平台基准，所有页面 Skill 的共同前置知识；
 - `flowweave-node-assets`：节点资产与目录；
-- `flowweave-capabilities`：Skill、MCP、Plugin、Context 等能力；
+- `flowweave-capabilities`：Skill、MCP、Plugin、Context、Agent Definition 与受控 Hook；
+- `flowweave-event-triggers`：运行事件触发器的读取与不可变版本创建；
 - `flowweave-environments`：终端环境和不可变版本；
 - `flowweave-flows`：流程定义、控制边和端口映射；
 - `flowweave-runs`：手动/自动 FlowRun 与 Runtime；

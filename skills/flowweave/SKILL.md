@@ -99,7 +99,8 @@ Agent Workspace 的工作目录删除由已绑定会话保护；文件删除只�
 ## 页面 Skill 路由
 
 - 节点目录、节点、字段或执行提示词：`flowweave-node-assets`
-- Skill、MCP、Plugin、Context、Markdown Agent Definition 的导入/版本/检测：`flowweave-capabilities`（Hook 已下线，不能新建）
+- Skill、MCP、Plugin、Context、Markdown Agent Definition 与受控 OpenHands Hook 的导入/版本/检测：`flowweave-capabilities`
+- 运行事件触发器的读取与不可变版本创建：`flowweave-event-triggers`
 - 终端环境、Setup Session、不可变版本：`flowweave-environments`
 - Flow 节点、控制边、端口映射与校验：`flowweave-flows`
 - FlowRun 创建、状态、取消、完成、Runtime：`flowweave-runs`

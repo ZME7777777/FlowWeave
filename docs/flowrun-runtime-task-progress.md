@@ -3585,6 +3585,14 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 
 验收：Web TypeScript typecheck、production build、受影响 `CapabilitiesPage.tsx` ESLint 与 `git diff --check` 通过。
 
+### FR-267 CLI 与 Skill 运行事件／Hook 同步 — DONE
+
+依赖：`FR-266`。
+
+目标：将 FR-204–FR-207 的用户可用运行事件触发器与 FR-259 的受控 OpenHands Hook 导入同步到可发布的 `@flowweave-ai/cli` 和仓库页面 Skill。CLI 必须提供事件触发器的读取、创建和追加版本命令，并让 Hook 导入传递受控元数据；Skill 必须删除“Hook 已下线”的过期断言，新增事件触发器治理、安全和不可变版本说明。不得引导 Docker、Runtime Provider、数据库或 OpenHands 私有 API 旁路。
+
+完成：CLI 升级至 `0.4.0`，新增 `event-trigger list|get|create|version`，并让 `capability validate|import --type HOOK` 接收名称、事件、matcher、模式与说明的受控字段；新增事件触发器页面 Skill，修正能力与基准 Skill、npm CLI 文档和包 README。所有写路径继续支持 `--dry-run`；事件动作配置禁止明文 Secret。未修改平台 API、Runtime 或 OpenHands 实现。
+
 ### FR-261 动态 Runtime 共享只读 Maven 仓库与配置 — DONE
 
 依赖：无（部署运维新需求）。
@@ -3610,6 +3618,7 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-10 | FR-267 | CLI Node 测试、语法检查、npm pack 清单、12 个仓库 FlowWeave Skill frontmatter 检查、Alembic head、`git diff --check` 与任务状态唯一性 | PASS：`@flowweave-ai/cli@0.4.0` 的 12 项 Node 测试均通过；`event-trigger` 的读取、创建、追加版本，以及受控 Hook 元数据映射覆盖 dry-run URL／请求体与缺参拒绝。打包仅含 README、CLI 入口和 package metadata；唯一 Alembic head 为 `0109_hook_capabilities`，无 `CURRENT` 或 whitespace 错误。 |
 | 2026-09-10 | FR-266 | Web typecheck／production build、受影响 `CapabilitiesPage.tsx` ESLint、`git diff --check` 与任务状态唯一性 | PASS：Hook 专属选择器在既有 Modal/能力编辑器规则后锁定六项事件单排、两列主体和完整标题留白。 |
 | 2026-09-10 | FR-265 | Web typecheck／production build、受影响 `CapabilitiesPage.tsx` ESLint、`git diff --check` 与任务状态唯一性 | PASS：浏览器缩放后的中等桌面宽度固定保持六项事件同排与双列主体，标题上沿留白不被通用紧凑规则覆盖。 |
 | 2026-09-10 | FR-264 | Web typecheck／production build、受影响 `CapabilitiesPage.tsx` ESLint、`git diff --check` 与任务状态唯一性 | PASS：标题顶部留白在紧凑视口规则后仍保持常规 30px、较矮视口 24px，且不影响 FR-263 的一次可见主配置流。 |

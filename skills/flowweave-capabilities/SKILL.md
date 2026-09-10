@@ -9,7 +9,7 @@ description: 导入、发布、查询或管理 FlowWeave Skill、MCP、Plugin、
 
 ## 对象与前置条件
 
-能力可以是 Skill、MCP、Plugin、Context 与 Agent Definition 等类型。平台导入后产生可追溯的版本、digest/blob/hash；节点、环境或 Agent Workspace 只能使用平台允许的版本。能力文件在提交前必须通过验证，且不应包含明文密钥。Hook 已从产品入口下线：历史记录可以读取，但新的 Hook 导入会被服务端拒绝，不能尝试绕过该限制。
+能力可以是 Skill、MCP、Plugin、Context、Agent Definition 与 Hook 等类型。平台导入后产生可追溯的版本、digest/blob/hash；节点、环境或 Agent Workspace 只能使用平台允许的版本。能力文件在提交前必须通过验证，且不应包含明文密钥。Hook 采用受控单事件表单：平台冻结上传文件并编译 OpenHands 原生 `hook_config`，不接受任意 Hook JSON 或绕过平台直接安装。
 
 先读取已有能力和线上 OpenAPI，确定文件格式、能力类型和请求字段：
 
@@ -47,6 +47,17 @@ flowweave capability plugin-publish <resolution-id> \
 自定义受信任 Marketplace 先使用 `capability marketplace-preview --data-file ./marketplace.json` 审阅目录。异步 resolve 返回 `202` 时读取同一个 resolution ID 的状态，不要重复提交。OAuth 只经平台授权引用管理；不把 token 放进请求样例、文件或日志。
 
 Agent Definition 仅接受 UTF-8 `.md`/`.markdown` 文件：必须包含 YAML frontmatter 和 Markdown 正文，`<example>…</example>` 用于触发示例；正文冻结为系统提示词。不要提交 JSON、分离脚本、嵌套 Skill/MCP/Hook 配置、显式模型或非治理权限／压缩设置。平台会将未声明的权限和压缩分别冻结为 `never_confirm` 与 `NoOpCondenser`。
+
+Hook 创建时只上传一个 UTF-8 文件：`PROMPT` 接受 `.md`、`.markdown` 或 `.txt`，`SCRIPT` 只接受 `.sh`；二者均不超过 1 MiB。请求必须提供名称、一个 OpenHands 生命周期事件和执行方式；`pre_tool_use`、`post_tool_use` 可另提供精确名称、`*`、正则或 `/正则/` 形式的工具 matcher，其他事件固定为 `*`。先验证，再由用户决定是否提交：
+
+```bash
+flowweave capability validate --type HOOK --file ./review-tool.md \
+  --hook-name '审查工具调用' --hook-event pre_tool_use \
+  --hook-matcher 'terminal' --hook-mode PROMPT
+flowweave capability commit --import-token <import-token>
+```
+
+Hook 只能在创建会话时冻结并通过 OpenHands 官方 `hook_config` 注册；既有会话只能读取其冻结版本，不能动态追加、修改或删除。
 
 要把能力绑定到 Agent Workspace，转 `flowweave-agent-workspace`；要让能力进入可运行的环境，先确保版本可用，再转 `flowweave-environments`。不要直接复制文件到 Docker、OpenHands HOME 或项目目录来伪造能力已发布。
 

@@ -33,6 +33,7 @@ function usage() {
   node <list|get|create|update|delete> [ID] [--data JSON|--data-file FILE]
   node-directory <list|create|delete|delete-many> [ID] [--id ID ...]
   capability <list|validate|commit|import|marketplace|marketplace-preview|marketplace-resolve|plugin-resolution|plugin-publish> ...
+  event-trigger <list|get|create|version> ...
   environment <list|get|create|update|delete|setup|publish|stop|version-delete> ...
   credential <list|create|update|delete|delete-many> ...
   flow <list|get|create|update|validate|delete> ...
@@ -361,6 +362,27 @@ async function capability(args) {
     const file = resolve(source);
     const content = await readFile(file);
     const body = { capability_type: type, filename: basename(file), content_base64: content.toString('base64') };
+    if (type === 'HOOK') {
+      const name = option(args, '--hook-name');
+      const event = option(args, '--hook-event');
+      const mode = option(args, '--hook-mode');
+      if (!name || !event || !mode) {
+        throw new CliError('HOOK 导入需要 --hook-name、--hook-event 和 --hook-mode');
+      }
+      if (!['pre_tool_use', 'post_tool_use', 'user_prompt_submit', 'session_start', 'session_end', 'stop'].includes(event)) {
+        throw new CliError('--hook-event 必须是 OpenHands 支持的生命周期事件');
+      }
+      if (!['PROMPT', 'SCRIPT'].includes(mode)) {
+        throw new CliError('--hook-mode 必须是 PROMPT 或 SCRIPT');
+      }
+      Object.assign(body, {
+        hook_name: name,
+        hook_description: option(args, '--hook-description') || '',
+        hook_event: event,
+        hook_matcher: option(args, '--hook-matcher') || '*',
+        hook_mode: mode,
+      });
+    }
     const validated = await request('POST', '/capability-imports/validate', args, { body });
     if (action === 'validate' || flag(args, '--dry-run')) return validated;
     return request('POST', '/capability-imports', args, { body: { import_token: validated.import_token } });
@@ -371,6 +393,22 @@ async function capability(args) {
     return request('POST', '/capability-imports', args, { body: { import_token: token } });
   }
   throw new CliError('capability 支持 list|validate|commit|import|marketplace|marketplace-preview|marketplace-resolve|plugin-resolution|plugin-publish');
+}
+
+async function eventTrigger(args) {
+  const [action, key] = positional(args);
+  if (action === 'list') {
+    if (key) throw new CliError('event-trigger list 不接受 trigger key');
+    return request('GET', '/event-triggers', args);
+  }
+  if (action === 'create') {
+    if (key) throw new CliError('event-trigger create 不接受 trigger key；请在请求体提供 trigger_key');
+    return request('POST', '/event-triggers', args);
+  }
+  if (!key) throw new CliError(`event-trigger ${action || ''} 需要 trigger key`);
+  if (action === 'get') return request('GET', `/event-triggers/${key}`, args);
+  if (action === 'version') return request('POST', `/event-triggers/${key}/versions`, args);
+  throw new CliError('event-trigger 支持 list|get|create|version');
 }
 
 async function environment(args) {
@@ -656,6 +694,7 @@ async function main(argv) {
   else if (command === 'node') result = crud(command, args);
   else if (command === 'node-directory') result = nodeDirectory(args);
   else if (command === 'capability') result = capability(args);
+  else if (command === 'event-trigger') result = eventTrigger(args);
   else if (command === 'environment') result = environment(args);
   else if (command === 'credential') result = credential(args);
   else if (command === 'flow') result = flow(args);
