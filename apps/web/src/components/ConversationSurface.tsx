@@ -872,18 +872,19 @@ function ActivityGroup({ items, active, liveText, startedAt, finishedAt, avatarS
   </details>;
 }
 
-function AgentReply({ event, content, onFork, onPreviewCandidateFile }: {
+function AgentReply({ event, content, onFork, onPreviewCandidateFile, highlightReferenceSource = false }: {
   event: OpenHandsConversationEvent;
   content: string;
   onFork?: () => void;
   onPreviewCandidateFile?: (fieldKey: string, relativePath: string) => void;
+  highlightReferenceSource?: boolean;
 }) {
   const eventId = event.id;
   const timestamp = formatMessageTime(event.payload.timestamp);
   const candidateMessage = event.event_type === 'COMPLETED' && event.payload.event_name === 'FinishAction'
     ? candidateOutputMessage(content)
     : { businessConclusion: content };
-  return <article className="conversation-message assistant" data-conversation-event-id={eventId} data-turn-terminal="true" data-event-id={eventId}>
+  return <article className={`conversation-message assistant${highlightReferenceSource ? ' conversation-reference-source-highlight' : ''}`} data-conversation-event-id={eventId} data-turn-terminal="true" data-event-id={eventId}>
     {candidateMessage.businessConclusion ? <MessageMarkdown>{candidateMessage.businessConclusion}</MessageMarkdown> : !candidateMessage.outputs && content ? <MessageMarkdown>{content}</MessageMarkdown> : null}
     {candidateMessage.outputs && <CandidateOutputReply outputs={candidateMessage.outputs} onPreviewFile={onPreviewCandidateFile ? output => onPreviewCandidateFile(output.fieldKey, output.value) : undefined}/>}
     {!candidateMessage.businessConclusion && !candidateMessage.outputs && !content && <span className="conversation-typing"><i/><i/><i/></span>}
@@ -984,6 +985,8 @@ export function ConversationSurface({ events, liveText, isGenerating, requestSta
   const followLatest = useRef(true);
   const wasGenerating = useRef(isGenerating);
   const copyResetTimer = useRef<number | undefined>(undefined);
+  const referenceHighlightStartTimer = useRef<number | undefined>(undefined);
+  const referenceHighlightTimer = useRef<number | undefined>(undefined);
   const [isAtLatest, setIsAtLatest] = useState(true);
   const [editingEventId, setEditingEventId] = useState<string>();
   const [editingContent, setEditingContent] = useState('');
@@ -992,6 +995,7 @@ export function ConversationSurface({ events, liveText, isGenerating, requestSta
   const [condensationElapsed, setCondensationElapsed] = useState(0);
   const [selectedReference, setSelectedReference] = useState<{ reference: ConversationReference; left: number; top: number }>();
   const [viewingReference, setViewingReference] = useState<AgentConversationReference>();
+  const [highlightedReferenceEventId, setHighlightedReferenceEventId] = useState<string>();
   // Pausing a tool makes OpenHands emit one synthetic AgentErrorEvent. Keep
   // the authoritative event for recovery and audit, but it is neither an
   // execution failure nor useful conversation content.
@@ -1064,6 +1068,8 @@ export function ConversationSurface({ events, liveText, isGenerating, requestSta
   }, [currentHasTerminal, isGenerating, liveText, scrollToLatest, scrollToTerminalStart, turns.length]);
   useEffect(() => () => {
     if (copyResetTimer.current) window.clearTimeout(copyResetTimer.current);
+    if (referenceHighlightStartTimer.current) window.clearTimeout(referenceHighlightStartTimer.current);
+    if (referenceHighlightTimer.current) window.clearTimeout(referenceHighlightTimer.current);
   }, []);
   useEffect(() => {
     if (condensationStatus?.state !== 'running') return;
@@ -1117,7 +1123,17 @@ export function ConversationSurface({ events, liveText, isGenerating, requestSta
     const source = Array.from(surface.current.querySelectorAll<HTMLElement>('[data-conversation-event-id]'))
       .find(item => item.dataset.conversationEventId === viewingReference.event_id);
     setViewingReference(undefined);
-    source?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    if (!source) return;
+    source.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    setHighlightedReferenceEventId(undefined);
+    if (referenceHighlightStartTimer.current) window.clearTimeout(referenceHighlightStartTimer.current);
+    if (referenceHighlightTimer.current) window.clearTimeout(referenceHighlightTimer.current);
+    referenceHighlightStartTimer.current = window.setTimeout(() => {
+      setHighlightedReferenceEventId(viewingReference.event_id);
+      referenceHighlightTimer.current = window.setTimeout(() => {
+        setHighlightedReferenceEventId(current => current === viewingReference.event_id ? undefined : current);
+      }, 1_800);
+    }, 600);
   }, [viewingReference]);
   const lastUserEventId = useMemo(() => [...turns].reverse().find(turn => turn.user)?.user?.event.id, [turns]);
   if (!turns.length && !liveText && !isGenerating && !condensationStatus) return <div className="conversation-surface-empty"><b>会话已就绪</b><span>发送第一条消息，开始与 Agent 协作。</span></div>;
@@ -1155,7 +1171,7 @@ export function ConversationSurface({ events, liveText, isGenerating, requestSta
         return <section className="conversation-turn" key={turn.id}>
           {turn.user && <div className="conversation-user-message">{editingEventId === turn.user.event.id
             ? <form className="conversation-message-edit" onSubmit={event => { event.preventDefault(); if (editingContent.trim()) onRewrite?.(turn.user!.event.id, editingContent.trim()); }}><textarea aria-label="编辑已发送消息" value={editingContent} disabled={rewritePending} onChange={event => setEditingContent(event.target.value)}/><footer><button type="button" onClick={() => setEditingEventId(undefined)}>取消</button><button type="submit" disabled={!editingContent.trim() || rewritePending}>重新思考</button></footer></form>
-            : <article data-user-event-id={turn.user.event.id} data-conversation-event-id={turn.user.event.id} className="conversation-message user">{turn.user.content && <div className="conversation-message-content"><MessageMarkdown>{turn.user.content}</MessageMarkdown></div>}<MessageAttachments attachments={eventAttachments(turn.user.event)} references={turn.user.event.payload.conversation_references} onOpen={onOpenAttachment} onOpenReference={setViewingReference}/><footer className="conversation-message-meta user">{userTimestamp && <time dateTime={typeof turn.user.event.payload.timestamp === 'string' ? turn.user.event.payload.timestamp : undefined}>{userTimestamp}</time>}<div className="conversation-message-actions"><button type="button" className="conversation-message-copy" aria-label={copiedEventId === turn.user.event.id ? '消息已复制' : '复制消息'} title={copiedEventId === turn.user.event.id ? '已复制' : '复制消息'} onClick={() => copyUserMessage(turn.user!.event.id, turn.user!.content)}>{copiedEventId === turn.user.event.id ? <Check size={13}/> : <Copy size={13}/>}</button>{lastUserEventId === turn.user.event.id && <button type="button" className="conversation-message-rewrite" aria-label="编辑并重新思考" title="编辑并重新思考" onClick={() => { setEditingEventId(turn.user!.event.id); setEditingContent(turn.user!.content); }}><Pencil size={13}/></button>}</div></footer></article>}</div>}
+            : <article data-user-event-id={turn.user.event.id} data-conversation-event-id={turn.user.event.id} className={`conversation-message user${highlightedReferenceEventId === turn.user.event.id ? ' conversation-reference-source-highlight' : ''}`}>{turn.user.content && <div className="conversation-message-content"><MessageMarkdown>{turn.user.content}</MessageMarkdown></div>}<MessageAttachments attachments={eventAttachments(turn.user.event)} references={turn.user.event.payload.conversation_references} onOpen={onOpenAttachment} onOpenReference={setViewingReference}/><footer className="conversation-message-meta user">{userTimestamp && <time dateTime={typeof turn.user.event.payload.timestamp === 'string' ? turn.user.event.payload.timestamp : undefined}>{userTimestamp}</time>}<div className="conversation-message-actions"><button type="button" className="conversation-message-copy" aria-label={copiedEventId === turn.user.event.id ? '消息已复制' : '复制消息'} title={copiedEventId === turn.user.event.id ? '已复制' : '复制消息'} onClick={() => copyUserMessage(turn.user!.event.id, turn.user!.content)}>{copiedEventId === turn.user.event.id ? <Check size={13}/> : <Copy size={13}/>}</button>{lastUserEventId === turn.user.event.id && <button type="button" className="conversation-message-rewrite" aria-label="编辑并重新思考" title="编辑并重新思考" onClick={() => { setEditingEventId(turn.user!.event.id); setEditingContent(turn.user!.content); }}><Pencil size={13}/></button>}</div></footer></article>}</div>}
           {processBlocks.map((block, blockIndex) => block.kind === 'condensation'
             ? <CondensationNotices key={block.id} items={block.items}/>
             : <ActivityGroup
@@ -1170,7 +1186,7 @@ export function ConversationSurface({ events, liveText, isGenerating, requestSta
           {isCurrent && !turn.assistant && !failures.length && (
             <CurrentTurnStatus items={turn.activity} liveText={liveText} requestSubmitting={requestSubmitting} monitoring={monitoring} connectionState={connectionState}/>
           )}
-          {turn.assistant && <AgentReply event={turn.assistant.event} content={turn.assistant.content} onFork={!isGenerating ? () => onFork?.(turn.assistant!.event.id) : undefined} onPreviewCandidateFile={onPreviewCandidateFile}/>}
+          {turn.assistant && <AgentReply event={turn.assistant.event} content={turn.assistant.content} onFork={!isGenerating ? () => onFork?.(turn.assistant!.event.id) : undefined} onPreviewCandidateFile={onPreviewCandidateFile} highlightReferenceSource={highlightedReferenceEventId === turn.assistant.event.id}/>}
           {failures.map(item => <ConversationFailure key={item.event.id} item={item} taskControl={taskControl}/>)}
         </section>;
       })}

@@ -16,6 +16,8 @@
 .conversation-surface :is(.conversation-message,.conversation-activity-row) a:focus-visible{outline:2px solid #8eb9a0;outline-offset:2px;border-radius:2px}
 .conversation-user-message{display:grid;justify-items:end;margin:0 0 30px}.conversation-message.user{position:relative;width:fit-content;max-width:min(78%,600px);margin:0;border:1px solid #e6e3df;border-radius:18px 18px 5px 18px;background:#f7f6f4;padding:10px 14px;color:#232824;overflow:visible}
 .conversation-message.assistant{max-width:100%;color:#222722}
+.conversation-message.conversation-reference-source-highlight{animation:conversation-reference-source-highlight 1.8s ease-out}
+@keyframes conversation-reference-source-highlight{0%,100%{box-shadow:0 0 0 0 transparent}18%,62%{box-shadow:0 0 0 8px #d9eddb}}
 .conversation-message.assistant pre{max-width:100%;overflow:auto;border:1px solid #e5e8e5;border-radius:10px;background:#f7f8f7;padding:11px;font:11px/1.55 'DM Mono',ui-monospace,monospace}
 .conversation-message.assistant code{border-radius:4px;background:#f1f3f1;padding:1px 4px;font:12px 'DM Mono',ui-monospace,monospace}
 .conversation-candidate-outputs{display:grid;gap:10px;border:1px solid #d8e4db;border-radius:11px;background:#f8fbf8;padding:12px}
@@ -96,7 +98,7 @@
 .conversation-turn-status-dots i:nth-child(2){animation-delay:.16s}
 .conversation-turn-status-dots i:nth-child(3){animation-delay:.32s}
 @keyframes conversation-turn-status-dot{0%,65%,100%{opacity:.22;transform:translateY(0)}35%{opacity:.9;transform:translateY(-1px)}}
-@media(prefers-reduced-motion:reduce){.conversation-turn-status-dots i,.conversation-condensation-spinner{animation:none;opacity:.55}}
+@media(prefers-reduced-motion:reduce){.conversation-turn-status-dots i,.conversation-condensation-spinner{animation:none;opacity:.55}.conversation-message.conversation-reference-source-highlight{animation:none;box-shadow:0 0 0 5px #d9eddb}}
 .conversation-tool-entry{display:grid;gap:4px}
 .conversation-tool-detail{display:block!important;margin:0;border:0}
 .conversation-tool-detail>summary{display:flex;align-items:center;gap:7px;width:fit-content;max-width:100%;cursor:pointer;list-style:none;color:#4b574f}

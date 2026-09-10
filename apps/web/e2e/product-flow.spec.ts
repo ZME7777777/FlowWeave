@@ -1307,12 +1307,14 @@ test('selected conversation text is sent and rendered as a compact reference car
     { id: 'reference-source-assistant', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'reference-source-user', content: selectedText, timestamp: now } },
     ...(sentPayload ? [{ id: 'reference-target-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'reference-source-assistant', content: '请据此继续', conversation_references: sentPayload.references, timestamp: now } }] : []),
   ];
+  await page.route('**/api/v1/auth/me', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ id: 'reference-user', username: 'tester', role: 'USER', is_super_admin: false }) }));
   await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
   await page.route('**/api/v1/agent-workspaces/**', async route => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
     if (path.endsWith('/default')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ id: 'reference-workspace', display_name: 'Agent 工作区', desired_state: 'RUNNING', updated_at: now }) });
     if (path.endsWith('/runtime')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ state: 'ACTIVE', write_available: true, updated_at: now }) });
+    if (path.endsWith('/conversations/reference-conversation')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ id: 'reference-conversation', display_title: '引用会话', lifecycle: 'ACTIVE', streaming_callback_ready: true, model_provider_id: null, model_name: null, reasoning_effort: null, created_at: now, updated_at: now }) });
     if (path.endsWith('/conversations') && request.method() === 'GET') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([{ id: 'reference-conversation', display_title: '引用会话', lifecycle: 'ACTIVE', streaming_callback_ready: true, model_provider_id: null, model_name: null, reasoning_effort: null, created_at: now, updated_at: now }]) });
     if (path.endsWith('/events')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ events: events(), next_cursor: null }) });
     if (path.endsWith('/input-readiness')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ready: true, execution_status: 'idle' }) });
@@ -1330,6 +1332,13 @@ test('selected conversation text is sent and rendered as a compact reference car
   await page.route('**/api/v1/model-providers', route => route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }));
   await page.route('**/api/v1/capabilities', route => route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }));
 
+  await page.goto('/');
+  await page.evaluate(() => {
+    localStorage.removeItem('flowweave-workbench');
+    for (const key of Object.keys(sessionStorage)) {
+      if (key.startsWith('flowweave.agent.') || key.startsWith('flowweave.node-session.')) sessionStorage.removeItem(key);
+    }
+  });
   await page.goto('/agent/conversations/reference-conversation');
   const source = page.locator('[data-conversation-event-id="reference-source-assistant"]');
   await expect(source).toContainText(selectedText);
@@ -1362,6 +1371,8 @@ test('selected conversation text is sent and rendered as a compact reference car
   await preview.getByRole('button', { name: '定位原消息' }).click();
   await expect(preview).toHaveCount(0);
   await expect(source).toBeInViewport();
+  await expect(source).toHaveClass(/conversation-reference-source-highlight/);
+  await expect(source).not.toHaveClass(/conversation-reference-source-highlight/, { timeout: 3_000 });
 });
 
 test('Agent workspace groups toggle their conversation lists', async ({ page }) => {
