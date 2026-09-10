@@ -31,6 +31,12 @@ def _cost(value: object) -> Decimal:
     return Decimal("0") if value is None else Decimal(str(value))
 
 
+def _token_count(value: object) -> int:
+    """Normalize ORM token defaults that are not populated until the first flush."""
+
+    return 0 if value is None else int(value)
+
+
 def _kind(usage_id: str) -> str:
     if usage_id.startswith("task:"):
         return "SUBAGENT"
@@ -70,7 +76,7 @@ def _summary(items: Iterable[AgentConversationUsageBucket]) -> dict[str, int | f
         bindings.add(item.binding_id)
         result["bucket_count"] = int(result["bucket_count"]) + 1
         for field in _TOKEN_FIELDS:
-            delta = int(getattr(item, f"observed_{field}")) - int(
+            delta = _token_count(getattr(item, f"observed_{field}")) - _token_count(
                 getattr(item, f"baseline_{field}")
             )
             result[field] = int(result[field]) + delta
@@ -127,8 +133,8 @@ def capture(
             _cost(item.observed_cost_usd), _cost(source.accumulated_cost)
         )
         for field in _TOKEN_FIELDS:
-            observed = int(getattr(item, f"observed_{field}"))
-            source_value = int(getattr(source, field))
+            observed = _token_count(getattr(item, f"observed_{field}"))
+            source_value = _token_count(getattr(source, field))
             setattr(item, f"observed_{field}", max(observed, source_value))
         item.observed_at = observed_at
     db.flush()

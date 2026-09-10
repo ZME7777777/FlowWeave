@@ -21,6 +21,7 @@ from flowweave.modules.agent_sessions.application import (
 )
 from flowweave.modules.agent_sessions.application import usage as usage_projection
 from flowweave.modules.agent_sessions.application.host import CREATE_SESSIONS, READ_SESSIONS
+from flowweave.modules.agent_sessions.infrastructure.models import AgentConversationUsageBucket
 from flowweave.modules.agent_sessions.public import AgentConversationBinding
 from flowweave.modules.agent_workspaces.application import work_directories
 from flowweave.modules.conversations.application import locator
@@ -48,6 +49,14 @@ from flowweave.shared.settings import settings_context
 def test_usage_cost_defaults_to_zero_before_orm_flush() -> None:
     assert usage_projection._cost(None) == Decimal("0")
     assert usage_projection._cost(0.125) == Decimal("0.125")
+
+
+def test_usage_token_defaults_to_zero_before_orm_flush() -> None:
+    bucket = AgentConversationUsageBucket(binding_id="binding", usage_id="usage")
+
+    assert bucket.observed_prompt_tokens is None
+    assert usage_projection._token_count(bucket.observed_prompt_tokens) == 0
+    assert usage_projection._token_count(17) == 17
 
 
 def test_conversation_reference_projection_hides_selected_text_from_message_body() -> None:
