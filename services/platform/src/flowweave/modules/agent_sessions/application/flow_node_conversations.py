@@ -1529,6 +1529,12 @@ def _handle(
     )
 
 
+def usage_reconciliation_handle(db: Session, binding: AgentConversationBinding) -> RuntimeHandle:
+    """Resolve a node-session handle for Worker-only usage reconciliation."""
+
+    return _handle(db, binding.id)
+
+
 def _flow_run_handle(
     db: Session,
     flow_run_id: str,

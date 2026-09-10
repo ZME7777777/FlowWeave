@@ -574,6 +574,18 @@ def _handle(
     )
 
 
+def usage_reconciliation_handle(db: Session, binding: AgentConversationBinding) -> RuntimeHandle:
+    """Resolve a direct-session handle for Worker-only usage reconciliation."""
+
+    if binding.workspace_id is None:
+        raise DomainError(
+            "USAGE_RECONCILIATION_BINDING_INVALID",
+            "The Agent Workspace Conversation has no workspace locator",
+            409,
+        )
+    return _handle(db, _workspace(db, binding.workspace_id), binding)
+
+
 def resolve_task_watchdog_runtime(
     db: Session, binding_id: str
 ) -> tuple[str, AgentConversationBinding, RuntimeHandle, int, str]:

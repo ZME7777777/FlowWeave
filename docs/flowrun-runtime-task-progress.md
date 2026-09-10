@@ -3467,6 +3467,14 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 
 完成：连续运行历史 Attempt 的概览页现在从既有、受父 FlowRun 和精确 Artifact ID 作用域限制的元数据端点按需读取输入绑定；输出页按当前候选输出集冻结的 Artifact ID 读取，不再依赖轻量详情中刻意省略的 Artifact 数组。响应继续不含 Artifact 内容或 `storage_key`，不修改任一 Artifact、输入绑定、候选集或执行状态。
 
+### FR-253 OpenHands Token 用量主动对账 — DONE
+
+依赖：`FR-252`。
+
+目标：不再只在用户打开会话、读取事件或门禁刚完成时才更新 Token 用量。Worker 必须定期从每个活跃的 Agent 会话和节点会话读取 OpenHands 正式的累计 usage，并写入已有的单调高水位 bucket，使会话、NodeRun、Attempt、FlowRun 和门禁的已有汇总投影在无人打开页面时也能更新。对账不得创建会话、写 OpenHands 事件或重复累计费用；Runtime 恢复失败时应保持读侧可用并重试。
+
+完成：Worker 复用维护循环、以持久化 due-time 和 `SKIP LOCKED` 每轮认领有限会话；默认每 5 分钟对账 5 条，连接失败后 30 秒重试。OpenHands 读取始终在数据库事务外且受现有 Worker I/O 上限约束，成功结果只经现有 high-water usage 投影落库。新增调度字段与迁移；Worker 以 bypass 扫描时会将 bucket 明确归属到 binding 原用户，以保证租户读取不会把新 usage 过滤成 0。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -3482,6 +3490,7 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-10 | FR-253 | 受影响 Python Ruff、`py_compile`、定向 Pyright；Alembic 迁移链解析、设置直接 smoke、`git diff --check` | PASS（静态）：Worker 维护循环会按持久化 due-time 对活跃 Agent／节点会话的正式 OpenHands 累计 usage 做有界、事务外对账；高水位写入幂等且按 binding owner 投影。定向 pytest 受本机 Docker daemon 不可用、Testcontainers PostgreSQL fixture 初始化失败阻断，未伪记为通过。`0107_usage_reconciliation_schedule` 独立衔接 `0105_conversation_token_usage`，避免并行未提交的模型服务迁移进入本次发布。 |
 | 2026-09-10 | FR-251 | 受影响 Python Ruff、`py_compile`；Web production build；Alembic head、`git diff --check` 与任务状态唯一性 | PASS：资源区仅显示 CPU、内存和当前受管项目的宿主机挂载路径；相对分配路径必须匹配固定 FlowRun allocation 格式且宿主机根必须为绝对路径，否则安全降级为不可用。唯一 Alembic head 为 `0105_conversation_token_usage`，无迁移。定向 pytest 因本机 Docker daemon 不可用、Testcontainers PostgreSQL 无法初始化而未运行；Web production build 通过。 |
 | 2026-09-10 | FR-252 | Web typecheck、受影响文件 ESLint、production build、已完成连续记录输入／输出按需加载定向 Playwright、Alembic head、`git diff --check` 与任务状态唯一性 | PASS：连续运行轻量详情保持不含运行级和 Attempt 级 Artifact 数组；已完成 Attempt 通过精确冻结输入绑定和候选输出 Artifact ID 按需读取元数据，概览与输出页均能显示历史值。未新增迁移或写路径；唯一 Alembic head 为 `0105_conversation_token_usage`。 |
 | 2026-09-09 | FR-250 | 受影响 Python `py_compile`、Ruff；Web TypeScript typecheck、受影响文件 ESLint、production build、Alembic head、`git diff --check` 与任务状态唯一性 | PASS：运行资源使用当前 Docker `stats` 的 CPU 实时百分比和内存已用量，以及 `inspect --size` 的容器可写层已用量；仅经 scope、资源 ID 和所有权校验的当前 `RUNNING` Runtime 返回。存储上限读取实际 Docker `StorageOpt`，无配额时明确显示“无硬上限”。当前 Alembic head 为 `0105_conversation_token_usage`，本切片无迁移。定向 pytest 因本机 Docker daemon 不可用、Testcontainers PostgreSQL 无法初始化而未运行；受影响静态检查通过。 |

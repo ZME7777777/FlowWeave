@@ -122,6 +122,13 @@ class Settings(BaseSettings):
     agent_workspace_runtime_image: str = "flowweave-openhands-runtime:1"
     terminal_environment_session_ttl_seconds: int = Field(default=14_400, ge=300, le=86_400)
     terminal_environment_cleanup_seconds: int = Field(default=30, ge=5, le=3600)
+    # OpenHands usage is an absolute, conversation-owned counter.  Reconcile it
+    # periodically rather than waiting for a user to reopen a session, but keep
+    # the cadence deliberately low so inactive historical sessions do not turn
+    # into a polling load on every worker maintenance pass.
+    usage_reconciliation_seconds: int = Field(default=300, ge=60, le=3600)
+    usage_reconciliation_retry_seconds: int = Field(default=30, ge=5, le=300)
+    usage_reconciliation_batch_size: int = Field(default=5, ge=1, le=50)
     sandbox_manager_scope: str = "flowweave-local"
     sandbox_reconcile_seconds: int = Field(default=30, ge=5, le=3600)
     sandbox_reconcile_batch_size: int = Field(default=50, ge=1, le=500)

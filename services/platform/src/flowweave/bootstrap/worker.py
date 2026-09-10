@@ -11,6 +11,7 @@ from uuid import uuid4
 
 from flowweave.bootstrap.container import Container, build_container
 from flowweave.bootstrap.settings import Settings
+from flowweave.modules.agent_sessions.application import usage_reconciliation
 from flowweave.modules.agent_workspaces.application.service import (
     ensure_default_agent_workspace,
     recover_default_agent_workspace_runtime_task,
@@ -395,10 +396,88 @@ class TaskWorker:
                         # independent short control transactions.
                         await session.commit()
                         await session.run_sync(reconcile_managed_sandboxes)
+                        await self.run_usage_reconciliation()
                         return expired
                     except BaseException:
                         await session.rollback()
                         raise
+
+    async def _read_usage_snapshot(self, binding_id: str):
+        """Read formal Runtime usage without holding a database transaction."""
+
+        def read():
+            with self.container.database.blocking_sessions() as db:
+                with tenant_bypass():
+                    handle = usage_reconciliation.resolve_handle(db, binding_id)
+                    # The locator query opened a transaction. Never retain it
+                    # while waiting on the OpenHands Agent Server.
+                    db.rollback()
+                    return self.container.runtime.read_active_events(handle)
+
+        async with self.container.blocking_io_slots:
+            context = contextvars.copy_context()
+            return await asyncio.get_running_loop().run_in_executor(
+                self.container.blocking_executor, context.run, read
+            )
+
+    async def _record_usage_reconciliation_failure(self, binding_id: str) -> None:
+        async with self.container.database.session() as session:
+            with tenant_bypass():
+                await session.run_sync(
+                    lambda db: usage_reconciliation.record_failure(
+                        db,
+                        binding_id,
+                        retry_seconds=self.container.settings.usage_reconciliation_retry_seconds,
+                    )
+                )
+            await session.commit()
+
+    async def _record_usage_reconciliation_success(self, binding_id: str, batch: Any) -> None:
+        async with self.container.database.session() as session:
+            with tenant_bypass():
+                await session.run_sync(
+                    lambda db: usage_reconciliation.record_success(db, binding_id, batch)
+                )
+            await session.commit()
+
+    async def run_usage_reconciliation(self) -> int:
+        """Reconcile a bounded due page of native cumulative token usage.
+
+        The database claim and projection writes are short transactions. The
+        potentially slow OpenHands read occurs outside either transaction and
+        uses the existing Worker I/O bound. Failure merely schedules a retry;
+        it never changes Conversation state or blocks task delivery.
+        """
+
+        async with self.container.database.session() as session:
+            with tenant_bypass():
+                binding_ids = await session.run_sync(
+                    lambda db: usage_reconciliation.claim_due_bindings(
+                        db,
+                        interval_seconds=self.container.settings.usage_reconciliation_seconds,
+                        limit=self.container.settings.usage_reconciliation_batch_size,
+                    )
+                )
+            await session.commit()
+
+        reconciled = 0
+        for binding_id in binding_ids:
+            try:
+                batch = await self._read_usage_snapshot(binding_id)
+            except Exception:
+                # A reconnecting Runtime must not make the Worker maintenance
+                # loop fail. The short retry delay lets a replacement quickly
+                # publish its preserved OpenHands counters.
+                logger.debug(
+                    "OpenHands usage reconciliation deferred binding_id=%s",
+                    binding_id,
+                    exc_info=True,
+                )
+                await self._record_usage_reconciliation_failure(binding_id)
+                continue
+            await self._record_usage_reconciliation_success(binding_id, batch)
+            reconciled += 1
+        return reconciled
 
     def _run_sync(self, operation: Coroutine[Any, Any, Any]) -> Any:
         if self._sync_loop is None:

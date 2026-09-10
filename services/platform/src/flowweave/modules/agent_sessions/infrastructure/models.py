@@ -98,6 +98,13 @@ class AgentConversationBinding(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
     last_connected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # A Worker-owned scheduling projection. It is intentionally separate from
+    # the authoritative OpenHands usage counters and is only used to throttle
+    # best-effort, read-only reconciliation.
+    usage_reconciled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    usage_reconcile_after: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), index=True
+    )
 
 
 class AgentConversationMessageAttachment(Base):

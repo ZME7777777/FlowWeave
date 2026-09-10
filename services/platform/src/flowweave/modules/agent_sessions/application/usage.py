@@ -34,7 +34,23 @@ def _cost(value: object) -> Decimal:
 def _token_count(value: object) -> int:
     """Normalize ORM token defaults that are not populated until the first flush."""
 
-    return 0 if value is None else int(value)
+    if value is None:
+        return 0
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float | str):
+        return int(value)
+    raise TypeError(f"Unsupported token counter type: {type(value)!r}")
+
+
+def _summary_integer(value: int | float | str | None) -> int:
+    return int(value) if isinstance(value, int | float | str) else 0
+
+
+def _summary_float(value: int | float | str | None) -> float:
+    return float(value) if isinstance(value, int | float | str) else 0.0
 
 
 def _kind(usage_id: str) -> str:
@@ -74,19 +90,19 @@ def _summary(items: Iterable[AgentConversationUsageBucket]) -> dict[str, int | f
     latest = None
     for item in items:
         bindings.add(item.binding_id)
-        result["bucket_count"] = int(result["bucket_count"]) + 1
+        result["bucket_count"] = _summary_integer(result["bucket_count"]) + 1
         for field in _TOKEN_FIELDS:
             delta = _token_count(getattr(item, f"observed_{field}")) - _token_count(
                 getattr(item, f"baseline_{field}")
             )
-            result[field] = int(result[field]) + delta
-        result["accumulated_cost"] = float(result["accumulated_cost"]) + float(
+            result[field] = _summary_integer(result[field]) + delta
+        result["accumulated_cost"] = _summary_float(result["accumulated_cost"]) + float(
             _cost(item.observed_cost_usd) - _cost(item.baseline_cost_usd)
         )
         if latest is None or item.observed_at > latest:
             latest = item.observed_at
     result["session_count"] = len(bindings)
-    result["total_tokens"] = sum(int(result[field]) for field in _TOKEN_FIELDS)
+    result["total_tokens"] = sum(_summary_integer(result[field]) for field in _TOKEN_FIELDS)
     result["observed_at"] = latest.isoformat() if latest else None
     return result
 
@@ -116,6 +132,10 @@ def capture(
         item = existing.get(source.usage_id)
         if item is None:
             item = AgentConversationUsageBucket(
+                # A Worker reconciles every tenant under bypass. Preserve the
+                # binding owner explicitly so the normal user-scoped read
+                # projection can see the newly captured bucket.
+                owner_user_id=binding.owner_user_id,
                 binding_id=binding.id,
                 flow_run_id=binding.flow_run_id,
                 node_run_id=binding.node_run_id,
@@ -129,8 +149,8 @@ def capture(
             existing[source.usage_id] = item
         item.model_name = source.model_name
         item.usage_kind = _kind(source.usage_id)
-        item.observed_cost_usd = max(
-            _cost(item.observed_cost_usd), _cost(source.accumulated_cost)
+        item.observed_cost_usd = float(
+            max(_cost(item.observed_cost_usd), _cost(source.accumulated_cost))
         )
         for field in _TOKEN_FIELDS:
             observed = _token_count(getattr(item, f"observed_{field}"))
