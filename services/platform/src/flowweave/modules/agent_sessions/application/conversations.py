@@ -24,6 +24,7 @@ from flowweave.modules.agent_sessions.application.event_branch import (
 from flowweave.modules.agent_sessions.application.runtime_config import (
     build_agent_spec,
     config_from_binding,
+    provider_for_config,
 )
 from flowweave.modules.agent_sessions.infrastructure.models import (
     AgentConversationBinding,
@@ -2928,7 +2929,15 @@ def rewrite_message(
 def resume(db: Session, workspace_id: str, binding_id: str) -> dict[str, Any]:
     workspace = _workspace(db, workspace_id)
     runtime = get_runtime()
-    handle = _handle(db, workspace, _binding(db, workspace_id, binding_id))
+    binding = _binding(db, workspace_id, binding_id)
+    handle = _handle(db, workspace, binding)
+    provider = provider_for_config(db, config_from_binding(db, binding))
+    if provider is not None:
+        # Refresh the same frozen provider before a formal native resume.
+        # This does not change model selection or append a user event; it lets
+        # conversations created before a transport-policy release receive the
+        # current bounded retry/timeout configuration.
+        runtime.switch_model(handle, provider)
     if _uses_legacy_compaction_policy(runtime.conversation_context(handle)):
         _safe_native_compaction(runtime, handle)
     result = runtime.run(handle)

@@ -3651,6 +3651,16 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 
 完成：统一 OpenHands LLM payload 不再禁用 HTTP 读超时，所有 FlowWeave 管理的流式模型调用均在 60 秒无响应后进入既有 OpenHands 重试／正式错误路径；不再要求用户手动暂停后继续才能解除无限等待。
 
+### FR-272 历史 Agent 会话继续时模型超时策略刷新 — DONE
+
+依赖：FR-271。
+
+目标：补齐直接 Agent Workspace 会话的正式 `resume` 路径。节点会话已经会在 `run` 前按 binding 重新下发冻结模型，直接 Agent Workspace 会话此前遗漏该步骤，因此部署 FR-271 后，已创建且暂停的历史会话仍会继续使用其创建时的无界 LLM timeout。继续前必须只重下发同一 binding 的冻结供应商／模型／推理强度，借由统一 payload 刷新 timeout/retry；不得换模型、追加或重发 user event、重写 OpenHands 历史或替换 Runtime。
+
+验收：Agent Workspace 定向 pytest 断言 resume 先按同一冻结模型调用 `switch_model`，再正式 `run`，无消息发送；受影响 Python Ruff/格式/语法检查、`git diff --check`、Alembic head 与任务状态唯一性通过；本切片使用独立 Git commit。
+
+完成：直接 Agent Workspace 的 resume 现与节点会话路径一致，会在正式 run 前重下发当前 binding 的冻结模型；历史会话用户手动暂停后继续即可获得 FR-271 的 60 秒有界等待策略。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -3666,6 +3676,7 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-10 | FR-272 | Agent Workspace resume 定向 pytest；受影响 Python Ruff format/check、`py_compile`、Alembic head、任务状态唯一性与 `git diff --check` | 静态检查 PASS：Ruff、格式、Python 编译、唯一 Alembic head `0110_candidate_output_set_owner` 与 whitespace 检查通过。`tests/test_agent_workspaces.py` 已实际启动，但全部 68 项均在 Testcontainers PostgreSQL fixture 初始化阶段因本机 Docker Unix socket 缺失失败，新增 resume 回归尚未进入断言，未记为测试通过。 |
 | 2026-09-10 | FR-273 | 受影响 Python `py_compile`、Ruff format/check、历史／交互 lane 直接隔离 smoke；受影响 Web ESLint、TypeScript typecheck、production build；Compose 渲染、Alembic head、任务状态唯一性与 `git diff --check` | PASS（静态、构建与直接冒烟）：节点与独立 Agent 会话的旧 `history_cursor` 页进入独立单并发数据库／线程 lane，交互事件、`input-readiness` 与确认读取不会再被历史预取耗尽。首屏在最新窗口有未完成正式用户事件时维持“正在处理”，仅在 OpenHands 明确返回 `paused` 后显示继续；旧页只在原生运行态确认空闲后异步预取。Python 编译、Ruff、受影响 Web ESLint、Web typecheck/build、Compose 渲染、唯一 Alembic head、任务状态与 whitespace 检查通过；直接 lane smoke 证明被阻塞的历史读取不阻塞交互读取。`tests/test_http.py` 定向 pytest 在断言前因本机 Docker Unix socket 缺失、Testcontainers PostgreSQL 无法启动而阻断，未伪记为通过。 |
 | 2026-09-10 | FR-269 | OpenHands 完成身份定向 pytest；无需 Docker fixture 的 Runtime 投影／重复完成／人工对账定向 pytest；受影响 Python Ruff format/check、`py_compile`；Web typecheck、受影响 Web ESLint、production build；Alembic head、任务状态唯一性与 `git diff --check` | PASS：OpenHands 适配器将 FinishAction ID 与 finish observation leaf cursor 分离；缺失历史 FlowWeave 投影标记不再阻断新的正式 FinishAction，重复同一 ID 仍不重放。对账命令仅接受受阻 Attempt 的当前活跃正式完成，写入原因/FinishAction ID 审计并复用 Artifact/Candidate/END Gate 投影；没有人工路径、事件 ID 或文件路径旁路。`test_openhands.py` 为 111 passed，独立 Runtime 定向为 3 passed；完整 Runtime pytest collection 的 21 个数据库 fixture 在断言前受本机 Docker socket 缺失阻断，未伪记为功能失败。唯一 Alembic head 为 `0109_hook_capabilities`；Web 全局 lint 仍因 `AgentSessionWorkbench.tsx` 两条既有 Hook dependency warning 在 `--max-warnings=0` 下失败，受影响文件 ESLint/typecheck/build 均通过。 |
 | 2026-09-10 | FR-267 | CLI Node 测试、语法检查、npm pack 清单、12 个仓库 FlowWeave Skill frontmatter 检查、Alembic head、`git diff --check` 与任务状态唯一性 | PASS：`@flowweave-ai/cli@0.4.0` 的 12 项 Node 测试均通过；`event-trigger` 的读取、创建、追加版本，以及受控 Hook 元数据映射覆盖 dry-run URL／请求体与缺参拒绝。打包仅含 README、CLI 入口和 package metadata；唯一 Alembic head 为 `0109_hook_capabilities`，无 `CURRENT` 或 whitespace 错误。 |

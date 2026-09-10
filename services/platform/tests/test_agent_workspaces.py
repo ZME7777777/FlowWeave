@@ -3058,6 +3058,63 @@ def test_agent_workspace_reapplies_persisted_model_after_runtime_reload_before_s
         assert runtime.sent == ["reload 后发送"]
 
 
+def test_agent_workspace_resume_reapplies_frozen_model_before_native_run(
+    settings, db_session_factory, monkeypatch
+):
+    class ResumingRuntime(MockRuntime):
+        switched: list[tuple[str, str]] = []
+        calls: list[str] = []
+        lifecycle: list[str] = []
+
+        def switch_model(self, handle, provider):
+            del handle
+            self.switched.append((provider.provider_id, provider.model))
+            self.lifecycle.append("switch")
+
+        def conversation_context(self, handle):
+            del handle
+            return {}
+
+        def run(self, handle):
+            self.calls.append("run")
+            self.lifecycle.append("run")
+            return super().run(handle)
+
+    monkeypatch.setattr(
+        conversations,
+        "runtime_provider",
+        lambda _db, asset, model_name=None, **_kwargs: RuntimeProvider(
+            provider_id=asset["asset"]["executor"]["model_provider_id"],
+            base_url="https://models.example.test/v1",
+            model=model_name or "bound-model",
+            api_key="x",
+        ),
+    )
+    runtime = ResumingRuntime()
+    with settings_context(settings), db_session_factory() as db, runtime_context(runtime):
+        workspace = _ready_workspace_for_conversation(db)
+        created = conversations.create_conversation(
+            db, workspace.id, None, workspace.default_model_provider_id, "resume-key"
+        )
+        conversations.switch_conversation_model(
+            db,
+            workspace.id,
+            created["id"],
+            str(created["model_provider_id"]),
+            "selected-model",
+            None,
+        )
+        runtime.switched.clear()
+
+        resumed = conversations.resume(db, workspace.id, created["id"])
+
+        assert resumed["accepted"] is True
+        assert runtime.switched == [(str(created["model_provider_id"]), "selected-model")]
+        assert runtime.calls == ["run"]
+        assert runtime.lifecycle == ["switch", "run"]
+        assert runtime.sent == []
+
+
 def test_agent_workspace_repairs_legacy_finish_fork_once_before_sending(
     settings, db_session_factory, monkeypatch
 ):
