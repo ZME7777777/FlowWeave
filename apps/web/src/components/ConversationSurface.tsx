@@ -2,7 +2,7 @@ import { Check, ChevronDown, ChevronRight, CircleAlert, Copy, ExternalLink, File
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type PointerEvent as ReactPointerEvent } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import type { AgentActivitySummary, AgentAttachment, AgentConversationReference, AgentConversationReferenceUse, OpenHandsConversationEvent, RuntimeTaskControlSnapshot } from '../types';
+import type { AgentActivitySummary, AgentAttachment, AgentConversationReference, OpenHandsConversationEvent, RuntimeTaskControlSnapshot } from '../types';
 import { deploymentBasePath } from '../deploymentPath';
 import { SubagentAvatar } from './SubagentAvatar';
 import { useEscapeClose } from './useEscapeClose';
@@ -33,10 +33,6 @@ interface UserMessageNavigationItem {
 export interface ConversationReference {
   eventId: string;
   content: string;
-  startOffset: number;
-  endOffset: number;
-  sourceSha256: string;
-  use: AgentConversationReferenceUse;
 }
 
 interface ActivityEntry {
@@ -78,8 +74,8 @@ function MessageAttachments({ attachments, references = [], onOpen, onOpenRefere
     >
       <FileText size={16}/><span><b>{attachment.filename}</b><small>{attachment.mime_type || '文件'}{attachmentSize(attachment.byte_size) ? ` · ${attachmentSize(attachment.byte_size)}` : ''}</small></span><PanelRightOpen size={13}/>
     </button>)}
-    {references.map((reference, index) => <button type="button" key={`${reference.event_id}:${reference.start_offset}:${reference.end_offset}:${reference.use}`} className="conversation-message-attachment conversation-message-reference" aria-label={`查看会话引用 ${index + 1}`} title="查看引用内容" onClick={() => onOpenReference?.(reference)}>
-      <Quote size={16}/><span><b>{`会话引用 ${index + 1}`}</b><small>{reference.use}</small></span>
+    {references.map((reference, index) => <button type="button" key={`${reference.event_id}:${reference.content}`} className="conversation-message-attachment conversation-message-reference" aria-label={`查看会话引用 ${index + 1}`} title="查看引用内容" onClick={() => onOpenReference?.(reference)}>
+      <Quote size={16}/><span><b>{`会话引用 ${index + 1}`}</b><small>已添加到本条消息</small></span>
       <PanelRightOpen size={13}/>
     </button>)}
   </div>;
@@ -898,39 +894,17 @@ function AgentReply({ event, content, onFork, onPreviewCandidateFile }: {
   </article>;
 }
 
-async function sha256(value: string): Promise<string> {
-  const bytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
-  return Array.from(new Uint8Array(bytes), byte => byte.toString(16).padStart(2, '0')).join('');
-}
-
-function textOffset(root: HTMLElement, node: Node, offset: number): number | undefined {
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-  let total = 0;
-  let current: Node | null;
-  while ((current = walker.nextNode())) {
-    if (current === node) return total + offset;
-    total += current.textContent?.length ?? 0;
-  }
-  return undefined;
-}
-
-async function conversationReferenceForSelection(selection: Selection, surface: HTMLElement): Promise<ConversationReference | undefined> {
+function conversationReferenceForSelection(selection: Selection, surface: HTMLElement): ConversationReference | undefined {
   if (!selection.rangeCount) return undefined;
+  const content = selection.toString().trim();
+  if (!content) return undefined;
   const range = selection.getRangeAt(0);
   const start = elementForNode(range.startContainer);
   const end = elementForNode(range.endContainer);
   const message = start?.closest<HTMLElement>('[data-conversation-event-id]');
   if (!message || !end || !surface.contains(message) || !message.contains(range.startContainer) || !message.contains(range.endContainer)) return undefined;
   const eventId = message.dataset.conversationEventId;
-  const sourceContent = message.dataset.referenceSourceContent;
-  const contentRoot = message.querySelector<HTMLElement>('.conversation-message-content');
-  if (!eventId || sourceContent === undefined || !contentRoot || contentRoot.textContent !== sourceContent) return undefined;
-  const startOffset = textOffset(contentRoot, range.startContainer, range.startOffset);
-  const endOffset = textOffset(contentRoot, range.endContainer, range.endOffset);
-  if (startOffset === undefined || endOffset === undefined || endOffset <= startOffset) return undefined;
-  const content = sourceContent.slice(startOffset, endOffset);
-  if (!content.trim()) return undefined;
-  return { eventId, content, startOffset, endOffset, sourceSha256: await sha256(sourceContent), use: 'BACKGROUND' };
+  return eventId ? { eventId, content } : undefined;
 }
 
 const NETWORK_ERROR_CODES = new Set([
@@ -1120,11 +1094,11 @@ export function ConversationSurface({ events, liveText, isGenerating, requestSta
       // Native selection copy remains available when the browser rejects programmatic clipboard access.
     });
   }, []);
-  const offerSelectedReference = useCallback(async (event: ReactPointerEvent<HTMLElement>) => {
+  const offerSelectedReference = useCallback((event: ReactPointerEvent<HTMLElement>) => {
     if (!onAddReference || !surface.current) return;
     const selection = window.getSelection();
     if (!selection) return;
-    const reference = await conversationReferenceForSelection(selection, surface.current);
+    const reference = conversationReferenceForSelection(selection, surface.current);
     if (!reference) { setSelectedReference(undefined); return; }
     const pointerMessage = event.target instanceof Node
       ? elementForNode(event.target)?.closest<HTMLElement>('[data-conversation-event-id]')
@@ -1165,7 +1139,7 @@ export function ConversationSurface({ events, liveText, isGenerating, requestSta
       </button>)}
     </nav>}
     {messagePreview && <aside id="conversation-message-preview" className="conversation-message-index-tooltip" role="tooltip" style={{ top: messagePreview.top }}><span>{messagePreview.content || '（空消息）'}</span></aside>}
-    <section ref={surface} className="conversation-surface" aria-live="polite" onScroll={() => { handleScroll(); setSelectedReference(undefined); }} onPointerUp={event => { void offerSelectedReference(event); }}>
+    <section ref={surface} className="conversation-surface" aria-live="polite" onScroll={() => { handleScroll(); setSelectedReference(undefined); }} onPointerUp={offerSelectedReference}>
       {turns.map((turn, index) => {
         const isCurrent = index === turns.length - 1 && isGenerating;
         const failures = turn.activity.filter(item => item.kind === 'error');
@@ -1181,7 +1155,7 @@ export function ConversationSurface({ events, liveText, isGenerating, requestSta
         return <section className="conversation-turn" key={turn.id}>
           {turn.user && <div className="conversation-user-message">{editingEventId === turn.user.event.id
             ? <form className="conversation-message-edit" onSubmit={event => { event.preventDefault(); if (editingContent.trim()) onRewrite?.(turn.user!.event.id, editingContent.trim()); }}><textarea aria-label="编辑已发送消息" value={editingContent} disabled={rewritePending} onChange={event => setEditingContent(event.target.value)}/><footer><button type="button" onClick={() => setEditingEventId(undefined)}>取消</button><button type="submit" disabled={!editingContent.trim() || rewritePending}>重新思考</button></footer></form>
-            : <article data-user-event-id={turn.user.event.id} data-conversation-event-id={turn.user.event.id} data-reference-source-content={turn.user.content} className="conversation-message user">{turn.user.content && <div className="conversation-message-content"><MessageMarkdown>{turn.user.content}</MessageMarkdown></div>}<MessageAttachments attachments={eventAttachments(turn.user.event)} references={turn.user.event.payload.conversation_references} onOpen={onOpenAttachment} onOpenReference={setViewingReference}/><footer className="conversation-message-meta user">{userTimestamp && <time dateTime={typeof turn.user.event.payload.timestamp === 'string' ? turn.user.event.payload.timestamp : undefined}>{userTimestamp}</time>}<div className="conversation-message-actions"><button type="button" className="conversation-message-copy" aria-label={copiedEventId === turn.user.event.id ? '消息已复制' : '复制消息'} title={copiedEventId === turn.user.event.id ? '已复制' : '复制消息'} onClick={() => copyUserMessage(turn.user!.event.id, turn.user!.content)}>{copiedEventId === turn.user.event.id ? <Check size={13}/> : <Copy size={13}/>}</button>{lastUserEventId === turn.user.event.id && <button type="button" className="conversation-message-rewrite" aria-label="编辑并重新思考" title="编辑并重新思考" onClick={() => { setEditingEventId(turn.user!.event.id); setEditingContent(turn.user!.content); }}><Pencil size={13}/></button>}</div></footer></article>}</div>}
+            : <article data-user-event-id={turn.user.event.id} data-conversation-event-id={turn.user.event.id} className="conversation-message user">{turn.user.content && <div className="conversation-message-content"><MessageMarkdown>{turn.user.content}</MessageMarkdown></div>}<MessageAttachments attachments={eventAttachments(turn.user.event)} references={turn.user.event.payload.conversation_references} onOpen={onOpenAttachment} onOpenReference={setViewingReference}/><footer className="conversation-message-meta user">{userTimestamp && <time dateTime={typeof turn.user.event.payload.timestamp === 'string' ? turn.user.event.payload.timestamp : undefined}>{userTimestamp}</time>}<div className="conversation-message-actions"><button type="button" className="conversation-message-copy" aria-label={copiedEventId === turn.user.event.id ? '消息已复制' : '复制消息'} title={copiedEventId === turn.user.event.id ? '已复制' : '复制消息'} onClick={() => copyUserMessage(turn.user!.event.id, turn.user!.content)}>{copiedEventId === turn.user.event.id ? <Check size={13}/> : <Copy size={13}/>}</button>{lastUserEventId === turn.user.event.id && <button type="button" className="conversation-message-rewrite" aria-label="编辑并重新思考" title="编辑并重新思考" onClick={() => { setEditingEventId(turn.user!.event.id); setEditingContent(turn.user!.content); }}><Pencil size={13}/></button>}</div></footer></article>}</div>}
           {processBlocks.map((block, blockIndex) => block.kind === 'condensation'
             ? <CondensationNotices key={block.id} items={block.items}/>
             : <ActivityGroup

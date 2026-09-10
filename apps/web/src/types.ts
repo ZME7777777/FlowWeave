@@ -636,16 +636,9 @@ export interface AgentPendingConfirmation {
 export interface AgentAttachment {
   filename: string; mime_type: string; byte_size: number; path: string; image_data_url?: string | null;
 }
-export type AgentMessageKind = 'EXECUTE' | 'QUESTION' | 'DECISION' | 'CORRECTION' | 'STATUS' | 'CONTINUE';
-export type AgentConversationReferenceUse = 'IMPLEMENTATION_SPEC' | 'CONSTRAINT' | 'BACKGROUND' | 'CORRECTION_SOURCE' | 'EVIDENCE' | 'OUTPUT_EXAMPLE';
 export interface AgentConversationReference {
   event_id: string;
-  start_offset: number;
-  end_offset: number;
-  source_sha256: string;
-  use: AgentConversationReferenceUse;
-  /** Server-projected source text. It is never trusted or sent back as authority. */
-  content?: string;
+  content: string;
 }
 export interface AgentConversationContext {
   used_tokens?: number | null; window_tokens?: number | null; cumulative_tokens?: number | null;

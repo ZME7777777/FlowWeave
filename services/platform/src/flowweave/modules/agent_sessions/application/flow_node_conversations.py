@@ -16,6 +16,7 @@ from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from flowweave.modules.agent_sessions import public as agent_sessions
+from flowweave.modules.agent_sessions.application import usage as usage_projection
 from flowweave.modules.agent_sessions.application.conversations import (
     AGENT_WORKSPACE_CONDENSER_MAX_EVENTS,
     ATTACHMENT_PATH,
@@ -1767,7 +1768,10 @@ def _event_batch_dict(
                 }
                 for item in attachments
             ]
-        elif references:
+        elif event.event_type == "MESSAGE" and str(payload.get("source") or "").lower() in {
+            "user",
+            "human",
+        }:
             payload["display_content"] = display_content
         return {"id": event.cursor, "event_type": event.event_type, "payload": payload}
 
@@ -2316,7 +2320,8 @@ def rerun_node_message(
     if parent_id is not None and not isinstance(parent_id, str):
         raise DomainError("RUNTIME_EVENT_IDENTITY_INVALID", "消息事件身份无效", 409)
     runtime.navigate(handle, parent_id)
-    result = runtime.send_message(handle, content.strip())
+    prompt, image_urls = message_payload(content.strip(), (), ())
+    result = runtime.send_message(handle, prompt, image_urls)
     _observe_task_watchdogs_after_send(db, binding, handle)
     activity_at = now()
     binding.last_connected_at = activity_at
