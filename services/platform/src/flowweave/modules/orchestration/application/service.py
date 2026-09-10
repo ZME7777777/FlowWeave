@@ -4060,6 +4060,7 @@ def _automatic_run_summary(
     run: FlowRun,
     schedule: FlowRunSchedule | None,
     node_state_counts: dict[str, int],
+    usage: dict[str, int | float | str | None],
 ) -> dict[str, Any]:
     """Project only the fields required by the automatic-record rail."""
 
@@ -4103,6 +4104,7 @@ def _automatic_run_summary(
             "terminal": terminal,
             "active": total - terminal,
         },
+        "usage": usage,
     }
 
 
@@ -4130,6 +4132,7 @@ def list_nested_automatic_run_summaries(db: Session, parent_run_id: str) -> list
         else []
     )
     schedules_by_id = {schedule.id: schedule for schedule in schedules}
+    usage_by_run = usage_projection.for_scope(db, field="flow_run_id", ids=child_ids)
     counts_by_run: dict[str, dict[str, int]] = {child.id: {} for child in children}
     for flow_run_id, state, count in db.execute(
         select(NodeRun.flow_run_id, NodeRun.state, func.count(NodeRun.id))
@@ -4139,7 +4142,10 @@ def list_nested_automatic_run_summaries(db: Session, parent_run_id: str) -> list
         counts_by_run[flow_run_id][state] = int(count)
     return [
         _automatic_run_summary(
-            child, schedules_by_id.get(child.schedule_id), counts_by_run[child.id]
+            child,
+            schedules_by_id.get(child.schedule_id),
+            counts_by_run[child.id],
+            usage_by_run.get(child.id, usage_projection.empty()),
         )
         for child in children
     ]

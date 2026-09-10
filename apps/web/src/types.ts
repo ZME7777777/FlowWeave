@@ -368,6 +368,7 @@ export interface FlowRunAutomaticRecordSummary {
   plan: { start_node_key: string; reachable_node_count: number; configured_node_count: number;
     readiness: { ready: boolean; issue_count: number } };
   progress: { node_runs: number; accepted: number; terminal: number; active: number };
+  usage?: TokenUsageSummary;
 }
 export interface FlowRunAutomaticRecordWrite {
   name?: string; environment_version_id: string; start_node_key: string;
