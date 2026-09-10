@@ -32,6 +32,7 @@ from flowweave.shared.http import (
     get_container,
     run_blocking,
     run_blocking_control,
+    run_blocking_history,
     run_sync,
 )
 from flowweave.shared.settings import bind_settings, reset_settings
@@ -564,7 +565,10 @@ async def agent_events(
     history_cursor: str | None = Query(default=None, max_length=200),
 ) -> dict[str, Any]:
     try:
-        return await run_blocking(
+        # ``history_cursor`` is a best-effort older-page prefetch. Reserve the
+        # normal Runtime-read lane for current events and execution status.
+        execute = run_blocking_history if history_cursor and not cursor else run_blocking
+        return await execute(
             container,
             lambda session: conversations.events(
                 session, workspace_id, binding_id, cursor, history_cursor

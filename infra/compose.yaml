@@ -25,6 +25,7 @@ x-platform-env: &platform-env
   POOL_MAX_OVERFLOW: ${POOL_MAX_OVERFLOW:-0}
   DATABASE_POOL_TIMEOUT_SECONDS: ${DATABASE_POOL_TIMEOUT_SECONDS:-2}
   BLOCKING_POOL_TIMEOUT_SECONDS: ${BLOCKING_POOL_TIMEOUT_SECONDS:-2}
+  HISTORY_READ_POOL_SIZE: ${HISTORY_READ_POOL_SIZE:-1}
   SSE_MAX_SUBSCRIBERS: ${SSE_MAX_SUBSCRIBERS:-256}
   SSE_SUBSCRIBER_QUEUE_SIZE: ${SSE_SUBSCRIBER_QUEUE_SIZE:-8}
   RATE_LIMIT_REDIS_URL: ${RATE_LIMIT_REDIS_URL:-}
@@ -191,7 +192,11 @@ services:
       POOL_SIZE: 8
       POOL_MAX_OVERFLOW: 0
       DATABASE_POOL_TIMEOUT_SECONDS: 2
-      BLOCKING_POOL_SIZE: 2
+      # Current execution state uses the interactive lane; older conversation
+      # pages use a separate one-connection history lane. Four interactive
+      # reads per API worker prevent a slow Runtime page from starving reload.
+      BLOCKING_POOL_SIZE: 4
+      HISTORY_READ_POOL_SIZE: 1
       BLOCKING_POOL_TIMEOUT_SECONDS: 2
       DOCKER_CONTROLLER_API_KEY: ${DOCKER_CONTROLLER_API_KEY:?set a random API controller key with at least 32 characters}
     labels:
@@ -238,6 +243,7 @@ services:
       POOL_MAX_OVERFLOW: 0
       DATABASE_POOL_TIMEOUT_SECONDS: 2
       BLOCKING_POOL_SIZE: 1
+      HISTORY_READ_POOL_SIZE: 1
       BLOCKING_POOL_TIMEOUT_SECONDS: 2
       DOCKER_CONTROLLER_API_KEY: ${DOCKER_CONTROLLER_API_KEY:?set a random API controller key with at least 32 characters}
     labels:
@@ -280,6 +286,7 @@ services:
       POOL_MAX_OVERFLOW: 0
       DATABASE_POOL_TIMEOUT_SECONDS: 2
       BLOCKING_POOL_SIZE: 4
+      HISTORY_READ_POOL_SIZE: 1
       BLOCKING_POOL_TIMEOUT_SECONDS: 2
       DOCKER_CONTROLLER_API_KEY: ${DOCKER_CONTROLLER_WORKER_API_KEY:?set a different random Worker controller key with at least 32 characters}
     labels:

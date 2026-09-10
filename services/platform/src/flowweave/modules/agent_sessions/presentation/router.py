@@ -39,6 +39,7 @@ from flowweave.shared.http import (
     command_key,
     get_container,
     run_blocking,
+    run_blocking_history,
     run_sync,
 )
 from flowweave.shared.schemas import ConversationPatchWrite
@@ -613,7 +614,10 @@ async def node_session_events(
     cursor: str | None = Query(default=None, max_length=200),
     history_cursor: str | None = Query(default=None, max_length=200),
 ) -> dict[str, Any]:
-    return await run_blocking(
+    # The latest-window route is interactive. Older pages are browser prefetch
+    # and must not occupy its Runtime/DB lane while a live turn is recovering.
+    execute = run_blocking_history if history_cursor and not cursor else run_blocking
+    return await execute(
         container,
         lambda session: agent_sessions.flow_node_conversations.read_node_conversation_events(
             session,

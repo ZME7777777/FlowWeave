@@ -3633,6 +3633,14 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 
 完成：`POST /node-attempts/{attempt_id}/reconcile-runtime-completion` 现仅接受 `expected_state_version`，工作台删除“对账原因”输入并可直接确认补登。新增迁移 `0110_candidate_output_set_owner` 回填并强制 `candidate_output_sets.owner_user_id`，使部署中现有模型查询与 PostgreSQL 模式一致。
 
+### FR-273 节点会话首屏运行态与历史预取隔离 — DONE
+
+依赖：`FR-228`、`FR-229`。节点会话打开时必须先恢复最新 OpenHands 窗口和原生运行态；旧历史页只能在会话空闲后低优先级预取，不能占用 `input-readiness` 或确认读取的 Runtime/数据库预算，更不能让尚未确认状态的会话错误显示为暂停／继续。
+
+完成：浏览器在最新窗口存在未完成正式用户事件、原生运行态读取尚在进行或明确运行中时暂停旧历史预取；首次 Runtime 状态延迟时由该正式事件暂时维持“正在处理”，只有 OpenHands 明确返回 `paused` 才显示继续。平台为 `history_cursor` 旧页增加独立的单并发线程与数据库连接 lane，节点和独立 Agent 路由均从该 lane 读取；交互事件、`input-readiness`、确认读取继续保留互动 lane。API 互动 lane 从每进程 2 提升为 4，旧页不再能耗尽会话状态预算。模型网关 502 仍按 OpenHands 正式错误显示，绝不伪装为暂停。
+
+验收：Python `py_compile`、历史／交互 lane 定向 pytest、Web TypeScript typecheck、受影响 Web ESLint、production build、Compose 渲染、Alembic head、任务状态唯一性与 `git diff --check`；以 commit 绑定方式部署共享平台镜像，先运行 migration，再重建 runtime-provider、api、worker 与 stream-api，验证节点会话运行态、历史预取与公网入口。
+
 ### FR-271 Agent 会话模型无事件等待上限 — DONE
 
 依赖：无（运行稳定性修复）。
@@ -3658,6 +3666,7 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-10 | FR-273 | 受影响 Python `py_compile`、Ruff format/check、历史／交互 lane 直接隔离 smoke；受影响 Web ESLint、TypeScript typecheck、production build；Compose 渲染、Alembic head、任务状态唯一性与 `git diff --check` | PASS（静态、构建与直接冒烟）：节点与独立 Agent 会话的旧 `history_cursor` 页进入独立单并发数据库／线程 lane，交互事件、`input-readiness` 与确认读取不会再被历史预取耗尽。首屏在最新窗口有未完成正式用户事件时维持“正在处理”，仅在 OpenHands 明确返回 `paused` 后显示继续；旧页只在原生运行态确认空闲后异步预取。Python 编译、Ruff、受影响 Web ESLint、Web typecheck/build、Compose 渲染、唯一 Alembic head、任务状态与 whitespace 检查通过；直接 lane smoke 证明被阻塞的历史读取不阻塞交互读取。`tests/test_http.py` 定向 pytest 在断言前因本机 Docker Unix socket 缺失、Testcontainers PostgreSQL 无法启动而阻断，未伪记为通过。 |
 | 2026-09-10 | FR-269 | OpenHands 完成身份定向 pytest；无需 Docker fixture 的 Runtime 投影／重复完成／人工对账定向 pytest；受影响 Python Ruff format/check、`py_compile`；Web typecheck、受影响 Web ESLint、production build；Alembic head、任务状态唯一性与 `git diff --check` | PASS：OpenHands 适配器将 FinishAction ID 与 finish observation leaf cursor 分离；缺失历史 FlowWeave 投影标记不再阻断新的正式 FinishAction，重复同一 ID 仍不重放。对账命令仅接受受阻 Attempt 的当前活跃正式完成，写入原因/FinishAction ID 审计并复用 Artifact/Candidate/END Gate 投影；没有人工路径、事件 ID 或文件路径旁路。`test_openhands.py` 为 111 passed，独立 Runtime 定向为 3 passed；完整 Runtime pytest collection 的 21 个数据库 fixture 在断言前受本机 Docker socket 缺失阻断，未伪记为功能失败。唯一 Alembic head 为 `0109_hook_capabilities`；Web 全局 lint 仍因 `AgentSessionWorkbench.tsx` 两条既有 Hook dependency warning 在 `--max-warnings=0` 下失败，受影响文件 ESLint/typecheck/build 均通过。 |
 | 2026-09-10 | FR-267 | CLI Node 测试、语法检查、npm pack 清单、12 个仓库 FlowWeave Skill frontmatter 检查、Alembic head、`git diff --check` 与任务状态唯一性 | PASS：`@flowweave-ai/cli@0.4.0` 的 12 项 Node 测试均通过；`event-trigger` 的读取、创建、追加版本，以及受控 Hook 元数据映射覆盖 dry-run URL／请求体与缺参拒绝。打包仅含 README、CLI 入口和 package metadata；唯一 Alembic head 为 `0109_hook_capabilities`，无 `CURRENT` 或 whitespace 错误。 |
 | 2026-09-10 | FR-266 | Web typecheck／production build、受影响 `CapabilitiesPage.tsx` ESLint、`git diff --check` 与任务状态唯一性 | PASS：Hook 专属选择器在既有 Modal/能力编辑器规则后锁定六项事件单排、两列主体和完整标题留白。 |

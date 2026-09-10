@@ -141,6 +141,28 @@ async def run_blocking_control(container: Container, operation: Callable[[Sessio
     )
 
 
+async def run_blocking_history(container: Container, operation: Callable[[Session], T]) -> T:
+    """Run one best-effort older-history page outside the interactive lane.
+
+    A browser may prefetch many historical OpenHands pages after it has painted
+    the latest window. This lane is intentionally small and independently
+    pooled: saturation drops the prefetch rather than delaying readiness or
+    confirmation reads for a running conversation.
+    """
+
+    return await _run_blocking_lane(
+        container,
+        operation,
+        executor=container.history_read_executor,
+        slots=container.history_read_slots,
+        session_factory=container.database.history_sessions,
+        saturation_code="RUNTIME_HISTORY_READ_SATURATED",
+        saturation_message="Conversation history is being loaded; retry shortly",
+        lane_name="history",
+        active_limit=container.settings.history_read_pool_size,
+    )
+
+
 async def _run_blocking_lane(
     container: Container,
     operation: Callable[[Session], T],

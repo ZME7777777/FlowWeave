@@ -48,6 +48,8 @@ class Container:
     audit_writer: AuditWriter
     blocking_executor: ThreadPoolExecutor
     blocking_io_slots: asyncio.Semaphore
+    history_read_executor: ThreadPoolExecutor
+    history_read_slots: asyncio.Semaphore
     blocking_control_executor: ThreadPoolExecutor
     blocking_control_slots: asyncio.Semaphore
 
@@ -59,6 +61,11 @@ class Container:
         unregister_http_transport(self.settings, self.http_transport)
         await asyncio.to_thread(
             self.blocking_executor.shutdown,
+            wait=True,
+            cancel_futures=True,
+        )
+        await asyncio.to_thread(
+            self.history_read_executor.shutdown,
             wait=True,
             cancel_futures=True,
         )
@@ -88,6 +95,10 @@ def build_container(settings: Settings, *, role: Literal["api", "worker"]) -> Co
         max_workers=blocking_workers,
         thread_name_prefix=f"flowweave-{role}-blocking",
     )
+    history_read_executor = ThreadPoolExecutor(
+        max_workers=settings.history_read_pool_size,
+        thread_name_prefix=f"flowweave-{role}-history-read",
+    )
     blocking_control_executor = ThreadPoolExecutor(
         max_workers=1,
         thread_name_prefix=f"flowweave-{role}-runtime-control",
@@ -113,6 +124,8 @@ def build_container(settings: Settings, *, role: Literal["api", "worker"]) -> Co
         audit_writer=AuditWriter(database.sessions),
         blocking_executor=blocking_executor,
         blocking_io_slots=asyncio.Semaphore(blocking_workers),
+        history_read_executor=history_read_executor,
+        history_read_slots=asyncio.Semaphore(settings.history_read_pool_size),
         blocking_control_executor=blocking_control_executor,
         blocking_control_slots=asyncio.Semaphore(1),
     )

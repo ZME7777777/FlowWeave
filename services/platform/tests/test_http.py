@@ -12,7 +12,7 @@ import pytest
 
 from flowweave.bootstrap import api as api_module
 from flowweave.shared.errors import DomainError
-from flowweave.shared.http import run_blocking, run_blocking_control
+from flowweave.shared.http import run_blocking, run_blocking_control, run_blocking_history
 
 
 class _Session:
@@ -35,6 +35,10 @@ class _Database:
     def control_sessions(self):
         yield _Session()
 
+    @contextmanager
+    def history_sessions(self):
+        yield _Session()
+
 
 @pytest.mark.asyncio
 async def test_run_blocking_keeps_cancelled_thread_counted_until_it_exits() -> None:
@@ -53,10 +57,12 @@ async def test_run_blocking_keeps_cancelled_thread_counted_until_it_exits() -> N
         container = SimpleNamespace(
             blocking_executor=executor,
             blocking_io_slots=asyncio.Semaphore(1),
+            history_read_executor=executor,
+            history_read_slots=asyncio.Semaphore(1),
             blocking_control_executor=control_executor,
             blocking_control_slots=asyncio.Semaphore(1),
             database=_Database(),
-            settings=SimpleNamespace(blocking_pool_size=1),
+            settings=SimpleNamespace(blocking_pool_size=1, history_read_pool_size=1),
         )
         request = asyncio.create_task(run_blocking(container, blocked))
         for _ in range(100):
@@ -93,6 +99,45 @@ async def test_run_blocking_keeps_cancelled_thread_counted_until_it_exits() -> N
         finally:
             principal_context.reset(token)
         assert result == "bound"
+
+
+@pytest.mark.asyncio
+async def test_history_reads_do_not_saturate_interactive_runtime_lane() -> None:
+    history_started = threading.Event()
+    history_release = threading.Event()
+
+    def history_read(_session: _Session) -> str:
+        history_started.set()
+        assert history_release.wait(timeout=2)
+        return "history"
+
+    with (
+        ThreadPoolExecutor(max_workers=1) as interactive_executor,
+        ThreadPoolExecutor(max_workers=1) as history_executor,
+        ThreadPoolExecutor(max_workers=1) as control_executor,
+    ):
+        container = SimpleNamespace(
+            blocking_executor=interactive_executor,
+            blocking_io_slots=asyncio.Semaphore(1),
+            history_read_executor=history_executor,
+            history_read_slots=asyncio.Semaphore(1),
+            blocking_control_executor=control_executor,
+            blocking_control_slots=asyncio.Semaphore(1),
+            database=_Database(),
+            settings=SimpleNamespace(blocking_pool_size=1, history_read_pool_size=1),
+        )
+        history_task = asyncio.create_task(run_blocking_history(container, history_read))
+        for _ in range(100):
+            if history_started.is_set():
+                break
+            await asyncio.sleep(0.001)
+        assert history_started.is_set()
+
+        # An interactive native-state read must remain available even while an
+        # older page is waiting on OpenHands.
+        assert await run_blocking(container, lambda _session: "interactive") == "interactive"
+        history_release.set()
+        assert await history_task == "history"
 
 
 def test_api_slow_request_log_excludes_query_values(anonymous_client, monkeypatch, caplog) -> None:

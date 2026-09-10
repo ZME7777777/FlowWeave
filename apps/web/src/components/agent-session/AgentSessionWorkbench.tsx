@@ -1855,7 +1855,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   useEffect(() => {
     if (!workspace || !conversationsQuery.hasNextPage || conversationsQuery.isFetchingNextPage) return;
     void conversationsQuery.fetchNextPage();
-  }, [conversationsQuery.fetchNextPage, conversationsQuery.hasNextPage, conversationsQuery.isFetchingNextPage, workspace]);
+  }, [conversationsQuery, workspace]);
   const workDirectoriesQuery = useQuery({ queryKey: sessionQueryKey(host, 'work-directories', workspace?.id), queryFn: () => api.workDirectories(workspace!.id), enabled: Boolean(workspace && features.workDirectories) });
   const providersQuery = useQuery({ queryKey: ['model-providers'], queryFn: api.providers, enabled: Boolean(workspace && features.modelSelection) });
   const capabilityCatalogQuery = useQuery({ queryKey: sessionQueryKey(host, 'capability-catalog'), queryFn: api.capabilities, enabled: Boolean(workspace && features.capabilities) });
@@ -2012,6 +2012,19 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     && (isGenerating || streamHold?.bindingId === selected.id),
   );
   const eventQueryKey = sessionQueryKey(host, 'conversation-events', workspace?.id, selected?.id);
+  const inputReadinessQuery = useQuery({
+    queryKey: sessionQueryKey(host, 'conversation-input-readiness', workspace?.id, selected?.id),
+    queryFn: () => api.inputReadiness(workspace!.id, selected!.id),
+    // This is the formal OpenHands execution-state read used to restore an
+    // in-flight turn after a browser reload. It is not persisted by FlowWeave.
+    enabled: Boolean(workspace && selected),
+    refetchInterval: query => {
+      const needsFallback = turnState === 'pausing' || queuedMessages.length > 0 || isGenerating || query.state.data?.ready === false;
+      if (!pageVisible || !needsFallback) return false;
+      return Math.min(2000 * 2 ** query.state.fetchFailureCount, 10_000);
+    },
+    retry: (count, error) => !(error instanceof ApiError && error.status < 500) && count < 2,
+  });
   const eventsQuery = useQuery({
     queryKey: eventQueryKey, queryFn: () => api.conversationEvents(workspace!.id, selected!.id), enabled: Boolean(workspace && selected),
     retry: (count, error) => !(error instanceof ApiError && error.status < 500) && count < 2,
@@ -2051,7 +2064,14 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       cancelled = true;
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [api, eventQueryKey, eventsQuery.data?.next_cursor, isGenerating, pageVisible, queryClient, selected?.id, workspace?.id]);
+  }, [api, eventQueryKey, eventsQuery.data?.next_cursor, isGenerating, pageVisible, queryClient, selected, workspace]);
+  const hasUnfinishedInitialTurn = Boolean(latestUnfinishedUserEventId(eventsQuery.data?.events ?? []));
+  const historyPrefetchBlocked = isGenerating
+    || hasUnfinishedInitialTurn
+    || inputReadinessQuery.isLoading
+    || inputReadinessQuery.isFetching
+    || conversationIsRunning(inputReadinessQuery.data?.execution_status);
+  const historyPrefetchDelayMs = inputReadinessQuery.isError ? 5000 : 0;
   const loadAllHistory = useCallback(async () => {
     if (!workspace || !selected || !eventsQuery.data?.history_cursor) return;
     const scope = selected.id;
@@ -2079,15 +2099,15 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   }, [api, eventQueryKey, eventsQuery.data?.history_cursor, queryClient, reportOperationError, selected, workspace]);
   useEffect(() => {
     const bindingId = selected?.id;
-    if (!bindingId || !eventsQuery.data?.history_cursor || historyLoadingScopes.current.has(bindingId)) return;
-    // Render the newest native window first, then asynchronously drain every
-    // older OpenHands page. The browser is the read scheduler; FlowWeave does
-    // not cache or reconstruct conversation history on the server.
+    if (!bindingId || !eventsQuery.data?.history_cursor || historyLoadingScopes.current.has(bindingId) || historyPrefetchBlocked) return;
+    // Render the newest native window and restore its native running status
+    // first. Historical pages are idle prefetch only: they must never make a
+    // newly opened, still-running node session look paused or unavailable.
     const timer = window.setTimeout(() => {
       void loadAllHistory();
-    }, 0);
+    }, historyPrefetchDelayMs);
     return () => window.clearTimeout(timer);
-  }, [eventsQuery.data?.history_cursor, loadAllHistory, selected?.id]);
+  }, [eventsQuery.data?.history_cursor, historyPrefetchBlocked, historyPrefetchDelayMs, loadAllHistory, selected?.id]);
   const displayedEvents = useMemo(() => {
     const activeScope = selected?.id ?? conversationDraft?.id;
     const bootstrapEvent = optimisticBootstrapTurn && optimisticBootstrapTurn.scope === activeScope
@@ -2144,19 +2164,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     });
     setDrawerOpen(true);
   }, [candidateOutputUrl, workspace]);
-  const inputReadinessQuery = useQuery({
-    queryKey: sessionQueryKey(host, 'conversation-input-readiness', workspace?.id, selected?.id),
-    queryFn: () => api.inputReadiness(workspace!.id, selected!.id),
-    // This is the formal OpenHands execution-state read used to restore an
-    // in-flight turn after a browser reload. It is not persisted by FlowWeave.
-    enabled: Boolean(workspace && selected),
-    refetchInterval: query => {
-      const needsFallback = turnState === 'pausing' || queuedMessages.length > 0 || isGenerating || query.state.data?.ready === false;
-      if (!pageVisible || !needsFallback) return false;
-      return Math.min(2000 * 2 ** query.state.fetchFailureCount, 10_000);
-    },
-    retry: (count, error) => !(error instanceof ApiError && error.status < 500) && count < 2,
-  });
   const contextQuery = useQuery({
     queryKey: sessionQueryKey(host, 'conversation-context', workspace?.id, selected?.id),
     queryFn: () => api.conversationContext(workspace!.id, selected!.id),
@@ -2305,12 +2312,17 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     setTurnState(current => current === 'idle' ? 'paused' : current);
   }, [inputReadinessQuery.data?.execution_status, selected]);
   useEffect(() => {
-    if (!selected || inputReadinessQuery.data?.ready !== false) return;
+    // On first entry, the native readiness request can be delayed by a Runtime
+    // reconnect. A persisted, unfinished formal user event already proves the
+    // turn is active; do not render a Pause/Resume state until OpenHands has
+    // explicitly reported one.
+    if (!selected || inputReadinessQuery.data?.ready === true
+      || inputReadinessQuery.data?.execution_status?.toLowerCase() === 'paused') return;
     const userEventId = latestUnfinishedUserEventId(displayedEvents);
     if (!userEventId) return;
     setActiveTurnEventId(current => current ?? userEventId);
     setTurnState(current => current === 'idle' ? 'running' : current);
-  }, [displayedEvents, inputReadinessQuery.data?.ready, selected]);
+  }, [displayedEvents, inputReadinessQuery.data?.execution_status, inputReadinessQuery.data?.ready, selected]);
   useEffect(() => {
     if ((turnState === 'running' || turnState === 'resuming') && activeTurnEventId && hasFinishedTurn(displayedEvents, activeTurnEventId)) {
       clearLiveText();

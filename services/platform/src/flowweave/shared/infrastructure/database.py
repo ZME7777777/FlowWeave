@@ -49,6 +49,20 @@ class Database:
         self.blocking_sessions = sessionmaker(
             self.blocking_engine, expire_on_commit=False, autoflush=False
         )
+        # Background history reads can take several seconds against a large
+        # OpenHands conversation. They must never reserve the same database
+        # connection budget as the interactive state/readiness path.
+        self.history_engine: Engine = create_engine(
+            settings.database_url,
+            pool_pre_ping=True,
+            pool_size=settings.history_read_pool_size,
+            max_overflow=0,
+            pool_timeout=settings.blocking_pool_timeout_seconds,
+            connect_args={"options": f"-c statement_timeout={settings.statement_timeout_ms}"},
+        )
+        self.history_sessions = sessionmaker(
+            self.history_engine, expire_on_commit=False, autoflush=False
+        )
         # Runtime control commands must remain available when every ordinary
         # read worker is blocked on an unhealthy Agent Server.  A separate
         # single-connection lane prevents read saturation from denying the
@@ -80,12 +94,14 @@ class Database:
     async def dispose(self) -> None:
         await self.engine.dispose()
         await asyncio.to_thread(self.blocking_engine.dispose)
+        await asyncio.to_thread(self.history_engine.dispose)
         await asyncio.to_thread(self.control_engine.dispose)
 
     def pool_metrics(self) -> dict[str, dict[str, int]]:
         pools = {
             "async": cast(QueuePool, self.engine.sync_engine.pool),
             "blocking": cast(QueuePool, self.blocking_engine.pool),
+            "history": cast(QueuePool, self.history_engine.pool),
             "control": cast(QueuePool, self.control_engine.pool),
         }
         return {
