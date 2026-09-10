@@ -8031,7 +8031,7 @@ def _remediate_gate_failure(
     expected_state_version: int,
     idempotency_key: str,
     automatic: bool,
-) -> NodeAttempt:
+) -> tuple[NodeAttempt, str]:
     """Native-fork the failed execution Conversation and send one gate report.
 
     The Attempt is the FlowWeave projection of a logical node execution; its
@@ -8116,7 +8116,7 @@ def _remediate_gate_failure(
         node_run.id,
         current.id,
     )
-    return current
+    return current, target_binding_id
 
 
 def remediate_gate_failure(
@@ -8134,8 +8134,23 @@ def remediate_gate_failure(
     if existing is not None:
         if existing.action_type != "FORK_GATE_REMEDIATION" or existing.attempt_id != attempt_id:
             raise conflict("gate remediation idempotency key is already used")
-        return attempt_detail(db, attempt_id)
-    current = _remediate_gate_failure(
+        binding_id = str(existing.payload_json.get("binding_id") or "")
+        if not binding_id:
+            # Actions created before the command-result contract did not save
+            # the safe FlowWeave binding identity. Reconstruct it from the
+            # Attempt's current native locator so an in-flight HTTP retry can
+            # still recover the already-created conversation.
+            if not current.conversation_id:
+                raise conflict("gate remediation result is missing its conversation binding")
+            binding_id = str(
+                agent_sessions.flow_node_locator.conversation_binding(
+                    db,
+                    flow_run_id=run.id,
+                    openhands_conversation_id=current.conversation_id,
+                ).id
+            )
+        return {"attempt": attempt_detail(db, attempt_id), "binding_id": binding_id}
+    current, binding_id = _remediate_gate_failure(
         db,
         current,
         node_run,
@@ -8149,12 +8164,16 @@ def remediate_gate_failure(
         run.id,
         "FORK_GATE_REMEDIATION",
         idempotency_key,
-        {"expected_state_version": payload.expected_state_version, "attempt_id": current.id},
+        {
+            "expected_state_version": payload.expected_state_version,
+            "attempt_id": current.id,
+            "binding_id": binding_id,
+        },
         node_run.id,
         current.id,
     )
     finish(db)
-    return attempt_detail(db, current.id)
+    return {"attempt": attempt_detail(db, current.id), "binding_id": binding_id}
 
 
 def gate_evaluation_events(

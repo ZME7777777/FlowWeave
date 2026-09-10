@@ -1311,7 +1311,7 @@ test('completed continuous attempts load frozen input and candidate output metad
   await expect(output).not.toContainText('等待本轮执行产出');
 });
 
-test('gate review conversation renders two compact records with full content on demand', async ({ page }) => {
+test('gate review conversation stays compact and remediation enters the created revision', async ({ page }) => {
   const gatePolicy = {
     id: 'gate-policy-1', stage: 'END', position: 0, gate_type: 'PROMPT', enabled: true,
     timeout_seconds: 300, config: { prompt: '检查交付物是否满足验收标准。', code: '' },
@@ -1345,6 +1345,8 @@ test('gate review conversation renders two compact records with full content on 
     { id: 'gate-tool-call', event_type: 'TOOL_CALL', payload: { source: 'agent', tool_name: 'terminal', content: '工具过程不应嵌入审查详情' } },
     { id: 'gate-message-assistant', event_type: 'MESSAGE', payload: { source: 'agent', content: answer } },
   ];
+  let releaseRemediation: (() => void) | undefined;
+  const remediationPending = new Promise<void>(resolve => { releaseRemediation = resolve; });
 
   await page.route('**/api/v1/**', async route => {
     const request = route.request();
@@ -1360,6 +1362,10 @@ test('gate review conversation renders two compact records with full content on 
     if (path === `/api/v1/flow-runs/${gateRun.id}/automatic-runs`) return respond([]);
     if (path === `/api/v1/node-attempts/${gateAttempt.id}/gate-evaluations/${gateEvaluation.id}/conversation/events`) {
       return respond({ events: conversationEvents, next_cursor: null, history_cursor: null });
+    }
+    if (path === `/api/v1/node-attempts/${gateAttempt.id}/remediate-gate-failure` && request.method() === 'POST') {
+      await remediationPending;
+      return respond({ attempt: gateAttempt, binding_id: 'gate-revision-binding' }, 201);
     }
     return respond({ error: { code: 'RESOURCE_NOT_FOUND', message: `未配置测试路由：${path}`, details: {} } }, 404);
   });
@@ -1390,4 +1396,19 @@ test('gate review conversation renders two compact records with full content on 
   await records.getByRole('button', { name: '查看审查回复完整内容' }).click();
   const answerDialog = page.getByRole('dialog', { name: '审查回复完整内容' });
   await expect(answerDialog.locator('pre')).toHaveText(answer);
+  await answerDialog.getByRole('button', { name: '关闭审查回复完整内容' }).click();
+  await gateDialog.getByRole('button', { name: '关闭门禁详情' }).click();
+
+  await attemptPanel.getByRole('button', { name: '概览', exact: true }).click();
+  const remediationButton = attemptPanel.locator('.terminal-run-panel button.primary');
+  await expect(remediationButton).toHaveText('根据门禁结果调整并重试');
+  await remediationButton.click();
+  const confirmation = page.getByRole('alertdialog');
+  await expect(confirmation).toContainText('创建成功后直接带你进入该会话');
+  await confirmation.getByRole('button', { name: '创建并进入调整会话', exact: true }).click();
+  await expect(remediationButton).toContainText('正在创建并进入调整会话');
+  await expect(attemptPanel.getByRole('status')).toContainText('正在从本轮完成边界创建调整分支');
+
+  releaseRemediation?.();
+  await expect(page).toHaveURL(new RegExp(`/agent-sessions/gate-revision-binding$`));
 });

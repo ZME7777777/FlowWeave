@@ -786,7 +786,7 @@ def test_automatic_end_gate_forks_and_sends_the_latest_gate_report(monkeypatch):
     )
 
     with runtime_context(NativeRuntime()):
-        orchestration_service._remediate_gate_failure(
+        remediated, binding_id = orchestration_service._remediate_gate_failure(
             None,
             attempt,
             node_run,
@@ -796,6 +796,8 @@ def test_automatic_end_gate_forks_and_sends_the_latest_gate_report(monkeypatch):
             automatic=True,
         )
 
+    assert remediated is attempt
+    assert binding_id == "binding-target"
     assert attempt.conversation_id == "forked-conversation"
     assert resolved == [
         {
@@ -900,7 +902,7 @@ def test_automatic_repairs_fork_from_the_latest_failed_conversation(monkeypatch)
     monkeypatch.setattr(orchestration_service, "_event", lambda *_args, **_kwargs: None)
 
     with runtime_context(NativeRuntime()):
-        orchestration_service._remediate_gate_failure(
+        first, first_binding_id = orchestration_service._remediate_gate_failure(
             None,
             attempt,
             node_run,
@@ -909,7 +911,7 @@ def test_automatic_repairs_fork_from_the_latest_failed_conversation(monkeypatch)
             idempotency_key="repair-1",
             automatic=True,
         )
-        orchestration_service._remediate_gate_failure(
+        second, second_binding_id = orchestration_service._remediate_gate_failure(
             None,
             attempt,
             node_run,
@@ -919,8 +921,75 @@ def test_automatic_repairs_fork_from_the_latest_failed_conversation(monkeypatch)
             automatic=True,
         )
 
+    assert first is attempt
+    assert second is attempt
+    assert (first_binding_id, second_binding_id) == ("binding-repair-1", "binding-repair-2")
     assert source_conversation_ids == ["original-conversation", "repair-1"]
     assert attempt.conversation_id == "repair-2"
+
+
+def test_manual_gate_remediation_returns_and_replays_the_target_binding(monkeypatch):
+    """The browser receives a stable FlowWeave binding, never an OpenHands locator."""
+
+    attempt = SimpleNamespace(
+        id="attempt-1",
+        node_run_id="node-run-1",
+        conversation_id="forked-conversation",
+    )
+    node_run = SimpleNamespace(id="node-run-1", flow_run_id="run-1")
+    run = SimpleNamespace(id="run-1")
+    actions: list[SimpleNamespace] = []
+    finished: list[bool] = []
+
+    class Db:
+        def scalar(self, _statement):
+            return actions[0] if actions else None
+
+    monkeypatch.setattr(orchestration_service, "_attempt", lambda *_args: attempt)
+    monkeypatch.setattr(orchestration_service, "_node_run", lambda *_args: node_run)
+    monkeypatch.setattr(orchestration_service, "_locked_run", lambda *_args: run)
+    monkeypatch.setattr(
+        orchestration_service,
+        "_remediate_gate_failure",
+        lambda *_args, **_kwargs: (attempt, "binding-target"),
+    )
+
+    def action(_db, _run_id, action_type, key, payload, _node_run_id, attempt_id):
+        item = SimpleNamespace(
+            action_type=action_type,
+            idempotency_key=key,
+            attempt_id=attempt_id,
+            payload_json=payload,
+        )
+        actions.append(item)
+        return item
+
+    monkeypatch.setattr(orchestration_service, "_action", action)
+    monkeypatch.setattr(orchestration_service, "finish", lambda *_args: finished.append(True))
+    monkeypatch.setattr(
+        orchestration_service,
+        "attempt_detail",
+        lambda *_args, **_kwargs: {"id": "attempt-1", "state": "END_BLOCKED"},
+    )
+
+    payload = SimpleNamespace(expected_state_version=8)
+    first = orchestration_service.remediate_gate_failure(Db(), attempt.id, payload, "repair-key")
+    replay = orchestration_service.remediate_gate_failure(Db(), attempt.id, payload, "repair-key")
+
+    assert (
+        first
+        == replay
+        == {
+            "attempt": {"id": "attempt-1", "state": "END_BLOCKED"},
+            "binding_id": "binding-target",
+        }
+    )
+    assert actions[0].payload_json == {
+        "expected_state_version": 8,
+        "attempt_id": "attempt-1",
+        "binding_id": "binding-target",
+    }
+    assert finished == [True]
 
 
 def test_gate_remediation_prompt_only_contains_actionable_output_corrections(monkeypatch):

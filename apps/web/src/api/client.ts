@@ -1,7 +1,7 @@
 import type {
   AuthUser,
   AgentProfileVersion, ArtifactInput, ArtifactVersion, ArtifactVersionPage, RuntimeArtifactAuditPage, CapabilityAsset, CapabilityImportResult, FlowDefinition, FlowRun, FlowRunAutomaticRecord, FlowRunAutomaticRecordUpdate, FlowRunAutomaticRecordWrite, FlowRunConversation, FlowRunRuntimeOverview, FlowRunRuntimeResource, FlowRunSummary, FlowWrite, MessageAttachmentInput, OpenHandsConversationEventBatch, McpSource, SkillSource,
-  BlockedNodeDelete, BulkDeleteResult, CapabilityBulkDeleteResult, CodexDeviceAuthorization, CodexOAuthStatus, ModelProvider, ModelProviderDiscoveryWrite, ModelProviderUsage, ModelProviderWrite, NodeAsset, NodeAssetWrite, NodeAttempt, FlowRunAutomaticRecordSummary, ProviderBulkDeleteResult,
+  BlockedNodeDelete, BulkDeleteResult, CapabilityBulkDeleteResult, CodexDeviceAuthorization, CodexOAuthStatus, GateRemediationResult, ModelProvider, ModelProviderDiscoveryWrite, ModelProviderUsage, ModelProviderWrite, NodeAsset, NodeAssetWrite, NodeAttempt, FlowRunAutomaticRecordSummary, ProviderBulkDeleteResult,
   AgentAttachment, AgentConversation, AgentConversationContext, AgentConversationInputReadiness, AgentConversationReference, AgentPendingConfirmation, AgentWorkDirectory, AgentWorkDirectoryList, AgentWorkspace, AgentWorkspaceCapability, AgentWorkspaceDetails, AgentWorkspaceMcpReadiness, AgentWorkspaceRuntime, CapabilityCollection, CapabilityCollectionWrite, ContextBundleManifest, MarketplaceCatalog, NodeDirectory, NodeRun, OpenHandsConversationEvent, PluginSourceResolution, RunEvent, RuntimeConfirmationBatch, TerminalEnvironment, TerminalEnvironmentWrite, EnvironmentSetupSession, EnvironmentVersion, GatePolicy, WebsiteCredential, WebsiteCredentialWrite, FlowRunSchedule, FlowRunScheduleOccurrencePage, FlowRunScheduleWrite, FlowRunScheduleTemplate,
 } from '../types';
 import { deploymentBasePath } from '../deploymentPath';
@@ -481,7 +481,7 @@ export const api = {
     request<RuntimeConfirmationBatch>(`/runtime-confirmation-batches/${batchId}/decision`, json('POST', { accept, reason }, true)),
   acceptAttempt: (attemptId: string, version: number) => request<FlowRun>(`/node-attempts/${attemptId}/accept`, json('POST', { expected_state_version: version }, true)),
   acceptGateRisk: (attemptId: string, version: number, reason: string) => request<FlowRun>(`/node-attempts/${attemptId}/accept-gate-risk`, json('POST', { expected_state_version: version, reason }, true)),
-  remediateGateFailure: (attemptId: string, version: number) => request<NodeAttempt>(`/node-attempts/${attemptId}/remediate-gate-failure`, json('POST', { expected_state_version: version }, true)),
+  remediateGateFailure: (attemptId: string, version: number) => request<GateRemediationResult>(`/node-attempts/${attemptId}/remediate-gate-failure`, json('POST', { expected_state_version: version }, true)),
   reconcileRuntimeCompletion: (attemptId: string, version: number) => request<NodeAttempt>(`/node-attempts/${attemptId}/reconcile-runtime-completion`, json('POST', { expected_state_version: version }, true)),
   gateEvaluationEvents: (attemptId: string, evaluationId: string, cursor?: string, historyCursor?: string) => {
     const query = new URLSearchParams();

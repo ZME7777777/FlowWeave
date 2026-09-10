@@ -351,6 +351,11 @@ export interface NodeAttempt {
   usage?: TokenUsageSummary;
   created_at: string; updated_at: string;
 }
+export interface GateRemediationResult {
+  attempt: NodeAttempt;
+  /** Safe FlowWeave binding identity used to open the newly created revision conversation. */
+  binding_id: string;
+}
 export interface NodeRun {
   id: string; flow_run_id: string; flow_node_snapshot_key: string; sequence_no: number;
   name?: string | null;
