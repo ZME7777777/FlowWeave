@@ -1286,6 +1286,7 @@ def bootstrap_node_conversation(
     content: str,
     attachments: tuple[dict[str, str | int], ...],
     references: tuple[dict[str, Any], ...] = (),
+    message_kind: str = "QUESTION",
     legacy_image_urls: tuple[str, ...] = (),
     conversation_id: str | None,
     work_directory_id: str | None,
@@ -1309,7 +1310,7 @@ def bootstrap_node_conversation(
             if not value.startswith("data:image/"):
                 raise DomainError("AGENT_ATTACHMENT_INVALID", "图片附件无效", 422)
             base64.b64decode(value.partition(",")[2], validate=True)
-    prompt, image_urls = message_payload(text, attachments, ())
+    prompt, image_urls = message_payload(text, attachments, (), message_kind)
     if legacy_image_urls:
         image_urls = legacy_image_urls
     agent_sessions.resolve_flow_node_session_host(
@@ -1751,11 +1752,13 @@ def _event_batch_dict(
                 attempt_id=attempt.id,
                 binding_id=binding.id,
             )
-        display_content, references, _legacy_message_kind = project_message_context(
+        display_content, references, message_kind = project_message_context(
             str(payload.get("content") or "")
         )
         if references:
             payload["conversation_references"] = list(references)
+        if message_kind is not None:
+            payload["message_kind"] = message_kind
         attachments = attachments_by_event.get(event.cursor, [])
         if attachments:
             # Automatic starts record an empty display override: retain the
@@ -1918,6 +1921,7 @@ def send_node_message(
     content: str,
     attachments: tuple[dict[str, str | int], ...] = (),
     references: tuple[dict[str, Any], ...] = (),
+    message_kind: str = "QUESTION",
 ) -> dict[str, Any]:
     """Send the same attachment-aware native message as the outer workbench."""
 
@@ -1938,7 +1942,7 @@ def send_node_message(
     resolved_references = resolve_conversation_references(
         runtime.read_active_events(handle).events, references
     )
-    prompt, image_urls = message_payload(content, attachments, resolved_references)
+    prompt, image_urls = message_payload(content, attachments, resolved_references, message_kind)
     readiness = runtime.input_readiness(handle)
     queued_during_turn = not readiness.ready
     if queued_during_turn:
@@ -2326,7 +2330,7 @@ def rerun_node_message(
     if parent_id is not None and not isinstance(parent_id, str):
         raise DomainError("RUNTIME_EVENT_IDENTITY_INVALID", "消息事件身份无效", 409)
     runtime.navigate(handle, parent_id)
-    prompt, image_urls = message_payload(content.strip(), (), ())
+    prompt, image_urls = message_payload(content.strip(), (), (), "CORRECTION")
     result = runtime.send_message(handle, prompt, image_urls)
     _observe_task_watchdogs_after_send(db, binding, handle)
     activity_at = now()

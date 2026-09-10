@@ -2,7 +2,7 @@ import { Check, ChevronDown, ChevronRight, CircleAlert, Copy, ExternalLink, File
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type PointerEvent as ReactPointerEvent } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import type { AgentActivitySummary, AgentAttachment, AgentConversationReference, OpenHandsConversationEvent, RuntimeTaskControlSnapshot } from '../types';
+import type { AgentActivitySummary, AgentAttachment, AgentConversationReference, AgentConversationReferenceUse, OpenHandsConversationEvent, RuntimeTaskControlSnapshot } from '../types';
 import { deploymentBasePath } from '../deploymentPath';
 import { SubagentAvatar } from './SubagentAvatar';
 import { useEscapeClose } from './useEscapeClose';
@@ -36,6 +36,7 @@ export interface ConversationReference {
   startOffset: number;
   endOffset: number;
   sourceSha256: string;
+  use: AgentConversationReferenceUse;
 }
 
 interface ActivityEntry {
@@ -77,8 +78,8 @@ function MessageAttachments({ attachments, references = [], onOpen, onOpenRefere
     >
       <FileText size={16}/><span><b>{attachment.filename}</b><small>{attachment.mime_type || '文件'}{attachmentSize(attachment.byte_size) ? ` · ${attachmentSize(attachment.byte_size)}` : ''}</small></span><PanelRightOpen size={13}/>
     </button>)}
-    {references.map((reference, index) => <button type="button" key={`${reference.event_id}:${reference.start_offset}:${reference.end_offset}`} className="conversation-message-attachment conversation-message-reference" aria-label={`查看会话引用 ${index + 1}`} title="查看引用内容" onClick={() => onOpenReference?.(reference)}>
-      <Quote size={16}/><span><b>{`会话引用 ${index + 1}`}</b><small>参考资料</small></span>
+    {references.map((reference, index) => <button type="button" key={`${reference.event_id}:${reference.start_offset}:${reference.end_offset}:${reference.use}`} className="conversation-message-attachment conversation-message-reference" aria-label={`查看会话引用 ${index + 1}`} title="查看引用内容" onClick={() => onOpenReference?.(reference)}>
+      <Quote size={16}/><span><b>{`会话引用 ${index + 1}`}</b><small>{reference.use}</small></span>
       <PanelRightOpen size={13}/>
     </button>)}
   </div>;
@@ -929,7 +930,7 @@ async function conversationReferenceForSelection(selection: Selection, surface: 
   if (startOffset === undefined || endOffset === undefined || endOffset <= startOffset) return undefined;
   const content = sourceContent.slice(startOffset, endOffset);
   if (!content.trim()) return undefined;
-  return { eventId, content, startOffset, endOffset, sourceSha256: await sha256(sourceContent) };
+  return { eventId, content, startOffset, endOffset, sourceSha256: await sha256(sourceContent), use: 'BACKGROUND' };
 }
 
 const NETWORK_ERROR_CODES = new Set([
