@@ -3728,3 +3728,78 @@ def test_agent_workspace_rewrites_only_the_active_branch_last_user_message(
         )
         assert result["accepted"] is True
         assert runtime.calls == [("navigate", "root-event"), ("send", "after")]
+
+
+def test_agent_workspace_rewrite_uses_the_formal_head_not_event_window_order(
+    settings, db_session_factory, monkeypatch
+):
+    class RewriteRuntime(MockRuntime):
+        calls: list[tuple[str, str | None]] = []
+
+        def read_events(self, handle):
+            del handle
+            return RuntimeEventBatch(
+                events=(
+                    RuntimeEvent(
+                        cursor="latest-error",
+                        event_type="ERROR",
+                        payload={"parent_id": "latest-user"},
+                    ),
+                    RuntimeEvent(
+                        cursor="latest-user",
+                        event_type="MESSAGE",
+                        payload={
+                            "source": "user",
+                            "content": "latest",
+                            "parent_id": "earlier-answer",
+                        },
+                    ),
+                    RuntimeEvent(
+                        cursor="earlier-answer",
+                        event_type="MESSAGE",
+                        payload={
+                            "source": "agent",
+                            "content": "earlier",
+                            "parent_id": "earlier-user",
+                        },
+                    ),
+                    RuntimeEvent(
+                        cursor="earlier-user",
+                        event_type="MESSAGE",
+                        payload={"source": "user", "content": "old", "parent_id": "__root__"},
+                    ),
+                ),
+                cursor="latest-error",
+            )
+
+        def navigate(self, handle, event_id):
+            del handle
+            self.calls.append(("navigate", event_id))
+
+        def send_message(self, handle, content, image_urls=()):
+            del image_urls
+            self.calls.append(("send", content))
+            return super().send_message(handle, content)
+
+    monkeypatch.setattr(
+        conversations,
+        "runtime_provider",
+        lambda *_args, **_kwargs: RuntimeProvider(
+            provider_id="provider",
+            base_url="https://models.example.test/v1",
+            model="test-model",
+            api_key="x",
+        ),
+    )
+    runtime = RewriteRuntime()
+    with settings_context(settings), db_session_factory() as db, runtime_context(runtime):
+        workspace = _ready_workspace_for_conversation(db)
+        created = conversations.create_conversation(
+            db, workspace.id, None, workspace.default_model_provider_id, "create-key"
+        )
+        result = conversations.rewrite_message(
+            db, workspace.id, created["id"], "latest-user", "after"
+        )
+
+    assert result["accepted"] is True
+    assert runtime.calls == [("navigate", "earlier-answer"), ("send", "after")]

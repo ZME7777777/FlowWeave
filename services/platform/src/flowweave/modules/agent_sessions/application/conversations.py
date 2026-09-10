@@ -19,6 +19,9 @@ from sqlalchemy.orm import Session
 
 from flowweave.modules.agent_sessions.application import usage as usage_projection
 from flowweave.modules.agent_sessions.application.deletion import delete_binding_records
+from flowweave.modules.agent_sessions.application.event_branch import (
+    latest_user_message_on_active_branch,
+)
 from flowweave.modules.agent_sessions.application.runtime_config import (
     build_agent_spec,
     config_from_binding,
@@ -3062,14 +3065,8 @@ def rewrite_message(
         raise DomainError("AGENT_CONVERSATION_BUSY", "请先暂停当前回复", 409)
     legacy_policy = _uses_legacy_compaction_policy(runtime.conversation_context(handle))
     batch = runtime.read_active_events(handle)
-    user_events = [
-        event
-        for event in batch.events
-        if event.event_type == "MESSAGE"
-        and str(event.payload.get("source") or "").lower() in {"user", "human"}
-    ]
-    target = next((event for event in user_events if event.cursor == event_id), None)
-    if target is None or not user_events or user_events[-1].cursor != event_id:
+    target = latest_user_message_on_active_branch(batch.events, batch.cursor)
+    if target is None or target.cursor != event_id:
         raise DomainError(
             "AGENT_MESSAGE_REWRITE_UNAVAILABLE",
             "只能编辑当前活动分支中最近发送的消息",

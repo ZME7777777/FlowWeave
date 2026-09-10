@@ -1271,6 +1271,8 @@ test('editing the latest user message locally replaces only its active branch', 
   await page.goto('/agent/conversations/rethink-conversation');
   await expect(page.getByText('不应保留的旧回答', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: '编辑并重新思考' }).click();
+  await expect(page.locator('.conversation-message.user')).toContainText('需要重新思考的问题');
+  await expect(page.locator('.conversation-message-edit')).toBeVisible();
   await page.getByLabel('编辑已发送消息').fill('修改后的问题');
   await page.getByRole('button', { name: '重新思考', exact: true }).click();
   await expect(page.getByText('更早的问题', { exact: true })).toBeVisible();

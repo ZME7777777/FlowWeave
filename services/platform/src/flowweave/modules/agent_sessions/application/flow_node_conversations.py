@@ -32,6 +32,9 @@ from flowweave.modules.agent_sessions.application.conversations import (
     validate_attachment_owners,
 )
 from flowweave.modules.agent_sessions.application.deletion import delete_binding_records
+from flowweave.modules.agent_sessions.application.event_branch import (
+    latest_user_message_on_active_branch,
+)
 from flowweave.modules.agent_sessions.application.flow_node_locator import (
     active_runtime_handle,
     bind_openhands_conversation,
@@ -2314,15 +2317,9 @@ def rerun_node_message(
     runtime = get_runtime()
     if not runtime.can_accept_input(handle):
         raise DomainError("AGENT_CONVERSATION_BUSY", "请先暂停当前回复", 409)
-    events = runtime.read_active_events(handle).events
-    user_events = [
-        event
-        for event in events
-        if event.event_type == "MESSAGE"
-        and str(event.payload.get("source") or "").lower() in {"user", "human"}
-    ]
-    target = next((event for event in user_events if event.cursor == event_id), None)
-    if target is None or not user_events or user_events[-1].cursor != event_id:
+    batch = runtime.read_active_events(handle)
+    target = latest_user_message_on_active_branch(batch.events, batch.cursor)
+    if target is None or target.cursor != event_id:
         raise DomainError(
             "AGENT_MESSAGE_REWRITE_UNAVAILABLE", "只能编辑当前活动分支中最近发送的消息", 409
         )
