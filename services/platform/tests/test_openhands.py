@@ -1122,6 +1122,41 @@ def test_openhands_configures_codex_oauth_for_responses(openhands_settings, monk
     assert llm["extra_headers"]["chatgpt-account-id"] == "account-123"
 
 
+def test_openhands_configures_api_key_provider_for_responses(openhands_settings, monkeypatch):
+    runtime = OpenHandsRuntime(openhands_settings)
+    captured: dict[str, object] = {}
+
+    def fake_request(method: str, path: str, **kwargs: object) -> dict[str, object]:
+        captured.update({"method": method, "path": path, **kwargs})
+        return {"id": "10000000-0000-4000-8000-000000000004", "leaf_event_id": "event-1"}
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+    baseline = _request()
+    runtime.start(
+        replace(
+            baseline,
+            agent_spec=replace(
+                baseline.agent_spec,
+                provider=RuntimeProvider(
+                    provider_id="responses-api-key",
+                    base_url="https://api.example.test/v1",
+                    model="gpt-responses",
+                    api_key="configured-secret",
+                    api_protocol="RESPONSES",
+                    reasoning_effort="low",
+                ),
+            ),
+        )
+    )
+
+    payload = captured["json"]
+    assert isinstance(payload, dict)
+    llm = payload["agent"]["llm"]
+    assert llm["api_mode"] == "responses"
+    assert llm["litellm_extra_body"] == {"store": False, "reasoning": {"effort": "low"}}
+    assert "model_canonical_name" not in llm
+
+
 def test_openhands_disables_native_autotitle_for_agent_workspace(openhands_settings, monkeypatch):
     runtime = OpenHandsRuntime(openhands_settings)
     captured: dict[str, object] = {}

@@ -3475,6 +3475,14 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 
 完成：Worker 复用维护循环、以持久化 due-time 和 `SKIP LOCKED` 每轮认领有限会话；默认每 5 分钟对账 5 条，连接失败后 30 秒重试。OpenHands 读取始终在数据库事务外且受现有 Worker I/O 上限约束，成功结果只经现有 high-water usage 投影落库。新增调度字段与迁移；Worker 以 bypass 扫描时会将 bucket 明确归属到 binding 原用户，以保证租户读取不会把新 usage 过滤成 0。
 
+### FR-254 模型服务删除与 OpenAI Responses API Key 协议 — DONE
+
+依赖：无。
+
+目标：管理员可以直接删除模型服务，不再因 Agent 会话或自动运行计划引用而阻塞。既有会话不得被静默换模，删除后清空其模型绑定并要求用户在下次发送前显式选择其他模型；自动运行计划则只可稳定选择其余已连接服务中的启用默认模型，无替代项时清空配置并安全要求重新配置。新增 API Key 服务的 OpenAI 调用协议选择，兼容既有 `/chat/completions`，并支持最新 `/responses`；Codex OAuth 必须固定走 Responses。
+
+完成：删除服务会保留会话绑定但清空 `model_provider_id`、模型名和推理强度；自动计划按服务名称、ID 稳定选择替代 `CONNECTED` 默认模型，或在没有可用替代时清空模型配置。删除响应返回会话和自动计划的重配统计。API Key 服务持久化 `CHAT_COMPLETIONS`／`RESPONSES` 协议，并将 Responses 配置贯通 Runtime、会话标题和 Prompt Gate；API Key 继续加密保存。模型服务弹窗提供对应协议选项及新的删除反馈。新增迁移 `0108_model_provider_api_protocol`，顺接 `0107_usage_reconcile`。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -3490,6 +3498,7 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-10 | FR-254 | Responses API Key Runtime 定向 pytest（2 passed）；受影响 Python Ruff format/check、`py_compile`、定向 Pyright；Web typecheck、受影响文件 ESLint、production build；Alembic head、任务状态唯一性与 `git diff --check` | PASS（静态与定向）：删除模型服务不会阻塞，既有会话不会静默迁移；自动计划只在有已连接默认模型时稳定重配，否则要求显式配置。API Key 可选择 Chat Completions 或 Responses，Codex OAuth 固定 Responses。Pyright 仅剩 `openhands.py:3542-3543` 两个既有 unknown-type 诊断；本改动模块无新增诊断。三条 API 集成测试在 Testcontainers 初始化时受本机 Docker Unix socket 缺失阻断，未伪记为通过。 |
 | 2026-09-10 | FR-253 | 受影响 Python Ruff、`py_compile`、定向 Pyright；Alembic 迁移链解析、设置直接 smoke、`git diff --check` | PASS（静态）：Worker 维护循环会按持久化 due-time 对活跃 Agent／节点会话的正式 OpenHands 累计 usage 做有界、事务外对账；高水位写入幂等且按 binding owner 投影。定向 pytest 受本机 Docker daemon 不可用、Testcontainers PostgreSQL fixture 初始化失败阻断，未伪记为通过。`0107_usage_reconcile` 独立衔接 `0105_conversation_token_usage`，避免并行未提交的模型服务迁移进入本次发布。 |
 | 2026-09-10 | FR-251 | 受影响 Python Ruff、`py_compile`；Web production build；Alembic head、`git diff --check` 与任务状态唯一性 | PASS：资源区仅显示 CPU、内存和当前受管项目的宿主机挂载路径；相对分配路径必须匹配固定 FlowRun allocation 格式且宿主机根必须为绝对路径，否则安全降级为不可用。唯一 Alembic head 为 `0105_conversation_token_usage`，无迁移。定向 pytest 因本机 Docker daemon 不可用、Testcontainers PostgreSQL 无法初始化而未运行；Web production build 通过。 |
 | 2026-09-10 | FR-252 | Web typecheck、受影响文件 ESLint、production build、已完成连续记录输入／输出按需加载定向 Playwright、Alembic head、`git diff --check` 与任务状态唯一性 | PASS：连续运行轻量详情保持不含运行级和 Attempt 级 Artifact 数组；已完成 Attempt 通过精确冻结输入绑定和候选输出 Artifact ID 按需读取元数据，概览与输出页均能显示历史值。未新增迁移或写路径；唯一 Alembic head 为 `0105_conversation_token_usage`。 |

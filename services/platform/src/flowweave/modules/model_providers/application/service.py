@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from cryptography.fernet import Fernet
 from sqlalchemy import delete, select, update
@@ -32,6 +33,7 @@ from flowweave.shared.schemas import (
 from flowweave.shared.settings import get_settings
 
 _DEVELOPMENT_CREDENTIALS_KEY = b"I84eBL_TIqLl5IVk_DTjGPtUDyVz3pl6pVCHyT8woaE="
+ProviderProtocol = Literal["CHAT_COMPLETIONS", "RESPONSES"]
 
 
 def _automatic_run_provider_models(run: FlowRun, provider_id: str) -> set[str]:
@@ -108,6 +110,7 @@ def provider_dict(db: Session, item: ModelProvider) -> dict[str, Any]:
         "name": item.name,
         "base_url": item.base_url,
         "auth_type": item.auth_type,
+        "api_protocol": item.api_protocol,
         "has_api_key": item.encrypted_api_key is not None,
         "api_key_hint": item.api_key_hint,
         "connection_state": item.connection_state,
@@ -208,24 +211,104 @@ def _validate_referenced_models(
 def delete_providers(db: Session, provider_ids: list[str]) -> dict[str, Any]:
     ids = list(dict.fromkeys(provider_ids))
     items = [get_provider(db, provider_id) for provider_id in ids]
-    references = {provider_id: _provider_references(db, provider_id) for provider_id in ids}
-    blocked = [
-        {
-            "id": item.id,
-            "name": item.name,
-            "relation": "AGENT_CONFIGURATION",
-            "nodes": references[item.id],
-        }
-        for item in items
-        if references[item.id]
-    ]
-    blocked_ids = {str(item["id"]) for item in blocked}
-    deleted_ids = [item.id for item in items if item.id not in blocked_ids]
+    deleted_ids = [item.id for item in items]
+    session_reconfigured = (
+        db.execute(
+            update(AgentConversationBinding)
+            .where(AgentConversationBinding.model_provider_id.in_(deleted_ids))
+            .values(model_provider_id=None, model_name=None, reasoning_effort=None)
+        ).rowcount
+        or 0
+    )
+    replacement = _deterministic_replacement_model(db, excluded_provider_ids=set(deleted_ids))
+    automatic_reconfigured = 0
+    automatic_needs_model_configuration = 0
+    for run in db.scalars(select(FlowRun).where(FlowRun.run_mode == "AUTOMATIC")):
+        changed, removed = _replace_automatic_run_provider(
+            run, deleted_provider_ids=set(deleted_ids), replacement=replacement
+        )
+        if changed:
+            automatic_reconfigured += 1
+        if removed:
+            automatic_needs_model_configuration += 1
 
     db.execute(delete(ProviderModel).where(ProviderModel.provider_id.in_(deleted_ids)))
     db.execute(delete(ModelProvider).where(ModelProvider.id.in_(deleted_ids)))
     finish(db)
-    return {"deleted_ids": deleted_ids, "blocked": blocked}
+    return {
+        "deleted_ids": deleted_ids,
+        "blocked": [],
+        "session_reconfigured": session_reconfigured,
+        "automatic_reconfigured": automatic_reconfigured,
+        "automatic_needs_model_configuration": automatic_needs_model_configuration,
+    }
+
+
+def _deterministic_replacement_model(
+    db: Session, *, excluded_provider_ids: set[str]
+) -> tuple[str, str] | None:
+    providers = db.scalars(
+        select(ModelProvider)
+        .where(ModelProvider.connection_state == "CONNECTED")
+        .order_by(ModelProvider.name, ModelProvider.id)
+    ).all()
+    for provider in providers:
+        if provider.id in excluded_provider_ids:
+            continue
+        model = db.scalar(
+            select(ProviderModel).where(
+                ProviderModel.provider_id == provider.id,
+                ProviderModel.enabled.is_(True),
+                ProviderModel.is_default.is_(True),
+            )
+        )
+        if model is not None:
+            return provider.id, model.model_name
+    return None
+
+
+def _replace_automatic_run_provider(
+    run: FlowRun, *, deleted_provider_ids: set[str], replacement: tuple[str, str] | None
+) -> tuple[bool, bool]:
+    plan = deepcopy(run.automation_plan_json or {})
+    raw_nodes: object = plan.get("node_plans")
+    if not isinstance(raw_nodes, dict):
+        return False, False
+    changed = False
+    removed = False
+    node_plans = cast(dict[str, object], raw_nodes)
+    for raw_node_value in node_plans.values():
+        if not isinstance(raw_node_value, dict):
+            continue
+        raw_node = cast(dict[str, object], raw_node_value)
+        presets: list[dict[str, object]] = []
+        preset = raw_node.get("agent_preset")
+        if isinstance(preset, dict):
+            presets.append(cast(dict[str, object], preset))
+        gates: object = raw_node.get("gates")
+        if isinstance(gates, list):
+            for gate_value in cast(list[object], gates):
+                if not isinstance(gate_value, dict):
+                    continue
+                gate = cast(dict[str, object], gate_value)
+                gate_preset = gate.get("agent_preset")
+                if isinstance(gate_preset, dict):
+                    presets.append(cast(dict[str, object], gate_preset))
+        for selected in presets:
+            if selected.get("model_provider_id") not in deleted_provider_ids:
+                continue
+            changed = True
+            if replacement is None:
+                selected["model_provider_id"] = None
+                selected["model_name"] = None
+                selected["reasoning_effort"] = None
+                removed = True
+            else:
+                selected["model_provider_id"], selected["model_name"] = replacement
+                selected["reasoning_effort"] = None
+    if changed:
+        run.automation_plan_json = plan
+    return changed, removed
 
 
 def save_provider(
@@ -255,6 +338,7 @@ def save_provider(
     item.name = payload.name.strip()
     previous_auth_type = item.auth_type
     item.auth_type = payload.auth_type
+    item.api_protocol = "RESPONSES" if payload.auth_type == "CODEX_OAUTH" else payload.api_protocol
     item.base_url = (
         CODEX_BASE_URL
         if payload.auth_type == "CODEX_OAUTH"
@@ -304,7 +388,7 @@ class PromptProviderSnapshot:
     base_url: str
     headers: dict[str, str]
     model: str
-    protocol: str
+    protocol: ProviderProtocol
 
 
 def prompt_provider_snapshot(
@@ -351,7 +435,7 @@ def prompt_provider_snapshot(
         base_url=item.base_url.rstrip("/"),
         headers=provider_auth_headers(item),
         model=model,
-        protocol="CHAT_COMPLETIONS",
+        protocol=cast(ProviderProtocol, item.api_protocol),
     )
 
 
@@ -382,7 +466,7 @@ class TitleProviderSnapshot:
     base_url: str
     headers: dict[str, str]
     model: str
-    protocol: str
+    protocol: ProviderProtocol
 
 
 def title_provider_snapshot(
@@ -390,8 +474,8 @@ def title_provider_snapshot(
 ) -> TitleProviderSnapshot:
     """Resolve a title-only request without exposing stored credentials in a task.
 
-    API-key providers use their configured OpenAI-compatible chat-completions
-    path. Codex OAuth always uses native Responses.
+    API-key providers use their configured OpenAI-compatible protocol. Codex
+    OAuth always uses native Responses.
     Neither route reaches the OpenHands Agent Server or a Conversation.
     """
 
@@ -415,7 +499,10 @@ def title_provider_snapshot(
     if item.auth_type != "API_KEY" or not item.encrypted_api_key:
         raise ValueError("title provider credentials are unavailable")
     return TitleProviderSnapshot(
-        item.base_url.rstrip("/"), provider_auth_headers(item), model, "CHAT_COMPLETIONS"
+        item.base_url.rstrip("/"),
+        provider_auth_headers(item),
+        model,
+        cast(ProviderProtocol, item.api_protocol),
     )
 
 

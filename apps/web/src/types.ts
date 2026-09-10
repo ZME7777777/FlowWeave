@@ -86,10 +86,12 @@ export interface BlockedNodeDelete {
   id: string; name: string; relation: 'FLOW_NODE';
   flows: Array<NamedDeleteReference & { reference_count: number }>;
 }
-export interface BlockedProviderDelete {
-  id: string; name: string; relation: 'AGENT_CONFIGURATION'; nodes: NamedDeleteReference[];
-}
 export interface BulkDeleteResult<T> { deleted_ids: string[]; blocked: T[] }
+export interface ProviderBulkDeleteResult {
+  deleted_ids: string[];
+  session_reconfigured: number; automatic_reconfigured: number;
+  automatic_needs_model_configuration: number;
+}
 export interface CapabilityBulkDeleteResult extends BulkDeleteResult<BlockedCapabilityDelete> {
   collection_changes: { updated: string[]; deleted: string[] };
 }
@@ -150,6 +152,7 @@ export interface ProviderModel {
 }
 export interface ModelProvider {
   id: string; name: string; base_url: string; auth_type: 'API_KEY' | 'CODEX_OAUTH';
+  api_protocol: 'CHAT_COMPLETIONS' | 'RESPONSES';
   has_api_key: boolean; api_key_hint?: string | null; oauth_connected: boolean;
   oauth_account_email?: string | null; oauth_device_pending: boolean;
   connection_state: string; reference_node_count: number; available_for_nodes: boolean;
@@ -159,6 +162,7 @@ export interface ModelProvider {
 }
 export interface ModelProviderWrite {
   name: string; auth_type: 'API_KEY' | 'CODEX_OAUTH'; base_url: string;
+  api_protocol: 'CHAT_COMPLETIONS' | 'RESPONSES';
   api_key?: string | null; row_version?: number | null;
   models: ProviderModel[];
 }

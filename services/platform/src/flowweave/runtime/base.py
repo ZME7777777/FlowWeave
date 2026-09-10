@@ -83,6 +83,7 @@ class RuntimeProvider:
     model: str
     api_key: str = field(repr=False)
     auth_type: Literal["API_KEY", "CODEX_OAUTH"] = "API_KEY"
+    api_protocol: Literal["CHAT_COMPLETIONS", "RESPONSES"] = "CHAT_COMPLETIONS"
     extra_headers: dict[str, str] = field(default_factory=_empty_headers)
     reasoning_effort: str | None = None
 

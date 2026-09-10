@@ -285,6 +285,7 @@ class ModelProviderDiscoveryWrite(ApiModel):
 class ModelProviderWrite(ApiModel):
     name: str = Field(min_length=1, max_length=200)
     auth_type: Literal["API_KEY", "CODEX_OAUTH"] = "API_KEY"
+    api_protocol: Literal["CHAT_COMPLETIONS", "RESPONSES"] = "CHAT_COMPLETIONS"
     base_url: str = ""
     api_key: str | None = None
     row_version: int | None = None
@@ -293,6 +294,8 @@ class ModelProviderWrite(ApiModel):
     @model_validator(mode="after")
     def validate_models(self) -> ModelProviderWrite:
         self.base_url = self.base_url.strip()
+        if self.auth_type == "CODEX_OAUTH":
+            self.api_protocol = "RESPONSES"
         if self.auth_type == "API_KEY" and not self.base_url:
             raise ValueError("base_url is required for API key providers")
         if self.auth_type == "API_KEY" and not self.models:

@@ -1005,9 +1005,7 @@ def test_session_only_node_can_submit_explicit_outputs_and_enter_acceptance(
     assert direct_records[0]["created_from"] == "HUMAN_CHAT"
     assert direct_records[0]["state"] == "ACCEPTED"
 
-    deleted = client.delete(
-        f"/api/v1/flow-runs/{run['id']}/nodes/{direct_records[0]['id']}"
-    )
+    deleted = client.delete(f"/api/v1/flow-runs/{run['id']}/nodes/{direct_records[0]['id']}")
     assert deleted.status_code == 202, deleted.text
     app_container = client.app.state.container
     with (
@@ -1922,13 +1920,14 @@ def test_model_provider_single_and_bulk_delete(client):
     assert deleted.json() == {
         "deleted_ids": [second["id"], third["id"]],
         "blocked": [],
+        "session_reconfigured": 0,
+        "automatic_reconfigured": 0,
+        "automatic_needs_model_configuration": 0,
     }
     assert client.get("/api/v1/model-providers").json() == []
 
 
-def test_model_provider_bulk_delete_deletes_unreferenced_and_reports_blocked(
-    client, db_session_factory
-):
+def test_model_provider_bulk_delete_unbinds_referenced_sessions(client, db_session_factory):
     referenced = _create_model_provider(client, "被引用模型服务")
     unreferenced = _create_model_provider(client, "未引用模型服务")
     binding_id = str(uuid4())
@@ -1956,27 +1955,51 @@ def test_model_provider_bulk_delete_deletes_unreferenced_and_reports_blocked(
     )
     assert deleted.status_code == 200, deleted.text
     assert deleted.json() == {
-        "deleted_ids": [unreferenced["id"]],
-        "blocked": [
-            {
-                "id": referenced["id"],
-                "name": referenced["name"],
-                "relation": "AGENT_CONFIGURATION",
-                "nodes": [{"id": binding_id, "name": "冻结供应商会话"}],
-            }
-        ],
+        "deleted_ids": [referenced["id"], unreferenced["id"]],
+        "blocked": [],
+        "session_reconfigured": 1,
+        "automatic_reconfigured": 0,
+        "automatic_needs_model_configuration": 0,
     }
-    assert {item["id"] for item in client.get("/api/v1/model-providers").json()} == {
-        referenced["id"],
-    }
+    assert client.get("/api/v1/model-providers").json() == []
 
     with db_session_factory() as db:
         binding = db.get(AgentConversationBinding, binding_id)
         assert binding is not None
-        db.delete(binding)
-        db.commit()
-    assert client.delete(f"/api/v1/model-providers/{referenced['id']}").status_code == 204
-    assert client.get("/api/v1/model-providers").json() == []
+        assert binding.model_provider_id is None
+        assert binding.model_name is None
+        assert binding.reasoning_effort is None
+
+
+def test_api_key_provider_responses_protocol_reaches_runtime_and_title_snapshot(
+    client, db_session_factory
+):
+    provider = client.post(
+        "/api/v1/model-providers",
+        json={
+            "name": "Responses API Key 服务",
+            "base_url": "https://models.example.test/v1",
+            "api_key": "test-responses-key",
+            "api_protocol": "RESPONSES",
+            "models": [{"model_name": "gpt-responses", "enabled": True, "is_default": True}],
+        },
+    )
+    assert provider.status_code == 201, provider.text
+    assert provider.json()["api_protocol"] == "RESPONSES"
+
+    from flowweave.modules.model_providers.application.service import title_provider_snapshot
+    from flowweave.runtime.request import runtime_provider
+
+    with db_session_factory() as db:
+        snapshot = title_provider_snapshot(db, provider.json()["id"], "gpt-responses")
+        runtime = runtime_provider(
+            db,
+            {"asset": {"executor": {"model_provider_id": provider.json()["id"]}}},
+            "gpt-responses",
+        )
+
+    assert snapshot.protocol == "RESPONSES"
+    assert runtime.api_protocol == "RESPONSES"
 
 
 @pytest.mark.asyncio

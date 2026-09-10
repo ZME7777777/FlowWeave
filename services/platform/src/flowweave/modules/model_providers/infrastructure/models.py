@@ -29,6 +29,7 @@ class ModelProvider(Base):
     name: Mapped[str] = mapped_column(String(200))
     base_url: Mapped[str] = mapped_column(Text)
     auth_type: Mapped[str] = mapped_column(String(30), default="API_KEY")
+    api_protocol: Mapped[str] = mapped_column(String(30), default="CHAT_COMPLETIONS")
     encrypted_api_key: Mapped[bytes | None] = mapped_column(LargeBinary)
     api_key_hint: Mapped[str | None] = mapped_column(String(20))
     encrypted_oauth_access_token: Mapped[bytes | None] = mapped_column(LargeBinary)

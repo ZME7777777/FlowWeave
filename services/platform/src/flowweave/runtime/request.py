@@ -202,6 +202,7 @@ def runtime_provider(
             model=selected_model,
             api_key=credentials.access_token,
             auth_type="CODEX_OAUTH",
+            api_protocol="RESPONSES",
             extra_headers=headers,
             reasoning_effort=selected_effort,
         )
@@ -223,6 +224,7 @@ def runtime_provider(
         base_url=selected.base_url,
         model=selected.model,
         api_key=api_key,
+        api_protocol=selected.protocol,
         reasoning_effort=selected_effort,
     )
 

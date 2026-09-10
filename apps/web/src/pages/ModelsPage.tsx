@@ -7,7 +7,7 @@ import { useEscapeClose } from '../components/useEscapeClose';
 import { Pagination } from '../components/Pagination';
 import type { CodexDeviceAuthorization, CodexOAuthStatus, ModelProvider, ModelProviderUsage, ModelProviderWrite, ProviderModel } from '../types';
 
-const blank = (): ModelProviderWrite => ({ name: '', auth_type: 'API_KEY', base_url: '', api_key: '', models: [{ model_name: '', enabled: true, is_default: true }] });
+const blank = (): ModelProviderWrite => ({ name: '', auth_type: 'API_KEY', api_protocol: 'CHAT_COMPLETIONS', base_url: '', api_key: '', models: [{ model_name: '', enabled: true, is_default: true }] });
 const CONNECTION_STATE_LABELS: Record<string, string> = { UNTESTED: '未测试', AUTHORIZING: '等待登录', CONNECTED: '已连接', FAILED: '连接失败' };
 type TestFeedback = { state: 'testing' | 'success' | 'error'; message: string };
 const budgetNumber = (value: number) => value.toLocaleString(undefined, { maximumFractionDigits: 4 });
@@ -52,7 +52,7 @@ function ProviderEditor({ provider, onClose }: { provider?: ModelProvider; onClo
     });
   }, [qc]);
   useEffect(() => {
-    setForm(provider ? { name: provider.name, auth_type: provider.auth_type, base_url: provider.base_url, api_key: '', row_version: provider.row_version, models: provider.models.map(({ model_name, enabled, is_default }) => ({ model_name, enabled, is_default })) } : blank());
+    setForm(provider ? { name: provider.name, auth_type: provider.auth_type, api_protocol: provider.api_protocol, base_url: provider.base_url, api_key: '', row_version: provider.row_version, models: provider.models.map(({ model_name, enabled, is_default }) => ({ model_name, enabled, is_default })) } : blank());
     setDiscovered([]); setError('');
   }, [applyDiscovery, provider]);
   useEffect(() => {
@@ -129,12 +129,13 @@ function ProviderEditor({ provider, onClose }: { provider?: ModelProvider; onClo
   const changeAuthType = (auth_type: ModelProviderWrite['auth_type']) => setForm(old => ({
     ...old,
     auth_type,
+    api_protocol: auth_type === 'CODEX_OAUTH' ? 'RESPONSES' : old.api_protocol,
     base_url: auth_type === 'CODEX_OAUTH' ? '' : old.base_url,
     api_key: '',
     models: auth_type === 'CODEX_OAUTH' ? [] : old.models.length ? old.models : [{ model_name: '', enabled: true, is_default: true }],
   }));
   return <div className="modal-backdrop"><form className="modal model-editor" onSubmit={save}><header><div><span className="eyebrow">MODEL PROVIDER</span><h2>{provider ? '编辑模型服务' : '新增模型服务'}</h2><p>API Key 与 Codex OAuth 凭据均加密保存且永不返回浏览器。</p></div><button type="button" className="ghost" onClick={onClose}>关闭</button></header>
-    <div className="form-grid"><label>服务名称<input required value={form.name} onChange={e => setForm({ ...form, name: e.target.value })}/></label><label>认证方式<select value={form.auth_type} onChange={e => changeAuthType(e.target.value as ModelProviderWrite['auth_type'])}><option value="API_KEY">Codex / OpenAI 兼容</option><option value="CODEX_OAUTH">Codex OAuth（ChatGPT 订阅）</option></select></label>{form.auth_type === 'API_KEY' ? <><label>Base URL<input required value={form.base_url} placeholder="https://api.example.com/v1" onChange={e => setForm({ ...form, base_url: e.target.value })}/></label><label>API Key<input type="password" value={form.api_key ?? ''} placeholder={provider?.has_api_key ? `留空保留现有密钥 ${provider.api_key_hint ?? ''}` : '输入 API Key'} onChange={e => setForm({ ...form, api_key: e.target.value })}/></label></> : <p className="startpoint wide">保存后在服务卡片点击“登录 Codex”，使用设备码连接 ChatGPT 订阅。OAuth 服务仅用于 Agent 节点，不用于 Prompt Gate。</p>}</div>
+    <div className="form-grid"><label>服务名称<input required value={form.name} onChange={e => setForm({ ...form, name: e.target.value })}/></label><label>认证方式<select value={form.auth_type} onChange={e => changeAuthType(e.target.value as ModelProviderWrite['auth_type'])}><option value="API_KEY">OpenAI 兼容 API Key</option><option value="CODEX_OAUTH">Codex OAuth（ChatGPT 订阅）</option></select></label>{form.auth_type === 'API_KEY' ? <><label>调用协议<select value={form.api_protocol} onChange={e => setForm({ ...form, api_protocol: e.target.value as ModelProviderWrite['api_protocol'] })}><option value="CHAT_COMPLETIONS">Chat Completions（/chat/completions）</option><option value="RESPONSES">Responses（/responses）</option></select></label><label>Base URL<input required value={form.base_url} placeholder="https://api.example.com/v1" onChange={e => setForm({ ...form, base_url: e.target.value })}/></label><label className="wide">API Key<input type="password" value={form.api_key ?? ''} placeholder={provider?.has_api_key ? `留空保留现有密钥 ${provider.api_key_hint ?? ''}` : '输入 API Key'} onChange={e => setForm({ ...form, api_key: e.target.value })}/></label></> : <p className="startpoint wide">保存后在服务卡片点击“登录 Codex”，使用设备码连接 ChatGPT 订阅。OAuth 服务仅用于 Agent 节点，不用于 Prompt Gate。</p>}</div>
     <div className="model-discovery-head"><div><b>可用模型</b><small>{form.auth_type === 'API_KEY' ? '填写连接信息后拉取模型，再选择启用项和默认模型' : provider?.oauth_connected ? '已按当前登录账号自动拉取；也可手动刷新' : '登录 Codex 后可按账号自动拉取模型'}</small></div>{(form.auth_type === 'API_KEY' || (provider && provider.oauth_connected)) && <button type="button" className="secondary" disabled={busy || (form.auth_type === 'API_KEY' && !form.base_url.trim())} onClick={() => void discover()}>{busy ? '拉取中…' : form.auth_type === 'CODEX_OAUTH' ? '刷新模型' : '拉取模型'}</button>}</div>
     {form.auth_type === 'API_KEY' && discovered.length > 0 && <div className="model-tags discovery-tags">{discovered.map(name => { const selected = form.models.some(item => item.model_name === name); return <button type="button" key={name} className={selected ? 'selected' : ''} aria-pressed={selected} onClick={() => toggle(name)}>{name}</button>; })}</div>}
     <div className={`provider-model-list ${form.auth_type === 'CODEX_OAUTH' ? 'oauth-model-list' : ''}`}>{form.models.map((model, index) => <div className="provider-model-row" key={model.model_name || index}>{form.auth_type === 'CODEX_OAUTH' ? <span className="synced-model-name"><b>{model.model_name}</b><small>由当前 Codex 账号同步{model.supported_reasoning_efforts?.length ? ` · 支持 ${model.supported_reasoning_efforts.join(' / ')}` : ''}</small></span> : <input aria-label={`模型 ${index + 1}`} required value={model.model_name} placeholder="模型标识" onChange={e => updateModel(index, { model_name: e.target.value })}/>}<label><input type="checkbox" checked={model.enabled} onChange={e => updateModel(index, { enabled: e.target.checked })}/>启用</label><label><input type="radio" name="default-model" checked={model.is_default} onChange={() => updateModel(index, { is_default: true, enabled: true })}/>默认</label>{form.auth_type === 'API_KEY' && <button type="button" className="danger model-remove-button" aria-label={`移除模型 ${model.model_name}`} onClick={() => removeModel(index)}><Trash2 size={16}/>删除</button>}</div>)}</div>
@@ -217,13 +218,16 @@ export function ModelsPage() {
   };
   const removeMany = async (ids: string[], label: string) => {
     if (!ids.length) return;
-    if (!await dialog.confirm({ title: `删除${label}？`, message: '模型服务、密钥和模型配置将被永久删除。', confirmLabel: '确认删除', tone: 'danger' })) return;
+    if (!await dialog.confirm({ title: `删除${label}？`, message: '模型服务、密钥和模型配置将被永久删除。已有会话会保留，但下次发送前需要选择其他模型；自动运行会按名称顺序选择其他已连接服务的默认模型。', confirmLabel: '确认删除', tone: 'danger' })) return;
     setDeleting(true); setError(''); setNotice('');
     try {
       const result = await api.deleteProviders(ids);
-      setSelectedIds(new Set(result.blocked.map(item => item.id)));
-      if (result.deleted_ids.length) setNotice(`已删除 ${result.deleted_ids.length} 个模型服务。`);
-      if (result.blocked.length) setError(`以下模型服务仍有关联，已跳过：${result.blocked.map(item => `“${item.name}”绑定节点 ${item.nodes.map(node => `“${node.name}”`).join('、')}`).join('；')}。`);
+      setSelectedIds(new Set());
+      const outcomes = [`已删除 ${result.deleted_ids.length} 个模型服务。`];
+      if (result.session_reconfigured) outcomes.push(`${result.session_reconfigured} 个会话需要在下次发送前选择其他模型。`);
+      if (result.automatic_reconfigured) outcomes.push(`${result.automatic_reconfigured} 个自动运行已改用其他已连接服务的默认模型。`);
+      if (result.automatic_needs_model_configuration) outcomes.push(`${result.automatic_needs_model_configuration} 个自动运行没有可用替代服务，需要重新配置模型。`);
+      if (result.deleted_ids.length) setNotice(outcomes.join(' '));
       await qc.invalidateQueries({ queryKey: ['providers'] });
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '删除失败');

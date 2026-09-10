@@ -836,30 +836,30 @@ class OpenHandsRuntime:
         window = declared_context_window(model)
         if window is not None:
             llm["max_input_tokens"] = window
-        if provider.auth_type == "CODEX_OAUTH":
+        if provider.auth_type == "CODEX_OAUTH" or provider.api_protocol == "RESPONSES":
             extra_body: dict[str, Any] = {"store": False}
             if provider.reasoning_effort:
                 extra_body["reasoning"] = {"effort": provider.reasoning_effort}
-            llm.update(
-                {
-                    "api_mode": "responses",
-                    # Preserve the Codex-specific capability identity for the
-                    # OpenHands/LiteLLM adapter while sending a catalog model
-                    # that LiteLLM knows supports native Responses streaming.
-                    # This formal OpenHands field prevents LiteLLM from
-                    # injecting OpenAI public-API-only output parameters into
-                    # the Codex OAuth request.
-                    "model_canonical_name": "openai/codex-auto-review",
-                    "extra_headers": provider.extra_headers,
-                    "litellm_extra_body": extra_body,
-                    "temperature": None,
-                    "max_output_tokens": None,
-                    "capability_overrides": {
-                        "supports_responses_api": True,
-                        "supports_sampling_params": False,
-                    },
-                }
-            )
+            llm.update({"api_mode": "responses", "litellm_extra_body": extra_body})
+            if provider.auth_type == "CODEX_OAUTH":
+                llm.update(
+                    {
+                        # Preserve the Codex-specific capability identity for the
+                        # OpenHands/LiteLLM adapter while sending a catalog model
+                        # that LiteLLM knows supports native Responses streaming.
+                        # This formal OpenHands field prevents LiteLLM from
+                        # injecting OpenAI public-API-only output parameters into
+                        # the Codex OAuth request.
+                        "model_canonical_name": "openai/codex-auto-review",
+                        "extra_headers": provider.extra_headers,
+                        "temperature": None,
+                        "max_output_tokens": None,
+                        "capability_overrides": {
+                            "supports_responses_api": True,
+                            "supports_sampling_params": False,
+                        },
+                    }
+                )
         return llm
 
     def _condenser_payload(
@@ -3457,7 +3457,7 @@ class OpenHandsRuntime:
             and actual.get("model") == expected["model"]
             and actual_base_url == expected_base_url
         )
-        if provider.auth_type == "CODEX_OAUTH":
+        if provider.auth_type == "CODEX_OAUTH" or provider.api_protocol == "RESPONSES":
             matches = matches and actual.get("api_mode") == "responses"
         else:
             matches = matches and actual.get("api_mode") != "responses"
