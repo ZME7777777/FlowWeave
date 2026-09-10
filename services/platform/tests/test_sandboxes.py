@@ -726,6 +726,51 @@ def test_runtime_command_is_non_root_read_only_and_has_only_bounded_writable_pat
     ]
 
 
+def test_shared_maven_root_is_verified_and_read_only_for_setup_and_runtime(
+    settings, monkeypatch, tmp_path
+):
+    maven_root = tmp_path / "maven"
+    (maven_root / "Repository").mkdir(parents=True)
+    (maven_root / "conf").mkdir()
+    (maven_root / "conf/settings.xml").write_text(
+        "<settings><localRepository>shared</localRepository></settings>", encoding="utf-8"
+    )
+    provider = DockerSandboxProvider(
+        _docker_settings(settings, maven_shared_host_root=maven_root)
+    )
+    monkeypatch.setattr(
+        provider,
+        "_runtime_workspace_mount",
+        lambda _resource: ["--mount", "type=bind,src=/safe,dst=/workspaces/node"],
+    )
+    image = "sha256:" + "d" * 64
+
+    setup = provider._create_command(_resource(), verified_image_reference=image)
+    runtime = provider._create_command(_runtime_resource(), verified_image_reference=image)
+    shared_mount = f"type=bind,src={maven_root},dst={maven_root},readonly"
+    settings_mount = f"type=bind,src={maven_root}/conf/settings.xml"
+    for command, home in ((setup, "/root"), (runtime, "/home/flowweave")):
+        mounts = [command[index + 1] for index, item in enumerate(command) if item == "--mount"]
+        assert shared_mount in mounts
+        assert f"{settings_mount},dst={home}/.m2/settings.xml,readonly" in mounts
+        assert f"MAVEN_ARGS=-s {maven_root}/conf/settings.xml" in command
+
+
+def test_shared_maven_root_rejects_symlinked_settings(settings, tmp_path):
+    maven_root = tmp_path / "maven"
+    (maven_root / "Repository").mkdir(parents=True)
+    (maven_root / "conf").mkdir()
+    external = tmp_path / "settings.xml"
+    external.write_text("<settings/>", encoding="utf-8")
+    (maven_root / "conf/settings.xml").symlink_to(external)
+    provider = DockerSandboxProvider(
+        _docker_settings(settings, maven_shared_host_root=maven_root)
+    )
+
+    with pytest.raises(DomainError, match="shared Maven root"):
+        provider._shared_maven_mount()
+
+
 def test_setup_and_runtime_share_the_same_complete_environment_home(settings, monkeypatch):
     provider = DockerSandboxProvider(_docker_settings(settings))
     volume = provider.environment_credential_volume_name("environment-1")

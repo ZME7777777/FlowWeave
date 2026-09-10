@@ -3535,6 +3535,16 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 
 验收：Web TypeScript typecheck、production build、受影响 `CapabilitiesPage.tsx` ESLint 与 `git diff --check` 通过。
 
+### FR-261 动态 Runtime 共享只读 Maven 仓库与配置 — DONE
+
+依赖：无（部署运维新需求）。
+
+目标：保留 Runtime 镜像内已验证的 `mvn` 二进制；由 Runtime Provider 以显式配置将宿主机 Maven 根目录整体只读挂载到每个 Environment Setup、FlowRun Runtime 与 Agent Workspace Runtime 的同一绝对路径。该根目录必须含 `Repository/` 与 `conf/settings.xml`，以保留现有 `localRepository` 路径。Provider 在创建前 fail closed 校验根目录、仓库、配置目录和 settings 文件，拒绝符号链接。所有受控 Maven 调用通过 `MAVEN_ARGS=-s <root>/conf/settings.xml` 使用共享配置。现有 Runtime 通过正式 generation replacement/recreate 恢复，不能删除 Workspace、Volume 或 Conversation 状态。
+
+验收：Runtime Provider 定向测试、Python 格式／静态检查、Compose 渲染与安全检查；使用 commit 绑定的远端预检、定向平台镜像部署、既有动态容器受控重建，验证只读挂载、`mvn -version` 与 settings 生效；`git diff --check` 和任务状态唯一性通过。
+
+完成：增加 `MAVEN_SHARED_HOST_ROOT` 显式配置；Runtime Provider 仅在该根目录、`Repository/`、`conf/` 和 `conf/settings.xml` 均为非符号链接的受控路径时创建动态容器。共享根按同一绝对路径只读挂载，settings 同时只读挂载为容器默认 `~/.m2/settings.xml`，并导出 `MAVEN_ARGS`。空环境变量明确禁用功能，避免误将 Provider 当前目录作为宿主 Maven 根。远端部署后须由本切片 commit 绑定构建，已运行 FlowRun 通过正式 replacement、Agent Workspace 通过受管 recreate 更新挂载；不删除 Workspace、Volume 或 Conversation 状态。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：

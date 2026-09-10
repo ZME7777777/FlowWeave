@@ -116,6 +116,9 @@ services:
       OPENHANDS_WORKSPACE_ROOT: /workspaces
       FLOW_RUN_RUNTIME_VALIDATION_ROOT: /runtime-storage
       RUNTIME_HOST_WORKSPACE_ROOT: ${FLOWWEAVE_RUNTIME_HOST_WORKSPACE_ROOT:?set FLOWWEAVE_RUNTIME_HOST_WORKSPACE_ROOT to an absolute workspace path}
+      # Optional host Maven root. When set, it must include Repository and
+      # conf/settings.xml and is re-mounted read-only into dynamic Runtimes.
+      MAVEN_SHARED_HOST_ROOT: ${MAVEN_SHARED_HOST_ROOT:-}
       DEPENDENCY_BUILDER_BACKEND: docker
       DEPENDENCY_BUILDER_IMAGE: ${DEPENDENCY_BUILDER_IMAGE:-flowweave-dependency-builder:1}
       DEPENDENCY_BUILDER_TIMEOUT_SECONDS: ${DEPENDENCY_BUILDER_TIMEOUT_SECONDS:-300}
@@ -151,6 +154,13 @@ services:
       - type: bind
         source: ${FLOWWEAVE_RUNTIME_HOST_WORKSPACE_ROOT:?set FLOWWEAVE_RUNTIME_HOST_WORKSPACE_ROOT to an absolute workspace path}
         target: /runtime-storage
+        read_only: true
+      # Keep this path identical inside the Provider so it validates the
+      # Docker-host source before mounting it into dynamic Runtimes. The /dev/null
+      # fallback is inert whenever Maven sharing is disabled.
+      - type: bind
+        source: ${MAVEN_SHARED_HOST_ROOT:-/dev/null}
+        target: ${MAVEN_SHARED_HOST_ROOT:-/maven-disabled}
         read_only: true
     depends_on:
       workspace-init: { condition: service_completed_successfully }

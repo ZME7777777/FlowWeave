@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import stat
 import subprocess
@@ -302,6 +303,7 @@ set -eu
 target=/flowweave-home
 mkdir -p "$target"
 mkdir -p "$target/.openhands"
+mkdir -p "$target/.m2"
 chmod 0700 "$target/.openhands"
 if [ -f "$target/config.json" ] && [ ! -e "$target/.lark-cli/config.json" ] \
    && { [ -d "$target/cache" ] || [ -d "$target/logs" ] \
@@ -930,6 +932,7 @@ chmod 0700 "$target"
             )
         credential_volume = self._ensure_environment_credential_volume(runtime_home_id)
         if resource.kind == "ENVIRONMENT_SETUP":
+            shared_maven_mount = self._shared_maven_mount(home_directory="/root")
             command.extend(
                 [
                     "--interactive",
@@ -948,10 +951,13 @@ chmod 0700 "$target"
                     "SETUID",
                     "--mount",
                     f"type=volume,src={credential_volume},dst=/root",
+                    *shared_maven_mount,
                     "-e",
                     "HOME=/root",
                     "-e",
                     "NPM_CONFIG_PREFIX=/root/.local",
+                    "-e",
+                    self._maven_args_environment(),
                     verified_image_reference,
                     "sh",
                     "-c",
@@ -960,6 +966,7 @@ chmod 0700 "$target"
             )
             return command
         workspace_mounts = self._runtime_workspace_mount(resource)
+        shared_maven_mount = self._shared_maven_mount(home_directory="/home/flowweave")
         session_key = derive_runtime_session_key(
             self.settings.openhands_session_api_key,
             self.settings.sandbox_manager_scope,
@@ -1048,11 +1055,14 @@ chmod 0700 "$target"
                 *runtime_tmpfs,
                 "--mount",
                 (f"type=volume,src={credential_volume},dst=/home/flowweave"),
+                *shared_maven_mount,
                 *workspace_mounts,
                 "-e",
                 "HOME=/home/flowweave",
                 "-e",
                 "NPM_CONFIG_PREFIX=/home/flowweave/.local",
+                "-e",
+                self._maven_args_environment(),
                 "-e",
                 "OPENHANDS_SUPPRESS_BANNER=1",
                 "-e",
@@ -1072,6 +1082,70 @@ chmod 0700 "$target"
             ]
         )
         return command
+
+    def _maven_args_environment(self) -> str:
+        root = self.settings.maven_shared_host_root
+        if str(root) in {"", "."}:
+            return "MAVEN_ARGS="
+        return f"MAVEN_ARGS=-s {root / 'conf' / 'settings.xml'}"
+
+    def _shared_maven_mount(self, *, home_directory: str = "/home/flowweave") -> list[str]:
+        """Return a verified read-only Maven root mount, when enabled.
+
+        The mount source is deliberately the same absolute path in the Docker
+        daemon, controller, and generated Runtime. settings.xml can thus
+        retain the operator's localRepository value, while Runtime code cannot
+        alter repository metadata or configured credentials.
+        """
+
+        root = self.settings.maven_shared_host_root
+        # Pydantic parses an empty Path environment variable as a dot path.
+        # Treat that sentinel as disabled instead of silently sharing the
+        # Provider's current working directory.
+        if str(root) in {"", "."}:
+            return []
+        if not root.is_absolute() or any(character in str(root) for character in ",="):
+            raise DomainError(
+                "SANDBOX_MAVEN_ROOT_INVALID",
+                "The shared Maven root must be an unambiguous absolute path",
+                503,
+            )
+        repository = root / "Repository"
+        configuration = root / "conf"
+        settings_xml = configuration / "settings.xml"
+        try:
+            root_metadata = root.lstat()
+            repository_metadata = repository.lstat()
+            configuration_metadata = configuration.lstat()
+            settings_metadata = settings_xml.lstat()
+            if (
+                stat.S_ISLNK(root_metadata.st_mode)
+                or not stat.S_ISDIR(root_metadata.st_mode)
+                or stat.S_ISLNK(repository_metadata.st_mode)
+                or not stat.S_ISDIR(repository_metadata.st_mode)
+                or stat.S_ISLNK(configuration_metadata.st_mode)
+                or not stat.S_ISDIR(configuration_metadata.st_mode)
+                or stat.S_ISLNK(settings_metadata.st_mode)
+                or not stat.S_ISREG(settings_metadata.st_mode)
+                or not os.access(settings_xml, os.R_OK)
+            ):
+                raise ValueError("invalid shared Maven root")
+        except (OSError, ValueError) as exc:
+            raise DomainError(
+                "SANDBOX_MAVEN_ROOT_INVALID",
+                (
+                    "The shared Maven root must contain readable Repository "
+                    "and conf/settings.xml paths"
+                ),
+                503,
+            ) from exc
+        settings_mount_target = f"{home_directory}/.m2/settings.xml"
+        return [
+            "--mount",
+            f"type=bind,src={root},dst={root},readonly",
+            "--mount",
+            f"type=bind,src={settings_xml},dst={settings_mount_target},readonly",
+        ]
 
     def _runtime_workspace_mount(self, resource: ManagedSandbox) -> list[str]:
         if (resource.spec_json or {}).get("runtime_allocation_relative"):

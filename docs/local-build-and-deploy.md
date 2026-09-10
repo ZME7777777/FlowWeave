@@ -145,6 +145,31 @@ docker image inspect flowweave-openhands-runtime:1
 
 新镜像也会被后续动态 Agent Runtime 和终端环境草稿使用。已经运行的动态容器不会被原地替换。OpenHands 镜像必须继续满足 `source.lock.json`、包版本和契约探针约束，不要用浮动上游版本替代。
 
+### 5.1.1 共享只读 Maven 仓库
+
+若 Docker 宿主机已准备统一 Maven 根目录（例如
+`/opt/flowweave/maven`），可在部署环境的 `.env` 设置：
+
+```bash
+MAVEN_SHARED_HOST_ROOT=/opt/flowweave/maven
+```
+
+该目录必须包含普通目录 `Repository/`、`conf/` 和普通文件
+`conf/settings.xml`；不得使用符号链接。Runtime Provider 将它以同一绝对路径只读挂载给
+Environment Setup、FlowRun 和 Agent Workspace 的动态 Runtime，并将该 settings 文件同时挂载为
+Runtime HOME 中默认的 `~/.m2/settings.xml`。因此现有 settings 中的：
+
+```xml
+<localRepository>/opt/flowweave/maven/Repository</localRepository>
+```
+
+会直接生效，容器仍使用镜像内经过契约检查的 `mvn` 二进制。Provider 还会导出
+`MAVEN_ARGS=-s /opt/flowweave/maven/conf/settings.xml`；共享目录与配置在 Runtime 内均不可写。
+
+修改此配置或 Runtime Provider 后，已运行的动态容器不会自动获得新挂载。必须通过各 FlowRun 的正式
+generation replacement 或 Agent Workspace 的受管容器 recreate 来更新；不得删除 Workspace、Docker volume
+或 OpenHands Conversation 持久目录。
+
 ### 5.2 Python/JavaScript Sandbox
 
 ```bash

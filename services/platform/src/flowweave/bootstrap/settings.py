@@ -65,6 +65,11 @@ class Settings(BaseSettings):
     # with flow_run_runtime_validation_root instead of inspecting a shared
     # source container to discover host mounts.
     runtime_host_workspace_root: Path = Path("")
+    # Optional immutable Maven root on the Docker host. When configured, the
+    # Runtime Provider validates and bind-mounts this root read-only into each
+    # dynamic Runtime at the same absolute path. It contains both Repository
+    # and conf/settings.xml so Maven can retain the configured localRepository.
+    maven_shared_host_root: Path = Path("")
     # Optional SSH endpoint used by JetBrains Gateway/IDEA to open the
     # persistent workspace on the Docker host. The endpoint is deliberately
     # separate from Runtime containers, which may be replaced at any time.
