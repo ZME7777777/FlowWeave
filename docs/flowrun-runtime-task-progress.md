@@ -3571,7 +3571,7 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 
 目标：使 Hook 紧凑桌面布局适配浏览器缩放后的中等有效宽度：六个事件仍在一行展示，标题顶部留白稳定；仅在真正窄屏时才回退为三列。
 
-完成：将三列事件回退断点从 1180px 下调至 900px，并将标题留白规则提升为 `section.modal.hook-editor` 的最终精确选择器；中等桌面有效宽度继续使用六项同排和双列主体布局。
+完成：移除不必要的三列事件回退：FlowWeave 的桌面最小宽度下，约 780px 编辑器已经可承载六个紧凑事件卡，因此浏览器缩放后的中等有效宽度也固定使用六项同排和双列主体布局；标题留白规则使用 `section.modal.hook-editor` 最终精确选择器。
 
 验收：Web TypeScript typecheck、production build、受影响 `CapabilitiesPage.tsx` ESLint 与 `git diff --check` 通过。
 
@@ -3600,7 +3600,7 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
-| 2026-09-10 | FR-265 | Web typecheck／production build、受影响 `CapabilitiesPage.tsx` ESLint、`git diff --check` 与任务状态唯一性 | PASS：浏览器缩放后的中等桌面宽度保持六项事件同排与双列主体，标题上沿留白不被通用紧凑规则覆盖。 |
+| 2026-09-10 | FR-265 | Web typecheck／production build、受影响 `CapabilitiesPage.tsx` ESLint、`git diff --check` 与任务状态唯一性 | PASS：浏览器缩放后的中等桌面宽度固定保持六项事件同排与双列主体，标题上沿留白不被通用紧凑规则覆盖。 |
 | 2026-09-10 | FR-264 | Web typecheck／production build、受影响 `CapabilitiesPage.tsx` ESLint、`git diff --check` 与任务状态唯一性 | PASS：标题顶部留白在紧凑视口规则后仍保持常规 30px、较矮视口 24px，且不影响 FR-263 的一次可见主配置流。 |
 | 2026-09-10 | FR-263 | Web typecheck／production build、受影响 `CapabilitiesPage.tsx` ESLint、`git diff --check` 与任务状态唯一性 | PASS：Hook 主要桌面配置流压缩为一次可见布局，六个回调事件横向同排，Matcher／执行方式和文件上传／运行语义分别横排；回退布局仍保证窄/矮窗口可访问所有控件。 |
 | 2026-09-10 | FR-262 | Web typecheck／production build、受影响 `CapabilitiesPage.tsx` ESLint、`git diff --check` 与任务状态唯一性 | PASS：Hook 标题区在常规和较矮视口均保留明确顶部留白；表单独立滚动及底部发布操作栏保持不变。 |
