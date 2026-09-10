@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 from flowweave.modules.agent_sessions.application import usage as usage_projection
 from flowweave.modules.agent_sessions.application.deletion import delete_binding_records
 from flowweave.modules.agent_sessions.application.event_branch import (
-    latest_user_message_on_active_branch,
+    latest_user_message_across_active_branch_pages,
 )
 from flowweave.modules.agent_sessions.application.runtime_config import (
     build_agent_spec,
@@ -3064,8 +3064,7 @@ def rewrite_message(
     if not runtime.can_accept_input(handle):
         raise DomainError("AGENT_CONVERSATION_BUSY", "请先暂停当前回复", 409)
     legacy_policy = _uses_legacy_compaction_policy(runtime.conversation_context(handle))
-    batch = runtime.read_active_events(handle)
-    target = latest_user_message_on_active_branch(batch.events, batch.cursor)
+    target = latest_user_message_across_active_branch_pages(runtime.read_active_events, handle)
     if target is None or target.cursor != event_id:
         raise DomainError(
             "AGENT_MESSAGE_REWRITE_UNAVAILABLE",

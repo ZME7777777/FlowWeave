@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
-from flowweave.runtime.base import RuntimeEvent
+from collections.abc import Callable
+from dataclasses import replace
+
+from flowweave.runtime.base import RuntimeEvent, RuntimeEventBatch, RuntimeHandle
+
+_MAX_ACTIVE_BRANCH_EVENTS = 10_000
 
 
 def latest_user_message_on_active_branch(
@@ -37,4 +42,46 @@ def latest_user_message_on_active_branch(
         if not isinstance(parent_id, str):
             return None
         current_id = parent_id
+    return None
+
+
+def latest_user_message_across_active_branch_pages(
+    read_active_events: Callable[[RuntimeHandle], RuntimeEventBatch],
+    handle: RuntimeHandle,
+) -> RuntimeEvent | None:
+    """Find the latest user message even when the active branch spans pages.
+
+    OpenHands returns a bounded active-branch window. ``history_cursor`` is
+    the formal missing parent at the older edge, so following it preserves the
+    native parent chain without inferring order from timestamps or transport
+    pages. Rewrites use this path because a long agent turn can put its user
+    message more than one event page behind the formal leaf.
+    """
+
+    events_by_id: dict[str, RuntimeEvent] = {}
+    leaf_event_id: str | None = None
+    history_cursor: str | None = None
+    visited_history_cursors: set[str] = set()
+
+    while len(events_by_id) < _MAX_ACTIVE_BRANCH_EVENTS:
+        batch = read_active_events(replace(handle, history_cursor=history_cursor))
+        if leaf_event_id is None:
+            leaf_event_id = batch.cursor
+        elif batch.cursor != leaf_event_id:
+            return None
+        for event in batch.events:
+            existing = events_by_id.get(event.cursor)
+            if existing is not None and existing != event:
+                return None
+            events_by_id[event.cursor] = event
+
+        target = latest_user_message_on_active_branch(tuple(events_by_id.values()), leaf_event_id)
+        if target is not None:
+            return target
+
+        history_cursor = batch.history_cursor
+        if not history_cursor or history_cursor in visited_history_cursors:
+            return None
+        visited_history_cursors.add(history_cursor)
+
     return None
