@@ -1022,10 +1022,11 @@ function ConversationFailure({ item, taskControl = [] }: { item: Item; taskContr
   </article>;
 }
 
-export function ConversationSurface({ events, liveText, isGenerating, requestStartedAt, requestSubmitting = false, rewritePending = false, condensationStatus, onRetryCondensation, onRewrite, onFork, onOpenAttachment, onPreviewCandidateFile, onAddReference, taskControl = [], monitoring, connectionState }: {
+export function ConversationSurface({ events, liveText, isGenerating, isPaused = false, requestStartedAt, requestSubmitting = false, rewritePending = false, condensationStatus, onRetryCondensation, onRewrite, onFork, onOpenAttachment, onPreviewCandidateFile, onAddReference, taskControl = [], monitoring, connectionState }: {
   events: OpenHandsConversationEvent[];
   liveText: string;
   isGenerating: boolean;
+  isPaused?: boolean;
   requestStartedAt?: number;
   requestSubmitting?: boolean;
   rewritePending?: boolean;
@@ -1197,6 +1198,14 @@ export function ConversationSurface({ events, liveText, isGenerating, requestSta
     }, 600);
   }, [viewingReference]);
   const lastUserEventId = useMemo(() => [...turns].reverse().find(turn => turn.user)?.user?.event.id, [turns]);
+  const responseTimeoutPaused = Boolean(
+    isPaused
+    && lastUserEventId
+    && taskControl.some(control => (
+      control.action_event_id === lastUserEventId
+      && control.control_state === 'TIMEOUT_PAUSED'
+    )),
+  );
   if (!turns.length && !liveText && !isGenerating && !condensationStatus) return <div className="conversation-surface-empty"><b>会话已就绪</b><span>发送第一条消息，开始与 Agent 协作。</span></div>;
   const showJumpToLatest = !isAtLatest && Boolean(turns.length || liveText || isGenerating);
   return <div ref={shell} className="conversation-surface-shell">
@@ -1252,6 +1261,9 @@ export function ConversationSurface({ events, liveText, isGenerating, requestSta
         </section>;
       })}
       {turns.length === 0 && (liveText || isGenerating) && <><ActivityGroup items={[]} active liveText={liveText} startedAt={requestStartedAt} avatarSlots={avatarSlots}/><CurrentTurnStatus items={[]} liveText={liveText} requestSubmitting={requestSubmitting} monitoring={monitoring} connectionState={connectionState}/></>}
+      {responseTimeoutPaused && <article className="conversation-interruption conversation-timeout-paused" role="status">
+        <Check size={15}/><div><b>模型响应超时，已暂停</b><p>OpenHands 会话连接正常。你可以点击“继续”重试。</p></div>
+      </article>}
       {condensationStatus && <article className={`conversation-condensation-progress ${condensationStatus.state}`} aria-label={condensationStatus.state === 'running' ? '正在压缩上下文' : '上下文压缩失败'} role="status">
         {condensationStatus.state === 'running' ? <LoaderCircle className="conversation-condensation-spinner" size={16}/> : <CircleAlert size={16}/>}
         <div><header><b>{condensationStatus.state === 'running' ? '正在压缩上下文' : '上下文压缩未完成'}</b>{condensationStatus.state === 'running' && <time>{formatDuration(condensationElapsed / 1_000)}</time>}</header>

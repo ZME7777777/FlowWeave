@@ -1,5 +1,7 @@
 from datetime import UTC, datetime, timedelta
 from time import sleep
+from types import SimpleNamespace
+from uuid import uuid4
 
 from sqlalchemy import select
 
@@ -12,6 +14,7 @@ from flowweave.modules.tasks.application.service import (
     succeed,
 )
 from flowweave.shared.models import BackgroundTask, FlowDefinition, TaskState
+from flowweave.shared.settings import settings_context
 
 
 def test_runtime_input_upload_uses_frozen_flow_run_generation_route(settings):
@@ -249,6 +252,90 @@ def test_idempotent_enqueue_returns_same_task(db_session_factory):
             idempotency_key="cleanup:a",
         )
         assert one.id == two.id
+
+
+def test_conversation_response_timeout_pauses_only_an_unchanged_native_leaf(
+    settings, db_session_factory, monkeypatch
+):
+    from flowweave.modules.agent_workspaces.application import task_watchdog
+    from flowweave.runtime.base import RuntimeEventBatch, RuntimeHandle, RuntimeInputReadiness
+    from flowweave.runtime.dependencies import runtime_context
+
+    class NativeRuntime:
+        def __init__(self, cursor: str) -> None:
+            self.cursor = cursor
+            self.execution_status = "running"
+            self.interrupts = 0
+
+        def read_active_events(self, _handle: RuntimeHandle) -> RuntimeEventBatch:
+            return RuntimeEventBatch(events=(), cursor=self.cursor)
+
+        def input_readiness(self, _handle: RuntimeHandle) -> RuntimeInputReadiness:
+            return RuntimeInputReadiness(
+                ready=self.execution_status == "paused",
+                execution_status=self.execution_status,
+            )
+
+        def interrupt(self, _handle: RuntimeHandle) -> None:
+            self.interrupts += 1
+            self.execution_status = "paused"
+
+    binding_id = str(uuid4())
+    user_event_id = "formal-user-event"
+    with settings_context(settings), db_session_factory() as db:
+        task = enqueue(
+            db,
+            task_type="PAUSE_AGENT_CONVERSATION_ON_TIMEOUT",
+            aggregate_type="AGENT_CONVERSATION",
+            aggregate_id=binding_id,
+            idempotency_key=f"timeout:{binding_id}:{user_event_id}",
+            payload={"user_event_id": user_event_id, "control_state": "TIMEOUT_WAITING"},
+        )
+        db.commit()
+        task_id = task.id
+
+    binding = SimpleNamespace(id=binding_id, host_kind="AGENT_WORKSPACE")
+    handle = RuntimeHandle(job_id="timeout-test", conversation_id="conversation")
+    monkeypatch.setattr(
+        task_watchdog,
+        "_resolve_timeout_handle",
+        lambda _db, _binding_id: (binding, handle),
+    )
+
+    with settings_context(settings), db_session_factory() as db:
+        claimed = claim(db, "timeout-worker", lease_seconds=30)
+        assert claimed is not None
+        claimed_task, lease = claimed
+        runtime = NativeRuntime(user_event_id)
+        with runtime_context(runtime):
+            task_watchdog.process_response_timeout(
+                db, binding_id, dict(claimed_task.payload_json), lease
+            )
+        assert runtime.interrupts == 1
+        control = task_watchdog.task_control_projection(db, binding_id)[0]
+        assert control["control_state"] == "TIMEOUT_PAUSED"
+        db.commit()
+
+    with settings_context(settings), db_session_factory() as db:
+        task = db.get(BackgroundTask, task_id)
+        assert task is not None
+        task.payload_json = {"user_event_id": user_event_id, "control_state": "TIMEOUT_WAITING"}
+        task.state = TaskState.PENDING
+        task.available_at = datetime.now(UTC)
+        db.commit()
+
+    with settings_context(settings), db_session_factory() as db:
+        claimed = claim(db, "timeout-worker", lease_seconds=30)
+        assert claimed is not None
+        claimed_task, lease = claimed
+        runtime = NativeRuntime("newer-native-event")
+        with runtime_context(runtime):
+            task_watchdog.process_response_timeout(
+                db, binding_id, dict(claimed_task.payload_json), lease
+            )
+        assert runtime.interrupts == 0
+        control = task_watchdog.task_control_projection(db, binding_id)[0]
+        assert control["control_state"] == "TIMEOUT_SUPERSEDED"
 
 
 def _asset_payload(_skill=None):

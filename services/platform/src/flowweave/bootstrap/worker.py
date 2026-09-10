@@ -88,6 +88,7 @@ _DELIVERY_TASK_TYPES = frozenset(
         "WATCH_AGENT_TASK_TIMEOUT",
         "CONFIRM_AGENT_TASK_TIMEOUT",
         "RESUME_AGENT_TASK_TIMEOUT",
+        "PAUSE_AGENT_CONVERSATION_ON_TIMEOUT",
         "BUILD_CAPABILITY_DEPENDENCIES",
         "RESOLVE_PLUGIN_SOURCE",
     }
@@ -105,18 +106,15 @@ def _is_permanent_task_failure(task: Any, exception: Exception) -> bool:
         # required Artifact, so surface the blocked Attempt immediately.
         return True
     return (
-        (
-            task.task_type == "CLEANUP_ENVIRONMENT_IMAGE"
-            and exception.code
-            in {
-                "ENVIRONMENT_IMAGE_OWNERSHIP_MISMATCH",
-                "ENVIRONMENT_IMAGE_TAG_CONFLICT",
-            }
-        )
-        or (
-            task.task_type == "CLEANUP_ENVIRONMENT_CREDENTIALS"
-            and exception.code == "SANDBOX_RESOURCE_CONFLICT"
-        )
+        task.task_type == "CLEANUP_ENVIRONMENT_IMAGE"
+        and exception.code
+        in {
+            "ENVIRONMENT_IMAGE_OWNERSHIP_MISMATCH",
+            "ENVIRONMENT_IMAGE_TAG_CONFLICT",
+        }
+    ) or (
+        task.task_type == "CLEANUP_ENVIRONMENT_CREDENTIALS"
+        and exception.code == "SANDBOX_RESOURCE_CONFLICT"
     )
 
 
@@ -213,6 +211,7 @@ class TaskWorker:
             "WATCH_AGENT_TASK_TIMEOUT",
             "CONFIRM_AGENT_TASK_TIMEOUT",
             "RESUME_AGENT_TASK_TIMEOUT",
+            "PAUSE_AGENT_CONVERSATION_ON_TIMEOUT",
         }:
             return tenant_user(task.owner_user_id)
         return tenant_bypass()
@@ -297,9 +296,7 @@ class TaskWorker:
                 renewer.stop()
                 raise
             except Exception as exc:
-                error = (
-                    f"{exc.code}: {exc.message}" if isinstance(exc, DomainError) else str(exc)
-                )
+                error = f"{exc.code}: {exc.message}" if isinstance(exc, DomainError) else str(exc)
                 renewer.stop()
                 if not renewer.lost.is_set():
                     await self._fail_task(lease, task, error, exc)
@@ -349,9 +346,7 @@ class TaskWorker:
                 lambda db: fail(db, lease, error, permanent=permanent, commit=False)
             )
             if failed:
-                await session.run_sync(
-                    lambda db: record_terminal_failure(db, lease.task_id, error)
-                )
+                await session.run_sync(lambda db: record_terminal_failure(db, lease.task_id, error))
                 await session.commit()
             else:
                 await session.rollback()
