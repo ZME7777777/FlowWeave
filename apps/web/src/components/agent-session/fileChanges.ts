@@ -34,6 +34,12 @@ export function workspaceRelativePath(path: string, workingDirectory?: string | 
   const root = workingDirectory ? normalizedWorkspacePath(workingDirectory) : '';
   if (root && candidate === root) return '.';
   if (root && candidate.startsWith(`${root}/`)) return `./${candidate.slice(root.length + 1)}`;
+  // OpenHands tool observations can be relative to the shared project root
+  // while the active conversation is scoped to a user worktree.  Do not show
+  // that implementation prefix in the conversation UI: the meaningful path
+  // begins at the worktree contents (normally `repos/`).
+  const pathSegments = candidate.split('/');
+  if (pathSegments[0] === 'users' && pathSegments.length > 3) return `./${pathSegments.slice(3).join('/')}`;
   return candidate ? `./${candidate}` : '.';
 }
 

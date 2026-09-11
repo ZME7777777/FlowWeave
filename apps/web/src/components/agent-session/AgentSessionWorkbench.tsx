@@ -2058,6 +2058,16 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     () => selectedConversationQuery.data ?? conversations.find(item => item.id === selectedBindingId),
     [conversations, selectedBindingId, selectedConversationQuery.data],
   );
+  // The workspace endpoint resolves the actual directory bound to this
+  // conversation, including legacy conversations whose list projection only
+  // reports the shared project root.  Keep transcript file paths scoped to
+  // this authoritative directory.
+  const selectedWorkspaceDetailsQuery = useQuery({
+    queryKey: sessionQueryKey(host, 'selected-workspace-details', workspace?.id, selected?.id),
+    queryFn: () => api.workspaceDetails(workspace!.id, { bindingId: selected!.id }),
+    enabled: Boolean(workspace && selected),
+    retry: (count, error) => !(error instanceof ApiError && error.status < 500) && count < 2,
+  });
   const updateUnreadConversationIds = useCallback((update: (current: Set<string>) => Set<string>) => {
     setUnreadConversationIds(current => {
       const next = update(current);
@@ -3186,7 +3196,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   // still carrying its authoritative working_directory.  Prefer it over the
   // shared project root so paths in its transcript stay relative to the
   // directory where that conversation actually ran.
-  const activeWorkspaceRoot = selected?.working_directory
+  const activeWorkspaceRoot = selectedWorkspaceDetailsQuery.data?.working_directory
+    ?? selected?.working_directory
     ?? (selected?.work_directory_id
       ? workDirectories.find(directory => directory.id === selected.work_directory_id)?.current_version.working_directory
       : undefined)

@@ -68,7 +68,7 @@
 .conversation-activity-row.live-text{color:#35483b}
 .conversation-activity-row.live-text>svg{color:#4d7d5e}
 .conversation-activity-row.thought{display:block;color:#222722;font-size:14px;line-height:1.78}
-.conversation-activity-row.thought>svg,.conversation-activity-row.thought :is(b,small){display:none}
+.conversation-activity-row.thought>svg{display:none}
 .conversation-activity-row.thought>div{display:block;min-width:0}
 .conversation-activity-row.thought p{margin:0 0 10px}
 .conversation-activity-row.thought p:last-child{margin-bottom:0}
