@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 from sqlalchemy import select
@@ -15,7 +15,11 @@ from flowweave.modules.agent_sessions.infrastructure.models import (
     AgentConversationCapability,
 )
 from flowweave.modules.agent_workspaces import public as agent_workspace_host
-from flowweave.modules.catalog.public import resolve_version
+from flowweave.modules.catalog.public import (
+    hold_session_memory_references,
+    resolve_snapshot_memory,
+    resolve_version,
+)
 from flowweave.runtime.base import (
     RuntimeAgentContext,
     RuntimeAgentDefinition,
@@ -32,9 +36,11 @@ from flowweave.runtime.workspace import (
     materialize_agent_workspace_capabilities,
     materialize_agent_workspace_capability_marketplace,
     materialize_agent_workspace_hook_config,
+    materialize_runtime_memory,
 )
 from flowweave.shared.domain.agent_definition import normalize_agent_definition_document
 from flowweave.shared.domain.openhands import FIXED_RUNTIME_TOOL_NAMES
+from flowweave.shared.domain.runtime_policy import normalize_memory_policy_document
 from flowweave.shared.errors import DomainError
 from flowweave.shared.settings import get_settings
 
@@ -86,6 +92,77 @@ class FrozenSessionConfig:
     model_name: str | None
     reasoning_effort: str | None
     capabilities: tuple[FrozenSessionCapability, ...]
+
+
+def materialize_frozen_memory(
+    db: Session,
+    config: FrozenSessionConfig,
+    *,
+    runtime_scope: Literal["ATTEMPT", "CONVERSATION"],
+    snapshot_id: str,
+    flow_run_id: str,
+    manifest_digest: str,
+    workspace_ref: str,
+    project_root: Path,
+    capability_root: Path,
+) -> bool:
+    """Expose only a frozen session Memory bundle to OpenHands.
+
+    Agent Workspace configuration intentionally has no Run Snapshot and never
+    calls this helper.  That keeps OpenHands' ambient user-memory tier disabled
+    outside FlowRun execution/conversation paths.
+    """
+
+    policies = [
+        capability
+        for capability in config.capabilities
+        if capability.capability_type == "MEMORY_POLICY"
+    ]
+    if not policies:
+        return False
+    if len(policies) != 1:
+        raise DomainError(
+            "AGENT_MEMORY_POLICY_CONFLICT",
+            "一个会话只能冻结一个 Memory Policy",
+            409,
+        )
+    policy = policies[0]
+    try:
+        policy_key, document = normalize_memory_policy_document(
+            policy.runtime_config, fallback_key=policy.capability_key
+        )
+    except ValueError as exc:
+        raise DomainError(
+            "AGENT_MEMORY_POLICY_INVALID",
+            "已冻结的 Memory Policy 无效",
+            409,
+            {"capability_version_id": policy.version_id},
+        ) from exc
+    if policy_key != policy.capability_key:
+        raise DomainError(
+            "AGENT_MEMORY_POLICY_IDENTITY_DRIFT",
+            "已冻结的 Memory Policy 身份校验失败",
+            409,
+        )
+    if not document["enabled"] or runtime_scope not in document["scopes"]:
+        return False
+    source_refs = list(document["source_refs"])
+    hold_session_memory_references(db, snapshot_id=snapshot_id, source_refs=source_refs)
+    materials = resolve_snapshot_memory(
+        db,
+        snapshot_id=snapshot_id,
+        source_refs=source_refs,
+        allowed_scopes={"USER", "PROJECT"},
+    )
+    materialize_runtime_memory(
+        flow_run_id=flow_run_id,
+        manifest_digest=manifest_digest,
+        workspace_ref=workspace_ref,
+        materials=materials,
+        project_root=project_root,
+        capability_root=capability_root,
+    )
+    return True
 
 
 def system_context(working_directory: str) -> str:
@@ -408,6 +485,7 @@ def build_agent_spec(
     host_root: Path,
     runtime_root: Path,
     system_message_suffix_append: str = "",
+    load_memory: bool = False,
 ) -> RuntimeAgentSpec:
     materialized = tuple(
         item.materialization_config()
@@ -453,6 +531,7 @@ def build_agent_spec(
                     "auto_load": False,
                 },
             ),
+            load_memory=load_memory,
         ),
         condenser=RuntimeCondenser(
             kind="LLM_SUMMARIZING",
@@ -482,6 +561,7 @@ __all__ = (
     "frozen_context_suffix",
     "freeze_config_on_binding",
     "flow_node_binding_for_attempt",
+    "materialize_frozen_memory",
     "provider_for_config",
     "reserve_flow_node_binding",
     "resolve_session_config",

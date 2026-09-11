@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`ACTIVE`
 > 当前执行切片：无
-> 下一可执行切片：`FR-316 Memory 创建路径与恢复一致性`
+> 下一可执行切片：`FR-317 MCP OAuth 刷新与 subscription 凭据预检`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -4056,14 +4056,27 @@ endpoint、session key 或未经授权的 Event。
 FlowRun Runtime 仍由显式生命周期持有且没有 idle TTL，stream heartbeat 只属于 OpenHands Server 的会话
 内存回收时钟。
 
-### FR-316 Memory 创建路径与恢复一致性 — READY
+### FR-316 Memory 创建路径与恢复一致性 — DONE
 
 依赖：FR-315。
 
 目标：验证 `load_memory` 在新建、fork、reload、Agent Workspace 与 FlowRun 节点全部正式创建路径生效，
 并继续只从冻结、只读、工作目录 scoped 的 Memory bundle 加载。
 
-### FR-317 MCP OAuth 刷新与 subscription 凭据预检 — PENDING
+完成：固定 `30cf5832e` 的 Agent Server 会在所有 launch path 对已解析 agent 盖上 stored
+`load_memory` preference，SDK `LocalConversation` 再从实际 `working_dir/.openhands/memory/MEMORY.md`
+走原生 best-effort loader。FlowRun Attempt 与 Conversation 现在均从冻结的 binding Memory Policy
+解析 Snapshot-held source ref、校验 digest，并在创建前物化同一只读 capability bundle 与工作目录 scoped
+loader symlink；`ATTEMPT` scope 用于节点执行，`CONVERSATION` scope 用于节点协作会话的新建与
+missing-conversation 重建。原生 fork 保持源会话的相同工作目录和 OpenHands 原生 agent 配置，因而继续
+读取相同 bundle。Runtime persistence 的 ambient `memory/` tier 被单独只读空挂载，避免上游 stored
+preference 使 HOME/persistence 的用户 Memory 覆盖冻结 bundle；Profile、Provider Connection 等其余
+持久化能力仍保留在 `OH_PERSISTENCE_DIR`。Agent Workspace 没有 FlowRun Snapshot，显式保持
+`load_memory=false`，并将 ambient user tier 与每个用户 project tier 的 `.openhands/memory` 都只读遮蔽
+为空目录；即使上游 stored preference 强制开启，也不得加载非冻结 Memory。Memory 内容不进入 Snapshot、DTO、
+事件或审计。
+
+### FR-317 MCP OAuth 刷新与 subscription 凭据预检 — READY
 
 依赖：FR-316。
 
@@ -4114,6 +4127,7 @@ fallback 矩阵；发布前确认原 ID reload、generation fencing、FlowWeave 
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-12 | FR-316 | 固定 `30cf5832e` 的 ConversationService stored preference stamp 与 `LocalConversation` project-memory loader 源码取证；扩展镜像 `contract_check.py`；新增冻结 policy 的 Snapshot hold/resolve/materialize 与 scope gate adapter pytest；`test_openhands.py` + `test_runtime_persistence.py`（130 passed）、受影响 Python Ruff format/check、`py_compile`、`uv lock --check`、Alembic head、`git diff --check` 与任务状态唯一性 | PASS（静态／定向）：FlowRun Attempt 与 Conversation 只在 frozen policy 的对应 scope 启用正式 `load_memory`，且只在 source ref 被当前 Snapshot hold、digest 校验并只读物化到实际 working directory 后才启用。协作会话 reload 后若原生会话丢失会用同一 bundle 重建；native fork 继承相同 working directory/config。Agent Workspace 即使上游 stored preference 覆盖显式关闭，也由 readonly empty persistence-memory 与 project-memory mounts 同时阻断 ambient 和 project 的非冻结 Memory。唯一 Alembic head 为 `0110_candidate_output_set_owner`，无 CURRENT，FR-317 为唯一 READY。Docker daemon 不可用，故镜像内 `contract_check.py`、真实 `load_memory` create/reload/fork、Provider docker exec、Testcontainers 集成与 E2E 未执行且未记为通过。 |
 | 2026-09-12 | FR-315 | 固定 `30cf5832e` 的 async-step user-message rescan 和 stream idle heartbeat 源码取证；扩展镜像 `contract_check.py`；运行中消息 gate、正式 user append timeout pytest；`test_openhands.py`（125 passed）、受影响 Python Ruff format/check、`py_compile`、`uv lock --check`、Alembic head、固定源码断言、`git diff --check` 与任务状态唯一性 | PASS（静态／定向）：运行中只有 `running/executing` 可向 OpenHands 正式追加 user event，当前原生 turn 不会被平台 interrupt、重绑或复制；确认/停止/暂停态仍拒绝。仅 streaming delta 时由上游 Event Service 维持其 idle clock，FlowRun Runtime 本身仍没有控制面 idle 回收。唯一 Alembic head 为 `0110_candidate_output_set_owner`，无 CURRENT，FR-316 为唯一 READY。Docker daemon 不可用，故镜像内 `contract_check.py`、真实 async LLM/tool step 消费、长流 idle eviction、Provider docker exec、Testcontainers 会话集成和 E2E 验证未执行且未记为通过。 |
 | 2026-09-12 | FR-314 | 固定 `30cf5832e` 的 `EventLog` marker/append 和 session-socket replay 源码取证；扩展镜像 contract_check marker 断言；新增长会话 active cursor 与 legacy fork 分支页数预算 pytest；`test_openhands.py`（120 passed）、受影响 Python Ruff format/check、`py_compile`、`uv lock --check`、Alembic head、`git diff --check` 与任务状态唯一性 | PASS（静态／定向）：普通上游 append 通过 marker 避免按长度目录扫描；FlowWeave 只在请求内按正式 id 回溯，最多读取 8 × 100 个原生 Event，超限 fail closed 并不持久化 sequence/cursor。显式历史分页、授权 durable replay 及 Provider fan-out 的既有上限保持不变。唯一 Alembic head 为 `0110_candidate_output_set_owner`，无 CURRENT，FR-315 为唯一 READY。Docker daemon 不可用，故固定镜像内 contract_check、真实长会话 append/replay/backpressure、Provider docker exec、Testcontainers 和端到端压力验证未执行且未记为通过。 |
 | 2026-09-12 | FR-313 | 固定 `30cf5832e` session socket、Event Service 与 StreamContext 源码取证；新增 remote/directed session-socket durable replay、cursor、exclusive `after_seq`、派生认证与 Provider 请求 nonce 测试；`test_openhands.py`（118 passed）、受影响 Python Ruff format/check、`py_compile`、Web TypeScript typecheck、ESLint、`uv lock --check`、Alembic head、`git diff --check` 与任务状态唯一性 | PASS（静态／定向）：浏览器只在活跃订阅 closure 保留 sequence，并通过 FlowWeave 授权 Relay 请求 durable suffix；Runtime endpoint、session key、原始 envelope/reasoning 和游标均不暴露或持久化。session replay Relay 不共享，避免后来订阅者错过已发送历史；live Relay 保持有界 fan-out，慢消费者继续被断开并可凭正式 `after_seq` 恢复。唯一 Alembic head 为 `0110_candidate_output_set_owner`，无 CURRENT，FR-314 为唯一 READY。Docker daemon 不可用，故真实 Runtime socket 的 replay/backpressure、Provider `docker exec` relay、镜像内 `contract_check.py`、Testcontainers 与端到端浏览器断连重连未执行且未记为通过。 |

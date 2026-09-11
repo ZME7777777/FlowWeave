@@ -31,7 +31,7 @@ from flowweave.shared.settings import get_settings
 _SCOPE_KEY = "platform-default"
 _ROOT = PurePosixPath(".agent-workspaces")
 _MARKER = ".flowweave-allocation"
-_DIRECTORIES = (
+_BASE_DIRECTORIES = (
     PurePosixPath("workspace"),
     PurePosixPath("workspace/project"),
     PurePosixPath("state"),
@@ -40,6 +40,16 @@ _DIRECTORIES = (
     PurePosixPath("state/persistence"),
     PurePosixPath("capabilities"),
 )
+_MEMORY_ISOLATION_DIRECTORIES = (
+    PurePosixPath("state/persistence/memory"),
+    # OpenHands may apply the stored ``load_memory`` preference after the
+    # request AgentContext has disabled it. This empty directory is mounted
+    # read-only onto every Agent Workspace project's memory-loader path so a
+    # user or model cannot introduce unfrozen project Memory through that
+    # preference.
+    PurePosixPath("state/disabled-project-memory"),
+)
+_DIRECTORIES = _BASE_DIRECTORIES + _MEMORY_ISOLATION_DIRECTORIES
 
 
 def _workspace_root() -> Path:
@@ -92,7 +102,9 @@ def _ensure_directory(path: Path) -> None:
     path.chmod(0o700)
 
 
-def _verify_allocation(allocation: AgentWorkspaceRuntimeAllocation) -> Path:
+def _verify_allocation(
+    allocation: AgentWorkspaceRuntimeAllocation, *, require_memory_isolation: bool = True
+) -> Path:
     if allocation.relative_root != _relative_root().as_posix():
         raise DomainError(
             "AGENT_WORKSPACE_ALLOCATION_CONFLICT",
@@ -125,7 +137,8 @@ def _verify_allocation(allocation: AgentWorkspaceRuntimeAllocation) -> Path:
             "The Agent Workspace external storage marker is invalid",
             409,
         )
-    for relative in _DIRECTORIES:
+    directories = _DIRECTORIES if require_memory_isolation else _BASE_DIRECTORIES
+    for relative in directories:
         metadata = (root / relative).lstat()
         if (
             stat.S_ISLNK(metadata.st_mode)
@@ -141,6 +154,15 @@ def _verify_allocation(allocation: AgentWorkspaceRuntimeAllocation) -> Path:
     return root
 
 
+def _upgrade_memory_isolation(allocation: AgentWorkspaceRuntimeAllocation) -> Path:
+    """Safely add readonly-memory mount sources to a pre-FR-316 allocation."""
+
+    root = _verify_allocation(allocation, require_memory_isolation=False)
+    for directory in _MEMORY_ISOLATION_DIRECTORIES:
+        _ensure_directory(root / directory)
+    return _verify_allocation(allocation)
+
+
 def _ensure_allocation(db: Session, workspace: AgentWorkspace) -> AgentWorkspaceRuntimeAllocation:
     allocation = db.scalar(
         select(AgentWorkspaceRuntimeAllocation)
@@ -148,7 +170,7 @@ def _ensure_allocation(db: Session, workspace: AgentWorkspace) -> AgentWorkspace
         .with_for_update()
     )
     if allocation is not None:
-        root = _verify_allocation(allocation)
+        root = _upgrade_memory_isolation(allocation)
         return allocation
     root = _host_root(_relative_root().as_posix())
     if root.exists() or root.is_symlink():
@@ -278,7 +300,7 @@ def runtime_allocation_for_agent_workspace(
             "The Agent Workspace external storage has not been allocated",
             409,
         )
-    _verify_allocation(allocation)
+    _upgrade_memory_isolation(allocation)
     return allocation
 
 

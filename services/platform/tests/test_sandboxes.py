@@ -1177,6 +1177,7 @@ def _runtime_allocation_tree(root: Path, allocation_id: str) -> None:
         "state/conversations",
         "state/bash-events",
         "state/persistence",
+        "state/persistence/memory",
         "capabilities",
     ):
         path = root / relative
@@ -1235,6 +1236,10 @@ def test_attempt_runtime_mounts_record_project_and_keeps_attempt_state(settings,
     ) in specifications
     assert (
         f"type=bind,src={attempt_root / 'state/persistence'},dst=/runtime/state/persistence"
+    ) in specifications
+    assert (
+        f"type=bind,src={attempt_root / 'state/persistence/memory'},"
+        "dst=/runtime/state/persistence/memory,readonly"
     ) in specifications
     assert not any("/home/flowweave/.openhands" in mount for mount in specifications)
     assert (

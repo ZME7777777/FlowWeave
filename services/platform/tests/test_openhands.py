@@ -10,6 +10,7 @@ import httpx
 import pytest
 
 from flowweave.bootstrap.settings import Settings
+from flowweave.modules.agent_sessions.application import runtime_config
 from flowweave.modules.agent_sessions.application.flow_node_conversations import (
     _accepts_queued_user_message,
 )
@@ -229,6 +230,112 @@ def test_collaboration_request_drops_all_node_execution_business_context():
     assert request.semantic_history == ()
     assert request.output_targets == {}
     assert request.agent_spec is shared_spec
+    assert request.memory_enabled is False
+
+
+def test_frozen_memory_is_materialized_before_enabling_native_loader(monkeypatch, tmp_path):
+    policy = runtime_config.FrozenSessionCapability(
+        version_id="policy-version",
+        capability_type="MEMORY_POLICY",
+        capability_key="governed-memory",
+        digest="a" * 64,
+        runtime_config={
+            "name": "governed-memory",
+            "description": "",
+            "enabled": True,
+            "scopes": ["ATTEMPT"],
+            "source_refs": [
+                {"reference_id": "00000000-0000-4000-8000-000000000001", "digest": "b" * 64}
+            ],
+            "retention_days": 30,
+            "require_review": True,
+            "sensitive_data_scan": True,
+            "replay_mode": "FROZEN",
+        },
+    )
+    config = runtime_config.FrozenSessionConfig(None, "provider", "model", None, (policy,))
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        runtime_config,
+        "hold_session_memory_references",
+        lambda _db, **kwargs: captured.update({"hold": kwargs}),
+    )
+    materials = (object(),)
+    monkeypatch.setattr(
+        runtime_config,
+        "resolve_snapshot_memory",
+        lambda _db, **kwargs: captured.update({"resolve": kwargs}) or materials,
+    )
+    monkeypatch.setattr(
+        runtime_config,
+        "materialize_runtime_memory",
+        lambda **kwargs: captured.update({"materialize": kwargs}),
+    )
+
+    assert runtime_config.materialize_frozen_memory(
+        object(),
+        config,
+        runtime_scope="ATTEMPT",
+        snapshot_id="snapshot-1",
+        flow_run_id="run-1",
+        manifest_digest="c" * 64,
+        workspace_ref=str(tmp_path / "project" / "node"),
+        project_root=tmp_path / "project",
+        capability_root=tmp_path / "capabilities",
+    )
+    assert captured["hold"] == {
+        "snapshot_id": "snapshot-1",
+        "source_refs": policy.runtime_config["source_refs"],
+    }
+    assert captured["resolve"] == {
+        "snapshot_id": "snapshot-1",
+        "source_refs": policy.runtime_config["source_refs"],
+        "allowed_scopes": {"USER", "PROJECT"},
+    }
+    assert captured["materialize"] == {
+        "flow_run_id": "run-1",
+        "manifest_digest": "c" * 64,
+        "workspace_ref": str(tmp_path / "project" / "node"),
+        "materials": materials,
+        "project_root": tmp_path / "project",
+        "capability_root": tmp_path / "capabilities",
+    }
+
+
+def test_frozen_memory_policy_outside_its_scope_does_not_enable_loader(tmp_path):
+    policy = runtime_config.FrozenSessionCapability(
+        version_id="policy-version",
+        capability_type="MEMORY_POLICY",
+        capability_key="governed-memory",
+        digest="a" * 64,
+        runtime_config={
+            "name": "governed-memory",
+            "description": "",
+            "enabled": True,
+            "scopes": ["CONVERSATION"],
+            "source_refs": [
+                {"reference_id": "00000000-0000-4000-8000-000000000001", "digest": "b" * 64}
+            ],
+            "retention_days": 30,
+            "require_review": True,
+            "sensitive_data_scan": True,
+            "replay_mode": "FROZEN",
+        },
+    )
+    config = runtime_config.FrozenSessionConfig(None, "provider", "model", None, (policy,))
+
+    assert not runtime_config.materialize_frozen_memory(
+        object(),
+        config,
+        runtime_scope="ATTEMPT",
+        snapshot_id="snapshot-1",
+        flow_run_id="run-1",
+        manifest_digest="c" * 64,
+        workspace_ref=str(tmp_path / "project" / "node"),
+        project_root=tmp_path / "project",
+        capability_root=tmp_path / "capabilities",
+    )
 
 
 def _handle(

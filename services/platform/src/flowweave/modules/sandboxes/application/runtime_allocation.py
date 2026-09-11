@@ -42,6 +42,10 @@ _DIRECTORY_MODES = {
     PurePosixPath("state/conversations"): 0o700,
     PurePosixPath("state/bash-events"): 0o700,
     PurePosixPath("state/persistence"): 0o700,
+    # OpenHands 1.47 stamps the server-level load_memory preference onto every
+    # launch. Keep its ambient user tier permanently empty so the only Memory
+    # it can read is FlowWeave's frozen project bundle.
+    PurePosixPath("state/persistence/memory"): 0o700,
     # The control plane must be able to create and remove immutable digest
     # bundles on rootless/bind-mounted filesystems.  Runtime read-only access
     # is enforced by the Docker mount contract; each completed bundle is still

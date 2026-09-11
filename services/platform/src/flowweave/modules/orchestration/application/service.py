@@ -5350,6 +5350,22 @@ def _runtime_request(db: Session, attempt: NodeAttempt) -> StartAttemptRequest:
         db, flow_run_id=run.id, node_attempt_id=attempt.id
     )
     runtime_owner_id = sandboxes.runtime_owner_flow_run_id(db, run.id)
+    memory_capability_root = (
+        sandboxes.node_attempt_capability_path(attempt.id, snapshot.runtime_manifest_hash)
+        if workspace.attempt_owned
+        else sandboxes.flow_run_capability_path(runtime_owner_id, snapshot.runtime_manifest_hash)
+    )
+    memory_enabled = agent_sessions.materialize_frozen_memory(
+        db,
+        session_config,
+        runtime_scope="ATTEMPT",
+        snapshot_id=snapshot.id,
+        flow_run_id=run.id if workspace.attempt_owned else runtime_owner_id,
+        manifest_digest=snapshot.runtime_manifest_hash,
+        workspace_ref=str(workspace.host_working_directory),
+        project_root=workspace.host_mount_root,
+        capability_root=memory_capability_root,
+    )
     host_root = (
         sandboxes.node_attempt_capability_path(
             attempt.id,
@@ -5379,6 +5395,7 @@ def _runtime_request(db: Session, attempt: NodeAttempt) -> StartAttemptRequest:
         ),
         host_root=host_root,
         runtime_root=runtime_root,
+        load_memory=memory_enabled,
     )
     asset = cast(dict[str, Any], node.get("asset") or {})
     input_contracts = {

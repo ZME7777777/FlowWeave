@@ -28,6 +28,7 @@ os.environ.setdefault("OH_SECRET_KEY", "flowweave-contract-check-secret-00000000
 os.environ.setdefault("OH_PERSISTENCE_DIR", "/runtime/state/persistence")
 
 from openhands.agent_server.api import create_app
+from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.mcp_router import (
     MCPOAuthCallbackRequest,
@@ -115,8 +116,8 @@ from openhands.sdk.tool.builtins.invoke_skill import (
 from openhands.sdk.tool.registry import list_usable_tools, resolve_tool
 from openhands.sdk.tool.spec import Tool
 from openhands.sdk.tool.tool import DeclaredResources, ToolExecutor
-from openhands.sdk.utils.path import get_user_persistence_dir
 from openhands.sdk.utils.command import sanitized_env
+from openhands.sdk.utils.path import get_user_persistence_dir
 from openhands.sdk.utils.redact import redact_api_key_literals, redact_text_secrets
 from openhands.tools.file_editor.editor import FileEditor
 from openhands.tools.file_editor.exceptions import FileValidationError
@@ -127,9 +128,7 @@ from openhands.tools.task.manager import Task, TaskManager, TaskStatus
 
 EXPECTED_VERSION = "1.47.0"
 EXPECTED_UPSTREAM_BASE = "30cf5832e42c71c24daa82a1a4fd5d25eb70d1b9"
-EXPECTED_SOURCE_ARCHIVE_SHA256 = (
-    "70128f691ba58f0a1a1f6987c24738bb144209c61ba1b44a349a5504a98ea6b5"
-)
+EXPECTED_SOURCE_ARCHIVE_SHA256 = "70128f691ba58f0a1a1f6987c24738bb144209c61ba1b44a349a5504a98ea6b5"
 PACKAGES = (
     "openhands-agent-server",
     "openhands-sdk",
@@ -263,6 +262,29 @@ def _assert_async_turn_and_stream_idle_contract() -> None:
     assert "update_last_execution_time()" in stream_signal_source
 
 
+def _assert_memory_launch_contract() -> None:
+    """Lock the upstream launch stamp and native workspace loader.
+
+    FlowWeave controls the Memory source by exposing a frozen project index and
+    isolates the ambient persistence-memory tier at the Runtime mount boundary.
+    It must not reimplement this OpenHands lifecycle in platform code.
+    """
+
+    service_source = getsource(ConversationService)
+    assert "stored_context = settings.agent_settings.agent_context" in service_source
+    assert "load_memory = bool(stored_context and stored_context.load_memory)" in service_source
+    assert "request = request.model_copy(" in service_source
+    assert 'update={"agent": _with_load_memory(request.agent)}' in service_source
+    assert service_source.index(
+        "Profile resolution and the load_memory stamp"
+    ) < service_source.index("request_data")
+
+    conversation_source = getsource(LocalConversation)
+    assert "if merged_context is not None and merged_context.load_memory:" in conversation_source
+    assert "memory_context = load_memory(self.workspace.working_dir)" in conversation_source
+    assert "Failed to load memory; continuing without it" in conversation_source
+
+
 def _assert_profile_provider_secret_and_condenser_behavior() -> None:
     child_environment = sanitized_env(
         {
@@ -274,14 +296,8 @@ def _assert_profile_provider_secret_and_condenser_behavior() -> None:
         }
     )
     assert child_environment == {"KEEP": "value", "AI_AGENT": "openhands"}
-    assert (
-        redact_text_secrets("tool output sk-oh-abcdef1234567890")
-        == "tool output <redacted>"
-    )
-    assert (
-        redact_api_key_literals("tmux sk-oh-abcdef1234567890")
-        == "tmux <redacted>"
-    )
+    assert redact_text_secrets("tool output sk-oh-abcdef1234567890") == "tool output <redacted>"
+    assert redact_api_key_literals("tmux sk-oh-abcdef1234567890") == "tmux <redacted>"
     persistence_dir = Path("/runtime/state/persistence")
     assert get_user_persistence_dir() == persistence_dir
     default_profile_store = LLMProfileStore()
@@ -306,9 +322,7 @@ def _assert_profile_provider_secret_and_condenser_behavior() -> None:
     with TemporaryDirectory() as directory:
         root = Path(directory)
         provider_store = ProviderConnectionStore(root / "provider-connections")
-        profile_store = LLMProfileStore(
-            root / "profiles", provider_store=provider_store
-        )
+        profile_store = LLMProfileStore(root / "profiles", provider_store=provider_store)
         connection = ProviderConnection(
             id="governed-provider",
             display_name="Governed Provider",
@@ -331,9 +345,7 @@ def _assert_profile_provider_secret_and_condenser_behavior() -> None:
         assert first.api_key is not None
         assert first.api_key.get_secret_value() == "first-key"
         provider_store.update(
-            connection.model_copy(
-                update={"api_key": SecretStr("rotated-key"), "updated_at": 2}
-            )
+            connection.model_copy(update={"api_key": SecretStr("rotated-key"), "updated_at": 2})
         )
         rotated = profile_store.load("governed-profile")
         assert rotated.api_key is not None
@@ -372,9 +384,7 @@ def main() -> None:
         multilingual_markdown = directory_path / "中文边界.md"
         # The first UTF-8 code point crosses byte 512. binaryornot 0.6.0 sampled
         # exactly 512 bytes and misclassified this valid text as binary.
-        multilingual_markdown.write_text(
-            "a" * 511 + "中文 Markdown\n", encoding="utf-8"
-        )
+        multilingual_markdown.write_text("a" * 511 + "中文 Markdown\n", encoding="utf-8")
         FileEditor().validate_file(multilingual_markdown)
 
         binary_file = directory_path / "nul.bin"
@@ -404,16 +414,13 @@ def main() -> None:
     assert len(server_info.usable_tools) == len(set(server_info.usable_tools))
     assert {"file_editor", "task_tracker", "terminal"} <= set(server_info.usable_tools)
     assert len(server_info.capabilities) == len(set(server_info.capabilities))
+    _assert_memory_launch_contract()
     event_socket_source = getsource(events_socket)
     bash_socket_source = getsource(bash_events_socket)
     socket_source = event_socket_source + bash_socket_source
-    assert (
-        '@sockets_router.websocket("/events/{conversation_id}")' in event_socket_source
-    )
+    assert '@sockets_router.websocket("/events/{conversation_id}")' in event_socket_source
     assert '@sockets_router.websocket("/bash-events")' in bash_socket_source
-    assert (
-        "_accept_authenticated_websocket(websocket, session_api_key)" in socket_source
-    )
+    assert "_accept_authenticated_websocket(websocket, session_api_key)" in socket_source
     assert _WebSocketSubscriber.receives_streaming_deltas is True
     asyncio.run(_assert_targeted_streaming_delta_delivery())
     _assert_durable_event_log_sequence()
@@ -441,13 +448,9 @@ def main() -> None:
         "file:///agent-server",
     )
     for package in PACKAGES:
-        direct_url = json.loads(
-            distribution(package).read_text("direct_url.json") or "{}"
-        )
+        direct_url = json.loads(distribution(package).read_text("direct_url.json") or "{}")
         actual_url = direct_url.get("url")
-        assert actual_url in tuple(
-            f"{root}/{package}" for root in allowed_source_roots
-        ), (
+        assert actual_url in tuple(f"{root}/{package}" for root in allowed_source_roots), (
             package,
             direct_url,
         )
@@ -475,9 +478,9 @@ def main() -> None:
         "capabilities",
     } <= set(server_info_schema["properties"])
     mcp_test_operation = schema["paths"]["/api/mcp/test"]["post"]
-    assert mcp_test_operation["requestBody"]["content"]["application/json"][
-        "schema"
-    ] == {"$ref": "#/components/schemas/MCPTestRequest"}
+    assert mcp_test_operation["requestBody"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/MCPTestRequest"
+    }
     mcp_schemas = schema["components"]["schemas"]
     mcp_request = mcp_schemas["MCPTestRequest"]
     assert set(mcp_request["properties"]) == {
@@ -488,9 +491,7 @@ def main() -> None:
     }
     assert mcp_request["required"] == ["server"]
     assert mcp_request["properties"]["timeout"]["default"] == 15.0
-    mcp_response = mcp_test_operation["responses"]["200"]["content"][
-        "application/json"
-    ]["schema"]
+    mcp_response = mcp_test_operation["responses"]["200"]["content"]["application/json"]["schema"]
     assert mcp_response["discriminator"]["propertyName"] == "ok"
     assert mcp_response["oneOf"] == [
         {"$ref": "#/components/schemas/MCPTestSuccess"},
@@ -574,9 +575,7 @@ def main() -> None:
     }
     assert set(MCPOAuthCallbackRequest.model_fields) == {"callback_url"}
     task_http_paths = sorted(
-        path
-        for path in paths
-        if "sub-agent" in path or "subagent" in path or "/tasks" in path
+        path for path in paths if "sub-agent" in path or "subagent" in path or "/tasks" in path
     )
     # The pinned OpenHands source exposes only the Agent Definition catalog.
     # Running TaskToolSet children remain internal blocking LocalConversations;
@@ -606,9 +605,7 @@ def main() -> None:
     start_fields = set(StartConversationRequest.model_fields)
     missing_start_fields = sorted(REQUIRED_START_FIELDS - start_fields)
     assert not missing_start_fields, {"missing_start_fields": missing_start_fields}
-    assert isinstance(
-        _field_default(StartConversationRequest, "confirmation_policy"), NeverConfirm
-    )
+    assert isinstance(_field_default(StartConversationRequest, "confirmation_policy"), NeverConfirm)
     profile_http_methods = {
         path: sorted(schema["paths"][path])
         for path in REQUIRED_PATHS
@@ -677,17 +674,13 @@ def main() -> None:
     except ValueError:
         pass
     else:
-        raise AssertionError(
-            "OpenHands unexpectedly accepts agent and agent_profile_id together"
-        )
+        raise AssertionError("OpenHands unexpectedly accepts agent and agent_profile_id together")
     plugin_source_fields = PluginSource.model_fields
     assert set(plugin_source_fields) == {"source", "ref", "repo_path"}
     assert plugin_source_fields["source"].is_required()
     assert plugin_source_fields["ref"].default is None
     assert plugin_source_fields["repo_path"].default is None
-    local_plugin = PluginSource(
-        source="/runtime/capabilities/nodes/node-1/plugins/review"
-    )
+    local_plugin = PluginSource(source="/runtime/capabilities/nodes/node-1/plugins/review")
     assert local_plugin.model_dump(mode="json", exclude_none=True) == {
         "source": "/runtime/capabilities/nodes/node-1/plugins/review"
     }
@@ -721,9 +714,7 @@ def main() -> None:
         assert fetched_marketplace.resolved_ref == marketplace_commit
         marketplace_plugin = fetched_marketplace.marketplace.get_plugin("review")
         assert marketplace_plugin is not None
-        assert fetched_marketplace.marketplace.resolve_plugin_source(
-            marketplace_plugin
-        ) == (
+        assert fetched_marketplace.marketplace.resolve_plugin_source(marketplace_plugin) == (
             str(marketplace_root / "plugins/review"),
             None,
             None,
@@ -735,12 +726,8 @@ def main() -> None:
     }
     finish_tool_name = FinishTool.__name__
     registered_finish = tool_registry._REG.pop(finish_tool_name, None)
-    registered_finish_usability = tool_registry._USABILITY_REG.pop(
-        finish_tool_name, None
-    )
-    registered_finish_module = tool_registry._MODULE_QUALNAMES.pop(
-        finish_tool_name, None
-    )
+    registered_finish_usability = tool_registry._USABILITY_REG.pop(finish_tool_name, None)
+    registered_finish_module = tool_registry._MODULE_QUALNAMES.pop(finish_tool_name, None)
     try:
         [structured_finish] = resolve_tool(
             Tool(
@@ -817,10 +804,7 @@ def main() -> None:
             objective="Verify the governed result",
         ).model_dump(),
     )
-    assert (
-        goal_event.model_dump(mode="json", exclude_none=True)["value"]["status"]
-        == "running"
-    )
+    assert goal_event.model_dump(mode="json", exclude_none=True)["value"]["status"] == "running"
 
     agent_context_fields = AgentContext.model_fields
     assert {"load_memory", "memory_context"} <= set(agent_context_fields)
@@ -874,13 +858,9 @@ def main() -> None:
     except ValueError:
         pass
     else:
-        raise AssertionError(
-            "OpenHands iterative refinement unexpectedly accepts zero iterations"
-        )
+        raise AssertionError("OpenHands iterative refinement unexpectedly accepts zero iterations")
     critic = AgentFinishedCritic(
-        iterative_refinement=IterativeRefinementConfig(
-            success_threshold=0.7, max_iterations=2
-        )
+        iterative_refinement=IterativeRefinementConfig(success_threshold=0.7, max_iterations=2)
     )
     assert critic.model_dump(mode="json", exclude_none=True) == {
         "kind": "AgentFinishedCritic",
@@ -933,8 +913,7 @@ def main() -> None:
         "conversation",
     }
     assert not any(
-        hasattr(TaskManager, name)
-        for name in ("cancel_task", "interrupt_task", "pause_task")
+        hasattr(TaskManager, name) for name in ("cancel_task", "interrupt_task", "pause_task")
     )
     assert list(signature(TaskExecutor.__call__).parameters) == [
         "self",
@@ -1003,18 +982,14 @@ def main() -> None:
     # index from that directory.  Existing durable child data therefore does
     # not constitute a service-restart resume contract.
     with TemporaryDirectory() as parent_persistence_dir:
-        persisted_subagent_dir = (
-            Path(parent_persistence_dir) / "subagents" / "persisted-child"
-        )
+        persisted_subagent_dir = Path(parent_persistence_dir) / "subagents" / "persisted-child"
         persisted_subagent_dir.mkdir(parents=True)
         (persisted_subagent_dir / "events.jsonl").write_text(
             "persisted child state\n", encoding="utf-8"
         )
         restarted_manager = TaskManager()
         restarted_manager.attach_parent(
-            SimpleNamespace(
-                state=SimpleNamespace(persistence_dir=Path(parent_persistence_dir))
-            )  # type: ignore[arg-type]
+            SimpleNamespace(state=SimpleNamespace(persistence_dir=Path(parent_persistence_dir)))  # type: ignore[arg-type]
         )
         assert restarted_manager._persistence_dir == (  # noqa: SLF001
             Path(parent_persistence_dir) / "subagents"
@@ -1028,9 +1003,7 @@ def main() -> None:
         except ValueError as exc:
             assert "Task 'task_00000001' not found" in str(exc)
         else:
-            raise AssertionError(
-                "a restarted TaskManager unexpectedly restored a Task identity"
-            )
+            raise AssertionError("a restarted TaskManager unexpectedly restored a Task identity")
 
     class CompletedTaskManager:
         def start_task(self, **kwargs: object) -> SimpleNamespace:
@@ -1228,9 +1201,7 @@ def main() -> None:
             "metadata": {},
         }
     )
-    assert governed_definition.model_dump(mode="json")["condenser"] == {
-        "kind": "NoOpCondenser"
-    }
+    assert governed_definition.model_dump(mode="json")["condenser"] == {"kind": "NoOpCondenser"}
 
     # Importing these public types is itself part of the frozen source contract.
     native_types = (
@@ -1306,6 +1277,8 @@ def main() -> None:
                 "memory_char_budget": MEMORY_CHAR_BUDGET,
                 "memory_tiers_independently_selectable": False,
                 "memory_read_failure_is_fatal": False,
+                "memory_stored_preference_stamped_on_all_launches": True,
+                "memory_native_workspace_loader": True,
                 "profile_v1_migration": True,
                 "provider_connection_read_at_use": True,
                 "nested_secret_serializer_probe": True,

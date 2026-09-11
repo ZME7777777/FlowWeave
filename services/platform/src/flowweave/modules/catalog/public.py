@@ -15,6 +15,7 @@ from flowweave.modules.catalog.application.mcp_oauth_authorizations import (
 )
 from flowweave.modules.catalog.application.memory_sources import (
     GovernedMemoryMaterial,
+    register_snapshot_memory_references,
     register_snapshot_references,
     resolve_snapshot_material,
 )
@@ -120,6 +121,14 @@ def resolve_snapshot_memory(
     )
 
 
+def hold_session_memory_references(
+    db: Session, *, snapshot_id: str, source_refs: list[dict[str, str]]
+) -> None:
+    """Bind a frozen session Memory selection to its Run Snapshot."""
+
+    register_snapshot_memory_references(db, snapshot_id=snapshot_id, source_refs=source_refs)
+
+
 __all__ = (
     "build_capability_dependencies",
     "capability_validation_owner_is_active",
@@ -129,6 +138,7 @@ __all__ = (
     "expire_plugin_source",
     "fail_plugin_source_resolution",
     "hold_snapshot_memory_references",
+    "hold_session_memory_references",
     "mcp_oauth_authorization_owner_is_active",
     "PublishedCapability",
     "resolve_plugin_source",

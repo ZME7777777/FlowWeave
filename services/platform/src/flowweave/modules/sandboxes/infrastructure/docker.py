@@ -1323,6 +1323,7 @@ chmod 0700 "$target"
             "state/conversations": 0o700,
             "state/bash-events": 0o700,
             "state/persistence": 0o700,
+            "state/persistence/memory": 0o700,
             # The control-plane root stays owner-writable so immutable digest
             # bundles can be published after a FlowRun Runtime starts. Runtime
             # access is read-only at the bind-mount boundary.
@@ -1330,6 +1331,12 @@ chmod 0700 "$target"
         }
         if not is_agent_workspace:
             paths["workspace/nodes"] = 0o700
+        else:
+            # Agent Workspaces have no frozen Snapshot Memory. The Runtime
+            # mounts this empty directory over their project loader path,
+            # preventing an upstream stored preference from loading mutable
+            # user/project Memory when it overrides AgentContext.load_memory.
+            paths["state/disabled-project-memory"] = 0o700
         try:
             root_metadata = validation_allocation_root.lstat()
             marker = validation_allocation_root / ".flowweave-allocation"
@@ -1441,10 +1448,22 @@ chmod 0700 "$target"
                 "dst=/runtime/state/persistence"
             ),
             (
+                f"type=bind,src={allocation_root / 'state/persistence/memory'},"
+                "dst=/runtime/state/persistence/memory,readonly"
+            ),
+            (
                 f"type=bind,src={allocation_root / 'capabilities'},"
                 "dst=/runtime/capabilities,readonly"
             ),
         ]
+        if is_agent_workspace:
+            specifications.insert(
+                1,
+                (
+                    f"type=bind,src={allocation_root / 'state/disabled-project-memory'},"
+                    f"dst=/runtime/workspace/project/users/{agent_user_id}/.openhands/memory,readonly"
+                ),
+            )
         if not is_agent_workspace:
             specifications.insert(
                 1,

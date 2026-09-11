@@ -334,6 +334,8 @@ def materialize_runtime_memory(
     manifest_digest: str,
     workspace_ref: str,
     materials: tuple[object, ...],
+    project_root: Path | None = None,
+    capability_root: Path | None = None,
 ) -> None:
     """Expose governed Memory through OpenHands' native project-memory loader."""
 
@@ -368,10 +370,10 @@ def materialize_runtime_memory(
         )
     content = b"\n\n".join(sections) + b"\n"
     bundle_digest = hashlib.sha256(content).hexdigest()
-    project_root = flow_run_workspace_project_path(flow_run_id)
+    project_root = project_root or flow_run_workspace_project_path(flow_run_id)
     working_dir = Path(workspace_ref)
-    capability_root = flow_run_capability_path(flow_run_id, manifest_digest)
-    source_root = flow_run_capability_path(flow_run_id, manifest_digest, "memory", bundle_digest)
+    capability_root = capability_root or flow_run_capability_path(flow_run_id, manifest_digest)
+    source_root = capability_root / "memory" / bundle_digest
     source_index = source_root / "MEMORY.md"
     runtime_index = openhands_flow_run_capability_path(
         manifest_digest, "memory", bundle_digest, "MEMORY.md"

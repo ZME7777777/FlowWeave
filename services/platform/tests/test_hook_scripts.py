@@ -116,6 +116,8 @@ def test_governed_memory_uses_openhands_project_loader_and_read_only_source(
             manifest_digest="a" * 64,
             workspace_ref=str(working_dir),
             materials=materials,
+            project_root=project_root,
+            capability_root=capability_root,
         )
 
         loader_index = working_dir / ".openhands/memory/MEMORY.md"

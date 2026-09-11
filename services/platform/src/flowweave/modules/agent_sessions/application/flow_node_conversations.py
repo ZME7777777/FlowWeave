@@ -43,6 +43,7 @@ from flowweave.modules.agent_sessions.application.runtime_config import (
     FrozenSessionConfig,
     build_agent_spec,
     config_from_binding,
+    materialize_frozen_memory,
     provider_for_config,
     reserve_flow_node_binding,
 )
@@ -245,6 +246,43 @@ def _node_capability_root(
     runtime_owner_id = sandboxes.runtime_owner_flow_run_id(db, flow_run_id)
     sandboxes.runtime_allocation_for_flow_run(db, runtime_owner_id, manifest_digest=manifest_digest)
     return sandboxes.flow_run_capability_path(runtime_owner_id, manifest_digest, *relative_parts)
+
+
+def _materialize_conversation_memory(
+    db: Session,
+    *,
+    run: FlowRun,
+    snapshot: RunSnapshot,
+    attempt_id: str,
+    config: FrozenSessionConfig,
+) -> bool:
+    """Materialize a conversation-scoped frozen Memory bundle.
+
+    The same helper runs on native creation and missing-conversation recovery.
+    A successful native fork shares the source conversation's working directory
+    and Loader-visible bundle, so it needs no second materialization path.
+    """
+
+    workspace = sandboxes.node_attempt_workspace_context(
+        db, flow_run_id=run.id, node_attempt_id=attempt_id
+    )
+    return materialize_frozen_memory(
+        db,
+        config,
+        runtime_scope="CONVERSATION",
+        snapshot_id=snapshot.id,
+        flow_run_id=run.id,
+        manifest_digest=snapshot.runtime_manifest_hash,
+        workspace_ref=str(workspace.host_working_directory),
+        project_root=workspace.host_mount_root,
+        capability_root=_node_capability_root(
+            db,
+            flow_run_id=run.id,
+            attempt_id=attempt_id,
+            manifest_digest=snapshot.runtime_manifest_hash,
+            relative_parts=(),
+        ),
+    )
 
 
 def _is_gate_sidecar(item: AgentConversationBinding) -> bool:
@@ -879,6 +917,13 @@ def _create_native_conversation(
     )
     config = config_from_binding(db, item)
     provider = provider_for_config(db, config)
+    memory_enabled = _materialize_conversation_memory(
+        db,
+        run=run,
+        snapshot=snapshot,
+        attempt_id=attempt_id,
+        config=config,
+    )
     if host_root.name != item.id:
         host_root = _node_capability_root(
             db,
@@ -902,6 +947,7 @@ def _create_native_conversation(
         system_message_suffix_append=_node_context_suffix(
             db, snapshot=snapshot, attempt_id=attempt_id
         ),
+        load_memory=memory_enabled,
     )
     request = build_runtime_request(
         db,
@@ -1250,6 +1296,13 @@ def _create_or_reload_node_bootstrap(
     working_directory = binding.working_directory or str(_RUNTIME_PROJECT)
     config = config_from_binding(db, binding)
     provider = provider_for_config(db, config)
+    memory_enabled = _materialize_conversation_memory(
+        db,
+        run=run,
+        snapshot=snapshot,
+        attempt_id=binding.node_attempt_id,
+        config=config,
+    )
     runtime_root = Path(
         sandboxes.openhands_flow_run_capability_path(
             snapshot.runtime_manifest_hash, "conversations", binding.id
@@ -1265,6 +1318,7 @@ def _create_or_reload_node_bootstrap(
         system_message_suffix_append=_node_context_suffix(
             db, snapshot=snapshot, attempt_id=binding.node_attempt_id
         ),
+        load_memory=memory_enabled,
     )
     request = build_runtime_request(
         db,

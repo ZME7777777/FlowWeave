@@ -147,6 +147,55 @@ def register_snapshot_references(
     db.flush()
 
 
+def register_snapshot_memory_references(
+    db: Session, *, snapshot_id: str, source_refs: list[dict[str, str]]
+) -> None:
+    """Hold the exact Memory versions selected by a frozen session.
+
+    Session capability selections are frozen independently from a Flow node,
+    but their Memory bytes must still be retained and resolved through the
+    owning Run Snapshot.  This function only records immutable identities; it
+    deliberately never copies the source text into a Snapshot or event.
+    """
+
+    seen: set[str] = set()
+    for source_ref in source_refs:
+        version_id = str(source_ref.get("reference_id") or "")
+        digest = str(source_ref.get("digest") or "")
+        if version_id in seen:
+            raise DomainError(
+                "MEMORY_SOURCE_INVALID",
+                "Frozen Memory Policy contains a duplicate source version",
+                409,
+                {"memory_source_version_id": version_id},
+            )
+        seen.add(version_id)
+        version = db.get(MemorySourceVersion, version_id)
+        if version is None or version.digest != digest:
+            raise DomainError(
+                "MEMORY_SOURCE_REFERENCE_INVALID",
+                "Frozen Memory Source does not match its immutable digest",
+                409,
+                {"memory_source_version_id": version_id},
+            )
+        existing = db.scalar(
+            select(MemorySourceVersionReference.id).where(
+                MemorySourceVersionReference.memory_source_version_id == version_id,
+                MemorySourceVersionReference.reference_kind == "RUN_SNAPSHOT",
+                MemorySourceVersionReference.reference_id == snapshot_id,
+            )
+        )
+        if existing is None:
+            db.add(
+                MemorySourceVersionReference(
+                    memory_source_version_id=version_id,
+                    reference_kind="RUN_SNAPSHOT",
+                    reference_id=snapshot_id,
+                )
+            )
+    db.flush()
+
+
 def resolve_snapshot_material(
     db: Session,
     *,
