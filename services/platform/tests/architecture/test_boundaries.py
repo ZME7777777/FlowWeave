@@ -350,6 +350,8 @@ def test_openhands_144_profile_secret_condenser_and_title_boundaries() -> None:
     assert '"provider_connection_read_at_use": True' in contract_probe
     assert '"nested_secret_serializer_probe": True' in contract_probe
     assert '"subscription_condenser_dispatch": True' in contract_probe
+    assert '"mcp_oauth_refreshable_fastmcp": True' in contract_probe
+    assert '"subscription_preflight_credentials_restored": True' in contract_probe
     assert '"remote_title_generation_fix_in_frozen_source": False' in contract_probe
     assert 'payload["autotitle"] = False' in runtime
     assert "_enqueue_title_task" in conversations

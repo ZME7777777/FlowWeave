@@ -46,6 +46,7 @@ from openhands.agent_server.models import (
     StartGoalRequest,
 )
 from openhands.agent_server.persistence import PersistedSettings
+from openhands.agent_server.profiles_router import validate_profile
 from openhands.agent_server.pub_sub import PubSub, Subscriber
 from openhands.agent_server.server_details_router import ServerInfo
 from openhands.agent_server.sockets import (
@@ -136,6 +137,7 @@ PACKAGES = (
     "openhands-workspace",
 )
 EXPECTED_BINARYORNOT_VERSION = "0.4.4"
+MINIMUM_FASTMCP_VERSION = (3, 2)
 REQUIRED_PATHS = {
     "/ready",
     "/server_info",
@@ -375,6 +377,20 @@ def _assert_profile_provider_secret_and_condenser_behavior() -> None:
     assert subscription_condenser.llm.stream is True
 
 
+def _assert_mcp_oauth_and_subscription_preflight_contract() -> None:
+    """Keep the upstream OAuth-refresh and subscription pre-flight fixes live."""
+
+    # FastMCP 3.2.0 restores a persisted absolute expiry timestamp, allowing
+    # an expired MCP OAuth token to refresh instead of remaining stale.
+    raw_fastmcp_version = version("fastmcp")
+    fastmcp_major_minor = tuple(int(part) for part in raw_fastmcp_version.split(".")[:2])
+    assert fastmcp_major_minor >= MINIMUM_FASTMCP_VERSION, raw_fastmcp_version
+    preflight_source = getsource(validate_profile)
+    assert "create_subscription_llm_from_config" in preflight_source
+    assert "asyncio.to_thread" in preflight_source
+    assert 'getattr(llm, "auth_type", None) == "subscription"' in preflight_source
+
+
 def main() -> None:
     versions = {package: version(package) for package in PACKAGES}
     assert set(versions.values()) == {EXPECTED_VERSION}, versions
@@ -426,6 +442,7 @@ def main() -> None:
     _assert_durable_event_log_sequence()
     _assert_async_turn_and_stream_idle_contract()
     _assert_profile_provider_secret_and_condenser_behavior()
+    _assert_mcp_oauth_and_subscription_preflight_contract()
     provenance_path = Path("/runtime/openhands-source-provenance.json")
     if not provenance_path.is_file():
         provenance_path = Path(__file__).with_name("openhands-source-provenance.json")
@@ -1283,6 +1300,8 @@ def main() -> None:
                 "provider_connection_read_at_use": True,
                 "nested_secret_serializer_probe": True,
                 "subscription_condenser_dispatch": True,
+                "mcp_oauth_refreshable_fastmcp": True,
+                "subscription_preflight_credentials_restored": True,
                 "remote_title_generation_fix_in_frozen_source": False,
             },
             sort_keys=True,

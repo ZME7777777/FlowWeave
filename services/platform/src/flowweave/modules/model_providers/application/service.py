@@ -122,13 +122,12 @@ def provider_dict(db: Session, item: ModelProvider) -> dict[str, Any]:
             and item.oauth_device_expires_at > datetime.now(UTC)
         ),
         "reference_node_count": len(_provider_references(db, item.id)),
-        "available_for_nodes": any(model.enabled and model.is_default for model in models)
-        and (item.auth_type == "API_KEY" or item.encrypted_oauth_refresh_token is not None),
-        "available_for_prompt_gates": any(model.enabled and model.is_default for model in models)
-        and (
-            item.auth_type == "API_KEY"
-            or (item.auth_type == "CODEX_OAUTH" and item.encrypted_oauth_refresh_token is not None)
-        ),
+        "available_for_nodes": item.connection_state == "CONNECTED"
+        and provider_has_runtime_credentials(item)
+        and any(model.enabled and model.is_default for model in models),
+        "available_for_prompt_gates": item.connection_state == "CONNECTED"
+        and provider_has_runtime_credentials(item)
+        and any(model.enabled and model.is_default for model in models),
         "row_version": item.row_version,
         "models": [
             {
@@ -162,9 +161,31 @@ def get_provider(db: Session, provider_id: str) -> ModelProvider:
     return item
 
 
+def provider_has_runtime_credentials(item: ModelProvider) -> bool:
+    """Whether a provider can supply credentials when OpenHands starts.
+
+    A successful connection test is historical.  The next Runtime request also
+    needs a current API key, or both Codex OAuth tokens so the access token can
+    safely refresh between pre-flight and use.
+    """
+
+    if item.auth_type == "API_KEY":
+        return item.encrypted_api_key is not None
+    if item.auth_type == "CODEX_OAUTH":
+        return (
+            item.encrypted_oauth_access_token is not None
+            and item.encrypted_oauth_refresh_token is not None
+        )
+    return False
+
+
 def has_connected_default_model(db: Session, provider_id: str) -> bool:
     item = db.get(ModelProvider, provider_id)
-    if item is None or item.connection_state != "CONNECTED":
+    if (
+        item is None
+        or item.connection_state != "CONNECTED"
+        or not provider_has_runtime_credentials(item)
+    ):
         return False
     return (
         db.scalar(
@@ -254,6 +275,8 @@ def _deterministic_replacement_model(
     ).all()
     for provider in providers:
         if provider.id in excluded_provider_ids:
+            continue
+        if not provider_has_runtime_credentials(provider):
             continue
         model = db.scalar(
             select(ProviderModel).where(

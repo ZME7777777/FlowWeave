@@ -11,6 +11,7 @@ from flowweave.modules.credentials.application.service import credentials_for_ag
 from flowweave.modules.model_providers.application.service import (
     codex_runtime_credentials,
     get_provider,
+    has_connected_default_model,
     prompt_provider_snapshot,
 )
 from flowweave.modules.model_providers.infrastructure.codex_oauth import CODEX_BASE_URL
@@ -177,6 +178,15 @@ def runtime_provider(
     asset = cast(dict[str, Any], node.get("asset") or {})
     executor = cast(dict[str, Any], asset.get("executor") or {})
     provider_id = str(executor.get("model_provider_id") or "")
+    if not provider_id or not has_connected_default_model(db, provider_id):
+        raise DomainError(
+            "MODEL_PROVIDER_NOT_READY",
+            (
+                "The selected model provider must be connected with a default model "
+                "and runtime credentials"
+            ),
+            422,
+        )
     selected_model, selected_effort = resolve_runtime_selection(
         db, node, model_name, reasoning_effort
     )

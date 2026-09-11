@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`ACTIVE`
 > 当前执行切片：无
-> 下一可执行切片：`FR-317 MCP OAuth 刷新与 subscription 凭据预检`
+> 下一可执行切片：`FR-318 Plugin/Extension 路径 containment 与本地 source 解析`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -4076,14 +4076,22 @@ preference 使 HOME/persistence 的用户 Memory 覆盖冻结 bundle；Profile�
 为空目录；即使上游 stored preference 强制开启，也不得加载非冻结 Memory。Memory 内容不进入 Snapshot、DTO、
 事件或审计。
 
-### FR-317 MCP OAuth 刷新与 subscription 凭据预检 — READY
+### FR-317 MCP OAuth 刷新与 subscription 凭据预检 — DONE
 
 依赖：FR-316。
 
 目标：验证上游 FastMCP OAuth token 刷新和 subscription credential pre-flight；FlowWeave 继续只保存
 加密 Secret Reference，维护 read-at-use、审计和不向 Snapshot/日志泄露 OAuth state 的边界。
 
-### FR-318 Plugin/Extension 路径 containment 与本地 source 解析 — PENDING
+完成：固定 `30cf5832e` 已包含 FastMCP `>=3.2.0` 的 expired OAuth token refresh 修复，以及 subscription
+LLM 在 upstream pre-flight 前经 `create_subscription_llm_from_config()` 恢复凭据的路径。Runtime 镜像
+lock 当前为 `fastmcp==3.4.5`，合同探针锁定最低 major/minor 版本与 subscription 恢复源代码；不复制
+OpenHands 的 OAuth refresh 生命周期。FlowWeave 保留既有加密 OAuth state Secret Reference、CAS refresh
+和 read-at-use 注入；OAuth state 与明文凭据均不进入 Snapshot、报告、审计 DTO 或日志。控制面额外将
+Provider 的 Runtime 就绪条件收敛为实际可启动凭据：API key 必须存在，Codex OAuth 必须同时有 access 与
+refresh token；连接状态、默认启用模型和凭据缺一时均不展示、不替换且 Runtime request fail closed。
+
+### FR-318 Plugin/Extension 路径 containment 与本地 source 解析 — READY
 
 依赖：FR-317。
 
@@ -4147,6 +4155,7 @@ fallback 矩阵；发布前确认原 ID reload、generation fencing、FlowWeave 
 | 2026-09-11 | FR-299 | Web TypeScript typecheck、ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS：Git Diff 的统一／并排控制按审查页签样式横向呈现，不会堆叠为纵向按钮；无 `CURRENT`。 |
 | 2026-09-11 | FR-298 | Web ESLint、TypeScript typecheck、production build、`git diff --check` 与任务状态唯一性 | PASS：持久化恢复的空“改动审查”页签不再解引用缺失变更的 `id`；会话刷新保持既有安全空态和后续事件加载行为。production build 仅报告既有大 chunk 提示；无 `CURRENT`。 |
 | 2026-09-11 | FR-297 | Web TypeScript typecheck、ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS：Git 详情返回与统一／并排控制使用同一紧凑描边、圆角、绿色情境反馈；无 `CURRENT`。 |
+| 2026-09-12 | FR-317 | 固定 `30cf5832e` 的 FastMCP OAuth refresh 与 subscription pre-flight 源码取证；扩展镜像 `contract_check.py`；新增 Provider Runtime credential predicate pytest；`test_provider_preflight.py` + `test_openhands.py`（132 passed）、受影响 Python Ruff format/check、`py_compile`、`uv lock --check`、Alembic head、`git diff --check` 与任务状态唯一性 | PASS（静态／定向）：镜像锁定 FastMCP `3.4.5` 并拒绝回退至 `3.2` 以下；subscription pre-flight 恢复路径受固定源码合同保护。FlowWeave 不实现并行 token refresh，仅维持 encrypted Secret Reference/CAS/read-at-use 边界；Provider 仅在已连接、拥有可刷新 Runtime credentials 与启用默认模型时可被选择，直接 Runtime request 同样 fail closed。唯一 Alembic head 为 `0110_candidate_output_set_owner`，无 CURRENT，FR-318 为唯一 READY。Docker daemon 不可用，故镜像内 `contract_check.py`、真实 OAuth expiry refresh、subscription Runtime pre-flight、Provider docker exec、Testcontainers architecture pytest 与 E2E 未执行且未记为通过；架构 pytest 收集的 29 项均因 Docker socket 缺失而在 Testcontainers PostgreSQL fixture setup 失败。 |
 | 2026-09-11 | FR-296 | Web TypeScript typecheck、ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS：提交详情返回按钮位于标题左侧，保留返回历史行为与无障碍标签；无 `CURRENT`。 |
 | 2026-09-11 | FR-295 | Web TypeScript typecheck、ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS：关闭中间 Git Diff 页签会清除侧栏文件选中及已打开缓存；再次点击同一提交文件可重新打开 Diff。无 `CURRENT`。 |
 | 2026-09-11 | FR-294 | Web TypeScript typecheck、ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS：Git 侧栏只随最后直接点击的单一路径显示，已排除根／工作目录容器仓库；`repos`、`repositories.md` 等普通路径不再显示，独立子仓库及其内部文件仍可显示。生产构建仅报告既有大 chunk 提示；无 `CURRENT`。 |
