@@ -19,6 +19,24 @@ export interface WorkspaceFileChange {
   lines: FileChangeLine[];
 }
 
+function normalizedWorkspacePath(path: string): string {
+  return path
+    .replace(/\\/g, '/')
+    .replace(/^\/runtime\/workspace\/project\/?/, '')
+    .replace(/^\.\//, '')
+    .replace(/^\/+/, '')
+    .replace(/\/+$/, '');
+}
+
+/** Render an OpenHands event path relative to the active workspace scope. */
+export function workspaceRelativePath(path: string, workingDirectory?: string | null): string {
+  const candidate = normalizedWorkspacePath(path);
+  const root = workingDirectory ? normalizedWorkspacePath(workingDirectory) : '';
+  if (root && candidate === root) return '.';
+  if (root && candidate.startsWith(`${root}/`)) return `./${candidate.slice(root.length + 1)}`;
+  return candidate ? `./${candidate}` : '.';
+}
+
 type PendingPatch = { id: string; path: string; lines: FileChangeLine[] };
 
 function detailString(value: unknown): string | undefined {

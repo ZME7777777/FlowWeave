@@ -18,7 +18,7 @@ import { useEscapeClose } from '../useEscapeClose';
 import { selectCapabilityVersion, selectCapabilityVersions } from '../../utils/capabilitySelection';
 import { SubagentAvatar } from '../SubagentAvatar';
 import { subagentAvatarSlots, type SubagentAvatarSlot } from '../../utils/subagentAvatar';
-import { workspaceFileChanges, type WorkspaceFileChange } from './fileChanges';
+import { workspaceFileChanges, workspaceRelativePath, type WorkspaceFileChange } from './fileChanges';
 import type { AgentAttachment, AgentConversation, AgentPendingConfirmationAction, AgentSessionCapability, AgentSessionMcpReadiness, AgentSessionWorkDirectory, AgentSessionWorkDirectoryList, CapabilityAsset, CapabilityCollection, ModelProvider, OpenHandsConversationEvent, OpenHandsConversationEventBatch, ProviderModel, RuntimeTaskControlSnapshot, RuntimeTaskUsageSnapshot } from '../../types';
 import '../../pages/agent-workbench.css';
 import '../../pages/agent-workbench-layout.css';
@@ -1217,11 +1217,7 @@ function WorkspaceTextPreview({ path, content }: { path: string; content: string
   return <pre className={`agent-file-code-preview${language ? ' highlighted' : ''}`}><code dangerouslySetInnerHTML={{ __html: highlightedCode(content, language) }}/></pre>;
 }
 
-function changeDisplayPath(path: string): string {
-  return path.replace(/^\/runtime\/workspace\/project\/?/, '');
-}
-
-function WorkspaceChangesReview({ changes, selectedId, onSelect }: { changes: WorkspaceFileChange[]; selectedId?: string; onSelect: (id: string) => void }) {
+function WorkspaceChangesReview({ changes, selectedId, onSelect, workspaceRoot }: { changes: WorkspaceFileChange[]; selectedId?: string; onSelect: (id: string) => void; workspaceRoot?: string }) {
   const [mode, setMode] = useState<'unified' | 'split'>('split');
   const selected = changes.find(change => change.id === selectedId) ?? changes[0];
   useEffect(() => { if (selected && selected.id !== selectedId) onSelect(selected.id); }, [onSelect, selected, selectedId]);
@@ -1235,10 +1231,10 @@ function WorkspaceChangesReview({ changes, selectedId, onSelect }: { changes: Wo
   return <section className="agent-changes-review">
     <nav className="agent-changes-file-list" aria-label="本轮修改的文件">
       <header><b>改动文件</b><span>{changes.length}</span></header>
-      {changes.map(change => <button key={change.id} type="button" className={change.id === selected.id ? 'active' : ''} onClick={() => onSelect(change.id)}><FileText size={14}/><span title={change.path}>{changeDisplayPath(change.path)}</span><em><ins>{`+${change.additions}`}</ins><del>{`-${change.deletions}`}</del></em></button>)}
+      {changes.map(change => <button key={change.id} type="button" className={change.id === selected.id ? 'active' : ''} onClick={() => onSelect(change.id)}><FileText size={14}/><span title={workspaceRelativePath(change.path, workspaceRoot)}>{workspaceRelativePath(change.path, workspaceRoot)}</span><em><ins>{`+${change.additions}`}</ins><del>{`-${change.deletions}`}</del></em></button>)}
     </nav>
     <article className="agent-changes-diff">
-      <header><div><b title={selected.path}>{changeDisplayPath(selected.path)}</b><small><ins>{`+${selected.additions}`}</ins><del>{`-${selected.deletions}`}</del></small></div><div className="agent-diff-mode"><button type="button" className={mode === 'unified' ? 'active' : ''} onClick={() => setMode('unified')}>统一</button><button type="button" className={mode === 'split' ? 'active' : ''} onClick={() => setMode('split')}>并排</button></div></header>
+      <header><div><b title={workspaceRelativePath(selected.path, workspaceRoot)}>{workspaceRelativePath(selected.path, workspaceRoot)}</b><small><ins>{`+${selected.additions}`}</ins><del>{`-${selected.deletions}`}</del></small></div><div className="agent-diff-mode"><button type="button" className={mode === 'unified' ? 'active' : ''} onClick={() => setMode('unified')}>统一</button><button type="button" className={mode === 'split' ? 'active' : ''} onClick={() => setMode('split')}>并排</button></div></header>
       {mode === 'unified' ? <pre className="agent-diff-unified">{selected.lines.map(line => <div className={`agent-diff-line ${line.kind}`} key={`${line.oldLine ?? ''}:${line.newLine ?? ''}:${line.text}`}><i>{line.oldLine ?? line.newLine ?? ''}</i><strong>{line.kind === 'addition' ? '+' : line.kind === 'deletion' ? '-' : ' '}</strong><code>{line.text || ' '}</code></div>)}</pre> : <div className="agent-diff-split"><pre><header>修改前</header>{selected.lines.map(line => renderLine(line, 'before'))}</pre><pre><header>修改后</header>{selected.lines.map(line => renderLine(line, 'after'))}</pre></div>}
     </article>
   </section>;
@@ -1293,8 +1289,11 @@ function WorkspaceFileTree({ entries, root, selectedFile, selectedPaths, expande
   const nodes = useMemo(() => workspaceTree(entries, root), [entries, root]);
   const selectionAnchor = useRef<string | undefined>(undefined);
   const treeRef = useRef<HTMLDivElement>(null);
+  const stickyOverlayRef = useRef<HTMLDivElement>(null);
   const rowRefs = useRef(new Map<string, HTMLDivElement>());
   const [stickyDirectoryPaths, setStickyDirectoryPaths] = useState<string[]>([]);
+  const [stickyOverlayTop, setStickyOverlayTop] = useState(0);
+  const [stickyOverlayHeight, setStickyOverlayHeight] = useState(0);
   useEffect(() => {
     const paths: string[] = [];
     const collect = (items: WorkspaceTreeNode[]) => items.forEach(node => { if (node.kind === 'directory') { paths.push(node.path); collect(node.children); } });
@@ -1333,10 +1332,13 @@ function WorkspaceFileTree({ entries, root, selectedFile, selectedPaths, expande
   const updateStickyDirectories = useCallback(() => {
     const tree = treeRef.current;
     if (!tree || tree.scrollTop <= 1) {
+      setStickyOverlayTop(0);
       setStickyDirectoryPaths(current => current.length ? [] : current);
       return;
     }
-    const stickyInset = tree.querySelector<HTMLElement>('.agent-file-tree-sticky-path')?.offsetHeight ?? 0;
+    setStickyOverlayTop(current => current === tree.scrollTop ? current : tree.scrollTop);
+    const stickyInset = stickyOverlayRef.current?.offsetHeight ?? 0;
+    setStickyOverlayHeight(current => current === stickyInset ? current : stickyInset);
     const firstVisible = visibleNodes.find(({ node }) => {
       const row = rowRefs.current.get(node.path);
       return row && row.offsetTop + row.offsetHeight > tree.scrollTop + stickyInset + 1;
@@ -1347,6 +1349,15 @@ function WorkspaceFileTree({ entries, root, selectedFile, selectedPaths, expande
   useEffect(() => {
     updateStickyDirectories();
   }, [updateStickyDirectories]);
+  useLayoutEffect(() => {
+    const overlay = stickyOverlayRef.current;
+    if (!overlay) { setStickyOverlayHeight(0); return; }
+    const updateHeight = () => setStickyOverlayHeight(overlay.offsetHeight);
+    updateHeight();
+    const observer = new ResizeObserver(updateHeight);
+    observer.observe(overlay);
+    return () => observer.disconnect();
+  }, [stickyDirectoryPaths]);
   const selectEntry = (node: WorkspaceTreeNode, event: ReactMouseEvent<HTMLButtonElement>) => {
     const toggling = event.metaKey || event.ctrlKey;
     const anchorIndex = selectionAnchor.current ? visibleNodes.findIndex(item => item.node.path === selectionAnchor.current) : -1;
@@ -1390,7 +1401,7 @@ function WorkspaceFileTree({ entries, root, selectedFile, selectedPaths, expande
     </div>;
   });
   return <div ref={treeRef} className={`agent-file-tree${stickyDirectoryPaths.length ? ' has-sticky-path' : ''}`} role="tree" aria-label="工作区目录树" onScroll={updateStickyDirectories}>
-    {stickyDirectoryPaths.length > 0 && <div className="agent-file-tree-sticky-path" aria-label="当前文件所在目录">{stickyDirectoryPaths.map((path, depth) => {
+    {stickyDirectoryPaths.length > 0 && <div ref={stickyOverlayRef} className="agent-file-tree-sticky-path" aria-label="当前文件所在目录" style={{ top: stickyOverlayTop }}>{stickyDirectoryPaths.map((path, depth) => {
       const directory = directoriesByPath.get(path);
       const open = expanded.has(path);
       return directory && <div key={path} className="agent-file-tree-row sticky-directory" role="presentation" style={{ '--tree-depth': depth } as CSSProperties}>
@@ -1399,6 +1410,7 @@ function WorkspaceFileTree({ entries, root, selectedFile, selectedPaths, expande
       </div>;
     })}</div>}
     {nodes.length ? renderNodes() : <p>当前目录没有可展示的文件。</p>}
+    {stickyOverlayHeight > 0 && <div className="agent-file-tree-sticky-spacer" aria-hidden="true" style={{ height: stickyOverlayHeight }}/> }
   </div>;
 }
 
@@ -1566,6 +1578,7 @@ function WorkspaceDrawer({
   }, Boolean(pendingTerminalClose) && !closingTerminalId);
   const handledAttachmentRequestKey = useRef<string | undefined>(undefined);
   const handledCandidatePreviewRequestKey = useRef<string | undefined>(undefined);
+  const handledReviewRequestId = useRef<string | undefined>(undefined);
   const [candidatePreview, setCandidatePreview] = useState<CandidateFilePreviewRequest>();
   const [selectedEntryPaths, setSelectedEntryPaths] = useState<Set<string>>(new Set());
   const [activeDirectory, setActiveDirectory] = useState<string>();
@@ -1677,7 +1690,12 @@ function WorkspaceDrawer({
     onOpen();
   }, [onOpen, reviewChanges, updateScope]);
   useEffect(() => {
-    if (reviewRequestId && reviewChanges.length) openChanges(reviewChanges[0]?.id);
+    // A review request is a one-shot navigation command.  Its data remains
+    // available for the user to reopen review manually, but an unrelated
+    // parent render must never reopen a tab the user has just closed.
+    if (!reviewRequestId || !reviewChanges.length || handledReviewRequestId.current === reviewRequestId) return;
+    handledReviewRequestId.current = reviewRequestId;
+    openChanges(reviewChanges[0]?.id);
   }, [openChanges, reviewChanges, reviewRequestId]);
   useEffect(() => {
     // `onOpen` is supplied by the page and may change identity on a render.
@@ -1869,7 +1887,7 @@ function WorkspaceDrawer({
               {canPreviewImage ? <img className="agent-file-media-preview" src={selectedAttachment?.image_data_url || selectedFileUrl} alt={selectedAttachment?.filename || '附件预览'}/> : canPreviewPdf ? <iframe className="agent-file-media-preview" title={selectedAttachment?.filename || 'PDF 预览'} src={selectedFileUrl}/> : textPreviewable ? previewQuery.isLoading ? <p>正在读取文件…</p> : previewQuery.isError ? <p>文件预览不可用，请下载后查看。</p> : <WorkspaceTextPreview path={selectedFile} content={previewQuery.data ?? ''}/> : <p>此文件不提供浏览器预览，请下载后查看。</p>}
             </> : <p>选择一个文件以预览或下载。</p>}</div>
           </section>}
-          {scopeState.tabs.some(tab => tab.kind === 'changes') && <div className={`agent-changes-tab-panel ${scopeState.activeTabId === 'changes' ? 'active' : ''}`}><WorkspaceChangesReview changes={reviewChanges} selectedId={scopeState.selectedChangeId} onSelect={selectedChangeId => updateScope(current => ({ ...current, selectedChangeId }))}/></div>}
+          {scopeState.tabs.some(tab => tab.kind === 'changes') && <div className={`agent-changes-tab-panel ${scopeState.activeTabId === 'changes' ? 'active' : ''}`}><WorkspaceChangesReview changes={reviewChanges} selectedId={scopeState.selectedChangeId} onSelect={selectedChangeId => updateScope(current => ({ ...current, selectedChangeId }))} workspaceRoot={details.working_directory}/></div>}
           {scopeState.tabs.some(tab => tab.kind === 'subagents') && <div className={`agent-subagent-tab-panel ${scopeState.activeTabId === 'subagents' ? 'active' : ''}`}><RuntimeTaskTab tasks={runtimeTasks} definitions={agentDefinitions} selectedTaskId={scopeState.selectedRuntimeTaskId} onSelect={taskId => updateScope(current => ({ ...current, selectedRuntimeTaskId: taskId }))} sessionStopped={sessionStopped}/></div>}
           {scopeState.tabs.filter((tab): tab is Extract<WorkspaceToolTab, { kind: 'terminal' }> => tab.kind === 'terminal').map(tab => <div key={tab.id} className={`agent-terminal-tab-panel ${scopeState.activeTabId === tab.id ? 'active' : ''}`}>{runtimeAvailable ? <WorkspaceTerminal workspaceId={workspaceId} terminalInstanceId={tab.terminalInstanceId} bindingId={bindingId} workDirectoryId={workDirectoryId} workingDirectory={details.working_directory}/> : <div className="agent-drawer-empty"><LoaderCircle className="agent-drawer-spinner" size={20}/><b>终端正在恢复</b><span>文件仍可使用；运行环境恢复后终端会自动可用。</span></div>}</div>)}
         </div>)}
@@ -3150,6 +3168,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     else if (turnState === 'paused') resume.mutate();
   };
   const workDirectories = workDirectoriesQuery.data?.items ?? [];
+  const activeWorkspaceRoot = selected?.work_directory_id
+    ? workDirectories.find(directory => directory.id === selected.work_directory_id)?.current_version.working_directory
+    : workDirectoriesQuery.data?.root.working_directory ?? selected?.working_directory;
   const conversationRow = (item: AgentConversation) => {
     // The list projection is the native OpenHands running snapshot for every
     // visible conversation. Local state only bridges the selected row between
