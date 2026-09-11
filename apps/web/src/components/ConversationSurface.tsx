@@ -859,13 +859,13 @@ function ActivityGroup({ items, active, liveText, startedAt, finishedAt, avatarS
         if (item.kind === 'tool' && toolDetail) return <div className="conversation-tool-entry" key={entry.id}>
           {presentation.thought && <article className="conversation-activity-row thought"><Sparkles size={14}/><div><MessageMarkdown>{presentation.thought}</MessageMarkdown></div></article>}
           <details className="conversation-activity-row tool conversation-tool-detail">
-            <summary>{taskAvatar ?? <ToolIcon size={14}/>}<div><b>{presentation.title}</b><small>{presentation.status}</small></div><ChevronRight className="conversation-tool-chevron" size={13}/></summary>
+            <summary>{taskAvatar ?? <ToolIcon size={14}/>}<div><b title={presentation.title}>{presentation.title}</b><small>{presentation.status}</small></div><ChevronRight className="conversation-tool-chevron" size={13}/></summary>
             {toolDetail}
           </details>
         </div>;
         return <article className={`conversation-activity-row ${item.kind}`} key={entry.id}>
-          {taskAvatar ?? <ToolIcon size={14}/>}<div><b>{presentation.title}</b><small>{presentation.status}</small>
-            {presentation.thought && <MessageMarkdown>{presentation.thought}</MessageMarkdown>}
+          {taskAvatar ?? <ToolIcon size={14}/>}<div className="conversation-activity-content"><b title={presentation.title}>{presentation.title}</b><small>{presentation.status}</small>
+            {presentation.thought && <span className="conversation-activity-thought"><MessageMarkdown>{presentation.thought}</MessageMarkdown></span>}
           </div>
         </article>;
       })}
