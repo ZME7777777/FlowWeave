@@ -546,11 +546,14 @@ def test_runtime_spec_hash_ignores_new_optional_none_fields() -> None:
     assert DockerSandboxProvider._spec_hash(resource) == before
 
 
-def test_existing_owned_runtime_does_not_require_pruned_historical_image(settings, monkeypatch):
+def test_existing_owned_runtime_observes_historical_generation_without_new_admission(
+    settings, monkeypatch
+):
     provider = DockerSandboxProvider(_docker_settings(settings))
     resource = _runtime_resource()
     observation = _observation(resource)
     network_touched: list[str] = []
+    isolated: list[str] = []
 
     monkeypatch.setattr(provider, "inspect", lambda _name: observation)
     monkeypatch.setattr(
@@ -563,11 +566,71 @@ def test_existing_owned_runtime_does_not_require_pruned_historical_image(setting
         "_ensure_runtime_network",
         lambda item: network_touched.append(item.id) or "unused",
     )
-    monkeypatch.setattr(provider, "_isolate_runtime_container", lambda *_args: None)
-    monkeypatch.setattr(provider, "_wait_for_agent_server", lambda _name: None)
+    monkeypatch.setattr(
+        provider,
+        "_isolate_runtime_container",
+        lambda _item, identifier: isolated.append(identifier),
+    )
+    monkeypatch.setattr(
+        provider,
+        "_wait_for_agent_server",
+        lambda _name: (_ for _ in ()).throw(AssertionError("existing Runtime must not re-admit")),
+    )
 
     assert provider.ensure_running(resource) == observation
     assert network_touched == [resource.id]
+    assert isolated == [observation.resource_identifier]
+
+
+def test_new_runtime_requires_strict_agent_server_admission(settings, monkeypatch):
+    provider = DockerSandboxProvider(_docker_settings(settings))
+    resource = _runtime_resource()
+    observation = _observation(resource)
+    inspected = iter((None, observation))
+    admitted: list[str] = []
+
+    monkeypatch.setattr(provider, "inspect", lambda _name: next(inspected))
+    monkeypatch.setattr(provider, "_verify_image_trust", lambda _item: "sha256:" + "1" * 64)
+    monkeypatch.setattr(provider, "_ensure_runtime_network", lambda _item: "unused")
+    monkeypatch.setattr(provider, "_ensure_environment_credential_volume", lambda _item: "home")
+    monkeypatch.setattr(provider, "_prepare_environment_home", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(provider, "_create_command", lambda *_args, **_kwargs: ["docker", "run"])
+    monkeypatch.setattr(provider, "_run", lambda *_args, **_kwargs: "container-id")
+    monkeypatch.setattr(provider, "_isolate_runtime_container", lambda *_args: None)
+    monkeypatch.setattr(provider, "_wait_for_agent_server", admitted.append)
+
+    assert provider.ensure_running(resource) == observation
+    assert admitted == [resource.backend_resource_name]
+
+
+def test_concurrent_new_runtime_creation_still_requires_strict_admission(settings, monkeypatch):
+    provider = DockerSandboxProvider(_docker_settings(settings))
+    resource = _runtime_resource()
+    observation = _observation(resource)
+    inspected = iter((None, observation))
+    admitted: list[str] = []
+
+    monkeypatch.setattr(provider, "inspect", lambda _name: next(inspected))
+    monkeypatch.setattr(provider, "_verify_image_trust", lambda _item: "sha256:" + "1" * 64)
+    monkeypatch.setattr(provider, "_ensure_runtime_network", lambda _item: "unused")
+    monkeypatch.setattr(provider, "_ensure_environment_credential_volume", lambda _item: "home")
+    monkeypatch.setattr(provider, "_prepare_environment_home", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(provider, "_create_command", lambda *_args, **_kwargs: ["docker", "run"])
+
+    def concurrent_create(*_args, **_kwargs):
+        raise DomainError(
+            "SANDBOX_DOCKER_FAILED",
+            "The Docker sandbox operation failed",
+            502,
+            {"detail": "name is already in use"},
+        )
+
+    monkeypatch.setattr(provider, "_run", concurrent_create)
+    monkeypatch.setattr(provider, "_isolate_runtime_container", lambda *_args: None)
+    monkeypatch.setattr(provider, "_wait_for_agent_server", admitted.append)
+
+    assert provider.ensure_running(resource) == observation
+    assert admitted == [resource.backend_resource_name]
 
 
 def test_setup_ledger_survives_outer_rollback_as_delete_intent(

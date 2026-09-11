@@ -595,8 +595,14 @@ chmod 0700 "$target"
                     )
                 self._verify_resource_contract(existing, resource)
             self._isolate_runtime_container(resource, existing.resource_identifier)
-            if resource.kind == "AGENT_RUNTIME":
-                self._wait_for_agent_server(resource.backend_resource_name)
+            # Readiness/provenance admission is a new-generation gate.  An
+            # existing owned Runtime can be a live historical OpenHands
+            # generation whose immutable container contract remains valid but
+            # whose server build predates the currently published baseline.
+            # Reconcile must observe and retain that computation, rather than
+            # silently treating a baseline upgrade as a failed replacement.
+            # New creation (including a concurrent create race below) still
+            # performs the strict Agent Server probe before it is admitted.
             return existing
 
         # No owned container exists. Verify the immutable image identity

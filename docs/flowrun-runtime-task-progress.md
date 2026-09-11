@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`COMPLETE`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`NONE`（本次稳定性修复任务链已完成，待远端部署验收）
+> 下一可执行切片：`NONE`（FR-330 已完成，后续稳定性审计须创建独立切片）
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -4273,6 +4273,27 @@ SQLAlchemy pool。物理 PostgreSQL session 随之关闭，既有 lock 的全部
 新增一槽连接池回归：预先污染同一物理 session 的 reentrant lock 后运行 reconcile，独立 observer 必须
 立即重新取得该 lock，防止下一轮 Worker maintenance 永久饥饿。
 
+### FR-330 历史存活 Runtime 的 reconcile 观察与新 generation 启动验收分离 — DONE
+
+依赖：FR-329。
+
+目标：固定 OpenHands `1.47.0` 的严格 `/ready`、`/server_info` version、四包版本和 source commit
+验证只能作为新 Agent Runtime generation 的启动准入，不能在 reconcile 时把仍运行、ownership/spec/网络
+契约均正确的历史 generation 静默视为新 generation。否则仍在服务 Conversation 的 `1.44.0` 历史
+容器会被每次观察误投影为 `ENVIRONMENT_RUNTIME_UNAVAILABLE`，尽管 Docker 和 Agent Server 实际健康。
+
+范围：既有 Runtime 继续完整复核受管 owner、manager scope、resource id、immutable spec hash，并恢复
+受信 client 网络和容器隔离；但不重做当前基线的启动 provenance admission，不创建／替换 generation，
+不停止活跃 FlowRun，也不修改 Conversation、persistence 或 allocation。新建容器及本进程遇到
+deterministic-name 创建竞争后确认的并发新容器，仍必须完成严格 `1.47.0` admission。历史停止容器的
+启动不在 reconcile 中隐式升级其 generation。
+
+完成：`ensure_running()` 对已存在的受管 Runtime 在完成 ownership/spec、受信 Runtime client 网络
+和隔离校验后直接作为 observation 返回，不再把当前 `1.47.0` Agent Server build admission 套用于
+历史计算载体。普通新建与确定性名称创建竞争的并发创建路径保持严格 readiness/provenance probe。
+新增回归覆盖历史 existing Runtime 不再重验、普通新建 Runtime 必须验收，以及创建竞争后取得的
+新 Runtime 仍必须验收。
+
 ### FR-321 OpenHands 1.47 增强最终安全、恢复与性能门禁 — DONE
 
 依赖：FR-309–FR-320。
@@ -4308,6 +4329,7 @@ contract、冻结策略与既有受控生命周期约束覆盖。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-12 | FR-330 | 受影响 Python Ruff format/check、`py_compile`、唯一 Alembic head、`git diff --check`；历史 existing/new/concurrent-create admission 定向 pytest | PASS（静态／构造）：Ruff、语法、空白检查与唯一 Alembic head `0113_task_retention` 通过。回归精确证明既有 Runtime 继续 owner/spec/网络/隔离校验而不重验当前基线，新 generation 与确定性名称竞争获得的 generation 均强制 strict admission。三条定向 pytest 在 Testcontainers PostgreSQL fixture 初始化前因本机 Docker Unix socket 缺失阻断，未伪记为通过；远端部署需确认活跃 `1.44.0` FlowRun Runtime 保持运行且账本收敛为 `RUNNING`、错误清除。 |
 | 2026-09-12 | FR-329 | 受影响 Python Ruff format/check、`py_compile`、唯一 Alembic head、`git diff --check`；session advisory lock 泄漏回归 pytest | PASS（静态）：Ruff、语法、空白检查与唯一 Alembic head `0113_task_retention` 通过。新增回归以单槽连接池模拟 reentrant session lock，验证 reconcile 收尾不会把锁带回连接池。两条定向 pytest 在 Testcontainers PostgreSQL fixture 初始化前因本机 Docker Unix socket 缺失而阻断，未伪记为通过；远端部署须确认 advisory lock 清除，正常周期重新观察活跃 Runtime 并清除临时 Provider 错误。 |
 | 2026-09-12 | FR-328 | 受影响 Python Ruff format/check、`py_compile`、唯一 Alembic head、`git diff --check`；历史终态 Runtime stop recovery 定向 pytest | PASS（静态）：Ruff、语法、空白检查与唯一 Alembic head `0113_task_retention` 通过。恢复只从终态 Run 与未停止 Runtime Session 的持久事实回补唯一 Runtime lane task，`SKIP LOCKED` 防止并发 Worker 重复投递；启动和 maintenance 复用同一恢复入口。定向 pytest 已启动，但在 Testcontainers PostgreSQL fixture 初始化前因本机 Docker Unix socket 缺失而阻断，未伪记为通过；远端部署需验证仅停止 6 个历史终态 Runtime、保留其外置状态，且不触及仍 ACTIVE 的 Run。 |
 | 2026-09-12 | FR-327 | 受影响 Python Ruff format/check、`py_compile`、唯一 Alembic head、`git diff --check`；满 batch backlog cadence 定向 pytest | PASS（静态）：Ruff、语法、空白检查与唯一 Alembic head `0113_task_retention` 通过。满批时 cleanup 会在 60 秒后继续，非满批恢复每天一次；不改变终态过滤或 lease 安全边界。两条任务定向 pytest 在 Testcontainers PostgreSQL fixture 初始化前因本机 Docker Unix socket 缺失而阻断，未伪记为通过；远端验证确认当前过期 terminal count 为 0，故不会删除现有诊断记录。 |
