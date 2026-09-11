@@ -1726,11 +1726,16 @@ function WorkspaceGitCommitSidebarDetail({ details, loading, error, selectedPath
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [filesHeight, setFilesHeight] = useState(260);
   useEffect(() => {
-    // Keep the tree navigable for deeply nested commits.  Expanding every
-    // directory at once pushes the changed leaves beyond this resizable pane,
-    // making an expanded folder appear empty.  Expose only the first level
-    // initially; every following level can be opened from its folder row.
-    setExpanded(new Set(tree.filter(node => node.children.length).map(node => node.path)));
+    // A commit tree is a focused, finite list.  Show all changed leaves
+    // immediately; long or deeply nested paths scroll in the tree pane.
+    const directories: string[] = [];
+    const collect = (nodes: WorkspaceGitTreeNode[]) => nodes.forEach(node => {
+      if (!node.children.length) return;
+      directories.push(node.path);
+      collect(node.children);
+    });
+    collect(tree);
+    setExpanded(new Set(directories));
   }, [tree]);
   const resizeFiles = (event: ReactPointerEvent<HTMLDivElement>) => {
     event.preventDefault();
@@ -1782,7 +1787,7 @@ function WorkspaceGitCommitSidebarDetail({ details, loading, error, selectedPath
     <div className="agent-git-review-resizer" role="separator" aria-label="调整文件与提交信息区域高度" aria-orientation="horizontal" onPointerDown={resizeFiles}/>
     <article className="agent-git-commit-info">
       <pre className="agent-git-commit-message">{details.commit.message || details.commit.subject || '（无提交说明）'}</pre>
-      <dl><dt>作者</dt><dd>{details.commit.author || '未提供'}{details.commit.author_email && <> &lt;{details.commit.author_email}&gt;</>}</dd><dt>作者时间</dt><dd>{gitCommitTimestamp(details.commit.authored_at ?? details.commit.date)}</dd><dt>提交者</dt><dd>{details.commit.committer || details.commit.author || '未提供'}{(details.commit.committer_email || details.commit.author_email) && <> &lt;{details.commit.committer_email || details.commit.author_email}&gt;</>}</dd><dt>提交时间</dt><dd>{gitCommitTimestamp(details.commit.committed_at ?? details.commit.date)}</dd></dl>
+      <dl><dt>Hash</dt><dd><code title={details.commit.id}>{details.commit.short_id}</code></dd><dt>作者</dt><dd>{details.commit.author || '未提供'}{details.commit.author_email && <> &lt;{details.commit.author_email}&gt;</>}</dd><dt>作者时间</dt><dd>{gitCommitTimestamp(details.commit.authored_at ?? details.commit.date)}</dd></dl>
     </article>
   </section>;
 }

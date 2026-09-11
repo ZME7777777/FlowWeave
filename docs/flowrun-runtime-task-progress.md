@@ -3891,6 +3891,14 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 
 完成：工作区标签保持与 composer 相同的整体宽度，但使用 border-box 和 14px 水平内边距，使文件夹图标及目录名与输入内容左侧直线区域对齐，不再落在圆角起弧处。
 
+### FR-303 Agent 工作区 Git 详情字段去重与文件树横向滚动 — DONE
+
+依赖：FR-300。
+
+目标：提交详情需保留短 Hash，但不重复显示与作者相同的提交者信息；深层目录中的文件名必须可完整辨认。
+
+完成：详情字段恢复短 Hash（完整 Hash 仅作悬浮提示），仅保留作者与作者时间；提交树默认展开全部目录以直接显示变更文件，按内容原宽度布局，超过右侧栏时提供横向滚动，不再使用省略号截断文件名。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -3906,6 +3914,7 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-11 | FR-303 | Web TypeScript typecheck、ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS：详情恢复短 Hash 并移除重复的提交者／提交时间；提交树默认完整展开，长路径不再截断而是在明确可见的横向滚动条中查看；无 `CURRENT`。production build 仅报告既有大 chunk 提示。 |
 | 2026-09-11 | FR-302 | Web TypeScript typecheck、ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS：输入区上方工作区标签内缩至 composer 直线内容区，不再对齐圆角外沿；无 `CURRENT`。production build 仅报告既有大 chunk 提示。 |
 | 2026-09-11 | FR-301 | Web TypeScript typecheck、ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS：右侧概览不再显示当前工作区／运行环境；输入框上方只显示当前工作区名称，悬停提示相对根工作区路径；无 `CURRENT`。production build 仅报告既有大 chunk 提示。 |
 | 2026-09-11 | FR-300 | Web TypeScript typecheck、ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS：Git 提交树仅初始展开首层，目录整行／箭头均可开合，深层文件不再因全量展开被挤出面板；详情仅显示短 Hash，返回为带无障碍标签的图标按钮；无 `CURRENT`。production build 仅报告既有大 chunk 提示。 |
