@@ -38,8 +38,9 @@
 .agent-workbench-list>.agent-workspace-group>.agent-workspace-group-content>.agent-workspace-group-more:hover:not(:disabled){background:#e9efeb!important;color:#527360!important}
 .agent-workbench-list>.agent-workspace-group>.agent-workspace-group-content>.agent-workspace-group-more:focus-visible{outline:2px solid #83aa92;outline-offset:1px}
 .agent-workbench-list>.agent-workspace-group>.agent-workspace-group-content>.agent-workspace-group-more:disabled{cursor:wait;opacity:.6}
-.agent-workbench-main{position:relative;grid-template-rows:64px minmax(0,1fr)}
-.agent-composer-dock{position:absolute;inset-inline:0;bottom:0;z-index:2;pointer-events:none}
+.agent-workbench-main{position:relative;grid-template-rows:64px minmax(0,1fr) auto}
+.agent-workbench-shell .agent-workbench-main{grid-template-rows:64px minmax(0,1fr) auto}
+.agent-composer-dock{position:relative;grid-row:3;inset:auto;z-index:2;pointer-events:none}
 .agent-composer-dock>*{pointer-events:auto}
 .agent-composer-dock .agent-composer{margin:0 auto}
 .agent-composer-dock .agent-current-workspace{margin:8px auto 10px}
