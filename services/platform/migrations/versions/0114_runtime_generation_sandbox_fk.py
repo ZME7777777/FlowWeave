@@ -1,6 +1,6 @@
 """restore Runtime generation Sandbox references as SET NULL foreign keys.
 
-Revision ID: 0114_runtime_generation_sandbox_fk
+Revision ID: 0114_runtime_sandbox_fk
 Revises: 0113_task_retention
 """
 
@@ -9,7 +9,10 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0114_runtime_generation_sandbox_fk"
+# Production alembic_version.version_num is VARCHAR(32); keep this ID below
+# that durable schema limit so the otherwise transactional migration can mark
+# itself applied after the FK repair succeeds.
+revision = "0114_runtime_sandbox_fk"
 down_revision = "0113_task_retention"
 branch_labels = None
 depends_on = None
