@@ -1718,6 +1718,10 @@ test('Agent new session keeps full capabilities and can create an explicit works
   await expect(page.getByText('2fae71c74c89', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: '新终端', exact: true }).click();
   await page.getByLabel('新增工作区工具').click();
+  await expect(page.getByRole('menu')).toBeVisible();
+  await page.getByLabel('发送 Agent 消息').click();
+  await expect(page.getByRole('menu')).toBeHidden();
+  await page.getByLabel('新增工作区工具').click();
   await page.getByRole('button', { name: '终端', exact: true }).click();
   await expect.poll(() => new Set(terminalInstanceIds).size).toBe(2);
   await expect(page.getByRole('button', { name: '2fae71c74c89', exact: true })).toHaveCount(2);

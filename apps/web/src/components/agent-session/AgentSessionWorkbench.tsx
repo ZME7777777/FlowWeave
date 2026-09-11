@@ -1962,6 +1962,8 @@ function WorkspaceDrawer({
   const [pendingTerminalClose, setPendingTerminalClose] = useState<Extract<WorkspaceToolTab, { kind: 'terminal' }>>();
   const [fullScreen, setFullScreen] = useState(false);
   const [sshAccessOpen, setSshAccessOpen] = useState(false);
+  const [toolMenuOpen, setToolMenuOpen] = useState(false);
+  const toolMenuRef = useRef<HTMLDivElement>(null);
   useEscapeClose(() => {
     if (pendingTerminalClose && !closingTerminalId) setPendingTerminalClose(undefined);
   }, Boolean(pendingTerminalClose) && !closingTerminalId);
@@ -2013,8 +2015,19 @@ function WorkspaceDrawer({
     return () => window.removeEventListener('keydown', exitOnEscape);
   }, [fullScreen]);
   useEffect(() => {
-    if (!open) setFullScreen(false);
+    if (!open) {
+      setFullScreen(false);
+      setToolMenuOpen(false);
+    }
   }, [open]);
+  useEffect(() => {
+    if (!toolMenuOpen) return;
+    const closeWhenPointerLeavesMenu = (event: PointerEvent) => {
+      if (event.target instanceof Node && !toolMenuRef.current?.contains(event.target)) setToolMenuOpen(false);
+    };
+    document.addEventListener('pointerdown', closeWhenPointerLeavesMenu, true);
+    return () => document.removeEventListener('pointerdown', closeWhenPointerLeavesMenu, true);
+  }, [toolMenuOpen]);
   useEffect(() => {
     if (!entryMenu) return;
     const close = () => setEntryMenu(undefined);
@@ -2280,7 +2293,7 @@ function WorkspaceDrawer({
       {loadingOrError || summary}
     </section>
     <section className={`agent-workspace-tool-shell ${open ? '' : 'panel-hidden'}`}>
-      <header><nav className="agent-workspace-tabs" aria-label="工作区工具页签">{scopeState.tabs.map(tab => <div key={tab.id} className={scopeState.activeTabId === tab.id ? 'active' : ''}><button type="button" className="agent-workspace-tab-select" onClick={() => updateScope(current => ({ ...current, activeTabId: tab.id }))}><span>{tab.kind === 'files' ? '文件' : tab.kind === 'changes' ? `审查${reviewChanges.length ? ` · ${reviewChanges.length}` : ''}` : tab.kind === 'git' ? `提交 · ${tab.details.commit.short_id}` : tab.kind === 'subagents' ? '子智能体' : details?.runtime.container_id || (details?.runtime.write_available ? '终端' : '连接中…')}</span></button><button type="button" className="agent-workspace-tab-close" aria-label={`关闭${tab.kind === 'files' ? '文件' : tab.kind === 'changes' ? '改动审查' : tab.kind === 'git' ? '提交审查' : tab.kind === 'subagents' ? '子智能体' : `终端 ${details?.runtime.container_id || ''}`}页签`} disabled={tab.kind === 'terminal' && closingTerminalId === tab.terminalInstanceId} onClick={() => { if (tab.kind !== 'terminal' || closingTerminalId !== tab.terminalInstanceId) requestCloseTab(tab); }}><X size={12}/></button></div>)}</nav><div className="agent-workspace-tool-actions"><details><summary aria-label="新增工作区工具"><Plus size={15}/></summary><div><button type="button" onClick={event => { openFiles(); event.currentTarget.closest('details')?.removeAttribute('open'); }}><FileCode2 size={13}/>文件</button>{reviewChanges.length > 0 && <button type="button" onClick={event => { openChanges(); event.currentTarget.closest('details')?.removeAttribute('open'); }}><FileText size={13}/>审查改动</button>}{runtimeTasks.length > 0 && <button type="button" onClick={event => { openRuntimeTasks(); event.currentTarget.closest('details')?.removeAttribute('open'); }}><Bot size={13}/>子智能体</button>}<button type="button" disabled={!runtimeAvailable} onClick={event => { openTerminal(); event.currentTarget.closest('details')?.removeAttribute('open'); }}><Plus size={13}/>终端</button></div></details><button type="button" aria-label={fullScreen ? '退出全屏' : '全屏查看工作区工具'} title={fullScreen ? '退出全屏（Esc）' : '全屏查看'} onClick={() => setFullScreen(current => !current)}>{fullScreen ? <Minimize2 size={16}/> : <Maximize2 size={16}/>}</button><button type="button" aria-label="关闭工作区工具" onClick={() => { setFullScreen(false); onClose(); }}><X size={16}/></button></div></header>
+      <header><nav className="agent-workspace-tabs" aria-label="工作区工具页签">{scopeState.tabs.map(tab => <div key={tab.id} className={scopeState.activeTabId === tab.id ? 'active' : ''}><button type="button" className="agent-workspace-tab-select" onClick={() => updateScope(current => ({ ...current, activeTabId: tab.id }))}><span>{tab.kind === 'files' ? '文件' : tab.kind === 'changes' ? `审查${reviewChanges.length ? ` · ${reviewChanges.length}` : ''}` : tab.kind === 'git' ? `提交 · ${tab.details.commit.short_id}` : tab.kind === 'subagents' ? '子智能体' : details?.runtime.container_id || (details?.runtime.write_available ? '终端' : '连接中…')}</span></button><button type="button" className="agent-workspace-tab-close" aria-label={`关闭${tab.kind === 'files' ? '文件' : tab.kind === 'changes' ? '改动审查' : tab.kind === 'git' ? '提交审查' : tab.kind === 'subagents' ? '子智能体' : `终端 ${details?.runtime.container_id || ''}`}页签`} disabled={tab.kind === 'terminal' && closingTerminalId === tab.terminalInstanceId} onClick={() => { if (tab.kind !== 'terminal' || closingTerminalId !== tab.terminalInstanceId) requestCloseTab(tab); }}><X size={12}/></button></div>)}</nav><div className="agent-workspace-tool-actions"><div ref={toolMenuRef} className="agent-workspace-tool-menu"><button type="button" className="agent-workspace-tool-menu-trigger" aria-label="新增工作区工具" aria-expanded={toolMenuOpen} aria-haspopup="menu" onClick={() => setToolMenuOpen(current => !current)}><Plus size={15}/></button>{toolMenuOpen && <div role="menu"><button type="button" role="menuitem" onClick={() => { openFiles(); setToolMenuOpen(false); }}><FileCode2 size={13}/>文件</button>{reviewChanges.length > 0 && <button type="button" role="menuitem" onClick={() => { openChanges(); setToolMenuOpen(false); }}><FileText size={13}/>审查改动</button>}{runtimeTasks.length > 0 && <button type="button" role="menuitem" onClick={() => { openRuntimeTasks(); setToolMenuOpen(false); }}><Bot size={13}/>子智能体</button>}<button type="button" role="menuitem" disabled={!runtimeAvailable} onClick={() => { openTerminal(); setToolMenuOpen(false); }}><Plus size={13}/>终端</button></div>}</div><button type="button" aria-label={fullScreen ? '退出全屏' : '全屏查看工作区工具'} title={fullScreen ? '退出全屏（Esc）' : '全屏查看'} onClick={() => setFullScreen(current => !current)}>{fullScreen ? <Minimize2 size={16}/> : <Maximize2 size={16}/>}</button><button type="button" aria-label="关闭工作区工具" onClick={() => { setFullScreen(false); onClose(); }}><X size={16}/></button></div></header>
       <div className="agent-workspace-tool-body">
         {panelError && <p className="agent-workspace-panel-error" role="alert"><span>{panelError}</span><button type="button" aria-label="关闭错误提示" onClick={() => setPanelError('')}><X size={13}/></button></p>}
         {loadingOrError || (!scopeState.tabs.length ? <div className="agent-drawer-empty"><b>选择工作区工具</b><span>文件仅打开一个页签；终端可按需打开多个独立实例。</span><div><button type="button" className="secondary" onClick={() => openFiles()}>打开文件</button><button type="button" className="secondary" disabled={!runtimeAvailable} onClick={openTerminal}>新建终端</button></div></div> : details && <div className={`agent-workspace-tool-content${gitSidebarVisible ? ' fullscreen-git-layout' : ''}`}>
