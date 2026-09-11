@@ -943,7 +943,7 @@ body:has(.login-page){min-width:0}
 
 /* Keep this dialog above the persistent navigation and inside a visible top gap. */
 .gate-conversation-backdrop{z-index:200;padding:28px}
-.gate-detail-dialog{height:auto;max-height:calc(100vh - 56px);grid-template-rows:auto minmax(0,1fr)}
+.gate-detail-dialog{display:block;height:auto;max-height:calc(100vh - 56px)}
 .gate-detail-body{align-content:start;gap:10px;max-height:min(660px,calc(100vh - 150px));margin:10px 0 0}
 .gate-detail-summary{padding:8px}.gate-agent-transcript{align-content:start;gap:6px}
 .gate-execution-config,.gate-provider-retry{display:grid;gap:5px;border:1px solid #d7e3db;border-radius:8px;background:#f8fbf9;padding:8px}.gate-execution-config h3,.gate-provider-retry h3,.gate-execution-config p,.gate-provider-retry p{margin:0}.gate-execution-config h3,.gate-provider-retry h3{font-size:12px}.gate-execution-config p{color:#315842;font:11px/1.5 'DM Mono',ui-monospace,monospace}.gate-execution-config small,.gate-provider-retry p{color:var(--muted);font-size:10px;line-height:1.5}.gate-provider-retry .agent-model-fields{margin:0}.gate-provider-retry .full{margin-top:2px}
