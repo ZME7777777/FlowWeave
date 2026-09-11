@@ -27,9 +27,22 @@ os.environ.setdefault("OPENHANDS_SUPPRESS_BANNER", "1")
 os.environ.setdefault("OH_SECRET_KEY", "flowweave-contract-check-secret-000000000000")
 os.environ.setdefault("OH_PERSISTENCE_DIR", "/runtime/state/persistence")
 
+# OpenHands' official dynamic-image builder resolves its UV workspace while
+# importing the build module.  The Runtime image carries the pinned source at
+# this location, but the rest of this probe deliberately runs from /runtime so
+# its independent fixtures retain their normal path semantics.
+_PROBE_CWD = Path.cwd()
+_PINNED_SOURCE_ROOT = Path("/opt/openhands-source")
+if _PINNED_SOURCE_ROOT.is_dir():
+    os.chdir(_PINNED_SOURCE_ROOT)
+
 from openhands.agent_server.api import create_app
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.docker.build import AGENT_SERVER_CAPABILITIES, BuildOptions
+
+if _PINNED_SOURCE_ROOT.is_dir():
+    os.chdir(_PROBE_CWD)
+
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.mcp_router import (
     MCPOAuthCallbackRequest,
