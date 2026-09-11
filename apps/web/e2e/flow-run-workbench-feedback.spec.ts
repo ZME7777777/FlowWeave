@@ -1382,6 +1382,9 @@ test('gate review conversation stays compact and remediation enters the created 
   const gateDialog = page.getByRole('dialog', { name: '门禁详情' });
   const records = gateDialog.getByRole('group', { name: '完整审查问答' });
   await expect(records.getByRole('button')).toHaveCount(2);
+  const compactSectionHeights = await gateDialog.locator('.gate-detail-body > section').evaluateAll(sections => sections.map(section => ({ className: section.className, height: section.getBoundingClientRect().height })));
+  expect(compactSectionHeights.find(section => section.className.includes('gate-detail-summary'))?.height).toBeLessThan(140);
+  expect(compactSectionHeights.find(section => section.className.includes('gate-execution-config'))?.height).toBeLessThan(90);
   await expect(records).toContainText('审查提问');
   await expect(records).toContainText('审查回复');
   await expect(gateDialog).not.toContainText('工具过程不应嵌入审查详情');
