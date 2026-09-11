@@ -1281,12 +1281,11 @@ function WorkspaceChangesReview({ changes, selectedId, onSelect, workspaceRoot }
   const afterDiffRef = useRef<HTMLPreElement>(null);
   const selected = changes.find(change => change.id === selectedId) ?? changes[0];
   useEffect(() => { if (selected && selected.id !== selectedId) onSelect(selected.id); }, [onSelect, selected, selectedId]);
-  const syncSplitScroll = (event: ReactUIEvent<HTMLPreElement>) => {
-    const source = event.currentTarget;
-    const peer = source === beforeDiffRef.current ? afterDiffRef.current : beforeDiffRef.current;
-    if (!peer) return;
-    if (peer.scrollTop !== source.scrollTop) peer.scrollTop = source.scrollTop;
-    if (peer.scrollLeft !== source.scrollLeft) peer.scrollLeft = source.scrollLeft;
+  const syncAfterDiffScroll = (event: ReactUIEvent<HTMLPreElement>) => {
+    const before = beforeDiffRef.current;
+    if (!before) return;
+    if (before.scrollTop !== event.currentTarget.scrollTop) before.scrollTop = event.currentTarget.scrollTop;
+    if (before.scrollLeft !== event.currentTarget.scrollLeft) before.scrollLeft = event.currentTarget.scrollLeft;
   };
   if (!selected) return <div className="agent-changes-empty"><b>没有可审查的文件改动</b><span>仅显示 OpenHands FileEditor 已成功写入、且带有原始前后内容的改动。</span></div>;
   const renderLine = (line: WorkspaceFileChange['lines'][number], side: 'before' | 'after') => {
@@ -1302,7 +1301,7 @@ function WorkspaceChangesReview({ changes, selectedId, onSelect, workspaceRoot }
     </nav>
     <article className="agent-changes-diff">
       <header><div><b title={workspaceRelativePath(selected.path, workspaceRoot)}>{workspaceRelativePath(selected.path, workspaceRoot)}</b><small><ins>{`+${selected.additions}`}</ins><del>{`-${selected.deletions}`}</del></small></div><div className="agent-diff-mode"><button type="button" className={mode === 'unified' ? 'active' : ''} onClick={() => setMode('unified')}>统一</button><button type="button" className={mode === 'split' ? 'active' : ''} onClick={() => setMode('split')}>并排</button></div></header>
-      {mode === 'unified' ? <pre className="agent-diff-unified">{selected.lines.map(line => <div className={`agent-diff-line ${line.kind}`} key={`${line.oldLine ?? ''}:${line.newLine ?? ''}:${line.text}`}><i>{line.oldLine ?? line.newLine ?? ''}</i><strong>{line.kind === 'addition' ? '+' : line.kind === 'deletion' ? '-' : ' '}</strong><code>{line.text || ' '}</code></div>)}</pre> : <div className="agent-diff-split"><pre ref={beforeDiffRef} onScroll={syncSplitScroll}><header>修改前</header>{selected.lines.map(line => renderLine(line, 'before'))}</pre><pre ref={afterDiffRef} onScroll={syncSplitScroll}><header>修改后</header>{selected.lines.map(line => renderLine(line, 'after'))}</pre></div>}
+      {mode === 'unified' ? <pre className="agent-diff-unified">{selected.lines.map(line => <div className={`agent-diff-line ${line.kind}`} key={`${line.oldLine ?? ''}:${line.newLine ?? ''}:${line.text}`}><i>{line.oldLine ?? line.newLine ?? ''}</i><strong>{line.kind === 'addition' ? '+' : line.kind === 'deletion' ? '-' : ' '}</strong><code>{line.text || ' '}</code></div>)}</pre> : <div className="agent-diff-split"><pre ref={beforeDiffRef} className="agent-diff-before"><header>修改前</header>{selected.lines.map(line => renderLine(line, 'before'))}</pre><pre ref={afterDiffRef} onScroll={syncAfterDiffScroll}><header>修改后</header>{selected.lines.map(line => renderLine(line, 'after'))}</pre></div>}
     </article>
   </section>;
 }
