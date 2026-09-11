@@ -547,7 +547,7 @@ function isBootstrapAmbiguous(error: Error): boolean {
 }
 
 type AgentCapabilityType = 'SKILL' | 'MCP' | 'PLUGIN' | 'CONTEXT' | 'AGENT_DEFINITION' | 'HOOK';
-type ComposerSuggestionKind = 'SKILL' | 'COMMAND' | 'MCP' | 'NATIVE';
+type ComposerSuggestionKind = 'SKILL' | 'COMMAND' | 'MCP' | 'NATIVE' | 'REFERENCE';
 type NativeComposerAction = 'CONDENSE';
 interface ComposerSuggestion {
   id: string;
@@ -570,14 +570,14 @@ function stringValues(value: unknown): string[] {
 }
 
 function ComposerCapabilityAutocomplete({
-  draft, suggestions, disabled, placeholder, onDraftChange, onPaste, onDropFiles, onDropWorkspaceFiles, onSubmit, onDirectSubmit, onManageCapabilities, onNativeAction, onWorkspaceReferenceTrigger,
+  draft, suggestions, disabled, placeholder, onDraftChange, onPaste, onDropFiles, onDropWorkspaceFiles, onSubmit, onDirectSubmit, onManageCapabilities, onNativeAction, onWorkspaceReferenceSelected,
 }: {
   draft: string; suggestions: ComposerSuggestion[]; disabled: boolean; placeholder: string;
   onDraftChange: (value: string) => void; onPaste: (event: ReactClipboardEvent<HTMLTextAreaElement>) => void; onDropFiles?: (files: File[]) => void; onDropWorkspaceFiles?: (paths: string[]) => void; onSubmit: () => void;
   onDirectSubmit?: () => void;
   onManageCapabilities?: () => void;
   onNativeAction?: (action: NativeComposerAction) => void;
-  onWorkspaceReferenceTrigger?: (query: string) => void;
+  onWorkspaceReferenceSelected?: () => void;
 }) {
   const input = useRef<HTMLTextAreaElement>(null);
   const dragDepth = useRef(0);
@@ -641,8 +641,20 @@ function ComposerCapabilityAutocomplete({
   }, [resizeInput]);
   const trigger = composerTrigger(draft);
   const visible = useMemo(() => {
-    if (!trigger || trigger.sigil === '@') return [];
+    if (!trigger) return [];
     const needle = trigger.query.toLocaleLowerCase();
+    if (trigger.sigil === '@') {
+      const reference: ComposerSuggestion = {
+        id: 'reference:workspace-files',
+        kind: 'REFERENCE',
+        token: '@文件和目录',
+        label: '文件和目录',
+        detail: '引用当前容器工作区中的文件或目录',
+      };
+      return !needle || `${reference.token} ${reference.label} ${reference.detail}`.toLocaleLowerCase().includes(needle)
+        ? [reference]
+        : [];
+    }
     return suggestions.filter(item => (trigger.sigil === '$' ? item.kind === 'SKILL' : item.kind !== 'SKILL')
       && (!needle || `${item.token} ${item.label} ${item.detail}`.toLocaleLowerCase().includes(needle)));
   }, [suggestions, trigger]);
@@ -654,14 +666,19 @@ function ComposerCapabilityAutocomplete({
       onNativeAction?.(item.nativeAction);
       return;
     }
+    if (item.kind === 'REFERENCE') {
+      onDraftChange(`${draft.slice(0, trigger.start)}${draft.slice(trigger.start + trigger.query.length + 1)}`);
+      onWorkspaceReferenceSelected?.();
+      return;
+    }
     onDraftChange(`${draft.slice(0, trigger.start)}${item.token} ${draft.slice(trigger.start + trigger.query.length + 1)}`);
     requestAnimationFrame(() => input.current?.focus());
   };
   const hasSuggestions = visible.length > 0;
   // A slash is an explicit request for a command or MCP.  Keep the picker
   // available for a draft before it has a native Conversation binding too.
-  const showCapabilityManager = Boolean(trigger && onManageCapabilities);
-  const hasMenu = Boolean(trigger && trigger.sigil !== '@' && (hasSuggestions || showCapabilityManager));
+  const showCapabilityManager = Boolean(trigger && trigger.sigil !== '@' && onManageCapabilities);
+  const hasMenu = Boolean(trigger && (hasSuggestions || showCapabilityManager));
   const hasNativeSuggestions = suggestions.some(item => item.kind === 'NATIVE');
   const acceptsFileDrag = (event: ReactDragEvent<HTMLElement>) => event.dataTransfer.types.includes('Files');
   const acceptsWorkspaceFileDrag = (event: ReactDragEvent<HTMLElement>) => event.dataTransfer.types.includes(WORKSPACE_FILE_TRANSFER_TYPE);
@@ -689,7 +706,7 @@ function ComposerCapabilityAutocomplete({
     if (workspacePaths.length) onDropWorkspaceFiles?.(workspacePaths);
     if (files.length) onDropFiles?.(files);
   }}>
-    <textarea ref={input} data-overflowing={inputOverflowing || undefined} aria-label="发送 Agent 消息" aria-autocomplete="list" aria-controls={hasMenu ? 'agent-composer-capabilities' : undefined} aria-expanded={hasMenu} value={draft} maxLength={200_000} placeholder={placeholder} disabled={disabled} onChange={event => { const next = event.target.value; const nextTrigger = composerTrigger(next); if (nextTrigger?.sigil === '@') { onDraftChange(next.slice(0, nextTrigger.start)); onWorkspaceReferenceTrigger?.(nextTrigger.query); } else onDraftChange(next); }} onPaste={onPaste} onKeyDown={event => {
+    <textarea ref={input} data-overflowing={inputOverflowing || undefined} aria-label="发送 Agent 消息" aria-autocomplete="list" aria-controls={hasMenu ? 'agent-composer-capabilities' : undefined} aria-expanded={hasMenu} value={draft} maxLength={200_000} placeholder={placeholder} disabled={disabled} onChange={event => onDraftChange(event.target.value)} onPaste={onPaste} onKeyDown={event => {
       if (isImeComposition(event)) return;
       if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !event.shiftKey) {
         event.preventDefault();
@@ -708,7 +725,7 @@ function ComposerCapabilityAutocomplete({
       if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); onSubmit(); }
     }}/>
     {fileDragActive && <div className="agent-composer-file-drop" aria-live="polite">松开以添加附件</div>}
-    {hasMenu && <div id="agent-composer-capabilities" className="agent-composer-capability-menu" role="listbox" aria-label={trigger!.sigil === '$' ? '选择技能' : hasNativeSuggestions ? '选择 OpenHands 原生能力、命令或 MCP' : '选择命令或 MCP'}>{hasSuggestions ? <>{visible.map((item, index) => <div className="agent-composer-capability-option" key={item.id}>{trigger!.sigil === '/' && (index === 0 || visible[index - 1]?.kind === 'NATIVE') && item.kind !== 'NATIVE' && <div className="agent-composer-capability-section">MCP 与命令</div>}{trigger!.sigil === '/' && item.kind === 'NATIVE' && (index === 0 || visible[index - 1]?.kind !== 'NATIVE') && <div className="agent-composer-capability-section">OpenHands 原生能力</div>}<button type="button" role="option" aria-selected={index === activeIndex} aria-disabled={item.available === false || undefined} disabled={item.available === false} className={`${index === activeIndex ? 'active' : ''}${item.available === false ? ' unavailable' : ''}`} onMouseDown={event => event.preventDefault()} onMouseEnter={() => setActiveIndex(index)} onClick={() => select(item)}><code>{item.token}</code><span><b>{item.label}</b><small>{item.detail}</small></span><em>{item.kind === 'SKILL' ? '技能' : item.kind === 'COMMAND' ? '命令' : item.kind === 'NATIVE' ? '原生' : 'MCP'}</em></button></div>)}{trigger!.sigil === '/' && !visible.some(item => item.kind !== 'NATIVE') && <div className="agent-composer-capability-empty"><span><b>当前会话还没有加载命令或 MCP</b><small>先为此会话加载能力，随后可在这里用 / 选择并插入。</small></span></div>}</> : <div className="agent-composer-capability-empty"><span><b>{!suggestions.length ? trigger!.sigil === '$' ? '当前会话还没有加载 Skill' : '当前会话还没有加载命令或 MCP' : '当前会话没有匹配的能力'}</b><small>{!suggestions.length ? `先为此会话加载能力，随后可在这里用 ${trigger!.sigil} 选择并插入。` : '调整输入关键词，或管理当前会话能力。'}</small></span></div>}{showCapabilityManager && <div className="agent-composer-capability-manage"><span>管理当前会话能力</span><button type="button" onMouseDown={event => event.preventDefault()} onClick={onManageCapabilities}>管理</button></div>}</div>}
+    {hasMenu && <div id="agent-composer-capabilities" className="agent-composer-capability-menu" role="listbox" aria-label={trigger!.sigil === '$' ? '选择技能' : trigger!.sigil === '@' ? '选择引用类型' : hasNativeSuggestions ? '选择 OpenHands 原生能力、命令或 MCP' : '选择命令或 MCP'}>{hasSuggestions ? <>{visible.map((item, index) => <div className="agent-composer-capability-option" key={item.id}>{trigger!.sigil === '@' && index === 0 && <div className="agent-composer-capability-section">引用类型</div>}{trigger!.sigil === '/' && (index === 0 || visible[index - 1]?.kind === 'NATIVE') && item.kind !== 'NATIVE' && <div className="agent-composer-capability-section">MCP 与命令</div>}{trigger!.sigil === '/' && item.kind === 'NATIVE' && (index === 0 || visible[index - 1]?.kind !== 'NATIVE') && <div className="agent-composer-capability-section">OpenHands 原生能力</div>}<button type="button" role="option" aria-selected={index === activeIndex} aria-disabled={item.available === false || undefined} disabled={item.available === false} className={`${index === activeIndex ? 'active' : ''}${item.available === false ? ' unavailable' : ''}`} onMouseDown={event => event.preventDefault()} onMouseEnter={() => setActiveIndex(index)} onClick={() => select(item)}><code>{item.token}</code><span><b>{item.label}</b><small>{item.detail}</small></span><em>{item.kind === 'SKILL' ? '技能' : item.kind === 'COMMAND' ? '命令' : item.kind === 'NATIVE' ? '原生' : item.kind === 'REFERENCE' ? '引用' : 'MCP'}</em></button></div>)}{trigger!.sigil === '/' && !visible.some(item => item.kind !== 'NATIVE') && <div className="agent-composer-capability-empty"><span><b>当前会话还没有加载命令或 MCP</b><small>先为此会话加载能力，随后可在这里用 / 选择并插入。</small></span></div>}</> : <div className="agent-composer-capability-empty"><span><b>{trigger!.sigil === '@' ? '当前没有匹配的引用类型' : !suggestions.length ? trigger!.sigil === '$' ? '当前会话还没有加载 Skill' : '当前会话还没有加载命令或 MCP' : '当前会话没有匹配的能力'}</b><small>{trigger!.sigil === '@' ? '调整输入关键词以筛选引用类型。' : !suggestions.length ? `先为此会话加载能力，随后可在这里用 ${trigger!.sigil} 选择并插入。` : '调整输入关键词，或管理当前会话能力。'}</small></span></div>}{showCapabilityManager && <div className="agent-composer-capability-manage"><span>管理当前会话能力</span><button type="button" onMouseDown={event => event.preventDefault()} onClick={onManageCapabilities}>管理</button></div>}</div>}
   </div>;
 }
 
@@ -1368,7 +1385,7 @@ function selectPreviewText(root: HTMLElement, content: string, selection: FileSe
 
 function WorkspaceTextPreview({ path, content, highlight, onSelect }: { path: string; content: string; highlight?: FileSelection; onSelect?: (selection: FileSelection) => void }) {
   const previewRef = useRef<HTMLDivElement>(null);
-  const [selection, setSelection] = useState<FileSelection>();
+  const [selectionAction, setSelectionAction] = useState<{ selection: FileSelection; left: number; top: number }>();
   useEffect(() => {
     if (!highlight || !previewRef.current) return;
     selectPreviewText(previewRef.current, content, highlight);
@@ -1379,9 +1396,14 @@ function WorkspaceTextPreview({ path, content, highlight, onSelect }: { path: st
   }, [content, highlight]);
   const captureSelection = () => {
     if (!previewRef.current) return;
-    setSelection(selectionFromPreview(previewRef.current, content));
+    const selection = selectionFromPreview(previewRef.current, content);
+    const range = window.getSelection()?.rangeCount ? window.getSelection()?.getRangeAt(0) : undefined;
+    if (!selection || !range) { setSelectionAction(undefined); return; }
+    const rect = range.getBoundingClientRect();
+    const top = rect.top > 52 ? rect.top - 38 : rect.bottom + 8;
+    setSelectionAction({ selection, left: Math.max(8, rect.right - 136), top });
   };
-  const action = selection && <button type="button" className="agent-file-selection-action" onMouseDown={event => event.preventDefault()} onClick={() => { onSelect?.(selection); setSelection(undefined); window.getSelection()?.removeAllRanges(); }}><Quote size={13}/>追加到会话</button>;
+  const action = selectionAction && createPortal(<button type="button" className="agent-file-selection-action" style={{ left: selectionAction.left, top: selectionAction.top }} onMouseDown={event => event.preventDefault()} onClick={() => { onSelect?.(selectionAction.selection); setSelectionAction(undefined); window.getSelection()?.removeAllRanges(); }}><Quote size={13}/>追加到会话</button>, document.body);
   if (/\.(?:md|mdx|markdown)$/i.test(path)) {
     return <div ref={previewRef} className="agent-file-preview-selection" onMouseUp={captureSelection}>{action}<article className="agent-file-markdown-preview"><ReactMarkdown remarkPlugins={[remarkGfm]} components={{ code: WorkspaceMarkdownCode }}>{content}</ReactMarkdown></article></div>;
   }
@@ -1484,23 +1506,71 @@ function relativeWorkspacePath(path: string, root: string): string {
 type WorkspaceEntry = { path: string; kind: 'file' | 'directory'; size: number; displayName?: string };
 type WorkspaceTreeNode = WorkspaceEntry & { name: string; children: WorkspaceTreeNode[] };
 
-function WorkspaceReferencePicker({ entries, query, onQueryChange, onChoose, onClose }: {
+function WorkspaceReferencePicker({ entries, root, query, onQueryChange, selectedReferences, onApply, onClose }: {
   entries: WorkspaceEntry[];
+  root: string;
   query: string;
   onQueryChange: (value: string) => void;
-  onChoose: (entry: WorkspaceEntry) => void;
+  selectedReferences: AgentWorkspaceReference[];
+  onApply: (entries: WorkspaceEntry[]) => void;
   onClose: () => void;
 }) {
   useEscapeClose(onClose);
-  const visible = useMemo(() => {
-    const needle = query.trim().toLocaleLowerCase();
-    return entries.filter(entry => !needle || (String(entry.displayName || '') + ' ' + entry.path).toLocaleLowerCase().includes(needle));
-  }, [entries, query]);
+  const nodes = useMemo(() => workspaceTree(entries, root), [entries, root]);
+  const [selectedPaths, setSelectedPaths] = useState<Set<string>>(() => new Set(selectedReferences.map(item => item.path)));
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
+  const needle = query.trim().toLocaleLowerCase();
+  const matches = useCallback((node: WorkspaceTreeNode): boolean => {
+    if (!needle) return true;
+    const label = `${node.name} ${node.path}`.toLocaleLowerCase();
+    return label.includes(needle) || node.children.some(matches);
+  }, [needle]);
+  useEffect(() => {
+    if (!needle) return;
+    const next = new Set<string>();
+    const collect = (items: WorkspaceTreeNode[]) => items.forEach(node => {
+      if (node.children.some(matches)) next.add(node.path);
+      collect(node.children);
+    });
+    collect(nodes);
+    setExpanded(current => new Set([...current, ...next]));
+  }, [matches, needle, nodes]);
+  const toggleExpanded = (path: string) => setExpanded(current => {
+    const next = new Set(current);
+    if (next.has(path)) next.delete(path); else next.add(path);
+    return next;
+  });
+  const toggleSelected = (path: string) => setSelectedPaths(current => {
+    const next = new Set(current);
+    if (next.has(path)) next.delete(path); else next.add(path);
+    return next;
+  });
+  const renderNodes = (items: WorkspaceTreeNode[], depth = 0): ReactNode => items.filter(matches).map(node => {
+    const open = expanded.has(node.path) || Boolean(needle);
+    const hasChildren = node.children.length > 0;
+    return <div key={node.path} role="treeitem" aria-expanded={node.kind === 'directory' && hasChildren ? open : undefined}>
+      <div className="agent-workspace-reference-tree-row" style={{ '--reference-depth': depth } as CSSProperties}>
+        {node.kind === 'directory' && hasChildren
+          ? <button type="button" className="agent-workspace-reference-disclosure" aria-label={`${open ? '收起' : '展开'}目录 ${node.name}`} onClick={() => toggleExpanded(node.path)}>{open ? <ChevronDown size={14}/> : <ChevronRight size={14}/>}</button>
+          : <span className="agent-workspace-reference-spacer" aria-hidden="true"/>}
+        <input type="checkbox" aria-label={`引用 ${node.kind === 'directory' ? '目录' : '文件'} ${node.path}`} checked={selectedPaths.has(node.path)} disabled={!selectedPaths.has(node.path) && selectedPaths.size >= 20} onChange={() => toggleSelected(node.path)}/>
+        {node.kind === 'directory' ? open ? <FolderOpen size={16}/> : <Folder size={16}/> : <FileCode2 size={16}/>}
+        <span title={node.path}>{node.name}</span>
+        <small>{node.kind === 'directory' ? '目录' : '文件'}</small>
+      </div>
+      {node.kind === 'directory' && hasChildren && open && <div role="group">{renderNodes(node.children, depth + 1)}</div>}
+    </div>;
+  });
+  const selectedEntries = entries.filter(entry => selectedPaths.has(entry.path));
   return <div className="agent-workspace-reference-picker-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}>
     <section className="agent-workspace-reference-picker" role="dialog" aria-modal="true" aria-label="引用当前工作区文件或目录">
       <header><div><b>引用当前工作区</b><small>仅引用容器内路径，不上传或复制文件内容</small></div><button type="button" aria-label="关闭工作区引用" onClick={onClose}><X size={15}/></button></header>
       <input autoFocus aria-label="筛选工作区文件或目录" value={query} onChange={event => onQueryChange(event.target.value)} placeholder="筛选文件或目录…"/>
-      <div className="agent-workspace-reference-list">{visible.length ? visible.map(entry => <button type="button" key={entry.path} onClick={() => onChoose(entry)}>{entry.kind === 'directory' ? <Folder size={16}/> : <FileCode2 size={16}/>}<span><b>{entry.displayName || entry.path.split('/').filter(Boolean).pop()}</b><small>{entry.path}</small></span></button>) : <p>当前工作区没有匹配的文件或目录。</p>}</div>
+      <section className="agent-workspace-reference-tree" aria-label="当前工作区文件树">
+        <header><div><b>选择文件或目录</b><span>展开目录后可选择任意子目录或子文件</span></div><em>{selectedEntries.length}/20</em></header>
+        <div role="tree">{nodes.length ? renderNodes(nodes) : <p>当前工作区没有可引用的文件或目录。</p>}</div>
+      </section>
+      <footer><button type="button" onClick={onClose}>取消</button><button type="button" className="primary" disabled={!selectedEntries.length} onClick={() => onApply(selectedEntries)}>添加 {selectedEntries.length ? `${selectedEntries.length} 个引用` : '引用'}</button></footer>
     </section>
   </div>;
 }
@@ -3899,7 +3969,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         {condensationConfirmationOpen && selected && <section className="agent-condensation-confirmation" aria-label="确认低用量上下文压缩" role="alertdialog" aria-modal="false">
           <ShieldAlert size={17}/><div><b>当前上下文用量较低</b><p>Token {contextProgress?.usedLabel} / {contextProgress?.windowLabel}（{contextProgress?.percentage}%），事件 {activeEventCount.toLocaleString()} / {eventLimit.toLocaleString()}（{eventProgress}%）。现在压缩可能没有足够的可压缩区间，并且仍会调用摘要模型。</p><footer><button type="button" onClick={() => setCondensationConfirmationOpen(false)}>取消</button><button type="button" className="primary" onClick={() => condense.mutate()}>仍然压缩</button></footer></div>
         </section>}
-        <ComposerCapabilityAutocomplete draft={draft} suggestions={composerSuggestions} placeholder={pendingConfirmation ? '请先处理上方工具确认…' : turnState === 'paused' ? '已暂停：可继续，也可编辑上方消息重新思考…' : features.capabilities ? '给 Agent 发消息…（Enter 加入队列，⌘/Ctrl+Enter 直接发送）' : '给 Agent 发消息…'} disabled={!canCompose || Boolean(pendingConfirmation) || bootstrap.isPending || condense.isPending || migrateStreaming.isPending || Boolean(pendingMigratedSend) || turnState === 'pausing' || turnState === 'resuming'} onDraftChange={setDraft} onPaste={event => { if (!features.attachments || !composerScope) return; const files = transferredFiles(event.clipboardData); if (!files.length) return; event.preventDefault(); for (const file of files) upload.mutate({ file, scope: composerScope }); }} onDropFiles={features.attachments && composerScope ? files => { for (const file of files) upload.mutate({ file, scope: composerScope }); } : undefined} onDropWorkspaceFiles={paths => { const entries = composerWorkspaceDetailsQuery.data?.files ?? []; setWorkspaceReferences(current => [...current, ...paths.flatMap(path => { const entry = entries.find(item => item.path === path); return entry && !current.some(reference => reference.path === path) ? [{ path, kind: entry.kind, display_name: path.split('/').filter(Boolean).pop() ?? path }] : []; })]); }} onSubmit={enqueueDraft} onDirectSubmit={sendDraftDirectly} onManageCapabilities={features.capabilities && (selected || features.draftCapabilitySelection) ? () => setCapabilityManagerOpen(true) : undefined} onNativeAction={action => { if (action === 'CONDENSE' && selected && (turnState === 'idle' || turnState === 'paused') && !pendingConfirmation && !condense.isPending) requestManualCompaction(); }} onWorkspaceReferenceTrigger={query => { setWorkspaceReferenceQuery(query); setWorkspaceReferencePickerOpen(true); }}/>
+        <ComposerCapabilityAutocomplete draft={draft} suggestions={composerSuggestions} placeholder={pendingConfirmation ? '请先处理上方工具确认…' : turnState === 'paused' ? '已暂停：可继续，也可编辑上方消息重新思考…' : features.capabilities ? '给 Agent 发消息…（Enter 加入队列，⌘/Ctrl+Enter 直接发送）' : '给 Agent 发消息…'} disabled={!canCompose || Boolean(pendingConfirmation) || bootstrap.isPending || condense.isPending || migrateStreaming.isPending || Boolean(pendingMigratedSend) || turnState === 'pausing' || turnState === 'resuming'} onDraftChange={setDraft} onPaste={event => { if (!features.attachments || !composerScope) return; const files = transferredFiles(event.clipboardData); if (!files.length) return; event.preventDefault(); for (const file of files) upload.mutate({ file, scope: composerScope }); }} onDropFiles={features.attachments && composerScope ? files => { for (const file of files) upload.mutate({ file, scope: composerScope }); } : undefined} onDropWorkspaceFiles={paths => { const entries = composerWorkspaceDetailsQuery.data?.files ?? []; setWorkspaceReferences(current => [...current, ...paths.flatMap(path => { const entry = entries.find(item => item.path === path); return entry && !current.some(reference => reference.path === path) ? [{ path, kind: entry.kind, display_name: path.split('/').filter(Boolean).pop() ?? path }] : []; })]); }} onSubmit={enqueueDraft} onDirectSubmit={sendDraftDirectly} onManageCapabilities={features.capabilities && (selected || features.draftCapabilitySelection) ? () => setCapabilityManagerOpen(true) : undefined} onNativeAction={action => { if (action === 'CONDENSE' && selected && (turnState === 'idle' || turnState === 'paused') && !pendingConfirmation && !condense.isPending) requestManualCompaction(); }} onWorkspaceReferenceSelected={() => { setWorkspaceReferenceQuery(''); setWorkspaceReferencePickerOpen(true); }}/>
         {features.attachments && attachments.length > 0 && <div className="agent-attachments">{attachments.map(item => <span key={item.path}><button type="button" className="agent-attachment-open" title={`在右侧查看附件：${item.filename}`} onClick={() => openAttachmentInDrawer(item)}>{item.image_data_url && <img src={item.image_data_url} alt=""/>}<em>{item.filename}</em></button><button type="button" className="agent-attachment-remove" aria-label={`移除附件 ${item.filename}`} onClick={() => setAttachments(all => all.filter(candidate => candidate.path !== item.path))}>×</button></span>)}</div>}
         {references.length > 0 && <div className="agent-attachments agent-conversation-references" aria-label="已添加的会话引用">{references.map((reference, index) => <span key={`${reference.eventId}:${reference.content}`}><span className="agent-attachment-open" title={reference.content}><Quote size={14}/><em>{`会话引用 ${index + 1}`}</em></span><button type="button" className="agent-attachment-remove" aria-label={`移除会话引用 ${index + 1}`} onClick={() => setReferences(current => current.filter(item => item !== reference))}>×</button></span>)}</div>}
         {workspaceReferences.length > 0 && <div className="agent-attachments agent-workspace-references" aria-label="已添加的工作区引用">{workspaceReferences.map(reference => <span key={reference.path}><span className="agent-attachment-open" title={reference.path}>{reference.kind === 'directory' ? <Folder size={14}/> : <FileCode2 size={14}/>}<em>{reference.display_name}</em></span><button type="button" className="agent-attachment-remove" aria-label={'移除工作区引用 ' + reference.display_name} onClick={() => setWorkspaceReferences(current => current.filter(item => item.path !== reference.path))}>×</button></span>)}</div>}
@@ -3926,16 +3996,16 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     <WorkspaceDrawer open={drawerOpen} onOpen={() => setDrawerOpen(true)} onClose={() => setDrawerOpen(false)} onAddFileSelection={(path, selection) => setWorkspaceReferences(current => current.some(reference => reference.path === path && JSON.stringify(reference.selection) === JSON.stringify(selection)) ? current : [...current, { path, kind: 'file', display_name: path.split('/').filter(Boolean).pop() ?? path, selection }])} highlightedFileSelection={fileSelectionReference} workspaceId={workspace.id} scopeKey={selected?.id ?? pendingCreatedId ?? conversationDraft?.id ?? 'workspace-root'} migrateFromScopeKey={workspaceScopeMigration} bindingId={selected?.id} workDirectoryId={selected ? undefined : conversationDraft?.workDirectoryId} conversation={selected} attachments={drawerAttachments} sources={drawerSources} attachmentRequest={attachmentRequest} candidatePreviewRequest={candidatePreviewRequest} reviewChanges={reviewChanges} reviewRequestId={reviewRequestId} sessionChanges={sessionFileChanges} onReviewChanges={openChangesReview} runtimeAvailable={Boolean((runtime?.terminal_available ?? runtime?.write_available) && (!features.terminalRequiresConversation || selected))} runtimeTasks={runtimeTasks} agentDefinitions={agentDefinitionAssets} sessionStopped={sessionStopped}/>
     {workspaceReferencePickerOpen && <WorkspaceReferencePicker
       entries={composerWorkspaceDetailsQuery.data?.files ?? []}
+      root={composerWorkspaceDetailsQuery.data?.working_directory ?? activeWorkspaceRoot ?? ''}
       query={workspaceReferenceQuery}
       onQueryChange={setWorkspaceReferenceQuery}
-      onChoose={entry => {
-        setWorkspaceReferences(current => current.some(reference => reference.path === entry.path)
-          ? current
-          : [...current, {
-              path: entry.path,
-              kind: entry.kind,
-              display_name: entry.path.split('/').filter(Boolean).pop() ?? entry.path,
-            }]);
+      selectedReferences={workspaceReferences}
+      onApply={entries => {
+        setWorkspaceReferences(entries.map(entry => ({
+          path: entry.path,
+          kind: entry.kind,
+          display_name: entry.path.split('/').filter(Boolean).pop() ?? entry.path,
+        })));
         setWorkspaceReferencePickerOpen(false);
         setWorkspaceReferenceQuery('');
       }}
