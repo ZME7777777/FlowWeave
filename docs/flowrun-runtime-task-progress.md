@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`COMPLETE`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`NONE`（FR-330 已完成，后续稳定性审计须创建独立切片）
+> 下一可执行切片：`NONE`（FR-331 已完成，后续稳定性审计须创建独立切片）
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -4294,6 +4294,27 @@ deterministic-name 创建竞争后确认的并发新容器，仍必须完成严�
 新增回归覆盖历史 existing Runtime 不再重验、普通新建 Runtime 必须验收，以及创建竞争后取得的
 新 Runtime 仍必须验收。
 
+### FR-331 平台重建时终态 Runtime 网络的错误重接修复 — DONE
+
+依赖：FR-323、FR-322。
+
+目标：平台服务 force-recreate 后，Runtime Provider 的网络恢复只可把当前 API、Worker 和 Stream API
+重新接入仍运行的受管 Agent Runtime。终态 FlowRun 保留其 Docker network、外置 Workspace 和 generation
+审计，但 drain 已断开并停止 Agent Server；这些保留的空网络不得在每次平台重建后被重新附着数据平面
+client，否则会造成连接数按历史 Runtime 数量增长并扩大已终态资源的网络暴露面。
+
+范围：继续严格验证 network 的确定性名称、resource id、manager scope、bridge/internal 模式与标签；
+在 connect 前额外要求 Docker 报告同一 resource id、scope、`agent-runtime` 标签的容器处于 running 且
+实际附着在该网络。若同一已附着受管 Runtime 明确为 `exited`/`dead`，只断开当前受信 client 以收敛
+历史错误连接；不删除终态 network/container/allocation。空网络或启动中的 Runtime 不断开，避免与新
+generation 的启动序列竞争；不能因短暂数据库不可用放宽 Docker ownership gate，也不得影响活跃
+FlowRun 或 Agent Workspace Runtime 的重接。
+
+完成：网络恢复现在按 network resource id 只读取受管、同 scope 的 Runtime Docker state。仅当 running
+Runtime 实际附着该 network 时才重接当前 trusted client；若已附着的同一受管 Runtime 已明确
+`exited`/`dead`，恢复循环只断开已有 trusted client 并保留 network、容器和外置状态。新增回归覆盖
+活跃 Runtime 的正常重接、保留终态 Runtime network 的不重接和既有错误连接收敛。
+
 ### FR-321 OpenHands 1.47 增强最终安全、恢复与性能门禁 — DONE
 
 依赖：FR-309–FR-320。
@@ -4329,6 +4350,7 @@ contract、冻结策略与既有受控生命周期约束覆盖。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-12 | FR-331 | 受影响 Python Ruff format/check、`py_compile`、唯一 Alembic head、`git diff --check`；活跃／终态 network recovery 定向 pytest；`.154` Docker CLI state 输出探针 | PASS（静态／生产构造）：Ruff、语法、空白检查与唯一 Alembic head `0113_task_retention` 通过。生产只读探针确认活跃 Runtime 返回完整 `container-id|running`，终态 Runtime 返回 `container-id|exited`，与附着 container ID 的 prefix 校验匹配。三条定向 pytest 在 Testcontainers PostgreSQL fixture 初始化前因本机 Docker Unix socket 缺失阻断，未伪记为通过；远端部署须确认 6 个终态 network 的 platform client attachment 被收敛、两个活跃 Runtime network 保持三类 trusted client。 |
 | 2026-09-12 | FR-330 | 受影响 Python Ruff format/check、`py_compile`、唯一 Alembic head、`git diff --check`；历史 existing/new/concurrent-create admission 定向 pytest | PASS（静态／构造）：Ruff、语法、空白检查与唯一 Alembic head `0113_task_retention` 通过。回归精确证明既有 Runtime 继续 owner/spec/网络/隔离校验而不重验当前基线，新 generation 与确定性名称竞争获得的 generation 均强制 strict admission。三条定向 pytest 在 Testcontainers PostgreSQL fixture 初始化前因本机 Docker Unix socket 缺失阻断，未伪记为通过；远端部署需确认活跃 `1.44.0` FlowRun Runtime 保持运行且账本收敛为 `RUNNING`、错误清除。 |
 | 2026-09-12 | FR-329 | 受影响 Python Ruff format/check、`py_compile`、唯一 Alembic head、`git diff --check`；session advisory lock 泄漏回归 pytest | PASS（静态）：Ruff、语法、空白检查与唯一 Alembic head `0113_task_retention` 通过。新增回归以单槽连接池模拟 reentrant session lock，验证 reconcile 收尾不会把锁带回连接池。两条定向 pytest 在 Testcontainers PostgreSQL fixture 初始化前因本机 Docker Unix socket 缺失而阻断，未伪记为通过；远端部署须确认 advisory lock 清除，正常周期重新观察活跃 Runtime 并清除临时 Provider 错误。 |
 | 2026-09-12 | FR-328 | 受影响 Python Ruff format/check、`py_compile`、唯一 Alembic head、`git diff --check`；历史终态 Runtime stop recovery 定向 pytest | PASS（静态）：Ruff、语法、空白检查与唯一 Alembic head `0113_task_retention` 通过。恢复只从终态 Run 与未停止 Runtime Session 的持久事实回补唯一 Runtime lane task，`SKIP LOCKED` 防止并发 Worker 重复投递；启动和 maintenance 复用同一恢复入口。定向 pytest 已启动，但在 Testcontainers PostgreSQL fixture 初始化前因本机 Docker Unix socket 缺失而阻断，未伪记为通过；远端部署需验证仅停止 6 个历史终态 Runtime、保留其外置状态，且不触及仍 ACTIVE 的 Run。 |

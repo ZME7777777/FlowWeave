@@ -763,12 +763,17 @@ chmod 0700 "$target"
         return clients
 
     def reconcile_runtime_client_networks(self) -> int:
-        """Reconnect current trusted clients to every managed Agent Runtime network.
+        """Reconnect current trusted clients to live managed Agent Runtime networks.
 
         Compose recreates API, Stream API, and Worker containers during a
         platform release. Docker network attachments belong to a container ID,
         so the new trusted container must be reattached to already-running
         Runtime networks without replacing their Agent Server or Conversation.
+
+        A terminal FlowRun retains its network for lifecycle audit, but drain
+        detaches and stops its Agent Server.  Those retained, empty networks
+        must not regain API/Worker/Stream API data-plane attachments merely
+        because a later platform deployment recreates its client containers.
         """
 
         try:
@@ -847,6 +852,68 @@ chmod 0700 "$target"
                     409,
                     {"network_id": network_id},
                 )
+            # The network label alone is insufficient for reconnection: a
+            # terminal Runtime deliberately preserves its network but has no
+            # running Agent Server.  Require a container that Docker reports
+            # as running and whose immutable ownership labels match this
+            # network's resource identity before restoring data-plane clients.
+            runtime_states = self._run(
+                [
+                    self.settings.docker_binary,
+                    "ps",
+                    "--all",
+                    "--no-trunc",
+                    "--format",
+                    "{{.ID}}|{{.State}}",
+                    "--filter",
+                    "label=flowweave.managed=true",
+                    "--filter",
+                    "label=flowweave.kind=agent-runtime",
+                    "--filter",
+                    f"label=flowweave.manager-scope={self.settings.sandbox_manager_scope}",
+                    "--filter",
+                    f"label=flowweave.resource-id={resource_id}",
+                ],
+                timeout=30,
+            ).splitlines()
+            running_runtime_ids: set[str] = set()
+            stopped_runtime_ids: set[str] = set()
+            for line in runtime_states:
+                container_id, separator, state = line.strip().partition("|")
+                if not separator or not container_id:
+                    raise DomainError(
+                        "SANDBOX_DOCKER_PROTOCOL_ERROR",
+                        "Docker returned invalid Runtime state metadata",
+                        502,
+                    )
+                if state == "running":
+                    running_runtime_ids.add(container_id)
+                elif state in {"exited", "dead"}:
+                    stopped_runtime_ids.add(container_id)
+            has_running_runtime = any(
+                attached_id.startswith(runtime_id)
+                for attached_id in attached_client_ids
+                for runtime_id in running_runtime_ids
+            )
+            if not has_running_runtime:
+                # A retained terminal Runtime has an exited owned container.
+                # Remove only current trusted clients from its otherwise
+                # preserved network so a prior platform restart does not leave
+                # a stale data-plane path behind.  Do not detach from an empty
+                # or starting network: that can legitimately be between the
+                # network attachment and `docker run` of a new generation.
+                has_stopped_runtime = any(
+                    attached_id.startswith(runtime_id)
+                    for attached_id in attached_client_ids
+                    for runtime_id in stopped_runtime_ids
+                )
+                if has_stopped_runtime:
+                    for client_id in clients:
+                        if any(
+                            attached_id.startswith(client_id) for attached_id in attached_client_ids
+                        ):
+                            self._disconnect_network(expected_name, client_id)
+                continue
             for client_id in clients:
                 # `docker ps --quiet` reports a short ID whereas network inspect
                 # keys its Containers map by the full ID. Docker guarantees that
@@ -866,6 +933,24 @@ chmod 0700 "$target"
         except DomainError as exc:
             detail = str(exc.details.get("detail") or "").lower()
             if "already exists" not in detail and "already connected" not in detail:
+                raise
+
+    def _disconnect_network(self, network_name: str, container_id: str) -> None:
+        try:
+            self._run(
+                [
+                    self.settings.docker_binary,
+                    "network",
+                    "disconnect",
+                    "--force",
+                    network_name,
+                    container_id,
+                ],
+                timeout=30,
+            )
+        except DomainError as exc:
+            detail = str(exc.details.get("detail") or "").lower()
+            if "not connected" not in detail and "no such container" not in detail:
                 raise
 
     def _ensure_runtime_network(self, resource: ManagedSandbox) -> str:

@@ -1213,7 +1213,7 @@ def test_runtime_client_network_reconcile_reattaches_recreated_platform_clients(
                         "Name": network_name,
                         "Driver": "bridge",
                         "Internal": True,
-                        "Containers": {"new-api-full-id": {}},
+                        "Containers": {"new-api-full-id": {}, "runtime-container-full-id": {}},
                         "Labels": {
                             "flowweave.managed": "true",
                             "flowweave.resource-type": "network",
@@ -1225,6 +1225,9 @@ def test_runtime_client_network_reconcile_reattaches_recreated_platform_clients(
                     }
                 ]
             )
+        if command[1:3] == ["ps", "--all"]:
+            assert command[-1] == f"label=flowweave.resource-id={resource_id}"
+            return "runtime-container-full-id|running\n"
         return ""
 
     monkeypatch.setattr(provider, "_run", fake_run)
@@ -1245,7 +1248,76 @@ def test_runtime_client_network_reconcile_reattaches_recreated_platform_clients(
         "label=flowweave.network-purpose=agent-runtime",
     ]
     assert commands[1] == ["docker", "network", "inspect", "network-id"]
-    assert commands[2:] == [["docker", "network", "connect", network_name, "new-worker"]]
+    assert commands[2] == [
+        "docker",
+        "ps",
+        "--all",
+        "--no-trunc",
+        "--format",
+        "{{.ID}}|{{.State}}",
+        "--filter",
+        "label=flowweave.managed=true",
+        "--filter",
+        "label=flowweave.kind=agent-runtime",
+        "--filter",
+        "label=flowweave.manager-scope=test-scope",
+        "--filter",
+        f"label=flowweave.resource-id={resource_id}",
+    ]
+    assert commands[3:] == [["docker", "network", "connect", network_name, "new-worker"]]
+
+
+def test_runtime_client_network_reconcile_skips_retained_terminal_runtime_network(
+    settings, monkeypatch
+):
+    provider = DockerSandboxProvider(_docker_settings(settings))
+    resource_id = "12345678-1234-4234-9234-123456789abc"
+    network_name = provider._runtime_network_name(resource_id)
+    commands: list[list[str]] = []
+
+    monkeypatch.setattr(provider, "_trusted_runtime_clients", lambda: ["new-api", "new-worker"])
+
+    def fake_run(command: list[str], **_kwargs):
+        commands.append(command)
+        if command[1:3] == ["network", "ls"]:
+            return "network-id"
+        if command[1:3] == ["network", "inspect"]:
+            return json.dumps(
+                [
+                    {
+                        "Name": network_name,
+                        "Driver": "bridge",
+                        "Internal": True,
+                        "Containers": {
+                            "new-api-full-id": {},
+                            "new-worker-full-id": {},
+                            "stopped-runtime-full-id": {},
+                        },
+                        "Labels": {
+                            "flowweave.managed": "true",
+                            "flowweave.resource-type": "network",
+                            "flowweave.resource-id": resource_id,
+                            "flowweave.manager-scope": "test-scope",
+                            "flowweave.network-purpose": "agent-runtime",
+                            "flowweave.network-mode": "isolated",
+                        },
+                    }
+                ]
+            )
+        if command[1:3] == ["ps", "--all"]:
+            return "stopped-runtime-full-id|exited\n"
+        if command[1:3] == ["network", "disconnect"]:
+            return ""
+        raise AssertionError(f"unexpected Docker command: {command}")
+
+    monkeypatch.setattr(provider, "_run", fake_run)
+
+    assert provider.reconcile_runtime_client_networks() == 0
+    assert not any(command[1:3] == ["network", "connect"] for command in commands)
+    assert [command for command in commands if command[1:3] == ["network", "disconnect"]] == [
+        ["docker", "network", "disconnect", "--force", network_name, "new-api"],
+        ["docker", "network", "disconnect", "--force", network_name, "new-worker"],
+    ]
 
 
 def test_runtime_client_network_reconcile_ignores_provider_start_before_clients(
