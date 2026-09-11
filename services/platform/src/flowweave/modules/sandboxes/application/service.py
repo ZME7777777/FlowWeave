@@ -1065,6 +1065,25 @@ def _apply_reconcile_outcome(
 
         if outcome.kind == "DELETED":
             if current.desired_state == "DELETED":
+                # A physical Sandbox row is replaceable whereas generation
+                # identity is retained for audit. Detach explicitly before
+                # deletion because historical databases can lack the FK's
+                # ON DELETE SET NULL action. Reconciliation deletes physical
+                # Sandboxes for both FlowRun and Agent Workspace Runtimes.
+                control_db.execute(
+                    update(RuntimeGeneration)
+                    .where(RuntimeGeneration.managed_runtime_id == current.id)
+                    .values(managed_runtime_id=None)
+                )
+                from flowweave.modules.agent_workspaces.infrastructure.models import (
+                    AgentWorkspaceRuntimeGeneration,
+                )
+
+                control_db.execute(
+                    update(AgentWorkspaceRuntimeGeneration)
+                    .where(AgentWorkspaceRuntimeGeneration.managed_runtime_id == current.id)
+                    .values(managed_runtime_id=None)
+                )
                 control_db.delete(current)
                 deleted = 1
             else:

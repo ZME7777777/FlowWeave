@@ -7,6 +7,7 @@ from sqlalchemy import (
     JSON,
     CheckConstraint,
     DateTime,
+    ForeignKey,
     Integer,
     LargeBinary,
     String,
@@ -145,7 +146,11 @@ class RuntimeGeneration(Base):
     generation: Mapped[int] = mapped_column(Integer)
     # ManagedSandbox is a replaceable physical-provider record. SET NULL keeps
     # the generation audit identity intact after that physical record is gone.
-    managed_runtime_id: Mapped[str | None] = mapped_column(String(36), unique=True, index=True)
+    managed_runtime_id: Mapped[str | None] = mapped_column(
+        ForeignKey("managed_sandboxes.id", ondelete="SET NULL"),
+        unique=True,
+        index=True,
+    )
     instance_id: Mapped[str | None] = mapped_column(String(100))
     runtime_image_digest: Mapped[str] = mapped_column(String(500))
     state: Mapped[str] = mapped_column(String(30), default="PROVISIONING", index=True)

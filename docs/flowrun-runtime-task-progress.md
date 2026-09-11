@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`COMPLETE`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`NONE`（FR-334 已完成；后续稳定性审计须创建独立切片）
+> 下一可执行切片：`FR-336`（初次 Runtime 供应的暂时性后端故障恢复）
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -91,6 +91,30 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 放到 FR-12；普通切片即使涉及安全或迁移，也只实现代码并做基础语法检查。
 
 ## 6. 任务清单
+
+### 稳定性审计修复清单（2026-09-12）
+
+| 切片 | 风险 | 状态 | 范围 |
+| --- | --- | --- | --- |
+| FR-335 | 已删除受管 Sandbox 的 generation 悬空引用 | DONE | 恢复两个 generation ledger 的 `ON DELETE SET NULL` 约束，升级时清理历史悬空引用，并让 reconcile 显式解绑。 |
+| FR-336 | 初次 Runtime 供应遇到临时 Provider 不可用会永久降级 | PENDING | 将短暂后端故障保持为可重试供应意图，限制 generation churn。 |
+| FR-337 | FlowRun 初次供应任务耗尽后无受控恢复入口 | PENDING | 增加安全、幂等且可审计的终态投递恢复。 |
+| OPS-01 | Docker rollback image / BuildKit cache 容量增长 | PENDING | 设计并执行经确认的保留／回收维护窗口；不纳入自动代码部署。 |
+
+### FR-335 Runtime generation Sandbox 引用完整性 — DONE
+
+依赖：无（稳定性审计发现，FR-334 后独立处理）。
+
+目标：
+
+- `runtime_generations.managed_runtime_id` 和 `agent_workspace_runtime_generations.managed_runtime_id`
+  对 `managed_sandboxes.id` 必须持久保持 `ON DELETE SET NULL`。
+- 迁移升级前清理历史悬空引用，随后建立受命名约束保护的关系。
+- reconciliation 成功清理物理 Sandbox 时显式解绑两个 generation ledger，不依赖历史数据库是否存在 FK。
+- 保留 generation 审计事实，绝不删除 Workspace、FlowRun、Conversation 或持久 Runtime 状态。
+
+验收：受影响迁移和 Python 文件可解析/编译、`git diff --check`、任务状态唯一性；定向 pytest 若本机 Docker
+可用则运行，否则如实记录 Testcontainers 前置条件阻断。
 
 ### FR-00 架构、边界和实施顺序冻结 — DONE
 
@@ -4405,6 +4429,7 @@ contract、冻结策略与既有受控生命周期约束覆盖。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-12 | FR-335 | 受影响 Python Ruff format/check、`py_compile`、唯一 Alembic head、`git diff --check`；两个 reconcile generation-reference 定向 pytest | PASS（静态）：Ruff、语法、空白检查和唯一 Alembic head `0114_runtime_generation_sandbox_fk` 通过。两个回归已收集，但均在业务断言前因本机 Docker Unix socket 缺失、Testcontainers PostgreSQL 无法启动而阻断，未伪记为通过；远端部署必须确认 migration 后两个 generation ledger 的悬空引用均为 0，且两个命名 FK 均为 `ON DELETE SET NULL`。 |
 | 2026-09-12 | FR-334 | 受影响 Python Ruff format/check、`py_compile`、唯一 Alembic head、`git diff --check`；replacement crash-takeover／duplicate-delivery／terminal-failure-isolation 定向 pytest | PASS（静态）：Ruff、语法、空白检查和唯一 Alembic head `0113_task_retention` 通过。新回归精确覆盖同一 task 的旧 durable lease 接管、不同 task 的 live lease no-op 与 terminal failure 不撤销另一 task lease。三条 pytest 已收集，但均在业务断言前因本机 Docker Unix socket 缺失、Testcontainers PostgreSQL 无法启动而阻断，未伪记为通过；远端发布不触发真实 Runtime replacement，以服务健康、无 replacement backlog 和现有 generation 账本保持收敛为验收。 |
 | 2026-09-12 | FR-333 | 受影响 Python Ruff format/check、`py_compile`、唯一 Alembic head、`git diff --check`；PostgreSQL 并发 `enqueue` 定向 pytest | PASS（静态）：Ruff、语法、空白检查与唯一 Alembic head `0113_task_retention` 通过。实现以 PostgreSQL 原子 `ON CONFLICT DO NOTHING` 取代 read-then-insert，随后读取权威记录，不会改写既有 terminal/lease/error 状态。新增双 Session 并发回归已被收集，但在业务断言前因本机 Docker Unix socket 缺失、Testcontainers PostgreSQL 无法启动而阻断，未伪记为通过；远端发布只验证服务健康与既有 task ledger，不向生产投递人为构造的 worker task。 |
 | 2026-09-12 | FR-332 | 受影响 Python Ruff format/check、`py_compile`、唯一 Alembic head、`git diff --check`；已停止 Runtime error-clear 定向 pytest | PASS（静态）：Ruff、语法、空白检查与唯一 Alembic head `0113_task_retention` 通过。新增回归精确覆盖 confirmed `STOPPED` observation 必须清除遗留 Provider 错误。两条定向 pytest 在 Testcontainers PostgreSQL fixture 初始化前因本机 Docker Unix socket 缺失阻断，未伪记为通过；远端部署需确认两个 `STOPPED` Runtime 的过时 `SANDBOX_BACKEND_UNAVAILABLE` 清除，且其容器、network、allocation 仍保留。 |

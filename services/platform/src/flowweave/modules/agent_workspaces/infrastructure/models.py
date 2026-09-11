@@ -6,6 +6,7 @@ from typing import ClassVar
 from sqlalchemy import (
     CheckConstraint,
     DateTime,
+    ForeignKey,
     Integer,
     LargeBinary,
     String,
@@ -135,7 +136,11 @@ class AgentWorkspaceRuntimeGeneration(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
     runtime_session_id: Mapped[str] = mapped_column(String(36), index=True)
     generation: Mapped[int] = mapped_column(Integer)
-    managed_runtime_id: Mapped[str | None] = mapped_column(String(36), unique=True, index=True)
+    managed_runtime_id: Mapped[str | None] = mapped_column(
+        ForeignKey("managed_sandboxes.id", ondelete="SET NULL"),
+        unique=True,
+        index=True,
+    )
     runtime_image_digest: Mapped[str] = mapped_column(String(500))
     state: Mapped[str] = mapped_column(String(20), default="PROVISIONING", index=True)
     fence_token: Mapped[str] = mapped_column(String(36), unique=True)

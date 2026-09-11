@@ -2283,6 +2283,134 @@ def test_reconciler_deletes_hard_expired_resource(settings, db_session_factory, 
     assert deleted == [resource_id]
 
 
+def test_reconciler_deletion_detaches_runtime_generation_reference(
+    settings, db_session_factory, monkeypatch
+):
+    """Physical cleanup retains generation audit without a dangling Sandbox ID."""
+
+    configured = _docker_settings(settings)
+    now = datetime.now(UTC)
+    flow_run_id = "11111111-1111-4111-8111-111111111111"
+    with db_session_factory() as db:
+        resource = ManagedSandbox(
+            kind="AGENT_RUNTIME",
+            owner_type="FLOW_RUN",
+            owner_id=flow_run_id,
+            backend="docker",
+            backend_resource_name="fw-sbx-detach-generation",
+            desired_state="DELETED",
+            observed_state="DELETING",
+            image_reference="runtime:locked",
+            spec_json={"port": 8000, "bound": True},
+            idle_expires_at=None,
+            hard_expires_at=now + timedelta(hours=1),
+            next_reconcile_at=now - timedelta(seconds=1),
+        )
+        db.add(resource)
+        db.flush()
+        session = FlowRunRuntime(
+            flow_run_id=flow_run_id,
+            environment_version_id="33333333-3333-4333-8333-333333333333",
+            runtime_image_digest="runtime:locked",
+            workspace_allocation_id="44444444-4444-4444-8444-444444444444",
+            status="DEGRADED",
+        )
+        db.add(session)
+        db.flush()
+        generation = RuntimeGeneration(
+            runtime_session_id=session.id,
+            generation=1,
+            managed_runtime_id=resource.id,
+            runtime_image_digest="runtime:locked",
+            state="FAILED",
+            fence_token="55555555-5555-4555-8555-555555555555",
+        )
+        db.add(generation)
+        db.commit()
+        resource_id = resource.id
+        generation_id = generation.id
+
+    deleted: list[str] = []
+    monkeypatch.setattr(
+        DockerSandboxProvider, "inspect", lambda self, _name: _observation(resource)
+    )
+    monkeypatch.setattr(DockerSandboxProvider, "delete", lambda self, item: deleted.append(item.id))
+    monkeypatch.setattr(DockerSandboxProvider, "list_managed", lambda self: [])
+
+    with settings_context(configured), db_session_factory() as db:
+        report = reconcile_managed_sandboxes(db)
+
+    with db_session_factory() as db:
+        assert db.get(ManagedSandbox, resource_id) is None
+        persisted_generation = db.get(RuntimeGeneration, generation_id)
+        assert persisted_generation is not None
+        assert persisted_generation.managed_runtime_id is None
+    assert report.deleted == 1
+    assert deleted == [resource_id]
+
+
+def test_reconciler_deletion_detaches_agent_workspace_generation_reference(
+    settings, db_session_factory, monkeypatch
+):
+    """The Agent Workspace generation ledger has the same physical lifecycle."""
+
+    configured = _docker_settings(settings)
+    now = datetime.now(UTC)
+    with settings_context(configured), db_session_factory() as db:
+        workspace = ensure_default_agent_workspace(db)
+        runtime = db.scalar(
+            select(AgentWorkspaceRuntime).where(AgentWorkspaceRuntime.workspace_id == workspace.id)
+        )
+        assert runtime is not None
+        resource = ManagedSandbox(
+            kind="AGENT_RUNTIME",
+            owner_type="AGENT_WORKSPACE",
+            owner_id=workspace.id,
+            backend="docker",
+            backend_resource_name="fw-sbx-detach-agent-workspace-generation",
+            desired_state="DELETED",
+            observed_state="DELETING",
+            image_reference=runtime.runtime_image_digest,
+            agent_workspace_allocation_id=runtime.workspace_allocation_id,
+            spec_json={"port": 8000, "bound": True},
+            idle_expires_at=None,
+            hard_expires_at=now + timedelta(hours=1),
+            next_reconcile_at=now - timedelta(seconds=1),
+        )
+        db.add(resource)
+        db.flush()
+        generation = AgentWorkspaceRuntimeGeneration(
+            runtime_session_id=runtime.id,
+            generation=1,
+            managed_runtime_id=resource.id,
+            runtime_image_digest=runtime.runtime_image_digest,
+            state="FAILED",
+            fence_token="66666666-6666-4666-8666-666666666666",
+        )
+        db.add(generation)
+        db.commit()
+        resource_id = resource.id
+        generation_id = generation.id
+
+    deleted: list[str] = []
+    monkeypatch.setattr(
+        DockerSandboxProvider, "inspect", lambda self, _name: _observation(resource)
+    )
+    monkeypatch.setattr(DockerSandboxProvider, "delete", lambda self, item: deleted.append(item.id))
+    monkeypatch.setattr(DockerSandboxProvider, "list_managed", lambda self: [])
+
+    with settings_context(configured), db_session_factory() as db:
+        report = reconcile_managed_sandboxes(db)
+
+    with db_session_factory() as db:
+        assert db.get(ManagedSandbox, resource_id) is None
+        persisted_generation = db.get(AgentWorkspaceRuntimeGeneration, generation_id)
+        assert persisted_generation is not None
+        assert persisted_generation.managed_runtime_id is None
+    assert report.deleted == 1
+    assert deleted == [resource_id]
+
+
 def test_reconciler_refuses_conflicting_delete_and_reclaims_only_stale_orphans(
     settings, db_session_factory, monkeypatch
 ):
