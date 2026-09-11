@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`COMPLETE`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`NONE`（FR-333 已完成；后续稳定性审计须创建独立切片）
+> 下一可执行切片：`NONE`（FR-334 已完成；后续稳定性审计须创建独立切片）
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -4348,6 +4348,28 @@ idempotency_key) DO NOTHING` 后读取唯一权威记录。并发交付会由数
 唯一键冲突泄露给 API、恢复或 Worker 调用方；已存在记录的 payload、状态、lease、attempt 和错误账本均未修改。
 新增双 Session 并发回归，断言两个调用返回同一 task id，且数据库中仅一条记录。
 
+### FR-334 Runtime replacement 重复投递与崩溃接管 fencing — DONE
+
+依赖：FR-333、FR-330。
+
+目标：Runtime replacement 的 Background Task lease（短）与 durable replacement lease（启动、drain 和
+OpenHands lease 等待所需的较长时间）有不同生命周期。进程在两者之间崩溃后，同一 task 被重新认领时不得
+因自己上一 attempt 的有效 replacement lease 而反复重试至 `DEAD`；同一 source generation 的另一条
+重复投递若已有 live replacement lease，也不得耗尽重试并在 terminal failure 路径清除真正执行者的 lease，
+否则会把健康恢复链误投影为 `DEGRADED` 并重开替换竞争。
+
+范围：只允许当前重新认领的同一 Background Task 接管其旧 replacement attempt；不同 task 遇到同
+generation 的 live replacement 视作已交付而无副作用结束。终态 task failure 只可收敛自身的
+replacement lease，绝不撤销另一 task 的 live lease。保持 generation、row-version、advisory lock、
+OpenHands lease 与唯一 N+1 target 的现有 fencing 语义。
+
+完成：replacement lease owner 保留 Background Task ID；同一 task 被重新认领时可接管其上一
+attempt 的 live durable lease 并继续既有 N+1，不会产生第二 target。不同 task 遇到同 generation 的
+live replacement 直接完成，不再把 `RUNTIME_REPLACEMENT_LEASE_HELD` 重试到 `DEAD`。terminal failure
+现在携带 task ID，只会影响自身 replacement lease；不同 task 的穷尽失败无法清除实际执行者 lease 或将
+Session 错投影为 `DEGRADED`。新增回归覆盖同 task crash takeover、重复 delivery no-op 与 duplicate
+terminal failure isolation。
+
 ### FR-321 OpenHands 1.47 增强最终安全、恢复与性能门禁 — DONE
 
 依赖：FR-309–FR-320。
@@ -4383,6 +4405,7 @@ contract、冻结策略与既有受控生命周期约束覆盖。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-12 | FR-334 | 受影响 Python Ruff format/check、`py_compile`、唯一 Alembic head、`git diff --check`；replacement crash-takeover／duplicate-delivery／terminal-failure-isolation 定向 pytest | PASS（静态）：Ruff、语法、空白检查和唯一 Alembic head `0113_task_retention` 通过。新回归精确覆盖同一 task 的旧 durable lease 接管、不同 task 的 live lease no-op 与 terminal failure 不撤销另一 task lease。三条 pytest 已收集，但均在业务断言前因本机 Docker Unix socket 缺失、Testcontainers PostgreSQL 无法启动而阻断，未伪记为通过；远端发布不触发真实 Runtime replacement，以服务健康、无 replacement backlog 和现有 generation 账本保持收敛为验收。 |
 | 2026-09-12 | FR-333 | 受影响 Python Ruff format/check、`py_compile`、唯一 Alembic head、`git diff --check`；PostgreSQL 并发 `enqueue` 定向 pytest | PASS（静态）：Ruff、语法、空白检查与唯一 Alembic head `0113_task_retention` 通过。实现以 PostgreSQL 原子 `ON CONFLICT DO NOTHING` 取代 read-then-insert，随后读取权威记录，不会改写既有 terminal/lease/error 状态。新增双 Session 并发回归已被收集，但在业务断言前因本机 Docker Unix socket 缺失、Testcontainers PostgreSQL 无法启动而阻断，未伪记为通过；远端发布只验证服务健康与既有 task ledger，不向生产投递人为构造的 worker task。 |
 | 2026-09-12 | FR-332 | 受影响 Python Ruff format/check、`py_compile`、唯一 Alembic head、`git diff --check`；已停止 Runtime error-clear 定向 pytest | PASS（静态）：Ruff、语法、空白检查与唯一 Alembic head `0113_task_retention` 通过。新增回归精确覆盖 confirmed `STOPPED` observation 必须清除遗留 Provider 错误。两条定向 pytest 在 Testcontainers PostgreSQL fixture 初始化前因本机 Docker Unix socket 缺失阻断，未伪记为通过；远端部署需确认两个 `STOPPED` Runtime 的过时 `SANDBOX_BACKEND_UNAVAILABLE` 清除，且其容器、network、allocation 仍保留。 |
 | 2026-09-12 | FR-331 | 受影响 Python Ruff format/check、`py_compile`、唯一 Alembic head、`git diff --check`；活跃／终态 network recovery 定向 pytest；`.154` Docker CLI state 输出探针 | PASS（静态／生产构造）：Ruff、语法、空白检查与唯一 Alembic head `0113_task_retention` 通过。生产只读探针确认活跃 Runtime 返回完整 `container-id|running`，终态 Runtime 返回 `container-id|exited`，与附着 container ID 的 prefix 校验匹配。三条定向 pytest 在 Testcontainers PostgreSQL fixture 初始化前因本机 Docker Unix socket 缺失阻断，未伪记为通过；远端部署须确认 6 个终态 network 的 platform client attachment 被收敛、两个活跃 Runtime network 保持三类 trusted client。 |

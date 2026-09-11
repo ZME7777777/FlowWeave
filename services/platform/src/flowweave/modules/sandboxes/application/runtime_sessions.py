@@ -501,6 +501,7 @@ def acquire_runtime_replacement_lease(
     flow_run_id: str,
     owner: str,
     lease_seconds: int,
+    takeover_task_id: str | None = None,
 ) -> tuple[FlowRunRuntime, RuntimeReplacementLease]:
     """Freeze routing and acquire or take over the durable replacement lease."""
 
@@ -529,11 +530,18 @@ def acquire_runtime_replacement_lease(
             409,
             {"runtime_session_id": session.id, "status": session.status},
         )
+    current_owner = session.replacement_lease_owner
+    can_take_over_own_task_attempt = (
+        takeover_task_id is not None
+        and current_owner is not None
+        and f":{takeover_task_id}:" in current_owner
+    )
     if (
         session.replacement_lease_token is not None
         and session.replacement_lease_until is not None
         and session.replacement_lease_until > now
-        and session.replacement_lease_owner != owner
+        and current_owner != owner
+        and not can_take_over_own_task_attempt
     ):
         raise DomainError(
             "RUNTIME_REPLACEMENT_LEASE_HELD",

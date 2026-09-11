@@ -102,6 +102,8 @@ def record_terminal_runtime_replacement_failure(
     db: Session,
     flow_run_id: str,
     error: str,
+    *,
+    replacement_task_id: str | None = None,
 ) -> None:
     """Make exhausted replacement retries explicitly diagnosable and non-routable."""
 
@@ -118,6 +120,18 @@ def record_terminal_runtime_replacement_failure(
         or session.replacement_generation is None
         or session.status not in {"REPLACING", "RECONNECTING", "DEGRADED"}
     ):
+        return
+    if (
+        replacement_task_id is not None
+        and session.replacement_lease_until is not None
+        and session.replacement_lease_until > datetime.now(UTC)
+        and not _replacement_lease_belongs_to_task(
+            session.replacement_lease_owner, replacement_task_id
+        )
+    ):
+        # A duplicate delivery exhausted its own retries while a different
+        # task still owns the active N→N+1 recovery. Never let its terminal
+        # bookkeeping clear the live lease or turn the Session DEGRADED.
         return
     session.status = "DEGRADED"
     session.replacement_lease_token = None
@@ -137,6 +151,12 @@ def _require_task_lease(db: Session, lease: Lease) -> None:
 
 def _replacement_owner(lease: Lease) -> str:
     return f"{lease.owner}:{lease.task_id}:{lease.generation}"[:200]
+
+
+def _replacement_lease_belongs_to_task(owner: str | None, task_id: str) -> bool:
+    """Recognize the stable background-task segment of a lease owner."""
+
+    return owner is not None and f":{task_id}:" in owner
 
 
 def _replacement_lease_seconds() -> int:
@@ -196,11 +216,30 @@ def _ensure_replacement_state(
                             "expected_generation": expected_generation,
                         },
                     )
+                now = datetime.now(UTC)
+                if (
+                    current_session.replacement_lease_token is not None
+                    and current_session.replacement_lease_until is not None
+                    and current_session.replacement_lease_until > now
+                    and not _replacement_lease_belongs_to_task(
+                        current_session.replacement_lease_owner, lease.task_id
+                    )
+                ):
+                    # This source generation is already being replaced by a
+                    # distinct durable delivery. Mark this duplicate task as
+                    # handled instead of retrying it until DEAD.
+                    control_db.commit()
+                    return None
                 session, replacement = acquire_runtime_replacement_lease(
                     control_db,
                     flow_run_id=flow_run_id,
                     owner=owner,
                     lease_seconds=_replacement_lease_seconds(),
+                    # A crashed worker's BackgroundTask may be reclaimed with
+                    # a new task-lease generation while its longer Runtime
+                    # replacement lease remains valid. Only that same task
+                    # may safely take over the durable operation.
+                    takeover_task_id=lease.task_id,
                 )
                 source = control_db.scalar(
                     select(RuntimeGeneration)

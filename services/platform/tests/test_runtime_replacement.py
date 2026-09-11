@@ -411,6 +411,133 @@ def test_crash_takeover_reuses_n_plus_one_and_waits_for_openhands_lease(
         assert 44 <= wait_seconds <= 45
 
 
+def test_reclaimed_task_attempt_takes_over_only_its_own_live_replacement_lease(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with db_session_factory() as db:
+        flow_run_id, _runtime_session_id = _seed_active_runtime(db, with_conversation=False)
+        _runtime, first = acquire_runtime_replacement_lease(
+            db,
+            flow_run_id=flow_run_id,
+            owner="worker-a:replacement-task:1",
+            lease_seconds=60,
+        )
+        db.commit()
+
+    with db_session_factory() as db:
+        _runtime, reclaimed = acquire_runtime_replacement_lease(
+            db,
+            flow_run_id=flow_run_id,
+            owner="worker-b:replacement-task:2",
+            lease_seconds=60,
+            takeover_task_id="replacement-task",
+        )
+        assert reclaimed.token != first.token
+        db.commit()
+
+    with db_session_factory() as db:
+        with pytest.raises(DomainError) as caught:
+            acquire_runtime_replacement_lease(
+                db,
+                flow_run_id=flow_run_id,
+                owner="worker-c:duplicate-task:1",
+                lease_seconds=60,
+                takeover_task_id="duplicate-task",
+            )
+        assert caught.value.code == "RUNTIME_REPLACEMENT_LEASE_HELD"
+
+
+def test_duplicate_replacement_delivery_finishes_without_touching_live_lease(
+    settings,
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with db_session_factory() as db:
+        flow_run_id, _runtime_session_id = _seed_active_runtime(db, with_conversation=False)
+        _runtime, live = acquire_runtime_replacement_lease(
+            db,
+            flow_run_id=flow_run_id,
+            owner="worker-a:live-replacement-task:1",
+            lease_seconds=60,
+        )
+        db.commit()
+
+    with settings_context(settings), db_session_factory() as db:
+        state = runtime_replacement._ensure_replacement_state(
+            db,
+            flow_run_id=flow_run_id,
+            expected_generation=1,
+            lease=Lease(task_id="duplicate-replacement-task", owner="worker-b", generation=1),
+        )
+        assert state is None
+        runtime = db.scalar(select(FlowRunRuntime).where(FlowRunRuntime.flow_run_id == flow_run_id))
+        assert runtime is not None
+        assert runtime.replacement_lease_token == live.token
+        assert runtime.replacement_lease_owner == "worker-a:live-replacement-task:1"
+
+
+def test_duplicate_terminal_failure_cannot_revoke_other_tasks_live_replacement_lease(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with db_session_factory() as db:
+        flow_run_id, runtime_session_id = _seed_active_runtime(db, with_conversation=False)
+        runtime, live = acquire_runtime_replacement_lease(
+            db,
+            flow_run_id=flow_run_id,
+            owner="worker-a:live-replacement-task:1",
+            lease_seconds=60,
+        )
+        source = db.scalar(
+            select(ManagedSandbox).where(
+                ManagedSandbox.owner_type == "FLOW_RUN",
+                ManagedSandbox.owner_id == flow_run_id,
+                ManagedSandbox.generation == 1,
+            )
+        )
+        assert source is not None
+        target_runtime = ManagedSandbox(
+            kind="AGENT_RUNTIME",
+            owner_type="FLOW_RUN",
+            owner_id=flow_run_id,
+            backend="docker",
+            backend_resource_name=f"fw-sbx-target-{flow_run_id[:8]}",
+            desired_state="RUNNING",
+            observed_state="CREATING",
+            generation=2,
+            image_reference=runtime.runtime_image_digest,
+            runtime_allocation_id=runtime.workspace_allocation_id,
+            spec_json=dict(source.spec_json),
+            hard_expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+        db.add(target_runtime)
+        db.flush()
+        target = ensure_runtime_generation(
+            db,
+            session=runtime,
+            generation=2,
+            managed_runtime=target_runtime,
+        )
+        attach_runtime_replacement_generation(
+            db,
+            session=runtime,
+            generation=target,
+            replacement_lease_token=live.token,
+        )
+        db.commit()
+
+    with db_session_factory() as db:
+        runtime_replacement.record_terminal_runtime_replacement_failure(
+            db,
+            flow_run_id,
+            "duplicate task exhausted",
+            replacement_task_id="duplicate-replacement-task",
+        )
+        runtime = db.get(FlowRunRuntime, runtime_session_id)
+        assert runtime is not None
+        assert runtime.status == "REPLACING"
+        assert runtime.replacement_lease_token == live.token
+        assert runtime.replacement_lease_owner == "worker-a:live-replacement-task:1"
+
+
 def test_replacement_failure_isolated_and_retryability_is_explicit(
     db_session_factory: sessionmaker[Session],
 ) -> None:

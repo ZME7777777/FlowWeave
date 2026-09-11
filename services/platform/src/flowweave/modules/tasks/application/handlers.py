@@ -317,6 +317,11 @@ def record_terminal_failure(db: Session, task_id: str, error: str) -> None:
     if task.task_type == "CANCEL_RUNTIME":
         orchestration.record_runtime_task_failure(db, task.aggregate_id, error, terminal=True)
     elif task.task_type == "REPLACE_FLOW_RUN_RUNTIME":
-        sandboxes.record_terminal_runtime_replacement_failure(db, task.aggregate_id, error)
+        sandboxes.record_terminal_runtime_replacement_failure(
+            db,
+            task.aggregate_id,
+            error,
+            replacement_task_id=task.id,
+        )
     elif task.task_type == "RESOLVE_PLUGIN_SOURCE":
         fail_plugin_source_resolution(db, task.aggregate_id, error)
