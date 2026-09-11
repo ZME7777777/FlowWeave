@@ -5003,7 +5003,8 @@ def recover_runtime_tasks(db: Session) -> int:
     Rows are locked with SKIP LOCKED so multiple workers may recover concurrently.
     """
 
-    recovered = _recover_automatic_run_starts(db)
+    recovered = recover_terminal_flow_run_runtime_stops(db)
+    recovered += _recover_automatic_run_starts(db)
     recovered += _recover_automatic_attempt_tasks(db)
     attempts = list(
         db.scalars(
@@ -5176,6 +5177,43 @@ def recover_runtime_tasks(db: Session) -> int:
                 _dispatch_runtime_wakeup(db, attempt, 1)
                 recovered += 1
     finish(db)
+    return recovered
+
+
+def recover_terminal_flow_run_runtime_stops(db: Session) -> int:
+    """Restore terminal Runtime-stop delivery for historical FlowRuns.
+
+    The durable Run and Runtime Session are authoritative: a completed or
+    cancelled Run with a live session must eventually have its stop delivery,
+    even if the Run reached its terminal state before that task existed.  Lock
+    each candidate Run so concurrent Workers cannot repeatedly revive the same
+    ledger record.
+    """
+
+    runs = list(
+        db.scalars(
+            select(FlowRun)
+            .where(
+                FlowRun.state.in_([FlowRunState.COMPLETED, FlowRunState.CANCELLED]),
+                FlowRun.id.in_(
+                    select(FlowRunRuntime.flow_run_id).where(
+                        FlowRunRuntime.status.notin_(["STOPPED", "DELETING"])
+                    )
+                ),
+            )
+            .order_by(FlowRun.finished_at, FlowRun.id)
+            .with_for_update(skip_locked=True)
+        )
+    )
+    recovered = 0
+    for run in runs:
+        idempotency_key = f"stop-flow-run-runtimes:{run.id}"
+        task = db.scalar(
+            select(BackgroundTask).where(BackgroundTask.idempotency_key == idempotency_key)
+        )
+        if task is None:
+            _enqueue_terminal_runtime_stop(db, run.id)
+            recovered += 1
     return recovered
 
 

@@ -488,6 +488,83 @@ def test_worker_startup_retries_terminal_recovery_delivery(
     assert detail["node_runs"][0]["attempts"][0]["runtime_phase"] == "RUNNING"
 
 
+def test_worker_recovers_terminal_flow_run_runtime_stop_delivery(
+    worker_client, worker_container, worker_skill_capability, db_session_factory
+):
+    """A pre-FR-323 terminal Run must not retain a live Runtime forever."""
+
+    from flowweave.bootstrap.worker import TaskWorker
+    from flowweave.shared.models import FlowRun, FlowRunRuntime
+
+    asset = worker_client.post(
+        "/api/v1/node-assets", json=_asset_payload(worker_skill_capability)
+    ).json()
+    flow = worker_client.post(
+        "/api/v1/flows",
+        json={
+            "name": "历史终态 Runtime 停止恢复",
+            "environment_version_id": worker_client.environment_version_id,
+            "default_entry_key": "design",
+            "nodes": [{"instance_key": "design", "node_asset_id": asset["id"]}],
+        },
+    ).json()
+    historical = worker_client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={"environment_version_id": worker_client.environment_version_id},
+    ).json()
+    active = worker_client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={"environment_version_id": worker_client.environment_version_id},
+    ).json()
+
+    with db_session_factory() as db:
+        historical_run = db.get(FlowRun, historical["id"])
+        historical_runtime = db.scalar(
+            select(FlowRunRuntime).where(FlowRunRuntime.flow_run_id == historical["id"])
+        )
+        active_runtime = db.scalar(
+            select(FlowRunRuntime).where(FlowRunRuntime.flow_run_id == active["id"])
+        )
+        assert historical_run is not None
+        assert historical_runtime is not None and active_runtime is not None
+        historical_run.state = "COMPLETED"
+        historical_runtime.status = "ACTIVE"
+        active_runtime.status = "ACTIVE"
+        db.commit()
+
+    worker = TaskWorker(worker_container)
+    worker._recover_startup()
+
+    with db_session_factory() as db:
+        tasks = list(
+            db.scalars(
+                select(BackgroundTask).where(
+                    BackgroundTask.task_type == "STOP_FLOW_RUN_RUNTIMES",
+                    BackgroundTask.aggregate_id.in_([historical["id"], active["id"]]),
+                )
+            )
+        )
+        assert [(task.aggregate_id, task.state) for task in tasks] == [
+            (historical["id"], TaskState.PENDING)
+        ]
+
+    worker._recover_startup()
+    with db_session_factory() as db:
+        assert (
+            len(
+                list(
+                    db.scalars(
+                        select(BackgroundTask.id).where(
+                            BackgroundTask.task_type == "STOP_FLOW_RUN_RUNTIMES",
+                            BackgroundTask.aggregate_id == historical["id"],
+                        )
+                    )
+                )
+            )
+            == 1
+        )
+
+
 def test_cancelled_run_stops_started_runtime_through_worker(
     monkeypatch, worker_client, worker_container, worker_skill_capability
 ):
