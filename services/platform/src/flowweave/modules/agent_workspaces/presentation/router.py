@@ -197,6 +197,7 @@ async def _forward_runtime_events(
     workspace_id: str,
     binding_id: str,
     working_directory: str,
+    after_seq: int | None = None,
 ) -> None:
     """Forward one transient Runtime stream while actively observing disconnects.
 
@@ -205,7 +206,7 @@ async def _forward_runtime_events(
     WebSocket also closes the upstream async generator and its Provider relay.
     """
 
-    stream = runtime.stream_events(handle)
+    stream = runtime.stream_events(handle, after_seq=after_seq)
     event_task: asyncio.Task[Any] | None = None
     receive_task: asyncio.Task[Any] | None = None
 
@@ -873,6 +874,7 @@ async def agent_conversation_stream(
     workspace_id: str,
     binding_id: str,
     container: ContainerDep,
+    after_seq: int | None = Query(default=None, ge=-1, le=9_007_199_254_740_991),
 ) -> None:
     settings_token = bind_settings(container.settings)
     try:
@@ -900,6 +902,7 @@ async def agent_conversation_stream(
                 working_directory=str(
                     conversation.get("working_directory") or handle.workspace_root
                 ),
+                after_seq=after_seq,
             )
         except WebSocketDisconnect:
             pass

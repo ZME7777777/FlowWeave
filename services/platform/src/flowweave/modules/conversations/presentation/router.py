@@ -30,10 +30,12 @@ def _key(value: str | None, action: str, identifier: str) -> str:
     return command_key(value, fallback=f"{action}:{identifier}:{uuid4()}")
 
 
-async def _forward_runtime_events(websocket: WebSocket, runtime: Any, handle: Any) -> None:
+async def _forward_runtime_events(
+    websocket: WebSocket, runtime: Any, handle: Any, *, after_seq: int | None = None
+) -> None:
     """Forward one Runtime stream and close it promptly when the client leaves."""
 
-    stream = runtime.stream_events(handle)
+    stream = runtime.stream_events(handle, after_seq=after_seq)
     event_task: asyncio.Task[Any] | None = None
     receive_task: asyncio.Task[Any] | None = None
 
@@ -184,6 +186,7 @@ async def conversation_stream(
     flow_run_id: str,
     binding_id: str,
     container: ContainerDep,
+    after_seq: int | None = Query(default=None, ge=-1, le=9_007_199_254_740_991),
 ) -> None:
     settings_token = bind_settings(container.settings)
     try:
@@ -201,7 +204,7 @@ async def conversation_stream(
             runtime = runtime_for(adapter, handle)
         await websocket.accept()
         try:
-            await _forward_runtime_events(websocket, runtime, handle)
+            await _forward_runtime_events(websocket, runtime, handle, after_seq=after_seq)
         except WebSocketDisconnect:
             pass
         except Exception:

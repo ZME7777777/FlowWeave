@@ -427,11 +427,15 @@ class RuntimeEventsWrite(SandboxDeleteWrite):
         pattern=r"^(?:[A-Za-z0-9][A-Za-z0-9_.:-]{0,199})?$",
     )
     timeout_seconds: float = Field(default=10.0, gt=0, le=25)
+    after_seq: int | None = Field(default=None, ge=-1, le=9_007_199_254_740_991)
+    replay_nonce: str | None = Field(default=None, pattern=r"^[0-9a-f]{32}$")
 
     @model_validator(mode="after")
     def validate_channel_target(self) -> RuntimeEventsWrite:
         if self.channel == "CONVERSATION" and not self.conversation_id:
             raise ValueError("conversation_id is required for Conversation events")
+        if (self.after_seq is None) != (self.replay_nonce is None):
+            raise ValueError("replay_nonce is required only with after_seq")
         return self
 
 
@@ -656,7 +660,11 @@ from websockets.exceptions import ConnectionClosed
 
 MARKER = "FLOWWEAVE_EVENT_RELAY_V2"
 CONTROL_KEY = "_flowweave_runtime_event_relay_v2"
-MAX_ACTIVE_PER_CHANNEL = 1
+# Live-only consumers share one relay. Durable replay consumers deliberately do
+# not, so a reconnect cannot join after another browser's replay has passed.
+# Provider hub capacity remains the global bound; this in-container ceiling
+# only reaps leaked exec processes from a previous Provider lifecycle.
+MAX_ACTIVE_PER_CHANNEL = 16
 HEARTBEAT_SECONDS = 10.0
 MAX_LIFETIME_SECONDS = 300.0
 
@@ -733,10 +741,11 @@ def emit(relay_id, kind, **values):
 
 
 async def main():
-    channel = sys.argv[1]
-    conversation_id = sys.argv[2]
-    timeout_seconds = float(sys.argv[3])
-    relay_id = sys.argv[4]
+    after_seq = sys.argv[1]
+    channel = sys.argv[2]
+    conversation_id = sys.argv[3]
+    timeout_seconds = float(sys.argv[4])
+    relay_id = sys.argv[5]
     active_count = prune_excess_relays(channel, conversation_id)
     emit(
         relay_id,
@@ -746,7 +755,8 @@ async def main():
         max_lifetime_seconds=MAX_LIFETIME_SECONDS,
     )
     path = (
-        f"/sockets/events/{conversation_id}"
+        f"/sockets/session/{conversation_id}"
+        + (f"?after_seq={after_seq}" if after_seq else "")
         if channel == "CONVERSATION"
         else "/sockets/bash-events"
     )
@@ -885,6 +895,7 @@ async def _runtime_event_stream(
     channel: str,
     conversation_id: str,
     timeout_seconds: float,
+    after_seq: int | None = None,
 ) -> AsyncIterator[bytes]:
     """Run the fixed relay inside one ownership-verified Runtime container."""
 
@@ -901,6 +912,7 @@ async def _runtime_event_stream(
         "-u",
         "-c",
         _RUNTIME_EVENT_RELAY,
+        "" if after_seq is None else str(after_seq),
         channel,
         conversation_id,
         str(timeout_seconds),
@@ -1038,6 +1050,8 @@ class _RuntimeEventRelayKey:
     container_id: str
     conversation_id: str
     channel: Literal["CONVERSATION", "BASH"]
+    after_seq: int | None = None
+    replay_nonce: str | None = None
 
 
 _RELAY_SUBSCRIPTION_CLOSED = object()
@@ -1157,6 +1171,7 @@ class _RuntimeEventRelay:
                 self.key.channel,
                 self.key.conversation_id,
                 self._timeout_seconds,
+                self.key.after_seq,
             ):
                 try:
                     value = cast(object, json.loads(raw_event))
@@ -1816,6 +1831,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             container_id=container_id,
             conversation_id=payload.conversation_id,
             channel=payload.channel,
+            after_seq=payload.after_seq,
+            replay_nonce=payload.replay_nonce,
         )
         relay, subscription = await relay_hubs.subscribe(
             relay_key, timeout_seconds=payload.timeout_seconds

@@ -8,7 +8,7 @@ import { createContext, useCallback, useContext, useEffect, useLayoutEffect, use
 import { createPortal } from 'react-dom';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { ApiError, randomId } from '../../api/client';
+import { ApiError, randomId, type AgentStreamEvent } from '../../api/client';
 import { agentWorkspaceSessionGateway, type AgentSessionGateway } from '../../api/agent-session-gateway';
 import { withoutDeploymentBase } from '../../deploymentPath';
 import { agentWorkspaceSessionHost, type AgentSessionHost } from './session-host';
@@ -380,7 +380,7 @@ function ConversationStreamObserver({
   workspaceId: string;
   bindingId: string;
   enabled: boolean;
-  onEvent: (event: { type: 'delta' | 'event' | 'message_complete' | 'stream_reset' | 'stream_closed'; content?: string; item_id?: string; event?: OpenHandsConversationEvent }) => void;
+  onEvent: (event: AgentStreamEvent) => void;
   onStatus: (status: StreamStatus) => void;
   onReconnect?: () => void;
 }) {
@@ -2843,7 +2843,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     if (liveTextFrame.current !== undefined) window.cancelAnimationFrame(liveTextFrame.current);
     if (liveEventsFrame.current !== undefined) window.cancelAnimationFrame(liveEventsFrame.current);
   }, []);
-  const onStreamEvent = useCallback((event: { type: 'delta' | 'event' | 'message_complete' | 'stream_reset' | 'stream_closed'; content?: string; item_id?: string; event?: OpenHandsConversationEvent }) => {
+  const onStreamEvent = useCallback((event: AgentStreamEvent) => {
     if (event.type === 'delta' && event.content) {
       if (event.item_id) liveStreamItemId.current = event.item_id;
       appendLiveText(event.content);

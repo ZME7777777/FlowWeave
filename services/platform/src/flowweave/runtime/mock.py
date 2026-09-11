@@ -181,8 +181,10 @@ class MockRuntime:
             )
         return identity
 
-    async def stream_events(self, handle: RuntimeHandle) -> AsyncIterator[dict[str, Any]]:
-        del handle
+    async def stream_events(
+        self, handle: RuntimeHandle, *, after_seq: int | None = None
+    ) -> AsyncIterator[dict[str, Any]]:
+        del handle, after_seq
         if False:
             yield {}
 

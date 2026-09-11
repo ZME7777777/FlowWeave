@@ -645,7 +645,9 @@ class RuntimePort(Protocol):
 
     def read_active_events(self, handle: RuntimeHandle) -> RuntimeEventBatch: ...
 
-    def stream_events(self, handle: RuntimeHandle) -> AsyncIterator[dict[str, Any]]: ...
+    def stream_events(
+        self, handle: RuntimeHandle, *, after_seq: int | None = None
+    ) -> AsyncIterator[dict[str, Any]]: ...
 
     def wait_for_wakeup(
         self,

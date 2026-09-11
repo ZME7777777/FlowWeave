@@ -159,7 +159,8 @@ def test_agent_conversation_stream_closes_idle_upstream_on_websocket_disconnect(
             stream_closed.set()
 
     class Runtime:
-        def stream_events(self, _handle):
+        def stream_events(self, _handle, *, after_seq=None):
+            del after_seq
             return IdleStream()
 
     class Database:

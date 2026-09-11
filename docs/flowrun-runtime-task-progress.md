@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`ACTIVE`
 > 当前执行切片：无
-> 下一可执行切片：`FR-313 Session Socket 授权 Relay 适配`
+> 下一可执行切片：`FR-314 长会话 EventLog 性能与有界读取门禁`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -4020,7 +4020,7 @@ EventLog 或 Conversation 持久化事实。
 
 完成：授权 Relay 的连接内投影仅在浏览器授权 Relay 连接内按正式 item identity、attempt 和 order 收敛 text delta；重试重置短暂文本，abort、matching durable event 和 Relay 结束关闭 slot，reasoning 与非正式或乱序输入不投影。该状态不进入任何平台持久层；Session Socket seq replay 与背压仍由 FR-313 实施。
 
-### FR-313 Session Socket 授权 Relay 适配 — READY
+### FR-313 Session Socket 授权 Relay 适配 — DONE
 
 依赖：FR-312。
 
@@ -4028,7 +4028,9 @@ EventLog 或 Conversation 持久化事实。
 背压和慢消费者断开语义；浏览器仍只能访问 FlowWeave SSE/WS，且只接收安全投影。不得暴露 Runtime
 endpoint、session key 或未经授权的 Event。
 
-### FR-314 长会话 EventLog 性能与有界读取门禁 — PENDING
+完成：三条浏览器 WebSocket 路由仍只连接 FlowWeave 授权 Relay；浏览器只在当前订阅 closure 保留已安全投影的最大 durable `seq`，重连时作为上游正式排他 `after_seq` 传回，页面卸载即丢弃，不写入 browser storage、Conversation、locator、数据库或审计。OpenHands adapter 统一改接 `/sockets/session/{conversation_id}`，Provider relay 和直连路径均保留 Runtime 派生 session key 在受保护边界认证。Relay 忽略 sync、只安全投影 durable/transient 内层正式 Event，并以 `durable_cursor` 让浏览器仅更新内存锚点；未知或不安全帧不外泄。每个 replay 请求携带一次性 nonce，因此不会接入已越过其 replay 段的共享 Relay；live-only Relay 继续共享。Provider 总 hub 容量与慢消费者有界队列仍保护资源，Runtime 内遗留 Relay 的每会话清理上限提高至 16，避免一个浏览器 replay 误中断另一浏览器的 live/replay 连接。
+
+### FR-314 长会话 EventLog 性能与有界读取门禁 — READY
 
 依赖：FR-313。
 
@@ -4100,6 +4102,7 @@ fallback 矩阵；发布前确认原 ID reload、generation fencing、FlowWeave 
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-12 | FR-313 | 固定 `30cf5832e` session socket、Event Service 与 StreamContext 源码取证；新增 remote/directed session-socket durable replay、cursor、exclusive `after_seq`、派生认证与 Provider 请求 nonce 测试；`test_openhands.py`（118 passed）、受影响 Python Ruff format/check、`py_compile`、Web TypeScript typecheck、ESLint、`uv lock --check`、Alembic head、`git diff --check` 与任务状态唯一性 | PASS（静态／定向）：浏览器只在活跃订阅 closure 保留 sequence，并通过 FlowWeave 授权 Relay 请求 durable suffix；Runtime endpoint、session key、原始 envelope/reasoning 和游标均不暴露或持久化。session replay Relay 不共享，避免后来订阅者错过已发送历史；live Relay 保持有界 fan-out，慢消费者继续被断开并可凭正式 `after_seq` 恢复。唯一 Alembic head 为 `0110_candidate_output_set_owner`，无 CURRENT，FR-314 为唯一 READY。Docker daemon 不可用，故真实 Runtime socket 的 replay/backpressure、Provider `docker exec` relay、镜像内 `contract_check.py`、Testcontainers 与端到端浏览器断连重连未执行且未记为通过。 |
 | 2026-09-12 | FR-312 | 固定 StreamContext、Event Service 与 socket 源码取证；新增 attempt/order/abort/durable-id/Relay-end 测试；test_openhands.py（116 passed）、Python Ruff、py_compile、Web TypeScript typecheck、ESLint、Alembic head、uv lock check、diff check 与任务状态检查 | PASS（静态／定向）：短暂 slot 仅接受正式 stream identity，重试、abort、durable event 与 Relay 结束都清理浏览器临时文本且不持久化。唯一 Alembic head 为 0110_candidate_output_set_owner；无 CURRENT，FR-313 为唯一 READY。Docker 不可用，未运行真实 Runtime Relay、socket reconnect、镜像 contract 或 Testcontainers 验证。 |
 | 2026-09-12 | FR-311 | 固定 `30cf5832e` 的 `EventLog.append`、Event Service 及 session socket 源码取证；新增 EventLog durable-sequence 合同探针、活动 HEAD cursor 对账的 detached-branch、跨页和 missing-anchor pytest；`test_openhands.py`（114 passed）、Ruff format/check、`py_compile`、Alembic head、`uv lock --check`、`git diff --check` 与任务状态唯一性 | PASS（静态／定向）：正式 event id/parent id 仍是唯一 Conversation 身份；FlowWeave 只在请求内用锚点投影当前 OpenHands HEAD 的 descendants，孤立/过期 FinishAction 不能跨支对账。上游 EventLog 的正式 index 只为 durable replay 契约，不被平台持久化；`/sockets/session` 留待 FR-313 的授权 Relay。唯一 Alembic head 为 `0110_candidate_output_set_owner`，无 CURRENT，FR-312 为唯一 READY。Docker daemon 不可用，镜像内 `contract_check.py`、真实断连／session-socket replay、replacement 与 Testcontainers 集成验证未执行且未记为通过。 |
 | 2026-09-11 | FR-310 | 固定 `30cf5832e` 的 `sanitized_env`／SDK literal redaction 探针；新增 secret projection/log filter pytest；完整无 Docker OpenHands adapter、Runtime contract/persistence 定向 pytest（123 passed）；Ruff format/check、`py_compile`、Alembic head、`uv lock --check`、直接架构源码 smoke、`git diff --check` 与任务状态唯一性 | PASS（静态／定向）：子进程环境只保留普通变量与 `AI_AGENT`，不会取得 Runtime 持久化或会话密钥；模型文本、Tool Observation、嵌套环境、`sk-oh-*` 与 Provider 日志均经第二层脱敏。唯一 Alembic head 为 `0110_candidate_output_set_owner`，无 CURRENT，FR-311 为唯一 READY。Docker daemon 不可用，镜像内 `contract_check.py`、真实 Agent 子进程／tmux 日志、Relay/Provider 运行态及 Testcontainers 架构 pytest 未执行且未记为通过。 |

@@ -570,15 +570,17 @@ export function agentTerminalUrl(runId: string, conversationId: string, rows = 2
 }
 
 export interface AgentStreamEvent {
-  type: 'delta' | 'event' | 'message_complete' | 'stream_reset' | 'stream_closed';
+  type: 'delta' | 'event' | 'message_complete' | 'stream_reset' | 'stream_closed' | 'durable_cursor';
   content?: string;
   item_id?: string;
   event?: OpenHandsConversationEvent;
+  seq?: number;
 }
 
-export function agentStreamUrl(runId: string, conversationId: string): string {
+export function agentStreamUrl(runId: string, conversationId: string, afterSeq?: number): string {
   const url = absoluteApiUrl(`/flow-runs/${encodeURIComponent(runId)}/conversations/${encodeURIComponent(conversationId)}/stream`);
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+  if (afterSeq !== undefined) url.searchParams.set('after_seq', String(afterSeq));
   return url.toString();
 }
 
@@ -592,17 +594,24 @@ export function subscribeToConversationStream(
   let socket: WebSocket | undefined;
   let reconnectTimer: number | undefined;
   let reconnectAttempt = 0;
+  let afterSeq: number | undefined;
 
   const connect = () => {
     if (disposed) return;
     onStatus?.(reconnectAttempt ? 'recovering' : 'connecting');
-    socket = new WebSocket(agentStreamUrl(runId, conversationId));
+    socket = new WebSocket(agentStreamUrl(runId, conversationId, afterSeq));
     socket.onopen = () => { reconnectAttempt = 0; onStatus?.('live'); };
     socket.onmessage = message => {
       try {
         const event = JSON.parse(String(message.data)) as Partial<AgentStreamEvent>;
         if (event.type === 'delta' && typeof event.content === 'string') {
           onEvent({ type: 'delta', content: event.content, item_id: event.item_id });
+        } else if (event.type === 'event' && event.event && typeof event.event.id === 'string') {
+          onEvent({ type: 'event', event: event.event });
+        } else if (event.type === 'durable_cursor' && Number.isSafeInteger(event.seq) && (event.seq ?? -1) >= 0) {
+          const seq = event.seq as number;
+          afterSeq = afterSeq === undefined ? seq : Math.max(afterSeq, seq);
+          onEvent({ type: 'durable_cursor', seq: afterSeq });
         } else if (event.type === 'message_complete') {
           onEvent({ type: 'message_complete' });
         } else if ((event.type === 'stream_reset' || event.type === 'stream_closed')
@@ -653,9 +662,10 @@ export function agentWorkspaceFileUrl(workspaceId: string, path: string, options
   return url.toString();
 }
 
-export function agentWorkspaceStreamUrl(workspaceId: string, bindingId: string): string {
+export function agentWorkspaceStreamUrl(workspaceId: string, bindingId: string, afterSeq?: number): string {
   const url = absoluteApiUrl(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/stream`);
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+  if (afterSeq !== undefined) url.searchParams.set('after_seq', String(afterSeq));
   return url.toString();
 }
 
@@ -669,18 +679,24 @@ export function subscribeToAgentWorkspaceStream(
   let socket: WebSocket | undefined;
   let reconnectTimer: number | undefined;
   let reconnectAttempt = 0;
+  let afterSeq: number | undefined;
   const reconnectDelays = [1000, 2000, 5000, 10_000, 30_000];
 
   const connect = () => {
     if (disposed) return;
     onStatus?.(reconnectAttempt ? 'recovering' : 'connecting');
-    socket = new WebSocket(agentWorkspaceStreamUrl(workspaceId, bindingId));
+    socket = new WebSocket(agentWorkspaceStreamUrl(workspaceId, bindingId, afterSeq));
     socket.onopen = () => { reconnectAttempt = 0; onStatus?.('live'); };
     socket.onmessage = message => {
       try {
         const event = JSON.parse(String(message.data)) as Partial<AgentStreamEvent>;
         if (event.type === 'delta' && typeof event.content === 'string') onEvent({ type: 'delta', content: event.content, item_id: event.item_id });
         else if (event.type === 'event' && event.event && typeof event.event.id === 'string') onEvent({ type: 'event', event: event.event });
+        else if (event.type === 'durable_cursor' && Number.isSafeInteger(event.seq) && (event.seq ?? -1) >= 0) {
+          const seq = event.seq as number;
+          afterSeq = afterSeq === undefined ? seq : Math.max(afterSeq, seq);
+          onEvent({ type: 'durable_cursor', seq: afterSeq });
+        }
         else if (event.type === 'message_complete') onEvent({ type: 'message_complete' });
         else if ((event.type === 'stream_reset' || event.type === 'stream_closed') && typeof event.item_id === 'string') onEvent({ type: event.type, item_id: event.item_id });
       } catch {
@@ -834,9 +850,10 @@ export const nodeSessionApi = {
     url.searchParams.set('columns', String(columns));
     return url.toString();
   },
-  stream: (flowRunId: string, attemptId: string, bindingId: string) => {
+  stream: (flowRunId: string, attemptId: string, bindingId: string, afterSeq?: number) => {
     const url = absoluteApiUrl(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/stream`);
     url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+    if (afterSeq !== undefined) url.searchParams.set('after_seq', String(afterSeq));
     return url.toString();
   },
 };
@@ -845,16 +862,21 @@ export function subscribeToNodeSessionStream(
   flowRunId: string, attemptId: string, bindingId: string, onEvent: (event: AgentStreamEvent) => void,
   onStatus?: (status: 'connecting' | 'live' | 'recovering' | 'disabled') => void,
 ): () => void {
-  let disposed = false; let socket: WebSocket | undefined; let retry: number | undefined; let attempts = 0;
+  let disposed = false; let socket: WebSocket | undefined; let retry: number | undefined; let attempts = 0; let afterSeq: number | undefined;
   const connect = () => {
     if (disposed) return;
     onStatus?.(attempts ? 'recovering' : 'connecting');
-    socket = new WebSocket(nodeSessionApi.stream(flowRunId, attemptId, bindingId));
+    socket = new WebSocket(nodeSessionApi.stream(flowRunId, attemptId, bindingId, afterSeq));
     socket.onopen = () => { attempts = 0; onStatus?.('live'); };
     socket.onmessage = message => { try {
       const event = JSON.parse(String(message.data)) as Partial<AgentStreamEvent>;
       if (event.type === 'delta' && typeof event.content === 'string') onEvent({ type: 'delta', content: event.content, item_id: event.item_id });
       else if (event.type === 'event' && event.event && typeof event.event.id === 'string') onEvent({ type: 'event', event: event.event });
+      else if (event.type === 'durable_cursor' && Number.isSafeInteger(event.seq) && (event.seq ?? -1) >= 0) {
+        const seq = event.seq as number;
+        afterSeq = afterSeq === undefined ? seq : Math.max(afterSeq, seq);
+        onEvent({ type: 'durable_cursor', seq: afterSeq });
+      }
       else if (event.type === 'message_complete') onEvent({ type: 'message_complete' });
       else if ((event.type === 'stream_reset' || event.type === 'stream_closed') && typeof event.item_id === 'string') onEvent({ type: event.type, item_id: event.item_id });
     } catch { /* REST remains authoritative. */ } };

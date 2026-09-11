@@ -174,8 +174,9 @@ async def _forward_runtime_events(
     flow_run_id: str,
     attempt_id: str,
     binding_id: str,
+    after_seq: int | None = None,
 ) -> None:
-    stream = runtime.stream_events(handle)
+    stream = runtime.stream_events(handle, after_seq=after_seq)
     event_task: asyncio.Task[Any] | None = None
     receive_task: asyncio.Task[Any] | None = None
 
@@ -1017,6 +1018,7 @@ async def node_session_stream(
     attempt_id: str,
     binding_id: str,
     container: ContainerDep,
+    after_seq: int | None = Query(default=None, ge=-1, le=9_007_199_254_740_991),
 ) -> None:
     token = bind_settings(container.settings)
     try:
@@ -1046,6 +1048,7 @@ async def node_session_stream(
                 flow_run_id=flow_run_id,
                 attempt_id=attempt_id,
                 binding_id=binding_id,
+                after_seq=after_seq,
             )
         except WebSocketDisconnect:
             pass

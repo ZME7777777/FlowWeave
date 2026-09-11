@@ -4,6 +4,7 @@ import base64
 import hmac
 import json
 import os
+import secrets
 import subprocess
 import time
 from collections.abc import AsyncIterator
@@ -331,6 +332,7 @@ class DockerControllerClient:
         conversation_id: str,
         channel: Literal["CONVERSATION", "BASH"] = "CONVERSATION",
         timeout_seconds: float = 10.0,
+        after_seq: int | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         """Read a Runtime event stream through the ownership-checking controller."""
 
@@ -341,6 +343,11 @@ class DockerControllerClient:
             "conversation_id": conversation_id,
             "channel": channel,
             "timeout_seconds": timeout_seconds,
+            "after_seq": after_seq,
+            # A durable replay is a complete, connection-specific suffix. It
+            # must never attach to a shared relay after that relay already
+            # sent part of its replay history to a different browser.
+            "replay_nonce": secrets.token_hex(16) if after_seq is not None else None,
         }
         try:
             async with self._transport().async_control.stream(

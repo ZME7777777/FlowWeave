@@ -168,10 +168,23 @@ class _TransientStreamProjection:
             del self._slots[item_id]
             return ({"type": "stream_closed", "item_id": item_id},)
 
-        # Session-socket durable/transient envelopes are accepted only as a
-        # relay compatibility input.  FR-313 owns connecting to that endpoint
-        # and its sequence/replay contract.
-        if frame_type in {"durable", "transient"}:
+        if frame_type == "sync":
+            # ``through_seq`` is a connection mark, not an acknowledgement:
+            # a live-only client did not receive that earlier history.
+            return ()
+
+        if frame_type == "durable":
+            seq = self._nonnegative_int(event.get("seq"))
+            nested = event.get("event")
+            if seq is None or not isinstance(nested, dict):
+                return ()
+            frames = self._project_durable(cast(dict[str, object], nested), visible)
+            # A cursor is browser-connection state only.  Send it even when
+            # the event has no product projection so the next authorized
+            # reconnect can request the precise native durable suffix.
+            return ({"type": "durable_cursor", "seq": seq}, *frames)
+
+        if frame_type == "transient":
             nested = event.get("event")
             if not isinstance(nested, dict):
                 return ()
@@ -3201,8 +3214,10 @@ class OpenHandsRuntime:
             )
         return tuple(snapshots)
 
-    async def stream_events(self, handle: RuntimeHandle) -> AsyncIterator[dict[str, Any]]:
-        """Relay transient visible-text deltas without persisting model reasoning."""
+    async def stream_events(
+        self, handle: RuntimeHandle, *, after_seq: int | None = None
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Project an authorized session socket without persisting its sequence."""
 
         projection = _TransientStreamProjection()
         route = self._environment_route(handle.job_id)
@@ -3219,6 +3234,7 @@ class OpenHandsRuntime:
                 resource_name=handle.runtime_resource_name,
                 resource_id=handle.runtime_resource_id,
                 conversation_id=handle.conversation_id,
+                after_seq=after_seq,
             )
             try:
                 async for event in stream:
@@ -3237,8 +3253,10 @@ class OpenHandsRuntime:
         base_url = self._base_url_for_handle(handle)
         websocket_url = (
             f"{base_url.replace('https://', 'wss://').replace('http://', 'ws://')}"
-            f"/sockets/events/{handle.conversation_id}"
+            f"/sockets/session/{handle.conversation_id}"
         )
+        if after_seq is not None:
+            websocket_url += f"?after_seq={after_seq}"
         async with connect(
             websocket_url,
             open_timeout=10,

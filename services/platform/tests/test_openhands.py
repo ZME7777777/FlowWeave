@@ -2421,11 +2421,19 @@ async def test_openhands_isolated_stream_uses_controller_and_filters_reasoning(
     )
     observed: dict[str, str] = {}
 
-    async def stream(_client, *, resource_name: str, resource_id: str, conversation_id: str):
+    async def stream(
+        _client,
+        *,
+        resource_name: str,
+        resource_id: str,
+        conversation_id: str,
+        after_seq: int | None = None,
+    ):
         observed.update(
             resource_name=resource_name,
             resource_id=resource_id,
             conversation_id=conversation_id,
+            after_seq=after_seq,
         )
         yield {
             "kind": "StreamingDeltaEvent",
@@ -2471,6 +2479,107 @@ async def test_openhands_isolated_stream_uses_controller_and_filters_reasoning(
         "resource_name": "fw-sbx-runtime",
         "resource_id": "sandbox-1",
         "conversation_id": "10000000-0000-4000-8000-000000000002",
+        "after_seq": None,
+    }
+
+
+@pytest.mark.asyncio
+async def test_openhands_isolated_session_socket_replays_durable_events_with_cursor(
+    openhands_settings, monkeypatch
+):
+    runtime = OpenHandsRuntime(
+        openhands_settings.model_copy(
+            update={
+                "docker_controller_mode": "remote",
+                "docker_controller_api_key": "a" * 32,
+            }
+        )
+    )
+    observed: dict[str, object] = {}
+
+    async def stream(_client, **kwargs):
+        observed.update(kwargs)
+        yield {"type": "sync", "from_seq": -1, "through_seq": 4}
+        yield {
+            "type": "durable",
+            "seq": 4,
+            "event": {
+                "kind": "MessageEvent",
+                "id": "assistant-4",
+                "timestamp": "2026-09-12T10:00:04+00:00",
+                "source": "agent",
+                "llm_message": {"role": "assistant", "content": "已完成"},
+            },
+        }
+
+    monkeypatch.setattr(DockerControllerClient, "stream_runtime_events", stream)
+    handle = RuntimeHandle(
+        "env-chat:fw-sbx-runtime",
+        "10000000-0000-4000-8000-000000000002",
+        runtime_resource_id="sandbox-1",
+        runtime_resource_name="fw-sbx-runtime",
+    )
+
+    events = [event async for event in runtime.stream_events(handle, after_seq=-1)]
+
+    assert observed["after_seq"] == -1
+    assert events == [
+        {"type": "durable_cursor", "seq": 4},
+        {
+            "type": "event",
+            "event": {
+                "id": "assistant-4",
+                "event_type": "MESSAGE",
+                "payload": {
+                    "source_type": "MessageEvent",
+                    "source": "agent",
+                    "content": "已完成",
+                    "timestamp": "2026-09-12T10:00:04+00:00",
+                },
+            },
+        },
+        {"type": "message_complete"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_openhands_direct_session_socket_uses_exclusive_after_seq(
+    openhands_settings, monkeypatch
+):
+    observed: dict[str, object] = {}
+
+    class Socket:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def send(self, value):
+            observed["auth"] = json.loads(value)
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            raise StopAsyncIteration
+
+    def fake_connect(url, **kwargs):
+        observed["url"] = url
+        observed["kwargs"] = kwargs
+        return Socket()
+
+    monkeypatch.setattr(openhands_module, "connect", fake_connect)
+    runtime = OpenHandsRuntime(openhands_settings)
+    handle = RuntimeHandle("env-chat:runtime-one", "conversation-1")
+
+    assert [event async for event in runtime.stream_events(handle, after_seq=9)] == []
+    assert observed["url"] == "ws://runtime-one:8000/sockets/session/conversation-1?after_seq=9"
+    assert observed["auth"] == {
+        "type": "auth",
+        "session_api_key": derive_runtime_session_key(
+            runtime.root_session_api_key, runtime.manager_scope, "runtime-one"
+        ),
     }
 
 
@@ -2530,7 +2639,10 @@ async def test_controller_event_stream_closes_httpx_response(openhands_settings,
 
     body = Body()
 
-    def handler(_request: httpx.Request) -> httpx.Response:
+    observed: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        observed.update(json.loads(request.content))
         return httpx.Response(200, stream=body)
 
     async_client = httpx.AsyncClient
@@ -2551,6 +2663,7 @@ async def test_controller_event_stream_closes_httpx_response(openhands_settings,
         resource_name="fw-sbx-runtime",
         resource_id="sandbox-1",
         conversation_id="10000000-0000-4000-8000-000000000002",
+        after_seq=-1,
     )
 
     assert await anext(stream) == {"kind": "StreamingDeltaEvent", "content": "visible"}
@@ -2558,6 +2671,8 @@ async def test_controller_event_stream_closes_httpx_response(openhands_settings,
     await client.aclose()
 
     assert response_closed.is_set()
+    assert observed["after_seq"] == -1
+    assert isinstance(observed["replay_nonce"], str)
 
 
 @pytest.mark.asyncio

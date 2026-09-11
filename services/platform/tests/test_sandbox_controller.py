@@ -724,11 +724,14 @@ def test_controller_runtime_event_stream_allows_api_and_worker_for_owned_agent_r
         )
         return "immutable-runtime-container-id"
 
-    async def stream(_settings, container_id, channel, conversation_id, timeout_seconds):
+    async def stream(
+        _settings, container_id, channel, conversation_id, timeout_seconds, after_seq=None
+    ):
         assert container_id == "immutable-runtime-container-id"
         assert channel == "CONVERSATION"
         assert conversation_id == "conversation-1"
         assert timeout_seconds == 10.0
+        assert after_seq is None
         yield b'{"kind":"StreamingDeltaEvent","content":"hello"}\n'
         yield b'{"kind":"MessageEvent","source":"agent"}\n'
 
@@ -834,7 +837,7 @@ async def test_runtime_event_stream_terminates_relay_when_consumer_closes(settin
         if controller_module._RUNTIME_EVENT_RELAY_TERMINATE in args:
             cleanup_calls.append(args)
             return CleanupProcess()
-        relay_id_index = args.index(controller_module._RUNTIME_EVENT_RELAY) + 4
+        relay_id_index = args.index(controller_module._RUNTIME_EVENT_RELAY) + 5
         nonlocal relay_id
         relay_id = str(args[relay_id_index])
         return process
@@ -920,7 +923,7 @@ async def test_runtime_event_stream_shields_cleanup_from_response_cancel_scope(
         return True, 0
 
     async def create_process(*args, **_kwargs):
-        relay_id_index = args.index(controller_module._RUNTIME_EVENT_RELAY) + 4
+        relay_id_index = args.index(controller_module._RUNTIME_EVENT_RELAY) + 5
         nonlocal relay_id
         relay_id = str(args[relay_id_index])
         return process
@@ -997,7 +1000,7 @@ async def test_runtime_event_stream_forwards_single_event_larger_than_default_re
             cleanup_calls += 1
             return CleanupProcess()
         captured.update(kwargs)
-        relay_id_index = args.index(controller_module._RUNTIME_EVENT_RELAY) + 4
+        relay_id_index = args.index(controller_module._RUNTIME_EVENT_RELAY) + 5
         relay_id = args[relay_id_index]
         stdout.feed_data(
             json.dumps(
@@ -1043,7 +1046,7 @@ async def test_runtime_event_stream_forwards_single_event_larger_than_default_re
     assert captured["limit"] == 2 * 1024 * 1024
     assert records == [payload]
     assert cleanup_calls == 1
-    assert "MAX_ACTIVE_PER_CHANNEL = 1" in controller_module._RUNTIME_EVENT_RELAY
+    assert "MAX_ACTIVE_PER_CHANNEL = 16" in controller_module._RUNTIME_EVENT_RELAY
     assert "MAX_LIFETIME_SECONDS = 300.0" in controller_module._RUNTIME_EVENT_RELAY
     assert "HEARTBEAT_SECONDS = 10.0" in controller_module._RUNTIME_EVENT_RELAY
 
