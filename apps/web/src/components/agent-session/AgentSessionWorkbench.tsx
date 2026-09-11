@@ -1336,9 +1336,10 @@ function WorkspaceFileTree({ entries, root, selectedFile, selectedPaths, expande
       setStickyDirectoryPaths(current => current.length ? [] : current);
       return;
     }
+    const stickyInset = tree.querySelector<HTMLElement>('.agent-file-tree-sticky-path')?.offsetHeight ?? 0;
     const firstVisible = visibleNodes.find(({ node }) => {
       const row = rowRefs.current.get(node.path);
-      return row && row.offsetTop + row.offsetHeight > tree.scrollTop + 1;
+      return row && row.offsetTop + row.offsetHeight > tree.scrollTop + stickyInset + 1;
     });
     const next = firstVisible ? stickyDirectoriesFor(firstVisible.node) : [];
     setStickyDirectoryPaths(current => current.length === next.length && current.every((path, index) => path === next[index]) ? current : next);
@@ -1391,7 +1392,11 @@ function WorkspaceFileTree({ entries, root, selectedFile, selectedPaths, expande
   return <div ref={treeRef} className={`agent-file-tree${stickyDirectoryPaths.length ? ' has-sticky-path' : ''}`} role="tree" aria-label="工作区目录树" onScroll={updateStickyDirectories}>
     {stickyDirectoryPaths.length > 0 && <div className="agent-file-tree-sticky-path" aria-label="当前文件所在目录">{stickyDirectoryPaths.map((path, depth) => {
       const directory = directoriesByPath.get(path);
-      return directory && <button type="button" key={path} title={`定位目录 ${directory.name}`} onClick={() => onActivateDirectory(path)} style={{ '--sticky-depth': depth } as CSSProperties}><FolderOpen size={13}/><span>{directory.name}</span></button>;
+      const open = expanded.has(path);
+      return directory && <div key={path} className="agent-file-tree-row sticky-directory" role="presentation" style={{ '--tree-depth': depth } as CSSProperties}>
+        <button type="button" className="agent-file-tree-disclosure" aria-label={`${open ? '收起' : '展开'}目录 ${directory.name}`} onClick={() => onExpandedChange(current => { const next = new Set(current); if (next.has(path)) next.delete(path); else next.add(path); return next; })}>{open ? <ChevronDown size={13}/> : <ChevronRight size={13}/>}</button>
+        <button type="button" className="agent-file-tree-item directory" title={`定位目录 ${directory.name}`} onClick={() => onActivateDirectory(path)}>{open ? <FolderOpen size={14}/> : <Folder size={14}/>}<span>{directory.name}</span></button>
+      </div>;
     })}</div>}
     {nodes.length ? renderNodes() : <p>当前目录没有可展示的文件。</p>}
   </div>;
