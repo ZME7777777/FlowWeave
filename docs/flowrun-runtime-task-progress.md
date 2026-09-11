@@ -2,8 +2,8 @@
 
 > 创建日期：2026-08-21
 > 状态：`COMPLETE`
-> 当前执行切片：无
-> 下一可执行切片：无（`FR-322` 平台重建后的 Runtime 网络恢复完成）
+> 当前执行切片：`FR-324`
+> 下一可执行切片：`FR-324`（本次稳定性修复任务链）
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -4177,6 +4177,42 @@ Runtime client 到同一 manager scope 且完整标签校验通过的 Agent Runt
 Runtime 的正式 Conversation 读取路径会恢复可达，不替换 Agent Server 或持久会话。新增单元回归覆盖新 client ID
 重接、Provider 早于 client 启动时的无害空结果，以及 Provider 启动即触发恢复循环。
 
+### FR-323 终态 FlowRun Runtime 停止与持久状态保留 — DONE
+
+依赖：FR-322。
+
+目标：FlowRun 完成或取消后，停止其 FlowRun/Node Attempt Agent Runtime 容器以回收 CPU、内存和网络，
+但保留外置 Workspace、Conversation/Event、persistence 与 generation 审计；只有显式永久删除 Run 才能删除
+这些持久资源。停止必须在既有取消任务完成后发生，以免与原生 cancel 并发。
+
+完成：完成、自动完成或取消 FlowRun 时写入唯一 `STOP_FLOW_RUN_RUNTIMES` Runtime lane task。该任务先等待
+所有 `CANCELLING/CANCEL_FAILED` Attempt settle，再将本 Run 的共享与 Attempt-owned Runtime Session fence 为
+`STOPPED`，通过受管 Docker Provider drain 容器，并把 generation/ledger 投影为 `STOPPED`。外置 Workspace、
+OpenHands state、secret、generation 审计与永久删除路径均不改变；重试保持幂等，且永久删除仍是唯一物理删除
+authority。
+
+### FR-324 Runtime Provider 临时不可达后的账本状态收敛 — CURRENT
+
+依赖：FR-323。
+
+目标：Provider `ensure`/inspect 短暂 503 不能将仍实际运行的受管容器永久投影为 `ERROR`。恢复后必须重新
+验证 Docker ownership、更新 observed state、清除临时错误，并对真正丢失的容器保留 generation fence/replacement
+语义。
+
+### FR-325 Background Task 终态保留与分批清理 — PENDING
+
+依赖：FR-324。
+
+目标：为 `SUCCEEDED`/`DEAD` task 建立可配置、可审计、分批且不干扰 active lease 的保留期清理，阻止
+poll/wakeup 高频任务无限增长；保留诊断窗口，且永久删除 FlowRun 的既有强制清理语义不变。
+
+### FR-326 OpenHands persistence 单一事实源挂载 — PENDING
+
+依赖：FR-325。
+
+目标：移除遗留 `state/persistence/profiles -> HOME/.openhands/profiles` 双重可写挂载，只保留
+`OH_PERSISTENCE_DIR` 单一持久根；验证 profile、Provider credential 与原 ID replacement 恢复均只读取该根。
+
 ### FR-321 OpenHands 1.47 增强最终安全、恢复与性能门禁 — DONE
 
 依赖：FR-309–FR-320。
@@ -4212,6 +4248,7 @@ contract、冻结策略与既有受控生命周期约束覆盖。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-12 | FR-323 | 受影响 Python Ruff format/check、`py_compile`、`git diff --check`；取消 Run → cancel task → terminal Runtime stop Worker 定向 pytest | PASS（静态）：Ruff、语法与空白检查通过，终态停止 task 处于 Runtime lane 且不与 cancel 并发。定向 pytest 在 Testcontainers PostgreSQL fixture 初始化前因本机 Docker Unix socket 缺失而阻断，未伪记为通过；远端部署将在真实 Docker Provider 上验证停止容器、保留 allocation/state 与重复 task 幂等。 |
 | 2026-09-12 | FR-322 | 受影响 Python Ruff format/check、py_compile、Alembic unique head、git diff --check；Sandbox/Provider 网络重接定向 pytest | PASS（静态）：Ruff 与语法检查通过，唯一 Alembic head 为 0112_agent_fallback，空白检查通过。恢复循环会从 Docker network inspect 的成员表跳过已附着 client，只连接缺失 container ID，避免每 10 秒重复 Docker 调用和日志。三条定向 Sandbox pytest 在业务断言前因本机 Docker Unix socket 缺失、Testcontainers PostgreSQL fixture 无法启动而阻断，未伪记为通过；远端部署后以实际旧 Runtime 私网连接和会话读取验证。 |
 | 2026-09-12 | FR-321 | 远端预检（`root@192.168.91.154` / `/opt/flowweave`）；不可变源码 archive SHA 校验；所有受影响 `linux/amd64` 镜像构建与 image inspect；实际 Runtime `contract_check.py`；实际 PostgreSQL migration `0110_candidate_output_set_owner → 0111_env_runtime_caps → 0112_agent_fallback`；同一平台镜像强制重建 `runtime-provider/api/worker/stream-api` 与 Web；Compose 健康、两个服务内 `/health`、内外网带前缀 FlowWeave / Agent 路由、未认证 Flow API 与 FastGPT `/login` 请求 | PASS：固定 Runtime image `a2c3f865…` 和平台 image `9d9d40d9…` 均为 `linux/amd64`；镜像内固定 source commit、四包 `1.47.0` 与全部 1.47 增强契约通过。Migration 退出码 0，`api`、`runtime-provider` healthy，`worker`、`stream-api`、`web` Up；`/flowweave/`、`/flowweave/agent` 和 `/login` 返回 200，内外网 `/flowweave/api/v1/flows` 返回预期 401。未创建真实用户模型调用或有状态 FlowRun，因此外部额度耗尽 fallback 与真实 conversation replacement 未伪记为生产调用通过。无 CURRENT、READY 或后续切片。 |
 | 2026-09-12 | FR-320 | 固定 `30cf5832e` 的 `FallbackStrategy`、hard-quota retry exclusion 与 profile router 源码取证；扩展镜像 `contract_check.py`；新增冻结策略 schema、binding tamper fail-closed、provider resolution 与 Runtime profile payload pytest；`test_model_fallback_policy.py` + `test_openhands.py`（135 passed）、Web TypeScript typecheck 与 ESLint、受影响 Python Ruff/check、`py_compile`、`uv lock --check`、Alembic head、`git diff --check` 与任务状态唯一性 | PASS（静态／定向）：仅 FlowRun 自动启动的显式冻结策略可使用上游 profile-based fallback；未配置时不静默换模，损坏冻结策略与失效 provider/model 均拒绝继续执行。上游 hard quota 直接越过 retry backoff 并按有序 profile 尝试；Runtime profile 名按 fallback 身份稳定复用，避免按 Attempt 耗尽上游 profile 上限。唯一 Alembic head 为 `0112_agent_fallback`，无 CURRENT，FR-321 为唯一 READY。Docker daemon 不可用，故镜像内 `contract_check.py`、真实 hard-quota fallback、动态 Runtime、迁移实跑、Testcontainers provider/automatic-run 集成与 E2E 未执行且未记为通过。 |

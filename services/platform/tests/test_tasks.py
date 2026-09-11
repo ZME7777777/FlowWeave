@@ -408,10 +408,18 @@ def test_worker_startup_retries_terminal_recovery_delivery(
 
 
 def test_cancelled_run_stops_started_runtime_through_worker(
-    worker_client, worker_container, worker_skill_capability
+    monkeypatch, worker_client, worker_container, worker_skill_capability
 ):
     from flowweave.bootstrap.worker import TaskWorker
+    from flowweave.modules.tasks.application import handlers
     from flowweave.runtime.base import RuntimeHandle
+
+    stopped_runs: list[str] = []
+    monkeypatch.setattr(
+        handlers.sandboxes,
+        "stop_flow_run_runtimes",
+        lambda _db, flow_run_id, *, commit: stopped_runs.append(flow_run_id),
+    )
 
     asset = worker_client.post(
         "/api/v1/node-assets", json=_asset_payload(worker_skill_capability)
@@ -470,6 +478,9 @@ def test_cancelled_run_stops_started_runtime_through_worker(
     final = worker_client.get(f"/api/v1/flow-runs/{started['id']}").json()
     assert final["node_runs"][0]["attempts"][0]["runtime_phase"] == "CANCELLED"
     assert worker_container.runtime.inspect(handle).status == "CANCELLED"
+
+    _run_worker_until(worker, lambda: stopped_runs == [started["id"]])
+    assert stopped_runs == [started["id"]]
 
 
 def test_cancel_attempt_stops_only_current_node_runtime(

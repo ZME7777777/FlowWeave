@@ -4895,9 +4895,7 @@ def confirm_start(
         reasoning_effort=(
             str(preset["reasoning_effort"]) if preset and preset.get("reasoning_effort") else None
         ),
-        fallback_models=(
-            tuple(preset.get("fallback_models", [])) if preset is not None else ()
-        ),
+        fallback_models=(tuple(preset.get("fallback_models", [])) if preset is not None else ()),
         capability_version_ids=(
             tuple(str(value) for value in preset.get("capability_version_ids", []))
             if preset is not None
@@ -7177,6 +7175,7 @@ def _recompute_run(db: Session, run: FlowRun) -> None:
         run.completion_mode = "AUTO"
         run.finished_at = now()
         _event(db, run.id, "FLOW_RUN_COMPLETED", {"mode": "AUTO"})
+        _enqueue_terminal_runtime_stop(db, run.id)
     elif any(x.state == NodeRunState.ACTIVE for x in node_runs):
         attempts = list(
             db.scalars(
@@ -7204,6 +7203,17 @@ def _recompute_run(db: Session, run: FlowRun) -> None:
             run.state = FlowRunState.WAITING_HUMAN
         else:
             run.state = FlowRunState.ACTIVE
+
+
+def _enqueue_terminal_runtime_stop(db: Session, flow_run_id: str) -> None:
+    task = enqueue(
+        db,
+        task_type="STOP_FLOW_RUN_RUNTIMES",
+        aggregate_type="FLOW_RUN",
+        aggregate_id=flow_run_id,
+        idempotency_key=f"stop-flow-run-runtimes:{flow_run_id}",
+    )
+    task.max_attempts = max(task.max_attempts, 20)
 
 
 def _record_workspace_paths_for_deletion(attempts: list[NodeAttempt]) -> set[Path]:
@@ -8571,6 +8581,7 @@ def complete_run(db: Session, run_id: str, idempotency_key: str) -> dict[str, An
     run.completion_mode = "HUMAN"
     run.finished_at = now()
     _event(db, run.id, "FLOW_RUN_COMPLETED", {"mode": "HUMAN"})
+    _enqueue_terminal_runtime_stop(db, run.id)
     finish(db)
     return run_detail(db, run.id)
 
@@ -8620,6 +8631,7 @@ def cancel_run(db: Session, run_id: str, idempotency_key: str) -> dict[str, Any]
         else:
             attempt.runtime_phase = "CANCELLED"
     _event(db, run.id, "FLOW_RUN_CANCELLED")
+    _enqueue_terminal_runtime_stop(db, run.id)
     finish(db)
     return run_detail(db, run.id)
 

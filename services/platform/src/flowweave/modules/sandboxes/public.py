@@ -65,6 +65,7 @@ from flowweave.modules.sandboxes.application.service import (
     request_delete_durable,
     sandbox_dict,
     sandbox_snapshot,
+    stop_flow_run_runtimes,
     touch_runtime,
 )
 from flowweave.modules.sandboxes.infrastructure.docker import DockerSandboxProvider, backend_name
@@ -130,5 +131,6 @@ __all__ = (
     "runtime_owner_flow_run_id",
     "sandbox_dict",
     "sandbox_snapshot",
+    "stop_flow_run_runtimes",
     "touch_runtime",
 )

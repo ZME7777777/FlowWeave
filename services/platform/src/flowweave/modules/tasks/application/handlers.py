@@ -215,6 +215,14 @@ def _replace_flow_run_runtime(
     )
 
 
+def _stop_flow_run_runtimes(
+    db: Session, aggregate_id: str, _payload: dict[str, Any], lease: Lease
+) -> None:
+    if not lease_is_current(db, lease):
+        raise RuntimeError("task lease was lost before terminal Runtime stop")
+    sandboxes.stop_flow_run_runtimes(db, aggregate_id, commit=False)
+
+
 def _cleanup_capability_import(
     db: Session, aggregate_id: str, _payload: dict[str, Any], _lease: Lease
 ) -> None:
@@ -265,6 +273,7 @@ HANDLERS: dict[str, Handler] = {
     "CLEANUP_ENVIRONMENT_IMAGE": _cleanup_environment_image,
     "CLEANUP_ENVIRONMENT_CREDENTIALS": _cleanup_environment_credentials,
     "REPLACE_FLOW_RUN_RUNTIME": _replace_flow_run_runtime,
+    "STOP_FLOW_RUN_RUNTIMES": _stop_flow_run_runtimes,
     "CLEANUP_CAPABILITY_IMPORT": _cleanup_capability_import,
     "BUILD_CAPABILITY_DEPENDENCIES": _build_capability_dependencies,
     "RESOLVE_PLUGIN_SOURCE": _resolve_plugin_source,

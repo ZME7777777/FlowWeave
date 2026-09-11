@@ -42,6 +42,7 @@ from flowweave.shared.application.transactions import register_rollback_action
 from flowweave.shared.database import uid
 from flowweave.shared.errors import DomainError, not_found
 from flowweave.shared.infrastructure.docker_control import ephemeral_lease_is_expired
+from flowweave.shared.models import AttemptState, NodeAttempt, NodeRun
 from flowweave.shared.settings import get_settings
 
 # These Runtimes own externally persisted OpenHands state.  They must live
@@ -700,9 +701,7 @@ def delete_flow_run_runtimes_now(db: Session, flow_run_id: str) -> None:
     # leaving the immutable generation reference behind.  Such a reference is
     # not live compute and must not block terminal FlowRun deletion; real rows
     # remain protected by delete_flow_run_runtime_session below.
-    runtime_session_ids = select(FlowRunRuntime.id).where(
-        FlowRunRuntime.flow_run_id == flow_run_id
-    )
+    runtime_session_ids = select(FlowRunRuntime.id).where(FlowRunRuntime.flow_run_id == flow_run_id)
     db.execute(
         update(RuntimeGeneration)
         .where(
@@ -718,6 +717,100 @@ def delete_flow_run_runtimes_now(db: Session, flow_run_id: str) -> None:
     )
     db.flush()
     delete_flow_run_runtime_session(db, flow_run_id)
+
+
+def stop_flow_run_runtimes(db: Session, flow_run_id: str, *, commit: bool = True) -> None:
+    """Fence and stop every Runtime belonging to a terminal FlowRun.
+
+    Completion and cancellation retain the externally persisted Workspace and
+    OpenHands state for audit/read-only recovery, but must not leave an Agent
+    Server container consuming resources indefinitely.  Permanent FlowRun
+    deletion remains the only path that removes the allocation and its state.
+    """
+
+    cancelling_attempt = db.scalar(
+        select(NodeAttempt.id)
+        .join(NodeRun, NodeRun.id == NodeAttempt.node_run_id)
+        .where(
+            NodeRun.flow_run_id == flow_run_id,
+            NodeAttempt.state == AttemptState.CANCELLED,
+            NodeAttempt.runtime_phase.in_(("CANCELLING", "CANCEL_FAILED")),
+        )
+        .limit(1)
+    )
+    if cancelling_attempt is not None:
+        raise DomainError(
+            "FLOW_RUN_RUNTIME_STOP_PENDING",
+            "Runtime cancellation must settle before terminal Runtime stop",
+            409,
+            {"flow_run_id": flow_run_id, "attempt_id": cancelling_attempt},
+        )
+
+    sessions = list(
+        db.scalars(
+            select(FlowRunRuntime)
+            .where(FlowRunRuntime.flow_run_id == flow_run_id)
+            .with_for_update()
+        )
+    )
+    if not sessions:
+        if commit:
+            db.commit()
+        else:
+            db.flush()
+        return
+
+    targets: list[tuple[FlowRunRuntime, RuntimeGeneration, ManagedSandbox]] = []
+    stopped_at = datetime.now(UTC)
+    for session in sessions:
+        if session.status == "DELETING":
+            continue
+        session.status = "STOPPED"
+        session.stopped_at = stopped_at
+        session.row_version += 1
+        session.updated_at = stopped_at
+        if session.active_generation is None:
+            continue
+        generation = db.scalar(
+            select(RuntimeGeneration)
+            .where(
+                RuntimeGeneration.runtime_session_id == session.id,
+                RuntimeGeneration.generation == session.active_generation,
+            )
+            .with_for_update()
+        )
+        if generation is None or generation.managed_runtime_id is None:
+            continue
+        resource = db.scalar(
+            select(ManagedSandbox)
+            .where(ManagedSandbox.id == generation.managed_runtime_id)
+            .with_for_update()
+        )
+        if resource is None:
+            continue
+        resource.desired_state = "STOPPED"
+        resource.next_reconcile_at = stopped_at
+        if generation.state != "STOPPED":
+            targets.append((session, generation, resource))
+
+    # Publish the fence before Docker I/O.  A failed drain rolls back the task
+    # transaction and retries; a successful drain can never be routed new work.
+    db.flush()
+    provider = DockerSandboxProvider(get_settings())
+    for _session, generation, resource in targets:
+        result = provider.drain(resource)
+        generation.state = "STOPPED"
+        generation.stopped_at = datetime.now(UTC)
+        generation.row_version += 1
+        resource.observed_state = "STOPPED"
+        resource.last_error_code = None
+        resource.last_error_detail = None
+        if not result.graceful:
+            resource.last_error_detail = "Runtime stopped after an ungraceful drain"
+    if commit:
+        db.commit()
+    else:
+        db.flush()
 
 
 def request_delete(db: Session, sandbox_id: str) -> None:
