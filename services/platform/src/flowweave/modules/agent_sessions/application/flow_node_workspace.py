@@ -18,7 +18,6 @@ from sqlalchemy.orm import Session
 
 from flowweave.modules.agent_sessions.application import flow_node_conversations
 from flowweave.modules.agent_sessions.application.flow_node_host import (
-    assert_flow_node_session_writable,
     resolve_flow_node_session_host,
 )
 from flowweave.modules.agent_sessions.application.ide import ssh_remote_descriptor
@@ -80,9 +79,7 @@ def _version_paths(db: Session, version_id: str) -> tuple[str, ...]:
     return paths
 
 
-def _binding_working_directory(
-    runtime_root: PurePosixPath, frozen: str | None
-) -> str:
+def _binding_working_directory(runtime_root: PurePosixPath, frozen: str | None) -> str:
     """Keep a frozen cwd only when it still belongs to this Attempt."""
 
     if frozen:
@@ -97,9 +94,7 @@ def _binding_working_directory(
     return runtime_root.as_posix()
 
 
-def _version_working_directory(
-    runtime_root: PurePosixPath, working_path: str
-) -> str:
+def _version_working_directory(runtime_root: PurePosixPath, working_path: str) -> str:
     if working_path == ".":
         return runtime_root.as_posix()
     parsed = PurePosixPath(working_path)
@@ -108,9 +103,7 @@ def _version_working_directory(
         or parsed.as_posix() != working_path
         or any(part in {"", ".", ".."} for part in parsed.parts)
     ):
-        raise DomainError(
-            "AGENT_WORK_DIRECTORY_VERSION_MISSING", "工作目录版本数据不完整", 409
-        )
+        raise DomainError("AGENT_WORK_DIRECTORY_VERSION_MISSING", "工作目录版本数据不完整", 409)
     return str(runtime_root.joinpath(*parsed.parts))
 
 
@@ -156,9 +149,7 @@ def _scope(
         ):
             raise DomainError("AGENT_WORK_DIRECTORY_VERSION_MISSING", "工作目录版本数据不完整", 409)
         paths = _version_paths(db, version.id)
-        working_directory = _version_working_directory(
-            runtime_root, version.working_path
-        )
+        working_directory = _version_working_directory(runtime_root, version.working_path)
         details = {
             "id": directory.id,
             "display_name": directory.display_name,
@@ -182,9 +173,7 @@ def _scope(
     return str(runtime_root), None, (str(runtime_root),)
 
 
-def _runtime_path(
-    project_root: Path, runtime_root: PurePosixPath, candidate: Path
-) -> str:
+def _runtime_path(project_root: Path, runtime_root: PurePosixPath, candidate: Path) -> str:
     relative = candidate.relative_to(project_root)
     return str(runtime_root.joinpath(*relative.parts))
 
@@ -422,7 +411,6 @@ def delete_entries(
         raise DomainError("FLOW_RUN_WORKSPACE_DELETE_EMPTY", "请选择要删除的文件或目录", 422)
     if len(set(paths)) > 100:
         raise DomainError("FLOW_RUN_WORKSPACE_DELETE_TOO_MANY", "一次最多删除 100 项", 422)
-    assert_flow_node_session_writable(db, flow_run_id=flow_run_id, attempt_id=attempt_id)
     project_root, runtime_root, _, _ = _authorize_entry(
         db, flow_run_id=flow_run_id, attempt_id=attempt_id
     )
@@ -488,6 +476,74 @@ def delete_entries(
     return [path for path, _ in selected]
 
 
+def create_entry(
+    db: Session,
+    *,
+    flow_run_id: str,
+    attempt_id: str,
+    binding_id: str | None,
+    work_directory_id: str | None,
+    parent_path: str,
+    name: str,
+    kind: str,
+) -> None:
+    """Create one ordinary entry in the authorized node workspace scope."""
+
+    name = name.strip()
+    if not name or name in {".", ".."} or name.startswith(".") or "/" in name or "\\" in name:
+        raise DomainError(
+            "FLOW_RUN_WORKSPACE_ENTRY_NAME_INVALID", "名称必须是非隐藏的单级文件名", 422
+        )
+    if kind not in {"FILE", "DIRECTORY"}:
+        raise DomainError("FLOW_RUN_WORKSPACE_ENTRY_KIND_INVALID", "只支持创建文件或目录", 422)
+    project_root, runtime_root, _, _ = _authorize_entry(
+        db, flow_run_id=flow_run_id, attempt_id=attempt_id
+    )
+    _, _, roots = _scope(
+        db,
+        flow_run_id=flow_run_id,
+        attempt_id=attempt_id,
+        binding_id=binding_id,
+        work_directory_id=work_directory_id,
+        runtime_root=runtime_root,
+    )
+    _validate_scope_roots(project_root, runtime_root, roots)
+    parsed = PurePosixPath(parent_path)
+    if (
+        not parsed.is_absolute()
+        or not parsed.is_relative_to(runtime_root)
+        or parsed.as_posix() != parent_path
+        or any(part in {"", ".", ".."} or part.startswith(".") for part in parsed.parts)
+        or not any(
+            parent_path == root or parent_path.startswith(root.rstrip("/") + "/") for root in roots
+        )
+    ):
+        raise DomainError("FLOW_RUN_WORKSPACE_PATH_INVALID", "父目录不在当前工作区范围内", 422)
+    parent = project_root.joinpath(*parsed.relative_to(runtime_root).parts)
+    try:
+        metadata = parent.lstat()
+        resolved_parent = parent.resolve(strict=True)
+    except OSError as exc:
+        raise DomainError("FLOW_RUN_WORKSPACE_FILE_NOT_FOUND", "父目录不存在", 404) from exc
+    if (
+        stat.S_ISLNK(metadata.st_mode)
+        or not stat.S_ISDIR(metadata.st_mode)
+        or not resolved_parent.is_relative_to(project_root)
+    ):
+        raise DomainError("FLOW_RUN_WORKSPACE_PATH_INVALID", "父路径不是可用目录", 422)
+    target = parent / name
+    try:
+        if kind == "DIRECTORY":
+            target.mkdir(mode=0o700)
+        else:
+            descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            os.close(descriptor)
+    except FileExistsError as exc:
+        raise DomainError("FLOW_RUN_WORKSPACE_ENTRY_EXISTS", "同名文件或目录已存在", 409) from exc
+    except OSError as exc:
+        raise DomainError("FLOW_RUN_WORKSPACE_CREATE_FAILED", "文件或目录创建失败", 409) from exc
+
+
 def read_candidate_output_file(
     db: Session,
     *,
@@ -520,9 +576,7 @@ def read_candidate_output_file(
     # The Attempt-local directory is server-side provenance only. FlowRun
     # Agents write their candidate files in the shared project mount, so use
     # the same fully authorized root as the node workspace drawer.
-    project_root, _, _, _ = _authorize_entry(
-        db, flow_run_id=flow_run_id, attempt_id=attempt_id
-    )
+    project_root, _, _, _ = _authorize_entry(db, flow_run_id=flow_run_id, attempt_id=attempt_id)
     try:
         root_metadata = project_root.lstat()
         candidate = project_root.joinpath(*relative.parts)
@@ -568,6 +622,7 @@ def conversation_working_directory(
 
 __all__ = (
     "conversation_working_directory",
+    "create_entry",
     "details",
     "read_candidate_output_file",
     "read_file",

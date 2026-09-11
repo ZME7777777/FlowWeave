@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Annotated, Any, cast
+from typing import Annotated, Any, Literal, cast
 from urllib.parse import quote
 from uuid import uuid4
 
@@ -128,6 +128,12 @@ class FlowRunWorkDirectoryCreateWrite(_Write):
 
 class WorkspaceEntriesDeleteWrite(_Write):
     paths: list[str] = Field(min_length=1, max_length=100)
+
+
+class WorkspaceEntryCreateWrite(_Write):
+    parent_path: str = Field(min_length=1, max_length=500)
+    name: str = Field(min_length=1, max_length=240)
+    kind: Literal["FILE", "DIRECTORY"]
 
 
 def _key(value: str | None, action: str, identifier: str) -> str:
@@ -456,6 +462,31 @@ async def delete_node_session_workspace_entries(
         ),
     )
     return {"deleted_paths": deleted}
+
+
+@router.post(f"{_BASE}/workspace/entries", status_code=201)
+async def create_node_session_workspace_entry(
+    flow_run_id: str,
+    attempt_id: str,
+    payload: WorkspaceEntryCreateWrite,
+    db: Db,
+    binding_id: str | None = Query(default=None),
+    work_directory_id: str | None = Query(default=None),
+) -> Response:
+    await run_sync(
+        db,
+        lambda session: agent_sessions.flow_node_workspace.create_entry(
+            session,
+            flow_run_id=flow_run_id,
+            attempt_id=attempt_id,
+            binding_id=binding_id,
+            work_directory_id=work_directory_id,
+            parent_path=payload.parent_path,
+            name=payload.name,
+            kind=payload.kind,
+        ),
+    )
+    return Response(status_code=201)
 
 
 @router.get(f"{_BASE}/candidate-output/file")

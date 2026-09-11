@@ -762,6 +762,18 @@ export const nodeSessionApi = {
     if (workDirectoryId) query.set('work_directory_id', workDirectoryId);
     return request<import('../types').AgentSessionWorkspaceDetails>(`${nodeSessionBase(flowRunId, attemptId)}/workspace${query.size ? `?${query}` : ''}`);
   },
+  deleteWorkspaceFile: (flowRunId: string, attemptId: string, path: string, options: { bindingId?: string; workDirectoryId?: string } = {}) => {
+    const query = new URLSearchParams();
+    if (options.bindingId) query.set('binding_id', options.bindingId);
+    if (options.workDirectoryId) query.set('work_directory_id', options.workDirectoryId);
+    return request<void>(`${nodeSessionBase(flowRunId, attemptId)}/workspace/entries${query.size ? `?${query}` : ''}`, json('DELETE', { paths: [path] }));
+  },
+  createWorkspaceEntry: (flowRunId: string, attemptId: string, parent_path: string, name: string, kind: 'FILE' | 'DIRECTORY', options: { bindingId?: string; workDirectoryId?: string } = {}) => {
+    const query = new URLSearchParams();
+    if (options.bindingId) query.set('binding_id', options.bindingId);
+    if (options.workDirectoryId) query.set('work_directory_id', options.workDirectoryId);
+    return request<void>(`${nodeSessionBase(flowRunId, attemptId)}/workspace/entries${query.size ? `?${query}` : ''}`, json('POST', { parent_path, name, kind }));
+  },
   file: (flowRunId: string, attemptId: string, path: string, bindingId?: string, workDirectoryId?: string, download = false) => {
     const query = new URLSearchParams({ path });
     if (bindingId) query.set('binding_id', bindingId);

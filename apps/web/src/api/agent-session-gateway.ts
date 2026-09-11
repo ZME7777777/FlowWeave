@@ -201,6 +201,10 @@ export function flowNodeSessionGateway(
       addConversationCapability: (_hostId, bindingId, capabilityVersionId) => nodeSessionApi.addCapability(flowRunId, attemptId, bindingId, capabilityVersionId),
       workspaceDetails: (_hostId, options) =>
         nodeSessionApi.workspace(flowRunId, attemptId, options?.bindingId, options?.workDirectoryId),
+      deleteFile: (_hostId, path, options) =>
+        nodeSessionApi.deleteWorkspaceFile(flowRunId, attemptId, path, options),
+      createFile: (_hostId, parentPath, name, kind, options) =>
+        nodeSessionApi.createWorkspaceEntry(flowRunId, attemptId, parentPath, name, kind, options),
       createWorkDirectory: async (_hostId, displayName, selectedPaths) =>
         nodeSessionApi.createWorkDirectory(flowRunId, attemptId, displayName, selectedPaths),
       filePreview: async (_hostId, path, options, signal) => {

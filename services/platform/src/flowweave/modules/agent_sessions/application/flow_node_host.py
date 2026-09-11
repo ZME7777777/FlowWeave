@@ -49,7 +49,8 @@ class FlowNodeSessionHost:
 
 
 _READ_PERMISSIONS = frozenset({LIST_SESSIONS, READ_SESSIONS, ACCESS_FILES})
-_WRITE_PERMISSIONS = frozenset({CREATE_SESSIONS, WRITE_SESSIONS, ACCESS_TERMINAL, CONTROL_SESSIONS})
+_TERMINAL_PERMISSIONS = frozenset({ACCESS_TERMINAL})
+_WRITE_PERMISSIONS = frozenset({CREATE_SESSIONS, WRITE_SESSIONS, CONTROL_SESSIONS})
 
 
 def assert_flow_node_session_writable(
@@ -70,6 +71,16 @@ def assert_flow_node_session_writable(
             "The selected node Attempt does not belong to this FlowRun",
             409,
             {"flow_run_id": flow_run_id, "node_attempt_id": attempt_id},
+        )
+    run = db.get(FlowRun, flow_run_id)
+    if run is None:
+        raise not_found("flow_run", flow_run_id)
+    if run.state in {"COMPLETED", "CANCELLED"}:
+        raise DomainError(
+            "FLOW_RUN_TERMINAL",
+            "流程已结束，会话仅可查看；工作区文件和终端仍可使用",
+            409,
+            {"flow_run_id": flow_run_id, "state": run.state},
         )
     if attempt.state == AttemptState.CANCELLED:
         raise DomainError(
@@ -204,10 +215,14 @@ def resolve_flow_node_session_host(
             working_directory=runtime_working_directory,
             runtime_manifest=snapshot.runtime_manifest_json or {},
             model_policy={},
+            # A terminal remains a Workspace tool after an Attempt or its
+            # FlowRun has reached a terminal state. Conversation mutations
+            # must still be fenced separately, but completed work must remain
+            # inspectable and manually operable from its persistent workspace.
             permissions=(
-                _READ_PERMISSIONS | _WRITE_PERMISSIONS
+                _READ_PERMISSIONS | _TERMINAL_PERMISSIONS | _WRITE_PERMISSIONS
                 if require_start_permission
-                else _READ_PERMISSIONS
+                else _READ_PERMISSIONS | _TERMINAL_PERMISSIONS
             ),
         ),
         flow_run_id=run.id,

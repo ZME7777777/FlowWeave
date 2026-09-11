@@ -522,14 +522,25 @@ def node_runtime_status(db: Session, *, flow_run_id: str, attempt_id: str) -> di
         require_start_permission=False,
     )
     attempt = _attempt(db, attempt_id)
-    writable = attempt.state != AttemptState.CANCELLED
+    run = db.get(FlowRun, flow_run_id)
+    writable = attempt.state != AttemptState.CANCELLED and (
+        run is None or run.state not in {"COMPLETED", "CANCELLED"}
+    )
     return {
         "state": "ACTIVE",
         "write_available": writable,
+        # The Runtime and persistent Workspace outlive a terminal FlowRun.
+        # This flag is intentionally independent from conversation writes: the
+        # browser may still open an interactive terminal for historical work.
+        "terminal_available": True,
         "message": (
-            "节点执行正在停止；会话和工作区已切换为只读。"
-            if attempt.runtime_phase == "CANCELLING"
-            else "节点执行已取消；会话和工作区仅可查看。"
+            "流程已结束；会话历史只读，右侧文件和终端仍可操作。"
+            if run is not None and run.state in {"COMPLETED", "CANCELLED"}
+            else (
+                "节点执行正在停止；会话和工作区已切换为只读。"
+                if attempt.runtime_phase == "CANCELLING"
+                else "节点执行已取消；会话和工作区仅可查看。"
+            )
         )
         if not writable
         else None,
@@ -2437,7 +2448,6 @@ def node_runtime_stream_details(
 def node_terminal_resource_details(
     db: Session, *, flow_run_id: str, attempt_id: str, binding_id: str
 ) -> tuple[str, str]:
-    _assert_node_session_writable(db, flow_run_id=flow_run_id, attempt_id=attempt_id)
     _binding_for_attempt(db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id)
     return flow_run_terminal_resource_details(db, flow_run_id, binding_id)
 
@@ -2447,7 +2457,6 @@ def node_draft_terminal_resource_details(
 ) -> tuple[str, str, str]:
     """Open a terminal before first message in the Attempt's fixed directory."""
 
-    _assert_node_session_writable(db, flow_run_id=flow_run_id, attempt_id=attempt_id)
     host = agent_sessions.resolve_flow_node_session_host(
         db, flow_run_id=flow_run_id, attempt_id=attempt_id, require_start_permission=False
     )

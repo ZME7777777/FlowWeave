@@ -19,7 +19,11 @@ from flowweave.modules.agent_sessions.application import (
     flow_node_workspace,
 )
 from flowweave.modules.agent_sessions.application import usage as usage_projection
-from flowweave.modules.agent_sessions.application.host import CREATE_SESSIONS, READ_SESSIONS
+from flowweave.modules.agent_sessions.application.host import (
+    ACCESS_TERMINAL,
+    CREATE_SESSIONS,
+    READ_SESSIONS,
+)
 from flowweave.modules.agent_sessions.infrastructure.models import AgentConversationUsageBucket
 from flowweave.modules.agent_sessions.public import AgentConversationBinding
 from flowweave.modules.agent_workspaces.application import work_directories
@@ -437,6 +441,7 @@ def test_flow_node_host_initializes_a_startable_attempt_without_write_permission
         assert ensured == [flow_run_id]
         assert host.session.permits(READ_SESSIONS)
         assert not host.session.permits(CREATE_SESSIONS)
+        assert host.session.permits(ACCESS_TERMINAL)
 
 
 def test_flow_node_host_rejects_non_startable_or_unscoped_attempts(
@@ -670,11 +675,47 @@ def test_cancelled_node_attempt_fences_every_session_write(
             )
         assert sent.value.code == "NODE_ATTEMPT_CANCELLED"
 
-        with pytest.raises(DomainError) as terminal:
-            flow_node_conversations.node_draft_terminal_resource_details(
+        monkeypatch.setattr(
+            flow_node_conversations.agent_sessions,
+            "resolve_flow_node_session_host",
+            lambda *_args, **_kwargs: SimpleNamespace(
+                session=SimpleNamespace(working_directory="/runtime/workspace/project")
+            ),
+        )
+        monkeypatch.setattr(
+            flow_node_conversations.sandboxes,
+            "active_node_runtime_connection",
+            lambda *_args, **_kwargs: SimpleNamespace(
+                resource_name="node-runtime", managed_runtime_id="runtime-id"
+            ),
+        )
+        assert flow_node_conversations.node_draft_terminal_resource_details(
+            db, flow_run_id=flow_run_id, attempt_id=attempt_id
+        ) == ("node-runtime", "runtime-id", "/runtime/workspace/project")
+
+        status = flow_node_conversations.node_runtime_status(
+            db, flow_run_id=flow_run_id, attempt_id=attempt_id
+        )
+        assert status["state"] == "ACTIVE"
+        assert status["write_available"] is False
+        assert status["terminal_available"] is True
+        assert "正在停止" in str(status["message"])
+
+
+def test_completed_flow_run_makes_node_conversation_read_only_but_keeps_terminal_available(
+    db_session_factory: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with db_session_factory() as db:
+        flow_run_id, _runtime_session_id, attempt_id = _node_session_context(db)
+        run = db.get(FlowRun, flow_run_id)
+        assert run is not None
+        run.state = "COMPLETED"
+
+        with pytest.raises(DomainError) as blocked:
+            flow_node_host.assert_flow_node_session_writable(
                 db, flow_run_id=flow_run_id, attempt_id=attempt_id
             )
-        assert terminal.value.code == "NODE_ATTEMPT_CANCELLED"
+        assert blocked.value.code == "FLOW_RUN_TERMINAL"
 
         monkeypatch.setattr(
             flow_node_conversations.agent_sessions,
@@ -684,9 +725,58 @@ def test_cancelled_node_attempt_fences_every_session_write(
         status = flow_node_conversations.node_runtime_status(
             db, flow_run_id=flow_run_id, attempt_id=attempt_id
         )
-        assert status["state"] == "ACTIVE"
         assert status["write_available"] is False
-        assert "正在停止" in str(status["message"])
+        assert status["terminal_available"] is True
+        assert "流程已结束" in str(status["message"])
+
+
+def test_terminal_node_attempt_keeps_workspace_entry_operations(
+    settings, db_session_factory: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from flowweave.modules.sandboxes.application.runtime_allocation import (
+        allocate_flow_run_runtime,
+        allocate_node_attempt_runtime,
+        node_attempt_workspace_project_path,
+    )
+
+    with settings_context(settings), db_session_factory() as db:
+        flow_run_id, _runtime_session_id, attempt_id = _node_session_context(db)
+        run = db.get(FlowRun, flow_run_id)
+        assert run is not None
+        allocate_flow_run_runtime(db, flow_run_id)
+        allocate_node_attempt_runtime(db, flow_run_id=flow_run_id, node_attempt_id=attempt_id)
+        project_root = node_attempt_workspace_project_path(
+            db, flow_run_id=flow_run_id, node_attempt_id=attempt_id
+        )
+        run.state = "COMPLETED"
+        monkeypatch.setattr(
+            flow_node_workspace,
+            "resolve_flow_node_session_host",
+            lambda _db, **_kwargs: SimpleNamespace(
+                session=SimpleNamespace(working_directory="/runtime/workspace/project")
+            ),
+        )
+
+        flow_node_workspace.create_entry(
+            db,
+            flow_run_id=flow_run_id,
+            attempt_id=attempt_id,
+            binding_id=None,
+            work_directory_id=None,
+            parent_path="/runtime/workspace/project",
+            name="post-run-notes.txt",
+            kind="FILE",
+        )
+        assert (project_root / "post-run-notes.txt").is_file()
+        assert flow_node_workspace.delete_entries(
+            db,
+            flow_run_id=flow_run_id,
+            attempt_id=attempt_id,
+            binding_id=None,
+            work_directory_id=None,
+            paths=("/runtime/workspace/project/post-run-notes.txt",),
+        ) == ["/runtime/workspace/project/post-run-notes.txt"]
+        assert not (project_root / "post-run-notes.txt").exists()
 
 
 def test_resume_node_conversation_does_not_reconcile_non_paused_native_state(
@@ -799,9 +889,7 @@ def test_resume_node_conversation_recovers_an_end_blocked_attempt_when_openhands
         monkeypatch.setattr(
             flow_node_conversations, "_node_handle", lambda *_args, **_kwargs: object()
         )
-        monkeypatch.setattr(
-            flow_node_conversations, "get_runtime", lambda: NativePausedRuntime()
-        )
+        monkeypatch.setattr(flow_node_conversations, "get_runtime", lambda: NativePausedRuntime())
         monkeypatch.setattr(flow_node_conversations, "config_from_binding", lambda *_args: object())
         monkeypatch.setattr(flow_node_conversations, "provider_for_config", lambda *_args: "market")
 
@@ -833,12 +921,15 @@ def test_resume_node_conversation_recovers_an_end_blocked_attempt_when_openhands
         )
         assert event is not None
         assert event.payload_json["reason"] == "NATIVE_PAUSE_AFTER_BLOCKED_PROJECTION"
-        assert db.scalar(
-            select(BackgroundTask).where(
-                BackgroundTask.idempotency_key
-                == f"wait-runtime-wakeup:{attempt_id}:v{resumed.state_version}:1"
+        assert (
+            db.scalar(
+                select(BackgroundTask).where(
+                    BackgroundTask.idempotency_key
+                    == f"wait-runtime-wakeup:{attempt_id}:v{resumed.state_version}:1"
+                )
             )
-        ) is not None
+            is not None
+        )
 
 
 def test_node_message_keeps_an_end_blocked_attempt_observing_native_events(
@@ -920,12 +1011,15 @@ def test_node_message_keeps_an_end_blocked_attempt_observing_native_events(
             "A restart occurred while this tool was in progress.",
         )
         assert run.state == "WAITING_HUMAN"
-        assert db.scalar(
-            select(BackgroundTask).where(
-                BackgroundTask.idempotency_key
-                == f"wait-runtime-wakeup:{attempt_id}:v{blocked.state_version}:1"
+        assert (
+            db.scalar(
+                select(BackgroundTask).where(
+                    BackgroundTask.idempotency_key
+                    == f"wait-runtime-wakeup:{attempt_id}:v{blocked.state_version}:1"
+                )
             )
-        ) is not None
+            is not None
+        )
 
 
 def test_node_session_list_orders_recent_activity_first(
