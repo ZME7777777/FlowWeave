@@ -915,13 +915,13 @@ def main() -> None:
         memory_root = Path(directory)
         user_root = memory_root / "user"
         workspace_root = memory_root / "workspace"
-        user_index = user_root / MEMORY_INDEX_RELPATH
+        user_index = user_root / "memory" / "MEMORY.md"
         project_index = workspace_root / MEMORY_INDEX_RELPATH
         user_index.parent.mkdir(parents=True)
         project_index.parent.mkdir(parents=True)
         user_index.write_text("ambient user fact", encoding="utf-8")
         project_index.write_text("governed project fact", encoding="utf-8")
-        with patch("pathlib.Path.home", return_value=user_root):
+        with patch.dict(os.environ, {"OH_PERSISTENCE_DIR": str(user_root)}):
             combined_memory = load_memory(workspace_root)
         assert combined_memory is not None
         assert "# User memory" in combined_memory
@@ -931,7 +931,7 @@ def main() -> None:
 
         user_index.write_bytes(b"\xff")
         project_index.unlink()
-        with patch("pathlib.Path.home", return_value=user_root):
+        with patch.dict(os.environ, {"OH_PERSISTENCE_DIR": str(user_root)}):
             unreadable_memory = load_memory(workspace_root)
         assert unreadable_memory is None
 
