@@ -36,6 +36,7 @@ interface QueuedMessage {
   references: ConversationReference[];
   workspaceReferences?: AgentWorkspaceReference[];
 }
+type FileSelection = NonNullable<AgentWorkspaceReference['selection']>;
 interface BoundQueuedMessage extends QueuedMessage {
   bindingId: string;
   /**
@@ -1318,12 +1319,74 @@ function WorkspaceMarkdownCode({ className, children, ...props }: ComponentProps
   return <code className={className} {...props} dangerouslySetInnerHTML={{ __html: highlightedCode(value, language) }}/>;
 }
 
-function WorkspaceTextPreview({ path, content }: { path: string; content: string }) {
+function textPosition(content: string, offset: number): { line: number; column: number } {
+  const before = content.slice(0, offset);
+  const line = before.split('\n').length;
+  return { line, column: before.length - before.lastIndexOf('\n') };
+}
+
+function selectionFromPreview(root: HTMLElement, content: string): FileSelection | undefined {
+  const selection = window.getSelection();
+  if (!selection?.rangeCount || selection.isCollapsed) return undefined;
+  const range = selection.getRangeAt(0);
+  if (!root.contains(range.startContainer) || !root.contains(range.endContainer)) return undefined;
+  const before = document.createRange();
+  before.selectNodeContents(root);
+  before.setEnd(range.startContainer, range.startOffset);
+  const start = before.toString().length;
+  const end = start + range.toString().length;
+  if (!range.toString().trim() || end <= start) return undefined;
+  const startPosition = textPosition(content, start);
+  const endPosition = textPosition(content, end);
+  return { start_line: startPosition.line, start_column: startPosition.column, end_line: endPosition.line, end_column: endPosition.column };
+}
+
+function previewOffset(content: string, line: number, column: number): number {
+  const lines = content.split('\n');
+  return lines.slice(0, line - 1).reduce((total, value) => total + value.length + 1, 0) + column - 1;
+}
+
+function selectPreviewText(root: HTMLElement, content: string, selection: FileSelection): void {
+  const start = previewOffset(content, selection.start_line, selection.start_column);
+  const end = previewOffset(content, selection.end_line, selection.end_column);
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  let consumed = 0;
+  let startNode: Text | undefined; let startOffset = 0; let endNode: Text | undefined; let endOffset = 0;
+  for (let node = walker.nextNode() as Text | null; node; node = walker.nextNode() as Text | null) {
+    const next = consumed + node.data.length;
+    if (!startNode && start >= consumed && start <= next) { startNode = node; startOffset = start - consumed; }
+    if (end >= consumed && end <= next) { endNode = node; endOffset = end - consumed; break; }
+    consumed = next;
+  }
+  if (!startNode || !endNode) return;
+  const range = document.createRange();
+  range.setStart(startNode, startOffset); range.setEnd(endNode, endOffset);
+  const browserSelection = window.getSelection();
+  browserSelection?.removeAllRanges(); browserSelection?.addRange(range);
+  root.scrollIntoView({ block: 'center', behavior: 'smooth' });
+}
+
+function WorkspaceTextPreview({ path, content, highlight, onSelect }: { path: string; content: string; highlight?: FileSelection; onSelect?: (selection: FileSelection) => void }) {
+  const previewRef = useRef<HTMLDivElement>(null);
+  const [selection, setSelection] = useState<FileSelection>();
+  useEffect(() => {
+    if (!highlight || !previewRef.current) return;
+    selectPreviewText(previewRef.current, content, highlight);
+    const timer = window.setTimeout(() => { window.getSelection()?.removeAllRanges(); previewRef.current?.classList.remove('workspace-selection-flash'); }, 1_600);
+    previewRef.current.classList.add('workspace-selection-flash');
+    previewRef.current.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    return () => window.clearTimeout(timer);
+  }, [content, highlight]);
+  const captureSelection = () => {
+    if (!previewRef.current) return;
+    setSelection(selectionFromPreview(previewRef.current, content));
+  };
+  const action = selection && <button type="button" className="agent-file-selection-action" onMouseDown={event => event.preventDefault()} onClick={() => { onSelect?.(selection); setSelection(undefined); window.getSelection()?.removeAllRanges(); }}><Quote size={13}/>追加到会话</button>;
   if (/\.(?:md|mdx|markdown)$/i.test(path)) {
-    return <article className="agent-file-markdown-preview"><ReactMarkdown remarkPlugins={[remarkGfm]} components={{ code: WorkspaceMarkdownCode }}>{content}</ReactMarkdown></article>;
+    return <div ref={previewRef} className="agent-file-preview-selection" onMouseUp={captureSelection}>{action}<article className="agent-file-markdown-preview"><ReactMarkdown remarkPlugins={[remarkGfm]} components={{ code: WorkspaceMarkdownCode }}>{content}</ReactMarkdown></article></div>;
   }
   const language = filePreviewLanguage(path);
-  return <pre className={`agent-file-code-preview${language ? ' highlighted' : ''}`}><code dangerouslySetInnerHTML={{ __html: highlightedCode(content, language) }}/></pre>;
+  return <div ref={previewRef} className="agent-file-preview-selection" onMouseUp={captureSelection}>{action}<pre className={`agent-file-code-preview${language ? ' highlighted' : ''}`}><code dangerouslySetInnerHTML={{ __html: highlightedCode(content, language) }}/></pre></div>;
 }
 
 function WorkspaceChangesReview({ changes, selectedId, onSelect, workspaceRoot }: { changes: WorkspaceFileChange[]; selectedId?: string; onSelect: (id: string) => void; workspaceRoot?: string }) {
@@ -2009,9 +2072,9 @@ function readWorkspaceToolState(storageKey: string): Record<string, WorkspaceToo
 }
 
 function WorkspaceDrawer({
-  open, onOpen, onClose, workspaceId, scopeKey, migrateFromScopeKey, bindingId, workDirectoryId, conversation, attachments, sources, attachmentRequest, candidatePreviewRequest, reviewChanges = [], reviewRequestId, sessionChanges = [], onReviewChanges, runtimeAvailable, runtimeTasks, agentDefinitions, sessionStopped,
+  open, onOpen, onClose, onAddFileSelection, highlightedFileSelection, workspaceId, scopeKey, migrateFromScopeKey, bindingId, workDirectoryId, conversation, attachments, sources, attachmentRequest, candidatePreviewRequest, reviewChanges = [], reviewRequestId, sessionChanges = [], onReviewChanges, runtimeAvailable, runtimeTasks, agentDefinitions, sessionStopped,
 }: {
-  open: boolean; onOpen: () => void; onClose: () => void; workspaceId: string; scopeKey: string; migrateFromScopeKey?: string; bindingId?: string; workDirectoryId?: string; conversation?: AgentConversation; attachments: AgentAttachment[]; sources: ConversationSource[]; attachmentRequest?: { key: string; attachment: AgentAttachment }; candidatePreviewRequest?: CandidateFilePreviewRequest; reviewChanges?: WorkspaceFileChange[]; reviewRequestId?: string; sessionChanges?: WorkspaceFileChange[]; onReviewChanges?: (changes: WorkspaceFileChange[]) => void; runtimeAvailable: boolean; runtimeTasks: RuntimeTaskProjection[]; agentDefinitions: CapabilityAsset[]; sessionStopped: boolean;
+  open: boolean; onOpen: () => void; onClose: () => void; onAddFileSelection?: (path: string, selection: FileSelection) => void; highlightedFileSelection?: { path: string; selection: FileSelection }; workspaceId: string; scopeKey: string; migrateFromScopeKey?: string; bindingId?: string; workDirectoryId?: string; conversation?: AgentConversation; attachments: AgentAttachment[]; sources: ConversationSource[]; attachmentRequest?: { key: string; attachment: AgentAttachment }; candidatePreviewRequest?: CandidateFilePreviewRequest; reviewChanges?: WorkspaceFileChange[]; reviewRequestId?: string; sessionChanges?: WorkspaceFileChange[]; onReviewChanges?: (changes: WorkspaceFileChange[]) => void; runtimeAvailable: boolean; runtimeTasks: RuntimeTaskProjection[]; agentDefinitions: CapabilityAsset[]; sessionStopped: boolean;
 }) {
   const { api, fileUrl } = useAgentSessionGateway();
   const host = useAgentSessionHost();
@@ -2145,6 +2208,10 @@ function WorkspaceDrawer({
     }));
     onOpen();
   }, [onOpen, updateScope]);
+  useEffect(() => {
+    if (!highlightedFileSelection) return;
+    openFiles(highlightedFileSelection.path);
+  }, [highlightedFileSelection, openFiles]);
   const openRuntimeTasks = useCallback((taskId?: string) => {
     updateScope(current => ({
       ...current,
@@ -2388,7 +2455,7 @@ function WorkspaceDrawer({
               <iframe className="agent-file-media-preview" sandbox="" title={`${candidatePreview.filename} 候选文件预览`} src={candidatePreview.url}/>
             </> : selectedFile ? <>
               <header><span title={selectedFile}>{selectedAttachment?.filename || relativeWorkspacePath(selectedFile, details.root)}</span><a href={fileUrl(workspaceId, selectedFile, { bindingId, workDirectoryId, download: true })}><Download size={13}/>下载</a></header>
-              {canPreviewImage ? <img className="agent-file-media-preview" src={selectedAttachment?.image_data_url || selectedFileUrl} alt={selectedAttachment?.filename || '附件预览'}/> : canPreviewPdf ? <iframe className="agent-file-media-preview" title={selectedAttachment?.filename || 'PDF 预览'} src={selectedFileUrl}/> : textPreviewable ? previewQuery.isLoading ? <p>正在读取文件…</p> : previewQuery.isError ? <p>文件预览不可用，请下载后查看。</p> : <WorkspaceTextPreview path={selectedFile} content={previewQuery.data ?? ''}/> : <p>此文件不提供浏览器预览，请下载后查看。</p>}
+              {canPreviewImage ? <img className="agent-file-media-preview" src={selectedAttachment?.image_data_url || selectedFileUrl} alt={selectedAttachment?.filename || '附件预览'}/> : canPreviewPdf ? <iframe className="agent-file-media-preview" title={selectedAttachment?.filename || 'PDF 预览'} src={selectedFileUrl}/> : textPreviewable ? previewQuery.isLoading ? <p>正在读取文件…</p> : previewQuery.isError ? <p>文件预览不可用，请下载后查看。</p> : <WorkspaceTextPreview path={selectedFile} content={previewQuery.data ?? ''} highlight={highlightedFileSelection?.path === selectedFile ? highlightedFileSelection.selection : undefined} onSelect={selection => { onAddFileSelection?.(selectedFile, selection); onClose(); }}/> : <p>此文件不提供浏览器预览，请下载后查看。</p>}
             </> : <p>选择一个文件以预览或下载。</p>}</div>
           </section>}
           {scopeState.tabs.some(tab => tab.kind === 'changes') && <div className={`agent-changes-tab-panel ${scopeState.activeTabId === 'changes' ? 'active' : ''}`}><WorkspaceChangesReview changes={reviewChanges} selectedId={scopeState.selectedChangeId} onSelect={selectedChangeId => updateScope(current => ({ ...current, selectedChangeId }))} workspaceRoot={details.working_directory}/></div>}
@@ -2432,7 +2499,7 @@ export function AgentSessionWorkbench({
 }
 
 function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStateChanged, autoOpenDraft = false, hideDraftTitle = false }: Omit<AgentSessionWorkbenchProps, 'gateway' | 'host'>) {
-  const { api, features, candidateOutputUrl, fileUrl } = useAgentSessionGateway();
+  const { api, features, candidateOutputUrl } = useAgentSessionGateway();
   const dialog = useProductDialog();
   const host = useAgentSessionHost();
   const queryClient = useQueryClient();
@@ -2478,6 +2545,18 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const [workspaceReferencePickerOpen, setWorkspaceReferencePickerOpen] = useState(false);
   const [workspaceReferenceQuery, setWorkspaceReferenceQuery] = useState('');
   const [attachmentRequest, setAttachmentRequest] = useState<{ key: string; attachment: AgentAttachment }>();
+  const [fileSelectionReference, setFileSelectionReference] = useState<{ path: string; selection: FileSelection }>();
+  useEffect(() => {
+    const openSelection = (event: Event) => {
+      const reference = (event as CustomEvent<AgentWorkspaceReference>).detail;
+      if (reference?.selection) {
+        setFileSelectionReference({ path: reference.path, selection: reference.selection });
+        setDrawerOpen(true);
+      }
+    };
+    window.addEventListener('flowweave:open-workspace-selection', openSelection);
+    return () => window.removeEventListener('flowweave:open-workspace-selection', openSelection);
+  }, []);
   const [candidatePreviewRequest, setCandidatePreviewRequest] = useState<CandidateFilePreviewRequest>();
   const [operationError, setOperationError] = useState<Error>();
   const [streamHold, setStreamHold] = useState<{ bindingId: string; expiresAt: number }>();
@@ -3844,7 +3923,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       </div>}
       {visibleError && <p className="agent-workbench-error">{visibleError.message}</p>}
     </section>
-    <WorkspaceDrawer open={drawerOpen} onOpen={() => setDrawerOpen(true)} onClose={() => setDrawerOpen(false)} workspaceId={workspace.id} scopeKey={selected?.id ?? pendingCreatedId ?? conversationDraft?.id ?? 'workspace-root'} migrateFromScopeKey={workspaceScopeMigration} bindingId={selected?.id} workDirectoryId={selected ? undefined : conversationDraft?.workDirectoryId} conversation={selected} attachments={drawerAttachments} sources={drawerSources} attachmentRequest={attachmentRequest} candidatePreviewRequest={candidatePreviewRequest} reviewChanges={reviewChanges} reviewRequestId={reviewRequestId} sessionChanges={sessionFileChanges} onReviewChanges={openChangesReview} runtimeAvailable={Boolean((runtime?.terminal_available ?? runtime?.write_available) && (!features.terminalRequiresConversation || selected))} runtimeTasks={runtimeTasks} agentDefinitions={agentDefinitionAssets} sessionStopped={sessionStopped}/>
+    <WorkspaceDrawer open={drawerOpen} onOpen={() => setDrawerOpen(true)} onClose={() => setDrawerOpen(false)} onAddFileSelection={(path, selection) => setWorkspaceReferences(current => current.some(reference => reference.path === path && JSON.stringify(reference.selection) === JSON.stringify(selection)) ? current : [...current, { path, kind: 'file', display_name: path.split('/').filter(Boolean).pop() ?? path, selection }])} highlightedFileSelection={fileSelectionReference} workspaceId={workspace.id} scopeKey={selected?.id ?? pendingCreatedId ?? conversationDraft?.id ?? 'workspace-root'} migrateFromScopeKey={workspaceScopeMigration} bindingId={selected?.id} workDirectoryId={selected ? undefined : conversationDraft?.workDirectoryId} conversation={selected} attachments={drawerAttachments} sources={drawerSources} attachmentRequest={attachmentRequest} candidatePreviewRequest={candidatePreviewRequest} reviewChanges={reviewChanges} reviewRequestId={reviewRequestId} sessionChanges={sessionFileChanges} onReviewChanges={openChangesReview} runtimeAvailable={Boolean((runtime?.terminal_available ?? runtime?.write_available) && (!features.terminalRequiresConversation || selected))} runtimeTasks={runtimeTasks} agentDefinitions={agentDefinitionAssets} sessionStopped={sessionStopped}/>
     {workspaceReferencePickerOpen && <WorkspaceReferencePicker
       entries={composerWorkspaceDetailsQuery.data?.files ?? []}
       query={workspaceReferenceQuery}

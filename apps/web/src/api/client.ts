@@ -183,7 +183,7 @@ const automaticNodePlansWrite = (nodePlans: FlowRunAutomaticRecordUpdate['node_p
 const attachmentReferences = (attachments: AgentAttachment[]) => attachments.map(({ path, image_data_url, filename, mime_type, byte_size }) =>
   image_data_url ? { path, image_data_url, filename, mime_type, byte_size } : { path, filename, mime_type, byte_size },
 );
-const workspaceReferencePayload = (references: AgentWorkspaceReference[]) => references.map(({ path, kind, display_name }) => ({ path, kind, display_name }));
+const workspaceReferencePayload = (references: AgentWorkspaceReference[]) => references.map(({ path, kind, display_name, selection }) => ({ path, kind, display_name, ...(selection ? { selection } : {}) }));
 export const api = {
   authMe: () => request<AuthUser>('/auth/me'),
   login: (username: string, password: string) =>

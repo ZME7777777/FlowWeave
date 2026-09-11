@@ -330,7 +330,7 @@ def validate_message_workspace_references(
     )
     _validate_scope_roots(project_root, runtime_root, roots)
     authorized_roots = _resolved_scope_roots(project_root, runtime_root, roots)
-    normalized: list[dict[str, str]] = []
+    normalized: list[dict[str, Any]] = []
     for reference in references:
         path = reference["path"]
         kind = reference["kind"]
@@ -367,7 +367,11 @@ def validate_message_workspace_references(
                 or not any(resolved.is_relative_to(root) for root in authorized_roots)
             ):
                 raise DomainError("AGENT_WORKSPACE_REFERENCE_INVALID", "引用目录无效", 422)
-        normalized.append({"path": path, "kind": kind, "display_name": candidate.name})
+        value: dict[str, Any] = {"path": path, "kind": kind, "display_name": candidate.name}
+        if reference.get("selection") is not None:
+            value["selection"] = reference["selection"]
+            value["relative_path"] = PurePosixPath(path).relative_to(runtime_root).as_posix()
+        normalized.append(value)
     return tuple(normalized)
 
 

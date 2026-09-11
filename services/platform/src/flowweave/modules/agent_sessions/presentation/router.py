@@ -78,6 +78,7 @@ class NodeWorkspaceReference(_Write):
     path: str = Field(min_length=1, max_length=500)
     kind: Literal["file", "directory"]
     display_name: str = Field(min_length=1, max_length=240)
+    selection: dict[str, int] | None = None
 
 
 class NodeSessionBootstrapFullWrite(_Write):

@@ -615,7 +615,7 @@ def validate_message_workspace_references(
     )
     project_root = _project_root(db, workspace_id)
     runtime_root = _runtime_root(workspace_id)
-    normalized: list[dict[str, str]] = []
+    normalized: list[dict[str, Any]] = []
     for reference in references:
         path = reference["path"]
         kind = reference["kind"]
@@ -626,7 +626,11 @@ def validate_message_workspace_references(
             raise DomainError("AGENT_WORKSPACE_REFERENCE_INVALID", "引用目录已不存在", 422)
         if kind == "file" and not candidate.is_file():
             raise DomainError("AGENT_WORKSPACE_REFERENCE_INVALID", "引用文件已不存在", 422)
-        normalized.append({"path": path, "kind": kind, "display_name": candidate.name})
+        value: dict[str, Any] = {"path": path, "kind": kind, "display_name": candidate.name}
+        if reference.get("selection") is not None:
+            value["selection"] = reference["selection"]
+            value["relative_path"] = PurePosixPath(path).relative_to(runtime_root).as_posix()
+        normalized.append(value)
     return tuple(normalized)
 
 

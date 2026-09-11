@@ -639,6 +639,10 @@ export interface AgentWorkspaceReference {
   path: string;
   kind: 'file' | 'directory';
   display_name: string;
+  /** A 1-based, end-exclusive range in a text file. */
+  selection?: { start_line: number; start_column: number; end_line: number; end_column: number };
+  /** Server-derived path relative to the current workspace root. */
+  relative_path?: string;
 }
 export interface AgentConversationReference {
   event_id: string;
