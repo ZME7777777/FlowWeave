@@ -7,6 +7,7 @@ import { deploymentBasePath } from '../deploymentPath';
 import { SubagentAvatar } from './SubagentAvatar';
 import { useEscapeClose } from './useEscapeClose';
 import { subagentAvatarSlotForEvent, subagentAvatarSlots, type SubagentAvatarSlot } from '../utils/subagentAvatar';
+import { workspaceFileChanges, type WorkspaceFileChange } from './agent-session/fileChanges';
 import './conversation-surface.css';
 
 type ItemKind = 'user' | 'assistant' | 'thought' | 'tool' | 'error' | 'condensation';
@@ -818,16 +819,20 @@ function taskAvatarStatus(entry: ActivityEntry, item: Item): 'running' | 'comple
   return phases.includes('COMPLETED') ? 'completed' : 'running';
 }
 
-function ActivityGroup({ items, active, liveText, startedAt, finishedAt, avatarSlots }: {
+function ActivityGroup({ items, active, liveText, startedAt, finishedAt, avatarSlots, onReviewChanges }: {
   items: Item[];
   active: boolean;
   liveText?: string;
   startedAt?: number;
   finishedAt?: number;
   avatarSlots: ReadonlyMap<string, SubagentAvatarSlot>;
+  onReviewChanges?: (changes: WorkspaceFileChange[]) => void;
 }) {
   const elapsedSeconds = useElapsedSeconds(startedAt, finishedAt, active);
   const entries = groupedActivities(items);
+  // A tool call is only projected here after its successful native result is
+  // present, so a pending or failed edit can never appear as a file change.
+  const changes = active ? workspaceFileChanges(items.map(item => item.event)) : [];
   const itemCount = entries.length + (liveText ? 1 : 0);
   const [open, setOpen] = useState(active);
   useEffect(() => { setOpen(active); }, [active]);
@@ -864,16 +869,22 @@ function ActivityGroup({ items, active, liveText, startedAt, finishedAt, avatarS
           </div>
         </article>;
       })}
+      {changes.length > 0 && <section className="conversation-live-file-changes" aria-label={`本轮已更改 ${changes.length} 个文件`}>
+        <button type="button" onClick={() => onReviewChanges?.(changes)}><FileText size={14}/><span><b>{`已更改 ${changes.length} 个文件`}</b><small><ins>{`+${changes.reduce((total, change) => total + change.additions, 0)}`}</ins><del>{`-${changes.reduce((total, change) => total + change.deletions, 0)}`}</del></small></span><PanelRightOpen size={13}/></button>
+        <div>{changes.map(change => <button type="button" key={change.id} onClick={() => onReviewChanges?.([change])} title={`审查 ${change.path}`}><span>{change.path.replace(/^\/runtime\/workspace\/project\/?/, '')}</span><ins>{`+${change.additions}`}</ins><del>{`-${change.deletions}`}</del></button>)}</div>
+      </section>}
       {liveText && <article className="conversation-activity-row live-text"><Sparkles size={14}/><div><b>正在生成回复</b><small>模型输出</small><p className="conversation-live-text-content">{liveText}</p></div></article>}
     </div>
   </details>;
 }
 
-function AgentReply({ event, content, onFork, onPreviewCandidateFile, highlightReferenceSource = false }: {
+function AgentReply({ event, content, changes = [], onFork, onPreviewCandidateFile, onReviewChanges, highlightReferenceSource = false }: {
   event: OpenHandsConversationEvent;
   content: string;
+  changes?: WorkspaceFileChange[];
   onFork?: () => void;
   onPreviewCandidateFile?: (fieldKey: string, relativePath: string) => void;
+  onReviewChanges?: (changes: WorkspaceFileChange[]) => void;
   highlightReferenceSource?: boolean;
 }) {
   const eventId = event.id;
@@ -885,6 +896,10 @@ function AgentReply({ event, content, onFork, onPreviewCandidateFile, highlightR
     {candidateMessage.businessConclusion ? <MessageMarkdown>{candidateMessage.businessConclusion}</MessageMarkdown> : !candidateMessage.outputs && content ? <MessageMarkdown>{content}</MessageMarkdown> : null}
     {candidateMessage.outputs && <CandidateOutputReply outputs={candidateMessage.outputs} onPreviewFile={onPreviewCandidateFile ? output => onPreviewCandidateFile(output.fieldKey, output.value) : undefined}/>}
     {!candidateMessage.businessConclusion && !candidateMessage.outputs && !content && <span className="conversation-typing"><i/><i/><i/></span>}
+    {changes.length > 0 && <section className="conversation-file-changes" aria-label={`本轮编辑了 ${changes.length} 个文件`}>
+      <button type="button" onClick={() => onReviewChanges?.(changes)}><FileText size={15}/><span><b>{`已编辑 ${changes.length} 个文件`}</b><small><ins>{`+${changes.reduce((total, change) => total + change.additions, 0)}`}</ins><del>{`-${changes.reduce((total, change) => total + change.deletions, 0)}`}</del></small></span><PanelRightOpen size={14}/></button>
+      <div>{changes.map(change => <button type="button" key={change.id} onClick={() => onReviewChanges?.([change])}><span title={change.path}>{change.path.replace(/^\/runtime\/workspace\/project\/?/, '')}</span><ins>{`+${change.additions}`}</ins><del>{`-${change.deletions}`}</del></button>)}</div>
+    </section>}
     {(timestamp || onFork) && <footer className="conversation-message-meta assistant">
       {timestamp && <time dateTime={typeof event.payload.timestamp === 'string' ? event.payload.timestamp : undefined}>{timestamp}</time>}
       {onFork && <button type="button" className="conversation-message-fork" onClick={onFork}><GitFork size={12}/>从此处分叉会话</button>}
@@ -1028,7 +1043,7 @@ function ConversationFailure({ item, taskControl = [] }: { item: Item; taskContr
   </article>;
 }
 
-export function ConversationSurface({ events, liveText, isGenerating, isPaused: _isPaused = false, requestStartedAt, requestSubmitting = false, rewritePending = false, condensationStatus, onRetryCondensation, onRewrite, onFork, onOpenAttachment, onPreviewCandidateFile, onAddReference, taskControl = [], monitoring, connectionState }: {
+export function ConversationSurface({ events, liveText, isGenerating, isPaused: _isPaused = false, requestStartedAt, requestSubmitting = false, rewritePending = false, condensationStatus, onRetryCondensation, onRewrite, onFork, onOpenAttachment, onPreviewCandidateFile, onReviewChanges, onAddReference, taskControl = [], monitoring, connectionState }: {
   events: OpenHandsConversationEvent[];
   liveText: string;
   isGenerating: boolean;
@@ -1043,6 +1058,7 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused: 
   onFork?: (eventId: string) => void;
   onOpenAttachment?: (attachment: AgentAttachment) => void;
   onPreviewCandidateFile?: (fieldKey: string, relativePath: string) => void;
+  onReviewChanges?: (changes: WorkspaceFileChange[]) => void;
   onAddReference?: (reference: ConversationReference) => void;
   taskControl?: RuntimeTaskControlSnapshot[];
   monitoring?: AgentActivitySummary;
@@ -1239,6 +1255,7 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused: 
           finishedAt,
           isCurrent && !turn.assistant && !failures.length,
         );
+        const fileChanges = workspaceFileChanges(turn.activity.map(item => item.event));
         const userTimestamp = turn.user ? formatMessageTime(turn.user.event.payload.timestamp) : undefined;
         return <section className="conversation-turn" key={turn.id}>
           {turn.user && <div className="conversation-user-message">{editingEventId === turn.user.event.id
@@ -1254,15 +1271,16 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused: 
               startedAt={block.startedAt}
               finishedAt={block.finishedAt}
               avatarSlots={avatarSlots}
+              onReviewChanges={onReviewChanges}
             />)}
           {isCurrent && !turn.assistant && !failures.length && (
             <CurrentTurnStatus items={turn.activity} liveText={liveText} requestSubmitting={requestSubmitting} monitoring={monitoring} connectionState={connectionState}/>
           )}
-          {turn.assistant && <AgentReply event={turn.assistant.event} content={turn.assistant.content} onFork={!isGenerating ? () => onFork?.(turn.assistant!.event.id) : undefined} onPreviewCandidateFile={onPreviewCandidateFile} highlightReferenceSource={highlightedReferenceEventId === turn.assistant.event.id}/>}
+          {turn.assistant && <AgentReply event={turn.assistant.event} content={turn.assistant.content} changes={fileChanges} onFork={!isGenerating ? () => onFork?.(turn.assistant!.event.id) : undefined} onPreviewCandidateFile={onPreviewCandidateFile} onReviewChanges={onReviewChanges} highlightReferenceSource={highlightedReferenceEventId === turn.assistant.event.id}/>}
           {failures.map(item => <ConversationFailure key={item.event.id} item={item} taskControl={taskControl}/>)}
         </section>;
       })}
-      {turns.length === 0 && (liveText || isGenerating) && <><ActivityGroup items={[]} active liveText={liveText} startedAt={requestStartedAt} avatarSlots={avatarSlots}/><CurrentTurnStatus items={[]} liveText={liveText} requestSubmitting={requestSubmitting} monitoring={monitoring} connectionState={connectionState}/></>}
+      {turns.length === 0 && (liveText || isGenerating) && <><ActivityGroup items={[]} active liveText={liveText} startedAt={requestStartedAt} avatarSlots={avatarSlots} onReviewChanges={onReviewChanges}/><CurrentTurnStatus items={[]} liveText={liveText} requestSubmitting={requestSubmitting} monitoring={monitoring} connectionState={connectionState}/></>}
       {condensationStatus && <article className={`conversation-condensation-progress ${condensationStatus.state}`} aria-label={condensationStatus.state === 'running' ? '正在压缩上下文' : '上下文压缩失败'} role="status">
         {condensationStatus.state === 'running' ? <LoaderCircle className="conversation-condensation-spinner" size={16}/> : <CircleAlert size={16}/>}
         <div><header><b>{condensationStatus.state === 'running' ? '正在压缩上下文' : '上下文压缩未完成'}</b>{condensationStatus.state === 'running' && <time>{formatDuration(condensationElapsed / 1_000)}</time>}</header>
