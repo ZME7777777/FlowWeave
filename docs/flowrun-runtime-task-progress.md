@@ -3915,14 +3915,6 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 
 完成：工作区标签改为可访问的复制按钮，复制 `.` 或 `./子目录`；在 Clipboard API 受限时回退至用户手势复制，成功后短暂显示“已复制”，同时保留既有目录名、定位和悬浮路径提示。
 
-### FR-306 Agent 工作区分组快捷新建入口移除 — DONE
-
-依赖：FR-305。
-
-目标：工作区分组标题只保留展开／收起箭头，不在箭头旁展示绿色快捷新建会话加号。
-
-完成：移除根工作区及子工作区分组标题内的快捷新建会话按钮；保留展开／收起、删除工作区（适用时）和既有的新建会话入口。
-
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -3938,7 +3930,6 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
-| 2026-09-11 | FR-306 | Web TypeScript typecheck、ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS：工作区分组标题不再显示绿色快捷新建会话加号，折叠箭头和其他创建入口保持可用；无 `CURRENT`。production build 仅报告既有大 chunk 提示。 |
 | 2026-09-11 | FR-305 | Web TypeScript typecheck、ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS：点击当前工作区标签仅复制相对根工作区路径，复制成功提供短暂可见与无障碍反馈；无 `CURRENT`。production build 仅报告既有大 chunk 提示。 |
 | 2026-09-11 | FR-304 | Web TypeScript typecheck、ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS：工作区标签整体向右移动 24px 至指定区域；无 `CURRENT`。production build 仅报告既有大 chunk 提示。 |
 | 2026-09-11 | FR-303 | Web TypeScript typecheck、ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS：详情恢复短 Hash 并移除重复的提交者／提交时间；提交树默认完整展开，长路径不再截断而是在明确可见的横向滚动条中查看；无 `CURRENT`。production build 仅报告既有大 chunk 提示。 |
