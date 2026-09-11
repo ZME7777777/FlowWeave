@@ -1389,30 +1389,26 @@ function selectPreviewText(root: HTMLElement, content: string, selection: FileSe
   root.scrollIntoView({ block: 'center', behavior: 'smooth' });
 }
 
-const WORKSPACE_SELECTION_HIGHLIGHT = 'flowweave-workspace-selection';
-
-function setWorkspaceSelectionHighlight(range?: Range): void {
-  const highlights = (CSS as unknown as { highlights?: { set: (name: string, value: unknown) => void; delete: (name: string) => boolean } }).highlights;
-  const HighlightConstructor = (window as unknown as { Highlight?: new (value: Range) => unknown }).Highlight;
-  if (!highlights || !HighlightConstructor) return;
-  if (range) highlights.set(WORKSPACE_SELECTION_HIGHLIGHT, new HighlightConstructor(range));
-  else highlights.delete(WORKSPACE_SELECTION_HIGHLIGHT);
-}
-
 function WorkspaceTextPreview({ path, content, highlight, onSelect }: { path: string; content: string; highlight?: FileSelection; onSelect?: (selection: FileSelection) => void }) {
   const previewRef = useRef<HTMLDivElement>(null);
-  const activeSelectionRef = useRef<FileSelection | undefined>(undefined);
-  const activeRangeRef = useRef<Range | undefined>(undefined);
   const [selectionAction, setSelectionAction] = useState<{ selection: FileSelection; left: number; top: number }>();
   const positionSelectionAction = useCallback((selection: FileSelection, range: Range) => {
+    const preview = previewRef.current;
+    if (!preview) return;
     // A multi-line range's bounding box starts at the first selected line.
     // The last client rect keeps the action attached to the line where the
     // selection ends, which is where users expect a contextual action.
-    const rects = Array.from(range.getClientRects());
+    const rects = Array.from(range.getClientRects()).filter(rect => rect.width > 0 && rect.height > 0);
     const anchor = rects.at(-1) ?? range.getBoundingClientRect();
+    const previewRect = preview.getBoundingClientRect();
     const actionWidth = 136;
-    const left = Math.min(Math.max(8, anchor.right - actionWidth), Math.max(8, window.innerWidth - actionWidth - 8));
-    const top = anchor.top >= 44 ? anchor.top - 36 : anchor.bottom + 8;
+    const left = Math.min(
+      Math.max(8, anchor.right - previewRect.left + preview.scrollLeft - actionWidth),
+      Math.max(8, preview.scrollWidth - actionWidth - 8),
+    );
+    const top = anchor.top - previewRect.top + preview.scrollTop >= 36
+      ? anchor.top - previewRect.top + preview.scrollTop - 36
+      : anchor.bottom - previewRect.top + preview.scrollTop + 8;
     setSelectionAction({ selection, left, top });
   }, []);
   useEffect(() => {
@@ -1423,50 +1419,17 @@ function WorkspaceTextPreview({ path, content, highlight, onSelect }: { path: st
     previewRef.current.scrollIntoView({ block: 'center', behavior: 'smooth' });
     return () => window.clearTimeout(timer);
   }, [content, highlight]);
-  useEffect(() => () => setWorkspaceSelectionHighlight(), []);
-  useEffect(() => {
-    const preview = previewRef.current;
-    const reposition = () => {
-      const selection = activeSelectionRef.current;
-      const range = activeRangeRef.current ?? (window.getSelection()?.rangeCount ? window.getSelection()?.getRangeAt(0) : undefined);
-      if (!selection || !preview || !range || !preview.contains(range.startContainer) || !preview.contains(range.endContainer)) {
-        activeSelectionRef.current = undefined;
-        activeRangeRef.current = undefined;
-        setWorkspaceSelectionHighlight();
-        setSelectionAction(undefined);
-        return;
-      }
-      positionSelectionAction(selection, range);
-    };
-    // `scroll` does not bubble, so capture it from the window to include the
-    // preview and every scrollable ancestor in the workbench.
-    window.addEventListener('scroll', reposition, { capture: true, passive: true });
-    window.addEventListener('resize', reposition);
-    return () => {
-      window.removeEventListener('scroll', reposition, true);
-      window.removeEventListener('resize', reposition);
-    };
-  }, [positionSelectionAction]);
   const captureSelection = () => {
     if (!previewRef.current) return;
     const selection = selectionFromPreview(previewRef.current, content);
     const range = window.getSelection()?.rangeCount ? window.getSelection()?.getRangeAt(0) : undefined;
     if (!selection || !range) {
-      activeSelectionRef.current = undefined;
-      activeRangeRef.current = undefined;
-      setWorkspaceSelectionHighlight();
       setSelectionAction(undefined);
       return;
     }
-    activeSelectionRef.current = selection;
-    activeRangeRef.current = range;
-    // Native selections can disappear as focus moves to the floating action.
-    // A CSS Custom Highlight keeps the exact chosen file range visible until
-    // the user sends it, chooses another range, or dismisses the action.
-    setWorkspaceSelectionHighlight(range);
     positionSelectionAction(selection, range);
   };
-  const action = selectionAction && createPortal(<button type="button" className="agent-file-selection-action" style={{ left: selectionAction.left, top: selectionAction.top }} onMouseDown={event => event.preventDefault()} onClick={() => { onSelect?.(selectionAction.selection); activeSelectionRef.current = undefined; activeRangeRef.current = undefined; setWorkspaceSelectionHighlight(); setSelectionAction(undefined); window.getSelection()?.removeAllRanges(); }}><Quote size={13}/>追加到会话</button>, document.body);
+  const action = selectionAction && <button type="button" className="agent-file-selection-action" style={{ left: selectionAction.left, top: selectionAction.top }} onMouseDown={event => event.preventDefault()} onClick={() => { onSelect?.(selectionAction.selection); setSelectionAction(undefined); window.getSelection()?.removeAllRanges(); }}><Quote size={13}/>追加到会话</button>;
   if (/\.(?:md|mdx|markdown)$/i.test(path)) {
     return <div ref={previewRef} className="agent-file-preview-selection" onMouseUp={captureSelection}>{action}<article className="agent-file-markdown-preview"><ReactMarkdown remarkPlugins={[remarkGfm]} components={{ code: WorkspaceMarkdownCode }}>{content}</ReactMarkdown></article></div>;
   }
