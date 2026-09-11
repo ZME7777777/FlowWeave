@@ -1,5 +1,6 @@
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from threading import Barrier, Thread
 from time import sleep
 
 from sqlalchemy import select
@@ -91,6 +92,51 @@ def test_task_lease_generation_fences_late_worker(db_session_factory):
     with db_session_factory() as db:
         assert succeed(db, lease2) is True
         assert db.get(BackgroundTask, task_id).state == TaskState.SUCCEEDED
+
+
+def test_concurrent_enqueue_reuses_one_postgres_idempotency_record(db_session_factory):
+    """Concurrent recovery delivery must not leak an IntegrityError to a caller."""
+
+    gate = Barrier(2)
+    task_ids: list[str] = []
+    failures: list[Exception] = []
+
+    def deliver() -> None:
+        try:
+            with db_session_factory() as db:
+                gate.wait(timeout=5)
+                task = enqueue(
+                    db,
+                    task_type="STOP_FLOW_RUN_RUNTIMES",
+                    aggregate_type="FLOW_RUN",
+                    aggregate_id="11111111-1111-4111-8111-111111111111",
+                    idempotency_key="stop-flow-run-runtimes:11111111-1111-4111-8111-111111111111",
+                )
+                db.commit()
+                task_ids.append(task.id)
+        except Exception as exc:  # pragma: no cover - asserted below
+            failures.append(exc)
+
+    threads = [Thread(target=deliver), Thread(target=deliver)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+        assert not thread.is_alive()
+
+    assert failures == []
+    assert len(task_ids) == 2
+    assert len(set(task_ids)) == 1
+    with db_session_factory() as db:
+        tasks = list(
+            db.scalars(
+                select(BackgroundTask).where(
+                    BackgroundTask.idempotency_key
+                    == "stop-flow-run-runtimes:11111111-1111-4111-8111-111111111111"
+                )
+            )
+        )
+        assert len(tasks) == 1
 
 
 def test_expired_lease_cannot_be_revived_by_heartbeat(db_session_factory):

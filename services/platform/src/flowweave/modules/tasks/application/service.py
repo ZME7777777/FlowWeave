@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import select, update
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from flowweave.modules.users.application.security import FLOWWEAVE_USER_ID, current_user_id
@@ -29,25 +30,32 @@ def enqueue(
     available_at: datetime | None = None,
 ) -> BackgroundTask:
     owner_user_id = current_user_id(default=FLOWWEAVE_USER_ID)
-    existing = db.scalar(
+    # Do not use a read-then-insert sequence here. Recovery, API commands and
+    # maintenance can concurrently deliver the same idempotency key on
+    # separate PostgreSQL transactions; both readers may see no row and the
+    # loser would otherwise receive an IntegrityError instead of the existing
+    # delivery record. The database unique constraint is the authority.
+    db.execute(
+        insert(BackgroundTask)
+        .values(
+            owner_user_id=owner_user_id,
+            task_type=task_type,
+            aggregate_type=aggregate_type,
+            aggregate_id=aggregate_id,
+            idempotency_key=idempotency_key,
+            payload_json=payload or {},
+            available_at=available_at or datetime.now(UTC),
+        )
+        .on_conflict_do_nothing(index_elements=("owner_user_id", "idempotency_key"))
+    )
+    task = db.scalar(
         select(BackgroundTask).where(
             BackgroundTask.owner_user_id == owner_user_id,
             BackgroundTask.idempotency_key == idempotency_key,
         )
     )
-    if existing:
-        return existing
-    task = BackgroundTask(
-        owner_user_id=owner_user_id,
-        task_type=task_type,
-        aggregate_type=aggregate_type,
-        aggregate_id=aggregate_id,
-        idempotency_key=idempotency_key,
-        payload_json=payload or {},
-        available_at=available_at or datetime.now(UTC),
-    )
-    db.add(task)
-    db.flush()
+    if task is None:
+        raise RuntimeError("Background task insert did not yield an idempotency record")
     return task
 
 

@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`COMPLETE`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`NONE`（FR-332 已完成，后续稳定性审计须创建独立切片）
+> 下一可执行切片：`NONE`（FR-333 已完成；后续稳定性审计须创建独立切片）
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -4329,6 +4329,25 @@ reconcile 对 `RUNNING` success 清除 `last_error_*`，但对 `STOPPED` success
 完成：`STOPPED` success outcome 与 `RUNNING` success outcome 一样清除 `last_error_code` 和
 `last_error_detail`；新增回归覆盖从 `SANDBOX_BACKEND_UNAVAILABLE` 到 Docker 确认停止的收敛。
 
+### FR-333 Background Task 并发幂等投递原子化 — DONE
+
+依赖：FR-325、FR-328。
+
+目标：Background Task 的 idempotency key 是 Runtime provision/recovery/replace/stop、Environment
+cleanup 与其他异步操作的单一交付 identity。现有 `enqueue()` 先查询再插入：两个并发事务可同时看不到
+记录，其中一个随后触发 unique constraint，而不是复用赢家 task，造成不必要的 API/Worker 失败并可能中断
+恢复链。
+
+范围：使用 PostgreSQL 唯一约束
+`(owner_user_id, idempotency_key)` 的原子 conflict-do-nothing，再读取权威 task。不得覆盖既有
+payload/state/lease/attempt/error，不复活 `DEAD` task，不改变 terminal retention 或 worker claim/fencing
+语义。
+
+完成：`enqueue()` 改为 PostgreSQL `INSERT ... ON CONFLICT (owner_user_id,
+idempotency_key) DO NOTHING` 后读取唯一权威记录。并发交付会由数据库唯一约束串行化并返回赢家 task，不再把
+唯一键冲突泄露给 API、恢复或 Worker 调用方；已存在记录的 payload、状态、lease、attempt 和错误账本均未修改。
+新增双 Session 并发回归，断言两个调用返回同一 task id，且数据库中仅一条记录。
+
 ### FR-321 OpenHands 1.47 增强最终安全、恢复与性能门禁 — DONE
 
 依赖：FR-309–FR-320。
@@ -4364,6 +4383,7 @@ contract、冻结策略与既有受控生命周期约束覆盖。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-12 | FR-333 | 受影响 Python Ruff format/check、`py_compile`、唯一 Alembic head、`git diff --check`；PostgreSQL 并发 `enqueue` 定向 pytest | PASS（静态）：Ruff、语法、空白检查与唯一 Alembic head `0113_task_retention` 通过。实现以 PostgreSQL 原子 `ON CONFLICT DO NOTHING` 取代 read-then-insert，随后读取权威记录，不会改写既有 terminal/lease/error 状态。新增双 Session 并发回归已被收集，但在业务断言前因本机 Docker Unix socket 缺失、Testcontainers PostgreSQL 无法启动而阻断，未伪记为通过；远端发布只验证服务健康与既有 task ledger，不向生产投递人为构造的 worker task。 |
 | 2026-09-12 | FR-332 | 受影响 Python Ruff format/check、`py_compile`、唯一 Alembic head、`git diff --check`；已停止 Runtime error-clear 定向 pytest | PASS（静态）：Ruff、语法、空白检查与唯一 Alembic head `0113_task_retention` 通过。新增回归精确覆盖 confirmed `STOPPED` observation 必须清除遗留 Provider 错误。两条定向 pytest 在 Testcontainers PostgreSQL fixture 初始化前因本机 Docker Unix socket 缺失阻断，未伪记为通过；远端部署需确认两个 `STOPPED` Runtime 的过时 `SANDBOX_BACKEND_UNAVAILABLE` 清除，且其容器、network、allocation 仍保留。 |
 | 2026-09-12 | FR-331 | 受影响 Python Ruff format/check、`py_compile`、唯一 Alembic head、`git diff --check`；活跃／终态 network recovery 定向 pytest；`.154` Docker CLI state 输出探针 | PASS（静态／生产构造）：Ruff、语法、空白检查与唯一 Alembic head `0113_task_retention` 通过。生产只读探针确认活跃 Runtime 返回完整 `container-id|running`，终态 Runtime 返回 `container-id|exited`，与附着 container ID 的 prefix 校验匹配。三条定向 pytest 在 Testcontainers PostgreSQL fixture 初始化前因本机 Docker Unix socket 缺失阻断，未伪记为通过；远端部署须确认 6 个终态 network 的 platform client attachment 被收敛、两个活跃 Runtime network 保持三类 trusted client。 |
 | 2026-09-12 | FR-330 | 受影响 Python Ruff format/check、`py_compile`、唯一 Alembic head、`git diff --check`；历史 existing/new/concurrent-create admission 定向 pytest | PASS（静态／构造）：Ruff、语法、空白检查与唯一 Alembic head `0113_task_retention` 通过。回归精确证明既有 Runtime 继续 owner/spec/网络/隔离校验而不重验当前基线，新 generation 与确定性名称竞争获得的 generation 均强制 strict admission。三条定向 pytest 在 Testcontainers PostgreSQL fixture 初始化前因本机 Docker Unix socket 缺失阻断，未伪记为通过；远端部署需确认活跃 `1.44.0` FlowRun Runtime 保持运行且账本收敛为 `RUNNING`、错误清除。 |
