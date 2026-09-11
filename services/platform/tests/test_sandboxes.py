@@ -1729,6 +1729,38 @@ def test_reconciler_clears_transient_provider_error_after_a_confirmed_runtime_ob
     assert report.errors == 0
 
 
+def test_reconciler_clears_transient_provider_error_after_a_confirmed_stop(
+    settings, db_session_factory, monkeypatch
+):
+    configured = _docker_settings(settings)
+    resource = _resource(desired_state="STOPPED")
+    resource.last_error_code = "SANDBOX_BACKEND_UNAVAILABLE"
+    resource.last_error_detail = "Docker temporarily unavailable"
+    resource.next_reconcile_at = datetime.now(UTC) - timedelta(seconds=1)
+    with db_session_factory() as db:
+        db.add(resource)
+        db.commit()
+        resource_id = resource.id
+
+    monkeypatch.setattr(
+        DockerSandboxProvider, "inspect", lambda self, _name: _observation(resource)
+    )
+    monkeypatch.setattr(DockerSandboxProvider, "list_managed", lambda self: [])
+
+    with settings_context(configured), db_session_factory() as db:
+        report = reconcile_managed_sandboxes(db)
+        db.commit()
+
+    with db_session_factory() as db:
+        persisted = db.get(ManagedSandbox, resource_id)
+        assert persisted is not None
+        assert persisted.desired_state == "STOPPED"
+        assert persisted.observed_state == "STOPPED"
+        assert persisted.last_error_code is None
+        assert persisted.last_error_detail is None
+    assert report.errors == 0
+
+
 def test_reconciler_deletes_auxiliary_resources_when_container_is_already_missing(
     settings, db_session_factory, monkeypatch
 ):

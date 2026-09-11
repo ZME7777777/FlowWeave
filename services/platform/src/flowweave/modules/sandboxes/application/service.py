@@ -1086,6 +1086,12 @@ def _apply_reconcile_outcome(
 
         if outcome.kind == "STOPPED":
             current.observed_state = "STOPPED"
+            # A confirmed terminal observation is just as authoritative as a
+            # confirmed RUNNING observation.  Do not retain a transient
+            # provider outage (or a prior stale error) after Docker has
+            # successfully confirmed the intentionally stopped resource.
+            current.last_error_code = None
+            current.last_error_detail = None
             current.next_reconcile_at = now + timedelta(seconds=interval_seconds)
         elif outcome.kind == "RUNNING" and outcome.observation is not None:
             current.observed_state = outcome.observation.state
