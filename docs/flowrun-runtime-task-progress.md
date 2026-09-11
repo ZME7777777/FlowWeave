@@ -3745,6 +3745,14 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 
 完成：仅在 Agent 工作台覆盖会话滚动区，将其内容列设为与 composer 相同的 860px 居中宽度，并保留 16px 两侧安全留白；通用 Conversation Surface 和只读弹窗继续使用原有布局。
 
+### FR-285 Agent 工作台三栏标题基线对齐 — DONE
+
+依赖：FR-284。
+
+目标：一级 Agent 工作台的左侧操作区、中间会话标题区和右侧环境信息区共享同一条标题区底部基线；左侧只保留新建会话和新增工作区按钮，中间不显示重复的英文会话眉题，右侧保持原有内容与交互。
+
+完成：修正工作台壳层覆盖规则，使中间标题区从 80px 收口为与左右两栏一致的 64px；三栏分隔线现完全对齐。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -3760,6 +3768,7 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-11 | FR-285 | Web ESLint、TypeScript typecheck、`git diff --check` 与任务状态唯一性 | PASS：实际生效的工作台壳层中栏标题轨道与左侧操作区、右侧环境信息区均为 64px，三栏底部分隔线对齐。 |
 | 2026-09-11 | FR-284 | Web ESLint、TypeScript typecheck、production build、`git diff --check` 与任务状态唯一性 | PASS：Agent 工作台内会话内容列与底部 composer 使用同一 860px 居中宽度，会话区保留 16px 两侧空白；通用会话页面与只读弹窗不受影响。 |
 | 2026-09-11 | FR-283 | Web TypeScript typecheck；受影响 Web ESLint；production build；`git diff --check` 与任务状态唯一性 | PASS：浏览器菜单抑制改至 document 捕获阶段，覆盖 xterm canvas 的内部事件处理顺序；仅限当前终端 DOM 子树且不停止传播。 |
 | 2026-09-11 | FR-282 | Web TypeScript typecheck；受影响 Web ESLint；production build；`git diff --check` 与任务状态唯一性 | PASS：过程文本与最终回复同级呈现，工具调用收敛为低对比度辅助信息，工具和文件变更路径按当前绑定工作目录相对显示。Agent 工作区终端新增浏览器右键默认行为回归断言；同一保护覆盖 FlowRun Runtime 和环境配置终端，且不阻断 xterm/tmux 右键事件。Web typecheck、受影响 ESLint、production build 和 whitespace 检查通过。定向 Playwright 因本机既有页面状态阻塞未完成，未伪记为通过。 |
