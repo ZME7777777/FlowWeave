@@ -1388,6 +1388,8 @@ function WorkspaceFileTree({ entries, root, selectedFile, selectedPaths, expande
   const treeRef = useRef<HTMLDivElement>(null);
   const stickyOverlayRef = useRef<HTMLDivElement>(null);
   const rowRefs = useRef(new Map<string, HTMLDivElement>());
+  const lastTreeScrollTopRef = useRef(0);
+  const stickyCoverageHeightRef = useRef(0);
   const [stickyDirectoryPaths, setStickyDirectoryPaths] = useState<string[]>([]);
   useEffect(() => {
     const paths: string[] = [];
@@ -1433,17 +1435,28 @@ function WorkspaceFileTree({ entries, root, selectedFile, selectedPaths, expande
     // gesture, so the directory path visibly drifted into the middle.
     if (overlay) overlay.style.transform = `translateY(${tree.scrollTop}px)`;
     if (tree.scrollTop <= 1) {
+      lastTreeScrollTopRef.current = tree.scrollTop;
+      stickyCoverageHeightRef.current = 0;
       setStickyDirectoryPaths(current => current.length ? [] : current);
       return;
     }
+    const movingUp = tree.scrollTop < lastTreeScrollTopRef.current;
     const overlayHeight = overlay?.offsetHeight ?? 0;
+    // A shorter directory chain exposes more source rows. Recomputing with
+    // that shorter height immediately selected the old deep path again, which
+    // in turn restored the tall chain (A → B → A flicker). Keep the maximum
+    // covered area for one downward scroll sequence; reset it only when the
+    // user reverses direction or returns to the top.
+    if (movingUp) stickyCoverageHeightRef.current = overlayHeight;
+    else stickyCoverageHeightRef.current = Math.max(stickyCoverageHeightRef.current, overlayHeight);
+    lastTreeScrollTopRef.current = tree.scrollTop;
     const treeTop = tree.getBoundingClientRect().top;
     const firstVisible = visibleNodes.find(({ node }) => {
       const row = rowRefs.current.get(node.path);
       // The path must describe the content that is actually exposed below the
       // pinned header. A row merely hidden behind that header belongs to the
       // previous directory and must not keep its stale ancestors visible.
-      return row && row.getBoundingClientRect().bottom > treeTop + overlayHeight + 1;
+      return row && row.getBoundingClientRect().bottom > treeTop + stickyCoverageHeightRef.current + 1;
     });
     const next = firstVisible ? stickyDirectoriesFor(firstVisible.node) : [];
     setStickyDirectoryPaths(current => current.length === next.length && current.every((path, index) => path === next[index]) ? current : next);
@@ -1452,21 +1465,10 @@ function WorkspaceFileTree({ entries, root, selectedFile, selectedPaths, expande
     updateStickyDirectories();
   }, [updateStickyDirectories]);
   useLayoutEffect(() => {
+    const tree = treeRef.current;
     const overlay = stickyOverlayRef.current;
-    if (!overlay) return;
-    const updateHeight = () => {
-      const tree = treeRef.current;
-      if (tree) overlay.style.transform = `translateY(${tree.scrollTop}px)`;
-    };
-    updateHeight();
-    const observer = new ResizeObserver(updateHeight);
-    observer.observe(overlay);
-    // The number of pinned folders changes the overlay height.  Re-evaluate
-    // after layout so the newly exposed first row can shrink the chain in the
-    // same scroll position, rather than waiting for the next wheel event.
-    const frame = requestAnimationFrame(updateStickyDirectories);
-    return () => { observer.disconnect(); cancelAnimationFrame(frame); };
-  }, [stickyDirectoryPaths, updateStickyDirectories]);
+    if (tree && overlay) overlay.style.transform = `translateY(${tree.scrollTop}px)`;
+  }, [stickyDirectoryPaths]);
   const selectEntry = (node: WorkspaceTreeNode, event: ReactMouseEvent<HTMLButtonElement>) => {
     const toggling = event.metaKey || event.ctrlKey;
     const anchorIndex = selectionAnchor.current ? visibleNodes.findIndex(item => item.node.path === selectionAnchor.current) : -1;
