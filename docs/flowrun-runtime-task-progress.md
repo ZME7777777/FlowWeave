@@ -3705,6 +3705,14 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 
 完成：Workbench 对终态节点显示“查看节点会话（只读）”，进入工作台后不自动创建不可发送的草稿。节点 Runtime DTO 新增独立 `terminal_available`，会话写入状态不再误禁用终端；终态 Run/Attempt 的会话写入统一以 `FLOW_RUN_TERMINAL`/既有取消栅栏拒绝。节点工作区文件树新增与现有受限范围一致的创建接口，既有删除路径不再依赖会话可写权限；两者继续使用 Attempt、工作目录、普通文件、符号链接和根目录校验。
 
+### FR-280 Agent 会话部署刷新中断保护 — DONE
+
+依赖：FR-279。
+
+目标：修复 Web 入口脚本版本变化时，浏览器在正在进行的 Agent 会话中由 30 秒部署探测或窗口重新获得焦点触发 `window.location.reload()`，丢失浏览器内尚未成为 OpenHands 正式事件的实时过程投影。活动会话路由必须延后自动重载，保留 WebSocket 与内存过程状态；离开该会话路由后仍可正常加载新版本。不得持久化或伪造 Tool/Thought/Event，也不得修改 OpenHands、Runtime、Conversation 或 FlowRun 契约。
+
+完成：入口版本探测现在识别带部署前缀的精确 `/agent/conversations/:bindingId` 路由。检测到新入口脚本时，活动 Agent 会话不再被自动 `window.location.reload()` 打断；其它页面与离开会话后的后续检查仍按既有方式刷新新版本。实时过程继续仅属于浏览器内存，正式 Tool／Thought／Finish 仍只由 OpenHands 事件流提供。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -3720,6 +3728,7 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-11 | FR-280 | Web ESLint、TypeScript typecheck、production build、`git diff --check` 与任务状态唯一性 | PASS：带部署前缀的活动 `/agent/conversations/:bindingId` 在入口脚本变更、30 秒部署探测或窗口重新获得焦点时不再触发全页 `window.location.reload()`；实时过程保留在浏览器内存直至 OpenHands 写入正式事件。其它路由继续按既有版本探测刷新。Web lint/typecheck/build 与 whitespace 检查通过；未新增迁移。 |
 | 2026-09-11 | FR-279 | 受影响 Python Ruff/格式、`py_compile`；Web ESLint、TypeScript typecheck、production build；`git diff --check`；终态节点会话定向 pytest | PASS（静态与构建）：终态节点入口保留只读会话，服务端继续拒绝会话写入；终端和受限工作区文件新建/删除使用独立授权路径。Ruff、格式、语法、Web lint/typecheck/build 与 whitespace 通过。4 条定向 pytest 已收集，但均在业务断言前因本机 Docker Unix socket 缺失、Testcontainers PostgreSQL 无法创建而阻断，未伪记为通过。无迁移、无 `CURRENT`。 |
 | 2026-09-11 | FR-278 | OpenHands 适配器定向 pytest；受影响 Python Ruff/格式、`py_compile`、Alembic head；Web ESLint、TypeScript typecheck、production build、`git diff --check` | PASS（本地）：OpenHands/LiteLLM 原生请求统一使用 120 秒超时、3 次重试和既有退避；FlowWeave 不再以计时器控制会话。上游 `BadGatewayError`/502 HTML 仅以“模型服务暂时不可用”呈现，用户界面不显示 LiteLLM、网关 HTML 或错误码。远端发布与验证按绑定 commit 单独执行。 |
 | 2026-09-10 | FR-277 | 门禁问答与调整会话定向 Playwright（1 passed）；首次创建、连续修订与幂等命令结果直接回归（3 passed）；Web TypeScript typecheck、受影响 ESLint、production build；受影响 Python Ruff format/check、`py_compile`；Alembic head、任务状态唯一性与 `git diff --check` | PASS：确认弹窗明确说明成功后自动进入新会话；请求期间按钮禁用并显示创建／进入状态及阶段提示；成功后使用服务端返回的安全 binding ID 直接进入新调整会话。命令首次创建和同幂等键重放均返回同一 binding，不暴露 OpenHands locator；历史动作缺失 binding 时可按当前 Attempt 作用域恢复。唯一 Alembic head 为 `0110_candidate_output_set_owner`，无 `CURRENT`。 |

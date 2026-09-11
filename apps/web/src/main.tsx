@@ -6,12 +6,18 @@ import './styles.css';
 import { App } from './App';
 import { AppErrorBoundary } from './components/AppErrorBoundary';
 import { ProductDialogProvider } from './components/ProductDialog';
-import { withDeploymentBase } from './deploymentPath';
+import { withDeploymentBase, withoutDeploymentBase } from './deploymentPath';
 
 const queryClient = new QueryClient({ defaultOptions: { queries: { staleTime: 15_000, retry: 1 } } });
 
 const appEntry = document.querySelector<HTMLScriptElement>('script[type="module"][src]')?.src;
 let updateReloading = false;
+
+function isActiveAgentConversationPath(): boolean {
+  return /^\/agent\/conversations\/[^/]+$/.test(
+    withoutDeploymentBase(window.location.pathname),
+  );
+}
 
 async function reloadWhenDeploymentChanges(): Promise<void> {
   if (!appEntry || updateReloading || document.visibilityState !== 'visible') return;
@@ -23,7 +29,7 @@ async function reloadWhenDeploymentChanges(): Promise<void> {
       ?? html.match(/<script[^>]+src=["']([^"']+)["'][^>]+type=["']module["']/i);
     if (!match) return;
     const deployedEntry = new URL(match[1], window.location.href).href;
-    if (deployedEntry !== appEntry) {
+    if (deployedEntry !== appEntry && !isActiveAgentConversationPath()) {
       updateReloading = true;
       window.location.reload();
     }
