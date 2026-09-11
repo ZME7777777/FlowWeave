@@ -52,6 +52,7 @@ from flowweave.shared.infrastructure.plugin_resolver import (
 )
 from flowweave.shared.infrastructure.sandbox import DockerSandbox
 from flowweave.shared.observability import Metrics
+from flowweave.shared.secret_redaction import SecretRedactionFilter
 from flowweave.shared.settings import bind_settings, reset_settings
 
 _MAX_REQUEST_BYTES = 2 * 1024 * 1024
@@ -74,6 +75,7 @@ def _configure_runtime_provider_logging(level: str) -> None:
     if not any(handler.get_name() == "flowweave-runtime-provider" for handler in logger.handlers):
         handler = logging.StreamHandler()
         handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
+        handler.addFilter(SecretRedactionFilter())
         handler.set_name("flowweave-runtime-provider")
         logger.addHandler(handler)
     logger.setLevel(level.upper())

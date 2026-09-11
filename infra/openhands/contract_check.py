@@ -112,6 +112,8 @@ from openhands.sdk.tool.registry import list_usable_tools, resolve_tool
 from openhands.sdk.tool.spec import Tool
 from openhands.sdk.tool.tool import DeclaredResources, ToolExecutor
 from openhands.sdk.utils.path import get_user_persistence_dir
+from openhands.sdk.utils.command import sanitized_env
+from openhands.sdk.utils.redact import redact_api_key_literals, redact_text_secrets
 from openhands.tools.file_editor.editor import FileEditor
 from openhands.tools.file_editor.exceptions import FileValidationError
 from openhands.tools.preset.default import AgentDefinition
@@ -216,6 +218,24 @@ async def _assert_targeted_streaming_delta_delivery() -> None:
 
 
 def _assert_profile_provider_secret_and_condenser_behavior() -> None:
+    child_environment = sanitized_env(
+        {
+            "KEEP": "value",
+            "OH_SECRET_KEY": "x" * 32,
+            "SESSION_API_KEY": "y" * 32,
+            "OH_SESSION_API_KEYS_0": "z" * 32,
+            "OH_SESSION_API_KEYS_1": "w" * 32,
+        }
+    )
+    assert child_environment == {"KEEP": "value", "AI_AGENT": "openhands"}
+    assert (
+        redact_text_secrets("tool output sk-oh-abcdef1234567890")
+        == "tool output <redacted>"
+    )
+    assert (
+        redact_api_key_literals("tmux sk-oh-abcdef1234567890")
+        == "tmux <redacted>"
+    )
     persistence_dir = Path("/runtime/state/persistence")
     assert get_user_persistence_dir() == persistence_dir
     default_profile_store = LLMProfileStore()

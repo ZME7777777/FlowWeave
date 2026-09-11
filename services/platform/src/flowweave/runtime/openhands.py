@@ -66,6 +66,7 @@ from flowweave.shared.infrastructure.http_transport import (
     HttpTransportPool,
     registered_http_transport,
 )
+from flowweave.shared.secret_redaction import redact_secret_text, redact_secret_value
 
 logger = logging.getLogger(__name__)
 _INTERACTIVE_READ_TIMEOUT_SECONDS = 8.0
@@ -1747,7 +1748,9 @@ class OpenHandsRuntime:
             )
         return {
             "score": float(score),
-            "message": raw_message[:2000] if isinstance(raw_message, str) else None,
+            "message": redact_secret_text(raw_message[:2000])
+            if isinstance(raw_message, str)
+            else None,
         }
 
     @classmethod
@@ -1809,14 +1812,14 @@ class OpenHandsRuntime:
             safe_verdict = {
                 "score": float(score),
                 "complete": verdict_value["complete"],
-                "missing": str(verdict_value.get("missing") or "")[:2000],
+                "missing": redact_secret_text(str(verdict_value.get("missing") or "")[:2000]),
             }
         return {
             "active": value["active"],
             "status": status,
             "iteration": iteration,
             "max_iterations": max_iterations,
-            "objective": objective[:20_000],
+            "objective": redact_secret_text(objective[:20_000]),
             "verdict": safe_verdict,
         }
 
@@ -1825,23 +1828,23 @@ class OpenHandsRuntime:
         if depth >= 6:
             return "[truncated]"
         if isinstance(value, dict):
-            return {
-                str(key): (
-                    "[redacted]"
-                    if any(
-                        marker in str(key).lower()
-                        for marker in ("api_key", "authorization", "password", "secret", "token")
-                    )
-                    else cls._safe_event_detail(child, depth=depth + 1)
-                )
-                for key, child in list(cast(dict[object, object], value).items())[:100]
-            }
+            return redact_secret_value(
+                {
+                    str(key): cls._safe_event_detail(child, depth=depth + 1)
+                    for key, child in list(cast(dict[object, object], value).items())[:100]
+                },
+                depth=depth,
+            )
         if isinstance(value, list):
             sequence = cast(list[object], value)
             return [cls._safe_event_detail(item, depth=depth + 1) for item in sequence[:100]]
         if isinstance(value, str):
-            return value[:20_000]
-        return value if value is None or isinstance(value, int | float | bool) else str(value)
+            return redact_secret_text(value[:20_000])
+        return (
+            value
+            if value is None or isinstance(value, int | float | bool)
+            else redact_secret_text(str(value))
+        )
 
     @classmethod
     def _event_payload(cls, item: dict[str, Any]) -> dict[str, Any]:
@@ -1849,18 +1852,18 @@ class OpenHandsRuntime:
         payload: dict[str, Any] = {
             "source_type": kind,
             "source": item.get("source"),
-            "content": cls._event_text(item),
+            "content": redact_secret_text(cls._event_text(item)),
         }
         timestamp = item.get("timestamp")
         if isinstance(timestamp, str) and timestamp:
             payload["timestamp"] = timestamp[:80]
         if kind == "ActionEvent":
-            thought = cls._text_content(item.get("thought"))[:20_000]
+            thought = redact_secret_text(cls._text_content(item.get("thought"))[:20_000])
             if thought:
                 payload["thought"] = thought
             summary = item.get("summary")
             if isinstance(summary, str) and summary:
-                payload["summary"] = summary[:2_000]
+                payload["summary"] = redact_secret_text(summary[:2_000])
         if kind in {"ActionEvent", "ObservationEvent"}:
             action_id = cls._formal_identity(
                 item.get("id") if kind == "ActionEvent" else item.get("action_id"),
@@ -2493,7 +2496,7 @@ class OpenHandsRuntime:
         for index in range(len(items) - 1, start_index - 1, -1):
             item = items[index]
             if self._event_type(item) == "COMPLETED":
-                text = self._event_text(item)
+                text = redact_secret_text(self._event_text(item))
                 return RuntimeResult(
                     status="COMPLETED",
                     outputs=self._outputs(handle, text),
@@ -2520,7 +2523,7 @@ class OpenHandsRuntime:
                     continue
                 return RuntimeResult(
                     status="FAILED",
-                    error=self._event_text(item) or "OpenHands failed",
+                    error=redact_secret_text(self._event_text(item)) or "OpenHands failed",
                     cursor=cursor,
                 )
             if assistant_message_is_final and str(item.get("kind") or "") == "MessageEvent":
@@ -2531,7 +2534,7 @@ class OpenHandsRuntime:
                     else ""
                 )
                 if role == "assistant" or str(item.get("source") or "").lower() == "agent":
-                    text = self._event_text(item)
+                    text = redact_secret_text(self._event_text(item))
                     if text:
                         return RuntimeResult(
                             status="COMPLETED",
@@ -3184,7 +3187,7 @@ class OpenHandsRuntime:
         if kind == "StreamingDeltaEvent":
             content = event.get("content")
             return (
-                ({"type": "delta", "content": content},)
+                ({"type": "delta", "content": redact_secret_text(content)},)
                 if isinstance(content, str) and content
                 else ()
             )

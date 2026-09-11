@@ -756,6 +756,9 @@ display title 可以从 OpenHands 定期同步，但 OpenHands 不可用时数�
 - API 对 Workspace、binding、stream 和 terminal 统一鉴权；不能仅依赖 UUID 不可猜。
 - Runtime API key 每 generation 轮换，稳定 `OH_SECRET_KEY` 仅由 Worker/Provider 调用边界取回。
 - Secret 不进入镜像、普通数据库列、日志、审计 payload、前端响应或 Agent display title。
+- 固定 OpenHands `1.47.0` 在 Agent 驱动子进程中移除 `OH_SECRET_KEY`、`SESSION_API_KEY` 和
+  所有 `OH_SESSION_API_KEYS_*`；FlowWeave 对 Provider 日志与跨 Runtime 的事件投影再做递归字段／
+  URL 凭据／API-key 字面量脱敏，`sk-oh-*` 与其他已识别 token 不得穿过浏览器或日志边界。
 - Runtime 继续 `cap_drop=ALL`、`no-new-privileges`、资源配额和受控 egress；Docker socket 只在 Provider。
 - bind mount 创建前拒绝符号链接穿越、非预期 owner、错误权限和超出批准根目录的路径。
 - 文件/终端 API 固定在 Workspace 根内，拒绝客户端绝对路径和 `..` 穿越。

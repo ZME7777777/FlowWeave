@@ -357,6 +357,20 @@ def test_openhands_144_profile_secret_condenser_and_title_boundaries() -> None:
     assert "lease_is_current" in titles
 
 
+def test_openhands_147_secret_isolation_and_flowweave_projection_boundaries() -> None:
+    """FR-310: protect Runtime credentials both upstream and at the platform edge."""
+
+    contract_probe = (REPOSITORY / "infra" / "openhands" / "contract_check.py").read_text()
+    runtime = (SOURCE / "runtime" / "openhands.py").read_text()
+    provider = (SOURCE / "bootstrap" / "runtime_provider.py").read_text()
+    assert "from openhands.sdk.utils.command import sanitized_env" in contract_probe
+    assert "OH_SESSION_API_KEYS_1" in contract_probe
+    assert "redact_api_key_literals" in contract_probe
+    assert "redact_secret_text(cls._event_text(item))" in runtime
+    assert "redact_secret_value" in runtime
+    assert "SecretRedactionFilter" in provider
+
+
 def test_agent_workspace_uses_the_single_agent_session_workbench_and_facade() -> None:
     """FR-94: `/agent` is the canonical session product, not a copied surface."""
 

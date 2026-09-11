@@ -157,6 +157,12 @@ Runtime 只挂载 `state/persistence → /runtime/state/persistence`，绝不再
 可恢复。连接 API key 可轮换，但不得替代持久 secret key。所有挂载在容器启动前进行 owner、普通目录、
 符号链接、权限和租户边界复核。
 
+固定 OpenHands `1.47.0` 的正式命令执行器会在 Agent 驱动的子进程前移除 `OH_SECRET_KEY`、
+`SESSION_API_KEY` 和全部 `OH_SESSION_API_KEYS_*`，因此模型生成的 Shell／Tool 不能通过环境读取
+Runtime 持久化或会话密钥。FlowWeave 仍把这些值仅注入 Agent Server 启动边界，并对 Runtime Provider
+日志和所有安全事件投影递归屏蔽敏感字段、URL 凭据及识别出的 API-key 字面量（包含 `sk-oh-*`）；
+浏览器、审计和 Relay 不得依赖上游单层脱敏。
+
 Runtime 被物理删除不等于 FlowRun 状态被删除。只有显式删除 FlowRun 且引用保护、审计和保留策略均
 满足时，Runtime Provider 才可物理删除外部持久目录。
 
