@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal
 from uuid import uuid4
@@ -20,6 +20,7 @@ from flowweave.modules.catalog.public import (
     resolve_snapshot_memory,
     resolve_version,
 )
+from flowweave.modules.model_providers.application.service import has_connected_default_model
 from flowweave.runtime.base import (
     RuntimeAgentContext,
     RuntimeAgentDefinition,
@@ -86,12 +87,29 @@ class FrozenSessionCapability:
 
 
 @dataclass(frozen=True, slots=True)
+class FrozenModelFallback:
+    """An ordered, immutable alternate LLM identity for one session."""
+
+    model_provider_id: str
+    model_name: str
+    reasoning_effort: str | None
+
+    def as_dict(self) -> dict[str, str | None]:
+        return {
+            "model_provider_id": self.model_provider_id,
+            "model_name": self.model_name,
+            "reasoning_effort": self.reasoning_effort,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class FrozenSessionConfig:
     workspace_id: str | None
     model_provider_id: str | None
     model_name: str | None
     reasoning_effort: str | None
     capabilities: tuple[FrozenSessionCapability, ...]
+    fallback_models: tuple[FrozenModelFallback, ...] = ()
 
 
 def materialize_frozen_memory(
@@ -179,6 +197,7 @@ def resolve_session_config(
     model_provider_id: str | None = None,
     model_name: str | None = None,
     reasoning_effort: str | None = None,
+    fallback_models: tuple[dict[str, object], ...] = (),
     capability_version_ids: tuple[str, ...] | None = None,
 ) -> FrozenSessionConfig:
     """Resolve an explicitly selected Agent configuration.
@@ -188,13 +207,13 @@ def resolve_session_config(
     """
 
     workspace = default_workspace(db)
-    provider_id = model_provider_id
+    primary_provider_id = model_provider_id
     selected_model: str | None
     selected_effort: str | None
-    if provider_id and model_name:
+    if primary_provider_id and model_name:
         selected_model, selected_effort = resolve_runtime_selection(
             db,
-            {"asset": {"executor": {"model_provider_id": provider_id}}},
+            {"asset": {"executor": {"model_provider_id": primary_provider_id}}},
             model_name,
             reasoning_effort,
         )
@@ -204,6 +223,59 @@ def resolve_session_config(
             "必须显式选择会话模型供应商和模型",
             409,
         )
+
+    if len(fallback_models) > 3:
+        raise DomainError(
+            "AGENT_FALLBACK_POLICY_INVALID",
+            "At most three fallback models may be frozen for one session",
+            422,
+        )
+    resolved_fallbacks: list[FrozenModelFallback] = []
+    seen_fallbacks: set[tuple[str, str, str | None]] = set()
+    for raw_fallback in fallback_models:
+        if not isinstance(raw_fallback, dict):
+            raise DomainError(
+                "AGENT_FALLBACK_POLICY_INVALID",
+                "Fallback model entries must be objects",
+                422,
+            )
+        fallback_provider_id = str(raw_fallback.get("model_provider_id") or "").strip()
+        fallback_model = str(raw_fallback.get("model_name") or "").strip()
+        raw_effort = raw_fallback.get("reasoning_effort")
+        fallback_effort = str(raw_effort).strip() if raw_effort else None
+        if (
+            not fallback_provider_id
+            or not fallback_model
+            or not has_connected_default_model(db, fallback_provider_id)
+        ):
+            raise DomainError(
+                "AGENT_FALLBACK_MODEL_UNAVAILABLE",
+                "Fallback models must be connected, enabled, and have runtime credentials",
+                409,
+            )
+        resolved_model, resolved_effort = resolve_runtime_selection(
+            db,
+            {"asset": {"executor": {"model_provider_id": fallback_provider_id}}},
+            fallback_model,
+            fallback_effort,
+        )
+        if resolved_model is None:
+            raise DomainError(
+                "AGENT_FALLBACK_MODEL_UNAVAILABLE", "Fallback model is unavailable", 409
+            )
+        identity = (fallback_provider_id, resolved_model, resolved_effort)
+        if identity in seen_fallbacks:
+            raise DomainError(
+                "AGENT_FALLBACK_MODEL_DUPLICATE", "Fallback models must be unique", 422
+            )
+        if identity == (primary_provider_id, selected_model, selected_effort):
+            raise DomainError(
+                "AGENT_FALLBACK_MODEL_PRIMARY",
+                "A fallback model must differ from the primary model",
+                422,
+            )
+        seen_fallbacks.add(identity)
+        resolved_fallbacks.append(FrozenModelFallback(*identity))
 
     frozen: list[FrozenSessionCapability] = []
     if capability_version_ids is not None:
@@ -248,10 +320,11 @@ def resolve_session_config(
             )
     return FrozenSessionConfig(
         workspace_id=workspace.id if workspace else None,
-        model_provider_id=provider_id,
+        model_provider_id=primary_provider_id,
         model_name=selected_model,
         reasoning_effort=selected_effort,
         capabilities=tuple(frozen),
+        fallback_models=tuple(resolved_fallbacks),
     )
 
 
@@ -327,6 +400,7 @@ def reserve_flow_node_binding(
         model_provider_id=config.model_provider_id,
         model_name=config.model_name,
         reasoning_effort=config.reasoning_effort,
+        fallback_models_json=[item.as_dict() for item in config.fallback_models],
         streaming_callback_ready=True,
         openhands_conversation_id=openhands_conversation_id or str(uuid4()),
         display_title=display_title,
@@ -389,12 +463,53 @@ def config_from_binding(db: Session, binding: AgentConversationBinding) -> Froze
                 runtime_config=published.runtime_config(),
             )
         )
-    return FrozenSessionConfig(
-        binding.workspace_id,
+    raw_fallbacks = binding.fallback_models_json or []
+    if not isinstance(raw_fallbacks, list) or len(raw_fallbacks) > 3:
+        raise DomainError("AGENT_FALLBACK_POLICY_INVALID", "Frozen fallback policy is invalid", 409)
+    fallback_models: list[FrozenModelFallback] = []
+    seen_fallbacks: set[tuple[str, str, str | None]] = set()
+    primary_identity = (
         binding.model_provider_id,
         binding.model_name,
         binding.reasoning_effort,
-        tuple(frozen),
+    )
+    for item in raw_fallbacks:
+        if not isinstance(item, dict):
+            raise DomainError(
+                "AGENT_FALLBACK_POLICY_INVALID", "Frozen fallback policy is invalid", 409
+            )
+        provider_id = item.get("model_provider_id")
+        model_name = item.get("model_name")
+        reasoning_effort = item.get("reasoning_effort")
+        if (
+            not isinstance(provider_id, str)
+            or not provider_id.strip()
+            or not isinstance(model_name, str)
+            or not model_name.strip()
+            or reasoning_effort is not None
+            and not isinstance(reasoning_effort, str)
+        ):
+            raise DomainError(
+                "AGENT_FALLBACK_POLICY_INVALID", "Frozen fallback policy is invalid", 409
+            )
+        identity = (
+            provider_id.strip(),
+            model_name.strip(),
+            reasoning_effort.strip() if reasoning_effort else None,
+        )
+        if identity == primary_identity or identity in seen_fallbacks:
+            raise DomainError(
+                "AGENT_FALLBACK_POLICY_INVALID", "Frozen fallback policy is invalid", 409
+            )
+        seen_fallbacks.add(identity)
+        fallback_models.append(FrozenModelFallback(*identity))
+    return FrozenSessionConfig(
+        workspace_id=binding.workspace_id,
+        model_provider_id=binding.model_provider_id,
+        model_name=binding.model_name,
+        reasoning_effort=binding.reasoning_effort,
+        capabilities=tuple(frozen),
+        fallback_models=tuple(fallback_models),
     )
 
 
@@ -405,11 +520,25 @@ def provider_for_config(db: Session, config: FrozenSessionConfig) -> RuntimeProv
         if get_settings().runtime_adapter == "mock":
             return None
         raise DomainError("AGENT_MODEL_CONFIGURATION_REQUIRED", "会话缺少冻结模型", 409)
-    return runtime_provider(
+    primary = runtime_provider(
         db,
         {"asset": {"executor": {"model_provider_id": config.model_provider_id}}},
         model_name=config.model_name,
         reasoning_effort=config.reasoning_effort,
+    )
+    fallback_providers = tuple(
+        runtime_provider(
+            db,
+            {"asset": {"executor": {"model_provider_id": fallback.model_provider_id}}},
+            model_name=fallback.model_name,
+            reasoning_effort=fallback.reasoning_effort,
+        )
+        for fallback in config.fallback_models
+    )
+    return (
+        primary
+        if not fallback_providers
+        else replace(primary, fallback_providers=fallback_providers)
     )
 
 
@@ -553,6 +682,7 @@ def build_agent_spec(
 
 __all__ = (
     "FrozenSessionConfig",
+    "FrozenModelFallback",
     "PROJECT_ROOT",
     "build_agent_spec",
     "config_from_binding",

@@ -272,12 +272,14 @@ def _freeze_draft_agent_preset(db: Session, raw: dict[str, Any]) -> dict[str, An
         model_provider_id=raw.get("model_provider_id"),
         model_name=raw.get("model_name"),
         reasoning_effort=raw.get("reasoning_effort"),
+        fallback_models=tuple(raw.get("fallback_models") or ()),
         capability_version_ids=tuple(raw.get("capability_version_ids") or ()),
     )
     return {
         "model_provider_id": config.model_provider_id,
         "model_name": config.model_name,
         "reasoning_effort": config.reasoning_effort,
+        "fallback_models": [item.as_dict() for item in config.fallback_models],
         "node_context_enabled": bool(raw.get("node_context_enabled")),
         "node_context_prompt": raw.get("node_context_prompt"),
         "capability_version_ids": [item.version_id for item in config.capabilities],
@@ -368,6 +370,7 @@ def _freeze_automatic_plan(
                 model_provider_id=gate_preset.get("model_provider_id"),
                 model_name=gate_preset.get("model_name"),
                 reasoning_effort=gate_preset.get("reasoning_effort"),
+                fallback_models=(),
                 capability_version_ids=(),
             )
             frozen_gates.append(
@@ -2764,6 +2767,7 @@ def _schedule_agent_preset(plan: dict[str, Any]) -> AgentPresetWrite:
         "model_provider_id",
         "model_name",
         "reasoning_effort",
+        "fallback_models",
         "node_context_enabled",
         "node_context_prompt",
     )
@@ -4890,6 +4894,9 @@ def confirm_start(
         model_name=(str(preset["model_name"]) if preset and preset.get("model_name") else None),
         reasoning_effort=(
             str(preset["reasoning_effort"]) if preset and preset.get("reasoning_effort") else None
+        ),
+        fallback_models=(
+            tuple(preset.get("fallback_models", [])) if preset is not None else ()
         ),
         capability_version_ids=(
             tuple(str(value) for value in preset.get("capability_version_ids", []))

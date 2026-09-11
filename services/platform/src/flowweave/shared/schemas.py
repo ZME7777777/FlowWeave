@@ -324,6 +324,14 @@ class ModelProviderWrite(ApiModel):
         return self
 
 
+class ModelFallbackWrite(ApiModel):
+    """One explicitly approved alternate model for a launch policy."""
+
+    model_provider_id: str = Field(min_length=1, max_length=36)
+    model_name: str = Field(min_length=1, max_length=240)
+    reasoning_effort: str | None = Field(default=None, max_length=30)
+
+
 class AgentPresetWrite(ApiModel):
     """One launch-scoped Agent configuration.
 
@@ -335,6 +343,7 @@ class AgentPresetWrite(ApiModel):
     model_provider_id: str | None = Field(default=None, min_length=1, max_length=36)
     model_name: str | None = Field(default=None, min_length=1, max_length=240)
     reasoning_effort: str | None = Field(default=None, max_length=30)
+    fallback_models: list[ModelFallbackWrite] = Field(default_factory=list, max_length=3)
     node_context_enabled: bool = False
     # An optional launch-only replacement for the node's saved free-text
     # context. It is persisted only on this Attempt, never back to the Node.
@@ -346,6 +355,17 @@ class AgentPresetWrite(ApiModel):
             raise ValueError("Agent capability versions must be unique")
         if self.model_name and not self.model_provider_id:
             raise ValueError("model_provider_id is required when model_name is selected")
+        identities = [
+            (item.model_provider_id, item.model_name, item.reasoning_effort or "")
+            for item in self.fallback_models
+        ]
+        if len(identities) != len(set(identities)):
+            raise ValueError("fallback models must be unique")
+        if self.model_provider_id and self.model_name and any(
+            item.model_provider_id == self.model_provider_id and item.model_name == self.model_name
+            for item in self.fallback_models
+        ):
+            raise ValueError("a fallback model must differ from the primary model")
         return self
 
 

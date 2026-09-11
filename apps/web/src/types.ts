@@ -201,6 +201,8 @@ export interface AgentPreset {
   model_provider_id?: string | null;
   model_name?: string | null;
   reasoning_effort?: string | null;
+  /** Ordered alternatives used only when this frozen policy explicitly permits fallback. */
+  fallback_models?: Array<{ model_provider_id: string; model_name: string; reasoning_effort?: string | null }>;
   /** Enables only the node's own free-text context, never repository Context. */
   node_context_enabled: boolean;
   /** Launch-only editable copy of the node's own free-text context. */

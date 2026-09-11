@@ -955,7 +955,9 @@ class OpenHandsRuntime:
     def _model_name(model: str) -> str:
         return model if "/" in model else f"openai/{model}"
 
-    def _llm_payload(self, provider: RuntimeProvider) -> dict[str, Any]:
+    def _llm_payload(
+        self, provider: RuntimeProvider, *, fallback_profile_names: tuple[str, ...] = ()
+    ) -> dict[str, Any]:
         model = self._model_name(provider.model)
         llm: dict[str, Any] = {
             "model": model,
@@ -1010,7 +1012,53 @@ class OpenHandsRuntime:
                         },
                     }
                 )
+        if fallback_profile_names:
+            # OpenHands owns execution of this formal fallback strategy. The
+            # profile names identify Runtime-local, encrypted-at-rest records
+            # created below from the already-frozen FlowWeave session policy.
+            llm["fallback_strategy"] = {"fallback_llms": list(fallback_profile_names)}
         return llm
+
+    @staticmethod
+    def _fallback_profile_names(
+        fallback_providers: tuple[RuntimeProvider, ...],
+    ) -> tuple[str, ...]:
+        """Return bounded Runtime-local profile identities for frozen fallbacks.
+
+        Profile names must not be generated per attempt: OpenHands deliberately
+        limits a persistence store to fifty profiles, while a FlowRun can own
+        many Conversations. The frozen provider/model/effort identity is the
+        policy boundary, so reusing its named profile is safe; the live
+        credential is still resolved only at the Runtime call boundary.
+        """
+
+        return tuple(
+            "flowweave-fb-"
+            + hashlib.sha256(
+                f"{item.provider_id}\0{item.model}\0{item.reasoning_effort or ''}".encode()
+            ).hexdigest()[:32]
+            for item in fallback_providers
+        )
+
+    def _configure_fallback_profiles(
+        self,
+        *,
+        provider: RuntimeProvider,
+        base_url: str,
+        session_api_key: str,
+    ) -> tuple[str, ...]:
+        if not provider.fallback_providers:
+            return ()
+        names = self._fallback_profile_names(provider.fallback_providers)
+        for name, fallback in zip(names, provider.fallback_providers, strict=True):
+            self._request(
+                "POST",
+                f"/api/profiles/{name}",
+                base_url=base_url,
+                session_api_key=session_api_key,
+                json={"llm": self._llm_payload(fallback), "include_secrets": True},
+            )
+        return names
 
     def _condenser_payload(
         self, condenser: RuntimeCondenser, provider: RuntimeProvider | None
@@ -1385,9 +1433,26 @@ class OpenHandsRuntime:
                 "Runtime Agent Spec must allow at least one Tool",
                 409,
             )
+        if not request.environment_image or not (
+            request.runtime_sandbox_id
+            and request.runtime_resource_name
+            and request.runtime_base_url
+        ):
+            raise DomainError(
+                "RUNTIME_SANDBOX_REQUIRED",
+                "Every FlowRun must use a published Environment Runtime allocation",
+                500,
+            )
         agent: dict[str, Any] = {
             "kind": "Agent",
-            "llm": self._llm_payload(provider),
+            "llm": self._llm_payload(
+                provider,
+                fallback_profile_names=self._configure_fallback_profiles(
+                    provider=provider,
+                    base_url=request.runtime_base_url,
+                    session_api_key=self._session_key_for_resource(request.runtime_resource_name),
+                ),
+            ),
             "condenser": self._condenser_payload(spec.condenser, spec.condenser_provider),
             "tools": [{"name": tool.name, "params": dict(tool.params)} for tool in spec.tools],
             "tool_concurrency_limit": spec.tool_concurrency_limit,
@@ -1512,16 +1577,6 @@ class OpenHandsRuntime:
                 "content": self._initial_content(request),
                 "run": True,
             }
-        if not request.environment_image or not (
-            request.runtime_sandbox_id
-            and request.runtime_resource_name
-            and request.runtime_base_url
-        ):
-            raise DomainError(
-                "RUNTIME_SANDBOX_REQUIRED",
-                "Every FlowRun must use a published Environment Runtime allocation",
-                500,
-            )
         target_base_url = request.runtime_base_url
         target_session_key = self._session_key_for_resource(request.runtime_resource_name)
         self._negotiate_runtime_contract(
@@ -3857,7 +3912,14 @@ class OpenHandsRuntime:
         }
 
     def switch_model(self, handle: RuntimeHandle, provider: RuntimeProvider) -> None:
-        expected = self._llm_payload(provider)
+        expected = self._llm_payload(
+            provider,
+            fallback_profile_names=self._configure_fallback_profiles(
+                provider=provider,
+                base_url=self._base_url_for_handle(handle),
+                session_api_key=self._session_key_for_handle(handle),
+            ),
+        )
         self._request(
             "POST",
             f"/api/conversations/{handle.conversation_id}/switch_llm",

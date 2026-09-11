@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`ACTIVE`
 > 当前执行切片：无
-> 下一可执行切片：`FR-320 硬额度失败的显式模型 fallback 策略`
+> 下一可执行切片：`FR-321 OpenHands 1.47 增强最终安全、恢复与性能门禁`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -4127,14 +4127,22 @@ canonical install string，既有已发布版本不会被改写。产品发布�
 同步修复 Environment compatibility gate 中遗留的 1.44 source archive SHA，改为当前固定 1.47
 archive SHA；这只影响新 Runtime manifest 的验证，不改写历史 Environment image digest。
 
-### FR-320 硬额度失败的显式模型 fallback 策略 — READY
+### FR-320 硬额度失败的显式模型 fallback 策略 — DONE
 
 依赖：FR-319。
 
 目标：采用上游硬额度错误立即 fallback 分类，但默认不静默换模。只有 Snapshot/Policy 显式冻结
 主模型、允许 fallback 集、用量归属与审计可见性时才允许切换；否则快速、可解释地失败。
 
-### FR-321 OpenHands 1.47 增强最终安全、恢复与性能门禁 — PENDING
+完成：自动运行主 Agent preset 可按顺序冻结最多三个显式备用模型；默认空集合仍在硬额度／用量
+限制时快速失败，Gate、独立 Agent Workspace 与手动会话换模不继承该策略。冻结时逐项验证已连接
+供应商、运行凭据、启用模型和 reasoning effort；binding 持久化规范化策略，reload 遇到损坏、重复、
+主模型回退或超额条目均 fail closed。活跃 Runtime 只在请求边界解析 primary/fallback 凭据，并以稳定
+受控 profile 名写入 OpenHands 加密 persistence；主 LLM 仅接收正式
+`fallback_strategy.fallback_llms`，不把明文凭据写入 FlowWeave 数据库、Snapshot、前端或日志。
+供应商删除／禁用校验同时覆盖冻结 fallback 引用。
+
+### FR-321 OpenHands 1.47 增强最终安全、恢复与性能门禁 — READY
 
 依赖：FR-309–FR-320。
 

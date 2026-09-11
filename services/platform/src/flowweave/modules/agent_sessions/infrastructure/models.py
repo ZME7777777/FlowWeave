@@ -11,6 +11,7 @@ from datetime import datetime
 from typing import cast
 
 from sqlalchemy import (
+    JSON,
     BigInteger,
     Boolean,
     CheckConstraint,
@@ -83,6 +84,7 @@ class AgentConversationBinding(Base):
     model_provider_id: Mapped[str | None] = mapped_column(String(36), index=True)
     model_name: Mapped[str | None] = mapped_column(String(240))
     reasoning_effort: Mapped[str | None] = mapped_column(String(30))
+    fallback_models_json: Mapped[list[dict[str, str | None]]] = mapped_column(JSON, default=list)
     streaming_callback_ready: Mapped[bool] = mapped_column(Boolean, default=True)
     # OpenHands identifiers are UUIDs today, but the formal Runtime contract
     # permits opaque identifiers. Keep the shared locator compatible with the

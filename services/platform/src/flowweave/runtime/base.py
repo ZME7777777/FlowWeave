@@ -86,6 +86,8 @@ class RuntimeProvider:
     api_protocol: Literal["CHAT_COMPLETIONS", "RESPONSES"] = "CHAT_COMPLETIONS"
     extra_headers: dict[str, str] = field(default_factory=_empty_headers)
     reasoning_effort: str | None = None
+    # Resolved only from an immutable session policy; never ambient provider state.
+    fallback_providers: tuple[RuntimeProvider, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

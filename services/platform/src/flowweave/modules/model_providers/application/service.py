@@ -57,11 +57,22 @@ def _automatic_run_provider_models(run: FlowRun, provider_id: str) -> set[str]:
             if not isinstance(preset_value, dict):
                 continue
             preset = cast(dict[str, object], preset_value)
-            if preset.get("model_provider_id") != provider_id:
+            if preset.get("model_provider_id") == provider_id:
+                model_name = preset.get("model_name")
+                if isinstance(model_name, str) and model_name:
+                    models.add(model_name)
+            fallback_models = preset.get("fallback_models")
+            if not isinstance(fallback_models, list):
                 continue
-            model_name = preset.get("model_name")
-            if isinstance(model_name, str) and model_name:
-                models.add(model_name)
+            for fallback_value in fallback_models:
+                if not isinstance(fallback_value, dict):
+                    continue
+                fallback = cast(dict[str, object], fallback_value)
+                if fallback.get("model_provider_id") != provider_id:
+                    continue
+                model_name = fallback.get("model_name")
+                if isinstance(model_name, str) and model_name:
+                    models.add(model_name)
     return models
 
 
@@ -76,6 +87,18 @@ def _provider_references(db: Session, provider_id: str) -> list[dict[str, str]]:
         )
     )
     references.extend(
+        {"id": binding.id, "name": binding.display_title or binding.id}
+        for binding in db.scalars(
+            select(AgentConversationBinding)
+            .where(AgentConversationBinding.model_provider_id != provider_id)
+            .order_by(AgentConversationBinding.created_at, AgentConversationBinding.id)
+        )
+        if any(
+            isinstance(item, dict) and item.get("model_provider_id") == provider_id
+            for item in (binding.fallback_models_json or [])
+        )
+    )
+    references.extend(
         {"id": run.id, "name": run.name}
         for run in db.scalars(
             select(FlowRun)
@@ -85,6 +108,23 @@ def _provider_references(db: Session, provider_id: str) -> list[dict[str, str]]:
         if _automatic_run_provider_models(run, provider_id)
     )
     return references
+
+
+def _fallback_provider_references(db: Session, provider_ids: set[str]) -> list[dict[str, str]]:
+    """Return bindings whose immutable fallback policy names a provider."""
+
+    return [
+        {"id": binding.id, "name": binding.display_title or binding.id}
+        for binding in db.scalars(
+            select(AgentConversationBinding).order_by(
+                AgentConversationBinding.created_at, AgentConversationBinding.id
+            )
+        )
+        if any(
+            isinstance(item, dict) and item.get("model_provider_id") in provider_ids
+            for item in (binding.fallback_models_json or [])
+        )
+    ]
 
 
 def _fernet() -> Fernet:
@@ -219,6 +259,18 @@ def _validate_referenced_models(
         )
         if name is not None
     }
+    for fallback_models in db.scalars(select(AgentConversationBinding.fallback_models_json)):
+        if not isinstance(fallback_models, list):
+            continue
+        for fallback_value in fallback_models:
+            if not isinstance(fallback_value, dict):
+                continue
+            fallback = cast(dict[str, object], fallback_value)
+            if fallback.get("model_provider_id") != provider_id:
+                continue
+            model_name = fallback.get("model_name")
+            if isinstance(model_name, str) and model_name:
+                referenced_names.add(model_name)
     for run in db.scalars(select(FlowRun).where(FlowRun.run_mode == "AUTOMATIC")):
         referenced_names.update(_automatic_run_provider_models(run, provider_id))
     unavailable = sorted(referenced_names - enabled_names)
@@ -233,6 +285,12 @@ def delete_providers(db: Session, provider_ids: list[str]) -> dict[str, Any]:
     ids = list(dict.fromkeys(provider_ids))
     items = [get_provider(db, provider_id) for provider_id in ids]
     deleted_ids = [item.id for item in items]
+    frozen_fallback_references = _fallback_provider_references(db, set(deleted_ids))
+    if frozen_fallback_references:
+        raise conflict(
+            "providers frozen as Agent fallback models cannot be deleted",
+            references=frozen_fallback_references,
+        )
     session_reconfigured = (
         db.execute(
             update(AgentConversationBinding)

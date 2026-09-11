@@ -87,7 +87,8 @@ from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.event.streaming_delta import StreamingDeltaEvent
 from openhands.sdk.git.git_changes import get_git_changes
 from openhands.sdk.io import InMemoryFileStore
-from openhands.sdk.llm import LLM, Message, TextContent
+from openhands.sdk.llm import LLM, FallbackStrategy, Message, TextContent
+from openhands.sdk.llm.exceptions import is_quota_exhaustion_error
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.llm.provider_connection_store import (
     ProviderConnection,
@@ -164,6 +165,7 @@ REQUIRED_PATHS = {
     "/api/agent-profiles/{name}/materialize",
     "/api/agent-profiles/{name}/rename",
     "/api/agent-profiles/{profile_id}/activate",
+    "/api/profiles/{name}",
     "/api/profiles/{name}/validate",
     "/api/llm/provider-connections",
     "/api/llm/provider-connections/{connection_id}",
@@ -407,6 +409,23 @@ def _assert_runtime_capability_build_contract() -> None:
         raise AssertionError("OpenHands accepted an unknown image capability")
 
 
+def _assert_quota_fallback_contract() -> None:
+    """Pin the formal fallback path used by FlowWeave's frozen policy."""
+
+    retry_source = getsource(LLM._make_retry_decorator)
+    assert "not is_quota_exhaustion_error(e)" in retry_source
+    assert "fallback to an alternate model happens immediately" in retry_source
+    strategy_source = getsource(FallbackStrategy)
+    assert "fallback_llms: list[str]" in strategy_source
+    assert "LLMProfileStore" in strategy_source
+    assert "for i, fb in enumerate(self._iter_fallbacks())" in strategy_source
+    assert "fb.fallback_strategy = None" in strategy_source
+    assert "RateLimitError" in strategy_source
+    assert is_quota_exhaustion_error(Exception("usage_limit_reached"))
+    strategy = FallbackStrategy(fallback_llms=["flowweave-fallback"])
+    assert strategy.fallback_llms == ["flowweave-fallback"]
+
+
 def main() -> None:
     versions = {package: version(package) for package in PACKAGES}
     assert set(versions.values()) == {EXPECTED_VERSION}, versions
@@ -460,6 +479,7 @@ def main() -> None:
     _assert_profile_provider_secret_and_condenser_behavior()
     _assert_mcp_oauth_and_subscription_preflight_contract()
     _assert_runtime_capability_build_contract()
+    _assert_quota_fallback_contract()
     provenance_path = Path("/runtime/openhands-source-provenance.json")
     if not provenance_path.is_file():
         provenance_path = Path(__file__).with_name("openhands-source-provenance.json")
@@ -653,6 +673,7 @@ def main() -> None:
         "/api/agent-profiles/{profile_id}/activate": ["post"],
     }
     assert set(schema["paths"]["/api/profiles/{name}/validate"]) == {"post"}
+    assert set(schema["paths"]["/api/profiles/{name}"]) == {"delete", "get", "post"}
     assert set(schema["paths"]["/api/llm/provider-connections"]) == {
         "get",
         "post",
