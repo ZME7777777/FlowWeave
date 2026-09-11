@@ -3841,6 +3841,14 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 
 完成：提交详情头部改为左侧返回箭头、右侧紧邻提交标题与短 SHA；按钮保留原有无障碍标签、点击行为和悬停反馈。
 
+### FR-297 Agent 工作区 Git 详情控制样式统一 — DONE
+
+依赖：FR-296。
+
+目标：提交详情的返回操作与 Git Diff 的“统一／并排”切换，应与审查 Diff 的紧凑控制风格统一，避免同一 Git 视图中出现不同的按钮语言。
+
+完成：提交详情返回操作调整为带文字的紧凑描边控制；Git Diff 继续复用审查 Diff 的同一模式切换组件，并统一其悬停与键盘焦点反馈。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -3856,6 +3864,7 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-11 | FR-297 | Web TypeScript typecheck、ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS：Git 详情返回与统一／并排控制使用同一紧凑描边、圆角、绿色情境反馈；无 `CURRENT`。 |
 | 2026-09-11 | FR-296 | Web TypeScript typecheck、ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS：提交详情返回按钮位于标题左侧，保留返回历史行为与无障碍标签；无 `CURRENT`。 |
 | 2026-09-11 | FR-295 | Web TypeScript typecheck、ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS：关闭中间 Git Diff 页签会清除侧栏文件选中及已打开缓存；再次点击同一提交文件可重新打开 Diff。无 `CURRENT`。 |
 | 2026-09-11 | FR-294 | Web TypeScript typecheck、ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS：Git 侧栏只随最后直接点击的单一路径显示，已排除根／工作目录容器仓库；`repos`、`repositories.md` 等普通路径不再显示，独立子仓库及其内部文件仍可显示。生产构建仅报告既有大 chunk 提示；无 `CURRENT`。 |
