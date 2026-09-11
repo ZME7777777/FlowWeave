@@ -74,6 +74,43 @@ def recover_expired(db: Session, *, commit: bool = True) -> int:
     return result.rowcount
 
 
+def cleanup_terminal(
+    db: Session,
+    *,
+    retention_days: int,
+    batch_size: int,
+    now: datetime | None = None,
+    commit: bool = True,
+) -> int:
+    """Delete one locked page of expired terminal delivery records.
+
+    Only terminal rows are candidates.  Selecting them with `SKIP LOCKED`
+    makes concurrent Worker maintenance passes safe without ever waiting on,
+    deleting, or changing a pending/retrying/leased task.
+    """
+
+    cutoff = (now or datetime.now(UTC)) - timedelta(days=retention_days)
+    terminal_tasks = list(
+        db.scalars(
+            select(BackgroundTask)
+            .where(
+                BackgroundTask.state.in_([TaskState.SUCCEEDED, TaskState.DEAD]),
+                BackgroundTask.updated_at < cutoff,
+            )
+            .order_by(BackgroundTask.updated_at, BackgroundTask.id)
+            .limit(batch_size)
+            .with_for_update(skip_locked=True)
+        )
+    )
+    for task in terminal_tasks:
+        db.delete(task)
+    if commit:
+        db.commit()
+    else:
+        db.flush()
+    return len(terminal_tasks)
+
+
 def claim(
     db: Session,
     owner: str,

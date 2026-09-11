@@ -109,6 +109,13 @@ class Settings(BaseSettings):
     worker_concurrency: int = Field(default=4, ge=1, le=64)
     task_lease_seconds: int = Field(default=30, ge=5)
     task_heartbeat_seconds: int = Field(default=10, ge=1)
+    # The task ledger is an execution/audit window, not an unbounded event
+    # store. Keep terminal rows long enough for operational diagnosis, then
+    # reclaim them in small maintenance batches. Active and leased work is
+    # never eligible for this retention policy.
+    task_terminal_retention_days: int = Field(default=30, ge=1, le=3_650)
+    task_terminal_cleanup_batch_size: int = Field(default=500, ge=1, le=5_000)
+    task_terminal_cleanup_seconds: int = Field(default=86_400, ge=60, le=604_800)
 
     sandbox_backend: str = "process"
     sandbox_image_python: str = "flowweave-sandbox-python:1"

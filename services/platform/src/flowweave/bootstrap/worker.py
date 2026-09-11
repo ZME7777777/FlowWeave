@@ -6,6 +6,7 @@ import logging
 import signal
 import threading
 from collections.abc import Coroutine
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
@@ -29,6 +30,7 @@ from flowweave.modules.tasks.application.handlers import handle, record_terminal
 from flowweave.modules.tasks.application.service import (
     Lease,
     claim,
+    cleanup_terminal,
     fail,
     heartbeat,
     recover_expired,
@@ -190,6 +192,7 @@ class TaskWorker:
         self.owner = container.settings.worker_id or f"worker-{uuid4()}"
         self._stopping = asyncio.Event()
         self._sync_loop: asyncio.AbstractEventLoop | None = None
+        self._next_terminal_task_cleanup_at = datetime.now(UTC)
 
     def stop(self) -> None:
         self._stopping.set()
@@ -386,6 +389,25 @@ class TaskWorker:
                         await session.run_sync(
                             lambda db: (mark_uow_owned(db), scan_due_flow_run_schedules(db))[1]
                         )
+                        now = datetime.now(UTC)
+                        if now >= self._next_terminal_task_cleanup_at:
+                            deleted = await session.run_sync(
+                                lambda db: cleanup_terminal(
+                                    db,
+                                    retention_days=self.container.settings.task_terminal_retention_days,
+                                    batch_size=self.container.settings.task_terminal_cleanup_batch_size,
+                                    now=now,
+                                    commit=False,
+                                )
+                            )
+                            self._next_terminal_task_cleanup_at = now + timedelta(
+                                seconds=self.container.settings.task_terminal_cleanup_seconds
+                            )
+                            if deleted:
+                                logger.info(
+                                    "Deleted %s expired terminal background tasks",
+                                    deleted,
+                                )
                         # Publish maintenance intent before the reconciler opens its
                         # independent short control transactions.
                         await session.commit()

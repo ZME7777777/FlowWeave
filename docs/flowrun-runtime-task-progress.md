@@ -2,8 +2,8 @@
 
 > 创建日期：2026-08-21
 > 状态：`COMPLETE`
-> 当前执行切片：`FR-325`
-> 下一可执行切片：`FR-325`（本次稳定性修复任务链）
+> 当前执行切片：`FR-326`
+> 下一可执行切片：`FR-326`（本次稳定性修复任务链）
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -4204,12 +4204,16 @@ authority。
 会清除错误、更新 backend ID。真实 `RUNTIME_LOST`、ownership conflict 与其他错误仍维持原有 fail-closed
 generation fence/replacement 语义，临时 Provider 503 不再触发长退避或错误 replacement。
 
-### FR-325 Background Task 终态保留与分批清理 — CURRENT
+### FR-325 Background Task 终态保留与分批清理 — DONE
 
 依赖：FR-324。
 
 目标：为 `SUCCEEDED`/`DEAD` task 建立可配置、可审计、分批且不干扰 active lease 的保留期清理，阻止
 poll/wakeup 高频任务无限增长；保留诊断窗口，且永久删除 FlowRun 的既有强制清理语义不变。
+
+完成：新增默认 30 天终态保留期、每日 maintenance cadence 与每次 500 条的可配置批次。清理查询只锁定
+`SUCCEEDED`/`DEAD` 且 `updated_at` 早于 cutoff 的记录，并以 `SKIP LOCKED` 分批删除；`PENDING`、`RETRY`、
+`RUNNING` 和任何 lease 不会成为候选。新增 `(state, updated_at)` 索引，避免 retention scan 随 ledger 增长退化。
 
 ### FR-326 OpenHands persistence 单一事实源挂载 — PENDING
 
@@ -4253,6 +4257,7 @@ contract、冻结策略与既有受控生命周期约束覆盖。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-12 | FR-325 | 受影响 Python Ruff format/check、`py_compile`、唯一 Alembic head、`git diff --check`；终态 task retention 定向 pytest | PASS（静态）：Ruff、语法、空白检查与唯一 Alembic head `0113_task_retention` 通过。清理按 terminal state + cutoff + batch 选择，且 `SKIP LOCKED` 不与其他 Worker 维护事务争抢。定向 pytest 在 Testcontainers PostgreSQL fixture 初始化前因本机 Docker Unix socket 缺失而阻断，未伪记为通过；远端部署验证需覆盖过期终态 task 批次收敛与 active lease 未受影响。 |
 | 2026-09-12 | FR-324 | 受影响 Python Ruff format/check、`py_compile`、唯一 Alembic head、`git diff --check`；Provider 临时不可达与恢复 observation 定向 pytest | PASS（静态）：Ruff、语法、唯一 Alembic head `0112_agent_fallback` 与空白检查通过。临时 `SANDBOX_BACKEND_UNAVAILABLE` 保留最后可信状态且不累积 cleanup backoff，确认运行的下一次 observation 清除错误。两条定向 pytest 在 Testcontainers PostgreSQL fixture 初始化前因本机 Docker Unix socket 缺失而阻断，未伪记为通过；远端真实 Docker Provider 部署验证需覆盖 503 后 ledger 收敛、无替换及 Conversation/state 保留。 |
 | 2026-09-12 | FR-323 | 受影响 Python Ruff format/check、`py_compile`、`git diff --check`；取消 Run → cancel task → terminal Runtime stop Worker 定向 pytest | PASS（静态）：Ruff、语法与空白检查通过，终态停止 task 处于 Runtime lane 且不与 cancel 并发。定向 pytest 在 Testcontainers PostgreSQL fixture 初始化前因本机 Docker Unix socket 缺失而阻断，未伪记为通过；远端部署将在真实 Docker Provider 上验证停止容器、保留 allocation/state 与重复 task 幂等。 |
 | 2026-09-12 | FR-322 | 受影响 Python Ruff format/check、py_compile、Alembic unique head、git diff --check；Sandbox/Provider 网络重接定向 pytest | PASS（静态）：Ruff 与语法检查通过，唯一 Alembic head 为 0112_agent_fallback，空白检查通过。恢复循环会从 Docker network inspect 的成员表跳过已附着 client，只连接缺失 container ID，避免每 10 秒重复 Docker 调用和日志。三条定向 Sandbox pytest 在业务断言前因本机 Docker Unix socket 缺失、Testcontainers PostgreSQL fixture 无法启动而阻断，未伪记为通过；远端部署后以实际旧 Runtime 私网连接和会话读取验证。 |

@@ -6,6 +6,7 @@ from sqlalchemy import select
 from flowweave.modules.orchestration.application.service import _runtime_input_upload_handle
 from flowweave.modules.tasks.application.service import (
     claim,
+    cleanup_terminal,
     enqueue,
     heartbeat,
     recover_expired,
@@ -113,6 +114,50 @@ def test_expired_lease_cannot_be_revived_by_heartbeat(db_session_factory):
     with db_session_factory() as db:
         assert heartbeat(db, lease, lease_seconds=5) is False
         assert recover_expired(db) == 1
+
+
+def test_terminal_task_cleanup_is_batched_and_never_deletes_active_work(db_session_factory):
+    now = datetime.now(UTC)
+    expired_ids: list[str] = []
+    retained_ids: list[str] = []
+    with db_session_factory() as db:
+        for index, state in enumerate((TaskState.SUCCEEDED, TaskState.DEAD, TaskState.SUCCEEDED)):
+            task = enqueue(
+                db,
+                task_type="POLL_RUNTIME",
+                aggregate_type="ATTEMPT",
+                aggregate_id=f"expired-terminal-{index}",
+                idempotency_key=f"expired-terminal-{index}",
+            )
+            task.state = state
+            task.updated_at = now - timedelta(days=31, seconds=index)
+            expired_ids.append(task.id)
+
+        for index, state in enumerate(
+            (TaskState.SUCCEEDED, TaskState.PENDING, TaskState.RETRY, TaskState.RUNNING)
+        ):
+            task = enqueue(
+                db,
+                task_type="POLL_RUNTIME",
+                aggregate_type="ATTEMPT",
+                aggregate_id=f"retained-task-{index}",
+                idempotency_key=f"retained-task-{index}",
+            )
+            task.state = state
+            task.updated_at = now if state == TaskState.SUCCEEDED else now - timedelta(days=31)
+            if state == TaskState.RUNNING:
+                task.lease_owner = "live-worker"
+                task.lease_until = now + timedelta(minutes=1)
+            retained_ids.append(task.id)
+        db.commit()
+
+    with db_session_factory() as db:
+        assert cleanup_terminal(db, retention_days=30, batch_size=2, now=now) == 2
+    with db_session_factory() as db:
+        assert cleanup_terminal(db, retention_days=30, batch_size=2, now=now) == 1
+    with db_session_factory() as db:
+        assert all(db.get(BackgroundTask, task_id) is None for task_id in expired_ids)
+        assert all(db.get(BackgroundTask, task_id) is not None for task_id in retained_ids)
 
 
 def test_worker_maintenance_recovers_a_lease_that_expires_after_startup(

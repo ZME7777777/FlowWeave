@@ -3,7 +3,16 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, ClassVar
 
-from sqlalchemy import JSON, CheckConstraint, DateTime, Integer, String, Text, UniqueConstraint
+from sqlalchemy import (
+    JSON,
+    CheckConstraint,
+    DateTime,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from flowweave.shared.database import Base, now, uid
@@ -17,9 +26,8 @@ class BackgroundTask(Base):
     # owner but is not subject to ordinary ORM/RLS filtering.
     __tenant_scoped__: ClassVar[bool] = False
     __table_args__ = (
-        UniqueConstraint(
-            "owner_user_id", "idempotency_key", name="uq_background_task_owner_key"
-        ),
+        UniqueConstraint("owner_user_id", "idempotency_key", name="uq_background_task_owner_key"),
+        Index("ix_background_tasks_terminal_updated_at", "state", "updated_at"),
         CheckConstraint("lease_generation >= 0", name="ck_task_generation_nonnegative"),
         CheckConstraint("attempts >= 0", name="ck_task_attempts_nonnegative"),
     )
