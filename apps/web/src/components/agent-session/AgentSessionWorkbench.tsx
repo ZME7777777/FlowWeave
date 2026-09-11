@@ -1604,7 +1604,7 @@ function WorkDirectoryCreator({ workspaceId, onClose, onCreated }: {
   </div>;
 }
 
-function selectedGitRepository(repositories: AgentSessionWorkspaceDetails['repositories'], selectedPath?: string) {
+function selectedGitRepository(repositories: AgentSessionWorkspaceDetails['repositories'], selectedPath?: string, ...containerPaths: Array<string | undefined>) {
   return repositories
     .filter(item => selectedPath === item.path || Boolean(selectedPath?.startsWith(`${item.path}/`)))
     .sort((left, right) => right.path.length - left.path.length)[0];
@@ -1617,6 +1617,7 @@ function WorkspaceGitSidebar({ details, repository, loadLog, loadCommit, loadDif
   loadCommit: (repositoryPath: string, commit: string) => Promise<WorkspaceGitCommitDetails>;
   loadDiff: (repositoryPath: string, commit: string, path: string) => Promise<WorkspaceGitFileDiff>;
   onOpenFileDiff: (details: WorkspaceGitCommitDetails, diff: WorkspaceGitFileDiff) => void;
+    .filter(item => !containerPaths.includes(item.path))
 }) {
   const [selectedCommit, setSelectedCommit] = useState<string>();
   const [selectedCommitFile, setSelectedCommitFile] = useState<string>();
@@ -1932,6 +1933,7 @@ function WorkspaceDrawer({
   }, [scopeKey]);
   useEffect(() => {
     sessionStorage.setItem(toolsStorageKey, JSON.stringify(scopeStates));
+  const [gitContextPath, setGitContextPath] = useState<string>();
   }, [scopeStates, toolsStorageKey]);
   useEffect(() => {
     if (!migrateFromScopeKey || migrateFromScopeKey === scopeKey) return;
@@ -1993,6 +1995,7 @@ function WorkspaceDrawer({
     enabled: Boolean(open && scopeState.activeTabId === 'files' && textPreviewable),
     retry: false,
   });
+    setGitContextPath(undefined);
   const visibleFiles = useMemo(() => {
     const files = new Map<string, WorkspaceEntry>((details?.files ?? []).map(file => [file.path, file]));
     for (const attachment of attachments) {
@@ -2085,6 +2088,7 @@ function WorkspaceDrawer({
     if (!api.deleteFile || !items.length) return;
     const directories = items.filter(item => item.kind === 'directory');
     if (!await dialog.confirm({ title: `删除 ${items.length} 项？`, message: directories.length ? '目录将递归删除其内容；此操作无法撤销。会话附件和不安全路径会受到保护。' : '所选文件会被永久删除，且无法撤销。', confirmLabel: '确认删除', tone: 'danger' })) return;
+    setGitContextPath(path);
     setPanelError('');
     try {
       await Promise.all(items.map(item => api.deleteFile!(workspaceId, item.path, { bindingId, workDirectoryId, recursive: item.kind === 'directory' })));
@@ -2230,7 +2234,7 @@ function WorkspaceDrawer({
           {scopeState.tabs.some(tab => tab.kind === 'files') && <section className={`agent-workspace-files ${scopeState.activeTabId === 'files' ? 'active' : ''}${gitSidebarVisible ? ' fullscreen-git' : ''}`} style={{ '--file-tree-width': `${fileTreeWidth}px` } as CSSProperties}>
             <div className="agent-file-tree-pane">
               <header className="agent-file-tree-toolbar"><span>{selectedEntryPaths.size ? `已选 ${selectedEntryPaths.size} 项` : '文件'}</span><div className="agent-file-tree-actions"><button type="button" title="新建文件" aria-label="新建文件" onClick={() => createAtActiveDirectory('FILE')}><FileCode2 size={13}/></button><button type="button" title="新建目录" aria-label="新建目录" onClick={() => createAtActiveDirectory('DIRECTORY')}><FolderPlus size={13}/></button><button type="button" className={`agent-file-tree-expand-toggle${allFileDirectoriesExpanded ? ' expanded' : ''}`} title={allFileDirectoriesExpanded ? '全部收起' : '全部展开'} aria-label={allFileDirectoriesExpanded ? '全部收起目录' : '全部展开目录'} disabled={!fileDirectoryPaths.length} onClick={() => setExpandedFilePaths(allFileDirectoriesExpanded ? new Set() : new Set(fileDirectoryPaths))}>{allFileDirectoriesExpanded ? <ChevronRight size={13}/> : <ChevronDown size={13}/>}</button><button type="button" className="danger" title="删除选中项" aria-label="删除选中项" disabled={!selectedEntryRoots.length} onClick={() => void removeEntries(selectedEntryRoots.map(path => ({ path, kind: visibleFiles.find(item => item.path === path)?.kind ?? 'directory' })))}><Trash2 size={13}/></button></div></header>
-              <WorkspaceFileTree entries={visibleFiles} root={details.working_directory} selectedFile={selectedFile} selectedPaths={selectedEntryPaths} expanded={expandedFilePaths} onExpandedChange={setExpandedFilePaths} onDirectoriesChange={setFileDirectoryPaths} onSelect={path => { setActiveDirectory(undefined); selectFile(path); }} onSelectionChange={setSelectedEntryPaths} onActivateDirectory={setActiveDirectory} onContextMenu={(path, kind, event) => { setEntryMenu({ path, kind, x: Math.min(event.clientX, window.innerWidth - 190), y: Math.min(event.clientY, window.innerHeight - 190) }); }}/>
+              <WorkspaceFileTree entries={visibleFiles} root={details.working_directory} selectedFile={selectedFile} selectedPaths={selectedEntryPaths} expanded={expandedFilePaths} onExpandedChange={setExpandedFilePaths} onDirectoriesChange={setFileDirectoryPaths} onSelect={path => { setActiveDirectory(undefined); selectFile(path); }} onSelectionChange={setSelectedEntryPaths} onActivateDirectory={path => { setActiveDirectory(path); setGitContextPath(path); }} onContextMenu={(path, kind, event) => { setEntryMenu({ path, kind, x: Math.min(event.clientX, window.innerWidth - 190), y: Math.min(event.clientY, window.innerHeight - 190) }); }}/>
             </div>
             <div className="agent-file-tree-resizer" role="separator" aria-label="调整文件目录宽度" aria-orientation="vertical" onPointerDown={startFileTreeResize}/>
             <div className="agent-file-preview">{candidatePreview ? <>

@@ -873,7 +873,7 @@ function ActivityGroup({ items, active, liveText, startedAt, finishedAt, avatarS
         if (item.kind === 'tool' && toolDetail) return <div className="conversation-tool-entry" key={entry.id}>
           {presentation.thought && <article className="conversation-activity-row thought"><MessageMarkdown>{presentation.thought}</MessageMarkdown></article>}
           <details className="conversation-activity-row tool conversation-tool-detail">
-            <summary aria-label={`查看执行详情：${presentation.title}（${presentation.status}）`}><ChevronRight className="conversation-tool-chevron" size={13}/></summary>
+            <summary aria-label={`查看执行详情：${presentation.title}`}>{taskAvatar ?? <ToolIcon size={14}/>}<div><b title={presentation.title}>{presentation.title}</b></div><ChevronRight className="conversation-tool-chevron" size={13}/></summary>
             {toolDetail}
           </details>
         </div>;
