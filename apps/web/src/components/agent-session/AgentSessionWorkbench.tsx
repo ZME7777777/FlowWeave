@@ -1389,7 +1389,6 @@ function WorkspaceFileTree({ entries, root, selectedFile, selectedPaths, expande
   const stickyOverlayRef = useRef<HTMLDivElement>(null);
   const rowRefs = useRef(new Map<string, HTMLDivElement>());
   const [stickyDirectoryPaths, setStickyDirectoryPaths] = useState<string[]>([]);
-  const [stickyOverlayHeight, setStickyOverlayHeight] = useState(0);
   useEffect(() => {
     const paths: string[] = [];
     const collect = (items: WorkspaceTreeNode[]) => items.forEach(node => { if (node.kind === 'directory') { paths.push(node.path); collect(node.children); } });
@@ -1438,7 +1437,6 @@ function WorkspaceFileTree({ entries, root, selectedFile, selectedPaths, expande
       return;
     }
     const overlayHeight = overlay?.offsetHeight ?? 0;
-    setStickyOverlayHeight(current => current === overlayHeight ? current : overlayHeight);
     const treeTop = tree.getBoundingClientRect().top;
     const firstVisible = visibleNodes.find(({ node }) => {
       const row = rowRefs.current.get(node.path);
@@ -1455,11 +1453,10 @@ function WorkspaceFileTree({ entries, root, selectedFile, selectedPaths, expande
   }, [updateStickyDirectories]);
   useLayoutEffect(() => {
     const overlay = stickyOverlayRef.current;
-    if (!overlay) { setStickyOverlayHeight(0); return; }
+    if (!overlay) return;
     const updateHeight = () => {
       const tree = treeRef.current;
       if (tree) overlay.style.transform = `translateY(${tree.scrollTop}px)`;
-      setStickyOverlayHeight(overlay.offsetHeight);
     };
     updateHeight();
     const observer = new ResizeObserver(updateHeight);
@@ -1522,7 +1519,6 @@ function WorkspaceFileTree({ entries, root, selectedFile, selectedPaths, expande
       </div>;
     })}</div>}
     {nodes.length ? renderNodes() : <p>当前目录没有可展示的文件。</p>}
-    {stickyOverlayHeight > 0 && <div className="agent-file-tree-sticky-spacer" aria-hidden="true" style={{ height: stickyOverlayHeight }}/> }
   </div>;
 }
 
@@ -1635,10 +1631,9 @@ function WorkspaceGitSidebar({ details, selectedPath, loadLog, loadCommit, loadD
     queryFn: () => loadDiff(repository!.path, selectedCommit!, selectedCommitFile!),
     enabled: Boolean(repository && selectedCommit && selectedCommitFile),
   });
-  if (!repository) return <aside className="agent-workspace-git-sidebar empty" aria-label="Git 提交历史"><header><GitBranch size={15}/><span>Git</span></header><p>选择 Git 仓库目录或其下的文件，即可查看提交历史。</p></aside>;
   return <aside className="agent-workspace-git-sidebar" aria-label="Git 提交历史">
-    <header><div><span><GitBranch size={15}/>Git</span><b title={workspaceRelativePath(repository.path, details.root)}>{workspaceRelativePath(repository.path, details.root)}</b></div>{repository.branch && <em title="当前分支（只读，暂不支持切换）">{repository.branch}</em>}</header>
-    {logQuery.isLoading ? <p className="agent-git-loading">正在读取提交历史…</p> : logQuery.isError ? <p className="agent-git-error">Git 历史读取失败。<button type="button" onClick={() => void logQuery.refetch()}>重试</button></p> : <>
+    <header><div><span><GitBranch size={15}/>Git</span><b title={repository ? workspaceRelativePath(repository.path, details.root) : selectedPath ? workspaceRelativePath(selectedPath, details.root) : undefined}>{repository ? workspaceRelativePath(repository.path, details.root) : '未选择 Git 仓库'}</b></div>{repository?.branch && <em title="当前分支（只读，暂不支持切换）">{repository.branch}</em>}</header>
+    {!repository ? <p className="agent-git-empty">{selectedPath ? '所选目录不是当前工作区中的 Git 仓库。' : '选择 Git 仓库目录或其下的文件，即可查看提交历史。'}</p> : logQuery.isLoading ? <p className="agent-git-loading">正在读取提交历史…</p> : logQuery.isError ? <p className="agent-git-error">Git 历史读取失败。<button type="button" onClick={() => void logQuery.refetch()}>重试</button></p> : <>
       <div className="agent-git-log">{(logQuery.data?.commits ?? []).map(commit => <button key={commit.id} type="button" className={selectedCommit === commit.id ? 'active' : ''} onClick={() => { setSelectedCommit(commit.id); setSelectedCommitFile(undefined); }}><b>{commit.subject || '（无提交说明）'}</b><span><code>{commit.short_id}</code><em>{commit.author}</em><time>{commit.date}</time></span></button>)}{!logQuery.data?.commits.length && <p>该仓库没有可展示的提交。</p>}</div>
       {selectedCommit && <section className="agent-git-commit-detail">
         <header><div><b>{commitQuery.data?.commit.subject || '正在读取提交…'}</b><span>{commitQuery.data?.commit.short_id}</span></div><button type="button" aria-label="关闭提交详情" onClick={() => { setSelectedCommit(undefined); setSelectedCommitFile(undefined); }}><X size={13}/></button></header>
@@ -1993,7 +1988,7 @@ function WorkspaceDrawer({
     : '';
   const canPreviewImage = Boolean(selectedFile && (selectedMimeType.startsWith('image/') || /\.(?:avif|gif|jpe?g|png|svg|webp)$/i.test(selectedFile)));
   const canPreviewPdf = Boolean(selectedFile && (selectedMimeType === 'application/pdf' || /\.pdf$/i.test(selectedFile)));
-  const gitSelectedPath = activeDirectory ?? selectedFile ?? [...selectedEntryPaths][0];
+  const gitSelectedPath = activeDirectory ?? [...selectedEntryPaths][0] ?? selectedFile;
   const gitOptions = { bindingId, workDirectoryId };
   const sshRemoteReady = Boolean(
     details?.ide.gateway.supported
