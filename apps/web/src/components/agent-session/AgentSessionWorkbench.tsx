@@ -1388,9 +1388,8 @@ function WorkspaceFileTree({ entries, root, selectedFile, selectedPaths, expande
   const treeRef = useRef<HTMLDivElement>(null);
   const stickyOverlayRef = useRef<HTMLDivElement>(null);
   const rowRefs = useRef(new Map<string, HTMLDivElement>());
-  const lastTreeScrollTopRef = useRef(0);
-  const stickyCoverageHeightRef = useRef(0);
   const [stickyDirectoryPaths, setStickyDirectoryPaths] = useState<string[]>([]);
+  const [stickyOverlayHeight, setStickyOverlayHeight] = useState(0);
   useEffect(() => {
     const paths: string[] = [];
     const collect = (items: WorkspaceTreeNode[]) => items.forEach(node => { if (node.kind === 'directory') { paths.push(node.path); collect(node.children); } });
@@ -1435,28 +1434,17 @@ function WorkspaceFileTree({ entries, root, selectedFile, selectedPaths, expande
     // gesture, so the directory path visibly drifted into the middle.
     if (overlay) overlay.style.transform = `translateY(${tree.scrollTop}px)`;
     if (tree.scrollTop <= 1) {
-      lastTreeScrollTopRef.current = tree.scrollTop;
-      stickyCoverageHeightRef.current = 0;
       setStickyDirectoryPaths(current => current.length ? [] : current);
       return;
     }
-    const movingUp = tree.scrollTop < lastTreeScrollTopRef.current;
-    const overlayHeight = overlay?.offsetHeight ?? 0;
-    // A shorter directory chain exposes more source rows. Recomputing with
-    // that shorter height immediately selected the old deep path again, which
-    // in turn restored the tall chain (A → B → A flicker). Keep the maximum
-    // covered area for one downward scroll sequence; reset it only when the
-    // user reverses direction or returns to the top.
-    if (movingUp) stickyCoverageHeightRef.current = overlayHeight;
-    else stickyCoverageHeightRef.current = Math.max(stickyCoverageHeightRef.current, overlayHeight);
-    lastTreeScrollTopRef.current = tree.scrollTop;
-    const treeTop = tree.getBoundingClientRect().top;
     const firstVisible = visibleNodes.find(({ node }) => {
       const row = rowRefs.current.get(node.path);
-      // The path must describe the content that is actually exposed below the
-      // pinned header. A row merely hidden behind that header belongs to the
-      // previous directory and must not keep its stale ancestors visible.
-      return row && row.getBoundingClientRect().bottom > treeTop + stickyCoverageHeightRef.current + 1;
+      // This anchor is derived exclusively from the scrollable source list,
+      // never from the overlay height.  The overlay is absolutely positioned
+      // and must not alter which row is current; feeding its height back into
+      // this decision previously kept a deep directory pinned to the end of
+      // the list and obscured the final files.
+      return row && row.offsetTop + row.offsetHeight > tree.scrollTop + 1;
     });
     const next = firstVisible ? stickyDirectoriesFor(firstVisible.node) : [];
     setStickyDirectoryPaths(current => current.length === next.length && current.every((path, index) => path === next[index]) ? current : next);
@@ -1465,9 +1453,20 @@ function WorkspaceFileTree({ entries, root, selectedFile, selectedPaths, expande
     updateStickyDirectories();
   }, [updateStickyDirectories]);
   useLayoutEffect(() => {
-    const tree = treeRef.current;
     const overlay = stickyOverlayRef.current;
-    if (tree && overlay) overlay.style.transform = `translateY(${tree.scrollTop}px)`;
+    if (!overlay) {
+      setStickyOverlayHeight(0);
+      return;
+    }
+    const syncOverlay = () => {
+      const currentTree = treeRef.current;
+      if (currentTree) overlay.style.transform = `translateY(${currentTree.scrollTop}px)`;
+      setStickyOverlayHeight(current => current === overlay.offsetHeight ? current : overlay.offsetHeight);
+    };
+    syncOverlay();
+    const observer = new ResizeObserver(syncOverlay);
+    observer.observe(overlay);
+    return () => observer.disconnect();
   }, [stickyDirectoryPaths]);
   const selectEntry = (node: WorkspaceTreeNode, event: ReactMouseEvent<HTMLButtonElement>) => {
     const toggling = event.metaKey || event.ctrlKey;
@@ -1521,6 +1520,7 @@ function WorkspaceFileTree({ entries, root, selectedFile, selectedPaths, expande
       </div>;
     })}</div>}
     {nodes.length ? renderNodes() : <p>当前目录没有可展示的文件。</p>}
+    {stickyOverlayHeight > 0 && <div className="agent-file-tree-sticky-spacer" aria-hidden="true" style={{ height: stickyOverlayHeight }}/> }
   </div>;
 }
 
@@ -1606,6 +1606,7 @@ function WorkDirectoryCreator({ workspaceId, onClose, onCreated }: {
 
 function selectedGitRepository(repositories: AgentSessionWorkspaceDetails['repositories'], selectedPath?: string, ...containerPaths: Array<string | undefined>) {
   return repositories
+    .filter(item => !containerPaths.includes(item.path))
     .filter(item => selectedPath === item.path || Boolean(selectedPath?.startsWith(`${item.path}/`)))
     .sort((left, right) => right.path.length - left.path.length)[0];
 }
@@ -1617,7 +1618,6 @@ function WorkspaceGitSidebar({ details, repository, loadLog, loadCommit, loadDif
   loadCommit: (repositoryPath: string, commit: string) => Promise<WorkspaceGitCommitDetails>;
   loadDiff: (repositoryPath: string, commit: string, path: string) => Promise<WorkspaceGitFileDiff>;
   onOpenFileDiff: (details: WorkspaceGitCommitDetails, diff: WorkspaceGitFileDiff) => void;
-    .filter(item => !containerPaths.includes(item.path))
 }) {
   const [selectedCommit, setSelectedCommit] = useState<string>();
   const [selectedCommitFile, setSelectedCommitFile] = useState<string>();
@@ -1922,6 +1922,7 @@ function WorkspaceDrawer({
   const [candidatePreview, setCandidatePreview] = useState<CandidateFilePreviewRequest>();
   const [selectedEntryPaths, setSelectedEntryPaths] = useState<Set<string>>(new Set());
   const [activeDirectory, setActiveDirectory] = useState<string>();
+  const [gitContextPath, setGitContextPath] = useState<string>();
   const [expandedFilePaths, setExpandedFilePaths] = useState<Set<string>>(new Set());
   const [fileDirectoryPaths, setFileDirectoryPaths] = useState<string[]>([]);
   const allFileDirectoriesExpanded = fileDirectoryPaths.length > 0 && fileDirectoryPaths.every(path => expandedFilePaths.has(path));
@@ -1933,7 +1934,6 @@ function WorkspaceDrawer({
   }, [scopeKey]);
   useEffect(() => {
     sessionStorage.setItem(toolsStorageKey, JSON.stringify(scopeStates));
-  const [gitContextPath, setGitContextPath] = useState<string>();
   }, [scopeStates, toolsStorageKey]);
   useEffect(() => {
     if (!migrateFromScopeKey || migrateFromScopeKey === scopeKey) return;
@@ -1984,6 +1984,7 @@ function WorkspaceDrawer({
     // reuse a selection after switching conversations or work directories.
     setActiveDirectory(undefined);
     setSelectedEntryPaths(new Set());
+    setGitContextPath(undefined);
   }, [bindingId, details?.working_directory, workDirectoryId]);
   const selectedFile = scopeState.selectedFile;
   const selectedAttachment = attachments.find(item => item.path === selectedFile);
@@ -1995,7 +1996,6 @@ function WorkspaceDrawer({
     enabled: Boolean(open && scopeState.activeTabId === 'files' && textPreviewable),
     retry: false,
   });
-    setGitContextPath(undefined);
   const visibleFiles = useMemo(() => {
     const files = new Map<string, WorkspaceEntry>((details?.files ?? []).map(file => [file.path, file]));
     for (const attachment of attachments) {
@@ -2077,6 +2077,7 @@ function WorkspaceDrawer({
   }, [onOpen, runtimeAvailable, updateScope]);
   const selectFile = (path?: string) => {
     setCandidatePreview(undefined);
+    setGitContextPath(path);
     if (path) {
       openFiles(path);
       return;
@@ -2088,7 +2089,6 @@ function WorkspaceDrawer({
     if (!api.deleteFile || !items.length) return;
     const directories = items.filter(item => item.kind === 'directory');
     if (!await dialog.confirm({ title: `删除 ${items.length} 项？`, message: directories.length ? '目录将递归删除其内容；此操作无法撤销。会话附件和不安全路径会受到保护。' : '所选文件会被永久删除，且无法撤销。', confirmLabel: '确认删除', tone: 'danger' })) return;
-    setGitContextPath(path);
     setPanelError('');
     try {
       await Promise.all(items.map(item => api.deleteFile!(workspaceId, item.path, { bindingId, workDirectoryId, recursive: item.kind === 'directory' })));
@@ -2192,8 +2192,7 @@ function WorkspaceDrawer({
     : '';
   const canPreviewImage = Boolean(selectedFile && (selectedMimeType.startsWith('image/') || /\.(?:avif|gif|jpe?g|png|svg|webp)$/i.test(selectedFile)));
   const canPreviewPdf = Boolean(selectedFile && (selectedMimeType === 'application/pdf' || /\.pdf$/i.test(selectedFile)));
-  const gitSelectedPath = activeDirectory ?? [...selectedEntryPaths][0] ?? selectedFile;
-  const gitRepository = useMemo(() => selectedGitRepository(details?.repositories ?? [], gitSelectedPath), [details?.repositories, gitSelectedPath]);
+  const gitRepository = useMemo(() => selectedGitRepository(details?.repositories ?? [], gitContextPath, details?.root, details?.working_directory), [details?.repositories, details?.root, details?.working_directory, gitContextPath]);
   const gitSidebarVisible = fullScreen && Boolean(gitRepository);
   const gitOptions = { bindingId, workDirectoryId };
   const sshRemoteReady = Boolean(
