@@ -115,6 +115,10 @@ def test_persistent_runtime_uses_one_openhands_state_root(
         "dst=/runtime/state/persistence/memory,readonly"
     ) in mounts
     assert not any("/.openhands" in mount for mount in mounts)
+    assert (
+        "/home/flowweave/.openhands:rw,nosuid,nodev,size=16m,uid=10001,gid=10001,mode=0700"
+        in command
+    )
     assert "OH_PERSISTENCE_DIR=/runtime/state/persistence" in command
 
 

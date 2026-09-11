@@ -302,9 +302,7 @@ class DockerSandboxProvider:
 set -eu
 target=/flowweave-home
 mkdir -p "$target"
-mkdir -p "$target/.openhands"
 mkdir -p "$target/.m2"
-chmod 0700 "$target/.openhands"
 if [ -f "$target/config.json" ] && [ ! -e "$target/.lark-cli/config.json" ] \
    && { [ -d "$target/cache" ] || [ -d "$target/logs" ] \
         || [ -f "$target/update-state.json" ]; }; then
@@ -1075,6 +1073,13 @@ chmod 0700 "$target"
         runtime_tmpfs = [
             "--tmpfs",
             "/tmp:rw,nosuid,nodev,size=128m,uid=10001,gid=10001,mode=1777",
+            # OpenHands 1.47 resolves all user state through the explicit
+            # OH_PERSISTENCE_DIR below. Older credential volumes can contain a
+            # legacy ~/.openhands tree; hide it without deleting operator data
+            # so it cannot become a second runtime state source or ambient
+            # profile/provider cache.
+            "--tmpfs",
+            "/home/flowweave/.openhands:rw,nosuid,nodev,size=16m,uid=10001,gid=10001,mode=0700",
         ]
         runtime_environment: list[str] = []
         if persistent_runtime:

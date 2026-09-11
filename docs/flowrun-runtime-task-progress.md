@@ -2,8 +2,8 @@
 
 > 创建日期：2026-08-21
 > 状态：`COMPLETE`
-> 当前执行切片：`FR-326`
-> 下一可执行切片：`FR-326`（本次稳定性修复任务链）
+> 当前执行切片：`NONE`
+> 下一可执行切片：`NONE`（本次稳定性修复任务链已完成，待远端部署验收）
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -4215,12 +4215,18 @@ poll/wakeup 高频任务无限增长；保留诊断窗口，且永久删除 Flow
 `SUCCEEDED`/`DEAD` 且 `updated_at` 早于 cutoff 的记录，并以 `SKIP LOCKED` 分批删除；`PENDING`、`RETRY`、
 `RUNNING` 和任何 lease 不会成为候选。新增 `(state, updated_at)` 索引，避免 retention scan 随 ledger 增长退化。
 
-### FR-326 OpenHands persistence 单一事实源挂载 — PENDING
+### FR-326 OpenHands persistence 单一事实源挂载 — DONE
 
 依赖：FR-325。
 
 目标：移除遗留 `state/persistence/profiles -> HOME/.openhands/profiles` 双重可写挂载，只保留
 `OH_PERSISTENCE_DIR` 单一持久根；验证 profile、Provider credential 与原 ID replacement 恢复均只读取该根。
+
+完成：固定 OpenHands `30cf5832e`/1.47 源码取证确认 `OH_PERSISTENCE_DIR` 覆盖 `~/.openhands` 的
+profile、provider connection、credential、memory、cache 与 plugin 路径。Runtime 继续只挂载
+`state/persistence → /runtime/state/persistence`；不再在 credential HOME 初始化中创建 `.openhands`，并以
+受限 tmpfs 遮蔽旧 HOME volume 可能遗留的 `.openhands`，不删除历史凭据卷数据。由此旧状态既不参与
+profile/provider 恢复，也不会成为第二个可写事实源。
 
 ### FR-321 OpenHands 1.47 增强最终安全、恢复与性能门禁 — DONE
 
@@ -4257,6 +4263,7 @@ contract、冻结策略与既有受控生命周期约束覆盖。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-12 | FR-326 | 固定 OpenHands `30cf5832e` persistence path 源码取证；受影响 Python Ruff format/check、`py_compile`、唯一 Alembic head、`git diff --check`；persistence mount / HOME preparation 定向 pytest | PASS（静态／构造）：固定源码确认 `OH_PERSISTENCE_DIR` 替代 `~/.openhands` 根。Ruff、语法、空白检查与唯一 Alembic head `0113_task_retention` 通过；持久 Runtime mount 构造测试 3 条通过，证明只有 `/runtime/state/persistence` 是持久根，旧 HOME `.openhands` 由受限 tmpfs 覆盖。HOME preparation 1 条 pytest 在 Testcontainers PostgreSQL fixture 初始化前因本机 Docker Unix socket 缺失而阻断，未伪记为通过；远端部署验证需检查实际容器 mount/env 与 profile/provider 恢复。 |
 | 2026-09-12 | FR-325 | 受影响 Python Ruff format/check、`py_compile`、唯一 Alembic head、`git diff --check`；终态 task retention 定向 pytest | PASS（静态）：Ruff、语法、空白检查与唯一 Alembic head `0113_task_retention` 通过。清理按 terminal state + cutoff + batch 选择，且 `SKIP LOCKED` 不与其他 Worker 维护事务争抢。定向 pytest 在 Testcontainers PostgreSQL fixture 初始化前因本机 Docker Unix socket 缺失而阻断，未伪记为通过；远端部署验证需覆盖过期终态 task 批次收敛与 active lease 未受影响。 |
 | 2026-09-12 | FR-324 | 受影响 Python Ruff format/check、`py_compile`、唯一 Alembic head、`git diff --check`；Provider 临时不可达与恢复 observation 定向 pytest | PASS（静态）：Ruff、语法、唯一 Alembic head `0112_agent_fallback` 与空白检查通过。临时 `SANDBOX_BACKEND_UNAVAILABLE` 保留最后可信状态且不累积 cleanup backoff，确认运行的下一次 observation 清除错误。两条定向 pytest 在 Testcontainers PostgreSQL fixture 初始化前因本机 Docker Unix socket 缺失而阻断，未伪记为通过；远端真实 Docker Provider 部署验证需覆盖 503 后 ledger 收敛、无替换及 Conversation/state 保留。 |
 | 2026-09-12 | FR-323 | 受影响 Python Ruff format/check、`py_compile`、`git diff --check`；取消 Run → cancel task → terminal Runtime stop Worker 定向 pytest | PASS（静态）：Ruff、语法与空白检查通过，终态停止 task 处于 Runtime lane 且不与 cancel 并发。定向 pytest 在 Testcontainers PostgreSQL fixture 初始化前因本机 Docker Unix socket 缺失而阻断，未伪记为通过；远端部署将在真实 Docker Provider 上验证停止容器、保留 allocation/state 与重复 task 幂等。 |
