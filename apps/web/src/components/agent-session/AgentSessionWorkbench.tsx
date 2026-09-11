@@ -1389,9 +1389,11 @@ function selectPreviewText(root: HTMLElement, content: string, selection: FileSe
   root.scrollIntoView({ block: 'center', behavior: 'smooth' });
 }
 
+interface WorkspaceSelectionRect { left: number; top: number; width: number; height: number; }
+
 function WorkspaceTextPreview({ path, content, highlight, onSelect }: { path: string; content: string; highlight?: FileSelection; onSelect?: (selection: FileSelection) => void }) {
   const previewRef = useRef<HTMLDivElement>(null);
-  const [selectionAction, setSelectionAction] = useState<{ selection: FileSelection; left: number; top: number }>();
+  const [selectionAction, setSelectionAction] = useState<{ selection: FileSelection; left: number; top: number; highlights: WorkspaceSelectionRect[] }>();
   const positionSelectionAction = useCallback((selection: FileSelection, range: Range) => {
     const preview = previewRef.current;
     if (!preview) return;
@@ -1409,7 +1411,18 @@ function WorkspaceTextPreview({ path, content, highlight, onSelect }: { path: st
     const top = anchor.top - previewRect.top + preview.scrollTop >= 36
       ? anchor.top - previewRect.top + preview.scrollTop - 36
       : anchor.bottom - previewRect.top + preview.scrollTop + 8;
-    setSelectionAction({ selection, left, top });
+    setSelectionAction({
+      selection, left, top,
+      // Native selection paint can disappear when the action is rendered.
+      // Keep an independent visual layer inside this scrolling preview so the
+      // selected file content remains unambiguously visible.
+      highlights: rects.map(rect => ({
+        left: rect.left - previewRect.left + preview.scrollLeft,
+        top: rect.top - previewRect.top + preview.scrollTop,
+        width: rect.width,
+        height: rect.height,
+      })),
+    });
   }, []);
   useEffect(() => {
     if (!highlight || !previewRef.current) return;
@@ -1429,7 +1442,7 @@ function WorkspaceTextPreview({ path, content, highlight, onSelect }: { path: st
     }
     positionSelectionAction(selection, range);
   };
-  const action = selectionAction && <button type="button" className="agent-file-selection-action" style={{ left: selectionAction.left, top: selectionAction.top }} onMouseDown={event => event.preventDefault()} onClick={() => { onSelect?.(selectionAction.selection); setSelectionAction(undefined); window.getSelection()?.removeAllRanges(); }}><Quote size={13}/>追加到会话</button>;
+  const action = selectionAction && <><div className="agent-file-selection-highlights" aria-hidden="true">{selectionAction.highlights.map((rect, index) => <i key={`${rect.left}:${rect.top}:${index}`} style={rect}/>)}</div><button type="button" className="agent-file-selection-action" style={{ left: selectionAction.left, top: selectionAction.top }} onMouseDown={event => event.preventDefault()} onClick={() => { onSelect?.(selectionAction.selection); setSelectionAction(undefined); window.getSelection()?.removeAllRanges(); }}><Quote size={13}/>追加到会话</button></>;
   if (/\.(?:md|mdx|markdown)$/i.test(path)) {
     return <div ref={previewRef} className="agent-file-preview-selection" onMouseUp={captureSelection}>{action}<article className="agent-file-markdown-preview"><ReactMarkdown remarkPlugins={[remarkGfm]} components={{ code: WorkspaceMarkdownCode }}>{content}</ReactMarkdown></article></div>;
   }
