@@ -3923,6 +3923,14 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 
 完成：工作区标签保留点击复制及成功反馈，但悬停使用普通箭头光标，不再显示系统复制加号。
 
+### FR-307 Agent 输入区工作区标签下移 — DONE
+
+依赖：FR-306。
+
+目标：工作区标签不得占用会话内容与输入区之间的阅读空间，应显示在发送框下方。
+
+完成：将可点击复制的工作区标签移动至 composer 之后，并以紧凑间距贴近发送框下沿；会话内容不再被标签遮挡。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -3938,6 +3946,7 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-11 | FR-307 | Web TypeScript typecheck、ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS：工作区标签位于发送框下方，不再占用会话阅读区域；相对路径复制、成功反馈与普通箭头光标保持不变；无 `CURRENT`。production build 仅报告既有大 chunk 提示。 |
 | 2026-09-11 | FR-306 | Web TypeScript typecheck、ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS：工作区标签仍可点击复制相对路径，悬停不再显示带绿色加号的复制光标；无 `CURRENT`。production build 仅报告既有大 chunk 提示。 |
 | 2026-09-11 | FR-305 | Web TypeScript typecheck、ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS：点击当前工作区标签仅复制相对根工作区路径，复制成功提供短暂可见与无障碍反馈；无 `CURRENT`。production build 仅报告既有大 chunk 提示。 |
 | 2026-09-11 | FR-304 | Web TypeScript typecheck、ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS：工作区标签整体向右移动 24px 至指定区域；无 `CURRENT`。production build 仅报告既有大 chunk 提示。 |
