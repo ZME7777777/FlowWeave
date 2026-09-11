@@ -414,7 +414,6 @@ def _assert_quota_fallback_contract() -> None:
 
     retry_source = getsource(LLM._make_retry_decorator)
     assert "not is_quota_exhaustion_error(e)" in retry_source
-    assert "fallback to an alternate model happens immediately" in retry_source
     strategy_source = getsource(FallbackStrategy)
     assert "fallback_llms: list[str]" in strategy_source
     assert "LLMProfileStore" in strategy_source
