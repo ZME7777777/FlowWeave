@@ -206,3 +206,8 @@
 /* Git history belongs to a selected repository only.  When the selection is
    outside one, no rail geometry is reserved and the tool surface fills width. */
 .agent-git-file-diff-review>header{justify-content:space-between;gap:10px}.agent-git-file-diff-review>header>div:first-child{min-width:0}.agent-git-file-diff-empty{display:grid;place-content:center;margin:0;padding:24px;color:#748078;font:10px/1.55 'DM Mono',ui-monospace,monospace;text-align:center}
+
+/* Keep Diff modes in the same horizontal, borderless tab family as the
+   workspace's review tab.  This override deliberately follows the shared
+   Diff base styles above, which otherwise restore the legacy bordered group. */
+.agent-diff-mode{display:flex!important;flex:0 0 auto!important;flex-direction:row!important;flex-wrap:nowrap!important;align-items:center;gap:1px;border:0!important;border-radius:0!important;padding:0!important;white-space:nowrap}.agent-diff-mode button{flex:0 0 auto;border:0!important;border-radius:6px!important;background:transparent!important;padding:6px 7px!important;color:#66716a!important;font-size:10px!important;line-height:1!important;white-space:nowrap}.agent-diff-mode button:hover:not(.active),.agent-diff-mode button:focus-visible:not(.active),.agent-diff-mode button.active{background:#e8f1eb!important;color:#286140!important;outline:0}
