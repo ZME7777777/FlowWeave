@@ -1027,6 +1027,13 @@ def _perform_reconcile(
         observation = provider.ensure_running(resource, runtime_secret_key=runtime_secret_key)
         return _ReconcileOutcome("RUNNING", observation)
     except DomainError as exc:
+        if exc.code == "SANDBOX_BACKEND_UNAVAILABLE":
+            # A remote Runtime Provider may be recreated or briefly unavailable
+            # while the Docker container it governs keeps running.  Do not turn
+            # a last-known-good observation into a false Runtime loss: the
+            # normal, short reconciliation interval will verify it again when
+            # the provider returns.
+            return _ReconcileOutcome("BACKEND_UNAVAILABLE", error=exc)
         return _ReconcileOutcome("ERROR", error=exc)
 
 
@@ -1100,6 +1107,14 @@ def _apply_reconcile_outcome(
                 "The bound Agent Runtime resource no longer exists and cannot be "
                 "recreated without losing its conversation state"
             )
+            current.next_reconcile_at = now + timedelta(seconds=interval_seconds)
+            errors = 1
+        elif outcome.kind == "BACKEND_UNAVAILABLE" and outcome.error is not None:
+            # Preserve the last trustworthy observed state and avoid the
+            # exponential cleanup backoff. The next normal reconcile will
+            # either restore a fresh RUNNING observation or prove a real loss.
+            current.last_error_code = outcome.error.code
+            current.last_error_detail = outcome.error.message
             current.next_reconcile_at = now + timedelta(seconds=interval_seconds)
             errors = 1
         elif outcome.error is not None:

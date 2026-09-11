@@ -1474,7 +1474,7 @@ def test_reconciler_does_not_recreate_a_missing_bound_runtime(
     assert recreated == []
 
 
-def test_reconciler_keeps_agent_runtime_when_docker_control_is_temporarily_unavailable(
+def test_reconciler_preserves_state_during_temporary_docker_control_outage(
     settings, db_session_factory, monkeypatch
 ):
     configured = _docker_settings(settings)
@@ -1534,11 +1534,64 @@ def test_reconciler_keeps_agent_runtime_when_docker_control_is_temporarily_unava
         assert resource is not None
         assert runtime is not None
         assert resource.desired_state == "RUNNING"
-        assert resource.observed_state == "ERROR"
+        assert resource.observed_state == "RUNNING"
         assert resource.last_error_code == "SANDBOX_BACKEND_UNAVAILABLE"
         assert runtime.status == "ACTIVE"
         assert runtime.failure_code is None
     assert report.errors == 1
+
+
+def test_reconciler_clears_transient_provider_error_after_a_confirmed_runtime_observation(
+    settings, db_session_factory, monkeypatch
+):
+    configured = _docker_settings(settings)
+    now = datetime.now(UTC)
+    with settings_context(configured), db_session_factory() as db:
+        workspace = ensure_default_agent_workspace(db)
+        runtime = db.scalar(
+            select(AgentWorkspaceRuntime).where(AgentWorkspaceRuntime.workspace_id == workspace.id)
+        )
+        assert runtime is not None
+        resource = ManagedSandbox(
+            kind="AGENT_RUNTIME",
+            owner_type="AGENT_WORKSPACE",
+            owner_id=workspace.id,
+            backend="docker",
+            backend_resource_name="fw-sbx-agent-runtime-recovered",
+            observed_state="RUNNING",
+            image_reference=runtime.runtime_image_digest,
+            agent_workspace_allocation_id=runtime.workspace_allocation_id,
+            hard_expires_at=now + timedelta(hours=1),
+            next_reconcile_at=now - timedelta(seconds=1),
+            last_error_code="SANDBOX_BACKEND_UNAVAILABLE",
+            last_error_detail="Docker temporarily unavailable",
+        )
+        db.add(resource)
+        db.commit()
+        resource_id = resource.id
+
+    monkeypatch.setattr(
+        DockerSandboxProvider, "inspect", lambda self, _name: _observation(resource)
+    )
+    monkeypatch.setattr(
+        DockerSandboxProvider,
+        "ensure_running",
+        lambda self, item, **_kwargs: _observation(item),
+    )
+    monkeypatch.setattr(DockerSandboxProvider, "list_managed", lambda self: [])
+
+    with settings_context(configured), db_session_factory() as db:
+        report = reconcile_managed_sandboxes(db)
+        db.commit()
+
+    with db_session_factory() as db:
+        persisted = db.get(ManagedSandbox, resource_id)
+        assert persisted is not None
+        assert persisted.observed_state == "RUNNING"
+        assert persisted.backend_resource_id == "docker-container-id"
+        assert persisted.last_error_code is None
+        assert persisted.last_error_detail is None
+    assert report.errors == 0
 
 
 def test_reconciler_deletes_auxiliary_resources_when_container_is_already_missing(
