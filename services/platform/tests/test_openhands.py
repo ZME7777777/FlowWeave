@@ -1818,6 +1818,94 @@ def test_openhands_active_cursor_reconciliation_follows_native_history_pages(
     ]
 
 
+def test_openhands_active_cursor_reconciliation_stops_at_history_page_budget(
+    openhands_settings, monkeypatch
+):
+    """A long detached history cannot consume an unbounded interactive read."""
+
+    runtime = OpenHandsRuntime(openhands_settings)
+    requested_pages: list[str] = []
+    page_ids = [f"page-{index}" for index in range(9, 0, -1)]
+
+    def fake_request(method: str, path: str, **kwargs: object) -> dict[str, object]:
+        assert method == "GET"
+        if path.endswith("/10000000-0000-4000-8000-000000000002"):
+            return _state(leaf_event_id=page_ids[0])
+        params = cast(dict[str, object], kwargs["params"])
+        page_id = cast(str, params["page_id"])
+        requested_pages.append(page_id)
+        index = page_ids.index(page_id)
+        parent_id = page_ids[index + 1] if index + 1 < len(page_ids) else "anchor"
+        return {
+            "items": [
+                {
+                    "kind": "MessageEvent",
+                    "id": page_id,
+                    "parent_id": parent_id,
+                    "source": "agent",
+                    "llm_message": {"role": "assistant", "content": page_id},
+                }
+            ],
+            "next_page_id": parent_id,
+        }
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+
+    with pytest.raises(DomainError) as caught:
+        runtime.read_active_events(_handle("anchor"))
+
+    assert caught.value.code == "RUNTIME_EVENT_HISTORY_BUDGET_EXHAUSTED"
+    assert caught.value.status == 503
+    assert caught.value.details == {
+        "conversation_id": "10000000-0000-4000-8000-000000000002",
+        "max_pages": 8,
+        "page_size": 100,
+    }
+    assert requested_pages == page_ids[:8]
+
+
+def test_openhands_fork_branch_recovery_stops_at_history_page_budget(
+    openhands_settings, monkeypatch
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    requested_pages: list[str] = []
+    page_ids = [f"branch-{index}" for index in range(9, 0, -1)]
+
+    def fake_request(method: str, _path: str, **kwargs: object) -> dict[str, object]:
+        assert method == "GET"
+        params = cast(dict[str, object], kwargs["params"])
+        page_id = cast(str, params["page_id"])
+        requested_pages.append(page_id)
+        index = page_ids.index(page_id)
+        parent_id = page_ids[index + 1] if index + 1 < len(page_ids) else "finish"
+        return {
+            "items": [
+                {
+                    "kind": "MessageEvent",
+                    "id": page_id,
+                    "parent_id": parent_id,
+                    "source": "user",
+                    "llm_message": {"role": "user", "content": page_id},
+                }
+            ],
+            "next_page_id": parent_id,
+        }
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+
+    with pytest.raises(DomainError) as caught:
+        runtime._active_branch_through(
+            "10000000-0000-4000-8000-000000000002",
+            leaf_event_id=page_ids[0],
+            stop_event_id="finish",
+            base_url="http://runtime:8000",
+            session_api_key="session-key",
+        )
+
+    assert caught.value.code == "RUNTIME_EVENT_HISTORY_BUDGET_EXHAUSTED"
+    assert requested_pages == page_ids[:8]
+
+
 def test_openhands_active_cursor_reconciliation_rejects_detached_anchor(
     openhands_settings, monkeypatch
 ):

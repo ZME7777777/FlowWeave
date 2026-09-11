@@ -71,6 +71,14 @@ from flowweave.shared.secret_redaction import redact_secret_text, redact_secret_
 
 logger = logging.getLogger(__name__)
 _INTERACTIVE_READ_TIMEOUT_SECONDS = 8.0
+_EVENT_HISTORY_PAGE_SIZE = 100
+# An interactive reconciliation may cross pages after a native fork or
+# navigate, but it must never turn a normal state read into a scan of an
+# unbounded EventLog. Eight native pages retain 800 formal events, including
+# the existing legacy-fork recovery window, while keeping one FlowWeave request
+# within its shared interactive read deadline. Older history remains available
+# through the explicit page endpoint and durable session replay.
+_EVENT_HISTORY_MAX_PAGES = 8
 
 
 @dataclass
@@ -2149,7 +2157,10 @@ class OpenHandsRuntime:
                 503,
                 {"outcome_unknown": False},
             )
-        params: dict[str, Any] = {"limit": 100, "sort_order": "TIMESTAMP"}
+        params: dict[str, Any] = {
+            "limit": _EVENT_HISTORY_PAGE_SIZE,
+            "sort_order": "TIMESTAMP",
+        }
         if cursor:
             params["page_id"] = cursor
         data = self._request(
@@ -2222,7 +2233,7 @@ class OpenHandsRuntime:
         if not anchor:
             return [], None
         params: dict[str, Any] = {
-            "limit": 100,
+            "limit": _EVENT_HISTORY_PAGE_SIZE,
             "sort_order": "TIMESTAMP_DESC",
             "page_id": anchor,
         }
@@ -2302,8 +2313,9 @@ class OpenHandsRuntime:
         page_id = leaf_event_id
         pages_seen: set[str] = set()
         by_id: dict[str, dict[str, Any]] = {}
+        deadline = time.monotonic() + _INTERACTIVE_READ_TIMEOUT_SECONDS
 
-        while True:
+        for _page in range(_EVENT_HISTORY_MAX_PAGES):
             if page_id in pages_seen:
                 raise DomainError(
                     "RUNTIME_EVENT_IDENTITY_INVALID",
@@ -2312,17 +2324,26 @@ class OpenHandsRuntime:
                     {"conversation_id": conversation_id, "event_id": page_id},
                 )
             pages_seen.add(page_id)
+            remaining_seconds = deadline - time.monotonic()
+            if remaining_seconds <= 0:
+                raise DomainError(
+                    "EXECUTOR_UNAVAILABLE",
+                    "OpenHands active event history did not respond within "
+                    "the interactive read limit",
+                    503,
+                    {"outcome_unknown": False},
+                )
             data = self._request(
                 "GET",
                 f"/api/conversations/{conversation_id}/events/search",
                 base_url=base_url,
                 session_api_key=session_api_key,
                 params={
-                    "limit": 100,
+                    "limit": _EVENT_HISTORY_PAGE_SIZE,
                     "sort_order": "TIMESTAMP_DESC",
                     "page_id": page_id,
                 },
-                timeout=_INTERACTIVE_READ_TIMEOUT_SECONDS,
+                timeout=max(0.1, remaining_seconds),
             )
             raw_items = data.get("items", [])
             if not isinstance(raw_items, list) or any(
@@ -2393,6 +2414,17 @@ class OpenHandsRuntime:
                     {"conversation_id": conversation_id, "event_id": anchor},
                 )
             page_id = next_page_id
+
+        raise DomainError(
+            "RUNTIME_EVENT_HISTORY_BUDGET_EXHAUSTED",
+            "OpenHands active event history exceeds the bounded interactive read budget",
+            503,
+            {
+                "conversation_id": conversation_id,
+                "max_pages": _EVENT_HISTORY_MAX_PAGES,
+                "page_size": _EVENT_HISTORY_PAGE_SIZE,
+            },
+        )
 
     @staticmethod
     def _canonical_digest(value: object) -> str:
@@ -2474,8 +2506,9 @@ class OpenHandsRuntime:
         page_ids_seen: set[str] = set()
         event_ids_seen: set[str] = set()
         branch_newest_first: list[dict[str, Any]] = []
+        deadline = time.monotonic() + _INTERACTIVE_READ_TIMEOUT_SECONDS
 
-        while True:
+        for _page in range(_EVENT_HISTORY_MAX_PAGES):
             if page_id in page_ids_seen:
                 raise DomainError(
                     "RUNTIME_PROTOCOL_ERROR",
@@ -2484,13 +2517,26 @@ class OpenHandsRuntime:
                     {"conversation_id": conversation_id, "event_id": current_event_id},
                 )
             page_ids_seen.add(page_id)
+            remaining_seconds = deadline - time.monotonic()
+            if remaining_seconds <= 0:
+                raise DomainError(
+                    "EXECUTOR_UNAVAILABLE",
+                    "OpenHands active event history did not respond within "
+                    "the interactive read limit",
+                    503,
+                    {"outcome_unknown": False},
+                )
             data = self._request(
                 "GET",
                 f"/api/conversations/{conversation_id}/events/search",
                 base_url=base_url,
                 session_api_key=session_api_key,
-                params={"limit": 100, "sort_order": "TIMESTAMP_DESC", "page_id": page_id},
-                timeout=_INTERACTIVE_READ_TIMEOUT_SECONDS,
+                params={
+                    "limit": _EVENT_HISTORY_PAGE_SIZE,
+                    "sort_order": "TIMESTAMP_DESC",
+                    "page_id": page_id,
+                },
+                timeout=max(0.1, remaining_seconds),
             )
             raw_items = data.get("items", [])
             if not isinstance(raw_items, list) or any(
@@ -2539,6 +2585,17 @@ class OpenHandsRuntime:
                     {"conversation_id": conversation_id, "event_id": current_event_id},
                 )
             page_id = next_page_id
+
+        raise DomainError(
+            "RUNTIME_EVENT_HISTORY_BUDGET_EXHAUSTED",
+            "OpenHands active event history exceeds the bounded interactive read budget",
+            503,
+            {
+                "conversation_id": conversation_id,
+                "max_pages": _EVENT_HISTORY_MAX_PAGES,
+                "page_size": _EVENT_HISTORY_PAGE_SIZE,
+            },
+        )
 
     @classmethod
     def _pending_actions(
@@ -2899,7 +2956,7 @@ class OpenHandsRuntime:
                 f"/api/conversations/{handle.conversation_id}/events/search",
                 base_url=base_url,
                 session_api_key=session_api_key,
-                params={"limit": 100, "sort_order": "TIMESTAMP_DESC"},
+                params={"limit": _EVENT_HISTORY_PAGE_SIZE, "sort_order": "TIMESTAMP_DESC"},
                 timeout=_INTERACTIVE_READ_TIMEOUT_SECONDS,
             )
             raw_items = recent.get("items", [])

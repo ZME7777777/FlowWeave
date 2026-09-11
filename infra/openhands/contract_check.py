@@ -232,6 +232,12 @@ def _assert_durable_event_log_sequence() -> None:
     assert events.get_index(second.id) == 1
     assert [event.id for event in events] == [first.id, second.id]
     append_source = getsource(EventLog.append)
+    # The marker keeps the normal single-writer append path independent of
+    # EventLog length. A full directory count remains only the fail-closed
+    # recovery path when another writer invalidates the marker.
+    assert append_source.index("self._marker_matches_length()") < append_source.index(
+        "self._count_events_on_disk()"
+    )
     assert append_source.index("self._fs.write") < append_source.index("return idx")
 
 
