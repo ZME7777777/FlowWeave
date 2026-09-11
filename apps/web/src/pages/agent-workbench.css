@@ -182,7 +182,7 @@
 /* Git detail controls use the same compact outlined treatment as the review
    Diff mode switch, so returning to history and changing Diff mode read as
    controls from one family. */
-.agent-git-commit-detail>header{align-items:center}.agent-git-commit-back{display:flex!important;align-items:center;gap:4px;min-height:24px;border:1px solid #d9e3dc!important;border-radius:5px!important;background:#fff!important;padding:4px 6px!important;color:#65736a!important;font-size:9px!important;line-height:1}.agent-git-commit-back:hover,.agent-git-commit-back:focus-visible{background:#e5f0e8!important;color:#24613f!important;outline:0}.agent-diff-mode button:hover:not(.active),.agent-diff-mode button:focus-visible:not(.active){background:#f1f6f2;color:#3f6250;outline:0}
+.agent-git-commit-detail>header{align-items:center}.agent-git-commit-back{display:grid!important;width:26px!important;height:26px!important;min-height:26px!important;place-items:center;border:1px solid #d9e3dc!important;border-radius:5px!important;background:#fff!important;padding:0!important;color:#65736a!important;line-height:1}.agent-git-commit-back:hover,.agent-git-commit-back:focus-visible{background:#e5f0e8!important;color:#24613f!important;outline:0}.agent-git-commit-files{overflow:hidden}.agent-git-file-tree{height:100%;box-sizing:border-box}.agent-git-commit-message{margin-top:0}.agent-diff-mode button:hover:not(.active),.agent-diff-mode button:focus-visible:not(.active){background:#f1f6f2;color:#3f6250;outline:0}
 
 /* Workspace files render according to their type: source code is highlighted,
    while Markdown uses the same safe document renderer as conversations. */

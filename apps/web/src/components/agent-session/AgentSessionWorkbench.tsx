@@ -1726,10 +1726,11 @@ function WorkspaceGitCommitSidebarDetail({ details, loading, error, selectedPath
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [filesHeight, setFilesHeight] = useState(260);
   useEffect(() => {
-    const directories: string[] = [];
-    const collect = (nodes: WorkspaceGitTreeNode[]) => nodes.forEach(node => { if (node.children.length) { directories.push(node.path); collect(node.children); } });
-    collect(tree);
-    setExpanded(new Set(directories));
+    // Keep the tree navigable for deeply nested commits.  Expanding every
+    // directory at once pushes the changed leaves beyond this resizable pane,
+    // making an expanded folder appear empty.  Expose only the first level
+    // initially; every following level can be opened from its folder row.
+    setExpanded(new Set(tree.filter(node => node.children.length).map(node => node.path)));
   }, [tree]);
   const resizeFiles = (event: ReactPointerEvent<HTMLDivElement>) => {
     event.preventDefault();
@@ -1755,10 +1756,16 @@ function WorkspaceGitCommitSidebarDetail({ details, loading, error, selectedPath
   const renderTree = (nodes: WorkspaceGitTreeNode[], depth = 0): ReactNode => nodes.map(node => {
     const directory = node.children.length > 0;
     const open = expanded.has(node.path);
+    const toggleDirectory = () => setExpanded(current => {
+      const next = new Set(current);
+      if (next.has(node.path)) next.delete(node.path);
+      else next.add(node.path);
+      return next;
+    });
     return <div key={node.path} className="agent-git-tree-node" role="treeitem" aria-expanded={directory ? open : undefined} aria-level={depth + 1}>
       <div className={`agent-git-tree-row${selectedPath === node.path ? ' active' : ''}`} style={{ '--git-tree-depth': depth } as CSSProperties}>
-        {directory ? <button type="button" className="agent-git-tree-disclosure" aria-label={`${open ? '收起' : '展开'}目录 ${node.name}`} onClick={() => setExpanded(current => { const next = new Set(current); if (next.has(node.path)) next.delete(node.path); else next.add(node.path); return next; })}>{open ? <ChevronDown size={13}/> : <ChevronRight size={13}/>}</button> : <span className="agent-git-tree-spacer" aria-hidden="true"/>}
-        <button type="button" className="agent-git-tree-item" title={node.path} onClick={() => { if (!directory) onSelectFile(node.path); }}><span>{directory ? open ? <FolderOpen size={14}/> : <Folder size={14}/> : <FileCode2 size={14}/>}</span><b>{node.name}</b>{node.status && <em>{node.status}</em>}</button>
+        {directory ? <button type="button" className="agent-git-tree-disclosure" aria-label={`${open ? '收起' : '展开'}目录 ${node.name}`} onClick={toggleDirectory}>{open ? <ChevronDown size={13}/> : <ChevronRight size={13}/>}</button> : <span className="agent-git-tree-spacer" aria-hidden="true"/>}
+        <button type="button" className="agent-git-tree-item" title={node.path} onClick={() => { if (directory) toggleDirectory(); else onSelectFile(node.path); }}><span>{directory ? open ? <FolderOpen size={14}/> : <Folder size={14}/> : <FileCode2 size={14}/>}</span><b>{node.name}</b>{node.status && <em>{node.status}</em>}</button>
       </div>
       {directory && open && <div role="group">{renderTree(node.children, depth + 1)}</div>}
     </div>;
@@ -1767,16 +1774,15 @@ function WorkspaceGitCommitSidebarDetail({ details, loading, error, selectedPath
   if (error) return <section className="agent-git-commit-detail"><p className="agent-git-error">提交详情读取失败。</p></section>;
   if (!details) return null;
   return <section className="agent-git-commit-detail agent-git-commit-sidebar" style={{ '--git-files-height': `${filesHeight}px` } as CSSProperties}>
-    <header><button type="button" className="agent-git-commit-back" aria-label="返回提交历史" onClick={onClose}><ArrowLeft size={13}/><span>返回</span></button><div><b title={details.commit.subject}>{details.commit.subject || '（无提交说明）'}</b><span>{details.commit.short_id}</span></div></header>
+    <header><button type="button" className="agent-git-commit-back" aria-label="返回提交历史" title="返回提交历史" onClick={onClose}><ArrowLeft size={14}/></button><div><b title={details.commit.subject}>{details.commit.subject || '（无提交说明）'}</b><span>{details.commit.short_id}</span></div></header>
     <section className="agent-git-commit-files">
       <header><div><b>提交文件</b><span><em>{details.files.length} 个文件</em></span></div></header>
       {tree.length ? <div className="agent-git-file-tree" role="tree" aria-label="提交文件树">{renderTree(tree)}</div> : <p>这个提交没有可展示的文件。</p>}
     </section>
     <div className="agent-git-review-resizer" role="separator" aria-label="调整文件与提交信息区域高度" aria-orientation="horizontal" onPointerDown={resizeFiles}/>
     <article className="agent-git-commit-info">
-      <header><span>提交信息</span><code title={details.commit.id}>{details.commit.id}</code></header>
       <pre className="agent-git-commit-message">{details.commit.message || details.commit.subject || '（无提交说明）'}</pre>
-      <dl><dt>作者</dt><dd>{details.commit.author || '未提供'}{details.commit.author_email && <> &lt;{details.commit.author_email}&gt;</>}</dd><dt>作者时间</dt><dd>{gitCommitTimestamp(details.commit.authored_at ?? details.commit.date)}</dd><dt>提交者</dt><dd>{details.commit.committer || details.commit.author || '未提供'}{(details.commit.committer_email || details.commit.author_email) && <> &lt;{details.commit.committer_email || details.commit.author_email}&gt;</>}</dd><dt>提交时间</dt><dd>{gitCommitTimestamp(details.commit.committed_at ?? details.commit.date)}</dd><dt>提交 ID</dt><dd><code>{details.commit.id}</code></dd></dl>
+      <dl><dt>作者</dt><dd>{details.commit.author || '未提供'}{details.commit.author_email && <> &lt;{details.commit.author_email}&gt;</>}</dd><dt>作者时间</dt><dd>{gitCommitTimestamp(details.commit.authored_at ?? details.commit.date)}</dd><dt>提交者</dt><dd>{details.commit.committer || details.commit.author || '未提供'}{(details.commit.committer_email || details.commit.author_email) && <> &lt;{details.commit.committer_email || details.commit.author_email}&gt;</>}</dd><dt>提交时间</dt><dd>{gitCommitTimestamp(details.commit.committed_at ?? details.commit.date)}</dd></dl>
     </article>
   </section>;
 }

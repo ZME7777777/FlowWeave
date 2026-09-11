@@ -3867,6 +3867,14 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 
 完成：模式切换在共享 Diff 基础样式之后显式覆盖为不可换行的横向 Flex，移除遗留描边容器；两个按钮使用与审查页签一致的圆角、文字色、悬停与激活反馈。
 
+### FR-300 Agent 工作区 Git 提交树可导航性与详情精简 — DONE
+
+依赖：FR-299。
+
+目标：深层提交文件树不能因默认全展开而把文件叶节点挤出可视区；提交详情不重复展示“提交信息”标题或完整提交 ID，返回历史使用无文字的图标按钮。
+
+完成：文件树初始只展开首层目录，目录图标及整行均可展开／收起，且树区域固定在可滚动的分割面板内；保留完整提交说明、作者与时间等详情，但移除冗余标题和完整 Hash，仅在顶部显示短 Hash；返回控件调整为带无障碍文字的箭头图标按钮。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -3882,6 +3890,7 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-11 | FR-300 | Web TypeScript typecheck、ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS：Git 提交树仅初始展开首层，目录整行／箭头均可开合，深层文件不再因全量展开被挤出面板；详情仅显示短 Hash，返回为带无障碍标签的图标按钮；无 `CURRENT`。production build 仅报告既有大 chunk 提示。 |
 | 2026-09-11 | FR-299 | Web TypeScript typecheck、ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS：Git Diff 的统一／并排控制按审查页签样式横向呈现，不会堆叠为纵向按钮；无 `CURRENT`。 |
 | 2026-09-11 | FR-298 | Web ESLint、TypeScript typecheck、production build、`git diff --check` 与任务状态唯一性 | PASS：持久化恢复的空“改动审查”页签不再解引用缺失变更的 `id`；会话刷新保持既有安全空态和后续事件加载行为。production build 仅报告既有大 chunk 提示；无 `CURRENT`。 |
 | 2026-09-11 | FR-297 | Web TypeScript typecheck、ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS：Git 详情返回与统一／并排控制使用同一紧凑描边、圆角、绿色情境反馈；无 `CURRENT`。 |
