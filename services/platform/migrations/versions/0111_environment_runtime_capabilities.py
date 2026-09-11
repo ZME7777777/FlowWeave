@@ -1,6 +1,6 @@
 """Freeze governed Runtime image capabilities on Environment Versions.
 
-Revision ID: 0111_environment_runtime_capabilities
+Revision ID: 0111_env_runtime_caps
 Revises: 0110_candidate_output_set_owner
 """
 
@@ -9,7 +9,7 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0111_environment_runtime_capabilities"
+revision = "0111_env_runtime_caps"
 down_revision = "0110_candidate_output_set_owner"
 branch_labels = None
 depends_on = None

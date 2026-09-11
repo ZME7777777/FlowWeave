@@ -1,7 +1,7 @@
 """Freeze explicit model fallback policy on Agent conversation bindings.
 
-Revision ID: 0112_agent_fallback_models
-Revises: 0111_environment_runtime_capabilities
+Revision ID: 0112_agent_fallback
+Revises: 0111_env_runtime_caps
 """
 
 from __future__ import annotations
@@ -9,8 +9,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0112_agent_fallback_models"
-down_revision = "0111_environment_runtime_capabilities"
+revision = "0112_agent_fallback"
+down_revision = "0111_env_runtime_caps"
 branch_labels = None
 depends_on = None
 
