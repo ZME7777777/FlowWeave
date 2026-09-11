@@ -94,10 +94,15 @@ def test_git_history_returns_reusable_object_ids_for_every_log_record(tmp_path):
     git("init")
     git("config", "user.name", "FlowWeave Test")
     git("config", "user.email", "test@example.invalid")
-    for index in range(3):
+    messages = [
+        "revision 0",
+        "revision 1",
+        "revision 2\n\nA complete commit body.",
+    ]
+    for index, message in enumerate(messages):
         (repository / "history.txt").write_text(f"revision {index}\n")
         git("add", "history.txt")
-        git("commit", "-m", f"revision {index}")
+        git("commit", "-m", message)
 
     history = workspace.git_log(
         tmp_path,
@@ -117,6 +122,11 @@ def test_git_history_returns_reusable_object_ids_for_every_log_record(tmp_path):
             item["id"],
         )
         assert details["commit"]["id"] == item["id"]
+        assert details["commit"]["author_email"] == "test@example.invalid"
+        assert details["commit"]["authored_at"]
+        assert details["commit"]["committed_at"]
+        revision = int(item["subject"].removeprefix("revision "))
+        assert details["commit"]["message"] == messages[revision]
         assert details["files"]
         assert details["files"][0]["path"] == "history.txt"
         diff = workspace.git_file_diff(

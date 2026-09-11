@@ -321,14 +321,13 @@ def git_commit(
                 repository,
                 "show",
                 "--no-patch",
-                "--date=short",
-                "--format=%H%x00%h%x00%an%x00%ad%x00%s",
+                "--format=%H%x00%h%x00%an%x00%ae%x00%aI%x00%cn%x00%ce%x00%cI%x00%s%x00%B",
                 object_id,
             )
             or b""
         )
         .decode("utf-8", errors="replace")
-        .split("\0", 4)
+        .split("\0", 9)
     )
     names = (
         _git_run(
@@ -366,8 +365,14 @@ def git_commit(
             "id": metadata[0].strip() if metadata else object_id,
             "short_id": metadata[1].strip() if len(metadata) > 1 else object_id[:12],
             "author": metadata[2].strip() if len(metadata) > 2 else "",
-            "date": metadata[3].strip() if len(metadata) > 3 else "",
-            "subject": metadata[4].strip() if len(metadata) > 4 else "",
+            "author_email": metadata[3].strip() if len(metadata) > 3 else "",
+            "authored_at": metadata[4].strip() if len(metadata) > 4 else "",
+            "committer": metadata[5].strip() if len(metadata) > 5 else "",
+            "committer_email": metadata[6].strip() if len(metadata) > 6 else "",
+            "committed_at": metadata[7].strip() if len(metadata) > 7 else "",
+            "date": metadata[4].strip() if len(metadata) > 4 else "",
+            "subject": metadata[8].strip() if len(metadata) > 8 else "",
+            "message": metadata[9].rstrip("\n") if len(metadata) > 9 else "",
         },
         "files": files,
     }

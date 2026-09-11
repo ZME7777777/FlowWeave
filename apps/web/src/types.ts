@@ -710,7 +710,19 @@ export interface AgentSessionWorkspaceDetails {
   };
 }
 export interface WorkspaceGitRepository { path: string; remote?: string; branch?: string; head?: string }
-export interface WorkspaceGitCommit { id: string; short_id: string; author: string; date: string; subject: string }
+export interface WorkspaceGitCommit {
+  id: string;
+  short_id: string;
+  author: string;
+  date: string;
+  subject: string;
+  author_email?: string;
+  authored_at?: string;
+  committer?: string;
+  committer_email?: string;
+  committed_at?: string;
+  message?: string;
+}
 export interface WorkspaceGitLog { repository: WorkspaceGitRepository; commits: WorkspaceGitCommit[] }
 export interface WorkspaceGitCommitDetails { repository: WorkspaceGitRepository; commit: WorkspaceGitCommit; files: Array<{ path: string; status: string }> }
 export interface WorkspaceGitFileDiff { path: string; diff: string; truncated: boolean }
