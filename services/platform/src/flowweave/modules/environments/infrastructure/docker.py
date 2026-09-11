@@ -13,6 +13,11 @@ import time
 from dataclasses import dataclass
 from typing import Any, cast
 
+from flowweave.shared.domain.runtime_capabilities import (
+    normalize_runtime_capabilities,
+    openhands_install_capabilities,
+    runtime_capability_profile,
+)
 from flowweave.shared.errors import DomainError
 from flowweave.shared.infrastructure.docker_control import (
     DockerControlError,
@@ -205,6 +210,8 @@ class OpenHandsBuild:
     target: str
     platform: str
     install_acp_providers: str
+    install_capabilities: str
+    capability_profile: str
 
 
 _OPENHANDS_BUILD_SCRIPT = r"""
@@ -1056,7 +1063,13 @@ print(json.dumps({
 
 
 def _build_openhands_runtime(
-    *, base_image: str, environment_id: str, version_id: str, version_no: int, platform: str
+    *,
+    base_image: str,
+    environment_id: str,
+    version_id: str,
+    version_no: int,
+    platform: str,
+    runtime_capabilities: tuple[str, ...] = (),
 ) -> OpenHandsBuild:
     """Invoke the pinned OpenHands Agent Server's formal Docker build entrypoint."""
 
@@ -1065,11 +1078,14 @@ def _build_openhands_runtime(
     version_token = version_id.replace("-", "").lower()
     repository = f"flowweave/environment-{slug}-runtime"
     custom_tag = f"v{version_no}-{version_token}"
+    capabilities = normalize_runtime_capabilities(runtime_capabilities)
+    install_capabilities = openhands_install_capabilities(capabilities)
+    target = "source-minimal" if not capabilities else "source"
     options = {
         "base_image": base_image,
         "custom_tags": custom_tag,
         "image": repository,
-        "target": "source-minimal",
+        "target": target,
         "platforms": [platform],
         "push": False,
         "include_base_tag": False,
@@ -1082,6 +1098,9 @@ def _build_openhands_runtime(
         # empty value also makes the upstream acp-providers stage exit before
         # it performs an unrelated Debian APT transaction.
         "install_acp_providers": "",
+        # This value is computed from FlowWeave's frozen allowlist, never
+        # copied from a caller-provided Docker build arg.
+        "install_capabilities": install_capabilities,
     }
     output = _run(
         [
@@ -1127,9 +1146,11 @@ def _build_openhands_runtime(
         reference=reference,
         log_digest=hashlib.sha256(output.encode()).hexdigest(),
         telemetry=telemetry,
-        target="source-minimal",
+        target=target,
         platform=platform,
         install_acp_providers="",
+        install_capabilities=install_capabilities,
+        capability_profile=runtime_capability_profile(capabilities),
     )
 
 
@@ -1193,6 +1214,7 @@ def publish_container(
     version_no: int,
     base_image_reference: str,
     base_image_digest: str,
+    runtime_capabilities: tuple[str, ...] = (),
 ) -> PublishedImage:
     """Package a customized user base through OpenHands' formal build chain."""
 
@@ -1202,12 +1224,17 @@ def publish_container(
     version_token = version_id.replace("-", "").lower()
     reference = f"flowweave/environment-{slug}:v{version_no}-{version_token}"
     customized_reference = f"flowweave/environment-{slug}-base:v{version_no}-{version_token}"
+    capabilities = normalize_runtime_capabilities(runtime_capabilities)
+    install_capabilities = openhands_install_capabilities(capabilities)
+    capability_profile = runtime_capability_profile(capabilities)
     expected_labels = {
         "flowweave.managed": "environment-image",
         "flowweave.manager-scope": settings.sandbox_manager_scope,
         "flowweave.environment-id": environment_id,
         "flowweave.environment-version-id": version_id,
         "flowweave.environment-version-no": str(version_no),
+        "flowweave.openhands-install-capabilities": install_capabilities,
+        "flowweave.runtime-capability-profile": capability_profile,
     }
 
     # A retry may reuse only a final image carrying the exact immutable
@@ -1276,6 +1303,12 @@ def publish_container(
                 "runtime_image_digest": digest,
                 "install_acp_providers": labels.get(
                     "flowweave.openhands-install-acp-providers"
+                ),
+                "install_capabilities": labels.get(
+                    "flowweave.openhands-install-capabilities", ""
+                ),
+                "capability_profile": labels.get(
+                    "flowweave.runtime-capability-profile", "minimal"
                 ),
             },
             "validation": {
@@ -1352,6 +1385,7 @@ def publish_container(
         version_id=version_id,
         version_no=version_no,
         platform=platform,
+        runtime_capabilities=capabilities,
     )
     official_inspected = cast(
         dict[str, object],
@@ -1387,6 +1421,8 @@ def publish_container(
             f'LABEL flowweave.openhands-build-target="{build.target}"',
             f'LABEL flowweave.openhands-build-platform="{build.platform}"',
             f'LABEL flowweave.openhands-install-acp-providers="{build.install_acp_providers}"',
+            f'LABEL flowweave.openhands-install-capabilities="{build.install_capabilities}"',
+            f'LABEL flowweave.runtime-capability-profile="{build.capability_profile}"',
             f'LABEL flowweave.user-base-image-digest="{base_image_digest}"',
             'ENV PATH="/agent-server/.venv/bin:${PATH}"',
             "ENTRYPOINT []",
@@ -1457,6 +1493,8 @@ def publish_container(
             "runtime_image_reference": reference,
             "runtime_image_digest": digest,
             "install_acp_providers": build.install_acp_providers,
+            "install_capabilities": build.install_capabilities,
+            "capability_profile": build.capability_profile,
         },
         "validation": {
             "contract_check": {
@@ -1487,6 +1525,7 @@ def publish_setup_container(
     version_no: int,
     base_image_reference: str,
     base_image_digest: str,
+    runtime_capabilities: tuple[str, ...] = (),
 ) -> PublishedImage:
     """Publish only after the controller/local adapter revalidates ownership."""
 
@@ -1504,6 +1543,9 @@ def publish_setup_container(
                     "version_no": version_no,
                     "base_image_reference": base_image_reference,
                     "base_image_digest": base_image_digest,
+                    "runtime_capabilities": list(
+                        normalize_runtime_capabilities(runtime_capabilities)
+                    ),
                 },
                 timeout=settings.terminal_environment_publish_timeout_seconds + 30,
             )
@@ -1535,4 +1577,5 @@ def publish_setup_container(
         version_no=version_no,
         base_image_reference=base_image_reference,
         base_image_digest=base_image_digest,
+        runtime_capabilities=runtime_capabilities,
     )

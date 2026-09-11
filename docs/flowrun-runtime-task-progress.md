@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`ACTIVE`
 > 当前执行切片：无
-> 下一可执行切片：`FR-319 Runtime 能力分层构建规格`
+> 下一可执行切片：`FR-320 硬额度失败的显式模型 fallback 策略`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -4107,7 +4107,7 @@ Git Plugin，控制面新增精确冻结坐标 gate：resolver 回传的 source�
 commit 解析到单独 allowlisted、完整 commit 固定的 Plugin Source；其内容与 resolved coordinates
 继续进入审计 report，实际 Runtime 仍只加载发布后的 immutable Blob。
 
-### FR-319 Runtime 能力分层构建规格 — READY
+### FR-319 Runtime 能力分层构建规格 — DONE
 
 依赖：FR-318。
 
@@ -4115,7 +4115,19 @@ commit 解析到单独 allowlisted、完整 commit 固定的 Plugin Source；其
 manifest（最小 Runtime、browser、vscode、docker）；不能公开为任意 Docker build arg，不能改变
 已发布 Environment image digest。
 
-### FR-320 硬额度失败的显式模型 fallback 策略 — PENDING
+完成：Environment 发布接口仅接收固定的 `browser`、`vscode`、`docker` 产品能力集合；空集合表示
+最小 Runtime，未知、重复或任意 Docker build argument 均拒绝。集合按固定顺序规范化，在创建
+Environment Version 时写入持久化字段并冻结；重试、远程 Runtime Provider 和最终 manifest 都只能使用
+该冻结值，任何 image target、profile 或 capability 串与版本不一致都会 fail closed。最小镜像使用
+OpenHands `source-minimal`，其余组合使用正式 `source` target，且只有计算得到的
+`INSTALL_CAPABILITIES` 会传入上游 `BuildOptions`。最终 label/manifest 记录 capability profile 与
+canonical install string，既有已发布版本不会被改写。产品发布确认页只显示这三项受治理复选项和
+最小 Runtime 默认值，不公开 Docker 参数；版本历史展示冻结组合。
+
+同步修复 Environment compatibility gate 中遗留的 1.44 source archive SHA，改为当前固定 1.47
+archive SHA；这只影响新 Runtime manifest 的验证，不改写历史 Environment image digest。
+
+### FR-320 硬额度失败的显式模型 fallback 策略 — READY
 
 依赖：FR-319。
 
@@ -4164,6 +4176,7 @@ fallback 矩阵；发布前确认原 ID reload、generation fencing、FlowWeave 
 | 2026-09-11 | FR-300 | Web TypeScript typecheck、ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS：Git 提交树仅初始展开首层，目录整行／箭头均可开合，深层文件不再因全量展开被挤出面板；详情仅显示短 Hash，返回为带无障碍标签的图标按钮；无 `CURRENT`。production build 仅报告既有大 chunk 提示。 |
 | 2026-09-11 | FR-299 | Web TypeScript typecheck、ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS：Git Diff 的统一／并排控制按审查页签样式横向呈现，不会堆叠为纵向按钮；无 `CURRENT`。 |
 | 2026-09-11 | FR-298 | Web ESLint、TypeScript typecheck、production build、`git diff --check` 与任务状态唯一性 | PASS：持久化恢复的空“改动审查”页签不再解引用缺失变更的 `id`；会话刷新保持既有安全空态和后续事件加载行为。production build 仅报告既有大 chunk 提示；无 `CURRENT`。 |
+| 2026-09-12 | FR-319 | 固定 `30cf5832e` 的 Dockerfile／`BuildOptions.install_capabilities` 源码取证；扩展镜像 `contract_check.py`；新增 capability canonicalization、官方构建输入、manifest drift 与冻结版本不一致 pytest；`test_runtime_capabilities.py`（9 passed）、Web TypeScript typecheck 与 ESLint、受影响 Python Ruff/check、`py_compile`、`uv lock --check`、Alembic head、`git diff --check` 与任务状态唯一性 | PASS（静态／定向）：Environment Version 在发布起点冻结可选 `browser`／`vscode`／`docker` 集合，空集合为最小 Runtime；只有规范化集合生成的 OpenHands `INSTALL_CAPABILITIES` 与 `source`/`source-minimal` target 能进入正式构建，结果以 label/manifest 和版本字段互相校验。当前源码归档 SHA gate 已与 1.47 lock 一致。唯一 Alembic head 为 `0111_environment_runtime_capabilities`，无 CURRENT，FR-320 为唯一 READY。Docker daemon 不可用，故镜像内 `contract_check.py`、真实 dynamic image build／target 内容、Runtime Provider publish、迁移实跑、Testcontainers Environment pytest 及 E2E 未执行且未记为通过。 |
 | 2026-09-11 | FR-297 | Web TypeScript typecheck、ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS：Git 详情返回与统一／并排控制使用同一紧凑描边、圆角、绿色情境反馈；无 `CURRENT`。 |
 | 2026-09-12 | FR-317 | 固定 `30cf5832e` 的 FastMCP OAuth refresh 与 subscription pre-flight 源码取证；扩展镜像 `contract_check.py`；新增 Provider Runtime credential predicate pytest；`test_provider_preflight.py` + `test_openhands.py`（132 passed）、受影响 Python Ruff format/check、`py_compile`、`uv lock --check`、Alembic head、`git diff --check` 与任务状态唯一性 | PASS（静态／定向）：镜像锁定 FastMCP `3.4.5` 并拒绝回退至 `3.2` 以下；subscription pre-flight 恢复路径受固定源码合同保护。FlowWeave 不实现并行 token refresh，仅维持 encrypted Secret Reference/CAS/read-at-use 边界；Provider 仅在已连接、拥有可刷新 Runtime credentials 与启用默认模型时可被选择，直接 Runtime request 同样 fail closed。唯一 Alembic head 为 `0110_candidate_output_set_owner`，无 CURRENT，FR-318 为唯一 READY。Docker daemon 不可用，故镜像内 `contract_check.py`、真实 OAuth expiry refresh、subscription Runtime pre-flight、Provider docker exec、Testcontainers architecture pytest 与 E2E 未执行且未记为通过；架构 pytest 收集的 29 项均因 Docker socket 缺失而在 Testcontainers PostgreSQL fixture setup 失败。 |
 | 2026-09-11 | FR-296 | Web TypeScript typecheck、ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS：提交详情返回按钮位于标题左侧，保留返回历史行为与无障碍标签；无 `CURRENT`。 |

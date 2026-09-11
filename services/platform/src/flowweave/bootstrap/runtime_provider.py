@@ -304,6 +304,19 @@ class PublishImageWrite(SandboxDeleteWrite):
     version_no: int = Field(ge=1)
     base_image_reference: str = Field(min_length=1, max_length=500)
     base_image_digest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    runtime_capabilities: list[str] = Field(default_factory=list, max_length=3)
+
+    @model_validator(mode="after")
+    def validate_runtime_capabilities(self) -> PublishImageWrite:
+        from flowweave.shared.domain.runtime_capabilities import normalize_runtime_capabilities
+
+        try:
+            self.runtime_capabilities = list(
+                normalize_runtime_capabilities(self.runtime_capabilities)
+            )
+        except ValueError as exc:
+            raise ValueError(str(exc)) from exc
+        return self
 
 
 class EnvironmentCredentialsWrite(ScopedRequest):
@@ -1675,6 +1688,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             version_no=payload.version_no,
             base_image_reference=payload.base_image_reference,
             base_image_digest=payload.base_image_digest,
+            runtime_capabilities=tuple(payload.runtime_capabilities),
         )
         return {"reference": image.reference, "digest": image.digest, "manifest": image.manifest}
 

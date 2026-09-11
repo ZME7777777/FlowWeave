@@ -29,6 +29,7 @@ os.environ.setdefault("OH_PERSISTENCE_DIR", "/runtime/state/persistence")
 
 from openhands.agent_server.api import create_app
 from openhands.agent_server.conversation_service import ConversationService
+from openhands.agent_server.docker.build import AGENT_SERVER_CAPABILITIES, BuildOptions
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.mcp_router import (
     MCPOAuthCallbackRequest,
@@ -392,6 +393,20 @@ def _assert_mcp_oauth_and_subscription_preflight_contract() -> None:
     assert 'getattr(llm, "auth_type", None) == "subscription"' in preflight_source
 
 
+def _assert_runtime_capability_build_contract() -> None:
+    """Keep FlowWeave's governed image build bridge pinned to upstream fields."""
+
+    assert AGENT_SERVER_CAPABILITIES == ("vscode", "browser", "docker")
+    assert _field_default(BuildOptions, "install_capabilities") == "vscode,browser,docker"
+    assert BuildOptions(install_capabilities="").install_capabilities == ""
+    try:
+        BuildOptions(install_capabilities="unsupported")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("OpenHands accepted an unknown image capability")
+
+
 def main() -> None:
     versions = {package: version(package) for package in PACKAGES}
     assert set(versions.values()) == {EXPECTED_VERSION}, versions
@@ -444,6 +459,7 @@ def main() -> None:
     _assert_async_turn_and_stream_idle_contract()
     _assert_profile_provider_secret_and_condenser_behavior()
     _assert_mcp_oauth_and_subscription_preflight_contract()
+    _assert_runtime_capability_build_contract()
     provenance_path = Path("/runtime/openhands-source-provenance.json")
     if not provenance_path.is_file():
         provenance_path = Path(__file__).with_name("openhands-source-provenance.json")
@@ -1325,6 +1341,7 @@ def main() -> None:
                 "subscription_condenser_dispatch": True,
                 "mcp_oauth_refreshable_fastmcp": True,
                 "subscription_preflight_credentials_restored": True,
+                "runtime_capability_build_arg_validated": True,
                 "plugin_repo_path_ancestry_containment": True,
                 "plugin_local_source_repo_path_containment": True,
                 "remote_title_generation_fix_in_frozen_source": False,

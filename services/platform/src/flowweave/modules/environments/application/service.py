@@ -13,6 +13,11 @@ from flowweave.modules.tasks.public import Lease, enqueue, lease_is_current
 from flowweave.runtime.contract import OPENHANDS_PACKAGE_VERSIONS
 from flowweave.shared.application.transactions import finish
 from flowweave.shared.domain.openhands import OPENHANDS_SOURCE_COMMIT
+from flowweave.shared.domain.runtime_capabilities import (
+    normalize_runtime_capabilities,
+    openhands_install_capabilities,
+    runtime_capability_profile,
+)
 from flowweave.shared.errors import DomainError, conflict, not_found
 from flowweave.shared.models import (
     BackgroundTask,
@@ -54,6 +59,7 @@ def _version_dict(
         "base_image_digest": item.base_image_digest,
         "image_reference": item.image_reference,
         "image_digest": item.image_digest,
+        "runtime_capabilities": list(item.runtime_capabilities or []),
         "manifest": item.manifest_json or {},
         "error_detail": item.error_detail,
         "runtime_compatible": runtime_compatible,
@@ -83,7 +89,7 @@ def _session_dict(item: EnvironmentSetupSession) -> dict[str, Any]:
 
 _CLEANUP_MAX_ATTEMPTS = 20
 _OPENHANDS_SOURCE_ARCHIVE_DIGEST = (
-    "94e0bc26a670c552f8bed2dfba048d9a5c6d7bc66778e7844009db6785da6d21"
+    "70128f691ba58f0a1a1f6987c24738bb144209c61ba1b44a349a5504a98ea6b5"
 )
 
 
@@ -115,7 +121,10 @@ _LEGACY_APPROVED_OPENHANDS_OVERLAYS: dict[str, str] = {
 
 
 def validate_runtime_manifest(
-    manifest: object, *, environment_version_id: str | None = None
+    manifest: object,
+    *,
+    environment_version_id: str | None = None,
+    expected_runtime_capabilities: tuple[str, ...] | None = None,
 ) -> None:
     """Reject environment images that cannot satisfy the frozen Runtime contract."""
 
@@ -183,6 +192,44 @@ def validate_runtime_manifest(
                 "validation": validation,
             },
         )
+    raw_install_capabilities = build.get("install_capabilities")
+    if raw_install_capabilities is not None:
+        try:
+            parsed_capabilities = (
+                ()
+                if raw_install_capabilities == ""
+                else tuple(str(raw_install_capabilities).split(","))
+            )
+            capabilities = normalize_runtime_capabilities(parsed_capabilities)
+        except ValueError as exc:
+            raise DomainError(
+                "ENVIRONMENT_RUNTIME_INCOMPATIBLE",
+                "The terminal environment has an invalid Runtime capability build spec",
+                409,
+                {"environment_version_id": environment_version_id},
+            ) from exc
+        expected_target = "source-minimal" if not capabilities else "source"
+        if (
+            raw_install_capabilities != openhands_install_capabilities(capabilities)
+            or build.get("capability_profile") != runtime_capability_profile(capabilities)
+            or build.get("target") != expected_target
+        ):
+            raise DomainError(
+                "ENVIRONMENT_RUNTIME_INCOMPATIBLE",
+                "The terminal environment has an invalid Runtime capability build spec",
+                409,
+                {"environment_version_id": environment_version_id},
+            )
+        if (
+            expected_runtime_capabilities is not None
+            and capabilities != normalize_runtime_capabilities(expected_runtime_capabilities)
+        ):
+            raise DomainError(
+                "ENVIRONMENT_RUNTIME_INCOMPATIBLE",
+                "The Runtime image capability build spec differs from its frozen version",
+                409,
+                {"environment_version_id": environment_version_id},
+            )
 
 
 def _control_engine(db: Session) -> Engine:
@@ -872,7 +919,20 @@ def terminal_session_details(
     )
 
 
-def publish_setup_session(db: Session, session_id: str, description: str = "") -> dict[str, Any]:
+def publish_setup_session(
+    db: Session,
+    session_id: str,
+    description: str = "",
+    runtime_capabilities: tuple[str, ...] = (),
+) -> dict[str, Any]:
+    try:
+        requested_capabilities = normalize_runtime_capabilities(runtime_capabilities)
+    except ValueError as exc:
+        raise DomainError(
+            "ENVIRONMENT_RUNTIME_CAPABILITIES_INVALID",
+            "The requested Runtime capabilities are invalid",
+            422,
+        ) from exc
     db.rollback()
     engine = _control_engine(db)
     with engine.connect() as connection:
@@ -891,6 +951,18 @@ def publish_setup_session(db: Session, session_id: str, description: str = "") -
                         EnvironmentVersion, item.published_version_id
                     )
                     if published_version is not None and published_version.state == "READY":
+                        if requested_capabilities != normalize_runtime_capabilities(
+                            published_version.runtime_capabilities or []
+                        ):
+                            raise DomainError(
+                                "ENVIRONMENT_RUNTIME_CAPABILITIES_IMMUTABLE",
+                                (
+                                    "The Runtime capability selection is already frozen "
+                                    "for this version"
+                                ),
+                                409,
+                                {"environment_version_id": published_version.id},
+                            )
                         return _version_dict(published_version)
                 if item.expires_at <= datetime.now(UTC):
                     item.state = "EXPIRED"
@@ -951,11 +1023,22 @@ def publish_setup_session(db: Session, session_id: str, description: str = "") -
                         state="PUBLISHING",
                         base_image_reference=item.base_image_reference,
                         base_image_digest=item.base_image_digest,
+                        runtime_capabilities=list(requested_capabilities),
                     )
                     control_db.add(version)
                     control_db.flush()
                     item.published_version_id = version.id
                 else:
+                    frozen_capabilities = normalize_runtime_capabilities(
+                        version.runtime_capabilities or []
+                    )
+                    if requested_capabilities != frozen_capabilities:
+                        raise DomainError(
+                            "ENVIRONMENT_RUNTIME_CAPABILITIES_IMMUTABLE",
+                            "The Runtime capability selection is already frozen for this version",
+                            409,
+                            {"environment_version_id": version.id},
+                        )
                     version.state = "PUBLISHING"
                     version.error_detail = None
                 item.state = "PUBLISHING"
@@ -967,6 +1050,9 @@ def publish_setup_session(db: Session, session_id: str, description: str = "") -
                 version_no = version.version_no
                 base_image_reference = item.base_image_reference
                 base_image_digest = item.base_image_digest
+                frozen_runtime_capabilities = normalize_runtime_capabilities(
+                    version.runtime_capabilities or []
+                )
                 control_db.commit()
 
             published: docker.PublishedImage | None = None
@@ -981,8 +1067,13 @@ def publish_setup_session(db: Session, session_id: str, description: str = "") -
                     version_no=version_no,
                     base_image_reference=base_image_reference,
                     base_image_digest=base_image_digest,
+                    runtime_capabilities=frozen_runtime_capabilities,
                 )
-                validate_runtime_manifest(published.manifest, environment_version_id=version_id)
+                validate_runtime_manifest(
+                    published.manifest,
+                    environment_version_id=version_id,
+                    expected_runtime_capabilities=frozen_runtime_capabilities,
+                )
             except DomainError as exc:
                 with Session(bind=connection) as control_db:
                     failed = control_db.get(EnvironmentVersion, version_id)

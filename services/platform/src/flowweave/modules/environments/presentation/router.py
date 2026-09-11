@@ -80,7 +80,10 @@ async def publish_setup_session(
     return await run_sync(
         db,
         lambda session: service.publish_setup_session(
-            session, session_id, payload.description if payload else ""
+            session,
+            session_id,
+            payload.description if payload else "",
+            tuple(payload.runtime_capabilities) if payload else (),
         ),
     )
 

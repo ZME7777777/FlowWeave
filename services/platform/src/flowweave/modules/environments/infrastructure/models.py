@@ -49,6 +49,9 @@ class EnvironmentVersion(Base):
     base_image_digest: Mapped[str] = mapped_column(String(100), default="")
     image_reference: Mapped[str] = mapped_column(String(500), default="")
     image_digest: Mapped[str] = mapped_column(String(100), default="")
+    # A governed product selection, frozen before the OpenHands image build.
+    # It is deliberately not an arbitrary Docker build-args document.
+    runtime_capabilities: Mapped[list[str]] = mapped_column(JSON, default=list)
     manifest_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     error_detail: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)

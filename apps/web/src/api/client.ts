@@ -381,8 +381,8 @@ export const api = {
     request<void>(`/terminal-environments/${environmentId}/versions/${versionId}`, json('DELETE')),
   createEnvironmentSetup: (id: string, base_version_id?: string) =>
     request<EnvironmentSetupSession>(`/terminal-environments/${id}/setup-sessions`, json('POST', { base_version_id: base_version_id || null })),
-  publishEnvironmentSetup: (id: string, description = '') =>
-    request<EnvironmentVersion>(`/environment-setup-sessions/${id}/publish`, json('POST', { description })),
+  publishEnvironmentSetup: (id: string, description = '', runtime_capabilities: string[] = []) =>
+    request<EnvironmentVersion>(`/environment-setup-sessions/${id}/publish`, json('POST', { description, runtime_capabilities })),
   stopEnvironmentSetup: (id: string) => request<void>(`/environment-setup-sessions/${id}`, json('DELETE')),
   websiteCredentials: () => request<WebsiteCredential[]>('/website-credentials'),
   createWebsiteCredential: (body: WebsiteCredentialWrite) =>

@@ -109,6 +109,8 @@ def _runtime_manifest(
             "user_base_image_reference": _BASE_IMAGE,
             "user_base_image_digest": "sha256:" + "1" * 64,
             "runtime_image_digest": image_digest,
+            "install_capabilities": "",
+            "capability_profile": "minimal",
         },
         "validation": {
             "contract_check": {"status": "PASSED"},
@@ -208,6 +210,8 @@ def _mock_formal_publish_pipeline(monkeypatch, calls: list[str] | None = None) -
             target="source-minimal",
             platform=str(kwargs["platform"]),
             install_acp_providers="",
+            install_capabilities="",
+            capability_profile="minimal",
         )
 
     def probe(_image_digest, *, probe_token):
@@ -250,8 +254,11 @@ def test_formal_openhands_build_keeps_environment_runtime_acp_free(monkeypatch):
     )
 
     assert captured_options["install_acp_providers"] == ""
+    assert captured_options["install_capabilities"] == ""
     assert captured_options["target"] == "source-minimal"
     assert result.install_acp_providers == ""
+    assert result.install_capabilities == ""
+    assert result.capability_profile == "minimal"
 
 
 def test_legacy_container_cleanup_requires_matching_ownership_labels(monkeypatch):
@@ -667,10 +674,12 @@ def test_terminal_environment_publish_does_not_bind_nodes(client, worker_contain
         version_no,
         base_image_reference,
         base_image_digest,
+        runtime_capabilities=(),
     ):
         assert version_id
         assert base_image_reference == _BASE_IMAGE
         assert base_image_digest == "sha256:" + "1" * 64
+        assert runtime_capabilities == ()
         published_container_ids.append(container_id)
         return PublishedImage(
             reference=f"flowweave/environment-{environment_id}:v{version_no}",

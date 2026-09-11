@@ -100,6 +100,7 @@ export interface EnvironmentVersion {
   description: string;
   state: 'PUBLISHING' | 'READY' | 'FAILED'; image_reference: string; image_digest: string;
   base_image_reference: string; base_image_digest: string;
+  runtime_capabilities: string[];
   manifest: { commands?: Record<string, string>; [key: string]: unknown };
   error_detail?: string | null; runtime_compatible: boolean;
   runtime_incompatibility_reason?: string | null; run_reference_count: number;

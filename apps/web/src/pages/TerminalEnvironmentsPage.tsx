@@ -19,14 +19,47 @@ function PublishingPanel({ onClose }: { onClose: () => void }) {
   </section></div>;
 }
 
+const RUNTIME_CAPABILITIES = [
+  { key: 'browser', label: 'Browser', detail: '安装 Chromium，供浏览器工具使用。' },
+  { key: 'vscode', label: 'VS Code', detail: '安装 OpenVSCode Server 与扩展。' },
+  { key: 'docker', label: 'Docker', detail: '安装 Docker Engine 与 Compose。' },
+] as const;
+
+function PublishEnvironmentDialog({
+  busy,
+  onCancel,
+  onPublish,
+}: {
+  busy: boolean;
+  onCancel: () => void;
+  onPublish: (description: string, runtimeCapabilities: string[]) => void;
+}) {
+  useEscapeClose(onCancel);
+  const [description, setDescription] = useState('');
+  const [selected, setSelected] = useState<string[]>([]);
+  const toggle = (key: string) => setSelected(current => current.includes(key)
+    ? current.filter(item => item !== key)
+    : [...current, key]);
+
+  return <div className="environment-terminal-backdrop"><form className="environment-capability-dialog" onSubmit={event => {
+    event.preventDefault();
+    onPublish(description, selected);
+  }}>
+    <header><div><span className="eyebrow">RUNTIME CAPABILITIES</span><h2>发布环境版本</h2><small>选择要写入下一不可变 Runtime 镜像的受治理能力。</small></div><button type="button" className="ghost" disabled={busy} onClick={onCancel}><X size={16}/>关闭</button></header>
+    <label className="environment-publish-description">版本说明（可选）<textarea value={description} maxLength={2000} placeholder="例如：增加内部 PyPI 镜像和数据处理依赖" onChange={event => setDescription(event.target.value)}/></label>
+    <fieldset className="environment-capability-options"><legend>Runtime 能力</legend><p>不选择时发布最小 Runtime。选择项会冻结到版本 manifest，之后不能修改。</p>{RUNTIME_CAPABILITIES.map(capability => <label key={capability.key}><input type="checkbox" checked={selected.includes(capability.key)} onChange={() => toggle(capability.key)}/><span><b>{capability.label}</b><small>{capability.detail}</small></span></label>)}</fieldset>
+    <footer><button type="button" className="ghost" disabled={busy} onClick={onCancel}>取消</button><button className="primary" disabled={busy}><Save size={14}/>{busy ? '发布中…' : '开始发布'}</button></footer>
+  </form></div>;
+}
+
 function TerminalPanel({ session, visible, publishError, onClose, onUnavailable, onPublishing, onPublishFailed }: { session: EnvironmentSetupSession; visible: boolean; publishError: string; onClose: () => void; onUnavailable: () => void; onPublishing: () => void; onPublishFailed: (message: string) => void }) {
   useEscapeClose(onClose, visible);
-  const dialog = useProductDialog();
   const queryClient = useQueryClient();
   const [connected, setConnected] = useState(false);
   const [reconnecting, setReconnecting] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [publishingOptions, setPublishingOptions] = useState(false);
   const socket = useRef<WebSocket | null>(null);
   const terminalHost = useRef<HTMLDivElement | null>(null);
 
@@ -216,12 +249,10 @@ function TerminalPanel({ session, visible, publishError, onClose, onUnavailable,
       term.dispose();
     };
   }, [onClose, onUnavailable, queryClient, session.id]);
-  const publish = async () => {
-    const description = await dialog.prompt({ title: '发布环境版本', message: '可为这次不可变版本补充说明，便于后续选择和审计。', inputLabel: '版本说明（可选）', placeholder: '例如：增加内部 PyPI 镜像和数据处理依赖', confirmLabel: '开始发布' });
-    if (description === null) return;
+  const publish = async (description: string, runtimeCapabilities: string[]) => {
     setBusy(true); setError('');
     onPublishing();
-    try { await api.publishEnvironmentSetup(session.id, description); await queryClient.invalidateQueries({ queryKey: ['terminal-environments'] }); onClose(); }
+    try { await api.publishEnvironmentSetup(session.id, description, runtimeCapabilities); await queryClient.invalidateQueries({ queryKey: ['terminal-environments'] }); setPublishingOptions(false); onClose(); }
     catch (reason) { onPublishFailed(reason instanceof Error ? reason.message : '发布失败'); }
     finally { setBusy(false); }
   };
@@ -236,7 +267,8 @@ function TerminalPanel({ session, visible, publishError, onClose, onUnavailable,
     <div className="terminal-screen"><div ref={terminalHost} className="terminal-screen-body" aria-label="环境终端，点击后输入命令"/></div>
     <p className="terminal-help">点击黑色区域后直接输入。关闭视图只会隐藏窗口，终端连接及其中的任务会继续运行；再次点击“继续配置”将回到同一个终端。支持 Enter、Backspace、方向键、Ctrl+C 和粘贴；终端失焦时按 Esc 关闭视图，聚焦时 Esc 会发送给终端程序。发布会保留容器文件系统中的认证信息、缓存和命令历史，请仅在受信任环境中使用和分发镜像。</p>
     {(error || publishError) && <p className="error">{error || publishError}</p>}
-    <footer><button className="danger" disabled={busy} onClick={() => void stop()}><Square size={14}/>停止并丢弃</button><button className="primary" disabled={busy || !connected} onClick={() => void publish()}><Save size={14}/>{busy ? '处理中…' : '发布环境版本'}</button></footer>
+    <footer><button className="danger" disabled={busy} onClick={() => void stop()}><Square size={14}/>停止并丢弃</button><button className="primary" disabled={busy || !connected} onClick={() => setPublishingOptions(true)}><Save size={14}/>{busy ? '处理中…' : '发布环境版本'}</button></footer>
+    {publishingOptions && <PublishEnvironmentDialog busy={busy} onCancel={() => setPublishingOptions(false)} onPublish={(description, capabilities) => void publish(description, capabilities)}/>}
   </section></div>;
 }
 
@@ -393,7 +425,7 @@ export function TerminalEnvironmentsPage() {
         return <section key={version.id}>
           <div><b>v{version.version_no}</b><span className={`environment-version-state ${version.state.toLowerCase()}`}>{version.state}</span></div>
           <small>{new Date(version.created_at).toLocaleString()} · {version.image_digest ? `${version.image_digest.slice(0, 19)}…` : '无镜像摘要'}</small>
-          <p>{version.description || '未填写版本说明'}</p>
+          <p>{version.description || '未填写版本说明'}{version.runtime_capabilities.length ? ` · ${version.runtime_capabilities.join(' + ')}` : ' · minimal'}</p>
           <span className={occupied ? 'environment-version-usage occupied' : 'environment-version-usage'}>{version.state === 'READY' && !version.runtime_compatible ? '缺少运行契约，需重新发布' : occupied ? `${version.run_reference_count} 个运行` : '未被占用'}</span>
           <button className="ghost" disabled={occupied} title={occupied ? '解除运行引用后才能删除' : `删除 v${version.version_no}`} aria-label={`删除版本 v${version.version_no}`} onClick={() => void removeVersion(environment, version)}><Trash2 size={14}/></button>
         </section>;

@@ -5,6 +5,8 @@ from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 
+from flowweave.shared.domain.runtime_capabilities import normalize_runtime_capabilities
+
 
 def _empty_any_dict() -> dict[str, Any]:
     return {}
@@ -197,6 +199,17 @@ class CredentialBulkDeleteWrite(ApiModel):
 
 class EnvironmentPublishWrite(ApiModel):
     description: str = Field(default="", max_length=2000)
+    runtime_capabilities: list[str] = Field(default_factory=list, max_length=3)
+
+    @model_validator(mode="after")
+    def validate_runtime_capabilities(self) -> EnvironmentPublishWrite:
+        try:
+            self.runtime_capabilities = list(
+                normalize_runtime_capabilities(self.runtime_capabilities)
+            )
+        except ValueError as exc:
+            raise ValueError(str(exc)) from exc
+        return self
 
 
 class EnvironmentSetupWrite(ApiModel):
