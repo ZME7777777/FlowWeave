@@ -570,8 +570,9 @@ export function agentTerminalUrl(runId: string, conversationId: string, rows = 2
 }
 
 export interface AgentStreamEvent {
-  type: 'delta' | 'event' | 'message_complete';
+  type: 'delta' | 'event' | 'message_complete' | 'stream_reset' | 'stream_closed';
   content?: string;
+  item_id?: string;
   event?: OpenHandsConversationEvent;
 }
 
@@ -601,9 +602,12 @@ export function subscribeToConversationStream(
       try {
         const event = JSON.parse(String(message.data)) as Partial<AgentStreamEvent>;
         if (event.type === 'delta' && typeof event.content === 'string') {
-          onEvent({ type: 'delta', content: event.content });
+          onEvent({ type: 'delta', content: event.content, item_id: event.item_id });
         } else if (event.type === 'message_complete') {
           onEvent({ type: 'message_complete' });
+        } else if ((event.type === 'stream_reset' || event.type === 'stream_closed')
+          && typeof event.item_id === 'string') {
+          onEvent({ type: event.type, item_id: event.item_id });
         }
       } catch {
         // A malformed transient frame must not disrupt durable message polling.
@@ -675,9 +679,10 @@ export function subscribeToAgentWorkspaceStream(
     socket.onmessage = message => {
       try {
         const event = JSON.parse(String(message.data)) as Partial<AgentStreamEvent>;
-        if (event.type === 'delta' && typeof event.content === 'string') onEvent({ type: 'delta', content: event.content });
+        if (event.type === 'delta' && typeof event.content === 'string') onEvent({ type: 'delta', content: event.content, item_id: event.item_id });
         else if (event.type === 'event' && event.event && typeof event.event.id === 'string') onEvent({ type: 'event', event: event.event });
         else if (event.type === 'message_complete') onEvent({ type: 'message_complete' });
+        else if ((event.type === 'stream_reset' || event.type === 'stream_closed') && typeof event.item_id === 'string') onEvent({ type: event.type, item_id: event.item_id });
       } catch {
         // The REST event source is authoritative; ignore an invalid live frame.
       }
@@ -848,9 +853,10 @@ export function subscribeToNodeSessionStream(
     socket.onopen = () => { attempts = 0; onStatus?.('live'); };
     socket.onmessage = message => { try {
       const event = JSON.parse(String(message.data)) as Partial<AgentStreamEvent>;
-      if (event.type === 'delta' && typeof event.content === 'string') onEvent({ type: 'delta', content: event.content });
+      if (event.type === 'delta' && typeof event.content === 'string') onEvent({ type: 'delta', content: event.content, item_id: event.item_id });
       else if (event.type === 'event' && event.event && typeof event.event.id === 'string') onEvent({ type: 'event', event: event.event });
       else if (event.type === 'message_complete') onEvent({ type: 'message_complete' });
+      else if ((event.type === 'stream_reset' || event.type === 'stream_closed') && typeof event.item_id === 'string') onEvent({ type: event.type, item_id: event.item_id });
     } catch { /* REST remains authoritative. */ } };
     socket.onclose = event => { socket = undefined; if (event.code === 4401) { notifyAuthenticationRequired(); onStatus?.('disabled'); return; } if (disposed || event.code === 4409) { onStatus?.('disabled'); return; } onStatus?.('recovering'); retry = window.setTimeout(connect, Math.min(1000 * 2 ** attempts++, 10_000)); };
   };

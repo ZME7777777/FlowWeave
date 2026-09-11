@@ -8,7 +8,8 @@ import math
 import re
 import tarfile
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal, cast
 from urllib.parse import unquote, urlparse
@@ -70,6 +71,134 @@ from flowweave.shared.secret_redaction import redact_secret_text, redact_secret_
 
 logger = logging.getLogger(__name__)
 _INTERACTIVE_READ_TIMEOUT_SECONDS = 8.0
+
+
+@dataclass
+class _TransientStreamSlot:
+    """One browser-only projection of an upstream StreamContext item."""
+
+    attempt: int
+    last_order: int = -1
+
+
+class _TransientStreamProjection:
+    """Validate and retire StreamContext progress without retaining it.
+
+    The legacy OpenHands events socket intentionally has no StreamContext frames,
+    so its old ``StreamingDeltaEvent`` shape remains a best-effort compatibility
+    path.  This projection accepts the formal session-frame shape when an
+    authorized Relay can provide it, but owns no replay state and is discarded
+    with this one Relay connection.
+    """
+
+    def __init__(self) -> None:
+        self._slots: dict[str, _TransientStreamSlot] = {}
+
+    @staticmethod
+    def _identity(value: object) -> str | None:
+        if (
+            isinstance(value, str)
+            and value
+            and len(value) <= 200
+            and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}", value)
+        ):
+            return value
+        return None
+
+    @staticmethod
+    def _nonnegative_int(value: object, *, minimum: int = 0) -> int | None:
+        if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+            return None
+        return value
+
+    def project(
+        self,
+        event: dict[str, object],
+        visible: Callable[[dict[str, object]], tuple[dict[str, Any], ...]],
+    ) -> tuple[dict[str, Any], ...]:
+        """Return a redacted browser projection for one upstream frame."""
+
+        frame_type = event.get("type")
+        if frame_type == "item_started":
+            item_id = self._identity(event.get("item_id"))
+            attempt = self._nonnegative_int(event.get("attempt"), minimum=1)
+            if item_id is None or attempt is None:
+                return ()
+            current = self._slots.get(item_id)
+            if current is not None and attempt < current.attempt:
+                return ()
+            if current is not None and attempt == current.attempt:
+                return ()
+            self._slots[item_id] = _TransientStreamSlot(attempt=attempt)
+            # A retry supersedes the prior text for this formal item, rather
+            # than appending a second answer.  The browser never sees IDs from
+            # unrelated slots and uses this only to clear its ephemeral draft.
+            return ({"type": "stream_reset", "item_id": item_id},) if current else ()
+
+        if frame_type == "delta":
+            item_id = self._identity(event.get("item_id"))
+            attempt = self._nonnegative_int(event.get("attempt"), minimum=1)
+            order = self._nonnegative_int(event.get("order"))
+            content = event.get("content")
+            if (
+                item_id is None
+                or attempt is None
+                or order is None
+                or not isinstance(content, str)
+                or event.get("kind") != "text"
+            ):
+                return ()
+            slot = self._slots.get(item_id)
+            if slot is None or slot.attempt != attempt or order <= slot.last_order:
+                return ()
+            slot.last_order = order
+            safe_content = redact_secret_text(content)
+            return (
+                ({"type": "delta", "content": safe_content, "item_id": item_id},)
+                if safe_content
+                else ()
+            )
+
+        if frame_type == "item_aborted":
+            item_id = self._identity(event.get("item_id"))
+            attempt = self._nonnegative_int(event.get("attempt"), minimum=1)
+            slot = self._slots.get(item_id) if item_id is not None else None
+            if slot is None or attempt != slot.attempt:
+                return ()
+            del self._slots[item_id]
+            return ({"type": "stream_closed", "item_id": item_id},)
+
+        # Session-socket durable/transient envelopes are accepted only as a
+        # relay compatibility input.  FR-313 owns connecting to that endpoint
+        # and its sequence/replay contract.
+        if frame_type in {"durable", "transient"}:
+            nested = event.get("event")
+            if not isinstance(nested, dict):
+                return ()
+            return self._project_durable(cast(dict[str, object], nested), visible)
+
+        return self._project_durable(event, visible)
+
+    def _project_durable(
+        self,
+        event: dict[str, object],
+        visible: Callable[[dict[str, object]], tuple[dict[str, Any], ...]],
+    ) -> tuple[dict[str, Any], ...]:
+        frames = visible(event)
+        item_id = self._identity(event.get("id"))
+        if item_id is None or item_id not in self._slots:
+            return frames
+        del self._slots[item_id]
+        if any(frame.get("type") == "message_complete" for frame in frames):
+            return frames
+        return (*frames, {"type": "stream_closed", "item_id": item_id})
+
+    def close_all(self) -> tuple[dict[str, Any], ...]:
+        """Close only local slots after a clean Relay exhaustion."""
+
+        item_ids = tuple(self._slots)
+        self._slots.clear()
+        return tuple({"type": "stream_closed", "item_id": item_id} for item_id in item_ids)
 
 
 class OpenHandsRuntime:
@@ -3075,6 +3204,7 @@ class OpenHandsRuntime:
     async def stream_events(self, handle: RuntimeHandle) -> AsyncIterator[dict[str, Any]]:
         """Relay transient visible-text deltas without persisting model reasoning."""
 
+        projection = _TransientStreamProjection()
         route = self._environment_route(handle.job_id)
         if route is not None and controller_is_remote(self.settings):
             if not handle.runtime_resource_id or not handle.runtime_resource_name:
@@ -3092,8 +3222,12 @@ class OpenHandsRuntime:
             )
             try:
                 async for event in stream:
-                    for visible in self._visible_stream_event(cast(dict[str, object], event)):
+                    for visible in projection.project(
+                        cast(dict[str, object], event), self._visible_stream_event
+                    ):
                         yield visible
+                for visible in projection.close_all():
+                    yield visible
             finally:
                 close = getattr(stream, "aclose", None)
                 if close is not None:
@@ -3130,8 +3264,10 @@ class OpenHandsRuntime:
                 if not isinstance(value, dict):
                     continue
                 event = cast(dict[str, object], value)
-                for visible in self._visible_stream_event(event):
+                for visible in projection.project(event, self._visible_stream_event):
                     yield visible
+        for visible in projection.close_all():
+            yield visible
 
     def _wait_for_wakeup_frame(
         self,

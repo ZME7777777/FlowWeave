@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`ACTIVE`
 > 当前执行切片：无
-> 下一可执行切片：`FR-312 StreamContext 生命周期与流式会话状态收敛`
+> 下一可执行切片：`FR-313 Session Socket 授权 Relay 适配`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -4010,7 +4010,7 @@ fail closed；已发生 native navigate/fork/replacement 的 detached FinishActi
 Attempt。普通历史读仍保留上游 inclusive `page_id` 兼容裁剪；平台不新增 sequence、cursor、
 EventLog 或 Conversation 持久化事实。
 
-### FR-312 StreamContext 生命周期与流式会话状态收敛 — READY
+### FR-312 StreamContext 生命周期与流式会话状态收敛 — DONE
 
 依赖：FR-311。
 
@@ -4018,7 +4018,9 @@ EventLog 或 Conversation 持久化事实。
 重试、取消、异常及无 durable reply 时浏览器不会遗留运行中气泡。不得持久化 delta、隐藏 reasoning
 或让浏览器直连 Runtime。
 
-### FR-313 Session Socket 授权 Relay 适配 — PENDING
+完成：授权 Relay 的连接内投影仅在浏览器授权 Relay 连接内按正式 item identity、attempt 和 order 收敛 text delta；重试重置短暂文本，abort、matching durable event 和 Relay 结束关闭 slot，reasoning 与非正式或乱序输入不投影。该状态不进入任何平台持久层；Session Socket seq replay 与背压仍由 FR-313 实施。
+
+### FR-313 Session Socket 授权 Relay 适配 — READY
 
 依赖：FR-312。
 
@@ -4098,6 +4100,7 @@ fallback 矩阵；发布前确认原 ID reload、generation fencing、FlowWeave 
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-12 | FR-312 | 固定 StreamContext、Event Service 与 socket 源码取证；新增 attempt/order/abort/durable-id/Relay-end 测试；test_openhands.py（116 passed）、Python Ruff、py_compile、Web TypeScript typecheck、ESLint、Alembic head、uv lock check、diff check 与任务状态检查 | PASS（静态／定向）：短暂 slot 仅接受正式 stream identity，重试、abort、durable event 与 Relay 结束都清理浏览器临时文本且不持久化。唯一 Alembic head 为 0110_candidate_output_set_owner；无 CURRENT，FR-313 为唯一 READY。Docker 不可用，未运行真实 Runtime Relay、socket reconnect、镜像 contract 或 Testcontainers 验证。 |
 | 2026-09-12 | FR-311 | 固定 `30cf5832e` 的 `EventLog.append`、Event Service 及 session socket 源码取证；新增 EventLog durable-sequence 合同探针、活动 HEAD cursor 对账的 detached-branch、跨页和 missing-anchor pytest；`test_openhands.py`（114 passed）、Ruff format/check、`py_compile`、Alembic head、`uv lock --check`、`git diff --check` 与任务状态唯一性 | PASS（静态／定向）：正式 event id/parent id 仍是唯一 Conversation 身份；FlowWeave 只在请求内用锚点投影当前 OpenHands HEAD 的 descendants，孤立/过期 FinishAction 不能跨支对账。上游 EventLog 的正式 index 只为 durable replay 契约，不被平台持久化；`/sockets/session` 留待 FR-313 的授权 Relay。唯一 Alembic head 为 `0110_candidate_output_set_owner`，无 CURRENT，FR-312 为唯一 READY。Docker daemon 不可用，镜像内 `contract_check.py`、真实断连／session-socket replay、replacement 与 Testcontainers 集成验证未执行且未记为通过。 |
 | 2026-09-11 | FR-310 | 固定 `30cf5832e` 的 `sanitized_env`／SDK literal redaction 探针；新增 secret projection/log filter pytest；完整无 Docker OpenHands adapter、Runtime contract/persistence 定向 pytest（123 passed）；Ruff format/check、`py_compile`、Alembic head、`uv lock --check`、直接架构源码 smoke、`git diff --check` 与任务状态唯一性 | PASS（静态／定向）：子进程环境只保留普通变量与 `AI_AGENT`，不会取得 Runtime 持久化或会话密钥；模型文本、Tool Observation、嵌套环境、`sk-oh-*` 与 Provider 日志均经第二层脱敏。唯一 Alembic head 为 `0110_candidate_output_set_owner`，无 CURRENT，FR-311 为唯一 READY。Docker daemon 不可用，镜像内 `contract_check.py`、真实 Agent 子进程／tmux 日志、Relay/Provider 运行态及 Testcontainers 架构 pytest 未执行且未记为通过。 |
 | 2026-09-11 | FR-309 | 固定 `30cf5832e` 源码确认 `OH_PERSISTENCE_DIR` 全根契约；无 Docker 的 1.47 SDK `LLMProfileStore` 路径探针；`test_runtime_contract.py` 与新增 `test_runtime_persistence.py`（8 passed）；受影响 Ruff format/check、`py_compile`、Alembic head、`uv lock --check`、`git diff --check` 与任务状态唯一性 | PASS（静态／定向）：Runtime 命令仅挂载 `state/persistence → /runtime/state/persistence`，不再挂载 HOME `.openhands` child；默认 Profile 与 Provider Connection 都落到该唯一 root。唯一 Alembic head 为 `0110_candidate_output_set_owner`，无 CURRENT，FR-310 为唯一 READY。Docker daemon 不可用，故镜像内 `contract_check.py`、真实 smoke／generation replacement 和依赖 Testcontainers 的既有 sandbox pytest 都未执行且未记为通过。 |

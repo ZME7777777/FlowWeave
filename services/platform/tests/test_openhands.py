@@ -2262,6 +2262,123 @@ def test_openhands_public_stream_exposes_text_but_not_reasoning():
     )
 
 
+def test_openhands_stream_projection_tracks_formal_attempts_orders_and_terminal_ids():
+    projection = openhands_module._TransientStreamProjection()
+
+    assert (
+        projection.project(
+            {"type": "item_started", "item_id": "stream-1", "attempt": 1},
+            OpenHandsRuntime._visible_stream_event,
+        )
+        == ()
+    )
+    assert projection.project(
+        {
+            "type": "delta",
+            "item_id": "stream-1",
+            "attempt": 1,
+            "order": 0,
+            "kind": "text",
+            "content": "first",
+        },
+        OpenHandsRuntime._visible_stream_event,
+    ) == ({"type": "delta", "item_id": "stream-1", "content": "first"},)
+    assert (
+        projection.project(
+            {
+                "type": "delta",
+                "item_id": "stream-1",
+                "attempt": 1,
+                "order": 0,
+                "kind": "text",
+                "content": "duplicate",
+            },
+            OpenHandsRuntime._visible_stream_event,
+        )
+        == ()
+    )
+    assert (
+        projection.project(
+            {
+                "type": "delta",
+                "item_id": "stream-1",
+                "attempt": 1,
+                "order": 1,
+                "kind": "reasoning",
+                "content": "never visible",
+            },
+            OpenHandsRuntime._visible_stream_event,
+        )
+        == ()
+    )
+
+    assert projection.project(
+        {"type": "item_started", "item_id": "stream-1", "attempt": 2},
+        OpenHandsRuntime._visible_stream_event,
+    ) == ({"type": "stream_reset", "item_id": "stream-1"},)
+    assert (
+        projection.project(
+            {
+                "type": "delta",
+                "item_id": "stream-1",
+                "attempt": 1,
+                "order": 2,
+                "kind": "text",
+                "content": "stale",
+            },
+            OpenHandsRuntime._visible_stream_event,
+        )
+        == ()
+    )
+    assert projection.project(
+        {
+            "type": "delta",
+            "item_id": "stream-1",
+            "attempt": 2,
+            "order": 0,
+            "kind": "text",
+            "content": "retry",
+        },
+        OpenHandsRuntime._visible_stream_event,
+    ) == ({"type": "delta", "item_id": "stream-1", "content": "retry"},)
+    assert projection.project(
+        {"type": "item_aborted", "item_id": "stream-1", "attempt": 2, "reason": "cancelled"},
+        OpenHandsRuntime._visible_stream_event,
+    ) == ({"type": "stream_closed", "item_id": "stream-1"},)
+
+    assert (
+        projection.project(
+            {"type": "item_started", "item_id": "stream-2", "attempt": 1},
+            OpenHandsRuntime._visible_stream_event,
+        )
+        == ()
+    )
+    assert projection.project(
+        {
+            "type": "durable",
+            "seq": 4,
+            "event": {
+                "kind": "MessageEvent",
+                "id": "stream-2",
+                "source": "agent",
+                "llm_message": {"role": "assistant", "content": "durable"},
+            },
+        },
+        OpenHandsRuntime._visible_stream_event,
+    )[-1] == {"type": "message_complete"}
+    assert projection.close_all() == ()
+
+
+def test_openhands_stream_projection_closes_open_slots_when_relay_ends():
+    projection = openhands_module._TransientStreamProjection()
+    projection.project(
+        {"type": "item_started", "item_id": "stream-1", "attempt": 1},
+        OpenHandsRuntime._visible_stream_event,
+    )
+
+    assert projection.close_all() == ({"type": "stream_closed", "item_id": "stream-1"},)
+
+
 def test_bash_wakeup_identity_excludes_command_output_and_marks_direct_actor():
     identity = OpenHandsRuntime._bash_event_identity(
         {
