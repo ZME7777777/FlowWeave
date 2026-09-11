@@ -1329,10 +1329,21 @@ def reconcile_managed_sandboxes(db: Session) -> ReconcileReport:
             errors += orphan_errors
             return ReconcileReport(len(resources), deleted, expired, orphans_deleted, errors)
         finally:
-            if connection.in_transaction():
-                connection.rollback()
-            connection.scalar(select(func.pg_advisory_unlock(lock_id)))
-            connection.commit()
+            try:
+                if connection.in_transaction():
+                    connection.rollback()
+                connection.scalar(select(func.pg_advisory_unlock(lock_id)))
+                connection.commit()
+            finally:
+                # PostgreSQL session advisory locks survive COMMIT and a
+                # SQLAlchemy QueuePool returns the same physical connection to
+                # later maintenance passes.  An interrupted/re-entrant unlock
+                # could otherwise strand the global reconcile lock on an idle
+                # pooled session indefinitely.  This control connection owns
+                # no caller transaction, so invalidate it after every acquired
+                # lock to guarantee the server session (and every lock count)
+                # is released before the connection can be reused.
+                connection.invalidate()
 
 
 def sandbox_dict(item: ManagedSandbox) -> dict[str, Any]:

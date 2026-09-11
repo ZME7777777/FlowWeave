@@ -4256,6 +4256,23 @@ profile/provider 恢复，也不会成为第二个可写事实源。
 范围。停止仍由既有 Runtime lane handler 执行，外置 Workspace、OpenHands persistence、Secret、allocation
 与 generation 审计均不删除。
 
+### FR-329 Sandbox reconcile advisory lock 泄漏修复 — DONE
+
+依赖：FR-324。
+
+目标：受管 Sandbox reconciliation 的 PostgreSQL session advisory lock 不得随着 SQLAlchemy
+连接回到连接池。泄漏的锁会使后续 Worker maintenance 全部跳过 reconciliation，导致临时
+`SANDBOX_BACKEND_UNAVAILABLE` 永远无法重新观察为 `RUNNING`，并阻塞资源状态收敛、过期回收与真正丢失
+Runtime 的正式恢复。保持跨 Docker I/O 的全局互斥和短事务边界，但在一次持锁 reconciliation 收尾后必须
+保证该物理 PostgreSQL session 不再携带任何该 session lock。
+
+完成：reconcile 在取得全局 PostgreSQL session advisory lock 后，无论 Docker observation、
+数据库投影或 unlock 本身是否出现异常，都会在 finally 中 invalidate 该控制连接，禁止其回到
+SQLAlchemy pool。物理 PostgreSQL session 随之关闭，既有 lock 的全部重入计数均被服务器释放；
+正常路径仍先显式 unlock/commit，Docker I/O 与数据库短事务边界、资源所有权校验和生命周期决策均不变。
+新增一槽连接池回归：预先污染同一物理 session 的 reentrant lock 后运行 reconcile，独立 observer 必须
+立即重新取得该 lock，防止下一轮 Worker maintenance 永久饥饿。
+
 ### FR-321 OpenHands 1.47 增强最终安全、恢复与性能门禁 — DONE
 
 依赖：FR-309–FR-320。
@@ -4291,6 +4308,7 @@ contract、冻结策略与既有受控生命周期约束覆盖。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-12 | FR-329 | 受影响 Python Ruff format/check、`py_compile`、唯一 Alembic head、`git diff --check`；session advisory lock 泄漏回归 pytest | PASS（静态）：Ruff、语法、空白检查与唯一 Alembic head `0113_task_retention` 通过。新增回归以单槽连接池模拟 reentrant session lock，验证 reconcile 收尾不会把锁带回连接池。两条定向 pytest 在 Testcontainers PostgreSQL fixture 初始化前因本机 Docker Unix socket 缺失而阻断，未伪记为通过；远端部署须确认 advisory lock 清除，正常周期重新观察活跃 Runtime 并清除临时 Provider 错误。 |
 | 2026-09-12 | FR-328 | 受影响 Python Ruff format/check、`py_compile`、唯一 Alembic head、`git diff --check`；历史终态 Runtime stop recovery 定向 pytest | PASS（静态）：Ruff、语法、空白检查与唯一 Alembic head `0113_task_retention` 通过。恢复只从终态 Run 与未停止 Runtime Session 的持久事实回补唯一 Runtime lane task，`SKIP LOCKED` 防止并发 Worker 重复投递；启动和 maintenance 复用同一恢复入口。定向 pytest 已启动，但在 Testcontainers PostgreSQL fixture 初始化前因本机 Docker Unix socket 缺失而阻断，未伪记为通过；远端部署需验证仅停止 6 个历史终态 Runtime、保留其外置状态，且不触及仍 ACTIVE 的 Run。 |
 | 2026-09-12 | FR-327 | 受影响 Python Ruff format/check、`py_compile`、唯一 Alembic head、`git diff --check`；满 batch backlog cadence 定向 pytest | PASS（静态）：Ruff、语法、空白检查与唯一 Alembic head `0113_task_retention` 通过。满批时 cleanup 会在 60 秒后继续，非满批恢复每天一次；不改变终态过滤或 lease 安全边界。两条任务定向 pytest 在 Testcontainers PostgreSQL fixture 初始化前因本机 Docker Unix socket 缺失而阻断，未伪记为通过；远端验证确认当前过期 terminal count 为 0，故不会删除现有诊断记录。 |
 | 2026-09-12 | FR-326 | 固定 OpenHands `30cf5832e` persistence path 源码取证；受影响 Python Ruff format/check、`py_compile`、唯一 Alembic head、`git diff --check`；persistence mount / HOME preparation 定向 pytest | PASS（静态／构造）：固定源码确认 `OH_PERSISTENCE_DIR` 替代 `~/.openhands` 根。Ruff、语法、空白检查与唯一 Alembic head `0113_task_retention` 通过；持久 Runtime mount 构造测试 3 条通过，证明只有 `/runtime/state/persistence` 是持久根，旧 HOME `.openhands` 由受限 tmpfs 覆盖。HOME preparation 1 条 pytest 在 Testcontainers PostgreSQL fixture 初始化前因本机 Docker Unix socket 缺失而阻断，未伪记为通过；远端部署验证需检查实际容器 mount/env 与 profile/provider 恢复。 |

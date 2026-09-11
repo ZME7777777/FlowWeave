@@ -7,7 +7,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
-from sqlalchemy import func, select, text
+from sqlalchemy import create_engine, func, select, text
+from sqlalchemy.orm import sessionmaker
 
 from flowweave.modules.agent_workspaces.application.service import ensure_default_agent_workspace
 from flowweave.modules.agent_workspaces.infrastructure.models import (
@@ -2294,6 +2295,48 @@ def test_reconciler_skips_docker_when_global_lock_is_held(
 
     assert report == ReconcileReport()
     assert touched == []
+
+
+def test_reconciler_discards_a_reentrant_session_advisory_lock_from_the_pool(
+    settings, db_session_factory, monkeypatch
+):
+    """A pooled session lock must not survive a completed reconcile pass."""
+
+    configured = _docker_settings(settings)
+    lock_key = "SANDBOX_RECONCILE:test-scope"
+    monkeypatch.setattr(DockerSandboxProvider, "list_managed", lambda self: [])
+    # A one-slot pool forces reconciliation to reuse this deliberately tainted
+    # PostgreSQL session.  Session advisory locks are reentrant: the former
+    # one-shot unlock decremented only the reconciliation acquisition and left
+    # this inherited count behind forever.
+    control_engine = create_engine(
+        settings.database_url,
+        pool_pre_ping=True,
+        pool_size=1,
+        max_overflow=0,
+        connect_args={"options": f"-c statement_timeout={settings.statement_timeout_ms}"},
+    )
+    control_sessions = sessionmaker(control_engine, expire_on_commit=False)
+
+    try:
+        with control_engine.connect() as tainted:
+            lock_id = tainted.scalar(select(func.hashtextextended(lock_key, 0)))
+            assert lock_id is not None
+            tainted.scalar(select(func.pg_advisory_lock(lock_id)))
+            tainted.commit()
+
+        with settings_context(configured), control_sessions() as db:
+            assert reconcile_managed_sandboxes(db) == ReconcileReport()
+
+        with db_session_factory.kw["bind"].connect() as observer:
+            released = observer.scalar(select(func.pg_try_advisory_lock(lock_id)))
+            if released:
+                observer.scalar(select(func.pg_advisory_unlock(lock_id)))
+                observer.commit()
+    finally:
+        control_engine.dispose()
+
+    assert released is True
 
 
 def test_reconciler_performs_docker_io_outside_database_transaction(
