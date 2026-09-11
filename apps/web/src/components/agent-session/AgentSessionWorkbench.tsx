@@ -4,7 +4,7 @@ import '@xterm/xterm/css/xterm.css';
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import hljs from 'highlight.js/lib/common';
 import { ArrowLeft, Bot, Boxes, Check, ChevronDown, ChevronRight, CircleDot, Copy, CornerDownRight, Download, Ellipsis, FileCode2, FileText, Folder, FolderOpen, FolderPlus, /* GitBranch — Git repository summary is temporarily hidden; retain for its future enhancement. */ GripVertical, ImageIcon, Layers3, Link2, LoaderCircle, Maximize2, Minimize2, MonitorCog, PanelRightOpen, Play, Plus, Quote, Search, Send, ShieldAlert, Square, Trash2, X } from 'lucide-react';
-import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type ComponentPropsWithoutRef, type CSSProperties, type DragEvent as ReactDragEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type UIEvent as ReactUIEvent } from 'react';
+import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type ComponentPropsWithoutRef, type CSSProperties, type DragEvent as ReactDragEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type UIEvent as ReactUIEvent, type WheelEvent as ReactWheelEvent } from 'react';
 import { createPortal } from 'react-dom';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -1290,11 +1290,33 @@ function WorkspaceChangesReview({ changes, selectedId, onSelect, workspaceRoot }
     if (beforeDiffContentRef.current) beforeDiffContentRef.current.style.transform = 'translate(0, 0)';
   }, [mode, selected.id]);
   const syncAfterDiffScroll = (event: ReactUIEvent<HTMLPreElement>) => {
-    const { scrollLeft, scrollTop } = event.currentTarget;
+    syncBeforeDiffOffset(event.currentTarget);
+  };
+  const syncBeforeDiffOffset = (pane: HTMLPreElement) => {
+    const { scrollLeft, scrollTop } = pane;
     // Keep the read-only left pane aligned without scheduling a full React
     // render for every scroll tick; the latter caused a visible flash on long
     // diffs, especially when the scrollbar reached its lower boundary.
     if (beforeDiffContentRef.current) beforeDiffContentRef.current.style.transform = `translate(${-scrollLeft}px, ${-scrollTop}px)`;
+  };
+  const stopDiffOverscroll = (event: ReactWheelEvent<HTMLPreElement>) => {
+    const pane = event.currentTarget;
+    const maxTop = Math.max(0, pane.scrollHeight - pane.clientHeight);
+    const maxLeft = Math.max(0, pane.scrollWidth - pane.clientWidth);
+    const reachesVerticalBoundary = (event.deltaY < 0 && pane.scrollTop <= 0)
+      || (event.deltaY > 0 && pane.scrollTop >= maxTop - 1);
+    const reachesHorizontalBoundary = (event.deltaX < 0 && pane.scrollLeft <= 0)
+      || (event.deltaX > 0 && pane.scrollLeft >= maxLeft - 1);
+    // Never let a wheel gesture bubble out of the review pane.  In
+    // particular, this prevents the remaining inertial delta at the bottom
+    // of a diff from reaching the page and producing an elastic refresh.
+    event.stopPropagation();
+    if (reachesVerticalBoundary || reachesHorizontalBoundary) {
+      event.preventDefault();
+      pane.scrollTop = Math.min(maxTop, Math.max(0, pane.scrollTop + event.deltaY));
+      pane.scrollLeft = Math.min(maxLeft, Math.max(0, pane.scrollLeft + event.deltaX));
+      syncBeforeDiffOffset(pane);
+    }
   };
   if (!selected) return <div className="agent-changes-empty"><b>没有可审查的文件改动</b><span>仅显示 OpenHands FileEditor 已成功写入、且带有原始前后内容的改动。</span></div>;
   const renderLine = (line: WorkspaceFileChange['lines'][number], side: 'before' | 'after') => {
@@ -1310,7 +1332,7 @@ function WorkspaceChangesReview({ changes, selectedId, onSelect, workspaceRoot }
     </nav>
     <article className="agent-changes-diff">
       <header><div><b title={workspaceRelativePath(selected.path, workspaceRoot)}>{workspaceRelativePath(selected.path, workspaceRoot)}</b><small><ins>{`+${selected.additions}`}</ins><del>{`-${selected.deletions}`}</del></small></div><div className="agent-diff-mode"><button type="button" className={mode === 'unified' ? 'active' : ''} onClick={() => setMode('unified')}>统一</button><button type="button" className={mode === 'split' ? 'active' : ''} onClick={() => setMode('split')}>并排</button></div></header>
-      {mode === 'unified' ? <pre className="agent-diff-unified">{selected.lines.map(line => <div className={`agent-diff-line ${line.kind}`} key={`${line.oldLine ?? ''}:${line.newLine ?? ''}:${line.text}`}><i>{line.oldLine ?? line.newLine ?? ''}</i><strong>{line.kind === 'addition' ? '+' : line.kind === 'deletion' ? '-' : ' '}</strong><code>{line.text || ' '}</code></div>)}</pre> : <div className="agent-diff-split"><div className="agent-diff-before"><header>修改前</header><div ref={beforeDiffContentRef} className="agent-diff-before-content">{selected.lines.map(line => renderLine(line, 'before'))}</div></div><pre ref={afterDiffRef} onScroll={syncAfterDiffScroll}><header>修改后</header>{selected.lines.map(line => renderLine(line, 'after'))}</pre></div>}
+      {mode === 'unified' ? <pre className="agent-diff-unified" onWheelCapture={stopDiffOverscroll}>{selected.lines.map(line => <div className={`agent-diff-line ${line.kind}`} key={`${line.oldLine ?? ''}:${line.newLine ?? ''}:${line.text}`}><i>{line.oldLine ?? line.newLine ?? ''}</i><strong>{line.kind === 'addition' ? '+' : line.kind === 'deletion' ? '-' : ' '}</strong><code>{line.text || ' '}</code></div>)}</pre> : <div className="agent-diff-split"><div className="agent-diff-before"><header>修改前</header><div ref={beforeDiffContentRef} className="agent-diff-before-content">{selected.lines.map(line => renderLine(line, 'before'))}</div></div><pre ref={afterDiffRef} onWheelCapture={stopDiffOverscroll} onScroll={syncAfterDiffScroll}><header>修改后</header>{selected.lines.map(line => renderLine(line, 'after'))}</pre></div>}
     </article>
   </section>;
 }
@@ -1367,7 +1389,6 @@ function WorkspaceFileTree({ entries, root, selectedFile, selectedPaths, expande
   const stickyOverlayRef = useRef<HTMLDivElement>(null);
   const rowRefs = useRef(new Map<string, HTMLDivElement>());
   const [stickyDirectoryPaths, setStickyDirectoryPaths] = useState<string[]>([]);
-  const [stickyOverlayTop, setStickyOverlayTop] = useState(0);
   const [stickyOverlayHeight, setStickyOverlayHeight] = useState(0);
   useEffect(() => {
     const paths: string[] = [];
@@ -1406,17 +1427,24 @@ function WorkspaceFileTree({ entries, root, selectedFile, selectedPaths, expande
   }, [directoriesByPath, expanded, root]);
   const updateStickyDirectories = useCallback(() => {
     const tree = treeRef.current;
-    if (!tree || tree.scrollTop <= 1) {
-      setStickyOverlayTop(0);
+    const overlay = stickyOverlayRef.current;
+    if (!tree) return;
+    // Keep the overlay attached to the scroll viewport synchronously.  Using
+    // React state for this offset made it lag a frame during an upward wheel
+    // gesture, so the directory path visibly drifted into the middle.
+    if (overlay) overlay.style.transform = `translateY(${tree.scrollTop}px)`;
+    if (tree.scrollTop <= 1) {
       setStickyDirectoryPaths(current => current.length ? [] : current);
       return;
     }
-    setStickyOverlayTop(current => current === tree.scrollTop ? current : tree.scrollTop);
-    const stickyInset = stickyOverlayRef.current?.offsetHeight ?? 0;
-    setStickyOverlayHeight(current => current === stickyInset ? current : stickyInset);
+    const overlayHeight = overlay?.offsetHeight ?? 0;
+    setStickyOverlayHeight(current => current === overlayHeight ? current : overlayHeight);
     const firstVisible = visibleNodes.find(({ node }) => {
       const row = rowRefs.current.get(node.path);
-      return row && row.offsetTop + row.offsetHeight > tree.scrollTop + stickyInset + 1;
+      // The active path is defined by the first row at the actual viewport
+      // edge, not the first row after the overlay.  The latter made the path
+      // switch back and forth while scrolling upward through deep folders.
+      return row && row.offsetTop + row.offsetHeight > tree.scrollTop + 1;
     });
     const next = firstVisible ? stickyDirectoriesFor(firstVisible.node) : [];
     setStickyDirectoryPaths(current => current.length === next.length && current.every((path, index) => path === next[index]) ? current : next);
@@ -1427,7 +1455,11 @@ function WorkspaceFileTree({ entries, root, selectedFile, selectedPaths, expande
   useLayoutEffect(() => {
     const overlay = stickyOverlayRef.current;
     if (!overlay) { setStickyOverlayHeight(0); return; }
-    const updateHeight = () => setStickyOverlayHeight(overlay.offsetHeight);
+    const updateHeight = () => {
+      const tree = treeRef.current;
+      if (tree) overlay.style.transform = `translateY(${tree.scrollTop}px)`;
+      setStickyOverlayHeight(overlay.offsetHeight);
+    };
     updateHeight();
     const observer = new ResizeObserver(updateHeight);
     observer.observe(overlay);
@@ -1476,7 +1508,7 @@ function WorkspaceFileTree({ entries, root, selectedFile, selectedPaths, expande
     </div>;
   });
   return <div ref={treeRef} className={`agent-file-tree${stickyDirectoryPaths.length ? ' has-sticky-path' : ''}`} role="tree" aria-label="工作区目录树" onScroll={updateStickyDirectories}>
-    {stickyDirectoryPaths.length > 0 && <div ref={stickyOverlayRef} className="agent-file-tree-sticky-path" aria-label="当前文件所在目录" style={{ top: stickyOverlayTop }}>{stickyDirectoryPaths.map((path, depth) => {
+    {stickyDirectoryPaths.length > 0 && <div ref={stickyOverlayRef} className="agent-file-tree-sticky-path" aria-label="当前文件所在目录">{stickyDirectoryPaths.map((path, depth) => {
       const directory = directoriesByPath.get(path);
       const open = expanded.has(path);
       return directory && <div key={path} className="agent-file-tree-row sticky-directory" role="presentation" style={{ '--tree-depth': depth } as CSSProperties}>
