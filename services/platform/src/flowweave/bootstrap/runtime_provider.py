@@ -1591,8 +1591,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             and payload.runtime_secret_key is not None
             else None
         )
-        observation = DockerSandboxProvider(configured).ensure_running(
-            _resource(payload), runtime_secret_key=runtime_secret_key
+        # Every Docker SDK/subprocess operation is synchronous. Keeping it
+        # off the ASGI loop is essential: a slow daemon operation for one
+        # Runtime must not make this Provider fail its health check and take
+        # unrelated Conversation or terminal requests down with it.
+        observation = await asyncio.to_thread(
+            DockerSandboxProvider(configured).ensure_running,
+            _resource(payload),
+            runtime_secret_key=runtime_secret_key,
         )
         return cast(dict[str, Any], _observation_dict(observation))
 
@@ -1601,30 +1607,38 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         check_scope(payload.manager_scope)
         if not payload.resource_name.startswith("fw-sbx-"):
             raise DomainError("SANDBOX_NAME_INVALID", "Sandbox name is not allowed", 422)
-        observation = DockerSandboxProvider(configured).inspect(payload.resource_name)
+        observation = await asyncio.to_thread(
+            DockerSandboxProvider(configured).inspect, payload.resource_name
+        )
         return {"observation": _observation_dict(observation)}
 
     @app.post("/v1/sandboxes/usage")
     async def usage(payload: SandboxDeleteWrite) -> dict[str, Any]:
         check_scope(payload.manager_scope)
-        usage = DockerSandboxProvider(configured).usage(
-            payload.resource_name, str(payload.resource_id)
+        usage = await asyncio.to_thread(
+            DockerSandboxProvider(configured).usage,
+            payload.resource_name,
+            str(payload.resource_id),
         )
         return {"usage": _usage_dict(usage)}
 
     @app.post("/v1/sandboxes/delete")
     async def delete(payload: SandboxDeleteWrite) -> dict[str, bool]:
         check_scope(payload.manager_scope)
-        DockerSandboxProvider(configured).delete_expected(
-            payload.resource_name, str(payload.resource_id)
+        await asyncio.to_thread(
+            DockerSandboxProvider(configured).delete_expected,
+            payload.resource_name,
+            str(payload.resource_id),
         )
         return {"deleted": True}
 
     @app.post("/v1/sandboxes/drain")
     async def _drain(payload: SandboxDeleteWrite) -> dict[str, bool]:
         check_scope(payload.manager_scope)
-        result = DockerSandboxProvider(configured).drain_expected(
-            payload.resource_name, str(payload.resource_id)
+        result = await asyncio.to_thread(
+            DockerSandboxProvider(configured).drain_expected,
+            payload.resource_name,
+            str(payload.resource_id),
         )
         return {"graceful": result.graceful, "stopped": result.stopped}
 
@@ -1633,7 +1647,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         check_scope(payload.manager_scope)
         return {
             "observations": [
-                _observation_dict(item) for item in DockerSandboxProvider(configured).list_managed()
+                _observation_dict(item)
+                for item in await asyncio.to_thread(DockerSandboxProvider(configured).list_managed)
             ]
         }
 
@@ -1642,7 +1657,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         check_scope(payload.manager_scope)
         if not payload.reference.startswith("flowweave/environment-"):
             raise DomainError("ENVIRONMENT_IMAGE_INVALID", "Image tag is not managed", 422)
-        environments_docker.remove_image(
+        await asyncio.to_thread(
+            environments_docker.remove_image,
             payload.reference,
             expected_digest=payload.expected_digest,
             environment_id=str(payload.environment_id),
@@ -1654,42 +1670,51 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/v1/environments/resolve-base-image")
     async def _resolve_base_image(payload: ResolveBaseImageWrite) -> dict[str, str]:
         check_scope(payload.manager_scope)
-        reference, digest = environments_docker.resolve_setup_image(payload.reference)
+        reference, digest = await asyncio.to_thread(
+            environments_docker.resolve_setup_image, payload.reference
+        )
         return {"reference": reference, "digest": digest}
 
     @app.post("/v1/environments/remove-credentials")
     async def remove_credentials(payload: EnvironmentCredentialsWrite) -> dict[str, bool]:
         check_scope(payload.manager_scope)
-        DockerSandboxProvider(configured).delete_environment_credentials(
-            str(payload.environment_id)
+        await asyncio.to_thread(
+            DockerSandboxProvider(configured).delete_environment_credentials,
+            str(payload.environment_id),
         )
         return {"deleted": True}
 
     @app.post("/v1/environments/remove-legacy")
     async def remove_legacy(payload: LegacyRemoveWrite) -> dict[str, bool]:
         check_scope(payload.manager_scope)
-        environments_docker.remove_legacy_setup_container(
-            payload.resource_name, environment_id=str(payload.environment_id)
+        await asyncio.to_thread(
+            environments_docker.remove_legacy_setup_container,
+            payload.resource_name,
+            environment_id=str(payload.environment_id),
         )
         return {"deleted": True}
 
     @app.post("/v1/environments/publish")
     async def publish(payload: PublishImageWrite) -> dict[str, Any]:
         check_scope(payload.manager_scope)
-        container_id = environments_docker.resolve_setup_container(
-            payload.resource_name,
-            sandbox_id=str(payload.resource_id),
-            environment_id=str(payload.environment_id),
-        )
-        image = environments_docker.publish_container(
-            container_id,
-            environment_id=str(payload.environment_id),
-            version_id=str(payload.version_id),
-            version_no=payload.version_no,
-            base_image_reference=payload.base_image_reference,
-            base_image_digest=payload.base_image_digest,
-            runtime_capabilities=tuple(payload.runtime_capabilities),
-        )
+
+        def publish_image() -> Any:
+            container_id = environments_docker.resolve_setup_container(
+                payload.resource_name,
+                sandbox_id=str(payload.resource_id),
+                environment_id=str(payload.environment_id),
+            )
+            return environments_docker.publish_container(
+                container_id,
+                environment_id=str(payload.environment_id),
+                version_id=str(payload.version_id),
+                version_no=payload.version_no,
+                base_image_reference=payload.base_image_reference,
+                base_image_digest=payload.base_image_digest,
+                runtime_capabilities=tuple(payload.runtime_capabilities),
+            )
+
+        image = await asyncio.to_thread(publish_image)
         return {"reference": image.reference, "digest": image.digest, "manifest": image.manifest}
 
     @app.post("/v1/gates/execute")
@@ -1703,8 +1728,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             cleanup_grace_seconds=configured.sandbox_orphan_grace_seconds,
             storage_size=configured.sandbox_storage_size,
         )
-        result = sandbox.execute(
-            cast(Any, payload.language), payload.code, payload.context, payload.timeout_seconds
+        result = await asyncio.to_thread(
+            sandbox.execute,
+            cast(Any, payload.language),
+            payload.code,
+            payload.context,
+            payload.timeout_seconds,
         )
         return {
             "status": result.status,
@@ -1724,7 +1753,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             cleanup_grace_seconds=configured.sandbox_orphan_grace_seconds,
             storage_size=configured.sandbox_storage_size,
         )
-        bundle = builder.build(payload.dependencies)
+        bundle = await asyncio.to_thread(builder.build, payload.dependencies)
         return {
             "content_base64": base64.b64encode(bundle.content).decode(),
             "manifest": bundle.manifest,
@@ -1741,8 +1770,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             cleanup_grace_seconds=configured.sandbox_orphan_grace_seconds,
             storage_size=configured.sandbox_storage_size,
         )
-        bundle = resolver.resolve(
-            PluginResolveRequest(payload.source, payload.commit, payload.repo_path)
+        bundle = await asyncio.to_thread(
+            resolver.resolve,
+            PluginResolveRequest(payload.source, payload.commit, payload.repo_path),
         )
         return {
             "content_base64": base64.b64encode(bundle.content).decode(),
@@ -1769,10 +1799,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             cleanup_grace_seconds=configured.sandbox_orphan_grace_seconds,
             storage_size=configured.sandbox_storage_size,
         )
-        bundle = resolver.resolve_marketplace_plugin(
+        bundle = await asyncio.to_thread(
+            resolver.resolve_marketplace_plugin,
             MarketplacePluginResolveRequest(
                 payload.source, payload.commit, payload.repo_path, payload.plugin_name
-            )
+            ),
         )
         return {
             "content_base64": base64.b64encode(bundle.content).decode(),
@@ -1799,8 +1830,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             cleanup_grace_seconds=configured.sandbox_orphan_grace_seconds,
             storage_size=configured.sandbox_storage_size,
         )
-        return resolver.list_marketplace(
-            MarketplaceCatalogRequest(payload.source, payload.commit, payload.repo_path)
+        return await asyncio.to_thread(
+            resolver.list_marketplace,
+            MarketplaceCatalogRequest(payload.source, payload.commit, payload.repo_path),
         )
 
     app.add_api_route(
@@ -1813,7 +1845,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def runtime_events(payload: RuntimeEventsWrite) -> StreamingResponse:
         check_scope(payload.manager_scope)
         try:
-            container_id = inspect_owned_container(
+            container_id = await asyncio.to_thread(
+                inspect_owned_container,
                 configured.docker_binary,
                 payload.resource_name,
                 str(payload.resource_id),
@@ -1872,7 +1905,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "The Plugin path does not belong to this validation",
                 422,
             )
-        return validate_owned_runtime_plugin(
+        return await asyncio.to_thread(
+            validate_owned_runtime_plugin,
             configured,
             resource_name=payload.resource_name,
             resource_id=str(payload.resource_id),

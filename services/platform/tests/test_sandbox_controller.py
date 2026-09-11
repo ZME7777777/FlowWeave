@@ -117,6 +117,43 @@ def test_runtime_provider_returns_owned_runtime_usage(settings, monkeypatch) -> 
     }
 
 
+def test_blocking_runtime_provision_does_not_block_controller_health(settings, monkeypatch):
+    provisioning = threading.Event()
+    release = threading.Event()
+
+    def blocking_ensure(self, resource, **_kwargs):
+        provisioning.set()
+        assert release.wait(timeout=5)
+        return DockerObservation(
+            resource_id=resource.id,
+            resource_name=resource.backend_resource_name,
+            resource_identifier="runtime-container",
+            state="RUNNING",
+            labels={},
+        )
+
+    monkeypatch.setattr(DockerSandboxProvider, "ensure_running", blocking_ensure)
+
+    with TestClient(create_app(_settings(settings))) as client:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            pending = executor.submit(
+                client.post,
+                "/v1/sandboxes/ensure",
+                headers=_headers(),
+                json=_ensure_payload(),
+            )
+            assert provisioning.wait(timeout=2)
+            started = time.monotonic()
+            health = client.get("/health")
+            elapsed = time.monotonic() - started
+            release.set()
+            provisioned = pending.result(timeout=2)
+
+    assert health.status_code == 200
+    assert elapsed < 0.5
+    assert provisioned.status_code == 200
+
+
 def test_runtime_provider_rejects_partial_shared_project_without_record() -> None:
     with pytest.raises(ValueError, match="project record identity"):
         RuntimeProviderSpec(
