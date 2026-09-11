@@ -3809,6 +3809,14 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 
 完成：Git 仓库选择解析提升到工作区布局层，只有当前选中路径命中最深仓库时才挂载侧栏、预留右侧宽度并为文件视图启用 Git 网格；非 Git 路径和普通文件恢复全宽。提交文件 Diff 解析统一补丁 hunk，提供带行号的统一／并排视图、修改前后滚动对齐和新增／删除高亮；无可解析文本时保留明确空态。
 
+### FR-293 Agent 工作区 Git 侧栏重复网格预留修复 — DONE
+
+依赖：FR-292。
+
+目标：在 Git 侧栏显示时，文件树、分隔条与文件预览仍只能使用三列；Git 侧栏由工作区容器的右侧预留宽度和绝对定位承载，文件视图不得再创建第四列，从而在文件预览与 Git 侧栏间留下空白。
+
+完成：移除全屏 Git 文件视图的第四个网格轨道；文件预览现在用尽由工作区容器为绝对定位 Git 侧栏预留之前的全部宽度，Git 侧栏继续保持在右侧。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -3824,6 +3832,7 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-11 | FR-293 | Web TypeScript typecheck、ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS：Git 侧栏可见时，文件树／分隔条／预览只占三列，预览区直接铺至右栏左边，不再存在重复的第四列空白。生产构建仅报告既有大 chunk 提示；无 `CURRENT`。 |
 | 2026-09-11 | FR-292 | Web TypeScript typecheck、ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS：Git 侧栏只在当前文件树选中的路径位于最深匹配 Git 仓库时出现，其他路径的中间工作区不再保留右栏空白。点击提交文件后，中间页签以带行号、增删高亮且可切换统一／并排的结构化 Diff 展示补丁；无 `CURRENT`。生产构建仅报告既有大 chunk 提示。 |
 | 2026-09-11 | FR-291 | Web TypeScript typecheck、ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS：提交详情不再占用中间展示区；右侧详情层承载目录树和完整元数据，点击其中一个文件才在中间打开该文件的 Git Diff。当前选中目录的仓库范围保持不变；无 `CURRENT`。 |
 | 2026-09-11 | FR-290 | Web TypeScript typecheck、ESLint、`git diff --check` 与任务状态唯一性 | PASS：Git 历史只由当前文件树选中路径的最深层所属仓库决定；没有匹配时不请求历史并引导选择目录。无 `CURRENT`。 |
