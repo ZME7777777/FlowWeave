@@ -3753,6 +3753,14 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 
 完成：修正工作台壳层覆盖规则，使中间标题区从 80px 收口为与左右两栏一致的 64px；三栏分隔线现完全对齐。
 
+### FR-286 Agent 会话过程与最终回复分隔 — DONE
+
+依赖：FR-282。
+
+目标：当一轮 Agent 会话同时包含工作过程和最终回复时，在两者之间显示一条低对比度横线，提供清晰但不抢眼的阅读边界。不得影响无过程的普通回复、进行中的会话、OpenHands 事件、会话传输、Runtime 或后端合同。
+
+完成：每轮在存在过程块和最终 Assistant 回复时插入语义 separator；使用低对比度 1px 横线及适度上下间距，普通回复、生成中状态和失败卡片不显示该边界。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -3768,6 +3776,7 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-11 | FR-286 | Web ESLint、TypeScript typecheck、production build、`git diff --check` 与任务状态唯一性 | PASS：仅在同轮过程块与最终回复之间显示低对比度横线，过程／最终回复边界清晰且不干扰无过程和进行中的会话。 |
 | 2026-09-11 | FR-285 | Web ESLint、TypeScript typecheck、`git diff --check` 与任务状态唯一性 | PASS：实际生效的工作台壳层中栏标题轨道与左侧操作区、右侧环境信息区均为 64px，三栏底部分隔线对齐。 |
 | 2026-09-11 | FR-284 | Web ESLint、TypeScript typecheck、production build、`git diff --check` 与任务状态唯一性 | PASS：Agent 工作台内会话内容列与底部 composer 使用同一 860px 居中宽度，会话区保留 16px 两侧空白；通用会话页面与只读弹窗不受影响。 |
 | 2026-09-11 | FR-283 | Web TypeScript typecheck；受影响 Web ESLint；production build；`git diff --check` 与任务状态唯一性 | PASS：浏览器菜单抑制改至 document 捕获阶段，覆盖 xterm canvas 的内部事件处理顺序；仅限当前终端 DOM 子树且不停止传播。 |

@@ -1293,6 +1293,7 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused: 
           {isCurrent && !turn.assistant && !failures.length && (
             <CurrentTurnStatus items={turn.activity} liveText={liveText} requestSubmitting={requestSubmitting} monitoring={monitoring} connectionState={connectionState}/>
           )}
+          {processBlocks.length > 0 && turn.assistant && <div className="conversation-process-divider" role="separator" aria-label="工作过程结束"/>}
           {turn.assistant && <AgentReply event={turn.assistant.event} content={turn.assistant.content} changes={fileChanges} onFork={!isGenerating ? () => onFork?.(turn.assistant!.event.id) : undefined} onPreviewCandidateFile={onPreviewCandidateFile} onReviewChanges={onReviewChanges} workspaceRoot={workspaceRoot} highlightReferenceSource={highlightedReferenceEventId === turn.assistant.event.id}/>}
           {failures.map(item => <ConversationFailure key={item.event.id} item={item} taskControl={taskControl}/>)}
         </section>;

@@ -8,6 +8,7 @@
 .conversation-surface-empty b{color:var(--ink);font-size:14px}
 .conversation-surface-empty span{font-size:12px}
 .conversation-turn{width:100%;max-width:100%;min-width:0;margin-bottom:28px}
+.conversation-process-divider{height:1px;margin:3px 0 20px;background:#e8ece9}
 .conversation-message{font-size:14px;line-height:1.78;overflow-wrap:anywhere}
 .conversation-message p{margin:0 0 10px}
 .conversation-message p:last-child{margin-bottom:0}
