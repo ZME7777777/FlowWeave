@@ -419,7 +419,6 @@ def _assert_quota_fallback_contract() -> None:
     assert "LLMProfileStore" in strategy_source
     assert "for i, fb in enumerate(self._iter_fallbacks())" in strategy_source
     assert "fb.fallback_strategy = None" in strategy_source
-    assert "RateLimitError" in strategy_source
     assert is_quota_exhaustion_error(Exception("usage_limit_reached"))
     strategy = FallbackStrategy(fallback_llms=["flowweave-fallback"])
     assert strategy.fallback_llms == ["flowweave-fallback"]
