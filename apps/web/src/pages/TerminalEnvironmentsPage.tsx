@@ -111,10 +111,13 @@ function TerminalPanel({ session, visible, publishError, onClose, onUnavailable,
     };
     const terminalScreen = host.querySelector<HTMLElement>('.xterm-screen');
     terminalScreen?.addEventListener('mousedown', forceTextSelection, { capture: true });
-    // Let xterm forward a terminal-specific right-click, but do not allow the
-    // browser's native menu to compete with the terminal surface.
-    const suppressBrowserContextMenu = (event: MouseEvent) => event.preventDefault();
-    host.addEventListener('contextmenu', suppressBrowserContextMenu, { capture: true });
+    // Capture above xterm's canvas so a nested element cannot prevent this
+    // terminal-only browser-menu suppression; retain terminal propagation.
+    const document = host.ownerDocument;
+    const suppressBrowserContextMenu = (event: MouseEvent) => {
+      if (host.contains(event.target as Node)) event.preventDefault();
+    };
+    document.addEventListener('contextmenu', suppressBrowserContextMenu, true);
     term.writeln('正在连接隔离终端…');
     let disposed = false;
     let reconnectTimer: number | undefined;
@@ -206,7 +209,7 @@ function TerminalPanel({ session, visible, publishError, onClose, onUnavailable,
       observer.disconnect();
       removeForcedSelectionListeners?.();
       terminalScreen?.removeEventListener('mousedown', forceTextSelection, true);
-      host.removeEventListener('contextmenu', suppressBrowserContextMenu, true);
+      document.removeEventListener('contextmenu', suppressBrowserContextMenu, true);
       input.dispose();
       socket.current?.close(1000);
       socket.current = null;

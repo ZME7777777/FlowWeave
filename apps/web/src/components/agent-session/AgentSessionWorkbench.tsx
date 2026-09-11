@@ -1072,11 +1072,14 @@ function WorkspaceTerminal({ workspaceId, terminalInstanceId, bindingId, workDir
     };
     const terminalScreen = element.querySelector<HTMLElement>('.xterm-screen');
     terminalScreen?.addEventListener('mousedown', forceTextSelection, { capture: true });
-    // Preserve the terminal program's right-click handling (for example tmux
-    // menus) while keeping the browser's native context menu out of the
-    // terminal surface. Do not stop propagation: xterm may need the event.
-    const suppressBrowserContextMenu = (event: MouseEvent) => event.preventDefault();
-    element.addEventListener('contextmenu', suppressBrowserContextMenu, { capture: true });
+    // xterm may stop propagation on its canvas before the host can observe a
+    // contextmenu event. Intercept at document capture instead, but only for
+    // this terminal. Do not stop propagation: tmux/xterm still receives it.
+    const document = element.ownerDocument;
+    const suppressBrowserContextMenu = (event: MouseEvent) => {
+      if (element.contains(event.target as Node)) event.preventDefault();
+    };
+    document.addEventListener('contextmenu', suppressBrowserContextMenu, true);
     let socket: WebSocket | null = null;
     let disposed = false;
     let reconnectTimer: number | undefined;
@@ -1164,7 +1167,7 @@ function WorkspaceTerminal({ workspaceId, terminalInstanceId, bindingId, workDir
     observer.observe(element);
     resize();
     void document.fonts?.ready.then(resize);
-    return () => { disposed = true; if (reconnectTimer !== undefined) window.clearTimeout(reconnectTimer); if (resizeFrame !== undefined) window.cancelAnimationFrame(resizeFrame); if (remoteResizeTimer !== undefined) window.clearTimeout(remoteResizeTimer); observer.disconnect(); removeForcedSelectionListeners?.(); terminalScreen?.removeEventListener('mousedown', forceTextSelection, true); element.removeEventListener('contextmenu', suppressBrowserContextMenu, true); input.dispose(); socket?.close(1000); terminal.dispose(); };
+    return () => { disposed = true; if (reconnectTimer !== undefined) window.clearTimeout(reconnectTimer); if (resizeFrame !== undefined) window.cancelAnimationFrame(resizeFrame); if (remoteResizeTimer !== undefined) window.clearTimeout(remoteResizeTimer); observer.disconnect(); removeForcedSelectionListeners?.(); terminalScreen?.removeEventListener('mousedown', forceTextSelection, true); document.removeEventListener('contextmenu', suppressBrowserContextMenu, true); input.dispose(); socket?.close(1000); terminal.dispose(); };
   }, [bindingId, terminalInstanceId, terminalUrl, workDirectoryId, workingDirectory, workspaceId]);
 
   return <section className="agent-workspace-terminal"><header><span className={`terminal-dot ${state}`}/><span>{detail}</span></header><div ref={host} aria-label="Agent 工作区终端"/></section>;
