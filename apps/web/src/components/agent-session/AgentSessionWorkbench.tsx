@@ -292,8 +292,6 @@ interface WorkspaceConversationGroupProps {
   label: string;
   children: (visibleCount: number) => ReactNode;
   conversationCount: number;
-  canCreateConversation?: boolean;
-  onCreateConversation?: () => void;
   onDelete?: () => void;
 }
 
@@ -350,7 +348,7 @@ function useAgentSessionHost(): AgentSessionHost {
   return useContext(AgentSessionHostContext);
 }
 
-function WorkspaceConversationGroup({ groupId, label, children, conversationCount, canCreateConversation = false, onCreateConversation, onDelete }: WorkspaceConversationGroupProps) {
+function WorkspaceConversationGroup({ groupId, label, children, conversationCount, onDelete }: WorkspaceConversationGroupProps) {
   const [collapsed, setCollapsed] = useState(false);
   const [visibleCount, setVisibleCount] = useState(3);
   const contentId = `agent-workspace-group-${groupId}`;
@@ -364,8 +362,7 @@ function WorkspaceConversationGroup({ groupId, label, children, conversationCoun
       })}>
         <Folder size={14}/><span>{label}</span><ChevronDown size={13}/>
       </button>
-      <div className="agent-workspace-group-actions">{onCreateConversation && <button type="button" aria-label={`在${label}中新建会话`} disabled={!canCreateConversation} onClick={onCreateConversation}><Plus size={13}/></button>}
-      {onDelete && <button type="button" className="danger" aria-label={`删除工作区 ${label}`} onClick={onDelete}><Trash2 size={13}/></button>}</div>
+      <div className="agent-workspace-group-actions">{onDelete && <button type="button" className="danger" aria-label={`删除工作区 ${label}`} onClick={onDelete}><Trash2 size={13}/></button>}</div>
     </header>
     <div id={contentId} className="agent-workspace-group-content" hidden={collapsed}>
       {children(visibleCount)}
@@ -3682,10 +3679,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     <aside className="agent-workbench-rail">
       <header className={!onReturnToSource && features.workDirectories ? 'agent-workbench-rail-actions-only' : undefined}>{onReturnToSource && <button type="button" className="agent-session-return" aria-label="返回节点执行" title="返回节点执行" onClick={onReturnToSource}><ArrowLeft size={16}/></button>}{(onReturnToSource || !features.workDirectories) && <div className="agent-session-host-heading"><span className="eyebrow">{onReturnToSource ? 'FLOWRUN NODE WORKSPACE' : 'FLOWRUN NODE'}</span><h1>{onReturnToSource ? workspace?.display_name || '节点会话' : '节点会话'}</h1></div>}<div className="agent-workbench-create-actions"><button className="primary" disabled={!canOpenConversation} onClick={() => openConversationDraft({ displayName: '根工作区' })}><Plus size={15}/>新建会话</button>{features.workDirectories && <button type="button" className="secondary" aria-label="新增工作区" disabled={!runtimeWritable} onClick={() => setWorkDirectoryCreatorOpen(true)}><FolderPlus size={14}/>新增工作区</button>}</div></header>
       <div className="agent-workbench-list">
-        <WorkspaceConversationGroup groupId="root" label="根工作区" conversationCount={rootConversations.length} canCreateConversation={canOpenConversation} onCreateConversation={() => openConversationDraft({ displayName: '根工作区' })}>
+        <WorkspaceConversationGroup groupId="root" label="根工作区" conversationCount={rootConversations.length}>
           {visibleCount => <>{pendingBootstrapItem && !pendingBootstrap?.draft.workDirectoryId ? pendingBootstrapItem : null}{rootConversations.slice(0, visibleCount).map(conversationRow)}</>}
         </WorkspaceConversationGroup>
-        {features.workDirectories && workDirectories.map(directory => <WorkspaceConversationGroup key={directory.id} groupId={directory.id} label={directory.display_name} conversationCount={conversationsForDirectory(directory.id).length} canCreateConversation={canOpenConversation} onCreateConversation={() => openConversationDraft({ workDirectoryId: directory.id, displayName: directory.display_name })} onDelete={api.deleteWorkDirectory && runtimeWritable ? () => void removeWorkDirectory(directory) : undefined}>
+        {features.workDirectories && workDirectories.map(directory => <WorkspaceConversationGroup key={directory.id} groupId={directory.id} label={directory.display_name} conversationCount={conversationsForDirectory(directory.id).length} onDelete={api.deleteWorkDirectory && runtimeWritable ? () => void removeWorkDirectory(directory) : undefined}>
           {visibleCount => <>{pendingBootstrapItem && pendingBootstrap?.draft.workDirectoryId === directory.id ? pendingBootstrapItem : null}{conversationsForDirectory(directory.id).slice(0, visibleCount).map(conversationRow)}</>}
         </WorkspaceConversationGroup>)}
       </div>
