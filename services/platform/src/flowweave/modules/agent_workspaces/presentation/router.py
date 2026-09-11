@@ -988,6 +988,13 @@ async def agent_workspace_terminal(
                     )
                 elif value.get("type") == "input":
                     await asyncio.to_thread(terminal.write, str(value.get("data", "")).encode())
+                elif value.get("type") == "close-pane":
+                    await asyncio.to_thread(
+                        environments.kill_managed_terminal_pane,
+                        resource_name,
+                        resource_id=runtime_id,
+                        session_name=session_name,
+                    )
         except WebSocketDisconnect:
             pass
         finally:

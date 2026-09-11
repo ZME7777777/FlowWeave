@@ -3759,7 +3759,7 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 
 目标：修复 tmux 原生鼠标菜单依赖终端鼠标协议、在浏览器中只要轻微移动就被新的 MouseMove 事件撤销的问题。Agent 工作区终端右键必须显示稳定的产品菜单，移动指针不关闭；复制、输入、分屏、标记与关闭窗格继续使用既有终端/tmux 语义。
 
-完成：终端在 document 捕获阶段拦截完整右键按下／抬起／浏览器菜单序列，不再让 tmux 接收该次右键。菜单以 FlowWeave DOM 浮层显示，只有显式点击动作或左键点击菜单外才会关闭；复制文本／整行走浏览器剪贴板，输入和 tmux 窗格命令仍通过同一受管 WebSocket 发送。分屏、标记和关闭项显示对应快捷键；关闭当前窗格改为显式 `kill-pane` 命令，直接关闭而不触发 tmux 的 `y` 确认提示。
+完成：终端在 document 捕获阶段拦截完整右键按下／抬起／浏览器菜单序列，不再让 tmux 接收该次右键。菜单以 FlowWeave DOM 浮层显示，只有显式点击动作或左键点击菜单外才会关闭；复制文本／整行走浏览器剪贴板，输入和 tmux 窗格命令仍通过同一受管 WebSocket 发送。菜单不显示快捷键提示；关闭当前窗格改为后端直接对当前受管 tmux 会话执行 `kill-pane`，不经过浏览器键盘模拟，不触发 `y` 确认，也不会留下 tmux `:` 命令提示。
 
 ### FR-286 Agent 会话过程与最终回复分隔 — DONE
 
@@ -3817,6 +3817,14 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 
 完成：移除全屏 Git 文件视图的第四个网格轨道；文件预览现在用尽由工作区容器为绝对定位 Git 侧栏预留之前的全部宽度，Git 侧栏继续保持在右侧。
 
+### FR-294 Agent 工作区 Git 侧栏精确路径门禁 — DONE
+
+依赖：FR-293。
+
+目标：Git 侧栏只能由用户最后直接点击的单个文件或目录路径启用；多选集合、旧目录状态或工作区根的容器 Git 元数据都不得使侧栏在普通目录、普通文件或仅包含子仓库的目录上残留。只有所选路径本身属于工作区内独立 Git 仓库或其子路径时，才显示 Git 侧栏。
+
+完成：Git 显示上下文改为最后直接点击的单一路径，不再从多选集合或遗留目录状态推断；显式排除工作区根与当前工作目录的容器 Git 仓库。普通目录、普通文件和仅容纳子仓库的目录均隐藏侧栏，只有被直接选中的独立子仓库或其内部文件显示。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -3832,13 +3840,14 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-11 | FR-294 | Web TypeScript typecheck、ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS：Git 侧栏只随最后直接点击的单一路径显示，已排除根／工作目录容器仓库；`repos`、`repositories.md` 等普通路径不再显示，独立子仓库及其内部文件仍可显示。生产构建仅报告既有大 chunk 提示；无 `CURRENT`。 |
 | 2026-09-11 | FR-293 | Web TypeScript typecheck、ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS：Git 侧栏可见时，文件树／分隔条／预览只占三列，预览区直接铺至右栏左边，不再存在重复的第四列空白。生产构建仅报告既有大 chunk 提示；无 `CURRENT`。 |
 | 2026-09-11 | FR-292 | Web TypeScript typecheck、ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS：Git 侧栏只在当前文件树选中的路径位于最深匹配 Git 仓库时出现，其他路径的中间工作区不再保留右栏空白。点击提交文件后，中间页签以带行号、增删高亮且可切换统一／并排的结构化 Diff 展示补丁；无 `CURRENT`。生产构建仅报告既有大 chunk 提示。 |
 | 2026-09-11 | FR-291 | Web TypeScript typecheck、ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS：提交详情不再占用中间展示区；右侧详情层承载目录树和完整元数据，点击其中一个文件才在中间打开该文件的 Git Diff。当前选中目录的仓库范围保持不变；无 `CURRENT`。 |
 | 2026-09-11 | FR-290 | Web TypeScript typecheck、ESLint、`git diff --check` 与任务状态唯一性 | PASS：Git 历史只由当前文件树选中路径的最深层所属仓库决定；没有匹配时不请求历史并引导选择目录。无 `CURRENT`。 |
 | 2026-09-11 | FR-289 | Web ESLint、TypeScript typecheck、production build；受影响 Python Ruff/check、`py_compile`；三提交（含多行 message、目录文件）直接 smoke、Alembic head、任务状态唯一性与 `git diff --check` | PASS：中间 Git 审查不再请求或显示原始 Diff；上部以可展开目录树呈现文件，下部显示完整提交信息，两区可上下拖拽。详情接口返回完整 message、作者／提交者邮箱及 ISO 时间；三提交直接 smoke 覆盖这些字段。定向 pytest 已收集，但全局 Testcontainers fixture 在本机 Docker daemon 不可用时于断言前阻断，未伪记为通过。唯一 Alembic head 为 `0110_candidate_output_set_owner`，无 `CURRENT`。 |
 | 2026-09-11 | FR-288 | Web ESLint、TypeScript typecheck、production build；受影响 Python Ruff/check、`py_compile`；三提交历史与详情／Diff 直接 smoke、Alembic head、任务状态唯一性与 `git diff --check` | PASS：当前授权工作区内的仓库可切换，选择提交后在中间“提交审查”页签浏览文件与 Diff。Git 历史使用 NUL 记录边界，连续三条提交均可回读详情与首个文件 Diff；不依赖数据库的直接 smoke 通过。定向 pytest 已收集，但全局 Testcontainers fixture 在本机 Docker daemon 不可用时于断言前阻断，未伪记为通过。唯一 Alembic head 为 `0110_candidate_output_set_owner`，无 `CURRENT`。 |
-| 2026-09-11 | FR-287 | Web TypeScript typecheck；受影响 Web ESLint；production build；`git diff --check` 与任务状态唯一性 | PASS：右键产品菜单的事件路径已覆盖鼠标移动不关闭、点击复制后关闭；tmux 原生菜单不再与 Chrome 菜单或 MouseMove 协议竞争。定向 Playwright 因既有工作区初始化长时间无响应而中止，未将其记为通过。 |
+| 2026-09-11 | FR-287 | Web TypeScript typecheck；受影响 Web ESLint；production build；受影响 Python 静态检查；`git diff --check` 与任务状态唯一性 | PASS：右键产品菜单不再显示快捷键；关闭当前窗格改为后端受管 `kill-pane`，不会将 `Ctrl B`、`:` 或 `y` 注入 PTY。tmux 原生菜单不再与 Chrome 菜单或 MouseMove 协议竞争。定向 Playwright 因既有工作区初始化长时间无响应而中止，未将其记为通过。 |
 | 2026-09-11 | FR-286 | Web ESLint、TypeScript typecheck、production build、`git diff --check` 与任务状态唯一性 | PASS：仅在同轮过程块与最终回复之间显示低对比度横线，过程／最终回复边界清晰且不干扰无过程和进行中的会话。 |
 | 2026-09-11 | FR-285 | Web ESLint、TypeScript typecheck、`git diff --check` 与任务状态唯一性 | PASS：实际生效的工作台壳层中栏标题轨道与左侧操作区、右侧环境信息区均为 64px，三栏底部分隔线对齐。 |
 | 2026-09-11 | FR-284 | Web ESLint、TypeScript typecheck、production build、`git diff --check` 与任务状态唯一性 | PASS：Agent 工作台内会话内容列与底部 composer 使用同一 860px 居中宽度，会话区保留 16px 两侧空白；通用会话页面与只读弹窗不受影响。 |

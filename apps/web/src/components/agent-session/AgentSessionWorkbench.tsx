@@ -1007,6 +1007,7 @@ function WorkspaceTerminal({ workspaceId, terminalInstanceId, bindingId, workDir
   const { terminalUrl } = useAgentSessionGateway();
   const host = useRef<HTMLDivElement>(null);
   const sendTerminalInput = useRef<(data: string) => void>(() => undefined);
+  const closeTerminalPane = useRef<() => void>(() => undefined);
   const [state, setState] = useState<'connecting' | 'connected' | 'unavailable'>('connecting');
   const [detail, setDetail] = useState('正在连接工作区终端…');
   const [contextMenu, setContextMenu] = useState<TerminalContextMenu>();
@@ -1206,21 +1207,23 @@ function WorkspaceTerminal({ workspaceId, terminalInstanceId, bindingId, workDir
     };
     const input = terminal.onData(data => { if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'input', data })); });
     sendTerminalInput.current = data => { if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'input', data })); };
+    closeTerminalPane.current = () => { if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'close-pane' })); };
     const observer = new ResizeObserver(resize);
     observer.observe(element);
     resize();
     void document.fonts?.ready.then(resize);
-    return () => { disposed = true; sendTerminalInput.current = () => undefined; if (reconnectTimer !== undefined) window.clearTimeout(reconnectTimer); if (resizeFrame !== undefined) window.cancelAnimationFrame(resizeFrame); if (remoteResizeTimer !== undefined) window.clearTimeout(remoteResizeTimer); observer.disconnect(); removeForcedSelectionListeners?.(); terminalScreen?.removeEventListener('mousedown', forceTextSelection, true); document.removeEventListener('mousedown', openTerminalContextMenu, true); document.removeEventListener('mousedown', closeTerminalContextMenu, true); document.removeEventListener('mouseup', suppressTerminalRightMouseUp, true); document.removeEventListener('contextmenu', suppressBrowserContextMenu, true); document.removeEventListener('keydown', dismissTerminalContextMenu, true); input.dispose(); socket?.close(1000); terminal.dispose(); };
+    return () => { disposed = true; sendTerminalInput.current = () => undefined; closeTerminalPane.current = () => undefined; if (reconnectTimer !== undefined) window.clearTimeout(reconnectTimer); if (resizeFrame !== undefined) window.cancelAnimationFrame(resizeFrame); if (remoteResizeTimer !== undefined) window.clearTimeout(remoteResizeTimer); observer.disconnect(); removeForcedSelectionListeners?.(); terminalScreen?.removeEventListener('mousedown', forceTextSelection, true); document.removeEventListener('mousedown', openTerminalContextMenu, true); document.removeEventListener('mousedown', closeTerminalContextMenu, true); document.removeEventListener('mouseup', suppressTerminalRightMouseUp, true); document.removeEventListener('contextmenu', suppressBrowserContextMenu, true); document.removeEventListener('keydown', dismissTerminalContextMenu, true); input.dispose(); socket?.close(1000); terminal.dispose(); };
   }, [bindingId, terminalInstanceId, terminalUrl, workDirectoryId, workingDirectory, workspaceId]);
 
   const closeMenu = () => setContextMenu(undefined);
   const runTmux = (command: string) => { sendTerminalInput.current(command); closeMenu(); };
+  const killCurrentPane = () => { closeMenu(); closeTerminalPane.current(); };
   const copy = (value: string) => {
     closeMenu();
     if (value) void navigator.clipboard.writeText(value).catch(() => undefined);
   };
   const selectedText = contextMenu?.text || '选中内容';
-  return <section className="agent-workspace-terminal"><header><span className={`terminal-dot ${state}`}/><span>{detail}</span></header><div ref={host} aria-label="Agent 工作区终端"/>{contextMenu && createPortal(<div className="agent-terminal-context-menu" role="menu" aria-label="终端操作菜单" style={{ left: contextMenu.x, top: contextMenu.y }} onMouseDown={event => event.stopPropagation()} onContextMenu={event => event.preventDefault()}><button type="button" role="menuitem" disabled={!contextMenu.text} onClick={() => copy(contextMenu.text)}><span>复制 “{selectedText}”</span><kbd>⌘/Ctrl C</kbd></button><button type="button" role="menuitem" disabled={!contextMenu.line} onClick={() => copy(contextMenu.line)}><span>复制当前行</span><kbd>⌘/Ctrl C</kbd></button><button type="button" role="menuitem" disabled={!contextMenu.text} onClick={() => runTmux(contextMenu.text)}><span>输入 “{selectedText}”</span><kbd>文本</kbd></button><hr/><button type="button" role="menuitem" onClick={() => runTmux('\u0002%')}><span>左右分屏</span><kbd>Ctrl B  %</kbd></button><button type="button" role="menuitem" onClick={() => runTmux('\u0002"')}><span>上下分屏</span><kbd>Ctrl B  "</kbd></button><button type="button" role="menuitem" onClick={() => runTmux('\u0002m')}><span>标记窗格</span><kbd>Ctrl B  M</kbd></button><button type="button" role="menuitem" className="danger" onClick={() => runTmux('\u0002:kill-pane\r')}><span>关闭当前窗格</span><kbd>Ctrl B  :kill-pane ↵</kbd></button></div>, document.body)}</section>;
+  return <section className="agent-workspace-terminal"><header><span className={`terminal-dot ${state}`}/><span>{detail}</span></header><div ref={host} aria-label="Agent 工作区终端"/>{contextMenu && createPortal(<div className="agent-terminal-context-menu" role="menu" aria-label="终端操作菜单" style={{ left: contextMenu.x, top: contextMenu.y }} onMouseDown={event => event.stopPropagation()} onContextMenu={event => event.preventDefault()}><button type="button" role="menuitem" disabled={!contextMenu.text} onClick={() => copy(contextMenu.text)}>复制 “{selectedText}”</button><button type="button" role="menuitem" disabled={!contextMenu.line} onClick={() => copy(contextMenu.line)}>复制当前行</button><button type="button" role="menuitem" disabled={!contextMenu.text} onClick={() => runTmux(contextMenu.text)}>输入 “{selectedText}”</button><hr/><button type="button" role="menuitem" onClick={() => runTmux('\u0002%')}>左右分屏</button><button type="button" role="menuitem" onClick={() => runTmux('\u0002"')}>上下分屏</button><button type="button" role="menuitem" onClick={() => runTmux('\u0002m')}>标记窗格</button><button type="button" role="menuitem" className="danger" onClick={killCurrentPane}>关闭当前窗格</button></div>, document.body)}</section>;
 }
 
 function isTextPreviewable(path: string, mimeType = ''): boolean {

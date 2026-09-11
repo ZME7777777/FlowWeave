@@ -99,3 +99,23 @@ def test_persistent_terminal_scan_is_scoped_and_excludes_attached_sessions(monke
     )
     assert "label=flowweave.manager-scope=scope-a" in commands[0]
     assert "label=flowweave.kind=agent-runtime" in commands[0]
+
+
+def test_kill_terminal_pane_targets_only_the_validated_session(monkeypatch) -> None:
+    commands: list[list[str]] = []
+
+    def run(command: list[str], *, timeout: int) -> str:
+        commands.append(command)
+        return ""
+
+    monkeypatch.setattr(docker, "require_backend", lambda: None)
+    monkeypatch.setattr(docker, "get_settings", lambda: SimpleNamespace(docker_binary="docker"))
+    monkeypatch.setattr(docker, "_run", run)
+
+    docker.kill_terminal_pane("runtime-container", "FW-Agent.Valid_01")
+
+    assert commands == [[
+        "docker", "exec", "runtime-container", "bash", "-c",
+        'tmux has-session -t "$1" 2>/dev/null && tmux kill-pane -t "$1" || true',
+        "--", "fw-agent.valid_01",
+    ]]

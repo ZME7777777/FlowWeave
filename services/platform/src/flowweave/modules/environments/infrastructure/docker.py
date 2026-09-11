@@ -576,6 +576,32 @@ def destroy_terminal_session(container_id: str, session_name: str) -> None:
     )
 
 
+def kill_terminal_pane(container_id: str, session_name: str) -> None:
+    """Close the active pane in one exact persistent tmux session."""
+
+    require_backend()
+    safe_session = _SAFE_NAME.sub("-", session_name.lower()).strip("-.")[:64]
+    if not safe_session:
+        raise DomainError(
+            "ENVIRONMENT_TERMINAL_SESSION_INVALID",
+            "The terminal session name is invalid",
+            422,
+        )
+    _run(
+        [
+            get_settings().docker_binary,
+            "exec",
+            container_id,
+            "bash",
+            "-c",
+            'tmux has-session -t "$1" 2>/dev/null && tmux kill-pane -t "$1" || true',
+            "--",
+            safe_session,
+        ],
+        timeout=15,
+    )
+
+
 def reap_managed_terminal_sessions(
     *,
     idle_seconds: int,
@@ -876,6 +902,60 @@ def destroy_managed_terminal_session(
             409,
         )
     destroy_terminal_session(immutable_id, session_name)
+
+
+def kill_managed_terminal_pane(
+    resource_name: str,
+    *,
+    resource_id: str,
+    session_name: str,
+) -> None:
+    """Close the active pane of one owned Agent Runtime terminal session."""
+
+    settings = get_settings()
+    require_backend()
+    if controller_is_remote(settings):
+        try:
+            DockerControllerClient(settings).kill_terminal_pane(
+                resource_name=resource_name,
+                resource_id=resource_id,
+                session_name=session_name,
+            )
+        except DockerControllerError as exc:
+            raise DomainError(
+                "AGENT_TERMINAL_BACKEND_UNAVAILABLE",
+                "The Agent Runtime terminal pane could not be closed",
+                503,
+            ) from exc
+        return
+    try:
+        immutable_id = inspect_owned_container(
+            settings.docker_binary,
+            resource_name,
+            resource_id,
+            expected_manager_scope=settings.sandbox_manager_scope,
+            expected_kind="agent-runtime",
+            timeout=30,
+        )
+    except DockerOwnershipError as exc:
+        raise DomainError(
+            "AGENT_TERMINAL_OWNERSHIP_MISMATCH",
+            "The Agent Runtime container is owned by another resource",
+            409,
+        ) from exc
+    except DockerControlError as exc:
+        raise DomainError(
+            "AGENT_TERMINAL_BACKEND_UNAVAILABLE",
+            "The Agent Runtime container could not be verified",
+            503,
+        ) from exc
+    if immutable_id is None:
+        raise DomainError(
+            "AGENT_TERMINAL_UNAVAILABLE",
+            "The Agent Runtime container no longer exists",
+            409,
+        )
+    kill_terminal_pane(immutable_id, session_name)
 
 
 def container_diff(container_id: str) -> list[str]:

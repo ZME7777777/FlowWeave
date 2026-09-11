@@ -1461,6 +1461,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "/v1/terminals/resize": frozenset({"api"}),
                 "/v1/terminals/close": frozenset({"api"}),
                 "/v1/terminals/destroy-session": frozenset({"api"}),
+                "/v1/terminals/kill-pane": frozenset({"api"}),
             }
             if request.url.path not in {
                 "/health",
@@ -1967,6 +1968,43 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         await asyncio.to_thread(destroy)
         return {"destroyed": True}
+
+    @app.post("/v1/terminals/kill-pane")
+    async def terminal_kill_pane(payload: TerminalSessionWrite) -> dict[str, bool]:
+        check_scope(payload.manager_scope)
+
+        def kill_pane() -> None:
+            try:
+                container_id = inspect_owned_container(
+                    configured.docker_binary,
+                    payload.resource_name,
+                    str(payload.resource_id),
+                    expected_manager_scope=configured.sandbox_manager_scope,
+                    expected_kind="agent-runtime",
+                    timeout=30,
+                )
+            except DockerOwnershipError as exc:
+                raise DomainError(
+                    "AGENT_TERMINAL_OWNERSHIP_MISMATCH",
+                    "The Agent Runtime container is owned by another resource",
+                    409,
+                ) from exc
+            except DockerControlError as exc:
+                raise DomainError(
+                    "AGENT_TERMINAL_BACKEND_UNAVAILABLE",
+                    "The Agent Runtime container could not be verified",
+                    503,
+                ) from exc
+            if container_id is None:
+                raise DomainError(
+                    "AGENT_TERMINAL_UNAVAILABLE",
+                    "The Agent Runtime container no longer exists",
+                    409,
+                )
+            environments_docker.kill_terminal_pane(container_id, payload.session_name)
+
+        await asyncio.to_thread(kill_pane)
+        return {"closed": True}
 
     # FastAPI retains these callables through the registered routes/handlers.
     # Explicitly access them so strict static analysis recognizes that use.

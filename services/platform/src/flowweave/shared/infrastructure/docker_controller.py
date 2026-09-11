@@ -306,6 +306,23 @@ class DockerControllerClient:
             timeout=30,
         )
 
+    def kill_terminal_pane(
+        self,
+        *,
+        resource_name: str,
+        resource_id: str,
+        session_name: str,
+    ) -> None:
+        self._request(
+            "/v1/terminals/kill-pane",
+            {
+                "resource_name": resource_name,
+                "resource_id": resource_id,
+                "session_name": session_name,
+            },
+            timeout=30,
+        )
+
     async def stream_runtime_events(
         self,
         *,
