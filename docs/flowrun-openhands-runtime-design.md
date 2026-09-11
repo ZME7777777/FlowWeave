@@ -146,6 +146,12 @@ FlowWeave 不再用私有请求字段或构建时源码补丁禁用它。
 worktree 临时目录放在可丢弃层；若启用 OpenHands worktree，必须先另行把其持久化和清理契约纳入
 Runtime Provider，默认保持关闭。
 
+固定 OpenHands `1.47.0` 中，`OH_PERSISTENCE_DIR` 完整替代 `~/.openhands` 根目录；Profile、Provider
+Connection、OAuth credential、用户 Memory、Skill cache、SOUL 和其他 SDK 辅助状态均从其子目录读取。
+Runtime 只挂载 `state/persistence → /runtime/state/persistence`，绝不再为
+`$HOME/.openhands/profiles` 建立第二个 bind mount 或控制面预创建目录。Environment HOME volume 仅保存
+与 OpenHands 用户状态无关的环境凭据／工具配置，不能成为这些状态的恢复事实源。
+
 每个 Runtime Session 使用稳定的 `OH_SECRET_KEY` Secret Reference。该 Secret 不进入镜像、Manifest、
 普通数据库列、日志或前端；replacement generation 取回同一版本的 Secret，保证 OpenHands 已加密状态
 可恢复。连接 API key 可轮换，但不得替代持久 secret key。所有挂载在容器启动前进行 owner、普通目录、

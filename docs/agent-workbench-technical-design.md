@@ -212,6 +212,10 @@ OH_PERSISTENCE_DIR=/runtime/state/persistence
 OH_SECRET_KEY=<调用边界注入的稳定 Secret>
 ~~~
 
+固定 OpenHands `1.47.0` 将 `OH_PERSISTENCE_DIR` 视为完整的用户状态根：Profile、Provider
+Connection、OAuth credential、用户 Memory、Skill cache 和 SOUL 均位于该挂载的子目录。不得向
+`/home/flowweave/.openhands/profiles` 追加兼容 bind mount 或预创建 child store；该路径不是恢复事实源。
+
 `/runtime/workspace/project` 是面向用户和 Agent 的逻辑项目根目录，而不是要求把所有文件平铺在该
 目录。Agent 可以按需求或功能创建任意子目录；所有需要保留的代码、配置、文档和用户产物必须在该根目录
 或其子目录内。平台不向用户暴露宿主机路径、Docker mount 或容器生命周期细节。Agent 工作台终端的初始

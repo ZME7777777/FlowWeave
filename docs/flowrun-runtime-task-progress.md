@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`ACTIVE`
 > 当前执行切片：无
-> 下一可执行切片：`FR-309 OpenHands 持久化目录统一与恢复收敛`
+> 下一可执行切片：`FR-310 Runtime 子进程密钥隔离与多层日志脱敏`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -3961,7 +3961,7 @@ Runtime contract pytest、Ruff、Pyright、`py_compile`、Alembic head、任务�
 source lock、依赖 lock、Runtime 构建 provenance／contract probe、动态 Environment build 输入、
 受治理 Capability 元数据与相关 fixture 已同步；历史已发布事实未改写。
 
-### FR-309 OpenHands 持久化目录统一与恢复收敛 — READY
+### FR-309 OpenHands 持久化目录统一与恢复收敛 — DONE
 
 依赖：FR-308。
 
@@ -3970,7 +3970,13 @@ source lock、依赖 lock、Runtime 构建 provenance／contract probe、动态 
 必须只经外置、受权限/租户边界校验的 `state/persistence` 恢复；验证 generation replacement、fork
 与原 Conversation ID reload 后不产生双事实源。
 
-### FR-310 Runtime 子进程密钥隔离与多层日志脱敏 — PENDING
+完成：移除旧 SDK 兼容所需的 `$HOME/.openhands/profiles` bind mount 与控制面 child-store
+预创建；Runtime 只验证并挂载 `state/persistence`，由 OpenHands 正式 `OH_PERSISTENCE_DIR` 路径
+按需创建 Profile、Provider Connection 及其他辅助状态子目录。静态命令契约和无 Docker 的 SDK 探针
+均确认默认 `LLMProfileStore` 的 Profile／Provider Connection 路径都位于该唯一根目录；既有
+allocation 不删除历史子目录，仍可由正式 loader 读取。
+
+### FR-310 Runtime 子进程密钥隔离与多层日志脱敏 — READY
 
 依赖：FR-309。
 
@@ -4075,6 +4081,7 @@ fallback 矩阵；发布前确认原 ID reload、generation fencing、FlowWeave 
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-11 | FR-309 | 固定 `30cf5832e` 源码确认 `OH_PERSISTENCE_DIR` 全根契约；无 Docker 的 1.47 SDK `LLMProfileStore` 路径探针；`test_runtime_contract.py` 与新增 `test_runtime_persistence.py`（8 passed）；受影响 Ruff format/check、`py_compile`、Alembic head、`uv lock --check`、`git diff --check` 与任务状态唯一性 | PASS（静态／定向）：Runtime 命令仅挂载 `state/persistence → /runtime/state/persistence`，不再挂载 HOME `.openhands` child；默认 Profile 与 Provider Connection 都落到该唯一 root。唯一 Alembic head 为 `0110_candidate_output_set_owner`，无 CURRENT，FR-310 为唯一 READY。Docker daemon 不可用，故镜像内 `contract_check.py`、真实 smoke／generation replacement 和依赖 Testcontainers 的既有 sandbox pytest 都未执行且未记为通过。 |
 | 2026-09-11 | FR-308 | 固定 commit/describe；codeload archive SHA-256、四包版本、`uv lock --check`、source fetch/provenance 与 fork condenser overlay；`test_runtime_contract.py`；受影响 `py_compile`／Ruff；Alembic head；任务状态唯一性与 `git diff --check` | PASS（无 Docker lane）：上游精确点为 `v1.47.0-4-g30cf5832e`，source/provenance 与四包 `1.47.0` 一致，overlay 成功应用；契约测试 7 passed。唯一 Alembic head 为 `0110_candidate_output_set_owner`，FR-309 为下一 READY、无 CURRENT。Docker daemon 不可用，故 linux/amd64 Runtime image build、镜像内 `contract_check.py` 与 Testcontainers 相关 architecture/Environment/Hook/Plugin pytest（126 个 setup error）均未执行且未记为通过；定向 Pyright 亦因当前解析环境无法解析已安装的 SQLAlchemy 等依赖而产生既有大量 unknown/import diagnostics，未据此归因于本升级。 |
 | 2026-09-11 | FR-307 | Web TypeScript typecheck、ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS：工作区标签位于发送框下方，不再占用会话阅读区域；相对路径复制、成功反馈与普通箭头光标保持不变；无 `CURRENT`。production build 仅报告既有大 chunk 提示。 |
 | 2026-09-11 | FR-306 | Web TypeScript typecheck、ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS：工作区标签仍可点击复制相对路径，悬停不再显示带绿色加号的复制光标；无 `CURRENT`。production build 仅报告既有大 chunk 提示。 |

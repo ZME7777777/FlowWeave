@@ -992,8 +992,7 @@ chmod 0700 "$target"
             record_id = str((resource.spec_json or {}).get("project_record_id") or "")
             agent_user_id = str((resource.spec_json or {}).get("agent_user_id") or "")
             workspace_path = (
-                "/runtime/workspace/project/users/"
-                + agent_user_id
+                "/runtime/workspace/project/users/" + agent_user_id
                 if resource.owner_type == "AGENT_WORKSPACE"
                 else (
                     f"/runtime/workspace/{record_id}"
@@ -1285,9 +1284,7 @@ chmod 0700 "$target"
             and relative == PurePosixPath(".agent-workspaces/platform-default")
         )
         record_id_valid = re.fullmatch(r"[0-9a-f-]{36}", project_record_id) is not None
-        direct_record_valid = record_id_valid and (
-            is_flow_run and project_record_id == flow_run_id
-        )
+        direct_record_valid = record_id_valid and (is_flow_run and project_record_id == flow_run_id)
         legacy_record = not project_record_id and not any(
             (project_flow_run_id, project_allocation_id, project_relative_raw)
         )
@@ -1326,7 +1323,6 @@ chmod 0700 "$target"
             "state/conversations": 0o700,
             "state/bash-events": 0o700,
             "state/persistence": 0o700,
-            "state/persistence/profiles": 0o700,
             # The control-plane root stays owner-writable so immutable digest
             # bundles can be published after a FlowRun Runtime starts. Runtime
             # access is read-only at the bind-mount boundary.
@@ -1362,9 +1358,7 @@ chmod 0700 "$target"
             if is_agent_workspace:
                 user_workspace = str(spec.get("agent_user_id") or "")
                 user_workspace_path = (
-                    validation_allocation_root
-                    / "workspace/project/users"
-                    / user_workspace
+                    validation_allocation_root / "workspace/project/users" / user_workspace
                 )
                 user_workspace_metadata = user_workspace_path.lstat()
                 if (
@@ -1445,15 +1439,6 @@ chmod 0700 "$target"
             (
                 f"type=bind,src={allocation_root / 'state/persistence'},"
                 "dst=/runtime/state/persistence"
-            ),
-            # OpenHands' Profile API honors OH_PERSISTENCE_DIR while SDK
-            # conversations resolve auxiliary profiles from
-            # $HOME/.openhands/profiles. Map only that child store: mounting
-            # the whole .openhands directory would hide credentials prepared
-            # in the Environment HOME volume.
-            (
-                f"type=bind,src={allocation_root / 'state/persistence/profiles'},"
-                "dst=/home/flowweave/.openhands/profiles"
             ),
             (
                 f"type=bind,src={allocation_root / 'capabilities'},"
@@ -1610,11 +1595,15 @@ chmod 0700 "$target"
 
         if controller_is_remote(self.settings):
             try:
-                raw = DockerControllerClient(self.settings).post(
-                    "/v1/sandboxes/usage",
-                    {"resource_name": resource_name, "resource_id": expected_resource_id},
-                    timeout=30,
-                ).get("usage")
+                raw = (
+                    DockerControllerClient(self.settings)
+                    .post(
+                        "/v1/sandboxes/usage",
+                        {"resource_name": resource_name, "resource_id": expected_resource_id},
+                        timeout=30,
+                    )
+                    .get("usage")
+                )
             except DockerControllerError as exc:
                 raise DomainError(
                     "SANDBOX_BACKEND_UNAVAILABLE",

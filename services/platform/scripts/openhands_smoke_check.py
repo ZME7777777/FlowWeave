@@ -19,7 +19,7 @@ from uuid import uuid4
 IMAGE = "flowweave-openhands-runtime:1"
 SESSION_KEY = "flowweave-smoke-key"
 SECRET_KEY = "flowweave-smoke-persistent-secret"
-EXPECTED_VERSION = "1.44.0"
+EXPECTED_VERSION = "1.47.0"
 REPOSITORY = Path(__file__).resolve().parents[3]
 FAKE_MODEL = REPOSITORY / "services/platform/scripts/openhands_fake_llm.py"
 
@@ -322,7 +322,7 @@ def _native_task_smoke(base_url: str, fake_model_url: str, suffix: str) -> str:
     task_metrics_key = f"task:{detail['task_id']}"
     assert task_metrics_key in usage_to_metrics, usage_to_metrics
     # The server publishes the child aggregate inside the parent Conversation;
-    # There is no separate child Task stats endpoint in the pinned 1.44.0 API.
+    # There is no separate child Task stats endpoint in the pinned 1.47.0 API.
     task_metrics = usage_to_metrics[task_metrics_key]
     assert isinstance(task_metrics, dict), task_metrics
     token_usage = task_metrics.get("accumulated_token_usage")
@@ -460,11 +460,6 @@ def _start_server(server: str, network: str, state_root: Path) -> str:
         f"type=bind,src={state_root / 'persistence'},dst=/runtime/state/persistence",
         "--mount",
         f"type=bind,src={state_root / 'home'},dst=/home/flowweave",
-        "--mount",
-        (
-            f"type=bind,src={state_root / 'persistence/profiles'},"
-            "dst=/home/flowweave/.openhands/profiles"
-        ),
         IMAGE,
     )
     port_line = _run("docker", "port", server, "8000/tcp", capture=True).splitlines()[0]
@@ -505,6 +500,30 @@ def _catalog_ids(base_url: str) -> set[str]:
     return {str(item["id"]) for item in items if isinstance(item, dict) and item.get("id")}
 
 
+def _assert_user_persistence_root(server: str, state_root: Path) -> None:
+    locations = _run(
+        "docker",
+        "exec",
+        server,
+        "/runtime/.venv/bin/python",
+        "-c",
+        (
+            "from openhands.sdk.llm.llm_profile_store import LLMProfileStore; "
+            "from openhands.sdk.utils.path import get_user_persistence_dir; "
+            "store=LLMProfileStore(); print(get_user_persistence_dir()); "
+            "print(store.base_dir); print(store._provider_store.base_dir)"
+        ),
+        capture=True,
+    ).splitlines()
+    assert locations == [
+        "/runtime/state/persistence",
+        "/runtime/state/persistence/profiles",
+        "/runtime/state/persistence/provider-connections",
+    ], locations
+    assert (state_root / "persistence" / "profiles").is_dir()
+    assert not (state_root / "home" / ".openhands").exists()
+
+
 def main() -> None:
     suffix = uuid4().hex[:10]
     network = f"flowweave-oh-smoke-{suffix}"
@@ -514,8 +533,6 @@ def main() -> None:
         state_root = Path(state_dir)
         for name in ("workspace", "conversations", "bash-events", "persistence", "home"):
             (state_root / name).mkdir()
-        (state_root / "persistence/profiles").mkdir()
-        (state_root / "home/.openhands").mkdir()
         try:
             _run("docker", "network", "create", network)
             _run(
@@ -548,11 +565,13 @@ def main() -> None:
                 capture=True,
             )
             assert versions.split(",") == [EXPECTED_VERSION] * 4, versions
+            _assert_user_persistence_root(server, state_root)
             fake_model_url = f"http://{fake}:18080/v1"
             confirmation_id = _confirmation_smoke(base_url, fake_model_url, suffix)
             condenser_id = _condenser_smoke(base_url, fake_model_url, suffix)
             native_task_id = _native_task_smoke(base_url, fake_model_url, suffix)
             oracle_id = _oracle_smoke(base_url, fake_model_url, suffix)
+            _assert_user_persistence_root(server, state_root)
             conversation_ids = (confirmation_id, condenser_id, native_task_id, oracle_id)
             original_event_ids = {item: _event_ids(base_url, item) for item in conversation_ids}
             _assert_persisted_conversations(state_root, conversation_ids)
@@ -566,6 +585,7 @@ def main() -> None:
             assert code in {200, 204}, (code, response)
             _run("docker", "rm", "-f", server)
             base_url = _start_server(server, network, state_root)
+            _assert_user_persistence_root(server, state_root)
             assert set(conversation_ids) <= _catalog_ids(base_url)
             reloaded_event_ids = {item: _event_ids(base_url, item) for item in conversation_ids}
             assert reloaded_event_ids == original_event_ids, (

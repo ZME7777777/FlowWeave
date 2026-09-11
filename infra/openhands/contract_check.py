@@ -25,6 +25,7 @@ from pydantic import SecretStr
 
 os.environ.setdefault("OPENHANDS_SUPPRESS_BANNER", "1")
 os.environ.setdefault("OH_SECRET_KEY", "flowweave-contract-check-secret-000000000000")
+os.environ.setdefault("OH_PERSISTENCE_DIR", "/runtime/state/persistence")
 
 from openhands.agent_server.api import create_app
 from openhands.agent_server.mcp_router import (
@@ -110,6 +111,7 @@ from openhands.sdk.tool.builtins.invoke_skill import (
 from openhands.sdk.tool.registry import list_usable_tools, resolve_tool
 from openhands.sdk.tool.spec import Tool
 from openhands.sdk.tool.tool import DeclaredResources, ToolExecutor
+from openhands.sdk.utils.path import get_user_persistence_dir
 from openhands.tools.file_editor.editor import FileEditor
 from openhands.tools.file_editor.exceptions import FileValidationError
 from openhands.tools.preset.default import AgentDefinition
@@ -214,6 +216,14 @@ async def _assert_targeted_streaming_delta_delivery() -> None:
 
 
 def _assert_profile_provider_secret_and_condenser_behavior() -> None:
+    persistence_dir = Path("/runtime/state/persistence")
+    assert get_user_persistence_dir() == persistence_dir
+    default_profile_store = LLMProfileStore()
+    assert default_profile_store.base_dir == persistence_dir / "profiles"
+    assert default_profile_store._provider_store is not None  # noqa: SLF001
+    assert default_profile_store._provider_store.base_dir == (  # noqa: SLF001
+        persistence_dir / "provider-connections"
+    )
     migrated = validate_agent_profile(
         {
             "schema_version": 1,

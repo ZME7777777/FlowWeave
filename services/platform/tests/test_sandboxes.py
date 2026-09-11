@@ -735,9 +735,7 @@ def test_shared_maven_root_is_verified_and_read_only_for_setup_and_runtime(
     (maven_root / "conf/settings.xml").write_text(
         "<settings><localRepository>shared</localRepository></settings>", encoding="utf-8"
     )
-    provider = DockerSandboxProvider(
-        _docker_settings(settings, maven_shared_host_root=maven_root)
-    )
+    provider = DockerSandboxProvider(_docker_settings(settings, maven_shared_host_root=maven_root))
     monkeypatch.setattr(
         provider,
         "_runtime_workspace_mount",
@@ -763,9 +761,7 @@ def test_shared_maven_root_rejects_symlinked_settings(settings, tmp_path):
     external = tmp_path / "settings.xml"
     external.write_text("<settings/>", encoding="utf-8")
     (maven_root / "conf/settings.xml").symlink_to(external)
-    provider = DockerSandboxProvider(
-        _docker_settings(settings, maven_shared_host_root=maven_root)
-    )
+    provider = DockerSandboxProvider(_docker_settings(settings, maven_shared_host_root=maven_root))
 
     with pytest.raises(DomainError, match="shared Maven root"):
         provider._shared_maven_mount()
@@ -1180,13 +1176,13 @@ def _runtime_allocation_tree(root: Path, allocation_id: str) -> None:
         "workspace/nodes",
         "state/conversations",
         "state/bash-events",
-        "state/persistence/profiles",
+        "state/persistence",
         "capabilities",
     ):
         path = root / relative
         path.mkdir(mode=0o700, parents=True, exist_ok=True)
         path.chmod(0o700)
-    for relative in ("workspace", "state", "state/persistence"):
+    for relative in ("workspace", "state"):
         (root / relative).chmod(0o700)
 
 
@@ -1237,6 +1233,10 @@ def test_attempt_runtime_mounts_record_project_and_keeps_attempt_state(settings,
     assert (
         f"type=bind,src={attempt_root / 'state/conversations'},dst=/runtime/state/conversations"
     ) in specifications
+    assert (
+        f"type=bind,src={attempt_root / 'state/persistence'},dst=/runtime/state/persistence"
+    ) in specifications
+    assert not any("/home/flowweave/.openhands" in mount for mount in specifications)
     assert (
         f"type=bind,src={attempt_root / 'capabilities'},dst=/runtime/capabilities,readonly"
     ) in specifications
@@ -1817,9 +1817,7 @@ def test_explicit_flow_run_delete_cleans_up_node_attempt_runtime(
     assert deleted == [resource_id]
 
 
-def test_flow_run_delete_clears_orphaned_generation_reference(
-    settings, db_session_factory
-):
+def test_flow_run_delete_clears_orphaned_generation_reference(settings, db_session_factory):
     configured = _docker_settings(settings)
     flow_run_id = "11111111-1111-4111-8111-111111111111"
     with db_session_factory() as db:
