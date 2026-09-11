@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`ACTIVE`
 > 当前执行切片：无
-> 下一可执行切片：`FR-311 事件持久顺序、正式 sequence 与恢复对账`
+> 下一可执行切片：`FR-312 StreamContext 生命周期与流式会话状态收敛`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -3992,7 +3992,7 @@ allocation 不删除历史子目录，仍可由正式 loader 读取。
 这些值不进入浏览器安全投影、Provider 日志或审计载荷；实际 Runtime 仍只在 Agent Server 启动边界
 接收所需密钥。
 
-### FR-311 事件持久顺序、正式 sequence 与恢复对账 — READY
+### FR-311 事件持久顺序、正式 sequence 与恢复对账 — DONE
 
 依赖：FR-310。
 
@@ -4000,7 +4000,17 @@ allocation 不删除历史子目录，仍可由正式 loader 读取。
 inclusive anchor 的兼容读法，且不将平台 cursor 重新变为 Conversation 事实。验证断连、重放、
 replacement 和 FinishAction 对账不会遗漏、重复或跨分支投影事件。
 
-### FR-312 StreamContext 生命周期与流式会话状态收敛 — PENDING
+完成：固定 `1.47.0` 的 `EventLog.append()` 现在由 Runtime 合同探针锁定为“成功落盘后返回
+正式整数 index”；`/sockets/session/{conversation_id}` 已被列为上游可用端点，但本切片不提前让
+浏览器改连该 Socket（授权 Relay 适配仍属于 FR-313）。FlowWeave 的活动会话恢复不再把
+`events/search?page_id=<event-id>` 的时间序兼容页当作当前分支事实：它从 OpenHands 正式
+`leaf_event_id` 沿 `parent_id` 回溯到仅存在于内存请求中的 event-id anchor，跨页继续读取，
+仅投影该 HEAD 支的 descendants。找不到 anchor、循环、重复 identity 或缺失页面 anchor 会
+fail closed；已发生 native navigate/fork/replacement 的 detached FinishAction 不会跨支完成当前
+Attempt。普通历史读仍保留上游 inclusive `page_id` 兼容裁剪；平台不新增 sequence、cursor、
+EventLog 或 Conversation 持久化事实。
+
+### FR-312 StreamContext 生命周期与流式会话状态收敛 — READY
 
 依赖：FR-311。
 
@@ -4088,6 +4098,7 @@ fallback 矩阵；发布前确认原 ID reload、generation fencing、FlowWeave 
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-12 | FR-311 | 固定 `30cf5832e` 的 `EventLog.append`、Event Service 及 session socket 源码取证；新增 EventLog durable-sequence 合同探针、活动 HEAD cursor 对账的 detached-branch、跨页和 missing-anchor pytest；`test_openhands.py`（114 passed）、Ruff format/check、`py_compile`、Alembic head、`uv lock --check`、`git diff --check` 与任务状态唯一性 | PASS（静态／定向）：正式 event id/parent id 仍是唯一 Conversation 身份；FlowWeave 只在请求内用锚点投影当前 OpenHands HEAD 的 descendants，孤立/过期 FinishAction 不能跨支对账。上游 EventLog 的正式 index 只为 durable replay 契约，不被平台持久化；`/sockets/session` 留待 FR-313 的授权 Relay。唯一 Alembic head 为 `0110_candidate_output_set_owner`，无 CURRENT，FR-312 为唯一 READY。Docker daemon 不可用，镜像内 `contract_check.py`、真实断连／session-socket replay、replacement 与 Testcontainers 集成验证未执行且未记为通过。 |
 | 2026-09-11 | FR-310 | 固定 `30cf5832e` 的 `sanitized_env`／SDK literal redaction 探针；新增 secret projection/log filter pytest；完整无 Docker OpenHands adapter、Runtime contract/persistence 定向 pytest（123 passed）；Ruff format/check、`py_compile`、Alembic head、`uv lock --check`、直接架构源码 smoke、`git diff --check` 与任务状态唯一性 | PASS（静态／定向）：子进程环境只保留普通变量与 `AI_AGENT`，不会取得 Runtime 持久化或会话密钥；模型文本、Tool Observation、嵌套环境、`sk-oh-*` 与 Provider 日志均经第二层脱敏。唯一 Alembic head 为 `0110_candidate_output_set_owner`，无 CURRENT，FR-311 为唯一 READY。Docker daemon 不可用，镜像内 `contract_check.py`、真实 Agent 子进程／tmux 日志、Relay/Provider 运行态及 Testcontainers 架构 pytest 未执行且未记为通过。 |
 | 2026-09-11 | FR-309 | 固定 `30cf5832e` 源码确认 `OH_PERSISTENCE_DIR` 全根契约；无 Docker 的 1.47 SDK `LLMProfileStore` 路径探针；`test_runtime_contract.py` 与新增 `test_runtime_persistence.py`（8 passed）；受影响 Ruff format/check、`py_compile`、Alembic head、`uv lock --check`、`git diff --check` 与任务状态唯一性 | PASS（静态／定向）：Runtime 命令仅挂载 `state/persistence → /runtime/state/persistence`，不再挂载 HOME `.openhands` child；默认 Profile 与 Provider Connection 都落到该唯一 root。唯一 Alembic head 为 `0110_candidate_output_set_owner`，无 CURRENT，FR-310 为唯一 READY。Docker daemon 不可用，故镜像内 `contract_check.py`、真实 smoke／generation replacement 和依赖 Testcontainers 的既有 sandbox pytest 都未执行且未记为通过。 |
 | 2026-09-11 | FR-308 | 固定 commit/describe；codeload archive SHA-256、四包版本、`uv lock --check`、source fetch/provenance 与 fork condenser overlay；`test_runtime_contract.py`；受影响 `py_compile`／Ruff；Alembic head；任务状态唯一性与 `git diff --check` | PASS（无 Docker lane）：上游精确点为 `v1.47.0-4-g30cf5832e`，source/provenance 与四包 `1.47.0` 一致，overlay 成功应用；契约测试 7 passed。唯一 Alembic head 为 `0110_candidate_output_set_owner`，FR-309 为下一 READY、无 CURRENT。Docker daemon 不可用，故 linux/amd64 Runtime image build、镜像内 `contract_check.py` 与 Testcontainers 相关 architecture/Environment/Hook/Plugin pytest（126 个 setup error）均未执行且未记为通过；定向 Pyright 亦因当前解析环境无法解析已安装的 SQLAlchemy 等依赖而产生既有大量 unknown/import diagnostics，未据此归因于本升级。 |

@@ -1700,6 +1700,152 @@ def test_openhands_reads_a_bounded_active_window_and_explicit_older_history(
     ]
 
 
+def test_openhands_active_cursor_reconciliation_excludes_detached_branch_events(
+    openhands_settings, monkeypatch
+):
+    """A timestamp page may contain siblings, but HEAD decides the current turn."""
+
+    runtime = OpenHandsRuntime(openhands_settings)
+    responses = iter(
+        [
+            _state(leaf_event_id="active-2"),
+            {
+                "items": [
+                    {
+                        "kind": "ActionEvent",
+                        "id": "active-2",
+                        "parent_id": "active-1",
+                        "source": "agent",
+                        "action": {"kind": "ThinkAction"},
+                    },
+                    {
+                        "kind": "ActionEvent",
+                        "id": "detached-finish",
+                        "parent_id": "anchor",
+                        "source": "agent",
+                        "action": {"kind": "FinishAction", "message": "stale"},
+                    },
+                    {
+                        "kind": "MessageEvent",
+                        "id": "active-1",
+                        "parent_id": "anchor",
+                        "source": "agent",
+                        "llm_message": {"role": "assistant", "content": "current"},
+                    },
+                    {
+                        "kind": "MessageEvent",
+                        "id": "anchor",
+                        "parent_id": "__root__",
+                        "source": "user",
+                        "llm_message": {"role": "user", "content": "continue"},
+                    },
+                ]
+            },
+        ]
+    )
+    monkeypatch.setattr(runtime, "_request", lambda *_args, **_kwargs: next(responses))
+
+    batch = runtime.read_active_events(_handle("anchor"))
+
+    assert [event.cursor for event in batch.events] == ["active-1", "active-2"]
+    assert batch.cursor == "active-2"
+    assert batch.result is None
+
+
+def test_openhands_active_cursor_reconciliation_follows_native_history_pages(
+    openhands_settings, monkeypatch
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    requests: list[dict[str, object] | None] = []
+    responses = iter(
+        [
+            _state(leaf_event_id="active-2"),
+            {
+                "items": [
+                    {
+                        "kind": "ActionEvent",
+                        "id": "active-2",
+                        "parent_id": "active-1",
+                        "source": "agent",
+                        "action": {"kind": "ThinkAction"},
+                    },
+                    {
+                        "kind": "MessageEvent",
+                        "id": "active-1",
+                        "parent_id": "older-1",
+                        "source": "agent",
+                        "llm_message": {"role": "assistant", "content": "current"},
+                    },
+                ],
+                "next_page_id": "anchor",
+            },
+            {
+                "items": [
+                    {
+                        "kind": "MessageEvent",
+                        "id": "older-1",
+                        "parent_id": "anchor",
+                        "source": "agent",
+                        "llm_message": {"role": "assistant", "content": "older"},
+                    },
+                    {
+                        "kind": "MessageEvent",
+                        "id": "anchor",
+                        "parent_id": "__root__",
+                        "source": "user",
+                        "llm_message": {"role": "user", "content": "continue"},
+                    },
+                ],
+                "next_page_id": None,
+            },
+        ]
+    )
+
+    def fake_request(_method: str, _path: str, **kwargs: object) -> dict[str, object]:
+        requests.append(kwargs.get("params") if isinstance(kwargs.get("params"), dict) else None)
+        return next(responses)
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+
+    batch = runtime.read_active_events(_handle("anchor"))
+
+    assert [event.cursor for event in batch.events] == ["older-1", "active-1", "active-2"]
+    assert batch.cursor == "active-2"
+    assert requests == [
+        None,
+        {"limit": 100, "sort_order": "TIMESTAMP_DESC", "page_id": "active-2"},
+        {"limit": 100, "sort_order": "TIMESTAMP_DESC", "page_id": "anchor"},
+    ]
+
+
+def test_openhands_active_cursor_reconciliation_rejects_detached_anchor(
+    openhands_settings, monkeypatch
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    responses = iter(
+        [
+            _state(leaf_event_id="active"),
+            {
+                "items": [
+                    {
+                        "kind": "MessageEvent",
+                        "id": "active",
+                        "parent_id": "__root__",
+                        "source": "agent",
+                        "llm_message": {"role": "assistant", "content": "new branch"},
+                    }
+                ]
+            },
+        ]
+    )
+    monkeypatch.setattr(runtime, "_request", lambda *_args, **_kwargs: next(responses))
+
+    with pytest.raises(DomainError) as caught:
+        runtime.read_active_events(_handle("old-anchor"))
+
+    assert caught.value.code == "RUNTIME_EVENT_IDENTITY_MISMATCH"
+
+
 def test_openhands_does_not_replay_cursor_finish_as_next_turn_result(
     openhands_settings, monkeypatch
 ):

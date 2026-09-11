@@ -2135,6 +2135,123 @@ class OpenHandsRuntime:
         # continuation token for a user-triggered older-history read.
         return list(reversed(chain)), current_event_id
 
+    def _active_events_after_cursor(
+        self,
+        conversation_id: str,
+        leaf_event_id: str,
+        cursor: str,
+        *,
+        base_url: str,
+        session_api_key: str,
+    ) -> list[dict[str, Any]]:
+        """Return only the current native HEAD descendants of ``cursor``.
+
+        ``events/search`` is a chronological EventLog view, not a branch
+        iterator.  A timestamp-forward request anchored at the last projected
+        event can therefore include a newer event from a detached branch after
+        a native navigate or fork/recovery.  Walk backwards from the formal
+        HEAD instead.  Pagination remains an OpenHands read concern: FlowWeave
+        retains no sequence or event-log cursor and uses only official event
+        identities for the transient reconciliation.
+        """
+
+        anchor = self._formal_identity(cursor, field="cursor", required=True)
+        assert anchor is not None
+        page_id = leaf_event_id
+        pages_seen: set[str] = set()
+        by_id: dict[str, dict[str, Any]] = {}
+
+        while True:
+            if page_id in pages_seen:
+                raise DomainError(
+                    "RUNTIME_EVENT_IDENTITY_INVALID",
+                    "OpenHands returned a cyclic event-history continuation",
+                    502,
+                    {"conversation_id": conversation_id, "event_id": page_id},
+                )
+            pages_seen.add(page_id)
+            data = self._request(
+                "GET",
+                f"/api/conversations/{conversation_id}/events/search",
+                base_url=base_url,
+                session_api_key=session_api_key,
+                params={
+                    "limit": 100,
+                    "sort_order": "TIMESTAMP_DESC",
+                    "page_id": page_id,
+                },
+                timeout=_INTERACTIVE_READ_TIMEOUT_SECONDS,
+            )
+            raw_items = data.get("items", [])
+            if not isinstance(raw_items, list) or any(
+                not isinstance(item, dict) for item in cast(list[object], raw_items)
+            ):
+                raise DomainError(
+                    "RUNTIME_EVENT_IDENTITY_INVALID",
+                    "OpenHands returned an invalid active event page",
+                    502,
+                )
+            page_items = [cast(dict[str, Any], item) for item in cast(list[object], raw_items)]
+            page_by_id = {self._event_identity(item)[0]: item for item in page_items}
+            if len(page_by_id) != len(page_items) or page_id not in page_by_id:
+                raise DomainError(
+                    "RUNTIME_EVENT_IDENTITY_MISMATCH",
+                    "The OpenHands active event page is missing its formal anchor",
+                    409,
+                    {"conversation_id": conversation_id, "event_id": page_id},
+                )
+            overlap = set(by_id).intersection(page_by_id)
+            if overlap:
+                raise DomainError(
+                    "RUNTIME_EVENT_IDENTITY_INVALID",
+                    "OpenHands repeated formal event identities across history pages",
+                    502,
+                    {"conversation_id": conversation_id},
+                )
+            by_id.update(page_by_id)
+
+            chain: list[dict[str, Any]] = []
+            seen_ids: set[str] = set()
+            current_event_id: str | None = leaf_event_id
+            while current_event_id is not None:
+                if current_event_id == anchor:
+                    return list(reversed(chain))
+                item = by_id.get(current_event_id)
+                if item is None:
+                    break
+                if current_event_id in seen_ids:
+                    raise DomainError(
+                        "RUNTIME_EVENT_IDENTITY_INVALID",
+                        "The active OpenHands event branch is cyclic",
+                        502,
+                        {"conversation_id": conversation_id, "event_id": current_event_id},
+                    )
+                seen_ids.add(current_event_id)
+                chain.append(item)
+                parent_id = self._formal_identity(
+                    item.get("parent_id"), field="parent_id", required=False
+                )
+                current_event_id = None if parent_id == "__root__" else parent_id
+
+            if current_event_id is None:
+                raise DomainError(
+                    "RUNTIME_EVENT_IDENTITY_MISMATCH",
+                    "The persisted OpenHands event anchor is not on the active branch",
+                    409,
+                    {"conversation_id": conversation_id, "event_id": anchor},
+                )
+            next_page_id = self._formal_identity(
+                data.get("next_page_id"), field="next_page_id", required=False
+            )
+            if next_page_id is None:
+                raise DomainError(
+                    "RUNTIME_EVENT_IDENTITY_MISMATCH",
+                    "The persisted OpenHands event anchor is missing after reload",
+                    409,
+                    {"conversation_id": conversation_id, "event_id": anchor},
+                )
+            page_id = next_page_id
+
     @staticmethod
     def _canonical_digest(value: object) -> str:
         encoded = json.dumps(
@@ -2697,15 +2814,24 @@ class OpenHandsRuntime:
             state.get("leaf_event_id"), field="leaf_event_id", required=False
         )
         if handle.cursor and not handle.history_cursor:
-            items, cursor = self._events(
+            if leaf_event_id is None:
+                raise DomainError(
+                    "RUNTIME_EVENT_IDENTITY_MISMATCH",
+                    "OpenHands has no active event identity for cursor reconciliation",
+                    409,
+                    {"conversation_id": handle.conversation_id},
+                )
+            active_items = self._active_events_after_cursor(
                 handle.conversation_id,
+                leaf_event_id,
                 handle.cursor,
                 base_url=base_url,
                 session_api_key=session_api_key,
             )
             active_items = [
-                item for item in items if not self._is_legacy_autotitle_protocol_error(item)
+                item for item in active_items if not self._is_legacy_autotitle_protocol_error(item)
             ]
+            cursor = leaf_event_id
             history_cursor = None
         else:
             active_items, history_cursor = self._active_event_window(

@@ -64,6 +64,7 @@ from openhands.sdk.context.memory import (
     load_memory,
 )
 from openhands.sdk.conversation.conversation_stats import ConversationStats
+from openhands.sdk.conversation.event_store import EventLog
 from openhands.sdk.conversation.goal import GoalStatus, GoalVerdict
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
@@ -79,6 +80,7 @@ from openhands.sdk.event import Event as OpenHandsEvent
 from openhands.sdk.event.condenser import Condensation, CondensationRequest
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.event.streaming_delta import StreamingDeltaEvent
+from openhands.sdk.io import InMemoryFileStore
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.llm.provider_connection_store import (
@@ -168,6 +170,7 @@ REQUIRED_PATHS = {
 }
 REQUIRED_WEBSOCKET_PATHS = {
     "/sockets/events/{conversation_id}",
+    "/sockets/session/{conversation_id}",
     "/sockets/bash-events",
 }
 REQUIRED_START_FIELDS = {
@@ -215,6 +218,21 @@ async def _assert_targeted_streaming_delta_delivery() -> None:
 
     assert ordinary.events == []
     assert streaming.events == [delta]
+
+
+def _assert_durable_event_log_sequence() -> None:
+    """Lock EventLog's formal persisted index contract for replay adapters."""
+
+    events = EventLog(InMemoryFileStore())
+    first = ConversationStateUpdateEvent(key="execution_status", value="running")
+    second = ConversationStateUpdateEvent(key="execution_status", value="idle")
+    assert events.append(first) == 0
+    assert events.append(second) == 1
+    assert events.get_index(first.id) == 0
+    assert events.get_index(second.id) == 1
+    assert [event.id for event in events] == [first.id, second.id]
+    append_source = getsource(EventLog.append)
+    assert append_source.index("self._fs.write") < append_source.index("return idx")
 
 
 def _assert_profile_provider_secret_and_condenser_behavior() -> None:
@@ -370,6 +388,7 @@ def main() -> None:
     )
     assert _WebSocketSubscriber.receives_streaming_deltas is True
     asyncio.run(_assert_targeted_streaming_delta_delivery())
+    _assert_durable_event_log_sequence()
     _assert_profile_provider_secret_and_condenser_behavior()
     provenance_path = Path("/runtime/openhands-source-provenance.json")
     if not provenance_path.is_file():
@@ -1237,6 +1256,7 @@ def main() -> None:
                 "start_field_count": len(start_fields),
                 "usable_tool_count": len(server_info.usable_tools),
                 "streaming_delta_delivery_is_subscriber_scoped": True,
+                "event_log_append_returns_durable_sequence": True,
                 "remote_structured_builtin_resolution": True,
                 "agent_definition_field_count": len(agent_definition_fields),
                 "agent_profile_http_methods": profile_http_methods,
