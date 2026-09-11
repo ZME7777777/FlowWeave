@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from time import sleep
 
@@ -192,6 +193,41 @@ def test_worker_maintenance_recovers_a_lease_that_expires_after_startup(
         assert recovered.lease_owner is None
         assert recovered.lease_until is None
         assert recovered.last_error == "LEASE_EXPIRED"
+
+
+def test_worker_maintenance_retries_a_full_terminal_cleanup_batch_soon(
+    worker_container, db_session_factory
+):
+    from flowweave.bootstrap.worker import TaskWorker
+
+    now = datetime.now(UTC)
+    worker = TaskWorker(
+        replace(
+            worker_container,
+            settings=worker_container.settings.model_copy(
+                update={
+                    "task_terminal_cleanup_batch_size": 1,
+                    "task_terminal_cleanup_seconds": 86_400,
+                    "task_terminal_cleanup_backlog_seconds": 5,
+                }
+            ),
+        )
+    )
+    with db_session_factory() as db:
+        task = enqueue(
+            db,
+            task_type="POLL_RUNTIME",
+            aggregate_type="ATTEMPT",
+            aggregate_id="terminal-backlog",
+            idempotency_key="terminal-backlog",
+        )
+        task.state = TaskState.SUCCEEDED
+        task.updated_at = now - timedelta(days=31)
+        db.commit()
+
+    worker._run_sync(worker.run_maintenance())
+
+    assert worker._next_terminal_task_cleanup_at <= now + timedelta(seconds=10)
 
 
 def test_lease_heartbeat_prevents_recovery_and_second_claim(db_session_factory, settings):

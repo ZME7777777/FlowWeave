@@ -400,8 +400,14 @@ class TaskWorker:
                                     commit=False,
                                 )
                             )
+                            cleanup_delay = (
+                                self.container.settings.task_terminal_cleanup_backlog_seconds
+                                if deleted
+                                == self.container.settings.task_terminal_cleanup_batch_size
+                                else self.container.settings.task_terminal_cleanup_seconds
+                            )
                             self._next_terminal_task_cleanup_at = now + timedelta(
-                                seconds=self.container.settings.task_terminal_cleanup_seconds
+                                seconds=cleanup_delay
                             )
                             if deleted:
                                 logger.info(
