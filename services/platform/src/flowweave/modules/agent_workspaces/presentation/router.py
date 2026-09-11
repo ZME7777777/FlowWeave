@@ -95,6 +95,12 @@ class AgentConversationReference(_Write):
     content: str = Field(min_length=1, max_length=10_000)
 
 
+class AgentWorkspaceReference(_Write):
+    path: str = Field(min_length=1, max_length=500)
+    kind: Literal["file", "directory"]
+    display_name: str = Field(min_length=1, max_length=240)
+
+
 def _empty_attachment_references() -> list[AgentAttachmentReference]:
     return []
 
@@ -116,6 +122,7 @@ class AgentConversationBootstrapWrite(_Write):
     references: list[AgentConversationReference] = Field(
         default_factory=_empty_conversation_references, max_length=10
     )
+    workspace_references: list[AgentWorkspaceReference] = Field(default_factory=list, max_length=20)
     capability_version_ids: list[str] = Field(default_factory=list)
 
 
@@ -127,6 +134,7 @@ class AgentMessageWrite(_Write):
     references: list[AgentConversationReference] = Field(
         default_factory=_empty_conversation_references, max_length=10
     )
+    workspace_references: list[AgentWorkspaceReference] = Field(default_factory=list, max_length=20)
 
 
 class AgentConversationModelWrite(_Write):
@@ -545,6 +553,7 @@ async def create_agent_conversation(
             content=payload.content,
             attachments=tuple(item.model_dump(exclude_none=True) for item in payload.attachments),
             references=tuple(item.model_dump() for item in payload.references),
+            workspace_references=tuple(item.model_dump() for item in payload.workspace_references),
             capability_version_ids=tuple(payload.capability_version_ids),
             idempotency_key=idempotency_key,
         ),
@@ -689,6 +698,7 @@ async def agent_message(
             payload.content,
             attachments=tuple(item.model_dump(exclude_none=True) for item in payload.attachments),
             references=tuple(item.model_dump() for item in payload.references),
+            workspace_references=tuple(item.model_dump() for item in payload.workspace_references),
         ),
     )
 

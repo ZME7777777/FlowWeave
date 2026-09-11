@@ -2,7 +2,7 @@ import { Check, ChevronDown, ChevronRight, CircleAlert, Copy, ExternalLink, File
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type PointerEvent as ReactPointerEvent } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import type { AgentActivitySummary, AgentAttachment, AgentConversationReference, OpenHandsConversationEvent, RuntimeTaskControlSnapshot } from '../types';
+import type { AgentActivitySummary, AgentAttachment, AgentConversationReference, AgentWorkspaceReference, OpenHandsConversationEvent, RuntimeTaskControlSnapshot } from '../types';
 import { deploymentBasePath } from '../deploymentPath';
 import { SubagentAvatar } from './SubagentAvatar';
 import { useEscapeClose } from './useEscapeClose';
@@ -186,13 +186,14 @@ function attachmentSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function MessageAttachments({ attachments, references = [], onOpen, onOpenReference }: {
+function MessageAttachments({ attachments, references = [], workspaceReferences = [], onOpen, onOpenReference }: {
   attachments: AgentAttachment[];
   references?: AgentConversationReference[];
+  workspaceReferences?: AgentWorkspaceReference[];
   onOpen?: (attachment: AgentAttachment) => void;
   onOpenReference?: (reference: AgentConversationReference) => void;
 }) {
-  if (!attachments.length && !references.length) return null;
+  if (!attachments.length && !references.length && !workspaceReferences.length) return null;
   return <div className="conversation-message-attachments" aria-label="消息附件">
     {attachments.map(attachment => <button
       type="button"
@@ -207,6 +208,9 @@ function MessageAttachments({ attachments, references = [], onOpen, onOpenRefere
       <Quote size={16}/><span><b>{`会话引用 ${index + 1}`}</b><small>已添加到本条消息</small></span>
       <PanelRightOpen size={13}/>
     </button>)}
+    {workspaceReferences.map(reference => <span key={reference.path} className="conversation-message-attachment conversation-message-workspace-reference" title={reference.path}>
+      <FileText size={16}/><span><b>{reference.display_name}</b><small>{reference.kind === 'directory' ? '工作区目录' : '工作区文件'} · 本地路径引用</small></span>
+    </span>)}
   </div>;
 }
 
@@ -1461,7 +1465,7 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused: 
         return <section className="conversation-turn" key={turn.id}>
           {turn.user && <div className="conversation-user-message">{editingEventId === turn.user.event.id
             ? <form className="conversation-message-edit" onSubmit={event => { event.preventDefault(); if (editingContent.trim()) onRewrite?.(turn.user!.event.id, editingContent.trim()); }}><textarea aria-label="编辑已发送消息" value={editingContent} disabled={rewritePending} onChange={event => setEditingContent(event.target.value)}/><footer><button type="button" onClick={() => setEditingEventId(undefined)}>取消</button><button type="submit" disabled={!editingContent.trim() || rewritePending}>重新思考</button></footer></form>
-            : <article data-user-event-id={turn.user.event.id} data-conversation-event-id={turn.user.event.id} className={`conversation-message user${highlightedReferenceEventId === turn.user.event.id ? ' conversation-reference-source-highlight' : ''}`}>{turn.user.content && <div className="conversation-message-content"><MessageMarkdown>{turn.user.content}</MessageMarkdown></div>}<MessageAttachments attachments={eventAttachments(turn.user.event)} references={turn.user.event.payload.conversation_references} onOpen={onOpenAttachment} onOpenReference={setViewingReference}/><footer className="conversation-message-meta user">{userTimestamp && <time dateTime={typeof turn.user.event.payload.timestamp === 'string' ? turn.user.event.payload.timestamp : undefined}>{userTimestamp}</time>}<div className="conversation-message-actions"><button type="button" className="conversation-message-copy" aria-label={copiedEventId === turn.user.event.id ? '消息已复制' : '复制消息'} title={copiedEventId === turn.user.event.id ? '已复制' : '复制消息'} onClick={() => copyUserMessage(turn.user!.event.id, turn.user!.content)}>{copiedEventId === turn.user.event.id ? <Check size={13}/> : <Copy size={13}/>}</button>{lastUserEventId === turn.user.event.id && <button type="button" className="conversation-message-rewrite" aria-label="编辑并重新思考" title="编辑并重新思考" onClick={() => { setEditingEventId(turn.user!.event.id); setEditingContent(turn.user!.content); }}><Pencil size={13}/></button>}</div></footer></article>}</div>}
+            : <article data-user-event-id={turn.user.event.id} data-conversation-event-id={turn.user.event.id} className={`conversation-message user${highlightedReferenceEventId === turn.user.event.id ? ' conversation-reference-source-highlight' : ''}`}>{turn.user.content && <div className="conversation-message-content"><MessageMarkdown>{turn.user.content}</MessageMarkdown></div>}<MessageAttachments attachments={eventAttachments(turn.user.event)} references={turn.user.event.payload.conversation_references} workspaceReferences={turn.user.event.payload.workspace_references} onOpen={onOpenAttachment} onOpenReference={setViewingReference}/><footer className="conversation-message-meta user">{userTimestamp && <time dateTime={typeof turn.user.event.payload.timestamp === 'string' ? turn.user.event.payload.timestamp : undefined}>{userTimestamp}</time>}<div className="conversation-message-actions"><button type="button" className="conversation-message-copy" aria-label={copiedEventId === turn.user.event.id ? '消息已复制' : '复制消息'} title={copiedEventId === turn.user.event.id ? '已复制' : '复制消息'} onClick={() => copyUserMessage(turn.user!.event.id, turn.user!.content)}>{copiedEventId === turn.user.event.id ? <Check size={13}/> : <Copy size={13}/>}</button>{lastUserEventId === turn.user.event.id && <button type="button" className="conversation-message-rewrite" aria-label="编辑并重新思考" title="编辑并重新思考" onClick={() => { setEditingEventId(turn.user!.event.id); setEditingContent(turn.user!.content); }}><Pencil size={13}/></button>}</div></footer></article>}</div>}
           {processBlocks.map((block, blockIndex) => block.kind === 'condensation'
             ? <CondensationNotices key={block.id} items={block.items}/>
             : <ActivityGroup

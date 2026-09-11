@@ -29,6 +29,7 @@ from flowweave.modules.agent_sessions.application.conversations import (
     project_conversation_references,
     record_message_attachments,
     validate_attachment_owners,
+    validated_workspace_references,
 )
 from flowweave.modules.agent_sessions.application.deletion import delete_binding_records
 from flowweave.modules.agent_sessions.application.event_branch import (
@@ -1360,6 +1361,7 @@ def bootstrap_node_conversation(
     content: str,
     attachments: tuple[dict[str, str | int], ...],
     references: tuple[dict[str, str], ...] = (),
+    workspace_references: tuple[dict[str, str], ...] = (),
     legacy_image_urls: tuple[str, ...] = (),
     conversation_id: str | None,
     work_directory_id: str | None,
@@ -1369,7 +1371,13 @@ def bootstrap_node_conversation(
     """Lazily create a node Conversation and durably reconcile its first event."""
 
     text = content.strip()
-    if not text and not attachments and not references and not legacy_image_urls:
+    if (
+        not text
+        and not attachments
+        and not references
+        and not workspace_references
+        and not legacy_image_urls
+    ):
         raise DomainError("AGENT_MESSAGE_EMPTY", "消息不能为空", 422)
     try:
         binding_id = str(UUID(conversation_id)) if conversation_id else str(uuid4())
@@ -1381,7 +1389,14 @@ def bootstrap_node_conversation(
             if not value.startswith("data:image/"):
                 raise DomainError("AGENT_ATTACHMENT_INVALID", "图片附件无效", 422)
             base64.b64decode(value.partition(",")[2], validate=True)
-    prompt, image_urls = message_payload(text, attachments, references)
+    workspace_references = agent_workspace_host.validate_flow_run_workspace_references(
+        db,
+        flow_run_id,
+        attempt_id,
+        validated_workspace_references(workspace_references),
+        work_directory_id=work_directory_id,
+    )
+    prompt, image_urls = message_payload(text, attachments, references, workspace_references)
     if legacy_image_urls:
         image_urls = legacy_image_urls
     agent_sessions.resolve_flow_node_session_host(
@@ -1822,11 +1837,13 @@ def _event_batch_dict(
                 attempt_id=attempt.id,
                 binding_id=binding.id,
             )
-        display_content, references = project_conversation_references(
+        display_content, references, workspace_references = project_conversation_references(
             str(payload.get("content") or "")
         )
         if references:
             payload["conversation_references"] = list(references)
+        if workspace_references:
+            payload["workspace_references"] = list(workspace_references)
         attachments = attachments_by_event.get(event.cursor, [])
         if attachments:
             # Automatic starts record an empty display override: retain the
@@ -2006,17 +2023,25 @@ def send_node_message(
     content: str,
     attachments: tuple[dict[str, str | int], ...] = (),
     references: tuple[dict[str, str], ...] = (),
+    workspace_references: tuple[dict[str, str], ...] = (),
 ) -> dict[str, Any]:
     """Send the same attachment-aware native message as the outer workbench."""
 
-    if not content.strip() and not attachments and not references:
+    if not content.strip() and not attachments and not references and not workspace_references:
         raise DomainError("AGENT_MESSAGE_EMPTY", "消息不能为空", 422)
     _assert_node_session_writable(db, flow_run_id=flow_run_id, attempt_id=attempt_id)
     binding = _binding_for_attempt(
         db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id, lock=True
     )
     validate_attachment_owners(binding.id, attachments)
-    prompt, image_urls = message_payload(content, attachments, references)
+    workspace_references = agent_workspace_host.validate_flow_run_workspace_references(
+        db,
+        flow_run_id,
+        attempt_id,
+        validated_workspace_references(workspace_references),
+        binding_id=binding.id,
+    )
+    prompt, image_urls = message_payload(content, attachments, references, workspace_references)
     handle = _node_handle(
         db,
         flow_run_id=flow_run_id,

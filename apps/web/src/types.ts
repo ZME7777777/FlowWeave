@@ -508,6 +508,7 @@ export interface OpenHandsConversationEvent {
     display_content?: string;
     attachments?: AgentAttachment[];
     conversation_references?: AgentConversationReference[];
+    workspace_references?: AgentWorkspaceReference[];
     [key: string]: unknown;
   };
 }
@@ -632,6 +633,12 @@ export interface AgentPendingConfirmation {
 }
 export interface AgentAttachment {
   filename: string; mime_type: string; byte_size: number; path: string; image_data_url?: string | null;
+}
+/** A server-authorized local workspace entry, distinct from an uploaded attachment. */
+export interface AgentWorkspaceReference {
+  path: string;
+  kind: 'file' | 'directory';
+  display_name: string;
 }
 export interface AgentConversationReference {
   event_id: string;

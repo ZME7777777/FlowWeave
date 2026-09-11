@@ -219,6 +219,24 @@ def _validate_scope_roots(
                 )
 
 
+def _resolved_scope_roots(
+    project_root: Path, runtime_root: PurePosixPath, roots: tuple[str, ...]
+) -> tuple[Path, ...]:
+    try:
+        return tuple(
+            project_root.joinpath(*PurePosixPath(root).relative_to(runtime_root).parts).resolve(
+                strict=True
+            )
+            for root in roots
+        )
+    except (OSError, ValueError) as exc:
+        raise DomainError(
+            "FLOW_RUN_WORKSPACE_PATH_INVALID",
+            "工作区目录当前不可用",
+            409,
+        ) from exc
+
+
 def _entries(
     project_root: Path, runtime_root: PurePosixPath, roots: tuple[str, ...]
 ) -> list[dict[str, Any]]:
@@ -277,19 +295,7 @@ def _host_file(
         resolved = candidate.resolve(strict=True)
     except OSError as exc:
         raise DomainError("FLOW_RUN_WORKSPACE_FILE_NOT_FOUND", "文件不存在或不可读取", 404) from exc
-    authorized_roots: list[Path] = []
-    try:
-        for root in roots:
-            root_relative = PurePosixPath(root).relative_to(runtime_root)
-            authorized_roots.append(
-                project_root.joinpath(*root_relative.parts).resolve(strict=True)
-            )
-    except (OSError, ValueError) as exc:
-        raise DomainError(
-            "FLOW_RUN_WORKSPACE_PATH_INVALID",
-            "工作区目录当前不可用",
-            409,
-        ) from exc
+    authorized_roots = _resolved_scope_roots(project_root, runtime_root, roots)
     if (
         stat.S_ISLNK(metadata.st_mode)
         or not stat.S_ISREG(metadata.st_mode)
@@ -298,6 +304,71 @@ def _host_file(
     ):
         raise DomainError("FLOW_RUN_WORKSPACE_PATH_INVALID", "文件路径不在当前工作区范围内", 422)
     return resolved
+
+
+def validate_message_workspace_references(
+    db: Session,
+    *,
+    flow_run_id: str,
+    attempt_id: str,
+    references: tuple[dict[str, str], ...],
+    work_directory_id: str | None = None,
+    binding_id: str | None = None,
+) -> tuple[dict[str, str], ...]:
+    """Authorize local FlowRun workspace references without reading their content."""
+
+    project_root, runtime_root, _, _ = _authorize_entry(
+        db, flow_run_id=flow_run_id, attempt_id=attempt_id
+    )
+    _, _, roots = _scope(
+        db,
+        flow_run_id=flow_run_id,
+        attempt_id=attempt_id,
+        binding_id=binding_id,
+        work_directory_id=work_directory_id,
+        runtime_root=runtime_root,
+    )
+    _validate_scope_roots(project_root, runtime_root, roots)
+    authorized_roots = _resolved_scope_roots(project_root, runtime_root, roots)
+    normalized: list[dict[str, str]] = []
+    for reference in references:
+        path = reference["path"]
+        kind = reference["kind"]
+        if kind == "file":
+            candidate = _host_file(project_root, runtime_root, path, roots)
+        else:
+            parsed = PurePosixPath(path)
+            if (
+                not parsed.is_absolute()
+                or not parsed.is_relative_to(runtime_root)
+                or parsed.as_posix() != path
+                or any(part in {"", ".", ".."} or part.startswith(".") for part in parsed.parts)
+                or not any(
+                    path == root or path.startswith(root.rstrip("/") + "/") for root in roots
+                )
+            ):
+                raise DomainError(
+                    "AGENT_WORKSPACE_REFERENCE_INVALID",
+                    "引用不在当前工作区范围内",
+                    422,
+                )
+            candidate = project_root.joinpath(*parsed.relative_to(runtime_root).parts)
+            try:
+                metadata = candidate.lstat()
+                resolved = candidate.resolve(strict=True)
+            except OSError as exc:
+                raise DomainError(
+                    "AGENT_WORKSPACE_REFERENCE_INVALID", "引用目录已不存在", 422
+                ) from exc
+            if (
+                stat.S_ISLNK(metadata.st_mode)
+                or not stat.S_ISDIR(metadata.st_mode)
+                or not resolved.is_relative_to(project_root)
+                or not any(resolved.is_relative_to(root) for root in authorized_roots)
+            ):
+                raise DomainError("AGENT_WORKSPACE_REFERENCE_INVALID", "引用目录无效", 422)
+        normalized.append({"path": path, "kind": kind, "display_name": candidate.name})
+    return tuple(normalized)
 
 
 def details(

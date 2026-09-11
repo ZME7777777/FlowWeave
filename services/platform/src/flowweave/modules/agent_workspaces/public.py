@@ -123,6 +123,48 @@ def delete_session_attachment_files(db: Session, workspace_id: str, binding_id: 
     workspace.delete_bound_attachment_files(db, workspace_id, binding_id)
 
 
+def validate_message_workspace_references(
+    db: Session,
+    workspace_id: str,
+    references: tuple[dict[str, str], ...],
+    *,
+    work_directory_id: str | None = None,
+    binding_id: str | None = None,
+    allow_provisioning: bool = False,
+) -> tuple[dict[str, str], ...]:
+    from flowweave.modules.agent_workspaces.application import workspace
+
+    return workspace.validate_message_workspace_references(
+        db,
+        workspace_id,
+        references,
+        work_directory_id=work_directory_id,
+        binding_id=binding_id,
+        allow_provisioning=allow_provisioning,
+    )
+
+
+def validate_flow_run_workspace_references(
+    db: Session,
+    flow_run_id: str,
+    node_attempt_id: str,
+    references: tuple[dict[str, str], ...],
+    *,
+    work_directory_id: str | None = None,
+    binding_id: str | None = None,
+) -> tuple[dict[str, str], ...]:
+    from flowweave.modules.agent_sessions.application import flow_node_workspace
+
+    return flow_node_workspace.validate_message_workspace_references(
+        db,
+        flow_run_id=flow_run_id,
+        attempt_id=node_attempt_id,
+        references=references,
+        work_directory_id=work_directory_id,
+        binding_id=binding_id,
+    )
+
+
 def git_repositories(
     project_root: Path, runtime_root: str, file_roots: tuple[str, ...]
 ) -> list[tuple[Path, str]]:
@@ -203,4 +245,6 @@ __all__ = (
     "recover_default_agent_workspace_runtime_task",
     "resolve_agent_workspace_runtime_secret",
     "runtime_allocation_for_agent_workspace",
+    "validate_flow_run_workspace_references",
+    "validate_message_workspace_references",
 )

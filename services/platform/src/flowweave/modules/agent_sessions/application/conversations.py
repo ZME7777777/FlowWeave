@@ -1188,6 +1188,7 @@ def bootstrap_conversation(
     content: str,
     attachments: tuple[dict[str, str | int], ...] = (),
     references: tuple[dict[str, str], ...] = (),
+    workspace_references: tuple[dict[str, str], ...] = (),
     capability_version_ids: tuple[str, ...] = (),
     idempotency_key: str,
 ) -> dict[str, Any]:
@@ -1200,9 +1201,9 @@ def bootstrap_conversation(
     """
 
     message_text = content.strip()
-    if not message_text and not attachments and not references:
+    if not message_text and not attachments and not references and not workspace_references:
         raise DomainError("AGENT_MESSAGE_EMPTY", "消息不能为空", 422)
-    prompt, image_urls = _message_payload(message_text, attachments, references)
+    normalized_workspace_references = _validated_workspace_references(workspace_references)
     workspace = _workspace(db, workspace_id)
     binding, command = _bootstrap_command(db, workspace.id, idempotency_key)
     if binding is not None and command is not None:
@@ -1287,6 +1288,16 @@ def bootstrap_conversation(
         db.commit()
 
     assert binding is not None and command is not None
+    normalized_workspace_references = agent_workspace_host.validate_message_workspace_references(
+        db,
+        workspace.id,
+        normalized_workspace_references,
+        binding_id=binding.id,
+        allow_provisioning=True,
+    )
+    prompt, image_urls = _message_payload(
+        message_text, attachments, references, normalized_workspace_references
+    )
     _validate_attachment_owners(
         binding.id,
         attachments,
@@ -1646,11 +1657,13 @@ def events(
                     binding.working_directory or user_runtime_project_root(workspace.id)
                 ),
             )
-        display_content, references = _project_conversation_references(
+        display_content, references, workspace_references = _project_conversation_references(
             str(payload.get("content") or "")
         )
         if references:
             payload["conversation_references"] = list(references)
+        if workspace_references:
+            payload["workspace_references"] = list(workspace_references)
         attachments = attachments_by_event.get(event.cursor, [])
         if attachments:
             payload["display_content"] = attachments[0].content
@@ -2018,14 +2031,21 @@ def message(
     content: str,
     attachments: tuple[dict[str, str | int], ...] = (),
     references: tuple[dict[str, str], ...] = (),
+    workspace_references: tuple[dict[str, str], ...] = (),
 ) -> dict[str, Any]:
-    if not content.strip() and not attachments and not references:
+    if not content.strip() and not attachments and not references and not workspace_references:
         raise DomainError("AGENT_MESSAGE_EMPTY", "消息不能为空", 422)
     workspace = _workspace(db, workspace_id)
     binding = _binding(db, workspace_id, binding_id, lock=True)
     handle = _handle(db, workspace, binding)
     _validate_attachment_owners(binding.id, attachments, workspace_root=handle.workspace_root)
-    prompt, image_urls = _message_payload(content, attachments, references)
+    workspace_references = agent_workspace_host.validate_message_workspace_references(
+        db,
+        workspace_id,
+        _validated_workspace_references(workspace_references),
+        binding_id=binding.id,
+    )
+    prompt, image_urls = _message_payload(content, attachments, references, workspace_references)
     if not binding.streaming_callback_ready:
         raise DomainError(
             "AGENT_STREAMING_MIGRATION_REQUIRED",
@@ -2221,6 +2241,7 @@ def _message_payload(
     content: str,
     attachments: tuple[dict[str, str | int], ...],
     references: tuple[dict[str, str], ...] = (),
+    workspace_references: tuple[dict[str, str], ...] = (),
 ) -> tuple[str, tuple[str, ...]]:
     if len(attachments) > 10:
         raise DomainError("AGENT_ATTACHMENT_INVALID", "附件引用无效，请重新上传", 422)
@@ -2250,6 +2271,7 @@ def _message_payload(
             "\n\n已上传到共享工作区的附件：\n" if prompt else "请查看已上传到共享工作区的附件：\n"
         ) + "\n".join(f"- {path}" for path in paths)
     normalized_references = _validated_conversation_references(references)
+    normalized_workspace_references = _validated_workspace_references(workspace_references)
     # The browser keeps the original selection and message interaction. Only
     # the runtime payload is partitioned, with a current request on every turn.
     prompt = (
@@ -2259,6 +2281,7 @@ def _message_payload(
             {
                 "version": 4,
                 "reference_materials": normalized_references,
+                "workspace_references": normalized_workspace_references,
                 "current_user_request": {"content": prompt},
             },
             ensure_ascii=False,
@@ -2290,7 +2313,41 @@ def _validated_conversation_references(
     return tuple(normalized)
 
 
-def _project_conversation_references(content: str) -> tuple[str, tuple[dict[str, str], ...]]:
+def _validated_workspace_references(
+    references: tuple[dict[str, str], ...],
+) -> tuple[dict[str, str], ...]:
+    if len(references) > 20:
+        raise DomainError("AGENT_WORKSPACE_REFERENCE_INVALID", "工作区引用无效，请重新选择", 422)
+    normalized: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in references:
+        path = item.get("path")
+        kind = item.get("kind")
+        display_name = item.get("display_name")
+        if (
+            not isinstance(path, str)
+            or not isinstance(kind, str)
+            or kind not in {"file", "directory"}
+            or not isinstance(display_name, str)
+            or not path.strip()
+            or not display_name.strip()
+            or len(path) > 500
+            or len(display_name) > 240
+            or path in seen
+        ):
+            raise DomainError(
+                "AGENT_WORKSPACE_REFERENCE_INVALID",
+                "工作区引用无效，请重新选择",
+                422,
+            )
+        seen.add(path)
+        normalized.append({"path": path, "kind": kind, "display_name": display_name.strip()})
+    return tuple(normalized)
+
+
+def _project_conversation_references(
+    content: str,
+) -> tuple[str, tuple[dict[str, str], ...], tuple[dict[str, str], ...]]:
     """Project transport envelopes back into the original browser transcript."""
 
     _prefix, marker, encoded = content.rpartition(_MESSAGE_CONTEXT_V4_MARKER)
@@ -2305,11 +2362,14 @@ def _project_conversation_references(content: str) -> tuple[str, tuple[dict[str,
                 or not isinstance(current.get("content"), str)
                 or not isinstance(raw_references, list)
             ):
-                return content, ()
+                return content, (), ()
             references = _validated_conversation_references(tuple(raw_references))
-            return current["content"].strip(), references
+            workspace_references = _validated_workspace_references(
+                tuple(parsed.get("workspace_references") or ())
+            )
+            return current["content"].strip(), references, workspace_references
         except (DomainError, TypeError, ValueError, json.JSONDecodeError):
-            return content, ()
+            return content, (), ()
 
     # v2/v3 were persisted briefly. Decode them so transport markers never
     # appear in a user bubble after reload, including when no references exist.
@@ -2330,15 +2390,15 @@ def _project_conversation_references(content: str) -> tuple[str, tuple[dict[str,
                 or not isinstance(current.get("content"), str)
                 or not isinstance(raw_references, list)
             ):
-                return content, ()
+                return content, (), ()
             references = _validated_conversation_references(tuple(raw_references))
-            return current["content"].strip(), references
+            return current["content"].strip(), references, ()
         except (DomainError, TypeError, ValueError, json.JSONDecodeError):
-            return content, ()
+            return content, (), ()
 
     visible, marker, encoded = content.rpartition(_CONVERSATION_REFERENCE_MARKER)
     if not marker:
-        return content, ()
+        return content, (), ()
     # Split before decoding so the new trailing current-task section is not
     # mistaken for part of the JSON transport payload.
     reference_json, current_marker, current_message = encoded.partition(
@@ -2348,15 +2408,15 @@ def _project_conversation_references(content: str) -> tuple[str, tuple[dict[str,
         parsed = json.loads(reference_json)
         raw_references = parsed.get("references") if isinstance(parsed, dict) else None
         if not isinstance(raw_references, list):
-            return content, ()
+            return content, (), ()
         references = _validated_conversation_references(tuple(raw_references))
     except (DomainError, TypeError, ValueError, json.JSONDecodeError):
-        return content, ()
+        return content, (), ()
     # New messages keep the current task after the quoted background section.
     # Legacy messages ended at the JSON payload, so preserve their projection.
     if current_marker:
-        return current_message.strip(), references
-    return visible.strip(), references
+        return current_message.strip(), references, ()
+    return visible.strip(), references, ()
 
 
 def _validate_attachment_owners(
@@ -2957,3 +3017,4 @@ message_payload = _message_payload
 project_conversation_references = _project_conversation_references
 record_message_attachments = _record_message_attachments
 validate_attachment_owners = _validate_attachment_owners
+validated_workspace_references = _validated_workspace_references

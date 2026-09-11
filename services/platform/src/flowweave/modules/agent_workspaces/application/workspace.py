@@ -472,6 +472,8 @@ def _working_directory(
     workspace_id: str,
     work_directory_id: str | None,
     binding_id: str | None,
+    *,
+    allow_provisioning: bool = False,
 ) -> tuple[str, dict[str, Any] | None]:
     if binding_id and work_directory_id:
         raise DomainError(
@@ -480,13 +482,13 @@ def _working_directory(
             422,
         )
     if binding_id:
-        binding = db.scalar(
-            select(AgentConversationBinding).where(
-                AgentConversationBinding.id == binding_id,
-                AgentConversationBinding.workspace_id == workspace_id,
-                AgentConversationBinding.lifecycle == "ACTIVE",
-            )
+        query = select(AgentConversationBinding).where(
+            AgentConversationBinding.id == binding_id,
+            AgentConversationBinding.workspace_id == workspace_id,
         )
+        if not allow_provisioning:
+            query = query.where(AgentConversationBinding.lifecycle == "ACTIVE")
+        binding = db.scalar(query)
         if binding is None:
             raise DomainError("AGENT_CONVERSATION_NOT_FOUND", "会话不存在或已删除", 404)
         return binding.working_directory or user_runtime_project_root(workspace_id), None
@@ -551,6 +553,8 @@ def _file_scope_roots(
     work_directory_id: str | None,
     binding_id: str | None,
     directory: dict[str, Any] | None,
+    *,
+    allow_provisioning: bool = False,
 ) -> tuple[str, ...]:
     """Resolve file roots independently from OpenHands' single working directory."""
 
@@ -558,13 +562,13 @@ def _file_scope_roots(
     if directory is not None:
         version_id = str(directory["current_version"]["id"])
     elif binding_id:
-        version_id = db.scalar(
-            select(AgentConversationBinding.work_directory_version_id).where(
-                AgentConversationBinding.id == binding_id,
-                AgentConversationBinding.workspace_id == workspace_id,
-                AgentConversationBinding.lifecycle == "ACTIVE",
-            )
+        query = select(AgentConversationBinding.work_directory_version_id).where(
+            AgentConversationBinding.id == binding_id,
+            AgentConversationBinding.workspace_id == workspace_id,
         )
+        if not allow_provisioning:
+            query = query.where(AgentConversationBinding.lifecycle == "ACTIVE")
+        version_id = db.scalar(query)
     elif work_directory_id:
         raise DomainError("AGENT_WORK_DIRECTORY_NOT_FOUND", "工作目录不存在", 404)
     user_root = user_runtime_project_root(workspace_id)
@@ -580,6 +584,50 @@ def _file_scope_roots(
     if not relative_paths:
         raise DomainError("AGENT_WORK_DIRECTORY_VERSION_MISSING", "工作目录版本数据不完整", 409)
     return tuple(f"{user_root}/{path}" for path in relative_paths)
+
+
+def validate_message_workspace_references(
+    db: Session,
+    workspace_id: str,
+    references: tuple[dict[str, str], ...],
+    *,
+    work_directory_id: str | None = None,
+    binding_id: str | None = None,
+    allow_provisioning: bool = False,
+) -> tuple[dict[str, str], ...]:
+    """Authorize local file or directory references without creating uploads."""
+
+    _workspace(db, workspace_id)
+    _working_directory_path, directory = _working_directory(
+        db,
+        workspace_id,
+        work_directory_id,
+        binding_id,
+        allow_provisioning=allow_provisioning,
+    )
+    roots = _file_scope_roots(
+        db,
+        workspace_id,
+        work_directory_id,
+        binding_id,
+        directory,
+        allow_provisioning=allow_provisioning,
+    )
+    project_root = _project_root(db, workspace_id)
+    runtime_root = _runtime_root(workspace_id)
+    normalized: list[dict[str, str]] = []
+    for reference in references:
+        path = reference["path"]
+        kind = reference["kind"]
+        candidate = _host_path(project_root, runtime_root, path, require_file=kind == "file")
+        if not any(path == root or path.startswith(root.rstrip("/") + "/") for root in roots):
+            raise DomainError("AGENT_WORKSPACE_REFERENCE_INVALID", "引用不在当前工作区范围内", 422)
+        if kind == "directory" and not candidate.is_dir():
+            raise DomainError("AGENT_WORKSPACE_REFERENCE_INVALID", "引用目录已不存在", 422)
+        if kind == "file" and not candidate.is_file():
+            raise DomainError("AGENT_WORKSPACE_REFERENCE_INVALID", "引用文件已不存在", 422)
+        normalized.append({"path": path, "kind": kind, "display_name": candidate.name})
+    return tuple(normalized)
 
 
 def _scoped_workspace_entries(

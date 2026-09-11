@@ -74,6 +74,12 @@ class NodeConversationReference(_Write):
     content: str = Field(min_length=1, max_length=10_000)
 
 
+class NodeWorkspaceReference(_Write):
+    path: str = Field(min_length=1, max_length=500)
+    kind: Literal["file", "directory"]
+    display_name: str = Field(min_length=1, max_length=240)
+
+
 class NodeSessionBootstrapFullWrite(_Write):
     conversation_id: str | None = Field(default=None, min_length=36, max_length=36)
     client_question_id: str | None = Field(default=None, min_length=1, max_length=100)
@@ -88,6 +94,9 @@ class NodeSessionBootstrapFullWrite(_Write):
     references: list[NodeConversationReference] = cast(
         list[NodeConversationReference], Field(default_factory=list, max_length=10)
     )
+    workspace_references: list[NodeWorkspaceReference] = cast(
+        list[NodeWorkspaceReference], Field(default_factory=list, max_length=20)
+    )
 
 
 class NodeSessionMessageWrite(_Write):
@@ -97,6 +106,9 @@ class NodeSessionMessageWrite(_Write):
     )
     references: list[NodeConversationReference] = cast(
         list[NodeConversationReference], Field(default_factory=list, max_length=10)
+    )
+    workspace_references: list[NodeWorkspaceReference] = cast(
+        list[NodeWorkspaceReference], Field(default_factory=list, max_length=20)
     )
 
 
@@ -379,6 +391,7 @@ async def bootstrap_node_session(
                 for item in payload.attachments
             ),
             references=tuple(item.model_dump() for item in payload.references),
+            workspace_references=tuple(item.model_dump() for item in payload.workspace_references),
             legacy_image_urls=tuple(legacy_image_urls),
             conversation_id=payload.conversation_id,
             work_directory_id=payload.work_directory_id,
@@ -843,6 +856,7 @@ async def node_session_message(
                 for item in payload.attachments
             ),
             references=tuple(item.model_dump() for item in payload.references),
+            workspace_references=tuple(item.model_dump() for item in payload.workspace_references),
         ),
     )
 

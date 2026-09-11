@@ -75,20 +75,26 @@ def test_conversation_reference_projection_hides_selected_text_from_message_body
     assert prompt.index(selected_text) < prompt.index("请基于引用继续处理")
     assert "reference_materials" in prompt
     assert "current_user_request" in prompt
-    display_content, references = session_conversations.project_conversation_references(prompt)
+    display_content, references, workspace_references = (
+        session_conversations.project_conversation_references(prompt)
+    )
     assert display_content == "请基于引用继续处理"
     assert selected_text not in display_content
     assert references == ({"event_id": "assistant-event-1", "content": selected_text},)
+    assert workspace_references == ()
 
 
 def test_message_context_v4_without_references_projects_the_original_message() -> None:
     prompt, _image_urls = session_conversations.message_payload("开始实现代码", (), ())
 
-    display_content, references = session_conversations.project_conversation_references(prompt)
+    display_content, references, workspace_references = (
+        session_conversations.project_conversation_references(prompt)
+    )
 
     assert session_conversations._MESSAGE_CONTEXT_V4_MARKER in prompt
     assert display_content == "开始实现代码"
     assert references == ()
+    assert workspace_references == ()
 
 
 def test_message_context_v3_is_hidden_from_existing_user_messages() -> None:
@@ -101,10 +107,13 @@ def test_message_context_v3_is_hidden_from_existing_user_messages() -> None:
         )
     )
 
-    display_content, references = session_conversations.project_conversation_references(prompt)
+    display_content, references, workspace_references = (
+        session_conversations.project_conversation_references(prompt)
+    )
 
     assert display_content == "开始实现代码"
     assert references == ()
+    assert workspace_references == ()
 
 
 def test_conversation_reference_projection_supports_legacy_suffix_format() -> None:
@@ -114,10 +123,13 @@ def test_conversation_reference_projection_supports_legacy_suffix_format() -> No
         + '{"references":[{"event_id":"assistant-event-1","content":"旧引用"}]}'
     )
 
-    display_content, references = session_conversations.project_conversation_references(prompt)
+    display_content, references, workspace_references = (
+        session_conversations.project_conversation_references(prompt)
+    )
 
     assert display_content == "请基于引用继续处理"
     assert references == ({"event_id": "assistant-event-1", "content": "旧引用"},)
+    assert workspace_references == ()
 
 
 def test_conversation_reference_projection_composes_with_attachment_context() -> None:
@@ -131,9 +143,35 @@ def test_conversation_reference_projection_composes_with_attachment_context() ->
         ({"event_id": "assistant-event-2", "content": "不要展开此引用"},),
     )
 
-    display_content, references = session_conversations.project_conversation_references(prompt)
+    display_content, references, workspace_references = (
+        session_conversations.project_conversation_references(prompt)
+    )
     assert display_content == f"请查看已上传到共享工作区的附件：\n- {attachment_path}"
     assert references == ({"event_id": "assistant-event-2", "content": "不要展开此引用"},)
+    assert workspace_references == ()
+
+
+def test_workspace_reference_projection_keeps_container_paths_out_of_message_body() -> None:
+    reference = {
+        "path": "/runtime/workspace/project/src",
+        "kind": "directory",
+        "display_name": "src",
+    }
+    prompt, image_urls = session_conversations.message_payload(
+        "请检查这个目录",
+        (),
+        (),
+        (reference,),
+    )
+
+    display_content, references, workspace_references = (
+        session_conversations.project_conversation_references(prompt)
+    )
+
+    assert image_urls == ()
+    assert display_content == "请检查这个目录"
+    assert references == ()
+    assert workspace_references == (reference,)
 
 
 def _runtime_context(db: Session) -> tuple[str, str]:
