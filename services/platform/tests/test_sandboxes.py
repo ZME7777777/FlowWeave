@@ -1150,6 +1150,7 @@ def test_runtime_client_network_reconcile_reattaches_recreated_platform_clients(
                         "Name": network_name,
                         "Driver": "bridge",
                         "Internal": True,
+                        "Containers": {"new-api": {}},
                         "Labels": {
                             "flowweave.managed": "true",
                             "flowweave.resource-type": "network",
@@ -1165,7 +1166,7 @@ def test_runtime_client_network_reconcile_reattaches_recreated_platform_clients(
 
     monkeypatch.setattr(provider, "_run", fake_run)
 
-    assert provider.reconcile_runtime_client_networks() == 2
+    assert provider.reconcile_runtime_client_networks() == 1
     assert commands[0] == [
         "docker",
         "network",
@@ -1181,10 +1182,7 @@ def test_runtime_client_network_reconcile_reattaches_recreated_platform_clients(
         "label=flowweave.network-purpose=agent-runtime",
     ]
     assert commands[1] == ["docker", "network", "inspect", "network-id"]
-    assert commands[2:] == [
-        ["docker", "network", "connect", network_name, "new-api"],
-        ["docker", "network", "connect", network_name, "new-worker"],
-    ]
+    assert commands[2:] == [["docker", "network", "connect", network_name, "new-worker"]]
 
 
 def test_runtime_client_network_reconcile_ignores_provider_start_before_clients(

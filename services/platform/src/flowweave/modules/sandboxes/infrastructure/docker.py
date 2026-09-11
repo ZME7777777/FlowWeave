@@ -809,6 +809,12 @@ chmod 0700 "$target"
                     if isinstance(labels_value, dict)
                     else {}
                 )
+                containers_value = network.get("Containers")
+                attached_client_ids = (
+                    {str(container_id) for container_id in containers_value}
+                    if isinstance(containers_value, dict)
+                    else set()
+                )
                 resource_id = labels.get("flowweave.resource-id", "")
                 expected_name = self._runtime_network_name(resource_id)
                 valid = (
@@ -838,6 +844,8 @@ chmod 0700 "$target"
                     {"network_id": network_id},
                 )
             for client_id in clients:
+                if client_id in attached_client_ids:
+                    continue
                 self._connect_network(expected_name, client_id)
                 attached += 1
         return attached
