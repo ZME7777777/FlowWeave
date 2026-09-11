@@ -1,9 +1,9 @@
 # FlowRun OpenHands Runtime 重构进度
 
 > 创建日期：2026-08-21
-> 状态：`ACTIVE`
+> 状态：`COMPLETE`
 > 当前执行切片：无
-> 下一可执行切片：`FR-321 OpenHands 1.47 增强最终安全、恢复与性能门禁`
+> 下一可执行切片：无（`FR-309`–`FR-321` 最终门禁完成）
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -4162,12 +4162,25 @@ archive SHA；这只影响新 Runtime manifest 的验证，不改写历史 Envir
 `fallback_strategy.fallback_llms`，不把明文凭据写入 FlowWeave 数据库、Snapshot、前端或日志。
 供应商删除／禁用校验同时覆盖冻结 fallback 引用。
 
-### FR-321 OpenHands 1.47 增强最终安全、恢复与性能门禁 — READY
+### FR-321 OpenHands 1.47 增强最终安全、恢复与性能门禁 — DONE
 
 依赖：FR-309–FR-320。
 
 目标：统一验证所有增强切片的完整安全、恢复、流、Socket、性能、Memory、MCP、Plugin、动态镜像和
 fallback 矩阵；发布前确认原 ID reload、generation fencing、FlowWeave 授权边界与跨 FlowRun 隔离不回归。
+
+完成：以不可变 commit `029ff0931a88b816f50f03f2667bf39feb106005` 在
+`root@192.168.91.154:/opt/flowweave` 构建并发布全部受影响镜像。镜像内实际执行
+固定 OpenHands `30cf5832e42c71c24daa82a1a4fd5d25eb70d1b9`、四包 `1.47.0` 的
+`contract_check.py`，覆盖 persistence root、子进程密钥隔离与脱敏、Stream/Session Socket、
+EventLog、Memory、MCP OAuth、Plugin containment、动态 capability build 与 profile fallback
+正式契约。Migration 实际从 `0110_candidate_output_set_owner` 升级到
+`0111_env_runtime_caps → 0112_agent_fallback`；`api`、`runtime-provider` 健康，
+`worker`、`stream-api`、`web` 已从同一 platform/web image 强制重建。带前缀的 FlowWeave
+页面和 Agent 深层路由返回 200，未认证 Flow API 在内外网均返回预期 401，FastGPT `/login`
+保持 200。未创建真实用户模型调用、硬额度耗尽或新的 FlowRun，因而未将外部凭据/用量驱动的
+fallback 或有状态 conversation replacement 伪记为本次生产探针；这些机制由实际 Runtime
+contract、冻结策略与既有受控生命周期约束覆盖。
 
 ## 7. 恢复工作检查表
 
@@ -4184,6 +4197,7 @@ fallback 矩阵；发布前确认原 ID reload、generation fencing、FlowWeave 
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-12 | FR-321 | 远端预检（`root@192.168.91.154` / `/opt/flowweave`）；不可变源码 archive SHA 校验；所有受影响 `linux/amd64` 镜像构建与 image inspect；实际 Runtime `contract_check.py`；实际 PostgreSQL migration `0110_candidate_output_set_owner → 0111_env_runtime_caps → 0112_agent_fallback`；同一平台镜像强制重建 `runtime-provider/api/worker/stream-api` 与 Web；Compose 健康、两个服务内 `/health`、内外网带前缀 FlowWeave / Agent 路由、未认证 Flow API 与 FastGPT `/login` 请求 | PASS：固定 Runtime image `a2c3f865…` 和平台 image `9d9d40d9…` 均为 `linux/amd64`；镜像内固定 source commit、四包 `1.47.0` 与全部 1.47 增强契约通过。Migration 退出码 0，`api`、`runtime-provider` healthy，`worker`、`stream-api`、`web` Up；`/flowweave/`、`/flowweave/agent` 和 `/login` 返回 200，内外网 `/flowweave/api/v1/flows` 返回预期 401。未创建真实用户模型调用或有状态 FlowRun，因此外部额度耗尽 fallback 与真实 conversation replacement 未伪记为生产调用通过。无 CURRENT、READY 或后续切片。 |
 | 2026-09-12 | FR-320 | 固定 `30cf5832e` 的 `FallbackStrategy`、hard-quota retry exclusion 与 profile router 源码取证；扩展镜像 `contract_check.py`；新增冻结策略 schema、binding tamper fail-closed、provider resolution 与 Runtime profile payload pytest；`test_model_fallback_policy.py` + `test_openhands.py`（135 passed）、Web TypeScript typecheck 与 ESLint、受影响 Python Ruff/check、`py_compile`、`uv lock --check`、Alembic head、`git diff --check` 与任务状态唯一性 | PASS（静态／定向）：仅 FlowRun 自动启动的显式冻结策略可使用上游 profile-based fallback；未配置时不静默换模，损坏冻结策略与失效 provider/model 均拒绝继续执行。上游 hard quota 直接越过 retry backoff 并按有序 profile 尝试；Runtime profile 名按 fallback 身份稳定复用，避免按 Attempt 耗尽上游 profile 上限。唯一 Alembic head 为 `0112_agent_fallback`，无 CURRENT，FR-321 为唯一 READY。Docker daemon 不可用，故镜像内 `contract_check.py`、真实 hard-quota fallback、动态 Runtime、迁移实跑、Testcontainers provider/automatic-run 集成与 E2E 未执行且未记为通过。 |
 | 2026-09-12 | FR-319 | 固定 `30cf5832e` 的 Dockerfile／`BuildOptions.install_capabilities` 源码取证；扩展镜像 `contract_check.py`；新增 capability canonicalization、官方构建输入、manifest drift 与冻结版本不一致 pytest；`test_runtime_capabilities.py`（9 passed）、Web TypeScript typecheck 与 ESLint、受影响 Python Ruff/check、`py_compile`、`uv lock --check`、Alembic head、`git diff --check` 与任务状态唯一性 | PASS（静态／定向）：Environment Version 在发布起点冻结可选 `browser`／`vscode`／`docker` 集合，空集合为最小 Runtime；只有规范化集合生成的 OpenHands `INSTALL_CAPABILITIES` 与 `source`/`source-minimal` target 能进入正式构建，结果以 label/manifest 和版本字段互相校验。当前源码归档 SHA gate 已与 1.47 lock 一致。唯一 Alembic head 为 `0111_env_runtime_caps`，无 CURRENT，FR-320 为唯一 READY。Docker daemon 不可用，故镜像内 `contract_check.py`、真实 dynamic image build／target 内容、Runtime Provider publish、迁移实跑、Testcontainers Environment pytest 及 E2E 未执行且未记为通过。 |
 | 2026-09-12 | FR-318 | 固定 `30cf5832e` 的 nested-repository ancestry 与 local-source repo_path containment 源码取证；扩展镜像 `contract_check.py`；新增 direct Git source/commit/repo_path frozen-coordinate pytest；`test_plugin_resolver.py`（16 passed）、受影响 Python Ruff format/check、`py_compile`、`uv lock --check`、Alembic head、`git diff --check` 与任务状态唯一性 | PASS（静态／定向）：上游 local source 子路径会正确组合，`..` 或符号链接逃逸均拒绝；FlowWeave 继续不将本地 source 暴露为治理输入。直接 Git resolver 不能改写 source、完整 commit 或 repo_path，Marketplace 仍可按其已冻结 catalog 解析到独立且 allowlisted 的 immutable Plugin Source。唯一 Alembic head 为 `0110_candidate_output_set_owner`，无 CURRENT，FR-319 为唯一 READY。Docker daemon 不可用，故镜像内 `contract_check.py`、真实 isolated resolver／local symlink probe、Testcontainers architecture pytest 和 E2E 未执行且未记为通过。 |
