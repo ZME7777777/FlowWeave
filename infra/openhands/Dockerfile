@@ -81,7 +81,11 @@ COPY infra/openhands/plugin_resolver.py /runtime/plugin_resolver.py
 ENV PATH="/runtime/.venv/bin:/usr/local/bin:$PATH"
 ENV OPENHANDS_BUILD_GIT_SHA="30cf5832e42c71c24daa82a1a4fd5d25eb70d1b9" \
     OPENHANDS_BUILD_GIT_REF="30cf5832e42c71c24daa82a1a4fd5d25eb70d1b9"
-RUN /runtime/.venv/bin/python /runtime/contract_check.py
+# The dynamic build module resolves its UV workspace relative to the current
+# directory.  Run the pinned contract probe from the fetched source root so
+# that this production-image check covers the official build path as well.
+RUN cd /opt/openhands-source \
+ && /runtime/.venv/bin/python /runtime/contract_check.py
 RUN uv pip install --python /runtime/.venv/bin/python pip==25.1.1 \
  && ln -sf /runtime/.venv/bin/pip /usr/local/bin/pip \
  && ln -sf /runtime/.venv/bin/pip /usr/local/bin/pip3
