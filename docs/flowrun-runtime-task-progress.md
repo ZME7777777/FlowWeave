@@ -3737,6 +3737,14 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 
 完成：三个 xterm 入口均改为在所属 `document` 捕获阶段判断事件目标是否属于当前终端后调用 `preventDefault()`。xterm/tmux 仍接收同一事件，因此终端自身右键操作继续可用；组件卸载会移除对应 document listener。
 
+### FR-284 Agent 会话内容列与输入框对齐 — DONE
+
+依赖：FR-282。
+
+目标：Agent 工作台内的会话滚动区与底部输入框使用相同的居中内容列宽度；会话内容两侧保留小幅安全留白，不再随主面板整宽铺开。不得影响通用会话 Surface、门禁只读弹窗、OpenHands 事件、会话传输、Runtime 或后端合同。
+
+完成：仅在 Agent 工作台覆盖会话滚动区，将其内容列设为与 composer 相同的 860px 居中宽度，并保留 16px 两侧安全留白；通用 Conversation Surface 和只读弹窗继续使用原有布局。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -3752,6 +3760,7 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-11 | FR-284 | Web ESLint、TypeScript typecheck、production build、`git diff --check` 与任务状态唯一性 | PASS：Agent 工作台内会话内容列与底部 composer 使用同一 860px 居中宽度，会话区保留 16px 两侧空白；通用会话页面与只读弹窗不受影响。 |
 | 2026-09-11 | FR-283 | Web TypeScript typecheck；受影响 Web ESLint；production build；`git diff --check` 与任务状态唯一性 | PASS：浏览器菜单抑制改至 document 捕获阶段，覆盖 xterm canvas 的内部事件处理顺序；仅限当前终端 DOM 子树且不停止传播。 |
 | 2026-09-11 | FR-282 | Web TypeScript typecheck；受影响 Web ESLint；production build；`git diff --check` 与任务状态唯一性 | PASS：过程文本与最终回复同级呈现，工具调用收敛为低对比度辅助信息，工具和文件变更路径按当前绑定工作目录相对显示。Agent 工作区终端新增浏览器右键默认行为回归断言；同一保护覆盖 FlowRun Runtime 和环境配置终端，且不阻断 xterm/tmux 右键事件。Web typecheck、受影响 ESLint、production build 和 whitespace 检查通过。定向 Playwright 因本机既有页面状态阻塞未完成，未伪记为通过。 |
 | 2026-09-11 | FR-281 | Web ESLint、TypeScript typecheck、production build、`git diff --check` 与任务状态唯一性 | PASS：共享会话 Surface 的工作过程与最终回复使用相同 14px 正文字号，折叠状态保留；删除活动列表左侧竖线和缩进。长 Shell 命令、文件路径和普通过程标题均在会话列内单行省略，不会撑入右侧工作区；工具摘要额外采用可收缩标题／固定状态网格，展开后仍可完整查看命令／结果。未修改 OpenHands 事件、会话传输、Runtime、迁移或后端合同。 |
