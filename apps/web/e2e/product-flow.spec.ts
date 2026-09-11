@@ -904,6 +904,12 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   });
   expect(copiedTerminalSelection.copied).toMatch(/put-\d+/);
   expect(copiedTerminalSelection.prevented).toBe(true);
+  const terminalContextMenu = await terminalScreen.evaluate(screen => {
+    const event = new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2 });
+    screen.dispatchEvent(event);
+    return event.defaultPrevented;
+  });
+  expect(terminalContextMenu).toBe(true);
   await expect(page.locator('.agent-context-progress.token')).toContainText('Token0 / 922,000');
   await expect(page.locator('.agent-context-progress.activity')).toHaveCount(1);
   await expect(page.getByText('上下文用量正在从 OpenHands 读取')).toHaveCount(0);

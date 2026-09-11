@@ -35,6 +35,10 @@ export function RuntimeTerminal({ runId, conversationId, standalone = false }: R
     const fit = new FitAddon();
     terminal.loadAddon(fit);
     terminal.open(element);
+    // xterm and the remote terminal remain responsible for right-click input;
+    // only prevent the browser from opening its native menu over the terminal.
+    const suppressBrowserContextMenu = (event: MouseEvent) => event.preventDefault();
+    element.addEventListener('contextmenu', suppressBrowserContextMenu, { capture: true });
     let socket: WebSocket | null = null;
     let disposed = false;
     let reconnectTimer: number | undefined;
@@ -77,6 +81,7 @@ export function RuntimeTerminal({ runId, conversationId, standalone = false }: R
       disposed = true;
       if (reconnectTimer !== undefined) window.clearTimeout(reconnectTimer);
       observer.disconnect();
+      element.removeEventListener('contextmenu', suppressBrowserContextMenu, true);
       input.dispose();
       socket?.close(1000);
       terminal.dispose();

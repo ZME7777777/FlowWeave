@@ -37,6 +37,18 @@ export function workspaceRelativePath(path: string, workingDirectory?: string | 
   return candidate ? `./${candidate}` : '.';
 }
 
+/** Replace only the active workspace prefix in a tool command or result. */
+export function workspaceRelativeText(value: string, workingDirectory?: string | null): string {
+  const normalizedRoot = workingDirectory ? normalizedWorkspacePath(workingDirectory) : '';
+  if (!normalizedRoot) return value;
+  const prefixes = [
+    workingDirectory?.replace(/\/+$/, ''),
+    `/runtime/workspace/project/${normalizedRoot}`,
+    `/${normalizedRoot}`,
+  ].filter((prefix): prefix is string => Boolean(prefix));
+  return prefixes.reduce((text, prefix) => text.split(prefix).join('.'), value);
+}
+
 type PendingPatch = { id: string; path: string; lines: FileChangeLine[] };
 
 function detailString(value: unknown): string | undefined {

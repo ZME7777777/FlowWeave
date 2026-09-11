@@ -333,12 +333,24 @@ function detailContent(value: unknown): string {
   return typeof value === 'string' ? value.trim().slice(0, 12_000) : '';
 }
 
-function workspacePath(value: string): string {
-  return value.replace(/^\/runtime\/workspace\/project\/?/, '工作区/');
+function workspacePath(value: string, workspaceRoot?: string | null): string {
+  return workspaceRelativePath(value, workspaceRoot);
 }
 
-function compactCommand(value: string): string {
-  const compact = value.replace(/\s+/g, ' ').trim();
+function workspaceRelativeText(value: string, workspaceRoot?: string | null): string {
+  if (!workspaceRoot) return value;
+  const containerPrefix = '/runtime/workspace/project/';
+  const normalizedRoot = workspaceRoot.replaceAll('\\', '/');
+  const relativeRoot = normalizedRoot.startsWith(containerPrefix) ? normalizedRoot.slice(containerPrefix.length) : normalizedRoot.replace(/^\/+/, '');
+  const absoluteRoot = normalizedRoot.replace(/\/+$/, '');
+  const prefixes = [absoluteRoot, containerPrefix + relativeRoot, '/' + relativeRoot]
+    .filter(Boolean)
+    .sort((left, right) => right.length - left.length);
+  return prefixes.reduce((text, prefix) => text.split(prefix).join('.'), value);
+}
+
+function compactCommand(value: string, workspaceRoot?: string | null): string {
+  const compact = workspaceRelativeText(value, workspaceRoot).replace(/\s+/g, ' ').trim();
   return compact.length > 110 ? `${compact.slice(0, 107)}...` : compact;
 }
 
@@ -395,7 +407,7 @@ interface ActivityPresentation {
   resultDetails?: Record<string, unknown>;
 }
 
-function activityPresentation(entry: ActivityEntry, active: boolean): ActivityPresentation {
+function activityPresentation(entry: ActivityEntry, active: boolean, workspaceRoot?: string | null): ActivityPresentation {
   const item = entry.action ?? entry.item;
   if (item.kind === 'condensation') {
     return { title: item.title, status: item.event.event_type === 'CONDENSATION_COMPLETED' ? '已完成' : '处理中' };
@@ -420,14 +432,14 @@ function activityPresentation(entry: ActivityEntry, active: boolean): ActivityPr
   const thought = entry.action?.content ? entry.action.content.slice(0, 2_000) : undefined;
   const summary = detailText(entry.action?.event.payload.summary);
   const actionTitle = (fallback: string) => summary || fallback;
-  const output = entry.results.map(value => detailContent(value.content)).filter(Boolean).join('\n\n').slice(0, 12_000) || undefined;
+  const output = workspaceRelativeText(entry.results.map(value => detailContent(value.content)).filter(Boolean).join('\n\n').slice(0, 12_000), workspaceRoot) || undefined;
   const exitCode = typeof resultDetails.exit_code === 'number' ? String(resultDetails.exit_code) : undefined;
   if (eventName === 'TerminalAction' || eventName === 'TerminalObservation' || resultName === 'TerminalObservation') {
     const verb = failed ? '运行失败' : completed ? '已运行' : '正在运行';
     return {
-      title: command ? `${verb} ${compactCommand(command)}` : actionTitle(completed ? '命令已执行' : '正在运行命令'),
+      title: command ? `${verb} ${compactCommand(command, workspaceRoot)}` : actionTitle(completed ? '命令已执行' : '正在运行命令'),
       status: failed ? '终端 · 失败' : completed ? '终端 · 已完成' : '终端',
-      command, thought, output, exitCode, actionDetails: details, resultDetails,
+      command: workspaceRelativeText(command, workspaceRoot), thought, output, exitCode, actionDetails: details, resultDetails,
     };
   }
   if (eventName === 'FileEditorAction' || eventName === 'FileEditorObservation' || resultName === 'FileEditorObservation') {
@@ -437,11 +449,11 @@ function activityPresentation(entry: ActivityEntry, active: boolean): ActivityPr
         : operation === 'undo_edit' ? (failed ? '撤销失败' : completed ? '已撤销编辑' : '正在撤销编辑')
           : ['str_replace', 'insert', 'append'].includes(operation) ? (failed ? '编辑失败' : completed ? '已编辑' : '正在编辑')
             : failed ? '文件操作失败' : completed ? '已完成文件操作' : '正在处理文件';
-    const displayPath = path ? workspacePath(path) : '';
+    const displayPath = path ? workspacePath(path, workspaceRoot) : '';
     return {
       title: displayPath ? `${verb} ${displayPath}` : actionTitle(verb),
       status: failed ? '文件编辑器 · 失败' : completed ? '文件编辑器 · 已完成' : '文件编辑器',
-      path: displayPath || undefined, operation: command || undefined, thought, output, actionDetails: details, resultDetails,
+      path: displayPath || undefined, operation: workspaceRelativeText(command, workspaceRoot) || undefined, thought, output, actionDetails: details, resultDetails,
     };
   }
   if (eventName === 'TaskTrackerAction') {
@@ -482,18 +494,18 @@ function activityPresentation(entry: ActivityEntry, active: boolean): ActivityPr
   };
 }
 
-function displayDetails(details: Record<string, unknown>): string {
+function displayDetails(details: Record<string, unknown>, workspaceRoot?: string | null): string {
   const visible = Object.fromEntries(Object.entries(details).filter(([key]) => !['content', 'old_content', 'new_content'].includes(key)));
-  return Object.keys(visible).length ? JSON.stringify(visible, null, 2).slice(0, 12_000) : '';
+  return Object.keys(visible).length ? workspaceRelativeText(JSON.stringify(visible, null, 2), workspaceRoot).slice(0, 12_000) : '';
 }
 
-function ToolDetailPanel({ presentation, eventName }: { presentation: ActivityPresentation; eventName: string }) {
+function ToolDetailPanel({ presentation, eventName, workspaceRoot }: { presentation: ActivityPresentation; eventName: string; workspaceRoot?: string | null }) {
   const details = presentation.actionDetails ?? {};
   const resultDetails = presentation.resultDetails ?? {};
   const isTerminal = eventName.includes('Terminal');
   const isFile = eventName.includes('FileEditor');
-  const structured = displayDetails(details);
-  const structuredResult = displayDetails(resultDetails);
+  const structured = displayDetails(details, workspaceRoot);
+  const structuredResult = displayDetails(resultDetails, workspaceRoot);
   const fileText = detailContent(details.file_text);
   const oldText = detailContent(details.old_str);
   const newText = detailContent(details.new_str);
@@ -855,10 +867,11 @@ function ActivityGroup({ items, active, liveText, startedAt, finishedAt, avatarS
           : undefined;
         const ToolIcon = eventName.includes('Terminal') ? SquareTerminal : eventName.includes('FileEditor') ? FileText : Icon;
         const taskAvatar = avatarSlot && <SubagentAvatar slot={avatarSlot} status={taskAvatarStatus(entry, item)} size={14}/>;
-        const presentation = activityPresentation(entry, active);
-        const toolDetail = item.kind === 'tool' ? <ToolDetailPanel presentation={presentation} eventName={eventName}/> : null;
+        const presentation = activityPresentation(entry, active, workspaceRoot);
+        const toolDetail = item.kind === 'tool' ? <ToolDetailPanel presentation={presentation} eventName={eventName} workspaceRoot={workspaceRoot}/> : null;
+        if (item.kind === 'thought') return <article className="conversation-activity-row thought" key={entry.id}><MessageMarkdown>{presentation.thought ?? item.content}</MessageMarkdown></article>;
         if (item.kind === 'tool' && toolDetail) return <div className="conversation-tool-entry" key={entry.id}>
-          {presentation.thought && <article className="conversation-activity-row thought"><Sparkles size={14}/><div><MessageMarkdown>{presentation.thought}</MessageMarkdown></div></article>}
+          {presentation.thought && <article className="conversation-activity-row thought"><MessageMarkdown>{presentation.thought}</MessageMarkdown></article>}
           <details className="conversation-activity-row tool conversation-tool-detail">
             <summary>{taskAvatar ?? <ToolIcon size={14}/>}<div><b title={presentation.title}>{presentation.title}</b><small>{presentation.status}</small></div><ChevronRight className="conversation-tool-chevron" size={13}/></summary>
             {toolDetail}
@@ -874,7 +887,7 @@ function ActivityGroup({ items, active, liveText, startedAt, finishedAt, avatarS
         <button type="button" onClick={() => onReviewChanges?.(changes)}><FileText size={14}/><span><b>{`已更改 ${changes.length} 个文件`}</b><small><ins>{`+${changes.reduce((total, change) => total + change.additions, 0)}`}</ins><del>{`-${changes.reduce((total, change) => total + change.deletions, 0)}`}</del></small></span><PanelRightOpen size={13}/></button>
         <div>{changes.map(change => <button type="button" key={change.id} onClick={() => onReviewChanges?.([change])} title={`审查 ${workspaceRelativePath(change.path, workspaceRoot)}`}><span>{workspaceRelativePath(change.path, workspaceRoot)}</span><ins>{`+${change.additions}`}</ins><del>{`-${change.deletions}`}</del></button>)}</div>
       </section>}
-      {liveText && <article className="conversation-activity-row live-text"><Sparkles size={14}/><div><b>正在生成回复</b><small>模型输出</small><p className="conversation-live-text-content">{liveText}</p></div></article>}
+      {liveText && <article className="conversation-activity-row thought live-text"><MessageMarkdown>{liveText}</MessageMarkdown></article>}
     </div>
   </details>;
 }

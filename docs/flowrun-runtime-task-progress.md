@@ -3721,6 +3721,14 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 
 完成：过程摘要、工具调用和中间文本统一为 14px／最终回复同级的可折叠区域，删除左侧竖线和额外内缩。过程组、列表、行和摘要均以 `min-width: 0`／`max-width: 100%` 约束在会话列内；普通活动行及工具摘要均以可收缩主标题列和固定状态列组成网格，长文件路径与命令摘要只在主列显示省略号。工具详情展开后仍展示完整命令与结果，并保留独立滚动。
 
+### FR-282 Agent 会话文本／工具视觉分层与工作区相对路径 — DONE
+
+依赖：FR-281。
+
+目标：过程中的文本输出直接使用与最终回复一致的正文呈现，不显示工具图标、状态或额外卡片样式；真实工具调用改为更小、低对比度的灰色辅助信息。工具和文件变更处显示的路径必须以当前会话绑定工作目录为根，展示为 `./…` 相对路径；不得修改 OpenHands 事件、会话传输、Runtime 或后端合同。
+
+完成：过程 Thought 与实时输出直接使用正文 Markdown 呈现；真实工具调用以低对比度辅助信息显示。命令、工具结果、结构化详情和文件变更统一按当前工作目录显示 `./…` 相对路径。三个 xterm 入口（Agent 工作区、FlowRun Runtime 与环境配置终端）会取消浏览器原生右键菜单默认行为，但不停止事件传播，因此终端自身的右键操作仍可处理。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -3736,6 +3744,7 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-11 | FR-282 | Web TypeScript typecheck；受影响 Web ESLint；production build；`git diff --check` 与任务状态唯一性 | PASS：过程文本与最终回复同级呈现，工具调用收敛为低对比度辅助信息，工具和文件变更路径按当前绑定工作目录相对显示。Agent 工作区终端新增浏览器右键默认行为回归断言；同一保护覆盖 FlowRun Runtime 和环境配置终端，且不阻断 xterm/tmux 右键事件。Web typecheck、受影响 ESLint、production build 和 whitespace 检查通过。定向 Playwright 因本机既有页面状态阻塞未完成，未伪记为通过。 |
 | 2026-09-11 | FR-281 | Web ESLint、TypeScript typecheck、production build、`git diff --check` 与任务状态唯一性 | PASS：共享会话 Surface 的工作过程与最终回复使用相同 14px 正文字号，折叠状态保留；删除活动列表左侧竖线和缩进。长 Shell 命令、文件路径和普通过程标题均在会话列内单行省略，不会撑入右侧工作区；工具摘要额外采用可收缩标题／固定状态网格，展开后仍可完整查看命令／结果。未修改 OpenHands 事件、会话传输、Runtime、迁移或后端合同。 |
 | 2026-09-11 | FR-280 | Web ESLint、TypeScript typecheck、production build、`git diff --check` 与任务状态唯一性 | PASS：带部署前缀的活动 `/agent/conversations/:bindingId` 在入口脚本变更、30 秒部署探测或窗口重新获得焦点时不再触发全页 `window.location.reload()`；实时过程保留在浏览器内存直至 OpenHands 写入正式事件。其它路由继续按既有版本探测刷新。Web lint/typecheck/build 与 whitespace 检查通过；未新增迁移。 |
 | 2026-09-11 | FR-279 | 受影响 Python Ruff/格式、`py_compile`；Web ESLint、TypeScript typecheck、production build；`git diff --check`；终态节点会话定向 pytest | PASS（静态与构建）：终态节点入口保留只读会话，服务端继续拒绝会话写入；终端和受限工作区文件新建/删除使用独立授权路径。Ruff、格式、语法、Web lint/typecheck/build 与 whitespace 通过。4 条定向 pytest 已收集，但均在业务断言前因本机 Docker Unix socket 缺失、Testcontainers PostgreSQL 无法创建而阻断，未伪记为通过。无迁移、无 `CURRENT`。 |
