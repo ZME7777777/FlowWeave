@@ -106,6 +106,17 @@ def _observe_task_watchdogs_after_send(
     observe_task_watchdogs_from_runtime(db, binding, handle)
 
 
+def _accepts_queued_user_message(execution_status: str) -> bool:
+    """Whether OpenHands may consume a formal user event after this turn.
+
+    Only an active standard-Agent turn has the upstream async-step rescan
+    contract.  Confirmation, interruption and lifecycle transitions retain
+    their explicit product controls and must fail closed.
+    """
+
+    return execution_status.strip().lower() in {"running", "executing"}
+
+
 def _attempt(db: Session, attempt_id: str) -> NodeAttempt:
     item = db.get(NodeAttempt, attempt_id)
     if item is None:
@@ -1850,11 +1861,22 @@ def send_question(
         base64.b64decode(value.partition(",")[2], validate=True)
     handle = _handle(db, binding_id)
     runtime = get_runtime()
-    if not runtime.can_accept_input(handle):
-        raise DomainError("AGENT_CONVERSATION_BUSY", "Agent 正在处理上一条消息，请稍候", 409)
-    provider = provider_for_config(db, config_from_binding(db, item))
-    if provider is not None:
-        runtime.switch_model(handle, provider)
+    readiness = runtime.input_readiness(handle)
+    queued_during_turn = not readiness.ready
+    if queued_during_turn:
+        # OpenHands consumes a formal user event appended while a standard
+        # Agent is running after its current async LLM/tool step.  Do not
+        # rebind the model while that turn owns the native Event Service.
+        if not _accepts_queued_user_message(readiness.execution_status):
+            raise DomainError(
+                "AGENT_CONVERSATION_BUSY",
+                "Agent 正在处理停止或确认请求，请稍候",
+                409,
+            )
+    else:
+        provider = provider_for_config(db, config_from_binding(db, item))
+        if provider is not None:
+            runtime.switch_model(handle, provider)
     result = runtime.send_message(handle, text, image_urls)
     _observe_task_watchdogs_after_send(db, item, handle)
     db.add(
@@ -1876,7 +1898,12 @@ def send_question(
     item.last_connected_at = activity_at
     item.updated_at = activity_at
     finish(db)
-    return {"accepted": True, "cursor": result.cursor, "runtime": _result_dict(result)}
+    return {
+        "accepted": True,
+        "cursor": result.cursor,
+        "runtime": _result_dict(result),
+        "queued_during_turn": queued_during_turn,
+    }
 
 
 def send_flow_run_question(
@@ -1949,7 +1976,7 @@ def send_node_message(
         # A running standard OpenHands Agent natively appends this user event
         # and consumes it after the current LLM/tool step. Do not interrupt the
         # current turn or mutate model/fork/compaction state concurrently.
-        if readiness.execution_status not in {"running", "executing"}:
+        if not _accepts_queued_user_message(readiness.execution_status):
             raise DomainError(
                 "AGENT_CONVERSATION_BUSY", "Agent 正在处理停止或确认请求，请稍候", 409
             )

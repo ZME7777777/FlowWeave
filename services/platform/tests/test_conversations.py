@@ -1022,6 +1022,68 @@ def test_node_message_keeps_an_end_blocked_attempt_observing_native_events(
         )
 
 
+def test_legacy_flow_run_question_queues_during_native_async_turn(
+    db_session_factory: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The legacy FlowRun question endpoint must not reject a running turn."""
+
+    with db_session_factory() as db:
+        flow_run_id, runtime_session_id, attempt_id = _node_session_context(db)
+        attempt = db.get(NodeAttempt, attempt_id)
+        assert attempt is not None
+        binding = AgentConversationBinding(
+            workspace_id=None,
+            host_kind="FLOW_NODE",
+            host_id=flow_run_id,
+            conversation_scope_id=attempt_id,
+            flow_run_id=flow_run_id,
+            node_run_id=attempt.node_run_id,
+            node_attempt_id=attempt_id,
+            runtime_session_id=runtime_session_id,
+            working_directory=attempt.workspace_ref,
+            openhands_conversation_id="async-running-conversation",
+            lifecycle="ACTIVE",
+            create_idempotency_key=f"async-running:{attempt_id}",
+        )
+        db.add(binding)
+        db.flush()
+
+        sent: list[tuple[str, tuple[str, ...]]] = []
+
+        class RunningRuntime:
+            def input_readiness(self, _handle: object) -> RuntimeInputReadiness:
+                return RuntimeInputReadiness(ready=False, execution_status="running")
+
+            def switch_model(self, _handle: object, _provider: object) -> None:
+                raise AssertionError("a running turn must not rebind its model")
+
+            def send_message(
+                self, _handle: object, content: str, images: tuple[str, ...]
+            ) -> RuntimeResult:
+                sent.append((content, images))
+                return RuntimeResult(status="RUNNING", cursor="queued-user-event")
+
+        monkeypatch.setattr(flow_node_conversations, "_binding", lambda *_args, **_kwargs: binding)
+        monkeypatch.setattr(flow_node_conversations, "_handle", lambda *_args, **_kwargs: object())
+        monkeypatch.setattr(flow_node_conversations, "get_runtime", lambda: RunningRuntime())
+        monkeypatch.setattr(
+            flow_node_conversations, "_observe_task_watchdogs_after_send", lambda *_args: None
+        )
+
+        payload = SimpleNamespace(
+            client_question_id="queued-turn",
+            content=[SimpleNamespace(type="text", text="继续处理当前任务")],
+        )
+        result = flow_node_conversations.send_question(
+            db, binding.id, payload, "queued-turn-key", "user-1"
+        )
+
+        assert result["accepted"] is True
+        assert result["cursor"] == "queued-user-event"
+        assert result["queued_during_turn"] is True
+        assert sent == [("继续处理当前任务", ())]
+
+
 def test_node_session_list_orders_recent_activity_first(
     db_session_factory: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
 ) -> None:

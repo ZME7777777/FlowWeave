@@ -10,6 +10,9 @@ import httpx
 import pytest
 
 from flowweave.bootstrap.settings import Settings
+from flowweave.modules.agent_sessions.application.flow_node_conversations import (
+    _accepts_queued_user_message,
+)
 from flowweave.runtime import openhands as openhands_module
 from flowweave.runtime.auth import derive_runtime_session_key
 from flowweave.runtime.base import (
@@ -21,6 +24,7 @@ from flowweave.runtime.base import (
     RuntimeCondenser,
     RuntimeCritic,
     RuntimeHandle,
+    RuntimeInputReadiness,
     RuntimeMCP,
     RuntimeMCPOAuthCallbackRequest,
     RuntimeMCPOAuthJobRequest,
@@ -2186,8 +2190,10 @@ def test_openhands_resume_interrupts_the_active_turn_before_steering(
 
 def test_openhands_send_message_advances_cursor_to_user_event(openhands_settings, monkeypatch):
     runtime = OpenHandsRuntime(openhands_settings)
+    requests: list[dict[str, object]] = []
 
-    def fake_request(_method: str, _path: str, **_kwargs: object) -> dict[str, object]:
+    def fake_request(_method: str, _path: str, **kwargs: object) -> dict[str, object]:
+        requests.append(kwargs)
         return {"id": "user-event-2"}
 
     monkeypatch.setattr(runtime, "_request", fake_request)
@@ -2198,6 +2204,29 @@ def test_openhands_send_message_advances_cursor_to_user_event(openhands_settings
 
     assert result.status == "RUNNING"
     assert result.cursor == "user-event-2"
+    assert len(requests) == 1
+    assert requests[0]["timeout"] == 3600
+    assert requests[0]["json"] == {
+        "role": "user",
+        "content": [{"type": "text", "text": "读取当前输入"}],
+        "run": True,
+    }
+
+
+@pytest.mark.parametrize(
+    ("readiness", "expected"),
+    (
+        (RuntimeInputReadiness(ready=False, execution_status="running"), True),
+        (RuntimeInputReadiness(ready=False, execution_status=" EXECUTING "), True),
+        (RuntimeInputReadiness(ready=False, execution_status="waiting_for_confirmation"), False),
+        (RuntimeInputReadiness(ready=False, execution_status="stopping"), False),
+        (RuntimeInputReadiness(ready=True, execution_status="idle"), False),
+    ),
+)
+def test_openhands_running_turn_queue_gate_is_limited_to_native_async_states(
+    readiness: RuntimeInputReadiness, expected: bool
+):
+    assert _accepts_queued_user_message(readiness.execution_status) is expected
 
 
 def test_openhands_public_stream_exposes_text_but_not_reasoning():

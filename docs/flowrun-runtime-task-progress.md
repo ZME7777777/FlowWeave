@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`ACTIVE`
 > 当前执行切片：无
-> 下一可执行切片：`FR-315 异步运行中用户消息与流式 idle 保活`
+> 下一可执行切片：`FR-316 Memory 创建路径与恢复一致性`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -4039,14 +4039,24 @@ endpoint、session key 或未经授权的 Event。
 
 完成：固定 `1.47.0` 的 `EventLog.append()` 合同现额外锁定为先检查长度 marker、仅在 marker 不能证明同一长度时才目录扫描；普通单 writer append 不随 EventLog 历史线性退化。FlowWeave 不复制该 marker、index 或 event cursor；Session Socket replay 保持由 OpenHands 逐页读盘。平台的按需 REST active-HEAD reconciliation 与遗留 fork branch recovery 共享 8 秒交互读 deadline，最多跨 8 个原生 100-event 页面（800 个正式 Event）。超过预算返回明确 `RUNTIME_EVENT_HISTORY_BUDGET_EXHAUSTED`，不会让一次恢复/状态读扫描无限长历史；显式历史分页与授权 Relay durable replay 仍为完整历史入口。Provider Relay 的 hub、subscriber 和队列上限继续作为 fan-out 资源门禁，不新增平台 EventLog 或状态存储。
 
-### FR-315 异步运行中用户消息与流式 idle 保活 — READY
+### FR-315 异步运行中用户消息与流式 idle 保活 — DONE
 
 依赖：FR-314。
 
 目标：验证异步 step 内新增 user message 被继续消费，及仅有 streaming delta 的长输出不会被 Runtime
 误判 idle 回收；保持 FlowWeave 显式暂停、排队发送和 generation fence 的产品语义。
 
-### FR-316 Memory 创建路径与恢复一致性 — PENDING
+完成：固定 `30cf5832e` 源码契约锁定 `LocalConversation.arun()` 在异步 step 后重新比较
+`last_user_message_id` 并继续消费运行中抵达的正式 user event，及 `EventService` 从 streaming delta
+生产端以节流方式刷新 Server 的 idle clock。FlowWeave 不复制 run loop 或 heartbeat：普通 FlowRun 提问入口
+现在与 Agent Workspace／节点会话一致，仅在正式 `running/executing` 状态直接提交原生
+`POST /events` user message（`run=true`），不在活动 turn 内重绑模型、fork、压缩或中断；停止、暂停、
+确认等非可续处理状态继续 fail closed。Adapter 对该原生 append 使用 3600 秒单请求等待边界，避免 Agent
+持有 step lock 时短超时触发重复发送；仍只返回正式 cursor，不持久化 stream delta 或 idle 信号。
+FlowRun Runtime 仍由显式生命周期持有且没有 idle TTL，stream heartbeat 只属于 OpenHands Server 的会话
+内存回收时钟。
+
+### FR-316 Memory 创建路径与恢复一致性 — READY
 
 依赖：FR-315。
 
@@ -4104,6 +4114,7 @@ fallback 矩阵；发布前确认原 ID reload、generation fencing、FlowWeave 
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-12 | FR-315 | 固定 `30cf5832e` 的 async-step user-message rescan 和 stream idle heartbeat 源码取证；扩展镜像 `contract_check.py`；运行中消息 gate、正式 user append timeout pytest；`test_openhands.py`（125 passed）、受影响 Python Ruff format/check、`py_compile`、`uv lock --check`、Alembic head、固定源码断言、`git diff --check` 与任务状态唯一性 | PASS（静态／定向）：运行中只有 `running/executing` 可向 OpenHands 正式追加 user event，当前原生 turn 不会被平台 interrupt、重绑或复制；确认/停止/暂停态仍拒绝。仅 streaming delta 时由上游 Event Service 维持其 idle clock，FlowRun Runtime 本身仍没有控制面 idle 回收。唯一 Alembic head 为 `0110_candidate_output_set_owner`，无 CURRENT，FR-316 为唯一 READY。Docker daemon 不可用，故镜像内 `contract_check.py`、真实 async LLM/tool step 消费、长流 idle eviction、Provider docker exec、Testcontainers 会话集成和 E2E 验证未执行且未记为通过。 |
 | 2026-09-12 | FR-314 | 固定 `30cf5832e` 的 `EventLog` marker/append 和 session-socket replay 源码取证；扩展镜像 contract_check marker 断言；新增长会话 active cursor 与 legacy fork 分支页数预算 pytest；`test_openhands.py`（120 passed）、受影响 Python Ruff format/check、`py_compile`、`uv lock --check`、Alembic head、`git diff --check` 与任务状态唯一性 | PASS（静态／定向）：普通上游 append 通过 marker 避免按长度目录扫描；FlowWeave 只在请求内按正式 id 回溯，最多读取 8 × 100 个原生 Event，超限 fail closed 并不持久化 sequence/cursor。显式历史分页、授权 durable replay 及 Provider fan-out 的既有上限保持不变。唯一 Alembic head 为 `0110_candidate_output_set_owner`，无 CURRENT，FR-315 为唯一 READY。Docker daemon 不可用，故固定镜像内 contract_check、真实长会话 append/replay/backpressure、Provider docker exec、Testcontainers 和端到端压力验证未执行且未记为通过。 |
 | 2026-09-12 | FR-313 | 固定 `30cf5832e` session socket、Event Service 与 StreamContext 源码取证；新增 remote/directed session-socket durable replay、cursor、exclusive `after_seq`、派生认证与 Provider 请求 nonce 测试；`test_openhands.py`（118 passed）、受影响 Python Ruff format/check、`py_compile`、Web TypeScript typecheck、ESLint、`uv lock --check`、Alembic head、`git diff --check` 与任务状态唯一性 | PASS（静态／定向）：浏览器只在活跃订阅 closure 保留 sequence，并通过 FlowWeave 授权 Relay 请求 durable suffix；Runtime endpoint、session key、原始 envelope/reasoning 和游标均不暴露或持久化。session replay Relay 不共享，避免后来订阅者错过已发送历史；live Relay 保持有界 fan-out，慢消费者继续被断开并可凭正式 `after_seq` 恢复。唯一 Alembic head 为 `0110_candidate_output_set_owner`，无 CURRENT，FR-314 为唯一 READY。Docker daemon 不可用，故真实 Runtime socket 的 replay/backpressure、Provider `docker exec` relay、镜像内 `contract_check.py`、Testcontainers 与端到端浏览器断连重连未执行且未记为通过。 |
 | 2026-09-12 | FR-312 | 固定 StreamContext、Event Service 与 socket 源码取证；新增 attempt/order/abort/durable-id/Relay-end 测试；test_openhands.py（116 passed）、Python Ruff、py_compile、Web TypeScript typecheck、ESLint、Alembic head、uv lock check、diff check 与任务状态检查 | PASS（静态／定向）：短暂 slot 仅接受正式 stream identity，重试、abort、durable event 与 Relay 结束都清理浏览器临时文本且不持久化。唯一 Alembic head 为 0110_candidate_output_set_owner；无 CURRENT，FR-313 为唯一 READY。Docker 不可用，未运行真实 Runtime Relay、socket reconnect、镜像 contract 或 Testcontainers 验证。 |

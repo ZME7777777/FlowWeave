@@ -28,6 +28,7 @@ os.environ.setdefault("OH_SECRET_KEY", "flowweave-contract-check-secret-00000000
 os.environ.setdefault("OH_PERSISTENCE_DIR", "/runtime/state/persistence")
 
 from openhands.agent_server.api import create_app
+from openhands.agent_server.event_service import EventService
 from openhands.agent_server.mcp_router import (
     MCPOAuthCallbackRequest,
     MCPOAuthStartResponse,
@@ -66,6 +67,7 @@ from openhands.sdk.context.memory import (
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.event_store import EventLog
 from openhands.sdk.conversation.goal import GoalStatus, GoalVerdict
+from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
@@ -241,6 +243,26 @@ def _assert_durable_event_log_sequence() -> None:
     assert append_source.index("self._fs.write") < append_source.index("return idx")
 
 
+def _assert_async_turn_and_stream_idle_contract() -> None:
+    """Lock the upstream-only queueing and streamed-idle-heartbeat behavior.
+
+    FlowWeave must submit running-turn questions as ordinary native user events;
+    it neither owns the run loop nor emits a synthetic activity signal.
+    """
+
+    run_source = getsource(LocalConversation.arun)
+    assert "last_user_message_id = self._state.last_user_message_id" in run_source
+    assert "new_message_arrived = (" in run_source
+    assert "self._state.last_user_message_id != last_user_message_id" in run_source
+    assert "User message arrived during step; continuing run" in run_source
+
+    event_service_source = getsource(EventService)
+    stream_signal_source = getsource(EventService._signal_stream_activity)
+    assert "_last_stream_activity_signal" in event_service_source
+    assert "self._signal_stream_activity()" in event_service_source
+    assert "update_last_execution_time()" in stream_signal_source
+
+
 def _assert_profile_provider_secret_and_condenser_behavior() -> None:
     child_environment = sanitized_env(
         {
@@ -395,6 +417,7 @@ def main() -> None:
     assert _WebSocketSubscriber.receives_streaming_deltas is True
     asyncio.run(_assert_targeted_streaming_delta_delivery())
     _assert_durable_event_log_sequence()
+    _assert_async_turn_and_stream_idle_contract()
     _assert_profile_provider_secret_and_condenser_behavior()
     provenance_path = Path("/runtime/openhands-source-provenance.json")
     if not provenance_path.is_file():
@@ -1263,6 +1286,8 @@ def main() -> None:
                 "usable_tool_count": len(server_info.usable_tools),
                 "streaming_delta_delivery_is_subscriber_scoped": True,
                 "event_log_append_returns_durable_sequence": True,
+                "async_step_consumes_mid_turn_user_message": True,
+                "streaming_delta_refreshes_runtime_idle_timer": True,
                 "remote_structured_builtin_resolution": True,
                 "agent_definition_field_count": len(agent_definition_fields),
                 "agent_profile_http_methods": profile_http_methods,
