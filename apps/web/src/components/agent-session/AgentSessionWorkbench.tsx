@@ -1614,18 +1614,27 @@ function selectedGitRepository(repositories: AgentSessionWorkspaceDetails['repos
     .sort((left, right) => right.path.length - left.path.length)[0];
 }
 
-function WorkspaceGitSidebar({ details, repository, loadLog, loadCommit, loadDiff, onOpenFileDiff }: {
+function WorkspaceGitSidebar({ details, repository, loadLog, loadCommit, loadDiff, onOpenFileDiff, closedDiffEpoch }: {
   details: AgentSessionWorkspaceDetails;
   repository: AgentSessionWorkspaceDetails['repositories'][number];
   loadLog: (repositoryPath: string) => Promise<import('../../types').WorkspaceGitLog>;
   loadCommit: (repositoryPath: string, commit: string) => Promise<WorkspaceGitCommitDetails>;
   loadDiff: (repositoryPath: string, commit: string, path: string) => Promise<WorkspaceGitFileDiff>;
   onOpenFileDiff: (details: WorkspaceGitCommitDetails, diff: WorkspaceGitFileDiff) => void;
+  closedDiffEpoch: number;
 }) {
   const [selectedCommit, setSelectedCommit] = useState<string>();
   const [selectedCommitFile, setSelectedCommitFile] = useState<string>();
   const openedDiffRef = useRef<string | undefined>(undefined);
   useEffect(() => { setSelectedCommit(undefined); setSelectedCommitFile(undefined); }, [repository.path]);
+  useEffect(() => {
+    if (!closedDiffEpoch) return;
+    // The central Diff tab was explicitly closed.  Its selected source file
+    // must be selectable again; otherwise the cached opened key suppresses a
+    // second click on that same file.
+    openedDiffRef.current = undefined;
+    setSelectedCommitFile(undefined);
+  }, [closedDiffEpoch]);
   const logQuery = useQuery({
     queryKey: ['workspace-git-log', repository.path],
     queryFn: () => loadLog(repository.path),
@@ -1926,6 +1935,7 @@ function WorkspaceDrawer({
   const [selectedEntryPaths, setSelectedEntryPaths] = useState<Set<string>>(new Set());
   const [activeDirectory, setActiveDirectory] = useState<string>();
   const [gitContextPath, setGitContextPath] = useState<string>();
+  const [closedGitDiffEpoch, setClosedGitDiffEpoch] = useState(0);
   const [expandedFilePaths, setExpandedFilePaths] = useState<Set<string>>(new Set());
   const [fileDirectoryPaths, setFileDirectoryPaths] = useState<string[]>([]);
   const allFileDirectoriesExpanded = fileDirectoryPaths.length > 0 && fileDirectoryPaths.every(path => expandedFilePaths.has(path));
@@ -2134,8 +2144,14 @@ function WorkspaceDrawer({
     }
     updateScope(current => {
       const tabs = current.tabs.filter(candidate => candidate.id !== tab.id);
-      return { ...current, tabs, activeTabId: current.activeTabId === tab.id ? tabs[tabs.length - 1]?.id : current.activeTabId };
+      return {
+        ...current,
+        tabs,
+        activeTabId: current.activeTabId === tab.id ? tabs[tabs.length - 1]?.id : current.activeTabId,
+        selectedGitFile: tab.kind === 'git' ? undefined : current.selectedGitFile,
+      };
     });
+    if (tab.kind === 'git') setClosedGitDiffEpoch(current => current + 1);
     if (scopeState.tabs.length === 1 && scopeState.tabs[0]?.id === tab.id) {
       setFullScreen(false);
       onClose();
@@ -2251,7 +2267,7 @@ function WorkspaceDrawer({
           {scopeState.tabs.filter((tab): tab is Extract<WorkspaceToolTab, { kind: 'git' }> => tab.kind === 'git').map(tab => <div key={tab.id} className={`agent-changes-tab-panel agent-git-commit-tab ${scopeState.activeTabId === tab.id ? 'active' : ''}`}><WorkspaceGitFileDiffReview details={tab.details} diff={tab.diff}/></div>)}
           {scopeState.tabs.some(tab => tab.kind === 'subagents') && <div className={`agent-subagent-tab-panel ${scopeState.activeTabId === 'subagents' ? 'active' : ''}`}><RuntimeTaskTab tasks={runtimeTasks} definitions={agentDefinitions} selectedTaskId={scopeState.selectedRuntimeTaskId} onSelect={taskId => updateScope(current => ({ ...current, selectedRuntimeTaskId: taskId }))} sessionStopped={sessionStopped}/></div>}
           {scopeState.tabs.filter((tab): tab is Extract<WorkspaceToolTab, { kind: 'terminal' }> => tab.kind === 'terminal').map(tab => <div key={tab.id} className={`agent-terminal-tab-panel ${scopeState.activeTabId === tab.id ? 'active' : ''}`}>{runtimeAvailable ? <WorkspaceTerminal workspaceId={workspaceId} terminalInstanceId={tab.terminalInstanceId} bindingId={bindingId} workDirectoryId={workDirectoryId} workingDirectory={details.working_directory}/> : <div className="agent-drawer-empty"><LoaderCircle className="agent-drawer-spinner" size={20}/><b>终端正在恢复</b><span>文件仍可使用；运行环境恢复后终端会自动可用。</span></div>}</div>)}
-          {gitSidebarVisible && gitRepository && <WorkspaceGitSidebar details={details} repository={gitRepository} loadLog={repositoryPath => api.gitLog(workspaceId, repositoryPath, gitOptions)} loadCommit={(repositoryPath, commit) => api.gitCommit(workspaceId, repositoryPath, commit, gitOptions)} loadDiff={(repositoryPath, commit, path) => api.gitDiff(workspaceId, repositoryPath, commit, path, gitOptions)} onOpenFileDiff={openGitFileDiff}/>}
+          {gitSidebarVisible && gitRepository && <WorkspaceGitSidebar details={details} repository={gitRepository} loadLog={repositoryPath => api.gitLog(workspaceId, repositoryPath, gitOptions)} loadCommit={(repositoryPath, commit) => api.gitCommit(workspaceId, repositoryPath, commit, gitOptions)} loadDiff={(repositoryPath, commit, path) => api.gitDiff(workspaceId, repositoryPath, commit, path, gitOptions)} onOpenFileDiff={openGitFileDiff} closedDiffEpoch={closedGitDiffEpoch}/>}
         </div>)}
       </div>
     </section>{entryMenu && <div className="agent-file-context-menu" role="menu" aria-label="文件操作菜单" style={{ left: entryMenu.x, top: entryMenu.y }} onPointerDown={event => event.stopPropagation()}>{entryMenu.kind === 'directory' && <><button type="button" role="menuitem" onClick={() => { void createEntry(entryMenu.path, 'FILE'); setEntryMenu(undefined); }}><FileCode2 size={14}/>新建文件</button><button type="button" role="menuitem" onClick={() => { void createEntry(entryMenu.path, 'DIRECTORY'); setEntryMenu(undefined); }}><FolderPlus size={14}/>新建目录</button></>}<button type="button" className="danger" role="menuitem" onClick={() => { void removeEntries([{ path: entryMenu.path, kind: entryMenu.kind }]); setEntryMenu(undefined); }}><Trash2 size={14}/>{entryMenu.kind === 'directory' ? '删除目录' : '删除文件'}</button></div>}
