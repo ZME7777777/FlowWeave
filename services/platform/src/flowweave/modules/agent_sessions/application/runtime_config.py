@@ -58,6 +58,18 @@ PROJECT_ROOT_SYSTEM_CONTEXT = "\n".join(
         "只要任务跟踪器仍有未完成项，或用户的完成条件尚未满足，就不得因为上下文压缩而提前收口。",
     )
 )
+CONVERSATION_COLLABORATION_CONTEXT = "\n".join(
+    (
+        "协作节奏：向用户展示的是阶段目标和可验证进展，而不是每一条工具调用的预告或复述。",
+        "仅在开始执行、计划或风险发生变化、完成关键阶段、需要用户决定或最终交付时，给出简短进展；不要在普通工具调用前逐条解释命令。",
+        (
+            "独立且只读的检查可以在同一轮模型输出中并行发起；存在数据依赖、写入、Git 提交/推送、"
+            "部署、权限确认或其他风险的动作必须串行，先读取并验证前一步结果。"
+        ),
+        "多步骤工作使用原生任务跟踪器维护计划；只在建立、实质调整或完成关键任务时更新，不要把任务跟踪器当作每次工具调用的说明。",
+        "最终答复应优先说明完成情况、关键结果、已运行的验证以及仍存在的风险或需要用户决定的事项。",
+    )
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -441,6 +453,7 @@ def build_agent_spec(
                 part
                 for part in (
                     system_context(working_directory),
+                    CONVERSATION_COLLABORATION_CONTEXT,
                     frozen_context_suffix(config.capabilities),
                     system_message_suffix_append.strip(),
                 )

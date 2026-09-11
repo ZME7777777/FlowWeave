@@ -43,6 +43,134 @@ interface ActivityEntry {
   results: Item[];
 }
 
+type TaskListStatus = 'todo' | 'in_progress' | 'done';
+
+interface TaskListItem {
+  title: string;
+  notes: string;
+  status: TaskListStatus;
+}
+
+interface TaskListSnapshot {
+  items: TaskListItem[];
+  command: 'view' | 'plan' | undefined;
+  timestamp?: string;
+}
+
+function taskListFromDetails(details: Record<string, unknown> | undefined): TaskListItem[] | undefined {
+  const rawTasks = details?.task_list;
+  if (!Array.isArray(rawTasks)) return undefined;
+  return rawTasks.flatMap(task => {
+    if (!task || typeof task !== 'object' || Array.isArray(task)) return [];
+    const value = task as Record<string, unknown>;
+    const title = typeof value.title === 'string' ? value.title.trim() : '';
+    if (!title) return [];
+    const rawStatus = typeof value.status === 'string' ? value.status : 'todo';
+    const status: TaskListStatus = rawStatus === 'done' || rawStatus === 'in_progress' ? rawStatus : 'todo';
+    return [{ title: title.slice(0, 1_000), notes: typeof value.notes === 'string' ? value.notes.slice(0, 8_000) : '', status }];
+  });
+}
+
+function taskListSnapshot(actionDetails: Record<string, unknown>, resultDetails: Record<string, unknown>, timestamp?: unknown): TaskListSnapshot | undefined {
+  const resultItems = taskListFromDetails(resultDetails);
+  const actionItems = taskListFromDetails(actionDetails);
+  const items = resultItems ?? actionItems;
+  if (!items) return undefined;
+  const command = detailText(resultDetails.command) || detailText(actionDetails.command);
+  return {
+    items,
+    command: command === 'plan' || command === 'view' ? command : undefined,
+    timestamp: typeof timestamp === 'string' ? timestamp : undefined,
+  };
+}
+
+function taskStatusLabel(status: TaskListStatus): string {
+  return status === 'done' ? '已完成' : status === 'in_progress' ? '进行中' : '待办';
+}
+
+function TaskStatusIcon({ status }: { status: TaskListStatus }) {
+  return status === 'done'
+    ? <Check className="conversation-task-status-icon done" size={14} aria-label="已完成"/>
+    : <span className={`conversation-task-status-icon ${status}`} aria-label={taskStatusLabel(status)}>{status === 'in_progress' && <i/>}</span>;
+}
+
+function TaskListItems({ items, source }: { items: TaskListItem[]; source?: string }) {
+  if (!items.length) return <p className="conversation-task-list-empty">当前没有任务。</p>;
+  return <ol className="conversation-task-list">
+    {items.map((task, index) => <li key={`${index}:${task.title}`}>
+      <details>
+        <summary><TaskStatusIcon status={task.status}/><span><b>{task.title}</b><small>{taskStatusLabel(task.status)}</small></span><ChevronRight size={13}/></summary>
+        <div className="conversation-task-detail">
+          {task.notes ? <p>{task.notes}</p> : <p>此任务没有附加说明。</p>}
+          {source && <small>{source}</small>}
+        </div>
+      </details>
+    </li>)}
+  </ol>;
+}
+
+function latestCurrentTaskList(events: OpenHandsConversationEvent[]): TaskListSnapshot | undefined {
+  for (const event of [...events].reverse()) {
+    if (event.event_type !== 'TOOL_RESULT' || event.payload.event_name !== 'TaskTrackerObservation') continue;
+    const details = event.payload.details ?? {};
+    if (details.is_error === true) continue;
+    const items = taskListFromDetails(details);
+    if (!items) continue;
+    const command = detailText(details.command);
+    return {
+      items,
+      command: command === 'plan' || command === 'view' ? command : undefined,
+      timestamp: typeof event.payload.timestamp === 'string' ? event.payload.timestamp : undefined,
+    };
+  }
+  return undefined;
+}
+
+function currentTurnEvents(events: OpenHandsConversationEvent[]): OpenHandsConversationEvent[] {
+  let userEventIndex = -1;
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    const source = String(event.payload.source ?? '').toLowerCase();
+    if (event.event_type === 'MESSAGE' && (source === 'user' || source === 'human')) {
+      userEventIndex = index;
+      break;
+    }
+  }
+  return userEventIndex >= 0 ? events.slice(userEventIndex) : [];
+}
+
+function CurrentTaskPlan({ snapshot }: { snapshot: TaskListSnapshot }) {
+  const completed = snapshot.items.filter(item => item.status === 'done').length;
+  return <details className="conversation-live-task-plan" open>
+    <summary aria-label={`当前计划：${completed} / ${snapshot.items.length} 已完成`}>
+      <Check size={15}/><span><b>当前计划</b><small>{`${completed} / ${snapshot.items.length} 已完成`}</small></span><ChevronRight size={14}/>
+    </summary>
+    <div className="conversation-live-task-plan-body">
+      <TaskListItems items={snapshot.items} source={snapshot.timestamp ? `OpenHands 原生任务事件 · ${formatMessageTime(snapshot.timestamp)}` : 'OpenHands 原生任务事件'}/>
+    </div>
+  </details>;
+}
+
+export function ConversationLiveOverlays({ events, isGenerating, onReviewChanges, workspaceRoot }: {
+  events: OpenHandsConversationEvent[];
+  isGenerating: boolean;
+  onReviewChanges?: (changes: WorkspaceFileChange[]) => void;
+  workspaceRoot?: string | null;
+}) {
+  const currentEvents = useMemo(() => currentTurnEvents(events), [events]);
+  const taskSnapshot = useMemo(() => latestCurrentTaskList(currentEvents), [currentEvents]);
+  const changes = useMemo(() => isGenerating ? workspaceFileChanges(currentEvents) : [], [currentEvents, isGenerating]);
+  const showPlan = isGenerating && taskSnapshot && taskSnapshot.items.some(item => item.status !== 'done');
+  if (!showPlan && !changes.length) return null;
+  return <aside className="conversation-live-overlays" aria-label="会话实时状态">
+    {showPlan && <CurrentTaskPlan snapshot={taskSnapshot}/>}
+    {changes.length > 0 && <section className="conversation-live-file-changes" aria-label={`本轮已更改 ${changes.length} 个文件`}>
+      <button type="button" onClick={() => onReviewChanges?.(changes)}><FileText size={14}/><span><b>{`已更改 ${changes.length} 个文件`}</b><small><ins>{`+${changes.reduce((total, change) => total + change.additions, 0)}`}</ins><del>{`-${changes.reduce((total, change) => total + change.deletions, 0)}`}</del></small></span><PanelRightOpen size={13}/></button>
+      <div>{changes.map(change => <button type="button" key={change.id} onClick={() => onReviewChanges?.([change])} title={`审查 ${workspaceRelativePath(change.path, workspaceRoot)}`}><span>{workspaceRelativePath(change.path, workspaceRoot)}</span><ins>{`+${change.additions}`}</ins><del>{`-${change.deletions}`}</del></button>)}</div>
+    </section>}
+  </aside>;
+}
+
 type TurnProcessBlock =
   | { kind: 'activity'; id: string; items: Item[]; startedAt?: number; finishedAt?: number; active: boolean }
   | { kind: 'condensation'; id: string; items: Item[] };
@@ -405,6 +533,13 @@ interface ActivityPresentation {
   exitCode?: string;
   actionDetails?: Record<string, unknown>;
   resultDetails?: Record<string, unknown>;
+  resultTimestamp?: string;
+}
+
+interface ActivityStage {
+  id: string;
+  title?: string;
+  entries: ActivityEntry[];
 }
 
 function activityPresentation(entry: ActivityEntry, active: boolean, workspaceRoot?: string | null): ActivityPresentation {
@@ -459,13 +594,13 @@ function activityPresentation(entry: ActivityEntry, active: boolean, workspaceRo
   if (eventName === 'TaskTrackerAction') {
     return {
       title: completed ? (command === 'plan' ? '任务列表已更新' : '任务列表已读取') : actionTitle(command === 'plan' ? '正在更新任务列表' : '正在查看任务列表'),
-      status: completed ? '任务跟踪 · 已完成' : '任务跟踪', thought, output, actionDetails: details, resultDetails,
+      status: completed ? '任务跟踪 · 已完成' : '任务跟踪', thought, output, actionDetails: details, resultDetails, resultTimestamp: typeof result?.event.payload.timestamp === 'string' ? result.event.payload.timestamp : typeof item.event.payload.timestamp === 'string' ? item.event.payload.timestamp : undefined,
     };
   }
   if (eventName === 'TaskTrackerObservation') {
     return {
       title: command === 'plan' ? '任务列表已更新' : '任务列表已读取',
-      status: completed ? '任务跟踪 · 已完成' : '任务跟踪',
+      status: completed ? '任务跟踪 · 已完成' : '任务跟踪', resultTimestamp: typeof item.event.payload.timestamp === 'string' ? item.event.payload.timestamp : undefined,
     };
   }
   if (eventName === 'InvokeSkillAction') return { title: completed ? `${actionTitle('技能调用')} · 已完成` : actionTitle('正在使用已启用技能'), status: completed ? '技能 · 已完成' : '技能', thought, output, actionDetails: details, resultDetails };
@@ -494,6 +629,42 @@ function activityPresentation(entry: ActivityEntry, active: boolean, workspaceRo
   };
 }
 
+function activityStageTitle(entry: ActivityEntry): string | undefined {
+  const item = entry.action ?? entry.item;
+  const eventName = String(item.event.payload.event_name ?? '');
+  if (eventName !== 'TaskTrackerAction' && eventName !== 'TaskTrackerObservation') return undefined;
+  const snapshot = taskListSnapshot(
+    item.event.payload.details ?? {},
+    entry.results.at(-1)?.event.payload.details ?? {},
+    entry.results.at(-1)?.event.payload.timestamp ?? item.event.payload.timestamp,
+  );
+  if (!snapshot) return undefined;
+  return snapshot.items.find(task => task.status === 'in_progress')?.title
+    ?? snapshot.items.find(task => task.status === 'todo')?.title;
+}
+
+function activityStages(entries: ActivityEntry[]): ActivityStage[] {
+  const stages: ActivityStage[] = [];
+  let current: ActivityStage | undefined;
+  for (const entry of entries) {
+    // A TaskTracker observation is the only native event that explicitly
+    // declares the current plan. Its in-progress task is therefore safe to
+    // show as a stage label; never infer stages from tool order or command text.
+    const title = activityStageTitle(entry);
+    if (title) {
+      current = { id: entry.id, title, entries: [entry] };
+      stages.push(current);
+      continue;
+    }
+    if (!current) {
+      current = { id: 'ungrouped', entries: [] };
+      stages.push(current);
+    }
+    current.entries.push(entry);
+  }
+  return stages;
+}
+
 function displayDetails(details: Record<string, unknown>, workspaceRoot?: string | null): string {
   const visible = Object.fromEntries(Object.entries(details).filter(([key]) => !['content', 'old_content', 'new_content'].includes(key)));
   return Object.keys(visible).length ? workspaceRelativeText(JSON.stringify(visible, null, 2), workspaceRoot).slice(0, 12_000) : '';
@@ -504,15 +675,24 @@ function ToolDetailPanel({ presentation, eventName, workspaceRoot }: { presentat
   const resultDetails = presentation.resultDetails ?? {};
   const isTerminal = eventName.includes('Terminal');
   const isFile = eventName.includes('FileEditor');
+  const isTaskTracker = eventName === 'TaskTrackerAction' || eventName === 'TaskTrackerObservation';
+  const taskSnapshot = isTaskTracker ? taskListSnapshot(details, resultDetails, presentation.resultTimestamp) : undefined;
   const structured = displayDetails(details, workspaceRoot);
   const structuredResult = displayDetails(resultDetails, workspaceRoot);
   const fileText = detailContent(details.file_text);
   const oldText = detailContent(details.old_str);
   const newText = detailContent(details.new_str);
-  const hasDetail = Boolean(presentation.command || presentation.output || structured || structuredResult || fileText || oldText || newText);
+  const hasDetail = Boolean(taskSnapshot || presentation.command || presentation.output || structured || structuredResult || fileText || oldText || newText);
   if (!hasDetail) return null;
   return <div className="conversation-tool-detail-panel">
-      <b>{isTerminal ? 'Shell' : isFile ? '文件操作' : '工具调用'}</b>
+      <b>{isTaskTracker ? '任务列表' : isTerminal ? 'Shell' : isFile ? '文件操作' : '工具调用'}</b>
+      {taskSnapshot && <>
+        <div className="conversation-task-list-summary">
+          <span>{taskSnapshot.command === 'plan' ? '已更新的计划' : '当前计划快照'}</span>
+          <small>{`${taskSnapshot.items.filter(item => item.status === 'done').length} / ${taskSnapshot.items.length} 已完成`}</small>
+        </div>
+        <TaskListItems items={taskSnapshot.items} source={taskSnapshot.timestamp ? `OpenHands 原生任务事件 · ${formatMessageTime(taskSnapshot.timestamp)}` : 'OpenHands 原生任务事件'}/>
+      </>}
       {isTerminal && presentation.command && <pre><code>{`$ ${presentation.command}`}</code></pre>}
       {isFile && <dl>
         {presentation.operation && <><dt>操作</dt><dd>{presentation.operation}</dd></>}
@@ -523,9 +703,9 @@ function ToolDetailPanel({ presentation, eventName, workspaceRoot }: { presentat
       {fileText && <><small>写入内容</small><pre><code>{fileText}</code></pre></>}
       {oldText && <><small>替换前</small><pre><code>{oldText}</code></pre></>}
       {newText && <><small>替换后</small><pre><code>{newText}</code></pre></>}
-      {!isTerminal && !isFile && structured && <><small>原始操作</small><pre><code>{structured}</code></pre></>}
-      {presentation.output && <><small>执行结果</small><pre><code>{presentation.output}</code></pre></>}
-      {!isTerminal && !isFile && structuredResult && <><small>结果信息</small><pre><code>{structuredResult}</code></pre></>}
+      {!isTerminal && !isFile && !isTaskTracker && structured && <><small>原始操作</small><pre><code>{structured}</code></pre></>}
+      {!isTaskTracker && presentation.output && <><small>执行结果</small><pre><code>{presentation.output}</code></pre></>}
+      {!isTerminal && !isFile && !isTaskTracker && structuredResult && <><small>结果信息</small><pre><code>{structuredResult}</code></pre></>}
       {presentation.exitCode && <small>退出码 {presentation.exitCode}</small>}
     </div>;
 }
@@ -831,21 +1011,18 @@ function taskAvatarStatus(entry: ActivityEntry, item: Item): 'running' | 'comple
   return phases.includes('COMPLETED') ? 'completed' : 'running';
 }
 
-function ActivityGroup({ items, active, liveText, startedAt, finishedAt, avatarSlots, onReviewChanges, workspaceRoot }: {
+function ActivityGroup({ items, active, liveText, startedAt, finishedAt, avatarSlots, workspaceRoot }: {
   items: Item[];
   active: boolean;
   liveText?: string;
   startedAt?: number;
   finishedAt?: number;
   avatarSlots: ReadonlyMap<string, SubagentAvatarSlot>;
-  onReviewChanges?: (changes: WorkspaceFileChange[]) => void;
   workspaceRoot?: string | null;
 }) {
   const elapsedSeconds = useElapsedSeconds(startedAt, finishedAt, active);
   const entries = groupedActivities(items);
-  // A tool call is only projected here after its successful native result is
-  // present, so a pending or failed edit can never appear as a file change.
-  const changes = active ? workspaceFileChanges(items.map(item => item.event)) : [];
+  const stages = activityStages(entries);
   const itemCount = entries.length + (liveText ? 1 : 0);
   const [open, setOpen] = useState(active);
   useEffect(() => { setOpen(active); }, [active]);
@@ -858,7 +1035,9 @@ function ActivityGroup({ items, active, liveText, startedAt, finishedAt, avatarS
   return <details className={`conversation-activity-group${active ? ' active' : ''}`} open={open} onToggle={event => setOpen(event.currentTarget.open)}>
     <summary>{summary}</summary>
     <div className="conversation-activity-list">
-      {entries.map(entry => {
+      {stages.map(stage => <section className={`conversation-activity-stage${stage.title ? '' : ' unlabelled'}`} key={stage.id}>
+        {stage.title && <header><span>阶段</span><b>{stage.title}</b></header>}
+        {stage.entries.map(entry => {
         const item = entry.action ?? entry.item;
         const Icon = item.kind === 'error' ? CircleAlert : item.kind === 'thought' || item.kind === 'condensation' ? Sparkles : Wrench;
         const eventName = String(item.event.payload.event_name ?? '');
@@ -869,11 +1048,20 @@ function ActivityGroup({ items, active, liveText, startedAt, finishedAt, avatarS
         const taskAvatar = avatarSlot && <SubagentAvatar slot={avatarSlot} status={taskAvatarStatus(entry, item)} size={14}/>;
         const presentation = activityPresentation(entry, active, workspaceRoot);
         const toolDetail = item.kind === 'tool' ? <ToolDetailPanel presentation={presentation} eventName={eventName} workspaceRoot={workspaceRoot}/> : null;
-        if (item.kind === 'thought') return <article className="conversation-activity-row thought" key={entry.id}><MessageMarkdown>{presentation.thought ?? item.content}</MessageMarkdown></article>;
+        if (item.kind === 'thought' && item.event.event_type === 'COMPLETED') return <article className="conversation-activity-row thought" key={entry.id}>
+          <MessageMarkdown>{presentation.thought ?? item.content}</MessageMarkdown>
+        </article>;
+        if (item.kind === 'thought') return <details className="conversation-activity-row thought conversation-thought-audit" key={entry.id}>
+          <summary>查看 Agent 过程说明<ChevronRight size={13}/></summary>
+          <MessageMarkdown>{presentation.thought ?? item.content}</MessageMarkdown>
+        </details>;
         if (item.kind === 'tool' && toolDetail) return <div className="conversation-tool-entry" key={entry.id}>
-          {presentation.thought && <article className="conversation-activity-row thought"><MessageMarkdown>{presentation.thought}</MessageMarkdown></article>}
           <details className="conversation-activity-row tool conversation-tool-detail">
             <summary aria-label={`查看执行详情：${presentation.title}`}>{taskAvatar ?? <ToolIcon size={14}/>}<div><b title={presentation.title}>{presentation.title}</b></div><ChevronRight className="conversation-tool-chevron" size={13}/></summary>
+            {presentation.thought && <details className="conversation-tool-thought-audit">
+              <summary>查看 Agent 过程说明<ChevronRight size={12}/></summary>
+              <MessageMarkdown>{presentation.thought}</MessageMarkdown>
+            </details>}
             {toolDetail}
           </details>
         </div>;
@@ -882,11 +1070,8 @@ function ActivityGroup({ items, active, liveText, startedAt, finishedAt, avatarS
             {presentation.thought && <span className="conversation-activity-thought"><MessageMarkdown>{presentation.thought}</MessageMarkdown></span>}
           </div>
         </article>;
-      })}
-      {changes.length > 0 && <section className="conversation-live-file-changes" aria-label={`本轮已更改 ${changes.length} 个文件`}>
-        <button type="button" onClick={() => onReviewChanges?.(changes)}><FileText size={14}/><span><b>{`已更改 ${changes.length} 个文件`}</b><small><ins>{`+${changes.reduce((total, change) => total + change.additions, 0)}`}</ins><del>{`-${changes.reduce((total, change) => total + change.deletions, 0)}`}</del></small></span><PanelRightOpen size={13}/></button>
-        <div>{changes.map(change => <button type="button" key={change.id} onClick={() => onReviewChanges?.([change])} title={`审查 ${workspaceRelativePath(change.path, workspaceRoot)}`}><span>{workspaceRelativePath(change.path, workspaceRoot)}</span><ins>{`+${change.additions}`}</ins><del>{`-${change.deletions}`}</del></button>)}</div>
-      </section>}
+        })}
+      </section>)}
       {liveText && <article className="conversation-activity-row thought live-text"><MessageMarkdown>{liveText}</MessageMarkdown></article>}
     </div>
   </details>;
@@ -1287,7 +1472,6 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused: 
               startedAt={block.startedAt}
               finishedAt={block.finishedAt}
               avatarSlots={avatarSlots}
-              onReviewChanges={onReviewChanges}
               workspaceRoot={workspaceRoot}
             />)}
           {isCurrent && !turn.assistant && !failures.length && (
@@ -1298,7 +1482,7 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused: 
           {failures.map(item => <ConversationFailure key={item.event.id} item={item} taskControl={taskControl}/>)}
         </section>;
       })}
-      {turns.length === 0 && (liveText || isGenerating) && <><ActivityGroup items={[]} active liveText={liveText} startedAt={requestStartedAt} avatarSlots={avatarSlots} onReviewChanges={onReviewChanges} workspaceRoot={workspaceRoot}/><CurrentTurnStatus items={[]} liveText={liveText} requestSubmitting={requestSubmitting} monitoring={monitoring} connectionState={connectionState}/></>}
+      {turns.length === 0 && (liveText || isGenerating) && <><ActivityGroup items={[]} active liveText={liveText} startedAt={requestStartedAt} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/><CurrentTurnStatus items={[]} liveText={liveText} requestSubmitting={requestSubmitting} monitoring={monitoring} connectionState={connectionState}/></>}
       {condensationStatus && <article className={`conversation-condensation-progress ${condensationStatus.state}`} aria-label={condensationStatus.state === 'running' ? '正在压缩上下文' : '上下文压缩失败'} role="status">
         {condensationStatus.state === 'running' ? <LoaderCircle className="conversation-condensation-spinner" size={16}/> : <CircleAlert size={16}/>}
         <div><header><b>{condensationStatus.state === 'running' ? '正在压缩上下文' : '上下文压缩未完成'}</b>{condensationStatus.state === 'running' && <time>{formatDuration(condensationElapsed / 1_000)}</time>}</header>
