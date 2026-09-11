@@ -3833,6 +3833,14 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 
 完成：关闭 Git Diff 页签时清除工作区作用域中的 Git 文件选择，并向侧栏发送关闭事件；侧栏同步清空其本地选中路径和已打开 Diff 缓存，因此同一文件可立即再次点击并重新打开。
 
+### FR-296 Agent 工作区提交详情返回操作左置 — DONE
+
+依赖：FR-295。
+
+目标：提交详情侧栏的“返回提交历史”操作应位于标题左侧，符合从详情返回列表的阅读与导航直觉。
+
+完成：提交详情头部改为左侧返回箭头、右侧紧邻提交标题与短 SHA；按钮保留原有无障碍标签、点击行为和悬停反馈。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -3848,6 +3856,7 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-11 | FR-296 | Web TypeScript typecheck、ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS：提交详情返回按钮位于标题左侧，保留返回历史行为与无障碍标签；无 `CURRENT`。 |
 | 2026-09-11 | FR-295 | Web TypeScript typecheck、ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS：关闭中间 Git Diff 页签会清除侧栏文件选中及已打开缓存；再次点击同一提交文件可重新打开 Diff。无 `CURRENT`。 |
 | 2026-09-11 | FR-294 | Web TypeScript typecheck、ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS：Git 侧栏只随最后直接点击的单一路径显示，已排除根／工作目录容器仓库；`repos`、`repositories.md` 等普通路径不再显示，独立子仓库及其内部文件仍可显示。生产构建仅报告既有大 chunk 提示；无 `CURRENT`。 |
 | 2026-09-11 | FR-293 | Web TypeScript typecheck、ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS：Git 侧栏可见时，文件树／分隔条／预览只占三列，预览区直接铺至右栏左边，不再存在重复的第四列空白。生产构建仅报告既有大 chunk 提示；无 `CURRENT`。 |

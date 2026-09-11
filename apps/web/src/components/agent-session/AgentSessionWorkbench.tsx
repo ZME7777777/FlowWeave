@@ -1764,7 +1764,7 @@ function WorkspaceGitCommitSidebarDetail({ details, loading, error, selectedPath
   if (error) return <section className="agent-git-commit-detail"><p className="agent-git-error">提交详情读取失败。</p></section>;
   if (!details) return null;
   return <section className="agent-git-commit-detail agent-git-commit-sidebar" style={{ '--git-files-height': `${filesHeight}px` } as CSSProperties}>
-    <header><div><b title={details.commit.subject}>{details.commit.subject || '（无提交说明）'}</b><span>{details.commit.short_id}</span></div><button type="button" aria-label="返回提交历史" onClick={onClose}><ArrowLeft size={13}/></button></header>
+    <header><button type="button" aria-label="返回提交历史" onClick={onClose}><ArrowLeft size={13}/></button><div><b title={details.commit.subject}>{details.commit.subject || '（无提交说明）'}</b><span>{details.commit.short_id}</span></div></header>
     <section className="agent-git-commit-files">
       <header><div><b>提交文件</b><span><em>{details.files.length} 个文件</em></span></div></header>
       {tree.length ? <div className="agent-git-file-tree" role="tree" aria-label="提交文件树">{renderTree(tree)}</div> : <p>这个提交没有可展示的文件。</p>}
