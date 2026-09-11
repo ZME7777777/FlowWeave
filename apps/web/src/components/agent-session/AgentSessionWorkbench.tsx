@@ -1277,15 +1277,24 @@ function WorkspaceTextPreview({ path, content }: { path: string; content: string
 
 function WorkspaceChangesReview({ changes, selectedId, onSelect, workspaceRoot }: { changes: WorkspaceFileChange[]; selectedId?: string; onSelect: (id: string) => void; workspaceRoot?: string }) {
   const [mode, setMode] = useState<'unified' | 'split'>('split');
-  const beforeDiffRef = useRef<HTMLPreElement>(null);
   const afterDiffRef = useRef<HTMLPreElement>(null);
+  const beforeDiffContentRef = useRef<HTMLDivElement>(null);
   const selected = changes.find(change => change.id === selectedId) ?? changes[0];
   useEffect(() => { if (selected && selected.id !== selectedId) onSelect(selected.id); }, [onSelect, selected, selectedId]);
+  useEffect(() => {
+    if (mode !== 'split') return;
+    if (afterDiffRef.current) {
+      afterDiffRef.current.scrollTop = 0;
+      afterDiffRef.current.scrollLeft = 0;
+    }
+    if (beforeDiffContentRef.current) beforeDiffContentRef.current.style.transform = 'translate(0, 0)';
+  }, [mode, selected.id]);
   const syncAfterDiffScroll = (event: ReactUIEvent<HTMLPreElement>) => {
-    const before = beforeDiffRef.current;
-    if (!before) return;
-    if (before.scrollTop !== event.currentTarget.scrollTop) before.scrollTop = event.currentTarget.scrollTop;
-    if (before.scrollLeft !== event.currentTarget.scrollLeft) before.scrollLeft = event.currentTarget.scrollLeft;
+    const { scrollLeft, scrollTop } = event.currentTarget;
+    // Keep the read-only left pane aligned without scheduling a full React
+    // render for every scroll tick; the latter caused a visible flash on long
+    // diffs, especially when the scrollbar reached its lower boundary.
+    if (beforeDiffContentRef.current) beforeDiffContentRef.current.style.transform = `translate(${-scrollLeft}px, ${-scrollTop}px)`;
   };
   if (!selected) return <div className="agent-changes-empty"><b>没有可审查的文件改动</b><span>仅显示 OpenHands FileEditor 已成功写入、且带有原始前后内容的改动。</span></div>;
   const renderLine = (line: WorkspaceFileChange['lines'][number], side: 'before' | 'after') => {
@@ -1301,7 +1310,7 @@ function WorkspaceChangesReview({ changes, selectedId, onSelect, workspaceRoot }
     </nav>
     <article className="agent-changes-diff">
       <header><div><b title={workspaceRelativePath(selected.path, workspaceRoot)}>{workspaceRelativePath(selected.path, workspaceRoot)}</b><small><ins>{`+${selected.additions}`}</ins><del>{`-${selected.deletions}`}</del></small></div><div className="agent-diff-mode"><button type="button" className={mode === 'unified' ? 'active' : ''} onClick={() => setMode('unified')}>统一</button><button type="button" className={mode === 'split' ? 'active' : ''} onClick={() => setMode('split')}>并排</button></div></header>
-      {mode === 'unified' ? <pre className="agent-diff-unified">{selected.lines.map(line => <div className={`agent-diff-line ${line.kind}`} key={`${line.oldLine ?? ''}:${line.newLine ?? ''}:${line.text}`}><i>{line.oldLine ?? line.newLine ?? ''}</i><strong>{line.kind === 'addition' ? '+' : line.kind === 'deletion' ? '-' : ' '}</strong><code>{line.text || ' '}</code></div>)}</pre> : <div className="agent-diff-split"><pre ref={beforeDiffRef} className="agent-diff-before"><header>修改前</header>{selected.lines.map(line => renderLine(line, 'before'))}</pre><pre ref={afterDiffRef} onScroll={syncAfterDiffScroll}><header>修改后</header>{selected.lines.map(line => renderLine(line, 'after'))}</pre></div>}
+      {mode === 'unified' ? <pre className="agent-diff-unified">{selected.lines.map(line => <div className={`agent-diff-line ${line.kind}`} key={`${line.oldLine ?? ''}:${line.newLine ?? ''}:${line.text}`}><i>{line.oldLine ?? line.newLine ?? ''}</i><strong>{line.kind === 'addition' ? '+' : line.kind === 'deletion' ? '-' : ' '}</strong><code>{line.text || ' '}</code></div>)}</pre> : <div className="agent-diff-split"><div className="agent-diff-before"><header>修改前</header><div ref={beforeDiffContentRef} className="agent-diff-before-content">{selected.lines.map(line => renderLine(line, 'before'))}</div></div><pre ref={afterDiffRef} onScroll={syncAfterDiffScroll}><header>修改后</header>{selected.lines.map(line => renderLine(line, 'after'))}</pre></div>}
     </article>
   </section>;
 }
