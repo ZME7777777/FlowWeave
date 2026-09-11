@@ -3907,6 +3907,14 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 
 完成：工作区标签的水平内缩从 14px 调整为 38px，整体向右移动 24px；标签继续与 composer 同宽，并保持移动端宽度规则不变。
 
+### FR-305 Agent 输入区工作区路径一键复制 — DONE
+
+依赖：FR-304。
+
+目标：输入框上方的工作区标签可直接点击复制相对根工作区路径；不得复制或展示 Runtime 绝对路径。
+
+完成：工作区标签改为可访问的复制按钮，复制 `.` 或 `./子目录`；在 Clipboard API 受限时回退至用户手势复制，成功后短暂显示“已复制”，同时保留既有目录名、定位和悬浮路径提示。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -3922,6 +3930,7 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-11 | FR-305 | Web TypeScript typecheck、ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS：点击当前工作区标签仅复制相对根工作区路径，复制成功提供短暂可见与无障碍反馈；无 `CURRENT`。production build 仅报告既有大 chunk 提示。 |
 | 2026-09-11 | FR-304 | Web TypeScript typecheck、ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS：工作区标签整体向右移动 24px 至指定区域；无 `CURRENT`。production build 仅报告既有大 chunk 提示。 |
 | 2026-09-11 | FR-303 | Web TypeScript typecheck、ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS：详情恢复短 Hash 并移除重复的提交者／提交时间；提交树默认完整展开，长路径不再截断而是在明确可见的横向滚动条中查看；无 `CURRENT`。production build 仅报告既有大 chunk 提示。 |
 | 2026-09-11 | FR-302 | Web TypeScript typecheck、ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS：输入区上方工作区标签内缩至 composer 直线内容区，不再对齐圆角外沿；无 `CURRENT`。production build 仅报告既有大 chunk 提示。 |
