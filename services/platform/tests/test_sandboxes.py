@@ -1150,7 +1150,7 @@ def test_runtime_client_network_reconcile_reattaches_recreated_platform_clients(
                         "Name": network_name,
                         "Driver": "bridge",
                         "Internal": True,
-                        "Containers": {"new-api": {}},
+                        "Containers": {"new-api-full-id": {}},
                         "Labels": {
                             "flowweave.managed": "true",
                             "flowweave.resource-type": "network",

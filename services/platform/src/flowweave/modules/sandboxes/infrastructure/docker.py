@@ -844,7 +844,10 @@ chmod 0700 "$target"
                     {"network_id": network_id},
                 )
             for client_id in clients:
-                if client_id in attached_client_ids:
+                # `docker ps --quiet` reports a short ID whereas network inspect
+                # keys its Containers map by the full ID. Docker guarantees that
+                # the short ID is an unambiguous prefix of the full container ID.
+                if any(attached_id.startswith(client_id) for attached_id in attached_client_ids):
                     continue
                 self._connect_network(expected_name, client_id)
                 attached += 1
