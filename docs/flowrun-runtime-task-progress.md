@@ -3849,6 +3849,16 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 
 完成：提交详情返回操作调整为带文字的紧凑描边控制；Git Diff 继续复用审查 Diff 的同一模式切换组件，并统一其悬停与键盘焦点反馈。
 
+### FR-298 Agent 会话刷新时空改动审查页签恢复修复 — DONE
+
+依赖：FR-297。
+
+目标：修复用户刷新已打开的 Agent 会话时，浏览器会话存储恢复“改动审查”页签、但新的会话事件尚未返回任何文件改动时，工作台读取缺失选中项 `id` 并触发全局错误页的问题。空页签必须保留既有安全空态，不得清除用户已恢复的工作区页签、重写会话／事件，或修改 Runtime 与 OpenHands 契约。
+
+完成：`WorkspaceChangesReview` 的 split-diff 重置 effect 现在以可选的 selected change ID 为依赖，因此会在现有空态分支之前安全完成首帧渲染；会话事件返回改动后仍按既有逻辑选择并展示文件。
+
+验收：Web ESLint、TypeScript typecheck、production build 与 `git diff --check` 通过；production build 仅保留既有 Rollup chunk-size 提示。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -3864,6 +3874,7 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-11 | FR-298 | Web ESLint、TypeScript typecheck、production build、`git diff --check` 与任务状态唯一性 | PASS：持久化恢复的空“改动审查”页签不再解引用缺失变更的 `id`；会话刷新保持既有安全空态和后续事件加载行为。production build 仅报告既有大 chunk 提示；无 `CURRENT`。 |
 | 2026-09-11 | FR-297 | Web TypeScript typecheck、ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS：Git 详情返回与统一／并排控制使用同一紧凑描边、圆角、绿色情境反馈；无 `CURRENT`。 |
 | 2026-09-11 | FR-296 | Web TypeScript typecheck、ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS：提交详情返回按钮位于标题左侧，保留返回历史行为与无障碍标签；无 `CURRENT`。 |
 | 2026-09-11 | FR-295 | Web TypeScript typecheck、ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS：关闭中间 Git Diff 页签会清除侧栏文件选中及已打开缓存；再次点击同一提交文件可重新打开 Diff。无 `CURRENT`。 |

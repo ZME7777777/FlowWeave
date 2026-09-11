@@ -1291,7 +1291,10 @@ function WorkspaceChangesReview({ changes, selectedId, onSelect, workspaceRoot }
       afterDiffRef.current.scrollLeft = 0;
     }
     if (beforeDiffContentRef.current) beforeDiffContentRef.current.style.transform = 'translate(0, 0)';
-  }, [mode, selected.id]);
+  // Workspace tool tabs are restored from session storage before the selected
+  // conversation's events have finished loading.  A restored changes tab can
+  // therefore legitimately have no selected file on its first render.
+  }, [mode, selected?.id]);
   const syncAfterDiffScroll = (event: ReactUIEvent<HTMLPreElement>) => {
     syncBeforeDiffOffset(event.currentTarget);
   };
