@@ -1611,16 +1611,11 @@ function WorkspaceGitSidebar({ details, selectedPath, loadLog, loadCommit, onOpe
   loadCommit: (repositoryPath: string, commit: string) => Promise<WorkspaceGitCommitDetails>;
   onOpenCommit: (details: WorkspaceGitCommitDetails) => void;
 }) {
-  const preferredRepository = useMemo(() => (details.repositories
+  const repository = useMemo(() => details.repositories
     .filter(item => selectedPath === item.path || Boolean(selectedPath?.startsWith(`${item.path}/`)))
-    .sort((left, right) => right.path.length - left.path.length)[0]
-    ?? details.repositories.find(item => item.path === details.working_directory)
-    ?? details.repositories[0]), [details.repositories, details.working_directory, selectedPath]);
-  const [repositoryPath, setRepositoryPath] = useState<string>();
-  const repository = details.repositories.find(item => item.path === repositoryPath) ?? preferredRepository;
+    .sort((left, right) => right.path.length - left.path.length)[0], [details.repositories, selectedPath]);
   const [selectedCommit, setSelectedCommit] = useState<string>();
   const openedCommitRef = useRef<string | undefined>(undefined);
-  useEffect(() => { setRepositoryPath(current => details.repositories.some(item => item.path === current) ? current : preferredRepository?.path); }, [details.repositories, preferredRepository?.path]);
   useEffect(() => { setSelectedCommit(undefined); }, [repository?.path]);
   const logQuery = useQuery({
     queryKey: ['workspace-git-log', repository?.path],
@@ -1639,9 +1634,8 @@ function WorkspaceGitSidebar({ details, selectedPath, loadLog, loadCommit, onOpe
     onOpenCommit(commitQuery.data);
   }, [commitQuery.data, onOpenCommit]);
   return <aside className="agent-workspace-git-sidebar" aria-label="Git 提交历史">
-    <header><div><span><GitBranch size={15}/>Git</span><b title={repository ? workspaceRelativePath(repository.path, details.root) : undefined}>{repository ? workspaceRelativePath(repository.path, details.root) : '当前工作区没有 Git 仓库'}</b></div>{repository?.branch && <em title="当前分支（只读，暂不支持切换）">{repository.branch}</em>}</header>
-    {!repository ? <p className="agent-git-empty">当前工作区范围内没有可读取的 Git 仓库。</p> : logQuery.isLoading ? <p className="agent-git-loading">正在读取提交历史…</p> : logQuery.isError ? <p className="agent-git-error">Git 历史读取失败。<button type="button" onClick={() => void logQuery.refetch()}>重试</button></p> : <>
-      {details.repositories.length > 1 && <div className="agent-git-repository-picker" role="listbox" aria-label="当前工作区 Git 仓库">{details.repositories.map(item => <button key={item.path} type="button" role="option" aria-selected={item.path === repository.path} className={item.path === repository.path ? 'active' : ''} title={workspaceRelativePath(item.path, details.root)} onClick={() => setRepositoryPath(item.path)}>{workspaceRelativePath(item.path, details.root)}</button>)}</div>}
+    <header><div><span><GitBranch size={15}/>Git</span><b title={repository ? workspaceRelativePath(repository.path, details.root) : undefined}>{repository ? workspaceRelativePath(repository.path, details.root) : '请先选择目录'}</b></div>{repository?.branch && <em title="当前分支（只读，暂不支持切换）">{repository.branch}</em>}</header>
+    {!repository ? <p className="agent-git-empty">请先在文件树中选择包含 Git 仓库的目录或其子目录。</p> : logQuery.isLoading ? <p className="agent-git-loading">正在读取提交历史…</p> : logQuery.isError ? <p className="agent-git-error">Git 历史读取失败。<button type="button" onClick={() => void logQuery.refetch()}>重试</button></p> : <>
       <div className="agent-git-log">{(logQuery.data?.commits ?? []).map(commit => <button key={commit.id} type="button" className={selectedCommit === commit.id ? 'active' : ''} onClick={() => { if (commitQuery.data?.commit.id === commit.id) onOpenCommit(commitQuery.data); else setSelectedCommit(commit.id); }}><b>{commit.subject || '（无提交说明）'}</b><span><code>{commit.short_id}</code><em>{commit.author}</em><time>{commit.date}</time></span></button>)}{!logQuery.data?.commits.length && <p>该仓库没有可展示的提交。</p>}</div>
       {selectedCommit && <p className={commitQuery.isError ? 'agent-git-error' : 'agent-git-loading'}>{commitQuery.isLoading ? '正在打开提交审查…' : commitQuery.isError ? '提交详情读取失败。' : '提交审查已在中间文件区打开。'}</p>}
     </>}
