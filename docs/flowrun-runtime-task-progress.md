@@ -3753,6 +3753,14 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 
 完成：修正工作台壳层覆盖规则，使中间标题区从 80px 收口为与左右两栏一致的 64px；三栏分隔线现完全对齐。
 
+### FR-287 Agent 工作区终端稳定右键菜单 — DONE
+
+依赖：FR-283。
+
+目标：修复 tmux 原生鼠标菜单依赖终端鼠标协议、在浏览器中只要轻微移动就被新的 MouseMove 事件撤销的问题。Agent 工作区终端右键必须显示稳定的产品菜单，移动指针不关闭；复制、输入、分屏、标记与关闭窗格继续使用既有终端/tmux 语义。
+
+完成：终端在 document 捕获阶段拦截完整右键按下／抬起／浏览器菜单序列，不再让 tmux 接收该次右键。菜单以 FlowWeave DOM 浮层显示，只有显式点击动作或左键点击菜单外才会关闭；复制文本／整行走浏览器剪贴板，输入和 tmux 窗格命令仍通过同一受管 WebSocket 发送。
+
 ### FR-286 Agent 会话过程与最终回复分隔 — DONE
 
 依赖：FR-282。
@@ -3776,6 +3784,7 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-11 | FR-287 | Web TypeScript typecheck；受影响 Web ESLint；production build；`git diff --check` 与任务状态唯一性 | PASS：右键产品菜单的事件路径已覆盖鼠标移动不关闭、点击复制后关闭；tmux 原生菜单不再与 Chrome 菜单或 MouseMove 协议竞争。定向 Playwright 因既有工作区初始化长时间无响应而中止，未将其记为通过。 |
 | 2026-09-11 | FR-286 | Web ESLint、TypeScript typecheck、production build、`git diff --check` 与任务状态唯一性 | PASS：仅在同轮过程块与最终回复之间显示低对比度横线，过程／最终回复边界清晰且不干扰无过程和进行中的会话。 |
 | 2026-09-11 | FR-285 | Web ESLint、TypeScript typecheck、`git diff --check` 与任务状态唯一性 | PASS：实际生效的工作台壳层中栏标题轨道与左侧操作区、右侧环境信息区均为 64px，三栏底部分隔线对齐。 |
 | 2026-09-11 | FR-284 | Web ESLint、TypeScript typecheck、production build、`git diff --check` 与任务状态唯一性 | PASS：Agent 工作台内会话内容列与底部 composer 使用同一 860px 居中宽度，会话区保留 16px 两侧空白；通用会话页面与只读弹窗不受影响。 |

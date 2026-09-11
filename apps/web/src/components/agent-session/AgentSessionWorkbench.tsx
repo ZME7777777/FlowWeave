@@ -1001,11 +1001,15 @@ function eventBranchIds(events: OpenHandsConversationEvent[], rootEventId: strin
   return branch;
 }
 
+type TerminalContextMenu = { x: number; y: number; text: string; line: string };
+
 function WorkspaceTerminal({ workspaceId, terminalInstanceId, bindingId, workDirectoryId, workingDirectory }: { workspaceId: string; terminalInstanceId: string; bindingId?: string; workDirectoryId?: string; workingDirectory: string }) {
   const { terminalUrl } = useAgentSessionGateway();
   const host = useRef<HTMLDivElement>(null);
+  const sendTerminalInput = useRef<(data: string) => void>(() => undefined);
   const [state, setState] = useState<'connecting' | 'connected' | 'unavailable'>('connecting');
   const [detail, setDetail] = useState('正在连接工作区终端…');
+  const [contextMenu, setContextMenu] = useState<TerminalContextMenu>();
 
   useEffect(() => {
     const element = host.current;
@@ -1072,14 +1076,52 @@ function WorkspaceTerminal({ workspaceId, terminalInstanceId, bindingId, workDir
     };
     const terminalScreen = element.querySelector<HTMLElement>('.xterm-screen');
     terminalScreen?.addEventListener('mousedown', forceTextSelection, { capture: true });
-    // xterm may stop propagation on its canvas before the host can observe a
-    // contextmenu event. Intercept at document capture instead, but only for
-    // this terminal. Do not stop propagation: tmux/xterm still receives it.
+    // tmux's native terminal menu shares the mouse protocol with xterm. A
+    // pointer move is therefore interpreted as another terminal mouse event
+    // and dismisses that menu. Own the right click before xterm sees it and
+    // render a persistent DOM menu whose commands are forwarded to tmux.
     const document = element.ownerDocument;
-    const suppressBrowserContextMenu = (event: MouseEvent) => {
-      if (element.contains(event.target as Node)) event.preventDefault();
+    const terminalTextAt = (event: MouseEvent) => {
+      const cell = terminalCellForMouseEvent(event);
+      const line = cell ? terminal.buffer.active.getLine(cell.row)?.translateToString(true) ?? '' : '';
+      const selected = terminal.getSelection().trim();
+      if (selected) return { text: selected, line };
+      const index = cell ? Math.min(Math.max(cell.column, 0), Math.max(0, line.length - 1)) : 0;
+      const before = line.slice(0, index + 1).match(/[^\s]+$/)?.[0] ?? '';
+      const after = line.slice(index + 1).match(/^[^\s]+/)?.[0] ?? '';
+      return { text: `${before}${after}`, line };
     };
+    const openTerminalContextMenu = (event: MouseEvent) => {
+      if (event.button !== 2 || !element.contains(event.target as Node)) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      const { text, line } = terminalTextAt(event);
+      setContextMenu({ x: Math.min(event.clientX, window.innerWidth - 230), y: Math.min(event.clientY, window.innerHeight - 330), text, line });
+      terminal.focus();
+    };
+    const closeTerminalContextMenu = (event: MouseEvent) => {
+      const target = event.target instanceof Element ? event.target : undefined;
+      if (event.button !== 2 && !target?.closest('.agent-terminal-context-menu')) setContextMenu(undefined);
+    };
+    const suppressTerminalRightMouseUp = (event: MouseEvent) => {
+      if (event.button === 2 && element.contains(event.target as Node)) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+      }
+    };
+    const suppressBrowserContextMenu = (event: MouseEvent) => {
+      if (!element.contains(event.target as Node)) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    };
+    const dismissTerminalContextMenu = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setContextMenu(undefined);
+    };
+    document.addEventListener('mousedown', openTerminalContextMenu, true);
+    document.addEventListener('mousedown', closeTerminalContextMenu, true);
+    document.addEventListener('mouseup', suppressTerminalRightMouseUp, true);
     document.addEventListener('contextmenu', suppressBrowserContextMenu, true);
+    document.addEventListener('keydown', dismissTerminalContextMenu, true);
     let socket: WebSocket | null = null;
     let disposed = false;
     let reconnectTimer: number | undefined;
@@ -1163,14 +1205,22 @@ function WorkspaceTerminal({ workspaceId, terminalInstanceId, bindingId, workDir
       };
     };
     const input = terminal.onData(data => { if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'input', data })); });
+    sendTerminalInput.current = data => { if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'input', data })); };
     const observer = new ResizeObserver(resize);
     observer.observe(element);
     resize();
     void document.fonts?.ready.then(resize);
-    return () => { disposed = true; if (reconnectTimer !== undefined) window.clearTimeout(reconnectTimer); if (resizeFrame !== undefined) window.cancelAnimationFrame(resizeFrame); if (remoteResizeTimer !== undefined) window.clearTimeout(remoteResizeTimer); observer.disconnect(); removeForcedSelectionListeners?.(); terminalScreen?.removeEventListener('mousedown', forceTextSelection, true); document.removeEventListener('contextmenu', suppressBrowserContextMenu, true); input.dispose(); socket?.close(1000); terminal.dispose(); };
+    return () => { disposed = true; sendTerminalInput.current = () => undefined; if (reconnectTimer !== undefined) window.clearTimeout(reconnectTimer); if (resizeFrame !== undefined) window.cancelAnimationFrame(resizeFrame); if (remoteResizeTimer !== undefined) window.clearTimeout(remoteResizeTimer); observer.disconnect(); removeForcedSelectionListeners?.(); terminalScreen?.removeEventListener('mousedown', forceTextSelection, true); document.removeEventListener('mousedown', openTerminalContextMenu, true); document.removeEventListener('mousedown', closeTerminalContextMenu, true); document.removeEventListener('mouseup', suppressTerminalRightMouseUp, true); document.removeEventListener('contextmenu', suppressBrowserContextMenu, true); document.removeEventListener('keydown', dismissTerminalContextMenu, true); input.dispose(); socket?.close(1000); terminal.dispose(); };
   }, [bindingId, terminalInstanceId, terminalUrl, workDirectoryId, workingDirectory, workspaceId]);
 
-  return <section className="agent-workspace-terminal"><header><span className={`terminal-dot ${state}`}/><span>{detail}</span></header><div ref={host} aria-label="Agent 工作区终端"/></section>;
+  const closeMenu = () => setContextMenu(undefined);
+  const runTmux = (command: string) => { sendTerminalInput.current(command); closeMenu(); };
+  const copy = (value: string) => {
+    closeMenu();
+    if (value) void navigator.clipboard.writeText(value).catch(() => undefined);
+  };
+  const selectedText = contextMenu?.text || '选中内容';
+  return <section className="agent-workspace-terminal"><header><span className={`terminal-dot ${state}`}/><span>{detail}</span></header><div ref={host} aria-label="Agent 工作区终端"/>{contextMenu && createPortal(<div className="agent-terminal-context-menu" role="menu" aria-label="终端操作菜单" style={{ left: contextMenu.x, top: contextMenu.y }} onMouseDown={event => event.stopPropagation()} onContextMenu={event => event.preventDefault()}><button type="button" role="menuitem" disabled={!contextMenu.text} onClick={() => copy(contextMenu.text)}>复制 “{selectedText}”</button><button type="button" role="menuitem" disabled={!contextMenu.line} onClick={() => copy(contextMenu.line)}>复制当前行</button><button type="button" role="menuitem" disabled={!contextMenu.text} onClick={() => runTmux(contextMenu.text)}>输入 “{selectedText}”</button><hr/><button type="button" role="menuitem" onClick={() => runTmux('\u0002%')}>左右分屏</button><button type="button" role="menuitem" onClick={() => runTmux('\u0002"')}>上下分屏</button><button type="button" role="menuitem" onClick={() => runTmux('\u0002m')}>标记窗格</button><button type="button" role="menuitem" className="danger" onClick={() => runTmux('\u0002x')}>关闭当前窗格…</button></div>, document.body)}</section>;
 }
 
 function isTextPreviewable(path: string, mimeType = ''): boolean {

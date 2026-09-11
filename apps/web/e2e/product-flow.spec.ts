@@ -904,12 +904,13 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   });
   expect(copiedTerminalSelection.copied).toMatch(/put-\d+/);
   expect(copiedTerminalSelection.prevented).toBe(true);
-  const terminalContextMenu = await terminalScreen.evaluate(screen => {
-    const event = new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2 });
-    screen.dispatchEvent(event);
-    return event.defaultPrevented;
-  });
-  expect(terminalContextMenu).toBe(true);
+  await page.mouse.click(screenBox.x + 92, screenBox.y + 26, { button: 'right' });
+  const terminalContextMenu = page.getByRole('menu', { name: '终端操作菜单' });
+  await expect(terminalContextMenu).toBeVisible();
+  await page.mouse.move(screenBox.x + 120, screenBox.y + 54);
+  await expect(terminalContextMenu).toBeVisible();
+  await terminalContextMenu.getByRole('menuitem', { name: '复制当前行' }).click();
+  await expect(terminalContextMenu).toBeHidden();
   await expect(page.locator('.agent-context-progress.token')).toContainText('Token0 / 922,000');
   await expect(page.locator('.agent-context-progress.activity')).toHaveCount(1);
   await expect(page.getByText('上下文用量正在从 OpenHands 读取')).toHaveCount(0);
