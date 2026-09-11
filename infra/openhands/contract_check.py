@@ -411,15 +411,21 @@ def _assert_mcp_oauth_and_subscription_preflight_contract() -> None:
 def _assert_runtime_capability_build_contract() -> None:
     """Keep FlowWeave's governed image build bridge pinned to upstream fields."""
 
-    assert AGENT_SERVER_CAPABILITIES == ("vscode", "browser", "docker")
-    assert _field_default(BuildOptions, "install_capabilities") == "vscode,browser,docker"
-    assert BuildOptions(install_capabilities="").install_capabilities == ""
+    cwd = Path.cwd()
     try:
-        BuildOptions(install_capabilities="unsupported")
-    except ValueError:
-        pass
-    else:
-        raise AssertionError("OpenHands accepted an unknown image capability")
+        if _PINNED_SOURCE_ROOT.is_dir():
+            os.chdir(_PINNED_SOURCE_ROOT)
+        assert AGENT_SERVER_CAPABILITIES == ("vscode", "browser", "docker")
+        assert _field_default(BuildOptions, "install_capabilities") == "vscode,browser,docker"
+        assert BuildOptions(install_capabilities="").install_capabilities == ""
+        try:
+            BuildOptions(install_capabilities="unsupported")
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("OpenHands accepted an unknown image capability")
+    finally:
+        os.chdir(cwd)
 
 
 def _assert_quota_fallback_contract() -> None:
