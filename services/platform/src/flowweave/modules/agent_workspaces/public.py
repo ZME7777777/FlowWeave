@@ -1,5 +1,6 @@
 """Stable public facade for the independent Agent Workspace."""
 
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -122,6 +123,57 @@ def delete_session_attachment_files(db: Session, workspace_id: str, binding_id: 
     workspace.delete_bound_attachment_files(db, workspace_id, binding_id)
 
 
+def git_repositories(
+    project_root: Path, runtime_root: str, file_roots: tuple[str, ...]
+) -> list[tuple[Path, str]]:
+    """Discover only repositories intersecting an already-authorized file scope."""
+
+    from flowweave.modules.agent_workspaces.application import workspace
+
+    return workspace._scope_repositories(project_root, runtime_root, file_roots)
+
+
+def git_repository_details(repository: Path, runtime_path: str) -> dict[str, str]:
+    from flowweave.modules.agent_workspaces.application import workspace
+
+    return workspace.repository_details(repository, runtime_path)
+
+
+def git_log(
+    project_root: Path, runtime_root: str, file_roots: tuple[str, ...], repository_path: str
+) -> dict[str, Any]:
+    from flowweave.modules.agent_workspaces.application import workspace
+
+    return workspace.git_log(project_root, runtime_root, file_roots, repository_path)
+
+
+def git_commit(
+    project_root: Path,
+    runtime_root: str,
+    file_roots: tuple[str, ...],
+    repository_path: str,
+    commit: str,
+) -> dict[str, Any]:
+    from flowweave.modules.agent_workspaces.application import workspace
+
+    return workspace.git_commit(project_root, runtime_root, file_roots, repository_path, commit)
+
+
+def git_file_diff(
+    project_root: Path,
+    runtime_root: str,
+    file_roots: tuple[str, ...],
+    repository_path: str,
+    commit: str,
+    path: str,
+) -> dict[str, Any]:
+    from flowweave.modules.agent_workspaces.application import workspace
+
+    return workspace.git_file_diff(
+        project_root, runtime_root, file_roots, repository_path, commit, path
+    )
+
+
 __all__ = (
     "agent_workspace_owner_is_active",
     "agent_workspace_record_path",
@@ -137,6 +189,11 @@ __all__ = (
     "delete_session_attachment_files",
     "ensure_default_agent_workspace",
     "frozen_conversation_work_directory_context",
+    "git_commit",
+    "git_file_diff",
+    "git_log",
+    "git_repository_details",
+    "git_repositories",
     "flow_run_conversation_work_directory_context",
     "get_flow_run_work_directory",
     "list_flow_run_work_directories",

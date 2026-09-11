@@ -709,6 +709,11 @@ export interface AgentSessionWorkspaceDetails {
     };
   };
 }
+export interface WorkspaceGitRepository { path: string; remote?: string; branch?: string; head?: string }
+export interface WorkspaceGitCommit { id: string; short_id: string; author: string; date: string; subject: string }
+export interface WorkspaceGitLog { repository: WorkspaceGitRepository; commits: WorkspaceGitCommit[] }
+export interface WorkspaceGitCommitDetails { repository: WorkspaceGitRepository; commit: WorkspaceGitCommit; files: Array<{ path: string; status: string }> }
+export interface WorkspaceGitFileDiff { path: string; diff: string; truncated: boolean }
 export type AgentWorkspaceDetails = AgentSessionWorkspaceDetails;
 export interface FlowRunRuntimeGeneration {
   generation: number;

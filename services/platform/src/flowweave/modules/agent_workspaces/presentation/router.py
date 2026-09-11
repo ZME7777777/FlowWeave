@@ -345,6 +345,57 @@ async def download_agent_workspace_file(
     )
 
 
+@router.get("/agent-workspaces/{workspace_id}/workspace/git/log")
+async def agent_workspace_git_log(
+    workspace_id: str,
+    db: Db,
+    repository_path: str = Query(...),
+    binding_id: str | None = Query(default=None),
+    work_directory_id: str | None = Query(default=None),
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: workspace.git_history(
+            session, workspace_id, repository_path, binding_id, work_directory_id
+        ),
+    )
+
+
+@router.get("/agent-workspaces/{workspace_id}/workspace/git/commit")
+async def agent_workspace_git_commit(
+    workspace_id: str,
+    db: Db,
+    repository_path: str = Query(...),
+    commit: str = Query(...),
+    binding_id: str | None = Query(default=None),
+    work_directory_id: str | None = Query(default=None),
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: workspace.git_commit_details(
+            session, workspace_id, repository_path, commit, binding_id, work_directory_id
+        ),
+    )
+
+
+@router.get("/agent-workspaces/{workspace_id}/workspace/git/diff")
+async def agent_workspace_git_diff(
+    workspace_id: str,
+    db: Db,
+    repository_path: str = Query(...),
+    commit: str = Query(...),
+    path: str = Query(...),
+    binding_id: str | None = Query(default=None),
+    work_directory_id: str | None = Query(default=None),
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: workspace.git_commit_file_diff(
+            session, workspace_id, repository_path, commit, path, binding_id, work_directory_id
+        ),
+    )
+
+
 @router.delete("/agent-workspaces/{workspace_id}/workspace/entries")
 async def delete_agent_workspace_entries(
     workspace_id: str,

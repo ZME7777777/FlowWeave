@@ -441,6 +441,78 @@ async def node_session_workspace_file(
     )
 
 
+@router.get(f"{_BASE}/workspace/git/log")
+async def node_session_workspace_git_log(
+    flow_run_id: str,
+    attempt_id: str,
+    db: Db,
+    repository_path: str = Query(...),
+    binding_id: str | None = Query(default=None),
+    work_directory_id: str | None = Query(default=None),
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: agent_sessions.flow_node_workspace.git_history(
+            session,
+            flow_run_id=flow_run_id,
+            attempt_id=attempt_id,
+            repository_path=repository_path,
+            binding_id=binding_id,
+            work_directory_id=work_directory_id,
+        ),
+    )
+
+
+@router.get(f"{_BASE}/workspace/git/commit")
+async def node_session_workspace_git_commit(
+    flow_run_id: str,
+    attempt_id: str,
+    db: Db,
+    repository_path: str = Query(...),
+    commit: str = Query(...),
+    binding_id: str | None = Query(default=None),
+    work_directory_id: str | None = Query(default=None),
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: agent_sessions.flow_node_workspace.git_commit_details(
+            session,
+            flow_run_id=flow_run_id,
+            attempt_id=attempt_id,
+            repository_path=repository_path,
+            commit=commit,
+            binding_id=binding_id,
+            work_directory_id=work_directory_id,
+        ),
+    )
+
+
+@router.get(f"{_BASE}/workspace/git/diff")
+async def node_session_workspace_git_diff(
+    flow_run_id: str,
+    attempt_id: str,
+    db: Db,
+    repository_path: str = Query(...),
+    commit: str = Query(...),
+    path: str = Query(...),
+    binding_id: str | None = Query(default=None),
+    work_directory_id: str | None = Query(default=None),
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: agent_sessions.flow_node_workspace.git_commit_file_diff(
+            session,
+            flow_run_id=flow_run_id,
+            attempt_id=attempt_id,
+            repository_path=repository_path,
+            commit=commit,
+            path=path,
+            binding_id=binding_id,
+            work_directory_id=work_directory_id,
+        ),
+    )
+
+
 @router.delete(f"{_BASE}/workspace/entries")
 async def delete_node_session_workspace_entries(
     flow_run_id: str,

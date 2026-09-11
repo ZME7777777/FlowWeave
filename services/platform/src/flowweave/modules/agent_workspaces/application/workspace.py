@@ -33,6 +33,9 @@ from flowweave.shared.errors import DomainError, not_found
 _MAX_INDEX_ENTRIES = 20_000
 _MAX_FILE_BYTES = 25 * 1024 * 1024
 _GIT_TIMEOUT_SECONDS = 2
+_GIT_LOG_LIMIT = 80
+_GIT_DIFF_LIMIT = 512 * 1024
+_GIT_OBJECT_ID = re.compile(r"^[0-9a-fA-F]{7,64}$")
 
 
 def terminal_session_name(workspace_id: str, container_id: str, terminal_instance_id: str) -> str:
@@ -214,6 +217,175 @@ def _repository_details(repository: Path, runtime_path: str) -> dict[str, str]:
     return details
 
 
+def repository_details(repository: Path, runtime_path: str) -> dict[str, str]:
+    """Return safe metadata for an already-authorized repository root."""
+
+    return _repository_details(repository, runtime_path)
+
+
+def _git_run(repository: Path, *arguments: str) -> bytes | None:
+    """Run an allowlisted, read-only Git command without a shell."""
+
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repository), *arguments],
+            capture_output=True,
+            check=False,
+            env={"PATH": os.defpath},
+            timeout=_GIT_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return result.stdout if result.returncode == 0 else None
+
+
+def _authorized_repository(
+    project_root: Path, runtime_root: str, file_roots: tuple[str, ...], repository_path: str
+) -> tuple[Path, str]:
+    repositories = dict(_scope_repositories(project_root, runtime_root, file_roots))
+    try:
+        repository = next(
+            host_path
+            for host_path, runtime_path in repositories.items()
+            if runtime_path == repository_path
+        )
+    except StopIteration as exc:
+        raise DomainError(
+            "AGENT_WORKSPACE_REPOSITORY_NOT_FOUND", "所选目录不属于当前工作区中的 Git 仓库", 404
+        ) from exc
+    return repository, repository_path
+
+
+def _git_commit(repository: Path, commit: str) -> str:
+    if not _GIT_OBJECT_ID.fullmatch(commit):
+        raise DomainError("AGENT_WORKSPACE_GIT_COMMIT_INVALID", "Git 提交标识无效", 422)
+    resolved = _git_run(repository, "rev-parse", "--verify", f"{commit}^{{commit}}")
+    if not resolved:
+        raise DomainError("AGENT_WORKSPACE_GIT_COMMIT_NOT_FOUND", "Git 提交不存在", 404)
+    return resolved.decode("ascii", errors="ignore").strip()
+
+
+def git_log(
+    project_root: Path, runtime_root: str, file_roots: tuple[str, ...], repository_path: str
+) -> dict[str, Any]:
+    """Return a bounded, read-only history for one authorized repository."""
+
+    repository, runtime_path = _authorized_repository(
+        project_root, runtime_root, file_roots, repository_path
+    )
+    output = (
+        _git_run(
+            repository,
+            "log",
+            f"--max-count={_GIT_LOG_LIMIT}",
+            "--date=short",
+            "--format=%H%x00%h%x00%an%x00%ad%x00%s%x00",
+        )
+        or b""
+    )
+    fields = output.decode("utf-8", errors="replace").split("\0")
+    commits = [
+        {
+            "id": fields[index],
+            "short_id": fields[index + 1],
+            "author": fields[index + 2],
+            "date": fields[index + 3],
+            "subject": fields[index + 4],
+        }
+        for index in range(0, max(0, len(fields) - 1), 5)
+        if index + 4 < len(fields) and fields[index]
+    ]
+    return {"repository": _repository_details(repository, runtime_path), "commits": commits}
+
+
+def git_commit(
+    project_root: Path,
+    runtime_root: str,
+    file_roots: tuple[str, ...],
+    repository_path: str,
+    commit: str,
+) -> dict[str, Any]:
+    repository, runtime_path = _authorized_repository(
+        project_root, runtime_root, file_roots, repository_path
+    )
+    object_id = _git_commit(repository, commit)
+    metadata = (
+        (
+            _git_run(
+                repository,
+                "show",
+                "--no-patch",
+                "--date=short",
+                "--format=%H%x00%h%x00%an%x00%ad%x00%s",
+                object_id,
+            )
+            or b""
+        )
+        .decode("utf-8", errors="replace")
+        .split("\0", 4)
+    )
+    names = (
+        _git_run(
+            repository, "diff-tree", "--root", "--no-commit-id", "--name-status", "-r", object_id
+        )
+        or b""
+    )
+    files = []
+    for line in names.decode("utf-8", errors="replace").splitlines():
+        status, separator, path = line.partition("\t")
+        if separator and path and "\x00" not in path:
+            files.append({"path": path, "status": status[:1] or "M"})
+    return {
+        "repository": _repository_details(repository, runtime_path),
+        "commit": {
+            "id": metadata[0] if metadata else object_id,
+            "short_id": metadata[1] if len(metadata) > 1 else object_id[:12],
+            "author": metadata[2] if len(metadata) > 2 else "",
+            "date": metadata[3] if len(metadata) > 3 else "",
+            "subject": metadata[4] if len(metadata) > 4 else "",
+        },
+        "files": files,
+    }
+
+
+def git_file_diff(
+    project_root: Path,
+    runtime_root: str,
+    file_roots: tuple[str, ...],
+    repository_path: str,
+    commit: str,
+    path: str,
+) -> dict[str, Any]:
+    repository, _ = _authorized_repository(project_root, runtime_root, file_roots, repository_path)
+    object_id = _git_commit(repository, commit)
+    if (
+        not path
+        or path.startswith("/")
+        or "\x00" in path
+        or any(part in {"", ".", ".."} for part in PurePosixPath(path).parts)
+    ):
+        raise DomainError("AGENT_WORKSPACE_GIT_PATH_INVALID", "Git 文件路径无效", 422)
+    changed = (
+        _git_run(
+            repository, "diff-tree", "--root", "--no-commit-id", "--name-only", "-r", object_id
+        )
+        or b""
+    )
+    if path not in changed.decode("utf-8", errors="replace").splitlines():
+        raise DomainError("AGENT_WORKSPACE_GIT_PATH_INVALID", "文件不属于该 Git 提交", 422)
+    output = (
+        _git_run(
+            repository, "show", "--format=", "--no-ext-diff", "--no-renames", object_id, "--", path
+        )
+        or b""
+    )
+    return {
+        "path": path,
+        "diff": output[:_GIT_DIFF_LIMIT].decode("utf-8", errors="replace"),
+        "truncated": len(output) > _GIT_DIFF_LIMIT,
+    }
+
+
 def _scope_repositories(
     project_root: Path, runtime_workspace_root: str, file_roots: tuple[str, ...]
 ) -> list[tuple[Path, str]]:
@@ -228,7 +400,7 @@ def _scope_repositories(
         )
         current = host_root
         while current.is_relative_to(project_root):
-            if (current / ".git").is_dir():
+            if (current / ".git").is_dir() or (current / ".git").is_file():
                 relative = current.relative_to(project_root).as_posix()
                 found[current] = (
                     runtime_workspace_root
@@ -241,7 +413,7 @@ def _scope_repositories(
             current = current.parent
         for directory, directory_names, _ in os.walk(host_root, followlinks=False):
             current_path = Path(directory)
-            if ".git" in directory_names:
+            if (current_path / ".git").is_dir() or (current_path / ".git").is_file():
                 relative = current_path.relative_to(project_root).as_posix()
                 found[current_path] = (
                     runtime_workspace_root
@@ -609,6 +781,61 @@ def details(
             ),
         },
     }
+
+
+def _git_scope(
+    db: Session, workspace_id: str, work_directory_id: str | None, binding_id: str | None
+) -> tuple[Path, str, tuple[str, ...]]:
+    _workspace(db, workspace_id)
+    runtime_root = _runtime_root(workspace_id)
+    _, directory = _working_directory(db, workspace_id, work_directory_id, binding_id)
+    return (
+        _project_root(db, workspace_id),
+        runtime_root,
+        _file_scope_roots(db, workspace_id, work_directory_id, binding_id, directory),
+    )
+
+
+def git_history(
+    db: Session,
+    workspace_id: str,
+    repository_path: str,
+    binding_id: str | None = None,
+    work_directory_id: str | None = None,
+) -> dict[str, Any]:
+    project_root, runtime_root, file_roots = _git_scope(
+        db, workspace_id, work_directory_id, binding_id
+    )
+    return git_log(project_root, runtime_root, file_roots, repository_path)
+
+
+def git_commit_details(
+    db: Session,
+    workspace_id: str,
+    repository_path: str,
+    commit: str,
+    binding_id: str | None = None,
+    work_directory_id: str | None = None,
+) -> dict[str, Any]:
+    project_root, runtime_root, file_roots = _git_scope(
+        db, workspace_id, work_directory_id, binding_id
+    )
+    return git_commit(project_root, runtime_root, file_roots, repository_path, commit)
+
+
+def git_commit_file_diff(
+    db: Session,
+    workspace_id: str,
+    repository_path: str,
+    commit: str,
+    path: str,
+    binding_id: str | None = None,
+    work_directory_id: str | None = None,
+) -> dict[str, Any]:
+    project_root, runtime_root, file_roots = _git_scope(
+        db, workspace_id, work_directory_id, binding_id
+    )
+    return git_file_diff(project_root, runtime_root, file_roots, repository_path, commit, path)
 
 
 def download(

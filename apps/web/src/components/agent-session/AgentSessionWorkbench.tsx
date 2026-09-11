@@ -3,7 +3,7 @@ import { Terminal as XTerm } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import hljs from 'highlight.js/lib/common';
-import { ArrowLeft, Bot, Boxes, Check, ChevronDown, ChevronRight, CircleDot, Copy, CornerDownRight, Download, Ellipsis, FileCode2, FileText, Folder, FolderOpen, FolderPlus, /* GitBranch — Git repository summary is temporarily hidden; retain for its future enhancement. */ GripVertical, ImageIcon, Layers3, Link2, LoaderCircle, Maximize2, Minimize2, MonitorCog, PanelRightOpen, Play, Plus, Quote, Search, Send, ShieldAlert, Square, Trash2, X } from 'lucide-react';
+import { ArrowLeft, Bot, Boxes, Check, ChevronDown, ChevronRight, CircleDot, Copy, CornerDownRight, Download, Ellipsis, FileCode2, FileText, Folder, FolderOpen, FolderPlus, GitBranch, GripVertical, ImageIcon, Layers3, Link2, LoaderCircle, Maximize2, Minimize2, MonitorCog, PanelRightOpen, Play, Plus, Quote, Search, Send, ShieldAlert, Square, Trash2, X } from 'lucide-react';
 import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type ComponentPropsWithoutRef, type CSSProperties, type DragEvent as ReactDragEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type UIEvent as ReactUIEvent, type WheelEvent as ReactWheelEvent } from 'react';
 import { createPortal } from 'react-dom';
 import ReactMarkdown from 'react-markdown';
@@ -19,7 +19,7 @@ import { selectCapabilityVersion, selectCapabilityVersions } from '../../utils/c
 import { SubagentAvatar } from '../SubagentAvatar';
 import { subagentAvatarSlots, type SubagentAvatarSlot } from '../../utils/subagentAvatar';
 import { workspaceFileChanges, workspaceRelativePath, type WorkspaceFileChange } from './fileChanges';
-import type { AgentAttachment, AgentConversation, AgentPendingConfirmationAction, AgentSessionCapability, AgentSessionMcpReadiness, AgentSessionWorkDirectory, AgentSessionWorkDirectoryList, CapabilityAsset, CapabilityCollection, ModelProvider, OpenHandsConversationEvent, OpenHandsConversationEventBatch, ProviderModel, RuntimeTaskControlSnapshot, RuntimeTaskUsageSnapshot } from '../../types';
+import type { AgentAttachment, AgentConversation, AgentPendingConfirmationAction, AgentSessionCapability, AgentSessionMcpReadiness, AgentSessionWorkDirectory, AgentSessionWorkDirectoryList, AgentSessionWorkspaceDetails, CapabilityAsset, CapabilityCollection, ModelProvider, OpenHandsConversationEvent, OpenHandsConversationEventBatch, ProviderModel, RuntimeTaskControlSnapshot, RuntimeTaskUsageSnapshot, WorkspaceGitCommitDetails, WorkspaceGitFileDiff } from '../../types';
 import '../../pages/agent-workbench.css';
 import '../../pages/agent-workbench-layout.css';
 
@@ -1439,12 +1439,13 @@ function WorkspaceFileTree({ entries, root, selectedFile, selectedPaths, expande
     }
     const overlayHeight = overlay?.offsetHeight ?? 0;
     setStickyOverlayHeight(current => current === overlayHeight ? current : overlayHeight);
+    const treeTop = tree.getBoundingClientRect().top;
     const firstVisible = visibleNodes.find(({ node }) => {
       const row = rowRefs.current.get(node.path);
-      // The active path is defined by the first row at the actual viewport
-      // edge, not the first row after the overlay.  The latter made the path
-      // switch back and forth while scrolling upward through deep folders.
-      return row && row.offsetTop + row.offsetHeight > tree.scrollTop + 1;
+      // The path must describe the content that is actually exposed below the
+      // pinned header. A row merely hidden behind that header belongs to the
+      // previous directory and must not keep its stale ancestors visible.
+      return row && row.getBoundingClientRect().bottom > treeTop + overlayHeight + 1;
     });
     const next = firstVisible ? stickyDirectoriesFor(firstVisible.node) : [];
     setStickyDirectoryPaths(current => current.length === next.length && current.every((path, index) => path === next[index]) ? current : next);
@@ -1463,8 +1464,12 @@ function WorkspaceFileTree({ entries, root, selectedFile, selectedPaths, expande
     updateHeight();
     const observer = new ResizeObserver(updateHeight);
     observer.observe(overlay);
-    return () => observer.disconnect();
-  }, [stickyDirectoryPaths]);
+    // The number of pinned folders changes the overlay height.  Re-evaluate
+    // after layout so the newly exposed first row can shrink the chain in the
+    // same scroll position, rather than waiting for the next wheel event.
+    const frame = requestAnimationFrame(updateStickyDirectories);
+    return () => { observer.disconnect(); cancelAnimationFrame(frame); };
+  }, [stickyDirectoryPaths, updateStickyDirectories]);
   const selectEntry = (node: WorkspaceTreeNode, event: ReactMouseEvent<HTMLButtonElement>) => {
     const toggling = event.metaKey || event.ctrlKey;
     const anchorIndex = selectionAnchor.current ? visibleNodes.findIndex(item => item.node.path === selectionAnchor.current) : -1;
@@ -1599,6 +1604,49 @@ function WorkDirectoryCreator({ workspaceId, onClose, onCreated }: {
       <footer><button type="button" className="secondary" disabled={create.isPending} onClick={onClose}>取消</button><button type="button" className="primary" disabled={!canSubmit} onClick={() => create.mutate()}>{create.isPending ? '正在创建…' : '创建工作区'}</button></footer>
     </section>
   </div>;
+}
+
+function WorkspaceGitSidebar({ details, selectedPath, loadLog, loadCommit, loadDiff }: {
+  details: AgentSessionWorkspaceDetails;
+  selectedPath?: string;
+  loadLog: (repositoryPath: string) => Promise<import('../../types').WorkspaceGitLog>;
+  loadCommit: (repositoryPath: string, commit: string) => Promise<WorkspaceGitCommitDetails>;
+  loadDiff: (repositoryPath: string, commit: string, path: string) => Promise<WorkspaceGitFileDiff>;
+}) {
+  const repository = useMemo(() => (details.repositories
+    .filter(item => selectedPath === item.path || Boolean(selectedPath?.startsWith(`${item.path}/`)))
+    .sort((left, right) => right.path.length - left.path.length)[0]), [details.repositories, selectedPath]);
+  const [selectedCommit, setSelectedCommit] = useState<string>();
+  const [selectedCommitFile, setSelectedCommitFile] = useState<string>();
+  useEffect(() => { setSelectedCommit(undefined); setSelectedCommitFile(undefined); }, [repository?.path]);
+  const logQuery = useQuery({
+    queryKey: ['workspace-git-log', repository?.path],
+    queryFn: () => loadLog(repository!.path),
+    enabled: Boolean(repository),
+    staleTime: 15_000,
+  });
+  const commitQuery = useQuery({
+    queryKey: ['workspace-git-commit', repository?.path, selectedCommit],
+    queryFn: () => loadCommit(repository!.path, selectedCommit!),
+    enabled: Boolean(repository && selectedCommit),
+  });
+  const diffQuery = useQuery({
+    queryKey: ['workspace-git-diff', repository?.path, selectedCommit, selectedCommitFile],
+    queryFn: () => loadDiff(repository!.path, selectedCommit!, selectedCommitFile!),
+    enabled: Boolean(repository && selectedCommit && selectedCommitFile),
+  });
+  if (!repository) return <aside className="agent-workspace-git-sidebar empty" aria-label="Git 提交历史"><header><GitBranch size={15}/><span>Git</span></header><p>选择 Git 仓库目录或其下的文件，即可查看提交历史。</p></aside>;
+  return <aside className="agent-workspace-git-sidebar" aria-label="Git 提交历史">
+    <header><div><span><GitBranch size={15}/>Git</span><b title={workspaceRelativePath(repository.path, details.root)}>{workspaceRelativePath(repository.path, details.root)}</b></div>{repository.branch && <em title="当前分支（只读，暂不支持切换）">{repository.branch}</em>}</header>
+    {logQuery.isLoading ? <p className="agent-git-loading">正在读取提交历史…</p> : logQuery.isError ? <p className="agent-git-error">Git 历史读取失败。<button type="button" onClick={() => void logQuery.refetch()}>重试</button></p> : <>
+      <div className="agent-git-log">{(logQuery.data?.commits ?? []).map(commit => <button key={commit.id} type="button" className={selectedCommit === commit.id ? 'active' : ''} onClick={() => { setSelectedCommit(commit.id); setSelectedCommitFile(undefined); }}><b>{commit.subject || '（无提交说明）'}</b><span><code>{commit.short_id}</code><em>{commit.author}</em><time>{commit.date}</time></span></button>)}{!logQuery.data?.commits.length && <p>该仓库没有可展示的提交。</p>}</div>
+      {selectedCommit && <section className="agent-git-commit-detail">
+        <header><div><b>{commitQuery.data?.commit.subject || '正在读取提交…'}</b><span>{commitQuery.data?.commit.short_id}</span></div><button type="button" aria-label="关闭提交详情" onClick={() => { setSelectedCommit(undefined); setSelectedCommitFile(undefined); }}><X size={13}/></button></header>
+        {commitQuery.isLoading ? <p>正在读取文件变更…</p> : commitQuery.isError ? <p className="agent-git-error">提交详情读取失败。</p> : <div className="agent-git-changed-files">{(commitQuery.data?.files ?? []).map(file => <button type="button" key={`${file.status}:${file.path}`} className={selectedCommitFile === file.path ? 'active' : ''} onClick={() => setSelectedCommitFile(file.path)}><em>{file.status}</em><span title={file.path}>{file.path}</span></button>)}</div>}
+        {selectedCommitFile && <div className="agent-git-file-diff"><header><span title={selectedCommitFile}>{selectedCommitFile}</span>{diffQuery.data?.truncated && <em>已截断</em>}</header>{diffQuery.isLoading ? <p>正在读取 Diff…</p> : diffQuery.isError ? <p className="agent-git-error">文件 Diff 读取失败。</p> : <pre>{diffQuery.data?.diff || '该文件没有可显示的文本 Diff。'}</pre>}</div>}
+      </section>}
+    </>}
+  </aside>;
 }
 
 type WorkspaceToolTab =
@@ -1945,6 +1993,8 @@ function WorkspaceDrawer({
     : '';
   const canPreviewImage = Boolean(selectedFile && (selectedMimeType.startsWith('image/') || /\.(?:avif|gif|jpe?g|png|svg|webp)$/i.test(selectedFile)));
   const canPreviewPdf = Boolean(selectedFile && (selectedMimeType === 'application/pdf' || /\.pdf$/i.test(selectedFile)));
+  const gitSelectedPath = activeDirectory ?? selectedFile ?? [...selectedEntryPaths][0];
+  const gitOptions = { bindingId, workDirectoryId };
   const sshRemoteReady = Boolean(
     details?.ide.gateway.supported
     && details.ide.gateway.host
@@ -1980,10 +2030,10 @@ function WorkspaceDrawer({
       <div className="agent-workspace-tool-body">
         {panelError && <p className="agent-workspace-panel-error" role="alert"><span>{panelError}</span><button type="button" aria-label="关闭错误提示" onClick={() => setPanelError('')}><X size={13}/></button></p>}
         {loadingOrError || (!scopeState.tabs.length ? <div className="agent-drawer-empty"><b>选择工作区工具</b><span>文件仅打开一个页签；终端可按需打开多个独立实例。</span><div><button type="button" className="secondary" onClick={() => openFiles()}>打开文件</button><button type="button" className="secondary" disabled={!runtimeAvailable} onClick={openTerminal}>新建终端</button></div></div> : details && <div className="agent-workspace-tool-content">
-          {scopeState.tabs.some(tab => tab.kind === 'files') && <section className={`agent-workspace-files ${scopeState.activeTabId === 'files' ? 'active' : ''}`} style={{ '--file-tree-width': `${fileTreeWidth}px` } as CSSProperties}>
+          {scopeState.tabs.some(tab => tab.kind === 'files') && <section className={`agent-workspace-files ${scopeState.activeTabId === 'files' ? 'active' : ''}${fullScreen ? ' fullscreen-git' : ''}`} style={{ '--file-tree-width': `${fileTreeWidth}px` } as CSSProperties}>
             <div className="agent-file-tree-pane">
               <header className="agent-file-tree-toolbar"><span>{selectedEntryPaths.size ? `已选 ${selectedEntryPaths.size} 项` : '文件'}</span><div className="agent-file-tree-actions"><button type="button" title="新建文件" aria-label="新建文件" onClick={() => createAtActiveDirectory('FILE')}><FileCode2 size={13}/></button><button type="button" title="新建目录" aria-label="新建目录" onClick={() => createAtActiveDirectory('DIRECTORY')}><FolderPlus size={13}/></button><button type="button" className={`agent-file-tree-expand-toggle${allFileDirectoriesExpanded ? ' expanded' : ''}`} title={allFileDirectoriesExpanded ? '全部收起' : '全部展开'} aria-label={allFileDirectoriesExpanded ? '全部收起目录' : '全部展开目录'} disabled={!fileDirectoryPaths.length} onClick={() => setExpandedFilePaths(allFileDirectoriesExpanded ? new Set() : new Set(fileDirectoryPaths))}>{allFileDirectoriesExpanded ? <ChevronRight size={13}/> : <ChevronDown size={13}/>}</button><button type="button" className="danger" title="删除选中项" aria-label="删除选中项" disabled={!selectedEntryRoots.length} onClick={() => void removeEntries(selectedEntryRoots.map(path => ({ path, kind: visibleFiles.find(item => item.path === path)?.kind ?? 'directory' })))}><Trash2 size={13}/></button></div></header>
-              <WorkspaceFileTree entries={visibleFiles} root={details.working_directory} selectedFile={selectedFile} selectedPaths={selectedEntryPaths} expanded={expandedFilePaths} onExpandedChange={setExpandedFilePaths} onDirectoriesChange={setFileDirectoryPaths} onSelect={selectFile} onSelectionChange={setSelectedEntryPaths} onActivateDirectory={setActiveDirectory} onContextMenu={(path, kind, event) => { setEntryMenu({ path, kind, x: Math.min(event.clientX, window.innerWidth - 190), y: Math.min(event.clientY, window.innerHeight - 150) }); }}/>
+              <WorkspaceFileTree entries={visibleFiles} root={details.working_directory} selectedFile={selectedFile} selectedPaths={selectedEntryPaths} expanded={expandedFilePaths} onExpandedChange={setExpandedFilePaths} onDirectoriesChange={setFileDirectoryPaths} onSelect={path => { setActiveDirectory(undefined); selectFile(path); }} onSelectionChange={setSelectedEntryPaths} onActivateDirectory={setActiveDirectory} onContextMenu={(path, kind, event) => { setEntryMenu({ path, kind, x: Math.min(event.clientX, window.innerWidth - 190), y: Math.min(event.clientY, window.innerHeight - 190) }); }}/>
             </div>
             <div className="agent-file-tree-resizer" role="separator" aria-label="调整文件目录宽度" aria-orientation="vertical" onPointerDown={startFileTreeResize}/>
             <div className="agent-file-preview">{candidatePreview ? <>
@@ -1993,6 +2043,7 @@ function WorkspaceDrawer({
               <header><span title={selectedFile}>{selectedAttachment?.filename || relativeWorkspacePath(selectedFile, details.root)}</span><a href={fileUrl(workspaceId, selectedFile, { bindingId, workDirectoryId, download: true })}><Download size={13}/>下载</a></header>
               {canPreviewImage ? <img className="agent-file-media-preview" src={selectedAttachment?.image_data_url || selectedFileUrl} alt={selectedAttachment?.filename || '附件预览'}/> : canPreviewPdf ? <iframe className="agent-file-media-preview" title={selectedAttachment?.filename || 'PDF 预览'} src={selectedFileUrl}/> : textPreviewable ? previewQuery.isLoading ? <p>正在读取文件…</p> : previewQuery.isError ? <p>文件预览不可用，请下载后查看。</p> : <WorkspaceTextPreview path={selectedFile} content={previewQuery.data ?? ''}/> : <p>此文件不提供浏览器预览，请下载后查看。</p>}
             </> : <p>选择一个文件以预览或下载。</p>}</div>
+            {fullScreen && <WorkspaceGitSidebar details={details} selectedPath={gitSelectedPath} loadLog={repositoryPath => api.gitLog(workspaceId, repositoryPath, gitOptions)} loadCommit={(repositoryPath, commit) => api.gitCommit(workspaceId, repositoryPath, commit, gitOptions)} loadDiff={(repositoryPath, commit, path) => api.gitDiff(workspaceId, repositoryPath, commit, path, gitOptions)}/>}
           </section>}
           {scopeState.tabs.some(tab => tab.kind === 'changes') && <div className={`agent-changes-tab-panel ${scopeState.activeTabId === 'changes' ? 'active' : ''}`}><WorkspaceChangesReview changes={reviewChanges} selectedId={scopeState.selectedChangeId} onSelect={selectedChangeId => updateScope(current => ({ ...current, selectedChangeId }))} workspaceRoot={details.working_directory}/></div>}
           {scopeState.tabs.some(tab => tab.kind === 'subagents') && <div className={`agent-subagent-tab-panel ${scopeState.activeTabId === 'subagents' ? 'active' : ''}`}><RuntimeTaskTab tasks={runtimeTasks} definitions={agentDefinitions} selectedTaskId={scopeState.selectedRuntimeTaskId} onSelect={taskId => updateScope(current => ({ ...current, selectedRuntimeTaskId: taskId }))} sessionStopped={sessionStopped}/></div>}

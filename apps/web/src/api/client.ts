@@ -208,6 +208,24 @@ export const api = {
     if (options.workDirectoryId) query.set('work_directory_id', options.workDirectoryId);
     return request<AgentWorkspaceDetails>(`/agent-workspaces/${encodeURIComponent(id)}/workspace${query.size ? `?${query}` : ''}`);
   },
+  agentWorkspaceGitLog: (id: string, repositoryPath: string, options: { bindingId?: string; workDirectoryId?: string } = {}) => {
+    const query = new URLSearchParams({ repository_path: repositoryPath });
+    if (options.bindingId) query.set('binding_id', options.bindingId);
+    if (options.workDirectoryId) query.set('work_directory_id', options.workDirectoryId);
+    return request<import('../types').WorkspaceGitLog>(`/agent-workspaces/${encodeURIComponent(id)}/workspace/git/log?${query}`);
+  },
+  agentWorkspaceGitCommit: (id: string, repositoryPath: string, commit: string, options: { bindingId?: string; workDirectoryId?: string } = {}) => {
+    const query = new URLSearchParams({ repository_path: repositoryPath, commit });
+    if (options.bindingId) query.set('binding_id', options.bindingId);
+    if (options.workDirectoryId) query.set('work_directory_id', options.workDirectoryId);
+    return request<import('../types').WorkspaceGitCommitDetails>(`/agent-workspaces/${encodeURIComponent(id)}/workspace/git/commit?${query}`);
+  },
+  agentWorkspaceGitDiff: (id: string, repositoryPath: string, commit: string, path: string, options: { bindingId?: string; workDirectoryId?: string } = {}) => {
+    const query = new URLSearchParams({ repository_path: repositoryPath, commit, path });
+    if (options.bindingId) query.set('binding_id', options.bindingId);
+    if (options.workDirectoryId) query.set('work_directory_id', options.workDirectoryId);
+    return request<import('../types').WorkspaceGitFileDiff>(`/agent-workspaces/${encodeURIComponent(id)}/workspace/git/diff?${query}`);
+  },
   agentWorkspaceFilePreview: (id: string, path: string, options: { bindingId?: string; workDirectoryId?: string } = {}, signal?: AbortSignal) => {
     const query = new URLSearchParams({ path });
     if (options.bindingId) query.set('binding_id', options.bindingId);
@@ -761,6 +779,24 @@ export const nodeSessionApi = {
     if (bindingId) query.set('binding_id', bindingId);
     if (workDirectoryId) query.set('work_directory_id', workDirectoryId);
     return request<import('../types').AgentSessionWorkspaceDetails>(`${nodeSessionBase(flowRunId, attemptId)}/workspace${query.size ? `?${query}` : ''}`);
+  },
+  gitLog: (flowRunId: string, attemptId: string, repositoryPath: string, bindingId?: string, workDirectoryId?: string) => {
+    const query = new URLSearchParams({ repository_path: repositoryPath });
+    if (bindingId) query.set('binding_id', bindingId);
+    if (workDirectoryId) query.set('work_directory_id', workDirectoryId);
+    return request<import('../types').WorkspaceGitLog>(`${nodeSessionBase(flowRunId, attemptId)}/workspace/git/log?${query}`);
+  },
+  gitCommit: (flowRunId: string, attemptId: string, repositoryPath: string, commit: string, bindingId?: string, workDirectoryId?: string) => {
+    const query = new URLSearchParams({ repository_path: repositoryPath, commit });
+    if (bindingId) query.set('binding_id', bindingId);
+    if (workDirectoryId) query.set('work_directory_id', workDirectoryId);
+    return request<import('../types').WorkspaceGitCommitDetails>(`${nodeSessionBase(flowRunId, attemptId)}/workspace/git/commit?${query}`);
+  },
+  gitDiff: (flowRunId: string, attemptId: string, repositoryPath: string, commit: string, path: string, bindingId?: string, workDirectoryId?: string) => {
+    const query = new URLSearchParams({ repository_path: repositoryPath, commit, path });
+    if (bindingId) query.set('binding_id', bindingId);
+    if (workDirectoryId) query.set('work_directory_id', workDirectoryId);
+    return request<import('../types').WorkspaceGitFileDiff>(`${nodeSessionBase(flowRunId, attemptId)}/workspace/git/diff?${query}`);
   },
   deleteWorkspaceFile: (flowRunId: string, attemptId: string, path: string, options: { bindingId?: string; workDirectoryId?: string } = {}) => {
     const query = new URLSearchParams();

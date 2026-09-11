@@ -26,6 +26,9 @@ import type {
   CapabilityCollection,
   ModelProvider,
   OpenHandsConversationEventBatch,
+  WorkspaceGitCommitDetails,
+  WorkspaceGitFileDiff,
+  WorkspaceGitLog,
 } from '../types';
 
 export type AgentSessionHostId = string;
@@ -81,6 +84,9 @@ export interface AgentSessionApi {
   readonly replaceHostCapabilities: (hostId: AgentSessionHostId, capabilityVersionIds: string[]) => Promise<AgentSessionCapability[]>;
   readonly addConversationCapability: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, capabilityVersionId: string) => Promise<AgentConversation>;
   readonly workspaceDetails: (hostId: AgentSessionHostId, options?: Omit<AgentSessionFileOptions, 'download'>) => Promise<AgentSessionWorkspaceDetails>;
+  readonly gitLog: (hostId: AgentSessionHostId, repositoryPath: string, options?: Omit<AgentSessionFileOptions, 'download'>) => Promise<WorkspaceGitLog>;
+  readonly gitCommit: (hostId: AgentSessionHostId, repositoryPath: string, commit: string, options?: Omit<AgentSessionFileOptions, 'download'>) => Promise<WorkspaceGitCommitDetails>;
+  readonly gitDiff: (hostId: AgentSessionHostId, repositoryPath: string, commit: string, path: string, options?: Omit<AgentSessionFileOptions, 'download'>) => Promise<WorkspaceGitFileDiff>;
   readonly createWorkDirectory: (hostId: AgentSessionHostId, displayName: string, selectedPaths: string[]) => Promise<AgentSessionWorkDirectory>;
   readonly deleteWorkDirectory?: (hostId: AgentSessionHostId, workDirectoryId: AgentSessionWorkDirectoryId) => Promise<void>;
   readonly filePreview: (hostId: AgentSessionHostId, path: string, options?: Omit<AgentSessionFileOptions, 'download'>, signal?: AbortSignal) => Promise<string>;
@@ -139,6 +145,9 @@ export const agentWorkspaceSessionGateway: AgentSessionGateway = {
     replaceHostCapabilities: api.replaceAgentWorkspaceCapabilities,
     addConversationCapability: api.addAgentConversationCapability,
     workspaceDetails: api.agentWorkspaceDetails,
+    gitLog: api.agentWorkspaceGitLog,
+    gitCommit: api.agentWorkspaceGitCommit,
+    gitDiff: api.agentWorkspaceGitDiff,
     createWorkDirectory: api.createAgentWorkDirectory,
     deleteWorkDirectory: api.deleteAgentWorkDirectory,
     filePreview: api.agentWorkspaceFilePreview,
@@ -201,6 +210,12 @@ export function flowNodeSessionGateway(
       addConversationCapability: (_hostId, bindingId, capabilityVersionId) => nodeSessionApi.addCapability(flowRunId, attemptId, bindingId, capabilityVersionId),
       workspaceDetails: (_hostId, options) =>
         nodeSessionApi.workspace(flowRunId, attemptId, options?.bindingId, options?.workDirectoryId),
+      gitLog: (_hostId, repositoryPath, options) =>
+        nodeSessionApi.gitLog(flowRunId, attemptId, repositoryPath, options?.bindingId, options?.workDirectoryId),
+      gitCommit: (_hostId, repositoryPath, commit, options) =>
+        nodeSessionApi.gitCommit(flowRunId, attemptId, repositoryPath, commit, options?.bindingId, options?.workDirectoryId),
+      gitDiff: (_hostId, repositoryPath, commit, path, options) =>
+        nodeSessionApi.gitDiff(flowRunId, attemptId, repositoryPath, commit, path, options?.bindingId, options?.workDirectoryId),
       deleteFile: (_hostId, path, options) =>
         nodeSessionApi.deleteWorkspaceFile(flowRunId, attemptId, path, options),
       createFile: (_hostId, parentPath, name, kind, options) =>

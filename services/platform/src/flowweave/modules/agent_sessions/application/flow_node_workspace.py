@@ -335,7 +335,12 @@ def details(
         "working_directory": working_directory,
         "work_directory": directory,
         "files": _entries(project_root, runtime_root, roots),
-        "repositories": [],
+        "repositories": [
+            agent_workspace_host.git_repository_details(repository, repository_path)
+            for repository, repository_path in agent_workspace_host.git_repositories(
+                project_root, str(runtime_root), roots
+            )
+        ],
         # This entry was authorized against an active Attempt Runtime.
         "runtime": {"state": "ACTIVE", "write_available": True},
         "ide": {
@@ -347,6 +352,85 @@ def details(
             ),
         },
     }
+
+
+def git_history(
+    db: Session,
+    *,
+    flow_run_id: str,
+    attempt_id: str,
+    repository_path: str,
+    binding_id: str | None = None,
+    work_directory_id: str | None = None,
+) -> dict[str, Any]:
+    project_root, runtime_root, _, _ = _authorize_entry(
+        db, flow_run_id=flow_run_id, attempt_id=attempt_id
+    )
+    _, _, roots = _scope(
+        db,
+        flow_run_id=flow_run_id,
+        attempt_id=attempt_id,
+        binding_id=binding_id,
+        work_directory_id=work_directory_id,
+        runtime_root=runtime_root,
+    )
+    _validate_scope_roots(project_root, runtime_root, roots)
+    return agent_workspace_host.git_log(project_root, str(runtime_root), roots, repository_path)
+
+
+def git_commit_details(
+    db: Session,
+    *,
+    flow_run_id: str,
+    attempt_id: str,
+    repository_path: str,
+    commit: str,
+    binding_id: str | None = None,
+    work_directory_id: str | None = None,
+) -> dict[str, Any]:
+    project_root, runtime_root, _, _ = _authorize_entry(
+        db, flow_run_id=flow_run_id, attempt_id=attempt_id
+    )
+    _, _, roots = _scope(
+        db,
+        flow_run_id=flow_run_id,
+        attempt_id=attempt_id,
+        binding_id=binding_id,
+        work_directory_id=work_directory_id,
+        runtime_root=runtime_root,
+    )
+    _validate_scope_roots(project_root, runtime_root, roots)
+    return agent_workspace_host.git_commit(
+        project_root, str(runtime_root), roots, repository_path, commit
+    )
+
+
+def git_commit_file_diff(
+    db: Session,
+    *,
+    flow_run_id: str,
+    attempt_id: str,
+    repository_path: str,
+    commit: str,
+    path: str,
+    binding_id: str | None = None,
+    work_directory_id: str | None = None,
+) -> dict[str, Any]:
+    project_root, runtime_root, _, _ = _authorize_entry(
+        db, flow_run_id=flow_run_id, attempt_id=attempt_id
+    )
+    _, _, roots = _scope(
+        db,
+        flow_run_id=flow_run_id,
+        attempt_id=attempt_id,
+        binding_id=binding_id,
+        work_directory_id=work_directory_id,
+        runtime_root=runtime_root,
+    )
+    _validate_scope_roots(project_root, runtime_root, roots)
+    return agent_workspace_host.git_file_diff(
+        project_root, str(runtime_root), roots, repository_path, commit, path
+    )
 
 
 def read_file(
