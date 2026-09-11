@@ -3793,6 +3793,14 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 
 完成：Git 侧栏仅以文件树当前选中目录／文件路径匹配最深层所属仓库；移除工作目录根和首个授权仓库回退以及跨仓库切换。未选中属于仓库的路径时，不发起历史读取并显示选择目录提示。
 
+### FR-291 Agent 工作区 Git 侧栏详情与中间 Diff 分流 — DONE
+
+依赖：FR-290。
+
+目标：点击 Git 提交后，右侧侧栏必须转入该提交的详情层，在侧栏中展示提交文件树和完整提交信息；点击侧栏文件后，才在中间工作区打开该文件的 Git Diff。提交详情不得占用中间展示区，仍遵循当前选中目录的仓库范围。
+
+完成：提交点击仅打开右侧侧栏详情层；文件树、可调整高度的提交信息和返回历史操作均留在侧栏。选择侧栏中的具体文件后，才读取 Diff 并在中间独立“提交”页签展示，切换其他文件复用该 Diff 页签。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -3808,6 +3816,7 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-11 | FR-291 | Web TypeScript typecheck、ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS：提交详情不再占用中间展示区；右侧详情层承载目录树和完整元数据，点击其中一个文件才在中间打开该文件的 Git Diff。当前选中目录的仓库范围保持不变；无 `CURRENT`。 |
 | 2026-09-11 | FR-290 | Web TypeScript typecheck、ESLint、`git diff --check` 与任务状态唯一性 | PASS：Git 历史只由当前文件树选中路径的最深层所属仓库决定；没有匹配时不请求历史并引导选择目录。无 `CURRENT`。 |
 | 2026-09-11 | FR-289 | Web ESLint、TypeScript typecheck、production build；受影响 Python Ruff/check、`py_compile`；三提交（含多行 message、目录文件）直接 smoke、Alembic head、任务状态唯一性与 `git diff --check` | PASS：中间 Git 审查不再请求或显示原始 Diff；上部以可展开目录树呈现文件，下部显示完整提交信息，两区可上下拖拽。详情接口返回完整 message、作者／提交者邮箱及 ISO 时间；三提交直接 smoke 覆盖这些字段。定向 pytest 已收集，但全局 Testcontainers fixture 在本机 Docker daemon 不可用时于断言前阻断，未伪记为通过。唯一 Alembic head 为 `0110_candidate_output_set_owner`，无 `CURRENT`。 |
 | 2026-09-11 | FR-288 | Web ESLint、TypeScript typecheck、production build；受影响 Python Ruff/check、`py_compile`；三提交历史与详情／Diff 直接 smoke、Alembic head、任务状态唯一性与 `git diff --check` | PASS：当前授权工作区内的仓库可切换，选择提交后在中间“提交审查”页签浏览文件与 Diff。Git 历史使用 NUL 记录边界，连续三条提交均可回读详情与首个文件 Diff；不依赖数据库的直接 smoke 通过。定向 pytest 已收集，但全局 Testcontainers fixture 在本机 Docker daemon 不可用时于断言前阻断，未伪记为通过。唯一 Alembic head 为 `0110_candidate_output_set_owner`，无 `CURRENT`。 |
