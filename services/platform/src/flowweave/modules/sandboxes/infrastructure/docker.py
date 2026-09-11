@@ -758,6 +758,90 @@ chmod 0700 "$target"
             )
         return clients
 
+    def reconcile_runtime_client_networks(self) -> int:
+        """Reconnect current trusted clients to every managed Agent Runtime network.
+
+        Compose recreates API, Stream API, and Worker containers during a
+        platform release. Docker network attachments belong to a container ID,
+        so the new trusted container must be reattached to already-running
+        Runtime networks without replacing their Agent Server or Conversation.
+        """
+
+        try:
+            clients = self._trusted_runtime_clients()
+        except DomainError as exc:
+            if exc.code == "SANDBOX_RUNTIME_CLIENT_UNAVAILABLE":
+                return 0
+            raise
+        network_ids = self._run(
+            [
+                self.settings.docker_binary,
+                "network",
+                "ls",
+                "--quiet",
+                "--filter",
+                "label=flowweave.managed=true",
+                "--filter",
+                "label=flowweave.resource-type=network",
+                "--filter",
+                f"label=flowweave.manager-scope={self.settings.sandbox_manager_scope}",
+                "--filter",
+                "label=flowweave.network-purpose=agent-runtime",
+            ],
+            timeout=30,
+        ).splitlines()
+        attached = 0
+        for network_id in dict.fromkeys(item.strip() for item in network_ids if item.strip()):
+            raw = self._run(
+                [self.settings.docker_binary, "network", "inspect", network_id], timeout=30
+            )
+            try:
+                value = cast(object, json.loads(raw))
+                if not isinstance(value, list) or len(value) != 1 or not isinstance(value[0], dict):
+                    raise ValueError("network inspect must contain one object")
+                network = cast(dict[str, object], value[0])
+                labels_value = network.get("Labels")
+                labels = (
+                    {
+                        str(key): str(item)
+                        for key, item in cast(dict[object, object], labels_value).items()
+                    }
+                    if isinstance(labels_value, dict)
+                    else {}
+                )
+                resource_id = labels.get("flowweave.resource-id", "")
+                expected_name = self._runtime_network_name(resource_id)
+                valid = (
+                    re.fullmatch(r"[0-9a-f-]{36}", resource_id) is not None
+                    and str(network.get("Name") or "") == expected_name
+                    and str(network.get("Driver") or "") == "bridge"
+                    and network.get("Internal")
+                    is (self.settings.sandbox_runtime_network_mode == "isolated")
+                    and labels.get("flowweave.managed") == "true"
+                    and labels.get("flowweave.resource-type") == "network"
+                    and labels.get("flowweave.manager-scope") == self.settings.sandbox_manager_scope
+                    and labels.get("flowweave.network-purpose") == "agent-runtime"
+                    and labels.get("flowweave.network-mode")
+                    == self.settings.sandbox_runtime_network_mode
+                )
+            except (json.JSONDecodeError, ValueError) as exc:
+                raise DomainError(
+                    "SANDBOX_DOCKER_PROTOCOL_ERROR",
+                    "Docker returned invalid Runtime network metadata",
+                    502,
+                ) from exc
+            if not valid:
+                raise DomainError(
+                    "SANDBOX_RESOURCE_CONFLICT",
+                    "The sandbox network does not match its isolated network contract",
+                    409,
+                    {"network_id": network_id},
+                )
+            for client_id in clients:
+                self._connect_network(expected_name, client_id)
+                attached += 1
+        return attached
+
     def _connect_network(self, network_name: str, container_id: str) -> None:
         try:
             self._run(

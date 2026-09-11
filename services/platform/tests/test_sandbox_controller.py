@@ -154,6 +154,22 @@ def test_blocking_runtime_provision_does_not_block_controller_health(settings, m
     assert provisioned.status_code == 200
 
 
+def test_runtime_provider_reconciles_runtime_network_clients_on_startup(settings, monkeypatch):
+    calls: list[bool] = []
+    monkeypatch.setattr(
+        DockerSandboxProvider,
+        "reconcile_runtime_client_networks",
+        lambda self: calls.append(True) or 0,
+    )
+
+    with TestClient(create_app(_settings(settings))):
+        deadline = time.monotonic() + 1
+        while not calls and time.monotonic() < deadline:
+            time.sleep(0.01)
+
+    assert calls == [True]
+
+
 def test_runtime_provider_rejects_partial_shared_project_without_record() -> None:
     with pytest.raises(ValueError, match="project record identity"):
         RuntimeProviderSpec(

@@ -1422,12 +1422,28 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 await asyncio.sleep(30)
                 await asyncio.to_thread(terminals.reap)
 
-        task = asyncio.create_task(reaper())
+        async def restore_runtime_client_networks() -> None:
+            while True:
+                try:
+                    attached = await asyncio.to_thread(
+                        DockerSandboxProvider(configured).reconcile_runtime_client_networks
+                    )
+                    if attached:
+                        logger.info("restored %d Runtime client network attachments", attached)
+                except DomainError as exc:
+                    logger.warning(
+                        "Runtime client network attachment reconciliation failed: %s", exc.code
+                    )
+                await asyncio.sleep(10)
+
+        reaper_task = asyncio.create_task(reaper())
+        network_task = asyncio.create_task(restore_runtime_client_networks())
         try:
             yield
         finally:
-            task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
+            reaper_task.cancel()
+            network_task.cancel()
+            await asyncio.gather(reaper_task, network_task, return_exceptions=True)
             await relay_hubs.close()
             await asyncio.to_thread(terminals.close_all)
 

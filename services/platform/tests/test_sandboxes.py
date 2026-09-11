@@ -1129,6 +1129,79 @@ def test_runtime_clients_require_api_or_worker_role_and_current_scope(settings, 
     ]
 
 
+def test_runtime_client_network_reconcile_reattaches_recreated_platform_clients(
+    settings, monkeypatch
+):
+    provider = DockerSandboxProvider(_docker_settings(settings))
+    resource_id = "12345678-1234-4234-9234-123456789abc"
+    network_name = provider._runtime_network_name(resource_id)
+    commands: list[list[str]] = []
+
+    monkeypatch.setattr(provider, "_trusted_runtime_clients", lambda: ["new-api", "new-worker"])
+
+    def fake_run(command: list[str], **_kwargs):
+        commands.append(command)
+        if command[1:3] == ["network", "ls"]:
+            return "network-id"
+        if command[1:3] == ["network", "inspect"]:
+            return json.dumps(
+                [
+                    {
+                        "Name": network_name,
+                        "Driver": "bridge",
+                        "Internal": True,
+                        "Labels": {
+                            "flowweave.managed": "true",
+                            "flowweave.resource-type": "network",
+                            "flowweave.resource-id": resource_id,
+                            "flowweave.manager-scope": "test-scope",
+                            "flowweave.network-purpose": "agent-runtime",
+                            "flowweave.network-mode": "isolated",
+                        },
+                    }
+                ]
+            )
+        return ""
+
+    monkeypatch.setattr(provider, "_run", fake_run)
+
+    assert provider.reconcile_runtime_client_networks() == 2
+    assert commands[0] == [
+        "docker",
+        "network",
+        "ls",
+        "--quiet",
+        "--filter",
+        "label=flowweave.managed=true",
+        "--filter",
+        "label=flowweave.resource-type=network",
+        "--filter",
+        "label=flowweave.manager-scope=test-scope",
+        "--filter",
+        "label=flowweave.network-purpose=agent-runtime",
+    ]
+    assert commands[1] == ["docker", "network", "inspect", "network-id"]
+    assert commands[2:] == [
+        ["docker", "network", "connect", network_name, "new-api"],
+        ["docker", "network", "connect", network_name, "new-worker"],
+    ]
+
+
+def test_runtime_client_network_reconcile_ignores_provider_start_before_clients(
+    settings, monkeypatch
+):
+    provider = DockerSandboxProvider(_docker_settings(settings))
+    monkeypatch.setattr(
+        provider,
+        "_trusted_runtime_clients",
+        lambda: (_ for _ in ()).throw(
+            DomainError("SANDBOX_RUNTIME_CLIENT_UNAVAILABLE", "not started", 503)
+        ),
+    )
+
+    assert provider.reconcile_runtime_client_networks() == 0
+
+
 @pytest.mark.parametrize(
     "managed_root",
     [
