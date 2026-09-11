@@ -106,12 +106,14 @@ def test_start_rejects_missing_contract_before_runtime_http(
         raise AssertionError("Runtime HTTP must not run before contract acceptance")
 
     monkeypatch.setattr(runtime, "_request", unexpected_request)
+    workspace_root = "/runtime/workspace/11111111-1111-1111-1111-111111111111"
     request = StartAttemptRequest(
         attempt_id="attempt-contract-missing",
         execution_key="attempt:contract-missing:start",
         node={"instance_key": "node", "asset": {"name": "Contract test"}},
         bindings=[],
-        workspace_ref=str(tmp_path / "workspace"),
+        workspace_ref=workspace_root,
+        workspace_root=workspace_root,
         agent_spec=RuntimeAgentSpec(
             provider=RuntimeProvider(
                 provider_id="provider",

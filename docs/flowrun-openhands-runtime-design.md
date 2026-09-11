@@ -3,7 +3,7 @@
 > 状态：`FR-00 FROZEN`
 > 日期：2026-08-21
 > OpenHands 事实基线：`software-agent-sdk`
-> `9a24f6c8866f353042a57df0514ccc900e3a0691`（四包 `1.44.0`）
+> `30cf5832e42c71c24daa82a1a4fd5d25eb70d1b9`（四包 `1.47.0`，含 `v1.47.0` 后已审计的 4 个修复）
 > 本文冻结目标架构和后续迁移边界，不表示后续运行时代码已经落地。
 
 ## 1. 决策摘要
@@ -126,7 +126,7 @@ FlowRun 启动和 replacement 只使用已发布 Runtime Image digest，遵循 `
 “基本预置能力”来自上述固定 OpenHands Runtime 层和用户 base image。FlowRun/Conversation 特定且由
 FlowWeave 显式绑定的 Skill、MCP、Plugin、Hook、Agent Definition、Policy 与 Memory 不烘焙进可变
 镜像，而按 Snapshot Runtime Manifest 只读物化，并在创建 Conversation 时通过 OpenHands 正式字段或
-Loader 加载。OpenHands 1.44.0 对 HOME 和项目目录的 ambient Plugin 原生扫描按上游默认保留；
+Loader 加载。OpenHands 1.47.0 对 HOME 和项目目录的 ambient Plugin 原生扫描按上游默认保留；
 FlowWeave 不再用私有请求字段或构建时源码补丁禁用它。
 
 ## 5. 持久化与可替换性
@@ -286,17 +286,16 @@ HOME/项目的 ambient Plugin 扫描是例外：它保持上游原生默认语�
 FlowRun 多 Conversation 间串扰，再由 OpenHands 正式 `load_memory` 生命周期原生加载。固定镜像真实
 create/smoke 验证仍集中在 FR-12。
 
-固定 OpenHands 1.44.0 已正式负责 Agent Profile v1→v2 迁移、LLM Profile 预检、Provider Connection
+固定 OpenHands 1.47.0 已正式负责 Agent Profile v1→v2 迁移、LLM Profile 预检、Provider Connection
 凭据的 read-at-use 解析、Secret serializer 探测，以及 subscription LLM 的 condenser dispatch。FlowWeave
 不复制这些存储迁移、凭据刷新或 condenser 调度生命周期；镜像门禁以实际迁移、轮换后重读、嵌套 Secret
 识别和 subscription condenser 行为验收，而不冻结上游字段全集或默认值表。FlowWeave 仍只持有不可变
 Snapshot 引用、权限、用量归属和调用边界 Secret Reference；显式 Agent JSON 继续避免从可变 Server
 Profile Store 恢复产品事实。
 
-远程标题生成的 Profile 解析、调用上下文和 metadata cache 修复不属于当前冻结提交
-`9a24f6c8866f353042a57df0514ccc900e3a0691`。在升级到包含这些修复且完成行为验收的源码前，Agent
-Workspace 必须继续关闭 OpenHands `autotitle`，保留 FlowWeave 独立标题任务、失败兜底和手动标题 CAS；
-不得仅因后续上游 `main` 已修复而提前删除。
+FlowWeave 的独立标题任务、失败兜底和手动标题 CAS 仍是当前产品事实；即使新的冻结源码包含更多
+上游标题路径修复，也不得在没有独立行为验收和产品决策时自动打开 OpenHands `autotitle` 或删除平台
+标题边界。
 没有对应 FlowWeave 产品需求的 OpenHands 能力不因此进入范围。
 
 ## 10. 数据模型草案

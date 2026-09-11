@@ -8,8 +8,8 @@ from __future__ import annotations
 
 from typing import Any, cast
 
-OPENHANDS_VERSION = "1.44.0"
-OPENHANDS_SOURCE_COMMIT = "9a24f6c8866f353042a57df0514ccc900e3a0691"
+OPENHANDS_VERSION = "1.47.0"
+OPENHANDS_SOURCE_COMMIT = "30cf5832e42c71c24daa82a1a4fd5d25eb70d1b9"
 
 FIXED_RUNTIME_TOOL_NAMES: tuple[str, ...] = (
     "file_editor",

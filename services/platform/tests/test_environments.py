@@ -89,7 +89,7 @@ def _runtime_provenance() -> dict[str, object]:
         "source_commit": OPENHANDS_SOURCE_COMMIT,
         "source_ref": OPENHANDS_SOURCE_COMMIT,
         "source_archive_digest": (
-            "94e0bc26a670c552f8bed2dfba048d9a5c6d7bc66778e7844009db6785da6d21"
+            "70128f691ba58f0a1a1f6987c24738bb144209c61ba1b44a349a5504a98ea6b5"
         ),
         "overlays": {},
     }
@@ -214,7 +214,7 @@ def _mock_formal_publish_pipeline(monkeypatch, calls: list[str] | None = None) -
         assert probe_token == "version1"
         if calls is not None:
             calls.append("probe")
-        return {"agent-server": "1.44.0"}, _runtime_provenance(), "b" * 64
+        return {"agent-server": "1.47.0"}, _runtime_provenance(), "b" * 64
 
     monkeypatch.setattr(environment_docker, "_build_openhands_runtime", build)
     monkeypatch.setattr(environment_docker, "_probe_runtime_image", probe)

@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`ACTIVE`
 > 当前执行切片：无
-> 下一可执行切片：无（等待新需求）
+> 下一可执行切片：`FR-309 OpenHands 持久化目录统一与恢复收敛`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -16,7 +16,8 @@
 “当前行为”的审计对象；是否保留必须重新按照本设计、固定 OpenHands 源码和真实运行证据判断。
 
 本任务只修改 FlowWeave。OpenHands 源码仓库保持只读，当前目标事实基线为固定 commit
-`9a24f6c8866f353042a57df0514ccc900e3a0691` 和由其构建的四个 `1.44.0` 包；此前完成记录中的旧版本号
+`30cf5832e42c71c24daa82a1a4fd5d25eb70d1b9` 和由其构建的四个 `1.47.0` 包；该固定点包含
+`v1.47.0` 后的 4 个已审计提交。此前完成记录中的旧版本号
 继续表示当时实际验收的历史基线，不做追溯改写。
 
 ## 2. 最终目标
@@ -3931,6 +3932,134 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 
 完成：将可点击复制的工作区标签移动至 composer 之后，并以紧凑间距贴近发送框下沿；会话内容不再被标签遮挡。
 
+### FR-308 OpenHands 1.47.0 精确源码基线升级 — DONE
+
+依赖：FR-307。
+
+目标：将 FlowWeave 的固定 OpenHands Runtime 从 `1.44.0` /
+`9a24f6c8866f353042a57df0514ccc900e3a0691` 升级为四包 `1.47.0`、精确源码提交
+`30cf5832e42c71c24daa82a1a4fd5d25eb70d1b9`（`v1.47.0-4-g30cf5832e`）。该点包括
+`v1.47.0` 与其后的 `StreamContext`、libtmux/API-key 脱敏、硬额度立即 fallback 等已审计修复。
+必须冻结 codeload archive SHA-256、四包依赖与 lock、Runtime build provenance、契约探针、动态
+Environment build 输入、受治理 Hook/Profile/Plugin 元数据和新产物测试 fixture。历史已发布
+Environment Runtime、Snapshot 与迁移记录继续引用其原 digest/版本事实，不就地改写。
+
+边界：本切片不直接使用 `/sockets/session/{id}`，不改浏览器协议、FlowWeave Relay、安全投影、
+产品标题策略或 Runtime 能力选择；只升级和验证基础 Runtime 契约。不得修改 OpenHands 源码，不使用
+浮动分支、未固定 PyPI 最新包或私有上游 fork。
+
+验收：不可变 archive 下载 SHA-256 与四包 `1.47.0` 校验；`uv lock --check`；固定源码 overlay
+可应用；契约探针可编译并在可用 Runtime 镜像中运行；受影响平台架构/Environment/Hook/Plugin/
+Runtime contract pytest、Ruff、Pyright、`py_compile`、Alembic head、任务状态唯一性与
+`git diff --check`。Docker 可用时构建 linux/amd64 Runtime 并执行 `contract_check.py`；不可用时
+不得把该镜像级验证记为通过。
+
+完成：固定并验证 codeload archive SHA-256
+`70128f691ba58f0a1a1f6987c24738bb144209c61ba1b44a349a5504a98ea6b5`、
+四包 `1.47.0`、commit `30cf5832e42c71c24daa82a1a4fd5d25eb70d1b9` 和 overlay SHA-256
+`bc06937d2214df9265b348ab8e11356e8a82f13bf592b238f9eeb51073359d10`。FlowWeave 的
+source lock、依赖 lock、Runtime 构建 provenance／contract probe、动态 Environment build 输入、
+受治理 Capability 元数据与相关 fixture 已同步；历史已发布事实未改写。
+
+### FR-309 OpenHands 持久化目录统一与恢复收敛 — READY
+
+依赖：FR-308。
+
+目标：采用上游对全部 `~/.openhands` 辅助状态尊重 `OH_PERSISTENCE_DIR` 的修复，删除仅为旧 SDK
+兼容而存在的 `$HOME/.openhands/profiles` 单独挂载。Profile、Memory、Plugin、凭据和会话辅助状态
+必须只经外置、受权限/租户边界校验的 `state/persistence` 恢复；验证 generation replacement、fork
+与原 Conversation ID reload 后不产生双事实源。
+
+### FR-310 Runtime 子进程密钥隔离与多层日志脱敏 — PENDING
+
+依赖：FR-309。
+
+目标：验证上游从 Agent 子进程剥离 `OH_SECRET_KEY`、`SESSION_API_KEY`、
+`OH_SESSION_API_KEYS_*` 的行为，并以注入式探针覆盖模型消息、Tool Observation、tmux/libtmux
+日志、Runtime Provider/Relay 日志与 FlowWeave 安全投影的秘密不可见性；覆盖 `sk-oh-*` API key。
+不得把 Secret 写入测试输出、数据库或受版本控制文件。
+
+### FR-311 事件持久顺序、正式 sequence 与恢复对账 — PENDING
+
+依赖：FR-310。
+
+目标：基于上游“先持久化、后发布、返回 EventLog sequence”契约，收敛 FlowWeave 对 event-id
+inclusive anchor 的兼容读法，且不将平台 cursor 重新变为 Conversation 事实。验证断连、重放、
+replacement 和 FinishAction 对账不会遗漏、重复或跨分支投影事件。
+
+### FR-312 StreamContext 生命周期与流式会话状态收敛 — PENDING
+
+依赖：FR-311。
+
+目标：使用上游 stream `item_id`、attempt、顺序和 abort 语义，改进授权 Relay 的短暂流投影，确保
+重试、取消、异常及无 durable reply 时浏览器不会遗留运行中气泡。不得持久化 delta、隐藏 reasoning
+或让浏览器直连 Runtime。
+
+### FR-313 Session Socket 授权 Relay 适配 — PENDING
+
+依赖：FR-312。
+
+目标：评估并在 FlowWeave 授权代理内采用上游 `/sockets/session/{conversation_id}` 的 durable seq replay、
+背压和慢消费者断开语义；浏览器仍只能访问 FlowWeave SSE/WS，且只接收安全投影。不得暴露 Runtime
+endpoint、session key 或未经授权的 Event。
+
+### FR-314 长会话 EventLog 性能与有界读取门禁 — PENDING
+
+依赖：FR-313。
+
+目标：验证 upstream length marker 使 EventLog append 不随历史线性退化；以长会话、子 Agent 和
+频繁 Tool Event 负载复核 FlowWeave 分页、按需历史读取、Relay fan-out 与数据库资源预算。
+
+### FR-315 异步运行中用户消息与流式 idle 保活 — PENDING
+
+依赖：FR-314。
+
+目标：验证异步 step 内新增 user message 被继续消费，及仅有 streaming delta 的长输出不会被 Runtime
+误判 idle 回收；保持 FlowWeave 显式暂停、排队发送和 generation fence 的产品语义。
+
+### FR-316 Memory 创建路径与恢复一致性 — PENDING
+
+依赖：FR-315。
+
+目标：验证 `load_memory` 在新建、fork、reload、Agent Workspace 与 FlowRun 节点全部正式创建路径生效，
+并继续只从冻结、只读、工作目录 scoped 的 Memory bundle 加载。
+
+### FR-317 MCP OAuth 刷新与 subscription 凭据预检 — PENDING
+
+依赖：FR-316。
+
+目标：验证上游 FastMCP OAuth token 刷新和 subscription credential pre-flight；FlowWeave 继续只保存
+加密 Secret Reference，维护 read-at-use、审计和不向 Snapshot/日志泄露 OAuth state 的边界。
+
+### FR-318 Plugin/Extension 路径 containment 与本地 source 解析 — PENDING
+
+依赖：FR-317。
+
+目标：使用上游祖先路径判定与 local `repo_path` containment 修复，强化 Marketplace/Plugin Source 的
+commit、repo_path、symlink 和越界拒绝验证；显式冻结 Plugin 生命周期保持不变。
+
+### FR-319 Runtime 能力分层构建规格 — PENDING
+
+依赖：FR-318。
+
+目标：将上游 `INSTALL_CAPABILITIES` 映射为 FlowWeave 受治理的 Environment 发布规格与不可变
+manifest（最小 Runtime、browser、vscode、docker）；不能公开为任意 Docker build arg，不能改变
+已发布 Environment image digest。
+
+### FR-320 硬额度失败的显式模型 fallback 策略 — PENDING
+
+依赖：FR-319。
+
+目标：采用上游硬额度错误立即 fallback 分类，但默认不静默换模。只有 Snapshot/Policy 显式冻结
+主模型、允许 fallback 集、用量归属与审计可见性时才允许切换；否则快速、可解释地失败。
+
+### FR-321 OpenHands 1.47 增强最终安全、恢复与性能门禁 — PENDING
+
+依赖：FR-309–FR-320。
+
+目标：统一验证所有增强切片的完整安全、恢复、流、Socket、性能、Memory、MCP、Plugin、动态镜像和
+fallback 矩阵；发布前确认原 ID reload、generation fencing、FlowWeave 授权边界与跨 FlowRun 隔离不回归。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -3946,6 +4075,7 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-11 | FR-308 | 固定 commit/describe；codeload archive SHA-256、四包版本、`uv lock --check`、source fetch/provenance 与 fork condenser overlay；`test_runtime_contract.py`；受影响 `py_compile`／Ruff；Alembic head；任务状态唯一性与 `git diff --check` | PASS（无 Docker lane）：上游精确点为 `v1.47.0-4-g30cf5832e`，source/provenance 与四包 `1.47.0` 一致，overlay 成功应用；契约测试 7 passed。唯一 Alembic head 为 `0110_candidate_output_set_owner`，FR-309 为下一 READY、无 CURRENT。Docker daemon 不可用，故 linux/amd64 Runtime image build、镜像内 `contract_check.py` 与 Testcontainers 相关 architecture/Environment/Hook/Plugin pytest（126 个 setup error）均未执行且未记为通过；定向 Pyright 亦因当前解析环境无法解析已安装的 SQLAlchemy 等依赖而产生既有大量 unknown/import diagnostics，未据此归因于本升级。 |
 | 2026-09-11 | FR-307 | Web TypeScript typecheck、ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS：工作区标签位于发送框下方，不再占用会话阅读区域；相对路径复制、成功反馈与普通箭头光标保持不变；无 `CURRENT`。production build 仅报告既有大 chunk 提示。 |
 | 2026-09-11 | FR-306 | Web TypeScript typecheck、ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS：工作区标签仍可点击复制相对路径，悬停不再显示带绿色加号的复制光标；无 `CURRENT`。production build 仅报告既有大 chunk 提示。 |
 | 2026-09-11 | FR-305 | Web TypeScript typecheck、ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS：点击当前工作区标签仅复制相对根工作区路径，复制成功提供短暂可见与无障碍反馈；无 `CURRENT`。production build 仅报告既有大 chunk 提示。 |

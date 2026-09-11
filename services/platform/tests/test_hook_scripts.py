@@ -40,8 +40,8 @@ def _asset(storage_key: str, filename: str, digest: str) -> dict[str, object]:
                 "capability_key": "guardrails",
                 "normalized_config": {
                     "hook_set_schema_version": 1,
-                    "openhands_version": "1.44.0",
-                    "source_commit": "9a24f6c8866f353042a57df0514ccc900e3a0691",
+                    "openhands_version": "1.47.0",
+                    "source_commit": "30cf5832e42c71c24daa82a1a4fd5d25eb70d1b9",
                     "allowed_events": [
                         "post_tool_use",
                         "pre_tool_use",

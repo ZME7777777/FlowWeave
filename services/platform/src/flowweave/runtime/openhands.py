@@ -1316,7 +1316,7 @@ class OpenHandsRuntime:
             request.execution_key.startswith("agent-workspace:")
             or request.interaction_mode == "COLLABORATION"
         ):
-            # The frozen OpenHands 1.44.0 auto-title path is not reliable for
+            # The frozen OpenHands 1.47.0 auto-title path is not enabled for
             # every governed provider protocol. Keep title metadata isolated
             # from the Conversation/Event lifecycle and generate it once in a
             # FlowWeave worker with the binding's frozen provider selection.

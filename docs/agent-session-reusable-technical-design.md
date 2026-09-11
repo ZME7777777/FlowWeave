@@ -4,7 +4,7 @@
 > 日期：2026-08-29
 > 实施状态：进行中；FR-87 已完成共享页面唯一入口，后端内核迁移尚未开始
 > 当前阶段：只整理和迁移已经完成的外层 `Agent 会话`，不接入 Flow、FlowRun 或节点
-> OpenHands 事实基线：`9a24f6c8866f353042a57df0514ccc900e3a0691`（四包 `1.44.0`）
+> OpenHands 事实基线：`30cf5832e42c71c24daa82a1a4fd5d25eb70d1b9`（四包 `1.47.0`，含 `v1.47.0` 后已审计的 4 个修复）
 > 参考设计：`docs/agent-workbench-technical-design.md`
 
 ## 1. 需求理解与结论

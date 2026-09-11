@@ -117,10 +117,10 @@ from openhands.tools.task import TaskAction, TaskObservation, TaskToolSet
 from openhands.tools.task.impl import TaskExecutor
 from openhands.tools.task.manager import Task, TaskManager, TaskStatus
 
-EXPECTED_VERSION = "1.44.0"
-EXPECTED_UPSTREAM_BASE = "9a24f6c8866f353042a57df0514ccc900e3a0691"
+EXPECTED_VERSION = "1.47.0"
+EXPECTED_UPSTREAM_BASE = "30cf5832e42c71c24daa82a1a4fd5d25eb70d1b9"
 EXPECTED_SOURCE_ARCHIVE_SHA256 = (
-    "94e0bc26a670c552f8bed2dfba048d9a5c6d7bc66778e7844009db6785da6d21"
+    "70128f691ba58f0a1a1f6987c24738bb144209c61ba1b44a349a5504a98ea6b5"
 )
 PACKAGES = (
     "openhands-agent-server",

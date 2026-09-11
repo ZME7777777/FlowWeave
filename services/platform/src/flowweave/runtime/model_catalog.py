@@ -1,7 +1,7 @@
 """Fixed model metadata that FlowWeave must expose before the first request.
 
 The values below are read from the LiteLLM catalog bundled in the pinned
-OpenHands 1.44.0 Runtime image.  They are intentionally limited to the Codex
+OpenHands 1.47.0 Runtime image.  They are intentionally limited to the Codex
 OAuth models that FlowWeave exposes through that image; other providers keep
 an unknown window until OpenHands reports one formally.
 """

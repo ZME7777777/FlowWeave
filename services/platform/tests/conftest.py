@@ -28,7 +28,7 @@ from flowweave.shared.models import EnvironmentVersion, TerminalEnvironment
 from flowweave.shared.sandbox import sandbox_context
 
 _OPENHANDS_SOURCE_ARCHIVE_DIGEST = (
-    "94e0bc26a670c552f8bed2dfba048d9a5c6d7bc66778e7844009db6785da6d21"
+    "70128f691ba58f0a1a1f6987c24738bb144209c61ba1b44a349a5504a98ea6b5"
 )
 
 

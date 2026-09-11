@@ -1,6 +1,6 @@
 """Apply FlowWeave's governed OpenHands source fixes.
 
-OpenHands 1.44.0 deep-copies the source Agent when forking. That is correct
+The pinned OpenHands source deep-copies the source Agent when forking. That is correct
 for general callers, but FlowWeave needs a fork to retain the selected event
 history while adopting the currently governed condenser policy. The upstream
 SDK already supports LocalConversation.fork(agent=...); this patch exposes
@@ -20,7 +20,7 @@ def _replace(path: Path, old: str, new: str) -> None:
     source = path.read_text(encoding="utf-8")
     if source.count(old) != 1:
         raise RuntimeError(
-            f"unexpected OpenHands 1.44.0 source shape: {path}: {old[:80]!r}"
+            f"unexpected pinned OpenHands source shape: {path}: {old[:80]!r}"
         )
     path.write_text(source.replace(old, new), encoding="utf-8")
 

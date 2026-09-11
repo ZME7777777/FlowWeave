@@ -73,14 +73,14 @@ RUN set -eux; \
       echo "INSTALL_ACP_PROVIDERS is empty; no ACP providers will be installed"; \
     fi
 RUN /runtime/.venv/bin/python -c \
-      "from importlib.metadata import version; expected='1.44.0'; packages=('openhands-agent-server','openhands-sdk','openhands-tools','openhands-workspace'); actual={name: version(name) for name in packages}; assert all(value == expected for value in actual.values()), actual"
+      "from importlib.metadata import version; expected='1.47.0'; packages=('openhands-agent-server','openhands-sdk','openhands-tools','openhands-workspace'); actual={name: version(name) for name in packages}; assert all(value == expected for value in actual.values()), actual"
 COPY infra/openhands/contract_check.py /runtime/contract_check.py
 COPY infra/openhands/contract_check.py \
      /opt/openhands-source/openhands-agent-server/openhands/agent_server/flowweave_contract_check.py
 COPY infra/openhands/plugin_resolver.py /runtime/plugin_resolver.py
 ENV PATH="/runtime/.venv/bin:/usr/local/bin:$PATH"
-ENV OPENHANDS_BUILD_GIT_SHA="9a24f6c8866f353042a57df0514ccc900e3a0691" \
-    OPENHANDS_BUILD_GIT_REF="9a24f6c8866f353042a57df0514ccc900e3a0691"
+ENV OPENHANDS_BUILD_GIT_SHA="30cf5832e42c71c24daa82a1a4fd5d25eb70d1b9" \
+    OPENHANDS_BUILD_GIT_REF="30cf5832e42c71c24daa82a1a4fd5d25eb70d1b9"
 RUN /runtime/.venv/bin/python /runtime/contract_check.py
 RUN uv pip install --python /runtime/.venv/bin/python pip==25.1.1 \
  && ln -sf /runtime/.venv/bin/pip /usr/local/bin/pip \

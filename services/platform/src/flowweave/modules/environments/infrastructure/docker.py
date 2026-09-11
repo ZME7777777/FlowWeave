@@ -1074,8 +1074,8 @@ def _build_openhands_runtime(
         "push": False,
         "include_base_tag": False,
         "include_versioned_tag": False,
-        "git_sha": "9a24f6c8866f353042a57df0514ccc900e3a0691",
-        "git_ref": "9a24f6c8866f353042a57df0514ccc900e3a0691",
+        "git_sha": "30cf5832e42c71c24daa82a1a4fd5d25eb70d1b9",
+        "git_ref": "30cf5832e42c71c24daa82a1a4fd5d25eb70d1b9",
         # FlowWeave's fixed Runtime seed is intentionally ACP-free. Preserve
         # that product boundary when invoking OpenHands' formal dynamic build
         # API instead of accepting its broader standalone-image default. An

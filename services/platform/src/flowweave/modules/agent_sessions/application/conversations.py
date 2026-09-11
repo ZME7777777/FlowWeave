@@ -2036,7 +2036,7 @@ def message(
     runtime = get_runtime()
     readiness = runtime.input_readiness(handle)
     if not readiness.ready:
-        # OpenHands 1.44.0 formally accepts a user event while its standard
+        # OpenHands 1.47.0 formally accepts a user event while its standard
         # Agent is running. The current LLM/tool step is left intact; the
         # native loop consumes the newly appended event on its next step.
         # Do not run model rebinding, fork recovery, or compaction here: each

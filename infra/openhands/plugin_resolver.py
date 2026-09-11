@@ -281,7 +281,7 @@ def main() -> None:
     plugin = Plugin.load(path)
     report: dict[str, Any] = {
         "schema_version": 1,
-        "openhands_version": "1.44.0",
+        "openhands_version": "1.47.0",
         "name": plugin.name,
         "file_count": len(hashes),
         "expanded_bytes": expanded_bytes,
