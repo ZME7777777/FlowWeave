@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`ACTIVE`
 > 当前执行切片：无
-> 下一可执行切片：`FR-318 Plugin/Extension 路径 containment 与本地 source 解析`
+> 下一可执行切片：`FR-319 Runtime 能力分层构建规格`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -4091,14 +4091,23 @@ OpenHands 的 OAuth refresh 生命周期。FlowWeave 保留既有加密 OAuth st
 Provider 的 Runtime 就绪条件收敛为实际可启动凭据：API key 必须存在，Codex OAuth 必须同时有 access 与
 refresh token；连接状态、默认启用模型和凭据缺一时均不展示、不替换且 Runtime request fail closed。
 
-### FR-318 Plugin/Extension 路径 containment 与本地 source 解析 — READY
+### FR-318 Plugin/Extension 路径 containment 与本地 source 解析 — DONE
 
 依赖：FR-317。
 
 目标：使用上游祖先路径判定与 local `repo_path` containment 修复，强化 Marketplace/Plugin Source 的
 commit、repo_path、symlink 和越界拒绝验证；显式冻结 Plugin 生命周期保持不变。
 
-### FR-319 Runtime 能力分层构建规格 — PENDING
+完成：固定 `30cf5832e` 已包含 nested Git repository 按真实路径祖先而非字符串前缀过滤的修复，
+以及 local Plugin source 与 `repo_path` 组合后解析路径必须保持在 source root 内的修复。Runtime
+合同探针现在验证安全 local 子路径可用，`..` 与符号链接越界均被上游拒绝；FlowWeave 不开放本地
+Plugin Source 作为治理输入，仍只允许 allowlisted HTTPS Git、完整 commit 和受限 repo_path。对于直接
+Git Plugin，控制面新增精确冻结坐标 gate：resolver 回传的 source、commit、repo_path 必须与用户已
+冻结选择完全一致，任一改写均 fail closed。Marketplace 保持其正式语义，可由已固定 Marketplace
+commit 解析到单独 allowlisted、完整 commit 固定的 Plugin Source；其内容与 resolved coordinates
+继续进入审计 report，实际 Runtime 仍只加载发布后的 immutable Blob。
+
+### FR-319 Runtime 能力分层构建规格 — READY
 
 依赖：FR-318。
 
@@ -4135,6 +4144,7 @@ fallback 矩阵；发布前确认原 ID reload、generation fencing、FlowWeave 
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-12 | FR-318 | 固定 `30cf5832e` 的 nested-repository ancestry 与 local-source repo_path containment 源码取证；扩展镜像 `contract_check.py`；新增 direct Git source/commit/repo_path frozen-coordinate pytest；`test_plugin_resolver.py`（16 passed）、受影响 Python Ruff format/check、`py_compile`、`uv lock --check`、Alembic head、`git diff --check` 与任务状态唯一性 | PASS（静态／定向）：上游 local source 子路径会正确组合，`..` 或符号链接逃逸均拒绝；FlowWeave 继续不将本地 source 暴露为治理输入。直接 Git resolver 不能改写 source、完整 commit 或 repo_path，Marketplace 仍可按其已冻结 catalog 解析到独立且 allowlisted 的 immutable Plugin Source。唯一 Alembic head 为 `0110_candidate_output_set_owner`，无 CURRENT，FR-319 为唯一 READY。Docker daemon 不可用，故镜像内 `contract_check.py`、真实 isolated resolver／local symlink probe、Testcontainers architecture pytest 和 E2E 未执行且未记为通过。 |
 | 2026-09-12 | FR-316 | 固定 `30cf5832e` 的 ConversationService stored preference stamp 与 `LocalConversation` project-memory loader 源码取证；扩展镜像 `contract_check.py`；新增冻结 policy 的 Snapshot hold/resolve/materialize 与 scope gate adapter pytest；`test_openhands.py` + `test_runtime_persistence.py`（130 passed）、受影响 Python Ruff format/check、`py_compile`、`uv lock --check`、Alembic head、`git diff --check` 与任务状态唯一性 | PASS（静态／定向）：FlowRun Attempt 与 Conversation 只在 frozen policy 的对应 scope 启用正式 `load_memory`，且只在 source ref 被当前 Snapshot hold、digest 校验并只读物化到实际 working directory 后才启用。协作会话 reload 后若原生会话丢失会用同一 bundle 重建；native fork 继承相同 working directory/config。Agent Workspace 即使上游 stored preference 覆盖显式关闭，也由 readonly empty persistence-memory 与 project-memory mounts 同时阻断 ambient 和 project 的非冻结 Memory。唯一 Alembic head 为 `0110_candidate_output_set_owner`，无 CURRENT，FR-317 为唯一 READY。Docker daemon 不可用，故镜像内 `contract_check.py`、真实 `load_memory` create/reload/fork、Provider docker exec、Testcontainers 集成与 E2E 未执行且未记为通过。 |
 | 2026-09-12 | FR-315 | 固定 `30cf5832e` 的 async-step user-message rescan 和 stream idle heartbeat 源码取证；扩展镜像 `contract_check.py`；运行中消息 gate、正式 user append timeout pytest；`test_openhands.py`（125 passed）、受影响 Python Ruff format/check、`py_compile`、`uv lock --check`、Alembic head、固定源码断言、`git diff --check` 与任务状态唯一性 | PASS（静态／定向）：运行中只有 `running/executing` 可向 OpenHands 正式追加 user event，当前原生 turn 不会被平台 interrupt、重绑或复制；确认/停止/暂停态仍拒绝。仅 streaming delta 时由上游 Event Service 维持其 idle clock，FlowRun Runtime 本身仍没有控制面 idle 回收。唯一 Alembic head 为 `0110_candidate_output_set_owner`，无 CURRENT，FR-316 为唯一 READY。Docker daemon 不可用，故镜像内 `contract_check.py`、真实 async LLM/tool step 消费、长流 idle eviction、Provider docker exec、Testcontainers 会话集成和 E2E 验证未执行且未记为通过。 |
 | 2026-09-12 | FR-314 | 固定 `30cf5832e` 的 `EventLog` marker/append 和 session-socket replay 源码取证；扩展镜像 contract_check marker 断言；新增长会话 active cursor 与 legacy fork 分支页数预算 pytest；`test_openhands.py`（120 passed）、受影响 Python Ruff format/check、`py_compile`、`uv lock --check`、Alembic head、`git diff --check` 与任务状态唯一性 | PASS（静态／定向）：普通上游 append 通过 marker 避免按长度目录扫描；FlowWeave 只在请求内按正式 id 回溯，最多读取 8 × 100 个原生 Event，超限 fail closed 并不持久化 sequence/cursor。显式历史分页、授权 durable replay 及 Provider fan-out 的既有上限保持不变。唯一 Alembic head 为 `0110_candidate_output_set_owner`，无 CURRENT，FR-315 为唯一 READY。Docker daemon 不可用，故固定镜像内 contract_check、真实长会话 append/replay/backpressure、Provider docker exec、Testcontainers 和端到端压力验证未执行且未记为通过。 |

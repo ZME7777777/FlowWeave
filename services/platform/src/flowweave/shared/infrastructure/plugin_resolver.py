@@ -76,6 +76,30 @@ def validate_plugin_git_source(
     return PluginResolveRequest(canonical_source, commit, repo_path)
 
 
+def validate_direct_plugin_resolution(
+    request: PluginResolveRequest, bundle: PluginResolveBundle, allowed_hosts: frozenset[str]
+) -> PluginResolveRequest:
+    """Require a direct Plugin resolver to preserve frozen coordinates exactly.
+
+    A Marketplace entry may formally resolve to a separate immutable Plugin
+    source. A directly governed Git source cannot: its source, full commit,
+    and repo_path are all part of the FlowWeave frozen selection.
+    """
+
+    requested = validate_plugin_git_source(request, allowed_hosts)
+    resolved = validate_plugin_git_source(
+        PluginResolveRequest(
+            bundle.resolved_source or requested.source,
+            bundle.resolved_commit,
+            bundle.resolved_repo_path if bundle.resolved_source else requested.repo_path,
+        ),
+        allowed_hosts,
+    )
+    if resolved != requested:
+        raise ValueError("Plugin resolver changed the frozen source coordinates")
+    return resolved
+
+
 def _decode_bundle(
     response: dict[str, Any],
     expected_commit: str | None,

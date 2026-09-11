@@ -7,15 +7,23 @@ from typing import Any
 
 import pytest
 
-from flowweave.shared.application.plugin_resolver import PluginResolveRequest
+from flowweave.shared.application.plugin_resolver import PluginResolveBundle, PluginResolveRequest
 from flowweave.shared.infrastructure import plugin_resolver as resolver_module
 from flowweave.shared.infrastructure.plugin_resolver import (
     DockerPluginResolver,
+    validate_direct_plugin_resolution,
     validate_plugin_git_source,
 )
 
 COMMIT = "a" * 40
 HOSTS = frozenset({"github.com", "gitlab.com"})
+
+
+@pytest.fixture(autouse=True)
+def database():
+    """Resolver validation is pure and needs no Testcontainer."""
+
+    yield
 
 
 def _resolver() -> DockerPluginResolver:
@@ -64,6 +72,37 @@ def test_git_plugin_source_normalizes_commit_and_accepts_safe_subpath() -> None:
         HOSTS,
     )
     assert canonical.source == "https://github.com/acme/plugins.git"
+
+
+@pytest.mark.parametrize(
+    "resolved_source,resolved_commit,resolved_repo_path",
+    (
+        ("https://github.com/acme/other-plugin.git", COMMIT, "plugins/review"),
+        ("https://github.com/acme/plugins.git", "b" * 40, "plugins/review"),
+        ("https://github.com/acme/plugins.git", COMMIT, "plugins/other"),
+    ),
+)
+def test_direct_plugin_resolution_rejects_source_coordinate_drift(
+    resolved_source: str, resolved_commit: str, resolved_repo_path: str
+) -> None:
+    request = PluginResolveRequest("https://github.com/acme/plugins.git", COMMIT, "plugins/review")
+    bundle = PluginResolveBundle(
+        b"plugin-zip",
+        resolved_commit,
+        {},
+        resolved_source=resolved_source,
+        resolved_repo_path=resolved_repo_path,
+    )
+
+    with pytest.raises(ValueError, match="frozen source coordinates"):
+        validate_direct_plugin_resolution(request, bundle, HOSTS)
+
+
+def test_direct_plugin_resolution_accepts_omitted_coordinates_as_requested() -> None:
+    request = PluginResolveRequest("https://github.com/acme/plugins.git", COMMIT, "plugins/review")
+    bundle = PluginResolveBundle(b"plugin-zip", COMMIT, {})
+
+    assert validate_direct_plugin_resolution(request, bundle, HOSTS) == request
 
 
 def test_plugin_resolution_uses_owned_ephemeral_network_and_fixed_entrypoint(

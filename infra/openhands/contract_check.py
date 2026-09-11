@@ -84,6 +84,7 @@ from openhands.sdk.event import Event as OpenHandsEvent
 from openhands.sdk.event.condenser import Condensation, CondensationRequest
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.event.streaming_delta import StreamingDeltaEvent
+from openhands.sdk.git.git_changes import get_git_changes
 from openhands.sdk.io import InMemoryFileStore
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
@@ -95,7 +96,7 @@ from openhands.sdk.llm.utils.metrics import Metrics
 from openhands.sdk.marketplace.registration import MarketplaceRegistration
 from openhands.sdk.marketplace.registry import MarketplaceRegistry
 from openhands.sdk.mcp.config import MCPOAuthAuthCredential, MCPOAuthState
-from openhands.sdk.plugin import Plugin, fetch_plugin_with_resolution
+from openhands.sdk.plugin import Plugin, PluginFetchError, fetch_plugin_with_resolution
 from openhands.sdk.plugin.types import PluginSource
 from openhands.sdk.profiles import (
     AGENT_PROFILE_SCHEMA_VERSION,
@@ -701,6 +702,28 @@ def main() -> None:
     assert local_plugin.model_dump(mode="json", exclude_none=True) == {
         "source": "/runtime/capabilities/nodes/node-1/plugins/review"
     }
+    assert "Path(change.path).is_relative_to(git_dir)" in getsource(get_git_changes)
+    with TemporaryDirectory() as directory:
+        root = Path(directory) / "plugins"
+        plugin_dir = root / "nested" / "review"
+        plugin_dir.mkdir(parents=True)
+        outside = Path(directory) / "outside"
+        outside.mkdir()
+        (root / "escape").symlink_to(outside, target_is_directory=True)
+        resolved_local, resolved_ref = fetch_plugin_with_resolution(
+            str(root), cache_dir=root / "cache", repo_path="nested/review"
+        )
+        assert resolved_local == plugin_dir
+        assert resolved_ref is None
+        for escaping_path in ("../outside", "escape"):
+            try:
+                fetch_plugin_with_resolution(
+                    str(root), cache_dir=root / "cache", repo_path=escaping_path
+                )
+            except PluginFetchError:
+                pass
+            else:
+                raise AssertionError("OpenHands accepted an escaping local Plugin repo_path")
     marketplace_commit = "a" * 40
     with TemporaryDirectory() as directory:
         marketplace_root = Path(directory)
@@ -1302,6 +1325,8 @@ def main() -> None:
                 "subscription_condenser_dispatch": True,
                 "mcp_oauth_refreshable_fastmcp": True,
                 "subscription_preflight_credentials_restored": True,
+                "plugin_repo_path_ancestry_containment": True,
+                "plugin_local_source_repo_path_containment": True,
                 "remote_title_generation_fix_in_frozen_source": False,
             },
             sort_keys=True,

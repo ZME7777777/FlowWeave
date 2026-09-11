@@ -35,6 +35,7 @@ from flowweave.shared.domain.capability_digest import capability_version_digest
 from flowweave.shared.errors import DomainError
 from flowweave.shared.infrastructure.plugin_resolver import (
     configured_plugin_hosts,
+    validate_direct_plugin_resolution,
     validate_plugin_git_source,
 )
 from flowweave.shared.models import (
@@ -333,16 +334,11 @@ def process_resolution(db: Session, resolution_id: str) -> None:
         archive_name = marketplace_plugin_name
     else:
         bundle = get_plugin_resolver().resolve(PluginResolveRequest(source, commit, repo_path))
-        resolved = validate_plugin_git_source(
-            PluginResolveRequest(
-                bundle.resolved_source or source,
-                bundle.resolved_commit,
-                bundle.resolved_repo_path if bundle.resolved_source else repo_path,
-            ),
+        resolved = validate_direct_plugin_resolution(
+            PluginResolveRequest(source, commit, repo_path),
+            bundle,
             configured_plugin_hosts(get_settings()),
         )
-        if resolved.commit != commit:
-            raise RuntimeError("Plugin resolver changed the requested commit")
         archive_name = Path(repo_path or source.rstrip("/")).stem
     preview = validate_plugin_archive(bundle.content, archive_name)
     raw_capabilities: object = preview.get("capabilities")
