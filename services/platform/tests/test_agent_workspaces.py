@@ -79,6 +79,57 @@ def _agent_project_root(settings, db, workspace):
     return settings.workspace_root / allocation.relative_root / "workspace/project"
 
 
+def test_git_history_returns_reusable_object_ids_for_every_log_record(tmp_path):
+    repository = tmp_path / "project"
+    repository.mkdir()
+
+    def git(*arguments: str) -> None:
+        subprocess.run(
+            ["git", "-C", str(repository), *arguments],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    git("init")
+    git("config", "user.name", "FlowWeave Test")
+    git("config", "user.email", "test@example.invalid")
+    for index in range(3):
+        (repository / "history.txt").write_text(f"revision {index}\n")
+        git("add", "history.txt")
+        git("commit", "-m", f"revision {index}")
+
+    history = workspace.git_log(
+        tmp_path,
+        "/runtime/workspace/project",
+        ("/runtime/workspace/project",),
+        "/runtime/workspace/project",
+    )
+
+    assert len(history["commits"]) == 3
+    for item in history["commits"]:
+        assert item["id"] == item["id"].strip()
+        details = workspace.git_commit(
+            tmp_path,
+            "/runtime/workspace/project",
+            ("/runtime/workspace/project",),
+            "/runtime/workspace/project",
+            item["id"],
+        )
+        assert details["commit"]["id"] == item["id"]
+        assert details["files"]
+        assert details["files"][0]["path"] == "history.txt"
+        diff = workspace.git_file_diff(
+            tmp_path,
+            "/runtime/workspace/project",
+            ("/runtime/workspace/project",),
+            "/runtime/workspace/project",
+            item["id"],
+            details["files"][0]["path"],
+        )
+        assert diff["path"] == "history.txt"
+
+
 def test_agent_conversation_stream_closes_idle_upstream_on_websocket_disconnect(
     settings, monkeypatch
 ):

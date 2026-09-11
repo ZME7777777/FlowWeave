@@ -1604,19 +1604,24 @@ function WorkDirectoryCreator({ workspaceId, onClose, onCreated }: {
   </div>;
 }
 
-function WorkspaceGitSidebar({ details, selectedPath, loadLog, loadCommit, loadDiff }: {
+function WorkspaceGitSidebar({ details, selectedPath, loadLog, loadCommit, onOpenCommit }: {
   details: AgentSessionWorkspaceDetails;
   selectedPath?: string;
   loadLog: (repositoryPath: string) => Promise<import('../../types').WorkspaceGitLog>;
   loadCommit: (repositoryPath: string, commit: string) => Promise<WorkspaceGitCommitDetails>;
-  loadDiff: (repositoryPath: string, commit: string, path: string) => Promise<WorkspaceGitFileDiff>;
+  onOpenCommit: (details: WorkspaceGitCommitDetails) => void;
 }) {
-  const repository = useMemo(() => (details.repositories
+  const preferredRepository = useMemo(() => (details.repositories
     .filter(item => selectedPath === item.path || Boolean(selectedPath?.startsWith(`${item.path}/`)))
-    .sort((left, right) => right.path.length - left.path.length)[0]), [details.repositories, selectedPath]);
+    .sort((left, right) => right.path.length - left.path.length)[0]
+    ?? details.repositories.find(item => item.path === details.working_directory)
+    ?? details.repositories[0]), [details.repositories, details.working_directory, selectedPath]);
+  const [repositoryPath, setRepositoryPath] = useState<string>();
+  const repository = details.repositories.find(item => item.path === repositoryPath) ?? preferredRepository;
   const [selectedCommit, setSelectedCommit] = useState<string>();
-  const [selectedCommitFile, setSelectedCommitFile] = useState<string>();
-  useEffect(() => { setSelectedCommit(undefined); setSelectedCommitFile(undefined); }, [repository?.path]);
+  const openedCommitRef = useRef<string | undefined>(undefined);
+  useEffect(() => { setRepositoryPath(current => details.repositories.some(item => item.path === current) ? current : preferredRepository?.path); }, [details.repositories, preferredRepository?.path]);
+  useEffect(() => { setSelectedCommit(undefined); }, [repository?.path]);
   const logQuery = useQuery({
     queryKey: ['workspace-git-log', repository?.path],
     queryFn: () => loadLog(repository!.path),
@@ -1628,20 +1633,17 @@ function WorkspaceGitSidebar({ details, selectedPath, loadLog, loadCommit, loadD
     queryFn: () => loadCommit(repository!.path, selectedCommit!),
     enabled: Boolean(repository && selectedCommit),
   });
-  const diffQuery = useQuery({
-    queryKey: ['workspace-git-diff', repository?.path, selectedCommit, selectedCommitFile],
-    queryFn: () => loadDiff(repository!.path, selectedCommit!, selectedCommitFile!),
-    enabled: Boolean(repository && selectedCommit && selectedCommitFile),
-  });
+  useEffect(() => {
+    if (!commitQuery.data || openedCommitRef.current === commitQuery.data.commit.id) return;
+    openedCommitRef.current = commitQuery.data.commit.id;
+    onOpenCommit(commitQuery.data);
+  }, [commitQuery.data, onOpenCommit]);
   return <aside className="agent-workspace-git-sidebar" aria-label="Git 提交历史">
-    <header><div><span><GitBranch size={15}/>Git</span><b title={repository ? workspaceRelativePath(repository.path, details.root) : selectedPath ? workspaceRelativePath(selectedPath, details.root) : undefined}>{repository ? workspaceRelativePath(repository.path, details.root) : '未选择 Git 仓库'}</b></div>{repository?.branch && <em title="当前分支（只读，暂不支持切换）">{repository.branch}</em>}</header>
-    {!repository ? <p className="agent-git-empty">{selectedPath ? '所选目录不是当前工作区中的 Git 仓库。' : '选择 Git 仓库目录或其下的文件，即可查看提交历史。'}</p> : logQuery.isLoading ? <p className="agent-git-loading">正在读取提交历史…</p> : logQuery.isError ? <p className="agent-git-error">Git 历史读取失败。<button type="button" onClick={() => void logQuery.refetch()}>重试</button></p> : <>
-      <div className="agent-git-log">{(logQuery.data?.commits ?? []).map(commit => <button key={commit.id} type="button" className={selectedCommit === commit.id ? 'active' : ''} onClick={() => { setSelectedCommit(commit.id); setSelectedCommitFile(undefined); }}><b>{commit.subject || '（无提交说明）'}</b><span><code>{commit.short_id}</code><em>{commit.author}</em><time>{commit.date}</time></span></button>)}{!logQuery.data?.commits.length && <p>该仓库没有可展示的提交。</p>}</div>
-      {selectedCommit && <section className="agent-git-commit-detail">
-        <header><div><b>{commitQuery.data?.commit.subject || '正在读取提交…'}</b><span>{commitQuery.data?.commit.short_id}</span></div><button type="button" aria-label="关闭提交详情" onClick={() => { setSelectedCommit(undefined); setSelectedCommitFile(undefined); }}><X size={13}/></button></header>
-        {commitQuery.isLoading ? <p>正在读取文件变更…</p> : commitQuery.isError ? <p className="agent-git-error">提交详情读取失败。</p> : <div className="agent-git-changed-files">{(commitQuery.data?.files ?? []).map(file => <button type="button" key={`${file.status}:${file.path}`} className={selectedCommitFile === file.path ? 'active' : ''} onClick={() => setSelectedCommitFile(file.path)}><em>{file.status}</em><span title={file.path}>{file.path}</span></button>)}</div>}
-        {selectedCommitFile && <div className="agent-git-file-diff"><header><span title={selectedCommitFile}>{selectedCommitFile}</span>{diffQuery.data?.truncated && <em>已截断</em>}</header>{diffQuery.isLoading ? <p>正在读取 Diff…</p> : diffQuery.isError ? <p className="agent-git-error">文件 Diff 读取失败。</p> : <pre>{diffQuery.data?.diff || '该文件没有可显示的文本 Diff。'}</pre>}</div>}
-      </section>}
+    <header><div><span><GitBranch size={15}/>Git</span><b title={repository ? workspaceRelativePath(repository.path, details.root) : undefined}>{repository ? workspaceRelativePath(repository.path, details.root) : '当前工作区没有 Git 仓库'}</b></div>{repository?.branch && <em title="当前分支（只读，暂不支持切换）">{repository.branch}</em>}</header>
+    {!repository ? <p className="agent-git-empty">当前工作区范围内没有可读取的 Git 仓库。</p> : logQuery.isLoading ? <p className="agent-git-loading">正在读取提交历史…</p> : logQuery.isError ? <p className="agent-git-error">Git 历史读取失败。<button type="button" onClick={() => void logQuery.refetch()}>重试</button></p> : <>
+      {details.repositories.length > 1 && <div className="agent-git-repository-picker" role="listbox" aria-label="当前工作区 Git 仓库">{details.repositories.map(item => <button key={item.path} type="button" role="option" aria-selected={item.path === repository.path} className={item.path === repository.path ? 'active' : ''} title={workspaceRelativePath(item.path, details.root)} onClick={() => setRepositoryPath(item.path)}>{workspaceRelativePath(item.path, details.root)}</button>)}</div>}
+      <div className="agent-git-log">{(logQuery.data?.commits ?? []).map(commit => <button key={commit.id} type="button" className={selectedCommit === commit.id ? 'active' : ''} onClick={() => { if (commitQuery.data?.commit.id === commit.id) onOpenCommit(commitQuery.data); else setSelectedCommit(commit.id); }}><b>{commit.subject || '（无提交说明）'}</b><span><code>{commit.short_id}</code><em>{commit.author}</em><time>{commit.date}</time></span></button>)}{!logQuery.data?.commits.length && <p>该仓库没有可展示的提交。</p>}</div>
+      {selectedCommit && <p className={commitQuery.isError ? 'agent-git-error' : 'agent-git-loading'}>{commitQuery.isLoading ? '正在打开提交审查…' : commitQuery.isError ? '提交详情读取失败。' : '提交审查已在中间文件区打开。'}</p>}
     </>}
   </aside>;
 }
@@ -1649,9 +1651,36 @@ function WorkspaceGitSidebar({ details, selectedPath, loadLog, loadCommit, loadD
 type WorkspaceToolTab =
   | { id: 'files'; kind: 'files' }
   | { id: 'changes'; kind: 'changes' }
+  | { id: 'git'; kind: 'git'; details: WorkspaceGitCommitDetails }
   | { id: 'subagents'; kind: 'subagents' }
   | { id: string; kind: 'terminal'; terminalInstanceId: string };
-type WorkspaceToolScopeState = { tabs: WorkspaceToolTab[]; activeTabId?: string; selectedFile?: string; selectedChangeId?: string; selectedRuntimeTaskId?: string };
+type WorkspaceToolScopeState = { tabs: WorkspaceToolTab[]; activeTabId?: string; selectedFile?: string; selectedChangeId?: string; selectedGitFile?: string; selectedRuntimeTaskId?: string };
+
+function WorkspaceGitCommitReview({ details, selectedPath, onSelect, loadDiff }: {
+  details: WorkspaceGitCommitDetails;
+  selectedPath?: string;
+  onSelect: (path: string) => void;
+  loadDiff: (repositoryPath: string, commit: string, path: string) => Promise<WorkspaceGitFileDiff>;
+}) {
+  const selected = details.files.find(file => file.path === selectedPath) ?? details.files[0];
+  useEffect(() => { if (selected && selected.path !== selectedPath) onSelect(selected.path); }, [onSelect, selected, selectedPath]);
+  const diffQuery = useQuery({
+    queryKey: ['workspace-git-diff', details.repository.path, details.commit.id, selected?.path],
+    queryFn: () => loadDiff(details.repository.path, details.commit.id, selected!.path),
+    enabled: Boolean(selected),
+  });
+  if (!selected) return <div className="agent-changes-empty"><b>这个提交没有可展示的文件</b><span>Git 未返回该提交的文本文件改动。</span></div>;
+  return <section className="agent-changes-review agent-git-review">
+    <nav className="agent-changes-file-list" aria-label="提交改动文件">
+      <header><b>提交文件</b><span>{details.files.length}</span></header>
+      {details.files.map(file => <button key={`${file.status}:${file.path}`} type="button" className={file.path === selected.path ? 'active' : ''} onClick={() => onSelect(file.path)}><FileText size={14}/><span title={file.path}>{file.path}</span><em><ins>{file.status}</ins></em></button>)}
+    </nav>
+    <article className="agent-changes-diff agent-git-diff">
+      <header><div><b title={details.commit.subject}>{details.commit.subject || '（无提交说明）'}</b><small><code>{details.commit.short_id}</code><span>{selected.path}</span>{diffQuery.data?.truncated && <em>已截断</em>}</small></div></header>
+      {diffQuery.isLoading ? <p className="agent-git-review-message">正在读取 Diff…</p> : diffQuery.isError ? <p className="agent-git-review-message error">文件 Diff 读取失败。</p> : <pre className="agent-git-review-diff">{diffQuery.data?.diff || '该文件没有可显示的文本 Diff。'}</pre>}
+    </article>
+  </section>;
+}
 type CandidateFilePreviewRequest = { key: string; filename: string; url: string };
 
 function SshAccessGuide({
@@ -1841,6 +1870,17 @@ function WorkspaceDrawer({
     }));
     onOpen();
   }, [onOpen, reviewChanges, updateScope]);
+  const openGitCommit = useCallback((commitDetails: WorkspaceGitCommitDetails) => {
+    updateScope(current => ({
+      ...current,
+      tabs: current.tabs.some(tab => tab.kind === 'git')
+        ? current.tabs.map(tab => tab.kind === 'git' ? { id: 'git', kind: 'git', details: commitDetails } : tab)
+        : [...current.tabs, { id: 'git', kind: 'git', details: commitDetails }],
+      activeTabId: 'git',
+      selectedGitFile: commitDetails.files[0]?.path,
+    }));
+    onOpen();
+  }, [onOpen, updateScope]);
   useEffect(() => {
     // A review request is a one-shot navigation command.  Its data remains
     // available for the user to reopen review manually, but an unrelated
@@ -2023,10 +2063,10 @@ function WorkspaceDrawer({
       {loadingOrError || summary}
     </section>
     <section className={`agent-workspace-tool-shell ${open ? '' : 'panel-hidden'}`}>
-      <header><nav className="agent-workspace-tabs" aria-label="工作区工具页签">{scopeState.tabs.map(tab => <div key={tab.id} className={scopeState.activeTabId === tab.id ? 'active' : ''}><button type="button" className="agent-workspace-tab-select" onClick={() => updateScope(current => ({ ...current, activeTabId: tab.id }))}><span>{tab.kind === 'files' ? '文件' : tab.kind === 'changes' ? `审查${reviewChanges.length ? ` · ${reviewChanges.length}` : ''}` : tab.kind === 'subagents' ? '子智能体' : details?.runtime.container_id || (details?.runtime.write_available ? '终端' : '连接中…')}</span></button><button type="button" className="agent-workspace-tab-close" aria-label={`关闭${tab.kind === 'files' ? '文件' : tab.kind === 'changes' ? '改动审查' : tab.kind === 'subagents' ? '子智能体' : `终端 ${details?.runtime.container_id || ''}`}页签`} disabled={tab.kind === 'terminal' && closingTerminalId === tab.terminalInstanceId} onClick={() => { if (tab.kind !== 'terminal' || closingTerminalId !== tab.terminalInstanceId) requestCloseTab(tab); }}><X size={12}/></button></div>)}</nav><div className="agent-workspace-tool-actions"><details><summary aria-label="新增工作区工具"><Plus size={15}/></summary><div><button type="button" onClick={event => { openFiles(); event.currentTarget.closest('details')?.removeAttribute('open'); }}><FileCode2 size={13}/>文件</button>{reviewChanges.length > 0 && <button type="button" onClick={event => { openChanges(); event.currentTarget.closest('details')?.removeAttribute('open'); }}><FileText size={13}/>审查改动</button>}{runtimeTasks.length > 0 && <button type="button" onClick={event => { openRuntimeTasks(); event.currentTarget.closest('details')?.removeAttribute('open'); }}><Bot size={13}/>子智能体</button>}<button type="button" disabled={!runtimeAvailable} onClick={event => { openTerminal(); event.currentTarget.closest('details')?.removeAttribute('open'); }}><Plus size={13}/>终端</button></div></details><button type="button" aria-label={fullScreen ? '退出全屏' : '全屏查看工作区工具'} title={fullScreen ? '退出全屏（Esc）' : '全屏查看'} onClick={() => setFullScreen(current => !current)}>{fullScreen ? <Minimize2 size={16}/> : <Maximize2 size={16}/>}</button><button type="button" aria-label="关闭工作区工具" onClick={() => { setFullScreen(false); onClose(); }}><X size={16}/></button></div></header>
+      <header><nav className="agent-workspace-tabs" aria-label="工作区工具页签">{scopeState.tabs.map(tab => <div key={tab.id} className={scopeState.activeTabId === tab.id ? 'active' : ''}><button type="button" className="agent-workspace-tab-select" onClick={() => updateScope(current => ({ ...current, activeTabId: tab.id }))}><span>{tab.kind === 'files' ? '文件' : tab.kind === 'changes' ? `审查${reviewChanges.length ? ` · ${reviewChanges.length}` : ''}` : tab.kind === 'git' ? `提交 · ${tab.details.commit.short_id}` : tab.kind === 'subagents' ? '子智能体' : details?.runtime.container_id || (details?.runtime.write_available ? '终端' : '连接中…')}</span></button><button type="button" className="agent-workspace-tab-close" aria-label={`关闭${tab.kind === 'files' ? '文件' : tab.kind === 'changes' ? '改动审查' : tab.kind === 'git' ? '提交审查' : tab.kind === 'subagents' ? '子智能体' : `终端 ${details?.runtime.container_id || ''}`}页签`} disabled={tab.kind === 'terminal' && closingTerminalId === tab.terminalInstanceId} onClick={() => { if (tab.kind !== 'terminal' || closingTerminalId !== tab.terminalInstanceId) requestCloseTab(tab); }}><X size={12}/></button></div>)}</nav><div className="agent-workspace-tool-actions"><details><summary aria-label="新增工作区工具"><Plus size={15}/></summary><div><button type="button" onClick={event => { openFiles(); event.currentTarget.closest('details')?.removeAttribute('open'); }}><FileCode2 size={13}/>文件</button>{reviewChanges.length > 0 && <button type="button" onClick={event => { openChanges(); event.currentTarget.closest('details')?.removeAttribute('open'); }}><FileText size={13}/>审查改动</button>}{runtimeTasks.length > 0 && <button type="button" onClick={event => { openRuntimeTasks(); event.currentTarget.closest('details')?.removeAttribute('open'); }}><Bot size={13}/>子智能体</button>}<button type="button" disabled={!runtimeAvailable} onClick={event => { openTerminal(); event.currentTarget.closest('details')?.removeAttribute('open'); }}><Plus size={13}/>终端</button></div></details><button type="button" aria-label={fullScreen ? '退出全屏' : '全屏查看工作区工具'} title={fullScreen ? '退出全屏（Esc）' : '全屏查看'} onClick={() => setFullScreen(current => !current)}>{fullScreen ? <Minimize2 size={16}/> : <Maximize2 size={16}/>}</button><button type="button" aria-label="关闭工作区工具" onClick={() => { setFullScreen(false); onClose(); }}><X size={16}/></button></div></header>
       <div className="agent-workspace-tool-body">
         {panelError && <p className="agent-workspace-panel-error" role="alert"><span>{panelError}</span><button type="button" aria-label="关闭错误提示" onClick={() => setPanelError('')}><X size={13}/></button></p>}
-        {loadingOrError || (!scopeState.tabs.length ? <div className="agent-drawer-empty"><b>选择工作区工具</b><span>文件仅打开一个页签；终端可按需打开多个独立实例。</span><div><button type="button" className="secondary" onClick={() => openFiles()}>打开文件</button><button type="button" className="secondary" disabled={!runtimeAvailable} onClick={openTerminal}>新建终端</button></div></div> : details && <div className="agent-workspace-tool-content">
+        {loadingOrError || (!scopeState.tabs.length ? <div className="agent-drawer-empty"><b>选择工作区工具</b><span>文件仅打开一个页签；终端可按需打开多个独立实例。</span><div><button type="button" className="secondary" onClick={() => openFiles()}>打开文件</button><button type="button" className="secondary" disabled={!runtimeAvailable} onClick={openTerminal}>新建终端</button></div></div> : details && <div className={`agent-workspace-tool-content${fullScreen ? ' fullscreen-git-layout' : ''}`}>
           {scopeState.tabs.some(tab => tab.kind === 'files') && <section className={`agent-workspace-files ${scopeState.activeTabId === 'files' ? 'active' : ''}${fullScreen ? ' fullscreen-git' : ''}`} style={{ '--file-tree-width': `${fileTreeWidth}px` } as CSSProperties}>
             <div className="agent-file-tree-pane">
               <header className="agent-file-tree-toolbar"><span>{selectedEntryPaths.size ? `已选 ${selectedEntryPaths.size} 项` : '文件'}</span><div className="agent-file-tree-actions"><button type="button" title="新建文件" aria-label="新建文件" onClick={() => createAtActiveDirectory('FILE')}><FileCode2 size={13}/></button><button type="button" title="新建目录" aria-label="新建目录" onClick={() => createAtActiveDirectory('DIRECTORY')}><FolderPlus size={13}/></button><button type="button" className={`agent-file-tree-expand-toggle${allFileDirectoriesExpanded ? ' expanded' : ''}`} title={allFileDirectoriesExpanded ? '全部收起' : '全部展开'} aria-label={allFileDirectoriesExpanded ? '全部收起目录' : '全部展开目录'} disabled={!fileDirectoryPaths.length} onClick={() => setExpandedFilePaths(allFileDirectoriesExpanded ? new Set() : new Set(fileDirectoryPaths))}>{allFileDirectoriesExpanded ? <ChevronRight size={13}/> : <ChevronDown size={13}/>}</button><button type="button" className="danger" title="删除选中项" aria-label="删除选中项" disabled={!selectedEntryRoots.length} onClick={() => void removeEntries(selectedEntryRoots.map(path => ({ path, kind: visibleFiles.find(item => item.path === path)?.kind ?? 'directory' })))}><Trash2 size={13}/></button></div></header>
@@ -2040,11 +2080,12 @@ function WorkspaceDrawer({
               <header><span title={selectedFile}>{selectedAttachment?.filename || relativeWorkspacePath(selectedFile, details.root)}</span><a href={fileUrl(workspaceId, selectedFile, { bindingId, workDirectoryId, download: true })}><Download size={13}/>下载</a></header>
               {canPreviewImage ? <img className="agent-file-media-preview" src={selectedAttachment?.image_data_url || selectedFileUrl} alt={selectedAttachment?.filename || '附件预览'}/> : canPreviewPdf ? <iframe className="agent-file-media-preview" title={selectedAttachment?.filename || 'PDF 预览'} src={selectedFileUrl}/> : textPreviewable ? previewQuery.isLoading ? <p>正在读取文件…</p> : previewQuery.isError ? <p>文件预览不可用，请下载后查看。</p> : <WorkspaceTextPreview path={selectedFile} content={previewQuery.data ?? ''}/> : <p>此文件不提供浏览器预览，请下载后查看。</p>}
             </> : <p>选择一个文件以预览或下载。</p>}</div>
-            {fullScreen && <WorkspaceGitSidebar details={details} selectedPath={gitSelectedPath} loadLog={repositoryPath => api.gitLog(workspaceId, repositoryPath, gitOptions)} loadCommit={(repositoryPath, commit) => api.gitCommit(workspaceId, repositoryPath, commit, gitOptions)} loadDiff={(repositoryPath, commit, path) => api.gitDiff(workspaceId, repositoryPath, commit, path, gitOptions)}/>}
           </section>}
           {scopeState.tabs.some(tab => tab.kind === 'changes') && <div className={`agent-changes-tab-panel ${scopeState.activeTabId === 'changes' ? 'active' : ''}`}><WorkspaceChangesReview changes={reviewChanges} selectedId={scopeState.selectedChangeId} onSelect={selectedChangeId => updateScope(current => ({ ...current, selectedChangeId }))} workspaceRoot={details.working_directory}/></div>}
+          {scopeState.tabs.filter((tab): tab is Extract<WorkspaceToolTab, { kind: 'git' }> => tab.kind === 'git').map(tab => <div key={tab.id} className={`agent-changes-tab-panel agent-git-commit-tab ${scopeState.activeTabId === tab.id ? 'active' : ''}`}><WorkspaceGitCommitReview details={tab.details} selectedPath={scopeState.selectedGitFile} onSelect={selectedGitFile => updateScope(current => ({ ...current, selectedGitFile }))} loadDiff={(repositoryPath, commit, path) => api.gitDiff(workspaceId, repositoryPath, commit, path, gitOptions)}/></div>)}
           {scopeState.tabs.some(tab => tab.kind === 'subagents') && <div className={`agent-subagent-tab-panel ${scopeState.activeTabId === 'subagents' ? 'active' : ''}`}><RuntimeTaskTab tasks={runtimeTasks} definitions={agentDefinitions} selectedTaskId={scopeState.selectedRuntimeTaskId} onSelect={taskId => updateScope(current => ({ ...current, selectedRuntimeTaskId: taskId }))} sessionStopped={sessionStopped}/></div>}
           {scopeState.tabs.filter((tab): tab is Extract<WorkspaceToolTab, { kind: 'terminal' }> => tab.kind === 'terminal').map(tab => <div key={tab.id} className={`agent-terminal-tab-panel ${scopeState.activeTabId === tab.id ? 'active' : ''}`}>{runtimeAvailable ? <WorkspaceTerminal workspaceId={workspaceId} terminalInstanceId={tab.terminalInstanceId} bindingId={bindingId} workDirectoryId={workDirectoryId} workingDirectory={details.working_directory}/> : <div className="agent-drawer-empty"><LoaderCircle className="agent-drawer-spinner" size={20}/><b>终端正在恢复</b><span>文件仍可使用；运行环境恢复后终端会自动可用。</span></div>}</div>)}
+          {fullScreen && <WorkspaceGitSidebar details={details} selectedPath={gitSelectedPath} loadLog={repositoryPath => api.gitLog(workspaceId, repositoryPath, gitOptions)} loadCommit={(repositoryPath, commit) => api.gitCommit(workspaceId, repositoryPath, commit, gitOptions)} onOpenCommit={openGitCommit}/>}
         </div>)}
       </div>
     </section>{entryMenu && <div className="agent-file-context-menu" role="menu" aria-label="文件操作菜单" style={{ left: entryMenu.x, top: entryMenu.y }} onPointerDown={event => event.stopPropagation()}>{entryMenu.kind === 'directory' && <><button type="button" role="menuitem" onClick={() => { void createEntry(entryMenu.path, 'FILE'); setEntryMenu(undefined); }}><FileCode2 size={14}/>新建文件</button><button type="button" role="menuitem" onClick={() => { void createEntry(entryMenu.path, 'DIRECTORY'); setEntryMenu(undefined); }}><FolderPlus size={14}/>新建目录</button></>}<button type="button" className="danger" role="menuitem" onClick={() => { void removeEntries([{ path: entryMenu.path, kind: entryMenu.kind }]); setEntryMenu(undefined); }}><Trash2 size={14}/>{entryMenu.kind === 'directory' ? '删除目录' : '删除文件'}</button></div>}

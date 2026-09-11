@@ -3769,6 +3769,14 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 
 完成：每轮在存在过程块和最终 Assistant 回复时插入语义 separator；使用低对比度 1px 横线及适度上下间距，普通回复、生成中状态和失败卡片不显示该边界。
 
+### FR-288 Agent 工作区完整 Git 历史审查 — DONE
+
+依赖：FR-287。
+
+目标：Git 侧栏必须展示当前已授权工作区范围内的完整仓库选择，而非仅依赖当前文件选择；历史返回的每条提交都必须可读取详情。选择提交后，受影响文件与 Diff 必须在中间工作区文件审查区域显示，复用现有改动审查的信息层级，右侧仅保留仓库与提交历史。不得放宽工作目录、路径或 Git 对象授权边界。
+
+完成：Git 侧栏默认使用当前选中路径所属仓库、工作目录根仓库或当前授权范围内首个仓库，并在多个仓库时提供明确切换。历史接口改为 NUL 分隔记录，修复第二条及后续提交 SHA 被记录换行污染而无法读取详情的问题；提交文件清单与路径校验同样使用 NUL 分隔，安全覆盖带特殊字符路径。选择提交后在中间区域打开“提交审查”页签，文件清单和 Diff 不再嵌入右侧历史栏。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -3784,6 +3792,7 @@ Web TypeScript typecheck、Python `compileall` 与 `git diff --check` 通过；�
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-11 | FR-288 | Web ESLint、TypeScript typecheck、production build；受影响 Python Ruff/check、`py_compile`；三提交历史与详情／Diff 直接 smoke、Alembic head、任务状态唯一性与 `git diff --check` | PASS：当前授权工作区内的仓库可切换，选择提交后在中间“提交审查”页签浏览文件与 Diff。Git 历史使用 NUL 记录边界，连续三条提交均可回读详情与首个文件 Diff；不依赖数据库的直接 smoke 通过。定向 pytest 已收集，但全局 Testcontainers fixture 在本机 Docker daemon 不可用时于断言前阻断，未伪记为通过。唯一 Alembic head 为 `0110_candidate_output_set_owner`，无 `CURRENT`。 |
 | 2026-09-11 | FR-287 | Web TypeScript typecheck；受影响 Web ESLint；production build；`git diff --check` 与任务状态唯一性 | PASS：右键产品菜单的事件路径已覆盖鼠标移动不关闭、点击复制后关闭；tmux 原生菜单不再与 Chrome 菜单或 MouseMove 协议竞争。定向 Playwright 因既有工作区初始化长时间无响应而中止，未将其记为通过。 |
 | 2026-09-11 | FR-286 | Web ESLint、TypeScript typecheck、production build、`git diff --check` 与任务状态唯一性 | PASS：仅在同轮过程块与最终回复之间显示低对比度横线，过程／最终回复边界清晰且不干扰无过程和进行中的会话。 |
 | 2026-09-11 | FR-285 | Web ESLint、TypeScript typecheck、`git diff --check` 与任务状态唯一性 | PASS：实际生效的工作台壳层中栏标题轨道与左侧操作区、右侧环境信息区均为 64px，三栏底部分隔线对齐。 |

@@ -277,23 +277,29 @@ def git_log(
         _git_run(
             repository,
             "log",
+            "-z",
             f"--max-count={_GIT_LOG_LIMIT}",
             "--date=short",
-            "--format=%H%x00%h%x00%an%x00%ad%x00%s%x00",
+            "--format=%H%x00%h%x00%an%x00%ad%x00%s",
         )
         or b""
     )
     fields = output.decode("utf-8", errors="replace").split("\0")
     commits = [
         {
-            "id": fields[index],
-            "short_id": fields[index + 1],
+            # Without `-z`, Git writes a newline between records even when the
+            # custom record format ends in NUL. That newline becomes part of
+            # every ID after the first one, so the commit endpoint correctly
+            # rejects it as an invalid object ID. Keep the parser defensive for
+            # repositories served by older Git versions as well.
+            "id": fields[index].strip(),
+            "short_id": fields[index + 1].strip(),
             "author": fields[index + 2],
             "date": fields[index + 3],
             "subject": fields[index + 4],
         }
         for index in range(0, max(0, len(fields) - 1), 5)
-        if index + 4 < len(fields) and fields[index]
+        if index + 4 < len(fields) and fields[index].strip()
     ]
     return {"repository": _repository_details(repository, runtime_path), "commits": commits}
 
@@ -326,23 +332,42 @@ def git_commit(
     )
     names = (
         _git_run(
-            repository, "diff-tree", "--root", "--no-commit-id", "--name-status", "-r", object_id
+            repository,
+            "diff-tree",
+            "--root",
+            "--no-commit-id",
+            "--name-status",
+            "-z",
+            "-r",
+            object_id,
         )
         or b""
     )
     files = []
-    for line in names.decode("utf-8", errors="replace").splitlines():
-        status, separator, path = line.partition("\t")
-        if separator and path and "\x00" not in path:
+    fields = names.decode("utf-8", errors="replace").split("\0")
+    index = 0
+    while index < len(fields):
+        status = fields[index]
+        index += 1
+        if not status:
+            continue
+        # Renames and copies carry two NUL-delimited paths. The review should
+        # use their destination: it is the path `git show <commit> -- <path>`
+        # can render, while the source path is only metadata.
+        path_count = 2 if status[:1] in {"R", "C"} else 1
+        paths = fields[index : index + path_count]
+        index += path_count
+        path = paths[-1] if paths else ""
+        if path and "\x00" not in path:
             files.append({"path": path, "status": status[:1] or "M"})
     return {
         "repository": _repository_details(repository, runtime_path),
         "commit": {
-            "id": metadata[0] if metadata else object_id,
-            "short_id": metadata[1] if len(metadata) > 1 else object_id[:12],
-            "author": metadata[2] if len(metadata) > 2 else "",
-            "date": metadata[3] if len(metadata) > 3 else "",
-            "subject": metadata[4] if len(metadata) > 4 else "",
+            "id": metadata[0].strip() if metadata else object_id,
+            "short_id": metadata[1].strip() if len(metadata) > 1 else object_id[:12],
+            "author": metadata[2].strip() if len(metadata) > 2 else "",
+            "date": metadata[3].strip() if len(metadata) > 3 else "",
+            "subject": metadata[4].strip() if len(metadata) > 4 else "",
         },
         "files": files,
     }
@@ -367,11 +392,18 @@ def git_file_diff(
         raise DomainError("AGENT_WORKSPACE_GIT_PATH_INVALID", "Git 文件路径无效", 422)
     changed = (
         _git_run(
-            repository, "diff-tree", "--root", "--no-commit-id", "--name-only", "-r", object_id
+            repository,
+            "diff-tree",
+            "--root",
+            "--no-commit-id",
+            "--name-only",
+            "-z",
+            "-r",
+            object_id,
         )
         or b""
     )
-    if path not in changed.decode("utf-8", errors="replace").splitlines():
+    if path not in changed.decode("utf-8", errors="replace").split("\0"):
         raise DomainError("AGENT_WORKSPACE_GIT_PATH_INVALID", "文件不属于该 Git 提交", 422)
     output = (
         _git_run(
