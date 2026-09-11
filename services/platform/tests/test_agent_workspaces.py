@@ -678,6 +678,84 @@ def test_workspace_runtime_replaces_deleted_physical_generation(
         assert [item.generation for item in generations] == [1, 2]
 
 
+def test_workspace_provision_reuses_generation_after_transient_provider_failure(
+    settings, db_session_factory, monkeypatch
+):
+    configured = settings.model_copy(
+        update={"terminal_environment_backend": "docker", "sandbox_manager_scope": "test-scope"}
+    )
+    calls = 0
+
+    def ensure_running(_self, resource, *, runtime_secret_key):
+        nonlocal calls
+        assert runtime_secret_key is not None
+        calls += 1
+        if calls == 1:
+            raise DomainError("SANDBOX_BACKEND_UNAVAILABLE", "Provider restarting", 503)
+        return DockerObservation(
+            resource_id=resource.id,
+            resource_name=resource.backend_resource_name,
+            resource_identifier="agent-runtime-container",
+            state="RUNNING",
+            labels={},
+        )
+
+    monkeypatch.setattr(DockerSandboxProvider, "ensure_running", ensure_running)
+    with settings_context(configured), db_session_factory() as db:
+        workspace = ensure_default_agent_workspace(db)
+        with pytest.raises(DomainError) as caught:
+            process_agent_workspace_runtime(db, workspace.id)
+        assert caught.value.code == "SANDBOX_BACKEND_UNAVAILABLE"
+
+        db.expire_all()
+        runtime = db.scalar(
+            select(AgentWorkspaceRuntime).where(AgentWorkspaceRuntime.workspace_id == workspace.id)
+        )
+        resources = list(
+            db.scalars(
+                select(ManagedSandbox).where(
+                    ManagedSandbox.owner_type == "AGENT_WORKSPACE",
+                    ManagedSandbox.owner_id == workspace.id,
+                )
+            )
+        )
+        generations = list(
+            db.scalars(
+                select(AgentWorkspaceRuntimeGeneration).where(
+                    AgentWorkspaceRuntimeGeneration.runtime_session_id == runtime.id
+                )
+            )
+        )
+        assert runtime is not None and runtime.status == "STARTING"
+        assert len(resources) == 1 and resources[0].desired_state == "RUNNING"
+        assert resources[0].last_error_code == "SANDBOX_BACKEND_UNAVAILABLE"
+        assert len(generations) == 1 and generations[0].state == "PROVISIONING"
+        resource_id = resources[0].id
+
+        process_agent_workspace_runtime(db, workspace.id)
+        db.expire_all()
+        resources = list(
+            db.scalars(
+                select(ManagedSandbox).where(
+                    ManagedSandbox.owner_type == "AGENT_WORKSPACE",
+                    ManagedSandbox.owner_id == workspace.id,
+                )
+            )
+        )
+        generations = list(
+            db.scalars(
+                select(AgentWorkspaceRuntimeGeneration).where(
+                    AgentWorkspaceRuntimeGeneration.runtime_session_id == runtime.id
+                )
+            )
+        )
+        runtime = db.get(AgentWorkspaceRuntime, runtime.id)
+        assert len(resources) == 1 and resources[0].id == resource_id
+        assert len(generations) == 1 and generations[0].state == "READY"
+        assert runtime is not None and runtime.active_generation == 1 and runtime.status == "ACTIVE"
+    assert calls == 2
+
+
 def test_workspace_runtime_recovery_refreshes_removed_image_digest(
     settings, db_session_factory, monkeypatch
 ):
@@ -1376,9 +1454,7 @@ def test_agent_workspace_creates_entries_at_the_authorized_root_and_subdirectory
         runtime_root = workspace._runtime_root(item.id)
 
         workspace.create_entry(db, item.id, runtime_root, "README.md", "FILE")
-        workspace.create_entry(
-            db, item.id, f"{runtime_root}/docs", "guide.md", "FILE"
-        )
+        workspace.create_entry(db, item.id, f"{runtime_root}/docs", "guide.md", "FILE")
 
         assert (project_root / "README.md").is_file()
         assert (project_root / "docs/guide.md").is_file()
@@ -1586,9 +1662,7 @@ def test_agent_workspace_accepts_user_root_attachment_paths():
     path = f"{workspace_root}/uploads/{owner_id}-{uuid4().hex}--pasted.png"
     attachments = ({"path": path, "image_data_url": "data:image/png;base64,aW1hZ2U="},)
 
-    conversations.validate_attachment_owners(
-        owner_id, attachments, workspace_root=workspace_root
-    )
+    conversations.validate_attachment_owners(owner_id, attachments, workspace_root=workspace_root)
     prompt, image_urls = conversations.message_payload("", attachments)
 
     assert path in prompt

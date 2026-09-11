@@ -563,27 +563,10 @@ def process_agent_workspace_runtime(db: Session, workspace_id: str) -> None:
         )
         db.add(resource)
         db.flush()
-    secret = resolve_agent_workspace_runtime_secret(db, allocation.id)
-    try:
-        observation = DockerSandboxProvider(get_settings()).ensure_running(
-            resource, runtime_secret_key=secret
-        )
-    except DomainError as exc:
-        runtime.status = "DEGRADED"
-        runtime.failure_code = exc.code
-        runtime.failure_summary = "Runtime provisioning failed; inspect protected logs"
-        runtime.row_version += 1
-        raise
-    resource.backend_resource_id = observation.resource_identifier
-    resource.observed_state = observation.state
-    resource.last_activity_at = datetime.now(UTC)
-    resource.idle_expires_at = None
-    resource.last_error_code = None
-    resource.last_error_detail = None
     generation = db.scalar(
-        select(AgentWorkspaceRuntimeGeneration).where(
-            AgentWorkspaceRuntimeGeneration.managed_runtime_id == resource.id
-        )
+        select(AgentWorkspaceRuntimeGeneration)
+        .where(AgentWorkspaceRuntimeGeneration.managed_runtime_id == resource.id)
+        .with_for_update()
     )
     if generation is None:
         generation = AgentWorkspaceRuntimeGeneration(
@@ -591,16 +574,69 @@ def process_agent_workspace_runtime(db: Session, workspace_id: str) -> None:
             generation=resource.generation,
             managed_runtime_id=resource.id,
             runtime_image_digest=runtime.runtime_image_digest,
-            state="READY",
+            state="PROVISIONING",
             fence_token=uid(),
             started_at=datetime.now(UTC),
-            ready_at=datetime.now(UTC),
         )
         db.add(generation)
-    else:
-        generation.state = "READY"
-        generation.ready_at = datetime.now(UTC)
+        db.flush()
+
+    # Runtime Provider delivery is indeterminate at the transport boundary.
+    # Commit the fenced physical intent first, so a worker rollback after a
+    # temporary provider outage cannot discard it and allocate N+1 on retry.
+    # This mirrors FlowRun Runtime provisioning's independent durable ledger.
+    db.commit()
+    secret = resolve_agent_workspace_runtime_secret(db, allocation.id)
+    try:
+        observation = DockerSandboxProvider(get_settings()).ensure_running(
+            resource, runtime_secret_key=secret
+        )
+    except DomainError as exc:
+        if exc.code == "SANDBOX_BACKEND_UNAVAILABLE":
+            # A transport failure after Docker accepted create is reconciled
+            # through the same deterministic resource name/generation rather
+            # than allocating another first generation.
+            resource.desired_state = "RUNNING"
+            resource.observed_state = "ERROR"
+            resource.last_error_code = exc.code
+            resource.last_error_detail = exc.message
+            resource.cleanup_attempts += 1
+            resource.next_reconcile_at = datetime.now(UTC) + timedelta(
+                seconds=min(2 ** min(resource.cleanup_attempts, 10), 3600)
+            )
+            runtime.status = "STARTING"
+            runtime.failure_code = exc.code
+            runtime.failure_summary = (
+                "Runtime Provider is temporarily unavailable; provisioning will retry"
+            )
+            runtime.row_version += 1
+            db.commit()
+            raise
+        resource.desired_state = "DELETED"
+        resource.next_reconcile_at = datetime.now(UTC)
+        generation.state = "FAILED"
+        generation.failure_code = exc.code
+        generation.failure_summary = "Runtime provisioning failed; inspect protected logs"
+        generation.stopped_at = datetime.now(UTC)
         generation.row_version += 1
+        runtime.status = "DEGRADED"
+        runtime.failure_code = exc.code
+        runtime.failure_summary = "Runtime provisioning failed; inspect protected logs"
+        runtime.row_version += 1
+        db.commit()
+        raise
+    resource.backend_resource_id = observation.resource_identifier
+    resource.observed_state = observation.state
+    resource.last_activity_at = datetime.now(UTC)
+    resource.idle_expires_at = None
+    resource.last_error_code = None
+    resource.last_error_detail = None
+    generation.state = "READY"
+    generation.ready_at = datetime.now(UTC)
+    generation.failure_code = None
+    generation.failure_summary = None
+    generation.stopped_at = None
+    generation.row_version += 1
     runtime.active_generation = resource.generation
     runtime.status = "ACTIVE"
     runtime.failure_code = None

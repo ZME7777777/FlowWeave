@@ -5,6 +5,7 @@ import json
 import subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import create_engine, func, select, text
@@ -15,6 +16,7 @@ from flowweave.modules.agent_workspaces.infrastructure.models import (
     AgentWorkspaceRuntime,
     AgentWorkspaceRuntimeGeneration,
 )
+from flowweave.modules.sandboxes.application import service as sandbox_service
 from flowweave.modules.sandboxes.application.service import (
     ReconcileReport,
     _owner_is_active,
@@ -2111,6 +2113,126 @@ def test_explicit_flow_run_delete_cleans_up_node_attempt_runtime(
             is None
         )
     assert deleted == [resource_id]
+
+
+def test_initial_flow_run_provision_reuses_generation_after_transient_provider_failure(
+    settings, db_session_factory, monkeypatch
+):
+    """A Provider 503 must retry one durable first-generation intent."""
+
+    configured = _docker_settings(settings)
+    flow_run_id = "11111111-1111-4111-8111-111111111111"
+    allocation_id = "22222222-2222-4222-8222-222222222222"
+    with db_session_factory() as db:
+        logical_session = FlowRunRuntime(
+            flow_run_id=flow_run_id,
+            environment_version_id="33333333-3333-4333-8333-333333333333",
+            runtime_image_digest="runtime:locked",
+            workspace_allocation_id=allocation_id,
+            status="STARTING",
+        )
+        db.add(logical_session)
+        db.commit()
+        logical_session_id = logical_session.id
+
+        allocation = SimpleNamespace(
+            id=allocation_id,
+            relative_root=".flow-run-runtimes/test/run",
+            secret_reference_id="44444444-4444-4444-8444-444444444444",
+        )
+        monkeypatch.setattr(
+            sandbox_service,
+            "runtime_allocation_for_flow_run",
+            lambda _db, _flow_run_id: allocation,
+        )
+        monkeypatch.setattr(
+            sandbox_service,
+            "resolve_runtime_secret",
+            lambda _db, _allocation_id: "runtime-secret",
+        )
+        monkeypatch.setattr(
+            sandbox_service,
+            "ensure_flow_run_runtime_session",
+            lambda control_db, **_kwargs: control_db.get(FlowRunRuntime, logical_session_id),
+        )
+
+        calls = 0
+
+        def ensure_running(_self, resource, *, runtime_secret_key):
+            nonlocal calls
+            assert runtime_secret_key == "runtime-secret"
+            calls += 1
+            if calls == 1:
+                raise DomainError(
+                    "SANDBOX_BACKEND_UNAVAILABLE", "Docker temporarily unavailable", 503
+                )
+            return _observation(resource)
+
+        monkeypatch.setattr(DockerSandboxProvider, "ensure_running", ensure_running)
+
+        with settings_context(configured), pytest.raises(DomainError) as caught:
+            sandbox_service._create_managed_runtime(
+                db,
+                flow_run_id=flow_run_id,
+                owner_type="FLOW_RUN",
+                owner_id=flow_run_id,
+                image="runtime:locked",
+                environment_id="environment-1",
+                environment_version_id="33333333-3333-4333-8333-333333333333",
+                environment_version_no=1,
+            )
+        assert caught.value.code == "SANDBOX_BACKEND_UNAVAILABLE"
+
+        db.expire_all()
+        first = db.scalar(
+            select(ManagedSandbox).where(
+                ManagedSandbox.owner_type == "FLOW_RUN",
+                ManagedSandbox.owner_id == flow_run_id,
+            )
+        )
+        assert first is not None
+        generation = db.scalar(
+            select(RuntimeGeneration).where(RuntimeGeneration.managed_runtime_id == first.id)
+        )
+        assert generation is not None
+        assert first.desired_state == "RUNNING"
+        assert first.last_error_code == "SANDBOX_BACKEND_UNAVAILABLE"
+        assert generation.state == "PROVISIONING"
+        first_id = first.id
+
+        with settings_context(configured):
+            sandbox_service._create_managed_runtime(
+                db,
+                flow_run_id=flow_run_id,
+                owner_type="FLOW_RUN",
+                owner_id=flow_run_id,
+                image="runtime:locked",
+                environment_id="environment-1",
+                environment_version_id="33333333-3333-4333-8333-333333333333",
+                environment_version_no=1,
+            )
+
+        db.expire_all()
+        resources = list(
+            db.scalars(
+                select(ManagedSandbox).where(
+                    ManagedSandbox.owner_type == "FLOW_RUN",
+                    ManagedSandbox.owner_id == flow_run_id,
+                )
+            )
+        )
+        generations = list(
+            db.scalars(
+                select(RuntimeGeneration).where(
+                    RuntimeGeneration.runtime_session_id == logical_session_id
+                )
+            )
+        )
+        session = db.get(FlowRunRuntime, logical_session_id)
+        assert len(resources) == 1 and resources[0].id == first_id
+        assert len(generations) == 1 and generations[0].state == "READY"
+        assert session is not None and session.active_generation == 1 and session.status == "ACTIVE"
+    assert calls == 2
 
 
 def test_flow_run_delete_clears_orphaned_generation_reference(settings, db_session_factory):

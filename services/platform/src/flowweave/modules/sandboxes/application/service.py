@@ -474,6 +474,17 @@ def _create_managed_runtime(
                     )
                 except DomainError as exc:
                     _error(resource, exc)
+                    if logical_session is not None and exc.code == "SANDBOX_BACKEND_UNAVAILABLE":
+                        # The Provider can be briefly unavailable while its
+                        # Docker daemon or the Provider process is restarted.
+                        # Keep this committed physical intent and its fenced
+                        # PROVISIONING generation so the task retry addresses
+                        # the same deterministic resource name.  Deleting it
+                        # here makes every retry allocate N+1 and can leave
+                        # an indeterminate Docker create orphaned.
+                        resource.desired_state = "RUNNING"
+                        control_db.commit()
+                        raise
                     resource.desired_state = "DELETED"
                     resource.next_reconcile_at = datetime.now(UTC)
                     if logical_session is not None and logical_generation is not None:
