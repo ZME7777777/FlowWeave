@@ -206,11 +206,20 @@ export const api = {
     request<AgentWorkDirectory>(`/agent-workspaces/${encodeURIComponent(id)}/work-directories`, json('POST', { display_name, selected_paths })),
   deleteAgentWorkDirectory: (id: string, directoryId: string) =>
     request<void>(`/agent-workspaces/${encodeURIComponent(id)}/work-directories/${encodeURIComponent(directoryId)}`, json('DELETE')),
-  agentWorkspaceDetails: (id: string, options: { bindingId?: string; workDirectoryId?: string } = {}) => {
+  agentWorkspaceDetails: (id: string, options: { bindingId?: string; workDirectoryId?: string; fullIndex?: boolean } = {}) => {
     const query = new URLSearchParams();
     if (options.bindingId) query.set('binding_id', options.bindingId);
     if (options.workDirectoryId) query.set('work_directory_id', options.workDirectoryId);
+    if (options.fullIndex) query.set('full_index', 'true');
     return request<AgentWorkspaceDetails>(`/agent-workspaces/${encodeURIComponent(id)}/workspace${query.size ? `?${query}` : ''}`);
+  },
+  agentWorkspaceDirectory: (id: string, options: { bindingId?: string; workDirectoryId?: string; parentPath?: string; cursor?: string } = {}) => {
+    const query = new URLSearchParams();
+    if (options.bindingId) query.set('binding_id', options.bindingId);
+    if (options.workDirectoryId) query.set('work_directory_id', options.workDirectoryId);
+    if (options.parentPath) query.set('parent_path', options.parentPath);
+    if (options.cursor) query.set('cursor', options.cursor);
+    return request<import('../types').AgentSessionWorkspaceDirectory>(`/agent-workspaces/${encodeURIComponent(id)}/workspace/directory${query.size ? `?${query}` : ''}`);
   },
   agentWorkspaceGitLog: (id: string, repositoryPath: string, options: { bindingId?: string; workDirectoryId?: string } = {}) => {
     const query = new URLSearchParams({ repository_path: repositoryPath });
@@ -799,11 +808,20 @@ export const nodeSessionApi = {
     request<import('../types').AgentSessionWorkDirectoryList>(`${nodeSessionBase(flowRunId, attemptId)}/work-directories`),
   createWorkDirectory: (flowRunId: string, attemptId: string, display_name: string, selected_paths: string[]) =>
     request<import('../types').AgentSessionWorkDirectory>(`${nodeSessionBase(flowRunId, attemptId)}/work-directories`, json('POST', { display_name, selected_paths })),
-  workspace: (flowRunId: string, attemptId: string, bindingId?: string, workDirectoryId?: string) => {
+  workspace: (flowRunId: string, attemptId: string, bindingId?: string, workDirectoryId?: string, fullIndex = false) => {
     const query = new URLSearchParams();
     if (bindingId) query.set('binding_id', bindingId);
     if (workDirectoryId) query.set('work_directory_id', workDirectoryId);
+    if (fullIndex) query.set('full_index', 'true');
     return request<import('../types').AgentSessionWorkspaceDetails>(`${nodeSessionBase(flowRunId, attemptId)}/workspace${query.size ? `?${query}` : ''}`);
+  },
+  workspaceDirectory: (flowRunId: string, attemptId: string, bindingId?: string, workDirectoryId?: string, parentPath?: string, cursor?: string) => {
+    const query = new URLSearchParams();
+    if (bindingId) query.set('binding_id', bindingId);
+    if (workDirectoryId) query.set('work_directory_id', workDirectoryId);
+    if (parentPath) query.set('parent_path', parentPath);
+    if (cursor) query.set('cursor', cursor);
+    return request<import('../types').AgentSessionWorkspaceDirectory>(`${nodeSessionBase(flowRunId, attemptId)}/workspace/directory${query.size ? `?${query}` : ''}`);
   },
   gitLog: (flowRunId: string, attemptId: string, repositoryPath: string, bindingId?: string, workDirectoryId?: string) => {
     const query = new URLSearchParams({ repository_path: repositoryPath });

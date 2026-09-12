@@ -527,6 +527,7 @@ def details(
     attempt_id: str,
     binding_id: str | None = None,
     work_directory_id: str | None = None,
+    full_index: bool = False,
 ) -> dict[str, Any]:
     project_root, runtime_root, mount_root, runtime_mount_root = _authorize_entry(
         db, flow_run_id=flow_run_id, attempt_id=attempt_id
@@ -554,13 +555,17 @@ def details(
         "scope": scope,
         "working_directory": working_directory,
         "work_directory": directory,
-        "files": _entries(project_root, runtime_root, roots),
-        "repositories": [
-            agent_workspace_host.git_repository_details(repository, repository_path)
-            for repository, repository_path in agent_workspace_host.git_repositories(
-                project_root, str(runtime_root), roots
-            )
-        ],
+        "files": _entries(project_root, runtime_root, roots) if full_index else [],
+        "repositories": (
+            [
+                agent_workspace_host.git_repository_details(repository, repository_path)
+                for repository, repository_path in agent_workspace_host.git_repositories(
+                    project_root, str(runtime_root), roots
+                )
+            ]
+            if full_index
+            else []
+        ),
         # This entry was authorized against an active Attempt Runtime.
         "runtime": {"state": "ACTIVE", "write_available": True},
         "ide": {

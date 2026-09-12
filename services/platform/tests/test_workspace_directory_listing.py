@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 
+from flowweave.modules.agent_workspaces.application import workspace as workspace_service
 from flowweave.modules.agent_workspaces.application.workspace import (
     _authorized_directory,
     _decode_directory_cursor,
@@ -84,3 +85,48 @@ def test_directory_listing_reads_only_direct_children_and_pages(
     second = list_directory(None, "workspace", cursor=first["next_cursor"], limit=2)
     assert [entry["path"] for entry in second["entries"]] == [f"{runtime_root}/zeta.txt"]
     assert second["next_cursor"] is None
+
+
+def test_workspace_details_skips_full_tree_and_git_without_explicit_index(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_root = "/runtime/workspace/project"
+
+    monkeypatch.setattr(workspace_service, "_workspace", lambda *_: None)
+    monkeypatch.setattr(
+        workspace_service, "_working_directory", lambda *_args, **_kwargs: (runtime_root, None)
+    )
+    monkeypatch.setattr(
+        workspace_service,
+        "_scope_details",
+        lambda *_args, **_kwargs: {"kind": "ROOT", "display_name": "根工作区"},
+    )
+    monkeypatch.setattr(
+        workspace_service, "_file_scope_roots", lambda *_args, **_kwargs: (runtime_root,)
+    )
+    monkeypatch.setattr(workspace_service, "_project_root", lambda *_: tmp_path)
+    monkeypatch.setattr(workspace_service, "_runtime_root", lambda *_: runtime_root)
+    monkeypatch.setattr(
+        workspace_service.agent_sessions.conversations,
+        "terminal_container_details",
+        lambda *_: ("runtime", "resource", "sha256:1234567890abcdef"),
+    )
+    monkeypatch.setattr(
+        workspace_service.agent_sessions, "ssh_remote_descriptor", lambda *_args, **_kwargs: {}
+    )
+    monkeypatch.setattr(
+        workspace_service,
+        "_scoped_workspace_entries",
+        lambda *_args, **_kwargs: pytest.fail("unexpected recursive file scan"),
+    )
+    monkeypatch.setattr(
+        workspace_service,
+        "_scope_repositories",
+        lambda *_args, **_kwargs: pytest.fail("unexpected Git repository scan"),
+    )
+
+    details = workspace_service.details(None, "workspace")
+
+    assert details["files"] == []
+    assert details["repositories"] == []
+    assert details["runtime"]["container_id"] == "1234567890ab"

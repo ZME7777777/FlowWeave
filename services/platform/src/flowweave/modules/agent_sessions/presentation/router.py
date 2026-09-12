@@ -413,6 +413,7 @@ async def node_session_workspace(
     db: Db,
     binding_id: str | None = Query(default=None),
     work_directory_id: str | None = Query(default=None),
+    full_index: bool = Query(default=False),
 ) -> dict[str, Any]:
     return await run_sync(
         db,
@@ -422,6 +423,7 @@ async def node_session_workspace(
             attempt_id=attempt_id,
             binding_id=binding_id,
             work_directory_id=work_directory_id,
+            full_index=full_index,
         ),
     )
 

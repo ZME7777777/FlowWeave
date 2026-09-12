@@ -1005,6 +1005,7 @@ def details(
     *,
     work_directory_id: str | None = None,
     binding_id: str | None = None,
+    full_index: bool = False,
 ) -> dict[str, Any]:
     _workspace(db, workspace_id)
     working_directory, directory = _working_directory(
@@ -1025,26 +1026,34 @@ def details(
         "scope": scope,
         "working_directory": working_directory,
         "work_directory": directory,
-        # Compatibility projection. PERF-03 switches browsers to the
-        # directory endpoint before this legacy full-tree response is removed
-        # from the first-read path.
-        "files": list(
-            {
-                entry["path"]: entry
-                for entry in (
-                    _scoped_workspace_entries(
-                        project_root, runtime_root, working_directory, file_roots
+        # Full indexing is retained only for explicit directory-management
+        # and reference-picker actions. Normal session and drawer hydration
+        # uses the directory endpoint, which reads direct children on demand.
+        "files": (
+            list(
+                {
+                    entry["path"]: entry
+                    for entry in (
+                        _scoped_workspace_entries(
+                            project_root, runtime_root, working_directory, file_roots
+                        )
+                        + _bound_attachment_entries(db, binding_id, project_root, runtime_root)
                     )
-                    + _bound_attachment_entries(db, binding_id, project_root, runtime_root)
-                )
-            }.values()
-        ),
-        "repositories": [
-            _repository_details(host_repository, runtime_path)
-            for host_repository, runtime_path in _scope_repositories(
-                project_root, runtime_root, file_roots
+                }.values()
             )
-        ],
+            if full_index
+            else []
+        ),
+        "repositories": (
+            [
+                _repository_details(host_repository, runtime_path)
+                for host_repository, runtime_path in _scope_repositories(
+                    project_root, runtime_root, file_roots
+                )
+            ]
+            if full_index
+            else []
+        ),
         "runtime": {"container_id": container_short_id},
         "ide": {
             "workspace_path": working_directory,

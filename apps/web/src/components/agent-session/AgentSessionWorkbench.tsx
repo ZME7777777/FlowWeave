@@ -1598,6 +1598,7 @@ function relativeWorkspacePath(path: string, root: string): string {
 }
 
 type WorkspaceEntry = { path: string; kind: 'file' | 'directory'; size: number; displayName?: string };
+type WorkspaceDirectoryPage = { entries: WorkspaceEntry[]; nextCursor?: string };
 type WorkspaceTreeNode = WorkspaceEntry & { name: string; children: WorkspaceTreeNode[] };
 
 function WorkspaceReferencePicker({ entries, root, query, onQueryChange, selectedReferences, onApply, onClose }: {
@@ -1707,7 +1708,7 @@ function workspaceTree(entries: WorkspaceEntry[], root: string): WorkspaceTreeNo
   return roots;
 }
 
-function WorkspaceFileTree({ entries, root, selectedFile, selectedPaths, expanded, onExpandedChange, onDirectoriesChange, onSelect, onSelectionChange, onActivateDirectory, onContextMenu }: { entries: WorkspaceEntry[]; root: string; selectedFile?: string; selectedPaths: Set<string>; expanded: Set<string>; onExpandedChange: (updater: (current: Set<string>) => Set<string>) => void; onDirectoriesChange: (paths: string[]) => void; onSelect: (path?: string) => void; onSelectionChange: (paths: Set<string>) => void; onActivateDirectory: (path?: string) => void; onContextMenu: (path: string, kind: 'file' | 'directory', event: ReactMouseEvent<HTMLButtonElement>) => void }) {
+function WorkspaceFileTree({ entries, root, selectedFile, selectedPaths, expanded, pagination, loadingDirectories, onExpandedChange, onDirectoriesChange, onLoadMore, onSelect, onSelectionChange, onActivateDirectory, onContextMenu }: { entries: WorkspaceEntry[]; root: string; selectedFile?: string; selectedPaths: Set<string>; expanded: Set<string>; pagination: Map<string, string | undefined>; loadingDirectories: Set<string>; onExpandedChange: (updater: (current: Set<string>) => Set<string>) => void; onDirectoriesChange: (paths: string[]) => void; onLoadMore: (parentPath?: string) => void; onSelect: (path?: string) => void; onSelectionChange: (paths: Set<string>) => void; onActivateDirectory: (path?: string) => void; onContextMenu: (path: string, kind: 'file' | 'directory', event: ReactMouseEvent<HTMLButtonElement>) => void }) {
   const nodes = useMemo(() => workspaceTree(entries, root), [entries, root]);
   const selectionAnchor = useRef<string | undefined>(undefined);
   const treeRef = useRef<HTMLDivElement>(null);
@@ -1820,9 +1821,13 @@ function WorkspaceFileTree({ entries, root, selectedFile, selectedPaths, expande
     if (node.kind === 'file') onSelect(node.path);
     else onActivateDirectory(node.path);
   };
-  const renderNodes = () => visibleNodes.map(({ node, depth }) => {
+  const renderNodes = () => visibleNodes.flatMap(({ node, depth }, index) => {
     const open = expanded.has(node.path);
-    return <div key={node.path} ref={element => { if (element) rowRefs.current.set(node.path, element); else rowRefs.current.delete(node.path); }} className={`agent-file-tree-row${selectedPaths.has(node.path) ? ' selected' : ''}`} role="treeitem" aria-expanded={node.kind === 'directory' ? open : undefined} aria-level={depth + 1} aria-selected={selectedPaths.has(node.path)} style={{ '--tree-depth': depth } as CSSProperties}>
+    const nextDepth = visibleNodes[index + 1]?.depth;
+    const hasMore = node.kind === 'directory' && open && Boolean(pagination.get(node.path));
+    const loading = loadingDirectories.has(node.path);
+    const isSubtreeEnd = nextDepth === undefined || nextDepth <= depth;
+    return [<div key={node.path} ref={element => { if (element) rowRefs.current.set(node.path, element); else rowRefs.current.delete(node.path); }} className={`agent-file-tree-row${selectedPaths.has(node.path) ? ' selected' : ''}`} role="treeitem" aria-expanded={node.kind === 'directory' ? open : undefined} aria-level={depth + 1} aria-selected={selectedPaths.has(node.path)} style={{ '--tree-depth': depth } as CSSProperties}>
       {node.kind === 'directory' ? <button type="button" className="agent-file-tree-disclosure" aria-label={`${open ? '收起' : '展开'}目录 ${node.name}`} onClick={() => onExpandedChange(current => { const next = new Set(current); if (next.has(node.path)) next.delete(node.path); else next.add(node.path); return next; })}>{open ? <ChevronDown size={13}/> : <ChevronRight size={13}/>}</button> : <span className="agent-tree-spacer" aria-hidden="true"/>}
       <button type="button" draggable={node.kind === 'file'} className={`agent-file-tree-item ${node.kind}${selectedFile === node.path ? ' active' : ''}`} onDragStart={event => {
         if (node.kind !== 'file') return;
@@ -1833,7 +1838,7 @@ function WorkspaceFileTree({ entries, root, selectedFile, selectedPaths, expande
         <span>{node.name}</span>
         {node.kind === 'file' && <em>{node.size ? `${Math.ceil(node.size / 1024)} KB` : '0 KB'}</em>}
       </button>
-    </div>;
+    </div>, hasMore && isSubtreeEnd ? <button key={`${node.path}:more`} type="button" className="agent-file-tree-load-more" style={{ '--tree-depth': depth + 1 } as CSSProperties} disabled={loading} onClick={() => onLoadMore(node.path)}>{loading ? '正在加载…' : '加载更多'}</button> : null];
   });
   return <div ref={treeRef} className={`agent-file-tree${stickyDirectoryPaths.length ? ' has-sticky-path' : ''}`} role="tree" aria-label="工作区目录树" onScroll={updateStickyDirectories}>
     {stickyDirectoryPaths.length > 0 && <div ref={stickyOverlayRef} className="agent-file-tree-sticky-path" aria-label="当前文件所在目录">{stickyDirectoryPaths.map((path, depth) => {
@@ -1845,6 +1850,7 @@ function WorkspaceFileTree({ entries, root, selectedFile, selectedPaths, expande
       </div>;
     })}</div>}
     {nodes.length ? renderNodes() : <p>当前目录没有可展示的文件。</p>}
+    {pagination.get('') && <button type="button" className="agent-file-tree-load-more" disabled={loadingDirectories.has('')} onClick={() => onLoadMore()}>{loadingDirectories.has('') ? '正在加载…' : '加载更多'}</button>}
     {stickyOverlayHeight > 0 && <div className="agent-file-tree-sticky-spacer" aria-hidden="true" style={{ height: stickyOverlayHeight }}/> }
   </div>;
 }
@@ -1862,7 +1868,7 @@ function WorkDirectoryCreator({ workspaceId, onClose, onCreated }: {
   useEscapeClose(() => { if (!create.isPending) onClose(); });
   const detailsQuery = useQuery({
     queryKey: sessionQueryKey(host, 'work-directory-creation', workspaceId),
-    queryFn: () => api.workspaceDetails(workspaceId),
+    queryFn: () => api.workspaceDetails(workspaceId, { fullIndex: true }),
     retry: (count, error) => !(error instanceof ApiError && error.status < 500) && count < 2,
   });
   const create = useMutation({
@@ -2340,13 +2346,66 @@ function WorkspaceDrawer({
     retry: (count, error) => !(error instanceof ApiError && error.status < 500) && count < 2,
   });
   const details = detailsQuery.data;
+  const directoryQueryKey = sessionQueryKey(host, 'workspace-directory', workspaceId, bindingId, workDirectoryId);
+  const rootDirectoryQuery = useQuery({
+    queryKey: [...directoryQueryKey, 'root'],
+    queryFn: () => api.workspaceDirectory(workspaceId, { bindingId, workDirectoryId }),
+    enabled: Boolean(open && scopeState.activeTabId === 'files'),
+    retry: (count, error) => !(error instanceof ApiError && error.status < 500) && count < 2,
+  });
+  const [directoryPages, setDirectoryPages] = useState<Map<string, WorkspaceDirectoryPage>>(() => new Map());
+  const loadingDirectories = useRef(new Set<string>());
+  const [loadingDirectoryPaths, setLoadingDirectoryPaths] = useState<Set<string>>(() => new Set());
+  const loadDirectory = useCallback(async (parentPath?: string) => {
+    const key = parentPath ?? '';
+    if (loadingDirectories.current.has(key)) return;
+    const current = directoryPages.get(key);
+    if (current && !current.nextCursor) return;
+    loadingDirectories.current.add(key);
+    setLoadingDirectoryPaths(paths => new Set(paths).add(key));
+    try {
+      const page = await api.workspaceDirectory(workspaceId, { bindingId, workDirectoryId, parentPath, cursor: current?.nextCursor });
+      setDirectoryPages(pages => {
+        const next = new Map(pages);
+        const previous = next.get(key);
+        next.set(key, { entries: [...(previous?.entries ?? []), ...page.entries], nextCursor: page.next_cursor ?? undefined });
+        return next;
+      });
+    } catch (reason) {
+      setPanelError(reason instanceof Error ? reason.message : '读取目录失败');
+    } finally {
+      loadingDirectories.current.delete(key);
+      setLoadingDirectoryPaths(paths => { const next = new Set(paths); next.delete(key); return next; });
+    }
+  }, [api, bindingId, directoryPages, workDirectoryId, workspaceId]);
   useEffect(() => {
     // A directory belongs to the currently authorized session scope. Never
     // reuse a selection after switching conversations or work directories.
     setActiveDirectory(undefined);
     setSelectedEntryPaths(new Set());
     setGitContextPath(undefined);
+    setDirectoryPages(new Map());
+    loadingDirectories.current.clear();
+    setLoadingDirectoryPaths(new Set());
   }, [bindingId, details?.working_directory, workDirectoryId]);
+  useEffect(() => {
+    if (!rootDirectoryQuery.data) return;
+    setDirectoryPages(pages => {
+      const next = new Map(pages);
+      next.set('', { entries: rootDirectoryQuery.data.entries, nextCursor: rootDirectoryQuery.data.next_cursor ?? undefined });
+      return next;
+    });
+  }, [rootDirectoryQuery.data, rootDirectoryQuery.dataUpdatedAt]);
+  useEffect(() => {
+    if (!details || !open || scopeState.activeTabId !== 'files') return;
+    const missing = [...expandedFilePaths].filter(path => !directoryPages.has(path));
+    if (!missing.length) return;
+    let cancelled = false;
+    void Promise.all(missing.map(async parentPath => {
+      if (!cancelled) await loadDirectory(parentPath);
+    }));
+    return () => { cancelled = true; };
+  }, [details, directoryPages, expandedFilePaths, loadDirectory, open, scopeState.activeTabId]);
   const selectedFile = scopeState.selectedFile;
   const selectedAttachment = attachments.find(item => item.path === selectedFile);
   const selectedMimeType = selectedAttachment?.mime_type ?? '';
@@ -2358,12 +2417,15 @@ function WorkspaceDrawer({
     retry: false,
   });
   const visibleFiles = useMemo(() => {
-    const files = new Map<string, WorkspaceEntry>((details?.files ?? []).map(file => [file.path, file]));
+    const files = new Map<string, WorkspaceEntry>();
+    for (const page of directoryPages.values()) {
+      for (const entry of page.entries) files.set(entry.path, entry);
+    }
     for (const attachment of attachments) {
       files.set(attachment.path, { path: attachment.path, kind: 'file', size: attachment.byte_size, displayName: attachment.filename });
     }
     return [...files.values()];
-  }, [attachments, details?.files]);
+  }, [attachments, directoryPages]);
   const openFiles = useCallback((path?: string) => {
     updateScope(current => ({
       ...current,
@@ -2480,6 +2542,8 @@ function WorkspaceDrawer({
       if (items.some(item => selectedFile === item.path || selectedFile?.startsWith(`${item.path}/`))) updateScope(current => ({ ...current, selectedFile: undefined }));
       setSelectedEntryPaths(new Set());
       await queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'workspace-details', workspaceId, bindingId, workDirectoryId) });
+      setDirectoryPages(new Map());
+      await queryClient.invalidateQueries({ queryKey: directoryQueryKey });
     } catch (reason) { setPanelError(reason instanceof Error ? reason.message : '删除文件失败'); }
   };
   const createEntry = async (parentPath: string, kind: 'FILE' | 'DIRECTORY') => {
@@ -2490,6 +2554,8 @@ function WorkspaceDrawer({
     try {
       await api.createFile(workspaceId, parentPath, name, kind, { bindingId, workDirectoryId });
       await queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'workspace-details', workspaceId, bindingId, workDirectoryId) });
+      setDirectoryPages(new Map());
+      await queryClient.invalidateQueries({ queryKey: directoryQueryKey });
     } catch (reason) { setPanelError(reason instanceof Error ? reason.message : '创建失败'); }
   };
   const createAtActiveDirectory = (kind: 'FILE' | 'DIRECTORY') => {
@@ -2623,7 +2689,7 @@ function WorkspaceDrawer({
           {scopeState.tabs.some(tab => tab.kind === 'files') && <section className={`agent-workspace-files ${scopeState.activeTabId === 'files' ? 'active' : ''}${gitSidebarVisible ? ' fullscreen-git' : ''}`} style={{ '--file-tree-width': `${fileTreeWidth}px` } as CSSProperties}>
             <div className="agent-file-tree-pane">
               <header className="agent-file-tree-toolbar"><span>{selectedEntryPaths.size ? `已选 ${selectedEntryPaths.size} 项` : '文件'}</span><div className="agent-file-tree-actions"><button type="button" title="新建文件" aria-label="新建文件" onClick={() => createAtActiveDirectory('FILE')}><FileCode2 size={13}/></button><button type="button" title="新建目录" aria-label="新建目录" onClick={() => createAtActiveDirectory('DIRECTORY')}><FolderPlus size={13}/></button><button type="button" className={`agent-file-tree-expand-toggle${allFileDirectoriesExpanded ? ' expanded' : ''}`} title={allFileDirectoriesExpanded ? '全部收起' : '全部展开'} aria-label={allFileDirectoriesExpanded ? '全部收起目录' : '全部展开目录'} disabled={!fileDirectoryPaths.length} onClick={() => setExpandedFilePaths(allFileDirectoriesExpanded ? new Set() : new Set(fileDirectoryPaths))}>{allFileDirectoriesExpanded ? <ChevronRight size={13}/> : <ChevronDown size={13}/>}</button><button type="button" className="danger" title="删除选中项" aria-label="删除选中项" disabled={!selectedEntryRoots.length} onClick={() => void removeEntries(selectedEntryRoots.map(path => ({ path, kind: visibleFiles.find(item => item.path === path)?.kind ?? 'directory' })))}><Trash2 size={13}/></button></div></header>
-              <WorkspaceFileTree entries={visibleFiles} root={details.working_directory} selectedFile={selectedFile} selectedPaths={selectedEntryPaths} expanded={expandedFilePaths} onExpandedChange={setExpandedFilePaths} onDirectoriesChange={setFileDirectoryPaths} onSelect={path => { setActiveDirectory(undefined); selectFile(path); }} onSelectionChange={setSelectedEntryPaths} onActivateDirectory={path => { setActiveDirectory(path); setGitContextPath(path); }} onContextMenu={(path, kind, event) => { setEntryMenu({ path, kind, x: Math.min(event.clientX, window.innerWidth - 190), y: Math.min(event.clientY, window.innerHeight - 190) }); }}/>
+              <WorkspaceFileTree entries={visibleFiles} root={details.working_directory} selectedFile={selectedFile} selectedPaths={selectedEntryPaths} expanded={expandedFilePaths} pagination={new Map([...directoryPages].map(([path, page]) => [path, page.nextCursor]))} loadingDirectories={loadingDirectoryPaths} onExpandedChange={setExpandedFilePaths} onDirectoriesChange={setFileDirectoryPaths} onLoadMore={parentPath => { void loadDirectory(parentPath); }} onSelect={path => { setActiveDirectory(undefined); selectFile(path); }} onSelectionChange={setSelectedEntryPaths} onActivateDirectory={path => { setActiveDirectory(path); setGitContextPath(path); }} onContextMenu={(path, kind, event) => { setEntryMenu({ path, kind, x: Math.min(event.clientX, window.innerWidth - 190), y: Math.min(event.clientY, window.innerHeight - 190) }); }}/>
             </div>
             <div className="agent-file-tree-resizer" role="separator" aria-label="调整文件目录宽度" aria-orientation="vertical" onPointerDown={startFileTreeResize}/>
             <div className="agent-file-preview">{candidatePreview ? <>
@@ -2823,23 +2889,26 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   // conversation, including legacy conversations whose list projection only
   // reports the shared project root.  Keep transcript file paths scoped to
   // this authoritative directory.
-  const selectedWorkspaceDetailsQuery = useQuery({
-    queryKey: sessionQueryKey(host, 'selected-workspace-details', workspace?.id, selected?.id),
-    queryFn: () => api.workspaceDetails(workspace!.id, { bindingId: selected!.id }),
-    enabled: Boolean(workspace && selected),
-    retry: (count, error) => !(error instanceof ApiError && error.status < 500) && count < 2,
-  });
-  const composerWorkspaceDetailsQuery = useQuery({
-    queryKey: sessionQueryKey(host, 'composer-workspace-details', workspace?.id, selected?.id, conversationDraft?.workDirectoryId),
-    queryFn: () => api.workspaceDetails(workspace!.id, { bindingId: selected?.id, workDirectoryId: selected ? undefined : conversationDraft?.workDirectoryId }),
+  const activeWorkspaceOptions = selected
+    ? { bindingId: selected.id }
+    : { workDirectoryId: conversationDraft?.workDirectoryId };
+  const activeWorkspaceDetailsQuery = useQuery({
+    queryKey: sessionQueryKey(host, 'workspace-details', workspace?.id, activeWorkspaceOptions.bindingId, activeWorkspaceOptions.workDirectoryId),
+    queryFn: () => api.workspaceDetails(workspace!.id, activeWorkspaceOptions),
     enabled: Boolean(workspace && (selected || conversationDraft)),
     retry: (count, error) => !(error instanceof ApiError && error.status < 500) && count < 2,
   });
+  const workspaceReferenceIndexQuery = useQuery({
+    queryKey: sessionQueryKey(host, 'workspace-reference-index', workspace?.id, activeWorkspaceOptions.bindingId, activeWorkspaceOptions.workDirectoryId),
+    queryFn: () => api.workspaceDetails(workspace!.id, { ...activeWorkspaceOptions, fullIndex: true }),
+    enabled: Boolean(workspace && workspaceReferencePickerOpen && (selected || conversationDraft)),
+    retry: (count, error) => !(error instanceof ApiError && error.status < 500) && count < 2,
+  });
   useEffect(() => {
-    if (selected && selectedWorkspaceDetailsQuery.data) {
+    if (selected && activeWorkspaceDetailsQuery.data) {
       markSessionPerformance('workspace-ready');
     }
-  }, [selected, selectedWorkspaceDetailsQuery.data]);
+  }, [activeWorkspaceDetailsQuery.data, selected]);
   const updateUnreadConversationIds = useCallback((update: (current: Set<string>) => Set<string>) => {
     setUnreadConversationIds(current => {
       const next = update(current);
@@ -3982,7 +4051,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   // still carrying its authoritative working_directory.  Prefer it over the
   // shared project root so paths in its transcript stay relative to the
   // directory where that conversation actually ran.
-  const activeWorkspaceRoot = selectedWorkspaceDetailsQuery.data?.working_directory
+  const activeWorkspaceRoot = activeWorkspaceDetailsQuery.data?.working_directory
     ?? selected?.working_directory
     ?? (selected?.work_directory_id
       ? workDirectories.find(directory => directory.id === selected.work_directory_id)?.current_version.working_directory
@@ -3992,7 +4061,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       : undefined)
     ?? workDirectoriesQuery.data?.root.working_directory;
   const rootWorkspaceDirectory = workDirectoriesQuery.data?.root.working_directory;
-  const currentWorkspaceName = selectedWorkspaceDetailsQuery.data?.scope.display_name
+  const currentWorkspaceName = activeWorkspaceDetailsQuery.data?.scope.display_name
     ?? (selected?.work_directory_id
       ? workDirectories.find(directory => directory.id === selected.work_directory_id)?.display_name
       : undefined)
@@ -4087,7 +4156,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         {condensationConfirmationOpen && selected && <section className="agent-condensation-confirmation" aria-label="确认低用量上下文压缩" role="alertdialog" aria-modal="false">
           <ShieldAlert size={17}/><div><b>当前上下文用量较低</b><p>Token {contextProgress?.usedLabel} / {contextProgress?.windowLabel}（{contextProgress?.percentage}%），事件 {activeEventCount.toLocaleString()} / {eventLimit.toLocaleString()}（{eventProgress}%）。现在压缩可能没有足够的可压缩区间，并且仍会调用摘要模型。</p><footer><button type="button" onClick={() => setCondensationConfirmationOpen(false)}>取消</button><button type="button" className="primary" onClick={() => condense.mutate()}>仍然压缩</button></footer></div>
         </section>}
-        <ComposerCapabilityAutocomplete draft={draft} suggestions={composerSuggestions} placeholder={pendingConfirmation ? '请先处理上方工具确认…' : turnState === 'paused' ? '已暂停：可继续，也可编辑上方消息重新思考…' : features.capabilities ? '给 Agent 发消息…（Enter 加入队列，⌘/Ctrl+Enter 直接发送）' : '给 Agent 发消息…'} disabled={!canCompose || Boolean(pendingConfirmation) || bootstrap.isPending || condense.isPending || migrateStreaming.isPending || Boolean(pendingMigratedSend) || turnState === 'pausing' || turnState === 'resuming'} onDraftChange={setDraft} onPaste={event => { if (!features.attachments || !composerScope) return; const files = transferredFiles(event.clipboardData); if (!files.length) return; event.preventDefault(); for (const file of files) upload.mutate({ file, scope: composerScope }); }} onDropFiles={features.attachments && composerScope ? files => { for (const file of files) upload.mutate({ file, scope: composerScope }); } : undefined} onDropWorkspaceFiles={paths => { const entries = composerWorkspaceDetailsQuery.data?.files ?? []; setWorkspaceReferences(current => [...current, ...paths.flatMap(path => { const entry = entries.find(item => item.path === path); return entry && !current.some(reference => reference.path === path) ? [{ path, kind: entry.kind, display_name: path.split('/').filter(Boolean).pop() ?? path }] : []; })]); }} onSubmit={enqueueDraft} onDirectSubmit={sendDraftDirectly} onManageCapabilities={features.capabilities && (selected || features.draftCapabilitySelection) ? () => setCapabilityManagerOpen(true) : undefined} onNativeAction={action => { if (action === 'CONDENSE' && selected && (turnState === 'idle' || turnState === 'paused') && !pendingConfirmation && !condense.isPending) requestManualCompaction(); }} onWorkspaceReferenceSelected={() => { setWorkspaceReferenceQuery(''); setWorkspaceReferencePickerOpen(true); }}/>
+        <ComposerCapabilityAutocomplete draft={draft} suggestions={composerSuggestions} placeholder={pendingConfirmation ? '请先处理上方工具确认…' : turnState === 'paused' ? '已暂停：可继续，也可编辑上方消息重新思考…' : features.capabilities ? '给 Agent 发消息…（Enter 加入队列，⌘/Ctrl+Enter 直接发送）' : '给 Agent 发消息…'} disabled={!canCompose || Boolean(pendingConfirmation) || bootstrap.isPending || condense.isPending || migrateStreaming.isPending || Boolean(pendingMigratedSend) || turnState === 'pausing' || turnState === 'resuming'} onDraftChange={setDraft} onPaste={event => { if (!features.attachments || !composerScope) return; const files = transferredFiles(event.clipboardData); if (!files.length) return; event.preventDefault(); for (const file of files) upload.mutate({ file, scope: composerScope }); }} onDropFiles={features.attachments && composerScope ? files => { for (const file of files) upload.mutate({ file, scope: composerScope }); } : undefined} onDropWorkspaceFiles={paths => setWorkspaceReferences(current => [...current, ...paths.flatMap(path => current.some(reference => reference.path === path) ? [] : [{ path, kind: 'file' as const, display_name: path.split('/').filter(Boolean).pop() ?? path }])])} onSubmit={enqueueDraft} onDirectSubmit={sendDraftDirectly} onManageCapabilities={features.capabilities && (selected || features.draftCapabilitySelection) ? () => setCapabilityManagerOpen(true) : undefined} onNativeAction={action => { if (action === 'CONDENSE' && selected && (turnState === 'idle' || turnState === 'paused') && !pendingConfirmation && !condense.isPending) requestManualCompaction(); }} onWorkspaceReferenceSelected={() => { setWorkspaceReferenceQuery(''); setWorkspaceReferencePickerOpen(true); }}/>
         {features.attachments && attachments.length > 0 && <div className="agent-attachments">{attachments.map(item => <span key={item.path}><button type="button" className="agent-attachment-open" title={`在右侧查看附件：${item.filename}`} onClick={() => openAttachmentInDrawer(item)}>{item.image_data_url && <img src={item.image_data_url} alt=""/>}<em>{item.filename}</em></button><button type="button" className="agent-attachment-remove" aria-label={`移除附件 ${item.filename}`} onClick={() => setAttachments(all => all.filter(candidate => candidate.path !== item.path))}>×</button></span>)}</div>}
         {references.length > 0 && <div className="agent-attachments agent-conversation-references" aria-label="已添加的会话引用">{references.map((reference, index) => <span key={`${reference.eventId}:${reference.content}`}><span className="agent-attachment-open" title={reference.content}><Quote size={14}/><em>{`会话引用 ${index + 1}`}</em></span><button type="button" className="agent-attachment-remove" aria-label={`移除会话引用 ${index + 1}`} onClick={() => setReferences(current => current.filter(item => item !== reference))}>×</button></span>)}</div>}
         {workspaceReferences.length > 0 && <div className="agent-attachments agent-workspace-references" aria-label="已添加的工作区引用">{workspaceReferences.map(reference => <span key={workspaceReferenceKey(reference)} title={reference.path}><span className="agent-attachment-open">{reference.kind === 'directory' ? <Folder size={14}/> : <FileCode2 size={14}/>}<em><b>{reference.display_name}</b><small>{workspaceReferenceLabel(reference)}</small></em></span><button type="button" className="agent-attachment-remove" aria-label={'移除工作区引用 ' + reference.display_name} onClick={() => setWorkspaceReferences(current => current.filter(item => workspaceReferenceKey(item) !== workspaceReferenceKey(reference)))}>×</button></span>)}</div>}
@@ -4113,8 +4182,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     </section>
     <WorkspaceDrawer open={drawerOpen} onOpen={() => setDrawerOpen(true)} onClose={() => { setFileSelectionReference(undefined); setDrawerOpen(false); }} onAddFileSelection={(path, selection) => setWorkspaceReferences(current => current.some(reference => reference.path === path && JSON.stringify(reference.selection) === JSON.stringify(selection)) ? current : [...current, { path, kind: 'file', display_name: path.split('/').filter(Boolean).pop() ?? path, selection }])} highlightedFileSelection={fileSelectionReference} workspaceId={workspace.id} scopeKey={selected?.id ?? pendingCreatedId ?? conversationDraft?.id ?? 'workspace-root'} migrateFromScopeKey={workspaceScopeMigration} bindingId={selected?.id} workDirectoryId={selected ? undefined : conversationDraft?.workDirectoryId} conversation={selected} attachments={drawerAttachments} sources={drawerSources} attachmentRequest={attachmentRequest} candidatePreviewRequest={candidatePreviewRequest} reviewChanges={reviewChanges} reviewRequestId={reviewRequestId} sessionChanges={sessionFileChanges} onReviewChanges={openChangesReview} runtimeAvailable={Boolean((runtime?.terminal_available ?? runtime?.write_available) && (!features.terminalRequiresConversation || selected))} runtimeTasks={runtimeTasks} agentDefinitions={agentDefinitionAssets} sessionStopped={sessionStopped}/>
     {workspaceReferencePickerOpen && <WorkspaceReferencePicker
-      entries={composerWorkspaceDetailsQuery.data?.files ?? []}
-      root={composerWorkspaceDetailsQuery.data?.working_directory ?? activeWorkspaceRoot ?? ''}
+      entries={workspaceReferenceIndexQuery.data?.files ?? []}
+      root={workspaceReferenceIndexQuery.data?.working_directory ?? activeWorkspaceRoot ?? ''}
       query={workspaceReferenceQuery}
       onQueryChange={setWorkspaceReferenceQuery}
       selectedReferences={workspaceReferences}

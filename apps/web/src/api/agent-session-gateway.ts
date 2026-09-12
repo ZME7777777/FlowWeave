@@ -23,6 +23,7 @@ import type {
   AgentSessionWorkDirectory,
   AgentSessionWorkDirectoryList,
   AgentSessionWorkspaceDetails,
+  AgentSessionWorkspaceDirectory,
   CapabilityAsset,
   CapabilityCollection,
   ModelProvider,
@@ -39,6 +40,13 @@ export type AgentSessionFileOptions = {
   bindingId?: AgentSessionBindingId;
   workDirectoryId?: AgentSessionWorkDirectoryId;
   download?: boolean;
+};
+export type AgentSessionWorkspaceOptions = Omit<AgentSessionFileOptions, 'download'> & {
+  fullIndex?: boolean;
+};
+export type AgentSessionDirectoryOptions = Omit<AgentSessionFileOptions, 'download'> & {
+  parentPath?: string;
+  cursor?: string;
 };
 export type AgentSessionTerminalOptions = Omit<AgentSessionFileOptions, 'download'> & {
   terminalInstanceId: string;
@@ -84,7 +92,8 @@ export interface AgentSessionApi {
   readonly mcpReadiness: (hostId: AgentSessionHostId, capabilityVersionId: string) => Promise<AgentSessionMcpReadiness>;
   readonly replaceHostCapabilities: (hostId: AgentSessionHostId, capabilityVersionIds: string[]) => Promise<AgentSessionCapability[]>;
   readonly addConversationCapability: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, capabilityVersionId: string) => Promise<AgentConversation>;
-  readonly workspaceDetails: (hostId: AgentSessionHostId, options?: Omit<AgentSessionFileOptions, 'download'>) => Promise<AgentSessionWorkspaceDetails>;
+  readonly workspaceDetails: (hostId: AgentSessionHostId, options?: AgentSessionWorkspaceOptions) => Promise<AgentSessionWorkspaceDetails>;
+  readonly workspaceDirectory: (hostId: AgentSessionHostId, options?: AgentSessionDirectoryOptions) => Promise<AgentSessionWorkspaceDirectory>;
   readonly gitLog: (hostId: AgentSessionHostId, repositoryPath: string, options?: Omit<AgentSessionFileOptions, 'download'>) => Promise<WorkspaceGitLog>;
   readonly gitCommit: (hostId: AgentSessionHostId, repositoryPath: string, commit: string, options?: Omit<AgentSessionFileOptions, 'download'>) => Promise<WorkspaceGitCommitDetails>;
   readonly gitDiff: (hostId: AgentSessionHostId, repositoryPath: string, commit: string, path: string, options?: Omit<AgentSessionFileOptions, 'download'>) => Promise<WorkspaceGitFileDiff>;
@@ -146,6 +155,7 @@ export const agentWorkspaceSessionGateway: AgentSessionGateway = {
     replaceHostCapabilities: api.replaceAgentWorkspaceCapabilities,
     addConversationCapability: api.addAgentConversationCapability,
     workspaceDetails: api.agentWorkspaceDetails,
+    workspaceDirectory: api.agentWorkspaceDirectory,
     gitLog: api.agentWorkspaceGitLog,
     gitCommit: api.agentWorkspaceGitCommit,
     gitDiff: api.agentWorkspaceGitDiff,
@@ -210,7 +220,9 @@ export function flowNodeSessionGateway(
       replaceHostCapabilities: () => Promise.resolve([]),
       addConversationCapability: (_hostId, bindingId, capabilityVersionId) => nodeSessionApi.addCapability(flowRunId, attemptId, bindingId, capabilityVersionId),
       workspaceDetails: (_hostId, options) =>
-        nodeSessionApi.workspace(flowRunId, attemptId, options?.bindingId, options?.workDirectoryId),
+        nodeSessionApi.workspace(flowRunId, attemptId, options?.bindingId, options?.workDirectoryId, options?.fullIndex),
+      workspaceDirectory: (_hostId, options) =>
+        nodeSessionApi.workspaceDirectory(flowRunId, attemptId, options?.bindingId, options?.workDirectoryId, options?.parentPath, options?.cursor),
       gitLog: (_hostId, repositoryPath, options) =>
         nodeSessionApi.gitLog(flowRunId, attemptId, repositoryPath, options?.bindingId, options?.workDirectoryId),
       gitCommit: (_hostId, repositoryPath, commit, options) =>

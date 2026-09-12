@@ -319,6 +319,7 @@ async def get_agent_workspace_details(
     db: Db,
     work_directory_id: str | None = Query(default=None),
     binding_id: str | None = Query(default=None),
+    full_index: bool = Query(default=False),
 ) -> dict[str, Any]:
     return await run_sync(
         db,
@@ -327,6 +328,7 @@ async def get_agent_workspace_details(
             workspace_id,
             work_directory_id=work_directory_id,
             binding_id=binding_id,
+            full_index=full_index,
         ),
     )
 
