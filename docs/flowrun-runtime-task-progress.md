@@ -101,6 +101,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-337 | FlowRun 初次供应任务耗尽后无受控恢复入口 | DONE | 增加安全、幂等且可审计的终态投递恢复。 |
 | FR-338 | Diff 源文件跳转路径、树定位与 Git 历史入口修复 | DONE | 统一当前文件路径解析、懒加载目录展开和会话／Git Diff 行级跳转。 |
 | FR-339 | Diff 跳转的规范文件坐标与逐层树定位 | DONE | 目录接口逐层确认祖先并返回规范路径后才打开预览，避免展示路径残留触发 404。 |
+| FR-340 | Git 并排 Diff 的仓库根坐标修复 | DONE | 并排视图的每行跳转使用已授权仓库绝对根加仓库内相对路径，避免遗漏 `repos/<repository>` 前缀。 |
 | OPS-01 | Docker rollback image / BuildKit cache 容量增长 | DONE | 建立带运行引用保护、dry-run 和显式确认的回收工具，并完成生产候选边界核验。 |
 | OPS-02 | Docker rollback image / BuildKit cache 容量增长 | DONE | 已按授权使用 OPS-03 tag 级路径回收，并完成生产不变量与入口验证。 |
 | OPS-03 | 多 rollback tag image 的安全回收 | DONE | 改为逐 tag、重查 Container 引用、不使用 `--force` 的回收路径。 |
@@ -194,6 +195,23 @@ Playwright Agent 工作台用例在 WebSocket 流恢复阶段超时，未将其�
 验收：Web TypeScript typecheck、ESLint、production build 与 `git diff --check` 通过。新增目标 Playwright
 断言覆盖审查 Diff 打开深层文件时的根目录／`src` 逐层请求及最终规范预览路径；本机实际执行时在该断言之前因
 登录后未出现“Agent 会话”入口而超时，未记为通过。
+
+### FR-340 Git 并排 Diff 的仓库根坐标修复 — DONE
+
+依赖：`FR-339`。
+
+目标：
+
+- Git 提交 Diff 的每一个行级跳转均须使用提交详情中经过授权的 `repository.path` 作为仓库根，并拼接 Git
+  返回的仓库内相对文件路径；不得把后者直接按工作目录根解析。
+- 会话 Diff 继续使用其工作目录坐标，不能因 Git 路径修复被改变。
+
+完成：Git 统一视图、文件级“查看源文件”和并排视图左右两侧的行点击现在共用同一
+`<repository.path>/<diff.path>` 源文件坐标。通用导航随即按既有受权目录接口逐层展开
+`repos/<repository>/...`，只在目标文件被目录接口确认后请求预览。
+
+验收：Web TypeScript typecheck、ESLint、production build 与 `git diff --check` 通过；既有目标 Playwright
+受登录入口阻断时如实记录，不将其视为通过。
 
 ### OPS-01 Docker rollback image / BuildKit cache 容量治理 — DONE
 

@@ -2214,6 +2214,11 @@ function WorkspaceGitFileDiffReview({ details, diff, onOpenSource }: { details: 
   const afterDiffRef = useRef<HTMLPreElement>(null);
   const beforeDiffContentRef = useRef<HTMLDivElement>(null);
   const lines = useMemo(() => gitDiffLines(diff.diff), [diff.diff]);
+  // Git diff paths are always relative to the repository root, whereas the
+  // shared workspace navigator expects a path in the current work-directory
+  // coordinate system. Keep the Git root here so every navigation affordance
+  // (including rows in split mode) uses the same absolute source path.
+  const sourcePath = `${details.repository.path.replace(/\/+$/, '')}/${diff.path}`;
   useEffect(() => {
     if (mode !== 'split') return;
     if (afterDiffRef.current) {
@@ -2245,9 +2250,8 @@ function WorkspaceGitFileDiffReview({ details, diff, onOpenSource }: { details: 
     const shown = side === 'before' ? line.kind !== 'addition' : line.kind !== 'deletion';
     if (!shown) return <div className="agent-diff-line empty" aria-hidden="true"/>;
     const number = side === 'before' ? line.oldLine : line.newLine;
-    return <button type="button" className={`agent-diff-line ${line.kind}`} key={`${side}:${line.oldLine ?? ''}:${line.newLine ?? ''}:${line.text}`} title={`打开源文件第 ${sourceLineForGitDiffLine(lines, index)} 行`} onClick={() => onOpenSource(diff.path, sourceLineForGitDiffLine(lines, index))}><i>{number ?? ''}</i><code>{line.text || ' '}</code></button>;
+    return <button type="button" className={`agent-diff-line ${line.kind}`} key={`${side}:${line.oldLine ?? ''}:${line.newLine ?? ''}:${line.text}`} title={`打开源文件第 ${sourceLineForGitDiffLine(lines, index)} 行`} onClick={() => onOpenSource(sourcePath, sourceLineForGitDiffLine(lines, index))}><i>{number ?? ''}</i><code>{line.text || ' '}</code></button>;
   };
-  const sourcePath = `${details.repository.path.replace(/\/+$/, '')}/${diff.path}`;
   return <section className="agent-git-file-diff-review">
     <header><div><b title={diff.path}>{diff.path}</b><small><code>{details.commit.short_id}</code><span title={details.commit.subject}>{details.commit.subject || '（无提交说明）'}</span>{diff.truncated && <em>已截断</em>}</small></div><div className="agent-changes-diff-actions"><button type="button" className="agent-open-source-file" onClick={() => onOpenSource(sourcePath, sourceLineForGitDiffLine(lines, lines.findIndex(line => line.kind !== 'deletion')))}><FileCode2 size={12}/>查看源文件</button>{lines.length > 0 && <div className="agent-diff-mode"><button type="button" className={mode === 'unified' ? 'active' : ''} onClick={() => setMode('unified')}>统一</button><button type="button" className={mode === 'split' ? 'active' : ''} onClick={() => setMode('split')}>并排</button></div>}</div></header>
     {!lines.length ? <p className="agent-git-file-diff-empty">{diff.diff ? '该文件没有可展示的文本行级 Diff。' : '该文件没有可显示的文本 Diff。'}</p> : mode === 'unified' ? <pre className="agent-diff-unified" onWheelCapture={stopDiffOverscroll}>{lines.map((line, index) => <button type="button" className={`agent-diff-line ${line.kind}`} key={`${line.oldLine ?? ''}:${line.newLine ?? ''}:${line.text}`} title={`打开源文件第 ${sourceLineForGitDiffLine(lines, index)} 行`} onClick={() => onOpenSource(sourcePath, sourceLineForGitDiffLine(lines, index))}><i>{line.oldLine ?? line.newLine ?? ''}</i><strong>{line.kind === 'addition' ? '+' : line.kind === 'deletion' ? '-' : ' '}</strong><code>{line.text || ' '}</code></button>)}</pre> : <div className="agent-diff-split"><div className="agent-diff-before"><header>修改前</header><div ref={beforeDiffContentRef} className="agent-diff-before-content">{lines.map((line, index) => renderLine(line, 'before', index))}</div></div><pre ref={afterDiffRef} onWheelCapture={stopDiffOverscroll} onScroll={event => syncBeforeDiffOffset(event.currentTarget)}><header>修改后</header>{lines.map((line, index) => renderLine(line, 'after', index))}</pre></div>}
