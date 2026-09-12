@@ -595,7 +595,6 @@ def test_controller_resolves_platform_setup_image_tag(settings, monkeypatch):
         ("/v1/sandboxes/inspect", "worker"),
         ("/v1/sandboxes/list", "worker"),
         ("/v1/environments/remove-image", "worker"),
-        ("/v1/environments/publish", "api"),
         ("/v1/gates/execute", "worker"),
         ("/v1/dependencies/build", "worker"),
         ("/v1/plugins/resolve", "worker"),
@@ -617,6 +616,21 @@ def test_controller_denies_each_single_role_operation_to_the_other_principal(
 
     assert response.status_code == 403
     assert response.json()["error"]["code"] == "CONTROLLER_FORBIDDEN"
+
+
+@pytest.mark.parametrize("headers", (_api_headers(), _headers()))
+def test_controller_allows_api_and_worker_to_publish_environment(settings, headers):
+    # A schema error proves the request passed the controller's principal gate;
+    # the actual endpoint requires a valid, managed setup resource. Publication
+    # is invoked by the durable Worker after the API has accepted the request.
+    with TestClient(create_app(_settings(settings))) as client:
+        response = client.post(
+            "/v1/environments/publish",
+            headers=headers,
+            json={"manager_scope": _SCOPE},
+        )
+
+    assert response.status_code == 422
 
 
 @pytest.mark.parametrize("headers", (_api_headers(), _headers()))

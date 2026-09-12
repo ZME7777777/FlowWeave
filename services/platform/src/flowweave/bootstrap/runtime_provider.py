@@ -1499,7 +1499,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 # during the bounded migration compatibility period. The
                 # handler independently verifies legacy ownership labels.
                 "/v1/environments/remove-legacy": frozenset({"api", "worker"}),
-                "/v1/environments/publish": frozenset({"api"}),
+                # Publication is accepted by the API but the durable image build
+                # runs from the Worker queue. Both principals must therefore use
+                # this narrowly scoped operation; the handler still verifies the
+                # managed setup resource, environment and manager scope.
+                "/v1/environments/publish": frozenset({"api", "worker"}),
                 "/v1/gates/execute": frozenset({"worker"}),
                 "/v1/dependencies/build": frozenset({"worker"}),
                 "/v1/plugins/resolve": frozenset({"worker"}),
