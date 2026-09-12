@@ -21,6 +21,9 @@ COPY --from=docker_cli /usr/local/bin/docker /usr/bin/docker
 COPY services/platform/alembic.ini ./alembic.ini
 COPY services/platform/migrations ./migrations
 COPY services/platform/src ./src
+# The Environment publish verifier must be supplied by this fixed control-plane
+# image. A user Setup image can contain an older /runtime/contract_check.py.
+COPY infra/openhands/contract_check.py ./contract_check.py
 ENV PATH="/app/.venv/bin:$PATH" PYTHONPATH=/app/src
 RUN useradd --create-home --uid 10001 flowweave \
  && mkdir -p /data/artifacts /data/workspaces \

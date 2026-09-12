@@ -1353,6 +1353,20 @@ def _probe_runtime_image(
         )
         commands = _inspect_commands(probe_name)
         runtime_provenance = _inspect_runtime_provenance(probe_name)
+        # Do not run /runtime/contract_check.py from the published image: a
+        # historical Setup image may carry its old OpenHands probe into the
+        # final Runtime filesystem. The controller's fixed probe is copied
+        # only into this disposable verification container.
+        probe_path = "/tmp/flowweave-contract-check.py"
+        _run(
+            [
+                settings.docker_binary,
+                "cp",
+                "/app/contract_check.py",
+                f"{probe_name}:{probe_path}",
+            ],
+            timeout=30,
+        )
         contract_output = _run(
             [
                 settings.docker_binary,
@@ -1365,11 +1379,12 @@ def _probe_runtime_image(
                 "OPENHANDS_BUILD_GIT_REF=30cf5832e42c71c24daa82a1a4fd5d25eb70d1b9",
                 probe_name,
                 "/agent-server/.venv/bin/python",
-                # The FlowWeave probe is inherited from the fixed base image.
-                # Do not execute a same-named file from OpenHands' source
-                # directory: that would put its ``openai`` subpackage ahead
-                # of the third-party dependency on sys.path.
-                "/runtime/contract_check.py",
+                # The FlowWeave probe was copied from the fixed controller.
+                # Do not execute a same-named file from the published image
+                # or from OpenHands' source directory: the former may be a
+                # historical probe and the latter would put its ``openai``
+                # subpackage ahead of the third-party dependency on sys.path.
+                probe_path,
             ],
             timeout=120,
         )
