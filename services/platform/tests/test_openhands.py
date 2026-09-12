@@ -1220,8 +1220,16 @@ def test_openhands_configures_codex_oauth_for_responses(openhands_settings, monk
     assert llm["base_url"] == "https://chatgpt.com/backend-api/codex"
     assert llm["api_key"] == "short-lived-access-token"
     assert llm["api_mode"] == "responses"
-    assert llm["model_canonical_name"] == "openai/codex-auto-review"
+    # Canonical name selects OpenHands prompt/capability lookup only.  The
+    # actual model above is still the one selected by the user.
+    assert llm["model_canonical_name"] == "openai/gpt-5.5-codex"
     assert llm["stream"] is True
+    assert llm["temperature"] is None
+    assert llm["max_output_tokens"] is None
+    assert llm["capability_overrides"] == {
+        "supports_responses_api": True,
+        "supports_sampling_params": False,
+    }
     assert llm["num_retries"] == 3
     assert llm["retry_multiplier"] == 2.0
     assert llm["retry_min_wait"] == 1
@@ -1232,6 +1240,19 @@ def test_openhands_configures_codex_oauth_for_responses(openhands_settings, monk
         "reasoning": {"effort": "high"},
     }
     assert llm["extra_headers"]["chatgpt-account-id"] == "account-123"
+
+
+@pytest.mark.parametrize(
+    ("model", "canonical"),
+    [
+        ("gpt-5.4", "openai/gpt-5.5-codex"),
+        ("openai/gpt-5.4-mini", "openai/gpt-5.5-codex"),
+        ("gpt-5.6-terra", "openai/gpt-5.5-codex"),
+        ("unverified-model", "openai/codex-auto-review"),
+    ],
+)
+def test_codex_canonical_name_only_recognizes_fixed_catalog_models(model, canonical):
+    assert openhands_module._codex_model_canonical_name(model) == canonical
 
 
 def test_openhands_configures_api_key_provider_for_responses(openhands_settings, monkeypatch):
@@ -1630,8 +1651,11 @@ def test_openhands_normalizes_incremental_events_and_terminal_result(
                         "id": "12",
                         "timestamp": "2026-08-26T10:00:02+00:00",
                         "source": "agent",
-                        "thought": [{"type": "text", "text": "search"}],
-                        "action": {"kind": "ThinkAction"},
+                        "llm_response_id": "response-12",
+                        "action": {
+                            "kind": "ThinkAction",
+                            "thought": "先定位现有实现，再决定最小改动范围。",
+                        },
                     },
                     {"kind": "FutureEvent", "id": "13", "source": "environment"},
                 ]
@@ -1677,7 +1701,9 @@ def test_openhands_normalizes_incremental_events_and_terminal_result(
     assert [event.cursor for event in running.events] == ["11", "12", "13"]
     assert running.events[2].payload["source_type"] == "FutureEvent"
     assert running.events[1].payload["event_name"] == "ThinkAction"
-    assert running.events[1].payload["content"] == "search"
+    assert running.events[1].payload["content"] == "先定位现有实现，再决定最小改动范围。"
+    assert running.events[1].payload["thought"] == "先定位现有实现，再决定最小改动范围。"
+    assert running.events[1].payload["llm_response_id"] == "response-12"
     assert running.events[0].payload["timestamp"] == "2026-08-26T10:00:01+00:00"
     assert running.events[1].payload["timestamp"] == "2026-08-26T10:00:02+00:00"
     assert running.cursor == "13"
@@ -2956,7 +2982,10 @@ def test_openhands_switches_llm_in_place_with_reasoning(openhands_settings, monk
     payload = captured["json"]
     assert isinstance(payload, dict)
     assert payload["llm"]["model"] == "openai/gpt-5.6-sol"
+    assert payload["llm"]["model_canonical_name"] == "openai/gpt-5.5-codex"
     assert payload["llm"]["stream"] is True
+    assert payload["llm"]["temperature"] is None
+    assert payload["llm"]["max_output_tokens"] is None
     assert payload["llm"]["num_retries"] == 3
     assert payload["llm"]["retry_multiplier"] == 2.0
     assert payload["llm"]["retry_min_wait"] == 1

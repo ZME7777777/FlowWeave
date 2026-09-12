@@ -674,11 +674,17 @@ test('top-level Agent workspace creates a direct conversation and restores its U
           ...(interrupted ? [{ id: 'paused-tool-error', event_type: 'ERROR', payload: { source_type: 'AgentErrorEvent', parent_id: 'running-user', content: 'Tool call interrupted before completion. The conversation was paused.' } }] : []),
         ] : conversations.length ? [
           { id: 'user-request', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '检查工作目录', timestamp: '2026-08-26T10:00:00Z' } },
-          { id: 'tool-request', event_type: 'TOOL_CALL', payload: { parent_id: 'user-request', action_id: 'tool-request', tool_call_id: 'terminal-call', tool_name: 'terminal', event_name: 'TerminalAction', content: '我先检查当前工作目录。', thought: '我先检查当前工作目录。', summary: '检查当前工作目录', details: { command: 'pwd' }, timestamp: '2026-08-26T10:00:02Z' } },
+          { id: 'progress-note', event_type: 'THOUGHT', payload: { source: 'agent', parent_id: 'user-request', event_name: 'ThinkAction', content: '我先确认当前工作目录，再根据现有结构判断后续改动范围。', thought: '我先确认当前工作目录，再根据现有结构判断后续改动范围。', timestamp: '2026-08-26T10:00:01Z' } },
+          { id: 'tool-request', event_type: 'TOOL_CALL', payload: { parent_id: 'progress-note', action_id: 'tool-request', tool_call_id: 'terminal-call', tool_name: 'terminal', event_name: 'TerminalAction', content: '我先检查当前工作目录。', thought: '我先检查当前工作目录。', summary: '检查当前工作目录', details: { command: 'pwd' }, timestamp: '2026-08-26T10:00:02Z' } },
           { id: 'tool-result', event_type: 'TOOL_RESULT', payload: { parent_id: 'unrelated-file-action', action_id: 'tool-request', tool_call_id: 'terminal-call', tool_name: 'terminal', event_name: 'TerminalObservation', content: '/workspace', details: { command: 'pwd', exit_code: 0, is_error: false }, timestamp: '2026-08-26T10:00:03Z' } },
           { id: 'file-action', event_type: 'TOOL_CALL', payload: { parent_id: 'tool-result', action_id: 'file-action', tool_call_id: 'file-call', tool_name: 'file_editor', event_name: 'FileEditorAction', summary: '更新运行配置', details: { command: 'str_replace', path: '/runtime/workspace/project/src/config.ts', old_str: 'const mode = "old"', new_str: 'const mode = "new"' }, timestamp: '2026-08-26T10:00:03.200Z' } },
           { id: 'file-result', event_type: 'TOOL_RESULT', payload: { parent_id: 'file-action', action_id: 'file-action', tool_call_id: 'file-call', tool_name: 'file_editor', event_name: 'FileEditorObservation', content: 'The file was edited successfully.', details: { command: 'str_replace', path: '/runtime/workspace/project/src/config.ts', is_error: false }, timestamp: '2026-08-26T10:00:03.500Z' } },
-          { id: 'state-empty', event_type: 'STATE', payload: { parent_id: 'file-result', timestamp: '2026-08-26T10:00:04Z' } },
+          { id: 'failed-command-action', event_type: 'TOOL_CALL', payload: { parent_id: 'file-result', action_id: 'failed-command-action', tool_call_id: 'failed-command-call', tool_name: 'terminal', event_name: 'TerminalAction', llm_response_id: 'response-1', summary: '验证失败命令', details: { command: 'false' }, timestamp: '2026-08-26T10:00:03.700Z' } },
+          { id: 'failed-command-result', event_type: 'TOOL_RESULT', payload: { parent_id: 'failed-command-action', action_id: 'failed-command-action', tool_call_id: 'failed-command-call', tool_name: 'terminal', event_name: 'TerminalObservation', content: 'command failed', details: { command: 'false', exit_code: 1, is_error: false }, timestamp: '2026-08-26T10:00:03.800Z' } },
+          { id: 'subagent-action', event_type: 'TOOL_CALL', payload: { parent_id: 'failed-command-result', action_id: 'subagent-action', tool_call_id: 'subagent-call', tool_name: 'task', event_name: 'TaskAction', runtime_task: { phase: 'REQUESTED', action_event_id: 'subagent-action', tool_call_id: 'subagent-call', subagent_type: 'reviewer', description: '检查子任务边界' }, timestamp: '2026-08-26T10:00:03.900Z' } },
+          { id: 'subagent-command-action', event_type: 'TOOL_CALL', payload: { parent_id: 'subagent-action', action_id: 'subagent-command-action', tool_call_id: 'subagent-command-call', tool_name: 'terminal', event_name: 'TerminalAction', llm_response_id: 'response-1', details: { command: 'git status --short' }, timestamp: '2026-08-26T10:00:03.950Z' } },
+          { id: 'subagent-command-result', event_type: 'TOOL_RESULT', payload: { parent_id: 'subagent-command-action', action_id: 'subagent-command-action', tool_call_id: 'subagent-command-call', tool_name: 'terminal', event_name: 'TerminalObservation', content: 'clean', details: { command: 'git status --short', exit_code: 0, is_error: false }, timestamp: '2026-08-26T10:00:03.975Z' } },
+          { id: 'state-empty', event_type: 'STATE', payload: { parent_id: 'subagent-command-result', timestamp: '2026-08-26T10:00:04Z' } },
           { id: 'agent-reply', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'state-empty', content: '工作区已就绪。', timestamp: '2026-08-26T10:02:19Z' } },
           { id: 'direct-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'agent-reply', content: '直接回答 https://input.example.test/brief', attachments: [{ filename: '需求截图.png', mime_type: 'image/png', byte_size: 128, path: '/runtime/workspace/project/uploads/source-image.png', image_data_url: 'data:image/png;base64,iVBORw==' }], timestamp: '2026-08-26T10:03:00Z' } },
           { id: 'direct-reply', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'direct-user', content: '直接回复完成。更多信息见 www.output.example.test/result', timestamp: '2026-08-26T10:03:02Z' } },
@@ -1036,7 +1042,9 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(fileDetail.getByText('const mode = "old"', { exact: true })).toBeVisible();
   await expect(fileDetail.getByText('const mode = "new"', { exact: true })).toBeVisible();
   await expect(fileDetail.getByText('The file was edited successfully.', { exact: true })).toBeVisible();
-  await expect(completedProcess.locator('.conversation-activity-row.tool')).toHaveCount(2);
+  await expect(completedProcess.locator('.conversation-activity-row.tool')).toHaveCount(5);
+  await expect(completedProcess.getByRole('button', { name: '查看执行详情：运行失败 false' })).toBeVisible();
+  await expect(completedProcess.getByText('子智能体 reviewer · 检查子任务边界')).toBeVisible();
   const messageRuler = page.getByRole('navigation', { name: '用户消息导航' });
   await expect(messageRuler).toBeVisible();
   await expect(page.locator('.message-position-navigator, .message-position-preview')).toHaveCount(0);
@@ -1093,9 +1101,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(trackerDetail.getByText('等待构建完成后核对结果。')).toBeVisible();
   await expect(trackerDetail.getByText('原始操作')).toHaveCount(0);
   await expect(trackerDetail.getByText('结果信息')).toHaveCount(0);
-  await expect(finishTurn.getByText('我先把执行步骤整理成任务列表。')).toHaveCount(0);
-  await trackerDetail.getByText('查看 Agent 过程说明').click();
-  await expect(trackerDetail.getByText('我先把执行步骤整理成任务列表。')).toBeVisible();
+  await expect(finishTurn.getByText('我先把执行步骤整理成任务列表。')).toBeVisible();
   await expect(finishTurn.getByText('任务跟踪已完成。')).toHaveCount(1);
   const failureTurn = page.locator('.conversation-turn').filter({ hasText: '模型服务暂不可用' });
   await expect(failureTurn).toContainText('当前模型服务或其上游网关暂时不可用');
@@ -1125,12 +1131,16 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.getByText('耗时 2分钟19秒')).toBeVisible();
   await expect(page.getByText('TerminalAction')).toBeHidden();
   await page.getByText('耗时 2分钟19秒').click();
+  const initialOperationGroup = page.getByRole('button', { name: '查看操作批次：已编辑 1 个文件，并运行 1 条命令' });
+  await expect(initialOperationGroup).toBeVisible();
+  await initialOperationGroup.click();
   await expect(page.getByRole('button', { name: '查看执行详情：已运行 pwd' })).toBeVisible();
-  await expect(page.getByText('我先检查当前工作目录。')).toHaveCount(0);
-  await page.getByRole('button', { name: '查看执行详情：已运行 pwd' }).click();
-  await page.getByText('查看 Agent 过程说明').first().click();
+  await expect(page.locator('.conversation-activity-row.thought').filter({ hasText: '我先确认当前工作目录，再根据现有结构判断后续改动范围。' })).toBeVisible();
   await expect(page.getByText('我先检查当前工作目录。')).toBeVisible();
   await expect(page.getByRole('button', { name: '查看执行详情：已编辑 工作区/src/config.ts' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '查看执行详情：运行失败 false' })).toBeVisible();
+  await expect(page.getByText('子智能体 reviewer · 检查子任务边界')).toBeVisible();
+  await expect(initialOperationGroup).toContainText('2 项原生操作');
   await expect(page.getByText('TerminalAction')).toHaveCount(0);
   await expect(page.getByText('STATE')).not.toBeVisible();
   await expect(page.getByText('当前供应商：已测试模型')).toBeVisible();
@@ -1200,11 +1210,8 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     type: 'event',
     event: { id: 'live-tool', event_type: 'TOOL_CALL', payload: { parent_id: 'running-user', action_id: 'live-tool', tool_call_id: 'live-call', tool_name: 'terminal', event_name: 'TerminalAction', content: '已完成初步分析。', thought: '已完成初步分析。', summary: '核对项目上下文', details: { command: 'pwd' }, timestamp: new Date().toISOString() } },
   }));
-  await expect(activeProcess.getByText('已完成初步分析。')).toHaveCount(0);
-  await expect(activeProcess.getByText('正在运行 pwd')).toBeVisible();
-  await activeProcess.getByRole('button', { name: '查看执行详情：正在运行 pwd' }).click();
-  await activeProcess.getByText('查看 Agent 过程说明').click();
   await expect(activeProcess.getByText('已完成初步分析。')).toBeVisible();
+  await expect(activeProcess.getByText('正在运行 pwd')).toBeVisible();
   await expect(page.locator('.conversation-turn-status')).toHaveText(/正在后台执行命令/);
   await expect(activeProcess.getByText('正在核对上下文。')).toHaveCount(0);
   agentStream!.send(JSON.stringify({

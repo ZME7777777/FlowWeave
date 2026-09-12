@@ -484,7 +484,10 @@ export interface OpenHandsConversationEvent {
     parent_id?: string | null;
     action_id?: string;
     tool_call_id?: string;
+    /** Formal OpenHands completion identity that produced this action. */
+    llm_response_id?: string;
     tool_name?: string;
+    security_risk?: string;
     content?: string;
     thought?: string;
     summary?: string;
@@ -529,6 +532,10 @@ export interface AgentActivitySummary {
   stale_after_seconds: number;
   possibly_stuck: boolean;
   subagent_count: number;
+  /** Read-only native-event coverage; tool summaries are deliberately excluded. */
+  native_progress_tool_batches?: number;
+  native_progress_covered_tool_batches?: number;
+  native_progress_uncovered_tool_batches?: number;
   active_subagents: Array<{
     action_event_id: string;
     tool_call_id?: string | null;
