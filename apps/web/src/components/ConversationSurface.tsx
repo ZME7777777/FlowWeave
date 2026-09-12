@@ -1250,12 +1250,14 @@ function ConversationFailure({ item, taskControl = [] }: { item: Item; taskContr
   </article>;
 }
 
-export function ConversationSurface({ events, liveText, isGenerating, isPaused: _isPaused = false, requestStartedAt, requestSubmitting = false, rewritePending = false, condensationStatus, onRetryCondensation, onRewrite, onFork, onOpenAttachment, onOpenWorkspaceReference, onPreviewCandidateFile, onReviewChanges, workspaceRoot, onAddReference, taskControl = [], monitoring, connectionState }: {
+export function ConversationSurface({ events, liveText, isGenerating, isPaused: _isPaused = false, hydrationPending = false, requestStartedAt, requestSubmitting = false, rewritePending = false, condensationStatus, onRetryCondensation, onRewrite, onFork, onOpenAttachment, onOpenWorkspaceReference, onPreviewCandidateFile, onReviewChanges, workspaceRoot, onAddReference, taskControl = [], monitoring, connectionState }: {
   events: OpenHandsConversationEvent[];
   liveText: string;
   isGenerating: boolean;
   /** Compatibility-only input; presentation follows OpenHands terminal events. */
   isPaused?: boolean;
+  /** A browser shell is being replaced by the formal, complete event branch. */
+  hydrationPending?: boolean;
   requestStartedAt?: number;
   requestSubmitting?: boolean;
   rewritePending?: boolean;
@@ -1341,10 +1343,15 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused: 
     });
   }, []);
   const handleScroll = useCallback(() => {
+    // The browser shell contains only the newest bounded projection. Its
+    // replacement with the complete native branch can change height several
+    // times before the initial scroll settles; do not treat those synthetic
+    // scroll events as an explicit decision to leave the latest message.
+    if (hydrationPending) return;
     updateScrollPosition();
-  }, [updateScrollPosition]);
+  }, [hydrationPending, updateScrollPosition]);
   useLayoutEffect(() => {
-    if (!initialPositioned.current && (turns.length || liveText || isGenerating)) {
+    if ((hydrationPending || !initialPositioned.current) && (turns.length || liveText || isGenerating)) {
       initialPositioned.current = true;
       scrollToLatest('auto');
     } else if (!wasGenerating.current && isGenerating) {
@@ -1356,7 +1363,7 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused: 
       scrollToLatest('auto');
     }
     wasGenerating.current = isGenerating;
-  }, [isGenerating, liveText, scrollToLatest, turns.length]);
+  }, [hydrationPending, isGenerating, liveText, scrollToLatest, turns.length]);
   useLayoutEffect(() => {
     const observedContent = content.current;
     if (!observedContent || typeof ResizeObserver === 'undefined') return;
@@ -1365,10 +1372,10 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused: 
       // Lazy Markdown and content-visibility can make historical rows taller
       // after the initial restoration scroll. Keep following only when the
       // user was already at the latest message; never pull them from history.
-      if (!followLatest.current || frame !== undefined) return;
+      if ((!hydrationPending && !followLatest.current) || frame !== undefined) return;
       frame = window.requestAnimationFrame(() => {
         frame = undefined;
-        if (followLatest.current) scrollToLatest('auto');
+        if (hydrationPending || followLatest.current) scrollToLatest('auto');
       });
     });
     observer.observe(observedContent);
@@ -1376,7 +1383,7 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused: 
       observer.disconnect();
       if (frame !== undefined) window.cancelAnimationFrame(frame);
     };
-  }, [scrollToLatest]);
+  }, [hydrationPending, scrollToLatest]);
   useEffect(() => () => {
     if (copyResetTimer.current) window.clearTimeout(copyResetTimer.current);
     if (referenceHighlightStartTimer.current) window.clearTimeout(referenceHighlightStartTimer.current);
