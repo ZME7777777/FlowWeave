@@ -42,7 +42,7 @@ function RunRuntimeResourceCells({ run }: { run: FlowRunSummary }) {
   if (resource.isPending) return <><span className="run-resource-loading"><b>正在读取容器资源…</b><small>不影响运行列表加载</small></span><span className="run-host-path run-resource-loading"><b>正在读取宿主机路径…</b><small>不影响运行列表加载</small></span></>;
   const summary = resource.data?.resource;
   if (!summary) return <><span><b>容器信息暂不可用</b><small>稍后将自动重试。</small></span><span className="run-host-path"><b>路径暂不可用</b><small>稍后将自动重试。</small></span></>;
-  return <><span><b>容器 {summary.container_id} · #{summary.generation}</b><small>CPU 已用 {summary.cpu_usage_percent.toFixed(1)}%（实时）/ {summary.cpu_limit} · 内存 {formatResourceBytes(summary.memory_usage_bytes)} / {summary.memory_limit}</small></span><span className="run-host-path"><b>宿主机项目目录</b><small>{summary.host_project_mount_path ?? '路径暂不可用'}</small></span></>;
+  return <><span className="run-runtime-resource"><b>容器 {summary.container_id} · #{summary.generation}</b><small className="run-resource-metrics"><span>CPU 已用 {summary.cpu_usage_percent.toFixed(1)}%（实时）/ {summary.cpu_limit}</span><span>内存 {formatResourceBytes(summary.memory_usage_bytes)} / {summary.memory_limit}</span></small></span><span className="run-host-path"><b>宿主机项目目录</b><small>{summary.host_project_mount_path ?? '路径暂不可用'}</small></span></>;
 }
 
 function RunTerminalEnvironmentCell({ run, environments }: { run: FlowRunSummary; environments: TerminalEnvironment[] }) {

@@ -204,6 +204,18 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 
 验收结果：Web TypeScript typecheck、ESLint、production build、`git diff --check` 与任务状态唯一性通过。production build 仅报告既有 bundle 大小建议；无迁移、无 API、数据库、Runtime Provider 或 OpenHands 改动。
 
+### FR-373 FlowRun 列表运行资源完整呈现 — DONE
+
+依赖：`FR-370`。
+
+目标：运行资源列不能因表格通用的单行省略样式截断 CPU 或内存用量。容器、CPU 和内存信息须以清晰的层级分行排版；资源列在可用宽度内完整显示数值，且不改变异步资源读取、宿主机路径、API 或 Runtime 契约。
+
+验收：Web TypeScript typecheck、受影响文件 ESLint、production build、`git diff --check` 与任务状态唯一性；不修改 API、数据库、Runtime Provider 或 OpenHands。
+
+完成：资源摘要现在按容器、CPU、内存三行呈现；CPU 与内存各自占用完整可用行，且解除运行资源单元格的通用单行省略。资源列最小宽度略增，宿主机路径的独立列与异步加载、错误和空态行为不变。
+
+验收结果：Web TypeScript typecheck、ESLint、production build、`git diff --check` 与任务状态唯一性通过。production build 仅报告既有 bundle 大小建议；无迁移、无 API、数据库、Runtime Provider 或 OpenHands 改动。
+
 ### FR-371 Git 提交详情跨 Diff／文件页签保留 — DONE
 
 依赖：`FR-338`。
