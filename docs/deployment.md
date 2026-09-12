@@ -53,27 +53,37 @@ curl -I http://127.0.0.1:5173/
 
 不要用 `docker compose down -v`、删除 volume 或清空 Workspace 解决发布故障。保留日志，恢复上一个已知镜像并仅重建受影响服务。
 
-## 远端发布：192.168.91.154
+## 远端发布
 
-默认远端目标固定为 `root@192.168.91.154`，部署根为 `/opt/flowweave`。发布前必须是一个已提交的 Git commit，并首先执行预检：
+生产主机、域名、账号、路径和其他网络拓扑属于私有运行配置，严禁写入 Git、Issue、PR、构建日志或公开文档。将版本化模板复制到本地忽略目录后，再填入该环境的非凭据连接信息：
 
 ```bash
-scripts/verify-remote-deploy-154.sh --commit <commit-sha> --scope <web|platform|runtime|other>
-# 或
-make remote-deploy-preflight COMMIT=<commit-sha> SCOPE=<web|platform|runtime|other>
+mkdir -p .local
+cp deploy/remote-deploy.env.example .local/remote-deploy.env
+chmod 600 .local/remote-deploy.env
 ```
 
-预检会确认目标主机、部署目录、提交与范围。不要猜测 SSH 别名、覆盖远端 `/opt/flowweave/deploy/compose.yaml` 或 `.env`，也不要使用本地 `infra/compose.yaml` 替换服务器 Compose 文件。
+发布前必须是一个已提交的 Git commit，并首先使用本地配置执行预检：
+
+```bash
+scripts/verify-remote-deploy.sh --config .local/remote-deploy.env \
+  --commit <commit-sha> --scope <web|platform|runtime|other>
+# 或
+make remote-deploy-preflight REMOTE_DEPLOY_CONFIG=.local/remote-deploy.env \
+  COMMIT=<commit-sha> SCOPE=<web|platform|runtime|other>
+```
+
+预检会确认本地配置中的目标主机、部署目录、提交与范围。不要猜测 SSH 别名、覆盖远端 Compose 或环境文件，也不要使用本地 `infra/compose.yaml` 替换服务器 Compose 文件。
 
 ### Commit 绑定的构建与更新
 
 1. 在本地确认 `git status --short --branch`、目标 commit 和受影响测试；运行 `git diff --check`。
-2. 从目标 commit 使用 `git archive` 创建不可变源码包，记录 SHA-256，传至 `/opt/flowweave/build-src/<commit>/`，并在服务器再次校验 SHA-256。
+2. 从目标 commit 使用 `git archive` 创建不可变源码包，记录 SHA-256，传至私有配置所指向的构建目录，并在服务器再次校验 SHA-256。
 3. 在服务器从该包构建所需 `linux/amd64` 镜像，检查 `docker image inspect` 输出为 `linux/amd64`。
 4. 验证远端 Compose，再按影响范围 force-recreate。更新平台镜像时，先运行 `migration`，随后同时更新 `runtime-provider`、`api`、`stream-api`、`worker`。仅更新 Web 时只更新 `web`。
 5. 检查服务健康、带 `/flowweave/` 前缀的 API/静态资源、Agent 深层路由及 FastGPT 根登录页。
 
-服务器的持久数据包括 PostgreSQL、Artifact volume 与 `/opt/flowweave/data/workspaces` bind mount。普通发布绝不执行 `docker compose down -v`，不删除数据、不覆盖 `.env`，也不使用 `--remove-orphans` 忽略或删除 `stream-api`。
+服务器的持久数据包括 PostgreSQL、Artifact volume 与 Workspace bind mount。普通发布绝不执行 `docker compose down -v`，不删除数据、不覆盖环境文件，也不使用 `--remove-orphans` 忽略或删除 `stream-api`。
 
 公网前缀部署还须在全新浏览器上下文确认 Network 请求使用 `/flowweave/api/v1/...`，而不是被 FastGPT 接管的根路径 `/api/v1/...`。
 
@@ -84,7 +94,7 @@ make remote-deploy-preflight COMMIT=<commit-sha> SCOPE=<web|platform|runtime|oth
 远端 Docker 容量维护默认是只读审计：
 
 ```bash
-scripts/maintain-remote-docker-retention-154.sh
+scripts/maintain-remote-docker-retention.sh --config .local/remote-deploy.env
 ```
 
 任何删除操作需要明确授权、先审阅 dry-run，并遵循脚本的确认参数。不要使用 `docker system prune`、`docker image prune -a`、强制删除镜像或清理 volume/Workspace 作为日常维护手段。

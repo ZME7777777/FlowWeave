@@ -1,6 +1,7 @@
 .PHONY: install dev check web-check api-check migration-check compose-check platform-image-check sandbox-images dependency-builder-image openhands-image openhands-image-provenance openhands-contract-check openhands-smoke sandbox-smoke web-dev api-dev worker-dev e2e infra-up rebuild-deploy infra-down remote-deploy-preflight
 
 COMPOSE = docker compose --env-file .env -f infra/compose.yaml
+REMOTE_DEPLOY_CONFIG ?= .local/remote-deploy.env
 
 install:
 	pnpm install --frozen-lockfile
@@ -82,9 +83,9 @@ rebuild-deploy:
 infra-down:
 	$(COMPOSE) down
 
-# Read-only guard for the fixed remote deployment target. Usage:
+# Read-only guard for a locally configured remote deployment target. Usage:
 # make remote-deploy-preflight COMMIT=<sha> SCOPE=web
 remote-deploy-preflight:
 	@test -n "$(COMMIT)" || (echo "COMMIT is required, e.g. make remote-deploy-preflight COMMIT=abc123 SCOPE=web" >&2; exit 2)
 	@test -n "$(SCOPE)" || (echo "SCOPE is required: web, platform, runtime, or other" >&2; exit 2)
-	scripts/verify-remote-deploy-154.sh --commit "$(COMMIT)" --scope "$(SCOPE)"
+	scripts/verify-remote-deploy.sh --config "$(REMOTE_DEPLOY_CONFIG)" --commit "$(COMMIT)" --scope "$(SCOPE)"

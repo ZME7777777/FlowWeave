@@ -1,7 +1,7 @@
 name: flowweave
 x-network-plan: &network-plan
-  # These CIDRs are FlowWeave-owned only. Production must set all values in
-  # /opt/flowweave/.env after checking the target host's routed networks.
+  # These CIDRs are FlowWeave-owned only. Each deployment environment must set
+  # them in its private environment file after checking routed networks.
   # Dynamic Runtime allocation adopts FLOWWEAVE_RUNTIME_NETWORK_POOL in FR-368.
   FLOWWEAVE_CONTROL_NETWORK_SUBNET: ${FLOWWEAVE_CONTROL_NETWORK_SUBNET:?set a non-overlapping FlowWeave control subnet}
   FLOWWEAVE_DOCKER_CONTROL_NETWORK_SUBNET: ${FLOWWEAVE_DOCKER_CONTROL_NETWORK_SUBNET:?set a non-overlapping FlowWeave Docker-control subnet}

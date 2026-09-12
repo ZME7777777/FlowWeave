@@ -1,13 +1,10 @@
 #!/usr/bin/env bash
 # Plan or execute the narrowly scoped FlowWeave Docker image retention policy
-# on the fixed production host. This script intentionally never prunes
+# on a locally configured production host. This script intentionally never prunes
 # containers, networks, volumes, workspaces, source archives, or the broad
 # Docker image/cache inventory.
 set -euo pipefail
 
-readonly HOST='192.168.91.154'
-readonly USER='root'
-readonly ROOT='/opt/flowweave'
 readonly CONFIRM_TOKEN='DELETE_UNREFERENCED_FLOWWEAVE_IMAGES'
 
 apply=false
@@ -16,12 +13,13 @@ keep_rollback_images=3
 cache_until='168h'
 max_delete=500
 confirmation=''
+config=''
 
 usage() {
   cat <<'EOF'
-Usage: scripts/maintain-remote-docker-retention-154.sh [options]
+Usage: scripts/maintain-remote-docker-retention.sh --config <local-env-file> [options]
 
-Default mode is read-only: it inventories the fixed FlowWeave production host
+Default mode is read-only: it inventories the configured FlowWeave production host
 and prints image IDs that are safe candidates under the retention policy.
 
 Options:
@@ -42,8 +40,8 @@ Options:
   --cache-until DURATION          Build cache age filter (default: 168h).
   -h, --help                      Show this help.
 
-The target is always root@192.168.91.154:/opt/flowweave. Never use this script
-against another host. Review dry-run output before any --apply invocation.
+The target comes from a private local config file. Do not commit it. Review
+dry-run output before any --apply invocation.
 EOF
 }
 
@@ -53,6 +51,11 @@ require_positive_integer() {
 
 while (($#)); do
   case "$1" in
+    --config)
+      [[ -n ${2:-} ]] || { echo '--config requires a local env file' >&2; exit 2; }
+      config=$2
+      shift 2
+      ;;
     --apply) apply=true; shift ;;
     --confirm) confirmation=${2:-}; shift 2 ;;
     --keep-rollback-images)
@@ -76,6 +79,17 @@ while (($#)); do
   esac
 done
 
+[[ -n $config ]] || { echo '--config is required' >&2; usage >&2; exit 2; }
+[[ -f "$config" && ! -L "$config" ]] || { echo "Remote config must be a regular local file: $config" >&2; exit 1; }
+# shellcheck disable=SC1090
+set -a
+source "$config"
+set +a
+for required in FLOWWEAVE_REMOTE_HOST FLOWWEAVE_REMOTE_USER FLOWWEAVE_REMOTE_ROOT; do
+  [[ -n ${!required:-} ]] || { echo "Missing $required in local remote config" >&2; exit 1; }
+done
+[[ "$FLOWWEAVE_REMOTE_ROOT" == /* ]] || { echo 'FLOWWEAVE_REMOTE_ROOT must be an absolute path' >&2; exit 1; }
+
 if $apply && [[ $confirmation != $CONFIRM_TOKEN ]]; then
   echo "--apply requires --confirm $CONFIRM_TOKEN" >&2
   exit 2
@@ -85,13 +99,14 @@ if $prune_build_cache && ! $apply; then
   exit 2
 fi
 
-ssh "$USER@$HOST" \
+ssh "$FLOWWEAVE_REMOTE_USER@$FLOWWEAVE_REMOTE_HOST" \
   env KEEP_ROLLBACK_IMAGES="$keep_rollback_images" \
   MAX_DELETE="$max_delete" \
   APPLY="$apply" \
   PRUNE_BUILD_CACHE="$prune_build_cache" \
   CACHE_UNTIL="$cache_until" \
-  ROOT="$ROOT" \
+  ROOT="$FLOWWEAVE_REMOTE_ROOT" \
+  DEPLOY_TARGET="$FLOWWEAVE_REMOTE_USER@$FLOWWEAVE_REMOTE_HOST" \
   bash -s <<'REMOTE'
 set -euo pipefail
 
@@ -106,7 +121,7 @@ current_protected=0
 rollback_protected=0
 foreign_tag_protected=0
 
-echo "target=root@192.168.91.154 deployment_root=$ROOT"
+echo "target=$DEPLOY_TARGET deployment_root=$ROOT"
 echo "mode=$([[ $APPLY == true ]] && echo apply || echo dry-run)"
 echo "policy=keep-current-plus-${KEEP_ROLLBACK_IMAGES}-newest-rollback-image-ids-per-repository"
 
