@@ -131,6 +131,8 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-367 | Node Attempt 独占 Runtime/网络，偏离每个 FlowRun 单 Runtime 模型 | DONE | 新节点 Attempt 只解析并复用 FlowRun Runtime Session、容器、持久目录和专属网络；历史 Attempt Runtime 只读兼容与回收策略另行明确。 |
 | FR-368 | FlowRun Runtime 网络仍由 Docker 默认池按大网段分配 | DONE | Runtime Provider 从 FR-366 冻结地址池为每个 FlowRun 分配小型、可审计、可回收的专属子网；临时构建网络也不得回退 Docker 默认池。 |
 | FR-369 | 远程控制面删除 FlowRun 时仍可能在 API 内直连 Docker | DONE | 远程删除委托 Runtime Provider 回收历史 generation 网络候选，再回收当前 FlowRun 共享网络；API 保持无 Docker socket。 |
+| FR-371 | Git 提交 Diff 返回文件页时丢失提交详情 | DONE | 将 Git 侧栏的已选提交提升为工作区范围状态；在文件与 Diff 页签切换时保留同一仓库的提交详情。 |
+| FR-372 | 提交／改动审查缺少层级文件导航 | DONE | 提交审查与代码审查均使用仅含目标改动文件及其父目录的可折叠文件树，并在当前标签中切换 Diff。 |
 
 ### FR-366 FlowWeave 专属 Docker 地址规划 — DONE
 
@@ -201,6 +203,22 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 完成：运行列表删除“运行状态”列，不再将 FlowRun 的汇总状态呈现为执行状态；既有运行环境就绪判断仍只控制进入与生命周期操作。运行资源单元格只保留容器、generation、CPU 与内存实时用量；规范化的宿主机项目挂载路径另列显示。两个单元格仍共享既有单次、按 FlowRun 异步请求的受保护资源摘要，不增加 Docker 观测或更改任何后端契约。
 
 验收结果：Web TypeScript typecheck、ESLint、production build、`git diff --check` 与任务状态唯一性通过。production build 仅报告既有 bundle 大小建议；无迁移、无 API、数据库、Runtime Provider 或 OpenHands 改动。
+
+### FR-371 Git 提交详情跨 Diff／文件页签保留 — DONE
+
+依赖：`FR-338`。
+
+目标：从 Git 提交详情选择文件打开中央 Diff 页签后，重新激活文件页签时，右侧 Git 侧栏必须保留此前选择的同一仓库提交详情与文件树，不能因侧栏条件卸载重新显示提交历史列表。显式返回提交历史、选择另一提交或切换到另一仓库时，仍须按原有语义清理或替换详情。
+
+完成：已选提交 ID 与所属仓库路径提升到既有工作区作用域状态；Git 侧栏重新挂载时从该状态恢复详情。关闭中央 Diff 页签只清除局部已选 Diff 文件，保留提交身份；仓库改变时局部文件选择仍会清空，避免跨仓库复用路径。
+
+### FR-372 提交／改动审查层级文件树 — DONE
+
+依赖：`FR-338`。
+
+目标：提交审查标签的左侧必须显示该提交改动文件与必要父目录组成的可展开文件树，选择叶子文件后在当前提交标签内加载其 Diff。代码审查标签也必须以相同树结构替代扁平文件列表；不得混入未改动的工作区文件。
+
+完成：新增共享的变更文件树，目录默认展开且可以收起，叶子项在当前审查标签内切换 Diff。提交文件叶子保留 Git 状态，代码审查叶子保留新增／删除统计；提交中的其他文件按需读取对应 Diff。
 
 ### FR-335 Runtime generation Sandbox 引用完整性 — DONE
 
@@ -4934,6 +4952,8 @@ contract、冻结策略与既有受控生命周期约束覆盖。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-13 | FR-372 | Web TypeScript typecheck、ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS：提交审查标签与代码审查标签均显示仅含改动文件及其父目录的可折叠文件树。提交树叶子在当前标签按需读取相应 Git Diff，代码审查树叶子在当前标签切换既有 FileEditor Diff；未把未改动工作区文件混入树中。typecheck、lint、build 与空白检查通过；production build 仅报告既有 bundle 大小建议。 |
+| 2026-09-13 | FR-371 | Web TypeScript typecheck、ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS：已选 Git 提交由临时侧栏组件状态提升为工作区范围状态，并按仓库路径绑定。打开提交文件 Diff 后再次切回文件页签，重新挂载的侧栏恢复同一条提交详情与文件树；关闭 Diff 只清除局部文件选择。typecheck、lint、build 与空白检查通过；production build 仅报告既有 bundle 大小建议。 |
 | 2026-09-12 | FR-365 | 受影响 Python Ruff check/format、`py_compile`、Pyright；Web TypeScript typecheck、ESLint、production build；`git diff --check` 与任务状态唯一性；完成态节点 Fork 定向 pytest | PASS（静态／构建）：完成态节点源会话仍无发送、改名、模型、控制或删除权限；每个 native Fork 清空节点绑定并按自身 locator 授予普通会话写入能力，且不会回写节点 Attempt。`CANCELLED` FlowRun／Attempt 继续拒绝 Fork。定向 pytest 已收集，但业务断言前因本机 Docker Unix socket 缺失、Testcontainers PostgreSQL 无法初始化而阻断，未伪记为通过。 |
 | 2026-09-12 | FR-364 | OpenHands MessageEvent／FinishAction、协作认证定向 pytest（4 passed）；无 Docker fixture 的完成补登 pytest（1 passed）；受影响 Python Ruff check、`py_compile`；Web TypeScript typecheck、ESLint、production build；Alembic head、任务状态唯一性与 `git diff --check` | PASS（定向、静态与构建）：当前 active branch 的 agent MessageEvent 仅在 OpenHands 原生 `finished` 状态下作为 `ASSISTANT_MESSAGE` 正式完成身份投影，保留自身事件 ID，未使用 cursor 或文本猜测；FinishAction 路径保持。协作会话创建时恢复受控认证 native Secret 和仅变量名元数据，候选输出卡片不再要求 FinishAction 才渲染。完整 `test_runtime_wakeup.py` 的其余 5 项在 Testcontainers PostgreSQL fixture 初始化前因本机 Docker Unix socket 缺失阻断，未伪记为通过。 |
 | 2026-09-12 | FR-363 | 连续记录详情／摘要删除过滤纯逻辑回归；受影响 Python Ruff format/check、`py_compile`、`git diff --check` 与任务状态唯一性 | PASS：两条列表入口均使用 `RunEvent.cursor` 构造已删除记录排除子查询，不再在摘要请求时引用不存在的 `RunEvent.id` 并返回 500；未迁移、删除或修改任何持久记录。 |
