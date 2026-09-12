@@ -30,7 +30,6 @@ CLI 对工作台的细粒度原子操作统一经 `api` / `upload` 完成。先�
 ```bash
 flowweave openapi --paths
 flowweave api post /flow-runs/<run-id>/nodes/<flow-node-key>/runs --data-file ./start-node.json --dry-run
-flowweave api put /node-attempts/<attempt-id>/input-bindings --data-file ./bindings.json
 flowweave api post /node-attempts/<attempt-id>/confirm-start --data-file ./confirm.json
 flowweave api post /node-attempts/<attempt-id>/human-input --data-file ./human-input.json
 flowweave api post /node-attempts/<attempt-id>/manual-outputs --data-file ./outputs.json

@@ -516,8 +516,6 @@ export const api = {
   artifactContent: (artifactId: string) => requestText(`/artifact-versions/${artifactId}/content`),
   activateNode: (runId: string, key: string, artifact_ids: Record<string, string>, gates: GatePolicy[] = [], input_urls: Record<string, string> = {}, startup_mode: 'PROMPT' | 'CHAT' = 'PROMPT', agent_preset?: import('../types').AgentPreset, startup_prompt?: string) =>
     request<NodeRun>(`/flow-runs/${runId}/nodes/${key}/runs`, json('POST', { artifact_ids, gates, input_urls, startup_mode, agent_preset, startup_prompt })),
-  bindInputs: (attemptId: string, bindings: Record<string, string>, version?: number) =>
-    request<NodeAttempt>(`/node-attempts/${attemptId}/input-bindings`, json('PUT', { bindings, expected_state_version: version })),
   confirmStart: (attemptId: string, version: number, startup: { startup_mode: 'SKILL' | 'PROMPT'; capability_key?: string; prompt?: string }) => request<NodeAttempt>(`/node-attempts/${attemptId}/confirm-start`, json('POST', { expected_state_version: version, ...startup }, true)),
   humanInput: (attemptId: string, content: string, version: number) => request<NodeAttempt>(`/node-attempts/${attemptId}/human-input`, json('POST', { content, expected_state_version: version }, true)),
   submitManualOutputs: (attemptId: string, version: number, outputs: Record<string, { artifact_type: 'URL'; uri?: string; artifact_id?: string } | { artifact_type: 'FILE'; path?: string; artifact_id?: string }>, forceAdvance = false) =>

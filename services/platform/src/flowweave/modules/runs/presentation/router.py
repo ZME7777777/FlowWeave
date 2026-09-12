@@ -28,7 +28,6 @@ from flowweave.shared.schemas import (
     GateRetryWithProviderWrite,
     GateRiskAcceptanceWrite,
     HumanInputWrite,
-    InputBindingsWrite,
     ManualAttemptOutputsWrite,
     NodeRunCopyWrite,
     NodeRunStart,
@@ -543,13 +542,6 @@ async def copy_node_run(
 ) -> dict[str, Any]:
     return await run_sync(
         db, lambda session: service.copy_node_run(session, run_id, node_run_id, payload)
-    )
-
-
-@router.put("/node-attempts/{attempt_id}/input-bindings")
-async def update_bindings(attempt_id: str, payload: InputBindingsWrite, db: Db) -> dict[str, Any]:
-    return await run_sync(
-        db, lambda session: service.replace_bindings(session, attempt_id, payload)
     )
 
 

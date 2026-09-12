@@ -120,7 +120,6 @@ from flowweave.shared.schemas import (
     GateRetryWithProviderWrite,
     GateRiskAcceptanceWrite,
     HumanInputWrite,
-    InputBindingsWrite,
     ManualAttemptOutputsWrite,
     NodeRunCopyWrite,
     NodeRunStart,
@@ -4821,46 +4820,6 @@ def _claim_attempt_version(
     attempt = _attempt(db, attempt_id)
     db.refresh(attempt)
     return attempt
-
-
-def replace_bindings(db: Session, attempt_id: str, payload: InputBindingsWrite) -> dict[str, Any]:
-    current = _attempt(db, attempt_id)
-    if current.state not in {AttemptState.WAITING_INPUT, AttemptState.START_BLOCKED}:
-        raise illegal("input bindings are frozen", state=current.state)
-    node_run = _node_run(db, current.node_run_id)
-    run = _run(db, node_run.flow_run_id)
-    node = _node(_snapshot(db, current.snapshot_id), node_run.flow_node_snapshot_key)
-    _validate_input_bindings(db, run, node, payload.bindings)
-    attempt = _claim_attempt_version(
-        db,
-        attempt_id,
-        payload.expected_state_version,
-        {AttemptState.WAITING_INPUT, AttemptState.START_BLOCKED},
-    )
-    for row in _bindings(db, attempt.id):
-        db.delete(row)
-    db.flush()
-    for field_key, artifact_id in payload.bindings.items():
-        db.add(
-            AttemptInputBinding(
-                attempt_id=attempt.id,
-                input_field_key=field_key,
-                artifact_version_id=artifact_id,
-                binding_source="HUMAN",
-            )
-        )
-    db.flush()
-    _dispatch_readiness(db, attempt)
-    _event(
-        db,
-        node_run.flow_run_id,
-        "INPUT_BINDING_CHANGED",
-        {"fields": list(payload.bindings)},
-        node_run.id,
-        attempt.id,
-    )
-    finish(db)
-    return attempt_detail(db, attempt.id)
 
 
 def confirm_start(

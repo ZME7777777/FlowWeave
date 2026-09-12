@@ -361,9 +361,14 @@ class AgentPresetWrite(ApiModel):
         ]
         if len(identities) != len(set(identities)):
             raise ValueError("fallback models must be unique")
-        if self.model_provider_id and self.model_name and any(
-            item.model_provider_id == self.model_provider_id and item.model_name == self.model_name
-            for item in self.fallback_models
+        if (
+            self.model_provider_id
+            and self.model_name
+            and any(
+                item.model_provider_id == self.model_provider_id
+                and item.model_name == self.model_name
+                for item in self.fallback_models
+            )
         ):
             raise ValueError("a fallback model must differ from the primary model")
         return self
@@ -688,10 +693,6 @@ class AttemptStartWrite(AttemptVersionWrite):
         if self.startup_mode == "PROMPT" and self.prompt is not None and not self.prompt.strip():
             raise ValueError("prompt cannot be blank")
         return self
-
-
-class InputBindingsWrite(AttemptVersionWrite):
-    bindings: dict[str, str]
 
 
 class HumanInputWrite(AttemptVersionWrite):

@@ -204,6 +204,36 @@ test('step configuration is saved before start and direct launch has its own tab
   await expect(page.getByRole('button', { name: '启动节点会话' })).toBeVisible();
 });
 
+test('created attempts keep their inputs read-only after a start gate blocks them', async ({ page }) => {
+  const blockedAttempt = { ...attempt, state: 'START_BLOCKED', state_version: 2 };
+  const blockedNodeRun = { ...nodeRun, attempts: [blockedAttempt] };
+  const blockedRun = { ...run, current_attempt_state: 'START_BLOCKED', node_runs: [blockedNodeRun] };
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    const respond = (body: unknown, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
+    if (path.endsWith('/auth/me')) return respond(authenticatedUser);
+    if (path === '/api/v1/flow-runs' && request.method() === 'GET') return respond([blockedRun]);
+    if (path === '/api/v1/flows' && request.method() === 'GET') return respond([definition]);
+    if (path === '/api/v1/terminal-environments' || path === '/api/v1/capabilities'
+      || path === '/api/v1/capability-collections' || path === '/api/v1/model-providers') return respond([]);
+    if (path === `/api/v1/flow-runs/${blockedRun.id}`) return respond(blockedRun);
+    if (path === `/api/v1/flows/${definition.id}`) return respond(definition);
+    if (path === `/api/v1/flow-runs/${blockedRun.id}/automatic-runs`) return respond([]);
+    return respond({ error: { code: 'RESOURCE_NOT_FOUND', message: path, details: {} } }, 404);
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: '流程运行', exact: true }).click();
+  await page.locator('.run-open').click();
+  await page.locator('.node-record-list .automatic-record-select').filter({ hasText: '测试节点' }).click();
+  await expect(page.getByTestId('attempt-state')).toHaveText('START_BLOCKED');
+  const panel = page.locator('.attempt-control');
+  await expect(panel.getByText('输入已随本轮创建冻结，仅供查看。')).toBeVisible();
+  await expect(panel.getByRole('button', { name: '编辑本轮输入' })).toHaveCount(0);
+  await expect(panel.getByRole('button', { name: '填写节点输入' })).toHaveCount(0);
+});
+
 test('continuous records never ask users to manually start an auto-ready successor', async ({ page }) => {
   const frozenContext = {
     id: 'context-version-1', capability_type: 'CONTEXT', capability_key: 'delivery-rules',

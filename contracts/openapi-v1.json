@@ -8598,57 +8598,6 @@
         }
       }
     },
-    "/api/v1/node-attempts/{attempt_id}/input-bindings": {
-      "put": {
-        "summary": "Update Bindings",
-        "operationId": "update_bindings_api_v1_node_attempts__attempt_id__input_bindings_put",
-        "parameters": [
-          {
-            "name": "attempt_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Attempt Id"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/InputBindingsWrite"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "additionalProperties": true,
-                  "title": "Response Update Bindings Api V1 Node Attempts  Attempt Id  Input Bindings Put"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/api/v1/node-attempts/{attempt_id}/confirm-start": {
       "post": {
         "summary": "Confirm Start",
@@ -11743,29 +11692,6 @@
           "field_key"
         ],
         "title": "IOFieldWrite"
-      },
-      "InputBindingsWrite": {
-        "properties": {
-          "expected_state_version": {
-            "type": "integer",
-            "minimum": 1.0,
-            "title": "Expected State Version"
-          },
-          "bindings": {
-            "additionalProperties": {
-              "type": "string"
-            },
-            "type": "object",
-            "title": "Bindings"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "expected_state_version",
-          "bindings"
-        ],
-        "title": "InputBindingsWrite"
       },
       "MCPOAuthAuthorizationCallbackWrite": {
         "properties": {
