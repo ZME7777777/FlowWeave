@@ -218,10 +218,14 @@ def test_runtime_probe_inherits_the_frozen_openhands_build_identity(monkeypatch)
         "fw-env-probe-version-token",
         "--entrypoint",
         "sh",
-        "--env",
+        "--tmpfs",
     ]
-    assert probe_start[8] == "OPENHANDS_BUILD_GIT_SHA=30cf5832e42c71c24daa82a1a4fd5d25eb70d1b9"
+    assert probe_start[8] == "/runtime/state:uid=10001,gid=10001,mode=0700"
     assert probe_start[9:11] == [
+        "--env",
+        "OPENHANDS_BUILD_GIT_SHA=30cf5832e42c71c24daa82a1a4fd5d25eb70d1b9",
+    ]
+    assert probe_start[11:13] == [
         "--env",
         "OPENHANDS_BUILD_GIT_REF=30cf5832e42c71c24daa82a1a4fd5d25eb70d1b9",
     ]

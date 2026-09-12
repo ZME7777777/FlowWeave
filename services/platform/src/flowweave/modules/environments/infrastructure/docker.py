@@ -1350,6 +1350,14 @@ def _probe_runtime_image(
                 probe_name,
                 "--entrypoint",
                 "sh",
+                # The formal Runtime receives /runtime/state through owned
+                # bind mounts. The disposable publish probe has no Runtime
+                # allocation, but the fixed contract check intentionally
+                # exercises its production persistence path. Provide that
+                # path as an in-memory, non-persistent mount owned by the
+                # Runtime user instead of changing OH_PERSISTENCE_DIR.
+                "--tmpfs",
+                "/runtime/state:uid=10001,gid=10001,mode=0700",
                 "--env",
                 "OPENHANDS_BUILD_GIT_SHA=30cf5832e42c71c24daa82a1a4fd5d25eb70d1b9",
                 "--env",
