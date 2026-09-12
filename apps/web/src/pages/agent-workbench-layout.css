@@ -42,8 +42,9 @@
 .agent-workbench-list>.agent-workspace-group>.agent-workspace-group-content>.agent-workspace-group-more:disabled{cursor:wait;opacity:.6}
 .agent-workbench-main{position:relative;grid-template-rows:64px minmax(0,1fr) auto}
 .agent-workbench-shell .agent-workbench-main{grid-template-rows:64px minmax(0,1fr) auto}
-.agent-composer-dock{position:relative;grid-row:3;inset:auto;z-index:2;pointer-events:none}
+.agent-composer-dock{position:relative;grid-row:3;inset:auto;z-index:2;padding-bottom:2px;pointer-events:none}
 .agent-composer-dock>*{pointer-events:auto}
 .agent-composer-dock .agent-composer{margin:0 auto}
-.agent-composer-dock .agent-current-workspace{margin:8px auto 10px}
+.agent-composer-dock .agent-current-workspace{margin:6px auto 2px}
+@media(max-width:680px){.agent-composer-dock{padding-bottom:8px}.agent-composer-dock .agent-current-workspace{margin-bottom:4px}}
 .agent-live-file-changes{display:flex;align-items:center;gap:7px;width:max-content;max-width:calc(100% - 32px);margin:0 auto 8px;border:1px solid #d8e4db;border-radius:10px;background:#fff;padding:7px 10px;color:#52625a;font:11px/1.3 inherit;box-shadow:0 4px 14px #2031250d}.agent-live-file-changes:hover{border-color:#c4dbc9;background:#f6fbf7;color:#245f3d}.agent-live-file-changes:focus-visible{outline:2px solid #79ac8a;outline-offset:2px}.agent-live-file-changes svg{flex:0 0 auto;color:#477d5d}.agent-live-file-changes span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.agent-live-file-changes ins,.agent-live-file-changes del{flex:0 0 auto;font:10px 'DM Mono',ui-monospace,monospace;text-decoration:none}.agent-live-file-changes ins{color:#208143}.agent-live-file-changes del{color:#b04a4a}
