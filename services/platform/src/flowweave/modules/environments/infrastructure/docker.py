@@ -210,13 +210,21 @@ def _docker_command_failed(detail: str) -> DomainError:
 
 
 def _normalize_imported_debian_sources(reference: str, *, timeout: int) -> str:
-    """Normalize the retired platform-owned TUNA endpoint in a temp image.
+    """Normalize platform-owned runtime state in a temporary base image.
 
     Older FlowWeave Runtime seeds rewrote Debian APT sources to the TUNA
     mirror.  That mirror now returns HTTP 403 from the production builder.
     This is intentionally limited to that exact, platform-injected endpoint;
     it runs only in a temporary container created from the imported image, so
     it never changes the user's live Setup container.
+
+    A Setup Session may itself have started from a historical published
+    Runtime.  ``docker export`` preserves that Runtime's ``/agent-server``
+    directory.  The official source-minimal Dockerfile then COPYs a current
+    agent-server tree over it, which merges directories and can leave old
+    ``*.dist-info`` metadata ahead of the fixed 1.47 installation.  Remove
+    only that platform-owned installation root from the disposable image; the
+    formal OpenHands build recreates it from the fixed source archive.
     """
 
     settings = get_settings()
@@ -231,7 +239,8 @@ def _normalize_imported_debian_sources(reference: str, *, timeout: int) -> str:
         "[ -f \"$source\" ] || continue; "
         "sed -i 's|https://mirrors.tuna.tsinghua.edu.cn/debian|"
         "https://deb.debian.org/debian|g' \"$source\"; "
-        "done"
+        "done; "
+        "rm -rf -- /agent-server"
     )
     _run(
         [
