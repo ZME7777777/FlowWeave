@@ -20,35 +20,10 @@ def test_ghcr_tls_timeout_has_stable_safe_diagnostic() -> None:
     assert error.details == {"registry": "ghcr.io", "failure": "TLS_HANDSHAKE_TIMEOUT"}
 
 
-def test_flatten_setup_container_pauses_exports_imports_and_unpauses(monkeypatch) -> None:
+def test_flatten_setup_container_only_pauses_live_setup(monkeypatch) -> None:
     commands: list[list[str]] = []
-
-    class Process:
-        def __init__(self, stdout: bytes = b"", *, returncode: int = 0) -> None:
-            self.stdout = io.BytesIO(stdout)
-            self.returncode = returncode
-
-        def communicate(self, timeout=None):
-            assert timeout == 60
-            return b"sha256:" + b"c" * 64, b""
-
-        def wait(self, timeout=None):
-            assert timeout == 30
-            return self.returncode
-
-        def poll(self):
-            return self.returncode
-
-        def kill(self):
-            pytest.fail("successful flatten must not kill Docker processes")
-
-    exporter = Process(b"tar-stream")
-    importer = Process()
-    popens: list[tuple[list[str], object]] = []
-
-    def fake_popen(command, **kwargs):
-        popens.append((command, kwargs.get("stdin")))
-        return exporter if command[1] == "export" else importer
+    exports: list[tuple[str, str, int]] = []
+    normalized: list[tuple[str, int]] = []
 
     monkeypatch.setattr(
         environment_docker, "get_settings", lambda: SimpleNamespace(docker_binary="docker")
@@ -56,52 +31,33 @@ def test_flatten_setup_container_pauses_exports_imports_and_unpauses(monkeypatch
     monkeypatch.setattr(
         environment_docker, "_run", lambda command, **_kwargs: commands.append(command) or ""
     )
-    monkeypatch.setattr(environment_docker.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(
+        environment_docker,
+        "_export_container_as_single_layer",
+        lambda container_id, reference, *, timeout: exports.append(
+            (container_id, reference, timeout)
+        )
+        or "sha256:initial",
+    )
+    monkeypatch.setattr(
+        environment_docker,
+        "_normalize_imported_debian_sources",
+        lambda reference, *, timeout: normalized.append((reference, timeout))
+        or "sha256:normalized",
+    )
 
     assert environment_docker._flatten_setup_container(
         "setup-container", "flowweave/environment-base:test", timeout=60
-    ) == "sha256:" + "c" * 64
+    ) == "sha256:normalized"
     assert commands == [
         ["docker", "pause", "setup-container"],
         ["docker", "unpause", "setup-container"],
     ]
-    assert popens[0][0] == ["docker", "export", "setup-container"]
-    assert popens[1][0] == [
-        "docker",
-        "import",
-        "--change",
-        "ENTRYPOINT []",
-        "--change",
-        "USER 0:0",
-        "-",
-        "flowweave/environment-base:test",
-    ]
-    assert popens[1][1] is exporter.stdout
+    assert exports == [("setup-container", "flowweave/environment-base:test", 60)]
+    assert normalized == [("flowweave/environment-base:test", 60)]
 
 
-def test_flatten_setup_container_unpauses_after_import_failure(monkeypatch) -> None:
-    class Process:
-        def __init__(self, *, returncode: int, stderr: bytes = b"") -> None:
-            self.stdout = io.BytesIO(b"tar-stream")
-            self.returncode = returncode
-            self.stderr = stderr
-
-        def communicate(self, timeout=None):
-            assert timeout == 60
-            return b"", self.stderr
-
-        def wait(self, timeout=None):
-            assert timeout == 30
-            return self.returncode
-
-        def poll(self):
-            return self.returncode
-
-        def kill(self):
-            pytest.fail("completed processes must not be killed")
-
-    exporter = Process(returncode=0)
-    importer = Process(returncode=1, stderr=b"docker import failed")
+def test_flatten_setup_container_unpauses_after_export_failure(monkeypatch) -> None:
     commands: list[list[str]] = []
     monkeypatch.setattr(
         environment_docker, "get_settings", lambda: SimpleNamespace(docker_binary="docker")
@@ -110,9 +66,11 @@ def test_flatten_setup_container_unpauses_after_import_failure(monkeypatch) -> N
         environment_docker, "_run", lambda command, **_kwargs: commands.append(command) or ""
     )
     monkeypatch.setattr(
-        environment_docker.subprocess,
-        "Popen",
-        lambda command, **_kwargs: exporter if command[1] == "export" else importer,
+        environment_docker,
+        "_export_container_as_single_layer",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            DomainError("ENVIRONMENT_DOCKER_FAILED", "failed", 502)
+        ),
     )
 
     with pytest.raises(DomainError, match="ENVIRONMENT_DOCKER_FAILED"):
@@ -124,3 +82,93 @@ def test_flatten_setup_container_unpauses_after_import_failure(monkeypatch) -> N
         ["docker", "pause", "setup-container"],
         ["docker", "unpause", "setup-container"],
     ]
+
+
+def test_normalize_imported_debian_sources_uses_only_temp_container(monkeypatch) -> None:
+    commands: list[list[str]] = []
+    exports: list[tuple[str, str, int]] = []
+    monkeypatch.setattr(
+        environment_docker, "get_settings", lambda: SimpleNamespace(docker_binary="docker")
+    )
+    monkeypatch.setattr(
+        environment_docker, "_run", lambda command, **_kwargs: commands.append(command) or ""
+    )
+    monkeypatch.setattr(
+        environment_docker,
+        "_export_container_as_single_layer",
+        lambda container_id, reference, *, timeout: exports.append(
+            (container_id, reference, timeout)
+        )
+        or "sha256:normalized",
+    )
+
+    assert environment_docker._normalize_imported_debian_sources(
+        "flowweave/environment-base:test", timeout=60
+    ) == "sha256:normalized"
+
+    name = "fw-env-source-normalize-947ecbcdd77aa3ce0c926762"
+    assert commands[0][:7] == [
+        "docker",
+        "create",
+        "--name",
+        name,
+        "--entrypoint",
+        "sh",
+        "flowweave/environment-base:test",
+    ]
+    assert "mirrors.tuna.tsinghua.edu.cn/debian" in commands[0][-1]
+    assert "deb.debian.org/debian" in commands[0][-1]
+    assert commands[1] == ["docker", "start", "-a", name]
+    assert exports == [(name, "flowweave/environment-base:test", 60)]
+    assert commands[2] == ["docker", "rm", "--force", name]
+
+
+def test_export_container_as_single_layer_sets_root_entrypoint(monkeypatch) -> None:
+    class Process:
+        def __init__(self, stdout: bytes = b"", stderr: bytes = b"") -> None:
+            self.stdout = io.BytesIO(stdout)
+            self.stderr = stderr
+            self.returncode = 0
+
+        def communicate(self, timeout=None):
+            assert timeout == 60
+            return b"sha256:flattened\n", self.stderr
+
+        def wait(self, timeout=None):
+            assert timeout == 30
+            return self.returncode
+
+        def poll(self):
+            return self.returncode
+
+        def kill(self):
+            pytest.fail("successful export/import must not kill Docker processes")
+
+    exporter = Process(b"tar-stream")
+    importer = Process()
+    calls: list[tuple[list[str], object]] = []
+
+    def fake_popen(command, **kwargs):
+        calls.append((command, kwargs.get("stdin")))
+        return exporter if command[1] == "export" else importer
+
+    monkeypatch.setattr(
+        environment_docker, "get_settings", lambda: SimpleNamespace(docker_binary="docker")
+    )
+    monkeypatch.setattr(environment_docker.subprocess, "Popen", fake_popen)
+
+    assert environment_docker._export_container_as_single_layer(
+        "temporary-container", "flowweave/environment-base:test", timeout=60
+    ) == "sha256:flattened"
+    assert calls[0][0] == ["docker", "export", "temporary-container"]
+    assert calls[1][0] == [
+        "docker",
+        "import",
+        "--change",
+        "ENTRYPOINT []",
+        "--change",
+        "USER 0:0",
+        "-",
+        "flowweave/environment-base:test",
+    ]
+    assert calls[1][1] is exporter.stdout

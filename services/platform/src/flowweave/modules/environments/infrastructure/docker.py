@@ -209,6 +209,134 @@ def _docker_command_failed(detail: str) -> DomainError:
     )
 
 
+def _normalize_imported_debian_sources(reference: str, *, timeout: int) -> str:
+    """Normalize the retired platform-owned TUNA endpoint in a temp image.
+
+    Older FlowWeave Runtime seeds rewrote Debian APT sources to the TUNA
+    mirror.  That mirror now returns HTTP 403 from the production builder.
+    This is intentionally limited to that exact, platform-injected endpoint;
+    it runs only in a temporary container created from the imported image, so
+    it never changes the user's live Setup container.
+    """
+
+    settings = get_settings()
+    normalization_name = (
+        "fw-env-source-normalize-"
+        + hashlib.sha256(reference.encode()).hexdigest()[:24]
+    )
+    script = (
+        "set -eu; "
+        "for source in /etc/apt/sources.list /etc/apt/sources.list.d/*.list "
+        "/etc/apt/sources.list.d/*.sources; do "
+        "[ -f \"$source\" ] || continue; "
+        "sed -i 's|https://mirrors.tuna.tsinghua.edu.cn/debian|"
+        "https://deb.debian.org/debian|g' \"$source\"; "
+        "done"
+    )
+    _run(
+        [
+            settings.docker_binary,
+            "create",
+            "--name",
+            normalization_name,
+            "--entrypoint",
+            "sh",
+            reference,
+            "-ec",
+            script,
+        ],
+        timeout=30,
+    )
+    try:
+        _run([settings.docker_binary, "start", "-a", normalization_name], timeout=30)
+        normalized_digest = _export_container_as_single_layer(
+            normalization_name, reference, timeout=timeout
+        )
+    finally:
+        try:
+            _run([settings.docker_binary, "rm", "--force", normalization_name], timeout=30)
+        except DomainError as exc:
+            if not _docker_resource_absent(exc, "container"):
+                raise
+    return normalized_digest
+
+
+def _export_container_as_single_layer(
+    container_id: str, reference: str, *, timeout: int
+) -> str:
+    """Export a stopped or paused container and import it as one layer.
+
+    The caller owns any lifecycle actions for ``container_id``.
+    """
+
+    settings = get_settings()
+    exporter: subprocess.Popen[bytes] | None = None
+    importer: subprocess.Popen[bytes] | None = None
+    try:
+        exporter = subprocess.Popen(
+            [settings.docker_binary, "export", container_id],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            env={"PATH": os.defpath},
+        )
+        assert exporter.stdout is not None
+        importer = subprocess.Popen(
+            [
+                settings.docker_binary,
+                "import",
+                "--change",
+                "ENTRYPOINT []",
+                "--change",
+                "USER 0:0",
+                "-",
+                reference,
+            ],
+            stdin=exporter.stdout,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env={"PATH": os.defpath},
+        )
+    except OSError as exc:
+        if importer is not None and importer.poll() is None:
+            importer.kill()
+            importer.wait(timeout=30)
+        if exporter is not None and exporter.poll() is None:
+            exporter.kill()
+            exporter.wait(timeout=30)
+        raise DomainError(
+            "ENVIRONMENT_BACKEND_UNAVAILABLE",
+            "The terminal environment Docker backend is unavailable",
+            503,
+        ) from exc
+    finally:
+        if exporter is not None and exporter.stdout is not None:
+            exporter.stdout.close()
+
+    try:
+        assert exporter is not None
+        assert importer is not None
+        imported_stdout, imported_stderr = importer.communicate(timeout=timeout)
+        exporter.wait(timeout=30)
+    except subprocess.TimeoutExpired as exc:
+        assert exporter is not None
+        assert importer is not None
+        if importer.poll() is None:
+            importer.kill()
+        if exporter.poll() is None:
+            exporter.kill()
+        importer.communicate()
+        exporter.wait()
+        raise DomainError(
+            "ENVIRONMENT_BACKEND_UNAVAILABLE",
+            "The terminal environment Docker backend is unavailable",
+            503,
+        ) from exc
+    if importer.returncode or exporter.returncode:
+        detail = (imported_stderr or imported_stdout).decode("utf-8", errors="replace")
+        raise _docker_command_failed(detail)
+    return imported_stdout.decode("utf-8", errors="replace").strip()
+
+
 def _flatten_setup_container(container_id: str, reference: str, *, timeout: int) -> str:
     """Freeze one Setup container as a single-layer Docker image.
 
@@ -220,77 +348,14 @@ def _flatten_setup_container(container_id: str, reference: str, *, timeout: int)
 
     settings = get_settings()
     paused = False
-    exporter: subprocess.Popen[bytes] | None = None
-    importer: subprocess.Popen[bytes] | None = None
     try:
         _run([settings.docker_binary, "pause", container_id], timeout=30)
         paused = True
-        try:
-            exporter = subprocess.Popen(
-                [settings.docker_binary, "export", container_id],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                env={"PATH": os.defpath},
-            )
-            assert exporter.stdout is not None
-            importer = subprocess.Popen(
-                [
-                    settings.docker_binary,
-                    "import",
-                    "--change",
-                    "ENTRYPOINT []",
-                    "--change",
-                    "USER 0:0",
-                    "-",
-                    reference,
-                ],
-                stdin=exporter.stdout,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                env={"PATH": os.defpath},
-            )
-        except OSError as exc:
-            if importer is not None and importer.poll() is None:
-                importer.kill()
-                importer.wait(timeout=30)
-            if exporter is not None and exporter.poll() is None:
-                exporter.kill()
-                exporter.wait(timeout=30)
-            raise DomainError(
-                "ENVIRONMENT_BACKEND_UNAVAILABLE",
-                "The terminal environment Docker backend is unavailable",
-                503,
-            ) from exc
-        finally:
-            if exporter is not None and exporter.stdout is not None:
-                exporter.stdout.close()
-
-        try:
-            assert exporter is not None
-            assert importer is not None
-            imported_stdout, imported_stderr = importer.communicate(timeout=timeout)
-            exporter.wait(timeout=30)
-        except subprocess.TimeoutExpired as exc:
-            assert exporter is not None
-            assert importer is not None
-            if importer.poll() is None:
-                importer.kill()
-            if exporter.poll() is None:
-                exporter.kill()
-            importer.communicate()
-            exporter.wait()
-            raise DomainError(
-                "ENVIRONMENT_BACKEND_UNAVAILABLE",
-                "The terminal environment Docker backend is unavailable",
-                503,
-            ) from exc
-        if importer.returncode or exporter.returncode:
-            detail = (imported_stderr or imported_stdout).decode("utf-8", errors="replace")
-            raise _docker_command_failed(detail)
-        return imported_stdout.decode("utf-8", errors="replace").strip()
+        _export_container_as_single_layer(container_id, reference, timeout=timeout)
     finally:
         if paused:
             _run([settings.docker_binary, "unpause", container_id], timeout=30)
+    return _normalize_imported_debian_sources(reference, timeout=timeout)
 
 
 def require_backend() -> None:
