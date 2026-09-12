@@ -758,10 +758,13 @@ function TaskTrackerCard({ entry, presentation }: { entry: ActivityEntry; presen
   );
   const completed = snapshot?.items.filter(task => task.status === 'done').length ?? 0;
   const loading = !result && action.event.event_type === 'TOOL_CALL';
-  return <section className={`conversation-native-card task-tracker${loading ? ' active' : ''}`} aria-label={`任务列表：${presentation.title}`}>
-    <header><ClipboardList size={15}/><span><b>{presentation.title}</b><small>{loading ? '正在更新' : snapshot?.command === 'plan' ? '已更新' : '当前快照'}</small></span>{loading && <LoaderCircle className="conversation-native-card-spinner" size={13}/>}</header>
-    {snapshot ? <><div className="conversation-task-list-summary"><span>{snapshot.command === 'plan' ? '任务清单' : '任务清单快照'}</span><small>{`${completed} / ${snapshot.items.length} 已完成`}</small></div><TaskListItems items={snapshot.items} source={snapshot.timestamp ? `OpenHands 原生任务事件 · ${formatMessageTime(snapshot.timestamp)}` : 'OpenHands 原生任务事件'}/></> : <p className="conversation-native-card-note">正在读取任务清单…</p>}
-  </section>;
+  const progress = snapshot ? `${completed} / ${snapshot.items.length} 已完成` : undefined;
+  return <details className={`conversation-native-card task-tracker${loading ? ' active' : ''}`} aria-label={`任务列表：${presentation.title}`}>
+    <summary><ClipboardList size={15}/><span><b>{presentation.title}</b><small>{loading ? '正在更新' : snapshot?.command === 'plan' ? '已更新' : '当前快照'}</small></span>{loading ? <LoaderCircle className="conversation-native-card-spinner" size={13}/> : progress && <small className="conversation-task-tracker-progress">{progress}</small>}<ChevronRight size={14}/></summary>
+    <div className="conversation-task-tracker-body">
+      {snapshot ? <><div className="conversation-task-list-summary"><span>{snapshot.command === 'plan' ? '任务清单' : '任务清单快照'}</span><small>{progress}</small></div><TaskListItems items={snapshot.items} source={snapshot.timestamp ? `OpenHands 原生任务事件 · ${formatMessageTime(snapshot.timestamp)}` : 'OpenHands 原生任务事件'}/></> : <p className="conversation-native-card-note">正在读取任务清单…</p>}
+    </div>
+  </details>;
 }
 
 function SkillLoadCard({ entry }: { entry: ActivityEntry }) {

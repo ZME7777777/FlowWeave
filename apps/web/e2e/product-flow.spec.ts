@@ -1127,6 +1127,11 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(finishTurn.locator('.conversation-message.assistant')).toHaveCount(1);
   await expect(finishTurn.getByText('耗时 3秒')).toBeVisible();
   const trackerCard = finishTurn.getByLabel('任务列表：任务列表已更新');
+  await expect(trackerCard).not.toHaveAttribute('open', '');
+  await expect(trackerCard).toContainText('2 / 3 已完成');
+  await expect(trackerCard.getByText('检查构建', { exact: true })).toHaveCount(0);
+  await trackerCard.locator(':scope > summary').click();
+  await expect(trackerCard).toHaveAttribute('open', '');
   await expect(trackerCard).toContainText('任务清单');
   await expect(trackerCard.getByText('检查构建', { exact: true })).toBeVisible();
   await expect(trackerCard.getByText('等待构建完成后核对结果。')).toHaveCount(0);
