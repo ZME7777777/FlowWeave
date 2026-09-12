@@ -29,7 +29,13 @@ def complete_active_branch(
     visited_history_cursors: set[str] = set()
 
     while True:
-        batch = read_active_events(replace(handle, history_cursor=history_cursor))
+        batch = read_active_events(
+            replace(
+                handle,
+                history_cursor=history_cursor,
+                active_branch_leaf_event_id=leaf_event_id if history_cursor else None,
+            )
+        )
         if leaf_event_id is None:
             leaf_event_id = batch.cursor
         elif batch.cursor != leaf_event_id:
@@ -42,6 +48,13 @@ def complete_active_branch(
         pages.append(batch)
         history_cursor = batch.history_cursor
         if not history_cursor:
+            # Older pages reuse the first formal HEAD to avoid duplicate state
+            # reads. Re-read that HEAD now: a drift during hydration must still
+            # fail closed rather than returning a stitched mixed branch.
+            if len(pages) > 1:
+                verified = read_active_events(handle)
+                if verified.cursor != leaf_event_id:
+                    raise ValueError("OpenHands active branch changed during hydration")
             # Oldest pages are read last.  Preserve the same chronological
             # page ordering previously produced by browser-side merging.
             events = tuple(event for page in reversed(pages) for event in page.events)
@@ -53,6 +66,8 @@ def complete_active_branch(
                 cursor_anchor_found=newest.cursor_anchor_found,
                 task_usage=newest.task_usage,
                 usage=newest.usage,
+                context=newest.context,
+                readiness=newest.readiness,
                 history_cursor=None,
             )
         if history_cursor in visited_history_cursors:

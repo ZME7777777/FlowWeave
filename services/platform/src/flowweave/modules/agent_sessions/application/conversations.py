@@ -2887,9 +2887,17 @@ def hydrate_conversation(
     started_at = time.monotonic()
     outcome = "error"
     try:
-        context = _conversation_context_snapshot(runtime, handle)
-        readiness = runtime.input_readiness(handle).as_dict()
         batch = complete_active_branch(runtime.read_active_events, handle)
+        context = (
+            _conversation_context_snapshot(runtime, handle)
+            if batch.context is None
+            else dict(batch.context)
+        )
+        readiness = (
+            runtime.input_readiness(handle).as_dict()
+            if batch.readiness is None
+            else batch.readiness.as_dict()
+        )
         projected = events(
             db,
             workspace_id,

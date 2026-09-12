@@ -3072,6 +3072,8 @@ class OpenHandsRuntime:
             result=self._result_from_events(handle, items, cursor),
             task_usage=self._task_usage_snapshots(state, source_cursor=state_cursor),
             usage=self._usage_snapshots(state),
+            context=self._conversation_context_from_state(state),
+            readiness=self._input_readiness_from_state(state),
         )
 
     def read_active_events(self, handle: RuntimeHandle) -> RuntimeEventBatch:
@@ -3079,10 +3081,16 @@ class OpenHandsRuntime:
 
         base_url = self._base_url_for_handle(handle)
         session_api_key = self._session_key_for_handle(handle)
-        state = self._conversation_state(handle, timeout=_INTERACTIVE_READ_TIMEOUT_SECONDS)
-        leaf_event_id = self._formal_identity(
-            state.get("leaf_event_id"), field="leaf_event_id", required=False
-        )
+        state: dict[str, Any] | None = None
+        if handle.history_cursor and handle.active_branch_leaf_event_id:
+            leaf_event_id = self._formal_identity(
+                handle.active_branch_leaf_event_id, field="leaf_event_id", required=True
+            )
+        else:
+            state = self._conversation_state(handle, timeout=_INTERACTIVE_READ_TIMEOUT_SECONDS)
+            leaf_event_id = self._formal_identity(
+                state.get("leaf_event_id"), field="leaf_event_id", required=False
+            )
         if handle.cursor and not handle.history_cursor:
             if leaf_event_id is None:
                 raise DomainError(
@@ -3123,7 +3131,9 @@ class OpenHandsRuntime:
             )
             for item in active_items
         )
-        state_cursor = str(state.get("leaf_event_id") or cursor or handle.cursor or "") or None
+        state_cursor = (
+            str((state or {}).get("leaf_event_id") or cursor or handle.cursor or "") or None
+        )
         return RuntimeEventBatch(
             events=events,
             cursor=cursor,
@@ -3133,8 +3143,14 @@ class OpenHandsRuntime:
                 if handle.history_cursor
                 else self._result_from_events(handle, active_items, cursor)
             ),
-            task_usage=self._task_usage_snapshots(state, source_cursor=state_cursor),
-            usage=self._usage_snapshots(state),
+            task_usage=(
+                self._task_usage_snapshots(state, source_cursor=state_cursor)
+                if state is not None
+                else ()
+            ),
+            usage=self._usage_snapshots(state) if state is not None else (),
+            context=self._conversation_context_from_state(state) if state is not None else None,
+            readiness=self._input_readiness_from_state(state) if state is not None else None,
         )
 
     def read_event(self, handle: RuntimeHandle, event_id: str) -> RuntimeEvent | None:
@@ -3870,9 +3886,9 @@ class OpenHandsRuntime:
             content=response.content,
         )
 
-    def conversation_context(self, handle: RuntimeHandle) -> dict[str, int | str | None]:
+    @classmethod
+    def _conversation_context_from_state(cls, state: dict[str, Any]) -> dict[str, int | str | None]:
         """Expose the current LLM's formal OpenHands context usage snapshot."""
-        state = self._conversation_state(handle, timeout=_INTERACTIVE_READ_TIMEOUT_SECONDS)
         agent = cast(object, state.get("agent"))
         agent_config = cast(dict[str, Any], agent) if isinstance(agent, dict) else {}
         llm = (
@@ -3896,7 +3912,7 @@ class OpenHandsRuntime:
         active_usage = next(
             (
                 usage
-                for usage in self._usage_snapshots(state)
+                for usage in cls._usage_snapshots(state)
                 if isinstance(usage_id, str) and usage.usage_id == usage_id
             ),
             None,
@@ -3921,7 +3937,7 @@ class OpenHandsRuntime:
         window = catalog_window or configured_window or usage_window
         cumulative = 0
         found = False
-        for usage in self._usage_snapshots(state):
+        for usage in cls._usage_snapshots(state):
             cumulative += (
                 usage.prompt_tokens
                 + usage.completion_tokens
@@ -3958,6 +3974,11 @@ class OpenHandsRuntime:
                 else None
             ),
         }
+
+    def conversation_context(self, handle: RuntimeHandle) -> dict[str, int | str | None]:
+        return self._conversation_context_from_state(
+            self._conversation_state(handle, timeout=_INTERACTIVE_READ_TIMEOUT_SECONDS)
+        )
 
     def switch_model(self, handle: RuntimeHandle, provider: RuntimeProvider) -> None:
         expected = self._llm_payload(
@@ -4041,15 +4062,8 @@ class OpenHandsRuntime:
             json={},
         )
 
-    def input_readiness(self, handle: RuntimeHandle) -> RuntimeInputReadiness:
-        """Read one native execution-state snapshot for input and UI recovery.
-
-        This is deliberately a transient OpenHands read rather than a
-        FlowWeave conversation state projection.  Interrupt is asynchronous,
-        so an accepted interrupt request alone must not unlock a second send.
-        """
-
-        state = self._conversation_state(handle, timeout=_INTERACTIVE_READ_TIMEOUT_SECONDS)
+    @staticmethod
+    def _input_readiness_from_state(state: dict[str, Any]) -> RuntimeInputReadiness:
         status = str(state.get("execution_status") or "").lower()
         ready = status not in {
             "starting",
@@ -4059,6 +4073,17 @@ class OpenHandsRuntime:
             "waiting_for_confirmation",
         }
         return RuntimeInputReadiness(ready=ready, execution_status=status or "unknown")
+
+    def input_readiness(self, handle: RuntimeHandle) -> RuntimeInputReadiness:
+        """Read one native execution-state snapshot for input and UI recovery.
+
+        This is deliberately a transient OpenHands read rather than a
+        FlowWeave conversation state projection.  Interrupt is asynchronous,
+        so an accepted interrupt request alone must not unlock a second send.
+        """
+
+        state = self._conversation_state(handle, timeout=_INTERACTIVE_READ_TIMEOUT_SECONDS)
+        return self._input_readiness_from_state(state)
 
     def running_conversation_ids(self, handle: RuntimeHandle) -> set[str]:
         """Read native RUNNING conversations through OpenHands' list API."""

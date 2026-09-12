@@ -185,10 +185,10 @@ def test_rewrite_target_rejects_missing_or_non_user_native_event() -> None:
 
 
 def test_complete_active_branch_hydrates_every_formal_history_page() -> None:
-    calls: list[str | None] = []
+    calls: list[tuple[str | None, str | None]] = []
 
     def read(handle: RuntimeHandle) -> RuntimeEventBatch:
-        calls.append(handle.history_cursor)
+        calls.append((handle.history_cursor, handle.active_branch_leaf_event_id))
         if handle.history_cursor == "older":
             return RuntimeEventBatch(
                 events=(RuntimeEvent("old-user", "MESSAGE", {"parent_id": "__root__"}),),
@@ -205,7 +205,13 @@ def test_complete_active_branch_hydrates_every_formal_history_page() -> None:
         read, RuntimeHandle(job_id="job", conversation_id="conversation")
     )
 
-    assert calls == [None, "older"]
+    assert calls == [
+        (None, None),
+        ("older", "latest-tool"),
+        # Recheck formal HEAD before accepting a branch whose older pages were
+        # read using the first page's snapshot.
+        (None, None),
+    ]
     assert [event.cursor for event in hydrated.events] == ["old-user", "latest-tool"]
     assert hydrated.cursor == "latest-tool"
     assert hydrated.history_cursor is None
@@ -221,6 +227,96 @@ def test_complete_active_branch_rejects_head_drift_between_pages() -> None:
 
     with pytest.raises(ValueError, match="active branch changed"):
         complete_active_branch(read, RuntimeHandle(job_id="job", conversation_id="conversation"))
+
+
+def test_hydration_reuses_active_batch_context_and_readiness(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = object()
+    binding = object()
+    handle = RuntimeHandle(job_id="job", conversation_id="conversation")
+    context = {"model_name": "test-model", "window_tokens": 128_000}
+    readiness = RuntimeInputReadiness(ready=False, execution_status="running")
+    captured: dict[str, object] = {}
+
+    class Runtime:
+        def read_active_events(self, _handle: object) -> RuntimeEventBatch:
+            return RuntimeEventBatch(
+                events=(RuntimeEvent("event", "MESSAGE", {"source": "user"}),),
+                cursor="event",
+                context=context,
+                readiness=readiness,
+            )
+
+        def conversation_context(self, _handle: object):
+            raise AssertionError("hydration must reuse its active-batch context")
+
+        def input_readiness(self, _handle: object):
+            raise AssertionError("hydration must reuse its active-batch readiness")
+
+    monkeypatch.setattr(session_conversations, "_workspace", lambda _db, _id: workspace)
+    monkeypatch.setattr(session_conversations, "_binding", lambda _db, _workspace_id, _id: binding)
+    monkeypatch.setattr(
+        session_conversations, "_handle", lambda _db, _workspace, _binding: handle
+    )
+    monkeypatch.setattr(session_conversations, "get_runtime", lambda: Runtime())
+    monkeypatch.setattr(
+        session_conversations,
+        "events",
+        lambda *_args, **kwargs: captured.update(kwargs) or {"events": []},
+    )
+
+    hydrated = session_conversations.hydrate_conversation(None, "workspace", "binding")
+
+    assert captured["context_override"] == context
+    assert hydrated == {
+        "events": {"events": []},
+        "context": context,
+        "readiness": readiness.as_dict(),
+    }
+
+
+def test_node_hydration_reuses_active_batch_context_and_readiness(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    binding = object()
+    handle = RuntimeHandle(job_id="job", conversation_id="conversation")
+    context = {"model_name": "node-model", "window_tokens": 128_000}
+    readiness = RuntimeInputReadiness(ready=True, execution_status="idle")
+
+    class Runtime:
+        def read_active_events(self, _handle: object) -> RuntimeEventBatch:
+            return RuntimeEventBatch(
+                cursor="event", context=context, readiness=readiness
+            )
+
+        def conversation_context(self, _handle: object):
+            raise AssertionError("node hydration must reuse active-batch context")
+
+        def input_readiness(self, _handle: object):
+            raise AssertionError("node hydration must reuse active-batch readiness")
+
+    monkeypatch.setattr(
+        flow_node_conversations, "_binding_for_attempt", lambda *_args, **_kwargs: binding
+    )
+    monkeypatch.setattr(
+        flow_node_conversations, "_binding_for_run", lambda *_args, **_kwargs: binding
+    )
+    monkeypatch.setattr(
+        flow_node_conversations, "_flow_run_handle", lambda *_args, **_kwargs: handle
+    )
+    monkeypatch.setattr(flow_node_conversations, "get_runtime", lambda: Runtime())
+    monkeypatch.setattr(flow_node_conversations, "_event_batch_dict", lambda *_args: {"events": []})
+
+    hydrated = flow_node_conversations.hydrate_node_conversation(
+        None, flow_run_id="run", attempt_id="attempt", binding_id="binding"
+    )
+
+    assert hydrated == {
+        "events": {"events": []},
+        "context": context,
+        "readiness": readiness.as_dict(),
+    }
 
 
 def test_conversation_head_reads_only_the_formal_native_leaf(

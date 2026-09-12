@@ -1777,10 +1777,20 @@ def hydrate_node_conversation(
             "OpenHands returned an inconsistent active branch during hydration",
             409,
         ) from exc
+    context = (
+        dict(batch.context)
+        if batch.context is not None
+        else dict(runtime.conversation_context(handle))
+    )
+    readiness = (
+        batch.readiness.as_dict()
+        if batch.readiness is not None
+        else runtime.input_readiness(handle).as_dict()
+    )
     return {
         "events": _event_batch_dict(db, binding, batch),
-        "context": dict(runtime.conversation_context(handle)),
-        "readiness": runtime.input_readiness(handle).as_dict(),
+        "context": context,
+        "readiness": readiness,
     }
 
 

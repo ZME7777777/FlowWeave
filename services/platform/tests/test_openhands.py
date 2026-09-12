@@ -11,6 +11,7 @@ import pytest
 
 from flowweave.bootstrap.settings import Settings
 from flowweave.modules.agent_sessions.application import runtime_config
+from flowweave.modules.agent_sessions.application.event_branch import complete_active_branch
 from flowweave.modules.agent_sessions.application.flow_node_conversations import (
     _accepts_queued_user_message,
 )
@@ -1770,6 +1771,100 @@ def test_openhands_normalizes_incremental_events_and_terminal_result(
         ),
         ("GET", "/api/conversations/10000000-0000-4000-8000-000000000002", None),
     ]
+
+
+def test_openhands_active_batch_reuses_one_native_state_for_context_and_readiness(
+    openhands_settings, monkeypatch
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    state_reads = 0
+
+    def state(_handle, **_kwargs):
+        nonlocal state_reads
+        state_reads += 1
+        return _state(
+            leaf_event_id="user-event",
+            execution_status="running",
+            agent={
+                "llm": {
+                    "usage_id": "flowweave:provider",
+                    "model": "test-model",
+                    "max_input_tokens": 8192,
+                },
+                "condenser": {"max_size": 10000},
+            },
+            stats={"usage_to_metrics": {}},
+        )
+
+    monkeypatch.setattr(runtime, "_conversation_state", state)
+    monkeypatch.setattr(
+        runtime,
+        "_active_event_window",
+        lambda *_args, **_kwargs: ([{
+            "kind": "MessageEvent",
+            "id": "user-event",
+            "parent_id": "__root__",
+            "source": "user",
+            "llm_message": {"role": "user", "content": "hello"},
+        }], None),
+    )
+
+    batch = runtime.read_active_events(_handle())
+
+    assert state_reads == 1
+    assert batch.cursor == "user-event"
+    assert batch.context == {
+        "used_tokens": 0,
+        "window_tokens": 8192,
+        "cumulative_tokens": None,
+        "provider_id": "provider",
+        "model_name": "test-model",
+        "reasoning_effort": None,
+        "condenser_max_size": 10000,
+        "condenser_max_tokens": None,
+    }
+    assert batch.readiness is not None
+    assert batch.readiness.ready is False
+    assert batch.readiness.execution_status == "running"
+
+
+def test_openhands_complete_hydration_reuses_first_state_for_older_pages(
+    openhands_settings, monkeypatch
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    state_reads = 0
+
+    def state(_handle, **_kwargs):
+        nonlocal state_reads
+        state_reads += 1
+        return _state(leaf_event_id="latest", stats={"usage_to_metrics": {}})
+
+    def active_window(_conversation_id, _leaf_event_id, history_cursor, **_kwargs):
+        if history_cursor == "older":
+            return ([{
+                "kind": "MessageEvent",
+                "id": "old-user",
+                "parent_id": "__root__",
+                "source": "user",
+                "llm_message": {"role": "user", "content": "old"},
+            }], None)
+        return ([{
+            "kind": "ActionEvent",
+            "id": "latest",
+            "parent_id": "old-user",
+            "source": "agent",
+            "action": {"kind": "ThinkAction"},
+        }], "older")
+
+    monkeypatch.setattr(runtime, "_conversation_state", state)
+    monkeypatch.setattr(runtime, "_active_event_window", active_window)
+
+    hydrated = complete_active_branch(runtime.read_active_events, _handle())
+
+    # Initial state supplies HEAD/context/readiness; older pages reuse that
+    # formal leaf, then one final state read detects concurrent HEAD drift.
+    assert state_reads == 2
+    assert [event.cursor for event in hydrated.events] == ["old-user", "latest"]
 
 
 def test_openhands_reads_only_the_native_active_head_branch(openhands_settings, monkeypatch):
