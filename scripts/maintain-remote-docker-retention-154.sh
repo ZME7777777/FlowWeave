@@ -205,9 +205,29 @@ if [[ $APPLY == true ]]; then
     echo "refusing to delete ${#candidate_ids[@]} images above --max-delete=$MAX_DELETE" >&2
     exit 1
   }
-  for image_id in "${!candidate_ids[@]}"; do
-    docker image rm "$image_id"
-  done
+  while IFS= read -r image_id; do
+    # A container might have been created after the dry-run. Recheck its image
+    # reference immediately before changing any tag; never use --force.
+    if docker ps -aq | xargs -r docker inspect --format '{{.Image}}' | grep -Fxq "$image_id"; then
+      echo "refusing to untag image now referenced by a container: $image_id" >&2
+      exit 1
+    fi
+
+    # Docker refuses `image rm <id>` when one image carries several tags. The
+    # policy already proved every non-empty tag is a governed rollback tag, so
+    # remove those exact tags one at a time. The final untag deletes the image
+    # naturally; no force removal is ever used.
+    mapfile -t current_tags < <(docker image inspect --format '{{range .RepoTags}}{{println .}}{{end}}' "$image_id")
+    for tag in "${current_tags[@]}"; do
+      [[ -z $tag ]] && continue
+      if [[ $tag != flowweave-platform:* && $tag != flowweave-web:* ]] || [[ $tag != *rollback* ]]; then
+        echo "refusing to untag image with a changed non-rollback or external tag: $image_id ($tag)" >&2
+        exit 1
+      fi
+      docker image rm "$tag"
+      printf 'REMOVED tag=%s image=%s\n' "$tag" "$image_id"
+    done
+  done < <(printf '%s\n' "${!candidate_ids[@]}" | sort)
   if [[ $PRUNE_BUILD_CACHE == true ]]; then
     docker builder prune --force --filter "until=$CACHE_UNTIL"
   fi

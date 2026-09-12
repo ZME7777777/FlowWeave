@@ -281,6 +281,9 @@ scripts/maintain-remote-docker-retention-154.sh
 
 候选只包含其全部非空 tag 都是 FlowWeave `rollback` 历史标签的 image；具名 `candidate`、`build` 或其他
 非 rollback 标签即使当前未引用也保留，必须由独立的、明确审计的策略处理。
+实际回收按候选的精确 rollback tag 逐个 untag，最后一个 tag 由 Docker 自然删除 image；绝不使用
+`docker image rm --force`。每个 image 在 untag 前会再次核对任一 Container（包括已退出）是否引用它，
+若期间出现引用或 tag 归属改变则 fail-closed 停止。
 
 无 tag 的 dangling image 因无法从 Docker 元数据安全证明其仅属于 FlowWeave，不在该工具的 image
 删除范围内；仍可通过显式的、按年龄过滤的 BuildKit cache 清理回收构建缓存。

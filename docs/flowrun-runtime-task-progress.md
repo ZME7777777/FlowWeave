@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`COMPLETE`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`OPS-02`（执行已核验的 Docker image / BuildKit cache 维护窗口；须获得明确删除授权）
+> 下一可执行切片：`OPS-02`（使用 OPS-03 修复后的 tag 级回收执行已授权维护窗口）
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -100,7 +100,8 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-336 | 初次 Runtime 供应遇到临时 Provider 不可用会永久降级 | DONE | 将短暂后端故障保持为可重试供应意图，限制 generation churn。 |
 | FR-337 | FlowRun 初次供应任务耗尽后无受控恢复入口 | DONE | 增加安全、幂等且可审计的终态投递恢复。 |
 | OPS-01 | Docker rollback image / BuildKit cache 容量增长 | DONE | 建立带运行引用保护、dry-run 和显式确认的回收工具，并完成生产候选边界核验。 |
-| OPS-02 | Docker rollback image / BuildKit cache 容量增长 | PENDING | 在明确删除授权的维护窗口执行 OPS-01 已核验的受限回收，并复核服务、卷和 Workspace。 |
+| OPS-02 | Docker rollback image / BuildKit cache 容量增长 | PENDING | 已获授权；OPS-03 已完成，须重新预检后使用 tag 级路径执行维护。 |
+| OPS-03 | 多 rollback tag image 的安全回收 | DONE | 改为逐 tag、重查 Container 引用、不使用 `--force` 的回收路径。 |
 
 ### FR-335 Runtime generation Sandbox 引用完整性 — DONE
 
@@ -194,6 +195,32 @@ cache 回收拆入 OPS-02，等待明确授权。
   仅重建受影响服务。
 
 验收：实际操作需要本用户对精确删除范围和可选 cache 回收的明确授权；未获授权前保持 `PENDING`。
+
+执行记录（2026-09-12）：用户已授权删除候选 rollback image 并清理超过 7 天的 BuildKit cache；实际执行在
+首个多 tag candidate `87fed…` 处被 Docker 的非强制 image-ID 删除拒绝安全停止（`image is referenced in
+multiple repositories`）。没有 image、cache、Container、volume、network 或 Workspace 被删除，Docker 容量
+统计未变化。该失败暴露工具执行路径不能处理同一 image 的多个受控 rollback tag，转入 OPS-03 修复；用户
+授权范围保持有效，修复后须重新做只读候选/服务预检再继续。
+
+### OPS-03 多 rollback tag image 的安全回收 — DONE
+
+依赖：`OPS-01`；由 OPS-02 首次执行的安全失败发现。
+
+目标：
+
+- 禁止使用 `docker image rm <image-id>` 或 `--force` 删除候选 image；逐个删除已验证为 FlowWeave rollback
+  的精确 tag，使 Docker 仅在最后 tag 消失时自然释放 image。
+- 每个 image 改动前重新读取所有 Container（包括已退出）引用，若出现引用或 tag 不再全为受控 rollback，
+  fail-closed 停止，不触及该 image。
+- 完成后仍须保留 current image、最近 rollback、所有 Container/volume/Workspace；恢复 OPS-02 已授权维护。
+
+验收：Bash 语法、逐 tag 删除路径静态审查、`git diff --check`、任务状态唯一性；提交后使用 commit 绑定的
+脚本重新 dry-run，未验证前不恢复实际删除。
+
+完成：回收路径改为逐个 untag 已验证的精确 rollback tag；每次改动前重新读取所有运行和已退出
+Container 的 image 引用，并重新校验其 tags 仍全部属于受控 FlowWeave rollback。路径不使用
+`docker image rm <image-id>` 或 `--force`，最后一个 tag 由 Docker 自然释放 image。修复后的生产
+dry-run 确认 280 个候选、36 个受保护 image ID，且未执行删除。
 
 ### FR-00 架构、边界和实施顺序冻结 — DONE
 
@@ -4508,6 +4535,7 @@ contract、冻结策略与既有受控生命周期约束覆盖。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-12 | OPS-03 | Bash 语法、逐 tag 删除路径静态审查、help、确认参数拒绝、修复后生产 dry-run、`git diff --check` 与任务状态唯一性 | PASS（工具／生产只读）：修复后工具不再以 image ID 删除，也不使用 `--force`；每个候选会在变更前重新验证任意运行或已退出 Container 均未引用该 image，且所有当前 tags 仍为 FlowWeave rollback。生产 dry-run 固定 `root@192.168.91.154:/opt/flowweave`，识别 280 个候选、保护 36 个 image ID（30 个 Container 引用、6 个保留 rollback）；尚未删除任何资源，待 OPS-02 的重新预检和已授权执行。 |
 | 2026-09-12 | OPS-01 | 维护脚本 Bash 语法、help、缺失确认 token／缺失 `--apply` 拒绝、生产 dry-run、运行及已退出 Container image 交叉核验、`--max-delete=1` fail-closed 演练、`git diff --check` | PASS（工具／生产只读）：`.154` 容量审计为 images 61.09GB（32.86GB reclaimable）、BuildKit 78.75GB（22.42GB reclaimable）、根分区 77GB 可用。脚本固定 `root@192.168.91.154:/opt/flowweave`，dry-run 识别 279 个纯 FlowWeave rollback、无任一 Container 引用的 image ID；36 个 image ID 受保护，其中 30 个由 Container 引用、6 个为两个仓库最新三份 rollback，当前 `remote-amd64` image 亦受保护。逐一交叉核验候选不含任何 `docker ps -aq` image ID。`--apply` 缺 token 被拒绝；带 token 的 `--max-delete=1` 在任何删除前因 279 > 1 fail-closed。未删除 image/cache/container/volume/network/Workspace；实际回收待 OPS-02 的明确删除授权。 |
 | 2026-09-12 | FR-337 | 受影响 Python Ruff format/check、`py_compile`、唯一 Alembic head、任务状态唯一性、`git diff --check`；FlowRun 供应任务耗尽恢复 3 条定向 pytest | PASS（静态）：Ruff、语法、唯一 Alembic head `0114_runtime_sandbox_fk`、任务状态唯一性与空白检查通过。三条回归已收集，但均在业务断言前因本机 Docker Unix socket 缺失、Testcontainers PostgreSQL 无法启动而阻断，未伪记为通过。恢复严格限定为仍存在且可执行的 FlowRun、无 active generation 的唯一 `STARTING` Runtime、唯一 `PROVISIONING` generation 与同代、保持 `RUNNING` 意图且最后错误为 `SANDBOX_BACKEND_UNAVAILABLE` 的 Sandbox；以 `SKIP LOCKED` 逐层锁定，最多一次将原任务由 `DEAD` 恢复为额外 20 次预算的 `RETRY`，不创建资源／generation／Conversation。 |
 | 2026-09-12 | FR-336 | 受影响 Python Ruff format/check、`py_compile`、严格 Pyright、唯一 Alembic head、`git diff --check`；FlowRun／Agent Workspace 初次供应的 Provider 503 → 同 generation 成功重试定向 pytest | PASS（静态）：Ruff、语法、Pyright `0 errors`、空白检查和唯一 Alembic head `0114_runtime_sandbox_fk` 通过。两条回归均已收集，但业务断言前因本机 Docker Unix socket 缺失、Testcontainers PostgreSQL 无法启动而阻断，未伪记为通过。FlowRun 现在只对持久 Runtime 的 `SANDBOX_BACKEND_UNAVAILABLE` 保留原 Sandbox／`PROVISIONING` generation；Agent Workspace 先持久化同一 Sandbox＋generation 意图，短暂失败保持 `STARTING` 并记录可恢复诊断，确定性 DomainError 仍使该资源／generation 收敛为删除／失败。远端部署必须确认现有 Runtime 不被重建，服务健康且无新的 generation churn。 |
