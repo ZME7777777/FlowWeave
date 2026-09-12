@@ -1131,6 +1131,9 @@ async def test_runtime_event_stream_forwards_single_event_larger_than_default_re
     assert "MAX_ACTIVE_PER_CHANNEL = 16" in controller_module._RUNTIME_EVENT_RELAY
     assert "MAX_LIFETIME_SECONDS = 300.0" in controller_module._RUNTIME_EVENT_RELAY
     assert "HEARTBEAT_SECONDS = 10.0" in controller_module._RUNTIME_EVENT_RELAY
+    assert 'os.environ.get("OH_SESSION_API_KEYS_0") or os.environ["SESSION_API_KEY"]' in (
+        controller_module._RUNTIME_EVENT_RELAY
+    )
 
 
 @pytest.mark.asyncio

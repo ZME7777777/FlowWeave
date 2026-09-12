@@ -784,9 +784,16 @@ async def main():
         ping_timeout=20,
         max_size=2 * 1024 * 1024,
     ) as upstream:
+        # OpenHands reads its configured socket credential from
+        # OH_SESSION_API_KEYS_0.  SESSION_API_KEY is retained only as a
+        # compatibility fallback for older Runtime images.  Existing Runtime
+        # containers may have a stale SESSION_API_KEY after a controller
+        # restart, whereas the OpenHands server continues to authorize against
+        # OH_SESSION_API_KEYS_0.
+        session_api_key = os.environ.get("OH_SESSION_API_KEYS_0") or os.environ["SESSION_API_KEY"]
         await upstream.send(json.dumps({
             "type": "auth",
-            "session_api_key": os.environ["SESSION_API_KEY"],
+            "session_api_key": session_api_key,
         }))
         while True:
             remaining = deadline - time.monotonic()
