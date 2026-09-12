@@ -107,6 +107,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-343 | 历史 FlowRun Memory 隔离目录兼容回填 | DONE | 仅在完整验证既有 allocation 的所有权、锁、路径和权限后，补齐 FR-316 新增的空只读 Memory 挂载目录。 |
 | FR-344 | 终态节点会话的只读 Runtime 恢复 | DONE | 终态 FlowRun 停止计算后，已有节点 Conversation 的只读查看会按冻结规格恢复同一持久 Runtime，同时保留写入拒绝。 |
 | FR-345 | 历史冻结 Environment Runtime 契约兼容 | DONE | 只读恢复已绑定历史 Conversation 时，严格接受经审计的 OpenHands 1.44 冻结 manifest；新发布、执行和写入路径继续只接受当前 1.47 契约。 |
+| FR-346 | 历史节点身份 Snapshot 只读兼容 | DONE | 已绑定历史 Conversation 的只读 host 可验证并投影无 Tool Policy 的 OpenHands 1.44 节点身份 Snapshot；新建与执行路径继续拒绝。 |
 | OPS-01 | Docker rollback image / BuildKit cache 容量增长 | DONE | 建立带运行引用保护、dry-run 和显式确认的回收工具，并完成生产候选边界核验。 |
 | OPS-02 | Docker rollback image / BuildKit cache 容量增长 | DONE | 已按授权使用 OPS-03 tag 级路径回收，并完成生产不变量与入口验证。 |
 | OPS-03 | 多 rollback tag image 的安全回收 | DONE | 改为逐 tag、重查 Container 引用、不使用 `--force` 的回收路径。 |
@@ -289,6 +290,19 @@ Playwright Agent 工作台用例在 WebSocket 流恢复阶段超时，未将其�
 完成：Runtime manifest 校验把当前 1.47 契约与唯一允许的历史 1.44 事实分开。后者要求四个包均为 `1.44.0`、`9a24f6c8866f353042a57df0514ccc900e3a0691`、对应 source archive digest、精确审计 overlay、正式 builder/image digest、成功 contract/tool probe 以及完整 build spec；任一字段漂移继续拒绝。只有 Attempt 已有 Conversation 且通过只读恢复分支时才显式开启该窄口，完成/取消后的创建、消息、控制和其他新运行时路径不改变。
 
 验收：新增纯 manifest 回归覆盖默认拒绝历史 1.44、显式只读恢复接受、混合包版本继续拒绝；取消 Attempt 会话恢复回归断言唯一调用点传入该显式开关。
+
+### FR-346 历史节点身份 Snapshot 只读兼容 — DONE
+
+依赖：`FR-345`。
+
+目标：
+
+- 在已有节点 Conversation 的只读恢复中，继续使用不可变、hash 校验过的历史节点身份 Snapshot；不得把旧 Agent Tool Policy 重新带回新执行模型。
+- 新 Conversation、消息发送、Attempt 执行和所有其他 Snapshot 使用路径继续只接受当前 OpenHands `1.47.0` Runtime manifest。
+
+完成：`runtime_node` 增加唯一显式只读投影开关。该开关只接受 schema `3`、OpenHands `1.44.0` 且每个节点只包含非空 `node_asset_id` 的映射；任何额外字段、旧 schema、错误 hash 或错误节点身份均继续失败。节点 host 只有在 Attempt 已有 Conversation 且恢复只读 Runtime 时传入开关，因此历史 Tool Policy 不会参与创建或执行。
+
+验收：取消 Attempt 的只读恢复回归同时断言历史 Environment 与历史 Snapshot 两个兼容开关；纯 Runtime manifest smoke 覆盖默认拒绝、只读接受和额外字段拒绝。
 
 ### OPS-01 Docker rollback image / BuildKit cache 容量治理 — DONE
 

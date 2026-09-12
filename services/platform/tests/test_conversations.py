@@ -803,7 +803,15 @@ def test_cancelled_node_session_restarts_only_for_read_only_history(
                 bool(kwargs["allow_legacy_frozen_runtime"])
             ),
         )
-        monkeypatch.setattr(flow_node_host, "runtime_node", lambda **_kwargs: {"asset": {}})
+        snapshot_options: list[bool] = []
+        monkeypatch.setattr(
+            flow_node_host,
+            "runtime_node",
+            lambda **kwargs: (
+                snapshot_options.append(bool(kwargs["allow_legacy_read_only_snapshot"])),
+                {"asset": {}},
+            )[1],
+        )
 
         host = flow_node_host.resolve_flow_node_session_host(
             db,
@@ -814,6 +822,7 @@ def test_cancelled_node_session_restarts_only_for_read_only_history(
 
         assert ensured == [attempt_id]
         assert manifest_options == [True]
+        assert snapshot_options == [True]
         assert host.session.permits(READ_SESSIONS)
         assert not host.session.permits(CREATE_SESSIONS)
 

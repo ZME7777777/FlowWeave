@@ -7,6 +7,7 @@ import pytest
 
 from flowweave.modules.environments.application import service
 from flowweave.modules.environments.infrastructure import docker
+from flowweave.runtime.manifest import runtime_manifest_hash, runtime_node
 from flowweave.shared.domain.openhands import OPENHANDS_SOURCE_COMMIT
 from flowweave.shared.domain.runtime_capabilities import (
     normalize_runtime_capabilities,
@@ -153,3 +154,38 @@ def test_manifest_rejects_capability_target_or_profile_drift() -> None:
             ),
             expected_runtime_capabilities=(),
         )
+
+
+def test_legacy_snapshot_node_identity_is_limited_to_read_only_recovery() -> None:
+    definition = {
+        "nodes": [
+            {
+                "instance_key": "node-1",
+                "node_asset_id": "asset-1",
+                "asset": {"id": "asset-1"},
+            }
+        ]
+    }
+    manifest = {
+        "schema_version": 3,
+        "openhands_version": "1.44.0",
+        "nodes": {"node-1": {"node_asset_id": "asset-1"}},
+    }
+    kwargs = {
+        "definition": definition,
+        "manifest": manifest,
+        "expected_hash": runtime_manifest_hash(manifest),
+        "snapshot_id": "snapshot-1",
+        "instance_key": "node-1",
+    }
+
+    with pytest.raises(DomainError, match="retired Agent Tool Policy"):
+        runtime_node(**kwargs)
+
+    node = runtime_node(**kwargs, allow_legacy_read_only_snapshot=True)
+    assert node["runtime_snapshot_id"] == "snapshot-1"
+
+    manifest["nodes"]["node-1"]["tool_policy"] = {}
+    kwargs["expected_hash"] = runtime_manifest_hash(manifest)
+    with pytest.raises(DomainError, match="retired Agent Tool Policy"):
+        runtime_node(**kwargs, allow_legacy_read_only_snapshot=True)

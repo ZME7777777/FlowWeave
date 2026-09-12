@@ -15,6 +15,8 @@ from typing import Any, cast
 from flowweave.shared.domain.openhands import OPENHANDS_VERSION
 from flowweave.shared.errors import DomainError
 
+_LEGACY_READ_ONLY_OPENHANDS_VERSION = "1.44.0"
+
 
 def runtime_manifest_hash(value: object) -> str:
     encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
@@ -50,8 +52,15 @@ def runtime_node(
     expected_hash: str,
     snapshot_id: str,
     instance_key: str,
+    allow_legacy_read_only_snapshot: bool = False,
 ) -> dict[str, Any]:
-    """Project one node from a Tool-Policy-free, immutable Runtime manifest."""
+    """Project one node from an immutable Runtime manifest.
+
+    New execution paths require the current Runtime manifest.  Read-only
+    recovery of an already-bound historical Conversation may explicitly accept
+    the reviewed 1.44 node-identity-only schema; it carries no Tool Policy and
+    cannot be used to create or execute a Conversation.
+    """
 
     if runtime_manifest_hash(manifest) != expected_hash:
         raise DomainError(
@@ -62,11 +71,25 @@ def runtime_node(
         )
     manifest_view = cast(dict[str, object], manifest)
     raw_nodes = manifest_view.get("nodes")
-    if (
-        manifest_view.get("schema_version") != 3
-        or manifest_view.get("openhands_version") != OPENHANDS_VERSION
-        or not isinstance(raw_nodes, dict)
-    ):
+    current_manifest = (
+        manifest_view.get("schema_version") == 3
+        and manifest_view.get("openhands_version") == OPENHANDS_VERSION
+        and isinstance(raw_nodes, dict)
+    )
+    legacy_read_only_manifest = (
+        allow_legacy_read_only_snapshot
+        and manifest_view.get("schema_version") == 3
+        and manifest_view.get("openhands_version") == _LEGACY_READ_ONLY_OPENHANDS_VERSION
+        and isinstance(raw_nodes, dict)
+        and all(
+            isinstance(raw_node, dict)
+            and set(raw_node) == {"node_asset_id"}
+            and isinstance(raw_node.get("node_asset_id"), str)
+            and bool(raw_node["node_asset_id"])
+            for raw_node in raw_nodes.values()
+        )
+    )
+    if not current_manifest and not legacy_read_only_manifest:
         raise DomainError(
             "SNAPSHOT_TOOL_POLICY_REQUIRES_RERUN",
             "This historical Snapshot uses the retired Agent Tool Policy and must be rerun",
