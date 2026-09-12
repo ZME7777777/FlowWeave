@@ -15,8 +15,6 @@ from typing import Any, cast
 from flowweave.shared.domain.openhands import OPENHANDS_VERSION
 from flowweave.shared.errors import DomainError
 
-_LEGACY_READ_ONLY_OPENHANDS_VERSION = "1.44.0"
-
 
 def runtime_manifest_hash(value: object) -> str:
     encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
@@ -52,14 +50,12 @@ def runtime_node(
     expected_hash: str,
     snapshot_id: str,
     instance_key: str,
-    allow_legacy_read_only_snapshot: bool = False,
+    expected_openhands_version: str = OPENHANDS_VERSION,
 ) -> dict[str, Any]:
     """Project one node from an immutable Runtime manifest.
 
-    New execution paths require the current Runtime manifest.  Read-only
-    recovery of an already-bound historical Conversation may explicitly accept
-    the reviewed 1.44 node-identity-only schema; it carries no Tool Policy and
-    cannot be used to create or execute a Conversation.
+    A Snapshot must match the immutable Environment Version selected by its
+    FlowRun, rather than the control plane's current OpenHands baseline.
     """
 
     if runtime_manifest_hash(manifest) != expected_hash:
@@ -71,32 +67,30 @@ def runtime_node(
         )
     manifest_view = cast(dict[str, object], manifest)
     raw_nodes = manifest_view.get("nodes")
-    current_manifest = (
+    nodes = cast(dict[str, object], raw_nodes) if isinstance(raw_nodes, dict) else {}
+    compatible_manifest = (
         manifest_view.get("schema_version") == 3
-        and manifest_view.get("openhands_version") == OPENHANDS_VERSION
-        and isinstance(raw_nodes, dict)
-    )
-    legacy_read_only_manifest = (
-        allow_legacy_read_only_snapshot
-        and manifest_view.get("schema_version") == 3
-        and manifest_view.get("openhands_version") == _LEGACY_READ_ONLY_OPENHANDS_VERSION
+        and manifest_view.get("openhands_version") == expected_openhands_version
         and isinstance(raw_nodes, dict)
         and all(
             isinstance(raw_node, dict)
-            and set(raw_node) == {"node_asset_id"}
-            and isinstance(raw_node.get("node_asset_id"), str)
-            and bool(raw_node["node_asset_id"])
-            for raw_node in raw_nodes.values()
+            and set(cast(dict[str, object], raw_node)) == {"node_asset_id"}
+            and isinstance(cast(dict[str, object], raw_node).get("node_asset_id"), str)
+            and bool(cast(dict[str, object], raw_node)["node_asset_id"])
+            for raw_node in nodes.values()
         )
     )
-    if not current_manifest and not legacy_read_only_manifest:
+    if not compatible_manifest:
         raise DomainError(
             "SNAPSHOT_TOOL_POLICY_REQUIRES_RERUN",
-            "This historical Snapshot uses the retired Agent Tool Policy and must be rerun",
+            (
+                "This Snapshot does not match its frozen Runtime identity or uses the retired "
+                "Agent Tool Policy"
+            ),
             409,
             {"snapshot_id": snapshot_id},
         )
-    manifest_node_value = cast(dict[str, object], raw_nodes).get(instance_key)
+    manifest_node_value = nodes.get(instance_key)
     if not isinstance(manifest_node_value, dict):
         raise DomainError(
             "SNAPSHOT_MANIFEST_INVALID",

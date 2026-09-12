@@ -414,10 +414,10 @@ export function TerminalEnvironmentsPage() {
   return <main className="page environments-page"><div className="page-action-row"><button className="primary" onClick={() => setCreating(true)}><Plus size={15}/>新建环境</button></div><div className="environments-page-scroll">
     <div className="environment-warning"><b>凭据风险</b><span>终端不挂载宿主目录，但发布不会清理或拒绝认证文件。镜像可能永久包含 Token、密钥、Cookie 和命令历史，请限制镜像访问与分发范围。</span></div>
     {error && <p className="error">{error}</p>}
-    {isLoading ? <div className="empty">加载终端环境…</div> : environments.length ? <><div className="environment-grid compact-environment-list">{pagedEnvironments.map(environment => { const latest = environment.versions.find(item => item.state === 'READY'); const latestCompatible = environment.versions.find(item => item.state === 'READY' && item.runtime_compatible); const active = environment.active_sessions[0]; return <article className="environment-card" key={environment.id}>
+    {isLoading ? <div className="empty">加载终端环境…</div> : environments.length ? <><div className="environment-grid compact-environment-list">{pagedEnvironments.map(environment => { const latest = environment.versions.find(item => item.state === 'READY'); const active = environment.active_sessions[0]; return <article className="environment-card" key={environment.id}>
       <header><span className="environment-icon"><Box size={20}/></span><div><h3>{environment.name}</h3></div><button className="ghost" disabled={deletingEnvironmentId !== null} aria-label={`删除环境 ${environment.name}`} onClick={() => void remove(environment)}>{deletingEnvironmentId === environment.id ? <LoaderCircle className="spin" size={15}/> : <Trash2 size={15}/>}</button></header>
       <p>{environment.description || '未填写说明'}</p>
-      <dl><div><dt>可运行版本</dt><dd>{environment.versions.filter(item => item.state === 'READY' && item.runtime_compatible).length}</dd></div><div><dt>最新可运行版本</dt><dd>{latestCompatible ? `v${latestCompatible.version_no} · ${latestCompatible.image_digest.slice(0, 19)}…` : '需要重新发布'}</dd></div><div><dt>配置会话</dt><dd>{active ? active.state : '无'}</dd></div></dl>
+      <dl><div><dt>可运行版本</dt><dd>{environment.versions.filter(item => item.state === 'READY').length}</dd></div><div><dt>最新可运行版本</dt><dd>{latest ? `v${latest.version_no} · ${latest.image_digest.slice(0, 19)}…` : '需要发布'}</dd></div><div><dt>配置会话</dt><dd>{active ? active.state : '无'}</dd></div></dl>
       {latest?.manifest.commands && <div className="environment-tools">{Object.entries(latest.manifest.commands).slice(0, 8).map(([command, version]) => <span key={command} title={version}>{command}</span>)}</div>}
       {environment.versions.length > 0 && <details className="environment-history"><summary>版本历史（{environment.versions.length}）</summary><div>{environment.versions.map(version => {
         const occupied = version.reference_count > 0;
@@ -425,7 +425,7 @@ export function TerminalEnvironmentsPage() {
           <div><b>v{version.version_no}</b><span className={`environment-version-state ${version.state.toLowerCase()}`}>{version.state}</span></div>
           <small>{new Date(version.created_at).toLocaleString()} · {version.image_digest ? `${version.image_digest.slice(0, 19)}…` : '无镜像摘要'}</small>
           <p>{version.description || '未填写版本说明'}{version.runtime_capabilities.length ? ` · ${version.runtime_capabilities.join(' + ')}` : ' · minimal'}</p>
-          <span className={occupied ? 'environment-version-usage occupied' : 'environment-version-usage'}>{version.state === 'READY' && !version.runtime_compatible ? '缺少运行契约，需重新发布' : occupied ? `${version.run_reference_count} 个运行` : '未被占用'}</span>
+          <span className={occupied ? 'environment-version-usage occupied' : 'environment-version-usage'}>{occupied ? `${version.run_reference_count} 个运行` : '未被占用'}</span>
           <button className="ghost" disabled={occupied} title={occupied ? '解除运行引用后才能删除' : `删除 v${version.version_no}`} aria-label={`删除版本 v${version.version_no}`} onClick={() => void removeVersion(environment, version)}><Trash2 size={14}/></button>
         </section>;
       })}</div></details>}

@@ -10,12 +10,8 @@ from sqlalchemy.orm import Session
 from flowweave.modules.environments.infrastructure import docker
 from flowweave.modules.sandboxes import public as sandboxes
 from flowweave.modules.tasks.public import Lease, enqueue, lease_is_current
-from flowweave.runtime.contract import OPENHANDS_PACKAGE_VERSIONS
 from flowweave.shared.application.transactions import finish
-from flowweave.shared.domain.openhands import (
-    OPENHANDS_SOURCE_COMMIT,
-    OpenHandsServerIdentity,
-)
+from flowweave.shared.domain.openhands import OpenHandsServerIdentity
 from flowweave.shared.domain.runtime_capabilities import (
     normalize_runtime_capabilities,
     openhands_install_capabilities,
@@ -48,9 +44,6 @@ def _version_dict(
     flow_reference_count: int = 0,
     snapshot_reference_count: int = 0,
 ) -> dict[str, Any]:
-    runtime_compatible, runtime_incompatibility_reason = runtime_manifest_compatibility(
-        item.manifest_json
-    )
     return {
         "id": item.id,
         "environment_id": item.environment_id,
@@ -65,8 +58,6 @@ def _version_dict(
         "runtime_capabilities": list(item.runtime_capabilities or []),
         "manifest": item.manifest_json or {},
         "error_detail": item.error_detail,
-        "runtime_compatible": runtime_compatible,
-        "runtime_incompatibility_reason": runtime_incompatibility_reason,
         "run_reference_count": run_reference_count,
         "flow_reference_count": flow_reference_count,
         "snapshot_reference_count": snapshot_reference_count,
@@ -91,43 +82,6 @@ def _session_dict(item: EnvironmentSetupSession) -> dict[str, Any]:
 
 
 _CLEANUP_MAX_ATTEMPTS = 20
-_OPENHANDS_SOURCE_ARCHIVE_DIGEST = (
-    "70128f691ba58f0a1a1f6987c24738bb144209c61ba1b44a349a5504a98ea6b5"
-)
-_LEGACY_OPENHANDS_SOURCE_COMMIT = "9a24f6c8866f353042a57df0514ccc900e3a0691"
-_LEGACY_OPENHANDS_SOURCE_ARCHIVE_DIGEST = (
-    "94e0bc26a670c552f8bed2dfba048d9a5c6d7bc66778e7844009db6785da6d21"
-)
-_LEGACY_OPENHANDS_PACKAGE_VERSIONS = {
-    package: "1.44.0" for package, _version in OPENHANDS_PACKAGE_VERSIONS
-}
-
-
-def runtime_manifest_compatibility(manifest: object) -> tuple[bool, str | None]:
-    """Describe whether an environment can be selected for a new Runtime."""
-
-    try:
-        validate_runtime_manifest(manifest)
-    except DomainError as exc:
-        if exc.code != "ENVIRONMENT_RUNTIME_INCOMPATIBLE":
-            raise
-        return False, exc.message
-    return True, None
-
-
-_APPROVED_OPENHANDS_OVERLAYS: dict[str, str] = {
-    # The pinned OpenHands source is patched during the formal Runtime build
-    # to retain native conversation-fork condensation behavior.  Treat this
-    # exact content hash as part of the frozen Runtime contract; reject every
-    # other overlay rather than broadly allowing source modifications.
-    "patch_fork_condenser.py": "19715a644888dc829299ebe555ef2cd682ca739dde97f9c046e626434d39f56a",
-}
-_LEGACY_APPROVED_OPENHANDS_OVERLAYS: dict[str, str] = {
-    # Environments published by the reviewed c48deb1 fork-policy fix used
-    # this predecessor patch. Keep those frozen manifests runnable while
-    # continuing to reject every other overlay.
-    "patch_fork_condenser.py": "917d5625d944bee61dfd24876b3c344990c7cd780d7f7cbec9df566af31d4fa3",
-}
 
 
 def validate_runtime_manifest(
@@ -135,15 +89,14 @@ def validate_runtime_manifest(
     *,
     environment_version_id: str | None = None,
     expected_runtime_capabilities: tuple[str, ...] | None = None,
-    allow_legacy_frozen_runtime: bool = False,
 ) -> None:
-    """Reject environment images that cannot satisfy the frozen Runtime contract.
+    """Validate an Environment Version against its own frozen evidence.
 
-    The current contract is required for all new publishing and execution
-    paths.  A caller may opt into the exact reviewed 1.44 contract only when
-    reopening an already-bound historical Conversation read-only; this keeps
-    immutable Environment Versions usable without making them selectable for
-    new Runs, generations, or Conversation writes.
+    A Runtime manifest records the Agent Server provenance used to build that
+    immutable image. It must not be compared with the control plane's current
+    OpenHands baseline: upgrading that baseline would otherwise invalidate
+    existing FlowRuns, nodes and Conversations. Runtime startup separately
+    probes the Server against this manifest's own identity and contract.
     """
 
     document = cast(dict[str, object], manifest) if isinstance(manifest, dict) else {}
@@ -151,11 +104,8 @@ def validate_runtime_manifest(
     provenance = cast(dict[str, object], provenance) if isinstance(provenance, dict) else {}
     packages = provenance.get("package_versions")
     actual_packages = cast(dict[str, object], packages) if isinstance(packages, dict) else {}
-    expected_packages = dict(OPENHANDS_PACKAGE_VERSIONS)
     actual_commit = provenance.get("source_commit")
     actual_ref = provenance.get("source_ref")
-    overlays = provenance.get("overlays")
-    actual_overlays = cast(dict[str, object], overlays) if isinstance(overlays, dict) else {}
     build = document.get("build")
     build = cast(dict[str, object], build) if isinstance(build, dict) else {}
     validation = document.get("validation")
@@ -181,43 +131,40 @@ def validate_runtime_manifest(
         and tool_probe.get("status") == "PASSED"
         and bool(security_scan.get("status"))
     )
-    current_provenance_valid = (
-        actual_packages == expected_packages
-        and actual_commit == OPENHANDS_SOURCE_COMMIT
-        and actual_ref == OPENHANDS_SOURCE_COMMIT
-        and provenance.get("source_archive_digest") == _OPENHANDS_SOURCE_ARCHIVE_DIGEST
-        # Historical Runtime manifests predate the formal fork patch and have
-        # no overlays. A newly published image may carry the current reviewed
-        # patch or the exact reviewed predecessor; unknown overlays fail closed.
-        and actual_overlays
-        in ({}, _APPROVED_OPENHANDS_OVERLAYS, _LEGACY_APPROVED_OPENHANDS_OVERLAYS)
+    expected_package_names = {
+        "openhands-agent-server",
+        "openhands-sdk",
+        "openhands-tools",
+        "openhands-workspace",
+    }
+    package_values = {
+        str(value)
+        for package, value in actual_packages.items()
+        if package in expected_package_names
+    }
+    provenance_valid = (
+        set(actual_packages) == expected_package_names
+        and all(isinstance(value, str) and value for value in actual_packages.values())
+        and len(package_values) == 1
+        and isinstance(actual_commit, str)
+        and bool(actual_commit)
+        and isinstance(actual_ref, str)
+        and bool(actual_ref)
+        and isinstance(provenance.get("source_archive_digest"), str)
+        and bool(provenance.get("source_archive_digest"))
+        and isinstance(provenance.get("overlays"), dict)
     )
-    legacy_frozen_provenance_valid = (
-        actual_packages == _LEGACY_OPENHANDS_PACKAGE_VERSIONS
-        and actual_commit == _LEGACY_OPENHANDS_SOURCE_COMMIT
-        and actual_ref == _LEGACY_OPENHANDS_SOURCE_COMMIT
-        and provenance.get("source_archive_digest") == _LEGACY_OPENHANDS_SOURCE_ARCHIVE_DIGEST
-        and actual_overlays == _APPROVED_OPENHANDS_OVERLAYS
-    )
-    if not common_contract_valid or not (
-        current_provenance_valid or (allow_legacy_frozen_runtime and legacy_frozen_provenance_valid)
-    ):
+    if not common_contract_valid or not provenance_valid:
         raise DomainError(
             "ENVIRONMENT_RUNTIME_INCOMPATIBLE",
-            (
-                "The terminal environment does not satisfy the frozen OpenHands "
-                "Runtime contract; publish a new environment version"
-            ),
+            "The terminal environment is missing immutable Runtime build evidence",
             409,
             {
                 "environment_version_id": environment_version_id,
-                "expected_package_versions": expected_packages,
                 "actual_package_versions": actual_packages,
-                "expected_source_commit": OPENHANDS_SOURCE_COMMIT,
                 "actual_source_commit": actual_commit,
                 "actual_source_ref": actual_ref,
                 "actual_source_archive_digest": provenance.get("source_archive_digest"),
-                "actual_overlays": actual_overlays,
                 "build": build,
                 "validation": validation,
             },
@@ -266,19 +213,12 @@ def runtime_server_identity(
     manifest: object,
     *,
     environment_version_id: str | None = None,
-    allow_legacy_frozen_runtime: bool = False,
 ) -> OpenHandsServerIdentity:
-    """Return the exact reviewed Agent Server identity frozen by an Environment.
-
-    Validation happens before extracting the values, so arbitrary manifest text
-    can never become a readiness admission expectation. The one legacy identity
-    remains available only through the explicit read-only recovery gate.
-    """
+    """Return the Agent Server identity frozen by one Environment Version."""
 
     validate_runtime_manifest(
         manifest,
         environment_version_id=environment_version_id,
-        allow_legacy_frozen_runtime=allow_legacy_frozen_runtime,
     )
     document = cast(dict[str, object], manifest)
     provenance = cast(dict[str, object], document["runtime_provenance"])

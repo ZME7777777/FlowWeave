@@ -58,7 +58,7 @@ from flowweave.modules.agent_workspaces import public as agent_workspace_host
 from flowweave.modules.catalog.public import resolve_version
 from flowweave.modules.environments.public import (
     lock_referenceable_version,
-    validate_runtime_manifest,
+    runtime_server_identity,
 )
 from flowweave.modules.model_providers.public import has_connected_default_model
 from flowweave.modules.sandboxes import public as sandboxes
@@ -175,7 +175,13 @@ def project_sandbox_images(
     return _SANDBOX_PROJECT_IMAGE.sub(replace_url, content)
 
 
-def _node_context_suffix(db: Session, *, snapshot: RunSnapshot, attempt_id: str | None) -> str:
+def _node_context_suffix(
+    db: Session,
+    *,
+    snapshot: RunSnapshot,
+    attempt_id: str | None,
+    expected_openhands_version: str,
+) -> str:
     """Render the node's already-frozen Context into the native system suffix."""
 
     if not attempt_id:
@@ -191,6 +197,7 @@ def _node_context_suffix(db: Session, *, snapshot: RunSnapshot, attempt_id: str 
         expected_hash=snapshot.runtime_manifest_hash,
         snapshot_id=snapshot.id,
         instance_key=node_run.flow_node_snapshot_key,
+        expected_openhands_version=expected_openhands_version,
     )
     asset = cast(dict[str, Any], node.get("asset") or {})
     executor = cast(dict[str, Any], asset.get("executor") or {})
@@ -885,7 +892,9 @@ def _create_native_conversation(
             409,
             {"environment_version_id": run.environment_version_id},
         )
-    validate_runtime_manifest(environment.manifest_json, environment_version_id=environment.id)
+    server_identity = runtime_server_identity(
+        environment.manifest_json, environment_version_id=environment.id
+    )
     if not attempt_id:
         raise DomainError(
             "NODE_CONVERSATION_CONTEXT_REQUIRED",
@@ -945,8 +954,12 @@ def _create_native_conversation(
         working_directory=working_directory,
         host_root=host_root,
         runtime_root=runtime_root,
+        runtime_server_identity=server_identity,
         system_message_suffix_append=_node_context_suffix(
-            db, snapshot=snapshot, attempt_id=attempt_id
+            db,
+            snapshot=snapshot,
+            attempt_id=attempt_id,
+            expected_openhands_version=server_identity.package_version,
         ),
         load_memory=memory_enabled,
     )
@@ -1250,7 +1263,9 @@ def _create_or_reload_node_bootstrap(
             409,
             {"environment_version_id": run.environment_version_id},
         )
-    validate_runtime_manifest(environment.manifest_json, environment_version_id=environment.id)
+    server_identity = runtime_server_identity(
+        environment.manifest_json, environment_version_id=environment.id
+    )
     if not binding.node_attempt_id:
         raise DomainError(
             "RUNTIME_CONVERSATION_SESSION_DRIFT",
@@ -1316,8 +1331,12 @@ def _create_or_reload_node_bootstrap(
         working_directory=working_directory,
         host_root=host_root,
         runtime_root=runtime_root,
+        runtime_server_identity=server_identity,
         system_message_suffix_append=_node_context_suffix(
-            db, snapshot=snapshot, attempt_id=binding.node_attempt_id
+            db,
+            snapshot=snapshot,
+            attempt_id=binding.node_attempt_id,
+            expected_openhands_version=server_identity.package_version,
         ),
         load_memory=memory_enabled,
     )
@@ -1803,9 +1822,7 @@ def node_conversation_head(
     event by formal OpenHands identity and never trust a browser cache.
     """
 
-    handle = _node_handle(
-        db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
-    )
+    handle = _node_handle(db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id)
     return {"cursor": get_runtime().read_active_events(handle).cursor}
 
 

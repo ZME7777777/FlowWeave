@@ -18,9 +18,14 @@ from flowweave.runtime.contract import (
     compile_runtime_contract,
     governed_runtime_contract,
     normalize_runtime_contract,
+    runtime_contract_for_server_identity,
 )
 from flowweave.runtime.openhands import OpenHandsRuntime
-from flowweave.shared.domain.openhands import OPENHANDS_SOURCE_COMMIT, OPENHANDS_VERSION
+from flowweave.shared.domain.openhands import (
+    OPENHANDS_SOURCE_COMMIT,
+    OPENHANDS_VERSION,
+    OpenHandsServerIdentity,
+)
 from flowweave.shared.errors import DomainError
 
 
@@ -77,15 +82,44 @@ def _reason(error: pytest.ExceptionInfo[DomainError]) -> object:
     return error.value.details.get("reason")
 
 
-def test_runtime_contract_rejects_missing_or_mutated_snapshot_contract() -> None:
+def test_runtime_contract_preserves_a_complete_historical_snapshot_contract() -> None:
     tools = ("file_editor", "terminal")
     with pytest.raises(ValueError, match="must be an object"):
         normalize_runtime_contract(None, required_tools=tools)
 
     document = compile_runtime_contract(tools)
-    document["source_commit"] = "0" * 40
-    with pytest.raises(ValueError, match="does not match"):
+    document["openhands_version"] = "1.44.0"
+    document["source_commit"] = "a" * 40
+    document["source_ref"] = "a" * 40
+    document["package_versions"] = {
+        "openhands-agent-server": "1.44.0",
+        "openhands-sdk": "1.44.0",
+        "openhands-tools": "1.44.0",
+        "openhands-workspace": "1.44.0",
+    }
+
+    contract = normalize_runtime_contract(document, required_tools=tools)
+    assert contract.openhands_version == "1.44.0"
+    assert contract.source_commit == "a" * 40
+
+    document["required_tools"] = ["terminal"]
+    with pytest.raises(ValueError, match="requirements are invalid"):
         normalize_runtime_contract(document, required_tools=tools)
+
+
+def test_runtime_contract_uses_the_environment_frozen_server_identity() -> None:
+    identity = OpenHandsServerIdentity("1.44.0", "a" * 40, "a" * 40)
+
+    contract = runtime_contract_for_server_identity(("file_editor", "terminal"), identity)
+
+    assert contract.openhands_version == identity.package_version
+    assert contract.source_commit == identity.source_commit
+    assert dict(contract.package_versions) == {
+        "openhands-agent-server": "1.44.0",
+        "openhands-sdk": "1.44.0",
+        "openhands-tools": "1.44.0",
+        "openhands-workspace": "1.44.0",
+    }
 
 
 def test_start_rejects_missing_contract_before_runtime_http(

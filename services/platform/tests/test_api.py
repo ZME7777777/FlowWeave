@@ -1396,8 +1396,8 @@ def test_flow_run_rejects_ready_environment_without_runtime_provenance(
         version_id = version.id
 
     listed = client.get(f"/api/v1/terminal-environments/{environment_id}").json()["versions"][0]
-    assert listed["runtime_compatible"] is False
-    assert listed["runtime_incompatibility_reason"]
+    assert "runtime_compatible" not in listed
+    assert "runtime_incompatibility_reason" not in listed
 
     saved = client.post(
         "/api/v1/flows",

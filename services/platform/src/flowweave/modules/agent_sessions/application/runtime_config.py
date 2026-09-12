@@ -30,7 +30,10 @@ from flowweave.runtime.base import (
     RuntimeProvider,
     RuntimeTool,
 )
-from flowweave.runtime.contract import agent_workspace_runtime_contract
+from flowweave.runtime.contract import (
+    agent_workspace_runtime_contract,
+    runtime_contract_for_server_identity,
+)
 from flowweave.runtime.request import resolve_runtime_selection, runtime_provider
 from flowweave.runtime.workspace import (
     agent_workspace_capability_marketplace_name,
@@ -40,7 +43,7 @@ from flowweave.runtime.workspace import (
     materialize_runtime_memory,
 )
 from flowweave.shared.domain.agent_definition import normalize_agent_definition_document
-from flowweave.shared.domain.openhands import FIXED_RUNTIME_TOOL_NAMES
+from flowweave.shared.domain.openhands import FIXED_RUNTIME_TOOL_NAMES, OpenHandsServerIdentity
 from flowweave.shared.domain.runtime_policy import normalize_memory_policy_document
 from flowweave.shared.errors import DomainError
 from flowweave.shared.settings import get_settings
@@ -645,6 +648,7 @@ def build_agent_spec(
     working_directory: str,
     host_root: Path,
     runtime_root: Path,
+    runtime_server_identity: OpenHandsServerIdentity | None = None,
     system_message_suffix_append: str = "",
     load_memory: bool = False,
 ) -> RuntimeAgentSpec:
@@ -710,7 +714,13 @@ def build_agent_spec(
         mcp_servers=mcp_servers,
         hook_config=hook_config,
         agent_definitions=frozen_agent_definitions(config.capabilities),
-        runtime_contract=agent_workspace_runtime_contract(tuple(tool.name for tool in TOOLS)),
+        runtime_contract=(
+            runtime_contract_for_server_identity(
+                tuple(tool.name for tool in TOOLS), runtime_server_identity
+            )
+            if runtime_server_identity is not None
+            else agent_workspace_runtime_contract(tuple(tool.name for tool in TOOLS))
+        ),
     )
 
 

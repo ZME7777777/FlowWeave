@@ -796,21 +796,21 @@ def test_cancelled_node_session_restarts_only_for_read_only_history(
             "active_node_runtime_connection",
             lambda _db, **_kwargs: _connection(runtime_session_id, flow_run_id),
         )
-        manifest_options: list[bool] = []
+        manifest_options: list[str | None] = []
         monkeypatch.setattr(
             flow_node_host,
             "runtime_server_identity",
             lambda _manifest, **kwargs: (
-                manifest_options.append(bool(kwargs["allow_legacy_frozen_runtime"])),
+                manifest_options.append(kwargs.get("environment_version_id")),
                 OpenHandsServerIdentity("1.44.0", "a" * 40, "a" * 40),
             )[1],
         )
-        snapshot_options: list[bool] = []
+        snapshot_options: list[str | None] = []
         monkeypatch.setattr(
             flow_node_host,
             "runtime_node",
             lambda **kwargs: (
-                snapshot_options.append(bool(kwargs["allow_legacy_read_only_snapshot"])),
+                snapshot_options.append(kwargs.get("expected_openhands_version")),
                 {"asset": {}},
             )[1],
         )
@@ -827,8 +827,8 @@ def test_cancelled_node_session_restarts_only_for_read_only_history(
         assert ensured[0]["runtime_server_identity"] == OpenHandsServerIdentity(
             "1.44.0", "a" * 40, "a" * 40
         )
-        assert manifest_options == [True]
-        assert snapshot_options == [True]
+        assert manifest_options == [str(ensured[0]["environment_version_id"])]
+        assert snapshot_options == ["1.44.0"]
         assert host.session.permits(READ_SESSIONS)
         assert not host.session.permits(CREATE_SESSIONS)
 

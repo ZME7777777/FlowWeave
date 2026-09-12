@@ -16,7 +16,6 @@ from typing import cast
 from flowweave.bootstrap.settings import Settings
 from flowweave.modules.sandboxes.infrastructure.models import ManagedSandbox
 from flowweave.runtime.auth import derive_runtime_session_key
-from flowweave.shared.domain.openhands import CURRENT_OPENHANDS_SERVER_IDENTITY
 from flowweave.shared.errors import DomainError
 from flowweave.shared.infrastructure.docker_control import (
     DockerControlError,
@@ -1682,16 +1681,9 @@ chmod 0700 "$target"
 
     def _wait_for_agent_server(self, resource: ManagedSandbox) -> None:
         spec = resource.spec_json or {}
-        package_version = str(
-            spec.get("runtime_openhands_version")
-            or CURRENT_OPENHANDS_SERVER_IDENTITY.package_version
-        )
-        source_commit = str(
-            spec.get("runtime_source_commit") or CURRENT_OPENHANDS_SERVER_IDENTITY.source_commit
-        )
-        source_ref = str(
-            spec.get("runtime_source_ref") or CURRENT_OPENHANDS_SERVER_IDENTITY.source_ref
-        )
+        package_version = str(spec.get("runtime_openhands_version") or "")
+        source_commit = str(spec.get("runtime_source_commit") or "")
+        source_ref = str(spec.get("runtime_source_ref") or "")
         if not package_version or not source_commit or not source_ref:
             raise DomainError(
                 "SANDBOX_SPEC_INVALID",

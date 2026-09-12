@@ -156,7 +156,7 @@ def test_manifest_rejects_capability_target_or_profile_drift() -> None:
         )
 
 
-def test_legacy_snapshot_node_identity_is_limited_to_read_only_recovery() -> None:
+def test_snapshot_node_identity_must_match_its_frozen_runtime_version() -> None:
     definition = {
         "nodes": [
             {
@@ -179,13 +179,13 @@ def test_legacy_snapshot_node_identity_is_limited_to_read_only_recovery() -> Non
         "instance_key": "node-1",
     }
 
-    with pytest.raises(DomainError, match="retired Agent Tool Policy"):
+    with pytest.raises(DomainError, match="frozen Runtime identity"):
         runtime_node(**kwargs)
 
-    node = runtime_node(**kwargs, allow_legacy_read_only_snapshot=True)
+    node = runtime_node(**kwargs, expected_openhands_version="1.44.0")
     assert node["runtime_snapshot_id"] == "snapshot-1"
 
     manifest["nodes"]["node-1"]["tool_policy"] = {}
     kwargs["expected_hash"] = runtime_manifest_hash(manifest)
-    with pytest.raises(DomainError, match="retired Agent Tool Policy"):
-        runtime_node(**kwargs, allow_legacy_read_only_snapshot=True)
+    with pytest.raises(DomainError, match="frozen Runtime identity"):
+        runtime_node(**kwargs, expected_openhands_version="1.44.0")

@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-import hashlib
+import io
 import json
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -33,6 +32,7 @@ from flowweave.shared.models import (
 
 _BASE_IMAGE = "flowweave-openhands-runtime@sha256:" + "1" * 64
 _REAL_RESOLVE_SETUP_IMAGE = environment_docker.resolve_setup_image
+_REAL_FLATTEN_SETUP_CONTAINER = environment_docker._flatten_setup_container
 
 
 @pytest.fixture(autouse=True)
@@ -41,6 +41,11 @@ def _resolve_test_setup_image(monkeypatch):
         environment_docker,
         "resolve_setup_image",
         lambda _reference: (_BASE_IMAGE, "sha256:" + "1" * 64),
+    )
+    monkeypatch.setattr(
+        environment_docker,
+        "_flatten_setup_container",
+        lambda _container_id, _reference, *, timeout: "sha256:" + "c" * 64,
     )
 
 
@@ -68,6 +73,136 @@ def test_platform_setup_image_tag_is_frozen_to_content_digest(monkeypatch):
         "flowweave-openhands-runtime:1",
         digest,
     )
+
+
+def test_docker_maps_ghcr_tls_timeout_to_stable_public_error():
+    error = environment_docker._docker_command_failed(
+        'Head "https://ghcr.io/v2/astral-sh/uv/manifests/0.11.6": net/http: TLS handshake timeout'
+    )
+
+    assert error.code == "ENVIRONMENT_BUILD_REGISTRY_UNAVAILABLE"
+    assert error.status == 503
+    assert error.details == {"registry": "ghcr.io", "failure": "TLS_HANDSHAKE_TIMEOUT"}
+
+
+def test_flatten_setup_container_pauses_exports_imports_and_unpauses(monkeypatch):
+    commands: list[list[str]] = []
+    popen_calls: list[tuple[list[str], object]] = []
+
+    class Process:
+        def __init__(self, stdout: bytes = b"") -> None:
+            self.stdout = io.BytesIO(stdout)
+            self.returncode = 0
+
+        def communicate(self, timeout=None):
+            assert timeout == 60
+            return b"sha256:" + b"c" * 64, b""
+
+        def wait(self, timeout=None):
+            assert timeout == 30
+            return self.returncode
+
+        def poll(self):
+            return self.returncode
+
+        def kill(self):
+            pytest.fail("successful flatten must not kill a Docker process")
+
+    exporter = Process(b"tar-stream")
+    importer = Process()
+
+    def fake_popen(command, **kwargs):
+        popen_calls.append((command, kwargs.get("stdin")))
+        return exporter if command[1] == "export" else importer
+
+    monkeypatch.setattr(
+        environment_docker,
+        "get_settings",
+        lambda: SimpleNamespace(docker_binary="docker"),
+    )
+    monkeypatch.setattr(
+        environment_docker,
+        "_run",
+        lambda command, **_kwargs: commands.append(command) or "",
+    )
+    monkeypatch.setattr(environment_docker.subprocess, "Popen", fake_popen)
+
+    assert (
+        _REAL_FLATTEN_SETUP_CONTAINER(
+            "setup-container", "flowweave/environment-base:test", timeout=60
+        )
+        == "sha256:" + "c" * 64
+    )
+    assert commands == [
+        ["docker", "pause", "setup-container"],
+        ["docker", "unpause", "setup-container"],
+    ]
+    assert popen_calls[0][0] == ["docker", "export", "setup-container"]
+    assert popen_calls[1][0] == [
+        "docker",
+        "import",
+        "--change",
+        "ENTRYPOINT []",
+        "--change",
+        "USER 0:0",
+        "-",
+        "flowweave/environment-base:test",
+    ]
+    assert popen_calls[1][1] is exporter.stdout
+
+
+def test_flatten_setup_container_unpauses_after_import_failure(monkeypatch):
+    commands: list[list[str]] = []
+
+    class Process:
+        def __init__(self, *, returncode: int, stderr: bytes = b"") -> None:
+            self.stdout = io.BytesIO(b"tar-stream")
+            self.returncode = returncode
+            self._stderr = stderr
+
+        def communicate(self, timeout=None):
+            assert timeout == 60
+            return b"", self._stderr
+
+        def wait(self, timeout=None):
+            assert timeout == 30
+            return self.returncode
+
+        def poll(self):
+            return self.returncode
+
+        def kill(self):
+            pytest.fail("a completed Docker process must not be killed")
+
+    exporter = Process(returncode=0)
+    importer = Process(returncode=1, stderr=b"docker import failed")
+
+    monkeypatch.setattr(
+        environment_docker,
+        "get_settings",
+        lambda: SimpleNamespace(docker_binary="docker"),
+    )
+    monkeypatch.setattr(
+        environment_docker,
+        "_run",
+        lambda command, **_kwargs: commands.append(command) or "",
+    )
+    monkeypatch.setattr(
+        environment_docker.subprocess,
+        "Popen",
+        lambda command, **_kwargs: exporter if command[1] == "export" else importer,
+    )
+
+    with pytest.raises(DomainError) as caught:
+        _REAL_FLATTEN_SETUP_CONTAINER(
+            "setup-container", "flowweave/environment-base:test", timeout=60
+        )
+
+    assert caught.value.code == "ENVIRONMENT_DOCKER_FAILED"
+    assert commands == [
+        ["docker", "pause", "setup-container"],
+        ["docker", "unpause", "setup-container"],
+    ]
 
 
 def _node_payload() -> dict[str, object]:
@@ -120,33 +255,7 @@ def _runtime_manifest(
     }
 
 
-def test_runtime_manifest_allows_only_the_reviewed_fork_overlay() -> None:
-    manifest = _runtime_manifest()
-    provenance = manifest["runtime_provenance"]
-    assert isinstance(provenance, dict)
-    patch_path = Path(__file__).resolve().parents[3] / "infra/openhands/patch_fork_condenser.py"
-    provenance["overlays"] = {
-        "patch_fork_condenser.py": hashlib.sha256(patch_path.read_bytes()).hexdigest()
-    }
-    environment_service.validate_runtime_manifest(manifest)
-
-    provenance["overlays"] = {
-        "patch_fork_condenser.py": (
-            "917d5625d944bee61dfd24876b3c344990c7cd780d7f7cbec9df566af31d4fa3"
-        )
-    }
-    environment_service.validate_runtime_manifest(manifest)
-
-    provenance["overlays"] = {"patch_fork_condenser.py": "tampered"}
-    with pytest.raises(DomainError, match="does not satisfy"):
-        environment_service.validate_runtime_manifest(manifest)
-
-    provenance["overlays"] = {"unreviewed.py": "a" * 64}
-    with pytest.raises(DomainError, match="does not satisfy"):
-        environment_service.validate_runtime_manifest(manifest)
-
-
-def test_legacy_runtime_manifest_is_limited_to_explicit_history_recovery() -> None:
+def test_runtime_manifest_preserves_self_describing_frozen_provenance() -> None:
     manifest = _runtime_manifest()
     provenance = manifest["runtime_provenance"]
     assert isinstance(provenance, dict)
@@ -160,28 +269,21 @@ def test_legacy_runtime_manifest_is_limited_to_explicit_history_recovery() -> No
             },
             "source_commit": "9a24f6c8866f353042a57df0514ccc900e3a0691",
             "source_ref": "9a24f6c8866f353042a57df0514ccc900e3a0691",
-            "source_archive_digest": (
-                "94e0bc26a670c552f8bed2dfba048d9a5c6d7bc66778e7844009db6785da6d21"
-            ),
-            "overlays": {
-                "patch_fork_condenser.py": (
-                    "19715a644888dc829299ebe555ef2cd682ca739dde97f9c046e626434d39f56a"
-                )
-            },
+            "source_archive_digest": "a" * 64,
+            "overlays": {"historical-overlay.py": "b" * 64},
         }
     )
-
-    with pytest.raises(DomainError, match="does not satisfy"):
-        environment_service.validate_runtime_manifest(manifest)
-
-    environment_service.validate_runtime_manifest(manifest, allow_legacy_frozen_runtime=True)
+    environment_service.validate_runtime_manifest(manifest)
+    identity = environment_service.runtime_server_identity(manifest)
+    assert identity.package_version == "1.44.0"
+    assert identity.source_commit == "9a24f6c8866f353042a57df0514ccc900e3a0691"
 
     provenance["package_versions"] = {
         **provenance["package_versions"],
         "openhands-sdk": "1.47.0",
     }
-    with pytest.raises(DomainError, match="does not satisfy"):
-        environment_service.validate_runtime_manifest(manifest, allow_legacy_frozen_runtime=True)
+    with pytest.raises(DomainError, match="immutable Runtime build evidence"):
+        environment_service.validate_runtime_manifest(manifest)
 
 
 def _mock_setup_provider(monkeypatch):
@@ -428,9 +530,8 @@ def test_image_cleanup_refuses_a_retargeted_tag(monkeypatch):
     assert [command[1:3] for command in commands] == [["image", "inspect"]]
 
 
-def test_publish_preserves_container_files_before_commit(monkeypatch):
+def test_publish_flattens_container_files_before_formal_build(monkeypatch):
     calls: list[str] = []
-    commit_commands: list[list[str]] = []
     _mock_formal_publish_pipeline(monkeypatch, calls)
 
     monkeypatch.setattr(environment_docker, "require_backend", lambda: None)
@@ -460,16 +561,21 @@ def test_publish_preserves_container_files_before_commit(monkeypatch):
         or ["A /root/.ssh/id_ed25519", "A /root/.lark-cli/token.json"],
     )
 
-    committed = False
     wrapped = False
 
+    def flatten(container_id, reference, *, timeout):
+        assert container_id == "container-1"
+        assert reference == "flowweave/environment-environment-1-base:v1-version1"
+        assert timeout == 60
+        calls.append("flatten")
+        return "sha256:" + "c" * 64
+
+    monkeypatch.setattr(environment_docker, "_flatten_setup_container", flatten)
+
     def fake_run(command, **kwargs):
-        nonlocal committed, wrapped
+        nonlocal wrapped
         if "commit" in command:
-            calls.append("commit")
-            commit_commands.append(command)
-            committed = True
-            return "sha256:" + "c" * 64
+            pytest.fail("publish must not retain the setup container's parent layer chain")
         if command[1] == "build":
             calls.append("wrap")
             wrapped = True
@@ -484,7 +590,10 @@ def test_publish_preserves_container_files_before_commit(monkeypatch):
                     {"detail": "No such image"},
                 )
             if reference.endswith("-base:v1-version1"):
-                return '{"Id":"sha256:' + "c" * 64 + '","Architecture":"arm64","Os":"linux"}'
+                return (
+                    '{"Id":"sha256:' + "c" * 64 + '","Architecture":"arm64","Os":"linux",'
+                    '"RootFS":{"Layers":["sha256:flat"]}}'
+                )
             if reference == "flowweave/formal-openhands-runtime:test":
                 return '{"Id":"sha256:' + "d" * 64 + '"}'
             return (
@@ -494,7 +603,9 @@ def test_publish_preserves_container_files_before_commit(monkeypatch):
                 '"flowweave.manager-scope":"test-scope",'
                 '"flowweave.environment-id":"environment-1",'
                 '"flowweave.environment-version-id":"version-1",'
-                '"flowweave.environment-version-no":"1"}}}'
+                '"flowweave.environment-version-no":"1",'
+                '"flowweave.openhands-install-capabilities":"",'
+                '"flowweave.runtime-capability-profile":"minimal"}}}'
             )
         raise AssertionError(command)
 
@@ -508,24 +619,12 @@ def test_publish_preserves_container_files_before_commit(monkeypatch):
         base_image_digest="sha256:" + "1" * 64,
     )
 
-    assert calls == ["scan", "commit", "formal-build", "wrap", "probe"]
-    assert commit_commands == [
-        [
-            "docker",
-            "commit",
-            "--pause=true",
-            "--change",
-            "ENTRYPOINT []",
-            "--change",
-            "USER 0:0",
-            "container-1",
-            "flowweave/environment-environment-1-base:v1-version1",
-        ]
-    ]
+    assert calls == ["scan", "flatten", "formal-build", "wrap", "probe"]
     assert published.reference == "flowweave/environment-environment-1:v1-version1"
     assert published.manifest["filesystem_change_count"] == 2
     assert published.manifest["build"]["install_acp_providers"] == ""
     assert published.manifest["build"]["customized_base_image_user"] == "0:0"
+    assert published.manifest["build"]["customized_base_image_layer_count"] == 1
 
 
 def test_publish_refuses_a_tag_owned_by_another_version(monkeypatch):
@@ -607,7 +706,10 @@ def test_publish_fails_if_docker_drops_image_ownership_labels(monkeypatch):
                     "ENVIRONMENT_DOCKER_FAILED", "missing", 502, {"detail": "No such image"}
                 )
             if reference.endswith("-base:v1-version1"):
-                return '{"Id":"sha256:' + "c" * 64 + '","Architecture":"arm64","Os":"linux"}'
+                return (
+                    '{"Id":"sha256:' + "c" * 64 + '","Architecture":"arm64","Os":"linux",'
+                    '"RootFS":{"Layers":["sha256:flat"]}}'
+                )
             if reference == "flowweave/formal-openhands-runtime:test":
                 return '{"Id":"sha256:' + "d" * 64 + '"}'
             return '{"Id":"sha256:' + "e" * 64 + '","Config":{"Labels":{}}}'
@@ -673,7 +775,10 @@ def test_publish_allows_authentication_files(monkeypatch):
                     "ENVIRONMENT_DOCKER_FAILED", "missing", 502, {"detail": "No such image"}
                 )
             if reference.endswith("-base:v1-version1"):
-                return '{"Id":"sha256:' + "c" * 64 + '","Architecture":"arm64","Os":"linux"}'
+                return (
+                    '{"Id":"sha256:' + "c" * 64 + '","Architecture":"arm64","Os":"linux",'
+                    '"RootFS":{"Layers":["sha256:flat"]}}'
+                )
             if reference == "flowweave/formal-openhands-runtime:test":
                 return '{"Id":"sha256:' + "d" * 64 + '"}'
             return (
@@ -683,7 +788,9 @@ def test_publish_allows_authentication_files(monkeypatch):
                 '"flowweave.manager-scope":"test-scope",'
                 '"flowweave.environment-id":"environment-1",'
                 '"flowweave.environment-version-id":"version-1",'
-                '"flowweave.environment-version-no":"1"}}}'
+                '"flowweave.environment-version-no":"1",'
+                '"flowweave.openhands-install-capabilities":"",'
+                '"flowweave.runtime-capability-profile":"minimal"}}}'
             )
         raise AssertionError(command)
 
@@ -698,7 +805,7 @@ def test_publish_allows_authentication_files(monkeypatch):
         base_image_digest="sha256:" + "1" * 64,
     )
 
-    assert committed is True
+    assert committed is False
     assert published.manifest["filesystem_change_count"] == 3
 
 

@@ -40,13 +40,10 @@ from flowweave.modules.sandboxes.infrastructure.models import (
 )
 from flowweave.shared.application.transactions import register_rollback_action
 from flowweave.shared.database import uid
-from flowweave.shared.domain.openhands import (
-    CURRENT_OPENHANDS_SERVER_IDENTITY,
-    OpenHandsServerIdentity,
-)
+from flowweave.shared.domain.openhands import OpenHandsServerIdentity
 from flowweave.shared.errors import DomainError, not_found
 from flowweave.shared.infrastructure.docker_control import ephemeral_lease_is_expired
-from flowweave.shared.models import AttemptState, NodeAttempt, NodeRun
+from flowweave.shared.models import AttemptState, EnvironmentVersion, NodeAttempt, NodeRun
 from flowweave.shared.settings import get_settings
 
 # These Runtimes own externally persisted OpenHands state.  They must live
@@ -212,7 +209,7 @@ def _create_managed_runtime(
     environment_id: str,
     environment_version_id: str,
     environment_version_no: int,
-    runtime_server_identity: OpenHandsServerIdentity = CURRENT_OPENHANDS_SERVER_IDENTITY,
+    runtime_server_identity: OpenHandsServerIdentity,
     workspace_relative: str = "",
 ) -> RuntimeProviderAllocation:
     settings = get_settings()
@@ -587,7 +584,7 @@ def ensure_flow_run_runtime(
     environment_id: str,
     environment_version_id: str,
     environment_version_no: int,
-    runtime_server_identity: OpenHandsServerIdentity = CURRENT_OPENHANDS_SERVER_IDENTITY,
+    runtime_server_identity: OpenHandsServerIdentity,
 ) -> RuntimeProviderAllocation:
     """Return the single physical Runtime Provider allocation for one FlowRun."""
     flow_run_id = runtime_owner_flow_run_id(db, flow_run_id)
@@ -614,7 +611,7 @@ def ensure_node_attempt_runtime(
     environment_id: str,
     environment_version_id: str,
     environment_version_no: int,
-    runtime_server_identity: OpenHandsServerIdentity = CURRENT_OPENHANDS_SERVER_IDENTITY,
+    runtime_server_identity: OpenHandsServerIdentity,
 ) -> RuntimeProviderAllocation:
     """Provision or reuse the one durable Runtime for a node Attempt.
 
@@ -650,6 +647,24 @@ def create_temporary_runtime(
 ) -> RuntimeProviderAllocation:
     """Create compute for an explicit non-conversation temporary lifecycle."""
 
+    environment = db.get(EnvironmentVersion, environment_version_id)
+    if environment is None or environment.environment_id != environment_id:
+        raise DomainError(
+            "RUN_ENVIRONMENT_VERSION_INVALID",
+            "The temporary Runtime Environment Version is unavailable",
+            409,
+            {"environment_version_id": environment_version_id},
+        )
+    # Import lazily because Environment publication itself delegates temporary
+    # Runtime lifecycle work to this module. The identity remains a property
+    # of the selected immutable Environment Version, never the current global
+    # OpenHands baseline.
+    from flowweave.modules.environments.public import runtime_server_identity
+
+    server_identity = runtime_server_identity(
+        environment.manifest_json, environment_version_id=environment.id
+    )
+
     return _create_managed_runtime(
         db,
         owner_type=owner_type,
@@ -658,6 +673,7 @@ def create_temporary_runtime(
         environment_id=environment_id,
         environment_version_id=environment_version_id,
         environment_version_no=environment_version_no,
+        runtime_server_identity=server_identity,
         workspace_relative=workspace_relative,
     )
 
