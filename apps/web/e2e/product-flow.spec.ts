@@ -445,6 +445,10 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   let modelIsResponding = false;
   let interrupted = false;
   let backfilledTaskAction = false;
+  let historyPrefetchEnabled = false;
+  let historyPageRequests = 0;
+  let releaseHistoryPage: (() => void) | undefined;
+  const historyPageGate = new Promise<void>(resolve => { releaseHistoryPage = resolve; });
   let agentStream: WebSocketRoute | undefined;
   let terminalSocket: WebSocketRoute | undefined;
   const terminalInputs: string[] = [];
@@ -687,7 +691,18 @@ test('top-level Agent workspace creates a direct conversation and restores its U
       return;
     }
     if (path.endsWith('/events')) {
-      const cursor = new URL(request.url()).searchParams.get('cursor');
+      const eventUrl = new URL(request.url());
+      const cursor = eventUrl.searchParams.get('cursor');
+      const historyCursor = eventUrl.searchParams.get('history_cursor');
+      if (historyCursor === 'running-history-1') {
+        historyPageRequests += 1;
+        await historyPageGate;
+        await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
+          events: [{ id: 'running-history-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '运行中后台补全的较早历史', timestamp: '2026-08-26T09:59:00Z' } }],
+          next_cursor: null, history_cursor: null,
+        }) });
+        return;
+      }
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
         events: modelIsResponding ? [
           ...(!cursor ? [{ id: 'running-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'agent-reply', content: '正在处理的请求', timestamp: new Date(Date.now() - 12_000).toISOString().replace(/Z$/, '') } }] : []),
@@ -733,6 +748,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
           ...(manualCondensations && !compactionScenario ? [{ id: 'manual-condensation', event_type: 'CONDENSATION_COMPLETED', payload: { source: 'agent', parent_id: 'failure-event', event_name: 'Condensation', summary: '已压缩较早上下文', forgotten_event_ids: ['tool-request', 'tool-result'], condensation_reason: 'REQUEST', condensation_reason_detail: 'OpenHands 收到显式压缩请求；该请求可能来自手动压缩、上下文用量主动保护或模型上下文超限后的恢复。', condensation_triggered_at: '2026-08-26T10:04:58Z', condensation_completed_at: '2026-08-26T10:05:00Z', timestamp: '2026-08-26T10:05:00Z' } }] : []),
         ] : [],
         next_cursor: modelIsResponding ? (backfilledTaskAction && cursor === 'running-user' ? 'recovered-task-action' : cursor || 'running-user') : null,
+        history_cursor: modelIsResponding && historyPrefetchEnabled && !cursor ? 'running-history-1' : null,
         monitoring: modelIsResponding ? {
           last_event_id: 'running-user',
           last_event_type: 'MESSAGE',
@@ -1199,10 +1215,17 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   });
   await expect(page.locator('.agent-composer-model-summary')).toHaveText('gpt-second高');
   await expect(page.getByText('当前供应商：另一模型配置')).toBeVisible();
+  modelIsResponding = true;
+  historyPrefetchEnabled = true;
   await page.reload();
   await expect(page.locator('.agent-composer-model-summary')).toHaveText('gpt-second高');
   await expect(page.getByText('当前供应商：另一模型配置')).toBeVisible();
-  modelIsResponding = true;
+  await expect.poll(() => historyPageRequests).toBeGreaterThan(0);
+  await expect(page.locator('.conversation-history-loading')).toContainText('正在载入更早的会话记录');
+  releaseHistoryPage?.();
+  await expect(page.getByText('运行中后台补全的较早历史')).toBeVisible();
+  await expect(page.locator('.conversation-history-loading')).toHaveCount(0);
+  historyPrefetchEnabled = false;
   const composer = page.getByLabel('发送 Agent 消息');
   await composer.fill('maven');
   await composer.dispatchEvent('keydown', { key: 'Enter', code: 'Enter', isComposing: true });
@@ -1318,6 +1341,8 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     return surface.scrollTop;
   });
   await expect(page.getByRole('button', { name: '跳转到正在生成的最新回复' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '跳转到正在生成的最新回复' })).toHaveCSS('width', '34px');
+  expect(await page.getByRole('button', { name: '跳转到正在生成的最新回复' }).evaluate(button => getComputedStyle(button, '::before').content)).toBe('none');
   agentStream!.send(JSON.stringify({
     type: 'delta',
     content: '用户正在查阅历史时，最新输出不应抢回视口。',
