@@ -29,7 +29,13 @@ from flowweave.modules.agent_sessions.public import AgentConversationBinding
 from flowweave.modules.agent_workspaces.application import work_directories
 from flowweave.modules.conversations.application import locator
 from flowweave.modules.conversations.application import service as conversation_service
-from flowweave.runtime.base import RuntimeInputReadiness, RuntimeResult
+from flowweave.runtime.base import (
+    RuntimeEvent,
+    RuntimeEventBatch,
+    RuntimeHandle,
+    RuntimeInputReadiness,
+    RuntimeResult,
+)
 from flowweave.shared.errors import DomainError
 from flowweave.shared.models import (
     BackgroundTask,
@@ -71,7 +77,7 @@ def test_conversation_reference_projection_hides_selected_text_from_message_body
     )
 
     assert image_urls == ()
-    assert session_conversations._MESSAGE_CONTEXT_V4_MARKER in prompt
+    assert session_conversations._MESSAGE_CONTEXT_V5_MARKER in prompt
     assert prompt.index(selected_text) < prompt.index("请基于引用继续处理")
     assert "reference_materials" in prompt
     assert "current_user_request" in prompt
@@ -84,17 +90,72 @@ def test_conversation_reference_projection_hides_selected_text_from_message_body
     assert workspace_references == ()
 
 
-def test_message_context_v4_without_references_projects_the_original_message() -> None:
+def test_plain_message_bypasses_context_envelope() -> None:
     prompt, _image_urls = session_conversations.message_payload("开始实现代码", (), ())
 
     display_content, references, workspace_references = (
         session_conversations.project_conversation_references(prompt)
     )
 
-    assert session_conversations._MESSAGE_CONTEXT_V4_MARKER in prompt
+    assert session_conversations._MESSAGE_CONTEXT_V5_MARKER not in prompt
+    assert prompt == "开始实现代码"
     assert display_content == "开始实现代码"
     assert references == ()
     assert workspace_references == ()
+
+
+def test_attachment_only_message_bypasses_context_envelope() -> None:
+    attachment_path = (
+        "/runtime/workspace/project/uploads/"
+        "00000000-0000-0000-0000-000000000001-0123456789abcdef0123456789abcdef--notes.txt"
+    )
+    prompt, _image_urls = session_conversations.message_payload(
+        "请阅读附件", ({"path": attachment_path},), ()
+    )
+
+    assert session_conversations._MESSAGE_CONTEXT_V5_MARKER not in prompt
+    assert prompt == f"请阅读附件\n\n已上传到共享工作区的附件：\n- {attachment_path}"
+
+
+def test_conversation_references_are_resolved_from_active_native_events() -> None:
+    class Runtime:
+        def read_active_events(self, _handle: object) -> RuntimeEventBatch:
+            return RuntimeEventBatch(
+                events=(
+                    RuntimeEvent(
+                        cursor="native-event",
+                        event_type="MESSAGE",
+                        payload={"content": "服务端已验证的引用内容"},
+                    ),
+                ),
+                cursor="native-event",
+            )
+
+    resolved = session_conversations.resolve_conversation_references(
+        Runtime(),  # type: ignore[arg-type]
+        RuntimeHandle(job_id="test", conversation_id="conversation"),
+        ({"event_id": "native-event"},),
+    )
+
+    assert resolved == ({"event_id": "native-event", "content": "服务端已验证的引用内容"},)
+
+
+def test_conversation_reference_resolver_rejects_client_supplied_content() -> None:
+    with pytest.raises(DomainError, match="会话引用无效"):
+        session_conversations.resolve_conversation_references(
+            object(),  # type: ignore[arg-type]
+            object(),  # type: ignore[arg-type]
+            ({"event_id": "native-event", "content": "浏览器伪造内容"},),
+        )
+
+
+def test_conversation_reference_total_budget_is_limited() -> None:
+    references = tuple(
+        {"event_id": f"event-{index}", "content": "x" * 10_000} for index in range(3)
+    )
+
+    with pytest.raises(DomainError, match="引用内容过长"):
+        session_conversations.message_payload("继续", (), references)
 
 
 def test_message_context_v3_is_hidden_from_existing_user_messages() -> None:
