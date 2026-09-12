@@ -1275,11 +1275,22 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(taskPlan).toBeVisible();
   await expect(taskPlan).toContainText('任务');
   await expect(taskPlan).toContainText('1 / 3 已完成');
-  await expect(taskPlan.locator('svg')).toHaveCount(1);
+  await expect(taskPlan.locator('.conversation-live-task-plan-summary svg')).toHaveCount(1);
+  await expect(taskPlan.getByRole('tooltip', { name: '当前任务详情' })).toBeHidden();
+  await taskPlan.hover();
+  const taskPreview = taskPlan.getByRole('tooltip', { name: '当前任务详情' });
+  await expect(taskPreview).toBeVisible();
+  await expect(taskPreview).toContainText('核对当前状态');
+  await expect(taskPreview).toContainText('已完成。');
+  await expect(taskPreview).toContainText('验证提交结果');
+  await expect(taskPreview).toContainText('正在等待命令结果。');
+  await expect(taskPreview).toContainText('整理交付说明');
+  await expect(taskPreview).toContainText('进行中');
   await expect(page.getByLabel('会话实时状态')).toHaveCount(0);
   await expect(page.getByLabel('本轮已更改 1 个文件')).toHaveCount(0);
-  await expect(taskPlan).not.toContainText('当前计划');
-  await expect(taskPlan).not.toContainText('验证提交结果');
+  const taskPlanSummary = taskPlan.locator('.conversation-live-task-plan-summary');
+  await expect(taskPlanSummary).not.toContainText('当前计划');
+  await expect(taskPlanSummary).not.toContainText('验证提交结果');
   await expect(activeProcess.locator('.conversation-activity-stage')).toHaveCount(0);
   agentStream!.send(JSON.stringify({
     type: 'event',
