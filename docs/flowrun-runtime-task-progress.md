@@ -115,6 +115,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-351 | FlowRun 侧栏记录区固定与分页 | DONE | 侧栏摘要、运行方式和操作栏固定；记录区独立滚动并以每页 5 条显示，移除操作栏下方的冗余说明。 |
 | FR-353 | Environment 发布基础镜像扁平化与失败诊断 | DONE | 将 Setup 容器在发布前扁平化为单层受控基础镜像，阻断版本继承造成的 RootFS 深度累积；GHCR TLS 超时返回稳定、无 Secret 的诊断码。 |
 | FR-354 | OpenHands 基线升级的历史 Runtime 连续性 | DONE | 删除历史 Environment、Snapshot、节点和会话对 OpenHands 版本／commit／ref 的运行时准入；仅保留实际协议、路由、工具和能力校验。 |
+| FR-362 | Environment 固定 provenance 跨 Docker Socket 隔离 | DONE | 固定 provenance／condenser overlay 通过 tar 流从 Runtime Provider 注入临时治理容器，杜绝 Docker daemon 将 `/app` 误解析为宿主机历史文件。 |
 | OPS-01 | Docker rollback image / BuildKit cache 容量增长 | DONE | 建立带运行引用保护、dry-run 和显式确认的回收工具，并完成生产候选边界核验。 |
 | OPS-02 | Docker rollback image / BuildKit cache 容量增长 | DONE | 已按授权使用 OPS-03 tag 级路径回收，并完成生产不变量与入口验证。 |
 | OPS-03 | 多 rollback tag image 的安全回收 | DONE | 改为逐 tag、重查 Container 引用、不使用 `--force` 的回收路径。 |
@@ -417,6 +418,17 @@ Environment 断言，未记为 pytest 通过；固定 OpenHands `1.47.0` 的真�
 完成：删除将 `runtime_frozen`／`FLOW_RUN_RUNTIME_FROZEN` 投影到列表、节点会话、运行、Runtime 操作和调度入口的全局基线冻结层。Environment、Snapshot Runtime contract、Runtime Provider ledger、Hook 物化和 Agent Server 探活均不再比较 OpenHands 版本、四包版本、source commit 或 source ref；这些字段若存在只作为审计 provenance。节点与会话创建／恢复只校验 FlowWeave 对象身份和实际 OpenHands 协议：服务 ready、必需 HTTP 路由、创建字段、能力与工具。前端继续显示和选择所有具备镜像摘要的 `READY` Environment Version。
 
 验收：`test_runtime_contract.py` 证明任意 Server 版本、包版本、commit/ref 漂移不再拒绝连接，同时路由、创建字段与工具缺失仍拒绝；`test_runtime_capabilities.py` 证明历史 Snapshot 版本元数据不再阻断节点投影。受影响 Python Ruff format/check、`py_compile` 和 `git diff --check` 通过。完整数据库 pytest 仍受本机 Docker socket 缺失造成的 Testcontainers fixture 初始化阻断，未记为通过；受影响 Pyright 定向运行仅报告 `environments/application/service.py` 中 3 条既有、未触及行的诊断。
+
+### FR-362 Environment 固定 provenance 跨 Docker Socket 隔离 — DONE
+
+依赖：FR-360、FR-361。
+
+完成：生产取证表明 Setup 继承的 v17 生成物仍携带 1.44 的 `/runtime/openhands-source-provenance.json`
+与 condenser overlay。根因是 Runtime Provider 经 Docker Socket 执行 `docker cp /app/...` 时，来源路径会被
+错误解析为宿主机文件系统路径。现在仅允许固定的两个平台资产作为 tar 流经 Docker 正式 `cp -` 注入临时
+治理容器；随后才 commit 最终治理层。该流程不写入用户 Setup 容器、Workspace、HOME 或持久 Runtime 状态。
+
+验收：定向单元测试覆盖治理容器与 tar 流复制边界；Ruff、Pyright、`py_compile` 与 `git diff --check` 通过。
 
 ### OPS-01 Docker rollback image / BuildKit cache 容量治理 — DONE
 

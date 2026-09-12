@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import tarfile
 from types import SimpleNamespace
 
 import pytest
@@ -11,8 +12,7 @@ from flowweave.shared.errors import DomainError
 
 def test_ghcr_tls_timeout_has_stable_safe_diagnostic() -> None:
     error = environment_docker._docker_command_failed(
-        'Head "https://ghcr.io/v2/astral-sh/uv/manifests/0.11.6": '
-        "net/http: TLS handshake timeout"
+        'Head "https://ghcr.io/v2/astral-sh/uv/manifests/0.11.6": net/http: TLS handshake timeout'
     )
 
     assert error.code == "ENVIRONMENT_BUILD_REGISTRY_UNAVAILABLE"
@@ -46,9 +46,12 @@ def test_flatten_setup_container_only_pauses_live_setup(monkeypatch) -> None:
         or "sha256:normalized",
     )
 
-    assert environment_docker._flatten_setup_container(
-        "setup-container", "flowweave/environment-base:test", timeout=60
-    ) == "sha256:normalized"
+    assert (
+        environment_docker._flatten_setup_container(
+            "setup-container", "flowweave/environment-base:test", timeout=60
+        )
+        == "sha256:normalized"
+    )
     assert commands == [
         ["docker", "pause", "setup-container"],
         ["docker", "unpause", "setup-container"],
@@ -102,9 +105,12 @@ def test_normalize_imported_debian_sources_uses_only_temp_container(monkeypatch)
         or "sha256:normalized",
     )
 
-    assert environment_docker._normalize_imported_debian_sources(
-        "flowweave/environment-base:test", timeout=60
-    ) == "sha256:normalized"
+    assert (
+        environment_docker._normalize_imported_debian_sources(
+            "flowweave/environment-base:test", timeout=60
+        )
+        == "sha256:normalized"
+    )
 
     name = "fw-env-source-normalize-947ecbcdd77aa3ce0c926762"
     assert commands[0][:7] == [
@@ -160,9 +166,12 @@ def test_export_container_as_single_layer_sets_root_entrypoint(monkeypatch) -> N
     )
     monkeypatch.setattr(environment_docker.subprocess, "Popen", fake_popen)
 
-    assert environment_docker._export_container_as_single_layer(
-        "temporary-container", "flowweave/environment-base:test", timeout=60
-    ) == "sha256:flattened"
+    assert (
+        environment_docker._export_container_as_single_layer(
+            "temporary-container", "flowweave/environment-base:test", timeout=60
+        )
+        == "sha256:flattened"
+    )
     assert calls[0][0] == ["docker", "export", "temporary-container"]
     assert calls[1][0] == [
         "docker",
@@ -251,6 +260,7 @@ def test_runtime_probe_inherits_the_frozen_openhands_build_identity(monkeypatch)
 
 def test_runtime_provenance_stamp_uses_only_disposable_governance_container(monkeypatch) -> None:
     commands: list[list[str]] = []
+    assets: list[tuple[str, str, str, int]] = []
 
     monkeypatch.setattr(
         environment_docker, "get_settings", lambda: SimpleNamespace(docker_binary="docker")
@@ -260,14 +270,25 @@ def test_runtime_provenance_stamp_uses_only_disposable_governance_container(monk
         "_run",
         lambda command, **_kwargs: commands.append(command) or "sha256:stamped",
     )
+    monkeypatch.setattr(
+        environment_docker,
+        "_copy_fixed_runtime_asset",
+        lambda container_id, asset_name, destination_dir, *, timeout: assets.append(
+            (container_id, asset_name, destination_dir, timeout)
+        ),
+    )
 
-    assert environment_docker._stamp_fixed_runtime_provenance(
-        "sha256:formal", "flowweave/environment:test", timeout=60
-    ) == "sha256:stamped"
+    assert (
+        environment_docker._stamp_fixed_runtime_provenance(
+            "sha256:formal", "flowweave/environment:test", timeout=60
+        )
+        == "sha256:stamped"
+    )
 
-    name = "fw-env-provenance-" + __import__("hashlib").sha256(
-        b"flowweave/environment:test"
-    ).hexdigest()[:24]
+    name = (
+        "fw-env-provenance-"
+        + __import__("hashlib").sha256(b"flowweave/environment:test").hexdigest()[:24]
+    )
     assert commands[0] == [
         "docker",
         "create",
@@ -275,22 +296,52 @@ def test_runtime_provenance_stamp_uses_only_disposable_governance_container(monk
         name,
         "sha256:formal",
     ]
+    assert assets == [
+        (name, "openhands-source-provenance.json", "/runtime", 30),
+        (name, "patch_fork_condenser.py", "/runtime", 30),
+    ]
     assert commands[1] == [
-        "docker",
-        "cp",
-        "/app/openhands-source-provenance.json",
-        f"{name}:/runtime/openhands-source-provenance.json",
-    ]
-    assert commands[2] == [
-        "docker",
-        "cp",
-        "/app/patch_fork_condenser.py",
-        f"{name}:/runtime/patch_fork_condenser.py",
-    ]
-    assert commands[3] == [
         "docker",
         "commit",
         name,
         "flowweave/environment:test",
     ]
-    assert commands[4] == ["docker", "rm", "--force", name]
+    assert commands[2] == ["docker", "rm", "--force", name]
+
+
+def test_fixed_runtime_asset_copy_streams_provider_asset(monkeypatch, tmp_path) -> None:
+    asset_name = "openhands-source-provenance.json"
+    asset = tmp_path / asset_name
+    asset.write_text('{"fixed": true}', encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    class Result:
+        returncode = 0
+        stdout = b""
+        stderr = b""
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        captured["input"] = kwargs["input"]
+        return Result()
+
+    monkeypatch.setattr(
+        environment_docker, "get_settings", lambda: SimpleNamespace(docker_binary="docker")
+    )
+    monkeypatch.setattr(environment_docker, "Path", lambda _path: tmp_path)
+    monkeypatch.setattr(environment_docker.subprocess, "run", fake_run)
+
+    environment_docker._copy_fixed_runtime_asset(
+        "governance-container", asset_name, "/runtime", timeout=30
+    )
+
+    assert captured["command"] == [
+        "docker",
+        "cp",
+        "-",
+        "governance-container:/runtime",
+    ]
+    with tarfile.open(fileobj=io.BytesIO(captured["input"]), mode="r") as archive:
+        member = archive.getmember(asset_name)
+        assert member.mode == 0o644
+        assert archive.extractfile(member).read() == b'{"fixed": true}'

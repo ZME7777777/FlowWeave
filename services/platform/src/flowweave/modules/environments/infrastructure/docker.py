@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import pty
@@ -8,9 +9,11 @@ import re
 import signal
 import struct
 import subprocess
+import tarfile
 import termios
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, cast
 
 from flowweave.shared.domain.runtime_capabilities import (
@@ -49,13 +52,13 @@ _TERMINAL_SHELL_SCRIPT = (
 )
 _TERMINAL_TMUX_SCRIPT = (
     'session="$1"; shell_script="$2"; columns="$3"; rows="$4"; '
-    'now=$(date +%s); '
+    "now=$(date +%s); "
     'if ! tmux has-session -t "$session" 2>/dev/null; then '
     'tmux new-session -d -x "$columns" -y "$rows" -s "$session" '
     'bash -c "$shell_script" '
     '|| tmux has-session -t "$session"; fi; '
     'if ! tmux show-options -t "$session" -v @flowweave_terminal_created_at '
-    '>/dev/null 2>&1; then '
+    ">/dev/null 2>&1; then "
     'tmux set-option -t "$session" @flowweave_terminal_created_at "$now"; fi; '
     'tmux set-option -t "$session" @flowweave_terminal_last_activity_at "$now"; '
     # Let tmux receive pointer input so wheel events enter its persistent
@@ -229,16 +232,15 @@ def _normalize_imported_debian_sources(reference: str, *, timeout: int) -> str:
 
     settings = get_settings()
     normalization_name = (
-        "fw-env-source-normalize-"
-        + hashlib.sha256(reference.encode()).hexdigest()[:24]
+        "fw-env-source-normalize-" + hashlib.sha256(reference.encode()).hexdigest()[:24]
     )
     script = (
         "set -eu; "
         "for source in /etc/apt/sources.list /etc/apt/sources.list.d/*.list "
         "/etc/apt/sources.list.d/*.sources; do "
-        "[ -f \"$source\" ] || continue; "
+        '[ -f "$source" ] || continue; '
         "sed -i 's|https://mirrors.tuna.tsinghua.edu.cn/debian|"
-        "https://deb.debian.org/debian|g' \"$source\"; "
+        'https://deb.debian.org/debian|g\' "$source"; '
         "done; "
         "rm -rf -- /agent-server"
     )
@@ -270,9 +272,7 @@ def _normalize_imported_debian_sources(reference: str, *, timeout: int) -> str:
     return normalized_digest
 
 
-def _export_container_as_single_layer(
-    container_id: str, reference: str, *, timeout: int
-) -> str:
+def _export_container_as_single_layer(container_id: str, reference: str, *, timeout: int) -> str:
     """Export a stopped or paused container and import it as one layer.
 
     The caller owns any lifecycle actions for ``container_id``.
@@ -821,7 +821,7 @@ def reap_managed_terminal_sessions(
     ).splitlines()
     reaped = 0
     now = int(time.time())
-    script = r'''
+    script = r"""
 set -eu
 now="$1"
 idle="$2"
@@ -853,7 +853,7 @@ for session in $(tmux list-sessions -F '#S' 2>/dev/null || true); do
   fi
 done
 printf '%s' "$reaped"
-'''
+"""
     for identifier in identifiers:
         container_id = identifier.strip()
         if not container_id:
@@ -1418,9 +1418,7 @@ def _probe_runtime_image(
                 raise
 
 
-def _stamp_fixed_runtime_provenance(
-    image_digest: str, reference: str, *, timeout: int
-) -> str:
+def _stamp_fixed_runtime_provenance(image_digest: str, reference: str, *, timeout: int) -> str:
     """Replace only inherited platform provenance in the final governance layer.
 
     A historical Runtime can contribute ``/runtime`` files through the user
@@ -1430,7 +1428,10 @@ def _stamp_fixed_runtime_provenance(
     1.47 build even after the formal output is correct.  Copy the controller's
     fixed assets into a disposable container and commit that one governance
     layer; it never writes to the Setup container, Workspace, HOME, or a
-    persistent Runtime mount.
+    persistent Runtime mount. The Docker CLI is running inside the Runtime
+    Provider but talks to the host daemon through its socket, so copy those
+    assets as a tar stream instead of relying on a daemon-visible ``/app``
+    path.
     """
 
     settings = get_settings()
@@ -1446,14 +1447,10 @@ def _stamp_fixed_runtime_provenance(
         timeout=30,
     )
     try:
-        for source, destination in (
-            ("/app/openhands-source-provenance.json", "/runtime/openhands-source-provenance.json"),
-            ("/app/patch_fork_condenser.py", "/runtime/patch_fork_condenser.py"),
-        ):
-            _run(
-                [settings.docker_binary, "cp", source, f"{stamp_name}:{destination}"],
-                timeout=30,
-            )
+        _copy_fixed_runtime_asset(
+            stamp_name, "openhands-source-provenance.json", "/runtime", timeout=30
+        )
+        _copy_fixed_runtime_asset(stamp_name, "patch_fork_condenser.py", "/runtime", timeout=30)
         return _run(
             [settings.docker_binary, "commit", stamp_name, reference],
             timeout=timeout,
@@ -1464,6 +1461,54 @@ def _stamp_fixed_runtime_provenance(
         except DomainError as exc:
             if not _docker_resource_absent(exc, "container"):
                 raise
+
+
+def _copy_fixed_runtime_asset(
+    container_id: str, asset_name: str, destination_dir: str, *, timeout: int
+) -> None:
+    """Copy a platform asset into a container without host-path ambiguity.
+
+    ``docker cp`` treats a local source path as client-local. The Runtime
+    Provider client is intentionally isolated from the Docker host, so sending
+    a tiny tar stream is the portable way to make its frozen assets authoritative.
+    """
+
+    if asset_name not in {"openhands-source-provenance.json", "patch_fork_condenser.py"}:
+        raise ValueError(f"unsupported fixed Runtime asset: {asset_name}")
+    try:
+        content = (Path("/app") / asset_name).read_bytes()
+    except OSError as exc:
+        raise DomainError(
+            "ENVIRONMENT_BACKEND_UNAVAILABLE",
+            "The terminal environment controller is missing a fixed Runtime asset",
+            503,
+        ) from exc
+
+    archive = io.BytesIO()
+    with tarfile.open(fileobj=archive, mode="w") as tar:
+        metadata = tarfile.TarInfo(asset_name)
+        metadata.size = len(content)
+        metadata.mode = 0o644
+        tar.addfile(metadata, io.BytesIO(content))
+    settings = get_settings()
+    try:
+        completed = subprocess.run(
+            [settings.docker_binary, "cp", "-", f"{container_id}:{destination_dir}"],
+            input=archive.getvalue(),
+            capture_output=True,
+            timeout=timeout,
+            check=False,
+            env={"PATH": os.defpath},
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise DomainError(
+            "ENVIRONMENT_BACKEND_UNAVAILABLE",
+            "The terminal environment Docker backend is unavailable",
+            503,
+        ) from exc
+    if completed.returncode:
+        detail = (completed.stderr or completed.stdout).decode("utf-8", errors="replace")
+        raise _docker_command_failed(detail)
 
 
 def publish_container(
@@ -1561,15 +1606,9 @@ def publish_container(
                 "user_base_image_digest": base_image_digest,
                 "runtime_image_reference": reference,
                 "runtime_image_digest": digest,
-                "install_acp_providers": labels.get(
-                    "flowweave.openhands-install-acp-providers"
-                ),
-                "install_capabilities": labels.get(
-                    "flowweave.openhands-install-capabilities", ""
-                ),
-                "capability_profile": labels.get(
-                    "flowweave.runtime-capability-profile", "minimal"
-                ),
+                "install_acp_providers": labels.get("flowweave.openhands-install-acp-providers"),
+                "install_capabilities": labels.get("flowweave.openhands-install-capabilities", ""),
+                "capability_profile": labels.get("flowweave.runtime-capability-profile", "minimal"),
             },
             "validation": {
                 "contract_check": {"status": "PASSED", "output_digest": contract_digest},
