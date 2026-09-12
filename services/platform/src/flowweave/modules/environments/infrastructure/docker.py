@@ -49,13 +49,13 @@ _TERMINAL_SHELL_SCRIPT = (
 )
 _TERMINAL_TMUX_SCRIPT = (
     'session="$1"; shell_script="$2"; columns="$3"; rows="$4"; '
-    "now=$(date +%s); "
+    'now=$(date +%s); '
     'if ! tmux has-session -t "$session" 2>/dev/null; then '
     'tmux new-session -d -x "$columns" -y "$rows" -s "$session" '
     'bash -c "$shell_script" '
     '|| tmux has-session -t "$session"; fi; '
     'if ! tmux show-options -t "$session" -v @flowweave_terminal_created_at '
-    ">/dev/null 2>&1; then "
+    '>/dev/null 2>&1; then '
     'tmux set-option -t "$session" @flowweave_terminal_created_at "$now"; fi; '
     'tmux set-option -t "$session" @flowweave_terminal_last_activity_at "$now"; '
     # Let tmux receive pointer input so wheel events enter its persistent
@@ -201,38 +201,21 @@ def _docker_command_failed(detail: str) -> DomainError:
             503,
             {"registry": "ghcr.io", "failure": "TLS_HANDSHAKE_TIMEOUT"},
         )
-    normalized = detail.lower()
-    if "no such image" in normalized or "image not found" in normalized:
-        return DomainError(
-            "ENVIRONMENT_DOCKER_FAILED",
-            "The requested Docker image is unavailable",
-            502,
-            {"failure": "IMAGE_NOT_FOUND"},
-        )
-    if "no such container" in normalized or "container not found" in normalized:
-        return DomainError(
-            "ENVIRONMENT_DOCKER_FAILED",
-            "The requested Docker container is unavailable",
-            502,
-            {"failure": "CONTAINER_NOT_FOUND"},
-        )
     return DomainError(
         "ENVIRONMENT_DOCKER_FAILED",
         "The terminal environment operation failed",
         502,
-        {},
+        {"detail": detail[-4000:]},
     )
 
 
 def _flatten_setup_container(container_id: str, reference: str, *, timeout: int) -> str:
     """Freeze one Setup container as a single-layer Docker image.
 
-    Setup Sessions can start from a prior published Runtime.  ``docker
-    commit`` preserves every parent layer, which eventually exceeds BuildKit's
-    snapshot depth during the next formal OpenHands build.  Export/import
-    preserves the container filesystem but intentionally drops the inherited
-    image history.  The formal builder supplies the Runtime entrypoint and
-    user, so only an empty entrypoint and root build user are required here.
+    Setup Sessions can start from a prior published Runtime. ``docker commit``
+    preserves every parent layer, which eventually exceeds BuildKit's snapshot
+    depth during the next formal OpenHands build. Export/import preserves the
+    container filesystem but intentionally drops the inherited image history.
     """
 
     settings = get_settings()
@@ -246,10 +229,6 @@ def _flatten_setup_container(container_id: str, reference: str, *, timeout: int)
             exporter = subprocess.Popen(
                 [settings.docker_binary, "export", container_id],
                 stdout=subprocess.PIPE,
-                # Docker export's stderr is not part of the image stream.  Do
-                # not leave it as an unread pipe: an unexpectedly verbose
-                # daemon error could otherwise block export and, in turn,
-                # leave the Setup Session paused.
                 stderr=subprocess.DEVNULL,
                 env={"PATH": os.defpath},
             )
@@ -271,9 +250,6 @@ def _flatten_setup_container(container_id: str, reference: str, *, timeout: int)
                 env={"PATH": os.defpath},
             )
         except OSError as exc:
-            # ``docker export`` may already be running when spawning its
-            # importer fails. Reap it before returning so a failed publish
-            # cannot leak a child process or keep the Setup Session paused.
             if importer is not None and importer.poll() is None:
                 importer.kill()
                 importer.wait(timeout=30)
@@ -360,9 +336,7 @@ print("FLOWWEAVE_OPENHANDS_BUILD=" + result.model_dump_json())
 def _docker_resource_absent(exc: DomainError, resource: str) -> bool:
     detail = str(exc.details.get("detail") or "").lower()
     return exc.code == "ENVIRONMENT_DOCKER_FAILED" and (
-        exc.details.get("failure") == f"{resource.upper()}_NOT_FOUND"
-        or f"no such {resource}" in detail
-        or f"{resource} not found" in detail
+        f"no such {resource}" in detail or f"{resource} not found" in detail
     )
 
 
@@ -773,7 +747,7 @@ def reap_managed_terminal_sessions(
     ).splitlines()
     reaped = 0
     now = int(time.time())
-    script = r"""
+    script = r'''
 set -eu
 now="$1"
 idle="$2"
@@ -805,7 +779,7 @@ for session in $(tmux list-sessions -F '#S' 2>/dev/null || true); do
   fi
 done
 printf '%s' "$reaped"
-"""
+'''
     for identifier in identifiers:
         container_id = identifier.strip()
         if not container_id:
@@ -1434,9 +1408,15 @@ def publish_container(
                 "user_base_image_digest": base_image_digest,
                 "runtime_image_reference": reference,
                 "runtime_image_digest": digest,
-                "install_acp_providers": labels.get("flowweave.openhands-install-acp-providers"),
-                "install_capabilities": labels.get("flowweave.openhands-install-capabilities", ""),
-                "capability_profile": labels.get("flowweave.runtime-capability-profile", "minimal"),
+                "install_acp_providers": labels.get(
+                    "flowweave.openhands-install-acp-providers"
+                ),
+                "install_capabilities": labels.get(
+                    "flowweave.openhands-install-capabilities", ""
+                ),
+                "capability_profile": labels.get(
+                    "flowweave.runtime-capability-profile", "minimal"
+                ),
             },
             "validation": {
                 "contract_check": {"status": "PASSED", "output_digest": contract_digest},
@@ -1450,12 +1430,8 @@ def publish_container(
         }
         return PublishedImage(reference=reference, digest=digest, manifest=manifest)
 
-    # Freeze the interactive setup filesystem as a *flat* intermediate image.
-    # A Setup Session may start from an earlier published Runtime; using
-    # ``docker commit`` here would retain that Runtime's full parent chain and
-    # make every subsequent publish one layer deeper.  The formal OpenHands
-    # builder still owns Runtime packaging; this is only its immutable user
-    # filesystem input.
+    # Flatten the Setup filesystem before passing it to OpenHands' formal
+    # builder; Setup Sessions can start from prior published Runtimes.
     diff = container_diff(container_id)
     customized_digest = _flatten_setup_container(
         container_id,
