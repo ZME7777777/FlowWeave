@@ -12,12 +12,6 @@ import { ApiError, randomId, type AgentStreamEvent } from '../../api/client';
 import { agentWorkspaceSessionGateway, type AgentSessionGateway } from '../../api/agent-session-gateway';
 import { withoutDeploymentBase } from '../../deploymentPath';
 import { agentWorkspaceSessionHost, type AgentSessionHost } from './session-host';
-import {
-  readConversationShellSnapshot,
-  reconcileLogicalConversationCache,
-  writeConversationShellSnapshot,
-  type LogicalConversationCacheEntry,
-} from './conversation-cache';
 import { ConversationSurface, ConversationTaskPlan, type ConversationReference } from '../ConversationSurface';
 import { useProductDialog } from '../ProductDialogContext';
 import { useEscapeClose } from '../useEscapeClose';
@@ -2959,19 +2953,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const liveTextFrame = useRef<number | undefined>(undefined);
   const pendingLiveEvents = useRef<OpenHandsConversationEvent[]>([]);
   const liveEventsFrame = useRef<number | undefined>(undefined);
-  // Full branches are intentionally memory-only.  This index is only an LRU
-  // lease for React Query entries; it is never used as an event locator or
-  // command authorization input.
-  const logicalConversationCache = useRef(new Map<string, LogicalConversationCacheEntry>());
-  const activeLogicalConversation = useRef<string | undefined>(undefined);
-  const logicalCachePruneTimer = useRef<number | undefined>(undefined);
+  const historyLoadingScopes = useRef(new Set<string>());
   useEffect(() => () => {
-    // Leaving this host must not let React Query's general-purpose GC retain
-    // whole EventLogs outside this feature's 5-session/5-minute lease. The
-    // bounded tab-local shell intentionally remains for the next first paint.
     for (const resource of [
-      'conversation-head',
-      'conversation-hydration',
       'conversation-events',
       'conversation-input-readiness',
       'conversation-context',
@@ -2979,11 +2963,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       queryClient.removeQueries({ queryKey: sessionQueryKey(host, resource) });
     }
   }, [host, queryClient]);
-  useEffect(() => () => {
-    if (logicalCachePruneTimer.current !== undefined) {
-      window.clearTimeout(logicalCachePruneTimer.current);
-    }
-  }, []);
   useEffect(() => () => {
     if (workspacePathCopyTimer.current !== undefined) window.clearTimeout(workspacePathCopyTimer.current);
   }, []);
@@ -3208,144 +3187,12 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     && (isGenerating || streamHold?.bindingId === selected.id),
   );
   const eventQueryKey = sessionQueryKey(host, 'conversation-events', workspace?.id, selected?.id);
-  const hydrationQueryKey = sessionQueryKey(host, 'conversation-hydration', workspace?.id, selected?.id);
-  const headQueryKey = sessionQueryKey(host, 'conversation-head', workspace?.id, selected?.id);
-  const selectedWorkspaceId = workspace?.id;
-  const cachedHydration = queryClient.getQueryData<import('../../types').AgentConversationHydration>(hydrationQueryKey);
-  const cachedHydrationCursor = cachedHydration?.events.next_cursor ?? undefined;
-  // Query cache presence alone is not a reuse lease: the just-completed
-  // hydration writes into it too. Only an entry parked while inactive may
-  // take the cheaper HEAD validation path on a later selection.
-  const reusableInactiveHydration = Boolean(
-    selected?.id
-    && cachedHydration
-    && logicalConversationCache.current.has(selected.id),
-  );
-  useEffect(() => {
-    const workspaceId = selectedWorkspaceId;
-    const bindingId = selected?.id;
-    if (!workspaceId || !bindingId) return;
-    const previous = activeLogicalConversation.current;
-    // Query data updates (context, readiness and stream reconciliation) must
-    // not rerun cache bookkeeping for the same selected binding.
-    if (previous === bindingId) return;
-    if (previous) {
-      const previousHydration = queryClient.getQueryData(
-        sessionQueryKey(host, 'conversation-hydration', workspaceId, previous),
-      );
-      if (previousHydration) logicalConversationCache.current.set(previous, {
-        bindingId: previous, lastAccessedAt: Date.now(),
-      });
-    }
-    activeLogicalConversation.current = bindingId;
-    logicalConversationCache.current.delete(bindingId);
-    const result = reconcileLogicalConversationCache(
-      logicalConversationCache.current.values(), bindingId, Date.now(),
-    );
-    logicalConversationCache.current = new Map(
-      result.retained.map(entry => [entry.bindingId, entry]),
-    );
-    for (const evictedBindingId of result.evictedBindingIds) {
-      for (const resource of [
-        'conversation-hydration',
-        'conversation-events',
-        'conversation-input-readiness',
-        'conversation-context',
-      ]) {
-        queryClient.removeQueries({
-          queryKey: sessionQueryKey(host, resource, workspaceId, evictedBindingId),
-          exact: true,
-        });
-      }
-    }
-    if (logicalCachePruneTimer.current !== undefined) {
-      window.clearTimeout(logicalCachePruneTimer.current);
-      logicalCachePruneTimer.current = undefined;
-    }
-    if (result.nextExpiresAt) {
-      logicalCachePruneTimer.current = window.setTimeout(() => {
-        logicalCachePruneTimer.current = undefined;
-        const expired = reconcileLogicalConversationCache(
-          logicalConversationCache.current.values(), activeLogicalConversation.current, Date.now(),
-        );
-        logicalConversationCache.current = new Map(
-          expired.retained.map(entry => [entry.bindingId, entry]),
-        );
-        for (const evictedBindingId of expired.evictedBindingIds) {
-          for (const resource of [
-            'conversation-hydration',
-            'conversation-events',
-            'conversation-input-readiness',
-            'conversation-context',
-          ]) {
-            queryClient.removeQueries({
-              queryKey: sessionQueryKey(host, resource, workspaceId, evictedBindingId),
-              exact: true,
-            });
-          }
-        }
-      }, Math.max(1, result.nextExpiresAt - Date.now()));
-    }
-  }, [host, queryClient, selected?.id, selectedWorkspaceId]);
-  useEffect(() => {
-    if (!selectedWorkspaceId || !selected?.id || cachedHydration) return;
-    const shell = readConversationShellSnapshot(host.id, selectedWorkspaceId, selected.id);
-    if (!shell) return;
-    // The shell improves first paint after a refresh, but no command derives
-    // truth from it. The complete hydration request below replaces it.
-    queryClient.setQueryData(
-      sessionQueryKey(host, 'conversation-events', selectedWorkspaceId, selected.id), shell.events,
-    );
-    if (shell.context) queryClient.setQueryData(
-      sessionQueryKey(host, 'conversation-context', selectedWorkspaceId, selected.id), shell.context,
-    );
-    if (shell.readiness) queryClient.setQueryData(
-      sessionQueryKey(host, 'conversation-input-readiness', selectedWorkspaceId, selected.id), shell.readiness,
-    );
-  }, [cachedHydration, host, queryClient, selected?.id, selectedWorkspaceId]);
-  const headQuery = useQuery({
-    queryKey: headQueryKey,
-    queryFn: () => api.conversationHead(workspace!.id, selected!.id),
-    // A first open gets its formal HEAD as part of complete hydration. Only a
-    // previously hydrated in-memory branch needs this cheaper reuse check.
-    enabled: Boolean(workspace && selected && reusableInactiveHydration),
-    staleTime: 0,
-    refetchOnMount: 'always',
-    retry: (count, error) => !(error instanceof ApiError && error.status < 500) && count < 2,
-  });
-  const hydrationQuery = useQuery({
-    queryKey: hydrationQueryKey,
-    queryFn: () => api.conversationHydration(workspace!.id, selected!.id),
-    // A complete branch already in this tab stays usable only after the
-    // bounded formal HEAD query above confirms its leaf. Missing data starts
-    // hydration immediately; stale/mismatched data is refreshed below.
-    enabled: Boolean(workspace && selected && !cachedHydration),
-    staleTime: Infinity,
-    retry: (count, error) => !(error instanceof ApiError && error.status < 500) && count < 2,
-  });
-  useEffect(() => {
-    if (!selected || !cachedHydration || !headQuery.isSuccess) return;
-    if ((headQuery.data?.cursor ?? undefined) === cachedHydrationCursor) return;
-    // Leave the old transcript visible while the formal replacement arrives.
-    // A changed HEAD is never merged into an old complete branch.
-    void hydrationQuery.refetch();
-  }, [cachedHydration, cachedHydrationCursor, headQuery.data?.cursor, headQuery.isSuccess, hydrationQuery, selected]);
   const inputReadinessQuery = useQuery({
     queryKey: sessionQueryKey(host, 'conversation-input-readiness', workspace?.id, selected?.id),
     queryFn: () => api.inputReadiness(workspace!.id, selected!.id),
     // This is the formal OpenHands execution-state read used to restore an
     // in-flight turn after a browser reload. It is not persisted by FlowWeave.
-    // Hydration supplies the first formal readiness snapshot. This remains a
-    // dedicated live-recovery poll after that initial complete read.
-    enabled: Boolean(
-      workspace
-      && selected
-      && hydrationQuery.data
-      && (hydrationQuery.data.readiness.ready === false
-        || turnState === 'pausing'
-        || queuedMessages.length > 0
-        || isGenerating),
-    ),
+    enabled: Boolean(workspace && selected),
     refetchInterval: query => {
       const needsFallback = turnState === 'pausing' || queuedMessages.length > 0 || isGenerating || query.state.data?.ready === false;
       if (!pageVisible || !needsFallback) return false;
@@ -3356,28 +3203,11 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const eventsQuery = useQuery<OpenHandsConversationEventBatch>({
     queryKey: eventQueryKey,
     queryFn: () => api.conversationEvents(workspace!.id, selected!.id),
-    enabled: false,
+    // Native event reads begin at the current leaf. The resulting bounded
+    // latest page is rendered before older pages are prefetched below.
+    enabled: Boolean(workspace && selected),
     retry: (count, error) => !(error instanceof ApiError && error.status < 500) && count < 2,
   });
-  useEffect(() => {
-    if (!hydrationQuery.data) return;
-    // Keep the existing event-cache surface for stream frames and cursor
-    // reconciliation, but seed all three initial native projections from one
-    // complete server-side hydration.  This avoids a second context/readiness
-    // request for an idle session while preserving those queries for live use.
-    queryClient.setQueryData<OpenHandsConversationEventBatch>(
-      sessionQueryKey(host, 'conversation-events', workspace?.id, selected?.id),
-      hydrationQuery.data.events,
-    );
-    queryClient.setQueryData(
-      sessionQueryKey(host, 'conversation-input-readiness', workspace?.id, selected?.id),
-      hydrationQuery.data.readiness,
-    );
-    queryClient.setQueryData(
-      sessionQueryKey(host, 'conversation-context', workspace?.id, selected?.id),
-      hydrationQuery.data.context,
-    );
-  }, [host, hydrationQuery.data, queryClient, selected?.id, workspace?.id]);
   useEffect(() => {
     if (selected && eventsQuery.data) markSessionPerformance('events-ready');
   }, [eventsQuery.data, selected]);
@@ -3417,6 +3247,45 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       if (timer !== undefined) window.clearTimeout(timer);
     };
   }, [api, eventQueryKey, eventsQuery.data?.next_cursor, isGenerating, pageVisible, queryClient, selected, workspace]);
+  const hasUnfinishedInitialTurn = Boolean(latestUnfinishedUserEventId(eventsQuery.data?.events ?? []));
+  const historyPrefetchBlocked = isGenerating
+    || hasUnfinishedInitialTurn
+    || inputReadinessQuery.isLoading
+    || inputReadinessQuery.isFetching
+    || conversationIsRunning(inputReadinessQuery.data?.execution_status);
+  const historyPrefetchDelayMs = inputReadinessQuery.isError ? 5_000 : 0;
+  const loadAllHistory = useCallback(async () => {
+    if (!workspace || !selected || !eventsQuery.data?.history_cursor) return;
+    const scope = selected.id;
+    if (historyLoadingScopes.current.has(scope)) return;
+    historyLoadingScopes.current.add(scope);
+    let historyCursor: string | null | undefined = eventsQuery.data.history_cursor;
+    try {
+      // The first response is the native latest page. Prepend older pages only
+      // after it has been positioned, yielding between pages so a long branch
+      // never delays the initial conversation view.
+      while (historyCursor) {
+        const cursor = historyCursor;
+        const older = await api.conversationEvents(workspace.id, scope, undefined, cursor);
+        queryClient.setQueryData<OpenHandsConversationEventBatch>(eventQueryKey, current => current
+          ? { ...current, events: mergeConversationEvents(older.events, current.events), history_cursor: older.history_cursor }
+          : older,
+        );
+        historyCursor = older.history_cursor;
+        if (historyCursor) await new Promise<void>(resolve => window.setTimeout(resolve, 0));
+      }
+    } catch (error) {
+      reportOperationError(scope, error instanceof Error ? error : new Error('读取更早会话记录失败'));
+    } finally {
+      historyLoadingScopes.current.delete(scope);
+    }
+  }, [api, eventQueryKey, eventsQuery.data?.history_cursor, queryClient, reportOperationError, selected, workspace]);
+  useEffect(() => {
+    const bindingId = selected?.id;
+    if (!bindingId || !eventsQuery.data?.history_cursor || historyLoadingScopes.current.has(bindingId) || historyPrefetchBlocked) return;
+    const timer = window.setTimeout(() => { void loadAllHistory(); }, historyPrefetchDelayMs);
+    return () => window.clearTimeout(timer);
+  }, [eventsQuery.data?.history_cursor, historyPrefetchBlocked, historyPrefetchDelayMs, loadAllHistory, selected?.id]);
   const displayedEvents = useMemo(() => {
     const activeScope = selected?.id ?? conversationDraft?.id;
     const bootstrapEvent = optimisticBootstrapTurn && optimisticBootstrapTurn.scope === activeScope
@@ -3483,17 +3352,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const contextQuery = useQuery({
     queryKey: sessionQueryKey(host, 'conversation-context', workspace?.id, selected?.id),
     queryFn: () => api.conversationContext(workspace!.id, selected!.id),
-    enabled: false,
-    staleTime: Infinity,
+    enabled: Boolean(workspace && selected),
   });
-  useEffect(() => {
-    if (!workspace || !selected || !hydrationQuery.data || !eventsQuery.data) return;
-    writeConversationShellSnapshot(host.id, workspace.id, selected.id, {
-      events: eventsQuery.data,
-      context: contextQuery.data ?? hydrationQuery.data.context,
-      readiness: inputReadinessQuery.data ?? hydrationQuery.data.readiness,
-    });
-  }, [contextQuery.data, eventsQuery.data, host.id, hydrationQuery.data, inputReadinessQuery.data, selected, workspace]);
   const compactionPolicyCurrent = contextQuery.data?.compaction_policy_current !== false;
   const canWrite = Boolean(selected && (runtimeWritable || selected.write_available));
   // A completed FlowRun keeps its source node Conversation read-only, but it
@@ -3518,7 +3378,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversations', workspace.id) });
     if (selected?.id) {
       void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation', workspace.id, selected.id) });
-      void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-hydration', workspace.id, selected.id) });
+      void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-events', workspace.id, selected.id) });
       void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-input-readiness', workspace.id, selected.id) });
       void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-confirmation', workspace.id, selected.id) });
       void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-context', workspace.id, selected.id) });
@@ -4442,7 +4302,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       {runtime?.state === 'RECOVERING' && <section className="agent-runtime-recover"><LoaderCircle size={18}/><div><b>运行环境正在恢复</b><span>{runtime.message || '历史会话和工作区文件仍可查看；恢复完成后可继续发送消息和使用终端。'}</span></div></section>}
       {runtime && !runtime.write_available && !selected?.write_available && runtime.state !== 'RECOVERING' && <section className="agent-runtime-recover"><ShieldAlert size={18}/><div><b>节点会话已切换为只读</b><span>{runtime.message || '节点执行已停止；历史会话和工作区文件仍可查看。'}</span></div></section>}
       {selected && !compactionPolicyCurrent && <section className="agent-compaction-policy-warning" aria-label="历史压缩策略兼容保护"><ShieldAlert size={18}/><div><b>已启用历史会话兼容保护</b><span>此会话继承了旧的事件数压缩策略。继续发送或恢复执行前，系统会先调用 OpenHands 原生压缩并校验摘要；校验失败时不会发送新消息。</span>{features.workDirectories && <button type="button" className="primary" disabled={!canOpenConversation} onClick={openCurrentDirectoryDraft}><Plus size={14}/>在相同工作目录新建会话</button>}</div></section>}
-      {selected || conversationDraft ? <ConversationSurface key={selected?.id ?? conversationDraft?.id} events={displayedEvents} liveText={liveText} isGenerating={isGenerating} isPaused={inputReadinessQuery.data?.execution_status?.toLowerCase() === 'paused'} hydrationPending={Boolean(selected && hydrationQuery.isFetching && !hydrationQuery.data)} requestStartedAt={requestStartedAt} requestSubmitting={send.isPending || bootstrap.isPending || rewrite.isPending} condensationStatus={selected && condensationStatus?.bindingId === selected.id ? condensationStatus : undefined} onRetryCondensation={selected && canWrite && condensationStatus?.bindingId === selected.id && condensationStatus.state === 'failed' ? requestManualCompaction : undefined} onRewrite={selected && canWrite && features.rewrite ? requestRewrite : undefined} onFork={canFork ? eventId => { if (fork.isPending) return; const directoryName = selected?.work_directory_id ? workDirectories.find(directory => directory.id === selected.work_directory_id)?.display_name ?? '当前工作区' : '节点工作目录'; void dialog.confirm({ title: '从此处分叉会话？', message: `将保留当前会话在“${directoryName}”中的工作目录和截至此回复的历史记录，创建一条可独立继续的新会话。源会话不会被修改。`, confirmLabel: '创建分叉会话' }).then(confirmed => { if (confirmed) fork.mutate(eventId); }); } : undefined} onOpenAttachment={features.attachments ? openAttachmentInDrawer : undefined} onPreviewCandidateFile={candidateOutputUrl && workspace ? openCandidateFileInDrawer : undefined} onReviewChanges={openChangesReview} workspaceRoot={activeWorkspaceRoot} onAddReference={canWrite ? reference => setReferences(current => current.some(item => item.eventId === reference.eventId && item.content === reference.content) ? current : [...current, reference]) : undefined} taskControl={eventsQuery.data?.task_control ?? []} monitoring={eventsQuery.data?.monitoring} connectionState={inputReadinessQuery.isError ? 'unavailable' : streamStatus === 'recovering' ? 'recovering' : streamStatus === 'connecting' ? 'checking' : inputReadinessQuery.isFetching && !inputReadinessQuery.data ? 'checking' : 'connected'}/> : <div className="agent-workbench-empty"><Bot size={32}/><b>新建会话开始协作</b><span>{features.workDirectories ? '每个会话共享同一工作区，但保留独立的对话与事件记录。' : '会话固定在当前节点 Attempt 的隔离工作目录。'}</span><button className="primary" disabled={!canOpenConversation} onClick={() => openConversationDraft({ displayName: features.workDirectories ? '根工作区' : '节点工作目录' })}><Plus size={15}/>新建会话</button></div>}
+      {selected || conversationDraft ? <ConversationSurface key={selected?.id ?? conversationDraft?.id} events={displayedEvents} liveText={liveText} isGenerating={isGenerating} isPaused={inputReadinessQuery.data?.execution_status?.toLowerCase() === 'paused'} requestStartedAt={requestStartedAt} requestSubmitting={send.isPending || bootstrap.isPending || rewrite.isPending} condensationStatus={selected && condensationStatus?.bindingId === selected.id ? condensationStatus : undefined} onRetryCondensation={selected && canWrite && condensationStatus?.bindingId === selected.id && condensationStatus.state === 'failed' ? requestManualCompaction : undefined} onRewrite={selected && canWrite && features.rewrite ? requestRewrite : undefined} onFork={canFork ? eventId => { if (fork.isPending) return; const directoryName = selected?.work_directory_id ? workDirectories.find(directory => directory.id === selected.work_directory_id)?.display_name ?? '当前工作区' : '节点工作目录'; void dialog.confirm({ title: '从此处分叉会话？', message: `将保留当前会话在“${directoryName}”中的工作目录和截至此回复的历史记录，创建一条可独立继续的新会话。源会话不会被修改。`, confirmLabel: '创建分叉会话' }).then(confirmed => { if (confirmed) fork.mutate(eventId); }); } : undefined} onOpenAttachment={features.attachments ? openAttachmentInDrawer : undefined} onPreviewCandidateFile={candidateOutputUrl && workspace ? openCandidateFileInDrawer : undefined} onReviewChanges={openChangesReview} workspaceRoot={activeWorkspaceRoot} onAddReference={canWrite ? reference => setReferences(current => current.some(item => item.eventId === reference.eventId && item.content === reference.content) ? current : [...current, reference]) : undefined} taskControl={eventsQuery.data?.task_control ?? []} monitoring={eventsQuery.data?.monitoring} connectionState={inputReadinessQuery.isError ? 'unavailable' : streamStatus === 'recovering' ? 'recovering' : streamStatus === 'connecting' ? 'checking' : inputReadinessQuery.isFetching && !inputReadinessQuery.data ? 'checking' : 'connected'}/> : <div className="agent-workbench-empty"><Bot size={32}/><b>新建会话开始协作</b><span>{features.workDirectories ? '每个会话共享同一工作区，但保留独立的对话与事件记录。' : '会话固定在当前节点 Attempt 的隔离工作目录。'}</span><button className="primary" disabled={!canOpenConversation} onClick={() => openConversationDraft({ displayName: features.workDirectories ? '根工作区' : '节点工作目录' })}><Plus size={15}/>新建会话</button></div>}
       {(selected || conversationDraft) && (runtimeWritable || Boolean(selected?.write_available)) && runtime?.state !== 'RECOVERING' && <div className="agent-composer-dock">
         <div className={`agent-composer ${turnState !== 'idle' || pendingConfirmation ? 'busy' : ''}`}>
         {pendingConfirmation && <section className="agent-confirmation" aria-label="工具执行确认"><header><ShieldAlert size={17}/><div><b>工具正在等待你的确认</b><span>动作尚未执行。请核对整批内容后批准或拒绝。</span></div></header><div className="agent-confirmation-actions">{(pendingConfirmation.actions ?? []).map((action: AgentPendingConfirmationAction) => <article key={action.digest}><div><b>{action.summary || action.tool_name}</b><span>{action.security_risk || 'UNKNOWN'}</span></div>{Object.keys(action.arguments).length > 0 && <pre>{JSON.stringify(action.arguments, null, 2)}</pre>}</article>)}</div><textarea aria-label="工具确认理由" value={confirmationReason} maxLength={2000} placeholder="填写批准或拒绝理由…" onChange={event => setConfirmationReason(event.target.value)}/><footer><button type="button" className="danger" disabled={!confirmationReason.trim() || decideConfirmation.isPending} onClick={() => decideConfirmation.mutate(false)}><X size={14}/>拒绝整批</button><button type="button" className="primary" disabled={!confirmationReason.trim() || decideConfirmation.isPending} onClick={() => decideConfirmation.mutate(true)}><Check size={14}/>批准整批</button></footer></section>}
