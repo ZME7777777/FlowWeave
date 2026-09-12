@@ -135,6 +135,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-372 | 提交／改动审查缺少层级文件导航 | DONE | 提交审查与代码审查均使用仅含目标改动文件及其父目录的可折叠文件树，并在当前标签中切换 Diff。 |
 | FR-374 | 会话完成后工作过程默认收起 | DONE | 已完成回复上方的工作过程默认收起为耗时／项目数摘要；执行中仍展开，用户可显式展开已完成详情。 |
 | FR-375 | 输入区实时任务摘要紧凑化与悬停详情 | DONE | 实时任务摘要与工作区路径同列展示，避免压住会话底线；悬停或键盘聚焦显示原生任务快照详情。 |
+| FR-376 | 输入区任务摘要行内收拢与详情层级 | DONE | 任务标签紧随工作区路径并缩至 20px；详情浮层在标签上方以独立层级显示，避免贴住会话边界或被输入区遮挡。 |
 
 ### FR-366 FlowWeave 专属 Docker 地址规划 — DONE
 
@@ -253,6 +254,16 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 完成：实时任务摘要改为与当前工作区路径同一安全行的 24px 紧凑标签，并以 flex 布局取代原有绝对定位。悬停／聚焦预览在标签上方显示原生任务快照详情；摘要本身仍仅保留完成数，不把任务内容常驻在输入区。未新增平台持久化、私有任务状态或运行时协议。
 
 验收结果：Web TypeScript typecheck、ESLint、production build、Playwright 定向产品流用例收集、`git diff --check` 与任务状态唯一性通过。本机未运行 Web/API 服务，故未执行需完整产品栈的 Playwright 断言；不修改 API、数据库、Runtime Provider 或 OpenHands。
+
+### FR-376 输入区任务摘要行内收拢与详情层级 — DONE
+
+依赖：`FR-375`。
+
+目标：实时任务摘要必须作为工作区路径后的紧凑行内状态，而非输入区右下角的独立块；标签高度不得再接近会话边界。悬停／聚焦详情必须保持在标签上方且有足够堆叠层级，不受输入区布局遮挡。
+
+完成：输入区底部先展示工作区路径，再紧随 20px 任务标签；移除了将标签推至右端的自动边距，收紧底部间距与路径图标。任务详情浮层改为从标签左上方展开，并由 composer 底部和浮层的明确堆叠层级覆盖邻近输入区。继续只读取既有 OpenHands `TaskTrackerObservation` 快照，未新增持久化、私有协议或运行时状态。
+
+验收结果：Web TypeScript typecheck、ESLint、production build、Playwright 定向产品流用例收集、`git diff --check` 与任务状态唯一性通过。完整浏览器用例仍需本地 API／认证服务，当前未启动，故仅收集并静态校验相关断言；不修改 API、数据库、Runtime Provider 或 OpenHands。
 
 ### FR-335 Runtime generation Sandbox 引用完整性 — DONE
 
@@ -4986,6 +4997,7 @@ contract、冻结策略与既有受控生命周期约束覆盖。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-13 | FR-376 | Web TypeScript typecheck、ESLint、production build、Playwright 用例收集、`git diff --check` 与任务状态唯一性 | PASS（静态／构建）：工作区路径现在位于实时任务标签之前，标签高度收紧为 20px，不再作为右下角独立块贴近会话底线。悬停／键盘聚焦仍显示同一 OpenHands 任务快照，浮层改由左上方展开并提升到 composer 上方。产品流断言覆盖 DOM 顺序、20px 高度和悬停详情；本机 API／认证服务未运行，未执行完整浏览器场景。未修改 API、数据库、Runtime Provider 或 OpenHands。 |
 | 2026-09-13 | FR-375 | Web TypeScript typecheck、ESLint、production build、Playwright 用例收集／定向执行、`git diff --check` 与任务状态唯一性 | PASS（静态／构建）：实时任务摘要收紧为 24px 行内标签，与工作区路径共用输入区下方安全行；不再采用会压住底线的绝对定位。鼠标悬停或键盘聚焦摘要时，显示同一 OpenHands 任务快照的标题、状态和说明。已收集对应产品流用例；定向执行因本机 API 未运行、登录后等待“Agent 会话”导航入口装配超时，未进入任务预览断言，未记为通过。未修改 API、数据库、Runtime Provider 或 OpenHands。 |
 | 2026-09-13 | FR-374 | Web TypeScript typecheck、ESLint、production build、Playwright 用例收集、`git diff --check` 与任务状态唯一性 | PASS（静态／构建）：完成回复上方的工作过程默认收起，摘要仍显示耗时与项目数；点击摘要可展开既有工具和活动详情。执行中过程仍默认展开，完成状态切换在布局阶段收起，避免视觉闪动。已收集对应产品流用例；本机 Web/API 服务未运行，未执行需完整产品栈的 Playwright 断言。未修改 API、数据库、Runtime Provider 或 OpenHands。 |
 | 2026-09-13 | FR-372 | Web TypeScript typecheck、ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS：提交审查标签与代码审查标签均显示仅含改动文件及其父目录的可折叠文件树。提交树叶子在当前标签按需读取相应 Git Diff，代码审查树叶子在当前标签切换既有 FileEditor Diff；未把未改动工作区文件混入树中。typecheck、lint、build 与空白检查通过；production build 仅报告既有 bundle 大小建议。 |

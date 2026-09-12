@@ -4447,10 +4447,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         </footer>
         </div>
         <div className="agent-composer-bottom">
-          <ConversationTaskPlan events={displayedEvents} isGenerating={isGenerating}/>
           <button type="button" className={`agent-current-workspace${workspacePathCopied ? ' copied' : ''}`} title={`${workspacePathCopied ? '已复制' : '点击复制'}：${currentWorkspaceRelativePath}`} aria-label={workspacePathCopied ? `工作区路径已复制：${currentWorkspaceRelativePath}` : `当前工作区：${currentWorkspaceName}；点击复制相对根工作区路径：${currentWorkspaceRelativePath}`} onClick={copyCurrentWorkspacePath}>
             <Folder size={16}/><span>{currentWorkspaceName}</span>{workspacePathCopied && <small aria-live="polite">已复制</small>}
           </button>
+          <ConversationTaskPlan events={displayedEvents} isGenerating={isGenerating}/>
         </div>
       </div>}
       {visibleError && <p className="agent-workbench-error">{visibleError.message}</p>}

@@ -1276,6 +1276,10 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(taskPlan).toContainText('任务');
   await expect(taskPlan).toContainText('1 / 3 已完成');
   await expect(taskPlan.locator('.conversation-live-task-plan-summary svg')).toHaveCount(1);
+  const composerFooter = page.locator('.agent-composer-bottom');
+  await expect(composerFooter.locator(':scope > :first-child')).toHaveClass(/agent-current-workspace/);
+  await expect(composerFooter.locator(':scope > :nth-child(2)')).toHaveClass(/conversation-live-task-plan/);
+  expect(await taskPlan.evaluate(element => element.getBoundingClientRect().height)).toBeLessThanOrEqual(22);
   await expect(taskPlan.getByRole('tooltip', { name: '当前任务详情' })).toBeHidden();
   await taskPlan.hover();
   const taskPreview = taskPlan.getByRole('tooltip', { name: '当前任务详情' });
