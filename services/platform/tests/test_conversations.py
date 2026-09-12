@@ -180,6 +180,58 @@ def test_complete_active_branch_rejects_head_drift_between_pages() -> None:
         complete_active_branch(read, RuntimeHandle(job_id="job", conversation_id="conversation"))
 
 
+def test_conversation_head_reads_only_the_formal_native_leaf(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = object()
+    binding = object()
+    calls: list[object] = []
+
+    class Runtime:
+        def read_active_events(self, handle: object) -> RuntimeEventBatch:
+            calls.append(handle)
+            return RuntimeEventBatch(
+                events=(RuntimeEvent("latest", "MESSAGE", {"content": "ignored window"}),),
+                cursor="formal-head",
+            )
+
+    runtime = Runtime()
+    handle = RuntimeHandle(job_id="job", conversation_id="conversation")
+    monkeypatch.setattr(session_conversations, "_workspace", lambda _db, _id: workspace)
+    monkeypatch.setattr(session_conversations, "_binding", lambda _db, _workspace_id, _id: binding)
+    monkeypatch.setattr(
+        session_conversations, "_handle", lambda _db, _workspace, _binding: handle
+    )
+    monkeypatch.setattr(session_conversations, "get_runtime", lambda: runtime)
+
+    assert session_conversations.conversation_head(None, "workspace", "binding") == {
+        "cursor": "formal-head"
+    }
+    assert calls == [handle]
+
+
+def test_node_conversation_head_reads_only_the_formal_native_leaf(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[object] = []
+
+    class Runtime:
+        def read_active_events(self, handle: object) -> RuntimeEventBatch:
+            calls.append(handle)
+            return RuntimeEventBatch(cursor="node-formal-head")
+
+    handle = RuntimeHandle(job_id="job", conversation_id="conversation")
+    monkeypatch.setattr(
+        flow_node_conversations, "_node_handle", lambda _db, **_kwargs: handle
+    )
+    monkeypatch.setattr(flow_node_conversations, "get_runtime", lambda: Runtime())
+
+    assert flow_node_conversations.node_conversation_head(
+        None, flow_run_id="flow", attempt_id="attempt", binding_id="binding"
+    ) == {"cursor": "node-formal-head"}
+    assert calls == [handle]
+
+
 def test_conversation_reference_resolver_rejects_client_supplied_content() -> None:
     with pytest.raises(DomainError, match="会话引用无效"):
         session_conversations.resolve_conversation_references(

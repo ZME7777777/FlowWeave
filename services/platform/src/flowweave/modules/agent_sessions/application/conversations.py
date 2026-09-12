@@ -700,6 +700,33 @@ def get_conversation(db: Session, workspace_id: str, binding_id: str) -> dict[st
     return _dict(db, item)
 
 
+def conversation_head(db: Session, workspace_id: str, binding_id: str) -> dict[str, str | None]:
+    """Return only the formal active-branch leaf for browser cache validation.
+
+    ``read_active_events`` is the fixed OpenHands API that resolves HEAD.  Its
+    bounded native window is deliberately discarded here: clients must not
+    mistake that window for complete history, while a matching immutable leaf
+    permits reusing their already-hydrated in-memory branch.
+    """
+
+    workspace = _workspace(db, workspace_id)
+    binding = _binding(db, workspace_id, binding_id)
+    started_at = time.monotonic()
+    try:
+        cursor = get_runtime().read_active_events(_handle(db, workspace, binding)).cursor
+    except Exception:
+        if metrics := current_metrics():
+            metrics.observe_operation(
+                "agent_session.head", time.monotonic() - started_at, outcome="error"
+            )
+        raise
+    if metrics := current_metrics():
+        metrics.observe_operation(
+            "agent_session.head", time.monotonic() - started_at, outcome="ok"
+        )
+    return {"cursor": cursor}
+
+
 def _capability_marketplace_paths(
     db: Session, workspace: AgentWorkspace, binding: AgentConversationBinding
 ) -> tuple[Path, Path, str]:

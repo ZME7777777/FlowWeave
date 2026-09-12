@@ -12,6 +12,12 @@ import { ApiError, randomId, type AgentStreamEvent } from '../../api/client';
 import { agentWorkspaceSessionGateway, type AgentSessionGateway } from '../../api/agent-session-gateway';
 import { withoutDeploymentBase } from '../../deploymentPath';
 import { agentWorkspaceSessionHost, type AgentSessionHost } from './session-host';
+import {
+  readConversationShellSnapshot,
+  reconcileLogicalConversationCache,
+  writeConversationShellSnapshot,
+  type LogicalConversationCacheEntry,
+} from './conversation-cache';
 import { ConversationSurface, ConversationTaskPlan, type ConversationReference } from '../ConversationSurface';
 import { useProductDialog } from '../ProductDialogContext';
 import { useEscapeClose } from '../useEscapeClose';
@@ -2849,6 +2855,31 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const liveTextFrame = useRef<number | undefined>(undefined);
   const pendingLiveEvents = useRef<OpenHandsConversationEvent[]>([]);
   const liveEventsFrame = useRef<number | undefined>(undefined);
+  // Full branches are intentionally memory-only.  This index is only an LRU
+  // lease for React Query entries; it is never used as an event locator or
+  // command authorization input.
+  const logicalConversationCache = useRef(new Map<string, LogicalConversationCacheEntry>());
+  const activeLogicalConversation = useRef<string | undefined>(undefined);
+  const logicalCachePruneTimer = useRef<number | undefined>(undefined);
+  useEffect(() => () => {
+    // Leaving this host must not let React Query's general-purpose GC retain
+    // whole EventLogs outside this feature's 5-session/5-minute lease. The
+    // bounded tab-local shell intentionally remains for the next first paint.
+    for (const resource of [
+      'conversation-head',
+      'conversation-hydration',
+      'conversation-events',
+      'conversation-input-readiness',
+      'conversation-context',
+    ]) {
+      queryClient.removeQueries({ queryKey: sessionQueryKey(host, resource) });
+    }
+  }, [host, queryClient]);
+  useEffect(() => () => {
+    if (logicalCachePruneTimer.current !== undefined) {
+      window.clearTimeout(logicalCachePruneTimer.current);
+    }
+  }, []);
   useEffect(() => () => {
     if (workspacePathCopyTimer.current !== undefined) window.clearTimeout(workspacePathCopyTimer.current);
   }, []);
@@ -3073,12 +3104,128 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     && (isGenerating || streamHold?.bindingId === selected.id),
   );
   const eventQueryKey = sessionQueryKey(host, 'conversation-events', workspace?.id, selected?.id);
-  const hydrationQuery = useQuery({
-    queryKey: sessionQueryKey(host, 'conversation-hydration', workspace?.id, selected?.id),
-    queryFn: () => api.conversationHydration(workspace!.id, selected!.id),
-    enabled: Boolean(workspace && selected),
+  const hydrationQueryKey = sessionQueryKey(host, 'conversation-hydration', workspace?.id, selected?.id);
+  const headQueryKey = sessionQueryKey(host, 'conversation-head', workspace?.id, selected?.id);
+  const selectedWorkspaceId = workspace?.id;
+  const cachedHydration = queryClient.getQueryData<import('../../types').AgentConversationHydration>(hydrationQueryKey);
+  const cachedHydrationCursor = cachedHydration?.events.next_cursor ?? undefined;
+  // Query cache presence alone is not a reuse lease: the just-completed
+  // hydration writes into it too. Only an entry parked while inactive may
+  // take the cheaper HEAD validation path on a later selection.
+  const reusableInactiveHydration = Boolean(
+    selected?.id
+    && cachedHydration
+    && logicalConversationCache.current.has(selected.id),
+  );
+  useEffect(() => {
+    const workspaceId = selectedWorkspaceId;
+    const bindingId = selected?.id;
+    if (!workspaceId || !bindingId) return;
+    const previous = activeLogicalConversation.current;
+    // Query data updates (context, readiness and stream reconciliation) must
+    // not rerun cache bookkeeping for the same selected binding.
+    if (previous === bindingId) return;
+    if (previous) {
+      const previousHydration = queryClient.getQueryData(
+        sessionQueryKey(host, 'conversation-hydration', workspaceId, previous),
+      );
+      if (previousHydration) logicalConversationCache.current.set(previous, {
+        bindingId: previous, lastAccessedAt: Date.now(),
+      });
+    }
+    activeLogicalConversation.current = bindingId;
+    logicalConversationCache.current.delete(bindingId);
+    const result = reconcileLogicalConversationCache(
+      logicalConversationCache.current.values(), bindingId, Date.now(),
+    );
+    logicalConversationCache.current = new Map(
+      result.retained.map(entry => [entry.bindingId, entry]),
+    );
+    for (const evictedBindingId of result.evictedBindingIds) {
+      for (const resource of [
+        'conversation-hydration',
+        'conversation-events',
+        'conversation-input-readiness',
+        'conversation-context',
+      ]) {
+        queryClient.removeQueries({
+          queryKey: sessionQueryKey(host, resource, workspaceId, evictedBindingId),
+          exact: true,
+        });
+      }
+    }
+    if (logicalCachePruneTimer.current !== undefined) {
+      window.clearTimeout(logicalCachePruneTimer.current);
+      logicalCachePruneTimer.current = undefined;
+    }
+    if (result.nextExpiresAt) {
+      logicalCachePruneTimer.current = window.setTimeout(() => {
+        logicalCachePruneTimer.current = undefined;
+        const expired = reconcileLogicalConversationCache(
+          logicalConversationCache.current.values(), activeLogicalConversation.current, Date.now(),
+        );
+        logicalConversationCache.current = new Map(
+          expired.retained.map(entry => [entry.bindingId, entry]),
+        );
+        for (const evictedBindingId of expired.evictedBindingIds) {
+          for (const resource of [
+            'conversation-hydration',
+            'conversation-events',
+            'conversation-input-readiness',
+            'conversation-context',
+          ]) {
+            queryClient.removeQueries({
+              queryKey: sessionQueryKey(host, resource, workspaceId, evictedBindingId),
+              exact: true,
+            });
+          }
+        }
+      }, Math.max(1, result.nextExpiresAt - Date.now()));
+    }
+  }, [host, queryClient, selected?.id, selectedWorkspaceId]);
+  useEffect(() => {
+    if (!selectedWorkspaceId || !selected?.id || cachedHydration) return;
+    const shell = readConversationShellSnapshot(host.id, selectedWorkspaceId, selected.id);
+    if (!shell) return;
+    // The shell improves first paint after a refresh, but no command derives
+    // truth from it. The complete hydration request below replaces it.
+    queryClient.setQueryData(
+      sessionQueryKey(host, 'conversation-events', selectedWorkspaceId, selected.id), shell.events,
+    );
+    if (shell.context) queryClient.setQueryData(
+      sessionQueryKey(host, 'conversation-context', selectedWorkspaceId, selected.id), shell.context,
+    );
+    if (shell.readiness) queryClient.setQueryData(
+      sessionQueryKey(host, 'conversation-input-readiness', selectedWorkspaceId, selected.id), shell.readiness,
+    );
+  }, [cachedHydration, host, queryClient, selected?.id, selectedWorkspaceId]);
+  const headQuery = useQuery({
+    queryKey: headQueryKey,
+    queryFn: () => api.conversationHead(workspace!.id, selected!.id),
+    // A first open gets its formal HEAD as part of complete hydration. Only a
+    // previously hydrated in-memory branch needs this cheaper reuse check.
+    enabled: Boolean(workspace && selected && reusableInactiveHydration),
+    staleTime: 0,
+    refetchOnMount: 'always',
     retry: (count, error) => !(error instanceof ApiError && error.status < 500) && count < 2,
   });
+  const hydrationQuery = useQuery({
+    queryKey: hydrationQueryKey,
+    queryFn: () => api.conversationHydration(workspace!.id, selected!.id),
+    // A complete branch already in this tab stays usable only after the
+    // bounded formal HEAD query above confirms its leaf. Missing data starts
+    // hydration immediately; stale/mismatched data is refreshed below.
+    enabled: Boolean(workspace && selected && !cachedHydration),
+    staleTime: Infinity,
+    retry: (count, error) => !(error instanceof ApiError && error.status < 500) && count < 2,
+  });
+  useEffect(() => {
+    if (!selected || !cachedHydration || !headQuery.isSuccess) return;
+    if ((headQuery.data?.cursor ?? undefined) === cachedHydrationCursor) return;
+    // Leave the old transcript visible while the formal replacement arrives.
+    // A changed HEAD is never merged into an old complete branch.
+    void hydrationQuery.refetch();
+  }, [cachedHydration, cachedHydrationCursor, headQuery.data?.cursor, headQuery.isSuccess, hydrationQuery, selected]);
   const inputReadinessQuery = useQuery({
     queryKey: sessionQueryKey(host, 'conversation-input-readiness', workspace?.id, selected?.id),
     queryFn: () => api.inputReadiness(workspace!.id, selected!.id),
@@ -3115,7 +3262,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     // complete server-side hydration.  This avoids a second context/readiness
     // request for an idle session while preserving those queries for live use.
     queryClient.setQueryData<OpenHandsConversationEventBatch>(
-      eventQueryKey, hydrationQuery.data.events,
+      sessionQueryKey(host, 'conversation-events', workspace?.id, selected?.id),
+      hydrationQuery.data.events,
     );
     queryClient.setQueryData(
       sessionQueryKey(host, 'conversation-input-readiness', workspace?.id, selected?.id),
@@ -3125,7 +3273,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       sessionQueryKey(host, 'conversation-context', workspace?.id, selected?.id),
       hydrationQuery.data.context,
     );
-  }, [eventQueryKey, host, hydrationQuery.data, queryClient, selected?.id, workspace?.id]);
+  }, [host, hydrationQuery.data, queryClient, selected?.id, workspace?.id]);
   useEffect(() => {
     if (selected && eventsQuery.data) markSessionPerformance('events-ready');
   }, [eventsQuery.data, selected]);
@@ -3234,6 +3382,14 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     enabled: false,
     staleTime: Infinity,
   });
+  useEffect(() => {
+    if (!workspace || !selected || !hydrationQuery.data || !eventsQuery.data) return;
+    writeConversationShellSnapshot(host.id, workspace.id, selected.id, {
+      events: eventsQuery.data,
+      context: contextQuery.data ?? hydrationQuery.data.context,
+      readiness: inputReadinessQuery.data ?? hydrationQuery.data.readiness,
+    });
+  }, [contextQuery.data, eventsQuery.data, host.id, hydrationQuery.data, inputReadinessQuery.data, selected, workspace]);
   const compactionPolicyCurrent = contextQuery.data?.compaction_policy_current !== false;
   const canWrite = Boolean(runtimeWritable && selected);
   const canCompose = Boolean(canWrite || (runtimeWritable && conversationDraft));

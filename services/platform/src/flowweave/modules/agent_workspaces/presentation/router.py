@@ -707,6 +707,16 @@ async def agent_conversation_hydration(
         ) from exc
 
 
+@router.get("/agent-workspaces/{workspace_id}/conversations/{binding_id}/head")
+async def agent_conversation_head(
+    workspace_id: str, binding_id: str, container: ContainerDep
+) -> dict[str, str | None]:
+    return await run_blocking(
+        container,
+        lambda session: conversations.conversation_head(session, workspace_id, binding_id),
+    )
+
+
 @router.get("/agent-workspaces/{workspace_id}/conversations/{binding_id}/pending-confirmation")
 async def agent_pending_confirmation(
     workspace_id: str, binding_id: str, container: ContainerDep

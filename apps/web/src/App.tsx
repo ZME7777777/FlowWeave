@@ -19,6 +19,7 @@ import { api } from './api/client';
 import type { AuthUser } from './types';
 import { LoginScreen } from './components/LoginScreen';
 import { useEscapeClose } from './components/useEscapeClose';
+import { clearAgentSessionCacheStorage, setAgentSessionCacheIdentity } from './components/agent-session/conversation-cache';
 
 const nav = [
   { view: 'nodes' as const, label: '节点资产', icon: Boxes },
@@ -44,6 +45,7 @@ function clearAgentIdentityStorage() {
       sessionStorage.removeItem(key);
     }
   }
+  clearAgentSessionCacheStorage();
 }
 
 export function App() {
@@ -69,6 +71,7 @@ export function App() {
       setView('agent-workbench');
       setRouteVersion(value => value + 1);
     }
+    if (nextUser) setAgentSessionCacheIdentity(nextUser.id);
     setUser(nextUser);
   }, [queryClient, setView]);
   useEscapeClose(() => setSettingsOpen(false), settingsOpen);
@@ -82,7 +85,11 @@ export function App() {
   }, [settingsOpen]);
   useEffect(() => {
     let active = true;
-    void api.authMe().then(value => { if (active) setUser(value); }).catch(() => {
+    void api.authMe().then(value => {
+      if (!active) return;
+      setAgentSessionCacheIdentity(value.id);
+      setUser(value);
+    }).catch(() => {
       if (active) void replaceIdentity(null);
     });
     const requireLogin = () => { void replaceIdentity(null); };

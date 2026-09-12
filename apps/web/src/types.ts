@@ -526,6 +526,10 @@ export interface AgentConversationHydration {
   context: AgentConversationContext;
   readiness: AgentConversationInputReadiness;
 }
+/** Formal OpenHands active-branch leaf identity used only to validate a browser cache. */
+export interface AgentConversationHead {
+  cursor?: string | null;
+}
 export interface AgentActivitySummary {
   last_event_id?: string | null;
   last_event_type?: string | null;

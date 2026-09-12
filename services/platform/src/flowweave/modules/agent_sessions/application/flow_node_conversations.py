@@ -1786,6 +1786,21 @@ def hydrate_node_conversation(
     }
 
 
+def node_conversation_head(
+    db: Session, *, flow_run_id: str, attempt_id: str, binding_id: str
+) -> dict[str, str | None]:
+    """Return the native active-branch leaf without serializing its event window.
+
+    This is a cache validator only.  Commands still re-resolve their requested
+    event by formal OpenHands identity and never trust a browser cache.
+    """
+
+    handle = _node_handle(
+        db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
+    )
+    return {"cursor": get_runtime().read_active_events(handle).cursor}
+
+
 def read_gate_sidecar_events(
     db: Session,
     *,
