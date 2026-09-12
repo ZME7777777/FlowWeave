@@ -1787,23 +1787,25 @@ function workspaceTree(entries: WorkspaceEntry[], root: string): WorkspaceTreeNo
   return roots;
 }
 
-function WorkspaceFileTree({ entries, root, selectedFile, selectedPaths, expanded, pagination, loadingDirectories, onExpandedChange, onDirectoriesChange, onLoadMore, onSelect, onSelectionChange, onActivateDirectory, onContextMenu }: { entries: WorkspaceEntry[]; root: string; selectedFile?: string; selectedPaths: Set<string>; expanded: Set<string>; pagination: Map<string, string | undefined>; loadingDirectories: Set<string>; onExpandedChange: (updater: (current: Set<string>) => Set<string>) => void; onDirectoriesChange: (paths: string[]) => void; onLoadMore: (parentPath?: string) => void; onSelect: (path?: string) => void; onSelectionChange: (paths: Set<string>) => void; onActivateDirectory: (path?: string) => void; onContextMenu: (path: string, kind: 'file' | 'directory', event: ReactMouseEvent<HTMLButtonElement>) => void }) {
+function WorkspaceFileTree({ entries, root, selectedFile, selectedPaths, expanded, pagination, loadingDirectories, onExpandedChange, onDirectoriesChange, onLoadMore, onSelect, onSelectionChange, onActivateDirectory, onContextMenu }: { entries: WorkspaceEntry[]; root: string; selectedFile?: string; selectedPaths: Set<string>; expanded: Set<string>; pagination: Map<string, string | undefined>; loadingDirectories: Set<string>; onExpandedChange: (updater: (current: Set<string>) => Set<string>) => void; onDirectoriesChange: (updater: (current: string[]) => string[]) => void; onLoadMore: (parentPath?: string) => void; onSelect: (path?: string) => void; onSelectionChange: (paths: Set<string>) => void; onActivateDirectory: (path?: string) => void; onContextMenu: (path: string, kind: 'file' | 'directory', event: ReactMouseEvent<HTMLButtonElement>) => void }) {
   const nodes = useMemo(() => workspaceTree(entries, root), [entries, root]);
   const selectionAnchor = useRef<string | undefined>(undefined);
   const treeRef = useRef<HTMLDivElement>(null);
   const stickyOverlayRef = useRef<HTMLDivElement>(null);
   const rowRefs = useRef(new Map<string, HTMLDivElement>());
   const [stickyDirectoryPaths, setStickyDirectoryPaths] = useState<string[]>([]);
-  const [stickyOverlayHeight, setStickyOverlayHeight] = useState(0);
   useEffect(() => {
     const paths: string[] = [];
     const collect = (items: WorkspaceTreeNode[]) => items.forEach(node => { if (node.kind === 'directory') { paths.push(node.path); collect(node.children); } });
     collect(nodes);
-    onDirectoriesChange(paths);
+    onDirectoriesChange(current => current.length === paths.length && current.every((path, index) => path === paths[index]) ? current : paths);
     // Manual expansion only tracks directories which are actually present in
     // the loaded tree. Source navigation has a separate, ordered expansion
     // state so a stale or malformed source path cannot keep causing 404s.
-    onExpandedChange(current => new Set([...current].filter(path => paths.includes(path))));
+    onExpandedChange(current => {
+      const next = new Set([...current].filter(path => paths.includes(path)));
+      return next.size === current.size ? current : next;
+    });
   }, [nodes, onDirectoriesChange, onExpandedChange]);
   const visibleNodes = useMemo(() => {
     const visible: Array<{ node: WorkspaceTreeNode; depth: number }> = [];
@@ -1845,12 +1847,11 @@ function WorkspaceFileTree({ entries, root, selectedFile, selectedPaths, expande
       setStickyDirectoryPaths(current => current.length ? [] : current);
       return;
     }
-    // The fixed path is an overlay, not part of the scrolling list. Anchor
-    // against the first source row below its actual painted boundary. Using
-    // scroll offsets here leaves a one-row error when the overlay changes
-    // depth: a fully covered directory can remain pinned after its subtree
-    // has already scrolled past.
-    const visibleTop = overlay?.getBoundingClientRect().bottom ?? tree.getBoundingClientRect().top;
+    // The source-tree viewport is the sole anchor. The overlay must never
+    // decide its own contents: adding or removing a pinned directory changes
+    // its height, which would otherwise make adjacent directories oscillate
+    // at the boundary.
+    const visibleTop = tree.getBoundingClientRect().top + 1;
     const firstVisible = visibleNodes.find(({ node }) => {
       const row = rowRefs.current.get(node.path);
       return row && row.getBoundingClientRect().bottom > visibleTop;
@@ -1869,20 +1870,9 @@ function WorkspaceFileTree({ entries, root, selectedFile, selectedPaths, expande
     rowRefs.current.get(selectedFile)?.scrollIntoView({ block: 'nearest' });
   }, [selectedFile, visibleNodes]);
   useLayoutEffect(() => {
+    const tree = treeRef.current;
     const overlay = stickyOverlayRef.current;
-    if (!overlay) {
-      setStickyOverlayHeight(0);
-      return;
-    }
-    const syncOverlay = () => {
-      const currentTree = treeRef.current;
-      if (currentTree) overlay.style.transform = `translateY(${currentTree.scrollTop}px)`;
-      setStickyOverlayHeight(current => current === overlay.offsetHeight ? current : overlay.offsetHeight);
-    };
-    syncOverlay();
-    const observer = new ResizeObserver(syncOverlay);
-    observer.observe(overlay);
-    return () => observer.disconnect();
+    if (tree && overlay) overlay.style.transform = `translateY(${tree.scrollTop}px)`;
   }, [stickyDirectoryPaths]);
   const selectEntry = (node: WorkspaceTreeNode, event: ReactMouseEvent<HTMLButtonElement>) => {
     const toggling = event.metaKey || event.ctrlKey;
@@ -1941,7 +1931,6 @@ function WorkspaceFileTree({ entries, root, selectedFile, selectedPaths, expande
     })}</div>}
     {nodes.length ? renderNodes() : <p>当前目录没有可展示的文件。</p>}
     {pagination.get('') && <button type="button" className="agent-file-tree-load-more" disabled={loadingDirectories.has('')} onClick={() => onLoadMore()}>{loadingDirectories.has('') ? '正在加载…' : '加载更多'}</button>}
-    {stickyOverlayHeight > 0 && <div className="agent-file-tree-sticky-spacer" aria-hidden="true" style={{ height: stickyOverlayHeight }}/> }
   </div>;
 }
 
