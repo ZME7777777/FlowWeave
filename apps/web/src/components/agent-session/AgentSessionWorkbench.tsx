@@ -1573,11 +1573,18 @@ function SharedSplitDiff({ before, after, resetKey }: { before: ReactNode; after
     const viewport = viewportRef.current;
     const scrollbar = scrollbarRef.current;
     if (!viewport || !scrollbar) return;
-    const panes = Array.from(viewport.querySelectorAll<HTMLElement>('.agent-diff-split-pane'));
-    const codes = Array.from(viewport.querySelectorAll<HTMLElement>('.agent-diff-split-code-content code'));
-    const paneWidth = Math.min(...panes.map(pane => pane.clientWidth));
-    const codeWidth = Math.max(0, ...codes.map(code => code.scrollWidth));
-    setScrollbarWidth(Math.ceil(scrollbar.clientWidth + Math.max(0, codeWidth - paneWidth)));
+    const lines = Array.from(viewport.querySelectorAll<HTMLElement>('.agent-diff-split .agent-diff-line:not(.empty)'));
+    // The gutter is deliberately fixed while only the code cell moves.  The
+    // scroll range must therefore be calculated from each code cell's actual
+    // visible width, not from the entire half-pane; otherwise it reaches its
+    // end one gutter-width before a long line is fully revealed.
+    const maxOffset = Math.max(0, ...lines.map(line => {
+      const code = line.querySelector<HTMLElement>('code');
+      if (!code) return 0;
+      const visibleCodeWidth = Math.max(0, line.clientWidth - code.offsetLeft);
+      return Math.max(0, code.scrollWidth - visibleCodeWidth);
+    }));
+    setScrollbarWidth(Math.ceil(scrollbar.clientWidth + maxOffset));
   }, []);
   useLayoutEffect(() => {
     const viewport = viewportRef.current;
