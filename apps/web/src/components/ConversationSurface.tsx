@@ -1442,6 +1442,7 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused: 
   // Rendering never derives a timeout, pause, or retry decision from it.
   void _isPaused;
   const surface = useRef<HTMLElement>(null);
+  const content = useRef<HTMLDivElement>(null);
   const shell = useRef<HTMLDivElement>(null);
   const initialPositioned = useRef(false);
   const followLatest = useRef(true);
@@ -1528,6 +1529,26 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused: 
     }
     wasGenerating.current = isGenerating;
   }, [currentHasTerminal, isGenerating, liveText, scrollToLatest, scrollToTerminalStart, turns.length]);
+  useLayoutEffect(() => {
+    const observedContent = content.current;
+    if (!observedContent || typeof ResizeObserver === 'undefined') return;
+    let frame: number | undefined;
+    const observer = new ResizeObserver(() => {
+      // Lazy Markdown and content-visibility can make historical rows taller
+      // after the initial restoration scroll. Keep following only when the
+      // user was already at the latest message; never pull them from history.
+      if (!followLatest.current || frame !== undefined) return;
+      frame = window.requestAnimationFrame(() => {
+        frame = undefined;
+        if (followLatest.current) scrollToLatest('auto');
+      });
+    });
+    observer.observe(observedContent);
+    return () => {
+      observer.disconnect();
+      if (frame !== undefined) window.cancelAnimationFrame(frame);
+    };
+  }, [scrollToLatest]);
   useEffect(() => () => {
     if (copyResetTimer.current) window.clearTimeout(copyResetTimer.current);
     if (referenceHighlightStartTimer.current) window.clearTimeout(referenceHighlightStartTimer.current);
@@ -1618,6 +1639,7 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused: 
     </nav>}
     {messagePreview && <aside id="conversation-message-preview" className="conversation-message-index-tooltip" role="tooltip" style={{ top: messagePreview.top }}><span>{messagePreview.content || '（空消息）'}</span></aside>}
     <section ref={surface} className="conversation-surface" aria-live="polite" onScroll={() => { handleScroll(); setSelectedReference(undefined); }} onPointerUp={offerSelectedReference}>
+      <div ref={content} className="conversation-surface-content">
       {turns.map((turn, index) => {
         const isCurrent = index === turns.length - 1 && isGenerating;
         const failures = turn.activity.filter(item => item.kind === 'error');
@@ -1669,6 +1691,7 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused: 
           {condensationStatus.state === 'failed' && onRetryCondensation && <button type="button" onClick={onRetryCondensation}>重新压缩</button>}
         </div>
       </article>}
+      </div>
     </section>
     {viewingReference && <ConversationReferencePreview reference={viewingReference} onClose={() => setViewingReference(undefined)} onLocate={locateReferenceSource}/>}
     {selectedReference && <button type="button" className="conversation-add-reference" style={{ left: selectedReference.left, top: selectedReference.top }} onPointerDown={event => event.preventDefault()} onClick={() => {
