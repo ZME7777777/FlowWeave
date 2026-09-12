@@ -322,7 +322,9 @@ def _create_lock_file(root: Path) -> None:
     os.close(descriptor)
 
 
-def _verify_layout(allocation: FlowRunRuntimeAllocation) -> Path:
+def _verify_layout(
+    allocation: FlowRunRuntimeAllocation, *, require_memory_isolation: bool = True
+) -> Path:
     owner_id = allocation.node_attempt_id or allocation.flow_run_id
     expected = _relative_root(
         owner_id, field="NodeAttempt" if allocation.node_attempt_id else "FlowRun"
@@ -375,6 +377,14 @@ def _verify_layout(allocation: FlowRunRuntimeAllocation) -> Path:
             # created and ownership-checked by ``_ensure_nodes_store``.
             if relative == PurePosixPath("workspace/nodes"):
                 continue
+            # ``state/persistence/memory`` was introduced after existing
+            # FlowRun and NodeAttempt Runtime allocations were created. Its
+            # empty, readonly mount source can be added only after the rest
+            # of the allocation has passed ownership and layout validation.
+            if not require_memory_isolation and relative == PurePosixPath(
+                "state/persistence/memory"
+            ):
+                continue
             raise DomainError(
                 "RUNTIME_ALLOCATION_MISSING",
                 "The FlowRun Runtime allocation is incomplete",
@@ -395,6 +405,33 @@ def _verify_layout(allocation: FlowRunRuntimeAllocation) -> Path:
                 {"path": relative.as_posix()},
             )
     return root
+
+
+def _upgrade_memory_isolation(allocation: FlowRunRuntimeAllocation) -> Path:
+    """Safely add the readonly Memory mount source to a pre-FR-316 allocation."""
+
+    root = _verify_layout(allocation, require_memory_isolation=False)
+    target = root / "state" / "persistence" / "memory"
+    try:
+        target.mkdir(mode=0o700)
+    except FileExistsError:
+        pass
+    metadata = target.lstat()
+    root_metadata = root.lstat()
+    if (
+        stat.S_ISLNK(metadata.st_mode)
+        or not stat.S_ISDIR(metadata.st_mode)
+        or stat.S_IMODE(metadata.st_mode) != 0o700
+        or metadata.st_uid != root_metadata.st_uid
+        or metadata.st_gid != root_metadata.st_gid
+    ):
+        raise DomainError(
+            "RUNTIME_ALLOCATION_PERMISSIONS_INVALID",
+            "The Runtime Memory isolation directory permissions are invalid",
+            409,
+            {"path": "state/persistence/memory"},
+        )
+    return _verify_layout(allocation)
 
 
 def _ensure_nodes_store(root: Path) -> None:
@@ -433,7 +470,7 @@ def allocate_flow_run_runtime(db: Session, flow_run_id: str) -> RuntimeStorageAl
         )
     )
     if existing is not None:
-        root = _verify_layout(existing)
+        root = _upgrade_memory_isolation(existing)
         _ensure_nodes_store(root)
         return RuntimeStorageAllocation(
             existing.id,
@@ -528,7 +565,7 @@ def allocate_node_attempt_runtime(
                 "The Runtime allocation owner is invalid",
                 409,
             )
-        root = _verify_layout(existing)
+        root = _upgrade_memory_isolation(existing)
         _ensure_nodes_store(root)
         return RuntimeStorageAllocation(
             existing.id,
@@ -601,7 +638,7 @@ def runtime_allocation_for_node_attempt(
             "This Attempt has no Runtime allocation",
             409,
         )
-    root = _verify_layout(allocation)
+    root = _upgrade_memory_isolation(allocation)
     _ensure_nodes_store(root)
     if manifest_digest is not None:
         with capability_materialization_lock(allocation):
@@ -651,6 +688,7 @@ def node_attempt_workspace_context(
         )
     )
     if allocation is not None:
+        _upgrade_memory_isolation(allocation)
         shared_project = _record_project_path(
             db, flow_run_id=flow_run_id, node_attempt_id=node_attempt_id
         )
@@ -675,7 +713,7 @@ def node_attempt_workspace_context(
 
         # Compatibility for Attempts created while each Runtime owned a private
         # project. Do not copy or merge those files implicitly.
-        attempt_project = _verify_layout(allocation) / "workspace" / "project"
+        attempt_project = _upgrade_memory_isolation(allocation) / "workspace" / "project"
         if host_working.is_absolute() and host_working.is_relative_to(attempt_project):
             relative = host_working.relative_to(attempt_project)
             if not relative.parts or any(part in {"", ".", ".."} for part in relative.parts):
@@ -750,7 +788,7 @@ def ensure_capability_manifest_directory(
             "The Snapshot Runtime Manifest digest is invalid",
             409,
         )
-    root = _verify_layout(allocation)
+    root = _upgrade_memory_isolation(allocation)
     capabilities = root / "capabilities"
     target = capabilities / manifest_digest
     if target.is_symlink() or (target.exists() and not target.is_dir()):
@@ -784,7 +822,7 @@ def runtime_allocation_for_flow_run(
     # Allocations created before the node/project split do not contain this
     # sibling directory. Validate the existing allocation first, then create
     # and validate the backward-compatible node store.
-    root = _verify_layout(allocation)
+    root = _upgrade_memory_isolation(allocation)
     _ensure_nodes_store(root)
     if manifest_digest is not None:
         with capability_materialization_lock(allocation):
@@ -811,7 +849,7 @@ def capability_materialization_lock(
 ) -> Iterator[None]:
     """Serialize immutable capability materialization for one FlowRun."""
 
-    root = _verify_layout(allocation)
+    root = _upgrade_memory_isolation(allocation)
     lock_path = root / _LOCK_NAME
     flags = os.O_RDWR
     if hasattr(os, "O_NOFOLLOW"):

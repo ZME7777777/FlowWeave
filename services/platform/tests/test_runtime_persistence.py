@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -8,6 +9,7 @@ import pytest
 
 from flowweave.bootstrap.settings import Settings
 from flowweave.modules.agent_workspaces.application import service as agent_workspace_service
+from flowweave.modules.sandboxes.application import runtime_allocation
 from flowweave.modules.sandboxes.infrastructure.docker import DockerSandboxProvider
 from flowweave.modules.sandboxes.infrastructure.models import ManagedSandbox
 from flowweave.shared.settings import settings_context
@@ -221,3 +223,55 @@ def test_existing_agent_workspace_allocation_gains_memory_isolation(
     for relative in agent_workspace_service._MEMORY_ISOLATION_DIRECTORIES:
         assert (root / relative).is_dir()
         assert (root / relative).stat().st_mode & 0o777 == 0o700
+
+
+def test_existing_flow_run_allocation_gains_memory_isolation(tmp_path: Path) -> None:
+    allocation_id = "11111111-1111-4111-8111-111111111111"
+    flow_run_id = "22222222-2222-4222-8222-222222222222"
+    node_attempt_id = "33333333-3333-4333-8333-333333333333"
+    settings = Settings(
+        runtime_adapter="mock",
+        workspace_root=tmp_path,
+        artifact_root=tmp_path / "artifacts",
+        sandbox_manager_scope="persistence-contract",
+    )
+
+    with settings_context(settings):
+        relative_root = runtime_allocation._relative_root(
+            node_attempt_id, field="NodeAttempt"
+        ).as_posix()
+        root = tmp_path / relative_root
+        root.mkdir(mode=0o700, parents=True)
+        root.chmod(0o700)
+        marker = root / ".flowweave-allocation"
+        marker.write_text(allocation_id, encoding="ascii")
+        marker.chmod(0o400)
+        lock = root / ".capability-materialization.lock"
+        descriptor = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
+        os.close(descriptor)
+        for relative in (
+            "workspace",
+            "workspace/project",
+            "workspace/nodes",
+            "state",
+            "state/conversations",
+            "state/bash-events",
+            "state/persistence",
+            "capabilities",
+        ):
+            directory = root / relative
+            directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+            directory.chmod(0o700)
+        allocation = SimpleNamespace(
+            id=allocation_id,
+            flow_run_id=flow_run_id,
+            node_attempt_id=node_attempt_id,
+            relative_root=relative_root,
+        )
+
+        upgraded = runtime_allocation._upgrade_memory_isolation(allocation)
+
+    memory = root / "state/persistence/memory"
+    assert upgraded == root
+    assert memory.is_dir()
+    assert memory.stat().st_mode & 0o777 == 0o700

@@ -104,6 +104,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-340 | Git 并排 Diff 的仓库根坐标修复 | DONE | 并排视图的每行跳转使用已授权仓库绝对根加仓库内相对路径，避免遗漏 `repos/<repository>` 前缀。 |
 | FR-341 | 源文件预览行号与非破坏性跳转反馈 | DONE | 代码预览展示同步行号，跳转行短暂高亮；已打开文件仅从当前滚动位置就近、平滑定位。 |
 | FR-342 | 根工作区 Git 历史展示修复 | DONE | 不再将与工作目录根重合的真实仓库误判为容器路径并过滤，保留最深仓库匹配。 |
+| FR-343 | 历史 FlowRun Memory 隔离目录兼容回填 | DONE | 仅在完整验证既有 allocation 的所有权、锁、路径和权限后，补齐 FR-316 新增的空只读 Memory 挂载目录。 |
 | OPS-01 | Docker rollback image / BuildKit cache 容量增长 | DONE | 建立带运行引用保护、dry-run 和显式确认的回收工具，并完成生产候选边界核验。 |
 | OPS-02 | Docker rollback image / BuildKit cache 容量增长 | DONE | 已按授权使用 OPS-03 tag 级路径回收，并完成生产不变量与入口验证。 |
 | OPS-03 | 多 rollback tag image 的安全回收 | DONE | 改为逐 tag、重查 Container 引用、不使用 `--force` 的回收路径。 |
@@ -245,6 +246,20 @@ Playwright Agent 工作台用例在 WebSocket 流恢复阶段超时，未将其�
 按选中路径的最深包含仓库显示历史。
 
 验收：Web TypeScript typecheck、ESLint、production build 与 `git diff --check` 通过。
+
+### FR-343 历史 FlowRun Memory 隔离目录兼容回填 — DONE
+
+依赖：`FR-316`。
+
+目标：
+
+- FR-316 新增 `state/persistence/memory` 只读隔离挂载后，旧 FlowRun 与 Node Attempt allocation 仍可安全打开工作台，不能因缺少这个空目录返回 `RUNTIME_ALLOCATION_MISSING`。
+- 仅允许在 allocation 根目录、marker、lock、既有必需目录、所有者和权限全部通过既有 fail-closed 校验后创建该目录；符号链接、错误 owner 或权限异常必须继续拒绝。
+- 不迁移、删除或修改既有 Conversation、Workspace、Capability、Secret Reference 或数据库记录。
+
+完成：allocation 的全部既有读取／供应入口都会先以不含该新增目录的历史布局完成完整验证，再创建唯一的空 `state/persistence/memory`（`0700`、同 root owner），并再次执行完整布局验证。新增定向回归覆盖历史 Node Attempt allocation 的安全回填。
+
+验收：`test_runtime_persistence.py`（4 passed）、受影响 Python Ruff format/check、`py_compile`、Alembic 唯一 head `0114_runtime_sandbox_fk`、`git diff --check` 与任务状态唯一性通过。
 
 ### OPS-01 Docker rollback image / BuildKit cache 容量治理 — DONE
 
