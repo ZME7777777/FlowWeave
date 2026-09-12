@@ -4058,7 +4058,7 @@ def list_nested_automatic_runs(db: Session, parent_run_id: str) -> list[dict[str
             .where(
                 FlowRun.parent_flow_run_id == parent.id,
                 FlowRun.run_mode == "AUTOMATIC",
-                ~select(RunEvent.id)
+                ~select(RunEvent.cursor)
                 .where(
                     RunEvent.flow_run_id == FlowRun.id,
                     RunEvent.event_type == "AUTOMATIC_RUN_DELETE_REQUESTED",
@@ -4133,7 +4133,7 @@ def list_nested_automatic_run_summaries(db: Session, parent_run_id: str) -> list
             .where(
                 FlowRun.parent_flow_run_id == parent.id,
                 FlowRun.run_mode == "AUTOMATIC",
-                ~select(RunEvent.id)
+                ~select(RunEvent.cursor)
                 .where(
                     RunEvent.flow_run_id == FlowRun.id,
                     RunEvent.event_type == "AUTOMATIC_RUN_DELETE_REQUESTED",

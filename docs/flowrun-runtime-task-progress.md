@@ -115,6 +115,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-351 | FlowRun 侧栏记录区固定与分页 | DONE | 侧栏摘要、运行方式和操作栏固定；记录区独立滚动并以每页 5 条显示，移除操作栏下方的冗余说明。 |
 | FR-353 | Environment 发布基础镜像扁平化与失败诊断 | DONE | 将 Setup 容器在发布前扁平化为单层受控基础镜像，阻断版本继承造成的 RootFS 深度累积；GHCR TLS 超时返回稳定、无 Secret 的诊断码。 |
 | FR-354 | OpenHands 基线升级的历史 Runtime 连续性 | DONE | 删除历史 Environment、Snapshot、节点和会话对 OpenHands 版本／commit／ref 的运行时准入；仅保留实际协议、路由、工具和能力校验。 |
+| FR-363 | 连续运行记录摘要查询修复 | DONE | 纠正 RunEvent 事件存在性子查询的主键字段，恢复连续运行记录列表与摘要加载。 |
 | FR-362 | Environment 固定 provenance 跨 Docker Socket 隔离 | DONE | 固定 provenance／condenser overlay 通过 tar 流从 Runtime Provider 注入临时治理容器，杜绝 Docker daemon 将 `/app` 误解析为宿主机历史文件。 |
 | OPS-01 | Docker rollback image / BuildKit cache 容量增长 | DONE | 建立带运行引用保护、dry-run 和显式确认的回收工具，并完成生产候选边界核验。 |
 | OPS-02 | Docker rollback image / BuildKit cache 容量增长 | DONE | 已按授权使用 OPS-03 tag 级路径回收，并完成生产不变量与入口验证。 |
@@ -418,6 +419,14 @@ Environment 断言，未记为 pytest 通过；固定 OpenHands `1.47.0` 的真�
 完成：删除将 `runtime_frozen`／`FLOW_RUN_RUNTIME_FROZEN` 投影到列表、节点会话、运行、Runtime 操作和调度入口的全局基线冻结层。Environment、Snapshot Runtime contract、Runtime Provider ledger、Hook 物化和 Agent Server 探活均不再比较 OpenHands 版本、四包版本、source commit 或 source ref；这些字段若存在只作为审计 provenance。节点与会话创建／恢复只校验 FlowWeave 对象身份和实际 OpenHands 协议：服务 ready、必需 HTTP 路由、创建字段、能力与工具。前端继续显示和选择所有具备镜像摘要的 `READY` Environment Version。
 
 验收：`test_runtime_contract.py` 证明任意 Server 版本、包版本、commit/ref 漂移不再拒绝连接，同时路由、创建字段与工具缺失仍拒绝；`test_runtime_capabilities.py` 证明历史 Snapshot 版本元数据不再阻断节点投影。受影响 Python Ruff format/check、`py_compile` 和 `git diff --check` 通过。完整数据库 pytest 仍受本机 Docker socket 缺失造成的 Testcontainers fixture 初始化阻断，未记为通过；受影响 Pyright 定向运行仅报告 `environments/application/service.py` 中 3 条既有、未触及行的诊断。
+
+### FR-363 连续运行记录摘要查询修复 — DONE
+
+依赖：无（线上故障修复）。
+
+完成：连续运行详情和轻量摘要列表用于排除已请求删除记录的 `RunEvent` 存在性子查询，均改用该表实际主键 `cursor`，不再引用不存在的 `id` 属性。此前摘要端点会在构建 SQLAlchemy 查询时抛出 `AttributeError` 并返回 500，使前端将失败误渲染为空列表；现有记录、删除语义和持久数据均未改变。
+
+验收：纯逻辑回归同时调用详情与摘要列表入口，确保二者可构建删除过滤查询；受影响 Python Ruff format/check、`py_compile`、`git diff --check` 和任务状态唯一性通过。
 
 ### FR-362 Environment 固定 provenance 跨 Docker Socket 隔离 — DONE
 
@@ -4816,6 +4825,7 @@ contract、冻结策略与既有受控生命周期约束覆盖。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-12 | FR-363 | 连续记录详情／摘要删除过滤纯逻辑回归；受影响 Python Ruff format/check、`py_compile`、`git diff --check` 与任务状态唯一性 | PASS：两条列表入口均使用 `RunEvent.cursor` 构造已删除记录排除子查询，不再在摘要请求时引用不存在的 `RunEvent.id` 并返回 500；未迁移、删除或修改任何持久记录。 |
 | 2026-09-12 | FR-354 | `test_runtime_contract.py`、`test_runtime_capabilities.py`；受影响 Python Ruff format/check、`py_compile`、`git diff --check`；结构化比较审计 | PASS（静态）：Server 版本、四包版本、commit/ref 变化不再阻断节点或会话；缺少必需 OpenAPI 路由、创建字段或工具仍明确拒绝。`rg` 与 ast-grep 未发现 FlowWeave 运行时代码中 OpenHands 版本／commit／ref 的相等性准入比较。完整数据库 pytest 因本机 Docker socket 缺失、Testcontainers fixture 初始化失败而未执行断言；Pyright 仅保留 `environments/application/service.py` 中 3 条未触及既有诊断。 |
 | 2026-09-12 | FR-351 | Web TypeScript typecheck、ESLint、production build、`git diff --check`；本地 Vite 上 FlowRun 侧栏定向 Playwright | PASS：运行摘要、模式切换和操作栏不再随记录滚动；记录内容在独立滚动区展示，三种模式共用每页 5 条的分页。定向浏览器回归确认第 6 条记录仅在“下一页”后渲染，固定区域在内容滚动后位置不变。三条操作说明均已移除。生产构建仅报告既有的大 chunk 提示。 |
 | 2026-09-12 | FR-342 | Web TypeScript typecheck、ESLint、production build、`git diff --check` | PASS（静态／构建）：根工作区仓库不再被前端的容器路径过滤排除；工作目录根及其子文件按最深包含仓库挂载 Git 历史。后端仓库发现与 `git_log` 已允许仓库根等于授权工作目录，故未改动 API 或授权边界。typecheck、lint、build 与空白检查通过；生产构建仅有既有的大 chunk 提示。 |
