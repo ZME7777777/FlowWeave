@@ -1629,7 +1629,15 @@ function workspaceSourcePath(path: string, workingDirectory?: string): string {
   if (!source || !root) return source;
   if (source === root || source.startsWith(`${root}/`)) return source;
   if (source.startsWith('/runtime/workspace/project/')) return source;
-  return `${root}/${source.replace(/^\/+/, '')}`;
+  // Git reports can use the work-directory display label as though it were a
+  // path prefix (for example `slow-interface-fix/repos/service/...`).  That
+  // label is already the last component of `root`; retaining it would point
+  // outside the selected workspace as `${root}/slow-interface-fix/...`.
+  const rootLabel = root.split('/').filter(Boolean).at(-1);
+  let relative = source.replace(/^\/+/, '');
+  if (rootLabel && relative === rootLabel) return root;
+  if (rootLabel && relative.startsWith(`${rootLabel}/`)) relative = relative.slice(rootLabel.length + 1);
+  return `${root}/${relative}`;
 }
 
 function sourceParentDirectories(path: string, root: string): string[] {
@@ -1762,11 +1770,11 @@ function WorkspaceFileTree({ entries, root, selectedFile, selectedPaths, expande
     const collect = (items: WorkspaceTreeNode[]) => items.forEach(node => { if (node.kind === 'directory') { paths.push(node.path); collect(node.children); } });
     collect(nodes);
     onDirectoriesChange(paths);
-    // Directory pages are loaded lazily.  Retaining scoped-but-not-yet-loaded
-    // paths lets a source navigation open every ancestor in sequence instead
-    // of losing deep expansion after the root page arrives.
-    onExpandedChange(current => new Set([...current].filter(path => path.startsWith(`${root}/`))));
-  }, [nodes, onDirectoriesChange, onExpandedChange, root]);
+    // Manual expansion only tracks directories which are actually present in
+    // the loaded tree. Source navigation has a separate, ordered expansion
+    // state so a stale or malformed source path cannot keep causing 404s.
+    onExpandedChange(current => new Set([...current].filter(path => paths.includes(path))));
+  }, [nodes, onDirectoriesChange, onExpandedChange]);
   const visibleNodes = useMemo(() => {
     const visible: Array<{ node: WorkspaceTreeNode; depth: number }> = [];
     const collect = (items: WorkspaceTreeNode[], depth = 0) => items.forEach(node => {
@@ -1822,6 +1830,13 @@ function WorkspaceFileTree({ entries, root, selectedFile, selectedPaths, expande
   useEffect(() => {
     updateStickyDirectories();
   }, [updateStickyDirectories]);
+  useEffect(() => {
+    if (!selectedFile) return;
+    // Source navigation can expand several lazy directory pages before the
+    // target row exists. Once it does, keep the selected source visible rather
+    // than merely marking an off-screen row active.
+    rowRefs.current.get(selectedFile)?.scrollIntoView({ block: 'nearest' });
+  }, [selectedFile, visibleNodes]);
   useLayoutEffect(() => {
     const overlay = stickyOverlayRef.current;
     if (!overlay) {
@@ -2320,6 +2335,7 @@ function WorkspaceDrawer({
   const handledReviewRequestId = useRef<string | undefined>(undefined);
   const [candidatePreview, setCandidatePreview] = useState<CandidateFilePreviewRequest>();
   const [sourceFileNavigation, setSourceFileNavigation] = useState<{ path: string; line: number }>();
+  const [pendingSourceNavigation, setPendingSourceNavigation] = useState<{ path: string; line: number; directories: string[] }>();
   const [selectedEntryPaths, setSelectedEntryPaths] = useState<Set<string>>(new Set());
   const [activeDirectory, setActiveDirectory] = useState<string>();
   const [gitContextPath, setGitContextPath] = useState<string>();
@@ -2451,6 +2467,59 @@ function WorkspaceDrawer({
     }));
     return () => { cancelled = true; };
   }, [details, directoryPages, expandedFilePaths, loadDirectory, open, scopeState.activeTabId]);
+  useEffect(() => {
+    if (!pendingSourceNavigation || !details || !open || scopeState.activeTabId !== 'files') return;
+    const { directories, line, path } = pendingSourceNavigation;
+    const root = details.working_directory.replace(/\/+$/, '');
+    if (path !== root && !path.startsWith(`${root}/`)) {
+      setPendingSourceNavigation(undefined);
+      setPanelError('源文件不在当前工作目录中。');
+      return;
+    }
+    const verifyEntry = (parentKey: string, childPath: string, kind: WorkspaceEntry['kind']) => {
+      const page = directoryPages.get(parentKey);
+      if (!page) return 'waiting' as const;
+      const entry = page.entries.find(candidate => candidate.path === childPath && candidate.kind === kind);
+      if (entry) return entry;
+      if (page.nextCursor) {
+        void loadDirectory(parentKey || undefined);
+        return 'loading-more' as const;
+      }
+      return undefined;
+    };
+    for (let index = 0; index < directories.length; index += 1) {
+      const directory = directories[index];
+      const parentKey = index === 0 ? '' : directories[index - 1];
+      const entry = verifyEntry(parentKey, directory, 'directory');
+      if (entry === 'waiting' || entry === 'loading-more') return;
+      if (!entry) {
+        setPendingSourceNavigation(undefined);
+        setExpandedFilePaths(current => new Set([...current].filter(candidate => !directories.includes(candidate))));
+        setPanelError('未能在当前工作目录中找到源文件。');
+        return;
+      }
+      if (!expandedFilePaths.has(directory)) {
+        setExpandedFilePaths(current => new Set([...current, directory]));
+        return;
+      }
+      if (!directoryPages.has(directory)) {
+        void loadDirectory(directory);
+        return;
+      }
+    }
+    const parentKey = directories.at(-1) ?? '';
+    const file = verifyEntry(parentKey, path, 'file');
+    if (file === 'waiting' || file === 'loading-more') return;
+    if (!file) {
+      setPendingSourceNavigation(undefined);
+      setPanelError('未能在当前工作目录中找到源文件。');
+      return;
+    }
+    setSourceFileNavigation({ path: file.path, line });
+    updateScope(current => ({ ...current, selectedFile: file.path }));
+    setSelectedEntryPaths(new Set([file.path]));
+    setPendingSourceNavigation(undefined);
+  }, [details, directoryPages, expandedFilePaths, loadDirectory, open, pendingSourceNavigation, scopeState.activeTabId, updateScope]);
   const selectedFile = scopeState.selectedFile;
   const selectedAttachment = attachments.find(item => item.path === selectedFile);
   const selectedMimeType = selectedAttachment?.mime_type ?? '';
@@ -2572,13 +2641,21 @@ function WorkspaceDrawer({
     const sourcePath = workspaceSourcePath(path, details?.working_directory);
     if (!sourcePath) return;
     setCandidatePreview(undefined);
-    setSourceFileNavigation({ path: sourcePath, line });
-    setExpandedFilePaths(current => new Set([
+    setSourceFileNavigation(undefined);
+    setPanelError('');
+    setPendingSourceNavigation({
+      path: sourcePath,
+      line,
+      directories: sourceParentDirectories(sourcePath, details?.working_directory ?? ''),
+    });
+    updateScope(current => ({
       ...current,
-      ...sourceParentDirectories(sourcePath, details?.working_directory ?? ''),
-    ]));
-    openFiles(sourcePath);
-  }, [details?.working_directory, openFiles]);
+      tabs: current.tabs.some(tab => tab.kind === 'files') ? current.tabs : [{ id: 'files', kind: 'files' }, ...current.tabs],
+      activeTabId: 'files',
+      selectedFile: undefined,
+    }));
+    onOpen();
+  }, [details?.working_directory, onOpen, updateScope]);
   const openSourceFile = useCallback((change: WorkspaceFileChange, line: number) => {
     openSourcePath(change.path, line);
   }, [openSourcePath]);

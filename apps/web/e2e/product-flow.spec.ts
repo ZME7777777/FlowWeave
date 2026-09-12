@@ -466,6 +466,8 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   let manualCondensations = 0;
   let forkRequests = 0;
   const workspaceEntryCreates: Array<{ parent_path: string; name: string; kind: string }> = [];
+  const workspaceDirectoryRequests: string[] = [];
+  const workspaceFilePreviewRequests: string[] = [];
   let compactionScenario = false;
   const longFinalReply = Array.from(
     { length: 90 },
@@ -510,6 +512,21 @@ test('top-level Agent workspace creates a direct conversation and restores its U
       }) });
       return;
     }
+    if (path.endsWith('/workspace/directory')) {
+      const parentPath = new URL(request.url()).searchParams.get('parent_path') || '/runtime/workspace/project';
+      workspaceDirectoryRequests.push(parentPath);
+      const entries = parentPath === '/runtime/workspace/project'
+        ? [
+          { path: '/runtime/workspace/project/backend', kind: 'directory', size: 0 },
+          { path: '/runtime/workspace/project/src', kind: 'directory', size: 0 },
+          { path: '/runtime/workspace/project/README.md', kind: 'file', size: 128 },
+        ]
+        : parentPath === '/runtime/workspace/project/src'
+          ? [{ path: '/runtime/workspace/project/src/config.ts', kind: 'file', size: 42 }]
+          : [];
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ parent_path: parentPath, entries, next_cursor: null }) });
+      return;
+    }
     if (path.endsWith('/workspace')) {
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
         root: '/runtime/workspace/project',
@@ -529,6 +546,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
       return;
     }
     if (path.endsWith('/workspace/file')) {
+      workspaceFilePreviewRequests.push(new URL(request.url()).searchParams.get('path') ?? '');
       await route.fulfill({ status: 200, contentType: 'text/plain', body: 'workspace file preview\n' });
       return;
     }
@@ -1042,6 +1060,16 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(fileDetail.getByText('const mode = "old"', { exact: true })).toBeVisible();
   await expect(fileDetail.getByText('const mode = "new"', { exact: true })).toBeVisible();
   await expect(fileDetail.getByText('The file was edited successfully.', { exact: true })).toBeVisible();
+  await page.locator('.conversation-file-changes > button').first().click();
+  await expect(page.getByRole('button', { name: '查看源文件' })).toBeVisible();
+  await page.getByRole('button', { name: '查看源文件' }).click();
+  await expect(page.getByText('workspace file preview', { exact: true })).toBeVisible();
+  await expect(page.getByText('config.ts', { exact: true })).toBeVisible();
+  await expect.poll(() => workspaceDirectoryRequests.slice(-2)).toEqual([
+    '/runtime/workspace/project',
+    '/runtime/workspace/project/src',
+  ]);
+  expect(workspaceFilePreviewRequests.at(-1)).toBe('/runtime/workspace/project/src/config.ts');
   await expect(completedProcess.locator('.conversation-activity-row.tool')).toHaveCount(5);
   await expect(completedProcess.getByRole('button', { name: '查看执行详情：运行失败 false' })).toBeVisible();
   await expect(completedProcess.getByText('子智能体 reviewer · 检查子任务边界')).toBeVisible();

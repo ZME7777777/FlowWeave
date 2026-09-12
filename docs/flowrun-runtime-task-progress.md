@@ -100,6 +100,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-336 | 初次 Runtime 供应遇到临时 Provider 不可用会永久降级 | DONE | 将短暂后端故障保持为可重试供应意图，限制 generation churn。 |
 | FR-337 | FlowRun 初次供应任务耗尽后无受控恢复入口 | DONE | 增加安全、幂等且可审计的终态投递恢复。 |
 | FR-338 | Diff 源文件跳转路径、树定位与 Git 历史入口修复 | DONE | 统一当前文件路径解析、懒加载目录展开和会话／Git Diff 行级跳转。 |
+| FR-339 | Diff 跳转的规范文件坐标与逐层树定位 | DONE | 目录接口逐层确认祖先并返回规范路径后才打开预览，避免展示路径残留触发 404。 |
 | OPS-01 | Docker rollback image / BuildKit cache 容量增长 | DONE | 建立带运行引用保护、dry-run 和显式确认的回收工具，并完成生产候选边界核验。 |
 | OPS-02 | Docker rollback image / BuildKit cache 容量增长 | DONE | 已按授权使用 OPS-03 tag 级路径回收，并完成生产不变量与入口验证。 |
 | OPS-03 | 多 rollback tag image 的安全回收 | DONE | 改为逐 tag、重查 Container 引用、不使用 `--force` 的回收路径。 |
@@ -176,6 +177,23 @@ Sandbox／`PROVISIONING` generation 的明确 Provider 暂时不可用任务从 
 验收：Web TypeScript typecheck、ESLint、production build 和 `git diff --check` 通过。既有广覆盖
 Playwright Agent 工作台用例在 WebSocket 流恢复阶段超时，未将其记为通过；其前端服务器连接与页面加载已恢复，
 超时发生在该历史用例的后续长流断言而非本切片的编译或构建。
+
+### FR-339 Diff 跳转的规范文件坐标与逐层树定位 — DONE
+
+依赖：`FR-338`。
+
+目标：
+
+- Diff 跳转不得直接把事件中携带的展示路径作为预览路径；必须以当前受权目录分页接口返回的文件路径为准。
+- 懒加载目录树必须顺序确认每一层目录，再展开并请求下一层；不存在或过期路径必须停止，不能遗留在展开集合并持续请求 404。
+- Git 仓库显示前缀与工作目录同名时，须去除重复前缀，避免形成 `<working-directory>/<label>/...` 的错误坐标。
+
+完成：工作区源路径归一化会去除重复的工作目录标签；新增待导航状态，按根目录到目标文件逐层验证目录分页条目、
+展开已确认目录，并仅在最终文件由接口返回后设置预览、行高亮与树选中。目标行出现后自动滚动至可见区域。
+
+验收：Web TypeScript typecheck、ESLint、production build 与 `git diff --check` 通过。新增目标 Playwright
+断言覆盖审查 Diff 打开深层文件时的根目录／`src` 逐层请求及最终规范预览路径；本机实际执行时在该断言之前因
+登录后未出现“Agent 会话”入口而超时，未记为通过。
 
 ### OPS-01 Docker rollback image / BuildKit cache 容量治理 — DONE
 
@@ -4563,6 +4581,7 @@ contract、冻结策略与既有受控生命周期约束覆盖。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-12 | FR-339 | Web TypeScript typecheck、ESLint、production build、`git diff --check`；当前源码 Vite 上 `product-flow.spec.ts` 目标 Playwright | PASS（静态／构建）：Diff 源文件导航只在目录分页逐层确认后才选中文件并请求预览，路径由已授权目录接口规范化，错误或已过期祖先会停止且不持续产生 404。typecheck、lint、build 与空白检查通过。目标 Playwright 已启动但在新增断言之前，登录后等待“Agent 会话”导航入口 120 秒超时；页面停留在登录页，未将其记为通过。 |
 | 2026-09-12 | OPS-02 | `f37c91b` 远端预检；维护前后 Docker/文件系统、Container image、named volume、Workspace、Compose／`.env` SHA-256 对比；OPS-03 重新 dry-run／apply／post dry-run；Compose 健康、内外网 FlowWeave／Agent／FastGPT 入口 | PASS（生产维护）：预检目标为 `root@192.168.91.154:/opt/flowweave`、范围 `other`；280 个安全候选以 322 个精确 rollback tag 逐个 untag，释放 280 个 image ID，post dry-run 候选为 0。超过 7 天的 BuildKit cache 回收 13.01GB；root 可用空间由 77GB 升至 83GB。操作前后全部 Container image ID、15 个 named volume、Workspace 顶层目录、`deploy/compose.yaml` 与 `.env` 哈希完全一致；没有 `--force`、broad prune 或数据删除。`api`／`runtime-provider`／`stream-api` healthy，`worker`／`web` Up，migration 为 `Exited (0)`；内外网 `/flowweave/` 与 `/flowweave/agent` 为 200，`/login` 为 200，未认证 Flow API 为预期 401。 |
 | 2026-09-12 | OPS-03 | Bash 语法、逐 tag 删除路径静态审查、help、确认参数拒绝、修复后生产 dry-run、`git diff --check` 与任务状态唯一性 | PASS（工具／生产只读）：修复后工具不再以 image ID 删除，也不使用 `--force`；每个候选会在变更前重新验证任意运行或已退出 Container 均未引用该 image，且所有当前 tags 仍为 FlowWeave rollback。生产 dry-run 固定 `root@192.168.91.154:/opt/flowweave`，识别 280 个候选、保护 36 个 image ID（30 个 Container 引用、6 个保留 rollback）；尚未删除任何资源，待 OPS-02 的重新预检和已授权执行。 |
 | 2026-09-12 | OPS-01 | 维护脚本 Bash 语法、help、缺失确认 token／缺失 `--apply` 拒绝、生产 dry-run、运行及已退出 Container image 交叉核验、`--max-delete=1` fail-closed 演练、`git diff --check` | PASS（工具／生产只读）：`.154` 容量审计为 images 61.09GB（32.86GB reclaimable）、BuildKit 78.75GB（22.42GB reclaimable）、根分区 77GB 可用。脚本固定 `root@192.168.91.154:/opt/flowweave`，dry-run 识别 279 个纯 FlowWeave rollback、无任一 Container 引用的 image ID；36 个 image ID 受保护，其中 30 个由 Container 引用、6 个为两个仓库最新三份 rollback，当前 `remote-amd64` image 亦受保护。逐一交叉核验候选不含任何 `docker ps -aq` image ID。`--apply` 缺 token 被拒绝；带 token 的 `--max-delete=1` 在任何删除前因 279 > 1 fail-closed。未删除 image/cache/container/volume/network/Workspace；实际回收待 OPS-02 的明确删除授权。 |
