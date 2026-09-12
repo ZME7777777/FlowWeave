@@ -1848,16 +1848,12 @@ function WorkspaceFileTree({ entries, root, selectedFile, selectedPaths, expande
       const currentTree = treeRef.current;
       if (currentTree) overlay.style.transform = `translateY(${currentTree.scrollTop}px)`;
       setStickyOverlayHeight(current => current === overlay.offsetHeight ? current : overlay.offsetHeight);
-      // A changed path can change the overlay height.  Re-evaluate against
-      // that final obstruction so a directory disappears exactly when its
-      // complete subtree is covered.
-      updateStickyDirectories();
     };
     syncOverlay();
     const observer = new ResizeObserver(syncOverlay);
     observer.observe(overlay);
     return () => observer.disconnect();
-  }, [stickyDirectoryPaths, updateStickyDirectories]);
+  }, [stickyDirectoryPaths]);
   const selectEntry = (node: WorkspaceTreeNode, event: ReactMouseEvent<HTMLButtonElement>) => {
     const toggling = event.metaKey || event.ctrlKey;
     const anchorIndex = selectionAnchor.current ? visibleNodes.findIndex(item => item.node.path === selectionAnchor.current) : -1;
