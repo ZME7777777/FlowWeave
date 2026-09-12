@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`COMPLETE`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`OPS-02`（使用 OPS-03 修复后的 tag 级回收执行已授权维护窗口）
+> 下一可执行切片：`NONE`（稳定性审计修复与已授权容量维护均已完成）
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -100,7 +100,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-336 | 初次 Runtime 供应遇到临时 Provider 不可用会永久降级 | DONE | 将短暂后端故障保持为可重试供应意图，限制 generation churn。 |
 | FR-337 | FlowRun 初次供应任务耗尽后无受控恢复入口 | DONE | 增加安全、幂等且可审计的终态投递恢复。 |
 | OPS-01 | Docker rollback image / BuildKit cache 容量增长 | DONE | 建立带运行引用保护、dry-run 和显式确认的回收工具，并完成生产候选边界核验。 |
-| OPS-02 | Docker rollback image / BuildKit cache 容量增长 | PENDING | 已获授权；OPS-03 已完成，须重新预检后使用 tag 级路径执行维护。 |
+| OPS-02 | Docker rollback image / BuildKit cache 容量增长 | DONE | 已按授权使用 OPS-03 tag 级路径回收，并完成生产不变量与入口验证。 |
 | OPS-03 | 多 rollback tag image 的安全回收 | DONE | 改为逐 tag、重查 Container 引用、不使用 `--force` 的回收路径。 |
 
 ### FR-335 Runtime generation Sandbox 引用完整性 — DONE
@@ -181,7 +181,7 @@ ID。它保护 current image 和每个仓库最新三个不同 rollback image ID
 引用、6 个最近 rollback。`--apply` 还必须匹配确认 token 且受 `--max-delete` 熔断；实际删除和 BuildKit
 cache 回收拆入 OPS-02，等待明确授权。
 
-### OPS-02 Docker 容量维护窗口执行 — PENDING
+### OPS-02 Docker 容量维护窗口执行 — DONE
 
 依赖：`OPS-01`。
 
@@ -201,6 +201,13 @@ cache 回收拆入 OPS-02，等待明确授权。
 multiple repositories`）。没有 image、cache、Container、volume、network 或 Workspace 被删除，Docker 容量
 统计未变化。该失败暴露工具执行路径不能处理同一 image 的多个受控 rollback tag，转入 OPS-03 修复；用户
 授权范围保持有效，修复后须重新做只读候选/服务预检再继续。
+
+完成（2026-09-12）：在 `root@192.168.91.154:/opt/flowweave` 以已提交的 OPS-03 工具重新预检后，
+从 280 个无 Container 引用、仅含受控 FlowWeave rollback tag 的候选中逐 tag 回收 322 个 tags，释放
+280 个 image ID；最终 dry-run 的候选数为 0。以 `--cache-until 168h` 单独清理 BuildKit，工具报告
+回收 13.01GB cache。没有使用 broad prune 或 `--force`，也没有删除 Container、volume、network、
+Workspace、Compose 或 `.env`。维护前后全部 Container image ID、15 个 named volume、Workspace 顶层
+目录和 `deploy/compose.yaml`／`.env` SHA-256 均一致；根分区可用空间由 77GB 增至 83GB。
 
 ### OPS-03 多 rollback tag image 的安全回收 — DONE
 
@@ -4535,6 +4542,7 @@ contract、冻结策略与既有受控生命周期约束覆盖。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-12 | OPS-02 | `f37c91b` 远端预检；维护前后 Docker/文件系统、Container image、named volume、Workspace、Compose／`.env` SHA-256 对比；OPS-03 重新 dry-run／apply／post dry-run；Compose 健康、内外网 FlowWeave／Agent／FastGPT 入口 | PASS（生产维护）：预检目标为 `root@192.168.91.154:/opt/flowweave`、范围 `other`；280 个安全候选以 322 个精确 rollback tag 逐个 untag，释放 280 个 image ID，post dry-run 候选为 0。超过 7 天的 BuildKit cache 回收 13.01GB；root 可用空间由 77GB 升至 83GB。操作前后全部 Container image ID、15 个 named volume、Workspace 顶层目录、`deploy/compose.yaml` 与 `.env` 哈希完全一致；没有 `--force`、broad prune 或数据删除。`api`／`runtime-provider`／`stream-api` healthy，`worker`／`web` Up，migration 为 `Exited (0)`；内外网 `/flowweave/` 与 `/flowweave/agent` 为 200，`/login` 为 200，未认证 Flow API 为预期 401。 |
 | 2026-09-12 | OPS-03 | Bash 语法、逐 tag 删除路径静态审查、help、确认参数拒绝、修复后生产 dry-run、`git diff --check` 与任务状态唯一性 | PASS（工具／生产只读）：修复后工具不再以 image ID 删除，也不使用 `--force`；每个候选会在变更前重新验证任意运行或已退出 Container 均未引用该 image，且所有当前 tags 仍为 FlowWeave rollback。生产 dry-run 固定 `root@192.168.91.154:/opt/flowweave`，识别 280 个候选、保护 36 个 image ID（30 个 Container 引用、6 个保留 rollback）；尚未删除任何资源，待 OPS-02 的重新预检和已授权执行。 |
 | 2026-09-12 | OPS-01 | 维护脚本 Bash 语法、help、缺失确认 token／缺失 `--apply` 拒绝、生产 dry-run、运行及已退出 Container image 交叉核验、`--max-delete=1` fail-closed 演练、`git diff --check` | PASS（工具／生产只读）：`.154` 容量审计为 images 61.09GB（32.86GB reclaimable）、BuildKit 78.75GB（22.42GB reclaimable）、根分区 77GB 可用。脚本固定 `root@192.168.91.154:/opt/flowweave`，dry-run 识别 279 个纯 FlowWeave rollback、无任一 Container 引用的 image ID；36 个 image ID 受保护，其中 30 个由 Container 引用、6 个为两个仓库最新三份 rollback，当前 `remote-amd64` image 亦受保护。逐一交叉核验候选不含任何 `docker ps -aq` image ID。`--apply` 缺 token 被拒绝；带 token 的 `--max-delete=1` 在任何删除前因 279 > 1 fail-closed。未删除 image/cache/container/volume/network/Workspace；实际回收待 OPS-02 的明确删除授权。 |
 | 2026-09-12 | FR-337 | 受影响 Python Ruff format/check、`py_compile`、唯一 Alembic head、任务状态唯一性、`git diff --check`；FlowRun 供应任务耗尽恢复 3 条定向 pytest | PASS（静态）：Ruff、语法、唯一 Alembic head `0114_runtime_sandbox_fk`、任务状态唯一性与空白检查通过。三条回归已收集，但均在业务断言前因本机 Docker Unix socket 缺失、Testcontainers PostgreSQL 无法启动而阻断，未伪记为通过。恢复严格限定为仍存在且可执行的 FlowRun、无 active generation 的唯一 `STARTING` Runtime、唯一 `PROVISIONING` generation 与同代、保持 `RUNNING` 意图且最后错误为 `SANDBOX_BACKEND_UNAVAILABLE` 的 Sandbox；以 `SKIP LOCKED` 逐层锁定，最多一次将原任务由 `DEAD` 恢复为额外 20 次预算的 `RETRY`，不创建资源／generation／Conversation。 |
