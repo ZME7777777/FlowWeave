@@ -2014,9 +2014,12 @@ function WorkDirectoryCreator({ workspaceId, onClose, onCreated }: {
   </div>;
 }
 
-function selectedGitRepository(repositories: AgentSessionWorkspaceDetails['repositories'], selectedPath?: string, ...containerPaths: Array<string | undefined>) {
+function selectedGitRepository(repositories: AgentSessionWorkspaceDetails['repositories'], selectedPath?: string) {
   return repositories
-    .filter(item => !containerPaths.includes(item.path))
+    // A repository may be exactly the selected work-directory root.  It is a
+    // valid Git repository, not merely a workspace container: filtering it
+    // out hides the complete Git sidebar for root workspaces such as
+    // `hq-interface`, while an identically structured nested workspace works.
     .filter(item => selectedPath === item.path || Boolean(selectedPath?.startsWith(`${item.path}/`)))
     .sort((left, right) => right.path.length - left.path.length)[0];
 }
@@ -2809,7 +2812,7 @@ function WorkspaceDrawer({
     staleTime: 15_000,
     retry: (count, error) => !(error instanceof ApiError && error.status < 500) && count < 2,
   });
-  const gitRepository = useMemo(() => selectedGitRepository(gitRepositoriesQuery.data?.repositories ?? [], gitContextPath, details?.root, details?.working_directory), [details?.root, details?.working_directory, gitContextPath, gitRepositoriesQuery.data?.repositories]);
+  const gitRepository = useMemo(() => selectedGitRepository(gitRepositoriesQuery.data?.repositories ?? [], gitContextPath), [gitContextPath, gitRepositoriesQuery.data?.repositories]);
   const gitSidebarVisible = fullScreen && filesTabIsActive && Boolean(gitRepository);
   const gitOptions = { bindingId, workDirectoryId };
   const sshRemoteReady = Boolean(
