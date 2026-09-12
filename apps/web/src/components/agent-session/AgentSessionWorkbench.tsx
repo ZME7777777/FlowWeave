@@ -1396,24 +1396,39 @@ function previewTextRange(root: HTMLElement, content: string, selection: FileSel
   return range;
 }
 
-function selectPreviewText(root: HTMLElement, content: string, selection: FileSelection): void {
+function revealPreviewText(root: HTMLElement, scrollContainer: HTMLElement, content: string, selection: FileSelection): Range | undefined {
   const range = previewTextRange(root, content, selection);
-  if (!range) return;
-  const browserSelection = window.getSelection();
-  browserSelection?.removeAllRanges(); browserSelection?.addRange(range);
-  // Code and Markdown previews have their own scrollbars. Scroll that inner
-  // surface instead of the page or drawer so the referenced start coordinate
-  // lands at the visible position even in a long file.
-  const scrollContainer = range.startContainer.parentElement?.closest<HTMLElement>(
-    '.agent-file-code-preview, .agent-file-markdown-preview',
-  ) ?? root;
+  if (!range) return undefined;
+  // Keep an already open file at its current reading position whenever the
+  // destination is visible.  When it is outside the viewport, reveal it with
+  // the smallest smooth scroll instead of forcing every jump to one fixed
+  // offset in the file.
   const previewRect = scrollContainer.getBoundingClientRect();
   const rangeRect = Array.from(range.getClientRects()).at(0) ?? range.getBoundingClientRect();
-  const top = Math.max(0, scrollContainer.scrollTop + rangeRect.top - previewRect.top - scrollContainer.clientHeight * 0.35);
-  const left = rangeRect.left < previewRect.left || rangeRect.right > previewRect.right
-    ? Math.max(0, scrollContainer.scrollLeft + rangeRect.left - previewRect.left - scrollContainer.clientWidth * 0.2)
-    : scrollContainer.scrollLeft;
-  scrollContainer.scrollTo({ top, left, behavior: 'smooth' });
+  const rangeTop = scrollContainer.scrollTop + rangeRect.top - previewRect.top;
+  const rangeBottom = rangeTop + Math.max(rangeRect.height, 1);
+  const verticalPadding = Math.min(28, Math.max(12, scrollContainer.clientHeight * 0.08));
+  let top = scrollContainer.scrollTop;
+  if (rangeTop < scrollContainer.scrollTop + verticalPadding) top = Math.max(0, rangeTop - verticalPadding);
+  else if (rangeBottom > scrollContainer.scrollTop + scrollContainer.clientHeight - verticalPadding) top = Math.max(0, rangeBottom - scrollContainer.clientHeight + verticalPadding);
+  const rangeLeft = scrollContainer.scrollLeft + rangeRect.left - previewRect.left;
+  const rangeRight = rangeLeft + Math.max(rangeRect.width, 1);
+  const horizontalPadding = Math.min(28, Math.max(12, scrollContainer.clientWidth * 0.05));
+  let left = scrollContainer.scrollLeft;
+  if (rangeLeft < scrollContainer.scrollLeft + horizontalPadding) left = Math.max(0, rangeLeft - horizontalPadding);
+  else if (rangeRight > scrollContainer.scrollLeft + scrollContainer.clientWidth - horizontalPadding) left = Math.max(0, rangeRight - scrollContainer.clientWidth + horizontalPadding);
+  if (top !== scrollContainer.scrollTop || left !== scrollContainer.scrollLeft) {
+    scrollContainer.scrollTo({ top, left, behavior: 'smooth' });
+  }
+  return range;
+}
+
+function selectPreviewText(root: HTMLElement, scrollContainer: HTMLElement, content: string, selection: FileSelection): boolean {
+  const range = revealPreviewText(root, scrollContainer, content, selection);
+  if (!range) return false;
+  const browserSelection = window.getSelection();
+  browserSelection?.removeAllRanges(); browserSelection?.addRange(range);
+  return true;
 }
 
 function workspaceReferenceLabel(reference: AgentWorkspaceReference): string {
@@ -1431,7 +1446,11 @@ interface WorkspaceSelectionRect { left: number; top: number; width: number; hei
 
 function WorkspaceTextPreview({ path, content, highlight, highlightLine, onSelect }: { path: string; content: string; highlight?: FileSelection; highlightLine?: number; onSelect?: (selection: FileSelection) => void }) {
   const previewRef = useRef<HTMLDivElement>(null);
+  const previewContentRef = useRef<HTMLElement>(null);
   const [selectionAction, setSelectionAction] = useState<{ selection: FileSelection; left: number; top: number; highlights: WorkspaceSelectionRect[] }>();
+  const [lineHighlight, setLineHighlight] = useState<number>();
+  const markdownPreview = /\.(?:md|mdx|markdown)$/i.test(path);
+  const codeLines = useMemo(() => content.split('\n'), [content]);
   const positionSelectionAction = useCallback((selection: FileSelection, range: Range) => {
     const preview = previewRef.current;
     if (!preview) return;
@@ -1469,19 +1488,30 @@ function WorkspaceTextPreview({ path, content, highlight, highlightLine, onSelec
     const lineSelection = line
       ? { start_line: line, start_column: 1, end_line: line, end_column: (content.split('\n')[line - 1]?.length ?? 0) + 1 }
       : undefined;
+    const preview = previewRef.current;
+    const source = previewContentRef.current;
     const selection = highlight ?? lineSelection;
-    if (!selection || !previewRef.current) return;
-    selectPreviewText(previewRef.current, content, selection);
+    if (!selection || !preview || !source) return;
+    setSelectionAction(undefined);
+    if (highlight || markdownPreview) {
+      if (!selectPreviewText(source, preview, content, selection)) return;
+    } else {
+      revealPreviewText(source, preview, content, selection);
+      setLineHighlight(line);
+    }
     const timer = window.setTimeout(() => {
       window.getSelection()?.removeAllRanges();
-      previewRef.current?.classList.remove('workspace-selection-flash');
+      preview.classList.remove('workspace-selection-flash');
+      setLineHighlight(current => current === line ? undefined : current);
     }, 1_600);
-    previewRef.current.classList.add('workspace-selection-flash');
+    preview.classList.add('workspace-selection-flash');
     return () => window.clearTimeout(timer);
-  }, [content, highlight, highlightLine]);
+  }, [content, highlight, highlightLine, markdownPreview]);
   const captureSelection = () => {
-    if (!previewRef.current) return;
-    const selection = selectionFromPreview(previewRef.current, content);
+    const preview = previewRef.current;
+    const source = previewContentRef.current;
+    if (!preview || !source) return;
+    const selection = selectionFromPreview(source, content);
     const range = window.getSelection()?.rangeCount ? window.getSelection()?.getRangeAt(0) : undefined;
     if (!selection || !range) {
       setSelectionAction(undefined);
@@ -1490,11 +1520,11 @@ function WorkspaceTextPreview({ path, content, highlight, highlightLine, onSelec
     positionSelectionAction(selection, range);
   };
   const action = selectionAction && <><div className="agent-file-selection-highlights" aria-hidden="true">{selectionAction.highlights.map((rect, index) => <i key={`${rect.left}:${rect.top}:${index}`} style={rect}/>)}</div><button type="button" className="agent-file-selection-action" style={{ left: selectionAction.left, top: selectionAction.top }} onMouseDown={event => event.preventDefault()} onMouseUp={event => event.stopPropagation()} onClick={event => { event.stopPropagation(); onSelect?.(selectionAction.selection); setSelectionAction(undefined); window.getSelection()?.removeAllRanges(); }}><Quote size={13}/>追加到会话</button></>;
-  if (/\.(?:md|mdx|markdown)$/i.test(path)) {
-    return <div ref={previewRef} className="agent-file-preview-selection" onMouseUp={captureSelection}>{action}<article className="agent-file-markdown-preview"><ReactMarkdown remarkPlugins={[remarkGfm]} components={{ code: WorkspaceMarkdownCode }}>{content}</ReactMarkdown></article></div>;
+  if (markdownPreview) {
+    return <div ref={previewRef} className="agent-file-preview-selection" onMouseUp={captureSelection}>{action}<article ref={previewContentRef} className="agent-file-markdown-preview"><ReactMarkdown remarkPlugins={[remarkGfm]} components={{ code: WorkspaceMarkdownCode }}>{content}</ReactMarkdown></article></div>;
   }
   const language = filePreviewLanguage(path);
-  return <div ref={previewRef} className="agent-file-preview-selection" onMouseUp={captureSelection}>{action}<pre className={`agent-file-code-preview${language ? ' highlighted' : ''}`}><code dangerouslySetInnerHTML={{ __html: highlightedCode(content, language) }}/></pre></div>;
+  return <div ref={previewRef} className="agent-file-preview-selection" onMouseUp={captureSelection}>{action}<div className={`agent-file-code-preview${language ? ' highlighted' : ''}`}><ol className="agent-file-line-numbers" aria-hidden="true">{codeLines.map((_, index) => <li key={index}>{index + 1}</li>)}</ol>{lineHighlight && <i className="agent-file-line-highlight" style={{ '--source-line': lineHighlight } as CSSProperties}/>}<code ref={previewContentRef} dangerouslySetInnerHTML={{ __html: highlightedCode(content, language) }}/></div></div>;
 }
 
 function sourceLineForDiffLine(lines: WorkspaceFileChange['lines'], selectedIndex: number): number {
