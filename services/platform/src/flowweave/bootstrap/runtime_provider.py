@@ -758,7 +758,7 @@ def emit(relay_id, kind, **values):
 
 
 async def main():
-    after_seq = sys.argv[1]
+    after_seq = int(sys.argv[1]) if sys.argv[1] else None
     channel = sys.argv[2]
     conversation_id = sys.argv[3]
     timeout_seconds = float(sys.argv[4])
