@@ -65,7 +65,7 @@ def assert_flow_node_session_writable(
 
     attempt = db.get(NodeAttempt, attempt_id)
     node_run = db.get(NodeRun, attempt.node_run_id) if attempt is not None else None
-    if node_run is None or node_run.flow_run_id != flow_run_id:
+    if attempt is None or node_run is None or node_run.flow_run_id != flow_run_id:
         raise DomainError(
             "NODE_CONVERSATION_CONTEXT_MISMATCH",
             "The selected node Attempt does not belong to this FlowRun",
@@ -150,11 +150,21 @@ def resolve_flow_node_session_host(
         # every mutation after cancellation or Run completion.
         and not require_start_permission
     )
+    # A failed START gate remains an operator-actionable node state.  The
+    # Workbench intentionally offers its session entry here so the operator
+    # can inspect and amend the node before retrying the gate.  A copied node
+    # can arrive in this state before it has ever created a Conversation, so
+    # ``conversation_id`` cannot be the condition that provisions its first
+    # Attempt-owned Agent Server generation.
+    startable_attempt_states = {
+        AttemptState.WAITING_START_CONFIRMATION,
+        AttemptState.START_BLOCKED,
+    }
     should_ensure_runtime = (
         workspace.attempt_owned
         and (
             require_start_permission
-            or (ensure_startable_runtime and attempt.state == "WAITING_START_CONFIRMATION")
+            or (ensure_startable_runtime and attempt.state in startable_attempt_states)
             or existing_session_needs_runtime
         )
     ) or (not workspace.attempt_owned and (require_start_permission or ensure_startable_runtime))

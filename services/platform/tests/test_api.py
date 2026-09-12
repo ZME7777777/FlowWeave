@@ -268,6 +268,50 @@ def test_copy_node_run_preserves_launch_configuration_without_execution_results(
     )
 
 
+def test_copied_start_blocked_node_provisions_runtime_for_agent_workbench(client, skill_capability):
+    asset = create_asset(client, skill_capability, "可处理启动门禁的副本节点")
+    payload = flow_payload(asset["id"], environment_version_id=client.environment_version_id)
+    for node in payload["nodes"]:
+        node["gates"][0]["config"]["code"] = (
+            "result = {'decision': 'FAIL', 'summary': '需要人工处理', "
+            "'reasons': ['缺少说明'], 'evidence': [], 'details': {}}"
+        )
+    created = client.post("/api/v1/flows", json=payload)
+    assert created.status_code == 201, created.text
+    run = client.post(
+        f"/api/v1/flows/{created.json()['id']}/runs",
+        json={"environment_version_id": client.environment_version_id},
+    ).json()
+    artifact = client.post(
+        f"/api/v1/flow-runs/{run['id']}/nodes/design_a/input-artifacts",
+        json={
+            "field_key": "prd",
+            "artifact_type": "URL",
+            "uri": "https://example.test/copied-blocked-input",
+        },
+    )
+    assert artifact.status_code == 201, artifact.text
+    source = client.post(
+        f"/api/v1/flow-runs/{run['id']}/nodes/design_a/runs",
+        json=prompt_node_start(artifact_ids={"prd": artifact.json()["id"]}),
+    )
+    assert source.status_code == 201, source.text
+    assert source.json()["attempts"][-1]["state"] == "START_BLOCKED"
+
+    copied = client.post(
+        f"/api/v1/flow-runs/{run['id']}/nodes/{source.json()['id']}/copy",
+        json={"name": "待处理副本"},
+    )
+    assert copied.status_code == 201, copied.text
+    copied_attempt = copied.json()["attempts"][-1]
+    assert copied_attempt["state"] == "START_BLOCKED"
+
+    host = client.get(
+        f"/api/v1/flow-runs/{run['id']}/node-attempts/{copied_attempt['id']}/agent-sessions/host"
+    )
+    assert host.status_code == 200, host.text
+
+
 def gate_payloads():
     return [
         {
