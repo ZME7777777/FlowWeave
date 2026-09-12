@@ -533,10 +533,17 @@ function isTerminalEntry(entry: ActivityEntry): boolean {
     && entry.action.event.payload.event_name === 'TerminalAction';
 }
 
+function commandHasCommentary(entry: ActivityEntry): boolean {
+  // A TerminalAction may carry the Agent's user-facing explanation. Preserve
+  // that narration beside its command instead of absorbing both into a batch
+  // header with no corresponding explanation.
+  return Boolean(entry.action?.content.trim());
+}
+
 function commandEntriesAreRelated(previous: ActivityEntry, next: ActivityEntry): boolean {
   const previousAction = previous.action;
   const nextAction = next.action;
-  if (!previousAction || !nextAction) return false;
+  if (!previousAction || !nextAction || commandHasCommentary(previous) || commandHasCommentary(next)) return false;
 
   const previousResponseId = detailText(previousAction.event.payload.llm_response_id);
   const nextResponseId = detailText(nextAction.event.payload.llm_response_id);

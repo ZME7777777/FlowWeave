@@ -1241,12 +1241,10 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     type: 'event',
     event: { id: 'live-tool-next', event_type: 'TOOL_CALL', payload: { parent_id: 'live-tool', action_id: 'live-tool-next', tool_call_id: 'live-next-call', llm_response_id: 'live-operation-batch-1', tool_name: 'terminal', event_name: 'TerminalAction', details: { command: 'git status --short' }, timestamp: new Date().toISOString() } },
   }));
-  const liveCommandGroup = activeProcess.locator('.conversation-command-group');
-  await expect(liveCommandGroup).toBeVisible();
-  await expect(liveCommandGroup.getByText('正在运行 2 条命令')).toBeVisible();
-  await expect(liveCommandGroup.getByText('0 / 2 已完成')).toBeVisible();
-  await expect(liveCommandGroup).toHaveAttribute('open', '');
-  await expect(liveCommandGroup.getByText('正在运行 git status --short')).toBeVisible();
+  await expect(activeProcess.locator('.conversation-command-group')).toHaveCount(0);
+  await expect(activeProcess.getByText('已完成初步分析。')).toBeVisible();
+  await expect(activeProcess.getByText('正在运行 pwd')).toBeVisible();
+  await expect(activeProcess.getByText('正在运行 git status --short')).toBeVisible();
   await expect(page.locator('.conversation-turn-status')).toHaveText(/正在后台执行命令/);
   await expect(activeProcess.getByText('正在核对上下文。')).toHaveCount(0);
   agentStream!.send(JSON.stringify({
@@ -1282,18 +1280,14 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     type: 'event',
     event: { id: 'live-tool-result', event_type: 'TOOL_RESULT', payload: { parent_id: 'live-tool', action_id: 'live-tool', tool_call_id: 'live-call', tool_name: 'terminal', event_name: 'TerminalObservation', content: '/runtime/workspace/project', details: { command: 'pwd', exit_code: 0, is_error: false }, timestamp: new Date().toISOString() } },
   }));
-  await expect(liveCommandGroup.getByText('正在运行 2 条命令')).toBeVisible();
-  await expect(liveCommandGroup.getByText('1 / 2 已完成')).toBeVisible();
+  await expect(activeProcess.getByText('正在运行 git status --short')).toBeVisible();
   agentStream!.send(JSON.stringify({
     type: 'event',
     event: { id: 'live-tool-next-result', event_type: 'TOOL_RESULT', payload: { parent_id: 'live-tool-next', action_id: 'live-tool-next', tool_call_id: 'live-next-call', tool_name: 'terminal', event_name: 'TerminalObservation', details: { command: 'git status --short', exit_code: 0, is_error: false }, timestamp: new Date().toISOString() } },
   }));
-  await expect(liveCommandGroup.getByText('已运行 2 条命令')).toBeVisible();
-  await expect(liveCommandGroup).not.toHaveAttribute('open', '');
-  await liveCommandGroup.locator(':scope > summary').click();
-  await expect(liveCommandGroup).toHaveAttribute('open', '');
-  await expect(liveCommandGroup.getByRole('button', { name: '查看执行详情：已运行 git status --short' })).toBeVisible();
-  await expect(liveCommandGroup.getByRole('button', { name: '查看执行详情：已运行 pwd' })).toBeVisible();
+  await expect(activeProcess.locator('.conversation-command-group')).toHaveCount(0);
+  await expect(activeProcess.getByRole('button', { name: '查看执行详情：已运行 git status --short' })).toBeVisible();
+  await expect(activeProcess.getByRole('button', { name: '查看执行详情：已运行 pwd' })).toBeVisible();
   await expect(page.locator('.conversation-turn-status')).toHaveText('OpenHands 会话连接正常，等待响应');
   await expect(activeProcess.locator('.conversation-activity-row.tool')).toHaveCount(3);
   await composer.fill('第一条排队消息');
