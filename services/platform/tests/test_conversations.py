@@ -1090,7 +1090,7 @@ def test_completed_flow_run_keeps_node_source_read_only_but_allows_native_fork(
     db_session_factory: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     with db_session_factory() as db:
-        flow_run_id, _runtime_session_id, attempt_id = _node_session_context(db)
+        flow_run_id, runtime_session_id, attempt_id = _node_session_context(db)
         run = db.get(FlowRun, flow_run_id)
         assert run is not None
         run.state = "COMPLETED"
@@ -1119,6 +1119,35 @@ def test_completed_flow_run_keeps_node_source_read_only_but_allows_native_fork(
         assert status["fork_available"] is True
         assert status["terminal_available"] is True
         assert "流程已结束" in str(status["message"])
+
+        # The source URL remains a convenient place to reach the native Fork,
+        # but the new locator must not inherit node ownership or its terminal
+        # write fence.
+        detached = AgentConversationBinding(
+            runtime_session_id=runtime_session_id,
+            host_kind="FLOW_NODE",
+            host_id=flow_run_id,
+            conversation_scope_id=attempt_id,
+            flow_run_id=flow_run_id,
+            node_run_id=None,
+            node_attempt_id=None,
+            openhands_conversation_id=str(uuid4()),
+            display_title="Fork · 源会话",
+            create_idempotency_key="completed-node-native-fork",
+            lifecycle="ACTIVE",
+        )
+        db.add(detached)
+        db.flush()
+        assert (
+            flow_node_conversations._assert_node_session_writable(
+                db,
+                flow_run_id=flow_run_id,
+                attempt_id=attempt_id,
+                binding_id=detached.id,
+            ).id
+            == attempt_id
+        )
+        assert flow_node_conversations._node_session_dict(db, detached)["write_available"] is True
 
         attempt = db.get(NodeAttempt, attempt_id)
         assert attempt is not None

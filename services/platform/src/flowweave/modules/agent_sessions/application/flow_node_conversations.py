@@ -126,9 +126,26 @@ def _attempt(db: Session, attempt_id: str) -> NodeAttempt:
     return item
 
 
-def _assert_node_session_writable(db: Session, *, flow_run_id: str, attempt_id: str) -> NodeAttempt:
-    """Use the node host's lifecycle fence for every mutation route."""
+def _assert_node_session_writable(
+    db: Session, *, flow_run_id: str, attempt_id: str, binding_id: str | None = None
+) -> NodeAttempt:
+    """Apply the node fence only to conversations still owned by that node.
 
+    A Fork is a native OpenHands branch with a copied history and frozen
+    directory, but it deliberately clears its node lineage.  Its URL remains
+    reachable from the source node workspace, while its subsequent writes
+    must never reopen or mutate the completed node Attempt.
+    """
+
+    if binding_id is not None:
+        binding = _binding_for_attempt(
+            db,
+            flow_run_id=flow_run_id,
+            attempt_id=attempt_id,
+            binding_id=binding_id,
+        )
+        if binding.node_attempt_id is None:
+            return _attempt(db, attempt_id)
     return agent_sessions.assert_flow_node_session_writable(
         db, flow_run_id=flow_run_id, attempt_id=attempt_id
     )
@@ -359,7 +376,9 @@ def _binding_for_attempt(
         lock=lock,
         allow_gate_sidecar=allow_gate_sidecar,
     )
-    if item.node_attempt_id != attempt_id:
+    if item.node_attempt_id != attempt_id and not (
+        item.node_attempt_id is None and item.conversation_scope_id == attempt_id
+    ):
         raise not_found("flow_run_conversation_binding", binding_id)
     return item
 
@@ -434,6 +453,10 @@ def _node_session_dict(db: Session, item: AgentConversationBinding) -> dict[str,
             )
         ],
         "streaming_callback_ready": item.streaming_callback_ready,
+        # This is deliberately per-conversation: a terminal node source is
+        # read-only while its detached native Fork is a normal writable
+        # conversation.
+        "write_available": item.node_attempt_id is None,
         "lifecycle": item.lifecycle,
         "created_at": item.created_at.isoformat(),
         "updated_at": item.updated_at.isoformat(),
@@ -634,7 +657,13 @@ def list_node_session_views(
         .where(
             AgentConversationBinding.host_kind == _FLOW_NODE,
             AgentConversationBinding.flow_run_id == flow_run_id,
-            AgentConversationBinding.node_attempt_id == attempt_id,
+            or_(
+                AgentConversationBinding.node_attempt_id == attempt_id,
+                and_(
+                    AgentConversationBinding.node_attempt_id.is_(None),
+                    AgentConversationBinding.conversation_scope_id == attempt_id,
+                ),
+            ),
             AgentConversationBinding.lifecycle == "ACTIVE",
             ~AgentConversationBinding.create_idempotency_key.like("gate-sidecar:%"),
         )
@@ -666,7 +695,13 @@ def list_node_session_page(
     query = select(AgentConversationBinding).where(
         AgentConversationBinding.host_kind == _FLOW_NODE,
         AgentConversationBinding.flow_run_id == flow_run_id,
-        AgentConversationBinding.node_attempt_id == attempt_id,
+        or_(
+            AgentConversationBinding.node_attempt_id == attempt_id,
+            and_(
+                AgentConversationBinding.node_attempt_id.is_(None),
+                AgentConversationBinding.conversation_scope_id == attempt_id,
+            ),
+        ),
         AgentConversationBinding.lifecycle == "ACTIVE",
         ~AgentConversationBinding.create_idempotency_key.like("gate-sidecar:%"),
     )
@@ -792,7 +827,9 @@ def get_node_conversation(
 def patch_node_conversation(
     db: Session, *, flow_run_id: str, attempt_id: str, binding_id: str, title: str
 ) -> dict[str, Any]:
-    _assert_node_session_writable(db, flow_run_id=flow_run_id, attempt_id=attempt_id)
+    _assert_node_session_writable(
+        db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
+    )
     item = _binding_for_attempt(
         db,
         flow_run_id=flow_run_id,
@@ -2072,11 +2109,11 @@ def send_flow_run_question(
     idempotency_key: str,
     actor: str | None,
 ) -> dict[str, Any]:
-    _binding_for_run(db, flow_run_id, binding_id)
+    binding = _binding_for_run(db, flow_run_id, binding_id)
     run = db.get(FlowRun, flow_run_id)
     if run is None:
         raise not_found("flow_run", flow_run_id)
-    if run.state in {"COMPLETED", "CANCELLED"}:
+    if binding.node_attempt_id is not None and run.state in {"COMPLETED", "CANCELLED"}:
         raise DomainError(
             "FLOW_RUN_TERMINAL",
             "A completed or cancelled FlowRun cannot accept new questions",
@@ -2096,7 +2133,9 @@ def send_node_question(
     idempotency_key: str,
     actor: str | None,
 ) -> dict[str, Any]:
-    _assert_node_session_writable(db, flow_run_id=flow_run_id, attempt_id=attempt_id)
+    _assert_node_session_writable(
+        db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
+    )
     _binding_for_attempt(db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id)
     return send_flow_run_question(db, flow_run_id, binding_id, payload, idempotency_key, actor)
 
@@ -2116,7 +2155,9 @@ def send_node_message(
 
     if not content.strip() and not attachments and not references and not workspace_references:
         raise DomainError("AGENT_MESSAGE_EMPTY", "消息不能为空", 422)
-    _assert_node_session_writable(db, flow_run_id=flow_run_id, attempt_id=attempt_id)
+    _assert_node_session_writable(
+        db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
+    )
     binding = _binding_for_attempt(
         db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id, lock=True
     )
@@ -2223,7 +2264,9 @@ def upload_node_attachment(
     mime_type = content_type.lower().strip() or "application/octet-stream"
     if len(mime_type) > 200:
         raise DomainError("AGENT_ATTACHMENT_INVALID", "附件类型无效", 422)
-    _assert_node_session_writable(db, flow_run_id=flow_run_id, attempt_id=attempt_id)
+    _assert_node_session_writable(
+        db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
+    )
     agent_sessions.resolve_flow_node_session_host(
         db, flow_run_id=flow_run_id, attempt_id=attempt_id, require_start_permission=False
     )
@@ -2301,7 +2344,9 @@ def add_node_conversation_capability(
 ) -> dict[str, Any]:
     """Load a governed capability through the same native marketplace lifecycle."""
 
-    _assert_node_session_writable(db, flow_run_id=flow_run_id, attempt_id=attempt_id)
+    _assert_node_session_writable(
+        db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
+    )
     binding = _binding_for_attempt(
         db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id, lock=True
     )
@@ -2418,7 +2463,9 @@ def decide_node_confirmation(
 ) -> dict[str, Any]:
     if not reason.strip():
         raise DomainError("AGENT_CONFIRMATION_REASON_REQUIRED", "请填写确认理由", 422)
-    _assert_node_session_writable(db, flow_run_id=flow_run_id, attempt_id=attempt_id)
+    _assert_node_session_writable(
+        db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
+    )
     result = get_runtime().respond_to_confirmation(
         _node_handle(db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id),
         expected_pending_digest,
@@ -2431,7 +2478,9 @@ def decide_node_confirmation(
 def delete_node_conversation(
     db: Session, *, flow_run_id: str, attempt_id: str, binding_id: str
 ) -> None:
-    _assert_node_session_writable(db, flow_run_id=flow_run_id, attempt_id=attempt_id)
+    _assert_node_session_writable(
+        db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
+    )
     binding = _binding_for_attempt(
         db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id, lock=True
     )
@@ -2503,7 +2552,9 @@ def rerun_node_message(
 ) -> dict[str, Any]:
     if not content.strip():
         raise DomainError("AGENT_MESSAGE_EMPTY", "消息不能为空", 422)
-    _assert_node_session_writable(db, flow_run_id=flow_run_id, attempt_id=attempt_id)
+    _assert_node_session_writable(
+        db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
+    )
     binding = _binding_for_attempt(
         db,
         flow_run_id=flow_run_id,
@@ -2552,7 +2603,12 @@ def fork_node_conversation(
         )
     )
     if existing is not None:
-        if existing.host_kind != _FLOW_NODE or existing.node_attempt_id != attempt_id:
+        if (
+            existing.host_kind != _FLOW_NODE
+            or existing.flow_run_id != flow_run_id
+            or existing.node_attempt_id is not None
+            or existing.conversation_scope_id != attempt_id
+        ):
             raise DomainError("AGENT_CONVERSATION_COMMAND_CONFLICT", "会话分叉请求冲突", 409)
         return _node_session_dict(db, existing)
     source_handle = _node_handle(
@@ -2571,12 +2627,13 @@ def fork_node_conversation(
         db,
         runtime_session_id=source.runtime_session_id,
         flow_run_id=flow_run_id,
-        node_run_id=source.node_run_id or "",
-        node_attempt_id=attempt_id,
+        node_run_id=None,
+        node_attempt_id=None,
         working_directory=source.working_directory or str(_RUNTIME_PROJECT),
         create_idempotency_key=idempotency_key,
         display_title=(title or "").strip()[:240] or f"Fork · {source.display_title or '会话'}",
         work_directory_version_id=source.work_directory_version_id,
+        conversation_scope_id=attempt_id,
         config=config,
     )
     if source_identity.event_id is None:
@@ -2623,7 +2680,9 @@ def stop_flow_run_conversation(db: Session, flow_run_id: str, binding_id: str) -
 def stop_node_conversation(
     db: Session, *, flow_run_id: str, attempt_id: str, binding_id: str
 ) -> dict[str, Any]:
-    _assert_node_session_writable(db, flow_run_id=flow_run_id, attempt_id=attempt_id)
+    _assert_node_session_writable(
+        db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
+    )
     _binding_for_attempt(db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id)
     return stop_flow_run_conversation(db, flow_run_id, binding_id)
 
@@ -2705,7 +2764,9 @@ def switch_node_conversation_model(
 ) -> dict[str, str | None]:
     """Apply and freeze a selected model for one scoped FlowRun session."""
 
-    _assert_node_session_writable(db, flow_run_id=flow_run_id, attempt_id=attempt_id)
+    _assert_node_session_writable(
+        db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
+    )
     binding = _binding_for_attempt(
         db,
         flow_run_id=flow_run_id,
@@ -2745,7 +2806,9 @@ def switch_node_conversation_model(
 def condense_node_conversation(
     db: Session, *, flow_run_id: str, attempt_id: str, binding_id: str
 ) -> dict[str, Any]:
-    _assert_node_session_writable(db, flow_run_id=flow_run_id, attempt_id=attempt_id)
+    _assert_node_session_writable(
+        db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
+    )
     runtime = get_runtime()
     handle = _node_handle(db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id)
     if not runtime.can_accept_input(handle):
@@ -2756,10 +2819,17 @@ def condense_node_conversation(
 def interrupt_node_conversation(
     db: Session, *, flow_run_id: str, attempt_id: str, binding_id: str
 ) -> dict[str, bool]:
-    _assert_node_session_writable(db, flow_run_id=flow_run_id, attempt_id=attempt_id)
+    _assert_node_session_writable(
+        db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
+    )
     binding = _binding_for_attempt(
         db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
     )
+    if binding.node_attempt_id is None:
+        get_runtime().interrupt(
+            _node_handle(db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id)
+        )
+        return {"accepted": True}
     attempt = _attempt(db, attempt_id)
     expected_version = attempt.state_version
     should_pause = attempt.state == AttemptState.EXECUTING and attempt.runtime_phase == "RUNNING"
@@ -2858,7 +2928,9 @@ def _record_native_pause(
 def resume_node_conversation(
     db: Session, *, flow_run_id: str, attempt_id: str, binding_id: str
 ) -> dict[str, Any]:
-    _assert_node_session_writable(db, flow_run_id=flow_run_id, attempt_id=attempt_id)
+    _assert_node_session_writable(
+        db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
+    )
     binding = _binding_for_attempt(
         db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
     )
@@ -2876,6 +2948,11 @@ def resume_node_conversation(
             # restart or native error cannot restore the creation-time model.
             runtime.switch_model(handle, provider)
         return runtime.run(handle)
+
+    if binding.node_attempt_id is None:
+        result = resume_runtime()
+        finish(db)
+        return {"accepted": True, "cursor": result.cursor}
 
     execution_conversation = attempt.conversation_id == binding.openhands_conversation_id
     if not execution_conversation:

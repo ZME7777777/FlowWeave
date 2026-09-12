@@ -384,12 +384,13 @@ def reserve_flow_node_binding(
     *,
     runtime_session_id: str,
     flow_run_id: str,
-    node_run_id: str,
-    node_attempt_id: str,
+    node_run_id: str | None,
+    node_attempt_id: str | None,
     working_directory: str,
     create_idempotency_key: str,
     display_title: str | None = None,
     work_directory_version_id: str | None = None,
+    conversation_scope_id: str | None = None,
     config: FrozenSessionConfig | None = None,
     binding_id: str | None = None,
     openhands_conversation_id: str | None = None,
@@ -402,6 +403,7 @@ def reserve_flow_node_binding(
             "节点会话必须显式选择模型供应商和模型",
             409,
         )
+    scope_id = conversation_scope_id or node_attempt_id or flow_run_id
     existing = db.scalar(
         select(AgentConversationBinding).where(
             AgentConversationBinding.create_idempotency_key == create_idempotency_key
@@ -413,6 +415,7 @@ def reserve_flow_node_binding(
             or existing.flow_run_id != flow_run_id
             or existing.node_attempt_id != node_attempt_id
             or existing.runtime_session_id != runtime_session_id
+            or existing.conversation_scope_id != scope_id
         ):
             raise DomainError(
                 "AGENT_CONVERSATION_COMMAND_CONFLICT",
@@ -426,7 +429,9 @@ def reserve_flow_node_binding(
         runtime_session_id=runtime_session_id,
         host_kind="FLOW_NODE",
         host_id=flow_run_id,
-        conversation_scope_id=node_attempt_id,
+        # A native fork can retain this FlowRun's Runtime and frozen work
+        # directory without remaining a NodeAttempt-owned conversation.
+        conversation_scope_id=scope_id,
         flow_run_id=flow_run_id,
         node_run_id=node_run_id,
         node_attempt_id=node_attempt_id,

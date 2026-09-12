@@ -484,7 +484,7 @@ Environment 断言，未记为 pytest 通过；固定 OpenHands `1.47.0` 的真�
 - 浏览器继续使用现有 Fork 图标、确认弹窗、文案、样式与路由；不得引入“追问会话”、跨 Workspace 引用或另一套会话模型。
 - `CANCELLED` FlowRun 和 `CANCELLED` Attempt 保持完全只读，不能借此例外创建任何新分支。
 
-完成：节点 Runtime 投影新增受服务端控制的 `fork_available`。完成态源会话以既有原生 Fork 路由、同一 Attempt 工作目录和同一冻结模型配置创建新分支；UI 仅在该精确能力为真时恢复现有 Fork 控件，其他写入控件继续由 `write_available=false` 禁用。取消路径仍走原有写入拒绝。
+完成：节点 Runtime 投影新增受服务端控制的 `fork_available`。完成态源会话以既有原生 Fork 路由、同一冻结工作目录和模型配置创建新分支，但分支 locator 明确清空 `node_run_id`／`node_attempt_id`：它仅保留来源页面的访问 scope，不再属于节点 Attempt 或驱动节点状态。UI 按会话自身的 `write_available` 渲染，故源会话继续只读，而 Fork 可正常发送、改名、切换模型、暂停／继续、压缩、删除和继续 Fork。取消路径仍走原有写入拒绝。
 
 验收：受影响 Python Ruff check/format、`py_compile`、Pyright，Web TypeScript typecheck、ESLint、production build、Alembic 唯一 head、`git diff --check` 与任务状态唯一性通过。新增完成态允许 Fork、完成态保留只读与取消 Attempt 拒绝的定向 pytest 已收集，但在业务断言前因本机 Docker Unix socket 缺失、Testcontainers PostgreSQL 初始化失败而阻断，未记为通过。
 
@@ -4893,7 +4893,7 @@ contract、冻结策略与既有受控生命周期约束覆盖。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
-| 2026-09-12 | FR-365 | 受影响 Python Ruff check/format、`py_compile`、Pyright；Web TypeScript typecheck、ESLint、production build；Alembic head、`git diff --check` 与任务状态唯一性；完成态节点 Fork 定向 pytest | PASS（静态／构建）：完成态节点会话只暴露普通会话既有的 native Fork 控件和后端 Fork 路由，源会话仍无发送、改名、模型、控制或删除权限；`CANCELLED` FlowRun／Attempt 继续拒绝 Fork。定向 pytest 已收集，但业务断言前因本机 Docker Unix socket 缺失、Testcontainers PostgreSQL 无法初始化而阻断，未伪记为通过。 |
+| 2026-09-12 | FR-365 | 受影响 Python Ruff check/format、`py_compile`、Pyright；Web TypeScript typecheck、ESLint、production build；`git diff --check` 与任务状态唯一性；完成态节点 Fork 定向 pytest | PASS（静态／构建）：完成态节点源会话仍无发送、改名、模型、控制或删除权限；每个 native Fork 清空节点绑定并按自身 locator 授予普通会话写入能力，且不会回写节点 Attempt。`CANCELLED` FlowRun／Attempt 继续拒绝 Fork。定向 pytest 已收集，但业务断言前因本机 Docker Unix socket 缺失、Testcontainers PostgreSQL 无法初始化而阻断，未伪记为通过。 |
 | 2026-09-12 | FR-364 | OpenHands MessageEvent／FinishAction、协作认证定向 pytest（4 passed）；无 Docker fixture 的完成补登 pytest（1 passed）；受影响 Python Ruff check、`py_compile`；Web TypeScript typecheck、ESLint、production build；Alembic head、任务状态唯一性与 `git diff --check` | PASS（定向、静态与构建）：当前 active branch 的 agent MessageEvent 仅在 OpenHands 原生 `finished` 状态下作为 `ASSISTANT_MESSAGE` 正式完成身份投影，保留自身事件 ID，未使用 cursor 或文本猜测；FinishAction 路径保持。协作会话创建时恢复受控认证 native Secret 和仅变量名元数据，候选输出卡片不再要求 FinishAction 才渲染。完整 `test_runtime_wakeup.py` 的其余 5 项在 Testcontainers PostgreSQL fixture 初始化前因本机 Docker Unix socket 缺失阻断，未伪记为通过。 |
 | 2026-09-12 | FR-363 | 连续记录详情／摘要删除过滤纯逻辑回归；受影响 Python Ruff format/check、`py_compile`、`git diff --check` 与任务状态唯一性 | PASS：两条列表入口均使用 `RunEvent.cursor` 构造已删除记录排除子查询，不再在摘要请求时引用不存在的 `RunEvent.id` 并返回 500；未迁移、删除或修改任何持久记录。 |
 | 2026-09-12 | FR-354 | `test_runtime_contract.py`、`test_runtime_capabilities.py`；受影响 Python Ruff format/check、`py_compile`、`git diff --check`；结构化比较审计 | PASS（静态）：Server 版本、四包版本、commit/ref 变化不再阻断节点或会话；缺少必需 OpenAPI 路由、创建字段或工具仍明确拒绝。`rg` 与 ast-grep 未发现 FlowWeave 运行时代码中 OpenHands 版本／commit／ref 的相等性准入比较。完整数据库 pytest 因本机 Docker socket 缺失、Testcontainers fixture 初始化失败而未执行断言；Pyright 仅保留 `environments/application/service.py` 中 3 条未触及既有诊断。 |
