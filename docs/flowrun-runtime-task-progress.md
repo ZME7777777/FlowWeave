@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`IN PROGRESS`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`FR-367 FlowRun 单 Runtime／共享网络收敛`
+> 下一可执行切片：`FR-368 FlowRun 专属小型网络分配`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -128,8 +128,8 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | 切片 | 风险 | 状态 | 范围 |
 | --- | --- | --- | --- |
 | FR-366 | FlowWeave 固定控制面与动态 Runtime 共用 Docker 默认地址池 | DONE | 已为 control、docker-control 与 Runtime 动态地址池建立强制、显式且互不重叠的配置契约；未改变现有 Runtime 所有权或远端网络。 |
-| FR-367 | Node Attempt 独占 Runtime/网络，偏离每个 FlowRun 单 Runtime 模型 | READY | 新节点 Attempt 只解析并复用 FlowRun Runtime Session、容器、持久目录和专属网络；历史 Attempt Runtime 只读兼容与回收策略另行明确。 |
-| FR-368 | FlowRun Runtime 网络仍由 Docker 默认池按大网段分配 | PENDING | Runtime Provider 从 FR-366 冻结地址池为每个 FlowRun 分配小型、可审计、可回收的专属子网；临时构建网络也不得回退 Docker 默认池。 |
+| FR-367 | Node Attempt 独占 Runtime/网络，偏离每个 FlowRun 单 Runtime 模型 | DONE | 新节点 Attempt 只解析并复用 FlowRun Runtime Session、容器、持久目录和专属网络；历史 Attempt Runtime 只读兼容与回收策略另行明确。 |
+| FR-368 | FlowRun Runtime 网络仍由 Docker 默认池按大网段分配 | READY | Runtime Provider 从 FR-366 冻结地址池为每个 FlowRun 分配小型、可审计、可回收的专属子网；临时构建网络也不得回退 Docker 默认池。 |
 
 ### FR-366 FlowWeave 专属 Docker 地址规划 — DONE
 
@@ -145,6 +145,21 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 验收：受影响 Python 和 Compose YAML 可解析、设置校验覆盖有效/无效/重叠地址规划、`git diff --check` 与任务状态唯一性。真实 Docker 创建、远端 Compose 切换、Runtime 子网租约、Attempt Runtime 收敛和端到端验证分别留给后续切片。
 
 完成：`infra/compose.yaml` 现在要求由部署 `.env` 显式提供两个固定控制面子网，并把完整网络规划传入所有控制面进程；`Settings` 校验三个 IPv4 CIDR 互不重叠，且 Runtime 子网前缀必须比 Runtime pool 更细。`.env.example` 给出仅用于本地起点的 `10.250.0.0/24`、`10.250.1.0/24` 与 `10.251.0.0/16`/`28` 规划，生产必须先依据主机路由重新确认。`py_compile`、Ruff、手工设置校验、渲染 Compose 安全检查和 `git diff --check` 通过。定向 pytest 受仓库全局 Testcontainers PostgreSQL fixture 阻断：本机 Docker socket 不存在，测试未进入断言，未记为通过。未部署、未修改远端 Compose、未重启 Docker、未创建或删除任何生产 Runtime 网络。
+
+### FR-367 FlowRun 单 Runtime／共享网络收敛 — DONE
+
+依赖：`FR-366`。
+
+目标：
+
+- 所有新建节点 Attempt（首次进入、流程流转与拒绝后重试）不得再分配 Attempt 专属 Runtime allocation、Secret、Runtime Session、ManagedSandbox 或 Docker 网络。
+- 新 Attempt 的工作目录继续按 NodeRun／FlowRun 记录隔离，但其 Conversation、Agent Server、持久 Runtime root 与网络必须解析为所属 FlowRun 的唯一 Runtime。
+- 已有 `node_attempt_id` allocation、Attempt Runtime Session 和 Conversation 不迁移、不删除、不改写；仅保留现有兼容路由，使历史会话可按原冻结资源只读恢复。
+- 不改 Docker daemon、Compose、全局地址池或 OpenHands 源码。
+
+验收：受影响 Python 可编译；新增回归断言新节点 Attempt 仅有 FlowRun allocation／session，且通过共享 Runtime 路由；Ruff、`git diff --check` 与任务状态唯一性。数据库 pytest 需要 Testcontainers Docker socket，若不可用则如实记录；不在本切片部署或运行真实 Runtime。
+
+完成：首次进入、流程流转和拒绝后重试三个新 Attempt 创建路径不再分配 Attempt 专属 Runtime allocation、Secret、Runtime Session、ManagedSandbox 或网络；它们仍按记录创建工作目录，并由既有 `node_attempt_workspace_context()` 回落到所属 FlowRun 的唯一 Runtime。`allocate_node_attempt_runtime()` 已从公共 facade 移除，仅保留为历史 allocation 的私有兼容工具；已有 Attempt-owned allocation／session 不迁移、不删除、不改写。受影响 Python `py_compile`、Ruff format/check、`git diff --check` 与任务状态唯一性通过。定向 pytest 在 Testcontainers PostgreSQL fixture 初始化时因本机 Docker socket 缺失受阻，未进入断言，未记为通过；未部署、未创建或删除 Docker 网络，也未修改 Docker daemon、Compose 或 OpenHands 源码。
 
 ### FR-335 Runtime generation Sandbox 引用完整性 — DONE
 

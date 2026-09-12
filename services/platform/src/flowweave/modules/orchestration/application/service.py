@@ -3739,7 +3739,6 @@ def _create_node_run(
     )
     db.add(attempt)
     db.flush()
-    sandboxes.allocate_node_attempt_runtime(db, flow_run_id=run.id, node_attempt_id=attempt.id)
     attempt.workspace_ref = str(
         ensure_node_attempt_workspace(
             db,
@@ -7951,7 +7950,6 @@ def _create_configurable_targets(db: Session, run: FlowRun, accepted: NodeRun) -
         )
         db.add(attempt)
         db.flush()
-        sandboxes.allocate_node_attempt_runtime(db, flow_run_id=run.id, node_attempt_id=attempt.id)
         attempt.workspace_ref = str(
             ensure_node_attempt_workspace(
                 db,
@@ -8574,7 +8572,6 @@ def reject_attempt(
     )
     db.add(next_attempt)
     db.flush()
-    sandboxes.allocate_node_attempt_runtime(db, flow_run_id=run.id, node_attempt_id=next_attempt.id)
     next_attempt.workspace_ref = str(
         ensure_node_attempt_workspace(
             db,

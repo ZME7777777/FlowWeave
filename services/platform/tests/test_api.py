@@ -761,10 +761,28 @@ def test_flow_run_can_start_empty_and_activate_any_node_later(
     with db_session_factory() as db:
         allocation = db.scalar(
             select(FlowRunRuntimeAllocation).where(
-                FlowRunRuntimeAllocation.flow_run_id == run["id"]
+                FlowRunRuntimeAllocation.flow_run_id == run["id"],
+                FlowRunRuntimeAllocation.node_attempt_id.is_(None),
             )
         )
         assert allocation is not None
+        assert (
+            db.scalar(
+                select(FlowRunRuntimeAllocation.id).where(
+                    FlowRunRuntimeAllocation.node_attempt_id == attempt["id"]
+                )
+            )
+            is None
+        )
+        assert (
+            db.scalar(
+                select(FlowRunRuntime.id).where(
+                    FlowRunRuntime.flow_run_id == run["id"],
+                    FlowRunRuntime.node_attempt_id == attempt["id"],
+                )
+            )
+            is None
+        )
         capabilities = settings.workspace_root / allocation.relative_root / "capabilities"
         # The provider mount is read-only; the control plane parent remains
         # writable so rootless bind mounts can publish and roll back bundles.

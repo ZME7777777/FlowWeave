@@ -537,10 +537,12 @@ def allocate_flow_run_runtime(db: Session, flow_run_id: str) -> RuntimeStorageAl
 def allocate_node_attempt_runtime(
     db: Session, *, flow_run_id: str, node_attempt_id: str
 ) -> RuntimeStorageAllocation:
-    """Allocate the durable Runtime root and stable secret for one Attempt.
+    """Read/repair support for a historical Attempt-owned Runtime allocation.
 
-    The caller cannot choose a host path.  A second conversation in this same
-    Attempt receives this allocation; a new Attempt receives another root.
+    New product paths must never call this function: a new Attempt reuses the
+    parent FlowRun allocation and Runtime Session. It remains private so
+    audited historical allocations can be interpreted without implicit data
+    migration.
     """
 
     run_id = _canonical_uuid(flow_run_id, field="FlowRun")
@@ -659,9 +661,9 @@ def node_attempt_workspace_context(
 ) -> NodeAttemptWorkspaceContext:
     """Resolve the shared project while preserving historical Runtime routing.
 
-    New Attempts execute in isolated Attempt Runtimes but mount the FlowRun's
-    shared project. Historical Attempt-private and FlowRun Runtime layouts stay
-    readable without moving or merging existing files.
+    New Attempts have no Attempt allocation and route through their FlowRun's
+    one Runtime Session. Historical Attempt-private allocations remain readable
+    without moving or merging existing files.
     """
 
     attempt = db.get(NodeAttempt, node_attempt_id)

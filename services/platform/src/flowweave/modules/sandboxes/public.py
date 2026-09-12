@@ -3,7 +3,6 @@
 from flowweave.modules.sandboxes.application.runtime_allocation import (
     RuntimeStorageAllocation,
     allocate_flow_run_runtime,
-    allocate_node_attempt_runtime,
     capability_materialization_lock,
     delete_flow_run_runtime_allocation,
     ensure_capability_manifest_directory,
@@ -80,7 +79,6 @@ __all__ = (
     "RuntimeSessionFence",
     "RuntimeStorageAllocation",
     "allocate_flow_run_runtime",
-    "allocate_node_attempt_runtime",
     "backend_name",
     "active_flow_run_runtime_connection",
     "active_node_attempt_runtime_connection",

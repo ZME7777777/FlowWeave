@@ -1014,7 +1014,7 @@ def active_node_attempt_runtime_connection(
 def active_node_runtime_connection(
     db: Session, *, flow_run_id: str, node_attempt_id: str
 ) -> ActiveRuntimeConnection:
-    """Route new Attempt-owned workspaces and untouched legacy Attempts correctly."""
+    """Route new Attempts to the FlowRun Runtime and retain legacy compatibility."""
 
     context = node_attempt_workspace_context(
         db, flow_run_id=flow_run_id, node_attempt_id=node_attempt_id
