@@ -665,6 +665,7 @@ class _TerminalManager:
 
 _RUNTIME_EVENT_RELAY = r"""
 import asyncio
+import importlib.metadata
 import json
 import os
 import signal
@@ -770,12 +771,20 @@ async def main():
         active_count=active_count,
         max_lifetime_seconds=MAX_LIFETIME_SECONDS,
     )
-    path = (
-        f"/sockets/session/{conversation_id}"
-        + (f"?after_seq={after_seq}" if after_seq else "")
-        if channel == "CONVERSATION"
-        else "/sockets/bash-events"
-    )
+    agent_server_version = importlib.metadata.version("openhands-agent-server")
+    if channel != "CONVERSATION":
+        path = "/sockets/bash-events"
+    elif agent_server_version.startswith("1.44."):
+        # A pre-upgrade Runtime is immutable for the life of its Conversation.
+        # OpenHands 1.44 formally exposes only the live events socket, so do
+        # not pretend it supports an ordered durable replay on reconnect.
+        if after_seq is not None:
+            raise RuntimeError("OpenHands 1.44 does not support after_seq replay")
+        path = f"/sockets/events/{conversation_id}"
+    else:
+        path = f"/sockets/session/{conversation_id}" + (
+            f"?after_seq={after_seq}" if after_seq is not None else ""
+        )
     deadline = time.monotonic() + MAX_LIFETIME_SECONDS
     async with connect(
         f"ws://127.0.0.1:8000{path}",
@@ -784,12 +793,8 @@ async def main():
         ping_timeout=20,
         max_size=2 * 1024 * 1024,
     ) as upstream:
-        # OpenHands reads its configured socket credential from
-        # OH_SESSION_API_KEYS_0.  SESSION_API_KEY is retained only as a
-        # compatibility fallback for older Runtime images.  Existing Runtime
-        # containers may have a stale SESSION_API_KEY after a controller
-        # restart, whereas the OpenHands server continues to authorize against
-        # OH_SESSION_API_KEYS_0.
+        # OpenHands 1.47 parses OH_SESSION_API_KEYS_0 first.  Retain the
+        # legacy variable as a fallback for a Runtime image that predates it.
         session_api_key = os.environ.get("OH_SESSION_API_KEYS_0") or os.environ["SESSION_API_KEY"]
         await upstream.send(json.dumps({
             "type": "auth",

@@ -1134,6 +1134,12 @@ async def test_runtime_event_stream_forwards_single_event_larger_than_default_re
     assert 'os.environ.get("OH_SESSION_API_KEYS_0") or os.environ["SESSION_API_KEY"]' in (
         controller_module._RUNTIME_EVENT_RELAY
     )
+    assert 'agent_server_version.startswith("1.44.")' in controller_module._RUNTIME_EVENT_RELAY
+    assert 'f"/sockets/events/{conversation_id}"' in controller_module._RUNTIME_EVENT_RELAY
+    assert (
+        "OpenHands 1.44 does not support after_seq replay"
+        in controller_module._RUNTIME_EVENT_RELAY
+    )
 
 
 @pytest.mark.asyncio
