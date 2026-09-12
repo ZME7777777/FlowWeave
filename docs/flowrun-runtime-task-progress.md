@@ -1,9 +1,9 @@
 # FlowRun OpenHands Runtime 重构进度
 
 > 创建日期：2026-08-21
-> 状态：`COMPLETE`
+> 状态：`IN PROGRESS`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`NONE`（FR-365 已完成）
+> 下一可执行切片：`FR-367 FlowRun 单 Runtime／共享网络收敛`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -122,6 +122,29 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | OPS-01 | Docker rollback image / BuildKit cache 容量增长 | DONE | 建立带运行引用保护、dry-run 和显式确认的回收工具，并完成生产候选边界核验。 |
 | OPS-02 | Docker rollback image / BuildKit cache 容量增长 | DONE | 已按授权使用 OPS-03 tag 级路径回收，并完成生产不变量与入口验证。 |
 | OPS-03 | 多 rollback tag image 的安全回收 | DONE | 改为逐 tag、重查 Container 引用、不使用 `--force` 的回收路径。 |
+
+### FlowWeave Docker 网络收敛（2026-09-12）
+
+| 切片 | 风险 | 状态 | 范围 |
+| --- | --- | --- | --- |
+| FR-366 | FlowWeave 固定控制面与动态 Runtime 共用 Docker 默认地址池 | DONE | 已为 control、docker-control 与 Runtime 动态地址池建立强制、显式且互不重叠的配置契约；未改变现有 Runtime 所有权或远端网络。 |
+| FR-367 | Node Attempt 独占 Runtime/网络，偏离每个 FlowRun 单 Runtime 模型 | READY | 新节点 Attempt 只解析并复用 FlowRun Runtime Session、容器、持久目录和专属网络；历史 Attempt Runtime 只读兼容与回收策略另行明确。 |
+| FR-368 | FlowRun Runtime 网络仍由 Docker 默认池按大网段分配 | PENDING | Runtime Provider 从 FR-366 冻结地址池为每个 FlowRun 分配小型、可审计、可回收的专属子网；临时构建网络也不得回退 Docker 默认池。 |
+
+### FR-366 FlowWeave 专属 Docker 地址规划 — DONE
+
+依赖：无（生产网络耗尽修复的最小配置边界）。
+
+目标：
+
+- Compose 的 `flowweave_control` 与 `flowweave_docker_control` 必须使用部署环境显式提供的独立 IPv4 子网，不能再由 Docker 默认地址池隐式选择。
+- Runtime Provider 必须接收独立的 FlowWeave 动态 Runtime 地址池和每网络前缀配置；配置值必须是可解析 IPv4 CIDR，动态子网应比地址池更小，并禁止与控制面网段重叠。
+- 不修改 Docker daemon 全局 `default-address-pools`，不改变现有 Docker 网络、容器、volume、Workspace 或任何 Runtime/Attempt 的所有权和恢复语义。
+- 部署时由运维在目标主机路由核验后写入现有 `.env` 的变量名和值；本切片不部署、不重启 Docker。
+
+验收：受影响 Python 和 Compose YAML 可解析、设置校验覆盖有效/无效/重叠地址规划、`git diff --check` 与任务状态唯一性。真实 Docker 创建、远端 Compose 切换、Runtime 子网租约、Attempt Runtime 收敛和端到端验证分别留给后续切片。
+
+完成：`infra/compose.yaml` 现在要求由部署 `.env` 显式提供两个固定控制面子网，并把完整网络规划传入所有控制面进程；`Settings` 校验三个 IPv4 CIDR 互不重叠，且 Runtime 子网前缀必须比 Runtime pool 更细。`.env.example` 给出仅用于本地起点的 `10.250.0.0/24`、`10.250.1.0/24` 与 `10.251.0.0/16`/`28` 规划，生产必须先依据主机路由重新确认。`py_compile`、Ruff、手工设置校验、渲染 Compose 安全检查和 `git diff --check` 通过。定向 pytest 受仓库全局 Testcontainers PostgreSQL fixture 阻断：本机 Docker socket 不存在，测试未进入断言，未记为通过。未部署、未修改远端 Compose、未重启 Docker、未创建或删除任何生产 Runtime 网络。
 
 ### FR-335 Runtime generation Sandbox 引用完整性 — DONE
 

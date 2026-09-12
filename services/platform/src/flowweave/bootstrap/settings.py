@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from ipaddress import IPv4Network
 from pathlib import Path
 
 from pydantic import Field, model_validator
@@ -152,6 +153,14 @@ class Settings(BaseSettings):
     sandbox_runtime_idle_ttl_seconds: int = Field(default=3_600, ge=300, le=86_400)
     sandbox_runtime_hard_ttl_seconds: int = Field(default=86_400, ge=300, le=604_800)
     sandbox_runtime_network_mode: str = "isolated"
+    # Docker's implicit address pools are shared by every application on a
+    # host and are both small and implementation-defined. Keep FlowWeave's
+    # persistent control-plane bridges and future per-FlowRun bridges in
+    # explicit, separately audited private ranges instead.
+    flowweave_control_network_subnet: IPv4Network = IPv4Network("10.250.0.0/24")
+    flowweave_docker_control_network_subnet: IPv4Network = IPv4Network("10.250.1.0/24")
+    flowweave_runtime_network_pool: IPv4Network = IPv4Network("10.251.0.0/16")
+    flowweave_runtime_network_prefix: int = Field(default=28, ge=8, le=28)
     sandbox_storage_size: str = "4g"
     terminal_environment_memory: str = "2g"
     terminal_environment_cpus: float = Field(default=2.0, gt=0, le=16)
@@ -189,6 +198,26 @@ class Settings(BaseSettings):
             )
         if self.sandbox_runtime_network_mode not in {"isolated", "egress"}:
             raise ValueError("SANDBOX_RUNTIME_NETWORK_MODE must be isolated or egress")
+        network_plan = (
+            self.flowweave_control_network_subnet,
+            self.flowweave_docker_control_network_subnet,
+            self.flowweave_runtime_network_pool,
+        )
+        if any(
+            left.overlaps(right)
+            for index, left in enumerate(network_plan)
+            for right in network_plan[index + 1 :]
+        ):
+            raise ValueError(
+                "FLOWWEAVE_CONTROL_NETWORK_SUBNET, "
+                "FLOWWEAVE_DOCKER_CONTROL_NETWORK_SUBNET, and "
+                "FLOWWEAVE_RUNTIME_NETWORK_POOL must not overlap"
+            )
+        if self.flowweave_runtime_network_prefix <= self.flowweave_runtime_network_pool.prefixlen:
+            raise ValueError(
+                "FLOWWEAVE_RUNTIME_NETWORK_PREFIX must be more specific than "
+                "FLOWWEAVE_RUNTIME_NETWORK_POOL"
+            )
         storage_match = re.fullmatch(r"([1-9][0-9]*)([mMgG])", self.sandbox_storage_size)
         if storage_match is None:
             raise ValueError("SANDBOX_STORAGE_SIZE must be an integer followed by m or g")

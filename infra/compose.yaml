@@ -1,5 +1,14 @@
 name: flowweave
+x-network-plan: &network-plan
+  # These CIDRs are FlowWeave-owned only. Production must set all values in
+  # /opt/flowweave/.env after checking the target host's routed networks.
+  # Dynamic Runtime allocation adopts FLOWWEAVE_RUNTIME_NETWORK_POOL in FR-368.
+  FLOWWEAVE_CONTROL_NETWORK_SUBNET: ${FLOWWEAVE_CONTROL_NETWORK_SUBNET:?set a non-overlapping FlowWeave control subnet}
+  FLOWWEAVE_DOCKER_CONTROL_NETWORK_SUBNET: ${FLOWWEAVE_DOCKER_CONTROL_NETWORK_SUBNET:?set a non-overlapping FlowWeave Docker-control subnet}
+  FLOWWEAVE_RUNTIME_NETWORK_POOL: ${FLOWWEAVE_RUNTIME_NETWORK_POOL:?set a non-overlapping FlowWeave Runtime pool}
+  FLOWWEAVE_RUNTIME_NETWORK_PREFIX: ${FLOWWEAVE_RUNTIME_NETWORK_PREFIX:?set a FlowWeave Runtime subnet prefix}
 x-platform-env: &platform-env
+  <<: *network-plan
   DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-flowweave}:${POSTGRES_PASSWORD:-flowweave_dev}@postgres:5432/${POSTGRES_DB:-flowweave}
   RUNTIME_ADAPTER: ${RUNTIME_ADAPTER:-openhands}
   EXECUTION_MODE: worker
@@ -115,6 +124,7 @@ services:
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=64m
     environment:
+      <<: *network-plan
       OPENHANDS_SESSION_API_KEY: ${OPENHANDS_SESSION_API_KEY:-flowweave-internal}
       OPENHANDS_WORKSPACE_ROOT: /workspaces
       FLOW_RUN_RUNTIME_VALIDATION_ROOT: /runtime-storage
@@ -331,6 +341,12 @@ volumes:
 networks:
   default:
     name: flowweave_control
+    ipam:
+      config:
+        - subnet: ${FLOWWEAVE_CONTROL_NETWORK_SUBNET:?set a non-overlapping FlowWeave control subnet}
   docker-control:
     name: flowweave_docker_control
     internal: true
+    ipam:
+      config:
+        - subnet: ${FLOWWEAVE_DOCKER_CONTROL_NETWORK_SUBNET:?set a non-overlapping FlowWeave Docker-control subnet}

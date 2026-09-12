@@ -11,6 +11,7 @@ import pytest
 from sqlalchemy import create_engine, func, select, text
 from sqlalchemy.orm import sessionmaker
 
+from flowweave.bootstrap.settings import Settings
 from flowweave.modules.agent_workspaces.application.service import ensure_default_agent_workspace
 from flowweave.modules.agent_workspaces.infrastructure.models import (
     AgentWorkspaceRuntime,
@@ -1014,6 +1015,28 @@ def test_runtime_network_contract_requires_declared_mode(
         with pytest.raises(DomainError) as caught:
             provider._inspect_runtime_network(resource)
         assert caught.value.code == "SANDBOX_RESOURCE_CONFLICT"
+
+
+def test_runtime_network_plan_requires_distinct_control_and_runtime_ranges() -> None:
+    Settings(
+        flowweave_control_network_subnet="10.250.0.0/24",
+        flowweave_docker_control_network_subnet="10.250.1.0/24",
+        flowweave_runtime_network_pool="10.251.0.0/16",
+        flowweave_runtime_network_prefix=28,
+    )
+
+    with pytest.raises(ValueError, match="must not overlap"):
+        Settings(
+            flowweave_control_network_subnet="10.250.0.0/24",
+            flowweave_docker_control_network_subnet="10.250.1.0/24",
+            flowweave_runtime_network_pool="10.250.0.0/16",
+        )
+
+    with pytest.raises(ValueError, match="must be more specific"):
+        Settings(
+            flowweave_runtime_network_pool="10.251.0.0/16",
+            flowweave_runtime_network_prefix=16,
+        )
 
 
 @pytest.mark.parametrize(
