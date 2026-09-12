@@ -1,9 +1,6 @@
 import { Check, ChevronDown, ChevronRight, CircleAlert, Copy, ExternalLink, FileText, GitFork, Link, LoaderCircle, PanelRightOpen, Pencil, Quote, Sparkles, SquareTerminal, Wrench } from 'lucide-react';
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type PointerEvent as ReactPointerEvent, type RefObject } from 'react';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type RefObject } from 'react';
 import type { AgentActivitySummary, AgentAttachment, AgentConversationReference, AgentWorkspaceReference, OpenHandsConversationEvent, RuntimeTaskControlSnapshot } from '../types';
-import { deploymentBasePath } from '../deploymentPath';
 import { SubagentAvatar } from './SubagentAvatar';
 import { useEscapeClose } from './useEscapeClose';
 import { subagentAvatarSlotForEvent, subagentAvatarSlots, type SubagentAvatarSlot } from '../utils/subagentAvatar';
@@ -233,35 +230,19 @@ function ConversationReferencePreview({ reference, onClose, onLocate }: {
   </div>;
 }
 
-function MarkdownImage({ src, alt, ...props }: ComponentPropsWithoutRef<'img'>) {
-  const [failed, setFailed] = useState(false);
-  // Runtime message projection deliberately produces API-root paths so the
-  // backend does not need to know where the web app is mounted.  Resolve them
-  // through the same base used by the API client: a leading `/api/v1` would
-  // otherwise bypass a `/flowweave` deployment prefix and be handled by the
-  // host application's API instead.
-  const resolvedSource = typeof src === 'string' && src.startsWith('/api/v1/')
-    ? `${import.meta.env.VITE_API_BASE_URL || deploymentBasePath}${src}`
-    : src;
-  const safeSource = typeof resolvedSource === 'string' && /^(?:https?:|data:image\/|blob:|\/)/i.test(resolvedSource);
-  if (!safeSource || failed) {
-    return <span className="conversation-image-unavailable" role="status">
-      <b>{alt || '图片无法显示'}</b>
-      {safeSource
-        ? <a href={resolvedSource} target="_blank" rel="noreferrer">在新窗口打开图片</a>
-        : <small>图片地址无效</small>}
-    </span>;
-  }
-  return <img {...props} className={`conversation-markdown-image${props.className ? ` ${props.className}` : ''}`} src={resolvedSource} alt={alt ?? ''} onError={() => setFailed(true)}/>;
-}
-
-function MarkdownLink({ href, ...props }: ComponentPropsWithoutRef<'a'>) {
-  const isExternal = typeof href === 'string' && /^(?:https?:\/\/|mailto:)/i.test(href);
-  return <a {...props} href={href} {...(isExternal ? { target: '_blank', rel: 'noopener noreferrer' } : {})}/>;
-}
+const ConversationMarkdown = lazy(() => import('./ConversationMarkdown').then(module => ({ default: module.ConversationMarkdown })));
+const LARGE_MARKDOWN_THRESHOLD = 6_000;
+const LARGE_MARKDOWN_PREVIEW_LENGTH = 2_000;
 
 function MessageMarkdown({ children }: { children: string }) {
-  return <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ a: MarkdownLink, img: MarkdownImage }}>{children}</ReactMarkdown>;
+  const [expanded, setExpanded] = useState(() => children.length <= LARGE_MARKDOWN_THRESHOLD);
+  useEffect(() => { setExpanded(children.length <= LARGE_MARKDOWN_THRESHOLD); }, [children]);
+  if (!expanded) return <div className="conversation-markdown-preview">
+    <pre>{children.slice(0, LARGE_MARKDOWN_PREVIEW_LENGTH)}</pre>
+    <small>{`此消息共 ${children.length.toLocaleString()} 个字符；完整 Markdown、代码块和图片将在展开后解析。`}</small>
+    <button type="button" onClick={() => setExpanded(true)}>渲染完整消息</button>
+  </div>;
+  return <Suspense fallback={<div className="conversation-markdown-loading">正在渲染消息…</div>}><ConversationMarkdown>{children}</ConversationMarkdown></Suspense>;
 }
 
 interface CandidateOutput { fieldKey: string; artifactType: 'URL' | 'FILE'; value: string }
@@ -537,7 +518,6 @@ interface ActivityPresentation {
   command?: string;
   path?: string;
   operation?: string;
-  output?: string;
   exitCode?: string;
   actionDetails?: Record<string, unknown>;
   resultDetails?: Record<string, unknown>;
@@ -575,14 +555,13 @@ function activityPresentation(entry: ActivityEntry, active: boolean, workspaceRo
   const thought = entry.action?.content ? entry.action.content.slice(0, 2_000) : undefined;
   const summary = detailText(entry.action?.event.payload.summary);
   const actionTitle = (fallback: string) => summary || fallback;
-  const output = workspaceRelativeText(entry.results.map(value => detailContent(value.content)).filter(Boolean).join('\n\n').slice(0, 12_000), workspaceRoot) || undefined;
   const exitCode = typeof resultDetails.exit_code === 'number' ? String(resultDetails.exit_code) : undefined;
   if (eventName === 'TerminalAction' || eventName === 'TerminalObservation' || resultName === 'TerminalObservation') {
     const verb = failed ? '运行失败' : completed ? '已运行' : '正在运行';
     return {
       title: command ? `${verb} ${compactCommand(command, workspaceRoot)}` : actionTitle(completed ? '命令已执行' : '正在运行命令'),
       status: failed ? '终端 · 失败' : completed ? '终端 · 已完成' : '终端',
-      command: workspaceRelativeText(command, workspaceRoot), thought, output, exitCode, actionDetails: details, resultDetails,
+      command: workspaceRelativeText(command, workspaceRoot), thought, exitCode, actionDetails: details, resultDetails,
     };
   }
   if (eventName === 'FileEditorAction' || eventName === 'FileEditorObservation' || resultName === 'FileEditorObservation') {
@@ -596,13 +575,13 @@ function activityPresentation(entry: ActivityEntry, active: boolean, workspaceRo
     return {
       title: displayPath ? `${verb} ${displayPath}` : actionTitle(verb),
       status: failed ? '文件编辑器 · 失败' : completed ? '文件编辑器 · 已完成' : '文件编辑器',
-      path: displayPath || undefined, operation: workspaceRelativeText(command, workspaceRoot) || undefined, thought, output, actionDetails: details, resultDetails,
+      path: displayPath || undefined, operation: workspaceRelativeText(command, workspaceRoot) || undefined, thought, actionDetails: details, resultDetails,
     };
   }
   if (eventName === 'TaskTrackerAction') {
     return {
       title: completed ? (command === 'plan' ? '任务列表已更新' : '任务列表已读取') : actionTitle(command === 'plan' ? '正在更新任务列表' : '正在查看任务列表'),
-      status: completed ? '任务跟踪 · 已完成' : '任务跟踪', thought, output, actionDetails: details, resultDetails, resultTimestamp: typeof result?.event.payload.timestamp === 'string' ? result.event.payload.timestamp : typeof item.event.payload.timestamp === 'string' ? item.event.payload.timestamp : undefined,
+      status: completed ? '任务跟踪 · 已完成' : '任务跟踪', thought, actionDetails: details, resultDetails, resultTimestamp: typeof result?.event.payload.timestamp === 'string' ? result.event.payload.timestamp : typeof item.event.payload.timestamp === 'string' ? item.event.payload.timestamp : undefined,
     };
   }
   if (eventName === 'TaskTrackerObservation') {
@@ -611,10 +590,10 @@ function activityPresentation(entry: ActivityEntry, active: boolean, workspaceRo
       status: completed ? '任务跟踪 · 已完成' : '任务跟踪', resultTimestamp: typeof item.event.payload.timestamp === 'string' ? item.event.payload.timestamp : undefined,
     };
   }
-  if (eventName === 'InvokeSkillAction') return { title: completed ? `${actionTitle('技能调用')} · 已完成` : actionTitle('正在使用已启用技能'), status: completed ? '技能 · 已完成' : '技能', thought, output, actionDetails: details, resultDetails };
+  if (eventName === 'InvokeSkillAction') return { title: completed ? `${actionTitle('技能调用')} · 已完成` : actionTitle('正在使用已启用技能'), status: completed ? '技能 · 已完成' : '技能', thought, actionDetails: details, resultDetails };
   if (eventName === 'InvokeSkillObservation') return { title: '技能调用已完成', status: completed ? '已完成' : '处理中' };
-  if (eventName.includes('Browser')) return { title: completed ? `${actionTitle('浏览器操作')} · 已完成` : actionTitle('正在操作浏览器'), status: completed ? '浏览器 · 已完成' : '浏览器', thought, output, actionDetails: details, resultDetails };
-  if (eventName.includes('MCP')) return { title: completed ? `${actionTitle('MCP 工具调用')} · 已完成` : actionTitle('正在调用 MCP 工具'), status: completed ? 'MCP · 已完成' : 'MCP', thought, output, actionDetails: details, resultDetails };
+  if (eventName.includes('Browser')) return { title: completed ? `${actionTitle('浏览器操作')} · 已完成` : actionTitle('正在操作浏览器'), status: completed ? '浏览器 · 已完成' : '浏览器', thought, actionDetails: details, resultDetails };
+  if (eventName.includes('MCP')) return { title: completed ? `${actionTitle('MCP 工具调用')} · 已完成` : actionTitle('正在调用 MCP 工具'), status: completed ? 'MCP · 已完成' : 'MCP', thought, actionDetails: details, resultDetails };
   if (eventName === 'TaskAction') {
     const runtimeTask = item.event.payload.runtime_task;
     const agentType = typeof runtimeTask?.subagent_type === 'string' && runtimeTask.subagent_type.trim()
@@ -625,7 +604,7 @@ function activityPresentation(entry: ActivityEntry, active: boolean, workspaceRo
     return {
       title: completed ? `子智能体 ${agentType} · ${label} · 已完成` : `子智能体 ${agentType} · ${label}`,
       status: completed ? '子智能体 · 已完成' : '子智能体 · 运行中',
-      thought, output, actionDetails: details, resultDetails,
+      thought, actionDetails: details, resultDetails,
     };
   }
   if (eventName === 'TaskObservation') return { title: '子任务已完成', status: completed ? '已完成' : '处理中' };
@@ -633,7 +612,7 @@ function activityPresentation(entry: ActivityEntry, active: boolean, workspaceRo
   return {
     title: completed ? `${actionTitle(toolName)} · 已完成` : actionTitle(`正在使用 ${toolName}`),
     status: completed ? '工具 · 已完成' : '工具',
-    thought, output, actionDetails: details, resultDetails,
+    thought, actionDetails: details, resultDetails,
   };
 }
 
@@ -678,21 +657,54 @@ function displayDetails(details: Record<string, unknown>, workspaceRoot?: string
   return Object.keys(visible).length ? workspaceRelativeText(JSON.stringify(visible, null, 2), workspaceRoot).slice(0, 12_000) : '';
 }
 
-function ToolDetailPanel({ presentation, eventName, workspaceRoot }: { presentation: ActivityPresentation; eventName: string; workspaceRoot?: string | null }) {
+function ToolDetailPanel({ presentation, eventName, results, workspaceRoot }: { presentation: ActivityPresentation; eventName: string; results: Item[]; workspaceRoot?: string | null }) {
+  const [expanded, setExpanded] = useState(false);
   const details = presentation.actionDetails ?? {};
   const resultDetails = presentation.resultDetails ?? {};
   const isTerminal = eventName.includes('Terminal');
   const isFile = eventName.includes('FileEditor');
   const isTaskTracker = eventName === 'TaskTrackerAction' || eventName === 'TaskTrackerObservation';
+  const hasResultOutput = results.some(result => typeof result.content === 'string' && result.content.trim().length > 0);
+  const hasDetail = Boolean(
+    isTaskTracker || presentation.command || hasResultOutput || presentation.exitCode
+    || Object.keys(details).length || Object.keys(resultDetails).length,
+  );
+  if (!hasDetail) return null;
+  return <div className="conversation-tool-detail-panel" data-expanded={expanded || undefined}>
+      <button type="button" className="conversation-tool-detail-toggle" aria-expanded={expanded} onClick={() => setExpanded(value => !value)}>
+        {expanded ? '收起详情' : hasResultOutput ? '查看详情与输出' : '查看详情'}
+      </button>
+      {expanded && <ToolDetailContent
+        details={details}
+        resultDetails={resultDetails}
+        results={results}
+        presentation={presentation}
+        isTerminal={isTerminal}
+        isFile={isFile}
+        isTaskTracker={isTaskTracker}
+        workspaceRoot={workspaceRoot}
+      />}
+    </div>;
+}
+
+function ToolDetailContent({ details, resultDetails, results, presentation, isTerminal, isFile, isTaskTracker, workspaceRoot }: {
+  details: Record<string, unknown>;
+  resultDetails: Record<string, unknown>;
+  results: Item[];
+  presentation: ActivityPresentation;
+  isTerminal: boolean;
+  isFile: boolean;
+  isTaskTracker: boolean;
+  workspaceRoot?: string | null;
+}) {
   const taskSnapshot = isTaskTracker ? taskListSnapshot(details, resultDetails, presentation.resultTimestamp) : undefined;
   const structured = displayDetails(details, workspaceRoot);
   const structuredResult = displayDetails(resultDetails, workspaceRoot);
   const fileText = detailContent(details.file_text);
   const oldText = detailContent(details.old_str);
   const newText = detailContent(details.new_str);
-  const hasDetail = Boolean(taskSnapshot || presentation.command || presentation.output || structured || structuredResult || fileText || oldText || newText);
-  if (!hasDetail) return null;
-  return <div className="conversation-tool-detail-panel">
+  const output = workspaceRelativeText(results.map(result => detailContent(result.content)).filter(Boolean).join('\n\n').slice(0, 12_000), workspaceRoot);
+  return <>
       <b>{isTaskTracker ? '任务列表' : isTerminal ? 'Shell' : isFile ? '文件操作' : '工具调用'}</b>
       {taskSnapshot && <>
         <div className="conversation-task-list-summary">
@@ -712,10 +724,10 @@ function ToolDetailPanel({ presentation, eventName, workspaceRoot }: { presentat
       {oldText && <><small>替换前</small><pre><code>{oldText}</code></pre></>}
       {newText && <><small>替换后</small><pre><code>{newText}</code></pre></>}
       {!isTerminal && !isFile && !isTaskTracker && structured && <><small>原始操作</small><pre><code>{structured}</code></pre></>}
-      {!isTaskTracker && presentation.output && <><small>执行结果</small><pre><code>{presentation.output}</code></pre></>}
+      {!isTaskTracker && output && <><small>执行结果</small><pre><code>{output}</code></pre></>}
       {!isTerminal && !isFile && !isTaskTracker && structuredResult && <><small>结果信息</small><pre><code>{structuredResult}</code></pre></>}
       {presentation.exitCode && <small>退出码 {presentation.exitCode}</small>}
-    </div>;
+    </>;
 }
 
 function eventTime(item?: Item): number | undefined {
@@ -1055,7 +1067,7 @@ function ActivityGroup({ items, active, liveText, startedAt, finishedAt, avatarS
         const ToolIcon = eventName.includes('Terminal') ? SquareTerminal : eventName.includes('FileEditor') ? FileText : Icon;
         const taskAvatar = avatarSlot && <SubagentAvatar slot={avatarSlot} status={taskAvatarStatus(entry, item)} size={14}/>;
         const presentation = activityPresentation(entry, active, workspaceRoot);
-        const toolDetail = item.kind === 'tool' ? <ToolDetailPanel presentation={presentation} eventName={eventName} workspaceRoot={workspaceRoot}/> : null;
+        const toolDetail = item.kind === 'tool' ? <ToolDetailPanel presentation={presentation} eventName={eventName} results={entry.results} workspaceRoot={workspaceRoot}/> : null;
         if (item.kind === 'thought' && item.event.event_type === 'COMPLETED') return <article className="conversation-activity-row thought" key={entry.id}>
           <MessageMarkdown>{presentation.thought ?? item.content}</MessageMarkdown>
         </article>;
@@ -1467,7 +1479,7 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused: 
         );
         const fileChanges = workspaceFileChanges(turn.activity.map(item => item.event));
         const userTimestamp = turn.user ? formatMessageTime(turn.user.event.payload.timestamp) : undefined;
-        return <section className="conversation-turn" key={turn.id}>
+        return <section className="conversation-turn" key={turn.id} data-conversation-turn={turn.id}>
           {turn.user && <div className="conversation-user-message">{editingEventId === turn.user.event.id
             ? <form className="conversation-message-edit" onSubmit={event => { event.preventDefault(); if (editingContent.trim()) onRewrite?.(turn.user!.event.id, editingContent.trim()); }}><textarea aria-label="编辑已发送消息" value={editingContent} disabled={rewritePending} onChange={event => setEditingContent(event.target.value)}/><footer><button type="button" onClick={() => setEditingEventId(undefined)}>取消</button><button type="submit" disabled={!editingContent.trim() || rewritePending}>重新思考</button></footer></form>
             : <article data-user-event-id={turn.user.event.id} data-conversation-event-id={turn.user.event.id} className={`conversation-message user${highlightedReferenceEventId === turn.user.event.id ? ' conversation-reference-source-highlight' : ''}`}>{turn.user.content && <div className="conversation-message-content"><MessageMarkdown>{turn.user.content}</MessageMarkdown></div>}<MessageAttachments attachments={eventAttachments(turn.user.event)} references={turn.user.event.payload.conversation_references} workspaceReferences={turn.user.event.payload.workspace_references} onOpen={onOpenAttachment} onOpenReference={setViewingReference} onOpenWorkspaceReference={onOpenWorkspaceReference}/><footer className="conversation-message-meta user">{userTimestamp && <time dateTime={typeof turn.user.event.payload.timestamp === 'string' ? turn.user.event.payload.timestamp : undefined}>{userTimestamp}</time>}<div className="conversation-message-actions"><button type="button" className="conversation-message-copy" aria-label={copiedEventId === turn.user.event.id ? '消息已复制' : '复制消息'} title={copiedEventId === turn.user.event.id ? '已复制' : '复制消息'} onClick={() => copyUserMessage(turn.user!.event.id, turn.user!.content)}>{copiedEventId === turn.user.event.id ? <Check size={13}/> : <Copy size={13}/>}</button>{lastUserEventId === turn.user.event.id && <button type="button" className="conversation-message-rewrite" aria-label="编辑并重新思考" title="编辑并重新思考" onClick={() => { setEditingEventId(turn.user!.event.id); setEditingContent(turn.user!.content); }}><Pencil size={13}/></button>}</div></footer></article>}</div>}

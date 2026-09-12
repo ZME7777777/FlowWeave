@@ -1,6 +1,6 @@
 # Agent 会话与工作区加载性能任务过程表
 
-> 状态：`PERF-08 DONE`
+> 状态：`PERF-09 DONE`
 > 创建日期：2026-09-12
 > 范围：Agent Workspace 与 FlowRun 节点会话的浏览器加载、工作区浏览、会话恢复和运行态读取。
 > OpenHands 事实基线：`30cf5832e42c71c24daa82a1a4fd5d25eb70d1b9`（四包 `1.47.0`）。
@@ -36,8 +36,8 @@
 | `PERF-06` | `PERF-05` | `DONE` | 前端首屏快照持久缓存、完整历史逻辑缓存（5 个 inactive 会话 + 5 分钟 LRU/TTL）、HEAD 轻量校验和内存上限；重型内容延迟读取。 | 定向浏览器回归：来回切换秒开、TTL/LRU 淘汰、刷新后的完整恢复和旧缓存覆盖。 |
 | `PERF-07` | `PERF-05` | `DONE` | 固化 Fork、旧用户消息重写和普通发送的 event-by-id / 正式状态验证路径，补足目标不在首屏或浏览器历史缓存时的回归。 | API/Runtime 回归：缓存淘汰、刷新、另一浏览器和局部窗口无目标事件时仍可操作；OpenHands 真缺失才明确失败。 |
 | `PERF-08` | `PERF-05` | `DONE` | 消除安全可证明的重复 Runtime 调用：hydration 共用一次正式 state；保留独立的运行中 readiness、断流 events reconcile 和列表 summary 读取。 | 调用计数和行为回归：圆形运行态、蓝色未读、WebSocket 断流恢复、暂停/恢复/队列均保持。 |
-| `PERF-09` | `PERF-03`, `PERF-06` | `READY` | 对会话消息、工具详情、Markdown/高亮、stdout/stderr、diff、预览采用视口虚拟化、默认折叠和按需解析/读取。 | 大会话浏览器回归：完整逻辑索引不丢失，首屏/滚动/展开不长任务阻塞。 |
-| `PERF-10` | `PERF-01`--`PERF-09` | `BLOCKED_BY_DEPENDENCY` | 完整性能、功能、契约、迁移、Web E2E 和真实 Runtime 验收；从已提交 commit 做全量远端构建、更新平台/Web/stream-api 并验证。 | 见第 5 节；部署前必须运行仓库远端预检，且只从提交 archive 构建。 |
+| `PERF-09` | `PERF-03`, `PERF-06` | `DONE` | 对会话消息、工具详情、Markdown/高亮、stdout/stderr、diff、预览采用视口有界绘制、默认折叠和按需解析/读取。 | 大会话浏览器回归：完整逻辑索引不丢失，首屏/滚动/展开不长任务阻塞。 |
+| `PERF-10` | `PERF-01`--`PERF-09` | `READY` | 完整性能、功能、契约、迁移、Web E2E 和真实 Runtime 验收；从已提交 commit 做全量远端构建、更新平台/Web/stream-api 并验证。 | 见第 5 节；部署前必须运行仓库远端预检，且只从提交 archive 构建。 |
 
 状态规则：同时只能有一个活跃切片；完成切片改为 `DONE` 并解锁紧随其后的依赖切片。每个切片必须单独 Git commit，提交成功后停止，不混入下一切片。
 
@@ -93,3 +93,4 @@ Fork / rewrite old event
 | 2026-09-12 | `PERF-06` | 平台 Ruff/py_compile、无 `conftest` 的 hydration/HEAD 测试（4 passed）、Web typecheck/lint/production build、缓存 Playwright（1 passed）、`git diff --check` | PASS：当前标签页且当前登录身份下，首屏仅保留最多 16 条安全展示事件的 sessionStorage shell；工具结果、stdout/stderr、diff、文件正文与图片等重内容不持久化。完整 active branch 仅在 React Query 内存中保留，非当前会话最多 5 个、TTL 5 分钟并以 LRU 淘汰。首次或刷新后的会话仍走完整 hydration；切回仍在 LRU 的会话只读取 OpenHands 正式 HEAD，未变则复用、变化则完整替换。登录身份变化/登出清除 shell；浏览器缓存从不作为发送、Fork 或重写的授权或 event id 依据。Vite 主 bundle gzip 482.78KB 警告未阻断构建，留给 `PERF-09`。 |
 | 2026-09-12 | `PERF-07` | 平台 Ruff/py_compile、无 `conftest` 的 event-by-id / 引用 / 重写定向测试（11 passed）、`git diff --check` | PASS：Runtime Port 新增正式 `read_event(conversation, event_id)`，固定 OpenHands `GET /conversations/{conversation_id}/events/{event_id}` 路径会验证返回的 formal ID；404 返回不存在，ID 漂移 fail closed。Fork 已使用同一路径的 `resolve_fork_boundary`，旧用户消息重写和 FlowRun 节点重写改为按 ID 验证同一会话中的用户 MESSAGE 后直接 navigate；普通发送的会话引用也逐个按 ID 重取，浏览器缓存、刷新、换浏览器和 active-window 页数不参与授权。已保留 3 个数据库级重写回归；本机 Docker daemon 不可用，Testcontainers 无法启动，未把该环境限制记为代码失败。 |
 | 2026-09-12 | `PERF-08` | 平台 Ruff/py_compile、无 `conftest` 的 Runtime state/hydration/readiness/stream/pause/resume/queue 定向测试（33 passed；4 个数据库 fixture 用例未启动）、`git diff --check` | PASS：`RuntimeEventBatch` 现在携带从同一正式 OpenHands state 派生的 context 和 readiness。首个 active-batch 只读取一次 native state；完整多页 hydration 的旧页复用首次正式 HEAD，并在结束时再读取 HEAD 检测漂移，状态读取从按页读取收敛为首尾两次。两类 hydration 直接消费该批次投影，不再额外读取 context/readiness。运行中 readiness 轮询、断流 cursor reconcile、会话列表 summary、暂停/恢复和队列发送仍使用各自独立的正式读取路径，未被删除。调用计数测试覆盖单页一次 state、多页两次 state、HEAD 漂移和 hydration 无重复调用。4 个需要 Testcontainers 的暂停/恢复/排队数据库用例因本机 Docker daemon 不可用未启动；其余同类无数据库契约已通过。 |
+| 2026-09-12 | `PERF-09` | Web typecheck/lint、production build、缓存与重工具输出 Playwright（1 passed）、`git diff --check` | PASS：完整逻辑事件仍保留在 hydration/React Query 数据中；非活动会话行以 `content-visibility` 有界绘制。工具 stdout/stderr、diff、文件正文和结构化 payload 默认不再拼接、路径重写或布局，用户展开具体工具详情后才生成；大于 6,000 字符的 Markdown 先显示 2,000 字符预览，点击后异步加载并解析完整 Markdown。图片使用浏览器原生 lazy loading/async decoding。产品页面和 Agent 深链路由改为 `React.lazy` 路由分包；入口 chunk 为 88.45KB gzip，Agent Workbench 为按路由 173.19KB gzip，仍保留在最终真实大历史会话验收中观测。Fork、rewrite、选择引用所依赖的 formal event id 与完整事件索引均未改动；浏览器回归验证工具输出仅在用户展开后可见。 |

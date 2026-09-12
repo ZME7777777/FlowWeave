@@ -1,18 +1,6 @@
 import { Activity, Bot, Boxes, BrainCircuit, CalendarClock, ChevronDown, GitFork, Hexagon, KeyRound, Library, LogOut, PlayCircle, Settings, TerminalSquare } from 'lucide-react';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { FlowsPage } from './pages/FlowsPage';
-import { NodesPage } from './pages/NodesPage';
-import { ModelsPage } from './pages/ModelsPage';
-import { RunsPage } from './pages/RunsPage';
-import { SchedulesPage } from './pages/SchedulesPage';
-import { WorkbenchPage } from './pages/WorkbenchPage';
-import { CapabilitiesPage } from './pages/CapabilitiesPage';
-import { TerminalEnvironmentsPage } from './pages/TerminalEnvironmentsPage';
-import { CredentialsPage } from './pages/CredentialsPage';
-import { StandaloneAgentTerminal } from './components/AgentRuntimeSidebar';
-import { AgentWorkbenchPage } from './pages/AgentWorkbenchPage';
-import { FlowNodeSessionPage } from './pages/FlowNodeSessionPage';
 import { useWorkbenchStore } from './store/workbench';
 import { withDeploymentBase, withoutDeploymentBase } from './deploymentPath';
 import { api } from './api/client';
@@ -20,6 +8,23 @@ import type { AuthUser } from './types';
 import { LoginScreen } from './components/LoginScreen';
 import { useEscapeClose } from './components/useEscapeClose';
 import { clearAgentSessionCacheStorage, setAgentSessionCacheIdentity } from './components/agent-session/conversation-cache';
+
+const FlowsPage = lazy(() => import('./pages/FlowsPage').then(module => ({ default: module.FlowsPage })));
+const NodesPage = lazy(() => import('./pages/NodesPage').then(module => ({ default: module.NodesPage })));
+const ModelsPage = lazy(() => import('./pages/ModelsPage').then(module => ({ default: module.ModelsPage })));
+const RunsPage = lazy(() => import('./pages/RunsPage').then(module => ({ default: module.RunsPage })));
+const SchedulesPage = lazy(() => import('./pages/SchedulesPage').then(module => ({ default: module.SchedulesPage })));
+const WorkbenchPage = lazy(() => import('./pages/WorkbenchPage').then(module => ({ default: module.WorkbenchPage })));
+const CapabilitiesPage = lazy(() => import('./pages/CapabilitiesPage').then(module => ({ default: module.CapabilitiesPage })));
+const TerminalEnvironmentsPage = lazy(() => import('./pages/TerminalEnvironmentsPage').then(module => ({ default: module.TerminalEnvironmentsPage })));
+const CredentialsPage = lazy(() => import('./pages/CredentialsPage').then(module => ({ default: module.CredentialsPage })));
+const StandaloneAgentTerminal = lazy(() => import('./components/AgentRuntimeSidebar').then(module => ({ default: module.StandaloneAgentTerminal })));
+const AgentWorkbenchPage = lazy(() => import('./pages/AgentWorkbenchPage').then(module => ({ default: module.AgentWorkbenchPage })));
+const FlowNodeSessionPage = lazy(() => import('./pages/FlowNodeSessionPage').then(module => ({ default: module.FlowNodeSessionPage })));
+
+function PageLoading() {
+  return <main className="auth-loading" role="status"><Hexagon size={30} fill="currentColor"/><span>正在加载页面…</span></main>;
+}
 
 const nav = [
   { view: 'nodes' as const, label: '节点资产', icon: Boxes },
@@ -164,11 +169,11 @@ export function App() {
   const logout = async () => {
     try { await api.logout(); } finally { await replaceIdentity(null); }
   };
-  if (terminalRunId && terminalConversationId) return <StandaloneAgentTerminal runId={terminalRunId} conversationId={terminalConversationId}/>;
+  if (terminalRunId && terminalConversationId) return <Suspense fallback={<PageLoading/>}><StandaloneAgentTerminal runId={terminalRunId} conversationId={terminalConversationId}/></Suspense>;
   const renderedView = view === 'agent-workbench' ? 'nodes' : view;
   const activeSettingsItem = !isAgentRoute ? settingsNav.find(item => item.view === renderedView) : undefined;
   const settingsActive = Boolean(activeSettingsItem);
   return <div className={`app-shell${isAgentRoute ? ' agent-workbench-shell' : ''}`}><header className="topbar"><button className="brand" onClick={() => selectView('nodes')} aria-label="返回节点资产"><span className="brand-mark"><Hexagon size={22} fill="currentColor"/></span><span>FlowWeave</span></button><nav aria-label="主导航">{nav.map(item => <button key={item.view} className={(nodeSessionRoute ? item.view === 'runs' : isAgentRoute ? item.view === 'agent-workbench' : renderedView === item.view) ? 'active' : ''} onClick={() => selectView(item.view)}><item.icon size={15}/>{item.label}</button>)}</nav>{activeSettingsItem && <div className="context-tab" aria-label={`当前配置：${activeSettingsItem.label}`}><span className="context-tab-divider" aria-hidden="true"/><activeSettingsItem.icon size={14}/><span>{activeSettingsItem.label}</span></div>}<div className="topbar-actions"><span className="kernel-status"><Activity size={14}/>{nodeSessionRoute ? 'FlowRun 节点会话' : isAgentRoute ? 'Agent 工作区' : '产物驱动运行'}</span><div className="account-menu" ref={settingsMenu}><button type="button" className={`account-trigger${settingsActive ? ' active' : ''}`} aria-label="账户与设置" aria-haspopup="menu" aria-expanded={settingsOpen} onClick={() => setSettingsOpen(open => !open)}><span className="account-avatar" aria-hidden="true">{user.username.slice(0, 1).toUpperCase()}</span><span className="account-identity"><b>{user.username}</b><small>{user.is_super_admin ? '超级管理员' : '普通用户'}</small></span><ChevronDown size={13} className={settingsOpen ? 'rotated' : ''}/></button>{settingsOpen && <div className="settings-popover account-popover" role="menu" aria-label="账户与设置"><div className="account-popover-heading"><Settings size={14}/><b>平台设置</b></div>{settingsNav.map(item => <button type="button" role="menuitem" title={item.description} key={item.view} className={renderedView === item.view && !isAgentRoute ? 'active' : ''} onClick={() => selectView(item.view)}><span className="settings-item-icon"><item.icon size={15}/></span><b>{item.label}</b></button>)}<button type="button" role="menuitem" title="结束当前平台会话" className="account-logout" onClick={() => void logout()}><span className="settings-item-icon"><LogOut size={15}/></span><b>退出登录</b></button></div>}</div></div></header>
-    {isAgentRoute ? nodeSessionRoute ? <FlowNodeSessionPage flowRunId={decodeURIComponent(nodeSessionRoute[1])} nodeRunId={decodeURIComponent(nodeSessionRoute[2])} attemptId={decodeURIComponent(nodeSessionRoute[3])} onNavigate={navigate}/> : <AgentWorkbenchPage onNavigate={navigate}/> : <>{<div className="principle-bar">一个 FlowRun 共享一个可替换 Runtime 与 Workspace；全部会话保留各自的 OpenHands 原生身份和事件树。</div>}{renderedView === 'nodes' && <NodesPage/>}{renderedView === 'capabilities' && <CapabilitiesPage/>}{renderedView === 'environments' && <TerminalEnvironmentsPage/>}{renderedView === 'credentials' && <CredentialsPage/>}{renderedView === 'flows' && <FlowsPage/>}{renderedView === 'runs' && <RunsPage/>}{renderedView === 'schedules' && <SchedulesPage/>}{renderedView === 'models' && <ModelsPage/>}{renderedView === 'workbench' && <WorkbenchPage/>}</>}
+    <Suspense fallback={<PageLoading/>}>{isAgentRoute ? nodeSessionRoute ? <FlowNodeSessionPage flowRunId={decodeURIComponent(nodeSessionRoute[1])} nodeRunId={decodeURIComponent(nodeSessionRoute[2])} attemptId={decodeURIComponent(nodeSessionRoute[3])} onNavigate={navigate}/> : <AgentWorkbenchPage onNavigate={navigate}/> : <>{<div className="principle-bar">一个 FlowRun 共享一个可替换 Runtime 与 Workspace；全部会话保留各自的 OpenHands 原生身份和事件树。</div>}{renderedView === 'nodes' && <NodesPage/>}{renderedView === 'capabilities' && <CapabilitiesPage/>}{renderedView === 'environments' && <TerminalEnvironmentsPage/>}{renderedView === 'credentials' && <CredentialsPage/>}{renderedView === 'flows' && <FlowsPage/>}{renderedView === 'runs' && <RunsPage/>}{renderedView === 'schedules' && <SchedulesPage/>}{renderedView === 'models' && <ModelsPage/>}{renderedView === 'workbench' && <WorkbenchPage/>}</>}</Suspense>
   </div>;
 }
