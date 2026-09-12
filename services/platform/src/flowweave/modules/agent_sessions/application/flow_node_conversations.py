@@ -145,7 +145,14 @@ def _assert_node_session_writable(
             binding_id=binding_id,
         )
         if binding.node_attempt_id is None:
-            return _attempt(db, attempt_id)
+            attempt = _attempt(db, attempt_id)
+            run = db.get(FlowRun, flow_run_id)
+            if (
+                run is not None
+                and run.state != "CANCELLED"
+                and attempt.state != AttemptState.CANCELLED
+            ):
+                return attempt
     return agent_sessions.assert_flow_node_session_writable(
         db, flow_run_id=flow_run_id, attempt_id=attempt_id
     )
@@ -2113,7 +2120,9 @@ def send_flow_run_question(
     run = db.get(FlowRun, flow_run_id)
     if run is None:
         raise not_found("flow_run", flow_run_id)
-    if binding.node_attempt_id is not None and run.state in {"COMPLETED", "CANCELLED"}:
+    if run.state == "CANCELLED" or (
+        binding.node_attempt_id is not None and run.state == "COMPLETED"
+    ):
         raise DomainError(
             "FLOW_RUN_TERMINAL",
             "A completed or cancelled FlowRun cannot accept new questions",

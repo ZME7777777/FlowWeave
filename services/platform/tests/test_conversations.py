@@ -1152,6 +1152,14 @@ def test_completed_flow_run_keeps_node_source_read_only_but_allows_native_fork(
         attempt = db.get(NodeAttempt, attempt_id)
         assert attempt is not None
         attempt.state = "CANCELLED"
+        with pytest.raises(DomainError) as detached_cancelled:
+            flow_node_conversations._assert_node_session_writable(
+                db,
+                flow_run_id=flow_run_id,
+                attempt_id=attempt_id,
+                binding_id=detached.id,
+            )
+        assert detached_cancelled.value.code == "FLOW_RUN_TERMINAL"
         with pytest.raises(DomainError) as cancelled:
             flow_node_host.assert_flow_node_session_forkable(
                 db, flow_run_id=flow_run_id, attempt_id=attempt_id
