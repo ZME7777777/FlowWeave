@@ -94,10 +94,14 @@ test('Agent session reuses a validated in-tab branch and refreshes through a bou
   await expect.poll(() => hydrationRequests).toBe(1);
   expect(headRequests).toBe(0);
 
-  // The complete EventLog remains in memory. Completed activity, including
-  // each tool's output, is immediately visible after hydration.
+  // The complete EventLog remains in memory. Tool output is revealed by the
+  // command row itself, without a second detail toggle.
   const firstActivity = page.locator('.conversation-activity-group').first();
   await expect(firstActivity).toHaveAttribute('open', '');
+  const firstTool = firstActivity.locator('.conversation-tool-detail').first();
+  await expect(firstTool).not.toHaveAttribute('open', '');
+  await firstTool.locator(':scope > summary').click();
+  await expect(firstTool).toHaveAttribute('open', '');
   await expect(firstActivity.locator('.conversation-tool-detail-panel')).toBeVisible();
   await expect(firstActivity.locator('.conversation-tool-detail-panel')).toContainText('x'.repeat(100));
 

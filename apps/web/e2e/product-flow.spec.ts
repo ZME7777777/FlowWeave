@@ -1050,7 +1050,8 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(terminalDetail.locator(':scope > summary')).toHaveAccessibleName('查看执行详情：已运行 pwd');
   await expect(terminalDetail.locator(':scope > summary')).toContainText('已运行 pwd');
   await expect(terminalDetail.locator(':scope > summary')).not.toContainText('终端 · 已完成');
-  await expect(terminalDetail).toHaveJSProperty('open', true);
+  await expect(terminalDetail).toHaveJSProperty('open', false);
+  await terminalDetail.locator(':scope > summary').click();
   await expect(terminalDetail.getByText('$ pwd', { exact: true })).toBeVisible();
   await expect(terminalDetail.getByText('/workspace', { exact: true })).toBeVisible();
   await expect(terminalDetail.getByText('退出码 0', { exact: true })).toBeVisible();
@@ -1059,7 +1060,8 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(fileDetail.locator(':scope > summary')).toHaveAccessibleName('查看执行详情：已编辑 工作区/src/config.ts');
   await expect(fileDetail.locator(':scope > summary')).toContainText('已编辑 工作区/src/config.ts');
   await expect(fileDetail.locator(':scope > summary')).not.toContainText('文件编辑器 · 已完成');
-  await expect(fileDetail).toHaveJSProperty('open', true);
+  await expect(fileDetail).toHaveJSProperty('open', false);
+  await fileDetail.locator(':scope > summary').click();
   await expect(fileDetail.getByText('const mode = "old"', { exact: true })).toBeVisible();
   await expect(fileDetail.getByText('const mode = "new"', { exact: true })).toBeVisible();
   await expect(fileDetail.getByText('The file was edited successfully.', { exact: true })).toBeVisible();
@@ -1305,7 +1307,8 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(queuedMessage.getByText('调整方向的排队消息')).toHaveCount(0);
   await expect.poll(() => sentMessages).toBe(2);
   const liveToolDetail = activeProcess.locator('.conversation-tool-detail').filter({ hasText: '已运行 pwd' });
-  await expect(liveToolDetail).toHaveJSProperty('open', true);
+  await expect(liveToolDetail).toHaveJSProperty('open', false);
+  await liveToolDetail.locator(':scope > summary').click();
   await expect(liveToolDetail.getByText('/runtime/workspace/project', { exact: true })).toBeVisible();
   await expect(page.locator('.agent-composer-actions .agent-send')).toHaveCount(1);
   await page.getByRole('button', { name: '暂停当前 Agent' }).click();

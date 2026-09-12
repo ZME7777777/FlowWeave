@@ -682,7 +682,6 @@ function displayDetails(details: Record<string, unknown>, workspaceRoot?: string
 }
 
 function ToolDetailPanel({ presentation, eventName, results, workspaceRoot }: { presentation: ActivityPresentation; eventName: string; results: Item[]; workspaceRoot?: string | null }) {
-  const [expanded, setExpanded] = useState(true);
   const details = presentation.actionDetails ?? {};
   const resultDetails = presentation.resultDetails ?? {};
   const isTerminal = eventName.includes('Terminal');
@@ -694,21 +693,16 @@ function ToolDetailPanel({ presentation, eventName, results, workspaceRoot }: { 
     || Object.keys(details).length || Object.keys(resultDetails).length,
   );
   if (!hasDetail) return null;
-  return <div className="conversation-tool-detail-panel" data-expanded={expanded || undefined}>
-      <button type="button" className="conversation-tool-detail-toggle" aria-expanded={expanded} onClick={() => setExpanded(value => !value)}>
-        {expanded ? '收起详情' : hasResultOutput ? '查看详情与输出' : '查看详情'}
-      </button>
-      {expanded && <ToolDetailContent
-        details={details}
-        resultDetails={resultDetails}
-        results={results}
-        presentation={presentation}
-        isTerminal={isTerminal}
-        isFile={isFile}
-        isTaskTracker={isTaskTracker}
-        workspaceRoot={workspaceRoot}
-      />}
-    </div>;
+  return <div className="conversation-tool-detail-panel"><ToolDetailContent
+    details={details}
+    resultDetails={resultDetails}
+    results={results}
+    presentation={presentation}
+    isTerminal={isTerminal}
+    isFile={isFile}
+    isTaskTracker={isTaskTracker}
+    workspaceRoot={workspaceRoot}
+  /></div>;
 }
 
 function ToolDetailContent({ details, resultDetails, results, presentation, isTerminal, isFile, isTaskTracker, workspaceRoot }: {
@@ -1118,7 +1112,7 @@ function ActivityEntryRow({ entry, active, avatarSlots, workspaceRoot }: {
     {presentation.thought && <article className="conversation-activity-row thought">
       <MessageMarkdown>{presentation.thought}</MessageMarkdown>
     </article>}
-    <details className="conversation-activity-row tool conversation-tool-detail" open>
+    <details className="conversation-activity-row tool conversation-tool-detail">
       <summary aria-label={`查看执行详情：${presentation.title}`}>{taskAvatar ?? <ToolIcon size={14}/>}<div><b title={presentation.title}>{presentation.title}</b></div></summary>
       {toolDetail}
     </details>
