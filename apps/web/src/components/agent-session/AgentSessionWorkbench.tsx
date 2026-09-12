@@ -1511,6 +1511,20 @@ function sourceLineForDiffLine(lines: WorkspaceFileChange['lines'], selectedInde
   return 1;
 }
 
+function sourceLineForGitDiffLine(lines: GitDiffLine[], selectedIndex: number): number {
+  const selected = lines[selectedIndex];
+  if (selected?.newLine) return selected.newLine;
+  // Git deletion rows have no coordinate in the working tree.  Keep source
+  // navigation useful by landing on the nearest surviving current line.
+  for (let index = selectedIndex + 1; index < lines.length; index += 1) {
+    if (lines[index].newLine) return lines[index].newLine!;
+  }
+  for (let index = selectedIndex - 1; index >= 0; index -= 1) {
+    if (lines[index].newLine) return lines[index].newLine!;
+  }
+  return 1;
+}
+
 function WorkspaceChangesReview({ changes, selectedId, onSelect, onOpenSource, workspaceRoot }: { changes: WorkspaceFileChange[]; selectedId?: string; onSelect: (id: string) => void; onOpenSource: (change: WorkspaceFileChange, line: number) => void; workspaceRoot?: string }) {
   const [mode, setMode] = useState<'unified' | 'split'>('split');
   const afterDiffRef = useRef<HTMLPreElement>(null);
@@ -1601,6 +1615,27 @@ function ConversationSourcesReview({ sources, onOpenAttachment }: { sources: Con
 
 function relativeWorkspacePath(path: string, root: string): string {
   return path === root ? '.' : path.startsWith(`${root}/`) ? path.slice(root.length + 1) : path;
+}
+
+function workspaceSourcePath(path: string, workingDirectory?: string): string {
+  let source = path.trim().replace(/\\/g, '/').replace(/\/+$|^\.\//g, '');
+  const root = workingDirectory?.replace(/\/+$|^\.\//g, '');
+  // Some FileEditor observations incorrectly preserve a worktree label before
+  // the Runtime path.  The Runtime root is the only authoritative absolute
+  // anchor; discard that display-only prefix before resolving the file.
+  const runtimeMarker = 'runtime/workspace/project/';
+  const runtimeOffset = source.indexOf(runtimeMarker);
+  if (runtimeOffset >= 0) source = `/${source.slice(runtimeOffset)}`;
+  if (!source || !root) return source;
+  if (source === root || source.startsWith(`${root}/`)) return source;
+  if (source.startsWith('/runtime/workspace/project/')) return source;
+  return `${root}/${source.replace(/^\/+/, '')}`;
+}
+
+function sourceParentDirectories(path: string, root: string): string[] {
+  if (path === root || !path.startsWith(`${root}/`)) return [];
+  const parts = path.slice(root.length + 1).split('/').filter(Boolean);
+  return parts.slice(0, -1).map((_, index) => `${root}/${parts.slice(0, index + 1).join('/')}`);
 }
 
 type WorkspaceEntry = { path: string; kind: 'file' | 'directory'; size: number; displayName?: string };
@@ -1727,8 +1762,11 @@ function WorkspaceFileTree({ entries, root, selectedFile, selectedPaths, expande
     const collect = (items: WorkspaceTreeNode[]) => items.forEach(node => { if (node.kind === 'directory') { paths.push(node.path); collect(node.children); } });
     collect(nodes);
     onDirectoriesChange(paths);
-    onExpandedChange(current => new Set([...current].filter(path => paths.includes(path))));
-  }, [nodes, onDirectoriesChange, onExpandedChange]);
+    // Directory pages are loaded lazily.  Retaining scoped-but-not-yet-loaded
+    // paths lets a source navigation open every ancestor in sequence instead
+    // of losing deep expansion after the root page arrives.
+    onExpandedChange(current => new Set([...current].filter(path => path.startsWith(`${root}/`))));
+  }, [nodes, onDirectoriesChange, onExpandedChange, root]);
   const visibleNodes = useMemo(() => {
     const visible: Array<{ node: WorkspaceTreeNode; depth: number }> = [];
     const collect = (items: WorkspaceTreeNode[], depth = 0) => items.forEach(node => {
@@ -2155,7 +2193,7 @@ function gitDiffLines(value: string): GitDiffLine[] {
   return lines;
 }
 
-function WorkspaceGitFileDiffReview({ details, diff }: { details: WorkspaceGitCommitDetails; diff: WorkspaceGitFileDiff }) {
+function WorkspaceGitFileDiffReview({ details, diff, onOpenSource }: { details: WorkspaceGitCommitDetails; diff: WorkspaceGitFileDiff; onOpenSource: (path: string, line: number) => void }) {
   const [mode, setMode] = useState<'unified' | 'split'>('split');
   const afterDiffRef = useRef<HTMLPreElement>(null);
   const beforeDiffContentRef = useRef<HTMLDivElement>(null);
@@ -2187,15 +2225,16 @@ function WorkspaceGitFileDiffReview({ details, diff }: { details: WorkspaceGitCo
       syncBeforeDiffOffset(pane);
     }
   };
-  const renderLine = (line: GitDiffLine, side: 'before' | 'after') => {
+  const renderLine = (line: GitDiffLine, side: 'before' | 'after', index: number) => {
     const shown = side === 'before' ? line.kind !== 'addition' : line.kind !== 'deletion';
     if (!shown) return <div className="agent-diff-line empty" aria-hidden="true"/>;
     const number = side === 'before' ? line.oldLine : line.newLine;
-    return <div className={`agent-diff-line ${line.kind}`} key={`${side}:${line.oldLine ?? ''}:${line.newLine ?? ''}:${line.text}`}><i>{number ?? ''}</i><code>{line.text || ' '}</code></div>;
+    return <button type="button" className={`agent-diff-line ${line.kind}`} key={`${side}:${line.oldLine ?? ''}:${line.newLine ?? ''}:${line.text}`} title={`打开源文件第 ${sourceLineForGitDiffLine(lines, index)} 行`} onClick={() => onOpenSource(diff.path, sourceLineForGitDiffLine(lines, index))}><i>{number ?? ''}</i><code>{line.text || ' '}</code></button>;
   };
+  const sourcePath = `${details.repository.path.replace(/\/+$/, '')}/${diff.path}`;
   return <section className="agent-git-file-diff-review">
-    <header><div><b title={diff.path}>{diff.path}</b><small><code>{details.commit.short_id}</code><span title={details.commit.subject}>{details.commit.subject || '（无提交说明）'}</span>{diff.truncated && <em>已截断</em>}</small></div>{lines.length > 0 && <div className="agent-diff-mode"><button type="button" className={mode === 'unified' ? 'active' : ''} onClick={() => setMode('unified')}>统一</button><button type="button" className={mode === 'split' ? 'active' : ''} onClick={() => setMode('split')}>并排</button></div>}</header>
-    {!lines.length ? <p className="agent-git-file-diff-empty">{diff.diff ? '该文件没有可展示的文本行级 Diff。' : '该文件没有可显示的文本 Diff。'}</p> : mode === 'unified' ? <pre className="agent-diff-unified" onWheelCapture={stopDiffOverscroll}>{lines.map(line => <div className={`agent-diff-line ${line.kind}`} key={`${line.oldLine ?? ''}:${line.newLine ?? ''}:${line.text}`}><i>{line.oldLine ?? line.newLine ?? ''}</i><strong>{line.kind === 'addition' ? '+' : line.kind === 'deletion' ? '-' : ' '}</strong><code>{line.text || ' '}</code></div>)}</pre> : <div className="agent-diff-split"><div className="agent-diff-before"><header>修改前</header><div ref={beforeDiffContentRef} className="agent-diff-before-content">{lines.map(line => renderLine(line, 'before'))}</div></div><pre ref={afterDiffRef} onWheelCapture={stopDiffOverscroll} onScroll={event => syncBeforeDiffOffset(event.currentTarget)}><header>修改后</header>{lines.map(line => renderLine(line, 'after'))}</pre></div>}
+    <header><div><b title={diff.path}>{diff.path}</b><small><code>{details.commit.short_id}</code><span title={details.commit.subject}>{details.commit.subject || '（无提交说明）'}</span>{diff.truncated && <em>已截断</em>}</small></div><div className="agent-changes-diff-actions"><button type="button" className="agent-open-source-file" onClick={() => onOpenSource(sourcePath, sourceLineForGitDiffLine(lines, lines.findIndex(line => line.kind !== 'deletion')))}><FileCode2 size={12}/>查看源文件</button>{lines.length > 0 && <div className="agent-diff-mode"><button type="button" className={mode === 'unified' ? 'active' : ''} onClick={() => setMode('unified')}>统一</button><button type="button" className={mode === 'split' ? 'active' : ''} onClick={() => setMode('split')}>并排</button></div>}</div></header>
+    {!lines.length ? <p className="agent-git-file-diff-empty">{diff.diff ? '该文件没有可展示的文本行级 Diff。' : '该文件没有可显示的文本 Diff。'}</p> : mode === 'unified' ? <pre className="agent-diff-unified" onWheelCapture={stopDiffOverscroll}>{lines.map((line, index) => <button type="button" className={`agent-diff-line ${line.kind}`} key={`${line.oldLine ?? ''}:${line.newLine ?? ''}:${line.text}`} title={`打开源文件第 ${sourceLineForGitDiffLine(lines, index)} 行`} onClick={() => onOpenSource(sourcePath, sourceLineForGitDiffLine(lines, index))}><i>{line.oldLine ?? line.newLine ?? ''}</i><strong>{line.kind === 'addition' ? '+' : line.kind === 'deletion' ? '-' : ' '}</strong><code>{line.text || ' '}</code></button>)}</pre> : <div className="agent-diff-split"><div className="agent-diff-before"><header>修改前</header><div ref={beforeDiffContentRef} className="agent-diff-before-content">{lines.map((line, index) => renderLine(line, 'before', index))}</div></div><pre ref={afterDiffRef} onWheelCapture={stopDiffOverscroll} onScroll={event => syncBeforeDiffOffset(event.currentTarget)}><header>修改后</header>{lines.map((line, index) => renderLine(line, 'after', index))}</pre></div>}
   </section>;
 }
 type CandidateFilePreviewRequest = { key: string; filename: string; url: string };
@@ -2529,17 +2568,20 @@ function WorkspaceDrawer({
     }
     updateScope(current => ({ ...current, selectedFile: undefined }));
   };
-  const openSourceFile = useCallback((change: WorkspaceFileChange, line: number) => {
-    const workingDirectory = details?.working_directory?.replace(/\/+$/, '');
-    const relativePath = change.path.replace(/^\.?\//, '');
-    const sourcePath = visibleFiles.find(file => file.path === change.path)?.path
-      ?? visibleFiles.find(file => file.path === `${workingDirectory}/${relativePath}`)?.path
-      ?? visibleFiles.find(file => file.path.endsWith(`/${relativePath}`))?.path
-      ?? (workingDirectory ? `${workingDirectory}/${relativePath}` : change.path);
+  const openSourcePath = useCallback((path: string, line: number) => {
+    const sourcePath = workspaceSourcePath(path, details?.working_directory);
+    if (!sourcePath) return;
     setCandidatePreview(undefined);
     setSourceFileNavigation({ path: sourcePath, line });
+    setExpandedFilePaths(current => new Set([
+      ...current,
+      ...sourceParentDirectories(sourcePath, details?.working_directory ?? ''),
+    ]));
     openFiles(sourcePath);
-  }, [details?.working_directory, openFiles, visibleFiles]);
+  }, [details?.working_directory, openFiles]);
+  const openSourceFile = useCallback((change: WorkspaceFileChange, line: number) => {
+    openSourcePath(change.path, line);
+  }, [openSourcePath]);
   const selectedEntryRoots = useMemo(() => [...selectedEntryPaths].filter(path => ![...selectedEntryPaths].some(other => other !== path && path.startsWith(`${other}/`))), [selectedEntryPaths]);
   const removeEntries = async (items: Array<{ path: string; kind: 'file' | 'directory' }>) => {
     if (!api.deleteFile || !items.length) return;
@@ -2719,7 +2761,7 @@ function WorkspaceDrawer({
           </section>}
           {scopeState.tabs.some(tab => tab.kind === 'changes') && <div className={`agent-changes-tab-panel ${scopeState.activeTabId === 'changes' ? 'active' : ''}`}><WorkspaceChangesReview changes={reviewChanges} selectedId={scopeState.selectedChangeId} onSelect={selectedChangeId => updateScope(current => ({ ...current, selectedChangeId }))} onOpenSource={openSourceFile} workspaceRoot={details.working_directory}/></div>}
           {scopeState.tabs.some(tab => tab.kind === 'sources') && <div className={`agent-changes-tab-panel ${scopeState.activeTabId === 'sources' ? 'active' : ''}`}><ConversationSourcesReview sources={sources} onOpenAttachment={attachment => { setCandidatePreview(undefined); selectFile(attachment.path); }}/></div>}
-          {scopeState.tabs.filter((tab): tab is Extract<WorkspaceToolTab, { kind: 'git' }> => tab.kind === 'git').map(tab => <div key={tab.id} className={`agent-changes-tab-panel agent-git-commit-tab ${scopeState.activeTabId === tab.id ? 'active' : ''}`}><WorkspaceGitFileDiffReview details={tab.details} diff={tab.diff}/></div>)}
+          {scopeState.tabs.filter((tab): tab is Extract<WorkspaceToolTab, { kind: 'git' }> => tab.kind === 'git').map(tab => <div key={tab.id} className={`agent-changes-tab-panel agent-git-commit-tab ${scopeState.activeTabId === tab.id ? 'active' : ''}`}><WorkspaceGitFileDiffReview details={tab.details} diff={tab.diff} onOpenSource={openSourcePath}/></div>)}
           {scopeState.tabs.some(tab => tab.kind === 'subagents') && <div className={`agent-subagent-tab-panel ${scopeState.activeTabId === 'subagents' ? 'active' : ''}`}><RuntimeTaskTab tasks={runtimeTasks} definitions={agentDefinitions} selectedTaskId={scopeState.selectedRuntimeTaskId} onSelect={taskId => updateScope(current => ({ ...current, selectedRuntimeTaskId: taskId }))} sessionStopped={sessionStopped}/></div>}
           {scopeState.tabs.filter((tab): tab is Extract<WorkspaceToolTab, { kind: 'terminal' }> => tab.kind === 'terminal').map(tab => <div key={tab.id} className={`agent-terminal-tab-panel ${scopeState.activeTabId === tab.id ? 'active' : ''}`}>{runtimeAvailable ? <WorkspaceTerminal workspaceId={workspaceId} terminalInstanceId={tab.terminalInstanceId} bindingId={bindingId} workDirectoryId={workDirectoryId} workingDirectory={details.working_directory}/> : <div className="agent-drawer-empty"><LoaderCircle className="agent-drawer-spinner" size={20}/><b>终端正在恢复</b><span>文件仍可使用；运行环境恢复后终端会自动可用。</span></div>}</div>)}
           {gitSidebarVisible && gitRepository && <WorkspaceGitSidebar details={details} repository={gitRepository} loadLog={repositoryPath => api.gitLog(workspaceId, repositoryPath, gitOptions)} loadCommit={(repositoryPath, commit) => api.gitCommit(workspaceId, repositoryPath, commit, gitOptions)} loadDiff={(repositoryPath, commit, path) => api.gitDiff(workspaceId, repositoryPath, commit, path, gitOptions)} onOpenFileDiff={openGitFileDiff} closedDiffEpoch={closedGitDiffEpoch}/>}

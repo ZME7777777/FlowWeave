@@ -99,6 +99,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-335 | 已删除受管 Sandbox 的 generation 悬空引用 | DONE | 恢复两个 generation ledger 的 `ON DELETE SET NULL` 约束，升级时清理历史悬空引用，并让 reconcile 显式解绑。 |
 | FR-336 | 初次 Runtime 供应遇到临时 Provider 不可用会永久降级 | DONE | 将短暂后端故障保持为可重试供应意图，限制 generation churn。 |
 | FR-337 | FlowRun 初次供应任务耗尽后无受控恢复入口 | DONE | 增加安全、幂等且可审计的终态投递恢复。 |
+| FR-338 | Diff 源文件跳转路径、树定位与 Git 历史入口修复 | DONE | 统一当前文件路径解析、懒加载目录展开和会话／Git Diff 行级跳转。 |
 | OPS-01 | Docker rollback image / BuildKit cache 容量增长 | DONE | 建立带运行引用保护、dry-run 和显式确认的回收工具，并完成生产候选边界核验。 |
 | OPS-02 | Docker rollback image / BuildKit cache 容量增长 | DONE | 已按授权使用 OPS-03 tag 级路径回收，并完成生产不变量与入口验证。 |
 | OPS-03 | 多 rollback tag image 的安全回收 | DONE | 改为逐 tag、重查 Container 引用、不使用 `--force` 的回收路径。 |
@@ -155,6 +156,26 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 完成：恢复入口在 Worker 启动与周期维护中复用；每轮最多锁定并检查 100 个候选。它只将同一持久
 Sandbox／`PROVISIONING` generation 的明确 Provider 暂时不可用任务从 `DEAD` 受控重投递一次，保留
 物理资源和 generation，不创建新的 Runtime 或 Conversation。
+
+### FR-338 Diff 源文件跳转、树定位与 Git 历史入口修复 — DONE
+
+依赖：无（工作台交互回归修复）。
+
+目标：
+
+- 会话审查 Diff 的“查看源文件”和每行跳转必须将 OpenHands 传回的绝对路径、相对路径及带展示前缀的
+  `runtime/workspace/project/...` 路径唯一解析为当前受授权工作区内的源文件，不能二次拼接工作目录。
+- 目标文件位于懒加载目录树深处时，必须依次展开并加载所有祖先目录，保留选中文件和行高亮，不能因目录页尚未
+  返回而丢弃展开意图。
+- Git 提交 Diff 必须与会话审查共用该导航链路，提供文件级和行级跳转；删除行使用相邻存活行的当前坐标。
+
+完成：新增工作区源路径归一化，遇到展示前缀时从唯一 Runtime 根
+`/runtime/workspace/project/` 重新定位；导航同时保留祖先目录的扩展状态，使目录分页按层加载。会话审查和 Git
+提交审查均可通过“查看源文件”或点击 Diff 行打开当前工作区文件，Git 路径先以已授权仓库根解析。
+
+验收：Web TypeScript typecheck、ESLint、production build 和 `git diff --check` 通过。既有广覆盖
+Playwright Agent 工作台用例在 WebSocket 流恢复阶段超时，未将其记为通过；其前端服务器连接与页面加载已恢复，
+超时发生在该历史用例的后续长流断言而非本切片的编译或构建。
 
 ### OPS-01 Docker rollback image / BuildKit cache 容量治理 — DONE
 
