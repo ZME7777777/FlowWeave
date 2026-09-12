@@ -4,7 +4,7 @@ import '@xterm/xterm/css/xterm.css';
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import hljs from 'highlight.js/lib/common';
 import { ArrowLeft, Bot, Boxes, Check, ChevronDown, ChevronRight, CircleDot, Copy, CornerDownRight, Download, Ellipsis, FileCode2, FileText, Folder, FolderOpen, FolderPlus, GitBranch, GripVertical, ImageIcon, Layers3, Link2, LoaderCircle, Maximize2, Minimize2, MonitorCog, PanelRightOpen, Play, Plus, Quote, Search, Send, ShieldAlert, Square, Trash2, X } from 'lucide-react';
-import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type ComponentPropsWithoutRef, type CSSProperties, type DragEvent as ReactDragEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type UIEvent as ReactUIEvent, type WheelEvent as ReactWheelEvent } from 'react';
+import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type ComponentPropsWithoutRef, type CSSProperties, type DragEvent as ReactDragEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type WheelEvent as ReactWheelEvent } from 'react';
 import { createPortal } from 'react-dom';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -1557,32 +1557,20 @@ function sourceLineForGitDiffLine(lines: GitDiffLine[], selectedIndex: number): 
 
 function WorkspaceChangesReview({ changes, selectedId, onSelect, onOpenSource, workspaceRoot }: { changes: WorkspaceFileChange[]; selectedId?: string; onSelect: (id: string) => void; onOpenSource: (change: WorkspaceFileChange, line: number) => void; workspaceRoot?: string }) {
   const [mode, setMode] = useState<'unified' | 'split'>('split');
-  const afterDiffRef = useRef<HTMLPreElement>(null);
-  const beforeDiffContentRef = useRef<HTMLDivElement>(null);
+  const splitDiffRef = useRef<HTMLDivElement>(null);
   const selected = changes.find(change => change.id === selectedId) ?? changes[0];
   useEffect(() => { if (selected && selected.id !== selectedId) onSelect(selected.id); }, [onSelect, selected, selectedId]);
   useEffect(() => {
     if (mode !== 'split') return;
-    if (afterDiffRef.current) {
-      afterDiffRef.current.scrollTop = 0;
-      afterDiffRef.current.scrollLeft = 0;
+    if (splitDiffRef.current) {
+      splitDiffRef.current.scrollTop = 0;
+      splitDiffRef.current.scrollLeft = 0;
     }
-    if (beforeDiffContentRef.current) beforeDiffContentRef.current.style.transform = 'translate(0, 0)';
   // Workspace tool tabs are restored from session storage before the selected
   // conversation's events have finished loading.  A restored changes tab can
   // therefore legitimately have no selected file on its first render.
   }, [mode, selected?.id]);
-  const syncAfterDiffScroll = (event: ReactUIEvent<HTMLPreElement>) => {
-    syncBeforeDiffOffset(event.currentTarget);
-  };
-  const syncBeforeDiffOffset = (pane: HTMLPreElement) => {
-    const { scrollLeft, scrollTop } = pane;
-    // Keep the read-only left pane aligned without scheduling a full React
-    // render for every scroll tick; the latter caused a visible flash on long
-    // diffs, especially when the scrollbar reached its lower boundary.
-    if (beforeDiffContentRef.current) beforeDiffContentRef.current.style.transform = `translate(${-scrollLeft}px, ${-scrollTop}px)`;
-  };
-  const stopDiffOverscroll = (event: ReactWheelEvent<HTMLPreElement>) => {
+  const stopDiffOverscroll = (event: ReactWheelEvent<HTMLElement>) => {
     const pane = event.currentTarget;
     const maxTop = Math.max(0, pane.scrollHeight - pane.clientHeight);
     const maxLeft = Math.max(0, pane.scrollWidth - pane.clientWidth);
@@ -1598,7 +1586,6 @@ function WorkspaceChangesReview({ changes, selectedId, onSelect, onOpenSource, w
       event.preventDefault();
       pane.scrollTop = Math.min(maxTop, Math.max(0, pane.scrollTop + event.deltaY));
       pane.scrollLeft = Math.min(maxLeft, Math.max(0, pane.scrollLeft + event.deltaX));
-      syncBeforeDiffOffset(pane);
     }
   };
   if (!selected) return <div className="agent-changes-empty"><b>没有可审查的文件改动</b><span>仅显示 OpenHands FileEditor 已成功写入、且带有原始前后内容的改动。</span></div>;
@@ -1615,7 +1602,7 @@ function WorkspaceChangesReview({ changes, selectedId, onSelect, onOpenSource, w
     </nav>
     <article className="agent-changes-diff">
       <header><div><b title={workspaceRelativePath(selected.path, workspaceRoot)}>{workspaceRelativePath(selected.path, workspaceRoot)}</b><small><ins>{`+${selected.additions}`}</ins><del>{`-${selected.deletions}`}</del></small></div><div className="agent-changes-diff-actions"><button type="button" className="agent-open-source-file" onClick={() => onOpenSource(selected, sourceLineForDiffLine(selected.lines, selected.lines.findIndex(line => line.kind !== 'deletion')))}><FileCode2 size={12}/>查看源文件</button><div className="agent-diff-mode"><button type="button" className={mode === 'unified' ? 'active' : ''} onClick={() => setMode('unified')}>统一</button><button type="button" className={mode === 'split' ? 'active' : ''} onClick={() => setMode('split')}>并排</button></div></div></header>
-      {mode === 'unified' ? <pre className="agent-diff-unified" onWheelCapture={stopDiffOverscroll}>{selected.lines.map((line, index) => <button type="button" className={`agent-diff-line ${line.kind}`} key={`${line.oldLine ?? ''}:${line.newLine ?? ''}:${line.text}`} title={`打开源文件第 ${sourceLineForDiffLine(selected.lines, index)} 行`} onClick={() => onOpenSource(selected, sourceLineForDiffLine(selected.lines, index))}><i>{line.oldLine ?? line.newLine ?? ''}</i><strong>{line.kind === 'addition' ? '+' : line.kind === 'deletion' ? '-' : ' '}</strong><code>{line.text || ' '}</code></button>)}</pre> : <div className="agent-diff-split"><div className="agent-diff-before"><header>修改前</header><div ref={beforeDiffContentRef} className="agent-diff-before-content">{selected.lines.map((line, index) => renderLine(line, 'before', index))}</div></div><pre ref={afterDiffRef} onWheelCapture={stopDiffOverscroll} onScroll={syncAfterDiffScroll}><header>修改后</header>{selected.lines.map((line, index) => renderLine(line, 'after', index))}</pre></div>}
+      {mode === 'unified' ? <pre className="agent-diff-unified" onWheelCapture={stopDiffOverscroll}>{selected.lines.map((line, index) => <button type="button" className={`agent-diff-line ${line.kind}`} key={`${line.oldLine ?? ''}:${line.newLine ?? ''}:${line.text}`} title={`打开源文件第 ${sourceLineForDiffLine(selected.lines, index)} 行`} onClick={() => onOpenSource(selected, sourceLineForDiffLine(selected.lines, index))}><i>{line.oldLine ?? line.newLine ?? ''}</i><strong>{line.kind === 'addition' ? '+' : line.kind === 'deletion' ? '-' : ' '}</strong><code>{line.text || ' '}</code></button>)}</pre> : <div ref={splitDiffRef} className="agent-diff-split" onWheelCapture={stopDiffOverscroll}><div className="agent-diff-split-content"><div className="agent-diff-before agent-diff-split-pane"><header>修改前</header>{selected.lines.map((line, index) => renderLine(line, 'before', index))}</div><div className="agent-diff-split-pane"><header>修改后</header>{selected.lines.map((line, index) => renderLine(line, 'after', index))}</div></div></div>}
     </article>
   </section>;
 }
@@ -2233,8 +2220,7 @@ function gitDiffLines(value: string): GitDiffLine[] {
 
 function WorkspaceGitFileDiffReview({ details, diff, onOpenSource }: { details: WorkspaceGitCommitDetails; diff: WorkspaceGitFileDiff; onOpenSource: (path: string, line: number) => void }) {
   const [mode, setMode] = useState<'unified' | 'split'>('split');
-  const afterDiffRef = useRef<HTMLPreElement>(null);
-  const beforeDiffContentRef = useRef<HTMLDivElement>(null);
+  const splitDiffRef = useRef<HTMLDivElement>(null);
   const lines = useMemo(() => gitDiffLines(diff.diff), [diff.diff]);
   // Git diff paths are always relative to the repository root, whereas the
   // shared workspace navigator expects a path in the current work-directory
@@ -2243,16 +2229,12 @@ function WorkspaceGitFileDiffReview({ details, diff, onOpenSource }: { details: 
   const sourcePath = `${details.repository.path.replace(/\/+$/, '')}/${diff.path}`;
   useEffect(() => {
     if (mode !== 'split') return;
-    if (afterDiffRef.current) {
-      afterDiffRef.current.scrollTop = 0;
-      afterDiffRef.current.scrollLeft = 0;
+    if (splitDiffRef.current) {
+      splitDiffRef.current.scrollTop = 0;
+      splitDiffRef.current.scrollLeft = 0;
     }
-    if (beforeDiffContentRef.current) beforeDiffContentRef.current.style.transform = 'translate(0, 0)';
   }, [diff.path, mode]);
-  const syncBeforeDiffOffset = (pane: HTMLPreElement) => {
-    if (beforeDiffContentRef.current) beforeDiffContentRef.current.style.transform = `translate(${-pane.scrollLeft}px, ${-pane.scrollTop}px)`;
-  };
-  const stopDiffOverscroll = (event: ReactWheelEvent<HTMLPreElement>) => {
+  const stopDiffOverscroll = (event: ReactWheelEvent<HTMLElement>) => {
     const pane = event.currentTarget;
     const maxTop = Math.max(0, pane.scrollHeight - pane.clientHeight);
     const maxLeft = Math.max(0, pane.scrollWidth - pane.clientWidth);
@@ -2265,7 +2247,6 @@ function WorkspaceGitFileDiffReview({ details, diff, onOpenSource }: { details: 
       event.preventDefault();
       pane.scrollTop = Math.min(maxTop, Math.max(0, pane.scrollTop + event.deltaY));
       pane.scrollLeft = Math.min(maxLeft, Math.max(0, pane.scrollLeft + event.deltaX));
-      syncBeforeDiffOffset(pane);
     }
   };
   const renderLine = (line: GitDiffLine, side: 'before' | 'after', index: number) => {
@@ -2276,7 +2257,7 @@ function WorkspaceGitFileDiffReview({ details, diff, onOpenSource }: { details: 
   };
   return <section className="agent-git-file-diff-review">
     <header><div><b title={diff.path}>{diff.path}</b><small><code>{details.commit.short_id}</code><span title={details.commit.subject}>{details.commit.subject || '（无提交说明）'}</span>{diff.truncated && <em>已截断</em>}</small></div><div className="agent-changes-diff-actions"><button type="button" className="agent-open-source-file" onClick={() => onOpenSource(sourcePath, sourceLineForGitDiffLine(lines, lines.findIndex(line => line.kind !== 'deletion')))}><FileCode2 size={12}/>查看源文件</button>{lines.length > 0 && <div className="agent-diff-mode"><button type="button" className={mode === 'unified' ? 'active' : ''} onClick={() => setMode('unified')}>统一</button><button type="button" className={mode === 'split' ? 'active' : ''} onClick={() => setMode('split')}>并排</button></div>}</div></header>
-    {!lines.length ? <p className="agent-git-file-diff-empty">{diff.diff ? '该文件没有可展示的文本行级 Diff。' : '该文件没有可显示的文本 Diff。'}</p> : mode === 'unified' ? <pre className="agent-diff-unified" onWheelCapture={stopDiffOverscroll}>{lines.map((line, index) => <button type="button" className={`agent-diff-line ${line.kind}`} key={`${line.oldLine ?? ''}:${line.newLine ?? ''}:${line.text}`} title={`打开源文件第 ${sourceLineForGitDiffLine(lines, index)} 行`} onClick={() => onOpenSource(sourcePath, sourceLineForGitDiffLine(lines, index))}><i>{line.oldLine ?? line.newLine ?? ''}</i><strong>{line.kind === 'addition' ? '+' : line.kind === 'deletion' ? '-' : ' '}</strong><code>{line.text || ' '}</code></button>)}</pre> : <div className="agent-diff-split"><div className="agent-diff-before"><header>修改前</header><div ref={beforeDiffContentRef} className="agent-diff-before-content">{lines.map((line, index) => renderLine(line, 'before', index))}</div></div><pre ref={afterDiffRef} onWheelCapture={stopDiffOverscroll} onScroll={event => syncBeforeDiffOffset(event.currentTarget)}><header>修改后</header>{lines.map((line, index) => renderLine(line, 'after', index))}</pre></div>}
+    {!lines.length ? <p className="agent-git-file-diff-empty">{diff.diff ? '该文件没有可展示的文本行级 Diff。' : '该文件没有可显示的文本 Diff。'}</p> : mode === 'unified' ? <pre className="agent-diff-unified" onWheelCapture={stopDiffOverscroll}>{lines.map((line, index) => <button type="button" className={`agent-diff-line ${line.kind}`} key={`${line.oldLine ?? ''}:${line.newLine ?? ''}:${line.text}`} title={`打开源文件第 ${sourceLineForGitDiffLine(lines, index)} 行`} onClick={() => onOpenSource(sourcePath, sourceLineForGitDiffLine(lines, index))}><i>{line.oldLine ?? line.newLine ?? ''}</i><strong>{line.kind === 'addition' ? '+' : line.kind === 'deletion' ? '-' : ' '}</strong><code>{line.text || ' '}</code></button>)}</pre> : <div ref={splitDiffRef} className="agent-diff-split" onWheelCapture={stopDiffOverscroll}><div className="agent-diff-split-content"><div className="agent-diff-before agent-diff-split-pane"><header>修改前</header>{lines.map((line, index) => renderLine(line, 'before', index))}</div><div className="agent-diff-split-pane"><header>修改后</header>{lines.map((line, index) => renderLine(line, 'after', index))}</div></div></div>}
   </section>;
 }
 type CandidateFilePreviewRequest = { key: string; filename: string; url: string };
