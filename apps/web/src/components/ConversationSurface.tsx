@@ -1343,27 +1343,20 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused: 
   const handleScroll = useCallback(() => {
     updateScrollPosition();
   }, [updateScrollPosition]);
-  const scrollToTerminalStart = useCallback((behavior: ScrollBehavior = 'smooth') => {
-    const terminals = surface.current?.querySelectorAll<HTMLElement>('[data-turn-terminal="true"]');
-    const terminal = terminals?.[terminals.length - 1];
-    if (!terminal) return scrollToLatest(behavior);
-    terminal.scrollIntoView({ block: 'start', behavior });
-    window.requestAnimationFrame(updateScrollPosition);
-  }, [scrollToLatest, updateScrollPosition]);
-  const currentHasTerminal = isGenerating && Boolean(turns.at(-1)?.assistant || turns.at(-1)?.activity.some(item => item.kind === 'error'));
   useLayoutEffect(() => {
     if (!initialPositioned.current && (turns.length || liveText || isGenerating)) {
       initialPositioned.current = true;
       scrollToLatest('auto');
     } else if (!wasGenerating.current && isGenerating) {
       scrollToLatest('smooth');
-    } else if (wasGenerating.current && !isGenerating && followLatest.current) {
-      scrollToTerminalStart('auto');
-    } else if (followLatest.current && !currentHasTerminal) {
+    } else if (followLatest.current) {
+      // A completed turn, lazy Markdown, or asynchronously restored history
+      // must never replace the newest-message anchor with the terminal row.
+      // Keep the newest content at the bottom until the user scrolls away.
       scrollToLatest('auto');
     }
     wasGenerating.current = isGenerating;
-  }, [currentHasTerminal, isGenerating, liveText, scrollToLatest, scrollToTerminalStart, turns.length]);
+  }, [isGenerating, liveText, scrollToLatest, turns.length]);
   useLayoutEffect(() => {
     const observedContent = content.current;
     if (!observedContent || typeof ResizeObserver === 'undefined') return;
