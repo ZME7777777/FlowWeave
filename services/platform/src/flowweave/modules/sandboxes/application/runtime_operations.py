@@ -7,6 +7,9 @@ from typing import Any
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
+from flowweave.modules.orchestration.application.runtime_freeze import (
+    require_flow_run_runtime_writable,
+)
 from flowweave.modules.sandboxes.application.runtime_owner import runtime_owner_flow_run_id
 from flowweave.modules.sandboxes.application.runtime_replacement import (
     enqueue_flow_run_runtime_replacement,
@@ -99,6 +102,10 @@ def runtime_overview(db: Session, flow_run_id: str) -> dict[str, Any]:
     if run is None:
         raise not_found("flow_run", flow_run_id)
     owner_id = runtime_owner_flow_run_id(db, flow_run_id)
+    owner = db.get(FlowRun, owner_id)
+    if owner is None:
+        raise not_found("flow_run", owner_id)
+    require_flow_run_runtime_writable(db, owner)
     session = db.scalar(
         select(FlowRunRuntime).where(
             FlowRunRuntime.flow_run_id == owner_id,
@@ -174,6 +181,10 @@ def runtime_resource_summary(db: Session, flow_run_id: str) -> dict[str, Any]:
     """Read Docker usage for one Runtime without delaying the run list."""
 
     owner_id = runtime_owner_flow_run_id(db, flow_run_id)
+    owner = db.get(FlowRun, owner_id)
+    if owner is None:
+        raise not_found("flow_run", owner_id)
+    require_flow_run_runtime_writable(db, owner)
     session = db.scalar(
         select(FlowRunRuntime).where(
             FlowRunRuntime.flow_run_id == owner_id,
@@ -317,6 +328,10 @@ def request_runtime_pause(
     """
 
     owner_id = runtime_owner_flow_run_id(db, flow_run_id)
+    owner = db.get(FlowRun, owner_id)
+    if owner is None:
+        raise not_found("flow_run", owner_id)
+    require_flow_run_runtime_writable(db, owner)
     session = db.scalar(
         select(FlowRunRuntime)
         .where(
@@ -460,6 +475,10 @@ def request_runtime_resume(
     """Resume a paused FlowRun Runtime using its retained container and state."""
 
     owner_id = runtime_owner_flow_run_id(db, flow_run_id)
+    owner = db.get(FlowRun, owner_id)
+    if owner is None:
+        raise not_found("flow_run", owner_id)
+    require_flow_run_runtime_writable(db, owner)
     session = db.scalar(
         select(FlowRunRuntime)
         .where(

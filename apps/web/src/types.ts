@@ -422,6 +422,7 @@ export interface FlowRunSummary {
   environment_version_id?: string | null;
   runtime_status?: string | null; runtime_write_available?: boolean;
   runtime_message?: string | null;
+  runtime_frozen?: boolean; runtime_freeze_reason?: string | null;
   usage?: TokenUsageSummary;
   started_at: string; updated_at: string; finished_at?: string | null;
 }
@@ -451,7 +452,8 @@ export interface FlowRunSchedule {
   source_flow_run_id?: string | null; run_mode: 'MANUAL' | 'AUTOMATIC'; start_node_key: string; interval_minutes: number;
   cron_expression?: string | null;
   source_flow_run?: { id: string; name: string; run_no: number; state: string } | null;
-  status: 'ACTIVE' | 'PAUSED'; next_run_at?: string | null; row_version: number;
+  status: 'ACTIVE' | 'PAUSED' | 'FROZEN'; next_run_at?: string | null; row_version: number;
+  runtime_frozen?: boolean; runtime_freeze_reason?: string | null;
   config_version: number; last_run_at?: string | null; has_execution: boolean;
   created_at: string; updated_at: string;
 }

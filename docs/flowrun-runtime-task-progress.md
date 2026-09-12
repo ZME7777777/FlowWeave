@@ -113,6 +113,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-349 | 备用模型供应商选择状态回显 | DONE | 空选择不再伪装为列表首个供应商，避免模型依赖菜单保持空白而无法加入备用顺序。 |
 | FR-350 | 备用模型优先级编辑分区 | DONE | 添加区与已选优先级列表分离，支持拖拽调整顺序，并统一保存语义。 |
 | FR-351 | FlowRun 侧栏记录区固定与分页 | DONE | 侧栏摘要、运行方式和操作栏固定；记录区独立滚动并以每页 5 条显示，移除操作栏下方的冗余说明。 |
+| FR-352 | 历史不兼容镜像的 FlowRun 冻结投影 | DONE | 列表、节点会话、Runtime 与定时任务统一按不可变镜像契约 fail closed；连续运行配置仍可导出以迁移到兼容的新 FlowRun。 |
 | OPS-01 | Docker rollback image / BuildKit cache 容量增长 | DONE | 建立带运行引用保护、dry-run 和显式确认的回收工具，并完成生产候选边界核验。 |
 | OPS-02 | Docker rollback image / BuildKit cache 容量增长 | DONE | 已按授权使用 OPS-03 tag 级路径回收，并完成生产不变量与入口验证。 |
 | OPS-03 | 多 rollback tag image 的安全回收 | DONE | 改为逐 tag、重查 Container 引用、不使用 `--force` 的回收路径。 |
@@ -4729,6 +4730,14 @@ live replacement 直接完成，不再把 `RUNTIME_REPLACEMENT_LEASE_HELD` 重�
 Session 错投影为 `DEGRADED`。新增回归覆盖同 task crash takeover、重复 delivery no-op 与 duplicate
 terminal failure isolation。
 
+### FR-352 历史不兼容镜像的 FlowRun 冻结投影 — DONE
+
+依赖：FR-345、FR-348。
+
+目标：历史 FlowRun 所绑定的不可变 Environment Version 若不再满足当前 OpenHands Runtime 契约，不能因其旧容器仍在运行而被误报为“运行环境已就绪”。在 FlowRun 列表先给出冻结原因，且在任何节点会话、执行、Runtime 生命周期或定时触发到达 OpenHands／Runtime Provider 前拒绝写入；连续运行配置仍可作为迁移到兼容新 FlowRun 的导出来源。
+
+完成：以统一的契约判定投影 `runtime_frozen`／`runtime_freeze_reason`，列表优先显示“已冻结”并禁用进入、暂停和启动；服务端以 `FLOW_RUN_RUNTIME_FROZEN` fail closed，覆盖节点启动、节点会话、自动运行、Runtime 操作和定时任务的手动／周期触发。定时目录同样显示冻结原因并停用触发和恢复；不会改写历史镜像、会话、Workspace 或执行记录。
+
 ### FR-321 OpenHands 1.47 增强最终安全、恢复与性能门禁 — DONE
 
 依赖：FR-309–FR-320。
@@ -4764,6 +4773,7 @@ contract、冻结策略与既有受控生命周期约束覆盖。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-12 | FR-352 | 受影响 Python Ruff format/check、`py_compile`、应用模块 import smoke；Web TypeScript typecheck、ESLint、production build、`git diff --check` | PASS（静态／构建）：旧 Runtime manifest 在列表和详情投影为冻结，物理容器状态不再覆盖该产品状态；节点会话、人工／自动执行、pause/resume/replacement 及调度写路径均在 Runtime/OpenHands 前统一拒绝。生产构建仅报告既有大 chunk 提示。本机 Docker daemon 不可用，未运行需要 Testcontainers PostgreSQL 的集成断言，未记为通过。 |
 | 2026-09-12 | FR-351 | Web TypeScript typecheck、ESLint、production build、`git diff --check`；本地 Vite 上 FlowRun 侧栏定向 Playwright | PASS：运行摘要、模式切换和操作栏不再随记录滚动；记录内容在独立滚动区展示，三种模式共用每页 5 条的分页。定向浏览器回归确认第 6 条记录仅在“下一页”后渲染，固定区域在内容滚动后位置不变。三条操作说明均已移除。生产构建仅报告既有的大 chunk 提示。 |
 | 2026-09-12 | FR-342 | Web TypeScript typecheck、ESLint、production build、`git diff --check` | PASS（静态／构建）：根工作区仓库不再被前端的容器路径过滤排除；工作目录根及其子文件按最深包含仓库挂载 Git 历史。后端仓库发现与 `git_log` 已允许仓库根等于授权工作目录，故未改动 API 或授权边界。typecheck、lint、build 与空白检查通过；生产构建仅有既有的大 chunk 提示。 |
 | 2026-09-12 | FR-341 | Web TypeScript typecheck、ESLint、production build、`git diff --check` | PASS（静态／构建）：代码／纯文本预览具备与内容行高同步的行号 gutter；Diff 导航通过当前可视边界计算最小滚动位移，目标可见时保持当前位置，不可见时平滑移入，并以 1.6 秒琥珀色行级高亮反馈。Markdown 富文本和选择引用保持原行为。typecheck、lint、build 与空白检查通过；生产构建仅有既有的大 chunk 提示。 |

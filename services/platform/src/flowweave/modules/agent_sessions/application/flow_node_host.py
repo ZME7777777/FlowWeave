@@ -26,6 +26,9 @@ from flowweave.modules.environments.public import (
     lock_referenceable_version,
     runtime_server_identity,
 )
+from flowweave.modules.orchestration.application.runtime_freeze import (
+    require_flow_run_runtime_writable,
+)
 from flowweave.modules.sandboxes import public as sandboxes
 from flowweave.runtime.manifest import runtime_node
 from flowweave.shared.domain.enums import AttemptState
@@ -75,6 +78,7 @@ def assert_flow_node_session_writable(
     run = db.get(FlowRun, flow_run_id)
     if run is None:
         raise not_found("flow_run", flow_run_id)
+    require_flow_run_runtime_writable(db, run)
     if run.state in {"COMPLETED", "CANCELLED"}:
         raise DomainError(
             "FLOW_RUN_TERMINAL",
@@ -111,6 +115,7 @@ def resolve_flow_node_session_host(
     run = db.get(FlowRun, flow_run_id)
     if run is None:
         raise not_found("flow_run", flow_run_id)
+    require_flow_run_runtime_writable(db, run)
     attempt = db.get(NodeAttempt, attempt_id)
     if attempt is None:
         raise DomainError(

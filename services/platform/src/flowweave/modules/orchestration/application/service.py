@@ -43,6 +43,11 @@ from flowweave.modules.gates.public import (
     GateResult,
     execute_gate_plan,
 )
+from flowweave.modules.orchestration.application.runtime_freeze import (
+    environment_version_runtime_freeze_reason,
+    flow_run_runtime_freeze_reason,
+    require_flow_run_runtime_writable,
+)
 from flowweave.modules.runs.public import (
     Artifact,
     Binding,
@@ -2910,6 +2915,7 @@ def _schedule_occurrence_dict(db: Session, occurrence: FlowRunScheduleOccurrence
 
 def _schedule_dict(db: Session, schedule: FlowRunSchedule) -> dict[str, Any]:
     source = db.get(FlowRun, schedule.source_flow_run_id) if schedule.source_flow_run_id else None
+    freeze_reason = environment_version_runtime_freeze_reason(db, schedule.environment_version_id)
     return {
         "id": schedule.id,
         "flow_definition_id": schedule.flow_definition_id,
@@ -2930,7 +2936,9 @@ def _schedule_dict(db: Session, schedule: FlowRunSchedule) -> dict[str, Any]:
         "start_node_key": schedule.start_node_key,
         "interval_minutes": schedule.interval_minutes,
         "cron_expression": schedule.cron_expression,
-        "status": schedule.status,
+        "status": "FROZEN" if freeze_reason else schedule.status,
+        "runtime_frozen": freeze_reason is not None,
+        "runtime_freeze_reason": freeze_reason,
         "next_run_at": schedule.next_run_at.isoformat() if schedule.next_run_at else None,
         "config_version": schedule.config_version,
         "last_run_at": schedule.last_run_at.isoformat() if schedule.last_run_at else None,
@@ -2978,6 +2986,7 @@ def list_flow_run_schedule_occurrences(
 
 def create_flow_run_schedule(db: Session, payload: FlowRunScheduleWrite) -> dict[str, Any]:
     source = _run(db, payload.source_flow_run_id)
+    require_flow_run_runtime_writable(db, source)
     parent = db.get(FlowRun, source.parent_flow_run_id) if source.parent_flow_run_id else None
     plan = copy.deepcopy(dict(source.automation_plan_json or {}))
     readiness = cast(dict[str, Any], plan.get("readiness") or {})
@@ -3055,6 +3064,10 @@ def set_flow_run_schedule_state(
             expected=payload.expected_row_version,
             actual=schedule.row_version,
         )
+    if payload.status == "ACTIVE":
+        reason = environment_version_runtime_freeze_reason(db, schedule.environment_version_id)
+        if reason is not None:
+            raise DomainError("FLOW_RUN_RUNTIME_FROZEN", reason, 409, {"schedule_id": schedule.id})
     schedule.status = payload.status
     schedule.row_version += 1
     if payload.status == "ACTIVE":
@@ -3075,6 +3088,9 @@ def trigger_flow_run_schedule(db: Session, schedule_id: str) -> dict[str, Any]:
     )
     if schedule is None:
         raise not_found("flow_run_schedule", schedule_id)
+    reason = environment_version_runtime_freeze_reason(db, schedule.environment_version_id)
+    if reason is not None:
+        raise DomainError("FLOW_RUN_RUNTIME_FROZEN", reason, 409, {"schedule_id": schedule.id})
     occurrence = FlowRunScheduleOccurrence(
         schedule_id=schedule.id,
         config_version=schedule.config_version,
@@ -3149,6 +3165,17 @@ def scan_due_flow_run_schedules(db: Session) -> int:
         )
     )
     for schedule in schedules:
+        freeze_reason = environment_version_runtime_freeze_reason(
+            db, schedule.environment_version_id
+        )
+        if freeze_reason is not None:
+            # Freeze the durable scheduler state as well as its list projection:
+            # otherwise an overdue, incompatible task would be selected again
+            # on every Worker tick.
+            schedule.status = "FROZEN"
+            schedule.next_run_at = None
+            schedule.row_version += 1
+            continue
         due_at = schedule.next_run_at
         occurrence = FlowRunScheduleOccurrence(
             schedule_id=schedule.id,
@@ -3195,6 +3222,9 @@ def process_flow_run_schedule_occurrence(
         _finish_transaction(db, commit)
         return
     try:
+        reason = environment_version_runtime_freeze_reason(db, schedule.environment_version_id)
+        if reason is not None:
+            raise DomainError("FLOW_RUN_RUNTIME_FROZEN", reason, 409, {"schedule_id": schedule.id})
         run = _materialize_scheduled_run(db, schedule, occurrence)
         occurrence.flow_run_id = run.id
         occurrence.state = "STARTED"
@@ -3361,6 +3391,7 @@ def process_start_automatic_run(db: Session, run_id: str, *, commit: bool = True
     """
 
     run = _locked_run(db, run_id)
+    require_flow_run_runtime_writable(db, run)
     plan = dict(run.automation_plan_json or {})
     if (
         run.run_mode != "AUTOMATIC"
@@ -4473,6 +4504,7 @@ def start_automatic_run(
     """Freeze a ready plan and durably request Worker scheduling."""
 
     run = _locked_run(db, run_id)
+    require_flow_run_runtime_writable(db, run)
     existing = db.scalar(select(HumanAction).where(HumanAction.idempotency_key == idempotency_key))
     if existing is not None:
         if existing.flow_run_id != run.id or existing.action_type != "FREEZE_AUTOMATIC_RUN":
@@ -4748,6 +4780,7 @@ def start_node_run(
     # Serializing on the FlowRun closes the application-level race between two
     # starts or two branch completions that target the same frozen node.
     run = _locked_run(db, run_id)
+    require_flow_run_runtime_writable(db, run)
     if run.run_mode != "MANUAL":
         raise illegal("automatic runs cannot use the manual node start command", state=run.state)
     if run.state in {FlowRunState.COMPLETED, FlowRunState.CANCELLED}:
@@ -4962,6 +4995,7 @@ def confirm_start(
         )
     effective_prompt = frozen_prompt if frozen_prompt is not None else payload.prompt
     current_node_run = _node_run(db, current.node_run_id)
+    require_flow_run_runtime_writable(db, _run(db, current_node_run.flow_run_id))
     node = _node(_snapshot(db, current.snapshot_id), current_node_run.flow_node_snapshot_key)
     host = agent_sessions.resolve_flow_node_session_host(
         db,
@@ -9604,6 +9638,7 @@ def run_detail(db: Session, run_id: str, *, include_artifacts: bool = True) -> d
         if run.environment_version_id
         else None
     )
+    freeze_reason = flow_run_runtime_freeze_reason(db, run, environment=environment)
     snapshots = list(
         db.scalars(
             select(RunSnapshot)
@@ -9687,6 +9722,8 @@ def run_detail(db: Session, run_id: str, *, include_artifacts: bool = True) -> d
         "row_version": run.row_version,
         "completion_mode": run.completion_mode,
         "environment_version_id": run.environment_version_id,
+        "runtime_frozen": freeze_reason is not None,
+        "runtime_freeze_reason": freeze_reason,
         "environment_version": (
             {
                 "id": environment.id,
@@ -9755,10 +9792,21 @@ def list_runs(db: Session) -> list[dict[str, Any]]:
     runtime_readiness = sandboxes.runtime_readiness_by_flow_run(db, run_ids)
     usage_by_run = usage_projection.for_scope(db, field="flow_run_id", ids=run_ids)
     snapshots_by_id = {item.id: item for item in snapshots}
+    environment_ids = [item.environment_version_id for item in runs if item.environment_version_id]
+    environments_by_id = {
+        item.id: item
+        for item in db.scalars(
+            select(EnvironmentVersion).where(EnvironmentVersion.id.in_(environment_ids))
+        )
+    }
 
     result: list[dict[str, Any]] = []
     for run in runs:
         runtime = runtime_readiness.get(run.id)
+        freeze_reason = flow_run_runtime_freeze_reason(
+            db, run, environment=environments_by_id.get(run.environment_version_id or "")
+        )
+        runtime_frozen = freeze_reason is not None
         snapshot = snapshots_by_id.get(run.active_snapshot_id or "")
         activity_times = [run.started_at]
         if runtime and isinstance(runtime.get("updated_at"), datetime):
@@ -9782,22 +9830,31 @@ def list_runs(db: Session) -> list[dict[str, Any]]:
                 "environment_version_id": run.environment_version_id,
                 "active_snapshot_version": snapshot.version if snapshot else None,
                 "runtime_status": (
-                    "DRAFT"
+                    "FROZEN"
+                    if runtime_frozen
+                    else "DRAFT"
                     if run.run_mode == "AUTOMATIC" and run.state == FlowRunState.DRAFT
                     else runtime.get("status")
                     if runtime
                     else "ARCHIVED"
                 ),
                 "runtime_write_available": bool(
-                    run.state != FlowRunState.DRAFT and runtime and runtime.get("write_available")
+                    not runtime_frozen
+                    and run.state != FlowRunState.DRAFT
+                    and runtime
+                    and runtime.get("write_available")
                 ),
                 "runtime_message": (
-                    "连续运行尚未启动，可继续编辑编排"
+                    freeze_reason
+                    if runtime_frozen
+                    else "连续运行尚未启动，可继续编辑编排"
                     if run.run_mode == "AUTOMATIC" and run.state == FlowRunState.DRAFT
                     else runtime.get("message")
                     if runtime
                     else None
                 ),
+                "runtime_frozen": runtime_frozen,
+                "runtime_freeze_reason": freeze_reason,
                 "usage": usage_by_run.get(run.id, usage_projection.empty()),
                 "started_at": run.started_at.isoformat(),
                 "updated_at": max(activity_times).isoformat(),
