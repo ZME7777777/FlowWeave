@@ -100,10 +100,14 @@ def test_agent_context_is_compiled_only_into_openhands_system_suffix(settings):
     assert AGENT_WORKSPACE_MAX_ITERATIONS == 300
     assert spec.budgets.max_iterations == AGENT_WORKSPACE_MAX_ITERATIONS
     assert "首要目标是把用户任务做对" in suffix
-    assert "OpenHands 内置 think 工具" in suffix
     assert "绝不能为了写进展而跳过、延迟、拆散或重排必要的检查" in suffix
-    assert "在重要工具调用或关键执行阶段之前" in suffix
-    assert "不要只复述工具、文件、命令、函数名或参数" in suffix
+    assert "把用户可感知的工作组织为小型、可验证的阶段" in suffix
+    assert "在开始一个阶段、阶段得到实质性发现或结果" in suffix
+    assert "当前理解、关键发现、当前适用的假设或已作决定" in suffix
+    assert "在获得实质性中间里程碑后及时更新，不必等到阶段结束" in suffix
+    assert "一条进展可以引导为完成同一阶段而连续进行的多个原生工具动作" in suffix
+    assert "普通且连续的工具调用不必逐条说明" not in suffix
+    assert "OpenHands 内置 think 工具" not in suffix
 
 
 def test_agent_context_is_allowed_only_during_conversation_creation(monkeypatch):
