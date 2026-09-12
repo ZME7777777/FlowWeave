@@ -1840,26 +1840,10 @@ function workspaceTree(entries: WorkspaceEntry[], root: string): WorkspaceTreeNo
   return roots;
 }
 
-function WorkspaceFileTree({ entries, root, selectedFile, selectedPaths, expanded, pagination, loadingDirectories, onExpandedChange, onDirectoriesChange, onLoadMore, onSelect, onSelectionChange, onActivateDirectory, onContextMenu }: { entries: WorkspaceEntry[]; root: string; selectedFile?: string; selectedPaths: Set<string>; expanded: Set<string>; pagination: Map<string, string | undefined>; loadingDirectories: Set<string>; onExpandedChange: (updater: (current: Set<string>) => Set<string>) => void; onDirectoriesChange: (updater: (current: string[]) => string[]) => void; onLoadMore: (parentPath?: string) => void; onSelect: (path?: string) => void; onSelectionChange: (paths: Set<string>) => void; onActivateDirectory: (path?: string) => void; onContextMenu: (path: string, kind: 'file' | 'directory', event: ReactMouseEvent<HTMLButtonElement>) => void }) {
+function WorkspaceFileTree({ entries, root, selectedFile, selectedPaths, expanded, pagination, loadingDirectories, onExpandedChange, onLoadMore, onSelect, onSelectionChange, onActivateDirectory, onContextMenu }: { entries: WorkspaceEntry[]; root: string; selectedFile?: string; selectedPaths: Set<string>; expanded: Set<string>; pagination: Map<string, string | undefined>; loadingDirectories: Set<string>; onExpandedChange: (updater: (current: Set<string>) => Set<string>) => void; onLoadMore: (parentPath?: string) => void; onSelect: (path?: string) => void; onSelectionChange: (paths: Set<string>) => void; onActivateDirectory: (path?: string) => void; onContextMenu: (path: string, kind: 'file' | 'directory', event: ReactMouseEvent<HTMLButtonElement>) => void }) {
   const nodes = useMemo(() => workspaceTree(entries, root), [entries, root]);
   const selectionAnchor = useRef<string | undefined>(undefined);
-  const treeRef = useRef<HTMLDivElement>(null);
-  const stickyOverlayRef = useRef<HTMLDivElement>(null);
   const rowRefs = useRef(new Map<string, HTMLDivElement>());
-  const [stickyDirectoryPaths, setStickyDirectoryPaths] = useState<string[]>([]);
-  useEffect(() => {
-    const paths: string[] = [];
-    const collect = (items: WorkspaceTreeNode[]) => items.forEach(node => { if (node.kind === 'directory') { paths.push(node.path); collect(node.children); } });
-    collect(nodes);
-    onDirectoriesChange(current => current.length === paths.length && current.every((path, index) => path === paths[index]) ? current : paths);
-    // Manual expansion only tracks directories which are actually present in
-    // the loaded tree. Source navigation has a separate, ordered expansion
-    // state so a stale or malformed source path cannot keep causing 404s.
-    onExpandedChange(current => {
-      const next = new Set([...current].filter(path => paths.includes(path)));
-      return next.size === current.size ? current : next;
-    });
-  }, [nodes, onDirectoriesChange, onExpandedChange]);
   const visibleNodes = useMemo(() => {
     const visible: Array<{ node: WorkspaceTreeNode; depth: number }> = [];
     const collect = (items: WorkspaceTreeNode[], depth = 0) => items.forEach(node => {
@@ -1869,52 +1853,6 @@ function WorkspaceFileTree({ entries, root, selectedFile, selectedPaths, expande
     collect(nodes);
     return visible;
   }, [expanded, nodes]);
-  const directoriesByPath = useMemo(() => {
-    const directories = new Map<string, WorkspaceTreeNode>();
-    const collect = (items: WorkspaceTreeNode[]) => items.forEach(node => {
-      if (node.kind === 'directory') { directories.set(node.path, node); collect(node.children); }
-    });
-    collect(nodes);
-    return directories;
-  }, [nodes]);
-  const stickyDirectoriesFor = useCallback((node: WorkspaceTreeNode): string[] => {
-    const relative = relativeWorkspacePath(node.path, root);
-    const parts = relative.split('/').filter(Boolean);
-    const directoryParts = node.kind === 'directory' ? parts : parts.slice(0, -1);
-    const paths: string[] = [];
-    for (let index = 1; index <= directoryParts.length; index += 1) {
-      const path = `${root}/${directoryParts.slice(0, index).join('/')}`;
-      if (directoriesByPath.has(path) && expanded.has(path)) paths.push(path);
-    }
-    return paths;
-  }, [directoriesByPath, expanded, root]);
-  const updateStickyDirectories = useCallback(() => {
-    const tree = treeRef.current;
-    const overlay = stickyOverlayRef.current;
-    if (!tree) return;
-    // Keep the overlay attached to the scroll viewport synchronously.  Using
-    // React state for this offset made it lag a frame during an upward wheel
-    // gesture, so the directory path visibly drifted into the middle.
-    if (overlay) overlay.style.transform = `translateY(${tree.scrollTop}px)`;
-    if (tree.scrollTop <= 1) {
-      setStickyDirectoryPaths(current => current.length ? [] : current);
-      return;
-    }
-    // The source-tree viewport is the sole anchor. The overlay must never
-    // decide its own contents: adding or removing a pinned directory changes
-    // its height, which would otherwise make adjacent directories oscillate
-    // at the boundary.
-    const visibleTop = tree.getBoundingClientRect().top + 1;
-    const firstVisible = visibleNodes.find(({ node }) => {
-      const row = rowRefs.current.get(node.path);
-      return row && row.getBoundingClientRect().bottom > visibleTop;
-    });
-    const next = firstVisible ? stickyDirectoriesFor(firstVisible.node) : [];
-    setStickyDirectoryPaths(current => current.length === next.length && current.every((path, index) => path === next[index]) ? current : next);
-  }, [stickyDirectoriesFor, visibleNodes]);
-  useEffect(() => {
-    updateStickyDirectories();
-  }, [updateStickyDirectories]);
   useEffect(() => {
     if (!selectedFile) return;
     // Source navigation can expand several lazy directory pages before the
@@ -1922,11 +1860,6 @@ function WorkspaceFileTree({ entries, root, selectedFile, selectedPaths, expande
     // than merely marking an off-screen row active.
     rowRefs.current.get(selectedFile)?.scrollIntoView({ block: 'nearest' });
   }, [selectedFile, visibleNodes]);
-  useLayoutEffect(() => {
-    const tree = treeRef.current;
-    const overlay = stickyOverlayRef.current;
-    if (tree && overlay) overlay.style.transform = `translateY(${tree.scrollTop}px)`;
-  }, [stickyDirectoryPaths]);
   const selectEntry = (node: WorkspaceTreeNode, event: ReactMouseEvent<HTMLButtonElement>) => {
     const toggling = event.metaKey || event.ctrlKey;
     const anchorIndex = selectionAnchor.current ? visibleNodes.findIndex(item => item.node.path === selectionAnchor.current) : -1;
@@ -1954,13 +1887,12 @@ function WorkspaceFileTree({ entries, root, selectedFile, selectedPaths, expande
     if (node.kind === 'file') onSelect(node.path);
     else onActivateDirectory(node.path);
   };
-  const renderNodes = () => visibleNodes.flatMap(({ node, depth }, index) => {
+  const renderNodes = (items: WorkspaceTreeNode[] = nodes, depth = 0): ReactNode => items.map(node => {
     const open = expanded.has(node.path);
-    const nextDepth = visibleNodes[index + 1]?.depth;
     const hasMore = node.kind === 'directory' && open && Boolean(pagination.get(node.path));
     const loading = loadingDirectories.has(node.path);
-    const isSubtreeEnd = nextDepth === undefined || nextDepth <= depth;
-    return [<div key={node.path} ref={element => { if (element) rowRefs.current.set(node.path, element); else rowRefs.current.delete(node.path); }} className={`agent-file-tree-row${selectedPaths.has(node.path) ? ' selected' : ''}`} role="treeitem" aria-expanded={node.kind === 'directory' ? open : undefined} aria-level={depth + 1} aria-selected={selectedPaths.has(node.path)} style={{ '--tree-depth': depth } as CSSProperties}>
+    return <div key={node.path} className={`agent-file-tree-node${node.kind === 'directory' && open ? ' open-directory' : ''}`}>
+      <div ref={element => { if (element) rowRefs.current.set(node.path, element); else rowRefs.current.delete(node.path); }} className={`agent-file-tree-row${selectedPaths.has(node.path) ? ' selected' : ''}`} role="treeitem" aria-expanded={node.kind === 'directory' ? open : undefined} aria-level={depth + 1} aria-selected={selectedPaths.has(node.path)} style={{ '--tree-depth': depth } as CSSProperties}>
       {node.kind === 'directory' ? <button type="button" className="agent-file-tree-disclosure" aria-label={`${open ? '收起' : '展开'}目录 ${node.name}`} onClick={() => onExpandedChange(current => { const next = new Set(current); if (next.has(node.path)) next.delete(node.path); else next.add(node.path); return next; })}>{open ? <ChevronDown size={13}/> : <ChevronRight size={13}/>}</button> : <span className="agent-tree-spacer" aria-hidden="true"/>}
       <button type="button" draggable={node.kind === 'file'} className={`agent-file-tree-item ${node.kind}${selectedFile === node.path ? ' active' : ''}`} onDragStart={event => {
         if (node.kind !== 'file') return;
@@ -1971,17 +1903,11 @@ function WorkspaceFileTree({ entries, root, selectedFile, selectedPaths, expande
         <span>{node.name}</span>
         {node.kind === 'file' && <em>{node.size ? `${Math.ceil(node.size / 1024)} KB` : '0 KB'}</em>}
       </button>
-    </div>, hasMore && isSubtreeEnd ? <button key={`${node.path}:more`} type="button" className="agent-file-tree-load-more" style={{ '--tree-depth': depth + 1 } as CSSProperties} disabled={loading} onClick={() => onLoadMore(node.path)}>{loading ? '正在加载…' : '加载更多'}</button> : null];
+      </div>
+      {node.kind === 'directory' && open && <div role="group">{renderNodes(node.children, depth + 1)}{hasMore && <button type="button" className="agent-file-tree-load-more" style={{ '--tree-depth': depth + 1 } as CSSProperties} disabled={loading} onClick={() => onLoadMore(node.path)}>{loading ? '正在加载…' : '加载更多'}</button>}</div>}
+    </div>;
   });
-  return <div ref={treeRef} className={`agent-file-tree${stickyDirectoryPaths.length ? ' has-sticky-path' : ''}`} role="tree" aria-label="工作区目录树" onScroll={updateStickyDirectories}>
-    {stickyDirectoryPaths.length > 0 && <div ref={stickyOverlayRef} className="agent-file-tree-sticky-path" aria-label="当前文件所在目录">{stickyDirectoryPaths.map((path, depth) => {
-      const directory = directoriesByPath.get(path);
-      const open = expanded.has(path);
-      return directory && <div key={path} className="agent-file-tree-row sticky-directory" role="presentation" style={{ '--tree-depth': depth } as CSSProperties}>
-        <button type="button" className="agent-file-tree-disclosure" aria-label={`${open ? '收起' : '展开'}目录 ${directory.name}`} onClick={() => onExpandedChange(current => { const next = new Set(current); if (next.has(path)) next.delete(path); else next.add(path); return next; })}>{open ? <ChevronDown size={13}/> : <ChevronRight size={13}/>}</button>
-        <button type="button" className="agent-file-tree-item directory" title={`定位目录 ${directory.name}`} onClick={() => onActivateDirectory(path)}>{open ? <FolderOpen size={14}/> : <Folder size={14}/>}<span>{directory.name}</span></button>
-      </div>;
-    })}</div>}
+  return <div className="agent-file-tree" role="tree" aria-label="工作区目录树">
     {nodes.length ? renderNodes() : <p>当前目录没有可展示的文件。</p>}
     {pagination.get('') && <button type="button" className="agent-file-tree-load-more" disabled={loadingDirectories.has('')} onClick={() => onLoadMore()}>{loadingDirectories.has('') ? '正在加载…' : '加载更多'}</button>}
   </div>;
@@ -2407,8 +2333,6 @@ function WorkspaceDrawer({
   const [gitContextPath, setGitContextPath] = useState<string>();
   const [closedGitDiffEpoch, setClosedGitDiffEpoch] = useState(0);
   const [expandedFilePaths, setExpandedFilePaths] = useState<Set<string>>(new Set());
-  const [fileDirectoryPaths, setFileDirectoryPaths] = useState<string[]>([]);
-  const allFileDirectoriesExpanded = fileDirectoryPaths.length > 0 && fileDirectoryPaths.every(path => expandedFilePaths.has(path));
   const [entryMenu, setEntryMenu] = useState<{ path: string; kind: 'file' | 'directory'; x: number; y: number }>();
   useEscapeClose(() => setEntryMenu(undefined), Boolean(entryMenu));
   const scopeState = scopeStates[scopeKey] ?? { tabs: [] };
@@ -2606,6 +2530,18 @@ function WorkspaceDrawer({
     }
     return [...files.values()];
   }, [attachments, directoryPages]);
+  const fileDirectoryPaths = useMemo(() => {
+    if (!details) return [];
+    const paths: string[] = [];
+    const collect = (items: WorkspaceTreeNode[]) => items.forEach(node => {
+      if (node.kind !== 'directory') return;
+      paths.push(node.path);
+      collect(node.children);
+    });
+    collect(workspaceTree(visibleFiles, details.working_directory));
+    return paths;
+  }, [details, visibleFiles]);
+  const allFileDirectoriesExpanded = fileDirectoryPaths.length > 0 && fileDirectoryPaths.every(path => expandedFilePaths.has(path));
   const openFiles = useCallback((path?: string) => {
     updateScope(current => ({
       ...current,
@@ -2891,7 +2827,7 @@ function WorkspaceDrawer({
           {scopeState.tabs.some(tab => tab.kind === 'files') && <section className={`agent-workspace-files ${scopeState.activeTabId === 'files' ? 'active' : ''}${gitSidebarVisible ? ' fullscreen-git' : ''}`} style={{ '--file-tree-width': `${fileTreeWidth}px` } as CSSProperties}>
             <div className="agent-file-tree-pane">
               <header className="agent-file-tree-toolbar"><span>{selectedEntryPaths.size ? `已选 ${selectedEntryPaths.size} 项` : '文件'}</span><div className="agent-file-tree-actions"><button type="button" title="新建文件" aria-label="新建文件" onClick={() => createAtActiveDirectory('FILE')}><FileCode2 size={13}/></button><button type="button" title="新建目录" aria-label="新建目录" onClick={() => createAtActiveDirectory('DIRECTORY')}><FolderPlus size={13}/></button><button type="button" className={`agent-file-tree-expand-toggle${allFileDirectoriesExpanded ? ' expanded' : ''}`} title={allFileDirectoriesExpanded ? '全部收起' : '全部展开'} aria-label={allFileDirectoriesExpanded ? '全部收起目录' : '全部展开目录'} disabled={!fileDirectoryPaths.length} onClick={() => setExpandedFilePaths(allFileDirectoriesExpanded ? new Set() : new Set(fileDirectoryPaths))}>{allFileDirectoriesExpanded ? <ChevronRight size={13}/> : <ChevronDown size={13}/>}</button><button type="button" className="danger" title="删除选中项" aria-label="删除选中项" disabled={!selectedEntryRoots.length} onClick={() => void removeEntries(selectedEntryRoots.map(path => ({ path, kind: visibleFiles.find(item => item.path === path)?.kind ?? 'directory' })))}><Trash2 size={13}/></button></div></header>
-              <WorkspaceFileTree entries={visibleFiles} root={details.working_directory} selectedFile={selectedFile} selectedPaths={selectedEntryPaths} expanded={expandedFilePaths} pagination={new Map([...directoryPages].map(([path, page]) => [path, page.nextCursor]))} loadingDirectories={loadingDirectoryPaths} onExpandedChange={setExpandedFilePaths} onDirectoriesChange={setFileDirectoryPaths} onLoadMore={parentPath => { void loadDirectory(parentPath); }} onSelect={path => { setActiveDirectory(undefined); selectFile(path); }} onSelectionChange={setSelectedEntryPaths} onActivateDirectory={path => { setActiveDirectory(path); setGitContextPath(path); }} onContextMenu={(path, kind, event) => { setEntryMenu({ path, kind, x: Math.min(event.clientX, window.innerWidth - 190), y: Math.min(event.clientY, window.innerHeight - 190) }); }}/>
+              <WorkspaceFileTree entries={visibleFiles} root={details.working_directory} selectedFile={selectedFile} selectedPaths={selectedEntryPaths} expanded={expandedFilePaths} pagination={new Map([...directoryPages].map(([path, page]) => [path, page.nextCursor]))} loadingDirectories={loadingDirectoryPaths} onExpandedChange={setExpandedFilePaths} onLoadMore={parentPath => { void loadDirectory(parentPath); }} onSelect={path => { setActiveDirectory(undefined); selectFile(path); }} onSelectionChange={setSelectedEntryPaths} onActivateDirectory={path => { setActiveDirectory(path); setGitContextPath(path); }} onContextMenu={(path, kind, event) => { setEntryMenu({ path, kind, x: Math.min(event.clientX, window.innerWidth - 190), y: Math.min(event.clientY, window.innerHeight - 190) }); }}/>
             </div>
             <div className="agent-file-tree-resizer" role="separator" aria-label="调整文件目录宽度" aria-orientation="vertical" onPointerDown={startFileTreeResize}/>
             <div className="agent-file-preview">{candidatePreview ? <>
