@@ -158,6 +158,10 @@ const automaticNodePlansWrite = (nodePlans: FlowRunAutomaticRecordUpdate['node_p
       model_provider_id: plan.agent_preset.model_provider_id,
       model_name: plan.agent_preset.model_name,
       reasoning_effort: plan.agent_preset.reasoning_effort,
+      // This is an editable part of the launch preset. Keep it when projecting
+      // a frozen response back to the strict write shape; otherwise a later
+      // draft save silently replaces the configured quota fallbacks with [].
+      fallback_models: plan.agent_preset.fallback_models ?? [],
       node_context_enabled: plan.agent_preset.node_context_enabled,
       node_context_prompt: plan.agent_preset.node_context_prompt,
     },
