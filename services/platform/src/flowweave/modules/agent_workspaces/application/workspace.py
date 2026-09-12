@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import mimetypes
 import os
 import re
@@ -198,6 +200,147 @@ def _workspace_entries(
                 outcome=outcome,
                 items=len(entries),
             )
+
+
+def _decode_directory_cursor(cursor: str | None) -> tuple[str, str] | None:
+    if cursor is None:
+        return None
+    try:
+        decoded = base64.urlsafe_b64decode(cursor.encode("ascii") + b"===").decode("utf-8")
+        kind, name = decoded.split("\0", 1)
+    except (binascii.Error, UnicodeDecodeError, ValueError):
+        raise DomainError(
+            "AGENT_WORKSPACE_DIRECTORY_CURSOR_INVALID", "目录分页标识无效", 422
+        ) from None
+    if kind not in {"directory", "file"} or not name or "/" in name:
+        raise DomainError("AGENT_WORKSPACE_DIRECTORY_CURSOR_INVALID", "目录分页标识无效", 422)
+    return kind, name
+
+
+def _directory_cursor(kind: str, name: str) -> str:
+    return base64.urlsafe_b64encode(f"{kind}\0{name}".encode()).decode("ascii").rstrip("=")
+
+
+def _authorized_directory(
+    project_root: Path, runtime_root: str, file_roots: tuple[str, ...], parent_path: str
+) -> Path:
+    if not any(
+        parent_path == root or parent_path.startswith(root.rstrip("/") + "/") for root in file_roots
+    ):
+        raise DomainError("AGENT_WORKSPACE_PATH_INVALID", "目录不在当前工作区范围内", 422)
+    candidate = (
+        project_root
+        if parent_path == runtime_root
+        else _host_path(project_root, runtime_root, parent_path, require_file=False)
+    )
+    try:
+        resolved = candidate.resolve(strict=True)
+        metadata = candidate.lstat()
+        authorized_roots = tuple(
+            (
+                project_root
+                if root == runtime_root
+                else _host_path(project_root, runtime_root, root, require_file=False)
+            ).resolve(strict=True)
+            for root in file_roots
+        )
+    except OSError as exc:
+        raise DomainError("AGENT_WORKSPACE_FILE_NOT_FOUND", "目录不存在或不可读取", 404) from exc
+    if (
+        stat.S_ISLNK(metadata.st_mode)
+        or not stat.S_ISDIR(metadata.st_mode)
+        or not resolved.is_relative_to(project_root)
+        or not any(resolved.is_relative_to(root) for root in authorized_roots)
+    ):
+        raise DomainError("AGENT_WORKSPACE_PATH_INVALID", "目录不在当前工作区范围内", 422)
+    return resolved
+
+
+def list_directory(
+    db: Session,
+    workspace_id: str,
+    *,
+    parent_path: str | None = None,
+    cursor: str | None = None,
+    limit: int = 100,
+    work_directory_id: str | None = None,
+    binding_id: str | None = None,
+) -> dict[str, Any]:
+    """List one authorized directory without recursively indexing the project tree."""
+
+    _workspace(db, workspace_id)
+    working_directory, directory = _working_directory(
+        db, workspace_id, work_directory_id, binding_id
+    )
+    file_roots = _file_scope_roots(db, workspace_id, work_directory_id, binding_id, directory)
+    project_root = _project_root(db, workspace_id)
+    runtime_root = _runtime_root(workspace_id)
+    selected_parent = parent_path or working_directory
+    host_parent = _authorized_directory(project_root, runtime_root, file_roots, selected_parent)
+    after = _decode_directory_cursor(cursor)
+    started_at = time.monotonic()
+    outcome = "error"
+    entries: list[tuple[str, str, Path, os.stat_result]] = []
+    try:
+        try:
+            children = tuple(host_parent.iterdir())
+        except OSError as exc:
+            raise DomainError(
+                "AGENT_WORKSPACE_STORAGE_UNAVAILABLE", "工作区目录当前不可用", 503
+            ) from exc
+        for child in children:
+            if child.name.startswith("."):
+                continue
+            try:
+                metadata = child.lstat()
+            except OSError:
+                continue
+            if stat.S_ISLNK(metadata.st_mode):
+                continue
+            if stat.S_ISDIR(metadata.st_mode):
+                kind = "directory"
+            elif stat.S_ISREG(metadata.st_mode):
+                kind = "file"
+            else:
+                continue
+            entries.append((kind, child.name, child, metadata))
+        entries.sort(key=lambda item: (item[0] != "directory", item[1]))
+        outcome = "ok"
+    finally:
+        if metrics := current_metrics():
+            metrics.observe_operation(
+                "agent_workspace.directory_listing",
+                time.monotonic() - started_at,
+                outcome=outcome,
+                items=len(entries),
+            )
+    if after is not None:
+        try:
+            start = next(
+                index + 1
+                for index, (kind, name, _, _) in enumerate(entries)
+                if (kind, name) == after
+            )
+        except StopIteration as exc:
+            raise DomainError(
+                "AGENT_WORKSPACE_DIRECTORY_CURSOR_INVALID", "目录内容已变化，请重新读取", 409
+            ) from exc
+        entries = entries[start:]
+    page = entries[:limit]
+    return {
+        "parent_path": selected_parent,
+        "entries": [
+            {
+                "path": f"{selected_parent.rstrip('/')}/{name}",
+                "kind": kind,
+                "size": metadata.st_size if kind == "file" else 0,
+            }
+            for kind, name, _, metadata in page
+        ],
+        "next_cursor": (
+            _directory_cursor(page[-1][0], page[-1][1]) if len(entries) > len(page) else None
+        ),
+    }
 
 
 def _git_value(repository: Path, *arguments: str) -> str | None:
@@ -871,12 +1014,6 @@ def details(
     file_roots = _file_scope_roots(db, workspace_id, work_directory_id, binding_id, directory)
     project_root = _project_root(db, workspace_id)
     runtime_root = _runtime_root(workspace_id)
-    repositories = [
-        _repository_details(host_repository, runtime_path)
-        for host_repository, runtime_path in _scope_repositories(
-            project_root, runtime_root, file_roots
-        )
-    ]
     try:
         session_service = agent_sessions.conversations
         _, _, container_id = session_service.terminal_container_details(db, workspace_id)
@@ -888,6 +1025,9 @@ def details(
         "scope": scope,
         "working_directory": working_directory,
         "work_directory": directory,
+        # Compatibility projection. PERF-03 switches browsers to the
+        # directory endpoint before this legacy full-tree response is removed
+        # from the first-read path.
         "files": list(
             {
                 entry["path"]: entry
@@ -899,7 +1039,12 @@ def details(
                 )
             }.values()
         ),
-        "repositories": repositories,
+        "repositories": [
+            _repository_details(host_repository, runtime_path)
+            for host_repository, runtime_path in _scope_repositories(
+                project_root, runtime_root, file_roots
+            )
+        ],
         "runtime": {"container_id": container_short_id},
         "ide": {
             "workspace_path": working_directory,

@@ -6,10 +6,13 @@ owned by one node Attempt and never appear through another node entry.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import mimetypes
 import os
 import shutil
 import stat
+import time
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -26,6 +29,7 @@ from flowweave.modules.agent_workspaces import public as agent_workspace_host
 from flowweave.modules.sandboxes import public as sandboxes
 from flowweave.shared.errors import DomainError
 from flowweave.shared.models import NodeAttempt
+from flowweave.shared.observability import current_metrics
 
 _RUNTIME_PROJECT = PurePosixPath("/runtime/workspace/project")
 _MAX_INDEX_ENTRIES = 20_000
@@ -274,6 +278,147 @@ def _entries(
                 if len(items) >= _MAX_INDEX_ENTRIES:
                     return items
     return items
+
+
+def _decode_directory_cursor(cursor: str | None) -> tuple[str, str] | None:
+    if cursor is None:
+        return None
+    try:
+        decoded = base64.urlsafe_b64decode(cursor.encode("ascii") + b"===").decode("utf-8")
+        kind, name = decoded.split("\0", 1)
+    except (binascii.Error, UnicodeDecodeError, ValueError):
+        raise DomainError(
+            "FLOW_RUN_WORKSPACE_DIRECTORY_CURSOR_INVALID", "目录分页标识无效", 422
+        ) from None
+    if kind not in {"directory", "file"} or not name or "/" in name:
+        raise DomainError("FLOW_RUN_WORKSPACE_DIRECTORY_CURSOR_INVALID", "目录分页标识无效", 422)
+    return kind, name
+
+
+def _directory_cursor(kind: str, name: str) -> str:
+    return base64.urlsafe_b64encode(f"{kind}\0{name}".encode()).decode("ascii").rstrip("=")
+
+
+def _authorized_directory(
+    project_root: Path, runtime_root: PurePosixPath, roots: tuple[str, ...], parent_path: str
+) -> Path:
+    parsed = PurePosixPath(parent_path)
+    if (
+        not parsed.is_absolute()
+        or not parsed.is_relative_to(runtime_root)
+        or parsed.as_posix() != parent_path
+        or any(part in {"", ".", ".."} or part.startswith(".") for part in parsed.parts)
+        or not any(
+            parent_path == root or parent_path.startswith(root.rstrip("/") + "/") for root in roots
+        )
+    ):
+        raise DomainError("FLOW_RUN_WORKSPACE_PATH_INVALID", "目录不在当前工作区范围内", 422)
+    candidate = project_root.joinpath(*parsed.relative_to(runtime_root).parts)
+    try:
+        metadata = candidate.lstat()
+        resolved = candidate.resolve(strict=True)
+        authorized_roots = _resolved_scope_roots(project_root, runtime_root, roots)
+    except OSError as exc:
+        raise DomainError("FLOW_RUN_WORKSPACE_FILE_NOT_FOUND", "目录不存在或不可读取", 404) from exc
+    if (
+        stat.S_ISLNK(metadata.st_mode)
+        or not stat.S_ISDIR(metadata.st_mode)
+        or not resolved.is_relative_to(project_root)
+        or not any(resolved.is_relative_to(root) for root in authorized_roots)
+    ):
+        raise DomainError("FLOW_RUN_WORKSPACE_PATH_INVALID", "目录不在当前工作区范围内", 422)
+    return resolved
+
+
+def list_directory(
+    db: Session,
+    *,
+    flow_run_id: str,
+    attempt_id: str,
+    binding_id: str | None = None,
+    work_directory_id: str | None = None,
+    parent_path: str | None = None,
+    cursor: str | None = None,
+    limit: int = 100,
+) -> dict[str, Any]:
+    """Read only one scope-authorized FlowRun directory page."""
+
+    project_root, runtime_root, _, _ = _authorize_entry(
+        db, flow_run_id=flow_run_id, attempt_id=attempt_id
+    )
+    working_directory, _, roots = _scope(
+        db,
+        flow_run_id=flow_run_id,
+        attempt_id=attempt_id,
+        binding_id=binding_id,
+        work_directory_id=work_directory_id,
+        runtime_root=runtime_root,
+    )
+    _validate_scope_roots(project_root, runtime_root, roots)
+    selected_parent = parent_path or working_directory
+    parent = _authorized_directory(project_root, runtime_root, roots, selected_parent)
+    after = _decode_directory_cursor(cursor)
+    started_at = time.monotonic()
+    outcome = "error"
+    entries: list[tuple[str, str, os.stat_result]] = []
+    try:
+        try:
+            children = tuple(parent.iterdir())
+        except OSError as exc:
+            raise DomainError(
+                "FLOW_RUN_WORKSPACE_UNAVAILABLE", "FlowRun 工作区当前不可用", 503
+            ) from exc
+        for child in children:
+            if child.name.startswith("."):
+                continue
+            try:
+                metadata = child.lstat()
+            except OSError:
+                continue
+            if stat.S_ISLNK(metadata.st_mode):
+                continue
+            if stat.S_ISDIR(metadata.st_mode):
+                kind = "directory"
+            elif stat.S_ISREG(metadata.st_mode):
+                kind = "file"
+            else:
+                continue
+            entries.append((kind, child.name, metadata))
+        entries.sort(key=lambda item: (item[0] != "directory", item[1]))
+        outcome = "ok"
+    finally:
+        if metrics := current_metrics():
+            metrics.observe_operation(
+                "flow_node_workspace.directory_listing",
+                time.monotonic() - started_at,
+                outcome=outcome,
+                items=len(entries),
+            )
+    if after is not None:
+        try:
+            start = next(
+                index + 1 for index, (kind, name, _) in enumerate(entries) if (kind, name) == after
+            )
+        except StopIteration as exc:
+            raise DomainError(
+                "FLOW_RUN_WORKSPACE_DIRECTORY_CURSOR_INVALID", "目录内容已变化，请重新读取", 409
+            ) from exc
+        entries = entries[start:]
+    page = entries[:limit]
+    return {
+        "parent_path": selected_parent,
+        "entries": [
+            {
+                "path": f"{selected_parent.rstrip('/')}/{name}",
+                "kind": kind,
+                "size": metadata.st_size if kind == "file" else 0,
+            }
+            for kind, name, metadata in page
+        ],
+        "next_cursor": (
+            _directory_cursor(page[-1][0], page[-1][1]) if len(entries) > len(page) else None
+        ),
+    }
 
 
 def _host_file(

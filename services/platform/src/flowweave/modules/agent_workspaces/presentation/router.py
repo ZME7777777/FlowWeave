@@ -331,6 +331,30 @@ async def get_agent_workspace_details(
     )
 
 
+@router.get("/agent-workspaces/{workspace_id}/workspace/directory")
+async def list_agent_workspace_directory(
+    workspace_id: str,
+    db: Db,
+    parent_path: str | None = Query(default=None, max_length=500),
+    cursor: str | None = Query(default=None, max_length=500),
+    limit: int = Query(default=100, ge=1, le=250),
+    work_directory_id: str | None = Query(default=None),
+    binding_id: str | None = Query(default=None),
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: workspace.list_directory(
+            session,
+            workspace_id,
+            parent_path=parent_path,
+            cursor=cursor,
+            limit=limit,
+            work_directory_id=work_directory_id,
+            binding_id=binding_id,
+        ),
+    )
+
+
 @router.get("/agent-workspaces/{workspace_id}/workspace/file")
 async def download_agent_workspace_file(
     workspace_id: str,

@@ -426,6 +426,32 @@ async def node_session_workspace(
     )
 
 
+@router.get(f"{_BASE}/workspace/directory")
+async def node_session_workspace_directory(
+    flow_run_id: str,
+    attempt_id: str,
+    db: Db,
+    parent_path: str | None = Query(default=None, max_length=500),
+    cursor: str | None = Query(default=None, max_length=500),
+    limit: int = Query(default=100, ge=1, le=250),
+    binding_id: str | None = Query(default=None),
+    work_directory_id: str | None = Query(default=None),
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: agent_sessions.flow_node_workspace.list_directory(
+            session,
+            flow_run_id=flow_run_id,
+            attempt_id=attempt_id,
+            binding_id=binding_id,
+            work_directory_id=work_directory_id,
+            parent_path=parent_path,
+            cursor=cursor,
+            limit=limit,
+        ),
+    )
+
+
 @router.get(f"{_BASE}/workspace/file")
 async def node_session_workspace_file(
     flow_run_id: str,
