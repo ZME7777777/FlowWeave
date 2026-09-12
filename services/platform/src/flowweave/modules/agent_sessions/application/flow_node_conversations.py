@@ -28,6 +28,7 @@ from flowweave.modules.agent_sessions.application.conversations import (
     normalized_first_sentence,
     project_conversation_references,
     record_message_attachments,
+    resolve_conversation_references,
     validate_attachment_owners,
     validated_workspace_references,
 )
@@ -1371,6 +1372,12 @@ def bootstrap_node_conversation(
     """Lazily create a node Conversation and durably reconcile its first event."""
 
     text = content.strip()
+    if references:
+        raise DomainError(
+            "AGENT_CONVERSATION_REFERENCE_UNAVAILABLE",
+            "新会话首条消息不能引用尚未存在的会话内容",
+            422,
+        )
     if (
         not text
         and not attachments
@@ -1396,7 +1403,7 @@ def bootstrap_node_conversation(
         validated_workspace_references(workspace_references),
         work_directory_id=work_directory_id,
     )
-    prompt, image_urls = message_payload(text, attachments, references, workspace_references)
+    prompt, image_urls = message_payload(text, attachments, (), workspace_references)
     if legacy_image_urls:
         image_urls = legacy_image_urls
     agent_sessions.resolve_flow_node_session_host(
@@ -2041,7 +2048,6 @@ def send_node_message(
         validated_workspace_references(workspace_references),
         binding_id=binding.id,
     )
-    prompt, image_urls = message_payload(content, attachments, references, workspace_references)
     handle = _node_handle(
         db,
         flow_run_id=flow_run_id,
@@ -2049,6 +2055,8 @@ def send_node_message(
         binding_id=binding_id,
     )
     runtime = get_runtime()
+    references = resolve_conversation_references(runtime, handle, references)
+    prompt, image_urls = message_payload(content, attachments, references, workspace_references)
     readiness = runtime.input_readiness(handle)
     queued_during_turn = not readiness.ready
     if queued_during_turn:

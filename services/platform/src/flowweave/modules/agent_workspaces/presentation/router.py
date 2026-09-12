@@ -92,7 +92,6 @@ class AgentAttachmentReference(_Write):
 
 class AgentConversationReference(_Write):
     event_id: str = Field(min_length=1, max_length=200)
-    content: str = Field(min_length=1, max_length=10_000)
 
 
 class AgentWorkspaceReference(_Write):
