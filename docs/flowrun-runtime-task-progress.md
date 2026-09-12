@@ -106,6 +106,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-342 | 根工作区 Git 历史展示修复 | DONE | 不再将与工作目录根重合的真实仓库误判为容器路径并过滤，保留最深仓库匹配。 |
 | FR-343 | 历史 FlowRun Memory 隔离目录兼容回填 | DONE | 仅在完整验证既有 allocation 的所有权、锁、路径和权限后，补齐 FR-316 新增的空只读 Memory 挂载目录。 |
 | FR-344 | 终态节点会话的只读 Runtime 恢复 | DONE | 终态 FlowRun 停止计算后，已有节点 Conversation 的只读查看会按冻结规格恢复同一持久 Runtime，同时保留写入拒绝。 |
+| FR-345 | 历史冻结 Environment Runtime 契约兼容 | DONE | 只读恢复已绑定历史 Conversation 时，严格接受经审计的 OpenHands 1.44 冻结 manifest；新发布、执行和写入路径继续只接受当前 1.47 契约。 |
 | OPS-01 | Docker rollback image / BuildKit cache 容量增长 | DONE | 建立带运行引用保护、dry-run 和显式确认的回收工具，并完成生产候选边界核验。 |
 | OPS-02 | Docker rollback image / BuildKit cache 容量增长 | DONE | 已按授权使用 OPS-03 tag 级路径回收，并完成生产不变量与入口验证。 |
 | OPS-03 | 多 rollback tag image 的安全回收 | DONE | 改为逐 tag、重查 Container 引用、不使用 `--force` 的回收路径。 |
@@ -275,6 +276,19 @@ Playwright Agent 工作台用例在 WebSocket 流恢复阶段超时，未将其�
 完成：节点 host 解析在 `require_start_permission=false` 且已有 Conversation 时，包含终态 Attempt 在内都会重启同一 Attempt Runtime；恢复会先将同一受管 Sandbox 的 `STOPPED` 意图切回 `RUNNING/PENDING`，随后复用既有 generation fence 激活 Runtime。权限构造仍只授予读取和终端访问。新增回归覆盖取消 Attempt 的已有会话恢复与写权限拒绝，以及停止的 immutable Runtime 恢复后重回 `RUNNING/ACTIVE`。全局 `auth-loading` 改为浅灰／白色过渡表面和低对比绿色标识。
 
 验收：Web TypeScript typecheck、ESLint、production build 通过；受影响 Python Ruff format/check 与 `py_compile` 通过。两条定向 pytest 依赖 Testcontainers PostgreSQL，本机 Docker socket 不可用而在 fixture setup 阶段阻断，未记为通过；生产以目标终态节点会话 host 接口及原 Conversation 读取路径验收。
+
+### FR-345 历史冻结 Environment Runtime 契约兼容 — DONE
+
+依赖：`FR-344`。
+
+目标：
+
+- 已发布且完整审计的历史 Environment Version 继续按其原有 image digest、OpenHands source 和包版本恢复已绑定的只读 Conversation；不得把它重建、升级或改写成当前 Runtime。
+- 新 Environment 发布、FlowRun 创建、首次 Runtime 供应、Conversation 创建及所有写入路径仍只接受当前 OpenHands `1.47.0` 固定契约。
+
+完成：Runtime manifest 校验把当前 1.47 契约与唯一允许的历史 1.44 事实分开。后者要求四个包均为 `1.44.0`、`9a24f6c8866f353042a57df0514ccc900e3a0691`、对应 source archive digest、精确审计 overlay、正式 builder/image digest、成功 contract/tool probe 以及完整 build spec；任一字段漂移继续拒绝。只有 Attempt 已有 Conversation 且通过只读恢复分支时才显式开启该窄口，完成/取消后的创建、消息、控制和其他新运行时路径不改变。
+
+验收：新增纯 manifest 回归覆盖默认拒绝历史 1.44、显式只读恢复接受、混合包版本继续拒绝；取消 Attempt 会话恢复回归断言唯一调用点传入该显式开关。
 
 ### OPS-01 Docker rollback image / BuildKit cache 容量治理 — DONE
 

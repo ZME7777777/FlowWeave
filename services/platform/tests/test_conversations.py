@@ -256,9 +256,7 @@ def test_hydration_reuses_active_batch_context_and_readiness(
 
     monkeypatch.setattr(session_conversations, "_workspace", lambda _db, _id: workspace)
     monkeypatch.setattr(session_conversations, "_binding", lambda _db, _workspace_id, _id: binding)
-    monkeypatch.setattr(
-        session_conversations, "_handle", lambda _db, _workspace, _binding: handle
-    )
+    monkeypatch.setattr(session_conversations, "_handle", lambda _db, _workspace, _binding: handle)
     monkeypatch.setattr(session_conversations, "get_runtime", lambda: Runtime())
     monkeypatch.setattr(
         session_conversations,
@@ -286,9 +284,7 @@ def test_node_hydration_reuses_active_batch_context_and_readiness(
 
     class Runtime:
         def read_active_events(self, _handle: object) -> RuntimeEventBatch:
-            return RuntimeEventBatch(
-                cursor="event", context=context, readiness=readiness
-            )
+            return RuntimeEventBatch(cursor="event", context=context, readiness=readiness)
 
         def conversation_context(self, _handle: object):
             raise AssertionError("node hydration must reuse active-batch context")
@@ -338,9 +334,7 @@ def test_conversation_head_reads_only_the_formal_native_leaf(
     handle = RuntimeHandle(job_id="job", conversation_id="conversation")
     monkeypatch.setattr(session_conversations, "_workspace", lambda _db, _id: workspace)
     monkeypatch.setattr(session_conversations, "_binding", lambda _db, _workspace_id, _id: binding)
-    monkeypatch.setattr(
-        session_conversations, "_handle", lambda _db, _workspace, _binding: handle
-    )
+    monkeypatch.setattr(session_conversations, "_handle", lambda _db, _workspace, _binding: handle)
     monkeypatch.setattr(session_conversations, "get_runtime", lambda: runtime)
 
     assert session_conversations.conversation_head(None, "workspace", "binding") == {
@@ -360,9 +354,7 @@ def test_node_conversation_head_reads_only_the_formal_native_leaf(
             return RuntimeEventBatch(cursor="node-formal-head")
 
     handle = RuntimeHandle(job_id="job", conversation_id="conversation")
-    monkeypatch.setattr(
-        flow_node_conversations, "_node_handle", lambda _db, **_kwargs: handle
-    )
+    monkeypatch.setattr(flow_node_conversations, "_node_handle", lambda _db, **_kwargs: handle)
     monkeypatch.setattr(flow_node_conversations, "get_runtime", lambda: Runtime())
 
     assert flow_node_conversations.node_conversation_head(
@@ -803,6 +795,14 @@ def test_cancelled_node_session_restarts_only_for_read_only_history(
             "active_node_runtime_connection",
             lambda _db, **_kwargs: _connection(runtime_session_id, flow_run_id),
         )
+        manifest_options: list[bool] = []
+        monkeypatch.setattr(
+            flow_node_host,
+            "validate_runtime_manifest",
+            lambda _manifest, **kwargs: manifest_options.append(
+                bool(kwargs["allow_legacy_frozen_runtime"])
+            ),
+        )
         monkeypatch.setattr(flow_node_host, "runtime_node", lambda **_kwargs: {"asset": {}})
 
         host = flow_node_host.resolve_flow_node_session_host(
@@ -813,6 +813,7 @@ def test_cancelled_node_session_restarts_only_for_read_only_history(
         )
 
         assert ensured == [attempt_id]
+        assert manifest_options == [True]
         assert host.session.permits(READ_SESSIONS)
         assert not host.session.permits(CREATE_SESSIONS)
 

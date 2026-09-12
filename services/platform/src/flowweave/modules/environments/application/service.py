@@ -91,6 +91,13 @@ _CLEANUP_MAX_ATTEMPTS = 20
 _OPENHANDS_SOURCE_ARCHIVE_DIGEST = (
     "70128f691ba58f0a1a1f6987c24738bb144209c61ba1b44a349a5504a98ea6b5"
 )
+_LEGACY_OPENHANDS_SOURCE_COMMIT = "9a24f6c8866f353042a57df0514ccc900e3a0691"
+_LEGACY_OPENHANDS_SOURCE_ARCHIVE_DIGEST = (
+    "94e0bc26a670c552f8bed2dfba048d9a5c6d7bc66778e7844009db6785da6d21"
+)
+_LEGACY_OPENHANDS_PACKAGE_VERSIONS = {
+    package: "1.44.0" for package, _version in OPENHANDS_PACKAGE_VERSIONS
+}
 
 
 def runtime_manifest_compatibility(manifest: object) -> tuple[bool, str | None]:
@@ -125,8 +132,16 @@ def validate_runtime_manifest(
     *,
     environment_version_id: str | None = None,
     expected_runtime_capabilities: tuple[str, ...] | None = None,
+    allow_legacy_frozen_runtime: bool = False,
 ) -> None:
-    """Reject environment images that cannot satisfy the frozen Runtime contract."""
+    """Reject environment images that cannot satisfy the frozen Runtime contract.
+
+    The current contract is required for all new publishing and execution
+    paths.  A caller may opt into the exact reviewed 1.44 contract only when
+    reopening an already-bound historical Conversation read-only; this keeps
+    immutable Environment Versions usable without making them selectable for
+    new Runs, generations, or Conversation writes.
+    """
 
     document = cast(dict[str, object], manifest) if isinstance(manifest, dict) else {}
     provenance = document.get("runtime_provenance")
@@ -152,25 +167,37 @@ def validate_runtime_manifest(
     security_scan = (
         cast(dict[str, object], security_scan) if isinstance(security_scan, dict) else {}
     )
-    if (
-        actual_packages != expected_packages
-        or actual_commit != OPENHANDS_SOURCE_COMMIT
-        or actual_ref != OPENHANDS_SOURCE_COMMIT
-        or provenance.get("source_archive_digest") != _OPENHANDS_SOURCE_ARCHIVE_DIGEST
+    common_contract_valid = (
+        build.get("builder") == "openhands.agent_server.docker.build"
+        and build.get("target") in {"source-minimal", "source"}
+        and build.get("platform") in {"linux/amd64", "linux/arm64"}
+        and bool(build.get("user_base_image_reference"))
+        and bool(build.get("user_base_image_digest"))
+        and build.get("runtime_image_digest") == document.get("image_id")
+        and contract_check.get("status") == "PASSED"
+        and tool_probe.get("status") == "PASSED"
+        and bool(security_scan.get("status"))
+    )
+    current_provenance_valid = (
+        actual_packages == expected_packages
+        and actual_commit == OPENHANDS_SOURCE_COMMIT
+        and actual_ref == OPENHANDS_SOURCE_COMMIT
+        and provenance.get("source_archive_digest") == _OPENHANDS_SOURCE_ARCHIVE_DIGEST
         # Historical Runtime manifests predate the formal fork patch and have
         # no overlays. A newly published image may carry the current reviewed
         # patch or the exact reviewed predecessor; unknown overlays fail closed.
-        or actual_overlays
-        not in ({}, _APPROVED_OPENHANDS_OVERLAYS, _LEGACY_APPROVED_OPENHANDS_OVERLAYS)
-        or build.get("builder") != "openhands.agent_server.docker.build"
-        or build.get("target") not in {"source-minimal", "source"}
-        or build.get("platform") not in {"linux/amd64", "linux/arm64"}
-        or not build.get("user_base_image_reference")
-        or not build.get("user_base_image_digest")
-        or build.get("runtime_image_digest") != document.get("image_id")
-        or contract_check.get("status") != "PASSED"
-        or tool_probe.get("status") != "PASSED"
-        or not security_scan.get("status")
+        and actual_overlays
+        in ({}, _APPROVED_OPENHANDS_OVERLAYS, _LEGACY_APPROVED_OPENHANDS_OVERLAYS)
+    )
+    legacy_frozen_provenance_valid = (
+        actual_packages == _LEGACY_OPENHANDS_PACKAGE_VERSIONS
+        and actual_commit == _LEGACY_OPENHANDS_SOURCE_COMMIT
+        and actual_ref == _LEGACY_OPENHANDS_SOURCE_COMMIT
+        and provenance.get("source_archive_digest") == _LEGACY_OPENHANDS_SOURCE_ARCHIVE_DIGEST
+        and actual_overlays == _APPROVED_OPENHANDS_OVERLAYS
+    )
+    if not common_contract_valid or not (
+        current_provenance_valid or (allow_legacy_frozen_runtime and legacy_frozen_provenance_valid)
     ):
         raise DomainError(
             "ENVIRONMENT_RUNTIME_INCOMPATIBLE",

@@ -172,7 +172,11 @@ def resolve_flow_node_session_host(
                 "The frozen FlowRun Environment Version is unavailable",
                 409,
             )
-        validate_runtime_manifest(environment.manifest_json, environment_version_id=environment.id)
+        validate_runtime_manifest(
+            environment.manifest_json,
+            environment_version_id=environment.id,
+            allow_legacy_frozen_runtime=existing_session_needs_runtime,
+        )
         if workspace.attempt_owned:
             sandboxes.ensure_node_attempt_runtime(
                 db,

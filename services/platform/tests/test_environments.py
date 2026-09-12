@@ -146,6 +146,44 @@ def test_runtime_manifest_allows_only_the_reviewed_fork_overlay() -> None:
         environment_service.validate_runtime_manifest(manifest)
 
 
+def test_legacy_runtime_manifest_is_limited_to_explicit_history_recovery() -> None:
+    manifest = _runtime_manifest()
+    provenance = manifest["runtime_provenance"]
+    assert isinstance(provenance, dict)
+    provenance.update(
+        {
+            "package_versions": {
+                "openhands-agent-server": "1.44.0",
+                "openhands-sdk": "1.44.0",
+                "openhands-tools": "1.44.0",
+                "openhands-workspace": "1.44.0",
+            },
+            "source_commit": "9a24f6c8866f353042a57df0514ccc900e3a0691",
+            "source_ref": "9a24f6c8866f353042a57df0514ccc900e3a0691",
+            "source_archive_digest": (
+                "94e0bc26a670c552f8bed2dfba048d9a5c6d7bc66778e7844009db6785da6d21"
+            ),
+            "overlays": {
+                "patch_fork_condenser.py": (
+                    "19715a644888dc829299ebe555ef2cd682ca739dde97f9c046e626434d39f56a"
+                )
+            },
+        }
+    )
+
+    with pytest.raises(DomainError, match="does not satisfy"):
+        environment_service.validate_runtime_manifest(manifest)
+
+    environment_service.validate_runtime_manifest(manifest, allow_legacy_frozen_runtime=True)
+
+    provenance["package_versions"] = {
+        **provenance["package_versions"],
+        "openhands-sdk": "1.47.0",
+    }
+    with pytest.raises(DomainError, match="does not satisfy"):
+        environment_service.validate_runtime_manifest(manifest, allow_legacy_frozen_runtime=True)
+
+
 def _mock_setup_provider(monkeypatch):
     created: list[str] = []
     removed: list[str] = []
@@ -471,17 +509,19 @@ def test_publish_preserves_container_files_before_commit(monkeypatch):
     )
 
     assert calls == ["scan", "commit", "formal-build", "wrap", "probe"]
-    assert commit_commands == [[
-        "docker",
-        "commit",
-        "--pause=true",
-        "--change",
-        "ENTRYPOINT []",
-        "--change",
-        "USER 0:0",
-        "container-1",
-        "flowweave/environment-environment-1-base:v1-version1",
-    ]]
+    assert commit_commands == [
+        [
+            "docker",
+            "commit",
+            "--pause=true",
+            "--change",
+            "ENTRYPOINT []",
+            "--change",
+            "USER 0:0",
+            "container-1",
+            "flowweave/environment-environment-1-base:v1-version1",
+        ]
+    ]
     assert published.reference == "flowweave/environment-environment-1:v1-version1"
     assert published.manifest["filesystem_change_count"] == 2
     assert published.manifest["build"]["install_acp_providers"] == ""
