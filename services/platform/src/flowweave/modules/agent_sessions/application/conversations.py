@@ -20,7 +20,6 @@ from flowweave.modules.agent_sessions.application import usage as usage_projecti
 from flowweave.modules.agent_sessions.application.deletion import delete_binding_records
 from flowweave.modules.agent_sessions.application.event_branch import (
     complete_active_branch,
-    latest_user_message_across_active_branch_pages,
 )
 from flowweave.modules.agent_sessions.application.runtime_config import (
     build_agent_spec,
@@ -42,6 +41,7 @@ from flowweave.modules.tasks.public import enqueue
 from flowweave.modules.users.application.security import user_runtime_project_root
 from flowweave.runtime.base import (
     RuntimeCondenser,
+    RuntimeEvent,
     RuntimeEventBatch,
     RuntimeHandle,
     RuntimeMCPProbeRequest,
@@ -2434,7 +2434,7 @@ def _reference_ids(references: tuple[dict[str, str], ...]) -> tuple[str, ...]:
 def _resolve_conversation_references(
     runtime: RuntimePort, handle: RuntimeHandle, references: tuple[dict[str, str], ...]
 ) -> tuple[dict[str, str], ...]:
-    """Resolve browser-selected IDs from the authorized native HEAD branch.
+    """Resolve browser-selected IDs from their authorized native Conversation.
 
     Reference text is a UI convenience, not a browser-trusted transport field.
     Resolving it here also makes the visible reference card and model context
@@ -2444,38 +2444,9 @@ def _resolve_conversation_references(
     event_ids = _reference_ids(references)
     if not event_ids:
         return ()
-    events: dict[str, Any] = {}
-    leaf_event_id: str | None = None
-    history_cursor: str | None = None
-    visited_history_cursors: set[str] = set()
-    while len(events) < 10_000:
-        batch = runtime.read_active_events(replace(handle, history_cursor=history_cursor))
-        if leaf_event_id is None:
-            leaf_event_id = batch.cursor
-        elif batch.cursor != leaf_event_id:
-            raise DomainError(
-                "RUNTIME_EVENT_IDENTITY_MISMATCH",
-                "会话引用读取期间事件分支发生变化，请重试",
-                409,
-            )
-        for event in batch.events:
-            existing = events.get(event.cursor)
-            if existing is not None and existing != event:
-                raise DomainError(
-                    "RUNTIME_EVENT_IDENTITY_INVALID",
-                    "会话引用事件身份无效，请重试",
-                    409,
-                )
-            events[event.cursor] = event
-        if all(event_id in events for event_id in event_ids):
-            break
-        history_cursor = batch.history_cursor
-        if not history_cursor or history_cursor in visited_history_cursors:
-            break
-        visited_history_cursors.add(history_cursor)
     resolved: list[dict[str, str]] = []
     for event_id in event_ids:
-        event = events.get(event_id)
+        event = runtime.read_event(handle, event_id)
         content = event.payload.get("content") if event is not None else None
         if (
             event is None
@@ -2491,6 +2462,28 @@ def _resolve_conversation_references(
         visible, _references, _workspace_references = _project_conversation_references(content)
         resolved.append({"event_id": event_id, "content": visible.strip()})
     return _validated_conversation_references(tuple(resolved))
+
+
+def validated_user_message_event(
+    runtime: RuntimePort, handle: RuntimeHandle, event_id: str
+) -> RuntimeEvent:
+    """Get a rewrite target by its native ID, never from a page window.
+
+    The OpenHands event-by-id endpoint is scoped to ``handle.conversation_id``.
+    Its response is the sole authority for whether an old user message can be
+    rewritten; browser cache, current active-window size and event ordering are
+    intentionally irrelevant.
+    """
+
+    target = runtime.read_event(handle, event_id)
+    source = target.payload.get("source") if target is not None else None
+    if target is None or target.event_type != "MESSAGE" or source not in {"user", "human"}:
+        raise DomainError(
+            "AGENT_MESSAGE_REWRITE_UNAVAILABLE",
+            "目标不是当前 OpenHands 会话中的用户消息，无法重新思考",
+            409,
+        )
+    return target
 
 
 def _validated_workspace_references(
@@ -3240,13 +3233,7 @@ def rewrite_message(
     if not runtime.can_accept_input(handle):
         raise DomainError("AGENT_CONVERSATION_BUSY", "请先暂停当前回复", 409)
     legacy_policy = _uses_legacy_compaction_policy(runtime.conversation_context(handle))
-    target = latest_user_message_across_active_branch_pages(runtime.read_active_events, handle)
-    if target is None or target.cursor != event_id:
-        raise DomainError(
-            "AGENT_MESSAGE_REWRITE_UNAVAILABLE",
-            "只能编辑当前活动分支中最近发送的消息",
-            409,
-        )
+    target = validated_user_message_event(runtime, handle, event_id)
     parent_id = target.payload.get("parent_id")
     if parent_id is not None and not isinstance(parent_id, str):
         raise DomainError("RUNTIME_EVENT_IDENTITY_INVALID", "消息事件身份无效", 409)

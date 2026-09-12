@@ -3898,6 +3898,14 @@ def test_agent_workspace_rewrites_only_the_active_branch_last_user_message(
     class RewriteRuntime(MockRuntime):
         calls: list[tuple[str, str | None]] = []
 
+        def read_event(self, _handle, event_id):
+            assert event_id == "user-event"
+            return RuntimeEvent(
+                cursor=event_id,
+                event_type="MESSAGE",
+                payload={"source": "user", "content": "before", "parent_id": "root-event"},
+            )
+
         def read_events(self, handle):
             del handle
             return RuntimeEventBatch(
@@ -3947,6 +3955,14 @@ def test_agent_workspace_rewrite_uses_the_formal_head_not_event_window_order(
 ):
     class RewriteRuntime(MockRuntime):
         calls: list[tuple[str, str | None]] = []
+
+        def read_event(self, _handle, event_id):
+            assert event_id == "latest-user"
+            return RuntimeEvent(
+                cursor=event_id,
+                event_type="MESSAGE",
+                payload={"source": "user", "content": "latest", "parent_id": "earlier-answer"},
+            )
 
         def read_events(self, handle):
             del handle
@@ -4017,38 +4033,22 @@ def test_agent_workspace_rewrite_uses_the_formal_head_not_event_window_order(
     assert runtime.calls == [("navigate", "earlier-answer"), ("send", "after")]
 
 
-def test_agent_workspace_rewrite_follows_active_branch_history_pages(
+def test_agent_workspace_rewrite_reads_old_user_event_by_native_id(
     settings, db_session_factory, monkeypatch
 ):
     class RewriteRuntime(MockRuntime):
         calls: list[tuple[str, str | None]] = []
 
         def read_active_events(self, handle):
-            if handle.history_cursor == "latest-user":
-                return RuntimeEventBatch(
-                    events=(
-                        RuntimeEvent(
-                            cursor="latest-user",
-                            event_type="MESSAGE",
-                            payload={
-                                "source": "user",
-                                "content": "latest",
-                                "parent_id": "root-event",
-                            },
-                        ),
-                    ),
-                    cursor="latest-tool",
-                )
-            return RuntimeEventBatch(
-                events=(
-                    RuntimeEvent(
-                        cursor="latest-tool",
-                        event_type="TOOL_CALL",
-                        payload={"parent_id": "latest-user"},
-                    ),
-                ),
-                cursor="latest-tool",
-                history_cursor="latest-user",
+            del handle
+            raise AssertionError("rewrite must not depend on a history-page window")
+
+        def read_event(self, _handle, event_id):
+            assert event_id == "latest-user"
+            return RuntimeEvent(
+                cursor=event_id,
+                event_type="MESSAGE",
+                payload={"source": "user", "content": "latest", "parent_id": "root-event"},
             )
 
         def navigate(self, handle, event_id):

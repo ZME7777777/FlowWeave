@@ -118,18 +118,14 @@ def test_attachment_only_message_bypasses_context_envelope() -> None:
     assert prompt == f"请阅读附件\n\n已上传到共享工作区的附件：\n- {attachment_path}"
 
 
-def test_conversation_references_are_resolved_from_active_native_events() -> None:
+def test_conversation_references_are_resolved_by_formal_native_event_id() -> None:
     class Runtime:
-        def read_active_events(self, _handle: object) -> RuntimeEventBatch:
-            return RuntimeEventBatch(
-                events=(
-                    RuntimeEvent(
-                        cursor="native-event",
-                        event_type="MESSAGE",
-                        payload={"content": "服务端已验证的引用内容"},
-                    ),
-                ),
+        def read_event(self, _handle: object, event_id: str) -> RuntimeEvent | None:
+            assert event_id == "native-event"
+            return RuntimeEvent(
                 cursor="native-event",
+                event_type="MESSAGE",
+                payload={"content": "服务端已验证的引用内容"},
             )
 
     resolved = session_conversations.resolve_conversation_references(
@@ -139,6 +135,53 @@ def test_conversation_references_are_resolved_from_active_native_events() -> Non
     )
 
     assert resolved == ({"event_id": "native-event", "content": "服务端已验证的引用内容"},)
+
+
+def test_rewrite_target_is_read_by_id_without_history_page_scan() -> None:
+    class Runtime:
+        def read_active_events(self, _handle: object) -> RuntimeEventBatch:
+            raise AssertionError("a rewrite target must not scan the active history window")
+
+        def read_event(self, _handle: object, event_id: str) -> RuntimeEvent | None:
+            assert event_id == "old-user-event"
+            return RuntimeEvent(
+                cursor=event_id,
+                event_type="MESSAGE",
+                payload={"source": "user", "parent_id": "old-parent"},
+            )
+
+    target = session_conversations.validated_user_message_event(
+        Runtime(),  # type: ignore[arg-type]
+        RuntimeHandle(job_id="test", conversation_id="conversation"),
+        "old-user-event",
+    )
+
+    assert target.cursor == "old-user-event"
+    assert target.payload["parent_id"] == "old-parent"
+
+
+def test_rewrite_target_rejects_missing_or_non_user_native_event() -> None:
+    class Runtime:
+        def __init__(self, event: RuntimeEvent | None) -> None:
+            self.event = event
+
+        def read_event(self, _handle: object, _event_id: str) -> RuntimeEvent | None:
+            return self.event
+
+    handle = RuntimeHandle(job_id="test", conversation_id="conversation")
+    events = (
+        None,
+        RuntimeEvent("tool", "TOOL_CALL", {}),
+        RuntimeEvent("agent", "MESSAGE", {"source": "agent"}),
+    )
+    for event in events:
+        with pytest.raises(DomainError) as caught:
+            session_conversations.validated_user_message_event(
+                Runtime(event),  # type: ignore[arg-type]
+                handle,
+                "requested",
+            )
+        assert caught.value.code == "AGENT_MESSAGE_REWRITE_UNAVAILABLE"
 
 
 def test_complete_active_branch_hydrates_every_formal_history_page() -> None:

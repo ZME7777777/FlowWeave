@@ -925,6 +925,73 @@ def test_openhands_accepts_non_strict_control_characters_from_managed_event_hist
     ) == {"items": [{"id": "event-1", "content": "first\nsecond"}], "next_page_id": None}
 
 
+def test_openhands_reads_one_formal_event_by_id_without_history_search(
+    openhands_settings, monkeypatch
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    calls: list[tuple[str, str]] = []
+
+    def request(method, path, **_kwargs):
+        calls.append((method, path))
+        return {
+            "kind": "MessageEvent",
+            "id": "old-user-event",
+            "parent_id": "old-parent",
+            "source": "user",
+            "llm_message": {"role": "user", "content": "old request"},
+        }
+
+    monkeypatch.setattr(runtime, "_request", request)
+
+    event = runtime.read_event(_handle(), "old-user-event")
+
+    assert event is not None
+    assert event.cursor == "old-user-event"
+    assert event.event_type == "MESSAGE"
+    assert event.payload["source"] == "user"
+    assert event.payload["parent_id"] == "old-parent"
+    assert calls == [
+        (
+            "GET",
+            "/api/conversations/10000000-0000-4000-8000-000000000002/events/old-user-event",
+        )
+    ]
+
+
+def test_openhands_rejects_event_by_id_identity_drift(openhands_settings, monkeypatch):
+    runtime = OpenHandsRuntime(openhands_settings)
+    monkeypatch.setattr(
+        runtime,
+        "_request",
+        lambda *_args, **_kwargs: {
+            "kind": "MessageEvent",
+            "id": "other-event",
+            "source": "user",
+            "llm_message": {"role": "user", "content": "wrong"},
+        },
+    )
+
+    with pytest.raises(DomainError) as caught:
+        runtime.read_event(_handle(), "old-user-event")
+
+    assert caught.value.code == "RUNTIME_EVENT_IDENTITY_DRIFT"
+
+
+def test_openhands_returns_none_for_missing_event_by_id(openhands_settings, monkeypatch):
+    runtime = OpenHandsRuntime(openhands_settings)
+    calls: list[dict[str, object]] = []
+
+    def request(*_args, **kwargs):
+        calls.append(kwargs)
+        return {"_flowweave_missing": True}
+
+    monkeypatch.setattr(runtime, "_request", request)
+
+    assert runtime.read_event(_handle(), "evicted-browser-event") is None
+    assert len(calls) == 1
+    assert calls[0]["missing_ok"] is True
+
+
 def test_openhands_maps_missing_delete_conversation_400_to_idempotent_missing(
     openhands_settings, monkeypatch
 ):

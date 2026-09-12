@@ -30,13 +30,11 @@ from flowweave.modules.agent_sessions.application.conversations import (
     record_message_attachments,
     resolve_conversation_references,
     validate_attachment_owners,
+    validated_user_message_event,
     validated_workspace_references,
 )
 from flowweave.modules.agent_sessions.application.deletion import delete_binding_records
-from flowweave.modules.agent_sessions.application.event_branch import (
-    complete_active_branch,
-    latest_user_message_across_active_branch_pages,
-)
+from flowweave.modules.agent_sessions.application.event_branch import complete_active_branch
 from flowweave.modules.agent_sessions.application.flow_node_locator import (
     active_runtime_handle,
     bind_openhands_conversation,
@@ -2479,11 +2477,7 @@ def rerun_node_message(
     runtime = get_runtime()
     if not runtime.can_accept_input(handle):
         raise DomainError("AGENT_CONVERSATION_BUSY", "请先暂停当前回复", 409)
-    target = latest_user_message_across_active_branch_pages(runtime.read_active_events, handle)
-    if target is None or target.cursor != event_id:
-        raise DomainError(
-            "AGENT_MESSAGE_REWRITE_UNAVAILABLE", "只能编辑当前活动分支中最近发送的消息", 409
-        )
+    target = validated_user_message_event(runtime, handle, event_id)
     parent_id = target.payload.get("parent_id")
     if parent_id is not None and not isinstance(parent_id, str):
         raise DomainError("RUNTIME_EVENT_IDENTITY_INVALID", "消息事件身份无效", 409)

@@ -208,6 +208,12 @@ class MockRuntime:
     def read_active_events(self, handle: RuntimeHandle) -> RuntimeEventBatch:
         return self.read_events(handle)
 
+    def read_event(self, handle: RuntimeHandle, event_id: str) -> RuntimeEvent | None:
+        for event in self._events.get(handle.job_id, ()):
+            if event.cursor == event_id:
+                return event
+        return None
+
     def switch_model(self, handle: RuntimeHandle, provider: RuntimeProvider) -> None:
         del handle, provider
 

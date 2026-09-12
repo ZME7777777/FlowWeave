@@ -3137,6 +3137,38 @@ class OpenHandsRuntime:
             usage=self._usage_snapshots(state),
         )
 
+    def read_event(self, handle: RuntimeHandle, event_id: str) -> RuntimeEvent | None:
+        """Read one formal event identity without scanning a history window.
+
+        OpenHands scopes this endpoint to the supplied Conversation, so the
+        response proves both event existence and conversation ownership. This
+        deliberately supports commands against old browser-visible events
+        after local cache eviction or a new browser session.
+        """
+
+        validated_event_id = self._formal_identity(event_id, field="id", required=True)
+        assert validated_event_id is not None
+        item = self._request(
+            "GET",
+            f"/api/conversations/{handle.conversation_id}/events/{validated_event_id}",
+            missing_ok=True,
+            base_url=self._base_url_for_handle(handle),
+            session_api_key=self._session_key_for_handle(handle),
+        )
+        if item.get("_flowweave_missing") is True:
+            return None
+        if self._event_identity(item)[0] != validated_event_id:
+            raise DomainError(
+                "RUNTIME_EVENT_IDENTITY_DRIFT",
+                "OpenHands returned a different event identity",
+                409,
+            )
+        return RuntimeEvent(
+            cursor=validated_event_id,
+            event_type=self._event_type(item),
+            payload=self._event_payload(item),
+        )
+
     @classmethod
     def _usage_snapshots(cls, state: dict[str, Any]) -> tuple[RuntimeUsageSnapshot, ...]:
         stats = state.get("stats")
