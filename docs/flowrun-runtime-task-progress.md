@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`COMPLETE`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`OPS-01`（Docker rollback image / BuildKit cache 容量维护；须先形成经确认的安全维护窗口）
+> 下一可执行切片：`OPS-02`（执行已核验的 Docker image / BuildKit cache 维护窗口；须获得明确删除授权）
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -99,7 +99,8 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-335 | 已删除受管 Sandbox 的 generation 悬空引用 | DONE | 恢复两个 generation ledger 的 `ON DELETE SET NULL` 约束，升级时清理历史悬空引用，并让 reconcile 显式解绑。 |
 | FR-336 | 初次 Runtime 供应遇到临时 Provider 不可用会永久降级 | DONE | 将短暂后端故障保持为可重试供应意图，限制 generation churn。 |
 | FR-337 | FlowRun 初次供应任务耗尽后无受控恢复入口 | DONE | 增加安全、幂等且可审计的终态投递恢复。 |
-| OPS-01 | Docker rollback image / BuildKit cache 容量增长 | PENDING | 设计并执行经确认的保留／回收维护窗口；不纳入自动代码部署。 |
+| OPS-01 | Docker rollback image / BuildKit cache 容量增长 | DONE | 建立带运行引用保护、dry-run 和显式确认的回收工具，并完成生产候选边界核验。 |
+| OPS-02 | Docker rollback image / BuildKit cache 容量增长 | PENDING | 在明确删除授权的维护窗口执行 OPS-01 已核验的受限回收，并复核服务、卷和 Workspace。 |
 
 ### FR-335 Runtime generation Sandbox 引用完整性 — DONE
 
@@ -153,6 +154,46 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 完成：恢复入口在 Worker 启动与周期维护中复用；每轮最多锁定并检查 100 个候选。它只将同一持久
 Sandbox／`PROVISIONING` generation 的明确 Provider 暂时不可用任务从 `DEAD` 受控重投递一次，保留
 物理资源和 generation，不创建新的 Runtime 或 Conversation。
+
+### OPS-01 Docker rollback image / BuildKit cache 容量治理 — DONE
+
+依赖：`FR-337`。
+
+目标：
+
+- 将 `.154` 上不停累积的 FlowWeave platform/web rollback image 与可回收 BuildKit cache 纳入可审计的
+  保留策略，避免磁盘空间持续减少导致后续运行时创建、迁移或发布失败。
+- 默认只读列出候选；始终保护 current `remote-amd64`、任意 Container（包括已退出受管 Runtime）引用的
+  image、每个仓库最新三个不同 rollback image，以及非 FlowWeave 仓库复用的 image。
+- 删除必须要求明确 token，并禁止使用 `docker system prune`、`docker image prune -a`、删除 volume、
+  Workspace、Container、network 或覆盖服务器 Compose／`.env`。BuildKit cache 清理必须单独显式选择。
+- 本切片先交付脚本和操作规程，并用生产 dry-run 核验候选边界；实际删除属于高影响操作，仅在用户明确
+  授权的维护窗口内执行和记录。
+
+验收：Bash 语法、help／dry-run 参数拒绝路径、`git diff --check`、任务状态唯一性；生产 dry-run 证明
+工具固定目标并保护现有服务 image、volume、Workspace 和最近 rollback。
+
+完成：受版本控制的维护工具固定目标为 `root@192.168.91.154:/opt/flowweave`，默认 dry-run；其候选
+仅包含没有任意 Container 引用、没有外部 repository tag 且全部非空 tag 都是 FlowWeave rollback 的 image
+ID。它保护 current image 和每个仓库最新三个不同 rollback image ID。生产 dry-run（2026-09-12）确认
+279 个候选均不被任何运行或已退出 Container 引用；36 个 image ID 受保护，其中包括 30 个 Container
+引用、6 个最近 rollback。`--apply` 还必须匹配确认 token 且受 `--max-delete` 熔断；实际删除和 BuildKit
+cache 回收拆入 OPS-02，等待明确授权。
+
+### OPS-02 Docker 容量维护窗口执行 — PENDING
+
+依赖：`OPS-01`。
+
+目标：
+
+- 在用户明确授权的维护窗口，使用 OPS-01 工具的精确候选删除未引用 rollback image；可选地以独立显式
+  开关清理超过保留期的 BuildKit cache。
+- 操作前后确认所有 Container 引用 image、named volume、`/opt/flowweave/data/workspaces`、远端
+  `deploy/compose.yaml` 和 `.env` 均未变更；不得使用任何 broad prune。
+- 记录实际删除 ID、Docker/文件系统容量、服务健康和外部入口验证；出现异常时停止并用保留 rollback tag
+  仅重建受影响服务。
+
+验收：实际操作需要本用户对精确删除范围和可选 cache 回收的明确授权；未获授权前保持 `PENDING`。
 
 ### FR-00 架构、边界和实施顺序冻结 — DONE
 
@@ -4467,6 +4508,7 @@ contract、冻结策略与既有受控生命周期约束覆盖。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-12 | OPS-01 | 维护脚本 Bash 语法、help、缺失确认 token／缺失 `--apply` 拒绝、生产 dry-run、运行及已退出 Container image 交叉核验、`--max-delete=1` fail-closed 演练、`git diff --check` | PASS（工具／生产只读）：`.154` 容量审计为 images 61.09GB（32.86GB reclaimable）、BuildKit 78.75GB（22.42GB reclaimable）、根分区 77GB 可用。脚本固定 `root@192.168.91.154:/opt/flowweave`，dry-run 识别 279 个纯 FlowWeave rollback、无任一 Container 引用的 image ID；36 个 image ID 受保护，其中 30 个由 Container 引用、6 个为两个仓库最新三份 rollback，当前 `remote-amd64` image 亦受保护。逐一交叉核验候选不含任何 `docker ps -aq` image ID。`--apply` 缺 token 被拒绝；带 token 的 `--max-delete=1` 在任何删除前因 279 > 1 fail-closed。未删除 image/cache/container/volume/network/Workspace；实际回收待 OPS-02 的明确删除授权。 |
 | 2026-09-12 | FR-337 | 受影响 Python Ruff format/check、`py_compile`、唯一 Alembic head、任务状态唯一性、`git diff --check`；FlowRun 供应任务耗尽恢复 3 条定向 pytest | PASS（静态）：Ruff、语法、唯一 Alembic head `0114_runtime_sandbox_fk`、任务状态唯一性与空白检查通过。三条回归已收集，但均在业务断言前因本机 Docker Unix socket 缺失、Testcontainers PostgreSQL 无法启动而阻断，未伪记为通过。恢复严格限定为仍存在且可执行的 FlowRun、无 active generation 的唯一 `STARTING` Runtime、唯一 `PROVISIONING` generation 与同代、保持 `RUNNING` 意图且最后错误为 `SANDBOX_BACKEND_UNAVAILABLE` 的 Sandbox；以 `SKIP LOCKED` 逐层锁定，最多一次将原任务由 `DEAD` 恢复为额外 20 次预算的 `RETRY`，不创建资源／generation／Conversation。 |
 | 2026-09-12 | FR-336 | 受影响 Python Ruff format/check、`py_compile`、严格 Pyright、唯一 Alembic head、`git diff --check`；FlowRun／Agent Workspace 初次供应的 Provider 503 → 同 generation 成功重试定向 pytest | PASS（静态）：Ruff、语法、Pyright `0 errors`、空白检查和唯一 Alembic head `0114_runtime_sandbox_fk` 通过。两条回归均已收集，但业务断言前因本机 Docker Unix socket 缺失、Testcontainers PostgreSQL 无法启动而阻断，未伪记为通过。FlowRun 现在只对持久 Runtime 的 `SANDBOX_BACKEND_UNAVAILABLE` 保留原 Sandbox／`PROVISIONING` generation；Agent Workspace 先持久化同一 Sandbox＋generation 意图，短暂失败保持 `STARTING` 并记录可恢复诊断，确定性 DomainError 仍使该资源／generation 收敛为删除／失败。远端部署必须确认现有 Runtime 不被重建，服务健康且无新的 generation churn。 |
 | 2026-09-12 | FR-335 | 受影响 Python Ruff format/check、`py_compile`、唯一 Alembic head、`git diff --check`；两个 reconcile generation-reference 定向 pytest；远端首次 migration 失败后的数据库／服务只读核验 | PASS（静态／失败保护）：Ruff、语法、空白检查和唯一 Alembic head `0114_runtime_sandbox_fk` 通过。两个回归已收集，但均在业务断言前因本机 Docker Unix socket 缺失、Testcontainers PostgreSQL 无法启动而阻断，未伪记为通过。首次远端 migration 在 Alembic 写入 34 字符 revision ID 时被生产 `alembic_version.version_num VARCHAR(32)` 拒绝；PostgreSQL 事务型 DDL 已完整回滚，版本仍为 `0113_task_retention`、目标 FK 尚未建立，既有 API/Provider/Worker/Stream API 未替换且保持健康。修复将 revision 缩至 23 字符；后续部署必须确认 migration 后两个 generation ledger 的悬空引用均为 0，且两个命名 FK 均为 `ON DELETE SET NULL`。 |

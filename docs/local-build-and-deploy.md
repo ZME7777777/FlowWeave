@@ -259,4 +259,50 @@ make infra-down
 make infra-up
 ```
 
+## 9. 生产 Docker 镜像保留维护
+
+`.154` 是与其他服务共用的 Docker 主机，普通发布会保留一个带时间戳的回滚镜像。不得在该主机执行
+`docker system prune`、`docker image prune -a`、`docker compose down -v`，也不得删除任何 volume、
+Workspace、Container 或部署源码目录来释放容量。
+
+当 `docker system df` 显示旧 FlowWeave rollback 镜像或 BuildKit cache 需要治理时，先在本地仓库使用
+受版本控制的维护工具做只读审计：
+
+```bash
+scripts/maintain-remote-docker-retention-154.sh
+```
+
+该命令固定检查 `root@192.168.91.154:/opt/flowweave`，默认只输出候选 image ID。它始终保护：
+
+- `flowweave-platform:remote-amd64` 与 `flowweave-web:remote-amd64`；
+- 任意运行中或已退出 Container 引用的 image ID；
+- 每个仓库最新的三个不同 rollback image ID；
+- 同时被非 FlowWeave repository tag 引用的 image ID。
+
+候选只包含其全部非空 tag 都是 FlowWeave `rollback` 历史标签的 image；具名 `candidate`、`build` 或其他
+非 rollback 标签即使当前未引用也保留，必须由独立的、明确审计的策略处理。
+
+无 tag 的 dangling image 因无法从 Docker 元数据安全证明其仅属于 FlowWeave，不在该工具的 image
+删除范围内；仍可通过显式的、按年龄过滤的 BuildKit cache 清理回收构建缓存。
+
+清理属于高影响维护操作，须在 dry-run 已人工复核、业务无关键发布/构建任务且已获明确授权后，才可运行：
+
+```bash
+scripts/maintain-remote-docker-retention-154.sh \
+  --apply --confirm DELETE_UNREFERENCED_FLOWWEAVE_IMAGES
+```
+
+如需单独清理 7 天以上的 BuildKit cache，也必须显式附加 `--prune-build-cache`；它仍不会清理
+images、containers、volumes、networks 或 workspaces：
+
+```bash
+scripts/maintain-remote-docker-retention-154.sh \
+  --apply --confirm DELETE_UNREFERENCED_FLOWWEAVE_IMAGES \
+  --prune-build-cache --cache-until 168h
+```
+
+每次维护后记录 `docker system df`、`df -h /opt/flowweave`、候选/实际删除 image ID 与服务健康检查。若
+任何服务异常，使用仍保留的 rollback tag 对受影响服务 `--no-deps --force-recreate`；不得删除数据卷或
+Workspace 作为回滚手段。
+
 除非明确要永久清空本地数据库、Artifact 和 FlowRun Runtime 外置状态，否则不要添加 `-v`。
