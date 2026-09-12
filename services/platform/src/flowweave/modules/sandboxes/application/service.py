@@ -40,6 +40,10 @@ from flowweave.modules.sandboxes.infrastructure.models import (
 )
 from flowweave.shared.application.transactions import register_rollback_action
 from flowweave.shared.database import uid
+from flowweave.shared.domain.openhands import (
+    CURRENT_OPENHANDS_SERVER_IDENTITY,
+    OpenHandsServerIdentity,
+)
 from flowweave.shared.errors import DomainError, not_found
 from flowweave.shared.infrastructure.docker_control import ephemeral_lease_is_expired
 from flowweave.shared.models import AttemptState, NodeAttempt, NodeRun
@@ -208,6 +212,7 @@ def _create_managed_runtime(
     environment_id: str,
     environment_version_id: str,
     environment_version_no: int,
+    runtime_server_identity: OpenHandsServerIdentity = CURRENT_OPENHANDS_SERVER_IDENTITY,
     workspace_relative: str = "",
 ) -> RuntimeProviderAllocation:
     settings = get_settings()
@@ -395,6 +400,9 @@ def _create_managed_runtime(
                             "environment_id": environment_id,
                             "environment_version_id": environment_version_id,
                             "environment_version_no": environment_version_no,
+                            "runtime_openhands_version": runtime_server_identity.package_version,
+                            "runtime_source_commit": runtime_server_identity.source_commit,
+                            "runtime_source_ref": runtime_server_identity.source_ref,
                             "workspace_relative": workspace_relative or None,
                             "flow_run_id": flow_run_id,
                             "node_attempt_id": node_attempt_id,
@@ -456,22 +464,47 @@ def _create_managed_runtime(
                         409,
                         {"sandbox_id": resource.id},
                     )
-                elif resource.desired_state == "STOPPED":
-                    # A completed FlowRun deliberately drains its retained
-                    # Runtime.  A later read-only visit to its existing
-                    # OpenHands Conversation may safely revive that exact
-                    # immutable allocation; do not create a new generation
-                    # or change the retained workspace/secret binding.
-                    #
-                    # `activate_runtime_generation()` already fences the
-                    # matching logical Session/Generation STOPPED -> ACTIVE
-                    # transition after Docker confirms it is ready.  Mark the
-                    # physical desired state before calling the provider so
-                    # the active-connection guard cannot observe a stopped
-                    # ledger row after the container has started.
-                    resource.desired_state = "RUNNING"
-                    resource.observed_state = "PENDING"
-                    resource.next_reconcile_at = datetime.now(UTC)
+                else:
+                    # Add identity to old ledgers only after its Environment
+                    # manifest passed the same reviewed compatibility gate.
+                    # This lets a missing historical container be recreated
+                    # without treating the platform's current version as its
+                    # provenance. Docker accepts the pre-identity label hash
+                    # for an already-retained old container.
+                    expected_identity = {
+                        "runtime_openhands_version": runtime_server_identity.package_version,
+                        "runtime_source_commit": runtime_server_identity.source_commit,
+                        "runtime_source_ref": runtime_server_identity.source_ref,
+                    }
+                    spec = dict(resource.spec_json or {})
+                    present_identity = {key: spec.get(key) for key in expected_identity}
+                    if any(value is not None for value in present_identity.values()) and (
+                        present_identity != expected_identity
+                    ):
+                        raise DomainError(
+                            "SANDBOX_SPEC_CONFLICT",
+                            "An active Runtime has a different frozen Agent Server identity",
+                            409,
+                            {"sandbox_id": resource.id},
+                        )
+                    if present_identity != expected_identity:
+                        resource.spec_json = {**spec, **expected_identity}
+                    if resource.desired_state == "STOPPED":
+                        # A completed FlowRun deliberately drains its retained
+                        # Runtime. A later read-only visit to its existing
+                        # OpenHands Conversation may safely revive that exact
+                        # immutable allocation; do not create a new generation
+                        # or change the retained workspace/secret binding.
+                        #
+                        # `activate_runtime_generation()` already fences the
+                        # matching logical Session/Generation STOPPED -> ACTIVE
+                        # transition after Docker confirms it is ready. Mark the
+                        # physical desired state before calling the provider so
+                        # the active-connection guard cannot observe a stopped
+                        # ledger row after the container has started.
+                        resource.desired_state = "RUNNING"
+                        resource.observed_state = "PENDING"
+                        resource.next_reconcile_at = datetime.now(UTC)
                 logical_generation = (
                     ensure_runtime_generation(
                         control_db,
@@ -554,6 +587,7 @@ def ensure_flow_run_runtime(
     environment_id: str,
     environment_version_id: str,
     environment_version_no: int,
+    runtime_server_identity: OpenHandsServerIdentity = CURRENT_OPENHANDS_SERVER_IDENTITY,
 ) -> RuntimeProviderAllocation:
     """Return the single physical Runtime Provider allocation for one FlowRun."""
     flow_run_id = runtime_owner_flow_run_id(db, flow_run_id)
@@ -567,6 +601,7 @@ def ensure_flow_run_runtime(
         environment_id=environment_id,
         environment_version_id=environment_version_id,
         environment_version_no=environment_version_no,
+        runtime_server_identity=runtime_server_identity,
     )
 
 
@@ -579,6 +614,7 @@ def ensure_node_attempt_runtime(
     environment_id: str,
     environment_version_id: str,
     environment_version_no: int,
+    runtime_server_identity: OpenHandsServerIdentity = CURRENT_OPENHANDS_SERVER_IDENTITY,
 ) -> RuntimeProviderAllocation:
     """Provision or reuse the one durable Runtime for a node Attempt.
 
@@ -597,6 +633,7 @@ def ensure_node_attempt_runtime(
         environment_id=environment_id,
         environment_version_id=environment_version_id,
         environment_version_no=environment_version_no,
+        runtime_server_identity=runtime_server_identity,
     )
 
 
@@ -912,6 +949,9 @@ def _sandbox_spec_signature(resource: ManagedSandbox) -> tuple[object, ...]:
         str((resource.spec_json or {}).get("project_allocation_relative") or ""),
         str((resource.spec_json or {}).get("project_record_id") or ""),
         str((resource.spec_json or {}).get("workspace_relative") or ""),
+        str((resource.spec_json or {}).get("runtime_openhands_version") or ""),
+        str((resource.spec_json or {}).get("runtime_source_commit") or ""),
+        str((resource.spec_json or {}).get("runtime_source_ref") or ""),
     )
 
 

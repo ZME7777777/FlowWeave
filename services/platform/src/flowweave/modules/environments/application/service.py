@@ -12,7 +12,10 @@ from flowweave.modules.sandboxes import public as sandboxes
 from flowweave.modules.tasks.public import Lease, enqueue, lease_is_current
 from flowweave.runtime.contract import OPENHANDS_PACKAGE_VERSIONS
 from flowweave.shared.application.transactions import finish
-from flowweave.shared.domain.openhands import OPENHANDS_SOURCE_COMMIT
+from flowweave.shared.domain.openhands import (
+    OPENHANDS_SOURCE_COMMIT,
+    OpenHandsServerIdentity,
+)
 from flowweave.shared.domain.runtime_capabilities import (
     normalize_runtime_capabilities,
     openhands_install_capabilities,
@@ -257,6 +260,37 @@ def validate_runtime_manifest(
                 409,
                 {"environment_version_id": environment_version_id},
             )
+
+
+def runtime_server_identity(
+    manifest: object,
+    *,
+    environment_version_id: str | None = None,
+    allow_legacy_frozen_runtime: bool = False,
+) -> OpenHandsServerIdentity:
+    """Return the exact reviewed Agent Server identity frozen by an Environment.
+
+    Validation happens before extracting the values, so arbitrary manifest text
+    can never become a readiness admission expectation. The one legacy identity
+    remains available only through the explicit read-only recovery gate.
+    """
+
+    validate_runtime_manifest(
+        manifest,
+        environment_version_id=environment_version_id,
+        allow_legacy_frozen_runtime=allow_legacy_frozen_runtime,
+    )
+    document = cast(dict[str, object], manifest)
+    provenance = cast(dict[str, object], document["runtime_provenance"])
+    packages = cast(dict[str, object], provenance["package_versions"])
+    package_values = {str(value) for value in packages.values()}
+    if len(package_values) != 1:
+        raise RuntimeError("validated Runtime package versions became inconsistent")
+    return OpenHandsServerIdentity(
+        package_version=package_values.pop(),
+        source_commit=str(provenance["source_commit"]),
+        source_ref=str(provenance["source_ref"]),
+    )
 
 
 def _control_engine(db: Session) -> Engine:

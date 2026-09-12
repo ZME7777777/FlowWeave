@@ -589,7 +589,7 @@ def test_new_runtime_requires_strict_agent_server_admission(settings, monkeypatc
     resource = _runtime_resource()
     observation = _observation(resource)
     inspected = iter((None, observation))
-    admitted: list[str] = []
+    admitted: list[ManagedSandbox] = []
 
     monkeypatch.setattr(provider, "inspect", lambda _name: next(inspected))
     monkeypatch.setattr(provider, "_verify_image_trust", lambda _item: "sha256:" + "1" * 64)
@@ -602,7 +602,24 @@ def test_new_runtime_requires_strict_agent_server_admission(settings, monkeypatc
     monkeypatch.setattr(provider, "_wait_for_agent_server", admitted.append)
 
     assert provider.ensure_running(resource) == observation
-    assert admitted == [resource.backend_resource_name]
+    assert admitted == [resource]
+
+
+def test_agent_server_admission_uses_frozen_environment_identity(settings, monkeypatch):
+    provider = DockerSandboxProvider(_docker_settings(settings))
+    resource = _runtime_resource()
+    resource.spec_json = {
+        **(resource.spec_json or {}),
+        "runtime_openhands_version": "1.44.0",
+        "runtime_source_commit": "a" * 40,
+        "runtime_source_ref": "b" * 40,
+    }
+    commands: list[list[str]] = []
+    monkeypatch.setattr(provider, "_run", lambda command, **_kwargs: commands.append(command) or "")
+
+    provider._wait_for_agent_server(resource)
+
+    assert commands[0][-3:] == ["1.44.0", "a" * 40, "b" * 40]
 
 
 def test_concurrent_new_runtime_creation_still_requires_strict_admission(settings, monkeypatch):
@@ -610,7 +627,7 @@ def test_concurrent_new_runtime_creation_still_requires_strict_admission(setting
     resource = _runtime_resource()
     observation = _observation(resource)
     inspected = iter((None, observation))
-    admitted: list[str] = []
+    admitted: list[ManagedSandbox] = []
 
     monkeypatch.setattr(provider, "inspect", lambda _name: next(inspected))
     monkeypatch.setattr(provider, "_verify_image_trust", lambda _item: "sha256:" + "1" * 64)
@@ -632,7 +649,7 @@ def test_concurrent_new_runtime_creation_still_requires_strict_admission(setting
     monkeypatch.setattr(provider, "_wait_for_agent_server", admitted.append)
 
     assert provider.ensure_running(resource) == observation
-    assert admitted == [resource.backend_resource_name]
+    assert admitted == [resource]
 
 
 def test_setup_ledger_survives_outer_rollback_as_delete_intent(

@@ -109,6 +109,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-345 | 历史冻结 Environment Runtime 契约兼容 | DONE | 只读恢复已绑定历史 Conversation 时，严格接受经审计的 OpenHands 1.44 冻结 manifest；新发布、执行和写入路径继续只接受当前 1.47 契约。 |
 | FR-346 | 历史节点身份 Snapshot 只读兼容 | DONE | 已绑定历史 Conversation 的只读 host 可验证并投影无 Tool Policy 的 OpenHands 1.44 节点身份 Snapshot；新建与执行路径继续拒绝。 |
 | FR-347 | 连续运行备用模型冻结回显 | DONE | 连续运行草稿保存时保留 `fallback_models`，避免严格写入投影将已选额度备用模型清空。 |
+| FR-348 | 历史 Runtime 重建的冻结 Server 身份探针 | DONE | Runtime Provider 重建容器时按已验证 Environment Version 的冻结 OpenHands 身份探针，不再把全局当前版本错误套用于历史只读会话。 |
 | OPS-01 | Docker rollback image / BuildKit cache 容量增长 | DONE | 建立带运行引用保护、dry-run 和显式确认的回收工具，并完成生产候选边界核验。 |
 | OPS-02 | Docker rollback image / BuildKit cache 容量增长 | DONE | 已按授权使用 OPS-03 tag 级路径回收，并完成生产不变量与入口验证。 |
 | OPS-03 | 多 rollback tag image 的安全回收 | DONE | 改为逐 tag、重查 Container 引用、不使用 `--force` 的回收路径。 |
@@ -304,6 +305,20 @@ Playwright Agent 工作台用例在 WebSocket 流恢复阶段超时，未将其�
 完成：`runtime_node` 增加唯一显式只读投影开关。该开关只接受 schema `3`、OpenHands `1.44.0` 且每个节点只包含非空 `node_asset_id` 的映射；任何额外字段、旧 schema、错误 hash 或错误节点身份均继续失败。节点 host 只有在 Attempt 已有 Conversation 且恢复只读 Runtime 时传入开关，因此历史 Tool Policy 不会参与创建或执行。
 
 验收：取消 Attempt 的只读恢复回归同时断言历史 Environment 与历史 Snapshot 两个兼容开关；纯 Runtime manifest smoke 覆盖默认拒绝、只读接受和额外字段拒绝。
+
+### FR-348 历史 Runtime 重建的冻结 Server 身份探针 — DONE
+
+依赖：`FR-345`、`FR-346`。
+
+目标：
+
+- Runtime Provider 在新建或 replacement generation 的 `/ready`、`/server_info` 探针中，必须验证该 Environment Version 已冻结且审核过的包版本、source commit 与 source ref；不得固定校验控制面当前 OpenHands 版本。
+- 只读恢复之外，任意新建 FlowRun、Attempt、Conversation、写入与不完整／混合 provenance 继续仅接受当前 `1.47.0` 契约。
+- 历史旧 Docker label／ledger 可以只为已验证的历史只读恢复增加身份字段；它们不得借此绕过 image digest、所有权、spec hash、manifest hash 或环境 provenance 校验。
+
+完成：Environment manifest admission 现在先验证完整冻结 provenance，再导出不可变 Server identity。Flow node host 仅在已有 Conversation 的只读恢复分支把此 identity 传给 Runtime allocation；其它调用仍使用当前 `1.47.0` 默认身份。Provider 将 identity 纳入持久 Runtime spec 和远端请求 schema，容器新建探针由该身份验证四包版本、build SHA 和 build ref。对旧 ledger/container 的 pre-identity label hash 只作为已审核 Environment identity 的兼容桥接接受；任何已存在但不同的 identity 继续以 `SANDBOX_SPEC_CONFLICT` 拒绝。
+
+验收：受影响 Python Ruff check/format、`py_compile`、`git diff --check` 通过；纯导入 smoke 验证唯一允许的 1.44 历史 manifest 导出其冻结 identity，Provider probe 使用该 identity，且 Remote Provider schema 拒绝不完整 identity。数据库 pytest 因本机 Docker socket 缺失，Testcontainers PostgreSQL fixture 初始化阶段阻断，未记为通过。
 
 ### FR-347 连续运行备用模型冻结回显 — DONE
 

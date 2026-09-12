@@ -37,6 +37,7 @@ from flowweave.runtime.base import (
     RuntimeInputReadiness,
     RuntimeResult,
 )
+from flowweave.shared.domain.openhands import OpenHandsServerIdentity
 from flowweave.shared.errors import DomainError
 from flowweave.shared.models import (
     BackgroundTask,
@@ -775,7 +776,7 @@ def test_cancelled_node_session_restarts_only_for_read_only_history(
         assert attempt is not None
         attempt.state = "CANCELLED"
         attempt.conversation_id = "aa632164-3d6a-44c8-af92-4d25f5890958"
-        ensured: list[str] = []
+        ensured: list[dict[str, object]] = []
         monkeypatch.setattr(
             flow_node_host.sandboxes,
             "node_attempt_workspace_context",
@@ -788,7 +789,7 @@ def test_cancelled_node_session_restarts_only_for_read_only_history(
         monkeypatch.setattr(
             flow_node_host.sandboxes,
             "ensure_node_attempt_runtime",
-            lambda _db, **kwargs: ensured.append(str(kwargs["node_attempt_id"])),
+            lambda _db, **kwargs: ensured.append(kwargs),
         )
         monkeypatch.setattr(
             flow_node_host.sandboxes,
@@ -798,10 +799,11 @@ def test_cancelled_node_session_restarts_only_for_read_only_history(
         manifest_options: list[bool] = []
         monkeypatch.setattr(
             flow_node_host,
-            "validate_runtime_manifest",
-            lambda _manifest, **kwargs: manifest_options.append(
-                bool(kwargs["allow_legacy_frozen_runtime"])
-            ),
+            "runtime_server_identity",
+            lambda _manifest, **kwargs: (
+                manifest_options.append(bool(kwargs["allow_legacy_frozen_runtime"])),
+                OpenHandsServerIdentity("1.44.0", "a" * 40, "a" * 40),
+            )[1],
         )
         snapshot_options: list[bool] = []
         monkeypatch.setattr(
@@ -820,7 +822,11 @@ def test_cancelled_node_session_restarts_only_for_read_only_history(
             require_start_permission=False,
         )
 
-        assert ensured == [attempt_id]
+        assert len(ensured) == 1
+        assert ensured[0]["node_attempt_id"] == attempt_id
+        assert ensured[0]["runtime_server_identity"] == OpenHandsServerIdentity(
+            "1.44.0", "a" * 40, "a" * 40
+        )
         assert manifest_options == [True]
         assert snapshot_options == [True]
         assert host.session.permits(READ_SESSIONS)

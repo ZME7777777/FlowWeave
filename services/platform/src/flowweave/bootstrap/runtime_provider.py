@@ -111,6 +111,9 @@ class RuntimeProviderSpec(_StrictModel):
     environment_id: UUID | None = None
     environment_version_id: UUID | None = None
     environment_version_no: int | None = Field(default=None, ge=1)
+    runtime_openhands_version: str | None = Field(default=None, min_length=1, max_length=32)
+    runtime_source_commit: str | None = Field(default=None, pattern=r"^[0-9a-f]{40}$")
+    runtime_source_ref: str | None = Field(default=None, pattern=r"^[0-9a-f]{40}$")
     flow_run_id: UUID | None = None
     node_attempt_id: UUID | None = None
     agent_workspace_id: UUID | None = None
@@ -176,6 +179,13 @@ class RuntimeProviderSpec(_StrictModel):
             value is not None
             for value in (self.flow_run_id, self.node_attempt_id, self.agent_workspace_id)
         )
+        identity_fields = (
+            self.runtime_openhands_version,
+            self.runtime_source_commit,
+            self.runtime_source_ref,
+        )
+        if any(value is not None for value in identity_fields) and not all(identity_fields):
+            raise ValueError("Runtime Agent Server identity must be provided together")
         if persistent_runtime and not all(allocation_fields):
             raise ValueError("Persistent Runtime allocation fields must be provided together")
         if persistent_runtime and self.project_record_id is None and any(shared_project_fields):

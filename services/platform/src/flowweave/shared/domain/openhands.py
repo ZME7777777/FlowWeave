@@ -6,10 +6,27 @@ conversation gets this exact tool set and OpenHands' native NeverConfirm mode.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, cast
 
 OPENHANDS_VERSION = "1.47.0"
 OPENHANDS_SOURCE_COMMIT = "30cf5832e42c71c24daa82a1a4fd5d25eb70d1b9"
+
+
+@dataclass(frozen=True, slots=True)
+class OpenHandsServerIdentity:
+    """Immutable Agent Server provenance expected from one Runtime image."""
+
+    package_version: str
+    source_commit: str
+    source_ref: str
+
+
+CURRENT_OPENHANDS_SERVER_IDENTITY = OpenHandsServerIdentity(
+    package_version=OPENHANDS_VERSION,
+    source_commit=OPENHANDS_SOURCE_COMMIT,
+    source_ref=OPENHANDS_SOURCE_COMMIT,
+)
 
 FIXED_RUNTIME_TOOL_NAMES: tuple[str, ...] = (
     "file_editor",

@@ -66,6 +66,29 @@ def test_runtime_provider_accepts_legacy_persistent_flow_run_spec() -> None:
     assert spec.project_record_id is None
 
 
+def test_runtime_provider_accepts_only_complete_frozen_server_identity() -> None:
+    values = dict(
+        port=8000,
+        flow_run_id=_OWNER_ID,
+        runtime_allocation_id=_ENVIRONMENT_ID,
+        runtime_allocation_relative=".flow-run-runtimes/" + "a" * 32 + "/" + str(_OWNER_ID),
+        runtime_secret_reference_id=_ENVIRONMENT_VERSION_ID,
+        environment_id=_ENVIRONMENT_ID,
+        environment_version_id=_ENVIRONMENT_VERSION_ID,
+        environment_version_no=1,
+    )
+    spec = RuntimeProviderSpec(
+        **values,
+        runtime_openhands_version="1.44.0",
+        runtime_source_commit="a" * 40,
+        runtime_source_ref="b" * 40,
+    )
+    assert spec.runtime_openhands_version == "1.44.0"
+
+    with pytest.raises(ValueError, match="identity must be provided together"):
+        RuntimeProviderSpec(**values, runtime_openhands_version="1.44.0")
+
+
 def test_runtime_provider_preserves_runtime_resource_limits() -> None:
     spec = RuntimeProviderSpec(
         port=8000,

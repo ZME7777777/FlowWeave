@@ -24,7 +24,7 @@ from flowweave.modules.agent_sessions.application.host import (
 )
 from flowweave.modules.environments.public import (
     lock_referenceable_version,
-    validate_runtime_manifest,
+    runtime_server_identity,
 )
 from flowweave.modules.sandboxes import public as sandboxes
 from flowweave.runtime.manifest import runtime_node
@@ -172,7 +172,7 @@ def resolve_flow_node_session_host(
                 "The frozen FlowRun Environment Version is unavailable",
                 409,
             )
-        validate_runtime_manifest(
+        server_identity = runtime_server_identity(
             environment.manifest_json,
             environment_version_id=environment.id,
             allow_legacy_frozen_runtime=existing_session_needs_runtime,
@@ -186,6 +186,7 @@ def resolve_flow_node_session_host(
                 environment_id=environment.environment_id,
                 environment_version_id=environment.id,
                 environment_version_no=environment.version_no,
+                runtime_server_identity=server_identity,
             )
         else:
             sandboxes.ensure_flow_run_runtime(
@@ -195,6 +196,7 @@ def resolve_flow_node_session_host(
                 environment_id=environment.environment_id,
                 environment_version_id=environment.id,
                 environment_version_no=environment.version_no,
+                runtime_server_identity=server_identity,
             )
     runtime_session_id = sandboxes.active_node_runtime_connection(
         db, flow_run_id=run.id, node_attempt_id=attempt.id
