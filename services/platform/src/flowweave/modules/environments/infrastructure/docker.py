@@ -1359,6 +1359,10 @@ def _probe_runtime_image(
                 "exec",
                 "--env",
                 "HOME=/tmp",
+                "--env",
+                "OPENHANDS_BUILD_GIT_SHA=30cf5832e42c71c24daa82a1a4fd5d25eb70d1b9",
+                "--env",
+                "OPENHANDS_BUILD_GIT_REF=30cf5832e42c71c24daa82a1a4fd5d25eb70d1b9",
                 probe_name,
                 "/agent-server/.venv/bin/python",
                 # The FlowWeave probe is inherited from the fixed base image.

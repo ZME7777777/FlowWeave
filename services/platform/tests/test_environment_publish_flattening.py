@@ -224,3 +224,14 @@ def test_runtime_probe_inherits_the_frozen_openhands_build_identity(monkeypatch)
         "--env",
         "OPENHANDS_BUILD_GIT_REF=30cf5832e42c71c24daa82a1a4fd5d25eb70d1b9",
     ]
+    contract_check = commands[1]
+    assert contract_check[0:8] == [
+        "docker",
+        "exec",
+        "--env",
+        "HOME=/tmp",
+        "--env",
+        "OPENHANDS_BUILD_GIT_SHA=30cf5832e42c71c24daa82a1a4fd5d25eb70d1b9",
+        "--env",
+        "OPENHANDS_BUILD_GIT_REF=30cf5832e42c71c24daa82a1a4fd5d25eb70d1b9",
+    ]
