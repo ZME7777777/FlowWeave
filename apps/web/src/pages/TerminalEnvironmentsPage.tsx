@@ -45,10 +45,10 @@ function PublishEnvironmentDialog({
     event.preventDefault();
     onPublish(description, selected);
   }}>
-    <header><div><span className="eyebrow">RUNTIME CAPABILITIES</span><h2>发布环境版本</h2><small>选择要写入下一不可变 Runtime 镜像的受治理能力。</small></div><button type="button" className="ghost" disabled={busy} onClick={onCancel}><X size={16}/>关闭</button></header>
+    <header><div><span className="eyebrow">RUNTIME CAPABILITIES</span><h2>发布环境版本</h2><small>选择要写入下一不可变 Runtime 镜像的受治理能力。</small></div><button type="button" className="ghost" onClick={onCancel}><X size={16}/>关闭</button></header>
     <label className="environment-publish-description">版本说明（可选）<textarea value={description} maxLength={2000} placeholder="例如：增加内部 PyPI 镜像和数据处理依赖" onChange={event => setDescription(event.target.value)}/></label>
     <fieldset className="environment-capability-options"><legend>Runtime 能力</legend><p>不选择时发布最小 Runtime。选择项会冻结到版本 manifest，之后不能修改。</p>{RUNTIME_CAPABILITIES.map(capability => <label key={capability.key}><input type="checkbox" checked={selected.includes(capability.key)} onChange={() => toggle(capability.key)}/><span><b>{capability.label}</b><small>{capability.detail}</small></span></label>)}</fieldset>
-    <footer><button type="button" className="ghost" disabled={busy} onClick={onCancel}>取消</button><button className="primary" disabled={busy}><Save size={14}/>{busy ? '发布中…' : '开始发布'}</button></footer>
+    <footer><button type="button" className="ghost" onClick={onCancel}>取消</button><button className="primary" disabled={busy}><Save size={14}/>{busy ? '提交中…' : '开始发布'}</button></footer>
   </form></div>;
 }
 
@@ -251,8 +251,7 @@ function TerminalPanel({ session, visible, publishError, onClose, onUnavailable,
   }, [onClose, onUnavailable, queryClient, session.id]);
   const publish = async (description: string, runtimeCapabilities: string[]) => {
     setBusy(true); setError('');
-    onPublishing();
-    try { await api.publishEnvironmentSetup(session.id, description, runtimeCapabilities); await queryClient.invalidateQueries({ queryKey: ['terminal-environments'] }); setPublishingOptions(false); onClose(); }
+    try { await api.publishEnvironmentSetup(session.id, description, runtimeCapabilities); onPublishing(); await queryClient.invalidateQueries({ queryKey: ['terminal-environments'] }); setPublishingOptions(false); onClose(); }
     catch (reason) { onPublishFailed(reason instanceof Error ? reason.message : '发布失败'); }
     finally { setBusy(false); }
   };

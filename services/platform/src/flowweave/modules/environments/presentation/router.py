@@ -5,6 +5,7 @@ import json
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Response, WebSocket, WebSocketDisconnect
+from fastapi.responses import JSONResponse
 
 from flowweave.bootstrap.container import Container
 from flowweave.modules.environments.application import service
@@ -73,19 +74,27 @@ async def create_setup_session(
     )
 
 
-@router.post("/environment-setup-sessions/{session_id}/publish", status_code=201)
+@router.post("/environment-setup-sessions/{session_id}/publish", status_code=202)
 async def publish_setup_session(
-    session_id: str, db: Db, payload: EnvironmentPublishWrite | None = None
+    session_id: str,
+    db: Db,
+    container: ContainerDep,
+    payload: EnvironmentPublishWrite | None = None,
 ) -> dict[str, Any]:
-    return await run_sync(
+    inline = container.settings.execution_mode == "inline"
+    result = await run_sync(
         db,
         lambda session: service.publish_setup_session(
             session,
             session_id,
             payload.description if payload else "",
             tuple(payload.runtime_capabilities) if payload else (),
+            execute=inline,
         ),
     )
+    if inline:
+        return JSONResponse(content=result, status_code=201)
+    return result
 
 
 @router.delete("/environment-setup-sessions/{session_id}", status_code=204)

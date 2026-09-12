@@ -985,6 +985,9 @@ def publish_setup_session(
     session_id: str,
     description: str = "",
     runtime_capabilities: tuple[str, ...] = (),
+    *,
+    execute: bool = True,
+    retry_on_error: bool = False,
 ) -> dict[str, Any]:
     try:
         requested_capabilities = normalize_runtime_capabilities(runtime_capabilities)
@@ -1025,71 +1028,14 @@ def publish_setup_session(
                                 {"environment_version_id": published_version.id},
                             )
                         return _version_dict(published_version)
-                if item.expires_at <= datetime.now(UTC):
-                    item.state = "EXPIRED"
-                    _enqueue_setup_cleanup(control_db, item)
-                    control_db.commit()
-                    raise DomainError(
-                        "ENVIRONMENT_SETUP_NOT_RUNNING",
-                        "The setup session expired before it could be published",
-                        409,
-                    )
-                if item.state != "RUNNING" or not item.container_id:
-                    raise DomainError(
-                        "ENVIRONMENT_SETUP_NOT_RUNNING",
-                        "Only a running setup session can be published",
-                        409,
-                    )
-                if not item.sandbox_id:
-                    raise DomainError(
-                        "ENVIRONMENT_SANDBOX_MISSING",
-                        "The setup session has no managed sandbox ledger entry",
-                        409,
-                    )
-                if not item.base_image_reference or not item.base_image_digest:
-                    raise DomainError(
-                        "ENVIRONMENT_BASE_IMAGE_UNRESOLVED",
-                        "This historical setup session has no frozen image provenance",
-                        409,
-                        {"session_id": item.id},
-                    )
-                environment = control_db.scalar(
-                    select(TerminalEnvironment)
-                    .where(TerminalEnvironment.id == item.environment_id)
-                    .with_for_update()
-                )
-                if environment is None:
-                    raise not_found("terminal_environment", item.environment_id)
-                version = (
-                    control_db.get(EnvironmentVersion, item.published_version_id)
-                    if item.published_version_id
-                    else None
-                )
-                if version is None:
-                    persisted_max = int(
-                        control_db.scalar(
-                            select(func.coalesce(func.max(EnvironmentVersion.version_no), 0)).where(
-                                EnvironmentVersion.environment_id == item.environment_id
-                            )
+                if item.state == "PUBLISHING" and item.published_version_id:
+                    version = control_db.get(EnvironmentVersion, item.published_version_id)
+                    if version is None:
+                        raise DomainError(
+                            "ENVIRONMENT_PUBLISH_STALE",
+                            "The publishing setup session has no version record",
+                            409,
                         )
-                        or 0
-                    )
-                    version_no = max(environment.last_version_no, persisted_max) + 1
-                    environment.last_version_no = version_no
-                    version = EnvironmentVersion(
-                        environment_id=item.environment_id,
-                        version_no=version_no,
-                        parent_version_id=item.base_version_id,
-                        description=description,
-                        state="PUBLISHING",
-                        base_image_reference=item.base_image_reference,
-                        base_image_digest=item.base_image_digest,
-                        runtime_capabilities=list(requested_capabilities),
-                    )
-                    control_db.add(version)
-                    control_db.flush()
-                    item.published_version_id = version.id
-                else:
                     frozen_capabilities = normalize_runtime_capabilities(
                         version.runtime_capabilities or []
                     )
@@ -1100,20 +1046,128 @@ def publish_setup_session(
                             409,
                             {"environment_version_id": version.id},
                         )
-                    version.state = "PUBLISHING"
-                    version.error_detail = None
-                item.state = "PUBLISHING"
-                item.error_detail = None
-                resource_name = item.container_id
-                sandbox_id = item.sandbox_id
-                environment_id = item.environment_id
-                version_id = version.id
-                version_no = version.version_no
-                base_image_reference = item.base_image_reference
-                base_image_digest = item.base_image_digest
+                    resource_name = item.container_id
+                    sandbox_id = item.sandbox_id
+                    environment_id = item.environment_id
+                    version_id = version.id
+                    version_no = version.version_no
+                    base_image_reference = item.base_image_reference
+                    base_image_digest = item.base_image_digest
+                else:
+                    if item.expires_at <= datetime.now(UTC):
+                        item.state = "EXPIRED"
+                        _enqueue_setup_cleanup(control_db, item)
+                        control_db.commit()
+                        raise DomainError(
+                            "ENVIRONMENT_SETUP_NOT_RUNNING",
+                            "The setup session expired before it could be published",
+                            409,
+                        )
+                    if item.state != "RUNNING" or not item.container_id:
+                        raise DomainError(
+                            "ENVIRONMENT_SETUP_NOT_RUNNING",
+                            "Only a running setup session can be published",
+                            409,
+                        )
+                    if not item.sandbox_id:
+                        raise DomainError(
+                            "ENVIRONMENT_SANDBOX_MISSING",
+                            "The setup session has no managed sandbox ledger entry",
+                            409,
+                        )
+                    if not item.base_image_reference or not item.base_image_digest:
+                        raise DomainError(
+                            "ENVIRONMENT_BASE_IMAGE_UNRESOLVED",
+                            "This historical setup session has no frozen image provenance",
+                            409,
+                            {"session_id": item.id},
+                        )
+                    environment = control_db.scalar(
+                        select(TerminalEnvironment)
+                        .where(TerminalEnvironment.id == item.environment_id)
+                        .with_for_update()
+                    )
+                    if environment is None:
+                        raise not_found("terminal_environment", item.environment_id)
+                    version = (
+                        control_db.get(EnvironmentVersion, item.published_version_id)
+                        if item.published_version_id
+                        else None
+                    )
+                    if version is None:
+                        persisted_max = int(
+                            control_db.scalar(
+                                select(
+                                    func.coalesce(func.max(EnvironmentVersion.version_no), 0)
+                                ).where(EnvironmentVersion.environment_id == item.environment_id)
+                            )
+                            or 0
+                        )
+                        version_no = max(environment.last_version_no, persisted_max) + 1
+                        environment.last_version_no = version_no
+                        version = EnvironmentVersion(
+                            environment_id=item.environment_id,
+                            version_no=version_no,
+                            parent_version_id=item.base_version_id,
+                            description=description,
+                            state="PUBLISHING",
+                            base_image_reference=item.base_image_reference,
+                            base_image_digest=item.base_image_digest,
+                            runtime_capabilities=list(requested_capabilities),
+                        )
+                        control_db.add(version)
+                        control_db.flush()
+                        item.published_version_id = version.id
+                    else:
+                        frozen_capabilities = normalize_runtime_capabilities(
+                            version.runtime_capabilities or []
+                        )
+                        if requested_capabilities != frozen_capabilities:
+                            raise DomainError(
+                                "ENVIRONMENT_RUNTIME_CAPABILITIES_IMMUTABLE",
+                                (
+                                    "The Runtime capability selection is already frozen "
+                                    "for this version"
+                                ),
+                                409,
+                                {"environment_version_id": version.id},
+                            )
+                        version.state = "PUBLISHING"
+                        version.error_detail = None
+                    item.state = "PUBLISHING"
+                    item.error_detail = None
+                    resource_name = item.container_id
+                    sandbox_id = item.sandbox_id
+                    environment_id = item.environment_id
+                    version_id = version.id
+                    version_no = version.version_no
+                    base_image_reference = item.base_image_reference
+                    base_image_digest = item.base_image_digest
                 frozen_runtime_capabilities = normalize_runtime_capabilities(
                     version.runtime_capabilities or []
                 )
+                if not execute:
+                    task = enqueue(
+                        control_db,
+                        task_type="PUBLISH_ENVIRONMENT_VERSION",
+                        aggregate_type="SETUP_SESSION",
+                        aggregate_id=item.id,
+                        idempotency_key=f"publish-environment-version:{item.id}:{version_id}",
+                        payload={
+                            "description": version.description,
+                            "runtime_capabilities": list(frozen_runtime_capabilities),
+                        },
+                    )
+                    if task.state == TaskState.DEAD:
+                        task.state = TaskState.PENDING
+                        task.available_at = datetime.now(UTC)
+                        task.lease_owner = None
+                        task.lease_until = None
+                        task.attempts = 0
+                        task.last_error = None
+                    task.max_attempts = max(task.max_attempts, 3)
+                    control_db.commit()
+                    return _session_dict(item)
                 control_db.commit()
 
             published: docker.PublishedImage | None = None
@@ -1139,6 +1193,18 @@ def publish_setup_session(
                 with Session(bind=connection) as control_db:
                     failed = control_db.get(EnvironmentVersion, version_id)
                     failed_session = control_db.get(EnvironmentSetupSession, session_id)
+                    if retry_on_error:
+                        if published is not None:
+                            _enqueue_image_cleanup(
+                                control_db,
+                                environment_id=environment_id,
+                                version_id=version_id,
+                                version_no=version_no,
+                                image_reference=published.reference,
+                                image_digest=published.digest,
+                            )
+                        control_db.commit()
+                        raise
                     if failed is not None and failed.state == "PUBLISHING":
                         failed.state = "FAILED"
                         failed.error_detail = exc.message
@@ -1199,6 +1265,41 @@ def publish_setup_session(
                 return _version_dict(current_version)
         finally:
             _session_unlock(connection, lock_id)
+
+
+def process_publish_environment_version(
+    db: Session, session_id: str, payload: dict[str, Any], *, commit: bool = True
+) -> None:
+    """Build a previously accepted environment version from the Worker queue."""
+
+    del commit  # publish_setup_session owns the control-plane transactions.
+    raw_capabilities = payload.get("runtime_capabilities")
+    capabilities = (
+        tuple(str(item) for item in raw_capabilities) if isinstance(raw_capabilities, list) else ()
+    )
+    publish_setup_session(
+        db,
+        session_id,
+        str(payload.get("description") or ""),
+        capabilities,
+        retry_on_error=True,
+    )
+
+
+def record_publish_environment_version_failure(db: Session, session_id: str, error: str) -> None:
+    """Expose a terminal Worker failure on the frozen version and setup session."""
+
+    item = db.get(EnvironmentSetupSession, session_id)
+    if item is None or item.state != "PUBLISHING":
+        return
+    version = (
+        db.get(EnvironmentVersion, item.published_version_id) if item.published_version_id else None
+    )
+    if version is not None and version.state == "PUBLISHING":
+        version.state = "FAILED"
+        version.error_detail = error[:2000]
+    item.state = "RUNNING"
+    item.error_detail = error[:2000]
 
 
 def stop_setup_session(db: Session, session_id: str) -> None:

@@ -191,6 +191,12 @@ def _cleanup_setup_container(
     environments.process_cleanup_setup_container(db, aggregate_id, payload, lease, commit=False)
 
 
+def _publish_environment_version(
+    db: Session, aggregate_id: str, payload: dict[str, Any], _lease: Lease
+) -> None:
+    environments.process_publish_environment_version(db, aggregate_id, payload, commit=False)
+
+
 def _cleanup_environment_image(
     db: Session, _aggregate_id: str, payload: dict[str, Any], lease: Lease
 ) -> None:
@@ -269,6 +275,7 @@ HANDLERS: dict[str, Handler] = {
     "CANCEL_RUNTIME": _cancel_runtime,
     "DELETE_NODE_RUN_RECORD": _delete_node_run_record,
     "DELETE_AUTOMATIC_RUN_RECORD": _delete_automatic_run_record,
+    "PUBLISH_ENVIRONMENT_VERSION": _publish_environment_version,
     "CLEANUP_SETUP_CONTAINER": _cleanup_setup_container,
     "CLEANUP_ENVIRONMENT_IMAGE": _cleanup_environment_image,
     "CLEANUP_ENVIRONMENT_CREDENTIALS": _cleanup_environment_credentials,
@@ -325,3 +332,5 @@ def record_terminal_failure(db: Session, task_id: str, error: str) -> None:
         )
     elif task.task_type == "RESOLVE_PLUGIN_SOURCE":
         fail_plugin_source_resolution(db, task.aggregate_id, error)
+    elif task.task_type == "PUBLISH_ENVIRONMENT_VERSION":
+        environments.record_publish_environment_version_failure(db, task.aggregate_id, error)

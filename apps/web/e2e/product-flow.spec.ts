@@ -273,15 +273,18 @@ test('environment publishing ignores IME confirmation before a separate Enter su
   expect(copiedTerminalSelection.copied).toContain('nnected');
   expect(copiedTerminalSelection.prevented).toBe(true);
   await page.getByRole('button', { name: '发布环境版本' }).click();
-  const publishDialog = page.getByRole('alertdialog', { name: '发布环境版本' });
+  const publishDialog = page.locator('.environment-capability-dialog');
+  await expect(publishDialog).toBeVisible();
   const publishDescription = publishDialog.getByLabel('版本说明（可选）');
   await publishDescription.fill('cli');
   await publishDescription.dispatchEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 229, isComposing: true });
   await expect(publishDialog).toBeVisible();
   await expect(publishDescription).toHaveValue('cli');
   expect(publishedDescriptions).toEqual([]);
-  await publishDescription.press('Enter');
+  await publishDialog.getByRole('button', { name: '开始发布' }).click();
   await expect.poll(() => publishedDescriptions).toEqual(['cli']);
+  await expect(publishDialog).toBeHidden();
+  await expect(page.getByRole('heading', { name: '环境配置终端' })).toBeHidden();
 });
 
 test('closing an environment terminal only hides its existing connection', async ({ page }) => {
