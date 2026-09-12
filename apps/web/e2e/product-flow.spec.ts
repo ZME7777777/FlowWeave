@@ -1310,10 +1310,11 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.locator('.conversation-turn-status')).toHaveText('OpenHands 会话连接正常，等待响应');
   await expect(activeProcess.locator('.conversation-activity-row.tool')).toHaveCount(3);
   const readingViewport = page.locator('.conversation-surface');
+  await readingViewport.hover();
+  await page.mouse.wheel(0, -160);
   const readingPosition = await readingViewport.evaluate(surface => {
     surface.scrollTop = Math.max(0, surface.scrollHeight - surface.clientHeight - 80);
     surface.dispatchEvent(new Event('scroll'));
-    surface.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: -120 }));
     return surface.scrollTop;
   });
   await expect(page.getByRole('button', { name: '跳转到正在生成的最新回复' })).toBeVisible();

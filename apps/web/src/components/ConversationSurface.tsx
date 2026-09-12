@@ -1302,6 +1302,7 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused: 
   const userScrolledAway = useRef(false);
   const scrollInteractionStartY = useRef<number | null>(null);
   const scrollInteractionTowardLatest = useRef(false);
+  const automaticScrollFrame = useRef<number | undefined>(undefined);
   const wasGenerating = useRef(isGenerating);
   const copyResetTimer = useRef<number | undefined>(undefined);
   const referenceHighlightStartTimer = useRef<number | undefined>(undefined);
@@ -1328,21 +1329,30 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused: 
     id: turn.user.event.id,
     content: turn.user.content,
   }] : []), [turns]);
+  const alignWithLatest = useCallback(() => {
+    const element = surface.current;
+    if (!element) return;
+    // Direct assignment is immediate and does not inherit page-level smooth
+    // scrolling. Automatic transcript updates must not start an animation
+    // that can compete with a user who starts reading history.
+    element.scrollTop = element.scrollHeight;
+  }, []);
   const scrollToLatest = useCallback((behavior: ScrollBehavior = 'smooth') => {
+    if (automaticScrollFrame.current !== undefined) {
+      window.cancelAnimationFrame(automaticScrollFrame.current);
+      automaticScrollFrame.current = undefined;
+    }
     userScrolledAway.current = false;
     followLatest.current = true;
     setIsAtLatest(true);
     const element = surface.current;
     if (!element) return;
-    // Assigning scrollTop is immediate, whereas `behavior: 'auto'` may still
-    // inherit a page-level smooth-scroll preference. Initial positioning must
-    // never visibly travel through the transcript.
     if (behavior === 'auto') {
-      element.scrollTop = element.scrollHeight;
+      alignWithLatest();
       return;
     }
     element.scrollTo({ top: element.scrollHeight, behavior });
-  }, []);
+  }, [alignWithLatest]);
   const updateScrollPosition = useCallback(() => {
     const element = surface.current;
     if (!element) return;
@@ -1365,6 +1375,16 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused: 
     setIsAtLatest(false);
   }, []);
   const stopFollowingLatest = useCallback(() => {
+    if (automaticScrollFrame.current !== undefined) {
+      window.cancelAnimationFrame(automaticScrollFrame.current);
+      automaticScrollFrame.current = undefined;
+    }
+    const element = surface.current;
+    if (element) {
+      // Cancel a pending browser smooth-scroll before it can retake the
+      // viewport while the user is trying to move upward.
+      element.scrollTo({ top: element.scrollTop, behavior: 'auto' });
+    }
     userScrolledAway.current = true;
     followLatest.current = false;
     setIsAtLatest(false);
@@ -1400,37 +1420,39 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused: 
   useLayoutEffect(() => {
     if (!initialPositioned.current && (turns.length || liveText || isGenerating)) {
       initialPositioned.current = true;
-      scrollToLatest('auto');
+      alignWithLatest();
     } else if (!wasGenerating.current && isGenerating && !userScrolledAway.current) {
-      scrollToLatest('smooth');
+      alignWithLatest();
     } else if (followLatest.current) {
       // A completed turn, lazy Markdown, or asynchronously restored history
       // must never replace the newest-message anchor with the terminal row.
       // Keep the newest content at the bottom until the user scrolls away.
-      scrollToLatest('auto');
+      alignWithLatest();
     }
     wasGenerating.current = isGenerating;
-  }, [isGenerating, liveText, scrollToLatest, turns.length]);
+  }, [alignWithLatest, isGenerating, liveText, turns.length]);
   useLayoutEffect(() => {
     const observedContent = content.current;
     if (!observedContent || typeof ResizeObserver === 'undefined') return;
-    let frame: number | undefined;
     const observer = new ResizeObserver(() => {
       // Lazy Markdown and content-visibility can make historical rows taller
       // after the initial restoration scroll. Keep following only when the
       // user was already at the latest message; never pull them from history.
-      if (!followLatest.current || frame !== undefined) return;
-      frame = window.requestAnimationFrame(() => {
-        frame = undefined;
-        if (followLatest.current) scrollToLatest('auto');
+      if (!followLatest.current || automaticScrollFrame.current !== undefined) return;
+      automaticScrollFrame.current = window.requestAnimationFrame(() => {
+        automaticScrollFrame.current = undefined;
+        if (followLatest.current) alignWithLatest();
       });
     });
     observer.observe(observedContent);
     return () => {
       observer.disconnect();
-      if (frame !== undefined) window.cancelAnimationFrame(frame);
+      if (automaticScrollFrame.current !== undefined) {
+        window.cancelAnimationFrame(automaticScrollFrame.current);
+        automaticScrollFrame.current = undefined;
+      }
     };
-  }, [scrollToLatest]);
+  }, [alignWithLatest]);
   useEffect(() => () => {
     if (copyResetTimer.current) window.clearTimeout(copyResetTimer.current);
     if (referenceHighlightStartTimer.current) window.clearTimeout(referenceHighlightStartTimer.current);
@@ -1441,9 +1463,14 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused: 
     const update = () => setCondensationElapsed(Math.max(0, Date.now() - condensationStatus.startedAt));
     update();
     const timer = window.setInterval(update, 1_000);
-    if (followLatest.current) window.requestAnimationFrame(() => scrollToLatest('smooth'));
+    if (followLatest.current) {
+      automaticScrollFrame.current = window.requestAnimationFrame(() => {
+        automaticScrollFrame.current = undefined;
+        if (followLatest.current) alignWithLatest();
+      });
+    }
     return () => window.clearInterval(timer);
-  }, [condensationStatus, scrollToLatest]);
+  }, [alignWithLatest, condensationStatus]);
   useEffect(() => {
     const onCopy = (event: ClipboardEvent) => {
       const selection = window.getSelection();
@@ -1520,7 +1547,7 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused: 
       </button>)}
     </nav>}
     {messagePreview && <aside id="conversation-message-preview" className="conversation-message-index-tooltip" role="tooltip" style={{ top: messagePreview.top }}><span>{messagePreview.content || '（空消息）'}</span></aside>}
-    <section ref={surface} className="conversation-surface" aria-live="polite" onScroll={() => { handleScroll(); setSelectedReference(undefined); }} onWheel={event => { if (event.deltaY < 0) stopFollowingLatest(); else if (event.deltaY > 0) scrollInteractionTowardLatest.current = true; }} onPointerDown={event => { scrollInteractionStartY.current = event.clientY; scrollInteractionTowardLatest.current = false; }} onPointerMove={event => { if (scrollInteractionStartY.current === null) return; if (event.clientY - scrollInteractionStartY.current > 3) stopFollowingLatest(); else if (scrollInteractionStartY.current - event.clientY > 3) scrollInteractionTowardLatest.current = true; }} onPointerUp={event => { scrollInteractionStartY.current = null; offerSelectedReference(event); }} onPointerCancel={() => { scrollInteractionStartY.current = null; }} onKeyDown={event => { if (['ArrowUp', 'PageUp', 'Home'].includes(event.key)) stopFollowingLatest(); else if (['ArrowDown', 'PageDown', 'End'].includes(event.key)) scrollInteractionTowardLatest.current = true; }}>
+    <section ref={surface} className="conversation-surface" aria-live="polite" onScroll={() => { handleScroll(); setSelectedReference(undefined); }} onWheelCapture={event => { if (event.deltaY < 0) stopFollowingLatest(); else if (event.deltaY > 0) scrollInteractionTowardLatest.current = true; }} onPointerDownCapture={event => { scrollInteractionStartY.current = event.clientY; scrollInteractionTowardLatest.current = false; }} onPointerMoveCapture={event => { if (scrollInteractionStartY.current === null) return; if (event.clientY - scrollInteractionStartY.current > 3) stopFollowingLatest(); else if (scrollInteractionStartY.current - event.clientY > 3) scrollInteractionTowardLatest.current = true; }} onPointerUp={event => { scrollInteractionStartY.current = null; offerSelectedReference(event); }} onPointerCancel={() => { scrollInteractionStartY.current = null; }} onKeyDown={event => { if (['ArrowUp', 'PageUp', 'Home'].includes(event.key)) stopFollowingLatest(); else if (['ArrowDown', 'PageDown', 'End'].includes(event.key)) scrollInteractionTowardLatest.current = true; }}>
       <div ref={content} className="conversation-surface-content">
       {historyPending && <div className="conversation-history-loading" role="status"><LoaderCircle size={14}/>正在载入更早的会话记录…</div>}
       {turns.map((turn, index) => {
