@@ -663,6 +663,48 @@ def test_route_rejects_locator_session_drift(
         assert caught.value.code == "RUNTIME_CONVERSATION_SESSION_DRIFT"
 
 
+def test_detached_node_fork_routes_through_source_attempt_runtime(
+    db_session_factory: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with db_session_factory() as db:
+        flow_run_id, runtime_session_id, attempt_id = _node_session_context(db)
+        binding = AgentConversationBinding(
+            runtime_session_id=runtime_session_id,
+            host_kind="FLOW_NODE",
+            host_id=flow_run_id,
+            conversation_scope_id=attempt_id,
+            flow_run_id=flow_run_id,
+            node_attempt_id=None,
+            openhands_conversation_id="detached-fork",
+            create_idempotency_key="detached-fork",
+        )
+        db.add(binding)
+        db.flush()
+        monkeypatch.setattr(
+            locator.sandboxes,
+            "active_node_runtime_connection",
+            lambda _db, *, flow_run_id, node_attempt_id: _connection(
+                runtime_session_id, flow_run_id
+            ),
+        )
+        monkeypatch.setattr(
+            locator.sandboxes,
+            "node_attempt_workspace_context",
+            lambda _db, **_kwargs: SimpleNamespace(runtime_mount_root="/runtime/workspace/project"),
+        )
+
+        handle = locator.active_runtime_handle(
+            db,
+            flow_run_id=flow_run_id,
+            openhands_conversation_id=binding.openhands_conversation_id,
+            cursor=None,
+            route_kind="COLLABORATION",
+        )
+
+        assert handle.runtime_resource_name == "fw-sbx-generation-1"
+        assert handle.workspace_root == "/runtime/workspace/project"
+
+
 def _node_session_context(db: Session) -> tuple[str, str, str]:
     flow_run_id, runtime_session_id = _runtime_context(db)
     snapshot = RunSnapshot(
@@ -1148,6 +1190,13 @@ def test_completed_flow_run_keeps_node_source_read_only_but_allows_native_fork(
             == attempt_id
         )
         assert flow_node_conversations._node_session_dict(db, detached)["write_available"] is True
+        # Forks retain the source Attempt only as their display scope. Reading
+        # their OpenHands history must therefore not require them to regain
+        # node ownership.
+        assert (
+            flow_node_conversations._event_batch_dict(db, detached, RuntimeEventBatch())["events"]
+            == []
+        )
 
         attempt = db.get(NodeAttempt, attempt_id)
         assert attempt is not None

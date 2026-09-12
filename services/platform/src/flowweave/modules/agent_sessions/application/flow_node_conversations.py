@@ -1947,15 +1947,20 @@ def _event_batch_dict(
     for attachment in stored:
         attachments_by_event.setdefault(attachment.event_id, []).append(attachment)
 
-    if binding.node_attempt_id is None:
+    # A native Fork deliberately clears node ownership so it cannot mutate
+    # its completed source Attempt.  It retains the source Attempt only as a
+    # display scope, which is sufficient for projecting legacy node-workspace
+    # image links while native routing remains bound to that source Runtime.
+    display_attempt_id = binding.node_attempt_id or binding.conversation_scope_id
+    if not display_attempt_id:
         raise DomainError(
             "RUNTIME_CONVERSATION_SESSION_DRIFT",
-            "The Conversation reservation has no Node Attempt Runtime owner",
+            "The Conversation has no source Attempt display scope",
             409,
         )
-    attempt = _attempt(db, binding.node_attempt_id)
+    attempt = _attempt(db, display_attempt_id)
     node_run = db.get(NodeRun, attempt.node_run_id)
-    if node_run is None:
+    if node_run is None or node_run.flow_run_id != binding.flow_run_id:
         raise DomainError("NODE_RUN_NOT_FOUND", "节点执行记录不可用", 409)
 
     def project(event: Any) -> dict[str, Any]:

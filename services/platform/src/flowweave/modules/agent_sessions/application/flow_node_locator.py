@@ -202,18 +202,22 @@ def active_runtime_handle(
     binding = _flow_run_binding(
         db, flow_run_id=flow_run_id, openhands_conversation_id=openhands_conversation_id
     )
-    if not binding.node_attempt_id:
+    # A native Fork clears ``node_attempt_id`` so it cannot resume or mutate
+    # its source node. Its retained conversation scope identifies the source
+    # Attempt Runtime and workspace that hold the native Conversation state.
+    attempt_id = binding.node_attempt_id or binding.conversation_scope_id
+    if not attempt_id:
         raise DomainError(
             "RUNTIME_CONVERSATION_SESSION_DRIFT",
-            "The Conversation has no Node Attempt Runtime owner",
+            "The Conversation has no source Attempt workspace scope",
             409,
             {"flow_run_id": flow_run_id, "binding_id": binding.id},
         )
     connection = sandboxes.active_node_runtime_connection(
-        db, flow_run_id=flow_run_id, node_attempt_id=binding.node_attempt_id
+        db, flow_run_id=flow_run_id, node_attempt_id=attempt_id
     )
     workspace = sandboxes.node_attempt_workspace_context(
-        db, flow_run_id=flow_run_id, node_attempt_id=binding.node_attempt_id
+        db, flow_run_id=flow_run_id, node_attempt_id=attempt_id
     )
     if connection.runtime_session_id != locator.runtime_session_id:
         raise DomainError(
