@@ -40,15 +40,6 @@ interface ActivityEntry {
   results: Item[];
 }
 
-interface CommandGroup {
-  id: string;
-  entries: ActivityEntry[];
-}
-
-type ActivityRow =
-  | { kind: 'entry'; entry: ActivityEntry }
-  | { kind: 'command-group'; group: CommandGroup };
-
 type TaskListStatus = 'todo' | 'in_progress' | 'done';
 
 interface TaskListItem {
@@ -525,56 +516,6 @@ function groupedActivities(items: Item[]): ActivityEntry[] {
     entries.push({ id: item.event.id, item, results: item.event.event_type === 'TOOL_RESULT' ? [item] : [] });
   }
   return entries;
-}
-
-function isTerminalEntry(entry: ActivityEntry): boolean {
-  return entry.action?.kind === 'tool'
-    && entry.action.event.event_type === 'TOOL_CALL'
-    && entry.action.event.payload.event_name === 'TerminalAction';
-}
-
-function commandHasCommentary(entry: ActivityEntry): boolean {
-  // A TerminalAction may carry the Agent's user-facing explanation. Preserve
-  // that narration beside its command instead of absorbing both into a batch
-  // header with no corresponding explanation.
-  return Boolean(entry.action?.content.trim());
-}
-
-function commandEntriesAreRelated(previous: ActivityEntry, next: ActivityEntry): boolean {
-  const previousAction = previous.action;
-  const nextAction = next.action;
-  if (!previousAction || !nextAction || commandHasCommentary(previous) || commandHasCommentary(next)) return false;
-
-  const previousResponseId = detailText(previousAction.event.payload.llm_response_id);
-  const nextResponseId = detailText(nextAction.event.payload.llm_response_id);
-  if (previousResponseId && previousResponseId === nextResponseId) return true;
-
-  const parentId = detailText(nextAction.event.payload.parent_id);
-  if (!parentId) return false;
-  return [previousAction.event.id, ...previous.results.map(result => result.event.id)].includes(parentId);
-}
-
-function activityRows(entries: ActivityEntry[]): ActivityRow[] {
-  const rows: ActivityRow[] = [];
-  for (let index = 0; index < entries.length;) {
-    const entry = entries[index];
-    if (!isTerminalEntry(entry)) {
-      rows.push({ kind: 'entry', entry });
-      index += 1;
-      continue;
-    }
-
-    const grouped = [entry];
-    let cursor = index + 1;
-    while (cursor < entries.length && isTerminalEntry(entries[cursor]) && commandEntriesAreRelated(grouped.at(-1)!, entries[cursor])) {
-      grouped.push(entries[cursor]);
-      cursor += 1;
-    }
-    if (grouped.length === 1) rows.push({ kind: 'entry', entry });
-    else rows.push({ kind: 'command-group', group: { id: grouped.map(value => value.id).join(':'), entries: grouped } });
-    index = cursor;
-  }
-  return rows;
 }
 
 interface ActivityPresentation {
@@ -1127,33 +1068,6 @@ function ActivityEntryRow({ entry, active, avatarSlots, workspaceRoot }: {
   </article>;
 }
 
-function CommandGroup({ group, active, avatarSlots, workspaceRoot }: {
-  group: CommandGroup;
-  active: boolean;
-  avatarSlots: ReadonlyMap<string, SubagentAvatarSlot>;
-  workspaceRoot?: string | null;
-}) {
-  const completed = group.entries.filter(entry => entry.results.length > 0).length;
-  const total = group.entries.length;
-  const allCompleted = completed === total;
-  const [open, setOpen] = useState(!allCompleted);
-
-  useEffect(() => {
-    if (allCompleted) setOpen(false);
-  }, [allCompleted]);
-
-  const label = allCompleted ? `已运行 ${total} 条命令` : `正在运行 ${total} 条命令`;
-  return <details className={`conversation-command-group${!allCompleted && active ? ' active' : ''}`} open={open} onToggle={event => setOpen(event.currentTarget.open)}>
-    <summary aria-label={`查看命令批次：${label}`}>
-      <SquareTerminal size={15}/><span><b>{label}</b>{!allCompleted && <small>{`${completed} / ${total} 已完成`}</small>}</span>
-      {!allCompleted && <LoaderCircle className="conversation-command-group-spinner" size={13}/>}<ChevronRight size={14}/>
-    </summary>
-    <div className="conversation-command-group-list">
-      {group.entries.map(entry => <ActivityEntryRow key={entry.id} entry={entry} active={active} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/>)}
-    </div>
-  </details>;
-}
-
 function ActivityGroup({ items, active, liveText, startedAt, finishedAt, avatarSlots, workspaceRoot }: {
   items: Item[];
   active: boolean;
@@ -1165,7 +1079,6 @@ function ActivityGroup({ items, active, liveText, startedAt, finishedAt, avatarS
 }) {
   const elapsedSeconds = useElapsedSeconds(startedAt, finishedAt, active);
   const entries = groupedActivities(items);
-  const rows = activityRows(entries);
   const itemCount = entries.length + (liveText ? 1 : 0);
   const [open, setOpen] = useState(true);
   const label = active
@@ -1177,9 +1090,7 @@ function ActivityGroup({ items, active, liveText, startedAt, finishedAt, avatarS
   return <details className={`conversation-activity-group${active ? ' active' : ''}`} open={open} onToggle={event => setOpen(event.currentTarget.open)}>
     <summary>{summary}</summary>
     <div className="conversation-activity-list">
-      {rows.map(row => row.kind === 'command-group'
-        ? <CommandGroup key={row.group.id} group={row.group} active={active} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/>
-        : <ActivityEntryRow key={row.entry.id} entry={row.entry} active={active} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/>)}
+      {entries.map(entry => <ActivityEntryRow key={entry.id} entry={entry} active={active} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/>)}
       {liveText && <article className="conversation-activity-row thought live-text"><MessageMarkdown>{liveText}</MessageMarkdown></article>}
     </div>
   </details>;

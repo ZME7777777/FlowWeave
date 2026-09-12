@@ -1248,7 +1248,6 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     type: 'event',
     event: { id: 'live-tool-next', event_type: 'TOOL_CALL', payload: { parent_id: 'live-tool', action_id: 'live-tool-next', tool_call_id: 'live-next-call', llm_response_id: 'live-operation-batch-1', tool_name: 'terminal', event_name: 'TerminalAction', details: { command: 'git status --short' }, timestamp: new Date().toISOString() } },
   }));
-  await expect(activeProcess.locator('.conversation-command-group')).toHaveCount(0);
   await expect(activeProcess.getByText('已完成初步分析。')).toBeVisible();
   await expect(activeProcess.getByText('正在运行 pwd')).toBeVisible();
   await expect(activeProcess.getByText('正在运行 git status --short')).toBeVisible();
@@ -1292,7 +1291,6 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     type: 'event',
     event: { id: 'live-tool-next-result', event_type: 'TOOL_RESULT', payload: { parent_id: 'live-tool-next', action_id: 'live-tool-next', tool_call_id: 'live-next-call', tool_name: 'terminal', event_name: 'TerminalObservation', details: { command: 'git status --short', exit_code: 0, is_error: false }, timestamp: new Date().toISOString() } },
   }));
-  await expect(activeProcess.locator('.conversation-command-group')).toHaveCount(0);
   await expect(activeProcess.getByRole('button', { name: '查看执行详情：已运行 git status --short' })).toBeVisible();
   await expect(activeProcess.getByRole('button', { name: '查看执行详情：已运行 pwd' })).toBeVisible();
   await expect(page.locator('.conversation-turn-status')).toHaveText('OpenHands 会话连接正常，等待响应');
