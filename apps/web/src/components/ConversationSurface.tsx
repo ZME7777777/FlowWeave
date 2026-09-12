@@ -641,6 +641,17 @@ function operationGroupSummary(entries: ActivityEntry[]): string {
   return parts.join('，并') || `已完成 ${entries.length} 项操作`;
 }
 
+function operationGroupIsComplete(entries: ActivityEntry[]): boolean {
+  return entries.every(entry => entry.results.length > 0);
+}
+
+function latestRunningOperation(entries: ActivityEntry[], workspaceRoot?: string | null): string {
+  const runningEntry = [...entries].reverse().find(entry => entry.results.length === 0);
+  return runningEntry
+    ? activityPresentation(runningEntry, true, workspaceRoot).title
+    : operationGroupSummary(entries);
+}
+
 function activityPresentation(entry: ActivityEntry, active: boolean, workspaceRoot?: string | null): ActivityPresentation {
   const item = entry.action ?? entry.item;
   if (item.kind === 'condensation') {
@@ -1183,9 +1194,20 @@ function OperationGroup({ group, active, avatarSlots, workspaceRoot }: {
   avatarSlots: ReadonlyMap<string, SubagentAvatarSlot>;
   workspaceRoot?: string | null;
 }) {
-  const summary = operationGroupSummary(group.entries);
-  return <details className="conversation-operation-group">
-    <summary aria-label={`查看操作批次：${summary}`}><Wrench size={14}/><span><b>{summary}</b><small>{`${group.entries.length} 项原生操作`}</small></span><ChevronRight size={13}/></summary>
+  const completed = operationGroupIsComplete(group.entries);
+  const completedCount = group.entries.filter(entry => entry.results.length > 0).length;
+  const summary = completed ? operationGroupSummary(group.entries) : latestRunningOperation(group.entries, workspaceRoot);
+  const [open, setOpen] = useState(!completed);
+  const wasCompleted = useRef(completed);
+  useEffect(() => {
+    if (!wasCompleted.current && completed) setOpen(false);
+    wasCompleted.current = completed;
+  }, [completed]);
+  const progress = completed
+    ? `${group.entries.length} 项原生操作`
+    : `${completedCount} / ${group.entries.length} 已完成`;
+  return <details className={`conversation-operation-group${completed ? '' : ' active'}`} open={open} onToggle={event => setOpen(event.currentTarget.open)}>
+    <summary aria-label={`查看操作批次：${summary}`}><Wrench size={14}/><span><b>{summary}</b><small>{progress}</small></span>{!completed && <LoaderCircle className="conversation-operation-group-spinner" size={13}/>}<ChevronRight size={13}/></summary>
     <div className="conversation-operation-group-list">
       {group.entries.map(entry => <ActivityEntryRow key={entry.id} entry={entry} active={active} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/>)}
     </div>
