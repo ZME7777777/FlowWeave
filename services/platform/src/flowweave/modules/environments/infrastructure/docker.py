@@ -1694,7 +1694,9 @@ def publish_container(
         input_text=dockerfile,
     )
     _stamp_fixed_runtime_provenance(
-        official_digest,
+        # Stamp on the labeled governance image, not the formal OpenHands
+        # output. The latter intentionally has no FlowWeave ownership labels.
+        reference,
         reference,
         timeout=settings.terminal_environment_publish_timeout_seconds,
     )
