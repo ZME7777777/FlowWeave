@@ -1815,14 +1815,14 @@ function WorkspaceFileTree({ entries, root, selectedFile, selectedPaths, expande
       setStickyDirectoryPaths(current => current.length ? [] : current);
       return;
     }
+    // The fixed path is an overlay, not part of the scrolling list.  Anchor
+    // against the first source row below that overlay: a row hidden entirely
+    // beneath it must not keep its directory pinned after its contents have
+    // scrolled past.
+    const visibleTop = tree.scrollTop + (overlay?.offsetHeight ?? 0);
     const firstVisible = visibleNodes.find(({ node }) => {
       const row = rowRefs.current.get(node.path);
-      // This anchor is derived exclusively from the scrollable source list,
-      // never from the overlay height.  The overlay is absolutely positioned
-      // and must not alter which row is current; feeding its height back into
-      // this decision previously kept a deep directory pinned to the end of
-      // the list and obscured the final files.
-      return row && row.offsetTop + row.offsetHeight > tree.scrollTop + 1;
+      return row && row.offsetTop + row.offsetHeight > visibleTop + 1;
     });
     const next = firstVisible ? stickyDirectoriesFor(firstVisible.node) : [];
     setStickyDirectoryPaths(current => current.length === next.length && current.every((path, index) => path === next[index]) ? current : next);
@@ -1847,12 +1847,16 @@ function WorkspaceFileTree({ entries, root, selectedFile, selectedPaths, expande
       const currentTree = treeRef.current;
       if (currentTree) overlay.style.transform = `translateY(${currentTree.scrollTop}px)`;
       setStickyOverlayHeight(current => current === overlay.offsetHeight ? current : overlay.offsetHeight);
+      // A changed path can change the overlay height.  Re-evaluate against
+      // that final obstruction so a directory disappears exactly when its
+      // complete subtree is covered.
+      updateStickyDirectories();
     };
     syncOverlay();
     const observer = new ResizeObserver(syncOverlay);
     observer.observe(overlay);
     return () => observer.disconnect();
-  }, [stickyDirectoryPaths]);
+  }, [stickyDirectoryPaths, updateStickyDirectories]);
   const selectEntry = (node: WorkspaceTreeNode, event: ReactMouseEvent<HTMLButtonElement>) => {
     const toggling = event.metaKey || event.ctrlKey;
     const anchorIndex = selectionAnchor.current ? visibleNodes.findIndex(item => item.node.path === selectionAnchor.current) : -1;
