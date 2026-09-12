@@ -1451,7 +1451,7 @@ function WorkspaceTextPreview({ path, content, highlight, highlightLine, onSelec
     }
     positionSelectionAction(selection, range);
   };
-  const action = selectionAction && <><div className="agent-file-selection-highlights" aria-hidden="true">{selectionAction.highlights.map((rect, index) => <i key={`${rect.left}:${rect.top}:${index}`} style={rect}/>)}</div><button type="button" className="agent-file-selection-action" style={{ left: selectionAction.left, top: selectionAction.top }} onMouseDown={event => event.preventDefault()} onClick={() => { onSelect?.(selectionAction.selection); setSelectionAction(undefined); window.getSelection()?.removeAllRanges(); }}><Quote size={13}/>追加到会话</button></>;
+  const action = selectionAction && <><div className="agent-file-selection-highlights" aria-hidden="true">{selectionAction.highlights.map((rect, index) => <i key={`${rect.left}:${rect.top}:${index}`} style={rect}/>)}</div><button type="button" className="agent-file-selection-action" style={{ left: selectionAction.left, top: selectionAction.top }} onMouseDown={event => event.preventDefault()} onMouseUp={event => event.stopPropagation()} onClick={event => { event.stopPropagation(); onSelect?.(selectionAction.selection); setSelectionAction(undefined); window.getSelection()?.removeAllRanges(); }}><Quote size={13}/>追加到会话</button></>;
   if (/\.(?:md|mdx|markdown)$/i.test(path)) {
     return <div ref={previewRef} className="agent-file-preview-selection" onMouseUp={captureSelection}>{action}<article className="agent-file-markdown-preview"><ReactMarkdown remarkPlugins={[remarkGfm]} components={{ code: WorkspaceMarkdownCode }}>{content}</ReactMarkdown></article></div>;
   }
