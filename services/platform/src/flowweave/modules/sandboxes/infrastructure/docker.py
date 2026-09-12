@@ -2185,6 +2185,24 @@ chmod 0700 "$target"
             ) from exc
 
     def delete(self, resource: ManagedSandbox) -> None:
+        if (
+            controller_is_remote(self.settings)
+            and resource.kind == "AGENT_RUNTIME"
+            and resource.owner_type == "FLOW_RUN"
+        ):
+            # The API process intentionally has no Docker socket.  Legacy
+            # FlowRun generations owned their network by sandbox ID, while
+            # current generations share a network owned by FlowRun ID.  Ask
+            # the Runtime Provider to remove the legacy candidate first; a
+            # missing candidate is idempotent, then the caller removes the
+            # current FlowRun-owned network once all generations are gone.
+            self.delete_expected(
+                resource.backend_resource_name,
+                resource.id,
+                network_owner_id=resource.id,
+                remove_network=True,
+            )
+            return
         legacy_flow_run_network = (
             resource.kind == "AGENT_RUNTIME"
             and resource.owner_type == "FLOW_RUN"

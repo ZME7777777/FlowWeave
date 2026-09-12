@@ -130,6 +130,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-366 | FlowWeave 固定控制面与动态 Runtime 共用 Docker 默认地址池 | DONE | 已为 control、docker-control 与 Runtime 动态地址池建立强制、显式且互不重叠的配置契约；未改变现有 Runtime 所有权或远端网络。 |
 | FR-367 | Node Attempt 独占 Runtime/网络，偏离每个 FlowRun 单 Runtime 模型 | DONE | 新节点 Attempt 只解析并复用 FlowRun Runtime Session、容器、持久目录和专属网络；历史 Attempt Runtime 只读兼容与回收策略另行明确。 |
 | FR-368 | FlowRun Runtime 网络仍由 Docker 默认池按大网段分配 | DONE | Runtime Provider 从 FR-366 冻结地址池为每个 FlowRun 分配小型、可审计、可回收的专属子网；临时构建网络也不得回退 Docker 默认池。 |
+| FR-369 | 远程控制面删除 FlowRun 时仍可能在 API 内直连 Docker | DONE | 远程删除委托 Runtime Provider 回收历史 generation 网络候选，再回收当前 FlowRun 共享网络；API 保持无 Docker socket。 |
 
 ### FR-366 FlowWeave 专属 Docker 地址规划 — DONE
 
@@ -175,6 +176,19 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 验收：受影响 Python 可编译；纯地址规划和命令构造断言覆盖确定性、池边界、冲突候选和 `--subnet`／审计标签；Ruff、`git diff --check` 与任务状态唯一性。真实 Docker 创建、现有网络迁移、远端 Compose 切换和端到端网络验证留给后续部署验收。
 
 完成：Runtime Provider 以稳定资源 ID 在已冻结的 FlowWeave Runtime 地址池中选择最多 16 个确定性候选小网段，Docker 明确收到 `--subnet`，遇到明确地址冲突仅在该池内有界探测，绝不回退 daemon 默认地址池。新 FlowRun Runtime 的网络身份固定为 `flow_run_id`，因此 replacement generation 和节点 Attempt 复用同一网络；仅在 FlowRun 永久删除后回收该共享网络。Environment Setup、依赖构建与插件解析的临时网络同样携带显式子网和 `flowweave.network-subnet` 审计标签。新标签网络在 inspect 和控制面客户端重连时验证 IPv4 池／前缀／IPAM 一致性；历史未标注网络仍可兼容读取并按其原资源身份回收。`py_compile`、Ruff format/check、独立地址规划探针和 `git diff --check` 通过；全部 pytest 仍在 Testcontainers PostgreSQL fixture 初始化时因本机 Docker socket 缺失受阻，未进入断言，未记为通过。未部署、未创建或删除任何真实 Docker 网络，也未修改 Docker daemon、Compose 或 OpenHands 源码。
+
+### FR-369 远程 FlowRun 删除网络回收 — DONE
+
+依赖：`FR-368`。
+
+目标：
+
+- API 使用远程 Docker Controller 时，FlowRun 永久删除不得在 API 进程内探测 Docker 网络或访问 Docker socket。
+- 当前由 `flow_run_id` 共享的网络和历史由 generation sandbox ID 归属的网络都必须只由 Runtime Provider 在完成容器回收后清理。
+
+验收：远程删除路径不得调用本地 legacy 网络探测；其 Runtime Provider 删除请求必须携带历史 sandbox 网络身份，并保留后续 FlowRun 共享网络回收；受影响 Python 编译、Ruff、定向回归与 `git diff --check`。
+
+完成：远程 FlowRun Runtime 删除先将 container 与历史 sandbox-ID 网络候选委托给 Runtime Provider；候选不存在时保持幂等，随后既有 FlowRun-ID 共享网络删除继续在 Runtime Provider 内执行。API 未挂载 Docker socket，历史和新网络都不由 API 直接操作。受影响 Python `py_compile`、Ruff format/check 通过；定向 pytest 在仓库会话级 Testcontainers PostgreSQL fixture 初始化时因本机 Docker socket 缺失受阻，未进入断言，未记为通过。
 
 ### FR-335 Runtime generation Sandbox 引用完整性 — DONE
 

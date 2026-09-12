@@ -1070,6 +1070,40 @@ def test_flow_run_runtime_generations_share_one_network_identity(settings) -> No
     )
 
 
+def test_remote_flow_run_delete_delegates_legacy_network_cleanup_to_provider(settings, monkeypatch):
+    provider = DockerSandboxProvider(
+        _docker_settings(
+            settings,
+            docker_controller_mode="remote",
+            docker_controller_url="http://runtime-provider:8090",
+            docker_controller_api_key="a" * 32,
+        )
+    )
+    resource = _runtime_resource()
+    resource.owner_type = "FLOW_RUN"
+    resource.owner_id = "12345678-1234-4234-9234-123456789abc"
+    delegated: list[tuple[str, str, str | None, bool]] = []
+
+    monkeypatch.setattr(
+        provider,
+        "_has_legacy_flow_run_network",
+        lambda _resource: pytest.fail("API must not inspect Docker directly"),
+    )
+    monkeypatch.setattr(
+        provider,
+        "delete_expected",
+        lambda name, resource_id, *, network_owner_id=None, remove_network=True: delegated.append(
+            (name, resource_id, network_owner_id, remove_network)
+        ),
+    )
+
+    provider.delete(resource)
+
+    assert delegated == [
+        (resource.backend_resource_name, resource.id, resource.id, True),
+    ]
+
+
 @pytest.mark.parametrize(
     ("network_mode", "expects_internal_flag"),
     (("isolated", True), ("egress", False)),
