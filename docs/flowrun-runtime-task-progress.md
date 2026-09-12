@@ -105,6 +105,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-341 | 源文件预览行号与非破坏性跳转反馈 | DONE | 代码预览展示同步行号，跳转行短暂高亮；已打开文件仅从当前滚动位置就近、平滑定位。 |
 | FR-342 | 根工作区 Git 历史展示修复 | DONE | 不再将与工作目录根重合的真实仓库误判为容器路径并过滤，保留最深仓库匹配。 |
 | FR-343 | 历史 FlowRun Memory 隔离目录兼容回填 | DONE | 仅在完整验证既有 allocation 的所有权、锁、路径和权限后，补齐 FR-316 新增的空只读 Memory 挂载目录。 |
+| FR-344 | 终态节点会话的只读 Runtime 恢复 | DONE | 终态 FlowRun 停止计算后，已有节点 Conversation 的只读查看会按冻结规格恢复同一持久 Runtime，同时保留写入拒绝。 |
 | OPS-01 | Docker rollback image / BuildKit cache 容量增长 | DONE | 建立带运行引用保护、dry-run 和显式确认的回收工具，并完成生产候选边界核验。 |
 | OPS-02 | Docker rollback image / BuildKit cache 容量增长 | DONE | 已按授权使用 OPS-03 tag 级路径回收，并完成生产不变量与入口验证。 |
 | OPS-03 | 多 rollback tag image 的安全回收 | DONE | 改为逐 tag、重查 Container 引用、不使用 `--force` 的回收路径。 |
@@ -260,6 +261,20 @@ Playwright Agent 工作台用例在 WebSocket 流恢复阶段超时，未将其�
 完成：allocation 的全部既有读取／供应入口都会先以不含该新增目录的历史布局完成完整验证，再创建唯一的空 `state/persistence/memory`（`0700`、同 root owner），并再次执行完整布局验证。新增定向回归覆盖历史 Node Attempt allocation 的安全回填。
 
 验收：`test_runtime_persistence.py`（4 passed）、受影响 Python Ruff format/check、`py_compile`、Alembic 唯一 head `0114_runtime_sandbox_fk`、`git diff --check` 与任务状态唯一性通过。
+
+### FR-344 终态节点会话的只读 Runtime 恢复 — DONE
+
+依赖：`FR-343`。
+
+目标：
+
+- 流程完成或节点取消后停止物理 Runtime 以回收计算资源，但已有 OpenHands Conversation 的“查看节点会话（只读）”必须可按其冻结 Environment、持久 Workspace、OpenHands 状态和 Secret 重启原 Runtime。
+- 只读恢复不得创建新 Conversation、修改事件树或放宽完成／取消后的创建、消息发送、控制等写权限。
+- 全局页面懒加载过渡必须改为与浅色产品界面一致的表面，消除黑色全屏闪烁。
+
+完成：节点 host 解析在 `require_start_permission=false` 且已有 Conversation 时，包含终态 Attempt 在内都会重启同一 Attempt Runtime；恢复会先将同一受管 Sandbox 的 `STOPPED` 意图切回 `RUNNING/PENDING`，随后复用既有 generation fence 激活 Runtime。权限构造仍只授予读取和终端访问。新增回归覆盖取消 Attempt 的已有会话恢复与写权限拒绝，以及停止的 immutable Runtime 恢复后重回 `RUNNING/ACTIVE`。全局 `auth-loading` 改为浅灰／白色过渡表面和低对比绿色标识。
+
+验收：Web TypeScript typecheck、ESLint、production build 通过；受影响 Python Ruff format/check 与 `py_compile` 通过。两条定向 pytest 依赖 Testcontainers PostgreSQL，本机 Docker socket 不可用而在 fixture setup 阶段阻断，未记为通过；生产以目标终态节点会话 host 接口及原 Conversation 读取路径验收。
 
 ### OPS-01 Docker rollback image / BuildKit cache 容量治理 — DONE
 

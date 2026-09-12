@@ -143,14 +143,12 @@ def resolve_flow_node_session_host(
     existing_session_needs_runtime = (
         workspace.attempt_owned
         and attempt.conversation_id is not None
-        and attempt.state
-        not in {
-            AttemptState.WAITING_INPUT,
-            AttemptState.START_GATES,
-            AttemptState.START_BLOCKED,
-            AttemptState.WAITING_START_CONFIRMATION,
-            AttemptState.CANCELLED,
-        }
+        # Terminal Runs stop their physical Runtime to avoid holding compute,
+        # while retaining the external OpenHands state for the product's
+        # read-only “view node session” action. Re-provision only an existing
+        # Conversation here; permission construction below continues to deny
+        # every mutation after cancellation or Run completion.
+        and not require_start_permission
     )
     should_ensure_runtime = (
         workspace.attempt_owned

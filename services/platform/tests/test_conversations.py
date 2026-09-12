@@ -774,6 +774,49 @@ def test_flow_node_host_initializes_a_startable_attempt_without_write_permission
         assert host.session.permits(ACCESS_TERMINAL)
 
 
+def test_cancelled_node_session_restarts_only_for_read_only_history(
+    db_session_factory: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with db_session_factory() as db:
+        flow_run_id, runtime_session_id, attempt_id = _node_session_context(db)
+        attempt = db.get(NodeAttempt, attempt_id)
+        assert attempt is not None
+        attempt.state = "CANCELLED"
+        attempt.conversation_id = "aa632164-3d6a-44c8-af92-4d25f5890958"
+        ensured: list[str] = []
+        monkeypatch.setattr(
+            flow_node_host.sandboxes,
+            "node_attempt_workspace_context",
+            lambda _db, **_kwargs: SimpleNamespace(
+                attempt_owned=True,
+                host_working_directory="/data/workspaces/node-1",
+                runtime_working_directory="/runtime/workspace/project",
+            ),
+        )
+        monkeypatch.setattr(
+            flow_node_host.sandboxes,
+            "ensure_node_attempt_runtime",
+            lambda _db, **kwargs: ensured.append(str(kwargs["node_attempt_id"])),
+        )
+        monkeypatch.setattr(
+            flow_node_host.sandboxes,
+            "active_node_runtime_connection",
+            lambda _db, **_kwargs: _connection(runtime_session_id, flow_run_id),
+        )
+        monkeypatch.setattr(flow_node_host, "runtime_node", lambda **_kwargs: {"asset": {}})
+
+        host = flow_node_host.resolve_flow_node_session_host(
+            db,
+            flow_run_id=flow_run_id,
+            attempt_id=attempt_id,
+            require_start_permission=False,
+        )
+
+        assert ensured == [attempt_id]
+        assert host.session.permits(READ_SESSIONS)
+        assert not host.session.permits(CREATE_SESSIONS)
+
+
 def test_flow_node_host_rejects_non_startable_or_unscoped_attempts(
     db_session_factory: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
 ) -> None:

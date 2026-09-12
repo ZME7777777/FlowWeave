@@ -2115,7 +2115,7 @@ def test_explicit_flow_run_delete_cleans_up_node_attempt_runtime(
     assert deleted == [resource_id]
 
 
-def test_initial_flow_run_provision_reuses_generation_after_transient_provider_failure(
+def test_initial_flow_run_provision_reuses_generation_after_transient_provider_failure_or_stop(
     settings, db_session_factory, monkeypatch
 ):
     """A Provider 503 must retry one durable first-generation intent."""
@@ -2213,6 +2213,37 @@ def test_initial_flow_run_provision_reuses_generation_after_transient_provider_f
             )
 
         db.expire_all()
+        recovered_resource = db.get(ManagedSandbox, first_id)
+        recovered_generation = db.scalar(
+            select(RuntimeGeneration).where(RuntimeGeneration.managed_runtime_id == first_id)
+        )
+        recovered_session = db.get(FlowRunRuntime, logical_session_id)
+        assert (
+            recovered_resource is not None
+            and recovered_generation is not None
+            and recovered_session is not None
+        )
+        recovered_resource.desired_state = "STOPPED"
+        recovered_resource.observed_state = "STOPPED"
+        recovered_generation.state = "STOPPED"
+        recovered_session.status = "STOPPED"
+        db.commit()
+
+        # A retained terminal Runtime must reuse the immutable allocation and
+        # generation when the product later needs to read its Conversation.
+        with settings_context(configured):
+            sandbox_service._create_managed_runtime(
+                db,
+                flow_run_id=flow_run_id,
+                owner_type="FLOW_RUN",
+                owner_id=flow_run_id,
+                image="runtime:locked",
+                environment_id="environment-1",
+                environment_version_id="33333333-3333-4333-8333-333333333333",
+                environment_version_no=1,
+            )
+
+        db.expire_all()
         resources = list(
             db.scalars(
                 select(ManagedSandbox).where(
@@ -2232,7 +2263,9 @@ def test_initial_flow_run_provision_reuses_generation_after_transient_provider_f
         assert len(resources) == 1 and resources[0].id == first_id
         assert len(generations) == 1 and generations[0].state == "READY"
         assert session is not None and session.active_generation == 1 and session.status == "ACTIVE"
-    assert calls == 2
+        assert resources[0].desired_state == "RUNNING"
+        assert resources[0].observed_state == "RUNNING"
+    assert calls == 3
 
 
 def test_flow_run_delete_clears_orphaned_generation_reference(settings, db_session_factory):

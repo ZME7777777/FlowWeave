@@ -456,6 +456,22 @@ def _create_managed_runtime(
                         409,
                         {"sandbox_id": resource.id},
                     )
+                elif resource.desired_state == "STOPPED":
+                    # A completed FlowRun deliberately drains its retained
+                    # Runtime.  A later read-only visit to its existing
+                    # OpenHands Conversation may safely revive that exact
+                    # immutable allocation; do not create a new generation
+                    # or change the retained workspace/secret binding.
+                    #
+                    # `activate_runtime_generation()` already fences the
+                    # matching logical Session/Generation STOPPED -> ACTIVE
+                    # transition after Docker confirms it is ready.  Mark the
+                    # physical desired state before calling the provider so
+                    # the active-connection guard cannot observe a stopped
+                    # ledger row after the container has started.
+                    resource.desired_state = "RUNNING"
+                    resource.observed_state = "PENDING"
+                    resource.next_reconcile_at = datetime.now(UTC)
                 logical_generation = (
                     ensure_runtime_generation(
                         control_db,
