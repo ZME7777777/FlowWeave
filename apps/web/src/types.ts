@@ -630,6 +630,8 @@ export type AgentWorkspace = AgentSessionHostDetails;
 export interface AgentSessionRuntime {
   state: 'ACTIVE' | 'RECOVERING';
   write_available: boolean;
+  /** Completed FlowRun node sessions may fork without reopening execution. */
+  fork_available?: boolean;
   /** Workspace terminal availability is independent from conversation writes. */
   terminal_available?: boolean;
   message?: string | null;

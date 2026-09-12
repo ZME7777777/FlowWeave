@@ -134,6 +134,14 @@ def _assert_node_session_writable(db: Session, *, flow_run_id: str, attempt_id: 
     )
 
 
+def _assert_node_session_forkable(db: Session, *, flow_run_id: str, attempt_id: str) -> NodeAttempt:
+    """Keep native forks available after a successful FlowRun completion."""
+
+    return agent_sessions.assert_flow_node_session_forkable(
+        db, flow_run_id=flow_run_id, attempt_id=attempt_id
+    )
+
+
 def _attempt_context(db: Session, attempt: NodeAttempt) -> tuple[NodeRun, FlowRun, RunSnapshot]:
     node_run = db.get(NodeRun, attempt.node_run_id)
     snapshot = db.get(RunSnapshot, attempt.snapshot_id)
@@ -581,9 +589,16 @@ def node_runtime_status(db: Session, *, flow_run_id: str, attempt_id: str) -> di
     writable = attempt.state != AttemptState.CANCELLED and (
         run is None or run.state not in {"COMPLETED", "CANCELLED"}
     )
+    fork_available = (
+        run is not None and run.state == "COMPLETED" and attempt.state != AttemptState.CANCELLED
+    )
     return {
         "state": "ACTIVE",
         "write_available": writable,
+        # A completed FlowRun remains read-only. The UI exposes this one
+        # native OpenHands branch operation with the same surface as an
+        # ordinary Agent-session Fork; all other controls stay disabled.
+        "fork_available": fork_available,
         # The Runtime and persistent Workspace outlive a terminal FlowRun.
         # This flag is intentionally independent from conversation writes: the
         # browser may still open an interactive terminal for historical work.
@@ -2527,7 +2542,7 @@ def fork_node_conversation(
 ) -> dict[str, Any]:
     """Use OpenHands' native fork while preserving the Attempt-only directory."""
 
-    _assert_node_session_writable(db, flow_run_id=flow_run_id, attempt_id=attempt_id)
+    _assert_node_session_forkable(db, flow_run_id=flow_run_id, attempt_id=attempt_id)
     source = _binding_for_attempt(
         db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id, lock=True
     )

@@ -112,17 +112,20 @@ def __getattr__(name: str) -> Any:
         }[name]
     if name in {
         "FlowNodeSessionHost",
+        "assert_flow_node_session_forkable",
         "assert_flow_node_session_writable",
         "resolve_flow_node_session_host",
     }:
         from flowweave.modules.agent_sessions.application.flow_node_host import (
             FlowNodeSessionHost,
+            assert_flow_node_session_forkable,
             assert_flow_node_session_writable,
             resolve_flow_node_session_host,
         )
 
         return {
             "FlowNodeSessionHost": FlowNodeSessionHost,
+            "assert_flow_node_session_forkable": assert_flow_node_session_forkable,
             "assert_flow_node_session_writable": assert_flow_node_session_writable,
             "resolve_flow_node_session_host": resolve_flow_node_session_host,
         }[name]

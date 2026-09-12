@@ -1086,7 +1086,7 @@ def test_cancelled_node_attempt_fences_every_session_write(
         assert "正在停止" in str(status["message"])
 
 
-def test_completed_flow_run_makes_node_conversation_read_only_but_keeps_terminal_available(
+def test_completed_flow_run_keeps_node_source_read_only_but_allows_native_fork(
     db_session_factory: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     with db_session_factory() as db:
@@ -1100,6 +1100,12 @@ def test_completed_flow_run_makes_node_conversation_read_only_but_keeps_terminal
                 db, flow_run_id=flow_run_id, attempt_id=attempt_id
             )
         assert blocked.value.code == "FLOW_RUN_TERMINAL"
+        assert (
+            flow_node_host.assert_flow_node_session_forkable(
+                db, flow_run_id=flow_run_id, attempt_id=attempt_id
+            ).id
+            == attempt_id
+        )
 
         monkeypatch.setattr(
             flow_node_conversations.agent_sessions,
@@ -1110,8 +1116,18 @@ def test_completed_flow_run_makes_node_conversation_read_only_but_keeps_terminal
             db, flow_run_id=flow_run_id, attempt_id=attempt_id
         )
         assert status["write_available"] is False
+        assert status["fork_available"] is True
         assert status["terminal_available"] is True
         assert "流程已结束" in str(status["message"])
+
+        attempt = db.get(NodeAttempt, attempt_id)
+        assert attempt is not None
+        attempt.state = "CANCELLED"
+        with pytest.raises(DomainError) as cancelled:
+            flow_node_host.assert_flow_node_session_forkable(
+                db, flow_run_id=flow_run_id, attempt_id=attempt_id
+            )
+        assert cancelled.value.code == "FLOW_RUN_TERMINAL"
 
 
 def test_terminal_node_attempt_keeps_workspace_entry_operations(

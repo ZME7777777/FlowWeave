@@ -92,6 +92,34 @@ def assert_flow_node_session_writable(
     return attempt
 
 
+def assert_flow_node_session_forkable(
+    db: Session, *, flow_run_id: str, attempt_id: str
+) -> NodeAttempt:
+    """Allow a native fork from a completed FlowRun without reopening it.
+
+    A fork is the sole exception to the terminal node-session write fence. It
+    creates a new OpenHands branch from a completed reply, but never sends a
+    message, resumes execution, or changes the completed Attempt/FlowRun
+    projection. Cancellation remains strictly read-only.
+    """
+
+    attempt = db.get(NodeAttempt, attempt_id)
+    node_run = db.get(NodeRun, attempt.node_run_id) if attempt is not None else None
+    if attempt is None or node_run is None or node_run.flow_run_id != flow_run_id:
+        raise DomainError(
+            "NODE_CONVERSATION_CONTEXT_MISMATCH",
+            "The selected node Attempt does not belong to this FlowRun",
+            409,
+            {"flow_run_id": flow_run_id, "node_attempt_id": attempt_id},
+        )
+    run = db.get(FlowRun, flow_run_id)
+    if run is None:
+        raise not_found("flow_run", flow_run_id)
+    if run.state == "COMPLETED" and attempt.state != AttemptState.CANCELLED:
+        return attempt
+    return assert_flow_node_session_writable(db, flow_run_id=flow_run_id, attempt_id=attempt_id)
+
+
 def resolve_flow_node_session_host(
     db: Session,
     *,
@@ -250,6 +278,7 @@ def resolve_flow_node_session_host(
 
 __all__ = (
     "FlowNodeSessionHost",
+    "assert_flow_node_session_forkable",
     "assert_flow_node_session_writable",
     "resolve_flow_node_session_host",
 )
