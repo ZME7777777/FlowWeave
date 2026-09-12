@@ -483,8 +483,8 @@ function workspaceReferencesFromStorage(value: unknown): AgentWorkspaceReference
     if (typeof candidate.path !== 'string' || !candidate.path.trim()
       || (candidate.kind !== 'file' && candidate.kind !== 'directory')
       || typeof candidate.display_name !== 'string' || !candidate.display_name.trim()
-      || seen.has(candidate.path)) return false;
-    seen.add(candidate.path);
+      || seen.has(workspaceReferenceKey(candidate as AgentWorkspaceReference))) return false;
+    seen.add(workspaceReferenceKey(candidate as AgentWorkspaceReference));
     return true;
   }).slice(0, 20);
 }
@@ -1386,9 +1386,30 @@ function selectPreviewText(root: HTMLElement, content: string, selection: FileSe
   if (!range) return;
   const browserSelection = window.getSelection();
   browserSelection?.removeAllRanges(); browserSelection?.addRange(range);
-  // The preview itself is the scroll container. Scrolling it into view does
-  // not reveal a deep line, whereas the range's rendered text node does.
-  range.startContainer.parentElement?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  // Code and Markdown previews have their own scrollbars. Scroll that inner
+  // surface instead of the page or drawer so the referenced start coordinate
+  // lands at the visible position even in a long file.
+  const scrollContainer = range.startContainer.parentElement?.closest<HTMLElement>(
+    '.agent-file-code-preview, .agent-file-markdown-preview',
+  ) ?? root;
+  const previewRect = scrollContainer.getBoundingClientRect();
+  const rangeRect = Array.from(range.getClientRects()).at(0) ?? range.getBoundingClientRect();
+  const top = Math.max(0, scrollContainer.scrollTop + rangeRect.top - previewRect.top - scrollContainer.clientHeight * 0.35);
+  const left = rangeRect.left < previewRect.left || rangeRect.right > previewRect.right
+    ? Math.max(0, scrollContainer.scrollLeft + rangeRect.left - previewRect.left - scrollContainer.clientWidth * 0.2)
+    : scrollContainer.scrollLeft;
+  scrollContainer.scrollTo({ top, left, behavior: 'smooth' });
+}
+
+function workspaceReferenceLabel(reference: AgentWorkspaceReference): string {
+  const selection = reference.selection;
+  return selection
+    ? `${reference.relative_path ?? reference.display_name} · ${selection.start_line}:${selection.start_column}–${selection.end_line}:${selection.end_column}`
+    : reference.kind === 'directory' ? '工作区目录 · 本地路径引用' : '工作区文件 · 本地路径引用';
+}
+
+function workspaceReferenceKey(reference: AgentWorkspaceReference): string {
+  return `${reference.path}:${JSON.stringify(reference.selection ?? {})}`;
 }
 
 interface WorkspaceSelectionRect { left: number; top: number; width: number; height: number; }
@@ -1436,9 +1457,11 @@ function WorkspaceTextPreview({ path, content, highlight, highlightLine, onSelec
     const selection = highlight ?? lineSelection;
     if (!selection || !previewRef.current) return;
     selectPreviewText(previewRef.current, content, selection);
-    const timer = window.setTimeout(() => { window.getSelection()?.removeAllRanges(); previewRef.current?.classList.remove('workspace-selection-flash'); }, 1_600);
+    const timer = window.setTimeout(() => {
+      window.getSelection()?.removeAllRanges();
+      previewRef.current?.classList.remove('workspace-selection-flash');
+    }, 1_600);
     previewRef.current.classList.add('workspace-selection-flash');
-    previewRef.current.scrollIntoView({ block: 'center', behavior: 'smooth' });
     return () => window.clearTimeout(timer);
   }, [content, highlight, highlightLine]);
   const captureSelection = () => {
@@ -2436,7 +2459,7 @@ function WorkspaceDrawer({
     setCandidatePreview(undefined);
     setSourceFileNavigation({ path: sourcePath, line });
     openFiles(sourcePath);
-  }, [details?.working_directory, openFiles]);
+  }, [details?.working_directory, openFiles, visibleFiles]);
   const selectedEntryRoots = useMemo(() => [...selectedEntryPaths].filter(path => ![...selectedEntryPaths].some(other => other !== path && path.startsWith(`${other}/`))), [selectedEntryPaths]);
   const removeEntries = async (items: Array<{ path: string; kind: 'file' | 'directory' }>) => {
     if (!api.deleteFile || !items.length) return;
@@ -4046,7 +4069,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         <ComposerCapabilityAutocomplete draft={draft} suggestions={composerSuggestions} placeholder={pendingConfirmation ? '请先处理上方工具确认…' : turnState === 'paused' ? '已暂停：可继续，也可编辑上方消息重新思考…' : features.capabilities ? '给 Agent 发消息…（Enter 加入队列，⌘/Ctrl+Enter 直接发送）' : '给 Agent 发消息…'} disabled={!canCompose || Boolean(pendingConfirmation) || bootstrap.isPending || condense.isPending || migrateStreaming.isPending || Boolean(pendingMigratedSend) || turnState === 'pausing' || turnState === 'resuming'} onDraftChange={setDraft} onPaste={event => { if (!features.attachments || !composerScope) return; const files = transferredFiles(event.clipboardData); if (!files.length) return; event.preventDefault(); for (const file of files) upload.mutate({ file, scope: composerScope }); }} onDropFiles={features.attachments && composerScope ? files => { for (const file of files) upload.mutate({ file, scope: composerScope }); } : undefined} onDropWorkspaceFiles={paths => { const entries = composerWorkspaceDetailsQuery.data?.files ?? []; setWorkspaceReferences(current => [...current, ...paths.flatMap(path => { const entry = entries.find(item => item.path === path); return entry && !current.some(reference => reference.path === path) ? [{ path, kind: entry.kind, display_name: path.split('/').filter(Boolean).pop() ?? path }] : []; })]); }} onSubmit={enqueueDraft} onDirectSubmit={sendDraftDirectly} onManageCapabilities={features.capabilities && (selected || features.draftCapabilitySelection) ? () => setCapabilityManagerOpen(true) : undefined} onNativeAction={action => { if (action === 'CONDENSE' && selected && (turnState === 'idle' || turnState === 'paused') && !pendingConfirmation && !condense.isPending) requestManualCompaction(); }} onWorkspaceReferenceSelected={() => { setWorkspaceReferenceQuery(''); setWorkspaceReferencePickerOpen(true); }}/>
         {features.attachments && attachments.length > 0 && <div className="agent-attachments">{attachments.map(item => <span key={item.path}><button type="button" className="agent-attachment-open" title={`在右侧查看附件：${item.filename}`} onClick={() => openAttachmentInDrawer(item)}>{item.image_data_url && <img src={item.image_data_url} alt=""/>}<em>{item.filename}</em></button><button type="button" className="agent-attachment-remove" aria-label={`移除附件 ${item.filename}`} onClick={() => setAttachments(all => all.filter(candidate => candidate.path !== item.path))}>×</button></span>)}</div>}
         {references.length > 0 && <div className="agent-attachments agent-conversation-references" aria-label="已添加的会话引用">{references.map((reference, index) => <span key={`${reference.eventId}:${reference.content}`}><span className="agent-attachment-open" title={reference.content}><Quote size={14}/><em>{`会话引用 ${index + 1}`}</em></span><button type="button" className="agent-attachment-remove" aria-label={`移除会话引用 ${index + 1}`} onClick={() => setReferences(current => current.filter(item => item !== reference))}>×</button></span>)}</div>}
-        {workspaceReferences.length > 0 && <div className="agent-attachments agent-workspace-references" aria-label="已添加的工作区引用">{workspaceReferences.map(reference => <span key={reference.path}><span className="agent-attachment-open" title={reference.path}>{reference.kind === 'directory' ? <Folder size={14}/> : <FileCode2 size={14}/>}<em>{reference.display_name}</em></span><button type="button" className="agent-attachment-remove" aria-label={'移除工作区引用 ' + reference.display_name} onClick={() => setWorkspaceReferences(current => current.filter(item => item.path !== reference.path))}>×</button></span>)}</div>}
+        {workspaceReferences.length > 0 && <div className="agent-attachments agent-workspace-references" aria-label="已添加的工作区引用">{workspaceReferences.map(reference => <span key={workspaceReferenceKey(reference)} title={reference.path}><span className="agent-attachment-open">{reference.kind === 'directory' ? <Folder size={14}/> : <FileCode2 size={14}/>}<em><b>{reference.display_name}</b><small>{workspaceReferenceLabel(reference)}</small></em></span><button type="button" className="agent-attachment-remove" aria-label={'移除工作区引用 ' + reference.display_name} onClick={() => setWorkspaceReferences(current => current.filter(item => workspaceReferenceKey(item) !== workspaceReferenceKey(reference)))}>×</button></span>)}</div>}
         <footer>
           <div className="agent-composer-context">
             {features.attachments && (selected || conversationDraft) && <><input ref={attachmentInput} aria-label="上传附件" type="file" multiple hidden onChange={event => { if (composerScope) for (const file of Array.from(event.target.files ?? [])) upload.mutate({ file, scope: composerScope }); event.currentTarget.value = ''; }}/><button type="button" aria-label="添加附件" disabled={!canCompose || Boolean(pendingConfirmation) || upload.isPending} onClick={() => attachmentInput.current?.click()}><Plus size={17}/></button></>}
@@ -4067,7 +4090,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       </div>}
       {visibleError && <p className="agent-workbench-error">{visibleError.message}</p>}
     </section>
-    <WorkspaceDrawer open={drawerOpen} onOpen={() => setDrawerOpen(true)} onClose={() => setDrawerOpen(false)} onAddFileSelection={(path, selection) => setWorkspaceReferences(current => current.some(reference => reference.path === path && JSON.stringify(reference.selection) === JSON.stringify(selection)) ? current : [...current, { path, kind: 'file', display_name: path.split('/').filter(Boolean).pop() ?? path, selection }])} highlightedFileSelection={fileSelectionReference} workspaceId={workspace.id} scopeKey={selected?.id ?? pendingCreatedId ?? conversationDraft?.id ?? 'workspace-root'} migrateFromScopeKey={workspaceScopeMigration} bindingId={selected?.id} workDirectoryId={selected ? undefined : conversationDraft?.workDirectoryId} conversation={selected} attachments={drawerAttachments} sources={drawerSources} attachmentRequest={attachmentRequest} candidatePreviewRequest={candidatePreviewRequest} reviewChanges={reviewChanges} reviewRequestId={reviewRequestId} sessionChanges={sessionFileChanges} onReviewChanges={openChangesReview} runtimeAvailable={Boolean((runtime?.terminal_available ?? runtime?.write_available) && (!features.terminalRequiresConversation || selected))} runtimeTasks={runtimeTasks} agentDefinitions={agentDefinitionAssets} sessionStopped={sessionStopped}/>
+    <WorkspaceDrawer open={drawerOpen} onOpen={() => setDrawerOpen(true)} onClose={() => { setFileSelectionReference(undefined); setDrawerOpen(false); }} onAddFileSelection={(path, selection) => setWorkspaceReferences(current => current.some(reference => reference.path === path && JSON.stringify(reference.selection) === JSON.stringify(selection)) ? current : [...current, { path, kind: 'file', display_name: path.split('/').filter(Boolean).pop() ?? path, selection }])} highlightedFileSelection={fileSelectionReference} workspaceId={workspace.id} scopeKey={selected?.id ?? pendingCreatedId ?? conversationDraft?.id ?? 'workspace-root'} migrateFromScopeKey={workspaceScopeMigration} bindingId={selected?.id} workDirectoryId={selected ? undefined : conversationDraft?.workDirectoryId} conversation={selected} attachments={drawerAttachments} sources={drawerSources} attachmentRequest={attachmentRequest} candidatePreviewRequest={candidatePreviewRequest} reviewChanges={reviewChanges} reviewRequestId={reviewRequestId} sessionChanges={sessionFileChanges} onReviewChanges={openChangesReview} runtimeAvailable={Boolean((runtime?.terminal_available ?? runtime?.write_available) && (!features.terminalRequiresConversation || selected))} runtimeTasks={runtimeTasks} agentDefinitions={agentDefinitionAssets} sessionStopped={sessionStopped}/>
     {workspaceReferencePickerOpen && <WorkspaceReferencePicker
       entries={composerWorkspaceDetailsQuery.data?.files ?? []}
       root={composerWorkspaceDetailsQuery.data?.working_directory ?? activeWorkspaceRoot ?? ''}
