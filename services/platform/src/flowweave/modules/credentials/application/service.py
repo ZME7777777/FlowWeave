@@ -158,6 +158,8 @@ def credentials_for_agent(db: Session) -> tuple[dict[str, str], str]:
     instructions = (
         "受控网站认证：先从目标 URL 提取主机，再只选择精确匹配的条目；"
         "仅当条目明确允许子域时，才可匹配其子域。不得为不匹配的主机引用变量。"
+        "只可使用下列列出的完整变量名；不得猜测或改写为 ES_QUERY_USER、"
+        "ES_QUERY_PASSWORD 等别名。"
         "不要输出、写入文件、提交或向用户索取这些值；未匹配时请求用户在认证管理中新增条目。\n"
         + "\n".join(lines)
     )

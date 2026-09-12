@@ -2923,6 +2923,7 @@ class OpenHandsRuntime:
                     outputs=self._outputs(handle, text),
                     final_message=text,
                     completion_event_id=self._event_identity(item)[0],
+                    completion_event_kind="FINISH_ACTION",
                     cursor=cursor,
                 )
             if self._event_type(item) == "ERROR":
@@ -2961,6 +2962,8 @@ class OpenHandsRuntime:
                             status="COMPLETED",
                             outputs=self._outputs(handle, text),
                             final_message=text,
+                            completion_event_id=self._event_identity(item)[0],
+                            completion_event_kind="ASSISTANT_MESSAGE",
                             cursor=cursor,
                         )
         return None
@@ -3175,7 +3178,14 @@ class OpenHandsRuntime:
             result=(
                 None
                 if handle.history_cursor
-                else self._result_from_events(handle, active_items, cursor)
+                else self._result_from_events(
+                    handle,
+                    active_items,
+                    cursor,
+                    assistant_message_is_final=(
+                        str((state or {}).get("execution_status") or "").lower() == "finished"
+                    ),
+                )
             ),
             task_usage=(
                 self._task_usage_snapshots(state, source_cursor=state_cursor)

@@ -197,8 +197,17 @@ def _request() -> StartAttemptRequest:
     )
 
 
-def test_collaboration_request_drops_all_node_execution_business_context():
+def test_collaboration_request_keeps_host_scoped_credentials_without_node_execution_context(
+    monkeypatch: pytest.MonkeyPatch,
+):
     shared_spec = RuntimeAgentSpec(tools=(RuntimeTool(name="terminal"),))
+    monkeypatch.setattr(
+        "flowweave.runtime.request.credentials_for_agent",
+        lambda _db: (
+            {"FLOWWEAVE_AUTH_ES_USERNAME": "secret-user"},
+            "受控网站认证：easysearch.example.com；变量 $FLOWWEAVE_AUTH_ES_USERNAME",
+        ),
+    )
 
     request = build_runtime_request(
         None,  # type: ignore[arg-type]
@@ -230,7 +239,11 @@ def test_collaboration_request_drops_all_node_execution_business_context():
     assert request.startup_capability_key is None
     assert request.semantic_history == ()
     assert request.output_targets == {}
-    assert request.agent_spec is shared_spec
+    assert request.agent_spec is not shared_spec
+    assert request.agent_spec.agent_context.system_message_suffix == (
+        "受控网站认证：easysearch.example.com；变量 $FLOWWEAVE_AUTH_ES_USERNAME"
+    )
+    assert request.conversation_secrets == {"FLOWWEAVE_AUTH_ES_USERNAME": "secret-user"}
     assert request.memory_enabled is False
 
 
@@ -2345,6 +2358,7 @@ def test_openhands_completion_uses_finish_action_identity_not_leaf_cursor(openha
     assert result is not None
     assert result.status == "COMPLETED"
     assert result.completion_event_id == "finish-action"
+    assert result.completion_event_kind == "FINISH_ACTION"
     assert result.cursor == "finish-observation"
 
 
@@ -2442,7 +2456,52 @@ def test_openhands_finished_turn_uses_assistant_message_after_latest_user(
 
     assert result.status == "COMPLETED"
     assert result.final_message == "你好！"
+    assert result.completion_event_id == "assistant-current"
+    assert result.completion_event_kind == "ASSISTANT_MESSAGE"
     assert result.cursor == "state-finished"
+
+
+def test_openhands_active_finished_branch_uses_assistant_message_identity(
+    openhands_settings, monkeypatch
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    monkeypatch.setattr(
+        runtime,
+        "_conversation_state",
+        lambda _handle, **_kwargs: _state(
+            execution_status="finished", leaf_event_id="assistant-current"
+        ),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_active_event_window",
+        lambda *_args, **_kwargs: (
+            [
+                {
+                    "kind": "MessageEvent",
+                    "id": "user-current",
+                    "parent_id": "__root__",
+                    "source": "user",
+                    "llm_message": {"role": "user", "content": "你好"},
+                },
+                {
+                    "kind": "MessageEvent",
+                    "id": "assistant-current",
+                    "parent_id": "user-current",
+                    "source": "agent",
+                    "llm_message": {"role": "assistant", "content": "完成"},
+                },
+            ],
+            None,
+        ),
+    )
+
+    batch = runtime.read_active_events(_handle())
+
+    assert batch.result is not None
+    assert batch.result.status == "COMPLETED"
+    assert batch.result.completion_event_id == "assistant-current"
+    assert batch.result.completion_event_kind == "ASSISTANT_MESSAGE"
 
 
 def test_openhands_resume_interrupts_the_active_turn_before_steering(

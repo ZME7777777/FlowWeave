@@ -390,6 +390,23 @@ def build_runtime_request(
         if workspace_context is not None
         else "/runtime/workspace/project"
     )
+    # Website credentials are independent of a node execution contract.
+    # Resolve them before the collaboration fast path too: a node session is
+    # still a new OpenHands Conversation and must receive the same
+    # host-scoped secret bindings as a standalone Agent session.
+    conversation_secrets, credential_context = credentials_for_agent(db)
+    if credential_context and agent_spec is not None:
+        context = agent_spec.agent_context
+        agent_spec = replace(
+            agent_spec,
+            agent_context=replace(
+                context,
+                system_message_suffix="\n\n".join(
+                    part for part in (context.system_message_suffix, credential_context) if part
+                ),
+            ),
+        )
+
     # Interactive Agent conversations are only hosted by the selected node
     # Attempt. They deliberately do not inherit that node's execution
     # contract, inputs, startup prompt, output targets, memory, hooks, or
@@ -427,19 +444,7 @@ def build_runtime_request(
             runtime_sandbox_id=runtime_sandbox_id,
             runtime_resource_name=runtime_resource_name,
             runtime_base_url=runtime_base_url,
-            conversation_secrets={},
-        )
-    conversation_secrets, credential_context = credentials_for_agent(db)
-    if credential_context and agent_spec is not None:
-        context = agent_spec.agent_context
-        agent_spec = replace(
-            agent_spec,
-            agent_context=replace(
-                context,
-                system_message_suffix="\n\n".join(
-                    part for part in (context.system_message_suffix, credential_context) if part
-                ),
-            ),
+            conversation_secrets=conversation_secrets,
         )
     if workspace_context is not None and not workspace_context.attempt_owned:
         raise DomainError(

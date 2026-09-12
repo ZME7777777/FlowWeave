@@ -588,9 +588,11 @@ class RuntimeResult:
     outputs: dict[str, tuple[str, str]] = field(default_factory=_empty_outputs)
     final_message: str | None = None
     human_question: str | None = None
-    # This is an OpenHands ActionEvent.id for FinishAction, not a conversation
-    # leaf/cursor. Observations may advance the leaf after FinishAction.
+    # A formal native completion event ID, never a conversation leaf/cursor.
+    # FINISH_ACTION is an ActionEvent.id; ASSISTANT_MESSAGE is a MessageEvent.id
+    # accepted only after OpenHands reports the active Conversation as finished.
     completion_event_id: str | None = None
+    completion_event_kind: Literal["FINISH_ACTION", "ASSISTANT_MESSAGE"] | None = None
     cursor: str | None = None
     error: str | None = None
     schema_version: int = 1
@@ -603,6 +605,7 @@ class RuntimeResult:
             "final_message": self.final_message,
             "human_question": self.human_question,
             "completion_event_id": self.completion_event_id,
+            "completion_event_kind": self.completion_event_kind,
             "cursor": self.cursor,
             "error": self.error,
         }

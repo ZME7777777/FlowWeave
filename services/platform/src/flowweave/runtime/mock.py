@@ -143,6 +143,7 @@ class MockRuntime:
                 status="COMPLETED",
                 outputs=outputs,
                 completion_event_id="mock-finish-2",
+                completion_event_kind="FINISH_ACTION",
                 cursor="2",
             )
         self._results[handle.job_id] = result
@@ -451,6 +452,7 @@ class MockRuntime:
             outputs={"result": ("TEXT", answer)},
             final_message=answer,
             completion_event_id=f"mock-finish-{assistant_cursor}",
+            completion_event_kind="FINISH_ACTION",
             cursor=assistant_cursor,
         )
         self._results[handle.job_id] = result

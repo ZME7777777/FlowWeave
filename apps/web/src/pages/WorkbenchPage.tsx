@@ -447,8 +447,20 @@ function gateResultText(value: unknown) {
     'Insufficient evidence to establish a passing gate result.': '证据不足，无法判定门禁通过。',
     'No candidate artifact was reviewed in the available activity.': '本次执行中没有可供审查的候选产物。',
     'No validation results or acceptance-criteria checks were provided.': '未提供可验证的结果或验收标准检查。',
+    'OpenHands completed without a formal FinishAction identity; outputs cannot be registered.': 'Agent 已返回结果，但 OpenHands 未提供可核验的正式完成事件标识，因此平台不会登记节点产物。',
+    'OpenHands completed without a formal completion event identity': 'Agent 已返回结果，但 OpenHands 未提供可核验的正式完成事件标识。',
   };
   return translations[text] ?? text;
+}
+
+function attemptErrorText(attempt: NodeAttempt): string | undefined {
+  if (attempt.error_code === 'RUNTIME_COMPLETION_IDENTITY_MISSING') {
+    return 'Agent 已返回结果，但 OpenHands 未提供可核验的正式完成事件标识；为避免将错误会话结果登记为节点产物，平台已暂停流转。可先从当前会话确认候选交付物，再点击“从 OpenHands 对账并补登”。';
+  }
+  if (attempt.error_code === 'RUNTIME_COMPLETION_IDENTITY_UNKNOWN') {
+    return '平台尚未能确认当前 OpenHands 活跃分支的正式完成事件标识；为避免错误登记节点产物，平台已暂停流转。可点击“从 OpenHands 对账并补登”。';
+  }
+  return attempt.error_detail ? gateResultText(attempt.error_detail) : undefined;
 }
 
 function gateDecisionText(decision: GateEvaluation['decision']) {
@@ -541,7 +553,7 @@ function GateDetailDialog({ attemptId, attemptStateVersion, evaluation, policy, 
   const evidence: Record<string, unknown>[] = Array.isArray(rawEvidence) ? rawEvidence.filter((item): item is Record<string, unknown> => typeof item === 'object' && item !== null) : [];
   const reviewedArtifacts = evaluation.reviewed_artifacts ?? [];
   const reviewedConsumers = evaluation.reviewed_downstream_consumers ?? [];
-  const checkRow = (item: Record<string, unknown>, key: string) => <li className={item.status === 'PASS' ? 'pass' : 'fail'} key={key}><strong>{item.status === 'PASS' ? '通过' : '未通过'}</strong><span>{item.kind === 'OUTPUT' ? `输出 ${String(item.field_key ?? '')}` : `${String(item.source_output_key ?? '')} → ${String(item.target ?? '')}`}</span><small>{item.expected_type ? `期望 ${String(item.expected_type)}${item.actual_type ? ` · 实际 ${String(item.actual_type)}` : ''} · ` : ''}{String(item.reason ?? '')}</small></li>;
+  const checkRow = (item: Record<string, unknown>, key: string) => <li className={item.status === 'PASS' ? 'pass' : 'fail'} key={key}><strong>{item.status === 'PASS' ? '通过' : '未通过'}</strong><span>{item.kind === 'OUTPUT' ? `输出 ${String(item.field_key ?? '')}` : `${String(item.source_output_key ?? '')} → ${String(item.target ?? '')}`}</span><small>{item.expected_type ? `期望 ${String(item.expected_type)}${item.actual_type ? ` · 实际 ${String(item.actual_type)}` : ''} · ` : ''}{gateResultText(item.reason)}</small></li>;
   const persistedOutputChecks = evidence.filter(item => item.kind === 'OUTPUT');
   const persistedMappingChecks = evidence.filter(item => item.kind === 'MAPPING');
   const legacyOutputChecks: Record<string, unknown>[] = reviewedArtifacts.map(item => ({ kind: 'OUTPUT', status: evaluation.decision, field_key: item.field_key, expected_type: item.artifact_type, actual_type: item.artifact_type, reason: '该产物已被冻结；此历史记录未保存逐项执行证据。' }));
@@ -1083,6 +1095,7 @@ function AttemptPanel({ run, nodeRun, attempt, refresh, navigate, sessionReturnC
   const runtimeFailed = attempt.error_code === 'RUNTIME_FAILED' || attempt.runtime_phase === 'FAILED';
   const completionReconciliationAvailable = attempt.state === 'END_BLOCKED'
     && ['RUNTIME_COMPLETION_IDENTITY_UNKNOWN', 'RUNTIME_COMPLETION_IDENTITY_MISSING'].includes(attempt.error_code ?? '');
+  const completionIdentityFailure = completionReconciliationAvailable;
   const automaticGateFailureRound = Math.max(0, ...attempt.gate_evaluations
     .filter(item => item.stage === 'END' && item.decision === 'FAIL')
     .map(item => item.evaluation_attempt));
@@ -1119,7 +1132,9 @@ function AttemptPanel({ run, nodeRun, attempt, refresh, navigate, sessionReturnC
   const automaticGateDeliveryFailed = automaticAttempt && attempt.error_code === 'AUTOMATIC_GATE_DELIVERY_FAILED';
   const automaticGateExecutionFailed = automaticAttempt && attempt.error_code === 'AUTOMATIC_GATE_EXECUTION_FAILED';
   const automaticRemediationDeliveryFailed = automaticAttempt && attempt.error_code === 'AUTOMATIC_OUTPUT_REMEDIATION_DELIVERY_FAILED';
-  const automaticBlockedTitle = runtimeFailed
+  const automaticBlockedTitle = completionIdentityFailure
+    ? '节点完成信息不完整'
+    : runtimeFailed
     ? '节点执行失败'
     : automaticGateRemediationPending
       ? '正在修订输出'
@@ -1136,7 +1151,9 @@ function AttemptPanel({ run, nodeRun, attempt, refresh, navigate, sessionReturnC
                 : automaticAttempt
                   ? '连续运行需要人工处理'
                   : '门禁未通过';
-  const automaticBlockedDescription = automaticGateExecutionFailed || automaticGateDeliveryFailed
+  const automaticBlockedDescription = completionIdentityFailure
+    ? attemptErrorText(attempt)
+    : automaticGateExecutionFailed || automaticGateDeliveryFailed
     ? '这是当前门禁执行或投递的技术故障，可能来自用户定义的门禁配置、所选供应商或服务异常，不表示节点输出不符合要求。请查看门禁详情；必要时切换门禁供应商后重试当前阶段。'
     : automaticRemediationDeliveryFailed
       ? '完成门禁已记录未通过，但平台未能创建输出修订会话。请恢复服务后重试当前阶段，或进入节点会话人工处理。'
@@ -1150,7 +1167,7 @@ function AttemptPanel({ run, nodeRun, attempt, refresh, navigate, sessionReturnC
       {attempt.state === 'WAITING_HUMAN' && <><label>人工输入<textarea value={text} onChange={event => setText(event.target.value)}/></label><button className="primary full" disabled={!text} onClick={() => act('human', { content: text })}>提交并继续</button></>}
       {attempt.state === 'WAITING_CONFIRMATION' && <RuntimeConfirmationPanel attempt={attempt} onResolved={refresh}/>}
       {attempt.state === 'WAITING_ACCEPTANCE' && (automaticAttempt ? <section className="terminal-run-panel"><h4>等待平台自动流转</h4><p>完成门禁已通过。平台正在按冻结拓扑和端口映射验收产物并选择后继节点，无需进入会话推动。</p></section> : <><label>验收意见<textarea value={text} onChange={event => setText(event.target.value)} placeholder="退回时填写修改要求"/></label><button className="primary full" onClick={() => act('accept')}>完成节点并流转</button><button className="secondary full" disabled={!text} onClick={() => act('reject', { reason: text })}>退回修改</button></>)}
-      {(attempt.state === 'START_BLOCKED' || attempt.state === 'END_BLOCKED') && <section className="terminal-run-panel"><h4>{automaticBlockedTitle}</h4><p>{automaticBlockedDescription || attempt.error_detail || (runtimeFailed ? '模型或运行时执行失败，尚未生成正式输出。可进入节点会话继续处理；OpenHands 接受继续或新消息后，后续正式事件会重新驱动本节点。' : '请查看门禁结果：可直接重新执行门禁，或根据门禁结论调整交付物后重试。只有人工明确接受风险时才会继续流转。')}</p>{completionReconciliationAvailable && <><small>平台会重新验证当前 OpenHands 活跃分支的正式 FinishAction、冻结输出合同和受管工作区文件；不会接受手工指定的事件 ID、路径或产物。</small><button className="primary full" disabled={mutation.isPending} onClick={() => void dialog.confirm({ title: '确认从 OpenHands 对账并补登？', message: '平台将依据正式 FinishAction ID 幂等登记候选产物，并重新执行完成门禁。', confirmLabel: '确认对账并补登' }).then(ok => ok && act('reconcile-runtime-completion'))}>从 OpenHands 对账并补登</button></>}{runtimeFailed && <small>失败发生在 Runtime 执行阶段，不是完成门禁拒绝；当前没有可流转的正式 Artifact。会话可继续时，新的原生回合会恢复节点事件投影。</small>}{(!automaticAttempt || retryableAutomaticFailure) && !runtimeFailed && !completionReconciliationAvailable && <button className="secondary full" onClick={() => act('retry')}>重新执行门禁</button>}{attempt.state === 'END_BLOCKED' && !attempt.error_code && <><button className="primary full" disabled={mutation.isPending} onClick={() => void dialog.confirm({ title: '根据门禁结果调整并重试？', message: '平台会创建一条新的原生调整会话，发送本次门禁结论，并在创建成功后直接带你进入该会话。修订并完成后，平台会重新执行完成门禁。', confirmLabel: '创建并进入调整会话' }).then(ok => ok && act('remediate-gate-failure'))}>{remediationPending ? <><RefreshCw className="spin" size={14}/>正在创建并进入调整会话…</> : '根据门禁结果调整并重试'}</button>{remediationPending && <small role="status">正在从本轮完成边界创建调整分支并发送门禁结论，请稍候…</small>}<label>人工接受风险理由<textarea value={text} maxLength={4000} onChange={event => setText(event.target.value)} placeholder="说明为何在保留校验失败结论的情况下仍可验收和流转"/></label><button className="danger full" disabled={!text.trim() || mutation.isPending} onClick={() => void dialog.confirm({ title: '接受门禁风险并继续？', message: '校验 Agent 的 FAIL 结论会原样保留；本次操作会作为独立人工决定写入审计，并继续验收和流转。', confirmLabel: '接受风险并继续', tone: 'danger' }).then(ok => ok && act('accept-gate-risk', { reason: text.trim() }))}>接受风险并继续流转</button></>}</section>}
+      {(attempt.state === 'START_BLOCKED' || attempt.state === 'END_BLOCKED') && <section className="terminal-run-panel"><h4>{automaticBlockedTitle}</h4><p>{automaticBlockedDescription || attemptErrorText(attempt) || (runtimeFailed ? '模型或运行时执行失败，尚未生成正式输出。可进入节点会话继续处理；OpenHands 接受继续或新消息后，后续正式事件会重新驱动本节点。' : '请查看门禁结果：可直接重新执行门禁，或根据门禁结论调整交付物后重试。只有人工明确接受风险时才会继续流转。')}</p>{completionReconciliationAvailable && <><small>平台会重新验证当前 OpenHands 活跃分支的正式完成回复、冻结输出合同和受管工作区文件；不会接受手工指定的事件 ID、路径或产物。</small><button className="primary full" disabled={mutation.isPending} onClick={() => void dialog.confirm({ title: '确认从 OpenHands 对账并补登？', message: '平台将依据正式完成事件 ID 幂等登记候选产物，并重新执行完成门禁。', confirmLabel: '确认对账并补登' }).then(ok => ok && act('reconcile-runtime-completion'))}>从 OpenHands 对账并补登</button></>}{runtimeFailed && <small>失败发生在 Runtime 执行阶段，不是完成门禁拒绝；当前没有可流转的正式 Artifact。会话可继续时，新的原生回合会恢复节点事件投影。</small>}{(!automaticAttempt || retryableAutomaticFailure) && !runtimeFailed && !completionReconciliationAvailable && <button className="secondary full" onClick={() => act('retry')}>重新执行门禁</button>}{attempt.state === 'END_BLOCKED' && !attempt.error_code && <><button className="primary full" disabled={mutation.isPending} onClick={() => void dialog.confirm({ title: '根据门禁结果调整并重试？', message: '平台会创建一条新的原生调整会话，发送本次门禁结论，并在创建成功后直接带你进入该会话。修订并完成后，平台会重新执行完成门禁。', confirmLabel: '创建并进入调整会话' }).then(ok => ok && act('remediate-gate-failure'))}>{remediationPending ? <><RefreshCw className="spin" size={14}/>正在创建并进入调整会话…</> : '根据门禁结果调整并重试'}</button>{remediationPending && <small role="status">正在从本轮完成边界创建调整分支并发送门禁结论，请稍候…</small>}<label>人工接受风险理由<textarea value={text} maxLength={4000} onChange={event => setText(event.target.value)} placeholder="说明为何在保留校验失败结论的情况下仍可验收和流转"/></label><button className="danger full" disabled={!text.trim() || mutation.isPending} onClick={() => void dialog.confirm({ title: '接受门禁风险并继续？', message: '校验 Agent 的 FAIL 结论会原样保留；本次操作会作为独立人工决定写入审计，并继续验收和流转。', confirmLabel: '接受风险并继续', tone: 'danger' }).then(ok => ok && act('accept-gate-risk', { reason: text.trim() }))}>接受风险并继续流转</button></>}</section>}
       {!attemptTerminal && <button className="danger full cancel-attempt-button" disabled={mutation.isPending} onClick={() => void dialog.confirm({ title: '取消当前节点的本轮执行？', message: '只会取消这个节点的当前轮次，其他节点执行和整个流程不会被取消。', confirmLabel: '取消本轮执行', tone: 'danger' }).then(ok => ok && act('cancel'))}><StopCircle size={15}/>取消本轮节点执行</button>}
     </>}</>}{tab === 'gates' && <section className="attempt-side-section"><h4>门禁结果</h4><GateList evaluations={attempt.gate_evaluations} policies={gatePolicies} onViewDetails={setGateConversation}/></section>}{tab === 'outputs' && <section className="attempt-side-section attempt-side-artifacts">{automaticArtifactScope && automaticArtifacts.isLoading ? <div className="empty compact">正在读取节点输出…</div> : automaticArtifactScope && automaticArtifacts.isError ? <p className="error">{automaticArtifacts.error.message}</p> : <><ArtifactList artifacts={automaticArtifactScope ? automaticArtifacts.data?.items ?? [] : attempt.artifacts} expectedFields={attemptNode?.asset.outputs ?? []}/>{automaticArtifactScope && automaticArtifacts.data && <Pagination page={automaticArtifacts.data.page} pageSize={automaticArtifacts.data.page_size} total={automaticArtifacts.data.total} onPageChange={setArtifactPage}/>}</>}</section>}{tab === 'audit' && automaticArtifactScope && <section className="attempt-side-section artifact-audit-panel"><h4>历史重复产物审计</h4><p className="field-hint">仅报告候选项与引用关系；本版本不会删除产物、工作区、Attempt 或运行记录。</p>{automaticArtifactAudit.isLoading ? <div className="empty compact">正在读取只读审计…</div> : automaticArtifactAudit.isError ? <p className="error">{automaticArtifactAudit.error.message}</p> : automaticArtifactAudit.data?.items.length ? <><div>{automaticArtifactAudit.data.items.map(item => <article key={`${item.producer_attempt_id}:${item.field_key}:${item.content_hash}`}><b>{item.field_key} · {item.artifacts.length} 个候选版本</b><small>{item.evidence.kind === 'FORMAL_COMPLETION_ID_REPLAY' ? '共享正式完成身份' : '仅内容哈希相同'} · 输入引用 {item.artifacts.reduce((total, artifact) => total + artifact.input_references.length, 0)} 个</small><small>工作区引用：{item.workspace_impact.workspace_ref_recorded ? '已记录' : '未记录'}；工作目录：{item.workspace_impact.work_directory_count}</small><ul>{item.cleanup.reasons.map(reason => <li key={reason}>{reason}</li>)}</ul></article>)}</div><Pagination page={automaticArtifactAudit.data.page} pageSize={automaticArtifactAudit.data.page_size} total={automaticArtifactAudit.data.total} onPageChange={setAuditPage}/></> : <div className="empty compact">未发现需要审阅的历史重复候选。</div>}</section>}{mutation.error && <p className="error">{mutation.error.message}</p>}</div>{gateConversation && <GateDetailDialog attemptId={attempt.id} attemptStateVersion={attempt.state_version} evaluation={gateConversation} policy={gatePolicies.find(policy => policy.id === gateConversation.policy_snapshot_key)} canRetryWithProvider={gateConversation.decision === 'ERROR' && ((attempt.state === 'START_BLOCKED' && gateConversation.stage === 'START') || (attempt.state === 'END_BLOCKED' && gateConversation.stage === 'END'))} onClose={() => setGateConversation(undefined)} onRetried={result => { setGateConversation(undefined); navigate(result, 'retry-with-provider'); refresh(); }}/>}</aside>;
 }

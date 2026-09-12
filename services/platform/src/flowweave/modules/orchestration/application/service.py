@@ -1561,13 +1561,28 @@ def _upgrade_legacy_automatic_plan_gate_ids(plan: dict[str, Any]) -> list[dict[s
     return upgraded
 
 
-def _completion_event_id(result: RuntimeResult) -> str | None:
-    """Return the formal OpenHands FinishAction identity, never a leaf cursor."""
+def _completion_event_identity(result: RuntimeResult) -> tuple[str, str] | None:
+    """Return a formal native completion event identity, never a leaf cursor.
+
+    OpenHands can formally finish either through the built-in FinishAction or
+    through an assistant MessageEvent after its native execution state is
+    ``finished``. The runtime adapter records which path supplied the ID.
+    The legacy default preserves existing non-OpenHands test/runtime adapters
+    that only emitted the already-established completion event ID.
+    """
 
     candidate = result.completion_event_id
     if not isinstance(candidate, str) or not candidate.strip():
         return None
-    return candidate.strip()
+    kind = result.completion_event_kind or "FINISH_ACTION"
+    if kind not in {"FINISH_ACTION", "ASSISTANT_MESSAGE"}:
+        return None
+    return candidate.strip(), kind
+
+
+def _completion_event_id(result: RuntimeResult) -> str | None:
+    identity = _completion_event_identity(result)
+    return identity[0] if identity is not None else None
 
 
 def _completion_already_projected(
@@ -1595,13 +1610,14 @@ def _block_missing_completion_identity(
     *,
     observed_completion_event_id: str | None,
 ) -> None:
-    """Fail closed only when OpenHands did not provide a formal FinishAction ID."""
+    """Fail closed only when OpenHands did not provide a formal completion ID."""
 
     node_run = _node_run(db, attempt.node_run_id)
     run = _run(db, node_run.flow_run_id)
     attempt.error_code = "RUNTIME_COMPLETION_IDENTITY_MISSING"
     attempt.error_detail = (
-        "OpenHands completed without a formal FinishAction identity; outputs cannot be registered."
+        "Agent 已返回结果，但 OpenHands 未提供可核验的正式完成事件标识；"
+        "为避免错误登记节点产物，平台已暂停流转。"
     )
     attempt.state_version += 1
     run.state = FlowRunState.WAITING_HUMAN
@@ -6118,13 +6134,14 @@ def _apply_runtime_result(
             discard_prepared_artifacts(prepared_outputs)
             _finish_transaction(db, commit)
             return attempt_detail(db, attempt.id)
-        completion_event_id = _completion_event_id(result)
-        if completion_event_id is None:
+        completion_identity = _completion_event_identity(result)
+        if completion_identity is None:
             raise DomainError(
                 "RUNTIME_COMPLETION_IDENTITY_MISSING",
                 "OpenHands completed without a formal completion event identity",
                 502,
             )
+        completion_event_id, completion_event_kind = completion_identity
         existing_candidate = db.scalar(
             select(CandidateOutputSet).where(
                 CandidateOutputSet.attempt_id == attempt.id,
@@ -6173,7 +6190,10 @@ def _apply_runtime_result(
             db,
             run.id,
             "RUNTIME_COMPLETION_PROJECTED",
-            {"completion_event_id": completion_event_id},
+            {
+                "completion_event_id": completion_event_id,
+                "completion_event_kind": completion_event_kind,
+            },
             node_run.id,
             attempt.id,
         )
@@ -6305,9 +6325,10 @@ def process_poll_runtime(
     result = observed_result or runtime.inspect(
         replace(handle, cursor=batch.cursor or handle.cursor)
     )
-    completion_event_id = _completion_event_id(result)
+    completion_identity = _completion_event_identity(result)
+    completion_event_id = completion_identity[0] if completion_identity is not None else None
     # Keep the native leaf cursor as a read/navigation anchor. It is distinct
-    # from the FinishAction ID used for Artifact projection idempotency.
+    # from the formal completion event ID used for Artifact projection idempotency.
     if result.cursor is None and batch.cursor is not None:
         result = replace(result, cursor=batch.cursor)
     native_execution_status = (
@@ -6330,12 +6351,12 @@ def process_poll_runtime(
         ):
             return
         # ``END_BLOCKED`` is only FlowWeave's projection of the prior
-        # operation. A formal FinishAction that is now the active native
+        # operation. A formal completion event that is now the active native
         # terminal event proves a later completed turn, even if OpenHands is
         # already ``finished`` when the worker observes it. Project it through
         # the ordinary Artifact and END-gate path. An old result is not
         # accepted here: the native active branch returns FAILED while its
-        # error remains terminal, until a later FinishAction supersedes it.
+        # error remains terminal, until a later formal completion supersedes it.
         if result.status == "COMPLETED" and observed_result is not None:
             if completion_event_id is None:
                 _block_missing_completion_identity(db, current, observed_completion_event_id=None)
@@ -6463,7 +6484,7 @@ def reconcile_runtime_completion(
     payload: RuntimeCompletionReconciliationWrite,
     idempotency_key: str,
 ) -> dict[str, Any]:
-    """Re-project one verified native FinishAction after a historical projection loss.
+    """Re-project one verified native completion after a historical projection loss.
 
     The operator supplies neither an event ID nor a file path. FlowWeave
     rereads the active OpenHands branch and reuses the ordinary projection
@@ -6505,13 +6526,17 @@ def reconcile_runtime_completion(
         read_active_events(handle) if callable(read_active_events) else runtime.read_events(handle)
     )
     result = batch.result
-    completion_event_id = _completion_event_id(result) if result is not None else None
-    if result is None or result.status != "COMPLETED" or completion_event_id is None:
+    completion_identity = _completion_event_identity(result) if result is not None else None
+    if result is None or result.status != "COMPLETED" or completion_identity is None:
         raise DomainError(
             "RUNTIME_COMPLETION_RECONCILIATION_UNAVAILABLE",
-            "The active OpenHands branch has no formal FinishAction available for reconciliation",
+            (
+                "The active OpenHands branch has no formal completed reply available "
+                "for reconciliation"
+            ),
             409,
         )
+    completion_event_id, completion_event_kind = completion_identity
     prepared = _prepare_runtime_outputs(result, current.output_targets_json or {}, handle)
     claimed = _claim_runtime_phase(
         db,
@@ -6534,7 +6559,10 @@ def reconcile_runtime_completion(
         run.id,
         "RECONCILE_RUNTIME_COMPLETION",
         idempotency_key,
-        {"completion_event_id": completion_event_id},
+        {
+            "completion_event_id": completion_event_id,
+            "completion_event_kind": completion_event_kind,
+        },
         node_run.id,
         claimed.id,
     )
@@ -6543,7 +6571,10 @@ def reconcile_runtime_completion(
         db,
         run.id,
         "RUNTIME_COMPLETION_RECONCILIATION_STARTED",
-        {"completion_event_id": completion_event_id},
+        {
+            "completion_event_id": completion_event_id,
+            "completion_event_kind": completion_event_kind,
+        },
         node_run.id,
         claimed.id,
     )

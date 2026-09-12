@@ -115,6 +115,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-351 | FlowRun 侧栏记录区固定与分页 | DONE | 侧栏摘要、运行方式和操作栏固定；记录区独立滚动并以每页 5 条显示，移除操作栏下方的冗余说明。 |
 | FR-353 | Environment 发布基础镜像扁平化与失败诊断 | DONE | 将 Setup 容器在发布前扁平化为单层受控基础镜像，阻断版本继承造成的 RootFS 深度累积；GHCR TLS 超时返回稳定、无 Secret 的诊断码。 |
 | FR-354 | OpenHands 基线升级的历史 Runtime 连续性 | DONE | 删除历史 Environment、Snapshot、节点和会话对 OpenHands 版本／commit／ref 的运行时准入；仅保留实际协议、路由、工具和能力校验。 |
+| FR-364 | 节点会话 MessageEvent 完成投影与认证连续性 | DONE | 将 OpenHands 已结束活跃分支的 agent MessageEvent 作为正式完成身份投影；恢复节点协作会话的受控认证注入，并统一中文失败说明与候选输出卡片。 |
 | FR-363 | 连续运行记录摘要查询修复 | DONE | 纠正 RunEvent 事件存在性子查询的主键字段，恢复连续运行记录列表与摘要加载。 |
 | FR-362 | Environment 固定 provenance 跨 Docker Socket 隔离 | DONE | 固定 provenance／condenser overlay 通过 tar 流从 Runtime Provider 注入临时治理容器，杜绝 Docker daemon 将 `/app` 误解析为宿主机历史文件。 |
 | OPS-01 | Docker rollback image / BuildKit cache 容量增长 | DONE | 建立带运行引用保护、dry-run 和显式确认的回收工具，并完成生产候选边界核验。 |
@@ -419,6 +420,20 @@ Environment 断言，未记为 pytest 通过；固定 OpenHands `1.47.0` 的真�
 完成：删除将 `runtime_frozen`／`FLOW_RUN_RUNTIME_FROZEN` 投影到列表、节点会话、运行、Runtime 操作和调度入口的全局基线冻结层。Environment、Snapshot Runtime contract、Runtime Provider ledger、Hook 物化和 Agent Server 探活均不再比较 OpenHands 版本、四包版本、source commit 或 source ref；这些字段若存在只作为审计 provenance。节点与会话创建／恢复只校验 FlowWeave 对象身份和实际 OpenHands 协议：服务 ready、必需 HTTP 路由、创建字段、能力与工具。前端继续显示和选择所有具备镜像摘要的 `READY` Environment Version。
 
 验收：`test_runtime_contract.py` 证明任意 Server 版本、包版本、commit/ref 漂移不再拒绝连接，同时路由、创建字段与工具缺失仍拒绝；`test_runtime_capabilities.py` 证明历史 Snapshot 版本元数据不再阻断节点投影。受影响 Python Ruff format/check、`py_compile` 和 `git diff --check` 通过。完整数据库 pytest 仍受本机 Docker socket 缺失造成的 Testcontainers fixture 初始化阻断，未记为通过；受影响 Pyright 定向运行仅报告 `environments/application/service.py` 中 3 条既有、未触及行的诊断。
+
+### FR-364 节点会话 MessageEvent 完成投影与认证连续性 — DONE
+
+依赖：无（节点会话稳定性修复）。
+
+目标：
+
+- OpenHands 在当前活跃分支已正式标为 `finished` 时，agent 的 assistant `MessageEvent.id` 必须与 `FinishAction` 一样可作为完成身份登记候选输出；不得使用 leaf cursor 或文本／事件顺序猜测身份。
+- 节点协作会话必须和独立 Agent 会话一样，在创建边界注入认证管理的 native Secret 与仅含域名／变量名的受控上下文；Secret 明文不得进入浏览器、普通数据库字段、镜像或审计记录。
+- 合法 `---FLOWWEAVE_OUTPUTS---` 协议在两种正式回复路径中均渲染候选产物卡片；节点完成、对账和平台校验说明面向用户使用中文。
+
+完成：`RuntimeResult` 记录 `FINISH_ACTION` 或 `ASSISTANT_MESSAGE` 的正式事件类型。OpenHands 适配器仅在 native `execution_status=finished` 的当前活跃分支接受 assistant MessageEvent，并保留其正式 `id`；`FinishAction` 路径不变。产物登记、幂等对账、审计事件和人工补登均记录该身份类型，数据库原有字符串 ID 约束无需迁移。协作会话不再在快路径丢弃认证 Secret，模型上下文明确只能使用列出的完整变量名，禁止猜测 `ES_QUERY_*` 别名。
+
+验收：OpenHands MessageEvent／FinishAction、协作认证与无 Docker fixture 的补登回归通过；受影响 Python Ruff check、`py_compile`、Web TypeScript typecheck、ESLint、production build 与 `git diff --check` 通过。完整 `test_runtime_wakeup.py` 需要 Testcontainers PostgreSQL，但本机 Docker Unix socket 不可用，5 项在 fixture 初始化前阻断；未记为断言失败或通过。
 
 ### FR-363 连续运行记录摘要查询修复 — DONE
 
@@ -4825,6 +4840,7 @@ contract、冻结策略与既有受控生命周期约束覆盖。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-12 | FR-364 | OpenHands MessageEvent／FinishAction、协作认证定向 pytest（4 passed）；无 Docker fixture 的完成补登 pytest（1 passed）；受影响 Python Ruff check、`py_compile`；Web TypeScript typecheck、ESLint、production build；Alembic head、任务状态唯一性与 `git diff --check` | PASS（定向、静态与构建）：当前 active branch 的 agent MessageEvent 仅在 OpenHands 原生 `finished` 状态下作为 `ASSISTANT_MESSAGE` 正式完成身份投影，保留自身事件 ID，未使用 cursor 或文本猜测；FinishAction 路径保持。协作会话创建时恢复受控认证 native Secret 和仅变量名元数据，候选输出卡片不再要求 FinishAction 才渲染。完整 `test_runtime_wakeup.py` 的其余 5 项在 Testcontainers PostgreSQL fixture 初始化前因本机 Docker Unix socket 缺失阻断，未伪记为通过。 |
 | 2026-09-12 | FR-363 | 连续记录详情／摘要删除过滤纯逻辑回归；受影响 Python Ruff format/check、`py_compile`、`git diff --check` 与任务状态唯一性 | PASS：两条列表入口均使用 `RunEvent.cursor` 构造已删除记录排除子查询，不再在摘要请求时引用不存在的 `RunEvent.id` 并返回 500；未迁移、删除或修改任何持久记录。 |
 | 2026-09-12 | FR-354 | `test_runtime_contract.py`、`test_runtime_capabilities.py`；受影响 Python Ruff format/check、`py_compile`、`git diff --check`；结构化比较审计 | PASS（静态）：Server 版本、四包版本、commit/ref 变化不再阻断节点或会话；缺少必需 OpenAPI 路由、创建字段或工具仍明确拒绝。`rg` 与 ast-grep 未发现 FlowWeave 运行时代码中 OpenHands 版本／commit／ref 的相等性准入比较。完整数据库 pytest 因本机 Docker socket 缺失、Testcontainers fixture 初始化失败而未执行断言；Pyright 仅保留 `environments/application/service.py` 中 3 条未触及既有诊断。 |
 | 2026-09-12 | FR-351 | Web TypeScript typecheck、ESLint、production build、`git diff --check`；本地 Vite 上 FlowRun 侧栏定向 Playwright | PASS：运行摘要、模式切换和操作栏不再随记录滚动；记录内容在独立滚动区展示，三种模式共用每页 5 条的分页。定向浏览器回归确认第 6 条记录仅在“下一页”后渲染，固定区域在内容滚动后位置不变。三条操作说明均已移除。生产构建仅报告既有的大 chunk 提示。 |

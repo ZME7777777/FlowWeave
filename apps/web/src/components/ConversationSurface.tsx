@@ -1261,9 +1261,13 @@ function AgentReply({ event, content, changes = [], onFork, onPreviewCandidateFi
 }) {
   const eventId = event.id;
   const timestamp = formatMessageTime(event.payload.timestamp);
-  const candidateMessage = event.event_type === 'COMPLETED' && event.payload.event_name === 'FinishAction'
-    ? candidateOutputMessage(content)
-    : { businessConclusion: content };
+  // Candidate outputs are a presentation aid for the agent's structured
+  // response. A provider can emit that response as an assistant MessageEvent
+  // or a FinishAction. Do not make the card disappear merely because the
+  // formal completion event has not yet been projected: the orchestration
+  // layer separately verifies the native completion identity before
+  // registering an Artifact.
+  const candidateMessage = candidateOutputMessage(content);
   return <article className={`conversation-message assistant${highlightReferenceSource ? ' conversation-reference-source-highlight' : ''}`} data-conversation-event-id={eventId} data-turn-terminal="true" data-event-id={eventId}>
     {candidateMessage.businessConclusion ? <MessageMarkdown>{candidateMessage.businessConclusion}</MessageMarkdown> : !candidateMessage.outputs && content ? <MessageMarkdown>{content}</MessageMarkdown> : null}
     {candidateMessage.outputs && <CandidateOutputReply outputs={candidateMessage.outputs} onPreviewFile={onPreviewCandidateFile ? output => onPreviewCandidateFile(output.fieldKey, output.value) : undefined}/>}

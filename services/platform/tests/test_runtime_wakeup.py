@@ -329,7 +329,7 @@ def test_repeated_native_completion_after_gate_block_does_not_replay_outputs(mon
     assert prepared == []
 
 
-def test_manual_completion_reconciliation_uses_active_finish_action(monkeypatch):
+def test_manual_completion_reconciliation_uses_active_assistant_message(monkeypatch):
     current = SimpleNamespace(
         id="attempt-1",
         node_run_id="node-run-1",
@@ -357,11 +357,12 @@ def test_manual_completion_reconciliation_uses_active_finish_action(monkeypatch)
         def read_active_events(self, _handle):
             return RuntimeEventBatch(
                 events=(),
-                cursor="finish-observation",
+                cursor="assistant-message",
                 result=RuntimeResult(
                     status="COMPLETED",
                     outputs={"report": ("FILE", "/runtime/workspace/report.md")},
-                    completion_event_id="finish-action",
+                    completion_event_id="assistant-message",
+                    completion_event_kind="ASSISTANT_MESSAGE",
                 ),
             )
 
@@ -418,13 +419,19 @@ def test_manual_completion_reconciliation_uses_active_finish_action(monkeypatch)
     assert actions == [
         (
             "RECONCILE_RUNTIME_COMPLETION",
-            {"completion_event_id": "finish-action"},
+            {
+                "completion_event_id": "assistant-message",
+                "completion_event_kind": "ASSISTANT_MESSAGE",
+            },
         )
     ]
     assert events == [
         (
             "RUNTIME_COMPLETION_RECONCILIATION_STARTED",
-            {"completion_event_id": "finish-action"},
+            {
+                "completion_event_id": "assistant-message",
+                "completion_event_kind": "ASSISTANT_MESSAGE",
+            },
         )
     ]
     assert applied == [
@@ -433,7 +440,8 @@ def test_manual_completion_reconciliation_uses_active_finish_action(monkeypatch)
             RuntimeResult(
                 status="COMPLETED",
                 outputs={"report": ("FILE", "/runtime/workspace/report.md")},
-                completion_event_id="finish-action",
+                completion_event_id="assistant-message",
+                completion_event_kind="ASSISTANT_MESSAGE",
             ),
             ["prepared"],
         )
