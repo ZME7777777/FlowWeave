@@ -293,6 +293,8 @@ export const api = {
     if (historyCursor) query.set('history_cursor', historyCursor);
     return request<OpenHandsConversationEventBatch>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/events${query.size ? `?${query}` : ''}`);
   },
+  agentConversationHydration: (workspaceId: string, bindingId: string) =>
+    request<import('../types').AgentConversationHydration>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/hydration`),
   agentPendingConfirmation: (workspaceId: string, bindingId: string) =>
     request<AgentPendingConfirmation>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/pending-confirmation`),
   decideAgentConfirmation: (workspaceId: string, bindingId: string, expected_pending_digest: string, accept: boolean, reason: string) =>
@@ -767,6 +769,8 @@ export const nodeSessionApi = {
     if (historyCursor) query.set('history_cursor', historyCursor);
     return request<import('../types').OpenHandsConversationEventBatch>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/events${query.size ? `?${query}` : ''}`);
   },
+  hydration: (flowRunId: string, attemptId: string, bindingId: string) =>
+    request<import('../types').AgentConversationHydration>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/hydration`),
   inputReadiness: (flowRunId: string, attemptId: string, bindingId: string) =>
     request<AgentConversationInputReadiness>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/input-readiness`),
   context: (flowRunId: string, attemptId: string, bindingId: string) =>

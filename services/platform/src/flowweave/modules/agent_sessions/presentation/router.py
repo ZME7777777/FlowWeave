@@ -797,6 +797,21 @@ async def node_session_events(
     )
 
 
+@router.get(f"{_BASE}/{{binding_id}}/hydration")
+async def node_session_hydration(
+    flow_run_id: str, attempt_id: str, binding_id: str, container: ContainerDep
+) -> dict[str, Any]:
+    return await run_blocking(
+        container,
+        lambda session: agent_sessions.flow_node_conversations.hydrate_node_conversation(
+            session,
+            flow_run_id=flow_run_id,
+            attempt_id=attempt_id,
+            binding_id=binding_id,
+        ),
+    )
+
+
 @router.get(f"{_BASE}/{{binding_id}}/input-readiness")
 async def node_session_input_readiness(
     flow_run_id: str, attempt_id: str, binding_id: str, container: ContainerDep

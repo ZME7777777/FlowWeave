@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 from flowweave.modules.agent_sessions.application import usage as usage_projection
 from flowweave.modules.agent_sessions.application.deletion import delete_binding_records
 from flowweave.modules.agent_sessions.application.event_branch import (
+    complete_active_branch,
     latest_user_message_across_active_branch_pages,
 )
 from flowweave.modules.agent_sessions.application.runtime_config import (
@@ -41,6 +42,7 @@ from flowweave.modules.tasks.public import enqueue
 from flowweave.modules.users.application.security import user_runtime_project_root
 from flowweave.runtime.base import (
     RuntimeCondenser,
+    RuntimeEventBatch,
     RuntimeHandle,
     RuntimeMCPProbeRequest,
     RuntimePort,
@@ -1525,13 +1527,17 @@ def events(
     binding_id: str,
     cursor: str | None,
     history_cursor: str | None = None,
+    *,
+    batch_override: RuntimeEventBatch | None = None,
+    context_override: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     workspace = _workspace(db, workspace_id)
     binding = _binding(db, workspace_id, binding_id)
     handle = _handle(db, workspace, binding)
     started_at = time.monotonic()
+    runtime = get_runtime()
     try:
-        batch = get_runtime().read_active_events(
+        batch = batch_override or runtime.read_active_events(
             replace(handle, cursor=cursor, history_cursor=history_cursor)
         )
     except Exception:
@@ -1566,7 +1572,11 @@ def events(
     # changing native conversation history.
     context_started_at = time.monotonic()
     try:
-        context = get_runtime().conversation_context(handle)
+        context = (
+            context_override
+            if context_override is not None
+            else runtime.conversation_context(handle)
+        )
     except (DomainError, AttributeError):
         context = {}
         context_outcome = "error"
@@ -2794,8 +2804,14 @@ def conversation_context(
 ) -> dict[str, int | float | str | bool | None]:
     workspace = _workspace(db, workspace_id)
     binding = _binding(db, workspace_id, binding_id)
-    runtime = get_runtime()
-    handle = _handle(db, workspace, binding)
+    return _conversation_context_snapshot(get_runtime(), _handle(db, workspace, binding))
+
+
+def _conversation_context_snapshot(
+    runtime: Any, handle: RuntimeHandle
+) -> dict[str, int | float | str | bool | None]:
+    """Project one official OpenHands context read for REST and hydration."""
+
     started_at = time.monotonic()
     try:
         context = runtime.conversation_context(handle)
@@ -2832,6 +2848,49 @@ def conversation_context(
         "proactive_compaction_tokens": threshold_tokens,
         "compaction_policy_current": compaction_policy_current,
     }
+
+
+def hydrate_conversation(
+    db: Session, workspace_id: str, binding_id: str
+) -> dict[str, Any]:
+    """Return the complete formal active branch and current native snapshots.
+
+    This endpoint is intentionally separate from incremental ``events``:
+    websocket recovery keeps its bounded current-window read, while initial
+    browser hydration gets all logical event identities in one response.
+    """
+
+    workspace = _workspace(db, workspace_id)
+    binding = _binding(db, workspace_id, binding_id)
+    handle = _handle(db, workspace, binding)
+    runtime = get_runtime()
+    started_at = time.monotonic()
+    outcome = "error"
+    try:
+        context = _conversation_context_snapshot(runtime, handle)
+        readiness = runtime.input_readiness(handle).as_dict()
+        batch = complete_active_branch(runtime.read_active_events, handle)
+        projected = events(
+            db,
+            workspace_id,
+            binding_id,
+            None,
+            batch_override=batch,
+            context_override=context,
+        )
+        outcome = "ok"
+    except ValueError as exc:
+        raise DomainError(
+            "RUNTIME_ACTIVE_BRANCH_INCONSISTENT",
+            "OpenHands returned an inconsistent active branch during hydration",
+            409,
+        ) from exc
+    finally:
+        if metrics := current_metrics():
+            metrics.observe_operation(
+                "agent_session.hydration", time.monotonic() - started_at, outcome=outcome
+            )
+    return {"events": projected, "context": context, "readiness": readiness}
 
 
 def switch_conversation_model(

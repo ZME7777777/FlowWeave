@@ -34,6 +34,7 @@ from flowweave.modules.agent_sessions.application.conversations import (
 )
 from flowweave.modules.agent_sessions.application.deletion import delete_binding_records
 from flowweave.modules.agent_sessions.application.event_branch import (
+    complete_active_branch,
     latest_user_message_across_active_branch_pages,
 )
 from flowweave.modules.agent_sessions.application.flow_node_locator import (
@@ -1755,6 +1756,34 @@ def read_node_conversation_events(
         cursor=cursor,
         history_cursor=history_cursor,
     )
+
+
+def hydrate_node_conversation(
+    db: Session,
+    *,
+    flow_run_id: str,
+    attempt_id: str,
+    binding_id: str,
+) -> dict[str, Any]:
+    """Hydrate one node session from its complete formal OpenHands HEAD branch."""
+
+    _binding_for_attempt(db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id)
+    binding = _binding_for_run(db, flow_run_id, binding_id)
+    runtime = get_runtime()
+    handle = _flow_run_handle(db, flow_run_id, binding_id)
+    try:
+        batch = complete_active_branch(runtime.read_active_events, handle)
+    except ValueError as exc:
+        raise DomainError(
+            "RUNTIME_ACTIVE_BRANCH_INCONSISTENT",
+            "OpenHands returned an inconsistent active branch during hydration",
+            409,
+        ) from exc
+    return {
+        "events": _event_batch_dict(db, binding, batch),
+        "context": dict(runtime.conversation_context(handle)),
+        "readiness": runtime.input_readiness(handle).as_dict(),
+    }
 
 
 def read_gate_sidecar_events(

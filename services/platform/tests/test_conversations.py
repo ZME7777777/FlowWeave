@@ -19,6 +19,7 @@ from flowweave.modules.agent_sessions.application import (
     flow_node_workspace,
 )
 from flowweave.modules.agent_sessions.application import usage as usage_projection
+from flowweave.modules.agent_sessions.application.event_branch import complete_active_branch
 from flowweave.modules.agent_sessions.application.host import (
     ACCESS_TERMINAL,
     CREATE_SESSIONS,
@@ -138,6 +139,45 @@ def test_conversation_references_are_resolved_from_active_native_events() -> Non
     )
 
     assert resolved == ({"event_id": "native-event", "content": "服务端已验证的引用内容"},)
+
+
+def test_complete_active_branch_hydrates_every_formal_history_page() -> None:
+    calls: list[str | None] = []
+
+    def read(handle: RuntimeHandle) -> RuntimeEventBatch:
+        calls.append(handle.history_cursor)
+        if handle.history_cursor == "older":
+            return RuntimeEventBatch(
+                events=(RuntimeEvent("old-user", "MESSAGE", {"parent_id": "__root__"}),),
+                cursor="latest-tool",
+            )
+        return RuntimeEventBatch(
+            events=(RuntimeEvent("latest-tool", "TOOL_CALL", {"parent_id": "old-user"}),),
+            cursor="latest-tool",
+            history_cursor="older",
+            result=RuntimeResult(status="RUNNING"),
+        )
+
+    hydrated = complete_active_branch(
+        read, RuntimeHandle(job_id="job", conversation_id="conversation")
+    )
+
+    assert calls == [None, "older"]
+    assert [event.cursor for event in hydrated.events] == ["old-user", "latest-tool"]
+    assert hydrated.cursor == "latest-tool"
+    assert hydrated.history_cursor is None
+    assert hydrated.result == RuntimeResult(status="RUNNING")
+
+
+def test_complete_active_branch_rejects_head_drift_between_pages() -> None:
+    def read(handle: RuntimeHandle) -> RuntimeEventBatch:
+        return RuntimeEventBatch(
+            cursor="changed-head" if handle.history_cursor else "first-head",
+            history_cursor="older" if handle.history_cursor is None else None,
+        )
+
+    with pytest.raises(ValueError, match="active branch changed"):
+        complete_active_branch(read, RuntimeHandle(job_id="job", conversation_id="conversation"))
 
 
 def test_conversation_reference_resolver_rejects_client_supplied_content() -> None:

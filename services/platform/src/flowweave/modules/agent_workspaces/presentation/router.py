@@ -688,6 +688,25 @@ async def agent_events(
         ) from exc
 
 
+@router.get("/agent-workspaces/{workspace_id}/conversations/{binding_id}/hydration")
+async def agent_conversation_hydration(
+    workspace_id: str, binding_id: str, container: ContainerDep
+) -> dict[str, Any]:
+    try:
+        return await run_blocking(
+            container,
+            lambda session: conversations.hydrate_conversation(session, workspace_id, binding_id),
+        )
+    except DomainError as exc:
+        if exc.code not in {"EXECUTOR_UNAVAILABLE", "RUNTIME_READ_SATURATED"}:
+            raise
+        raise DomainError(
+            "AGENT_RUNTIME_UNAVAILABLE",
+            "Agent 运行环境暂时不可读取，请稍后重试；FlowWeave 未自动修改会话或运行环境",
+            503,
+        ) from exc
+
+
 @router.get("/agent-workspaces/{workspace_id}/conversations/{binding_id}/pending-confirmation")
 async def agent_pending_confirmation(
     workspace_id: str, binding_id: str, container: ContainerDep

@@ -521,6 +521,11 @@ export interface OpenHandsConversationEventBatch {
   task_control?: RuntimeTaskControlSnapshot[];
   monitoring?: AgentActivitySummary;
 }
+export interface AgentConversationHydration {
+  events: OpenHandsConversationEventBatch;
+  context: AgentConversationContext;
+  readiness: AgentConversationInputReadiness;
+}
 export interface AgentActivitySummary {
   last_event_id?: string | null;
   last_event_type?: string | null;

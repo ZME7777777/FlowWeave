@@ -2849,7 +2849,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const liveTextFrame = useRef<number | undefined>(undefined);
   const pendingLiveEvents = useRef<OpenHandsConversationEvent[]>([]);
   const liveEventsFrame = useRef<number | undefined>(undefined);
-  const historyLoadingScopes = useRef(new Set<string>());
   useEffect(() => () => {
     if (workspacePathCopyTimer.current !== undefined) window.clearTimeout(workspacePathCopyTimer.current);
   }, []);
@@ -3074,12 +3073,28 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     && (isGenerating || streamHold?.bindingId === selected.id),
   );
   const eventQueryKey = sessionQueryKey(host, 'conversation-events', workspace?.id, selected?.id);
+  const hydrationQuery = useQuery({
+    queryKey: sessionQueryKey(host, 'conversation-hydration', workspace?.id, selected?.id),
+    queryFn: () => api.conversationHydration(workspace!.id, selected!.id),
+    enabled: Boolean(workspace && selected),
+    retry: (count, error) => !(error instanceof ApiError && error.status < 500) && count < 2,
+  });
   const inputReadinessQuery = useQuery({
     queryKey: sessionQueryKey(host, 'conversation-input-readiness', workspace?.id, selected?.id),
     queryFn: () => api.inputReadiness(workspace!.id, selected!.id),
     // This is the formal OpenHands execution-state read used to restore an
     // in-flight turn after a browser reload. It is not persisted by FlowWeave.
-    enabled: Boolean(workspace && selected),
+    // Hydration supplies the first formal readiness snapshot. This remains a
+    // dedicated live-recovery poll after that initial complete read.
+    enabled: Boolean(
+      workspace
+      && selected
+      && hydrationQuery.data
+      && (hydrationQuery.data.readiness.ready === false
+        || turnState === 'pausing'
+        || queuedMessages.length > 0
+        || isGenerating),
+    ),
     refetchInterval: query => {
       const needsFallback = turnState === 'pausing' || queuedMessages.length > 0 || isGenerating || query.state.data?.ready === false;
       if (!pageVisible || !needsFallback) return false;
@@ -3087,10 +3102,30 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     },
     retry: (count, error) => !(error instanceof ApiError && error.status < 500) && count < 2,
   });
-  const eventsQuery = useQuery({
-    queryKey: eventQueryKey, queryFn: () => api.conversationEvents(workspace!.id, selected!.id), enabled: Boolean(workspace && selected),
+  const eventsQuery = useQuery<OpenHandsConversationEventBatch>({
+    queryKey: eventQueryKey,
+    queryFn: () => api.conversationEvents(workspace!.id, selected!.id),
+    enabled: false,
     retry: (count, error) => !(error instanceof ApiError && error.status < 500) && count < 2,
   });
+  useEffect(() => {
+    if (!hydrationQuery.data) return;
+    // Keep the existing event-cache surface for stream frames and cursor
+    // reconciliation, but seed all three initial native projections from one
+    // complete server-side hydration.  This avoids a second context/readiness
+    // request for an idle session while preserving those queries for live use.
+    queryClient.setQueryData<OpenHandsConversationEventBatch>(
+      eventQueryKey, hydrationQuery.data.events,
+    );
+    queryClient.setQueryData(
+      sessionQueryKey(host, 'conversation-input-readiness', workspace?.id, selected?.id),
+      hydrationQuery.data.readiness,
+    );
+    queryClient.setQueryData(
+      sessionQueryKey(host, 'conversation-context', workspace?.id, selected?.id),
+      hydrationQuery.data.context,
+    );
+  }, [eventQueryKey, host, hydrationQuery.data, queryClient, selected?.id, workspace?.id]);
   useEffect(() => {
     if (selected && eventsQuery.data) markSessionPerformance('events-ready');
   }, [eventsQuery.data, selected]);
@@ -3130,49 +3165,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       if (timer !== undefined) window.clearTimeout(timer);
     };
   }, [api, eventQueryKey, eventsQuery.data?.next_cursor, isGenerating, pageVisible, queryClient, selected, workspace]);
-  const hasUnfinishedInitialTurn = Boolean(latestUnfinishedUserEventId(eventsQuery.data?.events ?? []));
-  const historyPrefetchBlocked = isGenerating
-    || hasUnfinishedInitialTurn
-    || inputReadinessQuery.isLoading
-    || inputReadinessQuery.isFetching
-    || conversationIsRunning(inputReadinessQuery.data?.execution_status);
-  const historyPrefetchDelayMs = inputReadinessQuery.isError ? 5000 : 0;
-  const loadAllHistory = useCallback(async () => {
-    if (!workspace || !selected || !eventsQuery.data?.history_cursor) return;
-    const scope = selected.id;
-    if (historyLoadingScopes.current.has(scope)) return;
-    historyLoadingScopes.current.add(scope);
-    let historyCursor: string | null | undefined = eventsQuery.data.history_cursor;
-    try {
-      // Keep the newest window interactive, then yield between native pages so
-      // long conversations do not monopolize the browser's event loop.
-      while (historyCursor) {
-        const cursor = historyCursor;
-        const older = await api.conversationEvents(workspace.id, scope, undefined, cursor);
-        queryClient.setQueryData<OpenHandsConversationEventBatch>(eventQueryKey, current => current
-          ? { ...current, events: mergeConversationEvents(older.events, current.events), history_cursor: older.history_cursor }
-          : older,
-        );
-        historyCursor = older.history_cursor;
-        if (historyCursor) await new Promise<void>(resolve => window.setTimeout(resolve, 0));
-      }
-    } catch (error) {
-      reportOperationError(scope, error instanceof Error ? error : new Error('读取更早会话记录失败'));
-    } finally {
-      historyLoadingScopes.current.delete(scope);
-    }
-  }, [api, eventQueryKey, eventsQuery.data?.history_cursor, queryClient, reportOperationError, selected, workspace]);
-  useEffect(() => {
-    const bindingId = selected?.id;
-    if (!bindingId || !eventsQuery.data?.history_cursor || historyLoadingScopes.current.has(bindingId) || historyPrefetchBlocked) return;
-    // Render the newest native window and restore its native running status
-    // first. Historical pages are idle prefetch only: they must never make a
-    // newly opened, still-running node session look paused or unavailable.
-    const timer = window.setTimeout(() => {
-      void loadAllHistory();
-    }, historyPrefetchDelayMs);
-    return () => window.clearTimeout(timer);
-  }, [eventsQuery.data?.history_cursor, historyPrefetchBlocked, historyPrefetchDelayMs, loadAllHistory, selected?.id]);
   const displayedEvents = useMemo(() => {
     const activeScope = selected?.id ?? conversationDraft?.id;
     const bootstrapEvent = optimisticBootstrapTurn && optimisticBootstrapTurn.scope === activeScope
@@ -3239,7 +3231,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const contextQuery = useQuery({
     queryKey: sessionQueryKey(host, 'conversation-context', workspace?.id, selected?.id),
     queryFn: () => api.conversationContext(workspace!.id, selected!.id),
-    enabled: Boolean(workspace && selected),
+    enabled: false,
+    staleTime: Infinity,
   });
   const compactionPolicyCurrent = contextQuery.data?.compaction_policy_current !== false;
   const canWrite = Boolean(runtimeWritable && selected);
@@ -3260,7 +3253,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversations', workspace.id) });
     if (selected?.id) {
       void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation', workspace.id, selected.id) });
-      void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-events', workspace.id, selected.id) });
+      void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-hydration', workspace.id, selected.id) });
       void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-input-readiness', workspace.id, selected.id) });
       void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-confirmation', workspace.id, selected.id) });
       void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-context', workspace.id, selected.id) });
@@ -3717,7 +3710,15 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       const deadline = Date.now() + 360_000;
       while (Date.now() < deadline) {
         const batch = await api.conversationEvents(workspaceId, bindingId);
-        queryClient.setQueryData(queryKey, batch);
+        queryClient.setQueryData<OpenHandsConversationEventBatch>(queryKey, current => current
+          ? {
+              ...current,
+              ...batch,
+              events: mergeConversationEvents(current.events, batch.events),
+              history_cursor: current.history_cursor ?? batch.history_cursor,
+            }
+          : batch,
+        );
         if (batch.events.some(event =>
           event.event_type === 'CONDENSATION_COMPLETED' && !completedBefore.has(event.id)
         )) return accepted;

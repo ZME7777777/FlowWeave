@@ -10,6 +10,7 @@ import {
 import type {
   AgentAttachment,
   AgentConversation,
+  AgentConversationHydration,
   AgentConversationPage,
   AgentConversationContext,
   AgentConversationInputReadiness,
@@ -109,6 +110,7 @@ export interface AgentSessionApi {
   readonly updateConversation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, title: string) => Promise<AgentConversation>;
   readonly deleteConversation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<void>;
   readonly conversationEvents: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, cursor?: string, historyCursor?: string) => Promise<OpenHandsConversationEventBatch>;
+  readonly conversationHydration: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<AgentConversationHydration>;
   readonly inputReadiness: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<AgentConversationInputReadiness>;
   readonly conversationContext: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<AgentConversationContext>;
   readonly pendingConfirmation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<AgentPendingConfirmation>;
@@ -172,6 +174,7 @@ export const agentWorkspaceSessionGateway: AgentSessionGateway = {
     updateConversation: api.updateAgentConversation,
     deleteConversation: api.deleteAgentConversation,
     conversationEvents: api.agentConversationEvents,
+    conversationHydration: api.agentConversationHydration,
     inputReadiness: api.agentConversationInputReadiness,
     conversationContext: api.agentConversationContext,
     pendingConfirmation: api.agentPendingConfirmation,
@@ -260,6 +263,8 @@ export function flowNodeSessionGateway(
       deleteConversation: (_hostId, bindingId) => nodeSessionApi.remove(flowRunId, attemptId, bindingId),
       conversationEvents: (_hostId, bindingId, cursor, historyCursor) =>
         nodeSessionApi.events(flowRunId, attemptId, bindingId, cursor, historyCursor),
+      conversationHydration: (_hostId, bindingId) =>
+        nodeSessionApi.hydration(flowRunId, attemptId, bindingId),
       inputReadiness: (_hostId, bindingId) =>
         nodeSessionApi.inputReadiness(flowRunId, attemptId, bindingId),
       conversationContext: (_hostId, bindingId) =>

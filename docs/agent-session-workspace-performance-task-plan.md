@@ -1,6 +1,6 @@
 # Agent 会话与工作区加载性能任务过程表
 
-> 状态：`PERF-04 DONE`
+> 状态：`PERF-05 DONE`
 > 创建日期：2026-09-12
 > 范围：Agent Workspace 与 FlowRun 节点会话的浏览器加载、工作区浏览、会话恢复和运行态读取。
 > OpenHands 事实基线：`30cf5832e42c71c24daa82a1a4fd5d25eb70d1b9`（四包 `1.47.0`）。
@@ -32,8 +32,8 @@
 | `PERF-02` | `PERF-01` | `DONE` | 新增受服务端范围校验的目录列表 API：根目录/展开目录按 `parent_path + cursor + limit` 返回直接子项；保留现有文件下载与写入授权。 | Agent Workspace 与 FlowRun 节点入口均已提供直接子项分页读取；路径、范围、符号链接与工作目录校验仍在服务端。 |
 | `PERF-03` | `PERF-02` | `DONE` | Web 文件树按目录懒加载、局部缓存失效和视口绘制优化；已选会话复用唯一轻量工作区详情，阅读会话时不预加载文件树。目录首次和展开时均只取一页，用户明确触发“加载更多”才继续读取。 | 平台目录授权与轻量详情测试、Web typecheck/lint/build 已通过；浏览器定向回归留待 `PERF-10`。 |
 | `PERF-04` | `PERF-02` | `DONE` | Git 仓库发现、branch/HEAD/remote 已从工作区首屏和完整文件索引拆出；仅用户打开 Git 历史时按范围授权发现，随后才读取 log、commit、diff。仓库列表采用 15 秒受控短 TTL。 | 平台定向测试、Web typecheck/lint/build 已通过；浏览器定向回归留待 `PERF-10`。 |
-| `PERF-05` | `PERF-01` | `READY` | 实现完整会话 hydration：服务端聚合完整 active branch、正式 state、readiness、context/usage，并以一次浏览器响应提供完整逻辑事实。 | 长会话、工具密集会话、Fork/重写/继续发送的服务端回归；不得把 100 条窗口作为逻辑上限。 |
-| `PERF-06` | `PERF-05` | `BLOCKED_BY_DEPENDENCY` | 前端首屏快照持久缓存、完整历史逻辑缓存（5 个 inactive 会话 + 5 分钟 LRU/TTL）、HEAD 轻量校验和内存上限；重型内容延迟读取。 | 定向浏览器回归：来回切换秒开、TTL/LRU 淘汰、刷新后的完整恢复和旧缓存覆盖。 |
+| `PERF-05` | `PERF-01` | `DONE` | 会话首次 hydration 改由服务端沿 OpenHands 正式 `history_cursor` 聚合完整 active branch，并在一次响应中返回 events、context/usage 与 readiness。浏览器不再循环历史页；运行中的 WebSocket 断流仍使用有界 cursor 增量对账。 | 平台定向聚合测试、Web typecheck/lint/build 已通过；浏览器定向回归留待 `PERF-10`。 |
+| `PERF-06` | `PERF-05` | `READY` | 前端首屏快照持久缓存、完整历史逻辑缓存（5 个 inactive 会话 + 5 分钟 LRU/TTL）、HEAD 轻量校验和内存上限；重型内容延迟读取。 | 定向浏览器回归：来回切换秒开、TTL/LRU 淘汰、刷新后的完整恢复和旧缓存覆盖。 |
 | `PERF-07` | `PERF-05` | `BLOCKED_BY_DEPENDENCY` | 固化 Fork、旧用户消息重写和普通发送的 event-by-id / 正式状态验证路径，补足目标不在首屏或浏览器历史缓存时的回归。 | API/Runtime 回归：缓存淘汰、刷新、另一浏览器和局部窗口无目标事件时仍可操作；OpenHands 真缺失才明确失败。 |
 | `PERF-08` | `PERF-05` | `BLOCKED_BY_DEPENDENCY` | 消除安全可证明的重复 Runtime 调用：hydration 共用一次正式 state；保留独立的运行中 readiness、断流 events reconcile 和列表 summary 读取。 | 调用计数和行为回归：圆形运行态、蓝色未读、WebSocket 断流恢复、暂停/恢复/队列均保持。 |
 | `PERF-09` | `PERF-03`, `PERF-06` | `BLOCKED_BY_DEPENDENCY` | 对会话消息、工具详情、Markdown/高亮、stdout/stderr、diff、预览采用视口虚拟化、默认折叠和按需解析/读取。 | 大会话浏览器回归：完整逻辑索引不丢失，首屏/滚动/展开不长任务阻塞。 |
@@ -89,3 +89,4 @@ Fork / rewrite old event
 | 2026-09-12 | `PERF-02` | 平台 Ruff/py_compile、无 `conftest` 的目录授权与 cursor 分页单测、`git diff --check` | PASS：两类会话入口均可按目录直接子项分页读取，隐藏文件、符号链接和范围外路径不暴露；旧 `/workspace` 全量响应暂仅为兼容保留，待 `PERF-03` 前端切换后移出首屏路径。 |
 | 2026-09-12 | `PERF-03` | 平台 Ruff/py_compile、无 `conftest` 的目录授权和轻量详情测试（4 passed）、Web typecheck/lint/production build、`git diff --check` | PASS：默认工作区详情不再递归扫描文件树或发现 Git 仓库；文件页签打开后才读取根目录，目录展开只读取直接子项的一页，继续分页须显式点击“加载更多”。创建/删除会清空局部目录缓存并重新授权读取；已加载行保留并采用 `content-visibility`，不牺牲多选、展开或粘性目录路径。Vite 提示主 bundle gzip 480.85KB，未阻断构建，留给 `PERF-09` 的渲染/分包审计。 |
 | 2026-09-12 | `PERF-04` | 平台 Ruff/py_compile、无 `conftest` 的 Git 拆分与目录授权测试（6 passed）、Web typecheck/lint/production build、`git diff --check` | PASS：普通工作区详情和 `full_index=true` 的文件引用路径均不会运行 Git 仓库扫描或 branch/HEAD/remote 子进程。两类会话入口仅在用户明确打开 Git 历史后调用受授权的 repositories API；选定仓库后才读取 log、commit 与 diff，列表 TTL 为 15 秒。Git 根仓库与多个授权仓库均可选择。Vite 提示主 bundle gzip 481.36KB，未阻断构建，继续留给 `PERF-09`。 |
+| 2026-09-12 | `PERF-05` | 平台 Ruff/py_compile、无 `conftest` 的完整 active-branch 聚合测试（2 passed）、Web typecheck/lint/production build、`git diff --check` | PASS：两类会话入口新增 hydration 路由；服务端以正式 `history_cursor` 与 event identity 读取所有 active-branch 页面，保持最新 HEAD/usage，若 HEAD 漂移、事件冲突或 cursor 循环则 fail closed。不存在“最近 100 条”或 FlowWeave 自定事件数量上限。浏览器首开只调用 hydration 并填充 events/context/readiness 缓存；历史分页循环已移除。运行中仍保留 readiness 读与 WebSocket 断流 cursor 对账，压缩轮询合并最新页而不覆盖完整历史。Vite 主 bundle gzip 481.25KB 警告未阻断构建，留给 `PERF-09`。 |
