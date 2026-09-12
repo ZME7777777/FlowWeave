@@ -1418,6 +1418,54 @@ def _probe_runtime_image(
                 raise
 
 
+def _stamp_fixed_runtime_provenance(
+    image_digest: str, reference: str, *, timeout: int
+) -> str:
+    """Replace only inherited platform provenance in the final governance layer.
+
+    A historical Runtime can contribute ``/runtime`` files through the user
+    base image.  OpenHands' formal source build replaces ``/agent-server``,
+    but deliberately preserves that user base filesystem.  Its old provenance
+    and FlowWeave condenser overlay would therefore contradict the fixed
+    1.47 build even after the formal output is correct.  Copy the controller's
+    fixed assets into a disposable container and commit that one governance
+    layer; it never writes to the Setup container, Workspace, HOME, or a
+    persistent Runtime mount.
+    """
+
+    settings = get_settings()
+    stamp_name = "fw-env-provenance-" + hashlib.sha256(reference.encode()).hexdigest()[:24]
+    _run(
+        [
+            settings.docker_binary,
+            "create",
+            "--name",
+            stamp_name,
+            image_digest,
+        ],
+        timeout=30,
+    )
+    try:
+        for source, destination in (
+            ("/app/openhands-source-provenance.json", "/runtime/openhands-source-provenance.json"),
+            ("/app/patch_fork_condenser.py", "/runtime/patch_fork_condenser.py"),
+        ):
+            _run(
+                [settings.docker_binary, "cp", source, f"{stamp_name}:{destination}"],
+                timeout=30,
+            )
+        return _run(
+            [settings.docker_binary, "commit", stamp_name, reference],
+            timeout=timeout,
+        )
+    finally:
+        try:
+            _run([settings.docker_binary, "rm", "--force", stamp_name], timeout=30)
+        except DomainError as exc:
+            if not _docker_resource_absent(exc, "container"):
+                raise
+
+
 def publish_container(
     container_id: str,
     *,
@@ -1644,6 +1692,11 @@ def publish_container(
         [settings.docker_binary, "build", "--tag", reference, "-"],
         timeout=settings.terminal_environment_publish_timeout_seconds,
         input_text=dockerfile,
+    )
+    _stamp_fixed_runtime_provenance(
+        official_digest,
+        reference,
+        timeout=settings.terminal_environment_publish_timeout_seconds,
     )
     inspection = cast(
         dict[str, object],

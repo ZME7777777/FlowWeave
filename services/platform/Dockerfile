@@ -24,6 +24,10 @@ COPY services/platform/src ./src
 # The Environment publish verifier must be supplied by this fixed control-plane
 # image. A user Setup image can contain an older /runtime/contract_check.py.
 COPY infra/openhands/contract_check.py ./contract_check.py
+# The final Environment governance layer also replaces historical Runtime
+# provenance and its governed source overlay before validation.
+COPY infra/openhands/openhands-source-provenance.json ./openhands-source-provenance.json
+COPY infra/openhands/patch_fork_condenser.py ./patch_fork_condenser.py
 ENV PATH="/app/.venv/bin:$PATH" PYTHONPATH=/app/src
 RUN useradd --create-home --uid 10001 flowweave \
  && mkdir -p /data/artifacts /data/workspaces \

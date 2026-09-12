@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "build_input": {
+    "schema_version": 1,
+    "source_kind": "upstream_source",
+    "repository": "https://github.com/OpenHands/software-agent-sdk.git",
+    "archive_url": "https://codeload.github.com/OpenHands/software-agent-sdk/tar.gz/30cf5832e42c71c24daa82a1a4fd5d25eb70d1b9",
+    "archive_sha256": "70128f691ba58f0a1a1f6987c24738bb144209c61ba1b44a349a5504a98ea6b5",
+    "upstream_base_commit": "30cf5832e42c71c24daa82a1a4fd5d25eb70d1b9",
+    "source_commit": "30cf5832e42c71c24daa82a1a4fd5d25eb70d1b9",
+    "fork_commit": null,
+    "package_version": "1.47.0",
+    "packages": [
+      "openhands-agent-server",
+      "openhands-sdk",
+      "openhands-tools",
+      "openhands-workspace"
+    ]
+  },
+  "source_archive_sha256": "70128f691ba58f0a1a1f6987c24738bb144209c61ba1b44a349a5504a98ea6b5",
+  "source_root": "/opt/openhands-source",
+  "overlays": {
+    "patch_fork_condenser.py": "bc06937d2214df9265b348ab8e11356e8a82f13bf592b238f9eeb51073359d10"
+  }
+}

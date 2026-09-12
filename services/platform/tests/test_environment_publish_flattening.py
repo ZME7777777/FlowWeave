@@ -247,3 +247,50 @@ def test_runtime_probe_inherits_the_frozen_openhands_build_identity(monkeypatch)
         "OPENHANDS_BUILD_GIT_REF=30cf5832e42c71c24daa82a1a4fd5d25eb70d1b9",
     ]
     assert contract_check[-1] == "/tmp/flowweave-contract-check.py"
+
+
+def test_runtime_provenance_stamp_uses_only_disposable_governance_container(monkeypatch) -> None:
+    commands: list[list[str]] = []
+
+    monkeypatch.setattr(
+        environment_docker, "get_settings", lambda: SimpleNamespace(docker_binary="docker")
+    )
+    monkeypatch.setattr(
+        environment_docker,
+        "_run",
+        lambda command, **_kwargs: commands.append(command) or "sha256:stamped",
+    )
+
+    assert environment_docker._stamp_fixed_runtime_provenance(
+        "sha256:formal", "flowweave/environment:test", timeout=60
+    ) == "sha256:stamped"
+
+    name = "fw-env-provenance-" + __import__("hashlib").sha256(
+        b"flowweave/environment:test"
+    ).hexdigest()[:24]
+    assert commands[0] == [
+        "docker",
+        "create",
+        "--name",
+        name,
+        "sha256:formal",
+    ]
+    assert commands[1] == [
+        "docker",
+        "cp",
+        "/app/openhands-source-provenance.json",
+        f"{name}:/runtime/openhands-source-provenance.json",
+    ]
+    assert commands[2] == [
+        "docker",
+        "cp",
+        "/app/patch_fork_condenser.py",
+        f"{name}:/runtime/patch_fork_condenser.py",
+    ]
+    assert commands[3] == [
+        "docker",
+        "commit",
+        name,
+        "flowweave/environment:test",
+    ]
+    assert commands[4] == ["docker", "rm", "--force", name]
