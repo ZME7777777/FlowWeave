@@ -729,6 +729,7 @@ export interface AgentSessionWorkspaceDirectory {
   next_cursor?: string | null;
 }
 export interface WorkspaceGitRepository { path: string; remote?: string; branch?: string; head?: string }
+export interface AgentSessionWorkspaceGitRepositories { repositories: WorkspaceGitRepository[] }
 export interface WorkspaceGitCommit {
   id: string;
   short_id: string;

@@ -24,6 +24,7 @@ import type {
   AgentSessionWorkDirectoryList,
   AgentSessionWorkspaceDetails,
   AgentSessionWorkspaceDirectory,
+  AgentSessionWorkspaceGitRepositories,
   CapabilityAsset,
   CapabilityCollection,
   ModelProvider,
@@ -94,6 +95,7 @@ export interface AgentSessionApi {
   readonly addConversationCapability: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, capabilityVersionId: string) => Promise<AgentConversation>;
   readonly workspaceDetails: (hostId: AgentSessionHostId, options?: AgentSessionWorkspaceOptions) => Promise<AgentSessionWorkspaceDetails>;
   readonly workspaceDirectory: (hostId: AgentSessionHostId, options?: AgentSessionDirectoryOptions) => Promise<AgentSessionWorkspaceDirectory>;
+  readonly gitRepositories: (hostId: AgentSessionHostId, options?: Omit<AgentSessionFileOptions, 'download'>) => Promise<AgentSessionWorkspaceGitRepositories>;
   readonly gitLog: (hostId: AgentSessionHostId, repositoryPath: string, options?: Omit<AgentSessionFileOptions, 'download'>) => Promise<WorkspaceGitLog>;
   readonly gitCommit: (hostId: AgentSessionHostId, repositoryPath: string, commit: string, options?: Omit<AgentSessionFileOptions, 'download'>) => Promise<WorkspaceGitCommitDetails>;
   readonly gitDiff: (hostId: AgentSessionHostId, repositoryPath: string, commit: string, path: string, options?: Omit<AgentSessionFileOptions, 'download'>) => Promise<WorkspaceGitFileDiff>;
@@ -156,6 +158,7 @@ export const agentWorkspaceSessionGateway: AgentSessionGateway = {
     addConversationCapability: api.addAgentConversationCapability,
     workspaceDetails: api.agentWorkspaceDetails,
     workspaceDirectory: api.agentWorkspaceDirectory,
+    gitRepositories: api.agentWorkspaceGitRepositories,
     gitLog: api.agentWorkspaceGitLog,
     gitCommit: api.agentWorkspaceGitCommit,
     gitDiff: api.agentWorkspaceGitDiff,
@@ -223,6 +226,8 @@ export function flowNodeSessionGateway(
         nodeSessionApi.workspace(flowRunId, attemptId, options?.bindingId, options?.workDirectoryId, options?.fullIndex),
       workspaceDirectory: (_hostId, options) =>
         nodeSessionApi.workspaceDirectory(flowRunId, attemptId, options?.bindingId, options?.workDirectoryId, options?.parentPath, options?.cursor),
+      gitRepositories: (_hostId, options) =>
+        nodeSessionApi.gitRepositories(flowRunId, attemptId, options?.bindingId, options?.workDirectoryId),
       gitLog: (_hostId, repositoryPath, options) =>
         nodeSessionApi.gitLog(flowRunId, attemptId, repositoryPath, options?.bindingId, options?.workDirectoryId),
       gitCommit: (_hostId, repositoryPath, commit, options) =>

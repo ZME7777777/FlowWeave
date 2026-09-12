@@ -221,6 +221,12 @@ export const api = {
     if (options.cursor) query.set('cursor', options.cursor);
     return request<import('../types').AgentSessionWorkspaceDirectory>(`/agent-workspaces/${encodeURIComponent(id)}/workspace/directory${query.size ? `?${query}` : ''}`);
   },
+  agentWorkspaceGitRepositories: (id: string, options: { bindingId?: string; workDirectoryId?: string } = {}) => {
+    const query = new URLSearchParams();
+    if (options.bindingId) query.set('binding_id', options.bindingId);
+    if (options.workDirectoryId) query.set('work_directory_id', options.workDirectoryId);
+    return request<import('../types').AgentSessionWorkspaceGitRepositories>(`/agent-workspaces/${encodeURIComponent(id)}/workspace/git/repositories${query.size ? `?${query}` : ''}`);
+  },
   agentWorkspaceGitLog: (id: string, repositoryPath: string, options: { bindingId?: string; workDirectoryId?: string } = {}) => {
     const query = new URLSearchParams({ repository_path: repositoryPath });
     if (options.bindingId) query.set('binding_id', options.bindingId);
@@ -822,6 +828,12 @@ export const nodeSessionApi = {
     if (parentPath) query.set('parent_path', parentPath);
     if (cursor) query.set('cursor', cursor);
     return request<import('../types').AgentSessionWorkspaceDirectory>(`${nodeSessionBase(flowRunId, attemptId)}/workspace/directory${query.size ? `?${query}` : ''}`);
+  },
+  gitRepositories: (flowRunId: string, attemptId: string, bindingId?: string, workDirectoryId?: string) => {
+    const query = new URLSearchParams();
+    if (bindingId) query.set('binding_id', bindingId);
+    if (workDirectoryId) query.set('work_directory_id', workDirectoryId);
+    return request<import('../types').AgentSessionWorkspaceGitRepositories>(`${nodeSessionBase(flowRunId, attemptId)}/workspace/git/repositories${query.size ? `?${query}` : ''}`);
   },
   gitLog: (flowRunId: string, attemptId: string, repositoryPath: string, bindingId?: string, workDirectoryId?: string) => {
     const query = new URLSearchParams({ repository_path: repositoryPath });

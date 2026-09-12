@@ -1044,16 +1044,11 @@ def details(
             if full_index
             else []
         ),
-        "repositories": (
-            [
-                _repository_details(host_repository, runtime_path)
-                for host_repository, runtime_path in _scope_repositories(
-                    project_root, runtime_root, file_roots
-                )
-            ]
-            if full_index
-            else []
-        ),
+        # Git discovery is deliberately not coupled to either the lightweight
+        # workspace summary or a full file index. The Git panel has its own
+        # explicit endpoint so opening a reference picker cannot recursively
+        # scan repositories or run branch/HEAD/remote commands.
+        "repositories": [],
         "runtime": {"container_id": container_short_id},
         "ide": {
             "workspace_path": working_directory,
@@ -1077,6 +1072,25 @@ def _git_scope(
         runtime_root,
         _file_scope_roots(db, workspace_id, work_directory_id, binding_id, directory),
     )
+
+
+def git_repositories(
+    db: Session,
+    workspace_id: str,
+    binding_id: str | None = None,
+    work_directory_id: str | None = None,
+) -> list[dict[str, str]]:
+    """Discover safe repository metadata only after an explicit Git-panel request."""
+
+    project_root, runtime_root, file_roots = _git_scope(
+        db, workspace_id, work_directory_id, binding_id
+    )
+    return [
+        _repository_details(host_repository, runtime_path)
+        for host_repository, runtime_path in _scope_repositories(
+            project_root, runtime_root, file_roots
+        )
+    ]
 
 
 def git_history(

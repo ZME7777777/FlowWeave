@@ -556,16 +556,10 @@ def details(
         "working_directory": working_directory,
         "work_directory": directory,
         "files": _entries(project_root, runtime_root, roots) if full_index else [],
-        "repositories": (
-            [
-                agent_workspace_host.git_repository_details(repository, repository_path)
-                for repository, repository_path in agent_workspace_host.git_repositories(
-                    project_root, str(runtime_root), roots
-                )
-            ]
-            if full_index
-            else []
-        ),
+        # Git discovery has an explicit Git-panel entrypoint. Even the full
+        # file index used by reference selection must not trigger repository
+        # scanning or Git metadata subprocesses.
+        "repositories": [],
         # This entry was authorized against an active Attempt Runtime.
         "runtime": {"state": "ACTIVE", "write_available": True},
         "ide": {
@@ -577,6 +571,36 @@ def details(
             ),
         },
     }
+
+
+def git_repositories(
+    db: Session,
+    *,
+    flow_run_id: str,
+    attempt_id: str,
+    binding_id: str | None = None,
+    work_directory_id: str | None = None,
+) -> list[dict[str, str]]:
+    """Discover authorized repositories only for an explicit Git-panel request."""
+
+    project_root, runtime_root, _, _ = _authorize_entry(
+        db, flow_run_id=flow_run_id, attempt_id=attempt_id
+    )
+    _, _, roots = _scope(
+        db,
+        flow_run_id=flow_run_id,
+        attempt_id=attempt_id,
+        binding_id=binding_id,
+        work_directory_id=work_directory_id,
+        runtime_root=runtime_root,
+    )
+    _validate_scope_roots(project_root, runtime_root, roots)
+    return [
+        agent_workspace_host.git_repository_details(repository, repository_path)
+        for repository, repository_path in agent_workspace_host.git_repositories(
+            project_root, str(runtime_root), roots
+        )
+    ]
 
 
 def git_history(

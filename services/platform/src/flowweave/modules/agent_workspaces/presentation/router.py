@@ -357,6 +357,23 @@ async def list_agent_workspace_directory(
     )
 
 
+@router.get("/agent-workspaces/{workspace_id}/workspace/git/repositories")
+async def list_agent_workspace_git_repositories(
+    workspace_id: str,
+    db: Db,
+    binding_id: str | None = Query(default=None),
+    work_directory_id: str | None = Query(default=None),
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: {
+            "repositories": workspace.git_repositories(
+                session, workspace_id, binding_id, work_directory_id
+            )
+        },
+    )
+
+
 @router.get("/agent-workspaces/{workspace_id}/workspace/file")
 async def download_agent_workspace_file(
     workspace_id: str,

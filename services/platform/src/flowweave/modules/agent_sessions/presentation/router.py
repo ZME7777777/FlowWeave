@@ -454,6 +454,28 @@ async def node_session_workspace_directory(
     )
 
 
+@router.get(f"{_BASE}/workspace/git/repositories")
+async def node_session_workspace_git_repositories(
+    flow_run_id: str,
+    attempt_id: str,
+    db: Db,
+    binding_id: str | None = Query(default=None),
+    work_directory_id: str | None = Query(default=None),
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: {
+            "repositories": agent_sessions.flow_node_workspace.git_repositories(
+                session,
+                flow_run_id=flow_run_id,
+                attempt_id=attempt_id,
+                binding_id=binding_id,
+                work_directory_id=work_directory_id,
+            )
+        },
+    )
+
+
 @router.get(f"{_BASE}/workspace/file")
 async def node_session_workspace_file(
     flow_run_id: str,

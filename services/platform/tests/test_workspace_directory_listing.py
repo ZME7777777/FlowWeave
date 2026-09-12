@@ -130,3 +130,82 @@ def test_workspace_details_skips_full_tree_and_git_without_explicit_index(
     assert details["files"] == []
     assert details["repositories"] == []
     assert details["runtime"]["container_id"] == "1234567890ab"
+
+
+def test_full_workspace_index_does_not_trigger_git_discovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_root = "/runtime/workspace/project"
+
+    monkeypatch.setattr(workspace_service, "_workspace", lambda *_: None)
+    monkeypatch.setattr(
+        workspace_service, "_working_directory", lambda *_args, **_kwargs: (runtime_root, None)
+    )
+    monkeypatch.setattr(
+        workspace_service,
+        "_scope_details",
+        lambda *_args, **_kwargs: {"kind": "ROOT", "display_name": "根工作区"},
+    )
+    monkeypatch.setattr(
+        workspace_service, "_file_scope_roots", lambda *_args, **_kwargs: (runtime_root,)
+    )
+    monkeypatch.setattr(workspace_service, "_project_root", lambda *_: tmp_path)
+    monkeypatch.setattr(workspace_service, "_runtime_root", lambda *_: runtime_root)
+    monkeypatch.setattr(
+        workspace_service.agent_sessions.conversations,
+        "terminal_container_details",
+        lambda *_: ("runtime", "resource", "sha256:1234567890abcdef"),
+    )
+    monkeypatch.setattr(
+        workspace_service.agent_sessions, "ssh_remote_descriptor", lambda *_args, **_kwargs: {}
+    )
+    monkeypatch.setattr(
+        workspace_service,
+        "_scoped_workspace_entries",
+        lambda *_args, **_kwargs: [
+            {"path": f"{runtime_root}/readme.md", "kind": "file", "size": 1}
+        ],
+    )
+    monkeypatch.setattr(
+        workspace_service,
+        "_scope_repositories",
+        lambda *_args, **_kwargs: pytest.fail("Git discovery belongs to the Git panel only"),
+    )
+
+    details = workspace_service.details(None, "workspace", full_index=True)
+
+    assert details["files"] == [
+        {"path": f"{runtime_root}/readme.md", "kind": "file", "size": 1}
+    ]
+    assert details["repositories"] == []
+
+
+def test_git_repositories_discovers_metadata_only_from_explicit_endpoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_root = "/runtime/workspace/project"
+    repository = tmp_path / "repository"
+
+    monkeypatch.setattr(workspace_service, "_workspace", lambda *_: None)
+    monkeypatch.setattr(
+        workspace_service, "_working_directory", lambda *_args, **_kwargs: (runtime_root, None)
+    )
+    monkeypatch.setattr(
+        workspace_service, "_file_scope_roots", lambda *_args, **_kwargs: (runtime_root,)
+    )
+    monkeypatch.setattr(workspace_service, "_project_root", lambda *_: tmp_path)
+    monkeypatch.setattr(workspace_service, "_runtime_root", lambda *_: runtime_root)
+    monkeypatch.setattr(
+        workspace_service,
+        "_scope_repositories",
+        lambda *_args, **_kwargs: [(repository, runtime_root)],
+    )
+    monkeypatch.setattr(
+        workspace_service,
+        "_repository_details",
+        lambda host_path, path: {"path": path, "branch": host_path.name},
+    )
+
+    assert workspace_service.git_repositories(None, "workspace") == [
+        {"path": runtime_root, "branch": "repository"}
+    ]
