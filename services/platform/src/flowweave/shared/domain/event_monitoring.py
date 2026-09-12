@@ -30,6 +30,59 @@ def _task_key(task: dict[str, Any]) -> str:
     return str(task.get("action_event_id") or task.get("task_id") or task.get("tool_call_id") or "")
 
 
+def _native_progress_coverage(events: tuple[Any, ...] | list[Any]) -> dict[str, int]:
+    """Measure visible native progress without inventing a commentary channel.
+
+    A batch is only a formal ``llm_response_id`` group (or one action when the
+    upstream did not provide that identity).  Coverage requires an actual
+    ThinkAction or safe ActionEvent thought; tool summaries never count.
+    """
+
+    progress_response_ids: set[str] = set()
+    progress_event_ids: set[str] = set()
+    for event in events:
+        payload = getattr(event, "payload", None)
+        if not isinstance(payload, dict):
+            continue
+        if (
+            getattr(event, "event_type", None) == "THOUGHT"
+            and payload.get("event_name") == "ThinkAction"
+            and isinstance(payload.get("content"), str)
+            and payload["content"].strip()
+        ):
+            progress_event_ids.add(str(getattr(event, "cursor", "")))
+            response_id = payload.get("llm_response_id")
+            if isinstance(response_id, str) and response_id:
+                progress_response_ids.add(response_id)
+
+    batches: dict[str, bool] = {}
+    for event in events:
+        payload = getattr(event, "payload", None)
+        if not isinstance(payload, dict) or getattr(event, "event_type", None) != "TOOL_CALL":
+            continue
+        if payload.get("event_name") == "ThinkAction":
+            continue
+        response_id = payload.get("llm_response_id")
+        cursor = str(getattr(event, "cursor", ""))
+        batch_id = response_id if isinstance(response_id, str) and response_id else cursor
+        has_action_progress = isinstance(payload.get("thought"), str) and bool(
+            payload["thought"].strip()
+        )
+        has_linked_think = (
+            isinstance(response_id, str)
+            and response_id in progress_response_ids
+        ) or str(payload.get("parent_id") or "") in progress_event_ids
+        batches[batch_id] = batches.get(batch_id, False) or has_action_progress or has_linked_think
+
+    total = len(batches)
+    covered = sum(batches.values())
+    return {
+        "native_progress_tool_batches": total,
+        "native_progress_covered_tool_batches": covered,
+        "native_progress_uncovered_tool_batches": total - covered,
+    }
+
+
 def build_activity_summary(
     events: tuple[Any, ...] | list[Any],
     *,
@@ -112,6 +165,7 @@ def build_activity_summary(
         ),
         "active_subagents": active,
         "subagent_count": len(subagents),
+        **_native_progress_coverage(events),
     }
 
 

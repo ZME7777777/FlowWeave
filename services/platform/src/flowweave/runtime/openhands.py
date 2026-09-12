@@ -85,6 +85,26 @@ _CONVERSATION_EVENTS_SEARCH_PATH = re.compile(r"^/api/conversations/[^/]+/events
 _CONVERSATION_EVENT_BY_ID_PATH = re.compile(r"^/api/conversations/[^/]+/events/[^/]+$")
 
 
+def _codex_model_canonical_name(model: str) -> str:
+    """Return a prompt-recognized canonical identity for a catalog Codex model.
+
+    ``model`` remains the exact model selected and frozen for the Conversation.
+    This field is only the OpenHands SDK's capability/prompt lookup identity.
+    The fixed SDK recognizes the GPT-5 Codex prompt variant through
+    ``gpt-5.5-codex`` but does not yet list the newer subscription catalog
+    names (for example ``gpt-5.6-sol``).  Keep unknown models on the existing
+    conservative alias so an unverified catalog entry cannot acquire a prompt
+    or capability profile by name alone.
+    """
+
+    normalized = model.strip().lower()
+    if normalized.startswith("openai/"):
+        normalized = normalized.removeprefix("openai/")
+    if declared_context_window(normalized) is not None:
+        return "openai/gpt-5.5-codex"
+    return "openai/codex-auto-review"
+
+
 def _operation_for_path(path: str) -> str:
     if _CONVERSATION_STATE_PATH.fullmatch(path):
         return "openhands.conversation_state"
@@ -1012,13 +1032,13 @@ class OpenHandsRuntime:
             if provider.auth_type == "CODEX_OAUTH":
                 llm.update(
                     {
-                        # Preserve the Codex-specific capability identity for the
-                        # OpenHands/LiteLLM adapter while sending a catalog model
-                        # that LiteLLM knows supports native Responses streaming.
-                        # This formal OpenHands field prevents LiteLLM from
-                        # injecting OpenAI public-API-only output parameters into
-                        # the Codex OAuth request.
-                        "model_canonical_name": "openai/codex-auto-review",
+                        # Keep the actual ``model`` above untouched: it is the
+                        # user-selected, frozen model sent to Codex.  The
+                        # canonical identity only selects OpenHands' prompt and
+                        # feature metadata.  A recognized Codex GPT-5 identity
+                        # enables its concise streaming guidance without changing
+                        # the subscription transport contract below.
+                        "model_canonical_name": _codex_model_canonical_name(model),
                         "extra_headers": provider.extra_headers,
                         "temperature": None,
                         "max_output_tokens": None,
@@ -1891,6 +1911,12 @@ class OpenHandsRuntime:
                 action_item = cast(dict[str, object], action)
                 if str(action_item.get("kind") or "") == "FinishAction":
                     return cls._text_content(action_item.get("message"))
+                if str(action_item.get("kind") or "") == "ThinkAction":
+                    # ThinkAction's user-facing progress is part of the
+                    # formal native action payload, not the provider thought
+                    # channel. Prefer it so it remains available even when
+                    # an LLM returns no top-level commentary text.
+                    return cls._text_content(action_item.get("thought"))
             # ActionEvent owns visible commentary at the event level. The
             # nested action contains tool arguments, not the model thought.
             return cls._text_content(item.get("thought"))
@@ -2079,7 +2105,16 @@ class OpenHandsRuntime:
         if isinstance(timestamp, str) and timestamp:
             payload["timestamp"] = timestamp[:80]
         if kind == "ActionEvent":
-            thought = redact_secret_text(cls._text_content(item.get("thought"))[:20_000])
+            action = item.get("action")
+            native_think = (
+                cls._text_content(cast(dict[str, object], action).get("thought"))
+                if isinstance(action, dict)
+                and str(cast(dict[str, object], action).get("kind") or "") == "ThinkAction"
+                else ""
+            )
+            thought = redact_secret_text(
+                (native_think or cls._text_content(item.get("thought")))[:20_000]
+            )
             if thought:
                 payload["thought"] = thought
             summary = item.get("summary")
@@ -2101,6 +2136,17 @@ class OpenHandsRuntime:
             tool_name = item.get("tool_name")
             if isinstance(tool_name, str) and tool_name:
                 payload["tool_name"] = tool_name[:200]
+        if kind == "ActionEvent":
+            llm_response_id = cls._formal_identity(
+                item.get("llm_response_id"), field="llm_response_id", required=False
+            )
+            if llm_response_id is not None:
+                payload["llm_response_id"] = llm_response_id
+            security_risk = item.get("security_risk")
+            if isinstance(security_risk, str) and security_risk in {
+                "UNKNOWN", "LOW", "MEDIUM", "HIGH"
+            }:
+                payload["security_risk"] = security_risk
         parent_id = cls._formal_identity(item.get("parent_id"), field="parent_id", required=False)
         if parent_id is not None:
             payload["parent_id"] = parent_id

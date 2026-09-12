@@ -99,6 +99,11 @@ def test_agent_context_is_compiled_only_into_openhands_system_suffix(settings):
     assert spec.mcp_servers == ()
     assert AGENT_WORKSPACE_MAX_ITERATIONS == 300
     assert spec.budgets.max_iterations == AGENT_WORKSPACE_MAX_ITERATIONS
+    assert "首要目标是把用户任务做对" in suffix
+    assert "OpenHands 内置 think 工具" in suffix
+    assert "绝不能为了写进展而跳过、延迟、拆散或重排必要的检查" in suffix
+    assert "在重要工具调用或关键执行阶段之前" in suffix
+    assert "不要只复述工具、文件、命令、函数名或参数" in suffix
 
 
 def test_agent_context_is_allowed_only_during_conversation_creation(monkeypatch):

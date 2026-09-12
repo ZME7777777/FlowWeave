@@ -67,3 +67,47 @@ def test_monitor_marks_completed_task_and_terminal_conversation_not_stuck():
     assert result["possibly_stuck"] is False
     assert result["active_subagents"] == []
     assert result["subagent_count"] == 1
+
+
+def test_monitor_measures_only_native_progress_for_formal_tool_batches():
+    observed_at = datetime(2026, 9, 8, 12, 0, tzinfo=UTC)
+    result = build_activity_summary(
+        [
+            _event(
+                "progress",
+                "THOUGHT",
+                observed_at,
+                event_name="ThinkAction",
+                content="先确认现有实现，再决定验证范围。",
+                llm_response_id="response-1",
+            ),
+            _event(
+                "tool-1",
+                "TOOL_CALL",
+                observed_at,
+                event_name="TerminalAction",
+                llm_response_id="response-1",
+                summary="命令摘要不应计入覆盖率",
+            ),
+            _event(
+                "tool-2",
+                "TOOL_CALL",
+                observed_at,
+                event_name="FileEditorAction",
+                llm_response_id="response-2",
+                summary="另一个工具摘要",
+            ),
+            _event(
+                "tool-3",
+                "TOOL_CALL",
+                observed_at,
+                event_name="TerminalAction",
+                thought="已经确认依赖，接下来验证构建结果。",
+            ),
+        ],
+        now=observed_at,
+    )
+
+    assert result["native_progress_tool_batches"] == 3
+    assert result["native_progress_covered_tool_batches"] == 2
+    assert result["native_progress_uncovered_tool_batches"] == 1

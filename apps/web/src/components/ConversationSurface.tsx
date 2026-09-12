@@ -530,6 +530,117 @@ interface ActivityStage {
   entries: ActivityEntry[];
 }
 
+interface ActivityOperationGroup {
+  id: string;
+  entries: ActivityEntry[];
+}
+
+type ActivityStageRow =
+  | { kind: 'entry'; entry: ActivityEntry }
+  | { kind: 'operation-group'; group: ActivityOperationGroup };
+
+function taskBoundaryEventIds(entries: ActivityEntry[]): ReadonlySet<string> {
+  const ids = new Set<string>();
+  const parentIds = new Map<string, string>();
+  for (const entry of entries) {
+    for (const item of [entry.action ?? entry.item, ...entry.results]) {
+      const parentId = detailText(item.event.payload.parent_id);
+      if (parentId) parentIds.set(item.event.id, parentId);
+      if (item.event.payload.runtime_task) ids.add(item.event.id);
+    }
+  }
+  for (const eventId of parentIds.keys()) {
+    let current = parentIds.get(eventId);
+    const seen = new Set<string>();
+    while (current && !seen.has(current)) {
+      if (ids.has(current)) { ids.add(eventId); break; }
+      seen.add(current);
+      current = parentIds.get(current);
+    }
+  }
+  return ids;
+}
+
+function hasFailedOperationResult(entry: ActivityEntry): boolean {
+  return entry.results.some(result => {
+    const details = result.event.payload.details;
+    if (details?.is_error === true) return true;
+    const exitCode = details?.exit_code;
+    return typeof exitCode === 'number' && Number.isFinite(exitCode) && exitCode !== 0;
+  });
+}
+
+function isAggregateableOperation(entry: ActivityEntry, taskBoundaryIds: ReadonlySet<string>): boolean {
+  const item = entry.action ?? entry.item;
+  if (item.kind !== 'tool' || item.event.event_type !== 'TOOL_CALL') return false;
+  if (item.event.payload.runtime_task || taskBoundaryIds.has(item.event.id)) return false;
+  if (hasFailedOperationResult(entry)) return false;
+  const risk = String(item.event.payload.security_risk ?? 'UNKNOWN');
+  if (risk === 'MEDIUM' || risk === 'HIGH') return false;
+  return ['TerminalAction', 'FileEditorAction'].includes(String(item.event.payload.event_name ?? ''));
+}
+
+function operationFollows(previous: ActivityEntry, next: ActivityEntry): boolean {
+  const parentId = detailText((next.action ?? next.item).event.payload.parent_id);
+  if (!parentId) return false;
+  if (parentId === (previous.action ?? previous.item).event.id) return true;
+  return previous.results.some(result => result.event.id === parentId);
+}
+
+function sameOperationBatch(previous: ActivityEntry, next: ActivityEntry): boolean {
+  const previousItem = previous.action ?? previous.item;
+  const nextItem = next.action ?? next.item;
+  const previousResponse = detailText(previousItem.event.payload.llm_response_id);
+  const nextResponse = detailText(nextItem.event.payload.llm_response_id);
+  return Boolean(previousResponse && previousResponse === nextResponse) || operationFollows(previous, next);
+}
+
+function activityStageRows(entries: ActivityEntry[]): ActivityStageRow[] {
+  const rows: ActivityStageRow[] = [];
+  const taskBoundaryIds = taskBoundaryEventIds(entries);
+  for (let index = 0; index < entries.length;) {
+    const first = entries[index];
+    if (!isAggregateableOperation(first, taskBoundaryIds)) {
+      rows.push({ kind: 'entry', entry: first });
+      index += 1;
+      continue;
+    }
+    const group = [first];
+    let cursor = index + 1;
+    while (cursor < entries.length && isAggregateableOperation(entries[cursor], taskBoundaryIds) && sameOperationBatch(group.at(-1)!, entries[cursor])) {
+      group.push(entries[cursor]);
+      cursor += 1;
+    }
+    if (group.length < 2) rows.push({ kind: 'entry', entry: first });
+    else rows.push({ kind: 'operation-group', group: { id: group.map(entry => entry.id).join(':'), entries: group } });
+    index = group.length < 2 ? index + 1 : cursor;
+  }
+  return rows;
+}
+
+function operationGroupSummary(entries: ActivityEntry[]): string {
+  let read = 0;
+  let created = 0;
+  let edited = 0;
+  let commands = 0;
+  for (const entry of entries) {
+    const item = entry.action ?? entry.item;
+    const eventName = String(item.event.payload.event_name ?? '');
+    if (eventName === 'TerminalAction') { commands += 1; continue; }
+    const command = detailContent(item.event.payload.details?.command).toLowerCase();
+    if (command === 'view') read += 1;
+    else if (command === 'create' || command === 'write') created += 1;
+    else edited += 1;
+  }
+  const parts = [
+    read ? `已读取 ${read} 个文件` : '',
+    created ? `已创建 ${created} 个文件` : '',
+    edited ? `已编辑 ${edited} 个文件` : '',
+    commands ? `已运行 ${commands} 条命令` : '',
+  ].filter(Boolean);
+  return parts.join('，并') || `已完成 ${entries.length} 项操作`;
+}
+
 function activityPresentation(entry: ActivityEntry, active: boolean, workspaceRoot?: string | null): ActivityPresentation {
   const item = entry.action ?? entry.item;
   if (item.kind === 'condensation') {
@@ -1031,6 +1142,56 @@ function taskAvatarStatus(entry: ActivityEntry, item: Item): 'running' | 'comple
   return phases.includes('COMPLETED') ? 'completed' : 'running';
 }
 
+function ActivityEntryRow({ entry, active, avatarSlots, workspaceRoot }: {
+  entry: ActivityEntry;
+  active: boolean;
+  avatarSlots: ReadonlyMap<string, SubagentAvatarSlot>;
+  workspaceRoot?: string | null;
+}) {
+  const item = entry.action ?? entry.item;
+  const Icon = item.kind === 'error' ? CircleAlert : item.kind === 'thought' || item.kind === 'condensation' ? Sparkles : Wrench;
+  const eventName = String(item.event.payload.event_name ?? '');
+  const avatarSlot = eventName === 'TaskAction' || eventName === 'TaskObservation'
+    ? subagentAvatarSlotForEvent(item.event, avatarSlots)
+    : undefined;
+  const ToolIcon = eventName.includes('Terminal') ? SquareTerminal : eventName.includes('FileEditor') ? FileText : Icon;
+  const taskAvatar = avatarSlot && <SubagentAvatar slot={avatarSlot} status={taskAvatarStatus(entry, item)} size={14}/>;
+  const presentation = activityPresentation(entry, active, workspaceRoot);
+  const toolDetail = item.kind === 'tool' ? <ToolDetailPanel presentation={presentation} eventName={eventName} results={entry.results} workspaceRoot={workspaceRoot}/> : null;
+  if (item.kind === 'thought') return <article className="conversation-activity-row thought">
+    <MessageMarkdown>{presentation.thought ?? item.content}</MessageMarkdown>
+  </article>;
+  if (item.kind === 'tool' && toolDetail) return <div className="conversation-tool-entry">
+    {presentation.thought && <article className="conversation-activity-row thought">
+      <MessageMarkdown>{presentation.thought}</MessageMarkdown>
+    </article>}
+    <details className="conversation-activity-row tool conversation-tool-detail">
+      <summary aria-label={`查看执行详情：${presentation.title}`}>{taskAvatar ?? <ToolIcon size={14}/>}<div><b title={presentation.title}>{presentation.title}</b></div><ChevronRight className="conversation-tool-chevron" size={13}/></summary>
+      {toolDetail}
+    </details>
+  </div>;
+  return <article className={`conversation-activity-row ${item.kind}`}>
+    {taskAvatar ?? <ToolIcon size={14}/>}<div className="conversation-activity-content"><b title={presentation.title}>{presentation.title}</b><small>{presentation.status}</small>
+      {presentation.thought && <span className="conversation-activity-thought"><MessageMarkdown>{presentation.thought}</MessageMarkdown></span>}
+    </div>
+  </article>;
+}
+
+function OperationGroup({ group, active, avatarSlots, workspaceRoot }: {
+  group: ActivityOperationGroup;
+  active: boolean;
+  avatarSlots: ReadonlyMap<string, SubagentAvatarSlot>;
+  workspaceRoot?: string | null;
+}) {
+  const summary = operationGroupSummary(group.entries);
+  return <details className="conversation-operation-group">
+    <summary aria-label={`查看操作批次：${summary}`}><Wrench size={14}/><span><b>{summary}</b><small>{`${group.entries.length} 项原生操作`}</small></span><ChevronRight size={13}/></summary>
+    <div className="conversation-operation-group-list">
+      {group.entries.map(entry => <ActivityEntryRow key={entry.id} entry={entry} active={active} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/>)}
+    </div>
+  </details>;
+}
+
 function ActivityGroup({ items, active, liveText, startedAt, finishedAt, avatarSlots, workspaceRoot }: {
   items: Item[];
   active: boolean;
@@ -1057,40 +1218,9 @@ function ActivityGroup({ items, active, liveText, startedAt, finishedAt, avatarS
     <div className="conversation-activity-list">
       {stages.map(stage => <section className={`conversation-activity-stage${stage.title ? '' : ' unlabelled'}`} key={stage.id}>
         {stage.title && <header><span>阶段</span><b>{stage.title}</b></header>}
-        {stage.entries.map(entry => {
-        const item = entry.action ?? entry.item;
-        const Icon = item.kind === 'error' ? CircleAlert : item.kind === 'thought' || item.kind === 'condensation' ? Sparkles : Wrench;
-        const eventName = String(item.event.payload.event_name ?? '');
-        const avatarSlot = eventName === 'TaskAction' || eventName === 'TaskObservation'
-          ? subagentAvatarSlotForEvent(item.event, avatarSlots)
-          : undefined;
-        const ToolIcon = eventName.includes('Terminal') ? SquareTerminal : eventName.includes('FileEditor') ? FileText : Icon;
-        const taskAvatar = avatarSlot && <SubagentAvatar slot={avatarSlot} status={taskAvatarStatus(entry, item)} size={14}/>;
-        const presentation = activityPresentation(entry, active, workspaceRoot);
-        const toolDetail = item.kind === 'tool' ? <ToolDetailPanel presentation={presentation} eventName={eventName} results={entry.results} workspaceRoot={workspaceRoot}/> : null;
-        if (item.kind === 'thought' && item.event.event_type === 'COMPLETED') return <article className="conversation-activity-row thought" key={entry.id}>
-          <MessageMarkdown>{presentation.thought ?? item.content}</MessageMarkdown>
-        </article>;
-        if (item.kind === 'thought') return <details className="conversation-activity-row thought conversation-thought-audit" key={entry.id}>
-          <summary>查看 Agent 过程说明<ChevronRight size={13}/></summary>
-          <MessageMarkdown>{presentation.thought ?? item.content}</MessageMarkdown>
-        </details>;
-        if (item.kind === 'tool' && toolDetail) return <div className="conversation-tool-entry" key={entry.id}>
-          <details className="conversation-activity-row tool conversation-tool-detail">
-            <summary aria-label={`查看执行详情：${presentation.title}`}>{taskAvatar ?? <ToolIcon size={14}/>}<div><b title={presentation.title}>{presentation.title}</b></div><ChevronRight className="conversation-tool-chevron" size={13}/></summary>
-            {presentation.thought && <details className="conversation-tool-thought-audit">
-              <summary>查看 Agent 过程说明<ChevronRight size={12}/></summary>
-              <MessageMarkdown>{presentation.thought}</MessageMarkdown>
-            </details>}
-            {toolDetail}
-          </details>
-        </div>;
-        return <article className={`conversation-activity-row ${item.kind}`} key={entry.id}>
-          {taskAvatar ?? <ToolIcon size={14}/>}<div className="conversation-activity-content"><b title={presentation.title}>{presentation.title}</b><small>{presentation.status}</small>
-            {presentation.thought && <span className="conversation-activity-thought"><MessageMarkdown>{presentation.thought}</MessageMarkdown></span>}
-          </div>
-        </article>;
-        })}
+        {activityStageRows(stage.entries).map(row => row.kind === 'operation-group'
+          ? <OperationGroup key={row.group.id} group={row.group} active={active} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/>
+          : <ActivityEntryRow key={row.entry.id} entry={row.entry} active={active} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/>)}
       </section>)}
       {liveText && <article className="conversation-activity-row thought live-text"><MessageMarkdown>{liveText}</MessageMarkdown></article>}
     </div>
