@@ -52,9 +52,12 @@ def test_dependency_build_uses_owned_ephemeral_network_and_bounded_logs(monkeypa
     network, container = commands
     assert network[:4] == ["docker", "network", "create", "--driver"]
     network_labels = [network[index + 1] for index, item in enumerate(network) if item == "--label"]
+    assert "--subnet" in network
+    assert network[network.index("--subnet") + 1].startswith("10.251.")
     assert "flowweave.resource-type=network" in network_labels
     assert "flowweave.network-purpose=dependency-build" in network_labels
     assert "flowweave.network-mode=egress" in network_labels
+    assert any(label.startswith("flowweave.network-subnet=10.251.") for label in network_labels)
     assert container[container.index("--network") + 1] == network[-1]
     assert container[container.index("--log-driver") + 1] == "local"
     assert container[container.index("--storage-opt") + 1] == "size=4g"

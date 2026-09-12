@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`IN PROGRESS`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`FR-368 FlowRun 专属小型网络分配`
+> 下一可执行切片：`NONE（等待部署验收）`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -129,7 +129,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | --- | --- | --- | --- |
 | FR-366 | FlowWeave 固定控制面与动态 Runtime 共用 Docker 默认地址池 | DONE | 已为 control、docker-control 与 Runtime 动态地址池建立强制、显式且互不重叠的配置契约；未改变现有 Runtime 所有权或远端网络。 |
 | FR-367 | Node Attempt 独占 Runtime/网络，偏离每个 FlowRun 单 Runtime 模型 | DONE | 新节点 Attempt 只解析并复用 FlowRun Runtime Session、容器、持久目录和专属网络；历史 Attempt Runtime 只读兼容与回收策略另行明确。 |
-| FR-368 | FlowRun Runtime 网络仍由 Docker 默认池按大网段分配 | READY | Runtime Provider 从 FR-366 冻结地址池为每个 FlowRun 分配小型、可审计、可回收的专属子网；临时构建网络也不得回退 Docker 默认池。 |
+| FR-368 | FlowRun Runtime 网络仍由 Docker 默认池按大网段分配 | DONE | Runtime Provider 从 FR-366 冻结地址池为每个 FlowRun 分配小型、可审计、可回收的专属子网；临时构建网络也不得回退 Docker 默认池。 |
 
 ### FR-366 FlowWeave 专属 Docker 地址规划 — DONE
 
@@ -160,6 +160,21 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 验收：受影响 Python 可编译；新增回归断言新节点 Attempt 仅有 FlowRun allocation／session，且通过共享 Runtime 路由；Ruff、`git diff --check` 与任务状态唯一性。数据库 pytest 需要 Testcontainers Docker socket，若不可用则如实记录；不在本切片部署或运行真实 Runtime。
 
 完成：首次进入、流程流转和拒绝后重试三个新 Attempt 创建路径不再分配 Attempt 专属 Runtime allocation、Secret、Runtime Session、ManagedSandbox 或网络；它们仍按记录创建工作目录，并由既有 `node_attempt_workspace_context()` 回落到所属 FlowRun 的唯一 Runtime。`allocate_node_attempt_runtime()` 已从公共 facade 移除，仅保留为历史 allocation 的私有兼容工具；已有 Attempt-owned allocation／session 不迁移、不删除、不改写。受影响 Python `py_compile`、Ruff format/check、`git diff --check` 与任务状态唯一性通过。定向 pytest 在 Testcontainers PostgreSQL fixture 初始化时因本机 Docker socket 缺失受阻，未进入断言，未记为通过；未部署、未创建或删除 Docker 网络，也未修改 Docker daemon、Compose 或 OpenHands 源码。
+
+### FR-368 FlowRun 专属小型网络分配 — DONE
+
+依赖：`FR-366`、`FR-367`。
+
+目标：
+
+- 每个新建 FlowRun Runtime 网络必须从 `FLOWWEAVE_RUNTIME_NETWORK_POOL` 按 `FLOWWEAVE_RUNTIME_NETWORK_PREFIX` 分配一个小型 IPv4 子网，Docker 创建命令不得依赖 daemon 默认地址池；同一 FlowRun 的节点 Attempt 继续使用其唯一 Runtime 网络。
+- Environment Setup、依赖构建和插件解析等 FlowWeave 受管临时 Docker 网络同样必须显式从该地址池分配，不得回退 Docker 默认地址池。
+- 网络须携带可审计的实际子网标签，并验证它属于冻结 FlowWeave 池且前缀正确；历史未标注网络保持现有兼容读取，不被本切片在线迁移或删除。
+- 子网选择以稳定资源 ID 为起点并对 Docker 报告的地址冲突有限探测，绝不因冲突改用未声明网络或默认地址池。
+
+验收：受影响 Python 可编译；纯地址规划和命令构造断言覆盖确定性、池边界、冲突候选和 `--subnet`／审计标签；Ruff、`git diff --check` 与任务状态唯一性。真实 Docker 创建、现有网络迁移、远端 Compose 切换和端到端网络验证留给后续部署验收。
+
+完成：Runtime Provider 以稳定资源 ID 在已冻结的 FlowWeave Runtime 地址池中选择最多 16 个确定性候选小网段，Docker 明确收到 `--subnet`，遇到明确地址冲突仅在该池内有界探测，绝不回退 daemon 默认地址池。新 FlowRun Runtime 的网络身份固定为 `flow_run_id`，因此 replacement generation 和节点 Attempt 复用同一网络；仅在 FlowRun 永久删除后回收该共享网络。Environment Setup、依赖构建与插件解析的临时网络同样携带显式子网和 `flowweave.network-subnet` 审计标签。新标签网络在 inspect 和控制面客户端重连时验证 IPv4 池／前缀／IPAM 一致性；历史未标注网络仍可兼容读取并按其原资源身份回收。`py_compile`、Ruff format/check、独立地址规划探针和 `git diff --check` 通过；全部 pytest 仍在 Testcontainers PostgreSQL fixture 初始化时因本机 Docker socket 缺失受阻，未进入断言，未记为通过。未部署、未创建或删除任何真实 Docker 网络，也未修改 Docker daemon、Compose 或 OpenHands 源码。
 
 ### FR-335 Runtime generation Sandbox 引用完整性 — DONE
 

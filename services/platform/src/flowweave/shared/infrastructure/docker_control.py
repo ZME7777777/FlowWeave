@@ -7,6 +7,8 @@ import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from hashlib import sha256
+from ipaddress import IPv4Network, ip_network
 from typing import cast
 from uuid import uuid4
 
@@ -17,6 +19,53 @@ class DockerControlError(RuntimeError):
 
 class DockerOwnershipError(DockerControlError):
     """The selected container is not owned by the expected FlowWeave resource."""
+
+
+@dataclass(frozen=True, slots=True)
+class FlowWeaveNetworkPlan:
+    """Allocate bounded FlowWeave-only subnets without using Docker defaults."""
+
+    pool: IPv4Network
+    prefix: int
+
+    def __post_init__(self) -> None:
+        if self.prefix <= self.pool.prefixlen or self.prefix > 32:
+            raise ValueError("Runtime network prefix must be more specific than its pool")
+
+    @property
+    def capacity(self) -> int:
+        return 1 << (self.prefix - self.pool.prefixlen)
+
+    def candidates(self, resource_id: str, *, max_attempts: int = 16) -> list[IPv4Network]:
+        if not resource_id:
+            raise ValueError("Runtime network resource identity is required")
+        if max_attempts < 1:
+            raise ValueError("Runtime network subnet probe count must be positive")
+        slot_size = 1 << (32 - self.prefix)
+        start = int.from_bytes(sha256(resource_id.encode("utf-8")).digest()[:8], "big")
+        pool_start = int(self.pool.network_address)
+        return [
+            IPv4Network((pool_start + ((start + offset) % self.capacity) * slot_size, self.prefix))
+            for offset in range(min(self.capacity, max_attempts))
+        ]
+
+    def contains_declared_subnet(self, raw_subnet: str) -> bool:
+        try:
+            subnet = ip_network(raw_subnet, strict=True)
+        except ValueError:
+            return False
+        return (
+            isinstance(subnet, IPv4Network)
+            and subnet.prefixlen == self.prefix
+            and subnet.subnet_of(self.pool)
+        )
+
+
+def docker_network_pool_conflict(detail: str) -> bool:
+    """Recognize Docker's explicit address-pool collision without masking failures."""
+
+    normalized = detail.lower()
+    return "pool overlaps" in normalized or "address already in use" in normalized
 
 
 def docker_storage_quota_is_unsupported(detail: str) -> bool:

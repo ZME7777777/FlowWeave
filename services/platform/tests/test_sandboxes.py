@@ -4,6 +4,7 @@ import hashlib
 import json
 import subprocess
 from datetime import UTC, datetime, timedelta
+from ipaddress import IPv4Network
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -41,6 +42,7 @@ from flowweave.shared.errors import DomainError
 from flowweave.shared.infrastructure import docker_control
 from flowweave.shared.infrastructure.docker_control import (
     DockerOwnershipError,
+    FlowWeaveNetworkPlan,
     remove_owned_container,
     remove_owned_network,
     remove_owned_volume,
@@ -983,7 +985,9 @@ def test_runtime_network_contract_requires_declared_mode(
         internal: bool = expected_internal,
         name: str = network_name,
         labelled_mode: str = network_mode,
+        subnet: str | None = None,
     ):
+        subnet = subnet or str(provider.network_plan.candidates(resource.id)[0])
         return json.dumps(
             [
                 {
@@ -997,7 +1001,9 @@ def test_runtime_network_contract_requires_declared_mode(
                         "flowweave.manager-scope": "test-scope",
                         "flowweave.network-purpose": "agent-runtime",
                         "flowweave.network-mode": labelled_mode,
+                        "flowweave.network-subnet": subnet,
                     },
+                    "IPAM": {"Config": [{"Subnet": subnet}]},
                 }
             ]
         )
@@ -1010,6 +1016,7 @@ def test_runtime_network_contract_requires_declared_mode(
         inspection(internal=not expected_internal),
         inspection(name="shared-runtime-network"),
         inspection(labelled_mode="egress" if network_mode == "isolated" else "isolated"),
+        inspection(subnet="10.250.0.0/28"),
     ):
         monkeypatch.setattr(provider, "_run", lambda *_args, value=invalid, **_kwargs: value)
         with pytest.raises(DomainError) as caught:
@@ -1039,6 +1046,30 @@ def test_runtime_network_plan_requires_distinct_control_and_runtime_ranges() -> 
         )
 
 
+def test_flowweave_network_plan_uses_deterministic_bounded_subnets() -> None:
+    plan = FlowWeaveNetworkPlan(IPv4Network("10.251.0.0/24"), 28)
+
+    candidates = plan.candidates("flow-run-1", max_attempts=3)
+
+    assert candidates == plan.candidates("flow-run-1", max_attempts=3)
+    assert len(candidates) == 3
+    assert all(plan.contains_declared_subnet(str(subnet)) for subnet in candidates)
+    assert not plan.contains_declared_subnet("10.250.0.0/28")
+    assert not plan.contains_declared_subnet("10.251.0.0/24")
+
+
+def test_flow_run_runtime_generations_share_one_network_identity(settings) -> None:
+    provider = DockerSandboxProvider(_docker_settings(settings))
+    resource = _runtime_resource()
+    resource.owner_type = "FLOW_RUN"
+    resource.owner_id = "12345678-1234-4234-9234-123456789abc"
+
+    assert provider._network_resource_id(resource) == resource.owner_id
+    assert provider._runtime_network_name(provider._network_resource_id(resource)) == (
+        "fw-net-12345678123442349234123456789abc"
+    )
+
+
 @pytest.mark.parametrize(
     ("network_mode", "expects_internal_flag"),
     (("isolated", True), ("egress", False)),
@@ -1062,6 +1093,9 @@ def test_runtime_network_creation_applies_declared_mode(
     assert len(commands) == 1
     command = commands[0]
     assert ("--internal" in command) is expects_internal_flag
+    subnet = command[command.index("--subnet") + 1]
+    assert provider.network_plan.contains_declared_subnet(subnet)
+    assert f"flowweave.network-subnet={subnet}" in command
     assert "flowweave.network-purpose=agent-runtime" in command
     assert f"flowweave.network-mode={network_mode}" in command
 
@@ -1081,6 +1115,9 @@ def test_setup_uses_an_owned_per_session_egress_network(settings, monkeypatch):
     assert network_name == provider._runtime_network_name(resource.id)
     assert len(commands) == 1
     assert "--internal" not in commands[0]
+    subnet = commands[0][commands[0].index("--subnet") + 1]
+    assert provider.network_plan.contains_declared_subnet(subnet)
+    assert f"flowweave.network-subnet={subnet}" in commands[0]
     assert "flowweave.network-purpose=environment-setup" in commands[0]
     assert "flowweave.network-mode=egress" in commands[0]
     assert all(command[1:3] != ["network", "connect"] for command in commands)
@@ -1265,12 +1302,17 @@ def test_runtime_client_network_reconcile_reattaches_recreated_platform_clients(
                             "flowweave.manager-scope": "test-scope",
                             "flowweave.network-purpose": "agent-runtime",
                             "flowweave.network-mode": "isolated",
+                            "flowweave.network-subnet": "10.251.0.0/28",
                         },
+                        "IPAM": {"Config": [{"Subnet": "10.251.0.0/28"}]},
                     }
                 ]
             )
         if command[1:3] == ["ps", "--all"]:
-            assert command[-1] == f"label=flowweave.resource-id={resource_id}"
+            assert command[-1] in {
+                f"label=flowweave.network-owner-id={resource_id}",
+                f"label=flowweave.resource-id={resource_id}",
+            }
             return "runtime-container-full-id|running\n"
         return ""
 
@@ -1306,9 +1348,10 @@ def test_runtime_client_network_reconcile_reattaches_recreated_platform_clients(
         "--filter",
         "label=flowweave.manager-scope=test-scope",
         "--filter",
-        f"label=flowweave.resource-id={resource_id}",
+        f"label=flowweave.network-owner-id={resource_id}",
     ]
-    assert commands[3:] == [["docker", "network", "connect", network_name, "new-worker"]]
+    assert commands[3][-1] == f"label=flowweave.resource-id={resource_id}"
+    assert commands[4:] == [["docker", "network", "connect", network_name, "new-worker"]]
 
 
 def test_runtime_client_network_reconcile_skips_retained_terminal_runtime_network(
@@ -1344,7 +1387,9 @@ def test_runtime_client_network_reconcile_skips_retained_terminal_runtime_networ
                             "flowweave.manager-scope": "test-scope",
                             "flowweave.network-purpose": "agent-runtime",
                             "flowweave.network-mode": "isolated",
+                            "flowweave.network-subnet": "10.251.0.0/28",
                         },
+                        "IPAM": {"Config": [{"Subnet": "10.251.0.0/28"}]},
                     }
                 ]
             )

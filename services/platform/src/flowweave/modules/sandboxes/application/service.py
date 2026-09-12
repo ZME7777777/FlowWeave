@@ -752,6 +752,7 @@ def delete_flow_run_runtimes_now(db: Session, flow_run_id: str) -> None:
     )
     for sandbox_id in sandbox_ids:
         delete_sandbox_now(db, sandbox_id)
+    DockerSandboxProvider(get_settings()).delete_flow_run_runtime_network(flow_run_id)
     db.flush()
     # Historical cleanup may have lost the ManagedSandbox ledger row while
     # leaving the immutable generation reference behind.  Such a reference is

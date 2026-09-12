@@ -20,6 +20,8 @@ from flowweave.shared.errors import DomainError
 from flowweave.shared.infrastructure.docker_control import (
     DockerControlError,
     DockerOwnershipError,
+    FlowWeaveNetworkPlan,
+    docker_network_pool_conflict,
     docker_resource_is_absent,
     remove_owned_container,
     remove_owned_network,
@@ -102,6 +104,10 @@ class DockerSandboxProvider:
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
+        self.network_plan = FlowWeaveNetworkPlan(
+            settings.flowweave_runtime_network_pool,
+            settings.flowweave_runtime_network_prefix,
+        )
 
     def require_enabled(self) -> None:
         if self.settings.terminal_environment_backend != "docker":
@@ -691,8 +697,38 @@ chmod 0700 "$target"
     def _runtime_network_name(resource_id: str) -> str:
         return f"fw-net-{resource_id.replace('-', '')}"
 
+    @staticmethod
+    def _network_resource_id(resource: ManagedSandbox) -> str:
+        """Keep one FlowRun data-plane network across Runtime generations."""
+
+        if resource.kind == "AGENT_RUNTIME" and resource.owner_type == "FLOW_RUN":
+            return resource.owner_id
+        return resource.id
+
+    def _has_legacy_flow_run_network(self, resource: ManagedSandbox) -> bool:
+        """Recognize old per-generation FlowRun networks only during cleanup."""
+
+        if resource.id == self._network_resource_id(resource):
+            return False
+        try:
+            self._run(
+                [
+                    self.settings.docker_binary,
+                    "network",
+                    "inspect",
+                    self._runtime_network_name(resource.id),
+                ],
+                timeout=30,
+            )
+        except DomainError as exc:
+            if self._absent(exc, "network"):
+                return False
+            raise
+        return True
+
     def _inspect_runtime_network(self, resource: ManagedSandbox) -> dict[str, object] | None:
-        network_name = self._runtime_network_name(resource.id)
+        network_resource_id = self._network_resource_id(resource)
+        network_name = self._runtime_network_name(network_resource_id)
         network_mode = (
             self.settings.sandbox_runtime_network_mode
             if resource.kind == "AGENT_RUNTIME"
@@ -731,6 +767,17 @@ chmod 0700 "$target"
             actual_name = str(data.get("Name") or "")
             driver = str(data.get("Driver") or "")
             internal = data.get("Internal")
+            declared_subnet = labels.get("flowweave.network-subnet")
+            ipam_value = data.get("IPAM")
+            ipam = cast(dict[str, object], ipam_value) if isinstance(ipam_value, dict) else {}
+            configs_value = ipam.get("Config")
+            configs = cast(list[object], configs_value) if isinstance(configs_value, list) else []
+            actual_subnets = {
+                str(config.get("Subnet") or "")
+                for item in configs
+                if isinstance(item, dict)
+                for config in (cast(dict[str, object], item),)
+            }
         except (json.JSONDecodeError, ValueError) as exc:
             raise DomainError(
                 "SANDBOX_DOCKER_PROTOCOL_ERROR",
@@ -743,10 +790,17 @@ chmod 0700 "$target"
             or internal is not expected_internal
             or labels.get("flowweave.managed") != "true"
             or labels.get("flowweave.resource-type") != "network"
-            or labels.get("flowweave.resource-id") != resource.id
+            or labels.get("flowweave.resource-id") != network_resource_id
             or labels.get("flowweave.manager-scope") != self.settings.sandbox_manager_scope
             or labels.get("flowweave.network-purpose") != network_purpose
             or labels.get("flowweave.network-mode") != network_mode
+            or (
+                declared_subnet is not None
+                and (
+                    not self.network_plan.contains_declared_subnet(declared_subnet)
+                    or actual_subnets != {declared_subnet}
+                )
+            )
         ):
             raise DomainError(
                 "SANDBOX_RESOURCE_CONFLICT",
@@ -759,6 +813,7 @@ chmod 0700 "$target"
                     "driver": driver,
                     "internal": internal,
                     "expected_network_mode": network_mode,
+                    "declared_subnet": declared_subnet,
                 },
             )
         return data
@@ -853,6 +908,19 @@ chmod 0700 "$target"
                     else set()
                 )
                 resource_id = labels.get("flowweave.resource-id", "")
+                declared_subnet = labels.get("flowweave.network-subnet")
+                ipam_value = network.get("IPAM")
+                ipam = cast(dict[str, object], ipam_value) if isinstance(ipam_value, dict) else {}
+                configs_value = ipam.get("Config")
+                configs = (
+                    cast(list[object], configs_value) if isinstance(configs_value, list) else []
+                )
+                actual_subnets = {
+                    str(config.get("Subnet") or "")
+                    for item in configs
+                    if isinstance(item, dict)
+                    for config in (cast(dict[str, object], item),)
+                }
                 expected_name = self._runtime_network_name(resource_id)
                 valid = (
                     re.fullmatch(r"[0-9a-f-]{36}", resource_id) is not None
@@ -866,6 +934,13 @@ chmod 0700 "$target"
                     and labels.get("flowweave.network-purpose") == "agent-runtime"
                     and labels.get("flowweave.network-mode")
                     == self.settings.sandbox_runtime_network_mode
+                    and (
+                        declared_subnet is None
+                        or (
+                            self.network_plan.contains_declared_subnet(declared_subnet)
+                            and actual_subnets == {declared_subnet}
+                        )
+                    )
                 )
             except (json.JSONDecodeError, ValueError) as exc:
                 raise DomainError(
@@ -885,25 +960,31 @@ chmod 0700 "$target"
             # running Agent Server.  Require a container that Docker reports
             # as running and whose immutable ownership labels match this
             # network's resource identity before restoring data-plane clients.
-            runtime_states = self._run(
-                [
-                    self.settings.docker_binary,
-                    "ps",
-                    "--all",
-                    "--no-trunc",
-                    "--format",
-                    "{{.ID}}|{{.State}}",
-                    "--filter",
-                    "label=flowweave.managed=true",
-                    "--filter",
-                    "label=flowweave.kind=agent-runtime",
-                    "--filter",
-                    f"label=flowweave.manager-scope={self.settings.sandbox_manager_scope}",
-                    "--filter",
+            runtime_filter_prefix = [
+                self.settings.docker_binary,
+                "ps",
+                "--all",
+                "--no-trunc",
+                "--format",
+                "{{.ID}}|{{.State}}",
+                "--filter",
+                "label=flowweave.managed=true",
+                "--filter",
+                "label=flowweave.kind=agent-runtime",
+                "--filter",
+                f"label=flowweave.manager-scope={self.settings.sandbox_manager_scope}",
+                "--filter",
+            ]
+            runtime_states = [
+                line
+                for identity_label in (
+                    f"label=flowweave.network-owner-id={resource_id}",
                     f"label=flowweave.resource-id={resource_id}",
-                ],
-                timeout=30,
-            ).splitlines()
+                )
+                for line in self._run(
+                    runtime_filter_prefix + [identity_label], timeout=30
+                ).splitlines()
+            ]
             running_runtime_ids: set[str] = set()
             stopped_runtime_ids: set[str] = set()
             for line in runtime_states:
@@ -982,7 +1063,8 @@ chmod 0700 "$target"
                 raise
 
     def _ensure_runtime_network(self, resource: ManagedSandbox) -> str:
-        network_name = self._runtime_network_name(resource.id)
+        network_resource_id = self._network_resource_id(resource)
+        network_name = self._runtime_network_name(network_resource_id)
         if self._inspect_runtime_network(resource) is None:
             network_mode = (
                 self.settings.sandbox_runtime_network_mode
@@ -992,40 +1074,55 @@ chmod 0700 "$target"
             network_purpose = (
                 "agent-runtime" if resource.kind == "AGENT_RUNTIME" else "environment-setup"
             )
-            command = [
-                self.settings.docker_binary,
-                "network",
-                "create",
-                "--driver",
-                "bridge",
-            ]
-            if network_mode == "isolated":
-                command.append("--internal")
-            command.extend(
-                [
-                    "--label",
-                    "flowweave.managed=true",
-                    "--label",
-                    "flowweave.resource-type=network",
-                    "--label",
-                    f"flowweave.manager-scope={self.settings.sandbox_manager_scope}",
-                    "--label",
-                    f"flowweave.resource-id={resource.id}",
-                    "--label",
-                    f"flowweave.network-purpose={network_purpose}",
-                    "--label",
-                    f"flowweave.network-mode={network_mode}",
-                    "--label",
-                    f"flowweave.created-at={int(resource.created_at.timestamp())}",
-                    network_name,
+            for subnet in self.network_plan.candidates(network_resource_id):
+                command = [
+                    self.settings.docker_binary,
+                    "network",
+                    "create",
+                    "--driver",
+                    "bridge",
+                    "--subnet",
+                    str(subnet),
                 ]
-            )
-            try:
-                self._run(command, timeout=30)
-            except DomainError as exc:
-                detail = str(exc.details.get("detail") or "").lower()
-                if "already exists" not in detail:
-                    raise
+                if network_mode == "isolated":
+                    command.append("--internal")
+                command.extend(
+                    [
+                        "--label",
+                        "flowweave.managed=true",
+                        "--label",
+                        "flowweave.resource-type=network",
+                        "--label",
+                        f"flowweave.manager-scope={self.settings.sandbox_manager_scope}",
+                        "--label",
+                        f"flowweave.resource-id={network_resource_id}",
+                        "--label",
+                        f"flowweave.network-purpose={network_purpose}",
+                        "--label",
+                        f"flowweave.network-mode={network_mode}",
+                        "--label",
+                        f"flowweave.network-subnet={subnet}",
+                        "--label",
+                        f"flowweave.created-at={int(resource.created_at.timestamp())}",
+                        network_name,
+                    ]
+                )
+                try:
+                    self._run(command, timeout=30)
+                    break
+                except DomainError as exc:
+                    detail = str(exc.details.get("detail") or "").lower()
+                    if "already exists" in detail:
+                        break
+                    if not docker_network_pool_conflict(detail):
+                        raise
+            else:
+                raise DomainError(
+                    "SANDBOX_RUNTIME_NETWORK_EXHAUSTED",
+                    "No FlowWeave Runtime subnet remains in the configured address pool",
+                    503,
+                    {"pool": str(self.network_plan.pool), "prefix": self.network_plan.prefix},
+                )
             self._inspect_runtime_network(resource)
         if resource.kind == "AGENT_RUNTIME":
             for client_id in self._trusted_runtime_clients():
@@ -1111,6 +1208,8 @@ chmod 0700 "$target"
             "--label",
             f"flowweave.owner-id={resource.owner_id}",
             "--label",
+            f"flowweave.network-owner-id={self._network_resource_id(resource)}",
+            "--label",
             f"flowweave.image-reference={resource.image_reference}",
             "--label",
             f"flowweave.spec-hash={self._spec_hash(resource)}",
@@ -1150,7 +1249,7 @@ chmod 0700 "$target"
                     "--interactive",
                     "--tty",
                     "--network",
-                    self._runtime_network_name(resource.id),
+                    self._runtime_network_name(self._network_resource_id(resource)),
                     "--cap-add",
                     "CHOWN",
                     "--cap-add",
@@ -1259,7 +1358,7 @@ chmod 0700 "$target"
         command.extend(
             [
                 "--network",
-                self._runtime_network_name(resource.id),
+                self._runtime_network_name(self._network_resource_id(resource)),
                 # Runtime images contain a full developer toolchain and execute
                 # model-generated commands. Keep that workload away from root
                 # and make the image itself immutable. FlowRun project/state
@@ -2021,7 +2120,14 @@ chmod 0700 "$target"
     def drain(self, resource: ManagedSandbox) -> DockerDrainResult:
         return self.drain_expected(resource.backend_resource_name, resource.id)
 
-    def delete_expected(self, resource_name: str, expected_resource_id: str) -> None:
+    def delete_expected(
+        self,
+        resource_name: str,
+        expected_resource_id: str,
+        *,
+        network_owner_id: str | None = None,
+        remove_network: bool = True,
+    ) -> None:
         if controller_is_remote(self.settings):
             try:
                 DockerControllerClient(self.settings).post(
@@ -2029,6 +2135,12 @@ chmod 0700 "$target"
                     {
                         "resource_name": resource_name,
                         "resource_id": expected_resource_id,
+                        **(
+                            {"network_owner_id": network_owner_id}
+                            if network_owner_id is not None
+                            else {}
+                        ),
+                        "remove_network": remove_network,
                     },
                     timeout=30,
                 )
@@ -2047,13 +2159,14 @@ chmod 0700 "$target"
                 expected_manager_scope=self.settings.sandbox_manager_scope,
                 timeout=30,
             )
-            remove_owned_network(
-                self.settings.docker_binary,
-                self._runtime_network_name(expected_resource_id),
-                expected_resource_id,
-                expected_manager_scope=self.settings.sandbox_manager_scope,
-                timeout=30,
-            )
+            if remove_network:
+                remove_owned_network(
+                    self.settings.docker_binary,
+                    self._runtime_network_name(network_owner_id or expected_resource_id),
+                    network_owner_id or expected_resource_id,
+                    expected_manager_scope=self.settings.sandbox_manager_scope,
+                    timeout=30,
+                )
         except DockerOwnershipError as exc:
             raise DomainError(
                 "SANDBOX_RESOURCE_CONFLICT",
@@ -2072,7 +2185,62 @@ chmod 0700 "$target"
             ) from exc
 
     def delete(self, resource: ManagedSandbox) -> None:
-        self.delete_expected(resource.backend_resource_name, resource.id)
+        legacy_flow_run_network = (
+            resource.kind == "AGENT_RUNTIME"
+            and resource.owner_type == "FLOW_RUN"
+            and self._has_legacy_flow_run_network(resource)
+        )
+        self.delete_expected(
+            resource.backend_resource_name,
+            resource.id,
+            network_owner_id=(
+                resource.id if legacy_flow_run_network else self._network_resource_id(resource)
+            ),
+            remove_network=(
+                resource.kind != "AGENT_RUNTIME"
+                or resource.owner_type != "FLOW_RUN"
+                or legacy_flow_run_network
+            ),
+        )
+
+    def delete_flow_run_runtime_network(self, flow_run_id: str) -> None:
+        """Remove a completed FlowRun's shared data-plane network only."""
+
+        if controller_is_remote(self.settings):
+            try:
+                DockerControllerClient(self.settings).post(
+                    "/v1/runtime-networks/delete",
+                    {"flow_run_id": flow_run_id},
+                    timeout=30,
+                )
+                return
+            except DockerControllerError as exc:
+                raise DomainError(
+                    "SANDBOX_BACKEND_UNAVAILABLE",
+                    "The Docker Runtime Provider is unavailable",
+                    503,
+                ) from exc
+        try:
+            remove_owned_network(
+                self.settings.docker_binary,
+                self._runtime_network_name(flow_run_id),
+                flow_run_id,
+                expected_manager_scope=self.settings.sandbox_manager_scope,
+                timeout=30,
+            )
+        except DockerOwnershipError as exc:
+            raise DomainError(
+                "SANDBOX_RESOURCE_CONFLICT",
+                "The FlowRun Runtime network is owned by another resource",
+                409,
+                {"flow_run_id": flow_run_id},
+            ) from exc
+        except DockerControlError as exc:
+            raise DomainError(
+                "SANDBOX_BACKEND_UNAVAILABLE",
+                "The Docker Runtime network could not be removed",
+                503,
+            ) from exc
 
     def delete_orphan(self, observation: DockerObservation) -> None:
         if not observation.resource_id:

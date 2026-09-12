@@ -499,7 +499,9 @@ def test_controller_allows_owned_runtime_delete_for_api_and_worker(settings, mon
     monkeypatch.setattr(
         DockerSandboxProvider,
         "delete_expected",
-        lambda self, resource_name, resource_id: deleted.append((resource_name, resource_id)),
+        lambda self, resource_name, resource_id, **_kwargs: deleted.append(
+            (resource_name, resource_id)
+        ),
     )
     resource_name = "fw-sbx-run-12345678-1234567890abcdef1234567890abcdef"
 
@@ -1136,12 +1138,11 @@ async def test_runtime_event_stream_forwards_single_event_larger_than_default_re
     )
     assert 'agent_server_version.startswith("1.44.")' in controller_module._RUNTIME_EVENT_RELAY
     assert 'f"/sockets/events/{conversation_id}"' in controller_module._RUNTIME_EVENT_RELAY
-    assert 'after_seq = int(sys.argv[1]) if sys.argv[1] else None' in (
+    assert "after_seq = int(sys.argv[1]) if sys.argv[1] else None" in (
         controller_module._RUNTIME_EVENT_RELAY
     )
     assert (
-        "OpenHands 1.44 does not support after_seq replay"
-        in controller_module._RUNTIME_EVENT_RELAY
+        "OpenHands 1.44 does not support after_seq replay" in controller_module._RUNTIME_EVENT_RELAY
     )
 
 

@@ -268,6 +268,12 @@ class SandboxNameWrite(ScopedRequest):
 
 class SandboxDeleteWrite(SandboxNameWrite):
     resource_id: UUID
+    network_owner_id: UUID | None = None
+    remove_network: bool = True
+
+
+class RuntimeNetworkDeleteWrite(ScopedRequest):
+    flow_run_id: UUID
 
 
 class ResolveContainerWrite(SandboxDeleteWrite):
@@ -1494,6 +1500,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 # required before a FlowRun row can be permanently deleted.
                 # The handler still verifies resource id, scope, and labels.
                 "/v1/sandboxes/delete": frozenset({"api", "worker"}),
+                "/v1/runtime-networks/delete": frozenset({"api", "worker"}),
                 "/v1/sandboxes/list": frozenset({"worker"}),
                 "/v1/environments/remove-image": frozenset({"worker"}),
                 # Worker resolves the platform-owned Agent Workspace image at
@@ -1664,6 +1671,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             DockerSandboxProvider(configured).delete_expected,
             payload.resource_name,
             str(payload.resource_id),
+            network_owner_id=(
+                str(payload.network_owner_id) if payload.network_owner_id is not None else None
+            ),
+            remove_network=payload.remove_network,
+        )
+        return {"deleted": True}
+
+    @app.post("/v1/runtime-networks/delete")
+    async def delete_runtime_network(payload: RuntimeNetworkDeleteWrite) -> dict[str, bool]:
+        check_scope(payload.manager_scope)
+        await asyncio.to_thread(
+            DockerSandboxProvider(configured).delete_flow_run_runtime_network,
+            str(payload.flow_run_id),
         )
         return {"deleted": True}
 
@@ -1787,6 +1807,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             timeout_seconds=configured.dependency_builder_timeout_seconds,
             cleanup_grace_seconds=configured.sandbox_orphan_grace_seconds,
             storage_size=configured.sandbox_storage_size,
+            network_pool=configured.flowweave_runtime_network_pool,
+            network_prefix=configured.flowweave_runtime_network_prefix,
         )
         bundle = await asyncio.to_thread(builder.build, payload.dependencies)
         return {
@@ -1804,6 +1826,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             timeout_seconds=configured.plugin_resolver_timeout_seconds,
             cleanup_grace_seconds=configured.sandbox_orphan_grace_seconds,
             storage_size=configured.sandbox_storage_size,
+            network_pool=configured.flowweave_runtime_network_pool,
+            network_prefix=configured.flowweave_runtime_network_prefix,
         )
         bundle = await asyncio.to_thread(
             resolver.resolve,
@@ -1833,6 +1857,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             timeout_seconds=configured.plugin_resolver_timeout_seconds,
             cleanup_grace_seconds=configured.sandbox_orphan_grace_seconds,
             storage_size=configured.sandbox_storage_size,
+            network_pool=configured.flowweave_runtime_network_pool,
+            network_prefix=configured.flowweave_runtime_network_prefix,
         )
         bundle = await asyncio.to_thread(
             resolver.resolve_marketplace_plugin,
@@ -1864,6 +1890,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             timeout_seconds=configured.plugin_resolver_timeout_seconds,
             cleanup_grace_seconds=configured.sandbox_orphan_grace_seconds,
             storage_size=configured.sandbox_storage_size,
+            network_pool=configured.flowweave_runtime_network_pool,
+            network_prefix=configured.flowweave_runtime_network_prefix,
         )
         return await asyncio.to_thread(
             resolver.list_marketplace,

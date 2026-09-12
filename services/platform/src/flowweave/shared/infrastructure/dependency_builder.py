@@ -4,6 +4,7 @@ import base64
 import json
 import os
 import subprocess
+from ipaddress import IPv4Network
 from typing import Any, cast
 
 from flowweave.bootstrap.settings import Settings
@@ -14,6 +15,8 @@ from flowweave.shared.application.dependency_builder import (
 from flowweave.shared.infrastructure.docker_control import (
     DockerControlError,
     EphemeralDockerLease,
+    FlowWeaveNetworkPlan,
+    docker_network_pool_conflict,
     remove_owned_container,
     remove_owned_network,
     run_docker_with_storage_quota_fallback,
@@ -25,6 +28,7 @@ from flowweave.shared.infrastructure.docker_controller import (
 )
 
 _MAX_BUNDLE_BYTES = 100 * 1024 * 1024
+_DEFAULT_NETWORK_POOL = IPv4Network("10.251.0.0/16")
 
 
 class DisabledDependencyBuilder:
@@ -44,6 +48,8 @@ class DockerDependencyBuilder:
         timeout_seconds: int = 300,
         cleanup_grace_seconds: int = 300,
         storage_size: str = "4g",
+        network_pool: IPv4Network = _DEFAULT_NETWORK_POOL,
+        network_prefix: int = 28,
     ) -> None:
         self.image = image
         self.docker_binary = docker_binary
@@ -51,6 +57,7 @@ class DockerDependencyBuilder:
         self.timeout_seconds = timeout_seconds
         self.cleanup_grace_seconds = cleanup_grace_seconds
         self.storage_size = storage_size
+        self.network_plan = FlowWeaveNetworkPlan(network_pool, network_prefix)
 
     def command(self, lease: EphemeralDockerLease) -> list[str]:
         return [
@@ -92,30 +99,37 @@ class DockerDependencyBuilder:
         ]
 
     def _create_network(self, lease: EphemeralDockerLease) -> None:
-        command = [
-            self.docker_binary,
-            "network",
-            "create",
-            "--driver",
-            "bridge",
-            *lease.network_label_args(purpose="dependency-build", mode="egress"),
-            lease.network_name(),
-        ]
-        try:
-            completed = subprocess.run(
-                command,
-                capture_output=True,
-                text=True,
-                timeout=30,
-                check=False,
-                env={"PATH": os.defpath},
-            )
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            raise RuntimeError("Dependency build network is unavailable") from exc
-        if completed.returncode:
-            raise RuntimeError(
-                f"Dependency build network failed: {(completed.stderr or completed.stdout)[:2000]}"
-            )
+        for subnet in self.network_plan.candidates(lease.resource_id):
+            command = [
+                self.docker_binary,
+                "network",
+                "create",
+                "--driver",
+                "bridge",
+                "--subnet",
+                str(subnet),
+                *lease.network_label_args(purpose="dependency-build", mode="egress"),
+                "--label",
+                f"flowweave.network-subnet={subnet}",
+                lease.network_name(),
+            ]
+            try:
+                completed = subprocess.run(
+                    command,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                    check=False,
+                    env={"PATH": os.defpath},
+                )
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                raise RuntimeError("Dependency build network is unavailable") from exc
+            if completed.returncode == 0:
+                return
+            detail = completed.stderr or completed.stdout
+            if not docker_network_pool_conflict(detail):
+                raise RuntimeError(f"Dependency build network failed: {detail[:2000]}")
+        raise RuntimeError("Dependency build network pool is exhausted")
 
     def _cleanup(self, lease: EphemeralDockerLease) -> None:
         try:
@@ -222,5 +236,7 @@ def build_dependency_builder(settings: Settings) -> DependencyBuilderPort:
             timeout_seconds=settings.dependency_builder_timeout_seconds,
             cleanup_grace_seconds=settings.sandbox_orphan_grace_seconds,
             storage_size=settings.sandbox_storage_size,
+            network_pool=settings.flowweave_runtime_network_pool,
+            network_prefix=settings.flowweave_runtime_network_prefix,
         )
     raise ValueError("Unsupported dependency builder backend")

@@ -140,6 +140,9 @@ def test_plugin_resolution_uses_owned_ephemeral_network_and_fixed_entrypoint(
 
     assert bundle.content == b"plugin-zip"
     network, container = commands
+    assert "--subnet" in network
+    assert network[network.index("--subnet") + 1].startswith("10.251.")
+    assert any(item.startswith("flowweave.network-subnet=10.251.") for item in network)
     assert "flowweave.network-purpose=plugin-resolve" in network
     assert "flowweave.network-mode=egress" in network
     assert container[container.index("--network") + 1] == network[-1]

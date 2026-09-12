@@ -5,6 +5,7 @@ import json
 import os
 import re
 import subprocess
+from ipaddress import IPv4Network
 from typing import Any, cast
 from urllib.parse import urlsplit
 
@@ -19,6 +20,8 @@ from flowweave.shared.application.plugin_resolver import (
 from flowweave.shared.infrastructure.docker_control import (
     DockerControlError,
     EphemeralDockerLease,
+    FlowWeaveNetworkPlan,
+    docker_network_pool_conflict,
     remove_owned_container,
     remove_owned_network,
     run_docker_with_storage_quota_fallback,
@@ -33,6 +36,7 @@ _COMMIT = re.compile(r"^[0-9a-f]{40}$")
 _REPO_PATH = re.compile(r"^[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*$")
 _SOURCE_SEGMENT = re.compile(r"^[A-Za-z0-9_.~-]{1,128}$")
 _MAX_BUNDLE_BYTES = 25 * 1024 * 1024
+_DEFAULT_NETWORK_POOL = IPv4Network("10.251.0.0/16")
 
 
 def validate_plugin_git_source(
@@ -173,6 +177,8 @@ class DockerPluginResolver:
         timeout_seconds: int = 300,
         cleanup_grace_seconds: int = 300,
         storage_size: str = "4g",
+        network_pool: IPv4Network = _DEFAULT_NETWORK_POOL,
+        network_prefix: int = 28,
     ) -> None:
         self.image = image
         self.allowed_hosts = allowed_hosts
@@ -181,6 +187,7 @@ class DockerPluginResolver:
         self.timeout_seconds = timeout_seconds
         self.cleanup_grace_seconds = cleanup_grace_seconds
         self.storage_size = storage_size
+        self.network_plan = FlowWeaveNetworkPlan(network_pool, network_prefix)
 
     def command(self, lease: EphemeralDockerLease) -> list[str]:
         return [
@@ -230,30 +237,37 @@ class DockerPluginResolver:
         ]
 
     def _create_network(self, lease: EphemeralDockerLease) -> None:
-        command = [
-            self.docker_binary,
-            "network",
-            "create",
-            "--driver",
-            "bridge",
-            *lease.network_label_args(purpose="plugin-resolve", mode="egress"),
-            lease.network_name(),
-        ]
-        try:
-            completed = subprocess.run(
-                command,
-                capture_output=True,
-                text=True,
-                timeout=30,
-                check=False,
-                env={"PATH": os.defpath},
-            )
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            raise RuntimeError("Plugin resolver network is unavailable") from exc
-        if completed.returncode:
-            raise RuntimeError(
-                f"Plugin resolver network failed: {(completed.stderr or completed.stdout)[:2000]}"
-            )
+        for subnet in self.network_plan.candidates(lease.resource_id):
+            command = [
+                self.docker_binary,
+                "network",
+                "create",
+                "--driver",
+                "bridge",
+                "--subnet",
+                str(subnet),
+                *lease.network_label_args(purpose="plugin-resolve", mode="egress"),
+                "--label",
+                f"flowweave.network-subnet={subnet}",
+                lease.network_name(),
+            ]
+            try:
+                completed = subprocess.run(
+                    command,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                    check=False,
+                    env={"PATH": os.defpath},
+                )
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                raise RuntimeError("Plugin resolver network is unavailable") from exc
+            if completed.returncode == 0:
+                return
+            detail = completed.stderr or completed.stdout
+            if not docker_network_pool_conflict(detail):
+                raise RuntimeError(f"Plugin resolver network failed: {detail[:2000]}")
+        raise RuntimeError("Plugin resolver network pool is exhausted")
 
     def _cleanup(self, lease: EphemeralDockerLease) -> None:
         try:
@@ -536,5 +550,7 @@ def build_plugin_resolver(settings: Settings) -> PluginResolverPort:
             timeout_seconds=settings.plugin_resolver_timeout_seconds,
             cleanup_grace_seconds=settings.sandbox_orphan_grace_seconds,
             storage_size=settings.sandbox_storage_size,
+            network_pool=settings.flowweave_runtime_network_pool,
+            network_prefix=settings.flowweave_runtime_network_prefix,
         )
     raise ValueError("Unsupported Plugin resolver backend")
