@@ -190,6 +190,18 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 
 完成：远程 FlowRun Runtime 删除先将 container 与历史 sandbox-ID 网络候选委托给 Runtime Provider；候选不存在时保持幂等，随后既有 FlowRun-ID 共享网络删除继续在 Runtime Provider 内执行。API 未挂载 Docker socket，历史和新网络都不由 API 直接操作。受影响 Python `py_compile`、Ruff format/check 通过；定向 pytest 在仓库会话级 Testcontainers PostgreSQL fixture 初始化时因本机 Docker socket 缺失受阻，未进入断言，未记为通过。
 
+### FR-370 FlowRun 列表运行资源与宿主机路径分列 — DONE
+
+依赖：`FR-256`。
+
+目标：FlowRun 列表不再展示误导性的 FlowRun“运行状态”列；流程级状态由节点执行和 Attempt 承担。保留既有运行环境就绪判断，仅用于进入、暂停与启动操作的可用性。将异步 Runtime 资源摘要中的规范化宿主机项目挂载路径拆为独立“宿主机路径”列，保持现有按 FlowRun、当前 generation、所有权保护的只读资源接口和加载边界。
+
+验收：Web TypeScript typecheck、受影响文件 ESLint、production build、`git diff --check` 与任务状态唯一性；不修改 API、数据库、Runtime Provider 或 OpenHands。
+
+完成：运行列表删除“运行状态”列，不再将 FlowRun 的汇总状态呈现为执行状态；既有运行环境就绪判断仍只控制进入与生命周期操作。运行资源单元格只保留容器、generation、CPU 与内存实时用量；规范化的宿主机项目挂载路径另列显示。两个单元格仍共享既有单次、按 FlowRun 异步请求的受保护资源摘要，不增加 Docker 观测或更改任何后端契约。
+
+验收结果：Web TypeScript typecheck、ESLint、production build、`git diff --check` 与任务状态唯一性通过。production build 仅报告既有 bundle 大小建议；无迁移、无 API、数据库、Runtime Provider 或 OpenHands 改动。
+
 ### FR-335 Runtime generation Sandbox 引用完整性 — DONE
 
 依赖：无（稳定性审计发现，FR-334 后独立处理）。
