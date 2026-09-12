@@ -111,6 +111,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-347 | 连续运行备用模型冻结回显 | DONE | 连续运行草稿保存时保留 `fallback_models`，避免严格写入投影将已选额度备用模型清空。 |
 | FR-348 | 历史 Runtime 重建的冻结 Server 身份探针 | DONE | Runtime Provider 重建容器时按已验证 Environment Version 的冻结 OpenHands 身份探针，不再把全局当前版本错误套用于历史只读会话。 |
 | FR-349 | 备用模型供应商选择状态回显 | DONE | 空选择不再伪装为列表首个供应商，避免模型依赖菜单保持空白而无法加入备用顺序。 |
+| FR-350 | 备用模型优先级编辑分区 | DONE | 添加区与已选优先级列表分离，支持上下调整顺序，并统一保存语义。 |
 | OPS-01 | Docker rollback image / BuildKit cache 容量增长 | DONE | 建立带运行引用保护、dry-run 和显式确认的回收工具，并完成生产候选边界核验。 |
 | OPS-02 | Docker rollback image / BuildKit cache 容量增长 | DONE | 已按授权使用 OPS-03 tag 级路径回收，并完成生产不变量与入口验证。 |
 | OPS-03 | 多 rollback tag image 的安全回收 | DONE | 改为逐 tag、重查 Container 引用、不使用 `--force` 的回收路径。 |
@@ -344,6 +345,20 @@ Playwright Agent 工作台用例在 WebSocket 流恢复阶段超时，未将其�
 - 用户必须实际选中供应商后才能看到对应模型并加入顺序，避免错误显示造成“已选供应商但模型为空”的死路。
 
 完成：自定义选择菜单只展示与当前 value 精确匹配的 option；空值不再回退到首个 option。模型与思考程度仍严格依赖已选供应商，加入顺序继续要求供应商与模型均有效。
+
+验收：Web TypeScript typecheck、ESLint、production build 与 `git diff --check`。
+
+### FR-350 备用模型优先级编辑分区 — DONE
+
+依赖：`FR-349`。
+
+目标：
+
+- 将供应商／模型选择和已添加备用模型列表分为清晰的两个区域。
+- 列表必须显示实际供应商名称、优先级和可操作的上移、下移、移除控件。
+- 保存动作使用“保存”，不再把临时编辑操作表述为“冻结”。
+
+完成：上方添加区仅选择供应商与模型，再通过单一“添加备用模型”按钮加入下方优先级列表；列表按运行时尝试顺序展示，支持立即上下调整。模型的默认思考程度仍随所选模型保存，不增加额外配置负担。
 
 验收：Web TypeScript typecheck、ESLint、production build 与 `git diff --check`。
 
