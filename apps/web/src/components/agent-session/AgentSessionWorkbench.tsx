@@ -1941,17 +1941,16 @@ function WorkDirectoryCreator({ workspaceId, onClose, onCreated }: {
   </div>;
 }
 
-function selectedGitRepository(repositories: AgentSessionWorkspaceDetails['repositories'], selectedPath?: string) {
+function selectedGitRepository(repositories: AgentSessionWorkspaceDetails['repositories'], selectedPath?: string, ...containerPaths: Array<string | undefined>) {
   return repositories
+    .filter(item => !containerPaths.includes(item.path))
     .filter(item => selectedPath === item.path || Boolean(selectedPath?.startsWith(`${item.path}/`)))
     .sort((left, right) => right.path.length - left.path.length)[0];
 }
 
-function WorkspaceGitSidebar({ details, repository, repositories, onRepositorySelect, loadLog, loadCommit, loadDiff, onOpenFileDiff, closedDiffEpoch }: {
+function WorkspaceGitSidebar({ details, repository, loadLog, loadCommit, loadDiff, onOpenFileDiff, closedDiffEpoch }: {
   details: AgentSessionWorkspaceDetails;
   repository: AgentSessionWorkspaceDetails['repositories'][number];
-  repositories: AgentSessionWorkspaceDetails['repositories'];
-  onRepositorySelect: (repositoryPath: string) => void;
   loadLog: (repositoryPath: string) => Promise<import('../../types').WorkspaceGitLog>;
   loadCommit: (repositoryPath: string, commit: string) => Promise<WorkspaceGitCommitDetails>;
   loadDiff: (repositoryPath: string, commit: string, path: string) => Promise<WorkspaceGitFileDiff>;
@@ -1994,7 +1993,6 @@ function WorkspaceGitSidebar({ details, repository, repositories, onRepositorySe
   }, [commitQuery.data, diffQuery.data, onOpenFileDiff, selectedCommitFile]);
   return <aside className="agent-workspace-git-sidebar" aria-label="Git 提交历史">
     <header><div><span><GitBranch size={15}/>Git</span><b title={workspaceRelativePath(repository.path, details.root)}>{workspaceRelativePath(repository.path, details.root)}</b></div>{repository.branch && <em title="当前分支（只读，暂不支持切换）">{repository.branch}</em>}</header>
-    {repositories.length > 1 && <nav className="agent-git-repository-picker" aria-label="选择 Git 仓库">{repositories.map(candidate => <button key={candidate.path} type="button" className={candidate.path === repository.path ? 'active' : ''} title={workspaceRelativePath(candidate.path, details.root)} onClick={() => onRepositorySelect(candidate.path)}>{workspaceRelativePath(candidate.path, details.root)}</button>)}</nav>}
     {logQuery.isLoading ? <p className="agent-git-loading">正在读取提交历史…</p> : logQuery.isError ? <p className="agent-git-error">Git 历史读取失败。<button type="button" onClick={() => void logQuery.refetch()}>重试</button></p> : <>
       <div className="agent-git-log">{(logQuery.data?.commits ?? []).map(commit => <button key={commit.id} type="button" onClick={() => { setSelectedCommit(commit.id); setSelectedCommitFile(undefined); }}><b>{commit.subject || '（无提交说明）'}</b><span><code>{commit.short_id}</code><em>{commit.author}</em><time>{commit.date}</time></span></button>)}{!logQuery.data?.commits.length && <p>该仓库没有可展示的提交。</p>}</div>
       {selectedCommit && <WorkspaceGitCommitSidebarDetail details={commitQuery.data} loading={commitQuery.isLoading} error={commitQuery.isError} selectedPath={selectedCommitFile} onSelectFile={path => { openedDiffRef.current = undefined; setSelectedCommitFile(path); }} onClose={() => { setSelectedCommit(undefined); setSelectedCommitFile(undefined); }}/>}
@@ -2286,7 +2284,6 @@ function WorkspaceDrawer({
   const [selectedEntryPaths, setSelectedEntryPaths] = useState<Set<string>>(new Set());
   const [activeDirectory, setActiveDirectory] = useState<string>();
   const [gitContextPath, setGitContextPath] = useState<string>();
-  const [gitPanelOpen, setGitPanelOpen] = useState(false);
   const [closedGitDiffEpoch, setClosedGitDiffEpoch] = useState(0);
   const [expandedFilePaths, setExpandedFilePaths] = useState<Set<string>>(new Set());
   const [fileDirectoryPaths, setFileDirectoryPaths] = useState<string[]>([]);
@@ -2393,7 +2390,6 @@ function WorkspaceDrawer({
     setActiveDirectory(undefined);
     setSelectedEntryPaths(new Set());
     setGitContextPath(undefined);
-    setGitPanelOpen(false);
     setDirectoryPages(new Map());
     loadingDirectories.current.clear();
     setLoadingDirectoryPaths(new Set());
@@ -2488,20 +2484,9 @@ function WorkspaceDrawer({
     }));
     onOpen();
   }, [onOpen, updateScope]);
-  const openGitHistory = useCallback(() => {
-    if (!details) return;
-    updateScope(current => ({
-      ...current,
-      tabs: current.tabs.some(tab => tab.kind === 'files')
-        ? current.tabs
-        : [{ id: 'files', kind: 'files' }, ...current.tabs],
-      activeTabId: current.activeTabId ?? 'files',
-    }));
-    setGitContextPath(current => current ?? activeDirectory ?? selectedFile ?? details.working_directory);
-    setGitPanelOpen(true);
-    setFullScreen(true);
-    onOpen();
-  }, [activeDirectory, details, onOpen, selectedFile, updateScope]);
+  // Retained only for stale in-memory UI callbacks. Git history is not a
+  // workspace-wide tool: it is rendered from the selected file-tree path.
+  const openGitHistory = useCallback(() => undefined, []);
   useEffect(() => {
     // A review request is a one-shot navigation command.  Its data remains
     // available for the user to reopen review manually, but an unrelated
@@ -2673,15 +2658,16 @@ function WorkspaceDrawer({
     : '';
   const canPreviewImage = Boolean(selectedFile && (selectedMimeType.startsWith('image/') || /\.(?:avif|gif|jpe?g|png|svg|webp)$/i.test(selectedFile)));
   const canPreviewPdf = Boolean(selectedFile && (selectedMimeType === 'application/pdf' || /\.pdf$/i.test(selectedFile)));
+  const filesTabIsActive = scopeState.activeTabId === 'files';
   const gitRepositoriesQuery = useQuery({
-    queryKey: sessionQueryKey(host, 'workspace-git-repositories', workspaceId, bindingId, workDirectoryId),
+    queryKey: sessionQueryKey(host, 'workspace-git-repositories', workspaceId, bindingId, workDirectoryId, gitContextPath),
     queryFn: () => api.gitRepositories(workspaceId, { bindingId, workDirectoryId }),
-    enabled: Boolean(gitPanelOpen && fullScreen && details),
+    enabled: Boolean(fullScreen && filesTabIsActive && gitContextPath),
     staleTime: 15_000,
     retry: (count, error) => !(error instanceof ApiError && error.status < 500) && count < 2,
   });
-  const gitRepository = useMemo(() => selectedGitRepository(gitRepositoriesQuery.data?.repositories ?? [], gitContextPath), [gitContextPath, gitRepositoriesQuery.data?.repositories]);
-  const gitSidebarVisible = gitPanelOpen && fullScreen && Boolean(gitRepository);
+  const gitRepository = useMemo(() => selectedGitRepository(gitRepositoriesQuery.data?.repositories ?? [], gitContextPath, details?.root, details?.working_directory), [details?.root, details?.working_directory, gitContextPath, gitRepositoriesQuery.data?.repositories]);
+  const gitSidebarVisible = fullScreen && filesTabIsActive && Boolean(gitRepository);
   const gitOptions = { bindingId, workDirectoryId };
   const sshRemoteReady = Boolean(
     details?.ide.gateway.supported
@@ -2709,7 +2695,7 @@ function WorkspaceDrawer({
     <div className="agent-workspace-resizer" role="separator" aria-label="调整工作区工具宽度" aria-orientation="vertical" onPointerDown={startResize}/>
     <section className={`agent-workspace-summary ${open ? 'panel-hidden' : ''}`}>
       <header><div><span className="eyebrow">WORKSPACE</span><b>环境信息</b></div><button type="button" aria-label="打开工作区工具" onClick={onOpen}><PanelRightOpen size={16}/></button></header>
-      <div className="agent-workspace-quick-actions"><button type="button" onClick={() => openFiles()}><FileCode2 size={14}/>文件</button><button type="button" onClick={openGitHistory}><GitBranch size={14}/>Git 历史</button><button type="button" disabled={!runtimeAvailable} onClick={openTerminal}><Plus size={14}/>新终端</button></div>
+      <div className="agent-workspace-quick-actions"><button type="button" onClick={() => openFiles()}><FileCode2 size={14}/>文件</button><button type="button" disabled={!runtimeAvailable} onClick={openTerminal}><Plus size={14}/>新终端</button></div>
       {loadingOrError || summary}
     </section>
     <section className={`agent-workspace-tool-shell ${open ? '' : 'panel-hidden'}`}>
@@ -2736,10 +2722,7 @@ function WorkspaceDrawer({
           {scopeState.tabs.filter((tab): tab is Extract<WorkspaceToolTab, { kind: 'git' }> => tab.kind === 'git').map(tab => <div key={tab.id} className={`agent-changes-tab-panel agent-git-commit-tab ${scopeState.activeTabId === tab.id ? 'active' : ''}`}><WorkspaceGitFileDiffReview details={tab.details} diff={tab.diff}/></div>)}
           {scopeState.tabs.some(tab => tab.kind === 'subagents') && <div className={`agent-subagent-tab-panel ${scopeState.activeTabId === 'subagents' ? 'active' : ''}`}><RuntimeTaskTab tasks={runtimeTasks} definitions={agentDefinitions} selectedTaskId={scopeState.selectedRuntimeTaskId} onSelect={taskId => updateScope(current => ({ ...current, selectedRuntimeTaskId: taskId }))} sessionStopped={sessionStopped}/></div>}
           {scopeState.tabs.filter((tab): tab is Extract<WorkspaceToolTab, { kind: 'terminal' }> => tab.kind === 'terminal').map(tab => <div key={tab.id} className={`agent-terminal-tab-panel ${scopeState.activeTabId === tab.id ? 'active' : ''}`}>{runtimeAvailable ? <WorkspaceTerminal workspaceId={workspaceId} terminalInstanceId={tab.terminalInstanceId} bindingId={bindingId} workDirectoryId={workDirectoryId} workingDirectory={details.working_directory}/> : <div className="agent-drawer-empty"><LoaderCircle className="agent-drawer-spinner" size={20}/><b>终端正在恢复</b><span>文件仍可使用；运行环境恢复后终端会自动可用。</span></div>}</div>)}
-          {gitPanelOpen && fullScreen && gitRepositoriesQuery.isLoading && <aside className="agent-workspace-git-sidebar"><p className="agent-git-loading">正在发现 Git 仓库…</p></aside>}
-          {gitPanelOpen && fullScreen && gitRepositoriesQuery.isError && <aside className="agent-workspace-git-sidebar"><p className="agent-git-error">Git 仓库读取失败。<button type="button" onClick={() => void gitRepositoriesQuery.refetch()}>重试</button></p></aside>}
-          {gitPanelOpen && fullScreen && gitRepositoriesQuery.isSuccess && !gitRepository && <aside className="agent-workspace-git-sidebar"><p className="agent-git-empty">当前工作区范围内没有可展示的 Git 仓库。</p></aside>}
-          {gitSidebarVisible && gitRepository && <WorkspaceGitSidebar details={details} repository={gitRepository} repositories={gitRepositoriesQuery.data?.repositories ?? []} onRepositorySelect={path => setGitContextPath(path)} loadLog={repositoryPath => api.gitLog(workspaceId, repositoryPath, gitOptions)} loadCommit={(repositoryPath, commit) => api.gitCommit(workspaceId, repositoryPath, commit, gitOptions)} loadDiff={(repositoryPath, commit, path) => api.gitDiff(workspaceId, repositoryPath, commit, path, gitOptions)} onOpenFileDiff={openGitFileDiff} closedDiffEpoch={closedGitDiffEpoch}/>}
+          {gitSidebarVisible && gitRepository && <WorkspaceGitSidebar details={details} repository={gitRepository} loadLog={repositoryPath => api.gitLog(workspaceId, repositoryPath, gitOptions)} loadCommit={(repositoryPath, commit) => api.gitCommit(workspaceId, repositoryPath, commit, gitOptions)} loadDiff={(repositoryPath, commit, path) => api.gitDiff(workspaceId, repositoryPath, commit, path, gitOptions)} onOpenFileDiff={openGitFileDiff} closedDiffEpoch={closedGitDiffEpoch}/>}
         </div>)}
       </div>
     </section>{entryMenu && <div className="agent-file-context-menu" role="menu" aria-label="文件操作菜单" style={{ left: entryMenu.x, top: entryMenu.y }} onPointerDown={event => event.stopPropagation()}>{entryMenu.kind === 'directory' && <><button type="button" role="menuitem" onClick={() => { void createEntry(entryMenu.path, 'FILE'); setEntryMenu(undefined); }}><FileCode2 size={14}/>新建文件</button><button type="button" role="menuitem" onClick={() => { void createEntry(entryMenu.path, 'DIRECTORY'); setEntryMenu(undefined); }}><FolderPlus size={14}/>新建目录</button></>}<button type="button" className="danger" role="menuitem" onClick={() => { void removeEntries([{ path: entryMenu.path, kind: entryMenu.kind }]); setEntryMenu(undefined); }}><Trash2 size={14}/>{entryMenu.kind === 'directory' ? '删除目录' : '删除文件'}</button></div>}

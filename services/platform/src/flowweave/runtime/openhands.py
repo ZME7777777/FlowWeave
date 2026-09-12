@@ -1707,6 +1707,22 @@ class OpenHandsRuntime:
             )
         return value
 
+    @staticmethod
+    def _llm_response_id(value: object) -> str | None:
+        """Return the opaque native LLM response correlation key."""
+        if value is None:
+            return None
+        # OpenHands declares EventID as a plain string alias. Provider response
+        # IDs are correlation values, not event-tree identities.
+        if not isinstance(value, str):
+            raise DomainError(
+                "RUNTIME_EVENT_IDENTITY_INVALID",
+                "OpenHands returned an invalid LLM response identity",
+                502,
+                {"field": "llm_response_id"},
+            )
+        return value
+
     @classmethod
     def _event_identity(
         cls, item: dict[str, Any]
@@ -2137,9 +2153,7 @@ class OpenHandsRuntime:
             if isinstance(tool_name, str) and tool_name:
                 payload["tool_name"] = tool_name[:200]
         if kind == "ActionEvent":
-            llm_response_id = cls._formal_identity(
-                item.get("llm_response_id"), field="llm_response_id", required=False
-            )
+            llm_response_id = cls._llm_response_id(item.get("llm_response_id"))
             if llm_response_id is not None:
                 payload["llm_response_id"] = llm_response_id
             security_risk = item.get("security_risk")

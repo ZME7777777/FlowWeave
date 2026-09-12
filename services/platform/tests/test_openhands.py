@@ -1719,7 +1719,7 @@ def test_openhands_normalizes_incremental_events_and_terminal_result(
                         "id": "12",
                         "timestamp": "2026-08-26T10:00:02+00:00",
                         "source": "agent",
-                        "llm_response_id": "response-12",
+                        "llm_response_id": "provider/response?id=12&batch=primary",
                         "action": {
                             "kind": "ThinkAction",
                             "thought": "先定位现有实现，再决定最小改动范围。",
@@ -1771,7 +1771,7 @@ def test_openhands_normalizes_incremental_events_and_terminal_result(
     assert running.events[1].payload["event_name"] == "ThinkAction"
     assert running.events[1].payload["content"] == "先定位现有实现，再决定最小改动范围。"
     assert running.events[1].payload["thought"] == "先定位现有实现，再决定最小改动范围。"
-    assert running.events[1].payload["llm_response_id"] == "response-12"
+    assert running.events[1].payload["llm_response_id"] == "provider/response?id=12&batch=primary"
     assert running.events[0].payload["timestamp"] == "2026-08-26T10:00:01+00:00"
     assert running.events[1].payload["timestamp"] == "2026-08-26T10:00:02+00:00"
     assert running.cursor == "13"
