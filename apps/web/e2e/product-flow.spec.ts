@@ -1036,8 +1036,10 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     return event.defaultPrevented;
   });
   expect(assistantSelection).toBe(false);
-  await expect(completedProcess).toHaveJSProperty('open', true);
+  await expect(completedProcess).toHaveJSProperty('open', false);
   await expect(completedProcess.getByText('耗时 2分钟19秒')).toBeVisible();
+  await completedProcess.locator(':scope > summary').click();
+  await expect(completedProcess).toHaveJSProperty('open', true);
   await expect(completedTurn).toHaveJSProperty('nodeName', 'SECTION');
   await expect.poll(() => completedTurn.evaluate(turn => {
     const process = turn.querySelector('.conversation-activity-group');

@@ -1064,7 +1064,15 @@ function ActivityGroup({ items, active, liveText, startedAt, finishedAt, avatarS
   const elapsedSeconds = useElapsedSeconds(startedAt, finishedAt, active);
   const entries = groupedActivities(items);
   const itemCount = entries.length + (liveText ? 1 : 0);
-  const [open, setOpen] = useState(true);
+  // Keep the in-flight process visible, then collapse it once the native
+  // terminal reply arrives. Historical completed processes also start closed,
+  // while the summary remains available for an explicit user expansion.
+  const [open, setOpen] = useState(active);
+  const wasActive = useRef(active);
+  useLayoutEffect(() => {
+    if (wasActive.current && !active) setOpen(false);
+    wasActive.current = active;
+  }, [active]);
   const label = active
     ? elapsedSeconds === undefined ? '处理中' : `已耗时 ${formatDuration(elapsedSeconds)}`
     : finishedAt === undefined || elapsedSeconds === undefined ? '工作过程' : `耗时 ${formatDuration(elapsedSeconds)}`;
