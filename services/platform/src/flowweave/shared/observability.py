@@ -7,6 +7,7 @@ import math
 import time
 from collections import Counter, defaultdict, deque
 from collections.abc import Mapping
+from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from threading import Lock
 from typing import Any
@@ -15,6 +16,7 @@ from flowweave.bootstrap.settings import Settings
 
 logger = logging.getLogger(__name__)
 _REQUEST_BUCKETS = (0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0)
+_current_metrics: ContextVar[Metrics | None] = ContextVar("flowweave_current_metrics", default=None)
 
 
 def _label_value(value: object) -> str:
@@ -41,6 +43,9 @@ class Metrics:
         self._request_duration: defaultdict[tuple[str, str, str], list[float]] = defaultdict(
             lambda: [0.0, 0.0, *([0.0] * len(_REQUEST_BUCKETS))]
         )
+        self._operation_duration: defaultdict[tuple[str, str], list[float]] = defaultdict(
+            lambda: [0.0, 0.0, *([0.0] * len(_REQUEST_BUCKETS))]
+        )
 
     def increment(self, name: str, /, **labels: object) -> None:
         key = (name, tuple(sorted((key, str(value)) for key, value in labels.items())))
@@ -65,12 +70,49 @@ class Metrics:
                 if value <= boundary:
                     bucket[index] += 1
 
+    def observe_operation(
+        self, operation: str, duration_seconds: float, *, outcome: str, items: int | None = None
+    ) -> None:
+        """Record a low-cardinality application operation.
+
+        Callers must supply a fixed operation name and outcome.  Deliberately
+        absent are request, workspace, conversation, user, path, and event
+        identifiers: Prometheus label cardinality must remain bounded.
+        """
+
+        label_key = (operation, outcome)
+        value = max(0.0, duration_seconds)
+        with self._lock:
+            bucket = self._operation_duration[label_key]
+            bucket[0] += 1
+            bucket[1] += value
+            for index, boundary in enumerate(_REQUEST_BUCKETS, start=2):
+                if value <= boundary:
+                    bucket[index] += 1
+            if items is not None:
+                self._counters[
+                    (
+                        "flowweave_operation_items_total",
+                        (("operation", operation), ("outcome", outcome)),
+                    )
+                ] += max(0, items)
+
     def render(self) -> str:
         lines = [
             "# HELP flowweave_http_requests_total Completed HTTP requests.",
             "# TYPE flowweave_http_requests_total counter",
             "# HELP flowweave_http_request_duration_seconds Request duration seconds.",
             "# TYPE flowweave_http_request_duration_seconds histogram",
+            (
+                "# HELP flowweave_operation_duration_seconds "
+                "Duration of bounded application operations."
+            ),
+            "# TYPE flowweave_operation_duration_seconds histogram",
+            (
+                "# HELP flowweave_operation_items_total "
+                "Items processed by bounded application operations."
+            ),
+            "# TYPE flowweave_operation_items_total counter",
             "# HELP flowweave_rate_limit_decisions_total Rate-limit decisions by bounded scope.",
             "# TYPE flowweave_rate_limit_decisions_total counter",
             "# HELP flowweave_rate_limit_backend Active rate-limit coordination backend.",
@@ -92,6 +134,7 @@ class Metrics:
             counters = tuple(self._counters.items())
             gauges = tuple(self._gauges.items())
             durations = tuple(self._request_duration.items())
+            operation_durations = tuple(self._operation_duration.items())
         for (name, labels), value in counters:
             lines.append(f"{name}{_labels(dict(labels))} {value}")
         for (name, labels), value in gauges:
@@ -113,7 +156,36 @@ class Metrics:
             lines.append(
                 f"flowweave_http_request_duration_seconds_sum{_labels(base)} {values[1]:.9f}"
             )
+        for (operation, outcome), values in operation_durations:
+            base = {"operation": operation, "outcome": outcome}
+            for boundary, count in zip(_REQUEST_BUCKETS, values[2:], strict=True):
+                lines.append(
+                    "flowweave_operation_duration_seconds_bucket"
+                    f"{_labels({**base, 'le': boundary})} {int(count)}"
+                )
+            lines.append(
+                "flowweave_operation_duration_seconds_bucket"
+                f"{_labels({**base, 'le': '+Inf'})} {int(values[0])}"
+            )
+            lines.append(
+                f"flowweave_operation_duration_seconds_count{_labels(base)} {int(values[0])}"
+            )
+            lines.append(f"flowweave_operation_duration_seconds_sum{_labels(base)} {values[1]:.9f}")
         return "\n".join(lines) + "\n"
+
+
+def bind_metrics(metrics: Metrics) -> Token[Metrics | None]:
+    return _current_metrics.set(metrics)
+
+
+def reset_metrics(token: Token[Metrics | None]) -> None:
+    _current_metrics.reset(token)
+
+
+def current_metrics() -> Metrics | None:
+    """Return request-bound metrics, or no-op outside an instrumented process."""
+
+    return _current_metrics.get()
 
 
 @dataclass(frozen=True, slots=True)

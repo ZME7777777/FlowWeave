@@ -39,6 +39,7 @@ from flowweave.runtime.dependencies import bind_runtime, reset_runtime
 from flowweave.shared.artifact_store import bind_artifact_store, reset_artifact_store
 from flowweave.shared.errors import DomainError
 from flowweave.shared.http import require_authenticated_connection, shared_business_scope
+from flowweave.shared.observability import bind_metrics, reset_metrics
 from flowweave.shared.plugin_resolver import bind_plugin_resolver, reset_plugin_resolver
 from flowweave.shared.sandbox import bind_sandbox, reset_sandbox
 from flowweave.shared.settings import bind_settings, reset_settings
@@ -156,6 +157,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         headers={"Retry-After": "60", "X-Request-ID": request_id},
                     )
         principal_token = bind_principal(principal)
+        metrics_token = bind_metrics(container.metrics)
         settings_token = bind_settings(container.settings)
         runtime_token = bind_runtime(container.runtime)
         store_token = bind_artifact_store(container.artifact_store)
@@ -184,6 +186,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return response
         finally:
             reset_principal(principal_token)
+            reset_metrics(metrics_token)
             reset_sandbox(sandbox_token)
             reset_plugin_resolver(resolver_token)
             reset_artifact_store(store_token)

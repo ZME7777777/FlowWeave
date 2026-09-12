@@ -6,6 +6,7 @@ import re
 import shutil
 import stat
 import subprocess
+import time
 from hashlib import sha256
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -29,6 +30,7 @@ from flowweave.modules.users.application.security import (
 )
 from flowweave.runtime.base import RuntimeWorkspaceFile
 from flowweave.shared.errors import DomainError, not_found
+from flowweave.shared.observability import current_metrics
 
 _MAX_INDEX_ENTRIES = 20_000
 _MAX_FILE_BYTES = 25 * 1024 * 1024
@@ -146,43 +148,56 @@ def _host_path(
 def _workspace_entries(
     project_root: Path, runtime_root: str, working_directory: str
 ) -> list[dict[str, Any]]:
-    host_root = (
-        project_root
-        if working_directory == runtime_root
-        else _host_path(project_root, runtime_root, working_directory, require_file=False)
-    )
-    if not host_root.is_dir():
-        raise DomainError("AGENT_WORKSPACE_PATH_INVALID", "当前工作目录不存在", 409)
+    started_at = time.monotonic()
+    outcome = "error"
     entries: list[dict[str, Any]] = []
-    for current, directory_names, file_names in os.walk(host_root, followlinks=False):
-        current_path = Path(current)
-        directory_names[:] = sorted(
-            name
-            for name in directory_names
-            if not name.startswith(".") and not (current_path / name).is_symlink()
+    try:
+        host_root = (
+            project_root
+            if working_directory == runtime_root
+            else _host_path(project_root, runtime_root, working_directory, require_file=False)
         )
-        for name, kind in (
-            *((name, "directory") for name in directory_names),
-            *((name, "file") for name in sorted(file_names) if not name.startswith(".")),
-        ):
-            host_path = current_path / name
-            try:
-                metadata = host_path.lstat()
-            except OSError:
-                continue
-            if stat.S_ISLNK(metadata.st_mode):
-                continue
-            relative = host_path.relative_to(project_root).as_posix()
-            entries.append(
-                {
-                    "path": f"{runtime_root}/{relative}",
-                    "kind": kind,
-                    "size": metadata.st_size if kind == "file" else 0,
-                }
+        if not host_root.is_dir():
+            raise DomainError("AGENT_WORKSPACE_PATH_INVALID", "当前工作目录不存在", 409)
+        for current, directory_names, file_names in os.walk(host_root, followlinks=False):
+            current_path = Path(current)
+            directory_names[:] = sorted(
+                name
+                for name in directory_names
+                if not name.startswith(".") and not (current_path / name).is_symlink()
             )
-            if len(entries) >= _MAX_INDEX_ENTRIES:
-                return entries
-    return entries
+            for name, kind in (
+                *((name, "directory") for name in directory_names),
+                *((name, "file") for name in sorted(file_names) if not name.startswith(".")),
+            ):
+                host_path = current_path / name
+                try:
+                    metadata = host_path.lstat()
+                except OSError:
+                    continue
+                if stat.S_ISLNK(metadata.st_mode):
+                    continue
+                relative = host_path.relative_to(project_root).as_posix()
+                entries.append(
+                    {
+                        "path": f"{runtime_root}/{relative}",
+                        "kind": kind,
+                        "size": metadata.st_size if kind == "file" else 0,
+                    }
+                )
+                if len(entries) >= _MAX_INDEX_ENTRIES:
+                    outcome = "ok"
+                    return entries
+        outcome = "ok"
+        return entries
+    finally:
+        if metrics := current_metrics():
+            metrics.observe_operation(
+                "agent_workspace.file_tree_scan",
+                time.monotonic() - started_at,
+                outcome=outcome,
+                items=len(entries),
+            )
 
 
 def _git_value(repository: Path, *arguments: str) -> str | None:
@@ -204,17 +219,28 @@ def _git_value(repository: Path, *arguments: str) -> str | None:
 
 
 def _repository_details(repository: Path, runtime_path: str) -> dict[str, str]:
-    details = {"path": runtime_path}
-    branch = _git_value(repository, "branch", "--show-current")
-    head = _git_value(repository, "rev-parse", "HEAD")
-    remote = _git_value(repository, "remote", "get-url", "origin")
-    if branch:
-        details["branch"] = branch
-    if head:
-        details["head"] = head
-    if remote:
-        details["remote"] = remote
-    return details
+    started_at = time.monotonic()
+    outcome = "error"
+    try:
+        details = {"path": runtime_path}
+        branch = _git_value(repository, "branch", "--show-current")
+        head = _git_value(repository, "rev-parse", "HEAD")
+        remote = _git_value(repository, "remote", "get-url", "origin")
+        if branch:
+            details["branch"] = branch
+        if head:
+            details["head"] = head
+        if remote:
+            details["remote"] = remote
+        outcome = "ok"
+        return details
+    finally:
+        if metrics := current_metrics():
+            metrics.observe_operation(
+                "agent_workspace.repository_metadata",
+                time.monotonic() - started_at,
+                outcome=outcome,
+            )
 
 
 def repository_details(repository: Path, runtime_path: str) -> dict[str, str]:
@@ -428,43 +454,57 @@ def _scope_repositories(
 ) -> list[tuple[Path, str]]:
     """Find repositories intersecting the visible scope, including an owning parent repo."""
 
+    started_at = time.monotonic()
+    outcome = "error"
     found: dict[Path, str] = {}
-    for runtime_root in file_roots:
-        host_root = (
-            project_root
-            if runtime_root == runtime_workspace_root
-            else _host_path(project_root, runtime_workspace_root, runtime_root, require_file=False)
-        )
-        current = host_root
-        while current.is_relative_to(project_root):
-            if (current / ".git").is_dir() or (current / ".git").is_file():
-                relative = current.relative_to(project_root).as_posix()
-                found[current] = (
-                    runtime_workspace_root
-                    if relative == "."
-                    else f"{runtime_workspace_root}/{relative}"
+    try:
+        for runtime_root in file_roots:
+            host_root = (
+                project_root
+                if runtime_root == runtime_workspace_root
+                else _host_path(
+                    project_root, runtime_workspace_root, runtime_root, require_file=False
                 )
-                break
-            if current == project_root:
-                break
-            current = current.parent
-        for directory, directory_names, _ in os.walk(host_root, followlinks=False):
-            current_path = Path(directory)
-            if (current_path / ".git").is_dir() or (current_path / ".git").is_file():
-                relative = current_path.relative_to(project_root).as_posix()
-                found[current_path] = (
-                    runtime_workspace_root
-                    if relative == "."
-                    else f"{runtime_workspace_root}/{relative}"
-                )
-            directory_names[:] = [
-                name
-                for name in directory_names
-                if not name.startswith(".") and not (current_path / name).is_symlink()
-            ]
-            if len(found) >= 100:
-                break
-    return sorted(found.items(), key=lambda item: item[1])
+            )
+            current = host_root
+            while current.is_relative_to(project_root):
+                if (current / ".git").is_dir() or (current / ".git").is_file():
+                    relative = current.relative_to(project_root).as_posix()
+                    found[current] = (
+                        runtime_workspace_root
+                        if relative == "."
+                        else f"{runtime_workspace_root}/{relative}"
+                    )
+                    break
+                if current == project_root:
+                    break
+                current = current.parent
+            for directory, directory_names, _ in os.walk(host_root, followlinks=False):
+                current_path = Path(directory)
+                if (current_path / ".git").is_dir() or (current_path / ".git").is_file():
+                    relative = current_path.relative_to(project_root).as_posix()
+                    found[current_path] = (
+                        runtime_workspace_root
+                        if relative == "."
+                        else f"{runtime_workspace_root}/{relative}"
+                    )
+                directory_names[:] = [
+                    name
+                    for name in directory_names
+                    if not name.startswith(".") and not (current_path / name).is_symlink()
+                ]
+                if len(found) >= 100:
+                    break
+        outcome = "ok"
+        return sorted(found.items(), key=lambda item: item[1])
+    finally:
+        if metrics := current_metrics():
+            metrics.observe_operation(
+                "agent_workspace.repository_discovery",
+                time.monotonic() - started_at,
+                outcome=outcome,
+                items=len(found),
+            )
 
 
 def _working_directory(

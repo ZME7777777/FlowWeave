@@ -56,6 +56,7 @@ from flowweave.runtime.workspace import (
 )
 from flowweave.shared.database import now
 from flowweave.shared.errors import DomainError, not_found
+from flowweave.shared.observability import current_metrics
 from flowweave.shared.settings import get_settings
 
 _PROJECT_ROOT = "/runtime/workspace/project"
@@ -1528,9 +1529,24 @@ def events(
     workspace = _workspace(db, workspace_id)
     binding = _binding(db, workspace_id, binding_id)
     handle = _handle(db, workspace, binding)
-    batch = get_runtime().read_active_events(
-        replace(handle, cursor=cursor, history_cursor=history_cursor)
-    )
+    started_at = time.monotonic()
+    try:
+        batch = get_runtime().read_active_events(
+            replace(handle, cursor=cursor, history_cursor=history_cursor)
+        )
+    except Exception:
+        if metrics := current_metrics():
+            metrics.observe_operation(
+                "agent_session.events", time.monotonic() - started_at, outcome="error"
+            )
+        raise
+    if metrics := current_metrics():
+        metrics.observe_operation(
+            "agent_session.events",
+            time.monotonic() - started_at,
+            outcome="ok",
+            items=len(batch.events),
+        )
     # A native Task blocks its parent and has no wall-clock timeout. Register
     # one durable watchdog from formal event identities while this normal REST
     # recovery read already owns a transaction. No Conversation state is
@@ -1548,10 +1564,20 @@ def events(
     # Enrich the browser projection from the formal active branch so the UI can
     # render an auditable start record and a separate completion record without
     # changing native conversation history.
+    context_started_at = time.monotonic()
     try:
         context = get_runtime().conversation_context(handle)
     except (DomainError, AttributeError):
         context = {}
+        context_outcome = "error"
+    else:
+        context_outcome = "ok"
+    if metrics := current_metrics():
+        metrics.observe_operation(
+            "agent_session.context",
+            time.monotonic() - context_started_at,
+            outcome=context_outcome,
+        )
     raw_max_events = context.get("condenser_max_size")
     max_events = (
         raw_max_events
@@ -2165,7 +2191,19 @@ def message(
             {"model_provider_id": target_provider_id},
         ) from exc
     compacted = False
-    context = runtime.conversation_context(handle)
+    started_at = time.monotonic()
+    try:
+        context = runtime.conversation_context(handle)
+    except Exception:
+        if metrics := current_metrics():
+            metrics.observe_operation(
+                "agent_session.context", time.monotonic() - started_at, outcome="error"
+            )
+        raise
+    if metrics := current_metrics():
+        metrics.observe_operation(
+            "agent_session.context", time.monotonic() - started_at, outcome="ok"
+        )
     # OpenHands' public fork API deep-copies the source agent and has no field
     # for replacing its condenser.  A fork of a historical 240-event session
     # must therefore remain writable without silently trusting that old
@@ -2758,7 +2796,19 @@ def conversation_context(
     binding = _binding(db, workspace_id, binding_id)
     runtime = get_runtime()
     handle = _handle(db, workspace, binding)
-    context = runtime.conversation_context(handle)
+    started_at = time.monotonic()
+    try:
+        context = runtime.conversation_context(handle)
+    except Exception:
+        if metrics := current_metrics():
+            metrics.observe_operation(
+                "agent_session.context", time.monotonic() - started_at, outcome="error"
+            )
+        raise
+    if metrics := current_metrics():
+        metrics.observe_operation(
+            "agent_session.context", time.monotonic() - started_at, outcome="ok"
+        )
     usage_current = _context_usage_is_current(runtime, handle)
     window_tokens = context.get("window_tokens")
     threshold_tokens = (

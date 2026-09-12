@@ -28,8 +28,8 @@
 | 切片 | 依赖 | 状态 | 目标与交付 | 最小验收与提交边界 |
 |---|---|---|---|---|
 | `PERF-00` | 无 | `DONE` | 冻结本过程表、不可退让约束、切片依赖和最终验收。 | 文档审阅、任务状态唯一性、`git diff --check`；仅提交本计划。 |
-| `PERF-01` | `PERF-00` | `READY` | 为工作区扫描、Git 探测、会话 hydration、OpenHands state/events/event-by-id 和前端加载阶段建立低基数指标与结构化耗时日志。 | 定向单测/静态检查证明指标无会话/用户/正文标签；不改变功能路径。 |
-| `PERF-02` | `PERF-01` | `BLOCKED_BY_DEPENDENCY` | 新增受服务端范围校验的目录列表 API：根目录/展开目录按 `parent_path + cursor + limit` 返回直接子项；保留现有文件下载与写入授权。 | API/授权/分页测试，证明没有递归全树扫描作为首屏读取。 |
+| `PERF-01` | `PERF-00` | `DONE` | 为工作区扫描、Git 探测、会话 hydration、OpenHands state/events/event-by-id 和前端加载阶段建立低基数指标与结构化耗时日志。 | 已记录固定 operation/outcome 的耗时直方图与条目计数；无会话/用户/正文标签，不改变功能路径。 |
+| `PERF-02` | `PERF-01` | `READY` | 新增受服务端范围校验的目录列表 API：根目录/展开目录按 `parent_path + cursor + limit` 返回直接子项；保留现有文件下载与写入授权。 | API/授权/分页测试，证明没有递归全树扫描作为首屏读取。 |
 | `PERF-03` | `PERF-02` | `BLOCKED_BY_DEPENDENCY` | Web 文件树按目录懒加载、局部缓存失效和虚拟化；已选会话复用唯一工作区详情，阅读会话时不预加载文件树。 | 定向浏览器回归：展开、上传、删除、Agent 写入后的局部刷新，以及现有工作目录/附件范围保护。 |
 | `PERF-04` | `PERF-02` | `BLOCKED_BY_DEPENDENCY` | 将 Git 仓库发现、branch/HEAD/remote、log、commit 和 diff 从工作区首屏拆为 Git 面板按需读取，并设置受控短 TTL。 | 定向 API/Web 回归：未打开 Git 不运行 Git 扫描；打开面板后仍只读且范围正确。 |
 | `PERF-05` | `PERF-01` | `BLOCKED_BY_DEPENDENCY` | 实现完整会话 hydration：服务端聚合完整 active branch、正式 state、readiness、context/usage，并以一次浏览器响应提供完整逻辑事实。 | 长会话、工具密集会话、Fork/重写/继续发送的服务端回归；不得把 100 条窗口作为逻辑上限。 |
@@ -85,3 +85,4 @@ Fork / rewrite old event
 | 日期 | 切片 | 验证 | 结果 |
 |---|---|---|---|
 | 2026-09-12 | `PERF-00` | 文档状态唯一性、`services/platform` 工作目录下 `.venv/bin/alembic heads`、`git diff --check` | PASS：冻结完整 hydration、首屏/历史缓存、event-by-id、懒加载和最终全量远端发布的切片边界；仅 `PERF-01` 解锁。 |
+| 2026-09-12 | `PERF-01` | 平台 Ruff/py_compile、无 `conftest` 的指标单测、Web typecheck/lint、`git diff --check` | PASS：工作区树/Git、会话 events/context、OpenHands state/events/event-by-id 及浏览器阶段均有低基数耗时观测；`PERF-02` 解锁。完整 pytest 因本机 Docker daemon 不可用而无法启动 Testcontainers；Pyright 当前环境错误解析全局 Python 3.14 标准库，未作为本切片代码失败。 |

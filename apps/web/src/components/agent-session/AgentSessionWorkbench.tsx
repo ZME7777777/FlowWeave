@@ -26,6 +26,7 @@ import '../../pages/agent-workbench-layout.css';
 const WORKSPACE_FILE_TRANSFER_TYPE = 'application/x-flowweave-workspace-file-path';
 const ACTIVE_EVENT_RECOVERY_INTERVAL_MS = 4_000;
 const WORKSPACE_PATH_COPIED_DURATION_MS = 1_500;
+const SESSION_PERFORMANCE_MARK_PREFIX = 'flowweave.agent-session.';
 type StreamStatus = 'connecting' | 'live' | 'recovering' | 'disabled';
 type TurnState = 'idle' | 'running' | 'pausing' | 'paused' | 'resuming';
 interface QueuedMessage {
@@ -76,6 +77,14 @@ interface ConversationSource {
   url?: string;
   attachment?: AgentAttachment;
   pending?: boolean;
+}
+
+function markSessionPerformance(phase: 'selected' | 'events-ready' | 'workspace-ready'): void {
+  // Browser Performance Timeline is a local diagnostic only. It intentionally
+  // contains no workspace, conversation, user, path, or message identifier.
+  if (typeof performance !== 'undefined' && typeof performance.mark === 'function') {
+    performance.mark(`${SESSION_PERFORMANCE_MARK_PREFIX}${phase}`);
+  }
 }
 
 async function copyTextToClipboard(value: string): Promise<void> {
@@ -2806,6 +2815,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     () => selectedConversationQuery.data ?? conversations.find(item => item.id === selectedBindingId),
     [conversations, selectedBindingId, selectedConversationQuery.data],
   );
+  const selectedConversationId = selected?.id;
+  useEffect(() => {
+    if (selectedConversationId) markSessionPerformance('selected');
+  }, [selectedConversationId]);
   // The workspace endpoint resolves the actual directory bound to this
   // conversation, including legacy conversations whose list projection only
   // reports the shared project root.  Keep transcript file paths scoped to
@@ -2822,6 +2835,11 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     enabled: Boolean(workspace && (selected || conversationDraft)),
     retry: (count, error) => !(error instanceof ApiError && error.status < 500) && count < 2,
   });
+  useEffect(() => {
+    if (selected && selectedWorkspaceDetailsQuery.data) {
+      markSessionPerformance('workspace-ready');
+    }
+  }, [selected, selectedWorkspaceDetailsQuery.data]);
   const updateUnreadConversationIds = useCallback((update: (current: Set<string>) => Set<string>) => {
     setUnreadConversationIds(current => {
       const next = update(current);
@@ -2976,6 +2994,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     queryKey: eventQueryKey, queryFn: () => api.conversationEvents(workspace!.id, selected!.id), enabled: Boolean(workspace && selected),
     retry: (count, error) => !(error instanceof ApiError && error.status < 500) && count < 2,
   });
+  useEffect(() => {
+    if (selected && eventsQuery.data) markSessionPerformance('events-ready');
+  }, [eventsQuery.data, selected]);
   useEffect(() => {
     if (!workspace || !selected || !isGenerating || !pageVisible || !eventsQuery.data?.next_cursor) return;
     const workspaceId = workspace.id;

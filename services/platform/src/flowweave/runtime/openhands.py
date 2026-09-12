@@ -67,6 +67,7 @@ from flowweave.shared.infrastructure.http_transport import (
     HttpTransportPool,
     registered_http_transport,
 )
+from flowweave.shared.observability import current_metrics
 from flowweave.shared.secret_redaction import redact_secret_text, redact_secret_value
 
 logger = logging.getLogger(__name__)
@@ -79,6 +80,19 @@ _EVENT_HISTORY_PAGE_SIZE = 100
 # within its shared interactive read deadline. Older history remains available
 # through the explicit page endpoint and durable session replay.
 _EVENT_HISTORY_MAX_PAGES = 8
+_CONVERSATION_STATE_PATH = re.compile(r"^/api/conversations/[^/]+$")
+_CONVERSATION_EVENTS_SEARCH_PATH = re.compile(r"^/api/conversations/[^/]+/events/search$")
+_CONVERSATION_EVENT_BY_ID_PATH = re.compile(r"^/api/conversations/[^/]+/events/[^/]+$")
+
+
+def _operation_for_path(path: str) -> str:
+    if _CONVERSATION_STATE_PATH.fullmatch(path):
+        return "openhands.conversation_state"
+    if _CONVERSATION_EVENTS_SEARCH_PATH.fullmatch(path):
+        return "openhands.conversation_events_search"
+    if _CONVERSATION_EVENT_BY_ID_PATH.fullmatch(path):
+        return "openhands.conversation_event_by_id"
+    return "openhands.other"
 
 
 @dataclass
@@ -413,6 +427,8 @@ class OpenHandsRuntime:
             ) from exc
         finally:
             duration = time.monotonic() - started_at
+            if metrics := current_metrics():
+                metrics.observe_operation(_operation_for_path(path), duration, outcome=outcome)
             if duration >= 1.0:
                 logger.warning(
                     "slow OpenHands request method=%s path=%s runtime=%s duration_ms=%d outcome=%s",
