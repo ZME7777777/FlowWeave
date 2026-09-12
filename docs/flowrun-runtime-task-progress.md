@@ -110,6 +110,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-346 | 历史节点身份 Snapshot 只读兼容 | DONE | 已绑定历史 Conversation 的只读 host 可验证并投影无 Tool Policy 的 OpenHands 1.44 节点身份 Snapshot；新建与执行路径继续拒绝。 |
 | FR-347 | 连续运行备用模型冻结回显 | DONE | 连续运行草稿保存时保留 `fallback_models`，避免严格写入投影将已选额度备用模型清空。 |
 | FR-348 | 历史 Runtime 重建的冻结 Server 身份探针 | DONE | Runtime Provider 重建容器时按已验证 Environment Version 的冻结 OpenHands 身份探针，不再把全局当前版本错误套用于历史只读会话。 |
+| FR-349 | 备用模型供应商选择状态回显 | DONE | 空选择不再伪装为列表首个供应商，避免模型依赖菜单保持空白而无法加入备用顺序。 |
 | OPS-01 | Docker rollback image / BuildKit cache 容量增长 | DONE | 建立带运行引用保护、dry-run 和显式确认的回收工具，并完成生产候选边界核验。 |
 | OPS-02 | Docker rollback image / BuildKit cache 容量增长 | DONE | 已按授权使用 OPS-03 tag 级路径回收，并完成生产不变量与入口验证。 |
 | OPS-03 | 多 rollback tag image 的安全回收 | DONE | 改为逐 tag、重查 Container 引用、不使用 `--force` 的回收路径。 |
@@ -330,6 +331,19 @@ Playwright Agent 工作台用例在 WebSocket 流恢复阶段超时，未将其�
 - 继续剥离仅用于审计展示的冻结能力字段，不能把整份服务端响应直接回写到严格命令 API。
 
 完成：前端将连续运行节点计划从服务端冻结投影还原为严格写入形状时，显式携带 `agent_preset.fallback_models`。后端既有严格校验与冻结路径会继续校验供应商、模型、顺序和额度策略，随后返回同一冻结清单供 UI 回显。
+
+验收：Web TypeScript typecheck、ESLint、production build 与 `git diff --check`。
+
+### FR-349 备用模型供应商选择状态回显 — DONE
+
+依赖：`FR-347`。
+
+目标：
+
+- 备用模型配置中的空供应商值必须明确显示“未选择”，不能渲染为可选列表的首项。
+- 用户必须实际选中供应商后才能看到对应模型并加入顺序，避免错误显示造成“已选供应商但模型为空”的死路。
+
+完成：自定义选择菜单只展示与当前 value 精确匹配的 option；空值不再回退到首个 option。模型与思考程度仍严格依赖已选供应商，加入顺序继续要求供应商与模型均有效。
 
 验收：Web TypeScript typecheck、ESLint、production build 与 `git diff --check`。
 
