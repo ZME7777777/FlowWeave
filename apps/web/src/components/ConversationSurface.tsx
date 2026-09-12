@@ -139,29 +139,13 @@ function currentTurnEvents(events: OpenHandsConversationEvent[]): OpenHandsConve
 export function ConversationTaskPlan({ events, isGenerating }: { events: OpenHandsConversationEvent[]; isGenerating: boolean }) {
   const currentEvents = useMemo(() => currentTurnEvents(events), [events]);
   const snapshot = useMemo(() => latestCurrentTaskList(currentEvents), [currentEvents]);
-  const [expanded, setExpanded] = useState(false);
-  const planBodyRef = useRef<HTMLDivElement>(null);
-  const currentTaskRef = useRef<HTMLLIElement>(null);
-  const currentTaskIndex = snapshot?.items.findIndex(item => item.status === 'in_progress') ?? -1;
   const completed = snapshot?.items.filter(item => item.status === 'done').length ?? 0;
   const showPlan = isGenerating && snapshot && snapshot.items.some(item => item.status !== 'done');
 
-  useLayoutEffect(() => {
-    if (!expanded || currentTaskIndex < 0 || !planBodyRef.current || !currentTaskRef.current) return;
-    const body = planBodyRef.current;
-    const task = currentTaskRef.current;
-    body.scrollTop = Math.max(0, task.offsetTop - (body.clientHeight - task.offsetHeight) / 2);
-  }, [currentTaskIndex, expanded, snapshot]);
-
   if (!showPlan || !snapshot) return null;
-  return <details className="conversation-live-task-plan" aria-label="当前任务计划" open={expanded} onMouseEnter={() => setExpanded(true)} onMouseLeave={() => setExpanded(false)} onFocusCapture={() => setExpanded(true)} onBlurCapture={event => { if (!event.currentTarget.contains(event.relatedTarget)) setExpanded(false); }}>
-    <summary aria-label={`当前计划：${completed} / ${snapshot.items.length} 已完成`} onClick={event => event.preventDefault()} onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') event.preventDefault(); }}>
-      <Check size={15}/><span><b>当前计划</b><small>{`${completed} / ${snapshot.items.length} 已完成`}</small></span><ChevronRight size={14}/>
-    </summary>
-    <div ref={planBodyRef} className="conversation-live-task-plan-body">
-      <TaskListItems items={snapshot.items} currentTaskIndex={currentTaskIndex >= 0 ? currentTaskIndex : undefined} currentTaskRef={currentTaskRef} source={snapshot.timestamp ? `OpenHands 原生任务事件 · ${formatMessageTime(snapshot.timestamp)}` : 'OpenHands 原生任务事件'}/>
-    </div>
-  </details>;
+  return <section className="conversation-live-task-plan" aria-label={`任务：${completed} / ${snapshot.items.length} 已完成`}>
+    <ClipboardList size={15}/><span><b>任务</b><small>{`${completed} / ${snapshot.items.length} 已完成`}</small></span>
+  </section>;
 }
 
 type TurnProcessBlock =
