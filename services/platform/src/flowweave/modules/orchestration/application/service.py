@@ -50,6 +50,7 @@ from flowweave.modules.runs.public import (
     evaluate_readiness,
 )
 from flowweave.modules.sandboxes import public as sandboxes
+from flowweave.modules.sandboxes.infrastructure.models import ManagedSandbox, RuntimeGeneration
 from flowweave.modules.tasks.public import Lease, enqueue, lease_is_current
 from flowweave.runtime.base import (
     RuntimeHandle,
@@ -5004,6 +5005,7 @@ def recover_runtime_tasks(db: Session) -> int:
     """
 
     recovered = recover_terminal_flow_run_runtime_stops(db)
+    recovered += recover_exhausted_transient_flow_run_provision_tasks(db)
     recovered += _recover_automatic_run_starts(db)
     recovered += _recover_automatic_attempt_tasks(db)
     attempts = list(
@@ -5177,6 +5179,103 @@ def recover_runtime_tasks(db: Session) -> int:
                 _dispatch_runtime_wakeup(db, attempt, 1)
                 recovered += 1
     finish(db)
+    return recovered
+
+
+def recover_exhausted_transient_flow_run_provision_tasks(db: Session) -> int:
+    """Give a still-safe initial Runtime intent one bounded retry budget.
+
+    FR-336 preserves a ``PROVISIONING`` generation when the Provider transport
+    is temporarily unavailable.  A long outage can nevertheless consume the
+    normal task retry budget.  Only that exact persisted intent is eligible:
+    no active writer, no terminal Run, no deleted/failed generation, and one
+    recorded recovery marker.  Consequently this does not turn deterministic
+    errors or deleted FlowRuns into an infinite delivery loop.
+    """
+
+    candidates = list(
+        db.scalars(
+            select(BackgroundTask)
+            .where(
+                BackgroundTask.task_type == "PROVISION_FLOW_RUN_RUNTIME",
+                BackgroundTask.aggregate_type == "FLOW_RUN",
+                BackgroundTask.state == TaskState.DEAD,
+                BackgroundTask.attempts >= BackgroundTask.max_attempts,
+                BackgroundTask.last_error.like("SANDBOX_BACKEND_UNAVAILABLE:%"),
+            )
+            .order_by(BackgroundTask.updated_at, BackgroundTask.id)
+            .limit(100)
+            .with_for_update(skip_locked=True)
+        )
+    )
+    recovered = 0
+    now_utc = datetime.now(UTC)
+    for task in candidates:
+        payload = dict(task.payload_json or {})
+        if payload.get("transient_provision_recovery_attempted") is True:
+            continue
+        run = db.scalar(
+            select(FlowRun).where(FlowRun.id == task.aggregate_id).with_for_update(skip_locked=True)
+        )
+        if run is None or run.state in {
+            FlowRunState.DRAFT,
+            FlowRunState.COMPLETED,
+            FlowRunState.CANCELLED,
+        }:
+            continue
+        runtimes = list(
+            db.scalars(
+                select(FlowRunRuntime)
+                .where(
+                    FlowRunRuntime.flow_run_id == run.id,
+                    FlowRunRuntime.node_attempt_id.is_(None),
+                    FlowRunRuntime.active_generation.is_(None),
+                    FlowRunRuntime.status == "STARTING",
+                )
+                .with_for_update(skip_locked=True)
+            )
+        )
+        if len(runtimes) != 1:
+            continue
+        runtime = runtimes[0]
+        generations = list(
+            db.scalars(
+                select(RuntimeGeneration)
+                .where(
+                    RuntimeGeneration.runtime_session_id == runtime.id,
+                    RuntimeGeneration.state == "PROVISIONING",
+                )
+                .with_for_update(skip_locked=True)
+            )
+        )
+        if len(generations) != 1 or generations[0].managed_runtime_id is None:
+            continue
+        generation = generations[0]
+        resource = db.scalar(
+            select(ManagedSandbox)
+            .where(ManagedSandbox.id == generation.managed_runtime_id)
+            .with_for_update(skip_locked=True)
+        )
+        if (
+            resource is None
+            or resource.kind != "AGENT_RUNTIME"
+            or resource.owner_type != "FLOW_RUN"
+            or resource.owner_id != run.id
+            or resource.generation != generation.generation
+            or resource.desired_state != "RUNNING"
+            or resource.last_error_code != "SANDBOX_BACKEND_UNAVAILABLE"
+        ):
+            continue
+        payload["transient_provision_recovery_attempted"] = True
+        task.payload_json = payload
+        task.state = TaskState.RETRY
+        task.attempts = 0
+        task.max_attempts += 20
+        task.available_at = now_utc
+        task.lease_owner = None
+        task.lease_until = None
+        task.last_error = "RECOVERED_TRANSIENT_PROVIDER_OUTAGE"
+        recovered += 1
     return recovered
 
 

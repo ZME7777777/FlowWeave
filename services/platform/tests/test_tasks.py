@@ -5,7 +5,17 @@ from time import sleep
 
 from sqlalchemy import select
 
-from flowweave.modules.orchestration.application.service import _runtime_input_upload_handle
+from flowweave.modules.orchestration.application.service import (
+    _runtime_input_upload_handle,
+    recover_exhausted_transient_flow_run_provision_tasks,
+)
+from flowweave.modules.sandboxes.infrastructure.models import (
+    FlowRunRuntime,
+    FlowRunRuntimeAllocation,
+    FlowRunRuntimeSecretReference,
+    ManagedSandbox,
+    RuntimeGeneration,
+)
 from flowweave.modules.tasks.application.service import (
     claim,
     cleanup_terminal,
@@ -14,7 +24,15 @@ from flowweave.modules.tasks.application.service import (
     recover_expired,
     succeed,
 )
-from flowweave.shared.models import BackgroundTask, FlowDefinition, TaskState
+from flowweave.modules.users.application.security import FLOWWEAVE_USER_ID
+from flowweave.shared.models import (
+    BackgroundTask,
+    EnvironmentVersion,
+    FlowDefinition,
+    FlowRun,
+    TaskState,
+    TerminalEnvironment,
+)
 
 
 def test_runtime_input_upload_uses_frozen_flow_run_generation_route(settings):
@@ -47,6 +65,176 @@ def test_runtime_input_upload_uses_frozen_flow_run_generation_route(settings):
         OpenHandsRuntime(settings)._base_url_for_handle(handle)
         == "http://flowweave-run-generation-7:8000"
     )
+
+
+def _exhausted_flow_run_provision_task(
+    db, *, error_code: str = "SANDBOX_BACKEND_UNAVAILABLE"
+) -> tuple[BackgroundTask, FlowRunRuntime, ManagedSandbox, RuntimeGeneration]:
+    base_image_digest = "sha256:" + "0" * 64
+    runtime_image_digest = "sha256:" + "1" * 64
+    environment = TerminalEnvironment(
+        name="transient provision recovery",
+        description="",
+        base_image="python:3.13",
+        base_image_digest=base_image_digest,
+    )
+    db.add(environment)
+    db.flush()
+    environment_version = EnvironmentVersion(
+        environment_id=environment.id,
+        version_no=1,
+        state="READY",
+        base_image_reference=f"python@{base_image_digest}",
+        base_image_digest=base_image_digest,
+        image_reference="flowweave/transient-provision-recovery:v1",
+        image_digest=runtime_image_digest,
+        manifest_json={},
+    )
+    flow = FlowDefinition(
+        name="transient provision recovery", description="", default_entry_key=None
+    )
+    db.add_all((environment_version, flow))
+    db.flush()
+    run = FlowRun(
+        flow_definition_id=flow.id,
+        run_no=1,
+        name="transient provision recovery",
+        state="ACTIVE",
+        environment_version_id=environment_version.id,
+    )
+    secret = FlowRunRuntimeSecretReference(
+        encrypted_secret_key=b"encrypted",
+        secret_digest="2" * 64,
+    )
+    db.add_all((run, secret))
+    db.flush()
+    allocation = FlowRunRuntimeAllocation(
+        flow_run_id=run.id,
+        secret_reference_id=secret.id,
+        relative_root=f".flow-run-runtimes/{run.id}",
+    )
+    db.add(allocation)
+    db.flush()
+    runtime = FlowRunRuntime(
+        flow_run_id=run.id,
+        environment_version_id=run.environment_version_id,
+        runtime_image_digest=runtime_image_digest,
+        workspace_allocation_id=allocation.id,
+        status="STARTING",
+    )
+    resource = ManagedSandbox(
+        kind="AGENT_RUNTIME",
+        owner_type="FLOW_RUN",
+        owner_id=run.id,
+        backend="docker",
+        backend_resource_name=f"fw-sbx-recovery-{run.id[:8]}",
+        desired_state="RUNNING",
+        observed_state="ERROR",
+        generation=1,
+        image_reference=runtime.runtime_image_digest,
+        runtime_allocation_id=runtime.workspace_allocation_id,
+        spec_json={"port": 8000},
+        hard_expires_at=datetime.now(UTC) + timedelta(hours=1),
+        last_error_code=error_code,
+    )
+    db.add_all((runtime, resource))
+    db.flush()
+    generation = RuntimeGeneration(
+        runtime_session_id=runtime.id,
+        generation=1,
+        managed_runtime_id=resource.id,
+        runtime_image_digest=runtime.runtime_image_digest,
+        state="PROVISIONING",
+        fence_token="33333333-3333-4333-8333-333333333333",
+    )
+    task = BackgroundTask(
+        owner_user_id=FLOWWEAVE_USER_ID,
+        task_type="PROVISION_FLOW_RUN_RUNTIME",
+        aggregate_type="FLOW_RUN",
+        aggregate_id=run.id,
+        idempotency_key=f"provision-flow-run-runtime:{run.id}",
+        state=TaskState.DEAD,
+        attempts=20,
+        max_attempts=20,
+        last_error=f"{error_code}: provider unavailable",
+    )
+    db.add_all((generation, task))
+    db.flush()
+    return task, runtime, resource, generation
+
+
+def test_exhausted_transient_flow_run_provision_gets_one_controlled_retry(db_session_factory):
+    with db_session_factory() as db:
+        task, runtime, resource, generation = _exhausted_flow_run_provision_task(db)
+        db.commit()
+        task_id = task.id
+        runtime_id = runtime.id
+        resource_id = resource.id
+        generation_id = generation.id
+
+    with db_session_factory() as db:
+        assert recover_exhausted_transient_flow_run_provision_tasks(db) == 1
+        db.commit()
+
+    with db_session_factory() as db:
+        task = db.get(BackgroundTask, task_id)
+        assert task is not None
+        assert task.state == TaskState.RETRY
+        assert task.attempts == 0
+        assert task.max_attempts == 40
+        assert task.lease_owner is None and task.lease_until is None
+        assert task.last_error == "RECOVERED_TRANSIENT_PROVIDER_OUTAGE"
+        assert task.payload_json == {"transient_provision_recovery_attempted": True}
+        assert db.get(FlowRunRuntime, runtime_id) is not None
+        assert db.get(ManagedSandbox, resource_id) is not None
+        assert db.get(RuntimeGeneration, generation_id) is not None
+
+        task.state = TaskState.DEAD
+        task.attempts = task.max_attempts
+        task.last_error = "SANDBOX_BACKEND_UNAVAILABLE: provider unavailable again"
+        db.commit()
+
+    with db_session_factory() as db:
+        assert recover_exhausted_transient_flow_run_provision_tasks(db) == 0
+        task = db.get(BackgroundTask, task_id)
+        assert task is not None and task.state == TaskState.DEAD
+
+
+def test_exhausted_deterministic_flow_run_provision_is_not_retried(db_session_factory):
+    with db_session_factory() as db:
+        task, _runtime, _resource, _generation = _exhausted_flow_run_provision_task(
+            db, error_code="SANDBOX_SPEC_CONFLICT"
+        )
+        db.commit()
+        task_id = task.id
+
+    with db_session_factory() as db:
+        assert recover_exhausted_transient_flow_run_provision_tasks(db) == 0
+        task = db.get(BackgroundTask, task_id)
+        assert task is not None and task.state == TaskState.DEAD
+
+
+def test_exhausted_flow_run_provision_is_not_retried_after_run_deletion(db_session_factory):
+    with db_session_factory() as db:
+        task = BackgroundTask(
+            owner_user_id=FLOWWEAVE_USER_ID,
+            task_type="PROVISION_FLOW_RUN_RUNTIME",
+            aggregate_type="FLOW_RUN",
+            aggregate_id="11111111-1111-4111-8111-111111111111",
+            idempotency_key="provision-flow-run-runtime:deleted-run",
+            state=TaskState.DEAD,
+            attempts=20,
+            max_attempts=20,
+            last_error="SANDBOX_BACKEND_UNAVAILABLE: provider unavailable",
+        )
+        db.add(task)
+        db.commit()
+        task_id = task.id
+
+    with db_session_factory() as db:
+        assert recover_exhausted_transient_flow_run_provision_tasks(db) == 0
+        task = db.get(BackgroundTask, task_id)
+        assert task is not None and task.state == TaskState.DEAD
 
 
 def _run_worker_until(worker, predicate, *, max_steps: int = 12) -> None:

@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`COMPLETE`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`FR-337`（FlowRun 供应任务耗尽后的受控恢复）
+> 下一可执行切片：`OPS-01`（Docker rollback image / BuildKit cache 容量维护；须先形成经确认的安全维护窗口）
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -98,7 +98,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | --- | --- | --- | --- |
 | FR-335 | 已删除受管 Sandbox 的 generation 悬空引用 | DONE | 恢复两个 generation ledger 的 `ON DELETE SET NULL` 约束，升级时清理历史悬空引用，并让 reconcile 显式解绑。 |
 | FR-336 | 初次 Runtime 供应遇到临时 Provider 不可用会永久降级 | DONE | 将短暂后端故障保持为可重试供应意图，限制 generation churn。 |
-| FR-337 | FlowRun 初次供应任务耗尽后无受控恢复入口 | PENDING | 增加安全、幂等且可审计的终态投递恢复。 |
+| FR-337 | FlowRun 初次供应任务耗尽后无受控恢复入口 | DONE | 增加安全、幂等且可审计的终态投递恢复。 |
 | OPS-01 | Docker rollback image / BuildKit cache 容量增长 | PENDING | 设计并执行经确认的保留／回收维护窗口；不纳入自动代码部署。 |
 
 ### FR-335 Runtime generation Sandbox 引用完整性 — DONE
@@ -130,6 +130,29 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 验收：受影响 Python 文件可解析／静态检查、`git diff --check`、任务状态唯一性；定向 pytest 若本机 Docker
 可用则运行，否则如实记录 Testcontainers 前置条件阻断。生产部署后核验临时 Provider 不可用不会新建或删除 generation，
 并保持服务健康与现有 Runtime 容器。
+
+### FR-337 FlowRun 供应任务耗尽后的受控恢复 — DONE
+
+依赖：`FR-336`。
+
+目标：
+
+- Worker 启动与周期恢复必须能识别已耗尽的 `PROVISION_FLOW_RUN_RUNTIME` 任务：仅当最后错误为
+  `SANDBOX_BACKEND_UNAVAILABLE`、FlowRun 仍可执行、没有 active generation，且同一持久 Sandbox／generation
+  仍为 `RUNNING`／`PROVISIONING` 意图时，恢复该任务。
+- 每个任务只允许一次额外重投递预算；在 task payload 中留下恢复标记，二次耗尽保持 `DEAD`，禁止无限重试。
+- 不恢复 `DRAFT`／`COMPLETED`／`CANCELLED` 或已物理删除的 FlowRun，不恢复确定性错误，也不将历史
+  `FAILED`／`DELETED` generation 伪装为安全的同 generation 重试。
+- 恢复必须使用 `SKIP LOCKED` 与既有 task row，清除 lease 并重置 attempts，但不新建物理 Sandbox、generation
+  或 OpenHands Conversation。
+
+验收：受影响 Python 文件可解析／静态检查、`git diff --check`、任务状态唯一性；定向 pytest 若本机 Docker
+可用则运行，否则如实记录 Testcontainers 前置条件阻断。生产部署后只读确认不存在符合条件的积压任务，
+且已删除 Run 的历史 `DEAD` task 未被复活。
+
+完成：恢复入口在 Worker 启动与周期维护中复用；每轮最多锁定并检查 100 个候选。它只将同一持久
+Sandbox／`PROVISIONING` generation 的明确 Provider 暂时不可用任务从 `DEAD` 受控重投递一次，保留
+物理资源和 generation，不创建新的 Runtime 或 Conversation。
 
 ### FR-00 架构、边界和实施顺序冻结 — DONE
 
@@ -4444,6 +4467,7 @@ contract、冻结策略与既有受控生命周期约束覆盖。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-12 | FR-337 | 受影响 Python Ruff format/check、`py_compile`、唯一 Alembic head、任务状态唯一性、`git diff --check`；FlowRun 供应任务耗尽恢复 3 条定向 pytest | PASS（静态）：Ruff、语法、唯一 Alembic head `0114_runtime_sandbox_fk`、任务状态唯一性与空白检查通过。三条回归已收集，但均在业务断言前因本机 Docker Unix socket 缺失、Testcontainers PostgreSQL 无法启动而阻断，未伪记为通过。恢复严格限定为仍存在且可执行的 FlowRun、无 active generation 的唯一 `STARTING` Runtime、唯一 `PROVISIONING` generation 与同代、保持 `RUNNING` 意图且最后错误为 `SANDBOX_BACKEND_UNAVAILABLE` 的 Sandbox；以 `SKIP LOCKED` 逐层锁定，最多一次将原任务由 `DEAD` 恢复为额外 20 次预算的 `RETRY`，不创建资源／generation／Conversation。 |
 | 2026-09-12 | FR-336 | 受影响 Python Ruff format/check、`py_compile`、严格 Pyright、唯一 Alembic head、`git diff --check`；FlowRun／Agent Workspace 初次供应的 Provider 503 → 同 generation 成功重试定向 pytest | PASS（静态）：Ruff、语法、Pyright `0 errors`、空白检查和唯一 Alembic head `0114_runtime_sandbox_fk` 通过。两条回归均已收集，但业务断言前因本机 Docker Unix socket 缺失、Testcontainers PostgreSQL 无法启动而阻断，未伪记为通过。FlowRun 现在只对持久 Runtime 的 `SANDBOX_BACKEND_UNAVAILABLE` 保留原 Sandbox／`PROVISIONING` generation；Agent Workspace 先持久化同一 Sandbox＋generation 意图，短暂失败保持 `STARTING` 并记录可恢复诊断，确定性 DomainError 仍使该资源／generation 收敛为删除／失败。远端部署必须确认现有 Runtime 不被重建，服务健康且无新的 generation churn。 |
 | 2026-09-12 | FR-335 | 受影响 Python Ruff format/check、`py_compile`、唯一 Alembic head、`git diff --check`；两个 reconcile generation-reference 定向 pytest；远端首次 migration 失败后的数据库／服务只读核验 | PASS（静态／失败保护）：Ruff、语法、空白检查和唯一 Alembic head `0114_runtime_sandbox_fk` 通过。两个回归已收集，但均在业务断言前因本机 Docker Unix socket 缺失、Testcontainers PostgreSQL 无法启动而阻断，未伪记为通过。首次远端 migration 在 Alembic 写入 34 字符 revision ID 时被生产 `alembic_version.version_num VARCHAR(32)` 拒绝；PostgreSQL 事务型 DDL 已完整回滚，版本仍为 `0113_task_retention`、目标 FK 尚未建立，既有 API/Provider/Worker/Stream API 未替换且保持健康。修复将 revision 缩至 23 字符；后续部署必须确认 migration 后两个 generation ledger 的悬空引用均为 0，且两个命名 FK 均为 `ON DELETE SET NULL`。 |
 | 2026-09-12 | FR-334 | 受影响 Python Ruff format/check、`py_compile`、唯一 Alembic head、`git diff --check`；replacement crash-takeover／duplicate-delivery／terminal-failure-isolation 定向 pytest | PASS（静态）：Ruff、语法、空白检查和唯一 Alembic head `0113_task_retention` 通过。新回归精确覆盖同一 task 的旧 durable lease 接管、不同 task 的 live lease no-op 与 terminal failure 不撤销另一 task lease。三条 pytest 已收集，但均在业务断言前因本机 Docker Unix socket 缺失、Testcontainers PostgreSQL 无法启动而阻断，未伪记为通过；远端发布不触发真实 Runtime replacement，以服务健康、无 replacement backlog 和现有 generation 账本保持收敛为验收。 |
