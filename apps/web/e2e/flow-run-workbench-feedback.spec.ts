@@ -465,6 +465,54 @@ test('an accepted legacy step recreates its missing downstream configuration wit
   await expect(page.getByRole('button', { name: '启动逐步运行 测试节点2' })).toBeVisible();
 });
 
+test('run rail keeps its controls fixed and pages records five at a time', async ({ page }) => {
+  const pagedNodeRuns = Array.from({ length: 6 }, (_, index) => ({
+    ...nodeRun,
+    id: `paged-node-run-${index + 1}`,
+    name: `分页记录 ${index + 1}`,
+    sequence_no: index + 1,
+    attempts: [{ ...attempt, id: `paged-attempt-${index + 1}`, node_run_id: `paged-node-run-${index + 1}` }],
+  }));
+  const currentRun = {
+    ...run,
+    node_runs: pagedNodeRuns,
+    progress: { accepted: 0, terminal: 0, active: pagedNodeRuns.length },
+  };
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    const respond = (body: unknown, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
+    if (path.endsWith('/auth/me')) return respond(authenticatedUser);
+    if (path === '/api/v1/flow-runs' && request.method() === 'GET') return respond([currentRun]);
+    if (path === '/api/v1/flows' && request.method() === 'GET') return respond([definition]);
+    if (path === `/api/v1/flow-runs/${run.id}` && request.method() === 'GET') return respond(currentRun);
+    if (path === `/api/v1/flows/${definition.id}` || path === '/api/v1/terminal-environments'
+      || path === '/api/v1/capabilities' || path === '/api/v1/capability-collections' || path === '/api/v1/model-providers') return respond([]);
+    if (path === `/api/v1/flow-runs/${run.id}/automatic-runs/summaries`) return respond([]);
+    return respond({ error: { code: 'RESOURCE_NOT_FOUND', message: `未配置测试路由：${path}`, details: {} } }, 404);
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: '流程运行', exact: true }).click();
+  await page.locator('.run-open').click();
+
+  const rail = page.locator('.flow-run-inner-rail');
+  const fixed = rail.locator('.run-rail-fixed');
+  const history = rail.locator('.run-history-scroll');
+  await expect(history).toHaveCSS('overflow-y', 'auto');
+  await expect(rail.locator('.node-record-list > article')).toHaveCount(5);
+  await expect(rail).toContainText('共 6 项，第 1 / 2 页');
+  await expect(rail.getByText('分页记录 6', { exact: true })).toHaveCount(0);
+  const fixedBox = await fixed.boundingBox();
+  await history.evaluate(element => { element.scrollTop = 100; });
+  expect(await fixed.boundingBox()).toEqual(fixedBox);
+
+  await rail.getByRole('button', { name: '下一页' }).click();
+  await expect(rail.locator('.node-record-list > article')).toHaveCount(1);
+  await expect(rail.getByText('分页记录 6', { exact: true })).toBeVisible();
+  await expect(rail).toContainText('共 6 项，第 2 / 2 页');
+});
+
 test('run projection stays neutral until record selection and automatic save reports its result', async ({ page }) => {
   let saveRequests = 0;
   let nodeCopyRequests = 0;
@@ -590,7 +638,7 @@ test('run projection stays neutral until record selection and automatic save rep
   await expect(graph.getByText('当前激活', { exact: true })).toHaveCount(0);
 
   await manualRecord.click();
-  await page.locator('.run-rail > h2').click();
+  await page.locator('.run-rail h2').click();
   await expect(page.locator('.node-record-list > article.active')).toHaveCount(0);
   await expect(graph.getByText('当前激活', { exact: true })).toHaveCount(0);
 

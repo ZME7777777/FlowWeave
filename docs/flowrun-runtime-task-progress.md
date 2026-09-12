@@ -112,6 +112,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-348 | 历史 Runtime 重建的冻结 Server 身份探针 | DONE | Runtime Provider 重建容器时按已验证 Environment Version 的冻结 OpenHands 身份探针，不再把全局当前版本错误套用于历史只读会话。 |
 | FR-349 | 备用模型供应商选择状态回显 | DONE | 空选择不再伪装为列表首个供应商，避免模型依赖菜单保持空白而无法加入备用顺序。 |
 | FR-350 | 备用模型优先级编辑分区 | DONE | 添加区与已选优先级列表分离，支持上下调整顺序，并统一保存语义。 |
+| FR-351 | FlowRun 侧栏记录区固定与分页 | DONE | 侧栏摘要、运行方式和操作栏固定；记录区独立滚动并以每页 5 条显示，移除操作栏下方的冗余说明。 |
 | OPS-01 | Docker rollback image / BuildKit cache 容量增长 | DONE | 建立带运行引用保护、dry-run 和显式确认的回收工具，并完成生产候选边界核验。 |
 | OPS-02 | Docker rollback image / BuildKit cache 容量增长 | DONE | 已按授权使用 OPS-03 tag 级路径回收，并完成生产不变量与入口验证。 |
 | OPS-03 | 多 rollback tag image 的安全回收 | DONE | 改为逐 tag、重查 Container 引用、不使用 `--force` 的回收路径。 |
@@ -361,6 +362,20 @@ Playwright Agent 工作台用例在 WebSocket 流恢复阶段超时，未将其�
 完成：上方添加区仅选择供应商与模型，再通过单一“添加备用模型”按钮加入下方优先级列表；列表按运行时尝试顺序展示，支持立即上下调整。模型的默认思考程度仍随所选模型保存，不增加额外配置负担。
 
 验收：Web TypeScript typecheck、ESLint、production build 与 `git diff --check`。
+
+### FR-351 FlowRun 侧栏记录区固定与分页 — DONE
+
+依赖：无（运行工作台可用性修复）。
+
+目标：
+
+- FlowRun 工作台左栏的运行摘要、运行方式切换和当前方式的操作栏必须固定在侧栏顶部；仅记录内容区域可独立滚动，不能再让整个侧栏连同操作栏滚走。
+- 逐步运行、连续运行和直接启动三种记录均每页显示 5 条；分页只收敛浏览器渲染窗口，不能改变现有 API、记录选择、Command/Control／Shift 批量选择、删除、复制或连续记录详情契约。
+- 移除操作栏下方仅重复说明多选、复制或启动方式的文字，保留简洁的记录类别标题和空态。
+
+完成：左栏拆分为固定 `run-rail-fixed` 与可收缩的记录面板；记录面板的内容区独立 `overflow:auto`，分页控件固定在其底部。三种模式共用每页 5 条的本地分页，切换模式回到第 1 页；已选记录若落在其他页面则自动定位到所属页。原有三条冗余操作说明均已删除；定时目录仅对当前页记录分组，既有选中、删除、复制、启动与详情请求不变。
+
+验收：Web TypeScript typecheck、ESLint、production build、`git diff --check`，以及本地 Vite 服务上的 FlowRun 侧栏定向 Playwright（固定区、独立滚动和第 6 条记录翻页显示）。
 
 ### OPS-01 Docker rollback image / BuildKit cache 容量治理 — DONE
 
@@ -4748,6 +4763,7 @@ contract、冻结策略与既有受控生命周期约束覆盖。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-12 | FR-351 | Web TypeScript typecheck、ESLint、production build、`git diff --check`；本地 Vite 上 FlowRun 侧栏定向 Playwright | PASS：运行摘要、模式切换和操作栏不再随记录滚动；记录内容在独立滚动区展示，三种模式共用每页 5 条的分页。定向浏览器回归确认第 6 条记录仅在“下一页”后渲染，固定区域在内容滚动后位置不变。三条操作说明均已移除。生产构建仅报告既有的大 chunk 提示。 |
 | 2026-09-12 | FR-342 | Web TypeScript typecheck、ESLint、production build、`git diff --check` | PASS（静态／构建）：根工作区仓库不再被前端的容器路径过滤排除；工作目录根及其子文件按最深包含仓库挂载 Git 历史。后端仓库发现与 `git_log` 已允许仓库根等于授权工作目录，故未改动 API 或授权边界。typecheck、lint、build 与空白检查通过；生产构建仅有既有的大 chunk 提示。 |
 | 2026-09-12 | FR-341 | Web TypeScript typecheck、ESLint、production build、`git diff --check` | PASS（静态／构建）：代码／纯文本预览具备与内容行高同步的行号 gutter；Diff 导航通过当前可视边界计算最小滚动位移，目标可见时保持当前位置，不可见时平滑移入，并以 1.6 秒琥珀色行级高亮反馈。Markdown 富文本和选择引用保持原行为。typecheck、lint、build 与空白检查通过；生产构建仅有既有的大 chunk 提示。 |
 | 2026-09-12 | FR-339 | Web TypeScript typecheck、ESLint、production build、`git diff --check`；当前源码 Vite 上 `product-flow.spec.ts` 目标 Playwright | PASS（静态／构建）：Diff 源文件导航只在目录分页逐层确认后才选中文件并请求预览，路径由已授权目录接口规范化，错误或已过期祖先会停止且不持续产生 404。typecheck、lint、build 与空白检查通过。目标 Playwright 已启动但在新增断言之前，登录后等待“Agent 会话”导航入口 120 秒超时；页面停留在登录页，未将其记为通过。 |
