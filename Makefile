@@ -67,7 +67,7 @@ e2e:
 	pnpm --filter @flowweave/web e2e
 
 infra-up: sandbox-images dependency-builder-image openhands-image
-	$(COMPOSE) up -d --build --force-recreate postgres migration runtime-provider api worker web
+	$(COMPOSE) up -d --build --force-recreate postgres migration runtime-provider api stream-api worker web
 
 # Rebuild every local image without cache, then recreate the complete stack.
 # Persistent database, artifact and workspace data are preserved.
@@ -76,8 +76,8 @@ rebuild-deploy:
 	docker build --no-cache -f infra/sandbox/javascript/Dockerfile -t flowweave-sandbox-javascript:1 .
 	docker build --no-cache -f infra/dependency-builder/Dockerfile -t flowweave-dependency-builder:1 .
 	docker build --no-cache -f infra/openhands/Dockerfile -t flowweave-openhands-runtime:1 .
-	$(COMPOSE) build --no-cache migration runtime-provider api worker web
-	$(COMPOSE) up -d --force-recreate --remove-orphans postgres workspace-init migration runtime-provider api worker web
+	$(COMPOSE) build --no-cache migration runtime-provider api stream-api worker web
+	$(COMPOSE) up -d --force-recreate --remove-orphans postgres workspace-init migration runtime-provider api stream-api worker web
 
 infra-down:
 	$(COMPOSE) down

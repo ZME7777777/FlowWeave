@@ -58,14 +58,16 @@ def published_ports(service: dict[str, Any]) -> list[dict[str, Any]]:
 
 def check_document(document: dict[str, Any]) -> None:
     services = mapping(document.get("services"), "services")
-    required = {"runtime-provider", "api", "worker"}
+    required = {"runtime-provider", "api", "stream-api", "worker"}
     if missing := required - services.keys():
         fail(f"missing services: {', '.join(sorted(missing))}")
 
     controller = mapping(services["runtime-provider"], "runtime-provider")
     api = mapping(services["api"], "api")
+    stream_api = mapping(services["stream-api"], "stream-api")
     worker = mapping(services["worker"], "worker")
     api_labels = mapping(api.get("labels", {}), "api labels")
+    stream_api_labels = mapping(stream_api.get("labels", {}), "stream-api labels")
     worker_labels = mapping(worker.get("labels", {}), "worker labels")
 
     for name, raw_service in services.items():
@@ -93,39 +95,47 @@ def check_document(document: dict[str, Any]) -> None:
         fail("runtime-provider must attach only to docker-control")
     if controller.get("ports") or controller.get("expose"):
         fail("runtime-provider must not publish or expose ports")
-    if "docker-control" not in network_names(api) or "docker-control" not in network_names(worker):
-        fail("api and worker must reach the controller only through docker-control")
+    if (
+        "docker-control" not in network_names(api)
+        or "docker-control" not in network_names(stream_api)
+        or "docker-control" not in network_names(worker)
+    ):
+        fail("api, stream-api, and worker must reach the controller through docker-control")
     forbidden_static_sandbox_networks = {
         name for name in networks if "dependency" in str(name) or "sandbox" in str(name)
     }
     if forbidden_static_sandbox_networks:
         fail("disposable sandboxes must not use static shared Compose networks")
-    allowed_control_clients = {"runtime-provider", "api", "worker"}
+    allowed_control_clients = {"runtime-provider", "api", "stream-api", "worker"}
     attached_to_control = {
         str(name)
         for name, service in services.items()
         if "docker-control" in network_names(mapping(service, str(name)))
     }
     if attached_to_control != allowed_control_clients:
-        fail("only runtime-provider, api, and worker may attach to docker-control")
-    for name, client in (("api", api), ("worker", worker)):
+        fail("only runtime-provider, api, stream-api, and worker may attach to docker-control")
+    for name, client in (("api", api), ("stream-api", stream_api), ("worker", worker)):
         if str(client.get("user")) != "10001:10001":
             fail(f"{name} must run explicitly as uid/gid 10001")
     if api_labels.get("flowweave.runtime-client") != "true":
         fail("api must be explicitly marked as a Runtime network client")
     if api_labels.get("flowweave.runtime-client-role") != "api":
         fail("api Runtime client role label is missing")
+    if stream_api_labels.get("flowweave.runtime-client") != "true":
+        fail("stream-api must be explicitly marked as a Runtime network client")
+    if stream_api_labels.get("flowweave.runtime-client-role") != "api":
+        fail("stream-api Runtime client role label is missing")
     if worker_labels.get("flowweave.runtime-client") != "true":
         fail("worker must be explicitly marked as a Runtime network client")
     if worker_labels.get("flowweave.runtime-client-role") != "worker":
         fail("worker Runtime client role label is missing")
     for name, raw_service in services.items():
-        if str(name) in {"api", "worker"}:
+        if str(name) in {"api", "stream-api", "worker"}:
             continue
         service = mapping(raw_service, str(name))
         labels = mapping(service.get("labels", {}), f"{name} labels")
         if "flowweave.runtime-client" in labels or "flowweave.runtime-client-role" in labels:
-            fail("only api and worker may carry Runtime client labels")
+            fail("only api, stream-api, and worker may carry Runtime client labels")
 
     if str(controller.get("user")) != "10001:10001":
         fail("runtime-provider must run explicitly as uid/gid 10001")
@@ -152,13 +162,18 @@ def check_document(document: dict[str, Any]) -> None:
 
     controller_env = environment(controller)
     api_env = environment(api)
+    stream_api_env = environment(stream_api)
     worker_env = environment(worker)
     if controller_env.get("DOCKER_CONTROLLER_MODE") != "local":
         fail("runtime-provider must use local Docker control mode")
     runtime_network_mode = controller_env.get("SANDBOX_RUNTIME_NETWORK_MODE", "")
     if runtime_network_mode not in {"isolated", "egress"}:
         fail("runtime-provider Runtime network mode must be isolated or egress")
-    for name, client_env in (("api", api_env), ("worker", worker_env)):
+    for name, client_env in (
+        ("api", api_env),
+        ("stream-api", stream_api_env),
+        ("worker", worker_env),
+    ):
         if client_env.get("DOCKER_CONTROLLER_MODE") != "remote":
             fail(f"{name} must use remote Docker control mode")
         if client_env.get("DOCKER_CONTROLLER_URL") != "http://runtime-provider:8090":
