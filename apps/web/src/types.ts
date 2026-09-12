@@ -516,6 +516,15 @@ export interface OpenHandsConversationEvent {
       status?: string;
       outcome?: { is_error?: boolean; content?: unknown };
     };
+    /** Safe projection of the formal OpenHands InvokeSkill lifecycle. */
+    runtime_skill?: {
+      phase: 'INVOKED' | 'LOADED' | 'ERROR';
+      skill_name: string;
+      action_event_id: string;
+      observation_event_id?: string;
+      tool_call_id?: string;
+      llm_response_id?: string;
+    };
     display_content?: string;
     attachments?: AgentAttachment[];
     conversation_references?: AgentConversationReference[];

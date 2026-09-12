@@ -696,10 +696,13 @@ test('top-level Agent workspace creates a direct conversation and restores its U
         ] : conversations.length ? [
           { id: 'user-request', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '检查工作目录', timestamp: '2026-08-26T10:00:00Z' } },
           { id: 'progress-note', event_type: 'THOUGHT', payload: { source: 'agent', parent_id: 'user-request', event_name: 'ThinkAction', content: '我先确认当前工作目录，再根据现有结构判断后续改动范围。', thought: '我先确认当前工作目录，再根据现有结构判断后续改动范围。', timestamp: '2026-08-26T10:00:01Z' } },
+          { id: 'progress-note-observation', event_type: 'TOOL_RESULT', payload: { source: 'environment', parent_id: 'progress-note', event_name: 'ThinkObservation', content: 'Your thought has been logged.', timestamp: '2026-08-26T10:00:01.100Z' } },
           { id: 'tool-request', event_type: 'TOOL_CALL', payload: { parent_id: 'progress-note', action_id: 'tool-request', tool_call_id: 'terminal-call', tool_name: 'terminal', event_name: 'TerminalAction', content: '我先检查当前工作目录。', thought: '我先检查当前工作目录。', summary: '检查当前工作目录', details: { command: 'pwd' }, timestamp: '2026-08-26T10:00:02Z' } },
           { id: 'tool-result', event_type: 'TOOL_RESULT', payload: { parent_id: 'unrelated-file-action', action_id: 'tool-request', tool_call_id: 'terminal-call', tool_name: 'terminal', event_name: 'TerminalObservation', content: '/workspace', details: { command: 'pwd', exit_code: 0, is_error: false }, timestamp: '2026-08-26T10:00:03Z' } },
           { id: 'file-action', event_type: 'TOOL_CALL', payload: { parent_id: 'tool-result', action_id: 'file-action', tool_call_id: 'file-call', tool_name: 'file_editor', event_name: 'FileEditorAction', summary: '更新运行配置', details: { command: 'str_replace', path: '/runtime/workspace/project/src/config.ts', old_str: 'const mode = "old"', new_str: 'const mode = "new"' }, timestamp: '2026-08-26T10:00:03.200Z' } },
           { id: 'file-result', event_type: 'TOOL_RESULT', payload: { parent_id: 'file-action', action_id: 'file-action', tool_call_id: 'file-call', tool_name: 'file_editor', event_name: 'FileEditorObservation', content: 'The file was edited successfully.', details: { command: 'str_replace', path: '/runtime/workspace/project/src/config.ts', is_error: false }, timestamp: '2026-08-26T10:00:03.500Z' } },
+          { id: 'skill-action', event_type: 'TOOL_CALL', payload: { parent_id: 'file-result', action_id: 'skill-action', tool_call_id: 'skill-call', tool_name: 'invoke_skill', event_name: 'InvokeSkillAction', details: { name: 'collect-app-exception-logs' }, runtime_skill: { phase: 'INVOKED', skill_name: 'collect-app-exception-logs', action_event_id: 'skill-action', tool_call_id: 'skill-call' }, timestamp: '2026-08-26T10:00:03.600Z' } },
+          { id: 'skill-result', event_type: 'TOOL_RESULT', payload: { parent_id: 'skill-action', action_id: 'skill-action', tool_call_id: 'skill-call', tool_name: 'invoke_skill', event_name: 'InvokeSkillObservation', content: 'Skill instructions should not render as a generic tool result.', details: { skill_name: 'collect-app-exception-logs', is_error: false }, runtime_skill: { phase: 'LOADED', skill_name: 'collect-app-exception-logs', action_event_id: 'skill-action', observation_event_id: 'skill-result', tool_call_id: 'skill-call' }, timestamp: '2026-08-26T10:00:03.650Z' } },
           { id: 'failed-command-action', event_type: 'TOOL_CALL', payload: { parent_id: 'file-result', action_id: 'failed-command-action', tool_call_id: 'failed-command-call', tool_name: 'terminal', event_name: 'TerminalAction', llm_response_id: 'response-1', summary: '验证失败命令', details: { command: 'false' }, timestamp: '2026-08-26T10:00:03.700Z' } },
           { id: 'failed-command-result', event_type: 'TOOL_RESULT', payload: { parent_id: 'failed-command-action', action_id: 'failed-command-action', tool_call_id: 'failed-command-call', tool_name: 'terminal', event_name: 'TerminalObservation', content: 'command failed', details: { command: 'false', exit_code: 1, is_error: false }, timestamp: '2026-08-26T10:00:03.800Z' } },
           { id: 'subagent-action', event_type: 'TOOL_CALL', payload: { parent_id: 'failed-command-result', action_id: 'subagent-action', tool_call_id: 'subagent-call', tool_name: 'task', event_name: 'TaskAction', runtime_task: { phase: 'REQUESTED', action_event_id: 'subagent-action', tool_call_id: 'subagent-call', subagent_type: 'reviewer', description: '检查子任务边界' }, timestamp: '2026-08-26T10:00:03.900Z' } },
@@ -1033,7 +1036,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     return event.defaultPrevented;
   });
   expect(assistantSelection).toBe(false);
-  await expect(completedProcess).toHaveJSProperty('open', false);
+  await expect(completedProcess).toHaveJSProperty('open', true);
   await expect(completedProcess.getByText('耗时 2分钟19秒')).toBeVisible();
   await expect(completedTurn).toHaveJSProperty('nodeName', 'SECTION');
   await expect.poll(() => completedTurn.evaluate(turn => {
@@ -1042,14 +1045,12 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     return Boolean(process && reply && (process.compareDocumentPosition(reply) & Node.DOCUMENT_POSITION_FOLLOWING));
   })).toBe(true);
   await expect(page.getByText('工作区已就绪。')).toHaveCount(1);
-  await completedProcess.getByText('耗时 2分钟19秒').click();
   const terminalDetail = completedProcess.locator('.conversation-tool-detail').first();
   await expect(terminalDetail).toHaveCount(1);
   await expect(terminalDetail.locator(':scope > summary')).toHaveAccessibleName('查看执行详情：已运行 pwd');
   await expect(terminalDetail.locator(':scope > summary')).toContainText('已运行 pwd');
   await expect(terminalDetail.locator(':scope > summary')).not.toContainText('终端 · 已完成');
-  await expect(terminalDetail).toHaveJSProperty('open', false);
-  await terminalDetail.locator(':scope > summary').click();
+  await expect(terminalDetail).toHaveJSProperty('open', true);
   await expect(terminalDetail.getByText('$ pwd', { exact: true })).toBeVisible();
   await expect(terminalDetail.getByText('/workspace', { exact: true })).toBeVisible();
   await expect(terminalDetail.getByText('退出码 0', { exact: true })).toBeVisible();
@@ -1058,8 +1059,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(fileDetail.locator(':scope > summary')).toHaveAccessibleName('查看执行详情：已编辑 工作区/src/config.ts');
   await expect(fileDetail.locator(':scope > summary')).toContainText('已编辑 工作区/src/config.ts');
   await expect(fileDetail.locator(':scope > summary')).not.toContainText('文件编辑器 · 已完成');
-  await expect(fileDetail).toHaveJSProperty('open', false);
-  await fileDetail.locator(':scope > summary').click();
+  await expect(fileDetail).toHaveJSProperty('open', true);
   await expect(fileDetail.getByText('const mode = "old"', { exact: true })).toBeVisible();
   await expect(fileDetail.getByText('const mode = "new"', { exact: true })).toBeVisible();
   await expect(fileDetail.getByText('The file was edited successfully.', { exact: true })).toBeVisible();
@@ -1074,6 +1074,11 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   ]);
   expect(workspaceFilePreviewRequests.at(-1)).toBe('/runtime/workspace/project/src/config.ts');
   await expect(completedProcess.locator('.conversation-activity-row.tool')).toHaveCount(5);
+  const skillLoad = completedProcess.getByLabel('加载 Skill：collect-app-exception-logs');
+  await expect(skillLoad).toContainText('加载 Skill');
+  await expect(skillLoad).toContainText('已加载');
+  await expect(skillLoad).not.toContainText('Skill instructions should not render as a generic tool result.');
+  await expect(completedProcess.getByText('Think · 已完成', { exact: true })).toHaveCount(0);
   await expect(completedProcess.getByRole('button', { name: '查看执行详情：运行失败 false' })).toBeVisible();
   await expect(completedProcess.getByText('子智能体 reviewer · 检查子任务边界')).toBeVisible();
   const messageRuler = page.getByRole('navigation', { name: '用户消息导航' });
@@ -1119,19 +1124,12 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   const finishTurn = page.locator('.conversation-turn').filter({ hasText: '任务跟踪已完成。' });
   await expect(finishTurn.locator('.conversation-message.assistant')).toHaveCount(1);
   await expect(finishTurn.getByText('耗时 3秒')).toBeVisible();
-  await finishTurn.getByText('耗时 3秒').click();
-  const trackerDetail = finishTurn.locator('.conversation-tool-detail');
-  await expect(trackerDetail.locator(':scope > summary')).toHaveAccessibleName('查看执行详情：任务列表已更新');
-  await expect(trackerDetail.locator(':scope > summary')).toContainText('任务列表已更新');
-  await expect(trackerDetail.locator(':scope > summary')).not.toContainText('任务跟踪 · 已完成');
-  await trackerDetail.locator(':scope > summary').click();
-  await expect(trackerDetail.getByText('已更新的计划')).toBeVisible();
-  await expect(trackerDetail.getByText('检查构建', { exact: true })).toBeVisible();
-  await expect(trackerDetail.getByText('等待构建完成后核对结果。')).toHaveCount(0);
-  await trackerDetail.getByText('检查构建', { exact: true }).click();
-  await expect(trackerDetail.getByText('等待构建完成后核对结果。')).toBeVisible();
-  await expect(trackerDetail.getByText('原始操作')).toHaveCount(0);
-  await expect(trackerDetail.getByText('结果信息')).toHaveCount(0);
+  const trackerCard = finishTurn.getByLabel('任务列表：任务列表已更新');
+  await expect(trackerCard).toContainText('任务清单');
+  await expect(trackerCard.getByText('检查构建', { exact: true })).toBeVisible();
+  await expect(trackerCard.getByText('等待构建完成后核对结果。')).toHaveCount(0);
+  await trackerCard.getByText('检查构建', { exact: true }).click();
+  await expect(trackerCard.getByText('等待构建完成后核对结果。')).toBeVisible();
   await expect(finishTurn.getByText('我先把执行步骤整理成任务列表。')).toBeVisible();
   await expect(finishTurn.getByText('任务跟踪已完成。')).toHaveCount(1);
   const failureTurn = page.locator('.conversation-turn').filter({ hasText: '模型服务暂不可用' });
@@ -1161,17 +1159,13 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.getByRole('heading', { name: 'Fork · 检查工作目录' })).toBeVisible();
   await expect(page.getByText('耗时 2分钟19秒')).toBeVisible();
   await expect(page.getByText('TerminalAction')).toBeHidden();
-  await page.getByText('耗时 2分钟19秒').click();
-  const initialOperationGroup = page.getByRole('button', { name: '查看操作批次：已编辑 1 个文件，并运行 1 条命令' });
-  await expect(initialOperationGroup).toBeVisible();
-  await initialOperationGroup.click();
   await expect(page.getByRole('button', { name: '查看执行详情：已运行 pwd' })).toBeVisible();
-  await expect(page.locator('.conversation-activity-row.thought').filter({ hasText: '我先确认当前工作目录，再根据现有结构判断后续改动范围。' })).toBeVisible();
+  await expect(page.locator('.conversation-activity-row.thought').filter({ hasText: '我先确认当前工作目录，再根据现有结构判断后续改动范围。' })).toHaveCount(0);
   await expect(page.getByText('我先检查当前工作目录。')).toBeVisible();
   await expect(page.getByRole('button', { name: '查看执行详情：已编辑 工作区/src/config.ts' })).toBeVisible();
   await expect(page.getByRole('button', { name: '查看执行详情：运行失败 false' })).toBeVisible();
   await expect(page.getByText('子智能体 reviewer · 检查子任务边界')).toBeVisible();
-  await expect(initialOperationGroup).toContainText('2 项原生操作');
+  await expect(page.locator('.conversation-operation-group')).toHaveCount(0);
   await expect(page.getByText('TerminalAction')).toHaveCount(0);
   await expect(page.getByText('STATE')).not.toBeVisible();
   await expect(page.getByText('当前供应商：已测试模型')).toBeVisible();
@@ -1247,11 +1241,12 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     type: 'event',
     event: { id: 'live-tool-next', event_type: 'TOOL_CALL', payload: { parent_id: 'live-tool', action_id: 'live-tool-next', tool_call_id: 'live-next-call', llm_response_id: 'live-operation-batch-1', tool_name: 'terminal', event_name: 'TerminalAction', details: { command: 'git status --short' }, timestamp: new Date().toISOString() } },
   }));
-  const liveOperationBatch = activeProcess.locator('.conversation-operation-group');
-  await expect(liveOperationBatch).toBeVisible();
-  await expect(liveOperationBatch.getByText('正在运行 git status --short')).toBeVisible();
-  await expect(liveOperationBatch.getByText('0 / 2 已完成')).toBeVisible();
-  await expect(liveOperationBatch).toHaveAttribute('open', '');
+  const liveCommandGroup = activeProcess.locator('.conversation-command-group');
+  await expect(liveCommandGroup).toBeVisible();
+  await expect(liveCommandGroup.getByText('正在运行 2 条命令')).toBeVisible();
+  await expect(liveCommandGroup.getByText('0 / 2 已完成')).toBeVisible();
+  await expect(liveCommandGroup).toHaveAttribute('open', '');
+  await expect(liveCommandGroup.getByText('正在运行 git status --short')).toBeVisible();
   await expect(page.locator('.conversation-turn-status')).toHaveText(/正在后台执行命令/);
   await expect(activeProcess.getByText('正在核对上下文。')).toHaveCount(0);
   agentStream!.send(JSON.stringify({
@@ -1279,7 +1274,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await taskPlan.hover();
   await expect(taskPlan).toHaveAttribute('open', '');
   await expect(taskPlan.locator('[data-current-task=true]')).toContainText('验证提交结果');
-  await expect(activeProcess.locator('.conversation-activity-stage').filter({ hasText: '验证提交结果' })).toContainText('阶段');
+  await expect(activeProcess.locator('.conversation-activity-stage')).toHaveCount(0);
   await expect(taskPlan.getByText('正在等待命令结果。')).toBeVisible();
   await page.locator('.agent-workbench-header').hover();
   await expect(taskPlan).not.toHaveAttribute('open', '');
@@ -1287,17 +1282,18 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     type: 'event',
     event: { id: 'live-tool-result', event_type: 'TOOL_RESULT', payload: { parent_id: 'live-tool', action_id: 'live-tool', tool_call_id: 'live-call', tool_name: 'terminal', event_name: 'TerminalObservation', content: '/runtime/workspace/project', details: { command: 'pwd', exit_code: 0, is_error: false }, timestamp: new Date().toISOString() } },
   }));
-  await expect(liveOperationBatch.getByText('正在运行 git status --short')).toBeVisible();
-  await expect(liveOperationBatch.getByText('1 / 2 已完成')).toBeVisible();
+  await expect(liveCommandGroup.getByText('正在运行 2 条命令')).toBeVisible();
+  await expect(liveCommandGroup.getByText('1 / 2 已完成')).toBeVisible();
   agentStream!.send(JSON.stringify({
     type: 'event',
     event: { id: 'live-tool-next-result', event_type: 'TOOL_RESULT', payload: { parent_id: 'live-tool-next', action_id: 'live-tool-next', tool_call_id: 'live-next-call', tool_name: 'terminal', event_name: 'TerminalObservation', details: { command: 'git status --short', exit_code: 0, is_error: false }, timestamp: new Date().toISOString() } },
   }));
-  await expect(liveOperationBatch.getByText('已运行 2 条命令')).toBeVisible();
-  await expect(liveOperationBatch).not.toHaveAttribute('open', '');
-  await liveOperationBatch.locator(':scope > summary').click();
-  await expect(liveOperationBatch).toHaveAttribute('open', '');
-  await expect(activeProcess.getByRole('button', { name: '查看执行详情：已运行 pwd' })).toBeVisible();
+  await expect(liveCommandGroup.getByText('已运行 2 条命令')).toBeVisible();
+  await expect(liveCommandGroup).not.toHaveAttribute('open', '');
+  await liveCommandGroup.locator(':scope > summary').click();
+  await expect(liveCommandGroup).toHaveAttribute('open', '');
+  await expect(liveCommandGroup.getByRole('button', { name: '查看执行详情：已运行 git status --short' })).toBeVisible();
+  await expect(liveCommandGroup.getByRole('button', { name: '查看执行详情：已运行 pwd' })).toBeVisible();
   await expect(page.locator('.conversation-turn-status')).toHaveText('OpenHands 会话连接正常，等待响应');
   await expect(activeProcess.locator('.conversation-activity-row.tool')).toHaveCount(3);
   await composer.fill('第一条排队消息');
@@ -1315,8 +1311,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(queuedMessage.getByText('调整方向的排队消息')).toHaveCount(0);
   await expect.poll(() => sentMessages).toBe(2);
   const liveToolDetail = activeProcess.locator('.conversation-tool-detail').filter({ hasText: '已运行 pwd' });
-  await expect(liveToolDetail).toHaveJSProperty('open', false);
-  await liveToolDetail.locator(':scope > summary').click();
+  await expect(liveToolDetail).toHaveJSProperty('open', true);
   await expect(liveToolDetail.getByText('/runtime/workspace/project', { exact: true })).toBeVisible();
   await expect(page.locator('.agent-composer-actions .agent-send')).toHaveCount(1);
   await page.getByRole('button', { name: '暂停当前 Agent' }).click();
@@ -1349,7 +1344,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.getByText(/最终回复第 1 段/)).toHaveCount(1);
   await expect(page.getByRole('button', { name: '发送消息' })).toBeVisible();
   await expect(activeProcess.getByText('分析中', { exact: true })).toHaveCount(0);
-  await expect(activeProcess).toHaveJSProperty('open', false);
+  await expect(activeProcess).toHaveJSProperty('open', true);
   await expect(page.locator('.conversation-turn-status')).toHaveCount(0);
   await expect(page.getByLabel('会话实时状态')).toHaveCount(0);
   const completedViewport = await page.locator('.conversation-turn').last().evaluate(turn => {
@@ -1371,7 +1366,6 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await page.getByRole('button', { name: '跳转到最新回复' }).click();
   await expect.poll(() => page.locator('.conversation-surface').evaluate(surface => surface.scrollHeight - surface.scrollTop - surface.clientHeight)).toBeLessThanOrEqual(16);
   await expect(page.getByRole('button', { name: '跳转到最新回复' })).toHaveCount(0);
-  await page.locator('.conversation-turn').last().locator('.conversation-activity-group > summary').click();
   await expect(page.getByText('核对已经完成，下面给出最终结果。')).toBeVisible();
   // A Runtime can return to native idle after an abnormal main-loop exit
   // without persisting a terminal event. The browser must not leave the

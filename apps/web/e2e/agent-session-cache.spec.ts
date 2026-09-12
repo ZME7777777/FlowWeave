@@ -94,15 +94,11 @@ test('Agent session reuses a validated in-tab branch and refreshes through a bou
   await expect.poll(() => hydrationRequests).toBe(1);
   expect(headRequests).toBe(0);
 
-  // The complete EventLog remains in memory, while costly tool output is not
-  // concatenated or painted until the user asks for this one tool's detail.
+  // The complete EventLog remains in memory. Completed activity, including
+  // each tool's output, is immediately visible after hydration.
   const firstActivity = page.locator('.conversation-activity-group').first();
-  await expect(firstActivity).not.toHaveAttribute('open', '');
-  await firstActivity.locator(':scope > summary').click();
-  await firstActivity.getByLabel(/查看执行详情/).click();
-  const toolOutput = firstActivity.getByRole('button', { name: '查看详情与输出' });
-  await expect(toolOutput).toBeVisible();
-  await toolOutput.click();
+  await expect(firstActivity).toHaveAttribute('open', '');
+  await expect(firstActivity.locator('.conversation-tool-detail-panel')).toBeVisible();
   await expect(firstActivity.locator('.conversation-tool-detail-panel')).toContainText('x'.repeat(100));
 
   await page.getByRole('button', { name: '缓存会话 B', exact: true }).click();

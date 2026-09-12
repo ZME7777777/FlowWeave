@@ -1,4 +1,4 @@
-import { Check, ChevronDown, ChevronRight, CircleAlert, Copy, ExternalLink, FileText, GitFork, Link, LoaderCircle, PanelRightOpen, Pencil, Quote, Sparkles, SquareTerminal, Wrench } from 'lucide-react';
+import { BookOpen, Check, ChevronDown, ChevronRight, CircleAlert, ClipboardList, Copy, ExternalLink, FileText, GitFork, Link, LoaderCircle, PanelRightOpen, Pencil, Quote, Sparkles, SquareTerminal, Wrench } from 'lucide-react';
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type RefObject } from 'react';
 import type { AgentActivitySummary, AgentAttachment, AgentConversationReference, AgentWorkspaceReference, OpenHandsConversationEvent, RuntimeTaskControlSnapshot } from '../types';
 import { SubagentAvatar } from './SubagentAvatar';
@@ -39,6 +39,15 @@ interface ActivityEntry {
   action?: Item;
   results: Item[];
 }
+
+interface CommandGroup {
+  id: string;
+  entries: ActivityEntry[];
+}
+
+type ActivityRow =
+  | { kind: 'entry'; entry: ActivityEntry }
+  | { kind: 'command-group'; group: CommandGroup };
 
 type TaskListStatus = 'todo' | 'in_progress' | 'done';
 
@@ -313,10 +322,17 @@ function itemsFor(event: OpenHandsConversationEvent): Item[] {
       : content;
     return [{ event, kind: isUser ? 'user' : 'assistant', title: '', content: isUser ? displayContent : content }];
   }
+  // Think is a native bookkeeping tool. Its content is already superseded by
+  // the user-facing commentary attached to the following formal actions, so
+  // keep it in the event log without rendering a separate Think card.
+  if (event.event_type === 'THOUGHT' && eventName === 'ThinkAction') return [];
   if (event.event_type === 'THOUGHT') return [{ event, kind: 'thought', title: '分析', content: thought || content }];
   if (event.event_type === 'CONDENSATION_REQUESTED') return [{ event, kind: 'condensation', title: '正在自动压缩上下文', content: '' }];
   if (event.event_type === 'CONDENSATION_COMPLETED') return [{ event, kind: 'condensation', title: '已自动压缩上下文', content: '' }];
   if (event.event_type === 'TOOL_CALL') return [{ event, kind: 'tool', title: eventName, content: thought || content }];
+  // Its native observation only confirms that text was logged, so rendering it
+  // as a generic tool result creates a redundant "Think · 已完成" row.
+  if (event.event_type === 'TOOL_RESULT' && eventName === 'ThinkObservation') return [];
   if (event.event_type === 'TOOL_RESULT') return [{ event, kind: 'tool', title: eventName, content }];
   if (event.event_type === 'ERROR') return [{ event, kind: 'error', title: '执行遇到问题', content }];
   if (event.event_type === 'COMPLETED') {
@@ -511,6 +527,49 @@ function groupedActivities(items: Item[]): ActivityEntry[] {
   return entries;
 }
 
+function isTerminalEntry(entry: ActivityEntry): boolean {
+  return entry.action?.kind === 'tool'
+    && entry.action.event.event_type === 'TOOL_CALL'
+    && entry.action.event.payload.event_name === 'TerminalAction';
+}
+
+function commandEntriesAreRelated(previous: ActivityEntry, next: ActivityEntry): boolean {
+  const previousAction = previous.action;
+  const nextAction = next.action;
+  if (!previousAction || !nextAction) return false;
+
+  const previousResponseId = detailText(previousAction.event.payload.llm_response_id);
+  const nextResponseId = detailText(nextAction.event.payload.llm_response_id);
+  if (previousResponseId && previousResponseId === nextResponseId) return true;
+
+  const parentId = detailText(nextAction.event.payload.parent_id);
+  if (!parentId) return false;
+  return [previousAction.event.id, ...previous.results.map(result => result.event.id)].includes(parentId);
+}
+
+function activityRows(entries: ActivityEntry[]): ActivityRow[] {
+  const rows: ActivityRow[] = [];
+  for (let index = 0; index < entries.length;) {
+    const entry = entries[index];
+    if (!isTerminalEntry(entry)) {
+      rows.push({ kind: 'entry', entry });
+      index += 1;
+      continue;
+    }
+
+    const grouped = [entry];
+    let cursor = index + 1;
+    while (cursor < entries.length && isTerminalEntry(entries[cursor]) && commandEntriesAreRelated(grouped.at(-1)!, entries[cursor])) {
+      grouped.push(entries[cursor]);
+      cursor += 1;
+    }
+    if (grouped.length === 1) rows.push({ kind: 'entry', entry });
+    else rows.push({ kind: 'command-group', group: { id: grouped.map(value => value.id).join(':'), entries: grouped } });
+    index = cursor;
+  }
+  return rows;
+}
+
 interface ActivityPresentation {
   title: string;
   status: string;
@@ -522,134 +581,6 @@ interface ActivityPresentation {
   actionDetails?: Record<string, unknown>;
   resultDetails?: Record<string, unknown>;
   resultTimestamp?: string;
-}
-
-interface ActivityStage {
-  id: string;
-  title?: string;
-  entries: ActivityEntry[];
-}
-
-interface ActivityOperationGroup {
-  id: string;
-  entries: ActivityEntry[];
-}
-
-type ActivityStageRow =
-  | { kind: 'entry'; entry: ActivityEntry }
-  | { kind: 'operation-group'; group: ActivityOperationGroup };
-
-function taskBoundaryEventIds(entries: ActivityEntry[]): ReadonlySet<string> {
-  const ids = new Set<string>();
-  const parentIds = new Map<string, string>();
-  for (const entry of entries) {
-    for (const item of [entry.action ?? entry.item, ...entry.results]) {
-      const parentId = detailText(item.event.payload.parent_id);
-      if (parentId) parentIds.set(item.event.id, parentId);
-      if (item.event.payload.runtime_task) ids.add(item.event.id);
-    }
-  }
-  for (const eventId of parentIds.keys()) {
-    let current = parentIds.get(eventId);
-    const seen = new Set<string>();
-    while (current && !seen.has(current)) {
-      if (ids.has(current)) { ids.add(eventId); break; }
-      seen.add(current);
-      current = parentIds.get(current);
-    }
-  }
-  return ids;
-}
-
-function hasFailedOperationResult(entry: ActivityEntry): boolean {
-  return entry.results.some(result => {
-    const details = result.event.payload.details;
-    if (details?.is_error === true) return true;
-    const exitCode = details?.exit_code;
-    return typeof exitCode === 'number' && Number.isFinite(exitCode) && exitCode !== 0;
-  });
-}
-
-function isAggregateableOperation(entry: ActivityEntry, taskBoundaryIds: ReadonlySet<string>): boolean {
-  const item = entry.action ?? entry.item;
-  if (item.kind !== 'tool' || item.event.event_type !== 'TOOL_CALL') return false;
-  if (item.event.payload.runtime_task || taskBoundaryIds.has(item.event.id)) return false;
-  if (hasFailedOperationResult(entry)) return false;
-  const risk = String(item.event.payload.security_risk ?? 'UNKNOWN');
-  if (risk === 'MEDIUM' || risk === 'HIGH') return false;
-  return ['TerminalAction', 'FileEditorAction'].includes(String(item.event.payload.event_name ?? ''));
-}
-
-function operationFollows(previous: ActivityEntry, next: ActivityEntry): boolean {
-  const parentId = detailText((next.action ?? next.item).event.payload.parent_id);
-  if (!parentId) return false;
-  if (parentId === (previous.action ?? previous.item).event.id) return true;
-  return previous.results.some(result => result.event.id === parentId);
-}
-
-function sameOperationBatch(previous: ActivityEntry, next: ActivityEntry): boolean {
-  const previousItem = previous.action ?? previous.item;
-  const nextItem = next.action ?? next.item;
-  const previousResponse = detailText(previousItem.event.payload.llm_response_id);
-  const nextResponse = detailText(nextItem.event.payload.llm_response_id);
-  return Boolean(previousResponse && previousResponse === nextResponse) || operationFollows(previous, next);
-}
-
-function activityStageRows(entries: ActivityEntry[]): ActivityStageRow[] {
-  const rows: ActivityStageRow[] = [];
-  const taskBoundaryIds = taskBoundaryEventIds(entries);
-  for (let index = 0; index < entries.length;) {
-    const first = entries[index];
-    if (!isAggregateableOperation(first, taskBoundaryIds)) {
-      rows.push({ kind: 'entry', entry: first });
-      index += 1;
-      continue;
-    }
-    const group = [first];
-    let cursor = index + 1;
-    while (cursor < entries.length && isAggregateableOperation(entries[cursor], taskBoundaryIds) && sameOperationBatch(group.at(-1)!, entries[cursor])) {
-      group.push(entries[cursor]);
-      cursor += 1;
-    }
-    if (group.length < 2) rows.push({ kind: 'entry', entry: first });
-    else rows.push({ kind: 'operation-group', group: { id: group.map(entry => entry.id).join(':'), entries: group } });
-    index = group.length < 2 ? index + 1 : cursor;
-  }
-  return rows;
-}
-
-function operationGroupSummary(entries: ActivityEntry[]): string {
-  let read = 0;
-  let created = 0;
-  let edited = 0;
-  let commands = 0;
-  for (const entry of entries) {
-    const item = entry.action ?? entry.item;
-    const eventName = String(item.event.payload.event_name ?? '');
-    if (eventName === 'TerminalAction') { commands += 1; continue; }
-    const command = detailContent(item.event.payload.details?.command).toLowerCase();
-    if (command === 'view') read += 1;
-    else if (command === 'create' || command === 'write') created += 1;
-    else edited += 1;
-  }
-  const parts = [
-    read ? `已读取 ${read} 个文件` : '',
-    created ? `已创建 ${created} 个文件` : '',
-    edited ? `已编辑 ${edited} 个文件` : '',
-    commands ? `已运行 ${commands} 条命令` : '',
-  ].filter(Boolean);
-  return parts.join('，并') || `已完成 ${entries.length} 项操作`;
-}
-
-function operationGroupIsComplete(entries: ActivityEntry[]): boolean {
-  return entries.every(entry => entry.results.length > 0);
-}
-
-function latestRunningOperation(entries: ActivityEntry[], workspaceRoot?: string | null): string {
-  const runningEntry = [...entries].reverse().find(entry => entry.results.length === 0);
-  return runningEntry
-    ? activityPresentation(runningEntry, true, workspaceRoot).title
-    : operationGroupSummary(entries);
 }
 
 function activityPresentation(entry: ActivityEntry, active: boolean, workspaceRoot?: string | null): ActivityPresentation {
@@ -738,49 +669,13 @@ function activityPresentation(entry: ActivityEntry, active: boolean, workspaceRo
   };
 }
 
-function activityStageTitle(entry: ActivityEntry): string | undefined {
-  const item = entry.action ?? entry.item;
-  const eventName = String(item.event.payload.event_name ?? '');
-  if (eventName !== 'TaskTrackerAction' && eventName !== 'TaskTrackerObservation') return undefined;
-  const snapshot = taskListSnapshot(
-    item.event.payload.details ?? {},
-    entry.results.at(-1)?.event.payload.details ?? {},
-    entry.results.at(-1)?.event.payload.timestamp ?? item.event.payload.timestamp,
-  );
-  if (!snapshot) return undefined;
-  return snapshot.items.find(task => task.status === 'in_progress')?.title
-    ?? snapshot.items.find(task => task.status === 'todo')?.title;
-}
-
-function activityStages(entries: ActivityEntry[]): ActivityStage[] {
-  const stages: ActivityStage[] = [];
-  let current: ActivityStage | undefined;
-  for (const entry of entries) {
-    // A TaskTracker observation is the only native event that explicitly
-    // declares the current plan. Its in-progress task is therefore safe to
-    // show as a stage label; never infer stages from tool order or command text.
-    const title = activityStageTitle(entry);
-    if (title) {
-      current = { id: entry.id, title, entries: [entry] };
-      stages.push(current);
-      continue;
-    }
-    if (!current) {
-      current = { id: 'ungrouped', entries: [] };
-      stages.push(current);
-    }
-    current.entries.push(entry);
-  }
-  return stages;
-}
-
 function displayDetails(details: Record<string, unknown>, workspaceRoot?: string | null): string {
   const visible = Object.fromEntries(Object.entries(details).filter(([key]) => !['content', 'old_content', 'new_content'].includes(key)));
   return Object.keys(visible).length ? workspaceRelativeText(JSON.stringify(visible, null, 2), workspaceRoot).slice(0, 12_000) : '';
 }
 
 function ToolDetailPanel({ presentation, eventName, results, workspaceRoot }: { presentation: ActivityPresentation; eventName: string; results: Item[]; workspaceRoot?: string | null }) {
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(true);
   const details = presentation.actionDetails ?? {};
   const resultDetails = presentation.resultDetails ?? {};
   const isTerminal = eventName.includes('Terminal');
@@ -850,6 +745,38 @@ function ToolDetailContent({ details, resultDetails, results, presentation, isTe
       {!isTerminal && !isFile && !isTaskTracker && structuredResult && <><small>结果信息</small><pre><code>{structuredResult}</code></pre></>}
       {presentation.exitCode && <small>退出码 {presentation.exitCode}</small>}
     </>;
+}
+
+function TaskTrackerCard({ entry, presentation }: { entry: ActivityEntry; presentation: ActivityPresentation }) {
+  const action = entry.action ?? entry.item;
+  const result = entry.results.at(-1);
+  const snapshot = taskListSnapshot(
+    action.event.payload.details ?? {},
+    result?.event.payload.details ?? {},
+    result?.event.payload.timestamp ?? action.event.payload.timestamp,
+  );
+  const completed = snapshot?.items.filter(task => task.status === 'done').length ?? 0;
+  const loading = !result && action.event.event_type === 'TOOL_CALL';
+  return <section className={`conversation-native-card task-tracker${loading ? ' active' : ''}`} aria-label={`任务列表：${presentation.title}`}>
+    <header><ClipboardList size={15}/><span><b>{presentation.title}</b><small>{loading ? '正在更新' : snapshot?.command === 'plan' ? '已更新' : '当前快照'}</small></span>{loading && <LoaderCircle className="conversation-native-card-spinner" size={13}/>}</header>
+    {snapshot ? <><div className="conversation-task-list-summary"><span>{snapshot.command === 'plan' ? '任务清单' : '任务清单快照'}</span><small>{`${completed} / ${snapshot.items.length} 已完成`}</small></div><TaskListItems items={snapshot.items} source={snapshot.timestamp ? `OpenHands 原生任务事件 · ${formatMessageTime(snapshot.timestamp)}` : 'OpenHands 原生任务事件'}/></> : <p className="conversation-native-card-note">正在读取任务清单…</p>}
+  </section>;
+}
+
+function SkillLoadCard({ entry }: { entry: ActivityEntry }) {
+  const action = entry.action ?? entry.item;
+  const result = entry.results.at(-1);
+  const actionSkill = action.event.payload.runtime_skill;
+  const resultSkill = result?.event.payload.runtime_skill;
+  const skillName = resultSkill?.skill_name || actionSkill?.skill_name
+    || detailText(result?.event.payload.details?.skill_name) || detailText(action.event.payload.details?.name) || '未命名 Skill';
+  const phase = resultSkill?.phase ?? actionSkill?.phase ?? (result ? 'LOADED' : 'INVOKED');
+  const failed = phase === 'ERROR' || result?.event.payload.details?.is_error === true;
+  const status = failed ? '加载失败' : phase === 'LOADED' ? '已加载' : '加载中';
+  return <section className={`conversation-native-card skill-load${failed ? ' error' : phase === 'INVOKED' ? ' active' : ''}`} aria-label={`加载 Skill：${skillName}`}>
+    <header><BookOpen size={15}/><span><b>加载 Skill</b><small>{status}</small></span>{phase === 'INVOKED' && <LoaderCircle className="conversation-native-card-spinner" size={13}/>}</header>
+    <code>{skillName}</code>
+  </section>;
 }
 
 function eventTime(item?: Item): number | undefined {
@@ -1088,7 +1015,7 @@ function activeToolLabel(eventName: string, toolName?: string, summary?: string,
   if (eventName.includes('FileEditor')) return '正在处理文件';
   if (eventName.includes('Browser')) return '正在执行浏览器操作';
   if (eventName.includes('MCP')) return '正在调用 MCP 工具';
-  if (eventName.includes('Skill')) return '正在使用技能';
+  if (eventName.includes('Skill')) return '正在加载 Skill';
   if (eventName.includes('Task')) return description ? `子智能体正在执行：${description}` : '子智能体正在执行';
   const normalized = explicitTool || eventName.replace(/(?:Action|Observation)$/, '');
   return normalized && normalized !== 'TOOL_CALL' ? `正在执行 ${normalized}` : '正在执行工具';
@@ -1172,11 +1099,19 @@ function ActivityEntryRow({ entry, active, avatarSlots, workspaceRoot }: {
   if (item.kind === 'thought') return <article className="conversation-activity-row thought">
     <MessageMarkdown>{presentation.thought ?? item.content}</MessageMarkdown>
   </article>;
+  if (eventName === 'TaskTrackerAction' || eventName === 'TaskTrackerObservation') return <div className="conversation-tool-entry semantic">
+    {presentation.thought && <article className="conversation-activity-row thought"><MessageMarkdown>{presentation.thought}</MessageMarkdown></article>}
+    <TaskTrackerCard entry={entry} presentation={presentation}/>
+  </div>;
+  if (eventName === 'InvokeSkillAction' || eventName === 'InvokeSkillObservation') return <div className="conversation-tool-entry semantic">
+    {presentation.thought && <article className="conversation-activity-row thought"><MessageMarkdown>{presentation.thought}</MessageMarkdown></article>}
+    <SkillLoadCard entry={entry}/>
+  </div>;
   if (item.kind === 'tool' && toolDetail) return <div className="conversation-tool-entry">
     {presentation.thought && <article className="conversation-activity-row thought">
       <MessageMarkdown>{presentation.thought}</MessageMarkdown>
     </article>}
-    <details className="conversation-activity-row tool conversation-tool-detail">
+    <details className="conversation-activity-row tool conversation-tool-detail" open>
       <summary aria-label={`查看执行详情：${presentation.title}`}>{taskAvatar ?? <ToolIcon size={14}/>}<div><b title={presentation.title}>{presentation.title}</b></div></summary>
       {toolDetail}
     </details>
@@ -1188,27 +1123,28 @@ function ActivityEntryRow({ entry, active, avatarSlots, workspaceRoot }: {
   </article>;
 }
 
-function OperationGroup({ group, active, avatarSlots, workspaceRoot }: {
-  group: ActivityOperationGroup;
+function CommandGroup({ group, active, avatarSlots, workspaceRoot }: {
+  group: CommandGroup;
   active: boolean;
   avatarSlots: ReadonlyMap<string, SubagentAvatarSlot>;
   workspaceRoot?: string | null;
 }) {
-  const completed = operationGroupIsComplete(group.entries);
-  const completedCount = group.entries.filter(entry => entry.results.length > 0).length;
-  const summary = completed ? operationGroupSummary(group.entries) : latestRunningOperation(group.entries, workspaceRoot);
-  const [open, setOpen] = useState(!completed);
-  const wasCompleted = useRef(completed);
+  const completed = group.entries.filter(entry => entry.results.length > 0).length;
+  const total = group.entries.length;
+  const allCompleted = completed === total;
+  const [open, setOpen] = useState(!allCompleted);
+
   useEffect(() => {
-    if (!wasCompleted.current && completed) setOpen(false);
-    wasCompleted.current = completed;
-  }, [completed]);
-  const progress = completed
-    ? `${group.entries.length} 项原生操作`
-    : `${completedCount} / ${group.entries.length} 已完成`;
-  return <details className={`conversation-operation-group${completed ? '' : ' active'}`} open={open} onToggle={event => setOpen(event.currentTarget.open)}>
-    <summary aria-label={`查看操作批次：${summary}`}><Wrench size={14}/><span><b>{summary}</b><small>{progress}</small></span>{!completed && <LoaderCircle className="conversation-operation-group-spinner" size={13}/>}<ChevronRight size={13}/></summary>
-    <div className="conversation-operation-group-list">
+    if (allCompleted) setOpen(false);
+  }, [allCompleted]);
+
+  const label = allCompleted ? `已运行 ${total} 条命令` : `正在运行 ${total} 条命令`;
+  return <details className={`conversation-command-group${!allCompleted && active ? ' active' : ''}`} open={open} onToggle={event => setOpen(event.currentTarget.open)}>
+    <summary aria-label={`查看命令批次：${label}`}>
+      <SquareTerminal size={15}/><span><b>{label}</b>{!allCompleted && <small>{`${completed} / ${total} 已完成`}</small>}</span>
+      {!allCompleted && <LoaderCircle className="conversation-command-group-spinner" size={13}/>}<ChevronRight size={14}/>
+    </summary>
+    <div className="conversation-command-group-list">
       {group.entries.map(entry => <ActivityEntryRow key={entry.id} entry={entry} active={active} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/>)}
     </div>
   </details>;
@@ -1225,10 +1161,9 @@ function ActivityGroup({ items, active, liveText, startedAt, finishedAt, avatarS
 }) {
   const elapsedSeconds = useElapsedSeconds(startedAt, finishedAt, active);
   const entries = groupedActivities(items);
-  const stages = activityStages(entries);
+  const rows = activityRows(entries);
   const itemCount = entries.length + (liveText ? 1 : 0);
-  const [open, setOpen] = useState(active);
-  useEffect(() => { setOpen(active); }, [active]);
+  const [open, setOpen] = useState(true);
   const label = active
     ? elapsedSeconds === undefined ? '处理中' : `已耗时 ${formatDuration(elapsedSeconds)}`
     : finishedAt === undefined || elapsedSeconds === undefined ? '工作过程' : `耗时 ${formatDuration(elapsedSeconds)}`;
@@ -1238,12 +1173,9 @@ function ActivityGroup({ items, active, liveText, startedAt, finishedAt, avatarS
   return <details className={`conversation-activity-group${active ? ' active' : ''}`} open={open} onToggle={event => setOpen(event.currentTarget.open)}>
     <summary>{summary}</summary>
     <div className="conversation-activity-list">
-      {stages.map(stage => <section className={`conversation-activity-stage${stage.title ? '' : ' unlabelled'}`} key={stage.id}>
-        {stage.title && <header><span>阶段</span><b>{stage.title}</b></header>}
-        {activityStageRows(stage.entries).map(row => row.kind === 'operation-group'
-          ? <OperationGroup key={row.group.id} group={row.group} active={active} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/>
-          : <ActivityEntryRow key={row.entry.id} entry={row.entry} active={active} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/>)}
-      </section>)}
+      {rows.map(row => row.kind === 'command-group'
+        ? <CommandGroup key={row.group.id} group={row.group} active={active} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/>
+        : <ActivityEntryRow key={row.entry.id} entry={row.entry} active={active} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/>)}
       {liveText && <article className="conversation-activity-row thought live-text"><MessageMarkdown>{liveText}</MessageMarkdown></article>}
     </div>
   </details>;
