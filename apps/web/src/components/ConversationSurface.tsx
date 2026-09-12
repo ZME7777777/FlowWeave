@@ -1177,7 +1177,7 @@ function ActivityEntryRow({ entry, active, avatarSlots, workspaceRoot }: {
       <MessageMarkdown>{presentation.thought}</MessageMarkdown>
     </article>}
     <details className="conversation-activity-row tool conversation-tool-detail">
-      <summary aria-label={`查看执行详情：${presentation.title}`}>{taskAvatar ?? <ToolIcon size={14}/>}<div><b title={presentation.title}>{presentation.title}</b></div><ChevronRight className="conversation-tool-chevron" size={13}/></summary>
+      <summary aria-label={`查看执行详情：${presentation.title}`}>{taskAvatar ?? <ToolIcon size={14}/>}<div><b title={presentation.title}>{presentation.title}</b></div></summary>
       {toolDetail}
     </details>
   </div>;
