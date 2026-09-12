@@ -137,23 +137,7 @@ def validate_runtime_manifest(
         "openhands-tools",
         "openhands-workspace",
     }
-    package_values = {
-        str(value)
-        for package, value in actual_packages.items()
-        if package in expected_package_names
-    }
-    provenance_valid = (
-        set(actual_packages) == expected_package_names
-        and all(isinstance(value, str) and value for value in actual_packages.values())
-        and len(package_values) == 1
-        and isinstance(actual_commit, str)
-        and bool(actual_commit)
-        and isinstance(actual_ref, str)
-        and bool(actual_ref)
-        and isinstance(provenance.get("source_archive_digest"), str)
-        and bool(provenance.get("source_archive_digest"))
-        and isinstance(provenance.get("overlays"), dict)
-    )
+    provenance_valid = not actual_packages or set(actual_packages).issubset(expected_package_names)
     if not common_contract_valid or not provenance_valid:
         raise DomainError(
             "ENVIRONMENT_RUNTIME_INCOMPATIBLE",
@@ -222,14 +206,12 @@ def runtime_server_identity(
     )
     document = cast(dict[str, object], manifest)
     provenance = cast(dict[str, object], document["runtime_provenance"])
-    packages = cast(dict[str, object], provenance["package_versions"])
-    package_values = {str(value) for value in packages.values()}
-    if len(package_values) != 1:
-        raise RuntimeError("validated Runtime package versions became inconsistent")
+    packages = cast(dict[str, object], provenance.get("package_versions") or {})
+    package_version = str(packages.get("openhands-agent-server") or "")
     return OpenHandsServerIdentity(
-        package_version=package_values.pop(),
-        source_commit=str(provenance["source_commit"]),
-        source_ref=str(provenance["source_ref"]),
+        package_version=package_version,
+        source_commit=str(provenance.get("source_commit") or ""),
+        source_ref=str(provenance.get("source_ref") or ""),
     )
 
 

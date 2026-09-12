@@ -180,7 +180,6 @@ def _node_context_suffix(
     *,
     snapshot: RunSnapshot,
     attempt_id: str | None,
-    expected_openhands_version: str,
 ) -> str:
     """Render the node's already-frozen Context into the native system suffix."""
 
@@ -197,7 +196,6 @@ def _node_context_suffix(
         expected_hash=snapshot.runtime_manifest_hash,
         snapshot_id=snapshot.id,
         instance_key=node_run.flow_node_snapshot_key,
-        expected_openhands_version=expected_openhands_version,
     )
     asset = cast(dict[str, Any], node.get("asset") or {})
     executor = cast(dict[str, Any], asset.get("executor") or {})
@@ -959,7 +957,6 @@ def _create_native_conversation(
             db,
             snapshot=snapshot,
             attempt_id=attempt_id,
-            expected_openhands_version=server_identity.package_version,
         ),
         load_memory=memory_enabled,
     )
@@ -1336,7 +1333,6 @@ def _create_or_reload_node_bootstrap(
             db,
             snapshot=snapshot,
             attempt_id=binding.node_attempt_id,
-            expected_openhands_version=server_identity.package_version,
         ),
         load_memory=memory_enabled,
     )

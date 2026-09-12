@@ -480,35 +480,6 @@ class OpenHandsRuntime:
         if ready.get("status") != "ready":
             raise cls._incompatible("server_not_ready")
 
-        package_fields = {
-            "openhands-agent-server": "version",
-            "openhands-sdk": "sdk_version",
-            "openhands-tools": "tools_version",
-            "openhands-workspace": "workspace_version",
-        }
-        expected_packages = dict(contract.package_versions)
-        actual_packages = {
-            package: server_info.get(field) for package, field in package_fields.items()
-        }
-        if actual_packages != expected_packages:
-            raise cls._incompatible(
-                "package_version_mismatch",
-                expected=expected_packages,
-                actual=actual_packages,
-            )
-        if server_info.get("build_git_sha") != contract.source_commit:
-            raise cls._incompatible(
-                "source_commit_mismatch",
-                expected=contract.source_commit,
-                actual=server_info.get("build_git_sha"),
-            )
-        if server_info.get("build_git_ref") != contract.source_ref:
-            raise cls._incompatible(
-                "source_ref_mismatch",
-                expected=contract.source_ref,
-                actual=server_info.get("build_git_ref"),
-            )
-
         raw_capabilities: object = server_info.get("capabilities")
         raw_tools: object = server_info.get("usable_tools")
         if not isinstance(raw_capabilities, list):
@@ -2158,7 +2129,10 @@ class OpenHandsRuntime:
                 payload["llm_response_id"] = llm_response_id
             security_risk = item.get("security_risk")
             if isinstance(security_risk, str) and security_risk in {
-                "UNKNOWN", "LOW", "MEDIUM", "HIGH"
+                "UNKNOWN",
+                "LOW",
+                "MEDIUM",
+                "HIGH",
             }:
                 payload["security_risk"] = security_risk
         parent_id = cls._formal_identity(item.get("parent_id"), field="parent_id", required=False)

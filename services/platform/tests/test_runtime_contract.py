@@ -174,7 +174,6 @@ def test_start_rejects_missing_contract_before_runtime_http(
 @pytest.mark.parametrize(
     ("mutation", "expected_reason"),
     [
-        ("source", "source_commit_mismatch"),
         ("route", "missing_http_operations"),
         ("field", "missing_start_conversation_fields"),
         ("tool", "missing_capabilities"),
@@ -185,9 +184,7 @@ def test_runtime_contract_rejects_incompatible_server(mutation: str, expected_re
     contract = governed_runtime_contract(tools)
     server_info = _server_info(tools=tools)
     openapi = _openapi(contract)
-    if mutation == "source":
-        server_info["build_git_sha"] = "0" * 40
-    elif mutation == "route":
+    if mutation == "route":
         paths = cast(dict[str, Any], openapi["paths"])
         paths.pop("/api/conversations/{conversation_id}/ask_agent")
     elif mutation == "field":
@@ -208,6 +205,31 @@ def test_runtime_contract_rejects_incompatible_server(mutation: str, expected_re
         )
     assert error.value.code == "RUNTIME_CONTRACT_INCOMPATIBLE"
     assert _reason(error) == expected_reason
+
+
+def test_runtime_contract_ignores_server_provenance_metadata() -> None:
+    """A new OpenHands baseline must not reject an existing session."""
+
+    tools = ("file_editor", "terminal")
+    contract = governed_runtime_contract(tools)
+    server_info = _server_info(tools=tools)
+    server_info.update(
+        {
+            "version": "2.0.0",
+            "sdk_version": "2.0.0",
+            "tools_version": "2.0.0",
+            "workspace_version": "2.0.0",
+            "build_git_sha": "0" * 40,
+            "build_git_ref": "f" * 40,
+        }
+    )
+
+    OpenHandsRuntime._validate_runtime_contract(  # pyright: ignore[reportPrivateUsage]
+        contract,
+        ready={"status": "ready"},
+        server_info=server_info,
+        openapi=_openapi(contract),
+    )
 
 
 def test_runtime_contract_accepts_openapi_schema_annotations() -> None:

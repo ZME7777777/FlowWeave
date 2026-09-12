@@ -66,7 +66,7 @@ def test_runtime_provider_accepts_legacy_persistent_flow_run_spec() -> None:
     assert spec.project_record_id is None
 
 
-def test_runtime_provider_accepts_only_complete_frozen_server_identity() -> None:
+def test_runtime_provider_accepts_partial_legacy_server_identity_metadata() -> None:
     values = dict(
         port=8000,
         flow_run_id=_OWNER_ID,
@@ -77,16 +77,8 @@ def test_runtime_provider_accepts_only_complete_frozen_server_identity() -> None
         environment_version_id=_ENVIRONMENT_VERSION_ID,
         environment_version_no=1,
     )
-    spec = RuntimeProviderSpec(
-        **values,
-        runtime_openhands_version="1.44.0",
-        runtime_source_commit="a" * 40,
-        runtime_source_ref="b" * 40,
-    )
+    spec = RuntimeProviderSpec(**values, runtime_openhands_version="1.44.0")
     assert spec.runtime_openhands_version == "1.44.0"
-
-    with pytest.raises(ValueError, match="identity must be provided together"):
-        RuntimeProviderSpec(**values, runtime_openhands_version="1.44.0")
 
 
 def test_runtime_provider_preserves_runtime_resource_limits() -> None:

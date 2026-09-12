@@ -171,16 +171,13 @@ def _compile_runtime_manifest(definition: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _runtime_node(
-    snapshot: RunSnapshot, instance_key: str, *, expected_openhands_version: str = OPENHANDS_VERSION
-) -> dict[str, Any]:
+def _runtime_node(snapshot: RunSnapshot, instance_key: str) -> dict[str, Any]:
     return runtime_node(
         definition=snapshot.definition_json,
         manifest=snapshot.runtime_manifest_json or {},
         expected_hash=snapshot.runtime_manifest_hash,
         snapshot_id=snapshot.id,
         instance_key=instance_key,
-        expected_openhands_version=expected_openhands_version,
     )
 
 
@@ -5576,7 +5573,6 @@ def _runtime_request(db: Session, attempt: NodeAttempt) -> StartAttemptRequest:
         _runtime_node(
             snapshot,
             node_run.flow_node_snapshot_key,
-            expected_openhands_version=server_identity.package_version,
         ),
         attempt.context_ids_json,
         node_context_prompt=(str(node_context_prompt) if node_context_prompt is not None else None),

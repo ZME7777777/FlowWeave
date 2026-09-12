@@ -62,8 +62,6 @@ _HOOK_METADATA_KEYS = {
     "filename",
     "content_hash",
 }
-_HOOK_OPENHANDS_VERSION = "1.47.0"
-_HOOK_SOURCE_COMMIT = "30cf5832e42c71c24daa82a1a4fd5d25eb70d1b9"
 _MCP_KEYS = {
     "url",
     "transport",
@@ -1091,13 +1089,11 @@ def materialize_hook_config(
             normalized = cast(dict[str, Any], capability.get("normalized_config") or {})
             if (
                 normalized.get("hook_set_schema_version") != 1
-                or normalized.get("openhands_version") != _HOOK_OPENHANDS_VERSION
-                or normalized.get("source_commit") != _HOOK_SOURCE_COMMIT
                 or normalized.get("runtime_mutation") != "FORBIDDEN"
                 or normalized.get("allowed_events") != sorted(_HOOK_EVENTS)
                 or set(normalized) - set(_HOOK_EVENTS) - _HOOK_METADATA_KEYS
             ):
-                raise ValueError("Hook Set must be republished against OpenHands 1.47.0")
+                raise ValueError("Hook Set is structurally invalid")
             for event in _HOOK_EVENTS:
                 raw_matchers = normalized.get(event)
                 if not isinstance(raw_matchers, list):
@@ -1340,8 +1336,6 @@ def materialize_agent_workspace_hook_config(
         mode = str(config.get("execution_mode") or "")
         if (
             config.get("hook_set_schema_version") != 2
-            or config.get("openhands_version") != _HOOK_OPENHANDS_VERSION
-            or config.get("source_commit") != _HOOK_SOURCE_COMMIT
             or config.get("runtime_mutation") != "FORBIDDEN"
             or event not in _HOOK_EVENTS
             or mode not in {"PROMPT", "SCRIPT"}

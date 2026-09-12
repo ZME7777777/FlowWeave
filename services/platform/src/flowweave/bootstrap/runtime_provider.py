@@ -179,13 +179,6 @@ class RuntimeProviderSpec(_StrictModel):
             value is not None
             for value in (self.flow_run_id, self.node_attempt_id, self.agent_workspace_id)
         )
-        identity_fields = (
-            self.runtime_openhands_version,
-            self.runtime_source_commit,
-            self.runtime_source_ref,
-        )
-        if any(value is not None for value in identity_fields) and not all(identity_fields):
-            raise ValueError("Runtime Agent Server identity must be provided together")
         if persistent_runtime and not all(allocation_fields):
             raise ValueError("Persistent Runtime allocation fields must be provided together")
         if persistent_runtime and self.project_record_id is None and any(shared_project_fields):

@@ -215,7 +215,6 @@ def resolve_flow_node_session_host(
         expected_hash=snapshot.runtime_manifest_hash,
         snapshot_id=snapshot.id,
         instance_key=node_run.flow_node_snapshot_key,
-        expected_openhands_version=server_identity.package_version,
     )
     working_directory = str(workspace.host_working_directory)
     runtime_working_directory = str(workspace.runtime_working_directory)

@@ -805,14 +805,10 @@ def test_cancelled_node_session_restarts_only_for_read_only_history(
                 OpenHandsServerIdentity("1.44.0", "a" * 40, "a" * 40),
             )[1],
         )
-        snapshot_options: list[str | None] = []
         monkeypatch.setattr(
             flow_node_host,
             "runtime_node",
-            lambda **kwargs: (
-                snapshot_options.append(kwargs.get("expected_openhands_version")),
-                {"asset": {}},
-            )[1],
+            lambda **_kwargs: {"asset": {}},
         )
 
         host = flow_node_host.resolve_flow_node_session_host(
@@ -828,7 +824,6 @@ def test_cancelled_node_session_restarts_only_for_read_only_history(
             "1.44.0", "a" * 40, "a" * 40
         )
         assert manifest_options == [str(ensured[0]["environment_version_id"])]
-        assert snapshot_options == ["1.44.0"]
         assert host.session.permits(READ_SESSIONS)
         assert not host.session.permits(CREATE_SESSIONS)
 

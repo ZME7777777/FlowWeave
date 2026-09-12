@@ -605,7 +605,7 @@ def test_new_runtime_requires_strict_agent_server_admission(settings, monkeypatc
     assert admitted == [resource]
 
 
-def test_agent_server_admission_uses_frozen_environment_identity(settings, monkeypatch):
+def test_agent_server_admission_ignores_frozen_environment_identity(settings, monkeypatch):
     provider = DockerSandboxProvider(_docker_settings(settings))
     resource = _runtime_resource()
     resource.spec_json = {
@@ -619,7 +619,9 @@ def test_agent_server_admission_uses_frozen_environment_identity(settings, monke
 
     provider._wait_for_agent_server(resource)
 
-    assert commands[0][-3:] == ["1.44.0", "a" * 40, "b" * 40]
+    assert "1.44.0" not in commands[0]
+    assert "a" * 40 not in commands[0]
+    assert "b" * 40 not in commands[0]
 
 
 def test_concurrent_new_runtime_creation_still_requires_strict_admission(settings, monkeypatch):

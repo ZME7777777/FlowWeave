@@ -12,7 +12,6 @@ import hashlib
 import json
 from typing import Any, cast
 
-from flowweave.shared.domain.openhands import OPENHANDS_VERSION
 from flowweave.shared.errors import DomainError
 
 
@@ -50,12 +49,12 @@ def runtime_node(
     expected_hash: str,
     snapshot_id: str,
     instance_key: str,
-    expected_openhands_version: str = OPENHANDS_VERSION,
 ) -> dict[str, Any]:
     """Project one node from an immutable Runtime manifest.
 
-    A Snapshot must match the immutable Environment Version selected by its
-    FlowRun, rather than the control plane's current OpenHands baseline.
+    The projection validates FlowWeave-owned node identity only. OpenHands
+    provenance is retained as Snapshot metadata, but must never gate opening
+    or creating a node session after an Agent Server baseline upgrade.
     """
 
     if runtime_manifest_hash(manifest) != expected_hash:
@@ -70,7 +69,6 @@ def runtime_node(
     nodes = cast(dict[str, object], raw_nodes) if isinstance(raw_nodes, dict) else {}
     compatible_manifest = (
         manifest_view.get("schema_version") == 3
-        and manifest_view.get("openhands_version") == expected_openhands_version
         and isinstance(raw_nodes, dict)
         and all(
             isinstance(raw_node, dict)
@@ -83,10 +81,7 @@ def runtime_node(
     if not compatible_manifest:
         raise DomainError(
             "SNAPSHOT_TOOL_POLICY_REQUIRES_RERUN",
-            (
-                "This Snapshot does not match its frozen Runtime identity or uses the retired "
-                "Agent Tool Policy"
-            ),
+            "This Snapshot uses the retired Agent Tool Policy",
             409,
             {"snapshot_id": snapshot_id},
         )

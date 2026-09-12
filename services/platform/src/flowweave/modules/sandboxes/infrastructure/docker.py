@@ -67,11 +67,6 @@ _PRE_SHARED_PROJECT_RUNTIME_SPEC_FIELDS = _RUNTIME_SPEC_FIELDS - {
 _PRE_NODE_ATTEMPT_RUNTIME_SPEC_FIELDS = _PRE_SHARED_PROJECT_RUNTIME_SPEC_FIELDS - {
     "node_attempt_id"
 }
-_PRE_SERVER_IDENTITY_RUNTIME_SPEC_FIELDS = _RUNTIME_SPEC_FIELDS - {
-    "runtime_openhands_version",
-    "runtime_source_commit",
-    "runtime_source_ref",
-}
 
 
 @dataclass(frozen=True, slots=True)
@@ -176,17 +171,33 @@ class DockerSandboxProvider:
         if not set(spec).issubset(_RUNTIME_SPEC_FIELDS):
             return frozenset(accepted)
 
-        # Runtime ledgers predating the frozen Server identity extension keep
-        # their existing immutable Docker label. Their Environment provenance
-        # is separately revalidated before the ledger can be reused.
-        pre_server_identity = {
+        # Old ledgers can include OpenHands provenance fields that were once
+        # added to the immutable Docker label. Preserve both historical hash
+        # forms, but never treat those metadata fields as an admission check.
+        without_server_metadata = {
             key: value
             for key, value in spec.items()
-            if key in _PRE_SERVER_IDENTITY_RUNTIME_SPEC_FIELDS
+            if key
+            not in {
+                "runtime_openhands_version",
+                "runtime_source_commit",
+                "runtime_source_ref",
+            }
         }
-        accepted.add(cls._hash_spec(pre_server_identity))
+        accepted.add(cls._hash_spec(without_server_metadata))
         accepted.add(
-            cls._hash_spec({key: spec.get(key) for key in _PRE_SERVER_IDENTITY_RUNTIME_SPEC_FIELDS})
+            cls._hash_spec(
+                {
+                    key: spec.get(key)
+                    for key in _RUNTIME_SPEC_FIELDS
+                    if key
+                    not in {
+                        "runtime_openhands_version",
+                        "runtime_source_commit",
+                        "runtime_source_ref",
+                    }
+                }
+            )
         )
 
         # RuntimeProviderSpec historically serialized every optional field,
@@ -1680,16 +1691,6 @@ chmod 0700 "$target"
         return [item for value in specifications for item in ("--mount", value)]
 
     def _wait_for_agent_server(self, resource: ManagedSandbox) -> None:
-        spec = resource.spec_json or {}
-        package_version = str(spec.get("runtime_openhands_version") or "")
-        source_commit = str(spec.get("runtime_source_commit") or "")
-        source_ref = str(spec.get("runtime_source_ref") or "")
-        if not package_version or not source_commit or not source_ref:
-            raise DomainError(
-                "SANDBOX_SPEC_INVALID",
-                "The Runtime Agent Server identity is incomplete",
-                422,
-            )
         deadline = time.monotonic() + self.settings.terminal_environment_start_timeout_seconds
         session_key = derive_runtime_session_key(
             self.settings.openhands_session_api_key,
@@ -1718,17 +1719,10 @@ chmod 0700 "$target"
                             "headers=headers),timeout=2));"
                             "ready=get('/ready');info=get('/server_info');"
                             "assert ready.get('status')=='ready';"
-                            "assert [info.get(key) for key in ('version','sdk_version',"
-                            "'tools_version','workspace_version')]==[sys.argv[2]]*4;"
-                            "assert info.get('build_git_sha')==sys.argv[3];"
-                            "assert info.get('build_git_ref')==sys.argv[4];"
                             "assert isinstance(info.get('capabilities'),list);"
                             "assert isinstance(info.get('usable_tools'),list)"
                         ),
                         session_key,
-                        package_version,
-                        source_commit,
-                        source_ref,
                     ],
                     timeout=3,
                 )

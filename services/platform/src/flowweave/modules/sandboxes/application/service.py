@@ -397,9 +397,6 @@ def _create_managed_runtime(
                             "environment_id": environment_id,
                             "environment_version_id": environment_version_id,
                             "environment_version_no": environment_version_no,
-                            "runtime_openhands_version": runtime_server_identity.package_version,
-                            "runtime_source_commit": runtime_server_identity.source_commit,
-                            "runtime_source_ref": runtime_server_identity.source_ref,
                             "workspace_relative": workspace_relative or None,
                             "flow_run_id": flow_run_id,
                             "node_attempt_id": node_attempt_id,
@@ -462,30 +459,9 @@ def _create_managed_runtime(
                         {"sandbox_id": resource.id},
                     )
                 else:
-                    # Add identity to old ledgers only after its Environment
-                    # manifest passed the same reviewed compatibility gate.
-                    # This lets a missing historical container be recreated
-                    # without treating the platform's current version as its
-                    # provenance. Docker accepts the pre-identity label hash
-                    # for an already-retained old container.
-                    expected_identity = {
-                        "runtime_openhands_version": runtime_server_identity.package_version,
-                        "runtime_source_commit": runtime_server_identity.source_commit,
-                        "runtime_source_ref": runtime_server_identity.source_ref,
-                    }
-                    spec = dict(resource.spec_json or {})
-                    present_identity = {key: spec.get(key) for key in expected_identity}
-                    if any(value is not None for value in present_identity.values()) and (
-                        present_identity != expected_identity
-                    ):
-                        raise DomainError(
-                            "SANDBOX_SPEC_CONFLICT",
-                            "An active Runtime has a different frozen Agent Server identity",
-                            409,
-                            {"sandbox_id": resource.id},
-                        )
-                    if present_identity != expected_identity:
-                        resource.spec_json = {**spec, **expected_identity}
+                    # Historical ledgers may retain OpenHands provenance
+                    # fields. They are audit metadata only: a baseline upgrade
+                    # must not rewrite them or reject the retained Runtime.
                     if resource.desired_state == "STOPPED":
                         # A completed FlowRun deliberately drains its retained
                         # Runtime. A later read-only visit to its existing
@@ -965,9 +941,6 @@ def _sandbox_spec_signature(resource: ManagedSandbox) -> tuple[object, ...]:
         str((resource.spec_json or {}).get("project_allocation_relative") or ""),
         str((resource.spec_json or {}).get("project_record_id") or ""),
         str((resource.spec_json or {}).get("workspace_relative") or ""),
-        str((resource.spec_json or {}).get("runtime_openhands_version") or ""),
-        str((resource.spec_json or {}).get("runtime_source_commit") or ""),
-        str((resource.spec_json or {}).get("runtime_source_ref") or ""),
     )
 
 

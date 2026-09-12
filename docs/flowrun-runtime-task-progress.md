@@ -114,7 +114,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-350 | 备用模型优先级编辑分区 | DONE | 添加区与已选优先级列表分离，支持拖拽调整顺序，并统一保存语义。 |
 | FR-351 | FlowRun 侧栏记录区固定与分页 | DONE | 侧栏摘要、运行方式和操作栏固定；记录区独立滚动并以每页 5 条显示，移除操作栏下方的冗余说明。 |
 | FR-353 | Environment 发布基础镜像扁平化与失败诊断 | DONE | 将 Setup 容器在发布前扁平化为单层受控基础镜像，阻断版本继承造成的 RootFS 深度累积；GHCR TLS 超时返回稳定、无 Secret 的诊断码。 |
-| FR-354 | OpenHands 基线升级的历史 Runtime 连续性 | DONE | 历史 Environment、Snapshot、会话和节点改按自身冻结 provenance／contract 路由和校验，不再因控制面基线升级被全局冻结或拒绝。 |
+| FR-354 | OpenHands 基线升级的历史 Runtime 连续性 | DONE | 删除历史 Environment、Snapshot、节点和会话对 OpenHands 版本／commit／ref 的运行时准入；仅保留实际协议、路由、工具和能力校验。 |
 | OPS-01 | Docker rollback image / BuildKit cache 容量增长 | DONE | 建立带运行引用保护、dry-run 和显式确认的回收工具，并完成生产候选边界核验。 |
 | OPS-02 | Docker rollback image / BuildKit cache 容量增长 | DONE | 已按授权使用 OPS-03 tag 级路径回收，并完成生产不变量与入口验证。 |
 | OPS-03 | 多 rollback tag image 的安全回收 | DONE | 改为逐 tag、重查 Container 引用、不使用 `--force` 的回收路径。 |
@@ -411,12 +411,12 @@ Environment 断言，未记为 pytest 通过；固定 OpenHands `1.47.0` 的真�
 目标：
 
 - OpenHands 基线只定义新构建与新 Snapshot 的默认契约；升级不能将既有 FlowRun、节点、Conversation、调度或已发布 Environment Version 统一标记为冻结、禁止打开或拒绝执行。
-- 历史 Environment 必须按其冻结的四包版本、source commit/ref、来源摘要和构建证据恢复；运行中的 Agent Server 必须与该历史对象本身的身份和 Snapshot contract 一致，而非与控制面当前基线相等。
-- 保留对缺失 provenance、损坏 manifest、身份漂移、缺少必需协议字段或能力规格漂移的明确拒绝；这些是数据完整性与实际不兼容诊断，不能被基线升级掩盖。
+- 历史 Environment、Snapshot、节点和会话可以保留 OpenHands 版本、source commit/ref 等 provenance 作为审计信息，但不得以其存在、完整性或与运行中 Server 的相等性作为打开、创建、恢复或执行的准入条件。
+- 保留对损坏的 FlowWeave 对象身份、缺少必需协议字段、路由、工具或能力规格漂移的明确拒绝；这些是实际功能兼容性诊断，不能被基线升级掩盖。
 
-完成：删除将 `runtime_frozen`／`FLOW_RUN_RUNTIME_FROZEN` 投影到列表、节点会话、运行、Runtime 操作和调度入口的全局基线冻结层。Environment manifest 现在仅校验自身完整、不可变的 build／probe／provenance 证据；Runtime Provider 和执行路径均显式携带该 Environment 的 Server identity，且不再以当前 baseline 作为历史容器探针回退。Snapshot Runtime contract 由严格解析其冻结内容替代“与当前生成 contract 完全相等”的比较，实际 OpenHands Server 仍在请求前按此冻结 contract 校验。前端恢复显示和选择所有具备镜像摘要的 `READY` Environment Version。
+完成：删除将 `runtime_frozen`／`FLOW_RUN_RUNTIME_FROZEN` 投影到列表、节点会话、运行、Runtime 操作和调度入口的全局基线冻结层。Environment、Snapshot Runtime contract、Runtime Provider ledger、Hook 物化和 Agent Server 探活均不再比较 OpenHands 版本、四包版本、source commit 或 source ref；这些字段若存在只作为审计 provenance。节点与会话创建／恢复只校验 FlowWeave 对象身份和实际 OpenHands 协议：服务 ready、必需 HTTP 路由、创建字段、能力与工具。前端继续显示和选择所有具备镜像摘要的 `READY` Environment Version。
 
-验收：历史 `1.44` manifest/contract 定向 smoke 与 `test_runtime_contract.py`、`test_runtime_capabilities.py` 共 18 项通过；Web TypeScript typecheck、ESLint 与 production build 通过；受影响 Python Ruff format/check、`py_compile` 和 `git diff --check` 通过。完整数据库 pytest 仍受本机 Docker socket 缺失造成的 Testcontainers fixture 初始化阻断，未记为通过；受影响 Pyright 定向运行同时报告 `environments/application/service.py` 中 3 条既有、未触及行的诊断，新的 contract parser 未新增 Pyright 报错。
+验收：`test_runtime_contract.py` 证明任意 Server 版本、包版本、commit/ref 漂移不再拒绝连接，同时路由、创建字段与工具缺失仍拒绝；`test_runtime_capabilities.py` 证明历史 Snapshot 版本元数据不再阻断节点投影。受影响 Python Ruff format/check、`py_compile` 和 `git diff --check` 通过。完整数据库 pytest 仍受本机 Docker socket 缺失造成的 Testcontainers fixture 初始化阻断，未记为通过；受影响 Pyright 定向运行仅报告 `environments/application/service.py` 中 3 条既有、未触及行的诊断。
 
 ### OPS-01 Docker rollback image / BuildKit cache 容量治理 — DONE
 
@@ -4804,7 +4804,7 @@ contract、冻结策略与既有受控生命周期约束覆盖。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
-| 2026-09-12 | FR-354 | 历史 Environment／Snapshot provenance 与 contract 直接 smoke；`test_runtime_contract.py`、`test_runtime_capabilities.py`；受影响 Python Ruff format/check、`py_compile`；Web TypeScript typecheck、ESLint、production build、`git diff --check` | PASS（静态／构建）：18 项契约测试确认历史冻结 `1.44` provenance/identity 与 Snapshot contract 可被解析并作为自身 Runtime 的探针契约；不会再与当前 `1.47` baseline 比较。Runtime Server 身份、镜像/manifest 完整性、必需 OpenAPI 与工具协议仍逐对象校验。完整数据库 pytest 因本机 Docker socket 缺失、Testcontainers fixture 初始化失败而未执行断言；Pyright 仅保留 `environments/application/service.py` 中 3 条未触及既有诊断。 |
+| 2026-09-12 | FR-354 | `test_runtime_contract.py`、`test_runtime_capabilities.py`；受影响 Python Ruff format/check、`py_compile`、`git diff --check`；结构化比较审计 | PASS（静态）：Server 版本、四包版本、commit/ref 变化不再阻断节点或会话；缺少必需 OpenAPI 路由、创建字段或工具仍明确拒绝。`rg` 与 ast-grep 未发现 FlowWeave 运行时代码中 OpenHands 版本／commit／ref 的相等性准入比较。完整数据库 pytest 因本机 Docker socket 缺失、Testcontainers fixture 初始化失败而未执行断言；Pyright 仅保留 `environments/application/service.py` 中 3 条未触及既有诊断。 |
 | 2026-09-12 | FR-351 | Web TypeScript typecheck、ESLint、production build、`git diff --check`；本地 Vite 上 FlowRun 侧栏定向 Playwright | PASS：运行摘要、模式切换和操作栏不再随记录滚动；记录内容在独立滚动区展示，三种模式共用每页 5 条的分页。定向浏览器回归确认第 6 条记录仅在“下一页”后渲染，固定区域在内容滚动后位置不变。三条操作说明均已移除。生产构建仅报告既有的大 chunk 提示。 |
 | 2026-09-12 | FR-342 | Web TypeScript typecheck、ESLint、production build、`git diff --check` | PASS（静态／构建）：根工作区仓库不再被前端的容器路径过滤排除；工作目录根及其子文件按最深包含仓库挂载 Git 历史。后端仓库发现与 `git_log` 已允许仓库根等于授权工作目录，故未改动 API 或授权边界。typecheck、lint、build 与空白检查通过；生产构建仅有既有的大 chunk 提示。 |
 | 2026-09-12 | FR-341 | Web TypeScript typecheck、ESLint、production build、`git diff --check` | PASS（静态／构建）：代码／纯文本预览具备与内容行高同步的行号 gutter；Diff 导航通过当前可视边界计算最小滚动位移，目标可见时保持当前位置，不可见时平滑移入，并以 1.6 秒琥珀色行级高亮反馈。Markdown 富文本和选择引用保持原行为。typecheck、lint、build 与空白检查通过；生产构建仅有既有的大 chunk 提示。 |

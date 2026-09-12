@@ -86,11 +86,7 @@ def runtime_contract_for_server_identity(
     """
 
     normalized_tools = tuple(sorted(set(required_tools)))
-    if (
-        not normalized_tools
-        or len(normalized_tools) != len(required_tools)
-        or not all((identity.package_version, identity.source_commit, identity.source_ref))
-    ):
+    if not normalized_tools or len(normalized_tools) != len(required_tools):
         raise ValueError("Runtime contract tools must be non-empty and unique")
     return RuntimeContract(
         schema_version=RUNTIME_CONTRACT_SCHEMA_VERSION,
@@ -168,25 +164,29 @@ def normalize_runtime_contract(
     if not isinstance(value, dict):
         raise ValueError("Runtime contract must be an object")
     document = cast(dict[object, object], value)
-    expected_keys = {
+    required_keys = {
         "schema_version",
-        "openhands_version",
-        "source_commit",
-        "source_ref",
-        "package_versions",
         "required_http_operations",
         "required_start_fields",
         "required_server_capabilities",
         "required_tools",
     }
-    if {str(key) for key in document} != expected_keys:
+    optional_provenance_keys = {
+        "openhands_version",
+        "source_commit",
+        "source_ref",
+        "package_versions",
+    }
+    if not required_keys.issubset({str(key) for key in document}) or not {
+        str(key) for key in document
+    }.issubset(required_keys | optional_provenance_keys):
         raise ValueError("Runtime contract fields are invalid")
 
     schema_version = document.get("schema_version")
     openhands_version = document.get("openhands_version")
     source_commit = document.get("source_commit")
     source_ref = document.get("source_ref")
-    packages = document.get("package_versions")
+    packages = document.get("package_versions", {})
     operations = document.get("required_http_operations")
     start_fields = document.get("required_start_fields")
     capabilities = document.get("required_server_capabilities")
@@ -196,10 +196,6 @@ def normalize_runtime_contract(
         not isinstance(schema_version, int)
         or isinstance(schema_version, bool)
         or schema_version < 1
-        or not all(
-            isinstance(item, str) and item
-            for item in (openhands_version, source_commit, source_ref)
-        )
         or not isinstance(packages, dict)
         or not isinstance(operations, list)
         or not isinstance(start_fields, list)
@@ -212,23 +208,12 @@ def normalize_runtime_contract(
     start_field_documents = cast(list[object], start_fields)
     capability_documents = cast(list[object], capabilities)
     tool_documents = cast(list[object], tools)
-    frozen_openhands_version = cast(str, openhands_version)
-    frozen_source_commit = cast(str, source_commit)
-    frozen_source_ref = cast(str, source_ref)
+    frozen_openhands_version = str(openhands_version or "")
+    frozen_source_commit = str(source_commit or "")
+    frozen_source_ref = str(source_ref or "")
 
-    expected_package_names = {
-        "openhands-agent-server",
-        "openhands-sdk",
-        "openhands-tools",
-        "openhands-workspace",
-    }
     package_versions = {name: value for name, value in package_document.items()}
-    if (
-        set(package_versions) != expected_package_names
-        or any(not isinstance(item, str) or not item for item in package_versions.values())
-        or len(set(package_versions.values())) != 1
-        or package_versions["openhands-agent-server"] != frozen_openhands_version
-    ):
+    if any(not item for item in package_versions.values()):
         raise ValueError("Runtime contract package versions are invalid")
 
     parsed_operations: list[tuple[str, str]] = []
