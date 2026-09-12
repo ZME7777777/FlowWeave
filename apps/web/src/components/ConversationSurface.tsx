@@ -1301,6 +1301,7 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused: 
   const followLatest = useRef(true);
   const userScrolledAway = useRef(false);
   const scrollInteractionStartY = useRef<number | null>(null);
+  const scrollInteractionTowardLatest = useRef(false);
   const wasGenerating = useRef(isGenerating);
   const copyResetTimer = useRef<number | undefined>(undefined);
   const referenceHighlightStartTimer = useRef<number | undefined>(undefined);
@@ -1346,9 +1347,22 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused: 
     const element = surface.current;
     if (!element) return;
     const atLatest = element.scrollHeight - element.scrollTop - element.clientHeight <= 16;
-    userScrolledAway.current = !atLatest;
-    followLatest.current = atLatest;
-    setIsAtLatest(atLatest);
+    if (!atLatest) {
+      userScrolledAway.current = true;
+      followLatest.current = false;
+      setIsAtLatest(false);
+      return;
+    }
+    // Keep the reading lock when a layout or pagination update happens to
+    // produce a bottom-positioned scroll event. Only an explicit return
+    // gesture (or the jump button) resumes following streamed output.
+    if (!userScrolledAway.current || scrollInteractionTowardLatest.current) {
+      userScrolledAway.current = false;
+      followLatest.current = true;
+      setIsAtLatest(true);
+      return;
+    }
+    setIsAtLatest(false);
   }, []);
   const stopFollowingLatest = useCallback(() => {
     userScrolledAway.current = true;
@@ -1377,26 +1391,26 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused: 
     });
   }, []);
   const handleScroll = useCallback(() => {
-    // Browser scroll anchoring and delayed content-visibility measurements can
-    // emit a scroll event while older pages are prepended. It is not a user
-    // decision to leave the latest message, so retain the initial bottom pin.
-    if (historyPending && !userScrolledAway.current) return;
+    // Pagination changes the available rows but must never suppress a real
+    // scroll event. The current viewport position alone decides whether new
+    // output may follow the latest message.
     updateScrollPosition();
-  }, [historyPending, updateScrollPosition]);
+    scrollInteractionTowardLatest.current = false;
+  }, [updateScrollPosition]);
   useLayoutEffect(() => {
-    if (((historyPending && !userScrolledAway.current) || !initialPositioned.current) && (turns.length || liveText || isGenerating)) {
+    if (!initialPositioned.current && (turns.length || liveText || isGenerating)) {
       initialPositioned.current = true;
       scrollToLatest('auto');
-    } else if (!wasGenerating.current && isGenerating) {
+    } else if (!wasGenerating.current && isGenerating && !userScrolledAway.current) {
       scrollToLatest('smooth');
-    } else if ((historyPending && !userScrolledAway.current) || followLatest.current) {
+    } else if (followLatest.current) {
       // A completed turn, lazy Markdown, or asynchronously restored history
       // must never replace the newest-message anchor with the terminal row.
       // Keep the newest content at the bottom until the user scrolls away.
       scrollToLatest('auto');
     }
     wasGenerating.current = isGenerating;
-  }, [historyPending, isGenerating, liveText, scrollToLatest, turns.length]);
+  }, [isGenerating, liveText, scrollToLatest, turns.length]);
   useLayoutEffect(() => {
     const observedContent = content.current;
     if (!observedContent || typeof ResizeObserver === 'undefined') return;
@@ -1405,10 +1419,10 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused: 
       // Lazy Markdown and content-visibility can make historical rows taller
       // after the initial restoration scroll. Keep following only when the
       // user was already at the latest message; never pull them from history.
-      if (((!historyPending || userScrolledAway.current) && !followLatest.current) || frame !== undefined) return;
+      if (!followLatest.current || frame !== undefined) return;
       frame = window.requestAnimationFrame(() => {
         frame = undefined;
-        if ((historyPending && !userScrolledAway.current) || followLatest.current) scrollToLatest('auto');
+        if (followLatest.current) scrollToLatest('auto');
       });
     });
     observer.observe(observedContent);
@@ -1416,7 +1430,7 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused: 
       observer.disconnect();
       if (frame !== undefined) window.cancelAnimationFrame(frame);
     };
-  }, [historyPending, scrollToLatest]);
+  }, [scrollToLatest]);
   useEffect(() => () => {
     if (copyResetTimer.current) window.clearTimeout(copyResetTimer.current);
     if (referenceHighlightStartTimer.current) window.clearTimeout(referenceHighlightStartTimer.current);
@@ -1506,8 +1520,9 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused: 
       </button>)}
     </nav>}
     {messagePreview && <aside id="conversation-message-preview" className="conversation-message-index-tooltip" role="tooltip" style={{ top: messagePreview.top }}><span>{messagePreview.content || '（空消息）'}</span></aside>}
-    <section ref={surface} className="conversation-surface" aria-live="polite" onScroll={() => { handleScroll(); setSelectedReference(undefined); }} onWheel={event => { if (event.deltaY < 0) stopFollowingLatest(); }} onPointerDown={event => { scrollInteractionStartY.current = event.clientY; }} onPointerMove={event => { if (scrollInteractionStartY.current !== null && event.clientY - scrollInteractionStartY.current > 3) stopFollowingLatest(); }} onPointerUp={event => { scrollInteractionStartY.current = null; offerSelectedReference(event); }} onPointerCancel={() => { scrollInteractionStartY.current = null; }} onKeyDown={event => { if (['ArrowUp', 'PageUp', 'Home'].includes(event.key)) stopFollowingLatest(); }}>
+    <section ref={surface} className="conversation-surface" aria-live="polite" onScroll={() => { handleScroll(); setSelectedReference(undefined); }} onWheel={event => { if (event.deltaY < 0) stopFollowingLatest(); else if (event.deltaY > 0) scrollInteractionTowardLatest.current = true; }} onPointerDown={event => { scrollInteractionStartY.current = event.clientY; scrollInteractionTowardLatest.current = false; }} onPointerMove={event => { if (scrollInteractionStartY.current === null) return; if (event.clientY - scrollInteractionStartY.current > 3) stopFollowingLatest(); else if (scrollInteractionStartY.current - event.clientY > 3) scrollInteractionTowardLatest.current = true; }} onPointerUp={event => { scrollInteractionStartY.current = null; offerSelectedReference(event); }} onPointerCancel={() => { scrollInteractionStartY.current = null; }} onKeyDown={event => { if (['ArrowUp', 'PageUp', 'Home'].includes(event.key)) stopFollowingLatest(); else if (['ArrowDown', 'PageDown', 'End'].includes(event.key)) scrollInteractionTowardLatest.current = true; }}>
       <div ref={content} className="conversation-surface-content">
+      {historyPending && <div className="conversation-history-loading" role="status"><LoaderCircle size={14}/>正在载入更早的会话记录…</div>}
       {turns.map((turn, index) => {
         const isCurrent = index === turns.length - 1 && isGenerating;
         const failures = turn.activity.filter(item => item.kind === 'error');

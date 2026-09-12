@@ -1309,6 +1309,21 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(activeProcess.getByRole('button', { name: '查看执行详情：已运行 pwd' })).toBeVisible();
   await expect(page.locator('.conversation-turn-status')).toHaveText('OpenHands 会话连接正常，等待响应');
   await expect(activeProcess.locator('.conversation-activity-row.tool')).toHaveCount(3);
+  const readingViewport = page.locator('.conversation-surface');
+  const readingPosition = await readingViewport.evaluate(surface => {
+    surface.scrollTop = Math.max(0, surface.scrollHeight - surface.clientHeight - 80);
+    surface.dispatchEvent(new Event('scroll'));
+    surface.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: -120 }));
+    return surface.scrollTop;
+  });
+  await expect(page.getByRole('button', { name: '跳转到正在生成的最新回复' })).toBeVisible();
+  agentStream!.send(JSON.stringify({
+    type: 'delta',
+    content: '用户正在查阅历史时，最新输出不应抢回视口。',
+  }));
+  await expect.poll(() => readingViewport.evaluate(surface => surface.scrollTop)).toBe(readingPosition);
+  await page.getByRole('button', { name: '跳转到正在生成的最新回复' }).click();
+  await expect.poll(() => readingViewport.evaluate(surface => surface.scrollHeight - surface.scrollTop - surface.clientHeight)).toBeLessThanOrEqual(16);
   await composer.fill('第一条排队消息');
   await composer.press('Enter');
   await composer.fill('调整方向的排队消息');
