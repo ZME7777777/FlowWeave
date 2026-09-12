@@ -210,8 +210,9 @@ function RunRail({ run, mode, nodeRecords, automaticRecords, automaticError, sel
     records: scheduledRecords.filter(record => record.schedule_id === scheduleId),
   }));
   const automaticRecordItem = (record: FlowRunAutomaticRecordSummary) => {
-    const stateLabel = record.state === 'DRAFT' ? record.plan.readiness.ready ? '草稿已就绪' : '草稿待补齐' : FLOW_STATE_LABELS[record.state] ?? record.state;
-    return <article key={record.id} className={automaticSelectedIds.has(record.id) ? 'active' : ''} data-record-state={record.state.toLowerCase()}><button type="button" className="automatic-record-select" aria-pressed={automaticSelectedIds.has(record.id)} onClick={event => onSelectAutomatic(record.id, modifiers(event))}><i title={stateLabel} aria-label={stateLabel}/><span><b>{record.name}</b></span></button>{record.state === 'DRAFT' && <button type="button" className="automatic-record-start" aria-label={`启动连续运行 ${record.name}`} disabled={!record.plan.readiness.ready || Boolean(automaticBusyId)} onClick={() => onStartAutomatic(record)}><Play size={12}/>{automaticBusyId === record.id ? '启动中…' : '启动'}</button>}</article>;
+    const ready = record.plan?.readiness?.ready ?? false;
+    const stateLabel = record.state === 'DRAFT' ? ready ? '草稿已就绪' : '草稿待补齐' : FLOW_STATE_LABELS[record.state] ?? record.state;
+    return <article key={record.id} className={automaticSelectedIds.has(record.id) ? 'active' : ''} data-record-state={record.state.toLowerCase()}><button type="button" className="automatic-record-select" aria-pressed={automaticSelectedIds.has(record.id)} onClick={event => onSelectAutomatic(record.id, modifiers(event))}><i title={stateLabel} aria-label={stateLabel}/><span><b>{record.name}</b></span></button>{record.state === 'DRAFT' && <button type="button" className="automatic-record-start" aria-label={`启动连续运行 ${record.name}`} disabled={!ready || Boolean(automaticBusyId)} onClick={() => onStartAutomatic(record)}><Play size={12}/>{automaticBusyId === record.id ? '启动中…' : '启动'}</button>}</article>;
   };
   const manualToolbar = <div className="automatic-record-toolbar manual-record-toolbar">{mode === 'MANUAL' && <button type="button" className="secondary" disabled={!selected || Boolean(manualBusyId)} onClick={onCopyNode}><Copy size={13}/>{manualBusyId ? '处理中…' : '拷贝'}</button>}<button type="button" className="danger" disabled={Boolean(manualBusyId)} onClick={onDeleteNode}><Trash2 size={13}/>{manualCount > 1 ? `删除 (${manualCount})` : '删除'}</button></div>;
   const nodeRecordLabel = mode === 'DIRECT' ? '直接启动记录' : '逐步运行记录';
@@ -1322,6 +1323,11 @@ export function WorkbenchPage() {
   const [selectedAutomaticId, setSelectedAutomaticId] = useState<string | undefined>(selectedAutomaticRecordId);
   const [manualSelectedIds, setManualSelectedIds] = useState<Set<string>>(new Set());
   const [automaticSelectedIds, setAutomaticSelectedIds] = useState<Set<string>>(new Set());
+  // Delete APIs return after durable cancellation/cleanup has been queued. A
+  // worker performs physical deletion later, so keep accepted deletes out of
+  // this local projection while polling may still receive their old rows.
+  const [pendingManualDeletionIds, setPendingManualDeletionIds] = useState<Set<string>>(new Set());
+  const [pendingAutomaticDeletionIds, setPendingAutomaticDeletionIds] = useState<Set<string>>(new Set());
   const [automaticDrafts, setAutomaticDrafts] = useState<Record<string, FlowRunAutomaticRecord>>({});
   const [automaticDialogOpen, setAutomaticDialogOpen] = useState(false);
   const [automaticImportDialogOpen, setAutomaticImportDialogOpen] = useState(false);
@@ -1342,6 +1348,8 @@ export function WorkbenchPage() {
     setAutomaticDrafts({});
     setManualSelectedIds(new Set());
     setAutomaticSelectedIds(new Set());
+    setPendingManualDeletionIds(new Set());
+    setPendingAutomaticDeletionIds(new Set());
   }, [selectedRunId]);
   useEffect(() => selectedRunId ? subscribeToRun(selectedRunId, refresh) : undefined, [selectedRunId, refresh]);
   useEffect(() => {
@@ -1400,8 +1408,9 @@ export function WorkbenchPage() {
   if (query.isError) return <div className="empty workbench-fallback"><b>运行详情加载失败</b><span>{query.error.message}</span><button className="secondary" onClick={returnToRuns}><ArrowLeft size={14}/>返回运行列表</button></div>;
   if (!run) return <div className="empty workbench-fallback"><span>加载运行状态…</span><button className="secondary" onClick={returnToRuns}><ArrowLeft size={14}/>返回运行列表</button></div>;
   const snapshot = run.snapshots.find(item => item.id === run.active_snapshot_id) ?? run.snapshots.at(-1);
-  const stepRecords = run.node_runs.filter(item => !isDirectNodeRun(item));
-  const directRecords = run.node_runs.filter(isDirectNodeRun);
+  const visibleNodeRuns = run.node_runs.filter(item => !pendingManualDeletionIds.has(item.id));
+  const stepRecords = visibleNodeRuns.filter(item => !isDirectNodeRun(item));
+  const directRecords = visibleNodeRuns.filter(isDirectNodeRun);
   const nodeRecords = mode === 'DIRECT' ? directRecords : stepRecords;
   const categorizedRun = { ...run, node_runs: nodeRecords };
   const selectedNode = snapshot?.definition.nodes.find(item => item.instance_key === selectedNodeKey);
@@ -1423,7 +1432,7 @@ export function WorkbenchPage() {
       return artifact ? [[mapping.target_input_key, artifact.id]] : [];
     }));
   })();
-  const automaticSummaries = automatic.data ?? [];
+  const automaticSummaries = (automatic.data ?? []).filter(record => !pendingAutomaticDeletionIds.has(record.id));
   const selectedAutomatic = selectedAutomaticId
     ? automaticDrafts[selectedAutomaticId] ?? automaticDetail.data
     : undefined;
@@ -1552,6 +1561,13 @@ export function WorkbenchPage() {
         ? '当前显示该连续运行记录的持久执行状态；灰色节点尚未激活。'
       : '未选择连续运行记录，当前显示中性流程定义；请点击左侧“新增”。';
   const hasPanel = Boolean((mode === 'AUTOMATIC' && selectedAutomaticId) || (nodeRun && attempt) || selectedNode);
+  const recordSummary = mode === 'AUTOMATIC'
+    ? (selectedAutomatic?.name ?? automaticRecords.find(record => record.id === selectedAutomaticId)?.name
+      ? { name: selectedAutomatic?.name ?? automaticRecords.find(record => record.id === selectedAutomaticId)?.name ?? '', label: '当前连续运行记录', state: selectedAutomatic?.state ?? automaticRecords.find(record => record.id === selectedAutomaticId)?.state }
+      : undefined)
+    : nodeRun
+      ? { name: nodeRunName(run, nodeRun), label: mode === 'MANUAL' ? '当前逐步运行记录' : '当前直接启动记录', state: attemptStateLabel(nodeRun) }
+      : undefined;
   const selectGraphNode = (key: string) => {
     if (mode === 'AUTOMATIC' && selectedAutomatic) {
       setSelectedNodeKey(key);
@@ -1723,8 +1739,12 @@ export function WorkbenchPage() {
       next.delete(recordId);
       return next;
     });
+    if (selectedAutomaticId === recordId) {
+      setSelectedAutomaticId(undefined);
+      useWorkbenchStore.setState({ selectedNodeRunId: undefined, selectedAttemptId: undefined });
+    }
   };
-  const rail = <RunRail run={run} mode={mode} nodeRecords={nodeRecords} automaticRecords={automaticRecords} selected={mode !== 'AUTOMATIC' ? nodeRun?.id : undefined} manualSelectedIds={manualSelectedIds} automaticSelectedIds={automaticSelectedIds} manualBusyId={manualBusyId} selectedAutomaticId={selectedAutomaticId} automaticBusyId={automaticBusyId} onModeChange={next => { setMode(next); clearSelection(); }} onSelect={selectHistory} onDeleteNode={() => { if (!selectedManualRuns.length) { void dialog.confirm({ title: '请先选择运行记录', message: '请在左侧选择一条或多条逐步运行记录，再执行删除。', confirmLabel: '我知道了', cancelLabel: '关闭' }); return; } const count = selectedManualRuns.length; void dialog.confirm({ title: count === 1 ? '删除这条运行记录？' : `删除 ${count} 条运行记录？`, message: count === 1 ? '后台会先取消仍在运行的节点，再永久删除 OpenHands 会话、记录工作区、产物和执行记录；共享 FlowRun Runtime 不受影响。' : `后台会逐条取消仍在运行的节点，再永久删除这 ${count} 条记录的 OpenHands 会话、记录工作区、产物和执行数据；共享 FlowRun Runtime 不受影响。`, confirmLabel: '删除', tone: 'danger' }).then(async ok => { if (!ok) return; setManualBusyId('bulk-delete'); try { for (const record of selectedManualRuns) await api.deleteNodeRun(run.id, record.id); qc.setQueryData<FlowRun>(['flow-run', run.id], current => current ? { ...current, node_runs: current.node_runs.filter(item => !manualSelectedIds.has(item.id)) } : current); clearSelection(); } catch (reason) { void dialog.confirm({ title: '删除运行记录失败', message: reason instanceof Error ? reason.message : '删除请求未被平台接受，请稍后重试。', confirmLabel: '我知道了', cancelLabel: '关闭' }); } finally { setManualBusyId(undefined); } }); }} onCopyNode={() => { if (mode === 'MANUAL' && nodeRun) setCopyTarget({ mode: 'MANUAL', record: nodeRun }); }} onStartNode={record => { const latest = record.attempts.at(-1); if (!latest || latest.state !== 'WAITING_START_CONFIRMATION') return; setManualBusyId(record.id); void api.confirmStart(latest.id, latest.state_version, { startup_mode: 'PROMPT', prompt: latest.startup_prompt ?? undefined }).then(started => { qc.setQueryData<FlowRun>(['flow-run', run.id], current => current ? { ...current, state: 'ACTIVE', node_runs: current.node_runs.map(item => item.id === record.id ? { ...item, attempts: item.attempts.map(candidate => candidate.id === started.id ? started : candidate) } : item) } : current); }).catch(reason => { window.alert(reason instanceof Error ? reason.message : "启动节点失败，请稍后重试。"); }).finally(() => { setManualBusyId(undefined); refresh(); }); }} onSelectAutomatic={selectAutomaticHistory} onClearSelection={clearSelection} onCreateAutomatic={() => setAutomaticDialogOpen(true)} onDeleteAutomatic={() => { if (!selectedAutomaticRecords.length) return; const count = selectedAutomaticRecords.length; void dialog.confirm({ title: count === 1 ? '删除连续运行记录？' : `删除 ${count} 条连续运行记录？`, message: count === 1 ? '后台会先取消仍在运行的节点，再永久删除该记录的 OpenHands 会话、记录工作区、产物和执行历史。' : `后台会逐条取消仍在运行的节点，再永久删除这 ${count} 条记录的 OpenHands 会话、记录工作区、产物和执行历史。`, confirmLabel: '删除', tone: 'danger' }).then(async ok => { if (!ok) return; setAutomaticBusyId('bulk-delete'); try { for (const record of selectedAutomaticRecords) { await api.deleteAutomaticRecord(run.id, record.id); removeAutomaticRecordFromRail(record.id); } clearSelection(); void qc.invalidateQueries({ queryKey: ['flow-run-automatic-records', run.id] }); } catch (reason) { void dialog.confirm({ title: '删除连续运行记录失败', message: reason instanceof Error ? reason.message : '删除请求未被平台接受，请稍后重试。', confirmLabel: '我知道了', cancelLabel: '关闭' }); } finally { setAutomaticBusyId(undefined); } }); }} onCopyAutomatic={() => { if (selectedAutomatic) setCopyTarget({ mode: 'AUTOMATIC', record: selectedAutomatic }); }} onExportAutomatic={() => { if (selectedAutomaticRecords.length) setAutomaticExportRecordIds(selectedAutomaticRecords.map(record => record.id)); }} onStartAutomatic={record => { setAutomaticBusyId(record.id); void api.startAutomaticRecord(run.id, record.id, record.row_version).then(replaceAutomatic).catch(reason => { window.alert(reason instanceof Error ? reason.message : "启动连续运行失败，请稍后重试。"); }).finally(() => setAutomaticBusyId(undefined)); }}/>;
+  const rail = <RunRail run={run} mode={mode} nodeRecords={nodeRecords} automaticRecords={automaticRecords} selected={mode !== 'AUTOMATIC' ? nodeRun?.id : undefined} manualSelectedIds={manualSelectedIds} automaticSelectedIds={automaticSelectedIds} manualBusyId={manualBusyId} selectedAutomaticId={selectedAutomaticId} automaticBusyId={automaticBusyId} onModeChange={next => { setMode(next); clearSelection(); }} onSelect={selectHistory} onDeleteNode={() => { if (!selectedManualRuns.length) { void dialog.confirm({ title: '请先选择运行记录', message: '请在左侧选择一条或多条逐步运行记录，再执行删除。', confirmLabel: '我知道了', cancelLabel: '关闭' }); return; } const count = selectedManualRuns.length; void dialog.confirm({ title: count === 1 ? '删除这条运行记录？' : `删除 ${count} 条运行记录？`, message: count === 1 ? '后台会先取消仍在运行的节点，再永久删除 OpenHands 会话、记录工作区、产物和执行记录；共享 FlowRun Runtime 不受影响。' : `后台会逐条取消仍在运行的节点，再永久删除这 ${count} 条记录的 OpenHands 会话、记录工作区、产物和执行数据；共享 FlowRun Runtime 不受影响。`, confirmLabel: '删除', tone: 'danger' }).then(async ok => { if (!ok) return; setManualBusyId('bulk-delete'); const acceptedIds = new Set<string>(); try { for (const record of selectedManualRuns) { await api.deleteNodeRun(run.id, record.id); acceptedIds.add(record.id); setPendingManualDeletionIds(current => new Set([...current, record.id])); } qc.setQueryData<FlowRun>(['flow-run', run.id], current => current ? { ...current, node_runs: current.node_runs.filter(item => !acceptedIds.has(item.id)) } : current); clearSelection(); } catch (reason) { void dialog.confirm({ title: '删除运行记录失败', message: reason instanceof Error ? reason.message : '删除请求未被平台接受，请稍后重试。', confirmLabel: '我知道了', cancelLabel: '关闭' }); } finally { setManualBusyId(undefined); } }); }} onCopyNode={() => { if (mode === 'MANUAL' && nodeRun) setCopyTarget({ mode: 'MANUAL', record: nodeRun }); }} onStartNode={record => { const latest = record.attempts.at(-1); if (!latest || latest.state !== 'WAITING_START_CONFIRMATION') return; setManualBusyId(record.id); void api.confirmStart(latest.id, latest.state_version, { startup_mode: 'PROMPT', prompt: latest.startup_prompt ?? undefined }).then(started => { qc.setQueryData<FlowRun>(['flow-run', run.id], current => current ? { ...current, state: 'ACTIVE', node_runs: current.node_runs.map(item => item.id === record.id ? { ...item, attempts: item.attempts.map(candidate => candidate.id === started.id ? started : candidate) } : item) } : current); }).catch(reason => { window.alert(reason instanceof Error ? reason.message : "启动节点失败，请稍后重试。"); }).finally(() => { setManualBusyId(undefined); refresh(); }); }} onSelectAutomatic={selectAutomaticHistory} onClearSelection={clearSelection} onCreateAutomatic={() => setAutomaticDialogOpen(true)} onDeleteAutomatic={() => { if (!selectedAutomaticRecords.length) return; const count = selectedAutomaticRecords.length; void dialog.confirm({ title: count === 1 ? '删除连续运行记录？' : `删除 ${count} 条连续运行记录？`, message: count === 1 ? '后台会先取消仍在运行的节点，再永久删除该记录的 OpenHands 会话、记录工作区、产物和执行历史。' : `后台会逐条取消仍在运行的节点，再永久删除这 ${count} 条记录的 OpenHands 会话、记录工作区、产物和执行历史。`, confirmLabel: '删除', tone: 'danger' }).then(async ok => { if (!ok) return; setAutomaticBusyId('bulk-delete'); try { for (const record of selectedAutomaticRecords) { await api.deleteAutomaticRecord(run.id, record.id); setPendingAutomaticDeletionIds(current => new Set([...current, record.id])); removeAutomaticRecordFromRail(record.id); } clearSelection(); void qc.invalidateQueries({ queryKey: ['flow-run-automatic-records', run.id] }); } catch (reason) { void dialog.confirm({ title: '删除连续运行记录失败', message: reason instanceof Error ? reason.message : '删除请求未被平台接受，请稍后重试。', confirmLabel: '我知道了', cancelLabel: '关闭' }); } finally { setAutomaticBusyId(undefined); } }); }} onCopyAutomatic={() => { if (selectedAutomatic) setCopyTarget({ mode: 'AUTOMATIC', record: selectedAutomatic }); }} onExportAutomatic={() => { if (selectedAutomaticRecords.length) setAutomaticExportRecordIds(selectedAutomaticRecords.map(record => record.id)); }} onStartAutomatic={record => { setAutomaticBusyId(record.id); void api.startAutomaticRecord(run.id, record.id, record.row_version).then(replaceAutomatic).catch(reason => { window.alert(reason instanceof Error ? reason.message : "启动连续运行失败，请稍后重试。"); }).finally(() => setAutomaticBusyId(undefined)); }}/>;
   return <>
     <header className="flow-run-workbench-header"><h1 title={run.name}>{run.name}</h1></header>
     <section className="workbench-page flow-run-inner-workbench" style={hasPanel ? { gridTemplateColumns: `${railWidth}px minmax(500px, 1fr) ${sidePanelWidth}px` } : { gridTemplateColumns: `${railWidth}px minmax(500px, 1fr)` }}>
@@ -1732,6 +1752,7 @@ export function WorkbenchPage() {
       <main className="run-main">
         <div className="run-workbench-toolbar">
           <button className="back" onClick={returnToRuns}><ArrowLeft size={14}/>返回运行列表</button>
+          {recordSummary && <div className="run-workbench-record-summary" title={recordSummary.name}><small>{recordSummary.label}{recordSummary.state ? ` · ${FLOW_STATE_LABELS[recordSummary.state] ?? recordSummary.state}` : ''}</small><b>{recordSummary.name}</b></div>}
           <button type="button" className="run-workbench-toolbar-clear" aria-label="取消当前选择" onClick={clearSelection}/>
           {(run.state === 'COMPLETED' || run.state === 'CANCELLED') && <TerminalRunDelete run={run} onDeleted={() => navigate(undefined, 'delete')}/>}
         </div>
