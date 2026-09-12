@@ -2067,6 +2067,19 @@ type WorkspaceToolTab =
 type WorkspaceToolScopeState = { tabs: WorkspaceToolTab[]; activeTabId?: string; selectedFile?: string; selectedChangeId?: string; selectedGitFile?: string; selectedGitCommit?: string; selectedGitRepositoryPath?: string; selectedRuntimeTaskId?: string };
 
 type ChangedFileTreeNode<T> = { name: string; path: string; value?: T; children: ChangedFileTreeNode<T>[] };
+type CollapsibleTreeNode = { name: string; path: string; children: CollapsibleTreeNode[] };
+
+function collapseDirectoryChain<T extends CollapsibleTreeNode>(node: T): { node: T; label: string } {
+  let terminal = node;
+  const names = [node.name];
+  // Keep the first directory which contains a changed file or multiple
+  // branches visible. Everything before that is navigation-only context.
+  while (terminal.children.length === 1 && terminal.children[0].children.length > 0) {
+    terminal = terminal.children[0] as T;
+    names.push(terminal.name);
+  }
+  return { node: terminal, label: names.join('/') };
+}
 
 function changedFileTree<T>(items: Array<{ path: string; value: T }>): ChangedFileTreeNode<T>[] {
   const roots: ChangedFileTreeNode<T>[] = [];
@@ -2105,19 +2118,22 @@ function ChangedFilesTree<T>({ items, selectedPath, title, empty, onSelect, rend
   const tree = changedFileTree(items);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const renderTree = (nodes: ChangedFileTreeNode<T>[], depth = 0): ReactNode => nodes.map(node => {
-    const directory = node.children.length > 0;
-    const open = !collapsed.has(node.path);
+    const collapsedDirectory = node.children.length ? collapseDirectoryChain(node) : undefined;
+    const displayed = collapsedDirectory?.node ?? node;
+    const directory = displayed.children.length > 0;
+    const label = collapsedDirectory?.label ?? node.name;
+    const open = !collapsed.has(displayed.path);
     const toggle = () => setCollapsed(current => {
       const next = new Set(current);
-      if (next.has(node.path)) next.delete(node.path); else next.add(node.path);
+      if (next.has(displayed.path)) next.delete(displayed.path); else next.add(displayed.path);
       return next;
     });
     return <div key={node.path} className="agent-git-tree-node" role="treeitem" aria-expanded={directory ? open : undefined} aria-level={depth + 1}>
       <div className={`agent-git-tree-row${selectedPath === node.path ? ' active' : ''}`} style={{ '--git-tree-depth': depth } as CSSProperties}>
-        {directory ? <button type="button" className="agent-git-tree-disclosure" aria-label={`${open ? '收起' : '展开'}目录 ${node.name}`} onClick={toggle}>{open ? <ChevronDown size={13}/> : <ChevronRight size={13}/>}</button> : <span className="agent-git-tree-spacer" aria-hidden="true"/>}
-        <button type="button" className="agent-git-tree-item" title={node.path} onClick={() => { if (directory) toggle(); else if (node.value !== undefined) onSelect(node.value); }}><span>{directory ? open ? <FolderOpen size={14}/> : <Folder size={14}/> : <FileCode2 size={14}/>}</span><b>{node.name}</b>{!directory && node.value !== undefined && renderMeta?.(node.value)}</button>
+        {directory ? <button type="button" className="agent-git-tree-disclosure" aria-label={`${open ? '收起' : '展开'}目录 ${label}`} onClick={toggle}>{open ? <ChevronDown size={13}/> : <ChevronRight size={13}/>}</button> : <span className="agent-git-tree-spacer" aria-hidden="true"/>}
+        <button type="button" className="agent-git-tree-item" title={displayed.path} onClick={() => { if (directory) toggle(); else if (node.value !== undefined) onSelect(node.value); }}><span>{directory ? open ? <FolderOpen size={14}/> : <Folder size={14}/> : <FileCode2 size={14}/>}</span><b>{directory ? `${label}/` : label}</b>{!directory && node.value !== undefined && renderMeta?.(node.value)}</button>
       </div>
-      {directory && open && <div role="group">{renderTree(node.children, depth + 1)}</div>}
+      {directory && open && <div role="group">{renderTree(displayed.children as ChangedFileTreeNode<T>[], depth + 1)}</div>}
     </div>;
   });
   return <nav className="agent-changes-file-tree" aria-label={title}>
@@ -2208,20 +2224,23 @@ function WorkspaceGitCommitSidebarDetail({ details, loading, error, selectedPath
     window.addEventListener('pointerup', stop, { once: true });
   };
   const renderTree = (nodes: WorkspaceGitTreeNode[], depth = 0): ReactNode => nodes.map(node => {
-    const directory = node.children.length > 0;
-    const open = expanded.has(node.path);
+    const collapsedDirectory = node.children.length ? collapseDirectoryChain(node) : undefined;
+    const displayed = collapsedDirectory?.node ?? node;
+    const directory = displayed.children.length > 0;
+    const label = collapsedDirectory?.label ?? node.name;
+    const open = expanded.has(displayed.path);
     const toggleDirectory = () => setExpanded(current => {
       const next = new Set(current);
-      if (next.has(node.path)) next.delete(node.path);
-      else next.add(node.path);
+      if (next.has(displayed.path)) next.delete(displayed.path);
+      else next.add(displayed.path);
       return next;
     });
     return <div key={node.path} className="agent-git-tree-node" role="treeitem" aria-expanded={directory ? open : undefined} aria-level={depth + 1}>
       <div className={`agent-git-tree-row${selectedPath === node.path ? ' active' : ''}`} style={{ '--git-tree-depth': depth } as CSSProperties}>
-        {directory ? <button type="button" className="agent-git-tree-disclosure" aria-label={`${open ? '收起' : '展开'}目录 ${node.name}`} onClick={toggleDirectory}>{open ? <ChevronDown size={13}/> : <ChevronRight size={13}/>}</button> : <span className="agent-git-tree-spacer" aria-hidden="true"/>}
-        <button type="button" className="agent-git-tree-item" title={node.path} onClick={() => { if (directory) toggleDirectory(); else onSelectFile(node.path); }}><span>{directory ? open ? <FolderOpen size={14}/> : <Folder size={14}/> : <FileCode2 size={14}/>}</span><b>{node.name}</b>{node.status && <em>{node.status}</em>}</button>
+        {directory ? <button type="button" className="agent-git-tree-disclosure" aria-label={`${open ? '收起' : '展开'}目录 ${label}`} onClick={toggleDirectory}>{open ? <ChevronDown size={13}/> : <ChevronRight size={13}/>}</button> : <span className="agent-git-tree-spacer" aria-hidden="true"/>}
+        <button type="button" className="agent-git-tree-item" title={displayed.path} onClick={() => { if (directory) toggleDirectory(); else onSelectFile(node.path); }}><span>{directory ? open ? <FolderOpen size={14}/> : <Folder size={14}/> : <FileCode2 size={14}/>}</span><b>{directory ? `${label}/` : label}</b>{node.status && <em>{node.status}</em>}</button>
       </div>
-      {directory && open && <div role="group">{renderTree(node.children, depth + 1)}</div>}
+      {directory && open && <div role="group">{renderTree(displayed.children as WorkspaceGitTreeNode[], depth + 1)}</div>}
     </div>;
   });
   if (loading) return <section className="agent-git-commit-detail"><p>正在读取提交详情…</p></section>;
