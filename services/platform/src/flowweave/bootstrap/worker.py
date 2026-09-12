@@ -344,15 +344,23 @@ class TaskWorker:
         exception: Exception,
     ) -> None:
         permanent = _is_permanent_task_failure(task, exception)
-        async with self.container.database.session() as session:
-            failed = await session.run_sync(
-                lambda db: fail(db, lease, error, permanent=permanent, commit=False)
-            )
-            if failed:
-                await session.run_sync(lambda db: record_terminal_failure(db, lease.task_id, error))
-                await session.commit()
-            else:
-                await session.rollback()
+        # Claimed tasks are global delivery records, but their terminal effects
+        # can target tenant-scoped aggregates.  Failure handling runs outside
+        # ``_execute_claimed_task`` and therefore must restore the same
+        # privileged worker context before it can transition the aggregate
+        # out of an in-flight state.
+        with tenant_bypass():
+            async with self.container.database.session() as session:
+                failed = await session.run_sync(
+                    lambda db: fail(db, lease, error, permanent=permanent, commit=False)
+                )
+                if failed:
+                    await session.run_sync(
+                        lambda db: record_terminal_failure(db, lease.task_id, error)
+                    )
+                    await session.commit()
+                else:
+                    await session.rollback()
 
     async def run_maintenance(self) -> int:
         settings, runtime, artifacts, dependency_builder, plugin_resolver, sandbox = (

@@ -172,3 +172,55 @@ def test_export_container_as_single_layer_sets_root_entrypoint(monkeypatch) -> N
         "flowweave/environment-base:test",
     ]
     assert calls[1][1] is exporter.stdout
+
+
+def test_runtime_probe_inherits_the_frozen_openhands_build_identity(monkeypatch) -> None:
+    commands: list[list[str]] = []
+
+    def fake_run(command, **_kwargs):
+        commands.append(command)
+        if command[1:3] == ["run", "--detach"]:
+            return "probe-container"
+        if command[1] == "rm":
+            return ""
+        raise AssertionError(command)
+
+    monkeypatch.setattr(
+        environment_docker, "get_settings", lambda: SimpleNamespace(docker_binary="docker")
+    )
+    monkeypatch.setattr(environment_docker, "_run", fake_run)
+    monkeypatch.setattr(
+        environment_docker, "_inspect_commands", lambda _container_id: {"python": "Python"}
+    )
+    monkeypatch.setattr(
+        environment_docker,
+        "_inspect_runtime_provenance",
+        lambda _container_id: {"source_commit": "30cf5832e42c71c24daa82a1a4fd5d25eb70d1b9"},
+    )
+    monkeypatch.setattr(
+        environment_docker,
+        "_run",
+        lambda command, **_kwargs: (
+            commands.append(command)
+            or ("contract passed" if command[1] == "exec" else "probe-container")
+        ),
+    )
+
+    environment_docker._probe_runtime_image("sha256:image", probe_token="version-token")
+
+    probe_start = commands[0]
+    assert probe_start[0:8] == [
+        "docker",
+        "run",
+        "--detach",
+        "--name",
+        "fw-env-probe-version-token",
+        "--entrypoint",
+        "sh",
+        "--env",
+    ]
+    assert probe_start[8] == "OPENHANDS_BUILD_GIT_SHA=30cf5832e42c71c24daa82a1a4fd5d25eb70d1b9"
+    assert probe_start[9:11] == [
+        "--env",
+        "OPENHANDS_BUILD_GIT_REF=30cf5832e42c71c24daa82a1a4fd5d25eb70d1b9",
+    ]
