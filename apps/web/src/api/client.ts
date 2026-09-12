@@ -2,7 +2,7 @@ import type {
   AuthUser,
   AgentProfileVersion, ArtifactInput, ArtifactVersion, ArtifactVersionPage, RuntimeArtifactAuditPage, CapabilityAsset, CapabilityImportResult, FlowDefinition, FlowRun, FlowRunAutomaticRecord, FlowRunAutomaticRecordUpdate, FlowRunAutomaticRecordWrite, FlowRunConversation, FlowRunRuntimeOverview, FlowRunRuntimeResource, FlowRunSummary, FlowWrite, MessageAttachmentInput, OpenHandsConversationEventBatch, McpSource, SkillSource,
   BlockedNodeDelete, BulkDeleteResult, CapabilityBulkDeleteResult, CodexDeviceAuthorization, CodexOAuthStatus, GateRemediationResult, ModelProvider, ModelProviderDiscoveryWrite, ModelProviderUsage, ModelProviderWrite, NodeAsset, NodeAssetWrite, NodeAttempt, FlowRunAutomaticRecordSummary, ProviderBulkDeleteResult,
-  AgentAttachment, AgentConversation, AgentConversationContext, AgentConversationHead, AgentConversationInputReadiness, AgentConversationReference, AgentPendingConfirmation, AgentWorkDirectory, AgentWorkDirectoryList, AgentWorkspace, AgentWorkspaceCapability, AgentWorkspaceDetails, AgentWorkspaceMcpReadiness, AgentWorkspaceReference, AgentWorkspaceRuntime, CapabilityCollection, CapabilityCollectionWrite, ContextBundleManifest, MarketplaceCatalog, NodeDirectory, NodeRun, OpenHandsConversationEvent, PluginSourceResolution, RunEvent, RuntimeConfirmationBatch, TerminalEnvironment, TerminalEnvironmentWrite, EnvironmentSetupSession, EnvironmentVersion, GatePolicy, WebsiteCredential, WebsiteCredentialWrite, FlowRunSchedule, FlowRunScheduleOccurrencePage, FlowRunScheduleWrite, FlowRunScheduleTemplate,
+  AgentAttachment, AgentConversation, AgentConversationContext, AgentConversationHead, AgentConversationInputReadiness, AgentConversationReference, AgentPendingConfirmation, AgentWorkDirectory, AgentWorkDirectoryList, AgentWorkspace, AgentWorkspaceCapability, AgentWorkspaceDetails, AgentWorkspaceMcpReadiness, AgentWorkspaceReference, AgentWorkspaceRuntime, AutomaticRecordConfigDocument, CapabilityCollection, CapabilityCollectionWrite, ContextBundleManifest, MarketplaceCatalog, NodeDirectory, NodeRun, OpenHandsConversationEvent, PluginSourceResolution, RunEvent, RuntimeConfirmationBatch, TerminalEnvironment, TerminalEnvironmentWrite, EnvironmentSetupSession, EnvironmentVersion, GatePolicy, WebsiteCredential, WebsiteCredentialWrite, FlowRunSchedule, FlowRunScheduleOccurrencePage, FlowRunScheduleWrite, FlowRunScheduleTemplate,
 } from '../types';
 import { deploymentBasePath } from '../deploymentPath';
 
@@ -476,6 +476,10 @@ export const api = {
     }))),
   copyAutomaticRecord: async (runId: string, recordId: string, name: string) =>
     automaticRecord(await request<AutomaticRunResponse>(`/flow-runs/${encodeURIComponent(runId)}/automatic-runs/${encodeURIComponent(recordId)}/copy`, json('POST', { name }))),
+  exportAutomaticRecordConfigs: (runId: string, recordIds: string[]) =>
+    request<AutomaticRecordConfigDocument>(`/flow-runs/${encodeURIComponent(runId)}/automatic-runs/config-exports`, json('POST', { record_ids: recordIds })),
+  importAutomaticRecordConfigs: async (runId: string, document: AutomaticRecordConfigDocument) =>
+    (await request<AutomaticRunResponse[]>(`/flow-runs/${encodeURIComponent(runId)}/automatic-runs/config-imports`, json('POST', document))).map(automaticRecord),
   startAutomaticRecord: async (runId: string, recordId: string, expected_row_version: number) =>
     automaticRecord(await request<AutomaticRunResponse>(`/flow-runs/${encodeURIComponent(runId)}/automatic-runs/${encodeURIComponent(recordId)}/start`, json('POST', { expected_row_version }, true))),
   upgradeAutomaticRecordLegacyPlan: async (runId: string, recordId: string, expected_row_version: number) =>

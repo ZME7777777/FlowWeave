@@ -17,6 +17,8 @@ from flowweave.shared.schemas import (
     ArtifactWrite,
     AttemptStartWrite,
     AttemptVersionWrite,
+    AutomaticRecordConfigExportWrite,
+    AutomaticRecordConfigImportWrite,
     AutomaticRunCopyWrite,
     AutomaticRunDraftUpdateWrite,
     AutomaticRunDraftWrite,
@@ -270,6 +272,30 @@ async def copy_nested_automatic_run(
             service.nested_automatic_run(session, parent_run_id, run_id),
             service.copy_automatic_run_draft(session, run_id, payload),
         )[1],
+    )
+
+
+@router.post("/flow-runs/{parent_run_id}/automatic-runs/config-exports")
+async def export_nested_automatic_run_configs(
+    parent_run_id: str, payload: AutomaticRecordConfigExportWrite, db: Db
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: service.export_nested_automatic_run_configs(
+            session, parent_run_id, payload
+        ),
+    )
+
+
+@router.post("/flow-runs/{parent_run_id}/automatic-runs/config-imports", status_code=201)
+async def import_nested_automatic_run_configs(
+    parent_run_id: str, payload: AutomaticRecordConfigImportWrite, db: Db
+) -> list[dict[str, Any]]:
+    return await run_sync(
+        db,
+        lambda session: service.import_nested_automatic_run_configs(
+            session, parent_run_id, payload
+        ),
     )
 
 

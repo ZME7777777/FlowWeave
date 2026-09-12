@@ -109,6 +109,8 @@ from flowweave.shared.schemas import (
     ArtifactWrite,
     AttemptStartWrite,
     AttemptVersionWrite,
+    AutomaticRecordConfigExportWrite,
+    AutomaticRecordConfigImportWrite,
     AutomaticRunCopyWrite,
     AutomaticRunDraftUpdateWrite,
     AutomaticRunDraftWrite,
@@ -4282,6 +4284,128 @@ def copy_automatic_run_draft(
         )
     finish(db)
     return run_detail(db, copied.id)
+
+
+def _portable_automatic_agent_preset(raw: object) -> dict[str, Any]:
+    preset = cast(dict[str, Any], raw if isinstance(raw, dict) else {})
+    return {
+        "capability_version_ids": list(preset.get("capability_version_ids") or []),
+        "model_provider_id": preset.get("model_provider_id"),
+        "model_name": preset.get("model_name"),
+        "reasoning_effort": preset.get("reasoning_effort"),
+        "fallback_models": copy.deepcopy(list(preset.get("fallback_models") or [])),
+        "node_context_enabled": bool(preset.get("node_context_enabled")),
+        "node_context_prompt": preset.get("node_context_prompt"),
+    }
+
+
+def _portable_automatic_gate(raw: object) -> dict[str, Any]:
+    gate = cast(dict[str, Any], raw if isinstance(raw, dict) else {})
+    preset = cast(dict[str, Any], gate.get("agent_preset") or {})
+    return {
+        "stage": gate.get("stage"),
+        "position": gate.get("position"),
+        "gate_type": gate.get("gate_type", "PROMPT"),
+        "enabled": bool(gate.get("enabled", True)),
+        "timeout_seconds": gate.get("timeout_seconds", 300),
+        "config": copy.deepcopy(dict(gate.get("config") or {})),
+        "agent_preset": {
+            "model_provider_id": preset.get("model_provider_id"),
+            "model_name": preset.get("model_name"),
+            "reasoning_effort": preset.get("reasoning_effort"),
+        },
+    }
+
+
+def _portable_automatic_node_plans(raw: object) -> dict[str, Any]:
+    plans = cast(dict[str, Any], raw if isinstance(raw, dict) else {})
+    portable: dict[str, Any] = {}
+    for node_key, raw_plan in plans.items():
+        plan = cast(dict[str, Any], raw_plan if isinstance(raw_plan, dict) else {})
+        # Artifact IDs are FlowRun-scoped and files cannot be safely represented
+        # in clipboard JSON. Keep only explicit URL inputs.
+        portable[str(node_key)] = {
+            "startup_prompt": plan.get("startup_prompt"),
+            "agent_preset": _portable_automatic_agent_preset(plan.get("agent_preset")),
+            "gates": [_portable_automatic_gate(gate) for gate in list(plan.get("gates") or [])],
+            "artifact_ids": {},
+            "input_urls": copy.deepcopy(dict(plan.get("input_urls") or {})),
+        }
+    return portable
+
+
+def export_nested_automatic_run_configs(
+    db: Session, parent_run_id: str, payload: AutomaticRecordConfigExportWrite
+) -> dict[str, Any]:
+    """Export only portable initial metadata from selected continuous records.
+
+    Environments, artifacts, files, runtime details, conversations, events and
+    all execution outcomes intentionally remain outside this document.
+    """
+
+    parent = _run(db, parent_run_id)
+    records = [nested_automatic_run(db, parent.id, record_id) for record_id in payload.record_ids]
+    return {
+        "format": "flowweave.continuous-record-config",
+        "version": 1,
+        "exported_at": now().isoformat(),
+        "source": {
+            "flow_definition_id": parent.flow_definition_id,
+            "flow_run_id": parent.id,
+        },
+        "records": [
+            {
+                "name": record.name,
+                "start_node_key": str(
+                    (record.automation_plan_json or {}).get("start_node_key") or ""
+                ),
+                "node_plans": _portable_automatic_node_plans(
+                    (record.automation_plan_json or {}).get("node_plans")
+                ),
+            }
+            for record in records
+        ],
+    }
+
+
+def import_nested_automatic_run_configs(
+    db: Session, parent_run_id: str, payload: AutomaticRecordConfigImportWrite
+) -> list[dict[str, Any]]:
+    """Create clean continuous-record drafts beneath the current FlowRun.
+
+    The target parent supplies the Environment Version. Imported documents do
+    not select or replace an Environment and never restore execution state.
+    """
+
+    parent = _run(db, parent_run_id)
+    if parent.run_mode != "MANUAL":
+        raise illegal("continuous records require a standard parent FlowRun", state=parent.state)
+    if parent.environment_version_id is None:
+        raise DomainError(
+            "RUN_ENVIRONMENT_REQUIRED", "parent FlowRun has no Environment Version", 409
+        )
+    imported: list[dict[str, Any]] = []
+    for record in payload.records:
+        imported.append(
+            create_nested_automatic_run_draft(
+                db,
+                parent.id,
+                AutomaticRunDraftWrite(
+                    name=record.name,
+                    environment_version_id=parent.environment_version_id,
+                    start_node_key=record.start_node_key,
+                    node_plans=record.node_plans,
+                ),
+            )
+        )
+    _event(
+        db,
+        parent.id,
+        "AUTOMATIC_RECORD_CONFIG_IMPORTED",
+        {"record_count": len(imported), "format": payload.format, "version": payload.version},
+    )
+    finish(db)
+    return imported
 
 
 def _copy_automatic_plan_artifact(

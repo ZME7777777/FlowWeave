@@ -572,6 +572,36 @@ class AutomaticRunCopyWrite(ApiModel):
     name: str | None = Field(default=None, max_length=220)
 
 
+class AutomaticRecordConfigExportWrite(ApiModel):
+    """Export initial configuration from one or more continuous records."""
+
+    record_ids: list[str] = Field(min_length=1, max_length=100)
+
+    @model_validator(mode="after")
+    def validate_record_ids(self) -> AutomaticRecordConfigExportWrite:
+        if len(self.record_ids) != len(set(self.record_ids)):
+            raise ValueError("record_ids must be unique")
+        return self
+
+
+class AutomaticRecordConfigWrite(ApiModel):
+    """Portable metadata, deliberately without Environment or Runtime state."""
+
+    name: str | None = Field(default=None, max_length=220)
+    start_node_key: str = Field(pattern=r"^[A-Za-z][A-Za-z0-9_-]{0,99}$")
+    node_plans: dict[str, AutomaticNodePlanWrite] = Field(default_factory=dict, max_length=200)
+
+
+class AutomaticRecordConfigImportWrite(ApiModel):
+    """Versioned JSON document used to import continuous-record configuration."""
+
+    format: Literal["flowweave.continuous-record-config"]
+    version: Literal[1]
+    exported_at: str | None = Field(default=None, max_length=64)
+    source: dict[str, str] | None = None
+    records: list[AutomaticRecordConfigWrite] = Field(min_length=1, max_length=100)
+
+
 class NodeRunCopyWrite(ApiModel):
     """Create a fresh manual record from a prior record's launch configuration."""
 

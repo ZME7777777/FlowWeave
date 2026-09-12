@@ -457,6 +457,66 @@ def test_new_standard_flow_run_remains_manual(client):
     assert created.json()["automation_plan"] is None
 
 
+def test_nested_automatic_record_config_export_import_uses_current_parent_environment(
+    worker_client,
+):
+    flow = _create_flow(worker_client)
+    parent = worker_client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={
+            "name": "配置导入目标",
+            "environment_version_id": worker_client.environment_version_id,
+        },
+    ).json()
+    created = worker_client.post(
+        f"/api/v1/flow-runs/{parent['id']}/automatic-runs",
+        json={
+            "name": "可导出的连续记录",
+            "environment_version_id": worker_client.environment_version_id,
+            "start_node_key": "first",
+            "node_plans": {
+                "first": _node_plan(
+                    worker_client, "导出起点配置", input_url="https://example.com/exported"
+                ),
+                "second": _node_plan(worker_client, "导出下游配置"),
+            },
+        },
+    )
+    assert created.status_code == 201, created.text
+    source = created.json()
+
+    exported_response = worker_client.post(
+        f"/api/v1/flow-runs/{parent['id']}/automatic-runs/config-exports",
+        json={"record_ids": [source["id"]]},
+    )
+    assert exported_response.status_code == 200, exported_response.text
+    exported = exported_response.json()
+    assert exported["format"] == "flowweave.continuous-record-config"
+    assert exported["version"] == 1
+    assert "environment_version_id" not in exported
+    assert exported["records"][0]["node_plans"]["first"]["artifact_ids"] == {}
+    assert exported["records"][0]["node_plans"]["first"]["input_urls"] == {
+        "source": "https://example.com/exported"
+    }
+
+    imported_response = worker_client.post(
+        f"/api/v1/flow-runs/{parent['id']}/automatic-runs/config-imports",
+        json=exported,
+    )
+    assert imported_response.status_code == 201, imported_response.text
+    imported = imported_response.json()
+    assert len(imported) == 1
+    assert imported[0]["id"] != source["id"]
+    assert imported[0]["parent_flow_run_id"] == parent["id"]
+    assert imported[0]["environment_version_id"] == parent["environment_version_id"]
+    assert imported[0]["state"] == "DRAFT"
+    assert imported[0]["node_runs"] == []
+    assert imported[0]["artifacts"] == []
+    assert imported[0]["automation_plan"]["node_plans"]["first"]["input_urls"] == {
+        "source": "https://example.com/exported"
+    }
+
+
 def test_nested_automatic_records_are_scoped_and_share_parent_runtime(
     worker_client, worker_container, db_session_factory
 ):

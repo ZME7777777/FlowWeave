@@ -395,6 +395,15 @@ export interface FlowRunAutomaticRecordUpdate {
   expected_row_version: number; name: string; start_node_key: string;
   node_plans: Record<string, AutomaticNodePlan>;
 }
+export interface AutomaticRecordConfig {
+  name?: string | null; start_node_key: string;
+  node_plans: Record<string, AutomaticNodePlan>;
+}
+export interface AutomaticRecordConfigDocument {
+  format: 'flowweave.continuous-record-config'; version: 1;
+  exported_at?: string; source?: { flow_definition_id?: string; flow_run_id?: string };
+  records: AutomaticRecordConfig[];
+}
 export interface SnapshotFlowNode extends FlowNode { asset: NodeAsset }
 export interface SnapshotDefinition extends Omit<FlowDefinition, 'nodes'> {
   nodes: SnapshotFlowNode[];
