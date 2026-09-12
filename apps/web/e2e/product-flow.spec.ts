@@ -1223,14 +1223,19 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     type: 'event',
     event: { id: 'live-file-result', event_type: 'TOOL_RESULT', payload: { parent_id: 'live-file-action', action_id: 'live-file-action', tool_call_id: 'live-file-call', tool_name: 'file_editor', event_name: 'FileEditorObservation', details: { command: 'str_replace', path: '/runtime/workspace/project/src/live.ts', old_content: 'const live = false;', new_content: 'const live = true;', is_error: false }, timestamp: new Date().toISOString() } },
   }));
-  const liveOverlays = page.getByLabel('会话实时状态');
-  await expect(liveOverlays).toBeVisible();
-  await expect(liveOverlays.getByLabel('当前计划：1 / 3 已完成')).toBeVisible();
-  await expect(liveOverlays.getByLabel('本轮已更改 1 个文件')).toBeVisible();
-  await expect(liveOverlays).toHaveCSS('flex-direction', 'row');
+  const taskPlan = page.getByLabel('当前任务计划');
+  await expect(taskPlan).toBeVisible();
+  await expect(taskPlan.getByLabel('当前计划：1 / 3 已完成')).toBeVisible();
+  await expect(taskPlan).not.toHaveAttribute('open', '');
+  await expect(page.getByLabel('会话实时状态')).toHaveCount(0);
+  await expect(page.getByLabel('本轮已更改 1 个文件')).toHaveCount(0);
+  await taskPlan.hover();
+  await expect(taskPlan).toHaveAttribute('open', '');
+  await expect(taskPlan.locator('[data-current-task=true]')).toContainText('验证提交结果');
   await expect(activeProcess.locator('.conversation-activity-stage').filter({ hasText: '验证提交结果' })).toContainText('阶段');
-  await liveOverlays.getByText('验证提交结果', { exact: true }).click();
-  await expect(liveOverlays.getByText('正在等待命令结果。')).toBeVisible();
+  await expect(taskPlan.getByText('正在等待命令结果。')).toBeVisible();
+  await page.locator('.agent-workbench-header').hover();
+  await expect(taskPlan).not.toHaveAttribute('open', '');
   agentStream!.send(JSON.stringify({
     type: 'event',
     event: { id: 'live-tool-result', event_type: 'TOOL_RESULT', payload: { parent_id: 'live-tool', action_id: 'live-tool', tool_call_id: 'live-call', tool_name: 'terminal', event_name: 'TerminalObservation', content: '/runtime/workspace/project', details: { command: 'pwd', exit_code: 0, is_error: false }, timestamp: new Date().toISOString() } },

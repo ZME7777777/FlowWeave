@@ -1,5 +1,5 @@
 import { Check, ChevronDown, ChevronRight, CircleAlert, Copy, ExternalLink, FileText, GitFork, Link, LoaderCircle, PanelRightOpen, Pencil, Quote, Sparkles, SquareTerminal, Wrench } from 'lucide-react';
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type PointerEvent as ReactPointerEvent } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type PointerEvent as ReactPointerEvent, type RefObject } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { AgentActivitySummary, AgentAttachment, AgentConversationReference, AgentWorkspaceReference, OpenHandsConversationEvent, RuntimeTaskControlSnapshot } from '../types';
@@ -94,10 +94,10 @@ function TaskStatusIcon({ status }: { status: TaskListStatus }) {
     : <span className={`conversation-task-status-icon ${status}`} aria-label={taskStatusLabel(status)}>{status === 'in_progress' && <i/>}</span>;
 }
 
-function TaskListItems({ items, source }: { items: TaskListItem[]; source?: string }) {
+function TaskListItems({ items, source, currentTaskIndex, currentTaskRef }: { items: TaskListItem[]; source?: string; currentTaskIndex?: number; currentTaskRef?: RefObject<HTMLLIElement | null> }) {
   if (!items.length) return <p className="conversation-task-list-empty">当前没有任务。</p>;
   return <ol className="conversation-task-list">
-    {items.map((task, index) => <li key={`${index}:${task.title}`}>
+    {items.map((task, index) => <li key={`${index}:${task.title}`} ref={index === currentTaskIndex ? currentTaskRef : undefined} data-current-task={index === currentTaskIndex || undefined}>
       <details>
         <summary><TaskStatusIcon status={task.status}/><span><b>{task.title}</b><small>{taskStatusLabel(task.status)}</small></span><ChevronRight size={13}/></summary>
         <div className="conversation-task-detail">
@@ -139,36 +139,32 @@ function currentTurnEvents(events: OpenHandsConversationEvent[]): OpenHandsConve
   return userEventIndex >= 0 ? events.slice(userEventIndex) : [];
 }
 
-function CurrentTaskPlan({ snapshot }: { snapshot: TaskListSnapshot }) {
-  const completed = snapshot.items.filter(item => item.status === 'done').length;
-  return <details className="conversation-live-task-plan" open>
-    <summary aria-label={`当前计划：${completed} / ${snapshot.items.length} 已完成`}>
+export function ConversationTaskPlan({ events, isGenerating }: { events: OpenHandsConversationEvent[]; isGenerating: boolean }) {
+  const currentEvents = useMemo(() => currentTurnEvents(events), [events]);
+  const snapshot = useMemo(() => latestCurrentTaskList(currentEvents), [currentEvents]);
+  const [expanded, setExpanded] = useState(false);
+  const planBodyRef = useRef<HTMLDivElement>(null);
+  const currentTaskRef = useRef<HTMLLIElement>(null);
+  const currentTaskIndex = snapshot?.items.findIndex(item => item.status === 'in_progress') ?? -1;
+  const completed = snapshot?.items.filter(item => item.status === 'done').length ?? 0;
+  const showPlan = isGenerating && snapshot && snapshot.items.some(item => item.status !== 'done');
+
+  useLayoutEffect(() => {
+    if (!expanded || currentTaskIndex < 0 || !planBodyRef.current || !currentTaskRef.current) return;
+    const body = planBodyRef.current;
+    const task = currentTaskRef.current;
+    body.scrollTop = Math.max(0, task.offsetTop - (body.clientHeight - task.offsetHeight) / 2);
+  }, [currentTaskIndex, expanded, snapshot]);
+
+  if (!showPlan || !snapshot) return null;
+  return <details className="conversation-live-task-plan" aria-label="当前任务计划" open={expanded} onMouseEnter={() => setExpanded(true)} onMouseLeave={() => setExpanded(false)} onFocusCapture={() => setExpanded(true)} onBlurCapture={event => { if (!event.currentTarget.contains(event.relatedTarget)) setExpanded(false); }}>
+    <summary aria-label={`当前计划：${completed} / ${snapshot.items.length} 已完成`} onClick={event => event.preventDefault()} onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') event.preventDefault(); }}>
       <Check size={15}/><span><b>当前计划</b><small>{`${completed} / ${snapshot.items.length} 已完成`}</small></span><ChevronRight size={14}/>
     </summary>
-    <div className="conversation-live-task-plan-body">
-      <TaskListItems items={snapshot.items} source={snapshot.timestamp ? `OpenHands 原生任务事件 · ${formatMessageTime(snapshot.timestamp)}` : 'OpenHands 原生任务事件'}/>
+    <div ref={planBodyRef} className="conversation-live-task-plan-body">
+      <TaskListItems items={snapshot.items} currentTaskIndex={currentTaskIndex >= 0 ? currentTaskIndex : undefined} currentTaskRef={currentTaskRef} source={snapshot.timestamp ? `OpenHands 原生任务事件 · ${formatMessageTime(snapshot.timestamp)}` : 'OpenHands 原生任务事件'}/>
     </div>
   </details>;
-}
-
-export function ConversationLiveOverlays({ events, isGenerating, onReviewChanges, workspaceRoot }: {
-  events: OpenHandsConversationEvent[];
-  isGenerating: boolean;
-  onReviewChanges?: (changes: WorkspaceFileChange[]) => void;
-  workspaceRoot?: string | null;
-}) {
-  const currentEvents = useMemo(() => currentTurnEvents(events), [events]);
-  const taskSnapshot = useMemo(() => latestCurrentTaskList(currentEvents), [currentEvents]);
-  const changes = useMemo(() => isGenerating ? workspaceFileChanges(currentEvents) : [], [currentEvents, isGenerating]);
-  const showPlan = isGenerating && taskSnapshot && taskSnapshot.items.some(item => item.status !== 'done');
-  if (!showPlan && !changes.length) return null;
-  return <aside className="conversation-live-overlays" aria-label="会话实时状态">
-    {showPlan && <CurrentTaskPlan snapshot={taskSnapshot}/>}
-    {changes.length > 0 && <section className="conversation-live-file-changes" aria-label={`本轮已更改 ${changes.length} 个文件`}>
-      <button type="button" onClick={() => onReviewChanges?.(changes)}><FileText size={14}/><span><b>{`已更改 ${changes.length} 个文件`}</b><small><ins>{`+${changes.reduce((total, change) => total + change.additions, 0)}`}</ins><del>{`-${changes.reduce((total, change) => total + change.deletions, 0)}`}</del></small></span><PanelRightOpen size={13}/></button>
-      <div>{changes.map(change => <button type="button" key={change.id} onClick={() => onReviewChanges?.([change])} title={`审查 ${workspaceRelativePath(change.path, workspaceRoot)}`}><span>{workspaceRelativePath(change.path, workspaceRoot)}</span><ins>{`+${change.additions}`}</ins><del>{`-${change.deletions}`}</del></button>)}</div>
-    </section>}
-  </aside>;
 }
 
 type TurnProcessBlock =
