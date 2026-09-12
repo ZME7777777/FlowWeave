@@ -214,6 +214,10 @@
    outside one, no rail geometry is reserved and the tool surface fills width. */
 .agent-git-file-diff-review>header{justify-content:space-between;gap:10px}.agent-git-file-diff-review>header>div:first-child{min-width:0}.agent-git-file-diff-empty{display:grid;place-content:center;margin:0;padding:24px;color:#748078;font:10px/1.55 'DM Mono',ui-monospace,monospace;text-align:center}
 
+/* A review may open the current authorized source file without treating the
+   captured diff text as a substitute for the workspace file. */
+.agent-changes-diff-actions{display:flex;flex:0 0 auto;align-items:center;gap:6px}.agent-open-source-file{display:flex;align-items:center;gap:4px;border:1px solid #c8dace;border-radius:5px;background:#f7fbf8;padding:4px 6px;color:#286140;font-size:9px;white-space:nowrap}.agent-open-source-file:hover,.agent-open-source-file:focus-visible{border-color:#8dbba0;background:#eaf5ed;outline:0}.agent-diff-line{width:100%;border:0;background:transparent;padding:0;font:inherit;text-align:left}.agent-diff-line:not(.empty){cursor:pointer}.agent-diff-line:not(.empty):hover,.agent-diff-line:not(.empty):focus-visible{outline:2px solid #79ad8a;outline-offset:-2px}
+
 /* Keep Diff modes in the same horizontal, borderless tab family as the
    workspace's review tab.  This override deliberately follows the shared
    Diff base styles above, which otherwise restore the legacy bordered group. */

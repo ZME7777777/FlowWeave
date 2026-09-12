@@ -1386,12 +1386,14 @@ function selectPreviewText(root: HTMLElement, content: string, selection: FileSe
   if (!range) return;
   const browserSelection = window.getSelection();
   browserSelection?.removeAllRanges(); browserSelection?.addRange(range);
-  root.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  // The preview itself is the scroll container. Scrolling it into view does
+  // not reveal a deep line, whereas the range's rendered text node does.
+  range.startContainer.parentElement?.scrollIntoView({ block: 'center', behavior: 'smooth' });
 }
 
 interface WorkspaceSelectionRect { left: number; top: number; width: number; height: number; }
 
-function WorkspaceTextPreview({ path, content, highlight, onSelect }: { path: string; content: string; highlight?: FileSelection; onSelect?: (selection: FileSelection) => void }) {
+function WorkspaceTextPreview({ path, content, highlight, highlightLine, onSelect }: { path: string; content: string; highlight?: FileSelection; highlightLine?: number; onSelect?: (selection: FileSelection) => void }) {
   const previewRef = useRef<HTMLDivElement>(null);
   const [selectionAction, setSelectionAction] = useState<{ selection: FileSelection; left: number; top: number; highlights: WorkspaceSelectionRect[] }>();
   const positionSelectionAction = useCallback((selection: FileSelection, range: Range) => {
@@ -1425,13 +1427,20 @@ function WorkspaceTextPreview({ path, content, highlight, onSelect }: { path: st
     });
   }, []);
   useEffect(() => {
-    if (!highlight || !previewRef.current) return;
-    selectPreviewText(previewRef.current, content, highlight);
+    const line = highlightLine && highlightLine > 0
+      ? Math.min(highlightLine, Math.max(1, content.split('\n').length))
+      : undefined;
+    const lineSelection = line
+      ? { start_line: line, start_column: 1, end_line: line, end_column: (content.split('\n')[line - 1]?.length ?? 0) + 1 }
+      : undefined;
+    const selection = highlight ?? lineSelection;
+    if (!selection || !previewRef.current) return;
+    selectPreviewText(previewRef.current, content, selection);
     const timer = window.setTimeout(() => { window.getSelection()?.removeAllRanges(); previewRef.current?.classList.remove('workspace-selection-flash'); }, 1_600);
     previewRef.current.classList.add('workspace-selection-flash');
     previewRef.current.scrollIntoView({ block: 'center', behavior: 'smooth' });
     return () => window.clearTimeout(timer);
-  }, [content, highlight]);
+  }, [content, highlight, highlightLine]);
   const captureSelection = () => {
     if (!previewRef.current) return;
     const selection = selectionFromPreview(previewRef.current, content);
@@ -1450,7 +1459,21 @@ function WorkspaceTextPreview({ path, content, highlight, onSelect }: { path: st
   return <div ref={previewRef} className="agent-file-preview-selection" onMouseUp={captureSelection}>{action}<pre className={`agent-file-code-preview${language ? ' highlighted' : ''}`}><code dangerouslySetInnerHTML={{ __html: highlightedCode(content, language) }}/></pre></div>;
 }
 
-function WorkspaceChangesReview({ changes, selectedId, onSelect, workspaceRoot }: { changes: WorkspaceFileChange[]; selectedId?: string; onSelect: (id: string) => void; workspaceRoot?: string }) {
+function sourceLineForDiffLine(lines: WorkspaceFileChange['lines'], selectedIndex: number): number {
+  const selected = lines[selectedIndex];
+  if (selected?.newLine) return selected.newLine;
+  // A removed line no longer has a source coordinate. Land on the following
+  // surviving/new line, or the preceding one when deletion reaches EOF.
+  for (let index = selectedIndex + 1; index < lines.length; index += 1) {
+    if (lines[index].newLine) return lines[index].newLine!;
+  }
+  for (let index = selectedIndex - 1; index >= 0; index -= 1) {
+    if (lines[index].newLine) return lines[index].newLine!;
+  }
+  return 1;
+}
+
+function WorkspaceChangesReview({ changes, selectedId, onSelect, onOpenSource, workspaceRoot }: { changes: WorkspaceFileChange[]; selectedId?: string; onSelect: (id: string) => void; onOpenSource: (change: WorkspaceFileChange, line: number) => void; workspaceRoot?: string }) {
   const [mode, setMode] = useState<'unified' | 'split'>('split');
   const afterDiffRef = useRef<HTMLPreElement>(null);
   const beforeDiffContentRef = useRef<HTMLDivElement>(null);
@@ -1497,11 +1520,11 @@ function WorkspaceChangesReview({ changes, selectedId, onSelect, workspaceRoot }
     }
   };
   if (!selected) return <div className="agent-changes-empty"><b>没有可审查的文件改动</b><span>仅显示 OpenHands FileEditor 已成功写入、且带有原始前后内容的改动。</span></div>;
-  const renderLine = (line: WorkspaceFileChange['lines'][number], side: 'before' | 'after') => {
+  const renderLine = (line: WorkspaceFileChange['lines'][number], side: 'before' | 'after', index: number) => {
     const shown = side === 'before' ? line.kind !== 'addition' : line.kind !== 'deletion';
     if (!shown) return <div className="agent-diff-line empty" aria-hidden="true"/>;
     const number = side === 'before' ? line.oldLine : line.newLine;
-    return <div className={`agent-diff-line ${line.kind}`} key={`${side}:${line.oldLine ?? ''}:${line.newLine ?? ''}:${line.text}`}><i>{number ?? ''}</i><code>{line.text || ' '}</code></div>;
+    return <button type="button" className={`agent-diff-line ${line.kind}`} key={`${side}:${line.oldLine ?? ''}:${line.newLine ?? ''}:${line.text}`} title={`打开源文件第 ${sourceLineForDiffLine(selected.lines, index)} 行`} onClick={() => onOpenSource(selected, sourceLineForDiffLine(selected.lines, index))}><i>{number ?? ''}</i><code>{line.text || ' '}</code></button>;
   };
   return <section className="agent-changes-review">
     <nav className="agent-changes-file-list" aria-label="本轮修改的文件">
@@ -1509,8 +1532,8 @@ function WorkspaceChangesReview({ changes, selectedId, onSelect, workspaceRoot }
       {changes.map(change => <button key={change.id} type="button" className={change.id === selected.id ? 'active' : ''} onClick={() => onSelect(change.id)}><FileText size={14}/><span title={workspaceRelativePath(change.path, workspaceRoot)}>{workspaceRelativePath(change.path, workspaceRoot)}</span><em><ins>{`+${change.additions}`}</ins><del>{`-${change.deletions}`}</del></em></button>)}
     </nav>
     <article className="agent-changes-diff">
-      <header><div><b title={workspaceRelativePath(selected.path, workspaceRoot)}>{workspaceRelativePath(selected.path, workspaceRoot)}</b><small><ins>{`+${selected.additions}`}</ins><del>{`-${selected.deletions}`}</del></small></div><div className="agent-diff-mode"><button type="button" className={mode === 'unified' ? 'active' : ''} onClick={() => setMode('unified')}>统一</button><button type="button" className={mode === 'split' ? 'active' : ''} onClick={() => setMode('split')}>并排</button></div></header>
-      {mode === 'unified' ? <pre className="agent-diff-unified" onWheelCapture={stopDiffOverscroll}>{selected.lines.map(line => <div className={`agent-diff-line ${line.kind}`} key={`${line.oldLine ?? ''}:${line.newLine ?? ''}:${line.text}`}><i>{line.oldLine ?? line.newLine ?? ''}</i><strong>{line.kind === 'addition' ? '+' : line.kind === 'deletion' ? '-' : ' '}</strong><code>{line.text || ' '}</code></div>)}</pre> : <div className="agent-diff-split"><div className="agent-diff-before"><header>修改前</header><div ref={beforeDiffContentRef} className="agent-diff-before-content">{selected.lines.map(line => renderLine(line, 'before'))}</div></div><pre ref={afterDiffRef} onWheelCapture={stopDiffOverscroll} onScroll={syncAfterDiffScroll}><header>修改后</header>{selected.lines.map(line => renderLine(line, 'after'))}</pre></div>}
+      <header><div><b title={workspaceRelativePath(selected.path, workspaceRoot)}>{workspaceRelativePath(selected.path, workspaceRoot)}</b><small><ins>{`+${selected.additions}`}</ins><del>{`-${selected.deletions}`}</del></small></div><div className="agent-changes-diff-actions"><button type="button" className="agent-open-source-file" onClick={() => onOpenSource(selected, sourceLineForDiffLine(selected.lines, selected.lines.findIndex(line => line.kind !== 'deletion')))}><FileCode2 size={12}/>查看源文件</button><div className="agent-diff-mode"><button type="button" className={mode === 'unified' ? 'active' : ''} onClick={() => setMode('unified')}>统一</button><button type="button" className={mode === 'split' ? 'active' : ''} onClick={() => setMode('split')}>并排</button></div></div></header>
+      {mode === 'unified' ? <pre className="agent-diff-unified" onWheelCapture={stopDiffOverscroll}>{selected.lines.map((line, index) => <button type="button" className={`agent-diff-line ${line.kind}`} key={`${line.oldLine ?? ''}:${line.newLine ?? ''}:${line.text}`} title={`打开源文件第 ${sourceLineForDiffLine(selected.lines, index)} 行`} onClick={() => onOpenSource(selected, sourceLineForDiffLine(selected.lines, index))}><i>{line.oldLine ?? line.newLine ?? ''}</i><strong>{line.kind === 'addition' ? '+' : line.kind === 'deletion' ? '-' : ' '}</strong><code>{line.text || ' '}</code></button>)}</pre> : <div className="agent-diff-split"><div className="agent-diff-before"><header>修改前</header><div ref={beforeDiffContentRef} className="agent-diff-before-content">{selected.lines.map((line, index) => renderLine(line, 'before', index))}</div></div><pre ref={afterDiffRef} onWheelCapture={stopDiffOverscroll} onScroll={syncAfterDiffScroll}><header>修改后</header>{selected.lines.map((line, index) => renderLine(line, 'after', index))}</pre></div>}
     </article>
   </section>;
 }
@@ -2213,6 +2236,7 @@ function WorkspaceDrawer({
   const handledCandidatePreviewRequestKey = useRef<string | undefined>(undefined);
   const handledReviewRequestId = useRef<string | undefined>(undefined);
   const [candidatePreview, setCandidatePreview] = useState<CandidateFilePreviewRequest>();
+  const [sourceFileNavigation, setSourceFileNavigation] = useState<{ path: string; line: number }>();
   const [selectedEntryPaths, setSelectedEntryPaths] = useState<Set<string>>(new Set());
   const [activeDirectory, setActiveDirectory] = useState<string>();
   const [gitContextPath, setGitContextPath] = useState<string>();
@@ -2402,6 +2426,17 @@ function WorkspaceDrawer({
     }
     updateScope(current => ({ ...current, selectedFile: undefined }));
   };
+  const openSourceFile = useCallback((change: WorkspaceFileChange, line: number) => {
+    const workingDirectory = details?.working_directory?.replace(/\/+$/, '');
+    const relativePath = change.path.replace(/^\.?\//, '');
+    const sourcePath = visibleFiles.find(file => file.path === change.path)?.path
+      ?? visibleFiles.find(file => file.path === `${workingDirectory}/${relativePath}`)?.path
+      ?? visibleFiles.find(file => file.path.endsWith(`/${relativePath}`))?.path
+      ?? (workingDirectory ? `${workingDirectory}/${relativePath}` : change.path);
+    setCandidatePreview(undefined);
+    setSourceFileNavigation({ path: sourcePath, line });
+    openFiles(sourcePath);
+  }, [details?.working_directory, openFiles]);
   const selectedEntryRoots = useMemo(() => [...selectedEntryPaths].filter(path => ![...selectedEntryPaths].some(other => other !== path && path.startsWith(`${other}/`))), [selectedEntryPaths]);
   const removeEntries = async (items: Array<{ path: string; kind: 'file' | 'directory' }>) => {
     if (!api.deleteFile || !items.length) return;
@@ -2564,10 +2599,10 @@ function WorkspaceDrawer({
               <iframe className="agent-file-media-preview" sandbox="" title={`${candidatePreview.filename} 候选文件预览`} src={candidatePreview.url}/>
             </> : selectedFile ? <>
               <header><span title={selectedFile}>{selectedAttachment?.filename || relativeWorkspacePath(selectedFile, details.root)}</span><a href={fileUrl(workspaceId, selectedFile, { bindingId, workDirectoryId, download: true })}><Download size={13}/>下载</a></header>
-              {canPreviewImage ? <img className="agent-file-media-preview" src={selectedAttachment?.image_data_url || selectedFileUrl} alt={selectedAttachment?.filename || '附件预览'}/> : canPreviewPdf ? <iframe className="agent-file-media-preview" title={selectedAttachment?.filename || 'PDF 预览'} src={selectedFileUrl}/> : textPreviewable ? previewQuery.isLoading ? <p>正在读取文件…</p> : previewQuery.isError ? <p>文件预览不可用，请下载后查看。</p> : <WorkspaceTextPreview path={selectedFile} content={previewQuery.data ?? ''} highlight={highlightedFileSelection?.path === selectedFile ? highlightedFileSelection.selection : undefined} onSelect={selection => { onAddFileSelection?.(selectedFile, selection); onClose(); }}/> : <p>此文件不提供浏览器预览，请下载后查看。</p>}
+              {canPreviewImage ? <img className="agent-file-media-preview" src={selectedAttachment?.image_data_url || selectedFileUrl} alt={selectedAttachment?.filename || '附件预览'}/> : canPreviewPdf ? <iframe className="agent-file-media-preview" title={selectedAttachment?.filename || 'PDF 预览'} src={selectedFileUrl}/> : textPreviewable ? previewQuery.isLoading ? <p>正在读取文件…</p> : previewQuery.isError ? <p>文件预览不可用，请下载后查看。</p> : <WorkspaceTextPreview path={selectedFile} content={previewQuery.data ?? ''} highlight={highlightedFileSelection?.path === selectedFile ? highlightedFileSelection.selection : undefined} highlightLine={sourceFileNavigation?.path === selectedFile ? sourceFileNavigation.line : undefined} onSelect={selection => { onAddFileSelection?.(selectedFile, selection); onClose(); }}/> : <p>此文件不提供浏览器预览，请下载后查看。</p>}
             </> : <p>选择一个文件以预览或下载。</p>}</div>
           </section>}
-          {scopeState.tabs.some(tab => tab.kind === 'changes') && <div className={`agent-changes-tab-panel ${scopeState.activeTabId === 'changes' ? 'active' : ''}`}><WorkspaceChangesReview changes={reviewChanges} selectedId={scopeState.selectedChangeId} onSelect={selectedChangeId => updateScope(current => ({ ...current, selectedChangeId }))} workspaceRoot={details.working_directory}/></div>}
+          {scopeState.tabs.some(tab => tab.kind === 'changes') && <div className={`agent-changes-tab-panel ${scopeState.activeTabId === 'changes' ? 'active' : ''}`}><WorkspaceChangesReview changes={reviewChanges} selectedId={scopeState.selectedChangeId} onSelect={selectedChangeId => updateScope(current => ({ ...current, selectedChangeId }))} onOpenSource={openSourceFile} workspaceRoot={details.working_directory}/></div>}
           {scopeState.tabs.some(tab => tab.kind === 'sources') && <div className={`agent-changes-tab-panel ${scopeState.activeTabId === 'sources' ? 'active' : ''}`}><ConversationSourcesReview sources={sources} onOpenAttachment={attachment => { setCandidatePreview(undefined); selectFile(attachment.path); }}/></div>}
           {scopeState.tabs.filter((tab): tab is Extract<WorkspaceToolTab, { kind: 'git' }> => tab.kind === 'git').map(tab => <div key={tab.id} className={`agent-changes-tab-panel agent-git-commit-tab ${scopeState.activeTabId === tab.id ? 'active' : ''}`}><WorkspaceGitFileDiffReview details={tab.details} diff={tab.diff}/></div>)}
           {scopeState.tabs.some(tab => tab.kind === 'subagents') && <div className={`agent-subagent-tab-panel ${scopeState.activeTabId === 'subagents' ? 'active' : ''}`}><RuntimeTaskTab tasks={runtimeTasks} definitions={agentDefinitions} selectedTaskId={scopeState.selectedRuntimeTaskId} onSelect={taskId => updateScope(current => ({ ...current, selectedRuntimeTaskId: taskId }))} sessionStopped={sessionStopped}/></div>}
