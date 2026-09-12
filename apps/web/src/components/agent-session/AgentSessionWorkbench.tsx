@@ -1815,14 +1815,15 @@ function WorkspaceFileTree({ entries, root, selectedFile, selectedPaths, expande
       setStickyDirectoryPaths(current => current.length ? [] : current);
       return;
     }
-    // The fixed path is an overlay, not part of the scrolling list.  Anchor
-    // against the first source row below that overlay: a row hidden entirely
-    // beneath it must not keep its directory pinned after its contents have
-    // scrolled past.
-    const visibleTop = tree.scrollTop + (overlay?.offsetHeight ?? 0);
+    // The fixed path is an overlay, not part of the scrolling list. Anchor
+    // against the first source row below its actual painted boundary. Using
+    // scroll offsets here leaves a one-row error when the overlay changes
+    // depth: a fully covered directory can remain pinned after its subtree
+    // has already scrolled past.
+    const visibleTop = overlay?.getBoundingClientRect().bottom ?? tree.getBoundingClientRect().top;
     const firstVisible = visibleNodes.find(({ node }) => {
       const row = rowRefs.current.get(node.path);
-      return row && row.offsetTop + row.offsetHeight > visibleTop + 1;
+      return row && row.getBoundingClientRect().bottom > visibleTop;
     });
     const next = firstVisible ? stickyDirectoriesFor(firstVisible.node) : [];
     setStickyDirectoryPaths(current => current.length === next.length && current.every((path, index) => path === next[index]) ? current : next);
