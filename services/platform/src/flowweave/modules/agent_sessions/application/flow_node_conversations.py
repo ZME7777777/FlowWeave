@@ -553,6 +553,10 @@ def _node_session_page_dicts(
             "working_directory": item.working_directory,
             "capabilities": capabilities_by_binding[item.id],
             "streaming_callback_ready": item.streaming_callback_ready,
+            # The sidebar uses this bounded DTO, rather than the selected
+            # session detail. Keep the detached Fork's independent write and
+            # delete permission visible there as well.
+            "write_available": item.node_attempt_id is None,
             "execution_status": (
                 "running" if item.openhands_conversation_id in running_conversation_ids else "idle"
             ),

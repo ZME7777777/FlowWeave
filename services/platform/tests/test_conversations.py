@@ -1190,6 +1190,14 @@ def test_completed_flow_run_keeps_node_source_read_only_but_allows_native_fork(
             == attempt_id
         )
         assert flow_node_conversations._node_session_dict(db, detached)["write_available"] is True
+        # The sidebar consumes the bounded page projection, so it needs the
+        # same per-conversation permission as the selected-session detail.
+        assert (
+            flow_node_conversations._node_session_page_dicts(db, [detached], set())[0][
+                "write_available"
+            ]
+            is True
+        )
         # Forks retain the source Attempt only as their display scope. Reading
         # their OpenHands history must therefore not require them to regain
         # node ownership.
