@@ -130,30 +130,6 @@ class AgentConversationMessageAttachment(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
-class AgentConversationAnnotation(Base):
-    """A user-authored collaboration comment anchored in a shared session surface."""
-
-    __tablename__ = "agent_conversation_annotations"
-    __table_args__ = (
-        CheckConstraint(
-            "anchor_kind IN ('CONVERSATION_TEXT', 'WORKSPACE_FILE_RANGE')",
-            name="ck_agent_conversation_annotation_anchor_kind",
-        ),
-        CheckConstraint(
-            "state IN ('OPEN', 'RESOLVED')", name="ck_agent_conversation_annotation_state"
-        ),
-    )
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
-    binding_id: Mapped[str] = mapped_column(String(36), index=True)
-    anchor_kind: Mapped[str] = mapped_column(String(30))
-    anchor_json: Mapped[dict[str, object]] = mapped_column(JSON)
-    comment: Mapped[str] = mapped_column(Text)
-    state: Mapped[str] = mapped_column(String(20), default="OPEN", index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
-
-
 class AgentConversationCapability(Base):
     """Immutable capability-version provenance frozen for one conversation."""
 
@@ -299,7 +275,6 @@ event.listen(AgentConversationCommand, "before_insert", _normalize_default_host)
 
 __all__ = (
     "AgentConversationBinding",
-    "AgentConversationAnnotation",
     "AgentConversationCapability",
     "AgentConversationCommand",
     "AgentConversationMessageAttachment",

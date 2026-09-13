@@ -27,7 +27,6 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from flowweave.bootstrap.container import Container
 from flowweave.modules.agent_sessions import public as agent_sessions
-from flowweave.modules.agent_sessions.application import annotations
 from flowweave.modules.agent_sessions.application.runtime_config import resolve_session_config
 from flowweave.modules.agent_workspaces import public as agent_workspace_host
 from flowweave.modules.environments import public as environments
@@ -81,16 +80,6 @@ class NodeWorkspaceReference(_Write):
     selection: dict[str, int] | None = None
 
 
-class NodeSessionAnnotationWrite(_Write):
-    anchor_kind: Literal["CONVERSATION_TEXT", "WORKSPACE_FILE_RANGE"]
-    anchor: dict[str, Any]
-    comment: str = Field(min_length=1, max_length=10_000)
-
-
-class NodeSessionAnnotationCommentWrite(_Write):
-    comment: str = Field(min_length=1, max_length=10_000)
-
-
 class NodeSessionBootstrapFullWrite(_Write):
     conversation_id: str | None = Field(default=None, min_length=36, max_length=36)
     client_question_id: str | None = Field(default=None, min_length=1, max_length=100)
@@ -108,6 +97,7 @@ class NodeSessionBootstrapFullWrite(_Write):
     workspace_references: list[NodeWorkspaceReference] = cast(
         list[NodeWorkspaceReference], Field(default_factory=list, max_length=20)
     )
+    annotations: list[dict[str, Any]] = Field(default_factory=list, max_length=20)
 
 
 class NodeSessionMessageWrite(_Write):
@@ -121,6 +111,7 @@ class NodeSessionMessageWrite(_Write):
     workspace_references: list[NodeWorkspaceReference] = cast(
         list[NodeWorkspaceReference], Field(default_factory=list, max_length=20)
     )
+    annotations: list[dict[str, Any]] = Field(default_factory=list, max_length=20)
 
 
 class NodeConfirmationDecisionWrite(_Write):
@@ -403,6 +394,7 @@ async def bootstrap_node_session(
             ),
             references=tuple(item.model_dump() for item in payload.references),
             workspace_references=tuple(item.model_dump() for item in payload.workspace_references),
+            annotations=tuple(payload.annotations),
             legacy_image_urls=tuple(legacy_image_urls),
             conversation_id=payload.conversation_id,
             work_directory_id=payload.work_directory_id,
@@ -783,82 +775,6 @@ async def delete_node_session(
     return Response(status_code=204)
 
 
-@router.get(f"{_BASE}/{{binding_id}}/annotations")
-async def list_node_session_annotations(
-    flow_run_id: str, attempt_id: str, binding_id: str, db: Db
-) -> list[dict[str, Any]]:
-    return await run_sync(
-        db,
-        lambda session: (
-            agent_sessions.flow_node_conversations.get_node_session_view(
-                session, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
-            ),
-            annotations.list_annotations(session, binding_id),
-        )[1],
-    )
-
-
-@router.post(f"{_BASE}/{{binding_id}}/annotations", status_code=201)
-async def create_node_session_annotation(
-    flow_run_id: str, attempt_id: str, binding_id: str, payload: NodeSessionAnnotationWrite, db: Db
-) -> dict[str, Any]:
-    return await run_sync(
-        db,
-        lambda session: (
-            agent_sessions.flow_node_conversations.get_node_session_view(
-                session, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
-            ),
-            annotations.create_annotation(
-                session,
-                binding_id=binding_id,
-                anchor_kind=payload.anchor_kind,
-                anchor=payload.anchor,
-                comment=payload.comment,
-            ),
-        )[1],
-    )
-
-
-@router.patch(f"{_BASE}/{{binding_id}}/annotations/{{annotation_id}}")
-async def update_node_session_annotation(
-    flow_run_id: str,
-    attempt_id: str,
-    binding_id: str,
-    annotation_id: str,
-    payload: NodeSessionAnnotationCommentWrite,
-    db: Db,
-) -> dict[str, Any]:
-    return await run_sync(
-        db,
-        lambda session: (
-            agent_sessions.flow_node_conversations.get_node_session_view(
-                session, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
-            ),
-            annotations.update_annotation(
-                session, binding_id=binding_id, annotation_id=annotation_id, comment=payload.comment
-            ),
-        )[1],
-    )
-
-
-@router.delete(f"{_BASE}/{{binding_id}}/annotations/{{annotation_id}}", status_code=204)
-async def delete_node_session_annotation(
-    flow_run_id: str, attempt_id: str, binding_id: str, annotation_id: str, db: Db
-) -> Response:
-    await run_sync(
-        db,
-        lambda session: (
-            agent_sessions.flow_node_conversations.get_node_session_view(
-                session, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
-            ),
-            annotations.delete_annotation(
-                session, binding_id=binding_id, annotation_id=annotation_id
-            ),
-        ),
-    )
-    return Response(status_code=204)
-
-
 @router.get(f"{_BASE}/{{binding_id}}/events")
 async def node_session_events(
     flow_run_id: str,
@@ -1024,6 +940,7 @@ async def node_session_message(
             ),
             references=tuple(item.model_dump() for item in payload.references),
             workspace_references=tuple(item.model_dump() for item in payload.workspace_references),
+            annotations=tuple(payload.annotations),
         ),
     )
 

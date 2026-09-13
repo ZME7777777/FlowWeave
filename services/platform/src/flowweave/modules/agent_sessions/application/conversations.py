@@ -17,7 +17,6 @@ from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from flowweave.modules.agent_sessions.application import usage as usage_projection
-from flowweave.modules.agent_sessions.application import annotations as collaboration_annotations
 from flowweave.modules.agent_sessions.application.deletion import delete_binding_records
 from flowweave.modules.agent_sessions.application.event_branch import (
     complete_active_branch,
@@ -722,9 +721,7 @@ def conversation_head(db: Session, workspace_id: str, binding_id: str) -> dict[s
             )
         raise
     if metrics := current_metrics():
-        metrics.observe_operation(
-            "agent_session.head", time.monotonic() - started_at, outcome="ok"
-        )
+        metrics.observe_operation("agent_session.head", time.monotonic() - started_at, outcome="ok")
     return {"cursor": cursor}
 
 
@@ -1218,6 +1215,7 @@ def bootstrap_conversation(
     attachments: tuple[dict[str, str | int], ...] = (),
     references: tuple[dict[str, str], ...] = (),
     workspace_references: tuple[dict[str, str], ...] = (),
+    annotations: tuple[dict[str, Any], ...] = (),
     capability_version_ids: tuple[str, ...] = (),
     idempotency_key: str,
 ) -> dict[str, Any]:
@@ -1236,7 +1234,13 @@ def bootstrap_conversation(
             "新会话首条消息不能引用尚未存在的会话内容",
             422,
         )
-    if not message_text and not attachments and not references and not workspace_references:
+    if (
+        not message_text
+        and not attachments
+        and not references
+        and not workspace_references
+        and not annotations
+    ):
         raise DomainError("AGENT_MESSAGE_EMPTY", "消息不能为空", 422)
     normalized_workspace_references = _validated_workspace_references(workspace_references)
     workspace = _workspace(db, workspace_id)
@@ -1331,7 +1335,7 @@ def bootstrap_conversation(
         allow_provisioning=True,
     )
     prompt, image_urls = _message_payload(
-        message_text, attachments, (), normalized_workspace_references
+        message_text, attachments, (), normalized_workspace_references, annotations
     )
     _validate_attachment_owners(
         binding.id,
@@ -1725,13 +1729,15 @@ def events(
                     binding.working_directory or user_runtime_project_root(workspace.id)
                 ),
             )
-        display_content, references, workspace_references = _project_conversation_references(
-            str(payload.get("content") or "")
+        display_content, references, workspace_references, annotations = (
+            _project_conversation_references(str(payload.get("content") or ""))
         )
         if references:
             payload["conversation_references"] = list(references)
         if workspace_references:
             payload["workspace_references"] = list(workspace_references)
+        if annotations:
+            payload["collaboration_annotations"] = list(annotations)
         attachments = attachments_by_event.get(event.cursor, [])
         if attachments:
             payload["display_content"] = attachments[0].content
@@ -2100,8 +2106,15 @@ def message(
     attachments: tuple[dict[str, str | int], ...] = (),
     references: tuple[dict[str, str], ...] = (),
     workspace_references: tuple[dict[str, str], ...] = (),
+    annotations: tuple[dict[str, Any], ...] = (),
 ) -> dict[str, Any]:
-    if not content.strip() and not attachments and not references and not workspace_references:
+    if (
+        not content.strip()
+        and not attachments
+        and not references
+        and not workspace_references
+        and not annotations
+    ):
         raise DomainError("AGENT_MESSAGE_EMPTY", "消息不能为空", 422)
     workspace = _workspace(db, workspace_id)
     binding = _binding(db, workspace_id, binding_id, lock=True)
@@ -2115,8 +2128,7 @@ def message(
     )
     references = _resolve_conversation_references(get_runtime(), handle, references)
     prompt, image_urls = _message_payload(
-        content, attachments, references, workspace_references,
-        annotations=collaboration_annotations.prompt_annotations(db, binding.id),
+        content, attachments, references, workspace_references, annotations
     )
     if not binding.streaming_callback_ready:
         raise DomainError(
@@ -2465,7 +2477,9 @@ def _resolve_conversation_references(
                 "引用不在当前会话分支中或已不可读取，请重新选择",
                 422,
             )
-        visible, _references, _workspace_references = _project_conversation_references(content)
+        visible, _references, _workspace_references, _annotations = (
+            _project_conversation_references(content)
+        )
         resolved.append({"event_id": event_id, "content": visible.strip()})
     return _validated_conversation_references(tuple(resolved))
 
@@ -2551,7 +2565,12 @@ def _validated_workspace_references(
 
 def _project_conversation_references(
     content: str,
-) -> tuple[str, tuple[dict[str, str], ...], tuple[dict[str, str], ...]]:
+) -> tuple[
+    str,
+    tuple[dict[str, str], ...],
+    tuple[dict[str, str], ...],
+    tuple[dict[str, Any], ...],
+]:
     """Project transport envelopes back into the original browser transcript."""
 
     _prefix, marker, encoded = content.rpartition(_MESSAGE_CONTEXT_V5_MARKER)
@@ -2566,14 +2585,16 @@ def _project_conversation_references(
                 or not isinstance(current.get("content"), str)
                 or not isinstance(raw_references, list)
             ):
-                return content, (), ()
+                return content, (), (), ()
             references = _validated_conversation_references(tuple(raw_references))
             workspace_references = _validated_workspace_references(
                 tuple(parsed.get("workspace_references") or ())
             )
-            return current["content"].strip(), references, workspace_references
+            raw_annotations = parsed.get("collaboration_annotations")
+            annotations = tuple(raw_annotations) if isinstance(raw_annotations, list) else ()
+            return current["content"].strip(), references, workspace_references, annotations
         except (DomainError, TypeError, ValueError, json.JSONDecodeError):
-            return content, (), ()
+            return content, (), (), ()
 
     _prefix, marker, encoded = content.rpartition(_MESSAGE_CONTEXT_V4_MARKER)
     if marker:
@@ -2587,14 +2608,14 @@ def _project_conversation_references(
                 or not isinstance(current.get("content"), str)
                 or not isinstance(raw_references, list)
             ):
-                return content, (), ()
+                return content, (), (), ()
             references = _validated_conversation_references(tuple(raw_references))
             workspace_references = _validated_workspace_references(
                 tuple(parsed.get("workspace_references") or ())
             )
-            return current["content"].strip(), references, workspace_references
+            return current["content"].strip(), references, workspace_references, ()
         except (DomainError, TypeError, ValueError, json.JSONDecodeError):
-            return content, (), ()
+            return content, (), (), ()
 
     # v2/v3 were persisted briefly. Decode them so transport markers never
     # appear in a user bubble after reload, including when no references exist.
@@ -2615,15 +2636,15 @@ def _project_conversation_references(
                 or not isinstance(current.get("content"), str)
                 or not isinstance(raw_references, list)
             ):
-                return content, (), ()
+                return content, (), (), ()
             references = _validated_conversation_references(tuple(raw_references))
-            return current["content"].strip(), references, ()
+            return current["content"].strip(), references, (), ()
         except (DomainError, TypeError, ValueError, json.JSONDecodeError):
-            return content, (), ()
+            return content, (), (), ()
 
     visible, marker, encoded = content.rpartition(_CONVERSATION_REFERENCE_MARKER)
     if not marker:
-        return content, (), ()
+        return content, (), (), ()
     # Split before decoding so the new trailing current-task section is not
     # mistaken for part of the JSON transport payload.
     reference_json, current_marker, current_message = encoded.partition(
@@ -2633,15 +2654,15 @@ def _project_conversation_references(
         parsed = json.loads(reference_json)
         raw_references = parsed.get("references") if isinstance(parsed, dict) else None
         if not isinstance(raw_references, list):
-            return content, (), ()
+            return content, (), (), ()
         references = _validated_conversation_references(tuple(raw_references))
     except (DomainError, TypeError, ValueError, json.JSONDecodeError):
-        return content, (), ()
+        return content, (), (), ()
     # New messages keep the current task after the quoted background section.
     # Legacy messages ended at the JSON payload, so preserve their projection.
     if current_marker:
-        return current_message.strip(), references, ()
-    return visible.strip(), references, ()
+        return current_message.strip(), references, (), ()
+    return visible.strip(), references, (), ()
 
 
 def _validate_attachment_owners(
@@ -2876,9 +2897,7 @@ def _conversation_context_snapshot(
     }
 
 
-def hydrate_conversation(
-    db: Session, workspace_id: str, binding_id: str
-) -> dict[str, Any]:
+def hydrate_conversation(db: Session, workspace_id: str, binding_id: str) -> dict[str, Any]:
     """Return the complete formal active branch and current native snapshots.
 
     This endpoint is intentionally separate from incremental ``events``:

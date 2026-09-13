@@ -17,7 +17,6 @@ from sqlalchemy.orm import Session
 
 from flowweave.modules.agent_sessions import public as agent_sessions
 from flowweave.modules.agent_sessions.application import usage as usage_projection
-from flowweave.modules.agent_sessions.application import annotations as collaboration_annotations
 from flowweave.modules.agent_sessions.application.conversations import (
     AGENT_WORKSPACE_CONDENSER_MAX_EVENTS,
     ATTACHMENT_PATH,
@@ -1441,6 +1440,7 @@ def bootstrap_node_conversation(
     attachments: tuple[dict[str, str | int], ...],
     references: tuple[dict[str, str], ...] = (),
     workspace_references: tuple[dict[str, str], ...] = (),
+    annotations: tuple[dict[str, Any], ...] = (),
     legacy_image_urls: tuple[str, ...] = (),
     conversation_id: str | None,
     work_directory_id: str | None,
@@ -1461,6 +1461,7 @@ def bootstrap_node_conversation(
         and not attachments
         and not references
         and not workspace_references
+        and not annotations
         and not legacy_image_urls
     ):
         raise DomainError("AGENT_MESSAGE_EMPTY", "消息不能为空", 422)
@@ -1481,7 +1482,7 @@ def bootstrap_node_conversation(
         validated_workspace_references(workspace_references),
         work_directory_id=work_directory_id,
     )
-    prompt, image_urls = message_payload(text, attachments, (), workspace_references)
+    prompt, image_urls = message_payload(text, attachments, (), workspace_references, annotations)
     if legacy_image_urls:
         image_urls = legacy_image_urls
     agent_sessions.resolve_flow_node_session_host(
@@ -1978,13 +1979,15 @@ def _event_batch_dict(
                 attempt_id=attempt.id,
                 binding_id=binding.id,
             )
-        display_content, references, workspace_references = project_conversation_references(
-            str(payload.get("content") or "")
+        display_content, references, workspace_references, annotations = (
+            project_conversation_references(str(payload.get("content") or ""))
         )
         if references:
             payload["conversation_references"] = list(references)
         if workspace_references:
             payload["workspace_references"] = list(workspace_references)
+        if annotations:
+            payload["collaboration_annotations"] = list(annotations)
         attachments = attachments_by_event.get(event.cursor, [])
         if attachments:
             # Automatic starts record an empty display override: retain the
@@ -2169,10 +2172,17 @@ def send_node_message(
     attachments: tuple[dict[str, str | int], ...] = (),
     references: tuple[dict[str, str], ...] = (),
     workspace_references: tuple[dict[str, str], ...] = (),
+    annotations: tuple[dict[str, Any], ...] = (),
 ) -> dict[str, Any]:
     """Send the same attachment-aware native message as the outer workbench."""
 
-    if not content.strip() and not attachments and not references and not workspace_references:
+    if (
+        not content.strip()
+        and not attachments
+        and not references
+        and not workspace_references
+        and not annotations
+    ):
         raise DomainError("AGENT_MESSAGE_EMPTY", "消息不能为空", 422)
     _assert_node_session_writable(
         db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
@@ -2197,8 +2207,7 @@ def send_node_message(
     runtime = get_runtime()
     references = resolve_conversation_references(runtime, handle, references)
     prompt, image_urls = message_payload(
-        content, attachments, references, workspace_references,
-        annotations=collaboration_annotations.prompt_annotations(db, binding.id),
+        content, attachments, references, workspace_references, annotations
     )
     readiness = runtime.input_readiness(handle)
     queued_during_turn = not readiness.ready

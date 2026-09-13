@@ -145,6 +145,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-383 | 发送区协作注释管理与评论编辑 | DONE | 发送区可查看、定位及编辑会话／文件注释；回复卡片复用定位并支持直接编辑评论。 |
 | FR-384 | 引用与注释的统一上下文呈现 | DONE | 选区“添加到会话”直接建立可评论的锚点；发送区沿用会话／文件引用 chip 与定位交互，不再要求用户选择两套概念。 |
 | FR-385 | 引用锚点的可见创建反馈与选区操作样式 | DONE | 会话／文件选区使用产品化按钮；创建成功立即显示引用 chip，失败可见；定位会话原文会高亮。 |
+| FR-386 | 协作注释归属 OpenHands 消息元信息 | DONE | 注释随当前用户消息原生持久化并从消息回显；移除 FlowWeave 注释表 CRUD，不校验模型 marker。 |
 
 ### FR-366 FlowWeave 专属 Docker 地址规划 — DONE
 
@@ -355,6 +356,16 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 完成：两个浮层均对实际 `<button>` 设置产品样式，消除外层容器样式与浏览器默认按钮叠加的问题。移除一次性引用降级路径，文件选区仅在可创建协作锚点时显示操作；创建响应直接写入当前注释查询缓存后再刷新，失败写入工作台错误区。会话定位复用引用高亮样式。浏览器回归覆盖会话选区、评论输入、立即呈现 chip、展开、定位与高亮。
 
 验收：Web TypeScript typecheck、受影响 Web ESLint、当前源码 Vite 的定向 Playwright（1 passed）、`git diff --check`、唯一 Alembic head `0115_agent_annotations` 通过。未修改 OpenHands、迁移、Runtime Provider、Docker 或远端环境。
+
+### FR-386 协作注释归属 OpenHands 消息元信息 — DONE
+
+依赖：`FR-385`。
+
+目标：移除 FlowWeave 对协作注释的独立存储，使会话和文件锚点、评论与 ID 成为当前用户消息的一部分；历史呈现从同一 OpenHands 原生 MessageEvent 投影，服务端不校验或关联模型回复 marker。
+
+完成：前端选区只维护发送前草稿，发送时将注释随消息封套提交；首条消息草稿刷新后仍恢复其注释，会话历史从同一封套还原注释并据已知 ID 宽松渲染回复 marker。会话与文件锚点共用这套草稿机制；两个宿主均移除 `/annotations` CRUD、ORM 模型与删除逻辑；旧表不再访问，且不做破坏性删表。已发送消息中的注释按原生消息冻结，评论只能在发送前编辑。
+
+验收：受影响 Python 编译与 Ruff、Web TypeScript typecheck、注释封套往返断言、唯一 Alembic head（仍为 `0115_agent_annotations`）及 `git diff --check`。数据库 pytest 仍需要本机 Docker Testcontainers，当前环境不可用。
 
 ### FR-335 Runtime generation Sandbox 引用完整性 — DONE
 
@@ -5088,6 +5099,7 @@ contract、冻结策略与既有受控生命周期约束覆盖。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-13 | FR-386 | Python 编译、Ruff、注释封套往返断言、Web TypeScript typecheck／ESLint／生产构建、Alembic head 与 `git diff --check` | PASS（静态／直接断言）：注释只随原生用户消息持久化，历史回显可恢复锚点／评论／ID；首条消息草稿刷新后保留注释；无注释 CRUD、无模型回复校验或服务端关联。数据库 pytest 在 Testcontainers 建库前因本机 Docker socket 缺失阻断，未记为通过。 |
 | 2026-09-13 | FR-385 | Web TypeScript typecheck、定向 ESLint、当前源码 Vite 的会话引用 Playwright（1 passed）、Alembic head、`git diff --check` 与任务状态唯一性 | PASS：会话选区弹出评论输入，保存后立即显示引用 chip；chip 可展开原文和评论并定位高亮。会话／文件选区均为产品化按钮，且不再暴露无注释创建能力的静默引用降级。未修改 OpenHands、迁移、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-13 | FR-384 | Web TypeScript typecheck、定向 ESLint、Alembic head、`git diff --check` 与任务状态唯一性 | PASS（静态）：会话／文件选区只保留“添加到会话”，它会创建带评论的持久锚点；发送区用与既有引用一致的会话／文件引用 chip 展示、定位和编辑评论。未增加模型回复校验或服务端关联；未修改 OpenHands、Runtime Provider、Docker、迁移或远端环境。 |
 | 2026-09-13 | FR-383 | Python Ruff format/check、`py_compile`、直接注释评论更新断言；Web TypeScript typecheck、定向 ESLint；Alembic head、`git diff --check` | PASS（静态／直接断言）：发送区可展开、定位会话／文件注释并行内编辑评论；回复卡片调用同一定位逻辑。评论 PATCH 只更新用户协作注释，未读取或校验模型回复。未修改 OpenHands、Runtime Provider、Docker、迁移或远端环境。 |

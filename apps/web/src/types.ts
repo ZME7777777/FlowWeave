@@ -688,9 +688,6 @@ export interface AgentConversationAnnotation {
   anchor_kind: 'CONVERSATION_TEXT' | 'WORKSPACE_FILE_RANGE';
   anchor: Record<string, unknown>;
   comment: string;
-  state: 'OPEN' | 'RESOLVED';
-  created_at: string;
-  updated_at: string;
 }
 export interface AgentConversationContext {
   used_tokens?: number | null; window_tokens?: number | null; cumulative_tokens?: number | null;

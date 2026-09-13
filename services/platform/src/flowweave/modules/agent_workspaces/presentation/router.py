@@ -19,7 +19,6 @@ from fastapi import (
 from pydantic import BaseModel, ConfigDict, Field
 
 from flowweave.bootstrap.container import Container
-from flowweave.modules.agent_sessions.application import annotations
 from flowweave.modules.agent_sessions.public import conversations
 from flowweave.modules.agent_workspaces.application import work_directories, workspace
 from flowweave.modules.environments import public as environments
@@ -102,16 +101,6 @@ class AgentWorkspaceReference(_Write):
     selection: dict[str, int] | None = None
 
 
-class AgentConversationAnnotationWrite(_Write):
-    anchor_kind: Literal["CONVERSATION_TEXT", "WORKSPACE_FILE_RANGE"]
-    anchor: dict[str, Any]
-    comment: str = Field(min_length=1, max_length=10_000)
-
-
-class AgentConversationAnnotationCommentWrite(_Write):
-    comment: str = Field(min_length=1, max_length=10_000)
-
-
 def _empty_attachment_references() -> list[AgentAttachmentReference]:
     return []
 
@@ -134,6 +123,7 @@ class AgentConversationBootstrapWrite(_Write):
         default_factory=_empty_conversation_references, max_length=10
     )
     workspace_references: list[AgentWorkspaceReference] = Field(default_factory=list, max_length=20)
+    annotations: list[dict[str, Any]] = Field(default_factory=list, max_length=20)
     capability_version_ids: list[str] = Field(default_factory=list)
 
 
@@ -146,6 +136,7 @@ class AgentMessageWrite(_Write):
         default_factory=_empty_conversation_references, max_length=10
     )
     workspace_references: list[AgentWorkspaceReference] = Field(default_factory=list, max_length=20)
+    annotations: list[dict[str, Any]] = Field(default_factory=list, max_length=20)
 
 
 class AgentConversationModelWrite(_Write):
@@ -608,6 +599,7 @@ async def create_agent_conversation(
             attachments=tuple(item.model_dump(exclude_none=True) for item in payload.attachments),
             references=tuple(item.model_dump() for item in payload.references),
             workspace_references=tuple(item.model_dump() for item in payload.workspace_references),
+            annotations=tuple(payload.annotations),
             capability_version_ids=tuple(payload.capability_version_ids),
             idempotency_key=idempotency_key,
         ),
@@ -666,80 +658,6 @@ async def delete_agent_conversation(
             workspace_id,
             binding_id,
             _key(idempotency_key, "delete-agent-conversation", binding_id),
-        ),
-    )
-    return Response(status_code=204)
-
-
-@router.get("/agent-workspaces/{workspace_id}/conversations/{binding_id}/annotations")
-async def list_agent_conversation_annotations(
-    workspace_id: str, binding_id: str, db: Db
-) -> list[dict[str, Any]]:
-    return await run_sync(
-        db,
-        lambda session: (
-            conversations.get_conversation(session, workspace_id, binding_id),
-            annotations.list_annotations(session, binding_id),
-        )[1],
-    )
-
-
-@router.post(
-    "/agent-workspaces/{workspace_id}/conversations/{binding_id}/annotations", status_code=201
-)
-async def create_agent_conversation_annotation(
-    workspace_id: str, binding_id: str, payload: AgentConversationAnnotationWrite, db: Db
-) -> dict[str, Any]:
-    return await run_sync(
-        db,
-        lambda session: (
-            conversations.get_conversation(session, workspace_id, binding_id),
-            annotations.create_annotation(
-                session,
-                binding_id=binding_id,
-                anchor_kind=payload.anchor_kind,
-                anchor=payload.anchor,
-                comment=payload.comment,
-            ),
-        )[1],
-    )
-
-
-@router.patch(
-    "/agent-workspaces/{workspace_id}/conversations/{binding_id}/annotations/{annotation_id}"
-)
-async def update_agent_conversation_annotation(
-    workspace_id: str,
-    binding_id: str,
-    annotation_id: str,
-    payload: AgentConversationAnnotationCommentWrite,
-    db: Db,
-) -> dict[str, Any]:
-    return await run_sync(
-        db,
-        lambda session: (
-            conversations.get_conversation(session, workspace_id, binding_id),
-            annotations.update_annotation(
-                session, binding_id=binding_id, annotation_id=annotation_id, comment=payload.comment
-            ),
-        )[1],
-    )
-
-
-@router.delete(
-    "/agent-workspaces/{workspace_id}/conversations/{binding_id}/annotations/{annotation_id}",
-    status_code=204,
-)
-async def delete_agent_conversation_annotation(
-    workspace_id: str, binding_id: str, annotation_id: str, db: Db
-) -> Response:
-    await run_sync(
-        db,
-        lambda session: (
-            conversations.get_conversation(session, workspace_id, binding_id),
-            annotations.delete_annotation(
-                session, binding_id=binding_id, annotation_id=annotation_id
-            ),
         ),
     )
     return Response(status_code=204)
@@ -856,6 +774,7 @@ async def agent_message(
             attachments=tuple(item.model_dump(exclude_none=True) for item in payload.attachments),
             references=tuple(item.model_dump() for item in payload.references),
             workspace_references=tuple(item.model_dump() for item in payload.workspace_references),
+            annotations=tuple(payload.annotations),
         ),
     )
 

@@ -88,9 +88,6 @@ export interface AgentSessionApi {
   readonly runtime: (hostId: AgentSessionHostId) => Promise<AgentSessionRuntime>;
   readonly conversations: (hostId: AgentSessionHostId, cursor?: string) => Promise<AgentConversationPage>;
   readonly conversation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<AgentConversation>;
-  readonly annotations: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<AgentConversationAnnotation[]>;
-  readonly createAnnotation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, anchorKind: AgentConversationAnnotation['anchor_kind'], anchor: Record<string, unknown>, comment: string) => Promise<AgentConversationAnnotation>;
-  readonly updateAnnotation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, annotationId: string, comment: string) => Promise<AgentConversationAnnotation>;
   readonly workDirectories: (hostId: AgentSessionHostId) => Promise<AgentSessionWorkDirectoryList>;
   readonly providers: () => Promise<ModelProvider[]>;
   readonly capabilities: () => Promise<CapabilityAsset[]>;
@@ -111,7 +108,7 @@ export interface AgentSessionApi {
   readonly deleteFile?: (hostId: AgentSessionHostId, path: string, options?: Omit<AgentSessionFileOptions, 'download'> & { recursive?: boolean }) => Promise<void>;
   readonly createFile?: (hostId: AgentSessionHostId, parentPath: string, name: string, kind: 'FILE' | 'DIRECTORY', options?: Omit<AgentSessionFileOptions, 'download'>) => Promise<void>;
   readonly closeTerminal: (hostId: AgentSessionHostId, terminalInstanceId: string, options?: Omit<AgentSessionFileOptions, 'download'>) => Promise<void>;
-  readonly bootstrapConversation: (hostId: AgentSessionHostId, conversationId: string, modelProviderId: string, modelName: string, reasoningEffort: string | null, content: string, attachments?: AgentAttachment[], references?: AgentConversationReference[], workspaceReferences?: AgentWorkspaceReference[], workDirectoryId?: AgentSessionWorkDirectoryId, capabilityVersionIds?: string[], idempotencyKey?: string) => Promise<{ conversation: AgentConversation; accepted: boolean; cursor?: string | null }>;
+  readonly bootstrapConversation: (hostId: AgentSessionHostId, conversationId: string, modelProviderId: string, modelName: string, reasoningEffort: string | null, content: string, attachments?: AgentAttachment[], references?: AgentConversationReference[], workspaceReferences?: AgentWorkspaceReference[], workDirectoryId?: AgentSessionWorkDirectoryId, capabilityVersionIds?: string[], idempotencyKey?: string, annotations?: AgentConversationAnnotation[]) => Promise<{ conversation: AgentConversation; accepted: boolean; cursor?: string | null }>;
   readonly updateConversation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, title: string) => Promise<AgentConversation>;
   readonly deleteConversation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<void>;
   readonly conversationEvents: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, cursor?: string, historyCursor?: string) => Promise<OpenHandsConversationEventBatch>;
@@ -121,7 +118,7 @@ export interface AgentSessionApi {
   readonly inputReadiness: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<AgentConversationInputReadiness>;
   readonly conversationContext: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<AgentConversationContext>;
   readonly pendingConfirmation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<AgentPendingConfirmation>;
-  readonly sendMessage: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, content: string, attachments?: AgentAttachment[], references?: AgentConversationReference[], workspaceReferences?: AgentWorkspaceReference[]) => Promise<{ accepted: boolean; cursor?: string | null; compacted?: boolean; queued_during_turn?: boolean }>;
+  readonly sendMessage: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, content: string, attachments?: AgentAttachment[], references?: AgentConversationReference[], workspaceReferences?: AgentWorkspaceReference[], annotations?: AgentConversationAnnotation[]) => Promise<{ accepted: boolean; cursor?: string | null; compacted?: boolean; queued_during_turn?: boolean }>;
   readonly migrateStreamingConversation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, modelProviderId: string, modelName?: string | null, reasoningEffort?: string | null) => Promise<AgentConversation>;
   readonly uploadConversationAttachment: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, file: File) => Promise<AgentAttachment>;
   readonly uploadDraftAttachment: (hostId: AgentSessionHostId, file: File, workDirectoryId?: AgentSessionWorkDirectoryId, conversationId?: string) => Promise<AgentAttachment>;
@@ -157,9 +154,6 @@ export const agentWorkspaceSessionGateway: AgentSessionGateway = {
     runtime: api.agentWorkspaceRuntime,
     conversations: api.agentConversations,
     conversation: api.agentConversation,
-    annotations: api.agentConversationAnnotations,
-    createAnnotation: api.createAgentConversationAnnotation,
-    updateAnnotation: api.updateAgentConversationAnnotation,
     workDirectories: api.agentWorkDirectories,
     providers: api.providers,
     capabilities: api.capabilities,
@@ -225,11 +219,6 @@ export function flowNodeSessionGateway(
       runtime: () => nodeSessionApi.runtime(flowRunId, attemptId),
       conversations: (_hostId, cursor) => nodeSessionApi.conversations(flowRunId, attemptId, cursor),
       conversation: (_hostId, bindingId) => nodeSessionApi.get(flowRunId, attemptId, bindingId),
-      annotations: (_hostId, bindingId) => nodeSessionApi.annotations(flowRunId, attemptId, bindingId),
-      createAnnotation: (_hostId, bindingId, anchorKind, anchor, comment) =>
-        nodeSessionApi.createAnnotation(flowRunId, attemptId, bindingId, anchorKind, anchor, comment),
-      updateAnnotation: (_hostId, bindingId, annotationId, comment) =>
-        nodeSessionApi.updateAnnotation(flowRunId, attemptId, bindingId, annotationId, comment),
       workDirectories: () => nodeSessionApi.workDirectories(flowRunId, attemptId),
       providers: api.providers,
       capabilities: api.capabilities,
@@ -269,9 +258,9 @@ export function flowNodeSessionGateway(
       // Node terminals are browser-owned websocket instances. Closing a tab
       // closes its socket; there is no persistent Workspace terminal record.
       closeTerminal: async () => undefined,
-      bootstrapConversation: async (_hostId, conversationId, providerId, modelName, reasoningEffort, content, attachments, references, workspaceReferences, workDirectoryId, _capabilityVersionIds, idempotencyKey) => {
+      bootstrapConversation: async (_hostId, conversationId, providerId, modelName, reasoningEffort, content, attachments, references, workspaceReferences, workDirectoryId, _capabilityVersionIds, idempotencyKey, annotations) => {
         return nodeSessionApi.bootstrap(
-          flowRunId, attemptId, content, providerId, modelName, reasoningEffort, attachments, references, workspaceReferences, workDirectoryId, idempotencyKey ?? conversationId,
+          flowRunId, attemptId, content, providerId, modelName, reasoningEffort, attachments, references, workspaceReferences, workDirectoryId, idempotencyKey ?? conversationId, annotations,
         );
       },
       updateConversation: (_hostId, bindingId, title) =>
@@ -288,8 +277,8 @@ export function flowNodeSessionGateway(
       conversationContext: (_hostId, bindingId) =>
         nodeSessionApi.context(flowRunId, attemptId, bindingId),
       pendingConfirmation: (_hostId, bindingId) => nodeSessionApi.pendingConfirmation(flowRunId, attemptId, bindingId),
-      sendMessage: (_hostId, bindingId, content, attachments = [], references = [], workspaceReferences = []) =>
-        nodeSessionApi.message(flowRunId, attemptId, bindingId, content, attachments, references, workspaceReferences),
+      sendMessage: (_hostId, bindingId, content, attachments = [], references = [], workspaceReferences = [], annotations = []) =>
+        nodeSessionApi.message(flowRunId, attemptId, bindingId, content, attachments, references, workspaceReferences, undefined, annotations),
       migrateStreamingConversation: (_hostId, bindingId, providerId, modelName, reasoningEffort) =>
         nodeSessionApi.migrate(flowRunId, attemptId, bindingId, providerId, modelName, reasoningEffort),
       uploadConversationAttachment: (_hostId, bindingId, file) =>

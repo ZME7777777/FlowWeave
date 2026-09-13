@@ -36,6 +36,7 @@ interface QueuedMessage {
   items: AgentAttachment[];
   references: ConversationReference[];
   workspaceReferences?: AgentWorkspaceReference[];
+  annotations: AgentConversationAnnotation[];
 }
 type FileSelection = NonNullable<AgentWorkspaceReference['selection']>;
 
@@ -96,6 +97,7 @@ interface ConversationDraftRecovery {
   attachments: AgentAttachment[];
   references: ConversationReference[];
   workspaceReferences?: AgentWorkspaceReference[];
+  annotations: AgentConversationAnnotation[];
   providerId: string;
   modelName: string;
   reasoningEffort: string | null;
@@ -532,6 +534,21 @@ function workspaceReferencesFromStorage(value: unknown): AgentWorkspaceReference
   }).slice(0, 20);
 }
 
+function annotationsFromStorage(value: unknown): AgentConversationAnnotation[] {
+  if (!Array.isArray(value)) return [];
+  const ids = new Set<string>();
+  return value.filter((item): item is AgentConversationAnnotation => {
+    if (!item || typeof item !== 'object') return false;
+    const candidate = item as Partial<AgentConversationAnnotation>;
+    if (typeof candidate.id !== 'string' || !candidate.id
+      || (candidate.anchor_kind !== 'CONVERSATION_TEXT' && candidate.anchor_kind !== 'WORKSPACE_FILE_RANGE')
+      || !candidate.anchor || typeof candidate.anchor !== 'object'
+      || typeof candidate.comment !== 'string' || ids.has(candidate.id)) return false;
+    ids.add(candidate.id);
+    return true;
+  }).slice(0, 20);
+}
+
 function readConversationDraft(storageKey: string): ConversationDraftRecovery | undefined {
   try {
     const stored = window.sessionStorage.getItem(storageKey);
@@ -552,6 +569,7 @@ function readConversationDraft(storageKey: string): ConversationDraftRecovery | 
       ...value,
       references,
       workspaceReferences: workspaceReferencesFromStorage(value.workspaceReferences),
+      annotations: annotationsFromStorage(value.annotations),
     } as ConversationDraftRecovery;
   } catch {
     return undefined;
@@ -3065,6 +3083,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const [attachments, setAttachments] = useState<AgentAttachment[]>(() => initialBootstrapRecovery.current?.message.items ?? initialConversationDraft.current?.attachments ?? []);
   const [references, setReferences] = useState<ConversationReference[]>(() => initialBootstrapRecovery.current?.message.references ?? initialConversationDraft.current?.references ?? []);
   const [workspaceReferences, setWorkspaceReferences] = useState<AgentWorkspaceReference[]>(() => initialBootstrapRecovery.current?.message.workspaceReferences ?? initialConversationDraft.current?.workspaceReferences ?? []);
+  const [composerAnnotations, setComposerAnnotations] = useState<AgentConversationAnnotation[]>(
+    () => initialBootstrapRecovery.current?.message.annotations ?? initialConversationDraft.current?.annotations ?? [],
+  );
   const [workspaceReferencePickerOpen, setWorkspaceReferencePickerOpen] = useState(false);
   const [workspaceReferenceQuery, setWorkspaceReferenceQuery] = useState('');
   const [attachmentRequest, setAttachmentRequest] = useState<{ key: string; attachment: AgentAttachment }>();
@@ -3173,30 +3194,20 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     () => selectedConversationQuery.data ?? conversations.find(item => item.id === selectedBindingId),
     [conversations, selectedBindingId, selectedConversationQuery.data],
   );
-  const selectedConversationId = selected?.id;
-  const annotationsQuery = useQuery({
-    queryKey: sessionQueryKey(host, 'annotations', workspace?.id, selectedConversationId),
-    queryFn: () => api.annotations(workspace!.id, selectedConversationId!),
-    enabled: Boolean(workspace && selectedConversationId),
-  });
   const createAnnotation = useCallback(async (anchorKind: 'CONVERSATION_TEXT' | 'WORKSPACE_FILE_RANGE', anchor: Record<string, unknown>) => {
-    if (!workspace || !selectedConversationId) return;
+    if (!selected && !conversationDraft) return;
     const comment = await dialog.prompt({ title: '添加注释', message: '这条评论会随下一次提问作为精确上下文发送给 Agent。', inputLabel: '你的评论', placeholder: '写下你的想法…', confirmLabel: '添加注释' });
     if (!comment?.trim()) return;
-    try {
-      const created = await api.createAnnotation(workspace.id, selectedConversationId, anchorKind, anchor, comment);
-      const queryKey = sessionQueryKey(host, 'annotations', workspace.id, selectedConversationId);
-      queryClient.setQueryData<AgentConversationAnnotation[]>(queryKey, current => [...(current ?? []), created]);
-      await queryClient.invalidateQueries({ queryKey });
-    } catch (reason) {
-      setOperationError(reason instanceof Error ? reason : new Error('添加会话引用失败'));
-    }
-  }, [api, dialog, host, queryClient, selectedConversationId, workspace]);
+    setComposerAnnotations(current => [...current, {
+      id: randomId(), anchor_kind: anchorKind, anchor, comment: comment.trim(),
+    }]);
+  }, [conversationDraft, dialog, selected]);
   const updateAnnotation = useCallback(async (annotation: AgentConversationAnnotation, comment: string) => {
-    if (!workspace || !selectedConversationId || !comment.trim()) return;
-    await api.updateAnnotation(workspace.id, selectedConversationId, annotation.id, comment);
-    await queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'annotations', workspace.id, selectedConversationId) });
-  }, [api, host, queryClient, selectedConversationId, workspace]);
+    if (!comment.trim()) return;
+    setComposerAnnotations(current => current.map(item => item.id === annotation.id
+      ? { ...item, comment: comment.trim() }
+      : item));
+  }, []);
   const locateAnnotation = useCallback((annotation: AgentConversationAnnotation) => {
     if (annotation.anchor_kind === 'CONVERSATION_TEXT') {
       const eventId = annotation.anchor.event_id;
@@ -3229,8 +3240,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     return () => window.removeEventListener('flowweave:create-file-annotation', listener);
   }, [createAnnotation]);
   useEffect(() => {
-    if (selectedConversationId) markSessionPerformance('selected');
-  }, [selectedConversationId]);
+    if (selected?.id) markSessionPerformance('selected');
+  }, [selected?.id]);
   // The workspace endpoint resolves the actual directory bound to this
   // conversation, including legacy conversations whose list projection only
   // reports the shared project root.  Keep transcript file paths scoped to
@@ -3507,6 +3518,17 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     )
       .filter(event => !hiddenEventIds.has(event.id));
   }, [conversationDraft?.id, eventsQuery.data?.events, hiddenEventIds, liveEvents, optimisticBootstrapTurn, selected?.id]);
+  const messageAnnotations = useMemo(() => displayedEvents.flatMap(event => {
+    const raw = event.payload.collaboration_annotations;
+    return Array.isArray(raw) ? raw.filter((item): item is AgentConversationAnnotation => Boolean(
+      item
+      && typeof item === 'object'
+      && typeof (item as AgentConversationAnnotation).id === 'string'
+      && typeof (item as AgentConversationAnnotation).anchor_kind === 'string'
+      && typeof (item as AgentConversationAnnotation).anchor === 'object'
+      && typeof (item as AgentConversationAnnotation).comment === 'string',
+    )) : [];
+  }), [displayedEvents]);
   const sessionFileChanges = useMemo(() => workspaceFileChanges(displayedEvents), [displayedEvents]);
   const openChangesReview = useCallback((changes: WorkspaceFileChange[]) => {
     if (!changes.length) return;
@@ -3675,7 +3697,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       bootstrapTransitionScope.current = undefined;
       return;
     }
-    setEditing(false); clearLiveText(); pendingLiveEvents.current = []; if (liveEventsFrame.current !== undefined) window.cancelAnimationFrame(liveEventsFrame.current); liveEventsFrame.current = undefined; setLiveEvents([]); setHiddenEventIds(new Set()); setActiveTurnEventId(undefined); setRequestStartedAt(undefined); setConfirmationReason(''); setCondensationConfirmationOpen(false); setTurnState('idle'); setQueuedMessages([]); setPendingNativeGuidance([]); setPendingRewrite(undefined); setAttachments([]); setReferences([]); setOperationError(undefined);
+    setEditing(false); clearLiveText(); pendingLiveEvents.current = []; if (liveEventsFrame.current !== undefined) window.cancelAnimationFrame(liveEventsFrame.current); liveEventsFrame.current = undefined; setLiveEvents([]); setHiddenEventIds(new Set()); setActiveTurnEventId(undefined); setRequestStartedAt(undefined); setConfirmationReason(''); setCondensationConfirmationOpen(false); setTurnState('idle'); setQueuedMessages([]); setPendingNativeGuidance([]); setPendingRewrite(undefined); setAttachments([]); setReferences([]); setComposerAnnotations([]); setOperationError(undefined);
   }, [clearLiveText, composerScope]);
   useEffect(() => {
     if (!editing) setTitle(selected?.display_title ?? '');
@@ -3709,10 +3731,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       return;
     }
     writeConversationDraft(host.draftStorageKey, {
-      draft: conversationDraft, content: draft, attachments, references, workspaceReferences, providerId: newConversationProviderId,
+      draft: conversationDraft, content: draft, attachments, references, workspaceReferences, annotations: composerAnnotations, providerId: newConversationProviderId,
       modelName: newConversationModelName, reasoningEffort: newConversationReasoningEffort,
     });
-  }, [attachments, bootstrapRecovery, clearConversationDraft, conversationDraft, draft, host.draftStorageKey, newConversationModelName, newConversationProviderId, newConversationReasoningEffort, pendingBootstrap, references, workspaceReferences]);
+  }, [attachments, bootstrapRecovery, clearConversationDraft, composerAnnotations, conversationDraft, draft, host.draftStorageKey, newConversationModelName, newConversationProviderId, newConversationReasoningEffort, pendingBootstrap, references, workspaceReferences]);
   useEffect(() => {
     if (turnState === 'pausing' && inputReadinessQuery.data?.ready) setTurnState('paused');
   }, [inputReadinessQuery.data?.ready, turnState]);
@@ -3808,6 +3830,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     conversationDraft?.workDirectoryId,
     conversationDraft?.capabilityVersionIds ?? [],
     conversationDraft!.id,
+    message.annotations,
   ), onSuccess: (value, message) => {
     if (!workspace) return;
     const conversation = value.conversation;
@@ -3929,7 +3952,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     },
   });
   const send = useMutation({
-    mutationFn: (message: BoundQueuedMessage) => api.sendMessage(workspace!.id, message.bindingId, message.content, message.items, message.references.map(item => ({ event_id: item.eventId, content: item.content })), message.workspaceReferences ?? []),
+    mutationFn: (message: BoundQueuedMessage) => api.sendMessage(workspace!.id, message.bindingId, message.content, message.items, message.references.map(item => ({ event_id: item.eventId, content: item.content })), message.workspaceReferences ?? [], message.annotations),
     onMutate: message => {
       const optimisticEventId = `pending-user:${randomId()}`;
       if (message.nativeGuidance) {
@@ -3944,6 +3967,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
             attachments: message.items,
             conversation_references: message.references.map(item => ({ event_id: item.eventId, content: item.content })),
             workspace_references: message.workspaceReferences,
+            collaboration_annotations: message.annotations,
           },
         }]));
         return { optimisticEventId, nativeGuidance: true };
@@ -3951,7 +3975,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       clearLiveText();
       setActiveTurnEventId(undefined);
       setRequestStartedAt(Date.now());
-      setLiveEvents([{ id: optimisticEventId, event_type: 'MESSAGE', payload: { source: 'user', content: message.content, conversation_references: message.references.map(item => ({ event_id: item.eventId, content: item.content })), workspace_references: message.workspaceReferences } }]);
+      setLiveEvents([{ id: optimisticEventId, event_type: 'MESSAGE', payload: { source: 'user', content: message.content, conversation_references: message.references.map(item => ({ event_id: item.eventId, content: item.content })), workspace_references: message.workspaceReferences, collaboration_annotations: message.annotations } }]);
       setTurnState('running');
       return { optimisticEventId, nativeGuidance: false };
     },
@@ -3961,10 +3985,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         if (!context?.nativeGuidance) setActiveTurnEventId(cursor);
         setLiveEvents(current => mergeConversationEvents(
           current.filter(event => event.id !== context?.optimisticEventId),
-          [{ id: cursor, event_type: 'MESSAGE', payload: { source: 'user', content: message.content, attachments: message.items, conversation_references: message.references.map(item => ({ event_id: item.eventId, content: item.content })), workspace_references: message.workspaceReferences } }],
+          [{ id: cursor, event_type: 'MESSAGE', payload: { source: 'user', content: message.content, attachments: message.items, conversation_references: message.references.map(item => ({ event_id: item.eventId, content: item.content })), workspace_references: message.workspaceReferences, collaboration_annotations: message.annotations } }],
         ));
       }
-      if (!context?.nativeGuidance) setAttachments([]);
+      if (!context?.nativeGuidance) { setAttachments([]); setComposerAnnotations([]); }
       refresh();
     },
     onError: (error, message, context) => {
@@ -3976,12 +4000,13 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
           setDraft(current => current || message.content);
           setAttachments(current => current.length ? current : message.items);
           setReferences(current => current.length ? current : message.references);
+          setComposerAnnotations(current => current.length ? current : message.annotations);
         }
         reportOperationError(message.bindingId, error);
         return;
       }
       if (error instanceof ApiError && error.code === 'AGENT_CONVERSATION_BUSY') {
-        setQueuedMessages(current => [...current, { id: message.id, scope: message.bindingId, content: message.content, items: message.items, references: message.references, workspaceReferences: message.workspaceReferences }]);
+        setQueuedMessages(current => [...current, { id: message.id, scope: message.bindingId, content: message.content, items: message.items, references: message.references, workspaceReferences: message.workspaceReferences, annotations: message.annotations }]);
         setLiveEvents(current => current.filter(event => event.id !== context?.optimisticEventId));
         setActiveTurnEventId(undefined);
         setTurnState('running');
@@ -4017,7 +4042,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       onNavigate(host.conversationPath(value.id));
     },
     onError: (error, message) => {
-      if (activeComposerScope.current === message.scope) { setDraft(message.content); setAttachments(message.items); setReferences(message.references); }
+      if (activeComposerScope.current === message.scope) { setDraft(message.content); setAttachments(message.items); setReferences(message.references); setComposerAnnotations(message.annotations); }
       reportOperationError(message.scope, error);
     },
   });
@@ -4176,37 +4201,37 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   }, [autoOpenDraft, conversationDraft, openConversationDraft, runtimeWritable, selectedBindingId, workspace]);
   const enqueueDraft = useCallback(() => {
     const content = draft.trim();
-    if ((!content && !attachments.length && !references.length && !workspaceReferences.length) || migrateStreaming.isPending || pendingMigratedSend || turnState === 'pausing' || turnState === 'resuming') return;
+    if ((!content && !attachments.length && !references.length && !workspaceReferences.length && !composerAnnotations.length) || migrateStreaming.isPending || pendingMigratedSend || turnState === 'pausing' || turnState === 'resuming') return;
     setDraft('');
     setOperationError(undefined);
     if (!composerScope) return;
-    const message = { id: randomId(), scope: composerScope, content, items: attachments, references, workspaceReferences };
+    const message = { id: randomId(), scope: composerScope, content, items: attachments, references, workspaceReferences, annotations: composerAnnotations };
     setAttachments([]);
-    setReferences([]); setWorkspaceReferences([]);
+    setReferences([]); setWorkspaceReferences([]); setComposerAnnotations([]);
     if (conversationDraft) {
       if (canBootstrap && !bootstrap.isPending) {
         setPendingBootstrap({ draft: conversationDraft, message });
         setOptimisticBootstrapTurn({
           scope: conversationDraft.id,
-          event: { id: `pending-bootstrap:${message.id}`, event_type: 'MESSAGE', payload: { source: 'user', content, attachments, conversation_references: references.map(item => ({ event_id: item.eventId, content: item.content })), workspace_references: workspaceReferences } },
+          event: { id: `pending-bootstrap:${message.id}`, event_type: 'MESSAGE', payload: { source: 'user', content, attachments, conversation_references: references.map(item => ({ event_id: item.eventId, content: item.content })), workspace_references: workspaceReferences, collaboration_annotations: composerAnnotations } },
         });
         setRequestStartedAt(Date.now());
         setTurnState('running');
         bootstrap.mutate(message);
       }
-      else { setDraft(content); setAttachments(attachments); setReferences(references); setWorkspaceReferences(workspaceReferences); }
+      else { setDraft(content); setAttachments(attachments); setReferences(references); setWorkspaceReferences(workspaceReferences); setComposerAnnotations(composerAnnotations); }
       return;
     }
-    if (!canWrite) { setDraft(content); setAttachments(attachments); setReferences(references); setWorkspaceReferences(workspaceReferences); return; }
+    if (!canWrite) { setDraft(content); setAttachments(attachments); setReferences(references); setWorkspaceReferences(workspaceReferences); setComposerAnnotations(composerAnnotations); return; }
     if (turnState === 'idle') {
       if (selected?.streaming_callback_ready) send.mutate({ ...message, bindingId: selected.id });
       else migrateStreaming.mutate(message);
     }
     else setQueuedMessages(items => [...items, message]);
-  }, [attachments, bootstrap, canBootstrap, canWrite, composerScope, conversationDraft, draft, migrateStreaming, pendingMigratedSend, references, selected, send, turnState, workspaceReferences]);
+  }, [attachments, bootstrap, canBootstrap, canWrite, composerAnnotations, composerScope, conversationDraft, draft, migrateStreaming, pendingMigratedSend, references, selected, send, turnState, workspaceReferences]);
   const sendDraftDirectly = useCallback(() => {
     const content = draft.trim();
-    const hasComposerMessage = Boolean(content || attachments.length || references.length || workspaceReferences.length);
+    const hasComposerMessage = Boolean(content || attachments.length || references.length || workspaceReferences.length || composerAnnotations.length);
     if (!hasComposerMessage) {
       const queuedMessage = queuedMessages[0];
       if (!queuedMessage || !canWrite || conversationDraft || migrateStreaming.isPending || pendingMigratedSend
@@ -4219,10 +4244,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     }
     if (!composerScope || conversationDraft || !canWrite || migrateStreaming.isPending || pendingMigratedSend
       || turnState === 'pausing' || turnState === 'resuming') return;
-    const message = { id: randomId(), scope: composerScope, content, items: attachments, references, workspaceReferences };
+    const message = { id: randomId(), scope: composerScope, content, items: attachments, references, workspaceReferences, annotations: composerAnnotations };
     setDraft('');
     setAttachments([]);
-    setReferences([]); setWorkspaceReferences([]);
+    setReferences([]); setWorkspaceReferences([]); setComposerAnnotations([]);
     setOperationError(undefined);
     if (turnState === 'running') {
       // This is not a pause: OpenHands appends the formal user event and
@@ -4239,7 +4264,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       else {
         setDraft(content);
         setAttachments(attachments);
-        setReferences(references); setWorkspaceReferences(workspaceReferences);
+        setReferences(references); setWorkspaceReferences(workspaceReferences); setComposerAnnotations(composerAnnotations);
       }
       return;
     }
@@ -4250,8 +4275,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     }
     setDraft(content);
     setAttachments(attachments);
-    setReferences(references); setWorkspaceReferences(workspaceReferences);
-  }, [attachments, canWrite, composerScope, conversationDraft, draft, migrateStreaming, pendingMigratedSend, queuedMessages, references, selected, send, turnState, workspaceReferences]);
+    setReferences(references); setWorkspaceReferences(workspaceReferences); setComposerAnnotations(composerAnnotations);
+  }, [attachments, canWrite, composerAnnotations, composerScope, conversationDraft, draft, migrateStreaming, pendingMigratedSend, queuedMessages, references, selected, send, turnState, workspaceReferences]);
   const sendQueuedMessageImmediately = useCallback((message: QueuedMessage) => {
     if (!canWrite || turnState !== 'running' || !selected?.streaming_callback_ready || message.scope !== selected.id) return;
     setQueuedMessages(items => items.filter(item => item.id !== message.id));
@@ -4529,10 +4554,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         onPreviewCandidateFile={candidateOutputUrl && workspace ? openCandidateFileInDrawer : undefined}
         onReviewChanges={openChangesReview}
         workspaceRoot={activeWorkspaceRoot}
-        annotations={annotationsQuery.data ?? []}
+        annotations={messageAnnotations}
         onCreateAnnotation={selected && canWrite ? anchor => void createAnnotation('CONVERSATION_TEXT', anchor) : undefined}
         onLocateAnnotation={locateAnnotation}
-        onUpdateAnnotation={(annotation, comment) => void updateAnnotation(annotation, comment)}
         taskControl={eventsQuery.data?.task_control ?? []}
         monitoring={eventsQuery.data?.monitoring}
         connectionState={inputReadinessQuery.isError ? 'unavailable' : streamStatus === 'recovering' ? 'recovering' : streamStatus === 'connecting' ? 'checking' : inputReadinessQuery.isFetching && !inputReadinessQuery.data ? 'checking' : 'connected'}
@@ -4547,7 +4571,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         <ComposerCapabilityAutocomplete draft={draft} suggestions={composerSuggestions} placeholder={pendingConfirmation ? '请先处理上方工具确认…' : turnState === 'paused' ? '已暂停：可继续，也可编辑上方消息重新思考…' : features.capabilities ? '给 Agent 发消息…（Enter 加入队列，⌘/Ctrl+Enter 直接发送）' : '给 Agent 发消息…'} disabled={!canCompose || Boolean(pendingConfirmation) || bootstrap.isPending || condense.isPending || migrateStreaming.isPending || Boolean(pendingMigratedSend) || turnState === 'pausing' || turnState === 'resuming'} onDraftChange={setDraft} onPaste={event => { if (!features.attachments || !composerScope) return; const files = transferredFiles(event.clipboardData); if (!files.length) return; event.preventDefault(); for (const file of files) upload.mutate({ file, scope: composerScope }); }} onDropFiles={features.attachments && composerScope ? files => { for (const file of files) upload.mutate({ file, scope: composerScope }); } : undefined} onDropWorkspaceFiles={paths => setWorkspaceReferences(current => [...current, ...paths.flatMap(path => current.some(reference => reference.path === path) ? [] : [{ path, kind: 'file' as const, display_name: path.split('/').filter(Boolean).pop() ?? path }])])} onSubmit={enqueueDraft} onDirectSubmit={sendDraftDirectly} onManageCapabilities={features.capabilities && (selected || features.draftCapabilitySelection) ? () => setCapabilityManagerOpen(true) : undefined} onNativeAction={action => { if (action === 'CONDENSE' && selected && (turnState === 'idle' || turnState === 'paused') && !pendingConfirmation && !condense.isPending) requestManualCompaction(); }} onWorkspaceReferenceSelected={() => { setWorkspaceReferenceQuery(''); setWorkspaceReferencePickerOpen(true); }}/>
         {features.attachments && attachments.length > 0 && <div className="agent-attachments">{attachments.map(item => <span key={item.path}><button type="button" className="agent-attachment-open" title={`在右侧查看附件：${item.filename}`} onClick={() => openAttachmentInDrawer(item)}>{item.image_data_url && <img src={item.image_data_url} alt=""/>}<em>{item.filename}</em></button><button type="button" className="agent-attachment-remove" aria-label={`移除附件 ${item.filename}`} onClick={() => setAttachments(all => all.filter(candidate => candidate.path !== item.path))}>×</button></span>)}</div>}
         {references.length > 0 && <div className="agent-attachments agent-conversation-references" aria-label="已添加的会话引用">{references.map((reference, index) => <span key={`${reference.eventId}:${reference.content}`}><span className="agent-attachment-open" title={reference.content}><Quote size={14}/><em>{`会话引用 ${index + 1}`}</em></span><button type="button" className="agent-attachment-remove" aria-label={`移除会话引用 ${index + 1}`} onClick={() => setReferences(current => current.filter(item => item !== reference))}>×</button></span>)}</div>}
-        {selected && <ComposerAnnotationList annotations={annotationsQuery.data ?? []} onLocate={locateAnnotation} onUpdate={(annotation, comment) => void updateAnnotation(annotation, comment)}/>}
+        {(selected || conversationDraft) && <ComposerAnnotationList annotations={composerAnnotations} onLocate={locateAnnotation} onUpdate={(annotation, comment) => void updateAnnotation(annotation, comment)}/>}
         {workspaceReferences.length > 0 && <div className="agent-attachments agent-workspace-references" aria-label="已添加的工作区引用">{workspaceReferences.map(reference => <span key={workspaceReferenceKey(reference)} title={reference.path}><span className="agent-attachment-open">{reference.kind === 'directory' ? <Folder size={14}/> : <FileCode2 size={14}/>}<em><b>{reference.display_name}</b><small>{workspaceReferenceLabel(reference)}</small></em></span><button type="button" className="agent-attachment-remove" aria-label={'移除工作区引用 ' + reference.display_name} onClick={() => setWorkspaceReferences(current => current.filter(item => workspaceReferenceKey(item) !== workspaceReferenceKey(reference)))}>×</button></span>)}</div>}
         <footer>
           <div className="agent-composer-context">
@@ -4576,7 +4600,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       open={drawerOpen}
       onOpen={() => setDrawerOpen(true)}
       onClose={() => { setFileSelectionReference(undefined); setDrawerOpen(false); }}
-      onAnnotateFileSelection={selected && canWrite ? (path, selection, quote) => void createAnnotation('WORKSPACE_FILE_RANGE', { path, selection, quote }) : undefined}
+      onAnnotateFileSelection={(selected && canWrite) || conversationDraft ? (path, selection, quote) => void createAnnotation('WORKSPACE_FILE_RANGE', { path, selection, quote }) : undefined}
       highlightedFileSelection={fileSelectionReference}
       workspaceId={workspace.id}
       scopeKey={selected?.id ?? pendingCreatedId ?? conversationDraft?.id ?? 'workspace-root'}

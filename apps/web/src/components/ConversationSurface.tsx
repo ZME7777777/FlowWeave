@@ -1097,15 +1097,12 @@ function ActivityGroup({ items, active, liveText, startedAt, finishedAt, avatarS
   </details>;
 }
 
-function AnnotationReplyContent({ content, annotations, onLocateAnnotation, onUpdateAnnotation }: {
+function AnnotationReplyContent({ content, annotations, onLocateAnnotation }: {
   content: string;
   annotations: AgentConversationAnnotation[];
   onLocateAnnotation?: (annotation: AgentConversationAnnotation) => void;
-  onUpdateAnnotation?: (annotation: AgentConversationAnnotation, comment: string) => void;
 }) {
   const [openedAnnotationId, setOpenedAnnotationId] = useState<string>();
-  const [editingAnnotationId, setEditingAnnotationId] = useState<string>();
-  const [editedComment, setEditedComment] = useState('');
   const annotationById = useMemo(() => new Map(annotations.map(annotation => [annotation.id, annotation])), [annotations]);
   const parts = useMemo(() => {
     const marker = /::flowweave-annotation\{id="([^"]+)"\}/g;
@@ -1133,13 +1130,13 @@ function AnnotationReplyContent({ content, annotations, onLocateAnnotation, onUp
       <header><span><Quote size={13}/>注释 {annotations.findIndex(annotation => annotation.id === openedAnnotation.id) + 1}</span><button type="button" aria-label="关闭注释" onClick={() => setOpenedAnnotationId(undefined)}>×</button></header>
       <small>{openedAnnotation.anchor_kind === 'CONVERSATION_TEXT' ? '会话文本' : '文件内容'}</small>
       {typeof openedAnnotation.anchor.quote === 'string' && openedAnnotation.anchor.quote && <blockquote>{openedAnnotation.anchor.quote}</blockquote>}
-      {editingAnnotationId === openedAnnotation.id ? <div className="conversation-annotation-edit"><textarea aria-label="编辑注释评论" value={editedComment} onChange={event => setEditedComment(event.target.value)}/><footer><button type="button" onClick={() => setEditingAnnotationId(undefined)}>取消</button><button type="button" disabled={!editedComment.trim()} onClick={() => { onUpdateAnnotation?.(openedAnnotation, editedComment); setEditingAnnotationId(undefined); }}>保存评论</button></footer></div> : <p>{openedAnnotation.comment}</p>}
-      <footer className="conversation-annotation-actions"><button type="button" onClick={() => onLocateAnnotation?.(openedAnnotation)}>定位原文</button><button type="button" onClick={() => { setEditedComment(openedAnnotation.comment); setEditingAnnotationId(openedAnnotation.id); }}>编辑评论</button></footer>
+      <p>{openedAnnotation.comment}</p>
+      <footer className="conversation-annotation-actions"><button type="button" onClick={() => onLocateAnnotation?.(openedAnnotation)}>定位原文</button></footer>
     </aside>}
   </>;
 }
 
-function AgentReply({ event, content, changes = [], onFork, onPreviewCandidateFile, onReviewChanges, workspaceRoot, annotations = [], onLocateAnnotation, onUpdateAnnotation, highlightReferenceSource = false }: {
+function AgentReply({ event, content, changes = [], onFork, onPreviewCandidateFile, onReviewChanges, workspaceRoot, annotations = [], onLocateAnnotation, highlightReferenceSource = false }: {
   event: OpenHandsConversationEvent;
   content: string;
   changes?: WorkspaceFileChange[];
@@ -1149,7 +1146,6 @@ function AgentReply({ event, content, changes = [], onFork, onPreviewCandidateFi
   workspaceRoot?: string | null;
   annotations?: AgentConversationAnnotation[];
   onLocateAnnotation?: (annotation: AgentConversationAnnotation) => void;
-  onUpdateAnnotation?: (annotation: AgentConversationAnnotation, comment: string) => void;
   highlightReferenceSource?: boolean;
 }) {
   const eventId = event.id;
@@ -1162,7 +1158,7 @@ function AgentReply({ event, content, changes = [], onFork, onPreviewCandidateFi
   // registering an Artifact.
   const candidateMessage = candidateOutputMessage(content);
   return <article className={`conversation-message assistant${highlightReferenceSource ? ' conversation-reference-source-highlight' : ''}`} data-conversation-event-id={eventId} data-turn-terminal="true" data-event-id={eventId}>
-    {candidateMessage.businessConclusion ? <AnnotationReplyContent content={candidateMessage.businessConclusion} annotations={annotations} onLocateAnnotation={onLocateAnnotation} onUpdateAnnotation={onUpdateAnnotation}/> : !candidateMessage.outputs && content ? <AnnotationReplyContent content={content} annotations={annotations} onLocateAnnotation={onLocateAnnotation} onUpdateAnnotation={onUpdateAnnotation}/> : null}
+    {candidateMessage.businessConclusion ? <AnnotationReplyContent content={candidateMessage.businessConclusion} annotations={annotations} onLocateAnnotation={onLocateAnnotation}/> : !candidateMessage.outputs && content ? <AnnotationReplyContent content={content} annotations={annotations} onLocateAnnotation={onLocateAnnotation}/> : null}
     {candidateMessage.outputs && <CandidateOutputReply outputs={candidateMessage.outputs} onPreviewFile={onPreviewCandidateFile ? output => onPreviewCandidateFile(output.fieldKey, output.value) : undefined}/>}
     {!candidateMessage.businessConclusion && !candidateMessage.outputs && !content && <span className="conversation-typing"><i/><i/><i/></span>}
     {changes.length > 0 && <section className="conversation-file-changes" aria-label={`本轮编辑了 ${changes.length} 个文件`}>
@@ -1312,7 +1308,7 @@ function ConversationFailure({ item, taskControl = [] }: { item: Item; taskContr
   </article>;
 }
 
-export function ConversationSurface({ events, liveText, isGenerating, isPaused: _isPaused = false, historyPending = false, requestStartedAt, requestSubmitting = false, rewritePending = false, condensationStatus, onRetryCondensation, onRewrite, onFork, onOpenAttachment, onOpenWorkspaceReference, onPreviewCandidateFile, onReviewChanges, workspaceRoot, annotations = [], onCreateAnnotation, onLocateAnnotation, onUpdateAnnotation, taskControl = [], monitoring, connectionState }: {
+export function ConversationSurface({ events, liveText, isGenerating, isPaused: _isPaused = false, historyPending = false, requestStartedAt, requestSubmitting = false, rewritePending = false, condensationStatus, onRetryCondensation, onRewrite, onFork, onOpenAttachment, onOpenWorkspaceReference, onPreviewCandidateFile, onReviewChanges, workspaceRoot, annotations = [], onCreateAnnotation, onLocateAnnotation, taskControl = [], monitoring, connectionState }: {
   events: OpenHandsConversationEvent[];
   liveText: string;
   isGenerating: boolean;
@@ -1335,7 +1331,6 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused: 
   annotations?: AgentConversationAnnotation[];
   onCreateAnnotation?: (anchor: { event_id: string; quote: string }) => void;
   onLocateAnnotation?: (annotation: AgentConversationAnnotation) => void;
-  onUpdateAnnotation?: (annotation: AgentConversationAnnotation, comment: string) => void;
   taskControl?: RuntimeTaskControlSnapshot[];
   monitoring?: AgentActivitySummary;
   connectionState?: ConversationConnectionState;
@@ -1635,7 +1630,7 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused: 
             <CurrentTurnStatus items={turn.activity} liveText={liveText} requestSubmitting={requestSubmitting} monitoring={monitoring} connectionState={connectionState}/>
           )}
           {processBlocks.length > 0 && turn.assistant && <div className="conversation-process-divider" role="separator" aria-label="工作过程结束"/>}
-          {turn.assistant && <AgentReply event={turn.assistant.event} content={turn.assistant.content} changes={fileChanges} onFork={!isGenerating ? () => onFork?.(turn.assistant!.event.id) : undefined} onPreviewCandidateFile={onPreviewCandidateFile} onReviewChanges={onReviewChanges} workspaceRoot={workspaceRoot} annotations={annotations} onLocateAnnotation={onLocateAnnotation} onUpdateAnnotation={onUpdateAnnotation} highlightReferenceSource={highlightedReferenceEventId === turn.assistant.event.id}/>}
+          {turn.assistant && <AgentReply event={turn.assistant.event} content={turn.assistant.content} changes={fileChanges} onFork={!isGenerating ? () => onFork?.(turn.assistant!.event.id) : undefined} onPreviewCandidateFile={onPreviewCandidateFile} onReviewChanges={onReviewChanges} workspaceRoot={workspaceRoot} annotations={annotations} onLocateAnnotation={onLocateAnnotation} highlightReferenceSource={highlightedReferenceEventId === turn.assistant.event.id}/>}
           {failures.map(item => <ConversationFailure key={item.event.id} item={item} taskControl={taskControl}/>)}
         </section>;
       })}
