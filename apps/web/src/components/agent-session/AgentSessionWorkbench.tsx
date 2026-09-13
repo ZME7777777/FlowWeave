@@ -57,6 +57,10 @@ function ComposerAnnotationList({ annotations, onLocate, onUpdate }: {
   const [openedId, setOpenedId] = useState<string>();
   const [editingId, setEditingId] = useState<string>();
   const [comment, setComment] = useState('');
+  const latestAnnotationId = annotations.at(-1)?.id;
+  useEffect(() => {
+    if (latestAnnotationId) setOpenedId(latestAnnotationId);
+  }, [latestAnnotationId]);
   if (!annotations.length) return null;
   const opened = annotations.find(annotation => annotation.id === openedId);
   const referenceName = (annotation: AgentConversationAnnotation, index: number) => `${annotation.anchor_kind === 'CONVERSATION_TEXT' ? '会话引用' : '文件引用'} ${index + 1}`;
@@ -64,11 +68,11 @@ function ComposerAnnotationList({ annotations, onLocate, onUpdate }: {
     <div className="agent-attachments agent-conversation-references">{annotations.map((annotation, index) => <span key={annotation.id}>
       <button type="button" className="agent-attachment-open" title="查看、定位或编辑评论" aria-expanded={openedId === annotation.id} onClick={() => setOpenedId(current => current === annotation.id ? undefined : annotation.id)}><Quote size={14}/><em>{referenceName(annotation, index)}</em></button>
     </span>)}</div>
-    {opened && <article className="agent-composer-annotation-card">
+    {opened && <article className="agent-composer-annotation-card" role="dialog" aria-label={`${referenceName(opened, annotations.findIndex(annotation => annotation.id === opened.id))} 详情`}>
       <header><span><Quote size={13}/>{referenceName(opened, annotations.findIndex(annotation => annotation.id === opened.id))}</span><button type="button" aria-label="关闭引用" onClick={() => setOpenedId(undefined)}>×</button></header>
       <small>{opened.anchor_kind === 'CONVERSATION_TEXT' ? '会话文本' : '文件内容'}</small>
       {typeof opened.anchor.quote === 'string' && opened.anchor.quote && <blockquote>{opened.anchor.quote}</blockquote>}
-      {editingId === opened.id ? <div className="agent-composer-annotation-edit"><textarea aria-label="编辑注释评论" value={comment} onChange={event => setComment(event.target.value)}/><footer><button type="button" onClick={() => setEditingId(undefined)}>取消</button><button type="button" disabled={!comment.trim()} onClick={() => { onUpdate(opened, comment); setEditingId(undefined); }}>保存评论</button></footer></div> : <p>{opened.comment}</p>}
+      {editingId === opened.id ? <div className="agent-composer-annotation-edit"><textarea aria-label="编辑注释评论" placeholder="可选：写下你的评论…" value={comment} onChange={event => setComment(event.target.value)}/><footer><button type="button" onClick={() => setEditingId(undefined)}>取消</button><button type="button" onClick={() => { onUpdate(opened, comment); setEditingId(undefined); }}>保存评论</button></footer></div> : <p>{opened.comment || '未添加评论'}</p>}
       <footer><button type="button" onClick={() => onLocate(opened)}>定位原文</button><button type="button" onClick={() => { setComment(opened.comment); setEditingId(opened.id); }}>编辑评论</button></footer>
     </article>}
   </section>;
@@ -1565,7 +1569,7 @@ function WorkspaceTextPreview({ path, content, highlight, highlightLine, onAnnot
     }
     if (onAnnotate) positionSelectionAction(selection, range.toString(), range);
   };
-  const action = selectionAction && <><div className="agent-file-selection-highlights" aria-hidden="true">{selectionAction.highlights.map((rect, index) => <i key={`${rect.left}:${rect.top}:${index}`} style={rect}/>)}</div><span className="agent-file-selection-action" style={{ left: selectionAction.left, top: selectionAction.top }}><button type="button" onMouseDown={event => event.preventDefault()} onClick={event => { event.stopPropagation(); onAnnotate?.(selectionAction.selection, selectionAction.quote); setSelectionAction(undefined); window.getSelection()?.removeAllRanges(); }}><Quote size={13}/>添加到会话</button></span></>;
+  const action = selectionAction && <><div className="agent-file-selection-highlights" aria-hidden="true">{selectionAction.highlights.map((rect, index) => <i key={`${rect.left}:${rect.top}:${index}`} style={rect}/>)}</div><span className="agent-file-selection-action" style={{ left: selectionAction.left, top: selectionAction.top }}><button type="button" onMouseDown={event => event.preventDefault()} onMouseUp={event => event.stopPropagation()} onClick={event => { event.stopPropagation(); onAnnotate?.(selectionAction.selection, selectionAction.quote); setSelectionAction(undefined); window.getSelection()?.removeAllRanges(); }}><Quote size={13}/>添加到会话</button></span></>;
   if (markdownPreview) {
     return <div ref={previewRef} className="agent-file-preview-selection" onMouseUp={captureSelection}>{action}<article ref={previewContentRef} className="agent-file-markdown-preview"><ReactMarkdown remarkPlugins={[remarkGfm]} components={{ code: WorkspaceMarkdownCode }}>{content}</ReactMarkdown></article></div>;
   }
@@ -2992,7 +2996,7 @@ function WorkspaceDrawer({
               <iframe className="agent-file-media-preview" sandbox="" title={`${candidatePreview.filename} 候选文件预览`} src={candidatePreview.url}/>
             </> : selectedFile ? <>
               <header><span title={selectedFile}>{selectedAttachment?.filename || relativeWorkspacePath(selectedFile, details.root)}</span><a href={fileUrl(workspaceId, selectedFile, { bindingId, workDirectoryId, download: true })}><Download size={13}/>下载</a></header>
-              {canPreviewImage ? <img className="agent-file-media-preview" src={selectedAttachment?.image_data_url || selectedFileUrl} alt={selectedAttachment?.filename || '附件预览'}/> : canPreviewPdf ? <iframe className="agent-file-media-preview" title={selectedAttachment?.filename || 'PDF 预览'} src={selectedFileUrl}/> : textPreviewable ? previewQuery.isLoading ? <p>正在读取文件…</p> : previewQuery.isError ? <p>文件预览不可用，请下载后查看。</p> : <WorkspaceTextPreview path={selectedFile} content={previewQuery.data ?? ''} highlight={highlightedFileSelection?.path === selectedFile ? highlightedFileSelection.selection : undefined} highlightLine={sourceFileNavigation?.path === selectedFile ? sourceFileNavigation.line : undefined} onAnnotate={(selection, quote) => onAnnotateFileSelection?.(selectedFile, selection, quote)}/> : <p>此文件不提供浏览器预览，请下载后查看。</p>}
+              {canPreviewImage ? <img className="agent-file-media-preview" src={selectedAttachment?.image_data_url || selectedFileUrl} alt={selectedAttachment?.filename || '附件预览'}/> : canPreviewPdf ? <iframe className="agent-file-media-preview" title={selectedAttachment?.filename || 'PDF 预览'} src={selectedFileUrl}/> : textPreviewable ? previewQuery.isLoading ? <p>正在读取文件…</p> : previewQuery.isError ? <p>文件预览不可用，请下载后查看。</p> : <WorkspaceTextPreview path={selectedFile} content={previewQuery.data ?? ''} highlight={highlightedFileSelection?.path === selectedFile ? highlightedFileSelection.selection : undefined} highlightLine={sourceFileNavigation?.path === selectedFile ? sourceFileNavigation.line : undefined} onAnnotate={onAnnotateFileSelection ? (selection, quote) => onAnnotateFileSelection(selectedFile, selection, quote) : undefined}/> : <p>此文件不提供浏览器预览，请下载后查看。</p>}
             </> : <p>选择一个文件以预览或下载。</p>}</div>
           </section>}
           {scopeState.tabs.some(tab => tab.kind === 'changes') && <div className={`agent-changes-tab-panel ${scopeState.activeTabId === 'changes' ? 'active' : ''}`}><WorkspaceChangesReview changes={reviewChanges} selectedId={scopeState.selectedChangeId} onSelect={selectedChangeId => updateScope(current => ({ ...current, selectedChangeId }))} onOpenSource={openSourceFile} workspaceRoot={details.working_directory}/></div>}
@@ -3194,16 +3198,13 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     () => selectedConversationQuery.data ?? conversations.find(item => item.id === selectedBindingId),
     [conversations, selectedBindingId, selectedConversationQuery.data],
   );
-  const createAnnotation = useCallback(async (anchorKind: 'CONVERSATION_TEXT' | 'WORKSPACE_FILE_RANGE', anchor: Record<string, unknown>) => {
+  const createAnnotation = useCallback((anchorKind: 'CONVERSATION_TEXT' | 'WORKSPACE_FILE_RANGE', anchor: Record<string, unknown>) => {
     if (!selected && !conversationDraft) return;
-    const comment = await dialog.prompt({ title: '添加注释', message: '这条评论会随下一次提问作为精确上下文发送给 Agent。', inputLabel: '你的评论', placeholder: '写下你的想法…', confirmLabel: '添加注释' });
-    if (!comment?.trim()) return;
     setComposerAnnotations(current => [...current, {
-      id: randomId(), anchor_kind: anchorKind, anchor, comment: comment.trim(),
+      id: randomId(), anchor_kind: anchorKind, anchor, comment: '',
     }]);
-  }, [conversationDraft, dialog, selected]);
-  const updateAnnotation = useCallback(async (annotation: AgentConversationAnnotation, comment: string) => {
-    if (!comment.trim()) return;
+  }, [conversationDraft, selected]);
+  const updateAnnotation = useCallback((annotation: AgentConversationAnnotation, comment: string) => {
     setComposerAnnotations(current => current.map(item => item.id === annotation.id
       ? { ...item, comment: comment.trim() }
       : item));
@@ -3215,8 +3216,54 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       const target = Array.from(document.querySelectorAll<HTMLElement>('[data-conversation-event-id]')).find(item => item.dataset.conversationEventId === eventId);
       const surface = target?.closest<HTMLElement>('.conversation-surface');
       if (!target || !surface) return;
-      const top = target.getBoundingClientRect().top - surface.getBoundingClientRect().top + surface.scrollTop - 18;
+      const quote = typeof annotation.anchor.quote === 'string' ? annotation.anchor.quote.trim() : '';
+      const textNodes: Text[] = [];
+      const walker = document.createTreeWalker(target, NodeFilter.SHOW_TEXT);
+      let renderedText = '';
+      for (let node = walker.nextNode() as Text | null; node; node = walker.nextNode() as Text | null) {
+        textNodes.push(node);
+        renderedText += node.data;
+      }
+      const quoteOffset = quote ? renderedText.indexOf(quote) : -1;
+      let range: Range | undefined;
+      if (quoteOffset >= 0) {
+        const quoteEnd = quoteOffset + quote.length;
+        let consumed = 0;
+        let startNode: Text | undefined;
+        let startOffset = 0;
+        let endNode: Text | undefined;
+        let endOffset = 0;
+        for (const node of textNodes) {
+          const next = consumed + node.data.length;
+          if (!startNode && quoteOffset >= consumed && quoteOffset <= next) {
+            startNode = node;
+            startOffset = quoteOffset - consumed;
+          }
+          if (quoteEnd >= consumed && quoteEnd <= next) {
+            endNode = node;
+            endOffset = quoteEnd - consumed;
+            break;
+          }
+          consumed = next;
+        }
+        if (startNode && endNode) {
+          range = document.createRange();
+          range.setStart(startNode, startOffset);
+          range.setEnd(endNode, endOffset);
+        }
+      }
+      const sourceRect = range?.getBoundingClientRect();
+      const targetRect = target.getBoundingClientRect();
+      const top = (sourceRect?.top ?? targetRect.top) - surface.getBoundingClientRect().top + surface.scrollTop - 28;
       surface.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
+      if (range) {
+        const selection = window.getSelection();
+        selection?.removeAllRanges();
+        selection?.addRange(range);
+        window.setTimeout(() => {
+          if (window.getSelection()?.toString() === quote) window.getSelection()?.removeAllRanges();
+        }, 1_800);
+      }
       target.classList.remove('conversation-reference-source-highlight');
       window.requestAnimationFrame(() => {
         target.classList.add('conversation-reference-source-highlight');
