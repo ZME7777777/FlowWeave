@@ -140,6 +140,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-378 | 运行中上划的滚动竞争消除 | DONE | 自动内容更新不再以平滑滚动抢占用户手势；上划在捕获阶段立即取消未完成滚动并保持历史阅读锁。 |
 | FR-379 | 会话历史异步分页与原始跳转样式恢复 | DONE | 首屏定位最新消息后仍在运行中读取更早历史；加载态仅覆盖实际请求，跳转控件恢复无波纹的简洁三点。 |
 | FR-380 | 会话真实底部定位稳定性 | DONE | 首屏与“跳到最新”按真实内容高度即时定位；长历史不再因虚拟高度或平滑滚动停在中途。 |
+| FR-381 | 共享 FlowRun Runtime 的节点工作区路径误判 | DONE | 新 Attempt 传入其记录级工作区上下文，并继续使用 FlowRun allocation，避免按旧节点目录错误拒绝。 |
 
 ### FR-366 FlowWeave 专属 Docker 地址规划 — DONE
 
@@ -300,6 +301,16 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 目标：首次进入会话和点击“跳到最新”必须直接落到真实最新消息底部。长会话不得由于未渲染行的估算高度或平滑滚动的中间 `scroll` 事件而停在中途。
 
 完成：取消每个会话轮次的 `content-visibility`／固有高度估算，使首屏与跳转均基于完整内容高度；用户点击跳转改为即时设置底部位置，并在同一帧布局稳定后再次校准。自动跟随、用户上滑阅读锁和流式输出不变。
+
+### FR-381 共享 FlowRun Runtime 的节点工作区路径恢复 — DONE
+
+依赖：`FR-367`。
+
+目标：新建 Node Attempt 已不再拥有私有 Runtime allocation，但其记录级工作目录必须仍作为启动请求的受校验上下文传入。请求构造不得把该目录当作历史 `nodes/<asset>/sessions/...` 布局而误报 `RUNTIME_WORKSPACE_INVALID`；私有 Attempt Runtime 与历史 FlowRun 路径的所有权、路径和符号链接门禁不放宽。
+
+完成：`_runtime_request()` 现在始终传递当前 Attempt 身份，令请求构造解析其服务端派生的记录工作目录。构造器根据该上下文的 `attempt_owned` 标志选择私有 Attempt allocation 或唯一 FlowRun allocation；共享 Runtime 使用其规范的 in-container 记录级 working directory，不再调用旧节点 sessions 路径校验。新增无数据库适配器回归，覆盖共享 Attempt 仍只请求 FlowRun allocation、且请求保留受验证的记录工作目录。
+
+验收：受影响 Python `py_compile`、Ruff check、`test_openhands.py -k shared_flow_run_runtime_uses_attempt_record_workspace`（1 passed）与 `git diff --check`；无迁移、Docker、OpenHands 源码或远端操作。
 
 ### FR-335 Runtime generation Sandbox 引用完整性 — DONE
 

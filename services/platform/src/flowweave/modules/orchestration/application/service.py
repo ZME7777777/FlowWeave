@@ -5705,7 +5705,10 @@ def _runtime_request(db: Session, attempt: NodeAttempt) -> StartAttemptRequest:
         environment_version_no=environment.version_no,
         agent_spec=agent_spec,
         conversation_id=session_binding.openhands_conversation_id,
-        node_attempt_id=attempt.id if workspace.attempt_owned else None,
+        # A new Attempt uses the FlowRun Runtime but still needs its resolved
+        # record-scoped workspace context.  Omitting the Attempt id makes the
+        # request builder apply the historical nodes/<asset>/sessions layout.
+        node_attempt_id=attempt.id,
     )
     return replace(
         request,

@@ -446,13 +446,6 @@ def build_runtime_request(
             runtime_base_url=runtime_base_url,
             conversation_secrets=conversation_secrets,
         )
-    if workspace_context is not None and not workspace_context.attempt_owned:
-        raise DomainError(
-            "NODE_WORKSPACE_REQUIRES_LEGACY_RUNTIME",
-            "The historical Attempt must continue on its FlowRun Runtime",
-            409,
-            {"node_attempt_id": node_attempt_id},
-        )
     runtime_allocation = (
         runtime_allocation_for_node_attempt(
             db,
@@ -460,10 +453,14 @@ def build_runtime_request(
             node_attempt_id=node_attempt_id,
             manifest_digest=runtime_manifest_hash,
         )
-        if node_attempt_id is not None
+        if workspace_context is not None and workspace_context.attempt_owned
         else runtime_allocation_for_flow_run(db, flow_run_id, manifest_digest=runtime_manifest_hash)
     )
-    materialization_owner_id = node_attempt_id or flow_run_id
+    materialization_owner_id = (
+        node_attempt_id
+        if workspace_context is not None and workspace_context.attempt_owned
+        else flow_run_id
+    )
     asset = cast(dict[str, Any], node.get("asset") or {})
     with capability_materialization_lock(runtime_allocation):
         skills, plugins, mcp_servers, node_workspace_ref = materialize_node_workspace(

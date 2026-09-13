@@ -367,8 +367,8 @@ class StartAttemptRequest:
     environment_version_no: int = 0
     runtime_workspace_relative: str = ""
     runtime_working_dir_relative: str = ""
-    # Canonical in-container cwd for Attempt-owned Runtime allocations.
-    # Historical FlowRun requests leave this empty and use the legacy mapping.
+    # Canonical in-container cwd for an Attempt. New Attempts can share a
+    # FlowRun Runtime while retaining their record-scoped working directory.
     runtime_working_directory: str = ""
     memory_enabled: bool = False
     runtime_sandbox_id: str = ""

@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+from contextlib import nullcontext
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import cast
 
 import httpx
@@ -245,6 +247,67 @@ def test_collaboration_request_keeps_host_scoped_credentials_without_node_execut
     )
     assert request.conversation_secrets == {"FLOWWEAVE_AUTH_ES_USERNAME": "secret-user"}
     assert request.memory_enabled is False
+
+
+def test_shared_flow_run_runtime_uses_attempt_record_workspace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A new Attempt shares its Runtime without falling back to legacy nodes paths."""
+
+    allocation_calls: list[str] = []
+    workspace = SimpleNamespace(
+        attempt_owned=False,
+        host_working_directory=Path(
+            "/managed/.flow-run-runtimes/scope/run/workspace/project/record"
+        ),
+        runtime_mount_root="/runtime/workspace/project",
+        runtime_working_directory="/runtime/workspace/project/record",
+    )
+    monkeypatch.setattr(
+        "flowweave.runtime.request.node_attempt_workspace_context",
+        lambda *_args, **_kwargs: workspace,
+    )
+    monkeypatch.setattr(
+        "flowweave.runtime.request.runtime_allocation_for_flow_run",
+        lambda _db, flow_run_id, **_kwargs: allocation_calls.append(flow_run_id) or object(),
+    )
+    monkeypatch.setattr(
+        "flowweave.runtime.request.runtime_allocation_for_node_attempt",
+        lambda *_args, **_kwargs: pytest.fail("shared Attempt must not allocate a private Runtime"),
+    )
+    monkeypatch.setattr(
+        "flowweave.runtime.request.capability_materialization_lock",
+        lambda _allocation: nullcontext(),
+    )
+    monkeypatch.setattr(
+        "flowweave.runtime.request.materialize_node_workspace",
+        lambda *_args, **_kwargs: ((), (), (), "/runtime/workspace/nodes/asset-1"),
+    )
+    monkeypatch.setattr(
+        "flowweave.runtime.request.materialize_hook_config",
+        lambda *_args, **_kwargs: {},
+    )
+    monkeypatch.setattr("flowweave.runtime.request.credentials_for_agent", lambda _db: ({}, ""))
+
+    request = build_runtime_request(
+        None,  # type: ignore[arg-type]
+        flow_run_id="flow-run-1",
+        runtime_manifest_hash="manifest-1",
+        attempt_id="attempt-1",
+        execution_key="attempt:attempt-1:start",
+        node={"asset": {"id": "asset-1"}},
+        bindings=[],
+        workspace_ref=str(workspace.host_working_directory),
+        environment_image="sha256:" + "1" * 64,
+        agent_spec=_request().agent_spec,
+        node_attempt_id="attempt-1",
+    )
+
+    assert allocation_calls == ["flow-run-1"]
+    assert request.workspace_root == "/runtime/workspace/project"
+    assert request.runtime_working_directory == "/runtime/workspace/project/record"
+    assert request.runtime_workspace_relative == ""
+    assert request.runtime_working_dir_relative == ""
 
 
 def test_frozen_memory_is_materialized_before_enabling_native_loader(monkeypatch, tmp_path):
