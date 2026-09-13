@@ -99,15 +99,15 @@ def test_agent_context_is_compiled_only_into_openhands_system_suffix(settings):
     assert spec.mcp_servers == ()
     assert AGENT_WORKSPACE_MAX_ITERATIONS == 300
     assert spec.budgets.max_iterations == AGENT_WORKSPACE_MAX_ITERATIONS
-    assert "首要目标是把用户任务做对" in suffix
-    assert "绝不能为了写进展而跳过、延迟、拆散或重排必要的检查" in suffix
-    assert "把用户可感知的工作组织为小型、可验证的阶段" in suffix
-    assert "在开始一个阶段、阶段得到实质性发现或结果" in suffix
-    assert "当前理解、关键发现、当前适用的假设或已作决定" in suffix
-    assert "在获得实质性中间里程碑后及时更新，不必等到阶段结束" in suffix
-    assert "一条进展可以引导为完成同一阶段而连续进行的多个原生工具动作" in suffix
+    assert "工具调用前导与 ThinkTool 的用途不同" in suffix
+    assert "ThinkTool 本身也是工具调用" in suffix
+    assert "仅在开始实质性、多步骤或高影响的工作阶段" in suffix
+    assert "不要为普通、连续、无新结论的读取、编辑、搜索或验证操作重复调用 ThinkTool" in suffix
+    assert "ThinkTool 内容必须是 1–3 句、面向用户、可公开的阶段摘要" in suffix
+    assert "不得输出完整私密推理链、敏感信息、凭据" in suffix
+    assert "不要用 ThinkTool 代替最终答复" in suffix
     assert "普通且连续的工具调用不必逐条说明" not in suffix
-    assert "OpenHands 内置 think 工具" not in suffix
+    assert "一条进展可以引导为完成同一阶段而连续进行的多个原生工具动作" not in suffix
 
 
 def test_agent_context_is_allowed_only_during_conversation_creation(monkeypatch):
