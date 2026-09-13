@@ -1500,10 +1500,11 @@ test('selected conversation text is sent and rendered as a compact reference car
   const now = new Date().toISOString();
   const selectedText = '这段内容只能作为会话引用卡片显示';
   let sentPayload: Record<string, unknown> | undefined;
+  const annotations: Array<Record<string, unknown>> = [];
   const events = () => [
     { id: 'reference-source-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '请给出可引用的建议', timestamp: now } },
     { id: 'reference-source-assistant', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'reference-source-user', content: selectedText, timestamp: now } },
-    ...(sentPayload ? [{ id: 'reference-target-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'reference-source-assistant', content: '请据此继续', conversation_references: [{ event_id: 'reference-source-assistant', content: selectedText }], timestamp: now } }] : []),
+    ...(sentPayload ? [{ id: 'reference-target-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'reference-source-assistant', content: '请据此继续', timestamp: now } }] : []),
   ];
   await page.route('**/api/v1/auth/me', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ id: 'reference-user', username: 'tester', role: 'USER', is_super_admin: false }) }));
   await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
@@ -1515,6 +1516,13 @@ test('selected conversation text is sent and rendered as a compact reference car
     if (path.endsWith('/conversations/reference-conversation')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ id: 'reference-conversation', display_title: '引用会话', lifecycle: 'ACTIVE', streaming_callback_ready: true, model_provider_id: null, model_name: null, reasoning_effort: null, created_at: now, updated_at: now }) });
     if (path.endsWith('/conversations') && request.method() === 'GET') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ items: [{ id: 'reference-conversation', display_title: '引用会话', lifecycle: 'ACTIVE', streaming_callback_ready: true, model_provider_id: null, model_name: null, reasoning_effort: null, created_at: now, updated_at: now }], next_cursor: null }) });
     if (path.endsWith('/events')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ events: events(), next_cursor: null }) });
+    if (path.endsWith('/annotations') && request.method() === 'GET') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(annotations) });
+    if (path.endsWith('/annotations') && request.method() === 'POST') {
+      const body = JSON.parse(request.postData() ?? '{}') as Record<string, unknown>;
+      const annotation = { id: `annotation-${annotations.length + 1}`, anchor_kind: body.anchor_kind, anchor: body.anchor, comment: body.comment, status: 'OPEN', created_at: now, updated_at: now };
+      annotations.push(annotation);
+      return route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify(annotation) });
+    }
     if (path.endsWith('/input-readiness')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ready: true, execution_status: 'idle' }) });
     if (path.endsWith('/work-directories')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [] }) });
     if (path.endsWith('/workspace')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: '/runtime/workspace/project', work_directory: null, files: [], repositories: [], runtime: { container_id: 'single-runtime' }, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '未配置', note: '' } } }) });
@@ -1551,23 +1559,23 @@ test('selected conversation text is sent and rendered as a compact reference car
     content.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
   });
   await page.getByRole('button', { name: '添加到会话' }).click();
-  await expect(page.getByLabel('已添加的会话引用')).toContainText('会话引用 1');
+  const annotationDialog = page.getByRole('alertdialog', { name: '添加注释' });
+  await expect(annotationDialog).toBeVisible();
+  await annotationDialog.getByLabel('你的评论').fill('请重点核对这段结果');
+  await annotationDialog.getByRole('button', { name: '添加注释' }).click();
+  await expect(page.getByLabel('已添加的引用 1 条')).toContainText('会话引用 1');
+  await expect.poll(() => annotations).toHaveLength(1);
   await page.getByLabel('发送 Agent 消息').fill('请据此继续');
   await page.getByRole('button', { name: '发送消息' }).click();
   await expect.poll(() => sentPayload).toMatchObject({
     content: '请据此继续',
-    references: [{ event_id: 'reference-source-assistant' }],
   });
   const sentMessage = page.locator('[data-user-event-id="reference-target-user"]');
   await expect(sentMessage).toContainText('请据此继续');
-  await expect(sentMessage).toContainText('会话引用 1');
-  await expect(sentMessage).not.toContainText(selectedText);
-  await sentMessage.getByRole('button', { name: '查看会话引用 1' }).click();
-  const preview = page.getByRole('dialog', { name: '会话引用内容' });
-  await expect(preview).toContainText('所选文本');
-  await expect(preview).toContainText(selectedText);
-  await preview.getByRole('button', { name: '定位原消息' }).click();
-  await expect(preview).toHaveCount(0);
+  await page.getByLabel('已添加的引用 1 条').getByRole('button', { name: '会话引用 1' }).click();
+  const annotationCard = page.getByText('请重点核对这段结果').locator('..');
+  await expect(annotationCard).toContainText(selectedText);
+  await annotationCard.getByRole('button', { name: '定位原文' }).click();
   await expect(source).toBeInViewport();
   await expect(source).toHaveClass(/conversation-reference-source-highlight/);
   await expect(source).not.toHaveClass(/conversation-reference-source-highlight/, { timeout: 3_000 });

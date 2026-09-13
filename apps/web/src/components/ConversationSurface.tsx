@@ -1312,7 +1312,7 @@ function ConversationFailure({ item, taskControl = [] }: { item: Item; taskContr
   </article>;
 }
 
-export function ConversationSurface({ events, liveText, isGenerating, isPaused: _isPaused = false, historyPending = false, requestStartedAt, requestSubmitting = false, rewritePending = false, condensationStatus, onRetryCondensation, onRewrite, onFork, onOpenAttachment, onOpenWorkspaceReference, onPreviewCandidateFile, onReviewChanges, workspaceRoot, onAddReference, annotations = [], onCreateAnnotation, onLocateAnnotation, onUpdateAnnotation, taskControl = [], monitoring, connectionState }: {
+export function ConversationSurface({ events, liveText, isGenerating, isPaused: _isPaused = false, historyPending = false, requestStartedAt, requestSubmitting = false, rewritePending = false, condensationStatus, onRetryCondensation, onRewrite, onFork, onOpenAttachment, onOpenWorkspaceReference, onPreviewCandidateFile, onReviewChanges, workspaceRoot, annotations = [], onCreateAnnotation, onLocateAnnotation, onUpdateAnnotation, taskControl = [], monitoring, connectionState }: {
   events: OpenHandsConversationEvent[];
   liveText: string;
   isGenerating: boolean;
@@ -1332,7 +1332,6 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused: 
   onPreviewCandidateFile?: (fieldKey: string, relativePath: string) => void;
   onReviewChanges?: (changes: WorkspaceFileChange[]) => void;
   workspaceRoot?: string | null;
-  onAddReference?: (reference: ConversationReference) => void;
   annotations?: AgentConversationAnnotation[];
   onCreateAnnotation?: (anchor: { event_id: string; quote: string }) => void;
   onLocateAnnotation?: (annotation: AgentConversationAnnotation) => void;
@@ -1546,7 +1545,7 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused: 
     });
   }, []);
   const offerSelectedReference = useCallback((event: ReactPointerEvent<HTMLElement>) => {
-    if ((!onAddReference && !onCreateAnnotation) || !surface.current) return;
+    if (!onCreateAnnotation || !surface.current) return;
     const selection = window.getSelection();
     if (!selection) return;
     const reference = conversationReferenceForSelection(selection, surface.current);
@@ -1562,7 +1561,7 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused: 
       left: Math.min(Math.max(12, bounds.left), Math.max(12, window.innerWidth - 172)),
       top: Math.min(bounds.bottom + 8, Math.max(12, window.innerHeight - 44)),
     });
-  }, [onAddReference, onCreateAnnotation]);
+  }, [onCreateAnnotation]);
   const locateReferenceSource = useCallback(() => {
     if (!viewingReference || !surface.current) return;
     const source = Array.from(surface.current.querySelectorAll<HTMLElement>('[data-conversation-event-id]'))
@@ -1658,7 +1657,7 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused: 
     </section>
     {viewingReference && <ConversationReferencePreview reference={viewingReference} onClose={() => setViewingReference(undefined)} onLocate={locateReferenceSource}/>}
     {selectedReference && <span className="conversation-add-reference" style={{ left: selectedReference.left, top: selectedReference.top }}>
-      <button type="button" onPointerDown={event => event.preventDefault()} onClick={() => { const anchor = { event_id: selectedReference.reference.eventId, quote: selectedReference.reference.content }; if (onCreateAnnotation) onCreateAnnotation(anchor); else if (onAddReference) onAddReference(selectedReference.reference); else window.dispatchEvent(new CustomEvent('flowweave:create-conversation-annotation', { detail: anchor })); window.getSelection()?.removeAllRanges(); setSelectedReference(undefined); }}><Quote size={14}/>添加到会话</button>
+      <button type="button" onPointerDown={event => event.preventDefault()} onClick={() => { onCreateAnnotation?.({ event_id: selectedReference.reference.eventId, quote: selectedReference.reference.content }); window.getSelection()?.removeAllRanges(); setSelectedReference(undefined); }}><Quote size={14}/>添加到会话</button>
     </span>}
     {showJumpToLatest && <button
       type="button"
