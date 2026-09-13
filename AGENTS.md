@@ -14,7 +14,7 @@ scripts/verify-remote-deploy.sh --config .local/remote-deploy.env \
   --commit <已提交的完整或短 SHA> --scope <web|platform|runtime|other>
 ```
 
-预检必须复述从本地配置读取的目标、部署根、发布范围和 commit。未提供有效本地配置时停止，不得猜测 SSH 别名或目标环境。普通部署严禁 `docker compose down -v`、删除 volume/Workspace、覆盖远端 Compose 或环境文件。`make rebuild-deploy` 和 `infra/compose.yaml` 仅用于本地；绝不可当作远端部署入口。
+预检必须复述从本地配置读取的目标、部署根、主 Compose/env、构建/镜像目录、可选 stream-api Compose/env、发布范围和 commit，并通过只读 SSH 验证其 Compose 拓扑。未提供有效本地配置，或声明入口未通过预检时停止，不得猜测 SSH 别名、目标环境、Compose 入口或 stream-api 所属项目。普通部署严禁 `docker compose down -v`、删除 volume/Workspace、覆盖远端 Compose 或环境文件。`make rebuild-deploy` 和 `infra/compose.yaml` 仅用于本地；绝不可当作远端部署入口。
 
 远程 Compose、环境文件、持久数据路径和私有入口均为服务器侧资产，不得复制进仓库。更新 API 时，必须从同一已提交版本同步更新并 recreate `stream-api`；不得以 orphan 或 `--remove-orphans` 忽略它。发生故障时先保留日志和数据库错误状态，再仅回滚受影响服务；禁止使用删除 volume、清空 Workspace、`reset --hard` 或 `clean -f` 代替回滚。
 

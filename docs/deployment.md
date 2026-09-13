@@ -55,7 +55,7 @@ curl -I http://127.0.0.1:5173/
 
 ## 远端发布
 
-生产主机、域名、账号、路径和其他网络拓扑属于私有运行配置，严禁写入 Git、Issue、PR、构建日志或公开文档。将版本化模板复制到本地忽略目录后，再填入该环境的非凭据连接信息：
+生产主机、域名、账号、路径和其他网络拓扑属于私有运行配置，严禁写入 Git、Issue、PR、构建日志或公开文档。将版本化模板复制到本地忽略目录后，再填入该环境的非凭据连接信息和唯一部署入口：主 Compose/env、源码构建目录、镜像目录，以及（仅在独立管理时）stream-api 的 Compose/env。路径均相对于私有配置中的部署根。
 
 ```bash
 mkdir -p .local
@@ -73,12 +73,16 @@ make remote-deploy-preflight REMOTE_DEPLOY_CONFIG=.local/remote-deploy.env \
   COMMIT=<commit-sha> SCOPE=<web|platform|runtime|other>
 ```
 
-预检会确认本地配置中的目标主机、部署目录、提交与范围。不要猜测 SSH 别名、覆盖远端 Compose 或环境文件，也不要使用本地 `infra/compose.yaml` 替换服务器 Compose 文件。
+预检先确认本地配置中的目标主机、部署目录、提交与范围；随后只读 SSH，检查部署根、构建/镜像目录、声明的 Compose/env 文件，运行 `docker compose config --quiet` 并确认本次范围所需服务。`platform` 必须验证 `migration`、`runtime-provider`、`api`、`worker` 和 `stream-api`；后者可在显式声明的独立 Compose 项目中。预检不会构建镜像、重建服务或改写服务器文件。
+
+不要猜测 SSH 别名、Compose 入口或 `stream-api` 所属项目；不要覆盖远端 Compose 或环境文件，也不要使用本地 `infra/compose.yaml` 替换服务器 Compose 文件。若预检报缺少入口或服务契约，先修正本机受保护的 `.local/remote-deploy.env`，再重新预检。
+
+若已有仅含目标主机、用户和部署根的旧 `.local/remote-deploy.env`，可将新增入口字段单独写入同目录的 `.local/remote-deploy.entrypoints.env`（同样 `chmod 600`）。预检仅在该文件是普通文件时合并读取它；新环境仍建议将全部字段保存在单一 `remote-deploy.env`。
 
 ### Commit 绑定的构建与更新
 
 1. 在本地确认 `git status --short --branch`、目标 commit 和受影响测试；运行 `git diff --check`。
-2. 从目标 commit 使用 `git archive` 创建不可变源码包，记录 SHA-256，传至私有配置所指向的构建目录，并在服务器再次校验 SHA-256。
+2. 从目标 commit 使用 `git archive` 创建不可变源码包，记录 SHA-256，传至已由预检验证的私有构建目录，并在服务器再次校验 SHA-256。
 3. 在服务器从该包构建所需 `linux/amd64` 镜像，检查 `docker image inspect` 输出为 `linux/amd64`。
 4. 验证远端 Compose，再按影响范围 force-recreate。更新平台镜像时，先运行 `migration`，随后同时更新 `runtime-provider`、`api`、`stream-api`、`worker`。仅更新 Web 时只更新 `web`。
 5. 检查服务健康、带 `/flowweave/` 前缀的 API/静态资源、Agent 深层路由及 FastGPT 根登录页。
