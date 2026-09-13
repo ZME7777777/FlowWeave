@@ -1,6 +1,6 @@
 import { BookOpen, Check, ChevronDown, ChevronRight, CircleAlert, ClipboardList, Copy, ExternalLink, FileText, GitFork, Link, LoaderCircle, PanelRightOpen, Pencil, Quote, Sparkles, SquareTerminal, Wrench } from 'lucide-react';
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type RefObject } from 'react';
-import type { AgentActivitySummary, AgentAttachment, AgentConversationReference, AgentWorkspaceReference, OpenHandsConversationEvent, RuntimeTaskControlSnapshot } from '../types';
+import type { AgentActivitySummary, AgentAttachment, AgentConversationAnnotation, AgentConversationReference, AgentWorkspaceReference, OpenHandsConversationEvent, RuntimeTaskControlSnapshot } from '../types';
 import { SubagentAvatar } from './SubagentAvatar';
 import { useEscapeClose } from './useEscapeClose';
 import { subagentAvatarSlotForEvent, subagentAvatarSlots, type SubagentAvatarSlot } from '../utils/subagentAvatar';
@@ -1097,7 +1097,14 @@ function ActivityGroup({ items, active, liveText, startedAt, finishedAt, avatarS
   </details>;
 }
 
-function AgentReply({ event, content, changes = [], onFork, onPreviewCandidateFile, onReviewChanges, workspaceRoot, highlightReferenceSource = false }: {
+function annotationMarkerMarkdown(content: string, annotations: AgentConversationAnnotation[]): string {
+  return content.replace(/::flowweave-annotation\{id="([^"]+)"\}/g, (raw, id: string) => {
+    const index = annotations.findIndex(annotation => annotation.id === id);
+    return index < 0 ? raw : `[注释 ${index + 1}]`;
+  });
+}
+
+function AgentReply({ event, content, changes = [], onFork, onPreviewCandidateFile, onReviewChanges, workspaceRoot, annotations = [], highlightReferenceSource = false }: {
   event: OpenHandsConversationEvent;
   content: string;
   changes?: WorkspaceFileChange[];
@@ -1105,6 +1112,7 @@ function AgentReply({ event, content, changes = [], onFork, onPreviewCandidateFi
   onPreviewCandidateFile?: (fieldKey: string, relativePath: string) => void;
   onReviewChanges?: (changes: WorkspaceFileChange[]) => void;
   workspaceRoot?: string | null;
+  annotations?: AgentConversationAnnotation[];
   highlightReferenceSource?: boolean;
 }) {
   const eventId = event.id;
@@ -1117,7 +1125,7 @@ function AgentReply({ event, content, changes = [], onFork, onPreviewCandidateFi
   // registering an Artifact.
   const candidateMessage = candidateOutputMessage(content);
   return <article className={`conversation-message assistant${highlightReferenceSource ? ' conversation-reference-source-highlight' : ''}`} data-conversation-event-id={eventId} data-turn-terminal="true" data-event-id={eventId}>
-    {candidateMessage.businessConclusion ? <MessageMarkdown>{candidateMessage.businessConclusion}</MessageMarkdown> : !candidateMessage.outputs && content ? <MessageMarkdown>{content}</MessageMarkdown> : null}
+    {candidateMessage.businessConclusion ? <MessageMarkdown>{annotationMarkerMarkdown(candidateMessage.businessConclusion, annotations)}</MessageMarkdown> : !candidateMessage.outputs && content ? <MessageMarkdown>{annotationMarkerMarkdown(content, annotations)}</MessageMarkdown> : null}
     {candidateMessage.outputs && <CandidateOutputReply outputs={candidateMessage.outputs} onPreviewFile={onPreviewCandidateFile ? output => onPreviewCandidateFile(output.fieldKey, output.value) : undefined}/>}
     {!candidateMessage.businessConclusion && !candidateMessage.outputs && !content && <span className="conversation-typing"><i/><i/><i/></span>}
     {changes.length > 0 && <section className="conversation-file-changes" aria-label={`本轮编辑了 ${changes.length} 个文件`}>
@@ -1267,7 +1275,7 @@ function ConversationFailure({ item, taskControl = [] }: { item: Item; taskContr
   </article>;
 }
 
-export function ConversationSurface({ events, liveText, isGenerating, isPaused: _isPaused = false, historyPending = false, requestStartedAt, requestSubmitting = false, rewritePending = false, condensationStatus, onRetryCondensation, onRewrite, onFork, onOpenAttachment, onOpenWorkspaceReference, onPreviewCandidateFile, onReviewChanges, workspaceRoot, onAddReference, taskControl = [], monitoring, connectionState }: {
+export function ConversationSurface({ events, liveText, isGenerating, isPaused: _isPaused = false, historyPending = false, requestStartedAt, requestSubmitting = false, rewritePending = false, condensationStatus, onRetryCondensation, onRewrite, onFork, onOpenAttachment, onOpenWorkspaceReference, onPreviewCandidateFile, onReviewChanges, workspaceRoot, onAddReference, annotations = [], onCreateAnnotation, taskControl = [], monitoring, connectionState }: {
   events: OpenHandsConversationEvent[];
   liveText: string;
   isGenerating: boolean;
@@ -1288,6 +1296,8 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused: 
   onReviewChanges?: (changes: WorkspaceFileChange[]) => void;
   workspaceRoot?: string | null;
   onAddReference?: (reference: ConversationReference) => void;
+  annotations?: AgentConversationAnnotation[];
+  onCreateAnnotation?: (anchor: { event_id: string; quote: string }) => void;
   taskControl?: RuntimeTaskControlSnapshot[];
   monitoring?: AgentActivitySummary;
   connectionState?: ConversationConnectionState;
@@ -1587,7 +1597,7 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused: 
             <CurrentTurnStatus items={turn.activity} liveText={liveText} requestSubmitting={requestSubmitting} monitoring={monitoring} connectionState={connectionState}/>
           )}
           {processBlocks.length > 0 && turn.assistant && <div className="conversation-process-divider" role="separator" aria-label="工作过程结束"/>}
-          {turn.assistant && <AgentReply event={turn.assistant.event} content={turn.assistant.content} changes={fileChanges} onFork={!isGenerating ? () => onFork?.(turn.assistant!.event.id) : undefined} onPreviewCandidateFile={onPreviewCandidateFile} onReviewChanges={onReviewChanges} workspaceRoot={workspaceRoot} highlightReferenceSource={highlightedReferenceEventId === turn.assistant.event.id}/>}
+          {turn.assistant && <AgentReply event={turn.assistant.event} content={turn.assistant.content} changes={fileChanges} onFork={!isGenerating ? () => onFork?.(turn.assistant!.event.id) : undefined} onPreviewCandidateFile={onPreviewCandidateFile} onReviewChanges={onReviewChanges} workspaceRoot={workspaceRoot} annotations={annotations} highlightReferenceSource={highlightedReferenceEventId === turn.assistant.event.id}/>}
           {failures.map(item => <ConversationFailure key={item.event.id} item={item} taskControl={taskControl}/>)}
         </section>;
       })}
@@ -1608,11 +1618,10 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused: 
       </div>
     </section>
     {viewingReference && <ConversationReferencePreview reference={viewingReference} onClose={() => setViewingReference(undefined)} onLocate={locateReferenceSource}/>}
-    {selectedReference && <button type="button" className="conversation-add-reference" style={{ left: selectedReference.left, top: selectedReference.top }} onPointerDown={event => event.preventDefault()} onClick={() => {
-      onAddReference?.(selectedReference.reference);
-      window.getSelection()?.removeAllRanges();
-      setSelectedReference(undefined);
-    }}><Quote size={14}/>添加到会话</button>}
+    {selectedReference && <span className="conversation-add-reference" style={{ left: selectedReference.left, top: selectedReference.top }}>
+      <button type="button" onPointerDown={event => event.preventDefault()} onClick={() => { const anchor = { event_id: selectedReference.reference.eventId, quote: selectedReference.reference.content }; if (onCreateAnnotation) onCreateAnnotation(anchor); else window.dispatchEvent(new CustomEvent('flowweave:create-conversation-annotation', { detail: anchor })); window.getSelection()?.removeAllRanges(); setSelectedReference(undefined); }}><Quote size={14}/>添加注释</button>
+      <button type="button" onPointerDown={event => event.preventDefault()} onClick={() => { onAddReference?.(selectedReference.reference); window.getSelection()?.removeAllRanges(); setSelectedReference(undefined); }}><Quote size={14}/>添加到会话</button>
+    </span>}
     {showJumpToLatest && <button
       type="button"
       className={`conversation-jump-latest${isGenerating ? ' generating' : ''}`}

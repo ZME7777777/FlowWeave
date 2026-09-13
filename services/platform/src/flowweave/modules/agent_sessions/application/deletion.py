@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from flowweave.modules.agent_sessions.infrastructure.models import (
     AgentConversationBinding,
+    AgentConversationAnnotation,
     AgentConversationCapability,
     AgentConversationCommand,
     AgentConversationMessageAttachment,
@@ -26,6 +27,9 @@ def delete_binding_records(db: Session, binding_id: str) -> None:
         )
     )
     db.execute(delete(BackgroundTask).where(BackgroundTask.aggregate_id == binding_id))
+    db.execute(
+        delete(AgentConversationAnnotation).where(AgentConversationAnnotation.binding_id == binding_id)
+    )
     db.execute(
         delete(AgentConversationMessageAttachment).where(
             AgentConversationMessageAttachment.binding_id == binding_id

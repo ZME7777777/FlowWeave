@@ -1438,7 +1438,7 @@ function workspaceReferenceKey(reference: AgentWorkspaceReference): string {
 
 interface WorkspaceSelectionRect { left: number; top: number; width: number; height: number; }
 
-function WorkspaceTextPreview({ path, content, highlight, highlightLine, onSelect }: { path: string; content: string; highlight?: FileSelection; highlightLine?: number; onSelect?: (selection: FileSelection) => void }) {
+function WorkspaceTextPreview({ path, content, highlight, highlightLine, onSelect, onAnnotate }: { path: string; content: string; highlight?: FileSelection; highlightLine?: number; onSelect?: (selection: FileSelection) => void; onAnnotate?: (selection: FileSelection) => void }) {
   const previewRef = useRef<HTMLDivElement>(null);
   const previewContentRef = useRef<HTMLElement>(null);
   const [selectionAction, setSelectionAction] = useState<{ selection: FileSelection; left: number; top: number; highlights: WorkspaceSelectionRect[] }>();
@@ -1513,7 +1513,7 @@ function WorkspaceTextPreview({ path, content, highlight, highlightLine, onSelec
     }
     positionSelectionAction(selection, range);
   };
-  const action = selectionAction && <><div className="agent-file-selection-highlights" aria-hidden="true">{selectionAction.highlights.map((rect, index) => <i key={`${rect.left}:${rect.top}:${index}`} style={rect}/>)}</div><button type="button" className="agent-file-selection-action" style={{ left: selectionAction.left, top: selectionAction.top }} onMouseDown={event => event.preventDefault()} onMouseUp={event => event.stopPropagation()} onClick={event => { event.stopPropagation(); onSelect?.(selectionAction.selection); setSelectionAction(undefined); window.getSelection()?.removeAllRanges(); }}><Quote size={13}/>追加到会话</button></>;
+  const action = selectionAction && <><div className="agent-file-selection-highlights" aria-hidden="true">{selectionAction.highlights.map((rect, index) => <i key={`${rect.left}:${rect.top}:${index}`} style={rect}/>)}</div><span className="agent-file-selection-action" style={{ left: selectionAction.left, top: selectionAction.top }}><button type="button" onMouseDown={event => event.preventDefault()} onClick={event => { event.stopPropagation(); if (onAnnotate) onAnnotate(selectionAction.selection); else window.dispatchEvent(new CustomEvent('flowweave:create-file-annotation', { detail: { path, selection: selectionAction.selection, quote: window.getSelection()?.toString() ?? '' } })); setSelectionAction(undefined); window.getSelection()?.removeAllRanges(); }}><Quote size={13}/>添加注释</button><button type="button" onMouseDown={event => event.preventDefault()} onClick={event => { event.stopPropagation(); onSelect?.(selectionAction.selection); setSelectionAction(undefined); window.getSelection()?.removeAllRanges(); }}><Quote size={13}/>追加到会话</button></span></>;
   if (markdownPreview) {
     return <div ref={previewRef} className="agent-file-preview-selection" onMouseUp={captureSelection}>{action}<article ref={previewContentRef} className="agent-file-markdown-preview"><ReactMarkdown remarkPlugins={[remarkGfm]} components={{ code: WorkspaceMarkdownCode }}>{content}</ReactMarkdown></article></div>;
   }
@@ -2399,9 +2399,9 @@ function readWorkspaceToolState(storageKey: string): Record<string, WorkspaceToo
 }
 
 function WorkspaceDrawer({
-  open, onOpen, onClose, onAddFileSelection, highlightedFileSelection, workspaceId, scopeKey, migrateFromScopeKey, bindingId, workDirectoryId, conversation, attachments, sources, attachmentRequest, candidatePreviewRequest, reviewChanges = [], reviewRequestId, sessionChanges = [], onReviewChanges, runtimeAvailable, runtimeTasks, agentDefinitions, sessionStopped,
+  open, onOpen, onClose, onAddFileSelection, onAnnotateFileSelection, highlightedFileSelection, workspaceId, scopeKey, migrateFromScopeKey, bindingId, workDirectoryId, conversation, attachments, sources, attachmentRequest, candidatePreviewRequest, reviewChanges = [], reviewRequestId, sessionChanges = [], onReviewChanges, runtimeAvailable, runtimeTasks, agentDefinitions, sessionStopped,
 }: {
-  open: boolean; onOpen: () => void; onClose: () => void; onAddFileSelection?: (path: string, selection: FileSelection) => void; highlightedFileSelection?: { path: string; selection: FileSelection }; workspaceId: string; scopeKey: string; migrateFromScopeKey?: string; bindingId?: string; workDirectoryId?: string; conversation?: AgentConversation; attachments: AgentAttachment[]; sources: ConversationSource[]; attachmentRequest?: { key: string; attachment: AgentAttachment }; candidatePreviewRequest?: CandidateFilePreviewRequest; reviewChanges?: WorkspaceFileChange[]; reviewRequestId?: string; sessionChanges?: WorkspaceFileChange[]; onReviewChanges?: (changes: WorkspaceFileChange[]) => void; runtimeAvailable: boolean; runtimeTasks: RuntimeTaskProjection[]; agentDefinitions: CapabilityAsset[]; sessionStopped: boolean;
+  open: boolean; onOpen: () => void; onClose: () => void; onAddFileSelection?: (path: string, selection: FileSelection) => void; onAnnotateFileSelection?: (path: string, selection: FileSelection, quote: string) => void; highlightedFileSelection?: { path: string; selection: FileSelection }; workspaceId: string; scopeKey: string; migrateFromScopeKey?: string; bindingId?: string; workDirectoryId?: string; conversation?: AgentConversation; attachments: AgentAttachment[]; sources: ConversationSource[]; attachmentRequest?: { key: string; attachment: AgentAttachment }; candidatePreviewRequest?: CandidateFilePreviewRequest; reviewChanges?: WorkspaceFileChange[]; reviewRequestId?: string; sessionChanges?: WorkspaceFileChange[]; onReviewChanges?: (changes: WorkspaceFileChange[]) => void; runtimeAvailable: boolean; runtimeTasks: RuntimeTaskProjection[]; agentDefinitions: CapabilityAsset[]; sessionStopped: boolean;
 }) {
   const { api, fileUrl } = useAgentSessionGateway();
   const host = useAgentSessionHost();
@@ -2940,7 +2940,7 @@ function WorkspaceDrawer({
               <iframe className="agent-file-media-preview" sandbox="" title={`${candidatePreview.filename} 候选文件预览`} src={candidatePreview.url}/>
             </> : selectedFile ? <>
               <header><span title={selectedFile}>{selectedAttachment?.filename || relativeWorkspacePath(selectedFile, details.root)}</span><a href={fileUrl(workspaceId, selectedFile, { bindingId, workDirectoryId, download: true })}><Download size={13}/>下载</a></header>
-              {canPreviewImage ? <img className="agent-file-media-preview" src={selectedAttachment?.image_data_url || selectedFileUrl} alt={selectedAttachment?.filename || '附件预览'}/> : canPreviewPdf ? <iframe className="agent-file-media-preview" title={selectedAttachment?.filename || 'PDF 预览'} src={selectedFileUrl}/> : textPreviewable ? previewQuery.isLoading ? <p>正在读取文件…</p> : previewQuery.isError ? <p>文件预览不可用，请下载后查看。</p> : <WorkspaceTextPreview path={selectedFile} content={previewQuery.data ?? ''} highlight={highlightedFileSelection?.path === selectedFile ? highlightedFileSelection.selection : undefined} highlightLine={sourceFileNavigation?.path === selectedFile ? sourceFileNavigation.line : undefined} onSelect={selection => { onAddFileSelection?.(selectedFile, selection); onClose(); }}/> : <p>此文件不提供浏览器预览，请下载后查看。</p>}
+              {canPreviewImage ? <img className="agent-file-media-preview" src={selectedAttachment?.image_data_url || selectedFileUrl} alt={selectedAttachment?.filename || '附件预览'}/> : canPreviewPdf ? <iframe className="agent-file-media-preview" title={selectedAttachment?.filename || 'PDF 预览'} src={selectedFileUrl}/> : textPreviewable ? previewQuery.isLoading ? <p>正在读取文件…</p> : previewQuery.isError ? <p>文件预览不可用，请下载后查看。</p> : <WorkspaceTextPreview path={selectedFile} content={previewQuery.data ?? ''} highlight={highlightedFileSelection?.path === selectedFile ? highlightedFileSelection.selection : undefined} highlightLine={sourceFileNavigation?.path === selectedFile ? sourceFileNavigation.line : undefined} onSelect={selection => { onAddFileSelection?.(selectedFile, selection); onClose(); }} onAnnotate={selection => onAnnotateFileSelection?.(selectedFile, selection, previewQuery.data ?? '')}/> : <p>此文件不提供浏览器预览，请下载后查看。</p>}
             </> : <p>选择一个文件以预览或下载。</p>}</div>
           </section>}
           {scopeState.tabs.some(tab => tab.kind === 'changes') && <div className={`agent-changes-tab-panel ${scopeState.activeTabId === 'changes' ? 'active' : ''}`}><WorkspaceChangesReview changes={reviewChanges} selectedId={scopeState.selectedChangeId} onSelect={selectedChangeId => updateScope(current => ({ ...current, selectedChangeId }))} onOpenSource={openSourceFile} workspaceRoot={details.working_directory}/></div>}
@@ -3140,6 +3140,28 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     [conversations, selectedBindingId, selectedConversationQuery.data],
   );
   const selectedConversationId = selected?.id;
+  const annotationsQuery = useQuery({
+    queryKey: sessionQueryKey(host, 'annotations', workspace?.id, selectedConversationId),
+    queryFn: () => api.annotations(workspace!.id, selectedConversationId!),
+    enabled: Boolean(workspace && selectedConversationId),
+  });
+  const createAnnotation = useCallback(async (anchorKind: 'CONVERSATION_TEXT' | 'WORKSPACE_FILE_RANGE', anchor: Record<string, unknown>) => {
+    if (!workspace || !selectedConversationId) return;
+    const comment = await dialog.prompt({ title: '添加注释', message: '这条评论会随下一次提问作为精确上下文发送给 Agent。', inputLabel: '你的评论', placeholder: '写下你的想法…', confirmLabel: '添加注释' });
+    if (!comment?.trim()) return;
+    await api.createAnnotation(workspace.id, selectedConversationId, anchorKind, anchor, comment);
+    await queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'annotations', workspace.id, selectedConversationId) });
+  }, [api, dialog, host, queryClient, selectedConversationId, workspace]);
+  useEffect(() => {
+    const listener = (event: Event) => void createAnnotation('CONVERSATION_TEXT', (event as CustomEvent<Record<string, unknown>>).detail);
+    window.addEventListener('flowweave:create-conversation-annotation', listener);
+    return () => window.removeEventListener('flowweave:create-conversation-annotation', listener);
+  }, [createAnnotation]);
+  useEffect(() => {
+    const listener = (event: Event) => void createAnnotation('WORKSPACE_FILE_RANGE', (event as CustomEvent<Record<string, unknown>>).detail);
+    window.addEventListener('flowweave:create-file-annotation', listener);
+    return () => window.removeEventListener('flowweave:create-file-annotation', listener);
+  }, [createAnnotation]);
   useEffect(() => {
     if (selectedConversationId) markSessionPerformance('selected');
   }, [selectedConversationId]);

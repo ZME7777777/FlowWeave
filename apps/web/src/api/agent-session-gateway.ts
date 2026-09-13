@@ -9,6 +9,7 @@ import {
 } from './client';
 import type {
   AgentAttachment,
+  AgentConversationAnnotation,
   AgentConversation,
   AgentConversationHead,
   AgentConversationHydration,
@@ -87,6 +88,8 @@ export interface AgentSessionApi {
   readonly runtime: (hostId: AgentSessionHostId) => Promise<AgentSessionRuntime>;
   readonly conversations: (hostId: AgentSessionHostId, cursor?: string) => Promise<AgentConversationPage>;
   readonly conversation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<AgentConversation>;
+  readonly annotations: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<AgentConversationAnnotation[]>;
+  readonly createAnnotation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, anchorKind: AgentConversationAnnotation['anchor_kind'], anchor: Record<string, unknown>, comment: string) => Promise<AgentConversationAnnotation>;
   readonly workDirectories: (hostId: AgentSessionHostId) => Promise<AgentSessionWorkDirectoryList>;
   readonly providers: () => Promise<ModelProvider[]>;
   readonly capabilities: () => Promise<CapabilityAsset[]>;
@@ -153,6 +156,8 @@ export const agentWorkspaceSessionGateway: AgentSessionGateway = {
     runtime: api.agentWorkspaceRuntime,
     conversations: api.agentConversations,
     conversation: api.agentConversation,
+    annotations: api.agentConversationAnnotations,
+    createAnnotation: api.createAgentConversationAnnotation,
     workDirectories: api.agentWorkDirectories,
     providers: api.providers,
     capabilities: api.capabilities,
@@ -218,6 +223,9 @@ export function flowNodeSessionGateway(
       runtime: () => nodeSessionApi.runtime(flowRunId, attemptId),
       conversations: (_hostId, cursor) => nodeSessionApi.conversations(flowRunId, attemptId, cursor),
       conversation: (_hostId, bindingId) => nodeSessionApi.get(flowRunId, attemptId, bindingId),
+      annotations: (_hostId, bindingId) => nodeSessionApi.annotations(flowRunId, attemptId, bindingId),
+      createAnnotation: (_hostId, bindingId, anchorKind, anchor, comment) =>
+        nodeSessionApi.createAnnotation(flowRunId, attemptId, bindingId, anchorKind, anchor, comment),
       workDirectories: () => nodeSessionApi.workDirectories(flowRunId, attemptId),
       providers: api.providers,
       capabilities: api.capabilities,

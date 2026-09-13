@@ -15,6 +15,7 @@ from flowweave.modules.agent_sessions.application.host import (
 )
 from flowweave.modules.agent_sessions.infrastructure.models import (
     AgentConversationBinding,
+    AgentConversationAnnotation,
     AgentConversationCapability,
     AgentConversationCommand,
     AgentConversationMessageAttachment,
@@ -134,6 +135,7 @@ def __getattr__(name: str) -> Any:
 
 __all__ = [
     "AgentConversationBinding",
+    "AgentConversationAnnotation",
     "AgentConversationCapability",
     "AgentConversationCommand",
     "AgentConversationMessageAttachment",

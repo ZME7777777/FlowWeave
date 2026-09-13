@@ -19,6 +19,7 @@ from fastapi import (
 from pydantic import BaseModel, ConfigDict, Field
 
 from flowweave.bootstrap.container import Container
+from flowweave.modules.agent_sessions.application import annotations
 from flowweave.modules.agent_sessions.public import conversations
 from flowweave.modules.agent_workspaces.application import work_directories, workspace
 from flowweave.modules.environments import public as environments
@@ -99,6 +100,12 @@ class AgentWorkspaceReference(_Write):
     kind: Literal["file", "directory"]
     display_name: str = Field(min_length=1, max_length=240)
     selection: dict[str, int] | None = None
+
+
+class AgentConversationAnnotationWrite(_Write):
+    anchor_kind: Literal["CONVERSATION_TEXT", "WORKSPACE_FILE_RANGE"]
+    anchor: dict[str, Any]
+    comment: str = Field(min_length=1, max_length=10_000)
 
 
 def _empty_attachment_references() -> list[AgentAttachmentReference]:
@@ -657,6 +664,36 @@ async def delete_agent_conversation(
             _key(idempotency_key, "delete-agent-conversation", binding_id),
         ),
     )
+    return Response(status_code=204)
+
+
+@router.get("/agent-workspaces/{workspace_id}/conversations/{binding_id}/annotations")
+async def list_agent_conversation_annotations(workspace_id: str, binding_id: str, db: Db) -> list[dict[str, Any]]:
+    return await run_sync(db, lambda session: (
+        conversations.get_conversation(session, workspace_id, binding_id),
+        annotations.list_annotations(session, binding_id),
+    )[1])
+
+
+@router.post("/agent-workspaces/{workspace_id}/conversations/{binding_id}/annotations", status_code=201)
+async def create_agent_conversation_annotation(
+    workspace_id: str, binding_id: str, payload: AgentConversationAnnotationWrite, db: Db
+) -> dict[str, Any]:
+    return await run_sync(db, lambda session: (
+        conversations.get_conversation(session, workspace_id, binding_id),
+        annotations.create_annotation(session, binding_id=binding_id, anchor_kind=payload.anchor_kind,
+                                      anchor=payload.anchor, comment=payload.comment),
+    )[1])
+
+
+@router.delete("/agent-workspaces/{workspace_id}/conversations/{binding_id}/annotations/{annotation_id}", status_code=204)
+async def delete_agent_conversation_annotation(
+    workspace_id: str, binding_id: str, annotation_id: str, db: Db
+) -> Response:
+    await run_sync(db, lambda session: (
+        conversations.get_conversation(session, workspace_id, binding_id),
+        annotations.delete_annotation(session, binding_id=binding_id, annotation_id=annotation_id),
+    ))
     return Response(status_code=204)
 
 

@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from flowweave.modules.agent_sessions import public as agent_sessions
 from flowweave.modules.agent_sessions.application import usage as usage_projection
+from flowweave.modules.agent_sessions.application import annotations as collaboration_annotations
 from flowweave.modules.agent_sessions.application.conversations import (
     AGENT_WORKSPACE_CONDENSER_MAX_EVENTS,
     ATTACHMENT_PATH,
@@ -2195,7 +2196,10 @@ def send_node_message(
     )
     runtime = get_runtime()
     references = resolve_conversation_references(runtime, handle, references)
-    prompt, image_urls = message_payload(content, attachments, references, workspace_references)
+    prompt, image_urls = message_payload(
+        content, attachments, references, workspace_references,
+        annotations=collaboration_annotations.prompt_annotations(db, binding.id),
+    )
     readiness = runtime.input_readiness(handle)
     queued_during_turn = not readiness.ready
     if queued_during_turn:

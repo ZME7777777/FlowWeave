@@ -26,6 +26,7 @@ from fastapi import (
 from pydantic import BaseModel, ConfigDict, Field
 
 from flowweave.bootstrap.container import Container
+from flowweave.modules.agent_sessions.application import annotations
 from flowweave.modules.agent_sessions import public as agent_sessions
 from flowweave.modules.agent_sessions.application.runtime_config import resolve_session_config
 from flowweave.modules.agent_workspaces import public as agent_workspace_host
@@ -78,6 +79,12 @@ class NodeWorkspaceReference(_Write):
     kind: Literal["file", "directory"]
     display_name: str = Field(min_length=1, max_length=240)
     selection: dict[str, int] | None = None
+
+
+class NodeSessionAnnotationWrite(_Write):
+    anchor_kind: Literal["CONVERSATION_TEXT", "WORKSPACE_FILE_RANGE"]
+    anchor: dict[str, Any]
+    comment: str = Field(min_length=1, max_length=10_000)
 
 
 class NodeSessionBootstrapFullWrite(_Write):
@@ -769,6 +776,41 @@ async def delete_node_session(
             session, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
         ),
     )
+    return Response(status_code=204)
+
+
+@router.get(f"{_BASE}/{{binding_id}}/annotations")
+async def list_node_session_annotations(
+    flow_run_id: str, attempt_id: str, binding_id: str, db: Db
+) -> list[dict[str, Any]]:
+    return await run_sync(db, lambda session: (
+        agent_sessions.flow_node_conversations.get_node_session_view(
+            session, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id),
+        annotations.list_annotations(session, binding_id),
+    )[1])
+
+
+@router.post(f"{_BASE}/{{binding_id}}/annotations", status_code=201)
+async def create_node_session_annotation(
+    flow_run_id: str, attempt_id: str, binding_id: str, payload: NodeSessionAnnotationWrite, db: Db
+) -> dict[str, Any]:
+    return await run_sync(db, lambda session: (
+        agent_sessions.flow_node_conversations.get_node_session_view(
+            session, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id),
+        annotations.create_annotation(session, binding_id=binding_id, anchor_kind=payload.anchor_kind,
+                                      anchor=payload.anchor, comment=payload.comment),
+    )[1])
+
+
+@router.delete(f"{_BASE}/{{binding_id}}/annotations/{{annotation_id}}", status_code=204)
+async def delete_node_session_annotation(
+    flow_run_id: str, attempt_id: str, binding_id: str, annotation_id: str, db: Db
+) -> Response:
+    await run_sync(db, lambda session: (
+        agent_sessions.flow_node_conversations.get_node_session_view(
+            session, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id),
+        annotations.delete_annotation(session, binding_id=binding_id, annotation_id=annotation_id),
+    ))
     return Response(status_code=204)
 
 
