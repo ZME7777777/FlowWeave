@@ -58,6 +58,10 @@ END gate 失败后，风险接受和补救 fork 都需要用户明确授权、�
 
 如果状态卡住，先读取 Run、NodeRun、Runtime 和 events，保留失败上下文；不可进入 Docker 或 OpenHands 私有端点“手工完成”节点。取消或拒绝前必须有用户的明确授权。
 
+若事件明确显示原生 FinishAction 已完成但控制面尚未投影，先读取当前 Attempt 的 `state_version`；只有用户明确要求恢复该投影时，才以该版本调用 `run reconcile-runtime-completion <attempt-id> --data '{"expected_state_version": <current-version>}' --dry-run`。这不是通用重试或强制完成入口，不能替代读取事件、门禁和 Runtime 状态。
+
+连续自动记录的初始配置可在其父 FlowRun 范围内导出或导入：`run automatic-config-export <parent-run-id> --data-file ./.tmp/export.json` 的 `record_ids` 必须来自已读取记录；`run automatic-config-import <parent-run-id> --data-file ./.tmp/import.json` 只接受版本化配置文档，且会创建记录。导入前必须 dry-run，确认 `format`、`version`、起始节点和计划；不携带 Environment、Runtime 或会话状态，也不能用它覆盖已有冻结记录。
+
 ## 节点会话工作区维护
 
 删除节点会话工作区文件或目录前，从 Run 详情取得真实 `attempt_id`，再读取该 Attempt 的记录级工作区范围。同一执行记录中的节点可共享记录项目根，不同记录相互隔离；不得套用旧的 `/runtime/workspace/project` 或其他记录路径。使用重复 `--path` 批量选择，并先 dry-run：
@@ -70,3 +74,5 @@ flowweave run workspace-delete <run-id> --attempt <attempt-id> \
 ```
 
 平台拒绝工作区根、范围外路径、隐藏路径、符号链接和特殊文件；目录会递归删除。删除 FlowRun 逻辑工作目录使用 `flowweave run work-directory-delete <run-id> --attempt <attempt-id> --work-directory <directory-id> --dry-run`。先读取目录 ID；仍被会话冻结版本引用时平台会拒绝删除。两类操作均只操作 FlowWeave 公开 API，不进入 Runtime 或宿主机直接删除。
+
+同一范围可通过 `run workspace-directory|workspace-git-repositories|workspace-git-log|workspace-git-commit|workspace-git-diff <run-id> --attempt <attempt-id>` 增量读取目录和 Git 历史，并以 `run workspace-entry-create` 创建普通文件/目录。只有用户明确需要完整索引时才调用 `run workspace-details <run-id> --attempt <attempt-id> --full-index`。仓库路径、commit 和文件路径都必须来自公开读取结果。`run hydration <run-id> --attempt <attempt-id> --binding <binding-id>` 与 `run head` 仅读取节点会话原生状态，不会启动、恢复或写入会话。

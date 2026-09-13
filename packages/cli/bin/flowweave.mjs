@@ -37,10 +37,10 @@ function usage() {
   environment <list|get|create|update|delete|setup|publish|stop|version-delete> ...
   credential <list|create|update|delete|delete-many> ...
   flow <list|get|create|update|validate|delete> ...
-  run <list|get|start|delete|runtime|replace|pause|resume|cancel|complete|events|node|node-copy|node-delete|workspace-delete|work-directory-delete> ...
+  run <list|get|start|delete|runtime|replace|pause|resume|cancel|complete|events|node|node-copy|node-delete|workspace-details|workspace-directory|workspace-git-repositories|workspace-git-log|workspace-git-commit|workspace-git-diff|workspace-entry-create|workspace-delete|work-directory-delete|hydration|head|automatic-config-export|automatic-config-import|reconcile-runtime-completion> ...
   schedule <list|templates|occurrences|create|pause|resume|trigger|delete> ...
   model <list|create|update|delete|discover|usage|test|oauth-start|oauth-poll|oauth-status|oauth-revoke> ...
-  agent <default|workspace|runtime|conversations|conversation|create|send|interrupt|resume|work-directories|work-directory-create|work-directory-delete|file-delete> ...
+  agent <default|workspace|runtime|conversations|conversation|create|send|interrupt|resume|work-directories|work-directory-create|work-directory-delete|workspace-details|workspace-directory|workspace-git-repositories|workspace-git-log|workspace-git-commit|workspace-git-diff|workspace-entry-create|file-delete|hydration|head> ...
 
 所有写入操作都可加 --dry-run 仅查看最终请求。运行 flowweave <命令> --help 查看该命令说明。`;
 }
@@ -453,6 +453,56 @@ async function flow(args) {
   throw new CliError('flow 支持 list|get|create|update|validate|delete');
 }
 
+function workspaceScope(args) {
+  const bindingId = option(args, '--binding');
+  const workDirectoryId = option(args, '--work-directory');
+  return [
+    ...(bindingId ? [['binding_id', bindingId]] : []),
+    ...(workDirectoryId ? [['work_directory_id', workDirectoryId]] : []),
+  ];
+}
+
+function workspaceDirectoryQuery(args) {
+  const parentPath = option(args, '--parent-path');
+  const cursor = option(args, '--cursor');
+  const limit = option(args, '--limit');
+  const query = workspaceScope(args);
+  if (parentPath) query.push(['parent_path', parentPath]);
+  if (cursor) query.push(['cursor', cursor]);
+  if (limit !== undefined) {
+    const value = Number(limit);
+    if (!Number.isSafeInteger(value) || value < 1 || value > 250) {
+      throw new CliError('workspace-directory 的 --limit 必须为 1 到 250 的整数');
+    }
+    query.push(['limit', String(value)]);
+  }
+  return query;
+}
+
+function workspaceDetailsQuery(args) {
+  return [
+    ...workspaceScope(args),
+    ...(flag(args, '--full-index') ? [['full_index', 'true']] : []),
+  ];
+}
+
+function workspaceGitQuery(args, { commit = false, path = false } = {}) {
+  const repositoryPath = option(args, '--repository-path');
+  if (!repositoryPath) throw new CliError('工作区 Git 操作需要 --repository-path');
+  const query = [['repository_path', repositoryPath], ...workspaceScope(args)];
+  if (commit) {
+    const value = option(args, '--commit');
+    if (!value) throw new CliError('工作区 Git 提交操作需要 --commit');
+    query.push(['commit', value]);
+  }
+  if (path) {
+    const value = option(args, '--path');
+    if (!value) throw new CliError('工作区 Git Diff 操作需要 --path');
+    query.push(['path', value]);
+  }
+  return query;
+}
+
 async function run(args) {
   const [action, id] = positional(args);
   if (action === 'list') return request('GET', '/flow-runs', args);
@@ -465,7 +515,17 @@ async function run(args) {
     });
     return request('POST', `/flows/${flowId}/runs`, args, { body });
   }
+  if (action === 'reconcile-runtime-completion') {
+    if (!id) throw new CliError('run reconcile-runtime-completion 需要 Attempt ID');
+    return request('POST', `/node-attempts/${id}/reconcile-runtime-completion`, args, { body: await objectPayload(args) });
+  }
   if (!id) throw new CliError(`run ${action || ''} 需要 FlowRun ID`);
+  if (action === 'automatic-config-export') {
+    return request('POST', `/flow-runs/${id}/automatic-runs/config-exports`, args, { body: await objectPayload(args) });
+  }
+  if (action === 'automatic-config-import') {
+    return request('POST', `/flow-runs/${id}/automatic-runs/config-imports`, args, { body: await objectPayload(args) });
+  }
   if (action === 'node' || action === 'node-copy' || action === 'node-delete') {
     const nodeRunId = option(args, '--node');
     if (!nodeRunId) throw new CliError(`run ${action} 需要 --node <node-run-id>`);
@@ -474,20 +534,48 @@ async function run(args) {
     if (action === 'node-copy') return request('POST', `${path}/copy`, args, { body: await objectPayload(args) });
     return request('DELETE', path, args);
   }
+  const attemptId = option(args, '--attempt');
+  const workspaceBase = attemptId
+    ? `/flow-runs/${id}/node-attempts/${attemptId}/agent-sessions`
+    : null;
+  if (['workspace-details', 'workspace-directory', 'workspace-git-repositories', 'workspace-git-log', 'workspace-git-commit', 'workspace-git-diff', 'workspace-entry-create'].includes(action)) {
+    if (!workspaceBase) throw new CliError(`run ${action} 需要 --attempt <attempt-id>`);
+    if (action === 'workspace-details') {
+      return request('GET', `${workspaceBase}/workspace`, args, { query: workspaceDetailsQuery(args) });
+    }
+    if (action === 'workspace-directory') {
+      return request('GET', `${workspaceBase}/workspace/directory`, args, { query: workspaceDirectoryQuery(args) });
+    }
+    if (action === 'workspace-git-repositories') {
+      return request('GET', `${workspaceBase}/workspace/git/repositories`, args, { query: workspaceScope(args) });
+    }
+    if (action === 'workspace-git-log') {
+      return request('GET', `${workspaceBase}/workspace/git/log`, args, { query: workspaceGitQuery(args) });
+    }
+    if (action === 'workspace-git-commit') {
+      return request('GET', `${workspaceBase}/workspace/git/commit`, args, { query: workspaceGitQuery(args, { commit: true }) });
+    }
+    if (action === 'workspace-git-diff') {
+      return request('GET', `${workspaceBase}/workspace/git/diff`, args, { query: workspaceGitQuery(args, { commit: true, path: true }) });
+    }
+    if (action === 'workspace-entry-create') {
+      return request('POST', `${workspaceBase}/workspace/entries`, args, { body: await objectPayload(args), query: workspaceScope(args) });
+    }
+  }
+  if (action === 'hydration' || action === 'head') {
+    if (!workspaceBase) throw new CliError(`run ${action} 需要 --attempt <attempt-id>`);
+    const bindingId = option(args, '--binding');
+    if (!bindingId) throw new CliError(`run ${action} 需要 --binding <binding-id>`);
+    return request('GET', `${workspaceBase}/${bindingId}/${action}`, args);
+  }
   if (action === 'workspace-delete') {
-    const attemptId = option(args, '--attempt');
     const paths = optionValues(args, '--path');
     if (!attemptId || !paths.length) {
       throw new CliError('run workspace-delete 需要 FlowRun ID、--attempt 和至少一个 --path');
     }
-    const bindingId = option(args, '--binding');
-    const workDirectoryId = option(args, '--work-directory');
     return request('DELETE', `/flow-runs/${id}/node-attempts/${attemptId}/agent-sessions/workspace/entries`, args, {
       body: { paths },
-      query: [
-        ...(bindingId ? [['binding_id', bindingId]] : []),
-        ...(workDirectoryId ? [['work_directory_id', workDirectoryId]] : []),
-      ],
+      query: workspaceScope(args),
     });
   }
   if (action === 'work-directory-delete') {
@@ -512,7 +600,7 @@ async function run(args) {
   if (action === 'cancel') return request('POST', `/flow-runs/${id}/cancel`, args, { body: {} });
   if (action === 'complete') return request('POST', `/flow-runs/${id}/complete`, args, { body: {} });
   if (action === 'events') return request('GET', `/flow-runs/${id}/events`, args);
-  throw new CliError('run 支持 list|get|start|delete|runtime|replace|pause|resume|cancel|complete|events|node|node-copy|node-delete|workspace-delete|work-directory-delete');
+  throw new CliError('run 支持 list|get|start|delete|runtime|replace|pause|resume|cancel|complete|events|node|node-copy|node-delete|workspace-details|workspace-directory|workspace-git-repositories|workspace-git-log|workspace-git-commit|workspace-git-diff|workspace-entry-create|workspace-delete|work-directory-delete|hydration|head|automatic-config-export|automatic-config-import|reconcile-runtime-completion');
 }
 
 async function schedule(args) {
@@ -597,26 +685,43 @@ async function agent(args) {
     if (!binding) throw new CliError('agent work-directory-delete 需要工作目录 ID');
     return request('DELETE', `${base}/work-directories/${binding}`, args);
   }
+  if (action === 'workspace-details') {
+    return request('GET', `${base}/workspace`, args, { query: workspaceDetailsQuery(args) });
+  }
+  if (action === 'workspace-directory') {
+    return request('GET', `${base}/workspace/directory`, args, { query: workspaceDirectoryQuery(args) });
+  }
+  if (action === 'workspace-git-repositories') {
+    return request('GET', `${base}/workspace/git/repositories`, args, { query: workspaceScope(args) });
+  }
+  if (action === 'workspace-git-log') {
+    return request('GET', `${base}/workspace/git/log`, args, { query: workspaceGitQuery(args) });
+  }
+  if (action === 'workspace-git-commit') {
+    return request('GET', `${base}/workspace/git/commit`, args, { query: workspaceGitQuery(args, { commit: true }) });
+  }
+  if (action === 'workspace-git-diff') {
+    return request('GET', `${base}/workspace/git/diff`, args, { query: workspaceGitQuery(args, { commit: true, path: true }) });
+  }
+  if (action === 'workspace-entry-create') {
+    return request('POST', `${base}/workspace/entries`, args, { body: await objectPayload(args), query: workspaceScope(args) });
+  }
   if (action === 'file-delete') {
     const paths = optionValues(args, '--path');
     if (!paths.length) throw new CliError('agent file-delete 至少需要一个 --path <runtime-path>');
-    const bindingId = option(args, '--binding');
-    const workDirectoryId = option(args, '--work-directory');
     return request('DELETE', `${base}/workspace/entries`, args, {
       body: { paths },
-      query: [
-        ...(bindingId ? [['binding_id', bindingId]] : []),
-        ...(workDirectoryId ? [['work_directory_id', workDirectoryId]] : []),
-      ],
+      query: workspaceScope(args),
     });
   }
   if (action === 'create') return request('POST', `${base}/conversations`, args);
   if (!binding) throw new CliError(`agent ${action || ''} 需要会话 binding ID`);
   if (action === 'conversation') return request('GET', `${base}/conversations/${binding}`, args);
+  if (action === 'hydration' || action === 'head') return request('GET', `${base}/conversations/${binding}/${action}`, args);
   if (action === 'send') return request('POST', `${base}/conversations/${binding}/messages`, args);
   if (action === 'interrupt') return request('POST', `${base}/conversations/${binding}/interrupt`, args, { body: {} });
   if (action === 'resume') return request('POST', `${base}/conversations/${binding}/resume`, args, { body: {} });
-  throw new CliError('agent 支持 default|workspace|runtime|conversations|conversation|create|send|interrupt|resume|work-directories|work-directory-create|work-directory-delete|file-delete');
+  throw new CliError('agent 支持 default|workspace|runtime|conversations|conversation|create|send|interrupt|resume|work-directories|work-directory-create|work-directory-delete|workspace-details|workspace-directory|workspace-git-repositories|workspace-git-log|workspace-git-commit|workspace-git-diff|workspace-entry-create|file-delete|hydration|head');
 }
 
 async function upload(args) {

@@ -13,6 +13,10 @@ flowweave health --ready
 
 页面域命令包括 `node`、`node-directory`、`capability`、`event-trigger`、`environment`、`credential`、`flow`、`run`、`schedule`、`model` 和 `agent`。它们分别覆盖节点资产、能力仓库、运行事件触发器、终端环境、网站认证条目、流程编排、FlowRun、周期调度、大模型配置与 Agent 工作台的常用原子操作。`credential` 管理网站凭据，不等于 `auth` 用户登录。每个命令的 JSON 请求体与在线 OpenAPI 一致；运行 `flowweave <域> --help` 查看映射。
 
+工作区浏览支持按需详情、增量目录、受授权的 Git 历史/提交/Diff 与创建普通文件或目录：使用 `agent workspace-details [--full-index]|workspace-directory|workspace-git-repositories|workspace-git-log|workspace-git-commit|workspace-git-diff|workspace-entry-create` 处理顶层 Agent Workspace；在 FlowRun 节点范围内使用对应的 `run workspace-* <run-id> --attempt <attempt-id>`。`--full-index` 只在用户确实需要完整索引时使用，默认优先按目录读取。Git 操作只接受由工作区 API 返回的 `repository_path`、commit 和文件路径，不能从本地或显示名称猜测。`agent hydration|head` 与 `run hydration|head` 读取会话原生状态；它们不修改 Conversation。
+
+连续自动记录的可移植初始配置使用 `run automatic-config-export <parent-run-id> --data-file ./.tmp/export.json` 和 `run automatic-config-import <parent-run-id> --data-file ./.tmp/import.json`。导出只接受已读取的连续记录 ID；导入会创建记录，先 dry-run 审阅格式版本、起始节点与节点计划。遇到明确的原生完成动作未投影时，才可在读取当前 Attempt 后使用 `run reconcile-runtime-completion <attempt-id> --data '{"expected_state_version": 3}'`；该操作必须携带当前状态版本，不能用来猜测或强制完成运行。
+
 常用命令示例：
 
 `flowweave node-directory delete-many --id <directory-id> --id <directory-id> --dry-run`、`flowweave credential delete-many --id <credential-id> --id <credential-id>`、`flowweave environment publish <setup-session-id> --description '升级 Python 依赖'`、`flowweave agent file-delete <workspace-id> --path <workspace-api-returned-path>`、`flowweave run workspace-delete <run-id> --attempt <attempt-id> --path <attempt-workspace-api-returned-path>`。
@@ -21,7 +25,7 @@ flowweave health --ready
 
 读取 FlowRun 中的记录使用 `flowweave run node <run-id> --node <node-run-id>`；只有用户明确要求时才能执行 `node-copy` 或 `node-delete`。暂停或恢复 Runtime 前，必须先读取 `run runtime`，将返回的 `generation` 与 session `row_version` 写入 `expected_generation`、`expected_session_row_version` 后传给 `run pause` 或 `run resume`。供应商上游余额/用量使用 `flowweave model usage <provider-id>`，它可能依赖该供应商的有效 API 凭据。
 
-周期任务使用 `schedule list/templates/occurrences/create/pause/resume/trigger/delete`。先用 `schedule templates` 读取可作为冻结母版的已就绪连续运行记录；创建请求必须使用在线 `FlowRunScheduleWrite` schema：只提交任务名称、母版 `source_flow_run_id` 和五段 `cron_expression`，节点、环境、输入和启动提示词均来自该记录的冻结母版。`schedule occurrences <schedule-id> --page 1 --page-size 10` 按需读取该调度的执行历史及其 FlowRun/NodeRun，而不预加载所有记录。暂停或恢复前从 `schedule list` 读取当前 `row_version`，再传入 `--expected-row-version`。手动触发会新增一次 occurrence，不会改写既有运行；删除生成的 FlowRun 不会删除调度，而有生成记录的调度删除会被平台拒绝。
+周期任务使用 `schedule list/templates/occurrences/create/pause/resume/trigger/delete`。先用 `schedule templates` 读取可作为冻结母版的已就绪连续运行记录；创建请求必须使用在线 `FlowRunScheduleWrite` schema：只提交任务名称、母版 `source_flow_run_id` 和五段 `cron_expression`，节点、环境、输入和启动提示词均来自该记录的冻结母版。`schedule occurrences <schedule-id> --page 1 --page-size 10` 按需读取该调度的执行历史及其 FlowRun/NodeRun，而不预加载所有记录。暂停或恢复前从 `schedule list` 读取当前 `row_version`，再传入 `--expected-row-version`。手动触发会新增一次 occurrence，不会改写既有运行；删除生成的 FlowRun 不会删除调度，而有生成记录的调度删除会被平台拒绝。环境发布现在会返回 `202`：发布后读取对应 Environment，等待新版本进入 `READY`，不要重复提交同一 Setup Session。
 
 能力命令还支持受治理的 OpenHands Plugin Marketplace：`capability marketplace` 读取服务端固定到完整 commit 的公开目录；使用返回的 `source`、`commit`、`repo_path` 与插件名称调用 `capability marketplace-resolve --data-file ./marketplace-plugin.json`，随后读取 `capability plugin-resolution <resolution-id>`，并以当前 `state_version` 调用 `capability plugin-publish <resolution-id> --data '{"expected_state_version": 1}'`。自定义受信任 Marketplace 可先用 `capability marketplace-preview --data-file ./marketplace.json` 审阅目录。Agent Definition 只能以 UTF-8 `.md`/`.markdown` 的 OpenHands YAML frontmatter + Markdown 正文通过 `capability validate|import --type AGENT_DEFINITION --file <file>` 导入。Hook 使用受控表单参数：`capability validate --type HOOK --file ./hook.md --hook-name <name> --hook-event <event> --hook-mode <PROMPT|SCRIPT>`；可选 `--hook-description` 与工具事件的 `--hook-matcher` 会被编译为 OpenHands 原生 `hook_config`，不能提交任意 Hook JSON。
 

@@ -41,6 +41,20 @@ flowweave agent conversations <workspace-id>
 
 工作目录、附件上传、能力绑定、MCP readiness、模型选择、pending confirmation、fork、condense、rerun 和 terminal 都是同一工作区域的原子 API。先读取目标会话/工作区和在线 OpenAPI，再使用 `flowweave api` 或 `upload`。能力必须是平台已治理的版本，先转 `flowweave-capabilities` 导入或定位；不能将文件复制进 Runtime 作为绑定。
 
+工作区目录与 Git 历史只能通过公开只读接口浏览，路径、仓库和 commit 都来自此前响应；不要把本机文件系统当作 Agent Workspace 的事实源：
+
+```bash
+flowweave agent workspace-directory <workspace-id> --parent-path <returned-path> --limit 100
+flowweave agent workspace-git-repositories <workspace-id>
+flowweave agent workspace-git-log <workspace-id> --repository-path <returned-repository-path>
+flowweave agent workspace-git-commit <workspace-id> --repository-path <returned-repository-path> --commit <returned-commit>
+flowweave agent workspace-git-diff <workspace-id> --repository-path <returned-repository-path> --commit <returned-commit> --path <returned-file-path>
+```
+
+默认优先使用增量目录读取；只有用户确实需要完整索引时才调用 `flowweave agent workspace-details <workspace-id> --full-index`，避免不必要的大响应。
+
+创建普通文件或目录使用 `agent workspace-entry-create <workspace-id> --data-file ./.tmp/entry.json --dry-run`；请求体仅使用在线 schema 的 `parent_path`、`name` 和 `kind`，写后重新读取目录。会话的 `agent hydration <workspace-id> <binding-id>` 和 `agent head <workspace-id> <binding-id>` 是原生状态读取，不会创建、续接或改变会话。
+
 对确认、附件、删除、停止或 fork 等改变状态的操作，先核对真实 workspace/binding ID 与用户意图；不得直接使用 Docker、Runtime Provider 或 OpenHands 私有接口。
 
 需要引用既有对话时，先读取该 binding 的正式事件，再在创建或发送消息的 `references` 数组中传 `{"event_id": "…", "content": "…"}`。引用是用户选择的上下文，不会授予其他 Workspace 的访问权限；不可按页面文本、历史 URL 或猜测 event ID 构造引用。

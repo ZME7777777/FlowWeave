@@ -382,6 +382,16 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 
 验收：受影响 Python `py_compile`、Ruff check/format、`test_openhands.py`（143 passed）、`git diff --check` 与任务状态唯一性通过；无迁移、Docker、OpenHands 源码或远端操作。
 
+### FR-402 CLI 与 Skill 新增公开接口同步 — DONE
+
+依赖：无（公开 CLI/Skill 契约同步）。
+
+目标：以 `3c06c479`（FR-267 CLI 生成基线）为起点整理后续新增的公开 API，并为高频、安全边界明确的操作提供 CLI 快捷命令与操作 Skill 指引；其余接口继续由通用 `api`、`upload`、`ws` 入口覆盖。不得臆造 OpenAPI 字段、绕过平台控制面，或将异步 Environment 发布误作同步成功。
+
+完成：CLI 新增顶层 Agent Workspace 与 FlowRun 节点范围的工作区详情／增量目录、授权 Git repositories/log/commit/diff、普通条目创建和 Conversation hydration/head 读取；新增连续自动记录配置导入／导出及带 Attempt 状态版本的 Runtime 完成投影对账。工作区 Git/路径操作要求来自公开读取结果；完整索引需显式 `--full-index`，默认使用增量目录。Environment 发布说明更新为异步 `202` 后重新读取直至 `READY`。基准 Skill、Agent Workspace、FlowRun 工作台与 Environment Skill 已同步这些边界和命令。
+
+验收：CLI `node --check`、Node 测试（13 passed）、`npm pack --dry-run`（仅 README、入口和 package metadata）、全部 FlowWeave Skill frontmatter 校验、`uv run --directory services/platform alembic heads`（唯一 `0115_agent_annotations`）、`git diff --check` 与任务状态唯一性通过；未修改 API、数据库、Runtime Provider、Docker、OpenHands 或远端环境。
+
 ### FR-398 长会话 Markdown 完整渲染 — DONE
 
 依赖：无（会话呈现交互修正）。

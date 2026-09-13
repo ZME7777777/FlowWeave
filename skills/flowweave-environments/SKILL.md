@@ -34,7 +34,7 @@ Environment 是可维护的环境定义。通过 Setup Session 在受控终端�
    flowweave ws /environment-setup-sessions/<setup-session-id>/terminal
    ```
 
-4. 完成配置后发布，重新读取 Environment，确认新版本为 `READY`，并保存**返回的 version ID**供 `flowweave run start --environment-version` 使用：
+4. 完成配置后发布。请求会异步返回 `202`，重新读取 Environment，等待新版本为 `READY` 后保存**返回的 version ID**供 `flowweave run start --environment-version` 使用；不要因页面或 CLI 尚未显示新版本而重复发布同一 Setup Session：
 
    ```bash
    flowweave environment publish <setup-session-id> --description '本次依赖与配置变更摘要'

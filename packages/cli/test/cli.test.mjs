@@ -315,3 +315,65 @@ test('事件触发器与受控 Hook 导入快捷命令保留公开契约', async
   assert.deepEqual({ hook_name: hookPayload.hook_name, hook_description: hookPayload.hook_description, hook_event: hookPayload.hook_event, hook_matcher: hookPayload.hook_matcher, hook_mode: hookPayload.hook_mode }, { hook_name: '审查工具调用', hook_description: '', hook_event: 'pre_tool_use', hook_matcher: 'terminal', hook_mode: 'PROMPT' });
   assert.equal(invoke(config, 'capability', 'validate', '--type', 'HOOK', '--file', './package.json', '--hook-name', '缺参数', '--dry-run').status, 2);
 });
+
+test('工作区历史、会话水合与连续记录配置快捷命令映射新增公开接口', async () => {
+  const config = await configured();
+  invoke(config, 'config', 'init', '--base-url', 'https://example.test/flowweave');
+
+  const directory = invoke(config, 'agent', 'workspace-directory', 'workspace-1', '--binding', 'binding-1', '--work-directory', 'directory-1', '--parent-path', '/project', '--cursor', 'next', '--limit', '25', '--dry-run');
+  assert.equal(directory.status, 0, directory.stderr);
+  assert.equal(JSON.parse(directory.stdout).url, 'https://example.test/flowweave/api/v1/agent-workspaces/workspace-1/workspace/directory?binding_id=binding-1&work_directory_id=directory-1&parent_path=%2Fproject&cursor=next&limit=25');
+  const details = invoke(config, 'agent', 'workspace-details', 'workspace-1', '--binding', 'binding-1', '--full-index', '--dry-run');
+  assert.equal(details.status, 0, details.stderr);
+  assert.equal(JSON.parse(details.stdout).url, 'https://example.test/flowweave/api/v1/agent-workspaces/workspace-1/workspace?binding_id=binding-1&full_index=true');
+  const gitDiff = invoke(config, 'agent', 'workspace-git-diff', 'workspace-1', '--repository-path', '/project', '--commit', 'abc123', '--path', 'src/index.ts', '--binding', 'binding-1', '--dry-run');
+  assert.equal(gitDiff.status, 0, gitDiff.stderr);
+  assert.equal(JSON.parse(gitDiff.stdout).url, 'https://example.test/flowweave/api/v1/agent-workspaces/workspace-1/workspace/git/diff?repository_path=%2Fproject&binding_id=binding-1&commit=abc123&path=src%2Findex.ts');
+  const created = invoke(config, 'agent', 'workspace-entry-create', 'workspace-1', '--data', '{"parent_path":"/project","name":"notes.md","kind":"FILE"}', '--work-directory', 'directory-1', '--dry-run');
+  assert.equal(created.status, 0, created.stderr);
+  assert.deepEqual(JSON.parse(created.stdout), {
+    method: 'POST',
+    payload: { parent_path: '/project', name: 'notes.md', kind: 'FILE' },
+    url: 'https://example.test/flowweave/api/v1/agent-workspaces/workspace-1/workspace/entries?work_directory_id=directory-1',
+  });
+  for (const action of ['hydration', 'head']) {
+    const result = invoke(config, 'agent', action, 'workspace-1', 'binding-1', '--dry-run');
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(JSON.parse(result.stdout).url, `https://example.test/flowweave/api/v1/agent-workspaces/workspace-1/conversations/binding-1/${action}`);
+  }
+
+  const nodeDirectory = invoke(config, 'run', 'workspace-directory', 'run-1', '--attempt', 'attempt-1', '--parent-path', '/project', '--limit', '20', '--dry-run');
+  assert.equal(nodeDirectory.status, 0, nodeDirectory.stderr);
+  assert.equal(JSON.parse(nodeDirectory.stdout).url, 'https://example.test/flowweave/api/v1/flow-runs/run-1/node-attempts/attempt-1/agent-sessions/workspace/directory?parent_path=%2Fproject&limit=20');
+  const nodeDetails = invoke(config, 'run', 'workspace-details', 'run-1', '--attempt', 'attempt-1', '--work-directory', 'directory-1', '--full-index', '--dry-run');
+  assert.equal(nodeDetails.status, 0, nodeDetails.stderr);
+  assert.equal(JSON.parse(nodeDetails.stdout).url, 'https://example.test/flowweave/api/v1/flow-runs/run-1/node-attempts/attempt-1/agent-sessions/workspace?work_directory_id=directory-1&full_index=true');
+  const nodeHistory = invoke(config, 'run', 'workspace-git-log', 'run-1', '--attempt', 'attempt-1', '--repository-path', '/project', '--dry-run');
+  assert.equal(nodeHistory.status, 0, nodeHistory.stderr);
+  assert.equal(JSON.parse(nodeHistory.stdout).url, 'https://example.test/flowweave/api/v1/flow-runs/run-1/node-attempts/attempt-1/agent-sessions/workspace/git/log?repository_path=%2Fproject');
+  const nodeEntry = invoke(config, 'run', 'workspace-entry-create', 'run-1', '--attempt', 'attempt-1', '--data', '{"parent_path":"/project","name":"tmp","kind":"DIRECTORY"}', '--dry-run');
+  assert.equal(nodeEntry.status, 0, nodeEntry.stderr);
+  assert.equal(JSON.parse(nodeEntry.stdout).url, 'https://example.test/flowweave/api/v1/flow-runs/run-1/node-attempts/attempt-1/agent-sessions/workspace/entries');
+  const nodeHead = invoke(config, 'run', 'head', 'run-1', '--attempt', 'attempt-1', '--binding', 'binding-1', '--dry-run');
+  assert.equal(nodeHead.status, 0, nodeHead.stderr);
+  assert.equal(JSON.parse(nodeHead.stdout).url, 'https://example.test/flowweave/api/v1/flow-runs/run-1/node-attempts/attempt-1/agent-sessions/binding-1/head');
+
+  const exported = invoke(config, 'run', 'automatic-config-export', 'run-1', '--data', '{"record_ids":["record-1"]}', '--dry-run');
+  assert.equal(exported.status, 0, exported.stderr);
+  assert.equal(JSON.parse(exported.stdout).url, 'https://example.test/flowweave/api/v1/flow-runs/run-1/automatic-runs/config-exports');
+  const imported = invoke(config, 'run', 'automatic-config-import', 'run-1', '--data', '{"format":"flowweave.continuous-record-config","version":1,"records":[{"start_node_key":"start"}]}', '--dry-run');
+  assert.equal(imported.status, 0, imported.stderr);
+  assert.equal(JSON.parse(imported.stdout).url, 'https://example.test/flowweave/api/v1/flow-runs/run-1/automatic-runs/config-imports');
+  const reconciled = invoke(config, 'run', 'reconcile-runtime-completion', 'attempt-1', '--data', '{"expected_state_version":3}', '--dry-run');
+  assert.equal(reconciled.status, 0, reconciled.stderr);
+  assert.deepEqual(JSON.parse(reconciled.stdout), {
+    method: 'POST',
+    payload: { expected_state_version: 3 },
+    url: 'https://example.test/flowweave/api/v1/node-attempts/attempt-1/reconcile-runtime-completion',
+  });
+
+  assert.equal(invoke(config, 'agent', 'workspace-directory', 'workspace-1', '--limit', '251', '--dry-run').status, 2);
+  assert.equal(invoke(config, 'run', 'workspace-git-diff', 'run-1', '--attempt', 'attempt-1', '--repository-path', '/project', '--dry-run').status, 2);
+  assert.equal(invoke(config, 'run', 'hydration', 'run-1', '--attempt', 'attempt-1', '--dry-run').status, 2);
+  assert.equal(invoke(config, 'run', 'head', 'run-1', '--binding', 'binding-1', '--dry-run').status, 2);
+});
