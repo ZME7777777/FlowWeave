@@ -1395,3 +1395,52 @@ def test_automatic_runtime_delivery_failure_cannot_be_retried_as_a_gate(
     )
     assert retried.status_code == 409, retried.text
     assert retried.json()["error"]["details"]["error_code"] == ("AUTOMATIC_RUNTIME_DELIVERY_FAILED")
+
+
+def test_automatic_runtime_owner_compatibility_failure_retries_runtime_start(
+    worker_client, worker_container, db_session_factory
+):
+    _worker, run_id, attempt_id = _started_automatic_attempt(worker_client, worker_container)
+    with db_session_factory() as db:
+        attempt = db.get(NodeAttempt, attempt_id)
+        assert attempt is not None
+        attempt.state = "EXECUTING"
+        attempt.runtime_phase = "STARTING"
+        orchestration_service.record_automatic_task_failure(
+            db,
+            attempt_id,
+            "START_RUNTIME",
+            {},
+            "RUNTIME_ALLOCATION_OWNER_INVALID: The Runtime Attempt does not belong to this FlowRun",
+        )
+        db.commit()
+
+    detail = worker_client.get(f"/api/v1/flow-runs/{run_id}").json()
+    attempt = detail["node_runs"][0]["attempts"][0]
+    assert attempt["state"] == "START_BLOCKED"
+    assert attempt["error_code"] == "AUTOMATIC_RUNTIME_DELIVERY_FAILED"
+
+    retried = worker_client.post(
+        f"/api/v1/node-attempts/{attempt_id}/retry-gates",
+        json={"expected_state_version": attempt["state_version"]},
+    )
+    assert retried.status_code == 200, retried.text
+    assert retried.json()["state"] == "EXECUTING"
+    assert retried.json()["runtime_phase"] == "STARTING"
+    assert retried.json()["error_code"] is None
+    assert retried.json()["error_detail"] is None
+    retried_version = retried.json()["state_version"]
+
+    with db_session_factory() as db:
+        run = db.get(FlowRun, run_id)
+        task = db.scalar(
+            select(BackgroundTask).where(
+                BackgroundTask.aggregate_id == attempt_id,
+                BackgroundTask.task_type == "START_RUNTIME",
+                BackgroundTask.idempotency_key
+                == f"retry-runtime-owner-compatibility:{attempt_id}:v{retried_version}",
+            )
+        )
+        assert run is not None and run.state == "ACTIVE"
+        assert task is not None and task.state == TaskState.PENDING
+        assert task.max_attempts >= 10

@@ -8617,6 +8617,54 @@ def reject_attempt(
 def retry_gates(db: Session, attempt_id: str, payload: AttemptVersionWrite) -> dict[str, Any]:
     current = _attempt(db, attempt_id)
     if current.error_code == "AUTOMATIC_RUNTIME_DELIVERY_FAILED":
+        owner_compatibility_failure = (
+            current.state == AttemptState.START_BLOCKED
+            and "RUNTIME_ALLOCATION_OWNER_INVALID" in (current.error_detail or "")
+        )
+        if owner_compatibility_failure:
+            node_run = _node_run(db, current.node_run_id)
+            run = _run(db, node_run.flow_run_id)
+            if run.run_mode != "AUTOMATIC":
+                raise illegal("runtime owner recovery requires an automatic attempt")
+            attempt = _claim_attempt_version(
+                db,
+                attempt_id,
+                payload.expected_state_version,
+                {AttemptState.START_BLOCKED},
+                next_state=AttemptState.EXECUTING,
+                runtime_phase="STARTING",
+            )
+            attempt.error_code = None
+            attempt.error_detail = None
+            task = enqueue(
+                db,
+                task_type="START_RUNTIME",
+                aggregate_type="ATTEMPT",
+                aggregate_id=attempt.id,
+                idempotency_key=(
+                    f"retry-runtime-owner-compatibility:{attempt.id}:v{attempt.state_version}"
+                ),
+            )
+            task.max_attempts = max(task.max_attempts, 10)
+            _action(
+                db,
+                run.id,
+                "RETRY_RUNTIME_OWNER_COMPATIBILITY",
+                f"retry-runtime-owner-compatibility:{attempt.id}:v{attempt.state_version}",
+                node_run_id=node_run.id,
+                attempt_id=attempt.id,
+            )
+            _event(
+                db,
+                run.id,
+                "RUNTIME_OWNER_COMPATIBILITY_RETRY_SCHEDULED",
+                {},
+                node_run.id,
+                attempt.id,
+            )
+            _recompute_run(db, run)
+            finish(db)
+            return attempt_detail(db, attempt.id)
         if current.state != AttemptState.END_BLOCKED or not (current.error_detail or "").startswith(
             "RUNTIME_OUTPUT_MISSING:"
         ):

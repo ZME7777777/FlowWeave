@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`IN PROGRESS`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`NONE（等待部署验收）`
+> 下一可执行切片：`NONE（等待 FR-397 部署验收）`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -156,6 +156,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-394 | 已发送注释上下文与回复锚点呈现 | DONE | 发送后的会话／文件注释从原生用户消息元数据投影为可定位 chip；草稿内容优先显示发送操作；文件 chip 与会话引用同尺寸；回复锚点呈现为可点击链接。 |
 | FR-395 | 回复注释链接的一次点击定位 | DONE | 回复中的已知注释链接阻断会话选区冒泡，并在展开详情时立即复用原文定位。 |
 | FR-396 | 嵌套连续记录的共享 Runtime 与 Attempt 归属分离 | DONE | Runtime request builder 保留子记录的逻辑 FlowRun ID 用于 Attempt／工作区校验，仅以父 FlowRun ID 解析共享 allocation 与能力物化，避免导入记录启动门禁误报 owner invalid。 |
+| FR-397 | 历史 Runtime owner 阻塞无法在修复后恢复 | DONE | 仅对明确记录旧 `RUNTIME_ALLOCATION_OWNER_INVALID` 的自动启动 Runtime 投递失败，以 CAS 重新投递同一 Attempt 的启动任务；继续复用 FlowRun Runtime。 |
 
 ### FR-366 FlowWeave 专属 Docker 地址规划 — DONE
 
@@ -336,6 +337,16 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 完成：Runtime request builder 现在显式区分逻辑 `flow_run_id` 与可选共享 `runtime_owner_flow_run_id`。节点 Attempt 的 workspace／归属校验始终使用子连续记录 ID；普通共享路径仍只从父记录获取 allocation 并在父记录的冻结能力目录物化。回归覆盖同时断言这两个 ID 的用途，防止导入记录在启动门禁阶段再次出现 `RUNTIME_ALLOCATION_OWNER_INVALID`。未恢复 Attempt-private Runtime、Secret、Session 或网络分配，也未修改历史 allocation、数据库、Runtime Provider、Docker 或 OpenHands。
 
 验收：受影响 Python `py_compile`、Ruff check、定向 `test_openhands.py`、`git diff --check` 通过；未运行 Docker／数据库／远端环境验证。
+
+### FR-397 自动运行历史 Runtime owner 阻塞受控恢复 — DONE
+
+依赖：`FR-396`。
+
+目标：已在 FR-396 部署前因嵌套连续记录把物理 Runtime owner 错用为 Attempt owner 而耗尽的自动启动任务，必须能在修复部署后由操作者恢复。恢复只能匹配 `START_BLOCKED`、`AUTOMATIC_RUNTIME_DELIVERY_FAILED` 且失败详情明确含 `RUNTIME_ALLOCATION_OWNER_INVALID` 的当前 Attempt；以状态版本 CAS 重新投递该 Attempt 的启动 Runtime 任务，保留冻结输入、会话绑定与唯一 FlowRun Runtime。其他 Runtime 投递失败继续拒绝，绝不创建 Attempt 私有 Runtime、Secret、Session 或网络。
+
+完成：`retry-gates` 现在仅对上述明确的历史兼容失败，将同一 Attempt 以状态版本 CAS 恢复为 `EXECUTING/STARTING`，清除旧失败投影并投递新的、独立幂等键的 `START_RUNTIME` 任务；记录操作与运行事件后重新聚合 FlowRun 状态。其余 `AUTOMATIC_RUNTIME_DELIVERY_FAILED` 仍按原安全限制拒绝。工作台会把该精确故障说明为可恢复的历史 Runtime owner 错误，明确重试继续复用当前 FlowRun Runtime。新增集成回归覆盖恢复后的状态、任务和重试上限，并保留通用 Runtime 投递失败的拒绝断言。
+
+验收：受影响 Python `py_compile`、Ruff check/format、Web TypeScript typecheck、ESLint、`git diff --check` 和任务状态唯一性通过。定向 pytest 已尝试，但本机没有 Docker socket，Testcontainers PostgreSQL fixture 在收集时失败，未进入断言；未部署、未修改数据库、Runtime Provider、Docker 或 OpenHands。
 
 ### FR-382 会话／文件协作注释协议与呈现 — DONE
 

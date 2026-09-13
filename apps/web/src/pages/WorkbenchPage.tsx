@@ -1129,6 +1129,10 @@ function AttemptPanel({ run, nodeRun, attempt, refresh, navigate, sessionReturnC
     'AUTOMATIC_TRANSITION_INVALID',
   ].includes(attempt.error_code);
   const automaticGateStage = attempt.state === 'START_BLOCKED' ? '启动' : '完成';
+  const runtimeOwnerCompatibilityRetry = automaticAttempt
+    && attempt.state === 'START_BLOCKED'
+    && attempt.error_code === 'AUTOMATIC_RUNTIME_DELIVERY_FAILED'
+    && attempt.error_detail?.includes('RUNTIME_ALLOCATION_OWNER_INVALID');
   const automaticGateDeliveryFailed = automaticAttempt && attempt.error_code === 'AUTOMATIC_GATE_DELIVERY_FAILED';
   const automaticGateExecutionFailed = automaticAttempt && attempt.error_code === 'AUTOMATIC_GATE_EXECUTION_FAILED';
   const automaticRemediationDeliveryFailed = automaticAttempt && attempt.error_code === 'AUTOMATIC_OUTPUT_REMEDIATION_DELIVERY_FAILED';
@@ -1138,7 +1142,9 @@ function AttemptPanel({ run, nodeRun, attempt, refresh, navigate, sessionReturnC
     ? '节点执行失败'
     : automaticGateRemediationPending
       ? '正在修订输出'
-      : automaticGateExecutionFailed
+      : runtimeOwnerCompatibilityRetry
+        ? '历史运行时归属错误可恢复'
+        : automaticGateExecutionFailed
         ? `自动${automaticGateStage}门禁执行失败`
         : automaticGateDeliveryFailed
           ? `自动${automaticGateStage}门禁投递失败`
@@ -1153,7 +1159,9 @@ function AttemptPanel({ run, nodeRun, attempt, refresh, navigate, sessionReturnC
                   : '门禁未通过';
   const automaticBlockedDescription = completionIdentityFailure
     ? attemptErrorText(attempt)
-    : automaticGateExecutionFailed || automaticGateDeliveryFailed
+    : runtimeOwnerCompatibilityRetry
+      ? '该记录在共享 FlowRun Runtime 兼容修复前启动失败。平台会复用当前 FlowRun Runtime 重新尝试启动，不会创建新的 Attempt Runtime 或修改已冻结的输入。'
+      : automaticGateExecutionFailed || automaticGateDeliveryFailed
     ? '这是当前门禁执行或投递的技术故障，可能来自用户定义的门禁配置、所选供应商或服务异常，不表示节点输出不符合要求。请查看门禁详情；必要时切换门禁供应商后重试当前阶段。'
     : automaticRemediationDeliveryFailed
       ? '完成门禁已记录未通过，但平台未能创建输出修订会话。请恢复服务后重试当前阶段，或进入节点会话人工处理。'
