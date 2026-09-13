@@ -49,6 +49,22 @@ function annotationFileSelection(annotation: AgentConversationAnnotation): { pat
   return { path, selection: value as FileSelection };
 }
 
+function annotationFileDisplay(annotation: AgentConversationAnnotation): { filename: string; path: string; range: string } | undefined {
+  const file = annotationFileSelection(annotation);
+  if (!file) return undefined;
+  const filename = file.path.split('/').filter(Boolean).at(-1) || file.path;
+  const { start_line, start_column, end_line, end_column } = file.selection;
+  return {
+    filename,
+    path: file.path,
+    range: `${start_line}:${start_column}–${end_line}:${end_column}`,
+  };
+}
+
+function annotationReferenceName(annotation: AgentConversationAnnotation, index: number): string {
+  return annotationFileDisplay(annotation)?.filename ?? `会话引用 ${index + 1}`;
+}
+
 function ComposerAnnotationList({ annotations, onLocate, onRemove, onUpdate }: {
   annotations: AgentConversationAnnotation[];
   onLocate: (annotation: AgentConversationAnnotation) => void;
@@ -64,15 +80,20 @@ function ComposerAnnotationList({ annotations, onLocate, onRemove, onUpdate }: {
   }, [latestAnnotationId]);
   if (!annotations.length) return null;
   const opened = annotations.find(annotation => annotation.id === openedId);
-  const referenceName = (annotation: AgentConversationAnnotation, index: number) => `${annotation.anchor_kind === 'CONVERSATION_TEXT' ? '会话引用' : '文件引用'} ${index + 1}`;
+  const openedIndex = opened ? annotations.findIndex(annotation => annotation.id === opened.id) : -1;
+  const openedFile = opened ? annotationFileDisplay(opened) : undefined;
   return <section className="agent-composer-annotations" aria-label={`已添加的引用 ${annotations.length} 条`}>
-    <div className="agent-attachments agent-conversation-references">{annotations.map((annotation, index) => <span key={annotation.id}>
-      <button type="button" className="agent-attachment-open" title="查看、定位或编辑评论" aria-expanded={openedId === annotation.id} onClick={() => setOpenedId(current => current === annotation.id ? undefined : annotation.id)}><Quote size={14}/><em>{referenceName(annotation, index)}</em></button>
-      <button type="button" className="agent-attachment-remove" aria-label={`移除${referenceName(annotation, index)}`} onClick={() => { setOpenedId(current => current === annotation.id ? undefined : current); setEditingId(current => current === annotation.id ? undefined : current); onRemove(annotation); }}>×</button>
-    </span>)}</div>
-    {opened && <article className="agent-composer-annotation-card" role="dialog" aria-label={`${referenceName(opened, annotations.findIndex(annotation => annotation.id === opened.id))} 详情`}>
-      <header><span><Quote size={13}/>{referenceName(opened, annotations.findIndex(annotation => annotation.id === opened.id))}</span><button type="button" aria-label="关闭引用" onClick={() => setOpenedId(undefined)}>×</button></header>
-      <small>{opened.anchor_kind === 'CONVERSATION_TEXT' ? '会话文本' : '文件内容'}</small>
+    <div className="agent-attachments agent-conversation-references">{annotations.map((annotation, index) => {
+      const file = annotationFileDisplay(annotation);
+      const referenceName = annotationReferenceName(annotation, index);
+      return <span key={annotation.id} className={file ? 'agent-file-annotation' : undefined}>
+        <button type="button" className={`agent-attachment-open${file ? ' agent-file-annotation-chip' : ''}`} title={file ? `${file.path} · ${file.range}` : '查看、定位或编辑评论'} aria-expanded={openedId === annotation.id} onClick={() => setOpenedId(current => current === annotation.id ? undefined : annotation.id)}>{file ? <FileText size={18}/> : <Quote size={14}/>}<em>{file ? <><b title={file.path}>{file.filename}</b><small>{`${file.filename} · ${file.range}`}</small></> : referenceName}</em></button>
+        <button type="button" className="agent-attachment-remove" aria-label={`移除${referenceName}`} onClick={() => { setOpenedId(current => current === annotation.id ? undefined : current); setEditingId(current => current === annotation.id ? undefined : current); onRemove(annotation); }}>×</button>
+      </span>;
+    })}</div>
+    {opened && <article className="agent-composer-annotation-card" role="dialog" aria-label={`${annotationReferenceName(opened, openedIndex)} 详情`}>
+      <header><span>{openedFile ? <FileText size={13}/> : <Quote size={13}/>}{annotationReferenceName(opened, openedIndex)}</span><button type="button" aria-label="关闭引用" onClick={() => setOpenedId(undefined)}>×</button></header>
+      <small title={openedFile?.path}>{openedFile ? `文件内容 · ${openedFile.filename} · ${openedFile.range}` : '会话文本'}</small>
       {typeof opened.anchor.quote === 'string' && opened.anchor.quote && <blockquote>{opened.anchor.quote}</blockquote>}
       {editingId === opened.id ? <div className="agent-composer-annotation-edit"><textarea aria-label="编辑注释评论" placeholder="可选：写下你的评论…" value={comment} onChange={event => setComment(event.target.value)}/><footer><button type="button" onClick={() => setEditingId(undefined)}>取消</button><button type="button" onClick={() => { onUpdate(opened, comment); setEditingId(undefined); }}>保存评论</button></footer></div> : <p>{opened.comment || '未添加评论'}</p>}
       <footer><button type="button" onClick={() => onLocate(opened)}>定位原文</button><button type="button" onClick={() => { setComment(opened.comment); setEditingId(opened.id); }}>编辑评论</button></footer>
@@ -1475,12 +1496,12 @@ function revealPreviewText(root: HTMLElement, scrollContainer: HTMLElement, cont
   return range;
 }
 
-function selectPreviewText(root: HTMLElement, scrollContainer: HTMLElement, content: string, selection: FileSelection): boolean {
+function selectPreviewText(root: HTMLElement, scrollContainer: HTMLElement, content: string, selection: FileSelection): Range | undefined {
   const range = revealPreviewText(root, scrollContainer, content, selection);
-  if (!range) return false;
+  if (!range) return undefined;
   const browserSelection = window.getSelection();
   browserSelection?.removeAllRanges(); browserSelection?.addRange(range);
-  return true;
+  return range;
 }
 
 function workspaceReferenceLabel(reference: AgentWorkspaceReference): string {
@@ -1500,6 +1521,7 @@ function WorkspaceTextPreview({ path, content, highlight, highlightLine, onAnnot
   const previewRef = useRef<HTMLDivElement>(null);
   const previewContentRef = useRef<HTMLElement>(null);
   const [selectionAction, setSelectionAction] = useState<{ selection: FileSelection; quote: string; left: number; top: number; highlights: WorkspaceSelectionRect[] }>();
+  const [pinnedSelectionHighlights, setPinnedSelectionHighlights] = useState<WorkspaceSelectionRect[]>();
   const [lineHighlight, setLineHighlight] = useState<number>();
   const markdownPreview = /\.(?:md|mdx|markdown)$/i.test(path);
   const codeLines = useMemo(() => content.split('\n'), [content]);
@@ -1533,6 +1555,19 @@ function WorkspaceTextPreview({ path, content, highlight, highlightLine, onAnnot
       })),
     });
   }, []);
+  const highlightRange = useCallback((range: Range) => {
+    const preview = previewRef.current;
+    if (!preview) return;
+    const previewRect = preview.getBoundingClientRect();
+    setPinnedSelectionHighlights(Array.from(range.getClientRects())
+      .filter(rect => rect.width > 0 && rect.height > 0)
+      .map(rect => ({
+        left: rect.left - previewRect.left + preview.scrollLeft,
+        top: rect.top - previewRect.top + preview.scrollTop,
+        width: rect.width,
+        height: rect.height,
+      })));
+  }, []);
   useEffect(() => {
     const line = highlightLine && highlightLine > 0
       ? Math.min(highlightLine, Math.max(1, content.split('\n').length))
@@ -1545,8 +1580,11 @@ function WorkspaceTextPreview({ path, content, highlight, highlightLine, onAnnot
     const selection = highlight ?? lineSelection;
     if (!selection || !preview || !source) return;
     setSelectionAction(undefined);
+    setPinnedSelectionHighlights(undefined);
     if (highlight || markdownPreview) {
-      if (!selectPreviewText(source, preview, content, selection)) return;
+      const range = selectPreviewText(source, preview, content, selection);
+      if (!range) return;
+      if (highlight) highlightRange(range);
     } else {
       revealPreviewText(source, preview, content, selection);
       setLineHighlight(line);
@@ -1558,11 +1596,12 @@ function WorkspaceTextPreview({ path, content, highlight, highlightLine, onAnnot
     }, 1_600);
     preview.classList.add('workspace-selection-flash');
     return () => window.clearTimeout(timer);
-  }, [content, highlight, highlightLine, markdownPreview]);
+  }, [content, highlight, highlightLine, highlightRange, markdownPreview]);
   const captureSelection = () => {
     const preview = previewRef.current;
     const source = previewContentRef.current;
     if (!preview || !source) return;
+    setPinnedSelectionHighlights(undefined);
     const selection = selectionFromPreview(source, content);
     const range = window.getSelection()?.rangeCount ? window.getSelection()?.getRangeAt(0) : undefined;
     if (!selection || !range) {
@@ -1572,11 +1611,12 @@ function WorkspaceTextPreview({ path, content, highlight, highlightLine, onAnnot
     if (onAnnotate) positionSelectionAction(selection, range.toString(), range);
   };
   const action = selectionAction && <><div className="agent-file-selection-highlights" aria-hidden="true">{selectionAction.highlights.map((rect, index) => <i key={`${rect.left}:${rect.top}:${index}`} style={rect}/>)}</div><span className="agent-file-selection-action" style={{ left: selectionAction.left, top: selectionAction.top }}><button type="button" onMouseDown={event => event.preventDefault()} onMouseUp={event => event.stopPropagation()} onClick={event => { event.stopPropagation(); onAnnotate?.(selectionAction.selection, selectionAction.quote); setSelectionAction(undefined); window.getSelection()?.removeAllRanges(); }}><Quote size={13}/>添加到会话</button></span></>;
+  const pinnedHighlight = pinnedSelectionHighlights?.length ? <div className="agent-file-selection-highlights pinned" aria-hidden="true">{pinnedSelectionHighlights.map((rect, index) => <i key={`${rect.left}:${rect.top}:${index}`} style={rect}/>)}</div> : undefined;
   if (markdownPreview) {
-    return <div ref={previewRef} className="agent-file-preview-selection" onMouseUp={captureSelection}>{action}<article ref={previewContentRef} className="agent-file-markdown-preview"><ReactMarkdown remarkPlugins={[remarkGfm]} components={{ code: WorkspaceMarkdownCode }}>{content}</ReactMarkdown></article></div>;
+    return <div ref={previewRef} className="agent-file-preview-selection" onMouseUp={captureSelection}>{pinnedHighlight}{action}<article ref={previewContentRef} className="agent-file-markdown-preview"><ReactMarkdown remarkPlugins={[remarkGfm]} components={{ code: WorkspaceMarkdownCode }}>{content}</ReactMarkdown></article></div>;
   }
   const language = filePreviewLanguage(path);
-  return <div ref={previewRef} className="agent-file-preview-selection" onMouseUp={captureSelection}>{action}<div className={`agent-file-code-preview${language ? ' highlighted' : ''}`}><ol className="agent-file-line-numbers" aria-hidden="true">{codeLines.map((_, index) => <li key={index}>{index + 1}</li>)}</ol>{lineHighlight && <i className="agent-file-line-highlight" style={{ '--source-line': lineHighlight } as CSSProperties}/>}<code ref={previewContentRef} dangerouslySetInnerHTML={{ __html: highlightedCode(content, language) }}/></div></div>;
+  return <div ref={previewRef} className="agent-file-preview-selection" onMouseUp={captureSelection}>{pinnedHighlight}{action}<div className={`agent-file-code-preview${language ? ' highlighted' : ''}`}><ol className="agent-file-line-numbers" aria-hidden="true">{codeLines.map((_, index) => <li key={index}>{index + 1}</li>)}</ol>{lineHighlight && <i className="agent-file-line-highlight" style={{ '--source-line': lineHighlight } as CSSProperties}/>}<code ref={previewContentRef} dangerouslySetInnerHTML={{ __html: highlightedCode(content, language) }}/></div></div>;
 }
 
 function sourceLineForDiffLine(lines: WorkspaceFileChange['lines'], selectedIndex: number): number {
@@ -3100,7 +3140,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     const openSelection = (event: Event) => {
       const reference = (event as CustomEvent<AgentWorkspaceReference>).detail;
       if (reference?.selection) {
-        setFileSelectionReference({ path: reference.path, selection: reference.selection });
+        setFileSelectionReference({ path: reference.path, selection: { ...reference.selection } });
         setDrawerOpen(true);
       }
     };
@@ -3275,7 +3315,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     }
     const file = annotationFileSelection(annotation);
     if (!file) return;
-    setFileSelectionReference(file);
+    // Always create a new selection identity: users may locate the same
+    // annotation repeatedly, and each click must re-open/reveal its range.
+    setFileSelectionReference({ path: file.path, selection: { ...file.selection } });
     setDrawerOpen(true);
   }, []);
   useEffect(() => {

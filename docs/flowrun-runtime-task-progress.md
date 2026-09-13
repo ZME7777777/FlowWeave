@@ -150,6 +150,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-388 | 协作引用草稿删除 | DONE | 会话／文件引用 chip 可在发送前移除，且不会修改已发送消息或服务端数据。 |
 | FR-389 | Web 镜像离线运行层修复 | DONE | 移除非运行必需的 Alpine 镜像源／vim 安装，避免无缓存 Web 发布受镜像源权限影响。 |
 | FR-390 | Composer 非文本上下文发送 | DONE | 发送按钮与提交快捷键统一识别注释、图片/附件、会话引用和工作区路径为可发送内容。 |
+| FR-391 | 文件注释定位与坐标呈现 | DONE | 文件锚点以缩略文件名和起止行列呈现；定位会重新打开锚定文件并保留精确选区高亮。 |
 
 ### FR-366 FlowWeave 专属 Docker 地址规划 — DONE
 
@@ -410,6 +411,16 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 完成：将发送按钮的禁用条件收敛为与实际提交路径相同的 `composerHasContent` 判定，纳入 `workspaceReferences` 与 `composerAnnotations`。首条 bootstrap 与既有会话均继续通过既有消息封套发送这些上下文；未改动服务端空消息门禁、OpenHands 或消息元信息结构。
 
 验收：Web TypeScript typecheck、受影响 Web ESLint、生产构建与 `git diff --check`。
+
+### FR-391 文件注释定位与坐标呈现 — DONE
+
+依赖：`FR-387`、`FR-388`。
+
+目标：文件内容注释不得继续显示泛化的“文件引用 N”；其 chip 要清晰呈现可省略的文件名与精确 `起始行:列–结束行:列`。点击“定位原文”应切换至已锚定文件并使该文件区间持续可见；重复定位同一注释也必须重新执行定位，不能因 React 状态身份未变而失效。
+
+完成：文件注释使用双行文件卡片，显示文件名和 `文件名 · 起始行:列–结束行:列`，完整路径保留在悬停提示；会话注释仍保留“会话引用 N”。定位时为选区创建新的状态身份，工作区抽屉重新激活文件标签并打开对应文件。文件预览在原有精确 Range 滚动和短暂浏览器 selection 之外保留独立高亮层，直到用户在文件中开始新的选择，因而不会在 1.6 秒后失去可见定位。
+
+验收：Web TypeScript typecheck、受影响 Web ESLint、production build、`git diff --check` 与任务状态唯一性。未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。
 
 ### FR-335 Runtime generation Sandbox 引用完整性 — DONE
 
@@ -5143,6 +5154,7 @@ contract、冻结策略与既有受控生命周期约束覆盖。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-13 | FR-391 | Web TypeScript typecheck、定向 ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS（静态／构建）：文件注释卡片显示缩略文件名和精确起止行列；定位同一锚点时仍重新打开文件并保留 Range 高亮层。未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-13 | FR-386 | Python 编译、Ruff、注释封套往返断言、Web TypeScript typecheck／ESLint／生产构建、Alembic head 与 `git diff --check` | PASS（静态／直接断言）：注释只随原生用户消息持久化，历史回显可恢复锚点／评论／ID；首条消息草稿刷新后保留注释；无注释 CRUD、无模型回复校验或服务端关联。数据库 pytest 在 Testcontainers 建库前因本机 Docker socket 缺失阻断，未记为通过。 |
 | 2026-09-13 | FR-385 | Web TypeScript typecheck、定向 ESLint、当前源码 Vite 的会话引用 Playwright（1 passed）、Alembic head、`git diff --check` 与任务状态唯一性 | PASS：会话选区弹出评论输入，保存后立即显示引用 chip；chip 可展开原文和评论并定位高亮。会话／文件选区均为产品化按钮，且不再暴露无注释创建能力的静默引用降级。未修改 OpenHands、迁移、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-13 | FR-384 | Web TypeScript typecheck、定向 ESLint、Alembic head、`git diff --check` 与任务状态唯一性 | PASS（静态）：会话／文件选区只保留“添加到会话”，它会创建带评论的持久锚点；发送区用与既有引用一致的会话／文件引用 chip 展示、定位和编辑评论。未增加模型回复校验或服务端关联；未修改 OpenHands、Runtime Provider、Docker、迁移或远端环境。 |
