@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`IN PROGRESS`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`NONE（等待 FR-403、FR-404 部署验收）`
+> 下一可执行切片：`NONE（等待 FR-405 部署验收）`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -162,6 +162,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-400 | 记录工作区根入口统一 | DONE | 所有新建／共享 Attempt 和节点会话入口统一传入记录根，不再传物理 mount、Attempt 或逻辑子目录。 |
 | FR-401 | 记录 ID 与 Runtime owner 身份分离 | DONE | 恢复以产品记录 ID 而非 FlowRun Runtime owner 选择 `project/<record-id>`，使共享 Runtime 中的不同记录继续隔离。 |
 | FR-403 | 共享记录工作区的门禁／Provider 路径贯通 | DONE | 门禁 sidecar、Runtime replacement probe 与 Provider terminal 准入均使用 `project/<record-id>`；物理 `project` mount 仅作为多记录存储根。 |
+| FR-405 | 共享记录工作区中的 FILE Artifact 输入隔离 | DONE | 自动 FILE Artifact 输入以 Attempt（而非执行或门禁 Conversation binding）作为受控上传所有者；私有会话附件仍只允许原 binding 使用。历史自动启动因旧 owner 校验失败时可重试并重新物化冻结输入。 |
 
 ### FR-366 FlowWeave 专属 Docker 地址规划 — DONE
 
@@ -431,6 +432,26 @@ endpoint 或调用方可控的容器／路径参数。独立子窗口标题必�
 
 验收：Web TypeScript typecheck、Web ESLint、受影响 Python `py_compile`、Ruff check、`git diff --check`
 与任务状态唯一性通过；未修改数据库、OpenHands、Docker 或远端环境。
+
+### FR-405 共享记录工作区中的 FILE Artifact 输入隔离 — DONE
+
+依赖：`FR-403`。
+
+目标：同一记录内的执行 Conversation、门禁 sidecar 与所有节点 Attempt 继续共享
+`/runtime/workspace/project/<record-id>`，但自动物化的 FILE Artifact 不得被误当成任一
+Conversation 的私有上传附件。私有用户附件必须继续严格绑定到创建它的 Conversation；不同记录
+不得因共享 FlowRun Runtime 互相读取 Artifact 输入。
+
+完成：自动启动上传的 FILE Artifact 以 Attempt ID 作为受控 owner 前缀，且投影到正式初始事件前
+同时校验 Attempt ID 与规范记录根。门禁 sidecar 仍没有 input attachment、仍只读取其显式门禁
+上下文，因此不会继承执行会话的私有附件。历史自动 Attempt 如果因旧的
+`AGENT_ATTACHMENT_INVALID` owner 校验而在启动阶段卡住，"重新执行门禁" 会安全地复用当前
+FlowRun Runtime、既有原生 Conversation 与冻结输入继续运行；不会创建 Attempt Runtime、重新导入
+或删除 Artifact。
+
+验收：新增 Attempt owner 与 gate-sidecar binding 隔离回归，并保留 gate request 无 input attachment
+断言；其余定向 Python / Web 静态检查与部署验收见本切片验证日志。未修改数据库、OpenHands
+源码、Runtime Provider、Docker 或持久数据。
 
 ### FR-398 长会话 Markdown 完整渲染 — DONE
 
@@ -5305,6 +5326,7 @@ contract、冻结策略与既有受控生命周期约束覆盖。
 
 | 日期 | 切片 | 验证 | 结果 |
 | 2026-09-13 | FR-404 | Web TypeScript typecheck、Web ESLint；受影响 Python `py_compile`／Ruff check；`git diff --check` 与任务状态唯一性 | PASS（静态）：FlowRun 列表不再显示重复的进入箭头，Runtime 就绪行可打开以 FlowRun 名称命名的独立终端子窗口；服务端只从 FlowRun 解析 active generation 和规范记录目录，浏览器不持有物理 endpoint。既有会话／Attempt 终端不变。未修改数据库、OpenHands、Docker 或远端环境。 |
+| 2026-09-13 | FR-405 | Attempt owner／gate-sidecar isolation 定向 pytest、`test_openhands.py`；受影响 Python `py_compile`、Ruff check/format；Web TypeScript typecheck、ESLint；Alembic head、`git diff --check` 与任务状态唯一性 | PASS（直接／静态）：自动 FILE Artifact 仅以 Attempt ID 和同一 `project/<record-id>` 根通过校验；相同记录根中的 gate-sidecar binding 仍被私有附件校验拒绝；sidecar request 保持无 input attachment。`test_agent_workspaces.py`／`test_gates.py` 的数据库 fixture 在断言前因本机 Docker socket 缺失而阻断，未记为通过。未修改数据库、OpenHands 源码、Runtime Provider、Docker 或持久数据。 |
 | 2026-09-13 | FR-394 | Web TypeScript typecheck、定向 ESLint、production build；受影响 Python Ruff／`py_compile`；`git diff --check` 与任务状态唯一性 | PASS（静态／构建）：已发送的会话／文件注释直接从 OpenHands 消息元数据回显为可定位 chip；任何 Composer 内容都优先呈现并走发送操作，清空后才恢复暂停／继续；文件 chip 与会话引用同尺寸并省略超长文本。系统提示词要求按原 ID 分别回应相关注释，回复中的 marker 显示为可点击链接；未新增服务端 marker 校验或注释存储。定向 pytest 在 Testcontainers 创建数据库前因本机 Docker socket 不可用而阻断，未记为通过。未修改数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-13 | FR-393 | Web TypeScript typecheck、定向 ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS（静态／构建）：注释气泡为固定 flex 布局并高于“跳到最新”；文件引用卡片紧凑显示文件名和坐标，选区滚动至预览上三分之一后以连续蓝色短暂反馈；会话注释使用与原生消息同封套的紧凑文本偏移精准定位，历史会话引用也仅选中原文而不高亮整条消息。未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-13 | FR-392 | Web TypeScript typecheck、定向 ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS（静态／构建）：固定注释浮层不再滚动，超长引用截断；ESC／外部点击关闭与直接评论生效；文件定位逐级展开树并以持久精确 Range 高亮。未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |

@@ -5812,9 +5812,10 @@ def _upload_runtime_input_attachments(
 ) -> StartAttemptRequest:
     """Upload frozen FILE artifacts through OpenHands' formal workspace API."""
 
-    binding = agent_sessions.flow_node_binding_for_attempt(
-        db, request.attempt_id, require_provisioning=True
-    )
+    # Verify that this exact Attempt has an already-frozen execution binding
+    # before materializing its Artifact inputs. The binding is intentionally
+    # not the Artifact owner: gate sidecars have different bindings.
+    agent_sessions.flow_node_binding_for_attempt(db, request.attempt_id, require_provisioning=True)
     handle = _runtime_input_upload_handle(request)
     runtime = get_runtime()
     attachments: list[dict[str, Any]] = []
@@ -5846,7 +5847,11 @@ def _upload_runtime_input_attachments(
             filename=filename,
             content_type=mime_type,
             content=content,
-            attachment_owner_id=binding.id,
+            # A formal FILE Artifact is an Attempt input, not a private
+            # interactive Conversation upload.  The Attempt is stable while
+            # its execution Conversation and isolated gate sidecars have
+            # distinct binding IDs inside the same record workspace.
+            attachment_owner_id=request.attempt_id,
         )
         attachment: dict[str, Any] = {
             "path": path,
@@ -6080,6 +6085,7 @@ def process_start_runtime(
             attempt_id=claimed.id,
             event_id=input_event_id,
             attachments=request.input_attachments,
+            workspace_root=request.workspace_root,
         )
     if _inline_execution():
         process_poll_runtime(db, claimed.id, 1, lease, commit=commit)
@@ -8631,6 +8637,12 @@ def retry_gates(db: Session, attempt_id: str, payload: AttemptVersionWrite) -> d
             for code in {
                 "RUNTIME_ALLOCATION_OWNER_INVALID",
                 "RUNTIME_WORKSPACE_INVALID",
+                # Before record-scoped Artifact ownership, automatic FILE
+                # inputs were incorrectly checked as private Conversation
+                # attachments. Re-running safely rematerializes only the
+                # Attempt's frozen Artifact bindings.
+                "AGENT_ATTACHMENT_INVALID",
+                "RUNTIME_ARTIFACT_ATTACHMENT_INVALID",
             }
         )
         if runtime_start_compatibility_failure:

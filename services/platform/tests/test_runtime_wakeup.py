@@ -592,6 +592,7 @@ def test_gate_sidecar_uses_its_node_attempt_record_workspace(monkeypatch):
     assert plan.sidecar_request.workspace_root == (
         "/runtime/workspace/project/6311561c-06e4-41ad-8afe-aac35cfa83ec"
     )
+    assert plan.sidecar_request.input_attachments == ()
 
 
 def test_runtime_output_registration_reuses_the_same_formal_completion(monkeypatch):

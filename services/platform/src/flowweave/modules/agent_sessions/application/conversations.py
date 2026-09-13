@@ -67,7 +67,12 @@ _AGENT_WORKSPACE_CONDENSER_MAX_EVENTS = 10_000
 _DYNAMIC_CAPABILITY_TYPES = frozenset({"SKILL", "MCP", "PLUGIN"})
 _CREATION_CAPABILITY_TYPES = _DYNAMIC_CAPABILITY_TYPES | {"CONTEXT", "AGENT_DEFINITION", "HOOK"}
 _COMPACTION_EVENT_WAIT_SECONDS = 120.0
-_RUNTIME_WORKSPACE_PATH = r"/runtime/workspace/(?:project(?:/users/[0-9a-f-]{36})?|[0-9a-f-]{36})"
+# A FlowRun Runtime physically mounts ``project`` but each product record is
+# rooted at ``project/<record-id>``.  Keep the older attempt-private root and
+# the user-scoped project root for their explicit compatibility paths.
+_RUNTIME_WORKSPACE_PATH = (
+    r"/runtime/workspace/(?:project/(?:users/)?[0-9a-f-]{36}|project|[0-9a-f-]{36})"
+)
 _SANDBOX_PROJECT_IMAGE = re.compile(
     rf"sandbox:({_RUNTIME_WORKSPACE_PATH}/[A-Za-z0-9][A-Za-z0-9._/-]*)"
 )

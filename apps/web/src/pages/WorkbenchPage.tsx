@@ -1132,7 +1132,12 @@ function AttemptPanel({ run, nodeRun, attempt, refresh, navigate, sessionReturnC
   const runtimeStartCompatibilityRetry = automaticAttempt
     && attempt.state === 'START_BLOCKED'
     && attempt.error_code === 'AUTOMATIC_RUNTIME_DELIVERY_FAILED'
-    && ['RUNTIME_ALLOCATION_OWNER_INVALID', 'RUNTIME_WORKSPACE_INVALID'].some(code => attempt.error_detail?.includes(code));
+    && [
+      'RUNTIME_ALLOCATION_OWNER_INVALID',
+      'RUNTIME_WORKSPACE_INVALID',
+      'AGENT_ATTACHMENT_INVALID',
+      'RUNTIME_ARTIFACT_ATTACHMENT_INVALID',
+    ].some(code => attempt.error_detail?.includes(code));
   const automaticGateDeliveryFailed = automaticAttempt && attempt.error_code === 'AUTOMATIC_GATE_DELIVERY_FAILED';
   const automaticGateExecutionFailed = automaticAttempt && attempt.error_code === 'AUTOMATIC_GATE_EXECUTION_FAILED';
   const automaticRemediationDeliveryFailed = automaticAttempt && attempt.error_code === 'AUTOMATIC_OUTPUT_REMEDIATION_DELIVERY_FAILED';

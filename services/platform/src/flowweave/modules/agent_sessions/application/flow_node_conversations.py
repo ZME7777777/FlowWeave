@@ -1665,23 +1665,63 @@ def record_attempt_input_attachments(
     attempt_id: str,
     event_id: str,
     attachments: tuple[dict[str, Any], ...],
+    workspace_root: str,
 ) -> None:
-    """Project automatic-start FILE inputs onto the formal initial user event."""
+    """Project automatic-start FILE inputs onto the formal initial user event.
+
+    A frozen Artifact input belongs to the Attempt, not to whichever native
+    Conversation happens to be using that Attempt's record workspace.  This
+    is deliberately different from an interactive user attachment, which
+    remains private to its Conversation binding.  In particular, a gate
+    sidecar has its own binding while sharing the same record root.
+    """
 
     binding = agent_sessions.flow_node_binding_for_attempt(
         db, attempt_id, require_provisioning=False
     )
-    normalized = tuple(
-        {
-            "path": str(item.get("path") or ""),
-            "filename": str(item.get("filename") or "attachment"),
-            "mime_type": str(item.get("mime_type") or "application/octet-stream"),
-            "byte_size": int(item.get("byte_size") or 0),
-        }
-        for item in attachments
+    normalized = validate_attempt_input_attachments(
+        attempt_id, attachments, workspace_root=workspace_root
     )
-    validate_attachment_owners(binding.id, normalized)
     record_message_attachments(db, binding, event_id, "", normalized)
+
+
+def validate_attempt_input_attachments(
+    attempt_id: str,
+    attachments: tuple[dict[str, Any], ...],
+    *,
+    workspace_root: str,
+) -> tuple[dict[str, str | int], ...]:
+    """Validate FILE Artifact inputs materialized for one record Attempt.
+
+    The owner prefix is an opaque capability only for files FlowWeave writes
+    while starting this exact Attempt.  It must never make a private upload
+    from another Conversation reusable merely because both Conversations share
+    a FlowRun Runtime.
+    """
+
+    normalized: list[dict[str, str | int]] = []
+    for item in attachments:
+        path = str(item.get("path") or "")
+        matched = ATTACHMENT_PATH.fullmatch(path)
+        if (
+            matched is None
+            or matched.group("owner") != attempt_id
+            or matched.group("workspace_root") != workspace_root
+        ):
+            raise DomainError(
+                "RUNTIME_ARTIFACT_ATTACHMENT_INVALID",
+                "流程文件输入不属于当前执行记录",
+                409,
+            )
+        normalized.append(
+            {
+                "path": path,
+                "filename": str(item.get("filename") or "attachment"),
+                "mime_type": str(item.get("mime_type") or "application/octet-stream"),
+                "byte_size": int(item.get("byte_size") or 0),
+            }
+        )
+    return tuple(normalized)
 
 
 def _handle(
