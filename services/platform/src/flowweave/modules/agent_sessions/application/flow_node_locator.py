@@ -236,7 +236,7 @@ def active_runtime_handle(
         cursor=cursor,
         runtime_resource_id=connection.managed_runtime_id,
         runtime_resource_name=connection.resource_name,
-        workspace_root=str(workspace.runtime_mount_root),
+        workspace_root=str(workspace.runtime_working_directory),
         history_cursor=history_cursor,
     )
 

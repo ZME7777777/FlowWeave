@@ -212,7 +212,7 @@ def openhands_flow_run_project_path() -> PurePosixPath:
 def openhands_flow_run_record_path(record_id: str) -> PurePosixPath:
     """Return the canonical in-container root for one execution record."""
 
-    return PurePosixPath("/runtime/workspace", _canonical_uuid(record_id, field="Runtime record"))
+    return openhands_flow_run_project_path() / _canonical_uuid(record_id, field="Runtime record")
 
 
 def flow_run_record_id(db: Session, *, flow_run_id: str, node_attempt_id: str) -> str:
@@ -227,10 +227,9 @@ def flow_run_record_id(db: Session, *, flow_run_id: str, node_attempt_id: str) -
             "The Runtime Attempt does not belong to this FlowRun",
             409,
         )
-    # A continuous execution is represented by a (possibly nested) automatic
-    # FlowRun and contains several NodeRuns. Manual/direct entries are the
-    # individual NodeRun records listed inside the outer FlowRun workbench.
-    return run.id if run.run_mode == "AUTOMATIC" else node_run.id
+    # Run mode only determines scheduling and pausing.  Every NodeRun and
+    # Attempt within this logical FlowRun shares this one record workspace.
+    return run.id
 
 
 def _record_project_path(db: Session, *, flow_run_id: str, node_attempt_id: str) -> Path:
@@ -702,8 +701,17 @@ def node_attempt_workspace_context(
                     "The shared FlowRun workspace layout is invalid",
                     409,
                 )
-            runtime_root = openhands_flow_run_record_path(
-                flow_run_record_id(db, flow_run_id=flow_run_id, node_attempt_id=node_attempt_id)
+            # Attempt-owned allocations are historical only. Their containers
+            # mounted the record directly beneath /runtime/workspace, so keep
+            # their frozen read-only locator rather than silently moving data.
+            runtime_root = PurePosixPath(
+                "/runtime/workspace",
+                _canonical_uuid(
+                    flow_run_record_id(
+                        db, flow_run_id=flow_run_id, node_attempt_id=node_attempt_id
+                    ),
+                    field="Runtime record",
+                ),
             )
             return NodeAttemptWorkspaceContext(
                 attempt_owned=True,

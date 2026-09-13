@@ -4,7 +4,7 @@ import asyncio
 import json
 from contextlib import nullcontext
 from dataclasses import replace
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
 from typing import cast
 
@@ -16,6 +16,11 @@ from flowweave.modules.agent_sessions.application import runtime_config
 from flowweave.modules.agent_sessions.application.event_branch import complete_active_branch
 from flowweave.modules.agent_sessions.application.flow_node_conversations import (
     _accepts_queued_user_message,
+)
+from flowweave.modules.agent_workspaces.application import work_directories
+from flowweave.modules.sandboxes.application.runtime_allocation import (
+    flow_run_record_id,
+    openhands_flow_run_record_path,
 )
 from flowweave.runtime import openhands as openhands_module
 from flowweave.runtime.auth import derive_runtime_session_key
@@ -319,6 +324,47 @@ def test_shared_flow_run_runtime_uses_attempt_record_workspace(
     assert request.runtime_working_directory == record_root
     assert request.runtime_workspace_relative == ""
     assert request.runtime_working_dir_relative == ""
+
+
+@pytest.mark.parametrize("run_mode", ["AUTOMATIC", "STEPWISE", "DIRECT"])
+def test_flow_run_record_workspace_is_independent_of_run_mode(run_mode: str) -> None:
+    flow_run_id = "10000000-0000-4000-8000-000000000001"
+    node_run_id = "20000000-0000-4000-8000-000000000002"
+    attempt_id = "30000000-0000-4000-8000-000000000003"
+    records = {
+        "NodeAttempt": SimpleNamespace(node_run_id=node_run_id),
+        "NodeRun": SimpleNamespace(flow_run_id=flow_run_id),
+        "FlowRun": SimpleNamespace(id=flow_run_id, run_mode=run_mode),
+    }
+
+    class _Db:
+        def get(self, model, _identity):
+            return records[model.__name__]
+
+    assert (
+        flow_run_record_id(_Db(), flow_run_id=flow_run_id, node_attempt_id=attempt_id)
+        == flow_run_id
+    )
+    assert openhands_flow_run_record_path(flow_run_id).as_posix() == (
+        f"/runtime/workspace/project/{flow_run_id}"
+    )
+
+
+def test_flow_run_selected_directory_does_not_change_runtime_record_root(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = PurePosixPath("/runtime/workspace/project/10000000-0000-4000-8000-000000000001")
+    version = SimpleNamespace(id="directory-version")
+    monkeypatch.setattr(work_directories, "_flow_run_attempt", lambda *_args: None)
+    monkeypatch.setattr(work_directories, "_flow_run_directory", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(work_directories, "_version", lambda *_args: version)
+    monkeypatch.setattr(work_directories, "_path_values", lambda *_args: ("selected",))
+    monkeypatch.setattr(work_directories, "_validate_flow_run_paths", lambda *_args: ())
+    monkeypatch.setattr(work_directories, "_flow_run_runtime_root", lambda *_args: root)
+
+    assert work_directories.flow_run_conversation_context(
+        object(), "flow-run", "attempt", "selected-directory"
+    ) == (version.id, root.as_posix())
 
 
 def test_frozen_memory_is_materialized_before_enabling_native_loader(monkeypatch, tmp_path):

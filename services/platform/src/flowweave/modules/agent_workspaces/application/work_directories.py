@@ -627,9 +627,10 @@ def flow_run_conversation_context(
     item = _flow_run_directory(db, flow_run_id, node_attempt_id, work_directory_id, lock=True)
     version = _version(db, item)
     _validate_flow_run_paths(db, flow_run_id, node_attempt_id, _path_values(db, version.id))
-    return version.id, _flow_run_working_directory(
-        db, flow_run_id, node_attempt_id, version.working_path
-    )
+    # A selected logical directory controls the frozen file scope, not the
+    # OpenHands workspace root. Every Attempt in this FlowRun shares its
+    # record-level project root.
+    return version.id, _flow_run_runtime_root(db, flow_run_id, node_attempt_id).as_posix()
 
 
 def frozen_flow_run_conversation_context(
@@ -653,7 +654,7 @@ def frozen_flow_run_conversation_context(
     if version is None:
         raise DomainError("AGENT_WORK_DIRECTORY_VERSION_MISSING", "工作目录版本数据不完整", 409)
     _validate_flow_run_paths(db, flow_run_id, node_attempt_id, _path_values(db, version.id))
-    return _flow_run_working_directory(db, flow_run_id, node_attempt_id, version.working_path)
+    return _flow_run_runtime_root(db, flow_run_id, node_attempt_id).as_posix()
 
 
 __all__ = (

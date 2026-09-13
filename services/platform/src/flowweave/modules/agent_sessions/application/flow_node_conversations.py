@@ -253,13 +253,6 @@ def _node_context_suffix(
     return "\n\n".join(("节点上下文（仅作系统级会话背景）：", *rendered)) if rendered else ""
 
 
-def _runtime_working_directory(request: Any) -> str:
-    """Return the shared Agent project, never a node Attempt data path."""
-
-    del request
-    return str(_RUNTIME_PROJECT)
-
-
 def _node_capability_root(
     db: Session,
     *,
@@ -965,6 +958,11 @@ def _create_native_conversation(
     connection = sandboxes.active_node_runtime_connection(
         db, flow_run_id=run.id, node_attempt_id=attempt_id
     )
+    record_working_directory = str(
+        sandboxes.node_attempt_workspace_context(
+            db, flow_run_id=run.id, node_attempt_id=attempt_id
+        ).runtime_working_directory
+    )
     host_root = _node_capability_root(
         db,
         flow_run_id=run.id,
@@ -972,7 +970,7 @@ def _create_native_conversation(
         manifest_digest=snapshot.runtime_manifest_hash,
         relative_parts=("conversations", session_binding_id or binding_id),
     )
-    working_directory = runtime_working_directory or str(_RUNTIME_PROJECT)
+    working_directory = runtime_working_directory or record_working_directory
     item = reserve_flow_node_binding(
         db,
         runtime_session_id=connection.runtime_session_id,
@@ -1043,7 +1041,7 @@ def _create_native_conversation(
     )
     request = replace(
         request,
-        workspace_ref=runtime_working_directory or _runtime_working_directory(request),
+        workspace_ref=working_directory,
         runtime_sandbox_id=connection.managed_runtime_id,
         runtime_resource_name=connection.resource_name,
         runtime_base_url=f"http://{connection.resource_name}:8000",
@@ -1060,7 +1058,7 @@ def _create_native_conversation(
         binding_id=binding_id,
         node_run_id=node_run_id,
         node_attempt_id=attempt_id,
-        working_directory=runtime_working_directory or _runtime_working_directory(request),
+        working_directory=working_directory,
         work_directory_version_id=work_directory_version_id,
     )
     db.add(
@@ -1356,7 +1354,7 @@ def _create_or_reload_node_bootstrap(
         workspace_root=str(
             sandboxes.node_attempt_workspace_context(
                 db, flow_run_id=run.id, node_attempt_id=binding.node_attempt_id
-            ).runtime_mount_root
+            ).runtime_working_directory
         ),
     )
     runtime = get_runtime()
@@ -2326,7 +2324,7 @@ def upload_node_attachment(
             workspace_root=str(
                 sandboxes.node_attempt_workspace_context(
                     db, flow_run_id=flow_run_id, node_attempt_id=attempt_id
-                ).runtime_mount_root
+                ).runtime_working_directory
             ),
         )
     path = get_runtime().upload_workspace_file(
@@ -2660,7 +2658,12 @@ def fork_node_conversation(
         flow_run_id=flow_run_id,
         node_run_id=None,
         node_attempt_id=None,
-        working_directory=source.working_directory or str(_RUNTIME_PROJECT),
+        working_directory=source.working_directory
+        or str(
+            sandboxes.node_attempt_workspace_context(
+                db, flow_run_id=flow_run_id, node_attempt_id=attempt_id
+            ).runtime_working_directory
+        ),
         create_idempotency_key=idempotency_key,
         display_title=(title or "").strip()[:240] or f"Fork · {source.display_title or '会话'}",
         work_directory_version_id=source.work_directory_version_id,
