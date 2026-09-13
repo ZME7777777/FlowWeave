@@ -90,6 +90,7 @@ export interface AgentSessionApi {
   readonly conversation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<AgentConversation>;
   readonly annotations: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<AgentConversationAnnotation[]>;
   readonly createAnnotation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, anchorKind: AgentConversationAnnotation['anchor_kind'], anchor: Record<string, unknown>, comment: string) => Promise<AgentConversationAnnotation>;
+  readonly updateAnnotation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, annotationId: string, comment: string) => Promise<AgentConversationAnnotation>;
   readonly workDirectories: (hostId: AgentSessionHostId) => Promise<AgentSessionWorkDirectoryList>;
   readonly providers: () => Promise<ModelProvider[]>;
   readonly capabilities: () => Promise<CapabilityAsset[]>;
@@ -158,6 +159,7 @@ export const agentWorkspaceSessionGateway: AgentSessionGateway = {
     conversation: api.agentConversation,
     annotations: api.agentConversationAnnotations,
     createAnnotation: api.createAgentConversationAnnotation,
+    updateAnnotation: api.updateAgentConversationAnnotation,
     workDirectories: api.agentWorkDirectories,
     providers: api.providers,
     capabilities: api.capabilities,
@@ -226,6 +228,8 @@ export function flowNodeSessionGateway(
       annotations: (_hostId, bindingId) => nodeSessionApi.annotations(flowRunId, attemptId, bindingId),
       createAnnotation: (_hostId, bindingId, anchorKind, anchor, comment) =>
         nodeSessionApi.createAnnotation(flowRunId, attemptId, bindingId, anchorKind, anchor, comment),
+      updateAnnotation: (_hostId, bindingId, annotationId, comment) =>
+        nodeSessionApi.updateAnnotation(flowRunId, attemptId, bindingId, annotationId, comment),
       workDirectories: () => nodeSessionApi.workDirectories(flowRunId, attemptId),
       providers: api.providers,
       capabilities: api.capabilities,

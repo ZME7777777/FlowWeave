@@ -142,6 +142,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-380 | 会话真实底部定位稳定性 | DONE | 首屏与“跳到最新”按真实内容高度即时定位；长历史不再因虚拟高度或平滑滚动停在中途。 |
 | FR-381 | 共享 FlowRun Runtime 的节点工作区路径误判 | DONE | 新 Attempt 传入其记录级工作区上下文，并继续使用 FlowRun allocation，避免按旧节点目录错误拒绝。 |
 | FR-382 | 会话／文件协作注释协议与呈现 | DONE | 固定系统提示词定义注释 ID 锚点回复；用户消息按完整注释结构传入；前端宽松按 ID 呈现，不校验模型输出。 |
+| FR-383 | 发送区协作注释管理与评论编辑 | DONE | 发送区可查看、定位及编辑会话／文件注释；回复卡片复用定位并支持直接编辑评论。 |
 
 ### FR-366 FlowWeave 专属 Docker 地址规划 — DONE
 
@@ -322,6 +323,16 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 完成：共享 `build_agent_spec()` 为 Agent Workspace 与 FlowRun 节点会话追加固定协作注释协议；注释输入投影生成完整、按创建顺序编号的模型结构，移除了用户消息中的临时回复指令。会话和文件选区都可创建评论，文件选区在显示操作时冻结 quote。前端将已知 ID 标记渲染为可打开的注释卡片，显示锚点原文与用户评论；没有任何模型输出集合校验、重试或服务端回复关联。
 
 验收：受影响 Python Ruff format/check、`py_compile`、Web TypeScript typecheck、受影响 Web ESLint、`alembic heads`（`0115_agent_annotations`）与 `git diff --check` 通过；直接运行时断言覆盖双锚点输入结构和无回复校验 payload。定向 pytest 已收集但在会话级 Testcontainers PostgreSQL fixture 初始化前因本机 Docker socket 缺失阻断，未记为通过。未修改 OpenHands 源码、Runtime Provider、Docker 或远端环境。
+
+### FR-383 发送区协作注释管理与评论编辑 — DONE
+
+依赖：`FR-382`。
+
+目标：未发送下一轮时，用户必须可在发送区查看当前 OPEN 注释、跳转至原会话文本或文件选区，并编辑已有用户评论。模型回复中的注释卡片也必须复用同一定位语义；编辑仅更新用户注释，不得解释、校验或改写模型回复标记。
+
+完成：两个宿主路由新增受 binding 授权的注释评论 PATCH；发送区增加可展开的注释清单和行内评论编辑。会话锚点滚动至原 OpenHands event，文件锚点打开现有工作区抽屉并高亮保存的范围；模型回复卡片复用该定位回调，且同样提供评论编辑。未增加任何服务端模型输出处理。
+
+验收：受影响 Python Ruff format/check、`py_compile`、直接 application 更新断言、Web TypeScript typecheck、受影响 Web ESLint、`alembic heads`（`0115_agent_annotations`）与 `git diff --check` 通过。未修改 OpenHands、Runtime Provider、Docker、迁移或远端环境。
 
 ### FR-335 Runtime generation Sandbox 引用完整性 — DONE
 
@@ -5055,6 +5066,7 @@ contract、冻结策略与既有受控生命周期约束覆盖。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-13 | FR-383 | Python Ruff format/check、`py_compile`、直接注释评论更新断言；Web TypeScript typecheck、定向 ESLint；Alembic head、`git diff --check` | PASS（静态／直接断言）：发送区可展开、定位会话／文件注释并行内编辑评论；回复卡片调用同一定位逻辑。评论 PATCH 只更新用户协作注释，未读取或校验模型回复。未修改 OpenHands、Runtime Provider、Docker、迁移或远端环境。 |
 | 2026-09-13 | FR-382 | Python Ruff format/check、`py_compile`、直接运行时断言；Web TypeScript typecheck、定向 ESLint；Alembic head、`git diff --check` | PASS（静态／直接断言）：系统提示词定义协作注释 ID 锚点协议，用户消息携带序号、ID、锚点、选中文本和评论；前端只按已知 ID 宽松渲染，不引入模型回复校验。定向 pytest 因本机 Docker socket 缺失，Testcontainers PostgreSQL fixture 在业务断言前阻断，未记为通过。未修改 OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-13 | FR-380 | Web TypeScript typecheck、ESLint、production build、Playwright 定向产品流、`git diff --check` 与任务状态唯一性 | PASS（静态／构建）：会话首屏和点击“跳到最新”改为按真实总高度即时定位，跳转后同一事件循环即断言位于末行；移除了会话轮次的虚拟高度估算，避免长历史第一次仅跳至中段。定向 Playwright 已收集，但本机 Web 服务未启动，访问 `127.0.0.1:5173` 被拒绝，未进入浏览器断言，未记为浏览器通过。未修改 API、数据库、Runtime Provider 或 OpenHands。 |
 | 2026-09-13 | FR-379 | Web TypeScript typecheck、ESLint、production build、Playwright 定向产品流、`git diff --check` 与任务状态唯一性 | PASS（静态／构建）：运行中会话在首屏最新窗口绘制后仍会请求更早历史，加载提示仅覆盖在途请求且完成后清除；产品流加入运行中历史分页和无波纹跳转按钮断言。定向 Playwright 已收集，但本机 Web 服务未启动，访问 `127.0.0.1:5173` 被拒绝，未进入浏览器断言，未记为浏览器通过。未修改 API、数据库、Runtime Provider 或 OpenHands。 |

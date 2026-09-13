@@ -65,6 +65,25 @@ def delete_annotation(db: Session, *, binding_id: str, annotation_id: str) -> No
         raise DomainError("AGENT_ANNOTATION_NOT_FOUND", "注释不存在或已删除", 404)
 
 
+def update_annotation(
+    db: Session, *, binding_id: str, annotation_id: str, comment: str
+) -> dict[str, Any]:
+    value = comment.strip()
+    if not value:
+        raise DomainError("AGENT_ANNOTATION_COMMENT_EMPTY", "注释评论不能为空", 422)
+    item = db.scalar(
+        select(AgentConversationAnnotation).where(
+            AgentConversationAnnotation.id == annotation_id,
+            AgentConversationAnnotation.binding_id == binding_id,
+        )
+    )
+    if item is None:
+        raise DomainError("AGENT_ANNOTATION_NOT_FOUND", "注释不存在或已删除", 404)
+    item.comment = value
+    db.flush()
+    return _view(item)
+
+
 def prompt_annotations(db: Session, binding_id: str) -> tuple[dict[str, Any], ...]:
     items = db.scalars(
         select(AgentConversationAnnotation)
@@ -107,4 +126,10 @@ def _prompt_view(item: AgentConversationAnnotation, *, ordinal: int) -> dict[str
     }
 
 
-__all__ = ("create_annotation", "delete_annotation", "list_annotations", "prompt_annotations")
+__all__ = (
+    "create_annotation",
+    "delete_annotation",
+    "list_annotations",
+    "prompt_annotations",
+    "update_annotation",
+)

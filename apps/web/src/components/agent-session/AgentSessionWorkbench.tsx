@@ -19,7 +19,7 @@ import { selectCapabilityVersion, selectCapabilityVersions } from '../../utils/c
 import { SubagentAvatar } from '../SubagentAvatar';
 import { subagentAvatarSlots, type SubagentAvatarSlot } from '../../utils/subagentAvatar';
 import { workspaceFileChanges, workspaceRelativePath, type WorkspaceFileChange } from './fileChanges';
-import type { AgentAttachment, AgentConversation, AgentPendingConfirmationAction, AgentSessionCapability, AgentSessionMcpReadiness, AgentSessionWorkDirectory, AgentSessionWorkDirectoryList, AgentSessionWorkspaceDetails, AgentWorkspaceReference, CapabilityAsset, CapabilityCollection, ModelProvider, OpenHandsConversationEvent, OpenHandsConversationEventBatch, ProviderModel, RuntimeTaskControlSnapshot, RuntimeTaskUsageSnapshot, WorkspaceGitCommitDetails, WorkspaceGitFileDiff } from '../../types';
+import type { AgentAttachment, AgentConversation, AgentConversationAnnotation, AgentPendingConfirmationAction, AgentSessionCapability, AgentSessionMcpReadiness, AgentSessionWorkDirectory, AgentSessionWorkDirectoryList, AgentSessionWorkspaceDetails, AgentWorkspaceReference, CapabilityAsset, CapabilityCollection, ModelProvider, OpenHandsConversationEvent, OpenHandsConversationEventBatch, ProviderModel, RuntimeTaskControlSnapshot, RuntimeTaskUsageSnapshot, WorkspaceGitCommitDetails, WorkspaceGitFileDiff } from '../../types';
 import '../../pages/agent-workbench.css';
 import '../../pages/agent-workbench-layout.css';
 
@@ -38,6 +38,34 @@ interface QueuedMessage {
   workspaceReferences?: AgentWorkspaceReference[];
 }
 type FileSelection = NonNullable<AgentWorkspaceReference['selection']>;
+
+function annotationFileSelection(annotation: AgentConversationAnnotation): { path: string; selection: FileSelection } | undefined {
+  if (annotation.anchor_kind !== 'WORKSPACE_FILE_RANGE') return undefined;
+  const { path, selection } = annotation.anchor;
+  if (typeof path !== 'string' || !selection || typeof selection !== 'object') return undefined;
+  const value = selection as Record<string, unknown>;
+  if (!['start_line', 'start_column', 'end_line', 'end_column'].every(name => typeof value[name] === 'number')) return undefined;
+  return { path, selection: value as FileSelection };
+}
+
+function ComposerAnnotationList({ annotations, onLocate, onUpdate }: {
+  annotations: AgentConversationAnnotation[];
+  onLocate: (annotation: AgentConversationAnnotation) => void;
+  onUpdate: (annotation: AgentConversationAnnotation, comment: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [editingId, setEditingId] = useState<string>();
+  const [comment, setComment] = useState('');
+  if (!annotations.length) return null;
+  return <section className="agent-composer-annotations" aria-label={`本轮协作注释 ${annotations.length} 条`}>
+    <button type="button" className="agent-composer-annotations-toggle" aria-expanded={open} onClick={() => setOpen(current => !current)}><Quote size={14}/><span>{annotations.length} 条注释</span><ChevronDown size={13}/></button>
+    {open && <div className="agent-composer-annotations-list">{annotations.map((annotation, index) => <article key={annotation.id}>
+      <header><button type="button" onClick={() => onLocate(annotation)}><Quote size={13}/><span>注释 {index + 1} · {annotation.anchor_kind === 'CONVERSATION_TEXT' ? '会话文本' : '文件内容'}</span></button><button type="button" onClick={() => { setEditingId(annotation.id); setComment(annotation.comment); }}>编辑评论</button></header>
+      {typeof annotation.anchor.quote === 'string' && annotation.anchor.quote && <blockquote>{annotation.anchor.quote}</blockquote>}
+      {editingId === annotation.id ? <div className="agent-composer-annotation-edit"><textarea aria-label={`编辑注释 ${index + 1} 的评论`} value={comment} onChange={event => setComment(event.target.value)}/><footer><button type="button" onClick={() => setEditingId(undefined)}>取消</button><button type="button" disabled={!comment.trim()} onClick={() => { onUpdate(annotation, comment); setEditingId(undefined); }}>保存</button></footer></div> : <p>{annotation.comment}</p>}
+    </article>)}</div>}
+  </section>;
+}
 interface BoundQueuedMessage extends QueuedMessage {
   bindingId: string;
   /**
@@ -3152,6 +3180,27 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     await api.createAnnotation(workspace.id, selectedConversationId, anchorKind, anchor, comment);
     await queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'annotations', workspace.id, selectedConversationId) });
   }, [api, dialog, host, queryClient, selectedConversationId, workspace]);
+  const updateAnnotation = useCallback(async (annotation: AgentConversationAnnotation, comment: string) => {
+    if (!workspace || !selectedConversationId || !comment.trim()) return;
+    await api.updateAnnotation(workspace.id, selectedConversationId, annotation.id, comment);
+    await queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'annotations', workspace.id, selectedConversationId) });
+  }, [api, host, queryClient, selectedConversationId, workspace]);
+  const locateAnnotation = useCallback((annotation: AgentConversationAnnotation) => {
+    if (annotation.anchor_kind === 'CONVERSATION_TEXT') {
+      const eventId = annotation.anchor.event_id;
+      if (typeof eventId !== 'string') return;
+      const target = Array.from(document.querySelectorAll<HTMLElement>('[data-conversation-event-id]')).find(item => item.dataset.conversationEventId === eventId);
+      const surface = target?.closest<HTMLElement>('.conversation-surface');
+      if (!target || !surface) return;
+      const top = target.getBoundingClientRect().top - surface.getBoundingClientRect().top + surface.scrollTop - 18;
+      surface.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
+      return;
+    }
+    const file = annotationFileSelection(annotation);
+    if (!file) return;
+    setFileSelectionReference(file);
+    setDrawerOpen(true);
+  }, []);
   useEffect(() => {
     const listener = (event: Event) => void createAnnotation('CONVERSATION_TEXT', (event as CustomEvent<Record<string, unknown>>).detail);
     window.addEventListener('flowweave:create-conversation-annotation', listener);
@@ -4466,12 +4515,15 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         onAddReference={canWrite ? reference => setReferences(current => current.some(item => item.eventId === reference.eventId && item.content === reference.content) ? current : [...current, reference]) : undefined}
         annotations={annotationsQuery.data ?? []}
         onCreateAnnotation={selected && canWrite ? anchor => void createAnnotation('CONVERSATION_TEXT', anchor) : undefined}
+        onLocateAnnotation={locateAnnotation}
+        onUpdateAnnotation={(annotation, comment) => void updateAnnotation(annotation, comment)}
         taskControl={eventsQuery.data?.task_control ?? []}
         monitoring={eventsQuery.data?.monitoring}
         connectionState={inputReadinessQuery.isError ? 'unavailable' : streamStatus === 'recovering' ? 'recovering' : streamStatus === 'connecting' ? 'checking' : inputReadinessQuery.isFetching && !inputReadinessQuery.data ? 'checking' : 'connected'}
       /> : <div className="agent-workbench-empty"><Bot size={32}/><b>新建会话开始协作</b><span>{features.workDirectories ? '每个会话共享同一工作区，但保留独立的对话与事件记录。' : '会话固定在当前节点 Attempt 的隔离工作目录。'}</span><button className="primary" disabled={!canOpenConversation} onClick={() => openConversationDraft({ displayName: features.workDirectories ? '根工作区' : '节点工作目录' })}><Plus size={15}/>新建会话</button></div>}
       {(selected || conversationDraft) && (runtimeWritable || Boolean(selected?.write_available)) && runtime?.state !== 'RECOVERING' && <div className="agent-composer-dock">
         <div className={`agent-composer ${turnState !== 'idle' || pendingConfirmation ? 'busy' : ''}`}>
+        {selected && <ComposerAnnotationList annotations={annotationsQuery.data ?? []} onLocate={locateAnnotation} onUpdate={(annotation, comment) => void updateAnnotation(annotation, comment)}/>}
         {pendingConfirmation && <section className="agent-confirmation" aria-label="工具执行确认"><header><ShieldAlert size={17}/><div><b>工具正在等待你的确认</b><span>动作尚未执行。请核对整批内容后批准或拒绝。</span></div></header><div className="agent-confirmation-actions">{(pendingConfirmation.actions ?? []).map((action: AgentPendingConfirmationAction) => <article key={action.digest}><div><b>{action.summary || action.tool_name}</b><span>{action.security_risk || 'UNKNOWN'}</span></div>{Object.keys(action.arguments).length > 0 && <pre>{JSON.stringify(action.arguments, null, 2)}</pre>}</article>)}</div><textarea aria-label="工具确认理由" value={confirmationReason} maxLength={2000} placeholder="填写批准或拒绝理由…" onChange={event => setConfirmationReason(event.target.value)}/><footer><button type="button" className="danger" disabled={!confirmationReason.trim() || decideConfirmation.isPending} onClick={() => decideConfirmation.mutate(false)}><X size={14}/>拒绝整批</button><button type="button" className="primary" disabled={!confirmationReason.trim() || decideConfirmation.isPending} onClick={() => decideConfirmation.mutate(true)}><Check size={14}/>批准整批</button></footer></section>}
         {queuedMessages.length > 0 && <section className="agent-queued-messages" aria-label="已排队消息"><header><b>消息队列</b><span>{queuedMessages.length} 条将在当前回复完成后依次发送</span></header>{queuedMessages.map((message, index) => <article key={message.id} draggable onDragStart={event => { if (!(event.target instanceof Element) || !event.target.closest('.queue-drag-handle')) { event.preventDefault(); return; } event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', message.id); setDraggedQueuedMessageId(message.id); }} onDragOver={event => { if (draggedQueuedMessageId && draggedQueuedMessageId !== message.id) event.preventDefault(); }} onDrop={event => { event.preventDefault(); const sourceId = event.dataTransfer.getData('text/plain') || draggedQueuedMessageId; if (sourceId) moveQueuedMessage(sourceId, message.id); setDraggedQueuedMessageId(undefined); }} onDragEnd={() => setDraggedQueuedMessageId(undefined)} className={draggedQueuedMessageId === message.id ? 'dragging' : undefined}><button type="button" className="queue-drag-handle" aria-label={`拖动排队消息 ${index + 1} 以调整顺序`} title="拖动调整顺序" tabIndex={-1}><GripVertical size={14}/></button><small>{index + 1}</small><p>{message.content || (message.references.length ? `会话引用 ${message.references.length} 条` : message.workspaceReferences?.length ? `工作区引用 ${message.workspaceReferences.length} 条` : '图片附件')}</p><span>{[message.items.length ? `${message.items.length} 个附件` : '', message.references.length ? `${message.references.length} 条会话引用` : '', message.workspaceReferences?.length ? `${message.workspaceReferences.length} 条工作区引用` : ''].filter(Boolean).join(' · ')}</span><div><button type="button" aria-label={`调整方向排队消息 ${index + 1}`} title="立即发送，调整当前回复方向" disabled={!canWrite || turnState !== 'running' || !selected?.streaming_callback_ready || message.scope !== selected.id} onClick={() => sendQueuedMessageImmediately(message)}><CornerDownRight size={12}/>调整方向</button><button type="button" className="queue-remove" aria-label={`移除排队消息 ${index + 1}`} onClick={() => setQueuedMessages(items => items.filter(item => item.id !== message.id))}><X size={13}/></button><button type="button" className="queue-more" aria-label={`更多排队消息操作 ${index + 1}`} title="更多操作" aria-expanded={queuedMessageMenuId === message.id} onClick={() => setQueuedMessageMenuId(current => current === message.id ? undefined : message.id)}><Ellipsis size={14}/></button>{queuedMessageMenuId === message.id && <div className="queue-menu" role="menu"><button type="button" role="menuitem" disabled={index === 0} onClick={() => { moveQueuedMessageByOffset(message.id, -1); setQueuedMessageMenuId(undefined); }}>上移</button><button type="button" role="menuitem" disabled={index === queuedMessages.length - 1} onClick={() => { moveQueuedMessageByOffset(message.id, 1); setQueuedMessageMenuId(undefined); }}>下移</button><button type="button" role="menuitem" onClick={() => { setDraft(message.content); setAttachments(message.items); setReferences(message.references); setWorkspaceReferences(message.workspaceReferences ?? []); setQueuedMessages(items => items.filter(item => item.id !== message.id)); setQueuedMessageMenuId(undefined); }}>编辑</button></div>}</div></article>)}</section>}
         {condensationConfirmationOpen && selected && <section className="agent-condensation-confirmation" aria-label="确认低用量上下文压缩" role="alertdialog" aria-modal="false">

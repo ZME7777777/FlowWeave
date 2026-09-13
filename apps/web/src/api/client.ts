@@ -291,6 +291,8 @@ export const api = {
     request<AgentConversationAnnotation[]>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/annotations`),
   createAgentConversationAnnotation: (workspaceId: string, bindingId: string, anchor_kind: AgentConversationAnnotation['anchor_kind'], anchor: Record<string, unknown>, comment: string) =>
     request<AgentConversationAnnotation>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/annotations`, json('POST', { anchor_kind, anchor, comment })),
+  updateAgentConversationAnnotation: (workspaceId: string, bindingId: string, annotationId: string, comment: string) =>
+    request<AgentConversationAnnotation>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/annotations/${encodeURIComponent(annotationId)}`, json('PATCH', { comment })),
   updateAgentConversation: (workspaceId: string, bindingId: string, title: string) =>
     request<AgentConversation>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}`, json('PATCH', { title })),
   deleteAgentConversation: (workspaceId: string, bindingId: string) =>
@@ -777,6 +779,8 @@ export const nodeSessionApi = {
     request<import('../types').AgentConversationAnnotation[]>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/annotations`),
   createAnnotation: (flowRunId: string, attemptId: string, bindingId: string, anchor_kind: import('../types').AgentConversationAnnotation['anchor_kind'], anchor: Record<string, unknown>, comment: string) =>
     request<import('../types').AgentConversationAnnotation>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/annotations`, json('POST', { anchor_kind, anchor, comment })),
+  updateAnnotation: (flowRunId: string, attemptId: string, bindingId: string, annotationId: string, comment: string) =>
+    request<import('../types').AgentConversationAnnotation>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/annotations/${encodeURIComponent(annotationId)}`, json('PATCH', { comment })),
   update: (flowRunId: string, attemptId: string, bindingId: string, title: string) =>
     request<import('../types').AgentConversation>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}`, json('PATCH', { title })),
   events: (flowRunId: string, attemptId: string, bindingId: string, cursor?: string, historyCursor?: string) => {
