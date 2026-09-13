@@ -556,7 +556,7 @@ def process_flow_run_runtime_replacement(
                         db,
                         flow_run_id=binding.flow_run_id,
                         node_attempt_id=binding.node_attempt_id,
-                    ).runtime_mount_root
+                    ).runtime_working_directory
                 )
             try:
                 expected_identity = _probe_identity(
@@ -640,7 +640,7 @@ def process_flow_run_runtime_replacement(
                         db,
                         flow_run_id=binding.flow_run_id,
                         node_attempt_id=binding.node_attempt_id,
-                    ).runtime_mount_root
+                    ).runtime_working_directory
                 )
             _probe_identity(
                 resource_name=target_runtime.backend_resource_name,

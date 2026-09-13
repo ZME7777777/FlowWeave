@@ -405,9 +405,15 @@ class TerminalStartWrite(SandboxDeleteWrite):
                 raise ValueError("working_dir must remain under a managed Runtime workspace")
             relative = path.relative_to(PurePosixPath("/runtime/workspace"))
             if len(relative.parts) == 1:
+                # Attempt-private Runtime containers created before the
+                # FlowRun-shared Runtime cutover exposed their frozen record
+                # at this legacy location. Keep this read-only compatibility
+                # route narrow; new FlowRun records use project/<record-id>.
                 identity = relative.parts[0]
             elif relative.parts[:2] == ("project", "users") and len(relative.parts) >= 3:
                 identity = relative.parts[2]
+            elif relative.parts[:1] == ("project",) and len(relative.parts) >= 2:
+                identity = relative.parts[1]
             else:
                 raise ValueError("working_dir must use a managed record or user workspace root")
             try:

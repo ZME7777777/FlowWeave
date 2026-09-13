@@ -471,7 +471,7 @@ def test_historical_gate_without_id_is_a_controlled_configuration_error(monkeypa
     assert exc_info.value.code == "GATE_POLICY_ID_MISSING"
 
 
-def test_gate_sidecar_uses_its_node_attempt_runtime_and_workspace(monkeypatch):
+def test_gate_sidecar_uses_its_node_attempt_record_workspace(monkeypatch):
     """Gate Conversations share the owning node Attempt's Runtime and root."""
 
     attempt = SimpleNamespace(id="attempt-1", snapshot_id="snapshot-1")
@@ -510,7 +510,10 @@ def test_gate_sidecar_uses_its_node_attempt_runtime_and_workspace(monkeypatch):
         "node_attempt_workspace_context",
         lambda *_args, **_kwargs: SimpleNamespace(
             attempt_owned=True,
-            runtime_mount_root="/runtime/workspace/node-record",
+            runtime_mount_root="/runtime/workspace/project",
+            runtime_working_directory=(
+                "/runtime/workspace/project/6311561c-06e4-41ad-8afe-aac35cfa83ec"
+            ),
         ),
     )
     monkeypatch.setattr(
@@ -577,14 +580,18 @@ def test_gate_sidecar_uses_its_node_attempt_runtime_and_workspace(monkeypatch):
     )
 
     assert captured == {
-        "binding_working_directory": "/runtime/workspace/node-record",
+        "binding_working_directory": (
+            "/runtime/workspace/project/6311561c-06e4-41ad-8afe-aac35cfa83ec"
+        ),
         "connection_flow_run_id": "nested-run-1",
         "connection_node_attempt_id": "attempt-1",
-        "workspace_ref": "/runtime/workspace/node-record",
+        "workspace_ref": "/runtime/workspace/project/6311561c-06e4-41ad-8afe-aac35cfa83ec",
         "node_attempt_id": "attempt-1",
     }
     assert plan.sidecar_request is not None
-    assert plan.sidecar_request.workspace_root == "/runtime/workspace/node-record"
+    assert plan.sidecar_request.workspace_root == (
+        "/runtime/workspace/project/6311561c-06e4-41ad-8afe-aac35cfa83ec"
+    )
 
 
 def test_runtime_output_registration_reuses_the_same_formal_completion(monkeypatch):

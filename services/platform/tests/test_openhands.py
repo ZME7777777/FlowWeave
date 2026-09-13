@@ -564,6 +564,29 @@ def test_openhands_preserves_agent_workspace_selected_subdirectory(openhands_set
     assert runtime._request_workspace_path(request) == request.workspace_ref
 
 
+def test_openhands_requires_a_canonical_record_under_the_shared_project_mount(
+    openhands_settings,
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    record_root = "/runtime/workspace/project/6311561c-06e4-41ad-8afe-aac35cfa83ec"
+
+    assert runtime._validated_workspace_root(record_root).as_posix() == record_root
+    assert (
+        runtime._request_workspace_path(
+            replace(
+                _request(),
+                workspace_root=record_root,
+                workspace_ref=f"{record_root}/gate-evidence",
+                runtime_sandbox_id="flow-run-runtime-1",
+                runtime_resource_name="flow-run-runtime",
+            )
+        )
+        == f"{record_root}/gate-evidence"
+    )
+    with pytest.raises(DomainError, match="record workspace identity is invalid"):
+        runtime._validated_workspace_root("/runtime/workspace/project")
+
+
 @pytest.mark.asyncio
 async def test_openhands_uses_the_container_owned_http_transport(openhands_settings):
     transport = HttpTransportPool.build()

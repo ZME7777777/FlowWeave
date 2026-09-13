@@ -12,7 +12,11 @@ import pytest
 from fastapi.testclient import TestClient
 
 from flowweave.bootstrap import runtime_provider as controller_module
-from flowweave.bootstrap.runtime_provider import RuntimeProviderSpec, create_app
+from flowweave.bootstrap.runtime_provider import (
+    RuntimeProviderSpec,
+    TerminalStartWrite,
+    create_app,
+)
 from flowweave.modules.environments.infrastructure import docker as environments_docker
 from flowweave.modules.sandboxes.infrastructure.docker import (
     DockerObservation,
@@ -79,6 +83,28 @@ def test_runtime_provider_accepts_partial_legacy_server_identity_metadata() -> N
     )
     spec = RuntimeProviderSpec(**values, runtime_openhands_version="1.44.0")
     assert spec.runtime_openhands_version == "1.44.0"
+
+
+def test_runtime_provider_accepts_record_scoped_terminal_working_directory() -> None:
+    record_id = "6311561c-06e4-41ad-8afe-aac35cfa83ec"
+    payload = TerminalStartWrite(
+        manager_scope=_SCOPE,
+        resource_name="fw-sbx-record-runtime",
+        resource_id=_RESOURCE_ID,
+        working_dir=f"/runtime/workspace/project/{record_id}/deliverables",
+    )
+
+    assert payload.working_dir == f"/runtime/workspace/project/{record_id}/deliverables"
+
+
+def test_runtime_provider_rejects_bare_project_terminal_working_directory() -> None:
+    with pytest.raises(ValueError, match="workspace identity is invalid"):
+        TerminalStartWrite(
+            manager_scope=_SCOPE,
+            resource_name="fw-sbx-record-runtime",
+            resource_id=_RESOURCE_ID,
+            working_dir="/runtime/workspace/project",
+        )
 
 
 def test_runtime_provider_preserves_runtime_resource_limits() -> None:

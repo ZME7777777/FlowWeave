@@ -489,10 +489,14 @@ def _active_attempt_runtime_handle(
         openhands_conversation_id=openhands_conversation_id,
     )
     if binding.node_attempt_id:
+        # The physical FlowRun mount may contain many record directories. A
+        # Conversation and its outputs are scoped to the logical record root,
+        # never to that mount root. This is also the path supplied to
+        # OpenHands for a shared FlowRun Runtime.
         workspace_root = str(
             sandboxes.node_attempt_workspace_context(
                 db, flow_run_id=flow_run_id, node_attempt_id=binding.node_attempt_id
-            ).runtime_mount_root
+            ).runtime_working_directory
         )
     else:
         workspace_root = binding.working_directory or ""
@@ -2585,7 +2589,12 @@ def _prepare_gate_plan(
                 # context. Its only inputs are the explicit gate payload below.
                 capability_version_ids=(),
             )
-        sidecar_working_directory = str(workspace.runtime_mount_root)
+        # The shared Runtime mounts the record store at
+        # /runtime/workspace/project. A gate is a Conversation within the
+        # Attempt's record, so it must use project/<record-id>, not the
+        # physical mount root. Passing the latter makes OpenHands parse
+        # "project" as a record UUID and fails before the gate can start.
+        sidecar_working_directory = str(workspace.runtime_working_directory)
         binding = agent_sessions.reserve_flow_node_binding(
             db,
             runtime_session_id=connection.runtime_session_id,

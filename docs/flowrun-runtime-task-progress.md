@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`IN PROGRESS`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`NONE（等待 FR-401 部署验收）`
+> 下一可执行切片：`NONE（等待 FR-403 部署验收）`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -161,6 +161,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-399 | 共享 FlowRun 项目根被 Runtime 误判为非法工作区 | DONE | 将共享物理 `project` mount 下的规范记录目录作为 OpenHands 逻辑根，并将明确的历史工作区身份失败纳入同一启动恢复。 |
 | FR-400 | 记录工作区根入口统一 | DONE | 所有新建／共享 Attempt 和节点会话入口统一传入记录根，不再传物理 mount、Attempt 或逻辑子目录。 |
 | FR-401 | 记录 ID 与 Runtime owner 身份分离 | DONE | 恢复以产品记录 ID 而非 FlowRun Runtime owner 选择 `project/<record-id>`，使共享 Runtime 中的不同记录继续隔离。 |
+| FR-403 | 共享记录工作区的门禁／Provider 路径贯通 | DONE | 门禁 sidecar、Runtime replacement probe 与 Provider terminal 准入均使用 `project/<record-id>`；物理 `project` mount 仅作为多记录存储根。 |
 
 ### FR-366 FlowWeave 专属 Docker 地址规划 — DONE
 
@@ -391,6 +392,29 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 完成：CLI 新增顶层 Agent Workspace 与 FlowRun 节点范围的工作区详情／增量目录、授权 Git repositories/log/commit/diff、普通条目创建和 Conversation hydration/head 读取；新增连续自动记录配置导入／导出及带 Attempt 状态版本的 Runtime 完成投影对账。工作区 Git/路径操作要求来自公开读取结果；完整索引需显式 `--full-index`，默认使用增量目录。Environment 发布说明更新为异步 `202` 后重新读取直至 `READY`。基准 Skill、Agent Workspace、FlowRun 工作台与 Environment Skill 已同步这些边界和命令。
 
 验收：CLI `node --check`、Node 测试（13 passed）、`npm pack --dry-run`（仅 README、入口和 package metadata）、全部 FlowWeave Skill frontmatter 校验、`uv run --directory services/platform alembic heads`（唯一 `0115_agent_annotations`）、`git diff --check` 与任务状态唯一性通过；未修改 API、数据库、Runtime Provider、Docker、OpenHands 或远端环境。
+
+### FR-403 共享记录工作区的门禁／Provider 路径贯通 — DONE
+
+依赖：`FR-399`、`FR-400`、`FR-401`。
+
+目标：所有共享 FlowRun Runtime 的 OpenHands Conversation 路由都必须以
+`/runtime/workspace/project/<record-id>` 作为逻辑工作区。门禁 sidecar、Runtime replacement identity probe
+和 Provider terminal 准入不得重新使用裸 `project` 物理 mount。物理 Runtime 仍由所属 FlowRun 共享，
+不同记录仍以其产品 record ID 隔离；既有 Attempt-private Runtime 只保留其原冻结路径的只读兼容。
+
+完成：门禁 sidecar 从记录级 `runtime_working_directory` 创建 binding、request root 与 working directory，
+不再把 `/runtime/workspace/project` 传给 OpenHands；Attempt Conversation handle 与 replacement 前后
+identity probe 同样解析记录根。Runtime Provider terminal schema 现在接受规范
+`project/<record-id>`（及其子目录），同时继续拒绝裸 `project`；用户工作区优先走既有
+`project/users/<user-id>` 身份分支。Docker 的共享 FlowRun 容器继续只挂载物理项目存储根，不将某一
+record 误设为整个容器的唯一 mount；旧 `/runtime/workspace/<record-id>` 仅保留历史
+Attempt-private Runtime 兼容，不成为新共享路径。
+
+验收：`test_openhands.py` 144 passed；记录根的 OpenHands request／Provider terminal 契约探针通过；
+受影响 Ruff check/format、Python `py_compile` 和 `git diff --check` 通过。
+`test_sandbox_controller.py`、`test_runtime_wakeup.py` 需要 Testcontainers PostgreSQL，但本机 Docker
+socket 不存在，fixture 在断言前失败，未记为通过。无迁移、无 OpenHands 源码修改、无本地 Docker
+Runtime 创建或远端操作；下一步为从该提交执行受控平台部署与生产验收。
 
 ### FR-398 长会话 Markdown 完整渲染 — DONE
 
