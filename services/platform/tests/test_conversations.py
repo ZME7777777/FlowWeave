@@ -100,6 +100,7 @@ def test_annotation_rule_is_system_context_and_message_contains_no_reply_validat
         '::flowweave-annotation{id="<annotation_id>"}'
         in runtime_config.COLLABORATION_ANNOTATION_CONTEXT
     )
+    assert "逐条给出与每条相关注释对应的具体回应" in runtime_config.COLLABORATION_ANNOTATION_CONTEXT
     prompt, _image_urls = session_conversations.message_payload(
         "请开始修改",
         (),

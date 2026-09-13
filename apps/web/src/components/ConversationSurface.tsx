@@ -186,15 +186,39 @@ function workspaceReferenceLabel(reference: AgentWorkspaceReference): string {
     : reference.kind === 'directory' ? '工作区目录 · 本地路径引用' : '工作区文件 · 本地路径引用';
 }
 
-function MessageAttachments({ attachments, references = [], workspaceReferences = [], onOpen, onOpenReference, onOpenWorkspaceReference }: {
+function eventAnnotations(event: OpenHandsConversationEvent): AgentConversationAnnotation[] {
+  const raw = event.payload.collaboration_annotations;
+  return Array.isArray(raw) ? raw.filter((item): item is AgentConversationAnnotation => Boolean(
+    item
+    && typeof item === 'object'
+    && typeof (item as AgentConversationAnnotation).id === 'string'
+    && typeof (item as AgentConversationAnnotation).anchor_kind === 'string'
+    && typeof (item as AgentConversationAnnotation).anchor === 'object'
+    && typeof (item as AgentConversationAnnotation).comment === 'string',
+  )) : [];
+}
+
+function annotationFileLabel(annotation: AgentConversationAnnotation): string | undefined {
+  if (annotation.anchor_kind !== 'WORKSPACE_FILE_RANGE') return undefined;
+  const { path, selection } = annotation.anchor;
+  if (typeof path !== 'string' || !selection || typeof selection !== 'object') return undefined;
+  const range = selection as Record<string, unknown>;
+  if (!['start_line', 'start_column', 'end_line', 'end_column'].every(key => typeof range[key] === 'number')) return undefined;
+  const filename = path.split('/').filter(Boolean).at(-1) || path;
+  return `${filename} · ${range.start_line}:${range.start_column}–${range.end_line}:${range.end_column}`;
+}
+
+function MessageAttachments({ attachments, references = [], workspaceReferences = [], annotations = [], onOpen, onOpenReference, onOpenWorkspaceReference, onOpenAnnotation }: {
   attachments: AgentAttachment[];
   references?: AgentConversationReference[];
   workspaceReferences?: AgentWorkspaceReference[];
+  annotations?: AgentConversationAnnotation[];
   onOpen?: (attachment: AgentAttachment) => void;
   onOpenReference?: (reference: AgentConversationReference) => void;
   onOpenWorkspaceReference?: (reference: AgentWorkspaceReference) => void;
+  onOpenAnnotation?: (annotation: AgentConversationAnnotation) => void;
 }) {
-  if (!attachments.length && !references.length && !workspaceReferences.length) return null;
+  if (!attachments.length && !references.length && !workspaceReferences.length && !annotations.length) return null;
   return <div className="conversation-message-attachments" aria-label="消息附件">
     {attachments.map(attachment => <button
       type="button"
@@ -212,6 +236,13 @@ function MessageAttachments({ attachments, references = [], workspaceReferences 
     {workspaceReferences.map(reference => <button type="button" key={`${reference.path}:${JSON.stringify(reference.selection ?? {})}`} className="conversation-message-attachment conversation-message-workspace-reference" title={reference.path} onClick={() => { onOpenWorkspaceReference?.(reference); window.dispatchEvent(new CustomEvent('flowweave:open-workspace-selection', { detail: reference })); }}>
       <FileText size={16}/><span><b>{reference.display_name}</b><small>{workspaceReferenceLabel(reference)}</small></span>
     </button>)}
+    {annotations.map((annotation, index) => {
+      const fileLabel = annotationFileLabel(annotation);
+      const label = fileLabel ?? `会话引用 ${index + 1}`;
+      return <button type="button" key={annotation.id} className="conversation-message-attachment conversation-message-annotation" title={fileLabel ?? '查看会话注释'} onClick={() => onOpenAnnotation?.(annotation)}>
+        {fileLabel ? <FileText size={16}/> : <Quote size={16}/>}<span><b>{label}</b><small>{annotation.comment || (fileLabel ? '文件内容注释' : '会话文本注释')}</small></span><PanelRightOpen size={13}/>
+      </button>;
+    })}
   </div>;
 }
 
@@ -1649,7 +1680,7 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused: 
         return <section className="conversation-turn" key={turn.id} data-conversation-turn={turn.id}>
           {turn.user && <div className="conversation-user-message">{editingEventId === turn.user.event.id
             ? <form className="conversation-message-edit" onSubmit={event => { event.preventDefault(); if (editingContent.trim()) onRewrite?.(turn.user!.event.id, editingContent.trim()); }}><textarea aria-label="编辑已发送消息" value={editingContent} disabled={rewritePending} onChange={event => setEditingContent(event.target.value)}/><footer><button type="button" onClick={() => setEditingEventId(undefined)}>取消</button><button type="submit" disabled={!editingContent.trim() || rewritePending}>重新思考</button></footer></form>
-            : <article data-user-event-id={turn.user.event.id} data-conversation-event-id={turn.user.event.id} className="conversation-message user">{turn.user.content && <div className="conversation-message-content"><MessageMarkdown>{turn.user.content}</MessageMarkdown></div>}<MessageAttachments attachments={eventAttachments(turn.user.event)} references={turn.user.event.payload.conversation_references} workspaceReferences={turn.user.event.payload.workspace_references} onOpen={onOpenAttachment} onOpenReference={setViewingReference} onOpenWorkspaceReference={onOpenWorkspaceReference}/><footer className="conversation-message-meta user">{userTimestamp && <time dateTime={typeof turn.user.event.payload.timestamp === 'string' ? turn.user.event.payload.timestamp : undefined}>{userTimestamp}</time>}<div className="conversation-message-actions"><button type="button" className="conversation-message-copy" aria-label={copiedEventId === turn.user.event.id ? '消息已复制' : '复制消息'} title={copiedEventId === turn.user.event.id ? '已复制' : '复制消息'} onClick={() => copyUserMessage(turn.user!.event.id, turn.user!.content)}>{copiedEventId === turn.user.event.id ? <Check size={13}/> : <Copy size={13}/>}</button>{lastUserEventId === turn.user.event.id && <button type="button" className="conversation-message-rewrite" aria-label="编辑并重新思考" title="编辑并重新思考" onClick={() => { setEditingEventId(turn.user!.event.id); setEditingContent(turn.user!.content); }}><Pencil size={13}/></button>}</div></footer></article>}</div>}
+            : <article data-user-event-id={turn.user.event.id} data-conversation-event-id={turn.user.event.id} className="conversation-message user">{turn.user.content && <div className="conversation-message-content"><MessageMarkdown>{turn.user.content}</MessageMarkdown></div>}<MessageAttachments attachments={eventAttachments(turn.user.event)} references={turn.user.event.payload.conversation_references} workspaceReferences={turn.user.event.payload.workspace_references} annotations={eventAnnotations(turn.user.event)} onOpen={onOpenAttachment} onOpenReference={setViewingReference} onOpenWorkspaceReference={onOpenWorkspaceReference} onOpenAnnotation={onLocateAnnotation}/><footer className="conversation-message-meta user">{userTimestamp && <time dateTime={typeof turn.user.event.payload.timestamp === 'string' ? turn.user.event.payload.timestamp : undefined}>{userTimestamp}</time>}<div className="conversation-message-actions"><button type="button" className="conversation-message-copy" aria-label={copiedEventId === turn.user.event.id ? '消息已复制' : '复制消息'} title={copiedEventId === turn.user.event.id ? '已复制' : '复制消息'} onClick={() => copyUserMessage(turn.user!.event.id, turn.user!.content)}>{copiedEventId === turn.user.event.id ? <Check size={13}/> : <Copy size={13}/>}</button>{lastUserEventId === turn.user.event.id && <button type="button" className="conversation-message-rewrite" aria-label="编辑并重新思考" title="编辑并重新思考" onClick={() => { setEditingEventId(turn.user!.event.id); setEditingContent(turn.user!.content); }}><Pencil size={13}/></button>}</div></footer></article>}</div>}
           {processBlocks.map((block, blockIndex) => block.kind === 'condensation'
             ? <CondensationNotices key={block.id} items={block.items}/>
             : <ActivityGroup

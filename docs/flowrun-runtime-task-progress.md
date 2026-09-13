@@ -153,6 +153,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-391 | 文件注释定位与坐标呈现 | DONE | 文件锚点以缩略文件名和起止行列呈现；定位会重新打开锚定文件并保留精确选区高亮。 |
 | FR-392 | 注释详情浮层与文件树导航完善 | DONE | 固定注释浮层并截断超长引用；支持外部／ESC 关闭和直接评论；文件定位逐层展开目录树。 |
 | FR-393 | 协作锚点定位与紧凑呈现修正 | DONE | 注释气泡不与 Composer 控件重叠且位于跳转按钮上层；文件锚点以原生选区样式短暂呈现并定位至预览上三分之一；会话锚点按选区偏移精确复原。 |
+| FR-394 | 已发送注释上下文与回复锚点呈现 | DONE | 发送后的会话／文件注释从原生用户消息元数据投影为可定位 chip；草稿内容优先显示发送操作；文件 chip 与会话引用同尺寸；回复锚点呈现为可点击链接。 |
 
 ### FR-366 FlowWeave 专属 Docker 地址规划 — DONE
 
@@ -443,6 +444,16 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 完成：Composer 浮层改为固定高度的 flex 布局，footer 不再绝对定位，并提升其宿主层级；文件卡片收紧为两行，第二行只保留起止坐标且文件名按可用宽度省略。文件 Range 的高亮矩形按视觉行合并，使用与文本选中一致的蓝色并在短暂展示后清理；定位采用即时滚动，把选区置于预览视口约上三分之一。新会话注释随同一 OpenHands 用户消息元数据保存 whitespace-free `compact_start`，定位时优先以该偏移加引文校验复原，旧元数据继续按引文兼容回退。历史会话引用同样改用精确 Range 选择并移除整条消息卡片高亮；未增加注释 CRUD、服务端校验或独立持久化。
 
 验收：Web TypeScript typecheck、受影响 Web ESLint、production build、`git diff --check` 与任务状态唯一性。未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。
+
+### FR-394 已发送注释上下文与回复锚点呈现 — DONE
+
+依赖：`FR-393`。
+
+目标：注释必须在已发送的原生用户消息气泡中可见，而不能因消息文字为空显示为空白。无论会话是否暂停，只要 Composer 中有文字、附件、引用或注释，主操作都应显示并执行“发送”；清空后才恢复暂停／继续操作。文件注释 chip 要与会话引用保持同一紧凑尺寸。模型回复需被提示逐条回应相关注释，并使用原注释 ID 生成可点击的前端锚点；客户端只宽松呈现其认识的 marker，不建立服务端回复校验。
+
+完成：会话 Surface 直接从 OpenHands 用户消息的 `collaboration_annotations` 元数据投影会话／文件注释 chip，点击复用既有原文定位；没有新增注释存储、API 或模型回复校验。Composer 的内容态优先于暂停／运行态，点击使用既有发送／排队路径，清空后恢复原控制；文件 chip 回归与会话引用相同的 28px 单行截断布局。系统提示词要求对相关多条注释逐条给出对应回应并原样附带 ID marker；回复 marker 前端以可点击的注释链接呈现。
+
+验收：受影响 Web TypeScript typecheck、ESLint、production build；受影响 Python Ruff／`py_compile`；`git diff --check` 与任务状态唯一性。定向 pytest 在 Testcontainers 创建数据库前因本机 Docker socket 不可用而阻断，未记为通过。未修改数据库、OpenHands、Runtime Provider、Docker 或远端环境。
 
 ### FR-335 Runtime generation Sandbox 引用完整性 — DONE
 
@@ -5176,6 +5187,7 @@ contract、冻结策略与既有受控生命周期约束覆盖。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-13 | FR-394 | Web TypeScript typecheck、定向 ESLint、production build；受影响 Python Ruff／`py_compile`；`git diff --check` 与任务状态唯一性 | PASS（静态／构建）：已发送的会话／文件注释直接从 OpenHands 消息元数据回显为可定位 chip；任何 Composer 内容都优先呈现并走发送操作，清空后才恢复暂停／继续；文件 chip 与会话引用同尺寸并省略超长文本。系统提示词要求按原 ID 分别回应相关注释，回复中的 marker 显示为可点击链接；未新增服务端 marker 校验或注释存储。定向 pytest 在 Testcontainers 创建数据库前因本机 Docker socket 不可用而阻断，未记为通过。未修改数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-13 | FR-393 | Web TypeScript typecheck、定向 ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS（静态／构建）：注释气泡为固定 flex 布局并高于“跳到最新”；文件引用卡片紧凑显示文件名和坐标，选区滚动至预览上三分之一后以连续蓝色短暂反馈；会话注释使用与原生消息同封套的紧凑文本偏移精准定位，历史会话引用也仅选中原文而不高亮整条消息。未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-13 | FR-392 | Web TypeScript typecheck、定向 ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS（静态／构建）：固定注释浮层不再滚动，超长引用截断；ESC／外部点击关闭与直接评论生效；文件定位逐级展开树并以持久精确 Range 高亮。未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-13 | FR-391 | Web TypeScript typecheck、定向 ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS（静态／构建）：文件注释卡片显示缩略文件名和精确起止行列；定位同一锚点时仍重新打开文件并保留 Range 高亮层。未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |

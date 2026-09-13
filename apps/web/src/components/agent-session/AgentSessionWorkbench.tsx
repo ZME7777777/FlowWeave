@@ -139,13 +139,13 @@ function ComposerAnnotationList({ annotations, onLocate, onRemove, onUpdate }: {
     <div className="agent-attachments agent-conversation-references">{annotations.map((annotation, index) => {
       const file = annotationFileDisplay(annotation);
       const referenceName = annotationReferenceName(annotation, index);
-      return <span key={annotation.id} className={file ? 'agent-file-annotation' : undefined}>
-        <button type="button" className={`agent-attachment-open${file ? ' agent-file-annotation-chip' : ''}`} title={file ? `${file.path} · ${file.range}` : '查看、定位或编辑评论'} aria-expanded={openedId === annotation.id} onClick={() => {
+      return <span key={annotation.id}>
+        <button type="button" className="agent-attachment-open" title={file ? `${file.path} · ${file.range}` : '查看、定位或编辑评论'} aria-expanded={openedId === annotation.id} onClick={() => {
           if (openedId === annotation.id) { closeOpened(); return; }
           setComment(annotation.comment);
           setEditingId(undefined);
           setOpenedId(annotation.id);
-        }}>{file ? <FileText size={18}/> : <Quote size={14}/>}<em>{file ? <><b title={file.path}>{file.filename}</b><small>{file.range}</small></> : referenceName}</em></button>
+        }}>{file ? <FileText size={14}/> : <Quote size={14}/>}<em>{file ? `${file.filename} · ${file.range}` : referenceName}</em></button>
         <button type="button" className="agent-attachment-remove" aria-label={`移除${referenceName}`} onClick={() => { setOpenedId(current => current === annotation.id ? undefined : current); setEditingId(current => current === annotation.id ? undefined : current); onRemove(annotation); }}>×</button>
       </span>;
     })}</div>
@@ -4542,16 +4542,19 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     : conversationDraft && !newConversationModelName ? '请选择模型' : condense.isPending ? '正在压缩上下文' : contextUsagePending ? '压缩已完成，等待下次模型调用更新用量' : persistModel.isPending ? '正在保存模型设置' : migrateStreaming.isPending || pendingMigratedSend ? '正在迁移历史会话' : pendingConfirmation ? '等待工具确认' : turnState === 'pausing' ? '正在暂停' : turnState === 'paused' ? '已暂停' : turnState === 'resuming' ? '正在继续' : turnState === 'running' ? '正在处理' : streamStatus === 'recovering' ? '连接恢复中' : undefined;
   const composerNote = queuedMessages.length > 0 ? `已排队 ${queuedMessages.length} 条` : '';
   const visibleError = operationError ?? confirmationQuery.error ?? eventsQuery.error;
-  const composerActionLabel = bootstrap.isPending ? '正在创建会话' : migrateStreaming.isPending || pendingMigratedSend ? '正在迁移历史会话' : pendingConfirmation ? '等待工具确认' : turnState === 'idle'
-    ? '发送消息'
-    : turnState === 'running'
-      ? '暂停当前 Agent'
-      : turnState === 'paused'
-        ? '继续当前 Agent'
-        : turnState === 'pausing' ? '正在暂停 Agent' : '正在继续 Agent';
   const composerHasContent = Boolean(
     draft.trim() || attachments.length || references.length || workspaceReferences.length || composerAnnotations.length,
   );
+  const composerActionSends = composerHasContent && !pendingConfirmation;
+  const composerActionLabel = bootstrap.isPending ? '正在创建会话' : migrateStreaming.isPending || pendingMigratedSend ? '正在迁移历史会话' : pendingConfirmation ? '等待工具确认' : composerActionSends
+    ? '发送消息'
+    : turnState === 'idle'
+      ? '发送消息'
+      : turnState === 'running'
+        ? '暂停当前 Agent'
+        : turnState === 'paused'
+          ? '继续当前 Agent'
+          : turnState === 'pausing' ? '正在暂停 Agent' : '正在继续 Agent';
   const composerActionDisabled = !(canWrite || canBootstrap)
     || Boolean(pendingConfirmation)
     || bootstrap.isPending
@@ -4562,7 +4565,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     || turnState === 'pausing'
     || turnState === 'resuming';
   const runComposerAction = () => {
-    if (turnState === 'idle') enqueueDraft();
+    if (composerActionSends || turnState === 'idle') enqueueDraft();
     else if (turnState === 'running') interrupt.mutate();
     else if (turnState === 'paused') resume.mutate();
   };
@@ -4714,7 +4717,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
           </div>
           <div className="agent-composer-actions">
             {features.modelSelection && (selected ? <ComposerModelMenu providers={connectedProviders} providerId={conversationProviderId} modelName={activeConversationModelName} models={availableConversationModels} efforts={supportedEfforts} effort={reasoningEffort ?? selected.reasoning_effort ?? contextQuery.data?.reasoning_effort ?? conversationModel?.default_reasoning_effort ?? ''} disabled={!canWrite || isGenerating || queuedMessages.length > 0 || Boolean(pendingConfirmation) || persistModel.isPending || migrateStreaming.isPending || Boolean(pendingMigratedSend)} onProviderChange={providerId => { const provider = connectedProviders.find(item => item.id === providerId); const model = provider?.models.find(item => item.enabled && item.is_default); if (!provider || !model) return; const effort = model.default_reasoning_effort ?? null; setConversationProviderId(providerId); setConversationModelName(model.model_name); setReasoningEffort(effort); persistModel.mutate({ providerId, modelName: model.model_name, effort }); }} onModelChange={modelName => { const model = availableConversationModels.find(item => item.model_name === modelName); const effort = model?.default_reasoning_effort ?? null; setConversationModelName(modelName); setReasoningEffort(effort); persistModel.mutate({ providerId: conversationProviderId, modelName, effort }); }} onEffortChange={effort => { const nextEffort = effort || null; setReasoningEffort(nextEffort); persistModel.mutate({ providerId: conversationProviderId, modelName: activeConversationModelName, effort: nextEffort }); }}/> : <ComposerModelMenu providers={connectedProviders} providerId={newConversationProviderId} modelName={newConversationModelName} models={availableDraftModels} efforts={supportedDraftEfforts} effort={newConversationReasoningEffort ?? draftConversationModel?.default_reasoning_effort ?? ''} disabled={!runtimeWritable || bootstrap.isPending} onProviderChange={providerId => { const provider = connectedProviders.find(item => item.id === providerId); const model = provider?.models.find(item => item.enabled && item.is_default); if (!provider || !model) return; setNewConversationProviderId(providerId); setNewConversationModelName(model.model_name); setNewConversationReasoningEffort(model.default_reasoning_effort ?? null); }} onModelChange={modelName => { const model = availableDraftModels.find(item => item.model_name === modelName); setNewConversationModelName(modelName); setNewConversationReasoningEffort(model?.default_reasoning_effort ?? null); }} onEffortChange={effort => setNewConversationReasoningEffort(effort || null)}/>) }
-            <button type="button" className={`agent-send${turnState === 'paused' || turnState === 'resuming' ? ' resume' : ''}`} aria-label={composerActionLabel} disabled={composerActionDisabled} onClick={runComposerAction}>{pendingConfirmation ? <ShieldAlert size={14}/> : turnState === 'idle' ? <Send size={16}/> : turnState === 'paused' || turnState === 'resuming' ? <Play size={12} fill="currentColor"/> : <Square size={10} fill="currentColor"/>}</button>
+            <button type="button" className={`agent-send${!composerActionSends && (turnState === 'paused' || turnState === 'resuming') ? ' resume' : ''}`} aria-label={composerActionLabel} disabled={composerActionDisabled} onClick={runComposerAction}>{pendingConfirmation ? <ShieldAlert size={14}/> : composerActionSends || turnState === 'idle' ? <Send size={16}/> : turnState === 'paused' || turnState === 'resuming' ? <Play size={12} fill="currentColor"/> : <Square size={10} fill="currentColor"/>}</button>
           </div>
         </footer>
         </div>
