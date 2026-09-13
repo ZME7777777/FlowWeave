@@ -33,6 +33,14 @@ export interface ConversationReference {
   content: string;
 }
 
+interface ConversationAnnotationReference extends ConversationReference {
+  /**
+   * Offset in the event's whitespace-free rendered text.  It disambiguates
+   * repeated quoted text without persisting any separate annotation record.
+   */
+  compactStart: number;
+}
+
 interface ActivityEntry {
   id: string;
   item: Item;
@@ -1136,7 +1144,7 @@ function AnnotationReplyContent({ content, annotations, onLocateAnnotation }: {
   </>;
 }
 
-function AgentReply({ event, content, changes = [], onFork, onPreviewCandidateFile, onReviewChanges, workspaceRoot, annotations = [], onLocateAnnotation, highlightReferenceSource = false }: {
+function AgentReply({ event, content, changes = [], onFork, onPreviewCandidateFile, onReviewChanges, workspaceRoot, annotations = [], onLocateAnnotation }: {
   event: OpenHandsConversationEvent;
   content: string;
   changes?: WorkspaceFileChange[];
@@ -1146,7 +1154,6 @@ function AgentReply({ event, content, changes = [], onFork, onPreviewCandidateFi
   workspaceRoot?: string | null;
   annotations?: AgentConversationAnnotation[];
   onLocateAnnotation?: (annotation: AgentConversationAnnotation) => void;
-  highlightReferenceSource?: boolean;
 }) {
   const eventId = event.id;
   const timestamp = formatMessageTime(event.payload.timestamp);
@@ -1157,7 +1164,7 @@ function AgentReply({ event, content, changes = [], onFork, onPreviewCandidateFi
   // layer separately verifies the native completion identity before
   // registering an Artifact.
   const candidateMessage = candidateOutputMessage(content);
-  return <article className={`conversation-message assistant${highlightReferenceSource ? ' conversation-reference-source-highlight' : ''}`} data-conversation-event-id={eventId} data-turn-terminal="true" data-event-id={eventId}>
+  return <article className="conversation-message assistant" data-conversation-event-id={eventId} data-turn-terminal="true" data-event-id={eventId}>
     {candidateMessage.businessConclusion ? <AnnotationReplyContent content={candidateMessage.businessConclusion} annotations={annotations} onLocateAnnotation={onLocateAnnotation}/> : !candidateMessage.outputs && content ? <AnnotationReplyContent content={content} annotations={annotations} onLocateAnnotation={onLocateAnnotation}/> : null}
     {candidateMessage.outputs && <CandidateOutputReply outputs={candidateMessage.outputs} onPreviewFile={onPreviewCandidateFile ? output => onPreviewCandidateFile(output.fieldKey, output.value) : undefined}/>}
     {!candidateMessage.businessConclusion && !candidateMessage.outputs && !content && <span className="conversation-typing"><i/><i/><i/></span>}
@@ -1172,7 +1179,7 @@ function AgentReply({ event, content, changes = [], onFork, onPreviewCandidateFi
   </article>;
 }
 
-function conversationReferenceForSelection(selection: Selection, surface: HTMLElement): ConversationReference | undefined {
+function conversationAnnotationForSelection(selection: Selection, surface: HTMLElement): ConversationAnnotationReference | undefined {
   if (!selection.rangeCount) return undefined;
   const content = selection.toString().trim();
   if (!content) return undefined;
@@ -1182,7 +1189,37 @@ function conversationReferenceForSelection(selection: Selection, surface: HTMLEl
   const message = start?.closest<HTMLElement>('[data-conversation-event-id]');
   if (!message || !end || !surface.contains(message) || !message.contains(range.startContainer) || !message.contains(range.endContainer)) return undefined;
   const eventId = message.dataset.conversationEventId;
-  return eventId ? { eventId, content } : undefined;
+  if (!eventId) return undefined;
+  // Keep this positional hint in the native user-message metadata alongside
+  // the quote. Unlike a DOM node or rendered element index it remains stable
+  // across syntax / Markdown spans, and the quote remains the compatibility
+  // fallback for messages created before the hint existed.
+  const before = document.createRange();
+  before.selectNodeContents(message);
+  before.setEnd(range.startContainer, range.startOffset);
+  return { eventId, content, compactStart: before.toString().replace(/\s+/g, '').length };
+}
+
+function conversationQuoteRange(root: HTMLElement, quote: string): Range | undefined {
+  const compactQuote = quote.replace(/\s+/g, '');
+  if (!compactQuote) return undefined;
+  const characters: Array<{ node: Text; offset: number; value: string }> = [];
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  for (let node = walker.nextNode() as Text | null; node; node = walker.nextNode() as Text | null) {
+    for (let offset = 0; offset < node.data.length; offset += 1) {
+      const value = node.data[offset];
+      if (!/\s/.test(value)) characters.push({ node, offset, value });
+    }
+  }
+  const startOffset = characters.map(character => character.value).join('').indexOf(compactQuote);
+  if (startOffset < 0) return undefined;
+  const start = characters[startOffset];
+  const end = characters[startOffset + compactQuote.length - 1];
+  if (!start || !end) return undefined;
+  const range = document.createRange();
+  range.setStart(start.node, start.offset);
+  range.setEnd(end.node, end.offset + 1);
+  return range;
 }
 
 interface FailurePresentation {
@@ -1329,7 +1366,7 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused: 
   onReviewChanges?: (changes: WorkspaceFileChange[]) => void;
   workspaceRoot?: string | null;
   annotations?: AgentConversationAnnotation[];
-  onCreateAnnotation?: (anchor: { event_id: string; quote: string }) => void;
+  onCreateAnnotation?: (anchor: { event_id: string; quote: string; compact_start: number }) => void;
   onLocateAnnotation?: (annotation: AgentConversationAnnotation) => void;
   taskControl?: RuntimeTaskControlSnapshot[];
   monitoring?: AgentActivitySummary;
@@ -1349,17 +1386,14 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused: 
   const automaticScrollFrame = useRef<number | undefined>(undefined);
   const wasGenerating = useRef(isGenerating);
   const copyResetTimer = useRef<number | undefined>(undefined);
-  const referenceHighlightStartTimer = useRef<number | undefined>(undefined);
-  const referenceHighlightTimer = useRef<number | undefined>(undefined);
   const [isAtLatest, setIsAtLatest] = useState(true);
   const [editingEventId, setEditingEventId] = useState<string>();
   const [editingContent, setEditingContent] = useState('');
   const [copiedEventId, setCopiedEventId] = useState<string>();
   const [messagePreview, setMessagePreview] = useState<{ id: string; content: string; index: number; top: number }>();
   const [condensationElapsed, setCondensationElapsed] = useState(0);
-  const [selectedReference, setSelectedReference] = useState<{ reference: ConversationReference; left: number; top: number }>();
+  const [selectedReference, setSelectedReference] = useState<{ reference: ConversationAnnotationReference; left: number; top: number }>();
   const [viewingReference, setViewingReference] = useState<AgentConversationReference>();
-  const [highlightedReferenceEventId, setHighlightedReferenceEventId] = useState<string>();
   // Pausing a tool makes OpenHands emit one synthetic AgentErrorEvent. Keep
   // the authoritative event for recovery and audit, but it is neither an
   // execution failure nor useful conversation content.
@@ -1502,8 +1536,6 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused: 
   }, [alignWithLatest]);
   useEffect(() => () => {
     if (copyResetTimer.current) window.clearTimeout(copyResetTimer.current);
-    if (referenceHighlightStartTimer.current) window.clearTimeout(referenceHighlightStartTimer.current);
-    if (referenceHighlightTimer.current) window.clearTimeout(referenceHighlightTimer.current);
   }, []);
   useEffect(() => {
     if (condensationStatus?.state !== 'running') return;
@@ -1543,7 +1575,7 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused: 
     if (!onCreateAnnotation || !surface.current) return;
     const selection = window.getSelection();
     if (!selection) return;
-    const reference = conversationReferenceForSelection(selection, surface.current);
+    const reference = conversationAnnotationForSelection(selection, surface.current);
     if (!reference) { setSelectedReference(undefined); return; }
     const pointerMessage = event.target instanceof Node
       ? elementForNode(event.target)?.closest<HTMLElement>('[data-conversation-event-id]')
@@ -1563,16 +1595,20 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused: 
       .find(item => item.dataset.conversationEventId === viewingReference.event_id);
     setViewingReference(undefined);
     if (!source) return;
-    source.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    setHighlightedReferenceEventId(undefined);
-    if (referenceHighlightStartTimer.current) window.clearTimeout(referenceHighlightStartTimer.current);
-    if (referenceHighlightTimer.current) window.clearTimeout(referenceHighlightTimer.current);
-    referenceHighlightStartTimer.current = window.setTimeout(() => {
-      setHighlightedReferenceEventId(viewingReference.event_id);
-      referenceHighlightTimer.current = window.setTimeout(() => {
-        setHighlightedReferenceEventId(current => current === viewingReference.event_id ? undefined : current);
-      }, 1_800);
-    }, 600);
+    const range = conversationQuoteRange(source, viewingReference.content);
+    const sourceRect = range?.getBoundingClientRect();
+    const surfaceRect = surface.current.getBoundingClientRect();
+    const top = (sourceRect?.top ?? source.getBoundingClientRect().top) - surfaceRect.top + surface.current.scrollTop - 28;
+    surface.current.scrollTo({ top: Math.max(0, top), behavior: 'auto' });
+    if (!range) return;
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    window.setTimeout(() => {
+      const current = window.getSelection();
+      if (current?.rangeCount && current.getRangeAt(0).compareBoundaryPoints(Range.START_TO_START, range) === 0
+        && current.getRangeAt(0).compareBoundaryPoints(Range.END_TO_END, range) === 0) current.removeAllRanges();
+    }, 3_800);
   }, [viewingReference]);
   const lastUserEventId = useMemo(() => [...turns].reverse().find(turn => turn.user)?.user?.event.id, [turns]);
   if (!turns.length && !liveText && !isGenerating && !condensationStatus) return <div className="conversation-surface-empty"><b>会话已就绪</b><span>发送第一条消息，开始与 Agent 协作。</span></div>;
@@ -1613,7 +1649,7 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused: 
         return <section className="conversation-turn" key={turn.id} data-conversation-turn={turn.id}>
           {turn.user && <div className="conversation-user-message">{editingEventId === turn.user.event.id
             ? <form className="conversation-message-edit" onSubmit={event => { event.preventDefault(); if (editingContent.trim()) onRewrite?.(turn.user!.event.id, editingContent.trim()); }}><textarea aria-label="编辑已发送消息" value={editingContent} disabled={rewritePending} onChange={event => setEditingContent(event.target.value)}/><footer><button type="button" onClick={() => setEditingEventId(undefined)}>取消</button><button type="submit" disabled={!editingContent.trim() || rewritePending}>重新思考</button></footer></form>
-            : <article data-user-event-id={turn.user.event.id} data-conversation-event-id={turn.user.event.id} className={`conversation-message user${highlightedReferenceEventId === turn.user.event.id ? ' conversation-reference-source-highlight' : ''}`}>{turn.user.content && <div className="conversation-message-content"><MessageMarkdown>{turn.user.content}</MessageMarkdown></div>}<MessageAttachments attachments={eventAttachments(turn.user.event)} references={turn.user.event.payload.conversation_references} workspaceReferences={turn.user.event.payload.workspace_references} onOpen={onOpenAttachment} onOpenReference={setViewingReference} onOpenWorkspaceReference={onOpenWorkspaceReference}/><footer className="conversation-message-meta user">{userTimestamp && <time dateTime={typeof turn.user.event.payload.timestamp === 'string' ? turn.user.event.payload.timestamp : undefined}>{userTimestamp}</time>}<div className="conversation-message-actions"><button type="button" className="conversation-message-copy" aria-label={copiedEventId === turn.user.event.id ? '消息已复制' : '复制消息'} title={copiedEventId === turn.user.event.id ? '已复制' : '复制消息'} onClick={() => copyUserMessage(turn.user!.event.id, turn.user!.content)}>{copiedEventId === turn.user.event.id ? <Check size={13}/> : <Copy size={13}/>}</button>{lastUserEventId === turn.user.event.id && <button type="button" className="conversation-message-rewrite" aria-label="编辑并重新思考" title="编辑并重新思考" onClick={() => { setEditingEventId(turn.user!.event.id); setEditingContent(turn.user!.content); }}><Pencil size={13}/></button>}</div></footer></article>}</div>}
+            : <article data-user-event-id={turn.user.event.id} data-conversation-event-id={turn.user.event.id} className="conversation-message user">{turn.user.content && <div className="conversation-message-content"><MessageMarkdown>{turn.user.content}</MessageMarkdown></div>}<MessageAttachments attachments={eventAttachments(turn.user.event)} references={turn.user.event.payload.conversation_references} workspaceReferences={turn.user.event.payload.workspace_references} onOpen={onOpenAttachment} onOpenReference={setViewingReference} onOpenWorkspaceReference={onOpenWorkspaceReference}/><footer className="conversation-message-meta user">{userTimestamp && <time dateTime={typeof turn.user.event.payload.timestamp === 'string' ? turn.user.event.payload.timestamp : undefined}>{userTimestamp}</time>}<div className="conversation-message-actions"><button type="button" className="conversation-message-copy" aria-label={copiedEventId === turn.user.event.id ? '消息已复制' : '复制消息'} title={copiedEventId === turn.user.event.id ? '已复制' : '复制消息'} onClick={() => copyUserMessage(turn.user!.event.id, turn.user!.content)}>{copiedEventId === turn.user.event.id ? <Check size={13}/> : <Copy size={13}/>}</button>{lastUserEventId === turn.user.event.id && <button type="button" className="conversation-message-rewrite" aria-label="编辑并重新思考" title="编辑并重新思考" onClick={() => { setEditingEventId(turn.user!.event.id); setEditingContent(turn.user!.content); }}><Pencil size={13}/></button>}</div></footer></article>}</div>}
           {processBlocks.map((block, blockIndex) => block.kind === 'condensation'
             ? <CondensationNotices key={block.id} items={block.items}/>
             : <ActivityGroup
@@ -1630,7 +1666,7 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused: 
             <CurrentTurnStatus items={turn.activity} liveText={liveText} requestSubmitting={requestSubmitting} monitoring={monitoring} connectionState={connectionState}/>
           )}
           {processBlocks.length > 0 && turn.assistant && <div className="conversation-process-divider" role="separator" aria-label="工作过程结束"/>}
-          {turn.assistant && <AgentReply event={turn.assistant.event} content={turn.assistant.content} changes={fileChanges} onFork={!isGenerating ? () => onFork?.(turn.assistant!.event.id) : undefined} onPreviewCandidateFile={onPreviewCandidateFile} onReviewChanges={onReviewChanges} workspaceRoot={workspaceRoot} annotations={annotations} onLocateAnnotation={onLocateAnnotation} highlightReferenceSource={highlightedReferenceEventId === turn.assistant.event.id}/>}
+          {turn.assistant && <AgentReply event={turn.assistant.event} content={turn.assistant.content} changes={fileChanges} onFork={!isGenerating ? () => onFork?.(turn.assistant!.event.id) : undefined} onPreviewCandidateFile={onPreviewCandidateFile} onReviewChanges={onReviewChanges} workspaceRoot={workspaceRoot} annotations={annotations} onLocateAnnotation={onLocateAnnotation}/>}
           {failures.map(item => <ConversationFailure key={item.event.id} item={item} taskControl={taskControl}/>)}
         </section>;
       })}
@@ -1652,7 +1688,7 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused: 
     </section>
     {viewingReference && <ConversationReferencePreview reference={viewingReference} onClose={() => setViewingReference(undefined)} onLocate={locateReferenceSource}/>}
     {selectedReference && <span className="conversation-add-reference" style={{ left: selectedReference.left, top: selectedReference.top }}>
-      <button type="button" onPointerDown={event => event.preventDefault()} onClick={() => { onCreateAnnotation?.({ event_id: selectedReference.reference.eventId, quote: selectedReference.reference.content }); window.getSelection()?.removeAllRanges(); setSelectedReference(undefined); }}><Quote size={14}/>添加到会话</button>
+      <button type="button" onPointerDown={event => event.preventDefault()} onClick={() => { onCreateAnnotation?.({ event_id: selectedReference.reference.eventId, quote: selectedReference.reference.content, compact_start: selectedReference.reference.compactStart }); window.getSelection()?.removeAllRanges(); setSelectedReference(undefined); }}><Quote size={14}/>添加到会话</button>
     </span>}
     {showJumpToLatest && <button
       type="button"

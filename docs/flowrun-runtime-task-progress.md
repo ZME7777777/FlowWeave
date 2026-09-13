@@ -152,6 +152,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-390 | Composer 非文本上下文发送 | DONE | 发送按钮与提交快捷键统一识别注释、图片/附件、会话引用和工作区路径为可发送内容。 |
 | FR-391 | 文件注释定位与坐标呈现 | DONE | 文件锚点以缩略文件名和起止行列呈现；定位会重新打开锚定文件并保留精确选区高亮。 |
 | FR-392 | 注释详情浮层与文件树导航完善 | DONE | 固定注释浮层并截断超长引用；支持外部／ESC 关闭和直接评论；文件定位逐层展开目录树。 |
+| FR-393 | 协作锚点定位与紧凑呈现修正 | DONE | 注释气泡不与 Composer 控件重叠且位于跳转按钮上层；文件锚点以原生选区样式短暂呈现并定位至预览上三分之一；会话锚点按选区偏移精确复原。 |
 
 ### FR-366 FlowWeave 专属 Docker 地址规划 — DONE
 
@@ -430,6 +431,16 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 目标：注释详情气泡必须使用固定尺寸且不出现滚动条；超长引用仅在固定预览区域截断。气泡要能由 ESC、关闭按钮或点击外部关闭。创建注释后评论应立即可输入；既有评论只需双击编辑，关闭时保留修改，不再要求额外编辑／保存按钮。文件定位必须展开锚定文件的全部父目录，并持续以清晰高亮显示区间。
 
 完成：详情气泡固定高度并隐藏溢出，文件／会话引文均限制为固定截断预览；评论输入区在新建锚点时自动打开，已有评论双击进入编辑，输入即时写入草稿，外部点击、ESC 和关闭按钮均会收起。文件锚点复用现有 source navigation 的逐级懒加载与目录展开路径，在树中选中叶文件；精确 Range 的常驻高亮增强为高对比度，重复定位时重新触发导航与预览高亮。
+
+验收：Web TypeScript typecheck、受影响 Web ESLint、production build、`git diff --check` 与任务状态唯一性。未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。
+
+### FR-393 协作锚点定位与紧凑呈现修正 — DONE
+
+依赖：`FR-392`。
+
+目标：Composer 注释详情不应让评论区与定位按钮重叠，且必须覆盖会话中的“跳到最新”控件。文件锚点的卡片应紧凑显示一行省略文件名和一行坐标；定位要把选区放在文件预览上三分之一，并以连续的浏览器选区样式短暂反馈。会话注释和历史会话引用均须定位至精确引文，而不是突出整条消息；同一消息有重复引文时，新建注释必须能回到原先选中的那一处。
+
+完成：Composer 浮层改为固定高度的 flex 布局，footer 不再绝对定位，并提升其宿主层级；文件卡片收紧为两行，第二行只保留起止坐标且文件名按可用宽度省略。文件 Range 的高亮矩形按视觉行合并，使用与文本选中一致的蓝色并在短暂展示后清理；定位采用即时滚动，把选区置于预览视口约上三分之一。新会话注释随同一 OpenHands 用户消息元数据保存 whitespace-free `compact_start`，定位时优先以该偏移加引文校验复原，旧元数据继续按引文兼容回退。历史会话引用同样改用精确 Range 选择并移除整条消息卡片高亮；未增加注释 CRUD、服务端校验或独立持久化。
 
 验收：Web TypeScript typecheck、受影响 Web ESLint、production build、`git diff --check` 与任务状态唯一性。未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。
 
@@ -5165,6 +5176,7 @@ contract、冻结策略与既有受控生命周期约束覆盖。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-13 | FR-393 | Web TypeScript typecheck、定向 ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS（静态／构建）：注释气泡为固定 flex 布局并高于“跳到最新”；文件引用卡片紧凑显示文件名和坐标，选区滚动至预览上三分之一后以连续蓝色短暂反馈；会话注释使用与原生消息同封套的紧凑文本偏移精准定位，历史会话引用也仅选中原文而不高亮整条消息。未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-13 | FR-392 | Web TypeScript typecheck、定向 ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS（静态／构建）：固定注释浮层不再滚动，超长引用截断；ESC／外部点击关闭与直接评论生效；文件定位逐级展开树并以持久精确 Range 高亮。未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-13 | FR-391 | Web TypeScript typecheck、定向 ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS（静态／构建）：文件注释卡片显示缩略文件名和精确起止行列；定位同一锚点时仍重新打开文件并保留 Range 高亮层。未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-13 | FR-386 | Python 编译、Ruff、注释封套往返断言、Web TypeScript typecheck／ESLint／生产构建、Alembic head 与 `git diff --check` | PASS（静态／直接断言）：注释只随原生用户消息持久化，历史回显可恢复锚点／评论／ID；首条消息草稿刷新后保留注释；无注释 CRUD、无模型回复校验或服务端关联。数据库 pytest 在 Testcontainers 建库前因本机 Docker socket 缺失阻断，未记为通过。 |

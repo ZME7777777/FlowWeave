@@ -65,6 +65,38 @@ function annotationReferenceName(annotation: AgentConversationAnnotation, index:
   return annotationFileDisplay(annotation)?.filename ?? `会话引用 ${index + 1}`;
 }
 
+function conversationQuoteRange(root: HTMLElement, quote: string, compactStart?: number): Range | undefined {
+  const compactQuote = quote.replace(/\s+/g, '');
+  if (!compactQuote) return undefined;
+  const characters: Array<{ node: Text; offset: number; value: string }> = [];
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  for (let node = walker.nextNode() as Text | null; node; node = walker.nextNode() as Text | null) {
+    for (let offset = 0; offset < node.data.length; offset += 1) {
+      const value = node.data[offset];
+      if (!/\s/.test(value)) characters.push({ node, offset, value });
+    }
+  }
+  const compactText = characters.map(character => character.value).join('');
+  // New annotations keep the selected compact-text offset in their OpenHands
+  // message metadata. Use it when it still matches, so a repeated sentence in
+  // one message cannot silently jump to its first occurrence. Older metadata
+  // did not include the offset and retains the quote-only fallback.
+  const requestedOffset = typeof compactStart === 'number' && Number.isInteger(compactStart) && compactStart >= 0
+    ? compactStart
+    : undefined;
+  const offset = requestedOffset !== undefined && compactText.slice(requestedOffset, requestedOffset + compactQuote.length) === compactQuote
+    ? requestedOffset
+    : compactText.indexOf(compactQuote);
+  if (offset < 0) return undefined;
+  const start = characters[offset];
+  const end = characters[offset + compactQuote.length - 1];
+  if (!start || !end) return undefined;
+  const range = document.createRange();
+  range.setStart(start.node, start.offset);
+  range.setEnd(end.node, end.offset + 1);
+  return range;
+}
+
 function ComposerAnnotationList({ annotations, onLocate, onRemove, onUpdate }: {
   annotations: AgentConversationAnnotation[];
   onLocate: (annotation: AgentConversationAnnotation) => void;
@@ -113,7 +145,7 @@ function ComposerAnnotationList({ annotations, onLocate, onRemove, onUpdate }: {
           setComment(annotation.comment);
           setEditingId(undefined);
           setOpenedId(annotation.id);
-        }}>{file ? <FileText size={18}/> : <Quote size={14}/>}<em>{file ? <><b title={file.path}>{file.filename}</b><small>{`${file.filename} · ${file.range}`}</small></> : referenceName}</em></button>
+        }}>{file ? <FileText size={18}/> : <Quote size={14}/>}<em>{file ? <><b title={file.path}>{file.filename}</b><small>{file.range}</small></> : referenceName}</em></button>
         <button type="button" className="agent-attachment-remove" aria-label={`移除${referenceName}`} onClick={() => { setOpenedId(current => current === annotation.id ? undefined : current); setEditingId(current => current === annotation.id ? undefined : current); onRemove(annotation); }}>×</button>
       </span>;
     })}</div>
@@ -1498,18 +1530,14 @@ function previewTextRange(root: HTMLElement, content: string, selection: FileSel
 function revealPreviewText(root: HTMLElement, scrollContainer: HTMLElement, content: string, selection: FileSelection): Range | undefined {
   const range = previewTextRange(root, content, selection);
   if (!range) return undefined;
-  // Keep an already open file at its current reading position whenever the
-  // destination is visible.  When it is outside the viewport, reveal it with
-  // the smallest smooth scroll instead of forcing every jump to one fixed
-  // offset in the file.
+  // File annotation navigation is an intentional jump, so keep the first
+  // selected line near the upper third of the viewport. This leaves enough
+  // following context to read the selected block without pinning it at the
+  // bottom edge of the file preview.
   const previewRect = scrollContainer.getBoundingClientRect();
   const rangeRect = Array.from(range.getClientRects()).at(0) ?? range.getBoundingClientRect();
   const rangeTop = scrollContainer.scrollTop + rangeRect.top - previewRect.top;
-  const rangeBottom = rangeTop + Math.max(rangeRect.height, 1);
-  const verticalPadding = Math.min(28, Math.max(12, scrollContainer.clientHeight * 0.08));
-  let top = scrollContainer.scrollTop;
-  if (rangeTop < scrollContainer.scrollTop + verticalPadding) top = Math.max(0, rangeTop - verticalPadding);
-  else if (rangeBottom > scrollContainer.scrollTop + scrollContainer.clientHeight - verticalPadding) top = Math.max(0, rangeBottom - scrollContainer.clientHeight + verticalPadding);
+  const top = Math.max(0, rangeTop - scrollContainer.clientHeight / 3);
   const rangeLeft = scrollContainer.scrollLeft + rangeRect.left - previewRect.left;
   const rangeRight = rangeLeft + Math.max(rangeRect.width, 1);
   const horizontalPadding = Math.min(28, Math.max(12, scrollContainer.clientWidth * 0.05));
@@ -1517,7 +1545,7 @@ function revealPreviewText(root: HTMLElement, scrollContainer: HTMLElement, cont
   if (rangeLeft < scrollContainer.scrollLeft + horizontalPadding) left = Math.max(0, rangeLeft - horizontalPadding);
   else if (rangeRight > scrollContainer.scrollLeft + scrollContainer.clientWidth - horizontalPadding) left = Math.max(0, rangeRight - scrollContainer.clientWidth + horizontalPadding);
   if (top !== scrollContainer.scrollTop || left !== scrollContainer.scrollLeft) {
-    scrollContainer.scrollTo({ top, left, behavior: 'smooth' });
+    scrollContainer.scrollTo({ top, left, behavior: 'auto' });
   }
   return range;
 }
@@ -1542,6 +1570,30 @@ function workspaceReferenceKey(reference: AgentWorkspaceReference): string {
 }
 
 interface WorkspaceSelectionRect { left: number; top: number; width: number; height: number; }
+
+function previewSelectionRects(range: Range, preview: HTMLElement): WorkspaceSelectionRect[] {
+  const previewRect = preview.getBoundingClientRect();
+  const rects = Array.from(range.getClientRects())
+    .filter(rect => rect.width > 0 && rect.height > 0)
+    .map(rect => ({
+      left: rect.left - previewRect.left + preview.scrollLeft,
+      top: rect.top - previewRect.top + preview.scrollTop,
+      width: rect.width,
+      height: rect.height,
+    }));
+  // Syntax highlighting splits one visual source line into many spans. Merge
+  // those fragments so programmatic navigation looks like one normal text
+  // selection rather than a collection of small green boxes.
+  return rects.reduce<WorkspaceSelectionRect[]>((merged, rect) => {
+    const previous = merged.at(-1);
+    if (previous && Math.abs(previous.top - rect.top) < 2 && Math.abs(previous.height - rect.height) < 2 && rect.left <= previous.left + previous.width + 3) {
+      previous.width = Math.max(previous.width, rect.left + rect.width - previous.left);
+    } else {
+      merged.push(rect);
+    }
+    return merged;
+  }, []);
+}
 
 function WorkspaceTextPreview({ path, content, highlight, highlightLine, onAnnotate }: { path: string; content: string; highlight?: FileSelection; highlightLine?: number; onAnnotate?: (selection: FileSelection, quote: string) => void }) {
   const previewRef = useRef<HTMLDivElement>(null);
@@ -1573,26 +1625,13 @@ function WorkspaceTextPreview({ path, content, highlight, highlightLine, onAnnot
       // Native selection paint can disappear when the action is rendered.
       // Keep an independent visual layer inside this scrolling preview so the
       // selected file content remains unambiguously visible.
-      highlights: rects.map(rect => ({
-        left: rect.left - previewRect.left + preview.scrollLeft,
-        top: rect.top - previewRect.top + preview.scrollTop,
-        width: rect.width,
-        height: rect.height,
-      })),
+      highlights: previewSelectionRects(range, preview),
     });
   }, []);
   const highlightRange = useCallback((range: Range) => {
     const preview = previewRef.current;
     if (!preview) return;
-    const previewRect = preview.getBoundingClientRect();
-    setPinnedSelectionHighlights(Array.from(range.getClientRects())
-      .filter(rect => rect.width > 0 && rect.height > 0)
-      .map(rect => ({
-        left: rect.left - previewRect.left + preview.scrollLeft,
-        top: rect.top - previewRect.top + preview.scrollTop,
-        width: rect.width,
-        height: rect.height,
-      })));
+    setPinnedSelectionHighlights(previewSelectionRects(range, preview));
   }, []);
   useEffect(() => {
     const line = highlightLine && highlightLine > 0
@@ -1619,7 +1658,8 @@ function WorkspaceTextPreview({ path, content, highlight, highlightLine, onAnnot
       window.getSelection()?.removeAllRanges();
       preview.classList.remove('workspace-selection-flash');
       setLineHighlight(current => current === line ? undefined : current);
-    }, 1_600);
+      setPinnedSelectionHighlights(undefined);
+    }, highlight ? 3_800 : 1_600);
     preview.classList.add('workspace-selection-flash');
     return () => window.clearTimeout(timer);
   }, [content, highlight, highlightLine, highlightRange, markdownPreview]);
@@ -3294,58 +3334,20 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       const surface = target?.closest<HTMLElement>('.conversation-surface');
       if (!target || !surface) return;
       const quote = typeof annotation.anchor.quote === 'string' ? annotation.anchor.quote.trim() : '';
-      const textNodes: Text[] = [];
-      const walker = document.createTreeWalker(target, NodeFilter.SHOW_TEXT);
-      let renderedText = '';
-      for (let node = walker.nextNode() as Text | null; node; node = walker.nextNode() as Text | null) {
-        textNodes.push(node);
-        renderedText += node.data;
-      }
-      const quoteOffset = quote ? renderedText.indexOf(quote) : -1;
-      let range: Range | undefined;
-      if (quoteOffset >= 0) {
-        const quoteEnd = quoteOffset + quote.length;
-        let consumed = 0;
-        let startNode: Text | undefined;
-        let startOffset = 0;
-        let endNode: Text | undefined;
-        let endOffset = 0;
-        for (const node of textNodes) {
-          const next = consumed + node.data.length;
-          if (!startNode && quoteOffset >= consumed && quoteOffset <= next) {
-            startNode = node;
-            startOffset = quoteOffset - consumed;
-          }
-          if (quoteEnd >= consumed && quoteEnd <= next) {
-            endNode = node;
-            endOffset = quoteEnd - consumed;
-            break;
-          }
-          consumed = next;
-        }
-        if (startNode && endNode) {
-          range = document.createRange();
-          range.setStart(startNode, startOffset);
-          range.setEnd(endNode, endOffset);
-        }
-      }
+      const compactStart = typeof annotation.anchor.compact_start === 'number' ? annotation.anchor.compact_start : undefined;
+      const range = conversationQuoteRange(target, quote, compactStart);
       const sourceRect = range?.getBoundingClientRect();
       const targetRect = target.getBoundingClientRect();
       const top = (sourceRect?.top ?? targetRect.top) - surface.getBoundingClientRect().top + surface.scrollTop - 28;
-      surface.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
+      surface.scrollTo({ top: Math.max(0, top), behavior: 'auto' });
       if (range) {
         const selection = window.getSelection();
         selection?.removeAllRanges();
         selection?.addRange(range);
         window.setTimeout(() => {
           if (window.getSelection()?.toString() === quote) window.getSelection()?.removeAllRanges();
-        }, 1_800);
+        }, 3_800);
       }
-      target.classList.remove('conversation-reference-source-highlight');
-      window.requestAnimationFrame(() => {
-        target.classList.add('conversation-reference-source-highlight');
-        window.setTimeout(() => target.classList.remove('conversation-reference-source-highlight'), 1_800);
-      });
       return;
     }
     const file = annotationFileSelection(annotation);
