@@ -1185,7 +1185,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.getByText('耗时 2分钟19秒')).toBeVisible();
   await expect(page.getByText('TerminalAction')).toBeHidden();
   await expect(page.getByRole('button', { name: '查看执行详情：已运行 pwd' })).toBeVisible();
-  await expect(page.locator('.conversation-activity-row.thought').filter({ hasText: '我先确认当前工作目录，再根据现有结构判断后续改动范围。' })).toHaveCount(1);
+  await expect(page.locator('.conversation-activity-row.thought.native-think').filter({ hasText: '我先确认当前工作目录，再根据现有结构判断后续改动范围。' })).toHaveCount(1);
   await expect(page.getByText('ThinkAction', { exact: true })).toHaveCount(0);
   await expect(page.getByText('Your thought has been logged.', { exact: true })).toHaveCount(0);
   await expect(page.getByText('我先检查当前工作目录。')).toBeVisible();

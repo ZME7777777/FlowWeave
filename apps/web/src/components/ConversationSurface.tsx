@@ -1064,7 +1064,8 @@ function ActivityEntryRow({ entry, active, avatarSlots, workspaceRoot }: {
   const taskAvatar = avatarSlot && <SubagentAvatar slot={avatarSlot} status={taskAvatarStatus(entry, item)} size={14}/>;
   const presentation = activityPresentation(entry, active, workspaceRoot);
   const toolDetail = item.kind === 'tool' ? <ToolDetailPanel presentation={presentation} eventName={eventName} results={entry.results} workspaceRoot={workspaceRoot}/> : null;
-  if (item.kind === 'thought') return <article className="conversation-activity-row thought">
+  const isNativeThink = item.event.event_type === 'THOUGHT' && eventName === 'ThinkAction';
+  if (item.kind === 'thought') return <article className={`conversation-activity-row thought${isNativeThink ? ' native-think' : ''}`}>
     <MessageMarkdown>{presentation.thought ?? item.content}</MessageMarkdown>
   </article>;
   if (eventName === 'TaskTrackerAction' || eventName === 'TaskTrackerObservation') return <div className="conversation-tool-entry semantic">
