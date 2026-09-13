@@ -7,9 +7,15 @@ from typing import Any
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
+from flowweave.modules.sandboxes.application.runtime_allocation import (
+    openhands_flow_run_record_path,
+)
 from flowweave.modules.sandboxes.application.runtime_owner import runtime_owner_flow_run_id
 from flowweave.modules.sandboxes.application.runtime_replacement import (
     enqueue_flow_run_runtime_replacement,
+)
+from flowweave.modules.sandboxes.application.runtime_sessions import (
+    active_flow_run_runtime_connection,
 )
 from flowweave.modules.sandboxes.infrastructure.docker import (
     DockerResourceUsage,
@@ -211,6 +217,23 @@ def runtime_resource_summary(db: Session, flow_run_id: str) -> dict[str, Any]:
         "flow_run_id": flow_run_id,
         "resource": _active_resource_summary(resource, generation, usage),
     }
+
+
+def flow_run_terminal_details(db: Session, flow_run_id: str) -> tuple[str, str, str]:
+    """Resolve FlowRun's single terminal without depending on a Conversation.
+
+    The active Runtime generation is the only physical container a FlowRun
+    terminal may use.  Its server-owned record directory remains the terminal
+    start path, so the browser cannot select a container or broaden its
+    workspace scope.
+    """
+
+    connection = active_flow_run_runtime_connection(db, flow_run_id=flow_run_id)
+    return (
+        connection.resource_name,
+        connection.managed_runtime_id,
+        str(openhands_flow_run_record_path(connection.flow_run_id)),
+    )
 
 
 def runtime_readiness_by_flow_run(
@@ -541,6 +564,7 @@ __all__ = (
     "request_runtime_pause",
     "request_runtime_replacement",
     "request_runtime_resume",
+    "flow_run_terminal_details",
     "runtime_overview",
     "runtime_resource_summary",
     "runtime_readiness_by_flow_run",

@@ -22,6 +22,7 @@ from flowweave.modules.sandboxes.application.runtime_allocation import (
     runtime_allocation_for_node_attempt,
 )
 from flowweave.modules.sandboxes.application.runtime_operations import (
+    flow_run_terminal_details,
     request_runtime_pause,
     request_runtime_replacement,
     request_runtime_resume,
@@ -98,6 +99,7 @@ __all__ = (
     "enqueue_flow_run_runtime_replacement",
     "flow_run_capability_path",
     "flow_run_record_id",
+    "flow_run_terminal_details",
     "node_attempt_capability_path",
     "flow_run_workspace_nodes_path",
     "flow_run_workspace_project_path",

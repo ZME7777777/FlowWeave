@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, Header, Query, WebSocket, WebSocketDisco
 from flowweave.bootstrap.container import Container
 from flowweave.modules.conversations import public as conversations
 from flowweave.modules.environments import public as environments
+from flowweave.modules.sandboxes import public as sandboxes
 from flowweave.runtime.dependencies import runtime_context
 from flowweave.runtime.routing import runtime_for
 from flowweave.shared.errors import DomainError
@@ -281,6 +282,81 @@ async def conversation_terminal(
                     await asyncio.to_thread(
                         active_terminal.write, str(value.get("data", "")).encode()
                     )
+        except WebSocketDisconnect:
+            pass
+        finally:
+            output.cancel()
+            await asyncio.gather(output, return_exceptions=True)
+    finally:
+        if terminal is not None:
+            await asyncio.to_thread(terminal.close)
+        reset_settings(settings_token)
+
+
+@router.websocket("/flow-runs/{flow_run_id}/terminal")
+async def flow_run_terminal(
+    websocket: WebSocket,
+    flow_run_id: str,
+    container: ContainerDep,
+) -> None:
+    """Attach the FlowRun-owned terminal to its active Runtime container."""
+
+    settings_token = bind_settings(container.settings)
+    terminal: environments.ManagedTerminal | None = None
+    try:
+        try:
+            rows = max(2, min(int(websocket.query_params.get("rows", "24")), 200))
+            columns = max(20, min(int(websocket.query_params.get("columns", "80")), 400))
+        except ValueError:
+            rows, columns = 24, 80
+        async with container.database.session() as db:
+            try:
+                resource_name, runtime_id, working_directory = await db.run_sync(
+                    lambda session: sandboxes.flow_run_terminal_details(session, flow_run_id)
+                )
+            except DomainError as exc:
+                await websocket.close(code=4409, reason=exc.message)
+                return
+        terminal = await asyncio.to_thread(
+            environments.open_managed_terminal,
+            resource_name,
+            resource_id=runtime_id,
+            session_name=f"flowweave-run-{flow_run_id}",
+            working_dir=working_directory,
+            rows=rows,
+            columns=columns,
+        )
+        await websocket.accept()
+
+        async def forward_output() -> None:
+            while True:
+                chunk, eof = await asyncio.to_thread(terminal.read)
+                if chunk:
+                    await websocket.send_bytes(chunk)
+                if eof:
+                    return
+
+        output = asyncio.create_task(forward_output())
+        try:
+            while True:
+                message = await websocket.receive()
+                if message.get("type") == "websocket.disconnect":
+                    break
+                text = message.get("text")
+                if not isinstance(text, str):
+                    continue
+                try:
+                    value = json.loads(text)
+                except json.JSONDecodeError:
+                    value = {"type": "input", "data": text}
+                if value.get("type") == "resize":
+                    await asyncio.to_thread(
+                        terminal.resize,
+                        max(2, min(int(value.get("rows", 24)), 200)),
+                        max(20, min(int(value.get("columns", 80)), 400)),
+                    )
+                elif value.get("type") == "input":
+                    await asyncio.to_thread(terminal.write, str(value.get("data", "")).encode())
         except WebSocketDisconnect:
             pass
         finally:

@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`IN PROGRESS`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`NONE（等待 FR-403 部署验收）`
+> 下一可执行切片：`NONE（等待 FR-403、FR-404 部署验收）`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -415,6 +415,22 @@ Attempt-private Runtime 兼容，不成为新共享路径。
 `test_sandbox_controller.py`、`test_runtime_wakeup.py` 需要 Testcontainers PostgreSQL，但本机 Docker
 socket 不存在，fixture 在断言前失败，未记为通过。无迁移、无 OpenHands 源码修改、无本地 Docker
 Runtime 创建或远端操作；下一步为从该提交执行受控平台部署与生产验收。
+
+### FR-404 FlowRun 列表独立终端入口 — DONE
+
+依赖：`FR-403`。
+
+目标：保留既有会话／Attempt 范围终端不变，并在 FlowRun 列表提供独立终端入口。用户无需先创建节点或
+Conversation，即可连接该 FlowRun 唯一 active Runtime 容器进行运行环境配置；浏览器不得接收物理
+endpoint 或调用方可控的容器／路径参数。独立子窗口标题必须使用 FlowRun 名称。
+
+完成：移除运行列表中与整行点击重复的进入箭头，新增仅在 Runtime 就绪时可用的终端按钮。新窗口复用
+现有 xterm 终端和 FlowWeave 授权代理，标题为 `FlowRun · <运行名称>`；新增 FlowRun 范围 WebSocket
+仅由服务端解析 active generation、受管 Runtime ID 与规范 `project/<record-id>` 起始目录。会话内终端
+继续使用原有 Conversation／Attempt 路由和子窗口语义，未被泛化或替换。
+
+验收：Web TypeScript typecheck、Web ESLint、受影响 Python `py_compile`、Ruff check、`git diff --check`
+与任务状态唯一性通过；未修改数据库、OpenHands、Docker 或远端环境。
 
 ### FR-398 长会话 Markdown 完整渲染 — DONE
 
@@ -5288,6 +5304,7 @@ contract、冻结策略与既有受控生命周期约束覆盖。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-13 | FR-404 | Web TypeScript typecheck、Web ESLint；受影响 Python `py_compile`／Ruff check；`git diff --check` 与任务状态唯一性 | PASS（静态）：FlowRun 列表不再显示重复的进入箭头，Runtime 就绪行可打开以 FlowRun 名称命名的独立终端子窗口；服务端只从 FlowRun 解析 active generation 和规范记录目录，浏览器不持有物理 endpoint。既有会话／Attempt 终端不变。未修改数据库、OpenHands、Docker 或远端环境。 |
 | 2026-09-13 | FR-394 | Web TypeScript typecheck、定向 ESLint、production build；受影响 Python Ruff／`py_compile`；`git diff --check` 与任务状态唯一性 | PASS（静态／构建）：已发送的会话／文件注释直接从 OpenHands 消息元数据回显为可定位 chip；任何 Composer 内容都优先呈现并走发送操作，清空后才恢复暂停／继续；文件 chip 与会话引用同尺寸并省略超长文本。系统提示词要求按原 ID 分别回应相关注释，回复中的 marker 显示为可点击链接；未新增服务端 marker 校验或注释存储。定向 pytest 在 Testcontainers 创建数据库前因本机 Docker socket 不可用而阻断，未记为通过。未修改数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-13 | FR-393 | Web TypeScript typecheck、定向 ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS（静态／构建）：注释气泡为固定 flex 布局并高于“跳到最新”；文件引用卡片紧凑显示文件名和坐标，选区滚动至预览上三分之一后以连续蓝色短暂反馈；会话注释使用与原生消息同封套的紧凑文本偏移精准定位，历史会话引用也仅选中原文而不高亮整条消息。未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-13 | FR-392 | Web TypeScript typecheck、定向 ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS（静态／构建）：固定注释浮层不再滚动，超长引用截断；ESC／外部点击关闭与直接评论生效；文件定位逐级展开树并以持久精确 Range 高亮。未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |

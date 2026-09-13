@@ -598,6 +598,14 @@ export function agentTerminalUrl(runId: string, conversationId: string, rows = 2
   return url.toString();
 }
 
+export function flowRunTerminalUrl(runId: string, rows = 24, columns = 80): string {
+  const url = absoluteApiUrl(`/flow-runs/${encodeURIComponent(runId)}/terminal`);
+  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+  url.searchParams.set('rows', String(rows));
+  url.searchParams.set('columns', String(columns));
+  return url.toString();
+}
+
 export interface AgentStreamEvent {
   type: 'delta' | 'event' | 'message_complete' | 'stream_reset' | 'stream_closed' | 'durable_cursor';
   content?: string;

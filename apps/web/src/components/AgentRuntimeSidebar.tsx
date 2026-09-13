@@ -3,7 +3,7 @@ import { Terminal as XTerm } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
 import { ExternalLink, Info, Maximize2, Minimize2, PanelRightClose, PanelRightOpen, Radar, Terminal, X } from 'lucide-react';
 import { ReactNode, useEffect, useRef, useState } from 'react';
-import { agentTerminalUrl } from '../api/client';
+import { agentTerminalUrl, flowRunTerminalUrl } from '../api/client';
 import type { FlowRunConversation, FlowRunRuntimeOverview } from '../types';
 import './AgentRuntimeSidebar.css';
 
@@ -17,7 +17,7 @@ interface Props {
   onCollapsedChange: (collapsed: boolean) => void;
 }
 
-interface RuntimeTerminalProps { runId: string; conversationId: string; standalone?: boolean }
+interface RuntimeTerminalProps { runId: string; conversationId?: string; standalone?: boolean }
 
 export function RuntimeTerminal({ runId, conversationId, standalone = false }: RuntimeTerminalProps) {
   const host = useRef<HTMLDivElement>(null);
@@ -55,7 +55,9 @@ export function RuntimeTerminal({ runId, conversationId, standalone = false }: R
       if (disposed) return;
       setState('connecting');
       setDetail(attempts ? '连接中断，正在重新解析 active generation…' : '正在通过 FlowWeave 授权代理连接 Runtime…');
-      const current = new WebSocket(agentTerminalUrl(runId, conversationId, terminal.rows, terminal.cols));
+      const current = new WebSocket(conversationId
+        ? agentTerminalUrl(runId, conversationId, terminal.rows, terminal.cols)
+        : flowRunTerminalUrl(runId, terminal.rows, terminal.cols));
       socket = current;
       current.binaryType = 'arraybuffer';
       current.onopen = () => { attempts = 0; setState('connected'); setDetail('已连接 active generation'); resize(); terminal.focus(); };
@@ -103,8 +105,10 @@ function openStandaloneTerminal(runId: string, conversationId: string) {
   window.open(url, `flowweave-terminal-${conversationId}`, 'popup=yes,width=1280,height=820');
 }
 
-export function StandaloneAgentTerminal({ runId, conversationId }: { runId: string; conversationId: string }) {
-  return <main className="standalone-terminal-page"><header><div><span className="eyebrow">FLOWRUN RUNTIME TERMINAL</span><h1>Agent 运行终端</h1></div><div><span>连接始终经 FlowWeave 重新解析 active generation</span><button type="button" onClick={() => window.close()}><X size={16}/>关闭窗口</button></div></header><RuntimeTerminal runId={runId} conversationId={conversationId} standalone/></main>;
+export function StandaloneAgentTerminal({ runId, runName, conversationId }: { runId: string; runName?: string | null; conversationId?: string | null }) {
+  const title = conversationId ? 'Agent 运行终端' : `FlowRun · ${runName || '运行终端'}`;
+  useEffect(() => { document.title = title; }, [title]);
+  return <main className="standalone-terminal-page"><header><div><span className="eyebrow">FLOWRUN RUNTIME TERMINAL</span><h1>{title}</h1></div><div><span>连接始终经 FlowWeave 重新解析 active generation</span><button type="button" onClick={() => window.close()}><X size={16}/>关闭窗口</button></div></header><RuntimeTerminal runId={runId} conversationId={conversationId ?? undefined} standalone/></main>;
 }
 
 export function AgentRuntimeSidebar({ runId, conversation, runtime, children, governance, collapsed, onCollapsedChange }: Props) {

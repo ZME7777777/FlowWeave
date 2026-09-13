@@ -163,13 +163,14 @@ export function App() {
   };
   const terminalParams = new URLSearchParams(window.location.search);
   const terminalRunId = terminalParams.get('terminalRun');
+  const terminalRunName = terminalParams.get('terminalName');
   const terminalConversationId = terminalParams.get('terminalConversation');
   if (user === undefined) return <div className="auth-loading"><Hexagon size={30} fill="currentColor"/><span>正在验证登录状态…</span></div>;
   if (user === null) return <LoginScreen onLogin={replaceIdentity}/>;
   const logout = async () => {
     try { await api.logout(); } finally { await replaceIdentity(null); }
   };
-  if (terminalRunId && terminalConversationId) return <Suspense fallback={<PageLoading/>}><StandaloneAgentTerminal runId={terminalRunId} conversationId={terminalConversationId}/></Suspense>;
+  if (terminalRunId) return <Suspense fallback={<PageLoading/>}><StandaloneAgentTerminal runId={terminalRunId} runName={terminalRunName} conversationId={terminalConversationId}/></Suspense>;
   const renderedView = view === 'agent-workbench' ? 'nodes' : view;
   const activeSettingsItem = !isAgentRoute ? settingsNav.find(item => item.view === renderedView) : undefined;
   const settingsActive = Boolean(activeSettingsItem);
