@@ -392,7 +392,14 @@ def build_runtime_request(
         else None
     )
     workspace_root = (
-        str(workspace_context.runtime_mount_root)
+        # New Attempts share the FlowRun's physical project mount, but their
+        # OpenHands workspace root remains the canonical record directory
+        # below it.  Do not make the shared mount itself an Attempt workspace.
+        str(
+            workspace_context.runtime_mount_root
+            if workspace_context.attempt_owned
+            else workspace_context.runtime_working_directory
+        )
         if workspace_context is not None
         else "/runtime/workspace/project"
     )

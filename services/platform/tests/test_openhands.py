@@ -257,13 +257,14 @@ def test_shared_flow_run_runtime_uses_attempt_record_workspace(
     allocation_calls: list[str] = []
     workspace_calls: list[tuple[str, str]] = []
     materialization_calls: list[str] = []
+    record_root = "/runtime/workspace/project/10000000-0000-4000-8000-000000000001"
     workspace = SimpleNamespace(
         attempt_owned=False,
         host_working_directory=Path(
-            "/managed/.flow-run-runtimes/scope/run/workspace/project/record"
+            "/managed/.flow-run-runtimes/scope/run/workspace/project/10000000-0000-4000-8000-000000000001"
         ),
         runtime_mount_root="/runtime/workspace/project",
-        runtime_working_directory="/runtime/workspace/project/record",
+        runtime_working_directory=record_root,
     )
     monkeypatch.setattr(
         "flowweave.runtime.request.node_attempt_workspace_context",
@@ -314,8 +315,8 @@ def test_shared_flow_run_runtime_uses_attempt_record_workspace(
     assert workspace_calls == [("nested-flow-run", "attempt-1")]
     assert allocation_calls == ["parent-flow-run"]
     assert materialization_calls == ["parent-flow-run", "parent-flow-run"]
-    assert request.workspace_root == "/runtime/workspace/project"
-    assert request.runtime_working_directory == "/runtime/workspace/project/record"
+    assert request.workspace_root == record_root
+    assert request.runtime_working_directory == record_root
     assert request.runtime_workspace_relative == ""
     assert request.runtime_working_dir_relative == ""
 
@@ -598,6 +599,7 @@ def test_openhands_reload_rejects_workspace_outside_flow_run_roots(openhands_set
             "/runtime/workspace/project/users/6311561c-06e4-41ad-8afe-aac35cfa83ec",
             True,
         ),
+        ("/runtime/workspace/project/10000000-0000-4000-8000-000000000001", True),
         ("/runtime/workspace/project", False),
         ("/runtime/workspace/nodes", False),
     ],
@@ -1912,13 +1914,18 @@ def test_openhands_active_batch_reuses_one_native_state_for_context_and_readines
     monkeypatch.setattr(
         runtime,
         "_active_event_window",
-        lambda *_args, **_kwargs: ([{
-            "kind": "MessageEvent",
-            "id": "user-event",
-            "parent_id": "__root__",
-            "source": "user",
-            "llm_message": {"role": "user", "content": "hello"},
-        }], None),
+        lambda *_args, **_kwargs: (
+            [
+                {
+                    "kind": "MessageEvent",
+                    "id": "user-event",
+                    "parent_id": "__root__",
+                    "source": "user",
+                    "llm_message": {"role": "user", "content": "hello"},
+                }
+            ],
+            None,
+        ),
     )
 
     batch = runtime.read_active_events(_handle())
@@ -1953,20 +1960,30 @@ def test_openhands_complete_hydration_reuses_first_state_for_older_pages(
 
     def active_window(_conversation_id, _leaf_event_id, history_cursor, **_kwargs):
         if history_cursor == "older":
-            return ([{
-                "kind": "MessageEvent",
-                "id": "old-user",
-                "parent_id": "__root__",
-                "source": "user",
-                "llm_message": {"role": "user", "content": "old"},
-            }], None)
-        return ([{
-            "kind": "ActionEvent",
-            "id": "latest",
-            "parent_id": "old-user",
-            "source": "agent",
-            "action": {"kind": "ThinkAction"},
-        }], "older")
+            return (
+                [
+                    {
+                        "kind": "MessageEvent",
+                        "id": "old-user",
+                        "parent_id": "__root__",
+                        "source": "user",
+                        "llm_message": {"role": "user", "content": "old"},
+                    }
+                ],
+                None,
+            )
+        return (
+            [
+                {
+                    "kind": "ActionEvent",
+                    "id": "latest",
+                    "parent_id": "old-user",
+                    "source": "agent",
+                    "action": {"kind": "ThinkAction"},
+                }
+            ],
+            "older",
+        )
 
     monkeypatch.setattr(runtime, "_conversation_state", state)
     monkeypatch.setattr(runtime, "_active_event_window", active_window)

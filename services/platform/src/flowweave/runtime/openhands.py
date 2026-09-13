@@ -1150,6 +1150,9 @@ class OpenHandsRuntime:
         if len(relative.parts) == 1:
             identity = relative.parts[0]
             identity_kind = "record"
+        elif relative.parts[:1] == ("project",) and len(relative.parts) == 2:
+            identity = relative.parts[1]
+            identity_kind = "record"
         elif relative.parts[:2] == ("project", "users") and len(relative.parts) == 3:
             identity = relative.parts[2]
             identity_kind = "user"

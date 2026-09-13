@@ -2,6 +2,7 @@ import base64
 from datetime import timedelta
 from uuid import UUID
 
+import pytest
 from sqlalchemy import delete, select
 
 from flowweave.modules.orchestration.application import service as orchestration_service
@@ -1397,8 +1398,15 @@ def test_automatic_runtime_delivery_failure_cannot_be_retried_as_a_gate(
     assert retried.json()["error"]["details"]["error_code"] == ("AUTOMATIC_RUNTIME_DELIVERY_FAILED")
 
 
-def test_automatic_runtime_owner_compatibility_failure_retries_runtime_start(
-    worker_client, worker_container, db_session_factory
+@pytest.mark.parametrize(
+    "runtime_error",
+    [
+        "RUNTIME_ALLOCATION_OWNER_INVALID: The Runtime Attempt does not belong to this FlowRun",
+        "RUNTIME_WORKSPACE_INVALID: The Runtime record workspace identity is invalid",
+    ],
+)
+def test_automatic_runtime_compatibility_failure_retries_runtime_start(
+    runtime_error, worker_client, worker_container, db_session_factory
 ):
     _worker, run_id, attempt_id = _started_automatic_attempt(worker_client, worker_container)
     with db_session_factory() as db:
@@ -1411,7 +1419,7 @@ def test_automatic_runtime_owner_compatibility_failure_retries_runtime_start(
             attempt_id,
             "START_RUNTIME",
             {},
-            "RUNTIME_ALLOCATION_OWNER_INVALID: The Runtime Attempt does not belong to this FlowRun",
+            runtime_error,
         )
         db.commit()
 
@@ -1438,7 +1446,7 @@ def test_automatic_runtime_owner_compatibility_failure_retries_runtime_start(
                 BackgroundTask.aggregate_id == attempt_id,
                 BackgroundTask.task_type == "START_RUNTIME",
                 BackgroundTask.idempotency_key
-                == f"retry-runtime-owner-compatibility:{attempt_id}:v{retried_version}",
+                == f"retry-runtime-start-compatibility:{attempt_id}:v{retried_version}",
             )
         )
         assert run is not None and run.state == "ACTIVE"

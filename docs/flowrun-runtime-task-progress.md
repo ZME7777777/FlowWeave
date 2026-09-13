@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`IN PROGRESS`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`NONE（等待 FR-397 部署验收）`
+> 下一可执行切片：`NONE（等待 FR-399 部署验收）`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -158,6 +158,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-396 | 嵌套连续记录的共享 Runtime 与 Attempt 归属分离 | DONE | Runtime request builder 保留子记录的逻辑 FlowRun ID 用于 Attempt／工作区校验，仅以父 FlowRun ID 解析共享 allocation 与能力物化，避免导入记录启动门禁误报 owner invalid。 |
 | FR-397 | 历史 Runtime owner 阻塞无法在修复后恢复 | DONE | 仅对明确记录旧 `RUNTIME_ALLOCATION_OWNER_INVALID` 的自动启动 Runtime 投递失败，以 CAS 重新投递同一 Attempt 的启动任务；继续复用 FlowRun Runtime。 |
 | FR-398 | 长会话消息被手动展开按钮截断 | DONE | 删除长 Markdown 的预览阈值与“渲染完整消息”按钮；已完成回复／历史会话直接完整渲染，运行中继续由现有 native delta 流逐步追加并遵守阅读锁。 |
+| FR-399 | 共享 FlowRun 项目根被 Runtime 误判为非法工作区 | DONE | 将共享物理 `project` mount 下的规范记录目录作为 OpenHands 逻辑根，并将明确的历史工作区身份失败纳入同一启动恢复。 |
 
 ### FR-366 FlowWeave 专属 Docker 地址规划 — DONE
 
@@ -348,6 +349,16 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 完成：`retry-gates` 现在仅对上述明确的历史兼容失败，将同一 Attempt 以状态版本 CAS 恢复为 `EXECUTING/STARTING`，清除旧失败投影并投递新的、独立幂等键的 `START_RUNTIME` 任务；记录操作与运行事件后重新聚合 FlowRun 状态。其余 `AUTOMATIC_RUNTIME_DELIVERY_FAILED` 仍按原安全限制拒绝。工作台会把该精确故障说明为可恢复的历史 Runtime owner 错误，明确重试继续复用当前 FlowRun Runtime。新增集成回归覆盖恢复后的状态、任务和重试上限，并保留通用 Runtime 投递失败的拒绝断言。
 
 验收：受影响 Python `py_compile`、Ruff check/format、Web TypeScript typecheck、ESLint、`git diff --check` 和任务状态唯一性通过。定向 pytest 已尝试，但本机没有 Docker socket，Testcontainers PostgreSQL fixture 在收集时失败，未进入断言；未部署、未修改数据库、Runtime Provider、Docker 或 OpenHands。
+
+### FR-399 共享 FlowRun 项目根工作区准入与历史恢复 — DONE
+
+依赖：`FR-381`、`FR-396`、`FR-397`。
+
+目标：共享 FlowRun Runtime 的记录级 working directory 位于 `/runtime/workspace/project/<canonical-record-id>`。物理 mount root 不能被误当作 OpenHands 逻辑工作区根；请求必须使用其下规范记录目录，且只接受该路径、既有规范记录根或用户根。不得接受 `/runtime/workspace`、`nodes`、物理 `project` root、非规范 UUID 或越过记录级 working directory 的路径。已在此校验遗漏修复前耗尽的自动启动任务，只有失败详情明确包含 `RUNTIME_WORKSPACE_INVALID` 时才可按 FR-397 同样的 CAS／独立任务键恢复；其他 Runtime 失败继续拒绝。
+
+完成：共享 Attempt 的 Runtime request 现在将 `runtime_working_directory`（`project/<record UUID>`）作为 OpenHands workspace root，而不再传入共享物理 mount root；OpenHands 校验严格接受该规范记录根，继续拒绝裸 `project` 和其他非规范路径。FR-397 的受控启动恢复同时精确覆盖 `RUNTIME_WORKSPACE_INVALID`，保留对 owner invalid 的恢复及对全部其他 Runtime 投递失败的拒绝。回归覆盖共享 Attempt 仍只使用父 FlowRun allocation、请求根／working directory 均为记录目录、两类历史兼容失败可恢复，以及非法裸 project root 仍被拒绝。
+
+验收：受影响 Python `py_compile`、Ruff check/format、`test_openhands.py`（139 passed）、Web TypeScript typecheck、ESLint、`git diff --check` 与任务状态唯一性通过。自动运行集成回归需要 Testcontainers PostgreSQL；本机 Docker socket 不存在，未进入断言。未部署、未修改数据库、Runtime Provider、Docker 或 OpenHands。
 
 ### FR-398 长会话 Markdown 完整渲染 — DONE
 
