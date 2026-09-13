@@ -1188,7 +1188,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.locator('.conversation-activity-row.thought.native-think').filter({ hasText: '我先确认当前工作目录，再根据现有结构判断后续改动范围。' })).toHaveCount(1);
   await expect(page.getByText('ThinkAction', { exact: true })).toHaveCount(0);
   await expect(page.getByText('Your thought has been logged.', { exact: true })).toHaveCount(0);
-  await expect(page.getByText('我先检查当前工作目录。')).toBeVisible();
+  await expect(page.locator('.conversation-activity-row.thought.tool-thought').filter({ hasText: '我先检查当前工作目录。' })).toHaveCount(1);
   await expect(page.getByRole('button', { name: '查看执行详情：已编辑 工作区/src/config.ts' })).toBeVisible();
   await expect(page.getByRole('button', { name: '查看执行详情：运行失败 false' })).toBeVisible();
   await expect(page.getByText('子智能体 reviewer · 检查子任务边界')).toBeVisible();

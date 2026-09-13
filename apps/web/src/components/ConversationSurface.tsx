@@ -1069,15 +1069,15 @@ function ActivityEntryRow({ entry, active, avatarSlots, workspaceRoot }: {
     <MessageMarkdown>{presentation.thought ?? item.content}</MessageMarkdown>
   </article>;
   if (eventName === 'TaskTrackerAction' || eventName === 'TaskTrackerObservation') return <div className="conversation-tool-entry semantic">
-    {presentation.thought && <article className="conversation-activity-row thought"><MessageMarkdown>{presentation.thought}</MessageMarkdown></article>}
+    {presentation.thought && <article className="conversation-activity-row thought tool-thought"><MessageMarkdown>{presentation.thought}</MessageMarkdown></article>}
     <TaskTrackerCard entry={entry} presentation={presentation}/>
   </div>;
   if (eventName === 'InvokeSkillAction' || eventName === 'InvokeSkillObservation') return <div className="conversation-tool-entry semantic">
-    {presentation.thought && <article className="conversation-activity-row thought"><MessageMarkdown>{presentation.thought}</MessageMarkdown></article>}
+    {presentation.thought && <article className="conversation-activity-row thought tool-thought"><MessageMarkdown>{presentation.thought}</MessageMarkdown></article>}
     <SkillLoadCard entry={entry}/>
   </div>;
   if (item.kind === 'tool' && toolDetail) return <div className="conversation-tool-entry">
-    {presentation.thought && <article className="conversation-activity-row thought">
+    {presentation.thought && <article className="conversation-activity-row thought tool-thought">
       <MessageMarkdown>{presentation.thought}</MessageMarkdown>
     </article>}
     <details className="conversation-activity-row tool conversation-tool-detail">
