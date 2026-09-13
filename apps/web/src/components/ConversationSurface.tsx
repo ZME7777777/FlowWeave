@@ -1337,7 +1337,7 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused: 
     // that can compete with a user who starts reading history.
     element.scrollTop = element.scrollHeight;
   }, []);
-  const scrollToLatest = useCallback((behavior: ScrollBehavior = 'smooth') => {
+  const scrollToLatest = useCallback(() => {
     if (automaticScrollFrame.current !== undefined) {
       window.cancelAnimationFrame(automaticScrollFrame.current);
       automaticScrollFrame.current = undefined;
@@ -1345,13 +1345,16 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused: 
     userScrolledAway.current = false;
     followLatest.current = true;
     setIsAtLatest(true);
-    const element = surface.current;
-    if (!element) return;
-    if (behavior === 'auto') {
-      alignWithLatest();
-      return;
-    }
-    element.scrollTo({ top: element.scrollHeight, behavior });
+    // This is an explicit user action, but it must still be immediate. A
+    // smooth journey emits intermediate scroll events; those look exactly
+    // like a user leaving the bottom and can stop a long transcript halfway.
+    alignWithLatest();
+    // Keep the bottom anchor after the click-triggered layout settles. This
+    // also covers Markdown/image layout that changes in the same frame.
+    automaticScrollFrame.current = window.requestAnimationFrame(() => {
+      automaticScrollFrame.current = undefined;
+      if (followLatest.current && !userScrolledAway.current) alignWithLatest();
+    });
   }, [alignWithLatest]);
   const updateScrollPosition = useCallback(() => {
     const element = surface.current;

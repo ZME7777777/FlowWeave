@@ -1349,6 +1349,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   }));
   await expect.poll(() => readingViewport.evaluate(surface => surface.scrollTop)).toBe(readingPosition);
   await page.getByRole('button', { name: '跳转到正在生成的最新回复' }).click();
+  expect(await readingViewport.evaluate(surface => surface.scrollHeight - surface.scrollTop - surface.clientHeight)).toBeLessThanOrEqual(16);
   await expect.poll(() => readingViewport.evaluate(surface => surface.scrollHeight - surface.scrollTop - surface.clientHeight)).toBeLessThanOrEqual(16);
   await composer.fill('第一条排队消息');
   await composer.press('Enter');
