@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -10,6 +11,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
+from flowweave.modules.agent_sessions.application import annotations as collaboration_annotations
 from flowweave.modules.agent_sessions.application import (
     conversations as session_conversations,
 )
@@ -17,6 +19,7 @@ from flowweave.modules.agent_sessions.application import (
     flow_node_conversations,
     flow_node_host,
     flow_node_workspace,
+    runtime_config,
 )
 from flowweave.modules.agent_sessions.application import usage as usage_projection
 from flowweave.modules.agent_sessions.application.event_branch import complete_active_branch
@@ -25,7 +28,10 @@ from flowweave.modules.agent_sessions.application.host import (
     CREATE_SESSIONS,
     READ_SESSIONS,
 )
-from flowweave.modules.agent_sessions.infrastructure.models import AgentConversationUsageBucket
+from flowweave.modules.agent_sessions.infrastructure.models import (
+    AgentConversationAnnotation,
+    AgentConversationUsageBucket,
+)
 from flowweave.modules.agent_sessions.public import AgentConversationBinding
 from flowweave.modules.agent_workspaces.application import work_directories
 from flowweave.modules.conversations.application import locator
@@ -90,6 +96,75 @@ def test_conversation_reference_projection_hides_selected_text_from_message_body
     assert selected_text not in display_content
     assert references == ({"event_id": "assistant-event-1", "content": selected_text},)
     assert workspace_references == ()
+
+
+def test_collaboration_annotation_prompt_shape_keeps_ids_and_full_user_context() -> None:
+    conversation = AgentConversationAnnotation(
+        id="annotation-conversation",
+        binding_id="binding",
+        anchor_kind="CONVERSATION_TEXT",
+        anchor_json={"event_id": "native-event", "quote": "请修改这一段"},
+        comment="这里需要更精确。",
+    )
+    workspace_file = AgentConversationAnnotation(
+        id="annotation-file",
+        binding_id="binding",
+        anchor_kind="WORKSPACE_FILE_RANGE",
+        anchor_json={
+            "path": "src/example.ts",
+            "selection": {"start_line": 3, "start_column": 1, "end_line": 5, "end_column": 8},
+            "quote": "const value = old;",
+        },
+        comment="请重构这段。",
+    )
+
+    assert collaboration_annotations._prompt_view(conversation, ordinal=1) == {
+        "ordinal": 1,
+        "annotation_id": "annotation-conversation",
+        "anchor_type": "CONVERSATION_TEXT",
+        "target": {"event_id": "native-event"},
+        "selected_text": "请修改这一段",
+        "user_comment": "这里需要更精确。",
+    }
+    assert collaboration_annotations._prompt_view(workspace_file, ordinal=2) == {
+        "ordinal": 2,
+        "annotation_id": "annotation-file",
+        "anchor_type": "WORKSPACE_FILE_RANGE",
+        "target": {
+            "path": "src/example.ts",
+            "start_line": 3,
+            "start_column": 1,
+            "end_line": 5,
+            "end_column": 8,
+        },
+        "selected_text": "const value = old;",
+        "user_comment": "请重构这段。",
+    }
+
+
+def test_annotation_rule_is_system_context_and_message_contains_no_reply_validation() -> None:
+    assert (
+        '::flowweave-annotation{id="<annotation_id>"}'
+        in runtime_config.COLLABORATION_ANNOTATION_CONTEXT
+    )
+    prompt, _image_urls = session_conversations.message_payload(
+        "请开始修改",
+        (),
+        annotations=(
+            {
+                "ordinal": 1,
+                "annotation_id": "annotation-1",
+                "anchor_type": "CONVERSATION_TEXT",
+                "target": {"event_id": "native-event"},
+                "selected_text": "选中内容",
+                "user_comment": "用户评论",
+            },
+        ),
+    )
+
+    payload = json.loads(prompt.rpartition(session_conversations._MESSAGE_CONTEXT_V5_MARKER)[2])
+    assert payload["collaboration_annotations"][0]["annotation_id"] == "annotation-1"
+    assert "annotation_reply_instruction" not in payload
 
 
 def test_plain_message_bypasses_context_envelope() -> None:

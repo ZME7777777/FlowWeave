@@ -1097,11 +1097,41 @@ function ActivityGroup({ items, active, liveText, startedAt, finishedAt, avatarS
   </details>;
 }
 
-function annotationMarkerMarkdown(content: string, annotations: AgentConversationAnnotation[]): string {
-  return content.replace(/::flowweave-annotation\{id="([^"]+)"\}/g, (raw, id: string) => {
-    const index = annotations.findIndex(annotation => annotation.id === id);
-    return index < 0 ? raw : `[注释 ${index + 1}]`;
-  });
+function AnnotationReplyContent({ content, annotations }: {
+  content: string;
+  annotations: AgentConversationAnnotation[];
+}) {
+  const [openedAnnotationId, setOpenedAnnotationId] = useState<string>();
+  const annotationById = useMemo(() => new Map(annotations.map(annotation => [annotation.id, annotation])), [annotations]);
+  const parts = useMemo(() => {
+    const marker = /::flowweave-annotation\{id="([^"]+)"\}/g;
+    const values: Array<{ content: string; annotation?: AgentConversationAnnotation }> = [];
+    let cursor = 0;
+    for (let matched = marker.exec(content); matched; matched = marker.exec(content)) {
+      if (matched.index > cursor) values.push({ content: content.slice(cursor, matched.index) });
+      const annotation = annotationById.get(matched[1]);
+      values.push(annotation ? { content: '', annotation } : { content: matched[0] });
+      cursor = matched.index + matched[0].length;
+    }
+    if (cursor < content.length) values.push({ content: content.slice(cursor) });
+    return values;
+  }, [annotationById, content]);
+  const openedAnnotation = openedAnnotationId ? annotationById.get(openedAnnotationId) : undefined;
+  return <>
+    {parts.map((part, index) => part.annotation ? <button
+      key={`${part.annotation.id}:${index}`}
+      type="button"
+      className="conversation-annotation-marker"
+      aria-expanded={openedAnnotation?.id === part.annotation.id}
+      onClick={() => setOpenedAnnotationId(current => current === part.annotation!.id ? undefined : part.annotation!.id)}
+    ><Quote size={12}/><span>注释 {annotations.findIndex(annotation => annotation.id === part.annotation!.id) + 1}</span></button> : part.content && <MessageMarkdown key={index}>{part.content}</MessageMarkdown>)}
+    {openedAnnotation && <aside className="conversation-annotation-card" aria-label={`注释 ${annotations.findIndex(annotation => annotation.id === openedAnnotation.id) + 1}`}>
+      <header><span><Quote size={13}/>注释 {annotations.findIndex(annotation => annotation.id === openedAnnotation.id) + 1}</span><button type="button" aria-label="关闭注释" onClick={() => setOpenedAnnotationId(undefined)}>×</button></header>
+      <small>{openedAnnotation.anchor_kind === 'CONVERSATION_TEXT' ? '会话文本' : '文件内容'}</small>
+      {typeof openedAnnotation.anchor.quote === 'string' && openedAnnotation.anchor.quote && <blockquote>{openedAnnotation.anchor.quote}</blockquote>}
+      <p>{openedAnnotation.comment}</p>
+    </aside>}
+  </>;
 }
 
 function AgentReply({ event, content, changes = [], onFork, onPreviewCandidateFile, onReviewChanges, workspaceRoot, annotations = [], highlightReferenceSource = false }: {
@@ -1125,7 +1155,7 @@ function AgentReply({ event, content, changes = [], onFork, onPreviewCandidateFi
   // registering an Artifact.
   const candidateMessage = candidateOutputMessage(content);
   return <article className={`conversation-message assistant${highlightReferenceSource ? ' conversation-reference-source-highlight' : ''}`} data-conversation-event-id={eventId} data-turn-terminal="true" data-event-id={eventId}>
-    {candidateMessage.businessConclusion ? <MessageMarkdown>{annotationMarkerMarkdown(candidateMessage.businessConclusion, annotations)}</MessageMarkdown> : !candidateMessage.outputs && content ? <MessageMarkdown>{annotationMarkerMarkdown(content, annotations)}</MessageMarkdown> : null}
+    {candidateMessage.businessConclusion ? <AnnotationReplyContent content={candidateMessage.businessConclusion} annotations={annotations}/> : !candidateMessage.outputs && content ? <AnnotationReplyContent content={content} annotations={annotations}/> : null}
     {candidateMessage.outputs && <CandidateOutputReply outputs={candidateMessage.outputs} onPreviewFile={onPreviewCandidateFile ? output => onPreviewCandidateFile(output.fieldKey, output.value) : undefined}/>}
     {!candidateMessage.businessConclusion && !candidateMessage.outputs && !content && <span className="conversation-typing"><i/><i/><i/></span>}
     {changes.length > 0 && <section className="conversation-file-changes" aria-label={`本轮编辑了 ${changes.length} 个文件`}>

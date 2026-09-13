@@ -141,6 +141,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-379 | 会话历史异步分页与原始跳转样式恢复 | DONE | 首屏定位最新消息后仍在运行中读取更早历史；加载态仅覆盖实际请求，跳转控件恢复无波纹的简洁三点。 |
 | FR-380 | 会话真实底部定位稳定性 | DONE | 首屏与“跳到最新”按真实内容高度即时定位；长历史不再因虚拟高度或平滑滚动停在中途。 |
 | FR-381 | 共享 FlowRun Runtime 的节点工作区路径误判 | DONE | 新 Attempt 传入其记录级工作区上下文，并继续使用 FlowRun allocation，避免按旧节点目录错误拒绝。 |
+| FR-382 | 会话／文件协作注释协议与呈现 | DONE | 固定系统提示词定义注释 ID 锚点回复；用户消息按完整注释结构传入；前端宽松按 ID 呈现，不校验模型输出。 |
 
 ### FR-366 FlowWeave 专属 Docker 地址规划 — DONE
 
@@ -311,6 +312,16 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 完成：`_runtime_request()` 现在始终传递当前 Attempt 身份，令请求构造解析其服务端派生的记录工作目录。构造器根据该上下文的 `attempt_owned` 标志选择私有 Attempt allocation 或唯一 FlowRun allocation；共享 Runtime 使用其规范的 in-container 记录级 working directory，不再调用旧节点 sessions 路径校验。新增无数据库适配器回归，覆盖共享 Attempt 仍只请求 FlowRun allocation、且请求保留受验证的记录工作目录。
 
 验收：受影响 Python `py_compile`、Ruff check、`test_openhands.py -k shared_flow_run_runtime_uses_attempt_record_workspace`（1 passed）与 `git diff --check`；无迁移、Docker、OpenHands 源码或远端操作。
+
+### FR-382 会话／文件协作注释协议与呈现 — DONE
+
+依赖：无（沿用已有 Agent Workspace／FlowRun 节点会话和 OpenHands Conversation）。
+
+目标：会话文本和文件选区均可附带独立用户评论；下一条用户消息以序号、`annotation_id`、锚点类型和位置、选中文本、用户评论的完整结构传入。稳定回复规则必须位于创建 OpenHands Conversation 的系统提示词，模型以 `::flowweave-annotation{id="..."}` 指向已回应注释。服务端不得解析、补全、校验或持久化模型回复的注释关联；前端只宽松渲染已知 ID，未知／遗漏标记保持原文。
+
+完成：共享 `build_agent_spec()` 为 Agent Workspace 与 FlowRun 节点会话追加固定协作注释协议；注释输入投影生成完整、按创建顺序编号的模型结构，移除了用户消息中的临时回复指令。会话和文件选区都可创建评论，文件选区在显示操作时冻结 quote。前端将已知 ID 标记渲染为可打开的注释卡片，显示锚点原文与用户评论；没有任何模型输出集合校验、重试或服务端回复关联。
+
+验收：受影响 Python Ruff format/check、`py_compile`、Web TypeScript typecheck、受影响 Web ESLint、`alembic heads`（`0115_agent_annotations`）与 `git diff --check` 通过；直接运行时断言覆盖双锚点输入结构和无回复校验 payload。定向 pytest 已收集但在会话级 Testcontainers PostgreSQL fixture 初始化前因本机 Docker socket 缺失阻断，未记为通过。未修改 OpenHands 源码、Runtime Provider、Docker 或远端环境。
 
 ### FR-335 Runtime generation Sandbox 引用完整性 — DONE
 
@@ -5044,6 +5055,7 @@ contract、冻结策略与既有受控生命周期约束覆盖。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-13 | FR-382 | Python Ruff format/check、`py_compile`、直接运行时断言；Web TypeScript typecheck、定向 ESLint；Alembic head、`git diff --check` | PASS（静态／直接断言）：系统提示词定义协作注释 ID 锚点协议，用户消息携带序号、ID、锚点、选中文本和评论；前端只按已知 ID 宽松渲染，不引入模型回复校验。定向 pytest 因本机 Docker socket 缺失，Testcontainers PostgreSQL fixture 在业务断言前阻断，未记为通过。未修改 OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-13 | FR-380 | Web TypeScript typecheck、ESLint、production build、Playwright 定向产品流、`git diff --check` 与任务状态唯一性 | PASS（静态／构建）：会话首屏和点击“跳到最新”改为按真实总高度即时定位，跳转后同一事件循环即断言位于末行；移除了会话轮次的虚拟高度估算，避免长历史第一次仅跳至中段。定向 Playwright 已收集，但本机 Web 服务未启动，访问 `127.0.0.1:5173` 被拒绝，未进入浏览器断言，未记为浏览器通过。未修改 API、数据库、Runtime Provider 或 OpenHands。 |
 | 2026-09-13 | FR-379 | Web TypeScript typecheck、ESLint、production build、Playwright 定向产品流、`git diff --check` 与任务状态唯一性 | PASS（静态／构建）：运行中会话在首屏最新窗口绘制后仍会请求更早历史，加载提示仅覆盖在途请求且完成后清除；产品流加入运行中历史分页和无波纹跳转按钮断言。定向 Playwright 已收集，但本机 Web 服务未启动，访问 `127.0.0.1:5173` 被拒绝，未进入浏览器断言，未记为浏览器通过。未修改 API、数据库、Runtime Provider 或 OpenHands。 |
 | 2026-09-13 | FR-378 | Web TypeScript typecheck、ESLint、production build、Playwright 定向产品流、`git diff --check` 与任务状态唯一性 | PASS（静态／构建）：流式渲染、内容尺寸观察和压缩状态改用可取消的即时贴底，不再启动会与上划竞争的自动平滑滚动；滚轮／触控捕获阶段立即中止残余动画并锁定历史视口。产品流改为真实鼠标滚轮路径后断言流式增量不夺回位置；完整执行仍在产品工作台前因本机 API／认证服务未启动而停留登录页，未执行该断言，未记为浏览器通过。未修改 API、数据库、Runtime Provider 或 OpenHands。 |
