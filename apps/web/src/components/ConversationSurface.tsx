@@ -305,10 +305,11 @@ function itemsFor(event: OpenHandsConversationEvent): Item[] {
       : content;
     return [{ event, kind: isUser ? 'user' : 'assistant', title: '', content: isUser ? displayContent : content }];
   }
-  // Think is a native bookkeeping tool. Its content is already superseded by
-  // the user-facing commentary attached to the following formal actions, so
-  // keep it in the event log without rendering a separate Think card.
-  if (event.event_type === 'THOUGHT' && eventName === 'ThinkAction') return [];
+  // ThinkAction is a native, non-terminal progress event. Render its content
+  // as ordinary text, without exposing the implementation-oriented tool name.
+  if (event.event_type === 'THOUGHT' && eventName === 'ThinkAction') {
+    return [{ event, kind: 'thought', title: '', content: thought || content }];
+  }
   if (event.event_type === 'THOUGHT') return [{ event, kind: 'thought', title: '分析', content: thought || content }];
   if (event.event_type === 'CONDENSATION_REQUESTED') return [{ event, kind: 'condensation', title: '正在自动压缩上下文', content: '' }];
   if (event.event_type === 'CONDENSATION_COMPLETED') return [{ event, kind: 'condensation', title: '已自动压缩上下文', content: '' }];
