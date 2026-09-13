@@ -157,6 +157,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-395 | 回复注释链接的一次点击定位 | DONE | 回复中的已知注释链接阻断会话选区冒泡，并在展开详情时立即复用原文定位。 |
 | FR-396 | 嵌套连续记录的共享 Runtime 与 Attempt 归属分离 | DONE | Runtime request builder 保留子记录的逻辑 FlowRun ID 用于 Attempt／工作区校验，仅以父 FlowRun ID 解析共享 allocation 与能力物化，避免导入记录启动门禁误报 owner invalid。 |
 | FR-397 | 历史 Runtime owner 阻塞无法在修复后恢复 | DONE | 仅对明确记录旧 `RUNTIME_ALLOCATION_OWNER_INVALID` 的自动启动 Runtime 投递失败，以 CAS 重新投递同一 Attempt 的启动任务；继续复用 FlowRun Runtime。 |
+| FR-398 | 长会话消息被手动展开按钮截断 | DONE | 删除长 Markdown 的预览阈值与“渲染完整消息”按钮；已完成回复／历史会话直接完整渲染，运行中继续由现有 native delta 流逐步追加并遵守阅读锁。 |
 
 ### FR-366 FlowWeave 专属 Docker 地址规划 — DONE
 
@@ -347,6 +348,16 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 完成：`retry-gates` 现在仅对上述明确的历史兼容失败，将同一 Attempt 以状态版本 CAS 恢复为 `EXECUTING/STARTING`，清除旧失败投影并投递新的、独立幂等键的 `START_RUNTIME` 任务；记录操作与运行事件后重新聚合 FlowRun 状态。其余 `AUTOMATIC_RUNTIME_DELIVERY_FAILED` 仍按原安全限制拒绝。工作台会把该精确故障说明为可恢复的历史 Runtime owner 错误，明确重试继续复用当前 FlowRun Runtime。新增集成回归覆盖恢复后的状态、任务和重试上限，并保留通用 Runtime 投递失败的拒绝断言。
 
 验收：受影响 Python `py_compile`、Ruff check/format、Web TypeScript typecheck、ESLint、`git diff --check` 和任务状态唯一性通过。定向 pytest 已尝试，但本机没有 Docker socket，Testcontainers PostgreSQL fixture 在收集时失败，未进入断言；未部署、未修改数据库、Runtime Provider、Docker 或 OpenHands。
+
+### FR-398 长会话 Markdown 完整渲染 — DONE
+
+依赖：无（会话呈现交互修正）。
+
+目标：会话正文不能因字符数出现“渲染完整消息”按钮或截断预览。已完成回复和后续进入历史会话时必须直接完整解析 Markdown；仍在回复时继续消费既有 OpenHands native delta，并随 delta 到达逐步追加内容、仅在用户保持最新位置时自动贴底。不得引入客户端消息副本、改变原生事件投影或取消用户上滑后的阅读锁。
+
+完成：移除了 6,000 字符 Markdown 预览阈值、2,000 字符截断和手动展开控件。`MessageMarkdown` 始终直接渲染传入内容；现有 `liveText` 增量和自动跟随逻辑不变，因此运行中的回复仍按实时到达内容逐步向下输出，完成／历史消息首次显示即为完整 Markdown。回归用例以 7,500 字符的正式 assistant 消息验证全文可见且页面没有“渲染完整消息”按钮。
+
+验收：Web TypeScript typecheck、全量 Web ESLint、production build、定向 Playwright、`git diff --check` 与任务状态唯一性；未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。
 
 ### FR-382 会话／文件协作注释协议与呈现 — DONE
 

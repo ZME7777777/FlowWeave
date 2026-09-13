@@ -19,10 +19,9 @@ async function login(page: Page) {
   await expect(page.getByRole('button', { name: '账户与设置' })).toContainText(user.username);
 }
 
-test('Agent session reuses a validated in-tab branch and refreshes through a bounded shell', async ({ page }) => {
+test('Agent session renders a completed long Markdown reply without manual expansion', async ({ page }) => {
   let authenticated = false;
-  let hydrationRequests = 0;
-  let headRequests = 0;
+  let eventRequests = 0;
   const workspace = {
     id: 'cache-workspace', display_name: 'Agent 工作区', desired_state: 'RUNNING', updated_at: now,
   };
@@ -35,7 +34,7 @@ test('Agent session reuses a validated in-tab branch and refreshes through a bou
     events: [
       { id: `${id}-user`, event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: `问题 ${id}`, timestamp: now } },
       { id: `${id}-tool`, event_type: 'TOOL_RESULT', payload: { parent_id: `${id}-user`, content: 'x'.repeat(20_000), details: { stdout: 'x'.repeat(20_000) }, timestamp: now } },
-      { id: `${id}-assistant`, event_type: 'MESSAGE', payload: { source: 'agent', parent_id: `${id}-tool`, content: `完整回复 ${id}`, timestamp: now } },
+      { id: `${id}-assistant`, event_type: 'MESSAGE', payload: { source: 'agent', parent_id: `${id}-tool`, content: `完整回复 ${id}\n\n${'完整 Markdown 内容 '.repeat(500)}`, timestamp: now } },
     ],
     next_cursor: `${id}-head`,
     history_cursor: null,
@@ -53,19 +52,10 @@ test('Agent session reuses a validated in-tab branch and refreshes through a bou
     if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
     if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
     if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: conversations, next_cursor: null });
-    if (path.endsWith('/hydration')) {
-      hydrationRequests += 1;
+    if (path.endsWith('/events')) {
+      eventRequests += 1;
       const id = path.split('/').at(-2)!;
-      return json(route, {
-        events: completeEvents(id),
-        context: { model_name: 'test-model', window_tokens: 128_000, used_tokens: 1_024, usage_current: true, compaction_policy_current: true },
-        readiness: { ready: true, execution_status: 'idle' },
-      });
-    }
-    if (path.endsWith('/head')) {
-      headRequests += 1;
-      const id = path.split('/').at(-2)!;
-      return json(route, { cursor: `${id}-head` });
+      return json(route, completeEvents(id));
     }
     if (path.endsWith('/work-directories')) return json(route, {
       root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [],
@@ -77,6 +67,7 @@ test('Agent session reuses a validated in-tab branch and refreshes through a bou
     });
     if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
     if (path.endsWith('/input-readiness')) return json(route, { ready: true, execution_status: 'idle' });
+    if (path.endsWith('/context')) return json(route, { model_name: 'test-model', window_tokens: 128_000, used_tokens: 1_024, usage_current: true, compaction_policy_current: true });
     if (path.endsWith('/model-providers') || path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
     if (path.includes('/conversations/') && request.method() === 'GET') {
       const id = path.split('/').at(-1)!;
@@ -86,43 +77,12 @@ test('Agent session reuses a validated in-tab branch and refreshes through a bou
   });
 
   // Authenticate outside the workbench, then enter the deep link. This keeps
-  // the initial hydration scoped to the conversation under test.
+  // the initial native event read scoped to the conversation under test.
   await page.goto('/');
   await login(page);
   await page.goto('/agent/conversations/cache-conversation-a');
-  await expect(page.getByText('完整回复 cache-conversation-a', { exact: true })).toBeVisible();
-  await expect.poll(() => hydrationRequests).toBe(1);
-  expect(headRequests).toBe(0);
-
-  // The complete EventLog remains in memory. Tool output is revealed by the
-  // command row itself, without a second detail toggle.
-  const firstActivity = page.locator('.conversation-activity-group').first();
-  await expect(firstActivity).toHaveAttribute('open', '');
-  const firstTool = firstActivity.locator('.conversation-tool-detail').first();
-  await expect(firstTool).not.toHaveAttribute('open', '');
-  await firstTool.locator(':scope > summary').click();
-  await expect(firstTool).toHaveAttribute('open', '');
-  await expect(firstActivity.locator('.conversation-tool-detail-panel')).toBeVisible();
-  await expect(firstActivity.locator('.conversation-tool-detail-panel')).toContainText('x'.repeat(100));
-
-  await page.getByRole('button', { name: '缓存会话 B', exact: true }).click();
-  await expect(page.getByText('完整回复 cache-conversation-b', { exact: true })).toBeVisible();
-  await expect.poll(() => hydrationRequests).toBe(2);
-
-  await page.getByRole('button', { name: '缓存会话 A', exact: true }).click();
-  await expect(page.getByText('完整回复 cache-conversation-a', { exact: true })).toBeVisible();
-  await expect.poll(() => headRequests).toBe(1);
-  expect(hydrationRequests).toBe(2);
-
-  await page.reload();
-  // The shell contains the latest formal message but excludes the large tool
-  // result; it appears before the fresh complete hydration resolves.
-  await expect(page.getByText('完整回复 cache-conversation-a', { exact: true })).toBeVisible();
-  await expect.poll(() => hydrationRequests).toBe(3);
-  await expect.poll(() => page.evaluate(() => {
-    const values = Object.entries(sessionStorage).filter(([key]) => key.startsWith('flowweave:agent-session-shell.v1:'));
-    return values.length > 0
-      && values.every(([, value]) => !value.includes('stdout'))
-      && values.every(([, value]) => !value.includes('x'.repeat(20_000)));
-  })).toBe(true);
+  await expect(page.getByText('完整回复 cache-conversation-a', { exact: false })).toBeVisible();
+  await expect(page.getByText('完整 Markdown 内容', { exact: false })).toBeVisible();
+  await expect(page.getByRole('button', { name: '渲染完整消息' })).toHaveCount(0);
+  await expect.poll(() => eventRequests).toBe(1);
 });

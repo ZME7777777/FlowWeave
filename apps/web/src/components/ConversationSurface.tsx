@@ -262,17 +262,8 @@ function ConversationReferencePreview({ reference, onClose, onLocate }: {
 }
 
 const ConversationMarkdown = lazy(() => import('./ConversationMarkdown').then(module => ({ default: module.ConversationMarkdown })));
-const LARGE_MARKDOWN_THRESHOLD = 6_000;
-const LARGE_MARKDOWN_PREVIEW_LENGTH = 2_000;
 
 function MessageMarkdown({ children }: { children: string }) {
-  const [expanded, setExpanded] = useState(() => children.length <= LARGE_MARKDOWN_THRESHOLD);
-  useEffect(() => { setExpanded(children.length <= LARGE_MARKDOWN_THRESHOLD); }, [children]);
-  if (!expanded) return <div className="conversation-markdown-preview">
-    <pre>{children.slice(0, LARGE_MARKDOWN_PREVIEW_LENGTH)}</pre>
-    <small>{`此消息共 ${children.length.toLocaleString()} 个字符；完整 Markdown、代码块和图片将在展开后解析。`}</small>
-    <button type="button" onClick={() => setExpanded(true)}>渲染完整消息</button>
-  </div>;
   return <Suspense fallback={<div className="conversation-markdown-loading">正在渲染消息…</div>}><ConversationMarkdown>{children}</ConversationMarkdown></Suspense>;
 }
 
