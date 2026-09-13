@@ -71,32 +71,58 @@ function ComposerAnnotationList({ annotations, onLocate, onRemove, onUpdate }: {
   onRemove: (annotation: AgentConversationAnnotation) => void;
   onUpdate: (annotation: AgentConversationAnnotation, comment: string) => void;
 }) {
+  const rootRef = useRef<HTMLElement>(null);
   const [openedId, setOpenedId] = useState<string>();
   const [editingId, setEditingId] = useState<string>();
   const [comment, setComment] = useState('');
   const latestAnnotationId = annotations.at(-1)?.id;
+  const latestAnnotationRef = useRef<AgentConversationAnnotation | undefined>(undefined);
+  latestAnnotationRef.current = annotations.at(-1);
   useEffect(() => {
-    if (latestAnnotationId) setOpenedId(latestAnnotationId);
+    const latest = latestAnnotationRef.current;
+    if (!latestAnnotationId || !latest) return;
+    setOpenedId(latestAnnotationId);
+    setEditingId(latestAnnotationId);
+    setComment(latest.comment);
   }, [latestAnnotationId]);
-  if (!annotations.length) return null;
   const opened = annotations.find(annotation => annotation.id === openedId);
   const openedIndex = opened ? annotations.findIndex(annotation => annotation.id === opened.id) : -1;
   const openedFile = opened ? annotationFileDisplay(opened) : undefined;
-  return <section className="agent-composer-annotations" aria-label={`已添加的引用 ${annotations.length} 条`}>
+  const closeOpened = useCallback(() => {
+    if (opened && editingId === opened.id) onUpdate(opened, comment);
+    setEditingId(undefined);
+    setOpenedId(undefined);
+  }, [comment, editingId, onUpdate, opened]);
+  useEscapeClose(closeOpened, Boolean(opened));
+  useEffect(() => {
+    if (!opened) return;
+    const closeWhenPointerLeavesCard = (event: PointerEvent) => {
+      if (event.target instanceof Node && !rootRef.current?.contains(event.target)) closeOpened();
+    };
+    document.addEventListener('pointerdown', closeWhenPointerLeavesCard, true);
+    return () => document.removeEventListener('pointerdown', closeWhenPointerLeavesCard, true);
+  }, [closeOpened, opened]);
+  if (!annotations.length) return null;
+  return <section ref={rootRef} className="agent-composer-annotations" aria-label={`已添加的引用 ${annotations.length} 条`}>
     <div className="agent-attachments agent-conversation-references">{annotations.map((annotation, index) => {
       const file = annotationFileDisplay(annotation);
       const referenceName = annotationReferenceName(annotation, index);
       return <span key={annotation.id} className={file ? 'agent-file-annotation' : undefined}>
-        <button type="button" className={`agent-attachment-open${file ? ' agent-file-annotation-chip' : ''}`} title={file ? `${file.path} · ${file.range}` : '查看、定位或编辑评论'} aria-expanded={openedId === annotation.id} onClick={() => setOpenedId(current => current === annotation.id ? undefined : annotation.id)}>{file ? <FileText size={18}/> : <Quote size={14}/>}<em>{file ? <><b title={file.path}>{file.filename}</b><small>{`${file.filename} · ${file.range}`}</small></> : referenceName}</em></button>
+        <button type="button" className={`agent-attachment-open${file ? ' agent-file-annotation-chip' : ''}`} title={file ? `${file.path} · ${file.range}` : '查看、定位或编辑评论'} aria-expanded={openedId === annotation.id} onClick={() => {
+          if (openedId === annotation.id) { closeOpened(); return; }
+          setComment(annotation.comment);
+          setEditingId(undefined);
+          setOpenedId(annotation.id);
+        }}>{file ? <FileText size={18}/> : <Quote size={14}/>}<em>{file ? <><b title={file.path}>{file.filename}</b><small>{`${file.filename} · ${file.range}`}</small></> : referenceName}</em></button>
         <button type="button" className="agent-attachment-remove" aria-label={`移除${referenceName}`} onClick={() => { setOpenedId(current => current === annotation.id ? undefined : current); setEditingId(current => current === annotation.id ? undefined : current); onRemove(annotation); }}>×</button>
       </span>;
     })}</div>
     {opened && <article className="agent-composer-annotation-card" role="dialog" aria-label={`${annotationReferenceName(opened, openedIndex)} 详情`}>
-      <header><span>{openedFile ? <FileText size={13}/> : <Quote size={13}/>}{annotationReferenceName(opened, openedIndex)}</span><button type="button" aria-label="关闭引用" onClick={() => setOpenedId(undefined)}>×</button></header>
+      <header><span>{openedFile ? <FileText size={13}/> : <Quote size={13}/>}{annotationReferenceName(opened, openedIndex)}</span><button type="button" aria-label="关闭引用并保存评论" onClick={closeOpened}>×</button></header>
       <small title={openedFile?.path}>{openedFile ? `文件内容 · ${openedFile.filename} · ${openedFile.range}` : '会话文本'}</small>
       {typeof opened.anchor.quote === 'string' && opened.anchor.quote && <blockquote>{opened.anchor.quote}</blockquote>}
-      {editingId === opened.id ? <div className="agent-composer-annotation-edit"><textarea aria-label="编辑注释评论" placeholder="可选：写下你的评论…" value={comment} onChange={event => setComment(event.target.value)}/><footer><button type="button" onClick={() => setEditingId(undefined)}>取消</button><button type="button" onClick={() => { onUpdate(opened, comment); setEditingId(undefined); }}>保存评论</button></footer></div> : <p>{opened.comment || '未添加评论'}</p>}
-      <footer><button type="button" onClick={() => onLocate(opened)}>定位原文</button><button type="button" onClick={() => { setComment(opened.comment); setEditingId(opened.id); }}>编辑评论</button></footer>
+      {editingId === opened.id ? <textarea className="agent-composer-annotation-comment" aria-label="编辑注释评论" placeholder="可选：写下你的评论…" value={comment} onChange={event => { setComment(event.target.value); onUpdate(opened, event.target.value); }}/> : <button type="button" className="agent-composer-annotation-comment-display" title="双击编辑评论" onDoubleClick={() => { setComment(opened.comment); setEditingId(opened.id); }}>{opened.comment || '双击添加评论'}</button>}
+      <footer><button type="button" onClick={() => { if (editingId === opened.id) onUpdate(opened, comment); onLocate(opened); }}>定位原文</button></footer>
     </article>}
   </section>;
 }
@@ -2757,7 +2783,16 @@ function WorkspaceDrawer({
   useEffect(() => {
     if (!highlightedFileSelection) return;
     openFiles(highlightedFileSelection.path);
-  }, [highlightedFileSelection, openFiles]);
+    if (!details) return;
+    const root = details.working_directory.replace(/\/+$/, '');
+    const path = highlightedFileSelection.path;
+    if (path !== root && !path.startsWith(`${root}/`)) return;
+    const parts = path.slice(root.length).split('/').filter(Boolean);
+    const directories = parts.slice(0, -1).map((_, index) => `${root}/${parts.slice(0, index + 1).join('/')}`);
+    // Reuse source navigation so a file annotation expands each lazy parent
+    // directory before selecting its leaf in the visible tree.
+    setPendingSourceNavigation({ path, line: highlightedFileSelection.selection.start_line, directories });
+  }, [details, highlightedFileSelection, openFiles]);
   const openRuntimeTasks = useCallback((taskId?: string) => {
     updateScope(current => ({
       ...current,
