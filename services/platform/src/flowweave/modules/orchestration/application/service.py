@@ -5689,7 +5689,12 @@ def _runtime_request(db: Session, attempt: NodeAttempt) -> StartAttemptRequest:
         )
     request = build_runtime_request(
         db,
-        flow_run_id=run.id if workspace.attempt_owned else runtime_owner_id,
+        # ``run.id`` is the Attempt's logical owner even when this nested
+        # automatic record shares its parent's physical Runtime.  Passing the
+        # parent ID here makes the request builder reject the Attempt before
+        # the Runtime can start.
+        flow_run_id=run.id,
+        runtime_owner_flow_run_id=runtime_owner_id,
         runtime_manifest_hash=snapshot.runtime_manifest_hash,
         attempt_id=attempt.id,
         execution_key=f"attempt:{attempt.id}:start",

@@ -379,7 +379,13 @@ def build_runtime_request(
     agent_spec: RuntimeAgentSpec | None = None,
     conversation_id: str | None = None,
     node_attempt_id: str | None = None,
+    runtime_owner_flow_run_id: str | None = None,
 ) -> StartAttemptRequest:
+    # A nested automatic record owns its NodeRun/Attempt identity, while its
+    # parent owns the one shared physical Runtime.  Keep those identities
+    # separate: workspace validation must use the logical record, whereas
+    # allocation and capability materialization must use the Runtime owner.
+    runtime_owner_id = runtime_owner_flow_run_id or flow_run_id
     workspace_context = (
         node_attempt_workspace_context(db, flow_run_id=flow_run_id, node_attempt_id=node_attempt_id)
         if node_attempt_id is not None
@@ -454,12 +460,14 @@ def build_runtime_request(
             manifest_digest=runtime_manifest_hash,
         )
         if workspace_context is not None and workspace_context.attempt_owned
-        else runtime_allocation_for_flow_run(db, flow_run_id, manifest_digest=runtime_manifest_hash)
+        else runtime_allocation_for_flow_run(
+            db, runtime_owner_id, manifest_digest=runtime_manifest_hash
+        )
     )
     materialization_owner_id = (
         node_attempt_id
         if workspace_context is not None and workspace_context.attempt_owned
-        else flow_run_id
+        else runtime_owner_id
     )
     asset = cast(dict[str, Any], node.get("asset") or {})
     with capability_materialization_lock(runtime_allocation):

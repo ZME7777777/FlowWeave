@@ -155,6 +155,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-393 | 协作锚点定位与紧凑呈现修正 | DONE | 注释气泡不与 Composer 控件重叠且位于跳转按钮上层；文件锚点以原生选区样式短暂呈现并定位至预览上三分之一；会话锚点按选区偏移精确复原。 |
 | FR-394 | 已发送注释上下文与回复锚点呈现 | DONE | 发送后的会话／文件注释从原生用户消息元数据投影为可定位 chip；草稿内容优先显示发送操作；文件 chip 与会话引用同尺寸；回复锚点呈现为可点击链接。 |
 | FR-395 | 回复注释链接的一次点击定位 | DONE | 回复中的已知注释链接阻断会话选区冒泡，并在展开详情时立即复用原文定位。 |
+| FR-396 | 嵌套连续记录的共享 Runtime 与 Attempt 归属分离 | DONE | Runtime request builder 保留子记录的逻辑 FlowRun ID 用于 Attempt／工作区校验，仅以父 FlowRun ID 解析共享 allocation 与能力物化，避免导入记录启动门禁误报 owner invalid。 |
 
 ### FR-366 FlowWeave 专属 Docker 地址规划 — DONE
 
@@ -325,6 +326,16 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 完成：`_runtime_request()` 现在始终传递当前 Attempt 身份，令请求构造解析其服务端派生的记录工作目录。构造器根据该上下文的 `attempt_owned` 标志选择私有 Attempt allocation 或唯一 FlowRun allocation；共享 Runtime 使用其规范的 in-container 记录级 working directory，不再调用旧节点 sessions 路径校验。新增无数据库适配器回归，覆盖共享 Attempt 仍只请求 FlowRun allocation、且请求保留受验证的记录工作目录。
 
 验收：受影响 Python `py_compile`、Ruff check、`test_openhands.py -k shared_flow_run_runtime_uses_attempt_record_workspace`（1 passed）与 `git diff --check`；无迁移、Docker、OpenHands 源码或远端操作。
+
+### FR-396 嵌套连续记录的共享 Runtime 与 Attempt 归属分离 — DONE
+
+依赖：`FR-367`、`FR-381`。
+
+目标：新增或导入的嵌套连续运行记录必须继续复用其父 FlowRun 的唯一 Runtime、allocation、能力物化目录和网络；同时，节点 Attempt／工作区校验必须保留子记录的逻辑 FlowRun ID，不得把物理 Runtime owner ID 当作 Attempt owner。
+
+完成：Runtime request builder 现在显式区分逻辑 `flow_run_id` 与可选共享 `runtime_owner_flow_run_id`。节点 Attempt 的 workspace／归属校验始终使用子连续记录 ID；普通共享路径仍只从父记录获取 allocation 并在父记录的冻结能力目录物化。回归覆盖同时断言这两个 ID 的用途，防止导入记录在启动门禁阶段再次出现 `RUNTIME_ALLOCATION_OWNER_INVALID`。未恢复 Attempt-private Runtime、Secret、Session 或网络分配，也未修改历史 allocation、数据库、Runtime Provider、Docker 或 OpenHands。
+
+验收：受影响 Python `py_compile`、Ruff check、定向 `test_openhands.py`、`git diff --check` 通过；未运行 Docker／数据库／远端环境验证。
 
 ### FR-382 会话／文件协作注释协议与呈现 — DONE
 

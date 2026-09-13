@@ -255,6 +255,8 @@ def test_shared_flow_run_runtime_uses_attempt_record_workspace(
     """A new Attempt shares its Runtime without falling back to legacy nodes paths."""
 
     allocation_calls: list[str] = []
+    workspace_calls: list[tuple[str, str]] = []
+    materialization_calls: list[str] = []
     workspace = SimpleNamespace(
         attempt_owned=False,
         host_working_directory=Path(
@@ -265,7 +267,9 @@ def test_shared_flow_run_runtime_uses_attempt_record_workspace(
     )
     monkeypatch.setattr(
         "flowweave.runtime.request.node_attempt_workspace_context",
-        lambda *_args, **_kwargs: workspace,
+        lambda _db, *, flow_run_id, node_attempt_id: (
+            workspace_calls.append((flow_run_id, node_attempt_id)) or workspace
+        ),
     )
     monkeypatch.setattr(
         "flowweave.runtime.request.runtime_allocation_for_flow_run",
@@ -281,17 +285,21 @@ def test_shared_flow_run_runtime_uses_attempt_record_workspace(
     )
     monkeypatch.setattr(
         "flowweave.runtime.request.materialize_node_workspace",
-        lambda *_args, **_kwargs: ((), (), (), "/runtime/workspace/nodes/asset-1"),
+        lambda _asset, *, flow_run_id, **_kwargs: (
+            materialization_calls.append(flow_run_id)
+            or ((), (), (), "/runtime/workspace/nodes/asset-1")
+        ),
     )
     monkeypatch.setattr(
         "flowweave.runtime.request.materialize_hook_config",
-        lambda *_args, **_kwargs: {},
+        lambda _asset, *, flow_run_id, **_kwargs: materialization_calls.append(flow_run_id) or {},
     )
     monkeypatch.setattr("flowweave.runtime.request.credentials_for_agent", lambda _db: ({}, ""))
 
     request = build_runtime_request(
         None,  # type: ignore[arg-type]
-        flow_run_id="flow-run-1",
+        flow_run_id="nested-flow-run",
+        runtime_owner_flow_run_id="parent-flow-run",
         runtime_manifest_hash="manifest-1",
         attempt_id="attempt-1",
         execution_key="attempt:attempt-1:start",
@@ -303,7 +311,9 @@ def test_shared_flow_run_runtime_uses_attempt_record_workspace(
         node_attempt_id="attempt-1",
     )
 
-    assert allocation_calls == ["flow-run-1"]
+    assert workspace_calls == [("nested-flow-run", "attempt-1")]
+    assert allocation_calls == ["parent-flow-run"]
+    assert materialization_calls == ["parent-flow-run", "parent-flow-run"]
     assert request.workspace_root == "/runtime/workspace/project"
     assert request.runtime_working_directory == "/runtime/workspace/project/record"
     assert request.runtime_workspace_relative == ""
