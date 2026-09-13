@@ -227,9 +227,10 @@ def flow_run_record_id(db: Session, *, flow_run_id: str, node_attempt_id: str) -
             "The Runtime Attempt does not belong to this FlowRun",
             409,
         )
-    # Run mode only determines scheduling and pausing.  Every NodeRun and
-    # Attempt within this logical FlowRun shares this one record workspace.
-    return run.id
+    # A nested automatic FlowRun is itself one continuous record. Manual and
+    # direct entries use their NodeRun record, keeping sibling records under
+    # the same physical FlowRun Runtime isolated from one another.
+    return run.id if run.run_mode == "AUTOMATIC" else node_run.id
 
 
 def _record_project_path(db: Session, *, flow_run_id: str, node_attempt_id: str) -> Path:

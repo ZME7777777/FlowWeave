@@ -326,14 +326,19 @@ def test_shared_flow_run_runtime_uses_attempt_record_workspace(
     assert request.runtime_working_dir_relative == ""
 
 
-@pytest.mark.parametrize("run_mode", ["AUTOMATIC", "STEPWISE", "DIRECT"])
-def test_flow_run_record_workspace_is_independent_of_run_mode(run_mode: str) -> None:
+@pytest.mark.parametrize(
+    ("run_mode", "expected_record"),
+    [("AUTOMATIC", "flow-run"), ("MANUAL", "node-run"), ("DIRECT", "node-run")],
+)
+def test_flow_run_record_workspace_uses_the_product_record_identity(
+    run_mode: str, expected_record: str
+) -> None:
     flow_run_id = "10000000-0000-4000-8000-000000000001"
     node_run_id = "20000000-0000-4000-8000-000000000002"
     attempt_id = "30000000-0000-4000-8000-000000000003"
     records = {
         "NodeAttempt": SimpleNamespace(node_run_id=node_run_id),
-        "NodeRun": SimpleNamespace(flow_run_id=flow_run_id),
+        "NodeRun": SimpleNamespace(id=node_run_id, flow_run_id=flow_run_id),
         "FlowRun": SimpleNamespace(id=flow_run_id, run_mode=run_mode),
     }
 
@@ -341,12 +346,10 @@ def test_flow_run_record_workspace_is_independent_of_run_mode(run_mode: str) -> 
         def get(self, model, _identity):
             return records[model.__name__]
 
-    assert (
-        flow_run_record_id(_Db(), flow_run_id=flow_run_id, node_attempt_id=attempt_id)
-        == flow_run_id
-    )
-    assert openhands_flow_run_record_path(flow_run_id).as_posix() == (
-        f"/runtime/workspace/project/{flow_run_id}"
+    record_id = flow_run_record_id(_Db(), flow_run_id=flow_run_id, node_attempt_id=attempt_id)
+    assert record_id == {"flow-run": flow_run_id, "node-run": node_run_id}[expected_record]
+    assert openhands_flow_run_record_path(record_id).as_posix() == (
+        f"/runtime/workspace/project/{record_id}"
     )
 
 

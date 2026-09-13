@@ -628,7 +628,7 @@ def flow_run_conversation_context(
     version = _version(db, item)
     _validate_flow_run_paths(db, flow_run_id, node_attempt_id, _path_values(db, version.id))
     # A selected logical directory controls the frozen file scope, not the
-    # OpenHands workspace root. Every Attempt in this FlowRun shares its
+    # OpenHands workspace root. Every Attempt in this record shares its
     # record-level project root.
     return version.id, _flow_run_runtime_root(db, flow_run_id, node_attempt_id).as_posix()
 

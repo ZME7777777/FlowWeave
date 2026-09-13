@@ -30,10 +30,10 @@ FlowWeave 后续采用以下唯一生产拓扑：
    已验证且 digest 锁定的自定义 Environment Version，并由该 Run 及其 Snapshot 冻结。由同一流程模板
    创建的不同 FlowRun 可以使用不同的基础镜像。
 
-一个逻辑 FlowRun 是唯一的工作区记录：其所有 NodeRun、Attempt 和节点会话都使用
-`/runtime/workspace/project/<flow-run-id>` 作为 OpenHands workspace root。连续、逐步与直接运行只是
-调度／停顿行为，不能改变记录身份或将 NodeRun、Attempt、逻辑工作目录作为 workspace root；嵌套记录仍以
-子 FlowRun ID 作为逻辑根，但可复用父 FlowRun 的物理 Runtime allocation。
+一个逻辑运行记录是唯一的工作区记录：其所有 NodeRun、Attempt 和节点会话都使用
+`/runtime/workspace/project/<record-id>` 作为 OpenHands workspace root。`record-id` 必须由记录解析器给出，
+绝不能以 Runtime owner FlowRun ID、Attempt、逻辑工作目录或物理 mount 推导；嵌套连续记录使用自身的记录
+ID 作为逻辑根，并可复用父 FlowRun 的物理 Runtime allocation。不同记录即使共享该 allocation，也必须隔离。
 
 ## 2. OpenHands 能力事实与架构选择
 

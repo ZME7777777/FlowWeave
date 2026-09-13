@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`IN PROGRESS`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`NONE（等待 FR-400 部署验收）`
+> 下一可执行切片：`NONE（等待 FR-401 部署验收）`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -159,7 +159,8 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-397 | 历史 Runtime owner 阻塞无法在修复后恢复 | DONE | 仅对明确记录旧 `RUNTIME_ALLOCATION_OWNER_INVALID` 的自动启动 Runtime 投递失败，以 CAS 重新投递同一 Attempt 的启动任务；继续复用 FlowRun Runtime。 |
 | FR-398 | 长会话消息被手动展开按钮截断 | DONE | 删除长 Markdown 的预览阈值与“渲染完整消息”按钮；已完成回复／历史会话直接完整渲染，运行中继续由现有 native delta 流逐步追加并遵守阅读锁。 |
 | FR-399 | 共享 FlowRun 项目根被 Runtime 误判为非法工作区 | DONE | 将共享物理 `project` mount 下的规范记录目录作为 OpenHands 逻辑根，并将明确的历史工作区身份失败纳入同一启动恢复。 |
-| FR-400 | FlowRun 记录工作区语义统一 | DONE | 所有运行模式均以逻辑 FlowRun ID 作为唯一记录工作区根；所有新建／共享 Attempt 和节点会话入口传入 `/runtime/workspace/project/<flow-run-id>`，不按 NodeRun、Attempt 或逻辑子目录分裂根。 |
+| FR-400 | 记录工作区根入口统一 | DONE | 所有新建／共享 Attempt 和节点会话入口统一传入记录根，不再传物理 mount、Attempt 或逻辑子目录。 |
+| FR-401 | 记录 ID 与 Runtime owner 身份分离 | DONE | 恢复以产品记录 ID 而非 FlowRun Runtime owner 选择 `project/<record-id>`，使共享 Runtime 中的不同记录继续隔离。 |
 
 ### FR-366 FlowWeave 专属 Docker 地址规划 — DONE
 
@@ -365,9 +366,19 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 
 依赖：`FR-399`。
 
-目标：运行模式不定义工作区身份。连续、逐步与直接运行的每个逻辑 FlowRun 都只有一个记录根，所有 NodeRun、Attempt、自动启动、节点会话恢复、附件上传和工作目录选择均传入 `/runtime/workspace/project/<flow-run-id>`；不得再以 NodeRun ID、Attempt ID 或工作目录子路径作为 OpenHands workspace root。嵌套导入记录继续用自己的 FlowRun ID 作为逻辑记录根，同时复用父 FlowRun 的唯一 Runtime allocation。历史 Attempt-private Runtime 仅保持既有只读兼容，不迁移、不合并或重新创建。
+目标：所有入口都必须传入 `/runtime/workspace/project/<record-id>`；不得再传物理 mount、Attempt ID 或工作目录子路径作为 OpenHands workspace root。嵌套导入记录继续用自身的记录 ID 作为逻辑根，同时复用父 FlowRun 的唯一 Runtime allocation。历史 Attempt-private Runtime 仅保持既有只读兼容，不迁移、不合并或重新创建。
 
-完成：`flow_run_record_id()` 现在对自动、逐步与直接运行一律返回逻辑 FlowRun ID，规范记录目录固定为 `project/<flow-run-id>`。新建共享 Attempt、节点会话创建／重载、locator 恢复、附件上传和工作目录选择全部使用记录根，物理 `project` mount 与 NodeRun／Attempt／逻辑子目录不再进入 OpenHands workspace root。嵌套记录仍以子 FlowRun ID 作为逻辑根，并继续解析父 FlowRun allocation。只对已有 Attempt-private Runtime 保留原冻结路径的只读兼容；未迁移、合并或重建其历史文件。
+完成：新建共享 Attempt、节点会话创建／重载、locator 恢复、附件上传和工作目录选择全部使用记录根，物理 `project` mount、Attempt 与逻辑子目录不再进入 OpenHands workspace root。记录身份始终由服务端解析，嵌套记录仍使用自身记录 ID 并继续解析父 FlowRun allocation。只对已有 Attempt-private Runtime 保留原冻结路径的只读兼容；未迁移、合并或重建其历史文件。
+
+验收：受影响 Python `py_compile`、Ruff check/format、`test_openhands.py`（143 passed）、`git diff --check` 与任务状态唯一性通过；无迁移、Docker、OpenHands 源码或远端操作。
+
+### FR-401 记录 ID 与 Runtime owner 身份分离 — DONE
+
+依赖：`FR-400`。
+
+目标：共享 Runtime 的物理 owner 仅用于 allocation／网络／能力物化；工作区根必须使用产品记录 ID。连续嵌套记录使用自身 ID，非连续记录使用其 NodeRun 记录 ID；不同记录不得因共享 FlowRun Runtime 而共用目录。
+
+完成：保留 `project/<record-id>` 的规范 OpenHands 根和全部入口的统一传递，但恢复 `flow_run_record_id()` 的产品记录解析：嵌套连续记录使用自身 ID，非连续记录使用 NodeRun 记录 ID。Runtime owner 继续只用于共享 allocation／网络／能力物化，不能进入 workspace root。新增回归覆盖两类记录身份及其规范路径，确保同一 Runtime 下不同记录隔离。
 
 验收：受影响 Python `py_compile`、Ruff check/format、`test_openhands.py`（143 passed）、`git diff --check` 与任务状态唯一性通过；无迁移、Docker、OpenHands 源码或远端操作。
 

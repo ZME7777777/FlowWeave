@@ -392,9 +392,9 @@ def build_runtime_request(
         else None
     )
     workspace_root = (
-        # A logical FlowRun owns one record root regardless of run mode,
-        # NodeRun, Attempt, or selected logical work directory.  The physical
-        # project mount is never an OpenHands workspace root.
+        # A logical execution record owns one root regardless of Attempt or
+        # selected logical work directory. The physical project mount is never
+        # an OpenHands workspace root.
         str(workspace_context.runtime_working_directory)
         if workspace_context is not None
         else "/runtime/workspace/project"
