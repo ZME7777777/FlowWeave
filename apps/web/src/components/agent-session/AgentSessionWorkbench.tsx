@@ -4470,13 +4470,16 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       : turnState === 'paused'
         ? '继续当前 Agent'
         : turnState === 'pausing' ? '正在暂停 Agent' : '正在继续 Agent';
+  const composerHasContent = Boolean(
+    draft.trim() || attachments.length || references.length || workspaceReferences.length || composerAnnotations.length,
+  );
   const composerActionDisabled = !(canWrite || canBootstrap)
     || Boolean(pendingConfirmation)
     || bootstrap.isPending
     || condense.isPending
     || migrateStreaming.isPending
     || Boolean(pendingMigratedSend)
-    || (turnState === 'idle' && ((!draft.trim() && !attachments.length && !references.length) || send.isPending))
+    || (turnState === 'idle' && (!composerHasContent || send.isPending))
     || turnState === 'pausing'
     || turnState === 'resuming';
   const runComposerAction = () => {

@@ -149,6 +149,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-387 | 协作注释草稿交互修正 | DONE | 精确定位引文、发送区详情浮层、可选评论和文件选区添加可用；不改变消息封套或服务端校验。 |
 | FR-388 | 协作引用草稿删除 | DONE | 会话／文件引用 chip 可在发送前移除，且不会修改已发送消息或服务端数据。 |
 | FR-389 | Web 镜像离线运行层修复 | DONE | 移除非运行必需的 Alpine 镜像源／vim 安装，避免无缓存 Web 发布受镜像源权限影响。 |
+| FR-390 | Composer 非文本上下文发送 | DONE | 发送按钮与提交快捷键统一识别注释、图片/附件、会话引用和工作区路径为可发送内容。 |
 
 ### FR-366 FlowWeave 专属 Docker 地址规划 — DONE
 
@@ -397,6 +398,16 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 目标：Web 生产镜像的运行层只应包含固定 Nginx 基础镜像和已构建静态文件；不得因非运行必需的调试工具安装或镜像源切换，使无缓存发布依赖额外 Alpine 包仓库权限。
 
 完成：移除运行层的 Alpine 镜像源改写与 `vim` 安装。固定 digest 的 Nginx 基础镜像、静态产物复制和 Nginx 配置完全不变；生产运行不需要包管理器或 `vim`。
+
+验收：Web TypeScript typecheck、受影响 Web ESLint、生产构建与 `git diff --check`。
+
+### FR-390 Composer 非文本上下文发送 — DONE
+
+依赖：`FR-388`。
+
+目标：发送区只要存在文字、协作注释、图片／附件、会话引用或工作区文件／目录路径任一上下文，即应允许发送；纯空 Composer 继续禁用。按钮状态必须与 Enter／⌘/Ctrl+Enter 的实际提交路径一致。
+
+完成：将发送按钮的禁用条件收敛为与实际提交路径相同的 `composerHasContent` 判定，纳入 `workspaceReferences` 与 `composerAnnotations`。首条 bootstrap 与既有会话均继续通过既有消息封套发送这些上下文；未改动服务端空消息门禁、OpenHands 或消息元信息结构。
 
 验收：Web TypeScript typecheck、受影响 Web ESLint、生产构建与 `git diff --check`。
 
