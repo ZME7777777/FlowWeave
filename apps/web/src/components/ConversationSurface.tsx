@@ -1163,7 +1163,11 @@ function AnnotationReplyContent({ content, annotations, onLocateAnnotation }: {
       type="button"
       className="conversation-annotation-marker"
       aria-expanded={openedAnnotation?.id === part.annotation.id}
-      onClick={() => setOpenedAnnotationId(current => current === part.annotation!.id ? undefined : part.annotation!.id)}
+      onPointerUp={event => event.stopPropagation()}
+      onClick={() => {
+        setOpenedAnnotationId(current => current === part.annotation!.id ? undefined : part.annotation!.id);
+        onLocateAnnotation?.(part.annotation!);
+      }}
     ><Quote size={12}/><span>注释 {annotations.findIndex(annotation => annotation.id === part.annotation!.id) + 1}</span></button> : part.content && <MessageMarkdown key={index}>{part.content}</MessageMarkdown>)}
     {openedAnnotation && <aside className="conversation-annotation-card" aria-label={`注释 ${annotations.findIndex(annotation => annotation.id === openedAnnotation.id) + 1}`}>
       <header><span><Quote size={13}/>注释 {annotations.findIndex(annotation => annotation.id === openedAnnotation.id) + 1}</span><button type="button" aria-label="关闭注释" onClick={() => setOpenedAnnotationId(undefined)}>×</button></header>
