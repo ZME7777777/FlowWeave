@@ -335,12 +335,11 @@ function itemsFor(event: OpenHandsConversationEvent): Item[] {
       : content;
     return [{ event, kind: isUser ? 'user' : 'assistant', title: '', content: isUser ? displayContent : content }];
   }
-  // ThinkAction is a native, non-terminal progress event. Render its content
-  // as ordinary text, without exposing the implementation-oriented tool name.
-  if (event.event_type === 'THOUGHT' && eventName === 'ThinkAction') {
+  // THOUGHT is the native, non-terminal progress event. Render its safe
+  // content as ordinary text, without exposing an implementation tool name.
+  if (event.event_type === 'THOUGHT') {
     return [{ event, kind: 'thought', title: '', content: thought || content }];
   }
-  if (event.event_type === 'THOUGHT') return [{ event, kind: 'thought', title: '分析', content: thought || content }];
   if (event.event_type === 'CONDENSATION_REQUESTED') return [{ event, kind: 'condensation', title: '正在自动压缩上下文', content: '' }];
   if (event.event_type === 'CONDENSATION_COMPLETED') return [{ event, kind: 'condensation', title: '已自动压缩上下文', content: '' }];
   if (event.event_type === 'TOOL_CALL') return [{ event, kind: 'tool', title: eventName, content: thought || content }];
@@ -1064,7 +1063,7 @@ function ActivityEntryRow({ entry, active, avatarSlots, workspaceRoot }: {
   const taskAvatar = avatarSlot && <SubagentAvatar slot={avatarSlot} status={taskAvatarStatus(entry, item)} size={14}/>;
   const presentation = activityPresentation(entry, active, workspaceRoot);
   const toolDetail = item.kind === 'tool' ? <ToolDetailPanel presentation={presentation} eventName={eventName} results={entry.results} workspaceRoot={workspaceRoot}/> : null;
-  const isNativeThink = item.event.event_type === 'THOUGHT' && eventName === 'ThinkAction';
+  const isNativeThink = item.event.event_type === 'THOUGHT';
   if (item.kind === 'thought') return <article className={`conversation-activity-row thought${isNativeThink ? ' native-think' : ''}`}>
     <MessageMarkdown>{presentation.thought ?? item.content}</MessageMarkdown>
   </article>;
