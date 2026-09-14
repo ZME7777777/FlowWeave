@@ -4936,10 +4936,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const eventProgress = eventLimit
     ? Math.min(100, Math.round((activeEventCount / eventLimit) * 100))
     : 0;
-  const compactionThreshold = Math.round((contextQuery.data?.proactive_compaction_ratio ?? 0.8) * 100);
+  const compactionThresholdTokens = contextQuery.data?.proactive_compaction_tokens ?? 256_000;
   const manualCompactionNeedsConfirmation = contextProgress !== undefined
-    && contextProgress.percentage < compactionThreshold
-    && eventProgress < compactionThreshold;
+    && contextProgress.used < compactionThresholdTokens
+    && eventProgress < 80;
   const requestManualCompaction = () => {
     if (manualCompactionNeedsConfirmation) {
       setCondensationConfirmationOpen(true);
@@ -4948,7 +4948,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     condense.mutate();
   };
   const contextTitle = contextProgress
-    ? `Token：OpenHands 当前 View ${contextProgress.used.toLocaleString()} / ${contextProgress.window.toLocaleString()}（${contextProgress.percentage}%）；达到 ${Math.round((contextQuery.data?.proactive_compaction_ratio ?? 0.8) * 100)}% 时发送前主动调用原生压缩`
+    ? `Token：OpenHands 当前 View ${contextProgress.used.toLocaleString()} / ${contextProgress.window.toLocaleString()}（${contextProgress.percentage}%）；达到 ${compactionThresholdTokens.toLocaleString()} tokens 时发送前主动调用原生压缩`
     : undefined;
   const tokenPendingLabel = contextQuery.isLoading
     ? '读取中'
@@ -5168,7 +5168,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         <footer>
           <div className="agent-composer-context">
             {features.attachments && (selected || conversationDraft) && <><input ref={attachmentInput} aria-label="上传附件" type="file" multiple hidden onChange={event => { if (composerScope) for (const file of Array.from(event.target.files ?? [])) upload.mutate({ file, scope: composerScope }); event.currentTarget.value = ''; }}/><button type="button" aria-label="添加附件" disabled={!canCompose || Boolean(pendingConfirmation) || upload.isPending} onClick={() => attachmentInput.current?.click()}><Plus size={17}/></button></>}
-            {contextProgress ? <span className="agent-context-progress token" title={contextTitle} aria-label={`Token 上下文用量 ${contextProgress.percentage}%，80% 时主动压缩`}><i style={{ '--context-progress': `${contextProgress.percentage}%` } as CSSProperties}/><em><small>Token</small>{contextProgress.usedLabel} / {contextProgress.windowLabel}</em></span> : (selected || conversationDraft) && <span className="agent-context-progress token pending" title={tokenPendingTitle} aria-label={`Token 上下文用量${tokenPendingLabel}`}><i style={{ '--context-progress': '0%' } as CSSProperties}/><em><small>Token</small>{tokenPendingLabel}</em></span>}
+            {contextProgress ? <span className="agent-context-progress token" title={contextTitle} aria-label={`Token 上下文用量 ${contextProgress.percentage}%，达到 ${compactionThresholdTokens.toLocaleString()} tokens 时主动压缩`}><i style={{ '--context-progress': `${contextProgress.percentage}%` } as CSSProperties}/><em><small>Token</small>{contextProgress.usedLabel} / {contextProgress.windowLabel}</em></span> : (selected || conversationDraft) && <span className="agent-context-progress token pending" title={tokenPendingTitle} aria-label={`Token 上下文用量${tokenPendingLabel}`}><i style={{ '--context-progress': '0%' } as CSSProperties}/><em><small>Token</small>{tokenPendingLabel}</em></span>}
             {(selected || conversationDraft) && <span className="agent-context-progress activity events" title={activityTitle} aria-label={`当前活动事件 ${activeEventCount} 条，上限 ${eventLimit} 条`}><i style={{ '--context-progress': `${eventProgress}%` } as CSSProperties}/><em><small>事件</small>{exactCount(activeEventCount)} / {exactCount(eventLimit)}</em></span>}
             {composerStatus && <span className="agent-composer-status">{composerStatus}</span>}
             {composerNote && <span className="agent-composer-note">{composerNote}</span>}

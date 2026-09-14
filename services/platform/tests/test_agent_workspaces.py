@@ -2779,11 +2779,11 @@ def test_agent_workspace_conversation_page_uses_exact_native_terminal_status(
         assert page["items"][0]["execution_status"] == "error"
 
 
-def test_agent_workspace_proactively_condenses_at_native_eighty_percent_before_send(
+def test_agent_workspace_proactively_condenses_at_256k_tokens_before_send(
     settings, db_session_factory, monkeypatch
 ):
     class ProactiveCompactionRuntime(MockRuntime):
-        used_tokens = 79_999
+        used_tokens = 255_999
         fail_compaction = False
         unsafe_summary = False
         calls: list[str] = []
@@ -2810,7 +2810,7 @@ def test_agent_workspace_proactively_condenses_at_native_eighty_percent_before_s
             del handle
             return {
                 "used_tokens": self.used_tokens,
-                "window_tokens": 100_000,
+                "window_tokens": 922_000,
                 "cumulative_tokens": self.used_tokens,
                 "provider_id": "provider-1",
                 "model_name": "test-model",
@@ -2900,7 +2900,7 @@ def test_agent_workspace_proactively_condenses_at_native_eighty_percent_before_s
         assert runtime.calls == ["send:below"]
 
         runtime.calls.clear()
-        runtime.used_tokens = 80_000
+        runtime.used_tokens = 256_000
         at_threshold = conversations.message(db, workspace.id, created["id"], "threshold")
         assert at_threshold["compacted"] is True
         assert runtime.calls == ["condense", "send:threshold"]
@@ -2926,7 +2926,7 @@ def test_agent_workspace_proactively_condenses_at_native_eighty_percent_before_s
         assert runtime.calls == ["condense", "navigate:thought-after-first-condensation"]
 
         runtime.fail_compaction = False
-        runtime.used_tokens = 80_000
+        runtime.used_tokens = 256_000
         runtime.unsafe_summary = True
         runtime.calls.clear()
         with pytest.raises(DomainError) as unsafe:
@@ -2948,7 +2948,7 @@ def test_agent_workspace_proactively_condenses_at_native_eighty_percent_before_s
             ),
         )
         refreshed = conversations.conversation_context(db, workspace.id, created["id"])
-        assert refreshed["used_tokens"] == 80_000
+        assert refreshed["used_tokens"] == 256_000
         assert refreshed["usage_current"] is True
 
 
@@ -3078,6 +3078,8 @@ def test_agent_workspace_uses_native_attachments_context_and_model_switch(
                 "cumulative_tokens": 456,
                 "model_name": "test-model",
                 "reasoning_effort": "medium",
+                "condenser_max_size": 10_000,
+                "condenser_max_tokens": 256_000,
             }
 
         def switch_model(self, handle, provider):
@@ -3169,9 +3171,10 @@ def test_agent_workspace_uses_native_attachments_context_and_model_switch(
             "cumulative_tokens": 456,
             "model_name": "test-model",
             "reasoning_effort": "medium",
+            "condenser_max_size": 10_000,
+            "condenser_max_tokens": 256_000,
             "usage_current": True,
-            "proactive_compaction_ratio": 0.8,
-            "proactive_compaction_tokens": 102_400,
+            "proactive_compaction_tokens": 256_000,
             "compaction_policy_current": True,
         }
         # Selecting a provider/model is persisted immediately on the individual
@@ -3440,7 +3443,7 @@ def test_agent_workspace_forks_at_native_event_and_condenses_manually(
     settings, db_session_factory, monkeypatch
 ):
     class ForkRuntime(MockRuntime):
-        fork_call: tuple[str | None, str, bool, int, float | None] | None = None
+        fork_call: tuple[str | None, str, bool, int, int | None, float | None] | None = None
         condensed = False
         head = "assistant-event"
         active_events: tuple[RuntimeEvent, ...] = (
@@ -3476,6 +3479,7 @@ def test_agent_workspace_forks_at_native_event_and_condenses_manually(
                 kwargs["expected_source_leaf_event_id"],
                 kwargs["reset_metrics"],
                 kwargs["condenser"].max_size,
+                kwargs["condenser"].max_tokens,
                 kwargs["condenser"].max_tokens_ratio,
             )
             return super().fork_conversation(handle, **kwargs)
@@ -3564,7 +3568,8 @@ def test_agent_workspace_forks_at_native_event_and_condenses_manually(
             "assistant-event",
             True,
             10_000,
-            0.8,
+            256_000,
+            None,
         )
         assert (
             conversations.fork_conversation(

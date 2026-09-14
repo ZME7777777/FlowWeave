@@ -689,17 +689,17 @@ test('top-level Agent workspace creates a direct conversation and restores its U
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(forkContext ? {
         used_tokens: null, window_tokens: 922_000, cumulative_tokens: 0,
         model_name: 'gpt-test', reasoning_effort: 'high', usage_current: true,
-        proactive_compaction_ratio: 0.8, proactive_compaction_tokens: 737_600, compaction_policy_current: false,
+        proactive_compaction_tokens: 256_000, compaction_policy_current: false,
         condenser_max_size: 240,
       } : manualCondensations ? {
         used_tokens: null, window_tokens: 922_000, cumulative_tokens: 12_716,
         model_name: 'gpt-test', reasoning_effort: 'high', usage_current: false,
-        proactive_compaction_ratio: 0.8, proactive_compaction_tokens: 737_600, compaction_policy_current: true,
+        proactive_compaction_tokens: 256_000, compaction_policy_current: true,
         condenser_max_size: 10_000,
       } : contextAvailable ? {
         used_tokens: 6_380, window_tokens: 922_000, cumulative_tokens: 12_716,
         model_name: 'gpt-test', reasoning_effort: 'high', usage_current: true,
-        proactive_compaction_ratio: 0.8, proactive_compaction_tokens: 737_600, compaction_policy_current: true,
+        proactive_compaction_tokens: 256_000, compaction_policy_current: true,
         condenser_max_size: 10_000,
       } : {
         used_tokens: 0, window_tokens: 922_000, cumulative_tokens: 12_716,
@@ -771,8 +771,8 @@ test('top-level Agent workspace creates a direct conversation and restores its U
           ...(compactionScenario ? [
             { id: 'compaction-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'failure-event', content: '完成压缩后继续检查', timestamp: '2026-08-26T10:10:00Z' } },
             { id: 'before-compaction', event_type: 'THOUGHT', payload: { source: 'agent', parent_id: 'compaction-user', content: '先整理当前信息。', timestamp: '2026-08-26T10:10:02Z' } },
-            { id: 'automatic-condensation-request', event_type: 'CONDENSATION_REQUESTED', payload: { source: 'agent', parent_id: 'before-compaction', condensation_reason_detail: 'Token 已达到 80% 主动压缩阈值。', timestamp: '2026-08-26T10:10:10Z' } },
-            { id: 'automatic-condensation-completed', event_type: 'CONDENSATION_COMPLETED', payload: { source: 'agent', parent_id: 'automatic-condensation-request', condensation_request_event_id: 'automatic-condensation-request', forgotten_event_ids: ['before-compaction'], condensation_reason_detail: 'Token 已达到 80% 主动压缩阈值。', condensation_triggered_at: '2026-08-26T10:10:10Z', condensation_completed_at: '2026-08-26T10:10:12Z', timestamp: '2026-08-26T10:10:12Z' } },
+            { id: 'automatic-condensation-request', event_type: 'CONDENSATION_REQUESTED', payload: { source: 'agent', parent_id: 'before-compaction', condensation_reason_detail: 'Token 已达到 256,000 主动压缩阈值。', timestamp: '2026-08-26T10:10:10Z' } },
+            { id: 'automatic-condensation-completed', event_type: 'CONDENSATION_COMPLETED', payload: { source: 'agent', parent_id: 'automatic-condensation-request', condensation_request_event_id: 'automatic-condensation-request', forgotten_event_ids: ['before-compaction'], condensation_reason_detail: 'Token 已达到 256,000 主动压缩阈值。', condensation_triggered_at: '2026-08-26T10:10:10Z', condensation_completed_at: '2026-08-26T10:10:12Z', timestamp: '2026-08-26T10:10:12Z' } },
             { id: 'after-compaction-tool', event_type: 'TOOL_CALL', payload: { source: 'agent', parent_id: 'automatic-condensation-completed', action_id: 'after-compaction-tool', tool_call_id: 'after-compaction-call', event_name: 'TerminalAction', details: { command: 'git status --short' }, timestamp: '2026-08-26T10:10:14Z' } },
             { id: 'after-compaction-result', event_type: 'TOOL_RESULT', payload: { source: 'environment', parent_id: 'after-compaction-tool', action_id: 'after-compaction-tool', tool_call_id: 'after-compaction-call', event_name: 'TerminalObservation', content: 'clean', details: { command: 'git status --short', exit_code: 0 }, timestamp: '2026-08-26T10:10:16Z' } },
             { id: 'after-compaction-reply', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'after-compaction-result', content: '压缩后检查完成。', timestamp: '2026-08-26T10:10:20Z' } },
@@ -1035,7 +1035,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   contextAvailable = true;
   await page.reload();
   await expect(page.locator('.agent-context-progress.token')).toContainText('Token6,380 / 922,000');
-  await expect(page.locator('.agent-context-progress.token')).toHaveAttribute('title', /OpenHands 当前 View.*80%/);
+  await expect(page.locator('.agent-context-progress.token')).toHaveAttribute('title', /OpenHands 当前 View.*256,000 tokens/);
   await expect(page.locator('.agent-context-progress.activity')).toContainText(/事件\d+ \/ 10,000/);
   await expect(page.locator('.agent-context-progress.activity')).toHaveAttribute('title', /当前活动事件.*10,000/);
   const composerAfterReload = page.getByLabel('发送 Agent 消息');
@@ -1078,7 +1078,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(compactionProcesses).toHaveCount(2);
   await expect(compactionProcesses.nth(0).getByText('耗时 10秒')).toBeVisible();
   await expect(compactionProcesses.nth(1).getByText('耗时 8秒')).toBeVisible();
-  await expect(compactionTurn.getByLabel('上下文压缩记录')).toContainText('Token 已达到 80% 主动压缩阈值');
+  await expect(compactionTurn.getByLabel('上下文压缩记录')).toContainText('Token 已达到 256,000 主动压缩阈值');
   await expect(compactionTurn.locator('.conversation-condensation-notice').first()).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
   await expect.poll(() => compactionTurn.evaluate(turn => [...turn.children].map(block => block.className))).toEqual([
     'conversation-message user',

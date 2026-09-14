@@ -23,6 +23,7 @@ from flowweave.modules.agent_sessions.application.event_branch import (
     complete_active_branch,
 )
 from flowweave.modules.agent_sessions.application.runtime_config import (
+    PROACTIVE_COMPACTION_TOKENS,
     build_agent_spec,
     config_from_binding,
     provider_for_config,
@@ -64,7 +65,6 @@ from flowweave.shared.observability import current_metrics
 from flowweave.shared.settings import get_settings
 
 _PROJECT_ROOT = "/runtime/workspace/project"
-_PROACTIVE_COMPACTION_RATIO = 0.8
 _AGENT_WORKSPACE_CONDENSER_MAX_EVENTS = 10_000
 _DYNAMIC_CAPABILITY_TYPES = frozenset({"SKILL", "MCP", "PLUGIN"})
 _CREATION_CAPABILITY_TYPES = _DYNAMIC_CAPABILITY_TYPES | {"CONTEXT", "AGENT_DEFINITION", "HOOK"}
@@ -2431,7 +2431,7 @@ def message(
             condenser=RuntimeCondenser(
                 kind="LLM_SUMMARIZING",
                 max_size=_AGENT_WORKSPACE_CONDENSER_MAX_EVENTS,
-                max_tokens_ratio=_PROACTIVE_COMPACTION_RATIO,
+                max_tokens=PROACTIVE_COMPACTION_TOKENS,
                 keep_first=4,
             ),
             condenser_provider=recovery_provider,
@@ -3056,18 +3056,14 @@ def _context_usage_is_current(runtime: Any, handle: RuntimeHandle) -> bool:
 def _proactive_compaction_required(
     runtime: Any, handle: RuntimeHandle, context: dict[str, Any]
 ) -> bool:
-    """Use only OpenHands' registered current-View usage and window."""
+    """Use only OpenHands' registered current-View usage."""
 
     used_tokens = context.get("used_tokens")
-    window_tokens = context.get("window_tokens")
     return (
         _context_usage_is_current(runtime, handle)
         and isinstance(used_tokens, int)
         and not isinstance(used_tokens, bool)
-        and isinstance(window_tokens, int)
-        and not isinstance(window_tokens, bool)
-        and window_tokens > 0
-        and used_tokens >= int(window_tokens * _PROACTIVE_COMPACTION_RATIO)
+        and used_tokens >= PROACTIVE_COMPACTION_TOKENS
     )
 
 
@@ -3098,26 +3094,21 @@ def _conversation_context_snapshot(
             "agent_session.context", time.monotonic() - started_at, outcome="ok"
         )
     usage_current = _context_usage_is_current(runtime, handle)
-    window_tokens = context.get("window_tokens")
-    threshold_tokens = (
-        int(window_tokens * _PROACTIVE_COMPACTION_RATIO)
-        if isinstance(window_tokens, int)
-        and not isinstance(window_tokens, bool)
-        and window_tokens > 0
-        else None
-    )
     condenser_max_size = context.get("condenser_max_size")
-    compaction_policy_current = not (
+    condenser_max_tokens = context.get("condenser_max_tokens")
+    compaction_policy_current = (
         isinstance(condenser_max_size, int)
         and not isinstance(condenser_max_size, bool)
-        and condenser_max_size < _AGENT_WORKSPACE_CONDENSER_MAX_EVENTS
+        and condenser_max_size == _AGENT_WORKSPACE_CONDENSER_MAX_EVENTS
+        and isinstance(condenser_max_tokens, int)
+        and not isinstance(condenser_max_tokens, bool)
+        and condenser_max_tokens == PROACTIVE_COMPACTION_TOKENS
     )
     return {
         **context,
         "used_tokens": context.get("used_tokens") if usage_current else None,
         "usage_current": usage_current,
-        "proactive_compaction_ratio": _PROACTIVE_COMPACTION_RATIO,
-        "proactive_compaction_tokens": threshold_tokens,
+        "proactive_compaction_tokens": PROACTIVE_COMPACTION_TOKENS,
         "compaction_policy_current": compaction_policy_current,
     }
 
@@ -3365,7 +3356,7 @@ def _fork_conversation(
             condenser=RuntimeCondenser(
                 kind="LLM_SUMMARIZING",
                 max_size=_AGENT_WORKSPACE_CONDENSER_MAX_EVENTS,
-                max_tokens_ratio=_PROACTIVE_COMPACTION_RATIO,
+                max_tokens=PROACTIVE_COMPACTION_TOKENS,
                 keep_first=4,
             ),
             condenser_provider=fork_provider,
@@ -3388,6 +3379,12 @@ def _fork_conversation(
             raise DomainError(
                 "RUNTIME_FORK_POLICY_DRIFT",
                 "分叉会话上下文压缩策略校验失败",
+                409,
+            )
+        if fork_context.get("condenser_max_tokens") != PROACTIVE_COMPACTION_TOKENS:
+            raise DomainError(
+                "RUNTIME_FORK_POLICY_DRIFT",
+                "分叉会话上下文 Token 压缩阈值校验失败",
                 409,
             )
         if migration_provider_id is not None:
@@ -3560,7 +3557,10 @@ def resume(db: Session, workspace_id: str, binding_id: str) -> dict[str, Any]:
         # conversations created before a transport-policy release receive the
         # current bounded retry/timeout configuration.
         runtime.switch_model(handle, provider)
-    if _uses_legacy_compaction_policy(runtime.conversation_context(handle)):
+    context = runtime.conversation_context(handle)
+    if _uses_legacy_compaction_policy(context) or _proactive_compaction_required(
+        runtime, handle, context
+    ):
         _safe_native_compaction(runtime, handle)
     result = runtime.run(handle)
     return {"accepted": True, "cursor": result.cursor}
@@ -3569,7 +3569,6 @@ def resume(db: Session, workspace_id: str, binding_id: str) -> dict[str, Any]:
 # Shared FlowRun-node conversations use these helpers while retaining one
 # implementation for native Agent Workspace conversations.  Public aliases
 # keep that dependency explicit without exposing underscore-prefixed details.
-PROACTIVE_COMPACTION_RATIO = _PROACTIVE_COMPACTION_RATIO
 AGENT_WORKSPACE_CONDENSER_MAX_EVENTS = _AGENT_WORKSPACE_CONDENSER_MAX_EVENTS
 ATTACHMENT_PATH = _ATTACHMENT_PATH
 enqueue_title_task = _enqueue_title_task
@@ -3578,6 +3577,8 @@ initial_user_event_id = _initial_user_event_id
 message_payload = _message_payload
 project_conversation_references = _project_conversation_references
 resolve_conversation_references = _resolve_conversation_references
+proactive_compaction_required = _proactive_compaction_required
 record_message_attachments = _record_message_attachments
+safe_native_compaction = _safe_native_compaction
 validate_attachment_owners = _validate_attachment_owners
 validated_workspace_references = _validated_workspace_references

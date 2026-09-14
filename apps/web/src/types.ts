@@ -696,7 +696,6 @@ export interface AgentConversationContext {
   model_name?: string | null; reasoning_effort?: string | null;
   condenser_max_size?: number | null;
   usage_current?: boolean;
-  proactive_compaction_ratio?: number;
   proactive_compaction_tokens?: number | null;
   compaction_policy_current?: boolean;
 }

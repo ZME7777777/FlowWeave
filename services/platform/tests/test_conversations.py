@@ -1595,10 +1595,13 @@ def test_running_node_message_dispatch_has_no_database_dependency(
 
     monkeypatch.setattr(flow_node_conversations, "get_runtime", lambda: RunningRuntime())
 
-    result, queued_during_turn = flow_node_conversations.dispatch_running_node_message(prepared)
+    result, queued_during_turn, compacted = flow_node_conversations.dispatch_running_node_message(
+        prepared
+    )
 
     assert result == RuntimeResult(status="RUNNING", cursor="native-user-event")
     assert queued_during_turn is True
+    assert compacted is False
     assert sent == ["请继续处理"]
 
 
@@ -1635,6 +1638,12 @@ def test_idle_node_message_dispatch_rebinds_then_sends_without_database(
             assert actual_provider is provider
             calls.append("switch")
 
+        def conversation_context(self, _handle: RuntimeHandle) -> dict[str, int]:
+            return {"used_tokens": 255_999, "window_tokens": 922_000}
+
+        def read_active_events(self, _handle: RuntimeHandle) -> RuntimeEventBatch:
+            return RuntimeEventBatch(events=())
+
         def send_message(
             self, _handle: RuntimeHandle, content: str, _images: tuple[str, ...]
         ) -> RuntimeResult:
@@ -1644,10 +1653,13 @@ def test_idle_node_message_dispatch_rebinds_then_sends_without_database(
 
     monkeypatch.setattr(flow_node_conversations, "get_runtime", lambda: IdleRuntime())
 
-    result, queued_during_turn = flow_node_conversations.dispatch_running_node_message(prepared)
+    result, queued_during_turn, compacted = flow_node_conversations.dispatch_running_node_message(
+        prepared
+    )
 
     assert result == RuntimeResult(status="RUNNING", cursor="native-user-event")
     assert queued_during_turn is False
+    assert compacted is False
     assert calls == ["switch", "send"]
 
 
@@ -1686,9 +1698,12 @@ def test_node_message_model_validation_waits_for_an_idle_rebind(
 
     running = Runtime(RuntimeInputReadiness(ready=False, execution_status="running"))
     monkeypatch.setattr(flow_node_conversations, "get_runtime", lambda: running)
-    result, queued_during_turn = flow_node_conversations.dispatch_running_node_message(prepared)
+    result, queued_during_turn, compacted = flow_node_conversations.dispatch_running_node_message(
+        prepared
+    )
     assert result.cursor == "native-user-event"
     assert queued_during_turn is True
+    assert compacted is False
     assert running.sent is True
 
     idle = Runtime(RuntimeInputReadiness(ready=True, execution_status="idle"))

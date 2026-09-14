@@ -947,7 +947,7 @@ async def node_session_message(
             **arguments,
         ),
     )
-    result, queued_during_turn = await run_blocking(
+    result, queued_during_turn, compacted = await run_blocking(
         container,
         lambda _session: agent_sessions.flow_node_conversations.dispatch_running_node_message(
             prepared
@@ -960,6 +960,7 @@ async def node_session_message(
             prepared,
             result,
             queued_during_turn=queued_during_turn,
+            compacted=compacted,
         ),
     )
 

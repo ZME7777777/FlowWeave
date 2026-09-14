@@ -20,15 +20,16 @@ from flowweave.modules.agent_sessions.application import usage as usage_projecti
 from flowweave.modules.agent_sessions.application.conversations import (
     AGENT_WORKSPACE_CONDENSER_MAX_EVENTS,
     ATTACHMENT_PATH,
-    PROACTIVE_COMPACTION_RATIO,
     enqueue_title_task,
     frozen_runtime_capability,
     initial_user_event_id,
     message_payload,
     normalized_first_sentence,
+    proactive_compaction_required,
     project_conversation_references,
     record_message_attachments,
     resolve_conversation_references,
+    safe_native_compaction,
     validate_attachment_owners,
     validated_user_message_event,
     validated_workspace_references,
@@ -41,6 +42,7 @@ from flowweave.modules.agent_sessions.application.flow_node_locator import (
     binding_locator,
 )
 from flowweave.modules.agent_sessions.application.runtime_config import (
+    PROACTIVE_COMPACTION_TOKENS,
     FrozenSessionConfig,
     build_agent_spec,
     config_from_binding,
@@ -2150,6 +2152,9 @@ def send_question(
         provider = provider_for_config(db, config_from_binding(db, item))
         if provider is not None:
             runtime.switch_model(handle, provider)
+        context = runtime.conversation_context(handle)
+        if proactive_compaction_required(runtime, handle, context):
+            safe_native_compaction(runtime, handle)
     result = runtime.send_message(handle, text, image_urls)
     _observe_task_watchdogs_after_send(db, item, handle)
     db.add(
@@ -2290,7 +2295,7 @@ def prepare_running_node_message(
 
 def dispatch_running_node_message(
     prepared: PreparedRunningNodeMessage,
-) -> tuple[RuntimeResult, bool]:
+) -> tuple[RuntimeResult, bool, bool]:
     """Rebind if idle, then append one native event without database I/O."""
 
     runtime = get_runtime()
@@ -2298,14 +2303,6 @@ def dispatch_running_node_message(
     queued_during_turn = not readiness.ready
     if queued_during_turn and not _accepts_queued_user_message(readiness.execution_status):
         raise DomainError("AGENT_CONVERSATION_BUSY", "Agent 正在处理停止或确认请求，请稍候", 409)
-    diagnostic = getattr(runtime, "log_delivery_diagnostic", None)
-    if callable(diagnostic):
-        diagnostic(
-            prepared.handle,
-            operation=("node_running_dispatch" if queued_during_turn else "node_idle_dispatch"),
-            readiness=readiness,
-            model_rebind=not queued_during_turn and prepared.provider is not None,
-        )
     references = resolve_conversation_references(runtime, prepared.handle, prepared.references)
     prompt, image_urls = message_payload(
         prepared.content,
@@ -2319,8 +2316,29 @@ def dispatch_running_node_message(
             raise prepared.provider_error
         if prepared.provider is not None:
             runtime.switch_model(prepared.handle, prepared.provider)
+        context = runtime.conversation_context(prepared.handle)
+        if proactive_compaction_required(runtime, prepared.handle, context):
+            safe_native_compaction(runtime, prepared.handle)
+            compacted = True
+        else:
+            compacted = False
+    else:
+        compacted = False
+    diagnostic = getattr(runtime, "log_delivery_diagnostic", None)
+    if callable(diagnostic):
+        diagnostic(
+            prepared.handle,
+            operation=("node_running_dispatch" if queued_during_turn else "node_idle_dispatch"),
+            readiness=readiness,
+            model_rebind=not queued_during_turn and prepared.provider is not None,
+            compaction=compacted,
+        )
     try:
-        return runtime.send_message(prepared.handle, prompt, image_urls), queued_during_turn
+        return (
+            runtime.send_message(prepared.handle, prompt, image_urls),
+            queued_during_turn,
+            compacted,
+        )
     except DomainError as exc:
         if exc.status >= 500:
             raise DomainError(
@@ -2335,6 +2353,7 @@ def finalize_running_node_message(
     result: RuntimeResult,
     *,
     queued_during_turn: bool,
+    compacted: bool,
 ) -> dict[str, Any]:
     """Project a confirmed native append in a short fenced transaction."""
 
@@ -2372,7 +2391,7 @@ def finalize_running_node_message(
     return {
         "accepted": True,
         "cursor": result.cursor,
-        "compacted": False,
+        "compacted": compacted,
         "queued_during_turn": queued_during_turn,
     }
 
@@ -2930,7 +2949,7 @@ def fork_node_conversation(
         condenser=RuntimeCondenser(
             kind="LLM_SUMMARIZING",
             max_size=AGENT_WORKSPACE_CONDENSER_MAX_EVENTS,
-            max_tokens_ratio=PROACTIVE_COMPACTION_RATIO,
+            max_tokens=PROACTIVE_COMPACTION_TOKENS,
             keep_first=4,
         ),
         condenser_provider=provider,
