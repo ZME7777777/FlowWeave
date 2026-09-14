@@ -172,6 +172,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-412 | 网站认证源变量命令级映射指导 | DONE | 平台继续按域名选择源凭据变量，同时允许 Agent 在匹配域名的单条命令中将其命令级映射到 Skill/脚本所需变量；禁止全局 export、跨域映射与凭据泄露。 |
 | FR-413 | 网站认证变量映射说明泛化 | DONE | 移除提示词中所有特定 Skill/脚本变量示例，只保留与实现无关的域名匹配、命令级映射和安全边界说明。 |
 | FR-414 | FlowRun 独立终端记录目录预创建 | DONE | FlowRun 终端在服务端创建并验证自身的规范记录目录后再连接，避免不存在的 cwd 使 OCI exec 失败；保持 Provider 的记录级隔离校验。 |
+| FR-416 | 子智能体模型请求策略与墙钟耗时语义 | DONE | 工作台明确展示每次模型请求的 120 秒／3 次重试策略，并将耗时标为 TaskAction 到当前或正式结果的墙钟时间；不伪造 OpenHands 未发布的逐次重试事件。 |
 | FR-415 | FlowRun 独立终端全局项目根修正 | DONE | FlowRun 级终端进入已挂载的全局 `project` 根，因此无需创建节点即可完成对整个 FlowRun 生效的配置；会话／Attempt 终端继续保持记录级路径。 |
 
 ### FR-366 FlowWeave 专属 Docker 地址规划 — DONE
@@ -569,6 +570,23 @@ Runtime 中的其他记录；不再因 Docker exec 在不存在的 `cwd` 上 `ch
 验收：新增 FlowRun 终端目录预创建回归；受影响 Python Ruff check/format、`py_compile`、直接
 运行时断言与 `git diff --check` 通过。定向 pytest 需要 Testcontainers PostgreSQL，但本机 Docker
 socket 不可用，fixture 在断言前失败，未记为通过；未修改数据库、OpenHands、Docker 或远端环境。
+
+### FR-416 子智能体模型请求策略与墙钟耗时语义 — DONE
+
+依赖：`FR-278`、`FR-197`。
+
+目标：子智能体详情必须明确区分 FlowWeave 冻结的单次模型请求策略与 Task 的实际墙钟时间。展示每次请求的
+120 秒上限和最多 3 次失败重试；耗时须明确表示从正式 `TaskAction` 到当前时间或正式
+`TaskObservation` 的经过时间，包含模型调用、退避等待和工具执行。不得将没有正式 OpenHands 事件支持的
+内部 LiteLLM 重试猜测为“已重试 1/3”，不得修改 OpenHands、事件持久化、Runtime 或 API 契约。
+
+完成：子智能体详情新增“模型请求策略：单次最长 120 秒；失败最多重试 3 次”，并将原“运行耗时”改为
+“子任务墙钟耗时”，附加其正式 Task 生命周期的计时边界。页面同时说明当前 OpenHands 只发布 Task 开始、结果
+和终态错误，单次模型重试在上游内部完成而没有正式事件，因而不伪造动态 `1/3` 计数。
+
+验收：Web TypeScript typecheck、ESLint、production build、`git diff --check` 与任务状态唯一性通过。新增的
+Agent 工作台 Playwright 断言会覆盖策略与墙钟耗时标签；本机执行时在既有登录准备阶段等待“Agent 会话”入口超时，
+尚未进入本切片断言，未记为通过。未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。
 
 ### FR-415 FlowRun 独立终端全局项目根修正 — DONE
 

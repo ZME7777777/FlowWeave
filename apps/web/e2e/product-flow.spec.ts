@@ -1101,6 +1101,11 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(completedProcess.getByText('Think · 已完成', { exact: true })).toHaveCount(0);
   await expect(completedProcess.getByRole('button', { name: '查看执行详情：运行失败 false' })).toBeVisible();
   await expect(completedProcess.getByText('子智能体 reviewer · 检查子任务边界')).toBeVisible();
+  await page.getByRole('button', { name: '1 个任务' }).click();
+  const subagentRecord = page.getByLabel('reviewer 任务详情');
+  await expect(subagentRecord.getByText('模型请求策略')).toBeVisible();
+  await expect(subagentRecord.getByText('单次最长 120 秒；失败最多重试 3 次')).toBeVisible();
+  await expect(subagentRecord.getByText('子任务墙钟耗时')).toBeVisible();
   const messageRuler = page.getByRole('navigation', { name: '用户消息导航' });
   await expect(messageRuler).toBeVisible();
   await expect(page.locator('.message-position-navigator, .message-position-preview')).toHaveCount(0);
