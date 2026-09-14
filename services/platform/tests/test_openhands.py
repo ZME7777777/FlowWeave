@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from contextlib import nullcontext
 from dataclasses import replace
 from pathlib import Path, PurePosixPath
@@ -4331,6 +4332,60 @@ def test_openhands_projects_native_conversation_error_details():
         "error_code": "LLMRateLimitError",
         "classification": {"kind": "rate_limit", "retryable": True, "user_action": "retry"},
     }
+
+
+def test_openhands_logs_one_redacted_native_terminal_error_diagnostic(
+    openhands_settings, monkeypatch, caplog
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    error = {
+        "kind": "ConversationErrorEvent",
+        "id": "error-event-private",
+        "source": "environment",
+        "parent_id": "user-event-private",
+        "code": "LLMNoResponseError",
+        "detail": (
+            "Unexpected completed event: <class 'litellm.types.llms.openai."
+            "ResponseIncompleteEvent'> "
+            "Bearer sk-should-not-appear"
+        ),
+        "llm_response_id": "response-private",
+        "classification": {
+            "kind": "transient",
+            "retryable": True,
+            "user_action": "retry",
+        },
+    }
+    state = {"execution_status": "error", "leaf_event_id": "leaf-private"}
+    monkeypatch.setattr(runtime, "_conversation_state", lambda *_args, **_kwargs: state)
+    monkeypatch.setattr(
+        runtime,
+        "_active_event_window",
+        lambda *_args, **_kwargs: ([error], None),
+    )
+    caplog.set_level(logging.WARNING, logger=openhands_module.__name__)
+
+    runtime.read_active_events(_handle())
+    runtime.read_active_events(_handle())
+
+    diagnostics = [
+        record.getMessage()
+        for record in caplog.records
+        if "native_terminal_error_diagnostic" in record.getMessage()
+    ]
+    assert len(diagnostics) == 1
+    message = diagnostics[0]
+    assert "signature=responses_incomplete_event" in message
+    assert "error_code=LLMNoResponseError" in message
+    assert "classification_retryable=True" in message
+    for private_value in (
+        "error-event-private",
+        "user-event-private",
+        "response-private",
+        "leaf-private",
+        "sk-should-not-appear",
+    ):
+        assert private_value not in message
 
 
 def test_openhands_projects_interrupted_agent_error_details():

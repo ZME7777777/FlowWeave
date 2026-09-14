@@ -192,6 +192,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-434 | 错误终态与运行中追加投递呈现修正 | DONE | 空闲或原生错误终态的新消息仍先持久化浏览器投递意图，但不得短暂显示为消息队列；运行中直接追加在收到正式 cursor 前不伪装为已发送气泡或队列，流先到达同一正式 OpenHands 用户事件时立即确认收起，歧义／拒绝项保持可见、可恢复。 |
 | FR-435 | 运行中追加消息的直觉式气泡确认 | DONE | 运行中“调整方向”立即显示用户消息气泡；气泡下方仅在正式 OpenHands user event 或 cursor 未确认前显示“正在追加到当前回复”，拒绝或歧义仍回到可操作投递项。 |
 | FR-436 | 错误终态精确列表投影与首屏收束 | DONE | 会话列表不再把 OpenHands eventually-consistent `search?status=running` 当作运行事实；有界页面逐项读取精确 native readiness。浏览器在 exact readiness 尚未返回时，若最近正式 user turn 已有 OpenHands ERROR／完成事件，立即清除本地运行桥接，不显示转圈、停止或运行中输入提示。 |
+| FR-437 | Responses 不完整终态关联诊断 | DONE | 在 FlowWeave 的正式 OpenHands 事件／状态读取边界，为原生错误终态写入一次脱敏关联日志，区分 Responses 不完整／缺少 completed／其他终态形态；不记录消息、输出、详情、凭据、端点或原始标识。 |
 | FR-415 | FlowRun 独立终端全局项目根修正 | DONE | FlowRun 级终端进入已挂载的全局 `project` 根，因此无需创建节点即可完成对整个 FlowRun 生效的配置；会话／Attempt 终端继续保持记录级路径。 |
 | FR-417 | FlowRun 独立终端挂载感知路径选择 | DONE | FlowRun 级终端按活跃 Runtime 的固定挂载契约选择共享 `project` 根或记录直挂载根，避免历史 Runtime 因不存在 cwd 失败。 |
 
@@ -880,6 +881,27 @@ production build、`git diff --check` 与任务状态唯一性通过。定向 py
 Testcontainers fixture 初始化失败、未进入断言；定向 Playwright 的本切片 error 收束断言已执行，随后在既有
 工作区工具菜单将 `menuitem` 作为 `button` 查找处超时，未记为完整浏览器通过。未修改数据库、OpenHands 源码、
 Runtime Provider、Docker 或持久数据。
+
+### FR-437 Responses 不完整终态关联诊断 — DONE
+
+依赖：`FR-436`。
+
+目标：当正式 OpenHands Conversation／Agent Error 终态在 FlowWeave 投影为失败时，必须保留足以关联同一
+Conversation、原生事件、Runtime、state leaf 和响应终止形态的服务端诊断事实，以区分浏览器投影、
+FlowWeave adapter、OpenHands／LiteLLM Responses 流终态与上游请求级差异。诊断不得新增 Conversation 事实、
+重试、续写、模型切换或 OpenHands 私有协议；不得把用户输入、模型输出、事件 detail、prompt、凭据、endpoint
+或原始 ID 写入日志。
+
+完成：OpenHands Runtime adapter 在正式 REST event page 与 active branch 读取路径中，对每个
+`ConversationErrorEvent`／`AgentErrorEvent` 仅记录一次有界、进程内去重的诊断。日志只携带 SHA-256 截短
+关联摘要、白名单错误码／classification、native execution status 和安全终态 signature；已识别
+`ResponseIncompleteEvent`、缺少 completed response 与其他非预期 terminal event。所有事件文本仅在内存中用于
+signature 分类，绝不传给 logger。
+
+验收：新增无 Docker fixture 的单元回归，模拟含假 Bearer token 的 `ResponseIncompleteEvent` detail，确认重复读取
+只产生一条日志，且日志保留 `LLMNoResponseError`、`responses_incomplete_event` 与 retryable 分类，却不含原始
+event／parent／response／leaf ID 或假 token。受影响 Python Ruff check／format、`py_compile`、两项定向 pytest
+与 `git diff --check` 通过。未修改数据库、OpenHands 源码、Runtime Provider、Docker 或持久数据。
 
 ### FR-415 FlowRun 独立终端全局项目根修正 — DONE
 
@@ -5788,6 +5810,7 @@ contract、冻结策略与既有受控生命周期约束覆盖。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-14 | FR-437 | 受影响 Python Ruff check／format、`py_compile`、`test_openhands.py` 两项无 Docker fixture 定向 pytest、`git diff --check` 与任务状态唯一性 | PASS（直接／静态）：正式 native error 读取现在写入一次脱敏关联诊断，分别标注 REST event page 或 active branch、opaque conversation/event/parent/runtime/response/state-leaf 关联值、白名单错误／classification、native execution status 与 Responses 安全终态 signature。回归使用含假 Bearer token 的不完整 Responses 终态，确认重复读取仅记录一次且不泄露任何原始 ID、detail 或 token；定向 pytest 为 `2 passed, 144 deselected`。未修改数据库、OpenHands 源码、Runtime Provider、Docker 或持久数据。 |
 | 2026-09-14 | FR-436 | 受影响 Python `py_compile`、Ruff F/E 静态检查与格式检查；Web TypeScript typecheck、全量 ESLint、production build、定向 Agent 工作台 Playwright、`git diff --check` 与任务状态唯一性 | PASS（静态／关键浏览器断言）：列表状态改由每个有界页项目的精确 OpenHands readiness 读取，正式 `error` 不再被 stale `search?status=running` 重新投影为转圈；最近正式 user turn 的 ERROR／assistant／Finish 在 readiness 延迟窗口也会收束浏览器运行桥接。产品流已执行列表仍 `running`、exact readiness `error` 的停止按钮／Composer／左侧转圈消失和后续直接发送断言；随后在既有工作区工具 `menuitem` 被错误按 `button` 查找处超时，未记为完整 Playwright 通过。定向 pytest 受本机 Docker socket 缺失阻断于 Testcontainers fixture，未进入断言。production build 仅报告既有大 bundle 建议。 |
 | 2026-09-14 | FR-433 | Web TypeScript typecheck、受影响 Web ESLint、production build、Agent 工作台定向 Playwright、Alembic head、任务状态唯一性与 `git diff --check` | PASS（静态／构建）：OpenHands 正式 `ready=true, execution_status=error/stuck` 现在收束为工作台 idle，保留错误事件但移除会话运行标记、Composer “正在处理”与停止按钮；不会以浏览器 ERROR 事件自行结束仍未完成的 native run。定向 Playwright 已执行新的 error 收束断言，随后在既有“终端”按钮不可见处超时（第 920 行），未记为完整浏览器通过。production build 仅报告既有大 bundle 建议。唯一 Alembic head 为 `0115_agent_annotations`。 |
 | 2026-09-14 | FR-432 | Web TypeScript typecheck、ESLint、production build、Agent 工作台定向 Playwright、任务状态唯一性与 `git diff --check` | PASS（静态／构建）：浏览器继续接收实时 OpenHands 正式事件、过程活动和完成通知，但不再累积或渲染 WebSocket `delta` 为临时最终回复；最终 Markdown 仅由正式 assistant／完成事件一次呈现。定向 Playwright 的新 delta 非呈现断言已执行，完整用例随后在既有“终端”按钮不可见处超时，未记为完整浏览器通过。production build 仅报告既有大 bundle 建议。 |

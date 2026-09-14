@@ -7,7 +7,9 @@ import logging
 import math
 import re
 import tarfile
+import threading
 import time
+from collections import OrderedDict
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -83,6 +85,8 @@ _EVENT_HISTORY_MAX_PAGES = 8
 _CONVERSATION_STATE_PATH = re.compile(r"^/api/conversations/[^/]+$")
 _CONVERSATION_EVENTS_SEARCH_PATH = re.compile(r"^/api/conversations/[^/]+/events/search$")
 _CONVERSATION_EVENT_BY_ID_PATH = re.compile(r"^/api/conversations/[^/]+/events/[^/]+$")
+_DIAGNOSTIC_EVENT_CACHE_LIMIT = 2_048
+_SAFE_DIAGNOSTIC_TOKEN = re.compile(r"^[A-Za-z0-9_.:-]{1,200}$")
 
 
 def _codex_model_canonical_name(model: str) -> str:
@@ -275,6 +279,11 @@ class OpenHandsRuntime:
         # transport seam available to those callers.
         self._http_transport = http_transport or registered_http_transport(settings)
         self._owns_http_transport = self._http_transport is None
+        # Formal terminal events are durable, so browser refreshes and event
+        # polling would otherwise emit the same diagnostic indefinitely. Keep
+        # a bounded, process-local dedupe cache keyed only by opaque hashes.
+        self._terminal_diagnostic_events: OrderedDict[str, None] = OrderedDict()
+        self._terminal_diagnostic_lock = threading.Lock()
 
     def _transport(self) -> HttpTransportPool:
         if self._http_transport is None:
@@ -287,6 +296,101 @@ class OpenHandsRuntime:
         if self._owns_http_transport and self._http_transport is not None:
             await self._http_transport.aclose()
             self._http_transport = None
+
+    @staticmethod
+    def _diagnostic_fingerprint(value: object) -> str | None:
+        """Return a stable opaque correlation value safe for service logs."""
+
+        if not isinstance(value, str) or not value:
+            return None
+        return hashlib.sha256(value.encode("utf-8", "replace")).hexdigest()[:16]
+
+    @staticmethod
+    def _safe_diagnostic_token(value: object) -> str | None:
+        if not isinstance(value, str):
+            return None
+        normalized = value.strip()
+        return normalized if _SAFE_DIAGNOSTIC_TOKEN.fullmatch(normalized) else None
+
+    @classmethod
+    def _terminal_error_signature(cls, item: dict[str, Any]) -> str:
+        """Classify known safe error shapes without logging upstream text."""
+
+        detail = cls._event_text(item)
+        if "ResponseIncompleteEvent" in detail:
+            return "responses_incomplete_event"
+        if "Responses stream finished without a completed response" in detail:
+            return "responses_missing_completed_event"
+        if "Unexpected completed event" in detail:
+            return "responses_unexpected_terminal_event"
+        return "unclassified"
+
+    def _log_native_terminal_diagnostics(
+        self,
+        handle: RuntimeHandle,
+        items: list[dict[str, Any]],
+        state: dict[str, Any] | None,
+        *,
+        source: str,
+    ) -> None:
+        """Emit one redacted correlation record for each native terminal error.
+
+        This is adapter-level observability rather than a second Conversation
+        store: all facts are read from formal OpenHands event/state APIs. It
+        never logs event text, prompts, model output, credentials, endpoint
+        URLs, or raw response identifiers.
+        """
+
+        for item in items:
+            if str(item.get("kind") or "") not in {
+                "ConversationErrorEvent",
+                "AgentErrorEvent",
+            }:
+                continue
+            event_id = self._event_identity(item)[0]
+            # Keep opaque values even in the in-process cache so correlation
+            # identifiers never outlive a request in raw form.
+            dedupe_key = (
+                f"{self._diagnostic_fingerprint(handle.conversation_id)}:"
+                f"{self._diagnostic_fingerprint(event_id)}"
+            )
+            with self._terminal_diagnostic_lock:
+                if dedupe_key in self._terminal_diagnostic_events:
+                    continue
+                self._terminal_diagnostic_events[dedupe_key] = None
+                self._terminal_diagnostic_events.move_to_end(dedupe_key)
+                if len(self._terminal_diagnostic_events) > _DIAGNOSTIC_EVENT_CACHE_LIMIT:
+                    self._terminal_diagnostic_events.popitem(last=False)
+
+            classification = item.get("classification")
+            classification_map = (
+                cast(dict[str, object], classification) if isinstance(classification, dict) else {}
+            )
+            error_code = self._safe_diagnostic_token(item.get("code"))
+            logger.warning(
+                "native_terminal_error_diagnostic source=%s conversation=%s event=%s parent=%s "
+                "runtime=%s error_code=%s error_code_fingerprint=%s signature=%s "
+                "response=%s classification_kind=%s classification_retryable=%s "
+                "classification_action=%s execution_status=%s state_leaf=%s",
+                source,
+                self._diagnostic_fingerprint(handle.conversation_id),
+                self._diagnostic_fingerprint(event_id),
+                self._diagnostic_fingerprint(item.get("parent_id")),
+                self._diagnostic_fingerprint(
+                    handle.runtime_resource_name or handle.runtime_resource_id
+                ),
+                error_code,
+                None if error_code else self._diagnostic_fingerprint(str(item.get("code") or "")),
+                self._terminal_error_signature(item),
+                self._diagnostic_fingerprint(item.get("llm_response_id")),
+                self._safe_diagnostic_token(classification_map.get("kind")),
+                classification_map.get("retryable")
+                if isinstance(classification_map.get("retryable"), bool)
+                else None,
+                self._safe_diagnostic_token(classification_map.get("user_action")),
+                self._safe_diagnostic_token((state or {}).get("execution_status")),
+                self._diagnostic_fingerprint((state or {}).get("leaf_event_id")),
+            )
 
     @staticmethod
     def _environment_route(job_id: str) -> tuple[str, bool] | None:
@@ -3104,6 +3208,7 @@ class OpenHandsRuntime:
             for item in visible_items
         )
         state = self._conversation_state(handle, timeout=_INTERACTIVE_READ_TIMEOUT_SECONDS)
+        self._log_native_terminal_diagnostics(handle, visible_items, state, source="event_page")
         state_cursor = str(state.get("leaf_event_id") or cursor or handle.cursor or "") or None
         return RuntimeEventBatch(
             events=events,
@@ -3171,6 +3276,7 @@ class OpenHandsRuntime:
             )
             for item in active_items
         )
+        self._log_native_terminal_diagnostics(handle, active_items, state, source="active_branch")
         state_cursor = (
             str((state or {}).get("leaf_event_id") or cursor or handle.cursor or "") or None
         )
