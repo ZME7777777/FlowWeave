@@ -445,6 +445,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   let modelIsResponding = false;
   let interrupted = false;
   let backfilledTaskAction = false;
+  let parentTurnFailed = false;
   let historyPrefetchEnabled = false;
   let historyPageRequests = 0;
   let releaseHistoryPage: (() => void) | undefined;
@@ -704,10 +705,11 @@ test('top-level Agent workspace creates a direct conversation and restores its U
         return;
       }
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
-        events: modelIsResponding ? [
+        events: (modelIsResponding || parentTurnFailed) ? [
           ...(!cursor ? [{ id: 'running-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'agent-reply', content: '正在处理的请求', timestamp: new Date(Date.now() - 12_000).toISOString().replace(/Z$/, '') } }] : []),
           ...(backfilledTaskAction && cursor === 'running-user' ? [{ id: 'recovered-task-action', event_type: 'TOOL_CALL', payload: { source: 'agent', parent_id: 'running-user', action_id: 'recovered-task-action', tool_call_id: 'recovered-task-call', tool_name: 'task', event_name: 'TaskAction', summary: '检查依赖关系', runtime_task: { phase: 'REQUESTED', action_event_id: 'recovered-task-action', tool_call_id: 'recovered-task-call', subagent_type: 'general-purpose', description: '检查依赖关系' }, timestamp: new Date().toISOString() } }] : []),
           ...(interrupted ? [{ id: 'paused-tool-error', event_type: 'ERROR', payload: { source_type: 'AgentErrorEvent', parent_id: 'running-user', content: 'Tool call interrupted before completion. The conversation was paused.' } }] : []),
+          ...(parentTurnFailed ? [{ id: 'running-parent-error', event_type: 'ERROR', payload: { source: 'environment', parent_id: 'recovered-task-action', content: '模型服务暂时不可用，本轮已停止', error_code: 'LLMServiceUnavailableError', timestamp: new Date().toISOString() } }] : []),
         ] : conversations.length ? [
           { id: 'user-request', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '检查工作目录', timestamp: '2026-08-26T10:00:00Z' } },
           { id: 'progress-note', event_type: 'THOUGHT', payload: { source: 'agent', parent_id: 'user-request', content: '我先确认当前工作目录，再根据现有结构判断后续改动范围。', thought: '我先确认当前工作目录，再根据现有结构判断后续改动范围。', timestamp: '2026-08-26T10:00:01Z' } },
@@ -1445,7 +1447,13 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await composer.press('Enter');
   await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toBeVisible();
   modelIsResponding = false;
+  parentTurnFailed = true;
   await expect(page.getByText('Agent 已异常停止，本轮结果未返回。你可以继续发送消息；历史记录已保留。')).toBeVisible({ timeout: 12_000 });
+  await expect(page.getByText('本轮异常结束，结果未返回')).toBeVisible();
+  await page.getByRole('button', { name: '1 个任务' }).click();
+  const parentFailedSubagentRecord = page.getByLabel('general-purpose 任务详情');
+  await expect(parentFailedSubagentRecord.getByText('主会话异常结束，结果未返回')).toBeVisible();
+  await expect(parentFailedSubagentRecord.getByText('运行中', { exact: true })).toHaveCount(0);
   await expect(page.getByRole('button', { name: '发送消息' })).toBeVisible();
   await expect(page.locator('.agent-workspace-conversation-running')).toHaveCount(0);
   await page.reload();

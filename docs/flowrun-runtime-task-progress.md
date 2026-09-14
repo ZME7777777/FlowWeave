@@ -175,6 +175,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-414 | FlowRun 独立终端记录目录预创建 | DONE | FlowRun 终端在服务端创建并验证自身的规范记录目录后再连接，避免不存在的 cwd 使 OCI exec 失败；保持 Provider 的记录级隔离校验。 |
 | FR-416 | 子智能体模型请求策略与墙钟耗时语义 | DONE | 工作台明确展示每次模型请求的 120 秒／3 次重试策略，并将耗时标为 TaskAction 到当前或正式结果的墙钟时间；不伪造 OpenHands 未发布的逐次重试事件。 |
 | FR-418 | 暂停会话时的子智能体状态投影 | DONE | 当 OpenHands 正式会话状态为 paused 时，未返回 TaskObservation 的子任务在主对话活动卡中显示“已暂停，结果未返回”，并停止运行态头像；不伪造成已完成或子 Agent 进程已退出。 |
+| FR-420 | 主会话异常终止时的子智能体状态投影 | DONE | 同一正式用户轮次出现 ERROR 后，未返回 TaskObservation 的子任务显示“主会话异常结束，结果未返回”，停止计时并不再计入运行中；不伪造成子任务自身失败。 |
 | FR-415 | FlowRun 独立终端全局项目根修正 | DONE | FlowRun 级终端进入已挂载的全局 `project` 根，因此无需创建节点即可完成对整个 FlowRun 生效的配置；会话／Attempt 终端继续保持记录级路径。 |
 | FR-417 | FlowRun 独立终端挂载感知路径选择 | DONE | FlowRun 级终端按活跃 Runtime 的固定挂载契约选择共享 `project` 根或记录直挂载根，避免历史 Runtime 因不存在 cwd 失败。 |
 
@@ -621,6 +622,25 @@ Agent 工作台 Playwright 断言会覆盖策略与墙钟耗时标签；本机�
 验收：新增 Agent 工作台 Playwright 断言，覆盖暂停后主对话活动卡的子智能体状态；Web TypeScript
 typecheck、ESLint、production build、`git diff --check` 与任务状态唯一性通过。定向 Playwright 在既有登录
 准备阶段等待“Agent 会话”入口超时，未进入本切片断言，未记为通过。
+
+### FR-420 主会话异常终止时的子智能体状态投影 — DONE
+
+依赖：`FR-418`。
+
+目标：当一个正式用户轮次的事件树出现正式 `ERROR`，而其 `TaskAction` 尚未收到正式
+`TaskObservation` 或以正式 `tool_call_id` 对应的 `AgentErrorEvent` 时，右侧子智能体记录和主对话
+工作过程不得继续显示“运行中”。它必须明确表示主会话异常结束、子任务结果未返回；不得把父会话
+错误推断为子任务已经完成或自身失败。
+
+完成：子智能体投影仅沿正式 `id`／`parent_id` 关系定位所属用户轮次的正式父 `ERROR`。无结果的
+Task 保持其原生 `RUNNING` 生命周期事实，但 UI 显示“主会话异常结束，结果未返回”、停止运行态头像、
+从运行中汇总移除，墙钟耗时冻结在父错误的正式时间；详情额外说明不会把该状态伪装成子任务失败。
+主对话相同轮次的工作过程也以“本轮异常结束，结果未返回”及非运行态头像呈现；已有正式 Task 结果
+继续按自身完成／失败状态显示。未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。
+
+验收：Web TypeScript typecheck、受影响文件 ESLint、production build、`git diff --check` 与任务状态唯一性通过。
+新增 Agent 工作台 Playwright 回归断言，覆盖正式父 `ERROR` 后未返回 Task 的工作过程与右侧记录状态；
+定向执行结果按本机实际前置条件记录于验证日志。
 
 ### FR-415 FlowRun 独立终端全局项目根修正 — DONE
 
@@ -5529,6 +5549,7 @@ contract、冻结策略与既有受控生命周期约束覆盖。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-14 | FR-420 | Web TypeScript typecheck、受影响文件 ESLint、production build、`git diff --check`、任务状态唯一性；Agent 工作台定向 Playwright | PASS（静态／构建）：正式父轮 ERROR 仅以事件树身份关联无结果 Task，UI 显示“主会话异常结束，结果未返回”、停止墙钟计时并移出运行中汇总，不伪造子任务自身失败。全量 ESLint 复跑受未纳入本切片的 `AgentRuntimeSidebar.tsx` 本地未使用变量阻断；受影响文件 lint 通过。定向 Playwright 因本机未启动 Vite 测试服务（`127.0.0.1:5173` `ERR_CONNECTION_REFUSED`）在 `page.goto` 前置阶段受阻，未进入本切片断言，未记为通过。未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-14 | FR-419 | 受影响 Python Ruff format/check、`py_compile`、认证上下文定向 pytest（2 passed）、Alembic head、`git diff --check` 与任务状态唯一性 | PASS：系统提示词后缀以固定认证协议加动态 JSON 凭据目录明确提供目标主机、匹配范围、认证类型和源变量映射；测试覆盖用户名密码与 Token 条目，且确认凭据明文不进入提示词。OpenHands 原生 Secret 注入、数据库、Docker 与远端环境未修改。 |
 | 2026-09-14 | FR-413 | 受影响 Python Ruff format/check、`py_compile`、认证提示词定向 pytest、`git diff --check` 与任务状态唯一性 | PASS：认证提示词不再含任何特定 Skill/脚本变量示例，只说明域名匹配后的源变量和命令级映射边界。未修改注入协议、数据库、OpenHands、Docker 或远端环境。 |
 | 2026-09-14 | FR-414 | FlowRun 终端目录预创建直接断言；受影响 Python Ruff format/check、`py_compile`、`git diff --check` 与任务状态唯一性 | PASS（直接／静态）：终端连接前只由服务端创建并验证该 FlowRun 的规范 `project/<record-id>`；返回路径与创建路径一致，Provider 继续拒绝未限定的 project 根。`test_runtime_operations.py` 需要 Testcontainers PostgreSQL，但本机 Docker socket 缺失，fixture 在断言前失败，未记为通过。未修改数据库、OpenHands、Docker 或远端环境。 |

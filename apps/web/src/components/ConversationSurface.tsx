@@ -553,7 +553,7 @@ interface ActivityPresentation {
   resultTimestamp?: string;
 }
 
-function activityPresentation(entry: ActivityEntry, active: boolean, workspaceRoot?: string | null, paused = false): ActivityPresentation {
+function activityPresentation(entry: ActivityEntry, active: boolean, workspaceRoot?: string | null, paused = false, parentFailed = false): ActivityPresentation {
   const item = entry.action ?? entry.item;
   if (item.kind === 'condensation') {
     return { title: item.title, status: item.event.event_type === 'CONDENSATION_COMPLETED' ? '已完成' : '处理中' };
@@ -625,9 +625,10 @@ function activityPresentation(entry: ActivityEntry, active: boolean, workspaceRo
     const description = typeof runtimeTask?.description === 'string' ? runtimeTask.description.trim() : '';
     const label = description || actionTitle(`子智能体 ${agentType}`);
     const interrupted = paused && !completed;
+    const unavailable = parentFailed && !completed;
     return {
-      title: completed ? `子智能体 ${agentType} · ${label} · 已完成` : interrupted ? `子智能体 ${agentType} · ${label} · 已暂停` : `子智能体 ${agentType} · ${label}`,
-      status: completed ? '子智能体 · 已完成' : interrupted ? '子智能体 · 已暂停，结果未返回' : '子智能体 · 运行中',
+      title: completed ? `子智能体 ${agentType} · ${label} · 已完成` : interrupted ? `子智能体 ${agentType} · ${label} · 已暂停` : unavailable ? `子智能体 ${agentType} · ${label} · 主会话异常结束` : `子智能体 ${agentType} · ${label}`,
+      status: completed ? '子智能体 · 已完成' : interrupted ? '子智能体 · 已暂停，结果未返回' : unavailable ? '子智能体 · 主会话异常结束，结果未返回' : '子智能体 · 运行中',
       thought, actionDetails: details, resultDetails,
     };
   }
@@ -1083,18 +1084,20 @@ function LiveReply({ content }: { content: string }) {
   </article>;
 }
 
-function taskAvatarStatus(entry: ActivityEntry, item: Item, paused = false): 'running' | 'paused' | 'completed' | 'error' {
+function taskAvatarStatus(entry: ActivityEntry, item: Item, paused = false, parentFailed = false): 'running' | 'paused' | 'completed' | 'error' {
   const phases = [item.event, ...entry.results.map(result => result.event)]
     .map(event => event.payload.runtime_task?.phase);
   if (phases.includes('ERROR')) return 'error';
   if (phases.includes('COMPLETED')) return 'completed';
+  if (parentFailed) return 'error';
   return paused ? 'paused' : 'running';
 }
 
-function ActivityEntryRow({ entry, active, paused = false, avatarSlots, workspaceRoot }: {
+function ActivityEntryRow({ entry, active, paused = false, parentFailed = false, avatarSlots, workspaceRoot }: {
   entry: ActivityEntry;
   active: boolean;
   paused?: boolean;
+  parentFailed?: boolean;
   avatarSlots: ReadonlyMap<string, SubagentAvatarSlot>;
   workspaceRoot?: string | null;
 }) {
@@ -1105,8 +1108,8 @@ function ActivityEntryRow({ entry, active, paused = false, avatarSlots, workspac
     ? subagentAvatarSlotForEvent(item.event, avatarSlots)
     : undefined;
   const ToolIcon = eventName.includes('Terminal') ? SquareTerminal : eventName.includes('FileEditor') ? FileText : Icon;
-  const taskAvatar = avatarSlot && <SubagentAvatar slot={avatarSlot} status={taskAvatarStatus(entry, item, paused)} size={14}/>;
-  const presentation = activityPresentation(entry, active, workspaceRoot, paused);
+  const taskAvatar = avatarSlot && <SubagentAvatar slot={avatarSlot} status={taskAvatarStatus(entry, item, paused, parentFailed)} size={14}/>;
+  const presentation = activityPresentation(entry, active, workspaceRoot, paused, parentFailed);
   const toolDetail = item.kind === 'tool' ? <ToolDetailPanel presentation={presentation} eventName={eventName} results={entry.results} workspaceRoot={workspaceRoot}/> : null;
   const isNativeThink = item.event.event_type === 'THOUGHT';
   if (item.kind === 'thought') return <article className={`conversation-activity-row thought${isNativeThink ? ' native-think' : ''}`}>
@@ -1136,10 +1139,11 @@ function ActivityEntryRow({ entry, active, paused = false, avatarSlots, workspac
   </article>;
 }
 
-function ActivityGroup({ items, active, paused = false, startedAt, finishedAt, avatarSlots, workspaceRoot }: {
+function ActivityGroup({ items, active, paused = false, parentFailed = false, startedAt, finishedAt, avatarSlots, workspaceRoot }: {
   items: Item[];
   active: boolean;
   paused?: boolean;
+  parentFailed?: boolean;
   startedAt?: number;
   finishedAt?: number;
   avatarSlots: ReadonlyMap<string, SubagentAvatarSlot>;
@@ -1148,6 +1152,10 @@ function ActivityGroup({ items, active, paused = false, startedAt, finishedAt, a
   const elapsedSeconds = useElapsedSeconds(startedAt, finishedAt, active);
   const entries = groupedActivities(items);
   const itemCount = entries.length;
+  const hasUnfinishedTask = entries.some(entry => {
+    const item = entry.action ?? entry.item;
+    return String(item.event.payload.event_name ?? '') === 'TaskAction' && entry.results.length === 0;
+  });
   // Keep the in-flight process visible, then collapse it once the native
   // terminal reply arrives. Historical completed processes also start closed,
   // while the summary remains available for an explicit user expansion.
@@ -1160,6 +1168,7 @@ function ActivityGroup({ items, active, paused = false, startedAt, finishedAt, a
   const label = active
     ? elapsedSeconds === undefined ? '处理中' : `已耗时 ${formatDuration(elapsedSeconds)}`
     : paused ? '已暂停，结果未返回'
+      : parentFailed && hasUnfinishedTask ? '本轮异常结束，结果未返回'
       : finishedAt === undefined || elapsedSeconds === undefined ? '工作过程' : `耗时 ${formatDuration(elapsedSeconds)}`;
   const summary = <><ChevronRight size={14}/><span>{label}</span>{itemCount > 0 && <small>{itemCount} 项</small>}{active && <LoaderCircle className="conversation-activity-spin" size={13}/>}</>;
   const hasDetails = itemCount > 0;
@@ -1167,7 +1176,7 @@ function ActivityGroup({ items, active, paused = false, startedAt, finishedAt, a
   return <details className={`conversation-activity-group${active ? ' active' : ''}`} open={open} onToggle={event => setOpen(event.currentTarget.open)}>
     <summary>{summary}</summary>
     <div className="conversation-activity-list">
-      {entries.map(entry => <ActivityEntryRow key={entry.id} entry={entry} active={active} paused={paused} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/>)}
+      {entries.map(entry => <ActivityEntryRow key={entry.id} entry={entry} active={active} paused={paused} parentFailed={parentFailed} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/>)}
     </div>
   </details>;
 }
@@ -1692,6 +1701,7 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused =
         const isCurrent = index === turns.length - 1 && isGenerating;
         const isCurrentPaused = index === turns.length - 1 && isPaused;
         const failures = turn.activity.filter(item => item.kind === 'error');
+        const parentFailed = failures.length > 0;
         const startedAt = eventTime(turn.user) ?? (isCurrent ? requestStartedAt : undefined);
         const finishedAt = eventTime(turn.assistant ?? failures.at(-1));
         const processBlocks = turnProcessBlocks(
@@ -1713,6 +1723,7 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused =
               items={block.items}
               active={block.active}
               paused={isCurrentPaused && !block.active}
+              parentFailed={parentFailed && !block.active}
               startedAt={block.startedAt}
               finishedAt={block.finishedAt}
               avatarSlots={avatarSlots}

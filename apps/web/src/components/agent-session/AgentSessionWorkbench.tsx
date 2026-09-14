@@ -253,6 +253,27 @@ interface RuntimeTaskProjection {
   lastEventSummary?: string;
   usage?: RuntimeTaskUsageSnapshot;
   control?: RuntimeTaskControlSnapshot;
+  /** A formal parent-turn error arrived before this Task produced a result. */
+  parentTerminal?: { eventId: string; at?: string };
+}
+
+function parentUserEventId(event: OpenHandsConversationEvent, byId: ReadonlyMap<string, OpenHandsConversationEvent>): string | undefined {
+  const visited = new Set<string>();
+  let current: OpenHandsConversationEvent | undefined = event;
+  while (current && !visited.has(current.id)) {
+    visited.add(current.id);
+    if (current.event_type === 'MESSAGE' && ['user', 'human'].includes(String(current.payload.source ?? '').toLowerCase())) return current.id;
+    const parentId: string | null | undefined = current.payload.parent_id;
+    current = parentId ? byId.get(parentId) : undefined;
+  }
+  return undefined;
+}
+
+function isTaskSpecificAgentError(event: OpenHandsConversationEvent): boolean {
+  if (event.event_type !== 'ERROR') return false;
+  const isAgentError = event.payload.event_name === 'AgentErrorEvent'
+    || event.payload.source_type === 'AgentErrorEvent';
+  return isAgentError && typeof event.payload.tool_call_id === 'string' && event.payload.tool_call_id.length > 0;
 }
 
 /**
@@ -262,6 +283,7 @@ interface RuntimeTaskProjection {
  */
 function runtimeTasksFromEvents(events: OpenHandsConversationEvent[], usageSnapshots: RuntimeTaskUsageSnapshot[] = [], controlSnapshots: RuntimeTaskControlSnapshot[] = []): RuntimeTaskProjection[] {
   const avatarSlots = subagentAvatarSlots(events);
+  const byEventId = new Map(events.map(event => [event.id, event]));
   const tasks = new Map<string, RuntimeTaskProjection>();
   const byToolCall = new Map<string, RuntimeTaskProjection>();
   for (const event of events) {
@@ -320,12 +342,25 @@ function runtimeTasksFromEvents(events: OpenHandsConversationEvent[], usageSnaps
     if (item.taskId) item.usage = usageByTaskId.get(item.taskId);
     item.control = controlByAction.get(item.actionEventId)
       ?? (item.toolCallId ? controlByTool.get(item.toolCallId) : undefined);
+    if (item.status !== 'RUNNING') continue;
+    const action = byEventId.get(item.actionEventId);
+    if (!action) continue;
+    const userEventId = parentUserEventId(action, byEventId);
+    if (!userEventId) continue;
+    const terminal = events.find(event => event.event_type === 'ERROR'
+      && !isTaskSpecificAgentError(event)
+      && parentUserEventId(event, byEventId) === userEventId);
+    if (terminal) item.parentTerminal = {
+      eventId: terminal.id,
+      at: typeof terminal.payload.timestamp === 'string' ? terminal.payload.timestamp : undefined,
+    };
   }
   return [...tasks.values()].sort((left, right) => (right.startedAt || '').localeCompare(left.startedAt || ''));
 }
 
 function runtimeTaskStatus(task: RuntimeTaskProjection, sessionStopped = false): string {
   if (sessionStopped && task.status === 'RUNNING') return '会话已停止，结果未返回';
+  if (task.parentTerminal && task.status === 'RUNNING') return '主会话异常结束，结果未返回';
   if (task.status === 'COMPLETED') return '已完成';
   if (task.status === 'ERROR') return '失败';
   const control = task.control?.control_state;
@@ -342,6 +377,7 @@ function runtimeTaskStatus(task: RuntimeTaskProjection, sessionStopped = false):
 function runtimeTaskIsActive(task: RuntimeTaskProjection, sessionStopped = false): boolean {
   if (task.status !== 'RUNNING') return false;
   if (sessionStopped) return false;
+  if (task.parentTerminal) return false;
   return !['INTERRUPT_CONFIRMED', 'RECOVERED', 'RECOVERY_FAILED', 'WATCHDOG_FAILED', 'INTERRUPT_CONFIRMATION_FAILED'].includes(
     task.control?.control_state ?? '',
   );
@@ -378,10 +414,10 @@ function RuntimeTaskRecord({ task, definitions, sessionStopped }: {
 }) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
-    if (task.status !== 'RUNNING') return;
+    if (task.status !== 'RUNNING' || task.parentTerminal) return;
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
-  }, [task.status]);
+  }, [task.parentTerminal, task.status]);
   const definition = definitions.find(item => item.capability_type === 'AGENT_DEFINITION' && item.capability_key === task.subagentType);
   const document = definition?.document && typeof definition.document === 'object' ? definition.document : {};
   const record = document as Record<string, unknown>;
@@ -390,12 +426,14 @@ function RuntimeTaskRecord({ task, definitions, sessionStopped }: {
   const outcome = taskOutcomeText(task.outcome);
   const nativeDefinition = !definition;
   const startedAt = task.startedAt ? Date.parse(task.startedAt) : NaN;
-  const controlStopsClock = sessionStopped || ['INTERRUPT_CONFIRMED', 'RECOVERED', 'RECOVERY_FAILED', 'WATCHDOG_FAILED', 'INTERRUPT_CONFIRMATION_FAILED'].includes(task.control?.control_state ?? '');
+  const controlStopsClock = sessionStopped || Boolean(task.parentTerminal) || ['INTERRUPT_CONFIRMED', 'RECOVERED', 'RECOVERY_FAILED', 'WATCHDOG_FAILED', 'INTERRUPT_CONFIRMATION_FAILED'].includes(task.control?.control_state ?? '');
   const finishedAt = task.finishedAt
     ? Date.parse(task.finishedAt)
-    : controlStopsClock && task.control?.updated_at
-      ? Date.parse(task.control.updated_at)
-      : now;
+    : task.parentTerminal?.at
+      ? Date.parse(task.parentTerminal.at)
+      : controlStopsClock && task.control?.updated_at
+        ? Date.parse(task.control.updated_at)
+        : now;
   const elapsedSeconds = Number.isFinite(startedAt) && Number.isFinite(finishedAt)
     ? Math.max(0, Math.floor((finishedAt - startedAt) / 1000))
     : undefined;
@@ -405,7 +443,7 @@ function RuntimeTaskRecord({ task, definitions, sessionStopped }: {
   const usage = task.usage;
   return <section className="agent-subagent-record" aria-label={`${task.subagentType} 任务详情`}>
       <header><div><span className="eyebrow">SUBAGENT</span><h2>{task.subagentType}</h2><p>{runtimeTaskStatus(task, sessionStopped)}{task.taskId ? ` · ${task.taskId}` : ''}</p></div></header>
-      <section><h3>本次任务</h3><dl><dt>状态</dt><dd className={`agent-subagent-status ${runtimeTaskIsActive(task, sessionStopped) ? 'running' : task.status.toLowerCase()}`}>{runtimeTaskStatus(task, sessionStopped)}</dd><dt>任务说明</dt><dd>{task.description || 'OpenHands 未提供任务摘要。'}</dd><dt>子智能体类型</dt><dd><code>{task.subagentType}</code></dd><dt>模型请求策略</dt><dd>单次最长 {MODEL_REQUEST_TIMEOUT_SECONDS} 秒；失败最多重试 {MODEL_REQUEST_MAX_RETRIES} 次</dd><dt>子任务墙钟耗时</dt><dd title="从正式 TaskAction 到当前时间或正式 TaskObservation 的经过时间；包含模型调用、重试等待和工具执行。">{elapsedLabel}</dd>{task.startedAt && <><dt>开始时间</dt><dd>{new Date(task.startedAt).toLocaleString('zh-CN')}</dd></>}{task.finishedAt && <><dt>结束时间</dt><dd>{new Date(task.finishedAt).toLocaleString('zh-CN')}</dd></>}{task.lastEventType && <><dt>最近事件</dt><dd>{task.lastEventType}{task.lastEventAt ? ` · ${new Date(task.lastEventAt).toLocaleString('zh-CN')}` : ''}</dd></>}{task.lastEventSummary && <><dt>最近事件摘要</dt><dd>{task.lastEventSummary}</dd></>}{task.control && <><dt>平台处理</dt><dd>{task.control.control_state}{task.control.updated_at ? ` · ${new Date(task.control.updated_at).toLocaleString('zh-CN')}` : ''}</dd>{task.control.deadline_at && <><dt>观察截止</dt><dd>{new Date(task.control.deadline_at).toLocaleString('zh-CN')}</dd></>}{task.control.last_error && <><dt>处理错误</dt><dd>{task.control.last_error}</dd></>}</>}</dl><p className="agent-subagent-note">OpenHands 当前只发布 Task 的开始、结果和终态错误；单次模型重试在上游内部完成，未提供正式重试事件，因此这里不会把它猜测成“1/3”。</p></section>
+      <section><h3>本次任务</h3><dl><dt>状态</dt><dd className={`agent-subagent-status ${runtimeTaskIsActive(task, sessionStopped) ? 'running' : task.status === 'COMPLETED' ? 'completed' : 'error'}`}>{runtimeTaskStatus(task, sessionStopped)}</dd><dt>任务说明</dt><dd>{task.description || 'OpenHands 未提供任务摘要。'}</dd><dt>子智能体类型</dt><dd><code>{task.subagentType}</code></dd><dt>模型请求策略</dt><dd>单次最长 {MODEL_REQUEST_TIMEOUT_SECONDS} 秒；失败最多重试 {MODEL_REQUEST_MAX_RETRIES} 次</dd><dt>子任务墙钟耗时</dt><dd title="从正式 TaskAction 到当前时间或正式 TaskObservation（或所属主会话的正式错误）的经过时间；包含模型调用、重试等待和工具执行。">{elapsedLabel}</dd>{task.startedAt && <><dt>开始时间</dt><dd>{new Date(task.startedAt).toLocaleString('zh-CN')}</dd></>}{task.finishedAt && <><dt>结束时间</dt><dd>{new Date(task.finishedAt).toLocaleString('zh-CN')}</dd></>}{task.parentTerminal?.at && <><dt>主会话异常时间</dt><dd>{new Date(task.parentTerminal.at).toLocaleString('zh-CN')}</dd></>}{task.lastEventType && <><dt>最近事件</dt><dd>{task.lastEventType}{task.lastEventAt ? ` · ${new Date(task.lastEventAt).toLocaleString('zh-CN')}` : ''}</dd></>}{task.lastEventSummary && <><dt>最近事件摘要</dt><dd>{task.lastEventSummary}</dd></>}{task.control && <><dt>平台处理</dt><dd>{task.control.control_state}{task.control.updated_at ? ` · ${new Date(task.control.updated_at).toLocaleString('zh-CN')}` : ''}</dd>{task.control.deadline_at && <><dt>观察截止</dt><dd>{new Date(task.control.deadline_at).toLocaleString('zh-CN')}</dd></>}{task.control.last_error && <><dt>处理错误</dt><dd>{task.control.last_error}</dd></>}</>}</dl><p className="agent-subagent-note">OpenHands 当前只发布 Task 的开始、结果和终态错误；单次模型重试在上游内部完成，未提供正式重试事件，因此这里不会把它猜测成“1/3”。{task.parentTerminal && ' 主会话已正式异常结束，但 OpenHands 未发布这个子任务的结果，因此不会把它伪装成子任务失败。'}</p></section>
       {usage && <section><h3>用量</h3><dl><dt>模型</dt><dd><code>{usage.model_name}</code></dd><dt>累计 Token</dt><dd>{(usage.prompt_tokens + usage.completion_tokens + usage.cache_read_tokens + usage.cache_write_tokens + usage.reasoning_tokens).toLocaleString('zh-CN')}</dd><dt>输入 / 输出</dt><dd>{usage.prompt_tokens.toLocaleString('zh-CN')} / {usage.completion_tokens.toLocaleString('zh-CN')}</dd><dt>推理 Token</dt><dd>{usage.reasoning_tokens.toLocaleString('zh-CN')}</dd><dt>缓存读 / 写</dt><dd>{usage.cache_read_tokens.toLocaleString('zh-CN')} / {usage.cache_write_tokens.toLocaleString('zh-CN')}</dd><dt>当前轮 Token</dt><dd>{usage.per_turn_tokens.toLocaleString('zh-CN')}</dd><dt>上下文窗口</dt><dd>{usage.context_window.toLocaleString('zh-CN')}</dd><dt>累计费用</dt><dd>${usage.accumulated_cost.toFixed(6)}</dd></dl></section>}
       <section><h3>子智能体定义</h3>{nativeDefinition ? <p className="agent-subagent-note">这是 OpenHands 原生 <code>{task.subagentType}</code> 类型。当前正式事件未携带可版本化的 FlowWeave Agent Definition，因此不会把它伪装成自定义定义。</p> : <><p>{definition.description || '已发布的 FlowWeave Agent Definition。'}</p><dl><dt>已发布版本</dt><dd>{definition.version}</dd><dt>内容摘要</dt><dd><code>{definition.content_hash.slice(0, 16)}</code></dd>{tools.length > 0 && <><dt>允许工具</dt><dd>{tools.join('、')}</dd></>}{skills.length > 0 && <><dt>技能</dt><dd>{skills.join('、')}</dd></>}</dl><p className="agent-subagent-note">此处展示当前可读取的已发布定义。会话运行时使用的定义版本由 OpenHands 创建请求冻结，事件未提供版本 ID 时不据此声称两者相同。</p></>}</section>
       {outcome && <section><h3>执行结果</h3><pre>{outcome}</pre></section>}
@@ -420,6 +458,7 @@ function RuntimeTaskTab({ tasks, definitions, selectedTaskId, onSelect, sessionS
   if (!selectedTask) return <div className="agent-drawer-empty"><b>暂无子智能体记录</b><span>本会话出现 OpenHands TaskAction 后，记录会显示在这里。</span></div>;
   return <section className="agent-subagent-tab" aria-label="子智能体记录">
     {sessionStopped && <div className="agent-subagent-session-notice" role="status"><Check size={15}/><span><b>会话已暂停</b><small>本次会话中的子智能体均已停止等待，尚未返回的结果不会继续生成。</small></span></div>}
+    {!sessionStopped && tasks.some(task => task.parentTerminal && task.status === 'RUNNING') && <div className="agent-subagent-session-notice" role="status"><CircleDot size={15}/><span><b>主会话已异常结束</b><small>未返回结果的子智能体不再显示为运行中；该状态不表示子任务已完成或自身失败。</small></span></div>}
     <aside className="agent-subagent-task-list"><header><div><span className="eyebrow">SUBAGENTS</span><b>子智能体记录</b></div><span className={running ? 'running' : ''}>{running ? `${running} 个运行中` : `${tasks.length} 个任务`}</span></header><div>{tasks.map(task => <button type="button" key={task.id} className={task.id === selectedTask.id ? 'active' : ''} aria-current={task.id === selectedTask.id ? 'true' : undefined} onClick={() => onSelect(task.id)}><RuntimeTaskGlyph task={task} size={13} sessionStopped={sessionStopped}/><span><b>{task.description || task.subagentType}</b><small>{task.subagentType} · {runtimeTaskStatus(task, sessionStopped)}</small></span><ChevronRight size={14}/></button>)}</div></aside>
     <RuntimeTaskRecord task={selectedTask} definitions={definitions} sessionStopped={sessionStopped}/>
   </section>;
