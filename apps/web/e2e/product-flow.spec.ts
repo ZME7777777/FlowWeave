@@ -458,6 +458,8 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   const terminalInputs: string[] = [];
   const terminalResizes: Array<{ rows: number; columns: number }> = [];
   let sentMessages = 0;
+  let releaseGuidanceDelivery: (() => void) | undefined;
+  const guidanceDeliveryGate = new Promise<void>(resolve => { releaseGuidanceDelivery = resolve; });
   let ambiguousMessagePosts = 0;
   let sentProvider: string | null = null;
   let sentBinding: string | null = null;
@@ -794,6 +796,9 @@ test('top-level Agent workspace creates a direct conversation and restores its U
       sentProvider = JSON.parse(request.postData() ?? '{}').model_provider_id ?? null;
       sentBinding = path.match(/\/conversations\/([^/]+)\/messages$/)?.[1] ?? null;
       sentMessages += 1;
+      if (payload.content === '调整方向的排队消息') {
+        await guidanceDeliveryGate;
+      }
       await route.fulfill({ status: 202, contentType: 'application/json', body: JSON.stringify({ accepted: true, cursor: sentMessages === 1 ? 'running-user' : `sent-user-${sentMessages}` }) });
       return;
     }
@@ -878,6 +883,11 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toHaveCount(0);
   await expect(page.locator('.agent-composer-status')).toHaveCount(0);
   await expect(page.locator('.agent-workspace-conversation-running')).toHaveCount(0);
+  const sentBeforeRetryAfterTerminalError = sentMessages;
+  await page.getByLabel('发送 Agent 消息').fill('错误后应直接发送');
+  await page.getByLabel('发送消息').click();
+  await expect(page.locator('[aria-label="消息投递队列"]')).toHaveCount(0);
+  await expect.poll(() => sentMessages).toBe(sentBeforeRetryAfterTerminalError + 1);
   parentTurnFailed = false;
   await page.reload();
   await page.locator('h2.agent-session-title').dblclick();
@@ -1447,7 +1457,12 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await composer.press('Meta+Enter');
   await expect(queuedMessage.getByText('第一条排队消息')).toBeVisible();
   await expect(queuedMessage.getByText('调整方向的排队消息')).toHaveCount(0);
+  await expect(page.locator('.conversation-message.user').filter({ hasText: '调整方向的排队消息' })).toHaveCount(0);
+  await expect(page.getByText('正在追加到当前回复', { exact: true })).toBeVisible();
   await expect.poll(() => sentMessages).toBe(2);
+  agentStream!.send(JSON.stringify({ type: 'event', event: { id: 'sent-user-2', event_type: 'MESSAGE', payload: { source: 'user', content: '调整方向的排队消息' } } }));
+  await expect(page.getByText('正在追加到当前回复', { exact: true })).toHaveCount(0);
+  releaseGuidanceDelivery?.();
   await composer.fill('网络不确定消息');
   await composer.press('Meta+Enter');
   await expect(queuedMessage.getByText('网络不确定消息')).toBeVisible();

@@ -3480,6 +3480,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const historyFailedCursors = useRef(new Map<string, string>());
   const queuedMessagesStorageKeyRef = useRef<string | undefined>(undefined);
   const queuedMessagesRef = useRef<QueuedMessage[]>([]);
+  const streamConfirmedNativeGuidanceIds = useRef<Set<string>>(new Set());
   useEffect(() => () => {
     for (const resource of [
       'conversation-events',
@@ -3787,9 +3788,26 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       ? 'paused'
       : turnState === 'pausing' || turnState === 'resuming' || turnState === 'paused'
         ? turnState
-        : nativeTurnRunning
+      : nativeTurnRunning
       ? 'running'
         : turnState;
+  // Delivery always enters the browser-local ledger before its one HTTP
+  // attempt. When the native Conversation is already idle (including after a
+  // formal error), that ledger entry is immediately eligible for dispatch; it
+  // is not user-visible queueing. Keep actual running-turn queue entries and
+  // every non-success outcome visible and actionable.
+  const visibleQueuedMessages = queuedMessages.filter(message =>
+    !(message.nativeGuidance && message.deliveryState === 'dispatching')
+    && (message.deliveryState === 'ambiguous'
+      || message.deliveryState === 'rejected'
+      || effectiveTurnState !== 'idle'
+      || message.scope !== selected?.id),
+  );
+  const nativeGuidanceDispatching = queuedMessages.some(message =>
+    message.nativeGuidance
+    && message.deliveryState === 'dispatching'
+    && message.scope === selected?.id,
+  );
   const isGenerating = effectiveTurnState === 'running' || effectiveTurnState === 'pausing' || effectiveTurnState === 'resuming';
   const streamEnabled = Boolean(
     selected
@@ -4033,19 +4051,49 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   useEffect(() => () => {
     if (liveEventsFrame.current !== undefined) window.cancelAnimationFrame(liveEventsFrame.current);
   }, []);
+  const commitQueuedMessages = useCallback((update: (current: QueuedMessage[]) => QueuedMessage[]) => {
+    const next = update(queuedMessagesRef.current);
+    queuedMessagesRef.current = next;
+    // Persist before a caller may start the corresponding HTTP request.
+    writeQueuedMessages(queuedMessagesStorageKeyRef.current, next);
+    setQueuedMessages(next);
+  }, []);
+  const updateQueuedMessage = useCallback((id: string, update: (message: QueuedMessage) => QueuedMessage) => {
+    commitQueuedMessages(current => current.map(message => message.id === id ? update(message) : message));
+  }, [commitQueuedMessages]);
   const onStreamEvent = useCallback((event: AgentStreamEvent) => {
     // The upstream stream remains necessary for timely process/event delivery,
     // but text deltas are transient and must never appear as a partial final
     // reply. Final answer content is rendered only from formal OpenHands events.
     if (event.type === 'stream_closed') refresh();
     if (event.type === 'event' && event.event) {
+      const payload = event.event.payload;
+      const isFormalUserMessage = event.event.event_type === 'MESSAGE'
+        && ['user', 'human'].includes(String(payload.source ?? '').toLowerCase());
+      if (isFormalUserMessage && selected?.id) {
+        const content = String(payload.content ?? '');
+        const confirmed = queuedMessagesRef.current.find(message =>
+          message.scope === selected.id
+          && message.nativeGuidance
+          && message.deliveryState === 'dispatching'
+          && message.content === content,
+        );
+        if (confirmed) {
+          // A formal OpenHands event identity is the delivery fact. The event
+          // stream can publish it before the append request returns from the
+          // current native turn's lock, so do not leave a confirmed message
+          // looking perpetually queued.
+          streamConfirmedNativeGuidanceIds.current.add(confirmed.id);
+          commitQueuedMessages(current => current.filter(message => message.id !== confirmed.id));
+        }
+      }
       appendLiveEvent(event.event);
     }
     // Completion frames do not identify the originating user event.  A stale
     // frame must never complete a newer turn; durable assistant/error events
     // associated with activeTurnEventId are the authoritative terminal signal.
     if (event.type === 'message_complete') { clearLiveText(); refresh(); }
-  }, [appendLiveEvent, clearLiveText, refresh]);
+  }, [appendLiveEvent, clearLiveText, commitQueuedMessages, refresh, selected?.id]);
   const onStreamReconnect = useCallback(() => {
     // A WebSocket is a live projection only. Events written while the browser
     // was disconnected are recovered from the authoritative REST feed after
@@ -4068,7 +4116,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       bootstrapTransitionScope.current = undefined;
       return;
     }
-    setEditing(false); clearLiveText(); pendingLiveEvents.current = []; if (liveEventsFrame.current !== undefined) window.cancelAnimationFrame(liveEventsFrame.current); liveEventsFrame.current = undefined; setLiveEvents([]); setHiddenEventIds(new Set()); setActiveTurnEventId(undefined); setRequestStartedAt(undefined); setConfirmationReason(''); setCondensationConfirmationOpen(false); setTurnState('idle'); queuedMessagesRef.current = []; setQueuedMessages([]); setPendingRewrite(undefined); setAttachments([]); setReferences([]); setComposerAnnotations([]); setOperationError(undefined);
+    setEditing(false); clearLiveText(); pendingLiveEvents.current = []; if (liveEventsFrame.current !== undefined) window.cancelAnimationFrame(liveEventsFrame.current); liveEventsFrame.current = undefined; setLiveEvents([]); setHiddenEventIds(new Set()); setActiveTurnEventId(undefined); setRequestStartedAt(undefined); setConfirmationReason(''); setCondensationConfirmationOpen(false); setTurnState('idle'); queuedMessagesRef.current = []; streamConfirmedNativeGuidanceIds.current.clear(); setQueuedMessages([]); setPendingRewrite(undefined); setAttachments([]); setReferences([]); setComposerAnnotations([]); setOperationError(undefined);
   }, [clearLiveText, composerScope]);
   useEffect(() => {
     if (!queuedMessagesStorageKey || queuedMessagesStorageKeyRef.current !== queuedMessagesStorageKey) return;
@@ -4089,16 +4137,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     writeQueuedMessages(queuedMessagesStorageKey, restored);
     setQueuedMessages(restored);
   }, [queuedMessagesStorageKey]);
-  const commitQueuedMessages = useCallback((update: (current: QueuedMessage[]) => QueuedMessage[]) => {
-    const next = update(queuedMessagesRef.current);
-    queuedMessagesRef.current = next;
-    // Persist before a caller may start the corresponding HTTP request.
-    writeQueuedMessages(queuedMessagesStorageKeyRef.current, next);
-    setQueuedMessages(next);
-  }, []);
-  const updateQueuedMessage = useCallback((id: string, update: (message: QueuedMessage) => QueuedMessage) => {
-    commitQueuedMessages(current => current.map(message => message.id === id ? update(message) : message));
-  }, [commitQueuedMessages]);
   useEffect(() => {
     if (!editing) setTitle(selected?.display_title ?? '');
   }, [editing, selected?.display_title]);
@@ -4354,20 +4392,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     onMutate: message => {
       const optimisticEventId = `pending-user:${randomId()}`;
       if (message.nativeGuidance) {
-        // Preserve the active streamed answer. This optimistic user event is
-        // only a local projection until the formal OpenHands cursor returns.
-        setLiveEvents(current => mergeConversationEvents(current, [{
-          id: optimisticEventId,
-          event_type: 'MESSAGE',
-          payload: {
-            source: 'user',
-            content: message.content,
-            attachments: message.items,
-            conversation_references: message.references.map(item => ({ event_id: item.eventId, content: item.content })),
-            workspace_references: message.workspaceReferences,
-            collaboration_annotations: message.annotations,
-          },
-        }]));
+        // OpenHands returns only Success from its formal event append, not a
+        // new event ID. A running turn can hold the native event lock while
+        // this request waits, so do not show a guessed user bubble or queue
+        // entry as if the append had already been confirmed.
         return { optimisticEventId, nativeGuidance: true };
       }
       clearLiveText();
@@ -4378,6 +4406,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       return { optimisticEventId, nativeGuidance: false };
     },
     onSuccess: (value, message, context) => {
+      const streamConfirmed = streamConfirmedNativeGuidanceIds.current.delete(message.id);
       const cursor = value.cursor;
       if (cursor) {
         if (!context?.nativeGuidance) setActiveTurnEventId(cursor);
@@ -4386,7 +4415,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
           [{ id: cursor, event_type: 'MESSAGE', payload: { source: 'user', content: message.content, attachments: message.items, conversation_references: message.references.map(item => ({ event_id: item.eventId, content: item.content })), workspace_references: message.workspaceReferences, collaboration_annotations: message.annotations } }],
         ));
       }
-      if (value.accepted && cursor) {
+      if (streamConfirmed || (value.accepted && cursor)) {
         commitQueuedMessages(current => current.filter(item => item.id !== message.id));
       } else {
         updateQueuedMessage(message.id, item => ({
@@ -4399,6 +4428,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       refresh();
     },
     onError: (error, message, context) => {
+      if (streamConfirmedNativeGuidanceIds.current.delete(message.id)) return;
       if (error instanceof ApiError && error.code === 'AGENT_CONVERSATION_BUSY') {
         updateQueuedMessage(message.id, item => ({ ...item, deliveryState: 'queued', nativeGuidance: false, deliveryError: undefined }));
       } else if (isAmbiguousDelivery(error)) {
@@ -4853,8 +4883,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const activityTitle = `当前活动事件 ${activeEventCount.toLocaleString()} / ${eventLimit?.toLocaleString() ?? 'OpenHands 自身上限'}。OpenHands 按事件规模触发兜底压缩。`;
   const composerStatus = bootstrapRecovery
     ? '正在安全核对首条消息'
-    : conversationDraft && !newConversationModelName ? '请选择模型' : condense.isPending ? '正在压缩上下文' : contextUsagePending ? '压缩已完成，等待下次模型调用更新用量' : persistModel.isPending ? '正在保存模型设置' : migrateStreaming.isPending || pendingMigratedSend ? '正在迁移历史会话' : pendingConfirmation ? '等待工具确认' : effectiveTurnState === 'pausing' ? '正在暂停' : effectiveTurnState === 'paused' ? '已暂停' : effectiveTurnState === 'resuming' ? '正在继续' : finalReplyAwaitingNativeCompletion ? '回复已生成，正在收尾' : effectiveTurnState === 'running' ? '正在处理' : streamStatus === 'recovering' ? '连接恢复中' : undefined;
-  const composerNote = queuedMessages.length > 0 ? `已排队 ${queuedMessages.length} 条` : '';
+    : nativeGuidanceDispatching ? '正在追加到当前回复' : conversationDraft && !newConversationModelName ? '请选择模型' : condense.isPending ? '正在压缩上下文' : contextUsagePending ? '压缩已完成，等待下次模型调用更新用量' : persistModel.isPending ? '正在保存模型设置' : migrateStreaming.isPending || pendingMigratedSend ? '正在迁移历史会话' : pendingConfirmation ? '等待工具确认' : effectiveTurnState === 'pausing' ? '正在暂停' : effectiveTurnState === 'paused' ? '已暂停' : effectiveTurnState === 'resuming' ? '正在继续' : finalReplyAwaitingNativeCompletion ? '回复已生成，正在收尾' : effectiveTurnState === 'running' ? '正在处理' : streamStatus === 'recovering' ? '连接恢复中' : undefined;
+  const composerNote = visibleQueuedMessages.length > 0 ? `已排队 ${visibleQueuedMessages.length} 条` : '';
   const visibleError = operationError ?? confirmationQuery.error ?? eventsQuery.error;
   const composerHasContent = Boolean(
     draft.trim() || attachments.length || references.length || workspaceReferences.length || composerAnnotations.length,
@@ -5001,7 +5031,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         isPaused={inputReadinessQuery.data?.execution_status?.toLowerCase() === 'paused'}
         historyPending={Boolean(selected && historyLoadingBindingId === selected.id)}
         requestStartedAt={requestStartedAt}
-        requestSubmitting={send.isPending || bootstrap.isPending || rewrite.isPending}
+        requestSubmitting={(send.isPending && !nativeGuidanceDispatching) || bootstrap.isPending || rewrite.isPending}
         condensationStatus={selected && condensationStatus?.bindingId === selected.id ? condensationStatus : undefined}
         onRetryCondensation={selected && canWrite && condensationStatus?.bindingId === selected.id && condensationStatus.state === 'failed' ? requestManualCompaction : undefined}
         onRewrite={selected && canWrite && features.rewrite ? requestRewrite : undefined}
@@ -5021,7 +5051,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       {(selected || conversationDraft) && (runtimeWritable || Boolean(selected?.write_available)) && runtime?.state !== 'RECOVERING' && <div className="agent-composer-dock">
         <div className={`agent-composer ${effectiveTurnState !== 'idle' || pendingConfirmation ? 'busy' : ''}`}>
         {pendingConfirmation && <section className="agent-confirmation" aria-label="工具执行确认"><header><ShieldAlert size={17}/><div><b>工具正在等待你的确认</b><span>动作尚未执行。请核对整批内容后批准或拒绝。</span></div></header><div className="agent-confirmation-actions">{(pendingConfirmation.actions ?? []).map((action: AgentPendingConfirmationAction) => <article key={action.digest}><div><b>{action.summary || action.tool_name}</b><span>{action.security_risk || 'UNKNOWN'}</span></div>{Object.keys(action.arguments).length > 0 && <pre>{JSON.stringify(action.arguments, null, 2)}</pre>}</article>)}</div><textarea aria-label="工具确认理由" value={confirmationReason} maxLength={2000} placeholder="填写批准或拒绝理由…" onChange={event => setConfirmationReason(event.target.value)}/><footer><button type="button" className="danger" disabled={!confirmationReason.trim() || decideConfirmation.isPending} onClick={() => decideConfirmation.mutate(false)}><X size={14}/>拒绝整批</button><button type="button" className="primary" disabled={!confirmationReason.trim() || decideConfirmation.isPending} onClick={() => decideConfirmation.mutate(true)}><Check size={14}/>批准整批</button></footer></section>}
-        {queuedMessages.length > 0 && <section className="agent-queued-messages" aria-label="消息投递队列"><header><b>消息队列</b><span>{queuedMessages.filter(message => message.deliveryState === 'queued').length} 条等待发送；结果不确定的消息不会自动重发</span></header>{queuedMessages.map((message, index) => {
+        {visibleQueuedMessages.length > 0 && <section className="agent-queued-messages" aria-label="消息投递队列"><header><b>消息队列</b><span>{visibleQueuedMessages.filter(message => message.deliveryState === 'queued').length} 条等待发送；结果不确定的消息不会自动重发</span></header>{visibleQueuedMessages.map((message, index) => {
           const deliveryState = message.deliveryState ?? 'queued';
           const status = deliveryState === 'dispatching' ? '正在提交'
             : deliveryState === 'ambiguous' ? '结果不确定'
@@ -5032,7 +5062,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         {condensationConfirmationOpen && selected && <section className="agent-condensation-confirmation" aria-label="确认低用量上下文压缩" role="alertdialog" aria-modal="false">
           <ShieldAlert size={17}/><div><b>当前上下文用量较低</b><p>Token {contextProgress?.usedLabel} / {contextProgress?.windowLabel}（{contextProgress?.percentage}%），事件 {activeEventCount.toLocaleString()} / {eventLimit.toLocaleString()}（{eventProgress}%）。现在压缩可能没有足够的可压缩区间，并且仍会调用摘要模型。</p><footer><button type="button" onClick={() => setCondensationConfirmationOpen(false)}>取消</button><button type="button" className="primary" onClick={() => condense.mutate()}>仍然压缩</button></footer></div>
         </section>}
-        <ComposerCapabilityAutocomplete draft={draft} suggestions={composerSuggestions} placeholder={pendingConfirmation ? '请先处理上方工具确认…' : effectiveTurnState === 'paused' ? '已暂停：可继续，也可编辑上方消息重新思考…' : features.capabilities ? '给 Agent 发消息…（Enter 加入队列，⌘/Ctrl+Enter 直接发送）' : '给 Agent 发消息…'} disabled={!canCompose || Boolean(pendingConfirmation) || bootstrap.isPending || condense.isPending || migrateStreaming.isPending || Boolean(pendingMigratedSend) || effectiveTurnState === 'pausing' || effectiveTurnState === 'resuming'} onDraftChange={setDraft} onPaste={event => { if (!features.attachments || !composerScope) return; const files = transferredFiles(event.clipboardData); if (!files.length) return; event.preventDefault(); for (const file of files) upload.mutate({ file, scope: composerScope }); }} onDropFiles={features.attachments && composerScope ? files => { for (const file of files) upload.mutate({ file, scope: composerScope }); } : undefined} onDropWorkspaceFiles={paths => setWorkspaceReferences(current => [...current, ...paths.flatMap(path => current.some(reference => reference.path === path) ? [] : [{ path, kind: 'file' as const, display_name: path.split('/').filter(Boolean).pop() ?? path }])])} onSubmit={enqueueDraft} onDirectSubmit={sendDraftDirectly} onManageCapabilities={features.capabilities && (selected || features.draftCapabilitySelection) ? () => setCapabilityManagerOpen(true) : undefined} onNativeAction={action => { if (action === 'CONDENSE' && selected && (effectiveTurnState === 'idle' || effectiveTurnState === 'paused') && !pendingConfirmation && !condense.isPending) requestManualCompaction(); }} onWorkspaceReferenceSelected={() => { setWorkspaceReferenceQuery(''); setWorkspaceReferencePickerOpen(true); }}/>
+        <ComposerCapabilityAutocomplete draft={draft} suggestions={composerSuggestions} placeholder={pendingConfirmation ? '请先处理上方工具确认…' : effectiveTurnState === 'paused' ? '已暂停：可继续，也可编辑上方消息重新思考…' : features.capabilities ? effectiveTurnState === 'running' ? '给 Agent 发消息…（Enter 加入队列，⌘/Ctrl+Enter 调整当前回复）' : '给 Agent 发消息…（Enter 发送；运行时自动加入队列）' : '给 Agent 发消息…'} disabled={!canCompose || Boolean(pendingConfirmation) || bootstrap.isPending || condense.isPending || migrateStreaming.isPending || Boolean(pendingMigratedSend) || effectiveTurnState === 'pausing' || effectiveTurnState === 'resuming'} onDraftChange={setDraft} onPaste={event => { if (!features.attachments || !composerScope) return; const files = transferredFiles(event.clipboardData); if (!files.length) return; event.preventDefault(); for (const file of files) upload.mutate({ file, scope: composerScope }); }} onDropFiles={features.attachments && composerScope ? files => { for (const file of files) upload.mutate({ file, scope: composerScope }); } : undefined} onDropWorkspaceFiles={paths => setWorkspaceReferences(current => [...current, ...paths.flatMap(path => current.some(reference => reference.path === path) ? [] : [{ path, kind: 'file' as const, display_name: path.split('/').filter(Boolean).pop() ?? path }])])} onSubmit={enqueueDraft} onDirectSubmit={sendDraftDirectly} onManageCapabilities={features.capabilities && (selected || features.draftCapabilitySelection) ? () => setCapabilityManagerOpen(true) : undefined} onNativeAction={action => { if (action === 'CONDENSE' && selected && (effectiveTurnState === 'idle' || effectiveTurnState === 'paused') && !pendingConfirmation && !condense.isPending) requestManualCompaction(); }} onWorkspaceReferenceSelected={() => { setWorkspaceReferenceQuery(''); setWorkspaceReferencePickerOpen(true); }}/>
         {features.attachments && attachments.length > 0 && <div className="agent-attachments">{attachments.map(item => <span key={item.path}><button type="button" className="agent-attachment-open" title={`在右侧查看附件：${item.filename}`} onClick={() => openAttachmentInDrawer(item)}>{item.image_data_url && <img src={item.image_data_url} alt=""/>}<em>{item.filename}</em></button><button type="button" className="agent-attachment-remove" aria-label={`移除附件 ${item.filename}`} onClick={() => setAttachments(all => all.filter(candidate => candidate.path !== item.path))}>×</button></span>)}</div>}
         {references.length > 0 && <div className="agent-attachments agent-conversation-references" aria-label="已添加的会话引用">{references.map((reference, index) => <span key={`${reference.eventId}:${reference.content}`}><span className="agent-attachment-open" title={reference.content}><Quote size={14}/><em>{`会话引用 ${index + 1}`}</em></span><button type="button" className="agent-attachment-remove" aria-label={`移除会话引用 ${index + 1}`} onClick={() => setReferences(current => current.filter(item => item !== reference))}>×</button></span>)}</div>}
         {(selected || conversationDraft) && <ComposerAnnotationList annotations={composerAnnotations} onLocate={locateAnnotation} onRemove={annotation => setComposerAnnotations(current => current.filter(item => item.id !== annotation.id))} onUpdate={(annotation, comment) => void updateAnnotation(annotation, comment)}/>}

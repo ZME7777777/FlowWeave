@@ -189,6 +189,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-431 | 主会话／子智能体事件连续补读 | DONE | 原生 readiness 短暂报 idle 时，只要正式用户轮尚未出现终态，持续用正式 OpenHands cursor 补读；迟到的 TaskAction 无需暂停或继续即可进入主会话投影。 |
 | FR-432 | 最终回复的临时 delta 呈现回退 | DONE | 停止将 WebSocket `delta` 累积或渲染为最终回复；最终 Markdown 只在 OpenHands 正式 assistant／完成事件持久化并投影后一次显示，过程状态与正式工具事件保持可见。 |
 | FR-433 | OpenHands 错误终态工作台收束 | DONE | 将 OpenHands 原生 `ready=true, execution_status=error/stuck` 识别为可安全结束的终态，停止错误卡后的运行标记、停止按钮与“正在处理”，不以浏览器事件自行伪造状态。 |
+| FR-434 | 错误终态与运行中追加投递呈现修正 | DONE | 空闲或原生错误终态的新消息仍先持久化浏览器投递意图，但不得短暂显示为消息队列；运行中直接追加在收到正式 cursor 前不伪装为已发送气泡或队列，流先到达同一正式 OpenHands 用户事件时立即确认收起，歧义／拒绝项保持可见、可恢复。 |
 | FR-415 | FlowRun 独立终端全局项目根修正 | DONE | FlowRun 级终端进入已挂载的全局 `project` 根，因此无需创建节点即可完成对整个 FlowRun 生效的配置；会话／Attempt 终端继续保持记录级路径。 |
 | FR-417 | FlowRun 独立终端挂载感知路径选择 | DONE | FlowRun 级终端按活跃 Runtime 的固定挂载契约选择共享 `project` 根或记录直挂载根，避免历史 Runtime 因不存在 cwd 失败。 |
 
@@ -815,6 +816,27 @@ Enter、空 composer 的 Command/Ctrl+Enter“调整方向”、运行中直接�
 验收：受影响 Web TypeScript typecheck、定向 ESLint、production build、唯一 Alembic head、任务状态唯一性与
 `git diff --check`。新增产品流回归模拟 `AGENT_MESSAGE_DELIVERY_AMBIGUOUS`，断言刷新后歧义条目仍在且没有
 第二次 POST；定向 Playwright 在到达该断言前因本机登录页缺少既有“Agent 会话”入口而超时，未记为通过。
+
+### FR-434 错误终态与运行中追加投递呈现修正 — DONE
+
+依赖：`FR-429`、`FR-433`。
+
+目标：原生错误终态已经可安全重试时，浏览器本地投递意图不得短暂伪装为用户可见的消息队列。运行中的
+“调整方向”追加在获得正式 OpenHands 送达事实前，也不得同时显示为已发送用户气泡、正在提交的队列项和
+composer 提交状态；当 WebSocket 比 HTTP 返回更早投影同一正式用户 `MESSAGE` 时，应立即收起等待状态，
+但不能把不确定或拒绝的投递误判为成功、自动重发或丢弃。
+
+完成：空闲与原生错误终态的 `dispatching` 意图继续在浏览器本地持久化，却从空闲范围的可见队列中排除。
+运行中原生追加不再建立猜测性的用户气泡；其 HTTP 请求等待时仅在 composer 显示“正在追加到当前回复”。
+流式正式 user `MESSAGE` 会匹配当前会话唯一的 in-flight 追加内容并同步移除该本地意图，防止 HTTP 因当前
+原生 turn lock 延迟返回时持续显示队列；HTTP cursor 仍是同等的确认回退。歧义、拒绝及真正等待发送的项目
+继续可见、持久并需要用户显式处理，页面恢复中的 `dispatching` 仍降级为歧义而不自动重发。
+
+验收：受影响 Web TypeScript typecheck、定向 ESLint、production build 及 `git diff --check` 通过。产品流
+增加错误终态直接投递、追加等待时无虚假气泡/队列、正式 stream user event 先于 HTTP 返回即收起状态的回归
+断言。定向 Playwright 在本地当前源码 Vite 服务上启动，但在到达新增断言前卡于既有
+`.conversation-file-changes > button` 入口（页面当前没有该元素）并超时，未记为通过；未修改 API、数据库、
+Runtime Provider、OpenHands 或远端环境。
 
 ### FR-415 FlowRun 独立终端全局项目根修正 — DONE
 
