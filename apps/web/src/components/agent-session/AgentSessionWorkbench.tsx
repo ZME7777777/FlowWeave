@@ -3740,42 +3740,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   useEffect(() => {
     if (selected && eventsQuery.data) markSessionPerformance('events-ready');
   }, [eventsQuery.data, selected]);
-  useEffect(() => {
-    if (!workspace || !selected || !isGenerating || !pageVisible || !eventsQuery.data?.next_cursor) return;
-    const workspaceId = workspace.id;
-    const bindingId = selected.id;
-    let cancelled = false;
-    let timer: number | undefined;
-    const recover = async () => {
-      const current = queryClient.getQueryData<OpenHandsConversationEventBatch>(eventQueryKey);
-      const cursor = current?.next_cursor ?? undefined;
-      if (cancelled || !cursor) return;
-      try {
-        const recovered = await api.conversationEvents(workspaceId, bindingId, cursor);
-        if (cancelled) return;
-        queryClient.setQueryData<OpenHandsConversationEventBatch>(eventQueryKey, existing => {
-          if (!existing) return existing;
-          const cursorUnchanged = existing.next_cursor === cursor;
-          return {
-            ...existing,
-            ...recovered,
-            events: mergeConversationEvents(existing.events, recovered.events),
-            next_cursor: cursorUnchanged ? (recovered.next_cursor ?? cursor) : existing.next_cursor,
-            history_cursor: existing.history_cursor ?? recovered.history_cursor,
-          };
-        });
-      } catch (error) {
-        void error;
-      } finally {
-        if (!cancelled) timer = window.setTimeout(() => { void recover(); }, ACTIVE_EVENT_RECOVERY_INTERVAL_MS);
-      }
-    };
-    timer = window.setTimeout(() => { void recover(); }, ACTIVE_EVENT_RECOVERY_INTERVAL_MS);
-    return () => {
-      cancelled = true;
-      if (timer !== undefined) window.clearTimeout(timer);
-    };
-  }, [api, eventQueryKey, eventsQuery.data?.next_cursor, isGenerating, pageVisible, queryClient, selected, workspace]);
   // Let the latest native window paint before background history starts. This
   // makes the first visual state deterministic. History is a read-only
   // native projection and must keep loading while the current turn runs.
@@ -3832,8 +3796,52 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       .filter(event => !hiddenEventIds.has(event.id));
   }, [conversationDraft?.id, eventsQuery.data?.events, hiddenEventIds, liveEvents, optimisticBootstrapTurn, selected?.id]);
   const activeNativeTurnId = activeTurnEventId ?? latestUnfinishedUserEventId(displayedEvents);
+  const hasUnfinishedFormalTurn = Boolean(latestUnfinishedUserEventId(displayedEvents));
   const finalReplyAwaitingNativeCompletion = nativeTurnRunning
     && Boolean(activeNativeTurnId && hasAssistantReplyForTurn(displayedEvents, activeNativeTurnId));
+  useEffect(() => {
+    // The OpenHands readiness read can briefly (or after a missed stream
+    // transition, persistently) report idle before it has observed the
+    // descendant TaskAction. A formal unfinished user turn and its native
+    // cursor prove there is still an active branch to reconcile. Keep this
+    // read-only recovery alive without changing the displayed execution state.
+    const recoverUnfinishedTurn = hasUnfinishedFormalTurn
+      && conversationHasReachedTerminalState(nativeExecutionStatus);
+    if (!workspace || !selected || !(isGenerating || recoverUnfinishedTurn) || !pageVisible || !eventsQuery.data?.next_cursor) return;
+    const workspaceId = workspace.id;
+    const bindingId = selected.id;
+    let cancelled = false;
+    let timer: number | undefined;
+    const recover = async () => {
+      const current = queryClient.getQueryData<OpenHandsConversationEventBatch>(eventQueryKey);
+      const cursor = current?.next_cursor ?? undefined;
+      if (cancelled || !cursor) return;
+      try {
+        const recovered = await api.conversationEvents(workspaceId, bindingId, cursor);
+        if (cancelled) return;
+        queryClient.setQueryData<OpenHandsConversationEventBatch>(eventQueryKey, existing => {
+          if (!existing) return existing;
+          const cursorUnchanged = existing.next_cursor === cursor;
+          return {
+            ...existing,
+            ...recovered,
+            events: mergeConversationEvents(existing.events, recovered.events),
+            next_cursor: cursorUnchanged ? (recovered.next_cursor ?? cursor) : existing.next_cursor,
+            history_cursor: existing.history_cursor ?? recovered.history_cursor,
+          };
+        });
+      } catch (error) {
+        void error;
+      } finally {
+        if (!cancelled) timer = window.setTimeout(() => { void recover(); }, ACTIVE_EVENT_RECOVERY_INTERVAL_MS);
+      }
+    };
+    timer = window.setTimeout(() => { void recover(); }, ACTIVE_EVENT_RECOVERY_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [api, eventQueryKey, eventsQuery.data?.next_cursor, hasUnfinishedFormalTurn, isGenerating, nativeExecutionStatus, pageVisible, queryClient, selected, workspace]);
   const messageAnnotations = useMemo(() => displayedEvents.flatMap(event => {
     const raw = event.payload.collaboration_annotations;
     return Array.isArray(raw) ? raw.filter((item): item is AgentConversationAnnotation => Boolean(

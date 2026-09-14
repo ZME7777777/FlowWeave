@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`IN PROGRESS`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`待主会话／子智能体事件补读问题独立拆分`
+> 下一可执行切片：`待会话可靠性后续问题独立拆分`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -186,6 +186,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-428 | FlowNode 空闲边界无数据库原生投递 | DONE | 节点会话直接发送也在独立 Runtime 段完成模型重绑和原生事件追加，短事务只负责授权、冻结与投影。 |
 | FR-429 | 浏览器队列可靠性交付 | DONE | 浏览器本地队列持久、可恢复；只在正式 OpenHands cursor 返回后移除，歧义投递绝不自动重发。 |
 | FR-430 | 已认证端到端可靠性交付验收 | DONE | 为现有 Agent 工作台产品流补足测试范围内的认证前置，使 FR-429 歧义投递持久化与不自动重发断言能实际执行；不改变生产认证或投递逻辑。 |
+| FR-431 | 主会话／子智能体事件连续补读 | DONE | 原生 readiness 短暂报 idle 时，只要正式用户轮尚未出现终态，持续用正式 OpenHands cursor 补读；迟到的 TaskAction 无需暂停或继续即可进入主会话投影。 |
 | FR-415 | FlowRun 独立终端全局项目根修正 | DONE | FlowRun 级终端进入已挂载的全局 `project` 根，因此无需创建节点即可完成对整个 FlowRun 生效的配置；会话／Attempt 终端继续保持记录级路径。 |
 | FR-417 | FlowRun 独立终端挂载感知路径选择 | DONE | FlowRun 级终端按活跃 Runtime 的固定挂载契约选择共享 `project` 根或记录直挂载根，避免历史 Runtime 因不存在 cwd 失败。 |
 
@@ -5720,6 +5721,7 @@ contract、冻结策略与既有受控生命周期约束覆盖。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-14 | FR-431 | Web ESLint、TypeScript typecheck、production build、定向 Agent 工作台 Playwright、任务状态唯一性与 `git diff --check` | PASS：当 formal user turn 尚未终态而 readiness 暂态或持续返回 idle 时，浏览器继续使用同一正式 OpenHands cursor 补读；迟到的 `TaskAction` 无需暂停／继续即可显示为子智能体调用。补读只读取原生事件，不改变 readiness、暂停或平台持久化语义。production build 仅报告既有大 bundle 建议。 |
 | 2026-09-14 | FR-430 | Web ESLint、TypeScript typecheck、production build、定向 Agent 工作台 Playwright、任务状态唯一性与 `git diff --check` | PASS：产品流在测试范围内显式 mock 已认证用户，并适配当前会话分页响应和标题语义；FR-429 的“歧义投递持久化、刷新后可见且绝不自动重发”断言已完整执行。production build 仅报告既有大 bundle 建议；未修改生产认证或投递逻辑。 |
 | 2026-09-14 | FR-429 | Web TypeScript typecheck、受影响 Web ESLint、production build、定向 Agent 工作台 Playwright、Alembic head、任务状态唯一性与 `git diff --check` | PASS（静态／构建）：浏览器队列以 host/workspace/binding 隔离的 sessionStorage 保留有限投递意图，状态为 queued、dispatching、ambiguous 或 rejected；正式 OpenHands cursor 才可移除。歧义投递和刷新恢复绝不自动重发，明确拒绝必须由用户编辑成新消息。新增 Playwright 回归在本机登录前置处超时，未到达新增断言，未记为通过。production build 仅报告既有大 bundle 建议；唯一 head 为 `0115_agent_annotations`。 |
 | 2026-09-14 | FR-428 | 受影响 Python `py_compile`；`uv run ruff format --check`／`uv run ruff check`；运行中与 idle Runtime-only dispatch、模型配置错误边界的直接回归；Alembic head、`git diff --check` 与任务状态唯一性 | PASS（静态／直接）：FlowNode 的 idle 直接发送现在同样在无数据库 Runtime 段完成正式引用校验、冻结模型重绑和 native event append，finalize 只短暂投影结果；`queued_during_turn` 由正式 readiness 返回。冻结模型错误只会在 idle rebind 时拒绝，运行中原生追加保持连续。定向 pytest 被全局 Testcontainers PostgreSQL fixture 的 Docker socket 缺失阻断，未进入测试体；同一回归已直接执行通过。唯一 head 为 `0115_agent_annotations`；未修改数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |

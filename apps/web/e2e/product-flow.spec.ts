@@ -444,6 +444,7 @@ test('terminal environment deletion preserves setup sessions when a FlowRun uses
 test('top-level Agent workspace creates a direct conversation and restores its URL', async ({ page }) => {
   let modelIsResponding = false;
   let transientIdleReadiness = false;
+  let readinessReportsIdle = false;
   let interrupted = false;
   let backfilledTaskAction = false;
   let incompleteLiveToolProjection = false;
@@ -801,7 +802,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
       return;
     }
     if (path.endsWith('/input-readiness')) {
-      if (transientIdleReadiness) {
+      if (transientIdleReadiness || readinessReportsIdle) {
         transientIdleReadiness = false;
         await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ready: true, execution_status: 'idle' }) });
         return;
@@ -1293,11 +1294,19 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.locator('.conversation-turn-status')).toHaveText('OpenHands 会话连接正常，等待响应');
   await expect(page.getByLabel('Agent 活动提醒')).toHaveCount(0);
   await expect.poll(() => Boolean(agentStream)).toBe(true);
+  // A stale readiness endpoint can remain idle while the formal user turn is
+  // still unfinished. Cursor reconciliation must stay active without using
+  // Pause/Resume as the mechanism that makes a child Task visible.
+  readinessReportsIdle = true;
+  await expect(page.getByRole('button', { name: '发送消息' })).toBeVisible();
   // A socket can look live while an intermediary has silently stopped
   // forwarding frames. The running-turn cursor recovery must reveal the
   // formal event without reconnecting or switching conversations.
   backfilledTaskAction = true;
   await expect(activeProcess.getByText('子智能体 general-purpose · 检查依赖关系')).toBeVisible();
+  readinessReportsIdle = false;
+  agentStream!.send(JSON.stringify({ type: 'message_complete' }));
+  await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toBeVisible();
   agentStream!.send(JSON.stringify({ type: 'delta', content: '正在核对上下文。' }));
   const liveReply = page.getByLabel('正在生成的回复');
   await expect(liveReply).toHaveText('正在核对上下文。');
