@@ -1403,6 +1403,7 @@ def test_automatic_runtime_delivery_failure_cannot_be_retried_as_a_gate(
     [
         "RUNTIME_ALLOCATION_OWNER_INVALID: The Runtime Attempt does not belong to this FlowRun",
         "RUNTIME_WORKSPACE_INVALID: The Runtime record workspace identity is invalid",
+        "runtime delivery exhausted retries",
     ],
 )
 def test_automatic_runtime_compatibility_failure_retries_runtime_start(

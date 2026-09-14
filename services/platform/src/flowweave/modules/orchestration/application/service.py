@@ -8632,19 +8632,13 @@ def reject_attempt(
 def retry_gates(db: Session, attempt_id: str, payload: AttemptVersionWrite) -> dict[str, Any]:
     current = _attempt(db, attempt_id)
     if current.error_code == "AUTOMATIC_RUNTIME_DELIVERY_FAILED":
-        runtime_start_compatibility_failure = current.state == AttemptState.START_BLOCKED and any(
-            code in (current.error_detail or "")
-            for code in {
-                "RUNTIME_ALLOCATION_OWNER_INVALID",
-                "RUNTIME_WORKSPACE_INVALID",
-                # Before record-scoped Artifact ownership, automatic FILE
-                # inputs were incorrectly checked as private Conversation
-                # attachments. Re-running safely rematerializes only the
-                # Attempt's frozen Artifact bindings.
-                "AGENT_ATTACHMENT_INVALID",
-                "RUNTIME_ARTIFACT_ATTACHMENT_INVALID",
-            }
-        )
+        # START_BLOCKED with this error code is exclusively projected when a
+        # START_RUNTIME delivery exhausts.  Re-queuing that same Attempt is
+        # idempotent and rematerializes only its frozen bindings.  Historic
+        # error text is not a durable contract: task workers may truncate or
+        # normalize their nested provider failure, so do not make recovery
+        # depend on matching a particular old diagnostic string.
+        runtime_start_compatibility_failure = current.state == AttemptState.START_BLOCKED
         if runtime_start_compatibility_failure:
             node_run = _node_run(db, current.node_run_id)
             run = _run(db, node_run.flow_run_id)

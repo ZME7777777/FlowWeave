@@ -1131,24 +1131,18 @@ function AttemptPanel({ run, nodeRun, attempt, refresh, navigate, sessionReturnC
   const automaticGateStage = attempt.state === 'START_BLOCKED' ? '启动' : '完成';
   const runtimeStartCompatibilityRetry = automaticAttempt
     && attempt.state === 'START_BLOCKED'
-    && attempt.error_code === 'AUTOMATIC_RUNTIME_DELIVERY_FAILED'
-    && [
-      'RUNTIME_ALLOCATION_OWNER_INVALID',
-      'RUNTIME_WORKSPACE_INVALID',
-      'AGENT_ATTACHMENT_INVALID',
-      'RUNTIME_ARTIFACT_ATTACHMENT_INVALID',
-    ].some(code => attempt.error_detail?.includes(code));
+    && attempt.error_code === 'AUTOMATIC_RUNTIME_DELIVERY_FAILED';
   const automaticGateDeliveryFailed = automaticAttempt && attempt.error_code === 'AUTOMATIC_GATE_DELIVERY_FAILED';
   const automaticGateExecutionFailed = automaticAttempt && attempt.error_code === 'AUTOMATIC_GATE_EXECUTION_FAILED';
   const automaticRemediationDeliveryFailed = automaticAttempt && attempt.error_code === 'AUTOMATIC_OUTPUT_REMEDIATION_DELIVERY_FAILED';
   const automaticBlockedTitle = completionIdentityFailure
     ? '节点完成信息不完整'
     : runtimeFailed
-    ? '节点执行失败'
+      ? '节点执行失败'
     : automaticGateRemediationPending
       ? '正在修订输出'
       : runtimeStartCompatibilityRetry
-        ? '历史运行时兼容错误可恢复'
+        ? '启动时运行时投递失败可恢复'
         : automaticGateExecutionFailed
         ? `自动${automaticGateStage}门禁执行失败`
         : automaticGateDeliveryFailed
@@ -1165,7 +1159,7 @@ function AttemptPanel({ run, nodeRun, attempt, refresh, navigate, sessionReturnC
   const automaticBlockedDescription = completionIdentityFailure
     ? attemptErrorText(attempt)
     : runtimeStartCompatibilityRetry
-      ? '该记录在共享 FlowRun Runtime 兼容修复前启动失败。平台会复用当前 FlowRun Runtime 和记录级工作目录重新尝试启动，不会创建新的 Attempt Runtime 或修改已冻结的输入。'
+      ? '平台会复用当前 FlowRun Runtime 和记录级工作目录重新尝试启动，不会创建新的 Attempt Runtime 或修改已冻结的输入。'
       : automaticGateExecutionFailed || automaticGateDeliveryFailed
     ? '这是当前门禁执行或投递的技术故障，可能来自用户定义的门禁配置、所选供应商或服务异常，不表示节点输出不符合要求。请查看门禁详情；必要时切换门禁供应商后重试当前阶段。'
     : automaticRemediationDeliveryFailed

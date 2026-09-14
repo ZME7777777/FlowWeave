@@ -163,6 +163,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-401 | 记录 ID 与 Runtime owner 身份分离 | DONE | 恢复以产品记录 ID 而非 FlowRun Runtime owner 选择 `project/<record-id>`，使共享 Runtime 中的不同记录继续隔离。 |
 | FR-403 | 共享记录工作区的门禁／Provider 路径贯通 | DONE | 门禁 sidecar、Runtime replacement probe 与 Provider terminal 准入均使用 `project/<record-id>`；物理 `project` mount 仅作为多记录存储根。 |
 | FR-405 | 共享记录工作区中的 FILE Artifact 输入隔离 | DONE | 自动 FILE Artifact 输入以 Attempt（而非执行或门禁 Conversation binding）作为受控上传所有者；私有会话附件仍只允许原 binding 使用。历史自动启动因旧 owner 校验失败时可重试并重新物化冻结输入。 |
+| FR-406 | 自动启动 Runtime 投递失败的文本无关恢复 | DONE | 自动 Attempt 的 `START_BLOCKED + AUTOMATIC_RUNTIME_DELIVERY_FAILED` 是已知 `START_RUNTIME` 耗尽投影；恢复只依据该受控状态重投同一 Attempt，不再依赖可能截断的内部错误文本，`END_BLOCKED` 仍维持不可自动恢复。 |
 
 ### FR-366 FlowWeave 专属 Docker 地址规划 — DONE
 
