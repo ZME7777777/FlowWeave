@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`IN PROGRESS`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`浏览器队列可靠性交付切片（待独立拆分并设为 CURRENT）`
+> 下一可执行切片：`待会话可靠性后续问题独立拆分`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -184,6 +184,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-426 | 瞬态 native idle 不得收起运行过程 | DONE | 仅当同一轮已有正式回复／错误且 native 状态确认终态时自动收起；短暂 idle 后恢复 running 保留展开详情。 |
 | FR-427 | FlowNode 运行中消息三阶段原生投递 | DONE | 运行中节点会话的授权和投影与 OpenHands user-event append 分离，Runtime 段不得访问或锁定 FlowWeave 数据库。 |
 | FR-428 | FlowNode 空闲边界无数据库原生投递 | DONE | 节点会话直接发送也在独立 Runtime 段完成模型重绑和原生事件追加，短事务只负责授权、冻结与投影。 |
+| FR-429 | 浏览器队列可靠性交付 | DONE | 浏览器本地队列持久、可恢复；只在正式 OpenHands cursor 返回后移除，歧义投递绝不自动重发。 |
 | FR-415 | FlowRun 独立终端全局项目根修正 | DONE | FlowRun 级终端进入已挂载的全局 `project` 根，因此无需创建节点即可完成对整个 FlowRun 生效的配置；会话／Attempt 终端继续保持记录级路径。 |
 | FR-417 | FlowRun 独立终端挂载感知路径选择 | DONE | FlowRun 级终端按活跃 Runtime 的固定挂载契约选择共享 `project` 根或记录直挂载根，避免历史 Runtime 因不存在 cwd 失败。 |
 
@@ -789,6 +790,27 @@ ambiguous，绝不根据最后消息自动重发。自动返工 Worker 的同步
 
 验收：受影响 Python Ruff format/check、`py_compile`、运行中与 idle Runtime-only dispatch 的直接回归、
 Alembic head、`git diff --check` 与任务状态唯一性；数据库定向回归仅在 Testcontainers 可用时执行。
+
+### FR-429 浏览器队列可靠性交付 — DONE
+
+依赖：`FR-424`、`FR-425`、`FR-428`。
+
+目标：浏览器里的 Enter 队列、运行中 Command/Ctrl+Enter 原生追加和空闲直接发送不得在 HTTP 调用前从
+内存队列消失。浏览器只保存有限的、本会话隔离的投递意图；OpenHands 正式 event cursor 仍是唯一送达事实。
+网络中断、超时、5xx 或后端 `AGENT_MESSAGE_DELIVERY_AMBIGUOUS` 必须保留为用户可见的歧义项并在刷新后恢复，
+不得依据最新消息、事件顺序或复用请求自行重发。
+
+完成：队列统一为浏览器持久的 `queued → dispatching → accepted | ambiguous | rejected` 投递意图。
+Enter、空 composer 的 Command/Ctrl+Enter“调整方向”、运行中直接追加和空闲直接发送都先同步保留条目，
+再开始单次 HTTP 请求；只有 `accepted=true` 且返回正式 OpenHands cursor 才删除。页面恢复把残留的
+`dispatching` 转为 `ambiguous`，在当前 host/workspace/binding 隔离的 sessionStorage 中继续显示，
+提示用户刷新正式会话确认，且永不自动重发。明确忙碌回复回到 queued，明确 4xx 拒绝显示为 rejected；
+用户可移除或“编辑为新消息”，歧义项可显式刷新确认。队列不写入 FlowWeave 数据库，也不作为 OpenHands
+消息、cursor 或会话状态事实。FlowNode 历史会话迁移会把本地意图转移到新 binding 的隔离键后再投递。
+
+验收：受影响 Web TypeScript typecheck、定向 ESLint、production build、唯一 Alembic head、任务状态唯一性与
+`git diff --check`。新增产品流回归模拟 `AGENT_MESSAGE_DELIVERY_AMBIGUOUS`，断言刷新后歧义条目仍在且没有
+第二次 POST；定向 Playwright 在到达该断言前因本机登录页缺少既有“Agent 会话”入口而超时，未记为通过。
 
 ### FR-415 FlowRun 独立终端全局项目根修正 — DONE
 
@@ -5697,6 +5719,7 @@ contract、冻结策略与既有受控生命周期约束覆盖。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-14 | FR-429 | Web TypeScript typecheck、受影响 Web ESLint、production build、定向 Agent 工作台 Playwright、Alembic head、任务状态唯一性与 `git diff --check` | PASS（静态／构建）：浏览器队列以 host/workspace/binding 隔离的 sessionStorage 保留有限投递意图，状态为 queued、dispatching、ambiguous 或 rejected；正式 OpenHands cursor 才可移除。歧义投递和刷新恢复绝不自动重发，明确拒绝必须由用户编辑成新消息。新增 Playwright 回归在本机登录前置处超时，未到达新增断言，未记为通过。production build 仅报告既有大 bundle 建议；唯一 head 为 `0115_agent_annotations`。 |
 | 2026-09-14 | FR-428 | 受影响 Python `py_compile`；`uv run ruff format --check`／`uv run ruff check`；运行中与 idle Runtime-only dispatch、模型配置错误边界的直接回归；Alembic head、`git diff --check` 与任务状态唯一性 | PASS（静态／直接）：FlowNode 的 idle 直接发送现在同样在无数据库 Runtime 段完成正式引用校验、冻结模型重绑和 native event append，finalize 只短暂投影结果；`queued_during_turn` 由正式 readiness 返回。冻结模型错误只会在 idle rebind 时拒绝，运行中原生追加保持连续。定向 pytest 被全局 Testcontainers PostgreSQL fixture 的 Docker socket 缺失阻断，未进入测试体；同一回归已直接执行通过。唯一 head 为 `0115_agent_annotations`；未修改数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-14 | FR-427 | 受影响 Python `py_compile`；`uv run ruff format --check`／`uv run ruff check`；不依赖 Testcontainers 的 Runtime dispatch 回归；Alembic head、`git diff --check` 与任务状态唯一性 | PASS（静态／直接）：FlowNode 运行中追加完成短事务 prepare、无数据库 Runtime dispatch、短事务 finalize；正式引用只按 native event ID 解析，Runtime 错误只返回 ambiguous、不猜测重发。定向 pytest 因全局 Testcontainers PostgreSQL fixture 在 Docker socket 不可用时初始化失败、未进入测试体；同一回归已直接执行通过。唯一 head 为 `0115_agent_annotations`；未修改数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-14 | FR-426 | Web TypeScript typecheck、受影响 Web ESLint、production build、定向 Agent 工作台 Playwright、`git diff --check` 与任务状态唯一性 | PASS（静态／构建）：运行过程只在正式 reply/error 与 native 终态共同确认后收起；单次 idle 后恢复 running 保留展开详情，暂停不再隐式关闭。定向 Playwright 已启动 Vite，但在本切片断言前停在既有登录页、找不到“Agent 会话”入口，未记为通过。未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |

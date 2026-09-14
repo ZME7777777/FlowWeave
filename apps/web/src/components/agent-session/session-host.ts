@@ -11,6 +11,8 @@ export interface AgentSessionHost {
   readonly bootstrapRecoveryStorageKey: string;
   /** Current-tab recovery for a new, not-yet-created conversation draft. */
   readonly draftStorageKey: string;
+  /** Current-tab recovery for queued or unresolved message delivery intent. */
+  queuedMessagesStorageKey(hostId: string, bindingId: string): string;
   /** Namespace every query and browser-only tool layout by host identity. */
   queryKey(resource: string, ...identifiers: Array<string | undefined>): readonly string[];
   workspaceToolsStorageKey(hostId: string): string;
@@ -24,6 +26,7 @@ export const agentWorkspaceSessionHost: AgentSessionHost = {
   rootPath: '/agent',
   bootstrapRecoveryStorageKey: 'flowweave.agent.bootstrap-recovery.v1',
   draftStorageKey: 'flowweave.agent.conversation-draft.v1',
+  queuedMessagesStorageKey: (hostId, bindingId) => `flowweave.agent.message-queue.v1:${hostId}:${bindingId}`,
   queryKey: (resource, ...identifiers) => [
     'agent-session',
     'agent-workspace',
@@ -51,6 +54,7 @@ export function flowNodeSessionHost(
     rootPath,
     bootstrapRecoveryStorageKey: `flowweave.node-session.bootstrap-recovery.v1:${flowRunId}:${attemptId}`,
     draftStorageKey: `flowweave.node-session.conversation-draft.v1:${flowRunId}:${attemptId}`,
+    queuedMessagesStorageKey: (hostId, bindingId) => `flowweave.node-session.message-queue.v1:${flowRunId}:${attemptId}:${hostId}:${bindingId}`,
     queryKey: (resource, ...identifiers) => [
       'agent-session', identity, resource,
       ...identifiers.filter((value): value is string => Boolean(value)),

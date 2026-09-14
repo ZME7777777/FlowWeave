@@ -457,6 +457,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   const terminalInputs: string[] = [];
   const terminalResizes: Array<{ rows: number; columns: number }> = [];
   let sentMessages = 0;
+  let ambiguousMessagePosts = 0;
   let sentProvider: string | null = null;
   let sentBinding: string | null = null;
   let streamingMigrations = 0;
@@ -768,6 +769,14 @@ test('top-level Agent workspace creates a direct conversation and restores its U
       return;
     }
     if (path.endsWith('/messages') && request.method() === 'POST') {
+      const payload = JSON.parse(request.postData() ?? '{}') as { content?: string };
+      if (payload.content === '网络不确定消息') {
+        ambiguousMessagePosts += 1;
+        await route.fulfill({ status: 504, contentType: 'application/json', body: JSON.stringify({
+          error: { code: 'AGENT_MESSAGE_DELIVERY_AMBIGUOUS', message: '消息发送结果不确定，请先刷新会话' },
+        }) });
+        return;
+      }
       sentProvider = JSON.parse(request.postData() ?? '{}').model_provider_id ?? null;
       sentBinding = path.match(/\/conversations\/([^/]+)\/messages$/)?.[1] ?? null;
       sentMessages += 1;
@@ -1384,7 +1393,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await composer.press('Enter');
   await composer.fill('调整方向的排队消息');
   await composer.press('Enter');
-  const queuedMessage = page.getByLabel('已排队消息');
+  const queuedMessage = page.getByLabel('消息投递队列');
   await expect(queuedMessage.getByText('第一条排队消息')).toBeVisible();
   await expect(queuedMessage.getByText('调整方向的排队消息')).toBeVisible();
   await queuedMessage.getByRole('button', { name: '更多排队消息操作 2' }).click();
@@ -1394,6 +1403,16 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(queuedMessage.getByText('第一条排队消息')).toBeVisible();
   await expect(queuedMessage.getByText('调整方向的排队消息')).toHaveCount(0);
   await expect.poll(() => sentMessages).toBe(2);
+  await composer.fill('网络不确定消息');
+  await composer.press('Meta+Enter');
+  await expect(queuedMessage.getByText('网络不确定消息')).toBeVisible();
+  await expect(queuedMessage.getByText('结果不确定', { exact: true })).toBeVisible();
+  await expect.poll(() => ambiguousMessagePosts).toBe(1);
+  await page.reload();
+  await expect(page.getByLabel('消息投递队列').getByText('网络不确定消息')).toBeVisible();
+  await expect(page.getByLabel('消息投递队列').getByText('结果不确定', { exact: true })).toBeVisible();
+  expect(ambiguousMessagePosts).toBe(1);
+  await page.getByLabel('消息投递队列').getByRole('button', { name: '移除排队消息 1' }).click();
   const liveToolDetail = activeProcess.locator('.conversation-tool-detail').filter({ hasText: '已运行 pwd' });
   await expect(liveToolDetail).toHaveJSProperty('open', false);
   await liveToolDetail.locator(':scope > summary').click();

@@ -118,7 +118,12 @@ export interface AgentSessionApi {
   readonly inputReadiness: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<AgentConversationInputReadiness>;
   readonly conversationContext: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<AgentConversationContext>;
   readonly pendingConfirmation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<AgentPendingConfirmation>;
-  readonly sendMessage: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, content: string, attachments?: AgentAttachment[], references?: AgentConversationReference[], workspaceReferences?: AgentWorkspaceReference[], annotations?: AgentConversationAnnotation[]) => Promise<{ accepted: boolean; cursor?: string | null; compacted?: boolean; queued_during_turn?: boolean }>;
+  /**
+   * `clientMessageId` keeps one browser dispatch attempt stable at the HTTP
+   * edge. It is not an exactly-once promise: OpenHands 1.47 has no formal
+   * event idempotency field, so callers must not retry ambiguous delivery.
+   */
+  readonly sendMessage: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, content: string, attachments?: AgentAttachment[], references?: AgentConversationReference[], workspaceReferences?: AgentWorkspaceReference[], annotations?: AgentConversationAnnotation[], clientMessageId?: string) => Promise<{ accepted: boolean; cursor?: string | null; compacted?: boolean; queued_during_turn?: boolean }>;
   readonly migrateStreamingConversation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, modelProviderId: string, modelName?: string | null, reasoningEffort?: string | null) => Promise<AgentConversation>;
   readonly uploadConversationAttachment: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, file: File) => Promise<AgentAttachment>;
   readonly uploadDraftAttachment: (hostId: AgentSessionHostId, file: File, workDirectoryId?: AgentSessionWorkDirectoryId, conversationId?: string) => Promise<AgentAttachment>;
@@ -277,8 +282,8 @@ export function flowNodeSessionGateway(
       conversationContext: (_hostId, bindingId) =>
         nodeSessionApi.context(flowRunId, attemptId, bindingId),
       pendingConfirmation: (_hostId, bindingId) => nodeSessionApi.pendingConfirmation(flowRunId, attemptId, bindingId),
-      sendMessage: (_hostId, bindingId, content, attachments = [], references = [], workspaceReferences = [], annotations = []) =>
-        nodeSessionApi.message(flowRunId, attemptId, bindingId, content, attachments, references, workspaceReferences, undefined, annotations),
+      sendMessage: (_hostId, bindingId, content, attachments = [], references = [], workspaceReferences = [], annotations = [], clientMessageId) =>
+        nodeSessionApi.message(flowRunId, attemptId, bindingId, content, attachments, references, workspaceReferences, clientMessageId, annotations),
       migrateStreamingConversation: (_hostId, bindingId, providerId, modelName, reasoningEffort) =>
         nodeSessionApi.migrate(flowRunId, attemptId, bindingId, providerId, modelName, reasoningEffort),
       uploadConversationAttachment: (_hostId, bindingId, file) =>
