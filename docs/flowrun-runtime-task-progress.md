@@ -166,6 +166,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-406 | 自动启动 Runtime 投递失败的文本无关恢复 | DONE | 自动 Attempt 的 `START_BLOCKED + AUTOMATIC_RUNTIME_DELIVERY_FAILED` 是已知 `START_RUNTIME` 耗尽投影；恢复只依据该受控状态重投同一 Attempt，不再依赖可能截断的内部错误文本，`END_BLOCKED` 仍维持不可自动恢复。 |
 | FR-407 | 流式回复 Markdown 重排闪烁 | DONE | 运行中 delta 以稳定的纯文本片段追加到独立回复气泡；正式完成事件才一次性切换为完整 Markdown，避免未闭合结构反复重排。 |
 | FR-408 | Mermaid 全屏预览与缩放 | DONE | 已渲染 Mermaid 图表可打开全屏预览，并在其中缩小、放大或复位比例；保留图片／文本切换与源码复制。 |
+| FR-409 | Mermaid 全屏自适应缩放与平移 | DONE | 100% 自动适配全屏可用视区；支持滚轮缩放、左键拖拽平移和视图复位。 |
 
 ### FR-366 FlowWeave 专属 Docker 地址规划 — DONE
 
@@ -491,6 +492,16 @@ API、数据库、OpenHands、Runtime Provider、Docker 或持久化契约。
 目标：已渲染 Mermaid SVG 必须可从会话内预览打开全屏视图；全屏视图允许用户在有限范围内缩小、放大及复位比例，并有明确的关闭入口。关闭按钮、点按遮罩与 Escape 均须返回原会话；不修改图表源码、会话消息、Runtime 或 OpenHands 状态。
 
 完成：共享 `ConversationMarkdown` 为已成功渲染的图片视图添加“全屏放大”入口。预览层通过 Portal 覆盖整个应用窗口，提供 50%–300% 的缩放控制、当前比例、复位、关闭、遮罩关闭和 Escape 关闭；原会话中的图片／文本切换和“一键复制”保持不变。未修改 API、数据库、OpenHands、Runtime Provider、Docker 或持久化契约。
+
+验收：Web TypeScript typecheck、全量 Web ESLint、production build 与 `git diff --check` 通过；无迁移、无远端操作。
+
+### FR-409 Mermaid 全屏自适应缩放与平移 — DONE
+
+依赖：`FR-408`。
+
+目标：全屏图表的 100% 必须表示按当前 SVG 宽高比铺满可用视区，而不是 SVG 的固定原始尺寸。用户可使用鼠标滚轮缩放，并通过按住鼠标左键拖拽平移较大的图表；缩放与拖拽不应让页面或底层会话滚动，复位应回到适配视图。
+
+完成：全屏视图在打开和窗口尺寸变化时读取 Mermaid SVG 的 `viewBox`，按画布可用宽高计算 contain 比例并作为 100% 基准。缩放控制范围扩大至 50%–500%；画布捕获滚轮以 10% 增减缩放，捕获左键 Pointer 事件以平移图表，并提供操作提示。复位同时恢复适配比例和居中位置；未修改消息、API、Runtime 或 OpenHands 状态。
 
 验收：Web TypeScript typecheck、全量 Web ESLint、production build 与 `git diff --check` 通过；无迁移、无远端操作。
 

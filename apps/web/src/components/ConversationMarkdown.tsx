@@ -1,4 +1,4 @@
-import { isValidElement, useEffect, useId, useRef, useState, type ComponentPropsWithoutRef, type ReactNode } from 'react';
+import { isValidElement, useEffect, useId, useLayoutEffect, useRef, useState, type ComponentPropsWithoutRef, type PointerEvent as ReactPointerEvent, type ReactNode, type WheelEvent as ReactWheelEvent } from 'react';
 import { createPortal } from 'react-dom';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -65,11 +65,17 @@ function MermaidDiagram({ source }: { source: string }) {
   const [mode, setMode] = useState<'image' | 'text'>('image');
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [zoom, setZoom] = useState(100);
+  const [fitScale, setFitScale] = useState(1);
+  const [diagramSize, setDiagramSize] = useState<{ width: number; height: number }>();
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [dragging, setDragging] = useState(false);
   const [svg, setSvg] = useState('');
   const [rendering, setRendering] = useState(true);
   const [error, setError] = useState('');
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle');
   const copyTimer = useRef<number | undefined>(undefined);
+  const fullscreenCanvasRef = useRef<HTMLDivElement>(null);
+  const dragStart = useRef<{ x: number; y: number; panX: number; panY: number } | undefined>(undefined);
 
   useEffect(() => {
     let cancelled = false;
@@ -115,6 +121,24 @@ function MermaidDiagram({ source }: { source: string }) {
     return () => window.removeEventListener('keydown', closeOnEscape);
   }, [isFullscreen]);
 
+  useLayoutEffect(() => {
+    if (!isFullscreen || !svg) return;
+    const canvas = fullscreenCanvasRef.current;
+    const diagram = canvas?.querySelector('svg') as SVGSVGElement | null;
+    if (!canvas || !diagram) return;
+    const updateFitScale = () => {
+      const width = diagram.viewBox.baseVal.width || diagram.width.baseVal.value;
+      const height = diagram.viewBox.baseVal.height || diagram.height.baseVal.value;
+      if (!width || !height) return;
+      setDiagramSize({ width, height });
+      setFitScale(Math.min((canvas.clientWidth - 64) / width, (canvas.clientHeight - 64) / height));
+    };
+    updateFitScale();
+    const observer = new ResizeObserver(updateFitScale);
+    observer.observe(canvas);
+    return () => observer.disconnect();
+  }, [isFullscreen, svg]);
+
   const copySource = () => {
     void copyDiagramSource(source).then(() => {
       setCopyState('copied');
@@ -125,10 +149,35 @@ function MermaidDiagram({ source }: { source: string }) {
 
   const openFullscreen = () => {
     setZoom(100);
+    setPan({ x: 0, y: 0 });
     setIsFullscreen(true);
   };
   const closeFullscreen = () => setIsFullscreen(false);
-  const changeZoom = (amount: number) => setZoom(current => Math.max(50, Math.min(300, current + amount)));
+  const changeZoom = (amount: number) => setZoom(current => Math.max(50, Math.min(500, current + amount)));
+  const resetView = () => {
+    setZoom(100);
+    setPan({ x: 0, y: 0 });
+  };
+  const startDragging = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    dragStart.current = { x: event.clientX, y: event.clientY, panX: pan.x, panY: pan.y };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setDragging(true);
+  };
+  const dragDiagram = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const start = dragStart.current;
+    if (!start) return;
+    setPan({ x: start.panX + event.clientX - start.x, y: start.panY + event.clientY - start.y });
+  };
+  const stopDragging = () => {
+    dragStart.current = undefined;
+    setDragging(false);
+  };
+  const zoomWithWheel = (event: ReactWheelEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    changeZoom(event.deltaY < 0 ? 10 : -10);
+  };
+  const displayScale = fitScale * zoom / 100;
 
   const fullscreenPreview = isFullscreen && svg && createPortal(
     <div className="conversation-mermaid-fullscreen-backdrop" role="presentation" onMouseDown={event => {
@@ -140,13 +189,17 @@ function MermaidDiagram({ source }: { source: string }) {
           <div className="conversation-mermaid-zoom-controls" role="group" aria-label="图表缩放">
             <button type="button" aria-label="缩小图表" onClick={() => changeZoom(-25)} disabled={zoom <= 50}>−</button>
             <output aria-live="polite">{zoom}%</output>
-            <button type="button" aria-label="放大图表" onClick={() => changeZoom(25)} disabled={zoom >= 300}>+</button>
-            <button type="button" onClick={() => setZoom(100)} disabled={zoom === 100}>复位</button>
+            <button type="button" aria-label="放大图表" onClick={() => changeZoom(25)} disabled={zoom >= 500}>+</button>
+            <button type="button" onClick={resetView} disabled={zoom === 100 && pan.x === 0 && pan.y === 0}>复位</button>
             <button type="button" className="conversation-mermaid-fullscreen-close" onClick={closeFullscreen}>关闭</button>
           </div>
         </header>
-        <div className="conversation-mermaid-fullscreen-canvas">
-          <div className="conversation-mermaid-svg" role="img" aria-label="Mermaid 图表" style={{ transform: `scale(${zoom / 100})` }} dangerouslySetInnerHTML={{ __html: svg }}/>
+        <div ref={fullscreenCanvasRef} className={`conversation-mermaid-fullscreen-canvas${dragging ? ' dragging' : ''}`} onWheel={zoomWithWheel} onPointerDown={startDragging} onPointerMove={dragDiagram} onPointerUp={stopDragging} onPointerCancel={stopDragging}>
+          {diagramSize && <div className="conversation-mermaid-fullscreen-stage" style={{ width: `${diagramSize.width * displayScale}px`, height: `${diagramSize.height * displayScale}px`, transform: `translate(${pan.x}px, ${pan.y}px)` }}>
+            <div className="conversation-mermaid-svg" role="img" aria-label="Mermaid 图表" style={{ transform: `scale(${displayScale})` }} dangerouslySetInnerHTML={{ __html: svg }}/>
+          </div>}
+          {!diagramSize && <div className="conversation-mermaid-svg conversation-mermaid-fullscreen-measure" aria-hidden="true" dangerouslySetInnerHTML={{ __html: svg }}/>}
+          <span className="conversation-mermaid-fullscreen-hint">滚轮缩放 · 左键拖动</span>
         </div>
       </section>
     </div>,
