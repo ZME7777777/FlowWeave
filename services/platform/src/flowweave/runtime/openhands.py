@@ -87,6 +87,7 @@ _CONVERSATION_EVENTS_SEARCH_PATH = re.compile(r"^/api/conversations/[^/]+/events
 _CONVERSATION_EVENT_BY_ID_PATH = re.compile(r"^/api/conversations/[^/]+/events/[^/]+$")
 _DIAGNOSTIC_EVENT_CACHE_LIMIT = 2_048
 _SAFE_DIAGNOSTIC_TOKEN = re.compile(r"^[A-Za-z0-9_.:-]{1,200}$")
+_SAFE_DIAGNOSTIC_MODEL = re.compile(r"^[A-Za-z0-9_.:/-]{1,200}$")
 
 
 def _codex_model_canonical_name(model: str) -> str:
@@ -312,6 +313,13 @@ class OpenHandsRuntime:
         normalized = value.strip()
         return normalized if _SAFE_DIAGNOSTIC_TOKEN.fullmatch(normalized) else None
 
+    @staticmethod
+    def _safe_diagnostic_model(value: object) -> str | None:
+        if not isinstance(value, str):
+            return None
+        normalized = value.strip()
+        return normalized if _SAFE_DIAGNOSTIC_MODEL.fullmatch(normalized) else None
+
     @classmethod
     def _terminal_error_signature(cls, item: dict[str, Any]) -> str:
         """Classify known safe error shapes without logging upstream text."""
@@ -324,6 +332,92 @@ class OpenHandsRuntime:
         if "Unexpected completed event" in detail:
             return "responses_unexpected_terminal_event"
         return "unclassified"
+
+    @classmethod
+    def _llm_diagnostic_snapshot(cls, llm: object) -> dict[str, object]:
+        """Project only opaque or allow-listed LLM identity fields."""
+
+        config = cast(dict[str, object], llm) if isinstance(llm, dict) else {}
+        usage_id = config.get("usage_id")
+        provider_id = (
+            usage_id.removeprefix("flowweave:")
+            if isinstance(usage_id, str) and usage_id.startswith("flowweave:")
+            else usage_id
+        )
+        extra_body = config.get("litellm_extra_body")
+        extra_body_map = cast(dict[str, object], extra_body) if isinstance(extra_body, dict) else {}
+        reasoning = extra_body_map.get("reasoning")
+        reasoning_map = cast(dict[str, object], reasoning) if isinstance(reasoning, dict) else {}
+        reasoning_effort = config.get("reasoning_effort") or reasoning_map.get("effort")
+        return {
+            "provider": cls._diagnostic_fingerprint(provider_id),
+            "model": cls._safe_diagnostic_model(config.get("model")),
+            "model_fingerprint": cls._diagnostic_fingerprint(config.get("model")),
+            "base_url": cls._diagnostic_fingerprint(config.get("base_url")),
+            "api_mode": cls._safe_diagnostic_token(config.get("api_mode")) or "chat",
+            "reasoning": cls._safe_diagnostic_token(reasoning_effort),
+        }
+
+    @classmethod
+    def _llm_diagnostic_matches(cls, expected: object, actual: object) -> dict[str, bool]:
+        expected_snapshot = cls._llm_diagnostic_snapshot(expected)
+        actual_snapshot = cls._llm_diagnostic_snapshot(actual)
+        return {
+            "provider": expected_snapshot["provider"] == actual_snapshot["provider"],
+            "model": (
+                expected_snapshot["model_fingerprint"] == actual_snapshot["model_fingerprint"]
+            ),
+            "base_url": (expected_snapshot["base_url"] == actual_snapshot["base_url"]),
+            "api_mode": (expected_snapshot["api_mode"] == actual_snapshot["api_mode"]),
+            "reasoning": (expected_snapshot["reasoning"] == actual_snapshot["reasoning"]),
+        }
+
+    def _log_llm_binding_diagnostic(
+        self,
+        handle: RuntimeHandle,
+        *,
+        operation: str,
+        expected: object,
+        actual: object,
+        matches: bool,
+        source_conversation_id: str | None = None,
+    ) -> None:
+        expected_snapshot = self._llm_diagnostic_snapshot(expected)
+        actual_snapshot = self._llm_diagnostic_snapshot(actual)
+        field_matches = self._llm_diagnostic_matches(expected, actual)
+        logger.warning(
+            "native_llm_binding_diagnostic operation=%s conversation=%s source_conversation=%s "
+            "runtime=%s matches=%s expected_provider=%s expected_model=%s "
+            "expected_model_fingerprint=%s expected_base_url=%s expected_api_mode=%s "
+            "expected_reasoning=%s actual_provider=%s actual_model=%s "
+            "actual_model_fingerprint=%s actual_base_url=%s actual_api_mode=%s "
+            "actual_reasoning=%s provider_matches=%s model_matches=%s "
+            "base_url_matches=%s api_mode_matches=%s reasoning_matches=%s",
+            operation,
+            self._diagnostic_fingerprint(handle.conversation_id),
+            self._diagnostic_fingerprint(source_conversation_id),
+            self._diagnostic_fingerprint(
+                handle.runtime_resource_name or handle.runtime_resource_id
+            ),
+            matches,
+            expected_snapshot["provider"],
+            expected_snapshot["model"],
+            expected_snapshot["model_fingerprint"],
+            expected_snapshot["base_url"],
+            expected_snapshot["api_mode"],
+            expected_snapshot["reasoning"],
+            actual_snapshot["provider"],
+            actual_snapshot["model"],
+            actual_snapshot["model_fingerprint"],
+            actual_snapshot["base_url"],
+            actual_snapshot["api_mode"],
+            actual_snapshot["reasoning"],
+            field_matches["provider"],
+            field_matches["model"],
+            field_matches["base_url"],
+            field_matches["api_mode"],
+            field_matches["reasoning"],
+        )
 
     def _log_native_terminal_diagnostics(
         self,
@@ -366,12 +460,23 @@ class OpenHandsRuntime:
             classification_map = (
                 cast(dict[str, object], classification) if isinstance(classification, dict) else {}
             )
+            agent = (state or {}).get("agent")
+            agent_map = cast(dict[str, object], agent) if isinstance(agent, dict) else {}
+            active_llm = self._llm_diagnostic_snapshot(agent_map.get("llm"))
+            try:
+                context = self._conversation_context_from_state(state or {})
+            except Exception:  # pragma: no cover - observability must not affect reads
+                context = {}
             error_code = self._safe_diagnostic_token(item.get("code"))
             logger.warning(
                 "native_terminal_error_diagnostic source=%s conversation=%s event=%s parent=%s "
                 "runtime=%s error_code=%s error_code_fingerprint=%s signature=%s "
                 "response=%s classification_kind=%s classification_retryable=%s "
-                "classification_action=%s execution_status=%s state_leaf=%s",
+                "classification_action=%s execution_status=%s state_leaf=%s "
+                "active_provider=%s active_model=%s active_model_fingerprint=%s "
+                "active_base_url=%s "
+                "active_api_mode=%s active_reasoning=%s context_used=%s "
+                "context_window=%s context_cumulative=%s",
                 source,
                 self._diagnostic_fingerprint(handle.conversation_id),
                 self._diagnostic_fingerprint(event_id),
@@ -390,6 +495,15 @@ class OpenHandsRuntime:
                 self._safe_diagnostic_token(classification_map.get("user_action")),
                 self._safe_diagnostic_token((state or {}).get("execution_status")),
                 self._diagnostic_fingerprint((state or {}).get("leaf_event_id")),
+                active_llm["provider"],
+                active_llm["model"],
+                active_llm["model_fingerprint"],
+                active_llm["base_url"],
+                active_llm["api_mode"],
+                active_llm["reasoning"],
+                context.get("used_tokens"),
+                context.get("window_tokens"),
+                context.get("cumulative_tokens"),
             )
 
     @staticmethod
@@ -1727,7 +1841,7 @@ class OpenHandsRuntime:
         cursor_value = created.get("leaf_event_id") or created.get("last_user_message_id")
         cursor = str(cursor_value) if cursor_value else None
         job_id = f"{'env-exec' if run else 'env-chat'}:{request.runtime_resource_name}"
-        return RuntimeHandle(
+        handle = RuntimeHandle(
             job_id=job_id,
             conversation_id=conversation_id,
             cursor=cursor,
@@ -1736,6 +1850,20 @@ class OpenHandsRuntime:
             output_contract={item["field_key"]: item for item in self._contracts[conversation_id]},
             workspace_root=request.workspace_root,
         )
+        created_agent = created.get("agent")
+        created_agent_map = (
+            cast(dict[str, object], created_agent) if isinstance(created_agent, dict) else {}
+        )
+        actual_llm = created_agent_map.get("llm")
+        llm_matches = self._llm_diagnostic_matches(agent["llm"], actual_llm)
+        self._log_llm_binding_diagnostic(
+            handle,
+            operation="create_run" if run else "create_idle",
+            expected=agent["llm"],
+            actual=actual_llm,
+            matches=all(llm_matches.values()),
+        )
+        return handle
 
     def create_conversation(self, request: StartAttemptRequest) -> RuntimeHandle:
         return self._create(request, run=False)
@@ -3276,6 +3404,15 @@ class OpenHandsRuntime:
             )
             for item in active_items
         )
+        if state is None and any(
+            str(item.get("kind") or "") in {"ConversationErrorEvent", "AgentErrorEvent"}
+            for item in active_items
+        ):
+            # A historical-page read can reuse a caller-supplied native leaf
+            # without loading state. Terminal diagnostics still need the
+            # formal active Agent/LLM to distinguish stale binding from an
+            # inherited Conversation/Fork failure.
+            state = self._conversation_state(handle, timeout=_INTERACTIVE_READ_TIMEOUT_SECONDS)
         self._log_native_terminal_diagnostics(handle, active_items, state, source="active_branch")
         state_cursor = (
             str((state or {}).get("leaf_event_id") or cursor or handle.cursor or "") or None
@@ -4173,6 +4310,13 @@ class OpenHandsRuntime:
             matches = matches and actual.get("api_mode") == "responses"
         else:
             matches = matches and actual.get("api_mode") != "responses"
+        self._log_llm_binding_diagnostic(
+            handle,
+            operation="switch",
+            expected=expected,
+            actual=actual,
+            matches=matches,
+        )
         if not matches:
             raise DomainError(
                 "RUNTIME_LLM_BINDING_DRIFT",
@@ -4663,6 +4807,36 @@ class OpenHandsRuntime:
             runtime_resource_name=handle.runtime_resource_name,
             workspace_root=handle.workspace_root,
         )
+        source_agent = source_state.get("agent")
+        source_agent_map = (
+            cast(dict[str, object], source_agent) if isinstance(source_agent, dict) else {}
+        )
+        created_agent = created.get("agent")
+        created_agent_map = (
+            cast(dict[str, object], created_agent) if isinstance(created_agent, dict) else {}
+        )
+        source_llm = source_agent_map.get("llm")
+        fork_llm = created_agent_map.get("llm")
+        inherited_matches = self._llm_diagnostic_matches(source_llm, fork_llm)
+        self._log_llm_binding_diagnostic(
+            fork_handle,
+            operation="fork_inheritance",
+            expected=source_llm,
+            actual=fork_llm,
+            matches=all(inherited_matches.values()),
+            source_conversation_id=handle.conversation_id,
+        )
+        if condenser_provider is not None:
+            expected_fork_llm = self._llm_payload(condenser_provider)
+            binding_matches = self._llm_diagnostic_matches(expected_fork_llm, fork_llm)
+            self._log_llm_binding_diagnostic(
+                fork_handle,
+                operation="fork_binding",
+                expected=expected_fork_llm,
+                actual=fork_llm,
+                matches=all(binding_matches.values()),
+                source_conversation_id=handle.conversation_id,
+            )
         return RuntimeForkResult(
             handle=fork_handle,
             source_conversation_id=source_id,

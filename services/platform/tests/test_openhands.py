@@ -3400,7 +3400,7 @@ async def test_openhands_isolated_stream_rejects_missing_sandbox_binding(openhan
         )
 
 
-def test_openhands_switches_llm_in_place_with_reasoning(openhands_settings, monkeypatch):
+def test_openhands_switches_llm_in_place_with_reasoning(openhands_settings, monkeypatch, caplog):
     runtime = OpenHandsRuntime(openhands_settings)
     captured: dict[str, object] = {}
 
@@ -3415,11 +3415,13 @@ def test_openhands_switches_llm_in_place_with_reasoning(openhands_settings, monk
                     "model": "openai/gpt-5.6-sol",
                     "base_url": "https://chatgpt.com/backend-api/codex",
                     "api_mode": "responses",
+                    "litellm_extra_body": {"reasoning": {"effort": "high"}},
                 }
             }
         )
 
     monkeypatch.setattr(runtime, "_request", fake_request)
+    caplog.set_level(logging.WARNING, logger=openhands_module.__name__)
     runtime.switch_model(
         _handle("cursor-1"),
         RuntimeProvider(
@@ -3452,9 +3454,25 @@ def test_openhands_switches_llm_in_place_with_reasoning(openhands_settings, monk
         "reasoning": {"effort": "high"},
     }
     assert payload["llm"]["extra_headers"] == {"chatgpt-account-id": "account-123"}
+    diagnostics = [
+        record.getMessage()
+        for record in caplog.records
+        if "native_llm_binding_diagnostic" in record.getMessage()
+    ]
+    assert len(diagnostics) == 1
+    message = diagnostics[0]
+    assert "operation=switch" in message
+    assert "matches=True" in message
+    assert "expected_model=openai/gpt-5.6-sol" in message
+    assert "actual_model=openai/gpt-5.6-sol" in message
+    assert "reasoning_matches=True" in message
+    assert "https://chatgpt.com" not in message
+    assert "short-lived-access-token" not in message
 
 
-def test_openhands_rejects_stale_codex_llm_after_api_key_switch(openhands_settings, monkeypatch):
+def test_openhands_rejects_stale_codex_llm_after_api_key_switch(
+    openhands_settings, monkeypatch, caplog
+):
     runtime = OpenHandsRuntime(openhands_settings)
 
     def fake_request(method: str, _path: str, **_kwargs: object) -> dict[str, object]:
@@ -3473,6 +3491,7 @@ def test_openhands_rejects_stale_codex_llm_after_api_key_switch(openhands_settin
         )
 
     monkeypatch.setattr(runtime, "_request", fake_request)
+    caplog.set_level(logging.WARNING, logger=openhands_module.__name__)
 
     with pytest.raises(DomainError) as raised:
         runtime.switch_model(
@@ -3493,6 +3512,21 @@ def test_openhands_rejects_stale_codex_llm_after_api_key_switch(openhands_settin
         "auth_type": "API_KEY",
     }
     assert raised.value.details["actual"]["base_url"] == "https://chatgpt.com/backend-api/codex"
+    diagnostics = [
+        record.getMessage()
+        for record in caplog.records
+        if "native_llm_binding_diagnostic" in record.getMessage()
+    ]
+    assert len(diagnostics) == 1
+    message = diagnostics[0]
+    assert "operation=switch" in message
+    assert "matches=False" in message
+    assert "provider_matches=False" in message
+    assert "model_matches=False" in message
+    assert "base_url_matches=False" in message
+    assert "configured-secret" not in message
+    assert "https://provider.example" not in message
+    assert "https://chatgpt.com" not in message
 
 
 def test_openhands_send_message_reads_user_anchor_when_endpoint_returns_success(
@@ -3794,17 +3828,29 @@ def test_openhands_condense_uses_native_endpoint_and_waits_for_event(
     ]
 
 
-def test_openhands_fork_replaces_only_the_governed_condenser(openhands_settings, monkeypatch):
+def test_openhands_fork_replaces_only_the_governed_condenser(
+    openhands_settings, monkeypatch, caplog
+):
     runtime = OpenHandsRuntime(openhands_settings)
     requests: list[tuple[str, str, object]] = []
+    active_llm = {
+        "usage_id": "flowweave:provider-1",
+        "model": "openai/gpt-5.6-sol",
+        "base_url": "http://host.docker.internal:1234/v1",
+    }
     responses = iter(
         [
-            _state(execution_status="idle", leaf_event_id="event-4"),
+            _state(
+                execution_status="idle",
+                leaf_event_id="event-4",
+                agent={"llm": active_llm},
+            ),
             {
                 "id": "10000000-0000-4000-8000-000000000003",
                 "forked_from_conversation_id": ("10000000-0000-4000-8000-000000000002"),
                 "forked_from_event_id": "event-4",
                 "leaf_event_id": "event-4",
+                "agent": {"llm": active_llm},
             },
         ]
     )
@@ -3814,6 +3860,7 @@ def test_openhands_fork_replaces_only_the_governed_condenser(openhands_settings,
         return next(responses)
 
     monkeypatch.setattr(runtime, "_request", fake_request)
+    caplog.set_level(logging.WARNING, logger=openhands_module.__name__)
     request = _request()
     result = runtime.fork_conversation(
         _handle("event-4"),
@@ -3864,6 +3911,19 @@ def test_openhands_fork_replaces_only_the_governed_condenser(openhands_settings,
     }
     assert payload["from_event_id"] == "event-4"
     assert payload["reset_metrics"] is True
+    diagnostics = [
+        record.getMessage()
+        for record in caplog.records
+        if "native_llm_binding_diagnostic" in record.getMessage()
+    ]
+    assert len(diagnostics) == 2
+    assert "operation=fork_inheritance" in diagnostics[0]
+    assert "matches=True" in diagnostics[0]
+    assert "operation=fork_binding" in diagnostics[1]
+    assert "matches=True" in diagnostics[1]
+    assert "actual_model=openai/gpt-5.6-sol" in diagnostics[1]
+    assert "host.docker.internal" not in "\n".join(diagnostics)
+    assert "configured-secret" not in "\n".join(diagnostics)
 
 
 def test_openhands_resolves_visible_finish_to_executed_fork_boundary(
@@ -4356,7 +4416,19 @@ def test_openhands_logs_one_redacted_native_terminal_error_diagnostic(
             "user_action": "retry",
         },
     }
-    state = {"execution_status": "error", "leaf_event_id": "leaf-private"}
+    state = {
+        "execution_status": "error",
+        "leaf_event_id": "leaf-private",
+        "agent": {
+            "llm": {
+                "usage_id": "flowweave:provider-private",
+                "model": "openai/gpt-5.6-terra",
+                "base_url": "https://private.example/v1",
+                "api_mode": "responses",
+                "litellm_extra_body": {"reasoning": {"effort": "high"}},
+            }
+        },
+    }
     monkeypatch.setattr(runtime, "_conversation_state", lambda *_args, **_kwargs: state)
     monkeypatch.setattr(
         runtime,
@@ -4378,11 +4450,16 @@ def test_openhands_logs_one_redacted_native_terminal_error_diagnostic(
     assert "signature=responses_incomplete_event" in message
     assert "error_code=LLMNoResponseError" in message
     assert "classification_retryable=True" in message
+    assert "active_model=openai/gpt-5.6-terra" in message
+    assert "active_api_mode=responses" in message
+    assert "active_reasoning=high" in message
     for private_value in (
         "error-event-private",
         "user-event-private",
         "response-private",
         "leaf-private",
+        "provider-private",
+        "https://private.example",
         "sk-should-not-appear",
     ):
         assert private_value not in message
