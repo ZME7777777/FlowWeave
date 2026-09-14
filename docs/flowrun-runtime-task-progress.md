@@ -191,6 +191,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-433 | OpenHands 错误终态工作台收束 | DONE | 将 OpenHands 原生 `ready=true, execution_status=error/stuck` 识别为可安全结束的终态，停止错误卡后的运行标记、停止按钮与“正在处理”，不以浏览器事件自行伪造状态。 |
 | FR-434 | 错误终态与运行中追加投递呈现修正 | DONE | 空闲或原生错误终态的新消息仍先持久化浏览器投递意图，但不得短暂显示为消息队列；运行中直接追加在收到正式 cursor 前不伪装为已发送气泡或队列，流先到达同一正式 OpenHands 用户事件时立即确认收起，歧义／拒绝项保持可见、可恢复。 |
 | FR-435 | 运行中追加消息的直觉式气泡确认 | DONE | 运行中“调整方向”立即显示用户消息气泡；气泡下方仅在正式 OpenHands user event 或 cursor 未确认前显示“正在追加到当前回复”，拒绝或歧义仍回到可操作投递项。 |
+| FR-440 | 队列“调整方向”的同步气泡投影 | DONE | 队列按钮与空 composer 快捷键在将条目标记为原生追加的同一同步交互中创建临时用户气泡，不再等待 dispatch mutation，随后复用该气泡并按正式事件／cursor 收敛。 |
 | FR-436 | 错误终态精确列表投影与首屏收束 | DONE | 会话列表不再把 OpenHands eventually-consistent `search?status=running` 当作运行事实；有界页面逐项读取精确 native readiness。浏览器在 exact readiness 尚未返回时，若最近正式 user turn 已有 OpenHands ERROR／完成事件，立即清除本地运行桥接，不显示转圈、停止或运行中输入提示。 |
 | FR-437 | Responses 不完整终态关联诊断 | DONE | 在 FlowWeave 的正式 OpenHands 事件／状态读取边界，为原生错误终态写入一次脱敏关联日志，区分 Responses 不完整／缺少 completed／其他终态形态；不记录消息、输出、详情、凭据、端点或原始标识。 |
 | FR-438 | Conversation／Fork 模型绑定一致性诊断 | DONE | 为创建、模型切换、原生 Fork 继承及错误终态记录脱敏 LLM 绑定证据，区分旧模型未切换与异常 Conversation 状态随 Fork 继承；不改变模型、Fork、重试或会话历史。 |
@@ -859,6 +860,22 @@ event 先到时移除该 event 并投影正式消息，HTTP cursor 先到时也�
 验收：Web TypeScript typecheck、定向 ESLint、production build 与 `git diff --check` 通过。产品流断言覆盖
 气泡、其下临时标识、composer 不重复标识及 stream 确认后的标识移除；完整串行 Playwright 仍在该段之前被
 既有文件改动入口选择器阻断，未记为通过。未修改 API、数据库、Runtime Provider、OpenHands 或远端环境。
+
+### FR-440 队列“调整方向”的同步气泡投影 — DONE
+
+依赖：`FR-435`。
+
+目标：从消息队列点击“调整方向”与直接使用 Command/Ctrl+Enter 必须具有同一即时反馈。点击后队列条目会
+隐藏并等待 dispatch effect；在这段时间里用户消息气泡不能缺席，也不得为同一投递创建第二个临时气泡。
+
+完成：抽取以浏览器 intent ID 去重的临时原生追加气泡创建器。队列按钮和空 composer 的快捷键在同步更新
+`nativeGuidance` 前先调用它；后续 send mutation 复用已创建的 event ID。正式 stream user event、HTTP cursor
+和失败清理路径继续使用同一 ID 收敛、替换或移除气泡，因此不改变 OpenHands 正式事件为唯一送达事实的边界。
+
+验收：Web TypeScript typecheck、定向 ESLint、production build 与 `git diff --check` 通过。产品流将原来的
+快捷键提升动作改为实际点击“调整方向”队列按钮，并验证消息气泡及其“正在追加到当前回复”标识立即可见。
+完整串行 Playwright 仍在此段之前被既有文件改动入口选择器阻断，未记为通过。未修改 API、数据库、
+Runtime Provider、OpenHands 或远端环境。
 
 ### FR-436 错误终态精确列表投影与首屏收束 — DONE
 

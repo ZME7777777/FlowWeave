@@ -4410,28 +4410,36 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       reportOperationError(selected?.id, persistModel.error as Error);
     },
   });
+  const showNativeGuidanceBubble = useCallback((message: QueuedMessage): string => {
+    const existing = nativeGuidanceOptimisticEventIds.current.get(message.id);
+    if (existing) return existing;
+    const optimisticEventId = `pending-user:${randomId()}`;
+    nativeGuidanceOptimisticEventIds.current.set(message.id, optimisticEventId);
+    setLiveEvents(current => mergeConversationEvents(current, [{
+      id: optimisticEventId,
+      event_type: 'MESSAGE',
+      payload: {
+        source: 'user',
+        content: message.content,
+        attachments: message.items,
+        conversation_references: message.references.map(item => ({ event_id: item.eventId, content: item.content })),
+        workspace_references: message.workspaceReferences,
+        collaboration_annotations: message.annotations,
+        _flowweave_delivery_status: '正在追加到当前回复',
+      },
+    }]));
+    return optimisticEventId;
+  }, []);
   const send = useMutation({
     mutationFn: (message: BoundQueuedMessage) => api.sendMessage(workspace!.id, message.bindingId, message.content, message.items, message.references.map(item => ({ event_id: item.eventId, content: item.content })), message.workspaceReferences ?? [], message.annotations, message.id),
     onMutate: message => {
-      const optimisticEventId = `pending-user:${randomId()}`;
+      const optimisticEventId = message.nativeGuidance
+        ? showNativeGuidanceBubble(message)
+        : `pending-user:${randomId()}`;
       if (message.nativeGuidance) {
         // The user has asked to append direction to the active turn, so show
         // that intent immediately. It remains explicitly provisional until a
         // formal OpenHands event or cursor confirms delivery.
-        nativeGuidanceOptimisticEventIds.current.set(message.id, optimisticEventId);
-        setLiveEvents(current => mergeConversationEvents(current, [{
-          id: optimisticEventId,
-          event_type: 'MESSAGE',
-          payload: {
-            source: 'user',
-            content: message.content,
-            attachments: message.items,
-            conversation_references: message.references.map(item => ({ event_id: item.eventId, content: item.content })),
-            workspace_references: message.workspaceReferences,
-            collaboration_annotations: message.annotations,
-            _flowweave_delivery_status: '正在追加到当前回复',
-          },
-        }]));
         return { optimisticEventId, nativeGuidance: true };
       }
       clearLiveText();
@@ -4757,6 +4765,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       // With an empty composer, Command/Ctrl+Enter promotes the current queue
       // head. Keep the durable entry and let the common dispatcher mark it
       // in-flight before its one and only HTTP attempt.
+      showNativeGuidanceBubble(queuedMessage);
       updateQueuedMessage(queuedMessage.id, message => ({ ...message, nativeGuidance: true }));
       return;
     }
@@ -4785,14 +4794,15 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     setDraft(content);
     setAttachments(attachments);
     setReferences(references); setWorkspaceReferences(workspaceReferences); setComposerAnnotations(composerAnnotations);
-  }, [attachments, canWrite, commitQueuedMessages, composerAnnotations, composerScope, conversationDraft, draft, effectiveTurnState, migrateStreaming.isPending, pendingMigratedSend, queuedMessages, references, selected, updateQueuedMessage, workspaceReferences]);
+  }, [attachments, canWrite, commitQueuedMessages, composerAnnotations, composerScope, conversationDraft, draft, effectiveTurnState, migrateStreaming.isPending, pendingMigratedSend, queuedMessages, references, selected, showNativeGuidanceBubble, updateQueuedMessage, workspaceReferences]);
   const sendQueuedMessageImmediately = useCallback((message: QueuedMessage) => {
     if (!canWrite || effectiveTurnState !== 'running' || !selected?.streaming_callback_ready || message.scope !== selected.id || message.deliveryState !== 'queued') return;
     // The message stays in the persisted queue until the formal OpenHands
     // event cursor returns. Mark it as native guidance so the dispatcher may
     // append it during the current native turn.
+    showNativeGuidanceBubble(message);
     updateQueuedMessage(message.id, item => ({ ...item, nativeGuidance: true }));
-  }, [canWrite, effectiveTurnState, selected, updateQueuedMessage]);
+  }, [canWrite, effectiveTurnState, selected, showNativeGuidanceBubble, updateQueuedMessage]);
   const moveQueuedMessage = useCallback((sourceId: string, targetId: string) => {
     if (sourceId === targetId) return;
     commitQueuedMessages(items => {

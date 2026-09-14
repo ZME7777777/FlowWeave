@@ -1459,7 +1459,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await queuedMessage.getByRole('button', { name: '更多排队消息操作 2' }).click();
   await queuedMessage.getByRole('menuitem', { name: '上移' }).click();
   await expect(queuedMessage.locator('article').first()).toContainText('调整方向的排队消息');
-  await composer.press('Meta+Enter');
+  await queuedMessage.getByRole('button', { name: '调整方向排队消息 1' }).click();
   await expect(queuedMessage.getByText('第一条排队消息')).toBeVisible();
   await expect(queuedMessage.getByText('调整方向的排队消息')).toHaveCount(0);
   await expect(page.locator('.conversation-message.user').filter({ hasText: '调整方向的排队消息' })).toBeVisible();
