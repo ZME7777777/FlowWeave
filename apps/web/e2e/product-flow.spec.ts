@@ -540,6 +540,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
           { path: '/runtime/workspace/project/backend', kind: 'directory', size: 0 },
           { path: '/runtime/workspace/project/src', kind: 'directory', size: 0 },
           { path: '/runtime/workspace/project/README.md', kind: 'file', size: 128 },
+          { path: '/runtime/workspace/project/期权异动接口批量查询代码审查报告.md', kind: 'file', size: 256 },
         ]
         : parentPath === '/runtime/workspace/project/src'
           ? [{ path: '/runtime/workspace/project/src/config.ts', kind: 'file', size: 42 }]
@@ -745,7 +746,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
           { id: 'state-empty', event_type: 'STATE', payload: { parent_id: 'subagent-command-result', timestamp: '2026-08-26T10:00:04Z' } },
           { id: 'agent-reply', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'state-empty', content: '工作区已就绪。', timestamp: '2026-08-26T10:02:19Z' } },
           { id: 'direct-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'agent-reply', content: '直接回答 https://input.example.test/brief', attachments: [{ filename: '需求截图.png', mime_type: 'image/png', byte_size: 128, path: '/runtime/workspace/project/uploads/source-image.png', image_data_url: 'data:image/png;base64,iVBORw==' }], timestamp: '2026-08-26T10:03:00Z' } },
-          { id: 'direct-reply', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'direct-user', content: '直接回复完成。更多信息见 www.output.example.test/result', timestamp: '2026-08-26T10:03:02Z' } },
+          { id: 'direct-reply', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'direct-user', content: '直接回复完成。请查看[期权异动接口批量查询代码审查报告.md](期权异动接口批量查询代码审查报告.md)。', timestamp: '2026-08-26T10:03:02Z' } },
           { id: 'finish-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'direct-reply', content: '整理任务', timestamp: '2026-08-26T10:03:10Z' } },
           { id: 'tracker-action', event_type: 'TOOL_CALL', payload: { source: 'agent', parent_id: 'finish-user', action_id: 'tracker-action', tool_call_id: 'tracker-call', tool_name: 'task_tracker', event_name: 'TaskTrackerAction', content: '我先把执行步骤整理成任务列表。', thought: '我先把执行步骤整理成任务列表。', summary: '整理并更新执行步骤', details: { command: 'plan', task_list: [{ title: '检查构建', status: 'in_progress' }] }, timestamp: '2026-08-26T10:03:11Z' } },
           { id: 'tracker-result', event_type: 'TOOL_RESULT', payload: { source: 'environment', parent_id: 'tracker-action', action_id: 'tracker-action', tool_call_id: 'tracker-call', tool_name: 'task_tracker', event_name: 'TaskTrackerObservation', details: { command: 'plan', is_error: false, task_list: [{ title: '检查构建', notes: '等待构建完成后核对结果。', status: 'in_progress' }] }, timestamp: '2026-08-26T10:03:12Z' } },
@@ -1095,6 +1096,14 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     return Boolean(process && reply && (process.compareDocumentPosition(reply) & Node.DOCUMENT_POSITION_FOLLOWING));
   })).toBe(true);
   await expect(page.getByText('工作区已就绪。')).toHaveCount(1);
+  const reportLink = page.getByRole('link', { name: '期权异动接口批量查询代码审查报告.md' });
+  await expect(reportLink).toBeVisible();
+  const urlBeforeReportPreview = page.url();
+  await reportLink.click();
+  await expect(page).toHaveURL(urlBeforeReportPreview);
+  await expect(page.getByText('workspace file preview', { exact: true })).toBeVisible();
+  await expect(page.getByText('期权异动接口批量查询代码审查报告.md', { exact: true })).toBeVisible();
+  expect(workspaceFilePreviewRequests.at(-1)).toBe('/runtime/workspace/project/期权异动接口批量查询代码审查报告.md');
   const terminalDetail = completedProcess.locator('.conversation-tool-detail').first();
   await expect(terminalDetail).toHaveCount(1);
   await expect(terminalDetail.locator(':scope > summary')).toHaveAccessibleName('查看执行详情：已运行 pwd');

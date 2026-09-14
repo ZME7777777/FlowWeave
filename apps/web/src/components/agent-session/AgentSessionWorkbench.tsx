@@ -2080,6 +2080,24 @@ function workspaceSourcePath(path: string, workingDirectory?: string): string {
   return `${root}/${relative}`;
 }
 
+/**
+ * Resolve a Markdown link only when it stays inside the currently authorized
+ * workspace. Relative links in an Agent reply are file references, not web
+ * routes; routing them through the drawer avoids a browser-level navigation.
+ */
+function workspaceMarkdownLinkPath(href: string, workingDirectory?: string): string | undefined {
+  const root = workingDirectory?.replace(/\/+$/, '');
+  if (!root || !href || /^(?:[a-z][a-z0-9+.-]*:|\/\/)/i.test(href)) return undefined;
+  const rawPath = href.split(/[?#]/, 1)[0];
+  if (!rawPath) return undefined;
+  let path: string;
+  try { path = decodeURIComponent(rawPath).replace(/\\/g, '/'); } catch { return undefined; }
+  if (path.split('/').includes('..')) return undefined;
+  path = path.replace(/^(?:\.\/)+/, '');
+  const resolved = path.startsWith('/') ? path : `${root}/${path}`;
+  return resolved === root || resolved.startsWith(`${root}/`) ? resolved : undefined;
+}
+
 function sourceParentDirectories(path: string, root: string): string[] {
   if (path === root || !path.startsWith(`${root}/`)) return [];
   const parts = path.slice(root.length + 1).split('/').filter(Boolean);
@@ -2424,6 +2442,7 @@ type WorkspaceToolTab =
   | { id: 'subagents'; kind: 'subagents' }
   | { id: string; kind: 'terminal'; terminalInstanceId: string };
 type WorkspaceToolScopeState = { tabs: WorkspaceToolTab[]; activeTabId?: string; selectedFile?: string; selectedChangeId?: string; selectedGitFile?: string; selectedGitCommit?: string; selectedGitRepositoryPath?: string; selectedRuntimeTaskId?: string };
+type MarkdownFileRequest = { key: string; path: string };
 
 type ChangedFileTreeNode<T> = { name: string; path: string; value?: T; children: ChangedFileTreeNode<T>[] };
 type CollapsibleTreeNode = { name: string; path: string; children: CollapsibleTreeNode[] };
@@ -2761,9 +2780,9 @@ function readWorkspaceToolState(storageKey: string): Record<string, WorkspaceToo
 }
 
 function WorkspaceDrawer({
-  open, onOpen, onClose, onAnnotateFileSelection, highlightedFileSelection, workspaceId, scopeKey, migrateFromScopeKey, bindingId, workDirectoryId, conversation, attachments, sources, attachmentRequest, candidatePreviewRequest, reviewChanges = [], reviewRequestId, sessionChanges = [], onReviewChanges, runtimeAvailable, runtimeTasks, agentDefinitions, sessionStopped,
+  open, onOpen, onClose, onAnnotateFileSelection, highlightedFileSelection, workspaceId, scopeKey, migrateFromScopeKey, bindingId, workDirectoryId, conversation, attachments, sources, attachmentRequest, candidatePreviewRequest, markdownFileRequest, reviewChanges = [], reviewRequestId, sessionChanges = [], onReviewChanges, runtimeAvailable, runtimeTasks, agentDefinitions, sessionStopped,
 }: {
-  open: boolean; onOpen: () => void; onClose: () => void; onAnnotateFileSelection?: (path: string, selection: FileSelection, quote: string) => void; highlightedFileSelection?: { path: string; selection: FileSelection }; workspaceId: string; scopeKey: string; migrateFromScopeKey?: string; bindingId?: string; workDirectoryId?: string; conversation?: AgentConversation; attachments: AgentAttachment[]; sources: ConversationSource[]; attachmentRequest?: { key: string; attachment: AgentAttachment }; candidatePreviewRequest?: CandidateFilePreviewRequest; reviewChanges?: WorkspaceFileChange[]; reviewRequestId?: string; sessionChanges?: WorkspaceFileChange[]; onReviewChanges?: (changes: WorkspaceFileChange[]) => void; runtimeAvailable: boolean; runtimeTasks: RuntimeTaskProjection[]; agentDefinitions: CapabilityAsset[]; sessionStopped: boolean;
+  open: boolean; onOpen: () => void; onClose: () => void; onAnnotateFileSelection?: (path: string, selection: FileSelection, quote: string) => void; highlightedFileSelection?: { path: string; selection: FileSelection }; workspaceId: string; scopeKey: string; migrateFromScopeKey?: string; bindingId?: string; workDirectoryId?: string; conversation?: AgentConversation; attachments: AgentAttachment[]; sources: ConversationSource[]; attachmentRequest?: { key: string; attachment: AgentAttachment }; candidatePreviewRequest?: CandidateFilePreviewRequest; markdownFileRequest?: MarkdownFileRequest; reviewChanges?: WorkspaceFileChange[]; reviewRequestId?: string; sessionChanges?: WorkspaceFileChange[]; onReviewChanges?: (changes: WorkspaceFileChange[]) => void; runtimeAvailable: boolean; runtimeTasks: RuntimeTaskProjection[]; agentDefinitions: CapabilityAsset[]; sessionStopped: boolean;
 }) {
   const { api, fileUrl } = useAgentSessionGateway();
   const host = useAgentSessionHost();
@@ -2791,6 +2810,7 @@ function WorkspaceDrawer({
   }, Boolean(pendingTerminalClose) && !closingTerminalId);
   const handledAttachmentRequestKey = useRef<string | undefined>(undefined);
   const handledCandidatePreviewRequestKey = useRef<string | undefined>(undefined);
+  const handledMarkdownFileRequestKey = useRef<string | undefined>(undefined);
   const handledReviewRequestId = useRef<string | undefined>(undefined);
   const [candidatePreview, setCandidatePreview] = useState<CandidateFilePreviewRequest>();
   const [sourceFileNavigation, setSourceFileNavigation] = useState<{ path: string; line: number }>();
@@ -3137,6 +3157,11 @@ function WorkspaceDrawer({
   const openSourceFile = useCallback((change: WorkspaceFileChange, line: number) => {
     openSourcePath(change.path, line);
   }, [openSourcePath]);
+  useEffect(() => {
+    if (!markdownFileRequest || handledMarkdownFileRequestKey.current === markdownFileRequest.key) return;
+    handledMarkdownFileRequestKey.current = markdownFileRequest.key;
+    openSourcePath(markdownFileRequest.path, 1);
+  }, [markdownFileRequest, openSourcePath]);
   const selectedEntryRoots = useMemo(() => [...selectedEntryPaths].filter(path => ![...selectedEntryPaths].some(other => other !== path && path.startsWith(`${other}/`))), [selectedEntryPaths]);
   const removeEntries = async (items: Array<{ path: string; kind: 'file' | 'directory' }>) => {
     if (!api.deleteFile || !items.length) return;
@@ -3407,6 +3432,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const [workspaceReferencePickerOpen, setWorkspaceReferencePickerOpen] = useState(false);
   const [workspaceReferenceQuery, setWorkspaceReferenceQuery] = useState('');
   const [attachmentRequest, setAttachmentRequest] = useState<{ key: string; attachment: AgentAttachment }>();
+  const [markdownFileRequest, setMarkdownFileRequest] = useState<MarkdownFileRequest>();
   const [fileSelectionReference, setFileSelectionReference] = useState<{ path: string; selection: FileSelection }>();
   useEffect(() => {
     const openSelection = (event: Event) => {
@@ -4871,6 +4897,16 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       : undefined)
     ?? workDirectoriesQuery.data?.root.working_directory;
   const rootWorkspaceDirectory = workDirectoriesQuery.data?.root.working_directory;
+  const openWorkspaceFileLink = (href: string) => {
+    const path = workspaceMarkdownLinkPath(href, activeWorkspaceRoot);
+    if (!path) return false;
+    setFileSelectionReference(undefined);
+    setAttachmentRequest(undefined);
+    setCandidatePreviewRequest(undefined);
+    setMarkdownFileRequest({ key: randomId(), path });
+    setDrawerOpen(true);
+    return true;
+  };
   const currentWorkspaceName = activeWorkspaceDetailsQuery.data?.scope.display_name
     ?? (selected?.work_directory_id
       ? workDirectories.find(directory => directory.id === selected.work_directory_id)?.display_name
@@ -4972,6 +5008,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         onOpenAttachment={features.attachments ? openAttachmentInDrawer : undefined}
         onPreviewCandidateFile={candidateOutputUrl && workspace ? openCandidateFileInDrawer : undefined}
         onReviewChanges={openChangesReview}
+        onOpenWorkspaceFile={openWorkspaceFileLink}
         workspaceRoot={activeWorkspaceRoot}
         annotations={messageAnnotations}
         onCreateAnnotation={selected && canWrite ? anchor => void createAnnotation('CONVERSATION_TEXT', anchor) : undefined}
@@ -5038,6 +5075,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       sources={drawerSources}
       attachmentRequest={attachmentRequest}
       candidatePreviewRequest={candidatePreviewRequest}
+      markdownFileRequest={markdownFileRequest}
       reviewChanges={reviewChanges}
       reviewRequestId={reviewRequestId}
       sessionChanges={sessionFileChanges}

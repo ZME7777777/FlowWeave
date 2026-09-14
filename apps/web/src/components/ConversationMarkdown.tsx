@@ -24,9 +24,15 @@ function MarkdownImage({ src, alt, ...props }: ComponentPropsWithoutRef<'img'>) 
   return <img {...props} loading="lazy" decoding="async" className={`conversation-markdown-image${props.className ? ` ${props.className}` : ''}`} src={resolvedSource} alt={alt ?? ''} onError={() => setFailed(true)}/>;
 }
 
-function MarkdownLink({ href, ...props }: ComponentPropsWithoutRef<'a'>) {
+function MarkdownLink({ href, onClick, onOpenWorkspaceFile, ...props }: ComponentPropsWithoutRef<'a'> & {
+  onOpenWorkspaceFile?: (href: string) => boolean;
+}) {
   const isExternal = typeof href === 'string' && /^(?:https?:\/\/|mailto:)/i.test(href);
-  return <a {...props} href={href} {...(isExternal ? { target: '_blank', rel: 'noopener noreferrer' } : {})}/>;
+  return <a {...props} href={href} {...(isExternal ? { target: '_blank', rel: 'noopener noreferrer' } : {})} onClick={event => {
+    onClick?.(event);
+    if (event.defaultPrevented || !href || isExternal || !onOpenWorkspaceFile?.(href)) return;
+    event.preventDefault();
+  }}/>;
 }
 
 function codeText(children: ReactNode): string {
@@ -263,6 +269,9 @@ function MarkdownTable({ children, node: _node, ...props }: ComponentPropsWithou
   return <div className="conversation-markdown-table-scroll"><table {...props}>{children}</table></div>;
 }
 
-export function ConversationMarkdown({ children }: { children: string }) {
-  return <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ a: MarkdownLink, img: MarkdownImage, pre: MarkdownPre, table: MarkdownTable }}>{children}</ReactMarkdown>;
+export function ConversationMarkdown({ children, onOpenWorkspaceFile }: { children: string; onOpenWorkspaceFile?: (href: string) => boolean }) {
+  return <ReactMarkdown remarkPlugins={[remarkGfm]} components={{
+    a: props => <MarkdownLink {...props} onOpenWorkspaceFile={onOpenWorkspaceFile}/>,
+    img: MarkdownImage, pre: MarkdownPre, table: MarkdownTable,
+  }}>{children}</ReactMarkdown>;
 }
