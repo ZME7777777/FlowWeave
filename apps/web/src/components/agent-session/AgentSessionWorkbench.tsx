@@ -4104,7 +4104,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       setRequestStartedAt(undefined);
       clearLiveText();
       setStreamHold({ bindingId: selected.id, expiresAt: Date.now() + STREAM_IDLE_GRACE_MS });
-      setOperationError(new Error('Agent 已异常停止，本轮结果未返回。你可以继续发送消息；历史记录已保留。'));
       setTurnState('idle');
       refresh();
     }, ABNORMAL_IDLE_RECONCILIATION_MS);
