@@ -1509,9 +1509,13 @@ def test_node_message_keeps_an_end_blocked_attempt_observing_native_events(
             ) -> RuntimeResult:
                 return RuntimeResult(status="RUNNING", cursor="new-user-turn")
 
-        monkeypatch.setattr(
-            flow_node_conversations, "_binding_for_attempt", lambda *_args, **_kwargs: binding
-        )
+        locks: list[bool] = []
+
+        def observed_binding(*_args, **kwargs):
+            locks.append(bool(kwargs.get("lock", False)))
+            return binding
+
+        monkeypatch.setattr(flow_node_conversations, "_binding_for_attempt", observed_binding)
         monkeypatch.setattr(
             flow_node_conversations, "_node_handle", lambda *_args, **_kwargs: object()
         )
@@ -1540,6 +1544,7 @@ def test_node_message_keeps_an_end_blocked_attempt_observing_native_events(
             "compacted": False,
             "queued_during_turn": True,
         }
+        assert not any(locks)
         assert (blocked.state, blocked.runtime_phase, blocked.error_code, blocked.error_detail) == (
             "END_BLOCKED",
             "COMPLETED",

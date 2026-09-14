@@ -692,8 +692,6 @@ def list_conversation_page(
 def get_conversation(db: Session, workspace_id: str, binding_id: str) -> dict[str, Any]:
     workspace = _workspace(db, workspace_id)
     item = _binding(db, workspace_id, binding_id)
-    item.last_connected_at = now()
-    db.flush()
     try:
         batch = get_runtime().read_active_events(_handle(db, workspace, item))
         usage_projection.capture(db, item, batch.usage)
@@ -2122,7 +2120,11 @@ def message(
     ):
         raise DomainError("AGENT_MESSAGE_EMPTY", "消息不能为空", 422)
     workspace = _workspace(db, workspace_id)
-    binding = _binding(db, workspace_id, binding_id, lock=True)
+    # A native OpenHands send may wait for the current Agent step.  Never
+    # retain a binding row lock across that I/O: a second user event is a
+    # formal OpenHands append, not a FlowWeave-owned turn transition.  Local
+    # attachment/activity projection happens only after the native result.
+    binding = _binding(db, workspace_id, binding_id)
     handle = _handle(db, workspace, binding)
     _validate_attachment_owners(binding.id, attachments, workspace_root=handle.workspace_root)
     workspace_references = agent_workspace_host.validate_message_workspace_references(

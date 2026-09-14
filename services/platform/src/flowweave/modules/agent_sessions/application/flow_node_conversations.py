@@ -758,8 +758,6 @@ def get_node_session_view(
     item = _binding_for_attempt(
         db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
     )
-    item.last_connected_at = now()
-    db.flush()
     _capture_binding_usage(db, item)
     return _node_session_dict(db, item)
 
@@ -823,8 +821,6 @@ def get_node_conversation(
         attempt_id=attempt_id,
         binding_id=binding_id,
     )
-    item.last_connected_at = now()
-    db.flush()
     return _binding_dict(item)
 
 
@@ -2225,8 +2221,11 @@ def send_node_message(
     _assert_node_session_writable(
         db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
     )
+    # OpenHands owns event serialization. Its native send can wait for an
+    # active Agent step, so this FlowWeave locator must not retain a
+    # ``FOR UPDATE`` lock over the Runtime request.
     binding = _binding_for_attempt(
-        db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id, lock=True
+        db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
     )
     validate_attachment_owners(binding.id, attachments)
     workspace_references = agent_workspace_host.validate_flow_run_workspace_references(

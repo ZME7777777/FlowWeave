@@ -3786,10 +3786,19 @@ def test_agent_workspace_appends_guidance_while_native_turn_is_running(
         created = conversations.create_conversation(
             db, workspace.id, None, workspace.default_model_provider_id, "create-key"
         )
+        locks: list[bool] = []
+        original_binding = conversations._binding
+
+        def observed_binding(*args, **kwargs):
+            locks.append(bool(kwargs.get("lock", False)))
+            return original_binding(*args, **kwargs)
+
+        monkeypatch.setattr(conversations, "_binding", observed_binding)
         conversations.message(db, workspace.id, created["id"], "first")
         result = conversations.message(db, workspace.id, created["id"], "second")
         assert result["queued_during_turn"] is True
         assert runtime.sent == ["first", "second"]
+        assert not any(locks)
         # Model rebinding is an idle-boundary operation. The direct native
         # event append must not mutate the model used by the active turn.
         assert runtime.switched == 1
@@ -3797,6 +3806,29 @@ def test_agent_workspace_appends_guidance_while_native_turn_is_running(
             "ready": False,
             "execution_status": "running",
         }
+
+
+def test_agent_workspace_read_does_not_update_connection_audit(
+    settings, db_session_factory
+) -> None:
+    runtime = MockRuntime()
+    with settings_context(settings), db_session_factory() as db, runtime_context(runtime):
+        workspace = _ready_workspace_for_conversation(db)
+        created = conversations.create_conversation(
+            db, workspace.id, None, workspace.default_model_provider_id, "read-only-connection"
+        )
+        binding = db.get(AgentConversationBinding, created["id"])
+        assert binding is not None
+        connected_at = datetime(2025, 1, 1, tzinfo=UTC)
+        binding.last_connected_at = connected_at
+        db.flush()
+
+        conversations.get_conversation(db, workspace.id, binding.id)
+
+        db.expire_all()
+        persisted = db.get(AgentConversationBinding, binding.id)
+        assert persisted is not None
+        assert persisted.last_connected_at == connected_at
 
 
 def test_agent_workspace_confirmation_uses_native_batch_digest(
