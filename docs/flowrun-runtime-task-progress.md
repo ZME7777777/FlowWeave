@@ -194,6 +194,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-440 | 队列“调整方向”的同步气泡投影 | DONE | 队列按钮与空 composer 快捷键在将条目标记为原生追加的同一同步交互中创建临时用户气泡，不再等待 dispatch mutation，随后复用该气泡并按正式事件／cursor 收敛。 |
 | FR-441 | 文件与 Diff 可读性、语法高亮统一 | DONE | 工作区文件、改动审查与 Git 提交 Diff 统一提升等宽正文与文件树字号；审查／Git 的统一和并排 Diff 按文件扩展名复用既有 Highlight.js 语法高亮。 |
 | FR-442 | 会话文件变更按正式父事件归属 | DONE | 回复下的文件变更按 OpenHands `parent_id` 回溯至正式 user turn；工具活动保留既有呈现顺序，历史缺失父链时仍回退原线性活动范围。 |
+| FR-443 | Git 统一 Diff 字号层叠修正 | DONE | Git 专用统一 Diff 的 `font` 简写不再覆盖共享 13px 基线，统一／并排模式保持同等正文尺寸与行高。 |
 | FR-436 | 错误终态精确列表投影与首屏收束 | DONE | 会话列表不再把 OpenHands eventually-consistent `search?status=running` 当作运行事实；有界页面逐项读取精确 native readiness。浏览器在 exact readiness 尚未返回时，若最近正式 user turn 已有 OpenHands ERROR／完成事件，立即清除本地运行桥接，不显示转圈、停止或运行中输入提示。 |
 | FR-437 | Responses 不完整终态关联诊断 | DONE | 在 FlowWeave 的正式 OpenHands 事件／状态读取边界，为原生错误终态写入一次脱敏关联日志，区分 Responses 不完整／缺少 completed／其他终态形态；不记录消息、输出、详情、凭据、端点或原始标识。 |
 | FR-438 | Conversation／Fork 模型绑定一致性诊断 | DONE | 为创建、模型切换、原生 Fork 继承及错误终态记录脱敏 LLM 绑定证据，区分旧模型未切换与异常 Conversation 状态随 Fork 继承；不改变模型、Fork、重试或会话历史。 |
@@ -886,6 +887,16 @@ Runtime Provider、OpenHands 或远端环境。
 目标：工作区源文件预览、会话改动审查和 Git 提交 Diff 的等宽正文不得继续使用难以阅读的小字号；文件树中的文件名也应与调整后的正文保持可读比例。审查 Diff 与 Git Diff 的统一／并排模式必须按当前文件扩展名复用现有 Highlight.js 语言映射，而非只输出无语义的纯文本。增删行的背景、行号、点击源文件跳转、统一／并排模式、受控路径解析和安全文本转义均保持原有语义。
 
 完成：工作区源码预览和所有 Diff 正文统一为 13px 等宽字号，Diff 行高与行号 gutter 同步扩展；工作区与 Git 文件树名称同步提升。新增 `HighlightedDiffCode` 仅将已解析的 Diff 源码行交给既有 `highlightedCode()` 和扩展名语言映射，因而会话改动审查与 Git Log 提交 Diff 都获得与文件预览相同的语言 token 渲染。Diff 仍由 Highlight.js 转义源文本，新增／删除背景与其余导航、滚动和视图模式逻辑未改变。
+
+验收：Web TypeScript typecheck、受影响组件 ESLint、production build、`git diff --check` 与任务状态唯一性通过。未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。
+
+### FR-443 Git 统一 Diff 字号层叠修正 — DONE
+
+依赖：`FR-441`。
+
+目标：Git 提交 Diff 的统一模式必须与并排模式采用相同的 13px 等宽正文与 1.6 行高；Git 专用统一视图的历史 `font` 简写不得以更高选择器优先级覆盖共享可读性基线。不得改变语法高亮、增删背景、行号、源文件跳转、滚动或统一／并排切换语义。
+
+完成：共享 Diff 基线新增 `.agent-git-file-diff-review > .agent-diff-unified` 专用选择器，明确覆盖 Git 历史规则的 10px `font` 简写；会话审查的统一模式与两种并排模式仍使用同一 13px／1.6 基线。
 
 验收：Web TypeScript typecheck、受影响组件 ESLint、production build、`git diff --check` 与任务状态唯一性通过。未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。
 
@@ -5884,6 +5895,7 @@ contract、冻结策略与既有受控生命周期约束覆盖。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-14 | FR-443 | Web TypeScript typecheck、受影响组件 ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS（静态／构建）：Git 统一 Diff 的专用 10px `font` 简写已被更高优先级的共享 13px／1.6 基线覆盖，因此其字号与并排模式一致。构建仅报告既有 bundle 大小建议；未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-14 | FR-442 | Web TypeScript typecheck、受影响组件与产品流 ESLint、production build、定向 Agent 工作台 Playwright、`git diff --check` 与任务状态唯一性 | PASS（静态／关键浏览器断言）：回复下的文件变更不再由线性活动呈现顺序决定，而是从正式 `parent_id` 回溯到对应 user turn；文件工具事件即使在后续对话事件之后才被投影，仍显示在原轮 assistant 回复下。定向 Playwright 已执行新增断言，随后在既有“终端”菜单项被错误按 button 查询处超时，未记为完整用例通过。production build 仅报告既有 bundle 大小建议；未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-14 | FR-441 | Web TypeScript typecheck、受影响组件 ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS（静态／构建）：工作区源码预览、会话审查和 Git 提交 Diff 的等宽正文统一为 13px，文件树名称同步增大；审查／Git 的统一与并排 Diff 现在按文件路径复用既有 Highlight.js 语言映射。构建仅报告既有 bundle 大小建议；未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-14 | FR-439 | 受影响 Python Ruff check／format、`py_compile`、完整无 Docker `test_openhands.py`、三项 Conversation 投递定向 pytest 尝试、`git diff --check` 与任务状态唯一性 | PASS（直接／静态）：Agent Workspace／FlowNode running 与 idle 投递、OpenHands user event append、原生 Fork 和 Responses 不完整终态现在记录可关联的脱敏决策与状态；日志只包含摘要、枚举、计数、context 与策略标志，固定 OpenHands 未暴露 incomplete reason 时明确为 `not_exposed`。`test_openhands.py` 为 `154 passed`；Conversation 三项测试因本机 Docker socket 缺失，在 Testcontainers PostgreSQL fixture 初始化失败且未进入断言，未记为通过。未改变发送、Fork、模型、压缩、重试、事件树或持久状态。 |
