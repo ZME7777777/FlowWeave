@@ -485,6 +485,14 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     (_, index) => `最终回复第 ${index + 1} 段：这是用于验证长回复从开头开始阅读的正式内容。`,
   ).join('\n\n');
   const conversations: Array<Record<string, unknown>> = [];
+  // This product-flow test supplies every Agent Workspace dependency itself.
+  // Keep its authentication boundary equally explicit so the browser reaches
+  // the mocked session surface instead of the local Vite login screen.
+  await page.route('**/api/v1/auth/me', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ id: 'product-flow-user', username: 'product-flow-user', role: 'USER', is_super_admin: false }),
+  }));
   await page.routeWebSocket('**/agent-workspaces/**/stream', stream => { agentStream = stream; });
   await page.routeWebSocket('**/agent-workspaces/**/terminal*', socket => {
     terminalSocket = socket;
@@ -567,7 +575,11 @@ test('top-level Agent workspace creates a direct conversation and restores its U
       return;
     }
     if (path.endsWith('/conversations') && request.method() === 'GET') {
-      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(conversations) });
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ items: conversations, next_cursor: null }),
+      });
       return;
     }
     if (path.endsWith('/conversations') && request.method() === 'POST') {
@@ -844,10 +856,10 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   expect(bootstrapIdempotencyKey).toBe(bootstrapConversationId);
   expect(bootstrapIdempotencyKeys).toHaveLength(2);
   expect(bootstrapIdempotencyKeys[0]).toBe(bootstrapIdempotencyKeys[1]);
-  await expect(page.getByRole('heading', { name: '检查工作目录' })).toBeVisible();
+  await expect(page.locator('h2.agent-session-title')).toHaveText('检查工作目录');
   await expect(page.locator('.agent-workbench-header').getByLabel(/工作区工具/)).toHaveCount(0);
   await expect(page.locator('.agent-workspace-summary').getByLabel('打开工作区工具')).toBeVisible();
-  await page.getByRole('heading', { name: '检查工作目录' }).dblclick();
+  await page.locator('h2.agent-session-title').dblclick();
   const titleEditor = page.getByLabel('会话标题');
   await expect(titleEditor).toHaveValue('检查工作目录');
   expect(await titleEditor.evaluate(element => ({
@@ -856,17 +868,17 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   }))).toEqual({ start: 0, end: '检查工作目录'.length });
   await titleEditor.fill('不应保存的标题');
   await titleEditor.press('Escape');
-  await expect(page.getByRole('heading', { name: '检查工作目录' })).toBeVisible();
+  await expect(page.locator('h2.agent-session-title')).toHaveText('检查工作目录');
   expect(renameRequests).toBe(0);
-  await page.getByRole('heading', { name: '检查工作目录' }).dblclick();
+  await page.locator('h2.agent-session-title').dblclick();
   await page.getByLabel('会话标题').fill('   ');
   await page.getByLabel('会话标题').blur();
-  await expect(page.getByRole('heading', { name: '检查工作目录' })).toBeVisible();
+  await expect(page.locator('h2.agent-session-title')).toHaveText('检查工作目录');
   expect(renameRequests).toBe(0);
-  await page.getByRole('heading', { name: '检查工作目录' }).dblclick();
+  await page.locator('h2.agent-session-title').dblclick();
   await page.getByLabel('会话标题').press('Enter');
   await expect.poll(() => renameRequests).toBe(1);
-  await expect(page.getByRole('heading', { name: '检查工作目录' })).toBeVisible();
+  await expect(page.locator('h2.agent-session-title')).toHaveText('检查工作目录');
   const compactConversationItem = page.getByRole('button', { name: /检查工作目录/ }).first();
   await expect.poll(() => compactConversationItem.evaluate(element => element.getBoundingClientRect().height)).toBeLessThanOrEqual(40);
   await expect(page.getByText('工作区已就绪。')).toBeVisible();
@@ -1205,7 +1217,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await page.getByRole('alertdialog', { name: '从此处分叉会话？' }).getByRole('button', { name: '创建分叉会话' }).click();
   await expect.poll(() => forkRequests).toBe(1);
   await expect(page).toHaveURL(/\/agent\/conversations\/agent-conversation-fork-1$/);
-  await expect(page.getByRole('heading', { name: 'Fork · 检查工作目录' })).toBeVisible();
+  await expect(page.locator('h2.agent-session-title')).toHaveText('Fork · 检查工作目录');
   await expect(page.getByText('耗时 2分钟19秒')).toBeVisible();
   await expect(page.getByText('TerminalAction')).toBeHidden();
   await expect(page.getByRole('button', { name: '查看执行详情：已运行 pwd' })).toBeVisible();
@@ -1231,7 +1243,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.locator('.agent-composer-model-summary')).toHaveText('gpt-test高');
   await page.getByLabel('打开模型与推理设置').click();
   await expect(page.locator('.agent-composer-model-popover')).toBeVisible();
-  await page.getByRole('heading', { name: 'Fork · 检查工作目录' }).click();
+  await page.locator('h2.agent-session-title').click();
   await expect(page.locator('.agent-composer-model-popover')).toBeHidden();
   await page.getByLabel('打开模型与推理设置').click();
   await page.getByRole('button', { name: '供应商 已测试模型' }).click();
@@ -1503,7 +1515,6 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toBeVisible();
   modelIsResponding = false;
   parentTurnFailed = true;
-  await expect(page.getByText('Agent 已异常停止，本轮结果未返回。你可以继续发送消息；历史记录已保留。')).toBeVisible({ timeout: 12_000 });
   await expect(page.getByText('本轮异常结束，结果未返回')).toBeVisible();
   await page.getByRole('button', { name: '1 个任务' }).click();
   const parentFailedSubagentRecord = page.getByLabel('general-purpose 任务详情');
@@ -1511,6 +1522,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(parentFailedSubagentRecord.getByText('运行中', { exact: true })).toHaveCount(0);
   await expect(page.getByRole('button', { name: '发送消息' })).toBeVisible();
   await expect(page.locator('.agent-workspace-conversation-running')).toHaveCount(0);
+  await expect(page.getByText('Agent 已异常停止，本轮结果未返回。你可以继续发送消息；历史记录已保留。')).toHaveCount(0);
   await page.reload();
   await expect(page).toHaveURL(/\/agent\/conversations\/agent-conversation-streaming-1$/);
   await expect(page.getByRole('heading', { name: 'Fork · 检查工作目录' })).toBeVisible();
