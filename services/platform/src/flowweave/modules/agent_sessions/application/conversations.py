@@ -8,12 +8,13 @@ import shutil
 import time
 from dataclasses import dataclass, replace
 from datetime import datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
 from uuid import UUID, uuid4, uuid5
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import Numeric, and_, cast, func, or_, select
 from sqlalchemy.orm import Session
 
 from flowweave.modules.agent_sessions.application import usage as usage_projection
@@ -224,28 +225,44 @@ def _dict(db: Session, item: AgentConversationBinding) -> dict[str, Any]:
         "created_at": item.created_at.isoformat(),
         "updated_at": item.updated_at.isoformat(),
         "last_connected_at": item.last_connected_at.isoformat() if item.last_connected_at else None,
+        "sort_key": str(_conversation_sort_key(item)),
     }
+
+
+def _creation_sort_rank(created_at: datetime) -> Decimal:
+    return Decimal(str(created_at.timestamp()))
+
+
+def _conversation_sort_key(item: AgentConversationBinding) -> Decimal:
+    return item.manual_sort_rank or _creation_sort_rank(item.created_at)
+
+
+def _conversation_sort_expression():
+    return func.coalesce(
+        AgentConversationBinding.manual_sort_rank,
+        cast(func.extract("epoch", AgentConversationBinding.created_at), Numeric(30, 12)),
+    )
 
 
 def _conversation_page_cursor(item: AgentConversationBinding) -> str:
     """Return an opaque cursor for the stable conversation-list ordering."""
 
     payload = json.dumps(
-        [item.created_at.isoformat(), item.id],
+        ["v2", str(_conversation_sort_key(item)), item.id],
         separators=(",", ":"),
     ).encode("utf-8")
     return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
 
 
-def _decode_conversation_page_cursor(cursor: str) -> tuple[datetime, str]:
+def _decode_conversation_page_cursor(cursor: str) -> tuple[Decimal, str]:
     try:
         padded = cursor + "=" * (-len(cursor) % 4)
         value = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")))
-        created_at, binding_id = value
-        if not isinstance(created_at, str) or not isinstance(binding_id, str):
+        version, sort_key, binding_id = value
+        if version != "v2" or not isinstance(sort_key, str) or not isinstance(binding_id, str):
             raise ValueError("invalid cursor values")
-        return datetime.fromisoformat(created_at), binding_id
-    except (TypeError, ValueError, binascii.Error, json.JSONDecodeError) as exc:
+        return Decimal(sort_key), binding_id
+    except (TypeError, ValueError, ArithmeticError, binascii.Error, json.JSONDecodeError) as exc:
         raise DomainError("AGENT_CONVERSATION_CURSOR_INVALID", "会话列表游标无效", 422) from exc
 
 
@@ -633,7 +650,7 @@ def list_conversations(db: Session, workspace_id: str) -> list[dict[str, Any]]:
                 AgentConversationBinding.lifecycle == "ACTIVE",
             )
             .order_by(
-                AgentConversationBinding.created_at.desc(),
+                _conversation_sort_expression().desc(),
                 AgentConversationBinding.id.desc(),
             )
         )
@@ -651,14 +668,15 @@ def list_conversation_page(
         AgentConversationBinding.lifecycle == "ACTIVE",
     )
     if cursor:
-        created_at, binding_id = _decode_conversation_page_cursor(cursor)
+        sort_key, binding_id = _decode_conversation_page_cursor(cursor)
+        order_key = _conversation_sort_expression()
         query = query.where(
             or_(
                 and_(
-                    AgentConversationBinding.created_at < created_at,
+                    order_key < sort_key,
                 ),
                 and_(
-                    AgentConversationBinding.created_at == created_at,
+                    order_key == sort_key,
                     AgentConversationBinding.id < binding_id,
                 ),
             )
@@ -666,7 +684,7 @@ def list_conversation_page(
     items = list(
         db.scalars(
             query.order_by(
-                AgentConversationBinding.created_at.desc(),
+                _conversation_sort_expression().desc(),
                 AgentConversationBinding.id.desc(),
             ).limit(limit + 1)
         )
@@ -701,6 +719,54 @@ def list_conversation_page(
         if has_more and page_items
         else None,
     }
+
+
+def reorder_conversation(
+    db: Session,
+    workspace_id: str,
+    binding_id: str,
+    *,
+    before_binding_id: str | None,
+    after_binding_id: str | None,
+) -> dict[str, Any]:
+    """Persist one workspace-local drag position without materializing a list."""
+
+    _workspace(db, workspace_id)
+    item = _binding(db, workspace_id, binding_id, lock=True)
+    if before_binding_id == binding_id or after_binding_id == binding_id:
+        raise DomainError("AGENT_CONVERSATION_ORDER_INVALID", "会话不能以自身作为排序邻居", 422)
+    if before_binding_id is None and after_binding_id is None:
+        raise DomainError("AGENT_CONVERSATION_ORDER_INVALID", "请指定会话的新位置", 422)
+
+    def neighbor(value: str | None) -> AgentConversationBinding | None:
+        return _binding(db, workspace_id, value, lock=True) if value else None
+
+    before = neighbor(before_binding_id)
+    after = neighbor(after_binding_id)
+    if any(
+        candidate is not None and candidate.work_directory_id != item.work_directory_id
+        for candidate in (before, after)
+    ):
+        raise DomainError(
+            "AGENT_CONVERSATION_ORDER_SCOPE_INVALID",
+            "会话只能在当前工作区内调整顺序",
+            409,
+        )
+    before_rank = _conversation_sort_key(before) if before else None
+    after_rank = _conversation_sort_key(after) if after else None
+    if before_rank is not None and after_rank is not None and before_rank <= after_rank:
+        raise DomainError("AGENT_CONVERSATION_ORDER_INVALID", "会话排序邻居无效，请刷新后重试", 409)
+    if before_rank is None:
+        rank = after_rank + Decimal("1")
+    elif after_rank is None:
+        rank = before_rank - Decimal("1")
+    else:
+        rank = (before_rank + after_rank) / Decimal("2")
+    if rank == before_rank or rank == after_rank:
+        raise DomainError("AGENT_CONVERSATION_ORDER_DENSE", "会话排序空间已满，请刷新后重试", 409)
+    item.manual_sort_rank = rank
+    db.flush()
+    return _dict(db, item)
 
 
 def get_conversation(db: Session, workspace_id: str, binding_id: str) -> dict[str, Any]:

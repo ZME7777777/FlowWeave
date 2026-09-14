@@ -719,6 +719,8 @@ export interface AgentConversation {
   created_at: string;
   updated_at: string;
   last_connected_at?: string | null;
+  /** Server-owned effective ordering key. Untouched conversations use created_at. */
+  sort_key?: string;
   usage?: TokenUsageSummary;
 }
 export interface AgentConversationPage {

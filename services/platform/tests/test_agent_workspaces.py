@@ -2648,6 +2648,52 @@ def test_agent_workspace_conversation_order_stays_at_creation_time(
         assert older_binding.updated_at > newer_binding.updated_at
 
 
+def test_agent_workspace_conversation_drag_order_overrides_only_moved_binding(
+    settings, db_session_factory, monkeypatch
+):
+    monkeypatch.setattr(
+        conversations,
+        "runtime_provider",
+        lambda _db, asset, **kwargs: RuntimeProvider(
+            provider_id=asset["asset"]["executor"]["model_provider_id"],
+            base_url="https://models.example.test/v1",
+            model=kwargs.get("model_name") or "test-model",
+            api_key="x",
+            reasoning_effort=kwargs.get("reasoning_effort"),
+        ),
+    )
+    with settings_context(settings), db_session_factory() as db, runtime_context(MockRuntime()):
+        workspace = _ready_workspace_for_conversation(db)
+        older = conversations.create_conversation(
+            db, workspace.id, "较早会话", workspace.default_model_provider_id, "drag-older"
+        )
+        newer = conversations.create_conversation(
+            db, workspace.id, "较新会话", workspace.default_model_provider_id, "drag-newer"
+        )
+        baseline = datetime.now(UTC) - timedelta(days=1)
+        older_binding = db.get(AgentConversationBinding, older["id"])
+        newer_binding = db.get(AgentConversationBinding, newer["id"])
+        assert older_binding is not None and newer_binding is not None
+        older_binding.created_at = baseline
+        newer_binding.created_at = baseline + timedelta(hours=1)
+        db.flush()
+
+        moved = conversations.reorder_conversation(
+            db,
+            workspace.id,
+            older["id"],
+            before_binding_id=None,
+            after_binding_id=newer["id"],
+        )
+
+        assert moved["sort_key"] > str(newer_binding.created_at.timestamp())
+        assert newer_binding.manual_sort_rank is None
+        assert [item["id"] for item in conversations.list_conversations(db, workspace.id)] == [
+            older["id"],
+            newer["id"],
+        ]
+
+
 def test_agent_workspace_conversation_page_is_bounded_and_cursor_stable(
     settings, db_session_factory, monkeypatch
 ):

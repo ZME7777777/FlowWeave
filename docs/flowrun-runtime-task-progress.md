@@ -5891,6 +5891,16 @@ EventLog、Memory、MCP OAuth、Plugin containment、动态 capability build 与
 fallback 或有状态 conversation replacement 伪记为本次生产探针；这些机制由实际 Runtime
 contract、冻结策略与既有受控生命周期约束覆盖。
 
+### FR-445 Agent 工作区会话自定义拖拽排序 — DONE
+
+依赖：FR-231。
+
+目标：保持会话列表按创建时间的默认稳定排序，同时允许用户仅在当前 Agent 工作区内把一个会话拖到任意相邻位置。未被拖拽的会话不得被写入人工顺序，仍按 created_at 排列；节点会话宿主不得获得该跨产品的展示控制，跨工作区排序请求必须 fail closed。
+
+完成：agent_conversation_bindings.manual_sort_rank 以可空高精度排序键记录单个被移动会话的局部覆盖值；空值由服务端创建时间推导。分页 cursor、服务端列表和浏览器已按同一有效排序键排序。受保护的排序命令只接受同一 workspace、同一工作区的相邻 binding，拖拽把手仅出现在默认 Agent 工作区；新建或未移动会话持续按创建时间自然进入列表。新增 0116_agent_manual_order 迁移与服务层回归，覆盖仅移动目标拥有覆盖值。
+
+验收：受影响 Python py_compile、Web TypeScript typecheck、Web ESLint、Alembic 唯一 head 0116_agent_manual_order 与 git diff --check 通过。两条定向 pytest 在 Testcontainers PostgreSQL 夹具创建前因本机 Docker daemon 不可用而阻断，未伪记为通过；待 Docker 可用时重跑。完成后提交独立 Git commit 并停止。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：

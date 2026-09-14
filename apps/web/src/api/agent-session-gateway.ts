@@ -110,6 +110,8 @@ export interface AgentSessionApi {
   readonly closeTerminal: (hostId: AgentSessionHostId, terminalInstanceId: string, options?: Omit<AgentSessionFileOptions, 'download'>) => Promise<void>;
   readonly bootstrapConversation: (hostId: AgentSessionHostId, conversationId: string, modelProviderId: string, modelName: string, reasoningEffort: string | null, content: string, attachments?: AgentAttachment[], references?: AgentConversationReference[], workspaceReferences?: AgentWorkspaceReference[], workDirectoryId?: AgentSessionWorkDirectoryId, capabilityVersionIds?: string[], idempotencyKey?: string, annotations?: AgentConversationAnnotation[]) => Promise<{ conversation: AgentConversation; accepted: boolean; cursor?: string | null }>;
   readonly updateConversation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, title: string) => Promise<AgentConversation>;
+  /** Node-session hosts intentionally omit this workspace-local presentation control. */
+  readonly reorderConversation?: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, beforeBindingId?: AgentSessionBindingId, afterBindingId?: AgentSessionBindingId) => Promise<AgentConversation>;
   readonly deleteConversation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<void>;
   readonly conversationEvents: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, cursor?: string, historyCursor?: string) => Promise<OpenHandsConversationEventBatch>;
   readonly conversationHydration: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<AgentConversationHydration>;
@@ -182,6 +184,7 @@ export const agentWorkspaceSessionGateway: AgentSessionGateway = {
     closeTerminal: api.closeAgentWorkspaceTerminal,
     bootstrapConversation: api.bootstrapAgentConversation,
     updateConversation: api.updateAgentConversation,
+    reorderConversation: api.reorderAgentConversation,
     deleteConversation: api.deleteAgentConversation,
     conversationEvents: api.agentConversationEvents,
     conversationHydration: api.agentConversationHydration,

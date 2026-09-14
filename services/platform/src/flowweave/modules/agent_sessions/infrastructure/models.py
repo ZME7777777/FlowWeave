@@ -8,6 +8,7 @@ product; a product host only supplies its authorized host context and Runtime.
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 from typing import cast
 
 from sqlalchemy import (
@@ -97,6 +98,9 @@ class AgentConversationBinding(Base):
     create_idempotency_key: Mapped[str] = mapped_column(String(200))
     bootstrap_parent_event_id: Mapped[str | None] = mapped_column(String(200))
     initial_user_event_id: Mapped[str | None] = mapped_column(String(200))
+    # NULL keeps the default creation-time order; only a dragged session has
+    # a workspace-local explicit rank.
+    manual_sort_rank: Mapped[Decimal | None] = mapped_column(Numeric(30, 12))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
     last_connected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

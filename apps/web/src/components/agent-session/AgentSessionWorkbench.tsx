@@ -607,7 +607,7 @@ function ConversationStreamObserver({
 }
 
 function WorkspaceConversationRow({
-  item, selectedBindingId, running, unread, conversationWritable, removing, deleteDisabled, onSelect, onDelete,
+  item, selectedBindingId, running, unread, conversationWritable, removing, deleteDisabled, dragging, onDragStart, onDragEnd, onDrop, onSelect, onDelete,
 }: {
   item: AgentConversation;
   selectedBindingId?: string;
@@ -616,10 +616,15 @@ function WorkspaceConversationRow({
   conversationWritable: boolean;
   removing: boolean;
   deleteDisabled: boolean;
+  dragging?: boolean;
+  onDragStart?: (event: ReactDragEvent<HTMLButtonElement>) => void;
+  onDragEnd?: () => void;
+  onDrop?: (event: ReactDragEvent<HTMLDivElement>) => void;
   onSelect: () => void;
   onDelete?: () => void;
 }) {
-  return <div className="agent-workspace-conversation">
+  return <div className={`agent-workspace-conversation${dragging ? ' dragging' : ''}`} onDragOver={onDrop ? event => event.preventDefault() : undefined} onDrop={onDrop}>
+    {onDragStart && <button type="button" className="agent-workspace-conversation-drag" draggable aria-label={`拖拽排序会话 ${conversationName(item)}`} title="拖拽调整当前工作区内的顺序" onClick={event => event.stopPropagation()} onDragStart={onDragStart} onDragEnd={onDragEnd}><GripVertical size={13}/></button>}
     <button type="button" className={`agent-workspace-conversation-select${item.id === selectedBindingId ? ' active' : ''}`} onClick={onSelect}>
       <CircleDot size={13}/><span><b>{conversationName(item)}</b></span>
     </button>
@@ -3443,6 +3448,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const [reviewChanges, setReviewChanges] = useState<WorkspaceFileChange[]>([]);
   const [reviewRequestId, setReviewRequestId] = useState<string>();
   const [editing, setEditing] = useState(false);
+  const [draggedBindingId, setDraggedBindingId] = useState<string>();
   const [title, setTitle] = useState('');
   const [newConversationProviderId, setNewConversationProviderId] = useState(() => initialBootstrapRecovery.current?.providerId ?? initialConversationDraft.current?.providerId ?? '');
   const [newConversationModelName, setNewConversationModelName] = useState(() => initialBootstrapRecovery.current?.modelName ?? initialConversationDraft.current?.modelName ?? '');
@@ -3552,7 +3558,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const capabilityCatalogQuery = useQuery({ queryKey: sessionQueryKey(host, 'capability-catalog'), queryFn: api.capabilities, enabled: Boolean(workspace && features.capabilities) });
   const conversations = useMemo(
     () => [...(conversationsQuery.data?.pages.flatMap(page => page.items) ?? [])].sort(
-      (left, right) => right.created_at.localeCompare(left.created_at) || right.id.localeCompare(left.id),
+      (left, right) => (Number(right.sort_key) || Date.parse(right.created_at))
+        - (Number(left.sort_key) || Date.parse(left.created_at))
+        || right.id.localeCompare(left.id),
     ),
     [conversationsQuery.data],
   );
@@ -4410,6 +4418,14 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     }
     refresh();
   }, onError: error => setOperationError(error) });
+  const reorder = useMutation({
+    mutationFn: ({ bindingId, beforeBindingId, afterBindingId }: { bindingId: string; beforeBindingId?: string; afterBindingId?: string }) => {
+      if (!api.reorderConversation) throw new Error('当前会话列表不支持自定义排序。');
+      return api.reorderConversation(workspace!.id, bindingId, beforeBindingId, afterBindingId);
+    },
+    onSuccess: () => { void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversations', workspace!.id) }); },
+    onError: error => setOperationError(error),
+  });
   const persistModel = useMutation({
     mutationFn: ({ providerId, modelName, effort }: { providerId: string; modelName: string; effort: string | null }) => api.switchConversationModel(workspace!.id, selected!.id, providerId, modelName, effort),
     onSuccess: value => {
@@ -5022,7 +5038,24 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       }, WORKSPACE_PATH_COPIED_DURATION_MS);
     }).catch(() => undefined);
   };
-  const conversationRow = (item: AgentConversation) => {
+  const dropConversation = (event: ReactDragEvent<HTMLDivElement>, target: AgentConversation, group: AgentConversation[]) => {
+    event.preventDefault();
+    const draggedId = draggedBindingId ?? event.dataTransfer.getData('application/x-flowweave-conversation');
+    setDraggedBindingId(undefined);
+    if (!draggedId || draggedId === target.id || !api.reorderConversation) return;
+    const dragged = group.find(item => item.id === draggedId);
+    if (!dragged) return;
+    const withoutDragged = group.filter(item => item.id !== draggedId);
+    const targetIndex = withoutDragged.findIndex(item => item.id === target.id);
+    if (targetIndex < 0) return;
+    const after = event.clientY >= event.currentTarget.getBoundingClientRect().top + event.currentTarget.getBoundingClientRect().height / 2;
+    reorder.mutate({
+      bindingId: draggedId,
+      beforeBindingId: after ? target.id : withoutDragged[targetIndex - 1]?.id,
+      afterBindingId: after ? withoutDragged[targetIndex + 1]?.id : target.id,
+    });
+  };
+  const conversationRow = (item: AgentConversation, group: AgentConversation[]) => {
     // The list projection is the native OpenHands running snapshot for every
     // visible conversation. Local state only bridges the selected row between
     // a send/interrupt action and the next bounded list refresh.
@@ -5036,7 +5069,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     const running = !selectedNativeIdle && !selectedFormalTerminal && (conversationIsRunning(item.execution_status)
       || (item.id === selected?.id && (selectedConversationRunning || isGenerating)));
     const conversationWritable = runtimeWritable || Boolean(item.write_available);
-    return <WorkspaceConversationRow key={item.id} item={item} selectedBindingId={selectedBindingId} running={running} unread={unreadConversationIds.has(item.id)} conversationWritable={conversationWritable} removing={remove.isPending} deleteDisabled={running} onSelect={() => selectConversation(item.id)} onDelete={features.conversationDeletion && conversationWritable ? () => void confirmDeletion('会话', conversationName(item)).then(ok => { if (ok) remove.mutate(item.id); }) : undefined}/>;
+    return <WorkspaceConversationRow key={item.id} item={item} selectedBindingId={selectedBindingId} running={running} unread={unreadConversationIds.has(item.id)} conversationWritable={conversationWritable} removing={remove.isPending} deleteDisabled={running} dragging={draggedBindingId === item.id} onDragStart={api.reorderConversation ? event => { event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('application/x-flowweave-conversation', item.id); setDraggedBindingId(item.id); } : undefined} onDragEnd={() => setDraggedBindingId(undefined)} onDrop={api.reorderConversation ? event => dropConversation(event, item, group) : undefined} onSelect={() => selectConversation(item.id)} onDelete={features.conversationDeletion && conversationWritable ? () => void confirmDeletion('会话', conversationName(item)).then(ok => { if (ok) remove.mutate(item.id); }) : undefined}/>;
   };
   const openCurrentDirectoryDraft = () => {
     const directory = selected?.work_directory_id
@@ -5075,10 +5108,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       <header className={!onReturnToSource && features.workDirectories ? 'agent-workbench-rail-actions-only' : undefined}>{onReturnToSource && <button type="button" className="agent-session-return" aria-label="返回节点执行" title="返回节点执行" onClick={onReturnToSource}><ArrowLeft size={16}/></button>}{(onReturnToSource || !features.workDirectories) && <div className="agent-session-host-heading"><span className="eyebrow">{onReturnToSource ? 'FLOWRUN NODE WORKSPACE' : 'FLOWRUN NODE'}</span><h1>{onReturnToSource ? workspace?.display_name || '节点会话' : '节点会话'}</h1></div>}<div className="agent-workbench-create-actions"><button className="primary" disabled={!canOpenConversation} onClick={() => openConversationDraft({ displayName: '根工作区' })}><Plus size={15}/>新建会话</button>{features.workDirectories && <button type="button" className="secondary" aria-label="新增工作区" disabled={!runtimeWritable} onClick={() => setWorkDirectoryCreatorOpen(true)}><FolderPlus size={14}/>新增工作区</button>}</div></header>
       <div className="agent-workbench-list">
         <WorkspaceConversationGroup groupId="root" label="根工作区" conversationCount={rootConversations.length} canCreateConversation={canOpenConversation} onCreateConversation={() => openConversationDraft({ displayName: '根工作区' })}>
-          {visibleCount => <>{pendingBootstrapItem && !pendingBootstrap?.draft.workDirectoryId ? pendingBootstrapItem : null}{rootConversations.slice(0, visibleCount).map(conversationRow)}</>}
+          {visibleCount => <>{pendingBootstrapItem && !pendingBootstrap?.draft.workDirectoryId ? pendingBootstrapItem : null}{rootConversations.slice(0, visibleCount).map(item => conversationRow(item, rootConversations))}</>}
         </WorkspaceConversationGroup>
         {features.workDirectories && workDirectories.map(directory => <WorkspaceConversationGroup key={directory.id} groupId={directory.id} label={directory.display_name} conversationCount={conversationsForDirectory(directory.id).length} canCreateConversation={canOpenConversation} onCreateConversation={() => openConversationDraft({ workDirectoryId: directory.id, displayName: directory.display_name })} onDelete={api.deleteWorkDirectory && runtimeWritable ? () => void removeWorkDirectory(directory) : undefined}>
-          {visibleCount => <>{pendingBootstrapItem && pendingBootstrap?.draft.workDirectoryId === directory.id ? pendingBootstrapItem : null}{conversationsForDirectory(directory.id).slice(0, visibleCount).map(conversationRow)}</>}
+          {visibleCount => { const group = conversationsForDirectory(directory.id); return <>{pendingBootstrapItem && pendingBootstrap?.draft.workDirectoryId === directory.id ? pendingBootstrapItem : null}{group.slice(0, visibleCount).map(item => conversationRow(item, group))}</>}}
         </WorkspaceConversationGroup>)}
       </div>
       {features.capabilities && (selected || features.draftCapabilitySelection) && <footer className="agent-workbench-rail-footer"><button type="button" disabled={selected ? !canWrite : !runtimeWritable} onClick={() => setCapabilityManagerOpen(true)}><Boxes size={15}/><span><b>能力</b><small>{selected ? '管理当前会话能力' : '为新会话选择能力'}</small></span><ChevronRight size={14}/></button></footer>}
