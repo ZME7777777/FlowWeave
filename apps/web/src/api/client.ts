@@ -336,8 +336,8 @@ export const api = {
     request<{ accepted: boolean; cursor?: string | null }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/condense`, json('POST')),
   forkAgentConversation: (workspaceId: string, bindingId: string, event_id: string) =>
     request<AgentConversation>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/fork`, json('POST', { event_id }, true)),
-  rerunAgentMessage: (workspaceId: string, bindingId: string, eventId: string, content: string) =>
-    request<{ accepted: boolean; cursor?: string | null }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/messages/${encodeURIComponent(eventId)}/rerun`, json('POST', { content })),
+  rerunAgentMessage: (workspaceId: string, bindingId: string, eventId: string, content: string, attachments: AgentAttachment[] = [], references: AgentConversationReference[] = [], workspace_references: AgentWorkspaceReference[] = [], annotations: AgentConversationAnnotation[] = []) =>
+    request<{ accepted: boolean; cursor?: string | null }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/messages/${encodeURIComponent(eventId)}/rerun`, json('POST', { content, attachments: attachmentReferences(attachments), references: conversationReferencePayload(references), workspace_references: workspaceReferencePayload(workspace_references), annotations })),
   interruptAgentConversation: (workspaceId: string, bindingId: string) =>
     request<{ accepted: boolean }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/interrupt`, json('POST')),
   agentConversationInputReadiness: (workspaceId: string, bindingId: string) =>
@@ -828,8 +828,8 @@ export const nodeSessionApi = {
     request<import('../types').AgentConversation>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/fork`, json('POST', { event_id }, true)),
   migrate: (flowRunId: string, attemptId: string, bindingId: string, model_provider_id: string, model_name?: string | null, reasoning_effort?: string | null) =>
     request<import('../types').AgentConversation>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/streaming-migration`, json('POST', { model_provider_id, model_name, reasoning_effort }, true)),
-  rerun: (flowRunId: string, attemptId: string, bindingId: string, eventId: string, content: string) =>
-    request<{ accepted: boolean; cursor?: string | null }>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/messages/${encodeURIComponent(eventId)}/rerun`, json('POST', { content })),
+  rerun: (flowRunId: string, attemptId: string, bindingId: string, eventId: string, content: string, attachments: AgentAttachment[] = [], references: AgentConversationReference[] = [], workspace_references: AgentWorkspaceReference[] = [], annotations: AgentConversationAnnotation[] = []) =>
+    request<{ accepted: boolean; cursor?: string | null }>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/messages/${encodeURIComponent(eventId)}/rerun`, json('POST', { content, attachments: attachmentReferences(attachments), references: conversationReferencePayload(references), workspace_references: workspaceReferencePayload(workspace_references), annotations })),
   mcpReadiness: (flowRunId: string, attemptId: string, capabilityVersionId: string) => request<import('../types').AgentSessionMcpReadiness>(`${nodeSessionBase(flowRunId, attemptId)}/capabilities/${encodeURIComponent(capabilityVersionId)}/mcp-readiness`, json('POST')),
   addCapability: (flowRunId: string, attemptId: string, bindingId: string, capability_version_id: string) => request<import('../types').AgentConversation>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/capabilities`, json('POST', { capability_version_id })),
   workDirectories: (flowRunId: string, attemptId: string) =>

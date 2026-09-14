@@ -19,7 +19,7 @@ import { selectCapabilityVersion, selectCapabilityVersions } from '../../utils/c
 import { SubagentAvatar } from '../SubagentAvatar';
 import { subagentAvatarSlots, type SubagentAvatarSlot } from '../../utils/subagentAvatar';
 import { workspaceFileChanges, workspaceRelativePath, type WorkspaceFileChange } from './fileChanges';
-import type { AgentAttachment, AgentConversation, AgentConversationAnnotation, AgentPendingConfirmationAction, AgentSessionCapability, AgentSessionMcpReadiness, AgentSessionWorkDirectory, AgentSessionWorkDirectoryList, AgentSessionWorkspaceDetails, AgentWorkspaceReference, CapabilityAsset, CapabilityCollection, ModelProvider, OpenHandsConversationEvent, OpenHandsConversationEventBatch, ProviderModel, RuntimeTaskControlSnapshot, RuntimeTaskUsageSnapshot, WorkspaceGitCommitDetails, WorkspaceGitFileDiff } from '../../types';
+import type { AgentAttachment, AgentConversation, AgentConversationAnnotation, AgentConversationReference, AgentPendingConfirmationAction, AgentSessionCapability, AgentSessionMcpReadiness, AgentSessionWorkDirectory, AgentSessionWorkDirectoryList, AgentSessionWorkspaceDetails, AgentWorkspaceReference, CapabilityAsset, CapabilityCollection, ModelProvider, OpenHandsConversationEvent, OpenHandsConversationEventBatch, ProviderModel, RuntimeTaskControlSnapshot, RuntimeTaskUsageSnapshot, WorkspaceGitCommitDetails, WorkspaceGitFileDiff } from '../../types';
 import '../../pages/agent-workbench.css';
 import '../../pages/agent-workbench-layout.css';
 
@@ -35,6 +35,14 @@ const MODEL_REQUEST_MAX_RETRIES = 3;
 type StreamStatus = 'connecting' | 'live' | 'recovering' | 'disabled';
 type TurnState = 'idle' | 'running' | 'pausing' | 'paused' | 'resuming';
 type QueueDeliveryState = 'queued' | 'dispatching' | 'ambiguous' | 'rejected';
+interface RewriteRequest {
+  eventId: string;
+  content: string;
+  attachments?: AgentAttachment[];
+  references?: AgentConversationReference[];
+  workspaceReferences?: AgentWorkspaceReference[];
+  annotations?: AgentConversationAnnotation[];
+}
 interface QueuedMessage {
   id: string;
   scope: string;
@@ -3411,7 +3419,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const [queuedMessages, setQueuedMessages] = useState<QueuedMessage[]>([]);
   const [draggedQueuedMessageId, setDraggedQueuedMessageId] = useState<string>();
   const [queuedMessageMenuId, setQueuedMessageMenuId] = useState<string>();
-  const [pendingRewrite, setPendingRewrite] = useState<{ eventId: string; content: string }>();
+  const [pendingRewrite, setPendingRewrite] = useState<RewriteRequest>();
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [reviewChanges, setReviewChanges] = useState<WorkspaceFileChange[]>([]);
   const [reviewRequestId, setReviewRequestId] = useState<string>();
@@ -4568,7 +4576,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     onError: error => reportOperationError(selected?.id, error),
   });
   const rewrite = useMutation({
-    mutationFn: ({ eventId, content }: { eventId: string; content: string }) => api.rerunMessage(workspace!.id, selected!.id, eventId, content),
+    mutationFn: ({ eventId, content, attachments, references, workspaceReferences, annotations }: RewriteRequest) => api.rerunMessage(
+      workspace!.id, selected!.id, eventId, content, attachments, references, workspaceReferences, annotations,
+    ),
     onMutate: request => {
       const optimisticEventId = `pending-rewrite:${randomId()}`;
       const branch = eventBranchIds(displayedEvents, request.eventId);
@@ -4576,7 +4586,13 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       commitQueuedMessages(() => []);
       clearLiveText();
       setHiddenEventIds(current => new Set([...current, ...branch]));
-      setLiveEvents([{ id: optimisticEventId, event_type: 'MESSAGE', payload: { source: 'user', content: request.content, parent_id: replacementParentId } }]);
+      setLiveEvents([{ id: optimisticEventId, event_type: 'MESSAGE', payload: {
+        source: 'user', content: request.content, parent_id: replacementParentId,
+        attachments: request.attachments,
+        conversation_references: request.references,
+        workspace_references: request.workspaceReferences,
+        collaboration_annotations: request.annotations,
+      } }]);
       setActiveTurnEventId(undefined);
       setRequestStartedAt(Date.now());
       setTurnState('running');
@@ -4588,7 +4604,13 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         setActiveTurnEventId(cursor);
         setLiveEvents(current => mergeConversationEvents(
           current.filter(event => event.id !== context?.optimisticEventId),
-          [{ id: cursor, event_type: 'MESSAGE', payload: { source: 'user', content: request.content, parent_id: context?.replacementParentId } }],
+          [{ id: cursor, event_type: 'MESSAGE', payload: {
+            source: 'user', content: request.content, parent_id: context?.replacementParentId,
+            attachments: request.attachments,
+            conversation_references: request.references,
+            workspace_references: request.workspaceReferences,
+            collaboration_annotations: request.annotations,
+          } }],
         ));
       }
       refresh();
@@ -4621,17 +4643,26 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     } else setTurnState(nativeTurnTerminal ? 'idle' : 'paused');
   }, [inputReadinessQuery.data?.ready, nativeTurnTerminal, pendingRewrite, rewrite, turnState]);
   const requestRewrite = useCallback((eventId: string, content: string) => {
+    const original = displayedEvents.find(event => event.id === eventId);
+    const request: RewriteRequest = {
+      eventId,
+      content,
+      attachments: original?.payload.attachments,
+      references: original?.payload.conversation_references,
+      workspaceReferences: original?.payload.workspace_references,
+      annotations: original?.payload.collaboration_annotations,
+    };
     if (effectiveTurnState === 'running') {
-      setPendingRewrite({ eventId, content });
+      setPendingRewrite(request);
       interrupt.mutate();
       return;
     }
     if (effectiveTurnState === 'pausing') {
-      setPendingRewrite({ eventId, content });
+      setPendingRewrite(request);
       return;
     }
-    if (effectiveTurnState === 'idle' || effectiveTurnState === 'paused') rewrite.mutate({ eventId, content });
-  }, [effectiveTurnState, interrupt, rewrite]);
+    if (effectiveTurnState === 'idle' || effectiveTurnState === 'paused') rewrite.mutate(request);
+  }, [displayedEvents, effectiveTurnState, interrupt, rewrite]);
   const openConversationDraft = useCallback((next: Omit<ConversationDraft, 'id'>) => {
     clearBootstrapRecovery();
     clearConversationDraft();

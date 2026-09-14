@@ -132,7 +132,8 @@ export interface AgentSessionApi {
   readonly interruptConversation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<{ accepted: boolean }>;
   readonly resumeConversation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<{ accepted: boolean; cursor?: string | null }>;
   readonly decideConfirmation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, expectedPendingDigest: string, accept: boolean, reason: string) => Promise<{ accepted: boolean; cursor?: string | null }>;
-  readonly rerunMessage: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, eventId: string, content: string) => Promise<{ accepted: boolean; cursor?: string | null }>;
+  /** Replays the edited user turn with its authorized non-text context intact. */
+  readonly rerunMessage: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, eventId: string, content: string, attachments?: AgentAttachment[], references?: AgentConversationReference[], workspaceReferences?: AgentWorkspaceReference[], annotations?: AgentConversationAnnotation[]) => Promise<{ accepted: boolean; cursor?: string | null }>;
   readonly switchConversationModel: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, modelProviderId: string, modelName: string, reasoningEffort: string | null) => Promise<{ model_provider_id: string; model_name?: string | null; reasoning_effort?: string | null }>;
 }
 
@@ -299,8 +300,8 @@ export function flowNodeSessionGateway(
         nodeSessionApi.resume(flowRunId, attemptId, bindingId),
       decideConfirmation: (_hostId, bindingId, digest, accept, reason) =>
         nodeSessionApi.decideConfirmation(flowRunId, attemptId, bindingId, digest, accept, reason),
-      rerunMessage: (_hostId, bindingId, eventId, content) =>
-        nodeSessionApi.rerun(flowRunId, attemptId, bindingId, eventId, content),
+      rerunMessage: (_hostId, bindingId, eventId, content, attachments, references, workspaceReferences, annotations) =>
+        nodeSessionApi.rerun(flowRunId, attemptId, bindingId, eventId, content, attachments, references, workspaceReferences, annotations),
       switchConversationModel: (_hostId, bindingId, providerId, modelName, reasoningEffort) =>
         nodeSessionApi.switchModel(flowRunId, attemptId, bindingId, providerId, modelName, reasoningEffort),
     },

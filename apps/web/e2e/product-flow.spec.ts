@@ -1549,17 +1549,21 @@ test('top-level Agent workspace creates a direct conversation and restores its U
 test('editing the latest user message locally replaces only its active branch', async ({ page }) => {
   let rewritten = false;
   let releaseRewrite: (() => void) | undefined;
+  let rerunPayload: Record<string, unknown> | undefined;
+  const attachedReport = { filename: '审计报告.pdf', mime_type: 'application/pdf', byte_size: 128, path: '/runtime/workspace/project/uploads/rethink-report.pdf' };
+  const referencedFile = { path: '/runtime/workspace/project/审计报告.md', kind: 'file', display_name: '审计报告.md' };
   const events = () => rewritten ? [
     { id: 'earlier-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '更早的问题', timestamp: '2026-08-28T10:00:00Z' } },
     { id: 'earlier-answer', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'earlier-user', content: '更早的回答', timestamp: '2026-08-28T10:00:01Z' } },
-    { id: 'rethink-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'earlier-answer', content: '修改后的问题', timestamp: '2026-08-28T10:00:03Z' } },
+    { id: 'rethink-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'earlier-answer', content: '修改后的问题', attachments: [attachedReport], workspace_references: [referencedFile], timestamp: '2026-08-28T10:00:03Z' } },
     { id: 'rethink-answer', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'rethink-user', content: '新的回答', timestamp: '2026-08-28T10:00:04Z' } },
   ] : [
     { id: 'earlier-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '更早的问题', timestamp: '2026-08-28T10:00:00Z' } },
     { id: 'earlier-answer', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'earlier-user', content: '更早的回答', timestamp: '2026-08-28T10:00:01Z' } },
-    { id: 'original-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'earlier-answer', content: '需要重新思考的问题', timestamp: '2026-08-28T10:00:02Z' } },
+    { id: 'original-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'earlier-answer', content: '需要重新思考的问题', attachments: [attachedReport], workspace_references: [referencedFile], timestamp: '2026-08-28T10:00:02Z' } },
     { id: 'old-answer', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'original-user', content: '不应保留的旧回答', timestamp: '2026-08-28T10:00:03Z' } },
   ];
+  await page.route('**/api/v1/auth/me', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ id: 'rethink-user', username: 'tester', role: 'USER', is_super_admin: false }) }));
   await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
   await page.route('**/api/v1/agent-workspaces/**', async route => {
     const request = route.request();
@@ -1573,6 +1577,7 @@ test('editing the latest user message locally replaces only its active branch', 
     if (path.endsWith('/context')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ model_name: null, reasoning_effort: null }) });
     if (path.endsWith('/pending-confirmation')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ pending: false }) });
     if (path.endsWith('/original-user/rerun') && request.method() === 'POST') {
+      rerunPayload = JSON.parse(request.postData() ?? '{}') as Record<string, unknown>;
       await new Promise<void>(resolve => { releaseRewrite = resolve; });
       rewritten = true;
       return route.fulfill({ status: 202, contentType: 'application/json', body: JSON.stringify({ accepted: true, cursor: 'rethink-user' }) });
@@ -1581,8 +1586,11 @@ test('editing the latest user message locally replaces only its active branch', 
   });
   await page.route('**/api/v1/model-providers', route => route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }));
 
+  await login(page);
   await page.goto('/agent/conversations/rethink-conversation');
   await expect(page.getByText('不应保留的旧回答', { exact: true })).toBeVisible();
+  await expect(page.locator('[data-user-event-id="original-user"]')).toContainText('审计报告.pdf');
+  await expect(page.locator('[data-user-event-id="original-user"]')).toContainText('审计报告.md');
   await page.getByRole('button', { name: '编辑并重新思考' }).click();
   await expect(page.getByText('需要重新思考的问题', { exact: true })).toHaveCount(0);
   await expect(page.locator('.conversation-message-edit')).toBeVisible();
@@ -1595,10 +1603,19 @@ test('editing the latest user message locally replaces only its active branch', 
   await expect(page.getByText(/已耗时 \d+秒/)).toBeVisible();
   await expect(page.locator('.conversation-turn-status')).toHaveText(/正在思考/);
   await expect.poll(() => Boolean(releaseRewrite)).toBe(true);
+  expect(rerunPayload).toMatchObject({
+    content: '修改后的问题',
+    attachments: [attachedReport],
+    workspace_references: [referencedFile],
+  });
+  await expect(page.locator('[data-user-event-id^="pending-rewrite:"]')).toContainText('审计报告.pdf');
+  await expect(page.locator('[data-user-event-id^="pending-rewrite:"]')).toContainText('审计报告.md');
   if (!releaseRewrite) throw new Error('Expected rerun request');
   releaseRewrite();
   await expect(page.getByText('新的回答', { exact: true })).toBeVisible();
   await expect(page.getByText('不应保留的旧回答', { exact: true })).toHaveCount(0);
+  await expect(page.locator('[data-user-event-id="rethink-user"]')).toContainText('审计报告.pdf');
+  await expect(page.locator('[data-user-event-id="rethink-user"]')).toContainText('审计报告.md');
 });
 
 test('selected conversation text is sent and rendered as a compact reference card', async ({ page }) => {

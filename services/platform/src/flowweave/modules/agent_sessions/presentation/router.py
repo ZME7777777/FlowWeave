@@ -982,6 +982,13 @@ async def rerun_node_message(
             binding_id=binding_id,
             event_id=event_id,
             content=payload.content,
+            attachments=tuple(
+                cast(dict[str, str | int], item.model_dump(exclude_none=True))
+                for item in payload.attachments
+            ),
+            references=tuple(item.model_dump() for item in payload.references),
+            workspace_references=tuple(item.model_dump() for item in payload.workspace_references),
+            annotations=tuple(payload.annotations),
         ),
     )
 

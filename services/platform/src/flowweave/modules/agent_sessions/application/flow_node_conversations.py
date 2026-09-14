@@ -2789,7 +2789,17 @@ def delete_flow_node_conversation_for_record_cleanup(
 
 
 def rerun_node_message(
-    db: Session, *, flow_run_id: str, attempt_id: str, binding_id: str, event_id: str, content: str
+    db: Session,
+    *,
+    flow_run_id: str,
+    attempt_id: str,
+    binding_id: str,
+    event_id: str,
+    content: str,
+    attachments: tuple[dict[str, str | int], ...] = (),
+    references: tuple[dict[str, str], ...] = (),
+    workspace_references: tuple[dict[str, str], ...] = (),
+    annotations: tuple[dict[str, Any], ...] = (),
 ) -> dict[str, Any]:
     if not content.strip():
         raise DomainError("AGENT_MESSAGE_EMPTY", "消息不能为空", 422)
@@ -2811,10 +2821,23 @@ def rerun_node_message(
     parent_id = target.payload.get("parent_id")
     if parent_id is not None and not isinstance(parent_id, str):
         raise DomainError("RUNTIME_EVENT_IDENTITY_INVALID", "消息事件身份无效", 409)
+    validate_attachment_owners(binding.id, attachments)
+    resolved_references = resolve_conversation_references(runtime, handle, references)
+    resolved_workspace_references = agent_workspace_host.validate_flow_run_workspace_references(
+        db,
+        flow_run_id,
+        attempt_id,
+        validated_workspace_references(workspace_references),
+        binding_id=binding.id,
+    )
     runtime.navigate(handle, parent_id)
-    prompt, image_urls = message_payload(content.strip(), (), ())
+    prompt, image_urls = message_payload(
+        content.strip(), attachments, resolved_references, resolved_workspace_references, annotations
+    )
     result = runtime.send_message(handle, prompt, image_urls)
     _observe_task_watchdogs_after_send(db, binding, handle)
+    if result.cursor:
+        record_message_attachments(db, binding, result.cursor, content.strip(), attachments)
     activity_at = now()
     binding.last_connected_at = activity_at
     binding.updated_at = activity_at

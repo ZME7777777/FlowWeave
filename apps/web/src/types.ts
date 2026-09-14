@@ -529,6 +529,7 @@ export interface OpenHandsConversationEvent {
     attachments?: AgentAttachment[];
     conversation_references?: AgentConversationReference[];
     workspace_references?: AgentWorkspaceReference[];
+    collaboration_annotations?: AgentConversationAnnotation[];
     [key: string]: unknown;
   };
 }

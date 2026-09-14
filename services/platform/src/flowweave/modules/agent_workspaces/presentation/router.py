@@ -962,7 +962,15 @@ async def agent_rerun_edited_message(
     return await run_sync(
         db,
         lambda session: conversations.rewrite_message(
-            session, workspace_id, binding_id, event_id, payload.content
+            session,
+            workspace_id,
+            binding_id,
+            event_id,
+            payload.content,
+            attachments=tuple(item.model_dump(exclude_none=True) for item in payload.attachments),
+            references=tuple(item.model_dump() for item in payload.references),
+            workspace_references=tuple(item.model_dump() for item in payload.workspace_references),
+            annotations=tuple(payload.annotations),
         ),
     )
 

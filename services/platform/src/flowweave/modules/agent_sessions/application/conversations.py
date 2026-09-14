@@ -3382,7 +3382,16 @@ def input_readiness(db: Session, workspace_id: str, binding_id: str) -> dict[str
 
 
 def rewrite_message(
-    db: Session, workspace_id: str, binding_id: str, event_id: str, content: str
+    db: Session,
+    workspace_id: str,
+    binding_id: str,
+    event_id: str,
+    content: str,
+    *,
+    attachments: tuple[dict[str, str | int], ...] = (),
+    references: tuple[dict[str, str], ...] = (),
+    workspace_references: tuple[dict[str, str], ...] = (),
+    annotations: tuple[dict[str, Any], ...] = (),
 ) -> dict[str, Any]:
     if not content.strip():
         raise DomainError("AGENT_MESSAGE_EMPTY", "消息不能为空", 422)
@@ -3397,13 +3406,22 @@ def rewrite_message(
     parent_id = target.payload.get("parent_id")
     if parent_id is not None and not isinstance(parent_id, str):
         raise DomainError("RUNTIME_EVENT_IDENTITY_INVALID", "消息事件身份无效", 409)
+    _validate_attachment_owners(
+        binding.id, attachments, workspace_root=binding.working_directory
+    )
+    resolved_references = _resolve_conversation_references(runtime, handle, references)
+    resolved_workspace_references = agent_workspace_host.validate_message_workspace_references(
+        db, workspace.id, _validated_workspace_references(workspace_references), binding_id=binding.id
+    )
     runtime.navigate(handle, parent_id)
     # Editing the first user message leaves no inherited context to protect.
     # Other legacy branches are compacted only after navigation so the native
     # summary is built from the branch the replacement turn will actually use.
     if legacy_policy and parent_id not in {None, "__root__"}:
         _safe_native_compaction(runtime, handle)
-    prompt, image_urls = _message_payload(content.strip(), (), ())
+    prompt, image_urls = _message_payload(
+        content.strip(), attachments, resolved_references, resolved_workspace_references, annotations
+    )
     try:
         result = runtime.send_message(handle, prompt, image_urls)
     except DomainError as exc:
@@ -3413,6 +3431,8 @@ def rewrite_message(
             ) from exc
         raise
     _observe_task_watchdogs_after_send(db, binding, handle)
+    if result.cursor:
+        _record_message_attachments(db, binding, result.cursor, content.strip(), attachments)
     activity_at = now()
     binding.last_connected_at = activity_at
     binding.updated_at = activity_at
