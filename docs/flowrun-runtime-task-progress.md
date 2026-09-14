@@ -169,6 +169,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-409 | Mermaid 全屏自适应缩放与平移 | DONE | 100% 自动适配全屏可用视区；支持滚轮缩放、左键拖拽平移和视图复位。 |
 | FR-410 | 回复注释直达定位 | DONE | 点击回复注释链接只执行既有原文定位，不再展开注释详情卡片。 |
 | FR-411 | Mermaid 全屏 SVG 舞台坐标修正 | DONE | SVG 直接填充适配舞台，100% 居中；缩放只改变舞台尺寸，不再漂移至左上。 |
+| FR-412 | 网站认证源变量命令级映射指导 | DONE | 平台继续按域名选择源凭据变量，同时允许 Agent 在匹配域名的单条命令中将其命令级映射到 Skill/脚本所需变量；禁止全局 export、跨域映射与凭据泄露。 |
 
 ### FR-366 FlowWeave 专属 Docker 地址规划 — DONE
 
@@ -526,6 +527,19 @@ API、数据库、OpenHands、Runtime Provider、Docker 或持久化契约。
 完成：全屏舞台尺寸仍由 SVG `viewBox` 与可用视区计算，但 SVG 改为直接以 `width/height:100%` 填充舞台，强制覆盖 Mermaid 的内联百分比／最大宽度约束；移除 SVG 二次 transform。缩放仅改变居中的舞台宽高，拖拽才应用位移；每次打开全屏重新测量图表尺寸，避免沿用旧视图数据。
 
 验收：Web TypeScript typecheck、全量 Web ESLint、production build 与 `git diff --check` 通过；无迁移、无远端操作。
+
+### FR-412 网站认证源变量命令级映射指导 — DONE
+
+依赖：无（认证提示词修正）。
+
+目标：
+
+- 平台继续只提供按目标主机匹配的认证源变量和不含明文的认证说明，不把 Skill/脚本的变量名固化为平台变量名。
+- Agent 可以在同一条实际访问匹配主机的命令中，以命令级环境变量赋值把源变量传给 Skill/脚本要求的变量名；不得使用全局 `export`、跨主机/条目映射、猜测变量或泄露凭据。
+
+完成：移除“不得改写为 `ES_QUERY_*` 别名”的提示词限制，改为明确允许命令级映射，并以 `ES_QUERY_USER`／`ES_QUERY_PASSWORD` 说明该用法。凭据仍仅在 OpenHands 原生 Conversation Secret 请求边界注册，不进入浏览器、镜像、Snapshot、日志或普通持久化字段。
+
+验收：受影响 Python Ruff format/check、`py_compile`、认证提示词定向 pytest 与 `git diff --check` 通过；无迁移、无 OpenHands 源码改动、无 Docker 或远端操作。
 
 ### FR-398 长会话 Markdown 完整渲染 — DONE
 
@@ -5399,6 +5413,7 @@ contract、冻结策略与既有受控生命周期约束覆盖。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-14 | FR-412 | 受影响 Python Ruff format/check、`py_compile`、认证提示词定向 pytest、`git diff --check` 与任务状态唯一性 | PASS：平台仍按目标主机与子域规则说明可用源凭据变量；提示词允许在同一条访问匹配主机的命令中以命令级环境变量赋值适配 Skill/脚本的变量名，明确禁止全局 `export`、跨主机／条目映射、猜测变量和凭据泄露。未修改注入协议、数据库、OpenHands、Docker 或远端环境。 |
 | 2026-09-14 | FR-410 | Web TypeScript typecheck、定向 ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS（静态／构建）：回复注释链接不再保存详情展开状态或渲染详情卡片；点击仅复用既有会话／文件原文定位。未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-13 | FR-404 | Web TypeScript typecheck、Web ESLint；受影响 Python `py_compile`／Ruff check；`git diff --check` 与任务状态唯一性 | PASS（静态）：FlowRun 列表不再显示重复的进入箭头，Runtime 就绪行可打开以 FlowRun 名称命名的独立终端子窗口；服务端只从 FlowRun 解析 active generation 和规范记录目录，浏览器不持有物理 endpoint。既有会话／Attempt 终端不变。未修改数据库、OpenHands、Docker 或远端环境。 |
 | 2026-09-13 | FR-405 | Attempt owner／gate-sidecar isolation 定向 pytest、`test_openhands.py`；受影响 Python `py_compile`、Ruff check/format；Web TypeScript typecheck、ESLint；Alembic head、`git diff --check` 与任务状态唯一性 | PASS（直接／静态）：自动 FILE Artifact 仅以 Attempt ID 和同一 `project/<record-id>` 根通过校验；相同记录根中的 gate-sidecar binding 仍被私有附件校验拒绝；sidecar request 保持无 input attachment。`test_agent_workspaces.py`／`test_gates.py` 的数据库 fixture 在断言前因本机 Docker socket 缺失而阻断，未记为通过。未修改数据库、OpenHands 源码、Runtime Provider、Docker 或持久数据。 |

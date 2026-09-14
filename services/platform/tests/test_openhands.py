@@ -18,6 +18,7 @@ from flowweave.modules.agent_sessions.application.flow_node_conversations import
     _accepts_queued_user_message,
 )
 from flowweave.modules.agent_workspaces.application import work_directories
+from flowweave.modules.credentials.application import service as credential_service
 from flowweave.modules.sandboxes.application.runtime_allocation import (
     flow_run_record_id,
     openhands_flow_run_record_path,
@@ -252,6 +253,41 @@ def test_collaboration_request_keeps_host_scoped_credentials_without_node_execut
     )
     assert request.conversation_secrets == {"FLOWWEAVE_AUTH_ES_USERNAME": "secret-user"}
     assert request.memory_enabled is False
+
+
+def test_credential_context_allows_command_local_skill_variable_mapping(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    credential = SimpleNamespace(
+        id="10000000-0000-4000-8000-000000000001",
+        auth_type="USERNAME_PASSWORD",
+        encrypted_username=b"username",
+        encrypted_secret=b"password",
+        target_host="easysearch.example.com",
+        include_subdomains=False,
+        name="EasySearch",
+    )
+
+    class CredentialDb:
+        def scalars(self, _query: object):
+            return iter((credential,))
+
+    monkeypatch.setattr(
+        credential_service,
+        "decrypt_secret",
+        lambda value: "query-user" if value == b"username" else "query-password",
+    )
+
+    values, context = credential_service.credentials_for_agent(CredentialDb())
+
+    assert values == {
+        "FLOWWEAVE_AUTH_10000000000040008000000000000001_USERNAME": "query-user",
+        "FLOWWEAVE_AUTH_10000000000040008000000000000001_PASSWORD": "query-password",
+    }
+    assert "可在同一条实际访问该匹配主机的命令中" in context
+    assert "ES_QUERY_USER" in context
+    assert "不要使用全局 export" in context
+    assert "不得猜测或改写" not in context
 
 
 def test_shared_flow_run_runtime_uses_attempt_record_workspace(
