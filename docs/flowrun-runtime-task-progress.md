@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`IN PROGRESS`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`NONE（等待 FR-424 数据库回归环境及 FlowNode／前端队列可靠性交付切片）`
+> 下一可执行切片：`FR-428（FlowNode 空闲边界投递；待独立拆分并设为 CURRENT）`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -181,6 +181,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-423 | Agent 会话 Runtime 投递短事务与无阻塞连接审计 | DONE | 消除 Agent Workspace 与 FlowNode 消息投递跨 OpenHands I/O 的 binding 行锁，并使会话读取不写连接审计行。 |
 | FR-424 | Agent Workspace 运行中消息三阶段原生投递 | DONE | 运行中追加消息在独立 Runtime 段调用 OpenHands，前后仅保留短事务授权和投影。 |
 | FR-425 | Agent 会话原生终态与收尾状态统一 | DONE | 所有会话运行／结束提示以 OpenHands `input-readiness` 为唯一终态事实；回复先到时明确显示原生收尾状态。 |
+| FR-427 | FlowNode 运行中消息三阶段原生投递 | DONE | 运行中节点会话的授权和投影与 OpenHands user-event append 分离，Runtime 段不得访问或锁定 FlowWeave 数据库。 |
 | FR-415 | FlowRun 独立终端全局项目根修正 | DONE | FlowRun 级终端进入已挂载的全局 `project` 根，因此无需创建节点即可完成对整个 FlowRun 生效的配置；会话／Attempt 终端继续保持记录级路径。 |
 | FR-417 | FlowRun 独立终端挂载感知路径选择 | DONE | FlowRun 级终端按活跃 Runtime 的固定挂载契约选择共享 `project` 根或记录直挂载根，避免历史 Runtime 因不存在 cwd 失败。 |
 
@@ -734,6 +735,26 @@ append；finalize 仅在 binding 仍指向准备阶段的同一 OpenHands conver
 与流式活动均以同一 native 状态收敛。assistant 回复先于 native idle 到达时，输入区明确显示“回复已生成，正在收尾”，
 并保留暂停控制；只有正式状态进入 idle／completed／stopped／finished 才恢复发送。新增 Playwright 回归覆盖该
 收尾窗口及 native idle 后的收敛。
+
+### FR-427 FlowNode 运行中消息三阶段原生投递 — DONE
+
+依赖：`FR-423`。
+
+目标：FlowNode 会话的运行中追加必须与 Agent Workspace 保持相同的可靠性边界：本地授权、Attempt／binding
+lineage、附件和工作区引用在短事务中冻结；运行中的 OpenHands `input-readiness`、正式 event ID 引用解析和
+`POST /events` 仅在不使用 FlowWeave 数据库的 Runtime 段执行；成功后再以短事务围栏检查同一 native
+conversation 并投影附件／活动时间及 END_BLOCKED 唤醒。若 Runtime 返回超时或服务端错误，必须返回
+`AGENT_MESSAGE_DELIVERY_AMBIGUOUS`，不得按历史或最新消息推测并自动补发。
+
+验收：受影响 Python Ruff format/check、`py_compile`、无数据库依赖的 Runtime dispatch 回归、`git diff --check`
+与任务状态唯一性；数据库回归仅在 Testcontainers 可用时执行。
+
+完成：FlowNode `/messages` 在运行中先通过 `run_sync` 提交并冻结授权、lineage、附件／工作区引用和
+Runtime handle；随后 `run_blocking` 仅调用 OpenHands readiness、按正式 event ID 读取引用并追加正式 user
+event；确认返回后才以新的短事务检查原 conversation locator，写入附件投影、活动时间与 END_BLOCKED
+wakeup。dispatch 在 DTO 上工作，不持有或访问 FlowWeave 数据库。OpenHands 服务端错误或超时仍明确归为
+`AGENT_MESSAGE_DELIVERY_AMBIGUOUS`，不做猜测性自动重发。native 已转 idle 的竞态回退原有空闲边界路径，
+其模型重绑、恢复和 compaction 将单独拆分。
 
 ### FR-415 FlowRun 独立终端全局项目根修正 — DONE
 
@@ -5642,6 +5663,7 @@ contract、冻结策略与既有受控生命周期约束覆盖。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-14 | FR-427 | 受影响 Python `py_compile`；`uv run ruff format --check`／`uv run ruff check`；不依赖 Testcontainers 的 Runtime dispatch 回归；Alembic head、`git diff --check` 与任务状态唯一性 | PASS（静态／直接）：FlowNode 运行中追加完成短事务 prepare、无数据库 Runtime dispatch、短事务 finalize；正式引用只按 native event ID 解析，Runtime 错误只返回 ambiguous、不猜测重发。定向 pytest 因全局 Testcontainers PostgreSQL fixture 在 Docker socket 不可用时初始化失败、未进入测试体；同一回归已直接执行通过。唯一 head 为 `0115_agent_annotations`；未修改数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-14 | FR-424 | 受影响 Python `py_compile`；`uv run ruff format --check`／`uv run ruff check`；`git diff --check` 与任务状态唯一性 | PASS（静态）：Agent Workspace 运行中追加现在以短事务 prepare、无数据库访问的 OpenHands dispatch 和短事务 finalize 执行；引用仍以正式 event ID 解析，finalize 检查 conversation identity。Testcontainers PostgreSQL 因本机 Docker socket 不可用未运行。未修改 OpenHands、数据库、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-14 | FR-423 | 受影响 Python `py_compile`；`uv run ruff format --check`／`uv run ruff check`；`git diff --check` 与任务状态唯一性；3 条 Agent Workspace／FlowNode 定向 pytest | PASS（静态）：普通与运行中原生 OpenHands 消息投递均不再以 `FOR UPDATE` 锁定 binding 后等待 Runtime；读取会话不再写入 `last_connected_at`，避免 WebSocket／读取为连接审计竞争同一行。三条 pytest 在 Testcontainers 启动 PostgreSQL 前因本机 Docker socket 不可用而阻断，未进入断言，未记为通过。未修改数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-14 | FR-421 | Web TypeScript typecheck、受影响文件 ESLint、production build、定向 Playwright、Alembic head、`git diff --check` 与任务状态唯一性 | PASS：FlowRun 列表终端按钮仅打开当前页面的以 FlowRun 名称命名的子弹窗；它复用 Runtime Terminal 的受权 WebSocket、拖拽选择、复制／输入和 tmux 操作，不创建浏览器 popup。定向 Playwright 在本地 Vite 服务上 1 passed。唯一 Alembic head 为 `0115_agent_annotations`；未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |

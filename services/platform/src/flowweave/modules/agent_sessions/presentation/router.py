@@ -923,9 +923,43 @@ async def node_session_message(
     binding_id: str,
     payload: NodeSessionMessageWrite,
     db: Db,
+    container: ContainerDep,
     idempotency_key: IdempotencyKey = None,
 ) -> dict[str, Any]:
     del idempotency_key
+    arguments = {
+        "attachments": tuple(
+            cast(dict[str, str | int], item.model_dump(exclude_none=True))
+            for item in payload.attachments
+        ),
+        "references": tuple(item.model_dump() for item in payload.references),
+        "workspace_references": tuple(item.model_dump() for item in payload.workspace_references),
+        "annotations": tuple(payload.annotations),
+    }
+    prepared = await run_sync(
+        db,
+        lambda session: agent_sessions.flow_node_conversations.prepare_running_node_message(
+            session,
+            flow_run_id=flow_run_id,
+            attempt_id=attempt_id,
+            binding_id=binding_id,
+            content=payload.content,
+            **arguments,
+        ),
+    )
+    running_result = await run_blocking(
+        container,
+        lambda _session: agent_sessions.flow_node_conversations.dispatch_running_node_message(
+            prepared
+        ),
+    )
+    if running_result is not None:
+        return await run_sync(
+            db,
+            lambda session: agent_sessions.flow_node_conversations.finalize_running_node_message(
+                session, prepared, running_result
+            ),
+        )
     return await run_sync(
         db,
         lambda session: agent_sessions.flow_node_conversations.send_node_message(
@@ -934,13 +968,7 @@ async def node_session_message(
             attempt_id=attempt_id,
             binding_id=binding_id,
             content=payload.content,
-            attachments=tuple(
-                cast(dict[str, str | int], item.model_dump(exclude_none=True))
-                for item in payload.attachments
-            ),
-            references=tuple(item.model_dump() for item in payload.references),
-            workspace_references=tuple(item.model_dump() for item in payload.workspace_references),
-            annotations=tuple(payload.annotations),
+            **arguments,
         ),
     )
 

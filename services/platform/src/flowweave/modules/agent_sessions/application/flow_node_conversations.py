@@ -5,7 +5,7 @@ import binascii
 import hashlib
 import json
 import re
-from dataclasses import asdict, replace
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, cast
@@ -94,6 +94,22 @@ from flowweave.shared.schemas import (
     FlowRunConversationCreateWrite,
 )
 from flowweave.shared.settings import get_settings
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedRunningNodeMessage:
+    """An authorized FlowNode message that can be dispatched without DB I/O."""
+
+    flow_run_id: str
+    attempt_id: str
+    binding_id: str
+    openhands_conversation_id: str
+    handle: RuntimeHandle
+    content: str
+    attachments: tuple[dict[str, str | int], ...]
+    references: tuple[dict[str, str], ...]
+    workspace_references: tuple[dict[str, str], ...]
+    annotations: tuple[dict[str, Any], ...]
 
 
 def _observe_task_watchdogs_after_send(
@@ -2194,6 +2210,135 @@ def send_node_question(
     )
     _binding_for_attempt(db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id)
     return send_flow_run_question(db, flow_run_id, binding_id, payload, idempotency_key, actor)
+
+
+def prepare_running_node_message(
+    db: Session,
+    *,
+    flow_run_id: str,
+    attempt_id: str,
+    binding_id: str,
+    content: str,
+    attachments: tuple[dict[str, str | int], ...] = (),
+    references: tuple[dict[str, str], ...] = (),
+    workspace_references: tuple[dict[str, str], ...] = (),
+    annotations: tuple[dict[str, Any], ...] = (),
+) -> PreparedRunningNodeMessage:
+    """Commit FlowNode authorization before a potentially long native append."""
+
+    if (
+        not content.strip()
+        and not attachments
+        and not references
+        and not workspace_references
+        and not annotations
+    ):
+        raise DomainError("AGENT_MESSAGE_EMPTY", "消息不能为空", 422)
+    _assert_node_session_writable(
+        db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
+    )
+    binding = _binding_for_attempt(
+        db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
+    )
+    validate_attachment_owners(binding.id, attachments)
+    resolved_workspace_references = agent_workspace_host.validate_flow_run_workspace_references(
+        db,
+        flow_run_id,
+        attempt_id,
+        validated_workspace_references(workspace_references),
+        binding_id=binding.id,
+    )
+    handle = _node_handle(
+        db,
+        flow_run_id=flow_run_id,
+        attempt_id=attempt_id,
+        binding_id=binding_id,
+    )
+    return PreparedRunningNodeMessage(
+        flow_run_id=flow_run_id,
+        attempt_id=attempt_id,
+        binding_id=binding.id,
+        openhands_conversation_id=binding.openhands_conversation_id,
+        handle=handle,
+        content=content,
+        attachments=attachments,
+        references=references,
+        workspace_references=resolved_workspace_references,
+        annotations=annotations,
+    )
+
+
+def dispatch_running_node_message(
+    prepared: PreparedRunningNodeMessage,
+) -> RuntimeResult | None:
+    """Append only an active native turn without using the FlowWeave database."""
+
+    runtime = get_runtime()
+    readiness = runtime.input_readiness(prepared.handle)
+    if readiness.ready:
+        return None
+    if not _accepts_queued_user_message(readiness.execution_status):
+        raise DomainError("AGENT_CONVERSATION_BUSY", "Agent 正在处理停止或确认请求，请稍候", 409)
+    references = resolve_conversation_references(runtime, prepared.handle, prepared.references)
+    prompt, image_urls = message_payload(
+        prepared.content,
+        prepared.attachments,
+        references,
+        prepared.workspace_references,
+        prepared.annotations,
+    )
+    try:
+        return runtime.send_message(prepared.handle, prompt, image_urls)
+    except DomainError as exc:
+        if exc.status >= 500:
+            raise DomainError(
+                "AGENT_MESSAGE_DELIVERY_AMBIGUOUS", "消息发送结果不确定，请先刷新会话", 504
+            ) from exc
+        raise
+
+
+def finalize_running_node_message(
+    db: Session, prepared: PreparedRunningNodeMessage, result: RuntimeResult
+) -> dict[str, Any]:
+    """Project a confirmed native append in a short fenced transaction."""
+
+    _assert_node_session_writable(
+        db,
+        flow_run_id=prepared.flow_run_id,
+        attempt_id=prepared.attempt_id,
+        binding_id=prepared.binding_id,
+    )
+    binding = _binding_for_attempt(
+        db,
+        flow_run_id=prepared.flow_run_id,
+        attempt_id=prepared.attempt_id,
+        binding_id=prepared.binding_id,
+        lock=True,
+    )
+    if binding.openhands_conversation_id != prepared.openhands_conversation_id:
+        raise DomainError(
+            "AGENT_MESSAGE_DELIVERY_AMBIGUOUS", "消息已原生送达，但会话定位已变化，请刷新会话", 409
+        )
+    _observe_task_watchdogs_after_send(db, binding, prepared.handle)
+    _ensure_blocked_attempt_wakeup(
+        db,
+        attempt_id=prepared.attempt_id,
+        binding=binding,
+    )
+    if result.cursor:
+        record_message_attachments(
+            db, binding, result.cursor, prepared.content.strip(), prepared.attachments
+        )
+    activity_at = now()
+    binding.last_connected_at = activity_at
+    binding.updated_at = activity_at
+    finish(db)
+    return {
+        "accepted": True,
+        "cursor": result.cursor,
+        "compacted": False,
+        "queued_during_turn": True,
+    }
 
 
 def send_node_message(

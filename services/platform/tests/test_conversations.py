@@ -1563,6 +1563,41 @@ def test_node_message_keeps_an_end_blocked_attempt_observing_native_events(
         )
 
 
+def test_running_node_message_dispatch_has_no_database_dependency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prepared = flow_node_conversations.PreparedRunningNodeMessage(
+        flow_run_id="flow-run",
+        attempt_id="attempt",
+        binding_id="binding",
+        openhands_conversation_id="native-conversation",
+        handle=RuntimeHandle(job_id="job", conversation_id="native-conversation"),
+        content="请继续处理",
+        attachments=(),
+        references=(),
+        workspace_references=(),
+        annotations=(),
+    )
+    sent: list[str] = []
+
+    class RunningRuntime:
+        def input_readiness(self, _handle: RuntimeHandle) -> RuntimeInputReadiness:
+            return RuntimeInputReadiness(ready=False, execution_status="running")
+
+        def send_message(
+            self, _handle: RuntimeHandle, content: str, _images: tuple[str, ...]
+        ) -> RuntimeResult:
+            sent.append(content)
+            return RuntimeResult(status="RUNNING", cursor="native-user-event")
+
+    monkeypatch.setattr(flow_node_conversations, "get_runtime", lambda: RunningRuntime())
+
+    result = flow_node_conversations.dispatch_running_node_message(prepared)
+
+    assert result == RuntimeResult(status="RUNNING", cursor="native-user-event")
+    assert sent == ["请继续处理"]
+
+
 def test_legacy_flow_run_question_queues_during_native_async_turn(
     db_session_factory: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
 ) -> None:
