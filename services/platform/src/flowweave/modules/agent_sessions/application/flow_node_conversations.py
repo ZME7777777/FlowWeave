@@ -63,7 +63,13 @@ from flowweave.modules.environments.public import (
 from flowweave.modules.model_providers.public import has_connected_default_model
 from flowweave.modules.sandboxes import public as sandboxes
 from flowweave.modules.tasks.public import enqueue
-from flowweave.runtime.base import RuntimeCondenser, RuntimeEventBatch, RuntimeHandle, RuntimeResult
+from flowweave.runtime.base import (
+    RuntimeCondenser,
+    RuntimeEventBatch,
+    RuntimeHandle,
+    RuntimeProvider,
+    RuntimeResult,
+)
 from flowweave.runtime.dependencies import get_runtime
 from flowweave.runtime.manifest import runtime_node
 from flowweave.runtime.request import (
@@ -105,6 +111,8 @@ class PreparedRunningNodeMessage:
     binding_id: str
     openhands_conversation_id: str
     handle: RuntimeHandle
+    provider: RuntimeProvider | None
+    provider_error: DomainError | None
     content: str
     attachments: tuple[dict[str, str | int], ...]
     references: tuple[dict[str, str], ...]
@@ -2254,12 +2262,24 @@ def prepare_running_node_message(
         attempt_id=attempt_id,
         binding_id=binding_id,
     )
+    provider: RuntimeProvider | None = None
+    provider_error: DomainError | None = None
+    try:
+        provider = provider_for_config(db, config_from_binding(db, binding))
+    except DomainError as exc:
+        # A running standard Agent can natively consume its next user event
+        # without a model rebind. Preserve the historical running-turn
+        # behavior, but replay this validation error if the runtime proves
+        # idle and the rebind is actually required.
+        provider_error = exc
     return PreparedRunningNodeMessage(
         flow_run_id=flow_run_id,
         attempt_id=attempt_id,
         binding_id=binding.id,
         openhands_conversation_id=binding.openhands_conversation_id,
         handle=handle,
+        provider=provider,
+        provider_error=provider_error,
         content=content,
         attachments=attachments,
         references=references,
@@ -2270,14 +2290,13 @@ def prepare_running_node_message(
 
 def dispatch_running_node_message(
     prepared: PreparedRunningNodeMessage,
-) -> RuntimeResult | None:
-    """Append only an active native turn without using the FlowWeave database."""
+) -> tuple[RuntimeResult, bool]:
+    """Rebind if idle, then append one native event without database I/O."""
 
     runtime = get_runtime()
     readiness = runtime.input_readiness(prepared.handle)
-    if readiness.ready:
-        return None
-    if not _accepts_queued_user_message(readiness.execution_status):
+    queued_during_turn = not readiness.ready
+    if queued_during_turn and not _accepts_queued_user_message(readiness.execution_status):
         raise DomainError("AGENT_CONVERSATION_BUSY", "Agent 正在处理停止或确认请求，请稍候", 409)
     references = resolve_conversation_references(runtime, prepared.handle, prepared.references)
     prompt, image_urls = message_payload(
@@ -2287,8 +2306,13 @@ def dispatch_running_node_message(
         prepared.workspace_references,
         prepared.annotations,
     )
+    if not queued_during_turn:
+        if prepared.provider_error is not None:
+            raise prepared.provider_error
+        if prepared.provider is not None:
+            runtime.switch_model(prepared.handle, prepared.provider)
     try:
-        return runtime.send_message(prepared.handle, prompt, image_urls)
+        return runtime.send_message(prepared.handle, prompt, image_urls), queued_during_turn
     except DomainError as exc:
         if exc.status >= 500:
             raise DomainError(
@@ -2298,7 +2322,11 @@ def dispatch_running_node_message(
 
 
 def finalize_running_node_message(
-    db: Session, prepared: PreparedRunningNodeMessage, result: RuntimeResult
+    db: Session,
+    prepared: PreparedRunningNodeMessage,
+    result: RuntimeResult,
+    *,
+    queued_during_turn: bool,
 ) -> dict[str, Any]:
     """Project a confirmed native append in a short fenced transaction."""
 
@@ -2337,7 +2365,7 @@ def finalize_running_node_message(
         "accepted": True,
         "cursor": result.cursor,
         "compacted": False,
-        "queued_during_turn": True,
+        "queued_during_turn": queued_during_turn,
     }
 
 

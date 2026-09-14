@@ -37,6 +37,7 @@ from flowweave.runtime.base import (
     RuntimeEventBatch,
     RuntimeHandle,
     RuntimeInputReadiness,
+    RuntimeProvider,
     RuntimeResult,
 )
 from flowweave.shared.domain.openhands import OpenHandsServerIdentity
@@ -1572,6 +1573,8 @@ def test_running_node_message_dispatch_has_no_database_dependency(
         binding_id="binding",
         openhands_conversation_id="native-conversation",
         handle=RuntimeHandle(job_id="job", conversation_id="native-conversation"),
+        provider=None,
+        provider_error=None,
         content="请继续处理",
         attachments=(),
         references=(),
@@ -1592,10 +1595,108 @@ def test_running_node_message_dispatch_has_no_database_dependency(
 
     monkeypatch.setattr(flow_node_conversations, "get_runtime", lambda: RunningRuntime())
 
-    result = flow_node_conversations.dispatch_running_node_message(prepared)
+    result, queued_during_turn = flow_node_conversations.dispatch_running_node_message(prepared)
 
     assert result == RuntimeResult(status="RUNNING", cursor="native-user-event")
+    assert queued_during_turn is True
     assert sent == ["请继续处理"]
+
+
+def test_idle_node_message_dispatch_rebinds_then_sends_without_database(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = RuntimeProvider(
+        provider_id="provider",
+        base_url="https://models.example.test/v1",
+        model="test-model",
+        api_key="test-key",
+    )
+    prepared = flow_node_conversations.PreparedRunningNodeMessage(
+        flow_run_id="flow-run",
+        attempt_id="attempt",
+        binding_id="binding",
+        openhands_conversation_id="native-conversation",
+        handle=RuntimeHandle(job_id="job", conversation_id="native-conversation"),
+        provider=provider,
+        provider_error=None,
+        content="请开始新的原生轮次",
+        attachments=(),
+        references=(),
+        workspace_references=(),
+        annotations=(),
+    )
+    calls: list[str] = []
+
+    class IdleRuntime:
+        def input_readiness(self, _handle: RuntimeHandle) -> RuntimeInputReadiness:
+            return RuntimeInputReadiness(ready=True, execution_status="idle")
+
+        def switch_model(self, _handle: RuntimeHandle, actual_provider: RuntimeProvider) -> None:
+            assert actual_provider is provider
+            calls.append("switch")
+
+        def send_message(
+            self, _handle: RuntimeHandle, content: str, _images: tuple[str, ...]
+        ) -> RuntimeResult:
+            assert content == "请开始新的原生轮次"
+            calls.append("send")
+            return RuntimeResult(status="RUNNING", cursor="native-user-event")
+
+    monkeypatch.setattr(flow_node_conversations, "get_runtime", lambda: IdleRuntime())
+
+    result, queued_during_turn = flow_node_conversations.dispatch_running_node_message(prepared)
+
+    assert result == RuntimeResult(status="RUNNING", cursor="native-user-event")
+    assert queued_during_turn is False
+    assert calls == ["switch", "send"]
+
+
+def test_node_message_model_validation_waits_for_an_idle_rebind(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model_error = DomainError("AGENT_MODEL_CONFIGURATION_REQUIRED", "会话缺少冻结模型", 409)
+    prepared = flow_node_conversations.PreparedRunningNodeMessage(
+        flow_run_id="flow-run",
+        attempt_id="attempt",
+        binding_id="binding",
+        openhands_conversation_id="native-conversation",
+        handle=RuntimeHandle(job_id="job", conversation_id="native-conversation"),
+        provider=None,
+        provider_error=model_error,
+        content="继续当前原生轮次",
+        attachments=(),
+        references=(),
+        workspace_references=(),
+        annotations=(),
+    )
+
+    class Runtime:
+        def __init__(self, readiness: RuntimeInputReadiness) -> None:
+            self.readiness = readiness
+            self.sent = False
+
+        def input_readiness(self, _handle: RuntimeHandle) -> RuntimeInputReadiness:
+            return self.readiness
+
+        def send_message(
+            self, _handle: RuntimeHandle, _content: str, _images: tuple[str, ...]
+        ) -> RuntimeResult:
+            self.sent = True
+            return RuntimeResult(status="RUNNING", cursor="native-user-event")
+
+    running = Runtime(RuntimeInputReadiness(ready=False, execution_status="running"))
+    monkeypatch.setattr(flow_node_conversations, "get_runtime", lambda: running)
+    result, queued_during_turn = flow_node_conversations.dispatch_running_node_message(prepared)
+    assert result.cursor == "native-user-event"
+    assert queued_during_turn is True
+    assert running.sent is True
+
+    idle = Runtime(RuntimeInputReadiness(ready=True, execution_status="idle"))
+    monkeypatch.setattr(flow_node_conversations, "get_runtime", lambda: idle)
+    with pytest.raises(DomainError) as caught:
+        flow_node_conversations.dispatch_running_node_message(prepared)
+    assert caught.value is model_error
+    assert idle.sent is False
 
 
 def test_legacy_flow_run_question_queues_during_native_async_turn(

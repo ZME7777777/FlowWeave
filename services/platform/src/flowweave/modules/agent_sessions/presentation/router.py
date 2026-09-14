@@ -947,28 +947,19 @@ async def node_session_message(
             **arguments,
         ),
     )
-    running_result = await run_blocking(
+    result, queued_during_turn = await run_blocking(
         container,
         lambda _session: agent_sessions.flow_node_conversations.dispatch_running_node_message(
             prepared
         ),
     )
-    if running_result is not None:
-        return await run_sync(
-            db,
-            lambda session: agent_sessions.flow_node_conversations.finalize_running_node_message(
-                session, prepared, running_result
-            ),
-        )
     return await run_sync(
         db,
-        lambda session: agent_sessions.flow_node_conversations.send_node_message(
+        lambda session: agent_sessions.flow_node_conversations.finalize_running_node_message(
             session,
-            flow_run_id=flow_run_id,
-            attempt_id=attempt_id,
-            binding_id=binding_id,
-            content=payload.content,
-            **arguments,
+            prepared,
+            result,
+            queued_during_turn=queued_during_turn,
         ),
     )
 
