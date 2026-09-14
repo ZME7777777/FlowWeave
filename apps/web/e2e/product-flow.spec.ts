@@ -1457,11 +1457,12 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await composer.press('Meta+Enter');
   await expect(queuedMessage.getByText('第一条排队消息')).toBeVisible();
   await expect(queuedMessage.getByText('调整方向的排队消息')).toHaveCount(0);
-  await expect(page.locator('.conversation-message.user').filter({ hasText: '调整方向的排队消息' })).toHaveCount(0);
-  await expect(page.getByText('正在追加到当前回复', { exact: true })).toBeVisible();
+  await expect(page.locator('.conversation-message.user').filter({ hasText: '调整方向的排队消息' })).toBeVisible();
+  await expect(page.locator('.conversation-message-delivery-status')).toHaveText('正在追加到当前回复');
+  await expect(page.locator('.agent-composer-status')).not.toContainText('正在追加到当前回复');
   await expect.poll(() => sentMessages).toBe(2);
   agentStream!.send(JSON.stringify({ type: 'event', event: { id: 'sent-user-2', event_type: 'MESSAGE', payload: { source: 'user', content: '调整方向的排队消息' } } }));
-  await expect(page.getByText('正在追加到当前回复', { exact: true })).toHaveCount(0);
+  await expect(page.locator('.conversation-message-delivery-status')).toHaveCount(0);
   releaseGuidanceDelivery?.();
   await composer.fill('网络不确定消息');
   await composer.press('Meta+Enter');

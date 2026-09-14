@@ -41,7 +41,7 @@
 .conversation-image-unavailable b{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .conversation-image-unavailable a{margin-left:auto;color:#795d1e;font-size:11px;text-decoration:underline;white-space:nowrap}
 .conversation-image-unavailable small{margin-left:auto;color:#887548;font-size:11px;white-space:nowrap}
-.conversation-message-meta{display:flex;align-items:center;gap:7px;color:#929a95;font:11px/1.35 'DM Mono',ui-monospace,monospace}.conversation-message-meta time{white-space:nowrap}.conversation-message-meta.user{position:absolute;right:0;bottom:-25px;justify-content:flex-end}.conversation-message-meta.assistant{justify-content:flex-start;margin-top:8px}
+.conversation-message-meta{display:flex;align-items:center;gap:7px;color:#929a95;font:11px/1.35 'DM Mono',ui-monospace,monospace}.conversation-message-meta time{white-space:nowrap}.conversation-message-meta.user{position:absolute;right:0;bottom:-25px;justify-content:flex-end}.conversation-message-delivery-status{color:#75867c;font:10px/1.35 inherit;white-space:nowrap}.conversation-message-meta.assistant{justify-content:flex-start;margin-top:8px}
 .conversation-message-actions{display:flex;gap:4px;opacity:0;transition:opacity .16s}
 .conversation-message-copy,.conversation-message-rewrite{display:grid;place-items:center;width:23px;height:23px;border:0;border-radius:6px;background:transparent;color:#738078;cursor:pointer;user-select:none;transition:background .16s,color .16s}
 .conversation-message.user:hover .conversation-message-actions,.conversation-message-actions:focus-within{opacity:1}

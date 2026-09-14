@@ -3481,6 +3481,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const queuedMessagesStorageKeyRef = useRef<string | undefined>(undefined);
   const queuedMessagesRef = useRef<QueuedMessage[]>([]);
   const streamConfirmedNativeGuidanceIds = useRef<Set<string>>(new Set());
+  const nativeGuidanceOptimisticEventIds = useRef<Map<string, string>>(new Map());
   useEffect(() => () => {
     for (const resource of [
       'conversation-events',
@@ -4085,6 +4086,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
           // looking perpetually queued.
           streamConfirmedNativeGuidanceIds.current.add(confirmed.id);
           commitQueuedMessages(current => current.filter(message => message.id !== confirmed.id));
+          const optimisticEventId = nativeGuidanceOptimisticEventIds.current.get(confirmed.id);
+          nativeGuidanceOptimisticEventIds.current.delete(confirmed.id);
+          if (optimisticEventId) setLiveEvents(current => current.filter(message => message.id !== optimisticEventId));
         }
       }
       appendLiveEvent(event.event);
@@ -4116,7 +4120,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       bootstrapTransitionScope.current = undefined;
       return;
     }
-    setEditing(false); clearLiveText(); pendingLiveEvents.current = []; if (liveEventsFrame.current !== undefined) window.cancelAnimationFrame(liveEventsFrame.current); liveEventsFrame.current = undefined; setLiveEvents([]); setHiddenEventIds(new Set()); setActiveTurnEventId(undefined); setRequestStartedAt(undefined); setConfirmationReason(''); setCondensationConfirmationOpen(false); setTurnState('idle'); queuedMessagesRef.current = []; streamConfirmedNativeGuidanceIds.current.clear(); setQueuedMessages([]); setPendingRewrite(undefined); setAttachments([]); setReferences([]); setComposerAnnotations([]); setOperationError(undefined);
+    setEditing(false); clearLiveText(); pendingLiveEvents.current = []; if (liveEventsFrame.current !== undefined) window.cancelAnimationFrame(liveEventsFrame.current); liveEventsFrame.current = undefined; setLiveEvents([]); setHiddenEventIds(new Set()); setActiveTurnEventId(undefined); setRequestStartedAt(undefined); setConfirmationReason(''); setCondensationConfirmationOpen(false); setTurnState('idle'); queuedMessagesRef.current = []; streamConfirmedNativeGuidanceIds.current.clear(); nativeGuidanceOptimisticEventIds.current.clear(); setQueuedMessages([]); setPendingRewrite(undefined); setAttachments([]); setReferences([]); setComposerAnnotations([]); setOperationError(undefined);
   }, [clearLiveText, composerScope]);
   useEffect(() => {
     if (!queuedMessagesStorageKey || queuedMessagesStorageKeyRef.current !== queuedMessagesStorageKey) return;
@@ -4392,10 +4396,23 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     onMutate: message => {
       const optimisticEventId = `pending-user:${randomId()}`;
       if (message.nativeGuidance) {
-        // OpenHands returns only Success from its formal event append, not a
-        // new event ID. A running turn can hold the native event lock while
-        // this request waits, so do not show a guessed user bubble or queue
-        // entry as if the append had already been confirmed.
+        // The user has asked to append direction to the active turn, so show
+        // that intent immediately. It remains explicitly provisional until a
+        // formal OpenHands event or cursor confirms delivery.
+        nativeGuidanceOptimisticEventIds.current.set(message.id, optimisticEventId);
+        setLiveEvents(current => mergeConversationEvents(current, [{
+          id: optimisticEventId,
+          event_type: 'MESSAGE',
+          payload: {
+            source: 'user',
+            content: message.content,
+            attachments: message.items,
+            conversation_references: message.references.map(item => ({ event_id: item.eventId, content: item.content })),
+            workspace_references: message.workspaceReferences,
+            collaboration_annotations: message.annotations,
+            _flowweave_delivery_status: '正在追加到当前回复',
+          },
+        }]));
         return { optimisticEventId, nativeGuidance: true };
       }
       clearLiveText();
@@ -4407,6 +4424,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     },
     onSuccess: (value, message, context) => {
       const streamConfirmed = streamConfirmedNativeGuidanceIds.current.delete(message.id);
+      nativeGuidanceOptimisticEventIds.current.delete(message.id);
       const cursor = value.cursor;
       if (cursor) {
         if (!context?.nativeGuidance) setActiveTurnEventId(cursor);
@@ -4429,6 +4447,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     },
     onError: (error, message, context) => {
       if (streamConfirmedNativeGuidanceIds.current.delete(message.id)) return;
+      nativeGuidanceOptimisticEventIds.current.delete(message.id);
       if (error instanceof ApiError && error.code === 'AGENT_CONVERSATION_BUSY') {
         updateQueuedMessage(message.id, item => ({ ...item, deliveryState: 'queued', nativeGuidance: false, deliveryError: undefined }));
       } else if (isAmbiguousDelivery(error)) {
@@ -4883,7 +4902,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const activityTitle = `当前活动事件 ${activeEventCount.toLocaleString()} / ${eventLimit?.toLocaleString() ?? 'OpenHands 自身上限'}。OpenHands 按事件规模触发兜底压缩。`;
   const composerStatus = bootstrapRecovery
     ? '正在安全核对首条消息'
-    : nativeGuidanceDispatching ? '正在追加到当前回复' : conversationDraft && !newConversationModelName ? '请选择模型' : condense.isPending ? '正在压缩上下文' : contextUsagePending ? '压缩已完成，等待下次模型调用更新用量' : persistModel.isPending ? '正在保存模型设置' : migrateStreaming.isPending || pendingMigratedSend ? '正在迁移历史会话' : pendingConfirmation ? '等待工具确认' : effectiveTurnState === 'pausing' ? '正在暂停' : effectiveTurnState === 'paused' ? '已暂停' : effectiveTurnState === 'resuming' ? '正在继续' : finalReplyAwaitingNativeCompletion ? '回复已生成，正在收尾' : effectiveTurnState === 'running' ? '正在处理' : streamStatus === 'recovering' ? '连接恢复中' : undefined;
+    : conversationDraft && !newConversationModelName ? '请选择模型' : condense.isPending ? '正在压缩上下文' : contextUsagePending ? '压缩已完成，等待下次模型调用更新用量' : persistModel.isPending ? '正在保存模型设置' : migrateStreaming.isPending || pendingMigratedSend ? '正在迁移历史会话' : pendingConfirmation ? '等待工具确认' : effectiveTurnState === 'pausing' ? '正在暂停' : effectiveTurnState === 'paused' ? '已暂停' : effectiveTurnState === 'resuming' ? '正在继续' : finalReplyAwaitingNativeCompletion ? '回复已生成，正在收尾' : effectiveTurnState === 'running' ? '正在处理' : streamStatus === 'recovering' ? '连接恢复中' : undefined;
   const composerNote = visibleQueuedMessages.length > 0 ? `已排队 ${visibleQueuedMessages.length} 条` : '';
   const visibleError = operationError ?? confirmationQuery.error ?? eventsQuery.error;
   const composerHasContent = Boolean(

@@ -190,6 +190,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-432 | 最终回复的临时 delta 呈现回退 | DONE | 停止将 WebSocket `delta` 累积或渲染为最终回复；最终 Markdown 只在 OpenHands 正式 assistant／完成事件持久化并投影后一次显示，过程状态与正式工具事件保持可见。 |
 | FR-433 | OpenHands 错误终态工作台收束 | DONE | 将 OpenHands 原生 `ready=true, execution_status=error/stuck` 识别为可安全结束的终态，停止错误卡后的运行标记、停止按钮与“正在处理”，不以浏览器事件自行伪造状态。 |
 | FR-434 | 错误终态与运行中追加投递呈现修正 | DONE | 空闲或原生错误终态的新消息仍先持久化浏览器投递意图，但不得短暂显示为消息队列；运行中直接追加在收到正式 cursor 前不伪装为已发送气泡或队列，流先到达同一正式 OpenHands 用户事件时立即确认收起，歧义／拒绝项保持可见、可恢复。 |
+| FR-435 | 运行中追加消息的直觉式气泡确认 | DONE | 运行中“调整方向”立即显示用户消息气泡；气泡下方仅在正式 OpenHands user event 或 cursor 未确认前显示“正在追加到当前回复”，拒绝或歧义仍回到可操作投递项。 |
 | FR-415 | FlowRun 独立终端全局项目根修正 | DONE | FlowRun 级终端进入已挂载的全局 `project` 根，因此无需创建节点即可完成对整个 FlowRun 生效的配置；会话／Attempt 终端继续保持记录级路径。 |
 | FR-417 | FlowRun 独立终端挂载感知路径选择 | DONE | FlowRun 级终端按活跃 Runtime 的固定挂载契约选择共享 `project` 根或记录直挂载根，避免历史 Runtime 因不存在 cwd 失败。 |
 
@@ -837,6 +838,23 @@ composer 提交状态；当 WebSocket 比 HTTP 返回更早投影同一正式用
 断言。定向 Playwright 在本地当前源码 Vite 服务上启动，但在到达新增断言前卡于既有
 `.conversation-file-changes > button` 入口（页面当前没有该元素）并超时，未记为通过；未修改 API、数据库、
 Runtime Provider、OpenHands 或远端环境。
+
+### FR-435 运行中追加消息的直觉式气泡确认 — DONE
+
+依赖：`FR-434`。
+
+目标：运行中以“调整方向”直接追加时，用户应立即看见自己刚发出的消息，而不是只能在 composer 或队列
+推断其状态。消息气泡必须清楚且紧凑地表达尚待 OpenHands 确认，不能把浏览器乐观投影冒充正式事件；
+正式 stream user event 或 HTTP cursor 到达后，应无缝移除临时状态，歧义或拒绝仍返回既有可恢复投递项。
+
+完成：运行中原生追加恢复立即渲染用户消息气泡，并在气泡下方以“正在追加到当前回复”标识其浏览器
+本地等待状态。该标识仅由临时 optimistic event 携带，不进入 OpenHands 或 FlowWeave 持久化事实；正式用户
+event 先到时移除该 event 并投影正式消息，HTTP cursor 先到时也以正式 event 替换。composer 不再重复显示
+同一状态；请求失败时移除临时气泡，并继续以队列中的歧义／拒绝项让用户显式处理。
+
+验收：Web TypeScript typecheck、定向 ESLint、production build 与 `git diff --check` 通过。产品流断言覆盖
+气泡、其下临时标识、composer 不重复标识及 stream 确认后的标识移除；完整串行 Playwright 仍在该段之前被
+既有文件改动入口选择器阻断，未记为通过。未修改 API、数据库、Runtime Provider、OpenHands 或远端环境。
 
 ### FR-415 FlowRun 独立终端全局项目根修正 — DONE
 
