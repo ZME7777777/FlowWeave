@@ -1,5 +1,6 @@
 import { isValidElement, useEffect, useId, useLayoutEffect, useRef, useState, type ComponentPropsWithoutRef, type PointerEvent as ReactPointerEvent, type ReactNode, type WheelEvent as ReactWheelEvent } from 'react';
 import { createPortal } from 'react-dom';
+import { Check, Copy } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { deploymentBasePath } from '../deploymentPath';
@@ -39,7 +40,7 @@ function isMermaidDiagram(className: string | undefined, source: string): boolea
     || /^(?:sequenceDiagram|flowchart|graph|classDiagram|stateDiagram(?:-v2)?|erDiagram|journey|gantt|pie|mindmap|timeline|gitGraph|quadrantChart|requirementDiagram|C4Context|C4Container|C4Component|C4Dynamic)\b/m.test(source.trim());
 }
 
-async function copyDiagramSource(value: string): Promise<void> {
+async function copyCodeToClipboard(value: string): Promise<void> {
   if (navigator.clipboard?.writeText) {
     try {
       await navigator.clipboard.writeText(value);
@@ -60,6 +61,37 @@ async function copyDiagramSource(value: string): Promise<void> {
   if (!copied) throw new Error('Clipboard is unavailable');
 }
 
+function CodeBlock({ source, children, ...props }: ComponentPropsWithoutRef<'pre'> & { source: string }) {
+  const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle');
+  const copyTimer = useRef<number | undefined>(undefined);
+
+  useEffect(() => () => {
+    if (copyTimer.current !== undefined) window.clearTimeout(copyTimer.current);
+  }, []);
+
+  const copySource = () => {
+    void copyCodeToClipboard(source).then(() => {
+      setCopyState('copied');
+      if (copyTimer.current !== undefined) window.clearTimeout(copyTimer.current);
+      copyTimer.current = window.setTimeout(() => setCopyState('idle'), 1800);
+    }).catch(() => setCopyState('failed'));
+  };
+  const copied = copyState === 'copied';
+
+  return <div className="conversation-code-block">
+    <pre {...props}>{children}</pre>
+    <button
+      type="button"
+      className={`conversation-code-copy${copyState === 'failed' ? ' failed' : ''}`}
+      aria-label={copied ? '代码已复制' : copyState === 'failed' ? '复制代码失败，请重试' : '复制代码'}
+      title={copied ? '已复制' : copyState === 'failed' ? '复制失败，请重试' : '复制代码'}
+      onClick={copySource}
+    >
+      {copied ? <Check size={15} strokeWidth={2.4} aria-hidden="true"/> : <Copy size={15} aria-hidden="true"/>}
+    </button>
+  </div>;
+}
+
 function MermaidDiagram({ source }: { source: string }) {
   const diagramId = useId().replace(/[^a-z0-9]/gi, '');
   const [mode, setMode] = useState<'image' | 'text'>('image');
@@ -72,8 +104,6 @@ function MermaidDiagram({ source }: { source: string }) {
   const [svg, setSvg] = useState('');
   const [rendering, setRendering] = useState(true);
   const [error, setError] = useState('');
-  const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle');
-  const copyTimer = useRef<number | undefined>(undefined);
   const fullscreenCanvasRef = useRef<HTMLDivElement>(null);
   const dragStart = useRef<{ x: number; y: number; panX: number; panY: number } | undefined>(undefined);
 
@@ -108,10 +138,6 @@ function MermaidDiagram({ source }: { source: string }) {
     return () => { cancelled = true; };
   }, [diagramId, source]);
 
-  useEffect(() => () => {
-    if (copyTimer.current !== undefined) window.clearTimeout(copyTimer.current);
-  }, []);
-
   useEffect(() => {
     if (!isFullscreen) return;
     const closeOnEscape = (event: KeyboardEvent) => {
@@ -138,14 +164,6 @@ function MermaidDiagram({ source }: { source: string }) {
     observer.observe(canvas);
     return () => observer.disconnect();
   }, [isFullscreen, svg]);
-
-  const copySource = () => {
-    void copyDiagramSource(source).then(() => {
-      setCopyState('copied');
-      if (copyTimer.current !== undefined) window.clearTimeout(copyTimer.current);
-      copyTimer.current = window.setTimeout(() => setCopyState('idle'), 1800);
-    }).catch(() => setCopyState('failed'));
-  };
 
   const openFullscreen = () => {
     setZoom(100);
@@ -224,22 +242,20 @@ function MermaidDiagram({ source }: { source: string }) {
           {!rendering && svg && <div className="conversation-mermaid-svg" role="img" aria-label="Mermaid 图表" dangerouslySetInnerHTML={{ __html: svg }}/>}
           {!rendering && error && <p className="conversation-mermaid-error" role="status">图片生成失败：{error}。可切换到文本查看或复制原始内容。</p>}
         </div>
-      : <div className="conversation-mermaid-text">
-          <pre><code>{source}</code></pre>
-          <button type="button" className="conversation-mermaid-copy" onClick={copySource}>{copyState === 'copied' ? '已复制' : copyState === 'failed' ? '复制失败，请手动复制' : '一键复制'}</button>
-        </div>}
+      : <div className="conversation-mermaid-text"><CodeBlock source={source}><code>{source}</code></CodeBlock></div>}
     {fullscreenPreview}
   </section>;
 }
 
 function MarkdownPre({ children, node: _node, ...props }: ComponentPropsWithoutRef<'pre'> & { node?: unknown }) {
   void _node;
+  let source = '';
   if (isValidElement(children) && children.type === 'code') {
     const code = children.props as { className?: string; children?: ReactNode };
-    const source = codeText(code.children).replace(/\n$/, '');
+    source = codeText(code.children).replace(/\n$/, '');
     if (source && isMermaidDiagram(code.className, source)) return <MermaidDiagram source={source}/>;
   }
-  return <pre {...props}>{children}</pre>;
+  return <CodeBlock {...props} source={source}>{children}</CodeBlock>;
 }
 
 function MarkdownTable({ children, node: _node, ...props }: ComponentPropsWithoutRef<'table'> & { node?: unknown }) {
