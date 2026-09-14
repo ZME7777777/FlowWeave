@@ -34,7 +34,7 @@ test('Agent session renders a completed long Markdown reply without manual expan
     events: [
       { id: `${id}-user`, event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: `问题 ${id}`, timestamp: now } },
       { id: `${id}-tool`, event_type: 'TOOL_RESULT', payload: { parent_id: `${id}-user`, content: 'x'.repeat(20_000), details: { stdout: 'x'.repeat(20_000) }, timestamp: now } },
-      { id: `${id}-assistant`, event_type: 'MESSAGE', payload: { source: 'agent', parent_id: `${id}-tool`, content: `完整回复 ${id}\n\n${'完整 Markdown 内容 '.repeat(500)}`, timestamp: now } },
+      { id: `${id}-assistant`, event_type: 'MESSAGE', payload: { source: 'agent', parent_id: `${id}-tool`, content: `完整回复 ${id}\n\n| 选择 | 项目 | 用途 | Git 地址 |\n| --- | --- | --- | --- |\n| #1 | \`hq-support\` | 同步 Kafka topic | \`https://gitlab.example.test/hq-support\` |\n\n${'完整 Markdown 内容 '.repeat(500)}`, timestamp: now } },
     ],
     next_cursor: `${id}-head`,
     history_cursor: null,
@@ -83,6 +83,11 @@ test('Agent session renders a completed long Markdown reply without manual expan
   await page.goto('/agent/conversations/cache-conversation-a');
   await expect(page.getByText('完整回复 cache-conversation-a', { exact: false })).toBeVisible();
   await expect(page.getByText('完整 Markdown 内容', { exact: false })).toBeVisible();
+  const table = page.locator('.conversation-markdown-table-scroll table');
+  await expect(table).toBeVisible();
+  await expect(table.getByRole('columnheader', { name: '选择' })).toHaveCSS('white-space', 'nowrap');
+  await expect(table.locator('td').first()).toHaveCSS('white-space', 'nowrap');
+  await expect(page.locator('.conversation-markdown-table-scroll')).toHaveCSS('overflow-x', 'auto');
   await expect(page.getByRole('button', { name: '渲染完整消息' })).toHaveCount(0);
   await expect.poll(() => eventRequests).toBe(1);
 });

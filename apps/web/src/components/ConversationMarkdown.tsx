@@ -242,6 +242,11 @@ function MarkdownPre({ children, node: _node, ...props }: ComponentPropsWithoutR
   return <pre {...props}>{children}</pre>;
 }
 
+function MarkdownTable({ children, node: _node, ...props }: ComponentPropsWithoutRef<'table'> & { node?: unknown }) {
+  void _node;
+  return <div className="conversation-markdown-table-scroll"><table {...props}>{children}</table></div>;
+}
+
 export function ConversationMarkdown({ children }: { children: string }) {
-  return <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ a: MarkdownLink, img: MarkdownImage, pre: MarkdownPre }}>{children}</ReactMarkdown>;
+  return <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ a: MarkdownLink, img: MarkdownImage, pre: MarkdownPre, table: MarkdownTable }}>{children}</ReactMarkdown>;
 }
