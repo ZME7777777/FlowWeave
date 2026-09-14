@@ -1040,6 +1040,48 @@ function CurrentTurnStatus({ items, liveText, requestSubmitting, monitoring, con
   </div>;
 }
 
+const LIVE_REPLY_CHUNK_LENGTH = 72;
+
+function nextLiveReplyChunk(content: string, offset: number): string {
+  const limit = Math.min(content.length, offset + LIVE_REPLY_CHUNK_LENGTH);
+  // Keep a leading line break with the following text. Rendering a lone\n+  // newline as its own DOM node would make one incoming line appear as two
+  // visual updates.
+  const newline = content.indexOf('\n', offset + 1);
+  if (newline >= offset && newline < limit) return content.slice(offset, newline + 1);
+  if (limit === content.length) return content.slice(offset);
+  for (let index = limit; index > offset + 16; index -= 1) {
+    if (/[\s,.;!?，。！？；：]/.test(content[index - 1])) return content.slice(offset, index);
+  }
+  return content.slice(offset, limit);
+}
+
+function LiveReply({ content }: { content: string }) {
+  const rendered = useRef('');
+  const [chunks, setChunks] = useState<string[]>([]);
+
+  useEffect(() => {
+    if (!content.startsWith(rendered.current)) {
+      rendered.current = '';
+      setChunks([]);
+    }
+    let frame: number | undefined;
+    const append = () => {
+      const offset = rendered.current.length;
+      if (offset >= content.length) return;
+      const chunk = nextLiveReplyChunk(content, offset);
+      rendered.current += chunk;
+      setChunks(current => [...current, chunk]);
+      frame = window.requestAnimationFrame(append);
+    };
+    frame = window.requestAnimationFrame(append);
+    return () => { if (frame !== undefined) window.cancelAnimationFrame(frame); };
+  }, [content]);
+
+  return <article className="conversation-message assistant conversation-live-reply" aria-label="正在生成的回复" aria-live="polite">
+    <div className="conversation-live-reply-content">{chunks.map((chunk, index) => <span key={index}>{chunk}</span>)}<i aria-hidden="true"/></div>
+  </article>;
+}
+
 function taskAvatarStatus(entry: ActivityEntry, item: Item): 'running' | 'completed' | 'error' {
   const phases = [item.event, ...entry.results.map(result => result.event)]
     .map(event => event.payload.runtime_task?.phase);
@@ -1091,10 +1133,9 @@ function ActivityEntryRow({ entry, active, avatarSlots, workspaceRoot }: {
   </article>;
 }
 
-function ActivityGroup({ items, active, liveText, startedAt, finishedAt, avatarSlots, workspaceRoot }: {
+function ActivityGroup({ items, active, startedAt, finishedAt, avatarSlots, workspaceRoot }: {
   items: Item[];
   active: boolean;
-  liveText?: string;
   startedAt?: number;
   finishedAt?: number;
   avatarSlots: ReadonlyMap<string, SubagentAvatarSlot>;
@@ -1102,7 +1143,7 @@ function ActivityGroup({ items, active, liveText, startedAt, finishedAt, avatarS
 }) {
   const elapsedSeconds = useElapsedSeconds(startedAt, finishedAt, active);
   const entries = groupedActivities(items);
-  const itemCount = entries.length + (liveText ? 1 : 0);
+  const itemCount = entries.length;
   // Keep the in-flight process visible, then collapse it once the native
   // terminal reply arrives. Historical completed processes also start closed,
   // while the summary remains available for an explicit user expansion.
@@ -1122,7 +1163,6 @@ function ActivityGroup({ items, active, liveText, startedAt, finishedAt, avatarS
     <summary>{summary}</summary>
     <div className="conversation-activity-list">
       {entries.map(entry => <ActivityEntryRow key={entry.id} entry={entry} active={active} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/>)}
-      {liveText && <article className="conversation-activity-row thought live-text"><MessageMarkdown>{liveText}</MessageMarkdown></article>}
     </div>
   </details>;
 }
@@ -1676,13 +1716,12 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused: 
           {turn.user && <div className="conversation-user-message">{editingEventId === turn.user.event.id
             ? <form className="conversation-message-edit" onSubmit={event => { event.preventDefault(); if (editingContent.trim()) onRewrite?.(turn.user!.event.id, editingContent.trim()); }}><textarea aria-label="编辑已发送消息" value={editingContent} disabled={rewritePending} onChange={event => setEditingContent(event.target.value)}/><footer><button type="button" onClick={() => setEditingEventId(undefined)}>取消</button><button type="submit" disabled={!editingContent.trim() || rewritePending}>重新思考</button></footer></form>
             : <article data-user-event-id={turn.user.event.id} data-conversation-event-id={turn.user.event.id} className="conversation-message user">{turn.user.content && <div className="conversation-message-content"><MessageMarkdown>{turn.user.content}</MessageMarkdown></div>}<MessageAttachments attachments={eventAttachments(turn.user.event)} references={turn.user.event.payload.conversation_references} workspaceReferences={turn.user.event.payload.workspace_references} annotations={eventAnnotations(turn.user.event)} onOpen={onOpenAttachment} onOpenReference={setViewingReference} onOpenWorkspaceReference={onOpenWorkspaceReference} onOpenAnnotation={onLocateAnnotation}/><footer className="conversation-message-meta user">{userTimestamp && <time dateTime={typeof turn.user.event.payload.timestamp === 'string' ? turn.user.event.payload.timestamp : undefined}>{userTimestamp}</time>}<div className="conversation-message-actions"><button type="button" className="conversation-message-copy" aria-label={copiedEventId === turn.user.event.id ? '消息已复制' : '复制消息'} title={copiedEventId === turn.user.event.id ? '已复制' : '复制消息'} onClick={() => copyUserMessage(turn.user!.event.id, turn.user!.content)}>{copiedEventId === turn.user.event.id ? <Check size={13}/> : <Copy size={13}/>}</button>{lastUserEventId === turn.user.event.id && <button type="button" className="conversation-message-rewrite" aria-label="编辑并重新思考" title="编辑并重新思考" onClick={() => { setEditingEventId(turn.user!.event.id); setEditingContent(turn.user!.content); }}><Pencil size={13}/></button>}</div></footer></article>}</div>}
-          {processBlocks.map((block, blockIndex) => block.kind === 'condensation'
+          {processBlocks.map(block => block.kind === 'condensation'
             ? <CondensationNotices key={block.id} items={block.items}/>
             : <ActivityGroup
               key={block.id}
               items={block.items}
               active={block.active}
-              liveText={isCurrent && blockIndex === processBlocks.length - 1 ? liveText : undefined}
               startedAt={block.startedAt}
               finishedAt={block.finishedAt}
               avatarSlots={avatarSlots}
@@ -1691,12 +1730,13 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused: 
           {isCurrent && !turn.assistant && !failures.length && (
             <CurrentTurnStatus items={turn.activity} liveText={liveText} requestSubmitting={requestSubmitting} monitoring={monitoring} connectionState={connectionState}/>
           )}
+          {isCurrent && !turn.assistant && !failures.length && liveText && <LiveReply content={liveText}/>}
           {processBlocks.length > 0 && turn.assistant && <div className="conversation-process-divider" role="separator" aria-label="工作过程结束"/>}
           {turn.assistant && <AgentReply event={turn.assistant.event} content={turn.assistant.content} changes={fileChanges} onFork={!isGenerating ? () => onFork?.(turn.assistant!.event.id) : undefined} onPreviewCandidateFile={onPreviewCandidateFile} onReviewChanges={onReviewChanges} workspaceRoot={workspaceRoot} annotations={annotations} onLocateAnnotation={onLocateAnnotation}/>}
           {failures.map(item => <ConversationFailure key={item.event.id} item={item} taskControl={taskControl}/>)}
         </section>;
       })}
-      {turns.length === 0 && (liveText || isGenerating) && <><ActivityGroup items={[]} active liveText={liveText} startedAt={requestStartedAt} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/><CurrentTurnStatus items={[]} liveText={liveText} requestSubmitting={requestSubmitting} monitoring={monitoring} connectionState={connectionState}/></>}
+      {turns.length === 0 && (liveText || isGenerating) && <><ActivityGroup items={[]} active startedAt={requestStartedAt} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/><CurrentTurnStatus items={[]} liveText={liveText} requestSubmitting={requestSubmitting} monitoring={monitoring} connectionState={connectionState}/>{liveText && <LiveReply content={liveText}/>}</>}
       {condensationStatus && <article className={`conversation-condensation-progress ${condensationStatus.state}`} aria-label={condensationStatus.state === 'running' ? '正在压缩上下文' : '上下文压缩失败'} role="status">
         {condensationStatus.state === 'running' ? <LoaderCircle className="conversation-condensation-spinner" size={16}/> : <CircleAlert size={16}/>}
         <div><header><b>{condensationStatus.state === 'running' ? '正在压缩上下文' : '上下文压缩未完成'}</b>{condensationStatus.state === 'running' && <time>{formatDuration(condensationElapsed / 1_000)}</time>}</header>

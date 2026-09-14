@@ -164,6 +164,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-403 | 共享记录工作区的门禁／Provider 路径贯通 | DONE | 门禁 sidecar、Runtime replacement probe 与 Provider terminal 准入均使用 `project/<record-id>`；物理 `project` mount 仅作为多记录存储根。 |
 | FR-405 | 共享记录工作区中的 FILE Artifact 输入隔离 | DONE | 自动 FILE Artifact 输入以 Attempt（而非执行或门禁 Conversation binding）作为受控上传所有者；私有会话附件仍只允许原 binding 使用。历史自动启动因旧 owner 校验失败时可重试并重新物化冻结输入。 |
 | FR-406 | 自动启动 Runtime 投递失败的文本无关恢复 | DONE | 自动 Attempt 的 `START_BLOCKED + AUTOMATIC_RUNTIME_DELIVERY_FAILED` 是已知 `START_RUNTIME` 耗尽投影；恢复只依据该受控状态重投同一 Attempt，不再依赖可能截断的内部错误文本，`END_BLOCKED` 仍维持不可自动恢复。 |
+| FR-407 | 流式回复 Markdown 重排闪烁 | DONE | 运行中 delta 以稳定的纯文本片段追加到独立回复气泡；正式完成事件才一次性切换为完整 Markdown，避免未闭合结构反复重排。 |
 
 ### FR-366 FlowWeave 专属 Docker 地址规划 — DONE
 
@@ -471,6 +472,16 @@ API、数据库、OpenHands、Runtime Provider、Docker 或持久化契约。
 
 验收：Web TypeScript typecheck、全量 Web ESLint、production build 与 `git diff --check` 通过。Mermaid 作为
 会话 Markdown 的懒加载 chunk 产出，避免非会话页面载入图表渲染器；无迁移、无远端操作。
+
+### FR-407 流式回复稳定追加渲染 — DONE
+
+依赖：`FR-398`。
+
+目标：运行中的原生 delta 不得每帧重新解析完整 Markdown，也不能只在工作过程行中闪烁刷新。内容应在独立的实时回复气泡中按稳定文本片段逐步追加；用户上滑后的阅读锁和自动贴底行为保持不变。OpenHands 正式 assistant／完成事件到达后，实时气泡才让位给完整 Markdown，历史与已完成会话始终直接完整呈现。
+
+完成：实时回复现按至多 72 字符、优先换行或自然断点切为不可变 DOM 片段追加，并只在尾部显示轻量光标；流式阶段不解析 Markdown、表格、代码或 Mermaid，因此未闭合结构不会造成页面抖动。完成时继续使用既有原生事件投影渲染完整 Markdown，不增加任何平台消息副本、事件协议或持久化。新增的 Playwright 回归会发送两帧 delta，验证内容以两个片段稳定累积，并在正式工具事件到达时清除实时气泡。
+
+验收结果：Web TypeScript typecheck、全量 Web ESLint、production build、`git diff --check`、唯一 Alembic head `0115_agent_annotations` 与任务状态唯一性通过。定向 Playwright 已启动，但本机未运行支撑 Agent 工作台导航的 API，测试在进入流式断言前等待“Agent 会话”入口超时；该环境限制未记为通过。未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。
 
 ### FR-398 长会话 Markdown 完整渲染 — DONE
 

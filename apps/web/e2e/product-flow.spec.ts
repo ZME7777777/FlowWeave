@@ -1263,8 +1263,12 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   backfilledTaskAction = true;
   await expect(activeProcess.getByText('子智能体 general-purpose · 检查依赖关系')).toBeVisible();
   agentStream!.send(JSON.stringify({ type: 'delta', content: '正在核对上下文。' }));
-  await expect(activeProcess.getByText('正在核对上下文。')).toBeVisible();
-  await expect(page.locator('.conversation-message.assistant').filter({ hasText: '正在核对上下文。' })).toHaveCount(0);
+  const liveReply = page.getByLabel('正在生成的回复');
+  await expect(liveReply).toHaveText('正在核对上下文。');
+  await expect(liveReply.locator('span')).toHaveCount(1);
+  agentStream!.send(JSON.stringify({ type: 'delta', content: '\n下一行内容应当稳定追加，不重新解析前文。' }));
+  await expect(liveReply).toContainText('正在核对上下文。\n下一行内容应当稳定追加，不重新解析前文。');
+  await expect(liveReply.locator('span')).toHaveCount(2);
   agentStream!.send(JSON.stringify({
     type: 'event',
     event: { id: 'live-tool', event_type: 'TOOL_CALL', payload: { parent_id: 'running-user', action_id: 'live-tool', tool_call_id: 'live-call', llm_response_id: 'live-operation-batch-1', tool_name: 'terminal', event_name: 'TerminalAction', content: '已完成初步分析。', thought: '已完成初步分析。', summary: '核对项目上下文', details: { command: 'pwd' }, timestamp: new Date().toISOString() } },
@@ -1279,7 +1283,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(activeProcess.getByText('正在运行 pwd')).toBeVisible();
   await expect(activeProcess.getByText('正在运行 git status --short')).toBeVisible();
   await expect(page.locator('.conversation-turn-status')).toHaveText(/正在后台执行命令/);
-  await expect(activeProcess.getByText('正在核对上下文。')).toHaveCount(0);
+  await expect(liveReply).toHaveCount(0);
   agentStream!.send(JSON.stringify({
     type: 'event',
     event: { id: 'live-plan', event_type: 'TOOL_CALL', payload: { parent_id: 'live-tool', action_id: 'live-plan', tool_call_id: 'live-plan-call', tool_name: 'task_tracker', event_name: 'TaskTrackerAction', details: { command: 'plan', task_list: [{ title: '核对当前状态', notes: '已完成。', status: 'done' }, { title: '验证提交结果', notes: '正在等待命令结果。', status: 'in_progress' }, { title: '整理交付说明', notes: '', status: 'todo' }] }, timestamp: new Date().toISOString() } },
