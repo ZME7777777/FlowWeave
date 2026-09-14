@@ -285,8 +285,8 @@ def test_credential_context_allows_command_local_skill_variable_mapping(
         "FLOWWEAVE_AUTH_10000000000040008000000000000001_PASSWORD": "query-password",
     }
     assert "可在同一条实际访问该匹配主机的命令中" in context
-    assert "ES_QUERY_USER" in context
     assert "不要使用全局 export" in context
+    assert "ES_QUERY" not in context
     assert "不得猜测或改写" not in context
 
 

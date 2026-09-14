@@ -170,6 +170,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-410 | 回复注释直达定位 | DONE | 点击回复注释链接只执行既有原文定位，不再展开注释详情卡片。 |
 | FR-411 | Mermaid 全屏 SVG 舞台坐标修正 | DONE | SVG 直接填充适配舞台，100% 居中；缩放只改变舞台尺寸，不再漂移至左上。 |
 | FR-412 | 网站认证源变量命令级映射指导 | DONE | 平台继续按域名选择源凭据变量，同时允许 Agent 在匹配域名的单条命令中将其命令级映射到 Skill/脚本所需变量；禁止全局 export、跨域映射与凭据泄露。 |
+| FR-413 | 网站认证变量映射说明泛化 | DONE | 移除提示词中所有特定 Skill/脚本变量示例，只保留与实现无关的域名匹配、命令级映射和安全边界说明。 |
 
 ### FR-366 FlowWeave 专属 Docker 地址规划 — DONE
 
@@ -537,7 +538,17 @@ API、数据库、OpenHands、Runtime Provider、Docker 或持久化契约。
 - 平台继续只提供按目标主机匹配的认证源变量和不含明文的认证说明，不把 Skill/脚本的变量名固化为平台变量名。
 - Agent 可以在同一条实际访问匹配主机的命令中，以命令级环境变量赋值把源变量传给 Skill/脚本要求的变量名；不得使用全局 `export`、跨主机/条目映射、猜测变量或泄露凭据。
 
-完成：移除“不得改写为 `ES_QUERY_*` 别名”的提示词限制，改为明确允许命令级映射，并以 `ES_QUERY_USER`／`ES_QUERY_PASSWORD` 说明该用法。凭据仍仅在 OpenHands 原生 Conversation Secret 请求边界注册，不进入浏览器、镜像、Snapshot、日志或普通持久化字段。
+完成：移除限制变量改写的提示词，并明确允许命令级映射。凭据仍仅在 OpenHands 原生 Conversation Secret 请求边界注册，不进入浏览器、镜像、Snapshot、日志或普通持久化字段。
+
+验收：受影响 Python Ruff format/check、`py_compile`、认证提示词定向 pytest 与 `git diff --check` 通过；无迁移、无 OpenHands 源码改动、无 Docker 或远端操作。
+
+### FR-413 网站认证变量映射说明泛化 — DONE
+
+依赖：`FR-412`。
+
+目标：认证提示词不得假设任何具体 Skill/脚本变量名或命名模式；只需说明平台按域名选择源凭据变量，以及 Agent 可在单条匹配域名的命令中以命令级环境变量赋值适配当前 Skill/脚本。
+
+完成：删除特定变量示例；提示词仅保留通用映射用法、安全边界与列出的实际源变量。
 
 验收：受影响 Python Ruff format/check、`py_compile`、认证提示词定向 pytest 与 `git diff --check` 通过；无迁移、无 OpenHands 源码改动、无 Docker 或远端操作。
 
@@ -5413,6 +5424,7 @@ contract、冻结策略与既有受控生命周期约束覆盖。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-14 | FR-413 | 受影响 Python Ruff format/check、`py_compile`、认证提示词定向 pytest、`git diff --check` 与任务状态唯一性 | PASS：认证提示词不再含任何特定 Skill/脚本变量示例，只说明域名匹配后的源变量和命令级映射边界。未修改注入协议、数据库、OpenHands、Docker 或远端环境。 |
 | 2026-09-14 | FR-412 | 受影响 Python Ruff format/check、`py_compile`、认证提示词定向 pytest、`git diff --check` 与任务状态唯一性 | PASS：平台仍按目标主机与子域规则说明可用源凭据变量；提示词允许在同一条访问匹配主机的命令中以命令级环境变量赋值适配 Skill/脚本的变量名，明确禁止全局 `export`、跨主机／条目映射、猜测变量和凭据泄露。未修改注入协议、数据库、OpenHands、Docker 或远端环境。 |
 | 2026-09-14 | FR-410 | Web TypeScript typecheck、定向 ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS（静态／构建）：回复注释链接不再保存详情展开状态或渲染详情卡片；点击仅复用既有会话／文件原文定位。未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-13 | FR-404 | Web TypeScript typecheck、Web ESLint；受影响 Python `py_compile`／Ruff check；`git diff --check` 与任务状态唯一性 | PASS（静态）：FlowRun 列表不再显示重复的进入箭头，Runtime 就绪行可打开以 FlowRun 名称命名的独立终端子窗口；服务端只从 FlowRun 解析 active generation 和规范记录目录，浏览器不持有物理 endpoint。既有会话／Attempt 终端不变。未修改数据库、OpenHands、Docker 或远端环境。 |

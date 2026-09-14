@@ -161,8 +161,6 @@ def credentials_for_agent(db: Session) -> tuple[dict[str, str], str]:
         "下列完整变量名是平台提供的源凭据变量。若当前 Skill 或脚本要求不同的环境变量名，"
         "可在同一条实际访问该匹配主机的命令中，将源变量以命令级环境变量赋值给脚本所需变量，"
         "再执行该 Skill 或脚本；不要使用全局 export。"
-        "例如，脚本要求 ES_QUERY_USER 和 ES_QUERY_PASSWORD 时，可使用"
-        ' ES_QUERY_USER="$源用户名变量" ES_QUERY_PASSWORD="$源密码变量" <脚本命令>。'
         "映射只能使用同一条已匹配条目的用户名、密码或 Token，不能跨主机、跨条目或猜测凭据变量。"
         "不要输出、写入文件、提交或向用户索取这些值；未匹配时请求用户在认证管理中新增条目。\n"
         + "\n".join(lines)
