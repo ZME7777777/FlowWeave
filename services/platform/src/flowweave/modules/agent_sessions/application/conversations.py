@@ -3438,7 +3438,12 @@ def rewrite_message(
     parent_id = target.payload.get("parent_id")
     if parent_id is not None and not isinstance(parent_id, str):
         raise DomainError("RUNTIME_EVENT_IDENTITY_INVALID", "消息事件身份无效", 409)
-    _validate_attachment_owners(binding.id, attachments, workspace_root=binding.working_directory)
+    # Draft attachments are uploaded to the conversation's shared project
+    # root before the binding's optional work-directory scope is frozen.  A
+    # rethink may therefore replay a valid first-turn attachment outside that
+    # narrower directory.  Keep the binding-owner check, but validate against
+    # the same project root used by uploads and ordinary message sends.
+    _validate_attachment_owners(binding.id, attachments, workspace_root=handle.workspace_root)
     resolved_references = _resolve_conversation_references(runtime, handle, references)
     resolved_workspace_references = agent_workspace_host.validate_message_workspace_references(
         db,

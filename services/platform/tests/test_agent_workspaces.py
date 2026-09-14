@@ -4021,6 +4021,76 @@ def test_agent_workspace_rewrites_only_the_active_branch_last_user_message(
         assert runtime.calls == [("navigate", "root-event"), ("send", "after")]
 
 
+def test_agent_workspace_rewrite_preserves_own_root_attachment_after_pause(
+    settings, db_session_factory, monkeypatch
+):
+    """A first-turn draft attachment remains valid after rethink in a subdirectory."""
+
+    class RewriteRuntime(MockRuntime):
+        sent: tuple[str, tuple[str, ...]] | None = None
+
+        def read_event(self, _handle, event_id):
+            assert event_id == "first-user"
+            return RuntimeEvent(
+                cursor=event_id,
+                event_type="MESSAGE",
+                payload={"source": "user", "content": "before", "parent_id": "__root__"},
+            )
+
+        def navigate(self, _handle, event_id):
+            assert event_id == "__root__"
+
+        def send_message(self, handle, content, image_urls=()):
+            self.sent = (content, image_urls)
+            return super().send_message(handle, content, image_urls)
+
+    monkeypatch.setattr(
+        conversations,
+        "runtime_provider",
+        lambda *_args, **_kwargs: RuntimeProvider(
+            provider_id="provider",
+            base_url="https://models.example.test/v1",
+            model="test-model",
+            api_key="x",
+        ),
+    )
+    runtime = RewriteRuntime()
+    with settings_context(settings), db_session_factory() as db, runtime_context(runtime):
+        workspace = _ready_workspace_for_conversation(db)
+        created = conversations.create_conversation(
+            db, workspace.id, None, workspace.default_model_provider_id, "rewrite-root-attachment"
+        )
+        binding = db.get(AgentConversationBinding, created["id"])
+        assert binding is not None
+        binding.working_directory = "/runtime/workspace/project/scoped"
+        attachment_path = (
+            f"/runtime/workspace/project/uploads/{binding.id}-{uuid4().hex}--image.png"
+        )
+
+        result = conversations.rewrite_message(
+            db,
+            workspace.id,
+            binding.id,
+            "first-user",
+            "after",
+            attachments=(
+                {
+                    "path": attachment_path,
+                    "filename": "image.png",
+                    "mime_type": "image/png",
+                    "byte_size": 4,
+                    "image_data_url": "data:image/png;base64,aW1hZ2U=",
+                },
+            ),
+        )
+
+    assert result["accepted"] is True
+    assert runtime.sent == (
+        f"after\n\n已上传到共享工作区的附件：\n- {attachment_path}",
+        ("data:image/png;base64,aW1hZ2U=",),
+    )
+
+
 def test_agent_workspace_rewrite_uses_the_formal_head_not_event_window_order(
     settings, db_session_factory, monkeypatch
 ):
