@@ -445,6 +445,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   let modelIsResponding = false;
   let interrupted = false;
   let backfilledTaskAction = false;
+  let incompleteLiveToolProjection = false;
   let parentTurnFailed = false;
   let historyPrefetchEnabled = false;
   let historyPageRequests = 0;
@@ -707,6 +708,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
         events: (modelIsResponding || parentTurnFailed) ? [
           ...(!cursor ? [{ id: 'running-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'agent-reply', content: '正在处理的请求', timestamp: new Date(Date.now() - 12_000).toISOString().replace(/Z$/, '') } }] : []),
+          ...(incompleteLiveToolProjection && !cursor ? [{ id: 'live-tool', event_type: 'TOOL_CALL', payload: { source: 'agent', parent_id: 'running-user', action_id: 'live-tool', tool_call_id: 'live-call', event_name: 'TerminalAction', timestamp: new Date().toISOString() } }] : []),
           ...(backfilledTaskAction && cursor === 'running-user' ? [{ id: 'recovered-task-action', event_type: 'TOOL_CALL', payload: { source: 'agent', parent_id: 'running-user', action_id: 'recovered-task-action', tool_call_id: 'recovered-task-call', tool_name: 'task', event_name: 'TaskAction', summary: '检查依赖关系', runtime_task: { phase: 'REQUESTED', action_event_id: 'recovered-task-action', tool_call_id: 'recovered-task-call', subagent_type: 'general-purpose', description: '检查依赖关系' }, timestamp: new Date().toISOString() } }] : []),
           ...(interrupted ? [{ id: 'paused-tool-error', event_type: 'ERROR', payload: { source_type: 'AgentErrorEvent', parent_id: 'running-user', content: 'Tool call interrupted before completion. The conversation was paused.' } }] : []),
           ...(parentTurnFailed ? [{ id: 'running-parent-error', event_type: 'ERROR', payload: { source: 'environment', parent_id: 'recovered-task-action', content: '模型服务暂时不可用，本轮已停止', error_code: 'LLMServiceUnavailableError', timestamp: new Date().toISOString() } }] : []),
@@ -1282,6 +1284,14 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   }));
   await expect(activeProcess.getByText('已完成初步分析。')).toBeVisible();
   await expect(activeProcess.getByText('正在运行 pwd')).toBeVisible();
+  // A bounded REST refresh may have the same formal action identity before it
+  // includes the stream projection's command and commentary. The visible tool
+  // must remain intact instead of flashing into an empty process card.
+  incompleteLiveToolProjection = true;
+  agentStream!.send(JSON.stringify({ type: 'message_complete' }));
+  await expect(activeProcess.getByText('已完成初步分析。')).toBeVisible();
+  await expect(activeProcess.getByText('正在运行 pwd')).toBeVisible();
+  incompleteLiveToolProjection = false;
   agentStream!.send(JSON.stringify({
     type: 'event',
     event: { id: 'live-tool-next', event_type: 'TOOL_CALL', payload: { parent_id: 'live-tool', action_id: 'live-tool-next', tool_call_id: 'live-next-call', llm_response_id: 'live-operation-batch-1', tool_name: 'terminal', event_name: 'TerminalAction', details: { command: 'git status --short' }, timestamp: new Date().toISOString() } },

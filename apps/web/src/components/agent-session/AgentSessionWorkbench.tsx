@@ -1171,12 +1171,27 @@ function mergeConversationEvents(
   durable: OpenHandsConversationEvent[],
   transient: OpenHandsConversationEvent[],
 ): OpenHandsConversationEvent[] {
-  // REST remains the source of truth for an event already persisted.  Append
-  // browser-only frames after that stable order so an optimistic current user
-  // turn cannot jump in front of the existing transcript before its parent is
-  // returned by OpenHands.
+  // REST remains the source of truth for fields it has persisted.  A current
+  // branch read is intentionally bounded, however, and the stream can carry a
+  // fuller projection of the same formal event before that read catches up.
+  // Merge by the native event ID so a refresh cannot make a visible ToolAction
+  // briefly disappear (or lose its command/details) while the turn is active.
+  // Append browser-only frames after the stable REST order so an optimistic
+  // current user turn cannot jump in front of its eventual formal parent.
+  const mergeEvent = (current: OpenHandsConversationEvent, incoming: OpenHandsConversationEvent): OpenHandsConversationEvent => ({
+    ...current,
+    ...incoming,
+    payload: {
+      ...current.payload,
+      ...incoming.payload,
+      details: { ...current.payload.details, ...incoming.payload.details },
+    },
+  });
   const merged = new Map(durable.map(event => [event.id, event]));
-  for (const event of transient) if (!merged.has(event.id)) merged.set(event.id, event);
+  for (const event of transient) {
+    const current = merged.get(event.id);
+    merged.set(event.id, current ? mergeEvent(current, event) : event);
+  }
   return [...merged.values()];
 }
 
@@ -3590,7 +3605,17 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   });
   const eventsQuery = useQuery<OpenHandsConversationEventBatch>({
     queryKey: eventQueryKey,
-    queryFn: () => api.conversationEvents(workspace!.id, selected!.id),
+    queryFn: async () => {
+      const latest = await api.conversationEvents(workspace!.id, selected!.id);
+      const current = queryClient.getQueryData<OpenHandsConversationEventBatch>(eventQueryKey);
+      // The OpenHands latest-page cursor is a bounded branch projection, not
+      // an instruction to clear already-rendered activity. Keep identities we
+      // have read during this turn and let the newest REST payload refresh the
+      // matching events' persisted fields.
+      return current
+        ? { ...current, ...latest, events: mergeConversationEvents(current.events, latest.events), history_cursor: current.history_cursor ?? latest.history_cursor }
+        : latest;
+    },
     // Native event reads begin at the current leaf. The resulting bounded
     // latest page is rendered before older pages are prefetched below.
     enabled: Boolean(workspace && selected),
