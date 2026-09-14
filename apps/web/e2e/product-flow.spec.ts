@@ -763,6 +763,11 @@ test('top-level Agent workspace creates a direct conversation and restores its U
           { id: 'failure-event', event_type: 'ERROR', payload: { source: 'environment', parent_id: 'failure-user', content: 'upstream connection refused', error_code: 'LLMServiceUnavailableError', timestamp: '2026-08-26T10:04:03Z' } },
           { id: 'incomplete-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'failure-event', content: '触发不完整流响应', timestamp: '2026-08-26T10:04:10Z' } },
           { id: 'incomplete-event', event_type: 'ERROR', payload: { source: 'environment', parent_id: 'incomplete-user', content: "Unexpected completed event: <class 'litellm.types.llms.openai.ResponseIncompleteEvent'>", error_code: 'LLMNoResponseError', timestamp: '2026-08-26T10:04:13Z' } },
+          // This branch arrives after several later turns, but its official
+          // parent remains the first user message. Its summary must stay with
+          // that first completed reply rather than follow arrival order.
+          { id: 'late-root-file-action', event_type: 'TOOL_CALL', payload: { source: 'agent', parent_id: 'user-request', action_id: 'late-root-file-action', tool_call_id: 'late-root-file-call', tool_name: 'file_editor', event_name: 'FileEditorAction', details: { command: 'str_replace', path: '/runtime/workspace/project/src/root-owned.ts', old_content: 'export const owner = "old";', new_content: 'export const owner = "root";' }, timestamp: '2026-08-26T10:05:03Z' } },
+          { id: 'late-root-file-result', event_type: 'TOOL_RESULT', payload: { source: 'environment', parent_id: 'late-root-file-action', action_id: 'late-root-file-action', tool_call_id: 'late-root-file-call', tool_name: 'file_editor', event_name: 'FileEditorObservation', details: { command: 'str_replace', path: '/runtime/workspace/project/src/root-owned.ts', old_content: 'export const owner = "old";', new_content: 'export const owner = "root";', is_error: false }, timestamp: '2026-08-26T10:05:04Z' } },
           ...(compactionScenario ? [
             { id: 'compaction-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'failure-event', content: '完成压缩后继续检查', timestamp: '2026-08-26T10:10:00Z' } },
             { id: 'before-compaction', event_type: 'THOUGHT', payload: { source: 'agent', parent_id: 'compaction-user', content: '先整理当前信息。', timestamp: '2026-08-26T10:10:02Z' } },
@@ -1130,6 +1135,8 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     return Boolean(process && reply && (process.compareDocumentPosition(reply) & Node.DOCUMENT_POSITION_FOLLOWING));
   })).toBe(true);
   await expect(page.getByText('工作区已就绪。')).toHaveCount(1);
+  await expect(completedTurn.getByRole('button', { name: '已编辑 1 个文件' })).toBeVisible();
+  await expect(completedTurn.getByText('root-owned.ts', { exact: true })).toBeVisible();
   const reportLink = page.getByRole('link', { name: '期权异动接口批量查询代码审查报告.md' });
   await expect(reportLink).toBeVisible();
   const urlBeforeReportPreview = page.url();

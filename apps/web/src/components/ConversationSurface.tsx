@@ -391,6 +391,22 @@ function orderedEvents(events: OpenHandsConversationEvent[]): OpenHandsConversat
   return output;
 }
 
+function userAncestorId(
+  event: OpenHandsConversationEvent,
+  byId: Map<string, OpenHandsConversationEvent>,
+): string | undefined {
+  const visited = new Set<string>();
+  let current: OpenHandsConversationEvent | undefined = event;
+  while (current && !visited.has(current.id)) {
+    visited.add(current.id);
+    const source = String(current.payload.source ?? '').toLowerCase();
+    if (current.event_type === 'MESSAGE' && (source === 'user' || source === 'human')) return current.id;
+    const parentId: string | null | undefined = current.payload.parent_id;
+    current = parentId ? byId.get(parentId) : undefined;
+  }
+  return undefined;
+}
+
 function isHistoricalAutoTitleError(
   event: OpenHandsConversationEvent,
   events: OpenHandsConversationEvent[],
@@ -413,28 +429,14 @@ function isHistoricalAutoTitleError(
     });
   }
   const byId = new Map(events.map(candidate => [candidate.id, candidate]));
-  const userAncestor = (candidate: OpenHandsConversationEvent): string | undefined => {
-    const visited = new Set<string>();
-    let current: OpenHandsConversationEvent | undefined = candidate;
-    while (current && !visited.has(current.id)) {
-      visited.add(current.id);
-      const source = String(current.payload.source ?? '').toLowerCase();
-      if (current.event_type === 'MESSAGE' && (source === 'user' || source === 'human')) {
-        return current.id;
-      }
-      const parentId: string | undefined = current.payload.parent_id ?? undefined;
-      current = parentId ? byId.get(parentId) : undefined;
-    }
-    return undefined;
-  };
-  const root = userAncestor(event);
+  const root = userAncestorId(event, byId);
   if (!root) return false;
   return events.some(candidate => {
     if (candidate.event_type !== 'MESSAGE') return false;
     const source = String(candidate.payload.source ?? '').toLowerCase();
     return source !== 'user' && source !== 'human'
       && Boolean(candidate.payload.content)
-      && userAncestor(candidate) === root;
+      && userAncestorId(candidate, byId) === root;
   });
 }
 
@@ -469,6 +471,20 @@ function turnsFor(events: OpenHandsConversationEvent[]): Turn[] {
     }
   }
   return turns;
+}
+
+function fileChangesForTurn(
+  events: OpenHandsConversationEvent[],
+  turn: Turn,
+): WorkspaceFileChange[] {
+  if (!turn.user) return workspaceFileChanges(turn.activity.map(item => item.event));
+  const byId = new Map(events.map(event => [event.id, event]));
+  // A tool result can arrive after the main reply or after a nested task's
+  // events have been projected. Its formal parent chain is the durable source
+  // of turn ownership; the rendered activity list is only a presentation
+  // order and must not determine whether a completed reply shows its changes.
+  const ownedEvents = events.filter(event => userAncestorId(event, byId) === turn.user!.event.id);
+  return workspaceFileChanges(ownedEvents.length ? ownedEvents : turn.activity.map(item => item.event));
 }
 
 function detailText(value: unknown): string {
@@ -1677,7 +1693,7 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused =
           isCurrent && !turn.assistant && !failures.length,
         );
         const completionConfirmed = !isGenerating && Boolean(turn.assistant || failures.length);
-        const fileChanges = workspaceFileChanges(turn.activity.map(item => item.event));
+        const fileChanges = fileChangesForTurn(events, turn);
         const userTimestamp = turn.user ? formatMessageTime(turn.user.event.payload.timestamp) : undefined;
         const userDeliveryStatus = turn.user && typeof turn.user.event.payload._flowweave_delivery_status === 'string'
           ? turn.user.event.payload._flowweave_delivery_status
