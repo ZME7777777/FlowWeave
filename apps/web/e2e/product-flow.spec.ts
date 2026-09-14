@@ -582,7 +582,12 @@ test('top-level Agent workspace creates a direct conversation and restores its U
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify({ items: conversations, next_cursor: null }),
+        // Simulate the OpenHands search index lagging behind the exact
+        // Conversation readiness state after a formal ERROR.
+        body: JSON.stringify({ items: conversations.map(item => ({
+          ...item,
+          execution_status: parentTurnFailed ? 'running' : modelIsResponding ? 'running' : 'idle',
+        })), next_cursor: null }),
       });
       return;
     }
@@ -729,7 +734,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
           ...(incompleteLiveToolProjection && !cursor ? [{ id: 'live-tool', event_type: 'TOOL_CALL', payload: { source: 'agent', parent_id: 'running-user', action_id: 'live-tool', tool_call_id: 'live-call', event_name: 'TerminalAction', timestamp: new Date().toISOString() } }] : []),
           ...(backfilledTaskAction && cursor === 'running-user' ? [{ id: 'recovered-task-action', event_type: 'TOOL_CALL', payload: { source: 'agent', parent_id: 'running-user', action_id: 'recovered-task-action', tool_call_id: 'recovered-task-call', tool_name: 'task', event_name: 'TaskAction', summary: '检查依赖关系', runtime_task: { phase: 'REQUESTED', action_event_id: 'recovered-task-action', tool_call_id: 'recovered-task-call', subagent_type: 'general-purpose', description: '检查依赖关系' }, timestamp: new Date().toISOString() } }] : []),
           ...(interrupted ? [{ id: 'paused-tool-error', event_type: 'ERROR', payload: { source_type: 'AgentErrorEvent', parent_id: 'running-user', content: 'Tool call interrupted before completion. The conversation was paused.' } }] : []),
-          ...(parentTurnFailed ? [{ id: 'running-parent-error', event_type: 'ERROR', payload: { source: 'environment', parent_id: 'recovered-task-action', content: '模型服务暂时不可用，本轮已停止', error_code: 'LLMServiceUnavailableError', timestamp: new Date().toISOString() } }] : []),
+          ...(parentTurnFailed ? [{ id: 'running-parent-error', event_type: 'ERROR', payload: { source: 'environment', parent_id: backfilledTaskAction ? 'recovered-task-action' : 'running-user', content: '模型服务暂时不可用，本轮已停止', error_code: 'LLMServiceUnavailableError', timestamp: new Date().toISOString() } }] : []),
         ] : conversations.length ? [
           { id: 'user-request', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '检查工作目录', timestamp: '2026-08-26T10:00:00Z' } },
           { id: 'progress-note', event_type: 'THOUGHT', payload: { source: 'agent', parent_id: 'user-request', content: '我先确认当前工作目录，再根据现有结构判断后续改动范围。', thought: '我先确认当前工作目录，再根据现有结构判断后续改动范围。', timestamp: '2026-08-26T10:00:01Z' } },

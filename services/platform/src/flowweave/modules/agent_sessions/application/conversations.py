@@ -250,9 +250,11 @@ def _decode_conversation_page_cursor(cursor: str) -> tuple[datetime, str]:
 
 
 def _page_dicts(
-    db: Session, items: list[AgentConversationBinding], running_conversation_ids: set[str]
+    db: Session,
+    items: list[AgentConversationBinding],
+    execution_status_by_conversation_id: dict[str, str],
 ) -> list[dict[str, Any]]:
-    """Build list DTOs with two batch queries instead of per-row lookups."""
+    """Build list DTOs with two batch queries and exact native status reads."""
 
     usage_by_binding = usage_projection.for_scope(
         db, field="binding_id", ids=(item.id for item in items)
@@ -307,8 +309,8 @@ def _page_dicts(
             "working_directory": item.working_directory,
             "capabilities": capabilities_by_binding[item.id],
             "streaming_callback_ready": item.streaming_callback_ready,
-            "execution_status": (
-                "running" if item.openhands_conversation_id in running_conversation_ids else "idle"
+            "execution_status": execution_status_by_conversation_id.get(
+                item.openhands_conversation_id, "unknown"
             ),
             "lifecycle": item.lifecycle,
             "created_at": item.created_at.isoformat(),
@@ -671,19 +673,30 @@ def list_conversation_page(
     )
     has_more = len(items) > limit
     page_items = items[:limit]
-    running_conversation_ids: set[str] = set()
+    execution_status_by_conversation_id: dict[str, str] = {}
     if page_items:
-        try:
-            running_conversation_ids = get_runtime().running_conversation_ids(
-                _handle(db, _workspace(db, workspace_id), page_items[0])
-            )
-        except (AttributeError, DomainError):
-            # A status marker must not make the paged Conversation list
-            # unavailable. The selected conversation still reads its native
-            # readiness through the explicit control endpoint.
-            pass
+        workspace = _workspace(db, workspace_id)
+        runtime = get_runtime()
+        for item in page_items:
+            try:
+                # The OpenHands search index can briefly retain a Conversation
+                # under `running` after its formal error event.  A spinner is a
+                # lifecycle claim, so make it only from the Conversation's
+                # exact native state read, never from that eventually-consistent
+                # list projection.  Pages are intentionally bounded to five.
+                execution_status_by_conversation_id[item.openhands_conversation_id] = (
+                    runtime.input_readiness(_handle(db, workspace, item))
+                    .execution_status.strip()
+                    .lower()
+                    or "unknown"
+                )
+            except (AttributeError, DomainError):
+                # Read-only navigation remains available while one Runtime is
+                # reconnecting.  Unknown deliberately does not claim a running
+                # turn; the selected Conversation will retry its exact read.
+                execution_status_by_conversation_id[item.openhands_conversation_id] = "unknown"
     return {
-        "items": _page_dicts(db, page_items, running_conversation_ids),
+        "items": _page_dicts(db, page_items, execution_status_by_conversation_id),
         "next_cursor": _conversation_page_cursor(page_items[-1])
         if has_more and page_items
         else None,

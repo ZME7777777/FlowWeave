@@ -56,6 +56,7 @@ from flowweave.runtime.base import (
     RuntimeEvent,
     RuntimeEventBatch,
     RuntimeForkRecovery,
+    RuntimeInputReadiness,
     RuntimePendingAction,
     RuntimePendingConfirmation,
     RuntimeProvider,
@@ -2692,6 +2693,44 @@ def test_agent_workspace_conversation_page_is_bounded_and_cursor_stable(
         assert {item["id"] for item in first["items"]}.isdisjoint(
             item["id"] for item in second["items"]
         )
+
+
+def test_agent_workspace_conversation_page_uses_exact_native_terminal_status(
+    settings, db_session_factory, monkeypatch
+):
+    monkeypatch.setattr(
+        conversations,
+        "runtime_provider",
+        lambda _db, asset, **kwargs: RuntimeProvider(
+            provider_id=asset["asset"]["executor"]["model_provider_id"],
+            base_url="https://models.example.test/v1",
+            model=kwargs.get("model_name") or "test-model",
+            api_key="x",
+            reasoning_effort=kwargs.get("reasoning_effort"),
+        ),
+    )
+
+    class StaleSearchRuntime(MockRuntime):
+        def running_conversation_ids(self, _handle):
+            raise AssertionError("list status must not use the stale search projection")
+
+        def input_readiness(self, _handle):
+            return RuntimeInputReadiness(ready=True, execution_status="error")
+
+    with (
+        settings_context(settings),
+        db_session_factory() as db,
+        runtime_context(StaleSearchRuntime()),
+    ):
+        workspace = _ready_workspace_for_conversation(db)
+        created = conversations.create_conversation(
+            db, workspace.id, "已失败会话", workspace.default_model_provider_id, "terminal-page"
+        )
+
+        page = conversations.list_conversation_page(db, workspace.id)
+
+        assert [item["id"] for item in page["items"]] == [created["id"]]
+        assert page["items"][0]["execution_status"] == "error"
 
 
 def test_agent_workspace_proactively_condenses_at_native_eighty_percent_before_send(

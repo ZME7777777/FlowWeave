@@ -3893,6 +3893,14 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   }, [conversationDraft?.id, eventsQuery.data?.events, hiddenEventIds, liveEvents, optimisticBootstrapTurn, selected?.id]);
   const activeNativeTurnId = activeTurnEventId ?? latestUnfinishedUserEventId(displayedEvents);
   const hasUnfinishedFormalTurn = Boolean(latestUnfinishedUserEventId(displayedEvents));
+  const latestFormalUserEventId = [...displayedEvents].reverse().find(event => event.event_type === 'MESSAGE'
+    && ['user', 'human'].includes(String(event.payload.source ?? '').toLowerCase()))?.id;
+  // A durable OpenHands ERROR/Finish/assistant event is also authoritative
+  // while the exact readiness request is still loading or reconnecting.
+  // This is not a browser-side lifecycle guess: it is the native event tree.
+  const latestFormalTurnFinished = Boolean(
+    latestFormalUserEventId && hasFinishedTurn(displayedEvents, latestFormalUserEventId),
+  );
   const finalReplyAwaitingNativeCompletion = nativeTurnRunning
     && Boolean(activeNativeTurnId && hasAssistantReplyForTurn(displayedEvents, activeNativeTurnId));
   useEffect(() => {
@@ -4206,6 +4214,17 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     }, ABNORMAL_IDLE_RECONCILIATION_MS);
     return () => window.clearTimeout(timer);
   }, [activeTurnEventId, clearLiveText, displayedEvents, nativeTurnTerminal, refresh, selected, turnState]);
+  useEffect(() => {
+    if (!selected || !latestFormalTurnFinished) return;
+
+    // The latest formal user turn has reached an OpenHands terminal event.
+    // It therefore cannot be revived by an older browser-local turn bridge.
+    clearLiveText();
+    setActiveTurnEventId(undefined);
+    setRequestStartedAt(undefined);
+    setTurnState(current => current === 'running' || current === 'resuming' ? 'idle' : current);
+    setStreamHold({ bindingId: selected.id, expiresAt: Date.now() + STREAM_IDLE_GRACE_MS });
+  }, [clearLiveText, displayedEvents, latestFormalTurnFinished, selected]);
   useEffect(() => {
     // On first entry, the native readiness request can be delayed by a Runtime
     // reconnect. A persisted, unfinished formal user event already proves the
@@ -4987,7 +5006,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     const selectedNativeIdle = item.id === selected?.id
       && inputReadinessQuery.data?.ready === true
       && conversationHasReachedTerminalState(inputReadinessQuery.data.execution_status);
-    const running = !selectedNativeIdle && (conversationIsRunning(item.execution_status)
+    const selectedFormalTerminal = item.id === selected?.id && latestFormalTurnFinished;
+    const running = !selectedNativeIdle && !selectedFormalTerminal && (conversationIsRunning(item.execution_status)
       || (item.id === selected?.id && (selectedConversationRunning || isGenerating)));
     const conversationWritable = runtimeWritable || Boolean(item.write_available);
     return <WorkspaceConversationRow key={item.id} item={item} selectedBindingId={selectedBindingId} running={running} unread={unreadConversationIds.has(item.id)} conversationWritable={conversationWritable} removing={remove.isPending} deleteDisabled={running} onSelect={() => selectConversation(item.id)} onDelete={features.conversationDeletion && conversationWritable ? () => void confirmDeletion('会话', conversationName(item)).then(ok => { if (ok) remove.mutate(item.id); }) : undefined}/>;
