@@ -1383,6 +1383,9 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.locator('.agent-composer-actions .agent-send')).toHaveCount(1);
   await page.getByRole('button', { name: '暂停当前 Agent' }).click();
   await expect(page.getByRole('button', { name: '继续当前 Agent' })).toBeVisible();
+  await expect(activeProcess.getByText('已暂停，结果未返回')).toBeVisible();
+  await activeProcess.locator('summary').click();
+  await expect(activeProcess.getByText('子智能体 · 已暂停，结果未返回')).toBeVisible();
   await expect(page.getByText('本轮没有生成回复')).toHaveCount(0);
   await page.reload();
   await expect(page.getByRole('button', { name: '继续当前 Agent' })).toBeVisible();

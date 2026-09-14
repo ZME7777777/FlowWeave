@@ -553,7 +553,7 @@ interface ActivityPresentation {
   resultTimestamp?: string;
 }
 
-function activityPresentation(entry: ActivityEntry, active: boolean, workspaceRoot?: string | null): ActivityPresentation {
+function activityPresentation(entry: ActivityEntry, active: boolean, workspaceRoot?: string | null, paused = false): ActivityPresentation {
   const item = entry.action ?? entry.item;
   if (item.kind === 'condensation') {
     return { title: item.title, status: item.event.event_type === 'CONDENSATION_COMPLETED' ? '已完成' : '处理中' };
@@ -624,9 +624,10 @@ function activityPresentation(entry: ActivityEntry, active: boolean, workspaceRo
       : 'general-purpose';
     const description = typeof runtimeTask?.description === 'string' ? runtimeTask.description.trim() : '';
     const label = description || actionTitle(`子智能体 ${agentType}`);
+    const interrupted = paused && !completed;
     return {
-      title: completed ? `子智能体 ${agentType} · ${label} · 已完成` : `子智能体 ${agentType} · ${label}`,
-      status: completed ? '子智能体 · 已完成' : '子智能体 · 运行中',
+      title: completed ? `子智能体 ${agentType} · ${label} · 已完成` : interrupted ? `子智能体 ${agentType} · ${label} · 已暂停` : `子智能体 ${agentType} · ${label}`,
+      status: completed ? '子智能体 · 已完成' : interrupted ? '子智能体 · 已暂停，结果未返回' : '子智能体 · 运行中',
       thought, actionDetails: details, resultDetails,
     };
   }
@@ -1082,16 +1083,18 @@ function LiveReply({ content }: { content: string }) {
   </article>;
 }
 
-function taskAvatarStatus(entry: ActivityEntry, item: Item): 'running' | 'completed' | 'error' {
+function taskAvatarStatus(entry: ActivityEntry, item: Item, paused = false): 'running' | 'paused' | 'completed' | 'error' {
   const phases = [item.event, ...entry.results.map(result => result.event)]
     .map(event => event.payload.runtime_task?.phase);
   if (phases.includes('ERROR')) return 'error';
-  return phases.includes('COMPLETED') ? 'completed' : 'running';
+  if (phases.includes('COMPLETED')) return 'completed';
+  return paused ? 'paused' : 'running';
 }
 
-function ActivityEntryRow({ entry, active, avatarSlots, workspaceRoot }: {
+function ActivityEntryRow({ entry, active, paused = false, avatarSlots, workspaceRoot }: {
   entry: ActivityEntry;
   active: boolean;
+  paused?: boolean;
   avatarSlots: ReadonlyMap<string, SubagentAvatarSlot>;
   workspaceRoot?: string | null;
 }) {
@@ -1102,8 +1105,8 @@ function ActivityEntryRow({ entry, active, avatarSlots, workspaceRoot }: {
     ? subagentAvatarSlotForEvent(item.event, avatarSlots)
     : undefined;
   const ToolIcon = eventName.includes('Terminal') ? SquareTerminal : eventName.includes('FileEditor') ? FileText : Icon;
-  const taskAvatar = avatarSlot && <SubagentAvatar slot={avatarSlot} status={taskAvatarStatus(entry, item)} size={14}/>;
-  const presentation = activityPresentation(entry, active, workspaceRoot);
+  const taskAvatar = avatarSlot && <SubagentAvatar slot={avatarSlot} status={taskAvatarStatus(entry, item, paused)} size={14}/>;
+  const presentation = activityPresentation(entry, active, workspaceRoot, paused);
   const toolDetail = item.kind === 'tool' ? <ToolDetailPanel presentation={presentation} eventName={eventName} results={entry.results} workspaceRoot={workspaceRoot}/> : null;
   const isNativeThink = item.event.event_type === 'THOUGHT';
   if (item.kind === 'thought') return <article className={`conversation-activity-row thought${isNativeThink ? ' native-think' : ''}`}>
@@ -1133,9 +1136,10 @@ function ActivityEntryRow({ entry, active, avatarSlots, workspaceRoot }: {
   </article>;
 }
 
-function ActivityGroup({ items, active, startedAt, finishedAt, avatarSlots, workspaceRoot }: {
+function ActivityGroup({ items, active, paused = false, startedAt, finishedAt, avatarSlots, workspaceRoot }: {
   items: Item[];
   active: boolean;
+  paused?: boolean;
   startedAt?: number;
   finishedAt?: number;
   avatarSlots: ReadonlyMap<string, SubagentAvatarSlot>;
@@ -1155,14 +1159,15 @@ function ActivityGroup({ items, active, startedAt, finishedAt, avatarSlots, work
   }, [active]);
   const label = active
     ? elapsedSeconds === undefined ? '处理中' : `已耗时 ${formatDuration(elapsedSeconds)}`
-    : finishedAt === undefined || elapsedSeconds === undefined ? '工作过程' : `耗时 ${formatDuration(elapsedSeconds)}`;
+    : paused ? '已暂停，结果未返回'
+      : finishedAt === undefined || elapsedSeconds === undefined ? '工作过程' : `耗时 ${formatDuration(elapsedSeconds)}`;
   const summary = <><ChevronRight size={14}/><span>{label}</span>{itemCount > 0 && <small>{itemCount} 项</small>}{active && <LoaderCircle className="conversation-activity-spin" size={13}/>}</>;
   const hasDetails = itemCount > 0;
   if (!hasDetails) return <div className="conversation-activity-group summary-only"><div className="conversation-activity-summary">{summary}</div></div>;
   return <details className={`conversation-activity-group${active ? ' active' : ''}`} open={open} onToggle={event => setOpen(event.currentTarget.open)}>
     <summary>{summary}</summary>
     <div className="conversation-activity-list">
-      {entries.map(entry => <ActivityEntryRow key={entry.id} entry={entry} active={active} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/>)}
+      {entries.map(entry => <ActivityEntryRow key={entry.id} entry={entry} active={active} paused={paused} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/>)}
     </div>
   </details>;
 }
@@ -1398,11 +1403,11 @@ function ConversationFailure({ item, taskControl = [] }: { item: Item; taskContr
   </article>;
 }
 
-export function ConversationSurface({ events, liveText, isGenerating, isPaused: _isPaused = false, historyPending = false, requestStartedAt, requestSubmitting = false, rewritePending = false, condensationStatus, onRetryCondensation, onRewrite, onFork, onOpenAttachment, onOpenWorkspaceReference, onPreviewCandidateFile, onReviewChanges, workspaceRoot, annotations = [], onCreateAnnotation, onLocateAnnotation, taskControl = [], monitoring, connectionState }: {
+export function ConversationSurface({ events, liveText, isGenerating, isPaused = false, historyPending = false, requestStartedAt, requestSubmitting = false, rewritePending = false, condensationStatus, onRetryCondensation, onRewrite, onFork, onOpenAttachment, onOpenWorkspaceReference, onPreviewCandidateFile, onReviewChanges, workspaceRoot, annotations = [], onCreateAnnotation, onLocateAnnotation, taskControl = [], monitoring, connectionState }: {
   events: OpenHandsConversationEvent[];
   liveText: string;
   isGenerating: boolean;
-  /** Compatibility-only input; presentation follows OpenHands terminal events. */
+  /** Formal native conversation pause state, used only to label unfinished Task actions. */
   isPaused?: boolean;
   /** Older native pages are being inserted above the current latest window. */
   historyPending?: boolean;
@@ -1425,9 +1430,6 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused: 
   monitoring?: AgentActivitySummary;
   connectionState?: ConversationConnectionState;
 }) {
-  // Kept only while older workbench callers still provide this field.
-  // Rendering never derives a timeout, pause, or retry decision from it.
-  void _isPaused;
   const surface = useRef<HTMLElement>(null);
   const content = useRef<HTMLDivElement>(null);
   const shell = useRef<HTMLDivElement>(null);
@@ -1688,6 +1690,7 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused: 
       {historyPending && <div className="conversation-history-loading" role="status"><LoaderCircle size={14}/>正在载入更早的会话记录…</div>}
       {turns.map((turn, index) => {
         const isCurrent = index === turns.length - 1 && isGenerating;
+        const isCurrentPaused = index === turns.length - 1 && isPaused;
         const failures = turn.activity.filter(item => item.kind === 'error');
         const startedAt = eventTime(turn.user) ?? (isCurrent ? requestStartedAt : undefined);
         const finishedAt = eventTime(turn.assistant ?? failures.at(-1));
@@ -1709,6 +1712,7 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused: 
               key={block.id}
               items={block.items}
               active={block.active}
+              paused={isCurrentPaused && !block.active}
               startedAt={block.startedAt}
               finishedAt={block.finishedAt}
               avatarSlots={avatarSlots}

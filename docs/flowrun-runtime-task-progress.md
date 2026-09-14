@@ -173,6 +173,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-413 | 网站认证变量映射说明泛化 | DONE | 移除提示词中所有特定 Skill/脚本变量示例，只保留与实现无关的域名匹配、命令级映射和安全边界说明。 |
 | FR-414 | FlowRun 独立终端记录目录预创建 | DONE | FlowRun 终端在服务端创建并验证自身的规范记录目录后再连接，避免不存在的 cwd 使 OCI exec 失败；保持 Provider 的记录级隔离校验。 |
 | FR-416 | 子智能体模型请求策略与墙钟耗时语义 | DONE | 工作台明确展示每次模型请求的 120 秒／3 次重试策略，并将耗时标为 TaskAction 到当前或正式结果的墙钟时间；不伪造 OpenHands 未发布的逐次重试事件。 |
+| FR-418 | 暂停会话时的子智能体状态投影 | DONE | 当 OpenHands 正式会话状态为 paused 时，未返回 TaskObservation 的子任务在主对话活动卡中显示“已暂停，结果未返回”，并停止运行态头像；不伪造成已完成或子 Agent 进程已退出。 |
 | FR-415 | FlowRun 独立终端全局项目根修正 | DONE | FlowRun 级终端进入已挂载的全局 `project` 根，因此无需创建节点即可完成对整个 FlowRun 生效的配置；会话／Attempt 终端继续保持记录级路径。 |
 | FR-417 | FlowRun 独立终端挂载感知路径选择 | DONE | FlowRun 级终端按活跃 Runtime 的固定挂载契约选择共享 `project` 根或记录直挂载根，避免历史 Runtime 因不存在 cwd 失败。 |
 
@@ -588,6 +589,22 @@ socket 不可用，fixture 在断言前失败，未记为通过；未修改数�
 验收：Web TypeScript typecheck、ESLint、production build、`git diff --check` 与任务状态唯一性通过。新增的
 Agent 工作台 Playwright 断言会覆盖策略与墙钟耗时标签；本机执行时在既有登录准备阶段等待“Agent 会话”入口超时，
 尚未进入本切片断言，未记为通过。未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。
+
+### FR-418 暂停会话时的子智能体状态投影 — DONE
+
+依赖：`FR-416`。
+
+目标：当 OpenHands 正式 conversation execution status 为 `paused` 时，主对话工作过程里尚未收到
+`TaskObservation` 的 `TaskAction` 不得继续显示“子智能体 · 运行中”。它必须明确表示暂停后结果未返回；
+不得把父会话暂停推断为 Task 已完成，也不得声称底层工具／外部进程已同步退出。
+
+完成：主对话活动卡使用既有正式 native pause 状态，仅为无结果的 `TaskAction` 显示
+“子智能体 · 已暂停，结果未返回”，并使用非运行态头像；右侧子智能体面板的既有相同语义保持一致。
+未新增 Task 状态、内部事件、超时控制或任何 OpenHands／API／持久化改动。
+
+验收：新增 Agent 工作台 Playwright 断言，覆盖暂停后主对话活动卡的子智能体状态；Web TypeScript
+typecheck、ESLint、production build、`git diff --check` 与任务状态唯一性通过。定向 Playwright 在既有登录
+准备阶段等待“Agent 会话”入口超时，未进入本切片断言，未记为通过。
 
 ### FR-415 FlowRun 独立终端全局项目根修正 — DONE
 

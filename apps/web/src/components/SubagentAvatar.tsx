@@ -15,7 +15,7 @@ export function SubagentAvatar({
   slot, status, size = 15,
 }: {
   slot: SubagentAvatarSlot;
-  status: 'running' | 'completed' | 'error';
+  status: 'running' | 'paused' | 'completed' | 'error';
   size?: number;
 }) {
   const Icon = avatarIcons[slot];
