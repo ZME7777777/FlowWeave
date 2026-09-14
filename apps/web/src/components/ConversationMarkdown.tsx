@@ -149,6 +149,7 @@ function MermaidDiagram({ source }: { source: string }) {
 
   const openFullscreen = () => {
     setZoom(100);
+    setDiagramSize(undefined);
     setPan({ x: 0, y: 0 });
     setIsFullscreen(true);
   };
@@ -196,7 +197,7 @@ function MermaidDiagram({ source }: { source: string }) {
         </header>
         <div ref={fullscreenCanvasRef} className={`conversation-mermaid-fullscreen-canvas${dragging ? ' dragging' : ''}`} onWheel={zoomWithWheel} onPointerDown={startDragging} onPointerMove={dragDiagram} onPointerUp={stopDragging} onPointerCancel={stopDragging}>
           {diagramSize && <div className="conversation-mermaid-fullscreen-stage" style={{ width: `${diagramSize.width * displayScale}px`, height: `${diagramSize.height * displayScale}px`, transform: `translate(${pan.x}px, ${pan.y}px)` }}>
-            <div className="conversation-mermaid-svg" role="img" aria-label="Mermaid 图表" style={{ transform: `scale(${displayScale})` }} dangerouslySetInnerHTML={{ __html: svg }}/>
+            <div className="conversation-mermaid-svg" role="img" aria-label="Mermaid 图表" dangerouslySetInnerHTML={{ __html: svg }}/>
           </div>}
           {!diagramSize && <div className="conversation-mermaid-svg conversation-mermaid-fullscreen-measure" aria-hidden="true" dangerouslySetInnerHTML={{ __html: svg }}/>}
           <span className="conversation-mermaid-fullscreen-hint">滚轮缩放 · 左键拖动</span>

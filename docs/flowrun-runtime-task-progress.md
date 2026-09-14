@@ -168,6 +168,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-408 | Mermaid 全屏预览与缩放 | DONE | 已渲染 Mermaid 图表可打开全屏预览，并在其中缩小、放大或复位比例；保留图片／文本切换与源码复制。 |
 | FR-409 | Mermaid 全屏自适应缩放与平移 | DONE | 100% 自动适配全屏可用视区；支持滚轮缩放、左键拖拽平移和视图复位。 |
 | FR-410 | 回复注释直达定位 | DONE | 点击回复注释链接只执行既有原文定位，不再展开注释详情卡片。 |
+| FR-411 | Mermaid 全屏 SVG 舞台坐标修正 | DONE | SVG 直接填充适配舞台，100% 居中；缩放只改变舞台尺寸，不再漂移至左上。 |
 
 ### FR-366 FlowWeave 专属 Docker 地址规划 — DONE
 
@@ -515,6 +516,16 @@ API、数据库、OpenHands、Runtime Provider、Docker 或持久化契约。
 完成：移除回复注释链接的详情状态与卡片渲染，保留既有 pointer 事件隔离及直接定位回调；未改变消息元数据、模型 marker、服务端校验或持久化。
 
 验收：受影响 Web TypeScript typecheck、定向 ESLint、production build、`git diff --check` 与任务状态唯一性。
+
+### FR-411 Mermaid 全屏 SVG 舞台坐标修正 — DONE
+
+依赖：`FR-409`。
+
+目标：修复 Mermaid SVG 内联百分比尺寸与额外 transform 缩放叠加造成的全屏适配失效、初始位置偏向左上和放大漂移。100% 必须显示居中且按视区最大可容纳尺寸铺放；放大或缩小时只调整同一舞台大小，平移才改变位置。
+
+完成：全屏舞台尺寸仍由 SVG `viewBox` 与可用视区计算，但 SVG 改为直接以 `width/height:100%` 填充舞台，强制覆盖 Mermaid 的内联百分比／最大宽度约束；移除 SVG 二次 transform。缩放仅改变居中的舞台宽高，拖拽才应用位移；每次打开全屏重新测量图表尺寸，避免沿用旧视图数据。
+
+验收：Web TypeScript typecheck、全量 Web ESLint、production build 与 `git diff --check` 通过；无迁移、无远端操作。
 
 ### FR-398 长会话 Markdown 完整渲染 — DONE
 
