@@ -1415,6 +1415,18 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.getByLabel('工具执行确认')).toHaveCount(0);
   await expect(page.locator('.agent-composer-actions .agent-send')).toHaveCount(1);
   await expect(page.getByText('Agent 正在处理上一条消息或停止请求，请稍候')).toHaveCount(0);
+  // A rendered assistant reply is not itself a terminal state. OpenHands may
+  // still be finishing the same native Agent loop, so every visible control
+  // must retain the one formal execution-state interpretation until idle.
+  agentStream!.send(JSON.stringify({
+    type: 'event',
+    event: { id: 'live-reply-before-idle', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'live-tool-result', content: '回复已经生成，原生会话仍在收尾。', timestamp: new Date().toISOString() } },
+  }));
+  agentStream!.send(JSON.stringify({ type: 'message_complete' }));
+  await expect(page.getByText('回复已经生成，原生会话仍在收尾。')).toBeVisible();
+  await expect(page.getByText('回复已生成，正在收尾')).toBeVisible();
+  await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toBeVisible();
+  await expect(page.locator('.agent-workspace-conversation-running')).toHaveCount(1);
   modelIsResponding = false;
   interrupted = false;
   agentStream!.send(JSON.stringify({
@@ -1425,6 +1437,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.getByText('核对已经完成，下面给出最终结果。')).toHaveCount(1);
   await expect(page.getByText(/最终回复第 1 段/)).toHaveCount(1);
   await expect(page.getByRole('button', { name: '发送消息' })).toBeVisible();
+  await expect(page.getByText('回复已生成，正在收尾')).toHaveCount(0);
   await expect(activeProcess.getByText('分析中', { exact: true })).toHaveCount(0);
   await expect(activeProcess).toHaveJSProperty('open', true);
   await expect(page.locator('.conversation-turn-status')).toHaveCount(0);

@@ -180,6 +180,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-422 | 流式工具活动在补读窗口中闪退 | DONE | 按正式事件 ID 合并 REST 与流式投影，并累积同一活动分支的最新页，避免工具卡在运行中被空过程和“正在思考”替代。 |
 | FR-423 | Agent 会话 Runtime 投递短事务与无阻塞连接审计 | DONE | 消除 Agent Workspace 与 FlowNode 消息投递跨 OpenHands I/O 的 binding 行锁，并使会话读取不写连接审计行。 |
 | FR-424 | Agent Workspace 运行中消息三阶段原生投递 | DONE | 运行中追加消息在独立 Runtime 段调用 OpenHands，前后仅保留短事务授权和投影。 |
+| FR-425 | Agent 会话原生终态与收尾状态统一 | DONE | 所有会话运行／结束提示以 OpenHands `input-readiness` 为唯一终态事实；回复先到时明确显示原生收尾状态。 |
 | FR-415 | FlowRun 独立终端全局项目根修正 | DONE | FlowRun 级终端进入已挂载的全局 `project` 根，因此无需创建节点即可完成对整个 FlowRun 生效的配置；会话／Attempt 终端继续保持记录级路径。 |
 | FR-417 | FlowRun 独立终端挂载感知路径选择 | DONE | FlowRun 级终端按活跃 Runtime 的固定挂载契约选择共享 `project` 根或记录直挂载根，避免历史 Runtime 因不存在 cwd 失败。 |
 
@@ -714,6 +715,25 @@ append；finalize 仅在 binding 仍指向准备阶段的同一 OpenHands conver
 
 验收：受影响 Python 文件通过 `uv run ruff format --check`、`uv run ruff check`、`py_compile` 与
 `git diff --check`。未运行数据库回归：本机 Testcontainers 仍无 Docker socket。
+
+### FR-425 Agent 会话原生终态与收尾状态统一 — DONE
+
+依赖：`FR-424`。
+
+目标：Agent 工作台不得把浏览器本地 `turnState` 或已渲染的 assistant 回复当成会话终态。会话列表转圈、输入区
+状态、暂停／继续按钮和流式活动必须以 OpenHands `input-readiness` 的正式 execution status 为同一事实来源；在
+回复已经可见、但原生会话仍为 running 的短暂窗口，明确显示“正在收尾”，并继续保持运行控制，直到 OpenHands
+返回正式终态。浏览器本地状态只可桥接发送、暂停和继续请求，不得提前宣布结束。
+
+验收：新增定向 Agent 工作台浏览器回归，覆盖“最终回复先可见、native status 仍为 running”时的统一收尾状态，
+以及 native idle 后才恢复发送状态；受影响 Web TypeScript typecheck、ESLint、production build、`git diff --check`
+与任务状态唯一性通过。本切片独立提交并停止。
+
+完成：工作台现在将 OpenHands `input-readiness` 的 execution status 作为会话是否仍在运行的唯一事实来源；
+浏览器本地状态只桥接已发送、暂停和继续命令。选中会话的左侧运行标记、输入区状态、暂停／继续按钮、队列操作
+与流式活动均以同一 native 状态收敛。assistant 回复先于 native idle 到达时，输入区明确显示“回复已生成，正在收尾”，
+并保留暂停控制；只有正式状态进入 idle／completed／stopped／finished 才恢复发送。新增 Playwright 回归覆盖该
+收尾窗口及 native idle 后的收敛。
 
 ### FR-415 FlowRun 独立终端全局项目根修正 — DONE
 
