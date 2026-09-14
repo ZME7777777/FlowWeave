@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`IN PROGRESS`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`NONE（等待 FR-404、FR-405 部署验收）`
+> 下一可执行切片：`NONE（等待 FR-404、FR-405、FR-413、FR-414 部署验收）`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -171,6 +171,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-411 | Mermaid 全屏 SVG 舞台坐标修正 | DONE | SVG 直接填充适配舞台，100% 居中；缩放只改变舞台尺寸，不再漂移至左上。 |
 | FR-412 | 网站认证源变量命令级映射指导 | DONE | 平台继续按域名选择源凭据变量，同时允许 Agent 在匹配域名的单条命令中将其命令级映射到 Skill/脚本所需变量；禁止全局 export、跨域映射与凭据泄露。 |
 | FR-413 | 网站认证变量映射说明泛化 | DONE | 移除提示词中所有特定 Skill/脚本变量示例，只保留与实现无关的域名匹配、命令级映射和安全边界说明。 |
+| FR-414 | FlowRun 独立终端记录目录预创建 | DONE | FlowRun 终端在服务端创建并验证自身的规范记录目录后再连接，避免不存在的 cwd 使 OCI exec 失败；保持 Provider 的记录级隔离校验。 |
 
 ### FR-366 FlowWeave 专属 Docker 地址规划 — DONE
 
@@ -551,6 +552,22 @@ API、数据库、OpenHands、Runtime Provider、Docker 或持久化契约。
 完成：删除特定变量示例；提示词仅保留通用映射用法、安全边界与列出的实际源变量。
 
 验收：受影响 Python Ruff format/check、`py_compile`、认证提示词定向 pytest 与 `git diff --check` 通过；无迁移、无 OpenHands 源码改动、无 Docker 或远端操作。
+
+### FR-414 FlowRun 独立终端记录目录预创建 — DONE
+
+依赖：`FR-404`。
+
+目标：FlowRun 列表的终端入口必须能在尚未创建节点 Attempt 或 Conversation 时启动。它继续只能进入
+该 FlowRun 自己的规范 `project/<record-id>` 目录，不得放宽 Runtime Provider 对裸 `project` 根的拒绝，
+也不得改变既有 Conversation／Attempt 终端的工作目录。
+
+完成：FlowRun 终端解析 active Runtime 后，在服务端按已验证 allocation 创建并校验其规范记录目录，
+再返回同一个 Runtime 内路径给终端 Relay。Provider 的记录级目录校验保持不变，因此不会暴露共享
+Runtime 中的其他记录；不再因 Docker exec 在不存在的 `cwd` 上 `chdir` 而失败。
+
+验收：新增 FlowRun 终端目录预创建回归；受影响 Python Ruff check/format、`py_compile`、直接
+运行时断言与 `git diff --check` 通过。定向 pytest 需要 Testcontainers PostgreSQL，但本机 Docker
+socket 不可用，fixture 在断言前失败，未记为通过；未修改数据库、OpenHands、Docker 或远端环境。
 
 ### FR-398 长会话 Markdown 完整渲染 — DONE
 
@@ -5425,6 +5442,7 @@ contract、冻结策略与既有受控生命周期约束覆盖。
 
 | 日期 | 切片 | 验证 | 结果 |
 | 2026-09-14 | FR-413 | 受影响 Python Ruff format/check、`py_compile`、认证提示词定向 pytest、`git diff --check` 与任务状态唯一性 | PASS：认证提示词不再含任何特定 Skill/脚本变量示例，只说明域名匹配后的源变量和命令级映射边界。未修改注入协议、数据库、OpenHands、Docker 或远端环境。 |
+| 2026-09-14 | FR-414 | FlowRun 终端目录预创建直接断言；受影响 Python Ruff format/check、`py_compile`、`git diff --check` 与任务状态唯一性 | PASS（直接／静态）：终端连接前只由服务端创建并验证该 FlowRun 的规范 `project/<record-id>`；返回路径与创建路径一致，Provider 继续拒绝未限定的 project 根。`test_runtime_operations.py` 需要 Testcontainers PostgreSQL，但本机 Docker socket 缺失，fixture 在断言前失败，未记为通过。未修改数据库、OpenHands、Docker 或远端环境。 |
 | 2026-09-14 | FR-412 | 受影响 Python Ruff format/check、`py_compile`、认证提示词定向 pytest、`git diff --check` 与任务状态唯一性 | PASS：平台仍按目标主机与子域规则说明可用源凭据变量；提示词允许在同一条访问匹配主机的命令中以命令级环境变量赋值适配 Skill/脚本的变量名，明确禁止全局 `export`、跨主机／条目映射、猜测变量和凭据泄露。未修改注入协议、数据库、OpenHands、Docker 或远端环境。 |
 | 2026-09-14 | FR-410 | Web TypeScript typecheck、定向 ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS（静态／构建）：回复注释链接不再保存详情展开状态或渲染详情卡片；点击仅复用既有会话／文件原文定位。未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-13 | FR-404 | Web TypeScript typecheck、Web ESLint；受影响 Python `py_compile`／Ruff check；`git diff --check` 与任务状态唯一性 | PASS（静态）：FlowRun 列表不再显示重复的进入箭头，Runtime 就绪行可打开以 FlowRun 名称命名的独立终端子窗口；服务端只从 FlowRun 解析 active generation 和规范记录目录，浏览器不持有物理 endpoint。既有会话／Attempt 终端不变。未修改数据库、OpenHands、Docker 或远端环境。 |

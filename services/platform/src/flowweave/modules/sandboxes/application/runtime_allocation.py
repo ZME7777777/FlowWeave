@@ -238,6 +238,26 @@ def _record_project_path(db: Session, *, flow_run_id: str, node_attempt_id: str)
     allocation = runtime_allocation_for_flow_run(db, runtime_owner_id)
     project_store = _verify_layout(allocation) / "workspace" / "project"
     record_id = flow_run_record_id(db, flow_run_id=flow_run_id, node_attempt_id=node_attempt_id)
+    return _ensure_record_project_path(project_store, record_id)
+
+
+def ensure_flow_run_record_workspace(db: Session, flow_run_id: str) -> PurePosixPath:
+    """Create the FlowRun's terminal record directory under its allocation.
+
+    A FlowRun-level terminal deliberately exists before a NodeAttempt or
+    Conversation is created. It still needs a canonical record path because
+    the Runtime Provider rejects an unscoped project mount.
+    """
+
+    record_id = _canonical_uuid(flow_run_id, field="FlowRun")
+    runtime_owner_id = runtime_owner_flow_run_id(db, record_id)
+    allocation = runtime_allocation_for_flow_run(db, runtime_owner_id)
+    project_store = _verify_layout(allocation) / "workspace" / "project"
+    _ensure_record_project_path(project_store, record_id)
+    return openhands_flow_run_record_path(record_id)
+
+
+def _ensure_record_project_path(project_store: Path, record_id: str) -> Path:
     target = project_store / record_id
     if project_store.is_symlink() or not project_store.is_dir():
         raise DomainError(
@@ -1016,6 +1036,7 @@ __all__ = (
     "capability_materialization_lock",
     "delete_flow_run_runtime_allocation",
     "ensure_capability_manifest_directory",
+    "ensure_flow_run_record_workspace",
     "flow_run_capability_path",
     "flow_run_record_id",
     "flow_run_workspace_nodes_path",

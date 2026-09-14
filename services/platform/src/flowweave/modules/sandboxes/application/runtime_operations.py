@@ -8,7 +8,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from flowweave.modules.sandboxes.application.runtime_allocation import (
-    openhands_flow_run_record_path,
+    ensure_flow_run_record_workspace,
 )
 from flowweave.modules.sandboxes.application.runtime_owner import runtime_owner_flow_run_id
 from flowweave.modules.sandboxes.application.runtime_replacement import (
@@ -223,16 +223,18 @@ def flow_run_terminal_details(db: Session, flow_run_id: str) -> tuple[str, str, 
     """Resolve FlowRun's single terminal without depending on a Conversation.
 
     The active Runtime generation is the only physical container a FlowRun
-    terminal may use.  Its server-owned record directory remains the terminal
-    start path, so the browser cannot select a container or broaden its
+    terminal may use. The server materializes its canonical record directory
+    before attaching, so a terminal is available before any node creates a
+    Conversation. The browser cannot select a container or broaden its
     workspace scope.
     """
 
     connection = active_flow_run_runtime_connection(db, flow_run_id=flow_run_id)
+    working_directory = ensure_flow_run_record_workspace(db, flow_run_id)
     return (
         connection.resource_name,
         connection.managed_runtime_id,
-        str(openhands_flow_run_record_path(connection.flow_run_id)),
+        str(working_directory),
     )
 
 
