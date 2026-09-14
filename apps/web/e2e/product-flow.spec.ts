@@ -443,6 +443,7 @@ test('terminal environment deletion preserves setup sessions when a FlowRun uses
 
 test('top-level Agent workspace creates a direct conversation and restores its URL', async ({ page }) => {
   let modelIsResponding = false;
+  let transientIdleReadiness = false;
   let interrupted = false;
   let backfilledTaskAction = false;
   let incompleteLiveToolProjection = false;
@@ -779,6 +780,11 @@ test('top-level Agent workspace creates a direct conversation and restores its U
       return;
     }
     if (path.endsWith('/input-readiness')) {
+      if (transientIdleReadiness) {
+        transientIdleReadiness = false;
+        await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ready: true, execution_status: 'idle' }) });
+        return;
+      }
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
         ready: !modelIsResponding || interrupted,
         execution_status: modelIsResponding ? (interrupted ? 'paused' : 'running') : 'idle',
@@ -1393,10 +1399,17 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await liveToolDetail.locator(':scope > summary').click();
   await expect(liveToolDetail.getByText('/runtime/workspace/project', { exact: true })).toBeVisible();
   await expect(page.locator('.agent-composer-actions .agent-send')).toHaveCount(1);
+  // A stale readiness response may briefly report idle before the next native
+  // snapshot reports this same turn as running. The process must stay open.
+  transientIdleReadiness = true;
+  await expect(page.getByRole('button', { name: '发送消息' })).toBeVisible();
+  await expect(activeProcess).toHaveJSProperty('open', true);
+  await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toBeVisible();
+  await expect(activeProcess).toHaveJSProperty('open', true);
   await page.getByRole('button', { name: '暂停当前 Agent' }).click();
   await expect(page.getByRole('button', { name: '继续当前 Agent' })).toBeVisible();
   await expect(activeProcess.getByText('已暂停，结果未返回')).toBeVisible();
-  await activeProcess.locator('summary').click();
+  await expect(activeProcess).toHaveJSProperty('open', true);
   await expect(activeProcess.getByText('子智能体 · 已暂停，结果未返回')).toBeVisible();
   await expect(page.getByText('本轮没有生成回复')).toHaveCount(0);
   await page.reload();

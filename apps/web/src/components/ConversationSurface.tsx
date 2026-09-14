@@ -1139,9 +1139,10 @@ function ActivityEntryRow({ entry, active, paused = false, parentFailed = false,
   </article>;
 }
 
-function ActivityGroup({ items, active, paused = false, parentFailed = false, startedAt, finishedAt, avatarSlots, workspaceRoot }: {
+function ActivityGroup({ items, active, completionConfirmed = false, paused = false, parentFailed = false, startedAt, finishedAt, avatarSlots, workspaceRoot }: {
   items: Item[];
   active: boolean;
+  completionConfirmed?: boolean;
   paused?: boolean;
   parentFailed?: boolean;
   startedAt?: number;
@@ -1156,15 +1157,18 @@ function ActivityGroup({ items, active, paused = false, parentFailed = false, st
     const item = entry.action ?? entry.item;
     return String(item.event.payload.event_name ?? '') === 'TaskAction' && entry.results.length === 0;
   });
-  // Keep the in-flight process visible, then collapse it once the native
-  // terminal reply arrives. Historical completed processes also start closed,
-  // while the summary remains available for an explicit user expansion.
+  // A delayed readiness response can briefly make an active turn appear idle.
+  // Preserve the visible details through that recovery; only a formal
+  // reply/error together with a native terminal state may auto-collapse.
   const [open, setOpen] = useState(active);
-  const wasActive = useRef(active);
+  const hasBeenActive = useRef(active);
   useLayoutEffect(() => {
-    if (wasActive.current && !active) setOpen(false);
-    wasActive.current = active;
-  }, [active]);
+    if (active) {
+      hasBeenActive.current = true;
+      return;
+    }
+    if (hasBeenActive.current && completionConfirmed) setOpen(false);
+  }, [active, completionConfirmed]);
   const label = active
     ? elapsedSeconds === undefined ? '处理中' : `已耗时 ${formatDuration(elapsedSeconds)}`
     : paused ? '已暂停，结果未返回'
@@ -1710,6 +1714,7 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused =
           finishedAt,
           isCurrent && !turn.assistant && !failures.length,
         );
+        const completionConfirmed = !isGenerating && Boolean(turn.assistant || failures.length);
         const fileChanges = workspaceFileChanges(turn.activity.map(item => item.event));
         const userTimestamp = turn.user ? formatMessageTime(turn.user.event.payload.timestamp) : undefined;
         return <section className="conversation-turn" key={turn.id} data-conversation-turn={turn.id}>
@@ -1722,6 +1727,7 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused =
               key={block.id}
               items={block.items}
               active={block.active}
+              completionConfirmed={completionConfirmed}
               paused={isCurrentPaused && !block.active}
               parentFailed={parentFailed && !block.active}
               startedAt={block.startedAt}
