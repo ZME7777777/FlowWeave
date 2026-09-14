@@ -3471,9 +3471,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const attachmentInput = useRef<HTMLInputElement>(null);
   const titleInput = useRef<HTMLInputElement>(null);
   const workspacePathCopyTimer = useRef<number | undefined>(undefined);
-  const pendingLiveText = useRef('');
-  const liveStreamItemId = useRef<string | undefined>(undefined);
-  const liveTextFrame = useRef<number | undefined>(undefined);
   const pendingLiveEvents = useRef<OpenHandsConversationEvent[]>([]);
   const liveEventsFrame = useRef<number | undefined>(undefined);
   const historyLoadingScopes = useRef(new Set<string>());
@@ -4018,21 +4015,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     }
   }, [host, queryClient, selected?.id, workspace]);
   const clearLiveText = useCallback(() => {
-    pendingLiveText.current = '';
-    liveStreamItemId.current = undefined;
-    if (liveTextFrame.current !== undefined) window.cancelAnimationFrame(liveTextFrame.current);
-    liveTextFrame.current = undefined;
     setLiveText('');
-  }, []);
-  const appendLiveText = useCallback((content: string) => {
-    pendingLiveText.current += content;
-    if (liveTextFrame.current !== undefined) return;
-    liveTextFrame.current = window.requestAnimationFrame(() => {
-      liveTextFrame.current = undefined;
-      const next = pendingLiveText.current;
-      pendingLiveText.current = '';
-      if (next) setLiveText(current => current + next);
-    });
   }, []);
   const appendLiveEvent = useCallback((event: OpenHandsConversationEvent) => {
     pendingLiveEvents.current.push(event);
@@ -4045,41 +4028,25 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     });
   }, []);
   useEffect(() => () => {
-    if (liveTextFrame.current !== undefined) window.cancelAnimationFrame(liveTextFrame.current);
     if (liveEventsFrame.current !== undefined) window.cancelAnimationFrame(liveEventsFrame.current);
   }, []);
   const onStreamEvent = useCallback((event: AgentStreamEvent) => {
-    if (event.type === 'delta' && event.content) {
-      if (event.item_id) liveStreamItemId.current = event.item_id;
-      appendLiveText(event.content);
-    }
-    if (event.type === 'stream_reset' && event.item_id && liveStreamItemId.current === event.item_id) clearLiveText();
-    if (event.type === 'stream_closed' && event.item_id && liveStreamItemId.current === event.item_id) {
-      clearLiveText();
-      refresh();
-    }
+    // The upstream stream remains necessary for timely process/event delivery,
+    // but text deltas are transient and must never appear as a partial final
+    // reply. Final answer content is rendered only from formal OpenHands events.
+    if (event.type === 'stream_closed') refresh();
     if (event.type === 'event' && event.event) {
       appendLiveEvent(event.event);
-      const formalCommentary = typeof event.event.payload.thought === 'string'
-        ? event.event.payload.thought
-        : ['THOUGHT', 'TOOL_CALL'].includes(event.event.event_type) && typeof event.event.payload.content === 'string'
-          ? event.event.payload.content
-          : '';
-      // Replace a streamed commentary draft only when its formal ActionEvent
-      // projection arrives. Empty tool/status frames must not erase visible
-      // model output before OpenHands has persisted an equivalent event.
-      if (formalCommentary || ['MESSAGE', 'ERROR', 'COMPLETED'].includes(event.event.event_type)) clearLiveText();
     }
     // Completion frames do not identify the originating user event.  A stale
     // frame must never complete a newer turn; durable assistant/error events
     // associated with activeTurnEventId are the authoritative terminal signal.
     if (event.type === 'message_complete') { clearLiveText(); refresh(); }
-  }, [appendLiveEvent, appendLiveText, clearLiveText, refresh]);
+  }, [appendLiveEvent, clearLiveText, refresh]);
   const onStreamReconnect = useCallback(() => {
     // A WebSocket is a live projection only. Events written while the browser
     // was disconnected are recovered from the authoritative REST feed after
-    // the socket is live again; browser-only deltas/events remain merged in
-    // memory until their formal counterparts arrive.
+    // the socket is live again; only formal event projections are retained.
     refresh();
   }, [refresh]);
   useEffect(() => {

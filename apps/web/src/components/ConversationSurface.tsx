@@ -1042,48 +1042,6 @@ function CurrentTurnStatus({ items, liveText, requestSubmitting, monitoring, con
   </div>;
 }
 
-const LIVE_REPLY_CHUNK_LENGTH = 72;
-
-function nextLiveReplyChunk(content: string, offset: number): string {
-  const limit = Math.min(content.length, offset + LIVE_REPLY_CHUNK_LENGTH);
-  // Keep a leading line break with the following text. Rendering a lone\n+  // newline as its own DOM node would make one incoming line appear as two
-  // visual updates.
-  const newline = content.indexOf('\n', offset + 1);
-  if (newline >= offset && newline < limit) return content.slice(offset, newline + 1);
-  if (limit === content.length) return content.slice(offset);
-  for (let index = limit; index > offset + 16; index -= 1) {
-    if (/[\s,.;!?，。！？；：]/.test(content[index - 1])) return content.slice(offset, index);
-  }
-  return content.slice(offset, limit);
-}
-
-function LiveReply({ content }: { content: string }) {
-  const rendered = useRef('');
-  const [chunks, setChunks] = useState<string[]>([]);
-
-  useEffect(() => {
-    if (!content.startsWith(rendered.current)) {
-      rendered.current = '';
-      setChunks([]);
-    }
-    let frame: number | undefined;
-    const append = () => {
-      const offset = rendered.current.length;
-      if (offset >= content.length) return;
-      const chunk = nextLiveReplyChunk(content, offset);
-      rendered.current += chunk;
-      setChunks(current => [...current, chunk]);
-      frame = window.requestAnimationFrame(append);
-    };
-    frame = window.requestAnimationFrame(append);
-    return () => { if (frame !== undefined) window.cancelAnimationFrame(frame); };
-  }, [content]);
-
-  return <article className="conversation-message assistant conversation-live-reply" aria-label="正在生成的回复" aria-live="polite">
-    <div className="conversation-live-reply-content">{chunks.map((chunk, index) => <span key={index}>{chunk}</span>)}<i aria-hidden="true"/></div>
-  </article>;
-}
-
 function taskAvatarStatus(entry: ActivityEntry, item: Item, paused = false, parentFailed = false): 'running' | 'paused' | 'completed' | 'error' {
   const phases = [item.event, ...entry.results.map(result => result.event)]
     .map(event => event.payload.runtime_task?.phase);
@@ -1742,13 +1700,12 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused =
           {isCurrent && !turn.assistant && !failures.length && (
             <CurrentTurnStatus items={turn.activity} liveText={liveText} requestSubmitting={requestSubmitting} monitoring={monitoring} connectionState={connectionState}/>
           )}
-          {isCurrent && !turn.assistant && !failures.length && liveText && <LiveReply content={liveText}/>}
           {processBlocks.length > 0 && turn.assistant && <div className="conversation-process-divider" role="separator" aria-label="工作过程结束"/>}
           {turn.assistant && <AgentReply event={turn.assistant.event} content={turn.assistant.content} changes={fileChanges} onFork={!isGenerating ? () => onFork?.(turn.assistant!.event.id) : undefined} onPreviewCandidateFile={onPreviewCandidateFile} onReviewChanges={onReviewChanges} onOpenWorkspaceFile={onOpenWorkspaceFile} workspaceRoot={workspaceRoot} annotations={annotations} onLocateAnnotation={onLocateAnnotation}/>}
           {failures.map(item => <ConversationFailure key={item.event.id} item={item} taskControl={taskControl}/>)}
         </section>;
       })}
-      {turns.length === 0 && (liveText || isGenerating) && <><ActivityGroup items={[]} active startedAt={requestStartedAt} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/><CurrentTurnStatus items={[]} liveText={liveText} requestSubmitting={requestSubmitting} monitoring={monitoring} connectionState={connectionState}/>{liveText && <LiveReply content={liveText}/>}</>}
+      {turns.length === 0 && (liveText || isGenerating) && <><ActivityGroup items={[]} active startedAt={requestStartedAt} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/><CurrentTurnStatus items={[]} liveText={liveText} requestSubmitting={requestSubmitting} monitoring={monitoring} connectionState={connectionState}/></>}
       {condensationStatus && <article className={`conversation-condensation-progress ${condensationStatus.state}`} aria-label={condensationStatus.state === 'running' ? '正在压缩上下文' : '上下文压缩失败'} role="status">
         {condensationStatus.state === 'running' ? <LoaderCircle className="conversation-condensation-spinner" size={16}/> : <CircleAlert size={16}/>}
         <div><header><b>{condensationStatus.state === 'running' ? '正在压缩上下文' : '上下文压缩未完成'}</b>{condensationStatus.state === 'running' && <time>{formatDuration(condensationElapsed / 1_000)}</time>}</header>

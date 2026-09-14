@@ -187,6 +187,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-429 | 浏览器队列可靠性交付 | DONE | 浏览器本地队列持久、可恢复；只在正式 OpenHands cursor 返回后移除，歧义投递绝不自动重发。 |
 | FR-430 | 已认证端到端可靠性交付验收 | DONE | 为现有 Agent 工作台产品流补足测试范围内的认证前置，使 FR-429 歧义投递持久化与不自动重发断言能实际执行；不改变生产认证或投递逻辑。 |
 | FR-431 | 主会话／子智能体事件连续补读 | DONE | 原生 readiness 短暂报 idle 时，只要正式用户轮尚未出现终态，持续用正式 OpenHands cursor 补读；迟到的 TaskAction 无需暂停或继续即可进入主会话投影。 |
+| FR-432 | 最终回复的临时 delta 呈现回退 | DONE | 停止将 WebSocket `delta` 累积或渲染为最终回复；最终 Markdown 只在 OpenHands 正式 assistant／完成事件持久化并投影后一次显示，过程状态与正式工具事件保持可见。 |
 | FR-415 | FlowRun 独立终端全局项目根修正 | DONE | FlowRun 级终端进入已挂载的全局 `project` 根，因此无需创建节点即可完成对整个 FlowRun 生效的配置；会话／Attempt 终端继续保持记录级路径。 |
 | FR-417 | FlowRun 独立终端挂载感知路径选择 | DONE | FlowRun 级终端按活跃 Runtime 的固定挂载契约选择共享 `project` 根或记录直挂载根，避免历史 Runtime 因不存在 cwd 失败。 |
 
@@ -5721,6 +5722,7 @@ contract、冻结策略与既有受控生命周期约束覆盖。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-14 | FR-432 | Web TypeScript typecheck、ESLint、production build、Agent 工作台定向 Playwright、任务状态唯一性与 `git diff --check` | PASS（静态／构建）：浏览器继续接收实时 OpenHands 正式事件、过程活动和完成通知，但不再累积或渲染 WebSocket `delta` 为临时最终回复；最终 Markdown 仅由正式 assistant／完成事件一次呈现。定向 Playwright 的新 delta 非呈现断言已执行，完整用例随后在既有“终端”按钮不可见处超时，未记为完整浏览器通过。production build 仅报告既有大 bundle 建议。 |
 | 2026-09-14 | FR-431 | Web ESLint、TypeScript typecheck、production build、定向 Agent 工作台 Playwright、任务状态唯一性与 `git diff --check` | PASS：当 formal user turn 尚未终态而 readiness 暂态或持续返回 idle 时，浏览器继续使用同一正式 OpenHands cursor 补读；迟到的 `TaskAction` 无需暂停／继续即可显示为子智能体调用。补读只读取原生事件，不改变 readiness、暂停或平台持久化语义。production build 仅报告既有大 bundle 建议。 |
 | 2026-09-14 | FR-430 | Web ESLint、TypeScript typecheck、production build、定向 Agent 工作台 Playwright、任务状态唯一性与 `git diff --check` | PASS：产品流在测试范围内显式 mock 已认证用户，并适配当前会话分页响应和标题语义；FR-429 的“歧义投递持久化、刷新后可见且绝不自动重发”断言已完整执行。production build 仅报告既有大 bundle 建议；未修改生产认证或投递逻辑。 |
 | 2026-09-14 | FR-429 | Web TypeScript typecheck、受影响 Web ESLint、production build、定向 Agent 工作台 Playwright、Alembic head、任务状态唯一性与 `git diff --check` | PASS（静态／构建）：浏览器队列以 host/workspace/binding 隔离的 sessionStorage 保留有限投递意图，状态为 queued、dispatching、ambiguous 或 rejected；正式 OpenHands cursor 才可移除。歧义投递和刷新恢复绝不自动重发，明确拒绝必须由用户编辑成新消息。新增 Playwright 回归在本机登录前置处超时，未到达新增断言，未记为通过。production build 仅报告既有大 bundle 建议；唯一 head 为 `0115_agent_annotations`。 |
