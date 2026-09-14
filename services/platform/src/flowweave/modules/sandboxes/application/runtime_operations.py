@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from pathlib import Path, PurePosixPath
 from typing import Any
+from uuid import UUID
 
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
@@ -223,17 +224,43 @@ def flow_run_terminal_details(db: Session, flow_run_id: str) -> tuple[str, str, 
     """Resolve FlowRun's single terminal without depending on a Conversation.
 
     The active Runtime generation is the only physical container a FlowRun
-    terminal may use. A FlowRun Runtime exposes its project allocation at the
-    global project root, so the terminal is available before any node creates
-    a Conversation and its changes apply to the FlowRun as a whole. The
-    browser cannot select a container or working directory.
+    terminal may use. The selected directory follows the active Runtime's
+    immutable mount contract: shared allocations expose the global project
+    root, while record-mounted Runtimes expose their record at the legacy
+    per-record root. The browser cannot select a container or working
+    directory.
     """
 
     connection = active_flow_run_runtime_connection(db, flow_run_id=flow_run_id)
+    record_id = connection.project_record_id
+    if record_id is None:
+        working_directory = openhands_flow_run_project_path()
+    else:
+        if not isinstance(record_id, str):
+            raise DomainError(
+                "RUNTIME_WORKSPACE_INVALID",
+                "The active Runtime record workspace is invalid",
+                409,
+            )
+        try:
+            canonical_record_id = str(UUID(record_id))
+        except (TypeError, ValueError) as exc:
+            raise DomainError(
+                "RUNTIME_WORKSPACE_INVALID",
+                "The active Runtime record workspace is invalid",
+                409,
+            ) from exc
+        if canonical_record_id != record_id or record_id != connection.flow_run_id:
+            raise DomainError(
+                "RUNTIME_WORKSPACE_INVALID",
+                "The active Runtime record workspace does not belong to this FlowRun",
+                409,
+            )
+        working_directory = PurePosixPath("/runtime/workspace") / record_id
     return (
         connection.resource_name,
         connection.managed_runtime_id,
-        str(openhands_flow_run_project_path()),
+        str(working_directory),
     )
 
 

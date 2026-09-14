@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`IN PROGRESS`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`NONE（等待 FR-404、FR-405、FR-413、FR-414、FR-415 部署验收）`
+> 下一可执行切片：`NONE（等待 FR-404、FR-405、FR-413、FR-414、FR-415、FR-417 部署验收）`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -174,6 +174,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-414 | FlowRun 独立终端记录目录预创建 | DONE | FlowRun 终端在服务端创建并验证自身的规范记录目录后再连接，避免不存在的 cwd 使 OCI exec 失败；保持 Provider 的记录级隔离校验。 |
 | FR-416 | 子智能体模型请求策略与墙钟耗时语义 | DONE | 工作台明确展示每次模型请求的 120 秒／3 次重试策略，并将耗时标为 TaskAction 到当前或正式结果的墙钟时间；不伪造 OpenHands 未发布的逐次重试事件。 |
 | FR-415 | FlowRun 独立终端全局项目根修正 | DONE | FlowRun 级终端进入已挂载的全局 `project` 根，因此无需创建节点即可完成对整个 FlowRun 生效的配置；会话／Attempt 终端继续保持记录级路径。 |
+| FR-417 | FlowRun 独立终端挂载感知路径选择 | DONE | FlowRun 级终端按活跃 Runtime 的固定挂载契约选择共享 `project` 根或记录直挂载根，避免历史 Runtime 因不存在 cwd 失败。 |
 
 ### FR-366 FlowWeave 专属 Docker 地址规划 — DONE
 
@@ -606,6 +607,22 @@ FlowRun 的全局项目工作区。它不得把 FlowRun ID 误当成记录 ID �
 `py_compile`、直接运行时断言与 `git diff --check` 通过。定向 pytest 需要 Testcontainers
 PostgreSQL，若本机 Docker socket 不可用则在 fixture 初始化前受阻，不记为通过；无数据库、
 OpenHands 或迁移改动。
+
+### FR-417 FlowRun 独立终端挂载感知路径选择 — DONE
+
+依赖：`FR-415`。
+
+目标：FlowRun 终端必须兼容活跃 Runtime 的两种已受管挂载：共享 allocation 的
+`/runtime/workspace/project` 和历史／直挂载 allocation 的
+`/runtime/workspace/<flow-run-id>`。不得通过容器探测或浏览器输入决定路径。
+
+完成：活跃 Runtime 连接携带其已冻结的 `project_record_id`；终端仅在该 ID 缺失时选择共享
+项目根，存在时严格校验其 canonical UUID 和 FlowRun 所有权后选择记录直挂载根。Provider 既有
+路径与容器所有权校验不变。
+
+验收：新增共享与记录直挂载目录选择回归；受影响 Python Ruff check/format、`py_compile`、
+直接断言与 `git diff --check` 通过。定向 pytest 若因本机 Testcontainers Docker socket 缺失而在
+fixture 初始化前受阻，不记为通过；无数据库、OpenHands 或迁移改动。
 
 ### FR-398 长会话 Markdown 完整渲染 — DONE
 

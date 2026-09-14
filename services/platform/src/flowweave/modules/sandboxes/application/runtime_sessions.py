@@ -43,6 +43,7 @@ class ActiveRuntimeConnection:
     resource_name: str
     generation: int
     runtime_fence: RuntimeSessionFence
+    project_record_id: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -965,6 +966,7 @@ def active_flow_run_runtime_connection(db: Session, *, flow_run_id: str) -> Acti
         resource_name=managed_runtime.backend_resource_name,
         generation=generation.generation,
         runtime_fence=_fence(session, generation),
+        project_record_id=(managed_runtime.spec_json or {}).get("project_record_id"),
     )
 
 
@@ -1008,6 +1010,7 @@ def active_node_attempt_runtime_connection(
         resource_name=managed_runtime.backend_resource_name,
         generation=generation.generation,
         runtime_fence=_fence(session, generation),
+        project_record_id=(managed_runtime.spec_json or {}).get("project_record_id"),
     )
 
 

@@ -30,7 +30,7 @@ def test_host_project_mount_path_uses_only_canonical_flow_run_allocation(tmp_pat
     )
 
 
-def test_flow_run_terminal_uses_global_project_root_before_any_node_exists(monkeypatch) -> None:
+def test_flow_run_terminal_uses_global_project_root_for_shared_runtime(monkeypatch) -> None:
     flow_run_id = "12345678-1234-4234-9234-123456789abc"
     monkeypatch.setattr(
         runtime_operations,
@@ -39,10 +39,31 @@ def test_flow_run_terminal_uses_global_project_root_before_any_node_exists(monke
             flow_run_id=flow_run_id,
             resource_name="runtime-resource",
             managed_runtime_id="managed-runtime",
+            project_record_id=None,
         ),
     )
     assert flow_run_terminal_details(object(), flow_run_id) == (
         "runtime-resource",
         "managed-runtime",
         "/runtime/workspace/project",
+    )
+
+
+def test_flow_run_terminal_uses_record_root_for_record_mounted_runtime(monkeypatch) -> None:
+    flow_run_id = "12345678-1234-4234-9234-123456789abc"
+    monkeypatch.setattr(
+        runtime_operations,
+        "active_flow_run_runtime_connection",
+        lambda _db, *, flow_run_id: SimpleNamespace(
+            flow_run_id=flow_run_id,
+            resource_name="runtime-resource",
+            managed_runtime_id="managed-runtime",
+            project_record_id=flow_run_id,
+        ),
+    )
+
+    assert flow_run_terminal_details(object(), flow_run_id) == (
+        "runtime-resource",
+        "managed-runtime",
+        f"/runtime/workspace/{flow_run_id}",
     )
