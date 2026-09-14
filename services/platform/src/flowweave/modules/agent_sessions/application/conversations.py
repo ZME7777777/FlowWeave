@@ -6,7 +6,7 @@ import json
 import re
 import shutil
 import time
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -47,6 +47,7 @@ from flowweave.runtime.base import (
     RuntimeMCPProbeRequest,
     RuntimePort,
     RuntimeProvider,
+    RuntimeResult,
     StartAttemptRequest,
 )
 from flowweave.runtime.dependencies import get_runtime
@@ -1102,6 +1103,21 @@ def _observe_task_watchdogs_after_send(
     observe_task_watchdogs_from_runtime(db, binding, handle)
 
 
+@dataclass(frozen=True, slots=True)
+class PreparedRunningMessage:
+    """Locally-authorized input that may be dispatched without a DB session."""
+
+    workspace_id: str
+    binding_id: str
+    openhands_conversation_id: str
+    handle: RuntimeHandle
+    content: str
+    attachments: tuple[dict[str, str | int], ...]
+    references: tuple[dict[str, str], ...]
+    workspace_references: tuple[dict[str, str], ...]
+    annotations: tuple[dict[str, Any], ...]
+
+
 def normalized_first_sentence(content: str) -> str:
     """A useful local title while the independent metadata task is pending."""
 
@@ -2099,6 +2115,110 @@ def _safe_native_compaction(runtime: Any, handle: RuntimeHandle) -> str:
         )
 
     return completed_event.cursor
+
+
+def prepare_running_message(
+    db: Session,
+    workspace_id: str,
+    binding_id: str,
+    content: str,
+    attachments: tuple[dict[str, str | int], ...] = (),
+    references: tuple[dict[str, str], ...] = (),
+    workspace_references: tuple[dict[str, str], ...] = (),
+    annotations: tuple[dict[str, Any], ...] = (),
+) -> PreparedRunningMessage:
+    """Finish local authorization before a possible long native append."""
+
+    if (
+        not content.strip()
+        and not attachments
+        and not references
+        and not workspace_references
+        and not annotations
+    ):
+        raise DomainError("AGENT_MESSAGE_EMPTY", "消息不能为空", 422)
+    workspace = _workspace(db, workspace_id)
+    binding = _binding(db, workspace_id, binding_id)
+    handle = _handle(db, workspace, binding)
+    _validate_attachment_owners(binding.id, attachments, workspace_root=handle.workspace_root)
+    validated_workspace_references = agent_workspace_host.validate_message_workspace_references(
+        db,
+        workspace_id,
+        _validated_workspace_references(workspace_references),
+        binding_id=binding.id,
+    )
+    if not binding.streaming_callback_ready:
+        raise DomainError(
+            "AGENT_STREAMING_MIGRATION_REQUIRED",
+            "此历史会话需要先迁移到流式会话后才能继续发送",
+            409,
+            {"binding_id": binding.id},
+        )
+    return PreparedRunningMessage(
+        workspace_id=workspace_id,
+        binding_id=binding.id,
+        openhands_conversation_id=binding.openhands_conversation_id,
+        handle=handle,
+        content=content,
+        attachments=attachments,
+        references=references,
+        workspace_references=validated_workspace_references,
+        annotations=annotations,
+    )
+
+
+def dispatch_running_message(prepared: PreparedRunningMessage) -> RuntimeResult | None:
+    """Append only an already-running native turn, without database access."""
+
+    runtime = get_runtime()
+    readiness = runtime.input_readiness(prepared.handle)
+    if readiness.ready:
+        return None
+    if readiness.execution_status not in {"running", "executing"}:
+        raise DomainError("AGENT_CONVERSATION_BUSY", "Agent 正在处理停止或确认请求，请稍候", 409)
+    references = _resolve_conversation_references(runtime, prepared.handle, prepared.references)
+    prompt, image_urls = _message_payload(
+        prepared.content,
+        prepared.attachments,
+        references,
+        prepared.workspace_references,
+        prepared.annotations,
+    )
+    try:
+        return runtime.send_message(prepared.handle, prompt, image_urls)
+    except DomainError as exc:
+        if exc.status >= 500:
+            raise DomainError(
+                "AGENT_MESSAGE_DELIVERY_AMBIGUOUS", "消息发送结果不确定，请先刷新会话", 504
+            ) from exc
+        raise
+
+
+def finalize_running_message(
+    db: Session, prepared: PreparedRunningMessage, result: RuntimeResult
+) -> dict[str, Any]:
+    """Project a confirmed native append in one short, fenced transaction."""
+
+    binding = _binding(db, prepared.workspace_id, prepared.binding_id, lock=True)
+    if binding.openhands_conversation_id != prepared.openhands_conversation_id:
+        raise DomainError(
+            "AGENT_MESSAGE_DELIVERY_AMBIGUOUS", "消息已原生送达，但会话定位已变化，请刷新会话", 409
+        )
+    _observe_task_watchdogs_after_send(db, binding, prepared.handle)
+    if result.cursor:
+        _record_message_attachments(
+            db, binding, result.cursor, prepared.content.strip(), prepared.attachments
+        )
+    activity_at = now()
+    binding.last_connected_at = activity_at
+    binding.updated_at = activity_at
+    db.flush()
+    return {
+        "accepted": True,
+        "cursor": result.cursor,
+        "compacted": False,
+        "queued_during_turn": True,
+    }
 
 
 def message(

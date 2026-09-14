@@ -761,9 +761,32 @@ async def agent_message(
     binding_id: str,
     payload: AgentMessageWrite,
     db: Db,
+    container: ContainerDep,
     idempotency_key: IdempotencyKey = None,
 ) -> dict[str, Any]:
     del idempotency_key
+    arguments = {
+        "attachments": tuple(item.model_dump(exclude_none=True) for item in payload.attachments),
+        "references": tuple(item.model_dump() for item in payload.references),
+        "workspace_references": tuple(item.model_dump() for item in payload.workspace_references),
+        "annotations": tuple(payload.annotations),
+    }
+    prepared = await run_sync(
+        db,
+        lambda session: conversations.prepare_running_message(
+            session, workspace_id, binding_id, payload.content, **arguments
+        ),
+    )
+    running_result = await run_blocking(
+        container, lambda _session: conversations.dispatch_running_message(prepared)
+    )
+    if running_result is not None:
+        return await run_sync(
+            db,
+            lambda session: conversations.finalize_running_message(
+                session, prepared, running_result
+            ),
+        )
     return await run_sync(
         db,
         lambda session: conversations.message(
@@ -771,10 +794,7 @@ async def agent_message(
             workspace_id,
             binding_id,
             payload.content,
-            attachments=tuple(item.model_dump(exclude_none=True) for item in payload.attachments),
-            references=tuple(item.model_dump() for item in payload.references),
-            workspace_references=tuple(item.model_dump() for item in payload.workspace_references),
-            annotations=tuple(payload.annotations),
+            **arguments,
         ),
     )
 
