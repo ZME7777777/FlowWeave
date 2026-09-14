@@ -454,6 +454,24 @@ FlowRun Runtime、既有原生 Conversation 与冻结输入继续运行；不会
 断言；其余定向 Python / Web 静态检查与部署验收见本切片验证日志。未修改数据库、OpenHands
 源码、Runtime Provider、Docker 或持久数据。
 
+### FR-406 Mermaid 会话图表渲染与源码切换 — DONE
+
+依赖：`FR-398`。
+
+目标：会话 Markdown 中的 Mermaid 代码块（以及以标准 Mermaid 声明起始的兼容代码块）默认应渲染为可缩放的
+SVG 图表，而不是只显示源码。用户可在“图片／文本”之间切换；文本模式必须在源码下方提供“一键复制”，并在
+浏览器 Clipboard API 受限时使用用户手势回退。渲染只在浏览器按需加载，图表源码不得写入平台消息、副本、
+Runtime 或 OpenHands 状态；无效语法必须保留可见的文本查看和复制路径。
+
+完成：共享 `ConversationMarkdown` 以严格安全级别按需加载 Mermaid，识别显式 `mermaid` 代码块及
+`sequenceDiagram` 等标准声明，默认以可滚动的 SVG 图表呈现。图表组件提供可访问的“图片／文本”切换；
+文本模式显示完整源码和一键复制反馈，权限受限时回退到浏览器用户手势复制。解析失败只在图片模式展示安全错误，
+仍可切换文本查看或复制。改动同时覆盖 Agent Workspace 与 FlowRun 节点会话的共享 Markdown 呈现层，未修改
+API、数据库、OpenHands、Runtime Provider、Docker 或持久化契约。
+
+验收：Web TypeScript typecheck、全量 Web ESLint、production build 与 `git diff --check` 通过。Mermaid 作为
+会话 Markdown 的懒加载 chunk 产出，避免非会话页面载入图表渲染器；无迁移、无远端操作。
+
 ### FR-398 长会话 Markdown 完整渲染 — DONE
 
 依赖：无（会话呈现交互修正）。
