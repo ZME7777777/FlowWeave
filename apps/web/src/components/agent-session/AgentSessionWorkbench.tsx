@@ -1641,6 +1641,16 @@ function highlightedCode(value: string, language?: string): string {
   return hljs.highlightAuto(value).value;
 }
 
+/**
+ * Diff payloads contain only source lines (their Git prefix and hunk headers
+ * have already been parsed away), so they can use the same safe highlighter as
+ * a workspace source preview.  Keep the path at the call site: a Git Diff is
+ * repository-relative, while a review Diff is workspace-relative.
+ */
+function HighlightedDiffCode({ path, value }: { path: string; value: string }) {
+  return <code dangerouslySetInnerHTML={{ __html: highlightedCode(value, filePreviewLanguage(path)) }}/>;
+}
+
 function WorkspaceMarkdownCode({ className, children, ...props }: ComponentPropsWithoutRef<'code'>) {
   const language = /language-([\w+-]+)/.exec(className ?? '')?.[1];
   if (!language) return <code className={className} {...props}>{children}</code>;
@@ -2023,7 +2033,7 @@ function WorkspaceChangesReview({ changes, selectedId, onSelect, onOpenSource, w
     if (!entry) return <div key={`${side}:${rowIndex}`} className="agent-diff-line empty" aria-hidden="true"/>;
     const { line, index } = entry;
     const number = side === 'before' ? line.oldLine : line.newLine;
-    return <button type="button" className={`agent-diff-line ${line.kind}`} key={`${side}:${rowIndex}:${line.oldLine ?? ''}:${line.newLine ?? ''}:${line.text}`} title={`打开源文件第 ${sourceLineForDiffLine(selected.lines, index)} 行`} onClick={() => onOpenSource(selected, sourceLineForDiffLine(selected.lines, index))}><i>{number ?? ''}</i><code>{line.text || ' '}</code></button>;
+    return <button type="button" className={`agent-diff-line ${line.kind}`} key={`${side}:${rowIndex}:${line.oldLine ?? ''}:${line.newLine ?? ''}:${line.text}`} title={`打开源文件第 ${sourceLineForDiffLine(selected.lines, index)} 行`} onClick={() => onOpenSource(selected, sourceLineForDiffLine(selected.lines, index))}><i>{number ?? ''}</i><HighlightedDiffCode path={selected.path} value={line.text || ' '}/></button>;
   };
   return <section className="agent-changes-review">
     <ChangedFilesTree
@@ -2036,7 +2046,10 @@ function WorkspaceChangesReview({ changes, selectedId, onSelect, onOpenSource, w
     />
     <article className="agent-changes-diff">
       <header><div><b title={workspaceRelativePath(selected.path, workspaceRoot)}>{workspaceRelativePath(selected.path, workspaceRoot)}</b><small><ins>{`+${selected.additions}`}</ins><del>{`-${selected.deletions}`}</del></small></div><div className="agent-changes-diff-actions"><button type="button" className="agent-open-source-file" onClick={() => onOpenSource(selected, sourceLineForDiffLine(selected.lines, selected.lines.findIndex(line => line.kind !== 'deletion')))}><FileCode2 size={12}/>查看源文件</button><div className="agent-diff-mode"><button type="button" className={mode === 'unified' ? 'active' : ''} onClick={() => setMode('unified')}>统一</button><button type="button" className={mode === 'split' ? 'active' : ''} onClick={() => setMode('split')}>并排</button></div></div></header>
-      {mode === 'unified' ? <pre className="agent-diff-unified" onWheelCapture={stopDiffOverscroll}>{selected.lines.map((line, index) => <button type="button" className={`agent-diff-line ${line.kind}`} key={`${line.oldLine ?? ''}:${line.newLine ?? ''}:${line.text}`} title={`打开源文件第 ${sourceLineForDiffLine(selected.lines, index)} 行`} onClick={() => onOpenSource(selected, sourceLineForDiffLine(selected.lines, index))}><i>{line.oldLine ?? line.newLine ?? ''}</i><strong>{line.kind === 'addition' ? '+' : line.kind === 'deletion' ? '-' : ' '}</strong><code>{line.text || ' '}</code></button>)}</pre> : <SharedSplitDiff resetKey={selected.id} before={splitLines.map((row, index) => renderSplitLine(row.before, 'before', index))} after={splitLines.map((row, index) => renderSplitLine(row.after, 'after', index))}/>}
+      {mode === 'unified'
+        ? <pre className="agent-diff-unified" onWheelCapture={stopDiffOverscroll}>{selected.lines.map((line, index) => <button type="button" className={`agent-diff-line ${line.kind}`} key={`${line.oldLine ?? ''}:${line.newLine ?? ''}:${line.text}`} title={`打开源文件第 ${sourceLineForDiffLine(selected.lines, index)} 行`} onClick={() => onOpenSource(selected, sourceLineForDiffLine(selected.lines, index))}><i>{line.oldLine ?? line.newLine ?? ''}</i><strong>{line.kind === 'addition' ? '+' : line.kind === 'deletion' ? '-' : ' '}</strong><HighlightedDiffCode path={selected.path} value={line.text || ' '}/></button>)}</pre>
+        : <SharedSplitDiff resetKey={selected.id} before={splitLines.map((row, index) => renderSplitLine(row.before, 'before', index))} after={splitLines.map((row, index) => renderSplitLine(row.after, 'after', index))}/>
+      }
     </article>
   </section>;
 }
@@ -2710,11 +2723,14 @@ function WorkspaceGitFileDiffReview({ details, diff, onOpenSource }: { details: 
     if (!entry) return <div key={`${side}:${rowIndex}`} className="agent-diff-line empty" aria-hidden="true"/>;
     const { line, index } = entry;
     const number = side === 'before' ? line.oldLine : line.newLine;
-    return <button type="button" className={`agent-diff-line ${line.kind}`} key={`${side}:${rowIndex}:${line.oldLine ?? ''}:${line.newLine ?? ''}:${line.text}`} title={`打开源文件第 ${sourceLineForGitDiffLine(lines, index)} 行`} onClick={() => onOpenSource(sourcePath, sourceLineForGitDiffLine(lines, index))}><i>{number ?? ''}</i><code>{line.text || ' '}</code></button>;
+    return <button type="button" className={`agent-diff-line ${line.kind}`} key={`${side}:${rowIndex}:${line.oldLine ?? ''}:${line.newLine ?? ''}:${line.text}`} title={`打开源文件第 ${sourceLineForGitDiffLine(lines, index)} 行`} onClick={() => onOpenSource(sourcePath, sourceLineForGitDiffLine(lines, index))}><i>{number ?? ''}</i><HighlightedDiffCode path={diff.path} value={line.text || ' '}/></button>;
   };
   return <section className="agent-git-file-diff-review">
     <header><div><b title={diff.path}>{diff.path}</b><small><code>{details.commit.short_id}</code><span title={details.commit.subject}>{details.commit.subject || '（无提交说明）'}</span>{diff.truncated && <em>已截断</em>}</small></div><div className="agent-changes-diff-actions"><button type="button" className="agent-open-source-file" onClick={() => onOpenSource(sourcePath, sourceLineForGitDiffLine(lines, lines.findIndex(line => line.kind !== 'deletion')))}><FileCode2 size={12}/>查看源文件</button>{lines.length > 0 && <div className="agent-diff-mode"><button type="button" className={mode === 'unified' ? 'active' : ''} onClick={() => setMode('unified')}>统一</button><button type="button" className={mode === 'split' ? 'active' : ''} onClick={() => setMode('split')}>并排</button></div>}</div></header>
-    {!lines.length ? <p className="agent-git-file-diff-empty">{diff.diff ? '该文件没有可展示的文本行级 Diff。' : '该文件没有可显示的文本 Diff。'}</p> : mode === 'unified' ? <pre className="agent-diff-unified" onWheelCapture={stopDiffOverscroll}>{lines.map((line, index) => <button type="button" className={`agent-diff-line ${line.kind}`} key={`${line.oldLine ?? ''}:${line.newLine ?? ''}:${line.text}`} title={`打开源文件第 ${sourceLineForGitDiffLine(lines, index)} 行`} onClick={() => onOpenSource(sourcePath, sourceLineForGitDiffLine(lines, index))}><i>{line.oldLine ?? line.newLine ?? ''}</i><strong>{line.kind === 'addition' ? '+' : line.kind === 'deletion' ? '-' : ' '}</strong><code>{line.text || ' '}</code></button>)}</pre> : <SharedSplitDiff resetKey={diff.path} before={splitLines.map((row, index) => renderSplitLine(row.before, 'before', index))} after={splitLines.map((row, index) => renderSplitLine(row.after, 'after', index))}/>}
+    {!lines.length ? <p className="agent-git-file-diff-empty">{diff.diff ? '该文件没有可展示的文本行级 Diff。' : '该文件没有可显示的文本 Diff。'}</p> : mode === 'unified'
+      ? <pre className="agent-diff-unified" onWheelCapture={stopDiffOverscroll}>{lines.map((line, index) => <button type="button" className={`agent-diff-line ${line.kind}`} key={`${line.oldLine ?? ''}:${line.newLine ?? ''}:${line.text}`} title={`打开源文件第 ${sourceLineForGitDiffLine(lines, index)} 行`} onClick={() => onOpenSource(sourcePath, sourceLineForGitDiffLine(lines, index))}><i>{line.oldLine ?? line.newLine ?? ''}</i><strong>{line.kind === 'addition' ? '+' : line.kind === 'deletion' ? '-' : ' '}</strong><HighlightedDiffCode path={diff.path} value={line.text || ' '}/></button>)}</pre>
+      : <SharedSplitDiff resetKey={diff.path} before={splitLines.map((row, index) => renderSplitLine(row.before, 'before', index))} after={splitLines.map((row, index) => renderSplitLine(row.after, 'after', index))}/>
+    }
   </section>;
 }
 

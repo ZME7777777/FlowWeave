@@ -192,6 +192,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-434 | 错误终态与运行中追加投递呈现修正 | DONE | 空闲或原生错误终态的新消息仍先持久化浏览器投递意图，但不得短暂显示为消息队列；运行中直接追加在收到正式 cursor 前不伪装为已发送气泡或队列，流先到达同一正式 OpenHands 用户事件时立即确认收起，歧义／拒绝项保持可见、可恢复。 |
 | FR-435 | 运行中追加消息的直觉式气泡确认 | DONE | 运行中“调整方向”立即显示用户消息气泡；气泡下方仅在正式 OpenHands user event 或 cursor 未确认前显示“正在追加到当前回复”，拒绝或歧义仍回到可操作投递项。 |
 | FR-440 | 队列“调整方向”的同步气泡投影 | DONE | 队列按钮与空 composer 快捷键在将条目标记为原生追加的同一同步交互中创建临时用户气泡，不再等待 dispatch mutation，随后复用该气泡并按正式事件／cursor 收敛。 |
+| FR-441 | 文件与 Diff 可读性、语法高亮统一 | DONE | 工作区文件、改动审查与 Git 提交 Diff 统一提升等宽正文与文件树字号；审查／Git 的统一和并排 Diff 按文件扩展名复用既有 Highlight.js 语法高亮。 |
 | FR-436 | 错误终态精确列表投影与首屏收束 | DONE | 会话列表不再把 OpenHands eventually-consistent `search?status=running` 当作运行事实；有界页面逐项读取精确 native readiness。浏览器在 exact readiness 尚未返回时，若最近正式 user turn 已有 OpenHands ERROR／完成事件，立即清除本地运行桥接，不显示转圈、停止或运行中输入提示。 |
 | FR-437 | Responses 不完整终态关联诊断 | DONE | 在 FlowWeave 的正式 OpenHands 事件／状态读取边界，为原生错误终态写入一次脱敏关联日志，区分 Responses 不完整／缺少 completed／其他终态形态；不记录消息、输出、详情、凭据、端点或原始标识。 |
 | FR-438 | Conversation／Fork 模型绑定一致性诊断 | DONE | 为创建、模型切换、原生 Fork 继承及错误终态记录脱敏 LLM 绑定证据，区分旧模型未切换与异常 Conversation 状态随 Fork 继承；不改变模型、Fork、重试或会话历史。 |
@@ -876,6 +877,16 @@ event 先到时移除该 event 并投影正式消息，HTTP cursor 先到时也�
 快捷键提升动作改为实际点击“调整方向”队列按钮，并验证消息气泡及其“正在追加到当前回复”标识立即可见。
 完整串行 Playwright 仍在此段之前被既有文件改动入口选择器阻断，未记为通过。未修改 API、数据库、
 Runtime Provider、OpenHands 或远端环境。
+
+### FR-441 文件与 Diff 可读性、语法高亮统一 — DONE
+
+依赖：`FR-338`、`FR-371`、`FR-372`。
+
+目标：工作区源文件预览、会话改动审查和 Git 提交 Diff 的等宽正文不得继续使用难以阅读的小字号；文件树中的文件名也应与调整后的正文保持可读比例。审查 Diff 与 Git Diff 的统一／并排模式必须按当前文件扩展名复用现有 Highlight.js 语言映射，而非只输出无语义的纯文本。增删行的背景、行号、点击源文件跳转、统一／并排模式、受控路径解析和安全文本转义均保持原有语义。
+
+完成：工作区源码预览和所有 Diff 正文统一为 13px 等宽字号，Diff 行高与行号 gutter 同步扩展；工作区与 Git 文件树名称同步提升。新增 `HighlightedDiffCode` 仅将已解析的 Diff 源码行交给既有 `highlightedCode()` 和扩展名语言映射，因而会话改动审查与 Git Log 提交 Diff 都获得与文件预览相同的语言 token 渲染。Diff 仍由 Highlight.js 转义源文本，新增／删除背景与其余导航、滚动和视图模式逻辑未改变。
+
+验收：Web TypeScript typecheck、受影响组件 ESLint、production build、`git diff --check` 与任务状态唯一性通过。未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。
 
 ### FR-436 错误终态精确列表投影与首屏收束 — DONE
 
@@ -5872,6 +5883,7 @@ contract、冻结策略与既有受控生命周期约束覆盖。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-14 | FR-441 | Web TypeScript typecheck、受影响组件 ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS（静态／构建）：工作区源码预览、会话审查和 Git 提交 Diff 的等宽正文统一为 13px，文件树名称同步增大；审查／Git 的统一与并排 Diff 现在按文件路径复用既有 Highlight.js 语言映射。构建仅报告既有 bundle 大小建议；未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-14 | FR-439 | 受影响 Python Ruff check／format、`py_compile`、完整无 Docker `test_openhands.py`、三项 Conversation 投递定向 pytest 尝试、`git diff --check` 与任务状态唯一性 | PASS（直接／静态）：Agent Workspace／FlowNode running 与 idle 投递、OpenHands user event append、原生 Fork 和 Responses 不完整终态现在记录可关联的脱敏决策与状态；日志只包含摘要、枚举、计数、context 与策略标志，固定 OpenHands 未暴露 incomplete reason 时明确为 `not_exposed`。`test_openhands.py` 为 `154 passed`；Conversation 三项测试因本机 Docker socket 缺失，在 Testcontainers PostgreSQL fixture 初始化失败且未进入断言，未记为通过。未改变发送、Fork、模型、压缩、重试、事件树或持久状态。 |
 | 2026-09-14 | FR-438 | 受影响 Python Ruff check／format、`py_compile`、`test_openhands.py` 四项无 Docker fixture 定向 pytest、`git diff --check` 与任务状态唯一性 | PASS（直接／静态）：创建、模型切换、原生 Fork 继承和错误终态现在记录脱敏 LLM 绑定证据；成功与漂移分别输出逐字段 match，Fork 同时比较父 native LLM 与 FlowWeave 保存的目标配置，错误终态附加 active model/API mode/reasoning 和 token 摘要。回归确认模型名可安全识别，同时 endpoint、provider 原值、密钥、原始事件身份及假 Bearer token 不进入日志；定向 pytest 为 `4 passed, 142 deselected`。未改变模型、Fork、重试、事件树或会话历史，未修改数据库、OpenHands 源码、Runtime Provider、Docker 或持久数据。 |
 | 2026-09-14 | FR-437 | 受影响 Python Ruff check／format、`py_compile`、`test_openhands.py` 两项无 Docker fixture 定向 pytest、`git diff --check` 与任务状态唯一性 | PASS（直接／静态）：正式 native error 读取现在写入一次脱敏关联诊断，分别标注 REST event page 或 active branch、opaque conversation/event/parent/runtime/response/state-leaf 关联值、白名单错误／classification、native execution status 与 Responses 安全终态 signature。回归使用含假 Bearer token 的不完整 Responses 终态，确认重复读取仅记录一次且不泄露任何原始 ID、detail 或 token；定向 pytest 为 `2 passed, 144 deselected`。未修改数据库、OpenHands 源码、Runtime Provider、Docker 或持久数据。 |
