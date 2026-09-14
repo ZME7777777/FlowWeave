@@ -1,4 +1,5 @@
 import { isValidElement, useEffect, useId, useRef, useState, type ComponentPropsWithoutRef, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { deploymentBasePath } from '../deploymentPath';
@@ -62,6 +63,8 @@ async function copyDiagramSource(value: string): Promise<void> {
 function MermaidDiagram({ source }: { source: string }) {
   const diagramId = useId().replace(/[^a-z0-9]/gi, '');
   const [mode, setMode] = useState<'image' | 'text'>('image');
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [zoom, setZoom] = useState(100);
   const [svg, setSvg] = useState('');
   const [rendering, setRendering] = useState(true);
   const [error, setError] = useState('');
@@ -103,6 +106,15 @@ function MermaidDiagram({ source }: { source: string }) {
     if (copyTimer.current !== undefined) window.clearTimeout(copyTimer.current);
   }, []);
 
+  useEffect(() => {
+    if (!isFullscreen) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setIsFullscreen(false);
+    };
+    window.addEventListener('keydown', closeOnEscape);
+    return () => window.removeEventListener('keydown', closeOnEscape);
+  }, [isFullscreen]);
+
   const copySource = () => {
     void copyDiagramSource(source).then(() => {
       setCopyState('copied');
@@ -111,12 +123,45 @@ function MermaidDiagram({ source }: { source: string }) {
     }).catch(() => setCopyState('failed'));
   };
 
+  const openFullscreen = () => {
+    setZoom(100);
+    setIsFullscreen(true);
+  };
+  const closeFullscreen = () => setIsFullscreen(false);
+  const changeZoom = (amount: number) => setZoom(current => Math.max(50, Math.min(300, current + amount)));
+
+  const fullscreenPreview = isFullscreen && svg && createPortal(
+    <div className="conversation-mermaid-fullscreen-backdrop" role="presentation" onMouseDown={event => {
+      if (event.target === event.currentTarget) closeFullscreen();
+    }}>
+      <section className="conversation-mermaid-fullscreen" role="dialog" aria-modal="true" aria-label="Mermaid 图表全屏预览">
+        <header>
+          <b>全屏预览</b>
+          <div className="conversation-mermaid-zoom-controls" role="group" aria-label="图表缩放">
+            <button type="button" aria-label="缩小图表" onClick={() => changeZoom(-25)} disabled={zoom <= 50}>−</button>
+            <output aria-live="polite">{zoom}%</output>
+            <button type="button" aria-label="放大图表" onClick={() => changeZoom(25)} disabled={zoom >= 300}>+</button>
+            <button type="button" onClick={() => setZoom(100)} disabled={zoom === 100}>复位</button>
+            <button type="button" className="conversation-mermaid-fullscreen-close" onClick={closeFullscreen}>关闭</button>
+          </div>
+        </header>
+        <div className="conversation-mermaid-fullscreen-canvas">
+          <div className="conversation-mermaid-svg" role="img" aria-label="Mermaid 图表" style={{ transform: `scale(${zoom / 100})` }} dangerouslySetInnerHTML={{ __html: svg }}/>
+        </div>
+      </section>
+    </div>,
+    document.body,
+  );
+
   return <section className="conversation-mermaid" aria-label="Mermaid 图表">
     <header className="conversation-mermaid-header">
       <span>时序图</span>
-      <div role="group" aria-label="图表显示方式">
+      <div className="conversation-mermaid-header-actions">
+        {mode === 'image' && !!svg && <button type="button" className="conversation-mermaid-fullscreen-button" onClick={openFullscreen}>全屏放大</button>}
+        <div role="group" aria-label="图表显示方式">
         <button type="button" className={mode === 'image' ? 'selected' : ''} aria-pressed={mode === 'image'} onClick={() => setMode('image')}>图片</button>
         <button type="button" className={mode === 'text' ? 'selected' : ''} aria-pressed={mode === 'text'} onClick={() => setMode('text')}>文本</button>
+        </div>
       </div>
     </header>
     {mode === 'image'
@@ -129,6 +174,7 @@ function MermaidDiagram({ source }: { source: string }) {
           <pre><code>{source}</code></pre>
           <button type="button" className="conversation-mermaid-copy" onClick={copySource}>{copyState === 'copied' ? '已复制' : copyState === 'failed' ? '复制失败，请手动复制' : '一键复制'}</button>
         </div>}
+    {fullscreenPreview}
   </section>;
 }
 
