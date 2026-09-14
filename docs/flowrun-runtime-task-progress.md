@@ -167,6 +167,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-407 | 流式回复 Markdown 重排闪烁 | DONE | 运行中 delta 以稳定的纯文本片段追加到独立回复气泡；正式完成事件才一次性切换为完整 Markdown，避免未闭合结构反复重排。 |
 | FR-408 | Mermaid 全屏预览与缩放 | DONE | 已渲染 Mermaid 图表可打开全屏预览，并在其中缩小、放大或复位比例；保留图片／文本切换与源码复制。 |
 | FR-409 | Mermaid 全屏自适应缩放与平移 | DONE | 100% 自动适配全屏可用视区；支持滚轮缩放、左键拖拽平移和视图复位。 |
+| FR-410 | 回复注释直达定位 | DONE | 点击回复注释链接只执行既有原文定位，不再展开注释详情卡片。 |
 
 ### FR-366 FlowWeave 专属 Docker 地址规划 — DONE
 
@@ -504,6 +505,16 @@ API、数据库、OpenHands、Runtime Provider、Docker 或持久化契约。
 完成：全屏视图在打开和窗口尺寸变化时读取 Mermaid SVG 的 `viewBox`，按画布可用宽高计算 contain 比例并作为 100% 基准。缩放控制范围扩大至 50%–500%；画布捕获滚轮以 10% 增减缩放，捕获左键 Pointer 事件以平移图表，并提供操作提示。复位同时恢复适配比例和居中位置；未修改消息、API、Runtime 或 OpenHands 状态。
 
 验收：Web TypeScript typecheck、全量 Web ESLint、production build 与 `git diff --check` 通过；无迁移、无远端操作。
+
+### FR-410 回复注释直达定位 — DONE
+
+依赖：`FR-395`。
+
+目标：回复中的注释链接点击后只跳转至其对应的会话文本或文件范围，不显示详情卡片或额外操作。
+
+完成：移除回复注释链接的详情状态与卡片渲染，保留既有 pointer 事件隔离及直接定位回调；未改变消息元数据、模型 marker、服务端校验或持久化。
+
+验收：受影响 Web TypeScript typecheck、定向 ESLint、production build、`git diff --check` 与任务状态唯一性。
 
 ### FR-398 长会话 Markdown 完整渲染 — DONE
 
@@ -5377,6 +5388,7 @@ contract、冻结策略与既有受控生命周期约束覆盖。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-14 | FR-410 | Web TypeScript typecheck、定向 ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS（静态／构建）：回复注释链接不再保存详情展开状态或渲染详情卡片；点击仅复用既有会话／文件原文定位。未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-13 | FR-404 | Web TypeScript typecheck、Web ESLint；受影响 Python `py_compile`／Ruff check；`git diff --check` 与任务状态唯一性 | PASS（静态）：FlowRun 列表不再显示重复的进入箭头，Runtime 就绪行可打开以 FlowRun 名称命名的独立终端子窗口；服务端只从 FlowRun 解析 active generation 和规范记录目录，浏览器不持有物理 endpoint。既有会话／Attempt 终端不变。未修改数据库、OpenHands、Docker 或远端环境。 |
 | 2026-09-13 | FR-405 | Attempt owner／gate-sidecar isolation 定向 pytest、`test_openhands.py`；受影响 Python `py_compile`、Ruff check/format；Web TypeScript typecheck、ESLint；Alembic head、`git diff --check` 与任务状态唯一性 | PASS（直接／静态）：自动 FILE Artifact 仅以 Attempt ID 和同一 `project/<record-id>` 根通过校验；相同记录根中的 gate-sidecar binding 仍被私有附件校验拒绝；sidecar request 保持无 input attachment。`test_agent_workspaces.py`／`test_gates.py` 的数据库 fixture 在断言前因本机 Docker socket 缺失而阻断，未记为通过。未修改数据库、OpenHands 源码、Runtime Provider、Docker 或持久数据。 |
 | 2026-09-13 | FR-394 | Web TypeScript typecheck、定向 ESLint、production build；受影响 Python Ruff／`py_compile`；`git diff --check` 与任务状态唯一性 | PASS（静态／构建）：已发送的会话／文件注释直接从 OpenHands 消息元数据回显为可定位 chip；任何 Composer 内容都优先呈现并走发送操作，清空后才恢复暂停／继续；文件 chip 与会话引用同尺寸并省略超长文本。系统提示词要求按原 ID 分别回应相关注释，回复中的 marker 显示为可点击链接；未新增服务端 marker 校验或注释存储。定向 pytest 在 Testcontainers 创建数据库前因本机 Docker socket 不可用而阻断，未记为通过。未修改数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |

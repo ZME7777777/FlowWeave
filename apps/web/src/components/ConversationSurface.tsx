@@ -1172,7 +1172,6 @@ function AnnotationReplyContent({ content, annotations, onLocateAnnotation }: {
   annotations: AgentConversationAnnotation[];
   onLocateAnnotation?: (annotation: AgentConversationAnnotation) => void;
 }) {
-  const [openedAnnotationId, setOpenedAnnotationId] = useState<string>();
   const annotationById = useMemo(() => new Map(annotations.map(annotation => [annotation.id, annotation])), [annotations]);
   const parts = useMemo(() => {
     const marker = /::flowweave-annotation\{id="([^"]+)"\}/g;
@@ -1187,26 +1186,14 @@ function AnnotationReplyContent({ content, annotations, onLocateAnnotation }: {
     if (cursor < content.length) values.push({ content: content.slice(cursor) });
     return values;
   }, [annotationById, content]);
-  const openedAnnotation = openedAnnotationId ? annotationById.get(openedAnnotationId) : undefined;
   return <>
     {parts.map((part, index) => part.annotation ? <button
       key={`${part.annotation.id}:${index}`}
       type="button"
       className="conversation-annotation-marker"
-      aria-expanded={openedAnnotation?.id === part.annotation.id}
       onPointerUp={event => event.stopPropagation()}
-      onClick={() => {
-        setOpenedAnnotationId(current => current === part.annotation!.id ? undefined : part.annotation!.id);
-        onLocateAnnotation?.(part.annotation!);
-      }}
+      onClick={() => onLocateAnnotation?.(part.annotation!)}
     ><Quote size={12}/><span>注释 {annotations.findIndex(annotation => annotation.id === part.annotation!.id) + 1}</span></button> : part.content && <MessageMarkdown key={index}>{part.content}</MessageMarkdown>)}
-    {openedAnnotation && <aside className="conversation-annotation-card" aria-label={`注释 ${annotations.findIndex(annotation => annotation.id === openedAnnotation.id) + 1}`}>
-      <header><span><Quote size={13}/>注释 {annotations.findIndex(annotation => annotation.id === openedAnnotation.id) + 1}</span><button type="button" aria-label="关闭注释" onClick={() => setOpenedAnnotationId(undefined)}>×</button></header>
-      <small>{openedAnnotation.anchor_kind === 'CONVERSATION_TEXT' ? '会话文本' : '文件内容'}</small>
-      {typeof openedAnnotation.anchor.quote === 'string' && openedAnnotation.anchor.quote && <blockquote>{openedAnnotation.anchor.quote}</blockquote>}
-      <p>{openedAnnotation.comment}</p>
-      <footer className="conversation-annotation-actions"><button type="button" onClick={() => onLocateAnnotation?.(openedAnnotation)}>定位原文</button></footer>
-    </aside>}
   </>;
 }
 
