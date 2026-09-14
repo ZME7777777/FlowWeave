@@ -495,7 +495,7 @@ def prompt_provider_snapshot(
                 )
             )
         if row is None:
-            raise ValueError("Prompt gate provider has no enabled model")
+            raise ValueError("提示词门禁的模型供应商没有启用模型")
         model = row.model_name
     if item.auth_type == "CODEX_OAUTH":
         credentials = codex_runtime_credentials(db, provider_id)
@@ -511,7 +511,7 @@ def prompt_provider_snapshot(
             headers["chatgpt-account-id"] = credentials.account_id
         return PromptProviderSnapshot(CODEX_BASE_URL, headers, model, "RESPONSES")
     if item.auth_type != "API_KEY":
-        raise ValueError("Prompt gate provider credentials are unavailable")
+        raise ValueError("提示词门禁的模型供应商凭据不可用")
     return PromptProviderSnapshot(
         base_url=item.base_url.rstrip("/"),
         headers=provider_auth_headers(item),

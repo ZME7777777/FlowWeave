@@ -2511,8 +2511,8 @@ def _prepare_gate_plan(
             timeout,
             preparation_error=GateResult(
                 "ERROR",
-                "Gate Agent configuration is required",
-                ["Gate Agent configuration is required"],
+                "门禁 Agent 配置缺失",
+                ["门禁 Agent 配置缺失"],
                 [],
                 {},
                 error_code="GATE_CONFIG_INVALID",
@@ -2532,8 +2532,8 @@ def _prepare_gate_plan(
             timeout,
             preparation_error=GateResult(
                 "ERROR",
-                "Gate Runtime Environment is unavailable",
-                ["Gate Runtime Environment is unavailable"],
+                "门禁运行环境不可用",
+                ["门禁运行环境不可用"],
                 [],
                 {},
                 error_code="GATE_CONFIG_INVALID",
@@ -2547,8 +2547,8 @@ def _prepare_gate_plan(
             timeout,
             preparation_error=GateResult(
                 "ERROR",
-                "Gate Runtime Environment is unavailable",
-                ["Gate Runtime Environment is unavailable"],
+                "门禁运行环境不可用",
+                ["门禁运行环境不可用"],
                 [],
                 {},
                 error_code="GATE_CONFIG_INVALID",
@@ -2667,8 +2667,8 @@ def _prepare_gate_plan(
             timeout,
             preparation_error=GateResult(
                 "ERROR",
-                "Gate Agent configuration is unavailable",
-                ["Gate Agent configuration is unavailable"],
+                "门禁 Agent 配置不可用",
+                ["门禁 Agent 配置不可用"],
                 [],
                 {},
                 log_excerpt=str(exc)[:4000],

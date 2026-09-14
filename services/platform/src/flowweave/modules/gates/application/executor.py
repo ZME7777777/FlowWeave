@@ -54,7 +54,7 @@ def _error(message: str, *, log: str = "", code: str = "GATE_ERROR") -> GateResu
 
 def _normalize(value: object) -> GateResult:
     if not isinstance(value, dict):
-        return _error("Gate result must be a JSON object", code="GATE_RESULT_INVALID")
+        return _error("门禁结果必须是 JSON 对象", code="GATE_RESULT_INVALID")
     mapping = cast(dict[str, object], value)
     # Models occasionally preserve harmless surrounding whitespace despite the
     # JSON contract. Normalize that transport detail, while retaining a strict
@@ -62,11 +62,11 @@ def _normalize(value: object) -> GateResult:
     decision = str(mapping.get("decision", "ERROR")).strip().upper()
     if decision not in DECISIONS:
         return _error(
-            "Gate decision must be PASS, FAIL, or ERROR",
+            "门禁判定值只能为 PASS、FAIL 或 ERROR",
             log=f"unsupported gate decision={decision[:80]!r}",
             code="GATE_RESULT_INVALID",
         )
-    summary = str(mapping.get("summary") or f"Gate returned {decision}")[:2000]
+    summary = str(mapping.get("summary") or f"门禁返回判定：{decision}")[:2000]
     reasons_raw = mapping.get("reasons", [])
     evidence_raw = mapping.get("evidence", [])
     details_raw = mapping.get("details", {})
@@ -75,7 +75,7 @@ def _normalize(value: object) -> GateResult:
         or not isinstance(evidence_raw, list)
         or not isinstance(details_raw, dict)
     ):
-        return _error("Gate result fields have invalid types", code="GATE_RESULT_INVALID")
+        return _error("门禁结果字段类型无效", code="GATE_RESULT_INVALID")
     reasons = [str(item)[:1000] for item in cast(list[object], reasons_raw)]
     evidence = [
         cast(dict[str, Any], item)
@@ -122,7 +122,7 @@ def _decode_gate_response(answer: str) -> object:
             return cast(dict[str, object], value)
     if last_error is not None:
         raise last_error
-    raise ValueError("Gate sidecar response contains no JSON object")
+    raise ValueError("门禁侧车响应中不包含 JSON 对象")
 
 
 _GATE_RESULT_RETRY_QUESTION = (
@@ -140,9 +140,9 @@ def _script(
 ) -> GateResult:
     execution = get_sandbox().execute(language, code, context, timeout)
     if execution.status == "TIMEOUT":
-        return _error(execution.error or "Gate timed out", log=execution.log, code="GATE_TIMEOUT")
+        return _error("门禁脚本执行超时", log=execution.log, code="GATE_TIMEOUT")
     if execution.status == "ERROR":
-        return _error(execution.error or "Gate execution failed", log=execution.log)
+        return _error("门禁脚本执行失败", log=execution.log)
     return _normalize(execution.result)
 
 
@@ -185,7 +185,7 @@ def prepare_gate(
             normalized,
             timeout,
             preparation_error=_error(
-                "Prompt gate requires model_provider_id and prompt",
+                "提示词门禁必须配置 model_provider_id 和 prompt",
                 code="GATE_CONFIG_INVALID",
             ),
         )
@@ -201,7 +201,7 @@ def prepare_gate(
             normalized,
             timeout,
             preparation_error=_error(
-                "Prompt gate model provider was not found or has no enabled model",
+                "提示词门禁的模型供应商不存在或没有启用模型",
                 log=str(exc),
                 code="GATE_CONFIG_INVALID",
             ),
@@ -214,7 +214,7 @@ def _prompt(plan: GateExecutionPlan, context: dict[str, Any]) -> GateResult:
     prompt = str(plan.config.get("prompt") or "")
     if provider is None:
         return plan.preparation_error or _error(
-            "Prompt gate provider is unavailable", code="GATE_CONFIG_INVALID"
+            "提示词门禁的模型供应商不可用", code="GATE_CONFIG_INVALID"
         )
     system = (
         "评估工作流门禁。只能返回一个 JSON 对象，其中包含 decision（PASS、FAIL 或 ERROR）、"
@@ -257,9 +257,7 @@ def _prompt(plan: GateExecutionPlan, context: dict[str, Any]) -> GateResult:
         ValueError,
         json.JSONDecodeError,
     ) as exc:
-        return _error(
-            "Prompt gate execution failed", log=str(exc), code="GATE_EXECUTOR_UNAVAILABLE"
-        )
+        return _error("提示词门禁执行失败", log=str(exc), code="GATE_EXECUTOR_UNAVAILABLE")
 
 
 def _prompt_responses(
@@ -300,9 +298,7 @@ def _prompt_responses(
                         raise ValueError(str(event.get("error") or event))
         return _normalize(json.loads("".join(deltas)))
     except (httpx.HTTPError, TypeError, ValueError, json.JSONDecodeError) as exc:
-        return _error(
-            "Prompt gate execution failed", log=str(exc), code="GATE_EXECUTOR_UNAVAILABLE"
-        )
+        return _error("提示词门禁执行失败", log=str(exc), code="GATE_EXECUTOR_UNAVAILABLE")
 
 
 def execute_gate_plan(plan: GateExecutionPlan, context: dict[str, Any]) -> GateResult:
@@ -318,7 +314,7 @@ def execute_gate_plan(plan: GateExecutionPlan, context: dict[str, Any]) -> GateR
         return _python(str(plan.config.get("code") or ""), context, plan.timeout)
     if plan.gate_type == "PROMPT":
         return _prompt(plan, context)
-    return _error(f"Unsupported gate type: {plan.gate_type}", code="GATE_CONFIG_INVALID")
+    return _error(f"不支持的门禁类型：{plan.gate_type}", code="GATE_CONFIG_INVALID")
 
 
 def _platform_output_contract(context: dict[str, Any]) -> GateResult:
@@ -505,7 +501,7 @@ def _sidecar_agent(plan: GateExecutionPlan) -> GateResult:
         if handle.conversation_id != plan.sidecar_request.conversation_id:
             return with_sidecar(
                 _error(
-                    "Gate sidecar Conversation identity drifted",
+                    "门禁侧车会话身份不一致",
                     code="GATE_EXECUTOR_UNAVAILABLE",
                 )
             )
@@ -517,7 +513,7 @@ def _sidecar_agent(plan: GateExecutionPlan) -> GateResult:
         try:
             result = _normalize(_decode_gate_response(answer))
         except (ValueError, json.JSONDecodeError):
-            result = _error("Gate sidecar returned invalid JSON", code="GATE_RESULT_INVALID")
+            result = _error("门禁侧车返回的 JSON 无效", code="GATE_RESULT_INVALID")
         if result.error_code != "GATE_RESULT_INVALID":
             return with_sidecar(result)
         # A malformed JSON envelope or an otherwise valid JSON object with an
@@ -533,7 +529,7 @@ def _sidecar_agent(plan: GateExecutionPlan) -> GateResult:
     except (ValueError, json.JSONDecodeError) as exc:
         return with_sidecar(
             _error(
-                "Gate sidecar returned invalid JSON",
+                "门禁侧车返回的 JSON 无效",
                 log=str(exc),
                 code="GATE_RESULT_INVALID",
             )
@@ -541,7 +537,7 @@ def _sidecar_agent(plan: GateExecutionPlan) -> GateResult:
     except Exception as exc:
         return with_sidecar(
             _error(
-                "Gate sidecar execution failed",
+                "门禁侧车执行失败",
                 log=str(exc),
                 code="GATE_EXECUTOR_UNAVAILABLE",
             )
@@ -574,7 +570,7 @@ def _run_recorded_gate_turn(
             answer = observed.final_message
             if isinstance(answer, str) and answer.strip():
                 return answer
-            raise ValueError("Gate sidecar completed without a final response")
+            raise ValueError("门禁侧车已完成，但未返回最终答复")
         if observed.status in {
             "FAILED",
             "CANCELLED",
@@ -582,9 +578,9 @@ def _run_recorded_gate_turn(
             "HUMAN_INPUT_REQUIRED",
         }:
             detail = observed.error or observed.human_question or observed.status
-            raise ValueError(f"Gate sidecar native turn did not complete: {detail}")
+            raise ValueError(f"门禁侧车原生轮次未完成：{detail}")
         if time.monotonic() >= deadline:
-            raise ValueError("Gate sidecar native turn timed out")
+            raise ValueError("门禁侧车原生轮次执行超时")
         # ``send_message`` accepts a formal user event, but the Runtime owns
         # completion and event persistence. Poll its current native state
         # rather than inferring completion from transport acceptance.

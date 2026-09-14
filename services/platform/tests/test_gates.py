@@ -43,6 +43,20 @@ def test_gate_normalizes_surrounding_decision_whitespace():
     assert result.decision == "PASS"
 
 
+def test_system_gate_messages_are_chinese_without_changing_the_result_protocol():
+    invalid_result = _normalize([])
+    fallback_summary = _normalize(
+        {"decision": "PASS", "reasons": [], "evidence": [], "details": {}}
+    )
+    unsupported_type = execute_gate_plan(GateExecutionPlan("JAVASCRIPT", {}, 1), {})
+
+    assert invalid_result.summary == "门禁结果必须是 JSON 对象"
+    assert fallback_summary.summary == "门禁返回判定：PASS"
+    assert unsupported_type.summary == "不支持的门禁类型：JAVASCRIPT"
+    assert invalid_result.error_code == "GATE_RESULT_INVALID"
+    assert unsupported_type.error_code == "GATE_CONFIG_INVALID"
+
+
 def test_platform_output_contract_only_checks_artifacts_types_and_port_mappings():
     """The platform check must not make a semantic document-quality judgement."""
 

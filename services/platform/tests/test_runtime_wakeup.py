@@ -1156,8 +1156,8 @@ def test_automatic_gate_execution_error_stops_without_output_remediation(monkeyp
     )
     result = GateResult(
         "ERROR",
-        "Gate Agent configuration is unavailable",
-        ["Gate Agent configuration is unavailable"],
+        "门禁 Agent 配置不可用",
+        ["门禁 Agent 配置不可用"],
         [],
         {},
         error_code="GATE_CONFIG_INVALID",
