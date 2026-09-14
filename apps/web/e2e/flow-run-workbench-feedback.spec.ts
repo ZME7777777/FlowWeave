@@ -109,6 +109,40 @@ const runningAutomatic = {
   },
 };
 
+test('FlowRun list opens the shared terminal as an in-page dialog', async ({ page }) => {
+  let terminalConnections = 0;
+  const popups: string[] = [];
+  page.on('popup', popup => popups.push(popup.url()));
+  await page.routeWebSocket('**/api/v1/flow-runs/run-1/terminal**', socket => {
+    terminalConnections += 1;
+    socket.send('connected\r\n$ ');
+  });
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    const respond = (body: unknown, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
+    if (path.endsWith('/auth/me')) return respond(authenticatedUser);
+    if (path === '/api/v1/flow-runs' && request.method() === 'GET') return respond([run]);
+    if (path === '/api/v1/flows' && request.method() === 'GET') return respond([definition]);
+    if (path === '/api/v1/terminal-environments') return respond([]);
+    if (path === '/api/v1/flow-runs/run-1/runtime/resource') return respond({ resource: null });
+    return respond({ error: { code: 'RESOURCE_NOT_FOUND', message: path, details: {} } }, 404);
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: '流程运行', exact: true }).click();
+  await page.getByRole('button', { name: '打开运行 测试运行 的终端' }).click();
+
+  const dialog = page.getByRole('dialog', { name: '测试运行 终端' });
+  await expect(dialog).toBeVisible();
+  await expect(dialog).toContainText('FlowRun 全局终端');
+  await expect.poll(() => terminalConnections).toBeGreaterThan(0);
+  expect(popups).toEqual([]);
+
+  await page.keyboard.press('Escape');
+  await expect(dialog).toBeHidden();
+});
+
 test('step configuration is saved before start and direct launch has its own tab', async ({ page }) => {
   const noInputAsset = { ...asset, inputs: [] };
   const stepDefinition = {

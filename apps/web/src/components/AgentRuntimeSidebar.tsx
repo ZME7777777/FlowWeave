@@ -2,9 +2,11 @@ import { FitAddon } from '@xterm/addon-fit';
 import { Terminal as XTerm } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
 import { ExternalLink, Info, Maximize2, Minimize2, PanelRightClose, PanelRightOpen, Radar, Terminal, X } from 'lucide-react';
+import { createPortal } from 'react-dom';
 import { ReactNode, useEffect, useRef, useState } from 'react';
 import { agentTerminalUrl, flowRunTerminalUrl } from '../api/client';
 import type { FlowRunConversation, FlowRunRuntimeOverview } from '../types';
+import { useEscapeClose } from './useEscapeClose';
 import './AgentRuntimeSidebar.css';
 
 interface Props {
@@ -19,14 +21,42 @@ interface Props {
 
 interface RuntimeTerminalProps { runId: string; conversationId?: string; standalone?: boolean }
 
+type RuntimeTerminalContextMenu = { x: number; y: number; text: string; line: string };
+
+async function copyTerminalText(value: string): Promise<void> {
+  if (!value) return;
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(value);
+      return;
+    } catch {
+      // Keep the terminal usable in an embedded browser without Clipboard API
+      // permission, matching the product's other copy affordances.
+    }
+  }
+  const textarea = document.createElement('textarea');
+  textarea.value = value;
+  textarea.setAttribute('readonly', '');
+  textarea.style.position = 'fixed';
+  textarea.style.opacity = '0';
+  document.body.append(textarea);
+  textarea.select();
+  const copied = document.execCommand('copy');
+  textarea.remove();
+  if (!copied) throw new Error('Clipboard is unavailable');
+}
+
 export function RuntimeTerminal({ runId, conversationId, standalone = false }: RuntimeTerminalProps) {
   const host = useRef<HTMLDivElement>(null);
+  const sendTerminalInput = useRef<(data: string) => void>(() => undefined);
   const [state, setState] = useState<'connecting' | 'connected' | 'unavailable'>('connecting');
   const [detail, setDetail] = useState('正在通过 FlowWeave 授权代理连接 Runtime…');
+  const [contextMenu, setContextMenu] = useState<RuntimeTerminalContextMenu>();
 
   useEffect(() => {
     const element = host.current;
     if (!element) return;
+    setContextMenu(undefined);
     const terminal = new XTerm({
       cursorBlink: true, scrollback: 3000, fontSize: 12, lineHeight: 1.3,
       fontFamily: "'DM Mono', ui-monospace, SFMono-Regular, Menlo, monospace",
@@ -35,13 +65,98 @@ export function RuntimeTerminal({ runId, conversationId, standalone = false }: R
     const fit = new FitAddon();
     terminal.loadAddon(fit);
     terminal.open(element);
-    // Capture above xterm's canvas while leaving its terminal input handling
-    // untouched; only the browser's native menu is canceled.
     const document = element.ownerDocument;
-    const suppressBrowserContextMenu = (event: MouseEvent) => {
-      if (element.contains(event.target as Node)) event.preventDefault();
+    let removeForcedSelectionListeners: (() => void) | undefined;
+    const terminalCellForMouseEvent = (event: MouseEvent) => {
+      const screen = element.querySelector<HTMLElement>('.xterm-screen');
+      if (!screen) return undefined;
+      const bounds = screen.getBoundingClientRect();
+      if (!bounds.width || !bounds.height) return undefined;
+      const column = Math.max(0, Math.min(terminal.cols - 1, Math.floor((event.clientX - bounds.left) * terminal.cols / bounds.width)));
+      const viewportRow = Math.max(0, Math.min(terminal.rows - 1, Math.floor((event.clientY - bounds.top) * terminal.rows / bounds.height)));
+      return { column, row: terminal.buffer.active.viewportY + viewportRow };
     };
+    const forceTextSelection = (event: MouseEvent) => {
+      if (event.button !== 0 || event.shiftKey || terminal.modes.mouseTrackingMode === 'none') return;
+      const start = terminalCellForMouseEvent(event);
+      if (!start) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      let selecting = false;
+      const updateSelection = (current: MouseEvent) => {
+        const end = terminalCellForMouseEvent(current);
+        if (!end) return;
+        const startOffset = start.row * terminal.cols + start.column;
+        const endOffset = end.row * terminal.cols + end.column;
+        const first = startOffset <= endOffset ? start : end;
+        terminal.select(first.column, first.row, Math.abs(endOffset - startOffset));
+      };
+      const removeListeners = () => {
+        document.removeEventListener('mousemove', moveSelection, true);
+        document.removeEventListener('mouseup', finishSelection, true);
+        removeForcedSelectionListeners = undefined;
+      };
+      const moveSelection = (current: MouseEvent) => {
+        current.preventDefault();
+        current.stopImmediatePropagation();
+        if (!selecting && Math.hypot(current.clientX - event.clientX, current.clientY - event.clientY) > 2) selecting = true;
+        if (selecting) updateSelection(current);
+      };
+      const finishSelection = (current: MouseEvent) => {
+        current.preventDefault();
+        current.stopImmediatePropagation();
+        if (selecting) updateSelection(current);
+        else terminal.focus();
+        removeListeners();
+      };
+      removeForcedSelectionListeners?.();
+      removeForcedSelectionListeners = removeListeners;
+      document.addEventListener('mousemove', moveSelection, true);
+      document.addEventListener('mouseup', finishSelection, true);
+    };
+    const terminalScreen = element.querySelector<HTMLElement>('.xterm-screen');
+    terminalScreen?.addEventListener('mousedown', forceTextSelection, { capture: true });
+    const terminalTextAt = (event: MouseEvent) => {
+      const cell = terminalCellForMouseEvent(event);
+      const line = cell ? terminal.buffer.active.getLine(cell.row)?.translateToString(true) ?? '' : '';
+      const selected = terminal.getSelection().trim();
+      if (selected) return { text: selected, line };
+      const index = cell ? Math.min(Math.max(cell.column, 0), Math.max(0, line.length - 1)) : 0;
+      const before = line.slice(0, index + 1).match(/[^\s]+$/)?.[0] ?? '';
+      const after = line.slice(index + 1).match(/^[^\s]+/)?.[0] ?? '';
+      return { text: before + after, line };
+    };
+    const openTerminalContextMenu = (event: MouseEvent) => {
+      if (event.button !== 2 || !element.contains(event.target as Node)) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      const { text, line } = terminalTextAt(event);
+      setContextMenu({ x: Math.min(event.clientX, window.innerWidth - 230), y: Math.min(event.clientY, window.innerHeight - 250), text, line });
+      terminal.focus();
+    };
+    const closeTerminalContextMenu = (event: MouseEvent) => {
+      const target = event.target instanceof Element ? event.target : undefined;
+      if (event.button !== 2 && !target?.closest('.agent-terminal-context-menu')) setContextMenu(undefined);
+    };
+    const suppressTerminalRightMouseUp = (event: MouseEvent) => {
+      if (event.button === 2 && element.contains(event.target as Node)) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+      }
+    };
+    const suppressBrowserContextMenu = (event: MouseEvent) => {
+      if (!element.contains(event.target as Node)) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    };
+    const dismissTerminalContextMenu = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setContextMenu(undefined);
+    };
+    document.addEventListener('mousedown', openTerminalContextMenu, true);
+    document.addEventListener('mousedown', closeTerminalContextMenu, true);
+    document.addEventListener('mouseup', suppressTerminalRightMouseUp, true);
     document.addEventListener('contextmenu', suppressBrowserContextMenu, true);
+    document.addEventListener('keydown', dismissTerminalContextMenu, true);
     let socket: WebSocket | null = null;
     let disposed = false;
     let reconnectTimer: number | undefined;
@@ -80,20 +195,37 @@ export function RuntimeTerminal({ runId, conversationId, standalone = false }: R
     };
     connect();
     const input = terminal.onData(data => { if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'input', data })); });
+    sendTerminalInput.current = data => { if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'input', data })); };
     const observer = new ResizeObserver(resize);
     observer.observe(element);
     return () => {
       disposed = true;
       if (reconnectTimer !== undefined) window.clearTimeout(reconnectTimer);
       observer.disconnect();
+      sendTerminalInput.current = () => undefined;
+      removeForcedSelectionListeners?.();
+      terminalScreen?.removeEventListener('mousedown', forceTextSelection, true);
+      document.removeEventListener('mousedown', openTerminalContextMenu, true);
+      document.removeEventListener('mousedown', closeTerminalContextMenu, true);
+      document.removeEventListener('mouseup', suppressTerminalRightMouseUp, true);
       document.removeEventListener('contextmenu', suppressBrowserContextMenu, true);
+      document.removeEventListener('keydown', dismissTerminalContextMenu, true);
       input.dispose();
       socket?.close(1000);
       terminal.dispose();
     };
   }, [conversationId, runId]);
 
-  return <div className={`agent-runtime-terminal ${standalone ? 'standalone' : ''}`}><div className="agent-terminal-status"><i className={state}/><span>{detail}</span></div><div ref={host} className="agent-terminal-screen" aria-label="Agent 运行终端"/></div>;
+  const closeMenu = () => setContextMenu(undefined);
+  const copy = (value: string) => { closeMenu(); void copyTerminalText(value).catch(() => undefined); };
+  const send = (value: string) => { closeMenu(); sendTerminalInput.current(value); };
+  const selectedText = contextMenu?.text || '选中内容';
+  return <div className={`agent-runtime-terminal ${standalone ? 'standalone' : ''}`}><div className="agent-terminal-status"><i className={state}/><span>{detail}</span></div><div ref={host} className="agent-terminal-screen" aria-label="Agent 运行终端"/>{contextMenu && createPortal(<div className="agent-terminal-context-menu" role="menu" aria-label="终端操作菜单" style={{ left: contextMenu.x, top: contextMenu.y }} onMouseDown={event => event.stopPropagation()} onContextMenu={event => event.preventDefault()}><button type="button" role="menuitem" disabled={!contextMenu.text} onClick={() => copy(contextMenu.text)}>复制 “{selectedText}”</button><button type="button" role="menuitem" disabled={!contextMenu.line} onClick={() => copy(contextMenu.line)}>复制当前行</button><button type="button" role="menuitem" disabled={!contextMenu.text} onClick={() => send(contextMenu.text)}>输入 “{selectedText}”</button><hr/><button type="button" role="menuitem" onClick={() => send('\u0002%')}>左右分屏</button><button type="button" role="menuitem" onClick={() => send('\u0002"')}>上下分屏</button><button type="button" role="menuitem" onClick={() => send('\u0002m')}>标记窗格</button></div>, document.body)}</div>;
+}
+
+export function FlowRunTerminalDialog({ runId, runName, onClose }: { runId: string; runName: string; onClose: () => void }) {
+  useEscapeClose(onClose);
+  return <div className="agent-terminal-overlay flow-run-terminal-dialog" role="dialog" aria-modal="true" aria-label={`${runName} 终端`} onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}><section onMouseDown={event => event.stopPropagation()}><header><div><Terminal size={18}/><span><b>{runName}</b><small>FlowRun 全局终端 · 右键可复制、输入或管理 tmux 窗格</small></span></div><button type="button" onClick={onClose}><X size={15}/>关闭</button></header><RuntimeTerminal runId={runId}/></section></div>;
 }
 
 function openStandaloneTerminal(runId: string, conversationId: string) {

@@ -176,6 +176,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-416 | 子智能体模型请求策略与墙钟耗时语义 | DONE | 工作台明确展示每次模型请求的 120 秒／3 次重试策略，并将耗时标为 TaskAction 到当前或正式结果的墙钟时间；不伪造 OpenHands 未发布的逐次重试事件。 |
 | FR-418 | 暂停会话时的子智能体状态投影 | DONE | 当 OpenHands 正式会话状态为 paused 时，未返回 TaskObservation 的子任务在主对话活动卡中显示“已暂停，结果未返回”，并停止运行态头像；不伪造成已完成或子 Agent 进程已退出。 |
 | FR-420 | 主会话异常终止时的子智能体状态投影 | DONE | 同一正式用户轮次出现 ERROR 后，未返回 TaskObservation 的子任务显示“主会话异常结束，结果未返回”，停止计时并不再计入运行中；不伪造成子任务自身失败。 |
+| FR-421 | FlowRun 列表共享终端子弹窗 | DONE | 列表终端按钮在当前页面打开以 FlowRun 名称命名的子弹窗，复用 Runtime Terminal 的授权连接、拖拽选择、复制／输入与 tmux 操作；不打开浏览器新窗口。 |
 | FR-415 | FlowRun 独立终端全局项目根修正 | DONE | FlowRun 级终端进入已挂载的全局 `project` 根，因此无需创建节点即可完成对整个 FlowRun 生效的配置；会话／Attempt 终端继续保持记录级路径。 |
 | FR-417 | FlowRun 独立终端挂载感知路径选择 | DONE | FlowRun 级终端按活跃 Runtime 的固定挂载契约选择共享 `project` 根或记录直挂载根，避免历史 Runtime 因不存在 cwd 失败。 |
 
@@ -641,6 +642,25 @@ Task 保持其原生 `RUNNING` 生命周期事实，但 UI 显示“主会话异
 验收：Web TypeScript typecheck、受影响文件 ESLint、production build、`git diff --check` 与任务状态唯一性通过。
 新增 Agent 工作台 Playwright 回归断言，覆盖正式父 `ERROR` 后未返回 Task 的工作过程与右侧记录状态；
 定向执行结果按本机实际前置条件记录于验证日志。
+
+### FR-421 FlowRun 列表共享终端子弹窗 — DONE
+
+依赖：`FR-415`、`FR-417`。
+
+目标：FlowRun 列表的终端入口必须在当前页面打开子弹窗，标题使用该 FlowRun 名称；不得再创建浏览器
+独立窗口。终端须复用 Runtime Terminal 与 Agent 会话已验证的拖拽文本选择、右键复制／输入和 tmux
+窗格操作，且不改变既有授权 WebSocket、Runtime 工作目录或容器连接协议。
+
+完成：列表入口改为渲染页面内 `FlowRunTerminalDialog`，在同一个 `RuntimeTerminal` Surface 中连接既有
+FlowRun 终端代理。共享终端组件现在按 Agent 会话终端的公共选择和右键交互处理 tmux mouse reporting，
+支持复制选中内容／当前行、输入选中文本、左右／上下分屏和标记窗格；复制同时保留受限嵌入浏览器的
+剪贴板回退。菜单样式移入 Runtime Terminal 样式表，确保流程列表和工作台的呈现一致。ESC、遮罩点击
+和关闭按钮均关闭该子弹窗；FlowRun 仍以全局项目根连接，未修改 API、数据库、OpenHands、Runtime
+Provider、Docker 或远端环境。
+
+验收：Web TypeScript typecheck、受影响文件 ESLint、production build、`git diff --check`、Alembic
+head 与任务状态唯一性通过。新增定向 Playwright 断言：点击列表按钮显示名为 FlowRun 的页面内 dialog，
+WebSocket 连接到既有 FlowRun terminal 路由，且没有创建 popup。
 
 ### FR-415 FlowRun 独立终端全局项目根修正 — DONE
 
@@ -5549,6 +5569,7 @@ contract、冻结策略与既有受控生命周期约束覆盖。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-14 | FR-421 | Web TypeScript typecheck、受影响文件 ESLint、production build、定向 Playwright、Alembic head、`git diff --check` 与任务状态唯一性 | PASS：FlowRun 列表终端按钮仅打开当前页面的以 FlowRun 名称命名的子弹窗；它复用 Runtime Terminal 的受权 WebSocket、拖拽选择、复制／输入和 tmux 操作，不创建浏览器 popup。定向 Playwright 在本地 Vite 服务上 1 passed。唯一 Alembic head 为 `0115_agent_annotations`；未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-14 | FR-420 | Web TypeScript typecheck、受影响文件 ESLint、production build、`git diff --check`、任务状态唯一性；Agent 工作台定向 Playwright | PASS（静态／构建）：正式父轮 ERROR 仅以事件树身份关联无结果 Task，UI 显示“主会话异常结束，结果未返回”、停止墙钟计时并移出运行中汇总，不伪造子任务自身失败。全量 ESLint 复跑受未纳入本切片的 `AgentRuntimeSidebar.tsx` 本地未使用变量阻断；受影响文件 lint 通过。定向 Playwright 因本机未启动 Vite 测试服务（`127.0.0.1:5173` `ERR_CONNECTION_REFUSED`）在 `page.goto` 前置阶段受阻，未进入本切片断言，未记为通过。未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-14 | FR-419 | 受影响 Python Ruff format/check、`py_compile`、认证上下文定向 pytest（2 passed）、Alembic head、`git diff --check` 与任务状态唯一性 | PASS：系统提示词后缀以固定认证协议加动态 JSON 凭据目录明确提供目标主机、匹配范围、认证类型和源变量映射；测试覆盖用户名密码与 Token 条目，且确认凭据明文不进入提示词。OpenHands 原生 Secret 注入、数据库、Docker 与远端环境未修改。 |
 | 2026-09-14 | FR-413 | 受影响 Python Ruff format/check、`py_compile`、认证提示词定向 pytest、`git diff --check` 与任务状态唯一性 | PASS：认证提示词不再含任何特定 Skill/脚本变量示例，只说明域名匹配后的源变量和命令级映射边界。未修改注入协议、数据库、OpenHands、Docker 或远端环境。 |

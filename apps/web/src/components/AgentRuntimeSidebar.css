@@ -319,6 +319,32 @@
 .standalone-terminal-page > header button:hover { background: #243a2b; border-color: #597360; }
 .agent-terminal-overlay .agent-runtime-terminal { padding: 14px; border: 0; border-radius: 0; box-shadow: none; }
 .agent-terminal-overlay .agent-terminal-screen { min-height: 0; }
+.agent-terminal-context-menu {
+  position: fixed;
+  z-index: 200;
+  width: 220px;
+  padding: 5px;
+  border: 1px solid #2d4336;
+  border-radius: 8px;
+  background: #102016;
+  box-shadow: 0 12px 32px #0008;
+  color: #d5f3dc;
+  font-size: 12px;
+}
+.agent-terminal-context-menu button {
+  display: block;
+  width: 100%;
+  padding: 7px 9px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+}
+.agent-terminal-context-menu button:hover:not(:disabled),
+.agent-terminal-context-menu button:focus-visible { border-radius: 4px; background: #254a32; outline: 0; }
+.agent-terminal-context-menu button:disabled { opacity: .45; }
+.agent-terminal-context-menu hr { margin: 4px; border: 0; border-top: 1px solid #2d4336; }
+.agent-terminal-context-menu button.danger { color: #ffb2a8; }
 
 .standalone-terminal-page {
   width: 100vw;
