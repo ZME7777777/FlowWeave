@@ -6,6 +6,7 @@ being assembled.  They are never included in list/read API projections.
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 
@@ -138,7 +139,7 @@ def credentials_for_agent(db: Session) -> tuple[dict[str, str], str]:
     name. The model receives domain/name metadata, not a plaintext value.
     """
     values: dict[str, str] = {}
-    lines: list[str] = []
+    directory: list[dict[str, object]] = []
     query = select(WebsiteCredential).order_by(
         WebsiteCredential.target_host, WebsiteCredential.name
     )
@@ -147,22 +148,44 @@ def credentials_for_agent(db: Session) -> tuple[dict[str, str], str]:
         if item.auth_type == "USERNAME_PASSWORD":
             values[f"{prefix}_USERNAME"] = decrypt_secret(item.encrypted_username or b"")
             values[f"{prefix}_PASSWORD"] = decrypt_secret(item.encrypted_secret)
-            variables = f"${prefix}_USERNAME / ${prefix}_PASSWORD"
+            source_env = {
+                "username": f"${prefix}_USERNAME",
+                "password": f"${prefix}_PASSWORD",
+            }
+            auth_type = "username_password"
         else:
             values[f"{prefix}_TOKEN"] = decrypt_secret(item.encrypted_secret)
-            variables = f"${prefix}_TOKEN"
-        scope = item.target_host + (" 及其子域" if item.include_subdomains else "（仅精确主机）")
-        lines.append(f"- {scope}：{item.name}（{item.auth_type}；变量 {variables}）")
-    if not lines:
+            source_env = {"token": f"${prefix}_TOKEN"}
+            auth_type = "token"
+        directory.append(
+            {
+                "target_host": item.target_host,
+                "host_scope": "subdomains" if item.include_subdomains else "exact",
+                "auth_type": auth_type,
+                "source_env": source_env,
+            }
+        )
+    if not directory:
         return {}, ""
     instructions = (
-        "受控网站认证：先从目标 URL 提取主机，再只选择精确匹配的条目；"
-        "仅当条目明确允许子域时，才可匹配其子域。不得为不匹配的主机引用变量。"
-        "下列完整变量名是平台提供的源凭据变量。若当前 Skill 或脚本要求不同的环境变量名，"
-        "可在同一条实际访问该匹配主机的命令中，将源变量以命令级环境变量赋值给脚本所需变量，"
-        "再执行该 Skill 或脚本；不要使用全局 export。"
-        "映射只能使用同一条已匹配条目的用户名、密码或 Token，不能跨主机、跨条目或猜测凭据变量。"
-        "不要输出、写入文件、提交或向用户索取这些值；未匹配时请求用户在认证管理中新增条目。\n"
-        + "\n".join(lines)
+        "# 受控认证协议\n\n"
+        "你只能按照下方凭据目录使用认证变量。\n\n"
+        "执行任何可能访问网络的命令前：\n"
+        "1. 从该命令实际访问的 URL 提取并规范化主机名。\n"
+        "2. 只选择 `target_host` 与主机名相同的条目；仅当 `host_scope` 为 `subdomains` 时，"
+        "才允许匹配其子域。\n"
+        "3. 如 Skill 或脚本需要自定义环境变量名，只能在这条访问已匹配主机的命令内，将该条目的 "
+        "`source_env` 映射给它；不得全局 `export`。\n"
+        "4. 不得跨条目、跨主机使用或猜测源变量；不得输出、写入文件、提交或向用户索取凭据值。\n"
+        "5. 没有匹配条目时，不得使用认证变量；请用户在认证管理中新增条目。\n\n"
+        "# 凭据目录（仅元数据；不含凭据明文）\n\n"
+        "```json\n"
+        + json.dumps(
+            {"schema_version": 1, "credentials": directory},
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n```"
     )
     return values, instructions

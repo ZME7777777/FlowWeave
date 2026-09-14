@@ -213,7 +213,7 @@ def test_collaboration_request_keeps_host_scoped_credentials_without_node_execut
         "flowweave.runtime.request.credentials_for_agent",
         lambda _db: (
             {"FLOWWEAVE_AUTH_ES_USERNAME": "secret-user"},
-            "受控网站认证：easysearch.example.com；变量 $FLOWWEAVE_AUTH_ES_USERNAME",
+            '# 受控认证协议\n\n```json\n{"schema_version": 1, "credentials": []}\n```',
         ),
     )
 
@@ -249,16 +249,16 @@ def test_collaboration_request_keeps_host_scoped_credentials_without_node_execut
     assert request.output_targets == {}
     assert request.agent_spec is not shared_spec
     assert request.agent_spec.agent_context.system_message_suffix == (
-        "受控网站认证：easysearch.example.com；变量 $FLOWWEAVE_AUTH_ES_USERNAME"
+        '# 受控认证协议\n\n```json\n{"schema_version": 1, "credentials": []}\n```'
     )
     assert request.conversation_secrets == {"FLOWWEAVE_AUTH_ES_USERNAME": "secret-user"}
     assert request.memory_enabled is False
 
 
-def test_credential_context_allows_command_local_skill_variable_mapping(
+def test_credential_context_is_a_structured_host_scoped_directory(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    credential = SimpleNamespace(
+    username_password_credential = SimpleNamespace(
         id="10000000-0000-4000-8000-000000000001",
         auth_type="USERNAME_PASSWORD",
         encrypted_username=b"username",
@@ -267,15 +267,28 @@ def test_credential_context_allows_command_local_skill_variable_mapping(
         include_subdomains=False,
         name="EasySearch",
     )
+    token_credential = SimpleNamespace(
+        id="20000000-0000-4000-8000-000000000002",
+        auth_type="TOKEN",
+        encrypted_username=None,
+        encrypted_secret=b"token",
+        target_host="api.example.test",
+        include_subdomains=True,
+        name="Example API",
+    )
 
     class CredentialDb:
         def scalars(self, _query: object):
-            return iter((credential,))
+            return iter((token_credential, username_password_credential))
 
     monkeypatch.setattr(
         credential_service,
         "decrypt_secret",
-        lambda value: "query-user" if value == b"username" else "query-password",
+        lambda value: {
+            b"username": "query-user",
+            b"password": "query-password",
+            b"token": "example-token",
+        }[value],
     )
 
     values, context = credential_service.credentials_for_agent(CredentialDb())
@@ -283,11 +296,34 @@ def test_credential_context_allows_command_local_skill_variable_mapping(
     assert values == {
         "FLOWWEAVE_AUTH_10000000000040008000000000000001_USERNAME": "query-user",
         "FLOWWEAVE_AUTH_10000000000040008000000000000001_PASSWORD": "query-password",
+        "FLOWWEAVE_AUTH_20000000000040008000000000000002_TOKEN": "example-token",
     }
-    assert "可在同一条实际访问该匹配主机的命令中" in context
-    assert "不要使用全局 export" in context
+    assert "# 受控认证协议" in context
+    assert "凭据目录（仅元数据；不含凭据明文）" in context
+    assert "不得全局 `export`" in context
+    directory = json.loads(context.split("```json\n", 1)[1].split("\n```", 1)[0])
+    assert directory == {
+        "schema_version": 1,
+        "credentials": [
+            {
+                "target_host": "api.example.test",
+                "host_scope": "subdomains",
+                "auth_type": "token",
+                "source_env": {"token": "$FLOWWEAVE_AUTH_20000000000040008000000000000002_TOKEN"},
+            },
+            {
+                "target_host": "easysearch.example.com",
+                "host_scope": "exact",
+                "auth_type": "username_password",
+                "source_env": {
+                    "username": "$FLOWWEAVE_AUTH_10000000000040008000000000000001_USERNAME",
+                    "password": "$FLOWWEAVE_AUTH_10000000000040008000000000000001_PASSWORD",
+                },
+            },
+        ],
+    }
     assert "ES_QUERY" not in context
-    assert "不得猜测或改写" not in context
+    assert "example-token" not in context
 
 
 def test_shared_flow_run_runtime_uses_attempt_record_workspace(

@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`IN PROGRESS`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`NONE（等待 FR-404、FR-405、FR-413、FR-414、FR-415、FR-417 部署验收）`
+> 下一可执行切片：`NONE（等待 FR-404、FR-405、FR-413、FR-414、FR-415、FR-417、FR-419 部署验收）`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -171,6 +171,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-411 | Mermaid 全屏 SVG 舞台坐标修正 | DONE | SVG 直接填充适配舞台，100% 居中；缩放只改变舞台尺寸，不再漂移至左上。 |
 | FR-412 | 网站认证源变量命令级映射指导 | DONE | 平台继续按域名选择源凭据变量，同时允许 Agent 在匹配域名的单条命令中将其命令级映射到 Skill/脚本所需变量；禁止全局 export、跨域映射与凭据泄露。 |
 | FR-413 | 网站认证变量映射说明泛化 | DONE | 移除提示词中所有特定 Skill/脚本变量示例，只保留与实现无关的域名匹配、命令级映射和安全边界说明。 |
+| FR-419 | 网站认证结构化提示词目录 | DONE | 将不含明文的凭据目录改为明确的认证协议与动态 JSON，逐条声明主机匹配范围、认证类型及平台源变量映射。 |
 | FR-414 | FlowRun 独立终端记录目录预创建 | DONE | FlowRun 终端在服务端创建并验证自身的规范记录目录后再连接，避免不存在的 cwd 使 OCI exec 失败；保持 Provider 的记录级隔离校验。 |
 | FR-416 | 子智能体模型请求策略与墙钟耗时语义 | DONE | 工作台明确展示每次模型请求的 120 秒／3 次重试策略，并将耗时标为 TaskAction 到当前或正式结果的墙钟时间；不伪造 OpenHands 未发布的逐次重试事件。 |
 | FR-418 | 暂停会话时的子智能体状态投影 | DONE | 当 OpenHands 正式会话状态为 paused 时，未返回 TaskObservation 的子任务在主对话活动卡中显示“已暂停，结果未返回”，并停止运行态头像；不伪造成已完成或子 Agent 进程已退出。 |
@@ -556,6 +557,21 @@ API、数据库、OpenHands、Runtime Provider、Docker 或持久化契约。
 完成：删除特定变量示例；提示词仅保留通用映射用法、安全边界与列出的实际源变量。
 
 验收：受影响 Python Ruff format/check、`py_compile`、认证提示词定向 pytest 与 `git diff --check` 通过；无迁移、无 OpenHands 源码改动、无 Docker 或远端操作。
+
+### FR-419 网站认证结构化提示词目录 — DONE
+
+依赖：`FR-412`、`FR-413`。
+
+目标：认证系统提示词应将不含明文的凭据目录以动态 JSON 提供给模型，逐条清晰声明
+`target_host`、精确或子域范围、认证类型和平台源变量映射；固定协议必须明确主机选择、命令级映射、
+无匹配拒绝以及泄露防护。不得改动 OpenHands 原生 Secret 请求注入、数据库凭据或网络执行边界。
+
+完成：认证上下文现在以固定的“受控认证协议”说明执行步骤，并在 JSON 代码块内动态提供
+`schema_version` 与 `credentials`。每条目录项明确包含 `target_host`、`host_scope`、`auth_type` 和
+按认证类型命名的 `source_env`；明文继续只经 OpenHands 原生 Conversation Secret 请求字段传入。
+
+验收：受影响 Python Ruff format/check、`py_compile`、认证上下文定向 pytest、Alembic head、
+`git diff --check` 与任务状态唯一性通过；无迁移、无 OpenHands 源码改动、无 Docker 或远端操作。
 
 ### FR-414 FlowRun 独立终端记录目录预创建 — DONE
 
@@ -5513,6 +5529,7 @@ contract、冻结策略与既有受控生命周期约束覆盖。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-14 | FR-419 | 受影响 Python Ruff format/check、`py_compile`、认证上下文定向 pytest（2 passed）、Alembic head、`git diff --check` 与任务状态唯一性 | PASS：系统提示词后缀以固定认证协议加动态 JSON 凭据目录明确提供目标主机、匹配范围、认证类型和源变量映射；测试覆盖用户名密码与 Token 条目，且确认凭据明文不进入提示词。OpenHands 原生 Secret 注入、数据库、Docker 与远端环境未修改。 |
 | 2026-09-14 | FR-413 | 受影响 Python Ruff format/check、`py_compile`、认证提示词定向 pytest、`git diff --check` 与任务状态唯一性 | PASS：认证提示词不再含任何特定 Skill/脚本变量示例，只说明域名匹配后的源变量和命令级映射边界。未修改注入协议、数据库、OpenHands、Docker 或远端环境。 |
 | 2026-09-14 | FR-414 | FlowRun 终端目录预创建直接断言；受影响 Python Ruff format/check、`py_compile`、`git diff --check` 与任务状态唯一性 | PASS（直接／静态）：终端连接前只由服务端创建并验证该 FlowRun 的规范 `project/<record-id>`；返回路径与创建路径一致，Provider 继续拒绝未限定的 project 根。`test_runtime_operations.py` 需要 Testcontainers PostgreSQL，但本机 Docker socket 缺失，fixture 在断言前失败，未记为通过。未修改数据库、OpenHands、Docker 或远端环境。 |
 | 2026-09-14 | FR-412 | 受影响 Python Ruff format/check、`py_compile`、认证提示词定向 pytest、`git diff --check` 与任务状态唯一性 | PASS：平台仍按目标主机与子域规则说明可用源凭据变量；提示词允许在同一条访问匹配主机的命令中以命令级环境变量赋值适配 Skill/脚本的变量名，明确禁止全局 `export`、跨主机／条目映射、猜测变量和凭据泄露。未修改注入协议、数据库、OpenHands、Docker 或远端环境。 |
