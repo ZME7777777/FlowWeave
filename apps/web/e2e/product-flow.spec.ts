@@ -803,6 +803,10 @@ test('top-level Agent workspace creates a direct conversation and restores its U
       return;
     }
     if (path.endsWith('/input-readiness')) {
+      if (parentTurnFailed) {
+        await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ready: true, execution_status: 'error' }) });
+        return;
+      }
       if (transientIdleReadiness || readinessReportsIdle) {
         transientIdleReadiness = false;
         await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ready: true, execution_status: 'idle' }) });
@@ -861,6 +865,21 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.locator('h2.agent-session-title')).toHaveText('检查工作目录');
   await expect(page.locator('.agent-workbench-header').getByLabel(/工作区工具/)).toHaveCount(0);
   await expect(page.locator('.agent-workspace-summary').getByLabel('打开工作区工具')).toBeVisible();
+  // OpenHands persists a formal error and transitions this turn to its native
+  // `error` terminal state. The browser must not retain a running UI from the
+  // prior state (spinner, "正在处理", and the stop button).
+  modelIsResponding = true;
+  await page.reload();
+  await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toBeVisible();
+  modelIsResponding = false;
+  parentTurnFailed = true;
+  await expect(page.getByText('模型服务暂时不可用')).toBeVisible();
+  await expect(page.getByRole('button', { name: '发送消息' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toHaveCount(0);
+  await expect(page.locator('.agent-composer-status')).toHaveCount(0);
+  await expect(page.locator('.agent-workspace-conversation-running')).toHaveCount(0);
+  parentTurnFailed = false;
+  await page.reload();
   await page.locator('h2.agent-session-title').dblclick();
   const titleEditor = page.getByLabel('会话标题');
   await expect(titleEditor).toHaveValue('检查工作目录');
@@ -1520,9 +1539,8 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect.poll(() => page.locator('.conversation-surface').evaluate(surface => surface.scrollHeight - surface.scrollTop - surface.clientHeight)).toBeLessThanOrEqual(16);
   await expect(page.getByRole('button', { name: '跳转到最新回复' })).toHaveCount(0);
   await expect(page.getByText('核对已经完成，下面给出最终结果。')).toBeVisible();
-  // A Runtime can return to native idle after an abnormal main-loop exit
-  // without persisting a terminal event. The browser must not leave the
-  // selected conversation's running marker spinning indefinitely.
+  // A Runtime can return a formal terminal error after an abnormal main-loop
+  // exit. Its Task descendants must also stop presenting as still running.
   modelIsResponding = true;
   await composer.fill('模拟主会话异常终止');
   await composer.press('Enter');

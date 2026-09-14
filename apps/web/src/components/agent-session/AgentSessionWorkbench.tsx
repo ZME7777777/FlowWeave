@@ -495,7 +495,10 @@ function conversationIsRunning(executionStatus: string | null | undefined): bool
 }
 
 function conversationHasReachedTerminalState(executionStatus: string | null | undefined): boolean {
-  return ['idle', 'completed', 'stopped', 'finished'].includes(
+  // OpenHands writes a formal ConversationErrorEvent before ending a failed
+  // run as `error`. Since that native state is ready for a later explicit
+  // message, it must clear any earlier local sending transition too.
+  return ['idle', 'completed', 'stopped', 'finished', 'error', 'stuck'].includes(
     executionStatus?.trim().toLowerCase() ?? '',
   );
 }
