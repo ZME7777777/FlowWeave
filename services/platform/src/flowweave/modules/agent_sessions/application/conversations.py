@@ -2185,6 +2185,13 @@ def dispatch_running_message(prepared: PreparedRunningMessage) -> RuntimeResult 
 
     runtime = get_runtime()
     readiness = runtime.input_readiness(prepared.handle)
+    diagnostic = getattr(runtime, "log_delivery_diagnostic", None)
+    if callable(diagnostic):
+        diagnostic(
+            prepared.handle,
+            operation="agent_running_dispatch",
+            readiness=readiness,
+        )
     if readiness.ready:
         return None
     if readiness.execution_status not in {"running", "executing"}:
@@ -2291,6 +2298,9 @@ def message(
                 "Agent 正在处理停止或确认请求，请稍候",
                 409,
             )
+        diagnostic = getattr(runtime, "log_delivery_diagnostic", None)
+        if callable(diagnostic):
+            diagnostic(handle, operation="agent_running_direct", readiness=readiness)
         try:
             result = runtime.send_message(handle, prompt, image_urls)
         except DomainError as exc:
@@ -2409,6 +2419,15 @@ def message(
     ):
         _safe_native_compaction(runtime, handle)
         compacted = True
+    diagnostic = getattr(runtime, "log_delivery_diagnostic", None)
+    if callable(diagnostic):
+        diagnostic(
+            handle,
+            operation="agent_idle_send",
+            model_rebind=True,
+            fork_recovery=recovery is not None,
+            compaction=compacted,
+        )
     try:
         result = runtime.send_message(handle, prompt, image_urls)
     except DomainError as exc:
@@ -3419,12 +3438,13 @@ def rewrite_message(
     parent_id = target.payload.get("parent_id")
     if parent_id is not None and not isinstance(parent_id, str):
         raise DomainError("RUNTIME_EVENT_IDENTITY_INVALID", "消息事件身份无效", 409)
-    _validate_attachment_owners(
-        binding.id, attachments, workspace_root=binding.working_directory
-    )
+    _validate_attachment_owners(binding.id, attachments, workspace_root=binding.working_directory)
     resolved_references = _resolve_conversation_references(runtime, handle, references)
     resolved_workspace_references = agent_workspace_host.validate_message_workspace_references(
-        db, workspace.id, _validated_workspace_references(workspace_references), binding_id=binding.id
+        db,
+        workspace.id,
+        _validated_workspace_references(workspace_references),
+        binding_id=binding.id,
     )
     runtime.navigate(handle, parent_id)
     # Editing the first user message leaves no inherited context to protect.
@@ -3433,7 +3453,11 @@ def rewrite_message(
     if legacy_policy and parent_id not in {None, "__root__"}:
         _safe_native_compaction(runtime, handle)
     prompt, image_urls = _message_payload(
-        content.strip(), attachments, resolved_references, resolved_workspace_references, annotations
+        content.strip(),
+        attachments,
+        resolved_references,
+        resolved_workspace_references,
+        annotations,
     )
     try:
         result = runtime.send_message(handle, prompt, image_urls)

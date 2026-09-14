@@ -2777,7 +2777,9 @@ def test_openhands_resume_interrupts_the_active_turn_before_steering(
     ]
 
 
-def test_openhands_send_message_advances_cursor_to_user_event(openhands_settings, monkeypatch):
+def test_openhands_send_message_advances_cursor_to_user_event(
+    openhands_settings, monkeypatch, caplog
+):
     runtime = OpenHandsRuntime(openhands_settings)
     requests: list[dict[str, object]] = []
 
@@ -2786,6 +2788,7 @@ def test_openhands_send_message_advances_cursor_to_user_event(openhands_settings
         return {"id": "user-event-2"}
 
     monkeypatch.setattr(runtime, "_request", fake_request)
+    caplog.set_level(logging.WARNING, logger=openhands_module.__name__)
     result = runtime.send_message(
         _handle("initial-event-1"),
         "读取当前输入",
@@ -2800,6 +2803,46 @@ def test_openhands_send_message_advances_cursor_to_user_event(openhands_settings
         "content": [{"type": "text", "text": "读取当前输入"}],
         "run": True,
     }
+    diagnostic = next(
+        record.getMessage()
+        for record in caplog.records
+        if "native_user_event_append_accepted" in record.getMessage()
+    )
+    assert "cursor_source=id text_chars=6 image_count=0" in diagnostic
+    assert "user-event-2" not in diagnostic
+    assert "读取当前输入" not in diagnostic
+
+
+def test_openhands_send_message_logs_redacted_ambiguous_failure(
+    openhands_settings, monkeypatch, caplog
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+
+    def fail_request(*_args, **_kwargs):
+        raise DomainError(
+            "EXECUTOR_UNAVAILABLE",
+            "Bearer secret-private",
+            504,
+            {"outcome_unknown": True, "endpoint": "https://private.example"},
+        )
+
+    monkeypatch.setattr(runtime, "_request", fail_request)
+    caplog.set_level(logging.WARNING, logger=openhands_module.__name__)
+
+    with pytest.raises(DomainError, match="Bearer secret-private"):
+        runtime.send_message(_handle(), "prompt-private")
+
+    diagnostic = next(
+        record.getMessage()
+        for record in caplog.records
+        if "native_user_event_append_failed" in record.getMessage()
+    )
+    assert "error_code=EXECUTOR_UNAVAILABLE" in diagnostic
+    assert "status=504 outcome_unknown=True" in diagnostic
+    assert "text_chars=14 image_count=0" in diagnostic
+    assert "secret-private" not in diagnostic
+    assert "private.example" not in diagnostic
+    assert "prompt-private" not in diagnostic
 
 
 @pytest.mark.parametrize(
@@ -3860,6 +3903,14 @@ def test_openhands_fork_replaces_only_the_governed_condenser(
         return next(responses)
 
     monkeypatch.setattr(runtime, "_request", fake_request)
+    monkeypatch.setattr(
+        runtime,
+        "_active_event_window",
+        lambda *_args, **_kwargs: (
+            [{"kind": "MessageEvent", "id": "fork-private", "source": "agent"}],
+            None,
+        ),
+    )
     caplog.set_level(logging.WARNING, logger=openhands_module.__name__)
     request = _request()
     result = runtime.fork_conversation(
@@ -3924,6 +3975,17 @@ def test_openhands_fork_replaces_only_the_governed_condenser(
     assert "actual_model=openai/gpt-5.6-sol" in diagnostics[1]
     assert "host.docker.internal" not in "\n".join(diagnostics)
     assert "configured-secret" not in "\n".join(diagnostics)
+    fork_diagnostic = next(
+        record.getMessage()
+        for record in caplog.records
+        if "native_fork_diagnostic source_conversation=" in record.getMessage()
+    )
+    assert "reset_metrics=True llm_matches=True" in fork_diagnostic
+    assert "source_window_events=1" in fork_diagnostic
+    assert "target_window_events=1" in fork_diagnostic
+    assert "source_context_window=922000" in fork_diagnostic
+    assert "target_context_window=922000" in fork_diagnostic
+    assert "fork-private" not in fork_diagnostic
 
 
 def test_openhands_resolves_visible_finish_to_executed_fork_boundary(
@@ -4448,6 +4510,7 @@ def test_openhands_logs_one_redacted_native_terminal_error_diagnostic(
     assert len(diagnostics) == 1
     message = diagnostics[0]
     assert "signature=responses_incomplete_event" in message
+    assert "incomplete_reason=not_exposed" in message
     assert "error_code=LLMNoResponseError" in message
     assert "classification_retryable=True" in message
     assert "active_model=openai/gpt-5.6-terra" in message
@@ -4463,6 +4526,118 @@ def test_openhands_logs_one_redacted_native_terminal_error_diagnostic(
         "sk-should-not-appear",
     ):
         assert private_value not in message
+
+
+@pytest.mark.parametrize(
+    ("detail_suffix", "expected"),
+    [
+        ("incomplete_details.reason=max_output_tokens", "max_output_tokens"),
+        ("incomplete_details.reason=content_filter", "content_filter"),
+        ("incomplete_details.reason=refusal", "refusal"),
+        ("gateway connection terminated", "gateway_termination"),
+        ("provider-private-detail", "not_exposed"),
+    ],
+)
+def test_openhands_allowlists_incomplete_response_reason(detail_suffix, expected):
+    event = {
+        "kind": "ConversationErrorEvent",
+        "detail": f"Unexpected completed event: ResponseIncompleteEvent {detail_suffix}",
+    }
+
+    assert OpenHandsRuntime._incomplete_response_reason(event) == expected
+
+
+def test_openhands_logs_redacted_delivery_state_without_message_content(
+    openhands_settings, monkeypatch, caplog
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    state = _state(
+        execution_status="running",
+        leaf_event_id="assistant-private",
+        agent={
+            "llm": {
+                "usage_id": "flowweave:provider-private",
+                "model": "openai/gpt-5.6-terra",
+                "base_url": "https://private.example/v1",
+                "api_mode": "responses",
+                "max_input_tokens": 922000,
+            },
+            "condenser": {"max_size": 10_000},
+        },
+        stats={"usage_to_metrics": {}},
+    )
+    events = [
+        {
+            "kind": "MessageEvent",
+            "id": "user-private",
+            "source": "user",
+            "llm_message": {"role": "user", "content": "prompt-private"},
+        },
+        {
+            "kind": "MessageEvent",
+            "id": "assistant-private",
+            "source": "agent",
+            "llm_message": {"role": "assistant", "content": "answer-private"},
+        },
+    ]
+    monkeypatch.setattr(runtime, "_conversation_state", lambda *_args, **_kwargs: state)
+    monkeypatch.setattr(
+        runtime,
+        "_active_event_window",
+        lambda *_args, **_kwargs: (events, "older-private"),
+    )
+    caplog.set_level(logging.WARNING, logger=openhands_module.__name__)
+
+    runtime.log_delivery_diagnostic(
+        _handle(),
+        operation="agent_running_direct",
+        readiness=RuntimeInputReadiness(ready=False, execution_status="running"),
+    )
+
+    message = next(
+        record.getMessage()
+        for record in caplog.records
+        if "native_delivery_diagnostic operation=" in record.getMessage()
+    )
+    assert "operation=agent_running_direct" in message
+    assert "ready=False execution_status=running" in message
+    assert "window_events=2 window_truncated=True" in message
+    assert "user_events=1 assistant_events=1 error_events=0" in message
+    assert "active_model=openai/gpt-5.6-terra" in message
+    assert "context_used=0 context_window=922000" in message
+    assert "condenser_max_size=10000" in message
+    for private_value in (
+        "user-private",
+        "assistant-private",
+        "older-private",
+        "prompt-private",
+        "answer-private",
+        "provider-private",
+        "https://private.example",
+    ):
+        assert private_value not in message
+
+
+def test_openhands_delivery_diagnostic_failure_does_not_escape(
+    openhands_settings, monkeypatch, caplog
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    monkeypatch.setattr(
+        runtime,
+        "_conversation_state",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("secret-detail")),
+    )
+    caplog.set_level(logging.WARNING, logger=openhands_module.__name__)
+
+    runtime.log_delivery_diagnostic(_handle(), operation="agent_idle_send")
+
+    message = next(
+        record.getMessage()
+        for record in caplog.records
+        if "native_delivery_diagnostic_failed" in record.getMessage()
+    )
+    assert "failure_type=RuntimeError" in message
+    assert "secret-detail" not in message
 
 
 def test_openhands_projects_interrupted_agent_error_details():

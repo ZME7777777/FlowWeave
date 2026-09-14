@@ -334,6 +334,22 @@ class OpenHandsRuntime:
         return "unclassified"
 
     @classmethod
+    def _incomplete_response_reason(cls, item: dict[str, Any]) -> str:
+        """Return only a bounded, allow-listed Responses termination reason."""
+
+        if cls._terminal_error_signature(item) != "responses_incomplete_event":
+            return "not_applicable"
+        detail = cls._event_text(item).lower()
+        for reason in ("max_output_tokens", "content_filter", "refusal"):
+            if reason in detail:
+                return reason
+        if any(marker in detail for marker in ("gateway", "connection terminated", "timeout")):
+            return "gateway_termination"
+        # OpenHands 1.47.0 currently drops the structured
+        # ResponseIncompleteEvent.incomplete_details field.
+        return "not_exposed"
+
+    @classmethod
     def _llm_diagnostic_snapshot(cls, llm: object) -> dict[str, object]:
         """Project only opaque or allow-listed LLM identity fields."""
 
@@ -471,6 +487,7 @@ class OpenHandsRuntime:
             logger.warning(
                 "native_terminal_error_diagnostic source=%s conversation=%s event=%s parent=%s "
                 "runtime=%s error_code=%s error_code_fingerprint=%s signature=%s "
+                "incomplete_reason=%s "
                 "response=%s classification_kind=%s classification_retryable=%s "
                 "classification_action=%s execution_status=%s state_leaf=%s "
                 "active_provider=%s active_model=%s active_model_fingerprint=%s "
@@ -487,6 +504,7 @@ class OpenHandsRuntime:
                 error_code,
                 None if error_code else self._diagnostic_fingerprint(str(item.get("code") or "")),
                 self._terminal_error_signature(item),
+                self._incomplete_response_reason(item),
                 self._diagnostic_fingerprint(item.get("llm_response_id")),
                 self._safe_diagnostic_token(classification_map.get("kind")),
                 classification_map.get("retryable")
@@ -504,6 +522,105 @@ class OpenHandsRuntime:
                 context.get("used_tokens"),
                 context.get("window_tokens"),
                 context.get("cumulative_tokens"),
+            )
+
+    def log_delivery_diagnostic(
+        self,
+        handle: RuntimeHandle,
+        *,
+        operation: str,
+        readiness: RuntimeInputReadiness | None = None,
+        model_rebind: bool = False,
+        fork_recovery: bool = False,
+        compaction: bool = False,
+    ) -> None:
+        """Log safe native state at a user-event delivery boundary.
+
+        Diagnostics are best effort: a state/event read failure must never
+        reject or duplicate the user event.
+        """
+
+        safe_operation = self._safe_diagnostic_token(operation) or "unknown"
+        try:
+            state = self._conversation_state(handle, timeout=_INTERACTIVE_READ_TIMEOUT_SECONDS)
+            native_readiness = readiness or self._input_readiness_from_state(state)
+            leaf_event_id = self._formal_identity(
+                state.get("leaf_event_id"), field="leaf_event_id", required=False
+            )
+            items, history_cursor = self._active_event_window(
+                handle.conversation_id,
+                leaf_event_id,
+                None,
+                base_url=self._base_url_for_handle(handle),
+                session_api_key=self._session_key_for_handle(handle),
+            )
+            context = self._conversation_context_from_state(state)
+            agent = state.get("agent")
+            agent_map = cast(dict[str, object], agent) if isinstance(agent, dict) else {}
+            active_llm = self._llm_diagnostic_snapshot(agent_map.get("llm"))
+            leaf_kind = self._safe_diagnostic_token(items[-1].get("kind")) if items else None
+            logger.warning(
+                "native_delivery_diagnostic operation=%s conversation=%s runtime=%s "
+                "ready=%s execution_status=%s state_leaf=%s window_events=%s "
+                "window_truncated=%s leaf_kind=%s user_events=%s assistant_events=%s "
+                "error_events=%s model_rebind=%s fork_recovery=%s compaction=%s "
+                "active_provider=%s active_model=%s active_model_fingerprint=%s "
+                "active_base_url=%s active_api_mode=%s active_reasoning=%s "
+                "context_used=%s context_window=%s context_cumulative=%s "
+                "condenser_max_size=%s condenser_max_tokens=%s",
+                safe_operation,
+                self._diagnostic_fingerprint(handle.conversation_id),
+                self._diagnostic_fingerprint(
+                    handle.runtime_resource_name or handle.runtime_resource_id
+                ),
+                native_readiness.ready,
+                self._safe_diagnostic_token(native_readiness.execution_status),
+                self._diagnostic_fingerprint(leaf_event_id),
+                len(items),
+                history_cursor is not None,
+                leaf_kind,
+                sum(
+                    1
+                    for item in items
+                    if str(item.get("kind") or "") == "MessageEvent"
+                    and str(item.get("source") or "").lower() in {"user", "human"}
+                ),
+                sum(
+                    1
+                    for item in items
+                    if str(item.get("kind") or "") == "MessageEvent"
+                    and str(item.get("source") or "").lower() in {"agent", "assistant"}
+                ),
+                sum(
+                    1
+                    for item in items
+                    if str(item.get("kind") or "") in {"ConversationErrorEvent", "AgentErrorEvent"}
+                ),
+                model_rebind,
+                fork_recovery,
+                compaction,
+                active_llm["provider"],
+                active_llm["model"],
+                active_llm["model_fingerprint"],
+                active_llm["base_url"],
+                active_llm["api_mode"],
+                active_llm["reasoning"],
+                context.get("used_tokens"),
+                context.get("window_tokens"),
+                context.get("cumulative_tokens"),
+                context.get("condenser_max_size"),
+                context.get("condenser_max_tokens"),
+            )
+        except Exception as exc:  # pragma: no cover - defensive observability boundary
+            logger.warning(
+                "native_delivery_diagnostic_failed operation=%s conversation=%s runtime=%s "
+                "failure_type=%s",
+                safe_operation,
+                self._diagnostic_fingerprint(handle.conversation_id),
+                self._diagnostic_fingerprint(
+                    handle.runtime_resource_name or handle.runtime_resource_id
+                ),
+                self._safe_diagnostic_token(type(exc).__name__) or "unknown",
             )
 
     @staticmethod
@@ -4017,32 +4134,65 @@ class OpenHandsRuntime:
             parts.append({"type": "text", "text": content})
         if image_urls:
             parts.append({"type": "image", "image_urls": list(image_urls)})
-        created = self._request(
-            "POST",
-            f"/api/conversations/{handle.conversation_id}/events",
-            base_url=self._base_url_for_handle(handle),
-            session_api_key=self._session_key_for_handle(handle),
-            # A native running Agent may hold its event-state lock until the
-            # current LLM/tool step finishes. This formal event append must
-            # wait for that boundary rather than timing out at the ordinary
-            # short control-request limit and inviting a duplicate retry.
-            timeout=3600,
-            json={
-                "role": "user",
-                "content": parts,
-                "run": True,
-            },
-        )
-        cursor_value = (
-            created.get("id")
-            or created.get("event_id")
-            or created.get("last_user_message_id")
-            or created.get("leaf_event_id")
-        )
+        try:
+            created = self._request(
+                "POST",
+                f"/api/conversations/{handle.conversation_id}/events",
+                base_url=self._base_url_for_handle(handle),
+                session_api_key=self._session_key_for_handle(handle),
+                # A native running Agent may hold its event-state lock until the
+                # current LLM/tool step finishes. This formal event append must
+                # wait for that boundary rather than timing out at the ordinary
+                # short control-request limit and inviting a duplicate retry.
+                timeout=3600,
+                json={
+                    "role": "user",
+                    "content": parts,
+                    "run": True,
+                },
+            )
+        except DomainError as exc:
+            error_code = self._safe_diagnostic_token(exc.code)
+            logger.warning(
+                "native_user_event_append_failed conversation=%s runtime=%s "
+                "error_code=%s error_code_fingerprint=%s status=%s outcome_unknown=%s "
+                "text_chars=%s image_count=%s",
+                self._diagnostic_fingerprint(handle.conversation_id),
+                self._diagnostic_fingerprint(
+                    handle.runtime_resource_name or handle.runtime_resource_id
+                ),
+                error_code,
+                None if error_code else self._diagnostic_fingerprint(exc.code),
+                exc.status,
+                exc.details.get("outcome_unknown") is True,
+                len(content),
+                len(image_urls),
+            )
+            raise
+        cursor_value: object | None = None
+        cursor_source = "missing"
+        for field in ("id", "event_id", "last_user_message_id", "leaf_event_id"):
+            if created.get(field):
+                cursor_value = created[field]
+                cursor_source = field
+                break
         if not cursor_value:
             state = self._conversation_state(handle)
             cursor_value = state.get("last_user_message_id") or handle.cursor
+            cursor_source = "state_last_user" if state.get("last_user_message_id") else "handle"
         cursor = str(cursor_value) if cursor_value else None
+        logger.warning(
+            "native_user_event_append_accepted conversation=%s runtime=%s cursor=%s "
+            "cursor_source=%s text_chars=%s image_count=%s",
+            self._diagnostic_fingerprint(handle.conversation_id),
+            self._diagnostic_fingerprint(
+                handle.runtime_resource_name or handle.runtime_resource_id
+            ),
+            self._diagnostic_fingerprint(cursor),
+            cursor_source,
+            len(content),
+            len(image_urls),
+        )
         return RuntimeResult(status="RUNNING", cursor=cursor)
 
     def upload_workspace_file(
@@ -4837,6 +4987,14 @@ class OpenHandsRuntime:
                 matches=all(binding_matches.values()),
                 source_conversation_id=handle.conversation_id,
             )
+        self._log_fork_diagnostic(
+            handle,
+            fork_handle,
+            source_state=source_state,
+            target_state=created,
+            reset_metrics=reset_metrics,
+            llm_matches=all(inherited_matches.values()),
+        )
         return RuntimeForkResult(
             handle=fork_handle,
             source_conversation_id=source_id,
@@ -4844,6 +5002,81 @@ class OpenHandsRuntime:
             leaf_event_id=leaf,
             reset_metrics=reset_metrics,
         )
+
+    def _log_fork_diagnostic(
+        self,
+        source_handle: RuntimeHandle,
+        target_handle: RuntimeHandle,
+        *,
+        source_state: dict[str, Any],
+        target_state: dict[str, Any],
+        reset_metrics: bool,
+        llm_matches: bool,
+    ) -> None:
+        """Correlate a native fork without retaining its event tree."""
+
+        try:
+            snapshots: list[tuple[int, bool, dict[str, int | str | None]]] = []
+            for current_handle, state in (
+                (source_handle, source_state),
+                (target_handle, target_state),
+            ):
+                leaf = self._formal_identity(
+                    state.get("leaf_event_id"), field="leaf_event_id", required=False
+                )
+                items, history_cursor = self._active_event_window(
+                    current_handle.conversation_id,
+                    leaf,
+                    None,
+                    base_url=self._base_url_for_handle(current_handle),
+                    session_api_key=self._session_key_for_handle(current_handle),
+                )
+                snapshots.append(
+                    (
+                        len(items),
+                        history_cursor is not None,
+                        self._conversation_context_from_state(state),
+                    )
+                )
+            source_snapshot, target_snapshot = snapshots
+            source_context = source_snapshot[2]
+            target_context = target_snapshot[2]
+            logger.warning(
+                "native_fork_diagnostic source_conversation=%s target_conversation=%s "
+                "runtime=%s reset_metrics=%s llm_matches=%s source_window_events=%s "
+                "source_window_truncated=%s target_window_events=%s "
+                "target_window_truncated=%s source_context_used=%s source_context_window=%s "
+                "source_context_cumulative=%s target_context_used=%s "
+                "target_context_window=%s target_context_cumulative=%s",
+                self._diagnostic_fingerprint(source_handle.conversation_id),
+                self._diagnostic_fingerprint(target_handle.conversation_id),
+                self._diagnostic_fingerprint(
+                    source_handle.runtime_resource_name or source_handle.runtime_resource_id
+                ),
+                reset_metrics,
+                llm_matches,
+                source_snapshot[0],
+                source_snapshot[1],
+                target_snapshot[0],
+                target_snapshot[1],
+                source_context.get("used_tokens"),
+                source_context.get("window_tokens"),
+                source_context.get("cumulative_tokens"),
+                target_context.get("used_tokens"),
+                target_context.get("window_tokens"),
+                target_context.get("cumulative_tokens"),
+            )
+        except Exception as exc:  # pragma: no cover - defensive observability boundary
+            logger.warning(
+                "native_fork_diagnostic_failed source_conversation=%s "
+                "target_conversation=%s runtime=%s failure_type=%s",
+                self._diagnostic_fingerprint(source_handle.conversation_id),
+                self._diagnostic_fingerprint(target_handle.conversation_id),
+                self._diagnostic_fingerprint(
+                    source_handle.runtime_resource_name or source_handle.runtime_resource_id
+                ),
+                self._safe_diagnostic_token(type(exc).__name__) or "unknown",
+            )
 
     def resume(
         self, handle: RuntimeHandle, content: str, image_urls: tuple[str, ...] = ()

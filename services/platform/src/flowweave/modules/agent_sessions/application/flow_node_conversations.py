@@ -2298,6 +2298,14 @@ def dispatch_running_node_message(
     queued_during_turn = not readiness.ready
     if queued_during_turn and not _accepts_queued_user_message(readiness.execution_status):
         raise DomainError("AGENT_CONVERSATION_BUSY", "Agent 正在处理停止或确认请求，请稍候", 409)
+    diagnostic = getattr(runtime, "log_delivery_diagnostic", None)
+    if callable(diagnostic):
+        diagnostic(
+            prepared.handle,
+            operation=("node_running_dispatch" if queued_during_turn else "node_idle_dispatch"),
+            readiness=readiness,
+            model_rebind=not queued_during_turn and prepared.provider is not None,
+        )
     references = resolve_conversation_references(runtime, prepared.handle, prepared.references)
     prompt, image_urls = message_payload(
         prepared.content,
@@ -2832,7 +2840,11 @@ def rerun_node_message(
     )
     runtime.navigate(handle, parent_id)
     prompt, image_urls = message_payload(
-        content.strip(), attachments, resolved_references, resolved_workspace_references, annotations
+        content.strip(),
+        attachments,
+        resolved_references,
+        resolved_workspace_references,
+        annotations,
     )
     result = runtime.send_message(handle, prompt, image_urls)
     _observe_task_watchdogs_after_send(db, binding, handle)

@@ -194,6 +194,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-436 | 错误终态精确列表投影与首屏收束 | DONE | 会话列表不再把 OpenHands eventually-consistent `search?status=running` 当作运行事实；有界页面逐项读取精确 native readiness。浏览器在 exact readiness 尚未返回时，若最近正式 user turn 已有 OpenHands ERROR／完成事件，立即清除本地运行桥接，不显示转圈、停止或运行中输入提示。 |
 | FR-437 | Responses 不完整终态关联诊断 | DONE | 在 FlowWeave 的正式 OpenHands 事件／状态读取边界，为原生错误终态写入一次脱敏关联日志，区分 Responses 不完整／缺少 completed／其他终态形态；不记录消息、输出、详情、凭据、端点或原始标识。 |
 | FR-438 | Conversation／Fork 模型绑定一致性诊断 | DONE | 为创建、模型切换、原生 Fork 继承及错误终态记录脱敏 LLM 绑定证据，区分旧模型未切换与异常 Conversation 状态随 Fork 继承；不改变模型、Fork、重试或会话历史。 |
+| FR-439 | 会话投递／Fork 全链路脱敏诊断 | DONE | 在 Agent Workspace 与 FlowNode 的 running／idle 投递选择、正式 user event append 成败、Fork 父子状态及 Responses 不完整终态增加脱敏诊断；记录有界事件计数、精确状态、上下文、压缩／恢复／重绑决策和匿名关联摘要，不记录正文、凭据、端点或原始身份。 |
 | FR-415 | FlowRun 独立终端全局项目根修正 | DONE | FlowRun 级终端进入已挂载的全局 `project` 根，因此无需创建节点即可完成对整个 FlowRun 生效的配置；会话／Attempt 终端继续保持记录级路径。 |
 | FR-417 | FlowRun 独立终端挂载感知路径选择 | DONE | FlowRun 级终端按活跃 Runtime 的固定挂载契约选择共享 `project` 根或记录直挂载根，避免历史 Runtime 因不存在 cwd 失败。 |
 
@@ -923,6 +924,29 @@ API mode、reasoning、当前 token 使用、窗口和累计 usage；日志异�
 `ResponseIncompleteEvent` 错误时 active model/reasoning 投影；断言 endpoint、provider 原值、密钥、event／response
 原始 ID 和假 Bearer token 均不进入日志。受影响 Python Ruff check／format、`py_compile`、四项定向 pytest 与
 `git diff --check` 通过。未修改数据库、OpenHands 源码、Runtime Provider、Docker 或持久数据。
+
+### FR-439 会话投递／Fork 全链路脱敏诊断 — DONE
+
+依赖：`FR-437`、`FR-438`。
+
+目标：对今天异常最可能经过的 Agent Workspace／FlowNode 消息入口、running 快速追加、idle 重绑与主动
+压缩、异常 Fork 恢复、原生 Fork、正式 user event append 以及 Responses 不完整终态建立同一套可关联诊断。
+日志只能记录截短 SHA-256 摘要、安全枚举、字符／事件计数、精确 execution status、上下文用量与策略决策；
+不得记录用户消息、模型输出、事件 detail、API Key、OAuth token、endpoint 明文或原始 Conversation／Runtime／
+event／response 身份。诊断读取失败不得改变发送、Fork、重试、历史或终态。
+
+完成：Agent Workspace 和 FlowNode 在 running／idle 分流后、正式发送前记录 readiness、active HEAD 的有界
+事件数、叶子类型、user／assistant／error 数量、当前模型/API mode/reasoning、上下文与 condenser 阈值，以及
+是否重绑模型、执行异常 Fork 恢复或主动压缩。OpenHands user event append 对已接受与结果不确定分别记录
+匿名 cursor 来源、请求长度／图片数或安全错误码；Fork 记录父子有界事件量、指标重置、上下文和 LLM 继承
+匹配。`ResponseIncompleteEvent` 额外输出白名单 `incomplete_reason`；固定 OpenHands 未暴露结构化原因时明确为
+`not_exposed`，不再把缺失原因猜成模型、网关或长度限制。
+
+验收：受影响 Python Ruff check／format、`py_compile`、完整无 Docker `test_openhands.py`（154 passed）、
+`git diff --check` 与任务状态唯一性通过。回归覆盖不完整原因白名单、重复终态去重、投递状态／事件计数、
+append 接受／歧义和诊断读取失败隔离，并确认消息、输出、Bearer、endpoint、provider 与所有原始身份不进入
+日志。三项 Conversation 投递定向测试因本机 Docker socket 缺失，在 Testcontainers PostgreSQL fixture 初始化
+时失败且未进入断言，未记为通过。未修改数据库、迁移、OpenHands 源码、Runtime Provider 或持久数据。
 
 ### FR-415 FlowRun 独立终端全局项目根修正 — DONE
 
@@ -5831,6 +5855,7 @@ contract、冻结策略与既有受控生命周期约束覆盖。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-14 | FR-439 | 受影响 Python Ruff check／format、`py_compile`、完整无 Docker `test_openhands.py`、三项 Conversation 投递定向 pytest 尝试、`git diff --check` 与任务状态唯一性 | PASS（直接／静态）：Agent Workspace／FlowNode running 与 idle 投递、OpenHands user event append、原生 Fork 和 Responses 不完整终态现在记录可关联的脱敏决策与状态；日志只包含摘要、枚举、计数、context 与策略标志，固定 OpenHands 未暴露 incomplete reason 时明确为 `not_exposed`。`test_openhands.py` 为 `154 passed`；Conversation 三项测试因本机 Docker socket 缺失，在 Testcontainers PostgreSQL fixture 初始化失败且未进入断言，未记为通过。未改变发送、Fork、模型、压缩、重试、事件树或持久状态。 |
 | 2026-09-14 | FR-438 | 受影响 Python Ruff check／format、`py_compile`、`test_openhands.py` 四项无 Docker fixture 定向 pytest、`git diff --check` 与任务状态唯一性 | PASS（直接／静态）：创建、模型切换、原生 Fork 继承和错误终态现在记录脱敏 LLM 绑定证据；成功与漂移分别输出逐字段 match，Fork 同时比较父 native LLM 与 FlowWeave 保存的目标配置，错误终态附加 active model/API mode/reasoning 和 token 摘要。回归确认模型名可安全识别，同时 endpoint、provider 原值、密钥、原始事件身份及假 Bearer token 不进入日志；定向 pytest 为 `4 passed, 142 deselected`。未改变模型、Fork、重试、事件树或会话历史，未修改数据库、OpenHands 源码、Runtime Provider、Docker 或持久数据。 |
 | 2026-09-14 | FR-437 | 受影响 Python Ruff check／format、`py_compile`、`test_openhands.py` 两项无 Docker fixture 定向 pytest、`git diff --check` 与任务状态唯一性 | PASS（直接／静态）：正式 native error 读取现在写入一次脱敏关联诊断，分别标注 REST event page 或 active branch、opaque conversation/event/parent/runtime/response/state-leaf 关联值、白名单错误／classification、native execution status 与 Responses 安全终态 signature。回归使用含假 Bearer token 的不完整 Responses 终态，确认重复读取仅记录一次且不泄露任何原始 ID、detail 或 token；定向 pytest 为 `2 passed, 144 deselected`。未修改数据库、OpenHands 源码、Runtime Provider、Docker 或持久数据。 |
 | 2026-09-14 | FR-436 | 受影响 Python `py_compile`、Ruff F/E 静态检查与格式检查；Web TypeScript typecheck、全量 ESLint、production build、定向 Agent 工作台 Playwright、`git diff --check` 与任务状态唯一性 | PASS（静态／关键浏览器断言）：列表状态改由每个有界页项目的精确 OpenHands readiness 读取，正式 `error` 不再被 stale `search?status=running` 重新投影为转圈；最近正式 user turn 的 ERROR／assistant／Finish 在 readiness 延迟窗口也会收束浏览器运行桥接。产品流已执行列表仍 `running`、exact readiness `error` 的停止按钮／Composer／左侧转圈消失和后续直接发送断言；随后在既有工作区工具 `menuitem` 被错误按 `button` 查找处超时，未记为完整 Playwright 通过。定向 pytest 受本机 Docker socket 缺失阻断于 Testcontainers fixture，未进入断言。production build 仅报告既有大 bundle 建议。 |
