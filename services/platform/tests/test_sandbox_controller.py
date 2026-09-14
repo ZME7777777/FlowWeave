@@ -97,14 +97,15 @@ def test_runtime_provider_accepts_record_scoped_terminal_working_directory() -> 
     assert payload.working_dir == f"/runtime/workspace/project/{record_id}/deliverables"
 
 
-def test_runtime_provider_rejects_bare_project_terminal_working_directory() -> None:
-    with pytest.raises(ValueError, match="workspace identity is invalid"):
-        TerminalStartWrite(
-            manager_scope=_SCOPE,
-            resource_name="fw-sbx-record-runtime",
-            resource_id=_RESOURCE_ID,
-            working_dir="/runtime/workspace/project",
-        )
+def test_runtime_provider_accepts_flow_run_global_project_terminal_working_directory() -> None:
+    payload = TerminalStartWrite(
+        manager_scope=_SCOPE,
+        resource_name="fw-sbx-record-runtime",
+        resource_id=_RESOURCE_ID,
+        working_dir="/runtime/workspace/project",
+    )
+
+    assert payload.working_dir == "/runtime/workspace/project"
 
 
 def test_runtime_provider_preserves_runtime_resource_limits() -> None:

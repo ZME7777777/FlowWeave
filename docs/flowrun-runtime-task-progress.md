@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`IN PROGRESS`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`NONE（等待 FR-404、FR-405、FR-413、FR-414 部署验收）`
+> 下一可执行切片：`NONE（等待 FR-404、FR-405、FR-413、FR-414、FR-415 部署验收）`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -172,6 +172,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-412 | 网站认证源变量命令级映射指导 | DONE | 平台继续按域名选择源凭据变量，同时允许 Agent 在匹配域名的单条命令中将其命令级映射到 Skill/脚本所需变量；禁止全局 export、跨域映射与凭据泄露。 |
 | FR-413 | 网站认证变量映射说明泛化 | DONE | 移除提示词中所有特定 Skill/脚本变量示例，只保留与实现无关的域名匹配、命令级映射和安全边界说明。 |
 | FR-414 | FlowRun 独立终端记录目录预创建 | DONE | FlowRun 终端在服务端创建并验证自身的规范记录目录后再连接，避免不存在的 cwd 使 OCI exec 失败；保持 Provider 的记录级隔离校验。 |
+| FR-415 | FlowRun 独立终端全局项目根修正 | DONE | FlowRun 级终端进入已挂载的全局 `project` 根，因此无需创建节点即可完成对整个 FlowRun 生效的配置；会话／Attempt 终端继续保持记录级路径。 |
 
 ### FR-366 FlowWeave 专属 Docker 地址规划 — DONE
 
@@ -568,6 +569,25 @@ Runtime 中的其他记录；不再因 Docker exec 在不存在的 `cwd` 上 `ch
 验收：新增 FlowRun 终端目录预创建回归；受影响 Python Ruff check/format、`py_compile`、直接
 运行时断言与 `git diff --check` 通过。定向 pytest 需要 Testcontainers PostgreSQL，但本机 Docker
 socket 不可用，fixture 在断言前失败，未记为通过；未修改数据库、OpenHands、Docker 或远端环境。
+
+### FR-415 FlowRun 独立终端全局项目根修正 — DONE
+
+依赖：`FR-414`。
+
+目标：FlowRun 列表的终端入口必须在节点 Attempt 和 Conversation 尚未创建时可用，并作用于该
+FlowRun 的全局项目工作区。它不得把 FlowRun ID 误当成记录 ID 或假设
+`project/<record-id>` 已映射到活跃 Runtime；既有 Conversation／Attempt 终端继续使用各自的
+记录级工作目录。
+
+完成：FlowRun 终端现在始终使用活跃 Runtime 已挂载的
+`/runtime/workspace/project` 全局项目根。Runtime Provider 只额外接受这一精确受管路径，仍在
+启动 PTY 前校验 manager scope 和 Runtime 容器所有权；其余记录级、用户级、绝对路径和 traversal
+校验均保持不变。
+
+验收：更新 FlowRun 全局项目根和 Provider 精确路径的回归断言；受影响 Python Ruff check/format、
+`py_compile`、直接运行时断言与 `git diff --check` 通过。定向 pytest 需要 Testcontainers
+PostgreSQL，若本机 Docker socket 不可用则在 fixture 初始化前受阻，不记为通过；无数据库、
+OpenHands 或迁移改动。
 
 ### FR-398 长会话 Markdown 完整渲染 — DONE
 

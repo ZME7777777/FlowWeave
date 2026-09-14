@@ -1,4 +1,4 @@
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from types import SimpleNamespace
 
 from flowweave.modules.sandboxes.application import runtime_operations
@@ -30,9 +30,7 @@ def test_host_project_mount_path_uses_only_canonical_flow_run_allocation(tmp_pat
     )
 
 
-def test_flow_run_terminal_materializes_its_record_directory_before_attach(
-    monkeypatch,
-) -> None:
+def test_flow_run_terminal_uses_global_project_root_before_any_node_exists(monkeypatch) -> None:
     flow_run_id = "12345678-1234-4234-9234-123456789abc"
     monkeypatch.setattr(
         runtime_operations,
@@ -43,19 +41,8 @@ def test_flow_run_terminal_materializes_its_record_directory_before_attach(
             managed_runtime_id="managed-runtime",
         ),
     )
-    created_records: list[str] = []
-    monkeypatch.setattr(
-        runtime_operations,
-        "ensure_flow_run_record_workspace",
-        lambda _db, record_id: (
-            created_records.append(record_id),
-            PurePosixPath("/runtime/workspace/project", record_id),
-        )[1],
-    )
-
     assert flow_run_terminal_details(object(), flow_run_id) == (
         "runtime-resource",
         "managed-runtime",
-        f"/runtime/workspace/project/{flow_run_id}",
+        "/runtime/workspace/project",
     )
-    assert created_records == [flow_run_id]

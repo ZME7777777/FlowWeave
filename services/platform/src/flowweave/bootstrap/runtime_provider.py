@@ -404,7 +404,13 @@ class TerminalStartWrite(SandboxDeleteWrite):
             ):
                 raise ValueError("working_dir must remain under a managed Runtime workspace")
             relative = path.relative_to(PurePosixPath("/runtime/workspace"))
-            if len(relative.parts) == 1:
+            if relative == PurePosixPath("project"):
+                # A FlowRun-level terminal is intentionally rooted at its
+                # single active Runtime's global project mount. Its container
+                # ownership is still verified below; record and user terminals
+                # keep their narrower workspace identities.
+                identity = None
+            elif len(relative.parts) == 1:
                 # Attempt-private Runtime containers created before the
                 # FlowRun-shared Runtime cutover exposed their frozen record
                 # at this legacy location. Keep this read-only compatibility
@@ -416,12 +422,13 @@ class TerminalStartWrite(SandboxDeleteWrite):
                 identity = relative.parts[1]
             else:
                 raise ValueError("working_dir must use a managed record or user workspace root")
-            try:
-                canonical = str(UUID(identity))
-            except ValueError as exc:
-                raise ValueError("working_dir workspace identity is invalid") from exc
-            if canonical != identity:
-                raise ValueError("working_dir workspace identity is not canonical")
+            if identity is not None:
+                try:
+                    canonical = str(UUID(identity))
+                except ValueError as exc:
+                    raise ValueError("working_dir workspace identity is invalid") from exc
+                if canonical != identity:
+                    raise ValueError("working_dir workspace identity is not canonical")
         if self.environment_id is not None and self.working_dir is not None:
             raise ValueError("setup terminals cannot set working_dir")
         if self.environment_id is None and self.working_dir is None:
