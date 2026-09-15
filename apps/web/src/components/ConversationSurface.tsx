@@ -1175,6 +1175,12 @@ function presentConversationFailure(code: string, detail: string): FailurePresen
       content: '模型服务拒绝了本次请求：当前账户额度不足或调用频率受限。请等待额度恢复，或选择有可用额度的模型配置后重新思考。',
     };
   }
+  if (hasCode('NoCondensationAvailableException') && contains('summarization llm call failed', 'authenticationerror', 'invalid api key')) {
+    return {
+      title: '会话上下文压缩失败',
+      content: '失败发生在会话的历史摘要器，而不是当前模型调用。重新发送消息后，系统会使用当前模型配置创建安全续支并继续原任务。',
+    };
+  }
   if (hasCode('AuthenticationError', 'UnauthorizedError', 'PermissionDeniedError', 'InvalidAPIKeyError') || contains('invalid api key', 'authentication', 'unauthorized', 'forbidden')) {
     return {
       title: '模型凭据无效或无权限',

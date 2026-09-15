@@ -3369,6 +3369,95 @@ def test_agent_workspace_repairs_legacy_finish_fork_once_before_sending(
         ]
 
 
+def test_agent_workspace_recovers_stale_condenser_credential_before_sending(
+    settings, db_session_factory, monkeypatch
+):
+    class CondenserCredentialRuntime(MockRuntime):
+        damaged_conversation_id: str | None = None
+        fork_calls: list[tuple[str, str, str]] = []
+        switched_conversation_ids: list[str] = []
+        sent: list[tuple[str, str]] = []
+
+        def input_readiness(self, handle):
+            return RuntimeInputReadiness(
+                ready=handle.conversation_id != self.damaged_conversation_id,
+                execution_status=(
+                    "error" if handle.conversation_id == self.damaged_conversation_id else "idle"
+                ),
+            )
+
+        def read_active_events(self, handle):
+            if handle.conversation_id != self.damaged_conversation_id:
+                return RuntimeEventBatch(events=(), cursor=handle.cursor)
+            error = RuntimeEvent(
+                cursor="condenser-auth-error",
+                event_type="ERROR",
+                payload={
+                    "error_code": "NoCondensationAvailableException",
+                    "content": (
+                        "Summarization LLM call failed: litellm.AuthenticationError: "
+                        "AuthenticationError: Invalid API key"
+                    ),
+                },
+            )
+            return RuntimeEventBatch(events=(error,), cursor=error.cursor)
+
+        def fork_conversation(self, handle, **kwargs):
+            self.fork_calls.append(
+                (handle.conversation_id, kwargs["target_conversation_id"], kwargs["from_event_id"])
+            )
+            return super().fork_conversation(handle, **kwargs)
+
+        def switch_model(self, handle, provider):
+            del provider
+            self.switched_conversation_ids.append(handle.conversation_id)
+
+        def send_message(self, handle, content, image_urls=()):
+            del image_urls
+            self.sent.append((handle.conversation_id, content))
+            return RuntimeResult(status="RUNNING", cursor=f"user-{len(self.sent)}")
+
+    monkeypatch.setattr(
+        conversations,
+        "runtime_provider",
+        lambda _db, asset, **kwargs: RuntimeProvider(
+            provider_id=asset["asset"]["executor"]["model_provider_id"],
+            base_url="https://models.example.test/v1",
+            model=kwargs.get("model_name") or "test-model",
+            api_key="current-key",
+            reasoning_effort=kwargs.get("reasoning_effort"),
+        ),
+    )
+    runtime = CondenserCredentialRuntime()
+    with settings_context(settings), db_session_factory() as db, runtime_context(runtime):
+        workspace = _ready_workspace_for_conversation(db)
+        created = conversations.create_conversation(
+            db, workspace.id, "摘要器凭据恢复", workspace.default_model_provider_id, "create-key"
+        )
+        binding = db.get(AgentConversationBinding, created["id"])
+        assert binding is not None
+        runtime.damaged_conversation_id = binding.openhands_conversation_id
+
+        first = conversations.message(db, workspace.id, binding.id, "继续当前任务")
+        repaired_conversation_id = binding.openhands_conversation_id
+
+        assert repaired_conversation_id != runtime.damaged_conversation_id
+        assert first["cursor"] == "user-1"
+        assert runtime.fork_calls == [
+            (runtime.damaged_conversation_id, repaired_conversation_id, "condenser-auth-error")
+        ]
+        assert runtime.switched_conversation_ids == [repaired_conversation_id]
+        assert runtime.sent == [(repaired_conversation_id, "继续当前任务")]
+
+        second = conversations.message(db, workspace.id, binding.id, "继续下一步")
+        assert second["cursor"] == "user-2"
+        assert len(runtime.fork_calls) == 1
+        assert runtime.sent == [
+            (repaired_conversation_id, "继续当前任务"),
+            (repaired_conversation_id, "继续下一步"),
+        ]
+
+
 def test_agent_workspace_forks_at_native_event(settings, db_session_factory, monkeypatch):
     class ForkRuntime(MockRuntime):
         fork_call: tuple[str | None, str, bool, int, int | None, float | None] | None = None

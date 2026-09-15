@@ -66,6 +66,7 @@ from flowweave.shared.settings import get_settings
 
 _PROJECT_ROOT = "/runtime/workspace/project"
 _AGENT_WORKSPACE_CONDENSER_MAX_EVENTS = 10_000
+_CONDENSER_CREDENTIAL_FAILURE_CODE = "NoCondensationAvailableException"
 _DYNAMIC_CAPABILITY_TYPES = frozenset({"SKILL", "MCP", "PLUGIN"})
 _CREATION_CAPABILITY_TYPES = _DYNAMIC_CAPABILITY_TYPES | {"CONTEXT", "AGENT_DEFINITION", "HOOK"}
 # A FlowRun Runtime physically mounts ``project`` but each product record is
@@ -2038,6 +2039,34 @@ def finalize_running_message(
     }
 
 
+def _condenser_credential_failure_event_id(runtime: Any, handle: RuntimeHandle) -> str | None:
+    """Return only the formal terminal event for a stale condenser API key.
+
+    OpenHands stores the summarizing condenser as a separate non-streaming LLM.
+    Its formal ``switch_llm`` operation preserves a non-identical condenser,
+    so an old conversation can retain a superseded credential.  No other
+    condensation or model failure may take this recovery path.
+    """
+
+    try:
+        branch = complete_active_branch(runtime.read_active_events, handle)
+    except (AttributeError, DomainError, ValueError):
+        return None
+    if not branch.cursor:
+        return None
+    leaf = next((event for event in branch.events if event.cursor == branch.cursor), None)
+    if leaf is None or leaf.event_type != "ERROR":
+        return None
+    if leaf.payload.get("error_code") != _CONDENSER_CREDENTIAL_FAILURE_CODE:
+        return None
+    detail = str(leaf.payload.get("content") or "").lower()
+    if "summarization llm call failed" not in detail:
+        return None
+    if "authenticationerror" not in detail and "invalid api key" not in detail:
+        return None
+    return leaf.cursor
+
+
 def message(
     db: Session,
     workspace_id: str,
@@ -2083,7 +2112,8 @@ def message(
         )
     runtime = get_runtime()
     readiness = runtime.input_readiness(handle)
-    if not readiness.ready:
+    condenser_recovery_event_id = _condenser_credential_failure_event_id(runtime, handle)
+    if not readiness.ready and condenser_recovery_event_id is None:
         # OpenHands 1.47.0 formally accepts a user event while its standard
         # Agent is running. The current LLM/tool step is left intact; the
         # native loop consumes the newly appended event on its next step.
@@ -2175,6 +2205,50 @@ def message(
         binding.openhands_conversation_id = replacement_id
         binding.updated_at = now()
         db.flush()
+    elif condenser_recovery_event_id is not None:
+        replacement_id = str(
+            uuid5(
+                UUID(binding.id),
+                f"condenser-credential-recovery:{handle.conversation_id}:{condenser_recovery_event_id}",
+            )
+        )
+        recovery_provider = runtime_provider(
+            db,
+            {"asset": {"executor": {"model_provider_id": binding.model_provider_id}}},
+            model_name=binding.model_name,
+            reasoning_effort=binding.reasoning_effort,
+        )
+        repaired = runtime.fork_conversation(
+            handle,
+            target_conversation_id=replacement_id,
+            title=binding.display_title or "未命名会话",
+            from_event_id=condenser_recovery_event_id,
+            expected_source_leaf_event_id=condenser_recovery_event_id,
+            reset_metrics=True,
+            condenser=RuntimeCondenser(
+                kind="LLM_SUMMARIZING",
+                max_size=_AGENT_WORKSPACE_CONDENSER_MAX_EVENTS,
+                max_tokens=NATIVE_CONDENSER_MAX_TOKENS,
+                keep_first=4,
+            ),
+            condenser_provider=recovery_provider,
+        )
+        if repaired.leaf_event_id != condenser_recovery_event_id:
+            raise DomainError(
+                "RUNTIME_FORK_IDENTITY_DRIFT",
+                "上下文压缩恢复分叉身份校验失败",
+                409,
+            )
+        handle = repaired.handle
+        if not runtime.can_accept_input(handle):
+            raise DomainError(
+                "RUNTIME_FORK_NOT_WRITABLE",
+                "上下文压缩恢复后仍不可继续输入",
+                503,
+            )
+        binding.openhands_conversation_id = replacement_id
+        binding.updated_at = now()
+        db.flush()
     provider = runtime_provider(
         db,
         {"asset": {"executor": {"model_provider_id": target_provider_id}}},
@@ -2196,7 +2270,7 @@ def message(
             handle,
             operation="agent_idle_send",
             model_rebind=True,
-            fork_recovery=recovery is not None,
+            fork_recovery=recovery is not None or condenser_recovery_event_id is not None,
             compaction=False,
         )
     try:
