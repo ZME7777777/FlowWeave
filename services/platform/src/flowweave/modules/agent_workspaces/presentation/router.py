@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from typing import Annotated, Any, Literal
 from urllib.parse import quote
 from uuid import UUID, uuid4
@@ -38,6 +39,7 @@ from flowweave.shared.http import (
 from flowweave.shared.settings import bind_settings, reset_settings
 
 router = APIRouter()
+_logger = logging.getLogger(__name__)
 ContainerDep = Annotated[Container, Depends(get_container)]
 
 
@@ -634,16 +636,26 @@ async def patch_agent_conversation(
 async def reorder_agent_conversation(
     workspace_id: str, binding_id: str, payload: AgentConversationOrderWrite, db: Db
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
-        lambda session: conversations.reorder_conversation(
-            session,
-            workspace_id,
-            binding_id,
-            before_binding_id=payload.before_binding_id,
-            after_binding_id=payload.after_binding_id,
-        ),
-    )
+    try:
+        return await run_sync(
+            db,
+            lambda session: conversations.reorder_conversation(
+                session,
+                workspace_id,
+                binding_id,
+                before_binding_id=payload.before_binding_id,
+                after_binding_id=payload.after_binding_id,
+            ),
+        )
+    except DomainError:
+        raise
+    except Exception as exc:
+        _logger.exception("agent_conversation_order_request_failed binding_id=%s", binding_id)
+        raise DomainError(
+            "AGENT_CONVERSATION_ORDER_INVALID",
+            "会话排序暂不可保存，请刷新后重试",
+            409,
+        ) from exc
 
 
 @router.post("/agent-workspaces/{workspace_id}/conversations/{binding_id}/capabilities")

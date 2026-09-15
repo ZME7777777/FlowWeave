@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import binascii
 import json
+import logging
 import re
 import shutil
 import time
@@ -15,6 +16,7 @@ from urllib.parse import urlencode
 from uuid import UUID, uuid4, uuid5
 
 from sqlalchemy import Numeric, and_, cast, func, or_, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from flowweave.modules.agent_sessions.application import usage as usage_projection
@@ -65,6 +67,7 @@ from flowweave.shared.observability import current_metrics
 from flowweave.shared.settings import get_settings
 
 _PROJECT_ROOT = "/runtime/workspace/project"
+_logger = logging.getLogger(__name__)
 _AGENT_WORKSPACE_CONDENSER_MAX_EVENTS = 10_000
 _CONDENSER_CREDENTIAL_FAILURE_CODE = "NoCondensationAvailableException"
 _DYNAMIC_CAPABILITY_TYPES = frozenset({"SKILL", "MCP", "PLUGIN"})
@@ -745,32 +748,71 @@ def reorder_conversation(
     def neighbor(value: str | None) -> AgentConversationBinding | None:
         return _binding(db, workspace_id, value, lock=True) if value else None
 
-    before = neighbor(before_binding_id)
-    after = neighbor(after_binding_id)
-    item_work_directory_id = _work_directory_id(db, item)
-    if any(
-        candidate is not None and _work_directory_id(db, candidate) != item_work_directory_id
-        for candidate in (before, after)
-    ):
+    try:
+        before = neighbor(before_binding_id)
+        after = neighbor(after_binding_id)
+        directory_versions = {
+            candidate.work_directory_version_id
+            for candidate in (item, before, after)
+            if candidate is not None and candidate.work_directory_version_id is not None
+        }
+        directory_by_version = {
+            version_id: work_directory_id
+            for version_id, work_directory_id in db.execute(
+                select(
+                    AgentWorkDirectoryVersion.id,
+                    AgentWorkDirectoryVersion.work_directory_id,
+                ).where(AgentWorkDirectoryVersion.id.in_(directory_versions))
+            )
+        }
+        item_work_directory_id = directory_by_version.get(item.work_directory_version_id)
+        if any(
+            candidate is not None
+            and directory_by_version.get(candidate.work_directory_version_id)
+            != item_work_directory_id
+            for candidate in (before, after)
+        ):
+            raise DomainError(
+                "AGENT_CONVERSATION_ORDER_SCOPE_INVALID",
+                "会话只能在当前工作区内调整顺序",
+                409,
+            )
+        before_rank = _conversation_sort_key(before) if before else None
+        after_rank = _conversation_sort_key(after) if after else None
+        if before_rank is not None and after_rank is not None and before_rank <= after_rank:
+            raise DomainError(
+                "AGENT_CONVERSATION_ORDER_INVALID", "会话排序邻居无效，请刷新后重试", 409
+            )
+        if before_rank is None:
+            rank = after_rank + Decimal("1")
+        elif after_rank is None:
+            rank = before_rank - Decimal("1")
+        else:
+            rank = (before_rank + after_rank) / Decimal("2")
+        if rank == before_rank or rank == after_rank:
+            raise DomainError(
+                "AGENT_CONVERSATION_ORDER_DENSE", "会话排序空间已满，请刷新后重试", 409
+            )
+        item.manual_sort_rank = rank
+        db.flush()
+    except DomainError:
+        raise
+    except (ArithmeticError, SQLAlchemyError, TypeError, ValueError) as exc:
+        db.rollback()
+        _logger.exception("agent_conversation_order_failed binding_id=%s", binding_id)
         raise DomainError(
-            "AGENT_CONVERSATION_ORDER_SCOPE_INVALID",
-            "会话只能在当前工作区内调整顺序",
+            "AGENT_CONVERSATION_ORDER_INVALID",
+            "会话排序暂不可保存，请刷新后重试",
             409,
-        )
-    before_rank = _conversation_sort_key(before) if before else None
-    after_rank = _conversation_sort_key(after) if after else None
-    if before_rank is not None and after_rank is not None and before_rank <= after_rank:
-        raise DomainError("AGENT_CONVERSATION_ORDER_INVALID", "会话排序邻居无效，请刷新后重试", 409)
-    if before_rank is None:
-        rank = after_rank + Decimal("1")
-    elif after_rank is None:
-        rank = before_rank - Decimal("1")
-    else:
-        rank = (before_rank + after_rank) / Decimal("2")
-    if rank == before_rank or rank == after_rank:
-        raise DomainError("AGENT_CONVERSATION_ORDER_DENSE", "会话排序空间已满，请刷新后重试", 409)
-    item.manual_sort_rank = rank
-    db.flush()
+        ) from exc
+    except Exception as exc:
+        db.rollback()
+        _logger.exception("agent_conversation_order_unexpected binding_id=%s", binding_id)
+        raise DomainError(
+            "AGENT_CONVERSATION_ORDER_INVALID",
+            "会话排序暂不可保存，请刷新后重试",
+            409,
+        ) from exc
     return _dict(db, item)
 
 

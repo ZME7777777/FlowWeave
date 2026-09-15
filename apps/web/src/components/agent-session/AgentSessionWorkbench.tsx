@@ -609,7 +609,7 @@ function ConversationStreamObserver({
 }
 
 function WorkspaceConversationRow({
-  item, selectedBindingId, running, unread, conversationWritable, removing, deleteDisabled, dragging, dropPosition, orderSyncState, onDragStart, onDragEnd, onDragOver, onDrop, onRetryOrder, onSelect, onDelete,
+  item, selectedBindingId, running, unread, conversationWritable, removing, deleteDisabled, dragging, dropPosition, orderSyncState, onPointerDragStart, onRetryOrder, onSelect, onDelete,
 }: {
   item: AgentConversation;
   selectedBindingId?: string;
@@ -621,16 +621,13 @@ function WorkspaceConversationRow({
   dragging?: boolean;
   dropPosition?: 'before' | 'after';
   orderSyncState?: 'syncing' | 'failed';
-  onDragStart?: (event: ReactDragEvent<HTMLButtonElement>) => void;
-  onDragEnd?: () => void;
-  onDragOver?: (event: ReactDragEvent<HTMLDivElement>) => void;
-  onDrop?: (event: ReactDragEvent<HTMLDivElement>) => void;
+  onPointerDragStart?: (event: React.PointerEvent<HTMLButtonElement>) => void;
   onRetryOrder?: () => void;
   onSelect: () => void;
   onDelete?: () => void;
 }) {
-  return <div className={`agent-workspace-conversation${dragging ? ' dragging' : ''}${dropPosition ? ` drop-${dropPosition}` : ''}${orderSyncState ? ` order-sync-${orderSyncState}` : ''}`} onDragOver={onDragOver} onDrop={onDrop}>
-    {onDragStart && <button type="button" className="agent-workspace-conversation-drag" draggable aria-label={`拖拽排序会话 ${conversationName(item)}`} title="拖拽调整当前工作区内的顺序" onClick={event => event.stopPropagation()} onDragStart={onDragStart} onDragEnd={onDragEnd}><GripVertical size={13}/></button>}
+  return <div data-conversation-binding-id={item.id} className={`agent-workspace-conversation${dragging ? ' dragging' : ''}${dropPosition ? ` drop-${dropPosition}` : ''}${orderSyncState ? ` order-sync-${orderSyncState}` : ''}`}>
+    {onPointerDragStart && <button type="button" className="agent-workspace-conversation-drag" aria-label={`拖拽排序会话 ${conversationName(item)}`} title="拖拽调整当前工作区内的顺序" onClick={event => event.stopPropagation()} onPointerDown={onPointerDragStart}><GripVertical size={13}/></button>}
     <button type="button" className={`agent-workspace-conversation-select${item.id === selectedBindingId ? ' active' : ''}`} onClick={onSelect}>
       <CircleDot size={13}/><span><b>{conversationName(item)}</b></span>
     </button>
@@ -3538,6 +3535,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const liveEventsFrame = useRef<number | undefined>(undefined);
   const historyLoadingScopes = useRef(new Set<string>());
   const historyFailedCursors = useRef(new Map<string, string>());
+  const draggedConversationRef = useRef<string | undefined>(undefined);
+  const dragTargetRef = useRef<{ bindingId: string; after: boolean } | undefined>(undefined);
+  const pointerDragGroupRef = useRef<AgentConversation[] | undefined>(undefined);
   const queuedMessagesStorageKeyRef = useRef<string | undefined>(undefined);
   const queuedMessagesRef = useRef<QueuedMessage[]>([]);
   const streamConfirmedNativeGuidanceIds = useRef<Set<string>>(new Set());
@@ -3600,19 +3600,25 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         - (Number(left.sort_key) || Date.parse(left.created_at))
         || right.id.localeCompare(left.id),
     );
-    const serverPosition = new Map(serverOrder.map((item, index) => [item.id, index]));
-    return [...serverOrder].sort((left, right) => {
-      if (conversationScopeKey(left) !== conversationScopeKey(right)) {
-        return (serverPosition.get(left.id) ?? 0) - (serverPosition.get(right.id) ?? 0);
-      }
-      const local = conversationOrder[conversationScopeKey(left)];
-      if (!local) return (serverPosition.get(left.id) ?? 0) - (serverPosition.get(right.id) ?? 0);
-      const leftIndex = local.indexOf(left.id);
-      const rightIndex = local.indexOf(right.id);
-      if (leftIndex >= 0 && rightIndex >= 0) return leftIndex - rightIndex;
-      if (leftIndex >= 0) return -1;
-      if (rightIndex >= 0) return 1;
-      return (serverPosition.get(left.id) ?? 0) - (serverPosition.get(right.id) ?? 0);
+    const groups = new Map<string, AgentConversation[]>();
+    for (const item of serverOrder) {
+      const scope = conversationScopeKey(item);
+      const group = groups.get(scope);
+      if (group) group.push(item);
+      else groups.set(scope, [item]);
+    }
+    return [...groups.values()].flatMap(group => {
+      const local = conversationOrder[conversationScopeKey(group[0])];
+      if (!local) return group;
+      const indexed = new Map(local.map((id, index) => [id, index]));
+      return [...group].sort((left, right) => {
+        const leftIndex = indexed.get(left.id);
+        const rightIndex = indexed.get(right.id);
+        if (leftIndex !== undefined && rightIndex !== undefined) return leftIndex - rightIndex;
+        if (leftIndex !== undefined) return -1;
+        if (rightIndex !== undefined) return 1;
+        return group.indexOf(left) - group.indexOf(right);
+      });
     });
   }, [conversationOrder, conversationsQuery.data]);
   const selectedConversationQuery = useQuery({
@@ -5034,19 +5040,22 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       }, WORKSPACE_PATH_COPIED_DURATION_MS);
     }).catch(() => undefined);
   };
-  const previewConversationDrop = (event: ReactDragEvent<HTMLDivElement>, target: AgentConversation) => {
-    event.preventDefault();
-    if (!draggedBindingId || draggedBindingId === target.id) return;
-    const after = event.clientY >= event.currentTarget.getBoundingClientRect().top + event.currentTarget.getBoundingClientRect().height / 2;
-    setDragTarget(current => current?.bindingId === target.id && current.after === after ? current : { bindingId: target.id, after });
-  };
-  const dropConversation = (event: ReactDragEvent<HTMLDivElement>, target: AgentConversation, group: AgentConversation[]) => {
-    event.preventDefault();
-    const draggedId = draggedBindingId ?? event.dataTransfer.getData('application/x-flowweave-conversation');
-    setDraggedBindingId(undefined);
-    setDragTarget(undefined);
-    if (!draggedId || draggedId === target.id) return;
-    const after = event.clientY >= event.currentTarget.getBoundingClientRect().top + event.currentTarget.getBoundingClientRect().height / 2;
+  function previewPointerConversationDrop(clientX: number, clientY: number) {
+    const target = document.elementFromPoint(clientX, clientY)
+      ?.closest<HTMLElement>('[data-conversation-binding-id]');
+    const bindingId = target?.dataset.conversationBindingId;
+    const group = pointerDragGroupRef.current;
+    const draggedId = draggedConversationRef.current;
+    if (!target || !bindingId || !group || !draggedId || bindingId === draggedId) return;
+    const candidate = group.find(item => item.id === bindingId);
+    if (!candidate) return;
+    const after = clientY >= target.getBoundingClientRect().top + target.getBoundingClientRect().height / 2;
+    const next = { bindingId, after };
+    dragTargetRef.current = next;
+    setDragTarget(current => current?.bindingId === bindingId && current.after === after ? current : next);
+  }
+  function commitConversationDrop(draggedId: string | undefined, target: AgentConversation | undefined, after: boolean, group: AgentConversation[]) {
+    if (!draggedId || !target || draggedId === target.id) return;
     const reordered = moveConversationInGroup(group, draggedId, target.id, after);
     const movedIndex = reordered.findIndex(item => item.id === draggedId);
     if (movedIndex < 0) return;
@@ -5057,7 +5066,38 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       [conversationScopeKey(target)]: reordered.map(item => item.id),
     }));
     synchronizeConversationOrder(draggedId, reordered[movedIndex - 1]?.id, reordered[movedIndex + 1]?.id);
-  };
+  }
+  function endPointerConversationDrag() {
+    const draggedId = draggedConversationRef.current;
+    const target = dragTargetRef.current;
+    const group = pointerDragGroupRef.current;
+    const targetItem = target && group ? group.find(item => item.id === target.bindingId) : undefined;
+    commitConversationDrop(draggedId, targetItem, target?.after ?? false, group ?? []);
+    draggedConversationRef.current = undefined;
+    dragTargetRef.current = undefined;
+    pointerDragGroupRef.current = undefined;
+    setDraggedBindingId(undefined);
+    setDragTarget(undefined);
+  }
+  function startPointerConversationDrag(event: React.PointerEvent<HTMLButtonElement>, item: AgentConversation, group: AgentConversation[]) {
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    draggedConversationRef.current = item.id;
+    dragTargetRef.current = undefined;
+    pointerDragGroupRef.current = group;
+    setDraggedBindingId(item.id);
+    setDragTarget(undefined);
+    const move = (pointerEvent: PointerEvent) => previewPointerConversationDrop(pointerEvent.clientX, pointerEvent.clientY);
+    const end = () => {
+      window.removeEventListener('pointermove', move, true);
+      window.removeEventListener('pointerup', end, true);
+      window.removeEventListener('pointercancel', end, true);
+      endPointerConversationDrag();
+    };
+    window.addEventListener('pointermove', move, true);
+    window.addEventListener('pointerup', end, true);
+    window.addEventListener('pointercancel', end, true);
+  }
   const conversationRow = (item: AgentConversation, group: AgentConversation[]) => {
     // The list projection is the native OpenHands running snapshot for every
     // visible conversation. Local state only bridges the selected row between
@@ -5073,7 +5113,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       || (item.id === selected?.id && (selectedConversationRunning || isGenerating)));
     const conversationWritable = runtimeWritable || Boolean(item.write_available);
     const sync = conversationOrderSync[item.id];
-    return <WorkspaceConversationRow key={item.id} item={item} selectedBindingId={selectedBindingId} running={running} unread={unreadConversationIds.has(item.id)} conversationWritable={conversationWritable} removing={remove.isPending} deleteDisabled={running} dragging={draggedBindingId === item.id} dropPosition={dragTarget?.bindingId === item.id ? (dragTarget.after ? 'after' : 'before') : undefined} orderSyncState={sync?.state} onDragStart={event => { event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('application/x-flowweave-conversation', item.id); setDraggedBindingId(item.id); setDragTarget(undefined); }} onDragEnd={() => { setDraggedBindingId(undefined); setDragTarget(undefined); }} onDragOver={event => previewConversationDrop(event, item)} onDrop={event => dropConversation(event, item, group)} onRetryOrder={sync?.state === 'failed' ? () => synchronizeConversationOrder(item.id, sync.beforeBindingId, sync.afterBindingId) : undefined} onSelect={() => selectConversation(item.id)} onDelete={features.conversationDeletion && conversationWritable ? () => void confirmDeletion('会话', conversationName(item)).then(ok => { if (ok) remove.mutate(item.id); }) : undefined}/>;
+    return <WorkspaceConversationRow key={item.id} item={item} selectedBindingId={selectedBindingId} running={running} unread={unreadConversationIds.has(item.id)} conversationWritable={conversationWritable} removing={remove.isPending} deleteDisabled={running} dragging={draggedBindingId === item.id} dropPosition={dragTarget?.bindingId === item.id ? (dragTarget.after ? 'after' : 'before') : undefined} orderSyncState={sync?.state} onPointerDragStart={event => startPointerConversationDrag(event, item, group)} onRetryOrder={sync?.state === 'failed' ? () => synchronizeConversationOrder(item.id, sync.beforeBindingId, sync.afterBindingId) : undefined} onSelect={() => selectConversation(item.id)} onDelete={features.conversationDeletion && conversationWritable ? () => void confirmDeletion('会话', conversationName(item)).then(ok => { if (ok) remove.mutate(item.id); }) : undefined}/>;
   };
   const pendingBootstrapItem = pendingBootstrap
     ? <button className={pendingBootstrap.draft.id === conversationDraft?.id ? 'active' : ''} aria-current={pendingBootstrap.draft.id === conversationDraft?.id ? 'page' : undefined} aria-label={`${pendingConversationName(pendingBootstrap.message)}，正在创建会话`}><LoaderCircle className="conversation-activity-spin" size={13}/><span><b>{pendingConversationName(pendingBootstrap.message)}</b><small>正在创建会话</small></span><ChevronRight size={13}/></button>
