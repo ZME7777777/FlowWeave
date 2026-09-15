@@ -1305,18 +1305,20 @@ class OpenHandsRuntime:
         self, provider: RuntimeProvider, *, fallback_profile_names: tuple[str, ...] = ()
     ) -> dict[str, Any]:
         model = self._model_name(provider.model)
+        # FlowWeave stores ``None`` as the product-level "default" choice.
+        # OpenHands 1.47 defines that default as ``high``, while its persisted
+        # ConversationState uses ``exclude_none=True``.  Sending a literal null
+        # would therefore survive only in memory: reload drops the field and
+        # reconstructs it as high, making an immediately persisted switch look
+        # like binding drift.  Resolve the default before crossing the Runtime
+        # boundary so create, switch, persistence and reload use one identity.
+        reasoning_effort = provider.reasoning_effort or "high"
         llm: dict[str, Any] = {
             "model": model,
             "base_url": provider.base_url,
             "api_key": provider.api_key,
             "usage_id": f"flowweave:{provider.provider_id}",
-            # OpenHands 1.47 defaults this field to ``high`` when it is
-            # omitted.  Always bind the FlowWeave selection explicitly,
-            # including ``None`` when the selected provider/model exposes no
-            # reasoning effort.  Otherwise a switch from a reasoning model can
-            # silently retain (or acquire) ``high`` and an OpenAI-compatible
-            # Chat Completions gateway may reject the unsupported parameter.
-            "reasoning_effort": provider.reasoning_effort,
+            "reasoning_effort": reasoning_effort,
             # Agent Server decides whether to wire its formal token callback
             # when the Event Service is created.  Keep it enabled from the
             # first provider so a later switch_llm to a streaming-only
@@ -1343,8 +1345,8 @@ class OpenHandsRuntime:
             llm["max_input_tokens"] = window
         if provider.auth_type == "CODEX_OAUTH" or provider.api_protocol == "RESPONSES":
             extra_body: dict[str, Any] = {"store": False}
-            if provider.reasoning_effort:
-                extra_body["reasoning"] = {"effort": provider.reasoning_effort}
+            if reasoning_effort:
+                extra_body["reasoning"] = {"effort": reasoning_effort}
             llm.update({"api_mode": "responses", "litellm_extra_body": extra_body})
             if provider.auth_type == "CODEX_OAUTH":
                 llm.update(

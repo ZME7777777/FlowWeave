@@ -882,7 +882,7 @@ def test_openhands_starts_real_agent_with_selected_provider_and_skill(
         "base_url": "http://host.docker.internal:1234/v1",
         "api_key": "configured-secret",
         "usage_id": "flowweave:provider-1",
-        "reasoning_effort": None,
+        "reasoning_effort": "high",
         "api_mode": "chat",
         "stream": True,
         "num_retries": 3,
@@ -1593,9 +1593,48 @@ def test_openhands_configures_api_key_provider_for_responses(openhands_settings,
     assert "model_canonical_name" not in llm
 
 
-@pytest.mark.parametrize("reasoning_effort", [None, "high"])
+def test_openhands_resolves_default_reasoning_for_responses_provider(
+    openhands_settings, monkeypatch
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    captured: dict[str, object] = {}
+
+    def fake_request(method: str, path: str, **kwargs: object) -> dict[str, object]:
+        captured.update({"method": method, "path": path, **kwargs})
+        return {"id": "10000000-0000-4000-8000-000000000004", "leaf_event_id": "event-1"}
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+    baseline = _request()
+    runtime.start(
+        replace(
+            baseline,
+            agent_spec=replace(
+                baseline.agent_spec,
+                provider=RuntimeProvider(
+                    provider_id="responses-api-key",
+                    base_url="https://api.example.test/v1",
+                    model="gpt-5.6-terra",
+                    api_key="configured-secret",
+                    api_protocol="RESPONSES",
+                    reasoning_effort=None,
+                ),
+            ),
+        )
+    )
+
+    payload = captured["json"]
+    assert isinstance(payload, dict)
+    llm = payload["agent"]["llm"]
+    assert llm["reasoning_effort"] == "high"
+    assert llm["litellm_extra_body"] == {
+        "store": False,
+        "reasoning": {"effort": "high"},
+    }
+
+
+@pytest.mark.parametrize(("reasoning_effort", "expected"), [(None, "high"), ("medium", "medium")])
 def test_openhands_configures_chat_provider_with_explicit_reasoning_contract(
-    openhands_settings, monkeypatch, reasoning_effort
+    openhands_settings, monkeypatch, reasoning_effort, expected
 ):
     runtime = OpenHandsRuntime(openhands_settings)
     captured: dict[str, object] = {}
@@ -1627,10 +1666,7 @@ def test_openhands_configures_chat_provider_with_explicit_reasoning_contract(
     llm = payload["agent"]["llm"]
     assert llm["api_mode"] == "chat"
     assert "litellm_extra_body" not in llm
-    # OpenHands defaults an omitted value to high.  Explicit null is required
-    # to keep a non-reasoning OpenAI-compatible gateway from receiving it.
-    assert "reasoning_effort" in llm
-    assert llm["reasoning_effort"] == reasoning_effort
+    assert llm["reasoning_effort"] == expected
 
 
 def test_openhands_disables_native_autotitle_for_agent_workspace(openhands_settings, monkeypatch):
@@ -3602,7 +3638,7 @@ def test_openhands_switch_usage_id_is_stable_and_scoped_to_effective_config(
     )
 
 
-def test_openhands_switches_from_responses_to_chat_without_retaining_reasoning(
+def test_openhands_switches_from_responses_to_chat_with_persistable_default_reasoning(
     openhands_settings, monkeypatch, caplog
 ):
     runtime = OpenHandsRuntime(openhands_settings)
@@ -3621,7 +3657,7 @@ def test_openhands_switches_from_responses_to_chat_without_retaining_reasoning(
                     "model": "openai/gpt-5.6-sol",
                     "base_url": "https://api.example.test/v1",
                     "api_mode": "chat",
-                    "reasoning_effort": None,
+                    "reasoning_effort": "high",
                 }
             }
         )
@@ -3642,7 +3678,7 @@ def test_openhands_switches_from_responses_to_chat_without_retaining_reasoning(
     payload = captured["json"]
     assert isinstance(payload, dict)
     assert payload["llm"]["api_mode"] == "chat"
-    assert payload["llm"]["reasoning_effort"] is None
+    assert payload["llm"]["reasoning_effort"] == "high"
     assert "litellm_extra_body" not in payload["llm"]
     diagnostic = next(
         record.getMessage()
@@ -3704,7 +3740,7 @@ def test_openhands_rejects_switch_when_conversation_info_omits_reasoning_effort(
     assert raised.value.code == "RUNTIME_LLM_BINDING_DRIFT"
 
 
-def test_openhands_rejects_switch_that_retains_previous_reasoning_effort(
+def test_openhands_rejects_switch_that_changes_explicit_reasoning_effort(
     openhands_settings, monkeypatch
 ):
     runtime = OpenHandsRuntime(openhands_settings)
@@ -3738,7 +3774,7 @@ def test_openhands_rejects_switch_that_retains_previous_reasoning_effort(
                 base_url="https://api.example.test/v1",
                 model="gpt-5.6-sol",
                 api_key="configured-secret",
-                reasoning_effort=None,
+                reasoning_effort="medium",
             ),
         )
 
@@ -4026,7 +4062,7 @@ def test_openhands_serializes_frozen_summarizing_condenser(openhands_settings, m
             "base_url": "http://host.docker.internal:1234/v1",
             "api_key": "configured-secret",
             "usage_id": "condenser",
-            "reasoning_effort": None,
+            "reasoning_effort": "high",
             "api_mode": "chat",
             "stream": True,
             "num_retries": 3,
@@ -4114,6 +4150,7 @@ def test_openhands_fork_replaces_only_the_governed_condenser(
         "usage_id": "flowweave:provider-1",
         "model": "openai/gpt-5.6-sol",
         "base_url": "http://host.docker.internal:1234/v1",
+        "reasoning_effort": "high",
     }
     responses = iter(
         [
@@ -4179,7 +4216,7 @@ def test_openhands_fork_replaces_only_the_governed_condenser(
             "base_url": "http://host.docker.internal:1234/v1",
             "api_key": "configured-secret",
             "usage_id": "condenser",
-            "reasoning_effort": None,
+            "reasoning_effort": "high",
             "api_mode": "chat",
             "stream": True,
             "num_retries": 3,
