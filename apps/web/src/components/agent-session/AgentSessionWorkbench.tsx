@@ -3518,6 +3518,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const [candidatePreviewRequest, setCandidatePreviewRequest] = useState<CandidateFilePreviewRequest>();
   const [operationError, setOperationError] = useState<Error>();
   const [historyLoadingBindingId, setHistoryLoadingBindingId] = useState<string>();
+  const [historyRevision, setHistoryRevision] = useState(0);
   const [streamHold, setStreamHold] = useState<{ bindingId: string; expiresAt: number }>();
   const [pageVisible, setPageVisible] = useState(() => document.visibilityState === 'visible');
   const [pendingCreatedId, setPendingCreatedId] = useState<string>();
@@ -3911,6 +3912,35 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   useEffect(() => {
     if (selected && eventsQuery.data) markSessionPerformance('events-ready');
   }, [eventsQuery.data, selected]);
+  const synchronizeConversationEvents = useCallback(async (preferLatest = false) => {
+    if (!workspace || !selected) return;
+    const current = queryClient.getQueryData<OpenHandsConversationEventBatch>(eventQueryKey);
+    const cursor = preferLatest ? undefined : current?.next_cursor ?? undefined;
+    try {
+      const incoming = await api.conversationEvents(workspace.id, selected.id, cursor);
+      queryClient.setQueryData<OpenHandsConversationEventBatch>(eventQueryKey, existing => existing
+        ? (() => {
+            // A stream frame or another reconciliation may have advanced the
+            // cursor while this read was in flight. Never move that progress
+            // backwards merely because this older request completed later.
+            const cursorUnchanged = existing.next_cursor === cursor;
+            return {
+              ...existing,
+              ...incoming,
+              events: mergeConversationEvents(existing.events, incoming.events),
+              next_cursor: cursor
+                ? (cursorUnchanged ? (incoming.next_cursor ?? cursor) : existing.next_cursor)
+                : (incoming.next_cursor ?? existing.next_cursor),
+              history_cursor: existing.history_cursor ?? incoming.history_cursor,
+            };
+          })()
+        : incoming,
+      );
+    } catch {
+      // The next scheduled cursor reconciliation is sufficient. A transient
+      // read failure must not clear already-rendered native events.
+    }
+  }, [api, eventQueryKey, queryClient, selected, workspace]);
   // Let the latest native window paint before background history starts. This
   // makes the first visual state deterministic. History is a read-only
   // native projection and must keep loading while the current turn runs.
@@ -3932,11 +3962,16 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         const cursor = historyCursor;
         if (seenHistoryCursors.has(cursor)) throw new Error('读取更早会话记录时，历史分页游标没有推进。');
         seenHistoryCursors.add(cursor);
+        // Bracket the eventual prepend so ConversationSurface can preserve a
+        // reader's viewport without relying on browser scroll anchoring.
+        setHistoryRevision(current => current + 1);
+        await new Promise<void>(resolve => window.requestAnimationFrame(() => resolve()));
         const older = await api.conversationEvents(workspace.id, scope, undefined, cursor);
         queryClient.setQueryData<OpenHandsConversationEventBatch>(eventQueryKey, current => current
           ? { ...current, events: mergeConversationEvents(older.events, current.events), history_cursor: older.history_cursor }
           : older,
         );
+        setHistoryRevision(current => current + 1);
         historyCursor = older.history_cursor;
         if (historyCursor) await new Promise<void>(resolve => window.setTimeout(resolve, 0));
       }
@@ -3951,10 +3986,13 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   useEffect(() => {
     const bindingId = selected?.id;
     const historyCursor = eventsQuery.data?.history_cursor;
-    if (!bindingId || !historyCursor || historyLoadingScopes.current.has(bindingId) || historyFailedCursors.current.get(bindingId) === historyCursor) return;
+    // Fetching a complete transcript while output is arriving inserts a large
+    // historical block above the live turn. Defer it until this native turn is
+    // settled; event recovery below remains active throughout execution.
+    if (!bindingId || !historyCursor || isGenerating || historyLoadingScopes.current.has(bindingId) || historyFailedCursors.current.get(bindingId) === historyCursor) return;
     const timer = window.setTimeout(() => { void loadAllHistory(); }, historyPrefetchDelayMs);
     return () => window.clearTimeout(timer);
-  }, [eventsQuery.data?.history_cursor, historyPrefetchDelayMs, loadAllHistory, selected?.id]);
+  }, [eventsQuery.data?.history_cursor, historyPrefetchDelayMs, isGenerating, loadAllHistory, selected?.id]);
   const displayedEvents = useMemo(() => {
     const activeScope = selected?.id ?? conversationDraft?.id;
     const bootstrapEvent = optimisticBootstrapTurn && optimisticBootstrapTurn.scope === activeScope
@@ -3986,41 +4024,23 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     // read-only recovery alive without changing the displayed execution state.
     const recoverUnfinishedTurn = hasUnfinishedFormalTurn
       && conversationHasReachedTerminalState(nativeExecutionStatus);
-    if (!workspace || !selected || !(isGenerating || recoverUnfinishedTurn) || !pageVisible || !eventsQuery.data?.next_cursor) return;
-    const workspaceId = workspace.id;
-    const bindingId = selected.id;
+    if (!workspace || !selected || !(isGenerating || recoverUnfinishedTurn) || !pageVisible) return;
     let cancelled = false;
     let timer: number | undefined;
     const recover = async () => {
-      const current = queryClient.getQueryData<OpenHandsConversationEventBatch>(eventQueryKey);
-      const cursor = current?.next_cursor ?? undefined;
-      if (cancelled || !cursor) return;
-      try {
-        const recovered = await api.conversationEvents(workspaceId, bindingId, cursor);
-        if (cancelled) return;
-        queryClient.setQueryData<OpenHandsConversationEventBatch>(eventQueryKey, existing => {
-          if (!existing) return existing;
-          const cursorUnchanged = existing.next_cursor === cursor;
-          return {
-            ...existing,
-            ...recovered,
-            events: mergeConversationEvents(existing.events, recovered.events),
-            next_cursor: cursorUnchanged ? (recovered.next_cursor ?? cursor) : existing.next_cursor,
-            history_cursor: existing.history_cursor ?? recovered.history_cursor,
-          };
-        });
-      } catch (error) {
-        void error;
-      } finally {
-        if (!cancelled) timer = window.setTimeout(() => { void recover(); }, ACTIVE_EVENT_RECOVERY_INTERVAL_MS);
-      }
+      if (cancelled) return;
+      // A live WebSocket can be silently wedged. When no cursor is available,
+      // read the bounded latest page instead of waiting for Pause/Resume to
+      // accidentally force a full UI refresh.
+      await synchronizeConversationEvents();
+      if (!cancelled) timer = window.setTimeout(() => { void recover(); }, ACTIVE_EVENT_RECOVERY_INTERVAL_MS);
     };
     timer = window.setTimeout(() => { void recover(); }, ACTIVE_EVENT_RECOVERY_INTERVAL_MS);
     return () => {
       cancelled = true;
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [api, eventQueryKey, eventsQuery.data?.next_cursor, hasUnfinishedFormalTurn, isGenerating, nativeExecutionStatus, pageVisible, queryClient, selected, workspace]);
+  }, [eventsQuery.data?.next_cursor, hasUnfinishedFormalTurn, isGenerating, nativeExecutionStatus, pageVisible, selected, synchronizeConversationEvents, workspace]);
   const messageAnnotations = useMemo(() => displayedEvents.flatMap(event => {
     const raw = event.payload.collaboration_annotations;
     return Array.isArray(raw) ? raw.filter((item): item is AgentConversationAnnotation => Boolean(
@@ -4118,6 +4138,12 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-context', workspace.id, selected.id) });
     }
   }, [host, queryClient, selected?.id, workspace]);
+  const reconcileConversationProjection = useCallback(() => {
+    void synchronizeConversationEvents(true);
+    if (!workspace || !selected) return;
+    void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-input-readiness', workspace.id, selected.id) });
+    void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-confirmation', workspace.id, selected.id) });
+  }, [host, queryClient, selected, synchronizeConversationEvents, workspace]);
   const clearLiveText = useCallback(() => {
     setLiveText('');
   }, []);
@@ -4148,7 +4174,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     // The upstream stream remains necessary for timely process/event delivery,
     // but text deltas are transient and must never appear as a partial final
     // reply. Final answer content is rendered only from formal OpenHands events.
-    if (event.type === 'stream_closed') refresh();
+    if (event.type === 'stream_closed') reconcileConversationProjection();
     if (event.type === 'event' && event.event) {
       const payload = event.event.payload;
       const isFormalUserMessage = event.event.event_type === 'MESSAGE'
@@ -4178,14 +4204,14 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     // Completion frames do not identify the originating user event.  A stale
     // frame must never complete a newer turn; durable assistant/error events
     // associated with activeTurnEventId are the authoritative terminal signal.
-    if (event.type === 'message_complete') { clearLiveText(); refresh(); }
-  }, [appendLiveEvent, clearLiveText, commitQueuedMessages, refresh, selected?.id]);
+    if (event.type === 'message_complete') { clearLiveText(); reconcileConversationProjection(); }
+  }, [appendLiveEvent, clearLiveText, commitQueuedMessages, reconcileConversationProjection, selected?.id]);
   const onStreamReconnect = useCallback(() => {
     // A WebSocket is a live projection only. Events written while the browser
     // was disconnected are recovered from the authoritative REST feed after
     // the socket is live again; only formal event projections are retained.
-    refresh();
-  }, [refresh]);
+    reconcileConversationProjection();
+  }, [reconcileConversationProjection]);
   useEffect(() => {
     if (!streamEnabled) setStreamStatus('disabled');
   }, [streamEnabled]);
@@ -4653,11 +4679,11 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversations', workspace.id) });
     onNavigate(host.conversationPath(value.id));
   }, onError: error => reportOperationError(selected?.id, error) });
-  const interrupt = useMutation({ mutationFn: () => api.interruptConversation(workspace!.id, selected!.id), onMutate: () => setTurnState('pausing'), onSuccess: () => { refresh(); onHostStateChanged?.(); }, onError: error => {
+  const interrupt = useMutation({ mutationFn: () => api.interruptConversation(workspace!.id, selected!.id), onMutate: () => setTurnState('pausing'), onSuccess: () => { reconcileConversationProjection(); onHostStateChanged?.(); }, onError: error => {
     setTurnState('running');
     reportOperationError(selected?.id, error);
   } });
-  const resume = useMutation({ mutationFn: () => api.resumeConversation(workspace!.id, selected!.id), onMutate: () => setTurnState('resuming'), onSuccess: value => { if (value.cursor) setActiveTurnEventId(value.cursor); setTurnState('running'); refresh(); onHostStateChanged?.(); }, onError: error => { setTurnState('paused'); reportOperationError(selected?.id, error); } });
+  const resume = useMutation({ mutationFn: () => api.resumeConversation(workspace!.id, selected!.id), onMutate: () => setTurnState('resuming'), onSuccess: value => { if (value.cursor) setActiveTurnEventId(value.cursor); setTurnState('running'); reconcileConversationProjection(); onHostStateChanged?.(); }, onError: error => { setTurnState('paused'); reportOperationError(selected?.id, error); } });
   const decideConfirmation = useMutation({
     mutationFn: (accept: boolean) => api.decideConfirmation(workspace!.id, selected!.id, pendingConfirmation!.pending_actions_digest!, accept, confirmationReason.trim()),
     onSuccess: value => {
@@ -5163,6 +5189,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         isGenerating={isGenerating}
         isPaused={inputReadinessQuery.data?.execution_status?.toLowerCase() === 'paused'}
         historyPending={Boolean(selected && historyLoadingBindingId === selected.id)}
+        historyRevision={historyRevision}
         requestStartedAt={requestStartedAt}
         requestSubmitting={(send.isPending && !nativeGuidanceDispatching) || bootstrap.isPending || rewrite.isPending}
         onRewrite={selected && canWrite && features.rewrite ? requestRewrite : undefined}

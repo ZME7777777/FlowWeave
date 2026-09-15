@@ -450,6 +450,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   let incompleteLiveToolProjection = false;
   let parentTurnFailed = false;
   let historyPrefetchEnabled = false;
+  let cursorlessEventRecovery = false;
   let historyPageRequests = 0;
   let releaseHistoryPage: (() => void) | undefined;
   const historyPageGate = new Promise<void>(resolve => { releaseHistoryPage = resolve; });
@@ -719,7 +720,8 @@ test('top-level Agent workspace creates a direct conversation and restores its U
         events: (modelIsResponding || parentTurnFailed) ? [
           ...(!cursor ? [{ id: 'running-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'agent-reply', content: '正在处理的请求', timestamp: new Date(Date.now() - 12_000).toISOString().replace(/Z$/, '') } }] : []),
           ...(incompleteLiveToolProjection && !cursor ? [{ id: 'live-tool', event_type: 'TOOL_CALL', payload: { source: 'agent', parent_id: 'running-user', action_id: 'live-tool', tool_call_id: 'live-call', event_name: 'TerminalAction', timestamp: new Date().toISOString() } }] : []),
-          ...(backfilledTaskAction && cursor === 'running-user' ? [{ id: 'recovered-task-action', event_type: 'TOOL_CALL', payload: { source: 'agent', parent_id: 'running-user', action_id: 'recovered-task-action', tool_call_id: 'recovered-task-call', tool_name: 'task', event_name: 'TaskAction', summary: '检查依赖关系', runtime_task: { phase: 'REQUESTED', action_event_id: 'recovered-task-action', tool_call_id: 'recovered-task-call', subagent_type: 'general-purpose', description: '检查依赖关系' }, timestamp: new Date().toISOString() } }] : []),
+          ...(backfilledTaskAction && (cursor === 'running-user' || (cursorlessEventRecovery && !cursor)) ? [{ id: 'recovered-task-action', event_type: 'TOOL_CALL', payload: { source: 'agent', parent_id: 'running-user', action_id: 'recovered-task-action', tool_call_id: 'recovered-task-call', tool_name: 'task', event_name: 'TaskAction', summary: '检查依赖关系', runtime_task: { phase: 'REQUESTED', action_event_id: 'recovered-task-action', tool_call_id: 'recovered-task-call', subagent_type: 'general-purpose', description: '检查依赖关系' }, timestamp: new Date().toISOString() } }] : []),
+          ...(cursorlessEventRecovery && !cursor ? [{ id: 'cursorless-task-action', event_type: 'TOOL_CALL', payload: { source: 'agent', parent_id: 'recovered-task-action', action_id: 'cursorless-task-action', tool_call_id: 'cursorless-task-call', tool_name: 'task', event_name: 'TaskAction', summary: '汇总子任务返回', runtime_task: { phase: 'REQUESTED', action_event_id: 'cursorless-task-action', tool_call_id: 'cursorless-task-call', subagent_type: 'reviewer', description: '汇总子任务返回' }, timestamp: new Date().toISOString() } }] : []),
           ...(interrupted ? [{ id: 'paused-tool-error', event_type: 'ERROR', payload: { source_type: 'AgentErrorEvent', parent_id: 'running-user', content: 'Tool call interrupted before completion. The conversation was paused.' } }] : []),
           ...(parentTurnFailed ? [{ id: 'running-parent-error', event_type: 'ERROR', payload: { source: 'environment', parent_id: backfilledTaskAction ? 'recovered-task-action' : 'running-user', content: '模型服务暂时不可用，本轮已停止', error_code: 'LLMServiceUnavailableError', timestamp: new Date().toISOString() } }] : []),
         ] : conversations.length ? [
@@ -756,7 +758,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
           { id: 'late-root-file-action', event_type: 'TOOL_CALL', payload: { source: 'agent', parent_id: 'user-request', action_id: 'late-root-file-action', tool_call_id: 'late-root-file-call', tool_name: 'file_editor', event_name: 'FileEditorAction', details: { command: 'str_replace', path: '/runtime/workspace/project/src/root-owned.ts', old_content: 'export const owner = "old";', new_content: 'export const owner = "root";' }, timestamp: '2026-08-26T10:05:03Z' } },
           { id: 'late-root-file-result', event_type: 'TOOL_RESULT', payload: { source: 'environment', parent_id: 'late-root-file-action', action_id: 'late-root-file-action', tool_call_id: 'late-root-file-call', tool_name: 'file_editor', event_name: 'FileEditorObservation', details: { command: 'str_replace', path: '/runtime/workspace/project/src/root-owned.ts', old_content: 'export const owner = "old";', new_content: 'export const owner = "root";', is_error: false }, timestamp: '2026-08-26T10:05:04Z' } },
         ] : [],
-        next_cursor: modelIsResponding ? (backfilledTaskAction && cursor === 'running-user' ? 'recovered-task-action' : cursor || 'running-user') : null,
+        next_cursor: modelIsResponding ? (cursorlessEventRecovery ? null : backfilledTaskAction && cursor === 'running-user' ? 'recovered-task-action' : cursor || 'running-user') : null,
         history_cursor: modelIsResponding && historyPrefetchEnabled && !cursor ? 'running-history-1' : null,
         monitoring: modelIsResponding ? {
           last_event_id: 'running-user',
@@ -1260,12 +1262,10 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await page.reload();
   await expect(page.locator('.agent-composer-model-summary')).toHaveText('gpt-second高');
   await expect(page.getByText('当前供应商：另一模型配置')).toBeVisible();
-  await expect.poll(() => historyPageRequests).toBeGreaterThan(0);
-  await expect(page.locator('.conversation-history-loading')).toContainText('正在载入更早的会话记录');
-  releaseHistoryPage?.();
-  await expect(page.getByText('运行中后台补全的较早历史')).toBeVisible();
-  await expect(page.locator('.conversation-history-loading')).toHaveCount(0);
-  historyPrefetchEnabled = false;
+  // The latest native window stays stable while this turn is live. Historical
+  // pages load after it settles, rather than racing the first streamed event.
+  await page.waitForTimeout(250);
+  expect(historyPageRequests).toBe(0);
   const composer = page.getByLabel('发送 Agent 消息');
   await composer.fill('maven');
   await composer.dispatchEvent('keydown', { key: 'Enter', code: 'Enter', isComposing: true });
@@ -1305,6 +1305,13 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   // formal event without reconnecting or switching conversations.
   backfilledTaskAction = true;
   await expect(activeProcess.getByText('子智能体 general-purpose · 检查依赖关系')).toBeVisible();
+  // Even when OpenHands temporarily exposes no incremental cursor and the
+  // WebSocket is silently quiet, the current-event reconciliation must reveal
+  // new child work without using Pause/Resume as a manual refresh button.
+  cursorlessEventRecovery = true;
+  agentStream!.send(JSON.stringify({ type: 'message_complete' }));
+  await expect(activeProcess.getByText('子智能体 reviewer · 汇总子任务返回')).toBeVisible();
+  cursorlessEventRecovery = false;
   readinessReportsIdle = false;
   agentStream!.send(JSON.stringify({ type: 'message_complete' }));
   await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toBeVisible();
@@ -1498,6 +1505,12 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(activeProcess).toHaveJSProperty('open', true);
   await expect(page.locator('.conversation-turn-status')).toHaveCount(0);
   await expect(page.getByLabel('会话实时状态')).toHaveCount(0);
+  await expect.poll(() => historyPageRequests).toBeGreaterThan(0);
+  await expect(page.locator('.conversation-history-loading')).toContainText('正在载入更早的会话记录');
+  releaseHistoryPage?.();
+  await expect(page.getByText('运行中后台补全的较早历史')).toBeVisible();
+  await expect(page.locator('.conversation-history-loading')).toHaveCount(0);
+  historyPrefetchEnabled = false;
   const completedViewport = await page.locator('.conversation-turn').last().evaluate(turn => {
     const surface = turn.closest('.conversation-surface');
     const reply = turn.querySelector('.conversation-message.assistant');

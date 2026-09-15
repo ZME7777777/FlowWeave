@@ -1337,7 +1337,7 @@ function ConversationFailure({ item, taskControl = [] }: { item: Item; taskContr
   </article>;
 }
 
-export function ConversationSurface({ events, liveText, isGenerating, isPaused = false, historyPending = false, requestStartedAt, requestSubmitting = false, rewritePending = false, onRewrite, onFork, onOpenAttachment, onOpenWorkspaceReference, onPreviewCandidateFile, onReviewChanges, onOpenWorkspaceFile, workspaceRoot, annotations = [], onCreateAnnotation, onLocateAnnotation, taskControl = [], monitoring, connectionState }: {
+export function ConversationSurface({ events, liveText, isGenerating, isPaused = false, historyPending = false, historyRevision = 0, requestStartedAt, requestSubmitting = false, rewritePending = false, onRewrite, onFork, onOpenAttachment, onOpenWorkspaceReference, onPreviewCandidateFile, onReviewChanges, onOpenWorkspaceFile, workspaceRoot, annotations = [], onCreateAnnotation, onLocateAnnotation, taskControl = [], monitoring, connectionState }: {
   events: OpenHandsConversationEvent[];
   liveText: string;
   isGenerating: boolean;
@@ -1345,6 +1345,8 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused =
   isPaused?: boolean;
   /** Older native pages are being inserted above the current latest window. */
   historyPending?: boolean;
+  /** Changes only after a historical page is prepended to the native event projection. */
+  historyRevision?: number;
   requestStartedAt?: number;
   requestSubmitting?: boolean;
   rewritePending?: boolean;
@@ -1373,6 +1375,9 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused =
   const scrollInteractionStartY = useRef<number | null>(null);
   const scrollInteractionTowardLatest = useRef(false);
   const automaticScrollFrame = useRef<number | undefined>(undefined);
+  const historyBottomOffset = useRef<number | undefined>(undefined);
+  const historyAnchorArmed = useRef(false);
+  const observedHistoryRevision = useRef(historyRevision);
   const wasGenerating = useRef(isGenerating);
   const copyResetTimer = useRef<number | undefined>(undefined);
   const [isAtLatest, setIsAtLatest] = useState(true);
@@ -1486,6 +1491,29 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused =
     updateScrollPosition();
     scrollInteractionTowardLatest.current = false;
   }, [updateScrollPosition]);
+  useLayoutEffect(() => {
+    const element = surface.current;
+    if (!element || observedHistoryRevision.current === historyRevision) return;
+    observedHistoryRevision.current = historyRevision;
+    if (!historyAnchorArmed.current) {
+      // The parent increments historyRevision once before requesting an older
+      // page, while the old DOM is still present, then again after prepending
+      // that page. This explicitly brackets the DOM change.
+      historyBottomOffset.current = followLatest.current
+        ? undefined
+        : element.scrollHeight - element.scrollTop;
+      historyAnchorArmed.current = true;
+    } else {
+      // Older pages are prepended. The browser must not choose a random
+      // historical row as its scroll anchor while the reader is away from the
+      // latest reply; preserve the exact distance from the bottom instead.
+      if (historyBottomOffset.current !== undefined) {
+        element.scrollTop = Math.max(0, element.scrollHeight - historyBottomOffset.current);
+      }
+      historyBottomOffset.current = undefined;
+      historyAnchorArmed.current = false;
+    }
+  }, [historyRevision]);
   useLayoutEffect(() => {
     if (!initialPositioned.current && (turns.length || liveText || isGenerating)) {
       initialPositioned.current = true;
