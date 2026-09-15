@@ -4694,9 +4694,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     onNavigate(host.rootPath);
   }, [clearBootstrapRecovery, clearConversationDraft, clearLiveText, host.rootPath, onNavigate]);
   useEffect(() => {
-    if (!autoOpenDraft || !workspace || !runtimeWritable || selectedBindingId || conversationDraft) return;
+    if (!autoOpenDraft || !workspace || selectedBindingId || conversationDraft) return;
     openConversationDraft({ displayName: '根工作区' });
-  }, [autoOpenDraft, conversationDraft, openConversationDraft, runtimeWritable, selectedBindingId, workspace]);
+  }, [autoOpenDraft, conversationDraft, openConversationDraft, selectedBindingId, workspace]);
   const enqueueDraft = useCallback(() => {
     const content = draft.trim();
     if ((!content && !attachments.length && !references.length && !workspaceReferences.length && !composerAnnotations.length) || migrateStreaming.isPending || pendingMigratedSend || effectiveTurnState === 'pausing' || effectiveTurnState === 'resuming') return;
