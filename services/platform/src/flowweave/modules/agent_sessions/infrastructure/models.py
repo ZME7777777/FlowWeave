@@ -249,6 +249,44 @@ class AgentConversationUsageBucket(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
 
 
+class AgentConversationSearch(Base):
+    """Durable native-conversation search request; never stores message bodies."""
+
+    __tablename__ = "agent_conversation_searches"
+    __table_args__ = (
+        CheckConstraint(
+            "state IN ('PENDING', 'RUNNING', 'SUCCEEDED', 'FAILED')",
+            name="ck_agent_conversation_search_state",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    workspace_id: Mapped[str] = mapped_column(String(36), index=True)
+    query: Mapped[str] = mapped_column(String(500))
+    state: Mapped[str] = mapped_column(String(20), default="PENDING", index=True)
+    failure_summary: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class AgentConversationSearchHit(Base):
+    """Formal native Event identity returned by one durable search."""
+
+    __tablename__ = "agent_conversation_search_hits"
+    __table_args__ = (
+        UniqueConstraint(
+            "search_id", "binding_id", "event_id", name="uq_agent_conversation_search_hit"
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    search_id: Mapped[str] = mapped_column(String(36), index=True)
+    binding_id: Mapped[str] = mapped_column(String(36), index=True)
+    event_id: Mapped[str] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
 def _normalize_default_host(
     _mapper: object,
     _connection: object,
@@ -282,4 +320,6 @@ __all__ = (
     "AgentConversationCapability",
     "AgentConversationCommand",
     "AgentConversationMessageAttachment",
+    "AgentConversationSearch",
+    "AgentConversationSearchHit",
 )

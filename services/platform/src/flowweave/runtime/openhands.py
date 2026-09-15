@@ -3637,6 +3637,79 @@ class OpenHandsRuntime:
             payload=self._event_payload(item),
         )
 
+    def search_message_events(self, handle: RuntimeHandle, query: str) -> tuple[RuntimeEvent, ...]:
+        """Search one native EventLog without creating a FlowWeave transcript copy.
+
+        The fixed Agent Server owns filtering and pagination. This is a
+        Worker-only historical operation; interactive reads retain their
+        bounded page budget.
+        """
+
+        needle = query.strip()
+        if not needle:
+            return ()
+        base_url = self._base_url_for_handle(handle)
+        session_api_key = self._session_key_for_handle(handle)
+        page_id: str | None = None
+        seen_page_ids: set[str] = set()
+        seen_event_ids: set[str] = set()
+        matches: list[RuntimeEvent] = []
+        while True:
+            if page_id is not None:
+                if page_id in seen_page_ids:
+                    raise DomainError(
+                        "RUNTIME_EVENT_IDENTITY_INVALID",
+                        "OpenHands returned a cyclic event-search continuation",
+                        502,
+                    )
+                seen_page_ids.add(page_id)
+            params: dict[str, str | int] = {
+                "body": needle,
+                "limit": _EVENT_HISTORY_PAGE_SIZE,
+                "sort_order": "TIMESTAMP_DESC",
+            }
+            if page_id is not None:
+                params["page_id"] = page_id
+            page = self._request(
+                "GET",
+                f"/api/conversations/{handle.conversation_id}/events/search",
+                base_url=base_url,
+                session_api_key=session_api_key,
+                params=params,
+            )
+            raw_items = page.get("items", [])
+            if not isinstance(raw_items, list) or any(
+                not isinstance(item, dict) for item in cast(list[object], raw_items)
+            ):
+                raise DomainError(
+                    "RUNTIME_EVENT_IDENTITY_INVALID",
+                    "OpenHands returned an invalid event-search page",
+                    502,
+                )
+            for raw in cast(list[object], raw_items):
+                item = cast(dict[str, Any], raw)
+                event_id = self._event_identity(item)[0]
+                if event_id in seen_event_ids:
+                    continue
+                seen_event_ids.add(event_id)
+                event = RuntimeEvent(
+                    cursor=event_id,
+                    event_type=self._event_type(item),
+                    payload=self._event_payload(item),
+                )
+                source = str(event.payload.get("source") or "").lower()
+                content = str(event.payload.get("content") or "")
+                if (
+                    event.event_type == "MESSAGE"
+                    and source in {"user", "human", "agent", "assistant"}
+                    and needle.casefold() in content.casefold()
+                ):
+                    matches.append(event)
+            next_page_id = page.get("next_page_id")
+            if not isinstance(next_page_id, str) or not next_page_id:
+                return tuple(matches)
+            page_id = self._formal_identity(next_page_id, field="next_page_id", required=True)
+
     @classmethod
     def _usage_snapshots(cls, state: dict[str, Any]) -> tuple[RuntimeUsageSnapshot, ...]:
         stats = state.get("stats")

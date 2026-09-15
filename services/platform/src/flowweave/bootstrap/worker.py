@@ -89,6 +89,7 @@ _DELIVERY_TASK_TYPES = frozenset(
         "START_AUTOMATIC_ATTEMPT",
         "ADVANCE_AUTOMATIC_ATTEMPT",
         "GENERATE_AGENT_CONVERSATION_TITLE",
+        "SEARCH_AGENT_CONVERSATIONS",
         "WATCH_AGENT_TASK_TIMEOUT",
         "CONFIRM_AGENT_TASK_TIMEOUT",
         "RESUME_AGENT_TASK_TIMEOUT",
@@ -212,6 +213,7 @@ class TaskWorker:
     def _task_tenant_context(task: Any):
         if task.task_type in {
             "GENERATE_AGENT_CONVERSATION_TITLE",
+            "SEARCH_AGENT_CONVERSATIONS",
             "WATCH_AGENT_TASK_TIMEOUT",
             "CONFIRM_AGENT_TASK_TIMEOUT",
             "RESUME_AGENT_TASK_TIMEOUT",

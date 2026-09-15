@@ -215,6 +215,15 @@ class MockRuntime:
                 return event
         return None
 
+    def search_message_events(self, handle: RuntimeHandle, query: str) -> tuple[RuntimeEvent, ...]:
+        needle = query.casefold()
+        return tuple(
+            event
+            for event in self._events.get(handle.job_id, ())
+            if event.event_type == "MESSAGE"
+            and needle in str(event.payload.get("content") or "").casefold()
+        )
+
     def switch_model(self, handle: RuntimeHandle, provider: RuntimeProvider) -> None:
         del handle, provider
 

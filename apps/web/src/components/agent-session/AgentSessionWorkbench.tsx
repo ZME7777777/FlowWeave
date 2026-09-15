@@ -20,7 +20,7 @@ import { selectCapabilityVersion, selectCapabilityVersions } from '../../utils/c
 import { SubagentAvatar } from '../SubagentAvatar';
 import { subagentAvatarSlots, type SubagentAvatarSlot } from '../../utils/subagentAvatar';
 import { workspaceFileChanges, workspaceRelativePath, type WorkspaceFileChange } from './fileChanges';
-import type { AgentAttachment, AgentConversation, AgentConversationAnnotation, AgentConversationReference, AgentPendingConfirmationAction, AgentSessionCapability, AgentSessionMcpReadiness, AgentSessionWorkDirectory, AgentSessionWorkDirectoryList, AgentSessionWorkspaceDetails, AgentWorkspaceReference, CapabilityAsset, CapabilityCollection, ModelProvider, OpenHandsConversationEvent, OpenHandsConversationEventBatch, ProviderModel, RuntimeTaskControlSnapshot, RuntimeTaskUsageSnapshot, WorkspaceGitCommitDetails, WorkspaceGitFileDiff } from '../../types';
+import type { AgentAttachment, AgentConversation, AgentConversationAnnotation, AgentConversationReference, AgentConversationSearch, AgentPendingConfirmationAction, AgentSessionCapability, AgentSessionMcpReadiness, AgentSessionWorkDirectory, AgentSessionWorkDirectoryList, AgentSessionWorkspaceDetails, AgentWorkspaceReference, CapabilityAsset, CapabilityCollection, ModelProvider, OpenHandsConversationEvent, OpenHandsConversationEventBatch, ProviderModel, RuntimeTaskControlSnapshot, RuntimeTaskUsageSnapshot, WorkspaceGitCommitDetails, WorkspaceGitFileDiff } from '../../types';
 import '../../pages/agent-workbench.css';
 import '../../pages/agent-workbench-layout.css';
 
@@ -578,6 +578,47 @@ function WorkspaceConversationGroup({ groupId, label, children, conversationCoun
       {canLoadMore && <button type="button" className="agent-workspace-group-more" onClick={() => setVisibleCount(current => current + 3)}>展开显示</button>}
     </div>
   </section>;
+}
+
+function conversationSearchSnippet(content: string, query: string): string {
+  const text = content.replace(/\s+/g, ' ').trim();
+  const index = text.toLocaleLowerCase().indexOf(query.toLocaleLowerCase());
+  if (index < 0) return text.slice(0, 180);
+  const start = Math.max(0, index - 56);
+  const end = Math.min(text.length, index + query.length + 124);
+  return (start ? '…' : '') + text.slice(start, end) + (end < text.length ? '…' : '');
+}
+
+function ConversationSearchDialog({ search, onClose, onSubmit, submitting, onOpenHit }: {
+  search?: AgentConversationSearch;
+  onClose: () => void;
+  onSubmit: (query: string) => void;
+  submitting: boolean;
+  onOpenHit: (bindingId: string, eventId: string) => void;
+}) {
+  const [query, setQuery] = useState(search?.query ?? '');
+  useEscapeClose(onClose);
+  useEffect(() => { setQuery(search?.query ?? ''); }, [search?.id, search?.query]);
+  const state = search?.state;
+  const running = state === 'PENDING' || state === 'RUNNING';
+  return <div className="agent-conversation-search-backdrop" onPointerDown={event => { if (event.target === event.currentTarget) onClose(); }}>
+    <section className="agent-conversation-search-dialog" role="dialog" aria-modal="true" aria-labelledby="agent-conversation-search-title">
+      <form onSubmit={event => { event.preventDefault(); if (query.trim() && !submitting) onSubmit(query.trim()); }}>
+        <Search size={21}/><input autoFocus aria-label="搜索会话内容" value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索全部工作区中的会话…"/><kbd>↵</kbd>
+        <button type="button" aria-label="关闭搜索" onClick={onClose}><X size={17}/></button>
+      </form>
+      <header><div><span className="eyebrow">CONVERSATION SEARCH</span><h2 id="agent-conversation-search-title">{search ? '“' + search.query + '”' : '搜索会话'}</h2></div>{running && <span className="agent-conversation-search-state running"><LoaderCircle size={13}/>后台搜索中</span>}{state === 'SUCCEEDED' && <span className="agent-conversation-search-state done"><Check size={13}/>已完成</span>}{state === 'FAILED' && <span className="agent-conversation-search-state failed">搜索失败</span>}</header>
+      <div className="agent-conversation-search-results">
+        {!search && <p>输入关键词并按回车。关闭窗口不会取消后台搜索。</p>}
+        {running && <p>正在逐个搜索所有工作区会话的原生消息记录。你可以关闭窗口，完成后从左上角按钮重新打开结果。</p>}
+        {state === 'FAILED' && <p>{search?.failure_summary || '搜索无法完成，请重新搜索。'}</p>}
+        {state === 'SUCCEEDED' && !search?.hits?.length && <p>没有找到包含该内容的会话消息。</p>}
+        {search?.hits?.map(hit => <button type="button" className="agent-conversation-search-hit" key={hit.binding_id + ':' + hit.event_id} onClick={() => onOpenHit(hit.binding_id, hit.event_id)}>
+          <span><b>{hit.title}</b><small>{hit.source === 'user' || hit.source === 'human' ? '你的消息' : 'Agent 回复'}{hit.timestamp ? ' · ' + new Date(hit.timestamp).toLocaleString() : ''}</small></span><p>{conversationSearchSnippet(hit.content, search.query)}</p><ChevronRight size={16}/>
+        </button>)}
+      </div>
+    </section>
+  </div>;
 }
 
 function ConversationStreamObserver({
@@ -3570,6 +3611,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const [workDirectoryCreatorOpen, setWorkDirectoryCreatorOpen] = useState(false);
   const [capabilityManagerOpen, setCapabilityManagerOpen] = useState(false);
   const [workspacePathCopied, setWorkspacePathCopied] = useState(false);
+  const [conversationSearchOpen, setConversationSearchOpen] = useState(false);
+  const [conversationSearchId, setConversationSearchId] = useState<string>();
+  const [conversationSearchTargetEventId, setConversationSearchTargetEventId] = useState<string>();
   const attachmentInput = useRef<HTMLInputElement>(null);
   const titleInput = useRef<HTMLInputElement>(null);
   const workspacePathCopyTimer = useRef<number | undefined>(undefined);
@@ -3612,6 +3656,17 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     refetchOnWindowFocus: true,
   });
   const workspace = workspaceQuery.data;
+  const conversationSearchSupported = Boolean(api.startConversationSearch && api.conversationSearch);
+  const conversationSearchQuery = useQuery<AgentConversationSearch>({
+    queryKey: sessionQueryKey(host, 'conversation-search', workspace?.id, conversationSearchId),
+    queryFn: () => api.conversationSearch!(workspace!.id, conversationSearchId!),
+    enabled: Boolean(workspace && conversationSearchId && api.conversationSearch),
+    refetchInterval: query => {
+      const state = query.state.data?.state;
+      return state === 'PENDING' || state === 'RUNNING' ? 1_000 : false;
+    },
+    retry: (count, error) => !(error instanceof ApiError && error.status < 500) && count < 2,
+  });
   const draftRecoveryStorageKey = workspace && conversationDraft
     ? conversationDraftStorageKey(host.id, workspace.id, conversationDraft.workDirectoryId)
     : undefined;
@@ -4047,6 +4102,20 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     )
       .filter(event => !hiddenEventIds.has(event.id));
   }, [conversationDraft?.id, eventsQuery.data?.events, hiddenEventIds, liveEvents, optimisticBootstrapTurn, selected?.id]);
+  useEffect(() => {
+    if (!conversationSearchTargetEventId || !selected) return;
+    const target = Array.from(document.querySelectorAll<HTMLElement>('[data-conversation-event-id]')).find(
+      item => item.dataset.conversationEventId === conversationSearchTargetEventId,
+    );
+    const surface = target?.closest<HTMLElement>('.conversation-surface');
+    if (!target || !surface) return;
+    const top = target.getBoundingClientRect().top - surface.getBoundingClientRect().top + surface.scrollTop - 28;
+    surface.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
+    target.classList.add('conversation-search-target');
+    const timer = window.setTimeout(() => target.classList.remove('conversation-search-target'), 2_600);
+    setConversationSearchTargetEventId(undefined);
+    return () => window.clearTimeout(timer);
+  }, [conversationSearchTargetEventId, displayedEvents, selected]);
   const activeNativeTurnId = activeTurnEventId ?? latestUnfinishedUserEventId(displayedEvents);
   const hasUnfinishedFormalTurn = Boolean(latestUnfinishedUserEventId(displayedEvents));
   const latestFormalUserEventId = [...displayedEvents].reverse().find(event => event.event_type === 'MESSAGE'
@@ -5243,6 +5312,20 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     setConversationDraft(undefined);
     onNavigate(host.conversationPath(bindingId));
   };
+  const startConversationSearch = (query: string) => {
+    if (!workspace || !api.startConversationSearch) return;
+    void api.startConversationSearch(workspace.id, query).then(search => {
+      setConversationSearchId(search.id);
+      setConversationSearchOpen(true);
+    }).catch(reason => {
+      setOperationError(reason instanceof Error ? reason : new Error('无法开始会话搜索'));
+    });
+  };
+  const openConversationSearchHit = (bindingId: string, eventId: string) => {
+    setConversationSearchTargetEventId(eventId);
+    setConversationSearchOpen(false);
+    selectConversation(bindingId);
+  };
   const removeWorkDirectory = async (directory: AgentSessionWorkDirectory) => {
     if (!api.deleteWorkDirectory || !await confirmDeletion('工作区', directory.display_name)) return;
     setOperationError(undefined);
@@ -5255,8 +5338,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   };
   return <main className="agent-workbench-page">
     {selected && <ConversationStreamObserver workspaceId={workspace.id} bindingId={selected.id} enabled={streamEnabled} onEvent={onStreamEvent} onStatus={setStreamStatus} onReconnect={onStreamReconnect}/>}
+    {conversationSearchOpen && <ConversationSearchDialog search={conversationSearchQuery.data} onClose={() => setConversationSearchOpen(false)} onSubmit={startConversationSearch} submitting={conversationSearchQuery.isFetching} onOpenHit={openConversationSearchHit}/>}
     <aside className="agent-workbench-rail">
-      <header className={!onReturnToSource && features.workDirectories ? 'agent-workbench-rail-actions-only' : undefined}>{onReturnToSource && <button type="button" className="agent-session-return" aria-label="返回节点执行" title="返回节点执行" onClick={onReturnToSource}><ArrowLeft size={16}/></button>}{(onReturnToSource || !features.workDirectories) && <div className="agent-session-host-heading"><span className="eyebrow">{onReturnToSource ? 'FLOWRUN NODE WORKSPACE' : 'FLOWRUN NODE'}</span><h1>{onReturnToSource ? workspace?.display_name || '节点会话' : '节点会话'}</h1></div>}<div className="agent-workbench-create-actions"><button className="primary" disabled={!canOpenConversation} onClick={() => openConversationDraft({ displayName: '根工作区' })}><Plus size={15}/>新建会话</button>{features.workDirectories && <button type="button" className="secondary" aria-label="新增工作区" disabled={!runtimeWritable} onClick={() => setWorkDirectoryCreatorOpen(true)}><FolderPlus size={14}/>新增工作区</button>}</div></header>
+      <header className={!onReturnToSource && features.workDirectories ? 'agent-workbench-rail-actions-only' : undefined}>{onReturnToSource && <button type="button" className="agent-session-return" aria-label="返回节点执行" title="返回节点执行" onClick={onReturnToSource}><ArrowLeft size={16}/></button>}{(onReturnToSource || !features.workDirectories) && <div className="agent-session-host-heading"><span className="eyebrow">{onReturnToSource ? 'FLOWRUN NODE WORKSPACE' : 'FLOWRUN NODE'}</span><h1>{onReturnToSource ? workspace?.display_name || '节点会话' : '节点会话'}</h1></div>}<div className="agent-workbench-create-actions"><button className="primary" disabled={!conversationSearchSupported} onClick={() => setConversationSearchOpen(true)}>{conversationSearchQuery.data?.state === 'PENDING' || conversationSearchQuery.data?.state === 'RUNNING' ? <LoaderCircle className="conversation-activity-spin" size={15}/> : conversationSearchQuery.data?.state === 'SUCCEEDED' ? <Check size={15}/> : <Search size={15}/>}{conversationSearchQuery.data?.state === 'SUCCEEDED' ? '搜索完成' : '搜索会话'}</button>{features.workDirectories && <button type="button" className="secondary" aria-label="新增工作区" disabled={!runtimeWritable} onClick={() => setWorkDirectoryCreatorOpen(true)}><FolderPlus size={14}/>新增工作区</button>}</div></header>
       <div className="agent-workbench-list">
         <WorkspaceConversationGroup groupId="root" label="根工作区" conversationCount={rootConversations.length} canCreateConversation={canOpenConversation} onCreateConversation={() => openConversationDraft({ displayName: '根工作区' })}>
           {visibleCount => <>{pendingBootstrapItem && !pendingBootstrap?.draft.workDirectoryId ? pendingBootstrapItem : null}{rootConversations.slice(0, visibleCount).map(item => conversationRow(item, rootConversations))}</>}

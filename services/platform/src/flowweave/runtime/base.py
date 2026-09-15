@@ -663,6 +663,10 @@ class RuntimePort(Protocol):
 
     def read_event(self, handle: RuntimeHandle, event_id: str) -> RuntimeEvent | None: ...
 
+    def search_message_events(
+        self, handle: RuntimeHandle, query: str
+    ) -> tuple[RuntimeEvent, ...]: ...
+
     def stream_events(
         self, handle: RuntimeHandle, *, after_seq: int | None = None
     ) -> AsyncIterator[dict[str, Any]]: ...

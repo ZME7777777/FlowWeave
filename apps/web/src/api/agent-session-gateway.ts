@@ -28,6 +28,7 @@ import type {
   AgentSessionWorkspaceDetails,
   AgentSessionWorkspaceDirectory,
   AgentSessionWorkspaceGitRepositories,
+  AgentConversationSearch,
   CapabilityAsset,
   CapabilityCollection,
   ModelProvider,
@@ -87,6 +88,8 @@ export interface AgentSessionApi {
   readonly defaultHost: () => Promise<AgentSessionHostDetails>;
   readonly runtime: (hostId: AgentSessionHostId) => Promise<AgentSessionRuntime>;
   readonly conversations: (hostId: AgentSessionHostId, cursor?: string) => Promise<AgentConversationPage>;
+  readonly startConversationSearch?: (hostId: AgentSessionHostId, query: string) => Promise<AgentConversationSearch>;
+  readonly conversationSearch?: (hostId: AgentSessionHostId, searchId: string) => Promise<AgentConversationSearch>;
   readonly conversation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<AgentConversation>;
   readonly workDirectories: (hostId: AgentSessionHostId) => Promise<AgentSessionWorkDirectoryList>;
   readonly providers: () => Promise<ModelProvider[]>;
@@ -160,6 +163,8 @@ export const agentWorkspaceSessionGateway: AgentSessionGateway = {
     defaultHost: api.defaultAgentWorkspace,
     runtime: api.agentWorkspaceRuntime,
     conversations: api.agentConversations,
+    startConversationSearch: api.startAgentConversationSearch,
+    conversationSearch: api.agentConversationSearch,
     conversation: api.agentConversation,
     workDirectories: api.agentWorkDirectories,
     providers: api.providers,

@@ -6001,6 +6001,21 @@ Tab 或刷新页面而丢失。新会话草稿必须按当前 Agent Workspace �
 中的 Agent composer 和新会话草稿，避免共享浏览器跨账号泄露。新增 Playwright 回归覆盖两条会话草稿、上传
 附件、切换与刷新恢复；不修改 API、数据库、Runtime Provider、OpenHands 或远端环境。
 
+### FR-461 Agent 工作区全局会话消息搜索 — DONE
+
+依赖：FR-460、FR-234。
+
+目标：将 Agent 工作台左上角主“新建会话”入口替换为“搜索会话”；保留根工作区和子工作区标题行的局部
+“+”会话创建入口。用户输入关键词并按回车后，搜索全部当前授权 Agent 工作区会话的原生 OpenHands 消息；
+居中搜索窗口可关闭且不得取消后台搜索。顶栏按钮在搜索中展示运行状态、完成后展示完成状态；命中结果显示
+会话名称和消息片段，点击后进入对应会话并定位正式事件。
+
+完成：新增受用户/工作区约束的持久搜索请求及命中事件 locator（仅 `binding_id + event_id`，不复制或持久化
+消息正文）；Worker 在独立任务中逐会话调用固定 OpenHands `events/search?body=…`，只接受 user/human/agent/
+assistant 的正式 MessageEvent，并以正式 identity 幂等落入命中 locator。搜索扫描前释放数据库事务，关闭弹窗不会
+取消任务；状态读取时重新从同一受控 Runtime 按正式 event ID 读取并投影正文。顶栏搜索按钮替换“新建会话”，
+根及子工作区行的“+”继续创建其局部会话。未修改 OpenHands 源码、Conversation 事件树、Runtime Provider 或远端环境。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -6016,6 +6031,7 @@ Tab 或刷新页面而丢失。新会话草稿必须按当前 Agent Workspace �
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-16 | FR-461 | 固定 OpenHands 1.47 事件搜索契约取证；OpenHands 适配器定向 pytest（2 passed）；受影响 Python `py_compile`、Ruff format/check；Web TypeScript typecheck、ESLint、production build；Alembic 唯一 head、`git diff --check` 与任务状态唯一性 | PASS（静态／定向／构建）：OpenHands 原生 `events/search?body` 逐页检索仅投影用户/助手 MessageEvent，测试覆盖 body、分页和非消息事件过滤。后台任务只持久化查询、状态及正式事件定位，结果展示时重新读取 OpenHands，不创建平台消息副本。搜索弹窗关闭后任务继续运行；顶栏按钮显示运行/完成状态，工作区标题行的 `+` 创建会话入口保持不变。Web typecheck、全量 ESLint 和 production build 通过；Python 编译、Ruff 与唯一 Alembic head `0117_agent_conversation_search` 通过。 |
 | 2026-09-15 | FR-460 | Web TypeScript typecheck、受影响 Web ESLint、production build、`git diff --check` 与任务状态唯一性；定向 Agent composer Playwright 尝试 | PASS（静态／构建）：TypeScript、受影响 ESLint、production build 和 whitespace 检查均通过。新增 Playwright 已实际启动并完成附件上传，但本机浏览器上下文被已有真实 Agent 工作台认证／路由状态接管，mock 未接管预期请求，故在超时前终止且未记为浏览器回归通过；测试源保留供干净上下文执行。未修改 API、数据库、Runtime Provider、OpenHands 或远端环境。 |
 | 2026-09-15 | FR-458 | Web TypeScript typecheck、全量 ESLint、production build、定向 Agent 工作台 Playwright、Alembic head、`git diff --check` 与任务状态唯一性 | PASS（静态／构建／关键浏览器断言）：corrective nudge 是当前最新事件且原生状态为 running 时，仅动态状态行显示自动重试；后续正式 Thought 到达后提示立即消失而运行标记／停止按钮保持，ERROR 终态后提示仍不出现。readiness 先于终态事件变 idle 时，左侧、Surface 和 Composer 统一保持“正在同步会话结束”。定向长产品流已通过本切片全部新增断言，随后在无关的既有“终端”入口按 button 定位处超时，故未记为完整用例通过。唯一 Alembic head 为 `0116_agent_manual_order`；未修改 API、数据库、Runtime Provider、OpenHands 或远端环境。 |
 | 2026-09-15 | FR-457 | 固定 OpenHands 1.47.0 `response_dispatch` 源码取证；Web TypeScript typecheck、全量 ESLint、production build、定向 Agent 工作台 Playwright、Alembic head、`git diff --check` 与任务状态唯一性 | PASS（静态／构建／关键浏览器断言）：真实空 Agent Message → `source=environment` corrective nudge → `execution_status=running` 序列下，英文框架消息不再作为回复显示，页面呈现中文自动重试状态，底部“暂停当前 Agent”和左侧运行标记同时保持。定向长产品流已通过本切片新增断言，随后在无关的既有 `root-owned.ts` 文件变更展示断言失败，故未记为完整用例通过。唯一 Alembic head 为 `0116_agent_manual_order`；未修改 API、数据库、Runtime Provider、OpenHands 或远端环境。 |

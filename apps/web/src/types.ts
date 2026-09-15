@@ -724,6 +724,23 @@ export interface AgentConversationPage {
   items: AgentConversation[];
   next_cursor?: string | null;
 }
+export interface AgentConversationSearchHit {
+  binding_id: string;
+  event_id: string;
+  title: string;
+  content: string;
+  timestamp?: string | null;
+  source?: string | null;
+}
+export interface AgentConversationSearch {
+  id: string;
+  query: string;
+  state: 'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'FAILED';
+  failure_summary?: string | null;
+  created_at: string;
+  completed_at?: string | null;
+  hits?: AgentConversationSearchHit[];
+}
 export interface AgentSessionWorkDirectory {
   id: string;
   display_name: string;

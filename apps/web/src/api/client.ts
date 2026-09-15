@@ -281,6 +281,10 @@ export const api = {
     if (cursor) query.set('cursor', cursor);
     return request<import('../types').AgentConversationPage>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations?${query}`);
   },
+  startAgentConversationSearch: (workspaceId: string, query: string) =>
+    request<import('../types').AgentConversationSearch>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-searches`, json('POST', { query })),
+  agentConversationSearch: (workspaceId: string, searchId: string) =>
+    request<import('../types').AgentConversationSearch>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-searches/${encodeURIComponent(searchId)}`),
   addAgentConversationCapability: (workspaceId: string, bindingId: string, capability_version_id: string) =>
     request<AgentConversation>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/capabilities`, json('POST', { capability_version_id })),
   bootstrapAgentConversation: (workspaceId: string, conversation_id: string, model_provider_id: string, model_name: string, reasoning_effort: string | null, content: string, attachments: AgentAttachment[] = [], references: AgentConversationReference[] = [], workspace_references: AgentWorkspaceReference[] = [], work_directory_id?: string, capability_version_ids: string[] = [], idempotencyKey = conversation_id, annotations: AgentConversationAnnotation[] = []) =>

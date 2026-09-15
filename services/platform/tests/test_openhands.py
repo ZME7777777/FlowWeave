@@ -1194,6 +1194,73 @@ def test_openhands_reads_one_formal_event_by_id_without_history_search(
     ]
 
 
+def test_openhands_searches_native_message_events_with_body_pagination(
+    openhands_settings, monkeypatch
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    calls: list[dict[str, object]] = []
+    pages = iter(
+        [
+            {
+                "items": [
+                    {
+                        "kind": "MessageEvent",
+                        "id": "assistant-hit",
+                        "source": "agent",
+                        "llm_message": {
+                            "role": "assistant",
+                            "content": "OpenSDK supports native event search.",
+                        },
+                    },
+                    {
+                        "kind": "ActionEvent",
+                        "id": "tool-hit",
+                        "source": "agent",
+                        "action": {"kind": "ThinkAction", "thought": "opensdk"},
+                    },
+                ],
+                "next_page_id": "older-page",
+            },
+            {
+                "items": [
+                    {
+                        "kind": "MessageEvent",
+                        "id": "user-hit",
+                        "source": "user",
+                        "llm_message": {
+                            "role": "user",
+                            "content": "Please use opensdk.",
+                        },
+                    }
+                ],
+                "next_page_id": None,
+            },
+        ]
+    )
+
+    def request(*_args, **kwargs):
+        calls.append(kwargs)
+        return next(pages)
+
+    monkeypatch.setattr(runtime, "_request", request)
+
+    events = runtime.search_message_events(_handle(), "opensdk")
+
+    assert [event.cursor for event in events] == ["assistant-hit", "user-hit"]
+    assert all(event.event_type == "MESSAGE" for event in events)
+    assert calls[0]["params"] == {
+        "body": "opensdk",
+        "limit": 100,
+        "sort_order": "TIMESTAMP_DESC",
+    }
+    assert calls[1]["params"] == {
+        "body": "opensdk",
+        "limit": 100,
+        "sort_order": "TIMESTAMP_DESC",
+        "page_id": "older-page",
+    }
+
+
 def test_openhands_rejects_event_by_id_identity_drift(openhands_settings, monkeypatch):
     runtime = OpenHandsRuntime(openhands_settings)
     monkeypatch.setattr(

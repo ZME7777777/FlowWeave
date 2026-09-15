@@ -7,6 +7,8 @@ from flowweave.modules.agent_sessions.infrastructure.models import (
     AgentConversationBinding,
     AgentConversationCapability,
     AgentConversationCommand,
+    AgentConversationSearch,
+    AgentConversationSearchHit,
     AgentConversationUsageBucket,
 )
 from flowweave.modules.agent_workspaces.infrastructure.models import (
@@ -100,6 +102,8 @@ __all__ = (
     "AgentConversationCapability",
     "AgentWorkspaceCapability",
     "AgentConversationCommand",
+    "AgentConversationSearch",
+    "AgentConversationSearchHit",
     "AgentConversationUsageBucket",
     "AgentWorkDirectory",
     "AgentWorkDirectoryPath",

@@ -5,6 +5,9 @@ from typing import Any, cast
 
 from sqlalchemy.orm import Session
 
+from flowweave.modules.agent_sessions.application.search import (
+    process as process_agent_conversation_search,
+)
 from flowweave.modules.agent_workspaces.public import (
     process_agent_conversation_title,
     process_agent_workspace_runtime,
@@ -86,6 +89,12 @@ def _generate_agent_conversation_title(
     db: Session, aggregate_id: str, payload: dict[str, Any], lease: Lease
 ) -> None:
     process_agent_conversation_title(db, aggregate_id, payload, lease)
+
+
+def _search_agent_conversations(
+    db: Session, aggregate_id: str, _payload: dict[str, Any], _lease: Lease
+) -> None:
+    process_agent_conversation_search(db, aggregate_id)
 
 
 def _watch_agent_task_timeout(
@@ -265,6 +274,7 @@ HANDLERS: dict[str, Handler] = {
     "PAUSE_FLOW_RUN_RUNTIME": _pause_flow_run_runtime,
     "PROVISION_AGENT_WORKSPACE_RUNTIME": _provision_agent_workspace_runtime,
     "GENERATE_AGENT_CONVERSATION_TITLE": _generate_agent_conversation_title,
+    "SEARCH_AGENT_CONVERSATIONS": _search_agent_conversations,
     "WATCH_AGENT_TASK_TIMEOUT": _watch_agent_task_timeout,
     "CONFIRM_AGENT_TASK_TIMEOUT": _confirm_agent_task_timeout,
     "RESUME_AGENT_TASK_TIMEOUT": _resume_agent_task_timeout,

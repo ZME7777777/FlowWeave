@@ -20,6 +20,7 @@ from fastapi import (
 from pydantic import BaseModel, ConfigDict, Field
 
 from flowweave.bootstrap.container import Container
+from flowweave.modules.agent_sessions.application import search as conversation_search
 from flowweave.modules.agent_sessions.public import conversations
 from flowweave.modules.agent_workspaces.application import work_directories, workspace
 from flowweave.modules.environments import public as environments
@@ -72,6 +73,10 @@ class AgentWorkspaceEntriesDeleteWrite(_Write):
 
 class AgentConversationPatchWrite(_Write):
     title: str = Field(min_length=1, max_length=200)
+
+
+class AgentConversationSearchWrite(_Write):
+    query: str = Field(min_length=1, max_length=500)
 
 
 class AgentConversationOrderWrite(_Write):
@@ -720,6 +725,30 @@ async def agent_events(
             "Agent 运行环境暂时不可读取，请稍后重试；FlowWeave 未自动修改会话或运行环境",
             503,
         ) from exc
+
+
+@router.post("/agent-workspaces/{workspace_id}/conversation-searches")
+async def start_agent_conversation_search(
+    workspace_id: str,
+    payload: AgentConversationSearchWrite,
+    db: Db,
+) -> dict[str, Any]:
+    return await run_sync(
+        db, lambda session: conversation_search.start(session, workspace_id, payload.query)
+    )
+
+
+@router.get("/agent-workspaces/{workspace_id}/conversation-searches/{search_id}")
+async def agent_conversation_search_status(
+    workspace_id: str,
+    search_id: str,
+    container: ContainerDep,
+) -> dict[str, Any]:
+    with runtime_context(container.runtime):
+        return await run_blocking_history(
+            container,
+            lambda session: conversation_search.status(session, workspace_id, search_id),
+        )
 
 
 @router.get("/agent-workspaces/{workspace_id}/conversations/{binding_id}/hydration")
