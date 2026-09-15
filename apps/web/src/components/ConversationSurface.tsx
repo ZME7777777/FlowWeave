@@ -1057,19 +1057,21 @@ function ActivityEntryRow({ entry, active, paused = false, parentFailed = false,
   const presentation = activityPresentation(entry, active, workspaceRoot, paused, parentFailed, recoveredErrorEventIds);
   const toolDetail = item.kind === 'tool' ? <ToolDetailPanel presentation={presentation} eventName={eventName} results={entry.results} workspaceRoot={workspaceRoot}/> : null;
   const isNativeThink = item.event.event_type === 'THOUGHT';
-  if (item.kind === 'thought') return <article className={`conversation-activity-row thought${isNativeThink ? ' native-think' : ''}`}>
+  const referenceableThought = item.kind === 'thought' || (item.kind === 'tool' && Boolean(presentation.thought));
+  const thoughtAttributes = referenceableThought ? { 'data-conversation-event-id': item.event.id } : {};
+  if (item.kind === 'thought') return <article {...thoughtAttributes} className={`conversation-activity-row thought${isNativeThink ? ' native-think' : ''}`}>
     <MessageMarkdown>{presentation.thought ?? item.content}</MessageMarkdown>
   </article>;
   if (eventName === 'TaskTrackerAction' || eventName === 'TaskTrackerObservation') return <div className="conversation-tool-entry semantic">
-    {presentation.thought && <article className="conversation-activity-row thought tool-thought"><MessageMarkdown>{presentation.thought}</MessageMarkdown></article>}
+    {presentation.thought && <article {...thoughtAttributes} className="conversation-activity-row thought tool-thought"><MessageMarkdown>{presentation.thought}</MessageMarkdown></article>}
     <TaskTrackerCard entry={entry} presentation={presentation}/>
   </div>;
   if (eventName === 'InvokeSkillAction' || eventName === 'InvokeSkillObservation') return <div className="conversation-tool-entry semantic">
-    {presentation.thought && <article className="conversation-activity-row thought tool-thought"><MessageMarkdown>{presentation.thought}</MessageMarkdown></article>}
+    {presentation.thought && <article {...thoughtAttributes} className="conversation-activity-row thought tool-thought"><MessageMarkdown>{presentation.thought}</MessageMarkdown></article>}
     <SkillLoadCard entry={entry}/>
   </div>;
   if (item.kind === 'tool' && toolDetail) return <div className="conversation-tool-entry">
-    {presentation.thought && <article className="conversation-activity-row thought tool-thought">
+    {presentation.thought && <article {...thoughtAttributes} className="conversation-activity-row thought tool-thought">
       <MessageMarkdown>{presentation.thought}</MessageMarkdown>
     </article>}
     <details className="conversation-activity-row tool conversation-tool-detail">

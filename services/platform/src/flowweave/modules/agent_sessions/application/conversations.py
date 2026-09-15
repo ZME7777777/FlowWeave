@@ -2546,23 +2546,42 @@ def _resolve_conversation_references(
     resolved: list[dict[str, str]] = []
     for event_id in event_ids:
         event = runtime.read_event(handle, event_id)
-        content = event.payload.get("content") if event is not None else None
-        if (
-            event is None
-            or event.event_type != "MESSAGE"
-            or not isinstance(content, str)
-            or not content.strip()
-        ):
+        content = _referenceable_event_text(event)
+        if content is None:
             raise DomainError(
                 "AGENT_CONVERSATION_REFERENCE_UNAVAILABLE",
                 "引用不在当前会话分支中或已不可读取，请重新选择",
                 422,
             )
-        visible, _references, _workspace_references, _annotations = (
-            _project_conversation_references(content)
+        visible = (
+            _project_conversation_references(content)[0]
+            if event is not None and event.event_type == "MESSAGE"
+            else content
         )
         resolved.append({"event_id": event_id, "content": visible.strip()})
     return _validated_conversation_references(tuple(resolved))
+
+
+def _referenceable_event_text(event: RuntimeEvent | None) -> str | None:
+    """Return only user-visible explanatory text from an authorized event.
+
+    A FlowWeave conversation reference is prompt context, not an OpenHands event
+    relation.  Accept regular messages, native ThinkAction projections and a
+    Tool Action's explanatory thought.  Never promote tool arguments, results,
+    command output or arbitrary event payload fields into implicit context.
+    """
+
+    if event is None:
+        return None
+    if event.event_type == "MESSAGE":
+        value = event.payload.get("content")
+    elif event.event_type == "THOUGHT":
+        value = event.payload.get("thought") or event.payload.get("content")
+    elif event.event_type == "TOOL_CALL":
+        value = event.payload.get("thought")
+    else:
+        return None
+    return value.strip() if isinstance(value, str) and value.strip() else None
 
 
 def validated_user_message_event(

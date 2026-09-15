@@ -181,6 +181,51 @@ def test_conversation_references_are_resolved_by_formal_native_event_id() -> Non
     assert resolved == ({"event_id": "native-event", "content": "服务端已验证的引用内容"},)
 
 
+@pytest.mark.parametrize(
+    ("event_type", "payload", "expected"),
+    (
+        ("THOUGHT", {"thought": "先确认磁盘占用"}, "先确认磁盘占用"),
+        (
+            "TOOL_CALL",
+            {"thought": "创建失败，先检查空间", "content": "rm -rf /"},
+            "创建失败，先检查空间",
+        ),
+    ),
+)
+def test_conversation_references_accept_only_explanatory_process_text(
+    event_type: str, payload: dict[str, str], expected: str
+) -> None:
+    class Runtime:
+        def read_event(self, _handle: object, event_id: str) -> RuntimeEvent | None:
+            assert event_id == "native-process-event"
+            return RuntimeEvent(cursor=event_id, event_type=event_type, payload=payload)  # type: ignore[arg-type]
+
+    resolved = session_conversations.resolve_conversation_references(
+        Runtime(),  # type: ignore[arg-type]
+        RuntimeHandle(job_id="test", conversation_id="conversation"),
+        ({"event_id": "native-process-event"},),
+    )
+
+    assert resolved == ({"event_id": "native-process-event", "content": expected},)
+
+
+def test_conversation_references_reject_tool_results_even_with_text() -> None:
+    class Runtime:
+        def read_event(self, _handle: object, event_id: str) -> RuntimeEvent | None:
+            return RuntimeEvent(
+                cursor=event_id,
+                event_type="TOOL_RESULT",
+                payload={"content": "sensitive command output"},
+            )
+
+    with pytest.raises(DomainError, match="引用不在当前会话分支中"):
+        session_conversations.resolve_conversation_references(
+            Runtime(),  # type: ignore[arg-type]
+            RuntimeHandle(job_id="test", conversation_id="conversation"),
+            ({"event_id": "tool-result"},),
+        )
+
+
 def test_rewrite_target_is_read_by_id_without_history_page_scan() -> None:
     class Runtime:
         def read_active_events(self, _handle: object) -> RuntimeEventBatch:
