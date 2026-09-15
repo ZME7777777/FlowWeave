@@ -42,13 +42,14 @@ const settingsNav = [
 ];
 
 function clearAgentIdentityStorage() {
+  const isAgentStorage = (key: string) => key.startsWith('flowweave.agent.')
+    || key.startsWith('flowweave:agent-session-tools:agent-workspace:')
+    || key.startsWith('flowweave:agent-conversation-');
   for (const key of Object.keys(sessionStorage)) {
-    if (
-      key.startsWith('flowweave.agent.')
-      || key.startsWith('flowweave:agent-session-tools:agent-workspace:')
-    ) {
-      sessionStorage.removeItem(key);
-    }
+    if (isAgentStorage(key)) sessionStorage.removeItem(key);
+  }
+  for (const key of Object.keys(localStorage)) {
+    if (isAgentStorage(key)) localStorage.removeItem(key);
   }
   clearAgentSessionCacheStorage();
 }

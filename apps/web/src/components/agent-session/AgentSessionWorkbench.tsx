@@ -205,6 +205,13 @@ interface ConversationDraftRecovery {
   modelName: string;
   reasoningEffort: string | null;
 }
+interface ComposerDraftRecovery {
+  content: string;
+  attachments: AgentAttachment[];
+  references: ConversationReference[];
+  workspaceReferences: AgentWorkspaceReference[];
+  annotations: AgentConversationAnnotation[];
+}
 interface OptimisticBootstrapTurn {
   scope: string;
   event: OpenHandsConversationEvent;
@@ -783,14 +790,14 @@ function annotationsFromStorage(value: unknown): AgentConversationAnnotation[] {
 
 function readConversationDraft(storageKey: string): ConversationDraftRecovery | undefined {
   try {
-    const stored = window.sessionStorage.getItem(storageKey);
+    const stored = window.localStorage.getItem(storageKey) ?? window.sessionStorage.getItem(storageKey);
     if (!stored) return undefined;
     const value = JSON.parse(stored) as Partial<ConversationDraftRecovery>;
     if (!value.draft?.id || typeof value.draft.displayName !== 'string'
       || typeof value.content !== 'string' || !Array.isArray(value.attachments)
       || typeof value.providerId !== 'string' || typeof value.modelName !== 'string'
       || (value.reasoningEffort !== null && typeof value.reasoningEffort !== 'string')) return undefined;
-    if (value.attachments.some(item => !item || typeof item.filename !== 'string'
+    if (value.content.length > 200_000 || value.attachments.some(item => !item || typeof item.filename !== 'string'
       || typeof item.mime_type !== 'string' || typeof item.byte_size !== 'number'
       || typeof item.path !== 'string')) return undefined;
     const references = Array.isArray(value.references)
@@ -799,6 +806,9 @@ function readConversationDraft(storageKey: string): ConversationDraftRecovery | 
       : [];
     return {
       ...value,
+      attachments: value.attachments.slice(0, 20).map(item => ({
+        filename: item.filename, mime_type: item.mime_type, byte_size: item.byte_size, path: item.path,
+      })),
       references,
       workspaceReferences: workspaceReferencesFromStorage(value.workspaceReferences),
       annotations: annotationsFromStorage(value.annotations),
@@ -810,8 +820,10 @@ function readConversationDraft(storageKey: string): ConversationDraftRecovery | 
 
 function writeConversationDraft(storageKey: string, recovery: ConversationDraftRecovery | undefined) {
   try {
-    if (recovery) window.sessionStorage.setItem(storageKey, JSON.stringify(recovery));
-    else window.sessionStorage.removeItem(storageKey);
+    if (recovery) window.localStorage.setItem(storageKey, JSON.stringify(recovery));
+    else window.localStorage.removeItem(storageKey);
+    // v1 was current-tab-only. Remove it after the v2 durable write succeeds.
+    window.sessionStorage.removeItem(storageKey);
   } catch {
     // This recovery aid deliberately remains browser-only. A first message is
     // still the only action that creates a server-side Conversation.
@@ -819,25 +831,53 @@ function writeConversationDraft(storageKey: string, recovery: ConversationDraftR
 }
 
 function conversationComposerDraftStorageKey(hostId: string, workspaceId: string, bindingId: string): string {
-  return `flowweave:agent-conversation-composer-draft:v1:${hostId}:${workspaceId}:${bindingId}`;
+  return `flowweave:agent-conversation-composer-draft:v2:${hostId}:${workspaceId}:${bindingId}`;
 }
 
-function readConversationComposerDraft(storageKey: string): string {
+function conversationDraftStorageKey(hostId: string, workspaceId: string, workDirectoryId?: string): string {
+  return `flowweave:agent-conversation-draft:v2:${hostId}:${workspaceId}:${workDirectoryId ?? 'root'}`;
+}
+
+function readConversationComposerDraft(storageKey: string): ComposerDraftRecovery {
   try {
-    const value = window.sessionStorage.getItem(storageKey);
-    return value && value.length <= 200_000 ? value : '';
+    const stored = window.localStorage.getItem(storageKey);
+    if (stored) {
+      const value = JSON.parse(stored) as Partial<ComposerDraftRecovery>;
+      if (typeof value.content === 'string' && value.content.length <= 200_000
+        && Array.isArray(value.attachments) && Array.isArray(value.references)) {
+        return {
+          content: value.content,
+          attachments: value.attachments.filter((item): item is AgentAttachment => Boolean(item)
+            && typeof item.filename === 'string' && typeof item.mime_type === 'string'
+            && typeof item.byte_size === 'number' && typeof item.path === 'string').slice(0, 20).map(item => ({
+              filename: item.filename, mime_type: item.mime_type, byte_size: item.byte_size, path: item.path,
+            })),
+          references: value.references.filter((item): item is ConversationReference => Boolean(item)
+            && typeof item.eventId === 'string' && typeof item.content === 'string').slice(0, 20),
+          workspaceReferences: workspaceReferencesFromStorage(value.workspaceReferences),
+          annotations: annotationsFromStorage(value.annotations),
+        };
+      }
+    }
+    // Preserve text-only drafts created by the previous current-tab store.
+    const legacy = window.sessionStorage.getItem(storageKey.replace(':v2:', ':v1:'));
+    return { content: legacy && legacy.length <= 200_000 ? legacy : '', attachments: [], references: [], workspaceReferences: [], annotations: [] };
   } catch {
-    return '';
+    return { content: '', attachments: [], references: [], workspaceReferences: [], annotations: [] };
   }
 }
 
-function writeConversationComposerDraft(storageKey: string | undefined, value: string) {
+function writeConversationComposerDraft(storageKey: string | undefined, value: ComposerDraftRecovery | undefined) {
   if (!storageKey) return;
   try {
-    if (value) window.sessionStorage.setItem(storageKey, value);
-    else window.sessionStorage.removeItem(storageKey);
+    if (value && (value.content || value.attachments.length || value.references.length || value.workspaceReferences.length || value.annotations.length)) {
+      window.localStorage.setItem(storageKey, JSON.stringify({
+        ...value,
+        attachments: value.attachments.slice(0, 20).map(item => ({ filename: item.filename, mime_type: item.mime_type, byte_size: item.byte_size, path: item.path })),
+      }));
+    } else window.localStorage.removeItem(storageKey);
   } catch {
-    // A per-conversation composer draft is a browser-local convenience.
+    // Composer recovery is opportunistic and must never block sending.
   }
 }
 
@@ -3456,9 +3496,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const host = useAgentSessionHost();
   const queryClient = useQueryClient();
   const initialBootstrapRecovery = useRef<BootstrapRecovery | undefined>(readBootstrapRecovery(host.bootstrapRecoveryStorageKey));
-  const initialConversationDraft = useRef<ConversationDraftRecovery | undefined>(
-    initialBootstrapRecovery.current ? undefined : readConversationDraft(host.draftStorageKey),
-  );
+  // New-conversation recovery is loaded only after the authorized workspace
+  // identity is known. The former host-wide key had no workspace boundary.
+  const initialConversationDraft = useRef<ConversationDraftRecovery | undefined>(undefined);
   const [draft, setDraft] = useState(() => initialBootstrapRecovery.current?.message.content ?? initialConversationDraft.current?.content ?? '');
   const [streamStatus, setStreamStatus] = useState<StreamStatus>('disabled');
   const [liveText, setLiveText] = useState('');
@@ -3572,6 +3612,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     refetchOnWindowFocus: true,
   });
   const workspace = workspaceQuery.data;
+  const draftRecoveryStorageKey = workspace && conversationDraft
+    ? conversationDraftStorageKey(host.id, workspace.id, conversationDraft.workDirectoryId)
+    : undefined;
   const unreadStorageKey = workspace ? unreadConversationStorageKey(host.id, workspace.id) : undefined;
   const runtimeQuery = useQuery({ queryKey: sessionQueryKey(host, 'runtime', workspace?.id), queryFn: () => api.runtime(workspace!.id), enabled: Boolean(workspace), refetchInterval: query => query.state.data?.state === 'RECOVERING' ? 5000 : false });
   const conversationsQuery = useInfiniteQuery({
@@ -3820,8 +3863,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     : undefined;
   const setComposerDraft = useCallback((value: string) => {
     setDraft(value);
-    writeConversationComposerDraft(selectedComposerDraftStorageKey, value);
-  }, [selectedComposerDraftStorageKey]);
+  }, []);
   const activeComposerScope = useRef<string | undefined>(undefined);
   activeComposerScope.current = composerScope;
   const reportOperationError = useCallback((scope: string | undefined, error: Error) => {
@@ -3832,8 +3874,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     writeBootstrapRecovery(host.bootstrapRecoveryStorageKey, undefined);
   }, [host.bootstrapRecoveryStorageKey]);
   const clearConversationDraft = useCallback(() => {
-    writeConversationDraft(host.draftStorageKey, undefined);
-  }, [host.draftStorageKey]);
+    if (draftRecoveryStorageKey) writeConversationDraft(draftRecoveryStorageKey, undefined);
+  }, [draftRecoveryStorageKey]);
   const connectedProviders = (providersQuery.data ?? []).filter(item => item.connection_state === 'CONNECTED' && item.models.some(model => model.enabled && model.is_default));
   const runtime = runtimeQuery.data;
   const runtimeWritable = Boolean(workspace && runtime?.write_available);
@@ -4242,14 +4284,31 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   useLayoutEffect(() => {
     if (previousComposerScope.current === composerScope) return;
     previousComposerScope.current = composerScope;
-    if (selectedComposerDraftStorageKey) setDraft(readConversationComposerDraft(selectedComposerDraftStorageKey));
-    else if (!conversationDraft) setDraft('');
+    const recoveredComposer = selectedComposerDraftStorageKey
+      ? readConversationComposerDraft(selectedComposerDraftStorageKey)
+      : undefined;
     if (bootstrapTransitionScope.current === composerScope) {
       bootstrapTransitionScope.current = undefined;
       return;
     }
-    setEditing(false); clearLiveText(); pendingLiveEvents.current = []; if (liveEventsFrame.current !== undefined) window.cancelAnimationFrame(liveEventsFrame.current); liveEventsFrame.current = undefined; setLiveEvents([]); setHiddenEventIds(new Set()); setActiveTurnEventId(undefined); setRequestStartedAt(undefined); setConfirmationReason(''); setTurnState('idle'); queuedMessagesRef.current = []; streamConfirmedNativeGuidanceIds.current.clear(); nativeGuidanceOptimisticEventIds.current.clear(); setQueuedMessages([]); setPendingRewrite(undefined); setAttachments([]); setReferences([]); setComposerAnnotations([]); setOperationError(undefined);
+    setEditing(false); clearLiveText(); pendingLiveEvents.current = []; if (liveEventsFrame.current !== undefined) window.cancelAnimationFrame(liveEventsFrame.current); liveEventsFrame.current = undefined; setLiveEvents([]); setHiddenEventIds(new Set()); setActiveTurnEventId(undefined); setRequestStartedAt(undefined); setConfirmationReason(''); setTurnState('idle'); queuedMessagesRef.current = []; streamConfirmedNativeGuidanceIds.current.clear(); nativeGuidanceOptimisticEventIds.current.clear(); setQueuedMessages([]); setPendingRewrite(undefined);
+    if (recoveredComposer) {
+      setDraft(recoveredComposer.content);
+      setAttachments(recoveredComposer.attachments);
+      setReferences(recoveredComposer.references);
+      setWorkspaceReferences(recoveredComposer.workspaceReferences);
+      setComposerAnnotations(recoveredComposer.annotations);
+    } else if (!conversationDraft) {
+      setDraft(''); setAttachments([]); setReferences([]); setWorkspaceReferences([]); setComposerAnnotations([]);
+    }
+    setOperationError(undefined);
   }, [clearLiveText, composerScope, conversationDraft, selectedComposerDraftStorageKey]);
+  useEffect(() => {
+    if (!selectedComposerDraftStorageKey) return;
+    writeConversationComposerDraft(selectedComposerDraftStorageKey, {
+      content: draft, attachments, references, workspaceReferences, annotations: composerAnnotations,
+    });
+  }, [attachments, composerAnnotations, draft, references, selectedComposerDraftStorageKey, workspaceReferences]);
   useEffect(() => {
     if (!queuedMessagesStorageKey || queuedMessagesStorageKeyRef.current !== queuedMessagesStorageKey) return;
     writeQueuedMessages(queuedMessagesStorageKey, queuedMessages);
@@ -4296,15 +4355,16 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     }
   }, [connectedProviders, newConversationModelName, newConversationProviderId]);
   useEffect(() => {
-    if (!conversationDraft || pendingBootstrap || bootstrapRecovery) {
+    if (pendingBootstrap || bootstrapRecovery) {
       clearConversationDraft();
       return;
     }
-    writeConversationDraft(host.draftStorageKey, {
+    if (!conversationDraft || !draftRecoveryStorageKey) return;
+    writeConversationDraft(draftRecoveryStorageKey, {
       draft: conversationDraft, content: draft, attachments, references, workspaceReferences, annotations: composerAnnotations, providerId: newConversationProviderId,
       modelName: newConversationModelName, reasoningEffort: newConversationReasoningEffort,
     });
-  }, [attachments, bootstrapRecovery, clearConversationDraft, composerAnnotations, conversationDraft, draft, host.draftStorageKey, newConversationModelName, newConversationProviderId, newConversationReasoningEffort, pendingBootstrap, references, workspaceReferences]);
+  }, [attachments, bootstrapRecovery, clearConversationDraft, composerAnnotations, conversationDraft, draft, draftRecoveryStorageKey, newConversationModelName, newConversationProviderId, newConversationReasoningEffort, pendingBootstrap, references, workspaceReferences]);
   useEffect(() => {
     if (turnState === 'pausing' && nativeExecutionStatus?.toLowerCase() === 'paused') {
       setTurnState('paused');
@@ -4805,20 +4865,35 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   }, [displayedEvents, effectiveTurnState, interrupt, rewrite]);
   const openConversationDraft = useCallback((next: Omit<ConversationDraft, 'id'>) => {
     clearBootstrapRecovery();
-    clearConversationDraft();
-    setConversationDraft({ ...next, id: randomId(), capabilityVersionIds: next.capabilityVersionIds ?? [] });
+    const recovery = workspace
+      ? readConversationDraft(conversationDraftStorageKey(host.id, workspace.id, next.workDirectoryId))
+      : undefined;
+    if (recovery) {
+      setConversationDraft(recovery.draft);
+      setDraft(recovery.content);
+      setAttachments(recovery.attachments);
+      setReferences(recovery.references);
+      setWorkspaceReferences(recovery.workspaceReferences ?? []);
+      setComposerAnnotations(recovery.annotations);
+      setNewConversationProviderId(recovery.providerId);
+      setNewConversationModelName(recovery.modelName);
+      setNewConversationReasoningEffort(recovery.reasoningEffort);
+    } else {
+      setConversationDraft({ ...next, id: randomId(), capabilityVersionIds: next.capabilityVersionIds ?? [] });
+      setDraft('');
+      setAttachments([]);
+      setReferences([]); setWorkspaceReferences([]);
+      setComposerAnnotations([]);
+    }
     setPendingBootstrap(undefined);
     setWorkspaceScopeMigration(undefined);
-    setDraft('');
-    setAttachments([]);
-    setReferences([]); setWorkspaceReferences([]);
     clearLiveText();
     setLiveEvents([]);
     setOptimisticBootstrapTurn(undefined);
     setHiddenEventIds(new Set());
     setTurnState('idle');
     onNavigate(host.rootPath);
-  }, [clearBootstrapRecovery, clearConversationDraft, clearLiveText, host.rootPath, onNavigate]);
+  }, [clearBootstrapRecovery, clearLiveText, host.id, host.rootPath, onNavigate, workspace]);
   useEffect(() => {
     if (!autoOpenDraft || !workspace || selectedBindingId || conversationDraft) return;
     openConversationDraft({ displayName: '根工作区' });
@@ -5166,7 +5241,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   );
   const selectConversation = (bindingId: string) => {
     setConversationDraft(undefined);
-    clearConversationDraft();
     onNavigate(host.conversationPath(bindingId));
   };
   const removeWorkDirectory = async (directory: AgentSessionWorkDirectory) => {
