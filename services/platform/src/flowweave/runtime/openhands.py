@@ -1306,6 +1306,13 @@ class OpenHandsRuntime:
             "base_url": provider.base_url,
             "api_key": provider.api_key,
             "usage_id": f"flowweave:{provider.provider_id}",
+            # OpenHands 1.47 defaults this field to ``high`` when it is
+            # omitted.  Always bind the FlowWeave selection explicitly,
+            # including ``None`` when the selected provider/model exposes no
+            # reasoning effort.  Otherwise a switch from a reasoning model can
+            # silently retain (or acquire) ``high`` and an OpenAI-compatible
+            # Chat Completions gateway may reject the unsupported parameter.
+            "reasoning_effort": provider.reasoning_effort,
             # Agent Server decides whether to wire its formal token callback
             # when the Event Service is created.  Keep it enabled from the
             # first provider so a later switch_llm to a streaming-only
@@ -1354,6 +1361,11 @@ class OpenHandsRuntime:
                         },
                     }
                 )
+        else:
+            # ``api_mode`` is an explicit OpenHands 1.47 contract.  Do not
+            # leave a prior Responses binding to SDK inference when switching
+            # this Conversation back to Chat Completions.
+            llm["api_mode"] = "chat"
         if fallback_profile_names:
             # OpenHands owns execution of this formal fallback strategy. The
             # profile names identify Runtime-local, encrypted-at-rest records
@@ -4459,7 +4471,8 @@ class OpenHandsRuntime:
         if provider.auth_type == "CODEX_OAUTH" or provider.api_protocol == "RESPONSES":
             matches = matches and actual.get("api_mode") == "responses"
         else:
-            matches = matches and actual.get("api_mode") != "responses"
+            matches = matches and actual.get("api_mode") in {"chat", "auto"}
+        matches = matches and self._llm_diagnostic_matches(expected, actual)["reasoning"]
         self._log_llm_binding_diagnostic(
             handle,
             operation="switch",

@@ -882,6 +882,8 @@ def test_openhands_starts_real_agent_with_selected_provider_and_skill(
         "base_url": "http://host.docker.internal:1234/v1",
         "api_key": "configured-secret",
         "usage_id": "flowweave:provider-1",
+        "reasoning_effort": None,
+        "api_mode": "chat",
         "stream": True,
         "num_retries": 3,
         "retry_multiplier": 2.0,
@@ -1589,6 +1591,46 @@ def test_openhands_configures_api_key_provider_for_responses(openhands_settings,
     assert llm["api_mode"] == "responses"
     assert llm["litellm_extra_body"] == {"store": False, "reasoning": {"effort": "low"}}
     assert "model_canonical_name" not in llm
+
+
+@pytest.mark.parametrize("reasoning_effort", [None, "high"])
+def test_openhands_configures_chat_provider_with_explicit_reasoning_contract(
+    openhands_settings, monkeypatch, reasoning_effort
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    captured: dict[str, object] = {}
+
+    def fake_request(method: str, path: str, **kwargs: object) -> dict[str, object]:
+        captured.update({"method": method, "path": path, **kwargs})
+        return {"id": "10000000-0000-4000-8000-000000000004", "leaf_event_id": "event-1"}
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+    baseline = _request()
+    runtime.start(
+        replace(
+            baseline,
+            agent_spec=replace(
+                baseline.agent_spec,
+                provider=RuntimeProvider(
+                    provider_id="chat-api-key",
+                    base_url="https://api.example.test/v1",
+                    model="gpt-5.6-sol",
+                    api_key="configured-secret",
+                    reasoning_effort=reasoning_effort,
+                ),
+            ),
+        )
+    )
+
+    payload = captured["json"]
+    assert isinstance(payload, dict)
+    llm = payload["agent"]["llm"]
+    assert llm["api_mode"] == "chat"
+    assert "litellm_extra_body" not in llm
+    # OpenHands defaults an omitted value to high.  Explicit null is required
+    # to keep a non-reasoning OpenAI-compatible gateway from receiving it.
+    assert "reasoning_effort" in llm
+    assert llm["reasoning_effort"] == reasoning_effort
 
 
 def test_openhands_disables_native_autotitle_for_agent_workspace(openhands_settings, monkeypatch):
@@ -3513,6 +3555,93 @@ def test_openhands_switches_llm_in_place_with_reasoning(openhands_settings, monk
     assert "short-lived-access-token" not in message
 
 
+def test_openhands_switches_from_responses_to_chat_without_retaining_reasoning(
+    openhands_settings, monkeypatch, caplog
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    captured: dict[str, object] = {}
+
+    def fake_request(method: str, path: str, **kwargs: object) -> dict[str, object]:
+        if method == "POST":
+            captured.update({"method": method, "path": path, **kwargs})
+            return {"success": True}
+        return _state(
+            agent={
+                "llm": {
+                    "usage_id": "flowweave:chat-api-key",
+                    "model": "openai/gpt-5.6-sol",
+                    "base_url": "https://api.example.test/v1",
+                    "api_mode": "chat",
+                    "reasoning_effort": None,
+                }
+            }
+        )
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+    caplog.set_level(logging.WARNING, logger=openhands_module.__name__)
+    runtime.switch_model(
+        _handle("cursor-1"),
+        RuntimeProvider(
+            provider_id="chat-api-key",
+            base_url="https://api.example.test/v1",
+            model="gpt-5.6-sol",
+            api_key="configured-secret",
+            reasoning_effort=None,
+        ),
+    )
+
+    payload = captured["json"]
+    assert isinstance(payload, dict)
+    assert payload["llm"]["api_mode"] == "chat"
+    assert payload["llm"]["reasoning_effort"] is None
+    assert "litellm_extra_body" not in payload["llm"]
+    diagnostic = next(
+        record.getMessage()
+        for record in caplog.records
+        if "native_llm_binding_diagnostic" in record.getMessage()
+    )
+    assert "matches=True" in diagnostic
+    assert "api_mode_matches=True" in diagnostic
+    assert "reasoning_matches=True" in diagnostic
+
+
+def test_openhands_rejects_switch_that_retains_previous_reasoning_effort(
+    openhands_settings, monkeypatch
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+
+    def fake_request(method: str, _path: str, **_kwargs: object) -> dict[str, object]:
+        if method == "POST":
+            return {"success": True}
+        return _state(
+            agent={
+                "llm": {
+                    "usage_id": "flowweave:chat-api-key",
+                    "model": "openai/gpt-5.6-sol",
+                    "base_url": "https://api.example.test/v1",
+                    "api_mode": "chat",
+                    "reasoning_effort": "high",
+                }
+            }
+        )
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+
+    with pytest.raises(DomainError) as raised:
+        runtime.switch_model(
+            _handle("cursor-1"),
+            RuntimeProvider(
+                provider_id="chat-api-key",
+                base_url="https://api.example.test/v1",
+                model="gpt-5.6-sol",
+                api_key="configured-secret",
+                reasoning_effort=None,
+            ),
+        )
+
+    assert raised.value.code == "RUNTIME_LLM_BINDING_DRIFT"
+
+
 def test_openhands_rejects_stale_codex_llm_after_api_key_switch(
     openhands_settings, monkeypatch, caplog
 ):
@@ -3794,6 +3923,8 @@ def test_openhands_serializes_frozen_summarizing_condenser(openhands_settings, m
             "base_url": "http://host.docker.internal:1234/v1",
             "api_key": "configured-secret",
             "usage_id": "condenser",
+            "reasoning_effort": None,
+            "api_mode": "chat",
             "stream": True,
             "num_retries": 3,
             "retry_multiplier": 2.0,
@@ -3945,6 +4076,8 @@ def test_openhands_fork_replaces_only_the_governed_condenser(
             "base_url": "http://host.docker.internal:1234/v1",
             "api_key": "configured-secret",
             "usage_id": "condenser",
+            "reasoning_effort": None,
+            "api_mode": "chat",
             "stream": True,
             "num_retries": 3,
             "retry_multiplier": 2.0,
