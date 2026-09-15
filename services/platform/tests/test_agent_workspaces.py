@@ -3389,18 +3389,24 @@ def test_agent_workspace_recovers_stale_condenser_credential_before_sending(
         def read_active_events(self, handle):
             if handle.conversation_id != self.damaged_conversation_id:
                 return RuntimeEventBatch(events=(), cursor=handle.cursor)
+            parent = RuntimeEvent(
+                cursor="before-condenser-error",
+                event_type="MESSAGE",
+                payload={"source": "agent", "content": "此前有效回复"},
+            )
             error = RuntimeEvent(
                 cursor="condenser-auth-error",
                 event_type="ERROR",
                 payload={
                     "error_code": "NoCondensationAvailableException",
+                    "parent_id": parent.cursor,
                     "content": (
                         "Summarization LLM call failed: litellm.AuthenticationError: "
                         "AuthenticationError: Invalid API key"
                     ),
                 },
             )
-            return RuntimeEventBatch(events=(error,), cursor=error.cursor)
+            return RuntimeEventBatch(events=(parent, error), cursor=error.cursor)
 
         def fork_conversation(self, handle, **kwargs):
             self.fork_calls.append(
@@ -3444,7 +3450,7 @@ def test_agent_workspace_recovers_stale_condenser_credential_before_sending(
         assert repaired_conversation_id != runtime.damaged_conversation_id
         assert first["cursor"] == "user-1"
         assert runtime.fork_calls == [
-            (runtime.damaged_conversation_id, repaired_conversation_id, "condenser-auth-error")
+            (runtime.damaged_conversation_id, repaired_conversation_id, "before-condenser-error")
         ]
         assert runtime.switched_conversation_ids == [repaired_conversation_id]
         assert runtime.sent == [(repaired_conversation_id, "继续当前任务")]

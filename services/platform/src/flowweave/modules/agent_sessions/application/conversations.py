@@ -2039,8 +2039,10 @@ def finalize_running_message(
     }
 
 
-def _condenser_credential_failure_event_id(runtime: Any, handle: RuntimeHandle) -> str | None:
-    """Return only the formal terminal event for a stale condenser API key.
+def _condenser_credential_failure_boundary(
+    runtime: Any, handle: RuntimeHandle
+) -> tuple[str, str] | None:
+    """Return the failed leaf and its safe pre-error native Fork boundary.
 
     OpenHands stores the summarizing condenser as a separate non-streaming LLM.
     Its formal ``switch_llm`` operation preserves a non-identical condenser,
@@ -2064,7 +2066,15 @@ def _condenser_credential_failure_event_id(runtime: Any, handle: RuntimeHandle) 
         return None
     if "authenticationerror" not in detail and "invalid api key" not in detail:
         return None
-    return leaf.cursor
+    parent_id = leaf.payload.get("parent_id")
+    if not isinstance(parent_id, str) or not parent_id or parent_id == "__root__":
+        return None
+    if not any(event.cursor == parent_id for event in branch.events):
+        return None
+    # Forking from the error itself retains that terminal error in the new
+    # branch.  The formal parent is the last trustworthy boundary before the
+    # condenser attempted its stale-credential summary.
+    return leaf.cursor, parent_id
 
 
 def message(
@@ -2112,8 +2122,8 @@ def message(
         )
     runtime = get_runtime()
     readiness = runtime.input_readiness(handle)
-    condenser_recovery_event_id = _condenser_credential_failure_event_id(runtime, handle)
-    if not readiness.ready and condenser_recovery_event_id is None:
+    condenser_recovery = _condenser_credential_failure_boundary(runtime, handle)
+    if not readiness.ready and condenser_recovery is None:
         # OpenHands 1.47.0 formally accepts a user event while its standard
         # Agent is running. The current LLM/tool step is left intact; the
         # native loop consumes the newly appended event on its next step.
@@ -2205,11 +2215,12 @@ def message(
         binding.openhands_conversation_id = replacement_id
         binding.updated_at = now()
         db.flush()
-    elif condenser_recovery_event_id is not None:
+    elif condenser_recovery is not None:
+        error_event_id, fork_event_id = condenser_recovery
         replacement_id = str(
             uuid5(
                 UUID(binding.id),
-                f"condenser-credential-recovery:{handle.conversation_id}:{condenser_recovery_event_id}",
+                f"condenser-credential-recovery:{handle.conversation_id}:{error_event_id}",
             )
         )
         recovery_provider = runtime_provider(
@@ -2222,8 +2233,8 @@ def message(
             handle,
             target_conversation_id=replacement_id,
             title=binding.display_title or "未命名会话",
-            from_event_id=condenser_recovery_event_id,
-            expected_source_leaf_event_id=condenser_recovery_event_id,
+            from_event_id=fork_event_id,
+            expected_source_leaf_event_id=error_event_id,
             reset_metrics=True,
             condenser=RuntimeCondenser(
                 kind="LLM_SUMMARIZING",
@@ -2233,7 +2244,7 @@ def message(
             ),
             condenser_provider=recovery_provider,
         )
-        if repaired.leaf_event_id != condenser_recovery_event_id:
+        if repaired.leaf_event_id != fork_event_id:
             raise DomainError(
                 "RUNTIME_FORK_IDENTITY_DRIFT",
                 "上下文压缩恢复分叉身份校验失败",
@@ -2270,7 +2281,7 @@ def message(
             handle,
             operation="agent_idle_send",
             model_rebind=True,
-            fork_recovery=recovery is not None or condenser_recovery_event_id is not None,
+            fork_recovery=recovery is not None or condenser_recovery is not None,
             compaction=False,
         )
     try:
