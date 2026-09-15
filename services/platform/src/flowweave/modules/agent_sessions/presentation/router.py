@@ -1079,21 +1079,6 @@ async def upload_node_draft_attachment(
     )
 
 
-@router.post(f"{_BASE}/{{binding_id}}/condense", status_code=202)
-async def condense_node_session(
-    flow_run_id: str, attempt_id: str, binding_id: str, db: Db
-) -> dict[str, Any]:
-    return await run_sync(
-        db,
-        lambda session: agent_sessions.flow_node_conversations.condense_node_conversation(
-            session,
-            flow_run_id=flow_run_id,
-            attempt_id=attempt_id,
-            binding_id=binding_id,
-        ),
-    )
-
-
 @router.post(f"{_BASE}/{{binding_id}}/interrupt", status_code=202)
 async def interrupt_node_session(
     flow_run_id: str, attempt_id: str, binding_id: str, db: Db

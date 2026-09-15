@@ -53,8 +53,8 @@ AgentWorkspaceCapability = agent_workspace_host.AgentWorkspaceCapability
 
 TOOLS = tuple(RuntimeTool(name=name) for name in FIXED_RUNTIME_TOOL_NAMES)
 PROJECT_ROOT = "/runtime/workspace/project"
-PROACTIVE_COMPACTION_TOKENS = 256_000
 CONDENSER_MAX_EVENTS = 10_000
+NATIVE_CONDENSER_MAX_TOKENS = 256_000
 AGENT_WORKSPACE_MAX_ITERATIONS = 300
 MATERIALIZED_CAPABILITY_TYPES = frozenset({"SKILL", "MCP", "PLUGIN"})
 PROJECT_ROOT_SYSTEM_CONTEXT = "\n".join(
@@ -740,7 +740,7 @@ def build_agent_spec(
         condenser=RuntimeCondenser(
             kind="LLM_SUMMARIZING",
             max_size=CONDENSER_MAX_EVENTS,
-            max_tokens=PROACTIVE_COMPACTION_TOKENS,
+            max_tokens=NATIVE_CONDENSER_MAX_TOKENS,
             keep_first=4,
         ),
         condenser_provider=provider,

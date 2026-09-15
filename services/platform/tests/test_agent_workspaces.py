@@ -1084,68 +1084,6 @@ def test_agent_workspace_projects_runtime_sandbox_images_for_the_browser(
     )
 
 
-def test_agent_workspace_projects_condensation_reason_and_separate_times(
-    settings, db_session_factory, monkeypatch
-):
-    class CondensationEventRuntime(MockRuntime):
-        def read_active_events(self, handle):
-            del handle
-            events = [
-                RuntimeEvent(
-                    cursor=f"event-{index}",
-                    event_type="THOUGHT",
-                    payload={
-                        "parent_id": "__root__" if index == 0 else f"event-{index - 1}",
-                        "timestamp": f"2026-08-26T10:00:{index % 60:02d}+00:00",
-                    },
-                )
-                for index in range(241)
-            ]
-            events.append(
-                RuntimeEvent(
-                    cursor="condensation-1",
-                    event_type="CONDENSATION_COMPLETED",
-                    payload={
-                        "parent_id": "event-240",
-                        "timestamp": "2026-08-26T10:05:00+00:00",
-                        "forgotten_event_ids": ["event-2", "event-3"],
-                    },
-                )
-            )
-            return RuntimeEventBatch(events=tuple(events))
-
-        def conversation_context(self, handle):
-            del handle
-            return {"condenser_max_size": 240}
-
-    monkeypatch.setattr(
-        conversations,
-        "runtime_provider",
-        lambda _db, asset, **kwargs: RuntimeProvider(
-            provider_id=asset["asset"]["executor"]["model_provider_id"],
-            base_url="https://models.example.test/v1",
-            model=kwargs.get("model_name") or "test-model",
-            api_key="x",
-        ),
-    )
-    runtime = CondensationEventRuntime()
-    with settings_context(settings), db_session_factory() as db, runtime_context(runtime):
-        workspace = _ready_workspace_for_conversation(db)
-        created = conversations.create_conversation(
-            db, workspace.id, "压缩记录", workspace.default_model_provider_id, "condense-key"
-        )
-        projected = conversations.events(db, workspace.id, created["id"], None)["events"][-1]
-
-    assert projected["event_type"] == "CONDENSATION_COMPLETED"
-    assert projected["payload"]["condensation_reason"] == "EVENTS"
-    assert projected["payload"]["condensation_event_count"] == 241
-    assert projected["payload"]["condensation_max_events"] == 240
-    assert projected["payload"]["condensation_triggered_at"] == ("2026-08-26T10:00:00+00:00")
-    assert projected["payload"]["condensation_completed_at"] == ("2026-08-26T10:05:00+00:00")
-    assert "241" in projected["payload"]["condensation_reason_detail"]
-    assert "240" in projected["payload"]["condensation_reason_detail"]
-
-
 def test_agent_workspace_selected_skill_is_frozen_and_mounted(
     settings, container, db_session_factory, monkeypatch, skill_capability
 ):
@@ -2779,7 +2717,7 @@ def test_agent_workspace_conversation_page_uses_exact_native_terminal_status(
         assert page["items"][0]["execution_status"] == "error"
 
 
-def test_agent_workspace_proactively_condenses_at_256k_tokens_before_send(
+def test_agent_workspace_sends_directly_at_high_context_usage(
     settings, db_session_factory, monkeypatch
 ):
     class ProactiveCompactionRuntime(MockRuntime):
@@ -2901,58 +2839,12 @@ def test_agent_workspace_proactively_condenses_at_256k_tokens_before_send(
 
         runtime.calls.clear()
         runtime.used_tokens = 256_000
-        at_threshold = conversations.message(db, workspace.id, created["id"], "threshold")
-        assert at_threshold["compacted"] is True
-        assert runtime.calls == ["condense", "send:threshold"]
-
-        runtime.active_events += (
-            RuntimeEvent(
-                cursor="thought-after-first-condensation",
-                event_type="THOUGHT",
-                payload={
-                    "source": "agent",
-                    "parent_id": runtime.head,
-                    "content": "继续处理",
-                },
-            ),
-        )
-        runtime.head = "thought-after-first-condensation"
-        runtime.calls.clear()
-        runtime.fail_compaction = True
-        with pytest.raises(DomainError) as raised:
-            conversations.message(db, workspace.id, created["id"], "must-not-send")
-        assert raised.value.code == "AGENT_CONTEXT_COMPACTION_FAILED"
-        assert "condenser 明确返回失败" in raised.value.message
-        assert runtime.calls == ["condense", "navigate:thought-after-first-condensation"]
-
-        runtime.fail_compaction = False
-        runtime.used_tokens = 256_000
-        runtime.unsafe_summary = True
-        runtime.calls.clear()
-        with pytest.raises(DomainError) as unsafe:
-            conversations.message(db, workspace.id, created["id"], "must-not-follow-bad-summary")
-        assert unsafe.value.code == "AGENT_CONTEXT_COMPACTION_UNSAFE"
-        assert runtime.calls == ["condense", "navigate:thought-after-first-condensation"]
-        assert not any(call.startswith("send:") for call in runtime.calls)
-
-        runtime.unsafe_summary = False
-        stale = conversations.conversation_context(db, workspace.id, created["id"])
-        assert stale["used_tokens"] is None
-        assert stale["usage_current"] is False
-
-        runtime.active_events += (
-            RuntimeEvent(
-                cursor="thought-after-condensation",
-                event_type="THOUGHT",
-                payload={"source": "agent", "content": "继续处理"},
-            ),
-        )
-        refreshed = conversations.conversation_context(db, workspace.id, created["id"])
-        assert refreshed["used_tokens"] == 256_000
-        assert refreshed["usage_current"] is True
+        at_high_usage = conversations.message(db, workspace.id, created["id"], "threshold")
+        assert at_high_usage["compacted"] is False
+        assert runtime.calls == ["send:threshold"]
 
 
-def test_agent_workspace_protects_legacy_event_count_policy_before_send(
+def test_agent_workspace_sends_legacy_conversation_without_rewriting_history(
     settings, db_session_factory, monkeypatch
 ):
     class LegacyPolicyRuntime(MockRuntime):
@@ -3045,11 +2937,9 @@ def test_agent_workspace_protects_legacy_event_count_policy_before_send(
         )
         result = conversations.message(db, workspace.id, created["id"], "continue")
         assert result["accepted"] is True
-        assert result["compacted"] is True
+        assert result["compacted"] is False
         assert runtime.sent is True
-        assert runtime.head == "legacy-condensation-completed"
-        context = conversations.conversation_context(db, workspace.id, created["id"])
-        assert context["compaction_policy_current"] is False
+        assert runtime.head == "assistant-head"
 
 
 def test_agent_workspace_uses_native_attachments_context_and_model_switch(
@@ -3174,8 +3064,6 @@ def test_agent_workspace_uses_native_attachments_context_and_model_switch(
             "condenser_max_size": 10_000,
             "condenser_max_tokens": 256_000,
             "usage_current": True,
-            "proactive_compaction_tokens": 256_000,
-            "compaction_policy_current": True,
         }
         # Selecting a provider/model is persisted immediately on the individual
         # Conversation and sending only re-applies that saved selection.
@@ -3202,7 +3090,7 @@ def test_agent_workspace_uses_native_attachments_context_and_model_switch(
             created["id"],
             replacement_provider.id,
             "replacement-model",
-            None,
+            256_000,
         )
         assert runtime.switched is not None
         assert runtime.switched.model == "replacement-model"
@@ -3439,12 +3327,11 @@ def test_agent_workspace_repairs_legacy_finish_fork_once_before_sending(
         ]
 
 
-def test_agent_workspace_forks_at_native_event_and_condenses_manually(
+def test_agent_workspace_forks_at_native_event(
     settings, db_session_factory, monkeypatch
 ):
     class ForkRuntime(MockRuntime):
         fork_call: tuple[str | None, str, bool, int, int | None, float | None] | None = None
-        condensed = False
         head = "assistant-event"
         active_events: tuple[RuntimeEvent, ...] = (
             RuntimeEvent(
@@ -3483,29 +3370,6 @@ def test_agent_workspace_forks_at_native_event_and_condenses_manually(
                 kwargs["condenser"].max_tokens_ratio,
             )
             return super().fork_conversation(handle, **kwargs)
-
-        def condense(self, handle):
-            del handle
-            self.condensed = True
-            self.active_events += (
-                RuntimeEvent(
-                    cursor="manual-condensation-request",
-                    event_type="CONDENSATION_REQUESTED",
-                    payload={"parent_id": self.head},
-                ),
-                RuntimeEvent(
-                    cursor="manual-condensation-completed",
-                    event_type="CONDENSATION_COMPLETED",
-                    payload={
-                        "forgotten_event_ids": ["assistant-event"],
-                        "summary": (
-                            "USER_CONTEXT: 源目标\nCOMPLETED: 已生成源回复\nPENDING: 等待后续指令"
-                        ),
-                    },
-                ),
-            )
-            self.head = "manual-condensation-completed"
-            return RuntimeResult(status="IDLE", cursor=self.head)
 
         def read_active_events(self, handle):
             del handle
@@ -3568,7 +3432,7 @@ def test_agent_workspace_forks_at_native_event_and_condenses_manually(
             "assistant-event",
             True,
             10_000,
-            256_000,
+            None,
             None,
         )
         assert (
@@ -3578,9 +3442,6 @@ def test_agent_workspace_forks_at_native_event_and_condenses_manually(
             == fork
         )
         assert len(conversations.list_conversations(db, workspace.id)) == 2
-        condensed = conversations.condense_conversation(db, workspace.id, source["id"])
-        assert condensed["accepted"] is True
-        assert runtime.condensed is True
 
 
 def test_agent_workspace_refreshes_source_head_after_finish_boundary_resolution(

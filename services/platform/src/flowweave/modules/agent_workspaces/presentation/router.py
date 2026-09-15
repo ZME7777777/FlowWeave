@@ -916,15 +916,6 @@ async def agent_streaming_migration(
     )
 
 
-@router.post(
-    "/agent-workspaces/{workspace_id}/conversations/{binding_id}/condense", status_code=202
-)
-async def agent_condense_conversation(workspace_id: str, binding_id: str, db: Db) -> dict[str, Any]:
-    return await run_sync(
-        db, lambda session: conversations.condense_conversation(session, workspace_id, binding_id)
-    )
-
-
 @router.post("/agent-workspaces/{workspace_id}/conversations/{binding_id}/fork", status_code=201)
 async def agent_fork_conversation(
     workspace_id: str,

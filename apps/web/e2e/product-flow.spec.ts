@@ -477,12 +477,10 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   const firstBootstrapGate = new Promise<void>(resolve => { releaseFirstBootstrap = resolve; });
   let renameRequests = 0;
   let contextAvailable = false;
-  let manualCondensations = 0;
   let forkRequests = 0;
   const workspaceEntryCreates: Array<{ parent_path: string; name: string; kind: string }> = [];
   const workspaceDirectoryRequests: string[] = [];
   const workspaceFilePreviewRequests: string[] = [];
-  let compactionScenario = false;
   const longFinalReply = Array.from(
     { length: 90 },
     (_, index) => `最终回复第 ${index + 1} 段：这是用于验证长回复从开头开始阅读的正式内容。`,
@@ -628,12 +626,6 @@ test('top-level Agent workspace creates a direct conversation and restores its U
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(binding) });
       return;
     }
-    if (path.endsWith('/condense') && request.method() === 'POST') {
-      manualCondensations += 1;
-      await new Promise(resolve => setTimeout(resolve, 1_000));
-      await route.fulfill({ status: 202, contentType: 'application/json', body: JSON.stringify({ accepted: true }) });
-      return;
-    }
     if (path.endsWith('/fork') && request.method() === 'POST') {
       forkRequests += 1;
       const created = {
@@ -689,17 +681,10 @@ test('top-level Agent workspace creates a direct conversation and restores its U
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(forkContext ? {
         used_tokens: null, window_tokens: 922_000, cumulative_tokens: 0,
         model_name: 'gpt-test', reasoning_effort: 'high', usage_current: true,
-        proactive_compaction_tokens: 256_000, compaction_policy_current: false,
         condenser_max_size: 240,
-      } : manualCondensations ? {
-        used_tokens: null, window_tokens: 922_000, cumulative_tokens: 12_716,
-        model_name: 'gpt-test', reasoning_effort: 'high', usage_current: false,
-        proactive_compaction_tokens: 256_000, compaction_policy_current: true,
-        condenser_max_size: 10_000,
       } : contextAvailable ? {
         used_tokens: 6_380, window_tokens: 922_000, cumulative_tokens: 12_716,
         model_name: 'gpt-test', reasoning_effort: 'high', usage_current: true,
-        proactive_compaction_tokens: 256_000, compaction_policy_current: true,
         condenser_max_size: 10_000,
       } : {
         used_tokens: 0, window_tokens: 922_000, cumulative_tokens: 12_716,
@@ -768,16 +753,6 @@ test('top-level Agent workspace creates a direct conversation and restores its U
           // that first completed reply rather than follow arrival order.
           { id: 'late-root-file-action', event_type: 'TOOL_CALL', payload: { source: 'agent', parent_id: 'user-request', action_id: 'late-root-file-action', tool_call_id: 'late-root-file-call', tool_name: 'file_editor', event_name: 'FileEditorAction', details: { command: 'str_replace', path: '/runtime/workspace/project/src/root-owned.ts', old_content: 'export const owner = "old";', new_content: 'export const owner = "root";' }, timestamp: '2026-08-26T10:05:03Z' } },
           { id: 'late-root-file-result', event_type: 'TOOL_RESULT', payload: { source: 'environment', parent_id: 'late-root-file-action', action_id: 'late-root-file-action', tool_call_id: 'late-root-file-call', tool_name: 'file_editor', event_name: 'FileEditorObservation', details: { command: 'str_replace', path: '/runtime/workspace/project/src/root-owned.ts', old_content: 'export const owner = "old";', new_content: 'export const owner = "root";', is_error: false }, timestamp: '2026-08-26T10:05:04Z' } },
-          ...(compactionScenario ? [
-            { id: 'compaction-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'failure-event', content: '完成压缩后继续检查', timestamp: '2026-08-26T10:10:00Z' } },
-            { id: 'before-compaction', event_type: 'THOUGHT', payload: { source: 'agent', parent_id: 'compaction-user', content: '先整理当前信息。', timestamp: '2026-08-26T10:10:02Z' } },
-            { id: 'automatic-condensation-request', event_type: 'CONDENSATION_REQUESTED', payload: { source: 'agent', parent_id: 'before-compaction', condensation_reason_detail: 'Token 已达到 256,000 主动压缩阈值。', timestamp: '2026-08-26T10:10:10Z' } },
-            { id: 'automatic-condensation-completed', event_type: 'CONDENSATION_COMPLETED', payload: { source: 'agent', parent_id: 'automatic-condensation-request', condensation_request_event_id: 'automatic-condensation-request', forgotten_event_ids: ['before-compaction'], condensation_reason_detail: 'Token 已达到 256,000 主动压缩阈值。', condensation_triggered_at: '2026-08-26T10:10:10Z', condensation_completed_at: '2026-08-26T10:10:12Z', timestamp: '2026-08-26T10:10:12Z' } },
-            { id: 'after-compaction-tool', event_type: 'TOOL_CALL', payload: { source: 'agent', parent_id: 'automatic-condensation-completed', action_id: 'after-compaction-tool', tool_call_id: 'after-compaction-call', event_name: 'TerminalAction', details: { command: 'git status --short' }, timestamp: '2026-08-26T10:10:14Z' } },
-            { id: 'after-compaction-result', event_type: 'TOOL_RESULT', payload: { source: 'environment', parent_id: 'after-compaction-tool', action_id: 'after-compaction-tool', tool_call_id: 'after-compaction-call', event_name: 'TerminalObservation', content: 'clean', details: { command: 'git status --short', exit_code: 0 }, timestamp: '2026-08-26T10:10:16Z' } },
-            { id: 'after-compaction-reply', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'after-compaction-result', content: '压缩后检查完成。', timestamp: '2026-08-26T10:10:20Z' } },
-          ] : []),
-          ...(manualCondensations && !compactionScenario ? [{ id: 'manual-condensation', event_type: 'CONDENSATION_COMPLETED', payload: { source: 'agent', parent_id: 'failure-event', event_name: 'Condensation', summary: '已压缩较早上下文', forgotten_event_ids: ['tool-request', 'tool-result'], condensation_reason: 'REQUEST', condensation_reason_detail: 'OpenHands 收到显式压缩请求；该请求可能来自手动压缩、上下文用量主动保护或模型上下文超限后的恢复。', condensation_triggered_at: '2026-08-26T10:04:58Z', condensation_completed_at: '2026-08-26T10:05:00Z', timestamp: '2026-08-26T10:05:00Z' } }] : []),
         ] : [],
         next_cursor: modelIsResponding ? (backfilledTaskAction && cursor === 'running-user' ? 'recovered-task-action' : cursor || 'running-user') : null,
         history_cursor: modelIsResponding && historyPrefetchEnabled && !cursor ? 'running-history-1' : null,
@@ -1030,66 +1005,19 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await terminalContextMenu.getByRole('menuitem', { name: '复制当前行' }).click();
   await expect(terminalContextMenu).toBeHidden();
   await expect(page.locator('.agent-context-progress.token')).toContainText('Token0 / 922,000');
-  await expect(page.locator('.agent-context-progress.activity')).toHaveCount(1);
+  await expect(page.locator('.agent-context-progress.activity')).toHaveCount(0);
   await expect(page.getByText('上下文用量正在从 OpenHands 读取')).toHaveCount(0);
   contextAvailable = true;
   await page.reload();
   await expect(page.locator('.agent-context-progress.token')).toContainText('Token6,380 / 922,000');
-  await expect(page.locator('.agent-context-progress.token')).toHaveAttribute('title', /OpenHands 当前 View.*256,000 tokens/);
-  await expect(page.locator('.agent-context-progress.activity')).toContainText(/事件\d+ \/ 10,000/);
-  await expect(page.locator('.agent-context-progress.activity')).toHaveAttribute('title', /当前活动事件.*10,000/);
+  await expect(page.locator('.agent-context-progress.token')).toHaveAttribute('title', /OpenHands 当前 View 6,380 \/ 922,000/);
+  await expect(page.locator('.agent-context-progress.activity')).toHaveCount(0);
   const composerAfterReload = page.getByLabel('发送 Agent 消息');
   await composerAfterReload.fill('/');
-  const nativeMenu = page.getByRole('listbox', { name: '选择 OpenHands 原生能力、命令或 MCP' });
-  await expect(nativeMenu.getByText('OpenHands 原生能力', { exact: true })).toBeVisible();
-  await expect(nativeMenu.getByRole('option', { name: /压缩上下文/ })).toBeVisible();
-  await nativeMenu.getByRole('option', { name: /压缩上下文/ }).click();
-  const lowUsageConfirmation = page.getByLabel('确认低用量上下文压缩');
-  await expect(lowUsageConfirmation).toBeVisible();
-  await expect(lowUsageConfirmation).toContainText('Token 6,380 / 922,000（1%）');
-  await expect(lowUsageConfirmation).toContainText('仍会调用摘要模型');
-  expect(manualCondensations).toBe(0);
-  await lowUsageConfirmation.getByRole('button', { name: '取消' }).click();
-  await expect(lowUsageConfirmation).toHaveCount(0);
-  expect(manualCondensations).toBe(0);
-  await composerAfterReload.fill('/');
-  await nativeMenu.getByRole('option', { name: /压缩上下文/ }).click();
-  await page.getByRole('button', { name: '仍然压缩' }).click();
-  const condensationProgress = page.getByLabel('正在压缩上下文');
-  await expect(condensationProgress).toBeVisible();
-  await expect(condensationProgress).toContainText('已提交原生压缩请求');
-  await expect.poll(() => manualCondensations).toBe(1);
-  await expect(condensationProgress).toHaveCount(0);
-  await expect(page.locator('.agent-context-progress.token')).toContainText('Token待模型更新');
-  await expect(page.locator('.agent-context-progress.activity')).toHaveCount(1);
-  await expect(page.getByText('压缩已完成，等待下次模型调用更新用量', { exact: true })).toBeVisible();
-  const condensationTimeline = page.getByLabel('上下文压缩记录');
-  await expect(condensationTimeline.getByText('已触发上下文压缩', { exact: true })).toBeVisible();
-  await expect(condensationTimeline.getByText('上下文压缩已完成', { exact: true })).toBeVisible();
-  await expect(condensationTimeline).toContainText('OpenHands 收到显式压缩请求');
-  await expect(condensationTimeline).toContainText('完整事件记录仍然保留');
-  await expect(condensationTimeline.locator('.conversation-condensation-notice')).toHaveCount(2);
-  await expect(condensationTimeline.locator('time')).toHaveCount(2);
-  await expect(condensationTimeline.locator('.conversation-activity-group')).toHaveCount(0);
-  compactionScenario = true;
-  await page.reload();
-  const compactionTurn = page.locator('.conversation-turn').filter({ hasText: '压缩后检查完成。' });
-  const compactionProcesses = compactionTurn.locator('.conversation-activity-group');
-  await expect(compactionProcesses).toHaveCount(2);
-  await expect(compactionProcesses.nth(0).getByText('耗时 10秒')).toBeVisible();
-  await expect(compactionProcesses.nth(1).getByText('耗时 8秒')).toBeVisible();
-  await expect(compactionTurn.getByLabel('上下文压缩记录')).toContainText('Token 已达到 256,000 主动压缩阈值');
-  await expect(compactionTurn.locator('.conversation-condensation-notice').first()).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
-  await expect.poll(() => compactionTurn.evaluate(turn => [...turn.children].map(block => block.className))).toEqual([
-    'conversation-message user',
-    'conversation-activity-group',
-    'conversation-condensation-timeline',
-    'conversation-activity-group',
-    'conversation-message assistant',
-  ]);
-  await expect(compactionProcesses.nth(1)).toContainText('已运行 git status --short');
-  compactionScenario = false;
-  await page.reload();
+  const commandMenu = page.getByRole('listbox', { name: '选择命令或 MCP' });
+  await expect(commandMenu.getByText('OpenHands 原生能力', { exact: true })).toHaveCount(0);
+  await expect(commandMenu.getByRole('option', { name: /压缩上下文/ })).toHaveCount(0);
+  await composerAfterReload.fill('');
   const completedTurn = page.locator('.conversation-turn').filter({ hasText: '工作区已就绪。' });
   const completedProcess = completedTurn.locator('.conversation-activity-group');
   await expect(completedTurn.locator('.conversation-message-meta time')).toHaveText([/\d{2}:\d{2}/, /\d{2}:\d{2}/]);
@@ -1283,9 +1211,8 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.getByText('TerminalAction')).toHaveCount(0);
   await expect(page.getByText('STATE')).not.toBeVisible();
   await expect(page.getByText('当前供应商：已测试模型')).toBeVisible();
-  await expect(page.getByLabel('历史压缩策略兼容保护')).toBeVisible();
   await expect(page.locator('.agent-context-progress.token')).toContainText('Token0 / 922,000');
-  await expect(page.locator('.agent-context-progress.activity')).toContainText(/事件\d+ \/ 240/);
+  await expect(page.locator('.agent-context-progress.activity')).toHaveCount(0);
   const forkComposer = page.getByLabel('发送 Agent 消息');
   await expect(forkComposer).toBeEnabled();
   await forkComposer.fill('分叉后可以继续输入');
@@ -2721,11 +2648,8 @@ test('Agent new-session capability selection is not truncated at 30 items', asyn
   await page.getByRole('button', { name: '新建会话' }).first().click();
   const composer = page.getByLabel('发送 Agent 消息');
   await composer.fill('/');
-  const commandMenu = page.getByRole('listbox', { name: '选择 OpenHands 原生能力、命令或 MCP' });
-  const pendingCondense = commandMenu.getByRole('option', { name: /压缩上下文/ });
-  await expect(pendingCondense).toBeVisible();
-  await expect(pendingCondense).toBeDisabled();
-  await expect(pendingCondense).toContainText('首条消息创建 OpenHands 原生会话后可调用');
+  const commandMenu = page.getByRole('listbox', { name: '选择命令或 MCP' });
+  await expect(commandMenu.getByRole('option', { name: /压缩上下文/ })).toHaveCount(0);
   await expect(commandMenu).toContainText('当前会话还没有加载命令或 MCP');
   await expect(commandMenu.getByRole('button', { name: '管理' })).toBeVisible();
   await commandMenu.getByRole('button', { name: '管理' }).click();
@@ -2814,8 +2738,8 @@ test('current Agent conversation can select a 31st capability and keeps frozen C
   await page.goto('/agent/conversations/history-capability-conversation');
   const composer = page.getByLabel('发送 Agent 消息');
   await composer.fill('/');
-  const commandMenu = page.getByRole('listbox', { name: '选择 OpenHands 原生能力、命令或 MCP' });
-  await expect(commandMenu.getByRole('option', { name: /压缩上下文/ })).toBeVisible();
+  const commandMenu = page.getByRole('listbox', { name: '选择命令或 MCP' });
+  await expect(commandMenu.getByRole('option', { name: /压缩上下文/ })).toHaveCount(0);
   await expect(commandMenu.getByRole('button', { name: '管理' })).toBeVisible();
   await composer.fill('$');
   const skillMenu = page.getByRole('listbox', { name: '选择技能' });

@@ -25,11 +25,9 @@ from flowweave.modules.agent_sessions.application.conversations import (
     initial_user_event_id,
     message_payload,
     normalized_first_sentence,
-    proactive_compaction_required,
     project_conversation_references,
     record_message_attachments,
     resolve_conversation_references,
-    safe_native_compaction,
     validate_attachment_owners,
     validated_user_message_event,
     validated_workspace_references,
@@ -42,7 +40,7 @@ from flowweave.modules.agent_sessions.application.flow_node_locator import (
     binding_locator,
 )
 from flowweave.modules.agent_sessions.application.runtime_config import (
-    PROACTIVE_COMPACTION_TOKENS,
+    NATIVE_CONDENSER_MAX_TOKENS,
     FrozenSessionConfig,
     build_agent_spec,
     config_from_binding,
@@ -2152,9 +2150,6 @@ def send_question(
         provider = provider_for_config(db, config_from_binding(db, item))
         if provider is not None:
             runtime.switch_model(handle, provider)
-        context = runtime.conversation_context(handle)
-        if proactive_compaction_required(runtime, handle, context):
-            safe_native_compaction(runtime, handle)
     result = runtime.send_message(handle, text, image_urls)
     _observe_task_watchdogs_after_send(db, item, handle)
     db.add(
@@ -2316,14 +2311,7 @@ def dispatch_running_node_message(
             raise prepared.provider_error
         if prepared.provider is not None:
             runtime.switch_model(prepared.handle, prepared.provider)
-        context = runtime.conversation_context(prepared.handle)
-        if proactive_compaction_required(runtime, prepared.handle, context):
-            safe_native_compaction(runtime, prepared.handle)
-            compacted = True
-        else:
-            compacted = False
-    else:
-        compacted = False
+    compacted = False
     diagnostic = getattr(runtime, "log_delivery_diagnostic", None)
     if callable(diagnostic):
         diagnostic(
@@ -2949,7 +2937,7 @@ def fork_node_conversation(
         condenser=RuntimeCondenser(
             kind="LLM_SUMMARIZING",
             max_size=AGENT_WORKSPACE_CONDENSER_MAX_EVENTS,
-            max_tokens=PROACTIVE_COMPACTION_TOKENS,
+            max_tokens=NATIVE_CONDENSER_MAX_TOKENS,
             keep_first=4,
         ),
         condenser_provider=provider,
@@ -3101,19 +3089,6 @@ def switch_node_conversation_model(
         "model_name": provider.model,
         "reasoning_effort": provider.reasoning_effort,
     }
-
-
-def condense_node_conversation(
-    db: Session, *, flow_run_id: str, attempt_id: str, binding_id: str
-) -> dict[str, Any]:
-    _assert_node_session_writable(
-        db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
-    )
-    runtime = get_runtime()
-    handle = _node_handle(db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id)
-    if not runtime.can_accept_input(handle):
-        raise DomainError("AGENT_CONVERSATION_BUSY", "请在当前回复完成或暂停后压缩上下文", 409)
-    return {"accepted": True, "cursor": runtime.condense(handle).cursor}
 
 
 def interrupt_node_conversation(
@@ -3382,11 +3357,6 @@ def resume_node_conversation(
     return {"accepted": True, "cursor": result.cursor}
 
 
-def condense_conversation(db: Session, binding_id: str) -> dict[str, Any]:
-    result = get_runtime().condense(_handle(db, binding_id))
-    return {"accepted": True, "runtime": _result_dict(result)}
-
-
 def control_goal(
     db: Session,
     binding_id: str,
@@ -3423,7 +3393,6 @@ def ask_agent(
 
 __all__ = (
     "ask_agent",
-    "condense_conversation",
     "control_goal",
     "create_conversation",
     "create_flow_run_conversation",
@@ -3456,7 +3425,6 @@ __all__ = (
     "node_conversation_context",
     "node_input_readiness",
     "node_terminal_resource_details",
-    "condense_node_conversation",
     "interrupt_node_conversation",
     "resume_node_conversation",
     "switch_node_conversation_model",

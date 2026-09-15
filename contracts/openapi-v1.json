@@ -1843,65 +1843,6 @@
         }
       }
     },
-    "/api/v1/flow-runs/{flow_run_id}/node-attempts/{attempt_id}/agent-sessions/{binding_id}/condense": {
-      "post": {
-        "summary": "Condense Node Session",
-        "operationId": "condense_node_session_api_v1_flow_runs__flow_run_id__node_attempts__attempt_id__agent_sessions__binding_id__condense_post",
-        "parameters": [
-          {
-            "name": "flow_run_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Flow Run Id"
-            }
-          },
-          {
-            "name": "attempt_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Attempt Id"
-            }
-          },
-          {
-            "name": "binding_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Binding Id"
-            }
-          }
-        ],
-        "responses": {
-          "202": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "additionalProperties": true,
-                  "title": "Response Condense Node Session Api V1 Flow Runs  Flow Run Id  Node Attempts  Attempt Id  Agent Sessions  Binding Id  Condense Post"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/api/v1/flow-runs/{flow_run_id}/node-attempts/{attempt_id}/agent-sessions/{binding_id}/interrupt": {
       "post": {
         "summary": "Interrupt Node Session",
@@ -3708,56 +3649,6 @@
                   "type": "object",
                   "additionalProperties": true,
                   "title": "Response Agent Streaming Migration Api V1 Agent Workspaces  Workspace Id  Conversations  Binding Id  Streaming Migration Post"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/v1/agent-workspaces/{workspace_id}/conversations/{binding_id}/condense": {
-      "post": {
-        "summary": "Agent Condense Conversation",
-        "operationId": "agent_condense_conversation_api_v1_agent_workspaces__workspace_id__conversations__binding_id__condense_post",
-        "parameters": [
-          {
-            "name": "workspace_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Workspace Id"
-            }
-          },
-          {
-            "name": "binding_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Binding Id"
-            }
-          }
-        ],
-        "responses": {
-          "202": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "additionalProperties": true,
-                  "title": "Response Agent Condense Conversation Api V1 Agent Workspaces  Workspace Id  Conversations  Binding Id  Condense Post"
                 }
               }
             }
