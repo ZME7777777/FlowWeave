@@ -5,6 +5,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import { api, artifactContentUrl, subscribeToRun } from '../api/client';
 import { flowMappingEdgeTypes, withMappingLabelOffsets } from '../components/flowMappingEdgeLayout';
+import { isOpenHandsAgentReply } from '../components/conversationEvents';
 import { Pagination } from '../components/Pagination';
 import { useProductDialog } from '../components/ProductDialogContext';
 import { RuntimeConfirmationPanel } from '../components/RuntimeConfirmationPanel';
@@ -491,7 +492,7 @@ function gateConversationRecords(events: OpenHandsConversationEvent[]): GateConv
       if (displayContent) questions.push({ id: event.id, kind: 'question', title: '审查提问', content: displayContent });
       continue;
     }
-    const isAssistantMessage = event.event_type === 'MESSAGE' && source !== 'user' && source !== 'human';
+    const isAssistantMessage = isOpenHandsAgentReply(event);
     const isFinishAnswer = event.event_type === 'COMPLETED' && event.payload.event_name === 'FinishAction';
     if ((isAssistantMessage || isFinishAnswer) && content) {
       answers.push({ id: event.id, kind: 'answer', title: '审查回复', content });

@@ -13,6 +13,7 @@ import { agentWorkspaceSessionGateway, type AgentSessionGateway } from '../../ap
 import { withoutDeploymentBase } from '../../deploymentPath';
 import { agentWorkspaceSessionHost, type AgentSessionHost } from './session-host';
 import { ConversationSurface, ConversationTaskPlan, type ConversationReference } from '../ConversationSurface';
+import { isOpenHandsAgentReply } from '../conversationEvents';
 import { useProductDialog } from '../ProductDialogContext';
 import { useEscapeClose } from '../useEscapeClose';
 import { selectCapabilityVersion, selectCapabilityVersions } from '../../utils/capabilitySelection';
@@ -1372,7 +1373,7 @@ function hasFinishedTurn(events: OpenHandsConversationEvent[], userEventId: stri
   return events.some(event => {
     const isTerminal = event.event_type === 'ERROR'
       || (event.event_type === 'COMPLETED' && event.payload.event_name === 'FinishAction')
-      || (event.event_type === 'MESSAGE' && !['user', 'human'].includes(String(event.payload.source ?? '').toLowerCase()));
+      || isOpenHandsAgentReply(event);
     return isTerminal && descendsFromActiveUser(event);
   });
 }
@@ -1380,8 +1381,7 @@ function hasFinishedTurn(events: OpenHandsConversationEvent[], userEventId: stri
 function hasAssistantReplyForTurn(events: OpenHandsConversationEvent[], userEventId: string): boolean {
   const byId = new Map(events.map(event => [event.id, event]));
   return events.some(event => {
-    if (event.event_type !== 'MESSAGE'
-      || ['user', 'human'].includes(String(event.payload.source ?? '').toLowerCase())) return false;
+    if (!isOpenHandsAgentReply(event)) return false;
     const visited = new Set<string>();
     let parentId = event.payload.parent_id;
     while (parentId && parentId !== '__root__' && !visited.has(parentId)) {

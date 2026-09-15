@@ -5,9 +5,10 @@ import { SubagentAvatar } from './SubagentAvatar';
 import { useEscapeClose } from './useEscapeClose';
 import { subagentAvatarSlotForEvent, subagentAvatarSlots, type SubagentAvatarSlot } from '../utils/subagentAvatar';
 import { workspaceFileChanges, workspaceRelativePath, type WorkspaceFileChange } from './agent-session/fileChanges';
+import { isOpenHandsAgentReply, isOpenHandsEmptyResponseRecovery } from './conversationEvents';
 import './conversation-surface.css';
 
-type ItemKind = 'user' | 'assistant' | 'thought' | 'tool' | 'error' | 'condensation';
+type ItemKind = 'user' | 'assistant' | 'thought' | 'tool' | 'error' | 'condensation' | 'recovery';
 
 interface Item {
   event: OpenHandsConversationEvent;
@@ -333,7 +334,19 @@ function itemsFor(event: OpenHandsConversationEvent): Item[] {
     const displayContent = typeof event.payload.display_content === 'string'
       ? event.payload.display_content
       : content;
-    return [{ event, kind: isUser ? 'user' : 'assistant', title: '', content: isUser ? displayContent : content }];
+    if (isUser) return [{ event, kind: 'user', title: '', content: displayContent }];
+    if (isOpenHandsAgentReply(event)) return [{ event, kind: 'assistant', title: '', content }];
+    if (isOpenHandsEmptyResponseRecovery(event)) return [{
+      event,
+      kind: 'recovery',
+      title: '正在自动恢复',
+      content: '模型返回空响应，OpenHands 正在自动重试。',
+    }];
+    // OpenHands persists an empty Agent Message immediately before its
+    // environment corrective nudge. It is neither a reply nor a terminal
+    // event. Other framework messages remain visible as process information,
+    // but never masquerade as a final Agent reply.
+    return content.trim() ? [{ event, kind: 'thought', title: eventName, content }] : [];
   }
   // THOUGHT is the native, non-terminal progress event. Render its safe
   // content as ordinary text, without exposing an implementation tool name.
@@ -421,8 +434,7 @@ function isHistoricalAutoTitleError(
     && detail.includes('Error code: 404');
   if (isKnownTitleProtocolFailure) {
     return events.some(candidate => {
-      const assistantMessage = candidate.event_type === 'MESSAGE'
-        && !['user', 'human'].includes(String(candidate.payload.source ?? '').toLowerCase());
+      const assistantMessage = isOpenHandsAgentReply(candidate);
       const finishResponse = candidate.event_type === 'COMPLETED'
         && candidate.payload.event_name === 'FinishAction';
       return (assistantMessage || finishResponse) && Boolean(candidate.payload.content);
@@ -432,10 +444,7 @@ function isHistoricalAutoTitleError(
   const root = userAncestorId(event, byId);
   if (!root) return false;
   return events.some(candidate => {
-    if (candidate.event_type !== 'MESSAGE') return false;
-    const source = String(candidate.payload.source ?? '').toLowerCase();
-    return source !== 'user' && source !== 'human'
-      && Boolean(candidate.payload.content)
+    return isOpenHandsAgentReply(candidate)
       && userAncestorId(candidate, byId) === root;
   });
 }
@@ -574,6 +583,10 @@ function activityPresentation(entry: ActivityEntry, active: boolean, workspaceRo
       thought: item.content.slice(0, 2_000) || undefined,
     };
   }
+  if (item.kind === 'recovery') return {
+    title: item.content,
+    status: active ? '自动恢复中' : '已自动恢复',
+  };
   if (item.kind === 'error') return { title: '执行遇到问题', status: '失败' };
   const details = item.event.payload.details ?? {};
   const result = entry.results.at(-1);
@@ -955,6 +968,7 @@ function activeActivityLabel(entries: ActivityEntry[], requestSubmitting: boolea
     pendingTool.event.payload.details,
   );
   const latest = entries.at(-1)?.item;
+  if (latest?.kind === 'recovery') return '模型返回空响应，OpenHands 正在自动重试';
   if (latest?.kind === 'condensation' && latest.event.event_type === 'CONDENSATION_REQUESTED') return '正在压缩上下文';
   return '正在思考';
 }
@@ -1015,7 +1029,7 @@ function ActivityEntryRow({ entry, active, paused = false, parentFailed = false,
   workspaceRoot?: string | null;
 }) {
   const item = entry.action ?? entry.item;
-  const Icon = item.kind === 'error' ? CircleAlert : item.kind === 'thought' || item.kind === 'condensation' ? Sparkles : Wrench;
+  const Icon = item.kind === 'error' ? CircleAlert : item.kind === 'thought' || item.kind === 'condensation' || item.kind === 'recovery' ? Sparkles : Wrench;
   const eventName = String(item.event.payload.event_name ?? '');
   const avatarSlot = eventName === 'TaskAction' || eventName === 'TaskObservation'
     ? subagentAvatarSlotForEvent(item.event, avatarSlots)

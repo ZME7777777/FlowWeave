@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`IN PROGRESS`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`待会话可靠性后续问题独立拆分`
+> 下一可执行切片：`NONE`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -188,6 +188,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-430 | 已认证端到端可靠性交付验收 | DONE | 为现有 Agent 工作台产品流补足测试范围内的认证前置，使 FR-429 歧义投递持久化与不自动重发断言能实际执行；不改变生产认证或投递逻辑。 |
 | FR-431 | 主会话／子智能体事件连续补读 | DONE | 原生 readiness 短暂报 idle 时，只要正式用户轮尚未出现终态，持续用正式 OpenHands cursor 补读；迟到的 TaskAction 无需暂停或继续即可进入主会话投影。 |
 | FR-456 | 会话事件投影、完成同步与历史滚动锚点可靠性 | DONE | 运行中的会话固定增量追赶当前 OpenHands 事件；`next_cursor` 缺失或 WebSocket 假活时回读有界最新页，不再要求暂停／继续触发补齐。完成、断流重连和暂停／继续只协调当前会话事件、readiness 与确认状态，不再全量刷新 Runtime、列表或上下文。历史页推迟到本轮终态后加载，历史 prepend 以显式视口事务和关闭浏览器 scroll anchoring 保持阅读位置。 |
+| FR-457 | OpenHands 空响应自恢复与运行状态一致性 | DONE | 空 Agent Message 与 `source=environment` 的原生 corrective nudge 不再被识别为最终回复；纠正事件以“模型返回空响应，OpenHands 正在自动重试”呈现，左侧会话状态与底部按钮继续统一服从原生 execution status。 |
 | FR-432 | 最终回复的临时 delta 呈现回退 | DONE | 停止将 WebSocket `delta` 累积或渲染为最终回复；最终 Markdown 只在 OpenHands 正式 assistant／完成事件持久化并投影后一次显示，过程状态与正式工具事件保持可见。 |
 | FR-433 | OpenHands 错误终态工作台收束 | DONE | 将 OpenHands 原生 `ready=true, execution_status=error/stuck` 识别为可安全结束的终态，停止错误卡后的运行标记、停止按钮与“正在处理”，不以浏览器事件自行伪造状态。 |
 | FR-434 | 错误终态与运行中追加投递呈现修正 | DONE | 空闲或原生错误终态的新消息仍先持久化浏览器投递意图，但不得短暂显示为消息队列；运行中直接追加在收到正式 cursor 前不伪装为已发送气泡或队列，流先到达同一正式 OpenHands 用户事件时立即确认收起，歧义／拒绝项保持可见、可恢复。 |
@@ -5943,6 +5944,26 @@ contract、冻结策略与既有受控生命周期约束覆盖。
 
 完成：文本预览白名单加入 `.properties` 以及 `application/x-java-properties` MIME；Highlight.js 映射把 `.properties`、`.ini` 和 `.conf` 统一按 INI 渲染。既有产品流增加 `.properties` 文件选择与预览请求断言。未修改文件读取授权、文件大小限制、下载接口、API、数据库、Runtime Provider 或 OpenHands。
 
+### FR-457 OpenHands 空响应自恢复与运行状态一致性 — DONE
+
+依赖：FR-425、FR-436、FR-456。
+
+目标：固定 OpenHands 1.47.0 在模型返回“无工具调用、无可见文本”时，会先持久化空 Agent Message，再以
+`source=environment` 写入 corrective nudge 并继续 Agent loop。FlowWeave 不得把这两个非终态事件识别为最终
+回复、停止左侧运行标记或把英文框架消息显示成普通对话正文。只有带可见正文的正式 Agent Message、
+FinishAction 或 ERROR 才可成为事件树终态证据；纠正事件应显示为低干扰的中文自动恢复状态。底部动作、左侧
+会话行和工作过程继续以 OpenHands 精确 `execution_status` 为运行事实，不修改 OpenHands、事件树或恢复循环。
+
+验收：固定 OpenHands 1.47.0 `response_dispatch` 源码取证；Web TypeScript typecheck、受影响 ESLint、
+production build、定向 Agent 工作台 Playwright、`git diff --check`、Alembic head 与任务状态唯一性通过；本切片
+使用独立 Git commit。
+
+完成：新增共享的 OpenHands MessageEvent 分类，只把来源为 Agent／Assistant 且含可见正文的消息作为正式回复。
+空 Agent Message 不渲染且不结束当前轮；固定 `source=environment` corrective nudge 作为工作过程显示中文自动恢复
+状态，其余 environment 消息继续作为非终态过程信息呈现。Agent 工作台的完成判定、回复收尾和 FlowRun 门禁审查
+问答均复用该分类，因此原生 `execution_status=running` 时左侧运行标记与底部停止按钮不会再因纠正事件分叉。未修改
+OpenHands、事件树、Runtime、API、数据库或自动恢复行为。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -5958,6 +5979,7 @@ contract、冻结策略与既有受控生命周期约束覆盖。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-15 | FR-457 | 固定 OpenHands 1.47.0 `response_dispatch` 源码取证；Web TypeScript typecheck、全量 ESLint、production build、定向 Agent 工作台 Playwright、Alembic head、`git diff --check` 与任务状态唯一性 | PASS（静态／构建／关键浏览器断言）：真实空 Agent Message → `source=environment` corrective nudge → `execution_status=running` 序列下，英文框架消息不再作为回复显示，页面呈现中文自动重试状态，底部“暂停当前 Agent”和左侧运行标记同时保持。定向长产品流已通过本切片新增断言，随后在无关的既有 `root-owned.ts` 文件变更展示断言失败，故未记为完整用例通过。唯一 Alembic head 为 `0116_agent_manual_order`；未修改 API、数据库、Runtime Provider、OpenHands 或远端环境。 |
 | 2026-09-15 | FR-456 | Web TypeScript typecheck、受影响 Web ESLint、production build、定向 Agent 工作台 Playwright、`git diff --check` 与任务状态唯一性 | PASS（静态／构建／关键浏览器断言）：运行中的历史分页不会与首个输出竞争；在 WebSocket 假活且 `next_cursor` 暂缺时，当前会话的有界正式事件回读无需暂停／继续即可投影新的子 Agent TaskAction；完成帧、断流重连及暂停／继续仅协调当前会话事件/readiness/确认，不再全量刷新 Runtime、列表或上下文。定向产品流已执行上述新增断言，并随后在既有终端入口仍按 `button` 定位、当前 UI 实为菜单项处超时，未记为完整用例通过。唯一 Alembic head 未涉及；未修改 API、数据库、Runtime Provider、OpenHands 或远端环境。 |
 | 2026-09-15 | FR-455 | Web TypeScript typecheck、受影响 Web ESLint、production build、定向产品流 Playwright、`git diff --check` 与任务状态唯一性 | PASS（静态／构建／关键浏览器断言）：`.properties` 文件在 Agent 工作区中触发既有受限文本预览请求，未回退至“此文件不提供浏览器预览”提示；TypeScript、lint、production build 与差异检查通过。定向产品流已越过新增断言，随后因既有终端入口仍按 `button` 查找而当前 UI 为菜单项超时，未记为完整用例通过。未修改 API、数据库、Runtime Provider 或 OpenHands。 |
 | 2026-09-15 | FR-454 | 受影响 Python `py_compile`、Ruff format/check、定向平台 API 回归尝试、`git diff --check` 与任务状态唯一性 | PASS（静态）：中性画布再次保存同一节点现在创建独立 `HUMAN_START` NodeRun，其首个 Attempt 为 `#1`；只复用 `FLOW_TRANSITION` 创建且仍处于 `WAITING_INPUT` 的下游占位，独立手动记录不会被流转路径误当作占位。新增 API 回归覆盖两条待启动同节点记录可同时创建且保持不同记录 ID。定向 pytest 在断言前被 Testcontainers PostgreSQL fixture 阻断：本机 Docker Unix socket 不存在；未伪记为通过。未修改数据库、迁移、OpenHands、Runtime Provider 或远端环境。 |

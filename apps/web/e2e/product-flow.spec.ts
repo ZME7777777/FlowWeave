@@ -451,6 +451,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   let parentTurnFailed = false;
   let historyPrefetchEnabled = false;
   let cursorlessEventRecovery = false;
+  let emptyResponseRecovery = false;
   let historyPageRequests = 0;
   let releaseHistoryPage: (() => void) | undefined;
   const historyPageGate = new Promise<void>(resolve => { releaseHistoryPage = resolve; });
@@ -722,6 +723,10 @@ test('top-level Agent workspace creates a direct conversation and restores its U
           ...(incompleteLiveToolProjection && !cursor ? [{ id: 'live-tool', event_type: 'TOOL_CALL', payload: { source: 'agent', parent_id: 'running-user', action_id: 'live-tool', tool_call_id: 'live-call', event_name: 'TerminalAction', timestamp: new Date().toISOString() } }] : []),
           ...(backfilledTaskAction && (cursor === 'running-user' || (cursorlessEventRecovery && !cursor)) ? [{ id: 'recovered-task-action', event_type: 'TOOL_CALL', payload: { source: 'agent', parent_id: 'running-user', action_id: 'recovered-task-action', tool_call_id: 'recovered-task-call', tool_name: 'task', event_name: 'TaskAction', summary: '检查依赖关系', runtime_task: { phase: 'REQUESTED', action_event_id: 'recovered-task-action', tool_call_id: 'recovered-task-call', subagent_type: 'general-purpose', description: '检查依赖关系' }, timestamp: new Date().toISOString() } }] : []),
           ...(cursorlessEventRecovery && !cursor ? [{ id: 'cursorless-task-action', event_type: 'TOOL_CALL', payload: { source: 'agent', parent_id: 'recovered-task-action', action_id: 'cursorless-task-action', tool_call_id: 'cursorless-task-call', tool_name: 'task', event_name: 'TaskAction', summary: '汇总子任务返回', runtime_task: { phase: 'REQUESTED', action_event_id: 'cursorless-task-action', tool_call_id: 'cursorless-task-call', subagent_type: 'reviewer', description: '汇总子任务返回' }, timestamp: new Date().toISOString() } }] : []),
+          ...(emptyResponseRecovery && !cursor ? [
+            { id: 'empty-agent-response', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'running-user', content: '', timestamp: new Date().toISOString() } },
+            { id: 'empty-response-nudge', event_type: 'MESSAGE', payload: { source: 'environment', parent_id: 'empty-agent-response', content: 'Your last response did not include a function call or a message. Please use a tool to proceed with the task.', timestamp: new Date().toISOString() } },
+          ] : []),
           ...(interrupted ? [{ id: 'paused-tool-error', event_type: 'ERROR', payload: { source_type: 'AgentErrorEvent', parent_id: 'running-user', content: 'Tool call interrupted before completion. The conversation was paused.' } }] : []),
           ...(parentTurnFailed ? [{ id: 'running-parent-error', event_type: 'ERROR', payload: { source: 'environment', parent_id: backfilledTaskAction ? 'recovered-task-action' : 'running-user', content: '模型服务暂时不可用，本轮已停止', error_code: 'LLMServiceUnavailableError', timestamp: new Date().toISOString() } }] : []),
         ] : conversations.length ? [
@@ -881,8 +886,16 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   // `error` terminal state. The browser must not retain a running UI from the
   // prior state (spinner, "正在处理", and the stop button).
   modelIsResponding = true;
+  emptyResponseRecovery = true;
   await page.reload();
+  // OpenHands 1.47 persists an empty Agent Message and an environment
+  // corrective nudge, then continues the same native loop. Neither event may
+  // end the turn or clear one of the two running indicators.
+  await expect(page.getByText('模型返回空响应，OpenHands 正在自动重试。')).toBeVisible();
+  await expect(page.getByText('Your last response did not include a function call or a message.')).toHaveCount(0);
   await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toBeVisible();
+  await expect(page.locator('.agent-workspace-conversation-running')).toHaveCount(1);
+  emptyResponseRecovery = false;
   modelIsResponding = false;
   parentTurnFailed = true;
   await expect(page.getByText('模型服务暂时不可用')).toBeVisible();
