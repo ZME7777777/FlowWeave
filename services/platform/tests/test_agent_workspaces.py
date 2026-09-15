@@ -3374,7 +3374,7 @@ def test_agent_workspace_recovers_stale_condenser_credential_before_sending(
 ):
     class CondenserCredentialRuntime(MockRuntime):
         damaged_conversation_id: str | None = None
-        fork_calls: list[tuple[str, str, str]] = []
+        created_conversation_ids: list[str] = []
         switched_conversation_ids: list[str] = []
         sent: list[tuple[str, str]] = []
 
@@ -3389,30 +3389,24 @@ def test_agent_workspace_recovers_stale_condenser_credential_before_sending(
         def read_active_events(self, handle):
             if handle.conversation_id != self.damaged_conversation_id:
                 return RuntimeEventBatch(events=(), cursor=handle.cursor)
-            parent = RuntimeEvent(
-                cursor="before-condenser-error",
-                event_type="MESSAGE",
-                payload={"source": "agent", "content": "此前有效回复"},
-            )
             error = RuntimeEvent(
                 cursor="condenser-auth-error",
                 event_type="ERROR",
                 payload={
                     "error_code": "NoCondensationAvailableException",
-                    "parent_id": parent.cursor,
                     "content": (
                         "Summarization LLM call failed: litellm.AuthenticationError: "
                         "AuthenticationError: Invalid API key"
                     ),
                 },
             )
-            return RuntimeEventBatch(events=(parent, error), cursor=error.cursor)
+            return RuntimeEventBatch(events=(error,), cursor=error.cursor)
 
-        def fork_conversation(self, handle, **kwargs):
-            self.fork_calls.append(
-                (handle.conversation_id, kwargs["target_conversation_id"], kwargs["from_event_id"])
-            )
-            return super().fork_conversation(handle, **kwargs)
+        def create_conversation(self, request):
+            handle = super().create_conversation(request)
+            self._results[handle.job_id] = RuntimeResult(status="IDLE", cursor=handle.cursor)
+            self.created_conversation_ids.append(handle.conversation_id)
+            return handle
 
         def switch_model(self, handle, provider):
             del provider
@@ -3449,15 +3443,16 @@ def test_agent_workspace_recovers_stale_condenser_credential_before_sending(
 
         assert repaired_conversation_id != runtime.damaged_conversation_id
         assert first["cursor"] == "user-1"
-        assert runtime.fork_calls == [
-            (runtime.damaged_conversation_id, repaired_conversation_id, "before-condenser-error")
+        assert runtime.created_conversation_ids == [
+            runtime.damaged_conversation_id,
+            repaired_conversation_id,
         ]
         assert runtime.switched_conversation_ids == [repaired_conversation_id]
         assert runtime.sent == [(repaired_conversation_id, "继续当前任务")]
 
         second = conversations.message(db, workspace.id, binding.id, "继续下一步")
         assert second["cursor"] == "user-2"
-        assert len(runtime.fork_calls) == 1
+        assert len(runtime.created_conversation_ids) == 2
         assert runtime.sent == [
             (repaired_conversation_id, "继续当前任务"),
             (repaired_conversation_id, "继续下一步"),

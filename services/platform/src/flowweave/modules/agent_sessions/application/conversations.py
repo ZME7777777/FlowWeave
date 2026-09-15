@@ -2039,10 +2039,8 @@ def finalize_running_message(
     }
 
 
-def _condenser_credential_failure_boundary(
-    runtime: Any, handle: RuntimeHandle
-) -> tuple[str, str] | None:
-    """Return the failed leaf and its safe pre-error native Fork boundary.
+def _condenser_credential_failure_event_id(runtime: Any, handle: RuntimeHandle) -> str | None:
+    """Return the sole native terminal error requiring a clean Conversation.
 
     OpenHands stores the summarizing condenser as a separate non-streaming LLM.
     Its formal ``switch_llm`` operation preserves a non-identical condenser,
@@ -2066,15 +2064,7 @@ def _condenser_credential_failure_boundary(
         return None
     if "authenticationerror" not in detail and "invalid api key" not in detail:
         return None
-    parent_id = leaf.payload.get("parent_id")
-    if not isinstance(parent_id, str) or not parent_id or parent_id == "__root__":
-        return None
-    if not any(event.cursor == parent_id for event in branch.events):
-        return None
-    # Forking from the error itself retains that terminal error in the new
-    # branch.  The formal parent is the last trustworthy boundary before the
-    # condenser attempted its stale-credential summary.
-    return leaf.cursor, parent_id
+    return leaf.cursor
 
 
 def message(
@@ -2122,8 +2112,8 @@ def message(
         )
     runtime = get_runtime()
     readiness = runtime.input_readiness(handle)
-    condenser_recovery = _condenser_credential_failure_boundary(runtime, handle)
-    if not readiness.ready and condenser_recovery is None:
+    condenser_recovery_event_id = _condenser_credential_failure_event_id(runtime, handle)
+    if not readiness.ready and condenser_recovery_event_id is None:
         # OpenHands 1.47.0 formally accepts a user event while its standard
         # Agent is running. The current LLM/tool step is left intact; the
         # native loop consumes the newly appended event on its next step.
@@ -2173,6 +2163,12 @@ def message(
             "请选择已测试成功且存在启用默认模型的模型供应商",
             409,
         )
+    provider = runtime_provider(
+        db,
+        {"asset": {"executor": {"model_provider_id": target_provider_id}}},
+        model_name=binding.model_name,
+        reasoning_effort=binding.reasoning_effort,
+    )
     recovery = runtime.incomplete_fork_recovery(handle)
     if recovery is not None:
         source_handle = replace(
@@ -2215,57 +2211,36 @@ def message(
         binding.openhands_conversation_id = replacement_id
         binding.updated_at = now()
         db.flush()
-    elif condenser_recovery is not None:
-        error_event_id, fork_event_id = condenser_recovery
+    elif condenser_recovery_event_id is not None:
+        previous_conversation_id = binding.openhands_conversation_id
         replacement_id = str(
             uuid5(
                 UUID(binding.id),
-                f"condenser-credential-recovery:{handle.conversation_id}:{error_event_id}",
+                f"condenser-credential-reset:{previous_conversation_id}:{condenser_recovery_event_id}",
             )
         )
-        recovery_provider = runtime_provider(
-            db,
-            {"asset": {"executor": {"model_provider_id": binding.model_provider_id}}},
-            model_name=binding.model_name,
-            reasoning_effort=binding.reasoning_effort,
-        )
-        repaired = runtime.fork_conversation(
-            handle,
-            target_conversation_id=replacement_id,
-            title=binding.display_title or "未命名会话",
-            from_event_id=fork_event_id,
-            expected_source_leaf_event_id=error_event_id,
-            reset_metrics=True,
-            condenser=RuntimeCondenser(
-                kind="LLM_SUMMARIZING",
-                max_size=_AGENT_WORKSPACE_CONDENSER_MAX_EVENTS,
-                max_tokens=NATIVE_CONDENSER_MAX_TOKENS,
-                keep_first=4,
-            ),
-            condenser_provider=recovery_provider,
-        )
-        if repaired.leaf_event_id != fork_event_id:
-            raise DomainError(
-                "RUNTIME_FORK_IDENTITY_DRIFT",
-                "上下文压缩恢复分叉身份校验失败",
-                409,
-            )
-        handle = repaired.handle
-        if not runtime.can_accept_input(handle):
-            raise DomainError(
-                "RUNTIME_FORK_NOT_WRITABLE",
-                "上下文压缩恢复后仍不可继续输入",
-                503,
-            )
         binding.openhands_conversation_id = replacement_id
         binding.updated_at = now()
-        db.flush()
-    provider = runtime_provider(
-        db,
-        {"asset": {"executor": {"model_provider_id": target_provider_id}}},
-        model_name=binding.model_name,
-        reasoning_effort=binding.reasoning_effort,
-    )
+        try:
+            handle = _create_native_conversation(
+                db,
+                workspace,
+                binding,
+                provider,
+                binding.working_directory or user_runtime_project_root(workspace.id),
+                allow_existing=True,
+            )
+        except Exception:
+            binding.openhands_conversation_id = previous_conversation_id
+            binding.updated_at = now()
+            db.flush()
+            raise
+        if not runtime.can_accept_input(handle):
+            raise DomainError(
+                "AGENT_CONVERSATION_RESET_NOT_WRITABLE",
+                "上下文压缩恢复后新会话仍不可继续输入",
+                503,
+            )
     try:
         runtime.switch_model(handle, provider)
     except DomainError as exc:
@@ -2281,7 +2256,7 @@ def message(
             handle,
             operation="agent_idle_send",
             model_rebind=True,
-            fork_recovery=recovery is not None or condenser_recovery is not None,
+            fork_recovery=recovery is not None or condenser_recovery_event_id is not None,
             compaction=False,
         )
     try:

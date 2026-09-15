@@ -201,7 +201,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-438 | Conversation／Fork 模型绑定一致性诊断 | DONE | 为创建、模型切换、原生 Fork 继承及错误终态记录脱敏 LLM 绑定证据，区分旧模型未切换与异常 Conversation 状态随 Fork 继承；不改变模型、Fork、重试或会话历史。 |
 | FR-439 | 会话投递／Fork 全链路脱敏诊断 | DONE | 在 Agent Workspace 与 FlowNode 的 running／idle 投递选择、正式 user event append 成败、Fork 父子状态及 Responses 不完整终态增加脱敏诊断；记录有界事件计数、精确状态、上下文、压缩／恢复／重绑决策和匿名关联摘要，不记录正文、凭据、端点或原始身份。 |
 | FR-446 | 会话上下文 256k 绝对压缩阈值 | DONE | Agent Workspace 与 FlowNode 不再按模型窗口的 80% 计算压缩阈值；可信当前 View 用量达到 256,000 tokens 时在空闲发送／恢复边界先执行经校验的 OpenHands 原生压缩，新会话和新 Fork 冻结同一原生 `max_tokens`。 |
-| FR-449 | 历史会话摘要器凭据恢复 | DONE | 仅当正式 OpenHands 活跃分支终态为 `NoCondensationAvailableException`，且详情明确为摘要 LLM 的认证失败时，从该错误的正式父事件原生 Fork 续支，避免把失败事件继承到新分支；新分支用当前冻结模型配置创建摘要器并投递用户消息，原会话／历史不改写。页面将该情形准确显示为上下文压缩失败，而不再误报当前模型凭据无效。 |
+| FR-449 | 历史会话摘要器凭据恢复 | DONE | 仅当正式 OpenHands 活跃分支终态为 `NoCondensationAvailableException`，且详情明确为摘要 LLM 的认证失败时，替换 locator 指向同一工作区、当前冻结模型与能力配置创建的全新原生 Conversation，再只投递当前消息；不使用 Fork，因为固定 OpenHands Fork 会深拷贝失效摘要器。原失败会话与历史保留只读，不再产生 Fork 链或重复投递。页面将该情形准确显示为上下文压缩失败，而不再误报当前模型凭据无效。 |
 | FR-415 | FlowRun 独立终端全局项目根修正 | DONE | FlowRun 级终端进入已挂载的全局 `project` 根，因此无需创建节点即可完成对整个 FlowRun 生效的配置；会话／Attempt 终端继续保持记录级路径。 |
 | FR-417 | FlowRun 独立终端挂载感知路径选择 | DONE | FlowRun 级终端按活跃 Runtime 的固定挂载契约选择共享 `project` 根或记录直挂载根，避免历史 Runtime 因不存在 cwd 失败。 |
 
