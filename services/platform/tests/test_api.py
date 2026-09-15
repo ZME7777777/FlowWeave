@@ -808,7 +808,7 @@ def test_flow_run_can_start_empty_and_activate_any_node_later(
     client.app.state.container.runtime = original_runtime
 
 
-def test_human_cannot_create_a_second_node_run_in_one_manual_group(client, skill_capability):
+def test_human_can_create_another_step_record_for_the_same_node(client, skill_capability):
     asset = create_asset(client, skill_capability)
     flow = create_flow(client, asset["id"])
     run = client.post(
@@ -833,31 +833,25 @@ def test_human_cannot_create_a_second_node_run_in_one_manual_group(client, skill
     )
     assert first.status_code == 201, first.text
     first_attempt = first.json()["attempts"][0]
-    started = client.post(
-        f"/api/v1/node-attempts/{first_attempt['id']}/confirm-start",
-        json={
-            "expected_state_version": first_attempt["state_version"],
-            "startup_mode": "PROMPT",
-            "prompt": "执行第一条并行记录",
-        },
-        headers={"Idempotency-Key": "start-first-independent-node-run"},
-    )
-    assert started.status_code == 200, started.text
-    assert started.json()["state"] == "WAITING_ACCEPTANCE"
+    assert first_attempt["state"] == "WAITING_START_CONFIRMATION"
 
     second = client.post(
         f"/api/v1/flow-runs/{run['id']}/nodes/design_a/runs",
         json=prompt_node_start(artifact_ids={"prd": artifact["id"]}),
     )
 
-    assert second.status_code == 409, second.text
-    assert second.json()["error"]["code"] == "ILLEGAL_STATE_TRANSITION"
+    assert second.status_code == 201, second.text
+    second_record = second.json()
+    assert second_record["id"] != first.json()["id"]
+    assert second_record["attempts"][0]["attempt_no"] == 1
+    assert second_record["attempts"][0]["state"] == "WAITING_START_CONFIRMATION"
     detail = client.get(f"/api/v1/flow-runs/{run['id']}").json()
     matching = [
         item for item in detail["node_runs"] if item["flow_node_snapshot_key"] == "design_a"
     ]
-    assert len(matching) == 1
-    assert matching[0]["attempts"][0]["attempt_no"] == 1
+    assert len(matching) == 2
+    assert {item["id"] for item in matching} == {first.json()["id"], second_record["id"]}
+    assert all(item["attempts"][0]["attempt_no"] == 1 for item in matching)
 
 
 def test_saved_step_record_starts_with_frozen_prompt_and_auto_advances_after_gates(

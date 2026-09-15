@@ -3640,15 +3640,15 @@ def _create_node_run(
     if not asset_id:
         raise DomainError("SNAPSHOT_INVALID", "node asset id is missing", 409)
     _validate_input_bindings(db, run, node, artifact_ids)
-    # A step-by-step run group owns at most one non-cancelled NodeRun for each
-    # frozen graph node. Direct session launches are independent records and
-    # never occupy that graph-transition slot. Cancelled records remain
-    # history; downstream transitions create a WAITING_INPUT work item.
+    # Only a downstream work item created by flow transition occupies a graph
+    # transition slot. A user may select the same node from the neutral canvas
+    # and save another independent step record while an earlier record is
+    # waiting to start or already executing. Cancelled records remain history.
     existing = db.scalar(
         select(NodeRun).where(
             NodeRun.flow_run_id == run.id,
             NodeRun.flow_node_snapshot_key == instance_key,
-            NodeRun.created_from != "HUMAN_CHAT",
+            NodeRun.created_from == "FLOW_TRANSITION",
             NodeRun.state != NodeRunState.CANCELLED,
         )
     )
@@ -3660,7 +3660,7 @@ def _create_node_run(
         )
         if latest is None:
             raise DomainError("RUN_STATE_INVALID", "node work item has no attempt", 409)
-        if latest.state != AttemptState.WAITING_INPUT or existing.created_from != "FLOW_TRANSITION":
+        if latest.state != AttemptState.WAITING_INPUT:
             raise illegal("node already exists in this manual run group", state=latest.state)
         if session_only:
             latest.startup_mode = "CHAT"
@@ -4807,7 +4807,7 @@ def start_node_run(
             select(NodeRun.id)
             .where(
                 NodeRun.flow_run_id == run.id,
-                NodeRun.created_from != "HUMAN_CHAT",
+                NodeRun.created_from == "FLOW_TRANSITION",
                 NodeRun.state != NodeRunState.CANCELLED,
             )
             .limit(1)
@@ -7904,7 +7904,7 @@ def _create_configurable_targets(db: Session, run: FlowRun, accepted: NodeRun) -
             select(NodeRun).where(
                 NodeRun.flow_run_id == run.id,
                 NodeRun.flow_node_snapshot_key == target_key,
-                NodeRun.created_from != "HUMAN_CHAT",
+                NodeRun.created_from == "FLOW_TRANSITION",
                 NodeRun.state != NodeRunState.CANCELLED,
             )
         )
