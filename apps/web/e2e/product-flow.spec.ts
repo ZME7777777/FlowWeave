@@ -449,6 +449,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   let backfilledTaskAction = false;
   let incompleteLiveToolProjection = false;
   let parentTurnFailed = false;
+  let recoverableAgentError = false;
   let historyPrefetchEnabled = false;
   let cursorlessEventRecovery = false;
   let emptyResponseRecovery = false;
@@ -719,7 +720,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
         return;
       }
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
-        events: (modelIsResponding || parentTurnFailed) ? [
+        events: (modelIsResponding || parentTurnFailed || recoverableAgentError) ? [
           ...(!cursor ? [{ id: 'running-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'agent-reply', content: '正在处理的请求', timestamp: new Date(Date.now() - 12_000).toISOString().replace(/Z$/, '') } }] : []),
           ...(incompleteLiveToolProjection && !cursor ? [{ id: 'live-tool', event_type: 'TOOL_CALL', payload: { source: 'agent', parent_id: 'running-user', action_id: 'live-tool', tool_call_id: 'live-call', event_name: 'TerminalAction', timestamp: new Date().toISOString() } }] : []),
           ...(backfilledTaskAction && (cursor === 'running-user' || (cursorlessEventRecovery && !cursor)) ? [{ id: 'recovered-task-action', event_type: 'TOOL_CALL', payload: { source: 'agent', parent_id: 'running-user', action_id: 'recovered-task-action', tool_call_id: 'recovered-task-call', tool_name: 'task', event_name: 'TaskAction', summary: '检查依赖关系', runtime_task: { phase: 'REQUESTED', action_event_id: 'recovered-task-action', tool_call_id: 'recovered-task-call', subagent_type: 'general-purpose', description: '检查依赖关系' }, timestamp: new Date().toISOString() } }] : []),
@@ -730,7 +731,12 @@ test('top-level Agent workspace creates a direct conversation and restores its U
             ...(emptyResponseFollowup ? [{ id: 'empty-response-followup', event_type: 'THOUGHT', payload: { source: 'agent', parent_id: 'empty-response-nudge', content: '已恢复，继续检查工作区。', thought: '已恢复，继续检查工作区。', timestamp: new Date().toISOString() } }] : []),
           ] : []),
           ...(interrupted ? [{ id: 'paused-tool-error', event_type: 'ERROR', payload: { source_type: 'AgentErrorEvent', parent_id: 'running-user', content: 'Tool call interrupted before completion. The conversation was paused.' } }] : []),
-          ...(parentTurnFailed ? [{ id: 'running-parent-error', event_type: 'ERROR', payload: { source: 'environment', parent_id: backfilledTaskAction ? 'recovered-task-action' : 'running-user', content: '模型服务暂时不可用，本轮已停止', error_code: 'LLMServiceUnavailableError', timestamp: new Date().toISOString() } }] : []),
+          ...(parentTurnFailed ? [{ id: 'running-parent-error', event_type: 'ERROR', payload: { source_type: 'ConversationErrorEvent', source: 'environment', parent_id: backfilledTaskAction ? 'recovered-task-action' : 'running-user', content: '模型服务暂时不可用，本轮已停止', error_code: 'LLMServiceUnavailableError', timestamp: new Date().toISOString() } }] : []),
+          ...(recoverableAgentError ? [
+            { id: 'recoverable-tool', event_type: 'TOOL_CALL', payload: { source: 'agent', parent_id: 'running-user', action_id: 'recoverable-tool', tool_call_id: 'recoverable-tool-call', event_name: 'TerminalAction', details: { command: 'fetch deployment state' }, timestamp: new Date().toISOString() } },
+            { id: 'recoverable-agent-error', event_type: 'ERROR', payload: { source_type: 'AgentErrorEvent', source: 'agent', parent_id: 'recoverable-tool', tool_call_id: 'recoverable-tool-call', content: 'Temporary upstream error; retrying the operation.', timestamp: new Date().toISOString() } },
+            { id: 'recoverable-agent-reply', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'recoverable-agent-error', content: '已恢复并完成部署状态查询。', timestamp: new Date().toISOString() } },
+          ] : []),
         ] : conversations.length ? [
           { id: 'user-request', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '检查工作目录', timestamp: '2026-08-26T10:00:00Z' } },
           { id: 'progress-note', event_type: 'THOUGHT', payload: { source: 'agent', parent_id: 'user-request', content: '我先确认当前工作目录，再根据现有结构判断后续改动范围。', thought: '我先确认当前工作目录，再根据现有结构判断后续改动范围。', timestamp: '2026-08-26T10:00:01Z' } },
@@ -756,9 +762,9 @@ test('top-level Agent workspace creates a direct conversation and restores its U
           { id: 'finish-action', event_type: 'COMPLETED', payload: { source: 'agent', parent_id: 'tracker-result', event_name: 'FinishAction', content: '任务跟踪已完成。', timestamp: '2026-08-26T10:03:13Z' } },
           { id: 'finish-observation', event_type: 'TOOL_RESULT', payload: { source: 'environment', parent_id: 'finish-action', event_name: 'FinishObservation', content: '', timestamp: '2026-08-26T10:03:14Z' } },
           { id: 'failure-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'finish-observation', content: '触发失败', timestamp: '2026-08-26T10:04:00Z' } },
-          { id: 'failure-event', event_type: 'ERROR', payload: { source: 'environment', parent_id: 'failure-user', content: 'upstream connection refused', error_code: 'LLMServiceUnavailableError', timestamp: '2026-08-26T10:04:03Z' } },
+          { id: 'failure-event', event_type: 'ERROR', payload: { source_type: 'ConversationErrorEvent', source: 'environment', parent_id: 'failure-user', content: 'upstream connection refused', error_code: 'LLMServiceUnavailableError', timestamp: '2026-08-26T10:04:03Z' } },
           { id: 'incomplete-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'failure-event', content: '触发不完整流响应', timestamp: '2026-08-26T10:04:10Z' } },
-          { id: 'incomplete-event', event_type: 'ERROR', payload: { source: 'environment', parent_id: 'incomplete-user', content: "Unexpected completed event: <class 'litellm.types.llms.openai.ResponseIncompleteEvent'>", error_code: 'LLMNoResponseError', timestamp: '2026-08-26T10:04:13Z' } },
+          { id: 'incomplete-event', event_type: 'ERROR', payload: { source_type: 'ConversationErrorEvent', source: 'environment', parent_id: 'incomplete-user', content: "Unexpected completed event: <class 'litellm.types.llms.openai.ResponseIncompleteEvent'>", error_code: 'LLMNoResponseError', timestamp: '2026-08-26T10:04:13Z' } },
           // This branch arrives after several later turns, but its official
           // parent remains the first user message. Its summary must stay with
           // that first completed reply rather than follow arrival order.
@@ -913,6 +919,21 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toHaveCount(0);
   await expect(page.locator('.agent-composer-status')).toHaveCount(0);
   await expect(page.locator('.agent-workspace-conversation-running')).toHaveCount(0);
+  recoverableAgentError = true;
+  modelIsResponding = true;
+  await page.reload();
+  const recoverableError = page.locator('.conversation-activity-row.agent-error').filter({ hasText: '执行过程出现可恢复错误' }).first();
+  const recoveredReply = page.getByText('已恢复并完成部署状态查询。');
+  await expect(recoverableError).toBeVisible();
+  await expect(recoverableError.getByText('Agent 已继续完成本轮回复')).toBeVisible();
+  await expect(recoveredReply).toBeVisible();
+  const recoverableErrorBox = await recoverableError.boundingBox();
+  const recoveredReplyBox = await recoveredReply.boundingBox();
+  expect(recoverableErrorBox?.y).toBeLessThan(recoveredReplyBox?.y ?? Number.POSITIVE_INFINITY);
+  await expect(page.getByText('本轮未能完成')).toHaveCount(0);
+  recoverableAgentError = false;
+  modelIsResponding = false;
+  await page.reload();
   const sentBeforeRetryAfterTerminalError = sentMessages;
   await page.getByLabel('发送 Agent 消息').fill('错误后应直接发送');
   await page.getByLabel('发送消息').click();

@@ -190,6 +190,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-456 | 会话事件投影、完成同步与历史滚动锚点可靠性 | DONE | 运行中的会话固定增量追赶当前 OpenHands 事件；`next_cursor` 缺失或 WebSocket 假活时回读有界最新页，不再要求暂停／继续触发补齐。完成、断流重连和暂停／继续只协调当前会话事件、readiness 与确认状态，不再全量刷新 Runtime、列表或上下文。历史页推迟到本轮终态后加载，历史 prepend 以显式视口事务和关闭浏览器 scroll anchoring 保持阅读位置。 |
 | FR-457 | OpenHands 空响应自恢复与运行状态一致性 | DONE | 空 Agent Message 与 `source=environment` 的原生 corrective nudge 不再被识别为最终回复；纠正事件以“模型返回空响应，OpenHands 正在自动重试”呈现，左侧会话状态与底部按钮继续统一服从原生 execution status。 |
 | FR-458 | 空响应恢复提示瞬时化与会话状态统一 | DONE | corrective nudge 只在它是当前最新事件且原生会话仍运行时复用实时状态行显示；后续事件或终态立即隐藏，历史工作过程不保留该提示。工作台所有运行控件复用同一原生状态投影。 |
+| FR-459 | 原生错误事件的终态／可恢复呈现分流 | DONE | 仅 OpenHands ConversationErrorEvent 呈现为“本轮未能完成”的会话级终态卡片；AgentErrorEvent 与未知历史 ERROR 保持原生审计事实，按其正式父事件留在工作过程中呈现为可恢复异常，后续正式回复会明确标注 Agent 已继续完成，避免暂停／继续后的正常回复被历史错误卡片误覆盖。 |
 | FR-432 | 最终回复的临时 delta 呈现回退 | DONE | 停止将 WebSocket `delta` 累积或渲染为最终回复；最终 Markdown 只在 OpenHands 正式 assistant／完成事件持久化并投影后一次显示，过程状态与正式工具事件保持可见。 |
 | FR-433 | OpenHands 错误终态工作台收束 | DONE | 将 OpenHands 原生 `ready=true, execution_status=error/stuck` 识别为可安全结束的终态，停止错误卡后的运行标记、停止按钮与“正在处理”，不以浏览器事件自行伪造状态。 |
 | FR-434 | 错误终态与运行中追加投递呈现修正 | DONE | 空闲或原生错误终态的新消息仍先持久化浏览器投递意图，但不得短暂显示为消息队列；运行中直接追加在收到正式 cursor 前不伪装为已发送气泡或队列，流先到达同一正式 OpenHands 用户事件时立即确认收起，歧义／拒绝项保持可见、可恢复。 |

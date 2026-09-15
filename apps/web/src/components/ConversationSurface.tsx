@@ -8,7 +8,7 @@ import { workspaceFileChanges, workspaceRelativePath, type WorkspaceFileChange }
 import { isOpenHandsAgentReply, isOpenHandsEmptyResponseRecovery } from './conversationEvents';
 import './conversation-surface.css';
 
-type ItemKind = 'user' | 'assistant' | 'thought' | 'tool' | 'error' | 'condensation';
+type ItemKind = 'user' | 'assistant' | 'thought' | 'tool' | 'error' | 'agent-error' | 'condensation';
 
 interface Item {
   event: OpenHandsConversationEvent;
@@ -324,6 +324,11 @@ function isPauseInterruptionEvent(event: OpenHandsConversationEvent): boolean {
     && String(event.payload.content ?? '') === PAUSE_INTERRUPTION_CONTENT;
 }
 
+function isConversationTerminalError(event: OpenHandsConversationEvent): boolean {
+  return event.event_type === 'ERROR'
+    && String(event.payload.source_type ?? '') === 'ConversationErrorEvent';
+}
+
 function itemsFor(event: OpenHandsConversationEvent): Item[] {
   const content = typeof event.payload.content === 'string' ? event.payload.content : '';
   const thought = typeof event.payload.thought === 'string' ? event.payload.thought : '';
@@ -355,7 +360,14 @@ function itemsFor(event: OpenHandsConversationEvent): Item[] {
   // as a generic tool result creates a redundant "Think · 已完成" row.
   if (event.event_type === 'TOOL_RESULT' && eventName === 'ThinkObservation') return [];
   if (event.event_type === 'TOOL_RESULT') return [{ event, kind: 'tool', title: eventName, content }];
-  if (event.event_type === 'ERROR') return [{ event, kind: 'error', title: '执行遇到问题', content }];
+  if (event.event_type === 'ERROR') {
+    return [{
+      event,
+      kind: isConversationTerminalError(event) ? 'error' : 'agent-error',
+      title: isConversationTerminalError(event) ? '本轮未能完成' : '执行过程出现可恢复错误',
+      content,
+    }];
+  }
   if (event.event_type === 'COMPLETED') {
     // OpenHands has two formal final-response paths: an assistant MessageEvent
     // and FinishAction.message. A FinishAction may also carry top-level
@@ -568,7 +580,7 @@ interface ActivityPresentation {
   resultTimestamp?: string;
 }
 
-function activityPresentation(entry: ActivityEntry, active: boolean, workspaceRoot?: string | null, paused = false, parentFailed = false): ActivityPresentation {
+function activityPresentation(entry: ActivityEntry, active: boolean, workspaceRoot?: string | null, paused = false, parentFailed = false, recoveredErrorEventIds: ReadonlySet<string> = new Set()): ActivityPresentation {
   const item = entry.action ?? entry.item;
   if (item.kind === 'condensation') return { title: item.title, status: item.event.event_type === 'CONDENSATION_COMPLETED' ? '已完成' : '处理中' };
   if (item.kind === 'thought') {
@@ -578,7 +590,21 @@ function activityPresentation(entry: ActivityEntry, active: boolean, workspaceRo
       thought: item.content.slice(0, 2_000) || undefined,
     };
   }
-  if (item.kind === 'error') return { title: '执行遇到问题', status: '失败' };
+  if (item.kind === 'error') {
+    const recovered = recoveredErrorEventIds.has(item.event.id);
+    return {
+      title: recovered ? '执行过程出现可恢复错误' : '执行遇到问题',
+      status: recovered ? 'Agent 已继续完成本轮回复' : '失败',
+      thought: recovered ? item.content || undefined : undefined,
+    };
+  }
+  if (item.kind === 'agent-error') {
+    return {
+      title: '执行过程出现可恢复错误',
+      status: recoveredErrorEventIds.has(item.event.id) ? 'Agent 已继续完成本轮回复' : '会话仍可继续',
+      thought: item.content || undefined,
+    };
+  }
   const details = item.event.payload.details ?? {};
   const result = entry.results.at(-1);
   const resultDetails = result?.event.payload.details ?? {};
@@ -1011,23 +1037,24 @@ function taskAvatarStatus(entry: ActivityEntry, item: Item, paused = false, pare
   return paused ? 'paused' : 'running';
 }
 
-function ActivityEntryRow({ entry, active, paused = false, parentFailed = false, avatarSlots, workspaceRoot }: {
+function ActivityEntryRow({ entry, active, paused = false, parentFailed = false, recoveredErrorEventIds, avatarSlots, workspaceRoot }: {
   entry: ActivityEntry;
   active: boolean;
   paused?: boolean;
   parentFailed?: boolean;
+  recoveredErrorEventIds: ReadonlySet<string>;
   avatarSlots: ReadonlyMap<string, SubagentAvatarSlot>;
   workspaceRoot?: string | null;
 }) {
   const item = entry.action ?? entry.item;
-  const Icon = item.kind === 'error' ? CircleAlert : item.kind === 'thought' || item.kind === 'condensation' ? Sparkles : Wrench;
+  const Icon = item.kind === 'error' || item.kind === 'agent-error' ? CircleAlert : item.kind === 'thought' || item.kind === 'condensation' ? Sparkles : Wrench;
   const eventName = String(item.event.payload.event_name ?? '');
   const avatarSlot = eventName === 'TaskAction' || eventName === 'TaskObservation'
     ? subagentAvatarSlotForEvent(item.event, avatarSlots)
     : undefined;
   const ToolIcon = eventName.includes('Terminal') ? SquareTerminal : eventName.includes('FileEditor') ? FileText : Icon;
   const taskAvatar = avatarSlot && <SubagentAvatar slot={avatarSlot} status={taskAvatarStatus(entry, item, paused, parentFailed)} size={14}/>;
-  const presentation = activityPresentation(entry, active, workspaceRoot, paused, parentFailed);
+  const presentation = activityPresentation(entry, active, workspaceRoot, paused, parentFailed, recoveredErrorEventIds);
   const toolDetail = item.kind === 'tool' ? <ToolDetailPanel presentation={presentation} eventName={eventName} results={entry.results} workspaceRoot={workspaceRoot}/> : null;
   const isNativeThink = item.event.event_type === 'THOUGHT';
   if (item.kind === 'thought') return <article className={`conversation-activity-row thought${isNativeThink ? ' native-think' : ''}`}>
@@ -1057,12 +1084,13 @@ function ActivityEntryRow({ entry, active, paused = false, parentFailed = false,
   </article>;
 }
 
-function ActivityGroup({ items, active, completionConfirmed = false, paused = false, parentFailed = false, startedAt, finishedAt, avatarSlots, workspaceRoot }: {
+function ActivityGroup({ items, active, completionConfirmed = false, paused = false, parentFailed = false, recoveredErrorEventIds = new Set(), startedAt, finishedAt, avatarSlots, workspaceRoot }: {
   items: Item[];
   active: boolean;
   completionConfirmed?: boolean;
   paused?: boolean;
   parentFailed?: boolean;
+  recoveredErrorEventIds?: ReadonlySet<string>;
   startedAt?: number;
   finishedAt?: number;
   avatarSlots: ReadonlyMap<string, SubagentAvatarSlot>;
@@ -1078,8 +1106,10 @@ function ActivityGroup({ items, active, completionConfirmed = false, paused = fa
   // A delayed readiness response can briefly make an active turn appear idle.
   // Preserve the visible details through that recovery; only a formal
   // reply/error together with a native terminal state may auto-collapse.
-  const [open, setOpen] = useState(active);
+  const hasRecoveredError = [...recoveredErrorEventIds].some(id => items.some(item => item.event.id === id));
+  const [open, setOpen] = useState(active || hasRecoveredError);
   const hasBeenActive = useRef(active);
+  const hasPresentedRecoverableError = useRef(hasRecoveredError);
   useLayoutEffect(() => {
     if (active) {
       hasBeenActive.current = true;
@@ -1087,6 +1117,11 @@ function ActivityGroup({ items, active, completionConfirmed = false, paused = fa
     }
     if (hasBeenActive.current && completionConfirmed) setOpen(false);
   }, [active, completionConfirmed]);
+  useLayoutEffect(() => {
+    if (!hasRecoveredError || hasPresentedRecoverableError.current) return;
+    hasPresentedRecoverableError.current = true;
+    setOpen(true);
+  }, [hasRecoveredError]);
   const label = active
     ? elapsedSeconds === undefined ? '处理中' : `已耗时 ${formatDuration(elapsedSeconds)}`
     : paused ? '已暂停，结果未返回'
@@ -1098,7 +1133,7 @@ function ActivityGroup({ items, active, completionConfirmed = false, paused = fa
   return <details className={`conversation-activity-group${active ? ' active' : ''}`} open={open} onToggle={event => setOpen(event.currentTarget.open)}>
     <summary>{summary}</summary>
     <div className="conversation-activity-list">
-      {entries.map(entry => <ActivityEntryRow key={entry.id} entry={entry} active={active} paused={paused} parentFailed={parentFailed} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/>)}
+      {entries.map(entry => <ActivityEntryRow key={entry.id} entry={entry} active={active} paused={paused} parentFailed={parentFailed} recoveredErrorEventIds={recoveredErrorEventIds} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/>)}
     </div>
   </details>;
 }
@@ -1646,7 +1681,13 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused =
       {turns.map((turn, index) => {
         const isCurrent = index === turns.length - 1 && isGenerating;
         const isCurrentPaused = index === turns.length - 1 && isPaused;
-        const failures = turn.activity.filter(item => item.kind === 'error');
+        const errors = turn.activity.filter(item => item.kind === 'error' || item.kind === 'agent-error');
+        const recoveredErrorEventIds = new Set(
+          turn.assistant || isCurrent ? errors.map(item => item.event.id) : errors
+            .filter(item => !isConversationTerminalError(item.event))
+            .map(item => item.event.id),
+        );
+        const failures = errors.filter(item => isConversationTerminalError(item.event) && !recoveredErrorEventIds.has(item.event.id));
         const parentFailed = failures.length > 0;
         // A submitted turn can render before its formal OpenHands user event
         // replaces the prior active branch. During that bounded hand-off the
@@ -1657,7 +1698,7 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused =
           : eventTime(turn.user);
         const finishedAt = eventTime(turn.assistant ?? failures.at(-1));
         const processBlocks = turnProcessBlocks(
-          turn.activity.filter(item => item.kind !== 'error'),
+          turn.activity.filter(item => item.kind !== 'error' || recoveredErrorEventIds.has(item.event.id)),
           startedAt,
           finishedAt,
           isCurrent && !turn.assistant && !failures.length,
@@ -1681,6 +1722,7 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused =
                 completionConfirmed={completionConfirmed}
                 paused={isCurrentPaused && !block.active}
                 parentFailed={parentFailed && !block.active}
+                recoveredErrorEventIds={recoveredErrorEventIds}
                 startedAt={block.startedAt}
                 finishedAt={block.finishedAt}
                 avatarSlots={avatarSlots}
