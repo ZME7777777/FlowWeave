@@ -679,15 +679,15 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     if (path.endsWith('/context')) {
       const forkContext = path.includes('/conversations/agent-conversation-fork-1/');
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(forkContext ? {
-        used_tokens: null, window_tokens: 922_000, cumulative_tokens: 0,
+        used_tokens: null, window_tokens: 922_000, cumulative_tokens: 0, condenser_max_tokens: 256_000,
         model_name: 'gpt-test', reasoning_effort: 'high', usage_current: true,
         condenser_max_size: 240,
       } : contextAvailable ? {
-        used_tokens: 6_380, window_tokens: 922_000, cumulative_tokens: 12_716,
+        used_tokens: 6_380, window_tokens: 922_000, cumulative_tokens: 12_716, condenser_max_tokens: 256_000,
         model_name: 'gpt-test', reasoning_effort: 'high', usage_current: true,
         condenser_max_size: 10_000,
       } : {
-        used_tokens: 0, window_tokens: 922_000, cumulative_tokens: 12_716,
+        used_tokens: 0, window_tokens: 922_000, cumulative_tokens: 12_716, condenser_max_tokens: 256_000,
         model_name: 'gpt-test', reasoning_effort: 'high',
       }) });
       return;
@@ -1022,13 +1022,13 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(terminalContextMenu).toBeVisible();
   await terminalContextMenu.getByRole('menuitem', { name: '复制当前行' }).click();
   await expect(terminalContextMenu).toBeHidden();
-  await expect(page.locator('.agent-context-progress.token')).toContainText('Token0 / 922,000');
+  await expect(page.locator('.agent-context-progress.token')).toContainText('Token0 / 256,000');
   await expect(page.locator('.agent-context-progress.activity')).toHaveCount(1);
   await expect(page.getByText('上下文用量正在从 OpenHands 读取')).toHaveCount(0);
   contextAvailable = true;
   await page.reload();
-  await expect(page.locator('.agent-context-progress.token')).toContainText('Token6,380 / 922,000');
-  await expect(page.locator('.agent-context-progress.token')).toHaveAttribute('title', /OpenHands 当前 View 6,380 \/ 922,000/);
+  await expect(page.locator('.agent-context-progress.token')).toContainText('Token6,380 / 256,000');
+  await expect(page.locator('.agent-context-progress.token')).toHaveAttribute('title', /OpenHands 当前 View 6,380 \/ 自动压缩阈值 256,000/);
   await expect(page.locator('.agent-context-progress.activity')).toContainText(/事件\d+ \/ 10,000/);
   await expect(page.locator('.agent-context-progress.activity')).toHaveAttribute('title', /当前加载的会话事件.*10,000/);
   const composerAfterReload = page.getByLabel('发送 Agent 消息');
@@ -1230,7 +1230,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.getByText('TerminalAction')).toHaveCount(0);
   await expect(page.getByText('STATE')).not.toBeVisible();
   await expect(page.getByText('当前供应商：已测试模型')).toBeVisible();
-  await expect(page.locator('.agent-context-progress.token')).toContainText('Token0 / 922,000');
+  await expect(page.locator('.agent-context-progress.token')).toContainText('Token0 / 256,000');
   await expect(page.locator('.agent-context-progress.activity')).toContainText(/事件\d+ \/ 240/);
   const forkComposer = page.getByLabel('发送 Agent 消息');
   await expect(forkComposer).toBeEnabled();

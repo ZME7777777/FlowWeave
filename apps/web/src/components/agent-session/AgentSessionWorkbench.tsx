@@ -32,6 +32,7 @@ const SESSION_PERFORMANCE_MARK_PREFIX = 'flowweave.agent-session.';
 // they are not a wall-clock deadline for the whole child task.
 const MODEL_REQUEST_TIMEOUT_SECONDS = 120;
 const MODEL_REQUEST_MAX_RETRIES = 3;
+const DEFAULT_CONTEXT_COMPACTION_THRESHOLD_TOKENS = 256_000;
 type StreamStatus = 'connecting' | 'live' | 'recovering' | 'disabled';
 type TurnState = 'idle' | 'running' | 'pausing' | 'paused' | 'resuming';
 type QueueDeliveryState = 'queued' | 'dispatching' | 'ambiguous' | 'rejected';
@@ -4838,11 +4839,13 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     ?? conversationProviderInfo?.models.find(model => model.enabled && model.is_default);
   const availableConversationModels = conversationProviderInfo?.models.filter(model => model.enabled) ?? [];
   const supportedEfforts = conversationModel?.supported_reasoning_efforts ?? [];
-  const visibleContextWindow = typeof contextQuery.data?.window_tokens === 'number' && contextQuery.data.window_tokens > 0
-    ? contextQuery.data.window_tokens
-    : conversationDraft
-      ? draftConversationModel?.context_window
-      : conversationModel?.context_window;
+  // The product limit is the frozen native condenser threshold, not the
+  // model's larger physical input window. A Conversation supplies its exact
+  // frozen value; a draft uses the platform's current frozen default.
+  const visibleContextWindow = typeof contextQuery.data?.condenser_max_tokens === 'number'
+    && contextQuery.data.condenser_max_tokens > 0
+    ? contextQuery.data.condenser_max_tokens
+    : DEFAULT_CONTEXT_COMPACTION_THRESHOLD_TOKENS;
   const contextUsagePending = Boolean(selected && contextQuery.data?.usage_current === false);
   const visibleContextTokens = typeof contextQuery.data?.used_tokens === 'number' && contextQuery.data.used_tokens >= 0
     ? contextQuery.data.used_tokens
@@ -4866,7 +4869,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     : 10_000;
   const eventProgress = Math.min(100, Math.round((activeEventCount / eventLimit) * 100));
   const contextTitle = contextProgress
-    ? `Token：OpenHands 当前 View ${contextProgress.used.toLocaleString()} / ${contextProgress.window.toLocaleString()}（${contextProgress.percentage}%）`
+    ? `Token：OpenHands 当前 View ${contextProgress.used.toLocaleString()} / 自动压缩阈值 ${contextProgress.window.toLocaleString()}（${contextProgress.percentage}%）`
     : undefined;
   const tokenPendingLabel = contextQuery.isLoading
     ? '读取中'
@@ -4874,10 +4877,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       ? '暂不可用'
       : contextUsagePending
         ? '待模型更新'
-        : '模型窗口未知';
+        : '压缩阈值未知';
   const tokenPendingTitle = contextUsagePending
     ? '当前使用量将在下一次模型调用后刷新。'
-    : '当前模型尚未提供可验证的上下文窗口；不会显示估算值。';
+    : '当前会话尚未提供可验证的自动压缩阈值；不会显示估算值。';
   const activityTitle = `当前加载的会话事件 ${activeEventCount.toLocaleString()} / ${eventLimit.toLocaleString()}。压缩由 OpenHands 原生管理。`;
   const composerStatus = bootstrapRecovery
     ? '正在安全核对首条消息'

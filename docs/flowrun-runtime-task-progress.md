@@ -201,6 +201,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-438 | Conversation／Fork 模型绑定一致性诊断 | DONE | 为创建、模型切换、原生 Fork 继承及错误终态记录脱敏 LLM 绑定证据，区分旧模型未切换与异常 Conversation 状态随 Fork 继承；不改变模型、Fork、重试或会话历史。 |
 | FR-439 | 会话投递／Fork 全链路脱敏诊断 | DONE | 在 Agent Workspace 与 FlowNode 的 running／idle 投递选择、正式 user event append 成败、Fork 父子状态及 Responses 不完整终态增加脱敏诊断；记录有界事件计数、精确状态、上下文、压缩／恢复／重绑决策和匿名关联摘要，不记录正文、凭据、端点或原始身份。 |
 | FR-446 | 会话上下文 256k 绝对压缩阈值 | DONE | Agent Workspace 与 FlowNode 不再按模型窗口的 80% 计算压缩阈值；可信当前 View 用量达到 256,000 tokens 时在空闲发送／恢复边界先执行经校验的 OpenHands 原生压缩，新会话和新 Fork 冻结同一原生 `max_tokens`。 |
+| FR-450 | 会话 Token 进度展示真实压缩阈值 | DONE | 工作台 Token 进度以会话冻结的原生 `condenser_max_tokens` 为上限，缺失时使用当前 256,000 默认值；不再向用户展示模型物理 922k 窗口。 |
 | FR-449 | 历史会话摘要器凭据恢复 | DONE | 仅当正式 OpenHands 活跃分支终态为 `NoCondensationAvailableException`，且详情明确为摘要 LLM 的认证失败时，替换 locator 指向同一工作区、当前冻结模型与能力配置创建的全新原生 Conversation，再只投递当前消息；不使用 Fork，因为固定 OpenHands Fork 会深拷贝失效摘要器。原失败会话与历史保留只读，不再产生 Fork 链或重复投递。页面将该情形准确显示为上下文压缩失败，而不再误报当前模型凭据无效。 |
 | FR-415 | FlowRun 独立终端全局项目根修正 | DONE | FlowRun 级终端进入已挂载的全局 `project` 根，因此无需创建节点即可完成对整个 FlowRun 生效的配置；会话／Attempt 终端继续保持记录级路径。 |
 | FR-417 | FlowRun 独立终端挂载感知路径选择 | DONE | FlowRun 级终端按活跃 Runtime 的固定挂载契约选择共享 `project` 根或记录直挂载根，避免历史 Runtime 因不存在 cwd 失败。 |
@@ -5921,6 +5922,14 @@ contract、冻结策略与既有受控生命周期约束覆盖。
 
 完成：共享 Agent spec、Agent Workspace 异常恢复 Fork 与普通 Fork、FlowNode Fork 均改为 `max_tokens=256000`，不再传 80% 比例。Agent Workspace、FlowNode 三阶段投递、旧直接问答和恢复入口在 native idle 边界按 `used_tokens >= 256000` 调用同一安全原生压缩，255,999 不触发；运行中排队消息仍只做正式 user event append。上下文 API 与页面明确展示 256,000 绝对阈值，保留 922k 模型窗口；FlowNode 脱敏投递诊断在保护决策后记录 `compaction`。固定 OpenHands 1.47.0 没有替换既有 Conversation 持久 condenser 的正式入口，因此历史会话不会被伪装为已原地升级：其可信 usage 仍受发送前保护，完整原生自动阈值需从安全边界创建新 Fork。未部署，未修改数据库、迁移、OpenHands 源码、Runtime Provider、供应商或持久事件。
 
+### FR-450 会话 Token 进度展示真实压缩阈值 — DONE
+
+依赖：FR-446。
+
+目标：工作台的 Token 进度条必须展示用户实际触发 OpenHands 原生压缩的上下文阈值，不得以模型的物理输入窗口替代该产品上限。既有会话应读取自身冻结的 `condenser_max_tokens`；新会话草稿和历史 Runtime 未返回该字段时使用当前平台冻结的 256,000 默认值。
+
+完成：前端上下文类型纳入 Runtime 已返回的 `condenser_max_tokens`；Token 进度优先使用该值，缺失时固定回退至 256,000，不再读取或展示 `window_tokens`／模型目录的 922k 窗口。悬停说明明确为“自动压缩阈值”，产品流 mock 同时返回 922,000 物理窗口和 256,000 冻结阈值，以防止展示逻辑回归。未修改模型目录、压缩策略、API、数据库、Runtime Provider 或 OpenHands。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -5936,6 +5945,7 @@ contract、冻结策略与既有受控生命周期约束覆盖。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-15 | FR-450 | Web TypeScript typecheck、受影响文件 ESLint、production build、定向产品流 Playwright、构建产物文字检查、`git diff --check` 与任务状态唯一性 | PASS（静态／构建／关键浏览器断言）：Runtime 同时返回 `window_tokens=922000` 和 `condenser_max_tokens=256000` 时，工作台实际渲染 `Token 0 / 256,000`；生产 bundle 含“自动压缩阈值”文案。定向完整产品流随后在本切片断言之后、既有终端入口仍以 button 角色定位而当前 UI 为“新终端”时超时，未记为完整用例通过。未部署、未修改 API、数据库、OpenHands、Runtime Provider 或压缩策略。 |
 | 2026-09-15 | FR-446 | 受影响 Python Ruff check／format、`py_compile`、绝对边界与 OpenHands payload 直接探针；Web TypeScript typecheck、受影响 ESLint、production build；定向 pytest 尝试、`git diff --check` 与任务状态唯一性 | PASS（静态／直接／构建）：255,999 不压缩、256,000 触发；OpenHands payload 精确包含 `max_tokens=256000` 且不含比例。Web 构建通过，仅报告既有 bundle 大小建议。定向 Agent Workspace／FlowNode pytest 被会话级 Testcontainers PostgreSQL fixture 在本机 Docker socket 不存在时阻断，未进入断言且未记为通过。922k 模型目录值保持不变；未部署、未修改数据库、迁移、OpenHands 源码、Runtime Provider、供应商或会话历史。 |
 | 2026-09-14 | FR-444 | 受影响 Python `py_compile`、`git diff --check`、任务状态唯一性；定向 pytest 尝试 | PASS（静态）：重思考附件校验改用会话项目根，同时仍严格匹配当前 binding owner；回归覆盖首条图片附件在冻结子目录后暂停／重思考的再次发送。当前 `.venv` 缺少 `ruff`／`pytest`／`alembic`，且 Docker Unix socket 不可用，定向 pytest/Testcontainers 未能启动，未记为通过。 |
 | 2026-09-14 | FR-443 | Web TypeScript typecheck、受影响组件 ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS（静态／构建）：Git 统一 Diff 的专用 10px `font` 简写已被更高优先级的共享 13px／1.6 基线覆盖，因此其字号与并排模式一致。构建仅报告既有 bundle 大小建议；未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
