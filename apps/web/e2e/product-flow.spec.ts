@@ -1005,13 +1005,14 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await terminalContextMenu.getByRole('menuitem', { name: '复制当前行' }).click();
   await expect(terminalContextMenu).toBeHidden();
   await expect(page.locator('.agent-context-progress.token')).toContainText('Token0 / 922,000');
-  await expect(page.locator('.agent-context-progress.activity')).toHaveCount(0);
+  await expect(page.locator('.agent-context-progress.activity')).toHaveCount(1);
   await expect(page.getByText('上下文用量正在从 OpenHands 读取')).toHaveCount(0);
   contextAvailable = true;
   await page.reload();
   await expect(page.locator('.agent-context-progress.token')).toContainText('Token6,380 / 922,000');
   await expect(page.locator('.agent-context-progress.token')).toHaveAttribute('title', /OpenHands 当前 View 6,380 \/ 922,000/);
-  await expect(page.locator('.agent-context-progress.activity')).toHaveCount(0);
+  await expect(page.locator('.agent-context-progress.activity')).toContainText(/事件\d+ \/ 10,000/);
+  await expect(page.locator('.agent-context-progress.activity')).toHaveAttribute('title', /当前加载的会话事件.*10,000/);
   const composerAfterReload = page.getByLabel('发送 Agent 消息');
   await composerAfterReload.fill('/');
   const commandMenu = page.getByRole('listbox', { name: '选择命令或 MCP' });
@@ -1212,7 +1213,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.getByText('STATE')).not.toBeVisible();
   await expect(page.getByText('当前供应商：已测试模型')).toBeVisible();
   await expect(page.locator('.agent-context-progress.token')).toContainText('Token0 / 922,000');
-  await expect(page.locator('.agent-context-progress.activity')).toHaveCount(0);
+  await expect(page.locator('.agent-context-progress.activity')).toContainText(/事件\d+ \/ 240/);
   const forkComposer = page.getByLabel('发送 Agent 消息');
   await expect(forkComposer).toBeEnabled();
   await forkComposer.fill('分叉后可以继续输入');

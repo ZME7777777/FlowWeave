@@ -4857,6 +4857,14 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       percentage: Math.min(100, Math.round((visibleContextTokens / visibleContextWindow) * 100)),
     }
     : undefined;
+  // This is a passive View indicator only. OpenHands owns the actual
+  // condensation decision and the resulting event history.
+  const activeEventCount = displayedEvents.length;
+  const eventLimit = typeof contextQuery.data?.condenser_max_size === 'number'
+    && contextQuery.data.condenser_max_size > 0
+    ? contextQuery.data.condenser_max_size
+    : 10_000;
+  const eventProgress = Math.min(100, Math.round((activeEventCount / eventLimit) * 100));
   const contextTitle = contextProgress
     ? `Token：OpenHands 当前 View ${contextProgress.used.toLocaleString()} / ${contextProgress.window.toLocaleString()}（${contextProgress.percentage}%）`
     : undefined;
@@ -4870,6 +4878,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const tokenPendingTitle = contextUsagePending
     ? '当前使用量将在下一次模型调用后刷新。'
     : '当前模型尚未提供可验证的上下文窗口；不会显示估算值。';
+  const activityTitle = `当前加载的会话事件 ${activeEventCount.toLocaleString()} / ${eventLimit.toLocaleString()}。压缩由 OpenHands 原生管理。`;
   const composerStatus = bootstrapRecovery
     ? '正在安全核对首条消息'
     : conversationDraft && !newConversationModelName ? '请选择模型' : persistModel.isPending ? '正在保存模型设置' : migrateStreaming.isPending || pendingMigratedSend ? '正在迁移历史会话' : pendingConfirmation ? '等待工具确认' : effectiveTurnState === 'pausing' ? '正在暂停' : effectiveTurnState === 'paused' ? '已暂停' : effectiveTurnState === 'resuming' ? '正在继续' : finalReplyAwaitingNativeCompletion ? '回复已生成，正在收尾' : effectiveTurnState === 'running' ? '正在处理' : streamStatus === 'recovering' ? '连接恢复中' : undefined;
@@ -5062,6 +5071,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
           <div className="agent-composer-context">
             {features.attachments && (selected || conversationDraft) && <><input ref={attachmentInput} aria-label="上传附件" type="file" multiple hidden onChange={event => { if (composerScope) for (const file of Array.from(event.target.files ?? [])) upload.mutate({ file, scope: composerScope }); event.currentTarget.value = ''; }}/><button type="button" aria-label="添加附件" disabled={!canCompose || Boolean(pendingConfirmation) || upload.isPending} onClick={() => attachmentInput.current?.click()}><Plus size={17}/></button></>}
             {contextProgress ? <span className="agent-context-progress token" title={contextTitle} aria-label={`Token 上下文用量 ${contextProgress.percentage}%`}><i style={{ '--context-progress': `${contextProgress.percentage}%` } as CSSProperties}/><em><small>Token</small>{contextProgress.usedLabel} / {contextProgress.windowLabel}</em></span> : (selected || conversationDraft) && <span className="agent-context-progress token pending" title={tokenPendingTitle} aria-label={`Token 上下文用量${tokenPendingLabel}`}><i style={{ '--context-progress': '0%' } as CSSProperties}/><em><small>Token</small>{tokenPendingLabel}</em></span>}
+            {(selected || conversationDraft) && <span className="agent-context-progress activity events" title={activityTitle} aria-label={`当前加载的会话事件 ${activeEventCount} 条，上限 ${eventLimit} 条`}><i style={{ '--context-progress': `${eventProgress}%` } as CSSProperties}/><em><small>事件</small>{exactCount(activeEventCount)} / {exactCount(eventLimit)}</em></span>}
             {composerStatus && <span className="agent-composer-status">{composerStatus}</span>}
             {composerNote && <span className="agent-composer-note">{composerNote}</span>}
           </div>
