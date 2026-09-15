@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import io
 import json
 import logging
@@ -355,11 +356,7 @@ class OpenHandsRuntime:
 
         config = cast(dict[str, object], llm) if isinstance(llm, dict) else {}
         usage_id = config.get("usage_id")
-        provider_id = (
-            usage_id.removeprefix("flowweave:")
-            if isinstance(usage_id, str) and usage_id.startswith("flowweave:")
-            else usage_id
-        )
+        provider_id = cls._flowweave_provider_id(usage_id) or usage_id
         extra_body = config.get("litellm_extra_body")
         extra_body_map = cast(dict[str, object], extra_body) if isinstance(extra_body, dict) else {}
         reasoning = extra_body_map.get("reasoning")
@@ -373,6 +370,13 @@ class OpenHandsRuntime:
             "api_mode": cls._safe_diagnostic_token(config.get("api_mode")) or "chat",
             "reasoning": cls._safe_diagnostic_token(reasoning_effort),
         }
+
+    @staticmethod
+    def _flowweave_provider_id(usage_id: object) -> str | None:
+        if not isinstance(usage_id, str) or not usage_id.startswith("flowweave:"):
+            return None
+        provider_id = usage_id.removeprefix("flowweave:").split(":binding:", 1)[0]
+        return provider_id or None
 
     @classmethod
     def _llm_diagnostic_matches(cls, expected: object, actual: object) -> dict[str, bool]:
@@ -1371,6 +1375,33 @@ class OpenHandsRuntime:
             # profile names identify Runtime-local, encrypted-at-rest records
             # created below from the already-frozen FlowWeave session policy.
             llm["fallback_strategy"] = {"fallback_llms": list(fallback_profile_names)}
+        return llm
+
+    def _switch_llm_payload(
+        self,
+        provider: RuntimeProvider,
+        *,
+        registry_salt: str,
+        fallback_profile_names: tuple[str, ...] = (),
+    ) -> dict[str, Any]:
+        """Build a config-scoped primary LLM registry identity.
+
+        OpenHands' formal ``switch_llm`` contract is first-write-wins for an
+        existing usage_id.  A provider-only key would therefore retain the
+        first model, reasoning choice, endpoint or credential registered for
+        that provider.  Hash the complete effective payload so identical
+        configurations reuse metrics, while every material change gets a new
+        immutable registry slot.  Key the digest with the private Runtime
+        session key so the public usage_id cannot be used as an offline oracle
+        for credentials or headers.
+        """
+
+        llm = self._llm_payload(provider, fallback_profile_names=fallback_profile_names)
+        serialized = json.dumps(llm, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+        digest = hmac.new(registry_salt.encode(), serialized.encode(), hashlib.sha256).hexdigest()[
+            :24
+        ]
+        llm["usage_id"] = f"flowweave:{provider.provider_id}:binding:{digest}"
         return llm
 
     @staticmethod
@@ -4354,13 +4385,7 @@ class OpenHandsRuntime:
             else {}
         )
         usage_id = llm.get("usage_id")
-        provider_id = (
-            usage_id.removeprefix("flowweave:")
-            if isinstance(usage_id, str)
-            and usage_id.startswith("flowweave:")
-            and usage_id != "flowweave:"
-            else None
-        )
+        provider_id = cls._flowweave_provider_id(usage_id)
         active_usage = next(
             (
                 usage
@@ -4433,19 +4458,21 @@ class OpenHandsRuntime:
         )
 
     def switch_model(self, handle: RuntimeHandle, provider: RuntimeProvider) -> None:
-        expected = self._llm_payload(
+        session_api_key = self._session_key_for_handle(handle)
+        expected = self._switch_llm_payload(
             provider,
+            registry_salt=session_api_key,
             fallback_profile_names=self._configure_fallback_profiles(
                 provider=provider,
                 base_url=self._base_url_for_handle(handle),
-                session_api_key=self._session_key_for_handle(handle),
+                session_api_key=session_api_key,
             ),
         )
         self._request(
             "POST",
             f"/api/conversations/{handle.conversation_id}/switch_llm",
             base_url=self._base_url_for_handle(handle),
-            session_api_key=self._session_key_for_handle(handle),
+            session_api_key=session_api_key,
             json={"llm": expected},
         )
         # A successful switch endpoint response alone is not evidence that

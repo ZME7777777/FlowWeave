@@ -3493,10 +3493,12 @@ def test_openhands_switches_llm_in_place_with_reasoning(openhands_settings, monk
         if method == "POST":
             captured.update({"method": method, "path": path, **kwargs})
             return {"success": True}
+        payload = captured["json"]
+        assert isinstance(payload, dict)
         return _state(
             agent={
                 "llm": {
-                    "usage_id": "flowweave:codex-oauth",
+                    "usage_id": payload["llm"]["usage_id"],
                     "model": "openai/gpt-5.6-sol",
                     "base_url": "https://chatgpt.com/backend-api/codex",
                     "api_mode": "responses",
@@ -3525,6 +3527,7 @@ def test_openhands_switches_llm_in_place_with_reasoning(openhands_settings, monk
     payload = captured["json"]
     assert isinstance(payload, dict)
     assert payload["llm"]["model"] == "openai/gpt-5.6-sol"
+    assert payload["llm"]["usage_id"].startswith("flowweave:codex-oauth:binding:")
     assert payload["llm"]["model_canonical_name"] == "openai/gpt-5.5-codex"
     assert payload["llm"]["stream"] is True
     assert payload["llm"]["temperature"] is None
@@ -3555,6 +3558,50 @@ def test_openhands_switches_llm_in_place_with_reasoning(openhands_settings, monk
     assert "short-lived-access-token" not in message
 
 
+def test_openhands_switch_usage_id_is_stable_and_scoped_to_effective_config(
+    openhands_settings,
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    baseline = RuntimeProvider(
+        provider_id="provider-1",
+        base_url="https://api.example.test/v1",
+        model="gpt-5.6-sol",
+        api_key="configured-secret",
+        reasoning_effort="high",
+    )
+
+    first = runtime._switch_llm_payload(baseline, registry_salt="runtime-session-key")
+    assert (
+        runtime._switch_llm_payload(baseline, registry_salt="runtime-session-key")["usage_id"]
+        == first["usage_id"]
+    )
+    assert str(first["usage_id"]).startswith("flowweave:provider-1:binding:")
+    assert "configured-secret" not in str(first["usage_id"])
+    assert (
+        runtime._switch_llm_payload(
+            replace(baseline, model="gpt-5.6-terra"), registry_salt="runtime-session-key"
+        )["usage_id"]
+        != first["usage_id"]
+    )
+    assert (
+        runtime._switch_llm_payload(
+            replace(baseline, reasoning_effort="medium"),
+            registry_salt="runtime-session-key",
+        )["usage_id"]
+        != first["usage_id"]
+    )
+    assert (
+        runtime._switch_llm_payload(
+            replace(baseline, api_key="rotated-secret"), registry_salt="runtime-session-key"
+        )["usage_id"]
+        != first["usage_id"]
+    )
+    assert (
+        runtime._switch_llm_payload(baseline, registry_salt="replacement-session-key")["usage_id"]
+        != first["usage_id"]
+    )
+
+
 def test_openhands_switches_from_responses_to_chat_without_retaining_reasoning(
     openhands_settings, monkeypatch, caplog
 ):
@@ -3565,10 +3612,12 @@ def test_openhands_switches_from_responses_to_chat_without_retaining_reasoning(
         if method == "POST":
             captured.update({"method": method, "path": path, **kwargs})
             return {"success": True}
+        payload = captured["json"]
+        assert isinstance(payload, dict)
         return _state(
             agent={
                 "llm": {
-                    "usage_id": "flowweave:chat-api-key",
+                    "usage_id": payload["llm"]["usage_id"],
                     "model": "openai/gpt-5.6-sol",
                     "base_url": "https://api.example.test/v1",
                     "api_mode": "chat",
@@ -3605,18 +3654,72 @@ def test_openhands_switches_from_responses_to_chat_without_retaining_reasoning(
     assert "reasoning_matches=True" in diagnostic
 
 
+def test_openhands_rejects_switch_when_conversation_info_omits_reasoning_effort(
+    openhands_settings, monkeypatch
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    captured: dict[str, object] = {}
+
+    def fake_request(method: str, path: str, **kwargs: object) -> dict[str, object]:
+        if method == "POST":
+            captured.update({"method": method, "path": path, **kwargs})
+            return {"success": True}
+        payload = captured["json"]
+        assert isinstance(payload, dict)
+        # Even with the new config-scoped identity, fail closed if a malformed
+        # ConversationInfo omits both supported representations of the
+        # requested reasoning choice.
+        return _state(
+            agent={
+                "llm": {
+                    "usage_id": payload["llm"]["usage_id"],
+                    "model": "openai/gpt-5.6-terra",
+                    "base_url": "http://models.example.test:8888/v1",
+                    "api_mode": "responses",
+                    "model_canonical_name": None,
+                }
+            }
+        )
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+    with pytest.raises(DomainError) as raised:
+        runtime.switch_model(
+            _handle("cursor-1"),
+            RuntimeProvider(
+                provider_id="619532ed-66da-4e0f-a29f-2d3d1916f3e7",
+                base_url="http://models.example.test:8888/v1",
+                model="gpt-5.6-terra",
+                api_key="configured-secret",
+                api_protocol="RESPONSES",
+                reasoning_effort="high",
+            ),
+        )
+
+    payload = captured["json"]
+    assert isinstance(payload, dict)
+    assert payload["llm"]["usage_id"].startswith(
+        "flowweave:619532ed-66da-4e0f-a29f-2d3d1916f3e7:binding:"
+    )
+    assert payload["llm"]["reasoning_effort"] == "high"
+    assert raised.value.code == "RUNTIME_LLM_BINDING_DRIFT"
+
+
 def test_openhands_rejects_switch_that_retains_previous_reasoning_effort(
     openhands_settings, monkeypatch
 ):
     runtime = OpenHandsRuntime(openhands_settings)
+    captured: dict[str, object] = {}
 
-    def fake_request(method: str, _path: str, **_kwargs: object) -> dict[str, object]:
+    def fake_request(method: str, _path: str, **kwargs: object) -> dict[str, object]:
         if method == "POST":
+            captured.update(kwargs)
             return {"success": True}
+        payload = captured["json"]
+        assert isinstance(payload, dict)
         return _state(
             agent={
                 "llm": {
-                    "usage_id": "flowweave:chat-api-key",
+                    "usage_id": payload["llm"]["usage_id"],
                     "model": "openai/gpt-5.6-sol",
                     "base_url": "https://api.example.test/v1",
                     "api_mode": "chat",
