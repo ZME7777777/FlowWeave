@@ -5902,6 +5902,16 @@ contract、冻结策略与既有受控生命周期约束覆盖。
 
 验收：受影响 Python py_compile、Web TypeScript typecheck、Web ESLint、Alembic 唯一 head 0116_agent_manual_order 与 git diff --check 通过。两条定向 pytest 在 Testcontainers PostgreSQL 夹具创建前因本机 Docker daemon 不可用而阻断，未伪记为通过；待 Docker 可用时重跑。完成后提交独立 Git commit 并停止。
 
+### FR-447 Agent 工作区拖拽排序目录边界修复 — DONE
+
+依赖：FR-445。
+
+目标：修复拖拽排序服务端将列表 DTO 的 work_directory_id 误当作 AgentConversationBinding ORM 字段，导致任意排序请求触发 AttributeError 并返回 500。根工作区和受版本绑定的子工作区都必须正确解析目录归属；跨工作区排序继续拒绝。
+
+完成：将目录归属解析收口为 AgentWorkDirectoryVersion 的正式映射，并由排序边界检查复用；新增根会话与子工作区会话跨范围排序的 fail-closed 回归。
+
+验收：受影响 Python py_compile、Ruff format/check 与 git diff --check 通过。定向 pytest 仍受本机 Docker daemon 缺失导致的 Testcontainers PostgreSQL fixture 阻断；不伪记为通过。
+
 ### FR-446 会话上下文 256k 绝对压缩阈值 — DONE
 
 依赖：FR-83、FR-428、FR-439。

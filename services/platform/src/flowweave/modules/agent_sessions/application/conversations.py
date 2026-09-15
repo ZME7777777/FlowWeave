@@ -186,8 +186,8 @@ def _binding(
     return item
 
 
-def _dict(db: Session, item: AgentConversationBinding) -> dict[str, Any]:
-    work_directory_id = (
+def _work_directory_id(db: Session, item: AgentConversationBinding) -> str | None:
+    return (
         db.scalar(
             select(AgentWorkDirectoryVersion.work_directory_id).where(
                 AgentWorkDirectoryVersion.id == item.work_directory_version_id
@@ -196,6 +196,10 @@ def _dict(db: Session, item: AgentConversationBinding) -> dict[str, Any]:
         if item.work_directory_version_id
         else None
     )
+
+
+def _dict(db: Session, item: AgentConversationBinding) -> dict[str, Any]:
+    work_directory_id = _work_directory_id(db, item)
     return {
         "id": item.id,
         "display_title": item.display_title,
@@ -742,8 +746,9 @@ def reorder_conversation(
 
     before = neighbor(before_binding_id)
     after = neighbor(after_binding_id)
+    item_work_directory_id = _work_directory_id(db, item)
     if any(
-        candidate is not None and candidate.work_directory_id != item.work_directory_id
+        candidate is not None and _work_directory_id(db, candidate) != item_work_directory_id
         for candidate in (before, after)
     ):
         raise DomainError(

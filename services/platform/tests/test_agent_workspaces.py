@@ -2632,6 +2632,48 @@ def test_agent_workspace_conversation_drag_order_overrides_only_moved_binding(
         ]
 
 
+def test_agent_workspace_conversation_drag_order_rejects_other_work_directory(
+    settings, db_session_factory, monkeypatch
+):
+    monkeypatch.setattr(
+        conversations,
+        "runtime_provider",
+        lambda _db, asset, **kwargs: RuntimeProvider(
+            provider_id=asset["asset"]["executor"]["model_provider_id"],
+            base_url="https://models.example.test/v1",
+            model=kwargs.get("model_name") or "test-model",
+            api_key="x",
+            reasoning_effort=kwargs.get("reasoning_effort"),
+        ),
+    )
+    with settings_context(settings), db_session_factory() as db, runtime_context(MockRuntime()):
+        workspace = _ready_workspace_for_conversation(db)
+        root = conversations.create_conversation(
+            db, workspace.id, "根会话", workspace.default_model_provider_id, "drag-root"
+        )
+        scoped = conversations.create_conversation(
+            db, workspace.id, "目录会话", workspace.default_model_provider_id, "drag-scoped"
+        )
+        project_root = _agent_project_root(settings, db, workspace)
+        (project_root / "backend").mkdir()
+        directory = work_directories.create_work_directory(db, workspace.id, "后端", ("backend",))
+        scoped_binding = db.get(AgentConversationBinding, scoped["id"])
+        assert scoped_binding is not None
+        scoped_binding.work_directory_version_id = directory["current_version"]["id"]
+        db.flush()
+
+        with pytest.raises(DomainError) as raised:
+            conversations.reorder_conversation(
+                db,
+                workspace.id,
+                root["id"],
+                before_binding_id=None,
+                after_binding_id=scoped["id"],
+            )
+
+        assert raised.value.code == "AGENT_CONVERSATION_ORDER_SCOPE_INVALID"
+
+
 def test_agent_workspace_conversation_page_is_bounded_and_cursor_stable(
     settings, db_session_factory, monkeypatch
 ):
@@ -3327,9 +3369,7 @@ def test_agent_workspace_repairs_legacy_finish_fork_once_before_sending(
         ]
 
 
-def test_agent_workspace_forks_at_native_event(
-    settings, db_session_factory, monkeypatch
-):
+def test_agent_workspace_forks_at_native_event(settings, db_session_factory, monkeypatch):
     class ForkRuntime(MockRuntime):
         fork_call: tuple[str | None, str, bool, int, int | None, float | None] | None = None
         head = "assistant-event"
