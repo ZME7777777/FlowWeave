@@ -819,6 +819,29 @@ function writeConversationDraft(storageKey: string, recovery: ConversationDraftR
   }
 }
 
+function conversationComposerDraftStorageKey(hostId: string, workspaceId: string, bindingId: string): string {
+  return `flowweave:agent-conversation-composer-draft:v1:${hostId}:${workspaceId}:${bindingId}`;
+}
+
+function readConversationComposerDraft(storageKey: string): string {
+  try {
+    const value = window.sessionStorage.getItem(storageKey);
+    return value && value.length <= 200_000 ? value : '';
+  } catch {
+    return '';
+  }
+}
+
+function writeConversationComposerDraft(storageKey: string | undefined, value: string) {
+  if (!storageKey) return;
+  try {
+    if (value) window.sessionStorage.setItem(storageKey, value);
+    else window.sessionStorage.removeItem(storageKey);
+  } catch {
+    // A per-conversation composer draft is a browser-local convenience.
+  }
+}
+
 function transferredFiles(transfer: DataTransfer): File[] {
   const files = Array.from(transfer.files);
   if (files.length) return files;
@@ -3784,6 +3807,13 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     return capabilities;
   }, [capabilityCatalogQuery.data, composerCapabilityReferences]);
   const composerScope = selected?.id ?? conversationDraft?.id;
+  const selectedComposerDraftStorageKey = workspace && selected
+    ? conversationComposerDraftStorageKey(host.id, workspace.id, selected.id)
+    : undefined;
+  const setComposerDraft = useCallback((value: string) => {
+    setDraft(value);
+    writeConversationComposerDraft(selectedComposerDraftStorageKey, value);
+  }, [selectedComposerDraftStorageKey]);
   const activeComposerScope = useRef<string | undefined>(undefined);
   activeComposerScope.current = composerScope;
   const reportOperationError = useCallback((scope: string | undefined, error: Error) => {
@@ -4159,15 +4189,17 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     if (selectedBindingId && conversations.length && !selected && pendingCreatedId !== selectedBindingId && !conversationsQuery.isFetching) onNavigate(host.rootPath, true);
   }, [conversationDraft, conversations, conversationsQuery.isFetching, host, onNavigate, pendingCreatedId, selected, selectedBindingId]);
   useEffect(() => { if (selected?.id === pendingCreatedId) setPendingCreatedId(undefined); }, [pendingCreatedId, selected?.id]);
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (previousComposerScope.current === composerScope) return;
     previousComposerScope.current = composerScope;
+    if (selectedComposerDraftStorageKey) setDraft(readConversationComposerDraft(selectedComposerDraftStorageKey));
+    else if (!conversationDraft) setDraft('');
     if (bootstrapTransitionScope.current === composerScope) {
       bootstrapTransitionScope.current = undefined;
       return;
     }
     setEditing(false); clearLiveText(); pendingLiveEvents.current = []; if (liveEventsFrame.current !== undefined) window.cancelAnimationFrame(liveEventsFrame.current); liveEventsFrame.current = undefined; setLiveEvents([]); setHiddenEventIds(new Set()); setActiveTurnEventId(undefined); setRequestStartedAt(undefined); setConfirmationReason(''); setTurnState('idle'); queuedMessagesRef.current = []; streamConfirmedNativeGuidanceIds.current.clear(); nativeGuidanceOptimisticEventIds.current.clear(); setQueuedMessages([]); setPendingRewrite(undefined); setAttachments([]); setReferences([]); setComposerAnnotations([]); setOperationError(undefined);
-  }, [clearLiveText, composerScope]);
+  }, [clearLiveText, composerScope, conversationDraft, selectedComposerDraftStorageKey]);
   useEffect(() => {
     if (!queuedMessagesStorageKey || queuedMessagesStorageKeyRef.current !== queuedMessagesStorageKey) return;
     writeQueuedMessages(queuedMessagesStorageKey, queuedMessages);
@@ -4376,7 +4408,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       setTurnState('idle');
       setConversationDraft(current => current ?? draftForRecovery);
       if (activeComposerScope.current === message.scope) {
-        setDraft(message.content);
+        setComposerDraft(message.content);
         setAttachments(message.items);
         setReferences(message.references);
       }
@@ -4396,7 +4428,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     setRequestStartedAt(undefined);
     setTurnState('idle');
     if (activeComposerScope.current === message.scope) {
-      setDraft(message.content);
+      setComposerDraft(message.content);
       setAttachments(message.items);
       setReferences(message.references);
     }
@@ -4744,7 +4776,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const enqueueDraft = useCallback(() => {
     const content = draft.trim();
     if ((!content && !attachments.length && !references.length && !workspaceReferences.length && !composerAnnotations.length) || migrateStreaming.isPending || pendingMigratedSend || effectiveTurnState === 'pausing' || effectiveTurnState === 'resuming') return;
-    setDraft('');
+    setComposerDraft('');
     setOperationError(undefined);
     if (!composerScope) return;
     const message = { id: randomId(), scope: composerScope, content, items: attachments, references, workspaceReferences, annotations: composerAnnotations };
@@ -4761,10 +4793,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         setTurnState('running');
         bootstrap.mutate(message);
       }
-      else { setDraft(content); setAttachments(attachments); setReferences(references); setWorkspaceReferences(workspaceReferences); setComposerAnnotations(composerAnnotations); }
+      else { setComposerDraft(content); setAttachments(attachments); setReferences(references); setWorkspaceReferences(workspaceReferences); setComposerAnnotations(composerAnnotations); }
       return;
     }
-    if (!canWrite) { setDraft(content); setAttachments(attachments); setReferences(references); setWorkspaceReferences(workspaceReferences); setComposerAnnotations(composerAnnotations); return; }
+    if (!canWrite) { setComposerDraft(content); setAttachments(attachments); setReferences(references); setWorkspaceReferences(workspaceReferences); setComposerAnnotations(composerAnnotations); return; }
     commitQueuedMessages(items => [...items, { ...message, deliveryState: 'queued', createdAt: Date.now() }]);
   }, [attachments, bootstrap, canBootstrap, canWrite, commitQueuedMessages, composerAnnotations, composerScope, conversationDraft, draft, effectiveTurnState, migrateStreaming.isPending, pendingMigratedSend, references, workspaceReferences]);
   const sendDraftDirectly = useCallback(() => {
@@ -4784,12 +4816,12 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     if (!composerScope || conversationDraft || !canWrite || migrateStreaming.isPending || pendingMigratedSend
       || effectiveTurnState === 'pausing' || effectiveTurnState === 'resuming') return;
     const message = { id: randomId(), scope: composerScope, content, items: attachments, references, workspaceReferences, annotations: composerAnnotations };
-    setDraft('');
+    setComposerDraft('');
     setAttachments([]);
     setReferences([]); setWorkspaceReferences([]); setComposerAnnotations([]);
     setOperationError(undefined);
     if (effectiveTurnState === 'running' && !selected?.streaming_callback_ready) {
-      setDraft(content);
+      setComposerDraft(content);
       setAttachments(attachments);
       setReferences(references); setWorkspaceReferences(workspaceReferences); setComposerAnnotations(composerAnnotations);
       return;
@@ -4803,10 +4835,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       }]);
       return;
     }
-    setDraft(content);
+    setComposerDraft(content);
     setAttachments(attachments);
     setReferences(references); setWorkspaceReferences(workspaceReferences); setComposerAnnotations(composerAnnotations);
-  }, [attachments, canWrite, commitQueuedMessages, composerAnnotations, composerScope, conversationDraft, draft, effectiveTurnState, migrateStreaming.isPending, pendingMigratedSend, queuedMessages, references, selected, showNativeGuidanceBubble, updateQueuedMessage, workspaceReferences]);
+  }, [attachments, canWrite, commitQueuedMessages, composerAnnotations, composerScope, conversationDraft, draft, effectiveTurnState, migrateStreaming.isPending, pendingMigratedSend, queuedMessages, references, selected, setComposerDraft, showNativeGuidanceBubble, updateQueuedMessage, workspaceReferences]);
   const sendQueuedMessageImmediately = useCallback((message: QueuedMessage) => {
     if (!canWrite || effectiveTurnState !== 'running' || !selected?.streaming_callback_ready || message.scope !== selected.id || message.deliveryState !== 'queued') return;
     // The message stays in the persisted queue until the formal OpenHands
