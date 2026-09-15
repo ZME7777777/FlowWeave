@@ -829,6 +829,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await page.getByRole('button', { name: 'Agent 会话' }).click();
   await expect.poll(() => new URL(page.url()).pathname).toBe('/agent');
   await expect(page.getByRole('button', { name: '新建会话' }).first()).toBeEnabled();
+  await expect(page.getByLabel('发送 Agent 消息')).toBeVisible();
   await expect(page.getByText('后端服务', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: '在后端服务中新建会话' }).click();
   await expect(page.getByRole('heading', { name: '新会话' })).toBeVisible();
@@ -837,6 +838,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await page.getByRole('button', { name: '新建会话' }).first().click();
   await expect(page).toHaveURL(/\/agent$/);
   await expect(page.getByText('会话已就绪', { exact: true })).toBeVisible();
+  await expect(page.getByLabel('发送 Agent 消息')).toBeVisible();
   const newConversationLayout = await page.locator('.agent-workbench-main').evaluate(main => {
     const header = main.querySelector<HTMLElement>('.agent-workbench-header');
     const content = main.querySelector<HTMLElement>('.agent-workbench-content');

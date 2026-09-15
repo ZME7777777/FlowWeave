@@ -5,5 +5,5 @@ import { AgentSessionWorkbench, type AgentSessionWorkbenchProps } from '../compo
  * existing route while the shared session workbench owns every interaction.
  */
 export function AgentWorkbenchPage(props: AgentSessionWorkbenchProps) {
-  return <AgentSessionWorkbench {...props}/>;
+  return <AgentSessionWorkbench {...props} autoOpenDraft/>;
 }
