@@ -837,6 +837,22 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await page.getByRole('button', { name: '新建会话' }).first().click();
   await expect(page).toHaveURL(/\/agent$/);
   await expect(page.getByText('会话已就绪', { exact: true })).toBeVisible();
+  const newConversationLayout = await page.locator('.agent-workbench-main').evaluate(main => {
+    const header = main.querySelector<HTMLElement>('.agent-workbench-header');
+    const content = main.querySelector<HTMLElement>('.agent-workbench-content');
+    const empty = main.querySelector<HTMLElement>('.conversation-surface-empty');
+    const composer = main.querySelector<HTMLElement>('.agent-composer-dock');
+    if (!header || !content || !empty || !composer) throw new Error('Expected Agent Workbench layout regions');
+    const headerBox = header.getBoundingClientRect();
+    const contentBox = content.getBoundingClientRect();
+    const emptyBox = empty.getBoundingClientRect();
+    const composerBox = composer.getBoundingClientRect();
+    return { headerBottom: headerBox.bottom, contentTop: contentBox.top, contentBottom: contentBox.bottom, emptyTop: emptyBox.top, emptyBottom: emptyBox.bottom, composerTop: composerBox.top };
+  });
+  expect(newConversationLayout.headerBottom).toBeLessThanOrEqual(newConversationLayout.contentTop + 1);
+  expect(newConversationLayout.emptyTop).toBeGreaterThanOrEqual(newConversationLayout.contentTop - 1);
+  expect(newConversationLayout.emptyBottom).toBeLessThanOrEqual(newConversationLayout.contentBottom + 1);
+  expect(newConversationLayout.contentBottom).toBeLessThanOrEqual(newConversationLayout.composerTop + 1);
   expect(bootstrapRequests).toBe(0);
   await expect(page.getByRole('button', { name: '检查工作目录' })).toHaveCount(0);
   await page.getByLabel('发送 Agent 消息').fill('检查工作目录');

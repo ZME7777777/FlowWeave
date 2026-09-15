@@ -40,8 +40,8 @@
 .agent-workbench-list>.agent-workspace-group>.agent-workspace-group-content>.agent-workspace-group-more:hover:not(:disabled){background:#e9efeb!important;color:#527360!important}
 .agent-workbench-list>.agent-workspace-group>.agent-workspace-group-content>.agent-workspace-group-more:focus-visible{outline:2px solid #83aa92;outline-offset:1px}
 .agent-workbench-list>.agent-workspace-group>.agent-workspace-group-content>.agent-workspace-group-more:disabled{cursor:wait;opacity:.6}
-.agent-workbench-main{position:relative;grid-template-rows:64px minmax(0,1fr) auto}
-.agent-workbench-shell .agent-workbench-main{grid-template-rows:64px minmax(0,1fr) auto}
+.agent-workbench-main,.agent-workbench-shell .agent-workbench-main{position:relative;display:grid!important;height:100%;min-height:0;overflow:hidden;grid-template-rows:64px minmax(0,1fr) auto!important}
+.agent-workbench-header{grid-row:1!important;min-height:0}.agent-workbench-content{grid-row:2!important;display:flex;min-width:0;min-height:0;flex-direction:column;overflow:hidden}.agent-workbench-content>:is(.conversation-surface-shell,.conversation-surface-empty,.agent-workbench-empty){min-height:0;flex:1 1 auto}
 .agent-composer-dock{position:relative;grid-row:3;inset:auto;z-index:2;padding-bottom:0;pointer-events:none}.agent-composer-dock:has(.agent-composer-annotation-card){z-index:80}
 .agent-composer-dock>*{pointer-events:auto}
 .agent-composer-dock .agent-composer{margin:0 auto}
