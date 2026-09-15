@@ -2632,6 +2632,70 @@ def test_agent_workspace_conversation_drag_order_overrides_only_moved_binding(
         ]
 
 
+def test_agent_workspace_conversation_drag_order_keeps_unique_ranks_after_repeated_top_moves(
+    settings, db_session_factory, monkeypatch
+):
+    monkeypatch.setattr(
+        conversations,
+        "runtime_provider",
+        lambda _db, asset, **kwargs: RuntimeProvider(
+            provider_id=asset["asset"]["executor"]["model_provider_id"],
+            base_url="https://models.example.test/v1",
+            model=kwargs.get("model_name") or "test-model",
+            api_key="x",
+            reasoning_effort=kwargs.get("reasoning_effort"),
+        ),
+    )
+    with settings_context(settings), db_session_factory() as db, runtime_context(MockRuntime()):
+        workspace = _ready_workspace_for_conversation(db)
+        created = [
+            conversations.create_conversation(
+                db,
+                workspace.id,
+                f"会话 {index}",
+                workspace.default_model_provider_id,
+                f"repeat-top-{index}",
+            )
+            for index in range(4)
+        ]
+        baseline = datetime.now(UTC) - timedelta(days=1)
+        for index, candidate in enumerate(created):
+            binding = db.get(AgentConversationBinding, candidate["id"])
+            assert binding is not None
+            binding.created_at = baseline + timedelta(minutes=index)
+        db.flush()
+
+        conversations.reorder_conversation(
+            db,
+            workspace.id,
+            created[0]["id"],
+            before_binding_id=None,
+            after_binding_id=created[3]["id"],
+        )
+        conversations.reorder_conversation(
+            db,
+            workspace.id,
+            created[1]["id"],
+            before_binding_id=None,
+            after_binding_id=created[0]["id"],
+        )
+
+        assert [item["id"] for item in conversations.list_conversations(db, workspace.id)] == [
+            created[1]["id"],
+            created[0]["id"],
+            created[3]["id"],
+            created[2]["id"],
+        ]
+        manual_ranks = [
+            binding.manual_sort_rank
+            for candidate in created
+            if (binding := db.get(AgentConversationBinding, candidate["id"])) is not None
+            and binding.manual_sort_rank is not None
+        ]
+        assert len(manual_ranks) == len(set(manual_ranks))
+        assert db.get(AgentConversationBinding, created[2]["id"]).manual_sort_rank is None
+
+
 def test_agent_workspace_conversation_drag_order_rejects_other_work_directory(
     settings, db_session_factory, monkeypatch
 ):

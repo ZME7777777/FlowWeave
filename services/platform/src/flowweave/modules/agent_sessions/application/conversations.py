@@ -68,6 +68,7 @@ from flowweave.shared.settings import get_settings
 
 _PROJECT_ROOT = "/runtime/workspace/project"
 _logger = logging.getLogger(__name__)
+_SORT_RANK_QUANTUM = Decimal("0.000000000001")
 _AGENT_WORKSPACE_CONDENSER_MAX_EVENTS = 10_000
 _CONDENSER_CREDENTIAL_FAILURE_CODE = "NoCondensationAvailableException"
 _DYNAMIC_CAPABILITY_TYPES = frozenset({"SKILL", "MCP", "PLUGIN"})
@@ -736,25 +737,38 @@ def reorder_conversation(
     before_binding_id: str | None,
     after_binding_id: str | None,
 ) -> dict[str, Any]:
-    """Persist one workspace-local drag position without materializing a list."""
+    """Persist one workspace-local drag position with unique manual ranks."""
 
     _workspace(db, workspace_id)
-    item = _binding(db, workspace_id, binding_id, lock=True)
     if before_binding_id == binding_id or after_binding_id == binding_id:
         raise DomainError("AGENT_CONVERSATION_ORDER_INVALID", "会话不能以自身作为排序邻居", 422)
     if before_binding_id is None and after_binding_id is None:
         raise DomainError("AGENT_CONVERSATION_ORDER_INVALID", "请指定会话的新位置", 422)
 
-    def neighbor(value: str | None) -> AgentConversationBinding | None:
-        return _binding(db, workspace_id, value, lock=True) if value else None
-
     try:
-        before = neighbor(before_binding_id)
-        after = neighbor(after_binding_id)
+        workspace_bindings = list(
+            db.scalars(
+                select(AgentConversationBinding)
+                .where(
+                    AgentConversationBinding.workspace_id == workspace_id,
+                    AgentConversationBinding.lifecycle == "ACTIVE",
+                )
+                .order_by(AgentConversationBinding.id)
+                .with_for_update()
+            )
+        )
+        bindings_by_id = {candidate.id: candidate for candidate in workspace_bindings}
+        item = bindings_by_id.get(binding_id)
+        if item is None:
+            raise DomainError("AGENT_CONVERSATION_NOT_FOUND", "会话不存在或已删除", 404)
+        before = bindings_by_id.get(before_binding_id) if before_binding_id else None
+        after = bindings_by_id.get(after_binding_id) if after_binding_id else None
+        if (before_binding_id and before is None) or (after_binding_id and after is None):
+            raise DomainError("AGENT_CONVERSATION_ORDER_INVALID", "会话排序邻居不存在", 409)
         directory_versions = {
             candidate.work_directory_version_id
-            for candidate in (item, before, after)
-            if candidate is not None and candidate.work_directory_version_id is not None
+            for candidate in workspace_bindings
+            if candidate.work_directory_version_id is not None
         }
         directory_by_version = {
             version_id: work_directory_id
@@ -765,11 +779,19 @@ def reorder_conversation(
                 ).where(AgentWorkDirectoryVersion.id.in_(directory_versions))
             )
         }
-        item_work_directory_id = directory_by_version.get(item.work_directory_version_id)
         if any(
-            candidate is not None
-            and directory_by_version.get(candidate.work_directory_version_id)
-            != item_work_directory_id
+            candidate.work_directory_version_id is not None
+            and candidate.work_directory_version_id not in directory_by_version
+            for candidate in workspace_bindings
+        ):
+            raise DomainError("AGENT_CONVERSATION_ORDER_INVALID", "会话工作区归属无效", 409)
+
+        def scope(candidate: AgentConversationBinding) -> str | None:
+            return directory_by_version.get(candidate.work_directory_version_id)
+
+        item_work_directory_id = scope(item)
+        if any(
+            candidate is not None and scope(candidate) != item_work_directory_id
             for candidate in (before, after)
         ):
             raise DomainError(
@@ -777,23 +799,79 @@ def reorder_conversation(
                 "会话只能在当前工作区内调整顺序",
                 409,
             )
-        before_rank = _conversation_sort_key(before) if before else None
-        after_rank = _conversation_sort_key(after) if after else None
-        if before_rank is not None and after_rank is not None and before_rank <= after_rank:
-            raise DomainError(
-                "AGENT_CONVERSATION_ORDER_INVALID", "会话排序邻居无效，请刷新后重试", 409
-            )
-        if before_rank is None:
-            rank = after_rank + Decimal("1")
-        elif after_rank is None:
-            rank = before_rank - Decimal("1")
+        ordered = sorted(
+            (
+                candidate
+                for candidate in workspace_bindings
+                if scope(candidate) == item_work_directory_id
+            ),
+            key=lambda candidate: (_conversation_sort_key(candidate), candidate.id),
+            reverse=True,
+        )
+        ordered.remove(item)
+        if before is None:
+            assert after is not None
+            insert_at = ordered.index(after)
+        elif after is None:
+            insert_at = ordered.index(before) + 1
         else:
-            rank = (before_rank + after_rank) / Decimal("2")
-        if rank == before_rank or rank == after_rank:
-            raise DomainError(
-                "AGENT_CONVERSATION_ORDER_DENSE", "会话排序空间已满，请刷新后重试", 409
+            before_index = ordered.index(before)
+            after_index = ordered.index(after)
+            if before_index + 1 != after_index:
+                raise DomainError(
+                    "AGENT_CONVERSATION_ORDER_INVALID",
+                    "会话排序邻居无效，请刷新后重试",
+                    409,
+                )
+            insert_at = after_index
+        ordered.insert(insert_at, item)
+
+        manual_ids = {
+            candidate.id for candidate in ordered if candidate.manual_sort_rank is not None
+        }
+        manual_ids.add(item.id)
+        position = 0
+        while position < len(ordered):
+            if ordered[position].id not in manual_ids:
+                position += 1
+                continue
+            start = position
+            while position < len(ordered) and ordered[position].id in manual_ids:
+                position += 1
+            run = ordered[start:position]
+            upper = _creation_sort_rank(ordered[start - 1].created_at) if start else None
+            lower = (
+                _creation_sort_rank(ordered[position].created_at)
+                if position < len(ordered)
+                else None
             )
-        item.manual_sort_rank = rank
+            if upper is not None and lower is not None:
+                if upper <= lower:
+                    raise DomainError(
+                        "AGENT_CONVERSATION_ORDER_INVALID", "会话默认排序锚点无效", 409
+                    )
+                step = (upper - lower) / Decimal(len(run) + 1)
+                ranks = [upper - step * Decimal(index + 1) for index in range(len(run))]
+            elif lower is not None:
+                ranks = [lower + Decimal(len(run) - index) for index in range(len(run))]
+            elif upper is not None:
+                ranks = [upper - Decimal(index + 1) for index in range(len(run))]
+            else:
+                base = max(_creation_sort_rank(candidate.created_at) for candidate in run)
+                ranks = [base + Decimal(len(run) - index) for index in range(len(run))]
+            normalized = [rank.quantize(_SORT_RANK_QUANTUM) for rank in ranks]
+            if (
+                any(left <= right for left, right in zip(normalized, normalized[1:], strict=False))
+                or (upper is not None and normalized[0] >= upper)
+                or (lower is not None and normalized[-1] <= lower)
+            ):
+                raise DomainError(
+                    "AGENT_CONVERSATION_ORDER_DENSE",
+                    "会话排序空间已满，请刷新后重试",
+                    409,
+                )
+            for candidate, rank in zip(run, normalized, strict=True):
+                candidate.manual_sort_rank = rank
         db.flush()
     except DomainError:
         raise
