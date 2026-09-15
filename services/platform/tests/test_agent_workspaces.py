@@ -8,6 +8,7 @@ import subprocess
 import zipfile
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 from uuid import uuid4
 
@@ -2629,6 +2630,10 @@ def test_agent_workspace_conversation_drag_order_overrides_only_moved_binding(
             older["id"],
             newer["id"],
         ]
+        page = conversations.list_conversation_page(db, workspace.id, limit=2)
+        assert [item["id"] for item in page["items"]] == [older["id"], newer["id"]]
+        assert page["items"][0]["sort_key"] == moved["sort_key"]
+        assert Decimal(page["items"][0]["sort_key"]) > Decimal(page["items"][1]["sort_key"])
 
 
 def test_agent_workspace_conversation_drag_order_keeps_unique_ranks_after_repeated_top_moves(

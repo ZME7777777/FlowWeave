@@ -343,6 +343,7 @@ def _page_dicts(
             "last_connected_at": item.last_connected_at.isoformat()
             if item.last_connected_at
             else None,
+            "sort_key": str(_conversation_sort_key(item)),
             "usage": usage_by_binding.get(item.id, usage_projection.empty()),
         }
         for item in items
