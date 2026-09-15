@@ -75,8 +75,7 @@ class AgentConversationPatchWrite(_Write):
 
 
 class AgentConversationOrderWrite(_Write):
-    before_binding_id: str | None = Field(default=None, min_length=1, max_length=36)
-    after_binding_id: str | None = Field(default=None, min_length=1, max_length=36)
+    ordered_binding_ids: list[str] = Field(min_length=1, max_length=500)
 
 
 class AgentConversationCapabilityAddWrite(_Write):
@@ -643,8 +642,7 @@ async def reorder_agent_conversation(
                 session,
                 workspace_id,
                 binding_id,
-                before_binding_id=payload.before_binding_id,
-                after_binding_id=payload.after_binding_id,
+                ordered_binding_ids=tuple(payload.ordered_binding_ids),
             ),
         )
     except DomainError:

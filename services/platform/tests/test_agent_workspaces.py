@@ -2620,8 +2620,7 @@ def test_agent_workspace_conversation_drag_order_overrides_only_moved_binding(
             db,
             workspace.id,
             older["id"],
-            before_binding_id=None,
-            after_binding_id=newer["id"],
+            ordered_binding_ids=(older["id"], newer["id"]),
         )
 
         assert moved["sort_key"] > str(newer_binding.created_at.timestamp())
@@ -2669,15 +2668,23 @@ def test_agent_workspace_conversation_drag_order_keeps_unique_ranks_after_repeat
             db,
             workspace.id,
             created[0]["id"],
-            before_binding_id=None,
-            after_binding_id=created[3]["id"],
+            ordered_binding_ids=(
+                created[0]["id"],
+                created[3]["id"],
+                created[2]["id"],
+                created[1]["id"],
+            ),
         )
         conversations.reorder_conversation(
             db,
             workspace.id,
             created[1]["id"],
-            before_binding_id=None,
-            after_binding_id=created[0]["id"],
+            ordered_binding_ids=(
+                created[1]["id"],
+                created[0]["id"],
+                created[3]["id"],
+                created[2]["id"],
+            ),
         )
 
         assert [item["id"] for item in conversations.list_conversations(db, workspace.id)] == [
@@ -2731,8 +2738,7 @@ def test_agent_workspace_conversation_drag_order_rejects_other_work_directory(
                 db,
                 workspace.id,
                 root["id"],
-                before_binding_id=None,
-                after_binding_id=scoped["id"],
+                ordered_binding_ids=(root["id"], scoped["id"]),
             )
 
         assert raised.value.code == "AGENT_CONVERSATION_ORDER_SCOPE_INVALID"

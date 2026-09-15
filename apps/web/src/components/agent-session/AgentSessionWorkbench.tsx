@@ -36,7 +36,7 @@ const DEFAULT_CONTEXT_COMPACTION_THRESHOLD_TOKENS = 256_000;
 type StreamStatus = 'connecting' | 'live' | 'recovering' | 'disabled';
 type TurnState = 'idle' | 'running' | 'pausing' | 'paused' | 'resuming';
 type QueueDeliveryState = 'queued' | 'dispatching' | 'ambiguous' | 'rejected';
-type ConversationOrderSync = { state: 'syncing' | 'failed'; beforeBindingId?: string; afterBindingId?: string };
+type ConversationOrderSync = { state: 'syncing' | 'failed'; orderedBindingIds: string[] };
 interface RewriteRequest {
   eventId: string;
   content: string;
@@ -4470,10 +4470,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     }
     refresh();
   }, onError: error => setOperationError(error) });
-  const synchronizeConversationOrder = useCallback((bindingId: string, beforeBindingId?: string, afterBindingId?: string) => {
+  const synchronizeConversationOrder = useCallback((bindingId: string, orderedBindingIds: string[]) => {
     if (!workspace || !api.reorderConversation) return;
-    setConversationOrderSync(current => ({ ...current, [bindingId]: { state: 'syncing', beforeBindingId, afterBindingId } }));
-    void api.reorderConversation(workspace.id, bindingId, beforeBindingId, afterBindingId)
+    setConversationOrderSync(current => ({ ...current, [bindingId]: { state: 'syncing', orderedBindingIds } }));
+    void api.reorderConversation(workspace.id, bindingId, orderedBindingIds)
       .then(() => setConversationOrderSync(current => {
         const next = { ...current };
         delete next[bindingId];
@@ -4481,7 +4481,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       }))
       .catch(() => setConversationOrderSync(current => ({
         ...current,
-        [bindingId]: { state: 'failed', beforeBindingId, afterBindingId },
+        [bindingId]: { state: 'failed', orderedBindingIds },
       })));
   }, [api, workspace]);
   const persistModel = useMutation({
@@ -5065,7 +5065,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       ...current,
       [conversationScopeKey(target)]: reordered.map(item => item.id),
     }));
-    synchronizeConversationOrder(draggedId, reordered[movedIndex - 1]?.id, reordered[movedIndex + 1]?.id);
+    synchronizeConversationOrder(draggedId, reordered.map(candidate => candidate.id));
   }
   function endPointerConversationDrag() {
     const draggedId = draggedConversationRef.current;
@@ -5113,7 +5113,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       || (item.id === selected?.id && (selectedConversationRunning || isGenerating)));
     const conversationWritable = runtimeWritable || Boolean(item.write_available);
     const sync = conversationOrderSync[item.id];
-    return <WorkspaceConversationRow key={item.id} item={item} selectedBindingId={selectedBindingId} running={running} unread={unreadConversationIds.has(item.id)} conversationWritable={conversationWritable} removing={remove.isPending} deleteDisabled={running} dragging={draggedBindingId === item.id} dropPosition={dragTarget?.bindingId === item.id ? (dragTarget.after ? 'after' : 'before') : undefined} orderSyncState={sync?.state} onPointerDragStart={event => startPointerConversationDrag(event, item, group)} onRetryOrder={sync?.state === 'failed' ? () => synchronizeConversationOrder(item.id, sync.beforeBindingId, sync.afterBindingId) : undefined} onSelect={() => selectConversation(item.id)} onDelete={features.conversationDeletion && conversationWritable ? () => void confirmDeletion('会话', conversationName(item)).then(ok => { if (ok) remove.mutate(item.id); }) : undefined}/>;
+    return <WorkspaceConversationRow key={item.id} item={item} selectedBindingId={selectedBindingId} running={running} unread={unreadConversationIds.has(item.id)} conversationWritable={conversationWritable} removing={remove.isPending} deleteDisabled={running} dragging={draggedBindingId === item.id} dropPosition={dragTarget?.bindingId === item.id ? (dragTarget.after ? 'after' : 'before') : undefined} orderSyncState={sync?.state} onPointerDragStart={event => startPointerConversationDrag(event, item, group)} onRetryOrder={sync?.state === 'failed' ? () => synchronizeConversationOrder(item.id, sync.orderedBindingIds) : undefined} onSelect={() => selectConversation(item.id)} onDelete={features.conversationDeletion && conversationWritable ? () => void confirmDeletion('会话', conversationName(item)).then(ok => { if (ok) remove.mutate(item.id); }) : undefined}/>;
   };
   const pendingBootstrapItem = pendingBootstrap
     ? <button className={pendingBootstrap.draft.id === conversationDraft?.id ? 'active' : ''} aria-current={pendingBootstrap.draft.id === conversationDraft?.id ? 'page' : undefined} aria-label={`${pendingConversationName(pendingBootstrap.message)}，正在创建会话`}><LoaderCircle className="conversation-activity-spin" size={13}/><span><b>{pendingConversationName(pendingBootstrap.message)}</b><small>正在创建会话</small></span><ChevronRight size={13}/></button>
