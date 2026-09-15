@@ -1645,8 +1645,8 @@ function WorkspaceTerminal({ workspaceId, terminalInstanceId, bindingId, workDir
 
 function isTextPreviewable(path: string, mimeType = ''): boolean {
   return mimeType.startsWith('text/')
-    || /^(?:application\/(?:json|xml|javascript|sql)|text\/(?:markdown|x-[^/]+))$/i.test(mimeType)
-    || /\.(?:md|mdx|txt|json|ya?ml|toml|ini|conf|xml|html?|css|scss|less|tsx?|jsx?|py|java|kt|go|rs|rb|php|sh|zsh|sql|graphql|vue|svelte)$/i.test(path);
+    || /^(?:application\/(?:json|xml|javascript|sql|x-java-properties)|text\/(?:markdown|x-[^/]+))$/i.test(mimeType)
+    || /\.(?:md|mdx|txt|json|ya?ml|toml|ini|conf|properties|xml|html?|css|scss|less|tsx?|jsx?|py|java|kt|go|rs|rb|php|sh|zsh|sql|graphql|vue|svelte)$/i.test(path);
 }
 
 function filePreviewLanguage(path: string): string | undefined {
@@ -1670,7 +1670,7 @@ function filePreviewLanguage(path: string): string | undefined {
     case 'cc': case 'cpp': case 'cxx': case 'hpp': return 'cpp';
     case 'cs': return 'csharp';
     case 'kt': case 'kts': return 'kotlin';
-    case 'toml': return 'ini';
+    case 'toml': case 'ini': case 'conf': case 'properties': return 'ini';
     default: return undefined;
   }
 }

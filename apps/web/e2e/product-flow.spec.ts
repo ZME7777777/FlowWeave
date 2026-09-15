@@ -540,6 +540,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
           { path: '/runtime/workspace/project/backend', kind: 'directory', size: 0 },
           { path: '/runtime/workspace/project/src', kind: 'directory', size: 0 },
           { path: '/runtime/workspace/project/README.md', kind: 'file', size: 128 },
+          { path: '/runtime/workspace/project/test-branches.properties', kind: 'file', size: 1024 },
           { path: '/runtime/workspace/project/期权异动接口批量查询代码审查报告.md', kind: 'file', size: 256 },
         ]
         : parentPath === '/runtime/workspace/project/src'
@@ -559,6 +560,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
           { path: '/runtime/workspace/project/backend', kind: 'directory', size: 0 },
           { path: '/runtime/workspace/project/src', kind: 'directory', size: 0 },
           { path: '/runtime/workspace/project/src/config.ts', kind: 'file', size: 42 },
+          { path: '/runtime/workspace/project/test-branches.properties', kind: 'file', size: 1024 },
         ],
         repositories: [{ path: '/runtime/workspace/project', remote: 'https://example.test/repo.git', branch: 'main', head: '1234567890ab' }],
         runtime: { container_id: '2fae71c74c89' },
@@ -929,6 +931,9 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   }]);
   await page.getByText('README.md', { exact: true }).click();
   await expect(page.getByText('workspace file preview', { exact: true })).toBeVisible();
+  await page.getByText('test-branches.properties', { exact: true }).click();
+  await expect(page.getByText('workspace file preview', { exact: true })).toBeVisible();
+  expect(workspaceFilePreviewRequests.at(-1)).toBe('/runtime/workspace/project/test-branches.properties');
   await page.getByLabel('新增工作区工具').click();
   await page.getByRole('button', { name: '终端', exact: true }).click();
   await expect(page.locator('.agent-workspace-terminal')).toBeVisible();

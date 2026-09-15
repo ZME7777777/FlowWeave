@@ -5934,6 +5934,14 @@ contract、冻结策略与既有受控生命周期约束覆盖。
 
 完成：前端上下文类型纳入 Runtime 已返回的 `condenser_max_tokens`；Token 进度优先使用该值，缺失时固定回退至 256,000，不再读取或展示 `window_tokens`／模型目录的 922k 窗口。悬停说明明确为“自动压缩阈值”，产品流 mock 同时返回 922,000 物理窗口和 256,000 冻结阈值，以防止展示逻辑回归。未修改模型目录、压缩策略、API、数据库、Runtime Provider 或 OpenHands。
 
+### FR-455 Agent 工作区 `.properties` 文件文本预览 — DONE
+
+依赖：FR-441。
+
+目标：工作区中以 `.properties` 结尾的配置文件必须进入既有受限文本预览链路，不得错误显示为仅可下载；其语法高亮应与 INI/配置文件保持一致。
+
+完成：文本预览白名单加入 `.properties` 以及 `application/x-java-properties` MIME；Highlight.js 映射把 `.properties`、`.ini` 和 `.conf` 统一按 INI 渲染。既有产品流增加 `.properties` 文件选择与预览请求断言。未修改文件读取授权、文件大小限制、下载接口、API、数据库、Runtime Provider 或 OpenHands。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -5949,6 +5957,7 @@ contract、冻结策略与既有受控生命周期约束覆盖。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-15 | FR-455 | Web TypeScript typecheck、受影响 Web ESLint、production build、定向产品流 Playwright、`git diff --check` 与任务状态唯一性 | PASS（静态／构建／关键浏览器断言）：`.properties` 文件在 Agent 工作区中触发既有受限文本预览请求，未回退至“此文件不提供浏览器预览”提示；TypeScript、lint、production build 与差异检查通过。定向产品流已越过新增断言，随后因既有终端入口仍按 `button` 查找而当前 UI 为菜单项超时，未记为完整用例通过。未修改 API、数据库、Runtime Provider 或 OpenHands。 |
 | 2026-09-15 | FR-454 | 受影响 Python `py_compile`、Ruff format/check、定向平台 API 回归尝试、`git diff --check` 与任务状态唯一性 | PASS（静态）：中性画布再次保存同一节点现在创建独立 `HUMAN_START` NodeRun，其首个 Attempt 为 `#1`；只复用 `FLOW_TRANSITION` 创建且仍处于 `WAITING_INPUT` 的下游占位，独立手动记录不会被流转路径误当作占位。新增 API 回归覆盖两条待启动同节点记录可同时创建且保持不同记录 ID。定向 pytest 在断言前被 Testcontainers PostgreSQL fixture 阻断：本机 Docker Unix socket 不存在；未伪记为通过。未修改数据库、迁移、OpenHands、Runtime Provider 或远端环境。 |
 | 2026-09-15 | FR-453 | 生产 API 脱敏模型绑定诊断；远端固定 Runtime 镜像四包版本与无网络 LLM／Agent null 序列化探针；固定 OpenHands 1.47 `ConversationState`、LLM options 与 `switch_llm` 源码取证；Chat／Responses 默认与显式思考强度回归；完整无 Docker `test_openhands.py`（161 passed）；Python Ruff format/check、`py_compile`、Alembic head、`git diff --check` 与任务状态唯一性 | PASS：线上所有失败均为供应商、模型、base URL、协议匹配而 `expected_reasoning=None/actual_reasoning=high`；固定四包均为 1.47.0，LLM 内存可保留 null，但 ConversationState 持久化以 `exclude_none=True` 删除它，重载后按上游正式默认恢复 high。平台空值继续表示“默认”，Runtime 边界统一解析为 high；不支持 reasoning 的模型仍由上游正式 options 层过滤该请求参数。唯一 Alembic head 为 `0116_agent_manual_order`；未修改 OpenHands 源码、数据库、迁移、前端、Runtime Provider 或会话历史。 |
 | 2026-09-15 | FR-452 | 生产浏览器 `RUNTIME_LLM_BINDING_DRIFT` 响应取证；固定 OpenHands 1.47 `switch_llm`／LLM registry／`ConversationInfo` 源码取证；配置级 usage_id、生产同形响应及既有漂移定向回归（6 passed）；完整无 Docker `test_openhands.py`（160 passed）；Python Ruff format/check、`py_compile`、Alembic head、`git diff --check` 与任务状态唯一性 | PASS：线上回读的供应商、模型、base URL 与 Responses 模式均已匹配，唯一剩余失败字段为 reasoning；固定源码证明相同 provider 级 usage_id 会 first-write-wins 复用首次 LLM。主模型切换现在以私有 Runtime 会话密钥对含模型、协议、地址、思考强度、凭据和 headers 的有效配置做 HMAC，配置不变稳定复用，任一关键项变化使用新 registry slot，usage_id 不暴露 Secret。Runtime 回读仍严格校验全部字段。唯一 Alembic head 为 `0116_agent_manual_order`；未修改 OpenHands 源码、数据库、迁移、前端、Runtime Provider 或会话历史。远端私有部署配置缺失，未执行 SSH、部署或服务重建。 |
