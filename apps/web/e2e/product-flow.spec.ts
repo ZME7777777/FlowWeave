@@ -452,6 +452,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   let historyPrefetchEnabled = false;
   let cursorlessEventRecovery = false;
   let emptyResponseRecovery = false;
+  let emptyResponseFollowup = false;
   let historyPageRequests = 0;
   let releaseHistoryPage: (() => void) | undefined;
   const historyPageGate = new Promise<void>(resolve => { releaseHistoryPage = resolve; });
@@ -726,6 +727,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
           ...(emptyResponseRecovery && !cursor ? [
             { id: 'empty-agent-response', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'running-user', content: '', timestamp: new Date().toISOString() } },
             { id: 'empty-response-nudge', event_type: 'MESSAGE', payload: { source: 'environment', parent_id: 'empty-agent-response', content: 'Your last response did not include a function call or a message. Please use a tool to proceed with the task.', timestamp: new Date().toISOString() } },
+            ...(emptyResponseFollowup ? [{ id: 'empty-response-followup', event_type: 'THOUGHT', payload: { source: 'agent', parent_id: 'empty-response-nudge', content: '已恢复，继续检查工作区。', thought: '已恢复，继续检查工作区。', timestamp: new Date().toISOString() } }] : []),
           ] : []),
           ...(interrupted ? [{ id: 'paused-tool-error', event_type: 'ERROR', payload: { source_type: 'AgentErrorEvent', parent_id: 'running-user', content: 'Tool call interrupted before completion. The conversation was paused.' } }] : []),
           ...(parentTurnFailed ? [{ id: 'running-parent-error', event_type: 'ERROR', payload: { source: 'environment', parent_id: backfilledTaskAction ? 'recovered-task-action' : 'running-user', content: '模型服务暂时不可用，本轮已停止', error_code: 'LLMServiceUnavailableError', timestamp: new Date().toISOString() } }] : []),
@@ -891,14 +893,22 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   // OpenHands 1.47 persists an empty Agent Message and an environment
   // corrective nudge, then continues the same native loop. Neither event may
   // end the turn or clear one of the two running indicators.
-  await expect(page.getByText('模型返回空响应，OpenHands 正在自动重试。')).toBeVisible();
+  const emptyResponseStatus = page.locator('.conversation-turn-status').filter({ hasText: '模型返回空响应，OpenHands 正在自动重试' });
+  await expect(emptyResponseStatus).toBeVisible();
   await expect(page.getByText('Your last response did not include a function call or a message.')).toHaveCount(0);
   await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toBeVisible();
   await expect(page.locator('.agent-workspace-conversation-running')).toHaveCount(1);
+  emptyResponseFollowup = true;
+  await page.reload();
+  await expect(page.getByText('已恢复，继续检查工作区。', { exact: true })).toBeVisible();
+  await expect(emptyResponseStatus).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toBeVisible();
   emptyResponseRecovery = false;
+  emptyResponseFollowup = false;
   modelIsResponding = false;
   parentTurnFailed = true;
   await expect(page.getByText('模型服务暂时不可用')).toBeVisible();
+  await expect(emptyResponseStatus).toHaveCount(0);
   await expect(page.getByRole('button', { name: '发送消息' })).toBeVisible();
   await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toHaveCount(0);
   await expect(page.locator('.agent-composer-status')).toHaveCount(0);
@@ -1309,10 +1319,12 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.getByLabel('Agent 活动提醒')).toHaveCount(0);
   await expect.poll(() => Boolean(agentStream)).toBe(true);
   // A stale readiness endpoint can remain idle while the formal user turn is
-  // still unfinished. Cursor reconciliation must stay active without using
-  // Pause/Resume as the mechanism that makes a child Task visible.
+  // still unfinished. All visible controls must hold the same synchronizing
+  // state until the native terminal event reaches the local projection.
   readinessReportsIdle = true;
-  await expect(page.getByRole('button', { name: '发送消息' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '正在同步会话结束' })).toBeDisabled();
+  await expect(page.locator('.agent-workspace-conversation-running')).toHaveCount(1);
+  await expect(activeProcess).toHaveClass(/active/);
   // A socket can look live while an intermediary has silently stopped
   // forwarding frames. The running-turn cursor recovery must reveal the
   // formal event without reconnecting or switching conversations.

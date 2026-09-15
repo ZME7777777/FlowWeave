@@ -189,6 +189,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-431 | 主会话／子智能体事件连续补读 | DONE | 原生 readiness 短暂报 idle 时，只要正式用户轮尚未出现终态，持续用正式 OpenHands cursor 补读；迟到的 TaskAction 无需暂停或继续即可进入主会话投影。 |
 | FR-456 | 会话事件投影、完成同步与历史滚动锚点可靠性 | DONE | 运行中的会话固定增量追赶当前 OpenHands 事件；`next_cursor` 缺失或 WebSocket 假活时回读有界最新页，不再要求暂停／继续触发补齐。完成、断流重连和暂停／继续只协调当前会话事件、readiness 与确认状态，不再全量刷新 Runtime、列表或上下文。历史页推迟到本轮终态后加载，历史 prepend 以显式视口事务和关闭浏览器 scroll anchoring 保持阅读位置。 |
 | FR-457 | OpenHands 空响应自恢复与运行状态一致性 | DONE | 空 Agent Message 与 `source=environment` 的原生 corrective nudge 不再被识别为最终回复；纠正事件以“模型返回空响应，OpenHands 正在自动重试”呈现，左侧会话状态与底部按钮继续统一服从原生 execution status。 |
+| FR-458 | 空响应恢复提示瞬时化与会话状态统一 | DONE | corrective nudge 只在它是当前最新事件且原生会话仍运行时复用实时状态行显示；后续事件或终态立即隐藏，历史工作过程不保留该提示。工作台所有运行控件复用同一原生状态投影。 |
 | FR-432 | 最终回复的临时 delta 呈现回退 | DONE | 停止将 WebSocket `delta` 累积或渲染为最终回复；最终 Markdown 只在 OpenHands 正式 assistant／完成事件持久化并投影后一次显示，过程状态与正式工具事件保持可见。 |
 | FR-433 | OpenHands 错误终态工作台收束 | DONE | 将 OpenHands 原生 `ready=true, execution_status=error/stuck` 识别为可安全结束的终态，停止错误卡后的运行标记、停止按钮与“正在处理”，不以浏览器事件自行伪造状态。 |
 | FR-434 | 错误终态与运行中追加投递呈现修正 | DONE | 空闲或原生错误终态的新消息仍先持久化浏览器投递意图，但不得短暂显示为消息队列；运行中直接追加在收到正式 cursor 前不伪装为已发送气泡或队列，流先到达同一正式 OpenHands 用户事件时立即确认收起，歧义／拒绝项保持可见、可恢复。 |
@@ -5964,6 +5965,25 @@ production build、定向 Agent 工作台 Playwright、`git diff --check`、Alem
 问答均复用该分类，因此原生 `execution_status=running` 时左侧运行标记与底部停止按钮不会再因纠正事件分叉。未修改
 OpenHands、事件树、Runtime、API、数据库或自动恢复行为。
 
+### FR-458 空响应恢复提示瞬时化与会话状态统一 — DONE
+
+依赖：FR-457。
+
+目标：OpenHands 的空响应 corrective nudge 继续保留在原生事件树中，但 FlowWeave 不得把它渲染成持久工作过程。
+仅当该 nudge 是当前最新正式事件且 OpenHands 精确 execution status 仍为 running 时，复用“正在思考”所在的实时
+状态行显示“模型返回空响应，OpenHands 正在自动重试”；任一后续事件到达、暂停、同步终态或本轮结束后立即恢复
+普通状态且历史会话不显示该提示。左侧运行标记、会话 Surface、Composer 和动作按钮复用同一运行状态投影，避免
+瞬态或终态窗口再次出现控件分叉。不修改 OpenHands、原生事件、Runtime、API 或数据库。
+
+验收：Web TypeScript typecheck、全量 ESLint、production build、定向 Agent 工作台 Playwright、`git diff --check`、
+Alembic head 与任务状态唯一性；本切片使用独立 Git commit。
+
+完成：corrective nudge 不再生成任何会话 `Item` 或历史工作过程，只在选中会话的统一状态为 running 且它是
+当前投影最后一个正式事件时覆盖动态状态行；后续 Thought／Tool／回复事件、暂停、终态同步或会话结束都会立即
+撤销覆盖。选中会话的左侧标记、Surface、Composer busy 状态、主动作和模型配置禁用统一复用
+`conversationActivity`；readiness 已终态但正式终态事件尚未补读时显式显示同步状态，不会提前开放发送或让控件
+互相矛盾。OpenHands 原生事件树保持不变，未新增任何 FlowWeave 持久状态。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -5979,6 +5999,7 @@ OpenHands、事件树、Runtime、API、数据库或自动恢复行为。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-15 | FR-458 | Web TypeScript typecheck、全量 ESLint、production build、定向 Agent 工作台 Playwright、Alembic head、`git diff --check` 与任务状态唯一性 | PASS（静态／构建／关键浏览器断言）：corrective nudge 是当前最新事件且原生状态为 running 时，仅动态状态行显示自动重试；后续正式 Thought 到达后提示立即消失而运行标记／停止按钮保持，ERROR 终态后提示仍不出现。readiness 先于终态事件变 idle 时，左侧、Surface 和 Composer 统一保持“正在同步会话结束”。定向长产品流已通过本切片全部新增断言，随后在无关的既有“终端”入口按 button 定位处超时，故未记为完整用例通过。唯一 Alembic head 为 `0116_agent_manual_order`；未修改 API、数据库、Runtime Provider、OpenHands 或远端环境。 |
 | 2026-09-15 | FR-457 | 固定 OpenHands 1.47.0 `response_dispatch` 源码取证；Web TypeScript typecheck、全量 ESLint、production build、定向 Agent 工作台 Playwright、Alembic head、`git diff --check` 与任务状态唯一性 | PASS（静态／构建／关键浏览器断言）：真实空 Agent Message → `source=environment` corrective nudge → `execution_status=running` 序列下，英文框架消息不再作为回复显示，页面呈现中文自动重试状态，底部“暂停当前 Agent”和左侧运行标记同时保持。定向长产品流已通过本切片新增断言，随后在无关的既有 `root-owned.ts` 文件变更展示断言失败，故未记为完整用例通过。唯一 Alembic head 为 `0116_agent_manual_order`；未修改 API、数据库、Runtime Provider、OpenHands 或远端环境。 |
 | 2026-09-15 | FR-456 | Web TypeScript typecheck、受影响 Web ESLint、production build、定向 Agent 工作台 Playwright、`git diff --check` 与任务状态唯一性 | PASS（静态／构建／关键浏览器断言）：运行中的历史分页不会与首个输出竞争；在 WebSocket 假活且 `next_cursor` 暂缺时，当前会话的有界正式事件回读无需暂停／继续即可投影新的子 Agent TaskAction；完成帧、断流重连及暂停／继续仅协调当前会话事件/readiness/确认，不再全量刷新 Runtime、列表或上下文。定向产品流已执行上述新增断言，并随后在既有终端入口仍按 `button` 定位、当前 UI 实为菜单项处超时，未记为完整用例通过。唯一 Alembic head 未涉及；未修改 API、数据库、Runtime Provider、OpenHands 或远端环境。 |
 | 2026-09-15 | FR-455 | Web TypeScript typecheck、受影响 Web ESLint、production build、定向产品流 Playwright、`git diff --check` 与任务状态唯一性 | PASS（静态／构建／关键浏览器断言）：`.properties` 文件在 Agent 工作区中触发既有受限文本预览请求，未回退至“此文件不提供浏览器预览”提示；TypeScript、lint、production build 与差异检查通过。定向产品流已越过新增断言，随后因既有终端入口仍按 `button` 查找而当前 UI 为菜单项超时，未记为完整用例通过。未修改 API、数据库、Runtime Provider 或 OpenHands。 |

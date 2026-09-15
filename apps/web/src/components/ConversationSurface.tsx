@@ -8,7 +8,7 @@ import { workspaceFileChanges, workspaceRelativePath, type WorkspaceFileChange }
 import { isOpenHandsAgentReply, isOpenHandsEmptyResponseRecovery } from './conversationEvents';
 import './conversation-surface.css';
 
-type ItemKind = 'user' | 'assistant' | 'thought' | 'tool' | 'error' | 'condensation' | 'recovery';
+type ItemKind = 'user' | 'assistant' | 'thought' | 'tool' | 'error' | 'condensation';
 
 interface Item {
   event: OpenHandsConversationEvent;
@@ -336,12 +336,7 @@ function itemsFor(event: OpenHandsConversationEvent): Item[] {
       : content;
     if (isUser) return [{ event, kind: 'user', title: '', content: displayContent }];
     if (isOpenHandsAgentReply(event)) return [{ event, kind: 'assistant', title: '', content }];
-    if (isOpenHandsEmptyResponseRecovery(event)) return [{
-      event,
-      kind: 'recovery',
-      title: '正在自动恢复',
-      content: '模型返回空响应，OpenHands 正在自动重试。',
-    }];
+    if (isOpenHandsEmptyResponseRecovery(event)) return [];
     // OpenHands persists an empty Agent Message immediately before its
     // environment corrective nudge. It is neither a reply nor a terminal
     // event. Other framework messages remain visible as process information,
@@ -583,10 +578,6 @@ function activityPresentation(entry: ActivityEntry, active: boolean, workspaceRo
       thought: item.content.slice(0, 2_000) || undefined,
     };
   }
-  if (item.kind === 'recovery') return {
-    title: item.content,
-    status: active ? '自动恢复中' : '已自动恢复',
-  };
   if (item.kind === 'error') return { title: '执行遇到问题', status: '失败' };
   const details = item.event.payload.details ?? {};
   const result = entry.results.at(-1);
@@ -968,7 +959,6 @@ function activeActivityLabel(entries: ActivityEntry[], requestSubmitting: boolea
     pendingTool.event.payload.details,
   );
   const latest = entries.at(-1)?.item;
-  if (latest?.kind === 'recovery') return '模型返回空响应，OpenHands 正在自动重试';
   if (latest?.kind === 'condensation' && latest.event.event_type === 'CONDENSATION_REQUESTED') return '正在压缩上下文';
   return '正在思考';
 }
@@ -992,19 +982,20 @@ function staleActivityLabel(
   return fallback;
 }
 
-function CurrentTurnStatus({ items, liveText, requestSubmitting, monitoring, connectionState = 'connected' }: {
+function CurrentTurnStatus({ items, liveText, requestSubmitting, statusOverride, monitoring, connectionState = 'connected' }: {
   items: Item[];
   liveText: string;
   requestSubmitting: boolean;
+  statusOverride?: string;
   monitoring?: AgentActivitySummary;
   connectionState?: ConversationConnectionState;
 }) {
   const activityLabel = liveText
     ? '正在生成回复'
     : activeActivityLabel(groupedActivities(items), requestSubmitting);
-  const label = liveText || requestSubmitting
+  const label = statusOverride ?? (liveText || requestSubmitting
     ? activityLabel
-    : staleActivityLabel(activityLabel, monitoring, connectionState);
+    : staleActivityLabel(activityLabel, monitoring, connectionState));
   return <div className="conversation-turn-status" role="status" aria-label={label}>
     <span>{label}</span>
     <span className="conversation-turn-status-dots" aria-hidden="true"><i/><i/><i/></span>
@@ -1029,7 +1020,7 @@ function ActivityEntryRow({ entry, active, paused = false, parentFailed = false,
   workspaceRoot?: string | null;
 }) {
   const item = entry.action ?? entry.item;
-  const Icon = item.kind === 'error' ? CircleAlert : item.kind === 'thought' || item.kind === 'condensation' || item.kind === 'recovery' ? Sparkles : Wrench;
+  const Icon = item.kind === 'error' ? CircleAlert : item.kind === 'thought' || item.kind === 'condensation' ? Sparkles : Wrench;
   const eventName = String(item.event.payload.event_name ?? '');
   const avatarSlot = eventName === 'TaskAction' || eventName === 'TaskObservation'
     ? subagentAvatarSlotForEvent(item.event, avatarSlots)
@@ -1351,12 +1342,14 @@ function ConversationFailure({ item, taskControl = [] }: { item: Item; taskContr
   </article>;
 }
 
-export function ConversationSurface({ events, liveText, isGenerating, isPaused = false, historyPending = false, historyRevision = 0, requestStartedAt, requestSubmitting = false, rewritePending = false, onRewrite, onFork, onOpenAttachment, onOpenWorkspaceReference, onPreviewCandidateFile, onReviewChanges, onOpenWorkspaceFile, workspaceRoot, annotations = [], onCreateAnnotation, onLocateAnnotation, taskControl = [], monitoring, connectionState }: {
+export function ConversationSurface({ events, liveText, isGenerating, isPaused = false, emptyResponseRecoveryActive = false, historyPending = false, historyRevision = 0, requestStartedAt, requestSubmitting = false, rewritePending = false, onRewrite, onFork, onOpenAttachment, onOpenWorkspaceReference, onPreviewCandidateFile, onReviewChanges, onOpenWorkspaceFile, workspaceRoot, annotations = [], onCreateAnnotation, onLocateAnnotation, taskControl = [], monitoring, connectionState }: {
   events: OpenHandsConversationEvent[];
   liveText: string;
   isGenerating: boolean;
   /** Formal native conversation pause state, used only to label unfinished Task actions. */
   isPaused?: boolean;
+  /** Transient UI only; the persisted corrective event never enters history. */
+  emptyResponseRecoveryActive?: boolean;
   /** Older native pages are being inserted above the current latest window. */
   historyPending?: boolean;
   /** Changes only after a historical page is prepended to the native event projection. */
@@ -1655,7 +1648,13 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused =
         const isCurrentPaused = index === turns.length - 1 && isPaused;
         const failures = turn.activity.filter(item => item.kind === 'error');
         const parentFailed = failures.length > 0;
-        const startedAt = eventTime(turn.user) ?? (isCurrent ? requestStartedAt : undefined);
+        // A submitted turn can render before its formal OpenHands user event
+        // replaces the prior active branch. During that bounded hand-off the
+        // browser submission time is the only truthful current-turn anchor;
+        // never briefly inherit a much older user event's timestamp.
+        const startedAt = isCurrent && requestStartedAt !== undefined
+          ? requestStartedAt
+          : eventTime(turn.user);
         const finishedAt = eventTime(turn.assistant ?? failures.at(-1));
         const processBlocks = turnProcessBlocks(
           turn.activity.filter(item => item.kind !== 'error'),
@@ -1688,14 +1687,14 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused =
                 workspaceRoot={workspaceRoot}
               />)}
           {isCurrent && !turn.assistant && !failures.length && (
-            <CurrentTurnStatus items={turn.activity} liveText={liveText} requestSubmitting={requestSubmitting} monitoring={monitoring} connectionState={connectionState}/>
+            <CurrentTurnStatus items={turn.activity} liveText={liveText} requestSubmitting={requestSubmitting} statusOverride={emptyResponseRecoveryActive ? '模型返回空响应，OpenHands 正在自动重试' : undefined} monitoring={monitoring} connectionState={connectionState}/>
           )}
           {processBlocks.length > 0 && turn.assistant && <div className="conversation-process-divider" role="separator" aria-label="工作过程结束"/>}
           {turn.assistant && <AgentReply event={turn.assistant.event} content={turn.assistant.content} changes={fileChanges} onFork={!isGenerating ? () => onFork?.(turn.assistant!.event.id) : undefined} onPreviewCandidateFile={onPreviewCandidateFile} onReviewChanges={onReviewChanges} onOpenWorkspaceFile={onOpenWorkspaceFile} workspaceRoot={workspaceRoot} annotations={annotations} onLocateAnnotation={onLocateAnnotation}/>}
           {failures.map(item => <ConversationFailure key={item.event.id} item={item} taskControl={taskControl}/>)}
         </section>;
       })}
-      {turns.length === 0 && (liveText || isGenerating) && <><ActivityGroup items={[]} active startedAt={requestStartedAt} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/><CurrentTurnStatus items={[]} liveText={liveText} requestSubmitting={requestSubmitting} monitoring={monitoring} connectionState={connectionState}/></>}
+      {turns.length === 0 && (liveText || isGenerating) && <><ActivityGroup items={[]} active startedAt={requestStartedAt} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/><CurrentTurnStatus items={[]} liveText={liveText} requestSubmitting={requestSubmitting} statusOverride={emptyResponseRecoveryActive ? '模型返回空响应，OpenHands 正在自动重试' : undefined} monitoring={monitoring} connectionState={connectionState}/></>}
       </div>
     </section>
     {viewingReference && <ConversationReferencePreview reference={viewingReference} onClose={() => setViewingReference(undefined)} onLocate={locateReferenceSource}/>}
