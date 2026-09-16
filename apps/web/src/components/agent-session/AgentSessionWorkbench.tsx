@@ -1,7 +1,7 @@
 import { FitAddon } from '@xterm/addon-fit';
 import { Terminal as XTerm } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
-import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { type InfiniteData, useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import hljs from 'highlight.js/lib/common';
 import { ArrowLeft, Bot, Boxes, Check, ChevronDown, ChevronRight, CircleDot, Copy, CornerDownRight, Download, Ellipsis, FileCode2, FileText, Folder, FolderOpen, FolderPlus, GitBranch, GripVertical, ImageIcon, Layers3, Link2, LoaderCircle, Maximize2, Minimize2, MonitorCog, PanelRightOpen, Play, Plus, Quote, Search, Send, ShieldAlert, Square, Trash2, X } from 'lucide-react';
 import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type ComponentPropsWithoutRef, type CSSProperties, type DragEvent as ReactDragEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type WheelEvent as ReactWheelEvent } from 'react';
@@ -20,7 +20,7 @@ import { selectCapabilityVersion, selectCapabilityVersions } from '../../utils/c
 import { SubagentAvatar } from '../SubagentAvatar';
 import { subagentAvatarSlots, type SubagentAvatarSlot } from '../../utils/subagentAvatar';
 import { workspaceFileChanges, workspaceRelativePath, type WorkspaceFileChange } from './fileChanges';
-import type { AgentAttachment, AgentConversation, AgentConversationAnnotation, AgentConversationReference, AgentConversationSearch, AgentPendingConfirmationAction, AgentSessionCapability, AgentSessionMcpReadiness, AgentSessionWorkDirectory, AgentSessionWorkDirectoryList, AgentSessionWorkspaceDetails, AgentWorkspaceReference, CapabilityAsset, CapabilityCollection, ModelProvider, OpenHandsConversationEvent, OpenHandsConversationEventBatch, ProviderModel, RuntimeTaskControlSnapshot, RuntimeTaskUsageSnapshot, WorkspaceGitCommitDetails, WorkspaceGitFileDiff } from '../../types';
+import type { AgentAttachment, AgentConversation, AgentConversationAnnotation, AgentConversationPage, AgentConversationReference, AgentConversationSearch, AgentPendingConfirmationAction, AgentSessionCapability, AgentSessionMcpReadiness, AgentSessionWorkDirectory, AgentSessionWorkDirectoryList, AgentSessionWorkspaceDetails, AgentWorkspaceReference, CapabilityAsset, CapabilityCollection, ModelProvider, OpenHandsConversationEvent, OpenHandsConversationEventBatch, ProviderModel, RuntimeTaskControlSnapshot, RuntimeTaskUsageSnapshot, WorkspaceGitCommitDetails, WorkspaceGitFileDiff } from '../../types';
 import '../../pages/agent-workbench.css';
 import '../../pages/agent-workbench-layout.css';
 
@@ -4542,6 +4542,34 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   ), onSuccess: (value, message) => {
     if (!workspace) return;
     const conversation = value.conversation;
+    // Keep the freshly created binding in both projections before changing the
+    // URL. Without this handoff, clearing the draft makes the workbench render
+    // its empty state for one frame while the route-specific GET is still in
+    // flight, which reads as a page flash immediately after the first send.
+    queryClient.setQueryData<AgentConversation>(
+      sessionQueryKey(host, 'conversation', workspace.id, conversation.id),
+      conversation,
+    );
+    queryClient.setQueryData<InfiniteData<AgentConversationPage>>(
+      sessionQueryKey(host, 'conversations', workspace.id),
+      current => {
+        if (!current?.pages.length) return current;
+        const [firstPage, ...remainingPages] = current.pages;
+        const exists = current.pages.some(page => page.items.some(item => item.id === conversation.id));
+        return {
+          ...current,
+          pages: [
+            {
+              ...firstPage,
+              items: exists
+                ? firstPage.items.map(item => item.id === conversation.id ? conversation : item)
+                : [conversation, ...firstPage.items],
+            },
+            ...remainingPages,
+          ],
+        };
+      },
+    );
     setWorkspaceScopeMigration(message.scope);
     setPendingCreatedId(conversation.id);
     bootstrapTransitionScope.current = conversation.id;

@@ -193,6 +193,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-459 | 原生错误事件的终态／可恢复呈现分流 | DONE | 仅 OpenHands ConversationErrorEvent 呈现为“本轮未能完成”的会话级终态卡片；AgentErrorEvent 与未知历史 ERROR 保持原生审计事实，按其正式父事件留在工作过程中呈现为可恢复异常，后续正式回复会明确标注 Agent 已继续完成，避免暂停／继续后的正常回复被历史错误卡片误覆盖。 |
 | FR-460 | 会话发送框草稿持久化与工作区隔离 | DONE | 新会话草稿按宿主、工作区及工作目录隔离；已创建会话按工作区与会话隔离。文本、服务端已授权附件元数据、会话／工作区引用和协作注释在切换、Tab 切换及刷新后静默恢复；账号切换会清除这些本地记录。 |
 | FR-462 | 过程解释文本会话引用 | DONE | 已持久化的 `ThinkAction` 与 Tool Action 可见 `thought` 可作为 FlowWeave 会话引用／协作锚点；工具参数、命令、Observation 与工具输出继续禁止作为隐式引用上下文。 |
+| FR-464 | 新会话首条消息页面闪烁 | DONE | 创建响应返回后先写入本地会话与列表投影，再切换稳定 URL，避免草稿清除与路由会话水合之间短暂渲染空状态。 |
 | FR-432 | 最终回复的临时 delta 呈现回退 | DONE | 停止将 WebSocket `delta` 累积或渲染为最终回复；最终 Markdown 只在 OpenHands 正式 assistant／完成事件持久化并投影后一次显示，过程状态与正式工具事件保持可见。 |
 | FR-433 | OpenHands 错误终态工作台收束 | DONE | 将 OpenHands 原生 `ready=true, execution_status=error/stuck` 识别为可安全结束的终态，停止错误卡后的运行标记、停止按钮与“正在处理”，不以浏览器事件自行伪造状态。 |
 | FR-434 | 错误终态与运行中追加投递呈现修正 | DONE | 空闲或原生错误终态的新消息仍先持久化浏览器投递意图，但不得短暂显示为消息队列；运行中直接追加在收到正式 cursor 前不伪装为已发送气泡或队列，流先到达同一正式 OpenHands 用户事件时立即确认收起，歧义／拒绝项保持可见、可恢复。 |
@@ -6053,6 +6054,18 @@ FlowRun 置为等待人工处理。已完成的 Runtime 输出固化错误（含
 伪记为通过。对生产记录的只读 Runtime 下载核验确认其一份 Markdown 输出为 26,608,720 B，超过 25 MiB
 上限 394,320 B；另一份为 2,653,476 B。未修改 OpenHands、数据库迁移、Runtime Provider 或远端持久数据。
 
+### FR-464 新会话首条消息页面闪烁 — DONE
+
+依赖：FR-460。
+
+目标：新会话发送首条消息后，浏览器在从草稿 `/agent` 切换至稳定会话 URL 时应连续保留会话界面，不能在
+创建响应和路由专属读取之间短暂退回空状态。
+
+完成：创建成功回调在清除草稿与导航前，将服务端返回的最小 Conversation 投影同步写入 route-specific
+query cache 及已加载的会话列表首页。稳定 URL 的后续读取继续作为权威刷新，但不会再让工作台在该读取完成前
+重挂载为“新建会话开始协作”。新增浏览器回归刻意阻塞路由详情读取，确认 URL 已变更时标题持续可见且空状态
+不存在。未修改 API、数据库、OpenHands、Runtime Provider 或部署配置。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -6068,6 +6081,7 @@ FlowRun 置为等待人工处理。已完成的 Runtime 输出固化错误（含
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-16 | FR-464 | Agent 会话定向 Playwright（1 passed）；Web TypeScript typecheck、ESLint、production build；`git diff --check` 与任务状态唯一性 | PASS：创建 API 的最小 Conversation 投影会在 URL 导航前同步进入详情缓存和已加载列表。浏览器回归刻意阻塞新 URL 的详情请求，仍确认新会话标题连续可见且不会渲染空状态；详情请求释放后继续走常规权威读取。Web typecheck、全量 ESLint 与 production build 通过；构建仅提示既有超大 chunk。未修改 API、数据库、OpenHands、Runtime Provider 或部署配置。 |
 | 2026-09-16 | FR-463 | 生产记录只读 Runtime Artifact 下载核验；逐步运行输出投影无 Docker 直接探针；受影响 Python Ruff format/check、`py_compile`；Web TypeScript typecheck 与 ESLint；`git diff --check`、任务状态唯一性；数据库定向 pytest 尝试 | PASS（生产取证／直接／静态）：正式 Runtime 下载确认一份声明 Markdown 输出为 26,608,720 B，超过 25 MiB 上限 394,320 B，完成事件与候选输出解析均未丢失。逐步运行耗尽的生命周期任务现在按当前阶段收敛为可见阻塞态；已完成的输出固化错误不再无界重试。无 Docker 直接探针确认 `ARTIFACT_FILE_TOO_LARGE` 将手工 Attempt 由 `EXECUTING/RUNNING` 收敛为 `END_BLOCKED/FAILED`，并写入审计；成功验收仍复用端口映射创建下游 `WAITING_INPUT` 工作项，不自动启动下游。Ruff、`py_compile`、Web typecheck/lint、whitespace 和状态唯一性通过。数据库定向 pytest 因本机 Docker Unix socket 缺失，在 Testcontainers fixture 初始化前受阻，未记为通过。未修改 OpenHands、数据库迁移、Runtime Provider 或远端持久数据。 |
 | 2026-09-16 | FR-461 | 固定 OpenHands 1.47 事件搜索契约取证；OpenHands 适配器定向 pytest（2 passed）；受影响 Python `py_compile`、Ruff format/check；Web TypeScript typecheck、ESLint、production build；Alembic 唯一 head、`git diff --check` 与任务状态唯一性 | PASS（静态／定向／构建）：OpenHands 原生 `events/search?body` 逐页检索仅投影用户/助手 MessageEvent，测试覆盖 body、分页和非消息事件过滤。后台任务只持久化查询、状态及正式事件定位，结果展示时重新读取 OpenHands，不创建平台消息副本。搜索弹窗关闭后任务继续运行；顶栏按钮显示运行/完成状态，工作区标题行的 `+` 创建会话入口保持不变。Web typecheck、全量 ESLint 和 production build 通过；Python 编译、Ruff 与唯一 Alembic head `0117_agent_conversation_search` 通过。 |
 | 2026-09-16 | FR-462 | Python `py_compile`、Ruff format/check、无 Docker 的过程引用直接探针；Web TypeScript typecheck、受影响 Web ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS（静态／构建／直接探针）：已持久化 `THOUGHT` 与 `TOOL_CALL.payload.thought` 可按 event ID 解析为引用内容；`TOOL_RESULT` 即使含文本也被拒绝。过程解释文本获得选区锚点；命令、工具详情与结果不获得锚点。Web 构建仅报告既有大 chunk 提示。定向 pytest 已启动但 Testcontainers PostgreSQL 依赖本机 Docker socket，不可用时在 fixture setup 阻断，未将其记为通过。未修改 OpenHands、数据库、迁移、Runtime Provider 或远端环境。 |
