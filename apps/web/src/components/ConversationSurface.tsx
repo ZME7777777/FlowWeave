@@ -1312,7 +1312,7 @@ function presentConversationFailure(code: string, detail: string): FailurePresen
   if (hasCode('NoCondensationAvailableException') && contains('summarization llm call failed', 'authenticationerror', 'invalid api key')) {
     return {
       title: '会话上下文压缩失败',
-      content: '失败发生在会话的历史摘要器，而不是当前模型调用。重新发送消息后，系统会使用当前模型配置创建安全续支并继续原任务。',
+      content: '失败发生在会话的历史摘要器，而不是当前模型调用。请检查该会话冻结的模型配置与摘要器凭据；系统不会用新会话替代或丢弃原有上下文。',
     };
   }
   if (hasCode('AuthenticationError', 'UnauthorizedError', 'PermissionDeniedError', 'InvalidAPIKeyError') || contains('invalid api key', 'authentication', 'unauthorized', 'forbidden')) {
