@@ -1507,6 +1507,12 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused =
     followLatest.current = false;
     setIsAtLatest(false);
   }, []);
+  const locateAnnotation = useCallback((annotation: AgentConversationAnnotation) => {
+    // A reference is an explicit reading navigation. Keep a running
+    // conversation from immediately reclaiming the viewport for new output.
+    stopFollowingLatest();
+    onLocateAnnotation?.(annotation);
+  }, [onLocateAnnotation, stopFollowingLatest]);
   const scrollToUserMessage = useCallback((eventId: string) => {
     const element = surface.current;
     const target = element?.querySelectorAll<HTMLElement>('[data-user-event-id]');
@@ -1638,6 +1644,7 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused =
   }, [onCreateAnnotation]);
   const locateReferenceSource = useCallback(() => {
     if (!viewingReference || !surface.current) return;
+    stopFollowingLatest();
     const source = Array.from(surface.current.querySelectorAll<HTMLElement>('[data-conversation-event-id]'))
       .find(item => item.dataset.conversationEventId === viewingReference.event_id);
     setViewingReference(undefined);
@@ -1656,7 +1663,7 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused =
       if (current?.rangeCount && current.getRangeAt(0).compareBoundaryPoints(Range.START_TO_START, range) === 0
         && current.getRangeAt(0).compareBoundaryPoints(Range.END_TO_END, range) === 0) current.removeAllRanges();
     }, 3_800);
-  }, [viewingReference]);
+  }, [stopFollowingLatest, viewingReference]);
   const lastUserEventId = useMemo(() => [...turns].reverse().find(turn => turn.user)?.user?.event.id, [turns]);
   if (!turns.length && !liveText && !isGenerating) return <div className="conversation-surface-empty"><b>会话已就绪</b><span>发送第一条消息，开始与 Agent 协作。</span></div>;
   const showJumpToLatest = !isAtLatest && Boolean(turns.length || liveText || isGenerating);
@@ -1714,7 +1721,7 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused =
         return <section className="conversation-turn" key={turn.id} data-conversation-turn={turn.id}>
           {turn.user && <div className="conversation-user-message">{editingEventId === turn.user.event.id
             ? <form className="conversation-message-edit" onSubmit={event => { event.preventDefault(); if (editingContent.trim()) onRewrite?.(turn.user!.event.id, editingContent.trim()); }}><textarea aria-label="编辑已发送消息" value={editingContent} disabled={rewritePending} onChange={event => setEditingContent(event.target.value)}/><footer><button type="button" onClick={() => setEditingEventId(undefined)}>取消</button><button type="submit" disabled={!editingContent.trim() || rewritePending}>重新思考</button></footer></form>
-            : <article data-user-event-id={turn.user.event.id} data-conversation-event-id={turn.user.event.id} className="conversation-message user">{turn.user.content && <div className="conversation-message-content"><MessageMarkdown>{turn.user.content}</MessageMarkdown></div>}<MessageAttachments attachments={eventAttachments(turn.user.event)} references={turn.user.event.payload.conversation_references} workspaceReferences={turn.user.event.payload.workspace_references} annotations={eventAnnotations(turn.user.event)} onOpen={onOpenAttachment} onOpenReference={setViewingReference} onOpenWorkspaceReference={onOpenWorkspaceReference} onOpenAnnotation={onLocateAnnotation}/><footer className="conversation-message-meta user">{userDeliveryStatus && <small className="conversation-message-delivery-status" role="status">{userDeliveryStatus}</small>}{userTimestamp && <time dateTime={typeof turn.user.event.payload.timestamp === 'string' ? turn.user.event.payload.timestamp : undefined}>{userTimestamp}</time>}<div className="conversation-message-actions"><button type="button" className="conversation-message-copy" aria-label={copiedEventId === turn.user.event.id ? '消息已复制' : '复制消息'} title={copiedEventId === turn.user.event.id ? '已复制' : '复制消息'} onClick={() => copyUserMessage(turn.user!.event.id, turn.user!.content)}>{copiedEventId === turn.user.event.id ? <Check size={13}/> : <Copy size={13}/>}</button>{lastUserEventId === turn.user.event.id && <button type="button" className="conversation-message-rewrite" aria-label="编辑并重新思考" title="编辑并重新思考" onClick={() => { setEditingEventId(turn.user!.event.id); setEditingContent(turn.user!.content); }}><Pencil size={13}/></button>}</div></footer></article>}</div>}
+            : <article data-user-event-id={turn.user.event.id} data-conversation-event-id={turn.user.event.id} className="conversation-message user">{turn.user.content && <div className="conversation-message-content"><MessageMarkdown>{turn.user.content}</MessageMarkdown></div>}<MessageAttachments attachments={eventAttachments(turn.user.event)} references={turn.user.event.payload.conversation_references} workspaceReferences={turn.user.event.payload.workspace_references} annotations={eventAnnotations(turn.user.event)} onOpen={onOpenAttachment} onOpenReference={setViewingReference} onOpenWorkspaceReference={onOpenWorkspaceReference} onOpenAnnotation={locateAnnotation}/><footer className="conversation-message-meta user">{userDeliveryStatus && <small className="conversation-message-delivery-status" role="status">{userDeliveryStatus}</small>}{userTimestamp && <time dateTime={typeof turn.user.event.payload.timestamp === 'string' ? turn.user.event.payload.timestamp : undefined}>{userTimestamp}</time>}<div className="conversation-message-actions"><button type="button" className="conversation-message-copy" aria-label={copiedEventId === turn.user.event.id ? '消息已复制' : '复制消息'} title={copiedEventId === turn.user.event.id ? '已复制' : '复制消息'} onClick={() => copyUserMessage(turn.user!.event.id, turn.user!.content)}>{copiedEventId === turn.user.event.id ? <Check size={13}/> : <Copy size={13}/>}</button>{lastUserEventId === turn.user.event.id && <button type="button" className="conversation-message-rewrite" aria-label="编辑并重新思考" title="编辑并重新思考" onClick={() => { setEditingEventId(turn.user!.event.id); setEditingContent(turn.user!.content); }}><Pencil size={13}/></button>}</div></footer></article>}</div>}
           {processBlocks.map(block => block.kind === 'condensation'
             ? <CondensationNotices key={block.id} items={block.items}/>
             : <ActivityGroup
@@ -1734,7 +1741,7 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused =
             <CurrentTurnStatus items={turn.activity} liveText={liveText} requestSubmitting={requestSubmitting} statusOverride={emptyResponseRecoveryActive ? '模型返回空响应，OpenHands 正在自动重试' : undefined} monitoring={monitoring} connectionState={connectionState}/>
           )}
           {processBlocks.length > 0 && turn.assistant && <div className="conversation-process-divider" role="separator" aria-label="工作过程结束"/>}
-          {turn.assistant && <AgentReply event={turn.assistant.event} content={turn.assistant.content} changes={fileChanges} onFork={!isGenerating ? () => onFork?.(turn.assistant!.event.id) : undefined} onPreviewCandidateFile={onPreviewCandidateFile} onReviewChanges={onReviewChanges} onOpenWorkspaceFile={onOpenWorkspaceFile} workspaceRoot={workspaceRoot} annotations={annotations} onLocateAnnotation={onLocateAnnotation}/>}
+          {turn.assistant && <AgentReply event={turn.assistant.event} content={turn.assistant.content} changes={fileChanges} onFork={!isGenerating ? () => onFork?.(turn.assistant!.event.id) : undefined} onPreviewCandidateFile={onPreviewCandidateFile} onReviewChanges={onReviewChanges} onOpenWorkspaceFile={onOpenWorkspaceFile} workspaceRoot={workspaceRoot} annotations={annotations} onLocateAnnotation={locateAnnotation}/>}
           {failures.map(item => <ConversationFailure key={item.event.id} item={item} taskControl={taskControl}/>)}
         </section>;
       })}
