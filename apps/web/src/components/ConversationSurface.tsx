@@ -1532,12 +1532,18 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused =
       const targetRect = target.getBoundingClientRect();
       const top = (sourceRect?.top ?? targetRect.top) - element.getBoundingClientRect().top + element.scrollTop - 28;
       element.scrollTo({ top: Math.max(0, top), behavior: 'auto' });
+      target.classList.remove('conversation-reference-source-highlight');
+      // Restart the same transient source-card feedback used by independent
+      // Agent sessions, even when the user locates this annotation repeatedly.
+      void target.offsetWidth;
+      target.classList.add('conversation-reference-source-highlight');
       if (!range) return;
       const selection = window.getSelection();
       selection?.removeAllRanges();
       selection?.addRange(range);
       window.setTimeout(() => {
         if (window.getSelection()?.toString() === quote) window.getSelection()?.removeAllRanges();
+        target.classList.remove('conversation-reference-source-highlight');
       }, 3_800);
     });
     return true;
@@ -1696,6 +1702,9 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused =
     const surfaceRect = surface.current.getBoundingClientRect();
     const top = (sourceRect?.top ?? source.getBoundingClientRect().top) - surfaceRect.top + surface.current.scrollTop - 28;
     surface.current.scrollTo({ top: Math.max(0, top), behavior: 'auto' });
+    source.classList.remove('conversation-reference-source-highlight');
+    void source.offsetWidth;
+    source.classList.add('conversation-reference-source-highlight');
     if (!range) return;
     const selection = window.getSelection();
     selection?.removeAllRanges();
@@ -1704,6 +1713,7 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused =
       const current = window.getSelection();
       if (current?.rangeCount && current.getRangeAt(0).compareBoundaryPoints(Range.START_TO_START, range) === 0
         && current.getRangeAt(0).compareBoundaryPoints(Range.END_TO_END, range) === 0) current.removeAllRanges();
+      source.classList.remove('conversation-reference-source-highlight');
     }, 3_800);
   }, [stopFollowingLatest, viewingReference]);
   const lastUserEventId = useMemo(() => [...turns].reverse().find(turn => turn.user)?.user?.event.id, [turns]);
