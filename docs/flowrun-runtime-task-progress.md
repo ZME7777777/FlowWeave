@@ -6110,6 +6110,16 @@ OpenHands 事件树、数据库迁移、Runtime Provider 或远端部署。
 既有连续／逐步记录详情均继续以实际到达的后继节点作为当前焦点，且已完成节点的会话、输入、门禁和产物仍可
 回看。
 
+### FR-469 Agent 会话附件与引用紧凑标签布局 — DONE
+
+依赖：FR-460、FR-462。
+
+目标：已发送 Agent 会话消息下方的附件、会话引用、工作区引用和注释不得各自占用整行。它们应以可换行的紧凑标签并排展示，同时保留文件名、类型／大小、引用标识、键盘可达性、完整标题提示和原有点击打开行为；窄宽度下自然换行，不裁切整个控件。
+
+完成：消息附件容器由纵向网格改为可换行的 flex 标签组；每个条目缩小图标、圆角、间距、内边距及文字字号，并将标题与元数据收口在同一行。附件、会话引用、工作区引用和注释继续复用同一安全预览／定位交互，长文本仍以省略号和原有 title 保持可访问。
+
+验收：Web TypeScript typecheck、受影响 Web ESLint、production build、`git diff --check` 与任务状态唯一性通过；未修改 API、数据库、OpenHands、Runtime Provider 或远端环境。
+
 ### FR-468 连续／逐步运行记录工作台统一 — DONE
 
 依赖：FR-465、FR-466、FR-467。
@@ -6141,6 +6151,7 @@ Attempt，右侧详情也复用同一个 `AttemptPanel` 与会话返回上下文
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-16 | FR-469 | Web TypeScript typecheck、全量 ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS：已发送消息下方的附件、会话引用、工作区引用和注释由纵向大卡片改为可换行的紧凑标签组；标题与类型／大小同排显示，长文本保持省略和完整 title，原有点击预览／定位与键盘操作不变。未修改 API、数据库、OpenHands、Runtime Provider 或远端环境。 |
 | 2026-09-16 | FR-468 | Web TypeScript typecheck、ESLint、连续／逐步工作台定向 Playwright（2 passed）、`git diff --check` 与任务状态唯一性 | PASS：已启动的连续／逐步记录通过同一执行记录上下文驱动流程图、节点详情和节点会话返回；逐步运行在后继待配置项停留，连续运行不出现手动启动入口并继续调度。未修改 API、数据库迁移、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-16 | FR-467 | 后继准备服务的 Ruff check、Python 编译、`git diff --check`、映射来源静态核对、连续运行定向 pytest 尝试 | PASS（静态）：连续／逐步路径共享冻结输出、后继拓扑、端口映射与既有后继工作项补齐；连续模式在准备后才额外调度 readiness，逐步模式保持待配置／显式启动。Ruff 与 Python 编译、whitespace 检查均通过；新后继准备路径不再写入 `AUTOMATIC_PORT_MAPPING`。两条连续运行集成回归已启动，但 Testcontainers PostgreSQL fixture 因本机 Docker Unix socket 缺失在断言前阻断，未记为通过。未修改迁移、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-16 | FR-466 | 逐步运行工作台 Playwright（3 passed）；Web TypeScript typecheck、受影响 ESLint；平台 Ruff format/check、`py_compile`；`git diff --check`、任务状态唯一性；节点会话定向 pytest 尝试 | PASS（浏览器／静态）：浏览器覆盖已完成节点可回看、完成后聚焦后继待配置节点、历史逐步记录输入映射与“已完成”节点文案。TypeScript、ESLint、Ruff、Python 编译和 whitespace 检查通过。`test_completed_flow_run_keeps_node_source_read_only_but_allows_native_fork` 已启动，但 Testcontainers PostgreSQL fixture 因本机 Docker Unix socket 不存在而在断言前阻断，未记为通过。未运行迁移、Docker、远端环境或部署。 |
