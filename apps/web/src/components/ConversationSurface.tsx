@@ -1228,7 +1228,7 @@ function conversationAnnotationForSelection(selection: Selection, surface: HTMLE
   return { eventId, content, compactStart: before.toString().replace(/\s+/g, '').length };
 }
 
-function conversationQuoteRange(root: HTMLElement, quote: string): Range | undefined {
+function conversationQuoteRange(root: HTMLElement, quote: string, compactStart?: number): Range | undefined {
   const compactQuote = quote.replace(/\s+/g, '');
   if (!compactQuote) return undefined;
   const characters: Array<{ node: Text; offset: number; value: string }> = [];
@@ -1239,10 +1239,16 @@ function conversationQuoteRange(root: HTMLElement, quote: string): Range | undef
       if (!/\s/.test(value)) characters.push({ node, offset, value });
     }
   }
-  const startOffset = characters.map(character => character.value).join('').indexOf(compactQuote);
-  if (startOffset < 0) return undefined;
-  const start = characters[startOffset];
-  const end = characters[startOffset + compactQuote.length - 1];
+  const compactText = characters.map(character => character.value).join('');
+  const requestedOffset = typeof compactStart === 'number' && Number.isInteger(compactStart) && compactStart >= 0
+    ? compactStart
+    : undefined;
+  const offset = requestedOffset !== undefined && compactText.slice(requestedOffset, requestedOffset + compactQuote.length) === compactQuote
+    ? requestedOffset
+    : compactText.indexOf(compactQuote);
+  if (offset < 0) return undefined;
+  const start = characters[offset];
+  const end = characters[offset + compactQuote.length - 1];
   if (!start || !end) return undefined;
   const range = document.createRange();
   range.setStart(start.node, start.offset);
@@ -1507,12 +1513,48 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused =
     followLatest.current = false;
     setIsAtLatest(false);
   }, []);
+  const locateTextAnnotation = useCallback((annotation: AgentConversationAnnotation) => {
+    // Text anchors belong to this transcript. Resolving them here avoids the
+    // FlowNode route's outer grid from becoming an accidental scroll target.
+    const eventId = annotation.anchor.event_id;
+    const element = surface.current;
+    if (typeof eventId !== 'string' || !element) return false;
+    const target = Array.from(element.querySelectorAll<HTMLElement>('[data-conversation-event-id]'))
+      .find(item => item.dataset.conversationEventId === eventId);
+    if (!target) return false;
+    stopFollowingLatest();
+    for (let parent = target.parentElement?.closest('details'); parent; parent = parent.parentElement?.closest('details')) parent.open = true;
+    const quote = typeof annotation.anchor.quote === 'string' ? annotation.anchor.quote.trim() : '';
+    const compactStart = typeof annotation.anchor.compact_start === 'number' ? annotation.anchor.compact_start : undefined;
+    window.requestAnimationFrame(() => {
+      const range = conversationQuoteRange(target, quote, compactStart);
+      const sourceRect = range?.getBoundingClientRect();
+      const targetRect = target.getBoundingClientRect();
+      const top = (sourceRect?.top ?? targetRect.top) - element.getBoundingClientRect().top + element.scrollTop - 28;
+      element.scrollTo({ top: Math.max(0, top), behavior: 'auto' });
+      if (!range) return;
+      const selection = window.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+      window.setTimeout(() => {
+        if (window.getSelection()?.toString() === quote) window.getSelection()?.removeAllRanges();
+      }, 3_800);
+    });
+    return true;
+  }, [stopFollowingLatest]);
   const locateAnnotation = useCallback((annotation: AgentConversationAnnotation) => {
-    // A reference is an explicit reading navigation. Keep a running
-    // conversation from immediately reclaiming the viewport for new output.
+    if (annotation.anchor_kind === 'CONVERSATION_TEXT' && locateTextAnnotation(annotation)) return;
     stopFollowingLatest();
     onLocateAnnotation?.(annotation);
-  }, [onLocateAnnotation, stopFollowingLatest]);
+  }, [locateTextAnnotation, onLocateAnnotation, stopFollowingLatest]);
+  useEffect(() => {
+    const locate = (event: Event) => {
+      const annotation = (event as CustomEvent<AgentConversationAnnotation>).detail;
+      if (annotation?.anchor_kind === 'CONVERSATION_TEXT') locateTextAnnotation(annotation);
+    };
+    window.addEventListener('flowweave:locate-conversation-annotation', locate);
+    return () => window.removeEventListener('flowweave:locate-conversation-annotation', locate);
+  }, [locateTextAnnotation]);
   const scrollToUserMessage = useCallback((eventId: string) => {
     const element = surface.current;
     const target = element?.querySelectorAll<HTMLElement>('[data-user-event-id]');

@@ -89,38 +89,6 @@ function annotationReferenceName(annotation: AgentConversationAnnotation, index:
   return annotationFileDisplay(annotation)?.filename ?? `会话引用 ${index + 1}`;
 }
 
-function conversationQuoteRange(root: HTMLElement, quote: string, compactStart?: number): Range | undefined {
-  const compactQuote = quote.replace(/\s+/g, '');
-  if (!compactQuote) return undefined;
-  const characters: Array<{ node: Text; offset: number; value: string }> = [];
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-  for (let node = walker.nextNode() as Text | null; node; node = walker.nextNode() as Text | null) {
-    for (let offset = 0; offset < node.data.length; offset += 1) {
-      const value = node.data[offset];
-      if (!/\s/.test(value)) characters.push({ node, offset, value });
-    }
-  }
-  const compactText = characters.map(character => character.value).join('');
-  // New annotations keep the selected compact-text offset in their OpenHands
-  // message metadata. Use it when it still matches, so a repeated sentence in
-  // one message cannot silently jump to its first occurrence. Older metadata
-  // did not include the offset and retains the quote-only fallback.
-  const requestedOffset = typeof compactStart === 'number' && Number.isInteger(compactStart) && compactStart >= 0
-    ? compactStart
-    : undefined;
-  const offset = requestedOffset !== undefined && compactText.slice(requestedOffset, requestedOffset + compactQuote.length) === compactQuote
-    ? requestedOffset
-    : compactText.indexOf(compactQuote);
-  if (offset < 0) return undefined;
-  const start = characters[offset];
-  const end = characters[offset + compactQuote.length - 1];
-  if (!start || !end) return undefined;
-  const range = document.createRange();
-  range.setStart(start.node, start.offset);
-  range.setEnd(end.node, end.offset + 1);
-  return range;
-}
-
 function ComposerAnnotationList({ annotations, onLocate, onRemove, onUpdate }: {
   annotations: AgentConversationAnnotation[];
   onLocate: (annotation: AgentConversationAnnotation) => void;
@@ -3747,26 +3715,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   }, []);
   const locateAnnotation = useCallback((annotation: AgentConversationAnnotation) => {
     if (annotation.anchor_kind === 'CONVERSATION_TEXT') {
-      const eventId = annotation.anchor.event_id;
-      if (typeof eventId !== 'string') return;
-      const target = Array.from(document.querySelectorAll<HTMLElement>('[data-conversation-event-id]')).find(item => item.dataset.conversationEventId === eventId);
-      const surface = target?.closest<HTMLElement>('.conversation-surface');
-      if (!target || !surface) return;
-      const quote = typeof annotation.anchor.quote === 'string' ? annotation.anchor.quote.trim() : '';
-      const compactStart = typeof annotation.anchor.compact_start === 'number' ? annotation.anchor.compact_start : undefined;
-      const range = conversationQuoteRange(target, quote, compactStart);
-      const sourceRect = range?.getBoundingClientRect();
-      const targetRect = target.getBoundingClientRect();
-      const top = (sourceRect?.top ?? targetRect.top) - surface.getBoundingClientRect().top + surface.scrollTop - 28;
-      surface.scrollTo({ top: Math.max(0, top), behavior: 'auto' });
-      if (range) {
-        const selection = window.getSelection();
-        selection?.removeAllRanges();
-        selection?.addRange(range);
-        window.setTimeout(() => {
-          if (window.getSelection()?.toString() === quote) window.getSelection()?.removeAllRanges();
-        }, 3_800);
-      }
+      window.dispatchEvent(new CustomEvent('flowweave:locate-conversation-annotation', { detail: annotation }));
       return;
     }
     const file = annotationFileSelection(annotation);
