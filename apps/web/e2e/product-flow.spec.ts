@@ -1750,9 +1750,12 @@ test('selected conversation text is sent and rendered as a compact reference car
   await expect(page.getByLabel('已添加的引用 1 条')).toContainText('会话引用 1');
   await page.getByRole('button', { name: '定位原文' }).click();
   await expect(source).toBeInViewport();
-  await expect(source).toHaveClass(/conversation-reference-source-highlight/);
-  await expect(source).toHaveCSS('outline-color', 'rgb(122, 180, 141)');
-  await expect(source).toHaveCSS('background-color', 'rgb(239, 248, 241)');
+  await expect.poll(() => source.evaluate(element => getComputedStyle(element, '::selection').backgroundColor)).toBe('rgb(183, 223, 255)');
+  await expect.poll(() => source.evaluate(() => window.getSelection()?.toString())).toBe(selectedText);
+  await expect.poll(() => source.evaluate(element => {
+    const selection = window.getSelection();
+    return Boolean(selection?.rangeCount && element.contains(selection.getRangeAt(0).startContainer) && element.contains(selection.getRangeAt(0).endContainer));
+  })).toBe(true);
   await page.getByLabel('发送 Agent 消息').fill('请据此继续');
   await page.getByRole('button', { name: '发送消息' }).click();
   await expect.poll(() => sentPayload).toMatchObject({
