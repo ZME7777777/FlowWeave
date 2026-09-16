@@ -239,6 +239,12 @@ function isInteractiveClick(target: EventTarget | null): boolean {
   return target instanceof Element && Boolean(target.closest('button, a, input, textarea, select, [role="button"]'));
 }
 
+function isFlowInternalClick(target: EventTarget | null): boolean {
+  return target instanceof Element && Boolean(target.closest(
+    'button, a, input, textarea, select, [role="button"], .react-flow__node, .react-flow__edge, .react-flow__controls',
+  ));
+}
+
 type SnapshotGraphNodeData = {
   label: string;
   status: string;
@@ -1407,18 +1413,6 @@ export function WorkbenchPage() {
   }, [selectedRunId]);
   useEffect(() => selectedRunId ? subscribeToRun(selectedRunId, refresh) : undefined, [selectedRunId, refresh]);
   useEffect(() => {
-    const root = query.data;
-    if (
-      mode !== 'MANUAL'
-      || selectedStepwiseId
-      || !root?.node_runs.some(item => !isDirectNodeRun(item))
-    ) return;
-    // Legacy manual executions predate the record directory. Present their
-    // parent as one readable legacy record instead of flattening N1/N2 back
-    // into the rail as if they were independent runs.
-    setSelectedStepwiseId(root.id);
-  }, [mode, query.data, selectedStepwiseId, stepwise.data]);
-  useEffect(() => {
     const run = query.data;
     if (!run) return;
     // Automatic records own their node runs. Their IDs must not be looked up
@@ -1481,6 +1475,16 @@ export function WorkbenchPage() {
     const restored = record.node_runs.find(item => item.id === selectedNodeRunId)
       ?? activeFlowNodeRun(record.node_runs);
     if (restored) {
+      // A user may intentionally move from an accepted history node to an
+      // uncreated successor to configure it.  There is no NodeRun ID to
+      // restore for that successor, so preserve the explicit graph choice
+      // instead of repeatedly snapping back to the last durable node.
+      const pendingSuccessorSelected = Boolean(
+        selectedNodeKey
+        && selectedNodeKey !== restored.flow_node_snapshot_key
+        && !record.node_runs.some(item => item.flow_node_snapshot_key === selectedNodeKey),
+      );
+      if (pendingSuccessorSelected) return;
       setManualSelectedIds(new Set([restored.id]));
       setSelectedNodeKey(restored.flow_node_snapshot_key);
       if (isUnconfiguredStepRecord(restored)) {
@@ -1492,12 +1496,12 @@ export function WorkbenchPage() {
       } else if (restored.id !== selectedNodeRunId || !selectedAttemptId) {
         selectExecution(restored.id, restored.attempts.at(-1)?.id);
       }
-    } else {
+    } else if (!selectedNodeKey) {
       setManualSelectedIds(new Set());
       setSelectedNodeKey(undefined);
       useWorkbenchStore.setState({ selectedNodeRunId: undefined, selectedAttemptId: undefined });
     }
-  }, [selectedAttemptId, selectedNodeRunId, selectedStepwiseId, selectExecution, stepwiseDetail.data]);
+  }, [selectedAttemptId, selectedNodeKey, selectedNodeRunId, selectedStepwiseId, selectExecution, stepwiseDetail.data]);
   useEffect(() => {
     // The mode and automatic-record ID are a one-shot browser-history restore
     // hint. Workbench owns the live selection after it mounts, so do not let
@@ -1638,7 +1642,18 @@ export function WorkbenchPage() {
       const updated = result as FlowRun;
       updateCurrentRun(() => updated);
       const next = [...updated.node_runs].reverse().find(item => item.state === 'ACTIVE') ?? updated.node_runs.at(-1);
-      if (next) selectExecution(next.id, next.attempts.at(-1)?.id);
+      if (next) {
+        // The service has already created the next durable Flow transition.
+        // Focus it immediately in both modes so a completed N1 behaves like
+        // continuous execution: the next node is visibly active and selected.
+        setSelectedNodeKey(next.flow_node_snapshot_key);
+        if (mode === 'MANUAL' && isUnconfiguredStepRecord(next)) {
+          setManualSelectedIds(new Set([next.id]));
+          useWorkbenchStore.setState({ selectedNodeRunId: undefined, selectedAttemptId: undefined });
+        } else {
+          selectExecution(next.id, next.attempts.at(-1)?.id);
+        }
+      }
     }
     if (kind === 'activate' && result && typeof result === 'object' && 'attempts' in result) {
       const created = result as NodeRun;
@@ -1944,7 +1959,7 @@ export function WorkbenchPage() {
   />;
   return <>
     <header className="flow-run-workbench-header"><h1 title={run.name}>{run.name}</h1></header>
-    <section className="workbench-page flow-run-inner-workbench" style={hasPanel ? { gridTemplateColumns: `${railWidth}px minmax(500px, 1fr) ${sidePanelWidth}px` } : { gridTemplateColumns: `${railWidth}px minmax(500px, 1fr)` }}>
+    <section className="workbench-page flow-run-inner-workbench" style={hasPanel ? { gridTemplateColumns: `${railWidth}px minmax(500px, 1fr) ${sidePanelWidth}px` } : { gridTemplateColumns: `${railWidth}px minmax(500px, 1fr)` }} onClick={event => { if (!isFlowInternalClick(event.target)) clearSelection(); }}>
       <div className="flow-run-rail-slot">{rail}<div className="run-rail-resizer" role="separator" tabIndex={0} aria-label="调整左侧记录栏宽度" aria-orientation="vertical" onPointerDown={beginRailResize} onKeyDown={resizeRailByKeyboard}/></div>
       <main className="run-main">
         <div className="run-workbench-toolbar">

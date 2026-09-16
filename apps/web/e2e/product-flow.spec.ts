@@ -1692,7 +1692,7 @@ test('selected conversation text is sent and rendered as a compact reference car
   const events = () => [
     { id: 'reference-source-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '请给出可引用的建议', timestamp: now } },
     { id: 'reference-source-assistant', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'reference-source-user', content: selectedText, timestamp: now } },
-    ...(sentPayload ? [{ id: 'reference-target-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'reference-source-assistant', content: '请据此继续', timestamp: now } }] : []),
+    ...(sentPayload ? [{ id: 'reference-target-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'reference-source-assistant', content: '请据此继续', collaboration_annotations: sentPayload.annotations, timestamp: now } }] : []),
   ];
   await page.route('**/api/v1/auth/me', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ id: 'reference-user', username: 'tester', role: 'USER', is_super_admin: false }) }));
   await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
@@ -1747,12 +1747,12 @@ test('selected conversation text is sent and rendered as a compact reference car
     content.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
   });
   await page.getByRole('button', { name: '添加到会话' }).click();
-  const annotationDialog = page.getByRole('alertdialog', { name: '添加注释' });
-  await expect(annotationDialog).toBeVisible();
-  await annotationDialog.getByLabel('你的评论').fill('请重点核对这段结果');
-  await annotationDialog.getByRole('button', { name: '添加注释' }).click();
   await expect(page.getByLabel('已添加的引用 1 条')).toContainText('会话引用 1');
-  await expect.poll(() => annotations).toHaveLength(1);
+  await page.getByRole('button', { name: '定位原文' }).click();
+  await expect(source).toBeInViewport();
+  await expect(source).toHaveClass(/conversation-reference-source-highlight/);
+  await expect(source).toHaveCSS('outline-color', 'rgb(122, 180, 141)');
+  await expect(source).toHaveCSS('background-color', 'rgb(239, 248, 241)');
   await page.getByLabel('发送 Agent 消息').fill('请据此继续');
   await page.getByRole('button', { name: '发送消息' }).click();
   await expect.poll(() => sentPayload).toMatchObject({
@@ -1760,13 +1760,7 @@ test('selected conversation text is sent and rendered as a compact reference car
   });
   const sentMessage = page.locator('[data-user-event-id="reference-target-user"]');
   await expect(sentMessage).toContainText('请据此继续');
-  await page.getByLabel('已添加的引用 1 条').getByRole('button', { name: '会话引用 1' }).click();
-  const annotationCard = page.getByText('请重点核对这段结果').locator('..');
-  await expect(annotationCard).toContainText(selectedText);
-  await annotationCard.getByRole('button', { name: '定位原文' }).click();
-  await expect(source).toBeInViewport();
-  await expect(source).toHaveClass(/conversation-reference-source-highlight/);
-  await expect(source).not.toHaveClass(/conversation-reference-source-highlight/, { timeout: 3_000 });
+  await expect(sentMessage).toContainText('会话引用 1');
 });
 
 test('Agent workspace groups toggle their conversation lists', async ({ page }) => {
