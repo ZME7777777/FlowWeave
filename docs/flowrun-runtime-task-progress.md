@@ -6110,6 +6110,16 @@ OpenHands 事件树、数据库迁移、Runtime Provider 或远端部署。
 既有连续／逐步记录详情均继续以实际到达的后继节点作为当前焦点，且已完成节点的会话、输入、门禁和产物仍可
 回看。
 
+### FR-470 Agent 会话紧凑标签样式提交纠正 — DONE
+
+依赖：FR-469。
+
+目标：恢复 FR-469 的实际消息附件与引用紧凑标签样式，使其以可换行的行内控件展示，而不改变消息文本渲染、附件／引用身份、预览或定位行为。
+
+完成：附件容器使用可换行 flex 布局；附件、会话引用、工作区引用和注释均以缩小图标、内边距和同排标题／元数据展示，条目最大宽度受限且长文本继续省略。并行中的消息渲染改动保持未触碰。
+
+验收：Web TypeScript typecheck、全量 ESLint、production build、`git diff --check` 与任务状态唯一性通过；未修改 API、数据库、OpenHands、Runtime Provider 或远端环境。
+
 ### FR-469 Agent 会话附件与引用紧凑标签布局 — DONE
 
 依赖：FR-460、FR-462。
@@ -6151,6 +6161,7 @@ Attempt，右侧详情也复用同一个 `AttemptPanel` 与会话返回上下文
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-16 | FR-470 | Web TypeScript typecheck、全量 ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS：纠正并实际提交 FR-469 的可换行紧凑标签样式；附件、会话引用、工作区引用和注释不再逐项占用整行，原有预览／定位交互保持不变。未修改 API、数据库、OpenHands、Runtime Provider 或远端环境。 |
 | 2026-09-16 | FR-469 | Web TypeScript typecheck、全量 ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS：已发送消息下方的附件、会话引用、工作区引用和注释由纵向大卡片改为可换行的紧凑标签组；标题与类型／大小同排显示，长文本保持省略和完整 title，原有点击预览／定位与键盘操作不变。未修改 API、数据库、OpenHands、Runtime Provider 或远端环境。 |
 | 2026-09-16 | FR-468 | Web TypeScript typecheck、ESLint、连续／逐步工作台定向 Playwright（2 passed）、`git diff --check` 与任务状态唯一性 | PASS：已启动的连续／逐步记录通过同一执行记录上下文驱动流程图、节点详情和节点会话返回；逐步运行在后继待配置项停留，连续运行不出现手动启动入口并继续调度。未修改 API、数据库迁移、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-16 | FR-467 | 后继准备服务的 Ruff check、Python 编译、`git diff --check`、映射来源静态核对、连续运行定向 pytest 尝试 | PASS（静态）：连续／逐步路径共享冻结输出、后继拓扑、端口映射与既有后继工作项补齐；连续模式在准备后才额外调度 readiness，逐步模式保持待配置／显式启动。Ruff 与 Python 编译、whitespace 检查均通过；新后继准备路径不再写入 `AUTOMATIC_PORT_MAPPING`。两条连续运行集成回归已启动，但 Testcontainers PostgreSQL fixture 因本机 Docker Unix socket 缺失在断言前阻断，未记为通过。未修改迁移、OpenHands、Runtime Provider、Docker 或远端环境。 |
