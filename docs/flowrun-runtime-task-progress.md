@@ -6110,6 +6110,16 @@ OpenHands 事件树、数据库迁移、Runtime Provider 或远端部署。
 既有连续／逐步记录详情均继续以实际到达的后继节点作为当前焦点，且已完成节点的会话、输入、门禁和产物仍可
 回看。
 
+### FR-471 Agent 会话已发送消息换行保留 — DONE
+
+依赖：FR-469。
+
+目标：用户在 Agent 会话发送框输入的换行必须在 OpenHands 持久化消息回读后仍按原始行距呈现，不能被浏览器默认的段落空白折叠为单行；普通消息仍可安全换行，现有附件、引用和消息操作不受影响。
+
+完成：用户消息内容容器继续以 `pre-wrap` 呈现；新增独立 Vite 上的定向 Playwright 覆盖，向正式用户 MESSAGE 事件写入两行文本，并断言回读后的气泡保留换行及对应样式。
+
+验收：受影响 Web ESLint/typecheck/production build；定向 Playwright（1 passed）；`git diff --check` 与任务状态唯一性通过。未修改 API、数据库、OpenHands、Runtime Provider 或远端环境。
+
 ### FR-470 Agent 会话紧凑标签样式提交纠正 — DONE
 
 依赖：FR-469。
