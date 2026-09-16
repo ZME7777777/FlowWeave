@@ -192,6 +192,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-458 | 空响应恢复提示瞬时化与会话状态统一 | DONE | corrective nudge 只在它是当前最新事件且原生会话仍运行时复用实时状态行显示；后续事件或终态立即隐藏，历史工作过程不保留该提示。工作台所有运行控件复用同一原生状态投影。 |
 | FR-459 | 原生错误事件的终态／可恢复呈现分流 | DONE | 仅 OpenHands ConversationErrorEvent 呈现为“本轮未能完成”的会话级终态卡片；AgentErrorEvent 与未知历史 ERROR 保持原生审计事实，按其正式父事件留在工作过程中呈现为可恢复异常，后续正式回复会明确标注 Agent 已继续完成，避免暂停／继续后的正常回复被历史错误卡片误覆盖。 |
 | FR-460 | 会话发送框草稿持久化与工作区隔离 | DONE | 新会话草稿按宿主、工作区及工作目录隔离；已创建会话按工作区与会话隔离。文本、服务端已授权附件元数据、会话／工作区引用和协作注释在切换、Tab 切换及刷新后静默恢复；账号切换会清除这些本地记录。 |
+| FR-462 | 过程解释文本会话引用 | DONE | 已持久化的 `ThinkAction` 与 Tool Action 可见 `thought` 可作为 FlowWeave 会话引用／协作锚点；工具参数、命令、Observation 与工具输出继续禁止作为隐式引用上下文。 |
 | FR-432 | 最终回复的临时 delta 呈现回退 | DONE | 停止将 WebSocket `delta` 累积或渲染为最终回复；最终 Markdown 只在 OpenHands 正式 assistant／完成事件持久化并投影后一次显示，过程状态与正式工具事件保持可见。 |
 | FR-433 | OpenHands 错误终态工作台收束 | DONE | 将 OpenHands 原生 `ready=true, execution_status=error/stuck` 识别为可安全结束的终态，停止错误卡后的运行标记、停止按钮与“正在处理”，不以浏览器事件自行伪造状态。 |
 | FR-434 | 错误终态与运行中追加投递呈现修正 | DONE | 空闲或原生错误终态的新消息仍先持久化浏览器投递意图，但不得短暂显示为消息队列；运行中直接追加在收到正式 cursor 前不伪装为已发送气泡或队列，流先到达同一正式 OpenHands 用户事件时立即确认收起，歧义／拒绝项保持可见、可恢复。 |
@@ -6016,6 +6017,20 @@ assistant 的正式 MessageEvent，并以正式 identity 幂等落入命中 loca
 取消任务；状态读取时重新从同一受控 Runtime 按正式 event ID 读取并投影正文。顶栏搜索按钮替换“新建会话”，
 根及子工作区行的“+”继续创建其局部会话。未修改 OpenHands 源码、Conversation 事件树、Runtime Provider 或远端环境。
 
+### FR-462 过程解释文本会话引用 — DONE
+
+依赖：FR-394。
+
+目标：用户应能选择已持久化的 Agent 过程解释文本并加入下一条会话上下文，包括原生 `ThinkAction` 和
+Tool Action 附带的可见 `thought`。这不是把工具调用、命令参数或工具返回值作为引用能力：命令、工具详情、
+Observation／stdout／stderr 与内部 `reasoning_content` 均不得成为可选锚点或被重新送入模型上下文。
+
+完成：过程说明文本复用已有 `data-conversation-event-id` 选区锚定与“添加到会话”交互，Tool Action 仅在
+存在可见 `thought` 时暴露锚点。服务端仍从当前受授权 OpenHands Conversation 按正式 event ID 回读来源；
+引用来源白名单扩展为 `MESSAGE`、`THOUGHT` 与 `TOOL_CALL.payload.thought`，并只提取该解释文本。
+`TOOL_RESULT` 和任何无解释文本的 Tool Action 一律拒绝。引用继续由 FlowWeave 封装为普通 OpenHands
+用户消息的背景上下文，不改变 OpenHands 协议、事件树或 Runtime Provider。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -6032,6 +6047,7 @@ assistant 的正式 MessageEvent，并以正式 identity 幂等落入命中 loca
 
 | 日期 | 切片 | 验证 | 结果 |
 | 2026-09-16 | FR-461 | 固定 OpenHands 1.47 事件搜索契约取证；OpenHands 适配器定向 pytest（2 passed）；受影响 Python `py_compile`、Ruff format/check；Web TypeScript typecheck、ESLint、production build；Alembic 唯一 head、`git diff --check` 与任务状态唯一性 | PASS（静态／定向／构建）：OpenHands 原生 `events/search?body` 逐页检索仅投影用户/助手 MessageEvent，测试覆盖 body、分页和非消息事件过滤。后台任务只持久化查询、状态及正式事件定位，结果展示时重新读取 OpenHands，不创建平台消息副本。搜索弹窗关闭后任务继续运行；顶栏按钮显示运行/完成状态，工作区标题行的 `+` 创建会话入口保持不变。Web typecheck、全量 ESLint 和 production build 通过；Python 编译、Ruff 与唯一 Alembic head `0117_agent_conversation_search` 通过。 |
+| 2026-09-16 | FR-462 | Python `py_compile`、Ruff format/check、无 Docker 的过程引用直接探针；Web TypeScript typecheck、受影响 Web ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS（静态／构建／直接探针）：已持久化 `THOUGHT` 与 `TOOL_CALL.payload.thought` 可按 event ID 解析为引用内容；`TOOL_RESULT` 即使含文本也被拒绝。过程解释文本获得选区锚点；命令、工具详情与结果不获得锚点。Web 构建仅报告既有大 chunk 提示。定向 pytest 已启动但 Testcontainers PostgreSQL 依赖本机 Docker socket，不可用时在 fixture setup 阻断，未将其记为通过。未修改 OpenHands、数据库、迁移、Runtime Provider 或远端环境。 |
 | 2026-09-15 | FR-460 | Web TypeScript typecheck、受影响 Web ESLint、production build、`git diff --check` 与任务状态唯一性；定向 Agent composer Playwright 尝试 | PASS（静态／构建）：TypeScript、受影响 ESLint、production build 和 whitespace 检查均通过。新增 Playwright 已实际启动并完成附件上传，但本机浏览器上下文被已有真实 Agent 工作台认证／路由状态接管，mock 未接管预期请求，故在超时前终止且未记为浏览器回归通过；测试源保留供干净上下文执行。未修改 API、数据库、Runtime Provider、OpenHands 或远端环境。 |
 | 2026-09-15 | FR-458 | Web TypeScript typecheck、全量 ESLint、production build、定向 Agent 工作台 Playwright、Alembic head、`git diff --check` 与任务状态唯一性 | PASS（静态／构建／关键浏览器断言）：corrective nudge 是当前最新事件且原生状态为 running 时，仅动态状态行显示自动重试；后续正式 Thought 到达后提示立即消失而运行标记／停止按钮保持，ERROR 终态后提示仍不出现。readiness 先于终态事件变 idle 时，左侧、Surface 和 Composer 统一保持“正在同步会话结束”。定向长产品流已通过本切片全部新增断言，随后在无关的既有“终端”入口按 button 定位处超时，故未记为完整用例通过。唯一 Alembic head 为 `0116_agent_manual_order`；未修改 API、数据库、Runtime Provider、OpenHands 或远端环境。 |
 | 2026-09-15 | FR-457 | 固定 OpenHands 1.47.0 `response_dispatch` 源码取证；Web TypeScript typecheck、全量 ESLint、production build、定向 Agent 工作台 Playwright、Alembic head、`git diff --check` 与任务状态唯一性 | PASS（静态／构建／关键浏览器断言）：真实空 Agent Message → `source=environment` corrective nudge → `execution_status=running` 序列下，英文框架消息不再作为回复显示，页面呈现中文自动重试状态，底部“暂停当前 Agent”和左侧运行标记同时保持。定向长产品流已通过本切片新增断言，随后在无关的既有 `root-owned.ts` 文件变更展示断言失败，故未记为完整用例通过。唯一 Alembic head 为 `0116_agent_manual_order`；未修改 API、数据库、Runtime Provider、OpenHands 或远端环境。 |
