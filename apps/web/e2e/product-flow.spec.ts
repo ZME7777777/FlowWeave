@@ -574,7 +574,12 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     }
     if (path.endsWith('/workspace/file')) {
       workspaceFilePreviewRequests.push(new URL(request.url()).searchParams.get('path') ?? '');
-      await route.fulfill({ status: 200, contentType: 'text/plain', body: 'workspace file preview\n' });
+      await route.fulfill({
+        status: 200,
+        contentType: 'text/plain',
+        headers: { 'X-Preview-Total-Bytes': '23' },
+        body: 'workspace file preview\n',
+      });
       return;
     }
     if (path.endsWith('/workspace/entries') && request.method() === 'POST') {
@@ -968,6 +973,15 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await page.getByRole('button', { name: '文件', exact: true }).click();
   await expect(page.getByText('README.md', { exact: true })).toBeVisible();
   await expect(page.locator('.agent-file-tree input[type=checkbox]')).toHaveCount(0);
+  await page.getByLabel('全屏查看工作区工具').click();
+  const readmeRow = page.locator('.agent-file-tree-row').filter({ hasText: 'README.md' });
+  await readmeRow.getByRole('button').hover();
+  await expect(readmeRow.getByRole('link', { name: '下载 README.md' })).toBeVisible();
+  await readmeRow.getByRole('button').click();
+  await expect(page.locator('.agent-workspace-git-sidebar')).toHaveCount(0);
+  const sourceDirectory = page.locator('.agent-file-tree-row').filter({ hasText: 'src' });
+  await sourceDirectory.locator('.agent-file-tree-item.directory').click();
+  await expect(page.getByText('config.ts', { exact: true })).toBeVisible();
   await page.getByLabel('新建文件').click();
   const createFileDialog = page.getByRole('alertdialog');
   await createFileDialog.getByRole('textbox', { name: '名称' }).fill('notes.md');
