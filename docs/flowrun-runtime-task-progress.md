@@ -6031,6 +6031,28 @@ Observation／stdout／stderr 与内部 `reasoning_content` 均不得成为可�
 `TOOL_RESULT` 和任何无解释文本的 Tool Action 一律拒绝。引用继续由 FlowWeave 封装为普通 OpenHands
 用户消息的背景上下文，不改变 OpenHands 协议、事件树或 Runtime Provider。
 
+### FR-463 逐步运行终态投影与连续运行收敛 — DONE
+
+依赖：FR-16、FR-425。
+
+目标：逐步运行与连续运行必须共享 OpenHands 完成事件、候选产物冻结、完成门禁和端口映射语义。两者唯一的
+产品差异是：逐步运行在节点通过并由用户验收后，只创建并绑定下游节点的待启动工作项，不自动执行下游节点。
+任何已耗尽的逐步运行生命周期后台任务都不得遗留 `EXECUTING` 假状态。
+
+完成：连续运行既有的终态任务失败可见化规则已扩展至逐步运行：readiness、门禁、Runtime 启动／轮询／
+wakeup／恢复／确认任务在耗尽后，按当前阶段收敛为 `START_BLOCKED` 或 `END_BLOCKED`、写入审计并将
+FlowRun 置为等待人工处理。已完成的 Runtime 输出固化错误（含缺失／无效／不可读／超过 25 MiB）被识别为
+确定性 `POLL_RUNTIME` 失败，不再无限重试同一完成事件；界面明确说明候选交付物未被冻结，用户可在同一
+节点会话修订输出后产生新的原生完成事件。逐步运行的成功验收继续复用既有
+`_create_configurable_targets`：冻结产物按端口映射绑定至下游 `WAITING_INPUT` 工作项，但不会创建自动启动
+任务。
+
+验收：受影响 Python Ruff format/check、Web TypeScript typecheck 与 ESLint、受影响 Python `py_compile`、
+`git diff --check`、任务状态唯一性通过。新增定向 pytest 覆盖超过 25 MiB 的 Artifact 固化失败与逐步运行
+`END_BLOCKED` 投影；本机 Docker Unix socket 不可用，Testcontainers PostgreSQL fixture 在断言前受阻，未
+伪记为通过。对生产记录的只读 Runtime 下载核验确认其一份 Markdown 输出为 26,608,720 B，超过 25 MiB
+上限 394,320 B；另一份为 2,653,476 B。未修改 OpenHands、数据库迁移、Runtime Provider 或远端持久数据。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -6046,6 +6068,7 @@ Observation／stdout／stderr 与内部 `reasoning_content` 均不得成为可�
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-16 | FR-463 | 生产记录只读 Runtime Artifact 下载核验；逐步运行输出投影无 Docker 直接探针；受影响 Python Ruff format/check、`py_compile`；Web TypeScript typecheck 与 ESLint；`git diff --check`、任务状态唯一性；数据库定向 pytest 尝试 | PASS（生产取证／直接／静态）：正式 Runtime 下载确认一份声明 Markdown 输出为 26,608,720 B，超过 25 MiB 上限 394,320 B，完成事件与候选输出解析均未丢失。逐步运行耗尽的生命周期任务现在按当前阶段收敛为可见阻塞态；已完成的输出固化错误不再无界重试。无 Docker 直接探针确认 `ARTIFACT_FILE_TOO_LARGE` 将手工 Attempt 由 `EXECUTING/RUNNING` 收敛为 `END_BLOCKED/FAILED`，并写入审计；成功验收仍复用端口映射创建下游 `WAITING_INPUT` 工作项，不自动启动下游。Ruff、`py_compile`、Web typecheck/lint、whitespace 和状态唯一性通过。数据库定向 pytest 因本机 Docker Unix socket 缺失，在 Testcontainers fixture 初始化前受阻，未记为通过。未修改 OpenHands、数据库迁移、Runtime Provider 或远端持久数据。 |
 | 2026-09-16 | FR-461 | 固定 OpenHands 1.47 事件搜索契约取证；OpenHands 适配器定向 pytest（2 passed）；受影响 Python `py_compile`、Ruff format/check；Web TypeScript typecheck、ESLint、production build；Alembic 唯一 head、`git diff --check` 与任务状态唯一性 | PASS（静态／定向／构建）：OpenHands 原生 `events/search?body` 逐页检索仅投影用户/助手 MessageEvent，测试覆盖 body、分页和非消息事件过滤。后台任务只持久化查询、状态及正式事件定位，结果展示时重新读取 OpenHands，不创建平台消息副本。搜索弹窗关闭后任务继续运行；顶栏按钮显示运行/完成状态，工作区标题行的 `+` 创建会话入口保持不变。Web typecheck、全量 ESLint 和 production build 通过；Python 编译、Ruff 与唯一 Alembic head `0117_agent_conversation_search` 通过。 |
 | 2026-09-16 | FR-462 | Python `py_compile`、Ruff format/check、无 Docker 的过程引用直接探针；Web TypeScript typecheck、受影响 Web ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS（静态／构建／直接探针）：已持久化 `THOUGHT` 与 `TOOL_CALL.payload.thought` 可按 event ID 解析为引用内容；`TOOL_RESULT` 即使含文本也被拒绝。过程解释文本获得选区锚点；命令、工具详情与结果不获得锚点。Web 构建仅报告既有大 chunk 提示。定向 pytest 已启动但 Testcontainers PostgreSQL 依赖本机 Docker socket，不可用时在 fixture setup 阻断，未将其记为通过。未修改 OpenHands、数据库、迁移、Runtime Provider 或远端环境。 |
 | 2026-09-15 | FR-460 | Web TypeScript typecheck、受影响 Web ESLint、production build、`git diff --check` 与任务状态唯一性；定向 Agent composer Playwright 尝试 | PASS（静态／构建）：TypeScript、受影响 ESLint、production build 和 whitespace 检查均通过。新增 Playwright 已实际启动并完成附件上传，但本机浏览器上下文被已有真实 Agent 工作台认证／路由状态接管，mock 未接管预期请求，故在超时前终止且未记为浏览器回归通过；测试源保留供干净上下文执行。未修改 API、数据库、Runtime Provider、OpenHands 或远端环境。 |

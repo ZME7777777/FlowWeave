@@ -3239,4 +3239,50 @@ def test_failed_runtime_cancel_is_visible_and_can_be_retried(
                 BackgroundTask.state == TaskState.PENDING,
             )
         )
-        assert retry_task is not None
+    assert retry_task is not None
+
+
+def test_manual_runtime_output_projection_failure_becomes_visible_block(
+    client, skill_capability, db_session_factory
+):
+    from flowweave.modules.tasks.application.handlers import record_terminal_failure
+
+    asset = create_asset(client, skill_capability, "逐步运行产物投影失败节点")
+    flow = create_flow(client, asset["id"])
+    run = client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={
+            "flow_node_key": "design_a",
+            "environment_version_id": client.environment_version_id,
+        },
+    ).json()
+    attempt_id = run["node_runs"][0]["attempts"][0]["id"]
+
+    with db_session_factory() as db:
+        attempt = db.get(NodeAttempt, attempt_id)
+        assert attempt is not None
+        attempt.state = "EXECUTING"
+        attempt.runtime_phase = "RUNNING"
+        task = BackgroundTask(
+            task_type="POLL_RUNTIME",
+            aggregate_type="ATTEMPT",
+            aggregate_id=attempt.id,
+            idempotency_key=f"failed-output-projection:{attempt.id}",
+            state=TaskState.DEAD,
+            attempts=1,
+            max_attempts=1,
+        )
+        db.add(task)
+        db.flush()
+        record_terminal_failure(
+            db, task.id, "ARTIFACT_FILE_TOO_LARGE: Artifact file must be between 1 byte and 25 MiB"
+        )
+        db.commit()
+
+    detail = client.get(f"/api/v1/flow-runs/{run['id']}").json()
+    assert detail["state"] == "WAITING_HUMAN"
+    attempt = detail["node_runs"][0]["attempts"][0]
+    assert attempt["state"] == "END_BLOCKED"
+    assert attempt["runtime_phase"] == "FAILED"
+    assert attempt["error_code"] == "RUNTIME_OUTPUT_PROJECTION_FAILED"
+    assert attempt["error_detail"].startswith("ARTIFACT_FILE_TOO_LARGE:")

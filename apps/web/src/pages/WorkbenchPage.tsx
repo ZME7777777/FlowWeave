@@ -461,6 +461,9 @@ function attemptErrorText(attempt: NodeAttempt): string | undefined {
   if (attempt.error_code === 'RUNTIME_COMPLETION_IDENTITY_UNKNOWN') {
     return '平台尚未能确认当前 OpenHands 活跃分支的正式完成事件标识；为避免错误登记节点产物，平台已暂停流转。可点击“从 OpenHands 对账并补登”。';
   }
+  if (attempt.error_code === 'RUNTIME_OUTPUT_PROJECTION_FAILED') {
+    return `Agent 已结束本轮执行，但平台无法将候选交付物冻结为节点产物：${gateResultText(attempt.error_detail)}。请在节点会话中修订输出后再次提交；当前节点不会自动流转到下游。`;
+  }
   return attempt.error_detail ? gateResultText(attempt.error_detail) : undefined;
 }
 

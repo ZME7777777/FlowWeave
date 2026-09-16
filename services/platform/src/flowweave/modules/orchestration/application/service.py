@@ -7328,6 +7328,79 @@ def record_automatic_task_failure(
     db.flush()
 
 
+def record_stepwise_runtime_task_failure(
+    db: Session,
+    attempt_id: str,
+    task_type: str,
+    payload: dict[str, Any],
+    error: str,
+) -> None:
+    """Expose a terminal manual delivery failure on its current Attempt.
+
+    Manual and automatic runs share the same native completion, Artifact, and
+    END-gate path.  They differ only after a successful acceptance: automatic
+    runs advance the frozen graph, while manual runs leave the next node for a
+    user to start.  Their exhausted worker deliveries must consequently
+    converge to the same visible blocked boundary rather than leaving a
+    manual Attempt in an in-flight state after its task dies.
+    """
+
+    lifecycle_tasks = {
+        "EVALUATE_READINESS",
+        "RUN_GATE_POLICY",
+        "START_RUNTIME",
+        "POLL_RUNTIME",
+        "WAIT_RUNTIME_WAKEUP",
+        "RESUME_RUNTIME",
+        "RESPOND_RUNTIME_CONFIRMATION",
+    }
+    if task_type not in lifecycle_tasks:
+        return
+    attempt = db.get(NodeAttempt, attempt_id)
+    if attempt is None or attempt.state in {
+        AttemptState.ACCEPTED,
+        AttemptState.REJECTED,
+        AttemptState.CANCELLED,
+    }:
+        return
+    node_run = _node_run(db, attempt.node_run_id)
+    run = _run(db, node_run.flow_run_id)
+    if run.run_mode == "AUTOMATIC" or run.state in {
+        FlowRunState.COMPLETED,
+        FlowRunState.CANCELLED,
+    }:
+        return
+    start_side = task_type in {"EVALUATE_READINESS", "START_RUNTIME"} or (
+        task_type == "RUN_GATE_POLICY" and payload.get("stage") == "START"
+    )
+    output_projection_error = task_type == "POLL_RUNTIME" and error.startswith(
+        (
+            "RUNTIME_OUTPUT_MISSING:",
+            "RUNTIME_OUTPUT_INVALID:",
+            "RUNTIME_OUTPUT_FILE_NOT_FOUND:",
+            "ARTIFACT_FILE_INVALID:",
+            "ARTIFACT_FILE_TOO_LARGE:",
+        )
+    )
+    attempt.state = AttemptState.START_BLOCKED if start_side else AttemptState.END_BLOCKED
+    attempt.runtime_phase = "FAILED"
+    attempt.error_code = (
+        "RUNTIME_OUTPUT_PROJECTION_FAILED" if output_projection_error else "RUNTIME_DELIVERY_FAILED"
+    )
+    attempt.error_detail = error[:2000]
+    attempt.state_version += 1
+    run.state = FlowRunState.WAITING_HUMAN
+    _event(
+        db,
+        run.id,
+        "RUNTIME_DELIVERY_FAILED",
+        {"task_type": task_type, "error": attempt.error_detail},
+        node_run.id,
+        attempt.id,
+    )
+    db.flush()
+
+
 def retry_runtime_cancel(
     db: Session, attempt_id: str, payload: RuntimeCancelRecoveryWrite, idempotency_key: str
 ) -> dict[str, Any]:

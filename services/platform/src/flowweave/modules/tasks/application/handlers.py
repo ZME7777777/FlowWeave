@@ -331,6 +331,9 @@ def record_terminal_failure(db: Session, task_id: str, error: str) -> None:
             dict(task.payload_json or {}),
             error,
         )
+    orchestration.record_stepwise_runtime_task_failure(
+        db, task.aggregate_id, task.task_type, dict(task.payload_json or {}), error
+    )
     if task.task_type == "CANCEL_RUNTIME":
         orchestration.record_runtime_task_failure(db, task.aggregate_id, error, terminal=True)
     elif task.task_type == "REPLACE_FLOW_RUN_RUNTIME":

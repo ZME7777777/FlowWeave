@@ -104,10 +104,17 @@ def _is_permanent_task_failure(task: Any, exception: Exception) -> bool:
 
     if not isinstance(exception, DomainError):
         return False
-    if task.task_type == "POLL_RUNTIME" and exception.code == "RUNTIME_OUTPUT_MISSING":
-        # OpenHands has already completed this turn and supplied the complete
-        # output map. Re-reading the same Finish result cannot create a
-        # required Artifact, so surface the blocked Attempt immediately.
+    if task.task_type == "POLL_RUNTIME" and exception.code in {
+        "RUNTIME_OUTPUT_MISSING",
+        "RUNTIME_OUTPUT_INVALID",
+        "RUNTIME_OUTPUT_FILE_NOT_FOUND",
+        "ARTIFACT_FILE_INVALID",
+        "ARTIFACT_FILE_TOO_LARGE",
+    }:
+        # OpenHands has already completed this turn. Re-reading the same
+        # formal completion cannot change its output contract or file bytes,
+        # so the Attempt must become visibly blocked instead of retrying the
+        # identical projection indefinitely.
         return True
     return (
         task.task_type == "CLEANUP_ENVIRONMENT_IMAGE"

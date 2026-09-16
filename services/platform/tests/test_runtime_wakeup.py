@@ -36,6 +36,71 @@ def test_runtime_output_missing_is_a_permanent_poll_failure():
     )
 
 
+def test_runtime_artifact_size_failure_is_a_permanent_poll_failure():
+    from flowweave.bootstrap.worker import _is_permanent_task_failure
+
+    oversized = DomainError(
+        "ARTIFACT_FILE_TOO_LARGE", "Artifact file must be between 1 byte and 25 MiB", 422
+    )
+
+    assert _is_permanent_task_failure(SimpleNamespace(task_type="POLL_RUNTIME"), oversized)
+    assert not _is_permanent_task_failure(SimpleNamespace(task_type="START_RUNTIME"), oversized)
+
+
+def test_stepwise_oversized_output_projection_becomes_visible_end_block(monkeypatch):
+    attempt = SimpleNamespace(
+        id="attempt-1",
+        node_run_id="node-run-1",
+        state=AttemptState.EXECUTING,
+        runtime_phase="RUNNING",
+        state_version=7,
+    )
+    node_run = SimpleNamespace(id="node-run-1", flow_run_id="run-1")
+    run = SimpleNamespace(id="run-1", run_mode="MANUAL", state="ACTIVE")
+    events: list[tuple[str, dict[str, object]]] = []
+
+    class Db:
+        def get(self, _model, identifier):
+            assert identifier == "attempt-1"
+            return attempt
+
+        def flush(self):
+            pass
+
+    monkeypatch.setattr(orchestration_service, "_node_run", lambda *_args: node_run)
+    monkeypatch.setattr(orchestration_service, "_run", lambda *_args: run)
+    monkeypatch.setattr(
+        orchestration_service,
+        "_event",
+        lambda _db, _run_id, event_type, payload, *_args: events.append((event_type, payload)),
+    )
+
+    orchestration_service.record_stepwise_runtime_task_failure(
+        Db(),
+        "attempt-1",
+        "POLL_RUNTIME",
+        {"poll_no": 1},
+        "ARTIFACT_FILE_TOO_LARGE: Artifact file must be between 1 byte and 25 MiB",
+    )
+
+    assert attempt.state == AttemptState.END_BLOCKED
+    assert attempt.runtime_phase == "FAILED"
+    assert attempt.error_code == "RUNTIME_OUTPUT_PROJECTION_FAILED"
+    assert attempt.state_version == 8
+    assert run.state == "WAITING_HUMAN"
+    assert events == [
+        (
+            "RUNTIME_DELIVERY_FAILED",
+            {
+                "task_type": "POLL_RUNTIME",
+                "error": (
+                    "ARTIFACT_FILE_TOO_LARGE: Artifact file must be between 1 byte and 25 MiB"
+                ),
+            },
+        )
+    ]
+
+
 def test_runtime_wakeup_timeout_enqueues_bounded_rest_reconciliation(monkeypatch):
     """A quiet wake-up channel cannot leave a completed Runtime unobserved."""
 
