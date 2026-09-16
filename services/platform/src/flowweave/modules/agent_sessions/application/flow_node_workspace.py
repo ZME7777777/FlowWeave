@@ -33,9 +33,6 @@ from flowweave.shared.observability import current_metrics
 
 _RUNTIME_PROJECT = PurePosixPath("/runtime/workspace/project")
 _MAX_INDEX_ENTRIES = 20_000
-_PREVIEW_CHUNK_BYTES = 512 * 1024
-# Candidate outputs are copied into the Artifact store as one immutable value.
-# This is intentionally independent from paged browser preview.
 _MAX_FILE_BYTES = 25 * 1024 * 1024
 
 AgentWorkDirectory = agent_workspace_host.AgentWorkDirectory
@@ -693,9 +690,7 @@ def read_file(
     binding_id: str | None,
     work_directory_id: str | None,
     path: str,
-    preview: bool = False,
-    offset: int = 0,
-) -> tuple[bytes, str, str, int | None, int | None]:
+) -> tuple[bytes, str, str]:
     project_root, runtime_root, _, _ = _authorize_entry(
         db, flow_run_id=flow_run_id, attempt_id=attempt_id
     )
@@ -710,27 +705,11 @@ def read_file(
     _validate_scope_roots(project_root, runtime_root, roots)
     candidate = _host_file(project_root, runtime_root, path, roots)
     try:
-        size = candidate.stat().st_size
+        content = candidate.read_bytes()
     except OSError as exc:
         raise DomainError("FLOW_RUN_WORKSPACE_FILE_NOT_FOUND", "文件不存在或不可读取", 404) from exc
-    if offset < 0 or offset > size:
-        raise DomainError("FLOW_RUN_WORKSPACE_PREVIEW_OFFSET_INVALID", "文件预览位置无效", 422)
-    try:
-        if preview:
-            with candidate.open("rb") as handle:
-                handle.seek(offset)
-                content = handle.read(_PREVIEW_CHUNK_BYTES)
-            if offset + len(content) < size:
-                newline = content.rfind(b"\n")
-                if newline >= 0:
-                    content = content[: newline + 1]
-                else:
-                    decoded = content.decode("utf-8", errors="ignore").encode("utf-8")
-                    content = decoded or content
-        else:
-            content = candidate.read_bytes()
-    except OSError as exc:
-        raise DomainError("FLOW_RUN_WORKSPACE_FILE_NOT_FOUND", "文件不存在或不可读取", 404) from exc
+    if len(content) > _MAX_FILE_BYTES:
+        raise DomainError("FLOW_RUN_WORKSPACE_FILE_TOO_LARGE", "文件超过预览大小限制", 422)
     attachment = (
         db.scalar(
             select(AgentConversationMessageAttachment)
@@ -749,8 +728,7 @@ def read_file(
         else mimetypes.guess_type(candidate.name)[0] or "application/octet-stream"
     )
     filename = attachment.filename if attachment else candidate.name
-    next_offset = offset + len(content) if preview and offset + len(content) < size else None
-    return content, content_type, filename, (size if preview else None), next_offset
+    return content, content_type, filename
 
 
 def delete_entries(

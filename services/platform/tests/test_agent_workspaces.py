@@ -81,26 +81,6 @@ def _agent_project_root(settings, db, workspace):
     return settings.workspace_root / allocation.relative_root / "workspace/project"
 
 
-def test_workspace_preview_chunk_stays_on_safe_utf8_and_line_boundaries(tmp_path):
-    path = tmp_path / "large-report.md"
-    content = ("一段完整的 Markdown 行，用于验证 UTF-8 和换行边界。\n".encode()) * 20_000
-    path.write_bytes(content)
-
-    first = workspace._preview_chunk(path, 0, len(content))
-    assert 0 < len(first) <= 512 * 1024
-    assert first.endswith(b"\n")
-    assert first.decode("utf-8")
-
-    second = workspace._preview_chunk(path, len(first), len(content))
-    assert second == content[len(first) : len(first) + len(second)]
-
-    single_line = ("界" * (512 * 1024)).encode()
-    path.write_bytes(single_line)
-    page = workspace._preview_chunk(path, 0, len(single_line))
-    assert 0 < len(page) < len(single_line)
-    assert page.decode("utf-8")
-
-
 def test_git_history_returns_reusable_object_ids_for_every_log_record(tmp_path):
     repository = tmp_path / "project"
     repository.mkdir()
@@ -1400,35 +1380,6 @@ def test_agent_workspace_files_and_terminal_revalidate_draft_directory(
         with pytest.raises(DomainError) as raised:
             workspace.details(db, item.id, work_directory_id=directory["id"])
         assert raised.value.code == "AGENT_WORK_DIRECTORY_NOT_FOUND"
-
-
-def test_agent_workspace_text_preview_is_paged_and_download_remains_complete(
-    settings, db_session_factory
-):
-    with settings_context(settings), db_session_factory() as db, runtime_context(MockRuntime()):
-        item = _ready_workspace_for_conversation(db)
-        project_root = _agent_project_root(settings, db, item)
-        runtime_path = "/runtime/workspace/project/large-report.md"
-        content = ("一段完整的 Markdown 行，用于验证 UTF-8 和换行边界。\n".encode()) * 20_000
-        (project_root / "large-report.md").write_bytes(content)
-
-        first = workspace.download(db, item.id, runtime_path, preview=True)
-        assert first.total_size == len(content)
-        assert first.next_offset == len(first.content)
-        assert 0 < len(first.content) <= 512 * 1024
-        assert first.content.endswith(b"\n")
-
-        second = workspace.download(
-            db, item.id, runtime_path, preview=True, offset=first.next_offset
-        )
-        assert (
-            second.content == content[first.next_offset : first.next_offset + len(second.content)]
-        )
-        assert second.next_offset is not None
-
-        downloaded = workspace.download(db, item.id, runtime_path)
-        assert downloaded.content == content
-        assert downloaded.next_offset is None
 
 
 def test_agent_workspace_creates_entries_at_the_authorized_root_and_subdirectory(

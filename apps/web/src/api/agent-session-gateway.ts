@@ -46,11 +46,6 @@ export type AgentSessionFileOptions = {
   workDirectoryId?: AgentSessionWorkDirectoryId;
   download?: boolean;
 };
-export type AgentSessionFilePreview = {
-  content: string;
-  totalBytes: number;
-  nextOffset?: number;
-};
 export type AgentSessionWorkspaceOptions = Omit<AgentSessionFileOptions, 'download'> & {
   fullIndex?: boolean;
 };
@@ -112,7 +107,7 @@ export interface AgentSessionApi {
   readonly gitDiff: (hostId: AgentSessionHostId, repositoryPath: string, commit: string, path: string, options?: Omit<AgentSessionFileOptions, 'download'>) => Promise<WorkspaceGitFileDiff>;
   readonly createWorkDirectory: (hostId: AgentSessionHostId, displayName: string, selectedPaths: string[]) => Promise<AgentSessionWorkDirectory>;
   readonly deleteWorkDirectory?: (hostId: AgentSessionHostId, workDirectoryId: AgentSessionWorkDirectoryId) => Promise<void>;
-  readonly filePreview: (hostId: AgentSessionHostId, path: string, options?: Omit<AgentSessionFileOptions, 'download'>, offset?: number, signal?: AbortSignal) => Promise<AgentSessionFilePreview>;
+  readonly filePreview: (hostId: AgentSessionHostId, path: string, options?: Omit<AgentSessionFileOptions, 'download'>, signal?: AbortSignal) => Promise<string>;
   readonly deleteFile?: (hostId: AgentSessionHostId, path: string, options?: Omit<AgentSessionFileOptions, 'download'> & { recursive?: boolean }) => Promise<void>;
   readonly createFile?: (hostId: AgentSessionHostId, parentPath: string, name: string, kind: 'FILE' | 'DIRECTORY', options?: Omit<AgentSessionFileOptions, 'download'>) => Promise<void>;
   readonly closeTerminal: (hostId: AgentSessionHostId, terminalInstanceId: string, options?: Omit<AgentSessionFileOptions, 'download'>) => Promise<void>;
@@ -265,17 +260,12 @@ export function flowNodeSessionGateway(
         nodeSessionApi.createWorkspaceEntry(flowRunId, attemptId, parentPath, name, kind, options),
       createWorkDirectory: async (_hostId, displayName, selectedPaths) =>
         nodeSessionApi.createWorkDirectory(flowRunId, attemptId, displayName, selectedPaths),
-      filePreview: async (_hostId, path, options, offset = 0, signal) => {
+      filePreview: async (_hostId, path, options, signal) => {
         const response = await fetch(nodeSessionApi.file(
-          flowRunId, attemptId, path, options?.bindingId, options?.workDirectoryId, false, true, offset,
+          flowRunId, attemptId, path, options?.bindingId, options?.workDirectoryId, false,
         ), { signal });
         if (!response.ok) throw new Error('Node workspace file preview is unavailable');
-        const nextOffset = response.headers.get('X-Preview-Next-Offset');
-        return {
-          content: await response.text(),
-          totalBytes: Number(response.headers.get('X-Preview-Total-Bytes') ?? 0),
-          nextOffset: nextOffset === null ? undefined : Number(nextOffset),
-        };
+        return response.text();
       },
       // Node terminals are browser-owned websocket instances. Closing a tab
       // closes its socket; there is no persistent Workspace terminal record.
