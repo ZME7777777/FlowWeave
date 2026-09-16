@@ -152,7 +152,7 @@ test('step configuration is saved before start and direct launch has its own tab
     port_mappings: [],
   };
   const stepSnapshot = { ...snapshot, definition: stepDefinition };
-  let currentRun = {
+  const currentRun = {
     ...run,
     snapshots: [stepSnapshot],
     active_snapshot_id: stepSnapshot.id,
@@ -226,7 +226,7 @@ test('step configuration is saved before start and direct launch has its own tab
   const stepwiseDialog = page.getByRole('dialog', { name: '新增逐步运行记录' });
   await stepwiseDialog.getByRole('textbox', { name: '逐步运行记录名称' }).fill('测试逐步记录');
   await stepwiseDialog.getByRole('button', { name: '创建记录' }).click();
-  await expect(page.locator('.manual-flow-record')).toContainText('测试逐步记录');
+  await expect(page.locator('.node-record-list')).toContainText('测试逐步记录');
   await page.locator('.run-graph-node').filter({ has: page.getByText('测试节点', { exact: true }) }).click();
   const consolePanel = page.locator('.node-console');
   await expect(consolePanel.locator('.node-console-mode-summary')).toContainText('逐步运行');
@@ -238,7 +238,7 @@ test('step configuration is saved before start and direct launch has its own tab
   }));
   expect(startBody).toBeUndefined();
 
-  await expect(page.locator('.manual-flow-record')).toContainText('测试逐步记录');
+  await expect(page.locator('.node-record-list')).toContainText('测试逐步记录');
   await page.locator('.run-graph-node').filter({ hasText: '测试节点' }).filter({ hasNotText: '测试节点2' }).click();
   await expect(page.getByTestId('attempt-state')).toHaveText('WAITING_START_CONFIRMATION');
   await page.getByRole('button', { name: '启动逐步运行 测试节点' }).click();
@@ -276,7 +276,7 @@ test('created attempts keep their inputs read-only after a start gate blocks the
   await page.goto('/');
   await page.getByRole('button', { name: '流程运行', exact: true }).click();
   await page.locator('.run-open').click();
-  await page.getByLabel('逐步运行节点记录').getByRole('button', { name: /测试节点/ }).click();
+  await page.locator('.run-graph-node').filter({ hasText: '测试节点' }).filter({ hasNotText: '测试节点2' }).click();
   await expect(page.getByTestId('attempt-state')).toHaveText('START_BLOCKED');
   const panel = page.locator('.attempt-control');
   await expect(panel.getByText('输入已随本轮创建冻结，仅供查看。')).toBeVisible();
@@ -472,15 +472,15 @@ test('a stepwise record keeps completed nodes readable while the next node is co
   await page.getByRole('button', { name: '流程运行', exact: true }).click();
   await page.locator('.run-open').click();
   await page.getByRole('tab', { name: '逐步运行' }).click();
-  await page.locator('.manual-flow-record-select').click();
-  await expect(page.locator('.manual-flow-record')).toContainText('批次异常收集');
+  await page.locator('.node-record-list .automatic-record-select').filter({ hasText: '批次异常收集' }).click();
+  await expect(page.locator('.run-workbench-record-summary')).toContainText('批次异常收集');
+  await expect(page.locator('.run-graph-node').filter({ hasText: '测试节点2' })).toContainText('当前流转节点');
 
-  const nodeHistory = page.getByLabel('逐步运行节点记录');
-  await nodeHistory.getByRole('button', { name: /测试节点 第 1 次执行/ }).click();
+  await page.locator('.run-graph-node').filter({ hasText: '测试节点' }).filter({ hasNotText: '测试节点2' }).click();
   await expect(page.getByTestId('attempt-state')).toHaveText('ACCEPTED');
   await expect(page.locator('.run-graph-node.snapshot-selected')).toContainText('测试节点');
 
-  await nodeHistory.getByRole('button', { name: /测试节点2 第 1 次执行/ }).click();
+  await page.locator('.run-graph-node').filter({ hasText: '测试节点2' }).click();
 
   const graph = page.locator('.run-graph');
   await expect(graph.locator('.run-graph-node.snapshot-selected')).toContainText('测试节点2');
@@ -562,17 +562,19 @@ test('an accepted legacy step remains readable before configuring its missing do
 });
 
 test('run rail keeps its controls fixed and pages records five at a time', async ({ page }) => {
-  const pagedNodeRuns = Array.from({ length: 6 }, (_, index) => ({
-    ...nodeRun,
-    id: `paged-node-run-${index + 1}`,
+  const pagedStepwiseRecords = Array.from({ length: 6 }, (_, index) => ({
+    ...run,
+    id: `paged-stepwise-record-${index + 1}`,
     name: `分页记录 ${index + 1}`,
-    sequence_no: index + 1,
-    attempts: [{ ...attempt, id: `paged-attempt-${index + 1}`, node_run_id: `paged-node-run-${index + 1}` }],
+    parent_flow_run_id: run.id,
+    node_runs: [],
+    artifacts: [],
+    progress: { accepted: 0, terminal: 0, active: 0 },
   }));
   const currentRun = {
     ...run,
-    node_runs: pagedNodeRuns,
-    progress: { accepted: 0, terminal: 0, active: pagedNodeRuns.length },
+    node_runs: [],
+    progress: { accepted: 0, terminal: 0, active: 0 },
   };
   await page.route('**/api/v1/**', async route => {
     const request = route.request();
@@ -582,7 +584,9 @@ test('run rail keeps its controls fixed and pages records five at a time', async
     if (path === '/api/v1/flow-runs' && request.method() === 'GET') return respond([currentRun]);
     if (path === '/api/v1/flows' && request.method() === 'GET') return respond([definition]);
     if (path === `/api/v1/flow-runs/${run.id}` && request.method() === 'GET') return respond(currentRun);
-    if (path === `/api/v1/flows/${definition.id}` || path === '/api/v1/terminal-environments'
+    if (path === `/api/v1/flows/${definition.id}`) return respond(definition);
+    if (path === `/api/v1/flow-runs/${run.id}/stepwise-runs` && request.method() === 'GET') return respond(pagedStepwiseRecords);
+    if (path === '/api/v1/terminal-environments'
       || path === '/api/v1/capabilities' || path === '/api/v1/capability-collections' || path === '/api/v1/model-providers') return respond([]);
     if (path === `/api/v1/flow-runs/${run.id}/automatic-runs/summaries`) return respond([]);
     return respond({ error: { code: 'RESOURCE_NOT_FOUND', message: `未配置测试路由：${path}`, details: {} } }, 404);
@@ -1312,7 +1316,11 @@ test('the step graph keeps the full persisted path while selecting node details'
     ...nodeRun, id: 'active-second', name: '正在执行的第二节点记录', flow_node_snapshot_key: 'second', sequence_no: 2,
     attempts: [{ ...attempt, id: 'active-second-attempt', node_run_id: 'active-second', state: 'EXECUTING' }],
   };
-  const currentRun = { ...run, node_runs: [completedFirst, activeSecond] };
+  const currentRun = { ...run, node_runs: [] };
+  const stepwiseRecord = {
+    ...run, id: 'stepwise-path-record', name: '完整逐步路径记录', parent_flow_run_id: run.id,
+    node_runs: [completedFirst, activeSecond],
+  };
   await page.route('**/api/v1/**', async route => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
@@ -1324,6 +1332,8 @@ test('the step graph keeps the full persisted path while selecting node details'
       || path === '/api/v1/capability-collections' || path === '/api/v1/model-providers') return respond([]);
     if (path === `/api/v1/flow-runs/${run.id}` && request.method() === 'GET') return respond(currentRun);
     if (path === `/api/v1/flows/${definition.id}`) return respond(definition);
+    if (path === `/api/v1/flow-runs/${run.id}/stepwise-runs` && request.method() === 'GET') return respond([stepwiseRecord]);
+    if (path === `/api/v1/flow-runs/${run.id}/stepwise-runs/${stepwiseRecord.id}` && request.method() === 'GET') return respond(stepwiseRecord);
     if (path === `/api/v1/flow-runs/${run.id}/automatic-runs`) return respond([]);
     return route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ error: { code: 'RESOURCE_NOT_FOUND', message: path, details: {} } }) });
   });
@@ -1331,15 +1341,16 @@ test('the step graph keeps the full persisted path while selecting node details'
   await page.goto('/');
   await page.getByRole('button', { name: '流程运行', exact: true }).click();
   await page.locator('.run-open').click();
+  await page.locator('.node-record-list .automatic-record-select').filter({ hasText: stepwiseRecord.name }).click();
 
   const graphNodes = page.locator('.run-graph-node');
-  await page.locator('.node-record-list .automatic-record-select').filter({ hasText: '已完成的首节点记录' }).click();
+  await page.locator('.run-graph-node').filter({ hasText: '测试节点' }).filter({ hasNotText: '测试节点2' }).click();
   await expect(graphNodes.nth(0)).toContainText('已完成');
-  await expect(graphNodes.nth(1)).toContainText('当前激活');
+  await expect(graphNodes.nth(1)).toContainText('正在执行');
 
-  await page.locator('.node-record-list .automatic-record-select').filter({ hasText: '正在执行的第二节点记录' }).click();
+  await page.locator('.run-graph-node').filter({ hasText: '测试节点2' }).click();
   await expect(graphNodes.nth(0)).toContainText('已完成');
-  await expect(graphNodes.nth(1)).toContainText('当前激活');
+  await expect(graphNodes.nth(1)).toContainText('正在执行');
 });
 
 test('selecting a historical attempt renders its own frozen graph snapshot', async ({ page }) => {
@@ -1370,7 +1381,11 @@ test('selecting a historical attempt renders its own frozen graph snapshot', asy
   };
   const currentRun = {
     ...run, active_snapshot_id: activeSnapshot.id, active_snapshot_version: activeSnapshot.version,
-    snapshots: [historicalSnapshot, activeSnapshot], node_runs: [historicalRecord],
+    snapshots: [historicalSnapshot, activeSnapshot], node_runs: [],
+  };
+  const stepwiseRecord = {
+    ...currentRun, id: 'historical-stepwise-record', name: '历史逐步运行记录', parent_flow_run_id: run.id,
+    node_runs: [historicalRecord],
   };
   await page.route('**/api/v1/**', async route => {
     const request = route.request();
@@ -1383,6 +1398,8 @@ test('selecting a historical attempt renders its own frozen graph snapshot', asy
       || path === '/api/v1/capability-collections' || path === '/api/v1/model-providers') return respond([]);
     if (path === `/api/v1/flow-runs/${run.id}` && request.method() === 'GET') return respond(currentRun);
     if (path === `/api/v1/flows/${definition.id}`) return respond(activeDefinition);
+    if (path === `/api/v1/flow-runs/${run.id}/stepwise-runs` && request.method() === 'GET') return respond([stepwiseRecord]);
+    if (path === `/api/v1/flow-runs/${run.id}/stepwise-runs/${stepwiseRecord.id}` && request.method() === 'GET') return respond(stepwiseRecord);
     if (path === `/api/v1/flow-runs/${run.id}/automatic-runs`) return respond([]);
     return route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ error: { code: 'RESOURCE_NOT_FOUND', message: path, details: {} } }) });
   });
@@ -1390,8 +1407,7 @@ test('selecting a historical attempt renders its own frozen graph snapshot', asy
   await page.goto('/');
   await page.getByRole('button', { name: '流程运行', exact: true }).click();
   await page.locator('.run-open').click();
-  await page.locator('.node-record-list .automatic-record-select').filter({ hasText: '历史执行记录' }).click();
-
+  await page.locator('.node-record-list .automatic-record-select').filter({ hasText: stepwiseRecord.name }).click();
   const graph = page.locator('.run-graph');
   await expect(graph).toContainText('历史冻结首节点');
   await expect(graph).toContainText('历史冻结次节点');
