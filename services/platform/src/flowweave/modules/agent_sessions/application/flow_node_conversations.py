@@ -143,6 +143,65 @@ def _accepts_queued_user_message(execution_status: str) -> bool:
     return execution_status.strip().lower() in {"running", "executing"}
 
 
+def _requires_native_condensation(runtime: Any, handle: RuntimeHandle) -> bool:
+    """Use only OpenHands' verified, frozen condenser threshold.
+
+    The model's physical context window is intentionally irrelevant here. The
+    native Conversation owns its current View usage and its frozen condenser
+    policy, so FlowWeave only decides whether it is safe to call the formal
+    ``condense`` endpoint at an idle delivery boundary.
+    """
+
+    context = runtime.conversation_context(handle)
+    used_tokens = context.get("used_tokens")
+    max_tokens = context.get("condenser_max_tokens")
+    if not isinstance(used_tokens, int) or isinstance(used_tokens, bool) or used_tokens < 0:
+        return False
+    if not isinstance(max_tokens, int) or isinstance(max_tokens, bool) or max_tokens <= 0:
+        return False
+    return used_tokens >= max_tokens
+
+
+def _condense_before_node_message(runtime: Any, handle: RuntimeHandle) -> bool:
+    """Complete one native condensation before appending a new user event.
+
+    ``POST /condense`` is OpenHands' only supported compaction operation. Its
+    HTTP response merely accepts the request, therefore require a newer formal
+    ``CONDENSATION_COMPLETED`` event before the current message may be sent.
+    This preserves the native event tree and guarantees that the next turn is
+    evaluated against the compacted View.
+    """
+
+    if not _requires_native_condensation(runtime, handle):
+        return False
+    before = complete_active_branch(runtime.read_active_events, handle)
+    before_cursor = before.cursor
+    runtime.condense(handle)
+    after = complete_active_branch(runtime.read_active_events, handle)
+    if not after.cursor or after.cursor == before_cursor:
+        raise DomainError(
+            "AGENT_CONDENSATION_PENDING",
+            "OpenHands 正在压缩上下文，请稍后自动继续当前消息",
+            503,
+        )
+    if not any(
+        event.event_type == "CONDENSATION_COMPLETED" and event.cursor != before_cursor
+        for event in after.events
+    ):
+        raise DomainError(
+            "AGENT_CONDENSATION_PENDING",
+            "OpenHands 尚未确认上下文压缩完成，请稍后自动继续当前消息",
+            503,
+        )
+    if not runtime.can_accept_input(handle):
+        raise DomainError(
+            "AGENT_CONDENSATION_PENDING",
+            "OpenHands 已完成上下文压缩，正在恢复会话，请稍后自动继续当前消息",
+            503,
+        )
+    return True
+
+
 def _attempt(db: Session, attempt_id: str) -> NodeAttempt:
     item = db.get(NodeAttempt, attempt_id)
     if item is None:
@@ -2298,6 +2357,13 @@ def dispatch_running_node_message(
     queued_during_turn = not readiness.ready
     if queued_during_turn and not _accepts_queued_user_message(readiness.execution_status):
         raise DomainError("AGENT_CONVERSATION_BUSY", "Agent 正在处理停止或确认请求，请稍候", 409)
+    compacted = False
+    if not queued_during_turn:
+        if prepared.provider_error is not None:
+            raise prepared.provider_error
+        if prepared.provider is not None:
+            runtime.switch_model(prepared.handle, prepared.provider)
+        compacted = _condense_before_node_message(runtime, prepared.handle)
     references = resolve_conversation_references(runtime, prepared.handle, prepared.references)
     prompt, image_urls = message_payload(
         prepared.content,
@@ -2306,12 +2372,6 @@ def dispatch_running_node_message(
         prepared.workspace_references,
         prepared.annotations,
     )
-    if not queued_during_turn:
-        if prepared.provider_error is not None:
-            raise prepared.provider_error
-        if prepared.provider is not None:
-            runtime.switch_model(prepared.handle, prepared.provider)
-    compacted = False
     diagnostic = getattr(runtime, "log_delivery_diagnostic", None)
     if callable(diagnostic):
         diagnostic(
@@ -2448,6 +2508,9 @@ def send_node_message(
         provider = provider_for_config(db, config_from_binding(db, binding))
         if provider is not None:
             runtime.switch_model(handle, provider)
+        compacted = _condense_before_node_message(runtime, handle)
+    if queued_during_turn:
+        compacted = False
     result = runtime.send_message(handle, prompt, image_urls)
     _observe_task_watchdogs_after_send(db, binding, handle)
     _ensure_blocked_attempt_wakeup(
@@ -2464,7 +2527,7 @@ def send_node_message(
     return {
         "accepted": True,
         "cursor": result.cursor,
-        "compacted": False,
+        "compacted": compacted,
         "queued_during_turn": queued_during_turn,
     }
 

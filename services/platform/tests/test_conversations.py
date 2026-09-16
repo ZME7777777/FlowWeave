@@ -1679,6 +1679,9 @@ def test_idle_node_message_dispatch_rebinds_then_sends_without_database(
         def input_readiness(self, _handle: RuntimeHandle) -> RuntimeInputReadiness:
             return RuntimeInputReadiness(ready=True, execution_status="idle")
 
+        def can_accept_input(self, _handle: RuntimeHandle) -> bool:
+            return True
+
         def switch_model(self, _handle: RuntimeHandle, actual_provider: RuntimeProvider) -> None:
             assert actual_provider is provider
             calls.append("switch")
@@ -1706,6 +1709,161 @@ def test_idle_node_message_dispatch_rebinds_then_sends_without_database(
     assert queued_during_turn is False
     assert compacted is False
     assert calls == ["switch", "send"]
+
+
+def test_idle_node_message_dispatch_condenses_at_the_frozen_native_threshold(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = RuntimeProvider(
+        provider_id="provider",
+        base_url="https://models.example.test/v1",
+        model="test-model",
+        api_key="test-key",
+    )
+    prepared = flow_node_conversations.PreparedRunningNodeMessage(
+        flow_run_id="flow-run",
+        attempt_id="attempt",
+        binding_id="binding",
+        openhands_conversation_id="native-conversation",
+        handle=RuntimeHandle(job_id="job", conversation_id="native-conversation"),
+        provider=provider,
+        provider_error=None,
+        content="压缩完成后继续当前任务",
+        attachments=(),
+        references=(),
+        workspace_references=(),
+        annotations=(),
+    )
+    calls: list[str] = []
+
+    class ThresholdRuntime:
+        events: tuple[RuntimeEvent, ...] = (
+            RuntimeEvent(
+                cursor="assistant-before-condense",
+                event_type="MESSAGE",
+                payload={"source": "agent", "parent_id": "__root__"},
+            ),
+        )
+
+        def input_readiness(self, _handle: RuntimeHandle) -> RuntimeInputReadiness:
+            return RuntimeInputReadiness(ready=True, execution_status="idle")
+
+        def can_accept_input(self, _handle: RuntimeHandle) -> bool:
+            return True
+
+        def switch_model(self, _handle: RuntimeHandle, actual_provider: RuntimeProvider) -> None:
+            assert actual_provider is provider
+            calls.append("switch")
+
+        def conversation_context(self, _handle: RuntimeHandle) -> dict[str, int]:
+            return {"used_tokens": 256_000, "condenser_max_tokens": 256_000}
+
+        def read_active_events(self, _handle: RuntimeHandle) -> RuntimeEventBatch:
+            return RuntimeEventBatch(
+                events=self.events,
+                cursor=self.events[-1].cursor,
+            )
+
+        def condense(self, _handle: RuntimeHandle) -> RuntimeResult:
+            calls.append("condense")
+            self.events += (
+                RuntimeEvent(
+                    cursor="condensation-request",
+                    event_type="CONDENSATION_REQUESTED",
+                    payload={"parent_id": "assistant-before-condense"},
+                ),
+                RuntimeEvent(
+                    cursor="condensation-completed",
+                    event_type="CONDENSATION_COMPLETED",
+                    payload={"parent_id": "condensation-request"},
+                ),
+            )
+            return RuntimeResult(status="IDLE", cursor="condensation-completed")
+
+        def send_message(
+            self, _handle: RuntimeHandle, content: str, _images: tuple[str, ...]
+        ) -> RuntimeResult:
+            assert content == "压缩完成后继续当前任务"
+            calls.append("send")
+            return RuntimeResult(status="RUNNING", cursor="native-user-event")
+
+    monkeypatch.setattr(flow_node_conversations, "get_runtime", lambda: ThresholdRuntime())
+
+    result, queued_during_turn, compacted = flow_node_conversations.dispatch_running_node_message(
+        prepared
+    )
+
+    assert result == RuntimeResult(status="RUNNING", cursor="native-user-event")
+    assert queued_during_turn is False
+    assert compacted is True
+    assert calls == ["switch", "condense", "send"]
+
+
+def test_idle_node_message_dispatch_does_not_send_before_condensation_completes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = RuntimeProvider(
+        provider_id="provider",
+        base_url="https://models.example.test/v1",
+        model="test-model",
+        api_key="test-key",
+    )
+    prepared = flow_node_conversations.PreparedRunningNodeMessage(
+        flow_run_id="flow-run",
+        attempt_id="attempt",
+        binding_id="binding",
+        openhands_conversation_id="native-conversation",
+        handle=RuntimeHandle(job_id="job", conversation_id="native-conversation"),
+        provider=provider,
+        provider_error=None,
+        content="不能抢先发送",
+        attachments=(),
+        references=(),
+        workspace_references=(),
+        annotations=(),
+    )
+
+    class PendingRuntime:
+        sent = False
+
+        def input_readiness(self, _handle: RuntimeHandle) -> RuntimeInputReadiness:
+            return RuntimeInputReadiness(ready=True, execution_status="idle")
+
+        def switch_model(self, _handle: RuntimeHandle, _provider: RuntimeProvider) -> None:
+            return None
+
+        def conversation_context(self, _handle: RuntimeHandle) -> dict[str, int]:
+            return {"used_tokens": 256_000, "condenser_max_tokens": 256_000}
+
+        def read_active_events(self, _handle: RuntimeHandle) -> RuntimeEventBatch:
+            return RuntimeEventBatch(
+                events=(
+                    RuntimeEvent(
+                        cursor="assistant-before-condense",
+                        event_type="MESSAGE",
+                        payload={"source": "agent", "parent_id": "__root__"},
+                    ),
+                ),
+                cursor="assistant-before-condense",
+            )
+
+        def condense(self, _handle: RuntimeHandle) -> RuntimeResult:
+            return RuntimeResult(status="RUNNING", cursor="assistant-before-condense")
+
+        def send_message(
+            self, _handle: RuntimeHandle, _content: str, _images: tuple[str, ...]
+        ) -> RuntimeResult:
+            self.sent = True
+            return RuntimeResult(status="RUNNING", cursor="unexpected")
+
+    runtime = PendingRuntime()
+    monkeypatch.setattr(flow_node_conversations, "get_runtime", lambda: runtime)
+
+    with pytest.raises(DomainError) as caught:
+        flow_node_conversations.dispatch_running_node_message(prepared)
+
+    assert caught.value.code == "AGENT_CONDENSATION_PENDING"
+    assert runtime.sent is False
 
 
 def test_node_message_model_validation_waits_for_an_idle_rebind(
