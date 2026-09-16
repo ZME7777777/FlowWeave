@@ -1597,6 +1597,31 @@ export function WorkbenchPage() {
   ) ?? (!selectedNodeRunId ? activeAutomaticNodeRun : undefined);
   const selectedAutomaticAttempt = selectedAutomaticNodeRun?.attempts.find(item => item.id === selectedAttemptId)
     ?? selectedAutomaticNodeRun?.attempts.at(-1);
+  const selectedExecutionRecord = mode === 'AUTOMATIC'
+    ? selectedAutomatic
+    : mode === 'MANUAL'
+      ? selectedStepwise
+      : undefined;
+  const activeExecutionNodeRun = mode === 'AUTOMATIC'
+    ? activeAutomaticNodeRun
+    : mode === 'MANUAL'
+      ? activeFlowNodeRun(nodeRecords)
+      : undefined;
+  const selectedExecutionNodeRun = mode === 'AUTOMATIC'
+    ? selectedAutomaticNodeRun
+    : mode === 'MANUAL'
+      ? nodeRun
+      : undefined;
+  const selectedExecutionAttempt = mode === 'AUTOMATIC'
+    ? selectedAutomaticAttempt
+    : mode === 'MANUAL'
+      ? attempt
+      : undefined;
+  const selectedExecutionSessionReturn = mode === 'AUTOMATIC' && selectedAutomatic
+    ? { runId: parentRun.id, mode: 'AUTOMATIC' as const, automaticRecordId: selectedAutomatic.id }
+    : mode === 'MANUAL' && selectedStepwise
+      ? { runId: parentRun.id, mode: 'MANUAL' as const, stepwiseRecordId: selectedStepwise.id }
+      : undefined;
   const clearSelection = () => {
     setSelectedNodeKey(undefined);
     setSelectedAutomaticId(undefined);
@@ -1676,10 +1701,8 @@ export function WorkbenchPage() {
     }
   };
   const automaticNeutralView = mode === 'AUTOMATIC' && !selectedAutomatic;
-  const graphRun = mode === 'AUTOMATIC' && selectedAutomatic ? selectedAutomatic : run;
-  const selectedExecutionSnapshotId = mode === 'AUTOMATIC'
-    ? selectedAutomaticAttempt?.snapshot_id
-    : attempt?.snapshot_id;
+  const graphRun = selectedExecutionRecord ?? run;
+  const selectedExecutionSnapshotId = selectedExecutionAttempt?.snapshot_id ?? attempt?.snapshot_id;
   const graphSnapshotId = selectedExecutionSnapshotId;
   const graphReachableKeys = mode === 'AUTOMATIC' && selectedAutomatic
       ? selectedAutomatic.reachable_node_keys
@@ -1697,9 +1720,7 @@ export function WorkbenchPage() {
     ? readyAutomaticPlanKeys(selectedAutomatic) : new Set<string>();
   const missingAutomaticPlanKeys = mode === 'AUTOMATIC' && selectedAutomatic?.state === 'DRAFT'
     ? selectedAutomatic.readiness.issues.map(issue => issue.node_key) : [];
-  const graphSelectedKey = selectedNodeKey ?? (mode === 'AUTOMATIC'
-    ? activeAutomaticNodeRun?.flow_node_snapshot_key
-    : nodeRun?.flow_node_snapshot_key);
+  const graphSelectedKey = selectedNodeKey ?? activeExecutionNodeRun?.flow_node_snapshot_key ?? nodeRun?.flow_node_snapshot_key;
   // A step run is one FlowRun that pauses at each node. Its graph remains
   // scoped to the selected record's full persisted path, exactly as a
   // continuous record does. Direct launches are independent single-node
@@ -1708,7 +1729,7 @@ export function WorkbenchPage() {
     ? { ...categorizedRun, node_runs: [nodeRun] }
     : undefined;
   const showExecutionState = mode === 'MANUAL'
-    ? Boolean(selectedStepwise)
+    ? Boolean(selectedExecutionRecord)
     : mode === 'DIRECT'
       ? Boolean(nodeRun)
       : Boolean(selectedAutomatic && selectedAutomatic.state !== 'DRAFT');
@@ -1721,7 +1742,7 @@ export function WorkbenchPage() {
       : selectedAutomatic
         ? '当前显示该连续运行记录的持久执行状态；灰色节点尚未激活。'
       : '未选择连续运行记录，当前显示中性流程定义；请点击左侧“新增”。';
-  const hasPanel = Boolean((mode === 'AUTOMATIC' && selectedAutomaticId) || (nodeRun && attempt) || selectedNode);
+  const hasPanel = Boolean((mode === 'AUTOMATIC' && selectedAutomaticId) || (selectedExecutionNodeRun && selectedExecutionAttempt) || (nodeRun && attempt) || selectedNode);
   const recordSummary = mode === 'AUTOMATIC'
     ? (selectedAutomatic?.name ?? automaticRecords.find(record => record.id === selectedAutomaticId)?.name
       ? { name: selectedAutomatic?.name ?? automaticRecords.find(record => record.id === selectedAutomaticId)?.name ?? '', label: '当前连续运行记录', state: selectedAutomatic?.state ?? automaticRecords.find(record => record.id === selectedAutomaticId)?.state }
@@ -1937,6 +1958,26 @@ export function WorkbenchPage() {
       void stepwiseDetail.refetch();
     });
   };
+  const refreshExecutionRecord = () => {
+    if (mode === 'AUTOMATIC') {
+      void automaticDetail.refetch();
+      void automatic.refetch();
+      return;
+    }
+    void stepwiseDetail.refetch();
+  };
+  const executionDetailPanel = selectedExecutionRecord && selectedExecutionNodeRun && selectedExecutionAttempt
+    ? <AttemptPanel
+        run={selectedExecutionRecord}
+        nodeRun={selectedExecutionNodeRun}
+        attempt={selectedExecutionAttempt}
+        refresh={refreshExecutionRecord}
+        navigate={mode === 'AUTOMATIC' ? refreshExecutionRecord : navigate}
+        sessionReturnContext={selectedExecutionSessionReturn}
+        automaticArtifactScope={mode === 'AUTOMATIC' ? { parentRunId: parentRun.id, recordId: selectedExecutionRecord.id } : undefined}
+        onStartStepwise={mode === 'MANUAL' ? () => startStepwiseNode(selectedExecutionNodeRun) : undefined}
+      />
+    : undefined;
   const rail = <RunRail
     run={run}
     mode={mode}
@@ -1977,11 +2018,11 @@ export function WorkbenchPage() {
           {(run.state === 'COMPLETED' || run.state === 'CANCELLED') && <TerminalRunDelete run={run} onDeleted={() => navigate(undefined, 'delete')}/>}
         </div>
         {mode !== 'AUTOMATIC' && run.state !== 'COMPLETED' && run.state !== 'CANCELLED' && <SnapshotSync run={run} currentVersion={flow.data?.row_version} onSynced={updated => navigate(updated, 'sync')}/>}
-        <SnapshotGraph run={graphRun} snapshotId={graphSnapshotId} selectedKey={graphSelectedKey} activeNodeRunId={mode === 'AUTOMATIC' ? activeAutomaticNodeRun?.id : mode === 'MANUAL' ? activeFlowNodeRun(nodeRecords)?.id : undefined} reachableKeys={graphReachableKeys} selectableKeys={graphSelectableKeys} configuredPlanKeys={configuredAutomaticPlanKeys} executionRun={mode === 'AUTOMATIC' ? selectedAutomatic : mode === 'MANUAL' ? categorizedRun : directExecutionRun} missingPlanKeys={missingAutomaticPlanKeys} showExecutionState={showExecutionState} neutralHelp={neutralGraphHelp} neutralView={automaticNeutralView} onClearSelection={clearSelection} onSelect={selectGraphNode}/>
+        <SnapshotGraph run={graphRun} snapshotId={graphSnapshotId} selectedKey={graphSelectedKey} activeNodeRunId={activeExecutionNodeRun?.id} reachableKeys={graphReachableKeys} selectableKeys={graphSelectableKeys} configuredPlanKeys={configuredAutomaticPlanKeys} executionRun={selectedExecutionRecord ?? directExecutionRun} missingPlanKeys={missingAutomaticPlanKeys} showExecutionState={showExecutionState} neutralHelp={neutralGraphHelp} neutralView={automaticNeutralView} onClearSelection={clearSelection} onSelect={selectGraphNode}/>
       </main>
       {hasPanel && <aside className="run-side-panel">
         <div className="run-side-resizer" role="separator" aria-label="调整右侧栏宽度" aria-orientation="vertical" onPointerDown={beginSideResize}/>
-        {mode === 'AUTOMATIC' && selectedAutomaticId ? selectedAutomatic ? selectedAutomatic.state === 'DRAFT' ? <AutomaticRecordEditor key={selectedAutomatic.id} parent={parentRun} record={selectedAutomatic} selectedKey={selectedNodeKey} onDraft={retainAutomaticDraft} onSaved={replaceAutomatic}/> : selectedAutomatic.automatic_block?.code === 'AUTOMATIC_PLAN_GATE_ID_MISSING' ? <AutomaticLegacyPlanRecoveryPanel parentRunId={parentRun.id} record={selectedAutomatic} onRecovered={updated => { replaceAutomatic(updated); void automaticDetail.refetch(); void automatic.refetch(); }}/> : selectedAutomaticNodeRun && selectedAutomaticAttempt ? <AttemptPanel run={selectedAutomatic} nodeRun={selectedAutomaticNodeRun} attempt={selectedAutomaticAttempt} refresh={() => { void automaticDetail.refetch(); void automatic.refetch(); }} navigate={() => { void automaticDetail.refetch(); void automatic.refetch(); }} sessionReturnContext={{ runId: parentRun.id, mode: 'AUTOMATIC', automaticRecordId: selectedAutomatic.id }} automaticArtifactScope={{ parentRunId: parentRun.id, recordId: selectedAutomatic.id }}/> : <aside className="action-panel"><div className="action-content automatic-empty">该节点尚未激活。连续调度到达后会在这里显示执行、门禁和人工处理入口。</div></aside> : automaticDetail.isError ? <aside className="action-panel"><div className="action-content error">连续运行详情加载失败：{automaticDetail.error.message}</div></aside> : <aside className="action-panel"><div className="action-content automatic-empty">加载连续运行详情…</div></aside> : nodeRun && attempt ? <AttemptPanel run={categorizedRun} nodeRun={nodeRun} attempt={attempt} refresh={() => { void stepwiseDetail.refetch(); }} navigate={navigate} sessionReturnContext={mode === 'MANUAL' && selectedStepwise ? { runId: parentRun.id, mode: 'MANUAL', stepwiseRecordId: selectedStepwise.id } : { runId: parentRun.id, mode }} onStartStepwise={mode === 'MANUAL' ? () => startStepwiseNode(nodeRun) : undefined}/> : selectedNode ? <NodeConsole run={categorizedRun} node={selectedNode} startupMode={mode === 'DIRECT' ? 'CHAT' : 'PROMPT'} pendingNodeRun={pendingConfigurationNodeRun} initialBindings={inheritedTransitionBindings} refresh={() => { void stepwiseDetail.refetch(); }} onActivated={created => { setSelectedNodeKey(undefined); navigate(created, 'activate'); }} onSelectExecution={item => { setSelectedNodeKey(item.flow_node_snapshot_key); selectExecution(item.id, item.attempts.at(-1)?.id); }}/> : null}
+        {mode === 'AUTOMATIC' && selectedAutomaticId ? selectedAutomatic ? selectedAutomatic.state === 'DRAFT' ? <AutomaticRecordEditor key={selectedAutomatic.id} parent={parentRun} record={selectedAutomatic} selectedKey={selectedNodeKey} onDraft={retainAutomaticDraft} onSaved={replaceAutomatic}/> : selectedAutomatic.automatic_block?.code === 'AUTOMATIC_PLAN_GATE_ID_MISSING' ? <AutomaticLegacyPlanRecoveryPanel parentRunId={parentRun.id} record={selectedAutomatic} onRecovered={updated => { replaceAutomatic(updated); void automaticDetail.refetch(); void automatic.refetch(); }}/> : executionDetailPanel ?? <aside className="action-panel"><div className="action-content automatic-empty">该节点尚未激活。连续调度到达后会在这里显示执行、门禁和人工处理入口。</div></aside> : automaticDetail.isError ? <aside className="action-panel"><div className="action-content error">连续运行详情加载失败：{automaticDetail.error.message}</div></aside> : <aside className="action-panel"><div className="action-content automatic-empty">加载连续运行详情…</div></aside> : executionDetailPanel ?? (nodeRun && attempt ? <AttemptPanel run={categorizedRun} nodeRun={nodeRun} attempt={attempt} refresh={() => { void stepwiseDetail.refetch(); }} navigate={navigate} sessionReturnContext={mode === 'MANUAL' && selectedStepwise ? { runId: parentRun.id, mode: 'MANUAL', stepwiseRecordId: selectedStepwise.id } : { runId: parentRun.id, mode }} onStartStepwise={mode === 'MANUAL' ? () => startStepwiseNode(nodeRun) : undefined}/> : selectedNode ? <NodeConsole run={categorizedRun} node={selectedNode} startupMode={mode === 'DIRECT' ? 'CHAT' : 'PROMPT'} pendingNodeRun={pendingConfigurationNodeRun} initialBindings={inheritedTransitionBindings} refresh={() => { void stepwiseDetail.refetch(); }} onActivated={created => { setSelectedNodeKey(undefined); navigate(created, 'activate'); }} onSelectExecution={item => { setSelectedNodeKey(item.flow_node_snapshot_key); selectExecution(item.id, item.attempts.at(-1)?.id); }}/> : null)}
       </aside>}
     </section>
     {copyTarget && <CopyRecordDialog mode={copyTarget.mode} sourceName={copyTarget.mode === 'MANUAL' ? nodeRunName(run, copyTarget.record) : copyTarget.record.name} onClose={() => setCopyTarget(undefined)} onExport={copyTarget.mode === 'AUTOMATIC' ? target => exportAutomaticRecords([copyTarget.record.id], target) : undefined} onCopy={async name => {
