@@ -3275,7 +3275,7 @@ def test_manual_runtime_output_projection_failure_becomes_visible_block(
         db.add(task)
         db.flush()
         record_terminal_failure(
-            db, task.id, "ARTIFACT_FILE_TOO_LARGE: Artifact file must be between 1 byte and 25 MiB"
+            db, task.id, "ARTIFACT_FILE_TOO_LARGE: Artifact file must be between 1 byte and 100 MiB"
         )
         db.commit()
 

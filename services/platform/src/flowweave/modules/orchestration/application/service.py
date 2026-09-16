@@ -619,7 +619,10 @@ class ArtifactContentReference:
     filename: str
 
 
-_MAX_ARTIFACT_FILE_BYTES = 25 * 1024 * 1024
+# Node outputs are copied into the Artifact store as immutable FlowRun inputs
+# for downstream nodes. Keep this above the interactive upload limit without
+# making one completion projection unbounded.
+_MAX_ARTIFACT_FILE_BYTES = 100 * 1024 * 1024
 
 
 def prepare_artifact(payload: ArtifactWrite, artifact_id: str | None = None) -> PreparedArtifact:
@@ -665,7 +668,7 @@ def prepare_file_artifact(
     if not content or len(content) > _MAX_ARTIFACT_FILE_BYTES:
         raise DomainError(
             "ARTIFACT_FILE_TOO_LARGE",
-            "Artifact file must be between 1 byte and 25 MiB",
+            "Artifact file must be between 1 byte and 100 MiB",
             422,
             {"max_bytes": _MAX_ARTIFACT_FILE_BYTES},
         )

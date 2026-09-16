@@ -40,11 +40,16 @@ def test_runtime_artifact_size_failure_is_a_permanent_poll_failure():
     from flowweave.bootstrap.worker import _is_permanent_task_failure
 
     oversized = DomainError(
-        "ARTIFACT_FILE_TOO_LARGE", "Artifact file must be between 1 byte and 25 MiB", 422
+        "ARTIFACT_FILE_TOO_LARGE", "Artifact file must be between 1 byte and 100 MiB", 422
     )
 
     assert _is_permanent_task_failure(SimpleNamespace(task_type="POLL_RUNTIME"), oversized)
     assert not _is_permanent_task_failure(SimpleNamespace(task_type="START_RUNTIME"), oversized)
+
+
+def test_node_artifact_file_limit_is_100_mib():
+    assert orchestration_service._MAX_ARTIFACT_FILE_BYTES == 100 * 1024 * 1024
+    assert 26_608_720 <= orchestration_service._MAX_ARTIFACT_FILE_BYTES
 
 
 def test_stepwise_oversized_output_projection_becomes_visible_end_block(monkeypatch):
@@ -80,7 +85,7 @@ def test_stepwise_oversized_output_projection_becomes_visible_end_block(monkeypa
         "attempt-1",
         "POLL_RUNTIME",
         {"poll_no": 1},
-        "ARTIFACT_FILE_TOO_LARGE: Artifact file must be between 1 byte and 25 MiB",
+        "ARTIFACT_FILE_TOO_LARGE: Artifact file must be between 1 byte and 100 MiB",
     )
 
     assert attempt.state == AttemptState.END_BLOCKED
@@ -94,7 +99,7 @@ def test_stepwise_oversized_output_projection_becomes_visible_end_block(monkeypa
             {
                 "task_type": "POLL_RUNTIME",
                 "error": (
-                    "ARTIFACT_FILE_TOO_LARGE: Artifact file must be between 1 byte and 25 MiB"
+                    "ARTIFACT_FILE_TOO_LARGE: Artifact file must be between 1 byte and 100 MiB"
                 ),
             },
         )
