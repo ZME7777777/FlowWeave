@@ -14,9 +14,11 @@ interface WorkbenchState {
   /** Browser-history restoration only; never persisted as a deep link. */
   selectedWorkbenchMode?: 'MANUAL' | 'AUTOMATIC';
   selectedAutomaticRecordId?: string;
+  selectedStepwiseRecordId?: string;
   setView: (view: ViewName) => void;
   openRun: (runId: string, nodeRunId?: string) => void;
   openAutomaticRecord: (parentRunId: string, recordId: string, nodeRunId?: string, attemptId?: string) => void;
+  openStepwiseRecord: (parentRunId: string, recordId: string, nodeRunId?: string, attemptId?: string) => void;
   selectNodeRun: (id: string) => void;
   selectAttempt: (id: string) => void;
   selectExecution: (nodeRunId: string, attemptId?: string) => void;
@@ -66,11 +68,15 @@ export const useWorkbenchStore = create<WorkbenchState>()(
       setView: view => set({ view }),
       openRun: (selectedRunId, selectedNodeRunId) => set({
         view: 'workbench', selectedRunId, selectedNodeRunId, selectedAttemptId: undefined,
-        selectedWorkbenchMode: undefined, selectedAutomaticRecordId: undefined,
+        selectedWorkbenchMode: undefined, selectedAutomaticRecordId: undefined, selectedStepwiseRecordId: undefined,
       }),
       openAutomaticRecord: (selectedRunId, selectedAutomaticRecordId, selectedNodeRunId, selectedAttemptId) => set({
         view: 'workbench', selectedRunId, selectedNodeRunId, selectedAttemptId,
-        selectedWorkbenchMode: 'AUTOMATIC', selectedAutomaticRecordId,
+        selectedWorkbenchMode: 'AUTOMATIC', selectedAutomaticRecordId, selectedStepwiseRecordId: undefined,
+      }),
+      openStepwiseRecord: (selectedRunId, selectedStepwiseRecordId, selectedNodeRunId, selectedAttemptId) => set({
+        view: 'workbench', selectedRunId, selectedNodeRunId, selectedAttemptId,
+        selectedWorkbenchMode: 'MANUAL', selectedAutomaticRecordId: undefined, selectedStepwiseRecordId,
       }),
       selectNodeRun: selectedNodeRunId => set({ selectedNodeRunId, selectedAttemptId: undefined }),
       selectAttempt: selectedAttemptId => set({ selectedAttemptId }),

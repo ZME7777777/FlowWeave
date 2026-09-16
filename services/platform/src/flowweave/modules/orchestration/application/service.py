@@ -131,6 +131,7 @@ from flowweave.shared.schemas import (
     RuntimeCancelRecoveryWrite,
     RuntimeCompletionReconciliationWrite,
     RuntimeConfirmationDecisionWrite,
+    StepwiseRunRecordWrite,
     SyncSnapshotWrite,
 )
 from flowweave.shared.settings import get_settings
@@ -3989,6 +3990,151 @@ def start_flow(
         )
     finish(db)
     return run_detail(db, run.id)
+
+
+def _create_stepwise_record_runtime(
+    db: Session, run: FlowRun, environment: EnvironmentVersion, snapshot: RunSnapshot
+) -> None:
+    """Allocate the record-owned Runtime before any node configuration.
+
+    A stepwise record is a complete execution record, not a NodeRun label.
+    Preallocating its managed Runtime is the same stable lifecycle contract as
+    a top-level FlowRun: later N1/N2 conversations share this record's
+    workspace, while separate records remain isolated.
+    """
+
+    sandboxes.allocate_flow_run_runtime(db, run.id)
+    allocation = sandboxes.runtime_allocation_for_flow_run(
+        db, run.id, manifest_digest=snapshot.runtime_manifest_hash
+    )
+    sandboxes.ensure_flow_run_runtime_session(
+        db,
+        flow_run_id=run.id,
+        environment_version_id=environment.id,
+        runtime_image_digest=environment.image_digest,
+        workspace_allocation=allocation,
+    )
+    if get_settings().runtime_adapter != "mock":
+        task = enqueue(
+            db,
+            task_type="PROVISION_FLOW_RUN_RUNTIME",
+            aggregate_type="FLOW_RUN",
+            aggregate_id=run.id,
+            idempotency_key=f"provision-flow-run-runtime:{run.id}",
+        )
+        task.max_attempts = max(task.max_attempts, 20)
+
+
+def create_nested_stepwise_run_record(
+    db: Session, parent_run_id: str, payload: StepwiseRunRecordWrite
+) -> dict[str, Any]:
+    """Create one empty, manually advanced execution record.
+
+    The parent is only the workbench directory. The returned child is the
+    execution authority for all of its NodeRuns, Attempts, Conversations,
+    Artifacts and workspace data. It intentionally creates neither a NodeRun
+    nor a Conversation, so the user still configures and explicitly starts N1.
+    """
+
+    parent = _locked_run(db, parent_run_id)
+    if parent.run_mode != "MANUAL" or parent.parent_flow_run_id is not None:
+        raise illegal("stepwise records require a top-level standard FlowRun", state=parent.state)
+    if parent.state in {FlowRunState.COMPLETED, FlowRunState.CANCELLED}:
+        raise illegal("terminal FlowRun cannot create a stepwise record", state=parent.state)
+    if not parent.environment_version_id:
+        raise DomainError(
+            "RUN_ENVIRONMENT_REQUIRED", "parent FlowRun has no Environment Version", 409
+        )
+    environment = lock_referenceable_version(db, parent.environment_version_id)
+    if environment is None:
+        raise DomainError(
+            "RUN_ENVIRONMENT_VERSION_INVALID",
+            "The parent FlowRun Environment Version is unavailable",
+            409,
+            {"environment_version_id": parent.environment_version_id},
+        )
+    source_snapshot = _active_snapshot(db, parent)
+    run_no = (
+        db.scalar(
+            select(func.max(FlowRun.run_no)).where(
+                FlowRun.flow_definition_id == parent.flow_definition_id
+            )
+        )
+        or 0
+    ) + 1
+    record = FlowRun(
+        flow_definition_id=parent.flow_definition_id,
+        run_no=run_no,
+        name=(payload.name or "").strip() or f"{parent.name} · 逐步运行 #{run_no}",
+        run_mode="MANUAL",
+        environment_version_id=environment.id,
+        parent_flow_run_id=parent.id,
+        lark_folder_token=None,
+        lark_folder_url=None,
+    )
+    db.add(record)
+    db.flush()
+    snapshot = RunSnapshot(
+        flow_run_id=record.id,
+        version=1,
+        schema_version=source_snapshot.schema_version,
+        definition_json=copy.deepcopy(source_snapshot.definition_json),
+        definition_hash=source_snapshot.definition_hash,
+        runtime_manifest_json=copy.deepcopy(source_snapshot.runtime_manifest_json),
+        runtime_manifest_hash=source_snapshot.runtime_manifest_hash,
+        environment_version_id=environment.id,
+    )
+    db.add(snapshot)
+    db.flush()
+    record.active_snapshot_id = snapshot.id
+    hold_snapshot_memory_references(
+        db, snapshot_id=snapshot.id, runtime_manifest=snapshot.runtime_manifest_json
+    )
+    _create_stepwise_record_runtime(db, record, environment, snapshot)
+    _event(
+        db,
+        record.id,
+        "STEPWISE_RUN_RECORD_CREATED",
+        {"parent_flow_run_id": parent.id, "snapshot_version": snapshot.version},
+    )
+    _event(db, parent.id, "STEPWISE_RUN_RECORD_CREATED", {"record_id": record.id})
+    finish(db)
+    return run_detail(db, record.id)
+
+
+def nested_stepwise_run_record(db: Session, parent_run_id: str, record_id: str) -> FlowRun:
+    record = _run(db, record_id)
+    if (
+        record.parent_flow_run_id != parent_run_id
+        or record.run_mode != "MANUAL"
+        or record.parent_flow_run_id is None
+    ):
+        raise not_found("stepwise_run_record", record_id)
+    return record
+
+
+def list_nested_stepwise_run_records(db: Session, parent_run_id: str) -> list[dict[str, Any]]:
+    parent = _run(db, parent_run_id)
+    records = list(
+        db.scalars(
+            select(FlowRun)
+            .where(
+                FlowRun.parent_flow_run_id == parent.id,
+                FlowRun.run_mode == "MANUAL",
+            )
+            .order_by(FlowRun.started_at.desc(), FlowRun.id.desc())
+        )
+    )
+    return [run_detail(db, record.id) for record in records]
+
+
+def delete_nested_stepwise_run_record(db: Session, parent_run_id: str, record_id: str) -> None:
+    parent = _locked_run(db, parent_run_id)
+    record = nested_stepwise_run_record(db, parent.id, record_id)
+    _assert_run_not_schedule_template(db, record.id)
+    _delete_run_records(db, record.id)
+    _event(db, parent.id, "STEPWISE_RUN_RECORD_DELETED", {"record_id": record_id})
+    finish(db)
 
 
 def create_automatic_run_draft(

@@ -522,6 +522,17 @@ class RunStart(ApiModel):
     input_bindings: dict[str, str] = Field(default_factory=_empty_str_dict)
 
 
+class StepwiseRunRecordWrite(ApiModel):
+    """Create one manually advanced execution record below a FlowRun.
+
+    The parent already owns the selected Environment Version.  Accepting an
+    environment from the browser here would make a record appear to belong to
+    one FlowRun while executing against another frozen environment.
+    """
+
+    name: str | None = Field(default=None, max_length=220)
+
+
 class AutomaticNodePlanWrite(ApiModel):
     """Editable, pre-runtime configuration for one automatic flow node."""
 

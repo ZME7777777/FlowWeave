@@ -40,6 +40,7 @@ from flowweave.shared.schemas import (
     RuntimeConfirmationDecisionWrite,
     RuntimeLifecycleWrite,
     RuntimeReplacementWrite,
+    StepwiseRunRecordWrite,
     SyncSnapshotWrite,
 )
 
@@ -121,6 +122,50 @@ async def nested_automatic_runs(parent_run_id: str, db: Db) -> list[dict[str, An
     return await run_sync(
         db, lambda session: service.list_nested_automatic_runs(session, parent_run_id)
     )
+
+
+@router.get("/flow-runs/{parent_run_id}/stepwise-runs")
+async def nested_stepwise_runs(parent_run_id: str, db: Db) -> list[dict[str, Any]]:
+    return await run_sync(
+        db, lambda session: service.list_nested_stepwise_run_records(session, parent_run_id)
+    )
+
+
+@router.post("/flow-runs/{parent_run_id}/stepwise-runs", status_code=201)
+async def create_nested_stepwise_run(
+    parent_run_id: str, payload: StepwiseRunRecordWrite, db: Db
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: service.create_nested_stepwise_run_record(
+            session, parent_run_id, payload
+        ),
+    )
+
+
+@router.get("/flow-runs/{parent_run_id}/stepwise-runs/{run_id}")
+async def nested_stepwise_run_detail(
+    parent_run_id: str, run_id: str, db: Db
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: service.run_detail(
+            session, service.nested_stepwise_run_record(session, parent_run_id, run_id).id
+        ),
+    )
+
+
+@router.delete(
+    "/flow-runs/{parent_run_id}/stepwise-runs/{run_id}",
+    status_code=204,
+    response_class=Response,
+)
+async def delete_nested_stepwise_run(parent_run_id: str, run_id: str, db: Db) -> Response:
+    await run_sync(
+        db,
+        lambda session: service.delete_nested_stepwise_run_record(session, parent_run_id, run_id),
+    )
+    return Response(status_code=204)
 
 
 @router.get("/flow-runs/{parent_run_id}/automatic-runs/summaries")

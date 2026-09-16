@@ -6066,6 +6066,22 @@ query cache 及已加载的会话列表首页。稳定 URL 的后续读取继续
 重挂载为“新建会话开始协作”。新增浏览器回归刻意阻塞路由详情读取，确认 URL 已变更时标题持续可见且空状态
 不存在。未修改 API、数据库、OpenHands、Runtime Provider 或部署配置。
 
+### FR-465 逐步运行记录目录与节点历史收敛 — DONE
+
+依赖：FR-463。
+
+目标：逐步运行必须与连续运行使用同一层级的记录交互：先创建一条命名的运行记录，再在记录内保存节点配置、
+显式启动节点；完成 N1 后创建的 N2 待配置工作项仍属于同一条记录。已完成 N1 必须可随时回看会话、输入、
+门禁和产物，不得因为选择 N2 或自动定位后继节点而丢失；逐步运行绝不自动启动后继节点。
+
+完成：新增受父 FlowRun 作用域保护的 `stepwise-runs` 创建、列表、详情和删除 API。每条记录是独立的
+`MANUAL` 子 FlowRun，冻结父记录的 Environment Version 与 Snapshot，并分配自身的 Runtime、工作区、
+Conversation 与 Artifact lineage；创建记录本身不创建 NodeRun 或 Conversation。工作台左侧逐步运行区域改为
+记录目录，`新增`先要求命名记录，选中后才展示该记录的 N1/N2 节点轨迹。已验收 N1 的选择不再被重定向至
+N2；选择 N2 待配置项保留 N1 的映射产物，保存后才出现显式启动。节点会话返回和运行态刷新保留
+`stepwiseRecordId`，因此返回会恢复原记录。历史上直接挂在父 FlowRun 的逐步 NodeRun 作为一条只读兼容
+“历史逐步运行”记录显示，不再平铺为多条记录。未修改 OpenHands 源码、迁移、远端环境或部署配置。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -6081,6 +6097,7 @@ query cache 及已加载的会话列表首页。稳定 URL 的后续读取继续
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-16 | FR-465 | 逐步运行工作台定向 Playwright（3 passed）；Web 受影响 ESLint；平台 Ruff 与 `py_compile`；`git diff --check`；逐步记录定向 pytest 尝试 | PASS（浏览器／静态）：浏览器覆盖“创建命名逐步记录 → 保存 N1 → 显式启动”、“已验收 N1 可回看 → N2 使用映射产物配置 → 保存后显式启动”及历史记录兼容路径。ESLint、Ruff、Python 编译和 whitespace 检查通过。新增 API pytest 已启动，但 Testcontainers 在 fixture setup 时因本机 Docker Unix socket 不存在而阻断，未进入断言且未记为通过。完整 Web typecheck 仍由本切片外 `AgentSessionWorkbench.tsx` 与近期文件预览 API 签名不一致的两项既有错误阻断；本切片涉及的 Workbench、会话返回、App、store、types 和 client 未出现 typecheck 报错。未部署。 |
 | 2026-09-16 | FR-464 | Agent 会话定向 Playwright（1 passed）；Web TypeScript typecheck、ESLint、production build；`git diff --check` 与任务状态唯一性 | PASS：创建 API 的最小 Conversation 投影会在 URL 导航前同步进入详情缓存和已加载列表。浏览器回归刻意阻塞新 URL 的详情请求，仍确认新会话标题连续可见且不会渲染空状态；详情请求释放后继续走常规权威读取。Web typecheck、全量 ESLint 与 production build 通过；构建仅提示既有超大 chunk。未修改 API、数据库、OpenHands、Runtime Provider 或部署配置。 |
 | 2026-09-16 | FR-463 | 生产记录只读 Runtime Artifact 下载核验；逐步运行输出投影无 Docker 直接探针；受影响 Python Ruff format/check、`py_compile`；Web TypeScript typecheck 与 ESLint；`git diff --check`、任务状态唯一性；数据库定向 pytest 尝试 | PASS（生产取证／直接／静态）：正式 Runtime 下载确认一份声明 Markdown 输出为 26,608,720 B，超过 25 MiB 上限 394,320 B，完成事件与候选输出解析均未丢失。逐步运行耗尽的生命周期任务现在按当前阶段收敛为可见阻塞态；已完成的输出固化错误不再无界重试。无 Docker 直接探针确认 `ARTIFACT_FILE_TOO_LARGE` 将手工 Attempt 由 `EXECUTING/RUNNING` 收敛为 `END_BLOCKED/FAILED`，并写入审计；成功验收仍复用端口映射创建下游 `WAITING_INPUT` 工作项，不自动启动下游。Ruff、`py_compile`、Web typecheck/lint、whitespace 和状态唯一性通过。数据库定向 pytest 因本机 Docker Unix socket 缺失，在 Testcontainers fixture 初始化前受阻，未记为通过。未修改 OpenHands、数据库迁移、Runtime Provider 或远端持久数据。 |
 | 2026-09-16 | FR-461 | 固定 OpenHands 1.47 事件搜索契约取证；OpenHands 适配器定向 pytest（2 passed）；受影响 Python `py_compile`、Ruff format/check；Web TypeScript typecheck、ESLint、production build；Alembic 唯一 head、`git diff --check` 与任务状态唯一性 | PASS（静态／定向／构建）：OpenHands 原生 `events/search?body` 逐页检索仅投影用户/助手 MessageEvent，测试覆盖 body、分页和非消息事件过滤。后台任务只持久化查询、状态及正式事件定位，结果展示时重新读取 OpenHands，不创建平台消息副本。搜索弹窗关闭后任务继续运行；顶栏按钮显示运行/完成状态，工作区标题行的 `+` 创建会话入口保持不变。Web typecheck、全量 ESLint 和 production build 通过；Python 编译、Ruff 与唯一 Alembic head `0117_agent_conversation_search` 通过。 |

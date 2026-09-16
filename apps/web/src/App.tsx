@@ -126,6 +126,9 @@ export function App() {
           selectedAutomaticRecordId: flowRun.mode === 'AUTOMATIC' && typeof flowRun.automaticRecordId === 'string'
             ? flowRun.automaticRecordId
             : undefined,
+          selectedStepwiseRecordId: flowRun.mode === 'MANUAL' && typeof flowRun.stepwiseRecordId === 'string'
+            ? flowRun.stepwiseRecordId
+            : undefined,
         });
       }
       setRouteVersion(value => value + 1);

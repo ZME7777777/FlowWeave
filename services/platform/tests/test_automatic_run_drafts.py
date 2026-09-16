@@ -618,6 +618,7 @@ def test_nested_automatic_records_are_scoped_and_share_parent_runtime(
     assert started_response.status_code == 200, started_response.text
     assert started_response.json()["state"] == "ACTIVE"
 
+
     worker = TaskWorker(worker_container)
     assert worker._run_once_sync() is True
     detail = worker_client.get(f"/api/v1/flow-runs/{updated['id']}").json()
@@ -672,6 +673,37 @@ def test_nested_automatic_records_are_scoped_and_share_parent_runtime(
             db.scalar(select(FlowRunRuntime).where(FlowRunRuntime.flow_run_id == parent["id"]))
             is not None
         )
+
+
+def test_nested_stepwise_record_is_empty_and_scoped_to_its_parent(client):
+    flow = _create_flow(client)
+    parent_response = client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={
+            "name": "逐步记录目录",
+            "environment_version_id": client.environment_version_id,
+        },
+    )
+    assert parent_response.status_code == 201, parent_response.text
+    parent = parent_response.json()
+
+    created_response = client.post(
+        f"/api/v1/flow-runs/{parent['id']}/stepwise-runs",
+        json={"name": "批次异常收集"},
+    )
+    assert created_response.status_code == 201, created_response.text
+    record = created_response.json()
+    assert record["parent_flow_run_id"] == parent["id"]
+    assert record["run_mode"] == "MANUAL"
+    assert record["environment_version_id"] == parent["environment_version_id"]
+    assert record["node_runs"] == []
+    assert record["snapshots"][0]["definition"] == parent["snapshots"][0]["definition"]
+
+    listed = client.get(f"/api/v1/flow-runs/{parent['id']}/stepwise-runs")
+    assert listed.status_code == 200, listed.text
+    assert [item["id"] for item in listed.json()] == [record["id"]]
+    assert client.get(f"/api/v1/flow-runs/{record['id']}").json()["node_runs"] == []
+    assert client.get(f"/api/v1/flow-runs/{record['id']}/stepwise-runs").json() == []
 
 
 def test_schedule_occurrence_stays_in_original_flow_run_as_continuous_record(

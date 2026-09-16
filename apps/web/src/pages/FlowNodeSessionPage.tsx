@@ -43,6 +43,7 @@ export function FlowNodeSessionPage({
     if (typeof sourceRunId === 'string') {
       refreshes.push(
         queryClient.invalidateQueries({ queryKey: ['flow-run', sourceRunId] }),
+        queryClient.invalidateQueries({ queryKey: ['flow-run-stepwise-records', sourceRunId] }),
         // The automatic-record query is inactive while this separate route is
         // open. Invalidation alone therefore leaves its old END_BLOCKED
         // value in the cache until after the Workbench first renders.
@@ -51,12 +52,22 @@ export function FlowNodeSessionPage({
           queryFn: () => api.automaticRecords(sourceRunId),
         }),
       );
+      if (typeof window.history.state?.flowweaveFlowRun?.stepwiseRecordId === 'string') {
+        const recordId = window.history.state.flowweaveFlowRun.stepwiseRecordId as string;
+        refreshes.push(
+          queryClient.fetchQuery({
+            queryKey: ['flow-run-stepwise-record', sourceRunId, recordId],
+            queryFn: () => api.stepwiseRecord(sourceRunId, recordId),
+          }),
+        );
+      }
     }
     await Promise.all(refreshes);
   }, [flowRunId, queryClient]);
   const returnToNodeAttempt = async () => {
     const source = window.history.state?.flowweaveFlowRun;
     const automatic = source?.mode === 'AUTOMATIC' && typeof source.automaticRecordId === 'string';
+    const stepwise = source?.mode === 'MANUAL' && typeof source.stepwiseRecordId === 'string';
     useWorkbenchStore.setState({
       view: 'workbench',
       selectedRunId: typeof source?.runId === 'string' ? source.runId : flowRunId,
@@ -64,6 +75,7 @@ export function FlowNodeSessionPage({
       selectedAttemptId: attemptId,
       selectedWorkbenchMode: automatic ? 'AUTOMATIC' : 'MANUAL',
       selectedAutomaticRecordId: automatic ? source.automaticRecordId : undefined,
+      selectedStepwiseRecordId: stepwise ? source.stepwiseRecordId : undefined,
     });
     await refreshFlowRunProjection();
     onNavigate('/', true);

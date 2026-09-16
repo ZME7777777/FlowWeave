@@ -377,6 +377,10 @@ export interface FlowRunAutomaticRecord extends FlowRun {
   node_plans: Record<string, AutomaticNodePlan>;
   readiness: { ready: boolean; issues: Array<{ code: string; node_key: string; message: string }> };
 }
+export interface FlowRunStepwiseRecord extends FlowRun {
+  /** The top-level FlowRun whose workbench owns this stepwise execution. */
+  parent_flow_run_id: string;
+}
 export interface FlowRunAutomaticRecordSummary {
   id: string; flow_run_id?: string | null; run_no: number; name: string; state: FlowRun['state'];
   row_version: number; schedule_id?: string | null; schedule_name?: string | null;
