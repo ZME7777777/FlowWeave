@@ -928,7 +928,7 @@ def test_automatic_run_starts_ready_plan_and_completes_frozen_chain(
     assert binding_summary == {
         "input_field_key": "source",
         "artifact_version_id": first_output,
-        "binding_source": "AUTOMATIC_PORT_MAPPING",
+        "binding_source": "PORT_MAPPING",
     }
 
     events = worker_client.get(f"/api/v1/flow-runs/{run['id']}/event-history").json()
@@ -1313,7 +1313,7 @@ def test_automatic_transition_fans_out_without_a_gate_agent(
             {
                 "input_field_key": "source",
                 "artifact_version_id": first_output,
-                "binding_source": "AUTOMATIC_PORT_MAPPING",
+                "binding_source": "PORT_MAPPING",
             }
         ]
 

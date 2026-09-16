@@ -3613,14 +3613,7 @@ def process_advance_automatic_attempt(
 
 
 def _automatic_successor_keys(db: Session, run: FlowRun, node_run: NodeRun) -> list[str]:
-    definition = _active_snapshot(db, run).definition_json
-    return sorted(
-        {
-            str(edge["target_instance_key"])
-            for edge in definition.get("edges", [])
-            if edge.get("source_instance_key") == node_run.flow_node_snapshot_key
-        }
-    )
+    return _successor_keys(_active_snapshot(db, run), node_run.flow_node_snapshot_key)
 
 
 def _create_node_run(
@@ -8064,64 +8057,120 @@ def _delete_node_run_records(
     _finish_transaction(db, commit)
 
 
-def _create_configurable_targets(db: Session, run: FlowRun, accepted: NodeRun) -> None:
-    """Expose frozen downstream work without starting its Agent or gates."""
+def _accepted_transition_outputs(
+    db: Session, accepted_attempt: NodeAttempt, *, allow_legacy_fallback: bool
+) -> list[ArtifactVersion]:
+    """Return the immutable outputs allowed to reach a frozen successor."""
 
-    snapshot = _active_snapshot(db, run)
-    definition = snapshot.definition_json
-    accepted_attempt = _attempt(db, accepted.accepted_attempt_id or "")
     candidate = _current_candidate_output_set(db, accepted_attempt)
-    if candidate is None:
-        runtime_count = int(
-            db.scalar(
-                select(func.count(ArtifactVersion.id)).where(
-                    ArtifactVersion.producer_attempt_id == accepted_attempt.id,
-                    ArtifactVersion.source == "RUNTIME",
-                )
-            )
-            or 0
-        )
-        if runtime_count:
-            raise DomainError(
-                "ATTEMPT_OUTPUT_NOT_ACCEPTED",
-                "only a passing candidate output set can flow downstream",
-                409,
-            )
-        fallback = list(
-            db.scalars(
-                select(ArtifactVersion)
-                .where(ArtifactVersion.producer_attempt_id == accepted_attempt.id)
-                .order_by(
-                    ArtifactVersion.field_key, ArtifactVersion.version_no.desc(), ArtifactVersion.id
-                )
-            )
-        )
-    else:
+    if candidate is not None:
         if candidate.status != "GATE_PASSED":
             raise DomainError(
                 "ATTEMPT_OUTPUT_NOT_ACCEPTED",
                 "only a passing candidate output set can flow downstream",
                 409,
             )
-        fallback = _candidate_artifacts(db, candidate)
-    by_field: dict[str, str] = {}
-    for item in fallback:
-        by_field.setdefault(item.field_key, item.id)
-    targets = sorted(
+        return _candidate_artifacts(db, candidate)
+    if not allow_legacy_fallback:
+        raise DomainError(
+            "ATTEMPT_OUTPUT_NOT_ACCEPTED",
+            "only a passing candidate output set can flow downstream",
+            409,
+        )
+
+    runtime_count = int(
+        db.scalar(
+            select(func.count(ArtifactVersion.id)).where(
+                ArtifactVersion.producer_attempt_id == accepted_attempt.id,
+                ArtifactVersion.source == "RUNTIME",
+            )
+        )
+        or 0
+    )
+    if runtime_count:
+        raise DomainError(
+            "ATTEMPT_OUTPUT_NOT_ACCEPTED",
+            "only a passing candidate output set can flow downstream",
+            409,
+        )
+    return list(
+        db.scalars(
+            select(ArtifactVersion)
+            .where(ArtifactVersion.producer_attempt_id == accepted_attempt.id)
+            .order_by(
+                ArtifactVersion.field_key,
+                ArtifactVersion.version_no.desc(),
+                ArtifactVersion.id,
+            )
+        )
+    )
+
+
+def _successor_keys(snapshot: RunSnapshot, source_node_key: str) -> list[str]:
+    return sorted(
         {
             str(edge["target_instance_key"])
-            for edge in definition.get("edges", [])
-            if edge.get("source_instance_key") == accepted.flow_node_snapshot_key
+            for edge in snapshot.definition_json.get("edges", [])
+            if edge.get("source_instance_key") == source_node_key
         }
     )
-    for target_key in targets:
-        bindings = {
-            str(mapping["target_input_key"]): artifact_id
-            for mapping in definition.get("port_mappings", [])
-            if mapping.get("source_instance_key") == accepted.flow_node_snapshot_key
-            and mapping.get("target_instance_key") == target_key
-            and (artifact_id := by_field.get(str(mapping.get("source_output_key") or "")))
-        }
+
+
+def _transition_bindings(
+    snapshot: RunSnapshot,
+    source_node_key: str,
+    target_node_key: str,
+    source_artifacts: list[ArtifactVersion],
+) -> dict[str, str]:
+    by_field: dict[str, str] = {}
+    for item in source_artifacts:
+        by_field.setdefault(item.field_key, item.id)
+    return {
+        str(mapping["target_input_key"]): artifact_id
+        for mapping in snapshot.definition_json.get("port_mappings", [])
+        if mapping.get("source_instance_key") == source_node_key
+        and mapping.get("target_instance_key") == target_node_key
+        and (artifact_id := by_field.get(str(mapping.get("source_output_key") or "")))
+    }
+
+
+def _bind_transition_artifacts(
+    db: Session,
+    attempt: NodeAttempt,
+    bindings: dict[str, str],
+    *,
+    binding_source: str,
+) -> None:
+    current = {item.input_field_key: item for item in _bindings(db, attempt.id)}
+    for field_key, artifact_id in bindings.items():
+        binding = current.get(field_key)
+        if binding is None:
+            db.add(
+                AttemptInputBinding(
+                    attempt_id=attempt.id,
+                    input_field_key=field_key,
+                    artifact_version_id=artifact_id,
+                    binding_source=binding_source,
+                )
+            )
+        else:
+            binding.artifact_version_id = artifact_id
+            binding.binding_source = binding_source
+    attempt.state_version += 1
+
+
+def _create_configurable_targets(db: Session, run: FlowRun, accepted: NodeRun) -> None:
+    """Expose frozen downstream work without starting its Agent or gates."""
+
+    snapshot = _active_snapshot(db, run)
+    accepted_attempt = _attempt(db, accepted.accepted_attempt_id or "")
+    source_artifacts = _accepted_transition_outputs(
+        db, accepted_attempt, allow_legacy_fallback=True
+    )
+    for target_key in _successor_keys(snapshot, accepted.flow_node_snapshot_key):
+        bindings = _transition_bindings(
+            snapshot, accepted.flow_node_snapshot_key, target_key, source_artifacts
+        )
         existing = db.scalar(
             select(NodeRun).where(
                 NodeRun.flow_run_id == run.id,
@@ -8145,21 +8194,7 @@ def _create_configurable_targets(db: Session, run: FlowRun, accepted: NodeRun) -
                     409,
                     {"flow_node_key": target_key},
                 )
-            current = {item.input_field_key: item for item in _bindings(db, attempt.id)}
-            for field_key, artifact_id in bindings.items():
-                if field_key in current:
-                    current[field_key].artifact_version_id = artifact_id
-                    current[field_key].binding_source = "PORT_MAPPING"
-                else:
-                    db.add(
-                        AttemptInputBinding(
-                            attempt_id=attempt.id,
-                            input_field_key=field_key,
-                            artifact_version_id=artifact_id,
-                            binding_source="PORT_MAPPING",
-                        )
-                    )
-            attempt.state_version += 1
+            _bind_transition_artifacts(db, attempt, bindings, binding_source="PORT_MAPPING")
             _event(
                 db,
                 run.id,
@@ -8236,21 +8271,13 @@ def _advance_automatic_targets(
     """
 
     snapshot = _active_snapshot(db, run)
-    definition = snapshot.definition_json
     plan: dict[str, Any] = dict(run.automation_plan_json or {})
     node_plans = cast(dict[str, Any], plan.get("node_plans") or {})
     accepted_attempt = _attempt(db, accepted.accepted_attempt_id or "")
-    candidate = _current_candidate_output_set(db, accepted_attempt)
-    if candidate is None or candidate.status != "GATE_PASSED":
-        raise DomainError(
-            "ATTEMPT_OUTPUT_NOT_ACCEPTED",
-            "only a passing candidate output set can flow downstream",
-            409,
-        )
-    source_outputs: dict[str, str] = {}
-    for item in _candidate_artifacts(db, candidate):
-        source_outputs.setdefault(item.field_key, item.id)
-    allowed = set(_automatic_successor_keys(db, run, accepted))
+    source_artifacts = _accepted_transition_outputs(
+        db, accepted_attempt, allow_legacy_fallback=False
+    )
+    allowed = set(_successor_keys(snapshot, accepted.flow_node_snapshot_key))
     unauthorized = sorted(set(selected_targets) - allowed)
     if unauthorized:
         raise DomainError(
@@ -8261,13 +8288,9 @@ def _advance_automatic_targets(
         )
     for target_key in selected_targets:
         target_plan = _automatic_node_plan(node_plans, target_key)
-        mapped = {
-            str(mapping["target_input_key"]): artifact_id
-            for mapping in definition.get("port_mappings", [])
-            if mapping.get("source_instance_key") == accepted.flow_node_snapshot_key
-            and mapping.get("target_instance_key") == target_key
-            and (artifact_id := source_outputs.get(str(mapping.get("source_output_key") or "")))
-        }
+        mapped = _transition_bindings(
+            snapshot, accepted.flow_node_snapshot_key, target_key, source_artifacts
+        )
         existing = db.scalar(
             select(NodeRun).where(
                 NodeRun.flow_run_id == run.id,
@@ -8295,7 +8318,7 @@ def _advance_automatic_targets(
             # explicit plan inputs retain their original creation provenance.
             for binding in _bindings(db, created_attempt.id):
                 if binding.input_field_key in mapped:
-                    binding.binding_source = "AUTOMATIC_PORT_MAPPING"
+                    binding.binding_source = "PORT_MAPPING"
             _event(
                 db,
                 run.id,
@@ -8319,22 +8342,12 @@ def _advance_automatic_targets(
             # A completed/started target cannot be retroactively re-bound by a
             # late predecessor.  The topology itself remains immutable.
             continue
-        current = {row.input_field_key: row for row in _bindings(db, current_attempt.id)}
-        for field_key, artifact_id in mapped.items():
-            binding = current.get(field_key)
-            if binding is None:
-                db.add(
-                    AttemptInputBinding(
-                        attempt_id=current_attempt.id,
-                        input_field_key=field_key,
-                        artifact_version_id=artifact_id,
-                        binding_source="AUTOMATIC_PORT_MAPPING",
-                    )
-                )
-            else:
-                binding.artifact_version_id = artifact_id
-                binding.binding_source = "AUTOMATIC_PORT_MAPPING"
-        current_attempt.state_version += 1
+        _bind_transition_artifacts(
+            db,
+            current_attempt,
+            mapped,
+            binding_source="PORT_MAPPING",
+        )
         _event(
             db,
             run.id,

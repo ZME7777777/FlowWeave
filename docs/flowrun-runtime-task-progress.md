@@ -6092,6 +6092,24 @@ N2；选择 N2 待配置项保留 N1 的映射产物，保存后才出现显式�
 
 完成：逐步运行接受节点后按刚完成节点的冻结拓扑优先定位已创建的后继工作项，右侧随即展示其输入／配置状态；无后继时才回退到当前活动节点。节点 Attempt 的 `ACCEPTED` 投影统一显示“已完成”，保留“验收”只用于流程级结果语义。已完成节点的源会话不再继承 Runtime 的通用写权限，服务端和列表 DTO 都投影为只读；同一受控 Attempt 作用域可创建或 Fork 一个清除节点归属的独立 OpenHands 会话，并在 FlowRun 完成后继续保持该独立会话的写边界，取消 Attempt 仍拒绝。会话返回现在在投影刷新失败时也必定导航回带有 `stepwiseRecordId` 的记录页面。
 
+### FR-467 连续／逐步后继节点准备统一 — DONE
+
+依赖：FR-463、FR-465、FR-466。
+
+目标：连续运行与逐步运行在节点完成后必须共享同一套冻结输出校验、拓扑后继解析、端口映射、既有后继
+工作项补齐及事件投影语义。两者唯一差异是后继节点的启动时机：连续运行完成准备后交给既有 readiness
+调度；逐步运行保留同一待配置节点，等待用户补充配置并显式启动。工作台两种记录详情均应将后继作为
+当前执行节点呈现，且保留节点、输入、门禁、产物和会话的相同回看入口。
+
+范围：收敛后端后继工作项准备的公共逻辑，并补充连续／逐步端口映射与启动时机的定向回归；不改动
+OpenHands 事件树、数据库迁移、Runtime Provider 或远端部署。
+
+完成：后继节点的冻结输出选择、候选产物校验、拓扑解析、端口映射和既有工作项补齐已经由同一组服务函数
+执行；新的端口映射统一记录为 `PORT_MAPPING`，不再把连续运行暴露为另一种映射语义。连续运行仅在公共准备
+完成后继续调用 readiness 调度；逐步运行继续保留 `WAITING_INPUT` 工作项，等待用户补齐配置并显式启动。
+既有连续／逐步记录详情均继续以实际到达的后继节点作为当前焦点，且已完成节点的会话、输入、门禁和产物仍可
+回看。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -6107,6 +6125,7 @@ N2；选择 N2 待配置项保留 N1 的映射产物，保存后才出现显式�
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-16 | FR-467 | 后继准备服务的 Ruff check、Python 编译、`git diff --check`、映射来源静态核对、连续运行定向 pytest 尝试 | PASS（静态）：连续／逐步路径共享冻结输出、后继拓扑、端口映射与既有后继工作项补齐；连续模式在准备后才额外调度 readiness，逐步模式保持待配置／显式启动。Ruff 与 Python 编译、whitespace 检查均通过；新后继准备路径不再写入 `AUTOMATIC_PORT_MAPPING`。两条连续运行集成回归已启动，但 Testcontainers PostgreSQL fixture 因本机 Docker Unix socket 缺失在断言前阻断，未记为通过。未修改迁移、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-16 | FR-466 | 逐步运行工作台 Playwright（3 passed）；Web TypeScript typecheck、受影响 ESLint；平台 Ruff format/check、`py_compile`；`git diff --check`、任务状态唯一性；节点会话定向 pytest 尝试 | PASS（浏览器／静态）：浏览器覆盖已完成节点可回看、完成后聚焦后继待配置节点、历史逐步记录输入映射与“已完成”节点文案。TypeScript、ESLint、Ruff、Python 编译和 whitespace 检查通过。`test_completed_flow_run_keeps_node_source_read_only_but_allows_native_fork` 已启动，但 Testcontainers PostgreSQL fixture 因本机 Docker Unix socket 不存在而在断言前阻断，未记为通过。未运行迁移、Docker、远端环境或部署。 |
 | 2026-09-16 | FR-465 | 逐步运行工作台定向 Playwright（3 passed）；Web 受影响 ESLint；平台 Ruff 与 `py_compile`；`git diff --check`；逐步记录定向 pytest 尝试 | PASS（浏览器／静态）：浏览器覆盖“创建命名逐步记录 → 保存 N1 → 显式启动”、“已验收 N1 可回看 → N2 使用映射产物配置 → 保存后显式启动”及历史记录兼容路径。ESLint、Ruff、Python 编译和 whitespace 检查通过。新增 API pytest 已启动，但 Testcontainers 在 fixture setup 时因本机 Docker Unix socket 不存在而阻断，未进入断言且未记为通过。完整 Web typecheck 仍由本切片外 `AgentSessionWorkbench.tsx` 与近期文件预览 API 签名不一致的两项既有错误阻断；本切片涉及的 Workbench、会话返回、App、store、types 和 client 未出现 typecheck 报错。未部署。 |
 | 2026-09-16 | FR-464 | Agent 会话定向 Playwright（1 passed）；Web TypeScript typecheck、ESLint、production build；`git diff --check` 与任务状态唯一性 | PASS：创建 API 的最小 Conversation 投影会在 URL 导航前同步进入详情缓存和已加载列表。浏览器回归刻意阻塞新 URL 的详情请求，仍确认新会话标题连续可见且不会渲染空状态；详情请求释放后继续走常规权威读取。Web typecheck、全量 ESLint 与 production build 通过；构建仅提示既有超大 chunk。未修改 API、数据库、OpenHands、Runtime Provider 或部署配置。 |
