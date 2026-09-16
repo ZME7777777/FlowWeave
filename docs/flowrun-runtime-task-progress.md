@@ -6082,6 +6082,16 @@ N2；选择 N2 待配置项保留 N1 的映射产物，保存后才出现显式�
 `stepwiseRecordId`，因此返回会恢复原记录。历史上直接挂在父 FlowRun 的逐步 NodeRun 作为一条只读兼容
 “历史逐步运行”记录显示，不再平铺为多条记录。未修改 OpenHands 源码、迁移、远端环境或部署配置。
 
+### FR-466 逐步运行节点完成态与会话回跳收敛 — DONE
+
+依赖：FR-463、FR-465。
+
+目标：逐步运行在节点完成并流转后必须像连续运行一样选中已到达的后继节点并展示其右侧配置／状态；节点完成态在图和详情中统一显示为“已完成”，不将单个节点表述为整条记录“已验收”。已完成节点的原始会话保持只读，但用户仍可从其作用域创建独立可写会话或原生 Fork；逐步运行会话的返回不得因刷新失败而停留在会话页面，必须恢复对应父记录、节点和 Attempt。
+
+范围：只调整逐步运行的工作台选择、节点会话权限投影／创建边界与返回导航；不改变 OpenHands 事件树、节点完成门禁、端口映射、FlowRun Runtime、数据库迁移或远端部署。新会话继续使用同一受控 Attempt Runtime 与冻结工作目录，但清除原节点的写归属；取消的 Attempt 仍严格只读。
+
+完成：逐步运行接受节点后按刚完成节点的冻结拓扑优先定位已创建的后继工作项，右侧随即展示其输入／配置状态；无后继时才回退到当前活动节点。节点 Attempt 的 `ACCEPTED` 投影统一显示“已完成”，保留“验收”只用于流程级结果语义。已完成节点的源会话不再继承 Runtime 的通用写权限，服务端和列表 DTO 都投影为只读；同一受控 Attempt 作用域可创建或 Fork 一个清除节点归属的独立 OpenHands 会话，并在 FlowRun 完成后继续保持该独立会话的写边界，取消 Attempt 仍拒绝。会话返回现在在投影刷新失败时也必定导航回带有 `stepwiseRecordId` 的记录页面。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -6097,6 +6107,7 @@ N2；选择 N2 待配置项保留 N1 的映射产物，保存后才出现显式�
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-16 | FR-466 | 逐步运行工作台 Playwright（3 passed）；Web TypeScript typecheck、受影响 ESLint；平台 Ruff format/check、`py_compile`；`git diff --check`、任务状态唯一性；节点会话定向 pytest 尝试 | PASS（浏览器／静态）：浏览器覆盖已完成节点可回看、完成后聚焦后继待配置节点、历史逐步记录输入映射与“已完成”节点文案。TypeScript、ESLint、Ruff、Python 编译和 whitespace 检查通过。`test_completed_flow_run_keeps_node_source_read_only_but_allows_native_fork` 已启动，但 Testcontainers PostgreSQL fixture 因本机 Docker Unix socket 不存在而在断言前阻断，未记为通过。未运行迁移、Docker、远端环境或部署。 |
 | 2026-09-16 | FR-465 | 逐步运行工作台定向 Playwright（3 passed）；Web 受影响 ESLint；平台 Ruff 与 `py_compile`；`git diff --check`；逐步记录定向 pytest 尝试 | PASS（浏览器／静态）：浏览器覆盖“创建命名逐步记录 → 保存 N1 → 显式启动”、“已验收 N1 可回看 → N2 使用映射产物配置 → 保存后显式启动”及历史记录兼容路径。ESLint、Ruff、Python 编译和 whitespace 检查通过。新增 API pytest 已启动，但 Testcontainers 在 fixture setup 时因本机 Docker Unix socket 不存在而阻断，未进入断言且未记为通过。完整 Web typecheck 仍由本切片外 `AgentSessionWorkbench.tsx` 与近期文件预览 API 签名不一致的两项既有错误阻断；本切片涉及的 Workbench、会话返回、App、store、types 和 client 未出现 typecheck 报错。未部署。 |
 | 2026-09-16 | FR-464 | Agent 会话定向 Playwright（1 passed）；Web TypeScript typecheck、ESLint、production build；`git diff --check` 与任务状态唯一性 | PASS：创建 API 的最小 Conversation 投影会在 URL 导航前同步进入详情缓存和已加载列表。浏览器回归刻意阻塞新 URL 的详情请求，仍确认新会话标题连续可见且不会渲染空状态；详情请求释放后继续走常规权威读取。Web typecheck、全量 ESLint 与 production build 通过；构建仅提示既有超大 chunk。未修改 API、数据库、OpenHands、Runtime Provider 或部署配置。 |
 | 2026-09-16 | FR-463 | 生产记录只读 Runtime Artifact 下载核验；逐步运行输出投影无 Docker 直接探针；受影响 Python Ruff format/check、`py_compile`；Web TypeScript typecheck 与 ESLint；`git diff --check`、任务状态唯一性；数据库定向 pytest 尝试 | PASS（生产取证／直接／静态）：正式 Runtime 下载确认一份声明 Markdown 输出为 26,608,720 B，超过 25 MiB 上限 394,320 B，完成事件与候选输出解析均未丢失。逐步运行耗尽的生命周期任务现在按当前阶段收敛为可见阻塞态；已完成的输出固化错误不再无界重试。无 Docker 直接探针确认 `ARTIFACT_FILE_TOO_LARGE` 将手工 Attempt 由 `EXECUTING/RUNNING` 收敛为 `END_BLOCKED/FAILED`，并写入审计；成功验收仍复用端口映射创建下游 `WAITING_INPUT` 工作项，不自动启动下游。Ruff、`py_compile`、Web typecheck/lint、whitespace 和状态唯一性通过。数据库定向 pytest 因本机 Docker Unix socket 缺失，在 Testcontainers fixture 初始化前受阻，未记为通过。未修改 OpenHands、数据库迁移、Runtime Provider 或远端持久数据。 |

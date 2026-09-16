@@ -3942,8 +3942,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const connectedProviders = (providersQuery.data ?? []).filter(item => item.connection_state === 'CONNECTED' && item.models.some(model => model.enabled && model.is_default));
   const runtime = runtimeQuery.data;
   const runtimeWritable = Boolean(workspace && runtime?.write_available);
-  const canOpenConversation = runtimeWritable;
-  const canBootstrap = Boolean(runtimeWritable && conversationDraft && (!features.modelSelection || (newConversationProviderId && newConversationModelName)));
+  const canOpenConversation = Boolean(workspace && (runtime?.write_available || runtime?.fork_available));
+  const canBootstrap = Boolean(canOpenConversation && conversationDraft && (!features.modelSelection || (newConversationProviderId && newConversationModelName)));
   const localTurnGenerating = turnState === 'running' || turnState === 'pausing' || turnState === 'resuming';
   const eventQueryKey = sessionQueryKey(host, 'conversation-events', workspace?.id, selected?.id);
   const inputReadinessQuery = useQuery({
@@ -4246,13 +4246,13 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     queryFn: () => api.conversationContext(workspace!.id, selected!.id),
     enabled: Boolean(workspace && selected),
   });
-  const canWrite = Boolean(selected && (runtimeWritable || selected.write_available));
+  const canWrite = Boolean(selected?.write_available);
   // A completed FlowRun keeps its source node Conversation read-only, but it
   // may create the same native Fork available in an ordinary Agent session.
   // The host owns this narrow capability flag; it does not make the composer
   // or any other session mutation writable again.
   const canFork = Boolean(selected && features.fork && (canWrite || runtime?.fork_available));
-  const canCompose = Boolean(canWrite || (runtimeWritable && conversationDraft));
+  const canCompose = Boolean(canWrite || (canOpenConversation && conversationDraft));
   const selectedConversationRunning = conversationActivity.active;
   const sessionStopped = conversationActivity.state === 'pausing' || conversationActivity.state === 'paused'
     || nativeExecutionStatus?.toLowerCase() === 'paused';
@@ -5333,7 +5333,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     const running = item.id === selected?.id
       ? conversationActivity.active
       : conversationIsRunning(item.execution_status);
-    const conversationWritable = runtimeWritable || Boolean(item.write_available);
+    const conversationWritable = Boolean(item.write_available);
     const sync = conversationOrderSync[item.id];
     return <WorkspaceConversationRow key={item.id} item={item} selectedBindingId={selectedBindingId} running={running} unread={unreadConversationIds.has(item.id)} conversationWritable={conversationWritable} removing={remove.isPending} deleteDisabled={running} dragging={draggedBindingId === item.id} dropPosition={dragTarget?.bindingId === item.id ? (dragTarget.after ? 'after' : 'before') : undefined} orderSyncState={sync?.state} onPointerDragStart={event => startPointerConversationDrag(event, item, group)} onRetryOrder={sync?.state === 'failed' ? () => synchronizeConversationOrder(item.id, sync.orderedBindingIds) : undefined} onSelect={() => selectConversation(item.id)} onDelete={features.conversationDeletion && conversationWritable ? () => void confirmDeletion('会话', conversationName(item)).then(ok => { if (ok) remove.mutate(item.id); }) : undefined}/>;
   };

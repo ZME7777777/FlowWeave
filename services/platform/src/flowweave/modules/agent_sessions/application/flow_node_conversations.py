@@ -236,6 +236,14 @@ def _assert_node_session_writable(
                 and attempt.state != AttemptState.CANCELLED
             ):
                 return attempt
+        attempt = _attempt(db, attempt_id)
+        if attempt.state == AttemptState.ACCEPTED:
+            raise DomainError(
+                "NODE_ATTEMPT_COMPLETED",
+                "节点已完成，原始会话仅可查看；请新建或分叉会话继续",
+                409,
+                {"node_attempt_id": attempt.id},
+            )
     return agent_sessions.assert_flow_node_session_writable(
         db, flow_run_id=flow_run_id, attempt_id=attempt_id
     )
@@ -539,7 +547,7 @@ def _node_session_dict(db: Session, item: AgentConversationBinding) -> dict[str,
         # This is deliberately per-conversation: a terminal node source is
         # read-only while its detached native Fork is a normal writable
         # conversation.
-        "write_available": item.node_attempt_id is None,
+        "write_available": _node_session_write_available(db, item),
         "lifecycle": item.lifecycle,
         "created_at": item.created_at.isoformat(),
         "updated_at": item.updated_at.isoformat(),
@@ -547,6 +555,27 @@ def _node_session_dict(db: Session, item: AgentConversationBinding) -> dict[str,
             item.last_connected_at.isoformat() if item.last_connected_at else None
         ),
     }
+
+
+def _node_session_write_available(db: Session, item: AgentConversationBinding) -> bool:
+    if item.node_attempt_id is None:
+        source_attempt_id = item.conversation_scope_id
+        attempt = db.get(NodeAttempt, source_attempt_id) if source_attempt_id else None
+        run = db.get(FlowRun, item.flow_run_id) if item.flow_run_id else None
+        return bool(
+            attempt is not None
+            and attempt.state != AttemptState.CANCELLED
+            and run is not None
+            and run.state != "CANCELLED"
+        )
+    attempt = db.get(NodeAttempt, item.node_attempt_id)
+    run = db.get(FlowRun, item.flow_run_id) if item.flow_run_id else None
+    return bool(
+        attempt is not None
+        and attempt.state not in {AttemptState.ACCEPTED, AttemptState.CANCELLED}
+        and run is not None
+        and run.state not in {"COMPLETED", "CANCELLED"}
+    )
 
 
 def _node_session_page_cursor(item: AgentConversationBinding) -> str:
@@ -632,7 +661,7 @@ def _node_session_page_dicts(
             # The sidebar uses this bounded DTO, rather than the selected
             # session detail. Keep the detached Fork's independent write and
             # delete permission visible there as well.
-            "write_available": item.node_attempt_id is None,
+            "write_available": _node_session_write_available(db, item),
             "execution_status": (
                 "running" if item.openhands_conversation_id in running_conversation_ids else "idle"
             ),
@@ -696,11 +725,13 @@ def node_runtime_status(db: Session, *, flow_run_id: str, attempt_id: str) -> di
     )
     attempt = _attempt(db, attempt_id)
     run = db.get(FlowRun, flow_run_id)
-    writable = attempt.state != AttemptState.CANCELLED and (
+    writable = attempt.state not in {AttemptState.ACCEPTED, AttemptState.CANCELLED} and (
         run is None or run.state not in {"COMPLETED", "CANCELLED"}
     )
     fork_available = (
-        run is not None and run.state == "COMPLETED" and attempt.state != AttemptState.CANCELLED
+        run is not None
+        and attempt.state != AttemptState.CANCELLED
+        and (run.state == "COMPLETED" or attempt.state == AttemptState.ACCEPTED)
     )
     return {
         "state": "ACTIVE",
@@ -716,6 +747,8 @@ def node_runtime_status(db: Session, *, flow_run_id: str, attempt_id: str) -> di
         "message": (
             "流程已结束；会话历史只读，右侧文件和终端仍可操作。"
             if run is not None and run.state in {"COMPLETED", "CANCELLED"}
+            else "节点已完成；原始会话只读，可新建或分叉会话继续。"
+            if attempt.state == AttemptState.ACCEPTED
             else (
                 "节点执行正在停止；会话和工作区已切换为只读。"
                 if attempt.runtime_phase == "CANCELLING"
@@ -991,8 +1024,9 @@ def _create_native_conversation(
     runtime_working_directory: str | None = None,
     session_config: FrozenSessionConfig | None = None,
     session_binding_id: str | None = None,
+    detached_from_attempt: bool = False,
 ) -> dict[str, Any]:
-    if run.state in {"COMPLETED", "CANCELLED"}:
+    if run.state == "CANCELLED" or (run.state == "COMPLETED" and not detached_from_attempt):
         raise DomainError(
             "FLOW_RUN_TERMINAL",
             "A completed or cancelled FlowRun cannot create Conversations",
@@ -1054,12 +1088,13 @@ def _create_native_conversation(
         db,
         runtime_session_id=connection.runtime_session_id,
         flow_run_id=run.id,
-        node_run_id=node_run_id or "",
-        node_attempt_id=attempt_id or "",
+        node_run_id=None if detached_from_attempt else node_run_id,
+        node_attempt_id=None if detached_from_attempt else attempt_id,
         working_directory=working_directory,
         create_idempotency_key=idempotency_key,
         display_title=title,
         work_directory_version_id=work_directory_version_id,
+        conversation_scope_id=attempt_id if detached_from_attempt else None,
         config=session_config,
         binding_id=session_binding_id,
     )
@@ -1129,17 +1164,21 @@ def _create_native_conversation(
     if handle.conversation_id != item.openhands_conversation_id:
         raise DomainError("AGENT_CONVERSATION_IDENTITY_DRIFT", "会话身份校验失败", 409)
     get_runtime().reload_conversation(handle)
-    item = bind_openhands_conversation(
-        db,
-        flow_run_id=run.id,
-        openhands_conversation_id=handle.conversation_id,
-        display_label=title,
-        binding_id=binding_id,
-        node_run_id=node_run_id,
-        node_attempt_id=attempt_id,
-        working_directory=working_directory,
-        work_directory_version_id=work_directory_version_id,
-    )
+    if detached_from_attempt:
+        item.lifecycle = "ACTIVE"
+        item.last_connected_at = now()
+    else:
+        item = bind_openhands_conversation(
+            db,
+            flow_run_id=run.id,
+            openhands_conversation_id=handle.conversation_id,
+            display_label=title,
+            binding_id=binding_id,
+            node_run_id=node_run_id,
+            node_attempt_id=attempt_id,
+            working_directory=working_directory,
+            work_directory_version_id=work_directory_version_id,
+        )
     db.add(
         HumanAction(
             flow_run_id=run.id,
@@ -1162,6 +1201,7 @@ def create_conversation(
     *,
     host: agent_sessions.FlowNodeSessionHost | None = None,
     session_config: FrozenSessionConfig | None = None,
+    detached_from_attempt: bool = False,
 ) -> dict[str, Any]:
     """Create one OpenHands-native Conversation in the FlowRun Runtime.
 
@@ -1217,6 +1257,7 @@ def create_conversation(
         work_directory_version_id=work_directory_version_id,
         runtime_working_directory=runtime_working_directory,
         session_config=session_config,
+        detached_from_attempt=detached_from_attempt,
     )
 
 
@@ -1236,11 +1277,14 @@ def create_flow_run_conversation(
         if binding_id:
             return get_conversation(db, binding_id)
         raise conflict("conversation creation outcome is unavailable")
+    requested_attempt = _attempt(db, payload.node_attempt_id)
+    detached_from_attempt = requested_attempt.state == AttemptState.ACCEPTED
     host = agent_sessions.resolve_flow_node_session_host(
         db,
         flow_run_id=flow_run_id,
         attempt_id=payload.node_attempt_id,
-        require_start_permission=True,
+        require_start_permission=not detached_from_attempt,
+        ensure_startable_runtime=detached_from_attempt,
     )
     attempt = _attempt(db, host.attempt_id)
     create_kwargs: dict[str, Any] = {"host": host}
@@ -1256,6 +1300,7 @@ def create_flow_run_conversation(
         ),
         idempotency_key,
         **create_kwargs,
+        detached_from_attempt=detached_from_attempt,
     )
 
 

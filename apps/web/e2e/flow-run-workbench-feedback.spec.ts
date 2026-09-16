@@ -499,6 +499,7 @@ test('a stepwise record keeps completed nodes readable while the next node is co
 
   await page.locator('.run-graph-node').filter({ hasText: '测试节点' }).filter({ hasNotText: '测试节点2' }).click();
   await expect(page.getByTestId('attempt-state')).toHaveText('ACCEPTED');
+  await expect(page.locator('.attempt-control .state-banner')).toContainText('已完成');
   await expect(page.locator('.run-graph-node.snapshot-selected')).toContainText('测试节点');
 
   await page.locator('.run-graph-node').filter({ hasText: '测试节点2' }).click();

@@ -77,8 +77,11 @@ export function FlowNodeSessionPage({
       selectedAutomaticRecordId: automatic ? source.automaticRecordId : undefined,
       selectedStepwiseRecordId: stepwise ? source.stepwiseRecordId : undefined,
     });
-    await refreshFlowRunProjection();
-    onNavigate('/', true);
+    try {
+      await refreshFlowRunProjection();
+    } finally {
+      onNavigate('/', true);
+    }
   };
   return <AgentSessionWorkbench
     gateway={gateway}

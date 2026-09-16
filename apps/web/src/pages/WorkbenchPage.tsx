@@ -29,7 +29,7 @@ const ATTEMPT_STATE_LABELS: Record<AttemptState, string> = {
   END_GATES: '正在检查完成条件',
   END_BLOCKED: '完成条件未通过',
   WAITING_ACCEPTANCE: '等待验收',
-  ACCEPTED: '已验收',
+  ACCEPTED: '已完成',
   REJECTED: '已退回',
   CANCELLED: '已取消',
 };
@@ -1641,7 +1641,15 @@ export function WorkbenchPage() {
     if ((kind === 'accept' || kind === 'accept-gate-risk') && result && typeof result === 'object' && 'node_runs' in result) {
       const updated = result as FlowRun;
       updateCurrentRun(() => updated);
-      const next = [...updated.node_runs].reverse().find(item => item.state === 'ACTIVE') ?? updated.node_runs.at(-1);
+      const acceptedSnapshot = updated.snapshots.find(item => item.id === nodeRun?.attempts.at(-1)?.snapshot_id)
+        ?? updated.snapshots.find(item => item.id === updated.active_snapshot_id)
+        ?? updated.snapshots.at(-1);
+      const successorKeys = new Set((acceptedSnapshot?.definition.edges ?? [])
+        .filter(edge => edge.source_instance_key === nodeRun?.flow_node_snapshot_key)
+        .map(edge => edge.target_instance_key));
+      const next = [...updated.node_runs].reverse().find(item => item.state === 'ACTIVE' && successorKeys.has(item.flow_node_snapshot_key))
+        ?? [...updated.node_runs].reverse().find(item => item.state === 'ACTIVE')
+        ?? updated.node_runs.at(-1);
       if (next) {
         // The service has already created the next durable Flow transition.
         // Focus it immediately in both modes so a completed N1 behaves like
