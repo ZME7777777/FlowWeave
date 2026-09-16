@@ -2360,13 +2360,7 @@ function workspaceTree(entries: WorkspaceEntry[], root: string): WorkspaceTreeNo
   return roots;
 }
 
-function formatFileSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${Math.ceil(bytes / 1024)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(bytes < 10 * 1024 * 1024 ? 1 : 0)} MB`;
-}
-
-function WorkspaceFileTree({ entries, root, selectedFile, selectedPaths, expanded, pagination, loadingDirectories, onExpandedChange, onLoadMore, onSelect, onSelectionChange, onActivateDirectory, onContextMenu, fileDownloadUrl }: { entries: WorkspaceEntry[]; root: string; selectedFile?: string; selectedPaths: Set<string>; expanded: Set<string>; pagination: Map<string, string | undefined>; loadingDirectories: Set<string>; onExpandedChange: (updater: (current: Set<string>) => Set<string>) => void; onLoadMore: (parentPath?: string) => void; onSelect: (path?: string) => void; onSelectionChange: (paths: Set<string>) => void; onActivateDirectory: (path?: string) => void; onContextMenu: (path: string, kind: 'file' | 'directory', event: ReactMouseEvent<HTMLButtonElement>) => void; fileDownloadUrl: (path: string) => string }) {
+function WorkspaceFileTree({ entries, root, selectedFile, selectedPaths, expanded, pagination, loadingDirectories, onExpandedChange, onLoadMore, onSelect, onSelectionChange, onActivateDirectory, onContextMenu }: { entries: WorkspaceEntry[]; root: string; selectedFile?: string; selectedPaths: Set<string>; expanded: Set<string>; pagination: Map<string, string | undefined>; loadingDirectories: Set<string>; onExpandedChange: (updater: (current: Set<string>) => Set<string>) => void; onLoadMore: (parentPath?: string) => void; onSelect: (path?: string) => void; onSelectionChange: (paths: Set<string>) => void; onActivateDirectory: (path?: string) => void; onContextMenu: (path: string, kind: 'file' | 'directory', event: ReactMouseEvent<HTMLButtonElement>) => void }) {
   const nodes = useMemo(() => workspaceTree(entries, root), [entries, root]);
   const selectionAnchor = useRef<string | undefined>(undefined);
   const rowRefs = useRef(new Map<string, HTMLDivElement>());
@@ -2427,8 +2421,8 @@ function WorkspaceFileTree({ entries, root, selectedFile, selectedPaths, expande
       }} onClick={event => selectEntry(node, event)} onContextMenu={event => { event.preventDefault(); if (node.kind === 'directory') onActivateDirectory(node.path); onContextMenu(node.path, node.kind, event); }}>
         {node.kind === 'directory' ? open ? <FolderOpen size={14}/> : <Folder size={14}/> : <FileCode2 size={14}/>}
         <span>{node.name}</span>
+        {node.kind === 'file' && <em>{node.size ? `${Math.ceil(node.size / 1024)} KB` : '0 KB'}</em>}
       </button>
-      {node.kind === 'file' && <span className="agent-file-tree-file-meta"><em className="agent-file-tree-size">{formatFileSize(node.size)}</em><a className="agent-file-tree-download" href={fileDownloadUrl(node.path)} aria-label={`下载 ${node.name}`} title={`下载 ${node.name}`}><Download size={12}/></a></span>}
       </div>
       {node.kind === 'directory' && open && <div role="group">{renderNodes(node.children, depth + 1)}{hasMore && <button type="button" className="agent-file-tree-load-more" style={{ '--tree-depth': depth + 1 } as CSSProperties} disabled={loading} onClick={() => onLoadMore(node.path)}>{loading ? '正在加载…' : '加载更多'}</button>}</div>}
     </div>;
@@ -3157,36 +3151,10 @@ function WorkspaceDrawer({
   const textPreviewable = Boolean(selectedFile && isTextPreviewable(selectedFile, selectedMimeType));
   const previewQuery = useQuery({
     queryKey: sessionQueryKey(host, 'file-preview', workspaceId, bindingId, selectedFile),
-    queryFn: ({ signal }) => api.filePreview(workspaceId, selectedFile!, { bindingId, workDirectoryId }, 0, signal),
+    queryFn: ({ signal }) => api.filePreview(workspaceId, selectedFile!, { bindingId, workDirectoryId }, signal),
     enabled: Boolean(open && scopeState.activeTabId === 'files' && textPreviewable),
     retry: false,
   });
-  const [previewState, setPreviewState] = useState<{ path: string; content: string; totalBytes: number; nextOffset?: number }>();
-  const [previewMoreLoading, setPreviewMoreLoading] = useState(false);
-  useEffect(() => {
-    if (!selectedFile || !previewQuery.data) {
-      setPreviewState(undefined);
-      return;
-    }
-    setPreviewState({ path: selectedFile, ...previewQuery.data });
-  }, [previewQuery.data, selectedFile]);
-  const loadMorePreview = useCallback(async () => {
-    if (!selectedFile || previewState?.nextOffset === undefined || previewMoreLoading) return;
-    setPreviewMoreLoading(true);
-    try {
-      const next = await api.filePreview(workspaceId, selectedFile, { bindingId, workDirectoryId }, previewState.nextOffset);
-      setPreviewState(current => current?.path === selectedFile ? {
-        path: selectedFile,
-        content: current.content + next.content,
-        totalBytes: next.totalBytes || current.totalBytes,
-        nextOffset: next.nextOffset,
-      } : current);
-    } catch (reason) {
-      setPanelError(reason instanceof Error ? reason.message : '继续读取文件失败');
-    } finally {
-      setPreviewMoreLoading(false);
-    }
-  }, [api, bindingId, previewMoreLoading, previewState, selectedFile, setPanelError, workDirectoryId, workspaceId]);
   const visibleFiles = useMemo(() => {
     const files = new Map<string, WorkspaceEntry>();
     for (const page of directoryPages.values()) {
@@ -3508,7 +3476,7 @@ function WorkspaceDrawer({
           {scopeState.tabs.some(tab => tab.kind === 'files') && <section className={`agent-workspace-files ${scopeState.activeTabId === 'files' ? 'active' : ''}${gitSidebarVisible ? ' fullscreen-git' : ''}`} style={{ '--file-tree-width': `${fileTreeWidth}px` } as CSSProperties}>
             <div className="agent-file-tree-pane">
               <header className="agent-file-tree-toolbar"><span>{selectedEntryPaths.size ? `已选 ${selectedEntryPaths.size} 项` : '文件'}</span><div className="agent-file-tree-actions"><button type="button" title="新建文件" aria-label="新建文件" onClick={() => createAtActiveDirectory('FILE')}><FileCode2 size={13}/></button><button type="button" title="新建目录" aria-label="新建目录" onClick={() => createAtActiveDirectory('DIRECTORY')}><FolderPlus size={13}/></button><button type="button" className={`agent-file-tree-expand-toggle${allFileDirectoriesExpanded ? ' expanded' : ''}`} title={allFileDirectoriesExpanded ? '全部收起' : '全部展开'} aria-label={allFileDirectoriesExpanded ? '全部收起目录' : '全部展开目录'} disabled={!fileDirectoryPaths.length} onClick={() => setExpandedFilePaths(allFileDirectoriesExpanded ? new Set() : new Set(fileDirectoryPaths))}>{allFileDirectoriesExpanded ? <ChevronRight size={13}/> : <ChevronDown size={13}/>}</button><button type="button" className="danger" title="删除选中项" aria-label="删除选中项" disabled={!selectedEntryRoots.length} onClick={() => void removeEntries(selectedEntryRoots.map(path => ({ path, kind: visibleFiles.find(item => item.path === path)?.kind ?? 'directory' })))}><Trash2 size={13}/></button></div></header>
-              <WorkspaceFileTree entries={visibleFiles} root={details.working_directory} selectedFile={selectedFile} selectedPaths={selectedEntryPaths} expanded={expandedFilePaths} pagination={new Map([...directoryPages].map(([path, page]) => [path, page.nextCursor]))} loadingDirectories={loadingDirectoryPaths} onExpandedChange={setExpandedFilePaths} onLoadMore={parentPath => { void loadDirectory(parentPath); }} onSelect={path => { setActiveDirectory(undefined); selectFile(path); }} onSelectionChange={setSelectedEntryPaths} onActivateDirectory={path => { setActiveDirectory(path); setGitContextPath(path); }} onContextMenu={(path, kind, event) => { setEntryMenu({ path, kind, x: Math.min(event.clientX, window.innerWidth - 190), y: Math.min(event.clientY, window.innerHeight - 190) }); }} fileDownloadUrl={path => fileUrl(workspaceId, path, { bindingId, workDirectoryId, download: true })}/>
+              <WorkspaceFileTree entries={visibleFiles} root={details.working_directory} selectedFile={selectedFile} selectedPaths={selectedEntryPaths} expanded={expandedFilePaths} pagination={new Map([...directoryPages].map(([path, page]) => [path, page.nextCursor]))} loadingDirectories={loadingDirectoryPaths} onExpandedChange={setExpandedFilePaths} onLoadMore={parentPath => { void loadDirectory(parentPath); }} onSelect={path => { setActiveDirectory(undefined); selectFile(path); }} onSelectionChange={setSelectedEntryPaths} onActivateDirectory={path => { setActiveDirectory(path); setGitContextPath(path); }} onContextMenu={(path, kind, event) => { setEntryMenu({ path, kind, x: Math.min(event.clientX, window.innerWidth - 190), y: Math.min(event.clientY, window.innerHeight - 190) }); }}/>
             </div>
             <div className="agent-file-tree-resizer" role="separator" aria-label="调整文件目录宽度" aria-orientation="vertical" onPointerDown={startFileTreeResize}/>
             <div className="agent-file-preview">{candidatePreview ? <>
@@ -3516,7 +3484,7 @@ function WorkspaceDrawer({
               <iframe className="agent-file-media-preview" sandbox="" title={`${candidatePreview.filename} 候选文件预览`} src={candidatePreview.url}/>
             </> : selectedFile ? <>
               <header><span title={selectedFile}>{selectedAttachment?.filename || relativeWorkspacePath(selectedFile, details.root)}</span><a href={fileUrl(workspaceId, selectedFile, { bindingId, workDirectoryId, download: true })}><Download size={13}/>下载</a></header>
-              {canPreviewImage ? <img className="agent-file-media-preview" src={selectedAttachment?.image_data_url || selectedFileUrl} alt={selectedAttachment?.filename || '附件预览'}/> : canPreviewPdf ? <iframe className="agent-file-media-preview" title={selectedAttachment?.filename || 'PDF 预览'} src={selectedFileUrl}/> : textPreviewable ? previewQuery.isLoading ? <p>正在读取文件…</p> : previewQuery.isError ? <p>文件预览不可用，请下载后查看。</p> : previewState ? <div className="agent-file-preview-paged"><WorkspaceTextPreview path={selectedFile} content={previewState.content} highlight={highlightedFileSelection?.path === selectedFile ? highlightedFileSelection.selection : undefined} highlightLine={sourceFileNavigation?.path === selectedFile ? sourceFileNavigation.line : undefined} onAnnotate={onAnnotateFileSelection ? (selection, quote) => onAnnotateFileSelection(selectedFile, selection, quote) : undefined}/>{previewState.nextOffset !== undefined && <footer><span>已加载 {formatFileSize(previewState.nextOffset)} / {formatFileSize(previewState.totalBytes)}</span><button type="button" onClick={() => void loadMorePreview()} disabled={previewMoreLoading}>{previewMoreLoading ? '正在加载…' : '加载更多'}</button></footer>}</div> : null : <p>此文件不提供浏览器预览，请下载后查看。</p>}
+              {canPreviewImage ? <img className="agent-file-media-preview" src={selectedAttachment?.image_data_url || selectedFileUrl} alt={selectedAttachment?.filename || '附件预览'}/> : canPreviewPdf ? <iframe className="agent-file-media-preview" title={selectedAttachment?.filename || 'PDF 预览'} src={selectedFileUrl}/> : textPreviewable ? previewQuery.isLoading ? <p>正在读取文件…</p> : previewQuery.isError ? <p>文件预览不可用，请下载后查看。</p> : <WorkspaceTextPreview path={selectedFile} content={previewQuery.data ?? ''} highlight={highlightedFileSelection?.path === selectedFile ? highlightedFileSelection.selection : undefined} highlightLine={sourceFileNavigation?.path === selectedFile ? sourceFileNavigation.line : undefined} onAnnotate={onAnnotateFileSelection ? (selection, quote) => onAnnotateFileSelection(selectedFile, selection, quote) : undefined}/> : <p>此文件不提供浏览器预览，请下载后查看。</p>}
             </> : <p>选择一个文件以预览或下载。</p>}</div>
           </section>}
           {scopeState.tabs.some(tab => tab.kind === 'changes') && <div className={`agent-changes-tab-panel ${scopeState.activeTabId === 'changes' ? 'active' : ''}`}><WorkspaceChangesReview changes={reviewChanges} selectedId={scopeState.selectedChangeId} onSelect={selectedChangeId => updateScope(current => ({ ...current, selectedChangeId }))} onOpenSource={openSourceFile} workspaceRoot={details.working_directory}/></div>}
