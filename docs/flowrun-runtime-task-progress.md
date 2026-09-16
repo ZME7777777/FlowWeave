@@ -188,6 +188,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-430 | 已认证端到端可靠性交付验收 | DONE | 为现有 Agent 工作台产品流补足测试范围内的认证前置，使 FR-429 歧义投递持久化与不自动重发断言能实际执行；不改变生产认证或投递逻辑。 |
 | FR-431 | 主会话／子智能体事件连续补读 | DONE | 原生 readiness 短暂报 idle 时，只要正式用户轮尚未出现终态，持续用正式 OpenHands cursor 补读；迟到的 TaskAction 无需暂停或继续即可进入主会话投影。 |
 | FR-456 | 会话事件投影、完成同步与历史滚动锚点可靠性 | DONE | 运行中的会话固定增量追赶当前 OpenHands 事件；`next_cursor` 缺失或 WebSocket 假活时回读有界最新页，不再要求暂停／继续触发补齐。完成、断流重连和暂停／继续只协调当前会话事件、readiness 与确认状态，不再全量刷新 Runtime、列表或上下文。历史页推迟到本轮终态后加载，历史 prepend 以显式视口事务和关闭浏览器 scroll anchoring 保持阅读位置。 |
+| FR-472 | 运行中压缩会话历史即时恢复 | DONE | 会话仍在运行、压缩中或压缩完成后刷新，历史分页立即继续读取，压缩前事件不再等本轮结束才显示。 |
 | FR-457 | OpenHands 空响应自恢复与运行状态一致性 | DONE | 空 Agent Message 与 `source=environment` 的原生 corrective nudge 不再被识别为最终回复；纠正事件以“模型返回空响应，OpenHands 正在自动重试”呈现，左侧会话状态与底部按钮继续统一服从原生 execution status。 |
 | FR-458 | 空响应恢复提示瞬时化与会话状态统一 | DONE | corrective nudge 只在它是当前最新事件且原生会话仍运行时复用实时状态行显示；后续事件或终态立即隐藏，历史工作过程不保留该提示。工作台所有运行控件复用同一原生状态投影。 |
 | FR-459 | 原生错误事件的终态／可恢复呈现分流 | DONE | 仅 OpenHands ConversationErrorEvent 呈现为“本轮未能完成”的会话级终态卡片；AgentErrorEvent 与未知历史 ERROR 保持原生审计事实，按其正式父事件留在工作过程中呈现为可恢复异常，后续正式回复会明确标注 Agent 已继续完成，避免暂停／继续后的正常回复被历史错误卡片误覆盖。 |
@@ -6110,6 +6111,16 @@ OpenHands 事件树、数据库迁移、Runtime Provider 或远端部署。
 既有连续／逐步记录详情均继续以实际到达的后继节点作为当前焦点，且已完成节点的会话、输入、门禁和产物仍可
 回看。
 
+### FR-472 运行中压缩会话历史即时恢复 — DONE
+
+依赖：`FR-456`、`FR-379`。
+
+目标：会话仍在运行、上下文压缩正在进行或已完成时，浏览器刷新后必须继续读取 OpenHands 历史分页；压缩前的正式事件不得等待当前回复完成才重新显示。只读历史分页不得改变 OpenHands Condensation、活跃事件分支、实时事件追赶或现有视口锚定语义。
+
+完成：移除前端以 `isGenerating` 暂停历史分页的条件。最新活跃窗口绘制后，无论 native Conversation 是否仍为 `running`，均按既有 `history_cursor` 继续异步读取、更早事件以前置方式合并，并复用既有滚动位置保护和失败游标收敛。新增隔离 Playwright 回归，模拟运行中的 Condensation 会话刷新后立即请求历史页并显示压缩前消息。
+
+验收：Web TypeScript typecheck、全量 ESLint、production build、隔离 Playwright 回归、`git diff --check`、Alembic head 与任务状态唯一性通过；未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。
+
 ### FR-471 Agent 会话已发送消息换行保留 — DONE
 
 依赖：FR-469。
@@ -6171,6 +6182,7 @@ Attempt，右侧详情也复用同一个 `AttemptPanel` 与会话返回上下文
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-16 | FR-472 | Web TypeScript typecheck、全量 ESLint、production build、隔离 Playwright 回归、`git diff --check`、Alembic head 与任务状态唯一性 | PASS：运行中的压缩会话刷新后立即按 native `history_cursor` 请求并回填较早事件；隔离浏览器回归模拟 Condensation、持续 `running` readiness 和刷新，确认压缩前消息可见。未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-16 | FR-470 | Web TypeScript typecheck、全量 ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS：纠正并实际提交 FR-469 的可换行紧凑标签样式；附件、会话引用、工作区引用和注释不再逐项占用整行，原有预览／定位交互保持不变。未修改 API、数据库、OpenHands、Runtime Provider 或远端环境。 |
 | 2026-09-16 | FR-469 | Web TypeScript typecheck、全量 ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS：已发送消息下方的附件、会话引用、工作区引用和注释由纵向大卡片改为可换行的紧凑标签组；标题与类型／大小同排显示，长文本保持省略和完整 title，原有点击预览／定位与键盘操作不变。未修改 API、数据库、OpenHands、Runtime Provider 或远端环境。 |
 | 2026-09-16 | FR-468 | Web TypeScript typecheck、ESLint、连续／逐步工作台定向 Playwright（2 passed）、`git diff --check` 与任务状态唯一性 | PASS：已启动的连续／逐步记录通过同一执行记录上下文驱动流程图、节点详情和节点会话返回；逐步运行在后继待配置项停留，连续运行不出现手动启动入口并继续调度。未修改 API、数据库迁移、OpenHands、Runtime Provider、Docker 或远端环境。 |

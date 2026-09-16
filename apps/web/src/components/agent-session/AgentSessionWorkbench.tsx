@@ -4092,13 +4092,13 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   useEffect(() => {
     const bindingId = selected?.id;
     const historyCursor = eventsQuery.data?.history_cursor;
-    // Fetching a complete transcript while output is arriving inserts a large
-    // historical block above the live turn. Defer it until this native turn is
-    // settled; event recovery below remains active throughout execution.
-    if (!bindingId || !historyCursor || isGenerating || historyLoadingScopes.current.has(bindingId) || historyFailedCursors.current.get(bindingId) === historyCursor) return;
+    // A refreshed running conversation must recover its complete native
+    // history too. Prepending pages preserves the reader viewport, so this
+    // read-only pagination can proceed independently of live event recovery.
+    if (!bindingId || !historyCursor || historyLoadingScopes.current.has(bindingId) || historyFailedCursors.current.get(bindingId) === historyCursor) return;
     const timer = window.setTimeout(() => { void loadAllHistory(); }, historyPrefetchDelayMs);
     return () => window.clearTimeout(timer);
-  }, [eventsQuery.data?.history_cursor, historyPrefetchDelayMs, isGenerating, loadAllHistory, selected?.id]);
+  }, [eventsQuery.data?.history_cursor, historyPrefetchDelayMs, loadAllHistory, selected?.id]);
   const displayedEvents = useMemo(() => {
     const activeScope = selected?.id ?? conversationDraft?.id;
     const bootstrapEvent = optimisticBootstrapTurn && optimisticBootstrapTurn.scope === activeScope

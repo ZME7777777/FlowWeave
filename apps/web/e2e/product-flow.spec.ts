@@ -1320,10 +1320,13 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await page.reload();
   await expect(page.locator('.agent-composer-model-summary')).toHaveText('gpt-second高');
   await expect(page.getByText('当前供应商：另一模型配置')).toBeVisible();
-  // The latest native window stays stable while this turn is live. Historical
-  // pages load after it settles, rather than racing the first streamed event.
-  await page.waitForTimeout(250);
-  expect(historyPageRequests).toBe(0);
+  // A refresh during a live turn must still recover the older native pages.
+  // The held page also proves the request begins before this turn settles.
+  await expect.poll(() => historyPageRequests).toBeGreaterThan(0);
+  await expect(page.locator('.conversation-history-loading')).toContainText('正在载入更早的会话记录');
+  releaseHistoryPage?.();
+  await expect(page.getByText('运行中后台补全的较早历史')).toBeVisible();
+  await expect(page.locator('.conversation-history-loading')).toHaveCount(0);
   const composer = page.getByLabel('发送 Agent 消息');
   await composer.fill('maven');
   await composer.dispatchEvent('keydown', { key: 'Enter', code: 'Enter', isComposing: true });
@@ -1566,8 +1569,6 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.locator('.conversation-turn-status')).toHaveCount(0);
   await expect(page.getByLabel('会话实时状态')).toHaveCount(0);
   await expect.poll(() => historyPageRequests).toBeGreaterThan(0);
-  await expect(page.locator('.conversation-history-loading')).toContainText('正在载入更早的会话记录');
-  releaseHistoryPage?.();
   await expect(page.getByText('运行中后台补全的较早历史')).toBeVisible();
   await expect(page.locator('.conversation-history-loading')).toHaveCount(0);
   historyPrefetchEnabled = false;

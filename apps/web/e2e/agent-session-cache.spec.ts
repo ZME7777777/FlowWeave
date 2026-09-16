@@ -219,3 +219,68 @@ test('First message keeps the new conversation visible while its routed read is 
 
   releaseConversationRead?.();
 });
+
+test('Running Agent session reload restores older history pages', async ({ page }) => {
+  let authenticated = false;
+  let historyRequests = 0;
+  const workspace = {
+    id: 'running-history-workspace', display_name: 'Agent 工作区', desired_state: 'RUNNING', updated_at: now,
+  };
+  const conversation = {
+    id: 'running-history-conversation', display_title: '运行中的压缩会话', title_state: 'MANUAL', lifecycle: 'ACTIVE',
+    streaming_callback_ready: true, execution_status: 'running', created_at: now, updated_at: now,
+  };
+
+  await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const path = url.pathname;
+    if (path.endsWith('/auth/me')) return authenticated
+      ? json(route, user)
+      : json(route, { error: { code: 'AUTHENTICATION_REQUIRED', message: '请先登录' } }, 401);
+    if (path.endsWith('/auth/login') && request.method() === 'POST') { authenticated = true; return json(route, user); }
+    if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
+    if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
+    if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: [conversation], next_cursor: null });
+    if (path.endsWith('/events')) {
+      if (url.searchParams.get('history_cursor') === 'compressed-history-page') {
+        historyRequests += 1;
+        return json(route, {
+          events: [{ id: 'compressed-history-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '压缩前仍可见的历史会话', timestamp: now } }],
+          next_cursor: null, history_cursor: null,
+        });
+      }
+      return json(route, {
+        events: [
+          { id: 'compressed-history-condensation', event_type: 'CONDENSATION', payload: { parent_id: 'live-user', summary: '早期会话摘要', forgotten_event_ids: ['old-1'], timestamp: now } },
+          { id: 'live-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'compressed-history-condensation', content: '当前仍在处理的请求', timestamp: now } },
+        ],
+        next_cursor: 'live-user', history_cursor: 'compressed-history-page', result: { status: 'RUNNING' },
+      });
+    }
+    if (path.endsWith('/work-directories')) return json(route, {
+      root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [],
+    });
+    if (path.endsWith('/workspace')) return json(route, {
+      root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' },
+      working_directory: '/runtime/workspace/project', work_directory: null, files: [], repositories: [],
+      runtime: {}, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '不可用', note: '' } },
+    });
+    if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
+    if (path.endsWith('/input-readiness')) return json(route, { ready: false, execution_status: 'running' });
+    if (path.endsWith('/context')) return json(route, { model_name: 'test-model', window_tokens: 128_000, used_tokens: 1_024, usage_current: true });
+    if (path.endsWith('/model-providers') || path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
+    if (path.includes('/conversations/') && request.method() === 'GET') return json(route, conversation);
+    return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+  });
+
+  await page.goto('/');
+  await login(page);
+  await page.goto('/agent/conversations/running-history-conversation');
+  await expect(page.getByText('当前仍在处理的请求')).toBeVisible();
+  await page.reload();
+  await expect(page.getByText('当前仍在处理的请求')).toBeVisible();
+  await expect.poll(() => historyRequests).toBeGreaterThan(0);
+  await expect(page.getByText('压缩前仍可见的历史会话')).toBeVisible();
+});
