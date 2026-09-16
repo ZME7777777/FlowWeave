@@ -423,6 +423,8 @@ class RuntimeWorkspaceFile:
     filename: str
     content_type: str
     content: bytes
+    total_size: int | None = None
+    next_offset: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

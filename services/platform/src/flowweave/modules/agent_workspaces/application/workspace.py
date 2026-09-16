@@ -35,11 +35,29 @@ from flowweave.shared.errors import DomainError, not_found
 from flowweave.shared.observability import current_metrics
 
 _MAX_INDEX_ENTRIES = 20_000
-_MAX_FILE_BYTES = 25 * 1024 * 1024
+_PREVIEW_CHUNK_BYTES = 512 * 1024
 _GIT_TIMEOUT_SECONDS = 2
 _GIT_LOG_LIMIT = 80
 _GIT_DIFF_LIMIT = 512 * 1024
 _GIT_OBJECT_ID = re.compile(r"^[0-9a-fA-F]{7,64}$")
+
+
+def _preview_chunk(path: Path, offset: int, size: int) -> bytes:
+    """Read one browser-safe text page without loading the complete file."""
+
+    with path.open("rb") as handle:
+        handle.seek(offset)
+        content = handle.read(_PREVIEW_CHUNK_BYTES)
+    if offset + len(content) >= size:
+        return content
+    # Prefer a whole line to preserve Markdown tables and avoid splitting a
+    # UTF-8 sequence. For a single oversized line, discard only a partial tail
+    # character while guaranteeing the caller still receives a non-empty page.
+    newline = content.rfind(b"\n")
+    if newline >= 0:
+        return content[: newline + 1]
+    decoded = content.decode("utf-8", errors="ignore").encode("utf-8")
+    return decoded or content
 
 
 def terminal_session_name(workspace_id: str, container_id: str, terminal_instance_id: str) -> str:
@@ -1141,6 +1159,9 @@ def download(
     path: str,
     binding_id: str | None = None,
     work_directory_id: str | None = None,
+    *,
+    preview: bool = False,
+    offset: int = 0,
 ) -> Any:
     _workspace(db, workspace_id)
     runtime_root = _runtime_root(workspace_id)
@@ -1164,15 +1185,13 @@ def download(
         size = host_path.stat().st_size
     except OSError as exc:
         raise DomainError("AGENT_WORKSPACE_FILE_UNAVAILABLE", "文件暂时无法读取", 503) from exc
-    if size > _MAX_FILE_BYTES:
-        raise DomainError(
-            "AGENT_WORKSPACE_FILE_TOO_LARGE",
-            "文件超过浏览器读取上限，请在终端或 IDE 中查看",
-            413,
-            {"max_bytes": _MAX_FILE_BYTES},
-        )
+    if offset < 0 or offset > size:
+        raise DomainError("AGENT_WORKSPACE_PREVIEW_OFFSET_INVALID", "文件预览位置无效", 422)
     try:
-        content = host_path.read_bytes()
+        if preview:
+            content = _preview_chunk(host_path, offset, size)
+        else:
+            content = host_path.read_bytes()
     except OSError as exc:
         raise DomainError("AGENT_WORKSPACE_FILE_UNAVAILABLE", "文件暂时无法读取", 503) from exc
     attachment_metadata = _attachment_media_metadata(db, binding_id, path)
@@ -1180,10 +1199,13 @@ def download(
         host_path.name,
         mimetypes.guess_type(host_path.name)[0] or "application/octet-stream",
     )
+    next_offset = offset + len(content) if preview and offset + len(content) < size else None
     return RuntimeWorkspaceFile(
         filename=filename,
         content_type=content_type,
         content=content,
+        total_size=size if preview else None,
+        next_offset=next_offset,
     )
 
 

@@ -2168,7 +2168,7 @@ def test_node_workspace_projection_shares_project_across_node_attempts(
         second_runtime_path = "/runtime/workspace/project/second.txt"
         assert first_runtime_path in paths
         assert second_runtime_path in paths
-        content, _content_type, filename = flow_node_workspace.read_file(
+        content, _content_type, filename, _total_size, _next_offset = flow_node_workspace.read_file(
             db,
             flow_run_id=flow_run_id,
             attempt_id=first_attempt_id,
@@ -2178,13 +2178,15 @@ def test_node_workspace_projection_shares_project_across_node_attempts(
         )
         assert content == b"first"
         assert filename == "first.txt"
-        second_content, _content_type, second_filename = flow_node_workspace.read_file(
-            db,
-            flow_run_id=flow_run_id,
-            attempt_id=second_attempt.id,
-            binding_id=None,
-            work_directory_id=None,
-            path=first_runtime_path,
+        second_content, _content_type, second_filename, _total_size, _next_offset = (
+            flow_node_workspace.read_file(
+                db,
+                flow_run_id=flow_run_id,
+                attempt_id=second_attempt.id,
+                binding_id=None,
+                work_directory_id=None,
+                path=first_runtime_path,
+            )
         )
         assert second_content == b"first"
         assert second_filename == "first.txt"

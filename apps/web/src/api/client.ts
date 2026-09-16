@@ -249,11 +249,25 @@ export const api = {
     if (options.workDirectoryId) query.set('work_directory_id', options.workDirectoryId);
     return request<import('../types').WorkspaceGitFileDiff>(`/agent-workspaces/${encodeURIComponent(id)}/workspace/git/diff?${query}`);
   },
-  agentWorkspaceFilePreview: (id: string, path: string, options: { bindingId?: string; workDirectoryId?: string } = {}, signal?: AbortSignal) => {
+  agentWorkspaceFilePreview: async (id: string, path: string, options: { bindingId?: string; workDirectoryId?: string } = {}, offset = 0, signal?: AbortSignal) => {
     const query = new URLSearchParams({ path });
     if (options.bindingId) query.set('binding_id', options.bindingId);
     if (options.workDirectoryId) query.set('work_directory_id', options.workDirectoryId);
-    return requestText(`/agent-workspaces/${encodeURIComponent(id)}/workspace/file?${query}`, signal);
+    query.set('preview', 'true');
+    query.set('offset', String(offset));
+    let response: Response;
+    try {
+      response = await fetch(`${API_BASE}${ROOT}/agent-workspaces/${encodeURIComponent(id)}/workspace/file?${query}`, { signal, credentials: 'include' });
+    } catch {
+      throw new ApiError('无法连接服务器，请检查网络连接后重试。', 'NETWORK_ERROR', {}, 0);
+    }
+    if (!response.ok) throw await responseError(response);
+    const nextOffset = response.headers.get('X-Preview-Next-Offset');
+    return {
+      content: await response.text(),
+      totalBytes: Number(response.headers.get('X-Preview-Total-Bytes') ?? 0),
+      nextOffset: nextOffset === null ? undefined : Number(nextOffset),
+    };
   },
   deleteAgentWorkspaceFile: (id: string, path: string, options: { bindingId?: string; workDirectoryId?: string; recursive?: boolean } = {}) => {
     const query = new URLSearchParams();
@@ -893,11 +907,15 @@ export const nodeSessionApi = {
     if (options.workDirectoryId) query.set('work_directory_id', options.workDirectoryId);
     return request<void>(`${nodeSessionBase(flowRunId, attemptId)}/workspace/entries${query.size ? `?${query}` : ''}`, json('POST', { parent_path, name, kind }));
   },
-  file: (flowRunId: string, attemptId: string, path: string, bindingId?: string, workDirectoryId?: string, download = false) => {
+  file: (flowRunId: string, attemptId: string, path: string, bindingId?: string, workDirectoryId?: string, download = false, preview = false, offset = 0) => {
     const query = new URLSearchParams({ path });
     if (bindingId) query.set('binding_id', bindingId);
     if (workDirectoryId) query.set('work_directory_id', workDirectoryId);
     if (download) query.set('download', 'true');
+    if (preview) {
+      query.set('preview', 'true');
+      query.set('offset', String(offset));
+    }
     return `${API_BASE}${ROOT}${nodeSessionBase(flowRunId, attemptId)}/workspace/file?${query}`;
   },
   candidateOutputFile: (flowRunId: string, attemptId: string, fieldKey: string, path: string) => {
