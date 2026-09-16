@@ -488,10 +488,8 @@ async def node_session_workspace_file(
     binding_id: str | None = Query(default=None),
     work_directory_id: str | None = Query(default=None),
     download: bool = Query(default=False),
-    preview: bool = Query(default=False),
-    offset: int = Query(default=0, ge=0),
 ) -> Response:
-    content, content_type, filename, total_size, next_offset = await run_sync(
+    content, content_type, filename = await run_sync(
         db,
         lambda session: agent_sessions.flow_node_workspace.read_file(
             session,
@@ -500,20 +498,13 @@ async def node_session_workspace_file(
             binding_id=binding_id,
             work_directory_id=work_directory_id,
             path=path,
-            preview=preview and not download,
-            offset=offset,
         ),
     )
     disposition = "attachment" if download else "inline"
-    headers = {"Content-Disposition": f"{disposition}; filename*=UTF-8''{quote(filename)}"}
-    if preview:
-        headers["X-Preview-Total-Bytes"] = str(total_size or 0)
-        if next_offset is not None:
-            headers["X-Preview-Next-Offset"] = str(next_offset)
     return Response(
         content=content,
         media_type=content_type,
-        headers=headers,
+        headers={"Content-Disposition": f"{disposition}; filename*=UTF-8''{quote(filename)}"},
     )
 
 

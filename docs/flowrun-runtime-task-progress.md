@@ -194,6 +194,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-460 | 会话发送框草稿持久化与工作区隔离 | DONE | 新会话草稿按宿主、工作区及工作目录隔离；已创建会话按工作区与会话隔离。文本、服务端已授权附件元数据、会话／工作区引用和协作注释在切换、Tab 切换及刷新后静默恢复；账号切换会清除这些本地记录。 |
 | FR-462 | 过程解释文本会话引用 | DONE | 已持久化的 `ThinkAction` 与 Tool Action 可见 `thought` 可作为 FlowWeave 会话引用／协作锚点；工具参数、命令、Observation 与工具输出继续禁止作为隐式引用上下文。 |
 | FR-464 | 新会话首条消息页面闪烁 | DONE | 创建响应返回后先写入本地会话与列表投影，再切换稳定 URL，避免草稿清除与路由会话水合之间短暂渲染空状态。 |
+| FR-465 | 工作区大文本分段预览与行内下载 | DONE | 文本／Markdown 预览按 512 KiB 的安全 UTF-8／换行边界分页读取；文件树的大小位置在行悬浮或键盘聚焦时替换为下载控件。 |
 | FR-432 | 最终回复的临时 delta 呈现回退 | DONE | 停止将 WebSocket `delta` 累积或渲染为最终回复；最终 Markdown 只在 OpenHands 正式 assistant／完成事件持久化并投影后一次显示，过程状态与正式工具事件保持可见。 |
 | FR-433 | OpenHands 错误终态工作台收束 | DONE | 将 OpenHands 原生 `ready=true, execution_status=error/stuck` 识别为可安全结束的终态，停止错误卡后的运行标记、停止按钮与“正在处理”，不以浏览器事件自行伪造状态。 |
 | FR-434 | 错误终态与运行中追加投递呈现修正 | DONE | 空闲或原生错误终态的新消息仍先持久化浏览器投递意图，但不得短暂显示为消息队列；运行中直接追加在收到正式 cursor 前不伪装为已发送气泡或队列，流先到达同一正式 OpenHands 用户事件时立即确认收起，歧义／拒绝项保持可见、可恢复。 |
@@ -6066,6 +6067,21 @@ query cache 及已加载的会话列表首页。稳定 URL 的后续读取继续
 重挂载为“新建会话开始协作”。新增浏览器回归刻意阻塞路由详情读取，确认 URL 已变更时标题持续可见且空状态
 不存在。未修改 API、数据库、OpenHands、Runtime Provider 或部署配置。
 
+### FR-465 工作区大文本分段预览与行内下载 — DONE
+
+依赖：FR-441。
+
+目标：工作区中的大 Markdown 或文本文件不得在打开时整份读取、解析并挂载到浏览器页面。首次预览最多读取
+512 KiB，优先在完整换行和 UTF-8 字符边界截断；用户可显式继续加载。完整文件下载保持原语义。文件树每行
+默认显示文件大小，只有悬浮到该行或将其聚焦时，才在同一右侧位置显示下载按钮。
+
+完成：普通 Agent Workspace 与 FlowRun 节点会话的文件读取接口均新增受控 `preview + offset` 分页契约，响应
+用 `X-Preview-Total-Bytes` 和 `X-Preview-Next-Offset` 返回进度。服务端只读取当前 512 KiB 窗口，正常行优先
+截至末尾完整换行；无换行的超长 UTF-8 行则丢弃不完整末尾字符，保证每页前进。前端首段渲染后显示加载进度及
+“加载更多”，不自动解析整份 Markdown；下载请求不携带 preview，仍返回完整内容。文件树将下载链接作为行级独立
+控件，默认隐藏并由大小占位，整行 hover 或 focus-within 时在同一右侧位置替换，避免嵌套交互元素。候选输出
+整体固化的 25 MiB Artifact 限制保持独立，不因浏览器分段预览被放宽。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -6081,6 +6097,7 @@ query cache 及已加载的会话列表首页。稳定 URL 的后续读取继续
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-16 | FR-465 | 无 Docker 的 UTF-8／换行分段读取直接探针；受影响 Python Ruff format/check、`py_compile`；Web TypeScript typecheck、受影响 ESLint、`git diff --check`；定向 Agent Workspace pytest 尝试 | PASS（直接／静态）：超过 512 KiB 的 UTF-8 Markdown 首段在完整换行边界结束，下一页以返回 offset 无重复续读；无换行的超长 UTF-8 行仍保持有效文本且 offset 前进。普通 Agent Workspace 与 FlowRun 节点会话下载继续不带 preview，返回完整文件。Python 格式、Lint、编译，Web typecheck、ESLint 和 whitespace 检查通过。新增 pytest 已启动但 Testcontainers PostgreSQL fixture 在断言前因本机 Docker Unix socket 缺失而阻断，未记为通过；未修改数据库迁移、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-16 | FR-464 | Agent 会话定向 Playwright（1 passed）；Web TypeScript typecheck、ESLint、production build；`git diff --check` 与任务状态唯一性 | PASS：创建 API 的最小 Conversation 投影会在 URL 导航前同步进入详情缓存和已加载列表。浏览器回归刻意阻塞新 URL 的详情请求，仍确认新会话标题连续可见且不会渲染空状态；详情请求释放后继续走常规权威读取。Web typecheck、全量 ESLint 与 production build 通过；构建仅提示既有超大 chunk。未修改 API、数据库、OpenHands、Runtime Provider 或部署配置。 |
 | 2026-09-16 | FR-463 | 生产记录只读 Runtime Artifact 下载核验；逐步运行输出投影无 Docker 直接探针；受影响 Python Ruff format/check、`py_compile`；Web TypeScript typecheck 与 ESLint；`git diff --check`、任务状态唯一性；数据库定向 pytest 尝试 | PASS（生产取证／直接／静态）：正式 Runtime 下载确认一份声明 Markdown 输出为 26,608,720 B，超过 25 MiB 上限 394,320 B，完成事件与候选输出解析均未丢失。逐步运行耗尽的生命周期任务现在按当前阶段收敛为可见阻塞态；已完成的输出固化错误不再无界重试。无 Docker 直接探针确认 `ARTIFACT_FILE_TOO_LARGE` 将手工 Attempt 由 `EXECUTING/RUNNING` 收敛为 `END_BLOCKED/FAILED`，并写入审计；成功验收仍复用端口映射创建下游 `WAITING_INPUT` 工作项，不自动启动下游。Ruff、`py_compile`、Web typecheck/lint、whitespace 和状态唯一性通过。数据库定向 pytest 因本机 Docker Unix socket 缺失，在 Testcontainers fixture 初始化前受阻，未记为通过。未修改 OpenHands、数据库迁移、Runtime Provider 或远端持久数据。 |
 | 2026-09-16 | FR-461 | 固定 OpenHands 1.47 事件搜索契约取证；OpenHands 适配器定向 pytest（2 passed）；受影响 Python `py_compile`、Ruff format/check；Web TypeScript typecheck、ESLint、production build；Alembic 唯一 head、`git diff --check` 与任务状态唯一性 | PASS（静态／定向／构建）：OpenHands 原生 `events/search?body` 逐页检索仅投影用户/助手 MessageEvent，测试覆盖 body、分页和非消息事件过滤。后台任务只持久化查询、状态及正式事件定位，结果展示时重新读取 OpenHands，不创建平台消息副本。搜索弹窗关闭后任务继续运行；顶栏按钮显示运行/完成状态，工作区标题行的 `+` 创建会话入口保持不变。Web typecheck、全量 ESLint 和 production build 通过；Python 编译、Ruff 与唯一 Alembic head `0117_agent_conversation_search` 通过。 |

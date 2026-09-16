@@ -6791,13 +6791,15 @@ def submit_manual_outputs(
                     )
                 )
                 continue
-            content, mime_type, filename = agent_sessions.flow_node_workspace.read_file(
-                db,
-                flow_run_id=run.id,
-                attempt_id=current.id,
-                binding_id=None,
-                work_directory_id=None,
-                path=value.path or "",
+            content, mime_type, filename, _total_size, _next_offset = (
+                agent_sessions.flow_node_workspace.read_file(
+                    db,
+                    flow_run_id=run.id,
+                    attempt_id=current.id,
+                    binding_id=None,
+                    work_directory_id=None,
+                    path=value.path or "",
+                )
             )
             prepared.append(
                 prepare_file_artifact(

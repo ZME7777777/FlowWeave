@@ -395,31 +395,18 @@ async def download_agent_workspace_file(
     binding_id: str | None = Query(default=None),
     work_directory_id: str | None = Query(default=None),
     download: bool = Query(default=False),
-    preview: bool = Query(default=False),
-    offset: int = Query(default=0, ge=0),
 ) -> Response:
     item = await run_sync(
         db,
         lambda session: workspace.download(
-            session,
-            workspace_id,
-            path,
-            binding_id,
-            work_directory_id,
-            preview=preview and not download,
-            offset=offset,
+            session, workspace_id, path, binding_id, work_directory_id
         ),
     )
     disposition = "attachment" if download else "inline"
-    headers = {"Content-Disposition": f"{disposition}; filename*=UTF-8''{quote(item.filename)}"}
-    if preview:
-        headers["X-Preview-Total-Bytes"] = str(item.total_size or 0)
-        if item.next_offset is not None:
-            headers["X-Preview-Next-Offset"] = str(item.next_offset)
     return Response(
         content=item.content,
         media_type=item.content_type,
-        headers=headers,
+        headers={"Content-Disposition": f"{disposition}; filename*=UTF-8''{quote(item.filename)}"},
     )
 
 
