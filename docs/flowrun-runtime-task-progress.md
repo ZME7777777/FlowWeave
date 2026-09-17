@@ -193,6 +193,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-475 | 会话用量累计 Token 实时投影 | DONE | 右侧既有“会话用量”仅将已有的累计 Token 数优先投影为 OpenHands `/context` 的累计供应商 usage；不新增字段、样式或底栏内容。 |
 | FR-476 | 会话当前 View 用量未知态投影 | DONE | 仅对真实空 metrics 投影零 Token；唯一同模型正式 usage bucket 可恢复，非空但歧义的统计保持未知，前端不得将缺失当前 View 用量显示为 0。 |
 | FR-478 | Markdown 文件预览相对链接跳转 | DONE | 点击工作区 Markdown 预览中的本地文件链接时，按当前文件目录解析并在文件工具中选择目标文件；不得让浏览器导航到拼接后的 FlowRun URL。 |
+| FR-479 | 逐步运行当前节点详情与样式复用 | DONE | 逐步记录选中后，右侧展示同一记录当前节点；已有 Attempt 复用共享详情，待配置节点复用连续配置面板组件与样式，仅保留人工配置／启动差异。 |
 | FR-457 | OpenHands 空响应自恢复与运行状态一致性 | DONE | 空 Agent Message 与 `source=environment` 的原生 corrective nudge 不再被识别为最终回复；纠正事件以“模型返回空响应，OpenHands 正在自动重试”呈现，左侧会话状态与底部按钮继续统一服从原生 execution status。 |
 | FR-458 | 空响应恢复提示瞬时化与会话状态统一 | DONE | corrective nudge 只在它是当前最新事件且原生会话仍运行时复用实时状态行显示；后续事件或终态立即隐藏，历史工作过程不保留该提示。工作台所有运行控件复用同一原生状态投影。 |
 | FR-459 | 原生错误事件的终态／可恢复呈现分流 | DONE | 仅 OpenHands ConversationErrorEvent 呈现为“本轮未能完成”的会话级终态卡片；AgentErrorEvent 与未知历史 ERROR 保持原生审计事实，按其正式父事件留在工作过程中呈现为可恢复异常，后续正式回复会明确标注 Agent 已继续完成，避免暂停／继续后的正常回复被历史错误卡片误覆盖。 |
@@ -6250,6 +6251,27 @@ Attempt，右侧详情也复用同一个 `AttemptPanel` 与会话返回上下文
 内容加载、目录链路可解析且浏览器始终停留在原 Node Session URL；同时覆盖 `../outside.md` 越界拒绝。
 Web TypeScript typecheck、受影响 ESLint、production build、`git diff --check` 与 Alembic head 核对均通过。
 
+### FR-479 逐步运行当前节点详情与样式复用 — DONE
+
+依赖：FR-477。
+
+目标：选中逐步运行记录后，画布当前节点与右侧详情必须由同一条记录、同一个当前 NodeRun／Attempt 事实解析。
+对于已到达且等待输入的节点，右侧直接展示节点配置和自动填充的上游输入；对于已有可查看 Attempt 的节点，展示共享
+`AttemptPanel`。不得要求用户再次点击画布才能看到详情，也不得回退为“该记录尚未到达节点”。
+
+范围：仅修改逐步记录选中后的前端定位，并让逐步待配置节点直接复用连续运行既有 `NodeConfigurationPanel` 与
+`automatic-record-editor` 样式；已有 Attempt 继续复用同一个 `AttemptPanel`。连续运行分支作为只读基线，不修改其调度、
+选择或详情逻辑，不新增逐步专属样式，不修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。
+
+完成：逐步记录选择会立即复用列表中已返回的完整运行投影，不再等待独立详情请求后才定位当前节点。显式画布节点
+选择优先于旧的 NodeRun／Attempt store 定位，选择 N2 时不会继续显示 N1 的侧栏；已到达且待配置的节点进入共享
+`NodeConfigurationPanel` 并直接复用连续配置面板的 `automatic-record-editor` 样式，已有 Attempt 继续进入共享
+`AttemptPanel`。未创建后继节点的映射输入从所选逐步记录的冻结端口映射与已完成上游节点解析，保持自动填充。
+
+验收：定向 Playwright 覆盖逐步详情请求延迟时仍立即显示 N2 配置、N1／N2 侧栏准确切换、历史后继节点自动填充、
+连续记录最终失败节点详情以及连续／逐步画布尺寸对齐，共 5 passed。Web TypeScript typecheck、受影响 ESLint、
+production build、`git diff --check` 与 Alembic head 核对均通过。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -6265,6 +6287,7 @@ Web TypeScript typecheck、受影响 ESLint、production build、`git diff --che
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-17 | FR-479 | Web TypeScript typecheck、受影响 ESLint、production build、定向 FlowRun 工作台 Playwright（5 passed）；`git diff --check`、Alembic head 与任务状态唯一性 | PASS：逐步记录选择立即按本记录当前节点渲染右栏，详情请求未返回时也不落入空态；显式 N2 选择不再显示旧 N1 Attempt。待配置节点复用连续配置面板组件与 `automatic-record-editor` 样式，已有 Attempt 继续复用 `AttemptPanel`，冻结端口映射输入自动带入。连续运行分支未修改，最终节点详情基准通过。唯一 Alembic head 为 `0117_agent_conversation_search`；无 `CURRENT`、`READY` 或下一切片。未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-17 | FR-478 | Web TypeScript typecheck、受影响 ESLint、production build、定向 Agent 工作台 Playwright（1 passed）；`git diff --check`、Alembic head 与任务状态唯一性 | PASS：Markdown 文件预览仅在用户点击本地链接时，以当前 Markdown 文件父目录解析目标并复用文件工具打开；不会依据页面 URL 自动展开，也不会改变 FlowRun／Agent 会话 URL。定向浏览器回归覆盖 `filtered_business_exception_reports/hq-admin.md` 正确跳转及越界路径拒绝。唯一 Alembic head 为 `0117_agent_conversation_search`；无 `CURRENT`、`READY` 或下一切片。未修改 API、数据库、OpenHands、Runtime Provider、FlowRun 路由或远端环境。 |
 | 2026-09-17 | FR-477 | Web TypeScript typecheck、受影响 ESLint、production build、定向 FlowRun 工作台 Playwright（5 passed）；`git diff --check`、Alembic head 与任务状态唯一性 | PASS：连续／逐步记录统一当前节点解析和右侧详情渲染；再次点击当前记录均取消选择，重新选择已启动记录均恢复当前节点侧栏；相同流程定义与状态下两种模式的节点宽高一致。连续自动后继调度与逐步显式启动差异保持不变。唯一 Alembic head 为 `0117_agent_conversation_search`；无 `CURRENT`、`READY` 或下一切片。未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-17 | FR-476 | OpenHands conversation context 定向 pytest（4 passed）；受影响 Python Ruff format/check；Web 受影响 ESLint、TypeScript typecheck、production build；`git diff --check`、Alembic head 与任务状态唯一性 | PASS：真实空 metrics 继续投影零 Token；旧会话只有一个非 Task／非 Condenser、同模型 usage bucket 时可恢复当前 View 用量；非空但多个候选保持未知。工作台对未知态显示“Token待模型更新”，不再将缺失数据展示为 0。受管 Pyright 对 adapter 仍为提交前相同的 3 项既有错误；未运行完整 Playwright，未修改数据库、OpenHands 源码、Runtime Provider、Docker 或远端环境。 |

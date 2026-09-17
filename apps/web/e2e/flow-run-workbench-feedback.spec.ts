@@ -467,6 +467,8 @@ test('a stepwise record keeps completed nodes readable while the next node is co
   };
   const parentRun = { ...run, node_runs: [], artifacts: [], progress: { accepted: 0, terminal: 0, active: 0 } };
   let savedBody: Record<string, unknown> | undefined;
+  let releaseStepwiseDetail = () => {};
+  const stepwiseDetailReady = new Promise<void>(resolve => { releaseStepwiseDetail = resolve; });
   await page.route('**/api/v1/**', async route => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
@@ -479,7 +481,10 @@ test('a stepwise record keeps completed nodes readable while the next node is co
     if (path === `/api/v1/flow-runs/${run.id}` && request.method() === 'GET') return respond(parentRun);
     if (path === `/api/v1/flows/${definition.id}`) return respond(transitionDefinition);
     if (path === `/api/v1/flow-runs/${run.id}/stepwise-runs` && request.method() === 'GET') return respond([currentRecord]);
-    if (path === `/api/v1/flow-runs/${run.id}/stepwise-runs/${currentRecord.id}` && request.method() === 'GET') return respond(currentRecord);
+    if (path === `/api/v1/flow-runs/${run.id}/stepwise-runs/${currentRecord.id}` && request.method() === 'GET') {
+      await stepwiseDetailReady;
+      return respond(currentRecord);
+    }
     if (path === `/api/v1/flow-runs/${run.id}/automatic-runs`) return respond([]);
     if (path === `/api/v1/flow-runs/${currentRecord.id}/nodes/second/runs` && request.method() === 'POST') {
       savedBody = request.postDataJSON() as Record<string, unknown>;
@@ -496,6 +501,13 @@ test('a stepwise record keeps completed nodes readable while the next node is co
   await page.locator('.node-record-list .automatic-record-select').filter({ hasText: '批次异常收集' }).click();
   await expect(page.locator('.run-workbench-record-summary')).toContainText('批次异常收集');
   await expect(page.locator('.run-graph-node').filter({ hasText: '测试节点2' })).toContainText('当前流转节点');
+  const currentNodeConsole = page.locator('.node-console');
+  await expect(currentNodeConsole).toHaveClass(/automatic-record-editor/);
+  await expect(currentNodeConsole).toContainText('测试节点2');
+  await expect(currentNodeConsole).toContainText('上游节点的映射产物已自动填入', { timeout: 2_000 });
+  await expect(currentNodeConsole.getByRole('link', { name: 'https://example.com/n1-output' })).toBeVisible();
+  await expect(page.locator('.run-side-panel')).not.toContainText('该记录尚未到达节点');
+  releaseStepwiseDetail();
 
   await page.locator('.run-graph-node').filter({ hasText: '测试节点' }).filter({ hasNotText: '测试节点2' }).click();
   await expect(page.getByTestId('attempt-state')).toHaveText('ACCEPTED');

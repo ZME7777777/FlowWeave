@@ -169,9 +169,17 @@ const activeFlowNodeRun = (records: NodeRun[]): NodeRun | undefined => records.r
 function selectedRecordNodeRun(record: FlowRun | undefined, selectedNodeRunId?: string, selectedNodeKey?: string): NodeRun | undefined {
   if (!record) return undefined;
   const active = activeFlowNodeRun(record.node_runs);
-  return record.node_runs.find(item => item.id === selectedNodeRunId)
-    ?? [...record.node_runs].reverse().find(item => item.flow_node_snapshot_key === selectedNodeKey)
-    ?? (!selectedNodeRunId ? active : undefined);
+  const selectedById = record.node_runs.find(item => item.id === selectedNodeRunId);
+  if (selectedNodeKey) {
+    const selectedByKey = [...record.node_runs].reverse().find(item => item.flow_node_snapshot_key === selectedNodeKey);
+    if (selectedByKey) return selectedByKey;
+    // An explicit graph choice can point at the next node before that node has
+    // a durable run. Never fall back to the previously selected Attempt: the
+    // right panel must configure the visible node instead of showing stale
+    // details from its predecessor.
+    if (selectedById?.flow_node_snapshot_key !== selectedNodeKey) return undefined;
+  }
+  return selectedById ?? (!selectedNodeRunId ? active : undefined);
 }
 
 function RunRail({ run, mode, nodeRecords, manualRecords, automaticRecords, automaticError, selected, selectedManualRecordId, canDeleteManualRecord, manualSelectedIds, automaticSelectedIds, manualBusyId, selectedAutomaticId, automaticBusyId, onModeChange, onSelect, onSelectManualRecord, onCreateManualRecord, onDeleteManualRecord, onDeleteNode, onSelectAutomatic, onClearSelection, onCreateAutomatic, onDeleteAutomatic, onCopyAutomatic, onExportAutomatic, onStartAutomatic }: {
@@ -1005,7 +1013,7 @@ function NodeConsole({ run, node, startupMode, pendingNodeRun, initialBindings, 
   const runAction = <button className="primary node-run-button" disabled={terminal || invalidMode || invalidGates || mutation.isPending} onClick={() => startupMode === 'PROMPT' && missingInputs ? setPromptTab('inputs') : mutation.mutate(bindings)}><Play size={15}/>{mutation.isPending ? '正在创建…' : startupMode === 'PROMPT' && missingInputs ? '请先填写节点输入' : startupMode === 'CHAT' ? '启动节点会话' : '保存配置'}</button>;
   const historyRun = { ...run, node_runs: run.node_runs.filter(item => isDirectNodeRun(item) === (startupMode === 'CHAT')) };
   const history = <NodeExecutionHistory run={historyRun} node={node} onSelectExecution={onSelectExecution}/>;
-  return <><NodeConfigurationPanel title={node.alias || node.asset.name} subtitle={`节点控制台 · 已执行 ${visits} 次`} mode={startupMode} fixedModeLabel={startupMode === 'CHAT' ? '直接启动' : '逐步运行'} onModeChange={() => undefined} promptTab={promptTab} onPromptTabChange={setPromptTab} action={runAction} promptContent={<>{(pendingAttempt || Object.keys(initialBindings ?? {}).length > 0) && <p className="field-hint">上游节点的映射产物已自动填入；可继续补充本节点配置，保存后再从左侧启动。</p>}<InputSummary fields={node.asset.inputs} bindings={bindings} artifacts={inputArtifacts}/>{node.asset.inputs.length > 0 && <button className="secondary full" onClick={() => setInputDialogOpen(true)}><Upload size={14}/>填写节点输入</button>}<StartupPromptSummary prompt={prompt} freezeHint="保存配置后会随记录冻结。" onEdit={() => setPromptDialogOpen(true)}/></>} agentContent={<AgentPresetEditor preset={agentPreset} nodeContext={node.asset.executor?.context_prompt ?? ''} onChange={setAgentPreset}/>} gateContent={<GateDraftEditor gates={gates} onChange={setGates}/>} historyContent={history} chatContent={history} belowContent={<>{invalidGates && <p className="error">每个门禁都需要填写判定提示词。</p>}{terminal && <p className="field-hint">流程已结束，不能创建新的节点执行。</p>}{mutation.error && <p className="error"><AlertTriangle size={14}/>{mutation.error.message}</p>}</>}/>{inputDialogOpen && <NodeInputDialog run={{ ...run, artifacts: inputArtifacts }} node={node} initialBindings={bindings} onClose={() => setInputDialogOpen(false)} onSubmit={({ bindings: nextBindings, artifacts }) => { setBindings(nextBindings); setInputArtifacts(current => mergeArtifacts(current, artifacts)); setInputDialogOpen(false); }}/>} {promptDialogOpen && <StartupPromptDialog prompt={prompt} onChange={setPrompt} onClose={() => setPromptDialogOpen(false)}/>}</>;
+  return <><NodeConfigurationPanel className={startupMode === 'PROMPT' ? 'automatic-record-editor' : undefined} title={node.alias || node.asset.name} subtitle={`节点控制台 · 已执行 ${visits} 次`} mode={startupMode} fixedModeLabel={startupMode === 'CHAT' ? '直接启动' : '逐步运行'} onModeChange={() => undefined} promptTab={promptTab} onPromptTabChange={setPromptTab} action={runAction} promptContent={<>{(pendingAttempt || Object.keys(initialBindings ?? {}).length > 0) && <p className="field-hint">上游节点的映射产物已自动填入；可继续补充本节点配置，保存后再从左侧启动。</p>}<InputSummary fields={node.asset.inputs} bindings={bindings} artifacts={inputArtifacts}/>{node.asset.inputs.length > 0 && <button className="secondary full" onClick={() => setInputDialogOpen(true)}><Upload size={14}/>填写节点输入</button>}<StartupPromptSummary prompt={prompt} freezeHint="保存配置后会随记录冻结。" onEdit={() => setPromptDialogOpen(true)}/></>} agentContent={<AgentPresetEditor preset={agentPreset} nodeContext={node.asset.executor?.context_prompt ?? ''} onChange={setAgentPreset}/>} gateContent={<GateDraftEditor gates={gates} onChange={setGates}/>} historyContent={history} chatContent={history} belowContent={<>{invalidGates && <p className="error">每个门禁都需要填写判定提示词。</p>}{terminal && <p className="field-hint">流程已结束，不能创建新的节点执行。</p>}{mutation.error && <p className="error"><AlertTriangle size={14}/>{mutation.error.message}</p>}</>}/>{inputDialogOpen && <NodeInputDialog run={{ ...run, artifacts: inputArtifacts }} node={node} initialBindings={bindings} onClose={() => setInputDialogOpen(false)} onSubmit={({ bindings: nextBindings, artifacts }) => { setBindings(nextBindings); setInputArtifacts(current => mergeArtifacts(current, artifacts)); setInputDialogOpen(false); }}/>} {promptDialogOpen && <StartupPromptDialog prompt={prompt} onChange={setPrompt} onClose={() => setPromptDialogOpen(false)}/>}</>;
 }
 
 const AUTOMATIC_STAGE_ORDER = ['INPUT_READINESS', 'START_GATES', 'START_HANDOFF', 'RUNTIME_START', 'AGENT_RUNNING', 'END_GATES', 'FLOW_ADVANCE'];
@@ -1400,6 +1408,13 @@ export function WorkbenchPage() {
   const automaticDetail = useQuery({ queryKey: ['flow-run-automatic-record', selectedRunId, selectedAutomaticId], queryFn: () => api.automaticRecord(selectedRunId!, selectedAutomaticId!), enabled: Boolean(selectedRunId && selectedAutomaticId), refetchInterval: 5000 });
   const stepwise = useQuery({ queryKey: ['flow-run-stepwise-records', selectedRunId], queryFn: () => api.stepwiseRecords(selectedRunId!), enabled: Boolean(selectedRunId), refetchInterval: selectedStepwiseId ? false : 5000 });
   const stepwiseDetail = useQuery({ queryKey: ['flow-run-stepwise-record', selectedRunId, selectedStepwiseId], queryFn: () => api.stepwiseRecord(selectedRunId!, selectedStepwiseId!), enabled: Boolean(selectedRunId && selectedStepwiseId && selectedStepwiseId !== selectedRunId), refetchInterval: 5000 });
+  // The stepwise rail endpoint already returns the complete frozen execution
+  // record. Reuse it as the immediate detail projection while the independently
+  // polled detail request is in flight, just as continuous execution resolves
+  // its current node from the selected record rather than from request timing.
+  const selectedStepwiseProjection = selectedStepwiseId
+    ? stepwiseDetail.data ?? stepwise.data?.find(record => record.id === selectedStepwiseId)
+    : undefined;
   const refresh = useCallback(() => {
     if (selectedRunId) {
       void qc.invalidateQueries({ queryKey: ['flow-run', selectedRunId] });
@@ -1478,7 +1493,7 @@ export function WorkbenchPage() {
     }
   }, [automaticDetail.data, selectExecution, selectedAttemptId, selectedAutomaticId, selectedNodeRunId]);
   useEffect(() => {
-    const record = stepwiseDetail.data;
+    const record = selectedStepwiseProjection;
     if (!record || !selectedStepwiseId) return;
     const restored = record.node_runs.find(item => item.id === selectedNodeRunId)
       ?? activeFlowNodeRun(record.node_runs);
@@ -1509,7 +1524,7 @@ export function WorkbenchPage() {
       setSelectedNodeKey(undefined);
       useWorkbenchStore.setState({ selectedNodeRunId: undefined, selectedAttemptId: undefined });
     }
-  }, [selectedAttemptId, selectedNodeKey, selectedNodeRunId, selectedStepwiseId, selectExecution, stepwiseDetail.data]);
+  }, [selectedAttemptId, selectedNodeKey, selectedNodeRunId, selectedStepwiseId, selectedStepwiseProjection, selectExecution]);
   useEffect(() => {
     // The mode and automatic-record ID are a one-shot browser-history restore
     // hint. Workbench owns the live selection after it mounts, so do not let
@@ -1543,7 +1558,7 @@ export function WorkbenchPage() {
   ];
   const legacyStepwise = selectedStepwiseId === parentRun.id;
   const selectedStepwise = selectedStepwiseId
-    ? legacyStepwise ? parentRun : stepwiseDetail.data ?? manualRecords.find(record => record.id === selectedStepwiseId)
+    ? legacyStepwise ? parentRun : selectedStepwiseProjection
     : undefined;
   const requiresStepwiseRecord = mode === 'MANUAL' && !selectedStepwise && !stepwise.isError;
   const run = mode === 'MANUAL' && selectedStepwise ? selectedStepwise : parentRun;
@@ -1566,18 +1581,23 @@ export function WorkbenchPage() {
   const pendingConfigurationNodeRun = mode === 'MANUAL' && selectedNodeKey
     ? nodeRecords.find(item => item.flow_node_snapshot_key === selectedNodeKey && isUnconfiguredStepRecord(item))
     : undefined;
-  const selectedManualRecord = nodeRecords.find(item => manualSelectedIds.has(item.id));
   const inheritedTransitionBindings = (() => {
-    if (pendingConfigurationNodeRun || !snapshot || !selectedNodeKey || !selectedManualRecord || attemptState(selectedManualRecord) !== 'ACCEPTED') return undefined;
-    const targetIsSuccessor = snapshot.definition.edges.some(edge => edge.source_instance_key === selectedManualRecord.flow_node_snapshot_key && edge.target_instance_key === selectedNodeKey);
-    if (!targetIsSuccessor) return undefined;
-    const outputArtifacts = selectedManualRecord.attempts.at(-1)?.artifacts ?? [];
-    return Object.fromEntries(snapshot.definition.port_mappings.flatMap(mapping => {
-      if (mapping.source_instance_key !== selectedManualRecord.flow_node_snapshot_key || mapping.target_instance_key !== selectedNodeKey) return [];
-      const artifact = outputArtifacts.find(item => item.field_key === mapping.source_output_key)
-        ?? run.artifacts.find(item => item.producer_attempt_id === selectedManualRecord.accepted_attempt_id && item.field_key === mapping.source_output_key);
-      return artifact ? [[mapping.target_input_key, artifact.id]] : [];
-    }));
+    if (pendingConfigurationNodeRun || !snapshot || !selectedNodeKey) return undefined;
+    // Resolve inherited inputs from this record's durable accepted path, not
+    // from rail selection state. The canvas, detail panel, and auto-filled
+    // inputs then remain scoped to the same stepwise execution record.
+    const bindings = snapshot.definition.port_mappings.flatMap(mapping => {
+      if (mapping.target_instance_key !== selectedNodeKey) return [];
+      const source = [...nodeRecords].reverse().find(item =>
+        item.flow_node_snapshot_key === mapping.source_instance_key
+        && attemptState(item) === 'ACCEPTED',
+      );
+      if (!source) return [];
+      const artifact = source.attempts.at(-1)?.artifacts.find(item => item.field_key === mapping.source_output_key)
+        ?? run.artifacts.find(item => item.producer_attempt_id === source.accepted_attempt_id && item.field_key === mapping.source_output_key);
+      return artifact ? [[mapping.target_input_key, artifact.id] as const] : [];
+    });
+    return bindings.length ? Object.fromEntries(bindings) : undefined;
   })();
   const automaticSummaries = (automatic.data ?? []).filter(record => !pendingAutomaticDeletionIds.has(record.id));
   const selectedAutomatic = selectedAutomaticId
