@@ -5156,10 +5156,12 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     && contextQuery.data.condenser_max_tokens > 0
     ? contextQuery.data.condenser_max_tokens
     : DEFAULT_CONTEXT_COMPACTION_THRESHOLD_TOKENS;
-  const contextUsagePending = Boolean(selected && contextQuery.data?.usage_current === false);
-  const visibleContextTokens = typeof contextQuery.data?.used_tokens === 'number' && contextQuery.data.used_tokens >= 0
-    ? contextQuery.data.used_tokens
-    : contextUsagePending ? undefined : 0;
+  const currentContextTokens = contextQuery.data?.used_tokens;
+  const hasCurrentContextUsage = typeof currentContextTokens === 'number' && currentContextTokens >= 0;
+  const contextUsagePending = Boolean(
+    selected && (!hasCurrentContextUsage || contextQuery.data?.usage_current === false),
+  );
+  const visibleContextTokens = hasCurrentContextUsage ? currentContextTokens : undefined;
   const contextProgress = typeof visibleContextWindow === 'number' && visibleContextWindow > 0
     && typeof visibleContextTokens === 'number'
     ? {
@@ -5189,7 +5191,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         ? '待模型更新'
         : '压缩阈值未知';
   const tokenPendingTitle = contextUsagePending
-    ? '当前使用量将在下一次模型调用后刷新。'
+    ? 'OpenHands 尚未返回可确认的当前 View 用量；不会将缺失数据显示为 0。'
     : '当前会话尚未提供可验证的自动压缩阈值；不会显示估算值。';
   const activityTitle = `当前加载的会话事件 ${activeEventCount.toLocaleString()} / ${eventLimit.toLocaleString()}。压缩由 OpenHands 原生管理。`;
   const composerStatus = bootstrapRecovery

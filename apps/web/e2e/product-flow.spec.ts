@@ -698,8 +698,8 @@ test('top-level Agent workspace creates a direct conversation and restores its U
         model_name: 'gpt-test', reasoning_effort: 'high', usage_current: true,
         condenser_max_size: 10_000,
       } : {
-        used_tokens: 0, window_tokens: 922_000, cumulative_tokens: 12_716, condenser_max_tokens: 256_000,
-        model_name: 'gpt-test', reasoning_effort: 'high',
+        used_tokens: null, window_tokens: 922_000, cumulative_tokens: 12_716, condenser_max_tokens: 256_000,
+        model_name: 'gpt-test', reasoning_effort: 'high', usage_current: false,
       }) });
       return;
     }
@@ -1087,7 +1087,8 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(terminalContextMenu).toBeVisible();
   await terminalContextMenu.getByRole('menuitem', { name: '复制当前行' }).click();
   await expect(terminalContextMenu).toBeHidden();
-  await expect(page.locator('.agent-context-progress.token')).toContainText('Token0 / 256,000');
+  await expect(page.locator('.agent-context-progress.token')).toContainText('Token待模型更新');
+  await expect(page.locator('.agent-context-progress.token')).toHaveAttribute('title', /不会将缺失数据展示为 0/);
   await expect(page.locator('.agent-context-progress.activity')).toHaveCount(1);
   await expect(page.getByText('上下文用量正在从 OpenHands 读取')).toHaveCount(0);
   contextAvailable = true;

@@ -4465,15 +4465,32 @@ class OpenHandsRuntime:
         )
         usage_id = llm.get("usage_id")
         provider_id = cls._flowweave_provider_id(usage_id)
+        usage_snapshots = cls._usage_snapshots(state)
         active_usage = next(
             (
                 usage
-                for usage in cls._usage_snapshots(state)
+                for usage in usage_snapshots
                 if isinstance(usage_id, str) and usage.usage_id == usage_id
             ),
             None,
         )
         model = llm.get("model")
+        # ``usage_id`` is the authoritative association. Older persisted
+        # Conversations can carry an LLM configuration whose usage_id predates
+        # the persisted stats key, though. In that narrow case OpenHands still
+        # gives us an unambiguous formal association when there is exactly one
+        # non-task, non-condenser metric bucket for the active model. Do not
+        # select among multiple buckets: that would turn a display projection
+        # into an unsafe guess after a model switch or delegated work.
+        if active_usage is None and isinstance(model, str):
+            compatible_usages = tuple(
+                usage
+                for usage in usage_snapshots
+                if not usage.usage_id.startswith(("task:", "condenser"))
+                and usage.model_name == model
+            )
+            if len(compatible_usages) == 1:
+                active_usage = compatible_usages[0]
         # The fixed Runtime catalog is product truth for known models.  The
         # active usage bucket is still the sole source of token consumption,
         # but providers may report a larger, drifting generic context window
@@ -4493,7 +4510,7 @@ class OpenHandsRuntime:
         window = catalog_window or configured_window or usage_window
         cumulative = 0
         found = False
-        for usage in cls._usage_snapshots(state):
+        for usage in usage_snapshots:
             cumulative += (
                 usage.prompt_tokens
                 + usage.completion_tokens
@@ -4503,17 +4520,23 @@ class OpenHandsRuntime:
             )
             found = True
         # OpenHands' formally named ``per_turn_token`` is the latest completed
-        # LLM request's current View usage.  It is not an accumulated total and
-        # is only taken from this Conversation's active LLM usage bucket.
+        # LLM request's current View usage. It is not an accumulated total and
+        # is only projected when this Conversation's active LLM bucket is
+        # formally known. A truly fresh Conversation has no metrics at all and
+        # therefore starts at zero; a non-empty but ambiguous metrics map must
+        # remain unknown instead of looking like an empty View.
+        usage_current = active_usage is not None or not usage_snapshots
         return {
-            # A configured View starts at exactly zero.  Returning ``None``
-            # hid that truthful baseline in the product until the first
-            # completion, although its formal context window was known.
-            "used_tokens": (active_usage.per_turn_tokens if active_usage is not None else 0)
-            if window is not None
-            else None,
+            "used_tokens": (
+                active_usage.per_turn_tokens
+                if active_usage is not None
+                else 0
+                if usage_current and window is not None
+                else None
+            ),
             "window_tokens": window,
             "cumulative_tokens": cumulative if found else None,
+            "usage_current": usage_current,
             "provider_id": provider_id,
             "model_name": llm.get("model") if isinstance(llm.get("model"), str) else None,
             "reasoning_effort": (

@@ -577,9 +577,7 @@ def test_openhands_uploads_valid_pptx_with_extended_runtime_timeout(
             calls.append({"url": url, **kwargs})
             return Response()
 
-    monkeypatch.setattr(
-        runtime, "_transport", lambda: SimpleNamespace(regular=Client())
-    )
+    monkeypatch.setattr(runtime, "_transport", lambda: SimpleNamespace(regular=Client()))
     monkeypatch.setattr(runtime, "_base_url_for_handle", lambda _handle: "http://runtime:8000")
     monkeypatch.setattr(runtime, "_session_key_for_handle", lambda _handle: "session-key")
     monkeypatch.setattr(openhands_module, "uuid4", lambda: SimpleNamespace(hex="a" * 32))
@@ -588,9 +586,7 @@ def test_openhands_uploads_valid_pptx_with_extended_runtime_timeout(
     path = runtime.upload_workspace_file(
         _handle(),
         filename="郑蒙恩-Java开发工程师职级晋升答辩.pptx",
-        content_type=(
-            "application/vnd.openxmlformats-officedocument.presentationml.presentation"
-        ),
+        content_type=("application/vnd.openxmlformats-officedocument.presentationml.presentation"),
         content=content,
     )
 
@@ -4750,6 +4746,7 @@ def test_openhands_conversation_context_reads_the_active_native_usage_bucket(
         "used_tokens": 6_380,
         "window_tokens": 922_000,
         "cumulative_tokens": 13_715,
+        "usage_current": True,
         "provider_id": "provider-1",
         "model_name": "openai/gpt-5.6-luna",
         "reasoning_effort": None,
@@ -4782,6 +4779,83 @@ def test_openhands_conversation_context_exposes_zero_token_baseline_for_pinned_c
     assert context["used_tokens"] == 0
     assert context["window_tokens"] == 1_050_000
     assert context["cumulative_tokens"] is None
+    assert context["usage_current"] is True
+
+
+def test_openhands_conversation_context_recovers_one_unambiguous_active_model_bucket(
+    openhands_settings, monkeypatch
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    monkeypatch.setattr(
+        runtime,
+        "_request",
+        lambda *_args, **_kwargs: _state(
+            agent={
+                "llm": {
+                    "model": "openai/gpt-5.6-luna",
+                    "usage_id": "flowweave:provider-current",
+                    "max_input_tokens": 922_000,
+                }
+            },
+            stats={
+                "usage_to_metrics": {
+                    "flowweave:provider-historical": {
+                        "model_name": "openai/gpt-5.6-luna",
+                        "accumulated_token_usage": {
+                            "prompt_tokens": 6_320,
+                            "completion_tokens": 60,
+                            "cache_read_tokens": 0,
+                            "cache_write_tokens": 0,
+                            "reasoning_tokens": 0,
+                            "context_window": 922_000,
+                            "per_turn_token": 6_380,
+                        },
+                    }
+                }
+            },
+        ),
+    )
+
+    context = runtime.conversation_context(_handle())
+
+    assert context["used_tokens"] == 6_380
+    assert context["usage_current"] is True
+
+
+def test_openhands_conversation_context_keeps_ambiguous_usage_unknown(
+    openhands_settings, monkeypatch
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    monkeypatch.setattr(
+        runtime,
+        "_request",
+        lambda *_args, **_kwargs: _state(
+            agent={
+                "llm": {
+                    "model": "openai/gpt-5.6-luna",
+                    "usage_id": "flowweave:provider-current",
+                    "max_input_tokens": 922_000,
+                }
+            },
+            stats={
+                "usage_to_metrics": {
+                    "flowweave:provider-old-a": {
+                        "model_name": "openai/gpt-5.6-luna",
+                        "accumulated_token_usage": {"per_turn_token": 100},
+                    },
+                    "flowweave:provider-old-b": {
+                        "model_name": "openai/gpt-5.6-luna",
+                        "accumulated_token_usage": {"per_turn_token": 200},
+                    },
+                }
+            },
+        ),
+    )
+
+    context = runtime.conversation_context(_handle())
+
+    assert context["used_tokens"] is None
+    assert context["usage_current"] is False
 
 
 @pytest.mark.parametrize(
