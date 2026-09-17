@@ -190,6 +190,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-456 | 会话事件投影、完成同步与历史滚动锚点可靠性 | DONE | 运行中的会话固定增量追赶当前 OpenHands 事件；`next_cursor` 缺失或 WebSocket 假活时回读有界最新页，不再要求暂停／继续触发补齐。完成、断流重连和暂停／继续只协调当前会话事件、readiness 与确认状态，不再全量刷新 Runtime、列表或上下文。历史页推迟到本轮终态后加载，历史 prepend 以显式视口事务和关闭浏览器 scroll anchoring 保持阅读位置。 |
 | FR-472 | 运行中压缩会话历史即时恢复 | DONE | 会话仍在运行、压缩中或压缩完成后刷新，历史分页立即继续读取，压缩前事件不再等本轮结束才显示。 |
 | FR-473 | Agent 会话事件压缩阈值收紧 | DONE | 新建 Agent 会话冻结 OpenHands `LLMSummarizingCondenser.max_size=1,000`；达到第 1,001 个 view 事件即触发原生事件型压缩，256,000 token 阈值不变。既有会话保留创建时冻结的阈值。 |
+| FR-475 | 会话用量累计 Token 实时投影 | DONE | 右侧既有“会话用量”仅将已有的累计 Token 数优先投影为 OpenHands `/context` 的累计供应商 usage；不新增字段、样式或底栏内容。 |
 | FR-457 | OpenHands 空响应自恢复与运行状态一致性 | DONE | 空 Agent Message 与 `source=environment` 的原生 corrective nudge 不再被识别为最终回复；纠正事件以“模型返回空响应，OpenHands 正在自动重试”呈现，左侧会话状态与底部按钮继续统一服从原生 execution status。 |
 | FR-458 | 空响应恢复提示瞬时化与会话状态统一 | DONE | corrective nudge 只在它是当前最新事件且原生会话仍运行时复用实时状态行显示；后续事件或终态立即隐藏，历史工作过程不保留该提示。工作台所有运行控件复用同一原生状态投影。 |
 | FR-459 | 原生错误事件的终态／可恢复呈现分流 | DONE | 仅 OpenHands ConversationErrorEvent 呈现为“本轮未能完成”的会话级终态卡片；AgentErrorEvent 与未知历史 ERROR 保持原生审计事实，按其正式父事件留在工作过程中呈现为可恢复异常，后续正式回复会明确标注 Agent 已继续完成，避免暂停／继续后的正常回复被历史错误卡片误覆盖。 |
@@ -6122,6 +6123,16 @@ OpenHands 事件树、数据库迁移、Runtime Provider 或远端部署。
 
 验收：OpenHands adapter 定向 pytest（1 passed）、受影响 Python Ruff／编译、Web TypeScript typecheck／ESLint／production build、`git diff --check`、Alembic head 与任务状态唯一性通过。受管 Pyright 在既有 OpenHands adapter 与其大测试文件中仍报告基线类型问题，未指向本切片新增行，故未伪记为通过；未修改 OpenHands、数据库、Runtime Provider、Docker 或远端环境。
 
+### FR-475 会话用量累计 Token 实时投影 — DONE
+
+依赖：无。
+
+目标：右侧既有“会话用量”只补充当前会话的 OpenHands 累计供应商 Token；不得新增用量字段、卡片、样式或底部 composer 内容，费用继续沿用已有持久化投影。
+
+完成：右侧既有“累计 … Token”优先显示当前 `/context` 返回的 `cumulative_tokens`，缺失或瞬时零值时回退到既有持久化 usage summary。正式会话事件同步后使既有 context 查询失效并回读，因此供应商 usage 到达 OpenHands 后可更新右侧现有数值；未改变底部 Token／事件压缩指示器或任何视觉结构。
+
+验收：Web TypeScript typecheck、受影响 ESLint、production build、定向产品流 Playwright 尝试、`git diff --check` 与任务状态唯一性；未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。
+
 ### FR-473 Agent 会话事件压缩阈值收紧 — DONE
 
 依赖：无。
@@ -6203,6 +6214,7 @@ Attempt，右侧详情也复用同一个 `AttemptPanel` 与会话返回上下文
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-17 | FR-475 | Web TypeScript typecheck、受影响 ESLint、production build、定向产品流 Playwright 尝试、`git diff --check` 与任务状态唯一性 | PASS（静态／构建）：右侧既有“会话用量”的累计 Token 优先显示正式 `/context.cumulative_tokens`，同步后刷新；缺失或零值时回退既有持久化 usage summary，未新增字段、样式或底栏内容。定向 Playwright 在新增断言后、既有“暂停当前 Agent”状态断言超时，未记为完整用例通过；新增右侧累计 Token 断言在该前置阶段已通过。未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-17 | FR-473 | 定向 Runtime Agent spec pytest 尝试；受影响 Python Ruff／编译、`git diff --check`、Alembic head 与任务状态唯一性 | PASS（静态）：新建会话冻结 `LLMSummarizingCondenser.max_size=1,000` 与原有 `max_tokens=256,000`；第 1,001 个 OpenHands view 事件将触发原生事件型压缩，既有会话不被在线重配。定向 pytest 在 Testcontainers PostgreSQL fixture 初始化前因本机 Docker Unix socket 缺失而阻断，未进入断言且未记为通过。未修改 OpenHands、数据库、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-16 | FR-472 | Web TypeScript typecheck、全量 ESLint、production build、隔离 Playwright 回归、`git diff --check`、Alembic head 与任务状态唯一性 | PASS：运行中的压缩会话刷新后立即按 native `history_cursor` 请求并回填较早事件；隔离浏览器回归模拟 Condensation、持续 `running` readiness 和刷新，确认压缩前消息可见。未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-16 | FR-470 | Web TypeScript typecheck、全量 ESLint、production build、`git diff --check` 与任务状态唯一性 | PASS：纠正并实际提交 FR-469 的可换行紧凑标签样式；附件、会话引用、工作区引用和注释不再逐项占用整行，原有预览／定位交互保持不变。未修改 API、数据库、OpenHands、Runtime Provider 或远端环境。 |

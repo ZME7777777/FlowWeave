@@ -2917,9 +2917,9 @@ function readWorkspaceToolState(storageKey: string): Record<string, WorkspaceToo
 }
 
 function WorkspaceDrawer({
-  open, onOpen, onClose, onAnnotateFileSelection, highlightedFileSelection, workspaceId, scopeKey, migrateFromScopeKey, bindingId, workDirectoryId, conversation, attachments, sources, attachmentRequest, candidatePreviewRequest, markdownFileRequest, reviewChanges = [], reviewRequestId, sessionChanges = [], onReviewChanges, runtimeAvailable, runtimeTasks, agentDefinitions, sessionStopped,
+  open, onOpen, onClose, onAnnotateFileSelection, highlightedFileSelection, workspaceId, scopeKey, migrateFromScopeKey, bindingId, workDirectoryId, conversation, conversationCumulativeTokens, attachments, sources, attachmentRequest, candidatePreviewRequest, markdownFileRequest, reviewChanges = [], reviewRequestId, sessionChanges = [], onReviewChanges, runtimeAvailable, runtimeTasks, agentDefinitions, sessionStopped,
 }: {
-  open: boolean; onOpen: () => void; onClose: () => void; onAnnotateFileSelection?: (path: string, selection: FileSelection, quote: string) => void; highlightedFileSelection?: { path: string; selection: FileSelection }; workspaceId: string; scopeKey: string; migrateFromScopeKey?: string; bindingId?: string; workDirectoryId?: string; conversation?: AgentConversation; attachments: AgentAttachment[]; sources: ConversationSource[]; attachmentRequest?: { key: string; attachment: AgentAttachment }; candidatePreviewRequest?: CandidateFilePreviewRequest; markdownFileRequest?: MarkdownFileRequest; reviewChanges?: WorkspaceFileChange[]; reviewRequestId?: string; sessionChanges?: WorkspaceFileChange[]; onReviewChanges?: (changes: WorkspaceFileChange[]) => void; runtimeAvailable: boolean; runtimeTasks: RuntimeTaskProjection[]; agentDefinitions: CapabilityAsset[]; sessionStopped: boolean;
+  open: boolean; onOpen: () => void; onClose: () => void; onAnnotateFileSelection?: (path: string, selection: FileSelection, quote: string) => void; highlightedFileSelection?: { path: string; selection: FileSelection }; workspaceId: string; scopeKey: string; migrateFromScopeKey?: string; bindingId?: string; workDirectoryId?: string; conversation?: AgentConversation; conversationCumulativeTokens?: number | null; attachments: AgentAttachment[]; sources: ConversationSource[]; attachmentRequest?: { key: string; attachment: AgentAttachment }; candidatePreviewRequest?: CandidateFilePreviewRequest; markdownFileRequest?: MarkdownFileRequest; reviewChanges?: WorkspaceFileChange[]; reviewRequestId?: string; sessionChanges?: WorkspaceFileChange[]; onReviewChanges?: (changes: WorkspaceFileChange[]) => void; runtimeAvailable: boolean; runtimeTasks: RuntimeTaskProjection[]; agentDefinitions: CapabilityAsset[]; sessionStopped: boolean;
 }) {
   const { api, fileUrl } = useAgentSessionGateway();
   const host = useAgentSessionHost();
@@ -3473,11 +3473,14 @@ function WorkspaceDrawer({
     && details.ide.gateway.path,
   );
   const conversationUsage = conversation?.usage;
+  const conversationTotalTokens = typeof conversationCumulativeTokens === 'number' && conversationCumulativeTokens > 0
+    ? conversationCumulativeTokens
+    : conversationUsage?.total_tokens ?? 0;
   const sessionChangeAdditions = sessionChanges.reduce((total, change) => total + change.additions, 0);
   const sessionChangeDeletions = sessionChanges.reduce((total, change) => total + change.deletions, 0);
   const visibleSources = sources.slice(0, 3);
   const summary = details && <section className="agent-workspace-overview">
-    {conversation && <article className="agent-workspace-conversation-config"><Bot size={16}/><div><small>会话用量</small><p className="agent-workspace-usage-line"><span>{`累计 ${(conversationUsage?.total_tokens ?? 0).toLocaleString('zh-CN')} Token`}</span><span>{`$${(conversationUsage?.accumulated_cost ?? 0).toFixed(6)}`}</span></p></div></article>}
+    {conversation && <article className="agent-workspace-conversation-config"><Bot size={16}/><div><small>会话用量</small><p className="agent-workspace-usage-line"><span>{`累计 ${conversationTotalTokens.toLocaleString('zh-CN')} Token`}</span><span>{`$${(conversationUsage?.accumulated_cost ?? 0).toFixed(6)}`}</span></p></div></article>}
     {conversation && <article className="agent-workspace-changes"><FileText size={16}/><div><small>变更</small><button type="button" disabled={!sessionChanges.length} onClick={() => onReviewChanges?.(sessionChanges)}><span><b>{sessionChanges.length ? `${sessionChanges.length} 个文件已更改` : '暂无变更'}</b>{sessionChanges.length > 0 && <em><ins>{`+${sessionChangeAdditions}`}</ins><del>{`-${sessionChangeDeletions}`}</del></em>}</span><ChevronRight size={13}/></button></div></article>}
     {runtimeTasks.length > 0 && <article className="agent-workspace-subagents"><Bot size={16}/><div><small>子智能体</small><button type="button" onClick={() => openRuntimeTasks()}><b>{runtimeTasks.filter(task => runtimeTaskIsActive(task, sessionStopped)).length ? `${runtimeTasks.filter(task => runtimeTaskIsActive(task, sessionStopped)).length} 个运行中` : `${runtimeTasks.length} 个任务`}</b><ChevronRight size={13}/></button><div className="agent-workspace-subagent-glyphs" aria-label={`${runtimeTasks.length} 个子智能体任务`}>{runtimeTasks.slice(0, 5).map((task, index) => <button type="button" key={task.id} aria-label={`查看第 ${index + 1} 个子智能体任务：${runtimeTaskStatus(task, sessionStopped)}`} onClick={() => openRuntimeTasks(task.id)}><RuntimeTaskGlyph task={task} sessionStopped={sessionStopped}/></button>)}{runtimeTasks.length > 5 && <button type="button" className="agent-subagent-overflow" aria-label={`查看其余 ${runtimeTasks.length - 5} 个子智能体任务`} onClick={() => openRuntimeTasks()}>+{runtimeTasks.length - 5}</button>}</div></div></article>}
     {/*
@@ -4042,11 +4045,12 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
           })()
         : incoming,
       );
+      void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-context', workspace.id, selected.id) });
     } catch {
       // The next scheduled cursor reconciliation is sufficient. A transient
       // read failure must not clear already-rendered native events.
     }
-  }, [api, eventQueryKey, queryClient, selected, workspace]);
+  }, [api, eventQueryKey, host, queryClient, selected, workspace]);
   // Let the latest native window paint before background history starts. This
   // makes the first visual state deterministic. History is a read-only
   // native projection and must keep loading while the current turn runs.
@@ -5469,6 +5473,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       bindingId={selected?.id}
       workDirectoryId={selected ? undefined : conversationDraft?.workDirectoryId}
       conversation={selected}
+      conversationCumulativeTokens={contextQuery.data?.cumulative_tokens}
       attachments={drawerAttachments}
       sources={drawerSources}
       attachmentRequest={attachmentRequest}

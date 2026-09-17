@@ -1094,6 +1094,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await page.reload();
   await expect(page.locator('.agent-context-progress.token')).toContainText('Token6,380 / 256,000');
   await expect(page.locator('.agent-context-progress.token')).toHaveAttribute('title', /OpenHands 当前 View 6,380 \/ 自动压缩阈值 256,000/);
+  await expect(page.locator('.agent-workspace-overview').getByText('累计 12,716 Token', { exact: true })).toBeVisible();
   await expect(page.locator('.agent-context-progress.activity')).toContainText(/事件\d+ \/ 10,000/);
   await expect(page.locator('.agent-context-progress.activity')).toHaveAttribute('title', /当前加载的会话事件.*10,000/);
   const composerAfterReload = page.getByLabel('发送 Agent 消息');
