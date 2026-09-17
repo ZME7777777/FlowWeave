@@ -250,7 +250,7 @@ def _assert_node_session_writable(
 
 
 def _assert_node_session_forkable(db: Session, *, flow_run_id: str, attempt_id: str) -> NodeAttempt:
-    """Keep native forks available after a successful FlowRun completion."""
+    """Keep native forks available for accepted nodes in every run mode."""
 
     return agent_sessions.assert_flow_node_session_forkable(
         db, flow_run_id=flow_run_id, attempt_id=attempt_id
@@ -736,9 +736,9 @@ def node_runtime_status(db: Session, *, flow_run_id: str, attempt_id: str) -> di
     return {
         "state": "ACTIVE",
         "write_available": writable,
-        # A completed FlowRun remains read-only. The UI exposes this one
-        # native OpenHands branch operation with the same surface as an
-        # ordinary Agent-session Fork; all other controls stay disabled.
+        # The original completed node Conversation remains read-only. This
+        # capability lets the shared session UI create a detached Conversation
+        # or native Fork without reopening the Attempt, regardless of run mode.
         "fork_available": fork_available,
         # The Runtime and persistent Workspace outlive a terminal FlowRun.
         # This flag is intentionally independent from conversation writes: the

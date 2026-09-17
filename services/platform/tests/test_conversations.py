@@ -1216,18 +1216,40 @@ def test_cancelled_node_attempt_fences_every_session_write(
         assert "正在停止" in str(status["message"])
 
 
-def test_completed_flow_run_keeps_node_source_read_only_but_allows_native_fork(
+def test_accepted_flow_node_keeps_source_read_only_but_allows_detached_conversations(
     db_session_factory: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     with db_session_factory() as db:
         flow_run_id, runtime_session_id, attempt_id = _node_session_context(db)
         run = db.get(FlowRun, flow_run_id)
         assert run is not None
-        run.state = "COMPLETED"
         attempt = db.get(NodeAttempt, attempt_id)
         assert attempt is not None
         attempt.state = "ACCEPTED"
 
+        # Continuous execution commonly leaves an accepted predecessor behind
+        # while the record advances. That old source stays read-only, but the
+        # shared node-session UI must still be allowed to create or fork a
+        # detached writable conversation in the same workspace.
+        monkeypatch.setattr(
+            flow_node_conversations.agent_sessions,
+            "resolve_flow_node_session_host",
+            lambda *_args, **_kwargs: None,
+        )
+        active_status = flow_node_conversations.node_runtime_status(
+            db, flow_run_id=flow_run_id, attempt_id=attempt_id
+        )
+        assert active_status["write_available"] is False
+        assert active_status["fork_available"] is True
+        assert "节点已完成" in str(active_status["message"])
+        assert (
+            flow_node_host.assert_flow_node_session_forkable(
+                db, flow_run_id=flow_run_id, attempt_id=attempt_id
+            ).id
+            == attempt_id
+        )
+
+        run.state = "COMPLETED"
         with pytest.raises(DomainError) as blocked:
             flow_node_host.assert_flow_node_session_writable(
                 db, flow_run_id=flow_run_id, attempt_id=attempt_id
@@ -1240,11 +1262,6 @@ def test_completed_flow_run_keeps_node_source_read_only_but_allows_native_fork(
             == attempt_id
         )
 
-        monkeypatch.setattr(
-            flow_node_conversations.agent_sessions,
-            "resolve_flow_node_session_host",
-            lambda *_args, **_kwargs: None,
-        )
         status = flow_node_conversations.node_runtime_status(
             db, flow_run_id=flow_run_id, attempt_id=attempt_id
         )

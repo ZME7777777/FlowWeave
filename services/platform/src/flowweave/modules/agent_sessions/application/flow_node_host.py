@@ -95,12 +95,13 @@ def assert_flow_node_session_writable(
 def assert_flow_node_session_forkable(
     db: Session, *, flow_run_id: str, attempt_id: str
 ) -> NodeAttempt:
-    """Allow a native fork from a completed FlowRun without reopening it.
+    """Allow a native fork from a completed node without reopening it.
 
-    A fork is the sole exception to the terminal node-session write fence. It
-    creates a new OpenHands branch from a completed reply, but never sends a
-    message, resumes execution, or changes the completed Attempt/FlowRun
-    projection. Cancellation remains strictly read-only.
+    An accepted predecessor in an active continuous/stepwise record already
+    passes the ordinary non-cancelled host fence. A completed FlowRun uses this
+    explicit exception so the same shared session UI can still create a native
+    branch. Neither path resumes or mutates the completed Attempt; cancellation
+    remains strictly read-only.
     """
 
     attempt = db.get(NodeAttempt, attempt_id)

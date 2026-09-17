@@ -1861,3 +1861,93 @@ test('workspace Markdown links open the referenced node-session file without nav
   await expect(page).toHaveURL(new RegExp(`${sessionPath}$`));
   expect(previewPaths).toEqual([sourcePath, targetPath]);
 });
+
+test('completed continuous node sessions can create and fork writable conversations', async ({ page }) => {
+  const flowRunId = 'continuous-history-run';
+  const nodeRunId = 'continuous-history-node';
+  const attemptId = 'continuous-history-attempt';
+  const sessionBase = `/api/v1/flow-runs/${flowRunId}/node-attempts/${attemptId}/agent-sessions`;
+  const sourcePath = `/flow-runs/${flowRunId}/nodes/${nodeRunId}/attempts/${attemptId}/agent-sessions/source-conversation`;
+  const root = '/runtime/workspace/project';
+  const sourceConversation = {
+    id: 'source-conversation', display_title: '连续运行旧会话', title_state: 'MANUAL', lifecycle: 'ACTIVE',
+    model_provider_id: 'history-provider', model_name: 'history-model', reasoning_effort: 'high', work_directory_id: null,
+    streaming_callback_ready: true, write_available: false, execution_status: 'idle',
+    created_at: now, updated_at: now, last_connected_at: now, capabilities: [],
+  };
+  const createdConversation = {
+    ...sourceConversation, id: 'created-conversation', display_title: '新会话', write_available: true,
+  };
+  const forkConversation = {
+    ...sourceConversation, id: 'fork-conversation', display_title: 'Fork · 连续运行旧会话', write_available: true,
+  };
+  const conversations = new Map([
+    [sourceConversation.id, sourceConversation],
+    [createdConversation.id, createdConversation],
+    [forkConversation.id, forkConversation],
+  ]);
+  let bootstrapRequests = 0;
+  let forkRequests = 0;
+
+  await page.routeWebSocket('**/api/v1/flow-runs/**/node-attempts/**/agent-sessions/**/stream', () => undefined);
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    const respond = (body: unknown, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
+    if (path.endsWith('/auth/me')) return respond(authenticatedUser);
+    if (path === '/api/v1/model-providers') return respond([{
+      id: 'history-provider', name: '历史续聊模型', connection_state: 'CONNECTED', available_for_nodes: true,
+      models: [{ model_name: 'history-model', enabled: true, is_default: true, supported_reasoning_efforts: ['high'], default_reasoning_effort: 'high' }],
+    }]);
+    if (path === '/api/v1/capabilities' || path === '/api/v1/capability-collections') return respond([]);
+    if (path === `${sessionBase}/host`) return respond({ id: 'continuous-history-host', display_name: '连续运行旧节点', desired_state: 'RUNNING', updated_at: now });
+    if (path === `${sessionBase}/runtime`) return respond({ state: 'ACTIVE', write_available: false, fork_available: true, terminal_available: true, message: '节点已完成；原始会话只读，可新建或分叉会话继续。', updated_at: now });
+    if (path === sessionBase && request.method() === 'GET') return respond({ items: [sourceConversation], next_cursor: null });
+    if (path === `${sessionBase}/bootstrap` && request.method() === 'POST') {
+      bootstrapRequests += 1;
+      return respond({ conversation: createdConversation, accepted: true, cursor: 'created-user' }, 201);
+    }
+    if (path === `${sessionBase}/${sourceConversation.id}/fork` && request.method() === 'POST') {
+      forkRequests += 1;
+      return respond(forkConversation, 201);
+    }
+    if (path === `${sessionBase}/work-directories`) return respond({ root: { kind: 'ROOT', display_name: '根工作区', working_directory: root }, items: [] });
+    if (path === `${sessionBase}/workspace`) return respond({
+      root, scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: root, work_directory: null,
+      files: [], repositories: [], runtime: {}, ide: { workspace_path: root, gateway: { supported: false, status: '不可用', note: '' } },
+    });
+    const conversationMatch = path.match(new RegExp(`^${sessionBase}/([^/]+)$`));
+    if (conversationMatch && request.method() === 'GET') return respond(conversations.get(conversationMatch[1]!) ?? sourceConversation);
+    const eventsMatch = path.match(new RegExp(`^${sessionBase}/([^/]+)/events$`));
+    if (eventsMatch) return respond(eventsMatch[1] === sourceConversation.id ? {
+      events: [
+        { id: 'history-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '执行旧节点', timestamp: now } },
+        { id: 'history-agent', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'history-user', content: '旧节点已经完成。', timestamp: now } },
+      ], next_cursor: 'history-agent', history_cursor: null, result: { status: 'COMPLETED' },
+    } : { events: [], next_cursor: null, history_cursor: null, result: { status: 'COMPLETED' } });
+    if (path.endsWith('/input-readiness')) return respond({ ready: true, execution_status: 'idle' });
+    if (path.endsWith('/context')) return respond({ model_name: 'history-model', reasoning_effort: 'high' });
+    if (path.endsWith('/pending-confirmation')) return respond({ pending: false });
+    return respond({ error: { code: 'RESOURCE_NOT_FOUND', message: `未配置测试路由：${path}`, details: {} } }, 404);
+  });
+
+  await page.goto(sourcePath);
+  await expect(page.getByText('节点会话已切换为只读')).toBeVisible();
+  await expect(page.getByRole('button', { name: '从此处分叉会话' })).toBeVisible();
+  const createConversation = page.getByRole('button', { name: '在根工作区中新建会话' });
+  await expect(createConversation).toBeEnabled();
+  await createConversation.click();
+  await expect(page.getByLabel('打开模型与推理设置')).toBeEnabled();
+  await page.getByLabel('发送 Agent 消息').fill('从旧节点创建新会话继续');
+  await page.getByRole('button', { name: '发送消息' }).click();
+  await expect.poll(() => bootstrapRequests).toBe(1);
+  await expect(page).toHaveURL(new RegExp(`/agent-sessions/${createdConversation.id}$`));
+  await expect(page.getByLabel('发送 Agent 消息')).toBeEnabled();
+
+  await page.goto(sourcePath);
+  await page.getByRole('button', { name: '从此处分叉会话' }).click();
+  await page.getByRole('alertdialog', { name: '从此处分叉会话？' }).getByRole('button', { name: '创建分叉会话' }).click();
+  await expect.poll(() => forkRequests).toBe(1);
+  await expect(page).toHaveURL(new RegExp(`/agent-sessions/${forkConversation.id}$`));
+  await expect(page.getByLabel('发送 Agent 消息')).toBeEnabled();
+});
