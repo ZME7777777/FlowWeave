@@ -1385,6 +1385,107 @@ test('manual and automatic records remain hidden after accepted deletion', async
   await expect(page.locator('.automatic-schedule-directory')).toHaveCount(0);
 });
 
+test('stepwise records reuse continuous selection, current-node detail, and graph sizing', async ({ page }) => {
+  const parentRun = { ...run, node_runs: [] };
+  const stepwiseAttempt = {
+    ...attempt, id: 'stepwise-parity-attempt', node_run_id: 'stepwise-parity-node', state: 'EXECUTING',
+  };
+  const stepwiseNode = {
+    ...nodeRun, id: 'stepwise-parity-node', flow_run_id: 'stepwise-parity-record', attempts: [stepwiseAttempt],
+  };
+  const stepwiseRecord = {
+    ...run, id: 'stepwise-parity-record', name: '逐步对齐记录', parent_flow_run_id: run.id,
+    node_runs: [stepwiseNode],
+  };
+  const automaticAttempt = {
+    ...attempt, id: 'automatic-parity-attempt', node_run_id: 'automatic-parity-node', state: 'EXECUTING',
+  };
+  const automaticNode = {
+    ...nodeRun, id: 'automatic-parity-node', flow_run_id: 'automatic-parity-record', attempts: [automaticAttempt],
+  };
+  const automaticRecord = {
+    ...frozenAutomaticBase, id: 'automatic-parity-record', name: '连续对齐记录', state: 'ACTIVE',
+    runtime_status: 'ACTIVE', runtime_write_available: true,
+    current_node_key: 'first', current_node_name: '测试节点', current_attempt_state: 'EXECUTING',
+    progress: { accepted: 0, terminal: 0, active: 1 }, node_runs: [automaticNode],
+    automation_plan: {
+      ...frozenAutomaticBase.automation_plan, status: 'FROZEN',
+      readiness: { ready: true, issues: [] },
+    },
+  };
+  const automaticSummary = {
+    id: automaticRecord.id, flow_run_id: run.id, run_no: automaticRecord.run_no, name: automaticRecord.name,
+    state: automaticRecord.state, row_version: automaticRecord.row_version, schedule_id: null, schedule_name: null,
+    started_at: automaticRecord.started_at, finished_at: automaticRecord.finished_at,
+    plan: { start_node_key: 'first', reachable_node_count: 2, configured_node_count: 1, readiness: { ready: true, issue_count: 0 } },
+    progress: automaticRecord.progress, usage: { total_tokens: 0, accumulated_cost: 0 },
+  };
+
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    const respond = (body: unknown) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
+    if (path.endsWith('/auth/me')) return respond(authenticatedUser);
+    if (path === '/api/v1/flow-runs' && request.method() === 'GET') return respond([parentRun]);
+    if (path === '/api/v1/flows' && request.method() === 'GET') return respond([definition]);
+    if (path === '/api/v1/terminal-environments' || path === '/api/v1/capabilities'
+      || path === '/api/v1/capability-collections' || path === '/api/v1/model-providers') return respond([]);
+    if (path === `/api/v1/flow-runs/${run.id}` && request.method() === 'GET') return respond(parentRun);
+    if (path === `/api/v1/flows/${definition.id}`) return respond(definition);
+    if (path === `/api/v1/flow-runs/${run.id}/stepwise-runs` && request.method() === 'GET') return respond([stepwiseRecord]);
+    if (path === `/api/v1/flow-runs/${run.id}/stepwise-runs/${stepwiseRecord.id}` && request.method() === 'GET') return respond(stepwiseRecord);
+    if (path === `/api/v1/flow-runs/${run.id}/automatic-runs/summaries` && request.method() === 'GET') return respond([automaticSummary]);
+    if (path === `/api/v1/flow-runs/${run.id}/automatic-runs/${automaticRecord.id}` && request.method() === 'GET') return respond(automaticRecord);
+    return route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ error: { code: 'RESOURCE_NOT_FOUND', message: path, details: {} } }) });
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: '流程运行', exact: true }).click();
+  await page.locator('.run-open').click();
+
+  await page.getByRole('tab', { name: '连续运行' }).click();
+  const automaticSelect = page.locator('.automatic-record-select').filter({ hasText: automaticRecord.name });
+  await automaticSelect.click();
+  await expect(page.locator('.automatic-record-list > article.active')).toHaveCount(1);
+  await expect(page.locator('.run-side-panel')).toBeVisible();
+  await expect(page.getByTestId('attempt-state')).toHaveText('EXECUTING');
+  const automaticNodeBox = await page.locator('.run-graph-node[data-selected="true"]').boundingBox();
+  expect(automaticNodeBox).not.toBeNull();
+  const automaticScale = await page.locator('.react-flow__viewport').evaluate(element => new DOMMatrix(getComputedStyle(element).transform).a);
+
+  await automaticSelect.click();
+  await expect(page.locator('.automatic-record-list > article.active')).toHaveCount(0);
+  await expect(page.locator('.run-side-panel')).toHaveCount(0);
+  await automaticSelect.click();
+  await expect(page.getByTestId('attempt-state')).toHaveText('EXECUTING');
+
+  await page.getByRole('tab', { name: '逐步运行' }).click();
+  const stepwiseSelect = page.locator('.node-record-list .automatic-record-select').filter({ hasText: stepwiseRecord.name });
+  await stepwiseSelect.click();
+  await expect(page.locator('.node-record-list > article.active')).toHaveCount(1);
+  await expect(page.locator('.run-side-panel')).toBeVisible();
+  await expect(page.getByTestId('attempt-state')).toHaveText('EXECUTING');
+  const stepwiseSelectedNode = page.locator('.run-graph-node[data-selected="true"]');
+  await expect(stepwiseSelectedNode).toContainText('测试节点');
+  const stepwiseNodeBox = await stepwiseSelectedNode.boundingBox();
+  expect(stepwiseNodeBox).not.toBeNull();
+  const stepwiseScale = await page.locator('.react-flow__viewport').evaluate(element => new DOMMatrix(getComputedStyle(element).transform).a);
+  expect(Math.abs(stepwiseScale - automaticScale)).toBeLessThanOrEqual(0.001);
+  expect(Math.abs(stepwiseNodeBox!.width - automaticNodeBox!.width)).toBeLessThanOrEqual(2);
+  expect(Math.abs(stepwiseNodeBox!.height - automaticNodeBox!.height)).toBeLessThanOrEqual(2);
+
+  await stepwiseSelect.click();
+  await expect(page.locator('.node-record-list > article.active')).toHaveCount(0);
+  await expect(page.locator('.run-side-panel')).toHaveCount(0);
+  await expect(page.locator('.run-graph')).toContainText('未选择逐步运行记录，当前显示中性流程定义');
+
+  await page.getByRole('tab', { name: '连续运行' }).click();
+  await automaticSelect.click();
+  await expect(page.locator('.automatic-record-list > article.active')).toHaveCount(1);
+  await expect(page.locator('.run-side-panel')).toBeVisible();
+  await expect(page.getByTestId('attempt-state')).toHaveText('EXECUTING');
+});
+
 test('the step graph keeps the full persisted path while selecting node details', async ({ page }) => {
   const completedFirst = {
     ...nodeRun, id: 'completed-first', name: '已完成的首节点记录', sequence_no: 1, state: 'ACCEPTED',

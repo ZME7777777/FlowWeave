@@ -6210,6 +6210,24 @@ Attempt，右侧详情也复用同一个 `AttemptPanel` 与会话返回上下文
 运行方式进入另一套详情路径；连续运行仅在同一详情之后维持后台自动启动／流转，逐步运行则在到达的后继
 节点保留配置与显式启动操作。连续草稿仍是启动前的批量配置入口，直接启动仍保持独立单节点会话模式。
 
+### FR-477 连续／逐步运行前端交互与节点呈现完全对齐 — DONE
+
+依赖：FR-468。
+
+目标：连续运行与逐步运行必须复用同一套记录选择、当前节点解析、流程图节点呈现和右侧执行详情代码。
+再次点击当前记录均可取消选中；选择已启动记录后均恢复并展示当前节点侧栏；相同流程定义和执行状态下节点
+尺寸与缩放不得因运行模式不同。两种模式唯一保留的行为差异是：连续运行完成当前节点后自动启动后继节点，
+逐步运行只自动填充后继输入并等待人工配置、显式启动。
+
+范围：仅修改 FlowRun 工作台前端派生状态、共享组件调用与定向浏览器回归；不修改 OpenHands、平台 API、
+数据库迁移、Runtime Provider、后端调度或远端部署。
+
+完成：逐步记录按连续运行既有的显式 NodeRun、图节点与最终持久流转位置顺序恢复当前节点，并将结果接入
+连续运行已经使用的 `SnapshotGraph`、`AttemptPanel` 与会话返回上下文；连续运行分支和自动调度逻辑未改。
+两类记录再次单击当前项都会取消选择；重新选择已启动记录会恢复当前节点和详情侧栏。定向浏览器回归在相同
+流程定义与执行状态下切换两种模式，验证节点选择、详情恢复、取消选择以及节点渲染宽高一致。逐步运行仅在
+未配置后继节点继续使用人工配置面板和显式启动，连续草稿及自动后继调度语义保持不变。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -6225,6 +6243,7 @@ Attempt，右侧详情也复用同一个 `AttemptPanel` 与会话返回上下文
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-17 | FR-477 | Web TypeScript typecheck、受影响 ESLint、production build、定向 FlowRun 工作台 Playwright（5 passed）；`git diff --check`、Alembic head 与任务状态唯一性 | PASS：连续／逐步记录统一当前节点解析和右侧详情渲染；再次点击当前记录均取消选择，重新选择已启动记录均恢复当前节点侧栏；相同流程定义与状态下两种模式的节点宽高一致。连续自动后继调度与逐步显式启动差异保持不变。唯一 Alembic head 为 `0117_agent_conversation_search`；无 `CURRENT`、`READY` 或下一切片。未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-17 | FR-476 | OpenHands conversation context 定向 pytest（4 passed）；受影响 Python Ruff format/check；Web 受影响 ESLint、TypeScript typecheck、production build；`git diff --check`、Alembic head 与任务状态唯一性 | PASS：真实空 metrics 继续投影零 Token；旧会话只有一个非 Task／非 Condenser、同模型 usage bucket 时可恢复当前 View 用量；非空但多个候选保持未知。工作台对未知态显示“Token待模型更新”，不再将缺失数据展示为 0。受管 Pyright 对 adapter 仍为提交前相同的 3 项既有错误；未运行完整 Playwright，未修改数据库、OpenHands 源码、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-17 | FR-475 | Web TypeScript typecheck、受影响 ESLint、production build、定向产品流 Playwright 尝试、`git diff --check` 与任务状态唯一性 | PASS（静态／构建）：右侧既有“会话用量”的累计 Token 优先显示正式 `/context.cumulative_tokens`，同步后刷新；缺失或零值时回退既有持久化 usage summary，未新增字段、样式或底栏内容。定向 Playwright 在新增断言后、既有“暂停当前 Agent”状态断言超时，未记为完整用例通过；新增右侧累计 Token 断言在该前置阶段已通过。未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-17 | FR-473 | 定向 Runtime Agent spec pytest 尝试；受影响 Python Ruff／编译、`git diff --check`、Alembic head 与任务状态唯一性 | PASS（静态）：新建会话冻结 `LLMSummarizingCondenser.max_size=1,000` 与原有 `max_tokens=256,000`；第 1,001 个 OpenHands view 事件将触发原生事件型压缩，既有会话不被在线重配。定向 pytest 在 Testcontainers PostgreSQL fixture 初始化前因本机 Docker Unix socket 缺失而阻断，未进入断言且未记为通过。未修改 OpenHands、数据库、Runtime Provider、Docker 或远端环境。 |

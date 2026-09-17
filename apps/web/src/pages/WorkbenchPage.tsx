@@ -166,12 +166,20 @@ const activeFlowNodeRun = (records: NodeRun[]): NodeRun | undefined => records.r
   undefined,
 );
 
+function selectedRecordNodeRun(record: FlowRun | undefined, selectedNodeRunId?: string, selectedNodeKey?: string): NodeRun | undefined {
+  if (!record) return undefined;
+  const active = activeFlowNodeRun(record.node_runs);
+  return record.node_runs.find(item => item.id === selectedNodeRunId)
+    ?? [...record.node_runs].reverse().find(item => item.flow_node_snapshot_key === selectedNodeKey)
+    ?? (!selectedNodeRunId ? active : undefined);
+}
+
 function RunRail({ run, mode, nodeRecords, manualRecords, automaticRecords, automaticError, selected, selectedManualRecordId, canDeleteManualRecord, manualSelectedIds, automaticSelectedIds, manualBusyId, selectedAutomaticId, automaticBusyId, onModeChange, onSelect, onSelectManualRecord, onCreateManualRecord, onDeleteManualRecord, onDeleteNode, onSelectAutomatic, onClearSelection, onCreateAutomatic, onDeleteAutomatic, onCopyAutomatic, onExportAutomatic, onStartAutomatic }: {
   run: FlowRun; mode: WorkbenchMode; nodeRecords: NodeRun[]; manualRecords: FlowRunStepwiseRecord[]; automaticRecords: FlowRunAutomaticRecordSummary[]; selected?: string; selectedManualRecordId?: string; canDeleteManualRecord: boolean;
   automaticError?: string; manualSelectedIds: Set<string>; automaticSelectedIds: Set<string>;
   manualBusyId?: string;
   selectedAutomaticId?: string; automaticBusyId?: string; onModeChange: (mode: WorkbenchMode) => void;
-  onSelect: (id: string, modifiers: SelectionModifiers) => void; onSelectManualRecord: (id: string) => void; onCreateManualRecord: () => void; onDeleteManualRecord: () => void; onDeleteNode: () => void; onSelectAutomatic: (id: string, modifiers: SelectionModifiers) => void; onCreateAutomatic: () => void;
+  onSelect: (id: string, modifiers: SelectionModifiers) => void; onSelectManualRecord: (id: string, modifiers: SelectionModifiers) => void; onCreateManualRecord: () => void; onDeleteManualRecord: () => void; onDeleteNode: () => void; onSelectAutomatic: (id: string, modifiers: SelectionModifiers) => void; onCreateAutomatic: () => void;
   onClearSelection: () => void; onDeleteAutomatic: () => void; onCopyAutomatic: () => void; onExportAutomatic: () => void; onStartAutomatic: (record: FlowRunAutomaticRecordSummary) => void;
 }) {
   const manualCount = manualSelectedIds.size;
@@ -217,7 +225,7 @@ function RunRail({ run, mode, nodeRecords, manualRecords, automaticRecords, auto
   const manualRecordItem = (record: FlowRunStepwiseRecord) => {
     const stateLabel = FLOW_STATE_LABELS[record.state] ?? record.state;
     return <article key={record.id} className={record.id === selectedManualRecordId ? 'active' : ''} data-record-state={record.state.toLowerCase()}>
-      <button type="button" className="automatic-record-select" aria-pressed={record.id === selectedManualRecordId} onClick={() => onSelectManualRecord(record.id)}><i title={stateLabel} aria-label={stateLabel}/><span><b>{record.name}</b></span></button>
+      <button type="button" className="automatic-record-select" aria-pressed={record.id === selectedManualRecordId} onClick={event => onSelectManualRecord(record.id, modifiers(event))}><i title={stateLabel} aria-label={stateLabel}/><span><b>{record.name}</b></span></button>
     </article>;
   };
   return <aside className="run-rail flow-run-inner-rail" onClick={event => { if (!isInteractiveClick(event.target)) onClearSelection(); }}>
@@ -1607,15 +1615,16 @@ export function WorkbenchPage() {
     : mode === 'MANUAL'
       ? activeFlowNodeRun(nodeRecords)
       : undefined;
+  const selectedStepwiseNodeRun = mode === 'MANUAL'
+    ? selectedRecordNodeRun(selectedStepwise, selectedNodeRunId, selectedNodeKey)
+    : undefined;
   const selectedExecutionNodeRun = mode === 'AUTOMATIC'
     ? selectedAutomaticNodeRun
-    : mode === 'MANUAL'
-      ? nodeRun
-      : undefined;
+    : selectedStepwiseNodeRun;
   const selectedExecutionAttempt = mode === 'AUTOMATIC'
     ? selectedAutomaticAttempt
-    : mode === 'MANUAL'
-      ? attempt
+    : selectedStepwiseNodeRun && !isUnconfiguredStepRecord(selectedStepwiseNodeRun)
+      ? selectedStepwiseNodeRun.attempts.find(item => item.id === selectedAttemptId) ?? selectedStepwiseNodeRun.attempts.at(-1)
       : undefined;
   const selectedExecutionSessionReturn = mode === 'AUTOMATIC' && selectedAutomatic
     ? { runId: parentRun.id, mode: 'AUTOMATIC' as const, automaticRecordId: selectedAutomatic.id }
@@ -1742,7 +1751,7 @@ export function WorkbenchPage() {
       : selectedAutomatic
         ? '当前显示该连续运行记录的持久执行状态；灰色节点尚未激活。'
       : '未选择连续运行记录，当前显示中性流程定义；请点击左侧“新增”。';
-  const hasPanel = Boolean((mode === 'AUTOMATIC' && selectedAutomaticId) || (selectedExecutionNodeRun && selectedExecutionAttempt) || (nodeRun && attempt) || selectedNode);
+  const hasPanel = Boolean((mode === 'AUTOMATIC' && selectedAutomaticId) || (mode === 'MANUAL' && selectedStepwiseId) || (selectedExecutionNodeRun && selectedExecutionAttempt) || (nodeRun && attempt) || selectedNode);
   const recordSummary = mode === 'AUTOMATIC'
     ? (selectedAutomatic?.name ?? automaticRecords.find(record => record.id === selectedAutomaticId)?.name
       ? { name: selectedAutomatic?.name ?? automaticRecords.find(record => record.id === selectedAutomaticId)?.name ?? '', label: '当前连续运行记录', state: selectedAutomatic?.state ?? automaticRecords.find(record => record.id === selectedAutomaticId)?.state }
@@ -1912,7 +1921,11 @@ export function WorkbenchPage() {
       setSelectedNodeKey(first.start_node_key);
     }
   };
-  const selectStepwiseRecord = (recordId: string) => {
+  const selectStepwiseRecord = (recordId: string, modifiers: SelectionModifiers = { extend: false, range: false }) => {
+    if (!modifiers.extend && !modifiers.range && selectedStepwiseId === recordId) {
+      clearSelection();
+      return;
+    }
     setSelectedStepwiseId(recordId);
     setSelectedNodeKey(undefined);
     setManualSelectedIds(new Set());
@@ -1978,6 +1991,16 @@ export function WorkbenchPage() {
         onStartStepwise={mode === 'MANUAL' ? () => startStepwiseNode(selectedExecutionNodeRun) : undefined}
       />
     : undefined;
+  const nodeConfigurationPanel = selectedNode
+    ? <NodeConsole run={categorizedRun} node={selectedNode} startupMode={mode === 'DIRECT' ? 'CHAT' : 'PROMPT'} pendingNodeRun={pendingConfigurationNodeRun} initialBindings={inheritedTransitionBindings} refresh={() => { void stepwiseDetail.refetch(); }} onActivated={created => { setSelectedNodeKey(undefined); navigate(created, 'activate'); }} onSelectExecution={item => { setSelectedNodeKey(item.flow_node_snapshot_key); selectExecution(item.id, item.attempts.at(-1)?.id); }}/>
+    : undefined;
+  const stepwiseRecordPanel = executionDetailPanel
+    ?? nodeConfigurationPanel
+    ?? (stepwiseDetail.isError
+      ? <aside className="action-panel"><div className="action-content error">逐步运行详情加载失败：{stepwiseDetail.error.message}</div></aside>
+      : selectedStepwise
+        ? <aside className="action-panel"><div className="action-content automatic-empty">该记录尚未到达节点，请在流程图中选择起始节点进行配置。</div></aside>
+        : <aside className="action-panel"><div className="action-content automatic-empty">加载逐步运行详情…</div></aside>);
   const rail = <RunRail
     run={run}
     mode={mode}
@@ -2022,7 +2045,7 @@ export function WorkbenchPage() {
       </main>
       {hasPanel && <aside className="run-side-panel">
         <div className="run-side-resizer" role="separator" aria-label="调整右侧栏宽度" aria-orientation="vertical" onPointerDown={beginSideResize}/>
-        {mode === 'AUTOMATIC' && selectedAutomaticId ? selectedAutomatic ? selectedAutomatic.state === 'DRAFT' ? <AutomaticRecordEditor key={selectedAutomatic.id} parent={parentRun} record={selectedAutomatic} selectedKey={selectedNodeKey} onDraft={retainAutomaticDraft} onSaved={replaceAutomatic}/> : selectedAutomatic.automatic_block?.code === 'AUTOMATIC_PLAN_GATE_ID_MISSING' ? <AutomaticLegacyPlanRecoveryPanel parentRunId={parentRun.id} record={selectedAutomatic} onRecovered={updated => { replaceAutomatic(updated); void automaticDetail.refetch(); void automatic.refetch(); }}/> : executionDetailPanel ?? <aside className="action-panel"><div className="action-content automatic-empty">该节点尚未激活。连续调度到达后会在这里显示执行、门禁和人工处理入口。</div></aside> : automaticDetail.isError ? <aside className="action-panel"><div className="action-content error">连续运行详情加载失败：{automaticDetail.error.message}</div></aside> : <aside className="action-panel"><div className="action-content automatic-empty">加载连续运行详情…</div></aside> : executionDetailPanel ?? (nodeRun && attempt ? <AttemptPanel run={categorizedRun} nodeRun={nodeRun} attempt={attempt} refresh={() => { void stepwiseDetail.refetch(); }} navigate={navigate} sessionReturnContext={mode === 'MANUAL' && selectedStepwise ? { runId: parentRun.id, mode: 'MANUAL', stepwiseRecordId: selectedStepwise.id } : { runId: parentRun.id, mode }} onStartStepwise={mode === 'MANUAL' ? () => startStepwiseNode(nodeRun) : undefined}/> : selectedNode ? <NodeConsole run={categorizedRun} node={selectedNode} startupMode={mode === 'DIRECT' ? 'CHAT' : 'PROMPT'} pendingNodeRun={pendingConfigurationNodeRun} initialBindings={inheritedTransitionBindings} refresh={() => { void stepwiseDetail.refetch(); }} onActivated={created => { setSelectedNodeKey(undefined); navigate(created, 'activate'); }} onSelectExecution={item => { setSelectedNodeKey(item.flow_node_snapshot_key); selectExecution(item.id, item.attempts.at(-1)?.id); }}/> : null)}
+        {mode === 'AUTOMATIC' && selectedAutomaticId ? selectedAutomatic ? selectedAutomatic.state === 'DRAFT' ? <AutomaticRecordEditor key={selectedAutomatic.id} parent={parentRun} record={selectedAutomatic} selectedKey={selectedNodeKey} onDraft={retainAutomaticDraft} onSaved={replaceAutomatic}/> : selectedAutomatic.automatic_block?.code === 'AUTOMATIC_PLAN_GATE_ID_MISSING' ? <AutomaticLegacyPlanRecoveryPanel parentRunId={parentRun.id} record={selectedAutomatic} onRecovered={updated => { replaceAutomatic(updated); void automaticDetail.refetch(); void automatic.refetch(); }}/> : executionDetailPanel ?? <aside className="action-panel"><div className="action-content automatic-empty">该节点尚未激活。连续调度到达后会在这里显示执行、门禁和人工处理入口。</div></aside> : automaticDetail.isError ? <aside className="action-panel"><div className="action-content error">连续运行详情加载失败：{automaticDetail.error.message}</div></aside> : <aside className="action-panel"><div className="action-content automatic-empty">加载连续运行详情…</div></aside> : mode === 'MANUAL' && selectedStepwiseId ? stepwiseRecordPanel : executionDetailPanel ?? (nodeRun && attempt ? <AttemptPanel run={categorizedRun} nodeRun={nodeRun} attempt={attempt} refresh={() => { void stepwiseDetail.refetch(); }} navigate={navigate} sessionReturnContext={mode === 'MANUAL' && selectedStepwise ? { runId: parentRun.id, mode: 'MANUAL', stepwiseRecordId: selectedStepwise.id } : { runId: parentRun.id, mode }} onStartStepwise={mode === 'MANUAL' ? () => startStepwiseNode(nodeRun) : undefined}/> : selectedNode ? <NodeConsole run={categorizedRun} node={selectedNode} startupMode={mode === 'DIRECT' ? 'CHAT' : 'PROMPT'} pendingNodeRun={pendingConfigurationNodeRun} initialBindings={inheritedTransitionBindings} refresh={() => { void stepwiseDetail.refetch(); }} onActivated={created => { setSelectedNodeKey(undefined); navigate(created, 'activate'); }} onSelectExecution={item => { setSelectedNodeKey(item.flow_node_snapshot_key); selectExecution(item.id, item.attempts.at(-1)?.id); }}/> : null)}
       </aside>}
     </section>
     {copyTarget && <CopyRecordDialog mode={copyTarget.mode} sourceName={copyTarget.mode === 'MANUAL' ? nodeRunName(run, copyTarget.record) : copyTarget.record.name} onClose={() => setCopyTarget(undefined)} onExport={copyTarget.mode === 'AUTOMATIC' ? target => exportAutomaticRecords([copyTarget.record.id], target) : undefined} onCopy={async name => {
