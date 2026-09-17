@@ -562,6 +562,61 @@ def _handle(
     )
 
 
+def test_openhands_uploads_valid_pptx_with_extended_runtime_timeout(
+    openhands_settings, monkeypatch
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    calls: list[dict[str, object]] = []
+
+    class Response:
+        def raise_for_status(self) -> None:
+            return None
+
+    class Client:
+        def post(self, url: str, **kwargs: object) -> Response:
+            calls.append({"url": url, **kwargs})
+            return Response()
+
+    monkeypatch.setattr(
+        runtime, "_transport", lambda: SimpleNamespace(regular=Client())
+    )
+    monkeypatch.setattr(runtime, "_base_url_for_handle", lambda _handle: "http://runtime:8000")
+    monkeypatch.setattr(runtime, "_session_key_for_handle", lambda _handle: "session-key")
+    monkeypatch.setattr(openhands_module, "uuid4", lambda: SimpleNamespace(hex="a" * 32))
+
+    content = b"PK\x03\x04" + b"pptx-content"
+    path = runtime.upload_workspace_file(
+        _handle(),
+        filename="郑蒙恩-Java开发工程师职级晋升答辩.pptx",
+        content_type=(
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+        ),
+        content=content,
+    )
+
+    safe_filename = "Java" + "_" * len("开发工程师职级晋升答辩") + ".pptx"
+    assert path == (
+        "/runtime/workspace/10000000-0000-4000-8000-000000000001/uploads/"
+        "10000000-0000-4000-8000-000000000002-"
+        f"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa--{safe_filename}"
+    )
+    assert calls == [
+        {
+            "url": "http://runtime:8000/api/file/upload",
+            "headers": {"X-Session-API-Key": "session-key"},
+            "params": {"path": path},
+            "files": {
+                "file": (
+                    safe_filename,
+                    content,
+                    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                )
+            },
+            "timeout": 120.0,
+        }
+    ]
+
+
 @pytest.mark.parametrize(
     ("execution_status", "ready"),
     [("running", False), ("waiting_for_confirmation", False), ("paused", True), ("idle", True)],

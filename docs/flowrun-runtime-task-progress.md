@@ -6112,6 +6112,16 @@ OpenHands 事件树、数据库迁移、Runtime Provider 或远端部署。
 既有连续／逐步记录详情均继续以实际到达的后继节点作为当前焦点，且已完成节点的会话、输入、门禁和产物仍可
 回看。
 
+### FR-474 Agent 会话 Office 附件 Runtime 上传时限 — DONE
+
+依赖：FR-471。
+
+目标：会话附件在通过 FlowWeave 已校验的 25 MiB 上限后，向 OpenHands Runtime 的正式工作区文件上传不得仍受普通交互请求的 30 秒时限影响。17 MiB 级 PPTX 必须保留原始二进制、Office MIME、会话鉴权和受限工作区路径；不得修改 OpenHands 源码、附件大小上限、数据库、Runtime Manifest 或部署配置。
+
+完成：OpenHands Runtime adapter 将附件上传单独限制为 120 秒，仍复用 OpenHands 1.47.0 正式 `/api/file/upload` 端点和既有 25 MiB 平台校验。新增适配器级回归，锁定中文 PPTX 文件名的安全路径、PPTX MIME、二进制 multipart 内容、会话 API key 与 120 秒受限时限。发送框的中间换行此前已由 FR-471 的 `pre-wrap` 回读投影保留；发送链仅裁剪首尾空白，不改写中间换行。
+
+验收：OpenHands adapter 定向 pytest（1 passed）、受影响 Python Ruff／编译、Web TypeScript typecheck／ESLint／production build、`git diff --check`、Alembic head 与任务状态唯一性通过。受管 Pyright 在既有 OpenHands adapter 与其大测试文件中仍报告基线类型问题，未指向本切片新增行，故未伪记为通过；未修改 OpenHands、数据库、Runtime Provider、Docker 或远端环境。
+
 ### FR-473 Agent 会话事件压缩阈值收紧 — DONE
 
 依赖：无。

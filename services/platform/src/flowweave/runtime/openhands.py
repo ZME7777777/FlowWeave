@@ -75,6 +75,10 @@ from flowweave.shared.secret_redaction import redact_secret_text, redact_secret_
 
 logger = logging.getLogger(__name__)
 _INTERACTIVE_READ_TIMEOUT_SECONDS = 8.0
+# Browser uploads are capped at 25 MiB.  OpenHands streams the multipart body to
+# disk, but transferring the largest valid attachment through a remote Runtime can
+# legitimately exceed the shared 30-second interactive HTTP budget.
+_ATTACHMENT_UPLOAD_TIMEOUT_SECONDS = 120.0
 _EVENT_HISTORY_PAGE_SIZE = 100
 # An interactive reconciliation may cross pages after a native fork or
 # navigate, but it must never turn a normal state read into a scan of an
@@ -4344,7 +4348,7 @@ class OpenHandsRuntime:
                 headers={"X-Session-API-Key": self._session_key_for_handle(handle)},
                 params={"path": target},
                 files={"file": (safe_name, content, content_type)},
-                timeout=30,
+                timeout=_ATTACHMENT_UPLOAD_TIMEOUT_SECONDS,
             )
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
