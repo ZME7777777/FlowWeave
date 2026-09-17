@@ -1747,6 +1747,15 @@ function WorkspaceMarkdownCode({ className, children, ...props }: ComponentProps
   return <code className={className} {...props} dangerouslySetInnerHTML={{ __html: highlightedCode(value, language) }}/>;
 }
 
+function WorkspaceMarkdownLink({ href, onOpenWorkspaceFile, onClick, node: _node, ...props }: ComponentPropsWithoutRef<'a'> & { onOpenWorkspaceFile?: (href: string) => boolean; node?: unknown }) {
+  void _node;
+  return <a {...props} href={href} onClick={event => {
+    onClick?.(event);
+    if (event.defaultPrevented || !href) return;
+    if (onOpenWorkspaceFile?.(href)) event.preventDefault();
+  }}/>;
+}
+
 function textPosition(content: string, offset: number): { line: number; column: number } {
   const before = content.slice(0, offset);
   const line = before.split('\n').length;
@@ -1860,7 +1869,7 @@ function previewSelectionRects(range: Range, preview: HTMLElement): WorkspaceSel
   }, []);
 }
 
-function WorkspaceTextPreview({ path, content, highlight, highlightLine, onAnnotate, lightweight = false }: { path: string; content: string; highlight?: FileSelection; highlightLine?: number; onAnnotate?: (selection: FileSelection, quote: string) => void; lightweight?: boolean }) {
+function WorkspaceTextPreview({ path, content, highlight, highlightLine, onAnnotate, onOpenWorkspaceFile, lightweight = false }: { path: string; content: string; highlight?: FileSelection; highlightLine?: number; onAnnotate?: (selection: FileSelection, quote: string) => void; onOpenWorkspaceFile?: (href: string) => boolean; lightweight?: boolean }) {
   const previewRef = useRef<HTMLDivElement>(null);
   const previewContentRef = useRef<HTMLElement>(null);
   const [selectionAction, setSelectionAction] = useState<{ selection: FileSelection; quote: string; left: number; top: number; highlights: WorkspaceSelectionRect[] }>();
@@ -1948,7 +1957,7 @@ function WorkspaceTextPreview({ path, content, highlight, highlightLine, onAnnot
   // users can still load the next page or download the complete file.
   if (lightweight) return <pre className="agent-file-large-text-preview">{content}</pre>;
   if (markdownPreview) {
-    return <div ref={previewRef} className="agent-file-preview-selection" onMouseUp={captureSelection}>{pinnedHighlight}{action}<article ref={previewContentRef} className="agent-file-markdown-preview"><ReactMarkdown remarkPlugins={[remarkGfm]} components={{ code: WorkspaceMarkdownCode }}>{content}</ReactMarkdown></article></div>;
+    return <div ref={previewRef} className="agent-file-preview-selection" onMouseUp={captureSelection}>{pinnedHighlight}{action}<article ref={previewContentRef} className="agent-file-markdown-preview"><ReactMarkdown remarkPlugins={[remarkGfm]} components={{ code: WorkspaceMarkdownCode, a: props => <WorkspaceMarkdownLink {...props} onOpenWorkspaceFile={onOpenWorkspaceFile}/> }}>{content}</ReactMarkdown></article></div>;
   }
   const language = filePreviewLanguage(path);
   return <div ref={previewRef} className="agent-file-preview-selection" onMouseUp={captureSelection}>{pinnedHighlight}{action}<div className={`agent-file-code-preview${language ? ' highlighted' : ''}`}><ol className="agent-file-line-numbers" aria-hidden="true">{codeLines.map((_, index) => <li key={index}>{index + 1}</li>)}</ol>{lineHighlight && <i className="agent-file-line-highlight" style={{ '--source-line': lineHighlight } as CSSProperties}/>}<code ref={previewContentRef} dangerouslySetInnerHTML={{ __html: highlightedCode(content, language) }}/></div></div>;
@@ -2202,16 +2211,33 @@ function workspaceSourcePath(path: string, workingDirectory?: string): string {
  * workspace. Relative links in an Agent reply are file references, not web
  * routes; routing them through the drawer avoids a browser-level navigation.
  */
-function workspaceMarkdownLinkPath(href: string, workingDirectory?: string): string | undefined {
-  const root = workingDirectory?.replace(/\/+$/, '');
-  if (!root || !href || /^(?:[a-z][a-z0-9+.-]*:|\/\/)/i.test(href)) return undefined;
+function normalizedWorkspacePath(path: string): string {
+  const absolute = path.startsWith('/');
+  const parts: string[] = [];
+  for (const part of path.split('/')) {
+    if (!part || part === '.') continue;
+    if (part === '..') parts.pop();
+    else parts.push(part);
+  }
+  return `${absolute ? '/' : ''}${parts.join('/')}`;
+}
+
+function workspaceMarkdownFileHref(href: string): boolean {
+  return Boolean(href && !/^(?:[a-z][a-z0-9+.-]*:|\/\/)/i.test(href) && href.split(/[?#]/, 1)[0]);
+}
+
+function workspaceMarkdownLinkPath(href: string, workingDirectory?: string, sourcePath?: string): string | undefined {
+  const root = workingDirectory ? normalizedWorkspacePath(workingDirectory.replace(/\\/g, '/')) : '';
+  if (!root || !workspaceMarkdownFileHref(href)) return undefined;
   const rawPath = href.split(/[?#]/, 1)[0];
   if (!rawPath) return undefined;
   let path: string;
   try { path = decodeURIComponent(rawPath).replace(/\\/g, '/'); } catch { return undefined; }
-  if (path.split('/').includes('..')) return undefined;
-  path = path.replace(/^(?:\.\/)+/, '');
-  const resolved = path.startsWith('/') ? path : `${root}/${path}`;
+  const normalizedSource = sourcePath ? normalizedWorkspacePath(sourcePath.replace(/\\/g, '/')) : undefined;
+  const sourceDirectory = normalizedSource && normalizedSource.startsWith(`${root}/`)
+    ? normalizedSource.slice(0, normalizedSource.lastIndexOf('/'))
+    : root;
+  const resolved = normalizedWorkspacePath(path.startsWith('/') ? path : `${sourceDirectory}/${path}`);
   return resolved === root || resolved.startsWith(`${root}/`) ? resolved : undefined;
 }
 
@@ -3329,6 +3355,16 @@ function WorkspaceDrawer({
     }));
     onOpen();
   }, [details?.working_directory, onOpen, updateScope]);
+  const openMarkdownPreviewLink = useCallback((href: string) => {
+    if (!workspaceMarkdownFileHref(href)) return false;
+    const path = workspaceMarkdownLinkPath(href, details?.working_directory, selectedFile);
+    if (!path) {
+      setPanelError('链接目标不在当前工作目录中。');
+      return true;
+    }
+    openSourcePath(path, 1);
+    return true;
+  }, [details?.working_directory, openSourcePath, selectedFile]);
   const openSourceFile = useCallback((change: WorkspaceFileChange, line: number) => {
     openSourcePath(change.path, line);
   }, [openSourcePath]);
@@ -3514,7 +3550,7 @@ function WorkspaceDrawer({
               <iframe className="agent-file-media-preview" sandbox="" title={`${candidatePreview.filename} 候选文件预览`} src={candidatePreview.url}/>
             </> : selectedFile ? <>
               <header><span title={selectedFile}>{selectedAttachment?.filename || relativeWorkspacePath(selectedFile, details.root)}</span><a href={fileUrl(workspaceId, selectedFile, { bindingId, workDirectoryId, download: true })}><Download size={13}/>下载</a></header>
-              {canPreviewImage ? <img className="agent-file-media-preview" src={selectedAttachment?.image_data_url || selectedFileUrl} alt={selectedAttachment?.filename || '附件预览'}/> : canPreviewPdf ? <iframe className="agent-file-media-preview" title={selectedAttachment?.filename || 'PDF 预览'} src={selectedFileUrl}/> : textPreviewable ? previewQuery.isLoading ? <p>正在读取文件…</p> : previewQuery.isError ? <p>文件预览不可用，请下载后查看。</p> : previewState ? <div className="agent-file-preview-paged"><WorkspaceTextPreview path={selectedFile} content={previewState.content} lightweight={lightweightPreview} highlight={lightweightPreview ? undefined : highlightedFileSelection?.path === selectedFile ? highlightedFileSelection.selection : undefined} highlightLine={lightweightPreview ? undefined : sourceFileNavigation?.path === selectedFile ? sourceFileNavigation.line : undefined} onAnnotate={!lightweightPreview && onAnnotateFileSelection ? (selection, quote) => onAnnotateFileSelection(selectedFile, selection, quote) : undefined}/>{previewState.nextOffset !== undefined && <footer><span>已加载 {formatFileSize(previewState.nextOffset)} / {formatFileSize(previewState.totalBytes)}</span><button type="button" onClick={() => void loadMorePreview()} disabled={previewMoreLoading}>{previewMoreLoading ? '正在加载…' : '加载更多'}</button></footer>}</div> : null : <p>此文件不提供浏览器预览，请下载后查看。</p>}
+              {canPreviewImage ? <img className="agent-file-media-preview" src={selectedAttachment?.image_data_url || selectedFileUrl} alt={selectedAttachment?.filename || '附件预览'}/> : canPreviewPdf ? <iframe className="agent-file-media-preview" title={selectedAttachment?.filename || 'PDF 预览'} src={selectedFileUrl}/> : textPreviewable ? previewQuery.isLoading ? <p>正在读取文件…</p> : previewQuery.isError ? <p>文件预览不可用，请下载后查看。</p> : previewState ? <div className="agent-file-preview-paged"><WorkspaceTextPreview path={selectedFile} content={previewState.content} lightweight={lightweightPreview} highlight={lightweightPreview ? undefined : highlightedFileSelection?.path === selectedFile ? highlightedFileSelection.selection : undefined} highlightLine={lightweightPreview ? undefined : sourceFileNavigation?.path === selectedFile ? sourceFileNavigation.line : undefined} onAnnotate={!lightweightPreview && onAnnotateFileSelection ? (selection, quote) => onAnnotateFileSelection(selectedFile, selection, quote) : undefined} onOpenWorkspaceFile={openMarkdownPreviewLink}/>{previewState.nextOffset !== undefined && <footer><span>已加载 {formatFileSize(previewState.nextOffset)} / {formatFileSize(previewState.totalBytes)}</span><button type="button" onClick={() => void loadMorePreview()} disabled={previewMoreLoading}>{previewMoreLoading ? '正在加载…' : '加载更多'}</button></footer>}</div> : null : <p>此文件不提供浏览器预览，请下载后查看。</p>}
             </> : <p>选择一个文件以预览或下载。</p>}</div>
           </section>}
           {scopeState.tabs.some(tab => tab.kind === 'changes') && <div className={`agent-changes-tab-panel ${scopeState.activeTabId === 'changes' ? 'active' : ''}`}><WorkspaceChangesReview changes={reviewChanges} selectedId={scopeState.selectedChangeId} onSelect={selectedChangeId => updateScope(current => ({ ...current, selectedChangeId }))} onOpenSource={openSourceFile} workspaceRoot={details.working_directory}/></div>}

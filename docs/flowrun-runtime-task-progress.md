@@ -192,6 +192,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-473 | Agent 会话事件压缩阈值收紧 | DONE | 新建 Agent 会话冻结 OpenHands `LLMSummarizingCondenser.max_size=1,000`；达到第 1,001 个 view 事件即触发原生事件型压缩，256,000 token 阈值不变。既有会话保留创建时冻结的阈值。 |
 | FR-475 | 会话用量累计 Token 实时投影 | DONE | 右侧既有“会话用量”仅将已有的累计 Token 数优先投影为 OpenHands `/context` 的累计供应商 usage；不新增字段、样式或底栏内容。 |
 | FR-476 | 会话当前 View 用量未知态投影 | DONE | 仅对真实空 metrics 投影零 Token；唯一同模型正式 usage bucket 可恢复，非空但歧义的统计保持未知，前端不得将缺失当前 View 用量显示为 0。 |
+| FR-478 | Markdown 文件预览相对链接跳转 | DONE | 点击工作区 Markdown 预览中的本地文件链接时，按当前文件目录解析并在文件工具中选择目标文件；不得让浏览器导航到拼接后的 FlowRun URL。 |
 | FR-457 | OpenHands 空响应自恢复与运行状态一致性 | DONE | 空 Agent Message 与 `source=environment` 的原生 corrective nudge 不再被识别为最终回复；纠正事件以“模型返回空响应，OpenHands 正在自动重试”呈现，左侧会话状态与底部按钮继续统一服从原生 execution status。 |
 | FR-458 | 空响应恢复提示瞬时化与会话状态统一 | DONE | corrective nudge 只在它是当前最新事件且原生会话仍运行时复用实时状态行显示；后续事件或终态立即隐藏，历史工作过程不保留该提示。工作台所有运行控件复用同一原生状态投影。 |
 | FR-459 | 原生错误事件的终态／可恢复呈现分流 | DONE | 仅 OpenHands ConversationErrorEvent 呈现为“本轮未能完成”的会话级终态卡片；AgentErrorEvent 与未知历史 ERROR 保持原生审计事实，按其正式父事件留在工作过程中呈现为可恢复异常，后续正式回复会明确标注 Agent 已继续完成，避免暂停／继续后的正常回复被历史错误卡片误覆盖。 |
@@ -6228,6 +6229,27 @@ Attempt，右侧详情也复用同一个 `AttemptPanel` 与会话返回上下文
 流程定义与执行状态下切换两种模式，验证节点选择、详情恢复、取消选择以及节点渲染宽高一致。逐步运行仅在
 未配置后继节点继续使用人工配置面板和显式启动，连续草稿及自动后继调度语义保持不变。
 
+### FR-478 Markdown 文件预览相对链接跳转 — DONE
+
+依赖：FR-69。
+
+目标：工作区 Markdown 文件预览中的本地链接必须在用户点击时，按当前 Markdown 文件所在目录解析目标路径，
+并复用文件工具既有的目录加载、选中与预览链路打开对应文件；不得触发浏览器向 FlowRun／Agent 会话路由后
+拼接文件路径的页面级导航。支持 URL 编码、中文、空格、`.`、工作区内 `..` 与多层目录；外部协议、纯锚点
+以及越出当前授权工作目录的路径不得作为工作区文件打开。
+
+范围：仅修改 Agent 工作台 Markdown 文件预览的链接解析、点击处理与定向浏览器回归；不依据页面 URL 自动
+展开目录，不修改 API、数据库、OpenHands、Runtime Provider、FlowRun 路由或远端部署。
+
+完成：Markdown 文件预览为本地链接增加显式点击处理，以当前预览文件的父目录为相对路径基准，规范化 URL
+编码、反斜杠、`.`、`..` 与多层目录后，复用既有文件工具的祖先目录加载、选中和预览链路。页面初始加载
+不会按 URL 自动展开目录，点击后也不向 FlowRun／Agent 会话浏览器 URL 拼接文件路径；外部协议与纯锚点
+保留原行为，越出授权工作目录的本地路径被拦截并显示明确错误。
+
+验收：隔离 Playwright 从会话消息打开汇总 Markdown 后，点击预览中的 `hq-admin` 相对链接，确认目标文件
+内容加载、目录链路可解析且浏览器始终停留在原 Node Session URL；同时覆盖 `../outside.md` 越界拒绝。
+Web TypeScript typecheck、受影响 ESLint、production build、`git diff --check` 与 Alembic head 核对均通过。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -6243,6 +6265,7 @@ Attempt，右侧详情也复用同一个 `AttemptPanel` 与会话返回上下文
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-17 | FR-478 | Web TypeScript typecheck、受影响 ESLint、production build、定向 Agent 工作台 Playwright（1 passed）；`git diff --check`、Alembic head 与任务状态唯一性 | PASS：Markdown 文件预览仅在用户点击本地链接时，以当前 Markdown 文件父目录解析目标并复用文件工具打开；不会依据页面 URL 自动展开，也不会改变 FlowRun／Agent 会话 URL。定向浏览器回归覆盖 `filtered_business_exception_reports/hq-admin.md` 正确跳转及越界路径拒绝。唯一 Alembic head 为 `0117_agent_conversation_search`；无 `CURRENT`、`READY` 或下一切片。未修改 API、数据库、OpenHands、Runtime Provider、FlowRun 路由或远端环境。 |
 | 2026-09-17 | FR-477 | Web TypeScript typecheck、受影响 ESLint、production build、定向 FlowRun 工作台 Playwright（5 passed）；`git diff --check`、Alembic head 与任务状态唯一性 | PASS：连续／逐步记录统一当前节点解析和右侧详情渲染；再次点击当前记录均取消选择，重新选择已启动记录均恢复当前节点侧栏；相同流程定义与状态下两种模式的节点宽高一致。连续自动后继调度与逐步显式启动差异保持不变。唯一 Alembic head 为 `0117_agent_conversation_search`；无 `CURRENT`、`READY` 或下一切片。未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-17 | FR-476 | OpenHands conversation context 定向 pytest（4 passed）；受影响 Python Ruff format/check；Web 受影响 ESLint、TypeScript typecheck、production build；`git diff --check`、Alembic head 与任务状态唯一性 | PASS：真实空 metrics 继续投影零 Token；旧会话只有一个非 Task／非 Condenser、同模型 usage bucket 时可恢复当前 View 用量；非空但多个候选保持未知。工作台对未知态显示“Token待模型更新”，不再将缺失数据展示为 0。受管 Pyright 对 adapter 仍为提交前相同的 3 项既有错误；未运行完整 Playwright，未修改数据库、OpenHands 源码、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-17 | FR-475 | Web TypeScript typecheck、受影响 ESLint、production build、定向产品流 Playwright 尝试、`git diff --check` 与任务状态唯一性 | PASS（静态／构建）：右侧既有“会话用量”的累计 Token 优先显示正式 `/context.cumulative_tokens`，同步后刷新；缺失或零值时回退既有持久化 usage summary，未新增字段、样式或底栏内容。定向 Playwright 在新增断言后、既有“暂停当前 Agent”状态断言超时，未记为完整用例通过；新增右侧累计 Token 断言在该前置阶段已通过。未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |

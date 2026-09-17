@@ -1761,3 +1761,91 @@ test('gate review conversation stays compact and remediation enters the created 
   releaseRemediation?.();
   await expect(page).toHaveURL(new RegExp(`/agent-sessions/gate-revision-binding$`));
 });
+
+test('workspace Markdown links open the referenced node-session file without navigating the browser', async ({ page }) => {
+  const flowRunId = 'markdown-link-run';
+  const nodeRunId = 'markdown-link-node';
+  const attemptId = 'markdown-link-attempt';
+  const conversation = {
+    id: 'markdown-link-conversation', display_title: 'Markdown 文件跳转', title_state: 'MANUAL', lifecycle: 'ACTIVE',
+    model_provider_id: null, model_name: null, reasoning_effort: null, work_directory_id: null, streaming_callback_ready: true,
+    execution_status: 'idle', created_at: now, updated_at: now, last_connected_at: now, capabilities: [],
+  };
+  const root = '/runtime/workspace/project';
+  const sourcePath = `${root}/filtered_business_exceptions.md`;
+  const reportDirectory = `${root}/filtered_business_exception_reports`;
+  const targetPath = `${reportDirectory}/hq-admin.md`;
+  const sessionBase = `/api/v1/flow-runs/${flowRunId}/node-attempts/${attemptId}/agent-sessions`;
+  const sessionPath = `/flow-runs/${flowRunId}/nodes/${nodeRunId}/attempts/${attemptId}/agent-sessions/${conversation.id}`;
+  const previewPaths: string[] = [];
+
+  await page.routeWebSocket('**/api/v1/flow-runs/**/node-attempts/**/agent-sessions/**/stream', () => undefined);
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const path = url.pathname;
+    const respond = (body: unknown, status = 200) => route.fulfill({
+      status, contentType: 'application/json', body: JSON.stringify(body),
+    });
+    if (path.endsWith('/auth/me')) return respond(authenticatedUser);
+    if (path === '/api/v1/model-providers' || path === '/api/v1/capabilities' || path === '/api/v1/capability-collections') return respond([]);
+    if (path === `${sessionBase}/host`) return respond({ id: 'markdown-link-host', display_name: 'Markdown 节点', desired_state: 'RUNNING', updated_at: now });
+    if (path === `${sessionBase}/runtime`) return respond({ state: 'ACTIVE', write_available: true, message: null, updated_at: now });
+    if (path === sessionBase && request.method() === 'GET') return respond({ items: [conversation], next_cursor: null });
+    if (path === `${sessionBase}/${conversation.id}` && request.method() === 'GET') return respond(conversation);
+    if (path === `${sessionBase}/work-directories`) return respond({ root: { kind: 'ROOT', display_name: '根工作区', working_directory: root }, items: [] });
+    if (path === `${sessionBase}/workspace`) return respond({
+      root, scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: root, work_directory: null,
+      files: [], repositories: [], runtime: {}, ide: { workspace_path: root, gateway: { supported: false, status: '不可用', note: '' } },
+    });
+    if (path === `${sessionBase}/workspace/directory`) {
+      const parentPath = url.searchParams.get('parent_path');
+      if (parentPath === reportDirectory) return respond({ entries: [{ path: targetPath, kind: 'file', size: 38_000 }], next_cursor: null });
+      return respond({ entries: [
+        { path: sourcePath, kind: 'file', size: 6_000 },
+        { path: reportDirectory, kind: 'directory', size: 0 },
+      ], next_cursor: null });
+    }
+    if (path === `${sessionBase}/workspace/file` && url.searchParams.get('preview') === 'true') {
+      const requestedPath = url.searchParams.get('path') ?? '';
+      previewPaths.push(requestedPath);
+      const content = requestedPath === sourcePath
+        ? '# 筛选后业务异常日志汇总\n\n[越界路径](../outside.md)\n\n| 文档 |\n| --- |\n| [hq-admin](filtered_business_exception_reports/hq-admin.md) |'
+        : requestedPath === targetPath ? '# HQ Admin report\n\n已正确打开目标文件。' : 'unexpected file';
+      return route.fulfill({
+        status: 200,
+        contentType: 'text/markdown',
+        headers: { 'X-Preview-Total-Bytes': String(content.length) },
+        body: content,
+      });
+    }
+    if (path === `${sessionBase}/${conversation.id}/events`) return respond({
+      events: [
+        { id: 'markdown-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '查看异常报告', timestamp: now } },
+        { id: 'markdown-agent', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'markdown-user', content: '[打开汇总](filtered_business_exceptions.md)', timestamp: now } },
+      ],
+      next_cursor: 'markdown-agent', history_cursor: null, result: { status: 'COMPLETED' },
+    });
+    if (path === `${sessionBase}/${conversation.id}/input-readiness`) return respond({ ready: true, execution_status: 'idle' });
+    if (path === `${sessionBase}/${conversation.id}/context`) return respond({});
+    if (path === `${sessionBase}/${conversation.id}/pending-confirmation`) return respond({ pending: false });
+    return respond({ error: { code: 'RESOURCE_NOT_FOUND', message: `未配置测试路由：${path}`, details: {} } }, 404);
+  });
+
+  await page.goto(sessionPath);
+  await page.getByRole('link', { name: '打开汇总' }).click();
+  await expect(page.locator('.agent-file-preview > header')).toContainText('filtered_business_exceptions.md');
+  await expect(page).toHaveURL(new RegExp(`${sessionPath}$`));
+
+  await page.locator('.agent-file-markdown-preview').getByRole('link', { name: '越界路径' }).click();
+  await expect(page.getByRole('alert')).toContainText('链接目标不在当前工作目录中');
+  await expect(page.locator('.agent-file-preview > header')).toContainText('filtered_business_exceptions.md');
+  await expect(page).toHaveURL(new RegExp(`${sessionPath}$`));
+  await page.getByRole('button', { name: '关闭错误提示' }).click();
+
+  await page.locator('.agent-file-markdown-preview').getByRole('link', { name: 'hq-admin' }).click();
+  await expect(page.locator('.agent-file-preview > header')).toContainText('hq-admin.md');
+  await expect(page.locator('.agent-file-markdown-preview')).toContainText('已正确打开目标文件');
+  await expect(page).toHaveURL(new RegExp(`${sessionPath}$`));
+  expect(previewPaths).toEqual([sourcePath, targetPath]);
+});
