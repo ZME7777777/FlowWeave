@@ -2883,6 +2883,49 @@ def test_agent_workspace_conversation_page_uses_exact_native_terminal_status(
         assert page["items"][0]["execution_status"] == "error"
 
 
+def test_agent_workspace_conversation_dtos_project_runtime_write_availability(
+    settings, db_session_factory
+):
+    with settings_context(settings), db_session_factory() as db, runtime_context(MockRuntime()):
+        workspace = _ready_workspace_for_conversation(db)
+        created = conversations.create_conversation(
+            db,
+            workspace.id,
+            "可续聊历史会话",
+            workspace.default_model_provider_id,
+            "write-availability",
+        )
+
+        assert created["write_available"] is True
+        assert (
+            conversations.get_conversation(db, workspace.id, created["id"])["write_available"]
+            is True
+        )
+        assert conversations.list_conversations(db, workspace.id)[0]["write_available"] is True
+        assert (
+            conversations.list_conversation_page(db, workspace.id)["items"][0]["write_available"]
+            is True
+        )
+
+        runtime = db.scalar(
+            select(AgentWorkspaceRuntime).where(AgentWorkspaceRuntime.workspace_id == workspace.id)
+        )
+        assert runtime is not None
+        runtime.status = "RECONNECTING"
+        db.flush()
+
+        assert conversations.runtime_status(db, workspace.id)["write_available"] is False
+        assert (
+            conversations.get_conversation(db, workspace.id, created["id"])["write_available"]
+            is False
+        )
+        assert conversations.list_conversations(db, workspace.id)[0]["write_available"] is False
+        assert (
+            conversations.list_conversation_page(db, workspace.id)["items"][0]["write_available"]
+            is False
+        )
+
+
 def test_agent_workspace_sends_directly_at_high_context_usage(
     settings, db_session_factory, monkeypatch
 ):

@@ -195,6 +195,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-478 | Markdown 文件预览相对链接跳转 | DONE | 点击工作区 Markdown 预览中的本地文件链接时，按当前文件目录解析并在文件工具中选择目标文件；不得让浏览器导航到拼接后的 FlowRun URL。 |
 | FR-479 | 逐步运行当前节点详情与样式复用 | DONE | 逐步记录选中后，右侧展示同一记录当前节点；已有 Attempt 复用共享详情，待配置节点复用连续配置面板组件与样式，仅保留人工配置／启动差异。 |
 | FR-480 | 连续／逐步旧节点会话续聊一致性 | DONE | 连续和逐步运行的旧节点统一复用共享 Agent 会话权限：原会话只读，但可新建可写会话或从已完成回复 Fork 继续。 |
+| FR-481 | 普通 Agent 历史会话可写权限恢复 | DONE | 普通 Agent Workspace 会话 DTO 显式投影共享 Runtime 的可写状态；Runtime ACTIVE 时历史会话可继续输入，恢复中保持只读，FlowRun 节点会话权限不变。 |
 | FR-457 | OpenHands 空响应自恢复与运行状态一致性 | DONE | 空 Agent Message 与 `source=environment` 的原生 corrective nudge 不再被识别为最终回复；纠正事件以“模型返回空响应，OpenHands 正在自动重试”呈现，左侧会话状态与底部按钮继续统一服从原生 execution status。 |
 | FR-458 | 空响应恢复提示瞬时化与会话状态统一 | DONE | corrective nudge 只在它是当前最新事件且原生会话仍运行时复用实时状态行显示；后续事件或终态立即隐藏，历史工作过程不保留该提示。工作台所有运行控件复用同一原生状态投影。 |
 | FR-459 | 原生错误事件的终态／可恢复呈现分流 | DONE | 仅 OpenHands ConversationErrorEvent 呈现为“本轮未能完成”的会话级终态卡片；AgentErrorEvent 与未知历史 ERROR 保持原生审计事实，按其正式父事件留在工作过程中呈现为可恢复异常，后续正式回复会明确标注 Agent 已继续完成，避免暂停／继续后的正常回复被历史错误卡片误覆盖。 |
@@ -6298,6 +6299,28 @@ Python Ruff format/check、`py_compile`、`git diff --check` 与 Alembic head �
 本机 Docker socket 缺失而阻断，未进入断言且未记为通过。普通 Agent 工作台大用例在既有“空响应后暂停按钮”断言处
 失败，发生在 Fork 段之前；本次节点会话用例已独立覆盖所需共享功能。
 
+
+### FR-481 普通 Agent 历史会话可写权限恢复 — DONE
+
+依赖：FR-480。
+
+目标：修复共享 Agent 会话组件启用逐会话 `write_available` 后，普通 Agent Workspace 会话响应缺失该字段、
+导致所有历史会话被浏览器误判为只读的问题。普通工作区的详情、旧列表、分页列表及创建／Fork 等会话响应
+统一显式返回工作区 Runtime 可写事实；Runtime `ACTIVE` 且工作区 `RUNNING` 时为可写，恢复中或维护态为只读。
+
+范围：仅修改普通 Agent Workspace 会话 DTO 投影，并补定向服务端契约与浏览器回归；不恢复前端全局 Runtime
+fallback，不修改 FlowRun 节点源会话只读／detached Fork 可写规则，不修改数据库、迁移、OpenHands、Runtime Provider、
+Docker 或远端环境。
+
+完成：普通 Agent Workspace 的详情、旧列表、分页列表及创建／Fork 等复用 `_dict` 的响应现在都显式返回
+`write_available`。该字段仅由工作区 Runtime `ACTIVE` 与工作区 `RUNNING` 的共同事实决定；恢复中返回 `false`，
+前端继续严格消费逐会话权限，不恢复会误放开 FlowRun 节点源会话的全局 Runtime fallback。定向浏览器回归验证
+两个已完成历史会话切换后输入框均可编辑。
+
+验收：Agent 历史会话定向 Playwright（1 passed）；Web TypeScript typecheck、受影响 ESLint、production build；
+Python Ruff format/check、`py_compile`；`git diff --check`、Alembic head 与任务状态唯一性均通过。后端定向 pytest
+在数据库 fixture 初始化前因本机 Docker socket 缺失而阻断，未进入新增断言且未记为通过。
+
 ## 7. 恢复工作检查表
 
 每次开始新切片必须依次检查：
@@ -6313,6 +6336,7 @@ Python Ruff format/check、`py_compile`、`git diff --check` 与 Alembic head �
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-17 | FR-481 | Agent 历史会话定向 Playwright（1 passed）；Web TypeScript typecheck、受影响 ESLint、production build；Python Ruff format/check、`py_compile`；后端定向 pytest 尝试；`git diff --check`、Alembic head 与任务状态唯一性 | PASS（浏览器／静态）：普通 Agent Workspace 会话详情、旧列表、分页列表及创建／Fork 响应显式投影 Runtime 可写状态；ACTIVE 历史会话 composer 可编辑，恢复中保持只读。后端 pytest 因本机 Docker socket 缺失在数据库 fixture 前阻断，未记为通过。唯一 Alembic head 为 `0117_agent_conversation_search`；无 `CURRENT`、`READY` 或下一切片。未修改数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-17 | FR-480 | 连续旧节点 Node Session Playwright（1 passed）；Web TypeScript typecheck、受影响 ESLint、production build；Python Ruff format/check、`py_compile`；后端定向 pytest 尝试；`git diff --check`、Alembic head 与任务状态唯一性 | PASS（前端 E2E／静态）：连续和逐步继续共用 `FlowNodeSessionPage`、Gateway 与 `AgentSessionWorkbench`；已完成原会话只读，但 detached 新会话模型与首条发送可用，已完成回复可原生 Fork，两个新会话均可继续输入。后端测试补齐活跃记录已接受前节点与整个记录完成场景；pytest 因本机 Docker socket 缺失在数据库 fixture 前阻断，未记为通过。普通 Agent 大用例在既有空响应暂停断言处失败，未到本次 Fork 段。唯一 Alembic head 为 `0117_agent_conversation_search`；无 `CURRENT`、`READY` 或下一切片。未修改 API schema、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-17 | FR-479 | Web TypeScript typecheck、受影响 ESLint、production build、定向 FlowRun 工作台 Playwright（5 passed）；`git diff --check`、Alembic head 与任务状态唯一性 | PASS：逐步记录选择立即按本记录当前节点渲染右栏，详情请求未返回时也不落入空态；显式 N2 选择不再显示旧 N1 Attempt。待配置节点复用连续配置面板组件与 `automatic-record-editor` 样式，已有 Attempt 继续复用 `AttemptPanel`，冻结端口映射输入自动带入。连续运行分支未修改，最终节点详情基准通过。唯一 Alembic head 为 `0117_agent_conversation_search`；无 `CURRENT`、`READY` 或下一切片。未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-17 | FR-478 | Web TypeScript typecheck、受影响 ESLint、production build、定向 Agent 工作台 Playwright（1 passed）；`git diff --check`、Alembic head 与任务状态唯一性 | PASS：Markdown 文件预览仅在用户点击本地链接时，以当前 Markdown 文件父目录解析目标并复用文件工具打开；不会依据页面 URL 自动展开，也不会改变 FlowRun／Agent 会话 URL。定向浏览器回归覆盖 `filtered_business_exception_reports/hq-admin.md` 正确跳转及越界路径拒绝。唯一 Alembic head 为 `0117_agent_conversation_search`；无 `CURRENT`、`READY` 或下一切片。未修改 API、数据库、OpenHands、Runtime Provider、FlowRun 路由或远端环境。 |

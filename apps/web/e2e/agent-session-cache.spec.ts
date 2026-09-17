@@ -27,7 +27,7 @@ test('Agent session renders a completed long Markdown reply without manual expan
   };
   const conversations = ['cache-conversation-a', 'cache-conversation-b'].map((id, index) => ({
     id, display_title: index === 0 ? '缓存会话 A' : '缓存会话 B', title_state: 'MANUAL',
-    lifecycle: 'ACTIVE', streaming_callback_ready: true, execution_status: 'idle',
+    lifecycle: 'ACTIVE', streaming_callback_ready: true, write_available: true, execution_status: 'idle',
     created_at: now, updated_at: now,
   }));
   const completeEvents = (id: string) => ({
@@ -91,7 +91,12 @@ test('Agent session renders a completed long Markdown reply without manual expan
   await expect(table.locator('td').first()).toHaveCSS('white-space', 'nowrap');
   await expect(page.locator('.conversation-markdown-table-scroll')).toHaveCSS('overflow-x', 'auto');
   await expect(page.getByRole('button', { name: '渲染完整消息' })).toHaveCount(0);
-  await expect.poll(() => eventRequests).toBe(1);
+  const composer = page.getByLabel('发送 Agent 消息');
+  await expect(composer).toBeEditable();
+  await page.getByRole('button', { name: '缓存会话 B', exact: true }).click();
+  await expect(page).toHaveURL(/\/agent\/conversations\/cache-conversation-b$/);
+  await expect(composer).toBeEditable();
+  await expect.poll(() => eventRequests).toBe(2);
 });
 
 test('Agent composer retains each conversation draft and uploaded attachment across navigation and reload', async ({ page }) => {

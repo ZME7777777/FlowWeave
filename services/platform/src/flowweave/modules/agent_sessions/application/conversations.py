@@ -203,8 +203,22 @@ def _work_directory_id(db: Session, item: AgentConversationBinding) -> str | Non
     )
 
 
-def _dict(db: Session, item: AgentConversationBinding) -> dict[str, Any]:
+def _workspace_write_available(db: Session, workspace: AgentWorkspace) -> bool:
+    runtime = db.scalar(
+        select(AgentWorkspaceRuntime).where(AgentWorkspaceRuntime.workspace_id == workspace.id)
+    )
+    return bool(runtime and runtime.status == "ACTIVE" and workspace.desired_state == "RUNNING")
+
+
+def _dict(
+    db: Session,
+    item: AgentConversationBinding,
+    *,
+    write_available: bool | None = None,
+) -> dict[str, Any]:
     work_directory_id = _work_directory_id(db, item)
+    if write_available is None:
+        write_available = _workspace_write_available(db, _workspace(db, item.workspace_id))
     return {
         "id": item.id,
         "display_title": item.display_title,
@@ -229,6 +243,7 @@ def _dict(db: Session, item: AgentConversationBinding) -> dict[str, Any]:
             )
         ],
         "streaming_callback_ready": item.streaming_callback_ready,
+        "write_available": write_available,
         "lifecycle": item.lifecycle,
         "created_at": item.created_at.isoformat(),
         "updated_at": item.updated_at.isoformat(),
@@ -278,6 +293,8 @@ def _page_dicts(
     db: Session,
     items: list[AgentConversationBinding],
     execution_status_by_conversation_id: dict[str, str],
+    *,
+    write_available: bool,
 ) -> list[dict[str, Any]]:
     """Build list DTOs with two batch queries and exact native status reads."""
 
@@ -334,6 +351,7 @@ def _page_dicts(
             "working_directory": item.working_directory,
             "capabilities": capabilities_by_binding[item.id],
             "streaming_callback_ready": item.streaming_callback_ready,
+            "write_available": write_available,
             "execution_status": execution_status_by_conversation_id.get(
                 item.openhands_conversation_id, "unknown"
             ),
@@ -564,7 +582,7 @@ def runtime_status(db: Session, workspace_id: str) -> dict[str, Any]:
     state = runtime.status if runtime is not None else "RECONNECTING"
     return {
         "state": "ACTIVE" if state == "ACTIVE" else "RECOVERING",
-        "write_available": state == "ACTIVE" and workspace.desired_state == "RUNNING",
+        "write_available": _workspace_write_available(db, workspace),
         "message": None if state == "ACTIVE" else "运行环境正在恢复，数据已保留",
         "updated_at": (
             runtime.updated_at if runtime is not None else workspace.updated_at
@@ -649,9 +667,10 @@ def resolve_task_watchdog_runtime(
 
 
 def list_conversations(db: Session, workspace_id: str) -> list[dict[str, Any]]:
-    _workspace(db, workspace_id)
+    workspace = _workspace(db, workspace_id)
+    write_available = _workspace_write_available(db, workspace)
     return [
-        _dict(db, item)
+        _dict(db, item, write_available=write_available)
         for item in db.scalars(
             select(AgentConversationBinding)
             .where(
@@ -671,7 +690,7 @@ def list_conversation_page(
 ) -> dict[str, Any]:
     """Read one bounded, stable page of direct Agent conversations."""
 
-    _workspace(db, workspace_id)
+    workspace = _workspace(db, workspace_id)
     query = select(AgentConversationBinding).where(
         AgentConversationBinding.workspace_id == workspace_id,
         AgentConversationBinding.lifecycle == "ACTIVE",
@@ -723,7 +742,12 @@ def list_conversation_page(
                 # turn; the selected Conversation will retry its exact read.
                 execution_status_by_conversation_id[item.openhands_conversation_id] = "unknown"
     return {
-        "items": _page_dicts(db, page_items, execution_status_by_conversation_id),
+        "items": _page_dicts(
+            db,
+            page_items,
+            execution_status_by_conversation_id,
+            write_available=_workspace_write_available(db, workspace),
+        ),
         "next_cursor": _conversation_page_cursor(page_items[-1])
         if has_more and page_items
         else None,
