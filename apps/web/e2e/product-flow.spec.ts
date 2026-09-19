@@ -485,6 +485,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   const workspaceEntryCreates: Array<{ parent_path: string; name: string; kind: string }> = [];
   const workspaceDirectoryRequests: string[] = [];
   const workspaceFilePreviewRequests: string[] = [];
+  let workspaceGitRepositoryRequests = 0;
   const longFinalReply = Array.from(
     { length: 90 },
     (_, index) => `最终回复第 ${index + 1} 段：这是用于验证长回复从开头开始阅读的正式内容。`,
@@ -551,6 +552,20 @@ test('top-level Agent workspace creates a direct conversation and restores its U
           ? [{ path: '/runtime/workspace/project/src/config.ts', kind: 'file', size: 42 }]
           : [];
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ parent_path: parentPath, entries, next_cursor: null }) });
+      return;
+    }
+    if (path.endsWith('/workspace/git/repositories')) {
+      workspaceGitRepositoryRequests += 1;
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
+        repositories: [{ path: '/runtime/workspace/project/backend', remote: 'https://example.test/backend.git', branch: 'main', head: '1234567890ab' }],
+      }) });
+      return;
+    }
+    if (path.endsWith('/workspace/git/log')) {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
+        repository: { path: '/runtime/workspace/project/backend', remote: 'https://example.test/backend.git', branch: 'main', head: '1234567890ab' },
+        commits: [],
+      }) });
       return;
     }
     if (path.endsWith('/workspace')) {
@@ -979,9 +994,14 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(readmeRow.getByRole('link', { name: '下载 README.md' })).toBeVisible();
   await readmeRow.getByRole('button').click();
   await expect(page.locator('.agent-workspace-git-sidebar')).toHaveCount(0);
+  const repositoryDirectory = page.locator('.agent-file-tree-row').filter({ hasText: 'backend' });
+  await repositoryDirectory.locator('.agent-file-tree-item.directory').click();
+  await expect.poll(() => workspaceGitRepositoryRequests).toBe(1);
+  await expect(page.getByLabel('Git 提交历史')).toBeVisible();
   const sourceDirectory = page.locator('.agent-file-tree-row').filter({ hasText: 'src' });
   await sourceDirectory.locator('.agent-file-tree-item.directory').click();
   await expect(page.getByText('config.ts', { exact: true })).toBeVisible();
+  await expect(page.locator('.agent-workspace-git-sidebar')).toHaveCount(0);
   await page.getByLabel('新建文件').click();
   const createFileDialog = page.getByRole('alertdialog');
   await createFileDialog.getByRole('textbox', { name: '名称' }).fill('notes.md');
