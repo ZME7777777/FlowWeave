@@ -29,7 +29,7 @@ class WebsiteCredential(Base):
             name="uq_website_credential_owner_host_path_name",
         ),
         CheckConstraint(
-            "auth_type IN ('USERNAME_PASSWORD', 'BEARER_TOKEN')",
+            "auth_type IN ('USERNAME_PASSWORD', 'TOKEN')",
             name="ck_website_credential_auth_type",
         ),
         CheckConstraint("row_version >= 1", name="ck_website_credential_row_version"),

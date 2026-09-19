@@ -120,14 +120,14 @@ export interface TerminalEnvironmentWrite {
 }
 export interface WebsiteCredential {
   id: string; name: string; target_host: string; target_path: string; include_subdomains: boolean;
-  auth_type: 'USERNAME_PASSWORD' | 'BEARER_TOKEN'; has_username: boolean; has_secret: boolean;
+  auth_type: 'USERNAME_PASSWORD' | 'TOKEN'; has_username: boolean; has_secret: boolean;
   secret_hint?: string | null; row_version: number;
   environment_names: { username?: string; password?: string; token?: string };
   created_at: string; updated_at: string;
 }
 export interface WebsiteCredentialWrite {
   name: string; target_host: string; target_path: string; include_subdomains: boolean;
-  auth_type: 'USERNAME_PASSWORD' | 'BEARER_TOKEN'; username?: string | null; secret?: string | null;
+  auth_type: 'USERNAME_PASSWORD' | 'TOKEN'; username?: string | null; secret?: string | null;
   row_version?: number | null;
 }
 export interface NodeAsset {

@@ -643,6 +643,29 @@ API、数据库、OpenHands、Runtime Provider、Docker 或持久化契约。
 `0118_credential_target_path`、认证目录／路径边界／路径 schema 定向 pytest（3 passed）、Web TypeScript
 typecheck、定向 ESLint 与 `git diff --check` 通过；无 OpenHands 源码、Docker 或远端操作。
 
+### FR-484 网站 Token 认证方案无关化 — DONE
+
+依赖：`FR-483`。
+
+目标：
+
+- 网站认证的 Token 类型不得隐含 HTTP `Bearer` 方案；GitHub Personal Access Token 等由目标系统定义格式的
+  Token 必须能够原样保存和注入。
+- API、数据库约束、认证目录和认证管理页面统一使用通用 `TOKEN` 名称；短暂兼容旧客户端发送的
+  `BEARER_TOKEN`，但不再将其保存或回显。
+- 固定认证协议必须明确平台不添加 `Bearer` 或其他前缀；Agent 仅在目标服务的实际协议要求时，在单条
+  已匹配命令中构造相应认证表达。
+- 不改变 OpenHands 原生 Secret 注入边界，不将 Secret、HTTP Header 或认证方案持久化到目录、日志或页面。
+
+完成：认证类型已统一为通用 `TOKEN`。GitHub PAT 等 Token 原样加密保存，并以原值作为 OpenHands Secret
+注入；平台不添加 `Bearer`、`token` 或其他前缀。旧客户端的 `BEARER_TOKEN` 请求会在 API schema
+入口归一化为 `TOKEN`，数据库迁移将已有记录转换为 `TOKEN` 并更新约束。认证目录明确要求 Agent 仅在
+目标服务协议需要时，在单条已匹配命令中构造认证表达；认证管理页面同步以 Token 标签和说明呈现。
+
+验收：受影响 Python Ruff format/check、`py_compile`、Alembic 唯一 head
+`0119_website_credential_generic_token`、认证目录／路径／Token 兼容定向 pytest（4 passed）、Web
+TypeScript typecheck、定向 ESLint 与 `git diff --check` 通过；无 OpenHands 源码、Docker 或远端操作。
+
 ### FR-414 FlowRun 独立终端记录目录预创建 — DONE
 
 依赖：`FR-404`。

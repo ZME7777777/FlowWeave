@@ -307,6 +307,7 @@ def test_credential_context_is_a_structured_host_scoped_directory(
     assert "不得全局 `export`" in context
     assert "target_path" in context
     assert "最长" in context
+    assert "绝不自动添加 `Bearer `" in context
     directory = json.loads(context.split("```json\n", 1)[1].split("\n```", 1)[0])
     assert directory == {
         "schema_version": 2,
@@ -361,6 +362,18 @@ def test_credential_target_path_is_normalized_and_rejects_url_components() -> No
             username="user",
             secret="secret",
         )
+
+
+def test_legacy_bearer_token_input_is_normalized_to_generic_token() -> None:
+    credential = WebsiteCredentialWrite(
+        name="GitHub PAT",
+        target_host="api.github.com",
+        target_path="/",
+        auth_type="BEARER_TOKEN",
+        secret="token",
+    )
+
+    assert credential.auth_type == "TOKEN"
 
 
 def test_shared_flow_run_runtime_uses_attempt_record_workspace(

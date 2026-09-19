@@ -168,7 +168,7 @@ class WebsiteCredentialWrite(ApiModel):
     target_host: str = Field(min_length=1, max_length=253)
     target_path: str = Field(default="/", min_length=1, max_length=2048)
     include_subdomains: bool = False
-    auth_type: Literal["USERNAME_PASSWORD", "BEARER_TOKEN"] = "USERNAME_PASSWORD"
+    auth_type: Literal["USERNAME_PASSWORD", "TOKEN", "BEARER_TOKEN"] = "USERNAME_PASSWORD"
     username: str | None = Field(default=None, max_length=320)
     secret: SecretStr | None = Field(default=None, max_length=4096)
     row_version: int | None = Field(default=None, ge=1)
@@ -201,6 +201,10 @@ class WebsiteCredentialWrite(ApiModel):
         if any(segment in {".", ".."} for segment in segments):
             raise ValueError("target_path must not contain dot segments")
         self.target_path = "/" if path == "/" else path.rstrip("/")
+        # Keep rolling clients compatible while ensuring every new persisted
+        # credential uses the protocol-neutral Token type.
+        if self.auth_type == "BEARER_TOKEN":
+            self.auth_type = "TOKEN"
         self.name = self.name.strip()
         if self.username is not None:
             self.username = self.username.strip() or None
