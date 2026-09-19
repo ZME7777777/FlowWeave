@@ -109,6 +109,8 @@ def test_agent_context_is_compiled_only_into_openhands_system_suffix(settings):
     assert "ThinkTool 内容必须是 1–3 句、面向用户、可公开的阶段摘要" in suffix
     assert "不得输出完整私密推理链、敏感信息、凭据" in suffix
     assert "不要用 ThinkTool 代替最终答复" in suffix
+    assert "外层必须使用比所有内层更长的围栏" in suffix
+    assert "不得让外层 Markdown 源码块与其中的代码块共用三个反引号" in suffix
     assert "普通且连续的工具调用不必逐条说明" not in suffix
     assert "一条进展可以引导为完成同一阶段而连续进行的多个原生工具动作" not in suffix
 

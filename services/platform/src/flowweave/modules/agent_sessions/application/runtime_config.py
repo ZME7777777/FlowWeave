@@ -131,6 +131,14 @@ CONVERSATION_COLLABORATION_CONTEXT = "\n".join(
         "不要用 ThinkTool 代替最终答复。",
     )
 )
+MARKDOWN_FENCE_CONTEXT = "\n".join(
+    (
+        "展示 Markdown 源码时，若外层 markdown/md 代码块中还包含 Markdown 代码围栏，"
+        "外层必须使用比所有内层更长的围栏（例如四个反引号）或使用波浪线围栏。",
+        "不得让外层 Markdown 源码块与其中的代码块共用三个反引号；"
+        "除此情形外，保持正常 Markdown 输出。",
+    )
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -723,6 +731,7 @@ def build_agent_spec(
                     MESSAGE_REFERENCE_CONTEXT,
                     COLLABORATION_ANNOTATION_CONTEXT,
                     CONVERSATION_COLLABORATION_CONTEXT,
+                    MARKDOWN_FENCE_CONTEXT,
                     frozen_context_suffix(config.capabilities),
                     system_message_suffix_append.strip(),
                 )
