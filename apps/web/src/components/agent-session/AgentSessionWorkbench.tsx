@@ -508,10 +508,10 @@ function writeUnreadConversationIds(storageKey: string | undefined, conversation
 
 const MAX_BOOTSTRAP_RECONCILIATION_ATTEMPTS = 3;
 const STREAM_IDLE_GRACE_MS = 5 * 60 * 1000;
-// A newly accepted user event can briefly still report idle before OpenHands
-// starts its Agent loop.  Wait for a bounded second native snapshot before
-// treating idle as an abnormal end of a locally-running turn.
-const ABNORMAL_IDLE_RECONCILIATION_MS = 4_000;
+// A readiness terminal state can precede its formal OpenHands event page. Keep
+// the reconciliation window short so a missing event cannot permanently lock
+// the composer.
+const TERMINAL_EVENT_RECONCILIATION_MS = 8_000;
 
 const AgentSessionGatewayContext = createContext<AgentSessionGateway>(agentWorkspaceSessionGateway);
 const AgentSessionHostContext = createContext<AgentSessionHost>(agentWorkspaceSessionHost);
@@ -3617,9 +3617,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   });
   const [hiddenEventIds, setHiddenEventIds] = useState<Set<string>>(() => new Set());
   const [turnState, setTurnState] = useState<TurnState>('idle');
-  const turnStateRef = useRef<TurnState>('idle');
-  turnStateRef.current = turnState;
   const [activeTurnEventId, setActiveTurnEventId] = useState<string>();
+  const [expiredTerminalSyncTurnKey, setExpiredTerminalSyncTurnKey] = useState<string>();
   const [requestStartedAt, setRequestStartedAt] = useState<number>();
   const [confirmationReason, setConfirmationReason] = useState('');
   const [queuedMessages, setQueuedMessages] = useState<QueuedMessage[]>([]);
@@ -4166,6 +4165,13 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   }, [conversationSearchTargetEventId, displayedEvents, selected]);
   const activeNativeTurnId = activeTurnEventId ?? latestUnfinishedUserEventId(displayedEvents);
   const hasUnfinishedFormalTurn = Boolean(latestUnfinishedUserEventId(displayedEvents));
+  const terminalSyncTurnKey = selected && nativeTurnTerminal
+    ? (() => {
+        const userEventId = latestUnfinishedUserEventId(displayedEvents);
+        return userEventId ? `${selected.id}:${userEventId}` : undefined;
+      })()
+    : undefined;
+  const terminalSyncExpired = terminalSyncTurnKey === expiredTerminalSyncTurnKey;
   const latestFormalUserEventId = [...displayedEvents].reverse().find(event => event.event_type === 'MESSAGE'
     && ['user', 'human'].includes(String(event.payload.source ?? '').toLowerCase()))?.id;
   // A durable OpenHands ERROR/Finish/assistant event is also authoritative
@@ -4182,14 +4188,14 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   // before the corresponding terminal event page, so keep the UI visibly
   // synchronizing instead of letting separate controls disagree about idle.
   const conversationActivity = useMemo(() => {
-    const synchronizing = nativeTurnTerminal && hasUnfinishedFormalTurn;
+    const synchronizing = nativeTurnTerminal && hasUnfinishedFormalTurn && !terminalSyncExpired;
     const state: ConversationActivityState = synchronizing ? 'synchronizing' : effectiveTurnState;
     return {
       state,
       active: state === 'running' || state === 'pausing' || state === 'resuming' || state === 'synchronizing',
       synchronizing,
     };
-  }, [effectiveTurnState, hasUnfinishedFormalTurn, nativeTurnTerminal]);
+  }, [effectiveTurnState, hasUnfinishedFormalTurn, nativeTurnTerminal, terminalSyncExpired]);
   const latestDisplayedEvent = displayedEvents.at(-1);
   const emptyResponseRecoveryActive = conversationActivity.state === 'running'
     && Boolean(latestDisplayedEvent && isOpenHandsEmptyResponseRecovery(latestDisplayedEvent));
@@ -4200,7 +4206,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     // cursor prove there is still an active branch to reconcile. Keep this
     // read-only recovery alive without changing the displayed execution state.
     const recoverUnfinishedTurn = hasUnfinishedFormalTurn
-      && conversationHasReachedTerminalState(nativeExecutionStatus);
+      && conversationHasReachedTerminalState(nativeExecutionStatus)
+      && !terminalSyncExpired;
     if (!workspace || !selected || !(isGenerating || recoverUnfinishedTurn) || !pageVisible) return;
     let cancelled = false;
     let timer: number | undefined;
@@ -4217,7 +4224,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       cancelled = true;
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [eventsQuery.data?.next_cursor, hasUnfinishedFormalTurn, isGenerating, nativeExecutionStatus, pageVisible, selected, synchronizeConversationEvents, workspace]);
+  }, [eventsQuery.data?.next_cursor, hasUnfinishedFormalTurn, isGenerating, nativeExecutionStatus, pageVisible, selected, synchronizeConversationEvents, terminalSyncExpired, workspace]);
   const messageAnnotations = useMemo(() => displayedEvents.flatMap(event => {
     const raw = event.payload.collaboration_annotations;
     return Array.isArray(raw) ? raw.filter((item): item is AgentConversationAnnotation => Boolean(
@@ -4408,7 +4415,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       bootstrapTransitionScope.current = undefined;
       return;
     }
-    setEditing(false); clearLiveText(); pendingLiveEvents.current = []; if (liveEventsFrame.current !== undefined) window.cancelAnimationFrame(liveEventsFrame.current); liveEventsFrame.current = undefined; setLiveEvents([]); setHiddenEventIds(new Set()); setActiveTurnEventId(undefined); setRequestStartedAt(undefined); setConfirmationReason(''); setTurnState('idle'); queuedMessagesRef.current = []; streamConfirmedNativeGuidanceIds.current.clear(); nativeGuidanceOptimisticEventIds.current.clear(); setQueuedMessages([]); setPendingRewrite(undefined);
+    setEditing(false); clearLiveText(); pendingLiveEvents.current = []; if (liveEventsFrame.current !== undefined) window.cancelAnimationFrame(liveEventsFrame.current); liveEventsFrame.current = undefined; setLiveEvents([]); setHiddenEventIds(new Set()); setActiveTurnEventId(undefined); setExpiredTerminalSyncTurnKey(undefined); setRequestStartedAt(undefined); setConfirmationReason(''); setTurnState('idle'); queuedMessagesRef.current = []; streamConfirmedNativeGuidanceIds.current.clear(); nativeGuidanceOptimisticEventIds.current.clear(); setQueuedMessages([]); setPendingRewrite(undefined);
     if (recoveredComposer) {
       setDraft(recoveredComposer.content);
       setAttachments(recoveredComposer.attachments);
@@ -4492,25 +4499,36 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     setTurnState(current => current === 'idle' ? 'paused' : current);
   }, [inputReadinessQuery.data?.execution_status, selected]);
   useEffect(() => {
-    if (!selected || !nativeTurnTerminal || (turnState !== 'running' && turnState !== 'resuming')) return;
+    if (!terminalSyncTurnKey) {
+      setExpiredTerminalSyncTurnKey(undefined);
+      return;
+    }
+    if (terminalSyncExpired) return;
 
-    // A formal assistant/error/Finish event remains the normal completion
-    // signal.  This is deliberately only a recovery path for a main Agent
-    // loop that ended without emitting one, so the rail cannot spin forever.
-    const activeUserEventId = activeTurnEventId ?? latestUnfinishedUserEventId(displayedEvents);
-    if (!activeUserEventId || hasFinishedTurn(displayedEvents, activeUserEventId)) return;
-
+    const [bindingId] = terminalSyncTurnKey.split(':', 1);
     const timer = window.setTimeout(() => {
-      if (turnStateRef.current !== 'running' && turnStateRef.current !== 'resuming') return;
+      // Readiness is authoritative for whether OpenHands accepts new input,
+      // but no browser state may fabricate the missing formal result.
+      setExpiredTerminalSyncTurnKey(terminalSyncTurnKey);
       setActiveTurnEventId(undefined);
       setRequestStartedAt(undefined);
       clearLiveText();
-      setStreamHold({ bindingId: selected.id, expiresAt: Date.now() + STREAM_IDLE_GRACE_MS });
+      setStreamHold({ bindingId, expiresAt: Date.now() + STREAM_IDLE_GRACE_MS });
       setTurnState('idle');
+      commitQueuedMessages(messages => messages.map(message => (
+        message.scope === bindingId && message.deliveryState === 'queued'
+          ? {
+              ...message,
+              deliveryState: 'ambiguous' as const,
+              deliveryError: 'OpenHands 已结束前未返回正式结果；消息未自动发送，请刷新会话确认后重新编辑。',
+            }
+          : message
+      )));
+      setOperationError(new Error('OpenHands 已结束，本轮未返回正式结果。你可以继续发送消息；同步期间排队的消息需要确认后重新编辑。'));
       refresh();
-    }, ABNORMAL_IDLE_RECONCILIATION_MS);
+    }, TERMINAL_EVENT_RECONCILIATION_MS);
     return () => window.clearTimeout(timer);
-  }, [activeTurnEventId, clearLiveText, displayedEvents, nativeTurnTerminal, refresh, selected, turnState]);
+  }, [clearLiveText, commitQueuedMessages, refresh, terminalSyncExpired, terminalSyncTurnKey]);
   useEffect(() => {
     if (!selected || !latestFormalTurnFinished) return;
 
@@ -5141,7 +5159,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     });
   }, [commitQueuedMessages]);
   useEffect(() => {
-    if (!selected || !queuedMessages.length || send.isPending || migrateStreaming.isPending || pendingMigratedSend
+    if (!selected || !eventsQuery.isSuccess || !queuedMessages.length || conversationActivity.synchronizing || send.isPending || migrateStreaming.isPending || pendingMigratedSend
       || (effectiveTurnState !== 'idle' && effectiveTurnState !== 'running')) return;
     const next = queuedMessages.find(message => message.scope === selected.id
       && message.deliveryState === 'queued'
@@ -5157,7 +5175,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     } else {
       updateQueuedMessage(next.id, message => ({ ...message, deliveryState: 'queued' }));
     }
-  }, [effectiveTurnState, migrateStreaming, pendingMigratedSend, queuedMessages, selected, send, updateQueuedMessage]);
+  }, [conversationActivity.synchronizing, effectiveTurnState, eventsQuery.isSuccess, migrateStreaming, pendingMigratedSend, queuedMessages, selected, send, updateQueuedMessage]);
   useEffect(() => {
     if (turnState === 'pausing' || !queuedMessages.length || !inputReadinessQuery.data?.ready || send.isPending) return;
     setTurnState('idle');

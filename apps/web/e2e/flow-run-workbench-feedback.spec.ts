@@ -1951,3 +1951,73 @@ test('completed continuous node sessions can create and fork writable conversati
   await expect(page).toHaveURL(new RegExp(`/agent-sessions/${forkConversation.id}$`));
   await expect(page.getByLabel('发送 Agent 消息')).toBeEnabled();
 });
+
+test('node sessions bound terminal reconciliation when the formal result is missing', async ({ page }) => {
+  const flowRunId = 'missing-terminal-run';
+  const nodeRunId = 'missing-terminal-node';
+  const attemptId = 'missing-terminal-attempt';
+  const sessionBase = `/api/v1/flow-runs/${flowRunId}/node-attempts/${attemptId}/agent-sessions`;
+  const sessionPath = `/flow-runs/${flowRunId}/nodes/${nodeRunId}/attempts/${attemptId}/agent-sessions/missing-terminal-conversation`;
+  const root = '/runtime/workspace/project';
+  let terminal = false;
+  let messagePosts = 0;
+  const conversation = {
+    id: 'missing-terminal-conversation', display_title: '节点终态缺失', lifecycle: 'ACTIVE',
+    model_provider_id: null, model_name: null, reasoning_effort: null, work_directory_id: null,
+    streaming_callback_ready: false, write_available: true, execution_status: 'running',
+    created_at: now, updated_at: now, last_connected_at: now, capabilities: [],
+  };
+
+  await page.routeWebSocket('**/api/v1/flow-runs/**/node-attempts/**/agent-sessions/**/stream', () => undefined);
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    const respond = (body: unknown, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
+    if (path.endsWith('/auth/me')) return respond(authenticatedUser);
+    if (path === '/api/v1/model-providers' || path === '/api/v1/capabilities' || path === '/api/v1/capability-collections') return respond([]);
+    if (path === `${sessionBase}/host`) return respond({ id: 'missing-terminal-host', display_name: '缺失终态节点', desired_state: 'RUNNING', updated_at: now });
+    if (path === `${sessionBase}/runtime`) return respond({ state: 'ACTIVE', write_available: true, fork_available: false, terminal_available: true, message: null, updated_at: now });
+    if (path === sessionBase && request.method() === 'GET') return respond({ items: [conversation], next_cursor: null });
+    if (path === `${sessionBase}/${conversation.id}` && request.method() === 'GET') return respond(conversation);
+    if (path === `${sessionBase}/${conversation.id}/events`) return respond({
+      events: [{ id: 'missing-terminal-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '节点 OpenHands 没有返回正式结果', timestamp: now } }],
+      next_cursor: null, history_cursor: null,
+    });
+    if (path === `${sessionBase}/${conversation.id}/input-readiness`) return respond(terminal
+      ? { ready: true, execution_status: 'idle' }
+      : { ready: false, execution_status: 'running' });
+    if (path === `${sessionBase}/work-directories`) return respond({ root: { kind: 'ROOT', display_name: '根工作区', working_directory: root }, items: [] });
+    if (path === `${sessionBase}/workspace`) return respond({
+      root, scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: root, work_directory: null,
+      files: [], repositories: [], runtime: {}, ide: { workspace_path: root, gateway: { supported: false, status: '不可用', note: '' } },
+    });
+    if (path === `${sessionBase}/${conversation.id}/context`) return respond({ model_name: null, reasoning_effort: null });
+    if (path === `${sessionBase}/${conversation.id}/pending-confirmation`) return respond({ pending: false });
+    if (path === `${sessionBase}/${conversation.id}/messages` && request.method() === 'POST') {
+      messagePosts += 1;
+      return respond({ accepted: true, cursor: 'unexpected-node-message' }, 202);
+    }
+    return respond({ error: { code: 'RESOURCE_NOT_FOUND', message: `未配置测试路由：${path}`, details: {} } }, 404);
+  });
+
+  await page.goto(sessionPath);
+  const composer = page.getByLabel('发送 Agent 消息');
+  await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toBeVisible();
+  await composer.fill('节点同步期间不得自动发送');
+  await composer.press('Enter');
+  await expect(page.getByLabel('消息投递队列').getByText('节点同步期间不得自动发送')).toBeVisible();
+
+  terminal = true;
+  await page.reload();
+  await expect(page.getByRole('button', { name: '正在同步会话结束' })).toBeDisabled();
+  await page.waitForTimeout(500);
+  await page.reload();
+  await expect(page.getByText('OpenHands 已结束，本轮未返回正式结果。你可以继续发送消息；同步期间排队的消息需要确认后重新编辑。')).toBeVisible({ timeout: 12_000 });
+  await expect(page.getByRole('button', { name: '发送消息' })).toBeVisible();
+  await expect(composer).toBeEnabled();
+  await expect(page.locator('.agent-workspace-conversation-running')).toHaveCount(0);
+  const queue = page.getByLabel('消息投递队列');
+  await expect(queue.getByText('节点同步期间不得自动发送')).toBeVisible();
+  await expect(queue.getByText('结果不确定', { exact: true })).toBeVisible();
+  expect(messagePosts).toBe(0);
+});

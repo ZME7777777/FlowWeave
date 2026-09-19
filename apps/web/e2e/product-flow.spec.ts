@@ -1615,6 +1615,75 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.getByRole('heading', { name: 'Fork · 检查工作目录' })).toBeVisible();
 });
 
+test('terminal readiness without a formal result releases the composer after a bounded reconciliation', async ({ page }) => {
+  const now = new Date().toISOString();
+  let terminal = false;
+  let messagePosts = 0;
+  const conversation = {
+    id: 'missing-terminal-conversation', display_title: '缺失终态', lifecycle: 'ACTIVE',
+    streaming_callback_ready: false, write_available: true, model_provider_id: null, model_name: null, reasoning_effort: null,
+    created_at: now, updated_at: now,
+  };
+  await page.route('**/api/v1/auth/me', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ id: 'missing-terminal-user', username: 'tester', role: 'USER', is_super_admin: false }),
+  }));
+  await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
+  await page.route('**/api/v1/agent-workspaces/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path.endsWith('/default')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ id: 'missing-terminal-workspace', display_name: 'Agent 工作区', desired_state: 'RUNNING', updated_at: now }) });
+    if (path.endsWith('/runtime')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ state: 'ACTIVE', write_available: true, message: null, updated_at: now }) });
+    if (path.endsWith('/conversations') && request.method() === 'GET') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ items: [conversation], next_cursor: null }) });
+    if (path.endsWith('/events')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
+      events: [{ id: 'missing-terminal-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: 'OpenHands 没有返回正式结果', timestamp: now } }],
+      next_cursor: null,
+    }) });
+    if (path.endsWith('/input-readiness')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(terminal
+      ? { ready: true, execution_status: 'idle' }
+      : { ready: false, execution_status: 'running' }) });
+    if (path.endsWith('/work-directories')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [] }) });
+    if (path.endsWith('/workspace')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: '/runtime/workspace/project', work_directory: null, files: [], repositories: [], runtime: { container_id: 'missing-terminal-runtime' }, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '未配置', note: '' } } }) });
+    if (path.endsWith('/context')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ model_name: null, reasoning_effort: null }) });
+    if (path.endsWith('/pending-confirmation')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ pending: false }) });
+    if (path.endsWith('/capabilities')) return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
+    if (path.endsWith('/messages') && request.method() === 'POST') {
+      messagePosts += 1;
+      return route.fulfill({ status: 202, contentType: 'application/json', body: JSON.stringify({ accepted: true, cursor: 'unexpected-message' }) });
+    }
+    return route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }) });
+  });
+  await page.route('**/api/v1/model-providers', route => route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }));
+  await page.route('**/api/v1/capabilities', route => route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }));
+
+  await login(page);
+  await page.goto('/agent/conversations/missing-terminal-conversation');
+  const composer = page.getByLabel('发送 Agent 消息');
+  await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toBeVisible();
+  await composer.fill('同步期间不得自动发送');
+  await composer.press('Enter');
+  await expect(page.getByLabel('消息投递队列').getByText('同步期间不得自动发送')).toBeVisible();
+
+  terminal = true;
+  await page.reload();
+  await expect(page.getByRole('button', { name: '正在同步会话结束' })).toBeDisabled();
+  await expect(composer).toBeDisabled();
+  // A reload must start a fresh bounded window rather than restore an
+  // unbounded synchronizing state from the incomplete formal event tree.
+  await page.waitForTimeout(500);
+  await page.reload();
+  await expect(page.getByRole('button', { name: '正在同步会话结束' })).toBeDisabled();
+  await expect(page.getByText('OpenHands 已结束，本轮未返回正式结果。你可以继续发送消息；同步期间排队的消息需要确认后重新编辑。')).toBeVisible({ timeout: 12_000 });
+  await expect(page.getByRole('button', { name: '发送消息' })).toBeVisible();
+  await expect(composer).toBeEnabled();
+  await expect(page.locator('.agent-workspace-conversation-running')).toHaveCount(0);
+  const queue = page.getByLabel('消息投递队列');
+  await expect(queue.getByText('同步期间不得自动发送')).toBeVisible();
+  await expect(queue.getByText('结果不确定', { exact: true })).toBeVisible();
+  expect(messagePosts).toBe(0);
+});
+
 test('editing the latest user message locally replaces only its active branch', async ({ page }) => {
   let rewritten = false;
   let releaseRewrite: (() => void) | undefined;
