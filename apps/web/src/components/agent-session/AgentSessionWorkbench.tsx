@@ -627,7 +627,7 @@ function ConversationStreamObserver({
 }
 
 function WorkspaceConversationRow({
-  item, selectedBindingId, running, unread, conversationWritable, removing, deleteDisabled, dragging, dropPosition, orderSyncState, onPointerDragStart, onRetryOrder, onSelect, onDelete,
+  item, selectedBindingId, running, unread, conversationWritable, removing, deleteDisabled, dragging, dropPosition, orderSyncState, onPointerDragStart, onRetryOrder, onSelect, onMarkUnread, onDelete,
 }: {
   item: AgentConversation;
   selectedBindingId?: string;
@@ -642,9 +642,22 @@ function WorkspaceConversationRow({
   onPointerDragStart?: (event: React.PointerEvent<HTMLButtonElement>) => void;
   onRetryOrder?: () => void;
   onSelect: () => void;
+  onMarkUnread: () => void;
   onDelete?: () => void;
 }) {
-  return <div data-conversation-binding-id={item.id} className={`agent-workspace-conversation${dragging ? ' dragging' : ''}${dropPosition ? ` drop-${dropPosition}` : ''}${orderSyncState ? ` order-sync-${orderSyncState}` : ''}`}>
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number }>();
+  useEscapeClose(() => setContextMenu(undefined), Boolean(contextMenu));
+  useEffect(() => {
+    if (!contextMenu) return;
+    const close = () => setContextMenu(undefined);
+    window.addEventListener('pointerdown', close);
+    window.addEventListener('resize', close);
+    return () => { window.removeEventListener('pointerdown', close); window.removeEventListener('resize', close); };
+  }, [contextMenu]);
+  return <div data-conversation-binding-id={item.id} className={`agent-workspace-conversation${dragging ? ' dragging' : ''}${dropPosition ? ` drop-${dropPosition}` : ''}${orderSyncState ? ` order-sync-${orderSyncState}` : ''}`} onContextMenu={event => {
+    event.preventDefault();
+    setContextMenu({ x: Math.min(event.clientX, window.innerWidth - 180), y: Math.min(event.clientY, window.innerHeight - 52) });
+  }}>
     {onPointerDragStart && <button type="button" className="agent-workspace-conversation-drag" aria-label={`拖拽排序会话 ${conversationName(item)}`} title="拖拽调整当前工作区内的顺序" onClick={event => event.stopPropagation()} onPointerDown={onPointerDragStart}><GripVertical size={13}/></button>}
     <button type="button" className={`agent-workspace-conversation-select${item.id === selectedBindingId ? ' active' : ''}`} onClick={onSelect}>
       <CircleDot size={13}/><span><b>{conversationName(item)}</b></span>
@@ -654,6 +667,7 @@ function WorkspaceConversationRow({
     {orderSyncState === 'syncing' && <span className="agent-workspace-conversation-sync" title="排序正在后台同步" aria-label="排序正在后台同步"><LoaderCircle size={12}/></span>}
     {orderSyncState === 'failed' && <button type="button" className="agent-workspace-conversation-sync failed" title="排序暂未同步；点击重试。当前前端顺序已保留。" aria-label="排序暂未同步，点击重试" onClick={event => { event.stopPropagation(); onRetryOrder?.(); }}>!</button>}
     {onDelete && !running && <button type="button" className="agent-workspace-conversation-delete" aria-label={`删除会话 ${conversationName(item)}`} title={deleteDisabled ? '会话运行中，请先停止' : '删除会话'} disabled={!conversationWritable || deleteDisabled || removing} onClick={onDelete}><Trash2 size={13}/></button>}
+    {contextMenu && createPortal(<div className="agent-conversation-context-menu" role="menu" aria-label={`会话操作菜单：${conversationName(item)}`} style={{ left: contextMenu.x, top: contextMenu.y }} onPointerDown={event => event.stopPropagation()} onContextMenu={event => event.preventDefault()}><button type="button" role="menuitem" onClick={() => { onMarkUnread(); setContextMenu(undefined); }}><CircleDot size={13}/>标记为未读</button></div>, document.body)}
   </div>;
 }
 
@@ -3923,6 +3937,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       return next;
     });
   }, [updateUnreadConversationIds]);
+  const markConversationUnread = useCallback((bindingId: string) => {
+    updateUnreadConversationIds(current => current.has(bindingId) ? current : new Set([...current, bindingId]));
+  }, [updateUnreadConversationIds]);
   useEffect(() => {
     activityBaseline.current = new Map();
     setUnreadConversationIds(readUnreadConversationIds(unreadStorageKey));
@@ -5425,7 +5442,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       : conversationIsRunning(item.execution_status);
     const conversationWritable = Boolean(item.write_available);
     const sync = conversationOrderSync[item.id];
-    return <WorkspaceConversationRow key={item.id} item={item} selectedBindingId={selectedBindingId} running={running} unread={unreadConversationIds.has(item.id)} conversationWritable={conversationWritable} removing={remove.isPending} deleteDisabled={running} dragging={draggedBindingId === item.id} dropPosition={dragTarget?.bindingId === item.id ? (dragTarget.after ? 'after' : 'before') : undefined} orderSyncState={sync?.state} onPointerDragStart={event => startPointerConversationDrag(event, item, group)} onRetryOrder={sync?.state === 'failed' ? () => synchronizeConversationOrder(item.id, sync.orderedBindingIds) : undefined} onSelect={() => selectConversation(item.id)} onDelete={features.conversationDeletion && conversationWritable ? () => void confirmDeletion('会话', conversationName(item)).then(ok => { if (ok) remove.mutate(item.id); }) : undefined}/>;
+    return <WorkspaceConversationRow key={item.id} item={item} selectedBindingId={selectedBindingId} running={running} unread={unreadConversationIds.has(item.id)} conversationWritable={conversationWritable} removing={remove.isPending} deleteDisabled={running} dragging={draggedBindingId === item.id} dropPosition={dragTarget?.bindingId === item.id ? (dragTarget.after ? 'after' : 'before') : undefined} orderSyncState={sync?.state} onPointerDragStart={event => startPointerConversationDrag(event, item, group)} onRetryOrder={sync?.state === 'failed' ? () => synchronizeConversationOrder(item.id, sync.orderedBindingIds) : undefined} onSelect={() => selectConversation(item.id)} onMarkUnread={() => markConversationUnread(item.id)} onDelete={features.conversationDeletion && conversationWritable ? () => void confirmDeletion('会话', conversationName(item)).then(ok => { if (ok) remove.mutate(item.id); }) : undefined}/>;
   };
   const pendingBootstrapItem = pendingBootstrap
     ? <button className={pendingBootstrap.draft.id === conversationDraft?.id ? 'active' : ''} aria-current={pendingBootstrap.draft.id === conversationDraft?.id ? 'page' : undefined} aria-label={`${pendingConversationName(pendingBootstrap.message)}，正在创建会话`}><LoaderCircle className="conversation-activity-spin" size={13}/><span><b>{pendingConversationName(pendingBootstrap.message)}</b><small>正在创建会话</small></span><ChevronRight size={13}/></button>
