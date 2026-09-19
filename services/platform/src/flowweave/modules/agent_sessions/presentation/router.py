@@ -539,6 +539,54 @@ async def node_session_workspace_git_log(
     )
 
 
+@router.get(f"{_BASE}/workspace/git/changes")
+async def node_session_workspace_git_changes(
+    flow_run_id: str,
+    attempt_id: str,
+    db: Db,
+    repository_path: str = Query(...),
+    binding_id: str | None = Query(default=None),
+    work_directory_id: str | None = Query(default=None),
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: agent_sessions.flow_node_workspace.git_changes(
+            session,
+            flow_run_id=flow_run_id,
+            attempt_id=attempt_id,
+            repository_path=repository_path,
+            binding_id=binding_id,
+            work_directory_id=work_directory_id,
+        ),
+    )
+
+
+@router.get(f"{_BASE}/workspace/git/working-diff")
+async def node_session_workspace_git_working_diff(
+    flow_run_id: str,
+    attempt_id: str,
+    db: Db,
+    repository_path: str = Query(...),
+    kind: str = Query(...),
+    path: str = Query(...),
+    binding_id: str | None = Query(default=None),
+    work_directory_id: str | None = Query(default=None),
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: agent_sessions.flow_node_workspace.git_change_file_diff(
+            session,
+            flow_run_id=flow_run_id,
+            attempt_id=attempt_id,
+            repository_path=repository_path,
+            kind=kind,
+            path=path,
+            binding_id=binding_id,
+            work_directory_id=work_directory_id,
+        ),
+    )
+
+
 @router.get(f"{_BASE}/workspace/git/commit")
 async def node_session_workspace_git_commit(
     flow_run_id: str,

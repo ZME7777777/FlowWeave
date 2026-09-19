@@ -216,6 +216,29 @@ def git_file_diff(
     )
 
 
+def git_working_changes(
+    project_root: Path, runtime_root: str, file_roots: tuple[str, ...], repository_path: str
+) -> dict[str, Any]:
+    from flowweave.modules.agent_workspaces.application import workspace
+
+    return workspace.git_working_changes(project_root, runtime_root, file_roots, repository_path)
+
+
+def git_working_file_diff(
+    project_root: Path,
+    runtime_root: str,
+    file_roots: tuple[str, ...],
+    repository_path: str,
+    kind: str,
+    path: str,
+) -> dict[str, Any]:
+    from flowweave.modules.agent_workspaces.application import workspace
+
+    return workspace.git_working_file_diff(
+        project_root, runtime_root, file_roots, repository_path, kind, path
+    )
+
+
 __all__ = (
     "agent_workspace_owner_is_active",
     "agent_workspace_record_path",
@@ -236,6 +259,8 @@ __all__ = (
     "git_log",
     "git_repository_details",
     "git_repositories",
+    "git_working_changes",
+    "git_working_file_diff",
     "flow_run_conversation_work_directory_context",
     "get_flow_run_work_directory",
     "list_flow_run_work_directories",

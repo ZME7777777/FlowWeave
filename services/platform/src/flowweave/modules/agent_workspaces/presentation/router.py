@@ -439,6 +439,40 @@ async def agent_workspace_git_log(
     )
 
 
+@router.get("/agent-workspaces/{workspace_id}/workspace/git/changes")
+async def agent_workspace_git_changes(
+    workspace_id: str,
+    db: Db,
+    repository_path: str = Query(...),
+    binding_id: str | None = Query(default=None),
+    work_directory_id: str | None = Query(default=None),
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: workspace.git_changes(
+            session, workspace_id, repository_path, binding_id, work_directory_id
+        ),
+    )
+
+
+@router.get("/agent-workspaces/{workspace_id}/workspace/git/working-diff")
+async def agent_workspace_git_working_diff(
+    workspace_id: str,
+    db: Db,
+    repository_path: str = Query(...),
+    kind: str = Query(...),
+    path: str = Query(...),
+    binding_id: str | None = Query(default=None),
+    work_directory_id: str | None = Query(default=None),
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: workspace.git_change_file_diff(
+            session, workspace_id, repository_path, kind, path, binding_id, work_directory_id
+        ),
+    )
+
+
 @router.get("/agent-workspaces/{workspace_id}/workspace/git/commit")
 async def agent_workspace_git_commit(
     workspace_id: str,

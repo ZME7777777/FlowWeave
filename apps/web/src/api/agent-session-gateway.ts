@@ -33,6 +33,8 @@ import type {
   CapabilityCollection,
   ModelProvider,
   OpenHandsConversationEventBatch,
+  WorkspaceGitChangeKind,
+  WorkspaceGitChanges,
   WorkspaceGitCommitDetails,
   WorkspaceGitFileDiff,
   WorkspaceGitLog,
@@ -108,6 +110,8 @@ export interface AgentSessionApi {
   readonly workspaceDirectory: (hostId: AgentSessionHostId, options?: AgentSessionDirectoryOptions) => Promise<AgentSessionWorkspaceDirectory>;
   readonly gitRepositories: (hostId: AgentSessionHostId, options?: Omit<AgentSessionFileOptions, 'download'>) => Promise<AgentSessionWorkspaceGitRepositories>;
   readonly gitLog: (hostId: AgentSessionHostId, repositoryPath: string, options?: Omit<AgentSessionFileOptions, 'download'>) => Promise<WorkspaceGitLog>;
+  readonly gitChanges: (hostId: AgentSessionHostId, repositoryPath: string, options?: Omit<AgentSessionFileOptions, 'download'>) => Promise<WorkspaceGitChanges>;
+  readonly gitWorkingDiff: (hostId: AgentSessionHostId, repositoryPath: string, kind: WorkspaceGitChangeKind, path: string, options?: Omit<AgentSessionFileOptions, 'download'>) => Promise<WorkspaceGitFileDiff>;
   readonly gitCommit: (hostId: AgentSessionHostId, repositoryPath: string, commit: string, options?: Omit<AgentSessionFileOptions, 'download'>) => Promise<WorkspaceGitCommitDetails>;
   readonly gitDiff: (hostId: AgentSessionHostId, repositoryPath: string, commit: string, path: string, options?: Omit<AgentSessionFileOptions, 'download'>) => Promise<WorkspaceGitFileDiff>;
   readonly createWorkDirectory: (hostId: AgentSessionHostId, displayName: string, selectedPaths: string[]) => Promise<AgentSessionWorkDirectory>;
@@ -183,6 +187,8 @@ export const agentWorkspaceSessionGateway: AgentSessionGateway = {
     workspaceDirectory: api.agentWorkspaceDirectory,
     gitRepositories: api.agentWorkspaceGitRepositories,
     gitLog: api.agentWorkspaceGitLog,
+    gitChanges: api.agentWorkspaceGitChanges,
+    gitWorkingDiff: api.agentWorkspaceGitWorkingDiff,
     gitCommit: api.agentWorkspaceGitCommit,
     gitDiff: api.agentWorkspaceGitDiff,
     createWorkDirectory: api.createAgentWorkDirectory,
@@ -255,6 +261,10 @@ export function flowNodeSessionGateway(
         nodeSessionApi.gitRepositories(flowRunId, attemptId, options?.bindingId, options?.workDirectoryId),
       gitLog: (_hostId, repositoryPath, options) =>
         nodeSessionApi.gitLog(flowRunId, attemptId, repositoryPath, options?.bindingId, options?.workDirectoryId),
+      gitChanges: (_hostId, repositoryPath, options) =>
+        nodeSessionApi.gitChanges(flowRunId, attemptId, repositoryPath, options?.bindingId, options?.workDirectoryId),
+      gitWorkingDiff: (_hostId, repositoryPath, kind, path, options) =>
+        nodeSessionApi.gitWorkingDiff(flowRunId, attemptId, repositoryPath, kind, path, options?.bindingId, options?.workDirectoryId),
       gitCommit: (_hostId, repositoryPath, commit, options) =>
         nodeSessionApi.gitCommit(flowRunId, attemptId, repositoryPath, commit, options?.bindingId, options?.workDirectoryId),
       gitDiff: (_hostId, repositoryPath, commit, path, options) =>

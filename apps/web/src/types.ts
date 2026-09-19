@@ -809,6 +809,9 @@ export interface WorkspaceGitCommit {
 }
 export interface WorkspaceGitLog { repository: WorkspaceGitRepository; commits: WorkspaceGitCommit[] }
 export interface WorkspaceGitCommitDetails { repository: WorkspaceGitRepository; commit: WorkspaceGitCommit; files: Array<{ path: string; status: string }> }
+export type WorkspaceGitChangeKind = 'STAGED' | 'UNSTAGED';
+export interface WorkspaceGitChangedFile { path: string; status: string }
+export interface WorkspaceGitChanges { repository: WorkspaceGitRepository; staged: WorkspaceGitChangedFile[]; unstaged: WorkspaceGitChangedFile[] }
 export interface WorkspaceGitFileDiff { path: string; diff: string; truncated: boolean }
 export type AgentWorkspaceDetails = AgentSessionWorkspaceDetails;
 export interface FlowRunRuntimeGeneration {

@@ -237,6 +237,18 @@ export const api = {
     if (options.workDirectoryId) query.set('work_directory_id', options.workDirectoryId);
     return request<import('../types').WorkspaceGitLog>(`/agent-workspaces/${encodeURIComponent(id)}/workspace/git/log?${query}`);
   },
+  agentWorkspaceGitChanges: (id: string, repositoryPath: string, options: { bindingId?: string; workDirectoryId?: string } = {}) => {
+    const query = new URLSearchParams({ repository_path: repositoryPath });
+    if (options.bindingId) query.set('binding_id', options.bindingId);
+    if (options.workDirectoryId) query.set('work_directory_id', options.workDirectoryId);
+    return request<import('../types').WorkspaceGitChanges>(`/agent-workspaces/${encodeURIComponent(id)}/workspace/git/changes?${query}`);
+  },
+  agentWorkspaceGitWorkingDiff: (id: string, repositoryPath: string, kind: import('../types').WorkspaceGitChangeKind, path: string, options: { bindingId?: string; workDirectoryId?: string } = {}) => {
+    const query = new URLSearchParams({ repository_path: repositoryPath, kind, path });
+    if (options.bindingId) query.set('binding_id', options.bindingId);
+    if (options.workDirectoryId) query.set('work_directory_id', options.workDirectoryId);
+    return request<import('../types').WorkspaceGitFileDiff>(`/agent-workspaces/${encodeURIComponent(id)}/workspace/git/working-diff?${query}`);
+  },
   agentWorkspaceGitCommit: (id: string, repositoryPath: string, commit: string, options: { bindingId?: string; workDirectoryId?: string } = {}) => {
     const query = new URLSearchParams({ repository_path: repositoryPath, commit });
     if (options.bindingId) query.set('binding_id', options.bindingId);
@@ -882,6 +894,18 @@ export const nodeSessionApi = {
     if (bindingId) query.set('binding_id', bindingId);
     if (workDirectoryId) query.set('work_directory_id', workDirectoryId);
     return request<import('../types').WorkspaceGitLog>(`${nodeSessionBase(flowRunId, attemptId)}/workspace/git/log?${query}`);
+  },
+  gitChanges: (flowRunId: string, attemptId: string, repositoryPath: string, bindingId?: string, workDirectoryId?: string) => {
+    const query = new URLSearchParams({ repository_path: repositoryPath });
+    if (bindingId) query.set('binding_id', bindingId);
+    if (workDirectoryId) query.set('work_directory_id', workDirectoryId);
+    return request<import('../types').WorkspaceGitChanges>(`${nodeSessionBase(flowRunId, attemptId)}/workspace/git/changes?${query}`);
+  },
+  gitWorkingDiff: (flowRunId: string, attemptId: string, repositoryPath: string, kind: import('../types').WorkspaceGitChangeKind, path: string, bindingId?: string, workDirectoryId?: string) => {
+    const query = new URLSearchParams({ repository_path: repositoryPath, kind, path });
+    if (bindingId) query.set('binding_id', bindingId);
+    if (workDirectoryId) query.set('work_directory_id', workDirectoryId);
+    return request<import('../types').WorkspaceGitFileDiff>(`${nodeSessionBase(flowRunId, attemptId)}/workspace/git/working-diff?${query}`);
   },
   gitCommit: (flowRunId: string, attemptId: string, repositoryPath: string, commit: string, bindingId?: string, workDirectoryId?: string) => {
     const query = new URLSearchParams({ repository_path: repositoryPath, commit });
