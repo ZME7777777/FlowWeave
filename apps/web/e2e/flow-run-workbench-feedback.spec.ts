@@ -1166,8 +1166,11 @@ test('returning from an automatic node session preserves the selected automatic 
   await expect(page.locator('.attempt-control')).toContainText('END_BLOCKED');
 });
 
-test('active manual records can be deleted through background cancellation and cleanup', async ({ page }) => {
-  let currentRun = run;
+test('active direct-launch records can be deleted through background cancellation and cleanup', async ({ page }) => {
+  let currentRun = {
+    ...run,
+    node_runs: [{ ...nodeRun, attempts: [{ ...attempt, startup_mode: 'CHAT' }] }],
+  };
   await page.route('**/api/v1/**', async route => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
@@ -1204,12 +1207,14 @@ test('active manual records can be deleted through background cancellation and c
   await page.goto('/');
   await page.getByRole('button', { name: '流程运行', exact: true }).click();
   await page.locator('.run-open').click();
+  await page.getByRole('tab', { name: '直接启动' }).click();
 
   const deleteButton = page.locator('.manual-record-toolbar').getByRole('button', { name: '删除' });
-  await expect(deleteButton).toBeEnabled();
+  await expect(deleteButton).toBeDisabled();
   await expect(page.getByRole('button', { name: '取消整个流程' })).toHaveCount(0);
 
   await page.locator('.node-record-list .automatic-record-select').filter({ hasText: '测试节点' }).click();
+  await expect(deleteButton).toBeEnabled();
   await deleteButton.click();
   const deleteDialog = page.getByRole('alertdialog');
   await expect(deleteDialog).toContainText('后台会先取消仍在运行的节点');
@@ -1222,8 +1227,8 @@ test('active manual records can be deleted through background cancellation and c
   await expect(page.locator('.run-side-panel .node-console')).toBeVisible();
 });
 
-test('waiting-input manual records can be deleted without cancellation', async ({ page }) => {
-  const waitingInputAttempt = { ...attempt, state: 'WAITING_INPUT', runtime_phase: null };
+test('waiting-input direct-launch records can be deleted without cancellation', async ({ page }) => {
+  const waitingInputAttempt = { ...attempt, state: 'WAITING_INPUT', runtime_phase: null, startup_mode: 'CHAT' };
   let currentRun = {
     ...run,
     current_attempt_state: 'WAITING_INPUT',
@@ -1253,6 +1258,7 @@ test('waiting-input manual records can be deleted without cancellation', async (
   await page.goto('/');
   await page.getByRole('button', { name: '流程运行', exact: true }).click();
   await page.locator('.run-open').click();
+  await page.getByRole('tab', { name: '直接启动' }).click();
   await page.locator('.node-record-list .automatic-record-select').filter({ hasText: '测试节点' }).click();
 
   const deleteButton = page.locator('.manual-record-toolbar').getByRole('button', { name: '删除' });
@@ -1304,17 +1310,23 @@ test('unstarted chat records can be deleted without a cancellation round trip', 
 });
 
 test('manual and automatic records remain hidden after accepted deletion', async ({ page }) => {
-  const manualRecords = [
+  const stepwiseRecords = [
     {
-      ...nodeRun, id: 'manual-record-1', name: '手动记录 1', sequence_no: 1,
-      attempts: [{ ...attempt, id: 'manual-attempt-1', node_run_id: 'manual-record-1', state: 'WAITING_START_CONFIRMATION', runtime_phase: null }],
+      ...run, id: 'stepwise-record-1', name: '逐步记录 1', parent_flow_run_id: run.id,
+      node_runs: [{
+        ...nodeRun, id: 'stepwise-node-1', flow_run_id: 'stepwise-record-1', sequence_no: 1,
+        attempts: [{ ...attempt, id: 'stepwise-attempt-1', node_run_id: 'stepwise-node-1', state: 'WAITING_START_CONFIRMATION', runtime_phase: null }],
+      }],
     },
     {
-      ...nodeRun, id: 'manual-record-2', name: '手动记录 2', sequence_no: 2,
-      attempts: [{ ...attempt, id: 'manual-attempt-2', node_run_id: 'manual-record-2', state: 'WAITING_START_CONFIRMATION', runtime_phase: null }],
+      ...run, id: 'stepwise-record-2', name: '逐步记录 2', parent_flow_run_id: run.id,
+      node_runs: [{
+        ...nodeRun, id: 'stepwise-node-2', flow_run_id: 'stepwise-record-2', sequence_no: 2,
+        attempts: [{ ...attempt, id: 'stepwise-attempt-2', node_run_id: 'stepwise-node-2', state: 'WAITING_START_CONFIRMATION', runtime_phase: null }],
+      }],
     },
   ];
-  let currentRun = { ...run, node_runs: manualRecords };
+  const currentRun = { ...run, node_runs: [] };
   const automaticRecords = [
     { ...frozenAutomaticBase, id: 'automatic-record-1', name: '自动记录 1', schedule_id: 'schedule-1', schedule_name: '每小时检查' },
     { ...frozenAutomaticBase, id: 'automatic-record-2', name: '自动记录 2', run_no: 3, schedule_id: 'schedule-1', schedule_name: '每小时检查' },
@@ -1326,7 +1338,7 @@ test('manual and automatic records remain hidden after accepted deletion', async
     plan: { start_node_key: 'first', reachable_node_count: 2, configured_node_count: 1, readiness: { ready: true, issue_count: 0 } },
     progress: record.progress, usage: { total_tokens: 0, accumulated_cost: 0 },
   }));
-  const deletedManualIds: string[] = [];
+  const deletedStepwiseIds: string[] = [];
   const deletedAutomaticIds: string[] = [];
   await page.route('**/api/v1/**', async route => {
     const request = route.request();
@@ -1341,16 +1353,18 @@ test('manual and automatic records remain hidden after accepted deletion', async
       || path === '/api/v1/capability-collections' || path === '/api/v1/model-providers') return respond([]);
     if (path === `/api/v1/flow-runs/${run.id}` && request.method() === 'GET') return respond(currentRun);
     if (path === `/api/v1/flows/${definition.id}`) return respond(definition);
+    if (path === `/api/v1/flow-runs/${run.id}/stepwise-runs` && request.method() === 'GET') return respond(stepwiseRecords);
+    const stepwiseDetail = stepwiseRecords.find(record => path === `/api/v1/flow-runs/${run.id}/stepwise-runs/${record.id}`);
+    if (stepwiseDetail && request.method() === 'GET') return respond(stepwiseDetail);
+    const stepwiseId = stepwiseRecords.find(record => path === `/api/v1/flow-runs/${run.id}/stepwise-runs/${record.id}`)?.id;
+    if (stepwiseId && request.method() === 'DELETE') {
+      deletedStepwiseIds.push(stepwiseId);
+      return respond(undefined, 204);
+    }
     if (path === `/api/v1/flow-runs/${run.id}/automatic-runs/summaries` && request.method() === 'GET') return respond(automaticSummaries);
     if (path === `/api/v1/flow-runs/${run.id}/automatic-runs` && request.method() === 'GET') return respond(automaticRecords);
     const automaticDetail = automaticRecords.find(record => path === `/api/v1/flow-runs/${run.id}/automatic-runs/${record.id}`);
     if (automaticDetail && request.method() === 'GET') return respond(automaticDetail);
-    const manualId = manualRecords.find(record => path === `/api/v1/flow-runs/${run.id}/nodes/${record.id}`)?.id;
-    if (manualId && request.method() === 'DELETE') {
-      deletedManualIds.push(manualId);
-      currentRun = { ...currentRun, node_runs: currentRun.node_runs.filter(record => record.id !== manualId) };
-      return respond(undefined, 204);
-    }
     const automaticId = automaticRecords.find(record => path === `/api/v1/flow-runs/${run.id}/automatic-runs/${record.id}`)?.id;
     if (automaticId && request.method() === 'DELETE') {
       deletedAutomaticIds.push(automaticId);
@@ -1364,19 +1378,23 @@ test('manual and automatic records remain hidden after accepted deletion', async
   await page.locator('.run-open').click();
   await page.getByRole('tab', { name: '逐步运行' }).click();
 
-  const manualFirst = page.locator('.node-record-list .automatic-record-select').filter({ hasText: '手动记录 1' });
-  const manualSecond = page.locator('.node-record-list .automatic-record-select').filter({ hasText: '手动记录 2' });
+  const manualFirst = page.locator('.node-record-list .automatic-record-select').filter({ hasText: '逐步记录 1' });
+  const manualSecond = page.locator('.node-record-list .automatic-record-select').filter({ hasText: '逐步记录 2' });
   await manualFirst.click();
-  await expect(page.locator('.run-workbench-record-summary')).toContainText('手动记录 1');
+  await expect(manualFirst).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.locator('.run-workbench-record-summary')).toContainText('逐步记录 1');
   await manualSecond.click({ modifiers: ['Meta'] });
+  await expect(page.locator('.node-record-list > article.active')).toHaveCount(2);
+  await manualFirst.click();
+  await manualSecond.click({ modifiers: ['Shift'] });
   await expect(page.locator('.node-record-list > article.active')).toHaveCount(2);
   const manualDelete = page.locator('.manual-record-toolbar').getByRole('button', { name: '删除 (2)' });
   await expect(manualDelete).toBeEnabled();
   await manualDelete.click();
   const manualDialog = page.getByRole('alertdialog');
-  await expect(manualDialog).toContainText('这 2 条记录的 OpenHands 会话、记录工作区、产物和执行数据');
+  await expect(manualDialog).toContainText('这 2 条记录的 OpenHands 会话、记录工作区、产物和执行历史');
   await manualDialog.getByRole('button', { name: '删除', exact: true }).click();
-  await expect.poll(() => deletedManualIds).toEqual(['manual-record-1', 'manual-record-2']);
+  await expect.poll(() => deletedStepwiseIds).toEqual(['stepwise-record-1', 'stepwise-record-2']);
   await expect(page.locator('.node-record-list .automatic-record-select')).toHaveCount(0);
 
   await page.getByRole('tab', { name: '连续运行' }).click();

@@ -182,15 +182,16 @@ function selectedRecordNodeRun(record: FlowRun | undefined, selectedNodeRunId?: 
   return selectedById ?? (!selectedNodeRunId ? active : undefined);
 }
 
-function RunRail({ run, mode, nodeRecords, manualRecords, automaticRecords, automaticError, selected, selectedManualRecordId, canDeleteManualRecord, manualSelectedIds, automaticSelectedIds, manualBusyId, selectedAutomaticId, automaticBusyId, onModeChange, onSelect, onSelectManualRecord, onCreateManualRecord, onDeleteManualRecord, onDeleteNode, onSelectAutomatic, onClearSelection, onCreateAutomatic, onDeleteAutomatic, onCopyAutomatic, onExportAutomatic, onStartAutomatic }: {
-  run: FlowRun; mode: WorkbenchMode; nodeRecords: NodeRun[]; manualRecords: FlowRunStepwiseRecord[]; automaticRecords: FlowRunAutomaticRecordSummary[]; selected?: string; selectedManualRecordId?: string; canDeleteManualRecord: boolean;
-  automaticError?: string; manualSelectedIds: Set<string>; automaticSelectedIds: Set<string>;
+function RunRail({ run, mode, nodeRecords, manualRecords, automaticRecords, automaticError, selected, selectedStepwiseId, canDeleteManualRecords, manualSelectedIds, stepwiseSelectedIds, automaticSelectedIds, manualBusyId, selectedAutomaticId, automaticBusyId, onModeChange, onSelect, onSelectManualRecord, onCreateManualRecord, onDeleteManualRecord, onDeleteNode, onSelectAutomatic, onClearSelection, onCreateAutomatic, onDeleteAutomatic, onCopyAutomatic, onExportAutomatic, onStartAutomatic }: {
+  run: FlowRun; mode: WorkbenchMode; nodeRecords: NodeRun[]; manualRecords: FlowRunStepwiseRecord[]; automaticRecords: FlowRunAutomaticRecordSummary[]; selected?: string; selectedStepwiseId?: string; canDeleteManualRecords: boolean;
+  automaticError?: string; manualSelectedIds: Set<string>; stepwiseSelectedIds: Set<string>; automaticSelectedIds: Set<string>;
   manualBusyId?: string;
   selectedAutomaticId?: string; automaticBusyId?: string; onModeChange: (mode: WorkbenchMode) => void;
   onSelect: (id: string, modifiers: SelectionModifiers) => void; onSelectManualRecord: (id: string, modifiers: SelectionModifiers) => void; onCreateManualRecord: () => void; onDeleteManualRecord: () => void; onDeleteNode: () => void; onSelectAutomatic: (id: string, modifiers: SelectionModifiers) => void; onCreateAutomatic: () => void;
   onClearSelection: () => void; onDeleteAutomatic: () => void; onCopyAutomatic: () => void; onExportAutomatic: () => void; onStartAutomatic: (record: FlowRunAutomaticRecordSummary) => void;
 }) {
   const manualCount = manualSelectedIds.size;
+  const stepwiseCount = stepwiseSelectedIds.size;
   const automaticCount = automaticSelectedIds.size;
   const modifiers = (event: ReactMouseEvent): SelectionModifiers => ({ extend: event.metaKey || event.ctrlKey, range: event.shiftKey });
   const [collapsedScheduleIds, setCollapsedScheduleIds] = useState<Set<string>>(new Set());
@@ -201,7 +202,7 @@ function RunRail({ run, mode, nodeRecords, manualRecords, automaticRecords, auto
   const visibleNodeRecords = mode === 'AUTOMATIC' || mode === 'MANUAL' ? [] : visibleRecords as NodeRun[];
   const visibleManualRecords = mode === 'MANUAL' ? visibleRecords as FlowRunStepwiseRecord[] : [];
   const visibleAutomaticRecords = mode === 'AUTOMATIC' ? visibleRecords as FlowRunAutomaticRecordSummary[] : [];
-  const selectedRecordId = mode === 'AUTOMATIC' ? selectedAutomaticId : mode === 'MANUAL' ? selectedManualRecordId : selected;
+  const selectedRecordId = mode === 'AUTOMATIC' ? selectedAutomaticId : mode === 'MANUAL' ? selectedStepwiseId : selected;
   const selectedRecordIndex = selectedRecordId ? records.findIndex(record => record.id === selectedRecordId) : -1;
   useEffect(() => {
     setRecordPage(1);
@@ -228,12 +229,12 @@ function RunRail({ run, mode, nodeRecords, manualRecords, automaticRecords, auto
   // NodeRun from this rail would make the visible record disagree with its
   // durable workspace, artifacts, and node history, so those record-level
   // actions remain available only for independent direct launches.
-  const manualToolbar = mode === 'MANUAL' ? <div className="automatic-record-toolbar manual-record-toolbar"><button type="button" className="danger" disabled={!canDeleteManualRecord || Boolean(manualBusyId)} onClick={onDeleteManualRecord}><Trash2 size={13}/>删除</button><button type="button" className="primary" disabled={Boolean(manualBusyId)} onClick={onCreateManualRecord}><Plus size={13}/>新增</button></div> : mode === 'DIRECT' ? <div className="automatic-record-toolbar manual-record-toolbar"><button type="button" className="danger" disabled={Boolean(manualBusyId)} onClick={onDeleteNode}><Trash2 size={13}/>{manualCount > 1 ? `删除 (${manualCount})` : '删除'}</button></div> : null;
+  const manualToolbar = mode === 'MANUAL' ? <div className="automatic-record-toolbar manual-record-toolbar"><button type="button" className="danger" disabled={!canDeleteManualRecords || Boolean(manualBusyId)} onClick={onDeleteManualRecord}><Trash2 size={13}/>{stepwiseCount > 1 ? `删除 (${stepwiseCount})` : '删除'}</button><button type="button" className="primary" disabled={Boolean(manualBusyId)} onClick={onCreateManualRecord}><Plus size={13}/>新增</button></div> : mode === 'DIRECT' ? <div className="automatic-record-toolbar manual-record-toolbar"><button type="button" className="danger" disabled={!manualCount || Boolean(manualBusyId)} onClick={onDeleteNode}><Trash2 size={13}/>{manualCount > 1 ? `删除 (${manualCount})` : '删除'}</button></div> : null;
   const nodeRecordLabel = mode === 'DIRECT' ? '直接启动记录' : '逐步运行记录';
   const manualRecordItem = (record: FlowRunStepwiseRecord) => {
     const stateLabel = FLOW_STATE_LABELS[record.state] ?? record.state;
-    return <article key={record.id} className={record.id === selectedManualRecordId ? 'active' : ''} data-record-state={record.state.toLowerCase()}>
-      <button type="button" className="automatic-record-select" aria-pressed={record.id === selectedManualRecordId} onClick={event => onSelectManualRecord(record.id, modifiers(event))}><i title={stateLabel} aria-label={stateLabel}/><span><b>{record.name}</b></span></button>
+    return <article key={record.id} className={stepwiseSelectedIds.has(record.id) ? 'active' : ''} data-record-state={record.state.toLowerCase()}>
+      <button type="button" className="automatic-record-select" aria-pressed={stepwiseSelectedIds.has(record.id)} onClick={event => onSelectManualRecord(record.id, modifiers(event))}><i title={stateLabel} aria-label={stateLabel}/><span><b>{record.name}</b></span></button>
     </article>;
   };
   return <aside className="run-rail flow-run-inner-rail" onClick={event => { if (!isInteractiveClick(event.target)) onClearSelection(); }}>
@@ -1378,6 +1379,7 @@ function AutomaticLegacyPlanRecoveryPanel({ parentRunId, record, onRecovered }: 
 }
 
 export function WorkbenchPage() {
+  const dialog = useProductDialog();
   const qc = useQueryClient();
   const { selectedRunId, selectedNodeRunId, selectedAttemptId, selectedWorkbenchMode, selectedAutomaticRecordId, selectedStepwiseRecordId, selectAttempt, selectExecution, setView } = useWorkbenchStore();
   const [selectedNodeKey, setSelectedNodeKey] = useState<string>();
@@ -1385,11 +1387,13 @@ export function WorkbenchPage() {
   const [selectedAutomaticId, setSelectedAutomaticId] = useState<string | undefined>(selectedAutomaticRecordId);
   const [selectedStepwiseId, setSelectedStepwiseId] = useState<string | undefined>(selectedStepwiseRecordId);
   const [manualSelectedIds, setManualSelectedIds] = useState<Set<string>>(new Set());
+  const [stepwiseSelectedIds, setStepwiseSelectedIds] = useState<Set<string>>(new Set());
   const [automaticSelectedIds, setAutomaticSelectedIds] = useState<Set<string>>(new Set());
   // Delete APIs return after durable cancellation/cleanup has been queued. A
   // worker performs physical deletion later, so keep accepted deletes out of
   // this local projection while polling may still receive their old rows.
   const [pendingManualDeletionIds, setPendingManualDeletionIds] = useState<Set<string>>(new Set());
+  const [pendingStepwiseDeletionIds, setPendingStepwiseDeletionIds] = useState<Set<string>>(new Set());
   const [pendingAutomaticDeletionIds, setPendingAutomaticDeletionIds] = useState<Set<string>>(new Set());
   const [automaticDrafts, setAutomaticDrafts] = useState<Record<string, FlowRunAutomaticRecord>>({});
   const [automaticDialogOpen, setAutomaticDialogOpen] = useState(false);
@@ -1430,8 +1434,10 @@ export function WorkbenchPage() {
     setStepwiseDialogOpen(false);
     setAutomaticDrafts({});
     setManualSelectedIds(new Set());
+    setStepwiseSelectedIds(new Set());
     setAutomaticSelectedIds(new Set());
     setPendingManualDeletionIds(new Set());
+    setPendingStepwiseDeletionIds(new Set());
     setPendingAutomaticDeletionIds(new Set());
   }, [selectedRunId]);
   useEffect(() => selectedRunId ? subscribeToRun(selectedRunId, refresh) : undefined, [selectedRunId, refresh]);
@@ -1450,7 +1456,7 @@ export function WorkbenchPage() {
       const restoredMode: WorkbenchMode = isDirectNodeRun(selectedNode) ? 'DIRECT' : 'MANUAL';
       if (mode !== restoredMode) setMode(restoredMode);
       setSelectedNodeKey(selectedNode.flow_node_snapshot_key);
-      setManualSelectedIds(current => current.size ? current : new Set([selectedNode.id]));
+      if (restoredMode === 'DIRECT') setManualSelectedIds(current => current.size ? current : new Set([selectedNode.id]));
     }
     if (selectedNode && !selectedAttemptId) {
       const latestAttempt = selectedNode.attempts.at(-1);
@@ -1495,6 +1501,7 @@ export function WorkbenchPage() {
   useEffect(() => {
     const record = selectedStepwiseProjection;
     if (!record || !selectedStepwiseId) return;
+    setStepwiseSelectedIds(current => current.size ? current : new Set([selectedStepwiseId]));
     const restored = record.node_runs.find(item => item.id === selectedNodeRunId)
       ?? activeFlowNodeRun(record.node_runs);
     if (restored) {
@@ -1508,7 +1515,6 @@ export function WorkbenchPage() {
         && !record.node_runs.some(item => item.flow_node_snapshot_key === selectedNodeKey),
       );
       if (pendingSuccessorSelected) return;
-      setManualSelectedIds(new Set([restored.id]));
       setSelectedNodeKey(restored.flow_node_snapshot_key);
       if (isUnconfiguredStepRecord(restored)) {
         // A reached successor is an input/configuration work item, not an
@@ -1520,7 +1526,6 @@ export function WorkbenchPage() {
         selectExecution(restored.id, restored.attempts.at(-1)?.id);
       }
     } else if (!selectedNodeKey) {
-      setManualSelectedIds(new Set());
       setSelectedNodeKey(undefined);
       useWorkbenchStore.setState({ selectedNodeRunId: undefined, selectedAttemptId: undefined });
     }
@@ -1555,7 +1560,7 @@ export function WorkbenchPage() {
   const manualRecords = [
     ...(legacyStepwiseRecord ? [legacyStepwiseRecord] : []),
     ...(stepwise.data ?? []),
-  ];
+  ].filter(record => !pendingStepwiseDeletionIds.has(record.id));
   const legacyStepwise = selectedStepwiseId === parentRun.id;
   const selectedStepwise = selectedStepwiseId
     ? legacyStepwise ? parentRun : selectedStepwiseProjection
@@ -1656,6 +1661,7 @@ export function WorkbenchPage() {
     setSelectedAutomaticId(undefined);
     setSelectedStepwiseId(undefined);
     setManualSelectedIds(new Set());
+    setStepwiseSelectedIds(new Set());
     setAutomaticSelectedIds(new Set());
     useWorkbenchStore.setState({ selectedNodeRunId: undefined, selectedAttemptId: undefined });
   };
@@ -1921,6 +1927,7 @@ export function WorkbenchPage() {
     qc.setQueryData(['flow-run-automatic-record', run.id, record.id], record);
     void qc.invalidateQueries({ queryKey: ['flow-run-automatic-records', run.id] });
   };
+  const selectedStepwiseRecords = manualRecords.filter(item => stepwiseSelectedIds.has(item.id));
   const selectedAutomaticRecords = automaticRecords.filter(item => automaticSelectedIds.has(item.id));
   const exportAutomaticRecords = async (recordIds: string[], target: ExportTarget) => {
     setAutomaticBusyId('config-export');
@@ -1942,9 +1949,22 @@ export function WorkbenchPage() {
     }
   };
   const selectStepwiseRecord = (recordId: string, modifiers: SelectionModifiers = { extend: false, range: false }) => {
-    if (!modifiers.extend && !modifiers.range && selectedStepwiseId === recordId) {
+    const isOnlySelected = stepwiseSelectedIds.size === 1 && stepwiseSelectedIds.has(recordId);
+    if (!modifiers.extend && !modifiers.range && selectedStepwiseId === recordId && isOnlySelected) {
       clearSelection();
       return;
+    }
+    if (modifiers.range && selectedStepwiseId) {
+      setStepwiseSelectedIds(new Set(rangeIds(manualRecords, selectedStepwiseId, recordId)));
+    } else if (modifiers.extend) {
+      setStepwiseSelectedIds(current => {
+        const next = new Set(current);
+        if (next.has(recordId)) next.delete(recordId);
+        else next.add(recordId);
+        return next;
+      });
+    } else {
+      setStepwiseSelectedIds(new Set([recordId]));
     }
     setSelectedStepwiseId(recordId);
     setSelectedNodeKey(undefined);
@@ -1957,20 +1977,48 @@ export function WorkbenchPage() {
     selectStepwiseRecord(record.id);
   };
   const deleteStepwiseRecord = () => {
-    if (!selectedStepwiseId || legacyStepwise) return;
-    setManualBusyId('delete');
-    void api.deleteStepwiseRecord(parentRun.id, selectedStepwiseId).then(() => {
-      qc.setQueryData<FlowRunStepwiseRecord[]>(['flow-run-stepwise-records', parentRun.id], current =>
-        current?.filter(record => record.id !== selectedStepwiseId) ?? [],
-      );
-      qc.removeQueries({ queryKey: ['flow-run-stepwise-record', parentRun.id, selectedStepwiseId] });
-      setSelectedStepwiseId(undefined);
-      setSelectedNodeKey(undefined);
-      setManualSelectedIds(new Set());
-      useWorkbenchStore.setState({ selectedNodeRunId: undefined, selectedAttemptId: undefined });
-    }).catch(reason => {
-      window.alert(reason instanceof Error ? reason.message : '删除逐步运行记录失败，请稍后重试。');
-    }).finally(() => setManualBusyId(undefined));
+    const recordIds = selectedStepwiseRecords.map(record => record.id);
+    if (!recordIds.length || recordIds.includes(parentRun.id)) return;
+    const count = recordIds.length;
+    void dialog.confirm({
+      title: count === 1 ? '删除逐步运行记录？' : `删除 ${count} 条逐步运行记录？`,
+      message: count === 1
+        ? '后台会先取消仍在运行的节点，再永久删除该记录的 OpenHands 会话、记录工作区、产物和执行历史；共享 FlowRun Runtime 不受影响。'
+        : `后台会逐条取消仍在运行的节点，再永久删除这 ${count} 条记录的 OpenHands 会话、记录工作区、产物和执行历史；共享 FlowRun Runtime 不受影响。`,
+      confirmLabel: '删除',
+      tone: 'danger',
+    }).then(async confirmed => {
+      if (!confirmed) return;
+      setManualBusyId('bulk-delete');
+      setPendingStepwiseDeletionIds(current => new Set([...current, ...recordIds]));
+      const results = await Promise.allSettled(recordIds.map(recordId => api.deleteStepwiseRecord(parentRun.id, recordId)));
+      const deletedIds = recordIds.filter((_, index) => results[index].status === 'fulfilled');
+      const failedIds = recordIds.filter((_, index) => results[index].status === 'rejected');
+      if (deletedIds.length) {
+        qc.setQueryData<FlowRunStepwiseRecord[]>(['flow-run-stepwise-records', parentRun.id], current =>
+          current?.filter(record => !deletedIds.includes(record.id)) ?? [],
+        );
+        for (const recordId of deletedIds) qc.removeQueries({ queryKey: ['flow-run-stepwise-record', parentRun.id, recordId] });
+      }
+      if (failedIds.length) setPendingStepwiseDeletionIds(current => {
+        const next = new Set(current);
+        failedIds.forEach(recordId => next.delete(recordId));
+        return next;
+      });
+      clearSelection();
+      if (failedIds.length) {
+        const firstFailure = results.find(result => result.status === 'rejected');
+        void dialog.confirm({
+          title: '删除逐步运行记录失败',
+          message: firstFailure?.status === 'rejected' && firstFailure.reason instanceof Error
+            ? firstFailure.reason.message
+            : '部分删除请求未被平台接受，请稍后重试。',
+          confirmLabel: '我知道了',
+          cancelLabel: '关闭',
+        });
+      }
+      setManualBusyId(undefined);
+    });
   };
   const startStepwiseNode = (record: NodeRun) => {
     const latest = record.attempts.at(-1);
@@ -2028,9 +2076,10 @@ export function WorkbenchPage() {
     manualRecords={manualRecords}
     automaticRecords={automaticRecords}
     selected={mode !== 'AUTOMATIC' ? nodeRun?.id : undefined}
-    selectedManualRecordId={selectedStepwiseId}
-    canDeleteManualRecord={Boolean(selectedStepwiseId && !legacyStepwise)}
+    selectedStepwiseId={selectedStepwiseId}
+    canDeleteManualRecords={Boolean(selectedStepwiseRecords.length) && !selectedStepwiseRecords.some(record => record.id === parentRun.id)}
     manualSelectedIds={manualSelectedIds}
+    stepwiseSelectedIds={stepwiseSelectedIds}
     automaticSelectedIds={automaticSelectedIds}
     manualBusyId={manualBusyId}
     selectedAutomaticId={selectedAutomaticId}
@@ -2040,11 +2089,100 @@ export function WorkbenchPage() {
     onSelectManualRecord={selectStepwiseRecord}
     onCreateManualRecord={() => setStepwiseDialogOpen(true)}
     onDeleteManualRecord={deleteStepwiseRecord}
-    onDeleteNode={() => undefined}
+    onDeleteNode={() => {
+      const recordIds = nodeRecords.filter(record => manualSelectedIds.has(record.id)).map(record => record.id);
+      if (!recordIds.length) return;
+      const count = recordIds.length;
+      void dialog.confirm({
+        title: count === 1 ? '删除这条运行记录？' : `删除 ${count} 条运行记录？`,
+        message: count === 1
+          ? '后台会先取消仍在运行的节点，再永久删除 OpenHands 会话、记录工作区、产物和执行记录；共享 FlowRun Runtime 不受影响。'
+          : `后台会逐条取消仍在运行的节点，再永久删除这 ${count} 条记录的 OpenHands 会话、记录工作区、产物和执行数据；共享 FlowRun Runtime 不受影响。`,
+        confirmLabel: '删除',
+        tone: 'danger',
+      }).then(async confirmed => {
+        if (!confirmed) return;
+        setManualBusyId('bulk-delete');
+        setPendingManualDeletionIds(current => new Set([...current, ...recordIds]));
+        const results = await Promise.allSettled(recordIds.map(recordId => api.deleteNodeRun(parentRun.id, recordId)));
+        const deletedIds = recordIds.filter((_, index) => results[index].status === 'fulfilled');
+        const failedIds = recordIds.filter((_, index) => results[index].status === 'rejected');
+        if (deletedIds.length) qc.setQueryData<FlowRun>(['flow-run', parentRun.id], current => current ? {
+          ...current,
+          node_runs: current.node_runs.filter(item => !deletedIds.includes(item.id)),
+        } : current);
+        if (failedIds.length) setPendingManualDeletionIds(current => {
+          const next = new Set(current);
+          failedIds.forEach(recordId => next.delete(recordId));
+          return next;
+        });
+        clearSelection();
+        if (failedIds.length) {
+          const firstFailure = results.find(result => result.status === 'rejected');
+          void dialog.confirm({
+            title: '删除运行记录失败',
+            message: firstFailure?.status === 'rejected' && firstFailure.reason instanceof Error
+              ? firstFailure.reason.message
+              : '部分删除请求未被平台接受，请稍后重试。',
+            confirmLabel: '我知道了',
+            cancelLabel: '关闭',
+          });
+        }
+        setManualBusyId(undefined);
+      });
+    }}
     onSelectAutomatic={selectAutomaticHistory}
     onClearSelection={clearSelection}
     onCreateAutomatic={() => setAutomaticDialogOpen(true)}
-    onDeleteAutomatic={() => undefined}
+    onDeleteAutomatic={() => {
+      const recordIds = selectedAutomaticRecords.map(record => record.id);
+      if (!recordIds.length) return;
+      const count = recordIds.length;
+      void dialog.confirm({
+        title: count === 1 ? '删除连续运行记录？' : `删除 ${count} 条连续运行记录？`,
+        message: count === 1
+          ? '后台会先取消仍在运行的节点，再永久删除该记录的 OpenHands 会话、记录工作区、产物和执行历史。'
+          : `后台会逐条取消仍在运行的节点，再永久删除这 ${count} 条记录的 OpenHands 会话、记录工作区、产物和执行历史。`,
+        confirmLabel: '删除',
+        tone: 'danger',
+      }).then(async confirmed => {
+        if (!confirmed) return;
+        setAutomaticBusyId('bulk-delete');
+        setPendingAutomaticDeletionIds(current => new Set([...current, ...recordIds]));
+        const results = await Promise.allSettled(recordIds.map(recordId => api.deleteAutomaticRecord(parentRun.id, recordId)));
+        const deletedIds = recordIds.filter((_, index) => results[index].status === 'fulfilled');
+        const failedIds = recordIds.filter((_, index) => results[index].status === 'rejected');
+        if (deletedIds.length) {
+          qc.setQueryData<FlowRunAutomaticRecordSummary[]>(['flow-run-automatic-records', parentRun.id], current =>
+            current?.filter(record => !deletedIds.includes(record.id)) ?? [],
+          );
+          for (const recordId of deletedIds) qc.removeQueries({ queryKey: ['flow-run-automatic-record', parentRun.id, recordId] });
+          setAutomaticDrafts(current => {
+            const next = { ...current };
+            deletedIds.forEach(recordId => delete next[recordId]);
+            return next;
+          });
+        }
+        if (failedIds.length) setPendingAutomaticDeletionIds(current => {
+          const next = new Set(current);
+          failedIds.forEach(recordId => next.delete(recordId));
+          return next;
+        });
+        clearSelection();
+        if (failedIds.length) {
+          const firstFailure = results.find(result => result.status === 'rejected');
+          void dialog.confirm({
+            title: '删除连续运行记录失败',
+            message: firstFailure?.status === 'rejected' && firstFailure.reason instanceof Error
+              ? firstFailure.reason.message
+              : '部分删除请求未被平台接受，请稍后重试。',
+            confirmLabel: '我知道了',
+            cancelLabel: '关闭',
+          });
+        }
+        setAutomaticBusyId(undefined);
+      });
+    }}
     onCopyAutomatic={() => { if (selectedAutomatic) setCopyTarget({ mode: 'AUTOMATIC', record: selectedAutomatic }); }}
     onExportAutomatic={() => { if (selectedAutomaticRecords.length) setAutomaticExportRecordIds(selectedAutomaticRecords.map(record => record.id)); }}
     onStartAutomatic={record => { setAutomaticBusyId(record.id); void api.startAutomaticRecord(parentRun.id, record.id, record.row_version).then(replaceAutomatic).finally(() => setAutomaticBusyId(undefined)); }}
