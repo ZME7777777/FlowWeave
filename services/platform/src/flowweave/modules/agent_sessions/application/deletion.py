@@ -7,6 +7,7 @@ from flowweave.modules.agent_sessions.infrastructure.models import (
     AgentConversationBinding,
     AgentConversationCapability,
     AgentConversationCommand,
+    AgentConversationCredentialSync,
     AgentConversationMessageAttachment,
 )
 from flowweave.shared.models import BackgroundTask, RuntimeConfirmationApproval
@@ -34,6 +35,11 @@ def delete_binding_records(db: Session, binding_id: str) -> None:
     db.execute(
         delete(AgentConversationCapability).where(
             AgentConversationCapability.binding_id == binding_id
+        )
+    )
+    db.execute(
+        delete(AgentConversationCredentialSync).where(
+            AgentConversationCredentialSync.binding_id == binding_id
         )
     )
     db.execute(

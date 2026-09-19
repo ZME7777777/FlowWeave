@@ -87,6 +87,10 @@ class AgentConversationCapabilityAddWrite(_Write):
     capability_version_id: str = Field(min_length=1, max_length=36)
 
 
+class AgentConversationCredentialSyncWrite(_Write):
+    credential_ids: list[str] = Field(default_factory=list, max_length=100)
+
+
 class AgentWorkspaceEntryCreateWrite(_Write):
     parent_path: str = Field(min_length=1, max_length=500)
     name: str = Field(min_length=1, max_length=240)
@@ -719,6 +723,33 @@ async def add_agent_conversation_capability(
         db,
         lambda session: conversations.add_conversation_capability(
             session, workspace_id, binding_id, payload.capability_version_id
+        ),
+    )
+
+
+@router.get("/agent-workspaces/{workspace_id}/conversations/{binding_id}/credential-sync")
+async def get_agent_conversation_credential_sync(
+    workspace_id: str, binding_id: str, db: Db
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: conversations.conversation_credential_sync_state(
+            session, workspace_id, binding_id
+        ),
+    )
+
+
+@router.post("/agent-workspaces/{workspace_id}/conversations/{binding_id}/credential-sync")
+async def synchronize_agent_conversation_credentials(
+    workspace_id: str,
+    binding_id: str,
+    payload: AgentConversationCredentialSyncWrite,
+    db: Db,
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: conversations.synchronize_conversation_credentials(
+            session, workspace_id, binding_id, tuple(payload.credential_ids)
         ),
     )
 

@@ -15,6 +15,7 @@ import type {
   AgentConversationHydration,
   AgentConversationPage,
   AgentConversationContext,
+  AgentConversationCredentialSyncState,
   AgentConversationInputReadiness,
   AgentConversationReference,
   AgentPendingConfirmation,
@@ -131,6 +132,8 @@ export interface AgentSessionApi {
   readonly conversationHead: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<AgentConversationHead>;
   readonly inputReadiness: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<AgentConversationInputReadiness>;
   readonly conversationContext: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<AgentConversationContext>;
+  readonly credentialSync: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<AgentConversationCredentialSyncState>;
+  readonly synchronizeCredentials: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, credentialIds: string[]) => Promise<AgentConversationCredentialSyncState>;
   readonly pendingConfirmation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<AgentPendingConfirmation>;
   /**
    * `clientMessageId` keeps one browser dispatch attempt stable at the HTTP
@@ -206,6 +209,8 @@ export const agentWorkspaceSessionGateway: AgentSessionGateway = {
     conversationHead: api.agentConversationHead,
     inputReadiness: api.agentConversationInputReadiness,
     conversationContext: api.agentConversationContext,
+    credentialSync: api.agentConversationCredentialSync,
+    synchronizeCredentials: api.synchronizeAgentConversationCredentials,
     pendingConfirmation: api.agentPendingConfirmation,
     sendMessage: api.sendAgentMessage,
     migrateStreamingConversation: api.migrateAgentStreamingConversation,
@@ -308,6 +313,10 @@ export function flowNodeSessionGateway(
         nodeSessionApi.inputReadiness(flowRunId, attemptId, bindingId),
       conversationContext: (_hostId, bindingId) =>
         nodeSessionApi.context(flowRunId, attemptId, bindingId),
+      credentialSync: (_hostId, bindingId) =>
+        nodeSessionApi.credentialSync(flowRunId, attemptId, bindingId),
+      synchronizeCredentials: (_hostId, bindingId, credentialIds) =>
+        nodeSessionApi.synchronizeCredentials(flowRunId, attemptId, bindingId, credentialIds),
       pendingConfirmation: (_hostId, bindingId) => nodeSessionApi.pendingConfirmation(flowRunId, attemptId, bindingId),
       sendMessage: (_hostId, bindingId, content, attachments = [], references = [], workspaceReferences = [], annotations = [], clientMessageId) =>
         nodeSessionApi.message(flowRunId, attemptId, bindingId, content, attachments, references, workspaceReferences, clientMessageId, annotations),

@@ -20,6 +20,11 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from flowweave.modules.agent_sessions.application import usage as usage_projection
+from flowweave.modules.agent_sessions.application.credential_sync import (
+    list_credential_sync_state,
+    record_initial_credential_sync,
+    synchronize_credentials,
+)
 from flowweave.modules.agent_sessions.application.deletion import delete_binding_records
 from flowweave.modules.agent_sessions.application.event_branch import (
     complete_active_branch,
@@ -1103,6 +1108,7 @@ def _create_native_conversation(
         raise DomainError("AGENT_CONVERSATION_IDENTITY_DRIFT", "会话持久化身份校验失败", 409)
     if identity.workspace_working_dir != working_directory:
         raise DomainError("AGENT_WORK_DIRECTORY_IDENTITY_DRIFT", "会话工作目录校验失败", 409)
+    record_initial_credential_sync(db, binding)
     return replace(handle, conversation_id=binding.openhands_conversation_id)
 
 
@@ -1266,6 +1272,25 @@ def add_conversation_capability(
     binding.updated_at = now()
     db.flush()
     return _dict(db, binding)
+
+
+def conversation_credential_sync_state(
+    db: Session, workspace_id: str, binding_id: str
+) -> dict[str, Any]:
+    workspace = _workspace(db, workspace_id)
+    return list_credential_sync_state(db, _binding(db, workspace.id, binding_id))
+
+
+def synchronize_conversation_credentials(
+    db: Session, workspace_id: str, binding_id: str, credential_ids: tuple[str, ...]
+) -> dict[str, Any]:
+    workspace = _workspace(db, workspace_id)
+    binding = _binding(db, workspace.id, binding_id, lock=True)
+    if binding.lifecycle != "ACTIVE":
+        raise DomainError("AGENT_CONVERSATION_NOT_READY", "会话当前无法同步认证", 409)
+    return synchronize_credentials(
+        db, binding, _handle(db, workspace, binding), get_runtime(), credential_ids
+    )
 
 
 def _initial_user_event_id(handle: RuntimeHandle, previous_event_id: str | None) -> str | None:

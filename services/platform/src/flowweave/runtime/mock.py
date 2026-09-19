@@ -42,6 +42,7 @@ class MockRuntime:
         self._results: dict[str, RuntimeResult] = {}
         self._events: dict[str, list[RuntimeEvent]] = {}
         self._conversation_condensers: dict[str, RuntimeCondenser] = {}
+        self._conversation_secrets: dict[str, dict[str, str]] = {}
 
     def probe_mcp(self, request: RuntimeMCPProbeRequest) -> RuntimeMCPProbeResult:
         del request
@@ -97,7 +98,11 @@ class MockRuntime:
         )
         self._results[handle.job_id] = RuntimeResult(status="RUNNING", cursor="1")
         self._events[handle.job_id] = []
+        self._conversation_secrets[handle.job_id] = dict(request.conversation_secrets)
         return handle
+
+    def update_conversation_secrets(self, handle: RuntimeHandle, secrets: dict[str, str]) -> None:
+        self._conversation_secrets.setdefault(handle.job_id, {}).update(secrets)
 
     def conversation_title(self, handle: RuntimeHandle) -> str | None:
         del handle
@@ -109,6 +114,7 @@ class MockRuntime:
     def delete_conversation(self, handle: RuntimeHandle) -> None:
         self._results.pop(handle.job_id, None)
         self._events.pop(handle.job_id, None)
+        self._conversation_secrets.pop(handle.job_id, None)
 
     def start(self, request: StartAttemptRequest) -> RuntimeHandle:
         handle = RuntimeHandle(
@@ -147,6 +153,7 @@ class MockRuntime:
                 cursor="2",
             )
         self._results[handle.job_id] = result
+        self._conversation_secrets[handle.job_id] = dict(request.conversation_secrets)
         return handle
 
     def read_events(self, handle: RuntimeHandle) -> RuntimeEventBatch:

@@ -17,6 +17,7 @@ from flowweave.modules.agent_sessions.infrastructure.models import (
     AgentConversationBinding,
     AgentConversationCapability,
     AgentConversationCommand,
+    AgentConversationCredentialSync,
     AgentConversationMessageAttachment,
     AgentConversationUsageBucket,
 )
@@ -62,6 +63,7 @@ def __getattr__(name: str) -> Any:
 
     if name in {
         "conversations",
+        "credential_sync",
         "flow_node_conversations",
         "flow_node_locator",
         "flow_node_workspace",
@@ -69,6 +71,7 @@ def __getattr__(name: str) -> Any:
     }:
         from flowweave.modules.agent_sessions.application import (
             conversations,
+            credential_sync,
             flow_node_conversations,
             flow_node_locator,
             flow_node_workspace,
@@ -77,6 +80,7 @@ def __getattr__(name: str) -> Any:
 
         return {
             "conversations": conversations,
+            "credential_sync": credential_sync,
             "flow_node_conversations": flow_node_conversations,
             "flow_node_locator": flow_node_locator,
             "flow_node_workspace": flow_node_workspace,
@@ -136,6 +140,7 @@ __all__ = [
     "AgentConversationBinding",
     "AgentConversationCapability",
     "AgentConversationCommand",
+    "AgentConversationCredentialSync",
     "AgentConversationMessageAttachment",
     "AgentConversationUsageBucket",
     "AgentSessionHostContext",

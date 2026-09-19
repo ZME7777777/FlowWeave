@@ -360,6 +360,10 @@ export const api = {
   },
   agentConversationContext: (workspaceId: string, bindingId: string) =>
     request<AgentConversationContext>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/context`),
+  agentConversationCredentialSync: (workspaceId: string, bindingId: string) =>
+    request<import('../types').AgentConversationCredentialSyncState>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/credential-sync`),
+  synchronizeAgentConversationCredentials: (workspaceId: string, bindingId: string, credential_ids: string[]) =>
+    request<import('../types').AgentConversationCredentialSyncState>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/credential-sync`, json('POST', { credential_ids })),
   switchAgentConversationModel: (workspaceId: string, bindingId: string, model_provider_id: string, model_name: string, reasoning_effort: string | null) =>
     request<{ model_provider_id: string; model_name?: string | null; reasoning_effort?: string | null }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/model`, json('POST', { model_provider_id, model_name, reasoning_effort })),
   migrateAgentStreamingConversation: (workspaceId: string, bindingId: string, model_provider_id: string, model_name?: string | null, reasoning_effort?: string | null) =>
@@ -827,6 +831,10 @@ export const nodeSessionApi = {
     request<AgentConversationInputReadiness>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/input-readiness`),
   context: (flowRunId: string, attemptId: string, bindingId: string) =>
     request<import('../types').AgentConversationContext>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/context`),
+  credentialSync: (flowRunId: string, attemptId: string, bindingId: string) =>
+    request<import('../types').AgentConversationCredentialSyncState>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/credential-sync`),
+  synchronizeCredentials: (flowRunId: string, attemptId: string, bindingId: string, credential_ids: string[]) =>
+    request<import('../types').AgentConversationCredentialSyncState>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/credential-sync`, json('POST', { credential_ids })),
   switchModel: (flowRunId: string, attemptId: string, bindingId: string, model_provider_id: string, model_name: string, reasoning_effort: string | null) =>
     request<{ model_provider_id: string; model_name?: string | null; reasoning_effort?: string | null }>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/model`, json('POST', { model_provider_id, model_name, reasoning_effort })),
   remove: (flowRunId: string, attemptId: string, bindingId: string) =>

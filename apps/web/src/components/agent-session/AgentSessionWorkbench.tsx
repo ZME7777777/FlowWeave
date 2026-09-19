@@ -3,7 +3,7 @@ import { Terminal as XTerm } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
 import { type InfiniteData, useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import hljs from 'highlight.js/lib/common';
-import { ArrowLeft, Bot, Boxes, Check, ChevronDown, ChevronRight, CircleDot, Copy, CornerDownRight, Download, Ellipsis, FileCode2, FileText, Folder, FolderOpen, FolderPlus, GitBranch, GripVertical, ImageIcon, Layers3, Link2, LoaderCircle, Maximize2, Minimize2, MonitorCog, PanelRightOpen, Play, Plus, Quote, Search, Send, ShieldAlert, Square, Trash2, X } from 'lucide-react';
+import { ArrowLeft, Bot, Boxes, Check, ChevronDown, ChevronRight, CircleDot, Copy, CornerDownRight, Download, Ellipsis, FileCode2, FileText, Folder, FolderOpen, FolderPlus, GitBranch, GripVertical, ImageIcon, Layers3, Link2, LoaderCircle, Maximize2, Minimize2, MonitorCog, PanelRightOpen, Play, Plus, Quote, RefreshCw, Search, Send, ShieldAlert, Square, Trash2, X } from 'lucide-react';
 import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type ComponentPropsWithoutRef, type CSSProperties, type DragEvent as ReactDragEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type WheelEvent as ReactWheelEvent } from 'react';
 import { createPortal } from 'react-dom';
 import ReactMarkdown from 'react-markdown';
@@ -20,7 +20,7 @@ import { selectCapabilityVersion, selectCapabilityVersions } from '../../utils/c
 import { SubagentAvatar } from '../SubagentAvatar';
 import { subagentAvatarSlots, type SubagentAvatarSlot } from '../../utils/subagentAvatar';
 import { workspaceFileChanges, workspaceRelativePath, type WorkspaceFileChange } from './fileChanges';
-import type { AgentAttachment, AgentConversation, AgentConversationAnnotation, AgentConversationPage, AgentConversationReference, AgentConversationSearch, AgentPendingConfirmationAction, AgentSessionCapability, AgentSessionMcpReadiness, AgentSessionWorkDirectory, AgentSessionWorkDirectoryList, AgentSessionWorkspaceDetails, AgentWorkspaceReference, CapabilityAsset, CapabilityCollection, ModelProvider, OpenHandsConversationEvent, OpenHandsConversationEventBatch, ProviderModel, RuntimeTaskControlSnapshot, RuntimeTaskUsageSnapshot, WorkspaceGitChangeKind, WorkspaceGitChangedFile, WorkspaceGitChanges, WorkspaceGitCommitDetails, WorkspaceGitFileDiff } from '../../types';
+import type { AgentAttachment, AgentConversation, AgentConversationAnnotation, AgentConversationCredentialSyncEntry, AgentConversationPage, AgentConversationReference, AgentConversationSearch, AgentPendingConfirmationAction, AgentSessionCapability, AgentSessionMcpReadiness, AgentSessionWorkDirectory, AgentSessionWorkDirectoryList, AgentSessionWorkspaceDetails, AgentWorkspaceReference, CapabilityAsset, CapabilityCollection, ModelProvider, OpenHandsConversationEvent, OpenHandsConversationEventBatch, ProviderModel, RuntimeTaskControlSnapshot, RuntimeTaskUsageSnapshot, WorkspaceGitChangeKind, WorkspaceGitChangedFile, WorkspaceGitChanges, WorkspaceGitCommitDetails, WorkspaceGitFileDiff } from '../../types';
 import '../../pages/agent-workbench.css';
 import '../../pages/agent-workbench-layout.css';
 
@@ -1094,13 +1094,15 @@ function CapabilityManager({ workspaceId, bindingId, conversationCapabilities, d
   const queryClient = useQueryClient();
   const [query, setQuery] = useState('');
   const [kind, setKind] = useState<AgentCapabilityType | 'ALL'>('ALL');
+  const [managerTab, setManagerTab] = useState<'CAPABILITIES' | 'CREDENTIALS'>('CAPABILITIES');
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [selectedCredentialIds, setSelectedCredentialIds] = useState<string[]>([]);
   const [mcpReadiness, setMcpReadiness] = useState<Record<string, AgentSessionMcpReadiness | undefined>>({});
   const [checkingMcpIds, setCheckingMcpIds] = useState<Set<string>>(new Set());
   const dialog = useRef<HTMLElement>(null);
   const closeButton = useRef<HTMLButtonElement>(null);
   const returnFocus = useRef<HTMLElement | null>(document.activeElement instanceof HTMLElement ? document.activeElement : null);
-  useEscapeClose(() => { if (!save.isPending) onClose(); });
+  const credentialSelectionInitialized = useRef(false);
   useEffect(() => {
     const opener = returnFocus.current;
     closeButton.current?.focus();
@@ -1108,10 +1110,20 @@ function CapabilityManager({ workspaceId, bindingId, conversationCapabilities, d
   }, []);
   const catalogQuery = useQuery({ queryKey: sessionQueryKey(host, 'capability-catalog'), queryFn: api.capabilities });
   const collectionsQuery = useQuery({ queryKey: sessionQueryKey(host, 'capability-collections'), queryFn: api.capabilityCollections });
+  const credentialQuery = useQuery({
+    queryKey: sessionQueryKey(host, 'credential-sync', workspaceId, bindingId),
+    queryFn: () => api.credentialSync(workspaceId, bindingId!),
+    enabled: Boolean(bindingId && managerTab === 'CREDENTIALS'),
+  });
   useEffect(() => {
     const current = bindingId ? conversationCapabilities : draftCapabilityIds?.map(id => ({ id }));
     if (current) setSelectedIds(current.map(item => item.id));
   }, [bindingId, conversationCapabilities, draftCapabilityIds]);
+  useEffect(() => {
+    if (!credentialQuery.data || credentialSelectionInitialized.current) return;
+    credentialSelectionInitialized.current = true;
+    setSelectedCredentialIds(credentialQuery.data.credentials.map(item => item.id));
+  }, [credentialQuery.data]);
   const frozenCreationOnlyIds = useMemo(() => new Set(
     (conversationCapabilities ?? [])
       .filter(item => item.capability_type === 'CONTEXT' || item.capability_type === 'AGENT_DEFINITION' || item.capability_type === 'HOOK')
@@ -1188,6 +1200,13 @@ function CapabilityManager({ workspaceId, bindingId, conversationCapabilities, d
       onClose();
     },
   });
+  const credentialSync = useMutation({
+    mutationFn: () => api.synchronizeCredentials(workspaceId, bindingId!, selectedCredentialIds),
+    onSuccess: value => {
+      queryClient.setQueryData(sessionQueryKey(host, 'credential-sync', workspaceId, bindingId), value);
+    },
+  });
+  useEscapeClose(() => { if (!save.isPending && !credentialSync.isPending) onClose(); });
   const toggle = (item: CapabilityAsset) => setSelectedIds(current => {
     if (current.includes(item.id)) {
       // The formal OpenHands API is additive.  Do not display an uncheckable
@@ -1216,15 +1235,19 @@ function CapabilityManager({ workspaceId, bindingId, conversationCapabilities, d
     if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
     else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
   };
-  return <div className="agent-capability-backdrop" role="presentation" onPointerDown={event => { if (event.target === event.currentTarget && !save.isPending) onClose(); }}>
+  const busy = save.isPending || credentialSync.isPending;
+  const toggleCredential = (credential: AgentConversationCredentialSyncEntry) => setSelectedCredentialIds(current => current.includes(credential.id) ? current.filter(id => id !== credential.id) : [...current, credential.id]);
+  return <div className="agent-capability-backdrop" role="presentation" onPointerDown={event => { if (event.target === event.currentTarget && !busy) onClose(); }}>
     <section ref={dialog} className="agent-capability-manager" role="dialog" aria-modal="true" aria-labelledby="agent-capability-title" onKeyDown={trapFocus}>
-      <header><div><span className="eyebrow">{bindingId ? 'CURRENT AGENT SESSION' : 'NEW AGENT SESSION'}</span><h2 id="agent-capability-title">能力</h2><p>{bindingId ? '可为当前会话注册新的已发布 Skill、MCP 或 Plugin。Context、Agent 与 Hook 仅在创建会话时冻结；可在对应标签查看已装配版本，但不能新增、编辑或删除。' : '新会话默认不挂载能力；在这里选择的版本只会冻结到即将创建的这一个会话。Context 会作为 OpenHands 系统级会话上下文，Agent 会作为原生子 Agent 定义，Hook 会通过官方 hook_config 注册。'}</p></div><button ref={closeButton} type="button" aria-label="关闭插件管理" disabled={save.isPending} onClick={onClose}><X size={18}/></button></header>
+      <header><div><span className="eyebrow">{bindingId ? 'CURRENT AGENT SESSION' : 'NEW AGENT SESSION'}</span><h2 id="agent-capability-title">能力</h2><p>{managerTab === 'CREDENTIALS' ? '为当前会话显式同步认证变量。同步不会扫描其他会话，也不会撤销已存在的变量。' : bindingId ? '可为当前会话注册新的已发布 Skill、MCP 或 Plugin。Context、Agent 与 Hook 仅在创建会话时冻结；可在对应标签查看已装配版本，但不能新增、编辑或删除。' : '新会话默认不挂载能力；在这里选择的版本只会冻结到即将创建的这一个会话。Context 会作为 OpenHands 系统级会话上下文，Agent 会作为原生子 Agent 定义，Hook 会通过官方 hook_config 注册。'}</p></div><button ref={closeButton} type="button" aria-label="关闭插件管理" disabled={busy} onClick={onClose}><X size={18}/></button></header>
+      {bindingId && <div className="agent-capability-tabs"><button type="button" className={managerTab === 'CAPABILITIES' ? 'active' : ''} onClick={() => setManagerTab('CAPABILITIES')}>能力</button><button type="button" className={managerTab === 'CREDENTIALS' ? 'active' : ''} onClick={() => setManagerTab('CREDENTIALS')}>认证</button></div>}
+      {managerTab === 'CREDENTIALS' ? <><div className="agent-capability-summary">{!credentialQuery.data?.initialized_at && <span>此会话未记录此前的认证同步状态</span>}<span>同步会追加新变量，并覆盖同名变量的当前值</span></div><div className="agent-capability-error"><p>取消选择、删除认证或切换认证类型不会从已存在会话撤销变量；请新建会话以轮换认证</p></div><div className="agent-capability-list">{credentialQuery.isLoading ? <p>正在读取认证信息…</p> : credentialQuery.error ? <p>{credentialQuery.error instanceof Error ? credentialQuery.error.message : '认证信息暂不可用。'}</p> : credentialQuery.data?.credentials.length ? credentialQuery.data.credentials.map(credential => { const checked = selectedCredentialIds.includes(credential.id); const state = credential.sync_state === 'CURRENT' ? '已同步' : credential.sync_state === 'NEEDS_SYNC' ? '需要同步' : '未记录'; return <button type="button" key={credential.id} className={checked ? 'selected' : ''} onClick={() => toggleCredential(credential)}><span className="agent-capability-icon plugin"><ShieldAlert size={17}/></span><span><b>{credential.name}</b><small>{credential.target_host}{credential.target_path} · {credential.auth_type === 'TOKEN' ? 'Token' : '用户名密码'}</small><em>{state}</em></span><i aria-hidden="true">{checked ? <Check size={15}/> : null}</i></button>; }) : <p>当前没有可同步的认证信息。</p>}</div>{credentialSync.error && <div className="agent-capability-error"><p>{credentialSync.error.message}</p></div>}<footer><button type="button" className="secondary" disabled={busy} onClick={onClose}>关闭</button><button type="button" className="primary" disabled={busy || credentialQuery.isLoading} onClick={() => credentialSync.mutate()}><RefreshCw size={14}/>{credentialSync.isPending ? '正在同步…' : '同步认证'}</button></footer></> : <>
       <div className="agent-capability-toolbar"><div className="agent-capability-tabs">{([['ALL', 'all'], ['PLUGIN', 'plugin'], ['MCP', 'MCP'], ['SKILL', 'skill'], ['CONTEXT', 'context'], ['AGENT_DEFINITION', 'agent'], ['HOOK', 'hook']] as const).map(([value, label]) => <button type="button" key={value} className={kind === value ? 'active' : ''} onClick={() => setKind(value)}>{label}</button>)}</div><div className="agent-capability-toolbar-actions">{!readonlyCreationOnly && <button type="button" className="agent-capability-select-visible" disabled={!selectableVisibleIds.length} onClick={toggleVisible}>{allVisibleSelected ? '取消选择筛选结果' : `选择筛选结果 (${selectableVisibleIds.length})`}</button>}<label className="agent-capability-search"><Search size={15}/><input value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索名称、说明或文件…"/></label></div></div>
       <div className="agent-capability-summary"><span>{readonlyCreationOnly ? <>已装配 <b>{kind === 'CONTEXT' ? frozenContextCount : kind === 'HOOK' ? frozenHookCount : frozenAgentCount}</b> 个 {kind === 'CONTEXT' ? 'Context' : kind === 'HOOK' ? 'Hook' : 'Agent'}</> : <>{bindingId ? '已注册' : '已选择'} <b>{selectedIds.length}</b> 项</>}</span><span>{readonlyCreationOnly ? `${kind === 'CONTEXT' ? 'Context' : kind === 'HOOK' ? 'Hook' : 'Agent'} 在创建会话时冻结，仅供查看，不能新增、编辑、取消或删除。` : bindingId ? '可继续注册新能力；已注册能力已锁定，不能取消或删除。' : '选择只作用于本次新会话，不会改变工作区或其他会话。'}</span></div>
       {(kind === 'ALL' || kind === 'SKILL') && collectionsQuery.data?.length ? <section className="agent-capability-collections"><span>Skill 组合</span><div>{collectionsQuery.data.map(collection => { const memberIds = collection.members.map(member => member.id).filter(id => byId.has(id)); const selected = memberIds.length > 0 && memberIds.every(id => selectedIds.includes(id)); return <button type="button" key={collection.id} className={selected ? 'selected' : ''} onClick={() => toggleCollection(collection)}><Layers3 size={13}/><b>{collection.name}</b><em>{collection.members.length}</em>{selected && <Check size={13}/>}</button>; })}</div></section> : null}
       <div className="agent-capability-list">{catalogQuery.isLoading ? <p>正在读取能力仓库…</p> : visible.length === 0 ? <p>{readonlyCreationOnly ? `此会话创建时没有装配 ${kind === 'CONTEXT' ? 'Context' : kind === 'HOOK' ? 'Hook' : 'Agent'}。` : '没有匹配的已发布能力。'}</p> : visible.map(item => { const checked = selectedIds.includes(item.id); const isFrozenCreationOnly = Boolean(bindingId && ['CONTEXT', 'AGENT_DEFINITION', 'HOOK'].includes(item.capability_type) && frozenCreationOnlyIds.has(item.id)); const locked = Boolean(bindingId && (conversationCapabilities ?? []).some(enabled => enabled.id === item.id)); const isMcp = item.capability_type === 'MCP'; const readiness = mcpReadiness[item.id]; const checking = isMcp && checkingMcpIds.has(item.id); const readinessLabel = item.capability_type === 'CONTEXT' ? '系统上下文' : item.capability_type === 'AGENT_DEFINITION' ? 'Agent' : item.capability_type === 'HOOK' ? 'Hook' : !isMcp ? (item.capability_type === 'SKILL' ? '技能' : item.capability_type) : !checked ? 'MCP' : checking ? '检测中' : readiness?.state === 'READY' ? '已连接' : readiness?.error_kind === 'timeout' ? '连接超时' : readiness?.error_kind === 'connection' ? '连接失败' : '不可用'; const detail = isFrozenCreationOnly ? '创建会话时已装配，仅供查看，不能编辑或删除。' : locked ? '已注册到当前会话，不能取消或删除。' : item.capability_type === 'CONTEXT' ? '创建会话时冻结，并追加到 OpenHands 系统提示词后缀。' : item.capability_type === 'AGENT_DEFINITION' ? '创建会话时冻结为 OpenHands 原生子 Agent 定义。' : item.capability_type === 'HOOK' ? '创建会话时冻结，并通过 OpenHands 官方 hook_config 注册。' : isMcp && checked && readiness?.state === 'UNAVAILABLE' ? `MCP ${readinessLabel}；不会保存为新会话默认能力。` : item.description || item.filename; const lockedLabel = isFrozenCreationOnly ? `${item.capability_key}（创建时已装配，只读）` : `${item.capability_key}（已注册，不能取消）`; const lockedTitle = isFrozenCreationOnly ? '该能力在创建会话时已装配，仅供查看，不能新增、编辑或删除。' : '该能力已注册到当前会话，不能取消或删除。'; return <button type="button" key={item.id} className={`${checked ? 'selected' : ''}${locked ? ' locked' : ''}`} disabled={locked} aria-label={locked ? lockedLabel : undefined} title={locked ? lockedTitle : undefined} onClick={() => toggle(item)}><span className={`agent-capability-icon ${item.capability_type.toLowerCase()}`}><Boxes size={17}/></span><span><b>{item.capability_key}</b><small>{detail}</small><em className={isMcp && checked ? `mcp-status ${readiness?.state === 'READY' ? 'ready' : readiness?.state === 'UNAVAILABLE' ? 'unavailable' : 'checking'}` : undefined}>{readinessLabel}</em></span><i aria-hidden="true">{checked ? <Check size={15}/> : null}</i></button>; })}</div>
       {save.error && <div className="agent-capability-error"><p>{save.error.message}</p>{save.error instanceof ApiError && save.error.code === 'AGENT_CONVERSATION_MARKETPLACE_UNAVAILABLE' && onCreateEnhancedConversation && <div className="agent-capability-migration"><span>这条历史会话未在创建时注册原生能力市场。可新建一个空能力会话后，再按需选择要挂载的能力；此会话的历史内容会保留不变。</span><button type="button" className="secondary" disabled={save.isPending} onClick={() => onCreateEnhancedConversation([])}><Plus size={13}/>新建可使用能力的会话</button></div>}</div>}
-      <footer>{!readonlyCreationOnly && selectedMcpIds.length > 0 && <button type="button" className="secondary" disabled={save.isPending || checkingMcpIds.size > 0} onClick={() => void checkMcpReadiness(selectedMcpIds)}>重新检测 MCP</button>}<button type="button" className="secondary" disabled={save.isPending} onClick={onClose}>{readonlyCreationOnly ? '关闭' : '取消'}</button>{!readonlyCreationOnly && <button type="button" className="primary" disabled={save.isPending || checkingMcpIds.size > 0} onClick={() => save.mutate()}>{save.isPending ? '正在注册…' : bindingId ? '注册到当前会话' : '用于新建会话'}</button>}</footer>
+      <footer>{!readonlyCreationOnly && selectedMcpIds.length > 0 && <button type="button" className="secondary" disabled={save.isPending || checkingMcpIds.size > 0} onClick={() => void checkMcpReadiness(selectedMcpIds)}>重新检测 MCP</button>}<button type="button" className="secondary" disabled={save.isPending} onClick={onClose}>{readonlyCreationOnly ? '关闭' : '取消'}</button>{!readonlyCreationOnly && <button type="button" className="primary" disabled={save.isPending || checkingMcpIds.size > 0} onClick={() => save.mutate()}>{save.isPending ? '正在注册…' : bindingId ? '注册到当前会话' : '用于新建会话'}</button>}</footer></>}
     </section>
   </div>;
 }

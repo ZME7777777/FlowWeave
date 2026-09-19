@@ -130,6 +130,13 @@ export interface WebsiteCredentialWrite {
   auth_type: 'USERNAME_PASSWORD' | 'TOKEN'; username?: string | null; secret?: string | null;
   row_version?: number | null;
 }
+export interface AgentConversationCredentialSyncEntry extends WebsiteCredential {
+  sync_state: 'CURRENT' | 'NEEDS_SYNC' | 'UNRECORDED';
+}
+export interface AgentConversationCredentialSyncState {
+  initialized_at?: string | null;
+  credentials: AgentConversationCredentialSyncEntry[];
+}
 export interface NodeAsset {
   id: string; directory_id?: string | null; name: string; description: string;
   icon_kind: string; icon_value: string; row_version: number;

@@ -32,6 +32,11 @@ from flowweave.modules.agent_sessions.application.conversations import (
     validated_user_message_event,
     validated_workspace_references,
 )
+from flowweave.modules.agent_sessions.application.credential_sync import (
+    list_credential_sync_state,
+    record_initial_credential_sync,
+    synchronize_credentials,
+)
 from flowweave.modules.agent_sessions.application.deletion import delete_binding_records
 from flowweave.modules.agent_sessions.application.event_branch import complete_active_branch
 from flowweave.modules.agent_sessions.application.flow_node_locator import (
@@ -56,6 +61,7 @@ from flowweave.modules.agent_sessions.public import (
 )
 from flowweave.modules.agent_workspaces import public as agent_workspace_host
 from flowweave.modules.catalog.public import resolve_version
+from flowweave.modules.credentials.application.service import credentials_for_agent
 from flowweave.modules.environments.public import (
     lock_referenceable_version,
     runtime_server_identity,
@@ -1128,10 +1134,13 @@ def _create_native_conversation(
         host_root=host_root,
         runtime_root=runtime_root,
         runtime_server_identity=server_identity,
-        system_message_suffix_append=_node_context_suffix(
-            db,
-            snapshot=snapshot,
-            attempt_id=attempt_id,
+        system_message_suffix_append="\n\n".join(
+            part
+            for part in (
+                _node_context_suffix(db, snapshot=snapshot, attempt_id=attempt_id),
+                credentials_for_agent(db)[1],
+            )
+            if part
         ),
         load_memory=memory_enabled,
     )
@@ -1153,12 +1162,14 @@ def _create_native_conversation(
         conversation_id=item.openhands_conversation_id,
         node_attempt_id=attempt_id,
     )
+    conversation_secrets, _credential_context = credentials_for_agent(db)
     request = replace(
         request,
         workspace_ref=working_directory,
         runtime_sandbox_id=connection.managed_runtime_id,
         runtime_resource_name=connection.resource_name,
         runtime_base_url=f"http://{connection.resource_name}:8000",
+        conversation_secrets=conversation_secrets,
     )
     handle = get_runtime().create_conversation(request)
     if handle.conversation_id != item.openhands_conversation_id:
@@ -1179,6 +1190,7 @@ def _create_native_conversation(
             working_directory=working_directory,
             work_directory_version_id=work_directory_version_id,
         )
+    record_initial_credential_sync(db, item)
     db.add(
         HumanAction(
             flow_run_id=run.id,
@@ -1514,10 +1526,13 @@ def _create_or_reload_node_bootstrap(
         host_root=host_root,
         runtime_root=runtime_root,
         runtime_server_identity=server_identity,
-        system_message_suffix_append=_node_context_suffix(
-            db,
-            snapshot=snapshot,
-            attempt_id=binding.node_attempt_id,
+        system_message_suffix_append="\n\n".join(
+            part
+            for part in (
+                _node_context_suffix(db, snapshot=snapshot, attempt_id=binding.node_attempt_id),
+                credentials_for_agent(db)[1],
+            )
+            if part
         ),
         load_memory=memory_enabled,
     )
@@ -1539,17 +1554,20 @@ def _create_or_reload_node_bootstrap(
         conversation_id=binding.openhands_conversation_id,
         node_attempt_id=binding.node_attempt_id,
     )
+    conversation_secrets, _credential_context = credentials_for_agent(db)
     request = replace(
         request,
         workspace_ref=working_directory,
         runtime_sandbox_id=connection.managed_runtime_id,
         runtime_resource_name=connection.resource_name,
         runtime_base_url=f"http://{connection.resource_name}:8000",
+        conversation_secrets=conversation_secrets,
     )
     created = runtime.create_conversation(request)
     if created.conversation_id != binding.openhands_conversation_id:
         raise DomainError("AGENT_CONVERSATION_IDENTITY_DRIFT", "会话身份校验失败", 409)
     identity = runtime.reload_conversation(handle)
+    record_initial_credential_sync(db, binding)
     return handle, identity.event_id
 
 
@@ -3068,6 +3086,40 @@ def stop_conversation(db: Session, binding_id: str) -> dict[str, Any]:
     return {"accepted": True}
 
 
+def node_credential_sync_state(
+    db: Session, *, flow_run_id: str, attempt_id: str, binding_id: str
+) -> dict[str, Any]:
+    binding = _binding_for_attempt(
+        db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
+    )
+    return list_credential_sync_state(db, binding)
+
+
+def synchronize_node_credentials(
+    db: Session,
+    *,
+    flow_run_id: str,
+    attempt_id: str,
+    binding_id: str,
+    credential_ids: tuple[str, ...],
+) -> dict[str, Any]:
+    _assert_node_session_writable(
+        db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
+    )
+    binding = _binding_for_attempt(
+        db,
+        flow_run_id=flow_run_id,
+        attempt_id=attempt_id,
+        binding_id=binding_id,
+        lock=True,
+    )
+    if binding.lifecycle != "ACTIVE":
+        raise DomainError("AGENT_CONVERSATION_NOT_READY", "会话当前无法同步认证", 409)
+    return synchronize_credentials(
+        db, binding, _handle(db, binding.id), get_runtime(), credential_ids
+    )
+
+
 def stop_flow_run_conversation(db: Session, flow_run_id: str, binding_id: str) -> dict[str, Any]:
     get_runtime().cancel(_flow_run_handle(db, flow_run_id, binding_id))
     return {"accepted": True}
@@ -3532,9 +3584,11 @@ __all__ = (
     "node_conversation_binding",
     "node_conversation_context",
     "node_input_readiness",
+    "node_credential_sync_state",
     "node_terminal_resource_details",
     "interrupt_node_conversation",
     "resume_node_conversation",
     "switch_node_conversation_model",
+    "synchronize_node_credentials",
     "terminal_resource_details",
 )

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Iterable
 from typing import Any
 
 from sqlalchemy import select
@@ -145,7 +146,9 @@ def matches_path(item: WebsiteCredential, path: str) -> bool:
     return normalized == target_path or normalized.startswith(target_path + "/")
 
 
-def credentials_for_agent(db: Session) -> tuple[dict[str, str], str]:
+def resolve_credentials_for_agent(
+    db: Session, credential_ids: Iterable[str] | None = None
+) -> tuple[dict[str, str], str, list[dict[str, Any]]]:
     """Return OpenHands secrets and only non-sensitive matching metadata.
 
     OpenHands exports a secret only to a command that references its variable
@@ -153,10 +156,23 @@ def credentials_for_agent(db: Session) -> tuple[dict[str, str], str]:
     """
     values: dict[str, str] = {}
     directory: list[dict[str, object]] = []
+    requested_ids = (
+        tuple(dict.fromkeys(credential_ids or ())) if credential_ids is not None else None
+    )
     query = select(WebsiteCredential).order_by(
         WebsiteCredential.target_host, WebsiteCredential.target_path, WebsiteCredential.name
     )
-    for item in db.scalars(query):
+    if requested_ids is not None:
+        query = query.where(WebsiteCredential.id.in_(requested_ids))
+    items = list(db.scalars(query))
+    if requested_ids is not None:
+        found = {item.id for item in items}
+        missing = next(
+            (credential_id for credential_id in requested_ids if credential_id not in found), None
+        )
+        if missing is not None:
+            raise not_found("website_credential", missing)
+    for item in items:
         prefix = _env_prefix(item)
         if item.auth_type == "USERNAME_PASSWORD":
             values[f"{prefix}_USERNAME"] = decrypt_secret(item.encrypted_username or b"")
@@ -179,8 +195,9 @@ def credentials_for_agent(db: Session) -> tuple[dict[str, str], str]:
                 "source_env": source_env,
             }
         )
+    summaries = [_summary(item) for item in items]
     if not directory:
-        return {}, ""
+        return {}, "", summaries
     instructions = (
         "# 受控认证协议\n\n"
         "你只能按照下方凭据目录使用认证变量。\n\n"
@@ -210,4 +227,11 @@ def credentials_for_agent(db: Session) -> tuple[dict[str, str], str]:
         )
         + "\n```"
     )
+    return values, instructions, summaries
+
+
+def credentials_for_agent(db: Session) -> tuple[dict[str, str], str]:
+    """Return all current credential values and their safe system directory."""
+
+    values, instructions, _summaries = resolve_credentials_for_agent(db)
     return values, instructions

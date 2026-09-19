@@ -666,6 +666,31 @@ typecheck、定向 ESLint 与 `git diff --check` 通过；无 OpenHands 源码�
 `0119_website_credential_generic_token`、认证目录／路径／Token 兼容定向 pytest（4 passed）、Web
 TypeScript typecheck、定向 ESLint 与 `git diff --check` 通过；无 OpenHands 源码、Docker 或远端操作。
 
+### FR-485 既有会话认证手动同步 — DONE
+
+依赖：`FR-484`。
+
+目标：
+
+- 新建会话继续默认注入所有当前认证；既有会话不进行后台扫描或自动同步。
+- 在当前会话的“能力”面板新增“认证”页，用户显式选择认证后才调用固定 OpenHands `POST
+  /conversations/{conversation_id}/secrets`，新增变量追加、同名变量覆盖为当前值。
+- 持久化仅保存认证 ID、已同步版本和安全元数据；不保存明文 Secret、认证目录正文或 HTTP 认证方案。
+- 明确既有历史会话的此前同步状态未知；取消选择、删除认证或改变认证类型不能撤销 OpenHands 已注入变量，
+  真正轮换必须新建会话。
+
+完成：新建 Agent Workspace 与 FlowRun 节点会话均在 OpenHands 原生创建成功且身份校验后，默认注入全部当前
+认证，并以不含明文的认证 ID／版本账本记录本次注入。既有与原生 Fork 会话始终保持 `UNRECORDED`，没有后台
+扫描、推断或自动同步。当前会话的“能力”面板新增懒加载“认证”页：初次读取默认勾选当前认证，但只有用户点击
+同步才调用 OpenHands 正式 `/api/conversations/{conversation_id}/secrets`；新变量追加、同名变量覆盖。账本仅记录
+已同步版本，认证更新显示需同步；删除、取消选择或认证类型变化不会声称撤销 Runtime 变量，页面要求新建会话完成
+轮换。认证目录继续在新会话的系统提示词后缀中按路径优先、域名逐级回退指导选择；Token 原样注入，不自动添加
+`Bearer` 或其他前缀。
+
+验收：受影响 Python Ruff／语法检查、Alembic 唯一 head
+`0120_agent_conversation_credential_sync`、Web TypeScript typecheck、定向 ESLint 与 `git diff --check` 通过；
+无 OpenHands 源码、Docker、迁移实跑、远端或业务 E2E 操作。
+
 ### FR-414 FlowRun 独立终端记录目录预创建 — DONE
 
 依赖：`FR-404`。

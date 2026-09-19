@@ -129,6 +129,10 @@ class NodeCapabilityAddWrite(_Write):
     capability_version_id: str = Field(min_length=1, max_length=36)
 
 
+class NodeCredentialSyncWrite(_Write):
+    credential_ids: list[str] = Field(default_factory=list, max_length=100)
+
+
 class NodeSessionModelWrite(_Write):
     model_provider_id: str = Field(min_length=1, max_length=36)
     model_name: str = Field(min_length=1, max_length=240)
@@ -297,6 +301,41 @@ async def add_node_session_capability(
             attempt_id=attempt_id,
             binding_id=binding_id,
             capability_version_id=payload.capability_version_id,
+        ),
+    )
+
+
+@router.get(f"{_BASE}/{{binding_id}}/credential-sync")
+async def get_node_session_credential_sync(
+    flow_run_id: str, attempt_id: str, binding_id: str, db: Db
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: agent_sessions.flow_node_conversations.node_credential_sync_state(
+            session,
+            flow_run_id=flow_run_id,
+            attempt_id=attempt_id,
+            binding_id=binding_id,
+        ),
+    )
+
+
+@router.post(f"{_BASE}/{{binding_id}}/credential-sync")
+async def synchronize_node_session_credentials(
+    flow_run_id: str,
+    attempt_id: str,
+    binding_id: str,
+    payload: NodeCredentialSyncWrite,
+    db: Db,
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: agent_sessions.flow_node_conversations.synchronize_node_credentials(
+            session,
+            flow_run_id=flow_run_id,
+            attempt_id=attempt_id,
+            binding_id=binding_id,
+            credential_ids=tuple(payload.credential_ids),
         ),
     )
 

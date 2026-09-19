@@ -2034,6 +2034,22 @@ class OpenHandsRuntime:
     def create_conversation(self, request: StartAttemptRequest) -> RuntimeHandle:
         return self._create(request, run=False)
 
+    def update_conversation_secrets(self, handle: RuntimeHandle, secrets: dict[str, str]) -> None:
+        """Use OpenHands' additive secret update endpoint without persisting values."""
+
+        self._request(
+            "POST",
+            f"/api/conversations/{handle.conversation_id}/secrets",
+            base_url=self._base_url_for_handle(handle),
+            session_api_key=self._session_key_for_handle(handle),
+            json={
+                "secrets": {
+                    name: {"kind": "StaticSecret", "value": value}
+                    for name, value in secrets.items()
+                }
+            },
+        )
+
     def conversation_title(self, handle: RuntimeHandle) -> str | None:
         title = self._conversation_state(handle).get("title")
         return title.strip() if isinstance(title, str) and title.strip() else None

@@ -98,6 +98,10 @@ class AgentConversationBinding(Base):
     create_idempotency_key: Mapped[str] = mapped_column(String(200))
     bootstrap_parent_event_id: Mapped[str | None] = mapped_column(String(200))
     initial_user_event_id: Mapped[str | None] = mapped_column(String(200))
+    # A NULL value deliberately preserves the unknown state of historical and
+    # native-forked conversations. We never infer secret injection from a
+    # Conversation's environment or event history.
+    credential_sync_initialized_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # NULL keeps the default creation-time order; only a dragged session has
     # a workspace-local explicit rank.
     manual_sort_rank: Mapped[Decimal | None] = mapped_column(Numeric(30, 12))
@@ -160,6 +164,28 @@ class AgentConversationCapability(Base):
     digest: Mapped[str] = mapped_column(String(64))
     position: Mapped[int] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class AgentConversationCredentialSync(Base):
+    """Non-secret record of one credential version sent to a Conversation."""
+
+    __tablename__ = "agent_conversation_credential_syncs"
+    __table_args__ = (
+        UniqueConstraint(
+            "binding_id", "credential_id", name="uq_agent_conversation_credential_sync"
+        ),
+        CheckConstraint(
+            "credential_row_version >= 1", name="ck_agent_conversation_credential_sync_version"
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    binding_id: Mapped[str] = mapped_column(String(36), index=True)
+    credential_id: Mapped[str] = mapped_column(String(36), index=True)
+    credential_row_version: Mapped[int] = mapped_column(Integer)
+    synced_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
 
 
 class AgentConversationCommand(Base):
