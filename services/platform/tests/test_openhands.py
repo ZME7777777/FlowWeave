@@ -60,6 +60,7 @@ from flowweave.shared.infrastructure.http_transport import (
     register_http_transport,
     unregister_http_transport,
 )
+from flowweave.shared.schemas import WebsiteCredentialWrite
 
 
 @pytest.fixture(autouse=True)
@@ -265,6 +266,7 @@ def test_credential_context_is_a_structured_host_scoped_directory(
         encrypted_username=b"username",
         encrypted_secret=b"password",
         target_host="easysearch.example.com",
+        target_path="/console",
         include_subdomains=False,
         name="EasySearch",
     )
@@ -274,6 +276,7 @@ def test_credential_context_is_a_structured_host_scoped_directory(
         encrypted_username=None,
         encrypted_secret=b"token",
         target_host="api.example.test",
+        target_path="/",
         include_subdomains=True,
         name="Example API",
     )
@@ -302,18 +305,22 @@ def test_credential_context_is_a_structured_host_scoped_directory(
     assert "# 受控认证协议" in context
     assert "凭据目录（仅元数据；不含凭据明文）" in context
     assert "不得全局 `export`" in context
+    assert "target_path" in context
+    assert "最长" in context
     directory = json.loads(context.split("```json\n", 1)[1].split("\n```", 1)[0])
     assert directory == {
-        "schema_version": 1,
+        "schema_version": 2,
         "credentials": [
             {
                 "target_host": "api.example.test",
+                "target_path": "/",
                 "host_scope": "subdomains",
                 "auth_type": "token",
                 "source_env": {"token": "$FLOWWEAVE_AUTH_20000000000040008000000000000002_TOKEN"},
             },
             {
                 "target_host": "easysearch.example.com",
+                "target_path": "/console",
                 "host_scope": "exact",
                 "auth_type": "username_password",
                 "source_env": {
@@ -325,6 +332,35 @@ def test_credential_context_is_a_structured_host_scoped_directory(
     }
     assert "ES_QUERY" not in context
     assert "example-token" not in context
+
+
+def test_credential_path_matching_uses_directory_boundaries() -> None:
+    credential = SimpleNamespace(target_path="/admin")
+
+    assert credential_service.matches_path(credential, "/admin")
+    assert credential_service.matches_path(credential, "/admin/users")
+    assert not credential_service.matches_path(credential, "/administrator")
+
+
+def test_credential_target_path_is_normalized_and_rejects_url_components() -> None:
+    credential = WebsiteCredentialWrite(
+        name="Admin",
+        target_host="Example.COM.",
+        target_path="/admin/",
+        username="user",
+        secret="secret",
+    )
+
+    assert credential.target_host == "example.com"
+    assert credential.target_path == "/admin"
+    with pytest.raises(ValueError, match="target_path"):
+        WebsiteCredentialWrite(
+            name="Admin",
+            target_host="example.com",
+            target_path="/admin?role=admin",
+            username="user",
+            secret="secret",
+        )
 
 
 def test_shared_flow_run_runtime_uses_attempt_record_workspace(

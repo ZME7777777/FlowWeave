@@ -166,6 +166,7 @@ class TerminalEnvironmentWrite(ApiModel):
 class WebsiteCredentialWrite(ApiModel):
     name: str = Field(min_length=1, max_length=200)
     target_host: str = Field(min_length=1, max_length=253)
+    target_path: str = Field(default="/", min_length=1, max_length=2048)
     include_subdomains: bool = False
     auth_type: Literal["USERNAME_PASSWORD", "BEARER_TOKEN"] = "USERNAME_PASSWORD"
     username: str | None = Field(default=None, max_length=320)
@@ -187,6 +188,19 @@ class WebsiteCredentialWrite(ApiModel):
         ):
             raise ValueError("target_host must be a DNS host without scheme, path, or port")
         self.target_host = value
+        path = self.target_path.strip()
+        if (
+            not path.startswith("/")
+            or path.startswith("//")
+            or "?" in path
+            or "#" in path
+            or "\\" in path
+        ):
+            raise ValueError("target_path must be an absolute URL path without query or fragment")
+        segments = path.split("/")
+        if any(segment in {".", ".."} for segment in segments):
+            raise ValueError("target_path must not contain dot segments")
+        self.target_path = "/" if path == "/" else path.rstrip("/")
         self.name = self.name.strip()
         if self.username is not None:
             self.username = self.username.strip() or None

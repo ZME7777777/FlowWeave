@@ -621,6 +621,28 @@ API、数据库、OpenHands、Runtime Provider、Docker 或持久化契约。
 验收：受影响 Python Ruff format/check、`py_compile`、认证上下文定向 pytest、Alembic head、
 `git diff --check` 与任务状态唯一性通过；无迁移、无 OpenHands 源码改动、无 Docker 或远端操作。
 
+### FR-483 网站认证路径范围与优先级 — DONE
+
+依赖：`FR-419`。
+
+目标：
+
+- 网站认证条目新增规范化 `target_path`；`/` 表示整个主机，具体路径以完整目录边界前缀匹配，不能将
+  `/admin` 误用于 `/administrator`。
+- 同一主机存在多套认证时，凭据目录必须让 Agent 先选择最长匹配路径；没有路径范围命中时才按最具体的
+  主机逐层回退。父域名条目继续必须显式开启子域匹配，且不得把公共后缀当作认证范围。
+- API、数据库迁移、页面 DTO 与编辑界面同步更新；系统提示词只公开路径／主机范围、认证类型和环境变量名，
+  不公开凭据值。
+
+完成：认证条目增加 `target_path`，旧记录经迁移统一回填为 `/`；同一域名可按路径保存不同凭据。路径输入
+拒绝 query、fragment、反斜杠与 dot segment，并将尾随 `/` 规范化。凭据目录升级为 schema `2`，明确最长
+目录边界前缀优先、无具体路径范围时再按显式子域许可逐层回退主机、同优先级拒绝任选的规则。认证管理页面
+可编辑和查看路径范围。未改变 OpenHands 原生 Secret 注入边界，也未将 Secret 写入目录、页面或日志。
+
+验收：受影响 Python `py_compile`、Ruff format/check、Alembic 唯一 head
+`0118_credential_target_path`、认证目录／路径边界／路径 schema 定向 pytest（3 passed）、Web TypeScript
+typecheck、定向 ESLint 与 `git diff --check` 通过；无 OpenHands 源码、Docker 或远端操作。
+
 ### FR-414 FlowRun 独立终端记录目录预创建 — DONE
 
 依赖：`FR-404`。

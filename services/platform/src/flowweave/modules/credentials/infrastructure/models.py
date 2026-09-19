@@ -24,8 +24,9 @@ class WebsiteCredential(Base):
         UniqueConstraint(
             "owner_user_id",
             "target_host",
+            "target_path",
             "name",
-            name="uq_website_credential_owner_host_name",
+            name="uq_website_credential_owner_host_path_name",
         ),
         CheckConstraint(
             "auth_type IN ('USERNAME_PASSWORD', 'BEARER_TOKEN')",
@@ -37,6 +38,7 @@ class WebsiteCredential(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
     name: Mapped[str] = mapped_column(String(200))
     target_host: Mapped[str] = mapped_column(String(253), index=True)
+    target_path: Mapped[str] = mapped_column(String(2048), default="/")
     include_subdomains: Mapped[bool] = mapped_column(Boolean, default=False)
     auth_type: Mapped[str] = mapped_column(String(30))
     encrypted_username: Mapped[bytes | None] = mapped_column(LargeBinary)

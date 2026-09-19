@@ -39,6 +39,7 @@ def _summary(item: WebsiteCredential) -> dict[str, Any]:
         "id": item.id,
         "name": item.name,
         "target_host": item.target_host,
+        "target_path": item.target_path,
         "include_subdomains": item.include_subdomains,
         "auth_type": item.auth_type,
         "has_username": item.encrypted_username is not None,
@@ -53,7 +54,7 @@ def _summary(item: WebsiteCredential) -> dict[str, Any]:
 
 def list_credentials(db: Session) -> list[dict[str, Any]]:
     query = select(WebsiteCredential).order_by(
-        WebsiteCredential.target_host, WebsiteCredential.name
+        WebsiteCredential.target_host, WebsiteCredential.target_path, WebsiteCredential.name
     )
     return [_summary(item) for item in db.scalars(query)]
 
@@ -84,6 +85,7 @@ def save_credential(
         item = WebsiteCredential(
             name=payload.name,
             target_host=payload.target_host,
+            target_path=payload.target_path,
             include_subdomains=payload.include_subdomains,
             auth_type=payload.auth_type,
             encrypted_username=encrypt_secret(payload.username) if payload.username else None,
@@ -92,9 +94,10 @@ def save_credential(
         )
         db.add(item)
     else:
-        item.name, item.target_host, item.include_subdomains, item.auth_type = (
+        item.name, item.target_host, item.target_path, item.include_subdomains, item.auth_type = (
             payload.name,
             payload.target_host,
+            payload.target_path,
             payload.include_subdomains,
             payload.auth_type,
         )
@@ -132,6 +135,16 @@ def matches_host(item: WebsiteCredential, host: str) -> bool:
     )
 
 
+def matches_path(item: WebsiteCredential, path: str) -> bool:
+    """Match the configured path as a whole directory prefix."""
+
+    target_path = item.target_path
+    normalized = "/" + path.lstrip("/")
+    if target_path == "/":
+        return True
+    return normalized == target_path or normalized.startswith(target_path + "/")
+
+
 def credentials_for_agent(db: Session) -> tuple[dict[str, str], str]:
     """Return OpenHands secrets and only non-sensitive matching metadata.
 
@@ -141,7 +154,7 @@ def credentials_for_agent(db: Session) -> tuple[dict[str, str], str]:
     values: dict[str, str] = {}
     directory: list[dict[str, object]] = []
     query = select(WebsiteCredential).order_by(
-        WebsiteCredential.target_host, WebsiteCredential.name
+        WebsiteCredential.target_host, WebsiteCredential.target_path, WebsiteCredential.name
     )
     for item in db.scalars(query):
         prefix = _env_prefix(item)
@@ -160,6 +173,7 @@ def credentials_for_agent(db: Session) -> tuple[dict[str, str], str]:
         directory.append(
             {
                 "target_host": item.target_host,
+                "target_path": item.target_path,
                 "host_scope": "subdomains" if item.include_subdomains else "exact",
                 "auth_type": auth_type,
                 "source_env": source_env,
@@ -171,17 +185,23 @@ def credentials_for_agent(db: Session) -> tuple[dict[str, str], str]:
         "# 受控认证协议\n\n"
         "你只能按照下方凭据目录使用认证变量。\n\n"
         "执行任何可能访问网络的命令前：\n"
-        "1. 从该命令实际访问的 URL 提取并规范化主机名。\n"
-        "2. 只选择 `target_host` 与主机名相同的条目；仅当 `host_scope` 为 `subdomains` 时，"
-        "才允许匹配其子域。\n"
-        "3. 如 Skill 或脚本需要自定义环境变量名，只能在这条访问已匹配主机的命令内，将该条目的 "
+        "1. 从该命令实际访问的 URL 提取并规范化主机名和路径；路径为空时视为 `/`，"
+        "忽略 query 与 fragment。\n"
+        "2. 先从主机匹配的条目中选择 `target_path` 最长且按完整目录边界匹配的条目：`/admin` 可匹配 "
+        "`/admin` 或 `/admin/users`，不能匹配 `/administrator`。`/` 是整台主机的兜底路径。\n"
+        "3. 若没有具体路径范围命中，才按主机从完整主机名开始逐层去掉最左标签，"
+        "选择最具体的可用条目；"
+        "仅当 `host_scope` 为 `subdomains` 时，才允许父域条目匹配子域。不得把公共后缀（如 `com`）"
+        "当作认证范围。\n"
+        "4. 两个条目在同一主机／路径优先级上并列时不得任选；不得使用认证变量，并请用户消除歧义。\n"
+        "5. 如 Skill 或脚本需要自定义环境变量名，只能在这条访问已匹配主机的命令内，将该条目的 "
         "`source_env` 映射给它；不得全局 `export`。\n"
-        "4. 不得跨条目、跨主机使用或猜测源变量；不得输出、写入文件、提交或向用户索取凭据值。\n"
-        "5. 没有匹配条目时，不得使用认证变量；请用户在认证管理中新增条目。\n\n"
+        "6. 不得跨条目、跨主机使用或猜测源变量；不得输出、写入文件、提交或向用户索取凭据值。\n"
+        "7. 没有匹配条目时，不得使用认证变量；请用户在认证管理中新增条目。\n\n"
         "# 凭据目录（仅元数据；不含凭据明文）\n\n"
         "```json\n"
         + json.dumps(
-            {"schema_version": 1, "credentials": directory},
+            {"schema_version": 2, "credentials": directory},
             ensure_ascii=False,
             indent=2,
             sort_keys=True,
