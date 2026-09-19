@@ -162,6 +162,88 @@ def test_git_history_returns_reusable_object_ids_for_every_log_record(tmp_path):
         assert diff["path"] == "history.txt"
 
 
+def test_git_working_changes_separate_staged_unstaged_and_untracked_files(tmp_path):
+    repository = tmp_path / "project"
+    repository.mkdir()
+
+    def git(*arguments: str) -> None:
+        subprocess.run(
+            ["git", "-C", str(repository), *arguments],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    git("init")
+    git("config", "user.name", "FlowWeave Test")
+    git("config", "user.email", "test@example.invalid")
+    (repository / "staged.txt").write_text("base staged\n")
+    (repository / "unstaged.txt").write_text("base unstaged\n")
+    git("add", ".")
+    git("commit", "-m", "base")
+
+    (repository / "staged.txt").write_text("staged change\n")
+    git("add", "staged.txt")
+    (repository / "unstaged.txt").write_text("unstaged change\n")
+    (repository / "untracked.txt").write_text("new file\n")
+
+    changes = workspace.git_working_changes(
+        repository,
+        "/runtime/workspace/project",
+        ("/runtime/workspace/project",),
+        "/runtime/workspace/project",
+    )
+
+    assert changes["staged"] == [{"path": "staged.txt", "status": "M"}]
+    assert changes["unstaged"] == [
+        {"path": "unstaged.txt", "status": "M"},
+        {"path": "untracked.txt", "status": "?"},
+    ]
+
+    staged_diff = workspace.git_working_file_diff(
+        repository,
+        "/runtime/workspace/project",
+        ("/runtime/workspace/project",),
+        "/runtime/workspace/project",
+        "STAGED",
+        "staged.txt",
+    )
+    assert "-base staged" in staged_diff["diff"]
+    assert "+staged change" in staged_diff["diff"]
+
+    unstaged_diff = workspace.git_working_file_diff(
+        repository,
+        "/runtime/workspace/project",
+        ("/runtime/workspace/project",),
+        "/runtime/workspace/project",
+        "UNSTAGED",
+        "unstaged.txt",
+    )
+    assert "-base unstaged" in unstaged_diff["diff"]
+    assert "+unstaged change" in unstaged_diff["diff"]
+
+    untracked_diff = workspace.git_working_file_diff(
+        repository,
+        "/runtime/workspace/project",
+        ("/runtime/workspace/project",),
+        "/runtime/workspace/project",
+        "UNSTAGED",
+        "untracked.txt",
+    )
+    assert "new file" in untracked_diff["diff"]
+    assert untracked_diff["truncated"] is False
+
+    with pytest.raises(DomainError, match="不属于所选本地改动"):
+        workspace.git_working_file_diff(
+            tmp_path,
+            "/runtime/workspace/project",
+            ("/runtime/workspace/project",),
+            "/runtime/workspace/project",
+            "STAGED",
+            "untracked.txt",
+        )
+
+
 def test_agent_conversation_stream_closes_idle_upstream_on_websocket_disconnect(
     settings, monkeypatch
 ):

@@ -568,6 +568,21 @@ test('top-level Agent workspace creates a direct conversation and restores its U
       }) });
       return;
     }
+    if (path.endsWith('/workspace/git/changes')) {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
+        repository: { path: '/runtime/workspace/project/backend', remote: 'https://example.test/backend.git', branch: 'main', head: '1234567890ab' },
+        staged: [{ path: 'src/staged.ts', status: 'M' }],
+        unstaged: [{ path: 'src/local.ts', status: 'M' }, { path: 'src/new.ts', status: '?' }],
+      }) });
+      return;
+    }
+    if (path.endsWith('/workspace/git/working-diff')) {
+      const filePath = new URL(request.url()).searchParams.get('path') ?? '';
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
+        path: filePath, diff: '@@ -1 +1 @@\n-old value\n+new value\n', truncated: false,
+      }) });
+      return;
+    }
     if (path.endsWith('/workspace')) {
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
         root: '/runtime/workspace/project',
@@ -997,7 +1012,17 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   const repositoryDirectory = page.locator('.agent-file-tree-row').filter({ hasText: 'backend' });
   await repositoryDirectory.locator('.agent-file-tree-item.directory').click();
   await expect.poll(() => workspaceGitRepositoryRequests).toBe(1);
-  await expect(page.getByLabel('Git 提交历史')).toBeVisible();
+  await expect(page.getByLabel('Git')).toBeVisible();
+  await page.getByRole('button', { name: '本地改动', exact: true }).click();
+  await expect(page.getByRole('navigation', { name: '暂存区' }).getByText('staged.ts', { exact: true })).toBeVisible();
+  await expect(page.getByRole('navigation', { name: '未暂存' }).getByText('local.ts', { exact: true })).toBeVisible();
+  await expect(page.getByRole('navigation', { name: '未暂存' }).getByText('new.ts', { exact: true })).toBeVisible();
+  await expect(page.getByLabel('Git').getByRole('button', { name: '暂存', exact: true })).toHaveCount(0);
+  await expect(page.getByLabel('Git').getByRole('button', { name: '撤销', exact: true })).toHaveCount(0);
+  await expect(page.getByLabel('Git').getByRole('button', { name: '提交', exact: true })).toHaveCount(0);
+  await page.getByRole('navigation', { name: '暂存区' }).getByText('staged.ts', { exact: true }).click();
+  await expect(page.getByText('old value', { exact: true })).toBeVisible();
+  await expect(page.getByText('new value', { exact: true })).toBeVisible();
   const sourceDirectory = page.locator('.agent-file-tree-row').filter({ hasText: 'src' });
   await sourceDirectory.locator('.agent-file-tree-item.directory').click();
   await expect(page.getByText('config.ts', { exact: true })).toBeVisible();

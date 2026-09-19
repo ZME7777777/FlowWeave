@@ -610,6 +610,120 @@ def git_file_diff(
     }
 
 
+def _git_changed_files(repository: Path, *, staged: bool) -> list[dict[str, str]]:
+    arguments = ["diff", "--name-status", "-z", "--find-renames"]
+    if staged:
+        arguments.append("--cached")
+    output = _git_run(repository, *arguments) or b""
+    fields = output.decode("utf-8", errors="replace").split("\0")
+    files: list[dict[str, str]] = []
+    index = 0
+    while index < len(fields):
+        status = fields[index]
+        index += 1
+        if not status:
+            continue
+        path_count = 2 if status[:1] in {"R", "C"} else 1
+        paths = fields[index : index + path_count]
+        index += path_count
+        path = paths[-1] if paths else ""
+        if path:
+            files.append({"path": path, "status": status[:1] or "M"})
+    return files
+
+
+def git_working_changes(
+    project_root: Path, runtime_root: str, file_roots: tuple[str, ...], repository_path: str
+) -> dict[str, Any]:
+    """Return staged and unstaged files without mutating the repository."""
+
+    repository, runtime_path = _authorized_repository(
+        project_root, runtime_root, file_roots, repository_path
+    )
+    staged = _git_changed_files(repository, staged=True)
+    unstaged = _git_changed_files(repository, staged=False)
+    untracked = _git_run(repository, "ls-files", "--others", "--exclude-standard", "-z") or b""
+    unstaged.extend(
+        {"path": path, "status": "?"}
+        for path in untracked.decode("utf-8", errors="replace").split("\0")
+        if path
+    )
+    return {
+        "repository": _repository_details(repository, runtime_path),
+        "staged": sorted(staged, key=lambda item: item["path"]),
+        "unstaged": sorted(unstaged, key=lambda item: item["path"]),
+    }
+
+
+def _git_working_kind(value: str) -> str:
+    kind = value.upper()
+    if kind not in {"STAGED", "UNSTAGED"}:
+        raise DomainError("AGENT_WORKSPACE_GIT_CHANGE_KIND_INVALID", "Git 本地改动类型无效", 422)
+    return kind
+
+
+def _git_relative_path(path: str) -> str:
+    if (
+        not path
+        or path.startswith("/")
+        or "\x00" in path
+        or any(part in {"", ".", ".."} for part in PurePosixPath(path).parts)
+    ):
+        raise DomainError("AGENT_WORKSPACE_GIT_PATH_INVALID", "Git 文件路径无效", 422)
+    return path
+
+
+def _git_untracked_diff(repository: Path, path: str) -> bytes | None:
+    try:
+        result = subprocess.run(
+            ["git", "diff", "--no-index", "--", "/dev/null", path],
+            cwd=repository,
+            capture_output=True,
+            check=False,
+            env={"PATH": os.defpath},
+            timeout=_GIT_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return result.stdout if result.returncode in {0, 1} else None
+
+
+def git_working_file_diff(
+    project_root: Path,
+    runtime_root: str,
+    file_roots: tuple[str, ...],
+    repository_path: str,
+    kind: str,
+    path: str,
+) -> dict[str, Any]:
+    """Return a bounded read-only Diff for one staged or unstaged file."""
+
+    repository, _ = _authorized_repository(project_root, runtime_root, file_roots, repository_path)
+    selected_kind = _git_working_kind(kind)
+    selected_path = _git_relative_path(path)
+    changes = git_working_changes(project_root, runtime_root, file_roots, repository_path)
+    group = changes["staged" if selected_kind == "STAGED" else "unstaged"]
+    selected = next((item for item in group if item["path"] == selected_path), None)
+    if selected is None:
+        raise DomainError(
+            "AGENT_WORKSPACE_GIT_CHANGE_NOT_FOUND", "文件不属于所选本地改动", 422
+        )
+    if selected_kind == "STAGED":
+        output = _git_run(
+            repository, "diff", "--cached", "--no-ext-diff", "--", selected_path
+        )
+    elif selected["status"] == "?":
+        output = _git_untracked_diff(repository, selected_path)
+    else:
+        output = _git_run(repository, "diff", "--no-ext-diff", "--", selected_path)
+    value = output or b""
+    return {
+        "path": selected_path,
+        "diff": value[:_GIT_DIFF_LIMIT].decode("utf-8", errors="replace"),
+        "truncated": len(value) > _GIT_DIFF_LIMIT,
+    }
+
+
 def _scope_repositories(
     project_root: Path, runtime_workspace_root: str, file_roots: tuple[str, ...]
 ) -> list[tuple[Path, str]]:
@@ -1151,6 +1265,36 @@ def git_commit_file_diff(
         db, workspace_id, work_directory_id, binding_id
     )
     return git_file_diff(project_root, runtime_root, file_roots, repository_path, commit, path)
+
+
+def git_changes(
+    db: Session,
+    workspace_id: str,
+    repository_path: str,
+    binding_id: str | None = None,
+    work_directory_id: str | None = None,
+) -> dict[str, Any]:
+    project_root, runtime_root, file_roots = _git_scope(
+        db, workspace_id, work_directory_id, binding_id
+    )
+    return git_working_changes(project_root, runtime_root, file_roots, repository_path)
+
+
+def git_change_file_diff(
+    db: Session,
+    workspace_id: str,
+    repository_path: str,
+    kind: str,
+    path: str,
+    binding_id: str | None = None,
+    work_directory_id: str | None = None,
+) -> dict[str, Any]:
+    project_root, runtime_root, file_roots = _git_scope(
+        db, workspace_id, work_directory_id, binding_id
+    )
+    return git_working_file_diff(
+        project_root, runtime_root, file_roots, repository_path, kind, path
+    )
 
 
 def download(

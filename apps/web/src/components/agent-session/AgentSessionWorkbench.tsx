@@ -20,7 +20,7 @@ import { selectCapabilityVersion, selectCapabilityVersions } from '../../utils/c
 import { SubagentAvatar } from '../SubagentAvatar';
 import { subagentAvatarSlots, type SubagentAvatarSlot } from '../../utils/subagentAvatar';
 import { workspaceFileChanges, workspaceRelativePath, type WorkspaceFileChange } from './fileChanges';
-import type { AgentAttachment, AgentConversation, AgentConversationAnnotation, AgentConversationPage, AgentConversationReference, AgentConversationSearch, AgentPendingConfirmationAction, AgentSessionCapability, AgentSessionMcpReadiness, AgentSessionWorkDirectory, AgentSessionWorkDirectoryList, AgentSessionWorkspaceDetails, AgentWorkspaceReference, CapabilityAsset, CapabilityCollection, ModelProvider, OpenHandsConversationEvent, OpenHandsConversationEventBatch, ProviderModel, RuntimeTaskControlSnapshot, RuntimeTaskUsageSnapshot, WorkspaceGitCommitDetails, WorkspaceGitFileDiff } from '../../types';
+import type { AgentAttachment, AgentConversation, AgentConversationAnnotation, AgentConversationPage, AgentConversationReference, AgentConversationSearch, AgentPendingConfirmationAction, AgentSessionCapability, AgentSessionMcpReadiness, AgentSessionWorkDirectory, AgentSessionWorkDirectoryList, AgentSessionWorkspaceDetails, AgentWorkspaceReference, CapabilityAsset, CapabilityCollection, ModelProvider, OpenHandsConversationEvent, OpenHandsConversationEventBatch, ProviderModel, RuntimeTaskControlSnapshot, RuntimeTaskUsageSnapshot, WorkspaceGitChangeKind, WorkspaceGitChangedFile, WorkspaceGitChanges, WorkspaceGitCommitDetails, WorkspaceGitFileDiff } from '../../types';
 import '../../pages/agent-workbench.css';
 import '../../pages/agent-workbench-layout.css';
 
@@ -2538,7 +2538,7 @@ function selectedGitRepository(repositories: AgentSessionWorkspaceDetails['repos
     .sort((left, right) => right.path.length - left.path.length)[0];
 }
 
-function WorkspaceGitSidebar({ details, repository, selectedCommit, onSelectCommit, loadLog, loadCommit, loadDiff, onOpenFileDiff, closedDiffEpoch }: {
+function WorkspaceGitSidebar({ details, repository, selectedCommit, onSelectCommit, loadLog, loadCommit, loadDiff, loadChanges, loadWorkingDiff, onOpenFileDiff, onOpenWorkingDiff, closedDiffEpoch }: {
   details: AgentSessionWorkspaceDetails;
   repository: AgentSessionWorkspaceDetails['repositories'][number];
   selectedCommit?: string;
@@ -2546,37 +2546,48 @@ function WorkspaceGitSidebar({ details, repository, selectedCommit, onSelectComm
   loadLog: (repositoryPath: string) => Promise<import('../../types').WorkspaceGitLog>;
   loadCommit: (repositoryPath: string, commit: string) => Promise<WorkspaceGitCommitDetails>;
   loadDiff: (repositoryPath: string, commit: string, path: string) => Promise<WorkspaceGitFileDiff>;
+  loadChanges: (repositoryPath: string) => Promise<WorkspaceGitChanges>;
+  loadWorkingDiff: (repositoryPath: string, kind: WorkspaceGitChangeKind, path: string) => Promise<WorkspaceGitFileDiff>;
   onOpenFileDiff: (details: WorkspaceGitCommitDetails, diff: WorkspaceGitFileDiff) => void;
+  onOpenWorkingDiff: (repository: WorkspaceGitChanges['repository'], kind: WorkspaceGitChangeKind, file: WorkspaceGitChangedFile, diff: WorkspaceGitFileDiff) => void;
   closedDiffEpoch: number;
 }) {
+  const [mode, setMode] = useState<'history' | 'changes'>('history');
   const [selectedCommitFile, setSelectedCommitFile] = useState<string>();
   const openedDiffRef = useRef<string | undefined>(undefined);
+  const [workingDiffError, setWorkingDiffError] = useState('');
   useEffect(() => {
     openedDiffRef.current = undefined;
     setSelectedCommitFile(undefined);
+    setWorkingDiffError('');
+    setMode('history');
   }, [repository.path]);
   useEffect(() => {
     if (!closedDiffEpoch) return;
-    // The central Diff tab was explicitly closed.  Its selected source file
-    // must be selectable again; otherwise the cached opened key suppresses a
-    // second click on that same file.
     openedDiffRef.current = undefined;
     setSelectedCommitFile(undefined);
   }, [closedDiffEpoch]);
   const logQuery = useQuery({
     queryKey: ['workspace-git-log', repository.path],
     queryFn: () => loadLog(repository.path),
+    enabled: mode === 'history',
     staleTime: 15_000,
+  });
+  const changesQuery = useQuery({
+    queryKey: ['workspace-git-changes', repository.path],
+    queryFn: () => loadChanges(repository.path),
+    enabled: mode === 'changes',
+    staleTime: 5_000,
   });
   const commitQuery = useQuery({
     queryKey: ['workspace-git-commit', repository.path, selectedCommit],
     queryFn: () => loadCommit(repository.path, selectedCommit!),
-    enabled: Boolean(selectedCommit),
+    enabled: Boolean(mode === 'history' && selectedCommit),
   });
   const diffQuery = useQuery({
     queryKey: ['workspace-git-diff', repository.path, selectedCommit, selectedCommitFile],
     queryFn: () => loadDiff(repository.path, selectedCommit!, selectedCommitFile!),
-    enabled: Boolean(selectedCommit && selectedCommitFile),
+    enabled: Boolean(mode === 'history' && selectedCommit && selectedCommitFile),
   });
   useEffect(() => {
     if (!commitQuery.data || !diffQuery.data || !selectedCommitFile) return;
@@ -2585,12 +2596,37 @@ function WorkspaceGitSidebar({ details, repository, selectedCommit, onSelectComm
     openedDiffRef.current = key;
     onOpenFileDiff(commitQuery.data, diffQuery.data);
   }, [commitQuery.data, diffQuery.data, onOpenFileDiff, selectedCommitFile]);
-  return <aside className="agent-workspace-git-sidebar" aria-label="Git 提交历史">
+  const openWorkingFile = async (kind: WorkspaceGitChangeKind, file: WorkspaceGitChangedFile) => {
+    const key = `${kind}:${file.path}`;
+    if (openedDiffRef.current === key || !changesQuery.data) return;
+    openedDiffRef.current = key;
+    setWorkingDiffError('');
+    try {
+      const diff = await loadWorkingDiff(repository.path, kind, file.path);
+      onOpenWorkingDiff(changesQuery.data.repository, kind, file, diff);
+    } catch {
+      openedDiffRef.current = undefined;
+      setWorkingDiffError('文件 Diff 读取失败，请重试。');
+    }
+  };
+  const selectMode = (next: 'history' | 'changes') => {
+    setMode(next);
+    onSelectCommit(undefined);
+    setSelectedCommitFile(undefined);
+    setWorkingDiffError('');
+    openedDiffRef.current = undefined;
+  };
+  return <aside className="agent-workspace-git-sidebar" aria-label="Git">
     <header><div><span><GitBranch size={15}/>Git</span><b title={workspaceRelativePath(repository.path, details.root)}>{workspaceRelativePath(repository.path, details.root)}</b></div>{repository.branch && <em title="当前分支（只读，暂不支持切换）">{repository.branch}</em>}</header>
-    {logQuery.isLoading ? <p className="agent-git-loading">正在读取提交历史…</p> : logQuery.isError ? <p className="agent-git-error">Git 历史读取失败。<button type="button" onClick={() => void logQuery.refetch()}>重试</button></p> : <>
+    <nav className="agent-git-view-tabs" aria-label="Git 视图"><button type="button" className={mode === 'history' ? 'active' : ''} aria-pressed={mode === 'history'} onClick={() => selectMode('history')}>提交记录</button><button type="button" className={mode === 'changes' ? 'active' : ''} aria-pressed={mode === 'changes'} onClick={() => selectMode('changes')}>本地改动</button></nav>
+    {mode === 'history' ? logQuery.isLoading ? <p className="agent-git-loading">正在读取提交历史…</p> : logQuery.isError ? <p className="agent-git-error">Git 历史读取失败。<button type="button" onClick={() => void logQuery.refetch()}>重试</button></p> : <>
       <div className="agent-git-log">{(logQuery.data?.commits ?? []).map(commit => <button key={commit.id} type="button" onClick={() => { onSelectCommit(commit.id); setSelectedCommitFile(undefined); }}><b>{commit.subject || '（无提交说明）'}</b><span><code>{commit.short_id}</code><em>{commit.author}</em><time>{commit.date}</time></span></button>)}{!logQuery.data?.commits.length && <p>该仓库没有可展示的提交。</p>}</div>
       {selectedCommit && <WorkspaceGitCommitSidebarDetail details={commitQuery.data} loading={commitQuery.isLoading} error={commitQuery.isError} selectedPath={selectedCommitFile} onSelectFile={path => { openedDiffRef.current = undefined; setSelectedCommitFile(path); }} onClose={() => { onSelectCommit(undefined); setSelectedCommitFile(undefined); }}/>}
-    </>}
+    </> : changesQuery.isLoading ? <p className="agent-git-loading">正在读取本地改动…</p> : changesQuery.isError ? <p className="agent-git-error">本地改动读取失败。<button type="button" onClick={() => void changesQuery.refetch()}>重试</button></p> : <div className="agent-git-local-changes">
+      {workingDiffError && <p className="agent-git-error" role="alert">{workingDiffError}</p>}
+      <ChangedFilesTree title="暂存区" empty="暂存区没有文件。" items={(changesQuery.data?.staged ?? []).map(file => ({ path: file.path, value: file }))} onSelect={file => void openWorkingFile('STAGED', file)} renderMeta={file => <em>{file.status}</em>}/>
+      <ChangedFilesTree title="未暂存" empty="没有未暂存文件。" items={(changesQuery.data?.unstaged ?? []).map(file => ({ path: file.path, value: file }))} onSelect={file => void openWorkingFile('UNSTAGED', file)} renderMeta={file => <em>{file.status}</em>}/>
+    </div>}
   </aside>;
 }
 
@@ -2599,6 +2635,7 @@ type WorkspaceToolTab =
   | { id: 'changes'; kind: 'changes' }
   | { id: 'sources'; kind: 'sources' }
   | { id: 'git'; kind: 'git'; details: WorkspaceGitCommitDetails; diff: WorkspaceGitFileDiff }
+  | { id: 'git-working'; kind: 'git-working'; repository: WorkspaceGitChanges['repository']; changeKind: WorkspaceGitChangeKind; file: WorkspaceGitChangedFile; diff: WorkspaceGitFileDiff }
   | { id: 'subagents'; kind: 'subagents' }
   | { id: string; kind: 'terminal'; terminalInstanceId: string };
 type WorkspaceToolScopeState = { tabs: WorkspaceToolTab[]; activeTabId?: string; selectedFile?: string; selectedChangeId?: string; selectedGitFile?: string; selectedGitCommit?: string; selectedGitRepositoryPath?: string; selectedRuntimeTaskId?: string };
@@ -3289,6 +3326,16 @@ function WorkspaceDrawer({
     }));
     onOpen();
   }, [onOpen, updateScope]);
+  const openGitWorkingDiff = useCallback((repository: WorkspaceGitChanges['repository'], changeKind: WorkspaceGitChangeKind, file: WorkspaceGitChangedFile, diff: WorkspaceGitFileDiff) => {
+    updateScope(current => ({
+      ...current,
+      tabs: current.tabs.some(tab => tab.kind === 'git-working')
+        ? current.tabs.map(tab => tab.kind === 'git-working' ? { id: 'git-working', kind: 'git-working', repository, changeKind, file, diff } : tab)
+        : [...current.tabs, { id: 'git-working', kind: 'git-working', repository, changeKind, file, diff }],
+      activeTabId: 'git-working',
+    }));
+    onOpen();
+  }, [onOpen, updateScope]);
   const openGitHistory = useCallback(() => {
     if (!gitContextPath) return;
     setGitSidebarRequested(true);
@@ -3431,7 +3478,7 @@ function WorkspaceDrawer({
         selectedGitFile: tab.kind === 'git' ? undefined : current.selectedGitFile,
       };
     });
-    if (tab.kind === 'git') setClosedGitDiffEpoch(current => current + 1);
+    if (tab.kind === 'git' || tab.kind === 'git-working') setClosedGitDiffEpoch(current => current + 1);
     if (scopeState.tabs.length === 1 && scopeState.tabs[0]?.id === tab.id) {
       setFullScreen(false);
       onClose();
@@ -3535,7 +3582,7 @@ function WorkspaceDrawer({
       {loadingOrError || summary}
     </section>
     <section className={`agent-workspace-tool-shell ${open ? '' : 'panel-hidden'}`}>
-      <header><nav className="agent-workspace-tabs" aria-label="工作区工具页签">{scopeState.tabs.map(tab => <div key={tab.id} className={scopeState.activeTabId === tab.id ? 'active' : ''}><button type="button" className="agent-workspace-tab-select" onClick={() => updateScope(current => ({ ...current, activeTabId: tab.id }))}><span>{tab.kind === 'files' ? '文件' : tab.kind === 'changes' ? `审查${reviewChanges.length ? ` · ${reviewChanges.length}` : ''}` : tab.kind === 'sources' ? `来源${sources.length ? ` · ${sources.length}` : ''}` : tab.kind === 'git' ? `提交 · ${tab.details.commit.short_id}` : tab.kind === 'subagents' ? '子智能体' : details?.runtime.container_id || (details?.runtime.write_available ? '终端' : '连接中…')}</span></button><button type="button" className="agent-workspace-tab-close" aria-label={`关闭${tab.kind === 'files' ? '文件' : tab.kind === 'changes' ? '改动审查' : tab.kind === 'sources' ? '来源' : tab.kind === 'git' ? '提交审查' : tab.kind === 'subagents' ? '子智能体' : `终端 ${details?.runtime.container_id || ''}`}页签`} disabled={tab.kind === 'terminal' && closingTerminalId === tab.terminalInstanceId} onClick={() => { if (tab.kind !== 'terminal' || closingTerminalId !== tab.terminalInstanceId) requestCloseTab(tab); }}><X size={12}/></button></div>)}</nav><div className="agent-workspace-tool-actions"><div ref={toolMenuRef} className="agent-workspace-tool-menu"><button type="button" className="agent-workspace-tool-menu-trigger" aria-label="新增工作区工具" aria-expanded={toolMenuOpen} aria-haspopup="menu" onClick={() => setToolMenuOpen(current => !current)}><Plus size={15}/></button>{toolMenuOpen && <div role="menu"><button type="button" role="menuitem" onClick={() => { openFiles(); setToolMenuOpen(false); }}><FileCode2 size={13}/>文件</button><button type="button" role="menuitem" onClick={() => { openGitHistory(); setToolMenuOpen(false); }}><GitBranch size={13}/>Git 历史</button>{reviewChanges.length > 0 && <button type="button" role="menuitem" onClick={() => { openChanges(); setToolMenuOpen(false); }}><FileText size={13}/>审查改动</button>}{sources.length > 0 && <button type="button" role="menuitem" onClick={() => { openSources(); setToolMenuOpen(false); }}><Link2 size={13}/>来源</button>}{runtimeTasks.length > 0 && <button type="button" role="menuitem" onClick={() => { openRuntimeTasks(); setToolMenuOpen(false); }}><Bot size={13}/>子智能体</button>}<button type="button" role="menuitem" disabled={!runtimeAvailable} onClick={() => { openTerminal(); setToolMenuOpen(false); }}><Plus size={13}/>终端</button></div>}</div><button type="button" aria-label={fullScreen ? '退出全屏' : '全屏查看工作区工具'} title={fullScreen ? '退出全屏（Esc）' : '全屏查看'} onClick={() => setFullScreen(current => !current)}>{fullScreen ? <Minimize2 size={16}/> : <Maximize2 size={16}/>}</button><button type="button" aria-label="关闭工作区工具" onClick={() => { setFullScreen(false); onClose(); }}><X size={16}/></button></div></header>
+      <header><nav className="agent-workspace-tabs" aria-label="工作区工具页签">{scopeState.tabs.map(tab => <div key={tab.id} className={scopeState.activeTabId === tab.id ? 'active' : ''}><button type="button" className="agent-workspace-tab-select" onClick={() => updateScope(current => ({ ...current, activeTabId: tab.id }))}><span>{tab.kind === 'files' ? '文件' : tab.kind === 'changes' ? `审查${reviewChanges.length ? ` · ${reviewChanges.length}` : ''}` : tab.kind === 'sources' ? `来源${sources.length ? ` · ${sources.length}` : ''}` : tab.kind === 'git' ? `提交 · ${tab.details.commit.short_id}` : tab.kind === 'git-working' ? `${tab.changeKind === 'STAGED' ? '暂存' : '本地'} · ${tab.file.path.split('/').at(-1)}` : tab.kind === 'subagents' ? '子智能体' : details?.runtime.container_id || (details?.runtime.write_available ? '终端' : '连接中…')}</span></button><button type="button" className="agent-workspace-tab-close" aria-label={`关闭${tab.kind === 'files' ? '文件' : tab.kind === 'changes' ? '改动审查' : tab.kind === 'sources' ? '来源' : tab.kind === 'git' ? '提交审查' : tab.kind === 'git-working' ? '本地改动 Diff' : tab.kind === 'subagents' ? '子智能体' : `终端 ${details?.runtime.container_id || ''}`}页签`} disabled={tab.kind === 'terminal' && closingTerminalId === tab.terminalInstanceId} onClick={() => { if (tab.kind !== 'terminal' || closingTerminalId !== tab.terminalInstanceId) requestCloseTab(tab); }}><X size={12}/></button></div>)}</nav><div className="agent-workspace-tool-actions"><div ref={toolMenuRef} className="agent-workspace-tool-menu"><button type="button" className="agent-workspace-tool-menu-trigger" aria-label="新增工作区工具" aria-expanded={toolMenuOpen} aria-haspopup="menu" onClick={() => setToolMenuOpen(current => !current)}><Plus size={15}/></button>{toolMenuOpen && <div role="menu"><button type="button" role="menuitem" onClick={() => { openFiles(); setToolMenuOpen(false); }}><FileCode2 size={13}/>文件</button><button type="button" role="menuitem" onClick={() => { openGitHistory(); setToolMenuOpen(false); }}><GitBranch size={13}/>Git 历史</button>{reviewChanges.length > 0 && <button type="button" role="menuitem" onClick={() => { openChanges(); setToolMenuOpen(false); }}><FileText size={13}/>审查改动</button>}{sources.length > 0 && <button type="button" role="menuitem" onClick={() => { openSources(); setToolMenuOpen(false); }}><Link2 size={13}/>来源</button>}{runtimeTasks.length > 0 && <button type="button" role="menuitem" onClick={() => { openRuntimeTasks(); setToolMenuOpen(false); }}><Bot size={13}/>子智能体</button>}<button type="button" role="menuitem" disabled={!runtimeAvailable} onClick={() => { openTerminal(); setToolMenuOpen(false); }}><Plus size={13}/>终端</button></div>}</div><button type="button" aria-label={fullScreen ? '退出全屏' : '全屏查看工作区工具'} title={fullScreen ? '退出全屏（Esc）' : '全屏查看'} onClick={() => setFullScreen(current => !current)}>{fullScreen ? <Minimize2 size={16}/> : <Maximize2 size={16}/>}</button><button type="button" aria-label="关闭工作区工具" onClick={() => { setFullScreen(false); onClose(); }}><X size={16}/></button></div></header>
       <div className="agent-workspace-tool-body">
         {panelError && <p className="agent-workspace-panel-error" role="alert"><span>{panelError}</span><button type="button" aria-label="关闭错误提示" onClick={() => setPanelError('')}><X size={13}/></button></p>}
         {loadingOrError || (!scopeState.tabs.length ? <div className="agent-drawer-empty"><b>选择工作区工具</b><span>文件仅打开一个页签；终端可按需打开多个独立实例。</span><div><button type="button" className="secondary" onClick={() => openFiles()}>打开文件</button><button type="button" className="secondary" disabled={!runtimeAvailable} onClick={openTerminal}>新建终端</button></div></div> : details && <div className={`agent-workspace-tool-content${gitSidebarVisible ? ' fullscreen-git-layout' : ''}`}>
@@ -3556,13 +3603,14 @@ function WorkspaceDrawer({
           {scopeState.tabs.some(tab => tab.kind === 'changes') && <div className={`agent-changes-tab-panel ${scopeState.activeTabId === 'changes' ? 'active' : ''}`}><WorkspaceChangesReview changes={reviewChanges} selectedId={scopeState.selectedChangeId} onSelect={selectedChangeId => updateScope(current => ({ ...current, selectedChangeId }))} onOpenSource={openSourceFile} workspaceRoot={details.working_directory}/></div>}
           {scopeState.tabs.some(tab => tab.kind === 'sources') && <div className={`agent-changes-tab-panel ${scopeState.activeTabId === 'sources' ? 'active' : ''}`}><ConversationSourcesReview sources={sources} onOpenAttachment={attachment => { setCandidatePreview(undefined); selectFile(attachment.path); }}/></div>}
           {scopeState.tabs.filter((tab): tab is Extract<WorkspaceToolTab, { kind: 'git' }> => tab.kind === 'git').map(tab => <div key={tab.id} className={`agent-changes-tab-panel agent-git-commit-tab ${scopeState.activeTabId === tab.id ? 'active' : ''}`}><WorkspaceGitCommitReview key={`${tab.details.commit.id}:${tab.diff.path}`} details={tab.details} initialDiff={tab.diff} loadDiff={path => api.gitDiff(workspaceId, tab.details.repository.path, tab.details.commit.id, path, gitOptions)} onOpenSource={openSourcePath}/></div>)}
+          {scopeState.tabs.filter((tab): tab is Extract<WorkspaceToolTab, { kind: 'git-working' }> => tab.kind === 'git-working').map(tab => <div key={tab.id} className={`agent-changes-tab-panel agent-git-commit-tab ${scopeState.activeTabId === tab.id ? 'active' : ''}`}><WorkspaceGitFileDiffReview details={{ repository: tab.repository, commit: { id: tab.changeKind, short_id: tab.changeKind === 'STAGED' ? '暂存区' : '未暂存', author: '', date: '', subject: tab.changeKind === 'STAGED' ? '已加入暂存区' : '尚未加入暂存区' }, files: [tab.file] }} diff={tab.diff} onOpenSource={openSourcePath}/></div>)}
           {scopeState.tabs.some(tab => tab.kind === 'subagents') && <div className={`agent-subagent-tab-panel ${scopeState.activeTabId === 'subagents' ? 'active' : ''}`}><RuntimeTaskTab tasks={runtimeTasks} definitions={agentDefinitions} selectedTaskId={scopeState.selectedRuntimeTaskId} onSelect={taskId => updateScope(current => ({ ...current, selectedRuntimeTaskId: taskId }))} sessionStopped={sessionStopped}/></div>}
           {scopeState.tabs.filter((tab): tab is Extract<WorkspaceToolTab, { kind: 'terminal' }> => tab.kind === 'terminal').map(tab => <div key={tab.id} className={`agent-terminal-tab-panel ${scopeState.activeTabId === tab.id ? 'active' : ''}`}>{runtimeAvailable ? <WorkspaceTerminal workspaceId={workspaceId} terminalInstanceId={tab.terminalInstanceId} bindingId={bindingId} workDirectoryId={workDirectoryId} workingDirectory={details.working_directory}/> : <div className="agent-drawer-empty"><LoaderCircle className="agent-drawer-spinner" size={20}/><b>终端正在恢复</b><span>文件仍可使用；运行环境恢复后终端会自动可用。</span></div>}</div>)}
           {gitSidebarVisible && gitRepository && <WorkspaceGitSidebar details={details} repository={gitRepository} selectedCommit={scopeState.selectedGitRepositoryPath === gitRepository.path ? scopeState.selectedGitCommit : undefined} onSelectCommit={commit => updateScope(current => ({
             ...current,
             selectedGitRepositoryPath: commit ? gitRepository.path : undefined,
             selectedGitCommit: commit,
-          }))} loadLog={repositoryPath => api.gitLog(workspaceId, repositoryPath, gitOptions)} loadCommit={(repositoryPath, commit) => api.gitCommit(workspaceId, repositoryPath, commit, gitOptions)} loadDiff={(repositoryPath, commit, path) => api.gitDiff(workspaceId, repositoryPath, commit, path, gitOptions)} onOpenFileDiff={openGitFileDiff} closedDiffEpoch={closedGitDiffEpoch}/>}
+          }))} loadLog={repositoryPath => api.gitLog(workspaceId, repositoryPath, gitOptions)} loadCommit={(repositoryPath, commit) => api.gitCommit(workspaceId, repositoryPath, commit, gitOptions)} loadDiff={(repositoryPath, commit, path) => api.gitDiff(workspaceId, repositoryPath, commit, path, gitOptions)} loadChanges={repositoryPath => api.gitChanges(workspaceId, repositoryPath, gitOptions)} loadWorkingDiff={(repositoryPath, kind, path) => api.gitWorkingDiff(workspaceId, repositoryPath, kind, path, gitOptions)} onOpenFileDiff={openGitFileDiff} onOpenWorkingDiff={openGitWorkingDiff} closedDiffEpoch={closedGitDiffEpoch}/>}
         </div>)}
       </div>
     </section>{entryMenu && <div className="agent-file-context-menu" role="menu" aria-label="文件操作菜单" style={{ left: entryMenu.x, top: entryMenu.y }} onPointerDown={event => event.stopPropagation()}>{entryMenu.kind === 'directory' && <><button type="button" role="menuitem" onClick={() => { void createEntry(entryMenu.path, 'FILE'); setEntryMenu(undefined); }}><FileCode2 size={14}/>新建文件</button><button type="button" role="menuitem" onClick={() => { void createEntry(entryMenu.path, 'DIRECTORY'); setEntryMenu(undefined); }}><FolderPlus size={14}/>新建目录</button></>}<button type="button" className="danger" role="menuitem" onClick={() => { void removeEntries([{ path: entryMenu.path, kind: entryMenu.kind }]); setEntryMenu(undefined); }}><Trash2 size={14}/>{entryMenu.kind === 'directory' ? '删除目录' : '删除文件'}</button></div>}
