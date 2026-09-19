@@ -197,6 +197,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-480 | 连续／逐步旧节点会话续聊一致性 | DONE | 连续和逐步运行的旧节点统一复用共享 Agent 会话权限：原会话只读，但可新建可写会话或从已完成回复 Fork 继续。 |
 | FR-481 | 普通 Agent 历史会话可写权限恢复 | DONE | 普通 Agent Workspace 会话 DTO 显式投影共享 Runtime 的可写状态；Runtime ACTIVE 时历史会话可继续输入，恢复中保持只读，FlowRun 节点会话权限不变。 |
 | FR-482 | 终态事件缺失的会话同步有界收敛 | DONE | 当 OpenHands readiness 已终态但正式 user turn 没有 assistant、ERROR 或 Finish 后代时，按会话与用户事件限定补读窗口；超时解除同步锁、停止补读并将同步期间队列项标为结果不确定，不伪造终态。 |
+| FR-486 | 连续／逐步候选输出 Gate 门禁一致性 | DONE | 两种模式都只能向后继节点流转 `GATE_PASSED` 的候选输出；删除逐步历史产物回退，并以定向服务回归锁定两条入口。 |
 | FR-457 | OpenHands 空响应自恢复与运行状态一致性 | DONE | 空 Agent Message 与 `source=environment` 的原生 corrective nudge 不再被识别为最终回复；纠正事件以“模型返回空响应，OpenHands 正在自动重试”呈现，左侧会话状态与底部按钮继续统一服从原生 execution status。 |
 | FR-458 | 空响应恢复提示瞬时化与会话状态统一 | DONE | corrective nudge 只在它是当前最新事件且原生会话仍运行时复用实时状态行显示；后续事件或终态立即隐藏，历史工作过程不保留该提示。工作台所有运行控件复用同一原生状态投影。 |
 | FR-459 | 原生错误事件的终态／可恢复呈现分流 | DONE | 仅 OpenHands ConversationErrorEvent 呈现为“本轮未能完成”的会话级终态卡片；AgentErrorEvent 与未知历史 ERROR 保持原生审计事实，按其正式父事件留在工作过程中呈现为可恢复异常，后续正式回复会明确标注 Agent 已继续完成，避免暂停／继续后的正常回复被历史错误卡片误覆盖。 |
@@ -6392,6 +6393,27 @@ Docker 或远端环境。
 Python Ruff format/check、`py_compile`；`git diff --check`、Alembic head 与任务状态唯一性均通过。后端定向 pytest
 在数据库 fixture 初始化前因本机 Docker socket 缺失而阻断，未进入新增断言且未记为通过。
 
+### FR-486 连续／逐步候选输出 Gate 门禁一致性 — DONE
+
+依赖：FR-467。
+
+目标：连续运行和逐步运行在节点完成后必须使用同一严格的候选输出准入：只有当前
+`CandidateOutputSet.status == GATE_PASSED` 时才允许向冻结后继节点写入端口映射。不得因为逐步运行而回退到
+未冻结、未经过 Gate 的历史 Artifact。
+
+范围：移除后继输出选择中的逐步专属历史回退，并补充服务层定向回归，覆盖两种运行方式在候选集合缺失或未通过
+Gate 时都返回 `ATTEMPT_OUTPUT_NOT_ACCEPTED`。不修改拓扑、端口映射、启动时机、工作台、数据库迁移、OpenHands、
+Runtime Provider、Docker 或远端部署。
+
+完成：`_accepted_transition_outputs` 已删除 `allow_legacy_fallback`，现在候选集合缺失或状态不是
+`GATE_PASSED` 时统一拒绝；逐步和连续后继入口都直接复用该严格准入。定向回归覆盖两种模式的候选集合缺失、
+`GATE_FAILED` 以及通过 Gate 后只使用冻结 Candidate Artifact 的路径。
+
+验收：受影响 Python Ruff format/check、`py_compile`、新增纯服务定向 pytest（5 passed）、Alembic 唯一 head
+`0120_agent_conversation_credential_sync`、`git diff --check` 与任务状态唯一性通过。完整目标测试文件在全局
+Testcontainers fixture 初始化前因本机 Docker socket 缺失而阻断；未记为通过。未修改数据库、OpenHands、Runtime
+Provider、Docker 或远端环境。
+
 ### FR-482 终态事件缺失的会话同步有界收敛 — DONE
 
 依赖：FR-456、FR-481。
@@ -6417,6 +6439,7 @@ Python Ruff format/check、`py_compile`；`git diff --check`、Alembic head 与�
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-19 | FR-486 | 受影响 Python Ruff format/check、`py_compile`；纯服务定向 pytest；完整目标测试文件尝试；Alembic head；`git diff --check` 与任务状态唯一性 | PASS（静态／纯服务）：逐步与连续后继入口都只接受 `GATE_PASSED` 的当前 CandidateOutputSet。新增纯服务回归 5 passed，覆盖候选集合缺失、`GATE_FAILED` 与通过 Gate 的冻结产物选择。完整目标测试文件在全局 Testcontainers fixture 初始化前因本机 Docker socket 缺失而阻断，未进入断言且未记为通过；唯一 Alembic head 为 `0120_agent_conversation_credential_sync`。未修改数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-19 | FR-482 | 顶层 Agent 与 FlowRun 节点会话各 1 条定向 Playwright；Web TypeScript typecheck、受影响 ESLint、production build；Alembic head；`git diff --check` 与任务状态唯一性 | PASS：两条浏览器回归都模拟 readiness 永久 `idle`、正式事件页仅有未完成 user turn、WebSocket 无终态和刷新后再次加载；8 秒窗口后输入与发送按钮恢复、运行标识消失，排队项显示“结果不确定”，消息 POST 次数保持 0。Web typecheck、ESLint 和 production build 通过；构建仅有既有大 chunk 警告。未修改数据库、OpenHands、API、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-17 | FR-481 | Agent 历史会话定向 Playwright（1 passed）；Web TypeScript typecheck、受影响 ESLint、production build；Python Ruff format/check、`py_compile`；后端定向 pytest 尝试；`git diff --check`、Alembic head 与任务状态唯一性 | PASS（浏览器／静态）：普通 Agent Workspace 会话详情、旧列表、分页列表及创建／Fork 响应显式投影 Runtime 可写状态；ACTIVE 历史会话 composer 可编辑，恢复中保持只读。后端 pytest 因本机 Docker socket 缺失在数据库 fixture 前阻断，未记为通过。唯一 Alembic head 为 `0117_agent_conversation_search`；无 `CURRENT`、`READY` 或下一切片。未修改数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-17 | FR-480 | 连续旧节点 Node Session Playwright（1 passed）；Web TypeScript typecheck、受影响 ESLint、production build；Python Ruff format/check、`py_compile`；后端定向 pytest 尝试；`git diff --check`、Alembic head 与任务状态唯一性 | PASS（前端 E2E／静态）：连续和逐步继续共用 `FlowNodeSessionPage`、Gateway 与 `AgentSessionWorkbench`；已完成原会话只读，但 detached 新会话模型与首条发送可用，已完成回复可原生 Fork，两个新会话均可继续输入。后端测试补齐活跃记录已接受前节点与整个记录完成场景；pytest 因本机 Docker socket 缺失在数据库 fixture 前阻断，未记为通过。普通 Agent 大用例在既有空响应暂停断言处失败，未到本次 Fork 段。唯一 Alembic head 为 `0117_agent_conversation_search`；无 `CURRENT`、`READY` 或下一切片。未修改 API schema、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |

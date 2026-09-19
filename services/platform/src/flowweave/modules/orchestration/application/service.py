@@ -8058,52 +8058,18 @@ def _delete_node_run_records(
 
 
 def _accepted_transition_outputs(
-    db: Session, accepted_attempt: NodeAttempt, *, allow_legacy_fallback: bool
+    db: Session, accepted_attempt: NodeAttempt
 ) -> list[ArtifactVersion]:
     """Return the immutable outputs allowed to reach a frozen successor."""
 
     candidate = _current_candidate_output_set(db, accepted_attempt)
-    if candidate is not None:
-        if candidate.status != "GATE_PASSED":
-            raise DomainError(
-                "ATTEMPT_OUTPUT_NOT_ACCEPTED",
-                "only a passing candidate output set can flow downstream",
-                409,
-            )
-        return _candidate_artifacts(db, candidate)
-    if not allow_legacy_fallback:
+    if candidate is None or candidate.status != "GATE_PASSED":
         raise DomainError(
             "ATTEMPT_OUTPUT_NOT_ACCEPTED",
             "only a passing candidate output set can flow downstream",
             409,
         )
-
-    runtime_count = int(
-        db.scalar(
-            select(func.count(ArtifactVersion.id)).where(
-                ArtifactVersion.producer_attempt_id == accepted_attempt.id,
-                ArtifactVersion.source == "RUNTIME",
-            )
-        )
-        or 0
-    )
-    if runtime_count:
-        raise DomainError(
-            "ATTEMPT_OUTPUT_NOT_ACCEPTED",
-            "only a passing candidate output set can flow downstream",
-            409,
-        )
-    return list(
-        db.scalars(
-            select(ArtifactVersion)
-            .where(ArtifactVersion.producer_attempt_id == accepted_attempt.id)
-            .order_by(
-                ArtifactVersion.field_key,
-                ArtifactVersion.version_no.desc(),
-                ArtifactVersion.id,
-            )
-        )
-    )
+    return _candidate_artifacts(db, candidate)
 
 
 def _successor_keys(snapshot: RunSnapshot, source_node_key: str) -> list[str]:
@@ -8164,9 +8130,7 @@ def _create_configurable_targets(db: Session, run: FlowRun, accepted: NodeRun) -
 
     snapshot = _active_snapshot(db, run)
     accepted_attempt = _attempt(db, accepted.accepted_attempt_id or "")
-    source_artifacts = _accepted_transition_outputs(
-        db, accepted_attempt, allow_legacy_fallback=True
-    )
+    source_artifacts = _accepted_transition_outputs(db, accepted_attempt)
     for target_key in _successor_keys(snapshot, accepted.flow_node_snapshot_key):
         bindings = _transition_bindings(
             snapshot, accepted.flow_node_snapshot_key, target_key, source_artifacts
@@ -8274,9 +8238,7 @@ def _advance_automatic_targets(
     plan: dict[str, Any] = dict(run.automation_plan_json or {})
     node_plans = cast(dict[str, Any], plan.get("node_plans") or {})
     accepted_attempt = _attempt(db, accepted.accepted_attempt_id or "")
-    source_artifacts = _accepted_transition_outputs(
-        db, accepted_attempt, allow_legacy_fallback=False
-    )
+    source_artifacts = _accepted_transition_outputs(db, accepted_attempt)
     allowed = set(_successor_keys(snapshot, accepted.flow_node_snapshot_key))
     unauthorized = sorted(set(selected_targets) - allowed)
     if unauthorized:

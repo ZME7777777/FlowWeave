@@ -1,7 +1,9 @@
 from types import SimpleNamespace
 
-from flowweave.modules.orchestration.application import service
+import pytest
+
 from flowweave.modules.gates.public import GateResult
+from flowweave.modules.orchestration.application import service
 
 
 def test_candidate_artifacts_follow_frozen_ids_not_query_order(monkeypatch):
@@ -83,3 +85,37 @@ def test_end_gate_execution_error_is_distinct_from_business_failure(monkeypatch)
 
     assert candidate.status == "GATE_ERROR"
     assert candidate.gate_error_code == "GATE_TIMEOUT"
+
+
+@pytest.mark.parametrize("candidate", [None, SimpleNamespace(status="GATE_FAILED")])
+@pytest.mark.parametrize("run_mode", ["MANUAL", "AUTOMATIC"])
+def test_transitions_reject_outputs_without_a_passing_gate(monkeypatch, candidate, run_mode):
+    attempt = SimpleNamespace(id="attempt-1")
+    run = SimpleNamespace(automation_plan_json={})
+    accepted = SimpleNamespace(
+        accepted_attempt_id=attempt.id,
+        flow_node_snapshot_key="source",
+    )
+    snapshot = SimpleNamespace(definition_json={"edges": []})
+
+    monkeypatch.setattr(service, "_active_snapshot", lambda *_args: snapshot)
+    monkeypatch.setattr(service, "_attempt", lambda *_args: attempt)
+    monkeypatch.setattr(service, "_current_candidate_output_set", lambda *_args: candidate)
+
+    with pytest.raises(service.DomainError) as error:
+        if run_mode == "MANUAL":
+            service._create_configurable_targets(SimpleNamespace(), run, accepted)
+        else:
+            service._advance_automatic_targets(SimpleNamespace(), run, accepted, [])
+
+    assert error.value.code == "ATTEMPT_OUTPUT_NOT_ACCEPTED"
+
+
+def test_transition_outputs_use_artifacts_from_passing_candidate(monkeypatch):
+    candidate = SimpleNamespace(status="GATE_PASSED")
+    artifacts = [SimpleNamespace(id="artifact-1", field_key="result")]
+
+    monkeypatch.setattr(service, "_current_candidate_output_set", lambda *_args: candidate)
+    monkeypatch.setattr(service, "_candidate_artifacts", lambda *_args: artifacts)
+
+    assert service._accepted_transition_outputs(SimpleNamespace(), SimpleNamespace()) == artifacts
