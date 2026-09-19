@@ -1290,7 +1290,7 @@ chmod 0700 "$target"
         }
         runtime_tmpfs = [
             "--tmpfs",
-            "/tmp:rw,nosuid,nodev,size=128m,uid=10001,gid=10001,mode=1777",
+            "/tmp:rw,nosuid,nodev,size=1g,uid=10001,gid=10001,mode=1777",
             # OpenHands 1.47 resolves all user state through the explicit
             # OH_PERSISTENCE_DIR below. Older credential volumes can contain a
             # legacy ~/.openhands tree; hide it without deleting operator data

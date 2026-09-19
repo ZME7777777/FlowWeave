@@ -795,7 +795,8 @@ def test_runtime_command_is_non_root_read_only_and_has_only_bounded_writable_pat
     assert all("/var/run/docker.sock" not in mount for mount in mounts)
     tmpfs = [command[index + 1] for index, item in enumerate(command) if item == "--tmpfs"]
     assert tmpfs == [
-        "/tmp:rw,nosuid,nodev,size=128m,uid=10001,gid=10001,mode=1777",
+        "/tmp:rw,nosuid,nodev,size=1g,uid=10001,gid=10001,mode=1777",
+        "/home/flowweave/.openhands:rw,nosuid,nodev,size=16m,uid=10001,gid=10001,mode=0700",
         "/runtime/ephemeral-state:rw,nosuid,nodev,size=64m,uid=10001,gid=10001,mode=0700",
     ]
     assert "HOME=/home/flowweave" in command
