@@ -48,6 +48,13 @@ interface ConversationTextHighlight {
   compactStart?: number;
 }
 
+interface ConversationHighlightRect {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
 interface ActivityEntry {
   id: string;
   item: Item;
@@ -1234,6 +1241,27 @@ function conversationAnnotationForSelection(selection: Selection, surface: HTMLE
   return { eventId, content, compactStart: before.toString().replace(/\s+/g, '').length };
 }
 
+function conversationHighlightRects(range: Range, root: HTMLElement): ConversationHighlightRect[] {
+  const rootRect = root.getBoundingClientRect();
+  const rects = Array.from(range.getClientRects())
+    .filter(rect => rect.width > 0 && rect.height > 0)
+    .map(rect => ({
+      left: rect.left - rootRect.left,
+      top: rect.top - rootRect.top,
+      width: rect.width,
+      height: rect.height,
+    }));
+  return rects.reduce<ConversationHighlightRect[]>((merged, rect) => {
+    const previous = merged.at(-1);
+    if (previous && Math.abs(previous.top - rect.top) < 2 && Math.abs(previous.height - rect.height) < 2 && rect.left <= previous.left + previous.width + 3) {
+      previous.width = Math.max(previous.width, rect.left + rect.width - previous.left);
+    } else {
+      merged.push(rect);
+    }
+    return merged;
+  }, []);
+}
+
 function conversationQuoteRange(root: HTMLElement, quote: string, compactStart?: number): Range | undefined {
   const compactQuote = quote.replace(/\s+/g, '');
   if (!compactQuote) return undefined;
@@ -1437,6 +1465,7 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused =
   const wasGenerating = useRef(isGenerating);
   const copyResetTimer = useRef<number | undefined>(undefined);
   const referenceHighlightTimer = useRef<number | undefined>(undefined);
+  const referenceLocationPending = useRef(false);
   const [isAtLatest, setIsAtLatest] = useState(true);
   const [editingEventId, setEditingEventId] = useState<string>();
   const [editingContent, setEditingContent] = useState('');
@@ -1445,6 +1474,7 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused =
   const [selectedReference, setSelectedReference] = useState<{ reference: ConversationAnnotationReference; left: number; top: number }>();
   const [viewingReference, setViewingReference] = useState<AgentConversationReference>();
   const [highlightedReference, setHighlightedReference] = useState<ConversationTextHighlight>();
+  const [referenceHighlightRects, setReferenceHighlightRects] = useState<ConversationHighlightRect[]>([]);
   // Pausing a tool makes OpenHands emit one synthetic AgentErrorEvent. Keep
   // the authoritative event for recovery and audit, but it is neither an
   // execution failure nor useful conversation content.
@@ -1523,51 +1553,84 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused =
   }, []);
   const highlightReferenceText = useCallback((highlight: ConversationTextHighlight) => {
     if (referenceHighlightTimer.current) window.clearTimeout(referenceHighlightTimer.current);
+    referenceHighlightTimer.current = undefined;
+    referenceLocationPending.current = true;
+    setReferenceHighlightRects([]);
     setHighlightedReference(highlight);
-    referenceHighlightTimer.current = window.setTimeout(() => {
-      setHighlightedReference(current => current === highlight ? undefined : current);
-      if (window.getSelection()?.toString() === highlight.quote) window.getSelection()?.removeAllRanges();
-      referenceHighlightTimer.current = undefined;
-    }, 3_800);
   }, []);
+  const updateReferenceHighlight = useCallback(() => {
+    const element = surface.current;
+    const highlightRoot = content.current;
+    if (!highlightedReference || !element || !highlightRoot) return false;
+    const target = Array.from(element.querySelectorAll<HTMLElement>('[data-conversation-event-id]'))
+      .find(item => item.dataset.conversationEventId === highlightedReference.eventId);
+    if (!target) return false;
+    for (let parent = target.parentElement?.closest('details'); parent; parent = parent.parentElement?.closest('details')) parent.open = true;
+    const range = conversationQuoteRange(target, highlightedReference.quote, highlightedReference.compactStart);
+    if (!range) return false;
+    const rects = conversationHighlightRects(range, highlightRoot);
+    if (!rects.length) return false;
+    setReferenceHighlightRects(rects);
+    if (referenceLocationPending.current) {
+      const sourceRect = range.getBoundingClientRect();
+      const surfaceRect = element.getBoundingClientRect();
+      const top = sourceRect.top - surfaceRect.top + element.scrollTop - 28;
+      element.scrollTo({ top: Math.max(0, top), behavior: 'auto' });
+      referenceLocationPending.current = false;
+    }
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    if (!referenceHighlightTimer.current) {
+      referenceHighlightTimer.current = window.setTimeout(() => {
+        setHighlightedReference(current => current === highlightedReference ? undefined : current);
+        setReferenceHighlightRects([]);
+        if (window.getSelection()?.toString() === highlightedReference.quote) window.getSelection()?.removeAllRanges();
+        referenceHighlightTimer.current = undefined;
+      }, 3_800);
+    }
+    return true;
+  }, [highlightedReference]);
   useEffect(() => () => {
     if (referenceHighlightTimer.current) window.clearTimeout(referenceHighlightTimer.current);
   }, []);
   useLayoutEffect(() => {
-    if (!highlightedReference || !surface.current) return;
-    const target = Array.from(surface.current.querySelectorAll<HTMLElement>('[data-conversation-event-id]'))
-      .find(item => item.dataset.conversationEventId === highlightedReference.eventId);
-    const range = target && conversationQuoteRange(target, highlightedReference.quote, highlightedReference.compactStart);
-    if (!range) return;
-    const selection = window.getSelection();
-    selection?.removeAllRanges();
-    selection?.addRange(range);
-  }, [events, highlightedReference]);
+    updateReferenceHighlight();
+  }, [events, historyRevision, updateReferenceHighlight]);
+  useEffect(() => {
+    if (!highlightedReference || !content.current) return;
+    const highlightRoot = content.current;
+    let updateFrame: number | undefined;
+    const scheduleUpdate = () => {
+      if (updateFrame !== undefined) return;
+      updateFrame = window.requestAnimationFrame(() => {
+        updateFrame = undefined;
+        updateReferenceHighlight();
+      });
+    };
+    const mutationObserver = new MutationObserver(mutations => {
+      if (mutations.some(mutation => !(mutation.target instanceof Element ? mutation.target : mutation.target.parentElement)?.closest('.conversation-reference-highlights'))) scheduleUpdate();
+    });
+    mutationObserver.observe(highlightRoot, { childList: true, subtree: true, characterData: true });
+    const resizeObserver = typeof ResizeObserver === 'undefined' ? undefined : new ResizeObserver(scheduleUpdate);
+    resizeObserver?.observe(highlightRoot);
+    window.addEventListener('resize', scheduleUpdate);
+    return () => {
+      mutationObserver.disconnect();
+      resizeObserver?.disconnect();
+      window.removeEventListener('resize', scheduleUpdate);
+      if (updateFrame !== undefined) window.cancelAnimationFrame(updateFrame);
+    };
+  }, [highlightedReference, updateReferenceHighlight]);
   const locateTextAnnotation = useCallback((annotation: AgentConversationAnnotation) => {
     // Text anchors belong to this transcript. Resolving them here avoids the
     // FlowNode route's outer grid from becoming an accidental scroll target.
     const eventId = annotation.anchor.event_id;
-    const element = surface.current;
-    if (typeof eventId !== 'string' || !element) return false;
-    const target = Array.from(element.querySelectorAll<HTMLElement>('[data-conversation-event-id]'))
-      .find(item => item.dataset.conversationEventId === eventId);
-    if (!target) return false;
-    stopFollowingLatest();
-    for (let parent = target.parentElement?.closest('details'); parent; parent = parent.parentElement?.closest('details')) parent.open = true;
+    if (typeof eventId !== 'string' || !surface.current) return false;
     const quote = typeof annotation.anchor.quote === 'string' ? annotation.anchor.quote.trim() : '';
     const compactStart = typeof annotation.anchor.compact_start === 'number' ? annotation.anchor.compact_start : undefined;
-    window.requestAnimationFrame(() => {
-      const range = conversationQuoteRange(target, quote, compactStart);
-      const sourceRect = range?.getBoundingClientRect();
-      const targetRect = target.getBoundingClientRect();
-      const top = (sourceRect?.top ?? targetRect.top) - element.getBoundingClientRect().top + element.scrollTop - 28;
-      element.scrollTo({ top: Math.max(0, top), behavior: 'auto' });
-      highlightReferenceText({ eventId, quote, compactStart });
-      if (!range) return;
-      const selection = window.getSelection();
-      selection?.removeAllRanges();
-      selection?.addRange(range);
-    });
+    stopFollowingLatest();
+    highlightReferenceText({ eventId, quote, compactStart });
     return true;
   }, [highlightReferenceText, stopFollowingLatest]);
   const locateAnnotation = useCallback((annotation: AgentConversationAnnotation) => {
@@ -1715,20 +1778,8 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused =
   const locateReferenceSource = useCallback(() => {
     if (!viewingReference || !surface.current) return;
     stopFollowingLatest();
-    const source = Array.from(surface.current.querySelectorAll<HTMLElement>('[data-conversation-event-id]'))
-      .find(item => item.dataset.conversationEventId === viewingReference.event_id);
     setViewingReference(undefined);
-    if (!source) return;
-    const range = conversationQuoteRange(source, viewingReference.content);
-    const sourceRect = range?.getBoundingClientRect();
-    const surfaceRect = surface.current.getBoundingClientRect();
-    const top = (sourceRect?.top ?? source.getBoundingClientRect().top) - surfaceRect.top + surface.current.scrollTop - 28;
-    surface.current.scrollTo({ top: Math.max(0, top), behavior: 'auto' });
     highlightReferenceText({ eventId: viewingReference.event_id, quote: viewingReference.content });
-    if (!range) return;
-    const selection = window.getSelection();
-    selection?.removeAllRanges();
-    selection?.addRange(range);
   }, [highlightReferenceText, stopFollowingLatest, viewingReference]);
   const lastUserEventId = useMemo(() => [...turns].reverse().find(turn => turn.user)?.user?.event.id, [turns]);
   if (!turns.length && !liveText && !isGenerating) return <div className="conversation-surface-empty"><b>会话已就绪</b><span>发送第一条消息，开始与 Agent 协作。</span></div>;
@@ -1752,6 +1803,7 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused =
     {messagePreview && <aside id="conversation-message-preview" className="conversation-message-index-tooltip" role="tooltip" style={{ top: messagePreview.top }}><span>{messagePreview.content || '（空消息）'}</span></aside>}
     <section ref={surface} className="conversation-surface" aria-live="polite" onScroll={() => { handleScroll(); setSelectedReference(undefined); }} onWheelCapture={event => { if (event.deltaY < 0) stopFollowingLatest(); else if (event.deltaY > 0) scrollInteractionTowardLatest.current = true; }} onPointerDownCapture={event => { scrollInteractionStartY.current = event.clientY; scrollInteractionTowardLatest.current = false; }} onPointerMoveCapture={event => { if (scrollInteractionStartY.current === null) return; if (event.clientY - scrollInteractionStartY.current > 3) stopFollowingLatest(); else if (scrollInteractionStartY.current - event.clientY > 3) scrollInteractionTowardLatest.current = true; }} onPointerUp={event => { scrollInteractionStartY.current = null; offerSelectedReference(event); }} onPointerCancel={() => { scrollInteractionStartY.current = null; }} onKeyDown={event => { if (['ArrowUp', 'PageUp', 'Home'].includes(event.key)) stopFollowingLatest(); else if (['ArrowDown', 'PageDown', 'End'].includes(event.key)) scrollInteractionTowardLatest.current = true; }}>
       <div ref={content} className="conversation-surface-content">
+      {referenceHighlightRects.length > 0 && <div className="conversation-reference-highlights" aria-hidden="true">{referenceHighlightRects.map((rect, index) => <i key={`${rect.left}:${rect.top}:${index}`} style={rect}/>)}</div>}
       {historyPending && <div className="conversation-history-loading" role="status"><LoaderCircle size={14}/>正在载入更早的会话记录…</div>}
       {turns.map((turn, index) => {
         const isCurrent = index === turns.length - 1 && isGenerating;
