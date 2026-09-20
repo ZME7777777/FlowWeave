@@ -9,12 +9,14 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import select
+from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.orm import Session, sessionmaker
 
 from flowweave.modules.agent_sessions.application import (
     conversations as session_conversations,
 )
 from flowweave.modules.agent_sessions.application import (
+    credential_sync,
     flow_node_conversations,
     flow_node_host,
     flow_node_workspace,
@@ -71,6 +73,51 @@ def test_usage_token_defaults_to_zero_before_orm_flush() -> None:
     assert bucket.observed_prompt_tokens is None
     assert usage_projection._token_count(bucket.observed_prompt_tokens) == 0
     assert usage_projection._token_count(17) == 17
+
+
+def test_credential_sync_schema_guard_maps_missing_postgres_schema() -> None:
+    class MissingColumn(Exception):
+        sqlstate = "42703"
+
+    class SessionWithMissingSchema:
+        rollback_calls = 0
+
+        def execute(self, _statement: object) -> None:
+            raise ProgrammingError("SELECT", {}, MissingColumn())
+
+        def rollback(self) -> None:
+            self.rollback_calls += 1
+
+    db = SessionWithMissingSchema()
+
+    with pytest.raises(DomainError) as caught:
+        credential_sync.ensure_credential_sync_schema(db)  # type: ignore[arg-type]
+
+    assert caught.value.code == "AGENT_CREDENTIAL_SYNC_SCHEMA_OUTDATED"
+    assert caught.value.status == 503
+    assert caught.value.message == "认证同步功能尚未完成升级，请联系管理员完成数据库迁移后重试"
+    assert db.rollback_calls == 1
+
+
+def test_credential_sync_schema_guard_reraises_unrelated_database_error() -> None:
+    class UnexpectedDatabaseError(Exception):
+        sqlstate = "XX000"
+
+    class SessionWithUnexpectedError:
+        rollback_calls = 0
+
+        def execute(self, _statement: object) -> None:
+            raise ProgrammingError("SELECT", {}, UnexpectedDatabaseError())
+
+        def rollback(self) -> None:
+            self.rollback_calls += 1
+
+    db = SessionWithUnexpectedError()
+
+    with pytest.raises(ProgrammingError):
+        credential_sync.ensure_credential_sync_schema(db)  # type: ignore[arg-type]
+
+    assert db.rollback_calls == 0
 
 
 def test_conversation_reference_projection_hides_selected_text_from_message_body() -> None:

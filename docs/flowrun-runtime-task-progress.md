@@ -200,6 +200,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-486 | 连续／逐步候选输出 Gate 门禁一致性 | DONE | 两种模式都只能向后继节点流转 `GATE_PASSED` 的候选输出；删除逐步历史产物回退，并以定向服务回归锁定两条入口。 |
 | FR-487 | 逐步／连续记录选择与操作栏一致性 | DONE | 逐步记录复用连续记录的多选、批量删除和即时隐藏交互，并恢复直接启动与连续记录删除操作。 |
 | FR-488 | 嵌套 Markdown 源码围栏约束 | DONE | 平台系统上下文要求展示含代码块的 Markdown 源码时使用更长或不同类型的外层围栏，避免源码后段被渲染为会话内容。 |
+| FR-489 | 既有会话认证同步可用性与会话配置层级 | DONE | 缺失认证同步迁移时返回可行动的稳定错误；会话配置以能力／认证顶层导航和能力类别二级导航呈现。 |
 | FR-457 | OpenHands 空响应自恢复与运行状态一致性 | DONE | 空 Agent Message 与 `source=environment` 的原生 corrective nudge 不再被识别为最终回复；纠正事件以“模型返回空响应，OpenHands 正在自动重试”呈现，左侧会话状态与底部按钮继续统一服从原生 execution status。 |
 | FR-458 | 空响应恢复提示瞬时化与会话状态统一 | DONE | corrective nudge 只在它是当前最新事件且原生会话仍运行时复用实时状态行显示；后续事件或终态立即隐藏，历史工作过程不保留该提示。工作台所有运行控件复用同一原生状态投影。 |
 | FR-459 | 原生错误事件的终态／可恢复呈现分流 | DONE | 仅 OpenHands ConversationErrorEvent 呈现为“本轮未能完成”的会话级终态卡片；AgentErrorEvent 与未知历史 ERROR 保持原生审计事实，按其正式父事件留在工作过程中呈现为可恢复异常，后续正式回复会明确标注 Agent 已继续完成，避免暂停／继续后的正常回复被历史错误卡片误覆盖。 |
@@ -6449,6 +6450,28 @@ FlowRun 兼容记录继续保持可读但不可删除。直接启动与连续运
 Markdown 源码块和内部代码块同用三个反引号。新回复因此会在生成时维持完整源码块，历史消息继续按原文的
 CommonMark 语义展示。
 
+### FR-489 既有会话认证同步可用性与会话配置层级 — DONE
+
+依赖：`FR-485`。
+
+目标：
+
+- 认证同步相关迁移尚未应用时，普通 Agent Workspace 和 FlowRun 节点会话的认证读取／同步接口必须返回
+  不包含内部 SQL 的稳定、可行动错误，不能让前端收到未分类的 500。
+- 既有会话的配置弹窗标题改为“会话配置”，以“能力／认证”为顶层导航；能力类别筛选继续作为能力页的
+  二级导航。删除标题下的说明，避免两层导航和冗长说明挤占可用空间。
+- 不改变 `FR-485` 冻结的同步语义：既有会话仍只在用户手动操作时同步，新会话继续默认注入当前认证。
+
+验收：受影响 Python Ruff format/check、`py_compile`、认证同步 schema guard 定向 pytest、Web TypeScript
+typecheck、定向 ESLint、Alembic 唯一 head、`git diff --check` 与任务状态唯一性；无 OpenHands 源码、Docker、
+迁移实跑、远端或业务 E2E 操作。
+
+完成：认证读取和手动同步入口会先检查认证同步所需的新增字段与表。缺少该 schema 时，仅将 PostgreSQL
+`42703`／`42P01` 或 SQLite 的明确缺列／缺表错误转换为不含内部 SQL 的
+`AGENT_CREDENTIAL_SYNC_SCHEMA_OUTDATED`（503）；其他数据库错误仍原样抛出。会话弹窗标题改为“会话配置”，
+能力／认证改为顶层标签，能力类别保留为能力页的二级标签，移除标题下说明以释放内容空间。既有会话继续只在
+用户手动同步时追加／覆盖认证，新建会话继续默认注入当时全部认证。
+
 ### FR-482 终态事件缺失的会话同步有界收敛 — DONE
 
 依赖：FR-456、FR-481。
@@ -6474,6 +6497,7 @@ CommonMark 语义展示。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-20 | FR-489 | 受影响 Python Ruff format/check、`py_compile`；认证同步 schema guard 定向 pytest 尝试及无 fixture 直接执行（2 passed）；Web TypeScript typecheck、定向 ESLint；Alembic head、`git diff --check` 与任务状态唯一性 | PASS（静态／纯逻辑）：普通 Agent Workspace 和 FlowRun 节点会话的认证读取／同步都会在 ORM 读取新增字段前确认 schema；已知缺失迁移返回可行动、无内部 SQL 的 503，其他数据库错误保持原样。弹窗采用“会话配置”标题、能力／认证顶层导航和能力二级类别导航，标题说明已移除。定向 pytest 在断言前因本机 Docker socket 缺失而被全局 Testcontainers fixture 阻断；相同两条纯逻辑测试直接执行通过。唯一 Alembic head 为 `0120_agent_conversation_credential_sync`；未修改数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-19 | FR-488 | 无容器 Runtime Agent spec 构造冒烟；Runtime Agent spec 定向 pytest 尝试；受影响 Python Ruff format/check、`py_compile`；`git diff --check` 与任务状态唯一性 | PASS（静态）：共用 OpenHands 系统后缀新增嵌套 Markdown 源码围栏规则；无容器规格构造确认更长外层／波浪线替代方案和禁止共用三个反引号的约束均会进入新会话，回归测试也锁定这些文案。定向 pytest 在进入断言前因本机 Docker socket 缺失而阻断，未记为通过。未修改前端渲染器、既有消息、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-19 | FR-487 | FlowRun 工作台定向 Playwright（5 passed）；Web TypeScript typecheck、ESLint、production build；Alembic head；`git diff --check` 与任务状态唯一性 | PASS：逐步记录复用连续运行的选中卡片、Cmd/Ctrl 多选、Shift 范围选择、批量删除确认及删除后即时隐藏；从节点会话返回的逐步记录也恢复选中态。直接启动、连续运行和逐步运行的删除都使用同一确认和乐观隐藏语义，历史父 FlowRun 兼容记录保持只读且不可删除。定向浏览器回归覆盖运行中及等待输入的直接启动删除、未启动会话删除、逐步与连续批量删除即时隐藏及共享详情／画布尺寸。唯一 Alembic head 为 `0120_agent_conversation_credential_sync`；production build 仅报告既有大 chunk 提示。未修改 API、数据库、迁移、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-19 | FR-486 | 受影响 Python Ruff format/check、`py_compile`；纯服务定向 pytest；完整目标测试文件尝试；Alembic head；`git diff --check` 与任务状态唯一性 | PASS（静态／纯服务）：逐步与连续后继入口都只接受 `GATE_PASSED` 的当前 CandidateOutputSet。新增纯服务回归 5 passed，覆盖候选集合缺失、`GATE_FAILED` 与通过 Gate 的冻结产物选择。完整目标测试文件在全局 Testcontainers fixture 初始化前因本机 Docker socket 缺失而阻断，未进入断言且未记为通过；唯一 Alembic head 为 `0120_agent_conversation_credential_sync`。未修改数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |

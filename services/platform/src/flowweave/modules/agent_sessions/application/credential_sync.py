@@ -5,7 +5,8 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, text
+from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlalchemy.orm import Session
 
 from flowweave.modules.agent_sessions.infrastructure.models import (
@@ -18,6 +19,35 @@ from flowweave.modules.credentials.application.service import (
 )
 from flowweave.runtime.base import RuntimeHandle, RuntimePort
 from flowweave.shared.database import now
+from flowweave.shared.errors import DomainError
+
+_SCHEMA_OUTDATED_CODE = "AGENT_CREDENTIAL_SYNC_SCHEMA_OUTDATED"
+_SCHEMA_OUTDATED_MESSAGE = "认证同步功能尚未完成升级，请联系管理员完成数据库迁移后重试"
+_POSTGRES_MISSING_SCHEMA_CODES = frozenset({"42703", "42P01"})
+
+
+def _is_missing_credential_sync_schema(error: ProgrammingError | OperationalError) -> bool:
+    original = error.orig
+    sqlstate = getattr(original, "sqlstate", None) or getattr(original, "pgcode", None)
+    if sqlstate in _POSTGRES_MISSING_SCHEMA_CODES:
+        return True
+    message = str(original).lower()
+    return "no such column" in message or "no such table" in message
+
+
+def ensure_credential_sync_schema(db: Session) -> None:
+    """Return a stable remediation error when the additive schema is not deployed."""
+
+    try:
+        db.execute(
+            text("SELECT credential_sync_initialized_at FROM agent_conversation_bindings LIMIT 1")
+        )
+        db.execute(text("SELECT binding_id FROM agent_conversation_credential_syncs LIMIT 1"))
+    except (OperationalError, ProgrammingError) as error:
+        if not _is_missing_credential_sync_schema(error):
+            raise
+        db.rollback()
+        raise DomainError(_SCHEMA_OUTDATED_CODE, _SCHEMA_OUTDATED_MESSAGE, 503) from error
 
 
 def _normalized_ids(credential_ids: Iterable[str]) -> tuple[str, ...]:
@@ -114,6 +144,7 @@ def synchronize_credentials(
 
 
 __all__ = (
+    "ensure_credential_sync_schema",
     "list_credential_sync_state",
     "record_initial_credential_sync",
     "synchronize_credentials",

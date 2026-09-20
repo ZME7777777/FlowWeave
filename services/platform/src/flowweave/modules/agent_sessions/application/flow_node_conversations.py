@@ -33,6 +33,7 @@ from flowweave.modules.agent_sessions.application.conversations import (
     validated_workspace_references,
 )
 from flowweave.modules.agent_sessions.application.credential_sync import (
+    ensure_credential_sync_schema,
     list_credential_sync_state,
     record_initial_credential_sync,
     synchronize_credentials,
@@ -3089,6 +3090,7 @@ def stop_conversation(db: Session, binding_id: str) -> dict[str, Any]:
 def node_credential_sync_state(
     db: Session, *, flow_run_id: str, attempt_id: str, binding_id: str
 ) -> dict[str, Any]:
+    ensure_credential_sync_schema(db)
     binding = _binding_for_attempt(
         db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
     )
@@ -3103,6 +3105,7 @@ def synchronize_node_credentials(
     binding_id: str,
     credential_ids: tuple[str, ...],
 ) -> dict[str, Any]:
+    ensure_credential_sync_schema(db)
     _assert_node_session_writable(
         db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
     )

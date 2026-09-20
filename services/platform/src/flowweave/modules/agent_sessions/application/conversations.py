@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 
 from flowweave.modules.agent_sessions.application import usage as usage_projection
 from flowweave.modules.agent_sessions.application.credential_sync import (
+    ensure_credential_sync_schema,
     list_credential_sync_state,
     record_initial_credential_sync,
     synchronize_credentials,
@@ -1277,6 +1278,7 @@ def add_conversation_capability(
 def conversation_credential_sync_state(
     db: Session, workspace_id: str, binding_id: str
 ) -> dict[str, Any]:
+    ensure_credential_sync_schema(db)
     workspace = _workspace(db, workspace_id)
     return list_credential_sync_state(db, _binding(db, workspace.id, binding_id))
 
@@ -1284,6 +1286,7 @@ def conversation_credential_sync_state(
 def synchronize_conversation_credentials(
     db: Session, workspace_id: str, binding_id: str, credential_ids: tuple[str, ...]
 ) -> dict[str, Any]:
+    ensure_credential_sync_schema(db)
     workspace = _workspace(db, workspace_id)
     binding = _binding(db, workspace.id, binding_id, lock=True)
     if binding.lifecycle != "ACTIVE":
