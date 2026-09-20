@@ -12,7 +12,7 @@ import { ApiError, randomId, type AgentStreamEvent } from '../../api/client';
 import { agentWorkspaceSessionGateway, type AgentSessionGateway } from '../../api/agent-session-gateway';
 import { withoutDeploymentBase } from '../../deploymentPath';
 import { agentWorkspaceSessionHost, type AgentSessionHost } from './session-host';
-import { ConversationSurface, ConversationTaskPlan, type ConversationReference } from '../ConversationSurface';
+import { ConversationSurface, ConversationTaskPlan, type ConversationHistoryPrepend, type ConversationReference } from '../ConversationSurface';
 import { isOpenHandsAgentReply, isOpenHandsEmptyResponseRecovery } from '../conversationEvents';
 import { useProductDialog } from '../ProductDialogContext';
 import { useEscapeClose } from '../useEscapeClose';
@@ -3736,7 +3736,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const [candidatePreviewRequest, setCandidatePreviewRequest] = useState<CandidateFilePreviewRequest>();
   const [operationError, setOperationError] = useState<Error>();
   const [historyLoadingBindingId, setHistoryLoadingBindingId] = useState<string>();
-  const [historyRevision, setHistoryRevision] = useState(0);
+  const [historyPrepend, setHistoryPrepend] = useState<ConversationHistoryPrepend>();
   const [streamHold, setStreamHold] = useState<{ bindingId: string; expiresAt: number }>();
   const [pageVisible, setPageVisible] = useState(() => document.visibilityState === 'visible');
   const [pendingCreatedId, setPendingCreatedId] = useState<string>();
@@ -3757,6 +3757,12 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const liveEventsFrame = useRef<number | undefined>(undefined);
   const historyLoadingScopes = useRef(new Set<string>());
   const historyFailedCursors = useRef(new Map<string, string>());
+  const historyPrependWaiters = useRef(new Map<number, {
+    scope: string;
+    capture?: (accepted: boolean) => void;
+    restore?: (accepted: boolean) => void;
+  }>());
+  const nextHistoryPrependId = useRef(0);
   const draggedConversationRef = useRef<string | undefined>(undefined);
   const dragTargetRef = useRef<{ bindingId: string; after: boolean } | undefined>(undefined);
   const pointerDragGroupRef = useRef<AgentConversation[] | undefined>(undefined);
@@ -3867,6 +3873,40 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     () => selectedConversationQuery.data ?? conversations.find(item => item.id === selectedBindingId),
     [conversations, selectedBindingId, selectedConversationQuery.data],
   );
+  const activeHistoryScope = useRef<string | undefined>(selected?.id);
+  activeHistoryScope.current = selected?.id;
+  const resolveHistoryPrepend = useCallback((transaction: ConversationHistoryPrepend, accepted: boolean) => {
+    const waiter = historyPrependWaiters.current.get(transaction.id);
+    if (!waiter || waiter.scope !== transaction.scope || activeHistoryScope.current !== transaction.scope) return;
+    const resolve = waiter[transaction.phase];
+    if (!resolve) return;
+    waiter[transaction.phase] = undefined;
+    resolve(accepted);
+    if (transaction.phase === 'restore') historyPrependWaiters.current.delete(transaction.id);
+  }, []);
+  const onHistoryAnchorCaptured = useCallback((transaction: ConversationHistoryPrepend) => {
+    resolveHistoryPrepend(transaction, true);
+  }, [resolveHistoryPrepend]);
+  const onHistoryAnchorRestored = useCallback((transaction: ConversationHistoryPrepend) => {
+    resolveHistoryPrepend(transaction, true);
+  }, [resolveHistoryPrepend]);
+  useEffect(() => {
+    const scope = selected?.id;
+    for (const [transactionId, waiter] of historyPrependWaiters.current) {
+      if (waiter.scope === scope) continue;
+      waiter.capture?.(false);
+      waiter.restore?.(false);
+      historyPrependWaiters.current.delete(transactionId);
+    }
+    setHistoryPrepend(current => current?.scope === scope ? current : undefined);
+  }, [selected?.id]);
+  useEffect(() => () => {
+    for (const waiter of historyPrependWaiters.current.values()) {
+      waiter.capture?.(false);
+      waiter.restore?.(false);
+    }
+    historyPrependWaiters.current.clear();
+  }, []);
   const queuedMessagesStorageKey = workspace && selected
     ? host.queuedMessagesStorageKey(workspace.id, selected.id)
     : undefined;
@@ -4164,6 +4204,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const loadAllHistory = useCallback(async () => {
     if (!workspace || !selected || !eventsQuery.data?.history_cursor) return;
     const scope = selected.id;
+    const scopeIsActive = () => activeHistoryScope.current === scope;
     if (historyLoadingScopes.current.has(scope)) return;
     historyLoadingScopes.current.add(scope);
     setHistoryLoadingBindingId(scope);
@@ -4178,18 +4219,34 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         const cursor = historyCursor;
         if (seenHistoryCursors.has(cursor)) throw new Error('读取更早会话记录时，历史分页游标没有推进。');
         seenHistoryCursors.add(cursor);
-        // Bracket the eventual prepend so ConversationSurface can preserve a
-        // reader's viewport without relying on browser scroll anchoring.
-        setHistoryRevision(current => current + 1);
-        await new Promise<void>(resolve => window.requestAnimationFrame(() => resolve()));
         const older = await api.conversationEvents(workspace.id, scope, undefined, cursor);
+        if (!scopeIsActive()) return;
+        // This transaction captures the actual viewport immediately before
+        // this exact page is inserted, then restores only after React has
+        // rendered the matching page. It cannot leak into another session.
+        const transaction: ConversationHistoryPrepend = {
+          id: ++nextHistoryPrependId.current,
+          scope,
+          phase: 'capture',
+        };
+        const captured = new Promise<boolean>(resolve => {
+          historyPrependWaiters.current.set(transaction.id, { scope, capture: resolve });
+        });
+        setHistoryPrepend(transaction);
+        if (!await captured || !scopeIsActive()) return;
         queryClient.setQueryData<OpenHandsConversationEventBatch>(eventQueryKey, current => current
           ? { ...current, events: mergeConversationEvents(older.events, current.events), history_cursor: older.history_cursor }
           : older,
         );
-        setHistoryRevision(current => current + 1);
+        const restored = new Promise<boolean>(resolve => {
+          const waiter = historyPrependWaiters.current.get(transaction.id);
+          if (waiter) waiter.restore = resolve;
+          else resolve(false);
+        });
+        setHistoryPrepend({ ...transaction, phase: 'restore' });
+        if (!await restored || !scopeIsActive()) return;
+        setHistoryPrepend(current => current?.id === transaction.id ? undefined : current);
         historyCursor = older.history_cursor;
-        if (historyCursor) await new Promise<void>(resolve => window.setTimeout(resolve, 0));
       }
     } catch (error) {
       if (historyCursor) historyFailedCursors.current.set(scope, historyCursor);
@@ -5531,7 +5588,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         isPaused={conversationActivity.state === 'paused'}
         emptyResponseRecoveryActive={emptyResponseRecoveryActive}
         historyPending={Boolean(selected && historyLoadingBindingId === selected.id)}
-        historyRevision={historyRevision}
+        conversationScope={selected?.id ?? conversationDraft?.id}
+        historyPrepend={historyPrepend}
+        onHistoryAnchorCaptured={onHistoryAnchorCaptured}
+        onHistoryAnchorRestored={onHistoryAnchorRestored}
         requestStartedAt={requestStartedAt}
         requestSubmitting={(send.isPending && !nativeGuidanceDispatching) || bootstrap.isPending || rewrite.isPending}
         onRewrite={selected && canWrite && features.rewrite ? requestRewrite : undefined}

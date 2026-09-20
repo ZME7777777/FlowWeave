@@ -488,8 +488,15 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   let workspaceGitRepositoryRequests = 0;
   const longFinalReply = Array.from(
     { length: 90 },
-    (_, index) => `最终回复第 ${index + 1} 段：这是用于验证长回复从开头开始阅读的正式内容。`,
+    (_, index) => `最终回复第 ${index + 1} 段：这是用于验证长回复稳定贴住会话底部的正式内容。`,
   ).join('\n\n');
+  const expectViewportAtLatest = async () => {
+    await expect.poll(() => page.locator('.conversation-surface').evaluate(surface => {
+      return surface.scrollHeight - surface.scrollTop - surface.clientHeight;
+    })).toBeLessThanOrEqual(16);
+    await expect(page.getByRole('button', { name: '跳转到正在生成的最新回复' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: '跳转到最新回复' })).toHaveCount(0);
+  };
   const conversations: Array<Record<string, unknown>> = [];
   // This product-flow test supplies every Agent Workspace dependency itself.
   // Keep its authentication boundary equally explicit so the browser reaches
@@ -1371,9 +1378,18 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   // The held page also proves the request begins before this turn settles.
   await expect.poll(() => historyPageRequests).toBeGreaterThan(0);
   await expect(page.locator('.conversation-history-loading')).toContainText('正在载入更早的会话记录');
+  await expect.poll(() => Boolean(agentStream)).toBe(true);
+  await expectViewportAtLatest();
+  agentStream!.send(JSON.stringify({
+    type: 'event',
+    event: { id: 'history-overlap-tool', event_type: 'TOOL_CALL', payload: { source: 'agent', parent_id: 'running-user', action_id: 'history-overlap-tool', tool_call_id: 'history-overlap-call', tool_name: 'terminal', event_name: 'TerminalAction', details: { command: 'git log -1 --oneline' }, timestamp: new Date().toISOString() } },
+  }));
+  await expect(page.getByText('正在运行 git log -1 --oneline')).toBeVisible();
+  await expectViewportAtLatest();
   releaseHistoryPage?.();
   await expect(page.getByText('运行中后台补全的较早历史')).toBeVisible();
   await expect(page.locator('.conversation-history-loading')).toHaveCount(0);
+  await expectViewportAtLatest();
   const composer = page.getByLabel('发送 Agent 消息');
   await composer.fill('maven');
   await composer.dispatchEvent('keydown', { key: 'Enter', code: 'Enter', isComposing: true });
@@ -1425,6 +1441,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   readinessReportsIdle = false;
   agentStream!.send(JSON.stringify({ type: 'message_complete' }));
   await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toBeVisible();
+  await expectViewportAtLatest();
   agentStream!.send(JSON.stringify({ type: 'delta', content: '正在核对上下文。' }));
   await expect(page.getByText('正在核对上下文。', { exact: true })).toHaveCount(0);
   agentStream!.send(JSON.stringify({ type: 'delta', content: '\n下一行内容应当稳定追加，不重新解析前文。' }));
@@ -1435,6 +1452,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   }));
   await expect(activeProcess.getByText('已完成初步分析。')).toBeVisible();
   await expect(activeProcess.getByText('正在运行 pwd')).toBeVisible();
+  await expectViewportAtLatest();
   // A bounded REST refresh may have the same formal action identity before it
   // includes the stream projection's command and commentary. The visible tool
   // must remain intact instead of flashing into an empty process card.
@@ -1450,6 +1468,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(activeProcess.getByText('已完成初步分析。')).toBeVisible();
   await expect(activeProcess.getByText('正在运行 pwd')).toBeVisible();
   await expect(activeProcess.getByText('正在运行 git status --short')).toBeVisible();
+  await expectViewportAtLatest();
   await expect(page.locator('.conversation-turn-status')).toHaveText(/正在后台执行命令/);
   agentStream!.send(JSON.stringify({
     type: 'event',
@@ -1492,6 +1511,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(taskPlanSummary).not.toContainText('当前计划');
   await expect(taskPlanSummary).not.toContainText('验证提交结果');
   await expect(activeProcess.locator('.conversation-activity-stage')).toHaveCount(0);
+  await expectViewportAtLatest();
   agentStream!.send(JSON.stringify({
     type: 'event',
     event: { id: 'live-tool-result', event_type: 'TOOL_RESULT', payload: { parent_id: 'live-tool', action_id: 'live-tool', tool_call_id: 'live-call', tool_name: 'terminal', event_name: 'TerminalObservation', content: '/runtime/workspace/project', details: { command: 'pwd', exit_code: 0, is_error: false }, timestamp: new Date().toISOString() } },
@@ -1505,25 +1525,31 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(activeProcess.getByRole('button', { name: '查看执行详情：已运行 pwd' })).toBeVisible();
   await expect(page.locator('.conversation-turn-status')).toHaveText('OpenHands 会话连接正常，等待响应');
   await expect(activeProcess.locator('.conversation-activity-row.tool')).toHaveCount(3);
+  await expectViewportAtLatest();
+  const latestToolDetail = activeProcess.locator('.conversation-tool-detail').filter({ hasText: '已运行 pwd' });
+  await latestToolDetail.locator(':scope > summary').click();
+  await expect(latestToolDetail.getByText('/runtime/workspace/project', { exact: true })).toBeVisible();
+  await expectViewportAtLatest();
+  await latestToolDetail.locator(':scope > summary').click();
+  await expect(latestToolDetail.getByText('/runtime/workspace/project', { exact: true })).toBeHidden();
+  await expectViewportAtLatest();
   const readingViewport = page.locator('.conversation-surface');
   await readingViewport.hover();
-  await page.mouse.wheel(0, -160);
-  const readingPosition = await readingViewport.evaluate(surface => {
-    surface.scrollTop = Math.max(0, surface.scrollHeight - surface.clientHeight - 80);
-    surface.dispatchEvent(new Event('scroll'));
-    return surface.scrollTop;
-  });
+  const bottomPosition = await readingViewport.evaluate(surface => surface.scrollTop);
+  await page.mouse.wheel(0, -240);
+  await expect.poll(() => readingViewport.evaluate(surface => surface.scrollTop)).toBeLessThan(bottomPosition);
+  const readingPosition = await readingViewport.evaluate(surface => surface.scrollTop);
   await expect(page.getByRole('button', { name: '跳转到正在生成的最新回复' })).toBeVisible();
   await expect(page.getByRole('button', { name: '跳转到正在生成的最新回复' })).toHaveCSS('width', '34px');
   expect(await page.getByRole('button', { name: '跳转到正在生成的最新回复' }).evaluate(button => getComputedStyle(button, '::before').content)).toBe('none');
   agentStream!.send(JSON.stringify({
-    type: 'delta',
-    content: '用户正在查阅历史时，最新输出不应抢回视口。',
+    type: 'event',
+    event: { id: 'live-history-browse-tool', event_type: 'TOOL_CALL', payload: { parent_id: 'live-tool-result', action_id: 'live-history-browse-tool', tool_call_id: 'live-history-browse-call', tool_name: 'terminal', event_name: 'TerminalAction', details: { command: 'git diff --check' }, timestamp: new Date().toISOString() } },
   }));
+  await expect(activeProcess.getByText('正在运行 git diff --check')).toBeVisible();
   await expect.poll(() => readingViewport.evaluate(surface => surface.scrollTop)).toBe(readingPosition);
   await page.getByRole('button', { name: '跳转到正在生成的最新回复' }).click();
-  expect(await readingViewport.evaluate(surface => surface.scrollHeight - surface.scrollTop - surface.clientHeight)).toBeLessThanOrEqual(16);
-  await expect.poll(() => readingViewport.evaluate(surface => surface.scrollHeight - surface.scrollTop - surface.clientHeight)).toBeLessThanOrEqual(16);
+  await expectViewportAtLatest();
   await composer.fill('第一条排队消息');
   await composer.press('Enter');
   await composer.fill('调整方向的排队消息');
@@ -1619,25 +1645,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.getByText('运行中后台补全的较早历史')).toBeVisible();
   await expect(page.locator('.conversation-history-loading')).toHaveCount(0);
   historyPrefetchEnabled = false;
-  const completedViewport = await page.locator('.conversation-turn').last().evaluate(turn => {
-    const surface = turn.closest('.conversation-surface');
-    const reply = turn.querySelector('.conversation-message.assistant');
-    if (!surface || !reply) throw new Error('Expected completed response');
-    const surfaceBox = surface.getBoundingClientRect();
-    const replyBox = reply.getBoundingClientRect();
-    return {
-      replyTop: replyBox.top,
-      replyBottom: replyBox.bottom,
-      surfaceTop: surfaceBox.top,
-      surfaceBottom: surfaceBox.bottom,
-    };
-  });
-  expect(completedViewport.replyTop).toBeGreaterThanOrEqual(completedViewport.surfaceTop - 1);
-  expect(completedViewport.replyTop).toBeLessThan(completedViewport.surfaceTop + 80);
-  expect(completedViewport.replyBottom).toBeGreaterThan(completedViewport.surfaceBottom);
-  await page.getByRole('button', { name: '跳转到最新回复' }).click();
-  await expect.poll(() => page.locator('.conversation-surface').evaluate(surface => surface.scrollHeight - surface.scrollTop - surface.clientHeight)).toBeLessThanOrEqual(16);
-  await expect(page.getByRole('button', { name: '跳转到最新回复' })).toHaveCount(0);
+  await expectViewportAtLatest();
   await expect(page.getByText('核对已经完成，下面给出最终结果。')).toBeVisible();
   // A Runtime can return a formal terminal error after an abnormal main-loop
   // exit. Its Task descendants must also stop presenting as still running.

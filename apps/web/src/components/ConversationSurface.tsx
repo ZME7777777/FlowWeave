@@ -1391,7 +1391,13 @@ function ConversationFailure({ item, taskControl = [] }: { item: Item; taskContr
   </article>;
 }
 
-export function ConversationSurface({ events, liveText, isGenerating, isPaused = false, emptyResponseRecoveryActive = false, historyPending = false, historyRevision = 0, requestStartedAt, requestSubmitting = false, rewritePending = false, onRewrite, onFork, onOpenAttachment, onOpenWorkspaceReference, onPreviewCandidateFile, onReviewChanges, onOpenWorkspaceFile, workspaceRoot, annotations = [], onCreateAnnotation, onLocateAnnotation, taskControl = [], monitoring, connectionState }: {
+export interface ConversationHistoryPrepend {
+  id: number;
+  scope: string;
+  phase: 'capture' | 'restore';
+}
+
+export function ConversationSurface({ events, liveText, isGenerating, isPaused = false, emptyResponseRecoveryActive = false, historyPending = false, conversationScope, historyPrepend, onHistoryAnchorCaptured, onHistoryAnchorRestored, requestStartedAt, requestSubmitting = false, rewritePending = false, onRewrite, onFork, onOpenAttachment, onOpenWorkspaceReference, onPreviewCandidateFile, onReviewChanges, onOpenWorkspaceFile, workspaceRoot, annotations = [], onCreateAnnotation, onLocateAnnotation, taskControl = [], monitoring, connectionState }: {
   events: OpenHandsConversationEvent[];
   liveText: string;
   isGenerating: boolean;
@@ -1401,8 +1407,12 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused =
   emptyResponseRecoveryActive?: boolean;
   /** Older native pages are being inserted above the current latest window. */
   historyPending?: boolean;
-  /** Changes only after a historical page is prepended to the native event projection. */
-  historyRevision?: number;
+  /** Binding identity that owns this transcript viewport. */
+  conversationScope?: string;
+  /** Explicitly brackets one scoped historical prepend. */
+  historyPrepend?: ConversationHistoryPrepend;
+  onHistoryAnchorCaptured?: (transaction: ConversationHistoryPrepend) => void;
+  onHistoryAnchorRestored?: (transaction: ConversationHistoryPrepend) => void;
   requestStartedAt?: number;
   requestSubmitting?: boolean;
   rewritePending?: boolean;
@@ -1431,9 +1441,13 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused =
   const scrollInteractionStartY = useRef<number | null>(null);
   const scrollInteractionTowardLatest = useRef(false);
   const automaticScrollFrame = useRef<number | undefined>(undefined);
-  const historyBottomOffset = useRef<number | undefined>(undefined);
-  const historyAnchorArmed = useRef(false);
-  const observedHistoryRevision = useRef(historyRevision);
+  const historyAnchor = useRef<{
+    id: number;
+    scope: string;
+    bottomOffset: number;
+    element?: HTMLElement;
+    offset?: number;
+  } | undefined>(undefined);
   const wasGenerating = useRef(isGenerating);
   const copyResetTimer = useRef<number | undefined>(undefined);
   const referenceHighlightTimer = useRef<number | undefined>(undefined);
@@ -1489,22 +1503,16 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused =
     const element = surface.current;
     if (!element) return;
     const atLatest = element.scrollHeight - element.scrollTop - element.clientHeight <= 16;
-    if (!atLatest) {
-      userScrolledAway.current = true;
-      followLatest.current = false;
-      setIsAtLatest(false);
-      return;
-    }
-    // Keep the reading lock when a layout or pagination update happens to
-    // produce a bottom-positioned scroll event. Only an explicit return
-    // gesture (or the jump button) resumes following streamed output.
-    if (!userScrolledAway.current || scrollInteractionTowardLatest.current) {
+    // Scroll events also occur when layout, ResizeObserver corrections, and
+    // direct scrollTop assignments settle. They do not establish reading
+    // intent. Only the capture handlers below can leave or resume follow mode.
+    if (atLatest && (!userScrolledAway.current || scrollInteractionTowardLatest.current)) {
       userScrolledAway.current = false;
       followLatest.current = true;
       setIsAtLatest(true);
       return;
     }
-    setIsAtLatest(false);
+    if (!followLatest.current) setIsAtLatest(false);
   }, []);
   const stopFollowingLatest = useCallback(() => {
     if (automaticScrollFrame.current !== undefined) {
@@ -1605,35 +1613,70 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused =
     });
   }, []);
   const handleScroll = useCallback(() => {
-    // Pagination changes the available rows but must never suppress a real
-    // scroll event. The current viewport position alone decides whether new
-    // output may follow the latest message.
     updateScrollPosition();
     scrollInteractionTowardLatest.current = false;
   }, [updateScrollPosition]);
+  const scheduleLatestAlignment = useCallback(() => {
+    if (!followLatest.current || userScrolledAway.current) return;
+    if (automaticScrollFrame.current !== undefined) window.cancelAnimationFrame(automaticScrollFrame.current);
+    automaticScrollFrame.current = window.requestAnimationFrame(() => {
+      automaticScrollFrame.current = undefined;
+      if (followLatest.current && !userScrolledAway.current) alignWithLatest();
+    });
+  }, [alignWithLatest]);
+  const handleNativeContentToggle = useCallback(() => {
+    // Native <details> changes do not necessarily re-render React. Preserve
+    // the latest anchor in the layout event itself; a reader's explicit lock
+    // still takes precedence over this programmatic height change.
+    if (followLatest.current && !userScrolledAway.current) {
+      alignWithLatest();
+      scheduleLatestAlignment();
+    }
+  }, [alignWithLatest, scheduleLatestAlignment]);
+  useEffect(() => {
+    const observedContent = content.current;
+    if (!observedContent) return;
+    observedContent.addEventListener('toggle', handleNativeContentToggle, true);
+    return () => observedContent.removeEventListener('toggle', handleNativeContentToggle, true);
+  }, [handleNativeContentToggle]);
   useLayoutEffect(() => {
     const element = surface.current;
-    if (!element || observedHistoryRevision.current === historyRevision) return;
-    observedHistoryRevision.current = historyRevision;
-    if (!historyAnchorArmed.current) {
-      // The parent increments historyRevision once before requesting an older
-      // page, while the old DOM is still present, then again after prepending
-      // that page. This explicitly brackets the DOM change.
-      historyBottomOffset.current = followLatest.current
-        ? undefined
-        : element.scrollHeight - element.scrollTop;
-      historyAnchorArmed.current = true;
-    } else {
-      // Older pages are prepended. The browser must not choose a random
-      // historical row as its scroll anchor while the reader is away from the
-      // latest reply; preserve the exact distance from the bottom instead.
-      if (historyBottomOffset.current !== undefined) {
-        element.scrollTop = Math.max(0, element.scrollHeight - historyBottomOffset.current);
-      }
-      historyBottomOffset.current = undefined;
-      historyAnchorArmed.current = false;
+    if (!element || !historyPrepend || historyPrepend.scope !== conversationScope) return;
+    if (historyPrepend.phase === 'capture') {
+      if (historyAnchor.current?.id === historyPrepend.id) return;
+      const surfaceBounds = element.getBoundingClientRect();
+      const anchorElement = Array.from(element.querySelectorAll<HTMLElement>('[data-conversation-event-id], .conversation-activity-row'))
+        .find(candidate => candidate.getBoundingClientRect().bottom > surfaceBounds.top);
+      historyAnchor.current = {
+        id: historyPrepend.id,
+        scope: historyPrepend.scope,
+        bottomOffset: element.scrollHeight - element.scrollTop,
+        element: anchorElement,
+        offset: anchorElement
+          ? anchorElement.getBoundingClientRect().top - surfaceBounds.top
+          : undefined,
+      };
+      onHistoryAnchorCaptured?.(historyPrepend);
+      return;
     }
-  }, [historyRevision]);
+    const anchor = historyAnchor.current;
+    if (!anchor || anchor.id !== historyPrepend.id || anchor.scope !== historyPrepend.scope) return;
+    if (followLatest.current && !userScrolledAway.current) {
+      alignWithLatest();
+    } else if (anchor.element?.isConnected && anchor.offset !== undefined) {
+      // A live event can append while this historical page is in flight. An
+      // element anchor isolates the prepend correction from that tail growth,
+      // keeping the exact row the reader was looking at in the same place.
+      const surfaceBounds = element.getBoundingClientRect();
+      element.scrollTop += anchor.element.getBoundingClientRect().top - surfaceBounds.top - anchor.offset;
+    } else {
+      // A replaced event is unusual, but retaining the previous offset is a
+      // better fallback than leaving the prepend to move the reader.
+      element.scrollTop = Math.max(0, element.scrollHeight - anchor.bottomOffset);
+    }
+    historyAnchor.current = undefined;
+    onHistoryAnchorRestored?.(historyPrepend);
+  }, [alignWithLatest, conversationScope, historyPrepend, onHistoryAnchorCaptured, onHistoryAnchorRestored]);
   useLayoutEffect(() => {
     if (!initialPositioned.current && (turns.length || liveText || isGenerating)) {
       initialPositioned.current = true;
@@ -1647,7 +1690,7 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused =
       alignWithLatest();
     }
     wasGenerating.current = isGenerating;
-  }, [alignWithLatest, isGenerating, liveText, turns.length]);
+  }, [alignWithLatest, isGenerating, liveText, turns.length, visibleEvents]);
   useLayoutEffect(() => {
     const observedContent = content.current;
     if (!observedContent || typeof ResizeObserver === 'undefined') return;
@@ -1750,7 +1793,27 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused =
       </button>)}
     </nav>}
     {messagePreview && <aside id="conversation-message-preview" className="conversation-message-index-tooltip" role="tooltip" style={{ top: messagePreview.top }}><span>{messagePreview.content || '（空消息）'}</span></aside>}
-    <section ref={surface} className="conversation-surface" aria-live="polite" onScroll={() => { handleScroll(); setSelectedReference(undefined); }} onWheelCapture={event => { if (event.deltaY < 0) stopFollowingLatest(); else if (event.deltaY > 0) scrollInteractionTowardLatest.current = true; }} onPointerDownCapture={event => { scrollInteractionStartY.current = event.clientY; scrollInteractionTowardLatest.current = false; }} onPointerMoveCapture={event => { if (scrollInteractionStartY.current === null) return; if (event.clientY - scrollInteractionStartY.current > 3) stopFollowingLatest(); else if (scrollInteractionStartY.current - event.clientY > 3) scrollInteractionTowardLatest.current = true; }} onPointerUp={event => { scrollInteractionStartY.current = null; offerSelectedReference(event); }} onPointerCancel={() => { scrollInteractionStartY.current = null; }} onKeyDown={event => { if (['ArrowUp', 'PageUp', 'Home'].includes(event.key)) stopFollowingLatest(); else if (['ArrowDown', 'PageDown', 'End'].includes(event.key)) scrollInteractionTowardLatest.current = true; }}>
+    <section ref={surface} className="conversation-surface" aria-live="polite" onScroll={() => { handleScroll(); setSelectedReference(undefined); }} onClickCapture={event => {
+      if (event.target instanceof Element && event.target.closest('summary')) scheduleLatestAlignment();
+    }} onWheelCapture={event => {
+      const element = surface.current;
+      if (event.deltaY < 0 && (element?.scrollTop ?? 0) > 0) stopFollowingLatest();
+      else if (event.deltaY > 0) scrollInteractionTowardLatest.current = true;
+    }} onPointerDownCapture={event => {
+      // Touch drags always belong to the viewport. For a mouse, only track
+      // the native scrollbar itself so text selection cannot disable follow.
+      if (event.pointerType === 'touch' || event.target === surface.current) {
+        scrollInteractionStartY.current = event.clientY;
+        scrollInteractionTowardLatest.current = false;
+      }
+    }} onPointerMoveCapture={event => {
+      if (scrollInteractionStartY.current === null) return;
+      if (event.clientY - scrollInteractionStartY.current > 3 && (surface.current?.scrollTop ?? 0) > 0) stopFollowingLatest();
+      else if (scrollInteractionStartY.current - event.clientY > 3) scrollInteractionTowardLatest.current = true;
+    }} onPointerUp={event => { scrollInteractionStartY.current = null; offerSelectedReference(event); }} onPointerCancel={() => { scrollInteractionStartY.current = null; }} onKeyDown={event => {
+      if (['ArrowUp', 'PageUp', 'Home'].includes(event.key) && (surface.current?.scrollTop ?? 0) > 0) stopFollowingLatest();
+      else if (['ArrowDown', 'PageDown', 'End'].includes(event.key)) scrollInteractionTowardLatest.current = true;
+    }}>
       <div ref={content} className="conversation-surface-content">
       {historyPending && <div className="conversation-history-loading" role="status"><LoaderCircle size={14}/>正在载入更早的会话记录…</div>}
       {turns.map((turn, index) => {

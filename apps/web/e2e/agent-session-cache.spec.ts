@@ -99,6 +99,229 @@ test('Agent session renders a completed long Markdown reply without manual expan
   await expect.poll(() => eventRequests).toBe(2);
 });
 
+test('Agent transcript keeps scroll ownership through streamed output and historical paging', async ({ page }) => {
+  let authenticated = false;
+  let historyRequests = 0;
+  let thirdHistoryCompleted = false;
+  let releaseFirstHistory: (() => void) | undefined;
+  let releaseSecondHistory: (() => void) | undefined;
+  let releaseThirdHistory: (() => void) | undefined;
+  let agentStream: { send(message: string): void } | undefined;
+  const firstHistoryGate = new Promise<void>(resolve => { releaseFirstHistory = resolve; });
+  const secondHistoryGate = new Promise<void>(resolve => { releaseSecondHistory = resolve; });
+  const thirdHistoryGate = new Promise<void>(resolve => { releaseThirdHistory = resolve; });
+  const workspace = {
+    id: 'scroll-workspace', display_name: '滚动回归工作区', desired_state: 'RUNNING', updated_at: now,
+  };
+  const conversations = [
+    {
+      id: 'scroll-conversation-a', display_title: '滚动会话 A', title_state: 'MANUAL',
+      lifecycle: 'ACTIVE', streaming_callback_ready: true, write_available: true, execution_status: 'running',
+      created_at: now, updated_at: now,
+    },
+    {
+      id: 'scroll-conversation-b', display_title: '滚动会话 B', title_state: 'MANUAL',
+      lifecycle: 'ACTIVE', streaming_callback_ready: true, write_available: true, execution_status: 'running',
+      created_at: now, updated_at: now,
+    },
+  ];
+  const event = (id: string, eventType: string, payload: Record<string, unknown>) => ({
+    id, event_type: eventType, payload: { timestamp: now, ...payload },
+  });
+  const activeEvents = (id: string) => id === 'scroll-conversation-a' ? {
+    events: [
+      event('scroll-a-user', 'MESSAGE', {
+        source: 'user', parent_id: '__root__',
+        content: `开始当前会话。\n\n${'用于制造真实滚动高度的当前会话内容。 '.repeat(1_000)}`,
+      }),
+      event('scroll-a-thought', 'THOUGHT', {
+        source: 'agent', parent_id: 'scroll-a-user', content: '稳定阅读锚点', thought: '稳定阅读锚点',
+      }),
+    ],
+    next_cursor: 'scroll-a-thought',
+    history_cursor: 'scroll-history-1',
+    result: { status: 'RUNNING' },
+  } : {
+    events: [
+      event('scroll-b-user', 'MESSAGE', {
+        source: 'user', parent_id: '__root__',
+        content: `会话 B 的最新内容。\n\n${'会话 B 必须不受会话 A 迟到历史分页影响。 '.repeat(1_000)}`,
+      }),
+      event('scroll-b-thought', 'THOUGHT', {
+        source: 'agent', parent_id: 'scroll-b-user', content: '会话 B 稳定锚点', thought: '会话 B 稳定锚点',
+      }),
+    ],
+    next_cursor: 'scroll-b-thought',
+    history_cursor: null,
+    result: { status: 'RUNNING' },
+  };
+  const expectAtLatest = async () => {
+    const surface = page.locator('.conversation-surface');
+    await expect.poll(() => surface.evaluate(element => {
+      return element.scrollHeight - element.scrollTop - element.clientHeight;
+    })).toBeLessThanOrEqual(16);
+    await expect(page.getByRole('button', { name: /跳转到.*最新回复/ })).toHaveCount(0);
+  };
+  const visibleAnchor = async () => page.locator('.conversation-surface').evaluate(element => {
+    const bounds = element.getBoundingClientRect();
+    const candidate = document.elementFromPoint(bounds.left + bounds.width / 2, bounds.top + Math.min(96, bounds.height / 2))
+      ?.closest<HTMLElement>('[data-conversation-event-id], .conversation-activity-row');
+    return candidate?.dataset.conversationEventId ?? candidate?.textContent?.trim().slice(0, 120) ?? '';
+  });
+
+  await page.routeWebSocket('**/agent-workspaces/**/stream', stream => { agentStream = stream; });
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const path = url.pathname;
+    if (path.endsWith('/auth/me')) return authenticated
+      ? json(route, user)
+      : json(route, { error: { code: 'AUTHENTICATION_REQUIRED', message: '请先登录' } }, 401);
+    if (path.endsWith('/auth/login') && request.method() === 'POST') { authenticated = true; return json(route, user); }
+    if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
+    if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
+    if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: conversations, next_cursor: null });
+    if (path.endsWith('/events')) {
+      const bindingId = path.split('/').at(-2)!;
+      const historyCursor = url.searchParams.get('history_cursor');
+      if (bindingId === 'scroll-conversation-a' && historyCursor === 'scroll-history-1') {
+        historyRequests += 1;
+        await firstHistoryGate;
+        return json(route, {
+          events: [event('scroll-history-one', 'MESSAGE', {
+            source: 'user', parent_id: '__root__',
+            content: `第一历史页。\n\n${'第一历史页的内容。 '.repeat(400)}`,
+          })],
+          next_cursor: null,
+          history_cursor: 'scroll-history-2',
+        });
+      }
+      if (bindingId === 'scroll-conversation-a' && historyCursor === 'scroll-history-2') {
+        historyRequests += 1;
+        await secondHistoryGate;
+        return json(route, {
+          events: [event('scroll-history-two', 'MESSAGE', {
+            source: 'user', parent_id: '__root__',
+            content: `第二历史页。\n\n${'第二历史页的内容。 '.repeat(400)}`,
+          })],
+          next_cursor: null,
+          history_cursor: 'scroll-history-3',
+        });
+      }
+      if (bindingId === 'scroll-conversation-a' && historyCursor === 'scroll-history-3') {
+        historyRequests += 1;
+        await thirdHistoryGate;
+        thirdHistoryCompleted = true;
+        return json(route, { error: { code: 'HISTORY_UNAVAILABLE', message: '历史页暂时不可用' } }, 503);
+      }
+      return json(route, activeEvents(bindingId));
+    }
+    if (path.endsWith('/work-directories')) return json(route, {
+      root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [],
+    });
+    if (path.endsWith('/workspace')) return json(route, {
+      root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' },
+      working_directory: '/runtime/workspace/project', work_directory: null, files: [], repositories: [],
+      runtime: {}, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '不可用', note: '' } },
+    });
+    if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
+    if (path.endsWith('/input-readiness')) return json(route, { ready: false, execution_status: 'running' });
+    if (path.endsWith('/context')) return json(route, { model_name: 'scroll-model', window_tokens: 128_000, used_tokens: 1_024, usage_current: true });
+    if (path.endsWith('/model-providers') || path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
+    if (path.includes('/conversations/') && request.method() === 'GET') return json(route, conversations.find(item => item.id === path.split('/').at(-1)));
+    return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+  });
+
+  await page.goto('/');
+  await login(page);
+  await page.goto('/agent/conversations/scroll-conversation-a');
+  await expect(page.getByText('稳定阅读锚点')).toBeVisible();
+  await expect.poll(() => Boolean(agentStream)).toBe(true);
+  await expect.poll(() => historyRequests).toBe(1);
+  const surface = page.locator('.conversation-surface');
+  await surface.hover();
+  await page.mouse.wheel(0, 20_000);
+  await expectAtLatest();
+
+  agentStream!.send(JSON.stringify({
+    type: 'event',
+    event: event('scroll-tool-one', 'TOOL_CALL', {
+      source: 'agent', parent_id: 'scroll-a-user', action_id: 'scroll-tool-one', tool_call_id: 'scroll-call-one',
+      tool_name: 'terminal', event_name: 'TerminalAction', details: { command: 'git status --short' },
+    }),
+  }));
+  await expect(page.getByText('正在运行 git status --short')).toBeVisible();
+  await expectAtLatest();
+  agentStream!.send(JSON.stringify({
+    type: 'event',
+    event: event('scroll-tool-one-result', 'TOOL_RESULT', {
+      source: 'environment', parent_id: 'scroll-tool-one', action_id: 'scroll-tool-one', tool_call_id: 'scroll-call-one',
+      tool_name: 'terminal', event_name: 'TerminalObservation', content: 'M ConversationSurface.tsx',
+      details: { command: 'git status --short', stdout: 'M ConversationSurface.tsx', exit_code: 0, is_error: false },
+    }),
+  }));
+  const detail = page.locator('.conversation-tool-detail').filter({ hasText: 'git status --short' });
+  await expect(detail).toBeVisible();
+  await expectAtLatest();
+  await detail.locator(':scope > summary').click();
+  await expect(detail.getByText('M ConversationSurface.tsx', { exact: true })).toBeVisible();
+  await expectAtLatest();
+  await detail.locator(':scope > summary').click();
+  await expectAtLatest();
+  const longFinalReply = Array.from(
+    { length: 90 },
+    (_, index) => `正式回复第 ${index + 1} 段：这一段用于验证正式 assistant 回复整块插入后仍稳定停在最新内容。`,
+  ).join('\n\n');
+  agentStream!.send(JSON.stringify({
+    type: 'event',
+    event: event('scroll-formal-reply', 'MESSAGE', {
+      source: 'agent', parent_id: 'scroll-tool-one-result', content: longFinalReply,
+    }),
+  }));
+  await expect(page.getByText('正式回复第 90 段：这一段用于验证正式 assistant 回复整块插入后仍稳定停在最新内容。')).toBeVisible();
+  await expect.poll(() => page.locator('.conversation-message.assistant').last().evaluate(reply => {
+    const surface = reply.closest<HTMLElement>('.conversation-surface');
+    return reply.getBoundingClientRect().height - (surface?.clientHeight ?? 0);
+  })).toBeGreaterThan(0);
+  await expectAtLatest();
+
+  releaseFirstHistory?.();
+  await expect(page.getByText('第一历史页。', { exact: false })).toBeVisible();
+  await expectAtLatest();
+  await expect.poll(() => historyRequests).toBe(2);
+
+  await surface.hover();
+  const bottomBeforeReading = await surface.evaluate(element => element.scrollTop);
+  await page.mouse.wheel(0, -360);
+  await expect.poll(() => surface.evaluate(element => element.scrollTop)).toBeLessThan(bottomBeforeReading);
+  await expect(page.getByRole('button', { name: '跳转到正在生成的最新回复' })).toBeVisible();
+  const anchorBeforePrepend = await visibleAnchor();
+  const readingPosition = await surface.evaluate(element => element.scrollTop);
+  agentStream!.send(JSON.stringify({
+    type: 'event',
+    event: event('scroll-tool-two', 'TOOL_CALL', {
+      source: 'agent', parent_id: 'scroll-tool-one-result', action_id: 'scroll-tool-two', tool_call_id: 'scroll-call-two',
+      tool_name: 'terminal', event_name: 'TerminalAction', details: { command: 'git diff --check' },
+    }),
+  }));
+  await expect(page.getByText('正在运行 git diff --check')).toBeVisible();
+  await expect.poll(() => surface.evaluate(element => element.scrollTop)).toBe(readingPosition);
+
+  releaseSecondHistory?.();
+  await expect(page.getByText('第二历史页。', { exact: false })).toBeVisible();
+  await expect.poll(visibleAnchor).toBe(anchorBeforePrepend);
+  await expect(page.getByRole('button', { name: '跳转到正在生成的最新回复' })).toBeVisible();
+  await expect.poll(() => historyRequests).toBe(3);
+
+  await page.getByRole('button', { name: '滚动会话 B', exact: true }).click();
+  await expect(page).toHaveURL(/\/agent\/conversations\/scroll-conversation-b$/);
+  await expect(page.getByText('会话 B 稳定锚点')).toBeVisible();
+  await expectAtLatest();
+  releaseThirdHistory?.();
+  await expect.poll(() => thirdHistoryCompleted).toBe(true);
+  await expectAtLatest();
+});
+
 test('Agent composer retains each conversation draft and uploaded attachment across navigation and reload', async ({ page }) => {
   let authenticated = false;
   const workspace = { id: 'draft-workspace', display_name: '草稿工作区', desired_state: 'RUNNING', updated_at: now };
