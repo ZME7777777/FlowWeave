@@ -1,6 +1,6 @@
 """rename website credential bearer tokens to generic tokens.
 
-Revision ID: 0119_website_credential_generic_token
+Revision ID: 0119_website_credential_token
 Revises: 0118_credential_target_path
 """
 
@@ -9,7 +9,7 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0119_website_credential_generic_token"
+revision = "0119_website_credential_token"
 down_revision = "0118_credential_target_path"
 branch_labels = None
 depends_on = None

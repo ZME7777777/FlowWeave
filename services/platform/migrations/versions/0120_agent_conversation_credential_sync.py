@@ -1,7 +1,7 @@
 """record explicit credential synchronization for Agent Conversations.
 
 Revision ID: 0120_agent_conversation_credential_sync
-Revises: 0119_website_credential_generic_token
+Revises: 0119_website_credential_token
 """
 
 from __future__ import annotations
@@ -10,7 +10,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "0120_agent_conversation_credential_sync"
-down_revision = "0119_website_credential_generic_token"
+down_revision = "0119_website_credential_token"
 branch_labels = None
 depends_on = None
 
