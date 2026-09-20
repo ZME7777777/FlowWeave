@@ -6491,6 +6491,21 @@ typecheck、定向 ESLint、Alembic 唯一 head、`git diff --check` 与任务�
 共享节点配置或 Attempt 详情。逐步运行工具栏采用连续运行记录相同的拷贝、删除、新增顺序与样式；拷贝仅克隆首节点的
 提示词配置、人工输入、门禁、上下文和 Agent 预设，并保留显式启动确认，不带入会话、输出、执行结果或端口映射产物。
 
+### FR-492 工作区 Markdown Mermaid 预览 — DONE
+
+依赖：FR-406、FR-408、FR-409、FR-411、FR-478。
+
+目标：工作区 Markdown 文件预览中的 Mermaid fenced code block 必须默认渲染为图表，并复用会话中已验证的
+图片／文本切换、源码复制、全屏查看、自适应缩放、滚轮缩放、拖动平移、复位及 Esc／遮罩关闭交互。普通代码块、
+本地 Markdown 链接、选区添加到会话和大文件轻量文本预览必须保持原有行为。
+
+范围：提取会话与工作区共用的 Mermaid 渲染组件及其样式，在 Agent 工作台 Markdown `pre` 渲染边界分流 Mermaid，
+并补充工作区文件预览的定向浏览器回归。不得修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。
+
+完成：会话与工作区 Markdown 预览现在共用 Mermaid 图表和代码块组件；工作区的 Mermaid fenced block 默认渲染
+为 SVG，并保留图片／文本切换、原始源码复制、全屏自适应缩放、滚轮缩放、左键拖动平移、复位和 Esc／遮罩关闭。
+普通代码块、Markdown 相对链接、选区添加到会话和大文件轻量文本预览不改变。
+
 ### FR-491 终态补读超时的误导提示移除 — DONE
 
 依赖：FR-482。
@@ -6531,6 +6546,7 @@ Runtime Provider、Docker 或远端环境。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-20 | FR-492 | Web TypeScript typecheck、定向 ESLint、工作区 Markdown 链接定向 Playwright（1 passed）、production build、`git diff --check` 与任务状态唯一性 | PASS：工作区 Mermaid fenced block 默认渲染为 SVG；浏览器回归覆盖图片／文本切换、全屏打开与 Esc 关闭，并继续验证同一预览中的本地 Markdown 链接与越界保护。production build 仅报告既有大 chunk 提示；未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-20 | FR-491 | Web TypeScript typecheck、定向 ESLint、顶层 Agent 与 FlowRun 节点会话定向 Playwright（2 passed）、`git diff --check` 与任务状态唯一性 | PASS：终态补读窗口到期后，发送入口恢复且未提交队列项继续显示“结果不确定”，但不会再出现把本地投影超时认定为“本轮未返回正式结果”的页面横幅。未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-20 | FR-490 | Web TypeScript typecheck、定向 ESLint、Playwright 逐步配置／选中／拷贝回归（3 passed）；受影响 Python Ruff format/check、`py_compile`、`git diff --check` 与任务状态唯一性 | PASS（静态／浏览器）：逐步记录新增、点击和拷贝均聚焦当前或入口节点，展示共享右栏；工具栏拷贝入口与连续记录对齐，拷贝保留首节点初始配置和人工输入且不带入会话或输出。后端 stepwise 定向 pytest 在进入断言前因本机 Docker socket 缺失而被全局 Testcontainers fixture 阻断，未记为通过；未修改数据库迁移、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-20 | FR-489 | 受影响 Python Ruff format/check、`py_compile`；认证同步 schema guard 定向 pytest 尝试及无 fixture 直接执行（2 passed）；Web TypeScript typecheck、定向 ESLint；Alembic head、`git diff --check` 与任务状态唯一性 | PASS（静态／纯逻辑）：普通 Agent Workspace 和 FlowRun 节点会话的认证读取／同步都会在 ORM 读取新增字段前确认 schema；已知缺失迁移返回可行动、无内部 SQL 的 503，其他数据库错误保持原样。弹窗采用“会话配置”标题、能力／认证顶层导航和能力二级类别导航，标题说明已移除。定向 pytest 在断言前因本机 Docker socket 缺失而被全局 Testcontainers fixture 阻断；相同两条纯逻辑测试直接执行通过。唯一 Alembic head 为 `0120_agent_conversation_credential_sync`；未修改数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |

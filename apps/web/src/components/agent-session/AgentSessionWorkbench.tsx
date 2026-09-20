@@ -4,7 +4,7 @@ import '@xterm/xterm/css/xterm.css';
 import { type InfiniteData, useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import hljs from 'highlight.js/lib/common';
 import { ArrowLeft, Bot, Boxes, Check, ChevronDown, ChevronRight, CircleDot, Copy, CornerDownRight, Download, Ellipsis, FileCode2, FileText, Folder, FolderOpen, FolderPlus, GitBranch, GripVertical, ImageIcon, Layers3, Link2, LoaderCircle, Maximize2, Minimize2, MonitorCog, PanelRightOpen, Play, Plus, Quote, RefreshCw, Search, Send, ShieldAlert, Square, Trash2, X } from 'lucide-react';
-import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type ComponentPropsWithoutRef, type CSSProperties, type DragEvent as ReactDragEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type WheelEvent as ReactWheelEvent } from 'react';
+import { createContext, isValidElement, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type ComponentPropsWithoutRef, type CSSProperties, type DragEvent as ReactDragEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type WheelEvent as ReactWheelEvent } from 'react';
 import { createPortal } from 'react-dom';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -16,6 +16,8 @@ import { ConversationSurface, ConversationTaskPlan, type ConversationHistoryPrep
 import { isOpenHandsAgentReply, isOpenHandsEmptyResponseRecovery } from '../conversationEvents';
 import { useProductDialog } from '../ProductDialogContext';
 import { useEscapeClose } from '../useEscapeClose';
+import { MermaidDiagram } from '../MermaidDiagram';
+import { isMermaidDiagram, markdownCodeText } from '../markdownCodeBlock';
 import { selectCapabilityVersion, selectCapabilityVersions } from '../../utils/capabilitySelection';
 import { SubagentAvatar } from '../SubagentAvatar';
 import { subagentAvatarSlots, type SubagentAvatarSlot } from '../../utils/subagentAvatar';
@@ -1784,6 +1786,16 @@ function WorkspaceMarkdownCode({ className, children, ...props }: ComponentProps
   return <code className={className} {...props} dangerouslySetInnerHTML={{ __html: highlightedCode(value, language) }}/>;
 }
 
+function WorkspaceMarkdownPre({ children, node: _node, ...props }: ComponentPropsWithoutRef<'pre'> & { node?: unknown }) {
+  void _node;
+  if (isValidElement(children)) {
+    const code = children.props as { className?: string; children?: ReactNode };
+    const source = markdownCodeText(code.children).replace(/\n$/, '');
+    if (source && isMermaidDiagram(code.className, source)) return <MermaidDiagram source={source}/>;
+  }
+  return <pre {...props}>{children}</pre>;
+}
+
 function WorkspaceMarkdownLink({ href, onOpenWorkspaceFile, onClick, node: _node, ...props }: ComponentPropsWithoutRef<'a'> & { onOpenWorkspaceFile?: (href: string) => boolean; node?: unknown }) {
   void _node;
   return <a {...props} href={href} onClick={event => {
@@ -1994,7 +2006,7 @@ function WorkspaceTextPreview({ path, content, highlight, highlightLine, onAnnot
   // users can still load the next page or download the complete file.
   if (lightweight) return <pre className="agent-file-large-text-preview">{content}</pre>;
   if (markdownPreview) {
-    return <div ref={previewRef} className="agent-file-preview-selection" onMouseUp={captureSelection}>{pinnedHighlight}{action}<article ref={previewContentRef} className="agent-file-markdown-preview"><ReactMarkdown remarkPlugins={[remarkGfm]} components={{ code: WorkspaceMarkdownCode, a: props => <WorkspaceMarkdownLink {...props} onOpenWorkspaceFile={onOpenWorkspaceFile}/> }}>{content}</ReactMarkdown></article></div>;
+    return <div ref={previewRef} className="agent-file-preview-selection" onMouseUp={captureSelection}>{pinnedHighlight}{action}<article ref={previewContentRef} className="agent-file-markdown-preview"><ReactMarkdown remarkPlugins={[remarkGfm]} components={{ pre: WorkspaceMarkdownPre, code: WorkspaceMarkdownCode, a: props => <WorkspaceMarkdownLink {...props} onOpenWorkspaceFile={onOpenWorkspaceFile}/> }}>{content}</ReactMarkdown></article></div>;
   }
   const language = filePreviewLanguage(path);
   return <div ref={previewRef} className="agent-file-preview-selection" onMouseUp={captureSelection}>{pinnedHighlight}{action}<div className={`agent-file-code-preview${language ? ' highlighted' : ''}`}><ol className="agent-file-line-numbers" aria-hidden="true">{codeLines.map((_, index) => <li key={index}>{index + 1}</li>)}</ol>{lineHighlight && <i className="agent-file-line-highlight" style={{ '--source-line': lineHighlight } as CSSProperties}/>}<code ref={previewContentRef} dangerouslySetInnerHTML={{ __html: highlightedCode(content, language) }}/></div></div>;

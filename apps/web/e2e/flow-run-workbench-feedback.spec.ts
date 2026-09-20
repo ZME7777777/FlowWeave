@@ -1934,7 +1934,7 @@ test('workspace Markdown links open the referenced node-session file without nav
       const requestedPath = url.searchParams.get('path') ?? '';
       previewPaths.push(requestedPath);
       const content = requestedPath === sourcePath
-        ? '# 筛选后业务异常日志汇总\n\n[越界路径](../outside.md)\n\n| 文档 |\n| --- |\n| [hq-admin](filtered_business_exception_reports/hq-admin.md) |'
+        ? '# 筛选后业务异常日志汇总\n\n```mermaid\nflowchart LR\n  A[开始] --> B[结束]\n```\n\n[越界路径](../outside.md)\n\n| 文档 |\n| --- |\n| [hq-admin](filtered_business_exception_reports/hq-admin.md) |'
         : requestedPath === targetPath ? '# HQ Admin report\n\n已正确打开目标文件。' : 'unexpected file';
       return route.fulfill({
         status: 200,
@@ -1960,6 +1960,15 @@ test('workspace Markdown links open the referenced node-session file without nav
   await page.getByRole('link', { name: '打开汇总' }).click();
   await expect(page.locator('.agent-file-preview > header')).toContainText('filtered_business_exceptions.md');
   await expect(page).toHaveURL(new RegExp(`${sessionPath}$`));
+  const diagram = page.getByLabel('Mermaid 图表');
+  await expect(diagram.locator('.conversation-mermaid-svg svg')).toBeVisible();
+  await diagram.getByRole('button', { name: '文本' }).click();
+  await expect(diagram).toContainText('flowchart LR');
+  await diagram.getByRole('button', { name: '图片' }).click();
+  await diagram.getByRole('button', { name: '全屏放大' }).click();
+  await expect(page.getByRole('dialog', { name: 'Mermaid 图表全屏预览' })).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('dialog', { name: 'Mermaid 图表全屏预览' })).toHaveCount(0);
 
   await page.locator('.agent-file-markdown-preview').getByRole('link', { name: '越界路径' }).click();
   await expect(page.getByRole('alert')).toContainText('链接目标不在当前工作目录中');
