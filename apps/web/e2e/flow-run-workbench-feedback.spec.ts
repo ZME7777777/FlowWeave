@@ -227,8 +227,11 @@ test('step configuration is saved before start and direct launch has its own tab
   await stepwiseDialog.getByRole('textbox', { name: '逐步运行记录名称' }).fill('测试逐步记录');
   await stepwiseDialog.getByRole('button', { name: '创建记录' }).click();
   await expect(page.locator('.node-record-list')).toContainText('测试逐步记录');
-  await page.locator('.run-graph-node').filter({ has: page.getByText('测试节点', { exact: true }) }).click();
+  const entryGraphNode = page.locator('.run-graph-node').filter({ has: page.getByText('测试节点', { exact: true }) });
+  await expect(entryGraphNode).toHaveAttribute('data-selected', 'true');
+  await expect(page.locator('.run-side-panel')).toBeVisible();
   const consolePanel = page.locator('.node-console');
+  await expect(consolePanel).toBeVisible();
   await expect(consolePanel.locator('.node-console-mode-summary')).toContainText('逐步运行');
   await consolePanel.getByRole('button', { name: '保存配置' }).click();
   await expect.poll(() => savedBody).toBeTruthy();
@@ -252,6 +255,97 @@ test('step configuration is saved before start and direct launch has its own tab
   await page.locator('.run-graph-node').filter({ hasText: '测试节点' }).filter({ hasNotText: '测试节点2' }).click();
   await expect(page.locator('.node-console-mode-summary')).toContainText('直接启动');
   await expect(page.getByRole('button', { name: '启动节点会话' })).toBeVisible();
+});
+
+test('stepwise record copy reuses the record selection and first-node configuration', async ({ page }) => {
+  const parentRun = { ...run, node_runs: [] };
+  const sourceAttempt = {
+    ...attempt,
+    id: 'source-stepwise-attempt',
+    node_run_id: 'source-stepwise-node',
+    state: 'WAITING_START_CONFIRMATION',
+    startup_prompt: '复制首节点的初始配置',
+  };
+  const sourceNode = {
+    ...nodeRun,
+    id: 'source-stepwise-node',
+    flow_run_id: 'source-stepwise-record',
+    created_from: 'HUMAN_START',
+    attempts: [sourceAttempt],
+  };
+  const sourceRecord = {
+    ...run,
+    id: 'source-stepwise-record',
+    name: '待拷贝逐步记录',
+    parent_flow_run_id: run.id,
+    node_runs: [sourceNode],
+  };
+  let records = [sourceRecord];
+  let copyBody: Record<string, unknown> | undefined;
+
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    const respond = (body: unknown, status = 200) => route.fulfill({
+      status,
+      contentType: 'application/json',
+      body: JSON.stringify(body),
+    });
+    if (path.endsWith('/auth/me')) return respond(authenticatedUser);
+    if (path === '/api/v1/flow-runs' && request.method() === 'GET') return respond([parentRun]);
+    if (path === '/api/v1/flows' && request.method() === 'GET') return respond([definition]);
+    if (path === '/api/v1/terminal-environments' || path === '/api/v1/capabilities'
+      || path === '/api/v1/capability-collections' || path === '/api/v1/model-providers') return respond([]);
+    if (path === `/api/v1/flow-runs/${run.id}` && request.method() === 'GET') return respond(parentRun);
+    if (path === `/api/v1/flows/${definition.id}`) return respond(definition);
+    if (path === `/api/v1/flow-runs/${run.id}/stepwise-runs` && request.method() === 'GET') return respond(records);
+    if (path === `/api/v1/flow-runs/${run.id}/stepwise-runs/${sourceRecord.id}` && request.method() === 'GET') return respond(sourceRecord);
+    if (path === `/api/v1/flow-runs/${run.id}/stepwise-runs/${sourceRecord.id}/copy` && request.method() === 'POST') {
+      copyBody = request.postDataJSON() as Record<string, unknown>;
+      const copiedAttempt = {
+        ...sourceAttempt,
+        id: 'copied-stepwise-attempt',
+        node_run_id: 'copied-stepwise-node',
+      };
+      const copiedNode = {
+        ...sourceNode,
+        id: 'copied-stepwise-node',
+        flow_run_id: 'copied-stepwise-record',
+        created_from: 'RECORD_COPY',
+        attempts: [copiedAttempt],
+      };
+      const copied = {
+        ...sourceRecord,
+        id: 'copied-stepwise-record',
+        name: copyBody.name,
+        node_runs: [copiedNode],
+      };
+      records = [copied, ...records];
+      return respond(copied, 201);
+    }
+    if (path === '/api/v1/flow-runs/run-1/stepwise-runs/copied-stepwise-record' && request.method() === 'GET') return respond(records[0]);
+    if (path === `/api/v1/flow-runs/${run.id}/automatic-runs`) return respond([]);
+    return respond({ error: { code: 'RESOURCE_NOT_FOUND', message: `未配置测试路由：${path}`, details: {} } }, 404);
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: '流程运行', exact: true }).click();
+  await page.locator('.run-open').click();
+  const sourceSelect = page.locator('.node-record-list .automatic-record-select').filter({ hasText: sourceRecord.name });
+  await sourceSelect.click();
+  await expect(page.locator('.run-side-panel')).toBeVisible();
+  await expect(page.getByTestId('attempt-state')).toHaveText('WAITING_START_CONFIRMATION');
+
+  await page.locator('.manual-record-toolbar').getByRole('button', { name: '拷贝', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: '拷贝逐步运行记录' });
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole('textbox', { name: '副本名称' }).fill('拷贝逐步运行记录');
+  await dialog.getByRole('button', { name: '确认拷贝' }).click();
+  await expect.poll(() => copyBody).toEqual({ name: '拷贝逐步运行记录' });
+  await expect(page.locator('.node-record-list > article.active')).toContainText('拷贝逐步运行记录');
+  await expect(page.locator('.run-graph-node[data-selected="true"]')).toContainText('测试节点');
+  await expect(page.locator('.run-side-panel')).toBeVisible();
+  await expect(page.getByTestId('attempt-state')).toHaveText('WAITING_START_CONFIRMATION');
 });
 
 test('created attempts keep their inputs read-only after a start gate blocks them', async ({ page }) => {

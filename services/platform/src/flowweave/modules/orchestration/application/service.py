@@ -3789,6 +3789,61 @@ def _create_node_run(
     return node_run, attempt
 
 
+def _copy_initial_node_configuration(
+    db: Session,
+    source_run: FlowRun,
+    target_run: FlowRun,
+    source_node: NodeRun,
+    initial: NodeAttempt,
+) -> tuple[NodeRun, NodeAttempt, int]:
+    """Copy one first-node configuration without execution state or outputs."""
+
+    artifact_ids: dict[str, str] = {}
+    if initial.startup_mode == "PROMPT":
+        for binding in _bindings(db, initial.id):
+            artifact = db.get(ArtifactVersion, binding.artifact_version_id)
+            if (
+                binding.binding_source == "PORT_MAPPING"
+                or artifact is None
+                or artifact.producer_attempt_id is not None
+            ):
+                continue
+            artifact_ids[binding.input_field_key] = _copy_automatic_plan_artifact(
+                db,
+                source_run,
+                target_run,
+                source_node.flow_node_snapshot_key,
+                artifact.id,
+                source="RECORD_COPY",
+            )
+
+    copied, copied_attempt = _create_node_run(
+        db,
+        target_run,
+        source_node.flow_node_snapshot_key,
+        artifact_ids,
+        "RECORD_COPY",
+        copy.deepcopy(initial.gate_policies_json or []),
+        session_only=initial.startup_mode == "CHAT",
+        context_ids=copy.deepcopy(initial.context_ids_json or []),
+        agent_preset=copy.deepcopy(initial.agent_preset_json),
+        allow_existing=True,
+    )
+    copied_attempt.startup_mode = initial.startup_mode
+    copied_attempt.startup_prompt = initial.startup_prompt
+    copied_attempt.startup_capability_key = initial.startup_capability_key
+    if copied_attempt.startup_mode == "PROMPT" and copied_attempt.startup_prompt is not None:
+        _event(
+            db,
+            target_run.id,
+            "STEP_RUN_CONFIGURATION_SAVED",
+            {"flow_node_key": copied.flow_node_snapshot_key, "copied": True},
+            copied.id,
+            copied_attempt.id,
+        )
+    return copied, copied_attempt, len(artifact_ids)
+
+
 def copy_node_run(
     db: Session, flow_run_id: str, source_node_run_id: str, payload: NodeRunCopyWrite
 ) -> dict[str, Any]:
@@ -3818,55 +3873,10 @@ def copy_node_run(
     if initial is None:
         raise DomainError("RUN_STATE_INVALID", "node record has no initial attempt", 409)
 
-    # A copied record gets its own human-input Artifacts.  It never aliases a
-    # source input that may later be deleted, and never imports a port-mapped
-    # upstream result.
-    artifact_ids: dict[str, str] = {}
-    if initial.startup_mode == "PROMPT":
-        for binding in _bindings(db, initial.id):
-            artifact = db.get(ArtifactVersion, binding.artifact_version_id)
-            if (
-                binding.binding_source == "PORT_MAPPING"
-                or artifact is None
-                or artifact.producer_attempt_id is not None
-            ):
-                continue
-            artifact_ids[binding.input_field_key] = _copy_automatic_plan_artifact(
-                db,
-                run,
-                run,
-                source.flow_node_snapshot_key,
-                artifact.id,
-                source="RECORD_COPY",
-            )
-
-    copied, copied_attempt = _create_node_run(
-        db,
-        run,
-        source.flow_node_snapshot_key,
-        artifact_ids,
-        "RECORD_COPY",
-        copy.deepcopy(initial.gate_policies_json or []),
-        session_only=initial.startup_mode == "CHAT",
-        context_ids=copy.deepcopy(initial.context_ids_json or []),
-        agent_preset=copy.deepcopy(initial.agent_preset_json),
-        allow_existing=True,
+    copied, copied_attempt, copied_input_count = _copy_initial_node_configuration(
+        db, run, run, source, initial
     )
     copied.name = (payload.name or "").strip() or None
-    # Launch text or a selected Skill is configuration. Preserve it without
-    # carrying over a conversation, runtime state, outputs, or outcomes.
-    copied_attempt.startup_mode = initial.startup_mode
-    copied_attempt.startup_prompt = initial.startup_prompt
-    copied_attempt.startup_capability_key = initial.startup_capability_key
-    if copied_attempt.startup_mode == "PROMPT" and copied_attempt.startup_prompt is not None:
-        _event(
-            db,
-            run.id,
-            "STEP_RUN_CONFIGURATION_SAVED",
-            {"flow_node_key": copied.flow_node_snapshot_key, "copied": True},
-            copied.id,
-            copied_attempt.id,
-        )
     _event(
         db,
         run.id,
@@ -3875,7 +3885,7 @@ def copy_node_run(
             "source_node_run_id": source.id,
             "source_attempt_id": initial.id,
             "name": copied.name,
-            "copied_input_count": len(artifact_ids),
+            "copied_input_count": copied_input_count,
         },
         copied.id,
     )
@@ -4018,9 +4028,9 @@ def _create_stepwise_record_runtime(
         task.max_attempts = max(task.max_attempts, 20)
 
 
-def create_nested_stepwise_run_record(
+def _create_nested_stepwise_run_record(
     db: Session, parent_run_id: str, payload: StepwiseRunRecordWrite
-) -> dict[str, Any]:
+) -> FlowRun:
     """Create one empty, manually advanced execution record.
 
     The parent is only the workbench directory. The returned child is the
@@ -4091,6 +4101,13 @@ def create_nested_stepwise_run_record(
         {"parent_flow_run_id": parent.id, "snapshot_version": snapshot.version},
     )
     _event(db, parent.id, "STEPWISE_RUN_RECORD_CREATED", {"record_id": record.id})
+    return record
+
+
+def create_nested_stepwise_run_record(
+    db: Session, parent_run_id: str, payload: StepwiseRunRecordWrite
+) -> dict[str, Any]:
+    record = _create_nested_stepwise_run_record(db, parent_run_id, payload)
     finish(db)
     return run_detail(db, record.id)
 
@@ -4104,6 +4121,68 @@ def nested_stepwise_run_record(db: Session, parent_run_id: str, record_id: str) 
     ):
         raise not_found("stepwise_run_record", record_id)
     return record
+
+
+def copy_nested_stepwise_run_record(
+    db: Session,
+    parent_run_id: str,
+    source_record_id: str,
+    payload: StepwiseRunRecordWrite,
+) -> dict[str, Any]:
+    """Copy a stepwise record's first-node initial configuration into a new record."""
+
+    parent = _locked_run(db, parent_run_id)
+    if parent.run_mode != "MANUAL" or parent.parent_flow_run_id is not None:
+        raise illegal("stepwise records require a top-level standard FlowRun", state=parent.state)
+    if parent.state in {FlowRunState.COMPLETED, FlowRunState.CANCELLED}:
+        raise illegal("terminal FlowRun cannot copy a stepwise record", state=parent.state)
+    source = _locked_run(db, source_record_id)
+    if (
+        source.parent_flow_run_id != parent.id
+        or source.run_mode != "MANUAL"
+        or source.parent_flow_run_id is None
+    ):
+        raise not_found("stepwise_run_record", source_record_id)
+    source_node = db.scalar(
+        select(NodeRun)
+        .where(NodeRun.flow_run_id == source.id)
+        .order_by(NodeRun.sequence_no, NodeRun.id)
+        .limit(1)
+    )
+    if source_node is None:
+        raise DomainError(
+            "RUN_STATE_INVALID", "stepwise record has no initial node configuration", 409
+        )
+    initial = db.scalar(
+        select(NodeAttempt)
+        .where(NodeAttempt.node_run_id == source_node.id)
+        .order_by(NodeAttempt.attempt_no)
+        .limit(1)
+    )
+    if initial is None:
+        raise DomainError("RUN_STATE_INVALID", "stepwise record has no initial node attempt", 409)
+
+    copied_record = _create_nested_stepwise_run_record(db, parent.id, payload)
+    copied_node, copied_attempt, copied_input_count = _copy_initial_node_configuration(
+        db, source, copied_record, source_node, initial
+    )
+    event_payload = {
+        "source_record_id": source.id,
+        "source_node_run_id": source_node.id,
+        "source_attempt_id": initial.id,
+        "copied_input_count": copied_input_count,
+    }
+    _event(
+        db,
+        copied_record.id,
+        "STEPWISE_RUN_RECORD_COPIED",
+        event_payload,
+        copied_node.id,
+        copied_attempt.id,
+    )
+    _event(db, parent.id, "STEPWISE_RUN_RECORD_COPIED", event_payload)
+    finish(db)
+    return run_detail(db, copied_record.id)
 
 
 def list_nested_stepwise_run_records(db: Session, parent_run_id: str) -> list[dict[str, Any]]:

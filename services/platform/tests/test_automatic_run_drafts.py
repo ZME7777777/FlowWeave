@@ -618,7 +618,6 @@ def test_nested_automatic_records_are_scoped_and_share_parent_runtime(
     assert started_response.status_code == 200, started_response.text
     assert started_response.json()["state"] == "ACTIVE"
 
-
     worker = TaskWorker(worker_container)
     assert worker._run_once_sync() is True
     detail = worker_client.get(f"/api/v1/flow-runs/{updated['id']}").json()
@@ -704,6 +703,94 @@ def test_nested_stepwise_record_is_empty_and_scoped_to_its_parent(client):
     assert [item["id"] for item in listed.json()] == [record["id"]]
     assert client.get(f"/api/v1/flow-runs/{record['id']}").json()["node_runs"] == []
     assert client.get(f"/api/v1/flow-runs/{record['id']}/stepwise-runs").json() == []
+
+
+def test_copy_nested_stepwise_record_preserves_first_configuration_and_human_inputs(client):
+    flow = _create_flow(client)
+    parent_response = client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={
+            "name": "逐步记录目录",
+            "environment_version_id": client.environment_version_id,
+        },
+    )
+    assert parent_response.status_code == 201, parent_response.text
+    parent = parent_response.json()
+    source_response = client.post(
+        f"/api/v1/flow-runs/{parent['id']}/stepwise-runs",
+        json={"name": "待拷贝逐步记录"},
+    )
+    assert source_response.status_code == 201, source_response.text
+    source = source_response.json()
+    source_input = client.post(
+        f"/api/v1/flow-runs/{source['id']}/nodes/first/input-artifacts",
+        json={
+            "field_key": "source",
+            "artifact_type": "URL",
+            "uri": "https://example.com/copied-stepwise-input",
+        },
+    )
+    assert source_input.status_code == 201, source_input.text
+    source_plan = _node_plan(
+        client,
+        "保留首节点初始配置",
+        artifact_id=source_input.json()["id"],
+    )
+    activated = client.post(
+        f"/api/v1/flow-runs/{source['id']}/nodes/first/runs",
+        json=source_plan,
+    )
+    assert activated.status_code == 201, activated.text
+    source_node = activated.json()
+    source_attempt = source_node["attempts"][-1]
+
+    copied_response = client.post(
+        f"/api/v1/flow-runs/{parent['id']}/stepwise-runs/{source['id']}/copy",
+        json={"name": "已拷贝逐步记录"},
+    )
+    assert copied_response.status_code == 201, copied_response.text
+    copied = copied_response.json()
+    assert copied["id"] != source["id"]
+    assert copied["parent_flow_run_id"] == parent["id"]
+    assert copied["name"] == "已拷贝逐步记录"
+    assert len(copied["node_runs"]) == 1
+    copied_node = copied["node_runs"][0]
+    copied_attempt = copied_node["attempts"][-1]
+    assert copied_node["created_from"] == "RECORD_COPY"
+    assert copied_node["flow_node_snapshot_key"] == "first"
+    assert copied_attempt["state"] == "WAITING_START_CONFIRMATION"
+    assert copied_attempt["startup_prompt"] == source_attempt["startup_prompt"]
+    assert copied_attempt["agent_preset"] == source_attempt["agent_preset"]
+    assert copied_attempt["gate_policies"] == source_attempt["gate_policies"]
+    assert copied_attempt["context_ids"] == source_attempt["context_ids"]
+    assert copied_attempt["conversation_id"] is None
+    assert copied_attempt["runtime_phase"] is None
+    assert copied_attempt["artifacts"] == []
+    assert copied_attempt["gate_evaluations"] == []
+    assert len(copied_attempt["input_bindings"]) == 1
+    copied_binding = copied_attempt["input_bindings"][0]
+    assert copied_binding["binding_source"] == "RECORD_COPY"
+    assert copied_binding["artifact_version_id"] != source_input.json()["id"]
+
+
+def test_copy_nested_stepwise_record_rejects_empty_source(client):
+    flow = _create_flow(client)
+    parent = client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={"environment_version_id": client.environment_version_id},
+    ).json()
+    source = client.post(
+        f"/api/v1/flow-runs/{parent['id']}/stepwise-runs",
+        json={"name": "空逐步记录"},
+    ).json()
+
+    copied = client.post(
+        f"/api/v1/flow-runs/{parent['id']}/stepwise-runs/{source['id']}/copy",
+        json={"name": "不应创建"},
+    )
+    assert copied.status_code == 409, copied.text
+    assert copied.json()["error"]["code"] == "RUN_STATE_INVALID"
+    assert client.get(f"/api/v1/flow-runs/{parent['id']}/stepwise-runs").json() == [source]
 
 
 def test_schedule_occurrence_stays_in_original_flow_run_as_continuous_record(

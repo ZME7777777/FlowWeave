@@ -490,6 +490,7 @@ export const api = {
   stepwiseRecords: (runId: string) => request<FlowRunStepwiseRecord[]>(`/flow-runs/${encodeURIComponent(runId)}/stepwise-runs`),
   stepwiseRecord: (runId: string, recordId: string) => request<FlowRunStepwiseRecord>(`/flow-runs/${encodeURIComponent(runId)}/stepwise-runs/${encodeURIComponent(recordId)}`),
   createStepwiseRecord: (runId: string, name?: string) => request<FlowRunStepwiseRecord>(`/flow-runs/${encodeURIComponent(runId)}/stepwise-runs`, json('POST', { name })),
+  copyStepwiseRecord: (runId: string, recordId: string, name: string) => request<FlowRunStepwiseRecord>(`/flow-runs/${encodeURIComponent(runId)}/stepwise-runs/${encodeURIComponent(recordId)}/copy`, json('POST', { name })),
   deleteStepwiseRecord: (runId: string, recordId: string) => request<void>(`/flow-runs/${encodeURIComponent(runId)}/stepwise-runs/${encodeURIComponent(recordId)}`, json('DELETE')),
   automaticRecords: async (runId: string) =>
     (await request<AutomaticRunResponse[]>(`/flow-runs/${encodeURIComponent(runId)}/automatic-runs`)).map(automaticRecord),

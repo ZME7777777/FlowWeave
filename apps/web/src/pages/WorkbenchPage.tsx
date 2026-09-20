@@ -104,7 +104,8 @@ function openNodeSession(
 type WorkbenchMode = 'MANUAL' | 'AUTOMATIC' | 'DIRECT';
 
 type CopyTarget =
-  | { mode: 'MANUAL'; record: NodeRun }
+  | { mode: 'DIRECT'; record: NodeRun }
+  | { mode: 'STEPWISE'; record: FlowRunStepwiseRecord }
   | { mode: 'AUTOMATIC'; record: FlowRunAutomaticRecord };
 
 type SelectionModifiers = { extend: boolean; range: boolean };
@@ -166,6 +167,12 @@ const activeFlowNodeRun = (records: NodeRun[]): NodeRun | undefined => records.r
   undefined,
 );
 
+function initialFlowNodeKey(record: FlowRun): string | undefined {
+  const snapshot = record.snapshots.find(item => item.id === record.active_snapshot_id)
+    ?? record.snapshots.at(-1);
+  return snapshot?.definition.default_entry_key ?? snapshot?.definition.nodes[0]?.instance_key;
+}
+
 function selectedRecordNodeRun(record: FlowRun | undefined, selectedNodeRunId?: string, selectedNodeKey?: string): NodeRun | undefined {
   if (!record) return undefined;
   const active = activeFlowNodeRun(record.node_runs);
@@ -182,12 +189,12 @@ function selectedRecordNodeRun(record: FlowRun | undefined, selectedNodeRunId?: 
   return selectedById ?? (!selectedNodeRunId ? active : undefined);
 }
 
-function RunRail({ run, mode, nodeRecords, manualRecords, automaticRecords, automaticError, selected, selectedStepwiseId, canDeleteManualRecords, manualSelectedIds, stepwiseSelectedIds, automaticSelectedIds, manualBusyId, selectedAutomaticId, automaticBusyId, onModeChange, onSelect, onSelectManualRecord, onCreateManualRecord, onDeleteManualRecord, onDeleteNode, onSelectAutomatic, onClearSelection, onCreateAutomatic, onDeleteAutomatic, onCopyAutomatic, onExportAutomatic, onStartAutomatic }: {
-  run: FlowRun; mode: WorkbenchMode; nodeRecords: NodeRun[]; manualRecords: FlowRunStepwiseRecord[]; automaticRecords: FlowRunAutomaticRecordSummary[]; selected?: string; selectedStepwiseId?: string; canDeleteManualRecords: boolean;
+function RunRail({ run, mode, nodeRecords, manualRecords, automaticRecords, automaticError, selected, selectedStepwiseId, canCopyManualRecord, canDeleteManualRecords, manualSelectedIds, stepwiseSelectedIds, automaticSelectedIds, manualBusyId, selectedAutomaticId, automaticBusyId, onModeChange, onSelect, onSelectManualRecord, onCreateManualRecord, onCopyManual, onDeleteManualRecord, onDeleteNode, onSelectAutomatic, onClearSelection, onCreateAutomatic, onDeleteAutomatic, onCopyAutomatic, onExportAutomatic, onStartAutomatic }: {
+  run: FlowRun; mode: WorkbenchMode; nodeRecords: NodeRun[]; manualRecords: FlowRunStepwiseRecord[]; automaticRecords: FlowRunAutomaticRecordSummary[]; selected?: string; selectedStepwiseId?: string; canCopyManualRecord: boolean; canDeleteManualRecords: boolean;
   automaticError?: string; manualSelectedIds: Set<string>; stepwiseSelectedIds: Set<string>; automaticSelectedIds: Set<string>;
   manualBusyId?: string;
   selectedAutomaticId?: string; automaticBusyId?: string; onModeChange: (mode: WorkbenchMode) => void;
-  onSelect: (id: string, modifiers: SelectionModifiers) => void; onSelectManualRecord: (id: string, modifiers: SelectionModifiers) => void; onCreateManualRecord: () => void; onDeleteManualRecord: () => void; onDeleteNode: () => void; onSelectAutomatic: (id: string, modifiers: SelectionModifiers) => void; onCreateAutomatic: () => void;
+  onSelect: (id: string, modifiers: SelectionModifiers) => void; onSelectManualRecord: (id: string, modifiers: SelectionModifiers) => void; onCreateManualRecord: () => void; onCopyManual: () => void; onDeleteManualRecord: () => void; onDeleteNode: () => void; onSelectAutomatic: (id: string, modifiers: SelectionModifiers) => void; onCreateAutomatic: () => void;
   onClearSelection: () => void; onDeleteAutomatic: () => void; onCopyAutomatic: () => void; onExportAutomatic: () => void; onStartAutomatic: (record: FlowRunAutomaticRecordSummary) => void;
 }) {
   const manualCount = manualSelectedIds.size;
@@ -225,11 +232,7 @@ function RunRail({ run, mode, nodeRecords, manualRecords, automaticRecords, auto
     const stateLabel = record.state === 'DRAFT' ? ready ? '草稿已就绪' : '草稿待补齐' : FLOW_STATE_LABELS[record.state] ?? record.state;
     return <article key={record.id} className={automaticSelectedIds.has(record.id) ? 'active' : ''} data-record-state={record.state.toLowerCase()}><button type="button" className="automatic-record-select" aria-pressed={automaticSelectedIds.has(record.id)} onClick={event => onSelectAutomatic(record.id, modifiers(event))}><i title={stateLabel} aria-label={stateLabel}/><span><b>{record.name}</b></span></button>{record.state === 'DRAFT' && <button type="button" className="automatic-record-start" aria-label={`启动连续运行 ${record.name}`} disabled={!ready || Boolean(automaticBusyId)} onClick={() => onStartAutomatic(record)}><Play size={12}/>{automaticBusyId === record.id ? '启动中…' : '启动'}</button>}</article>;
   };
-  // A stepwise record is the whole FlowRun. Deleting or copying one nested
-  // NodeRun from this rail would make the visible record disagree with its
-  // durable workspace, artifacts, and node history, so those record-level
-  // actions remain available only for independent direct launches.
-  const manualToolbar = mode === 'MANUAL' ? <div className="automatic-record-toolbar manual-record-toolbar"><button type="button" className="danger" disabled={!canDeleteManualRecords || Boolean(manualBusyId)} onClick={onDeleteManualRecord}><Trash2 size={13}/>{stepwiseCount > 1 ? `删除 (${stepwiseCount})` : '删除'}</button><button type="button" className="primary" disabled={Boolean(manualBusyId)} onClick={onCreateManualRecord}><Plus size={13}/>新增</button></div> : mode === 'DIRECT' ? <div className="automatic-record-toolbar manual-record-toolbar"><button type="button" className="danger" disabled={!manualCount || Boolean(manualBusyId)} onClick={onDeleteNode}><Trash2 size={13}/>{manualCount > 1 ? `删除 (${manualCount})` : '删除'}</button></div> : null;
+  const manualToolbar = mode === 'MANUAL' ? <div className="automatic-record-toolbar manual-record-toolbar"><button type="button" className="secondary" disabled={!canCopyManualRecord || Boolean(manualBusyId)} onClick={onCopyManual}><Copy size={13}/>{manualBusyId ? '处理中…' : '拷贝'}</button><button type="button" className="danger" disabled={!canDeleteManualRecords || Boolean(manualBusyId)} onClick={onDeleteManualRecord}><Trash2 size={13}/>{stepwiseCount > 1 ? `删除 (${stepwiseCount})` : '删除'}</button><button type="button" className="primary" disabled={Boolean(manualBusyId)} onClick={onCreateManualRecord}><Plus size={13}/>新增</button></div> : mode === 'DIRECT' ? <div className="automatic-record-toolbar manual-record-toolbar"><button type="button" className="danger" disabled={!manualCount || Boolean(manualBusyId)} onClick={onDeleteNode}><Trash2 size={13}/>{manualCount > 1 ? `删除 (${manualCount})` : '删除'}</button></div> : null;
   const nodeRecordLabel = mode === 'DIRECT' ? '直接启动记录' : '逐步运行记录';
   const manualRecordItem = (record: FlowRunStepwiseRecord) => {
     const stateLabel = FLOW_STATE_LABELS[record.state] ?? record.state;
@@ -1260,14 +1263,14 @@ function StepwiseRecordDialog({ run, onClose, onCreated }: { run: FlowRun; onClo
 function CopyRecordDialog({ mode, sourceName, onClose, onCopy, onExport }: { mode: CopyTarget['mode']; sourceName: string; onClose: () => void; onCopy: (name: string) => Promise<void>; onExport?: (target: ExportTarget) => Promise<void> }) {
   const [name, setName] = useState(`${sourceName} · 副本`);
   const [exportFeedback, setExportFeedback] = useState<ExportTarget>();
-  const recordLabel = mode === 'MANUAL' ? '逐步运行记录' : '连续运行记录';
+  const recordLabel = mode === 'DIRECT' ? '直接启动记录' : mode === 'STEPWISE' ? '逐步运行记录' : '连续运行记录';
   const mutation = useMutation({ mutationFn: () => onCopy(name.trim()), onSuccess: onClose });
   const exportMutation = useMutation({
     mutationFn: (target: ExportTarget) => onExport!(target),
     onSuccess: (_, target) => setExportFeedback(target),
   });
   useEscapeClose(onClose);
-  return <div className="modal-backdrop"><section className="modal automatic-record-dialog" role="dialog" aria-modal="true" aria-label={`拷贝${recordLabel}`}><header><div><span className="eyebrow">COPY RECORD</span><h2>拷贝{recordLabel}</h2><p>请为副本命名。确认后只复制初始配置，不包含会话、输出、文件输入或执行结果。</p></div><button type="button" className="ghost" aria-label={`关闭拷贝${recordLabel}`} onClick={onClose}><X size={17}/></button></header><label>副本名称<input aria-label="副本名称" value={name} maxLength={220} autoFocus onChange={event => setName(event.target.value)} /></label>{mutation.error && <p className="error">拷贝失败：{mutation.error.message}</p>}{exportMutation.error && <p className="error">导出失败：{exportMutation.error.message}</p>}{exportFeedback && <p className="field-hint" role="status">{exportFeedback === 'clipboard' ? '已复制到剪贴板。' : '已开始下载配置文件。'}</p>}<footer><button type="button" className="ghost" disabled={mutation.isPending || exportMutation.isPending} onClick={onClose}>取消</button>{mode === 'AUTOMATIC' && onExport && <><button type="button" className="secondary" disabled={mutation.isPending || exportMutation.isPending} onClick={() => exportMutation.mutate('download')}><Download size={13}/>{exportMutation.isPending && exportMutation.variables === 'download' ? '下载中…' : exportFeedback === 'download' ? '已开始下载' : '下载'}</button><button type="button" className="secondary" disabled={mutation.isPending || exportMutation.isPending} onClick={() => exportMutation.mutate('clipboard')}><Copy size={13}/>{exportMutation.isPending && exportMutation.variables === 'clipboard' ? '复制中…' : exportFeedback === 'clipboard' ? '已复制到剪贴板' : '复制'}</button></>}<button type="button" className="primary" disabled={!name.trim() || mutation.isPending || exportMutation.isPending} onClick={() => mutation.mutate()}>{mutation.isPending ? '拷贝中…' : '确认拷贝'}</button></footer></section></div>;
+  return <div className="modal-backdrop"><section className="modal automatic-record-dialog" role="dialog" aria-modal="true" aria-label={`拷贝${recordLabel}`}><header><div><span className="eyebrow">COPY RECORD</span><h2>拷贝{recordLabel}</h2><p>请为副本命名。确认后只复制初始配置与人工输入，不包含会话、输出或运行过程。</p></div><button type="button" className="ghost" aria-label={`关闭拷贝${recordLabel}`} onClick={onClose}><X size={17}/></button></header><label>副本名称<input aria-label="副本名称" value={name} maxLength={220} autoFocus onChange={event => setName(event.target.value)} /></label>{mutation.error && <p className="error">拷贝失败：{mutation.error.message}</p>}{exportMutation.error && <p className="error">导出失败：{exportMutation.error.message}</p>}{exportFeedback && <p className="field-hint" role="status">{exportFeedback === 'clipboard' ? '已复制到剪贴板。' : '已开始下载配置文件。'}</p>}<footer><button type="button" className="ghost" disabled={mutation.isPending || exportMutation.isPending} onClick={onClose}>取消</button>{mode === 'AUTOMATIC' && onExport && <><button type="button" className="secondary" disabled={mutation.isPending || exportMutation.isPending} onClick={() => exportMutation.mutate('download')}><Download size={13}/>{exportMutation.isPending && exportMutation.variables === 'download' ? '下载中…' : exportFeedback === 'download' ? '已开始下载' : '下载'}</button><button type="button" className="secondary" disabled={mutation.isPending || exportMutation.isPending} onClick={() => exportMutation.mutate('clipboard')}><Copy size={13}/>{exportMutation.isPending && exportMutation.variables === 'clipboard' ? '复制中…' : exportFeedback === 'clipboard' ? '已复制到剪贴板' : '复制'}</button></>}<button type="button" className="primary" disabled={!name.trim() || mutation.isPending || exportMutation.isPending} onClick={() => mutation.mutate()}>{mutation.isPending ? '拷贝中…' : '确认拷贝'}</button></footer></section></div>;
 }
 
 function AutomaticRecordImportDialog({ onClose, onImport }: { onClose: () => void; onImport: (config: AutomaticRecordConfigDocument) => Promise<void> }) {
@@ -1526,7 +1529,7 @@ export function WorkbenchPage() {
         selectExecution(restored.id, restored.attempts.at(-1)?.id);
       }
     } else if (!selectedNodeKey) {
-      setSelectedNodeKey(undefined);
+      setSelectedNodeKey(initialFlowNodeKey(record));
       useWorkbenchStore.setState({ selectedNodeRunId: undefined, selectedAttemptId: undefined });
     }
   }, [selectedAttemptId, selectedNodeKey, selectedNodeRunId, selectedStepwiseId, selectedStepwiseProjection, selectExecution]);
@@ -1929,6 +1932,9 @@ export function WorkbenchPage() {
   };
   const selectedStepwiseRecords = manualRecords.filter(item => stepwiseSelectedIds.has(item.id));
   const selectedAutomaticRecords = automaticRecords.filter(item => automaticSelectedIds.has(item.id));
+  const canCopyStepwiseRecord = selectedStepwiseRecords.length === 1
+    && selectedStepwiseRecords[0].id !== parentRun.id
+    && selectedStepwiseRecords[0].node_runs.length > 0;
   const exportAutomaticRecords = async (recordIds: string[], target: ExportTarget) => {
     setAutomaticBusyId('config-export');
     try {
@@ -1948,7 +1954,11 @@ export function WorkbenchPage() {
       setSelectedNodeKey(first.start_node_key);
     }
   };
-  const selectStepwiseRecord = (recordId: string, modifiers: SelectionModifiers = { extend: false, range: false }) => {
+  const selectStepwiseRecord = (
+    recordId: string,
+    modifiers: SelectionModifiers = { extend: false, range: false },
+    recordProjection?: FlowRunStepwiseRecord,
+  ) => {
     const isOnlySelected = stepwiseSelectedIds.size === 1 && stepwiseSelectedIds.has(recordId);
     if (!modifiers.extend && !modifiers.range && selectedStepwiseId === recordId && isOnlySelected) {
       clearSelection();
@@ -1967,14 +1977,21 @@ export function WorkbenchPage() {
       setStepwiseSelectedIds(new Set([recordId]));
     }
     setSelectedStepwiseId(recordId);
-    setSelectedNodeKey(undefined);
     setManualSelectedIds(new Set());
-    useWorkbenchStore.setState({ selectedNodeRunId: undefined, selectedAttemptId: undefined });
+    const record = recordProjection ?? manualRecords.find(item => item.id === recordId);
+    const current = record ? activeFlowNodeRun(record.node_runs) : undefined;
+    if (current && !isUnconfiguredStepRecord(current)) {
+      setSelectedNodeKey(current.flow_node_snapshot_key);
+      selectExecution(current.id, current.attempts.at(-1)?.id);
+    } else {
+      setSelectedNodeKey(current?.flow_node_snapshot_key ?? (record ? initialFlowNodeKey(record) : undefined));
+      useWorkbenchStore.setState({ selectedNodeRunId: undefined, selectedAttemptId: undefined });
+    }
   };
   const selectCreatedStepwiseRecord = (record: FlowRunStepwiseRecord) => {
     qc.setQueryData<FlowRunStepwiseRecord[]>(['flow-run-stepwise-records', parentRun.id], current => [record, ...(current ?? [])]);
     qc.setQueryData(['flow-run-stepwise-record', parentRun.id, record.id], record);
-    selectStepwiseRecord(record.id);
+    selectStepwiseRecord(record.id, undefined, record);
   };
   const deleteStepwiseRecord = () => {
     const recordIds = selectedStepwiseRecords.map(record => record.id);
@@ -2077,6 +2094,7 @@ export function WorkbenchPage() {
     automaticRecords={automaticRecords}
     selected={mode !== 'AUTOMATIC' ? nodeRun?.id : undefined}
     selectedStepwiseId={selectedStepwiseId}
+    canCopyManualRecord={canCopyStepwiseRecord}
     canDeleteManualRecords={Boolean(selectedStepwiseRecords.length) && !selectedStepwiseRecords.some(record => record.id === parentRun.id)}
     manualSelectedIds={manualSelectedIds}
     stepwiseSelectedIds={stepwiseSelectedIds}
@@ -2088,6 +2106,11 @@ export function WorkbenchPage() {
     onSelect={selectHistory}
     onSelectManualRecord={selectStepwiseRecord}
     onCreateManualRecord={() => setStepwiseDialogOpen(true)}
+    onCopyManual={() => {
+      if (selectedStepwiseRecords.length === 1) {
+        setCopyTarget({ mode: 'STEPWISE', record: selectedStepwiseRecords[0] });
+      }
+    }}
     onDeleteManualRecord={deleteStepwiseRecord}
     onDeleteNode={() => {
       const recordIds = nodeRecords.filter(record => manualSelectedIds.has(record.id)).map(record => record.id);
@@ -2206,8 +2229,8 @@ export function WorkbenchPage() {
         {mode === 'AUTOMATIC' && selectedAutomaticId ? selectedAutomatic ? selectedAutomatic.state === 'DRAFT' ? <AutomaticRecordEditor key={selectedAutomatic.id} parent={parentRun} record={selectedAutomatic} selectedKey={selectedNodeKey} onDraft={retainAutomaticDraft} onSaved={replaceAutomatic}/> : selectedAutomatic.automatic_block?.code === 'AUTOMATIC_PLAN_GATE_ID_MISSING' ? <AutomaticLegacyPlanRecoveryPanel parentRunId={parentRun.id} record={selectedAutomatic} onRecovered={updated => { replaceAutomatic(updated); void automaticDetail.refetch(); void automatic.refetch(); }}/> : executionDetailPanel ?? <aside className="action-panel"><div className="action-content automatic-empty">该节点尚未激活。连续调度到达后会在这里显示执行、门禁和人工处理入口。</div></aside> : automaticDetail.isError ? <aside className="action-panel"><div className="action-content error">连续运行详情加载失败：{automaticDetail.error.message}</div></aside> : <aside className="action-panel"><div className="action-content automatic-empty">加载连续运行详情…</div></aside> : mode === 'MANUAL' && selectedStepwiseId ? stepwiseRecordPanel : executionDetailPanel ?? (nodeRun && attempt ? <AttemptPanel run={categorizedRun} nodeRun={nodeRun} attempt={attempt} refresh={() => { void stepwiseDetail.refetch(); }} navigate={navigate} sessionReturnContext={mode === 'MANUAL' && selectedStepwise ? { runId: parentRun.id, mode: 'MANUAL', stepwiseRecordId: selectedStepwise.id } : { runId: parentRun.id, mode }} onStartStepwise={mode === 'MANUAL' ? () => startStepwiseNode(nodeRun) : undefined}/> : selectedNode ? <NodeConsole run={categorizedRun} node={selectedNode} startupMode={mode === 'DIRECT' ? 'CHAT' : 'PROMPT'} pendingNodeRun={pendingConfigurationNodeRun} initialBindings={inheritedTransitionBindings} refresh={() => { void stepwiseDetail.refetch(); }} onActivated={created => { setSelectedNodeKey(undefined); navigate(created, 'activate'); }} onSelectExecution={item => { setSelectedNodeKey(item.flow_node_snapshot_key); selectExecution(item.id, item.attempts.at(-1)?.id); }}/> : null)}
       </aside>}
     </section>
-    {copyTarget && <CopyRecordDialog mode={copyTarget.mode} sourceName={copyTarget.mode === 'MANUAL' ? nodeRunName(run, copyTarget.record) : copyTarget.record.name} onClose={() => setCopyTarget(undefined)} onExport={copyTarget.mode === 'AUTOMATIC' ? target => exportAutomaticRecords([copyTarget.record.id], target) : undefined} onCopy={async name => {
-      if (copyTarget.mode === 'MANUAL') {
+    {copyTarget && <CopyRecordDialog mode={copyTarget.mode} sourceName={copyTarget.mode === 'DIRECT' ? nodeRunName(run, copyTarget.record) : copyTarget.record.name} onClose={() => setCopyTarget(undefined)} onExport={copyTarget.mode === 'AUTOMATIC' ? target => exportAutomaticRecords([copyTarget.record.id], target) : undefined} onCopy={async name => {
+      if (copyTarget.mode === 'DIRECT') {
         setManualBusyId(copyTarget.record.id);
         try {
           const copied = await api.copyNodeRun(run.id, copyTarget.record.id, name);
@@ -2215,6 +2238,14 @@ export function WorkbenchPage() {
           setManualSelectedIds(new Set([copied.id]));
           setSelectedNodeKey(copied.flow_node_snapshot_key);
           selectExecution(copied.id, copied.attempts.at(-1)?.id);
+        } finally { setManualBusyId(undefined); }
+        return;
+      }
+      if (copyTarget.mode === 'STEPWISE') {
+        setManualBusyId(copyTarget.record.id);
+        try {
+          const copied = await api.copyStepwiseRecord(parentRun.id, copyTarget.record.id, name);
+          selectCreatedStepwiseRecord(copied);
         } finally { setManualBusyId(undefined); }
         return;
       }

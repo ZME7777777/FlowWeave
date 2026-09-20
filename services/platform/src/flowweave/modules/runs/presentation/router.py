@@ -137,16 +137,24 @@ async def create_nested_stepwise_run(
 ) -> dict[str, Any]:
     return await run_sync(
         db,
-        lambda session: service.create_nested_stepwise_run_record(
-            session, parent_run_id, payload
+        lambda session: service.create_nested_stepwise_run_record(session, parent_run_id, payload),
+    )
+
+
+@router.post("/flow-runs/{parent_run_id}/stepwise-runs/{run_id}/copy", status_code=201)
+async def copy_nested_stepwise_run(
+    parent_run_id: str, run_id: str, payload: StepwiseRunRecordWrite, db: Db
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: service.copy_nested_stepwise_run_record(
+            session, parent_run_id, run_id, payload
         ),
     )
 
 
 @router.get("/flow-runs/{parent_run_id}/stepwise-runs/{run_id}")
-async def nested_stepwise_run_detail(
-    parent_run_id: str, run_id: str, db: Db
-) -> dict[str, Any]:
+async def nested_stepwise_run_detail(parent_run_id: str, run_id: str, db: Db) -> dict[str, Any]:
     return await run_sync(
         db,
         lambda session: service.run_detail(
