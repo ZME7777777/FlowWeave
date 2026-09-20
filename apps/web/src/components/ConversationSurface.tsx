@@ -1604,7 +1604,7 @@ export function ConversationSurface({ events, liveText, isGenerating, isPaused =
   }, []);
   useLayoutEffect(() => {
     updateReferenceHighlight();
-  }, [events, historyRevision, updateReferenceHighlight]);
+  }, [events, updateReferenceHighlight]);
   useEffect(() => {
     if (!highlightedReference || !content.current) return;
     const highlightRoot = content.current;
