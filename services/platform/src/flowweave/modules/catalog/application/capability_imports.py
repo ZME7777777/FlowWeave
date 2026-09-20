@@ -37,6 +37,7 @@ from flowweave.shared.dependency_builder import get_dependency_builder
 from flowweave.shared.domain.agent_definition import (
     parse_agent_definition_markdown,
 )
+from flowweave.shared.domain.openhands import OPENHANDS_SOURCE_COMMIT, OPENHANDS_VERSION
 from flowweave.shared.domain.runtime_policy import (
     normalize_agent_profile_document,
     normalize_context_policy_document,
@@ -193,8 +194,8 @@ HOOK_EVENTS = {
 }
 HOOK_EVENT_KEYS = frozenset(HOOK_EVENTS.values())
 HOOK_SET_SCHEMA_VERSION = 1
-HOOK_OPENHANDS_VERSION = "1.47.0"
-HOOK_SOURCE_COMMIT = "30cf5832e42c71c24daa82a1a4fd5d25eb70d1b9"
+HOOK_OPENHANDS_VERSION = OPENHANDS_VERSION
+HOOK_SOURCE_COMMIT = OPENHANDS_SOURCE_COMMIT
 HOOK_TYPES = {"command", "script", "prompt", "agent"}
 HOOK_DEFINITION_KEYS = {
     "type",

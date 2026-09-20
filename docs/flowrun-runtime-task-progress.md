@@ -15,9 +15,9 @@
 此前的重构决策不能作为本任务已经完成、可以跳过验证或必须保留现有实现的依据。现有源码只作为
 “当前行为”的审计对象；是否保留必须重新按照本设计、固定 OpenHands 源码和真实运行证据判断。
 
-本任务只修改 FlowWeave。OpenHands 源码仓库保持只读，当前目标事实基线为固定 commit
-`30cf5832e42c71c24daa82a1a4fd5d25eb70d1b9` 和由其构建的四个 `1.47.0` 包；该固定点包含
-`v1.47.0` 后的 4 个已审计提交。此前完成记录中的旧版本号
+除 FR-493 经用户单独授权并已在隔离工作树完成的最小 OpenHands fork 外，本任务只修改 FlowWeave。
+当前目标事实基线为 fork commit `0eee8da762ce1319521b285102094b8b7b47c9de`，其上游基线为
+`30cf5832e42c71c24daa82a1a4fd5d25eb70d1b9`，四个包版本仍固定为 `1.47.0`。此前完成记录中的旧版本号
 继续表示当时实际验收的历史基线，不做追溯改写。
 
 ## 2. 最终目标
@@ -203,6 +203,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-489 | 既有会话认证同步可用性与会话配置层级 | DONE | 缺失认证同步迁移时返回可行动的稳定错误；会话配置以能力／认证顶层导航和能力类别二级导航呈现。 |
 | FR-490 | 逐步／连续工作台选中与初始配置复制一致性 | DONE | 逐步记录创建、重新选中和复制均立即聚焦记录当前或起始节点并打开共享侧栏；复制首节点初始配置，保留启动门禁差异。 |
 | FR-491 | 终态补读超时的误导提示移除 | DONE | 补读窗口到期仍解除同步、保护未提交队列项，但不再将本地兜底判断展示为页面级错误。 |
+| FR-493 | OpenHands 当前 View Token 精确投影 | DONE | 固定用户授权的 OpenHands `1.47.0` fork 源码与不可变归档；FlowWeave 读取正式 `/context` 端点并将 `total_tokens` 投影为当前 View 用量，不累加或回退 `per_turn_token`。 |
 | FR-457 | OpenHands 空响应自恢复与运行状态一致性 | DONE | 空 Agent Message 与 `source=environment` 的原生 corrective nudge 不再被识别为最终回复；纠正事件以“模型返回空响应，OpenHands 正在自动重试”呈现，左侧会话状态与底部按钮继续统一服从原生 execution status。 |
 | FR-458 | 空响应恢复提示瞬时化与会话状态统一 | DONE | corrective nudge 只在它是当前最新事件且原生会话仍运行时复用实时状态行显示；后续事件或终态立即隐藏，历史工作过程不保留该提示。工作台所有运行控件复用同一原生状态投影。 |
 | FR-459 | 原生错误事件的终态／可恢复呈现分流 | DONE | 仅 OpenHands ConversationErrorEvent 呈现为“本轮未能完成”的会话级终态卡片；AgentErrorEvent 与未知历史 ERROR 保持原生审计事实，按其正式父事件留在工作过程中呈现为可恢复异常，后续正式回复会明确标注 Agent 已继续完成，避免暂停／继续后的正常回复被历史错误卡片误覆盖。 |
@@ -6506,6 +6507,25 @@ Runtime Provider、Docker 或远端环境。
 未发出的队列项继续保持 `ambiguous`，其说明只陈述未自动发送与需要用户刷新确认，不再对当前轮次作缺少正式结果的
 推断。
 
+### FR-493 OpenHands 当前 View Token 精确投影 — DONE
+
+依赖：FR-450。
+
+目标：会话用量中的当前 View Token 必须来自 OpenHands 按当前活动 View 和 Agent LLM 使用 condenser 同一
+计数函数计算的正式值，不得继续把最后一次 LLM 请求的 `per_turn_token` 当成当前 View 总量，也不得在
+FlowWeave 本地累加后猜测压缩边界。
+
+范围：固定用户授权的 OpenHands `1.47.0` fork commit
+`0eee8da762ce1319521b285102094b8b7b47c9de`、不可变源码归档及 provenance；将
+`GET /api/conversations/{conversation_id}/context` 纳入当前 Runtime 合同并把响应
+`total_tokens` 投影为既有 `used_tokens`。历史无此端点的 Runtime 只返回当前用量未知，不回退
+`per_turn_token`。不升级 OpenHands 包版本，不新增数据库迁移或前端字段，不部署或操作远端环境。
+
+完成：FlowWeave Runtime 合同、源码锁、provenance、动态 Environment Runtime 构建身份和兼容性投影统一固定
+到 fork commit；会话上下文单独读取 OpenHands 当前 View 的精确 `total_tokens`，仅在历史 Runtime 缺少端点时
+返回未知。State batch 不再把最后一次请求的 `per_turn_token` 伪装成当前 View，用量端点的非法类型、负数或缺失
+字段均以 `RUNTIME_USAGE_PROTOCOL_DRIFT` 拒绝。
+
 ### FR-482 终态事件缺失的会话同步有界收敛 — DONE
 
 依赖：FR-456、FR-481。
@@ -6531,6 +6551,7 @@ Runtime Provider、Docker 或远端环境。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-20 | FR-493 | 受影响 Python Ruff format/check 与 `py_compile`；OpenHands 当前 View Token、state batch、日志和 Runtime contract 定向 pytest（13 passed）；源码身份无容器直接检查（2 passed）；不可变归档 SHA-256、provenance 和四包版本核验；Alembic head、`git diff --check` 与任务状态唯一性 | PASS（静态／定向）：FlowWeave 使用 OpenHands fork commit `0eee8da762ce1319521b285102094b8b7b47c9de`，上游基线仍为 `30cf5832e42c71c24daa82a1a4fd5d25eb70d1b9`，四包版本保持 `1.47.0`，归档 SHA-256 为 `68a00aa2b9c259b85df424afc4466edc4f7c1a3d95eee0e5d235b2463dd3c511`。精确 `/context.total_tokens` 覆盖误导性 `per_turn_token`；历史端点缺失返回未知，非法协议值 fail closed。唯一 Alembic head 为 `0120_agent_credential_sync`。大范围 pytest 已有 190 项通过，随后因本机 Docker socket 缺失而被 Testcontainers PostgreSQL 阻断；另有一个与本切片无关的既有 fixture `secret_hint` 缺失失败。无迁移、无前端字段、无远端部署。 |
 | 2026-09-20 | FR-491 | Web TypeScript typecheck、定向 ESLint、顶层 Agent 与 FlowRun 节点会话定向 Playwright（2 passed）、`git diff --check` 与任务状态唯一性 | PASS：终态补读窗口到期后，发送入口恢复且未提交队列项继续显示“结果不确定”，但不会再出现把本地投影超时认定为“本轮未返回正式结果”的页面横幅。未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-20 | FR-490 | Web TypeScript typecheck、定向 ESLint、Playwright 逐步配置／选中／拷贝回归（3 passed）；受影响 Python Ruff format/check、`py_compile`、`git diff --check` 与任务状态唯一性 | PASS（静态／浏览器）：逐步记录新增、点击和拷贝均聚焦当前或入口节点，展示共享右栏；工具栏拷贝入口与连续记录对齐，拷贝保留首节点初始配置和人工输入且不带入会话或输出。后端 stepwise 定向 pytest 在进入断言前因本机 Docker socket 缺失而被全局 Testcontainers fixture 阻断，未记为通过；未修改数据库迁移、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-20 | FR-489 | 受影响 Python Ruff format/check、`py_compile`；认证同步 schema guard 定向 pytest 尝试及无 fixture 直接执行（2 passed）；Web TypeScript typecheck、定向 ESLint；Alembic head、`git diff --check` 与任务状态唯一性 | PASS（静态／纯逻辑）：普通 Agent Workspace 和 FlowRun 节点会话的认证读取／同步都会在 ORM 读取新增字段前确认 schema；已知缺失迁移返回可行动、无内部 SQL 的 503，其他数据库错误保持原样。弹窗采用“会话配置”标题、能力／认证顶层导航和能力二级类别导航，标题说明已移除。定向 pytest 在断言前因本机 Docker socket 缺失而被全局 Testcontainers fixture 阻断；相同两条纯逻辑测试直接执行通过。唯一 Alembic head 为 `0120_agent_conversation_credential_sync`；未修改数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |

@@ -29,6 +29,7 @@ REQUIRED_HTTP_OPERATIONS: tuple[tuple[str, str], ...] = tuple(
             ("POST", "/api/conversations"),
             ("POST", "/api/conversations/{conversation_id}/secrets"),
             ("GET", "/api/conversations/{conversation_id}"),
+            ("GET", "/api/conversations/{conversation_id}/context"),
             ("POST", "/api/conversations/{conversation_id}/events"),
             ("GET", "/api/conversations/{conversation_id}/events/{event_id}"),
             ("GET", "/api/conversations/{conversation_id}/events/search"),

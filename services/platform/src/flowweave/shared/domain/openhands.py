@@ -10,7 +10,9 @@ from dataclasses import dataclass
 from typing import Any, cast
 
 OPENHANDS_VERSION = "1.47.0"
-OPENHANDS_SOURCE_COMMIT = "30cf5832e42c71c24daa82a1a4fd5d25eb70d1b9"
+OPENHANDS_UPSTREAM_BASE_COMMIT = "30cf5832e42c71c24daa82a1a4fd5d25eb70d1b9"
+OPENHANDS_SOURCE_COMMIT = "0eee8da762ce1319521b285102094b8b7b47c9de"
+OPENHANDS_SOURCE_ARCHIVE_SHA256 = "68a00aa2b9c259b85df424afc4466edc4f7c1a3d95eee0e5d235b2463dd3c511"
 
 
 @dataclass(frozen=True, slots=True)

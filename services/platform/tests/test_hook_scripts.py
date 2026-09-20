@@ -16,6 +16,7 @@ from flowweave.runtime.workspace import (
     materialize_runtime_memory,
 )
 from flowweave.shared.artifact_store import artifact_store_context
+from flowweave.shared.domain.openhands import OPENHANDS_SOURCE_COMMIT
 from flowweave.shared.errors import DomainError
 from flowweave.shared.infrastructure.artifact_store import LocalArtifactStore
 from flowweave.shared.settings import settings_context
@@ -41,7 +42,7 @@ def _asset(storage_key: str, filename: str, digest: str) -> dict[str, object]:
                 "normalized_config": {
                     "hook_set_schema_version": 1,
                     "openhands_version": "1.47.0",
-                    "source_commit": "30cf5832e42c71c24daa82a1a4fd5d25eb70d1b9",
+                    "source_commit": OPENHANDS_SOURCE_COMMIT,
                     "allowed_events": [
                         "post_tool_use",
                         "pre_tool_use",

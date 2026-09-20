@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from flowweave.modules.environments.infrastructure import docker as environment_docker
+from flowweave.shared.domain.openhands import OPENHANDS_SOURCE_COMMIT
 from flowweave.shared.errors import DomainError
 
 
@@ -207,7 +208,7 @@ def test_runtime_probe_inherits_the_frozen_openhands_build_identity(monkeypatch)
     monkeypatch.setattr(
         environment_docker,
         "_inspect_runtime_provenance",
-        lambda _container_id: {"source_commit": "30cf5832e42c71c24daa82a1a4fd5d25eb70d1b9"},
+        lambda _container_id: {"source_commit": OPENHANDS_SOURCE_COMMIT},
     )
     monkeypatch.setattr(
         environment_docker,
@@ -232,11 +233,11 @@ def test_runtime_probe_inherits_the_frozen_openhands_build_identity(monkeypatch)
     assert probe_start[8] == "/runtime/state:uid=10001,gid=10001,mode=0700"
     assert probe_start[9:11] == [
         "--env",
-        "OPENHANDS_BUILD_GIT_SHA=30cf5832e42c71c24daa82a1a4fd5d25eb70d1b9",
+        f"OPENHANDS_BUILD_GIT_SHA={OPENHANDS_SOURCE_COMMIT}",
     ]
     assert probe_start[11:13] == [
         "--env",
-        "OPENHANDS_BUILD_GIT_REF=30cf5832e42c71c24daa82a1a4fd5d25eb70d1b9",
+        f"OPENHANDS_BUILD_GIT_REF={OPENHANDS_SOURCE_COMMIT}",
     ]
     assert commands[1] == [
         "docker",
@@ -251,9 +252,9 @@ def test_runtime_probe_inherits_the_frozen_openhands_build_identity(monkeypatch)
         "--env",
         "HOME=/tmp",
         "--env",
-        "OPENHANDS_BUILD_GIT_SHA=30cf5832e42c71c24daa82a1a4fd5d25eb70d1b9",
+        f"OPENHANDS_BUILD_GIT_SHA={OPENHANDS_SOURCE_COMMIT}",
         "--env",
-        "OPENHANDS_BUILD_GIT_REF=30cf5832e42c71c24daa82a1a4fd5d25eb70d1b9",
+        f"OPENHANDS_BUILD_GIT_REF={OPENHANDS_SOURCE_COMMIT}",
     ]
     assert contract_check[-1] == "/tmp/flowweave-contract-check.py"
 

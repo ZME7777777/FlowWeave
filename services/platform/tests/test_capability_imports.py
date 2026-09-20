@@ -14,6 +14,7 @@ from flowweave.modules.catalog.application.capability_repository import (
     publish_dependency_build,
     resolve_version,
 )
+from flowweave.shared.domain.openhands import OPENHANDS_SOURCE_COMMIT
 from flowweave.shared.models import (
     AgentConversationBinding,
     AgentConversationCapability,
@@ -945,7 +946,7 @@ def test_hook_config_normalizes_form_json(client):
             "normalized_config": {
                 "hook_set_schema_version": 1,
                 "openhands_version": "1.47.0",
-                "source_commit": "30cf5832e42c71c24daa82a1a4fd5d25eb70d1b9",
+                "source_commit": OPENHANDS_SOURCE_COMMIT,
                 "allowed_events": [
                     "post_tool_use",
                     "pre_tool_use",

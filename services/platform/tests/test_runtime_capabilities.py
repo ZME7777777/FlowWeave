@@ -8,7 +8,10 @@ import pytest
 from flowweave.modules.environments.application import service
 from flowweave.modules.environments.infrastructure import docker
 from flowweave.runtime.manifest import runtime_manifest_hash, runtime_node
-from flowweave.shared.domain.openhands import OPENHANDS_SOURCE_COMMIT
+from flowweave.shared.domain.openhands import (
+    OPENHANDS_SOURCE_ARCHIVE_SHA256,
+    OPENHANDS_SOURCE_COMMIT,
+)
 from flowweave.shared.domain.runtime_capabilities import (
     normalize_runtime_capabilities,
     openhands_install_capabilities,
@@ -110,9 +113,7 @@ def _manifest(*, target: str, install_capabilities: str, profile: str) -> dict[s
             },
             "source_commit": OPENHANDS_SOURCE_COMMIT,
             "source_ref": OPENHANDS_SOURCE_COMMIT,
-            "source_archive_digest": (
-                "70128f691ba58f0a1a1f6987c24738bb144209c61ba1b44a349a5504a98ea6b5"
-            ),
+            "source_archive_digest": OPENHANDS_SOURCE_ARCHIVE_SHA256,
             "overlays": {},
         },
         "build": {

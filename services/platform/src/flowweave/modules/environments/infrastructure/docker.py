@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
+from flowweave.shared.domain.openhands import OPENHANDS_SOURCE_COMMIT
 from flowweave.shared.domain.runtime_capabilities import (
     normalize_runtime_capabilities,
     openhands_install_capabilities,
@@ -1271,8 +1272,8 @@ def _build_openhands_runtime(
         "push": False,
         "include_base_tag": False,
         "include_versioned_tag": False,
-        "git_sha": "30cf5832e42c71c24daa82a1a4fd5d25eb70d1b9",
-        "git_ref": "30cf5832e42c71c24daa82a1a4fd5d25eb70d1b9",
+        "git_sha": OPENHANDS_SOURCE_COMMIT,
+        "git_ref": OPENHANDS_SOURCE_COMMIT,
         # FlowWeave's fixed Runtime seed is intentionally ACP-free. Preserve
         # that product boundary when invoking OpenHands' formal dynamic build
         # API instead of accepting its broader standalone-image default. An
@@ -1359,9 +1360,9 @@ def _probe_runtime_image(
                 "--tmpfs",
                 "/runtime/state:uid=10001,gid=10001,mode=0700",
                 "--env",
-                "OPENHANDS_BUILD_GIT_SHA=30cf5832e42c71c24daa82a1a4fd5d25eb70d1b9",
+                f"OPENHANDS_BUILD_GIT_SHA={OPENHANDS_SOURCE_COMMIT}",
                 "--env",
-                "OPENHANDS_BUILD_GIT_REF=30cf5832e42c71c24daa82a1a4fd5d25eb70d1b9",
+                f"OPENHANDS_BUILD_GIT_REF={OPENHANDS_SOURCE_COMMIT}",
                 image_digest,
                 "-c",
                 "trap : TERM INT; while :; do sleep 3600; done",
@@ -1391,9 +1392,9 @@ def _probe_runtime_image(
                 "--env",
                 "HOME=/tmp",
                 "--env",
-                "OPENHANDS_BUILD_GIT_SHA=30cf5832e42c71c24daa82a1a4fd5d25eb70d1b9",
+                f"OPENHANDS_BUILD_GIT_SHA={OPENHANDS_SOURCE_COMMIT}",
                 "--env",
-                "OPENHANDS_BUILD_GIT_REF=30cf5832e42c71c24daa82a1a4fd5d25eb70d1b9",
+                f"OPENHANDS_BUILD_GIT_REF={OPENHANDS_SOURCE_COMMIT}",
                 probe_name,
                 "/agent-server/.venv/bin/python",
                 # The FlowWeave probe was copied from the fixed controller.
