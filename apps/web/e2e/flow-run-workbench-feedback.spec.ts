@@ -2124,8 +2124,8 @@ test('node sessions bound terminal reconciliation when the formal result is miss
   await expect(page.getByRole('button', { name: '正在同步会话结束' })).toBeDisabled();
   await page.waitForTimeout(500);
   await page.reload();
-  await expect(page.getByText('OpenHands 已结束，本轮未返回正式结果。你可以继续发送消息；同步期间排队的消息需要确认后重新编辑。')).toBeVisible({ timeout: 12_000 });
-  await expect(page.getByRole('button', { name: '发送消息' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '发送消息' })).toBeVisible({ timeout: 12_000 });
+  await expect(page.getByText('OpenHands 已结束，本轮未返回正式结果。你可以继续发送消息；同步期间排队的消息需要确认后重新编辑。')).toHaveCount(0);
   await expect(composer).toBeEnabled();
   await expect(page.locator('.agent-workspace-conversation-running')).toHaveCount(0);
   const queue = page.getByLabel('消息投递队列');

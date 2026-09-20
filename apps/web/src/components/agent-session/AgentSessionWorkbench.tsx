@@ -4665,11 +4665,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
           ? {
               ...message,
               deliveryState: 'ambiguous' as const,
-              deliveryError: 'OpenHands 已结束前未返回正式结果；消息未自动发送，请刷新会话确认后重新编辑。',
+              deliveryError: '会话同步结束前未自动发送；发送结果不确定，请刷新会话确认后重新编辑。',
             }
           : message
       )));
-      setOperationError(new Error('OpenHands 已结束，本轮未返回正式结果。你可以继续发送消息；同步期间排队的消息需要确认后重新编辑。'));
       refresh();
     }, TERMINAL_EVENT_RECONCILIATION_MS);
     return () => window.clearTimeout(timer);

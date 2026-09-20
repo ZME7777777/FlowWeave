@@ -202,6 +202,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-488 | 嵌套 Markdown 源码围栏约束 | DONE | 平台系统上下文要求展示含代码块的 Markdown 源码时使用更长或不同类型的外层围栏，避免源码后段被渲染为会话内容。 |
 | FR-489 | 既有会话认证同步可用性与会话配置层级 | DONE | 缺失认证同步迁移时返回可行动的稳定错误；会话配置以能力／认证顶层导航和能力类别二级导航呈现。 |
 | FR-490 | 逐步／连续工作台选中与初始配置复制一致性 | DONE | 逐步记录创建、重新选中和复制均立即聚焦记录当前或起始节点并打开共享侧栏；复制首节点初始配置，保留启动门禁差异。 |
+| FR-491 | 终态补读超时的误导提示移除 | DONE | 补读窗口到期仍解除同步、保护未提交队列项，但不再将本地兜底判断展示为页面级错误。 |
 | FR-457 | OpenHands 空响应自恢复与运行状态一致性 | DONE | 空 Agent Message 与 `source=environment` 的原生 corrective nudge 不再被识别为最终回复；纠正事件以“模型返回空响应，OpenHands 正在自动重试”呈现，左侧会话状态与底部按钮继续统一服从原生 execution status。 |
 | FR-458 | 空响应恢复提示瞬时化与会话状态统一 | DONE | corrective nudge 只在它是当前最新事件且原生会话仍运行时复用实时状态行显示；后续事件或终态立即隐藏，历史工作过程不保留该提示。工作台所有运行控件复用同一原生状态投影。 |
 | FR-459 | 原生错误事件的终态／可恢复呈现分流 | DONE | 仅 OpenHands ConversationErrorEvent 呈现为“本轮未能完成”的会话级终态卡片；AgentErrorEvent 与未知历史 ERROR 保持原生审计事实，按其正式父事件留在工作过程中呈现为可恢复异常，后续正式回复会明确标注 Agent 已继续完成，避免暂停／继续后的正常回复被历史错误卡片误覆盖。 |
@@ -6490,6 +6491,21 @@ typecheck、定向 ESLint、Alembic 唯一 head、`git diff --check` 与任务�
 共享节点配置或 Attempt 详情。逐步运行工具栏采用连续运行记录相同的拷贝、删除、新增顺序与样式；拷贝仅克隆首节点的
 提示词配置、人工输入、门禁、上下文和 Agent 预设，并保留显式启动确认，不带入会话、输出、执行结果或端口映射产物。
 
+### FR-491 终态补读超时的误导提示移除 — DONE
+
+依赖：FR-482。
+
+目标：终态补读窗口只是浏览器本地的有界同步保护，不得把“尚未从当前投影读到正式终态”展示成会话没有正式结果的
+页面级错误；否则正式回复已到达或稍后到达时，横幅会与用户可见内容矛盾。
+
+范围：仅修改共享 `AgentSessionWorkbench` 的超时投影和两个既有浏览器回归。超时后继续解除同步锁、恢复输入、
+停止补读，并将未发出的队列项标记为结果不确定；不改写 OpenHands 事件，不自动发送队列项，不修改 API、数据库、
+Runtime Provider、Docker 或远端环境。
+
+完成：补读窗口到期后不再写入 `operationError`，因此不会显示“OpenHands 已结束，本轮未返回正式结果”的页面横幅。
+未发出的队列项继续保持 `ambiguous`，其说明只陈述未自动发送与需要用户刷新确认，不再对当前轮次作缺少正式结果的
+推断。
+
 ### FR-482 终态事件缺失的会话同步有界收敛 — DONE
 
 依赖：FR-456、FR-481。
@@ -6498,7 +6514,7 @@ typecheck、定向 ESLint、Alembic 唯一 head、`git diff --check` 与任务�
 
 范围：仅修改共享 `AgentSessionWorkbench` 的前端投影和浏览器回归。超时后不构造 assistant／ERROR／Finish 事件，不修改 OpenHands、数据库、API、Runtime Provider、Docker 或 FlowRun 调度；同会话尚未提交的队列项必须显式标记为结果不确定，绝不自动发送。
 
-完成：工作台以 `[binding_id, unfinished_user_event_id]` 唯一标识 8 秒补读窗口。窗口存在时所有运行标识、输入和主按钮保持同一同步锁；真正正式终态、新一轮或切换会话会清理窗口。窗口到期后只解除本地 UI 桥接、停止持续补读并显示“OpenHands 已结束，本轮未返回正式结果”，不伪造事件。该会话尚未提交的队列项转为 `ambiguous`，自动分发还必须先完成当前正式事件页读取，避免刷新时在同步状态建立前抢先投递。
+完成：工作台以 `[binding_id, unfinished_user_event_id]` 唯一标识 8 秒补读窗口。窗口存在时所有运行标识、输入和主按钮保持同一同步锁；真正正式终态、新一轮或切换会话会清理窗口。窗口到期后只解除本地 UI 桥接、停止持续补读，不伪造事件；FR-491 进一步禁止将该本地兜底判断显示为页面错误。该会话尚未提交的队列项转为 `ambiguous`，自动分发还必须先完成当前正式事件页读取，避免刷新时在同步状态建立前抢先投递。
 
 ## 7. 恢复工作检查表
 
@@ -6515,6 +6531,7 @@ typecheck、定向 ESLint、Alembic 唯一 head、`git diff --check` 与任务�
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-20 | FR-491 | Web TypeScript typecheck、定向 ESLint、顶层 Agent 与 FlowRun 节点会话定向 Playwright（2 passed）、`git diff --check` 与任务状态唯一性 | PASS：终态补读窗口到期后，发送入口恢复且未提交队列项继续显示“结果不确定”，但不会再出现把本地投影超时认定为“本轮未返回正式结果”的页面横幅。未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-20 | FR-490 | Web TypeScript typecheck、定向 ESLint、Playwright 逐步配置／选中／拷贝回归（3 passed）；受影响 Python Ruff format/check、`py_compile`、`git diff --check` 与任务状态唯一性 | PASS（静态／浏览器）：逐步记录新增、点击和拷贝均聚焦当前或入口节点，展示共享右栏；工具栏拷贝入口与连续记录对齐，拷贝保留首节点初始配置和人工输入且不带入会话或输出。后端 stepwise 定向 pytest 在进入断言前因本机 Docker socket 缺失而被全局 Testcontainers fixture 阻断，未记为通过；未修改数据库迁移、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-20 | FR-489 | 受影响 Python Ruff format/check、`py_compile`；认证同步 schema guard 定向 pytest 尝试及无 fixture 直接执行（2 passed）；Web TypeScript typecheck、定向 ESLint；Alembic head、`git diff --check` 与任务状态唯一性 | PASS（静态／纯逻辑）：普通 Agent Workspace 和 FlowRun 节点会话的认证读取／同步都会在 ORM 读取新增字段前确认 schema；已知缺失迁移返回可行动、无内部 SQL 的 503，其他数据库错误保持原样。弹窗采用“会话配置”标题、能力／认证顶层导航和能力二级类别导航，标题说明已移除。定向 pytest 在断言前因本机 Docker socket 缺失而被全局 Testcontainers fixture 阻断；相同两条纯逻辑测试直接执行通过。唯一 Alembic head 为 `0120_agent_conversation_credential_sync`；未修改数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-19 | FR-488 | 无容器 Runtime Agent spec 构造冒烟；Runtime Agent spec 定向 pytest 尝试；受影响 Python Ruff format/check、`py_compile`；`git diff --check` 与任务状态唯一性 | PASS（静态）：共用 OpenHands 系统后缀新增嵌套 Markdown 源码围栏规则；无容器规格构造确认更长外层／波浪线替代方案和禁止共用三个反引号的约束均会进入新会话，回归测试也锁定这些文案。定向 pytest 在进入断言前因本机 Docker socket 缺失而阻断，未记为通过。未修改前端渲染器、既有消息、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
