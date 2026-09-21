@@ -23,13 +23,14 @@ from flowweave.bootstrap.settings import Settings
 from flowweave.runtime.contract import OPENHANDS_PACKAGE_VERSIONS
 from flowweave.shared import models as _models  # noqa: F401
 from flowweave.shared.database import create_sync_session_factory
-from flowweave.shared.domain.openhands import OPENHANDS_SOURCE_COMMIT
+from flowweave.shared.domain.openhands import (
+    OPENHANDS_SOURCE_ARCHIVE_SHA256,
+    OPENHANDS_SOURCE_COMMIT,
+)
 from flowweave.shared.models import EnvironmentVersion, TerminalEnvironment
 from flowweave.shared.sandbox import sandbox_context
 
-_OPENHANDS_SOURCE_ARCHIVE_DIGEST = (
-    "70128f691ba58f0a1a1f6987c24738bb144209c61ba1b44a349a5504a98ea6b5"
-)
+_OPENHANDS_SOURCE_ARCHIVE_DIGEST = OPENHANDS_SOURCE_ARCHIVE_SHA256
 
 
 def _seed_ready_environment(sessions: sessionmaker[Session]) -> str:

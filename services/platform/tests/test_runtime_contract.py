@@ -120,6 +120,10 @@ def test_runtime_contract_uses_the_environment_frozen_server_identity() -> None:
         "openhands-tools": "1.44.0",
         "openhands-workspace": "1.44.0",
     }
+    assert (
+        "GET",
+        "/api/conversations/{conversation_id}/context",
+    ) in governed_runtime_contract(("file_editor", "terminal")).required_http_operations
 
 
 def test_start_rejects_missing_contract_before_runtime_http(

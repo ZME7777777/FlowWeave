@@ -11,6 +11,7 @@ from flowweave.modules.catalog.application.capability_repository import (
     resolve_version,
 )
 from flowweave.shared.application.transactions import finish
+from flowweave.shared.domain.openhands import OPENHANDS_SOURCE_COMMIT, OPENHANDS_VERSION
 from flowweave.shared.domain.runtime_policy import (
     OPENHANDS_AGENT_PROFILE_FIELD_MATRIX,
     OPENHANDS_AGENT_PROFILE_SCHEMA_VERSION,
@@ -43,8 +44,8 @@ def _read_model(item: PublishedCapability) -> dict[str, Any]:
         "state": item.version.state,
         "document": dict(item.version.normalized_config_json),
         "compatibility": {
-            "openhands_version": "1.47.0",
-            "source_commit": "30cf5832e42c71c24daa82a1a4fd5d25eb70d1b9",
+            "openhands_version": OPENHANDS_VERSION,
+            "source_commit": OPENHANDS_SOURCE_COMMIT,
             "schema_version": OPENHANDS_AGENT_PROFILE_SCHEMA_VERSION,
             "fields": dict(OPENHANDS_AGENT_PROFILE_FIELD_MATRIX),
             "server_profile_store": "PROHIBITED_FOR_PRODUCTION",

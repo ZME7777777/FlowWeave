@@ -2323,9 +2323,10 @@ def test_openhands_active_batch_reuses_one_native_state_for_context_and_readines
     assert state_reads == 1
     assert batch.cursor == "user-event"
     assert batch.context == {
-        "used_tokens": 0,
+        "used_tokens": None,
         "window_tokens": 8192,
         "cumulative_tokens": None,
+        "usage_current": False,
         "provider_id": "provider",
         "model_name": "test-model",
         "reasoning_effort": None,
@@ -4744,55 +4745,61 @@ def test_openhands_read_events_projects_only_native_task_cumulative_usage(
     assert len(usage.digest) == 64
 
 
-def test_openhands_conversation_context_reads_the_active_native_usage_bucket(
+def test_openhands_conversation_context_reads_exact_current_view_tokens(
     openhands_settings, monkeypatch
 ):
     runtime = OpenHandsRuntime(openhands_settings)
+    responses = iter(
+        [
+            _state(
+                agent={
+                    "llm": {
+                        "model": "openai/gpt-5.6-luna",
+                        "usage_id": "flowweave:provider-1",
+                    }
+                },
+                stats={
+                    "usage_to_metrics": {
+                        "condenser": {
+                            "model_name": "openai/gpt-5.6-luna",
+                            "accumulated_cost": 0.0,
+                            "accumulated_token_usage": {
+                                "prompt_tokens": 999,
+                                "completion_tokens": 0,
+                                "cache_read_tokens": 0,
+                                "cache_write_tokens": 0,
+                                "reasoning_tokens": 0,
+                                "context_window": 20_000,
+                                "per_turn_token": 999,
+                            },
+                        },
+                        "flowweave:provider-1": {
+                            "model_name": "openai/gpt-5.6-luna",
+                            "accumulated_cost": 0.1,
+                            "accumulated_token_usage": {
+                                "prompt_tokens": 12_654,
+                                "completion_tokens": 62,
+                                "cache_read_tokens": 0,
+                                "cache_write_tokens": 0,
+                                "reasoning_tokens": 0,
+                                "context_window": 922_000,
+                                "per_turn_token": 6_380,
+                            },
+                        },
+                    }
+                },
+            ),
+            {"total_tokens": 42_000},
+        ]
+    )
     monkeypatch.setattr(
         runtime,
         "_request",
-        lambda *_args, **_kwargs: _state(
-            agent={
-                "llm": {
-                    "model": "openai/gpt-5.6-luna",
-                    "usage_id": "flowweave:provider-1",
-                }
-            },
-            stats={
-                "usage_to_metrics": {
-                    "condenser": {
-                        "model_name": "openai/gpt-5.6-luna",
-                        "accumulated_cost": 0.0,
-                        "accumulated_token_usage": {
-                            "prompt_tokens": 999,
-                            "completion_tokens": 0,
-                            "cache_read_tokens": 0,
-                            "cache_write_tokens": 0,
-                            "reasoning_tokens": 0,
-                            "context_window": 20_000,
-                            "per_turn_token": 999,
-                        },
-                    },
-                    "flowweave:provider-1": {
-                        "model_name": "openai/gpt-5.6-luna",
-                        "accumulated_cost": 0.1,
-                        "accumulated_token_usage": {
-                            "prompt_tokens": 12_654,
-                            "completion_tokens": 62,
-                            "cache_read_tokens": 0,
-                            "cache_write_tokens": 0,
-                            "reasoning_tokens": 0,
-                            "context_window": 922_000,
-                            "per_turn_token": 6_380,
-                        },
-                    },
-                }
-            },
-        ),
+        lambda *_args, **_kwargs: next(responses),
     )
 
     assert runtime.conversation_context(_handle()) == {
-        "used_tokens": 6_380,
+        "used_tokens": 42_000,
         "window_tokens": 922_000,
         "cumulative_tokens": 13_715,
         "usage_current": True,
@@ -4808,19 +4815,25 @@ def test_openhands_conversation_context_exposes_zero_token_baseline_for_pinned_c
     openhands_settings, monkeypatch
 ):
     runtime = OpenHandsRuntime(openhands_settings)
+    responses = iter(
+        [
+            _state(
+                agent={
+                    "llm": {
+                        "model": "openai/gpt-5.4",
+                        "usage_id": "flowweave:provider-1",
+                        "max_input_tokens": 1_050_000,
+                    }
+                },
+                stats={"usage_to_metrics": {}},
+            ),
+            {"total_tokens": 0},
+        ]
+    )
     monkeypatch.setattr(
         runtime,
         "_request",
-        lambda *_args, **_kwargs: _state(
-            agent={
-                "llm": {
-                    "model": "openai/gpt-5.4",
-                    "usage_id": "flowweave:provider-1",
-                    "max_input_tokens": 1_050_000,
-                }
-            },
-            stats={"usage_to_metrics": {}},
-        ),
+        lambda *_args, **_kwargs: next(responses),
     )
 
     context = runtime.conversation_context(_handle())
@@ -4831,73 +4844,117 @@ def test_openhands_conversation_context_exposes_zero_token_baseline_for_pinned_c
     assert context["usage_current"] is True
 
 
-def test_openhands_conversation_context_recovers_one_unambiguous_active_model_bucket(
+def test_openhands_conversation_context_ignores_per_turn_token_from_unambiguous_bucket(
     openhands_settings, monkeypatch
 ):
     runtime = OpenHandsRuntime(openhands_settings)
     monkeypatch.setattr(
         runtime,
         "_request",
-        lambda *_args, **_kwargs: _state(
-            agent={
-                "llm": {
-                    "model": "openai/gpt-5.6-luna",
-                    "usage_id": "flowweave:provider-current",
-                    "max_input_tokens": 922_000,
-                }
-            },
-            stats={
-                "usage_to_metrics": {
-                    "flowweave:provider-historical": {
-                        "model_name": "openai/gpt-5.6-luna",
-                        "accumulated_token_usage": {
-                            "prompt_tokens": 6_320,
-                            "completion_tokens": 60,
-                            "cache_read_tokens": 0,
-                            "cache_write_tokens": 0,
-                            "reasoning_tokens": 0,
-                            "context_window": 922_000,
-                            "per_turn_token": 6_380,
-                        },
+        lambda _method, path, **_kwargs: (
+            {"total_tokens": 21_000}
+            if path.endswith("/context")
+            else _state(
+                agent={
+                    "llm": {
+                        "model": "openai/gpt-5.6-luna",
+                        "usage_id": "flowweave:provider-current",
+                        "max_input_tokens": 922_000,
                     }
-                }
-            },
+                },
+                stats={
+                    "usage_to_metrics": {
+                        "flowweave:provider-historical": {
+                            "model_name": "openai/gpt-5.6-luna",
+                            "accumulated_token_usage": {
+                                "prompt_tokens": 6_320,
+                                "completion_tokens": 60,
+                                "cache_read_tokens": 0,
+                                "cache_write_tokens": 0,
+                                "reasoning_tokens": 0,
+                                "context_window": 922_000,
+                                "per_turn_token": 6_380,
+                            },
+                        }
+                    }
+                },
+            )
         ),
     )
 
     context = runtime.conversation_context(_handle())
 
-    assert context["used_tokens"] == 6_380
+    assert context["used_tokens"] == 21_000
     assert context["usage_current"] is True
 
 
-def test_openhands_conversation_context_keeps_ambiguous_usage_unknown(
+def test_openhands_conversation_context_uses_exact_view_despite_ambiguous_usage_buckets(
     openhands_settings, monkeypatch
 ):
     runtime = OpenHandsRuntime(openhands_settings)
     monkeypatch.setattr(
         runtime,
         "_request",
-        lambda *_args, **_kwargs: _state(
-            agent={
-                "llm": {
-                    "model": "openai/gpt-5.6-luna",
-                    "usage_id": "flowweave:provider-current",
-                    "max_input_tokens": 922_000,
-                }
-            },
-            stats={
-                "usage_to_metrics": {
-                    "flowweave:provider-old-a": {
-                        "model_name": "openai/gpt-5.6-luna",
-                        "accumulated_token_usage": {"per_turn_token": 100},
-                    },
-                    "flowweave:provider-old-b": {
-                        "model_name": "openai/gpt-5.6-luna",
-                        "accumulated_token_usage": {"per_turn_token": 200},
-                    },
-                }
-            },
+        lambda _method, path, **_kwargs: (
+            {"total_tokens": 30_000}
+            if path.endswith("/context")
+            else _state(
+                agent={
+                    "llm": {
+                        "model": "openai/gpt-5.6-luna",
+                        "usage_id": "flowweave:provider-current",
+                        "max_input_tokens": 922_000,
+                    }
+                },
+                stats={
+                    "usage_to_metrics": {
+                        "flowweave:provider-old-a": {
+                            "model_name": "openai/gpt-5.6-luna",
+                            "accumulated_token_usage": {"per_turn_token": 100},
+                        },
+                        "flowweave:provider-old-b": {
+                            "model_name": "openai/gpt-5.6-luna",
+                            "accumulated_token_usage": {"per_turn_token": 200},
+                        },
+                    }
+                },
+            )
+        ),
+    )
+
+    context = runtime.conversation_context(_handle())
+
+    assert context["used_tokens"] == 30_000
+    assert context["usage_current"] is True
+
+
+def test_openhands_conversation_context_keeps_endpoint_less_runtime_usage_unknown(
+    openhands_settings, monkeypatch
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    monkeypatch.setattr(
+        runtime,
+        "_request",
+        lambda _method, path, **_kwargs: (
+            {"_flowweave_missing": True}
+            if path.endswith("/context")
+            else _state(
+                agent={
+                    "llm": {
+                        "model": "openai/gpt-5.6-luna",
+                        "usage_id": "flowweave:provider-1",
+                        "max_input_tokens": 922_000,
+                    }
+                },
+                stats={
+                    "usage_to_metrics": {
+                        "flowweave:provider-1": {
+                            "model_name": "openai/gpt-5.6-luna",
+                            "accumulated_token_usage": {"per_turn_token": 6_380},
+                        }
+                    }
+                },
+            )
         ),
     )
 
@@ -4905,6 +4962,32 @@ def test_openhands_conversation_context_keeps_ambiguous_usage_unknown(
 
     assert context["used_tokens"] is None
     assert context["usage_current"] is False
+
+
+@pytest.mark.parametrize("total_tokens", [None, True, -1, 1.5, "1234"])
+def test_openhands_conversation_context_rejects_invalid_exact_view_usage(
+    openhands_settings, monkeypatch, total_tokens
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    monkeypatch.setattr(
+        runtime,
+        "_request",
+        lambda _method, path, **_kwargs: (
+            {"total_tokens": total_tokens}
+            if path.endswith("/context")
+            else _state(
+                agent={"llm": {"model": "openai/gpt-5.6-luna"}},
+                stats={"usage_to_metrics": {}},
+            )
+        ),
+    )
+
+    with pytest.raises(DomainError) as raised:
+        runtime.conversation_context(_handle())
+
+    assert raised.value.code == "RUNTIME_USAGE_PROTOCOL_DRIFT"
+    assert raised.value.status == 502
+    assert raised.value.details == {"field": "total_tokens"}
 
 
 @pytest.mark.parametrize(
@@ -5122,7 +5205,7 @@ def test_openhands_logs_redacted_delivery_state_without_message_content(
     assert "window_events=2 window_truncated=True" in message
     assert "user_events=1 assistant_events=1 error_events=0" in message
     assert "active_model=openai/gpt-5.6-terra" in message
-    assert "context_used=0 context_window=922000" in message
+    assert "context_used=None context_window=922000" in message
     assert "condenser_max_size=10000" in message
     for private_value in (
         "user-private",

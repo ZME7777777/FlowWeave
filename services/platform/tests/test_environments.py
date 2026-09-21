@@ -18,7 +18,10 @@ from flowweave.modules.sandboxes.infrastructure.docker import (
     DockerSandboxProvider,
 )
 from flowweave.runtime.contract import OPENHANDS_PACKAGE_VERSIONS
-from flowweave.shared.domain.openhands import OPENHANDS_SOURCE_COMMIT
+from flowweave.shared.domain.openhands import (
+    OPENHANDS_SOURCE_ARCHIVE_SHA256,
+    OPENHANDS_SOURCE_COMMIT,
+)
 from flowweave.shared.errors import DomainError
 from flowweave.shared.models import (
     BackgroundTask,
@@ -223,9 +226,7 @@ def _runtime_provenance() -> dict[str, object]:
         "package_versions": dict(OPENHANDS_PACKAGE_VERSIONS),
         "source_commit": OPENHANDS_SOURCE_COMMIT,
         "source_ref": OPENHANDS_SOURCE_COMMIT,
-        "source_archive_digest": (
-            "70128f691ba58f0a1a1f6987c24738bb144209c61ba1b44a349a5504a98ea6b5"
-        ),
+        "source_archive_digest": OPENHANDS_SOURCE_ARCHIVE_SHA256,
         "overlays": {},
     }
 

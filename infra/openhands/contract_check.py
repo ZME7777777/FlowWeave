@@ -145,7 +145,8 @@ from openhands.tools.task.manager import Task, TaskManager, TaskStatus
 
 EXPECTED_VERSION = "1.47.0"
 EXPECTED_UPSTREAM_BASE = "30cf5832e42c71c24daa82a1a4fd5d25eb70d1b9"
-EXPECTED_SOURCE_ARCHIVE_SHA256 = "70128f691ba58f0a1a1f6987c24738bb144209c61ba1b44a349a5504a98ea6b5"
+EXPECTED_SOURCE_COMMIT = "0eee8da762ce1319521b285102094b8b7b47c9de"
+EXPECTED_SOURCE_ARCHIVE_SHA256 = "68a00aa2b9c259b85df424afc4466edc4f7c1a3d95eee0e5d235b2463dd3c511"
 PACKAGES = (
     "openhands-agent-server",
     "openhands-sdk",
@@ -158,6 +159,7 @@ REQUIRED_PATHS = {
     "/ready",
     "/server_info",
     "/api/conversations",
+    "/api/conversations/{conversation_id}/context",
     "/api/conversations/{conversation_id}/condense",
     "/api/conversations/{conversation_id}/events/search",
     "/api/conversations/{conversation_id}/events/{event_id}",
@@ -463,8 +465,8 @@ def main() -> None:
             pass
         else:
             raise AssertionError("FileEditor accepted a NUL-containing binary file")
-    assert os.environ.get("OPENHANDS_BUILD_GIT_SHA") == EXPECTED_UPSTREAM_BASE
-    assert os.environ.get("OPENHANDS_BUILD_GIT_REF") == EXPECTED_UPSTREAM_BASE
+    assert os.environ.get("OPENHANDS_BUILD_GIT_SHA") == EXPECTED_SOURCE_COMMIT
+    assert os.environ.get("OPENHANDS_BUILD_GIT_REF") == EXPECTED_SOURCE_COMMIT
     event_socket_parameters = signature(events_socket).parameters
     bash_socket_parameters = signature(bash_events_socket).parameters
     assert {"resend_mode", "after_timestamp"} <= set(event_socket_parameters)
@@ -476,8 +478,8 @@ def main() -> None:
     assert server_info.sdk_version == EXPECTED_VERSION
     assert server_info.tools_version == EXPECTED_VERSION
     assert server_info.workspace_version == EXPECTED_VERSION
-    assert server_info.build_git_sha == EXPECTED_UPSTREAM_BASE
-    assert server_info.build_git_ref == EXPECTED_UPSTREAM_BASE
+    assert server_info.build_git_sha == EXPECTED_SOURCE_COMMIT
+    assert server_info.build_git_ref == EXPECTED_SOURCE_COMMIT
     assert server_info.usable_tools == list_usable_tools()
     assert len(server_info.usable_tools) == len(set(server_info.usable_tools))
     assert {"file_editor", "task_tracker", "terminal"} <= set(server_info.usable_tools)
@@ -503,9 +505,9 @@ def main() -> None:
     provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
     build_input = provenance["build_input"]
     assert build_input["upstream_base_commit"] == EXPECTED_UPSTREAM_BASE
-    assert build_input["source_commit"] == EXPECTED_UPSTREAM_BASE
-    assert build_input["source_kind"] == "upstream_source"
-    assert build_input["fork_commit"] is None
+    assert build_input["source_commit"] == EXPECTED_SOURCE_COMMIT
+    assert build_input["source_kind"] == "flowweave_fork"
+    assert build_input["fork_commit"] == EXPECTED_SOURCE_COMMIT
     assert provenance["source_archive_sha256"] == EXPECTED_SOURCE_ARCHIVE_SHA256
     patch_path = Path("/runtime/patch_fork_condenser.py")
     assert provenance["overlays"] == {

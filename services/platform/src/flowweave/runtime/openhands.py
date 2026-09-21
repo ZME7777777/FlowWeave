@@ -4535,24 +4535,16 @@ class OpenHandsRuntime:
                 + usage.reasoning_tokens
             )
             found = True
-        # OpenHands' formally named ``per_turn_token`` is the latest completed
-        # LLM request's current View usage. It is not an accumulated total and
-        # is only projected when this Conversation's active LLM bucket is
-        # formally known. A truly fresh Conversation has no metrics at all and
-        # therefore starts at zero; a non-empty but ambiguous metrics map must
-        # remain unknown instead of looking like an empty View.
-        usage_current = active_usage is not None or not usage_snapshots
         return {
-            "used_tokens": (
-                active_usage.per_turn_tokens
-                if active_usage is not None
-                else 0
-                if usage_current and window is not None
-                else None
-            ),
+            # ``per_turn_token`` is only the latest completed LLM request. It
+            # is never a safe approximation of the current active View and
+            # must not be accumulated locally across turns or condensations.
+            # The exact value is merged by ``conversation_context`` from the
+            # dedicated OpenHands current-View endpoint.
+            "used_tokens": None,
             "window_tokens": window,
             "cumulative_tokens": cumulative if found else None,
-            "usage_current": usage_current,
+            "usage_current": False,
             "provider_id": provider_id,
             "model_name": llm.get("model") if isinstance(llm.get("model"), str) else None,
             "reasoning_effort": (
@@ -4570,10 +4562,38 @@ class OpenHandsRuntime:
             ),
         }
 
+    def _conversation_view_total_tokens(self, handle: RuntimeHandle) -> int | None:
+        payload = self._request(
+            "GET",
+            f"/api/conversations/{handle.conversation_id}/context",
+            missing_ok=True,
+            base_url=self._base_url_for_handle(handle),
+            session_api_key=self._session_key_for_handle(handle),
+            timeout=_INTERACTIVE_READ_TIMEOUT_SECONDS,
+        )
+        if payload.get("_flowweave_missing") is True:
+            # Historical frozen Runtime contracts may predate this endpoint.
+            # Their current View usage is unknown; never fall back to the
+            # latest request's ``per_turn_token``.
+            return None
+        total_tokens = payload.get("total_tokens")
+        if isinstance(total_tokens, bool) or not isinstance(total_tokens, int) or total_tokens < 0:
+            raise DomainError(
+                "RUNTIME_USAGE_PROTOCOL_DRIFT",
+                "OpenHands current View token usage is invalid",
+                502,
+                {"field": "total_tokens"},
+            )
+        return total_tokens
+
     def conversation_context(self, handle: RuntimeHandle) -> dict[str, int | str | None]:
-        return self._conversation_context_from_state(
+        context = self._conversation_context_from_state(
             self._conversation_state(handle, timeout=_INTERACTIVE_READ_TIMEOUT_SECONDS)
         )
+        total_tokens = self._conversation_view_total_tokens(handle)
+        context["used_tokens"] = total_tokens
+        context["usage_current"] = total_tokens is not None
+        return context
 
     def switch_model(self, handle: RuntimeHandle, provider: RuntimeProvider) -> None:
         session_api_key = self._session_key_for_handle(handle)
