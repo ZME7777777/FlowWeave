@@ -197,7 +197,6 @@ html{-webkit-text-size-adjust:100%;text-rendering:optimizeLegibility}body{font-s
 .inner-run-mode-tabs button.active{background:#fff;color:var(--green);box-shadow:0 1px 4px #17342618}
 .automatic-record-toolbar{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:5px;margin:0 0 6px}
 .automatic-record-toolbar button{min-width:0;gap:4px;padding:7px 6px;font-size:10px;white-space:nowrap}
-.manual-record-toolbar{grid-template-columns:repeat(2,minmax(0,1fr))}
 .manual-record-toolbar:has(>button:only-child){grid-template-columns:1fr}
 .automatic-record-list{display:grid;gap:4px;margin-top:10px}
 .automatic-record-list>p{padding:14px 4px;color:var(--muted);font-size:10px;text-align:center}

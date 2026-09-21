@@ -168,6 +168,9 @@ const activeFlowNodeRun = (records: NodeRun[]): NodeRun | undefined => records.r
 );
 
 function initialFlowNodeKey(record: FlowRun): string | undefined {
+  if ('start_node_key' in record && typeof record.start_node_key === 'string') {
+    return record.start_node_key;
+  }
   const snapshot = record.snapshots.find(item => item.id === record.active_snapshot_id)
     ?? record.snapshots.at(-1);
   return snapshot?.definition.default_entry_key ?? snapshot?.definition.nodes[0]?.instance_key;
@@ -1251,13 +1254,19 @@ function AutomaticRecordDialog({ run, onClose, onCreated, onImport }: { run: Flo
 }
 
 function StepwiseRecordDialog({ run, onClose, onCreated }: { run: FlowRun; onClose: () => void; onCreated: (record: FlowRunStepwiseRecord) => void }) {
+  const snapshot = run.snapshots.find(item => item.id === run.active_snapshot_id) ?? run.snapshots.at(-1);
+  const nodes = snapshot?.definition.nodes ?? [];
   const [name, setName] = useState('');
+  const [startNodeKey, setStartNodeKey] = useState(nodes[0]?.instance_key ?? '');
   const mutation = useMutation({
-    mutationFn: () => api.createStepwiseRecord(run.id, name.trim() || undefined),
+    mutationFn: () => api.createStepwiseRecord(run.id, {
+      name: name.trim() || undefined,
+      start_node_key: startNodeKey,
+    }),
     onSuccess: onCreated,
   });
   useEscapeClose(onClose);
-  return <div className="modal-backdrop"><section className="modal automatic-record-dialog" role="dialog" aria-modal="true" aria-label="新增逐步运行记录"><header><div><span className="eyebrow">STEPWISE RUN</span><h2>新增逐步运行记录</h2><p>记录创建后才开始配置节点。N1、N2 的会话、产物和审计都会保留在这条记录内；每个节点仍须保存配置后由你显式启动。</p></div><button type="button" className="ghost" aria-label="关闭新增逐步运行记录" onClick={onClose}><X size={17}/></button></header><label>记录名称<input aria-label="逐步运行记录名称" value={name} maxLength={220} autoFocus placeholder={`${run.name} · 批次执行`} onChange={event => setName(event.target.value)}/></label>{mutation.error && <p className="error">创建失败：{mutation.error.message}</p>}<footer><button type="button" className="ghost" disabled={mutation.isPending} onClick={onClose}>取消</button><button type="button" className="primary" disabled={mutation.isPending} onClick={() => mutation.mutate()}>{mutation.isPending ? '创建中…' : '创建记录'}</button></footer></section></div>;
+  return <div className="modal-backdrop"><section className="modal automatic-record-dialog" role="dialog" aria-modal="true" aria-label="新增逐步运行记录"><header><div><span className="eyebrow">STEPWISE RUN</span><h2>新增逐步运行记录</h2><p>选择起始节点后保存记录。节点仍需先保存配置，再由你显式启动；完成后停在下一个节点。</p></div><button type="button" className="ghost" aria-label="关闭新增逐步运行记录" onClick={onClose}><X size={17}/></button></header><label>记录名称<input aria-label="逐步运行记录名称" value={name} maxLength={220} autoFocus placeholder={`${run.name} · 批次执行`} onChange={event => setName(event.target.value)}/></label><label>起始节点<LaunchOptionMenu label="逐步运行起始节点" value={startNodeKey} options={nodes.map(node => ({ value: node.instance_key, label: node.alias || node.asset.name }))} disabled={!nodes.length} onChange={setStartNodeKey}/></label>{mutation.error && <p className="error">创建失败：{mutation.error.message}</p>}<footer><button type="button" className="ghost" disabled={mutation.isPending} onClick={onClose}>取消</button><button type="button" className="primary" disabled={!startNodeKey || mutation.isPending} onClick={() => mutation.mutate()}>{mutation.isPending ? '创建中…' : '创建记录'}</button></footer></section></div>;
 }
 
 function CopyRecordDialog({ mode, sourceName, onClose, onCopy, onExport }: { mode: CopyTarget['mode']; sourceName: string; onClose: () => void; onCopy: (name: string) => Promise<void>; onExport?: (target: ExportTarget) => Promise<void> }) {

@@ -40,6 +40,7 @@ from flowweave.shared.schemas import (
     RuntimeConfirmationDecisionWrite,
     RuntimeLifecycleWrite,
     RuntimeReplacementWrite,
+    StepwiseRunRecordCopyWrite,
     StepwiseRunRecordWrite,
     SyncSnapshotWrite,
 )
@@ -143,7 +144,7 @@ async def create_nested_stepwise_run(
 
 @router.post("/flow-runs/{parent_run_id}/stepwise-runs/{run_id}/copy", status_code=201)
 async def copy_nested_stepwise_run(
-    parent_run_id: str, run_id: str, payload: StepwiseRunRecordWrite, db: Db
+    parent_run_id: str, run_id: str, payload: StepwiseRunRecordCopyWrite, db: Db
 ) -> dict[str, Any]:
     return await run_sync(
         db,

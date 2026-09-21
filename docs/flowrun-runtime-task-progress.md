@@ -6492,6 +6492,24 @@ typecheck、定向 ESLint、Alembic 唯一 head、`git diff --check` 与任务�
 共享节点配置或 Attempt 详情。逐步运行工具栏采用连续运行记录相同的拷贝、删除、新增顺序与样式；拷贝仅克隆首节点的
 提示词配置、人工输入、门禁、上下文和 Agent 预设，并保留显式启动确认，不带入会话、输出、执行结果或端口映射产物。
 
+### FR-494 逐步运行创建起始节点与 Runtime 所有权对齐 — DONE
+
+依赖：FR-490。
+
+目标：逐步记录创建必须与连续记录使用一致的记录操作栏、选中画布和右侧详情交互，并要求用户冻结一个有效的起始节点。
+创建不得因嵌套记录错误拥有父 FlowRun 的 Runtime allocation/session 而返回 `RUNTIME_SESSION_OWNER_INVALID`。复制必须只从
+源记录冻结的起始节点读取初始人工配置，不能因其他节点恰好先有配置而复制错误节点。
+
+范围：在逐步记录创建 API、运行时初始化、Web 创建弹窗、记录投影和定向服务／浏览器回归内收口。嵌套记录保留自身的
+快照、审计、节点图和逻辑工作目录，但物理 Runtime allocation 与 session 由父 FlowRun 复用；不得改变连续全图配置、
+逐步显式启动、数据库迁移、OpenHands、Runtime Provider、Docker 或远端 Compose。
+
+完成：创建请求现在必须传递经冻结快照校验的 `start_node_key`，并将其持久化到记录计划和详情投影。新增记录、重新选择
+记录及复制记录会优先聚焦该节点并展示共享侧栏；无节点时创建按钮不可用。逐步工具栏取消双列覆写，复用连续记录的同排
+拷贝、删除、新增布局。嵌套逐步记录创建改为解析父 FlowRun 的 Runtime owner，并只在顶层 owner 上配置 allocation、
+session 和 provision 任务，消除记录 id 与 allocation 所有者不一致。复制只接受名称，并精确查找源记录持久化起始节点
+的初始 Attempt；起始节点未配置时返回 `RUN_STATE_INVALID`。
+
 ### FR-492 工作区 Markdown Mermaid 预览 — DONE
 
 依赖：FR-406、FR-408、FR-409、FR-411、FR-478。
@@ -6566,6 +6584,7 @@ FlowWeave 本地累加后猜测压缩边界。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-21 | FR-494 | 受影响 Python `py_compile`、Ruff check；Web TypeScript typecheck、定向 ESLint；逐步创建、复制和记录选中定向 Playwright（3 passed）；Alembic head、`git diff --check` 与任务状态唯一性 | PASS（静态／浏览器）：起始节点选择会随创建请求持久化，创建／复制后选中对应画布节点并展开共享侧栏；逐步工具栏三枚操作按钮同排。服务回归覆盖父 Runtime owner、无效起始节点、起始节点配置复制和错误节点拒绝。完整后端 pytest 受本机 Docker socket 缺失的全局 Testcontainers fixture 阻断，未进入断言且未记为通过；全量工作台 E2E 的自动会话场景曾超时，逐步目标用例单独重跑通过。未修改数据库迁移、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-20 | FR-493 | 受影响 Python Ruff format/check 与 `py_compile`；OpenHands 当前 View Token、state batch、日志和 Runtime contract 定向 pytest（13 passed）；源码身份无容器直接检查（2 passed）；不可变归档 SHA-256、provenance 和四包版本核验；Alembic head、`git diff --check` 与任务状态唯一性 | PASS（静态／定向）：FlowWeave 使用 OpenHands fork commit `0eee8da762ce1319521b285102094b8b7b47c9de`，上游基线仍为 `30cf5832e42c71c24daa82a1a4fd5d25eb70d1b9`，四包版本保持 `1.47.0`，归档 SHA-256 为 `68a00aa2b9c259b85df424afc4466edc4f7c1a3d95eee0e5d235b2463dd3c511`。精确 `/context.total_tokens` 覆盖误导性 `per_turn_token`；历史端点缺失返回未知，非法协议值 fail closed。唯一 Alembic head 为 `0120_agent_credential_sync`。大范围 pytest 已有 190 项通过，随后因本机 Docker socket 缺失而被 Testcontainers PostgreSQL 阻断；另有一个与本切片无关的既有 fixture `secret_hint` 缺失失败。无迁移、无前端字段、无远端部署。 |
 | 2026-09-20 | FR-492 | Web TypeScript typecheck、定向 ESLint、工作区 Markdown 链接定向 Playwright（1 passed）、production build、`git diff --check` 与任务状态唯一性 | PASS：工作区 Mermaid fenced block 默认渲染为 SVG；浏览器回归覆盖图片／文本切换、全屏打开与 Esc 关闭，并继续验证同一预览中的本地 Markdown 链接与越界保护。production build 仅报告既有大 chunk 提示；未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-20 | FR-491 | Web TypeScript typecheck、定向 ESLint、顶层 Agent 与 FlowRun 节点会话定向 Playwright（2 passed）、`git diff --check` 与任务状态唯一性 | PASS：终态补读窗口到期后，发送入口恢复且未提交队列项继续显示“结果不确定”，但不会再出现把本地投影超时认定为“本轮未返回正式结果”的页面横幅。未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |

@@ -131,6 +131,7 @@ from flowweave.shared.schemas import (
     RuntimeCancelRecoveryWrite,
     RuntimeCompletionReconciliationWrite,
     RuntimeConfirmationDecisionWrite,
+    StepwiseRunRecordCopyWrite,
     StepwiseRunRecordWrite,
     SyncSnapshotWrite,
 )
@@ -3998,32 +3999,32 @@ def start_flow(
 def _create_stepwise_record_runtime(
     db: Session, run: FlowRun, environment: EnvironmentVersion, snapshot: RunSnapshot
 ) -> None:
-    """Allocate the record-owned Runtime before any node configuration.
+    """Ensure the physical Runtime owned by the parent FlowRun.
 
     A stepwise record is a complete execution record, not a NodeRun label.
-    Preallocating its managed Runtime is the same stable lifecycle contract as
-    a top-level FlowRun: later N1/N2 conversations share this record's
-    workspace, while separate records remain isolated.
+    Its logical project workspace remains record-specific, while a nested
+    record shares its parent's physical Runtime allocation and Session.
     """
 
-    sandboxes.allocate_flow_run_runtime(db, run.id)
+    runtime_owner_id = sandboxes.runtime_owner_flow_run_id(db, run.id)
+    sandboxes.allocate_flow_run_runtime(db, runtime_owner_id)
     allocation = sandboxes.runtime_allocation_for_flow_run(
-        db, run.id, manifest_digest=snapshot.runtime_manifest_hash
+        db, runtime_owner_id, manifest_digest=snapshot.runtime_manifest_hash
     )
     sandboxes.ensure_flow_run_runtime_session(
         db,
-        flow_run_id=run.id,
+        flow_run_id=runtime_owner_id,
         environment_version_id=environment.id,
         runtime_image_digest=environment.image_digest,
         workspace_allocation=allocation,
     )
-    if get_settings().runtime_adapter != "mock":
+    if get_settings().runtime_adapter != "mock" and runtime_owner_id == run.id:
         task = enqueue(
             db,
             task_type="PROVISION_FLOW_RUN_RUNTIME",
             aggregate_type="FLOW_RUN",
-            aggregate_id=run.id,
-            idempotency_key=f"provision-flow-run-runtime:{run.id}",
+            aggregate_id=runtime_owner_id,
+            idempotency_key=f"provision-flow-run-runtime:{runtime_owner_id}",
         )
         task.max_attempts = max(task.max_attempts, 20)
 
@@ -4089,7 +4090,9 @@ def _create_nested_stepwise_run_record(
     )
     db.add(snapshot)
     db.flush()
+    _node(snapshot, payload.start_node_key)
     record.active_snapshot_id = snapshot.id
+    record.automation_plan_json = {"start_node_key": payload.start_node_key}
     hold_snapshot_memory_references(
         db, snapshot_id=snapshot.id, runtime_manifest=snapshot.runtime_manifest_json
     )
@@ -4098,9 +4101,18 @@ def _create_nested_stepwise_run_record(
         db,
         record.id,
         "STEPWISE_RUN_RECORD_CREATED",
-        {"parent_flow_run_id": parent.id, "snapshot_version": snapshot.version},
+        {
+            "parent_flow_run_id": parent.id,
+            "snapshot_version": snapshot.version,
+            "start_node_key": payload.start_node_key,
+        },
     )
-    _event(db, parent.id, "STEPWISE_RUN_RECORD_CREATED", {"record_id": record.id})
+    _event(
+        db,
+        parent.id,
+        "STEPWISE_RUN_RECORD_CREATED",
+        {"record_id": record.id, "start_node_key": payload.start_node_key},
+    )
     return record
 
 
@@ -4127,7 +4139,7 @@ def copy_nested_stepwise_run_record(
     db: Session,
     parent_run_id: str,
     source_record_id: str,
-    payload: StepwiseRunRecordWrite,
+    payload: StepwiseRunRecordCopyWrite,
 ) -> dict[str, Any]:
     """Copy a stepwise record's first-node initial configuration into a new record."""
 
@@ -4143,9 +4155,20 @@ def copy_nested_stepwise_run_record(
         or source.parent_flow_run_id is None
     ):
         raise not_found("stepwise_run_record", source_record_id)
+    source_plan = dict(source.automation_plan_json or {})
+    source_start_node_key = source_plan.get("start_node_key")
+    if not isinstance(source_start_node_key, str):
+        raise DomainError(
+            "RUN_STATE_INVALID",
+            "stepwise record has no configured start node",
+            409,
+        )
     source_node = db.scalar(
         select(NodeRun)
-        .where(NodeRun.flow_run_id == source.id)
+        .where(
+            NodeRun.flow_run_id == source.id,
+            NodeRun.flow_node_snapshot_key == source_start_node_key,
+        )
         .order_by(NodeRun.sequence_no, NodeRun.id)
         .limit(1)
     )
@@ -4162,7 +4185,14 @@ def copy_nested_stepwise_run_record(
     if initial is None:
         raise DomainError("RUN_STATE_INVALID", "stepwise record has no initial node attempt", 409)
 
-    copied_record = _create_nested_stepwise_run_record(db, parent.id, payload)
+    copied_record = _create_nested_stepwise_run_record(
+        db,
+        parent.id,
+        StepwiseRunRecordWrite(
+            name=payload.name,
+            start_node_key=source_start_node_key,
+        ),
+    )
     copied_node, copied_attempt, copied_input_count = _copy_initial_node_configuration(
         db, source, copied_record, source_node, initial
     )
@@ -10019,6 +10049,8 @@ def node_run_detail(
 
 def run_detail(db: Session, run_id: str, *, include_artifacts: bool = True) -> dict[str, Any]:
     run = _run(db, run_id)
+    automation_plan = dict(run.automation_plan_json or {})
+    start_node_key = automation_plan.get("start_node_key")
     schedule = db.get(FlowRunSchedule, run.schedule_id) if run.schedule_id else None
     environment = (
         db.get(EnvironmentVersion, run.environment_version_id)
@@ -10099,6 +10131,7 @@ def run_detail(db: Session, run_id: str, *, include_artifacts: bool = True) -> d
         "name": run.name,
         "run_mode": run.run_mode,
         "automation_plan": run.automation_plan_json,
+        "start_node_key": start_node_key if isinstance(start_node_key, str) else None,
         "parent_flow_run_id": run.parent_flow_run_id,
         "schedule_id": run.schedule_id,
         "schedule_name": schedule.name if schedule else None,

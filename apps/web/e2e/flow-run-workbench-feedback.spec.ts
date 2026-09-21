@@ -147,8 +147,11 @@ test('step configuration is saved before start and direct launch has its own tab
   const noInputAsset = { ...asset, inputs: [] };
   const stepDefinition = {
     ...definition,
-    nodes: [{ ...definition.nodes[0], asset: noInputAsset }],
-    edges: [],
+    nodes: [
+      { ...definition.nodes[0], asset: noInputAsset },
+      { ...definition.nodes[1], asset: { ...noInputAsset, id: 'asset-2', name: '测试节点2' } },
+    ],
+    edges: [{ ...definition.edges[0] }],
     port_mappings: [],
   };
   const stepSnapshot = { ...snapshot, definition: stepDefinition };
@@ -160,6 +163,7 @@ test('step configuration is saved before start and direct launch has its own tab
     progress: { accepted: 0, terminal: 0, active: 0 },
   };
   let currentStepRecord: typeof currentRun | undefined;
+  let stepwiseCreateBody: Record<string, unknown> | undefined;
   let savedBody: Record<string, unknown> | undefined;
   let startBody: Record<string, unknown> | undefined;
   await page.route('**/api/v1/**', async route => {
@@ -179,15 +183,17 @@ test('step configuration is saved before start and direct launch has its own tab
     if (path === `/api/v1/flows/${definition.id}`) return respond(stepDefinition);
     if (path === `/api/v1/flow-runs/${run.id}/stepwise-runs` && request.method() === 'GET') return respond(currentStepRecord ? [currentStepRecord] : []);
     if (path === `/api/v1/flow-runs/${run.id}/stepwise-runs` && request.method() === 'POST') {
+      stepwiseCreateBody = request.postDataJSON() as Record<string, unknown>;
       currentStepRecord = {
         ...currentRun, id: 'stepwise-record-1', name: '测试逐步记录', parent_flow_run_id: run.id,
+        start_node_key: String(stepwiseCreateBody.start_node_key),
         node_runs: [], artifacts: [], progress: { accepted: 0, terminal: 0, active: 0 },
       };
       return respond(currentStepRecord, 201);
     }
     if (path === `/api/v1/flow-runs/${run.id}/stepwise-runs/stepwise-record-1` && request.method() === 'GET') return respond(currentStepRecord);
     if (path === `/api/v1/flow-runs/${run.id}/automatic-runs`) return respond([]);
-    if (path === '/api/v1/flow-runs/stepwise-record-1/nodes/first/runs' && request.method() === 'POST') {
+    if (path === '/api/v1/flow-runs/stepwise-record-1/nodes/second/runs' && request.method() === 'POST') {
       savedBody = request.postDataJSON() as Record<string, unknown>;
       const savedAttempt = {
         ...attempt,
@@ -200,6 +206,7 @@ test('step configuration is saved before start and direct launch has its own tab
       const savedRecord = {
         ...nodeRun,
         id: 'saved-node-run',
+        flow_node_snapshot_key: 'second',
         created_from: 'HUMAN_START',
         attempts: [savedAttempt],
       };
@@ -221,13 +228,25 @@ test('step configuration is saved before start and direct launch has its own tab
   await expect(page.getByRole('tab', { name: '逐步运行' })).toHaveAttribute('aria-selected', 'true');
   await expect(page.getByRole('tab', { name: '连续运行' })).toBeVisible();
   await expect(page.getByRole('tab', { name: '直接启动' })).toBeVisible();
+  const stepwiseToolbar = page.locator('.manual-record-toolbar');
+  await expect(stepwiseToolbar.locator(':scope > button')).toHaveCount(3);
+  expect(await stepwiseToolbar.locator(':scope > button').evaluateAll(buttons => {
+    const top = buttons[0]?.getBoundingClientRect().top;
+    return buttons.every(button => button.getBoundingClientRect().top === top);
+  })).toBe(true);
 
   await page.getByRole('button', { name: '新增' }).click();
   const stepwiseDialog = page.getByRole('dialog', { name: '新增逐步运行记录' });
   await stepwiseDialog.getByRole('textbox', { name: '逐步运行记录名称' }).fill('测试逐步记录');
+  await stepwiseDialog.getByRole('button', { name: '逐步运行起始节点' }).click();
+  await stepwiseDialog.getByRole('option', { name: '测试节点2', exact: true }).click();
   await stepwiseDialog.getByRole('button', { name: '创建记录' }).click();
+  await expect.poll(() => stepwiseCreateBody).toEqual({
+    name: '测试逐步记录',
+    start_node_key: 'second',
+  });
   await expect(page.locator('.node-record-list')).toContainText('测试逐步记录');
-  const entryGraphNode = page.locator('.run-graph-node').filter({ has: page.getByText('测试节点', { exact: true }) });
+  const entryGraphNode = page.locator('.run-graph-node').filter({ has: page.getByText('测试节点2', { exact: true }) });
   await expect(entryGraphNode).toHaveAttribute('data-selected', 'true');
   await expect(page.locator('.run-side-panel')).toBeVisible();
   const consolePanel = page.locator('.node-console');
@@ -242,7 +261,7 @@ test('step configuration is saved before start and direct launch has its own tab
   expect(startBody).toBeUndefined();
 
   await expect(page.locator('.node-record-list')).toContainText('测试逐步记录');
-  await page.locator('.run-graph-node').filter({ hasText: '测试节点' }).filter({ hasNotText: '测试节点2' }).click();
+  await page.locator('.run-graph-node').filter({ hasText: '测试节点2' }).click();
   await expect(page.getByTestId('attempt-state')).toHaveText('WAITING_START_CONFIRMATION');
   await page.getByRole('button', { name: '启动逐步运行 测试节点' }).click();
   await expect.poll(() => startBody).toEqual(expect.objectContaining({
@@ -278,6 +297,7 @@ test('stepwise record copy reuses the record selection and first-node configurat
     id: 'source-stepwise-record',
     name: '待拷贝逐步记录',
     parent_flow_run_id: run.id,
+    start_node_key: 'first',
     node_runs: [sourceNode],
   };
   let records = [sourceRecord];

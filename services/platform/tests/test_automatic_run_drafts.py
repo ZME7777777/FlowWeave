@@ -674,7 +674,7 @@ def test_nested_automatic_records_are_scoped_and_share_parent_runtime(
         )
 
 
-def test_nested_stepwise_record_is_empty_and_scoped_to_its_parent(client):
+def test_nested_stepwise_record_is_empty_and_scoped_to_its_parent(client, db_session_factory):
     flow = _create_flow(client)
     parent_response = client.post(
         f"/api/v1/flows/{flow['id']}/runs",
@@ -688,21 +688,54 @@ def test_nested_stepwise_record_is_empty_and_scoped_to_its_parent(client):
 
     created_response = client.post(
         f"/api/v1/flow-runs/{parent['id']}/stepwise-runs",
-        json={"name": "批次异常收集"},
+        json={"name": "批次异常收集", "start_node_key": "second"},
     )
     assert created_response.status_code == 201, created_response.text
     record = created_response.json()
     assert record["parent_flow_run_id"] == parent["id"]
     assert record["run_mode"] == "MANUAL"
     assert record["environment_version_id"] == parent["environment_version_id"]
+    assert record["start_node_key"] == "second"
+    assert record["automation_plan"] == {"start_node_key": "second"}
     assert record["node_runs"] == []
     assert record["snapshots"][0]["definition"] == parent["snapshots"][0]["definition"]
+    with db_session_factory() as db:
+        assert (
+            db.scalar(
+                select(FlowRunRuntimeAllocation).where(
+                    FlowRunRuntimeAllocation.flow_run_id == parent["id"]
+                )
+            )
+            is not None
+        )
+        assert (
+            db.scalar(select(FlowRunRuntime).where(FlowRunRuntime.flow_run_id == parent["id"]))
+            is not None
+        )
+        assert (
+            db.scalar(
+                select(FlowRunRuntimeAllocation).where(
+                    FlowRunRuntimeAllocation.flow_run_id == record["id"]
+                )
+            )
+            is None
+        )
+        assert (
+            db.scalar(select(FlowRunRuntime).where(FlowRunRuntime.flow_run_id == record["id"]))
+            is None
+        )
 
     listed = client.get(f"/api/v1/flow-runs/{parent['id']}/stepwise-runs")
     assert listed.status_code == 200, listed.text
     assert [item["id"] for item in listed.json()] == [record["id"]]
     assert client.get(f"/api/v1/flow-runs/{record['id']}").json()["node_runs"] == []
     assert client.get(f"/api/v1/flow-runs/{record['id']}/stepwise-runs").json() == []
+    invalid = client.post(
+        f"/api/v1/flow-runs/{parent['id']}/stepwise-runs",
+        json={"name": "无效起点", "start_node_key": "missing"},
+    )
+    assert invalid.status_code == 404, invalid.text
+    assert client.get(f"/api/v1/flow-runs/{parent['id']}/stepwise-runs").json() == [record]
 
 
 def test_copy_nested_stepwise_record_preserves_first_configuration_and_human_inputs(client):
@@ -718,7 +751,7 @@ def test_copy_nested_stepwise_record_preserves_first_configuration_and_human_inp
     parent = parent_response.json()
     source_response = client.post(
         f"/api/v1/flow-runs/{parent['id']}/stepwise-runs",
-        json={"name": "待拷贝逐步记录"},
+        json={"name": "待拷贝逐步记录", "start_node_key": "first"},
     )
     assert source_response.status_code == 201, source_response.text
     source = source_response.json()
@@ -753,6 +786,8 @@ def test_copy_nested_stepwise_record_preserves_first_configuration_and_human_inp
     assert copied["id"] != source["id"]
     assert copied["parent_flow_run_id"] == parent["id"]
     assert copied["name"] == "已拷贝逐步记录"
+    assert copied["start_node_key"] == "first"
+    assert copied["automation_plan"] == {"start_node_key": "first"}
     assert len(copied["node_runs"]) == 1
     copied_node = copied["node_runs"][0]
     copied_attempt = copied_node["attempts"][-1]
@@ -781,12 +816,37 @@ def test_copy_nested_stepwise_record_rejects_empty_source(client):
     ).json()
     source = client.post(
         f"/api/v1/flow-runs/{parent['id']}/stepwise-runs",
-        json={"name": "空逐步记录"},
+        json={"name": "空逐步记录", "start_node_key": "first"},
     ).json()
 
     copied = client.post(
         f"/api/v1/flow-runs/{parent['id']}/stepwise-runs/{source['id']}/copy",
         json={"name": "不应创建"},
+    )
+    assert copied.status_code == 409, copied.text
+    assert copied.json()["error"]["code"] == "RUN_STATE_INVALID"
+    assert client.get(f"/api/v1/flow-runs/{parent['id']}/stepwise-runs").json() == [source]
+
+
+def test_copy_nested_stepwise_record_requires_its_persisted_start_node_configuration(client):
+    flow = _create_flow(client)
+    parent = client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={"environment_version_id": client.environment_version_id},
+    ).json()
+    source = client.post(
+        f"/api/v1/flow-runs/{parent['id']}/stepwise-runs",
+        json={"name": "起始节点为 second", "start_node_key": "second"},
+    ).json()
+    configured_other_node = client.post(
+        f"/api/v1/flow-runs/{source['id']}/nodes/first/runs",
+        json=_node_plan(client, "不应被当作起始节点配置"),
+    )
+    assert configured_other_node.status_code == 201, configured_other_node.text
+
+    copied = client.post(
+        f"/api/v1/flow-runs/{parent['id']}/stepwise-runs/{source['id']}/copy",
+        json={"name": "不应复制"},
     )
     assert copied.status_code == 409, copied.text
     assert copied.json()["error"]["code"] == "RUN_STATE_INVALID"

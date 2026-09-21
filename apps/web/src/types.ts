@@ -387,6 +387,12 @@ export interface FlowRunAutomaticRecord extends FlowRun {
 export interface FlowRunStepwiseRecord extends FlowRun {
   /** The top-level FlowRun whose workbench owns this stepwise execution. */
   parent_flow_run_id: string;
+  /** Persisted initial canvas selection for records that have no NodeRun yet. */
+  start_node_key?: string | null;
+}
+export interface FlowRunStepwiseRecordWrite {
+  name?: string;
+  start_node_key: string;
 }
 export interface FlowRunAutomaticRecordSummary {
   id: string; flow_run_id?: string | null; run_no: number; name: string; state: FlowRun['state'];
