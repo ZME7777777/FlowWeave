@@ -1033,6 +1033,7 @@ def _create_native_conversation(
     session_binding_id: str | None = None,
     detached_from_attempt: bool = False,
 ) -> dict[str, Any]:
+    ensure_credential_sync_schema(db)
     if run.state == "CANCELLED" or (run.state == "COMPLETED" and not detached_from_attempt):
         raise DomainError(
             "FLOW_RUN_TERMINAL",
@@ -1440,6 +1441,7 @@ def _create_or_reload_node_bootstrap(
 ) -> tuple[RuntimeHandle, str | None]:
     """Create one reserved native Conversation, or recover its fixed UUID."""
 
+    ensure_credential_sync_schema(db)
     if (
         not run.environment_version_id
         or not snapshot.environment_version_id

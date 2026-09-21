@@ -55,6 +55,7 @@ def ensure_credential_sync_schema(db: Session) -> None:
             text("SELECT credential_sync_initialized_at FROM agent_conversation_bindings LIMIT 1")
         )
         db.execute(text("SELECT binding_id FROM agent_conversation_credential_syncs LIMIT 1"))
+        db.execute(text("SELECT owner_user_id FROM agent_conversation_credential_syncs LIMIT 1"))
     except DBAPIError as error:
         if not _is_missing_credential_sync_schema(error):
             raise

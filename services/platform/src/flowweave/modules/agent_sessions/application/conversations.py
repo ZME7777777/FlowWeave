@@ -1028,6 +1028,7 @@ def _create_native_conversation(
     *,
     allow_existing: bool = False,
 ) -> RuntimeHandle:
+    ensure_credential_sync_schema(db)
     runtime = db.scalar(
         select(AgentWorkspaceRuntime).where(AgentWorkspaceRuntime.workspace_id == workspace.id)
     )

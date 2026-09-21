@@ -143,6 +143,37 @@ def test_credential_sync_schema_guard_maps_wrapped_postgres_missing_schema() -> 
     assert db.rollback_calls == 1
 
 
+def test_credential_sync_schema_guard_requires_credential_sync_owner() -> None:
+    class MissingCredentialSyncOwner(Exception):
+        sqlstate = "42703"
+
+    class SessionWithMissingCredentialSyncOwner:
+        rollback_calls = 0
+        statements: list[str] = []
+
+        def execute(self, statement: object) -> None:
+            self.statements.append(str(statement))
+            if "owner_user_id" in str(statement):
+                raise ProgrammingError("SELECT", {}, MissingCredentialSyncOwner())
+
+        def rollback(self) -> None:
+            self.rollback_calls += 1
+
+    db = SessionWithMissingCredentialSyncOwner()
+
+    with pytest.raises(DomainError) as caught:
+        credential_sync.ensure_credential_sync_schema(db)  # type: ignore[arg-type]
+
+    assert caught.value.code == "AGENT_CREDENTIAL_SYNC_SCHEMA_OUTDATED"
+    assert caught.value.status == 503
+    assert db.rollback_calls == 1
+    assert db.statements == [
+        "SELECT credential_sync_initialized_at FROM agent_conversation_bindings LIMIT 1",
+        "SELECT binding_id FROM agent_conversation_credential_syncs LIMIT 1",
+        "SELECT owner_user_id FROM agent_conversation_credential_syncs LIMIT 1",
+    ]
+
+
 def test_conversation_reference_projection_hides_selected_text_from_message_body() -> None:
     selected_text = "这段引用只能以附件卡片显示"
     prompt, image_urls = session_conversations.message_payload(

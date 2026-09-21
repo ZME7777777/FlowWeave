@@ -6606,6 +6606,26 @@ Workspace 为边界保存在 `localStorage`，不写入 API、数据库或 OpenH
 
 完成：Runtime 合同将 `/context` 明确为可选观测端点；新冻结合同不再要求它，历史合同即使仍列出该路径也会在缺失时继续允许会话启动和消息投递。Skill 组合菜单通过捕获阶段的外部 pointerdown 关闭。消息定位条改为由导航容器统一接收指针位置、按动画帧合并处理，以连续小数刻度计算附近波纹；每帧只测量首两个刻度并更新至多四个相邻刻度，避免长会话按全部消息数执行布局读写。键盘聚焦与点击定位保持原行为。
 
+### FR-501 首次会话认证同步迁移恢复 — DONE
+
+依赖：FR-497。
+
+目标：新 Agent Workspace 或 FlowRun 节点会话首次创建时，认证同步记录必须具有 ORM 与租户隔离要求的
+`owner_user_id`。已执行错误 `0120` 迁移的数据库必须以追加迁移修复，且在修复部署前，所有会创建原生
+Conversation 的入口都应在创建 Runtime 状态之前返回稳定、可行动的 schema 503，而不能先创建会话后因
+缺列返回原始 SQL 500。
+
+范围：新增一条仅修复 `agent_conversation_credential_syncs.owner_user_id` 的 Alembic 迁移，从关联的
+Conversation binding 回填现有记录并建立索引；扩展认证同步 schema guard，并在 Agent Workspace 与
+FlowRun 两个原生会话创建路径前置调用。补充纯逻辑回归。不得修改 OpenHands、Runtime Provider、
+Docker 或远端环境。
+
+完成：`0121_credential_sync_owner` 以追加方式补齐 `owner_user_id`，按 `binding_id` 回填绑定的
+所有者后收紧为非空并建立索引。schema guard 同时确认 credential sync 表的 binding 和 owner 列；缺失时
+回滚当前事务并返回 `AGENT_CREDENTIAL_SYNC_SCHEMA_OUTDATED`（503）。Agent Workspace、直接 FlowRun
+创建与节点 bootstrap 创建均在任何原生 Runtime 创建前执行该检查，因此旧库不会留下已创建但未完成认证同步
+的会话。
+
 ### FR-497 会话配置组合收拢与认证同步异常兼容 — DONE
 
 依赖：FR-489。
@@ -6683,6 +6703,7 @@ FlowWeave 本地累加后猜测压缩边界。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-21 | FR-501 | 受影响 Python Ruff format/check、`py_compile`；认证同步 schema guard 纯逻辑回归（4 passed）；Alembic head、`git diff --check` 与任务状态唯一性 | PASS（静态／纯逻辑）：追加迁移从 Conversation binding 回填 credential sync 的 owner，随后收紧为非空并建立索引；三条原生会话创建路径均在 Runtime 创建前检查完整 schema。纯逻辑断言覆盖 PostgreSQL 缺列／缺表、非 schema 数据库异常及本次仅缺 credential sync `owner_user_id` 的情形。定向 pytest 在全局 Testcontainers fixture 初始化时因本机 Docker socket 缺失受阻，未进入断言且未记为通过。唯一 Alembic head 为 `0121_credential_sync_owner`；未修改 OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-21 | FR-500 | Runtime 合同 Ruff format/check、`py_compile`、定向 pytest（9 passed）；Web TypeScript typecheck、受影响文件定向 ESLint；产品流会话工作台定向 Playwright 尝试；Alembic head、`git diff --check` 与任务状态唯一性 | PASS（静态／纯逻辑）：缺少可选 `/context` 不再使历史冻结 Runtime 在消息投递前判为不兼容，历史合同仍列出该路由时同样兼容；Skill 组合在菜单外 pointerdown 时关闭；定位条由每个 tick 的离散 hover 改为容器级 requestAnimationFrame 连续波纹，并把每帧布局与样式更新限制在相邻刻度。定向 Playwright 在本切片断言前，于既有“暂停当前 Agent”断言（`product-flow.spec.ts:957`）超时，未记为浏览器回归通过。唯一 Alembic head 为 `0120_agent_credential_sync`；未修改消息请求、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-21 | FR-499 | Web TypeScript typecheck、受影响文件定向 ESLint、Agent composer 草稿恢复定向 Playwright（1 passed）、Alembic head、`git diff --check` 与任务状态唯一性 | PASS：Composer 的按字符输入不再更新工作台根组件状态；会话切换与卸载按旧 scope flush，400ms 防抖持久化仍保留。`ConversationSurface` 通过 memo 与稳定的空任务控制引用隔离不相关的 Composer 更新。唯一 Alembic head 为 `0120_agent_credential_sync`；未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-21 | FR-498 | Web TypeScript typecheck、受影响文件定向 ESLint、顶层 Agent 工作区产品流定向 Playwright 尝试、Alembic head、`git diff --check` 与任务状态唯一性 | PASS（静态）：直接发送立即投影用户消息并异步提交，运行中仅在正式 HTTP cursor 返回前显示追加状态；暂停输入走同一直接投递路径；未提交队列项可原地编辑而不重建其投递记录。定向 Playwright 已启动本地 Vite 服务，但在本切片新增断言前的既有空响应恢复“暂停当前 Agent”断言（第 953 行）超时，未记为浏览器回归通过。唯一 Alembic head 为 `0120_agent_credential_sync`；未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
