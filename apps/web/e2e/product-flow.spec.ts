@@ -558,8 +558,13 @@ test('top-level Agent workspace creates a direct conversation and restores its U
           { path: '/runtime/workspace/project/期权异动接口批量查询代码审查报告.md', kind: 'file', size: 256 },
         ]
         : parentPath === '/runtime/workspace/project/src'
-          ? [{ path: '/runtime/workspace/project/src/config.ts', kind: 'file', size: 42 }]
-          : [];
+          ? [
+            { path: '/runtime/workspace/project/src/components', kind: 'directory', size: 0 },
+            { path: '/runtime/workspace/project/src/config.ts', kind: 'file', size: 42 },
+          ]
+          : parentPath === '/runtime/workspace/project/src/components'
+            ? [{ path: '/runtime/workspace/project/src/components/App.tsx', kind: 'file', size: 64 }]
+            : [];
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ parent_path: parentPath, entries, next_cursor: null }) });
       return;
     }
@@ -1023,6 +1028,8 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await page.getByLabel('全屏查看工作区工具').click();
   await page.getByLabel('全部展开目录').click();
   await expect(page.getByText('config.ts', { exact: true })).toBeVisible();
+  await expect(page.getByText('App.tsx', { exact: true })).toBeVisible();
+  await expect.poll(() => workspaceDirectoryRequests).toContain('/runtime/workspace/project/src/components');
   const collapseDirectories = page.getByLabel('全部收起目录');
   await expect.poll(() => collapseDirectories.evaluate(button => {
     const bounds = button.getBoundingClientRect();
@@ -1032,6 +1039,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await collapseDirectories.click();
   await expect(page.getByLabel('全部展开目录')).toBeVisible();
   await expect(page.getByText('config.ts', { exact: true })).toBeHidden();
+  await expect(page.getByText('App.tsx', { exact: true })).toBeHidden();
   const readmeRow = page.locator('.agent-file-tree-row').filter({ hasText: 'README.md' });
   await readmeRow.getByRole('button').hover();
   await expect(readmeRow.getByRole('link', { name: '下载 README.md' })).toBeVisible();
