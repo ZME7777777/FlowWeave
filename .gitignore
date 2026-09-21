@@ -31,6 +31,7 @@ var/workspaces/*
 var/tool-state/lark-cli/*
 !var/tool-state/lark-cli/.gitkeep
 apps/web/test-results/
+test-results/
 
 # Generated local artifacts
 services/platform/e2e-artifacts/

@@ -1,4 +1,4 @@
-import { BookOpen, Check, ChevronDown, ChevronRight, CircleAlert, ClipboardList, Copy, ExternalLink, FileText, GitFork, Link, LoaderCircle, PanelRightOpen, Pencil, Quote, Sparkles, SquareTerminal, Wrench } from 'lucide-react';
+import { BookOpen, Check, ChevronDown, ChevronRight, CircleAlert, ClipboardList, Copy, ExternalLink, FileText, GitFork, Link, LoaderCircle, PanelRightOpen, Pencil, PlugZap, Quote, Sparkles, SquareTerminal, Wrench } from 'lucide-react';
 import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type RefObject } from 'react';
 import type { AgentActivitySummary, AgentAttachment, AgentConversationAnnotation, AgentConversationReference, AgentWorkspaceReference, OpenHandsConversationEvent, RuntimeTaskControlSnapshot } from '../types';
 import { SubagentAvatar } from './SubagentAvatar';
@@ -593,6 +593,26 @@ interface ActivityPresentation {
   resultTimestamp?: string;
 }
 
+type ToolVisualKind = 'terminal' | 'file' | 'task-tracker' | 'skill' | 'browser' | 'mcp' | 'subagent' | 'generic';
+
+interface ToolVisualPresentation {
+  kind: ToolVisualKind;
+  label: string;
+}
+
+function toolVisualPresentation(eventName: string, toolName?: string): ToolVisualPresentation {
+  const normalizedEventName = eventName.toLowerCase();
+  const normalizedToolName = toolName?.toLowerCase() ?? '';
+  if (normalizedEventName.includes('terminal')) return { kind: 'terminal', label: '终端' };
+  if (normalizedEventName.includes('fileeditor')) return { kind: 'file', label: '文件' };
+  if (normalizedEventName.includes('tasktracker')) return { kind: 'task-tracker', label: '任务' };
+  if (normalizedEventName.includes('invokeskill')) return { kind: 'skill', label: 'Skill' };
+  if (normalizedEventName.includes('browser')) return { kind: 'browser', label: '浏览器' };
+  if (normalizedEventName.includes('mcp') || normalizedToolName.startsWith('mcp_')) return { kind: 'mcp', label: 'MCP' };
+  if (normalizedEventName === 'taskaction' || normalizedEventName === 'taskobservation') return { kind: 'subagent', label: '子任务' };
+  return { kind: 'generic', label: '通用工具' };
+}
+
 function activityPresentation(entry: ActivityEntry, active: boolean, workspaceRoot?: string | null, paused = false, parentFailed = false, recoveredErrorEventIds: ReadonlySet<string> = new Set()): ActivityPresentation {
   const item = entry.action ?? entry.item;
   if (item.kind === 'condensation') return { title: item.title, status: item.event.event_type === 'CONDENSATION_COMPLETED' ? '已完成' : '处理中' };
@@ -698,12 +718,19 @@ function displayDetails(details: Record<string, unknown>, workspaceRoot?: string
   return Object.keys(visible).length ? workspaceRelativeText(JSON.stringify(visible, null, 2), workspaceRoot).slice(0, 12_000) : '';
 }
 
-function ToolDetailPanel({ presentation, eventName, results, workspaceRoot }: { presentation: ActivityPresentation; eventName: string; results: Item[]; workspaceRoot?: string | null }) {
+function ToolDetailPanel({ presentation, eventName, toolName, toolVisual, results, workspaceRoot }: {
+  presentation: ActivityPresentation;
+  eventName: string;
+  toolName?: string;
+  toolVisual: ToolVisualPresentation;
+  results: Item[];
+  workspaceRoot?: string | null;
+}) {
   const details = presentation.actionDetails ?? {};
   const resultDetails = presentation.resultDetails ?? {};
-  const isTerminal = eventName.includes('Terminal');
-  const isFile = eventName.includes('FileEditor');
-  const isTaskTracker = eventName === 'TaskTrackerAction' || eventName === 'TaskTrackerObservation';
+  const isTerminal = toolVisual.kind === 'terminal';
+  const isFile = toolVisual.kind === 'file';
+  const isTaskTracker = toolVisual.kind === 'task-tracker';
   const hasResultOutput = results.some(result => typeof result.content === 'string' && result.content.trim().length > 0);
   const hasDetail = Boolean(
     isTaskTracker || presentation.command || hasResultOutput || presentation.exitCode
@@ -718,11 +745,13 @@ function ToolDetailPanel({ presentation, eventName, results, workspaceRoot }: { 
     isTerminal={isTerminal}
     isFile={isFile}
     isTaskTracker={isTaskTracker}
+    eventName={eventName}
+    toolName={toolName}
     workspaceRoot={workspaceRoot}
   /></div>;
 }
 
-function ToolDetailContent({ details, resultDetails, results, presentation, isTerminal, isFile, isTaskTracker, workspaceRoot }: {
+function ToolDetailContent({ details, resultDetails, results, presentation, isTerminal, isFile, isTaskTracker, eventName, toolName, workspaceRoot }: {
   details: Record<string, unknown>;
   resultDetails: Record<string, unknown>;
   results: Item[];
@@ -730,6 +759,8 @@ function ToolDetailContent({ details, resultDetails, results, presentation, isTe
   isTerminal: boolean;
   isFile: boolean;
   isTaskTracker: boolean;
+  eventName: string;
+  toolName?: string;
   workspaceRoot?: string | null;
 }) {
   const taskSnapshot = isTaskTracker ? taskListSnapshot(details, resultDetails, presentation.resultTimestamp) : undefined;
@@ -741,6 +772,10 @@ function ToolDetailContent({ details, resultDetails, results, presentation, isTe
   const output = workspaceRelativeText(results.map(result => detailContent(result.content)).filter(Boolean).join('\n\n').slice(0, 12_000), workspaceRoot);
   return <>
       <b>{isTaskTracker ? '任务列表' : isTerminal ? 'Shell' : isFile ? '文件操作' : '工具调用'}</b>
+      <dl className="conversation-tool-provenance">
+        <dt>事件类型</dt><dd>{eventName || '未知事件'}</dd>
+        {toolName && <><dt>工具名</dt><dd>{toolName}</dd></>}
+      </dl>
       {taskSnapshot && <>
         <div className="conversation-task-list-summary">
           <span>{taskSnapshot.command === 'plan' ? '已更新的计划' : '当前计划快照'}</span>
@@ -1062,33 +1097,37 @@ function ActivityEntryRow({ entry, active, paused = false, parentFailed = false,
   const item = entry.action ?? entry.item;
   const Icon = item.kind === 'error' || item.kind === 'agent-error' ? CircleAlert : item.kind === 'thought' || item.kind === 'condensation' ? Sparkles : Wrench;
   const eventName = String(item.event.payload.event_name ?? '');
+  const toolName = detailText(item.event.payload.tool_name);
+  const toolVisual = toolVisualPresentation(eventName, toolName);
   const avatarSlot = eventName === 'TaskAction' || eventName === 'TaskObservation'
     ? subagentAvatarSlotForEvent(item.event, avatarSlots)
     : undefined;
-  const ToolIcon = eventName.includes('Terminal') ? SquareTerminal : eventName.includes('FileEditor') ? FileText : Icon;
+  const ToolIcon = toolVisual.kind === 'terminal' ? SquareTerminal : toolVisual.kind === 'file' ? FileText : toolVisual.kind === 'mcp' ? PlugZap : Icon;
   const taskAvatar = avatarSlot && <SubagentAvatar slot={avatarSlot} status={taskAvatarStatus(entry, item, paused, parentFailed)} size={14}/>;
   const presentation = activityPresentation(entry, active, workspaceRoot, paused, parentFailed, recoveredErrorEventIds);
-  const toolDetail = item.kind === 'tool' ? <ToolDetailPanel presentation={presentation} eventName={eventName} results={entry.results} workspaceRoot={workspaceRoot}/> : null;
+  const toolDetail = item.kind === 'tool'
+    ? <ToolDetailPanel presentation={presentation} eventName={eventName} toolName={toolName || undefined} toolVisual={toolVisual} results={entry.results} workspaceRoot={workspaceRoot}/>
+    : null;
   const isNativeThink = item.event.event_type === 'THOUGHT';
   const referenceableThought = item.kind === 'thought' || (item.kind === 'tool' && Boolean(presentation.thought));
   const thoughtAttributes = referenceableThought ? { 'data-conversation-event-id': item.event.id } : {};
   if (item.kind === 'thought') return <article {...thoughtAttributes} className={`conversation-activity-row thought${isNativeThink ? ' native-think' : ''}`}>
     <MessageMarkdown>{presentation.thought ?? item.content}</MessageMarkdown>
   </article>;
-  if (eventName === 'TaskTrackerAction' || eventName === 'TaskTrackerObservation') return <div className="conversation-tool-entry semantic">
-    {presentation.thought && <article {...thoughtAttributes} className="conversation-activity-row thought tool-thought"><MessageMarkdown>{presentation.thought}</MessageMarkdown></article>}
+  if (eventName === 'TaskTrackerAction' || eventName === 'TaskTrackerObservation') return <div className={`conversation-tool-entry semantic tool-${toolVisual.kind}`}>
+    {presentation.thought && <article {...thoughtAttributes} className={`conversation-activity-row thought tool-thought tool-${toolVisual.kind}`}><MessageMarkdown>{presentation.thought}</MessageMarkdown></article>}
     <TaskTrackerCard entry={entry} presentation={presentation}/>
   </div>;
-  if (eventName === 'InvokeSkillAction' || eventName === 'InvokeSkillObservation') return <div className="conversation-tool-entry semantic">
-    {presentation.thought && <article {...thoughtAttributes} className="conversation-activity-row thought tool-thought"><MessageMarkdown>{presentation.thought}</MessageMarkdown></article>}
+  if (eventName === 'InvokeSkillAction' || eventName === 'InvokeSkillObservation') return <div className={`conversation-tool-entry semantic tool-${toolVisual.kind}`}>
+    {presentation.thought && <article {...thoughtAttributes} className={`conversation-activity-row thought tool-thought tool-${toolVisual.kind}`}><MessageMarkdown>{presentation.thought}</MessageMarkdown></article>}
     <SkillLoadCard entry={entry}/>
   </div>;
-  if (item.kind === 'tool' && toolDetail) return <div className="conversation-tool-entry">
-    {presentation.thought && <article {...thoughtAttributes} className="conversation-activity-row thought tool-thought">
+  if (item.kind === 'tool' && toolDetail) return <div className={`conversation-tool-entry tool-${toolVisual.kind}`}>
+    {presentation.thought && <article {...thoughtAttributes} className={`conversation-activity-row thought tool-thought tool-${toolVisual.kind}`}>
       <MessageMarkdown>{presentation.thought}</MessageMarkdown>
     </article>}
-    <details className="conversation-activity-row tool conversation-tool-detail">
-      <summary aria-label={`查看执行详情：${presentation.title}`}>{taskAvatar ?? <ToolIcon size={14}/>}<div><b title={presentation.title}>{presentation.title}</b></div></summary>
+    <details className={`conversation-activity-row tool conversation-tool-detail tool-${toolVisual.kind}`} data-tool-kind={toolVisual.kind}>
+      <summary aria-label={`查看执行详情：${presentation.title}`}>{taskAvatar ?? <ToolIcon size={14}/>}<div><b title={presentation.title}>{presentation.title}</b></div><span className="conversation-tool-kind" aria-hidden="true">{toolVisual.label}</span></summary>
       {toolDetail}
     </details>
   </div>;

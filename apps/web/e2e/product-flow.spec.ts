@@ -796,6 +796,10 @@ test('top-level Agent workspace creates a direct conversation and restores its U
           { id: 'subagent-action', event_type: 'TOOL_CALL', payload: { parent_id: 'failed-command-result', action_id: 'subagent-action', tool_call_id: 'subagent-call', tool_name: 'task', event_name: 'TaskAction', runtime_task: { phase: 'REQUESTED', action_event_id: 'subagent-action', tool_call_id: 'subagent-call', subagent_type: 'reviewer', description: '检查子任务边界' }, timestamp: '2026-08-26T10:00:03.900Z' } },
           { id: 'subagent-command-action', event_type: 'TOOL_CALL', payload: { parent_id: 'subagent-action', action_id: 'subagent-command-action', tool_call_id: 'subagent-command-call', tool_name: 'terminal', event_name: 'TerminalAction', llm_response_id: 'response-1', details: { command: 'git status --short' }, timestamp: '2026-08-26T10:00:03.950Z' } },
           { id: 'subagent-command-result', event_type: 'TOOL_RESULT', payload: { parent_id: 'subagent-command-action', action_id: 'subagent-command-action', tool_call_id: 'subagent-command-call', tool_name: 'terminal', event_name: 'TerminalObservation', content: 'clean', details: { command: 'git status --short', exit_code: 0, is_error: false }, timestamp: '2026-08-26T10:00:03.975Z' } },
+          { id: 'mcp-action', event_type: 'TOOL_CALL', payload: { parent_id: 'subagent-command-result', action_id: 'mcp-action', tool_call_id: 'mcp-call', tool_name: 'market-data.get-kline', event_name: 'MCPToolAction', content: '查询指定标的的日线数据。', thought: '我先通过行情 MCP 获取日线数据。', summary: '查询沪深 300 日线', details: { symbol: '000300.SH', interval: '1d' }, timestamp: '2026-08-26T10:00:03.980Z' } },
+          { id: 'mcp-result', event_type: 'TOOL_RESULT', payload: { parent_id: 'mcp-action', action_id: 'mcp-action', tool_call_id: 'mcp-call', tool_name: 'market-data.get-kline', event_name: 'MCPToolObservation', content: '已返回 30 条日线数据。', details: { is_error: false, rows: 30 }, timestamp: '2026-08-26T10:00:03.985Z' } },
+          { id: 'generic-tool-action', event_type: 'TOOL_CALL', payload: { parent_id: 'mcp-result', action_id: 'generic-tool-action', tool_call_id: 'generic-tool-call', tool_name: 'code_search', event_name: 'CodeSearchAction', summary: '定位扩展服务 K 线查询入口', details: { query: 'get_kline' }, timestamp: '2026-08-26T10:00:03.990Z' } },
+          { id: 'generic-tool-result', event_type: 'TOOL_RESULT', payload: { parent_id: 'generic-tool-action', action_id: 'generic-tool-action', tool_call_id: 'generic-tool-call', tool_name: 'code_search', event_name: 'CodeSearchObservation', content: '已定位到扩展服务入口。', details: { is_error: false, matches: 2 }, timestamp: '2026-08-26T10:00:03.995Z' } },
           { id: 'state-empty', event_type: 'STATE', payload: { parent_id: 'subagent-command-result', timestamp: '2026-08-26T10:00:04Z' } },
           { id: 'agent-reply', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'state-empty', content: '工作区已就绪。', timestamp: '2026-08-26T10:02:19Z' } },
           { id: 'direct-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'agent-reply', content: '直接回答 https://input.example.test/brief', attachments: [{ filename: '需求截图.png', mime_type: 'image/png', byte_size: 128, path: '/runtime/workspace/project/uploads/source-image.png', image_data_url: 'data:image/png;base64,iVBORw==' }], timestamp: '2026-08-26T10:03:00Z' } },
@@ -1258,7 +1262,22 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     '/runtime/workspace/project/src',
   ]);
   expect(workspaceFilePreviewRequests.at(-1)).toBe('/runtime/workspace/project/src/config.ts');
-  await expect(completedProcess.locator('.conversation-activity-row.tool')).toHaveCount(5);
+  await expect(completedProcess.locator('.conversation-activity-row.tool')).toHaveCount(7);
+  const mcpDetail = completedProcess.locator('.conversation-tool-detail[data-tool-kind="mcp"]');
+  await expect(mcpDetail).toHaveCount(1);
+  await expect(mcpDetail.locator(':scope > summary .conversation-tool-kind')).toHaveText('MCP');
+  await expect(completedProcess.locator('.conversation-activity-row.thought.tool-thought.tool-mcp')).toContainText('我先通过行情 MCP 获取日线数据。');
+  await mcpDetail.locator(':scope > summary').click();
+  await expect(mcpDetail.getByText('事件类型', { exact: true })).toBeVisible();
+  await expect(mcpDetail.getByText('MCPToolAction', { exact: true })).toBeVisible();
+  await expect(mcpDetail.getByText('工具名', { exact: true })).toBeVisible();
+  await expect(mcpDetail.getByText('market-data.get-kline', { exact: true })).toBeVisible();
+  const genericToolDetail = completedProcess.locator('.conversation-tool-detail[data-tool-kind="generic"]');
+  await expect(genericToolDetail).toHaveCount(1);
+  await expect(genericToolDetail.locator(':scope > summary .conversation-tool-kind')).toHaveText('通用工具');
+  await genericToolDetail.locator(':scope > summary').click();
+  await expect(genericToolDetail.getByText('CodeSearchAction', { exact: true })).toBeVisible();
+  await expect(genericToolDetail.getByText('code_search', { exact: true })).toBeVisible();
   const skillLoad = completedProcess.getByLabel('加载 Skill：collect-app-exception-logs');
   await expect(skillLoad).toContainText('加载 Skill');
   await expect(skillLoad).toContainText('已加载');
