@@ -15,8 +15,8 @@
 此前的重构决策不能作为本任务已经完成、可以跳过验证或必须保留现有实现的依据。现有源码只作为
 “当前行为”的审计对象；是否保留必须重新按照本设计、固定 OpenHands 源码和真实运行证据判断。
 
-除 FR-493 经用户单独授权并已在隔离工作树完成的最小 OpenHands fork 外，本任务只修改 FlowWeave。
-当前目标事实基线为 fork commit `0eee8da762ce1319521b285102094b8b7b47c9de`，其上游基线为
+除 FR-493、FR-504 经用户单独授权并已在隔离工作树完成的最小 OpenHands fork 外，本任务只修改 FlowWeave。
+当前目标事实基线为 fork commit `5efe25b00698d39bc615b9dbe759c793e0617a13`，其上游基线为
 `30cf5832e42c71c24daa82a1a4fd5d25eb70d1b9`，四个包版本仍固定为 `1.47.0`。此前完成记录中的旧版本号
 继续表示当时实际验收的历史基线，不做追溯改写。
 
@@ -209,6 +209,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-498 | 会话直接发送、暂停续答与队列原地编辑 | DONE | 普通发送同步显示用户消息并异步投递；暂停会话直接续答；浏览器投递队列保留原项原地编辑。 |
 | FR-500 | 会话投递契约兼容与工作台连续定位交互 | DONE | 将缺失可选 `/context` 路由从会话启动硬失败中剥离；Skill 组合菜单支持外部点击关闭；用户消息定位条按指针连续产生波纹式刻度反馈。 |
 | FR-503 | 逐步运行导入、拷贝与连续运行前端交互对齐 | DONE | 逐步运行新增、导入、记录选中、起始节点聚焦、右侧栏展示、配置下载/复制及首节点配置拷贝均复用连续运行的交互投影；后端导入重新生成 URL artifact 与 Gate ID，并保持待启动状态。 |
+| FR-504 | OpenHands 当前 View 事件数精确投影 | DONE | OpenHands `/context` 在同一活动 View 快照中返回正式 `event_count`；FlowWeave 底栏只展示该值，旧 Runtime 缺字段时保持未知，不再使用完整历史事件数。 |
 | FR-457 | OpenHands 空响应自恢复与运行状态一致性 | DONE | 空 Agent Message 与 `source=environment` 的原生 corrective nudge 不再被识别为最终回复；纠正事件以“模型返回空响应，OpenHands 正在自动重试”呈现，左侧会话状态与底部按钮继续统一服从原生 execution status。 |
 | FR-458 | 空响应恢复提示瞬时化与会话状态统一 | DONE | corrective nudge 只在它是当前最新事件且原生会话仍运行时复用实时状态行显示；后续事件或终态立即隐藏，历史工作过程不保留该提示。工作台所有运行控件复用同一原生状态投影。 |
 | FR-459 | 原生错误事件的终态／可恢复呈现分流 | DONE | 仅 OpenHands ConversationErrorEvent 呈现为“本轮未能完成”的会话级终态卡片；AgentErrorEvent 与未知历史 ERROR 保持原生审计事实，按其正式父事件留在工作过程中呈现为可恢复异常，后续正式回复会明确标注 Agent 已继续完成，避免暂停／继续后的正常回复被历史错误卡片误覆盖。 |
@@ -6665,6 +6666,27 @@ scope；首条消息 bootstrap 成功后会清理已发送内容，避免发送�
 完成：逐步新增弹窗保留与连续运行一致的起始节点选择和导入入口；导入后立即选中首条记录、聚焦其起始节点并打开共享右侧栏；点击逐步记录时按当前节点或冻结起始节点恢复相同选中状态。逐步记录的操作栏提供与连续运行同位置、同样式的拷贝、下载、复制和删除能力。配置导出仅携带首节点启动提示词、Agent 预设、Gate 配置和直接 URL 输入；导入重新校验目标节点字段、生成新的 URL artifact 与 Gate ID，并创建 `WAITING_START_CONFIRMATION` Attempt，不自动调度。记录拷贝复用同一首节点配置投影，保留逐步显式启动语义并排除 Conversation、运行状态、输出、文件 artifact 和旧 artifact ID。
 
 验证：Web `tsc -b`、受影响页面与 API 的 ESLint、受影响 Python `py_compile`、`git diff --check` 通过；服务端定向 pytest 已执行但当前环境缺少 Docker socket，在 fixture 初始化阶段因 `docker.errors.DockerException` 退出，未进入业务断言；新增定向 Playwright 覆盖逐步配置导入后记录、起始节点和右侧栏选中状态。
+### FR-504 OpenHands 当前 View 事件数精确投影 — DONE
+
+依赖：FR-493、FR-500。
+
+目标：会话底栏的事件进度必须来自 OpenHands 当前活动 View 的正式事件数，而不是 FlowWeave 已加载的完整
+EventLog 历史。原生压缩完成后，事件数应与压缩后的 `state.view.events` 一致，不得继续出现
+“事件 1,502 / 1,000”这类把可回读历史误认为当前压缩窗口的展示。
+
+范围：在用户授权的 OpenHands `1.47.0` fork 中，将
+`GET /api/conversations/{conversation_id}/context` 扩展为从同一次 state 锁快照返回
+`total_tokens + event_count`；固定 fork commit
+`5efe25b00698d39bc615b9dbe759c793e0617a13`、不可变源码归档和 provenance。FlowWeave Runtime
+新增 `view_event_count` 投影，Web 底栏只使用该字段。既有 generation 若只有旧
+`total_tokens` 字段，Token 继续精确展示，事件数显示“待 Runtime 更新”；不得回退
+`displayedEvents.length`。不升级四个 OpenHands 包版本，不新增数据库迁移，不部署或操作远端环境。
+
+完成：OpenHands Event Service 在一次 `with state` 临界区内复制当前 `state.view.events` 并取得 Agent
+LLM，随后基于同一快照计算 Token 和事件数量；路由返回非负 `event_count`。FlowWeave 对新字段执行严格
+非负整数校验，缺失字段仅作为旧 Runtime 兼容未知态；工作台移除完整已加载历史数量，正式值、读取中、
+暂不可用、待 Runtime 更新和待会话创建分别呈现。源码锁、构建身份和归档 SHA-256 已统一更新，四包版本
+保持 `1.47.0`。
 
 ### FR-497 会话配置组合收拢与认证同步异常兼容 — DONE
 
@@ -6743,6 +6765,7 @@ FlowWeave 本地累加后猜测压缩边界。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-21 | FR-504 | 受影响 Python Ruff format/check、`py_compile`；OpenHands 会话上下文定向 pytest（16 passed）与完整文件尝试；源码身份架构断言无容器直接执行；Web TypeScript typecheck 与受影响文件 ESLint；产品流定向 Playwright 尝试；source lock/provenance JSON、不可变归档 SHA-256、四包版本、远端 baseline ref、Alembic head、`git diff --check` 与任务状态唯一性 | PASS（静态／定向）：OpenHands fork commit 为 `5efe25b00698d39bc615b9dbe759c793e0617a13`，上游基线仍为 `30cf5832e42c71c24daa82a1a4fd5d25eb70d1b9`，四包版本保持 `1.47.0`，归档 SHA-256 为 `ac664389c402a5f6334798164b6a16ede8542cdc4012b9db9cc2470a24f5dd9d`；远端 `baseline` 与功能分支均指向该 commit。FlowWeave 只投影正式当前 View `event_count`，旧 Runtime 缺字段保持未知且不影响精确 Token。完整 `test_openhands.py` 有 179 项通过，随后仅在与本切片无关的既有 `secret_hint` fixture 失败。架构 pytest 被全局 Testcontainers fixture 在本机无 Docker socket 时提前阻断，相同源码身份断言无容器直接执行通过。产品流 Playwright 在本次新增事件断言前，于既有“暂停当前 Agent”断言（`product-flow.spec.ts:957`）超时，未记为浏览器回归通过。唯一 Alembic head 为 `0121_credential_sync_owner`；无迁移、无远端部署。 |
 | 2026-09-21 | FR-501 | 受影响 Python Ruff format/check、`py_compile`；认证同步 schema guard 纯逻辑回归（4 passed）；Alembic head、`git diff --check` 与任务状态唯一性 | PASS（静态／纯逻辑）：追加迁移从 Conversation binding 回填 credential sync 的 owner，随后收紧为非空并建立索引；三条原生会话创建路径均在 Runtime 创建前检查完整 schema。纯逻辑断言覆盖 PostgreSQL 缺列／缺表、非 schema 数据库异常及本次仅缺 credential sync `owner_user_id` 的情形。定向 pytest 在全局 Testcontainers fixture 初始化时因本机 Docker socket 缺失受阻，未进入断言且未记为通过。唯一 Alembic head 为 `0121_credential_sync_owner`；未修改 OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-21 | FR-503 | Web `tsc -b`、受影响页面与 API 的 ESLint、受影响 Python `py_compile`、Alembic head、`git diff --check`；逐步配置导入工作台回归 | PASS（静态／浏览器）：逐步新增、导入、记录选中、起始节点聚焦、右侧栏展示及配置下载／复制／拷贝均与连续运行复用同一交互投影；服务端定向 pytest 在全局 Docker fixture 初始化阶段因本机 Docker socket 缺失受阻，未进入业务断言；新增 Playwright 覆盖导入后记录、起始节点和右侧栏选中状态。唯一 Alembic head 为 `0120_agent_credential_sync`；未修改 OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-21 | FR-500 | Runtime 合同 Ruff format/check、`py_compile`、定向 pytest（9 passed）；Web TypeScript typecheck、受影响文件定向 ESLint；产品流会话工作台定向 Playwright 尝试；Alembic head、`git diff --check` 与任务状态唯一性 | PASS（静态／纯逻辑）：缺少可选 `/context` 不再使历史冻结 Runtime 在消息投递前判为不兼容，历史合同仍列出该路由时同样兼容；Skill 组合在菜单外 pointerdown 时关闭；定位条由每个 tick 的离散 hover 改为容器级 requestAnimationFrame 连续波纹，并把每帧布局与样式更新限制在相邻刻度。定向 Playwright 在本切片断言前，于既有“暂停当前 Agent”断言（`product-flow.spec.ts:957`）超时，未记为浏览器回归通过。唯一 Alembic head 为 `0120_agent_credential_sync`；未修改消息请求、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |

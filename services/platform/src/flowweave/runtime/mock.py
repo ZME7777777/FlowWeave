@@ -284,6 +284,7 @@ class MockRuntime:
             "reasoning_effort": None,
             "condenser_max_size": condenser.max_size if condenser is not None else None,
             "condenser_max_tokens": condenser.max_tokens if condenser is not None else None,
+            "view_event_count": None,
         }
 
     def interrupt(self, handle: RuntimeHandle) -> None:

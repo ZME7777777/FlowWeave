@@ -79,8 +79,8 @@ COPY infra/openhands/contract_check.py \
      /opt/openhands-source/openhands-agent-server/openhands/agent_server/flowweave_contract_check.py
 COPY infra/openhands/plugin_resolver.py /runtime/plugin_resolver.py
 ENV PATH="/runtime/.venv/bin:/usr/local/bin:$PATH"
-ENV OPENHANDS_BUILD_GIT_SHA="0eee8da762ce1319521b285102094b8b7b47c9de" \
-    OPENHANDS_BUILD_GIT_REF="0eee8da762ce1319521b285102094b8b7b47c9de"
+ENV OPENHANDS_BUILD_GIT_SHA="5efe25b00698d39bc615b9dbe759c793e0617a13" \
+    OPENHANDS_BUILD_GIT_REF="5efe25b00698d39bc615b9dbe759c793e0617a13"
 RUN /runtime/.venv/bin/python /runtime/contract_check.py
 RUN uv pip install --python /runtime/.venv/bin/python pip==25.1.1 \
  && ln -sf /runtime/.venv/bin/pip /usr/local/bin/pip \

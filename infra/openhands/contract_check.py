@@ -54,6 +54,7 @@ from openhands.agent_server.mcp_router import (
 from openhands.agent_server.models import (
     BashEventPage,
     ConfirmationResponseRequest,
+    ConversationContext,
     ForkConversationRequest,
     NavigateConversationRequest,
     StartConversationRequest,
@@ -145,8 +146,8 @@ from openhands.tools.task.manager import Task, TaskManager, TaskStatus
 
 EXPECTED_VERSION = "1.47.0"
 EXPECTED_UPSTREAM_BASE = "30cf5832e42c71c24daa82a1a4fd5d25eb70d1b9"
-EXPECTED_SOURCE_COMMIT = "0eee8da762ce1319521b285102094b8b7b47c9de"
-EXPECTED_SOURCE_ARCHIVE_SHA256 = "68a00aa2b9c259b85df424afc4466edc4f7c1a3d95eee0e5d235b2463dd3c511"
+EXPECTED_SOURCE_COMMIT = "5efe25b00698d39bc615b9dbe759c793e0617a13"
+EXPECTED_SOURCE_ARCHIVE_SHA256 = "ac664389c402a5f6334798164b6a16ede8542cdc4012b9db9cc2470a24f5dd9d"
 PACKAGES = (
     "openhands-agent-server",
     "openhands-sdk",
@@ -473,6 +474,7 @@ def main() -> None:
     assert "resend_mode" in bash_socket_parameters
     assert "after_timestamp" not in bash_socket_parameters
     assert set(BashEventPage.model_fields) == {"items", "next_page_id"}
+    assert set(ConversationContext.model_fields) == {"total_tokens", "event_count"}
     server_info = ServerInfo(uptime=0, idle_time=0)
     assert server_info.version == EXPECTED_VERSION
     assert server_info.sdk_version == EXPECTED_VERSION

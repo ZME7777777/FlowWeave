@@ -4564,7 +4564,9 @@ class OpenHandsRuntime:
             ),
         }
 
-    def _conversation_view_total_tokens(self, handle: RuntimeHandle) -> int | None:
+    def _conversation_view_context_metrics(
+        self, handle: RuntimeHandle
+    ) -> tuple[int, int | None] | None:
         payload = self._request(
             "GET",
             f"/api/conversations/{handle.conversation_id}/context",
@@ -4582,19 +4584,36 @@ class OpenHandsRuntime:
         if isinstance(total_tokens, bool) or not isinstance(total_tokens, int) or total_tokens < 0:
             raise DomainError(
                 "RUNTIME_USAGE_PROTOCOL_DRIFT",
-                "OpenHands current View token usage is invalid",
+                "OpenHands current View context metrics are invalid",
                 502,
                 {"field": "total_tokens"},
             )
-        return total_tokens
+
+        # The first FlowWeave 1.47 fork exposed only ``total_tokens`` from
+        # this endpoint. Existing generations may therefore support the
+        # endpoint without yet exposing the current View event count.
+        # Preserve their exact token projection, but keep event usage unknown
+        # instead of falling back to the complete loaded EventLog.
+        if "event_count" not in payload:
+            return total_tokens, None
+        event_count = payload["event_count"]
+        if isinstance(event_count, bool) or not isinstance(event_count, int) or event_count < 0:
+            raise DomainError(
+                "RUNTIME_USAGE_PROTOCOL_DRIFT",
+                "OpenHands current View context metrics are invalid",
+                502,
+                {"field": "event_count"},
+            )
+        return total_tokens, event_count
 
     def conversation_context(self, handle: RuntimeHandle) -> dict[str, int | str | None]:
         context = self._conversation_context_from_state(
             self._conversation_state(handle, timeout=_INTERACTIVE_READ_TIMEOUT_SECONDS)
         )
-        total_tokens = self._conversation_view_total_tokens(handle)
-        context["used_tokens"] = total_tokens
-        context["usage_current"] = total_tokens is not None
+        metrics = self._conversation_view_context_metrics(handle)
+        context["used_tokens"] = metrics[0] if metrics is not None else None
+        context["view_event_count"] = metrics[1] if metrics is not None else None
+        context["usage_current"] = metrics is not None
         return context
 
     def switch_model(self, handle: RuntimeHandle, provider: RuntimeProvider) -> None:
