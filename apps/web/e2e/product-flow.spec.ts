@@ -1265,7 +1265,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(completedProcess.locator('.conversation-activity-row.tool')).toHaveCount(7);
   const mcpDetail = completedProcess.locator('.conversation-tool-detail[data-tool-kind="mcp"]');
   await expect(mcpDetail).toHaveCount(1);
-  await expect(mcpDetail.locator(':scope > summary .conversation-tool-kind')).toHaveText('MCP');
+  await expect(mcpDetail.locator(':scope > summary .conversation-tool-kind')).toHaveCount(0);
   await expect(completedProcess.locator('.conversation-activity-row.thought.tool-thought.tool-mcp')).toContainText('我先通过行情 MCP 获取日线数据。');
   await mcpDetail.locator(':scope > summary').click();
   await expect(mcpDetail.getByText('事件类型', { exact: true })).toBeVisible();
@@ -1274,7 +1274,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(mcpDetail.getByText('market-data.get-kline', { exact: true })).toBeVisible();
   const genericToolDetail = completedProcess.locator('.conversation-tool-detail[data-tool-kind="generic"]');
   await expect(genericToolDetail).toHaveCount(1);
-  await expect(genericToolDetail.locator(':scope > summary .conversation-tool-kind')).toHaveText('通用工具');
+  await expect(genericToolDetail.locator(':scope > summary .conversation-tool-kind')).toHaveCount(0);
   await genericToolDetail.locator(':scope > summary').click();
   await expect(genericToolDetail.getByText('CodeSearchAction', { exact: true })).toBeVisible();
   await expect(genericToolDetail.getByText('code_search', { exact: true })).toBeVisible();

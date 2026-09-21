@@ -1,4 +1,4 @@
-import { BookOpen, Check, ChevronDown, ChevronRight, CircleAlert, ClipboardList, Copy, ExternalLink, FileText, GitFork, Link, LoaderCircle, PanelRightOpen, Pencil, PlugZap, Quote, Sparkles, SquareTerminal, Wrench } from 'lucide-react';
+import { BookOpen, Check, ChevronDown, ChevronRight, CircleAlert, ClipboardList, Copy, ExternalLink, FileText, GitFork, Link, LoaderCircle, PanelRightOpen, Pencil, Quote, Sparkles, SquareTerminal, Wrench } from 'lucide-react';
 import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type RefObject } from 'react';
 import type { AgentActivitySummary, AgentAttachment, AgentConversationAnnotation, AgentConversationReference, AgentWorkspaceReference, OpenHandsConversationEvent, RuntimeTaskControlSnapshot } from '../types';
 import { SubagentAvatar } from './SubagentAvatar';
@@ -595,22 +595,17 @@ interface ActivityPresentation {
 
 type ToolVisualKind = 'terminal' | 'file' | 'task-tracker' | 'skill' | 'browser' | 'mcp' | 'subagent' | 'generic';
 
-interface ToolVisualPresentation {
-  kind: ToolVisualKind;
-  label: string;
-}
-
-function toolVisualPresentation(eventName: string, toolName?: string): ToolVisualPresentation {
+function toolVisualPresentation(eventName: string, toolName?: string): ToolVisualKind {
   const normalizedEventName = eventName.toLowerCase();
   const normalizedToolName = toolName?.toLowerCase() ?? '';
-  if (normalizedEventName.includes('terminal')) return { kind: 'terminal', label: '终端' };
-  if (normalizedEventName.includes('fileeditor')) return { kind: 'file', label: '文件' };
-  if (normalizedEventName.includes('tasktracker')) return { kind: 'task-tracker', label: '任务' };
-  if (normalizedEventName.includes('invokeskill')) return { kind: 'skill', label: 'Skill' };
-  if (normalizedEventName.includes('browser')) return { kind: 'browser', label: '浏览器' };
-  if (normalizedEventName.includes('mcp') || normalizedToolName.startsWith('mcp_')) return { kind: 'mcp', label: 'MCP' };
-  if (normalizedEventName === 'taskaction' || normalizedEventName === 'taskobservation') return { kind: 'subagent', label: '子任务' };
-  return { kind: 'generic', label: '通用工具' };
+  if (normalizedEventName.includes('terminal')) return 'terminal';
+  if (normalizedEventName.includes('fileeditor')) return 'file';
+  if (normalizedEventName.includes('tasktracker')) return 'task-tracker';
+  if (normalizedEventName.includes('invokeskill')) return 'skill';
+  if (normalizedEventName.includes('browser')) return 'browser';
+  if (normalizedEventName.includes('mcp') || normalizedToolName.startsWith('mcp_')) return 'mcp';
+  if (normalizedEventName === 'taskaction' || normalizedEventName === 'taskobservation') return 'subagent';
+  return 'generic';
 }
 
 function activityPresentation(entry: ActivityEntry, active: boolean, workspaceRoot?: string | null, paused = false, parentFailed = false, recoveredErrorEventIds: ReadonlySet<string> = new Set()): ActivityPresentation {
@@ -722,15 +717,15 @@ function ToolDetailPanel({ presentation, eventName, toolName, toolVisual, result
   presentation: ActivityPresentation;
   eventName: string;
   toolName?: string;
-  toolVisual: ToolVisualPresentation;
+  toolVisual: ToolVisualKind;
   results: Item[];
   workspaceRoot?: string | null;
 }) {
   const details = presentation.actionDetails ?? {};
   const resultDetails = presentation.resultDetails ?? {};
-  const isTerminal = toolVisual.kind === 'terminal';
-  const isFile = toolVisual.kind === 'file';
-  const isTaskTracker = toolVisual.kind === 'task-tracker';
+  const isTerminal = toolVisual === 'terminal';
+  const isFile = toolVisual === 'file';
+  const isTaskTracker = toolVisual === 'task-tracker';
   const hasResultOutput = results.some(result => typeof result.content === 'string' && result.content.trim().length > 0);
   const hasDetail = Boolean(
     isTaskTracker || presentation.command || hasResultOutput || presentation.exitCode
@@ -1102,7 +1097,7 @@ function ActivityEntryRow({ entry, active, paused = false, parentFailed = false,
   const avatarSlot = eventName === 'TaskAction' || eventName === 'TaskObservation'
     ? subagentAvatarSlotForEvent(item.event, avatarSlots)
     : undefined;
-  const ToolIcon = toolVisual.kind === 'terminal' ? SquareTerminal : toolVisual.kind === 'file' ? FileText : toolVisual.kind === 'mcp' ? PlugZap : Icon;
+  const ToolIcon = toolVisual === 'terminal' ? SquareTerminal : toolVisual === 'file' ? FileText : Icon;
   const taskAvatar = avatarSlot && <SubagentAvatar slot={avatarSlot} status={taskAvatarStatus(entry, item, paused, parentFailed)} size={14}/>;
   const presentation = activityPresentation(entry, active, workspaceRoot, paused, parentFailed, recoveredErrorEventIds);
   const toolDetail = item.kind === 'tool'
@@ -1114,20 +1109,20 @@ function ActivityEntryRow({ entry, active, paused = false, parentFailed = false,
   if (item.kind === 'thought') return <article {...thoughtAttributes} className={`conversation-activity-row thought${isNativeThink ? ' native-think' : ''}`}>
     <MessageMarkdown>{presentation.thought ?? item.content}</MessageMarkdown>
   </article>;
-  if (eventName === 'TaskTrackerAction' || eventName === 'TaskTrackerObservation') return <div className={`conversation-tool-entry semantic tool-${toolVisual.kind}`}>
-    {presentation.thought && <article {...thoughtAttributes} className={`conversation-activity-row thought tool-thought tool-${toolVisual.kind}`}><MessageMarkdown>{presentation.thought}</MessageMarkdown></article>}
+  if (eventName === 'TaskTrackerAction' || eventName === 'TaskTrackerObservation') return <div className={`conversation-tool-entry semantic tool-${toolVisual}`}>
+    {presentation.thought && <article {...thoughtAttributes} className={`conversation-activity-row thought tool-thought tool-${toolVisual}`}><MessageMarkdown>{presentation.thought}</MessageMarkdown></article>}
     <TaskTrackerCard entry={entry} presentation={presentation}/>
   </div>;
-  if (eventName === 'InvokeSkillAction' || eventName === 'InvokeSkillObservation') return <div className={`conversation-tool-entry semantic tool-${toolVisual.kind}`}>
-    {presentation.thought && <article {...thoughtAttributes} className={`conversation-activity-row thought tool-thought tool-${toolVisual.kind}`}><MessageMarkdown>{presentation.thought}</MessageMarkdown></article>}
+  if (eventName === 'InvokeSkillAction' || eventName === 'InvokeSkillObservation') return <div className={`conversation-tool-entry semantic tool-${toolVisual}`}>
+    {presentation.thought && <article {...thoughtAttributes} className={`conversation-activity-row thought tool-thought tool-${toolVisual}`}><MessageMarkdown>{presentation.thought}</MessageMarkdown></article>}
     <SkillLoadCard entry={entry}/>
   </div>;
-  if (item.kind === 'tool' && toolDetail) return <div className={`conversation-tool-entry tool-${toolVisual.kind}`}>
-    {presentation.thought && <article {...thoughtAttributes} className={`conversation-activity-row thought tool-thought tool-${toolVisual.kind}`}>
+  if (item.kind === 'tool' && toolDetail) return <div className={`conversation-tool-entry tool-${toolVisual}`}>
+    {presentation.thought && <article {...thoughtAttributes} className={`conversation-activity-row thought tool-thought tool-${toolVisual}`}>
       <MessageMarkdown>{presentation.thought}</MessageMarkdown>
     </article>}
-    <details className={`conversation-activity-row tool conversation-tool-detail tool-${toolVisual.kind}`} data-tool-kind={toolVisual.kind}>
-      <summary aria-label={`查看执行详情：${presentation.title}`}>{taskAvatar ?? <ToolIcon size={14}/>}<div><b title={presentation.title}>{presentation.title}</b></div><span className="conversation-tool-kind" aria-hidden="true">{toolVisual.label}</span></summary>
+    <details className={`conversation-activity-row tool conversation-tool-detail tool-${toolVisual}`} data-tool-kind={toolVisual}>
+      <summary aria-label={`查看执行详情：${presentation.title}`}>{taskAvatar ?? <ToolIcon size={14}/>}<div><b title={presentation.title}>{presentation.title}</b></div></summary>
       {toolDetail}
     </details>
   </div>;
