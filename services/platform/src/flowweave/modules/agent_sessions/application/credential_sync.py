@@ -6,7 +6,7 @@ from collections.abc import Iterable
 from typing import Any
 
 from sqlalchemy import select, text
-from sqlalchemy.exc import OperationalError, ProgrammingError
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
 from flowweave.modules.agent_sessions.infrastructure.models import (
@@ -26,13 +26,25 @@ _SCHEMA_OUTDATED_MESSAGE = "认证同步功能尚未完成升级，请联系管�
 _POSTGRES_MISSING_SCHEMA_CODES = frozenset({"42703", "42P01"})
 
 
-def _is_missing_credential_sync_schema(error: ProgrammingError | OperationalError) -> bool:
+def _is_missing_credential_sync_schema(error: DBAPIError) -> bool:
+    """Recognize only the additive schema objects missing from a DBAPI error."""
+
     original = error.orig
     sqlstate = getattr(original, "sqlstate", None) or getattr(original, "pgcode", None)
     if sqlstate in _POSTGRES_MISSING_SCHEMA_CODES:
         return True
     message = str(original).lower()
-    return "no such column" in message or "no such table" in message
+    return any(
+        marker in message
+        for marker in (
+            "no such column",
+            "no such table",
+            "undefined column",
+            "undefined table",
+            "column does not exist",
+            "relation does not exist",
+        )
+    )
 
 
 def ensure_credential_sync_schema(db: Session) -> None:
@@ -43,7 +55,7 @@ def ensure_credential_sync_schema(db: Session) -> None:
             text("SELECT credential_sync_initialized_at FROM agent_conversation_bindings LIMIT 1")
         )
         db.execute(text("SELECT binding_id FROM agent_conversation_credential_syncs LIMIT 1"))
-    except (OperationalError, ProgrammingError) as error:
+    except DBAPIError as error:
         if not _is_missing_credential_sync_schema(error):
             raise
         db.rollback()

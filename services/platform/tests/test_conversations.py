@@ -9,7 +9,7 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import select
-from sqlalchemy.exc import ProgrammingError
+from sqlalchemy.exc import InternalError, ProgrammingError
 from sqlalchemy.orm import Session, sessionmaker
 
 from flowweave.modules.agent_sessions.application import (
@@ -118,6 +118,29 @@ def test_credential_sync_schema_guard_reraises_unrelated_database_error() -> Non
         credential_sync.ensure_credential_sync_schema(db)  # type: ignore[arg-type]
 
     assert db.rollback_calls == 0
+
+
+def test_credential_sync_schema_guard_maps_wrapped_postgres_missing_schema() -> None:
+    class MissingTable(Exception):
+        sqlstate = "42P01"
+
+    class SessionWithWrappedMissingSchema:
+        rollback_calls = 0
+
+        def execute(self, _statement: object) -> None:
+            raise InternalError("SELECT", {}, MissingTable())
+
+        def rollback(self) -> None:
+            self.rollback_calls += 1
+
+    db = SessionWithWrappedMissingSchema()
+
+    with pytest.raises(DomainError) as caught:
+        credential_sync.ensure_credential_sync_schema(db)  # type: ignore[arg-type]
+
+    assert caught.value.code == "AGENT_CREDENTIAL_SYNC_SCHEMA_OUTDATED"
+    assert caught.value.status == 503
+    assert db.rollback_calls == 1
 
 
 def test_conversation_reference_projection_hides_selected_text_from_message_body() -> None:
