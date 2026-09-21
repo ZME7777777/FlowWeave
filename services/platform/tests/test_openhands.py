@@ -4789,7 +4789,7 @@ def test_openhands_conversation_context_reads_exact_current_view_tokens(
                     }
                 },
             ),
-            {"total_tokens": 42_000},
+            {"total_tokens": 42_000, "event_count": 87},
         ]
     )
     monkeypatch.setattr(
@@ -4800,6 +4800,7 @@ def test_openhands_conversation_context_reads_exact_current_view_tokens(
 
     assert runtime.conversation_context(_handle()) == {
         "used_tokens": 42_000,
+        "view_event_count": 87,
         "window_tokens": 922_000,
         "cumulative_tokens": 13_715,
         "usage_current": True,
@@ -4827,7 +4828,7 @@ def test_openhands_conversation_context_exposes_zero_token_baseline_for_pinned_c
                 },
                 stats={"usage_to_metrics": {}},
             ),
-            {"total_tokens": 0},
+            {"total_tokens": 0, "event_count": 0},
         ]
     )
     monkeypatch.setattr(
@@ -4839,6 +4840,7 @@ def test_openhands_conversation_context_exposes_zero_token_baseline_for_pinned_c
     context = runtime.conversation_context(_handle())
 
     assert context["used_tokens"] == 0
+    assert context["view_event_count"] == 0
     assert context["window_tokens"] == 1_050_000
     assert context["cumulative_tokens"] is None
     assert context["usage_current"] is True
@@ -4852,7 +4854,7 @@ def test_openhands_conversation_context_ignores_per_turn_token_from_unambiguous_
         runtime,
         "_request",
         lambda _method, path, **_kwargs: (
-            {"total_tokens": 21_000}
+            {"total_tokens": 21_000, "event_count": 41}
             if path.endswith("/context")
             else _state(
                 agent={
@@ -4885,6 +4887,7 @@ def test_openhands_conversation_context_ignores_per_turn_token_from_unambiguous_
     context = runtime.conversation_context(_handle())
 
     assert context["used_tokens"] == 21_000
+    assert context["view_event_count"] == 41
     assert context["usage_current"] is True
 
 
@@ -4896,7 +4899,7 @@ def test_openhands_conversation_context_uses_exact_view_despite_ambiguous_usage_
         runtime,
         "_request",
         lambda _method, path, **_kwargs: (
-            {"total_tokens": 30_000}
+            {"total_tokens": 30_000, "event_count": 52}
             if path.endswith("/context")
             else _state(
                 agent={
@@ -4925,6 +4928,7 @@ def test_openhands_conversation_context_uses_exact_view_despite_ambiguous_usage_
     context = runtime.conversation_context(_handle())
 
     assert context["used_tokens"] == 30_000
+    assert context["view_event_count"] == 52
     assert context["usage_current"] is True
 
 
@@ -4961,19 +4965,54 @@ def test_openhands_conversation_context_keeps_endpoint_less_runtime_usage_unknow
     context = runtime.conversation_context(_handle())
 
     assert context["used_tokens"] is None
+    assert context["view_event_count"] is None
     assert context["usage_current"] is False
 
 
-@pytest.mark.parametrize("total_tokens", [None, True, -1, 1.5, "1234"])
-def test_openhands_conversation_context_rejects_invalid_exact_view_usage(
-    openhands_settings, monkeypatch, total_tokens
+def test_openhands_conversation_context_keeps_legacy_view_event_count_unknown(
+    openhands_settings, monkeypatch
 ):
     runtime = OpenHandsRuntime(openhands_settings)
     monkeypatch.setattr(
         runtime,
         "_request",
         lambda _method, path, **_kwargs: (
-            {"total_tokens": total_tokens}
+            {"total_tokens": 21_000}
+            if path.endswith("/context")
+            else _state(
+                agent={
+                    "llm": {
+                        "model": "openai/gpt-5.6-luna",
+                        "usage_id": "flowweave:provider-1",
+                        "max_input_tokens": 922_000,
+                    }
+                },
+                stats={"usage_to_metrics": {}},
+            )
+        ),
+    )
+
+    context = runtime.conversation_context(_handle())
+
+    assert context["used_tokens"] == 21_000
+    assert context["view_event_count"] is None
+    assert context["usage_current"] is True
+
+
+@pytest.mark.parametrize("field", ["total_tokens", "event_count"])
+@pytest.mark.parametrize("invalid_value", [None, True, -1, 1.5, "1234"])
+def test_openhands_conversation_context_rejects_invalid_exact_view_metrics(
+    openhands_settings, monkeypatch, field, invalid_value
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+
+    context_payload = {"total_tokens": 1_234, "event_count": 42}
+    context_payload[field] = invalid_value
+    monkeypatch.setattr(
+        runtime,
+        "_request",
+        lambda _method, path, **_kwargs: (
+            context_payload
             if path.endswith("/context")
             else _state(
                 agent={"llm": {"model": "openai/gpt-5.6-luna"}},
@@ -4987,7 +5026,7 @@ def test_openhands_conversation_context_rejects_invalid_exact_view_usage(
 
     assert raised.value.code == "RUNTIME_USAGE_PROTOCOL_DRIFT"
     assert raised.value.status == 502
-    assert raised.value.details == {"field": "total_tokens"}
+    assert raised.value.details == {"field": field}
 
 
 @pytest.mark.parametrize(

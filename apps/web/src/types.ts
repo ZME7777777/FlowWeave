@@ -709,6 +709,7 @@ export interface AgentConversationAnnotation {
 }
 export interface AgentConversationContext {
   used_tokens?: number | null; window_tokens?: number | null; cumulative_tokens?: number | null;
+  view_event_count?: number | null;
   provider_id?: string | null;
   model_name?: string | null; reasoning_effort?: string | null;
   condenser_max_size?: number | null; condenser_max_tokens?: number | null;
