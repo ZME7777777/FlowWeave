@@ -160,7 +160,6 @@ REQUIRED_PATHS = {
     "/ready",
     "/server_info",
     "/api/conversations",
-    "/api/conversations/{conversation_id}/context",
     "/api/conversations/{conversation_id}/condense",
     "/api/conversations/{conversation_id}/events/search",
     "/api/conversations/{conversation_id}/events/{event_id}",

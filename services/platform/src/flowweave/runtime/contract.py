@@ -49,12 +49,20 @@ REQUIRED_HTTP_OPERATIONS: tuple[tuple[str, str], ...] = tuple(
     )
 )
 
-# Current View usage is optional observability.  Existing frozen Runtime
+# Current View usage is optional observability. Existing frozen Runtime
 # contracts can retain the route, but its absence must not block a message.
 OPTIONAL_HTTP_OPERATIONS = frozenset(
     {
         ("GET", "/api/conversations/{conversation_id}/context"),
     }
+)
+
+# Older snapshots accidentally persisted the optional context route as a
+# required operation. Normalize that obsolete requirement away while keeping
+# the route optional for runtime compatibility checks.
+_OBSOLETE_OPTIONAL_VIEW_USAGE_OPERATION = (
+    "GET",
+    "/api/conversations/{conversation_id}/context",
 )
 
 REQUIRED_START_FIELDS: tuple[str, ...] = tuple(
@@ -252,6 +260,12 @@ def normalize_runtime_contract(
         or len(parsed_tools) != len(set(parsed_tools))
     ):
         raise ValueError("Runtime contract requirements are invalid")
+
+    parsed_operations = [
+        operation
+        for operation in parsed_operations
+        if operation != _OBSOLETE_OPTIONAL_VIEW_USAGE_OPERATION
+    ]
 
     return RuntimeContract(
         schema_version=schema_version,

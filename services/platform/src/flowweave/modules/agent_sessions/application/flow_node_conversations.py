@@ -3073,6 +3073,8 @@ def fork_node_conversation(
     )
     if result.handle.conversation_id != target.openhands_conversation_id:
         raise DomainError("RUNTIME_FORK_IDENTITY_DRIFT", "会话分叉身份校验失败", 409)
+    if provider is not None:
+        runtime.switch_model(result.handle, provider)
     target.lifecycle = "ACTIVE"
     finish(db)
     return _node_session_dict(db, target)

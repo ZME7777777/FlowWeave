@@ -3222,6 +3222,7 @@ def _fork_conversation(
             or result.source_event_id != fork_event_id
         ):
             raise DomainError("RUNTIME_FORK_IDENTITY_DRIFT", "会话分叉身份校验失败", 409)
+        runtime.switch_model(result.handle, fork_provider)
         identity = runtime.reload_conversation(result.handle)
         if identity.persistence_dir != f"/runtime/state/conversations/{UUID(target_id).hex}":
             raise DomainError("RUNTIME_FORK_IDENTITY_DRIFT", "分叉会话持久化身份校验失败", 409)

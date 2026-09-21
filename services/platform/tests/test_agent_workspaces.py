@@ -3711,6 +3711,7 @@ def test_agent_workspace_recovers_stale_condenser_credential_before_sending(
 def test_agent_workspace_forks_at_native_event(settings, db_session_factory, monkeypatch):
     class ForkRuntime(MockRuntime):
         fork_call: tuple[str | None, str, bool, int, int | None, float | None] | None = None
+        switched_conversation_ids: list[str] = []
         head = "assistant-event"
         active_events: tuple[RuntimeEvent, ...] = (
             RuntimeEvent(
@@ -3757,6 +3758,10 @@ def test_agent_workspace_forks_at_native_event(settings, db_session_factory, mon
         def can_accept_input(self, handle):
             del handle
             return True
+
+        def switch_model(self, handle, provider):
+            del provider
+            self.switched_conversation_ids.append(handle.conversation_id)
 
     monkeypatch.setattr(
         conversations,
@@ -3814,6 +3819,7 @@ def test_agent_workspace_forks_at_native_event(settings, db_session_factory, mon
             None,
             None,
         )
+        assert runtime.switched_conversation_ids == [fork["openhands_conversation_id"]]
         assert (
             conversations.fork_conversation(
                 db, workspace.id, source["id"], "assistant-event", None, "fork-key"
