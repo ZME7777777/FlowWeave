@@ -4,7 +4,7 @@ import '@xterm/xterm/css/xterm.css';
 import { type InfiniteData, useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import hljs from 'highlight.js/lib/common';
 import { ArrowLeft, Bell, Bot, Boxes, Check, ChevronDown, ChevronRight, CircleDot, Copy, CornerDownRight, Download, Ellipsis, FileCode2, FileText, Folder, FolderOpen, FolderPlus, GitBranch, GripVertical, ImageIcon, Layers3, Link2, LoaderCircle, Maximize2, Minimize2, MonitorCog, PanelRightOpen, Pin, PinOff, Play, Plus, Quote, RefreshCw, Search, Send, ShieldAlert, Square, Trash2, X } from 'lucide-react';
-import { createContext, isValidElement, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type ComponentPropsWithoutRef, type CSSProperties, type DragEvent as ReactDragEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type WheelEvent as ReactWheelEvent } from 'react';
+import { createContext, forwardRef, isValidElement, useCallback, useContext, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type ComponentPropsWithoutRef, type CSSProperties, type DragEvent as ReactDragEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type WheelEvent as ReactWheelEvent } from 'react';
 import { createPortal } from 'react-dom';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -985,20 +985,59 @@ function stringValues(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0) : [];
 }
 
-function ComposerCapabilityAutocomplete({
-  draft, suggestions, disabled, placeholder, onDraftChange, onPaste, onDropFiles, onDropWorkspaceFiles, onSubmit, onDirectSubmit, onManageCapabilities, onWorkspaceReferenceSelected,
-}: {
-  draft: string; suggestions: ComposerSuggestion[]; disabled: boolean; placeholder: string;
-  onDraftChange: (value: string) => void; onPaste: (event: ReactClipboardEvent<HTMLTextAreaElement>) => void; onDropFiles?: (files: File[]) => void; onDropWorkspaceFiles?: (paths: string[]) => void; onSubmit: () => void;
-  onDirectSubmit?: () => void;
+interface ComposerHandle {
+  replace: (value: string) => void;
+  value: () => string;
+}
+
+const COMPOSER_DRAFT_PERSIST_DELAY_MS = 400;
+const EMPTY_TASK_CONTROL: RuntimeTaskControlSnapshot[] = [];
+
+const ComposerCapabilityAutocomplete = forwardRef<ComposerHandle, {
+  initialDraft: string; scope?: string; suggestions: ComposerSuggestion[]; disabled: boolean; placeholder: string;
+  onDraftChange: (value: string) => void; onContentPresenceChange: (hasContent: boolean) => void; onDraftPersist: (value: string) => void; onPaste: (event: ReactClipboardEvent<HTMLTextAreaElement>) => void; onDropFiles?: (files: File[]) => void; onDropWorkspaceFiles?: (paths: string[]) => void; onSubmit: (content: string) => void;
+  onDirectSubmit?: (content: string) => void;
   onManageCapabilities?: () => void;
   onWorkspaceReferenceSelected?: () => void;
-}) {
+}>(function ComposerCapabilityAutocomplete({
+  initialDraft, scope, suggestions, disabled, placeholder, onDraftChange, onContentPresenceChange, onDraftPersist, onPaste, onDropFiles, onDropWorkspaceFiles, onSubmit, onDirectSubmit, onManageCapabilities, onWorkspaceReferenceSelected,
+}, ref) {
   const input = useRef<HTMLTextAreaElement>(null);
   const dragDepth = useRef(0);
+  const draftRef = useRef(initialDraft);
+  const previousScope = useRef(scope);
+  const persistDraftRef = useRef(onDraftPersist);
+  const [draft, setDraft] = useState(initialDraft);
   const [activeIndex, setActiveIndex] = useState(0);
   const [fileDragActive, setFileDragActive] = useState(false);
   const [inputOverflowing, setInputOverflowing] = useState(false);
+  const updateDraft = useCallback((value: string) => {
+    draftRef.current = value;
+    setDraft(current => current === value ? current : value);
+    onDraftChange(value);
+  }, [onDraftChange]);
+  useImperativeHandle(ref, () => ({
+    replace: updateDraft,
+    value: () => draftRef.current,
+  }), [updateDraft]);
+  useLayoutEffect(() => {
+    if (previousScope.current === scope) return;
+    previousScope.current = scope;
+    updateDraft(initialDraft);
+  }, [initialDraft, scope, updateDraft]);
+  const hasText = Boolean(draft.trim());
+  useEffect(() => { onContentPresenceChange(hasText); }, [hasText, onContentPresenceChange]);
+  useEffect(() => {
+    persistDraftRef.current = onDraftPersist;
+  }, [onDraftPersist]);
+  useLayoutEffect(() => {
+    const persist = persistDraftRef.current;
+    return () => persist(draftRef.current);
+  }, [scope]);
+  useEffect(() => {
+    const timer = window.setTimeout(() => onDraftPersist(draft), COMPOSER_DRAFT_PERSIST_DELAY_MS);
+    return () => window.clearTimeout(timer);
+  }, [draft, onDraftPersist]);
   const resizeInput = useCallback(() => {
     const textarea = input.current;
     if (!textarea) return;
@@ -1077,11 +1116,11 @@ function ComposerCapabilityAutocomplete({
   const select = (item: ComposerSuggestion) => {
     if (!trigger || item.available === false) return;
     if (item.kind === 'REFERENCE') {
-      onDraftChange(`${draft.slice(0, trigger.start)}${draft.slice(trigger.start + trigger.query.length + 1)}`);
+      updateDraft(`${draft.slice(0, trigger.start)}${draft.slice(trigger.start + trigger.query.length + 1)}`);
       onWorkspaceReferenceSelected?.();
       return;
     }
-    onDraftChange(`${draft.slice(0, trigger.start)}${item.token} ${draft.slice(trigger.start + trigger.query.length + 1)}`);
+    updateDraft(`${draft.slice(0, trigger.start)}${item.token} ${draft.slice(trigger.start + trigger.query.length + 1)}`);
     requestAnimationFrame(() => input.current?.focus());
   };
   const hasSuggestions = visible.length > 0;
@@ -1115,14 +1154,14 @@ function ComposerCapabilityAutocomplete({
     if (workspacePaths.length) onDropWorkspaceFiles?.(workspacePaths);
     if (files.length) onDropFiles?.(files);
   }}>
-    <textarea ref={input} data-overflowing={inputOverflowing || undefined} aria-label="发送 Agent 消息" aria-autocomplete="list" aria-controls={hasMenu ? 'agent-composer-capabilities' : undefined} aria-expanded={hasMenu} value={draft} maxLength={200_000} placeholder={placeholder} disabled={disabled} onChange={event => onDraftChange(event.target.value)} onPaste={onPaste} onKeyDown={event => {
+    <textarea ref={input} data-overflowing={inputOverflowing || undefined} aria-label="发送 Agent 消息" aria-autocomplete="list" aria-controls={hasMenu ? 'agent-composer-capabilities' : undefined} aria-expanded={hasMenu} value={draft} maxLength={200_000} placeholder={placeholder} disabled={disabled} onChange={event => updateDraft(event.target.value)} onPaste={onPaste} onKeyDown={event => {
       if (isImeComposition(event)) return;
       if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !event.shiftKey) {
         event.preventDefault();
-        onDirectSubmit?.();
+        onDirectSubmit?.(draft);
         return;
       }
-      if (hasMenu && event.key === 'Escape') { onDraftChange(draft.slice(0, -trigger!.query.length - 1)); return; }
+      if (hasMenu && event.key === 'Escape') { updateDraft(draft.slice(0, -trigger!.query.length - 1)); return; }
       if (hasSuggestions && ['ArrowDown', 'ArrowUp', 'Enter', 'Tab'].includes(event.key)) {
         event.preventDefault();
         if (event.key === 'ArrowDown') { setActiveIndex(index => (index + 1) % visible.length); return; }
@@ -1131,12 +1170,12 @@ function ComposerCapabilityAutocomplete({
         return;
       }
       if (hasMenu && ['Enter', 'Tab'].includes(event.key)) { event.preventDefault(); return; }
-      if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); onSubmit(); }
+      if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); onSubmit(draft); }
     }}/>
     {fileDragActive && <div className="agent-composer-file-drop" aria-live="polite">松开以添加附件</div>}
     {hasMenu && <div id="agent-composer-capabilities" className="agent-composer-capability-menu" role="listbox" aria-label={trigger!.sigil === '$' ? '选择技能' : trigger!.sigil === '@' ? '选择引用类型' : '选择命令或 MCP'}>{hasSuggestions ? <>{visible.map((item, index) => <div className="agent-composer-capability-option" key={item.id}>{trigger!.sigil === '@' && index === 0 && <div className="agent-composer-capability-section">引用类型</div>}{trigger!.sigil === '/' && index === 0 && <div className="agent-composer-capability-section">MCP 与命令</div>}<button type="button" role="option" aria-selected={index === activeIndex} aria-disabled={item.available === false || undefined} disabled={item.available === false} className={`${index === activeIndex ? 'active' : ''}${item.available === false ? ' unavailable' : ''}`} onMouseDown={event => event.preventDefault()} onMouseEnter={() => setActiveIndex(index)} onClick={() => select(item)}><code>{item.token}</code><span><b>{item.label}</b><small>{item.detail}</small></span><em>{item.kind === 'SKILL' ? '技能' : item.kind === 'COMMAND' ? '命令' : item.kind === 'REFERENCE' ? '引用' : 'MCP'}</em></button></div>)}</> : <div className="agent-composer-capability-empty"><span><b>{trigger!.sigil === '@' ? '当前没有匹配的引用类型' : !suggestions.length ? trigger!.sigil === '$' ? '当前会话还没有加载 Skill' : '当前会话还没有加载命令或 MCP' : '当前会话没有匹配的能力'}</b><small>{trigger!.sigil === '@' ? '调整输入关键词以筛选引用类型。' : !suggestions.length ? `先为此会话加载能力，随后可在这里用 ${trigger!.sigil} 选择并插入。` : '调整输入关键词，或管理当前会话能力。'}</small></span></div>}{showCapabilityManager && <div className="agent-composer-capability-manage"><span>管理当前会话能力</span><button type="button" onMouseDown={event => event.preventDefault()} onClick={onManageCapabilities}>管理</button></div>}</div>}
   </div>;
-}
+});
 
 function CapabilityManager({ workspaceId, bindingId, conversationCapabilities, draftCapabilityIds, onClose, onCreateEnhancedConversation }: {
   workspaceId: string; bindingId?: string; conversationCapabilities?: AgentSessionCapability[]; onClose: () => void;
@@ -3740,7 +3779,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   // New-conversation recovery is loaded only after the authorized workspace
   // identity is known. The former host-wide key had no workspace boundary.
   const initialConversationDraft = useRef<ConversationDraftRecovery | undefined>(undefined);
-  const [draft, setDraft] = useState(() => initialBootstrapRecovery.current?.message.content ?? initialConversationDraft.current?.content ?? '');
+  const initialComposerDraft = initialBootstrapRecovery.current?.message.content ?? initialConversationDraft.current?.content ?? '';
+  const composerDraftRef = useRef(initialComposerDraft);
+  const composerRef = useRef<ComposerHandle>(null);
+  const [composerHasText, setComposerHasText] = useState(() => Boolean(initialComposerDraft.trim()));
   const [streamStatus, setStreamStatus] = useState<StreamStatus>('disabled');
   const [liveText, setLiveText] = useState('');
   const [liveEvents, setLiveEvents] = useState<OpenHandsConversationEvent[]>([]);
@@ -4208,7 +4250,16 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     ? conversationComposerDraftStorageKey(host.id, workspace.id, selected.id)
     : undefined;
   const setComposerDraft = useCallback((value: string) => {
-    setDraft(value);
+    composerDraftRef.current = value;
+  }, []);
+  const replaceComposerDraft = useCallback((value: string) => {
+    composerDraftRef.current = value;
+    composerRef.current?.replace(value);
+    const hasText = Boolean(value.trim());
+    setComposerHasText(current => current === hasText ? current : hasText);
+  }, []);
+  const onComposerContentPresenceChange = useCallback((hasText: boolean) => {
+    setComposerHasText(current => current === hasText ? current : hasText);
   }, []);
   const activeComposerScope = useRef<string | undefined>(undefined);
   activeComposerScope.current = composerScope;
@@ -4222,6 +4273,23 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const clearConversationDraft = useCallback(() => {
     if (draftRecoveryStorageKey) writeConversationDraft(draftRecoveryStorageKey, undefined);
   }, [draftRecoveryStorageKey]);
+  const persistComposerDraft = useCallback((content = composerDraftRef.current) => {
+    composerDraftRef.current = content;
+    if (selectedComposerDraftStorageKey) {
+      writeConversationComposerDraft(selectedComposerDraftStorageKey, {
+        content, attachments, references, workspaceReferences, annotations: composerAnnotations,
+      });
+    }
+    if (pendingBootstrap || bootstrapRecovery) {
+      clearConversationDraft();
+      return;
+    }
+    if (!conversationDraft || !draftRecoveryStorageKey) return;
+    writeConversationDraft(draftRecoveryStorageKey, {
+      draft: conversationDraft, content, attachments, references, workspaceReferences, annotations: composerAnnotations, providerId: newConversationProviderId,
+      modelName: newConversationModelName, reasoningEffort: newConversationReasoningEffort,
+    });
+  }, [attachments, bootstrapRecovery, clearConversationDraft, composerAnnotations, conversationDraft, draftRecoveryStorageKey, newConversationModelName, newConversationProviderId, newConversationReasoningEffort, pendingBootstrap, references, selectedComposerDraftStorageKey, workspaceReferences]);
   const connectedProviders = (providersQuery.data ?? []).filter(item => item.connection_state === 'CONNECTED' && item.models.some(model => model.enabled && model.is_default));
   const runtime = runtimeQuery.data;
   const runtimeWritable = Boolean(workspace && runtime?.write_available);
@@ -4654,22 +4722,19 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     }
     setEditing(false); setQueuedMessageMenuId(undefined); setQueuedMessageEditingId(undefined); setQueuedMessageEditingContent(''); clearLiveText(); pendingLiveEvents.current = []; if (liveEventsFrame.current !== undefined) window.cancelAnimationFrame(liveEventsFrame.current); liveEventsFrame.current = undefined; setLiveEvents([]); setHiddenEventIds(new Set()); setActiveTurnEventId(undefined); setExpiredTerminalSyncTurnKey(undefined); setRequestStartedAt(undefined); setConfirmationReason(''); setTurnState('idle'); queuedMessagesRef.current = []; nativeGuidanceOptimisticEventIds.current.clear(); setQueuedMessages([]); setPendingRewrite(undefined);
     if (recoveredComposer) {
-      setDraft(recoveredComposer.content);
+      replaceComposerDraft(recoveredComposer.content);
       setAttachments(recoveredComposer.attachments);
       setReferences(recoveredComposer.references);
       setWorkspaceReferences(recoveredComposer.workspaceReferences);
       setComposerAnnotations(recoveredComposer.annotations);
     } else if (!conversationDraft) {
-      setDraft(''); setAttachments([]); setReferences([]); setWorkspaceReferences([]); setComposerAnnotations([]);
+      replaceComposerDraft(''); setAttachments([]); setReferences([]); setWorkspaceReferences([]); setComposerAnnotations([]);
     }
     setOperationError(undefined);
-  }, [clearLiveText, composerScope, conversationDraft, selectedComposerDraftStorageKey]);
+  }, [clearLiveText, composerScope, conversationDraft, replaceComposerDraft, selectedComposerDraftStorageKey]);
   useEffect(() => {
-    if (!selectedComposerDraftStorageKey) return;
-    writeConversationComposerDraft(selectedComposerDraftStorageKey, {
-      content: draft, attachments, references, workspaceReferences, annotations: composerAnnotations,
-    });
-  }, [attachments, composerAnnotations, draft, references, selectedComposerDraftStorageKey, workspaceReferences]);
+    persistComposerDraft();
+  }, [persistComposerDraft]);
   useEffect(() => {
     if (!queuedMessagesStorageKey || queuedMessagesStorageKeyRef.current !== queuedMessagesStorageKey) return;
     writeQueuedMessages(queuedMessagesStorageKey, queuedMessages);
@@ -4715,17 +4780,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       setNewConversationReasoningEffort(model.default_reasoning_effort ?? null);
     }
   }, [connectedProviders, newConversationModelName, newConversationProviderId]);
-  useEffect(() => {
-    if (pendingBootstrap || bootstrapRecovery) {
-      clearConversationDraft();
-      return;
-    }
-    if (!conversationDraft || !draftRecoveryStorageKey) return;
-    writeConversationDraft(draftRecoveryStorageKey, {
-      draft: conversationDraft, content: draft, attachments, references, workspaceReferences, annotations: composerAnnotations, providerId: newConversationProviderId,
-      modelName: newConversationModelName, reasoningEffort: newConversationReasoningEffort,
-    });
-  }, [attachments, bootstrapRecovery, clearConversationDraft, composerAnnotations, conversationDraft, draft, draftRecoveryStorageKey, newConversationModelName, newConversationProviderId, newConversationReasoningEffort, pendingBootstrap, references, workspaceReferences]);
   useEffect(() => {
     if (turnState === 'pausing' && nativeExecutionStatus?.toLowerCase() === 'paused') {
       setTurnState('paused');
@@ -4917,7 +4971,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       setTurnState('idle');
       setConversationDraft(current => current ?? draftForRecovery);
       if (activeComposerScope.current === message.scope) {
-        setComposerDraft(message.content);
+        replaceComposerDraft(message.content);
         setAttachments(message.items);
         setReferences(message.references);
       }
@@ -4937,7 +4991,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     setRequestStartedAt(undefined);
     setTurnState('idle');
     if (activeComposerScope.current === message.scope) {
-      setComposerDraft(message.content);
+      replaceComposerDraft(message.content);
       setAttachments(message.items);
       setReferences(message.references);
     }
@@ -5279,7 +5333,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       : undefined;
     if (recovery) {
       setConversationDraft(recovery.draft);
-      setDraft(recovery.content);
+      replaceComposerDraft(recovery.content);
       setAttachments(recovery.attachments);
       setReferences(recovery.references);
       setWorkspaceReferences(recovery.workspaceReferences ?? []);
@@ -5289,7 +5343,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       setNewConversationReasoningEffort(recovery.reasoningEffort);
     } else {
       setConversationDraft({ ...next, id: randomId(), capabilityVersionIds: next.capabilityVersionIds ?? [] });
-      setDraft('');
+      replaceComposerDraft('');
       setAttachments([]);
       setReferences([]); setWorkspaceReferences([]);
       setComposerAnnotations([]);
@@ -5302,15 +5356,15 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     setHiddenEventIds(new Set());
     setTurnState('idle');
     onNavigate(host.rootPath);
-  }, [clearBootstrapRecovery, clearLiveText, host.id, host.rootPath, onNavigate, workspace]);
+  }, [clearBootstrapRecovery, clearLiveText, host.id, host.rootPath, onNavigate, replaceComposerDraft, workspace]);
   useEffect(() => {
     if (!autoOpenDraft || !workspace || selectedBindingId || conversationDraft) return;
     openConversationDraft({ displayName: '根工作区' });
   }, [autoOpenDraft, conversationDraft, openConversationDraft, selectedBindingId, workspace]);
-  const enqueueDraft = useCallback(() => {
-    const content = draft.trim();
+  const enqueueDraft = useCallback((draftContent = composerDraftRef.current) => {
+    const content = draftContent.trim();
     if ((!content && !attachments.length && !references.length && !workspaceReferences.length && !composerAnnotations.length) || migrateStreaming.isPending || pendingMigratedSend || effectiveTurnState === 'pausing' || effectiveTurnState === 'resuming') return;
-    setComposerDraft('');
+    replaceComposerDraft('');
     setOperationError(undefined);
     if (!composerScope) return;
     const message = { id: randomId(), scope: composerScope, content, items: attachments, references, workspaceReferences, annotations: composerAnnotations };
@@ -5327,10 +5381,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         setTurnState('running');
         bootstrap.mutate(message);
       }
-      else { setComposerDraft(content); setAttachments(attachments); setReferences(references); setWorkspaceReferences(workspaceReferences); setComposerAnnotations(composerAnnotations); }
+      else { replaceComposerDraft(content); setAttachments(attachments); setReferences(references); setWorkspaceReferences(workspaceReferences); setComposerAnnotations(composerAnnotations); }
       return;
     }
-    if (!canWrite) { setComposerDraft(content); setAttachments(attachments); setReferences(references); setWorkspaceReferences(workspaceReferences); setComposerAnnotations(composerAnnotations); return; }
+    if (!canWrite) { replaceComposerDraft(content); setAttachments(attachments); setReferences(references); setWorkspaceReferences(workspaceReferences); setComposerAnnotations(composerAnnotations); return; }
     if (!selected) return;
     const nativeGuidance = effectiveTurnState === 'running';
     const queuedMessage: QueuedMessage = {
@@ -5346,9 +5400,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       nativeGuidance ? '正在追加到当前回复' : undefined,
     );
     send.mutate({ ...queuedMessage, bindingId: selected.id });
-  }, [attachments, bootstrap, canBootstrap, canWrite, commitQueuedMessages, composerAnnotations, composerScope, conversationDraft, draft, effectiveTurnState, migrateStreaming.isPending, pendingMigratedSend, references, selected, send, setComposerDraft, showOptimisticUserBubble, workspaceReferences]);
-  const sendDraftDirectly = useCallback(() => {
-    const content = draft.trim();
+  }, [attachments, bootstrap, canBootstrap, canWrite, commitQueuedMessages, composerAnnotations, composerScope, conversationDraft, effectiveTurnState, migrateStreaming.isPending, pendingMigratedSend, references, replaceComposerDraft, selected, send, showOptimisticUserBubble, workspaceReferences]);
+  const sendDraftDirectly = useCallback((draftContent = composerDraftRef.current) => {
+    const content = draftContent.trim();
     const hasComposerMessage = Boolean(content || attachments.length || references.length || workspaceReferences.length || composerAnnotations.length);
     if (!hasComposerMessage) {
       const queuedMessage = queuedMessages.find(message => message.deliveryState === 'queued');
@@ -5361,8 +5415,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       updateQueuedMessage(queuedMessage.id, message => ({ ...message, nativeGuidance: true }));
       return;
     }
-    enqueueDraft();
-  }, [attachments.length, canWrite, composerAnnotations.length, conversationDraft, draft, effectiveTurnState, enqueueDraft, migrateStreaming.isPending, pendingMigratedSend, queuedMessages, references.length, selected, showOptimisticUserBubble, updateQueuedMessage, workspaceReferences.length]);
+    enqueueDraft(draftContent);
+  }, [attachments.length, canWrite, composerAnnotations.length, conversationDraft, effectiveTurnState, enqueueDraft, migrateStreaming.isPending, pendingMigratedSend, queuedMessages, references.length, selected, showOptimisticUserBubble, updateQueuedMessage, workspaceReferences.length]);
   const sendQueuedMessageImmediately = useCallback((message: QueuedMessage) => {
     if (!canWrite || effectiveTurnState !== 'running' || !selected?.streaming_callback_ready || message.scope !== selected.id || message.deliveryState !== 'queued') return;
     // The message stays in the persisted queue until the formal OpenHands
@@ -5490,7 +5544,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const composerNote = visibleQueuedMessages.length > 0 ? `已排队 ${visibleQueuedMessages.length} 条` : '';
   const visibleError = operationError ?? confirmationQuery.error ?? eventsQuery.error;
   const composerHasContent = Boolean(
-    draft.trim() || attachments.length || references.length || workspaceReferences.length || composerAnnotations.length,
+    composerHasText || attachments.length || references.length || workspaceReferences.length || composerAnnotations.length,
   );
   const composerActionSends = composerHasContent && !pendingConfirmation && !conversationActivity.synchronizing;
   const composerActionLabel = bootstrap.isPending ? '正在创建会话' : migrateStreaming.isPending || pendingMigratedSend ? '正在迁移历史会话' : pendingConfirmation ? '等待工具确认' : conversationActivity.synchronizing ? '正在同步会话结束' : composerActionSends
@@ -5720,7 +5774,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         annotations={messageAnnotations}
         onCreateAnnotation={selected && canWrite ? anchor => void createAnnotation('CONVERSATION_TEXT', anchor) : undefined}
         onLocateAnnotation={locateAnnotation}
-        taskControl={eventsQuery.data?.task_control ?? []}
+        taskControl={eventsQuery.data?.task_control ?? EMPTY_TASK_CONTROL}
         monitoring={eventsQuery.data?.monitoring}
         connectionState={inputReadinessQuery.isError ? 'unavailable' : streamStatus === 'recovering' ? 'recovering' : streamStatus === 'connecting' ? 'checking' : inputReadinessQuery.isFetching && !inputReadinessQuery.data ? 'checking' : 'connected'}
       /> : <div className="agent-workbench-empty"><Bot size={32}/><b>新建会话开始协作</b><span>{features.workDirectories ? '每个会话共享同一工作区，但保留独立的对话与事件记录。' : '会话固定在当前节点 Attempt 的隔离工作目录。'}</span><button className="primary" disabled={!canOpenConversation} onClick={() => openConversationDraft({ displayName: features.workDirectories ? '根工作区' : '节点工作目录' })}><Plus size={15}/>新建会话</button></div>}
@@ -5752,7 +5806,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
           };
           return <article key={message.id} draggable={deliveryState === 'queued' && !editingQueueMessage} onDragStart={event => { if (deliveryState !== 'queued' || editingQueueMessage || !(event.target instanceof Element) || !event.target.closest('.queue-drag-handle')) { event.preventDefault(); return; } event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', message.id); setDraggedQueuedMessageId(message.id); }} onDragOver={event => { if (deliveryState === 'queued' && draggedQueuedMessageId && draggedQueuedMessageId !== message.id) event.preventDefault(); }} onDrop={event => { event.preventDefault(); const sourceId = event.dataTransfer.getData('text/plain') || draggedQueuedMessageId; if (sourceId && deliveryState === 'queued') moveQueuedMessage(sourceId, message.id); setDraggedQueuedMessageId(undefined); }} onDragEnd={() => setDraggedQueuedMessageId(undefined)} className={`delivery-${deliveryState}${draggedQueuedMessageId === message.id ? ' dragging' : ''}${editingQueueMessage ? ' editing' : ''}`}><button type="button" className="queue-drag-handle" aria-label={`拖动排队消息 ${index + 1} 以调整顺序`} title="拖动调整顺序" disabled={deliveryState !== 'queued' || editingQueueMessage} tabIndex={-1}><GripVertical size={14}/></button><small>{index + 1}</small>{editingQueueMessage ? <textarea className="queue-edit-input" aria-label={`编辑排队消息 ${index + 1}`} autoFocus value={queuedMessageEditingContent} onChange={event => setQueuedMessageEditingContent(event.target.value)} onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); setQueuedMessageEditingId(undefined); setQueuedMessageEditingContent(''); } if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); saveQueuedMessageEdit(); } }}/> : <p>{message.content || (message.references.length ? `会话引用 ${message.references.length} 条` : message.workspaceReferences?.length ? `工作区引用 ${message.workspaceReferences.length} 条` : '图片附件')}</p>}<span>{[status, message.items.length ? `${message.items.length} 个附件` : '', message.references.length ? `${message.references.length} 条会话引用` : '', message.workspaceReferences?.length ? `${message.workspaceReferences.length} 条工作区引用` : ''].filter(Boolean).join(' · ')}</span><div>{editingQueueMessage ? <><button type="button" className="queue-edit-save" aria-label={`保存排队消息 ${index + 1}`} title="保存编辑" disabled={!hasEditedContent} onClick={saveQueuedMessageEdit}><Check size={13}/></button><button type="button" className="queue-edit-cancel" aria-label={`取消编辑排队消息 ${index + 1}`} title="取消编辑" onClick={() => { setQueuedMessageEditingId(undefined); setQueuedMessageEditingContent(''); }}><X size={13}/></button></> : <><button type="button" aria-label={`调整方向排队消息 ${index + 1}`} title="立即发送，调整当前回复方向" disabled={deliveryState !== 'queued' || !canWrite || effectiveTurnState !== 'running' || !selected?.streaming_callback_ready || message.scope !== selected.id} onClick={() => sendQueuedMessageImmediately(message)}><CornerDownRight size={12}/>调整方向</button>{deliveryState === 'ambiguous' && <button type="button" className="queue-refresh" aria-label={`刷新会话确认排队消息 ${index + 1}`} title="刷新会话确认，系统不会自动重发" onClick={refresh}>刷新确认</button>}<button type="button" className="queue-remove" aria-label={`移除排队消息 ${index + 1}`} disabled={!removable} onClick={() => { commitQueuedMessages(items => items.filter(item => item.id !== message.id)); if (queuedMessageEditingId === message.id) { setQueuedMessageEditingId(undefined); setQueuedMessageEditingContent(''); } }}><X size={13}/></button><button type="button" className="queue-more" aria-label={`更多排队消息操作 ${index + 1}`} title="更多操作" disabled={!editable} aria-expanded={queuedMessageMenuId === message.id} onClick={() => setQueuedMessageMenuId(current => current === message.id ? undefined : message.id)}><Ellipsis size={14}/></button>{queuedMessageMenuId === message.id && <div className="queue-menu" role="menu"><button type="button" role="menuitem" disabled={index === 0} onClick={() => { moveQueuedMessageByOffset(message.id, -1); setQueuedMessageMenuId(undefined); }}>上移</button><button type="button" role="menuitem" disabled={index === queuedMessages.length - 1} onClick={() => { moveQueuedMessageByOffset(message.id, 1); setQueuedMessageMenuId(undefined); }}>下移</button><button type="button" role="menuitem" onClick={() => { setQueuedMessageEditingId(message.id); setQueuedMessageEditingContent(message.content); setQueuedMessageMenuId(undefined); }}>编辑</button></div>}</>}</div>{message.deliveryError && <em className="queue-delivery-error">{message.deliveryError}</em>}</article>;
         })}</section>}
-        <ComposerCapabilityAutocomplete draft={draft} suggestions={composerSuggestions} placeholder={pendingConfirmation ? '请先处理上方工具确认…' : conversationActivity.synchronizing ? '正在同步上一轮结束状态…' : '给 Agent 发消息…'} disabled={!canCompose || Boolean(pendingConfirmation) || bootstrap.isPending || migrateStreaming.isPending || Boolean(pendingMigratedSend) || conversationActivity.synchronizing || conversationActivity.state === 'pausing' || conversationActivity.state === 'resuming'} onDraftChange={setComposerDraft} onPaste={event => { if (!features.attachments || !composerScope) return; const files = transferredFiles(event.clipboardData); if (!files.length) return; event.preventDefault(); for (const file of files) upload.mutate({ file, scope: composerScope }); }} onDropFiles={features.attachments && composerScope ? files => { for (const file of files) upload.mutate({ file, scope: composerScope }); } : undefined} onDropWorkspaceFiles={paths => setWorkspaceReferences(current => [...current, ...paths.flatMap(path => current.some(reference => reference.path === path) ? [] : [{ path, kind: 'file' as const, display_name: path.split('/').filter(Boolean).pop() ?? path }])])} onSubmit={enqueueDraft} onDirectSubmit={sendDraftDirectly} onManageCapabilities={features.capabilities && (selected || features.draftCapabilitySelection) ? () => setCapabilityManagerOpen(true) : undefined} onWorkspaceReferenceSelected={() => { setWorkspaceReferenceQuery(''); setWorkspaceReferencePickerOpen(true); }}/>
+        <ComposerCapabilityAutocomplete ref={composerRef} initialDraft={composerDraftRef.current} scope={composerScope} suggestions={composerSuggestions} placeholder={pendingConfirmation ? '请先处理上方工具确认…' : conversationActivity.synchronizing ? '正在同步上一轮结束状态…' : '给 Agent 发消息…'} disabled={!canCompose || Boolean(pendingConfirmation) || bootstrap.isPending || migrateStreaming.isPending || Boolean(pendingMigratedSend) || conversationActivity.synchronizing || conversationActivity.state === 'pausing' || conversationActivity.state === 'resuming'} onDraftChange={setComposerDraft} onContentPresenceChange={onComposerContentPresenceChange} onDraftPersist={persistComposerDraft} onPaste={event => { if (!features.attachments || !composerScope) return; const files = transferredFiles(event.clipboardData); if (!files.length) return; event.preventDefault(); for (const file of files) upload.mutate({ file, scope: composerScope }); }} onDropFiles={features.attachments && composerScope ? files => { for (const file of files) upload.mutate({ file, scope: composerScope }); } : undefined} onDropWorkspaceFiles={paths => setWorkspaceReferences(current => [...current, ...paths.flatMap(path => current.some(reference => reference.path === path) ? [] : [{ path, kind: 'file' as const, display_name: path.split('/').filter(Boolean).pop() ?? path }])])} onSubmit={enqueueDraft} onDirectSubmit={sendDraftDirectly} onManageCapabilities={features.capabilities && (selected || features.draftCapabilitySelection) ? () => setCapabilityManagerOpen(true) : undefined} onWorkspaceReferenceSelected={() => { setWorkspaceReferenceQuery(''); setWorkspaceReferencePickerOpen(true); }}/>
         {features.attachments && attachments.length > 0 && <div className="agent-attachments">{attachments.map(item => <span key={item.path}><button type="button" className="agent-attachment-open" title={`在右侧查看附件：${item.filename}`} onClick={() => openAttachmentInDrawer(item)}>{item.image_data_url && <img src={item.image_data_url} alt=""/>}<em>{item.filename}</em></button><button type="button" className="agent-attachment-remove" aria-label={`移除附件 ${item.filename}`} onClick={() => setAttachments(all => all.filter(candidate => candidate.path !== item.path))}>×</button></span>)}</div>}
         {references.length > 0 && <div className="agent-attachments agent-conversation-references" aria-label="已添加的会话引用">{references.map((reference, index) => <span key={`${reference.eventId}:${reference.content}`}><span className="agent-attachment-open" title={reference.content}><Quote size={14}/><em>{`会话引用 ${index + 1}`}</em></span><button type="button" className="agent-attachment-remove" aria-label={`移除会话引用 ${index + 1}`} onClick={() => setReferences(current => current.filter(item => item !== reference))}>×</button></span>)}</div>}
         {(selected || conversationDraft) && <ComposerAnnotationList annotations={composerAnnotations} onLocate={locateAnnotation} onRemove={annotation => setComposerAnnotations(current => current.filter(item => item.id !== annotation.id))} onUpdate={(annotation, comment) => void updateAnnotation(annotation, comment)}/>}

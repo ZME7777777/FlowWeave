@@ -6575,6 +6575,21 @@ Workspace 为边界保存在 `localStorage`，不写入 API、数据库或 OpenH
 直接进入投递路径，借由既有 `run=true` 服务端调用继续原生会话。只有运行中且历史会话未声明 `streaming_callback_ready`
 时保留本地队列降级。队列编辑改为原位置 textarea，保存时仅替换内容并保留投递 ID、顺序、附件、引用和注释元数据。
 
+### FR-499 Composer 本地草稿隔离与会话渲染边界 — DONE
+
+依赖：FR-498。
+
+目标：在长会话中输入文字不得让工作台根组件按字符更新并重新协调整段已挂载会话历史。Composer 应自行维护本地文本，
+只向上层暴露稳定的内容快照、空／非空边沿和防抖持久化；会话展示应有明确的 memo 边界。
+
+范围：仅调整 Agent 工作台 Composer 的本地草稿状态、会话／草稿恢复与持久化接线，以及 `ConversationSurface` 的渲染
+边界。不得在本切片改变历史事件获取策略、历史 DOM 窗口化、定位条数据或定位条的 hover／drag 行为；它们分别留给后续
+切片。不得修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。
+
+完成：Composer 文本状态收敛在本地组件；工作台根只保留 ref 快照、空／非空状态和操作性替换。草稿按 400ms 防抖持久化，
+并在会话切换或卸载时先 flush 旧 scope，避免丢失或错写草稿。`ConversationSurface` 建立 memo 边界，空任务控制数组也
+保持稳定引用；未改变历史事件获取、历史 DOM 窗口化或定位条交互。
+
 ### FR-497 会话配置组合收拢与认证同步异常兼容 — DONE
 
 依赖：FR-489。
@@ -6652,6 +6667,7 @@ FlowWeave 本地累加后猜测压缩边界。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-21 | FR-499 | Web TypeScript typecheck、受影响文件定向 ESLint、Agent composer 草稿恢复定向 Playwright（1 passed）、Alembic head、`git diff --check` 与任务状态唯一性 | PASS：Composer 的按字符输入不再更新工作台根组件状态；会话切换与卸载按旧 scope flush，400ms 防抖持久化仍保留。`ConversationSurface` 通过 memo 与稳定的空任务控制引用隔离不相关的 Composer 更新。唯一 Alembic head 为 `0120_agent_credential_sync`；未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-21 | FR-498 | Web TypeScript typecheck、受影响文件定向 ESLint、顶层 Agent 工作区产品流定向 Playwright 尝试、Alembic head、`git diff --check` 与任务状态唯一性 | PASS（静态）：直接发送立即投影用户消息并异步提交，运行中仅在正式 HTTP cursor 返回前显示追加状态；暂停输入走同一直接投递路径；未提交队列项可原地编辑而不重建其投递记录。定向 Playwright 已启动本地 Vite 服务，但在本切片新增断言前的既有空响应恢复“暂停当前 Agent”断言（第 953 行）超时，未记为浏览器回归通过。唯一 Alembic head 为 `0120_agent_credential_sync`；未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-21 | FR-497 | 受影响 Python Ruff format/check、`py_compile`；认证同步 schema guard 三条纯逻辑回归；Web TypeScript typecheck、定向 ESLint；Alembic head、`git diff --check` 与任务状态唯一性 | PASS（静态／纯逻辑）：Skill 组合收拢为能力工具栏中的可访问图标菜单，既有会话的六行配置网格与新会话的五行网格分别保持列表和底部操作栏布局；侧栏入口统一为“会话配置”。认证同步 schema guard 识别被 `InternalError` 包装、原始异常携带 `42P01` 的 PostgreSQL 缺表情形，并只将已知缺失 schema 转为稳定 503。完整 `tests/test_conversations.py -k credential_sync_schema_guard` 在全局 Testcontainers fixture 初始化时因本机 Docker daemon 不可用而阻断，未进入断言且未记为通过。唯一 Alembic head 为 `0120_agent_credential_sync`；未修改迁移、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-21 | FR-495 | Web TypeScript typecheck、`product-flow.spec.ts` 定向 ESLint、文件树层叠静态核对、`git diff --check` 与任务状态唯一性；顶层 Agent 工作区产品流定向 Playwright 尝试 | PASS（静态）：工具栏 `z-index` 为 30，高于固定目录行的最高 20；回归覆盖展开懒加载目录、收起按钮命中点和收起后的嵌套文件隐藏。定向 Playwright 在新增文件树断言前，于既有“暂停当前 Agent”断言（第 947 行）超时，因此未计为通过。未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |

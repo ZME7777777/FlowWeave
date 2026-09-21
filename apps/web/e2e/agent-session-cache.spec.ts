@@ -327,7 +327,7 @@ test('Agent composer retains each conversation draft and uploaded attachment acr
   const workspace = { id: 'draft-workspace', display_name: '草稿工作区', desired_state: 'RUNNING', updated_at: now };
   const conversations = ['draft-conversation-a', 'draft-conversation-b'].map((id, index) => ({
     id, display_title: index === 0 ? '草稿会话 A' : '草稿会话 B', title_state: 'MANUAL',
-    lifecycle: 'ACTIVE', streaming_callback_ready: true, execution_status: 'idle', created_at: now, updated_at: now,
+    lifecycle: 'ACTIVE', streaming_callback_ready: true, write_available: true, execution_status: 'idle', created_at: now, updated_at: now,
   }));
   await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
   await page.route('**/api/v1/**', async route => {
@@ -362,17 +362,17 @@ test('Agent composer retains each conversation draft and uploaded attachment acr
   await page.getByLabel('上传附件').setInputFiles({ name: '保留附件.txt', mimeType: 'text/plain', buffer: Buffer.from('retained') });
   await expect(page.locator('.agent-composer .agent-attachments').getByText('保留附件.txt', { exact: true })).toBeVisible();
 
-  await page.getByRole('button', { name: '草稿会话 B 可继续会话' }).click();
+  await page.getByRole('button', { name: '草稿会话 B', exact: true }).click();
   await expect(composer).toHaveValue('');
   await composer.fill('会话 B 的未发送内容');
-  await page.getByRole('button', { name: '草稿会话 A 可继续会话' }).click();
+  await page.getByRole('button', { name: '草稿会话 A', exact: true }).click();
   await expect(composer).toHaveValue('会话 A 的未发送内容');
   await expect(page.locator('.agent-composer .agent-attachments').getByText('保留附件.txt', { exact: true })).toBeVisible();
 
   await page.reload();
   await expect(composer).toHaveValue('会话 A 的未发送内容');
   await expect(page.locator('.agent-composer .agent-attachments').getByText('保留附件.txt', { exact: true })).toBeVisible();
-  await page.getByRole('button', { name: '草稿会话 B 可继续会话' }).click();
+  await page.getByRole('button', { name: '草稿会话 B', exact: true }).click();
   await expect(composer).toHaveValue('会话 B 的未发送内容');
 });
 
