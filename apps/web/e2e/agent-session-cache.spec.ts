@@ -570,3 +570,121 @@ test('Conversation context menu marks a conversation unread until it is opened a
   await expect(unreadMarker).toHaveCount(0);
   await expect.poll(() => page.evaluate(() => localStorage.getItem('flowweave:agent-workspace-unread:agent-workspace:unread-workspace'))).not.toContain('unread-conversation-a');
 });
+
+test('Conversation sidebar pins locally, orders activity, and reveals the selected source row', async ({ page }) => {
+  let authenticated = false;
+  const workspace = { id: 'sidebar-workspace', display_name: '侧栏工作区', desired_state: 'RUNNING', updated_at: now };
+  const directory = {
+    id: 'sidebar-directory', display_name: '归属工作区',
+    current_version: { working_directory: '/runtime/workspace/project/directory' },
+  };
+  const conversations = [
+    {
+      id: 'sidebar-root-unread', display_title: '未读根会话', title_state: 'MANUAL', lifecycle: 'ACTIVE',
+      streaming_callback_ready: true, write_available: true, execution_status: 'idle',
+      created_at: '2026-09-12T09:00:00Z', updated_at: '2026-09-12T09:10:00Z',
+    },
+    {
+      id: 'sidebar-directory-pinned', display_title: '归属工作区会话', title_state: 'MANUAL', lifecycle: 'ACTIVE',
+      streaming_callback_ready: true, write_available: true, execution_status: 'idle', work_directory_id: directory.id,
+      created_at: '2026-09-12T09:20:00Z', updated_at: '2026-09-12T09:20:00Z',
+    },
+    {
+      id: 'sidebar-directory-running', display_title: '运行中目标会话', title_state: 'MANUAL', lifecycle: 'ACTIVE',
+      streaming_callback_ready: true, write_available: true, execution_status: 'running', work_directory_id: directory.id,
+      created_at: '2026-09-12T09:30:00Z', updated_at: '2026-09-12T09:50:00Z',
+    },
+    {
+      id: 'sidebar-search-target', display_title: '搜索目标会话', title_state: 'MANUAL', lifecycle: 'ACTIVE',
+      streaming_callback_ready: true, write_available: true, execution_status: 'idle',
+      created_at: '2026-09-12T08:30:00Z', updated_at: '2026-09-12T08:30:00Z',
+    },
+  ];
+  const search = {
+    id: 'sidebar-search', query: '精准定位', state: 'SUCCEEDED',
+    hits: [{
+      binding_id: 'sidebar-search-target', event_id: 'sidebar-search-event', title: '搜索目标会话',
+      source: 'agent', timestamp: '2026-09-12T08:30:00Z', content: '这是需要精准定位的搜索内容。',
+    }],
+  };
+
+  await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path.endsWith('/auth/me')) return authenticated ? json(route, user) : json(route, { error: { code: 'AUTHENTICATION_REQUIRED', message: '请先登录' } }, 401);
+    if (path.endsWith('/auth/login') && request.method() === 'POST') { authenticated = true; return json(route, user); }
+    if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
+    if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
+    if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: conversations, next_cursor: null });
+    if (path.endsWith('/conversation-searches') && request.method() === 'POST') return json(route, search);
+    if (path.endsWith('/conversation-searches/sidebar-search')) return json(route, search);
+    if (path.endsWith('/events')) {
+      const bindingId = path.split('/').at(-2)!;
+      const eventId = bindingId === 'sidebar-search-target' ? 'sidebar-search-event' : `${bindingId}-event`;
+      return json(route, {
+        events: [{ id: eventId, event_type: 'MESSAGE', payload: { source: 'agent', parent_id: '__root__', content: bindingId === 'sidebar-search-target' ? '这是需要精准定位的搜索内容。' : `会话 ${bindingId}`, timestamp: now } }],
+        next_cursor: null, history_cursor: null, result: { status: bindingId === 'sidebar-directory-running' ? 'RUNNING' : 'COMPLETED' },
+      });
+    }
+    if (path.endsWith('/work-directories')) return json(route, {
+      root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [directory],
+    });
+    if (path.endsWith('/workspace')) return json(route, {
+      root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: '/runtime/workspace/project',
+      work_directory: null, files: [], repositories: [], runtime: {}, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '不可用', note: '' } },
+    });
+    if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
+    if (path.endsWith('/input-readiness')) return json(route, { ready: true, execution_status: 'idle' });
+    if (path.endsWith('/context')) return json(route, { model_name: 'test-model', window_tokens: 128_000, used_tokens: 1_024, usage_current: true });
+    if (path.endsWith('/model-providers') || path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
+    if (path.includes('/conversations/') && request.method() === 'GET') {
+      const id = path.split('/').at(-1)!;
+      return json(route, conversations.find(item => item.id === id));
+    }
+    return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+  });
+
+  await page.goto('/');
+  await login(page);
+  await page.goto('/agent/conversations/sidebar-root-unread');
+
+  const pinnedConversation = page.getByRole('button', { name: '归属工作区会话', exact: true });
+  await pinnedConversation.click({ button: 'right' });
+  await page.getByRole('menuitem', { name: '置顶' }).click();
+  const pinnedSection = page.getByRole('region', { name: '置顶会话' });
+  await expect(pinnedSection.getByRole('button', { name: '归属工作区会话', exact: true })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => localStorage.getItem('flowweave:agent-workspace-pinned:agent-workspace:sidebar-workspace'))).toContain('sidebar-directory-pinned');
+  await expect(page.locator('.agent-workspace-group').filter({ hasText: '归属工作区' }).getByRole('button', { name: '归属工作区会话', exact: true })).toHaveCount(0);
+
+  await page.reload();
+  const persistedPinnedConversation = page.getByRole('region', { name: '置顶会话' }).getByRole('button', { name: '归属工作区会话', exact: true });
+  await expect(persistedPinnedConversation).toBeVisible();
+  await persistedPinnedConversation.click({ button: 'right' });
+  await page.getByRole('menuitem', { name: '取消置顶' }).click();
+  await expect(page.getByRole('region', { name: '置顶会话' })).toHaveCount(0);
+  await expect(page.locator('.agent-workspace-group').filter({ hasText: '归属工作区' }).getByRole('button', { name: '归属工作区会话', exact: true })).toBeVisible();
+
+  const unreadConversation = page.getByRole('button', { name: '未读根会话', exact: true });
+  await unreadConversation.click({ button: 'right' });
+  await page.getByRole('menuitem', { name: '标记为未读' }).click();
+  await page.getByRole('button', { name: /查看活动会话（2）/ }).click();
+  const activity = page.getByRole('region', { name: '活动会话' });
+  await expect(activity).toBeVisible();
+  await expect.poll(() => activity.locator('[data-conversation-binding-id]').evaluateAll(rows => rows.map(row => row.getAttribute('data-conversation-binding-id')))).toEqual([
+    'sidebar-directory-running',
+    'sidebar-root-unread',
+  ]);
+
+  await activity.getByRole('button', { name: '运行中目标会话', exact: true }).click();
+  await expect(page).toHaveURL(/\/agent\/conversations\/sidebar-directory-running$/);
+  await expect(activity).toHaveCount(0);
+  await expect(page.locator('[data-conversation-binding-id="sidebar-directory-running"]')).toHaveClass(/sidebar-reveal/);
+
+  await page.getByRole('button', { name: '搜索会话' }).click();
+  await page.getByLabel('搜索会话内容').fill('精准定位');
+  await page.getByLabel('搜索会话内容').press('Enter');
+  await page.getByRole('dialog').getByRole('button', { name: /搜索目标会话/ }).click();
+  await expect(page).toHaveURL(/\/agent\/conversations\/sidebar-search-target$/);
+  await expect(page.locator('[data-conversation-event-id="sidebar-search-event"]')).toHaveClass(/conversation-search-target/);
+});
