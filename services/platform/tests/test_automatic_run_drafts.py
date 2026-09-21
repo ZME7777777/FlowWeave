@@ -928,6 +928,80 @@ def test_copy_nested_stepwise_record_requires_its_persisted_start_node_configura
     assert client.get(f"/api/v1/flow-runs/{parent['id']}/stepwise-runs").json() == [source]
 
 
+def test_stepwise_config_actions_recover_legacy_record_start_node(client, db_session_factory):
+    flow = _create_flow(client)
+    parent = client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={"environment_version_id": client.environment_version_id},
+    ).json()
+    source = client.post(
+        f"/api/v1/flow-runs/{parent['id']}/stepwise-runs",
+        json={"name": "历史逐步记录", "start_node_key": "first"},
+    ).json()
+    activated = client.post(
+        f"/api/v1/flow-runs/{source['id']}/nodes/first/runs",
+        json=_node_plan(client, "历史记录的首节点配置"),
+    )
+    assert activated.status_code == 201, activated.text
+
+    # Simulate a record created before FR-490 persisted start_node_key.
+    with db_session_factory() as db:
+        record = db.get(FlowRun, source["id"])
+        assert record is not None
+        record.automation_plan_json = None
+        db.commit()
+
+    exported = client.post(
+        f"/api/v1/flow-runs/{parent['id']}/stepwise-runs/config-exports",
+        json={"record_ids": [source["id"]]},
+    )
+    assert exported.status_code == 200, exported.text
+    assert exported.json()["records"][0]["start_node_key"] == "first"
+
+    copied = client.post(
+        f"/api/v1/flow-runs/{parent['id']}/stepwise-runs/{source['id']}/copy",
+        json={"name": "历史逐步记录副本"},
+    )
+    assert copied.status_code == 201, copied.text
+    assert copied.json()["start_node_key"] == "first"
+    with db_session_factory() as db:
+        repaired = db.get(FlowRun, source["id"])
+        assert repaired is not None
+        assert repaired.automation_plan_json == {"start_node_key": "first"}
+
+
+def test_stepwise_config_actions_support_legacy_parent_flow_run_record(client):
+    flow = _create_flow(client)
+    parent = client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={"environment_version_id": client.environment_version_id},
+    ).json()
+    activated = client.post(
+        f"/api/v1/flow-runs/{parent['id']}/nodes/first/runs",
+        json=_node_plan(client, "历史父记录的首节点配置"),
+    )
+    assert activated.status_code == 201, activated.text
+
+    exported = client.post(
+        f"/api/v1/flow-runs/{parent['id']}/stepwise-runs/config-exports",
+        json={"record_ids": [parent["id"]]},
+    )
+    assert exported.status_code == 200, exported.text
+    assert exported.json()["records"][0]["start_node_key"] == "first"
+    assert exported.json()["records"][0]["initial_configuration"]["startup_prompt"] == (
+        "历史父记录的首节点配置"
+    )
+
+    copied = client.post(
+        f"/api/v1/flow-runs/{parent['id']}/stepwise-runs/{parent['id']}/copy",
+        json={"name": "历史父记录副本"},
+    )
+    assert copied.status_code == 201, copied.text
+    assert copied.json()["id"] != parent["id"]
+    assert copied.json()["parent_flow_run_id"] == parent["id"]
+    assert copied.json()["start_node_key"] == "first"
+
+
 def test_schedule_occurrence_stays_in_original_flow_run_as_continuous_record(
     worker_client, worker_container
 ):

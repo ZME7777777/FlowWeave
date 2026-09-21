@@ -4141,6 +4141,83 @@ def nested_stepwise_run_record(db: Session, parent_run_id: str, record_id: str) 
     return record
 
 
+def _stepwise_initial_node(db: Session, record: FlowRun) -> tuple[str, NodeRun]:
+    """Resolve a stepwise record's first configured node.
+
+    Records created before ``start_node_key`` was persisted can still have a
+    durable first NodeRun. Recover that key from the NodeRun sequence and
+    persist it so later reads and operations use the same authority. A record
+    with no configured node remains invalid instead of guessing from events or
+    from the flow definition.
+    """
+
+    # Before stepwise records became child FlowRuns, their prompt-driven
+    # NodeRuns lived directly on the top-level parent. Keep that history
+    # usable for configuration export/copy without treating direct CHAT
+    # sessions as stepwise records.
+    if record.parent_flow_run_id is None:
+        if record.run_mode != "MANUAL":
+            raise DomainError(
+                "RUN_STATE_INVALID", "stepwise record has no initial node configuration", 409
+            )
+        candidates = list(
+            db.scalars(
+                select(NodeRun)
+                .where(NodeRun.flow_run_id == record.id)
+                .order_by(NodeRun.sequence_no, NodeRun.id)
+            )
+        )
+        for candidate in candidates:
+            if candidate.created_from == "HUMAN_CHAT":
+                continue
+            latest_attempt = db.scalar(
+                select(NodeAttempt)
+                .where(NodeAttempt.node_run_id == candidate.id)
+                .order_by(NodeAttempt.attempt_no.desc())
+                .limit(1)
+            )
+            if latest_attempt is None or latest_attempt.startup_mode == "CHAT":
+                continue
+            return candidate.flow_node_snapshot_key, candidate
+        raise DomainError(
+            "RUN_STATE_INVALID", "stepwise record has no initial node configuration", 409
+        )
+
+    plan = dict(record.automation_plan_json or {})
+    raw_start_node_key = plan.get("start_node_key")
+    if isinstance(raw_start_node_key, str) and raw_start_node_key:
+        start_node_key = raw_start_node_key
+        source_node = db.scalar(
+            select(NodeRun)
+            .where(
+                NodeRun.flow_run_id == record.id,
+                NodeRun.flow_node_snapshot_key == start_node_key,
+            )
+            .order_by(NodeRun.sequence_no, NodeRun.id)
+            .limit(1)
+        )
+    else:
+        source_node = db.scalar(
+            select(NodeRun)
+            .where(NodeRun.flow_run_id == record.id)
+            .order_by(NodeRun.sequence_no, NodeRun.id)
+            .limit(1)
+        )
+        if source_node is None:
+            raise DomainError(
+                "RUN_STATE_INVALID", "stepwise record has no initial node configuration", 409
+            )
+        start_node_key = source_node.flow_node_snapshot_key
+        plan["start_node_key"] = start_node_key
+        record.automation_plan_json = plan
+
+    if source_node is None:
+        raise DomainError(
+            "RUN_STATE_INVALID", "stepwise record has no initial node configuration", 409
+        )
+    return start_node_key, source_node
+
+
 def copy_nested_stepwise_run_record(
     db: Session,
     parent_run_id: str,
@@ -4155,33 +4232,14 @@ def copy_nested_stepwise_run_record(
     if parent.state in {FlowRunState.COMPLETED, FlowRunState.CANCELLED}:
         raise illegal("terminal FlowRun cannot copy a stepwise record", state=parent.state)
     source = _locked_run(db, source_record_id)
-    if (
+    is_legacy_parent_record = source.id == parent.id
+    if not is_legacy_parent_record and (
         source.parent_flow_run_id != parent.id
         or source.run_mode != "MANUAL"
         or source.parent_flow_run_id is None
     ):
         raise not_found("stepwise_run_record", source_record_id)
-    source_plan = dict(source.automation_plan_json or {})
-    source_start_node_key = source_plan.get("start_node_key")
-    if not isinstance(source_start_node_key, str):
-        raise DomainError(
-            "RUN_STATE_INVALID",
-            "stepwise record has no configured start node",
-            409,
-        )
-    source_node = db.scalar(
-        select(NodeRun)
-        .where(
-            NodeRun.flow_run_id == source.id,
-            NodeRun.flow_node_snapshot_key == source_start_node_key,
-        )
-        .order_by(NodeRun.sequence_no, NodeRun.id)
-        .limit(1)
-    )
-    if source_node is None:
-        raise DomainError(
-            "RUN_STATE_INVALID", "stepwise record has no initial node configuration", 409
-        )
+    source_start_node_key, source_node = _stepwise_initial_node(db, source)
     initial = db.scalar(
         select(NodeAttempt)
         .where(NodeAttempt.node_run_id == source_node.id)
@@ -4712,24 +4770,12 @@ def export_nested_stepwise_run_configs(
     parent = _run(db, parent_run_id)
     records: list[dict[str, Any]] = []
     for record_id in payload.record_ids:
-        record = nested_stepwise_run_record(db, parent.id, record_id)
-        plan = dict(record.automation_plan_json or {})
-        start_node_key = plan.get("start_node_key")
-        if not isinstance(start_node_key, str) or not start_node_key:
-            raise DomainError("RUN_STATE_INVALID", "stepwise record has no configured start node", 409)
-        source_node = db.scalar(
-            select(NodeRun)
-            .where(
-                NodeRun.flow_run_id == record.id,
-                NodeRun.flow_node_snapshot_key == start_node_key,
-            )
-            .order_by(NodeRun.sequence_no, NodeRun.id)
-            .limit(1)
+        record = (
+            parent
+            if record_id == parent.id
+            else nested_stepwise_run_record(db, parent.id, record_id)
         )
-        if source_node is None:
-            raise DomainError(
-                "RUN_STATE_INVALID", "stepwise record has no initial node configuration", 409
-            )
+        start_node_key, source_node = _stepwise_initial_node(db, record)
         initial = db.scalar(
             select(NodeAttempt)
             .where(NodeAttempt.node_run_id == source_node.id)
@@ -4737,7 +4783,9 @@ def export_nested_stepwise_run_configs(
             .limit(1)
         )
         if initial is None:
-            raise DomainError("RUN_STATE_INVALID", "stepwise record has no initial node attempt", 409)
+            raise DomainError(
+                "RUN_STATE_INVALID", "stepwise record has no initial node attempt", 409
+            )
         input_urls: dict[str, str] = {}
         for binding in _bindings(db, initial.id):
             if binding.binding_source == "PORT_MAPPING":
@@ -10235,6 +10283,22 @@ def run_detail(db: Session, run_id: str, *, include_artifacts: bool = True) -> d
     run = _run(db, run_id)
     automation_plan = dict(run.automation_plan_json or {})
     start_node_key = automation_plan.get("start_node_key")
+    if (
+        run.parent_flow_run_id is not None
+        and run.run_mode == "MANUAL"
+        and not (isinstance(start_node_key, str) and start_node_key)
+    ):
+        # Project the first durable node for pre-FR-490 stepwise records. The
+        # command paths use _stepwise_initial_node to persist the repair; this
+        # read projection keeps an old record selectable before that happens.
+        legacy_initial_node = db.scalar(
+            select(NodeRun)
+            .where(NodeRun.flow_run_id == run.id)
+            .order_by(NodeRun.sequence_no, NodeRun.id)
+            .limit(1)
+        )
+        if legacy_initial_node is not None:
+            start_node_key = legacy_initial_node.flow_node_snapshot_key
     schedule = db.get(FlowRunSchedule, run.schedule_id) if run.schedule_id else None
     environment = (
         db.get(EnvironmentVersion, run.environment_version_id)

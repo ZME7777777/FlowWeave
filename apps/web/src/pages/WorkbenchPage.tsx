@@ -1570,6 +1570,7 @@ export function WorkbenchPage() {
     ...parentRun,
     name: `${parentRun.name} · 历史逐步运行`,
     parent_flow_run_id: parentRun.id,
+    start_node_key: parentStepNodes[0]?.flow_node_snapshot_key,
   } satisfies FlowRunStepwiseRecord : undefined;
   const manualRecords = [
     ...(legacyStepwiseRecord ? [legacyStepwiseRecord] : []),
@@ -1944,7 +1945,7 @@ export function WorkbenchPage() {
   const selectedStepwiseRecords = manualRecords.filter(item => stepwiseSelectedIds.has(item.id));
   const selectedAutomaticRecords = automaticRecords.filter(item => automaticSelectedIds.has(item.id));
   const canCopyStepwiseRecord = selectedStepwiseRecords.length === 1
-    && selectedStepwiseRecords[0].id !== parentRun.id;
+    && selectedStepwiseRecords[0].node_runs.length > 0;
   const exportAutomaticRecords = async (recordIds: string[], target: ExportTarget) => {
     setAutomaticBusyId('config-export');
     try {
