@@ -6510,6 +6510,19 @@ typecheck、定向 ESLint、Alembic 唯一 head、`git diff --check` 与任务�
 session 和 provision 任务，消除记录 id 与 allocation 所有者不一致。复制只接受名称，并精确查找源记录持久化起始节点
 的初始 Attempt；起始节点未配置时返回 `RUN_STATE_INVALID`。
 
+### FR-495 工作区文件树固定目录工具栏层叠修复 — DONE
+
+依赖：FR-338。
+
+目标：工作区文件树滚动时，固定目录行不得遮挡或截获顶部操作栏的指针事件。用户通过“全部展开目录”展开懒加载目录后，
+必须仍可点击“全部收起目录”，并让嵌套文件恢复隐藏。
+
+范围：仅调整 Agent Workspace 文件树工具栏和固定目录行的层叠关系，并补充既有产品流的浏览器回归。不得改动文件树
+数据、展开状态逻辑、API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。
+
+完成：文件树粘性工具栏层级已高于固定目录行的最高层级，因此展开后的固定目录不会覆盖操作栏或截获收起按钮点击。
+产品流回归先展开目录并等待懒加载文件可见，再确认收起按钮位于命中点顶层，点击后验证嵌套文件隐藏。
+
 ### FR-492 工作区 Markdown Mermaid 预览 — DONE
 
 依赖：FR-406、FR-408、FR-409、FR-411、FR-478。
@@ -6584,6 +6597,7 @@ FlowWeave 本地累加后猜测压缩边界。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-21 | FR-495 | Web TypeScript typecheck、`product-flow.spec.ts` 定向 ESLint、文件树层叠静态核对、`git diff --check` 与任务状态唯一性；顶层 Agent 工作区产品流定向 Playwright 尝试 | PASS（静态）：工具栏 `z-index` 为 30，高于固定目录行的最高 20；回归覆盖展开懒加载目录、收起按钮命中点和收起后的嵌套文件隐藏。定向 Playwright 在新增文件树断言前，于既有“暂停当前 Agent”断言（第 947 行）超时，因此未计为通过。未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-21 | FR-494 | 受影响 Python `py_compile`、Ruff check；Web TypeScript typecheck、定向 ESLint；逐步创建、复制和记录选中定向 Playwright（3 passed）；Alembic head、`git diff --check` 与任务状态唯一性 | PASS（静态／浏览器）：起始节点选择会随创建请求持久化，创建／复制后选中对应画布节点并展开共享侧栏；逐步工具栏三枚操作按钮同排。服务回归覆盖父 Runtime owner、无效起始节点、起始节点配置复制和错误节点拒绝。完整后端 pytest 受本机 Docker socket 缺失的全局 Testcontainers fixture 阻断，未进入断言且未记为通过；全量工作台 E2E 的自动会话场景曾超时，逐步目标用例单独重跑通过。未修改数据库迁移、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-20 | FR-493 | 受影响 Python Ruff format/check 与 `py_compile`；OpenHands 当前 View Token、state batch、日志和 Runtime contract 定向 pytest（13 passed）；源码身份无容器直接检查（2 passed）；不可变归档 SHA-256、provenance 和四包版本核验；Alembic head、`git diff --check` 与任务状态唯一性 | PASS（静态／定向）：FlowWeave 使用 OpenHands fork commit `0eee8da762ce1319521b285102094b8b7b47c9de`，上游基线仍为 `30cf5832e42c71c24daa82a1a4fd5d25eb70d1b9`，四包版本保持 `1.47.0`，归档 SHA-256 为 `68a00aa2b9c259b85df424afc4466edc4f7c1a3d95eee0e5d235b2463dd3c511`。精确 `/context.total_tokens` 覆盖误导性 `per_turn_token`；历史端点缺失返回未知，非法协议值 fail closed。唯一 Alembic head 为 `0120_agent_credential_sync`。大范围 pytest 已有 190 项通过，随后因本机 Docker socket 缺失而被 Testcontainers PostgreSQL 阻断；另有一个与本切片无关的既有 fixture `secret_hint` 缺失失败。无迁移、无前端字段、无远端部署。 |
 | 2026-09-20 | FR-492 | Web TypeScript typecheck、定向 ESLint、工作区 Markdown 链接定向 Playwright（1 passed）、production build、`git diff --check` 与任务状态唯一性 | PASS：工作区 Mermaid fenced block 默认渲染为 SVG；浏览器回归覆盖图片／文本切换、全屏打开与 Esc 关闭，并继续验证同一预览中的本地 Markdown 链接与越界保护。production build 仅报告既有大 chunk 提示；未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |

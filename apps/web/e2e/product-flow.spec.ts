@@ -1011,6 +1011,17 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.getByText('README.md', { exact: true })).toBeVisible();
   await expect(page.locator('.agent-file-tree input[type=checkbox]')).toHaveCount(0);
   await page.getByLabel('全屏查看工作区工具').click();
+  await page.getByLabel('全部展开目录').click();
+  await expect(page.getByText('config.ts', { exact: true })).toBeVisible();
+  const collapseDirectories = page.getByLabel('全部收起目录');
+  await expect.poll(() => collapseDirectories.evaluate(button => {
+    const bounds = button.getBoundingClientRect();
+    const topmost = document.elementFromPoint(bounds.left + bounds.width / 2, bounds.top + bounds.height / 2);
+    return topmost === button || button.contains(topmost);
+  })).toBeTruthy();
+  await collapseDirectories.click();
+  await expect(page.getByLabel('全部展开目录')).toBeVisible();
+  await expect(page.getByText('config.ts', { exact: true })).toBeHidden();
   const readmeRow = page.locator('.agent-file-tree-row').filter({ hasText: 'README.md' });
   await readmeRow.getByRole('button').hover();
   await expect(readmeRow.getByRole('link', { name: '下载 README.md' })).toBeVisible();
