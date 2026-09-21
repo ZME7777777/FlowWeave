@@ -828,6 +828,81 @@ def test_copy_nested_stepwise_record_rejects_empty_source(client):
     assert client.get(f"/api/v1/flow-runs/{parent['id']}/stepwise-runs").json() == [source]
 
 
+def test_stepwise_record_config_export_import_preserves_only_initial_configuration(client):
+    flow = _create_flow(client)
+    parent = client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={"name": "逐步配置导入目标", "environment_version_id": client.environment_version_id},
+    ).json()
+    source = client.post(
+        f"/api/v1/flow-runs/{parent['id']}/stepwise-runs",
+        json={"name": "逐步配置来源", "start_node_key": "first"},
+    ).json()
+    source_input = client.post(
+        f"/api/v1/flow-runs/{source['id']}/nodes/first/input-artifacts",
+        json={
+            "field_key": "source",
+            "artifact_type": "URL",
+            "uri": "https://example.com/stepwise-config-input",
+        },
+    )
+    assert source_input.status_code == 201, source_input.text
+    activated = client.post(
+        f"/api/v1/flow-runs/{source['id']}/nodes/first/runs",
+        json=_node_plan(client, "导出的逐步启动提示词", artifact_id=source_input.json()["id"]),
+    )
+    assert activated.status_code == 201, activated.text
+    source_attempt = activated.json()["attempts"][-1]
+
+    exported_response = client.post(
+        f"/api/v1/flow-runs/{parent['id']}/stepwise-runs/config-exports",
+        json={"record_ids": [source["id"]]},
+    )
+    assert exported_response.status_code == 200, exported_response.text
+    exported = exported_response.json()
+    assert exported["format"] == "flowweave.stepwise-record-config"
+    assert exported["version"] == 1
+    assert "environment_version_id" not in exported
+    exported_config = exported["records"][0]
+    assert exported_config["start_node_key"] == "first"
+    assert exported_config["initial_configuration"]["startup_prompt"] == source_attempt[
+        "startup_prompt"
+    ]
+    assert exported_config["initial_configuration"]["agent_preset"] == source_attempt[
+        "agent_preset"
+    ]
+    assert exported_config["initial_configuration"]["input_urls"] == {
+        "source": "https://example.com/stepwise-config-input"
+    }
+    assert "conversation_id" not in exported_config["initial_configuration"]
+    assert "artifact_ids" not in exported_config["initial_configuration"]
+
+    imported_response = client.post(
+        f"/api/v1/flow-runs/{parent['id']}/stepwise-runs/config-imports",
+        json=exported,
+    )
+    assert imported_response.status_code == 201, imported_response.text
+    imported = imported_response.json()
+    assert len(imported) == 1
+    record = imported[0]
+    assert record["id"] != source["id"]
+    assert record["parent_flow_run_id"] == parent["id"]
+    assert record["automation_plan"] == {"start_node_key": "first"}
+    assert len(record["node_runs"]) == 1
+    node_run = record["node_runs"][0]
+    attempt = node_run["attempts"][-1]
+    assert node_run["created_from"] == "RECORD_CONFIG_IMPORT"
+    assert attempt["state"] == "WAITING_START_CONFIRMATION"
+    assert attempt["startup_prompt"] == source_attempt["startup_prompt"]
+    assert attempt["agent_preset"] == source_attempt["agent_preset"]
+    assert attempt["conversation_id"] is None
+    assert attempt["runtime_phase"] is None
+    assert attempt["gate_evaluations"] == []
+    assert len(attempt["input_bindings"]) == 1
+    assert attempt["input_bindings"][0]["artifact_version_id"] != source_input.json()["id"]
+    assert record["artifacts"][0]["source"] == "STEPWISE_RECORD_CONFIG_IMPORT"
+
+
 def test_copy_nested_stepwise_record_requires_its_persisted_start_node_configuration(client):
     flow = _create_flow(client)
     parent = client.post(

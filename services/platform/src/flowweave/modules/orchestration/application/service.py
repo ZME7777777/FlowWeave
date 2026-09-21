@@ -131,6 +131,8 @@ from flowweave.shared.schemas import (
     RuntimeCancelRecoveryWrite,
     RuntimeCompletionReconciliationWrite,
     RuntimeConfirmationDecisionWrite,
+    StepwiseRecordConfigExportWrite,
+    StepwiseRecordConfigImportWrite,
     StepwiseRunRecordCopyWrite,
     StepwiseRunRecordWrite,
     SyncSnapshotWrite,
@@ -3630,6 +3632,7 @@ def _create_node_run(
     agent_preset: dict[str, Any] | None = None,
     startup_prompt: str | None = None,
     allow_existing: bool = False,
+    awaiting_start_confirmation: bool = False,
 ) -> tuple[NodeRun, NodeAttempt]:
     snapshot = _active_snapshot(db, run)
     node = _node(snapshot, instance_key)
@@ -3736,7 +3739,9 @@ def _create_node_run(
         attempt_no=1,
         snapshot_id=snapshot.id,
         state=(
-            AttemptState.WAITING_START_CONFIRMATION if session_only else AttemptState.WAITING_INPUT
+            AttemptState.WAITING_START_CONFIRMATION
+            if session_only or awaiting_start_confirmation
+            else AttemptState.WAITING_INPUT
         ),
         startup_mode="CHAT" if session_only else "PROMPT",
         startup_prompt=startup_prompt,
@@ -3775,12 +3780,12 @@ def _create_node_run(
         node_run.id,
         attempt.id,
     )
-    if session_only:
+    if session_only or awaiting_start_confirmation:
         run.state = FlowRunState.WAITING_HUMAN
         _event(
             db,
             run.id,
-            "ATTEMPT_SESSION_READY",
+            "ATTEMPT_SESSION_READY" if session_only else "ATTEMPT_START_CONFIRMATION_REQUIRED",
             {"flow_node_key": instance_key},
             node_run.id,
             attempt.id,
@@ -3829,6 +3834,7 @@ def _copy_initial_node_configuration(
         context_ids=copy.deepcopy(initial.context_ids_json or []),
         agent_preset=copy.deepcopy(initial.agent_preset_json),
         allow_existing=True,
+        awaiting_start_confirmation=initial.startup_mode == "PROMPT",
     )
     copied_attempt.startup_mode = initial.startup_mode
     copied_attempt.startup_prompt = initial.startup_prompt
@@ -4692,6 +4698,184 @@ def import_nested_automatic_run_configs(
         db,
         parent.id,
         "AUTOMATIC_RECORD_CONFIG_IMPORTED",
+        {"record_count": len(imported), "format": payload.format, "version": payload.version},
+    )
+    finish(db)
+    return imported
+
+
+def export_nested_stepwise_run_configs(
+    db: Session, parent_run_id: str, payload: StepwiseRecordConfigExportWrite
+) -> dict[str, Any]:
+    """Export the portable initial configuration of selected stepwise records."""
+
+    parent = _run(db, parent_run_id)
+    records: list[dict[str, Any]] = []
+    for record_id in payload.record_ids:
+        record = nested_stepwise_run_record(db, parent.id, record_id)
+        plan = dict(record.automation_plan_json or {})
+        start_node_key = plan.get("start_node_key")
+        if not isinstance(start_node_key, str) or not start_node_key:
+            raise DomainError("RUN_STATE_INVALID", "stepwise record has no configured start node", 409)
+        source_node = db.scalar(
+            select(NodeRun)
+            .where(
+                NodeRun.flow_run_id == record.id,
+                NodeRun.flow_node_snapshot_key == start_node_key,
+            )
+            .order_by(NodeRun.sequence_no, NodeRun.id)
+            .limit(1)
+        )
+        if source_node is None:
+            raise DomainError(
+                "RUN_STATE_INVALID", "stepwise record has no initial node configuration", 409
+            )
+        initial = db.scalar(
+            select(NodeAttempt)
+            .where(NodeAttempt.node_run_id == source_node.id)
+            .order_by(NodeAttempt.attempt_no)
+            .limit(1)
+        )
+        if initial is None:
+            raise DomainError("RUN_STATE_INVALID", "stepwise record has no initial node attempt", 409)
+        input_urls: dict[str, str] = {}
+        for binding in _bindings(db, initial.id):
+            if binding.binding_source == "PORT_MAPPING":
+                continue
+            artifact = db.get(ArtifactVersion, binding.artifact_version_id)
+            if (
+                artifact is None
+                or artifact.producer_attempt_id is not None
+                or artifact.artifact_type != "URL"
+                or not artifact.uri
+            ):
+                continue
+            input_urls[binding.input_field_key] = artifact.uri
+        records.append(
+            {
+                "name": record.name,
+                "start_node_key": start_node_key,
+                "initial_configuration": {
+                    "startup_prompt": initial.startup_prompt,
+                    "agent_preset": _portable_automatic_agent_preset(
+                        initial.agent_preset_json
+                    ),
+                    "gates": [
+                        _portable_automatic_gate(gate)
+                        for gate in list(initial.gate_policies_json or [])
+                    ],
+                    "input_urls": input_urls,
+                },
+            }
+        )
+    return {
+        "format": "flowweave.stepwise-record-config",
+        "version": 1,
+        "exported_at": now().isoformat(),
+        "source": {"flow_definition_id": parent.flow_definition_id, "flow_run_id": parent.id},
+        "records": records,
+    }
+
+
+def import_nested_stepwise_run_configs(
+    db: Session, parent_run_id: str, payload: StepwiseRecordConfigImportWrite
+) -> list[dict[str, Any]]:
+    """Create stepwise records from portable first-node configuration."""
+
+    parent = _locked_run(db, parent_run_id)
+    if parent.run_mode != "MANUAL" or parent.parent_flow_run_id is not None:
+        raise illegal("stepwise records require a top-level standard FlowRun", state=parent.state)
+    if parent.state in {FlowRunState.COMPLETED, FlowRunState.CANCELLED}:
+        raise illegal("terminal FlowRun cannot import a stepwise record", state=parent.state)
+    if parent.environment_version_id is None:
+        raise DomainError(
+            "RUN_ENVIRONMENT_REQUIRED", "parent FlowRun has no Environment Version", 409
+        )
+    imported: list[dict[str, Any]] = []
+    for config in payload.records:
+        record = _create_nested_stepwise_run_record(
+            db,
+            parent.id,
+            StepwiseRunRecordWrite(name=config.name, start_node_key=config.start_node_key),
+        )
+        snapshot = _active_snapshot(db, record)
+        node = _node(snapshot, config.start_node_key)
+        input_types = {field.key: field.data_type for field in _input_fields(node)}
+        input_urls = dict(config.initial_configuration.input_urls)
+        invalid_fields = sorted(
+            field_key
+            for field_key in input_urls
+            if input_types.get(field_key) != "URL"
+        )
+        if invalid_fields:
+            raise DomainError(
+                "INPUT_BINDING_INVALID",
+                "input URL field is not a URL input of the target node",
+                422,
+                {"fields": invalid_fields},
+            )
+        artifact_ids: dict[str, str] = {}
+        for field_key, uri in input_urls.items():
+            prepared = prepare_artifact(
+                ArtifactWrite(
+                    field_key=field_key,
+                    artifact_type="URL",
+                    uri=uri,
+                    metadata={"source": "STEPWISE_RECORD_CONFIG_IMPORT"},
+                )
+            )
+            artifact = _register_artifact(
+                db,
+                record.id,
+                prepared,
+                source="STEPWISE_RECORD_CONFIG_IMPORT",
+                consumer_node_key=config.start_node_key,
+            )
+            artifact_ids[field_key] = artifact.id
+        gates = []
+        for gate in config.initial_configuration.gates:
+            gate_data = gate.model_dump()
+            gate_data["id"] = str(uuid4())
+            gates.append(gate_data)
+        preset = config.initial_configuration.agent_preset.model_dump()
+        node_asset = cast(dict[str, Any], node.get("asset") or {})
+        node_executor = cast(dict[str, Any], node_asset.get("executor") or {})
+        effective_context_prompt = (
+            preset.get("node_context_prompt")
+            if preset.get("node_context_prompt") is not None
+            else node_executor.get("context_prompt") or ""
+        )
+        context_ids = (
+            [_MANUAL_NODE_CONTEXT_ID]
+            if preset.get("node_context_enabled") and str(effective_context_prompt).strip()
+            else []
+        )
+        node_run, attempt = _create_node_run(
+            db,
+            record,
+            config.start_node_key,
+            artifact_ids,
+            "RECORD_CONFIG_IMPORT",
+            gates,
+            context_ids=context_ids,
+            agent_preset=preset,
+            startup_prompt=config.initial_configuration.startup_prompt,
+            allow_existing=True,
+            awaiting_start_confirmation=True,
+        )
+        _event(
+            db,
+            record.id,
+            "STEPWISE_RECORD_CONFIG_IMPORTED",
+            {"parent_flow_run_id": parent.id, "start_node_key": config.start_node_key},
+            node_run.id,
+            attempt.id,
+        )
+        imported.append(run_detail(db, record.id))
+    _event(
+        db,
+        parent.id,
+        "STEPWISE_RECORD_CONFIG_IMPORTED",
         {"record_count": len(imported), "format": payload.format, "version": payload.version},
     )
     finish(db)
