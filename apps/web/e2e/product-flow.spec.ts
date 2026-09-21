@@ -794,6 +794,12 @@ test('top-level Agent workspace creates a direct conversation and restores its U
           { id: 'tool-result', event_type: 'TOOL_RESULT', payload: { parent_id: 'unrelated-file-action', action_id: 'tool-request', tool_call_id: 'terminal-call', tool_name: 'terminal', event_name: 'TerminalObservation', content: '/workspace', details: { command: 'pwd', exit_code: 0, is_error: false }, timestamp: '2026-08-26T10:00:03Z' } },
           { id: 'file-action', event_type: 'TOOL_CALL', payload: { parent_id: 'tool-result', action_id: 'file-action', tool_call_id: 'file-call', tool_name: 'file_editor', event_name: 'FileEditorAction', summary: '更新运行配置', details: { command: 'str_replace', path: '/runtime/workspace/project/src/config.ts', old_str: 'const mode = "old"', new_str: 'const mode = "new"' }, timestamp: '2026-08-26T10:00:03.200Z' } },
           { id: 'file-result', event_type: 'TOOL_RESULT', payload: { parent_id: 'file-action', action_id: 'file-action', tool_call_id: 'file-call', tool_name: 'file_editor', event_name: 'FileEditorObservation', content: 'The file was edited successfully.', details: { command: 'str_replace', path: '/runtime/workspace/project/src/config.ts', is_error: false }, timestamp: '2026-08-26T10:00:03.500Z' } },
+          { id: 'java-read-action', event_type: 'TOOL_CALL', payload: { parent_id: 'file-result', action_id: 'java-read-action', tool_call_id: 'java-read-call', tool_name: 'file_editor', event_name: 'FileEditorAction', details: { command: 'view', path: '/runtime/workspace/project/src/Main.java' }, timestamp: '2026-08-26T10:00:03.520Z' } },
+          { id: 'java-read-result', event_type: 'TOOL_RESULT', payload: { parent_id: 'java-read-action', action_id: 'java-read-action', tool_call_id: 'java-read-call', tool_name: 'file_editor', event_name: 'FileEditorObservation', content: 'class Main {}', details: { command: 'view', path: '/runtime/workspace/project/src/Main.java', is_error: false }, timestamp: '2026-08-26T10:00:03.540Z' } },
+          { id: 'properties-read-action', event_type: 'TOOL_CALL', payload: { parent_id: 'java-read-result', action_id: 'properties-read-action', tool_call_id: 'properties-read-call', tool_name: 'file_editor', event_name: 'FileEditorAction', details: { command: 'view', path: '/runtime/workspace/project/config/application.properties' }, timestamp: '2026-08-26T10:00:03.560Z' } },
+          { id: 'properties-read-result', event_type: 'TOOL_RESULT', payload: { parent_id: 'properties-read-action', action_id: 'properties-read-action', tool_call_id: 'properties-read-call', tool_name: 'file_editor', event_name: 'FileEditorObservation', content: 'server.port=8080', details: { command: 'view', path: '/runtime/workspace/project/config/application.properties', is_error: false }, timestamp: '2026-08-26T10:00:03.580Z' } },
+          { id: 'markdown-create-action', event_type: 'TOOL_CALL', payload: { parent_id: 'properties-read-result', action_id: 'markdown-create-action', tool_call_id: 'markdown-create-call', tool_name: 'file_editor', event_name: 'FileEditorAction', details: { command: 'create', path: '/runtime/workspace/project/README.md', file_text: '# Project' }, timestamp: '2026-08-26T10:00:03.600Z' } },
+          { id: 'markdown-create-result', event_type: 'TOOL_RESULT', payload: { parent_id: 'markdown-create-action', action_id: 'markdown-create-action', tool_call_id: 'markdown-create-call', tool_name: 'file_editor', event_name: 'FileEditorObservation', content: 'The file was created successfully.', details: { command: 'create', path: '/runtime/workspace/project/README.md', is_error: false }, timestamp: '2026-08-26T10:00:03.620Z' } },
           { id: 'skill-action', event_type: 'TOOL_CALL', payload: { parent_id: 'file-result', action_id: 'skill-action', tool_call_id: 'skill-call', tool_name: 'invoke_skill', event_name: 'InvokeSkillAction', details: { name: 'collect-app-exception-logs' }, runtime_skill: { phase: 'INVOKED', skill_name: 'collect-app-exception-logs', action_event_id: 'skill-action', tool_call_id: 'skill-call' }, timestamp: '2026-08-26T10:00:03.600Z' } },
           { id: 'skill-result', event_type: 'TOOL_RESULT', payload: { parent_id: 'skill-action', action_id: 'skill-action', tool_call_id: 'skill-call', tool_name: 'invoke_skill', event_name: 'InvokeSkillObservation', content: 'Skill instructions should not render as a generic tool result.', details: { skill_name: 'collect-app-exception-logs', is_error: false }, runtime_skill: { phase: 'LOADED', skill_name: 'collect-app-exception-logs', action_event_id: 'skill-action', observation_event_id: 'skill-result', tool_call_id: 'skill-call' }, timestamp: '2026-08-26T10:00:03.650Z' } },
           { id: 'failed-command-action', event_type: 'TOOL_CALL', payload: { parent_id: 'file-result', action_id: 'failed-command-action', tool_call_id: 'failed-command-call', tool_name: 'terminal', event_name: 'TerminalAction', llm_response_id: 'response-1', summary: '验证失败命令', details: { command: 'false' }, timestamp: '2026-08-26T10:00:03.700Z' } },
@@ -1271,7 +1277,21 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     '/runtime/workspace/project/src',
   ]);
   expect(workspaceFilePreviewRequests.at(-1)).toBe('/runtime/workspace/project/src/config.ts');
-  await expect(completedProcess.locator('.conversation-activity-row.tool')).toHaveCount(7);
+  await expect(completedProcess.locator('.conversation-activity-row.tool')).toHaveCount(10);
+  const fileDetails = completedProcess.locator('.conversation-tool-detail[data-tool-kind="file"]');
+  await expect(fileDetails).toHaveCount(4);
+  await expect(fileDetails.nth(0)).toHaveAttribute('data-file-operation', 'edit');
+  await expect(fileDetails.nth(0)).toHaveAttribute('data-file-kind', 'code');
+  await expect(fileDetails.nth(0).locator(':scope > summary > svg.lucide-file-pen-line')).toBeVisible();
+  await expect(fileDetails.nth(1)).toHaveAttribute('data-file-operation', 'read');
+  await expect(fileDetails.nth(1)).toHaveAttribute('data-file-kind', 'code');
+  await expect(fileDetails.nth(1).locator(':scope > summary > svg.lucide-file-code-2')).toBeVisible();
+  await expect(fileDetails.nth(2)).toHaveAttribute('data-file-operation', 'read');
+  await expect(fileDetails.nth(2)).toHaveAttribute('data-file-kind', 'config');
+  await expect(fileDetails.nth(2).locator(':scope > summary > svg.lucide-file-cog')).toBeVisible();
+  await expect(fileDetails.nth(3)).toHaveAttribute('data-file-operation', 'create');
+  await expect(fileDetails.nth(3)).toHaveAttribute('data-file-kind', 'markdown');
+  await expect(fileDetails.nth(3).locator(':scope > summary > svg.lucide-file-plus-2')).toBeVisible();
   const mcpDetail = completedProcess.locator('.conversation-tool-detail[data-tool-kind="mcp"]');
   await expect(mcpDetail).toHaveCount(1);
   await expect(mcpDetail.locator(':scope > summary .conversation-tool-kind')).toHaveCount(0);

@@ -1,4 +1,4 @@
-import { BookOpen, Check, ChevronDown, ChevronRight, CircleAlert, ClipboardList, Copy, ExternalLink, FileText, GitFork, Link, LoaderCircle, PanelRightOpen, Pencil, PlugZap, Quote, Sparkles, SquareTerminal, Wrench } from 'lucide-react';
+import { BookOpen, Check, ChevronDown, ChevronRight, CircleAlert, ClipboardList, Copy, ExternalLink, Eye, FileCode2, FileCog, FileJson, FilePenLine, FilePlus2, FileText, FileType2, GitFork, Link, LoaderCircle, PanelRightOpen, Pencil, PlugZap, Quote, Sparkles, SquareTerminal, Wrench } from 'lucide-react';
 import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type RefObject } from 'react';
 import type { AgentActivitySummary, AgentAttachment, AgentConversationAnnotation, AgentConversationReference, AgentWorkspaceReference, OpenHandsConversationEvent, RuntimeTaskControlSnapshot } from '../types';
 import { SubagentAvatar } from './SubagentAvatar';
@@ -601,6 +601,8 @@ interface ActivityPresentation {
   command?: string;
   path?: string;
   operation?: string;
+  fileOperation?: FileOperationKind;
+  fileKind?: FileKind;
   exitCode?: string;
   actionDetails?: Record<string, unknown>;
   resultDetails?: Record<string, unknown>;
@@ -608,6 +610,38 @@ interface ActivityPresentation {
 }
 
 type ToolVisualKind = 'terminal' | 'file' | 'task-tracker' | 'skill' | 'browser' | 'mcp' | 'subagent' | 'generic';
+type FileOperationKind = 'read' | 'create' | 'edit' | 'undo' | 'generic';
+type FileKind = 'code' | 'config' | 'data' | 'markdown' | 'text' | 'generic';
+
+function fileOperationKind(command: string): FileOperationKind {
+  if (command === 'view') return 'read';
+  if (command === 'create' || command === 'write') return 'create';
+  if (command === 'undo_edit') return 'undo';
+  if (command === 'str_replace' || command === 'insert' || command === 'append') return 'edit';
+  return 'generic';
+}
+
+function fileKindForPath(path?: string): FileKind {
+  const fileName = path?.replaceAll('\\', '/').split('/').at(-1)?.toLowerCase() ?? '';
+  if (/^(\.env|\.gitignore|\.dockerignore|\.npmrc|\.editorconfig)(\..*)?$/.test(fileName)
+    || /\.(properties|ini|toml|conf|cfg)$/.test(fileName)) return 'config';
+  if (/\.(json|jsonc|yaml|yml|xml|csv)$/.test(fileName)) return 'data';
+  if (/\.(md|mdx|rst)$/.test(fileName)) return 'markdown';
+  if (/\.(txt|log)$/.test(fileName)) return 'text';
+  if (/\.(c|cc|cpp|cxx|cs|go|h|java|js|jsx|kt|php|py|rb|rs|sh|sql|swift|ts|tsx|vue|svelte|bash|zsh)$/.test(fileName)) return 'code';
+  return 'generic';
+}
+
+function fileToolIcon(presentation: ActivityPresentation) {
+  if (presentation.fileOperation === 'create') return FilePlus2;
+  if (presentation.fileOperation === 'edit' || presentation.fileOperation === 'undo') return FilePenLine;
+  if (presentation.fileKind === 'code') return FileCode2;
+  if (presentation.fileKind === 'config') return FileCog;
+  if (presentation.fileKind === 'data') return FileJson;
+  if (presentation.fileKind === 'markdown') return FileType2;
+  if (presentation.fileOperation === 'read') return Eye;
+  return FileText;
+}
 
 function toolVisualPresentation(eventName: string, toolName?: string): ToolVisualKind {
   const normalizedEventName = eventName.toLowerCase();
@@ -670,6 +704,8 @@ function activityPresentation(entry: ActivityEntry, active: boolean, workspaceRo
   }
   if (eventName === 'FileEditorAction' || eventName === 'FileEditorObservation' || resultName === 'FileEditorObservation') {
     const operation = command.toLowerCase();
+    const fileOperation = fileOperationKind(operation);
+    const fileKind = fileKindForPath(path);
     const verb = operation === 'view' ? (failed ? '读取失败' : completed ? '已读取' : '正在读取')
       : ['create', 'write'].includes(operation) ? (failed ? '创建失败' : completed ? '已创建' : '正在创建')
         : operation === 'undo_edit' ? (failed ? '撤销失败' : completed ? '已撤销编辑' : '正在撤销编辑')
@@ -679,7 +715,7 @@ function activityPresentation(entry: ActivityEntry, active: boolean, workspaceRo
     return {
       title: displayPath ? `${verb} ${displayPath}` : actionTitle(verb),
       status: failed ? '文件编辑器 · 失败' : completed ? '文件编辑器 · 已完成' : '文件编辑器',
-      path: displayPath || undefined, operation: workspaceRelativeText(command, workspaceRoot) || undefined, thought, actionDetails: details, resultDetails,
+      path: displayPath || undefined, operation: workspaceRelativeText(command, workspaceRoot) || undefined, fileOperation, fileKind, thought, actionDetails: details, resultDetails,
     };
   }
   if (eventName === 'TaskTrackerAction') {
@@ -1111,9 +1147,9 @@ function ActivityEntryRow({ entry, active, paused = false, parentFailed = false,
   const avatarSlot = eventName === 'TaskAction' || eventName === 'TaskObservation'
     ? subagentAvatarSlotForEvent(item.event, avatarSlots)
     : undefined;
-  const ToolIcon = toolVisual === 'terminal' ? SquareTerminal : toolVisual === 'file' ? FileText : toolVisual === 'mcp' ? PlugZap : Icon;
-  const taskAvatar = avatarSlot && <SubagentAvatar slot={avatarSlot} status={taskAvatarStatus(entry, item, paused, parentFailed)} size={14}/>;
   const presentation = activityPresentation(entry, active, workspaceRoot, paused, parentFailed, recoveredErrorEventIds);
+  const ToolIcon = toolVisual === 'terminal' ? SquareTerminal : toolVisual === 'file' ? fileToolIcon(presentation) : toolVisual === 'mcp' ? PlugZap : Icon;
+  const taskAvatar = avatarSlot && <SubagentAvatar slot={avatarSlot} status={taskAvatarStatus(entry, item, paused, parentFailed)} size={14}/>;
   const toolDetail = item.kind === 'tool'
     ? <ToolDetailPanel presentation={presentation} eventName={eventName} toolName={toolName || undefined} toolVisual={toolVisual} results={entry.results} workspaceRoot={workspaceRoot}/>
     : null;
@@ -1135,7 +1171,7 @@ function ActivityEntryRow({ entry, active, paused = false, parentFailed = false,
     {presentation.thought && <article {...thoughtAttributes} className={`conversation-activity-row thought tool-thought tool-${toolVisual}`}>
       <MessageMarkdown>{presentation.thought}</MessageMarkdown>
     </article>}
-    <details className={`conversation-activity-row tool conversation-tool-detail tool-${toolVisual}`} data-tool-kind={toolVisual}>
+    <details className={`conversation-activity-row tool conversation-tool-detail tool-${toolVisual}`} data-tool-kind={toolVisual} data-file-operation={toolVisual === 'file' ? presentation.fileOperation : undefined} data-file-kind={toolVisual === 'file' ? presentation.fileKind : undefined}>
       <summary aria-label={`查看执行详情：${presentation.title}`}>{taskAvatar ?? <ToolIcon size={14}/>}<div><b title={presentation.title}>{presentation.title}</b></div></summary>
       {toolDetail}
     </details>
