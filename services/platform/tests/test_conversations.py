@@ -840,6 +840,94 @@ def test_detached_node_fork_routes_through_source_attempt_runtime(
         assert handle.workspace_root == "/runtime/workspace/project"
 
 
+def test_node_fork_rebinds_the_frozen_model_on_the_target_conversation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = SimpleNamespace(
+        runtime_session_id="runtime-session",
+        working_directory="/runtime/workspace/project",
+        work_directory_version_id=None,
+        display_title="源会话",
+        openhands_conversation_id="source-conversation",
+    )
+    target = SimpleNamespace(
+        openhands_conversation_id="forked-conversation",
+        display_title="Fork · 源会话",
+        lifecycle="PROVISIONING",
+    )
+    source_handle = RuntimeHandle(job_id="job", conversation_id=source.openhands_conversation_id)
+    provider = RuntimeProvider(
+        provider_id="provider",
+        base_url="https://models.example.test/v1",
+        model="frozen-model",
+        api_key="secret",
+    )
+    switched: list[tuple[str, RuntimeProvider, str]] = []
+
+    class Runtime:
+        def can_accept_input(self, handle: RuntimeHandle) -> bool:
+            assert handle == source_handle
+            return True
+
+        def reload_conversation(self, handle: RuntimeHandle) -> SimpleNamespace:
+            assert handle == source_handle
+            return SimpleNamespace(event_id="source-head")
+
+        def resolve_fork_boundary(self, handle: RuntimeHandle, event_id: str) -> str:
+            assert handle == source_handle
+            assert event_id == "assistant-event"
+            return event_id
+
+        def fork_conversation(self, handle: RuntimeHandle, **kwargs: object) -> SimpleNamespace:
+            assert handle == source_handle
+            assert kwargs["target_conversation_id"] == target.openhands_conversation_id
+            return SimpleNamespace(
+                handle=RuntimeHandle(job_id="job", conversation_id=target.openhands_conversation_id)
+            )
+
+        def switch_model(self, handle: RuntimeHandle, actual_provider: RuntimeProvider) -> None:
+            switched.append((handle.conversation_id, actual_provider, target.lifecycle))
+
+    runtime = Runtime()
+    monkeypatch.setattr(
+        flow_node_conversations,
+        "_assert_node_session_forkable",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        flow_node_conversations, "_binding_for_attempt", lambda *_args, **_kwargs: source
+    )
+    monkeypatch.setattr(
+        flow_node_conversations, "_node_handle", lambda *_args, **_kwargs: source_handle
+    )
+    monkeypatch.setattr(flow_node_conversations, "config_from_binding", lambda *_args: object())
+    monkeypatch.setattr(
+        flow_node_conversations, "reserve_flow_node_binding", lambda *_args, **_kwargs: target
+    )
+    monkeypatch.setattr(flow_node_conversations, "provider_for_config", lambda *_args: provider)
+    monkeypatch.setattr(flow_node_conversations, "get_runtime", lambda: runtime)
+    monkeypatch.setattr(flow_node_conversations, "finish", lambda _db: None)
+    monkeypatch.setattr(
+        flow_node_conversations,
+        "_node_session_dict",
+        lambda _db, binding: {"id": binding.openhands_conversation_id},
+    )
+
+    result = flow_node_conversations.fork_node_conversation(
+        SimpleNamespace(scalar=lambda _statement: None),
+        flow_run_id="flow-run",
+        attempt_id="attempt",
+        binding_id="source-binding",
+        event_id="assistant-event",
+        title=None,
+        idempotency_key="fork-key",
+    )
+
+    assert result == {"id": "forked-conversation"}
+    assert switched == [("forked-conversation", provider, "PROVISIONING")]
+    assert target.lifecycle == "ACTIVE"
+
+
 def _node_session_context(db: Session) -> tuple[str, str, str]:
     flow_run_id, runtime_session_id = _runtime_context(db)
     snapshot = RunSnapshot(
