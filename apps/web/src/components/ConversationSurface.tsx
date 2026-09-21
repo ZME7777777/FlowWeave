@@ -1,5 +1,5 @@
 import { BookOpen, Check, ChevronDown, ChevronRight, CircleAlert, ClipboardList, Copy, ExternalLink, FileText, GitFork, Link, LoaderCircle, PanelRightOpen, Pencil, PlugZap, Quote, Sparkles, SquareTerminal, Wrench } from 'lucide-react';
-import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type RefObject } from 'react';
+import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type RefObject } from 'react';
 import type { AgentActivitySummary, AgentAttachment, AgentConversationAnnotation, AgentConversationReference, AgentWorkspaceReference, OpenHandsConversationEvent, RuntimeTaskControlSnapshot } from '../types';
 import { SubagentAvatar } from './SubagentAvatar';
 import { useEscapeClose } from './useEscapeClose';
@@ -158,19 +158,33 @@ function currentTurnEvents(events: OpenHandsConversationEvent[]): OpenHandsConve
   return userEventIndex >= 0 ? events.slice(userEventIndex) : [];
 }
 
-export function ConversationTaskPlan({ events, isGenerating }: { events: OpenHandsConversationEvent[]; isGenerating: boolean }) {
+export function ConversationTaskPlan({ events, isGenerating, conversationScope }: { events: OpenHandsConversationEvent[]; isGenerating: boolean; conversationScope?: string }) {
   const currentEvents = useMemo(() => currentTurnEvents(events), [events]);
   const snapshot = useMemo(() => latestCurrentTaskList(currentEvents), [currentEvents]);
-  const completed = snapshot?.items.filter(item => item.status === 'done').length ?? 0;
-  const showPlan = isGenerating && snapshot && snapshot.items.some(item => item.status !== 'done');
+  const currentTurnId = currentEvents.find(event => event.event_type === 'MESSAGE'
+    && ['user', 'human'].includes(String(event.payload.source ?? '').toLowerCase()))?.id;
+  const retainedSnapshot = useRef<{ scope?: string; turnId?: string; snapshot: TaskListSnapshot } | undefined>(undefined);
+  if (!isGenerating || retainedSnapshot.current?.scope !== conversationScope || retainedSnapshot.current?.turnId !== currentTurnId) {
+    retainedSnapshot.current = undefined;
+  }
+  if (snapshot?.items.some(item => item.status !== 'done')) {
+    retainedSnapshot.current = { scope: conversationScope, turnId: currentTurnId, snapshot };
+  } else if (snapshot?.items.length) {
+    retainedSnapshot.current = undefined;
+  }
+  const displayedSnapshot = snapshot?.items.some(item => item.status !== 'done')
+    ? snapshot
+    : retainedSnapshot.current?.snapshot;
+  const completed = displayedSnapshot?.items.filter(item => item.status === 'done').length ?? 0;
+  const showPlan = isGenerating && displayedSnapshot && displayedSnapshot.items.some(item => item.status !== 'done');
 
-  if (!showPlan || !snapshot) return null;
-  return <section className="conversation-live-task-plan" tabIndex={0} role="group" aria-label={`任务：${completed} / ${snapshot.items.length} 已完成`}>
-    <div className="conversation-live-task-plan-summary"><ClipboardList size={14}/><span><b>任务</b><small>{`${completed} / ${snapshot.items.length} 已完成`}</small></span></div>
+  if (!showPlan || !displayedSnapshot) return null;
+  return <section className="conversation-live-task-plan" tabIndex={0} role="group" aria-label={`任务：${completed} / ${displayedSnapshot.items.length} 已完成`}>
+    <div className="conversation-live-task-plan-summary"><ClipboardList size={14}/><span><b>任务</b><small>{`${completed} / ${displayedSnapshot.items.length} 已完成`}</small></span></div>
     <aside className="conversation-live-task-plan-preview" role="tooltip" aria-label="当前任务详情">
-      <header><b>当前任务</b><small>{`${completed} / ${snapshot.items.length} 已完成`}</small></header>
+      <header><b>当前任务</b><small>{`${completed} / ${displayedSnapshot.items.length} 已完成`}</small></header>
       <ol>
-        {snapshot.items.map((task, index) => <li key={`${index}:${task.title}`} data-status={task.status}>
+        {displayedSnapshot.items.map((task, index) => <li key={`${index}:${task.title}`} data-status={task.status}>
           <TaskStatusIcon status={task.status}/><span><b>{task.title}</b>{task.notes && <small>{task.notes}</small>}</span><em>{taskStatusLabel(task.status)}</em>
         </li>)}
       </ol>
@@ -1508,6 +1522,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, l
   const messageNavigationPreviewIndex = useRef<number | undefined>(undefined);
   const messageNavigationPointerY = useRef<number | undefined>(undefined);
   const messageNavigationStyledButtons = useRef<Set<HTMLButtonElement>>(new Set());
+  const selectionReferenceFrame = useRef<number | undefined>(undefined);
   const historyAnchor = useRef<{
     id: number;
     scope: string;
@@ -1733,13 +1748,10 @@ export const ConversationSurface = memo(function ConversationSurface({ events, l
   }, []);
   const updateMessageNavigationPreview = useCallback((clientY: number) => {
     const buttons = Array.from(messageNavigation.current?.querySelectorAll<HTMLButtonElement>('button') ?? []);
-    if (!buttons.length) return;
-    const firstBounds = buttons[0].getBoundingClientRect();
-    const firstCenter = firstBounds.top + firstBounds.height / 2;
-    const nextBounds = buttons[1]?.getBoundingClientRect();
-    const nextCenter = nextBounds ? nextBounds.top + nextBounds.height / 2 : firstCenter + firstBounds.height + 3;
-    const interval = Math.max(1, nextCenter - firstCenter);
-    const pointerIndex = Math.max(0, Math.min(buttons.length - 1, (clientY - firstCenter) / interval));
+    const navigationBounds = messageNavigation.current?.getBoundingClientRect();
+    if (!buttons.length || !navigationBounds?.height) return;
+    const normalizedPosition = Math.max(0, Math.min(1, (clientY - navigationBounds.top) / navigationBounds.height));
+    const pointerIndex = normalizedPosition * Math.max(0, buttons.length - 1);
     const styledButtons = new Set<HTMLButtonElement>();
     const firstStyledIndex = Math.max(0, Math.ceil(pointerIndex - 2));
     const lastStyledIndex = Math.min(buttons.length - 1, Math.floor(pointerIndex + 2));
@@ -1889,6 +1901,11 @@ export const ConversationSurface = memo(function ConversationSurface({ events, l
       window.cancelAnimationFrame(messageNavigationFrame.current);
     }
   }, []);
+  useEffect(() => () => {
+    if (selectionReferenceFrame.current !== undefined) {
+      window.cancelAnimationFrame(selectionReferenceFrame.current);
+    }
+  }, [conversationScope]);
   useEffect(() => {
     const onCopy = (event: ClipboardEvent) => {
       const selection = window.getSelection();
@@ -1912,20 +1929,39 @@ export const ConversationSurface = memo(function ConversationSurface({ events, l
   }, []);
   const offerSelectedReference = useCallback((event: ReactPointerEvent<HTMLElement>) => {
     if (!onCreateAnnotation || !surface.current) return;
+    if (event.pointerType === 'mouse' && event.button !== 0) return;
+    const pointerTarget = event.target instanceof Node ? elementForNode(event.target) : undefined;
+    if (pointerTarget?.closest('a,button,input,textarea,select,summary,[contenteditable="true"]')) return;
+    const pointerMessageId = pointerTarget?.closest<HTMLElement>('[data-conversation-event-id]')?.dataset.conversationEventId;
     const selection = window.getSelection();
-    if (!selection) return;
-    const reference = conversationAnnotationForSelection(selection, surface.current);
-    if (!reference) { setSelectedReference(undefined); return; }
-    const pointerMessage = event.target instanceof Node
-      ? elementForNode(event.target)?.closest<HTMLElement>('[data-conversation-event-id]')
-      : undefined;
-    if (pointerMessage?.dataset.conversationEventId !== reference.eventId) { setSelectedReference(undefined); return; }
-    const bounds = selection.getRangeAt(0).getBoundingClientRect();
-    if (!bounds.width && !bounds.height) { setSelectedReference(undefined); return; }
-    setSelectedReference({
-      reference,
-      left: Math.min(Math.max(12, bounds.left), Math.max(12, window.innerWidth - 172)),
-      top: Math.min(bounds.bottom + 8, Math.max(12, window.innerHeight - 44)),
+    if (!selection || selection.isCollapsed || !selection.rangeCount) {
+      setSelectedReference(undefined);
+      return;
+    }
+    if (selectionReferenceFrame.current !== undefined) window.cancelAnimationFrame(selectionReferenceFrame.current);
+    selectionReferenceFrame.current = window.requestAnimationFrame(() => {
+      selectionReferenceFrame.current = undefined;
+      const currentSurface = surface.current;
+      const currentSelection = window.getSelection();
+      if (!currentSurface || !currentSelection || currentSelection.isCollapsed || !currentSelection.rangeCount) {
+        setSelectedReference(undefined);
+        return;
+      }
+      const reference = conversationAnnotationForSelection(currentSelection, currentSurface);
+      if (!reference || pointerMessageId !== reference.eventId) {
+        setSelectedReference(undefined);
+        return;
+      }
+      const bounds = currentSelection.getRangeAt(0).getBoundingClientRect();
+      if (!bounds.width && !bounds.height) {
+        setSelectedReference(undefined);
+        return;
+      }
+      setSelectedReference({
+        reference,
+        left: Math.min(Math.max(12, bounds.left), Math.max(12, window.innerWidth - 172)),
+        top: Math.min(bounds.bottom + 8, Math.max(12, window.innerHeight - 44)),
+      });
     });
   }, [onCreateAnnotation]);
   const locateReferenceSource = useCallback(() => {
@@ -1944,6 +1980,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, l
         key={message.id}
         aria-label={`定位到用户消息：${messageSummary(message.content)}`}
         aria-describedby={messagePreview?.id === message.id ? 'conversation-message-preview' : undefined}
+        style={{ '--message-index-position': `${userMessageNavigation.length === 1 ? 50 : (index / (userMessageNavigation.length - 1)) * 100}%` } as CSSProperties}
         onFocus={event => showMessagePreview(message, index, event.currentTarget)}
         onBlur={() => setMessagePreview(current => current?.id === message.id ? undefined : current)}
         onClick={() => scrollToUserMessage(message.id)}

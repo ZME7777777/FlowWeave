@@ -660,7 +660,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
         id: 'agent-conversation-1', display_title: '检查工作目录', title_state: 'PENDING', lifecycle: 'ACTIVE',
         model_provider_id: modelProviderId,
         model_name: 'gpt-test', reasoning_effort: null,
-        streaming_callback_ready: true,
+        streaming_callback_ready: true, write_available: true,
         created_at: new Date().toISOString(), updated_at: new Date().toISOString(), last_connected_at: null,
       };
       conversations.splice(0, 0, created);
@@ -1298,7 +1298,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect.poll(() => messageRuler.getByRole('button').evaluateAll(buttons => {
     const tops = buttons.map(button => button.getBoundingClientRect().top);
     return Math.max(...tops) - Math.min(...tops);
-  })).toBeLessThanOrEqual(30);
+  })).toBeGreaterThan(100);
   const firstMessageTick = messageRuler.getByRole('button', { name: '定位到用户消息：检查工作目录' });
   await firstMessageTick.hover();
   await expect(page.locator('#conversation-message-preview')).toContainText('检查工作目录');
@@ -1310,6 +1310,13 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     return message.getBoundingClientRect().top - surface.getBoundingClientRect().top;
   })).toBeGreaterThanOrEqual(-1);
   await expect.poll(() => page.locator('[data-user-event-id="user-request"]').evaluate(message => {
+    const surface = message.closest('.conversation-surface');
+    if (!surface) throw new Error('Expected conversation surface');
+    return message.getBoundingClientRect().top - surface.getBoundingClientRect().top;
+  })).toBeLessThan(80);
+  const lastMessageTick = messageRuler.getByRole('button').last();
+  await lastMessageTick.click();
+  await expect.poll(() => page.locator('[data-user-event-id]').last().evaluate(message => {
     const surface = message.closest('.conversation-surface');
     if (!surface) throw new Error('Expected conversation surface');
     return message.getBoundingClientRect().top - surface.getBoundingClientRect().top;
@@ -1881,8 +1888,8 @@ test('selected conversation text is sent and rendered as a compact reference car
     const path = new URL(request.url()).pathname;
     if (path.endsWith('/default')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ id: 'reference-workspace', display_name: 'Agent 工作区', desired_state: 'RUNNING', updated_at: now }) });
     if (path.endsWith('/runtime')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ state: 'ACTIVE', write_available: true, updated_at: now }) });
-    if (path.endsWith('/conversations/reference-conversation')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ id: 'reference-conversation', display_title: '引用会话', lifecycle: 'ACTIVE', streaming_callback_ready: true, model_provider_id: null, model_name: null, reasoning_effort: null, created_at: now, updated_at: now }) });
-    if (path.endsWith('/conversations') && request.method() === 'GET') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ items: [{ id: 'reference-conversation', display_title: '引用会话', lifecycle: 'ACTIVE', streaming_callback_ready: true, model_provider_id: null, model_name: null, reasoning_effort: null, created_at: now, updated_at: now }], next_cursor: null }) });
+    if (path.endsWith('/conversations/reference-conversation')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ id: 'reference-conversation', display_title: '引用会话', lifecycle: 'ACTIVE', streaming_callback_ready: true, write_available: true, model_provider_id: null, model_name: null, reasoning_effort: null, created_at: now, updated_at: now }) });
+    if (path.endsWith('/conversations') && request.method() === 'GET') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ items: [{ id: 'reference-conversation', display_title: '引用会话', lifecycle: 'ACTIVE', streaming_callback_ready: true, write_available: true, model_provider_id: null, model_name: null, reasoning_effort: null, created_at: now, updated_at: now }], next_cursor: null }) });
     if (path.endsWith('/events')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ events: events(), next_cursor: null }) });
     if (path.endsWith('/annotations') && request.method() === 'GET') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(annotations) });
     if (path.endsWith('/annotations') && request.method() === 'POST') {
@@ -1926,6 +1933,7 @@ test('selected conversation text is sent and rendered as a compact reference car
     selection?.addRange(range);
     content.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
   });
+  await expect(page.getByRole('button', { name: '添加到会话' })).toBeVisible();
   await page.getByRole('button', { name: '添加到会话' }).click();
   await expect(page.getByLabel('已添加的引用 1 条')).toContainText('会话引用 1');
   await page.getByRole('button', { name: '定位原文' }).click();

@@ -369,11 +369,19 @@ test('Agent composer retains each conversation draft and uploaded attachment acr
   await expect(composer).toHaveValue('会话 A 的未发送内容');
   await expect(page.locator('.agent-composer .agent-attachments').getByText('保留附件.txt', { exact: true })).toBeVisible();
 
+  // Exercise the fast A -> B -> A path before either debounce timer can
+  // settle. The newly selected conversation must not inherit the old draft.
+  await page.getByRole('button', { name: '草稿会话 B', exact: true }).click();
+  await expect(composer).toHaveValue('会话 B 的未发送内容');
+  await page.getByRole('button', { name: '草稿会话 A', exact: true }).click();
+  await expect(composer).toHaveValue('会话 A 的未发送内容');
+
   await page.reload();
   await expect(composer).toHaveValue('会话 A 的未发送内容');
   await expect(page.locator('.agent-composer .agent-attachments').getByText('保留附件.txt', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: '草稿会话 B', exact: true }).click();
   await expect(composer).toHaveValue('会话 B 的未发送内容');
+  await expect(page.locator('.agent-composer .agent-attachments').getByText('保留附件.txt', { exact: true })).toHaveCount(0);
 });
 
 test('First message keeps the new conversation visible while its routed read is pending', async ({ page }) => {

@@ -6626,6 +6626,34 @@ Docker 或远端环境。
 创建与节点 bootstrap 创建均在任何原生 Runtime 创建前执行该检查，因此旧库不会留下已创建但未完成认证同步
 的会话。
 
+### FR-502 会话实时投影、草稿隔离与导航稳定性 — DONE
+
+依赖：FR-499、FR-500。
+
+目标：运行中会话在 WebSocket 投影短暂缺帧或静默断开时，必须继续从 OpenHands 正式事件读取恢复更新；
+当前用户轮次的有效任务快照不能因某次有界事件投影缺少 `TaskTrackerObservation` 而反复消失。Composer 的防抖和
+卸载持久化必须按明确会话 scope 写入，快速切换会话时不得将未发送文本写入另一个会话。用户消息导航条应将整个
+历史范围归一化映射到固定轨道，末条消息始终可达；普通点击和双击的空选区不得触发长消息选区序列化。
+
+范围：仅调整 Agent 工作台会话事件／就绪兜底读取、Composer 草稿持久化边界、会话任务摘要、用户消息导航条、
+选区引用的浏览器交互，以及对应 Web E2E 回归。不得修改 API、数据库、OpenHands、Runtime Provider、Docker
+或远端环境。
+
+验收：Web TypeScript typecheck、受影响文件 ESLint、`git diff --check` 与任务状态唯一性；在本机产品栈可用时
+尝试限定 Playwright 回归。不得将测试环境无法提供的服务视为通过。
+
+完成：运行中会话现在会在 WebSocket 投影缺帧或静默断开时，通过事件与 input-readiness 的权威 REST 读取恢复；
+当前用户轮次的任务快照按会话和正式 user turn 隔离并保留，不再因有界事件投影暂时缺少
+`TaskTrackerObservation` 而反复消失。Composer 草稿、附件和引用按会话 scope 独立持久化，快速切换会话时先写回旧
+scope；首条消息 bootstrap 成功后会清理已发送内容，避免发送文本重新出现在输入框。用户消息导航条改为固定轨道，
+历史末条用户消息可以定位到视口顶部附近；普通点击和双击的空选区会快速退出，选区引用解析合并到单个动画帧。
+
+验收结果：`pnpm --dir apps/web typecheck`、受影响文件 ESLint、`git diff --check`、任务状态唯一性检查通过；
+`e2e/product-flow.spec.ts -g "selected conversation text"`、`e2e/agent-session-cache.spec.ts -g "Agent composer retains"`
+均通过。顶层 Agent workspace 长用例已通过本切片涉及的会话创建、发送后 Composer 清理、草稿恢复和消息导航阶段，
+后续在既有 `getByLabel('Git')` 断言处因严格匹配命中 3 个元素（其中 1 个隐藏）失败；该失败是测试选择器歧义，
+不是本切片会话状态修复失败。
+
 ### FR-497 会话配置组合收拢与认证同步异常兼容 — DONE
 
 依赖：FR-489。
