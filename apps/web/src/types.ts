@@ -420,6 +420,23 @@ export interface AutomaticRecordConfigDocument {
   exported_at?: string; source?: { flow_definition_id?: string; flow_run_id?: string };
   records: AutomaticRecordConfig[];
 }
+export interface StepwiseInitialConfiguration {
+  startup_prompt?: string | null;
+  agent_preset: AgentPreset;
+  gates: GatePolicy[];
+  input_urls: Record<string, string>;
+}
+export interface StepwiseRecordConfig {
+  name?: string | null;
+  start_node_key: string;
+  initial_configuration: StepwiseInitialConfiguration;
+}
+export interface StepwiseRecordConfigDocument {
+  format: 'flowweave.stepwise-record-config'; version: 1;
+  exported_at?: string; source?: { flow_definition_id?: string; flow_run_id?: string };
+  records: StepwiseRecordConfig[];
+}
+export type RecordConfigDocument = AutomaticRecordConfigDocument | StepwiseRecordConfigDocument;
 export interface SnapshotFlowNode extends FlowNode { asset: NodeAsset }
 export interface SnapshotDefinition extends Omit<FlowDefinition, 'nodes'> {
   nodes: SnapshotFlowNode[];

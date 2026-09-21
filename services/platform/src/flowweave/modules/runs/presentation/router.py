@@ -41,6 +41,8 @@ from flowweave.shared.schemas import (
     RuntimeLifecycleWrite,
     RuntimeReplacementWrite,
     StepwiseRunRecordCopyWrite,
+    StepwiseRecordConfigExportWrite,
+    StepwiseRecordConfigImportWrite,
     StepwiseRunRecordWrite,
     SyncSnapshotWrite,
 )
@@ -150,6 +152,30 @@ async def copy_nested_stepwise_run(
         db,
         lambda session: service.copy_nested_stepwise_run_record(
             session, parent_run_id, run_id, payload
+        ),
+    )
+
+
+@router.post("/flow-runs/{parent_run_id}/stepwise-runs/config-exports")
+async def export_nested_stepwise_run_configs(
+    parent_run_id: str, payload: StepwiseRecordConfigExportWrite, db: Db
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: service.export_nested_stepwise_run_configs(
+            session, parent_run_id, payload
+        ),
+    )
+
+
+@router.post("/flow-runs/{parent_run_id}/stepwise-runs/config-imports", status_code=201)
+async def import_nested_stepwise_run_configs(
+    parent_run_id: str, payload: StepwiseRecordConfigImportWrite, db: Db
+) -> list[dict[str, Any]]:
+    return await run_sync(
+        db,
+        lambda session: service.import_nested_stepwise_run_configs(
+            session, parent_run_id, payload
         ),
     )
 

@@ -208,6 +208,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-497 | 会话配置组合收拢与认证同步异常兼容 | DONE | Skill 组合收拢至能力工具栏菜单；既有会话认证同步兼容包装后的 PostgreSQL 缺失 schema 错误，并保留会话配置入口命名。 |
 | FR-498 | 会话直接发送、暂停续答与队列原地编辑 | DONE | 普通发送同步显示用户消息并异步投递；暂停会话直接续答；浏览器投递队列保留原项原地编辑。 |
 | FR-500 | 会话投递契约兼容与工作台连续定位交互 | DONE | 将缺失可选 `/context` 路由从会话启动硬失败中剥离；Skill 组合菜单支持外部点击关闭；用户消息定位条按指针连续产生波纹式刻度反馈。 |
+| FR-503 | 逐步运行导入、拷贝与连续运行前端交互对齐 | DONE | 逐步运行新增、导入、记录选中、起始节点聚焦、右侧栏展示、配置下载/复制及首节点配置拷贝均复用连续运行的交互投影；后端导入重新生成 URL artifact 与 Gate ID，并保持待启动状态。 |
 | FR-457 | OpenHands 空响应自恢复与运行状态一致性 | DONE | 空 Agent Message 与 `source=environment` 的原生 corrective nudge 不再被识别为最终回复；纠正事件以“模型返回空响应，OpenHands 正在自动重试”呈现，左侧会话状态与底部按钮继续统一服从原生 execution status。 |
 | FR-458 | 空响应恢复提示瞬时化与会话状态统一 | DONE | corrective nudge 只在它是当前最新事件且原生会话仍运行时复用实时状态行显示；后续事件或终态立即隐藏，历史工作过程不保留该提示。工作台所有运行控件复用同一原生状态投影。 |
 | FR-459 | 原生错误事件的终态／可恢复呈现分流 | DONE | 仅 OpenHands ConversationErrorEvent 呈现为“本轮未能完成”的会话级终态卡片；AgentErrorEvent 与未知历史 ERROR 保持原生审计事实，按其正式父事件留在工作过程中呈现为可恢复异常，后续正式回复会明确标注 Agent 已继续完成，避免暂停／继续后的正常回复被历史错误卡片误覆盖。 |
@@ -6653,6 +6654,17 @@ scope；首条消息 bootstrap 成功后会清理已发送内容，避免发送�
 均通过。顶层 Agent workspace 长用例已通过本切片涉及的会话创建、发送后 Composer 清理、草稿恢复和消息导航阶段，
 后续在既有 `getByLabel('Git')` 断言处因严格匹配命中 3 个元素（其中 1 个隐藏）失败；该失败是测试选择器歧义，
 不是本切片会话状态修复失败。
+### FR-503 逐步运行导入、拷贝与连续运行前端交互对齐 — DONE
+
+依赖：FR-490、FR-494。
+
+目标：逐步运行在新增、点击记录、起始节点聚焦、右侧栏展示、操作栏以及配置导入／导出／复制上，必须与连续运行保持同一套工作台交互语义；逐步模式只保留逐节点显式启动这一业务差异。逐步记录的配置拷贝应以当时创建首节点的初始配置为事实来源，不复制会话、执行状态、输出或历史 artifact。
+
+范围：补齐逐步运行配置文档的导入和导出 API、URL 输入与 Gate 配置校验、配置拷贝的前端入口和共享下载／剪贴板交互，并补充服务端与工作台回归。不得改变连续运行的执行语义、数据库迁移、OpenHands、Runtime Provider、Docker 或远端环境。
+
+完成：逐步新增弹窗保留与连续运行一致的起始节点选择和导入入口；导入后立即选中首条记录、聚焦其起始节点并打开共享右侧栏；点击逐步记录时按当前节点或冻结起始节点恢复相同选中状态。逐步记录的操作栏提供与连续运行同位置、同样式的拷贝、下载、复制和删除能力。配置导出仅携带首节点启动提示词、Agent 预设、Gate 配置和直接 URL 输入；导入重新校验目标节点字段、生成新的 URL artifact 与 Gate ID，并创建 `WAITING_START_CONFIRMATION` Attempt，不自动调度。记录拷贝复用同一首节点配置投影，保留逐步显式启动语义并排除 Conversation、运行状态、输出、文件 artifact 和旧 artifact ID。
+
+验证：Web `tsc -b`、受影响页面与 API 的 ESLint、受影响 Python `py_compile`、`git diff --check` 通过；服务端定向 pytest 已执行但当前环境缺少 Docker socket，在 fixture 初始化阶段因 `docker.errors.DockerException` 退出，未进入业务断言；新增定向 Playwright 覆盖逐步配置导入后记录、起始节点和右侧栏选中状态。
 
 ### FR-497 会话配置组合收拢与认证同步异常兼容 — DONE
 
@@ -6732,6 +6744,7 @@ FlowWeave 本地累加后猜测压缩边界。
 
 | 日期 | 切片 | 验证 | 结果 |
 | 2026-09-21 | FR-501 | 受影响 Python Ruff format/check、`py_compile`；认证同步 schema guard 纯逻辑回归（4 passed）；Alembic head、`git diff --check` 与任务状态唯一性 | PASS（静态／纯逻辑）：追加迁移从 Conversation binding 回填 credential sync 的 owner，随后收紧为非空并建立索引；三条原生会话创建路径均在 Runtime 创建前检查完整 schema。纯逻辑断言覆盖 PostgreSQL 缺列／缺表、非 schema 数据库异常及本次仅缺 credential sync `owner_user_id` 的情形。定向 pytest 在全局 Testcontainers fixture 初始化时因本机 Docker socket 缺失受阻，未进入断言且未记为通过。唯一 Alembic head 为 `0121_credential_sync_owner`；未修改 OpenHands、Runtime Provider、Docker 或远端环境。 |
+| 2026-09-21 | FR-503 | Web `tsc -b`、受影响页面与 API 的 ESLint、受影响 Python `py_compile`、Alembic head、`git diff --check`；逐步配置导入工作台回归 | PASS（静态／浏览器）：逐步新增、导入、记录选中、起始节点聚焦、右侧栏展示及配置下载／复制／拷贝均与连续运行复用同一交互投影；服务端定向 pytest 在全局 Docker fixture 初始化阶段因本机 Docker socket 缺失受阻，未进入业务断言；新增 Playwright 覆盖导入后记录、起始节点和右侧栏选中状态。唯一 Alembic head 为 `0120_agent_credential_sync`；未修改 OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-21 | FR-500 | Runtime 合同 Ruff format/check、`py_compile`、定向 pytest（9 passed）；Web TypeScript typecheck、受影响文件定向 ESLint；产品流会话工作台定向 Playwright 尝试；Alembic head、`git diff --check` 与任务状态唯一性 | PASS（静态／纯逻辑）：缺少可选 `/context` 不再使历史冻结 Runtime 在消息投递前判为不兼容，历史合同仍列出该路由时同样兼容；Skill 组合在菜单外 pointerdown 时关闭；定位条由每个 tick 的离散 hover 改为容器级 requestAnimationFrame 连续波纹，并把每帧布局与样式更新限制在相邻刻度。定向 Playwright 在本切片断言前，于既有“暂停当前 Agent”断言（`product-flow.spec.ts:957`）超时，未记为浏览器回归通过。唯一 Alembic head 为 `0120_agent_credential_sync`；未修改消息请求、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-21 | FR-499 | Web TypeScript typecheck、受影响文件定向 ESLint、Agent composer 草稿恢复定向 Playwright（1 passed）、Alembic head、`git diff --check` 与任务状态唯一性 | PASS：Composer 的按字符输入不再更新工作台根组件状态；会话切换与卸载按旧 scope flush，400ms 防抖持久化仍保留。`ConversationSurface` 通过 memo 与稳定的空任务控制引用隔离不相关的 Composer 更新。唯一 Alembic head 为 `0120_agent_credential_sync`；未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-21 | FR-498 | Web TypeScript typecheck、受影响文件定向 ESLint、顶层 Agent 工作区产品流定向 Playwright 尝试、Alembic head、`git diff --check` 与任务状态唯一性 | PASS（静态）：直接发送立即投影用户消息并异步提交，运行中仅在正式 HTTP cursor 返回前显示追加状态；暂停输入走同一直接投递路径；未提交队列项可原地编辑而不重建其投递记录。定向 Playwright 已启动本地 Vite 服务，但在本切片新增断言前的既有空响应恢复“暂停当前 Agent”断言（第 953 行）超时，未记为浏览器回归通过。唯一 Alembic head 为 `0120_agent_credential_sync`；未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |

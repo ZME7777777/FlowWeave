@@ -164,6 +164,7 @@ test('step configuration is saved before start and direct launch has its own tab
   };
   let currentStepRecord: typeof currentRun | undefined;
   let stepwiseCreateBody: Record<string, unknown> | undefined;
+  let stepwiseImportBody: Record<string, unknown> | undefined;
   let savedBody: Record<string, unknown> | undefined;
   let startBody: Record<string, unknown> | undefined;
   await page.route('**/api/v1/**', async route => {
@@ -190,6 +191,37 @@ test('step configuration is saved before start and direct launch has its own tab
         node_runs: [], artifacts: [], progress: { accepted: 0, terminal: 0, active: 0 },
       };
       return respond(currentStepRecord, 201);
+    }
+    if (path === `/api/v1/flow-runs/${run.id}/stepwise-runs/config-imports` && request.method() === 'POST') {
+      stepwiseImportBody = request.postDataJSON() as Record<string, unknown>;
+      const importedAttempt = {
+        ...attempt,
+        id: 'imported-stepwise-attempt',
+        node_run_id: 'imported-stepwise-node',
+        state: 'WAITING_START_CONFIRMATION',
+        runtime_phase: null,
+        startup_prompt: '导入的逐步启动提示词',
+      };
+      const importedNode = {
+        ...nodeRun,
+        id: 'imported-stepwise-node',
+        flow_run_id: 'imported-stepwise-record',
+        flow_node_snapshot_key: 'second',
+        created_from: 'RECORD_CONFIG_IMPORT',
+        attempts: [importedAttempt],
+      };
+      const importedRecord = {
+        ...currentRun,
+        id: 'imported-stepwise-record',
+        name: '导入逐步记录',
+        parent_flow_run_id: run.id,
+        start_node_key: 'second',
+        node_runs: [importedNode],
+        artifacts: [],
+        progress: { accepted: 0, terminal: 0, active: 1 },
+      };
+      currentStepRecord = importedRecord;
+      return respond([importedRecord], 201);
     }
     if (path === `/api/v1/flow-runs/${run.id}/stepwise-runs/stepwise-record-1` && request.method() === 'GET') return respond(currentStepRecord);
     if (path === `/api/v1/flow-runs/${run.id}/automatic-runs`) return respond([]);
@@ -237,10 +269,32 @@ test('step configuration is saved before start and direct launch has its own tab
 
   await page.getByRole('button', { name: '新增' }).click();
   const stepwiseDialog = page.getByRole('dialog', { name: '新增逐步运行记录' });
-  await stepwiseDialog.getByRole('textbox', { name: '逐步运行记录名称' }).fill('测试逐步记录');
-  await stepwiseDialog.getByRole('button', { name: '逐步运行起始节点' }).click();
-  await stepwiseDialog.getByRole('option', { name: '测试节点2', exact: true }).click();
-  await stepwiseDialog.getByRole('button', { name: '创建记录' }).click();
+  await expect(stepwiseDialog.getByRole('button', { name: '导入 / 粘贴' })).toBeVisible();
+  await stepwiseDialog.getByRole('button', { name: '导入 / 粘贴' }).click();
+  const importDialog = page.getByRole('dialog', { name: '导入逐步运行配置' });
+  await importDialog.getByRole('textbox', { name: '粘贴逐步运行配置' }).fill(JSON.stringify({
+    format: 'flowweave.stepwise-record-config',
+    version: 1,
+    records: [{ name: '导入逐步记录', start_node_key: 'second', initial_configuration: {
+      startup_prompt: '导入的逐步启动提示词',
+      agent_preset: { capability_version_ids: [], node_context_enabled: false },
+      gates: [], input_urls: {},
+    } }],
+  }));
+  await importDialog.getByRole('button', { name: '确认导入' }).click();
+  await expect.poll(() => stepwiseImportBody).toEqual(expect.objectContaining({
+    format: 'flowweave.stepwise-record-config',
+    version: 1,
+  }));
+  await expect(page.locator('.node-record-list > article.active')).toContainText('导入逐步记录');
+  await expect(page.locator('.run-graph-node[data-selected="true"]')).toContainText('测试节点2');
+  await expect(page.locator('.run-side-panel')).toBeVisible();
+  await page.getByRole('button', { name: '新增' }).click();
+  const stepwiseDialogAfterImport = page.getByRole('dialog', { name: '新增逐步运行记录' });
+  await stepwiseDialogAfterImport.getByRole('textbox', { name: '逐步运行记录名称' }).fill('测试逐步记录');
+  await stepwiseDialogAfterImport.getByRole('button', { name: '逐步运行起始节点' }).click();
+  await stepwiseDialogAfterImport.getByRole('option', { name: '测试节点2', exact: true }).click();
+  await stepwiseDialogAfterImport.getByRole('button', { name: '创建记录' }).click();
   await expect.poll(() => stepwiseCreateBody).toEqual({
     name: '测试逐步记录',
     start_node_key: 'second',

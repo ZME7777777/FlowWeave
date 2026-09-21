@@ -11,7 +11,7 @@ import { useProductDialog } from '../components/ProductDialogContext';
 import { RuntimeConfirmationPanel } from '../components/RuntimeConfirmationPanel';
 import { useEscapeClose } from '../components/useEscapeClose';
 import { useWorkbenchStore } from '../store/workbench';
-import type { AgentPreset, ArtifactVersion, AttemptState, AutomaticNodePlan, AutomaticRecordConfigDocument, CapabilityAsset, CapabilityCollection, FlowRun, FlowRunAutomaticRecord, FlowRunAutomaticRecordSummary, FlowRunStepwiseRecord, GateAgentPreset, GateEvaluation, GatePolicy, GateRemediationResult, NodeAttempt, NodeRun, OpenHandsConversationEvent, OpenHandsConversationEventBatch, SnapshotFlowNode, TokenUsageSummary } from '../types';
+import type { AgentPreset, ArtifactVersion, AttemptState, AutomaticNodePlan, AutomaticRecordConfigDocument, CapabilityAsset, CapabilityCollection, FlowRun, FlowRunAutomaticRecord, FlowRunAutomaticRecordSummary, FlowRunStepwiseRecord, GateAgentPreset, GateEvaluation, GatePolicy, GateRemediationResult, NodeAttempt, NodeRun, OpenHandsConversationEvent, OpenHandsConversationEventBatch, RecordConfigDocument, SnapshotFlowNode, TokenUsageSummary } from '../types';
 import { withDeploymentBase } from '../deploymentPath';
 import { selectCapabilityVersion, selectCapabilityVersions } from '../utils/capabilitySelection';
 
@@ -111,18 +111,18 @@ type CopyTarget =
 type SelectionModifiers = { extend: boolean; range: boolean };
 type ExportTarget = 'download' | 'clipboard';
 
-const configExportFilename = () => `flowweave-continuous-records-${new Date().toISOString().slice(0, 10)}.json`;
+const configExportFilename = (config: RecordConfigDocument) => `${config.format === 'flowweave.stepwise-record-config' ? 'flowweave-stepwise-records' : 'flowweave-continuous-records'}-${new Date().toISOString().slice(0, 10)}.json`;
 
-function downloadConfigDocument(config: AutomaticRecordConfigDocument): void {
+function downloadConfigDocument(config: RecordConfigDocument): void {
   const url = URL.createObjectURL(new Blob([JSON.stringify(config, null, 2)], { type: 'application/json' }));
   const link = document.createElement('a');
   link.href = url;
-  link.download = configExportFilename();
+  link.download = configExportFilename(config);
   link.click();
   URL.revokeObjectURL(url);
 }
 
-async function copyConfigDocument(config: AutomaticRecordConfigDocument): Promise<void> {
+async function copyConfigDocument(config: RecordConfigDocument): Promise<void> {
   const text = JSON.stringify(config, null, 2);
   if (navigator.clipboard?.writeText) {
     await navigator.clipboard.writeText(text);
@@ -1253,7 +1253,7 @@ function AutomaticRecordDialog({ run, onClose, onCreated, onImport }: { run: Flo
   return <div className="modal-backdrop"><section className="modal automatic-record-dialog" role="dialog" aria-modal="true" aria-label="新增连续运行"><header><div><span className="eyebrow">AUTOMATIC RUN</span><h2>新增连续运行</h2><p>记录归属于当前流程运行，并使用当前冻结快照与运行环境。</p></div><button type="button" className="ghost" aria-label="关闭新增连续运行" onClick={onClose}><X size={17}/></button></header><label>名称<input aria-label="连续运行名称" value={name} onChange={event => setName(event.target.value)} placeholder={`${run.name} · 连续运行`}/></label><label>起始节点<select aria-label="连续运行起始节点" value={startNodeKey} onChange={event => setStartNodeKey(event.target.value)}>{nodes.map(node => <option key={node.instance_key} value={node.instance_key}>{node.alias || node.asset.name}</option>)}</select></label>{mutation.error && <p className="error">{mutation.error.message}</p>}<footer><button type="button" className="ghost" onClick={onClose}>取消</button><button type="button" className="secondary" disabled={mutation.isPending} onClick={onImport}><Upload size={13}/>导入 / 粘贴</button><button type="button" className="primary" disabled={!startNodeKey || mutation.isPending} onClick={() => mutation.mutate()}>{mutation.isPending ? '创建中…' : '创建草稿'}</button></footer></section></div>;
 }
 
-function StepwiseRecordDialog({ run, onClose, onCreated }: { run: FlowRun; onClose: () => void; onCreated: (record: FlowRunStepwiseRecord) => void }) {
+function StepwiseRecordDialog({ run, onClose, onCreated, onImport }: { run: FlowRun; onClose: () => void; onCreated: (record: FlowRunStepwiseRecord) => void; onImport: () => void }) {
   const snapshot = run.snapshots.find(item => item.id === run.active_snapshot_id) ?? run.snapshots.at(-1);
   const nodes = snapshot?.definition.nodes ?? [];
   const [name, setName] = useState('');
@@ -1266,7 +1266,7 @@ function StepwiseRecordDialog({ run, onClose, onCreated }: { run: FlowRun; onClo
     onSuccess: onCreated,
   });
   useEscapeClose(onClose);
-  return <div className="modal-backdrop"><section className="modal automatic-record-dialog" role="dialog" aria-modal="true" aria-label="新增逐步运行记录"><header><div><span className="eyebrow">STEPWISE RUN</span><h2>新增逐步运行记录</h2><p>选择起始节点后保存记录。节点仍需先保存配置，再由你显式启动；完成后停在下一个节点。</p></div><button type="button" className="ghost" aria-label="关闭新增逐步运行记录" onClick={onClose}><X size={17}/></button></header><label>记录名称<input aria-label="逐步运行记录名称" value={name} maxLength={220} autoFocus placeholder={`${run.name} · 批次执行`} onChange={event => setName(event.target.value)}/></label><label>起始节点<LaunchOptionMenu label="逐步运行起始节点" value={startNodeKey} options={nodes.map(node => ({ value: node.instance_key, label: node.alias || node.asset.name }))} disabled={!nodes.length} onChange={setStartNodeKey}/></label>{mutation.error && <p className="error">创建失败：{mutation.error.message}</p>}<footer><button type="button" className="ghost" disabled={mutation.isPending} onClick={onClose}>取消</button><button type="button" className="primary" disabled={!startNodeKey || mutation.isPending} onClick={() => mutation.mutate()}>{mutation.isPending ? '创建中…' : '创建记录'}</button></footer></section></div>;
+  return <div className="modal-backdrop"><section className="modal automatic-record-dialog" role="dialog" aria-modal="true" aria-label="新增逐步运行记录"><header><div><span className="eyebrow">STEPWISE RUN</span><h2>新增逐步运行记录</h2><p>选择起始节点后保存记录。节点仍需先保存配置，再由你显式启动；完成后停在下一个节点。</p></div><button type="button" className="ghost" aria-label="关闭新增逐步运行记录" onClick={onClose}><X size={17}/></button></header><label>记录名称<input aria-label="逐步运行记录名称" value={name} maxLength={220} autoFocus placeholder={`${run.name} · 批次执行`} onChange={event => setName(event.target.value)}/></label><label>起始节点<LaunchOptionMenu label="逐步运行起始节点" value={startNodeKey} options={nodes.map(node => ({ value: node.instance_key, label: node.alias || node.asset.name }))} disabled={!nodes.length} onChange={setStartNodeKey}/></label>{mutation.error && <p className="error">创建失败：{mutation.error.message}</p>}<footer><button type="button" className="ghost" disabled={mutation.isPending} onClick={onClose}>取消</button><button type="button" className="secondary" disabled={mutation.isPending} onClick={onImport}><Upload size={13}/>导入 / 粘贴</button><button type="button" className="primary" disabled={!startNodeKey || mutation.isPending} onClick={() => mutation.mutate()}>{mutation.isPending ? '创建中…' : '创建记录'}</button></footer></section></div>;
 }
 
 function CopyRecordDialog({ mode, sourceName, onClose, onCopy, onExport }: { mode: CopyTarget['mode']; sourceName: string; onClose: () => void; onCopy: (name: string) => Promise<void>; onExport?: (target: ExportTarget) => Promise<void> }) {
@@ -1279,17 +1279,18 @@ function CopyRecordDialog({ mode, sourceName, onClose, onCopy, onExport }: { mod
     onSuccess: (_, target) => setExportFeedback(target),
   });
   useEscapeClose(onClose);
-  return <div className="modal-backdrop"><section className="modal automatic-record-dialog" role="dialog" aria-modal="true" aria-label={`拷贝${recordLabel}`}><header><div><span className="eyebrow">COPY RECORD</span><h2>拷贝{recordLabel}</h2><p>请为副本命名。确认后只复制初始配置与人工输入，不包含会话、输出或运行过程。</p></div><button type="button" className="ghost" aria-label={`关闭拷贝${recordLabel}`} onClick={onClose}><X size={17}/></button></header><label>副本名称<input aria-label="副本名称" value={name} maxLength={220} autoFocus onChange={event => setName(event.target.value)} /></label>{mutation.error && <p className="error">拷贝失败：{mutation.error.message}</p>}{exportMutation.error && <p className="error">导出失败：{exportMutation.error.message}</p>}{exportFeedback && <p className="field-hint" role="status">{exportFeedback === 'clipboard' ? '已复制到剪贴板。' : '已开始下载配置文件。'}</p>}<footer><button type="button" className="ghost" disabled={mutation.isPending || exportMutation.isPending} onClick={onClose}>取消</button>{mode === 'AUTOMATIC' && onExport && <><button type="button" className="secondary" disabled={mutation.isPending || exportMutation.isPending} onClick={() => exportMutation.mutate('download')}><Download size={13}/>{exportMutation.isPending && exportMutation.variables === 'download' ? '下载中…' : exportFeedback === 'download' ? '已开始下载' : '下载'}</button><button type="button" className="secondary" disabled={mutation.isPending || exportMutation.isPending} onClick={() => exportMutation.mutate('clipboard')}><Copy size={13}/>{exportMutation.isPending && exportMutation.variables === 'clipboard' ? '复制中…' : exportFeedback === 'clipboard' ? '已复制到剪贴板' : '复制'}</button></>}<button type="button" className="primary" disabled={!name.trim() || mutation.isPending || exportMutation.isPending} onClick={() => mutation.mutate()}>{mutation.isPending ? '拷贝中…' : '确认拷贝'}</button></footer></section></div>;
+  return <div className="modal-backdrop"><section className="modal automatic-record-dialog" role="dialog" aria-modal="true" aria-label={`拷贝${recordLabel}`}><header><div><span className="eyebrow">COPY RECORD</span><h2>拷贝{recordLabel}</h2><p>请为副本命名。确认后只复制初始配置与人工输入，不包含会话、输出或运行过程。</p></div><button type="button" className="ghost" aria-label={`关闭拷贝${recordLabel}`} onClick={onClose}><X size={17}/></button></header><label>副本名称<input aria-label="副本名称" value={name} maxLength={220} autoFocus onChange={event => setName(event.target.value)} /></label>{mutation.error && <p className="error">拷贝失败：{mutation.error.message}</p>}{exportMutation.error && <p className="error">导出失败：{exportMutation.error.message}</p>}{exportFeedback && <p className="field-hint" role="status">{exportFeedback === 'clipboard' ? '已复制到剪贴板。' : '已开始下载配置文件。'}</p>}<footer><button type="button" className="ghost" disabled={mutation.isPending || exportMutation.isPending} onClick={onClose}>取消</button>{onExport && <><button type="button" className="secondary" disabled={mutation.isPending || exportMutation.isPending} onClick={() => exportMutation.mutate('download')}><Download size={13}/>{exportMutation.isPending && exportMutation.variables === 'download' ? '下载中…' : exportFeedback === 'download' ? '已开始下载' : '下载'}</button><button type="button" className="secondary" disabled={mutation.isPending || exportMutation.isPending} onClick={() => exportMutation.mutate('clipboard')}><Copy size={13}/>{exportMutation.isPending && exportMutation.variables === 'clipboard' ? '复制中…' : exportFeedback === 'clipboard' ? '已复制到剪贴板' : '复制'}</button></>}<button type="button" className="primary" disabled={!name.trim() || mutation.isPending || exportMutation.isPending} onClick={() => mutation.mutate()}>{mutation.isPending ? '拷贝中…' : '确认拷贝'}</button></footer></section></div>;
 }
 
-function AutomaticRecordImportDialog({ onClose, onImport }: { onClose: () => void; onImport: (config: AutomaticRecordConfigDocument) => Promise<void> }) {
+function RecordConfigImportDialog({ mode, onClose, onImport }: { mode: 'AUTOMATIC' | 'STEPWISE'; onClose: () => void; onImport: (config: RecordConfigDocument) => Promise<void> }) {
+  const label = mode === 'AUTOMATIC' ? '连续运行' : '逐步运行';
   const [text, setText] = useState('');
   const [fileName, setFileName] = useState<string>();
   const [fileSize, setFileSize] = useState<number>();
   const [dragging, setDragging] = useState(false);
   const [fileError, setFileError] = useState('');
   const fileInput = useRef<HTMLInputElement>(null);
-  const mutation = useMutation({ mutationFn: async () => { let config: unknown; try { config = JSON.parse(text); } catch { throw new Error('配置不是有效的 JSON 文件或 JSON 文本。'); } return onImport(config as AutomaticRecordConfigDocument); }, onSuccess: onClose });
+  const mutation = useMutation({ mutationFn: async () => { let config: unknown; try { config = JSON.parse(text); } catch { throw new Error('配置不是有效的 JSON 文件或 JSON 文本。'); } return onImport(config as RecordConfigDocument); }, onSuccess: onClose });
   const loadFile = (file?: File) => {
     if (!file) return;
     if (!/\.json$/i.test(file.name) && file.type !== 'application/json') {
@@ -1303,7 +1304,7 @@ function AutomaticRecordImportDialog({ onClose, onImport }: { onClose: () => voi
   };
   const sizeLabel = fileSize === undefined ? '' : fileSize < 1024 ? `${fileSize} B` : `${(fileSize / 1024).toFixed(1)} KB`;
   useEscapeClose(onClose);
-  return <div className="modal-backdrop"><section className="modal automatic-record-dialog" role="dialog" aria-modal="true" aria-label="导入连续运行配置"><header><div><span className="eyebrow">IMPORT RECORD CONFIG</span><h2>导入连续运行配置</h2><p>配置将新增到当前 FlowRun，并沿用当前 FlowRun 的环境。不会导入运行环境、会话、产物、文件或执行历史。</p></div><button type="button" className="ghost" aria-label="关闭导入连续运行配置" onClick={onClose}><X size={17}/></button></header><section className={`automatic-config-upload${dragging ? ' dragging' : ''}${fileName ? ' selected' : ''}`} aria-label="上传 JSON 配置文件" onDragEnter={event => { event.preventDefault(); setDragging(true); }} onDragOver={event => event.preventDefault()} onDragLeave={event => { if (event.currentTarget === event.target) setDragging(false); }} onDrop={event => { event.preventDefault(); setDragging(false); loadFile(event.dataTransfer.files?.[0]); }}><input ref={fileInput} aria-label="上传连续运行配置" type="file" accept="application/json,.json" onChange={event => loadFile(event.target.files?.[0])}/><span className="automatic-config-upload-icon"><FileText size={20}/></span><span><b>{fileName || '导入 JSON 配置文件'}</b><small>{fileName ? `${sizeLabel} · 已读取，可直接确认导入` : '拖放文件至此处，或选择本地导出的 JSON 文件'}</small></span><button type="button" className="secondary" onClick={() => fileInput.current?.click()}>{fileName ? '重新选择' : '选择文件'}</button></section><label className="automatic-config-paste">或粘贴 JSON<textarea aria-label="粘贴连续运行配置" value={text} onChange={event => { setText(event.target.value); setFileError(''); }} placeholder="粘贴导出的连续运行配置 JSON"/></label>{fileError && <p className="error">{fileError}</p>}{mutation.error && <p className="error">导入失败：{mutation.error.message}</p>}<footer><button type="button" className="ghost" disabled={mutation.isPending} onClick={onClose}>取消</button><button type="button" className="primary" disabled={!text.trim() || mutation.isPending} onClick={() => mutation.mutate()}>{mutation.isPending ? '导入中…' : '确认导入'}</button></footer></section></div>;
+  return <div className="modal-backdrop"><section className="modal automatic-record-dialog" role="dialog" aria-modal="true" aria-label={`导入${label}配置`}><header><div><span className="eyebrow">IMPORT RECORD CONFIG</span><h2>导入{label}配置</h2><p>配置将新增到当前 FlowRun，并沿用当前 FlowRun 的环境。不会导入运行环境、会话、产物、文件或执行历史。</p></div><button type="button" className="ghost" aria-label={`关闭导入${label}配置`} onClick={onClose}><X size={17}/></button></header><section className={`automatic-config-upload${dragging ? ' dragging' : ''}${fileName ? ' selected' : ''}`} aria-label="上传 JSON 配置文件" onDragEnter={event => { event.preventDefault(); setDragging(true); }} onDragOver={event => event.preventDefault()} onDragLeave={event => { if (event.currentTarget === event.target) setDragging(false); }} onDrop={event => { event.preventDefault(); setDragging(false); loadFile(event.dataTransfer.files?.[0]); }}><input ref={fileInput} aria-label={`上传${label}配置`} type="file" accept="application/json,.json" onChange={event => loadFile(event.target.files?.[0])}/><span className="automatic-config-upload-icon"><FileText size={20}/></span><span><b>{fileName || '导入 JSON 配置文件'}</b><small>{fileName ? `${sizeLabel} · 已读取，可直接确认导入` : '拖放文件至此处，或选择本地导出的 JSON 文件'}</small></span><button type="button" className="secondary" onClick={() => fileInput.current?.click()}>{fileName ? '重新选择' : '选择文件'}</button></section><label className="automatic-config-paste">或粘贴 JSON<textarea aria-label={`粘贴${label}配置`} value={text} onChange={event => { setText(event.target.value); setFileError(''); }} placeholder={`粘贴导出的${label}配置 JSON`}/></label>{fileError && <p className="error">{fileError}</p>}{mutation.error && <p className="error">导入失败：{mutation.error.message}</p>}<footer><button type="button" className="ghost" disabled={mutation.isPending} onClick={onClose}>取消</button><button type="button" className="primary" disabled={!text.trim() || mutation.isPending} onClick={() => mutation.mutate()}>{mutation.isPending ? '导入中…' : '确认导入'}</button></footer></section></div>;
 }
 
 function AutomaticRecordExportDialog({ count, onClose, onExport }: { count: number; onClose: () => void; onExport: (target: ExportTarget) => Promise<void> }) {
@@ -1411,6 +1412,7 @@ export function WorkbenchPage() {
   const [automaticDialogOpen, setAutomaticDialogOpen] = useState(false);
   const [stepwiseDialogOpen, setStepwiseDialogOpen] = useState(false);
   const [automaticImportDialogOpen, setAutomaticImportDialogOpen] = useState(false);
+  const [stepwiseImportDialogOpen, setStepwiseImportDialogOpen] = useState(false);
   const [automaticExportRecordIds, setAutomaticExportRecordIds] = useState<string[]>();
   const [copyTarget, setCopyTarget] = useState<CopyTarget>();
   const [automaticBusyId, setAutomaticBusyId] = useState<string>();
@@ -1942,8 +1944,7 @@ export function WorkbenchPage() {
   const selectedStepwiseRecords = manualRecords.filter(item => stepwiseSelectedIds.has(item.id));
   const selectedAutomaticRecords = automaticRecords.filter(item => automaticSelectedIds.has(item.id));
   const canCopyStepwiseRecord = selectedStepwiseRecords.length === 1
-    && selectedStepwiseRecords[0].id !== parentRun.id
-    && selectedStepwiseRecords[0].node_runs.length > 0;
+    && selectedStepwiseRecords[0].id !== parentRun.id;
   const exportAutomaticRecords = async (recordIds: string[], target: ExportTarget) => {
     setAutomaticBusyId('config-export');
     try {
@@ -2001,6 +2002,26 @@ export function WorkbenchPage() {
     qc.setQueryData<FlowRunStepwiseRecord[]>(['flow-run-stepwise-records', parentRun.id], current => [record, ...(current ?? [])]);
     qc.setQueryData(['flow-run-stepwise-record', parentRun.id, record.id], record);
     selectStepwiseRecord(record.id, undefined, record);
+  };
+  const exportStepwiseRecords = async (recordIds: string[], target: ExportTarget) => {
+    setManualBusyId('config-export');
+    try {
+      const config = await api.exportStepwiseRecordConfigs(parentRun.id, recordIds);
+      if (target === 'download') downloadConfigDocument(config);
+      else await copyConfigDocument(config);
+    } finally { setManualBusyId(undefined); }
+  };
+  const importStepwiseRecords = async (config: RecordConfigDocument) => {
+    if (config.format !== 'flowweave.stepwise-record-config') {
+      throw new Error('这不是逐步运行配置文件。');
+    }
+    const imported = await api.importStepwiseRecordConfigs(parentRun.id, config);
+    for (const record of imported) {
+      qc.setQueryData(['flow-run-stepwise-record', parentRun.id, record.id], record);
+    }
+    void qc.invalidateQueries({ queryKey: ['flow-run-stepwise-records', parentRun.id] });
+    const first = imported[0];
+    if (first) selectCreatedStepwiseRecord(first);
   };
   const deleteStepwiseRecord = () => {
     const recordIds = selectedStepwiseRecords.map(record => record.id);
@@ -2238,7 +2259,7 @@ export function WorkbenchPage() {
         {mode === 'AUTOMATIC' && selectedAutomaticId ? selectedAutomatic ? selectedAutomatic.state === 'DRAFT' ? <AutomaticRecordEditor key={selectedAutomatic.id} parent={parentRun} record={selectedAutomatic} selectedKey={selectedNodeKey} onDraft={retainAutomaticDraft} onSaved={replaceAutomatic}/> : selectedAutomatic.automatic_block?.code === 'AUTOMATIC_PLAN_GATE_ID_MISSING' ? <AutomaticLegacyPlanRecoveryPanel parentRunId={parentRun.id} record={selectedAutomatic} onRecovered={updated => { replaceAutomatic(updated); void automaticDetail.refetch(); void automatic.refetch(); }}/> : executionDetailPanel ?? <aside className="action-panel"><div className="action-content automatic-empty">该节点尚未激活。连续调度到达后会在这里显示执行、门禁和人工处理入口。</div></aside> : automaticDetail.isError ? <aside className="action-panel"><div className="action-content error">连续运行详情加载失败：{automaticDetail.error.message}</div></aside> : <aside className="action-panel"><div className="action-content automatic-empty">加载连续运行详情…</div></aside> : mode === 'MANUAL' && selectedStepwiseId ? stepwiseRecordPanel : executionDetailPanel ?? (nodeRun && attempt ? <AttemptPanel run={categorizedRun} nodeRun={nodeRun} attempt={attempt} refresh={() => { void stepwiseDetail.refetch(); }} navigate={navigate} sessionReturnContext={mode === 'MANUAL' && selectedStepwise ? { runId: parentRun.id, mode: 'MANUAL', stepwiseRecordId: selectedStepwise.id } : { runId: parentRun.id, mode }} onStartStepwise={mode === 'MANUAL' ? () => startStepwiseNode(nodeRun) : undefined}/> : selectedNode ? <NodeConsole run={categorizedRun} node={selectedNode} startupMode={mode === 'DIRECT' ? 'CHAT' : 'PROMPT'} pendingNodeRun={pendingConfigurationNodeRun} initialBindings={inheritedTransitionBindings} refresh={() => { void stepwiseDetail.refetch(); }} onActivated={created => { setSelectedNodeKey(undefined); navigate(created, 'activate'); }} onSelectExecution={item => { setSelectedNodeKey(item.flow_node_snapshot_key); selectExecution(item.id, item.attempts.at(-1)?.id); }}/> : null)}
       </aside>}
     </section>
-    {copyTarget && <CopyRecordDialog mode={copyTarget.mode} sourceName={copyTarget.mode === 'DIRECT' ? nodeRunName(run, copyTarget.record) : copyTarget.record.name} onClose={() => setCopyTarget(undefined)} onExport={copyTarget.mode === 'AUTOMATIC' ? target => exportAutomaticRecords([copyTarget.record.id], target) : undefined} onCopy={async name => {
+    {copyTarget && <CopyRecordDialog mode={copyTarget.mode} sourceName={copyTarget.mode === 'DIRECT' ? nodeRunName(run, copyTarget.record) : copyTarget.record.name} onClose={() => setCopyTarget(undefined)} onExport={copyTarget.mode === 'AUTOMATIC' ? target => exportAutomaticRecords([copyTarget.record.id], target) : copyTarget.mode === 'STEPWISE' ? target => exportStepwiseRecords([copyTarget.record.id], target) : undefined} onCopy={async name => {
       if (copyTarget.mode === 'DIRECT') {
         setManualBusyId(copyTarget.record.id);
         try {
@@ -2283,8 +2304,9 @@ export function WorkbenchPage() {
         onImport={() => { setAutomaticDialogOpen(false); setAutomaticImportDialogOpen(true); }}
       />
     )}
-    {stepwiseDialogOpen && <StepwiseRecordDialog run={parentRun} onClose={() => setStepwiseDialogOpen(false)} onCreated={record => { setStepwiseDialogOpen(false); selectCreatedStepwiseRecord(record); }}/>}
-    {automaticImportDialogOpen && <AutomaticRecordImportDialog onClose={() => setAutomaticImportDialogOpen(false)} onImport={importAutomaticRecords}/>}
+    {stepwiseDialogOpen && <StepwiseRecordDialog run={parentRun} onClose={() => setStepwiseDialogOpen(false)} onImport={() => { setStepwiseDialogOpen(false); setStepwiseImportDialogOpen(true); }} onCreated={record => { setStepwiseDialogOpen(false); selectCreatedStepwiseRecord(record); }}/>} 
+    {automaticImportDialogOpen && <RecordConfigImportDialog mode="AUTOMATIC" onClose={() => setAutomaticImportDialogOpen(false)} onImport={config => { if (config.format !== 'flowweave.continuous-record-config') throw new Error('这不是连续运行配置文件。'); return importAutomaticRecords(config); }}/>} 
+    {stepwiseImportDialogOpen && <RecordConfigImportDialog mode="STEPWISE" onClose={() => setStepwiseImportDialogOpen(false)} onImport={importStepwiseRecords}/>} 
     {automaticExportRecordIds && <AutomaticRecordExportDialog count={automaticExportRecordIds.length} onClose={() => setAutomaticExportRecordIds(undefined)} onExport={target => exportAutomaticRecords(automaticExportRecordIds, target)}/>}
   </>;
 }

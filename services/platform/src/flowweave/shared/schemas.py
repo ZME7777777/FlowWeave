@@ -638,6 +638,53 @@ class AutomaticRecordConfigImportWrite(ApiModel):
     records: list[AutomaticRecordConfigWrite] = Field(min_length=1, max_length=100)
 
 
+class StepwiseRecordConfigExportWrite(ApiModel):
+    """Export initial configuration from one or more stepwise records."""
+
+    record_ids: list[str] = Field(min_length=1, max_length=100)
+
+    @model_validator(mode="after")
+    def validate_record_ids(self) -> StepwiseRecordConfigExportWrite:
+        if len(self.record_ids) != len(set(self.record_ids)):
+            raise ValueError("record_ids must be unique")
+        return self
+
+
+class StepwiseInitialConfigurationWrite(ApiModel):
+    """Portable first-node configuration for a stepwise record."""
+
+    startup_prompt: str | None = Field(default=None, max_length=200_000)
+    agent_preset: AgentPresetWrite = Field(default_factory=AgentPresetWrite)
+    gates: list[GateWrite] = Field(default_factory=_empty_gates)
+    input_urls: dict[str, str] = Field(default_factory=_empty_str_dict)
+
+    @model_validator(mode="after")
+    def validate_input_urls(self) -> StepwiseInitialConfigurationWrite:
+        self.input_urls = {
+            field_key: _http_url(value, f"input URL for {field_key}")
+            for field_key, value in self.input_urls.items()
+        }
+        return self
+
+
+class StepwiseRecordConfigWrite(ApiModel):
+    """Portable metadata for one stepwise record."""
+
+    name: str | None = Field(default=None, max_length=220)
+    start_node_key: str = Field(pattern=r"^[A-Za-z][A-Za-z0-9_-]{0,99}$")
+    initial_configuration: StepwiseInitialConfigurationWrite
+
+
+class StepwiseRecordConfigImportWrite(ApiModel):
+    """Versioned JSON document used to import stepwise configuration."""
+
+    format: Literal["flowweave.stepwise-record-config"]
+    version: Literal[1]
+    exported_at: str | None = Field(default=None, max_length=64)
+    source: dict[str, str] | None = None
+    records: list[StepwiseRecordConfigWrite] = Field(min_length=1, max_length=100)
+
+
 class NodeRunCopyWrite(ApiModel):
     """Create a fresh manual record from a prior record's launch configuration."""
 
