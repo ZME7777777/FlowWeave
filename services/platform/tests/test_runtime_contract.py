@@ -123,7 +123,32 @@ def test_runtime_contract_uses_the_environment_frozen_server_identity() -> None:
     assert (
         "GET",
         "/api/conversations/{conversation_id}/context",
-    ) in governed_runtime_contract(("file_editor", "terminal")).required_http_operations
+    ) not in governed_runtime_contract(("file_editor", "terminal")).required_http_operations
+
+
+def test_runtime_contract_normalizes_only_the_obsolete_optional_view_usage_operation() -> None:
+    tools = ("file_editor", "terminal")
+    document = compile_runtime_contract(tools)
+    document["required_http_operations"].extend(
+        (
+            {
+                "method": "GET",
+                "path": "/api/conversations/{conversation_id}/context",
+            },
+            {"method": "POST", "path": "/api/conversations/{conversation_id}/custom"},
+        )
+    )
+
+    contract = normalize_runtime_contract(document, required_tools=tools)
+
+    assert (
+        "GET",
+        "/api/conversations/{conversation_id}/context",
+    ) not in contract.required_http_operations
+    assert (
+        "POST",
+        "/api/conversations/{conversation_id}/custom",
+    ) in contract.required_http_operations
 
 
 def test_start_rejects_missing_contract_before_runtime_http(

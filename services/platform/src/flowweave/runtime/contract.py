@@ -29,7 +29,6 @@ REQUIRED_HTTP_OPERATIONS: tuple[tuple[str, str], ...] = tuple(
             ("POST", "/api/conversations"),
             ("POST", "/api/conversations/{conversation_id}/secrets"),
             ("GET", "/api/conversations/{conversation_id}"),
-            ("GET", "/api/conversations/{conversation_id}/context"),
             ("POST", "/api/conversations/{conversation_id}/events"),
             ("GET", "/api/conversations/{conversation_id}/events/{event_id}"),
             ("GET", "/api/conversations/{conversation_id}/events/search"),
@@ -48,6 +47,15 @@ REQUIRED_HTTP_OPERATIONS: tuple[tuple[str, str], ...] = tuple(
             ("POST", "/api/conversations/{conversation_id}/ask_agent"),
         }
     )
+)
+
+# The OpenHands adapter reads this endpoint only to improve View token usage
+# diagnostics and already degrades when it is unavailable.  It was
+# mistakenly frozen into snapshot contracts before the target Server exposed
+# it, so retain compatibility with only that obsolete requirement.
+_OBSOLETE_OPTIONAL_VIEW_USAGE_OPERATION = (
+    "GET",
+    "/api/conversations/{conversation_id}/context",
 )
 
 REQUIRED_START_FIELDS: tuple[str, ...] = tuple(
@@ -245,6 +253,12 @@ def normalize_runtime_contract(
         or len(parsed_tools) != len(set(parsed_tools))
     ):
         raise ValueError("Runtime contract requirements are invalid")
+
+    parsed_operations = [
+        operation
+        for operation in parsed_operations
+        if operation != _OBSOLETE_OPTIONAL_VIEW_USAGE_OPERATION
+    ]
 
     return RuntimeContract(
         schema_version=schema_version,
