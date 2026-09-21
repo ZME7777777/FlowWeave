@@ -58,6 +58,7 @@ from flowweave.runtime.base import (
     RuntimeWorkspaceSnapshot,
     StartAttemptRequest,
 )
+from flowweave.runtime.contract import OPTIONAL_HTTP_OPERATIONS
 from flowweave.runtime.model_catalog import declared_context_window
 from flowweave.shared.errors import DomainError
 from flowweave.shared.infrastructure.docker_controller import (
@@ -860,7 +861,8 @@ class OpenHandsRuntime:
         for method, path in contract.required_http_operations:
             raw_operation = paths.get(path)
             if not isinstance(raw_operation, dict) or method.lower() not in raw_operation:
-                missing_operations.append({"method": method, "path": path})
+                if (method, path) not in OPTIONAL_HTTP_OPERATIONS:
+                    missing_operations.append({"method": method, "path": path})
         if missing_operations:
             raise cls._incompatible(
                 "missing_http_operations", missing_operations=missing_operations

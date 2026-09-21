@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
 
@@ -15,6 +16,7 @@ from flowweave.runtime.base import (
     StartAttemptRequest,
 )
 from flowweave.runtime.contract import (
+    OPTIONAL_HTTP_OPERATIONS,
     compile_runtime_contract,
     governed_runtime_contract,
     normalize_runtime_contract,
@@ -123,7 +125,7 @@ def test_runtime_contract_uses_the_environment_frozen_server_identity() -> None:
     assert (
         "GET",
         "/api/conversations/{conversation_id}/context",
-    ) in governed_runtime_contract(("file_editor", "terminal")).required_http_operations
+    ) not in governed_runtime_contract(("file_editor", "terminal")).required_http_operations
 
 
 def test_start_rejects_missing_contract_before_runtime_http(
@@ -209,6 +211,27 @@ def test_runtime_contract_rejects_incompatible_server(mutation: str, expected_re
         )
     assert error.value.code == "RUNTIME_CONTRACT_INCOMPATIBLE"
     assert _reason(error) == expected_reason
+
+
+def test_runtime_contract_accepts_historical_optional_context_route() -> None:
+    tools = ("file_editor", "terminal")
+    contract = governed_runtime_contract(tools)
+    historical_contract = replace(
+        contract,
+        required_http_operations=tuple(
+            sorted(set(contract.required_http_operations) | OPTIONAL_HTTP_OPERATIONS)
+        ),
+    )
+    openapi = _openapi(historical_contract)
+    paths = cast(dict[str, Any], openapi["paths"])
+    paths.pop("/api/conversations/{conversation_id}/context")
+
+    OpenHandsRuntime._validate_runtime_contract(  # pyright: ignore[reportPrivateUsage]
+        historical_contract,
+        ready={"status": "ready"},
+        server_info=_server_info(tools=tools),
+        openapi=openapi,
+    )
 
 
 def test_runtime_contract_ignores_server_provenance_metadata() -> None:

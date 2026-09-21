@@ -1469,6 +1469,11 @@ export const ConversationSurface = memo(function ConversationSurface({ events, l
   const scrollInteractionStartY = useRef<number | null>(null);
   const scrollInteractionTowardLatest = useRef(false);
   const automaticScrollFrame = useRef<number | undefined>(undefined);
+  const messageNavigation = useRef<HTMLElement>(null);
+  const messageNavigationFrame = useRef<number | undefined>(undefined);
+  const messageNavigationPreviewIndex = useRef<number | undefined>(undefined);
+  const messageNavigationPointerY = useRef<number | undefined>(undefined);
+  const messageNavigationStyledButtons = useRef<Set<HTMLButtonElement>>(new Set());
   const historyAnchor = useRef<{
     id: number;
     scope: string;
@@ -1675,6 +1680,72 @@ export const ConversationSurface = memo(function ConversationSurface({ events, l
       top: targetBounds.top - shellBounds.top + targetBounds.height / 2,
     });
   }, []);
+  const clearMessageNavigationPreview = useCallback(() => {
+    if (messageNavigationFrame.current !== undefined) {
+      window.cancelAnimationFrame(messageNavigationFrame.current);
+      messageNavigationFrame.current = undefined;
+    }
+    messageNavigationPreviewIndex.current = undefined;
+    messageNavigationPointerY.current = undefined;
+    messageNavigationStyledButtons.current.forEach(button => {
+      button.style.removeProperty('--message-index-proximity');
+      button.style.removeProperty('--message-index-proximity-percent');
+      button.style.removeProperty('--message-index-width');
+      button.style.removeProperty('--message-index-opacity');
+      button.style.removeProperty('--message-index-halo');
+    });
+    messageNavigationStyledButtons.current.clear();
+    setMessagePreview(undefined);
+  }, []);
+  const updateMessageNavigationPreview = useCallback((clientY: number) => {
+    const buttons = Array.from(messageNavigation.current?.querySelectorAll<HTMLButtonElement>('button') ?? []);
+    if (!buttons.length) return;
+    const firstBounds = buttons[0].getBoundingClientRect();
+    const firstCenter = firstBounds.top + firstBounds.height / 2;
+    const nextBounds = buttons[1]?.getBoundingClientRect();
+    const nextCenter = nextBounds ? nextBounds.top + nextBounds.height / 2 : firstCenter + firstBounds.height + 3;
+    const interval = Math.max(1, nextCenter - firstCenter);
+    const pointerIndex = Math.max(0, Math.min(buttons.length - 1, (clientY - firstCenter) / interval));
+    const styledButtons = new Set<HTMLButtonElement>();
+    const firstStyledIndex = Math.max(0, Math.ceil(pointerIndex - 2));
+    const lastStyledIndex = Math.min(buttons.length - 1, Math.floor(pointerIndex + 2));
+    for (let index = firstStyledIndex; index <= lastStyledIndex; index += 1) {
+      const button = buttons[index];
+      const proximity = Math.max(0, 1 - Math.abs(index - pointerIndex) / 2);
+      if (!proximity) continue;
+      styledButtons.add(button);
+      button.style.setProperty('--message-index-proximity', proximity.toFixed(3));
+      button.style.setProperty('--message-index-proximity-percent', `${Math.round(proximity * 100)}%`);
+      button.style.setProperty('--message-index-width', `${8 + 7 * proximity}px`);
+      button.style.setProperty('--message-index-opacity', `${0.62 + 0.38 * proximity}`);
+      button.style.setProperty('--message-index-halo', `${3 * proximity}px`);
+    }
+    messageNavigationStyledButtons.current.forEach(button => {
+      if (styledButtons.has(button)) return;
+      button.style.removeProperty('--message-index-proximity');
+      button.style.removeProperty('--message-index-proximity-percent');
+      button.style.removeProperty('--message-index-width');
+      button.style.removeProperty('--message-index-opacity');
+      button.style.removeProperty('--message-index-halo');
+    });
+    messageNavigationStyledButtons.current = styledButtons;
+    const previewIndex = Math.max(0, Math.min(userMessageNavigation.length - 1, Math.round(pointerIndex)));
+    if (messageNavigationPreviewIndex.current === previewIndex) return;
+    const previewTarget = buttons[previewIndex];
+    const previewMessage = userMessageNavigation[previewIndex];
+    if (!previewTarget || !previewMessage) return;
+    messageNavigationPreviewIndex.current = previewIndex;
+    showMessagePreview(previewMessage, previewIndex, previewTarget);
+  }, [showMessagePreview, userMessageNavigation]);
+  const handleMessageNavigationPointerMove = useCallback((event: ReactPointerEvent<HTMLElement>) => {
+    messageNavigationPointerY.current = event.clientY;
+    if (messageNavigationFrame.current !== undefined) return;
+    messageNavigationFrame.current = window.requestAnimationFrame(() => {
+      messageNavigationFrame.current = undefined;
+      const clientY = messageNavigationPointerY.current;
+      if (clientY !== undefined) updateMessageNavigationPreview(clientY);
+    });
+  }, [updateMessageNavigationPreview]);
   const handleScroll = useCallback(() => {
     updateScrollPosition();
     scrollInteractionTowardLatest.current = false;
@@ -1779,6 +1850,11 @@ export const ConversationSurface = memo(function ConversationSurface({ events, l
   useEffect(() => () => {
     if (copyResetTimer.current) window.clearTimeout(copyResetTimer.current);
   }, []);
+  useEffect(() => () => {
+    if (messageNavigationFrame.current !== undefined) {
+      window.cancelAnimationFrame(messageNavigationFrame.current);
+    }
+  }, []);
   useEffect(() => {
     const onCopy = (event: ClipboardEvent) => {
       const selection = window.getSelection();
@@ -1828,15 +1904,13 @@ export const ConversationSurface = memo(function ConversationSurface({ events, l
   if (!turns.length && !liveText && !isGenerating) return <div className="conversation-surface-empty"><b>会话已就绪</b><span>发送第一条消息，开始与 Agent 协作。</span></div>;
   const showJumpToLatest = !isAtLatest && Boolean(turns.length || liveText || isGenerating);
   return <div ref={shell} className="conversation-surface-shell">
-    {userMessageNavigation.length > 0 && <nav className="conversation-message-index" aria-label="用户消息导航">
+    {userMessageNavigation.length > 0 && <nav ref={messageNavigation} className="conversation-message-index" aria-label="用户消息导航" onPointerMove={handleMessageNavigationPointerMove} onPointerLeave={clearMessageNavigationPreview}>
       {userMessageNavigation.map((message, index) => <button
         type="button"
         key={message.id}
         aria-label={`定位到用户消息：${messageSummary(message.content)}`}
         aria-describedby={messagePreview?.id === message.id ? 'conversation-message-preview' : undefined}
-        onPointerEnter={event => showMessagePreview(message, index, event.currentTarget)}
         onFocus={event => showMessagePreview(message, index, event.currentTarget)}
-        onPointerLeave={() => setMessagePreview(current => current?.id === message.id ? undefined : current)}
         onBlur={() => setMessagePreview(current => current?.id === message.id ? undefined : current)}
         onClick={() => scrollToUserMessage(message.id)}
       >

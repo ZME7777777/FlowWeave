@@ -29,7 +29,6 @@ REQUIRED_HTTP_OPERATIONS: tuple[tuple[str, str], ...] = tuple(
             ("POST", "/api/conversations"),
             ("POST", "/api/conversations/{conversation_id}/secrets"),
             ("GET", "/api/conversations/{conversation_id}"),
-            ("GET", "/api/conversations/{conversation_id}/context"),
             ("POST", "/api/conversations/{conversation_id}/events"),
             ("GET", "/api/conversations/{conversation_id}/events/{event_id}"),
             ("GET", "/api/conversations/{conversation_id}/events/search"),
@@ -48,6 +47,14 @@ REQUIRED_HTTP_OPERATIONS: tuple[tuple[str, str], ...] = tuple(
             ("POST", "/api/conversations/{conversation_id}/ask_agent"),
         }
     )
+)
+
+# Current View usage is optional observability.  Existing frozen Runtime
+# contracts can retain the route, but its absence must not block a message.
+OPTIONAL_HTTP_OPERATIONS = frozenset(
+    {
+        ("GET", "/api/conversations/{conversation_id}/context"),
+    }
 )
 
 REQUIRED_START_FIELDS: tuple[str, ...] = tuple(
