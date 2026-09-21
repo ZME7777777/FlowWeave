@@ -3758,6 +3758,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const [queuedMessages, setQueuedMessages] = useState<QueuedMessage[]>([]);
   const [draggedQueuedMessageId, setDraggedQueuedMessageId] = useState<string>();
   const [queuedMessageMenuId, setQueuedMessageMenuId] = useState<string>();
+  const [queuedMessageEditingId, setQueuedMessageEditingId] = useState<string>();
+  const [queuedMessageEditingContent, setQueuedMessageEditingContent] = useState('');
   const [pendingRewrite, setPendingRewrite] = useState<RewriteRequest>();
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [reviewChanges, setReviewChanges] = useState<WorkspaceFileChange[]>([]);
@@ -3833,7 +3835,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const pointerDragGroupRef = useRef<AgentConversation[] | undefined>(undefined);
   const queuedMessagesStorageKeyRef = useRef<string | undefined>(undefined);
   const queuedMessagesRef = useRef<QueuedMessage[]>([]);
-  const streamConfirmedNativeGuidanceIds = useRef<Set<string>>(new Set());
   const nativeGuidanceOptimisticEventIds = useRef<Map<string, string>>(new Map());
   useEffect(() => () => {
     for (const resource of [
@@ -4262,7 +4263,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   // is not user-visible queueing. Keep actual running-turn queue entries and
   // every non-success outcome visible and actionable.
   const visibleQueuedMessages = queuedMessages.filter(message =>
-    !(message.nativeGuidance && message.deliveryState === 'dispatching')
+    message.deliveryState !== 'dispatching'
     && (message.deliveryState === 'ambiguous'
       || message.deliveryState === 'rejected'
       || effectiveTurnState !== 'idle'
@@ -4620,37 +4621,12 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     // but text deltas are transient and must never appear as a partial final
     // reply. Final answer content is rendered only from formal OpenHands events.
     if (event.type === 'stream_closed') reconcileConversationProjection();
-    if (event.type === 'event' && event.event) {
-      const payload = event.event.payload;
-      const isFormalUserMessage = event.event.event_type === 'MESSAGE'
-        && ['user', 'human'].includes(String(payload.source ?? '').toLowerCase());
-      if (isFormalUserMessage && selected?.id) {
-        const content = String(payload.content ?? '');
-        const confirmed = queuedMessagesRef.current.find(message =>
-          message.scope === selected.id
-          && message.nativeGuidance
-          && message.deliveryState === 'dispatching'
-          && message.content === content,
-        );
-        if (confirmed) {
-          // A formal OpenHands event identity is the delivery fact. The event
-          // stream can publish it before the append request returns from the
-          // current native turn's lock, so do not leave a confirmed message
-          // looking perpetually queued.
-          streamConfirmedNativeGuidanceIds.current.add(confirmed.id);
-          commitQueuedMessages(current => current.filter(message => message.id !== confirmed.id));
-          const optimisticEventId = nativeGuidanceOptimisticEventIds.current.get(confirmed.id);
-          nativeGuidanceOptimisticEventIds.current.delete(confirmed.id);
-          if (optimisticEventId) setLiveEvents(current => current.filter(message => message.id !== optimisticEventId));
-        }
-      }
-      appendLiveEvent(event.event);
-    }
+    if (event.type === 'event' && event.event) appendLiveEvent(event.event);
     // Completion frames do not identify the originating user event.  A stale
     // frame must never complete a newer turn; durable assistant/error events
     // associated with activeTurnEventId are the authoritative terminal signal.
     if (event.type === 'message_complete') { clearLiveText(); reconcileConversationProjection(); }
-  }, [appendLiveEvent, clearLiveText, commitQueuedMessages, reconcileConversationProjection, selected?.id]);
+  }, [appendLiveEvent, clearLiveText, reconcileConversationProjection]);
   const onStreamReconnect = useCallback(() => {
     // A WebSocket is a live projection only. Events written while the browser
     // was disconnected are recovered from the authoritative REST feed after
@@ -4676,7 +4652,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       bootstrapTransitionScope.current = undefined;
       return;
     }
-    setEditing(false); clearLiveText(); pendingLiveEvents.current = []; if (liveEventsFrame.current !== undefined) window.cancelAnimationFrame(liveEventsFrame.current); liveEventsFrame.current = undefined; setLiveEvents([]); setHiddenEventIds(new Set()); setActiveTurnEventId(undefined); setExpiredTerminalSyncTurnKey(undefined); setRequestStartedAt(undefined); setConfirmationReason(''); setTurnState('idle'); queuedMessagesRef.current = []; streamConfirmedNativeGuidanceIds.current.clear(); nativeGuidanceOptimisticEventIds.current.clear(); setQueuedMessages([]); setPendingRewrite(undefined);
+    setEditing(false); setQueuedMessageMenuId(undefined); setQueuedMessageEditingId(undefined); setQueuedMessageEditingContent(''); clearLiveText(); pendingLiveEvents.current = []; if (liveEventsFrame.current !== undefined) window.cancelAnimationFrame(liveEventsFrame.current); liveEventsFrame.current = undefined; setLiveEvents([]); setHiddenEventIds(new Set()); setActiveTurnEventId(undefined); setExpiredTerminalSyncTurnKey(undefined); setRequestStartedAt(undefined); setConfirmationReason(''); setTurnState('idle'); queuedMessagesRef.current = []; nativeGuidanceOptimisticEventIds.current.clear(); setQueuedMessages([]); setPendingRewrite(undefined);
     if (recoveredComposer) {
       setDraft(recoveredComposer.content);
       setAttachments(recoveredComposer.attachments);
@@ -5027,7 +5003,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       reportOperationError(selected?.id, persistModel.error as Error);
     },
   });
-  const showNativeGuidanceBubble = useCallback((message: QueuedMessage): string => {
+  const showOptimisticUserBubble = useCallback((message: QueuedMessage, deliveryStatus?: string): string => {
     const existing = nativeGuidanceOptimisticEventIds.current.get(message.id);
     if (existing) return existing;
     const optimisticEventId = `pending-user:${randomId()}`;
@@ -5042,7 +5018,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         conversation_references: message.references.map(item => ({ event_id: item.eventId, content: item.content })),
         workspace_references: message.workspaceReferences,
         collaboration_annotations: message.annotations,
-        _flowweave_delivery_status: '正在追加到当前回复',
+        ...(deliveryStatus ? { _flowweave_delivery_status: deliveryStatus } : {}),
       },
     }]));
     return optimisticEventId;
@@ -5050,24 +5026,35 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const send = useMutation({
     mutationFn: (message: BoundQueuedMessage) => api.sendMessage(workspace!.id, message.bindingId, message.content, message.items, message.references.map(item => ({ event_id: item.eventId, content: item.content })), message.workspaceReferences ?? [], message.annotations, message.id),
     onMutate: message => {
-      const optimisticEventId = message.nativeGuidance
-        ? showNativeGuidanceBubble(message)
-        : `pending-user:${randomId()}`;
+      const optimisticEventId = showOptimisticUserBubble(
+        message,
+        message.nativeGuidance ? '正在追加到当前回复' : undefined,
+      );
       if (message.nativeGuidance) {
         // The user has asked to append direction to the active turn, so show
-        // that intent immediately. It remains explicitly provisional until a
-        // formal OpenHands event or cursor confirms delivery.
+        // that intent immediately. It remains explicitly provisional until
+        // the append request returns a formal OpenHands cursor.
         return { optimisticEventId, nativeGuidance: true };
       }
       clearLiveText();
       setActiveTurnEventId(undefined);
       setRequestStartedAt(Date.now());
-      setLiveEvents([{ id: optimisticEventId, event_type: 'MESSAGE', payload: { source: 'user', content: message.content, conversation_references: message.references.map(item => ({ event_id: item.eventId, content: item.content })), workspace_references: message.workspaceReferences, collaboration_annotations: message.annotations } }]);
+      setLiveEvents(current => mergeConversationEvents(current, [{
+        id: optimisticEventId,
+        event_type: 'MESSAGE',
+        payload: {
+          source: 'user',
+          content: message.content,
+          attachments: message.items,
+          conversation_references: message.references.map(item => ({ event_id: item.eventId, content: item.content })),
+          workspace_references: message.workspaceReferences,
+          collaboration_annotations: message.annotations,
+        },
+      }]));
       setTurnState('running');
       return { optimisticEventId, nativeGuidance: false };
     },
     onSuccess: (value, message, context) => {
-      const streamConfirmed = streamConfirmedNativeGuidanceIds.current.delete(message.id);
       nativeGuidanceOptimisticEventIds.current.delete(message.id);
       const cursor = value.cursor;
       if (cursor) {
@@ -5077,7 +5064,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
           [{ id: cursor, event_type: 'MESSAGE', payload: { source: 'user', content: message.content, attachments: message.items, conversation_references: message.references.map(item => ({ event_id: item.eventId, content: item.content })), workspace_references: message.workspaceReferences, collaboration_annotations: message.annotations } }],
         ));
       }
-      if (streamConfirmed || (value.accepted && cursor)) {
+      if (value.accepted && cursor) {
         commitQueuedMessages(current => current.filter(item => item.id !== message.id));
       } else {
         updateQueuedMessage(message.id, item => ({
@@ -5090,7 +5077,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       refresh();
     },
     onError: (error, message, context) => {
-      if (streamConfirmedNativeGuidanceIds.current.delete(message.id)) return;
       nativeGuidanceOptimisticEventIds.current.delete(message.id);
       if (error instanceof ApiError && error.code === 'AGENT_CONVERSATION_BUSY') {
         updateQueuedMessage(message.id, item => ({ ...item, deliveryState: 'queued', nativeGuidance: false, deliveryError: undefined }));
@@ -5345,8 +5331,22 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       return;
     }
     if (!canWrite) { setComposerDraft(content); setAttachments(attachments); setReferences(references); setWorkspaceReferences(workspaceReferences); setComposerAnnotations(composerAnnotations); return; }
-    commitQueuedMessages(items => [...items, { ...message, deliveryState: 'queued', createdAt: Date.now() }]);
-  }, [attachments, bootstrap, canBootstrap, canWrite, commitQueuedMessages, composerAnnotations, composerScope, conversationDraft, draft, effectiveTurnState, migrateStreaming.isPending, pendingMigratedSend, references, setComposerDraft, workspaceReferences]);
+    if (!selected) return;
+    const nativeGuidance = effectiveTurnState === 'running';
+    const queuedMessage: QueuedMessage = {
+      ...message,
+      nativeGuidance,
+      deliveryState: nativeGuidance && !selected.streaming_callback_ready ? 'queued' : 'dispatching',
+      createdAt: Date.now(),
+    };
+    commitQueuedMessages(items => [...items, queuedMessage]);
+    if (queuedMessage.deliveryState === 'queued') return;
+    showOptimisticUserBubble(
+      queuedMessage,
+      nativeGuidance ? '正在追加到当前回复' : undefined,
+    );
+    send.mutate({ ...queuedMessage, bindingId: selected.id });
+  }, [attachments, bootstrap, canBootstrap, canWrite, commitQueuedMessages, composerAnnotations, composerScope, conversationDraft, draft, effectiveTurnState, migrateStreaming.isPending, pendingMigratedSend, references, selected, send, setComposerDraft, showOptimisticUserBubble, workspaceReferences]);
   const sendDraftDirectly = useCallback(() => {
     const content = draft.trim();
     const hasComposerMessage = Boolean(content || attachments.length || references.length || workspaceReferences.length || composerAnnotations.length);
@@ -5357,44 +5357,20 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       // With an empty composer, Command/Ctrl+Enter promotes the current queue
       // head. Keep the durable entry and let the common dispatcher mark it
       // in-flight before its one and only HTTP attempt.
-      showNativeGuidanceBubble(queuedMessage);
+      showOptimisticUserBubble(queuedMessage, '正在追加到当前回复');
       updateQueuedMessage(queuedMessage.id, message => ({ ...message, nativeGuidance: true }));
       return;
     }
-    if (!composerScope || conversationDraft || !canWrite || migrateStreaming.isPending || pendingMigratedSend
-      || effectiveTurnState === 'pausing' || effectiveTurnState === 'resuming') return;
-    const message = { id: randomId(), scope: composerScope, content, items: attachments, references, workspaceReferences, annotations: composerAnnotations };
-    setComposerDraft('');
-    setAttachments([]);
-    setReferences([]); setWorkspaceReferences([]); setComposerAnnotations([]);
-    setOperationError(undefined);
-    if (effectiveTurnState === 'running' && !selected?.streaming_callback_ready) {
-      setComposerDraft(content);
-      setAttachments(attachments);
-      setReferences(references); setWorkspaceReferences(workspaceReferences); setComposerAnnotations(composerAnnotations);
-      return;
-    }
-    if (effectiveTurnState === 'running' || effectiveTurnState === 'idle') {
-      commitQueuedMessages(items => [...items, {
-        ...message,
-        nativeGuidance: effectiveTurnState === 'running',
-        deliveryState: 'queued',
-        createdAt: Date.now(),
-      }]);
-      return;
-    }
-    setComposerDraft(content);
-    setAttachments(attachments);
-    setReferences(references); setWorkspaceReferences(workspaceReferences); setComposerAnnotations(composerAnnotations);
-  }, [attachments, canWrite, commitQueuedMessages, composerAnnotations, composerScope, conversationDraft, draft, effectiveTurnState, migrateStreaming.isPending, pendingMigratedSend, queuedMessages, references, selected, setComposerDraft, showNativeGuidanceBubble, updateQueuedMessage, workspaceReferences]);
+    enqueueDraft();
+  }, [attachments.length, canWrite, composerAnnotations.length, conversationDraft, draft, effectiveTurnState, enqueueDraft, migrateStreaming.isPending, pendingMigratedSend, queuedMessages, references.length, selected, showOptimisticUserBubble, updateQueuedMessage, workspaceReferences.length]);
   const sendQueuedMessageImmediately = useCallback((message: QueuedMessage) => {
     if (!canWrite || effectiveTurnState !== 'running' || !selected?.streaming_callback_ready || message.scope !== selected.id || message.deliveryState !== 'queued') return;
     // The message stays in the persisted queue until the formal OpenHands
     // event cursor returns. Mark it as native guidance so the dispatcher may
     // append it during the current native turn.
-    showNativeGuidanceBubble(message);
+    showOptimisticUserBubble(message, '正在追加到当前回复');
     updateQueuedMessage(message.id, item => ({ ...item, nativeGuidance: true }));
-  }, [canWrite, effectiveTurnState, selected, showNativeGuidanceBubble, updateQueuedMessage]);
+  }, [canWrite, effectiveTurnState, selected, showOptimisticUserBubble, updateQueuedMessage]);
   const moveQueuedMessage = useCallback((sourceId: string, targetId: string) => {
     if (sourceId === targetId) return;
     commitQueuedMessages(items => {
@@ -5420,10 +5396,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   }, [commitQueuedMessages]);
   useEffect(() => {
     if (!selected || !eventsQuery.isSuccess || !queuedMessages.length || conversationActivity.synchronizing || send.isPending || migrateStreaming.isPending || pendingMigratedSend
-      || (effectiveTurnState !== 'idle' && effectiveTurnState !== 'running')) return;
+      || (effectiveTurnState !== 'idle' && effectiveTurnState !== 'running' && effectiveTurnState !== 'paused')) return;
     const next = queuedMessages.find(message => message.scope === selected.id
       && message.deliveryState === 'queued'
-      && (effectiveTurnState === 'idle' || message.nativeGuidance));
+      && (effectiveTurnState === 'running' ? message.nativeGuidance : !message.nativeGuidance));
     if (!next) return;
     updateQueuedMessage(next.id, message => ({ ...message, deliveryState: 'dispatching', deliveryError: undefined }));
     if (selected.streaming_callback_ready) {
@@ -5758,10 +5734,25 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
           const status = deliveryState === 'dispatching' ? '正在提交'
             : deliveryState === 'ambiguous' ? '结果不确定'
               : deliveryState === 'rejected' ? '已被拒绝' : '等待发送';
-          const editable = deliveryState !== 'dispatching';
-          return <article key={message.id} draggable={deliveryState === 'queued'} onDragStart={event => { if (deliveryState !== 'queued' || !(event.target instanceof Element) || !event.target.closest('.queue-drag-handle')) { event.preventDefault(); return; } event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', message.id); setDraggedQueuedMessageId(message.id); }} onDragOver={event => { if (deliveryState === 'queued' && draggedQueuedMessageId && draggedQueuedMessageId !== message.id) event.preventDefault(); }} onDrop={event => { event.preventDefault(); const sourceId = event.dataTransfer.getData('text/plain') || draggedQueuedMessageId; if (sourceId && deliveryState === 'queued') moveQueuedMessage(sourceId, message.id); setDraggedQueuedMessageId(undefined); }} onDragEnd={() => setDraggedQueuedMessageId(undefined)} className={`delivery-${deliveryState}${draggedQueuedMessageId === message.id ? ' dragging' : ''}`}><button type="button" className="queue-drag-handle" aria-label={`拖动排队消息 ${index + 1} 以调整顺序`} title="拖动调整顺序" disabled={deliveryState !== 'queued'} tabIndex={-1}><GripVertical size={14}/></button><small>{index + 1}</small><p>{message.content || (message.references.length ? `会话引用 ${message.references.length} 条` : message.workspaceReferences?.length ? `工作区引用 ${message.workspaceReferences.length} 条` : '图片附件')}</p><span>{[status, message.items.length ? `${message.items.length} 个附件` : '', message.references.length ? `${message.references.length} 条会话引用` : '', message.workspaceReferences?.length ? `${message.workspaceReferences.length} 条工作区引用` : ''].filter(Boolean).join(' · ')}</span><div><button type="button" aria-label={`调整方向排队消息 ${index + 1}`} title="立即发送，调整当前回复方向" disabled={deliveryState !== 'queued' || !canWrite || effectiveTurnState !== 'running' || !selected?.streaming_callback_ready || message.scope !== selected.id} onClick={() => sendQueuedMessageImmediately(message)}><CornerDownRight size={12}/>调整方向</button>{deliveryState === 'ambiguous' && <button type="button" className="queue-refresh" aria-label={`刷新会话确认排队消息 ${index + 1}`} title="刷新会话确认，系统不会自动重发" onClick={refresh}>刷新确认</button>}<button type="button" className="queue-remove" aria-label={`移除排队消息 ${index + 1}`} disabled={!editable} onClick={() => commitQueuedMessages(items => items.filter(item => item.id !== message.id))}><X size={13}/></button><button type="button" className="queue-more" aria-label={`更多排队消息操作 ${index + 1}`} title="更多操作" disabled={!editable} aria-expanded={queuedMessageMenuId === message.id} onClick={() => setQueuedMessageMenuId(current => current === message.id ? undefined : message.id)}><Ellipsis size={14}/></button>{queuedMessageMenuId === message.id && <div className="queue-menu" role="menu"><button type="button" role="menuitem" disabled={deliveryState !== 'queued' || index === 0} onClick={() => { moveQueuedMessageByOffset(message.id, -1); setQueuedMessageMenuId(undefined); }}>上移</button><button type="button" role="menuitem" disabled={deliveryState !== 'queued' || index === queuedMessages.length - 1} onClick={() => { moveQueuedMessageByOffset(message.id, 1); setQueuedMessageMenuId(undefined); }}>下移</button><button type="button" role="menuitem" onClick={() => { setComposerDraft(message.content); setAttachments(message.items); setReferences(message.references); setWorkspaceReferences(message.workspaceReferences ?? []); setComposerAnnotations(message.annotations); commitQueuedMessages(items => items.filter(item => item.id !== message.id)); setQueuedMessageMenuId(undefined); }}>编辑为新消息</button></div>}</div>{message.deliveryError && <em className="queue-delivery-error">{message.deliveryError}</em>}</article>;
+          const editable = deliveryState === 'queued';
+          const removable = deliveryState !== 'dispatching';
+          const editingQueueMessage = queuedMessageEditingId === message.id;
+          const hasEditedContent = Boolean(
+            queuedMessageEditingContent.trim()
+            || message.items.length
+            || message.references.length
+            || message.workspaceReferences?.length
+            || message.annotations.length,
+          );
+          const saveQueuedMessageEdit = () => {
+            if (!hasEditedContent) return;
+            updateQueuedMessage(message.id, item => ({ ...item, content: queuedMessageEditingContent.trim() }));
+            setQueuedMessageEditingId(undefined);
+            setQueuedMessageEditingContent('');
+          };
+          return <article key={message.id} draggable={deliveryState === 'queued' && !editingQueueMessage} onDragStart={event => { if (deliveryState !== 'queued' || editingQueueMessage || !(event.target instanceof Element) || !event.target.closest('.queue-drag-handle')) { event.preventDefault(); return; } event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', message.id); setDraggedQueuedMessageId(message.id); }} onDragOver={event => { if (deliveryState === 'queued' && draggedQueuedMessageId && draggedQueuedMessageId !== message.id) event.preventDefault(); }} onDrop={event => { event.preventDefault(); const sourceId = event.dataTransfer.getData('text/plain') || draggedQueuedMessageId; if (sourceId && deliveryState === 'queued') moveQueuedMessage(sourceId, message.id); setDraggedQueuedMessageId(undefined); }} onDragEnd={() => setDraggedQueuedMessageId(undefined)} className={`delivery-${deliveryState}${draggedQueuedMessageId === message.id ? ' dragging' : ''}${editingQueueMessage ? ' editing' : ''}`}><button type="button" className="queue-drag-handle" aria-label={`拖动排队消息 ${index + 1} 以调整顺序`} title="拖动调整顺序" disabled={deliveryState !== 'queued' || editingQueueMessage} tabIndex={-1}><GripVertical size={14}/></button><small>{index + 1}</small>{editingQueueMessage ? <textarea className="queue-edit-input" aria-label={`编辑排队消息 ${index + 1}`} autoFocus value={queuedMessageEditingContent} onChange={event => setQueuedMessageEditingContent(event.target.value)} onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); setQueuedMessageEditingId(undefined); setQueuedMessageEditingContent(''); } if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); saveQueuedMessageEdit(); } }}/> : <p>{message.content || (message.references.length ? `会话引用 ${message.references.length} 条` : message.workspaceReferences?.length ? `工作区引用 ${message.workspaceReferences.length} 条` : '图片附件')}</p>}<span>{[status, message.items.length ? `${message.items.length} 个附件` : '', message.references.length ? `${message.references.length} 条会话引用` : '', message.workspaceReferences?.length ? `${message.workspaceReferences.length} 条工作区引用` : ''].filter(Boolean).join(' · ')}</span><div>{editingQueueMessage ? <><button type="button" className="queue-edit-save" aria-label={`保存排队消息 ${index + 1}`} title="保存编辑" disabled={!hasEditedContent} onClick={saveQueuedMessageEdit}><Check size={13}/></button><button type="button" className="queue-edit-cancel" aria-label={`取消编辑排队消息 ${index + 1}`} title="取消编辑" onClick={() => { setQueuedMessageEditingId(undefined); setQueuedMessageEditingContent(''); }}><X size={13}/></button></> : <><button type="button" aria-label={`调整方向排队消息 ${index + 1}`} title="立即发送，调整当前回复方向" disabled={deliveryState !== 'queued' || !canWrite || effectiveTurnState !== 'running' || !selected?.streaming_callback_ready || message.scope !== selected.id} onClick={() => sendQueuedMessageImmediately(message)}><CornerDownRight size={12}/>调整方向</button>{deliveryState === 'ambiguous' && <button type="button" className="queue-refresh" aria-label={`刷新会话确认排队消息 ${index + 1}`} title="刷新会话确认，系统不会自动重发" onClick={refresh}>刷新确认</button>}<button type="button" className="queue-remove" aria-label={`移除排队消息 ${index + 1}`} disabled={!removable} onClick={() => { commitQueuedMessages(items => items.filter(item => item.id !== message.id)); if (queuedMessageEditingId === message.id) { setQueuedMessageEditingId(undefined); setQueuedMessageEditingContent(''); } }}><X size={13}/></button><button type="button" className="queue-more" aria-label={`更多排队消息操作 ${index + 1}`} title="更多操作" disabled={!editable} aria-expanded={queuedMessageMenuId === message.id} onClick={() => setQueuedMessageMenuId(current => current === message.id ? undefined : message.id)}><Ellipsis size={14}/></button>{queuedMessageMenuId === message.id && <div className="queue-menu" role="menu"><button type="button" role="menuitem" disabled={index === 0} onClick={() => { moveQueuedMessageByOffset(message.id, -1); setQueuedMessageMenuId(undefined); }}>上移</button><button type="button" role="menuitem" disabled={index === queuedMessages.length - 1} onClick={() => { moveQueuedMessageByOffset(message.id, 1); setQueuedMessageMenuId(undefined); }}>下移</button><button type="button" role="menuitem" onClick={() => { setQueuedMessageEditingId(message.id); setQueuedMessageEditingContent(message.content); setQueuedMessageMenuId(undefined); }}>编辑</button></div>}</>}</div>{message.deliveryError && <em className="queue-delivery-error">{message.deliveryError}</em>}</article>;
         })}</section>}
-        <ComposerCapabilityAutocomplete draft={draft} suggestions={composerSuggestions} placeholder={pendingConfirmation ? '请先处理上方工具确认…' : conversationActivity.synchronizing ? '正在同步上一轮结束状态…' : conversationActivity.state === 'paused' ? '已暂停：可继续，也可编辑上方消息重新思考…' : features.capabilities ? conversationActivity.state === 'running' ? '给 Agent 发消息…（Enter 加入队列，⌘/Ctrl+Enter 调整当前回复）' : '给 Agent 发消息…（Enter 发送；运行时自动加入队列）' : '给 Agent 发消息…'} disabled={!canCompose || Boolean(pendingConfirmation) || bootstrap.isPending || migrateStreaming.isPending || Boolean(pendingMigratedSend) || conversationActivity.synchronizing || conversationActivity.state === 'pausing' || conversationActivity.state === 'resuming'} onDraftChange={setComposerDraft} onPaste={event => { if (!features.attachments || !composerScope) return; const files = transferredFiles(event.clipboardData); if (!files.length) return; event.preventDefault(); for (const file of files) upload.mutate({ file, scope: composerScope }); }} onDropFiles={features.attachments && composerScope ? files => { for (const file of files) upload.mutate({ file, scope: composerScope }); } : undefined} onDropWorkspaceFiles={paths => setWorkspaceReferences(current => [...current, ...paths.flatMap(path => current.some(reference => reference.path === path) ? [] : [{ path, kind: 'file' as const, display_name: path.split('/').filter(Boolean).pop() ?? path }])])} onSubmit={enqueueDraft} onDirectSubmit={sendDraftDirectly} onManageCapabilities={features.capabilities && (selected || features.draftCapabilitySelection) ? () => setCapabilityManagerOpen(true) : undefined} onWorkspaceReferenceSelected={() => { setWorkspaceReferenceQuery(''); setWorkspaceReferencePickerOpen(true); }}/>
+        <ComposerCapabilityAutocomplete draft={draft} suggestions={composerSuggestions} placeholder={pendingConfirmation ? '请先处理上方工具确认…' : conversationActivity.synchronizing ? '正在同步上一轮结束状态…' : '给 Agent 发消息…'} disabled={!canCompose || Boolean(pendingConfirmation) || bootstrap.isPending || migrateStreaming.isPending || Boolean(pendingMigratedSend) || conversationActivity.synchronizing || conversationActivity.state === 'pausing' || conversationActivity.state === 'resuming'} onDraftChange={setComposerDraft} onPaste={event => { if (!features.attachments || !composerScope) return; const files = transferredFiles(event.clipboardData); if (!files.length) return; event.preventDefault(); for (const file of files) upload.mutate({ file, scope: composerScope }); }} onDropFiles={features.attachments && composerScope ? files => { for (const file of files) upload.mutate({ file, scope: composerScope }); } : undefined} onDropWorkspaceFiles={paths => setWorkspaceReferences(current => [...current, ...paths.flatMap(path => current.some(reference => reference.path === path) ? [] : [{ path, kind: 'file' as const, display_name: path.split('/').filter(Boolean).pop() ?? path }])])} onSubmit={enqueueDraft} onDirectSubmit={sendDraftDirectly} onManageCapabilities={features.capabilities && (selected || features.draftCapabilitySelection) ? () => setCapabilityManagerOpen(true) : undefined} onWorkspaceReferenceSelected={() => { setWorkspaceReferenceQuery(''); setWorkspaceReferencePickerOpen(true); }}/>
         {features.attachments && attachments.length > 0 && <div className="agent-attachments">{attachments.map(item => <span key={item.path}><button type="button" className="agent-attachment-open" title={`在右侧查看附件：${item.filename}`} onClick={() => openAttachmentInDrawer(item)}>{item.image_data_url && <img src={item.image_data_url} alt=""/>}<em>{item.filename}</em></button><button type="button" className="agent-attachment-remove" aria-label={`移除附件 ${item.filename}`} onClick={() => setAttachments(all => all.filter(candidate => candidate.path !== item.path))}>×</button></span>)}</div>}
         {references.length > 0 && <div className="agent-attachments agent-conversation-references" aria-label="已添加的会话引用">{references.map((reference, index) => <span key={`${reference.eventId}:${reference.content}`}><span className="agent-attachment-open" title={reference.content}><Quote size={14}/><em>{`会话引用 ${index + 1}`}</em></span><button type="button" className="agent-attachment-remove" aria-label={`移除会话引用 ${index + 1}`} onClick={() => setReferences(current => current.filter(item => item !== reference))}>×</button></span>)}</div>}
         {(selected || conversationDraft) && <ComposerAnnotationList annotations={composerAnnotations} onLocate={locateAnnotation} onRemove={annotation => setComposerAnnotations(current => current.filter(item => item.id !== annotation.id))} onUpdate={(annotation, comment) => void updateAnnotation(annotation, comment)}/>}

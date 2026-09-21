@@ -462,8 +462,10 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   const terminalInputs: string[] = [];
   const terminalResizes: Array<{ rows: number; columns: number }> = [];
   let sentMessages = 0;
-  let releaseGuidanceDelivery: (() => void) | undefined;
-  const guidanceDeliveryGate = new Promise<void>(resolve => { releaseGuidanceDelivery = resolve; });
+  let runningDirectMessagePosts = 0;
+  let pausedDirectMessagePosts = 0;
+  let releaseRunningDirectDelivery: (() => void) | undefined;
+  const runningDirectDeliveryGate = new Promise<void>(resolve => { releaseRunningDirectDelivery = resolve; });
   let ambiguousMessagePosts = 0;
   let sentProvider: string | null = null;
   let sentBinding: string | null = null;
@@ -840,8 +842,12 @@ test('top-level Agent workspace creates a direct conversation and restores its U
       sentProvider = JSON.parse(request.postData() ?? '{}').model_provider_id ?? null;
       sentBinding = path.match(/\/conversations\/([^/]+)\/messages$/)?.[1] ?? null;
       sentMessages += 1;
-      if (payload.content === '调整方向的排队消息') {
-        await guidanceDeliveryGate;
+      if (payload.content === '运行中直接发送消息') {
+        runningDirectMessagePosts += 1;
+        await runningDirectDeliveryGate;
+      }
+      if (payload.content === '暂停后直接发送消息') {
+        pausedDirectMessagePosts += 1;
       }
       await route.fulfill({ status: 202, contentType: 'application/json', body: JSON.stringify({ accepted: true, cursor: sentMessages === 1 ? 'running-user' : `sent-user-${sentMessages}` }) });
       return;
@@ -1561,26 +1567,39 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect.poll(() => readingViewport.evaluate(surface => surface.scrollTop)).toBe(readingPosition);
   await page.getByRole('button', { name: '跳转到正在生成的最新回复' }).click();
   await expectViewportAtLatest();
-  await composer.fill('第一条排队消息');
+  await composer.fill('运行中直接发送消息');
   await composer.press('Enter');
-  await composer.fill('调整方向的排队消息');
+  await expect(page.locator('.conversation-message.user').filter({ hasText: '运行中直接发送消息' })).toBeVisible();
+  await expect(page.locator('.conversation-message-delivery-status')).toHaveText('正在追加到当前回复');
+  await expect(page.getByLabel('消息投递队列').getByText('运行中直接发送消息')).toHaveCount(0);
+  await expect.poll(() => runningDirectMessagePosts).toBe(1);
+  agentStream!.send(JSON.stringify({
+    type: 'event',
+    event: { id: 'running-direct-stream-user', event_type: 'MESSAGE', payload: { source: 'user', content: '运行中直接发送消息' } },
+  }));
+  await expect(page.locator('.conversation-message-delivery-status')).toHaveText('正在追加到当前回复');
+  releaseRunningDirectDelivery?.();
+  await expect(page.locator('.conversation-message-delivery-status')).toHaveCount(0);
+  const activeConversation = conversations.find(item => item.id === sentBinding);
+  if (!activeConversation) throw new Error('Expected the active conversation to receive the direct message');
+  activeConversation.streaming_callback_ready = false;
+  await page.reload();
+  await composer.fill('待编辑排队消息');
   await composer.press('Enter');
   const queuedMessage = page.getByLabel('消息投递队列');
-  await expect(queuedMessage.getByText('第一条排队消息')).toBeVisible();
-  await expect(queuedMessage.getByText('调整方向的排队消息')).toBeVisible();
-  await queuedMessage.getByRole('button', { name: '更多排队消息操作 2' }).click();
-  await queuedMessage.getByRole('menuitem', { name: '上移' }).click();
-  await expect(queuedMessage.locator('article').first()).toContainText('调整方向的排队消息');
-  await queuedMessage.getByRole('button', { name: '调整方向排队消息 1' }).click();
-  await expect(queuedMessage.getByText('第一条排队消息')).toBeVisible();
-  await expect(queuedMessage.getByText('调整方向的排队消息')).toHaveCount(0);
-  await expect(page.locator('.conversation-message.user').filter({ hasText: '调整方向的排队消息' })).toBeVisible();
-  await expect(page.locator('.conversation-message-delivery-status')).toHaveText('正在追加到当前回复');
-  await expect(page.locator('.agent-composer-status')).not.toContainText('正在追加到当前回复');
-  await expect.poll(() => sentMessages).toBe(2);
-  agentStream!.send(JSON.stringify({ type: 'event', event: { id: 'sent-user-2', event_type: 'MESSAGE', payload: { source: 'user', content: '调整方向的排队消息' } } }));
-  await expect(page.locator('.conversation-message-delivery-status')).toHaveCount(0);
-  releaseGuidanceDelivery?.();
+  const editableQueuedMessage = queuedMessage.locator('article').filter({ hasText: '待编辑排队消息' });
+  await expect(editableQueuedMessage).toBeVisible();
+  await queuedMessage.getByRole('button', { name: '更多排队消息操作 1' }).click();
+  await queuedMessage.getByRole('menuitem', { name: '编辑' }).click();
+  const queueEditor = queuedMessage.getByRole('textbox', { name: '编辑排队消息 1' });
+  await expect(queueEditor).toHaveValue('待编辑排队消息');
+  await queueEditor.fill('已原地编辑的排队消息');
+  await queuedMessage.getByRole('button', { name: '保存排队消息 1' }).click();
+  await expect(editableQueuedMessage).toContainText('已原地编辑的排队消息');
+  await expect(composer).not.toHaveValue('已原地编辑的排队消息');
+  await expect(queuedMessage.locator('article')).toHaveCount(1);
+  await queuedMessage.getByRole('button', { name: '移除排队消息 1' }).click();
+  activeConversation.streaming_callback_ready = true;
   await composer.fill('网络不确定消息');
   await composer.press('Meta+Enter');
   await expect(queuedMessage.getByText('网络不确定消息')).toBeVisible();
@@ -1612,6 +1631,11 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await page.reload();
   await expect(page.getByRole('button', { name: '继续当前 Agent' })).toBeVisible();
   await expect(page.locator('.agent-composer-actions .agent-send')).toHaveCount(1);
+  await composer.fill('暂停后直接发送消息');
+  await composer.press('Enter');
+  await expect(page.locator('.conversation-message.user').filter({ hasText: '暂停后直接发送消息' })).toBeVisible();
+  await expect(page.getByLabel('消息投递队列').getByText('暂停后直接发送消息')).toHaveCount(0);
+  await expect.poll(() => pausedDirectMessagePosts).toBe(1);
   await page.getByRole('button', { name: '继续当前 Agent' }).click();
   await expect(page.getByLabel('工具执行确认')).toBeVisible();
   await expect(page.getByRole('button', { name: '等待工具确认' })).toBeDisabled();

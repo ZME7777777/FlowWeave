@@ -206,6 +206,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-493 | OpenHands 当前 View Token 精确投影 | DONE | 固定用户授权的 OpenHands `1.47.0` fork 源码与不可变归档；FlowWeave 读取正式 `/context` 端点并将 `total_tokens` 投影为当前 View 用量，不累加或回退 `per_turn_token`。 |
 | FR-496 | 会话侧栏置顶、活动聚合与命中定位 | DONE | 浏览器本地置顶仅改变侧栏展示位置；运行中或未读会话按更新时间聚合，并在活动或搜索选择后定位到对应会话和事件。 |
 | FR-497 | 会话配置组合收拢与认证同步异常兼容 | DONE | Skill 组合收拢至能力工具栏菜单；既有会话认证同步兼容包装后的 PostgreSQL 缺失 schema 错误，并保留会话配置入口命名。 |
+| FR-498 | 会话直接发送、暂停续答与队列原地编辑 | DONE | 普通发送同步显示用户消息并异步投递；暂停会话直接续答；浏览器投递队列保留原项原地编辑。 |
 | FR-457 | OpenHands 空响应自恢复与运行状态一致性 | DONE | 空 Agent Message 与 `source=environment` 的原生 corrective nudge 不再被识别为最终回复；纠正事件以“模型返回空响应，OpenHands 正在自动重试”呈现，左侧会话状态与底部按钮继续统一服从原生 execution status。 |
 | FR-458 | 空响应恢复提示瞬时化与会话状态统一 | DONE | corrective nudge 只在它是当前最新事件且原生会话仍运行时复用实时状态行显示；后续事件或终态立即隐藏，历史工作过程不保留该提示。工作台所有运行控件复用同一原生状态投影。 |
 | FR-459 | 原生错误事件的终态／可恢复呈现分流 | DONE | 仅 OpenHands ConversationErrorEvent 呈现为“本轮未能完成”的会话级终态卡片；AgentErrorEvent 与未知历史 ERROR 保持原生审计事实，按其正式父事件留在工作过程中呈现为可恢复异常，后续正式回复会明确标注 Agent 已继续完成，避免暂停／继续后的正常回复被历史错误卡片误覆盖。 |
@@ -6557,6 +6558,23 @@ Workspace 为边界保存在 `localStorage`，不写入 API、数据库或 OpenH
 选择后恢复普通列表、展开需要的分组、滚动并短暂高亮目标记录。搜索继续传入命中 `event_id`，进入会话后滚动并高亮对应
 原生事件。
 
+### FR-498 会话直接发送、暂停续答与队列原地编辑 — DONE
+
+依赖：FR-429、FR-435、FR-440。
+
+目标：已创建会话的普通发送无论当前原生会话处于运行、空闲还是暂停，均应同步投影为用户消息并异步提交给 OpenHands；
+运行中消息明确标注为正在追加，暂停消息直接以新的 `run=true` 用户输入继续会话，不得要求用户先点击继续或将其误导为
+排队。浏览器本地投递意图仍须在正式 HTTP cursor 返回前持久保留，但 WebSocket 到达的同文本文字不得作为确认或删除
+依据。用户还应能在队列中原地修改尚未提交的消息，保留同一投递 ID、顺序及全部附件、引用和注释元数据。
+
+范围：仅调整 Agent 工作台的浏览器本地投递投影、队列编辑交互与顶层 Agent 产品流回归。OpenHands 正式 cursor 仍是
+成功确认的唯一事实；不修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。
+
+完成：所有直接发送先在本地以用户消息投影，随后异步提交；运行中保留“正在追加到当前回复”状态，HTTP 返回正式 cursor
+后才移除浏览器本地投递意图。WebSocket 的同文本事件只作为正式历史投影，不能凭文本删除本地意图。暂停会话的新消息同样
+直接进入投递路径，借由既有 `run=true` 服务端调用继续原生会话。只有运行中且历史会话未声明 `streaming_callback_ready`
+时保留本地队列降级。队列编辑改为原位置 textarea，保存时仅替换内容并保留投递 ID、顺序、附件、引用和注释元数据。
+
 ### FR-497 会话配置组合收拢与认证同步异常兼容 — DONE
 
 依赖：FR-489。
@@ -6634,6 +6652,7 @@ FlowWeave 本地累加后猜测压缩边界。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-21 | FR-498 | Web TypeScript typecheck、受影响文件定向 ESLint、顶层 Agent 工作区产品流定向 Playwright 尝试、Alembic head、`git diff --check` 与任务状态唯一性 | PASS（静态）：直接发送立即投影用户消息并异步提交，运行中仅在正式 HTTP cursor 返回前显示追加状态；暂停输入走同一直接投递路径；未提交队列项可原地编辑而不重建其投递记录。定向 Playwright 已启动本地 Vite 服务，但在本切片新增断言前的既有空响应恢复“暂停当前 Agent”断言（第 953 行）超时，未记为浏览器回归通过。唯一 Alembic head 为 `0120_agent_credential_sync`；未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-21 | FR-497 | 受影响 Python Ruff format/check、`py_compile`；认证同步 schema guard 三条纯逻辑回归；Web TypeScript typecheck、定向 ESLint；Alembic head、`git diff --check` 与任务状态唯一性 | PASS（静态／纯逻辑）：Skill 组合收拢为能力工具栏中的可访问图标菜单，既有会话的六行配置网格与新会话的五行网格分别保持列表和底部操作栏布局；侧栏入口统一为“会话配置”。认证同步 schema guard 识别被 `InternalError` 包装、原始异常携带 `42P01` 的 PostgreSQL 缺表情形，并只将已知缺失 schema 转为稳定 503。完整 `tests/test_conversations.py -k credential_sync_schema_guard` 在全局 Testcontainers fixture 初始化时因本机 Docker daemon 不可用而阻断，未进入断言且未记为通过。唯一 Alembic head 为 `0120_agent_credential_sync`；未修改迁移、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-21 | FR-495 | Web TypeScript typecheck、`product-flow.spec.ts` 定向 ESLint、文件树层叠静态核对、`git diff --check` 与任务状态唯一性；顶层 Agent 工作区产品流定向 Playwright 尝试 | PASS（静态）：工具栏 `z-index` 为 30，高于固定目录行的最高 20；回归覆盖展开懒加载目录、收起按钮命中点和收起后的嵌套文件隐藏。定向 Playwright 在新增文件树断言前，于既有“暂停当前 Agent”断言（第 947 行）超时，因此未计为通过。未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-21 | FR-494 | 受影响 Python `py_compile`、Ruff check；Web TypeScript typecheck、定向 ESLint；逐步创建、复制和记录选中定向 Playwright（3 passed）；Alembic head、`git diff --check` 与任务状态唯一性 | PASS（静态／浏览器）：起始节点选择会随创建请求持久化，创建／复制后选中对应画布节点并展开共享侧栏；逐步工具栏三枚操作按钮同排。服务回归覆盖父 Runtime owner、无效起始节点、起始节点配置复制和错误节点拒绝。完整后端 pytest 受本机 Docker socket 缺失的全局 Testcontainers fixture 阻断，未进入断言且未记为通过；全量工作台 E2E 的自动会话场景曾超时，逐步目标用例单独重跑通过。未修改数据库迁移、OpenHands、Runtime Provider、Docker 或远端环境。 |
