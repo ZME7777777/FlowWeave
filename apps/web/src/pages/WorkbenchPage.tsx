@@ -125,8 +125,13 @@ function downloadConfigDocument(config: RecordConfigDocument): void {
 async function copyConfigDocument(config: RecordConfigDocument): Promise<void> {
   const text = JSON.stringify(config, null, 2);
   if (navigator.clipboard?.writeText) {
-    await navigator.clipboard.writeText(text);
-    return;
+    try {
+      await navigator.clipboard.writeText(text);
+      return;
+    } catch {
+      // Clipboard permissions are commonly denied in embedded or non-secure
+      // browser contexts. Keep the same fallback used by older browsers.
+    }
   }
   const textarea = document.createElement('textarea');
   textarea.value = text;
@@ -192,12 +197,12 @@ function selectedRecordNodeRun(record: FlowRun | undefined, selectedNodeRunId?: 
   return selectedById ?? (!selectedNodeRunId ? active : undefined);
 }
 
-function RunRail({ run, mode, nodeRecords, manualRecords, automaticRecords, automaticError, selected, selectedStepwiseId, canCopyManualRecord, canDeleteManualRecords, manualSelectedIds, stepwiseSelectedIds, automaticSelectedIds, manualBusyId, selectedAutomaticId, automaticBusyId, onModeChange, onSelect, onSelectManualRecord, onCreateManualRecord, onCopyManual, onDeleteManualRecord, onDeleteNode, onSelectAutomatic, onClearSelection, onCreateAutomatic, onDeleteAutomatic, onCopyAutomatic, onExportAutomatic, onStartAutomatic }: {
+function RunRail({ run, mode, nodeRecords, manualRecords, automaticRecords, automaticError, selected, selectedStepwiseId, canCopyManualRecord, canDeleteManualRecords, manualSelectedIds, stepwiseSelectedIds, automaticSelectedIds, manualBusyId, selectedAutomaticId, automaticBusyId, onModeChange, onSelect, onSelectManualRecord, onCreateManualRecord, onCopyManual, onExportManual, onDeleteManualRecord, onDeleteNode, onSelectAutomatic, onClearSelection, onCreateAutomatic, onDeleteAutomatic, onCopyAutomatic, onExportAutomatic, onStartAutomatic }: {
   run: FlowRun; mode: WorkbenchMode; nodeRecords: NodeRun[]; manualRecords: FlowRunStepwiseRecord[]; automaticRecords: FlowRunAutomaticRecordSummary[]; selected?: string; selectedStepwiseId?: string; canCopyManualRecord: boolean; canDeleteManualRecords: boolean;
   automaticError?: string; manualSelectedIds: Set<string>; stepwiseSelectedIds: Set<string>; automaticSelectedIds: Set<string>;
   manualBusyId?: string;
   selectedAutomaticId?: string; automaticBusyId?: string; onModeChange: (mode: WorkbenchMode) => void;
-  onSelect: (id: string, modifiers: SelectionModifiers) => void; onSelectManualRecord: (id: string, modifiers: SelectionModifiers) => void; onCreateManualRecord: () => void; onCopyManual: () => void; onDeleteManualRecord: () => void; onDeleteNode: () => void; onSelectAutomatic: (id: string, modifiers: SelectionModifiers) => void; onCreateAutomatic: () => void;
+  onSelect: (id: string, modifiers: SelectionModifiers) => void; onSelectManualRecord: (id: string, modifiers: SelectionModifiers) => void; onCreateManualRecord: () => void; onCopyManual: () => void; onExportManual: () => void; onDeleteManualRecord: () => void; onDeleteNode: () => void; onSelectAutomatic: (id: string, modifiers: SelectionModifiers) => void; onCreateAutomatic: () => void;
   onClearSelection: () => void; onDeleteAutomatic: () => void; onCopyAutomatic: () => void; onExportAutomatic: () => void; onStartAutomatic: (record: FlowRunAutomaticRecordSummary) => void;
 }) {
   const manualCount = manualSelectedIds.size;
@@ -235,7 +240,7 @@ function RunRail({ run, mode, nodeRecords, manualRecords, automaticRecords, auto
     const stateLabel = record.state === 'DRAFT' ? ready ? '草稿已就绪' : '草稿待补齐' : FLOW_STATE_LABELS[record.state] ?? record.state;
     return <article key={record.id} className={automaticSelectedIds.has(record.id) ? 'active' : ''} data-record-state={record.state.toLowerCase()}><button type="button" className="automatic-record-select" aria-pressed={automaticSelectedIds.has(record.id)} onClick={event => onSelectAutomatic(record.id, modifiers(event))}><i title={stateLabel} aria-label={stateLabel}/><span><b>{record.name}</b></span></button>{record.state === 'DRAFT' && <button type="button" className="automatic-record-start" aria-label={`启动连续运行 ${record.name}`} disabled={!ready || Boolean(automaticBusyId)} onClick={() => onStartAutomatic(record)}><Play size={12}/>{automaticBusyId === record.id ? '启动中…' : '启动'}</button>}</article>;
   };
-  const manualToolbar = mode === 'MANUAL' ? <div className="automatic-record-toolbar manual-record-toolbar"><button type="button" className="secondary" disabled={!canCopyManualRecord || Boolean(manualBusyId)} onClick={onCopyManual}><Copy size={13}/>{manualBusyId ? '处理中…' : '拷贝'}</button><button type="button" className="danger" disabled={!canDeleteManualRecords || Boolean(manualBusyId)} onClick={onDeleteManualRecord}><Trash2 size={13}/>{stepwiseCount > 1 ? `删除 (${stepwiseCount})` : '删除'}</button><button type="button" className="primary" disabled={Boolean(manualBusyId)} onClick={onCreateManualRecord}><Plus size={13}/>新增</button></div> : mode === 'DIRECT' ? <div className="automatic-record-toolbar manual-record-toolbar"><button type="button" className="danger" disabled={!manualCount || Boolean(manualBusyId)} onClick={onDeleteNode}><Trash2 size={13}/>{manualCount > 1 ? `删除 (${manualCount})` : '删除'}</button></div> : null;
+  const manualToolbar = mode === 'MANUAL' ? <div className="automatic-record-toolbar manual-record-toolbar"><button type="button" className="secondary" disabled={stepwiseCount > 1 ? Boolean(manualBusyId) : !canCopyManualRecord || Boolean(manualBusyId)} onClick={stepwiseCount > 1 ? onExportManual : onCopyManual}><Copy size={13}/>{manualBusyId ? '处理中…' : stepwiseCount > 1 ? `导出 (${stepwiseCount})` : '拷贝'}</button><button type="button" className="danger" disabled={!canDeleteManualRecords || Boolean(manualBusyId)} onClick={onDeleteManualRecord}><Trash2 size={13}/>{stepwiseCount > 1 ? `删除 (${stepwiseCount})` : '删除'}</button><button type="button" className="primary" disabled={Boolean(manualBusyId)} onClick={onCreateManualRecord}><Plus size={13}/>新增</button></div> : mode === 'DIRECT' ? <div className="automatic-record-toolbar manual-record-toolbar"><button type="button" className="danger" disabled={!manualCount || Boolean(manualBusyId)} onClick={onDeleteNode}><Trash2 size={13}/>{manualCount > 1 ? `删除 (${manualCount})` : '删除'}</button></div> : null;
   const nodeRecordLabel = mode === 'DIRECT' ? '直接启动记录' : '逐步运行记录';
   const manualRecordItem = (record: FlowRunStepwiseRecord) => {
     const stateLabel = FLOW_STATE_LABELS[record.state] ?? record.state;
@@ -1307,11 +1312,12 @@ function RecordConfigImportDialog({ mode, onClose, onImport }: { mode: 'AUTOMATI
   return <div className="modal-backdrop"><section className="modal automatic-record-dialog" role="dialog" aria-modal="true" aria-label={`导入${label}配置`}><header><div><span className="eyebrow">IMPORT RECORD CONFIG</span><h2>导入{label}配置</h2><p>配置将新增到当前 FlowRun，并沿用当前 FlowRun 的环境。不会导入运行环境、会话、产物、文件或执行历史。</p></div><button type="button" className="ghost" aria-label={`关闭导入${label}配置`} onClick={onClose}><X size={17}/></button></header><section className={`automatic-config-upload${dragging ? ' dragging' : ''}${fileName ? ' selected' : ''}`} aria-label="上传 JSON 配置文件" onDragEnter={event => { event.preventDefault(); setDragging(true); }} onDragOver={event => event.preventDefault()} onDragLeave={event => { if (event.currentTarget === event.target) setDragging(false); }} onDrop={event => { event.preventDefault(); setDragging(false); loadFile(event.dataTransfer.files?.[0]); }}><input ref={fileInput} aria-label={`上传${label}配置`} type="file" accept="application/json,.json" onChange={event => loadFile(event.target.files?.[0])}/><span className="automatic-config-upload-icon"><FileText size={20}/></span><span><b>{fileName || '导入 JSON 配置文件'}</b><small>{fileName ? `${sizeLabel} · 已读取，可直接确认导入` : '拖放文件至此处，或选择本地导出的 JSON 文件'}</small></span><button type="button" className="secondary" onClick={() => fileInput.current?.click()}>{fileName ? '重新选择' : '选择文件'}</button></section><label className="automatic-config-paste">或粘贴 JSON<textarea aria-label={`粘贴${label}配置`} value={text} onChange={event => { setText(event.target.value); setFileError(''); }} placeholder={`粘贴导出的${label}配置 JSON`}/></label>{fileError && <p className="error">{fileError}</p>}{mutation.error && <p className="error">导入失败：{mutation.error.message}</p>}<footer><button type="button" className="ghost" disabled={mutation.isPending} onClick={onClose}>取消</button><button type="button" className="primary" disabled={!text.trim() || mutation.isPending} onClick={() => mutation.mutate()}>{mutation.isPending ? '导入中…' : '确认导入'}</button></footer></section></div>;
 }
 
-function AutomaticRecordExportDialog({ count, onClose, onExport }: { count: number; onClose: () => void; onExport: (target: ExportTarget) => Promise<void> }) {
+function RecordConfigExportDialog({ mode, count, onClose, onExport }: { mode: 'AUTOMATIC' | 'STEPWISE'; count: number; onClose: () => void; onExport: (target: ExportTarget) => Promise<void> }) {
   const [feedback, setFeedback] = useState<ExportTarget>();
   const mutation = useMutation({ mutationFn: (target: ExportTarget) => onExport(target), onSuccess: (_, target) => setFeedback(target) });
+  const label = mode === 'AUTOMATIC' ? '连续运行' : '逐步运行';
   useEscapeClose(onClose);
-  return <div className="modal-backdrop"><section className="modal automatic-record-dialog" role="dialog" aria-modal="true" aria-label="导出连续运行配置"><header><div><span className="eyebrow">EXPORT RECORD CONFIG</span><h2>导出连续运行配置</h2><p>将导出 {count} 条连续运行记录的初始化配置。不包含环境、会话、产物、文件或执行历史。</p></div><button type="button" className="ghost" aria-label="关闭导出连续运行配置" onClick={onClose}><X size={17}/></button></header>{mutation.error && <p className="error">导出失败：{mutation.error.message}</p>}{feedback && <p className="field-hint" role="status">{feedback === 'clipboard' ? '已复制到剪贴板。' : '已开始下载配置文件。'}</p>}<footer><button type="button" className="ghost" disabled={mutation.isPending} onClick={onClose}>取消</button><button type="button" className="secondary" disabled={mutation.isPending} onClick={() => mutation.mutate('download')}><Download size={13}/>{mutation.isPending && mutation.variables === 'download' ? '下载中…' : feedback === 'download' ? '已开始下载' : '下载'}</button><button type="button" className="primary" disabled={mutation.isPending} onClick={() => mutation.mutate('clipboard')}><Copy size={13}/>{mutation.isPending && mutation.variables === 'clipboard' ? '复制中…' : feedback === 'clipboard' ? '已复制到剪贴板' : '复制'}</button></footer></section></div>;
+  return <div className="modal-backdrop"><section className="modal automatic-record-dialog" role="dialog" aria-modal="true" aria-label={`导出${label}配置`}><header><div><span className="eyebrow">EXPORT RECORD CONFIG</span><h2>导出{label}配置</h2><p>将导出 {count} 条{label}记录的初始化配置。不包含环境、会话、产物、文件或执行历史。</p></div><button type="button" className="ghost" aria-label={`关闭导出${label}配置`} onClick={onClose}><X size={17}/></button></header>{mutation.error && <p className="error">导出失败：{mutation.error.message}</p>}{feedback && <p className="field-hint" role="status">{feedback === 'clipboard' ? '已复制到剪贴板。' : '已开始下载配置文件。'}</p>}<footer><button type="button" className="ghost" disabled={mutation.isPending} onClick={onClose}>取消</button><button type="button" className="secondary" disabled={mutation.isPending} onClick={() => mutation.mutate('download')}><Download size={13}/>{mutation.isPending && mutation.variables === 'download' ? '下载中…' : feedback === 'download' ? '已开始下载' : '下载'}</button><button type="button" className="primary" disabled={mutation.isPending} onClick={() => mutation.mutate('clipboard')}><Copy size={13}/>{mutation.isPending && mutation.variables === 'clipboard' ? '复制中…' : feedback === 'clipboard' ? '已复制到剪贴板' : '复制'}</button></footer></section></div>;
 }
 
 function AutomaticRecordEditor({ parent, record, selectedKey, onDraft, onSaved }: { parent: FlowRun; record: FlowRunAutomaticRecord; selectedKey?: string; onDraft: (record: FlowRunAutomaticRecord) => void; onSaved: (record: FlowRunAutomaticRecord) => void }) {
@@ -1414,6 +1420,7 @@ export function WorkbenchPage() {
   const [automaticImportDialogOpen, setAutomaticImportDialogOpen] = useState(false);
   const [stepwiseImportDialogOpen, setStepwiseImportDialogOpen] = useState(false);
   const [automaticExportRecordIds, setAutomaticExportRecordIds] = useState<string[]>();
+  const [stepwiseExportRecordIds, setStepwiseExportRecordIds] = useState<string[]>();
   const [copyTarget, setCopyTarget] = useState<CopyTarget>();
   const [automaticBusyId, setAutomaticBusyId] = useState<string>();
   const [manualBusyId, setManualBusyId] = useState<string>();
@@ -1945,7 +1952,13 @@ export function WorkbenchPage() {
   const selectedStepwiseRecords = manualRecords.filter(item => stepwiseSelectedIds.has(item.id));
   const selectedAutomaticRecords = automaticRecords.filter(item => automaticSelectedIds.has(item.id));
   const canCopyStepwiseRecord = selectedStepwiseRecords.length === 1
-    && selectedStepwiseRecords[0].node_runs.length > 0;
+    && Boolean(selectedStepwiseRecords[0].start_node_key)
+    && (
+      selectedStepwiseRecords[0].node_runs.length === 0
+      || selectedStepwiseRecords[0].node_runs.some(
+        nodeRun => nodeRun.flow_node_snapshot_key === selectedStepwiseRecords[0].start_node_key,
+      )
+    );
   const exportAutomaticRecords = async (recordIds: string[], target: ExportTarget) => {
     setAutomaticBusyId('config-export');
     try {
@@ -2142,6 +2155,9 @@ export function WorkbenchPage() {
         setCopyTarget({ mode: 'STEPWISE', record: selectedStepwiseRecords[0] });
       }
     }}
+    onExportManual={() => {
+      if (selectedStepwiseRecords.length > 1) setStepwiseExportRecordIds(selectedStepwiseRecords.map(record => record.id));
+    }}
     onDeleteManualRecord={deleteStepwiseRecord}
     onDeleteNode={() => {
       const recordIds = nodeRecords.filter(record => manualSelectedIds.has(record.id)).map(record => record.id);
@@ -2308,6 +2324,7 @@ export function WorkbenchPage() {
     {stepwiseDialogOpen && <StepwiseRecordDialog run={parentRun} onClose={() => setStepwiseDialogOpen(false)} onImport={() => { setStepwiseDialogOpen(false); setStepwiseImportDialogOpen(true); }} onCreated={record => { setStepwiseDialogOpen(false); selectCreatedStepwiseRecord(record); }}/>} 
     {automaticImportDialogOpen && <RecordConfigImportDialog mode="AUTOMATIC" onClose={() => setAutomaticImportDialogOpen(false)} onImport={config => { if (config.format !== 'flowweave.continuous-record-config') throw new Error('这不是连续运行配置文件。'); return importAutomaticRecords(config); }}/>} 
     {stepwiseImportDialogOpen && <RecordConfigImportDialog mode="STEPWISE" onClose={() => setStepwiseImportDialogOpen(false)} onImport={importStepwiseRecords}/>} 
-    {automaticExportRecordIds && <AutomaticRecordExportDialog count={automaticExportRecordIds.length} onClose={() => setAutomaticExportRecordIds(undefined)} onExport={target => exportAutomaticRecords(automaticExportRecordIds, target)}/>}
+    {automaticExportRecordIds && <RecordConfigExportDialog mode="AUTOMATIC" count={automaticExportRecordIds.length} onClose={() => setAutomaticExportRecordIds(undefined)} onExport={target => exportAutomaticRecords(automaticExportRecordIds, target)}/>}
+    {stepwiseExportRecordIds && <RecordConfigExportDialog mode="STEPWISE" count={stepwiseExportRecordIds.length} onClose={() => setStepwiseExportRecordIds(undefined)} onExport={target => exportStepwiseRecords(stepwiseExportRecordIds, target)}/>}
   </>;
 }

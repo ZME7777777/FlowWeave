@@ -808,7 +808,7 @@ def test_copy_nested_stepwise_record_preserves_first_configuration_and_human_inp
     assert copied_binding["artifact_version_id"] != source_input.json()["id"]
 
 
-def test_copy_nested_stepwise_record_rejects_empty_source(client):
+def test_copy_nested_stepwise_record_preserves_empty_start_node_draft(client):
     flow = _create_flow(client)
     parent = client.post(
         f"/api/v1/flows/{flow['id']}/runs",
@@ -821,11 +821,39 @@ def test_copy_nested_stepwise_record_rejects_empty_source(client):
 
     copied = client.post(
         f"/api/v1/flow-runs/{parent['id']}/stepwise-runs/{source['id']}/copy",
-        json={"name": "不应创建"},
+        json={"name": "空逐步记录副本"},
     )
-    assert copied.status_code == 409, copied.text
-    assert copied.json()["error"]["code"] == "RUN_STATE_INVALID"
-    assert client.get(f"/api/v1/flow-runs/{parent['id']}/stepwise-runs").json() == [source]
+    assert copied.status_code == 201, copied.text
+    copied_record = copied.json()
+    assert copied_record["id"] != source["id"]
+    assert copied_record["name"] == "空逐步记录副本"
+    assert copied_record["start_node_key"] == "first"
+    assert copied_record["automation_plan"] == {"start_node_key": "first"}
+    assert copied_record["node_runs"] == []
+
+    exported = client.post(
+        f"/api/v1/flow-runs/{parent['id']}/stepwise-runs/config-exports",
+        json={"record_ids": [source["id"]]},
+    )
+    assert exported.status_code == 200, exported.text
+    assert exported.json()["records"][0] == {
+        "name": source["name"],
+        "start_node_key": "first",
+        "initial_configuration": {
+            "startup_prompt": None,
+            "agent_preset": {
+                "capability_version_ids": [],
+                "model_provider_id": None,
+                "model_name": None,
+                "reasoning_effort": None,
+                "fallback_models": [],
+                "node_context_enabled": False,
+                "node_context_prompt": None,
+            },
+            "gates": [],
+            "input_urls": {},
+        },
+    }
 
 
 def test_stepwise_record_config_export_import_preserves_only_initial_configuration(client):

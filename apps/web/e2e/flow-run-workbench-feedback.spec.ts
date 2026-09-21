@@ -374,6 +374,22 @@ test('stepwise record copy reuses the record selection and first-node configurat
     if (path === `/api/v1/flows/${definition.id}`) return respond(definition);
     if (path === `/api/v1/flow-runs/${run.id}/stepwise-runs` && request.method() === 'GET') return respond(records);
     if (path === `/api/v1/flow-runs/${run.id}/stepwise-runs/${sourceRecord.id}` && request.method() === 'GET') return respond(sourceRecord);
+    if (path === `/api/v1/flow-runs/${run.id}/stepwise-runs/config-exports` && request.method() === 'POST') {
+      return respond({
+        format: 'flowweave.stepwise-record-config',
+        version: 1,
+        records: [{
+          name: sourceRecord.name,
+          start_node_key: 'first',
+          initial_configuration: {
+            startup_prompt: sourceAttempt.startup_prompt,
+            agent_preset: sourceAttempt.agent_preset,
+            gates: [],
+            input_urls: {},
+          },
+        }],
+      });
+    }
     if (path === `/api/v1/flow-runs/${run.id}/stepwise-runs/${sourceRecord.id}/copy` && request.method() === 'POST') {
       copyBody = request.postDataJSON() as Record<string, unknown>;
       const copiedAttempt = {
@@ -420,6 +436,18 @@ test('stepwise record copy reuses the record selection and first-node configurat
   await expect(page.locator('.run-graph-node[data-selected="true"]')).toContainText('测试节点');
   await expect(page.locator('.run-side-panel')).toBeVisible();
   await expect(page.getByTestId('attempt-state')).toHaveText('WAITING_START_CONFIRMATION');
+
+  await sourceSelect.click({ modifiers: ['Meta'] });
+  await expect(page.locator('.manual-record-toolbar').getByRole('button', { name: '导出 (2)', exact: true })).toBeEnabled();
+  await page.locator('.manual-record-toolbar').getByRole('button', { name: '导出 (2)', exact: true }).click();
+  const exportDialog = page.getByRole('dialog', { name: '导出逐步运行配置' });
+  await expect(exportDialog).toBeVisible();
+  const downloadPromise = page.waitForEvent('download');
+  await exportDialog.getByRole('button', { name: '下载', exact: true }).click();
+  const download = await downloadPromise;
+  expect(download.suggestedFilename()).toMatch(/^flowweave-stepwise-records-\d{4}-\d{2}-\d{2}\.json$/);
+  await expect(exportDialog.getByRole('status')).toContainText('已开始下载配置文件');
+  await exportDialog.getByRole('button', { name: '取消', exact: true }).click();
 });
 
 test('created attempts keep their inputs read-only after a start gate blocks them', async ({ page }) => {
@@ -1665,6 +1693,10 @@ test('stepwise records reuse continuous selection, current-node detail, and grap
   await expect(page.getByTestId('attempt-state')).toHaveText('EXECUTING');
   const stepwiseSelectedNode = page.locator('.run-graph-node[data-selected="true"]');
   await expect(stepwiseSelectedNode).toContainText('测试节点');
+  await expect.poll(async () => {
+    const box = await stepwiseSelectedNode.boundingBox();
+    return box && automaticNodeBox ? Math.abs(box.height - automaticNodeBox.height) : Number.POSITIVE_INFINITY;
+  }).toBeLessThanOrEqual(2);
   const stepwiseNodeBox = await stepwiseSelectedNode.boundingBox();
   expect(stepwiseNodeBox).not.toBeNull();
   const stepwiseScale = await page.locator('.react-flow__viewport').evaluate(element => new DOMMatrix(getComputedStyle(element).transform).a);

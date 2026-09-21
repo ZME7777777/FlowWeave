@@ -4141,14 +4141,17 @@ def nested_stepwise_run_record(db: Session, parent_run_id: str, record_id: str) 
     return record
 
 
-def _stepwise_initial_node(db: Session, record: FlowRun) -> tuple[str, NodeRun]:
-    """Resolve a stepwise record's first configured node.
+def _stepwise_initial_node(db: Session, record: FlowRun) -> tuple[str, NodeRun | None]:
+    """Resolve a stepwise record's start node and optional first NodeRun.
 
     Records created before ``start_node_key`` was persisted can still have a
     durable first NodeRun. Recover that key from the NodeRun sequence and
     persist it so later reads and operations use the same authority. A record
-    with no configured node remains invalid instead of guessing from events or
-    from the flow definition.
+    created with a start node but no saved configuration returns that node with
+    no NodeRun. This mirrors a continuous draft: copy/export can preserve the
+    selected start node without inventing execution state. A record with a
+    different NodeRun but no matching start node remains invalid instead of
+    guessing from events or from the flow definition.
     """
 
     # Before stepwise records became child FlowRuns, their prompt-driven
@@ -4212,9 +4215,15 @@ def _stepwise_initial_node(db: Session, record: FlowRun) -> tuple[str, NodeRun]:
         record.automation_plan_json = plan
 
     if source_node is None:
-        raise DomainError(
-            "RUN_STATE_INVALID", "stepwise record has no initial node configuration", 409
+        has_other_node = db.scalar(
+            select(NodeRun.id)
+            .where(NodeRun.flow_run_id == record.id)
+            .limit(1)
         )
+        if has_other_node is not None:
+            raise DomainError(
+                "RUN_STATE_INVALID", "stepwise record has no initial node configuration", 409
+            )
     return start_node_key, source_node
 
 
@@ -4240,6 +4249,26 @@ def copy_nested_stepwise_run_record(
     ):
         raise not_found("stepwise_run_record", source_record_id)
     source_start_node_key, source_node = _stepwise_initial_node(db, source)
+    copied_record = _create_nested_stepwise_run_record(
+        db,
+        parent.id,
+        StepwiseRunRecordWrite(
+            name=payload.name,
+            start_node_key=source_start_node_key,
+        ),
+    )
+    if source_node is None:
+        event_payload = {
+            "source_record_id": source.id,
+            "source_node_run_id": None,
+            "source_attempt_id": None,
+            "copied_input_count": 0,
+        }
+        _event(db, copied_record.id, "STEPWISE_RUN_RECORD_COPIED", event_payload)
+        _event(db, parent.id, "STEPWISE_RUN_RECORD_COPIED", event_payload)
+        finish(db)
+        return run_detail(db, copied_record.id)
+
     initial = db.scalar(
         select(NodeAttempt)
         .where(NodeAttempt.node_run_id == source_node.id)
@@ -4249,14 +4278,6 @@ def copy_nested_stepwise_run_record(
     if initial is None:
         raise DomainError("RUN_STATE_INVALID", "stepwise record has no initial node attempt", 409)
 
-    copied_record = _create_nested_stepwise_run_record(
-        db,
-        parent.id,
-        StepwiseRunRecordWrite(
-            name=payload.name,
-            start_node_key=source_start_node_key,
-        ),
-    )
     copied_node, copied_attempt, copied_input_count = _copy_initial_node_configuration(
         db, source, copied_record, source_node, initial
     )
@@ -4776,6 +4797,20 @@ def export_nested_stepwise_run_configs(
             else nested_stepwise_run_record(db, parent.id, record_id)
         )
         start_node_key, source_node = _stepwise_initial_node(db, record)
+        if source_node is None:
+            records.append(
+                {
+                    "name": record.name,
+                    "start_node_key": start_node_key,
+                    "initial_configuration": {
+                        "startup_prompt": None,
+                        "agent_preset": _portable_automatic_agent_preset(None),
+                        "gates": [],
+                        "input_urls": {},
+                    },
+                }
+            )
+            continue
         initial = db.scalar(
             select(NodeAttempt)
             .where(NodeAttempt.node_run_id == source_node.id)
