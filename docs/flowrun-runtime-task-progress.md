@@ -203,6 +203,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-489 | 既有会话认证同步可用性与会话配置层级 | DONE | 缺失认证同步迁移时返回可行动的稳定错误；会话配置以能力／认证顶层导航和能力类别二级导航呈现。 |
 | FR-490 | 逐步／连续工作台选中与初始配置复制一致性 | DONE | 逐步记录创建、重新选中和复制均立即聚焦记录当前或起始节点并打开共享侧栏；复制首节点初始配置，保留启动门禁差异。 |
 | FR-491 | 终态补读超时的误导提示移除 | DONE | 补读窗口到期仍解除同步、保护未提交队列项，但不再将本地兜底判断展示为页面级错误。 |
+| FR-493 | 会话侧栏置顶、活动聚合与命中定位 | DONE | 浏览器本地置顶仅改变侧栏展示位置；运行中或未读会话按更新时间聚合，并在活动或搜索选择后定位到对应会话和事件。 |
 | FR-457 | OpenHands 空响应自恢复与运行状态一致性 | DONE | 空 Agent Message 与 `source=environment` 的原生 corrective nudge 不再被识别为最终回复；纠正事件以“模型返回空响应，OpenHands 正在自动重试”呈现，左侧会话状态与底部按钮继续统一服从原生 execution status。 |
 | FR-458 | 空响应恢复提示瞬时化与会话状态统一 | DONE | corrective nudge 只在它是当前最新事件且原生会话仍运行时复用实时状态行显示；后续事件或终态立即隐藏，历史工作过程不保留该提示。工作台所有运行控件复用同一原生状态投影。 |
 | FR-459 | 原生错误事件的终态／可恢复呈现分流 | DONE | 仅 OpenHands ConversationErrorEvent 呈现为“本轮未能完成”的会话级终态卡片；AgentErrorEvent 与未知历史 ERROR 保持原生审计事实，按其正式父事件留在工作过程中呈现为可恢复异常，后续正式回复会明确标注 Agent 已继续完成，避免暂停／继续后的正常回复被历史错误卡片误覆盖。 |
@@ -6506,6 +6507,23 @@ typecheck、定向 ESLint、Alembic 唯一 head、`git diff --check` 与任务�
 为 SVG，并保留图片／文本切换、原始源码复制、全屏自适应缩放、滚轮缩放、左键拖动平移、复位和 Esc／遮罩关闭。
 普通代码块、Markdown 相对链接、选区添加到会话和大文件轻量文本预览不改变。
 
+### FR-493 会话侧栏置顶、活动聚合与命中定位 — DONE
+
+依赖：FR-460、FR-491。
+
+目标：会话右键菜单支持置顶，置顶会话显示在侧栏顶部的独立展示区，但继续归属原根工作区或工作区记录；置顶区右键
+仅提供取消置顶，取消后立即回到原分组。侧栏还应提供活动入口，按更新时间倒序聚合正在运行和未读的会话；从活动项
+返回普通列表时必须展开并定位对应记录。搜索命中会话时既要进入该会话，也要定位其命中事件。
+
+范围：仅修改 Agent 工作台的浏览器本地展示状态、侧栏交互、搜索命中定位与定向浏览器回归。置顶状态以宿主和 Agent
+Workspace 为边界保存在 `localStorage`，不写入 API、数据库或 OpenHands，不变更会话的 `work_directory_id`、服务端排序
+或 Runtime 归属；不得修改 Runtime Provider、Docker 或远端环境。
+
+完成：普通会话右键可置顶，置顶区只显示置顶会话并在右键提供取消置顶；普通工作区列表仅隐藏该局部展示副本，取消后会话
+根据原 `work_directory_id` 回到根工作区或原工作区分组。活动列表仅包含运行中或未读会话，按 `updated_at` 倒序排列；
+选择后恢复普通列表、展开需要的分组、滚动并短暂高亮目标记录。搜索继续传入命中 `event_id`，进入会话后滚动并高亮对应
+原生事件。
+
 ### FR-491 终态补读超时的误导提示移除 — DONE
 
 依赖：FR-482。
@@ -6546,6 +6564,7 @@ Runtime Provider、Docker 或远端环境。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-21 | FR-493 | Web TypeScript typecheck、定向 ESLint、侧栏置顶／活动／搜索定位定向 Playwright（1 passed）、production build、Alembic head、`git diff --check` 与任务状态唯一性 | PASS：置顶仅持久化浏览器本地展示状态，刷新后仍可见；取消置顶立即按原工作区归属回显。活动列表按更新时间倒序显示运行中或未读会话，选择后普通列表展开、滚动并高亮目标。搜索命中进入对应会话并高亮原生事件。唯一 Alembic head 为 `0120_agent_credential_sync`；production build 仅报告既有大 chunk 提示；未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-20 | FR-492 | Web TypeScript typecheck、定向 ESLint、工作区 Markdown 链接定向 Playwright（1 passed）、production build、`git diff --check` 与任务状态唯一性 | PASS：工作区 Mermaid fenced block 默认渲染为 SVG；浏览器回归覆盖图片／文本切换、全屏打开与 Esc 关闭，并继续验证同一预览中的本地 Markdown 链接与越界保护。production build 仅报告既有大 chunk 提示；未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-20 | FR-491 | Web TypeScript typecheck、定向 ESLint、顶层 Agent 与 FlowRun 节点会话定向 Playwright（2 passed）、`git diff --check` 与任务状态唯一性 | PASS：终态补读窗口到期后，发送入口恢复且未提交队列项继续显示“结果不确定”，但不会再出现把本地投影超时认定为“本轮未返回正式结果”的页面横幅。未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-20 | FR-490 | Web TypeScript typecheck、定向 ESLint、Playwright 逐步配置／选中／拷贝回归（3 passed）；受影响 Python Ruff format/check、`py_compile`、`git diff --check` 与任务状态唯一性 | PASS（静态／浏览器）：逐步记录新增、点击和拷贝均聚焦当前或入口节点，展示共享右栏；工具栏拷贝入口与连续记录对齐，拷贝保留首节点初始配置和人工输入且不带入会话或输出。后端 stepwise 定向 pytest 在进入断言前因本机 Docker socket 缺失而被全局 Testcontainers fixture 阻断，未记为通过；未修改数据库迁移、OpenHands、Runtime Provider、Docker 或远端环境。 |
