@@ -1253,6 +1253,10 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(nextProgressGroup.locator(':scope > summary')).toContainText('接下来检查不同类型的文件。');
   await nextProgressGroup.locator(':scope > summary').click();
   await expect(nextProgressGroup.getByText('已读取 工作区/src/Main.java')).toBeVisible();
+  await expect(nextProgressGroup.getByText('已读取 工作区/config/application.properties')).toBeVisible();
+  await expect(nextProgressGroup.getByText('已创建 工作区/README.md')).toBeVisible();
+  await expect(nextProgressGroup.locator('.tool-skill')).toHaveCount(0);
+  await expect(nextProgressGroup.getByText('子智能体 reviewer · 检查子任务边界')).toHaveCount(0);
   await expect(completedTurn).toHaveJSProperty('nodeName', 'SECTION');
   await expect.poll(() => completedTurn.evaluate(turn => {
     const process = turn.querySelector('.conversation-activity-group');
@@ -1555,23 +1559,31 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.getByText('下一行内容应当稳定追加，不重新解析前文。', { exact: false })).toHaveCount(0);
   agentStream!.send(JSON.stringify({
     type: 'event',
-    event: { id: 'live-tool', event_type: 'TOOL_CALL', payload: { parent_id: 'running-user', action_id: 'live-tool', tool_call_id: 'live-call', llm_response_id: 'live-operation-batch-1', tool_name: 'terminal', event_name: 'TerminalAction', content: '已完成初步分析。', thought: '已完成初步分析。', summary: '核对项目上下文', details: { command: 'pwd' }, timestamp: new Date().toISOString() } },
+    event: { id: 'live-progress', event_type: 'THOUGHT', payload: { source: 'agent', parent_id: 'running-user', llm_response_id: 'live-operation-batch-1', content: '范围已扩为终端与文件操作；现在做静态验证。', thought: '范围已扩为终端与文件操作；现在做静态验证。', timestamp: new Date().toISOString() } },
   }));
-  const liveProgressGroup = activeProcess.locator('.conversation-progress-group').filter({ hasText: '已完成初步分析。' });
+  await expect(activeProcess.getByText('范围已扩为终端与文件操作；现在做静态验证。')).toBeVisible();
+  await expect(activeProcess.locator('[data-progress-event-id="live-progress"]')).toHaveCount(0);
+  agentStream!.send(JSON.stringify({
+    type: 'event',
+    event: { id: 'live-tool', event_type: 'TOOL_CALL', payload: { parent_id: 'live-progress', action_id: 'live-tool', tool_call_id: 'live-call', llm_response_id: 'live-operation-batch-1', tool_name: 'terminal', event_name: 'TerminalAction', summary: '核对项目上下文', details: { command: 'pwd' }, timestamp: new Date().toISOString() } },
+  }));
+  const liveProgressGroup = activeProcess.locator('[data-progress-event-id="live-progress"]');
   await expect(liveProgressGroup).toHaveCount(1);
   await expect(liveProgressGroup).toHaveJSProperty('open', false);
+  await expect(liveProgressGroup).toHaveClass(/active/);
+  await expect(liveProgressGroup.locator(':scope > summary > svg.lucide-chevron-right')).toHaveCount(0);
+  await expect(liveProgressGroup.locator(':scope > summary > svg.lucide-workflow')).toBeVisible();
   await expect(liveProgressGroup.locator(':scope > summary')).toContainText('正在运行 pwd');
-  await expect(liveProgressGroup.getByText('正在运行 pwd')).toHaveCount(1);
-  await liveProgressGroup.locator(':scope > summary').click();
-  await expect(liveProgressGroup).toHaveJSProperty('open', true);
-  await expect(liveProgressGroup.getByRole('button', { name: '查看执行详情：正在运行 pwd' })).toBeVisible();
+  await expect(liveProgressGroup.locator('.conversation-progress-current')).toHaveText('正在运行 pwd');
+  await expect(liveProgressGroup.locator(':scope > summary > span')).toHaveCSS('animation-name', 'conversation-progress-scan');
+  await expect(liveProgressGroup.getByRole('button', { name: '查看执行详情：正在运行 pwd' })).toBeHidden();
   await expectViewportAtLatest();
   // A bounded REST refresh may have the same formal action identity before it
   // includes the stream projection's command and commentary. The visible tool
   // must remain intact instead of flashing into an empty process card.
   incompleteLiveToolProjection = true;
   agentStream!.send(JSON.stringify({ type: 'message_complete' }));
-  await expect(activeProcess.getByText('已完成初步分析。')).toBeVisible();
+  await expect(activeProcess.getByText('范围已扩为终端与文件操作；现在做静态验证。')).toBeVisible();
   await expect(activeProcess.getByText('正在运行 pwd')).toBeVisible();
   incompleteLiveToolProjection = false;
   agentStream!.send(JSON.stringify({
@@ -1579,8 +1591,14 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     event: { id: 'live-tool-next', event_type: 'TOOL_CALL', payload: { parent_id: 'live-tool', action_id: 'live-tool-next', tool_call_id: 'live-next-call', llm_response_id: 'live-operation-batch-1', tool_name: 'terminal', event_name: 'TerminalAction', details: { command: 'git status --short' }, timestamp: new Date().toISOString() } },
   }));
   await expect(activeProcess.getByText('已完成初步分析。')).toBeVisible();
-  await expect(activeProcess.getByText('正在运行 pwd')).toBeVisible();
-  await expect(activeProcess.getByText('正在运行 git status --short')).toBeVisible();
+  await expect(liveProgressGroup).toHaveJSProperty('open', false);
+  await expect(liveProgressGroup.locator('.conversation-progress-current')).toHaveText('正在运行 git status --short');
+  await expect(liveProgressGroup.getByRole('button', { name: '查看执行详情：正在运行 pwd' })).toBeHidden();
+  await expect(liveProgressGroup.getByRole('button', { name: '查看执行详情：正在运行 git status --short' })).toBeHidden();
+  await liveProgressGroup.locator(':scope > summary').click();
+  await expect(liveProgressGroup).toHaveJSProperty('open', true);
+  await expect(liveProgressGroup.getByRole('button', { name: '查看执行详情：正在运行 pwd' })).toBeVisible();
+  await expect(liveProgressGroup.getByRole('button', { name: '查看执行详情：正在运行 git status --short' })).toBeVisible();
   await expectViewportAtLatest();
   await expect(page.locator('.conversation-turn-status')).toHaveText(/正在后台执行命令/);
   agentStream!.send(JSON.stringify({
@@ -1593,12 +1611,30 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   }));
   agentStream!.send(JSON.stringify({
     type: 'event',
-    event: { id: 'live-file-action', event_type: 'TOOL_CALL', payload: { parent_id: 'live-plan-result', action_id: 'live-file-action', tool_call_id: 'live-file-call', tool_name: 'file_editor', event_name: 'FileEditorAction', details: { command: 'str_replace', path: '/runtime/workspace/project/src/live.ts', old_content: 'const live = false;', new_content: 'const live = true;' }, timestamp: new Date().toISOString() } },
+    event: { id: 'live-file-progress', event_type: 'THOUGHT', payload: { source: 'agent', parent_id: 'live-plan-result', llm_response_id: 'live-file-batch-1', content: '接下来更新实现文件。', thought: '接下来更新实现文件。', timestamp: new Date().toISOString() } },
   }));
+  await expect(activeProcess.getByText('接下来更新实现文件。')).toBeVisible();
+  await expect(activeProcess.locator('[data-progress-event-id="live-file-progress"]')).toHaveCount(0);
+  agentStream!.send(JSON.stringify({
+    type: 'event',
+    event: { id: 'live-file-action', event_type: 'TOOL_CALL', payload: { parent_id: 'live-file-progress', action_id: 'live-file-action', tool_call_id: 'live-file-call', llm_response_id: 'live-file-batch-1', tool_name: 'file_editor', event_name: 'FileEditorAction', details: { command: 'str_replace', path: '/runtime/workspace/project/src/live.ts', old_content: 'const live = false;', new_content: 'const live = true;' }, timestamp: new Date().toISOString() } },
+  }));
+  const liveFileProgressGroup = activeProcess.locator('[data-progress-event-id="live-file-progress"]');
+  await expect(liveFileProgressGroup).toHaveJSProperty('open', false);
+  await expect(liveFileProgressGroup).toHaveClass(/active/);
+  await expect(liveFileProgressGroup.locator(':scope > summary > svg.lucide-workflow')).toBeVisible();
+  await expect(liveFileProgressGroup.locator('.conversation-progress-current')).toHaveText('正在编辑 工作区/src/live.ts');
+  await expect(liveFileProgressGroup.locator(':scope > summary > span')).toHaveCSS('animation-name', 'conversation-progress-scan');
+  await expect(liveFileProgressGroup.locator('.task-tracker')).toHaveCount(0);
   agentStream!.send(JSON.stringify({
     type: 'event',
     event: { id: 'live-file-result', event_type: 'TOOL_RESULT', payload: { parent_id: 'live-file-action', action_id: 'live-file-action', tool_call_id: 'live-file-call', tool_name: 'file_editor', event_name: 'FileEditorObservation', details: { command: 'str_replace', path: '/runtime/workspace/project/src/live.ts', old_content: 'const live = false;', new_content: 'const live = true;', is_error: false }, timestamp: new Date().toISOString() } },
   }));
+  await expect(liveFileProgressGroup).toHaveJSProperty('open', false);
+  await expect(liveFileProgressGroup).not.toHaveClass(/active/);
+  await expect(liveFileProgressGroup.locator(':scope > summary')).toHaveText('接下来更新实现文件。');
+  await expect(liveFileProgressGroup.locator('.conversation-progress-current')).toHaveCount(0);
+  await expect(liveFileProgressGroup.locator(':scope > summary > span')).toHaveCSS('animation-name', 'none');
   const taskPlan = page.getByLabel('任务：1 / 3 已完成');
   await expect(taskPlan).toBeVisible();
   await expect(taskPlan).toContainText('任务');
@@ -1635,7 +1671,9 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     event: { id: 'live-tool-next-result', event_type: 'TOOL_RESULT', payload: { parent_id: 'live-tool-next', action_id: 'live-tool-next', tool_call_id: 'live-next-call', tool_name: 'terminal', event_name: 'TerminalObservation', details: { command: 'git status --short', exit_code: 0, is_error: false }, timestamp: new Date().toISOString() } },
   }));
   await expect(liveProgressGroup).toHaveJSProperty('open', false);
-  await expect(liveProgressGroup.locator(':scope > summary')).toHaveText('已完成初步分析。');
+  await expect(liveProgressGroup).not.toHaveClass(/active/);
+  await expect(liveProgressGroup.locator(':scope > summary')).toHaveText('范围已扩为终端与文件操作；现在做静态验证。');
+  await expect(liveProgressGroup.locator(':scope > summary > span')).toHaveCSS('animation-name', 'none');
   await liveProgressGroup.locator(':scope > summary').click();
   await expect(activeProcess.getByRole('button', { name: '查看执行详情：已运行 git status --short' })).toBeVisible();
   await expect(activeProcess.getByRole('button', { name: '查看执行详情：已运行 pwd' })).toBeVisible();

@@ -1,4 +1,4 @@
-import { BookOpen, Check, ChevronDown, ChevronRight, CircleAlert, ClipboardList, Copy, ExternalLink, Eye, FileCode2, FileCog, FileJson, FilePenLine, FilePlus2, FileText, FileType2, GitFork, Link, LoaderCircle, PanelRightOpen, Pencil, PlugZap, Quote, Sparkles, SquareTerminal, Wrench } from 'lucide-react';
+import { BookOpen, Check, ChevronDown, ChevronRight, CircleAlert, ClipboardList, Copy, ExternalLink, Eye, FileCode2, FileCog, FileJson, FilePenLine, FilePlus2, FileText, FileType2, GitFork, Link, LoaderCircle, PanelRightOpen, Pencil, PlugZap, Quote, Sparkles, SquareTerminal, Workflow, Wrench } from 'lucide-react';
 import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type RefObject } from 'react';
 import type { AgentActivitySummary, AgentAttachment, AgentConversationAnnotation, AgentConversationReference, AgentWorkspaceReference, OpenHandsConversationEvent, RuntimeTaskControlSnapshot } from '../types';
 import { SubagentAvatar } from './SubagentAvatar';
@@ -608,13 +608,17 @@ function progressText(item: Item): string {
   return item.content.trim().slice(0, 2_000);
 }
 
+function isNativeOperation(entry: ActivityEntry): boolean {
+  return ['TerminalAction', 'FileEditorAction'].includes(String(entry.action?.event.payload.event_name ?? ''));
+}
+
 function entryHasProgress(entry: ActivityEntry): boolean {
-  return entry.item.kind === 'thought' || Boolean(entry.action && progressText(entry.action));
+  return entry.item.kind === 'thought' || Boolean(isNativeOperation(entry) && progressText(entry.action!));
 }
 
 function actionBelongsToProgress(entry: ActivityEntry, progress: Item, ownedEventIds: ReadonlySet<string>): boolean {
   const action = entry.action;
-  if (!action) return false;
+  if (!action || !isNativeOperation(entry)) return false;
   if (action.event.id === progress.event.id) return true;
 
   const progressResponseId = detailText(progress.event.payload.llm_response_id);
@@ -1273,7 +1277,7 @@ function ProgressActivity({ group, active, paused, parentFailed, recoveredErrorE
   const summaryLabel = currentTitle ? `${label}，${currentTitle}` : label;
   return <details className={`conversation-progress-group${running ? ' active' : ''}`} open={open} onToggle={event => setOpen(event.currentTarget.open)} data-progress-event-id={group.progress.event.id}>
     <summary aria-label={`查看执行过程：${summaryLabel}`}>
-      <ChevronRight size={14}/><span><b>{label}</b>{running && currentTitle && <small>{currentTitle}</small>}</span>{running && <LoaderCircle className="conversation-activity-spin" size={13}/>}
+      <Workflow className="conversation-progress-icon" size={13}/><span><b>{label}</b>{running && currentTitle && <small className="conversation-progress-current" role="status">{currentTitle}</small>}</span>
     </summary>
     <div className="conversation-progress-group-list">
       {group.entries.map((entry, index) => <ActivityEntryRow key={entry.id} entry={entry} active={active} paused={paused} parentFailed={parentFailed} hideThought={index === 0 && entry.action?.event.id === group.progress.event.id} recoveredErrorEventIds={recoveredErrorEventIds} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/>)}
