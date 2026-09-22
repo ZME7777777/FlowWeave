@@ -54,7 +54,7 @@ AgentWorkspaceCapability = agent_workspace_host.AgentWorkspaceCapability
 TOOLS = tuple(RuntimeTool(name=name) for name in FIXED_RUNTIME_TOOL_NAMES)
 PROJECT_ROOT = "/runtime/workspace/project"
 CONDENSER_MAX_EVENTS = 1_000
-NATIVE_CONDENSER_MAX_TOKENS = 256_000
+NATIVE_CONDENSER_MAX_TOKENS = 512_000
 AGENT_WORKSPACE_MAX_ITERATIONS = 300
 MATERIALIZED_CAPABILITY_TYPES = frozenset({"SKILL", "MCP", "PLUGIN"})
 PROJECT_ROOT_SYSTEM_CONTEXT = "\n".join(

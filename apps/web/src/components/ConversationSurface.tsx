@@ -864,7 +864,7 @@ function TaskTrackerCard({ entry, presentation }: { entry: ActivityEntry; presen
   </details>;
 }
 
-function SkillLoadCard({ entry }: { entry: ActivityEntry }) {
+function SkillLoadRow({ entry }: { entry: ActivityEntry }) {
   const action = entry.action ?? entry.item;
   const result = entry.results.at(-1);
   const actionSkill = action.event.payload.runtime_skill;
@@ -874,10 +874,9 @@ function SkillLoadCard({ entry }: { entry: ActivityEntry }) {
   const phase = resultSkill?.phase ?? actionSkill?.phase ?? (result ? 'LOADED' : 'INVOKED');
   const failed = phase === 'ERROR' || result?.event.payload.details?.is_error === true;
   const status = failed ? '加载失败' : phase === 'LOADED' ? '已加载' : '加载中';
-  return <section className={`conversation-native-card skill-load${failed ? ' error' : phase === 'INVOKED' ? ' active' : ''}`} aria-label={`加载 Skill：${skillName}`}>
-    <header><BookOpen size={15}/><span><b>加载 Skill</b><small>{status}</small></span>{phase === 'INVOKED' && <LoaderCircle className="conversation-native-card-spinner" size={13}/>}</header>
-    <code>{skillName}</code>
-  </section>;
+  return <article className={`conversation-activity-row tool skill-load${failed ? ' error' : phase === 'INVOKED' ? ' active' : ''}`} aria-label={`加载 Skill：${skillName}`}>
+    <BookOpen size={14}/><div><b>{`加载 Skill ${skillName}`}</b><small>{status}</small></div>
+  </article>;
 }
 
 function eventTime(item?: Item): number | undefined {
@@ -1165,7 +1164,7 @@ function ActivityEntryRow({ entry, active, paused = false, parentFailed = false,
   </div>;
   if (eventName === 'InvokeSkillAction' || eventName === 'InvokeSkillObservation') return <div className={`conversation-tool-entry semantic tool-${toolVisual}`}>
     {presentation.thought && <article {...thoughtAttributes} className={`conversation-activity-row thought tool-thought tool-${toolVisual}`}><MessageMarkdown>{presentation.thought}</MessageMarkdown></article>}
-    <SkillLoadCard entry={entry}/>
+    <SkillLoadRow entry={entry}/>
   </div>;
   if (item.kind === 'tool' && toolDetail) return <div className={`conversation-tool-entry tool-${toolVisual}`}>
     {presentation.thought && <article {...thoughtAttributes} className={`conversation-activity-row thought tool-thought tool-${toolVisual}`}>
@@ -1785,10 +1784,14 @@ export const ConversationSurface = memo(function ConversationSurface({ events, l
   }, []);
   const updateMessageNavigationPreview = useCallback((clientY: number) => {
     const buttons = Array.from(messageNavigation.current?.querySelectorAll<HTMLButtonElement>('button') ?? []);
-    const navigationBounds = messageNavigation.current?.getBoundingClientRect();
-    if (!buttons.length || !navigationBounds?.height) return;
-    const normalizedPosition = Math.max(0, Math.min(1, (clientY - navigationBounds.top) / navigationBounds.height));
-    const pointerIndex = normalizedPosition * Math.max(0, buttons.length - 1);
+    if (!buttons.length) return;
+    const firstBounds = buttons[0].getBoundingClientRect();
+    const lastBounds = buttons.at(-1)?.getBoundingClientRect() ?? firstBounds;
+    const firstCenter = firstBounds.top + firstBounds.height / 2;
+    const lastCenter = lastBounds.top + lastBounds.height / 2;
+    const pointerIndex = buttons.length === 1 || firstCenter === lastCenter
+      ? 0
+      : Math.max(0, Math.min(buttons.length - 1, (clientY - firstCenter) / (lastCenter - firstCenter) * (buttons.length - 1)));
     const styledButtons = new Set<HTMLButtonElement>();
     const firstStyledIndex = Math.max(0, Math.ceil(pointerIndex - 2));
     const lastStyledIndex = Math.min(buttons.length - 1, Math.floor(pointerIndex + 2));
@@ -2022,7 +2025,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, l
         key={message.id}
         aria-label={`定位到用户消息：${messageSummary(message.content)}`}
         aria-describedby={messagePreview?.id === message.id ? 'conversation-message-preview' : undefined}
-        style={{ '--message-index-position': `${userMessageNavigation.length === 1 ? 50 : (index / (userMessageNavigation.length - 1)) * 100}%` } as CSSProperties}
+        style={{ '--message-index-position': `calc(50% + ${(index - (userMessageNavigation.length - 1) / 2) * 15}px)` } as CSSProperties}
         onFocus={event => showMessagePreview(message, index, event.currentTarget)}
         onBlur={() => setMessagePreview(current => current?.id === message.id ? undefined : current)}
         onClick={() => scrollToUserMessage(message.id)}

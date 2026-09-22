@@ -734,15 +734,15 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     if (path.endsWith('/context')) {
       const forkContext = path.includes('/conversations/agent-conversation-fork-1/');
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(forkContext ? {
-        used_tokens: null, window_tokens: 922_000, cumulative_tokens: 0, condenser_max_tokens: 256_000,
+        used_tokens: null, window_tokens: 922_000, cumulative_tokens: 0, condenser_max_tokens: 512_000,
         model_name: 'gpt-test', reasoning_effort: 'high', usage_current: true,
         condenser_max_size: 240, view_event_count: 12,
       } : contextAvailable ? {
-        used_tokens: 6_380, window_tokens: 922_000, cumulative_tokens: 12_716, condenser_max_tokens: 256_000,
+        used_tokens: 6_380, window_tokens: 922_000, cumulative_tokens: 12_716, condenser_max_tokens: 512_000,
         model_name: 'gpt-test', reasoning_effort: 'high', usage_current: true,
         condenser_max_size: 10_000, view_event_count: 42,
       } : {
-        used_tokens: null, window_tokens: 922_000, cumulative_tokens: 12_716, condenser_max_tokens: 256_000,
+        used_tokens: null, window_tokens: 922_000, cumulative_tokens: 12_716, condenser_max_tokens: 512_000,
         model_name: 'gpt-test', reasoning_effort: 'high', usage_current: false,
       }) });
       return;
@@ -1191,8 +1191,8 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.getByText('上下文用量正在从 OpenHands 读取')).toHaveCount(0);
   contextAvailable = true;
   await page.reload();
-  await expect(page.locator('.agent-context-progress.token')).toContainText('Token6,380 / 256,000');
-  await expect(page.locator('.agent-context-progress.token')).toHaveAttribute('title', /OpenHands 当前 View 6,380 \/ 自动压缩阈值 256,000/);
+  await expect(page.locator('.agent-context-progress.token')).toContainText('Token6,380 / 512,000');
+  await expect(page.locator('.agent-context-progress.token')).toHaveAttribute('title', /OpenHands 当前 View 6,380 \/ 自动压缩阈值 512,000/);
   await expect(page.locator('.agent-workspace-overview').getByText('累计 12,716 Token', { exact: true })).toBeVisible();
   await expect(page.locator('.agent-context-progress.activity')).toContainText('事件42 / 10,000');
   await expect(page.locator('.agent-context-progress.activity')).toHaveAttribute('title', /OpenHands 当前活动 View 事件 42 \/ 自动压缩阈值 10,000/);
@@ -1319,7 +1319,10 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(genericToolDetail.getByText('CodeSearchAction', { exact: true })).toBeVisible();
   await expect(genericToolDetail.getByText('code_search', { exact: true })).toBeVisible();
   const skillLoad = completedProcess.getByLabel('加载 Skill：collect-app-exception-logs');
-  await expect(skillLoad).toContainText('加载 Skill');
+  await expect(skillLoad).toHaveClass(/conversation-activity-row/);
+  await expect(skillLoad).not.toHaveClass(/conversation-native-card/);
+  await expect(skillLoad.locator(':scope > svg.lucide-book-open')).toBeVisible();
+  await expect(skillLoad).toContainText('加载 Skill collect-app-exception-logs');
   await expect(skillLoad).toContainText('已加载');
   await expect(skillLoad).not.toContainText('Skill instructions should not render as a generic tool result.');
   await expect(completedProcess.getByText('Think · 已完成', { exact: true })).toHaveCount(0);
@@ -1333,11 +1336,19 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   const messageRuler = page.getByRole('navigation', { name: '用户消息导航' });
   await expect(messageRuler).toBeVisible();
   await expect(page.locator('.message-position-navigator, .message-position-preview')).toHaveCount(0);
-  await expect(messageRuler.getByRole('button')).toHaveCount(4);
-  await expect.poll(() => messageRuler.getByRole('button').evaluateAll(buttons => {
-    const tops = buttons.map(button => button.getBoundingClientRect().top);
-    return Math.max(...tops) - Math.min(...tops);
-  })).toBeGreaterThan(100);
+  const messageTicks = messageRuler.getByRole('button');
+  await expect(messageTicks).toHaveCount(4);
+  await expect.poll(() => messageTicks.evaluateAll(buttons => {
+    const ruler = buttons[0]?.parentElement?.getBoundingClientRect();
+    const centers = buttons.map(button => {
+      const bounds = button.getBoundingClientRect();
+      return bounds.top + bounds.height / 2;
+    });
+    return {
+      centerOffset: ruler ? (centers[0] + centers.at(-1)!) / 2 - (ruler.top + ruler.height / 2) : Number.NaN,
+      gaps: centers.slice(1).map((center, index) => center - centers[index]),
+    };
+  })).toEqual({ centerOffset: 0, gaps: [15, 15, 15] });
   const firstMessageTick = messageRuler.getByRole('button', { name: '定位到用户消息：检查工作目录' });
   await firstMessageTick.hover();
   await expect(page.locator('#conversation-message-preview')).toContainText('检查工作目录');
@@ -1432,7 +1443,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.getByText('TerminalAction')).toHaveCount(0);
   await expect(page.getByText('STATE')).not.toBeVisible();
   await expect(page.getByText('当前供应商：已测试模型')).toBeVisible();
-  await expect(page.locator('.agent-context-progress.token')).toContainText('Token0 / 256,000');
+  await expect(page.locator('.agent-context-progress.token')).toContainText('Token0 / 512,000');
   await expect(page.locator('.agent-context-progress.activity')).toContainText('事件12 / 240');
   const forkComposer = page.getByLabel('发送 Agent 消息');
   await expect(forkComposer).toBeEnabled();
