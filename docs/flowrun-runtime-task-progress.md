@@ -210,6 +210,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-500 | 会话投递契约兼容与工作台连续定位交互 | DONE | 将缺失可选 `/context` 路由从会话启动硬失败中剥离；Skill 组合菜单支持外部点击关闭；用户消息定位条按指针连续产生波纹式刻度反馈。 |
 | FR-503 | 逐步运行导入、拷贝与连续运行前端交互对齐 | DONE | 逐步运行新增、导入、记录选中、起始节点聚焦、右侧栏展示、配置下载/复制及首节点配置拷贝均复用连续运行的交互投影；后端导入重新生成 URL artifact 与 Gate ID，并保持待启动状态。 |
 | FR-504 | OpenHands 当前 View 事件数精确投影 | DONE | OpenHands `/context` 在同一活动 View 快照中返回正式 `event_count`；FlowWeave 底栏只展示该值，旧 Runtime 缺字段时保持未知，不再使用完整历史事件数。 |
+| FR-505 | 会话认证增量勾选收敛 | DONE | 移除认证页的撤销提示；已选择认证锁定且不能取消，只允许将未选择认证新增到本次同步。 |
 | FR-457 | OpenHands 空响应自恢复与运行状态一致性 | DONE | 空 Agent Message 与 `source=environment` 的原生 corrective nudge 不再被识别为最终回复；纠正事件以“模型返回空响应，OpenHands 正在自动重试”呈现，左侧会话状态与底部按钮继续统一服从原生 execution status。 |
 | FR-458 | 空响应恢复提示瞬时化与会话状态统一 | DONE | corrective nudge 只在它是当前最新事件且原生会话仍运行时复用实时状态行显示；后续事件或终态立即隐藏，历史工作过程不保留该提示。工作台所有运行控件复用同一原生状态投影。 |
 | FR-459 | 原生错误事件的终态／可恢复呈现分流 | DONE | 仅 OpenHands ConversationErrorEvent 呈现为“本轮未能完成”的会话级终态卡片；AgentErrorEvent 与未知历史 ERROR 保持原生审计事实，按其正式父事件留在工作过程中呈现为可恢复异常，后续正式回复会明确标注 Agent 已继续完成，避免暂停／继续后的正常回复被历史错误卡片误覆盖。 |
@@ -6666,6 +6667,18 @@ scope；首条消息 bootstrap 成功后会清理已发送内容，避免发送�
 完成：逐步新增弹窗保留与连续运行一致的起始节点选择和导入入口；导入后立即选中首条记录、聚焦其起始节点并打开共享右侧栏；点击逐步记录时按当前节点或冻结起始节点恢复相同选中状态。逐步记录的操作栏提供与连续运行同位置、同样式的拷贝、下载、复制和删除能力。配置导出仅携带首节点启动提示词、Agent 预设、Gate 配置和直接 URL 输入；导入重新校验目标节点字段、生成新的 URL artifact 与 Gate ID，并创建 `WAITING_START_CONFIRMATION` Attempt，不自动调度。记录拷贝复用同一首节点配置投影，保留逐步显式启动语义并排除 Conversation、运行状态、输出、文件 artifact 和旧 artifact ID。
 
 验证：Web `tsc -b`、受影响页面与 API 的 ESLint、受影响 Python `py_compile`、`git diff --check` 通过；服务端定向 pytest 已执行但当前环境缺少 Docker socket，在 fixture 初始化阶段因 `docker.errors.DockerException` 退出，未进入业务断言；新增定向 Playwright 覆盖逐步配置导入后记录、起始节点和右侧栏选中状态。
+### FR-505 会话认证增量勾选收敛 — DONE
+
+依赖：FR-489、FR-497。
+
+目标：既有会话的认证配置仅支持增量同步。已选择认证不得在页面中取消勾选；用户只能将此前未选择的认证勾选后同步。移除与该交互不一致的撤销说明。
+
+范围：仅修改 Agent Workspace 会话配置的认证页前端状态与可访问性提示；不改变认证同步 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。
+
+完成：认证页删除“取消选择／删除／切换不会撤销变量”的错误提示。已选择认证显示为锁定的禁用项，并在状态更新函数中保持单向选择不变量；未选择认证仍可勾选，勾选后即锁定，最终同步请求只会保留并追加认证 ID。
+
+验收：Web TypeScript typecheck、受影响文件 ESLint、`git diff --check` 与任务状态唯一性检查通过；无迁移、无 OpenHands 或远端操作。
+
 ### FR-504 OpenHands 当前 View 事件数精确投影 — DONE
 
 依赖：FR-493、FR-500。
@@ -7198,3 +7211,4 @@ FlowWeave 本地累加后猜测压缩边界。
 | 2026-08-26 | FR-28 | Agent Workspace/OpenHands 定向 pytest（70 passed）；Ruff、Pyright；Web ESLint/typecheck/build；Alembic head 与 `git diff --check` | PASS：完成回复可从其正式 event identity 原生 fork 为独立 Conversation，持久化新的最小 locator 与审计命令，重放相同幂等键返回同一 binding；手动压缩只调用原生 condense，完成情况继续由 Condensation 事件渲染。运行中会话拒绝这两项控制操作；新增 0061 migration 允许 FORK 审计类型。无 CURRENT、READY 或下一切片。 |
 | 2026-08-26 | FR-29 | Agent Workspace 定向 pytest（10 passed）；受影响 Python Ruff/Pyright；Web ESLint/typecheck/build；本地 Alembic head、`git diff --check` 与任务状态核对 | PASS：新建会话与原生 fork 都冻结 `model_provider_id`；会话内模型切换 API 不再接受供应商参数，并只按 binding 的冻结供应商构造正式 `switch_llm`。前端下拉仅显示该供应商的模型名称。没有可审计供应商身份的历史 binding 不被猜测回填，继续可读写但模型切换被明确拒绝；新增 0062 迁移。无 CURRENT、READY 或下一切片。 |
 | 2026-08-26 | FR-30 | OpenHands active-head 定向 pytest（1 passed）；受影响 Python Ruff/Pyright；`git diff --check` 与任务状态核对 | PASS：`parent_id = "__root__"` 被识别为固定 OpenHands 事件树的合法终点，不再作为缺失 event 查找。正式 ERROR 事件可返回至页面；不重发消息、不改写事件树或掩盖上游模型错误。无 CURRENT、READY 或下一切片。 |
+| 2026-09-22 | FR-505 | Web TypeScript typecheck、受影响文件 ESLint、`git diff --check` 与任务状态唯一性 | PASS：认证页移除撤销提示；已选择认证显示为锁定且禁用，状态更新函数同样拒绝移除已有 ID；未选择认证仍可新增，新增后立即锁定。未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
