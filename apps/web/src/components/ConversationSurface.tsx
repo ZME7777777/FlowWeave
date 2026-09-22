@@ -62,6 +62,16 @@ interface ActivityEntry {
   results: Item[];
 }
 
+interface ProgressActivityGroup {
+  id: string;
+  progress: Item;
+  entries: ActivityEntry[];
+}
+
+type ActivityRow =
+  | { kind: 'entry'; entry: ActivityEntry }
+  | { kind: 'progress-group'; group: ProgressActivityGroup };
+
 type TaskListStatus = 'todo' | 'in_progress' | 'done';
 
 interface TaskListItem {
@@ -592,6 +602,61 @@ function groupedActivities(items: Item[]): ActivityEntry[] {
     entries.push({ id: item.event.id, item, results: item.event.event_type === 'TOOL_RESULT' ? [item] : [] });
   }
   return entries;
+}
+
+function progressText(item: Item): string {
+  return item.content.trim().slice(0, 2_000);
+}
+
+function entryHasProgress(entry: ActivityEntry): boolean {
+  return entry.item.kind === 'thought' || Boolean(entry.action && progressText(entry.action));
+}
+
+function actionBelongsToProgress(entry: ActivityEntry, progress: Item, ownedEventIds: ReadonlySet<string>): boolean {
+  const action = entry.action;
+  if (!action) return false;
+  if (action.event.id === progress.event.id) return true;
+
+  const progressResponseId = detailText(progress.event.payload.llm_response_id);
+  const actionResponseId = detailText(action.event.payload.llm_response_id);
+  if (progressResponseId && actionResponseId) return progressResponseId === actionResponseId;
+  return ownedEventIds.has(detailText(action.event.payload.parent_id));
+}
+
+function activityRows(entries: ActivityEntry[]): ActivityRow[] {
+  const rows: ActivityRow[] = [];
+  for (let index = 0; index < entries.length;) {
+    const entry = entries[index];
+    if (!entryHasProgress(entry)) {
+      rows.push({ kind: 'entry', entry });
+      index += 1;
+      continue;
+    }
+
+    const progress = entry.item;
+    const grouped: ActivityEntry[] = [];
+    const ownedEventIds = new Set([progress.event.id]);
+    let cursor = entry.item.kind === 'thought' ? index + 1 : index;
+    while (cursor < entries.length) {
+      const candidate = entries[cursor];
+      if (candidate.item.kind === 'thought' || !actionBelongsToProgress(candidate, progress, ownedEventIds)) break;
+      grouped.push(candidate);
+      ownedEventIds.add(candidate.action!.event.id);
+      for (const result of candidate.results) ownedEventIds.add(result.event.id);
+      cursor += 1;
+    }
+    if (!grouped.length) {
+      rows.push({ kind: 'entry', entry });
+      index += 1;
+      continue;
+    }
+    rows.push({
+      kind: 'progress-group',
+      group: { id: progress.event.id, progress, entries: grouped },
+    });
+    index = cursor;
+  }
+  return rows;
 }
 
 interface ActivityPresentation {
@@ -1129,11 +1194,12 @@ function taskAvatarStatus(entry: ActivityEntry, item: Item, paused = false, pare
   return paused ? 'paused' : 'running';
 }
 
-function ActivityEntryRow({ entry, active, paused = false, parentFailed = false, recoveredErrorEventIds, avatarSlots, workspaceRoot }: {
+function ActivityEntryRow({ entry, active, paused = false, parentFailed = false, hideThought = false, recoveredErrorEventIds, avatarSlots, workspaceRoot }: {
   entry: ActivityEntry;
   active: boolean;
   paused?: boolean;
   parentFailed?: boolean;
+  hideThought?: boolean;
   recoveredErrorEventIds: ReadonlySet<string>;
   avatarSlots: ReadonlyMap<string, SubagentAvatarSlot>;
   workspaceRoot?: string | null;
@@ -1159,15 +1225,15 @@ function ActivityEntryRow({ entry, active, paused = false, parentFailed = false,
     <MessageMarkdown>{presentation.thought ?? item.content}</MessageMarkdown>
   </article>;
   if (eventName === 'TaskTrackerAction' || eventName === 'TaskTrackerObservation') return <div className={`conversation-tool-entry semantic tool-${toolVisual}`}>
-    {presentation.thought && <article {...thoughtAttributes} className={`conversation-activity-row thought tool-thought tool-${toolVisual}`}><MessageMarkdown>{presentation.thought}</MessageMarkdown></article>}
+    {!hideThought && presentation.thought && <article {...thoughtAttributes} className={`conversation-activity-row thought tool-thought tool-${toolVisual}`}><MessageMarkdown>{presentation.thought}</MessageMarkdown></article>}
     <TaskTrackerCard entry={entry} presentation={presentation}/>
   </div>;
   if (eventName === 'InvokeSkillAction' || eventName === 'InvokeSkillObservation') return <div className={`conversation-tool-entry semantic tool-${toolVisual}`}>
-    {presentation.thought && <article {...thoughtAttributes} className={`conversation-activity-row thought tool-thought tool-${toolVisual}`}><MessageMarkdown>{presentation.thought}</MessageMarkdown></article>}
+    {!hideThought && presentation.thought && <article {...thoughtAttributes} className={`conversation-activity-row thought tool-thought tool-${toolVisual}`}><MessageMarkdown>{presentation.thought}</MessageMarkdown></article>}
     <SkillLoadRow entry={entry}/>
   </div>;
   if (item.kind === 'tool' && toolDetail) return <div className={`conversation-tool-entry tool-${toolVisual}`}>
-    {presentation.thought && <article {...thoughtAttributes} className={`conversation-activity-row thought tool-thought tool-${toolVisual}`}>
+    {!hideThought && presentation.thought && <article {...thoughtAttributes} className={`conversation-activity-row thought tool-thought tool-${toolVisual}`}>
       <MessageMarkdown>{presentation.thought}</MessageMarkdown>
     </article>}
     <details className={`conversation-activity-row tool conversation-tool-detail tool-${toolVisual}`} data-tool-kind={toolVisual} data-file-operation={toolVisual === 'file' ? presentation.fileOperation : undefined} data-file-kind={toolVisual === 'file' ? presentation.fileKind : undefined}>
@@ -1180,6 +1246,39 @@ function ActivityEntryRow({ entry, active, paused = false, parentFailed = false,
       {presentation.thought && <span className="conversation-activity-thought"><MessageMarkdown>{presentation.thought}</MessageMarkdown></span>}
     </div>
   </article>;
+}
+
+function ProgressActivity({ group, active, paused, parentFailed, recoveredErrorEventIds, avatarSlots, workspaceRoot }: {
+  group: ProgressActivityGroup;
+  active: boolean;
+  paused: boolean;
+  parentFailed: boolean;
+  recoveredErrorEventIds: ReadonlySet<string>;
+  avatarSlots: ReadonlyMap<string, SubagentAvatarSlot>;
+  workspaceRoot?: string | null;
+}) {
+  const pendingEntries = group.entries.filter(entry => entry.action && entry.results.length === 0);
+  const running = active && pendingEntries.length > 0;
+  const [open, setOpen] = useState(false);
+  const wasRunning = useRef(running);
+  useLayoutEffect(() => {
+    if (wasRunning.current && !running) setOpen(false);
+    wasRunning.current = running;
+  }, [running]);
+  const currentEntry = pendingEntries.at(-1);
+  const currentTitle = currentEntry
+    ? activityPresentation(currentEntry, true, workspaceRoot, paused, parentFailed, recoveredErrorEventIds).title
+    : undefined;
+  const label = progressText(group.progress);
+  const summaryLabel = currentTitle ? `${label}，${currentTitle}` : label;
+  return <details className={`conversation-progress-group${running ? ' active' : ''}`} open={open} onToggle={event => setOpen(event.currentTarget.open)} data-progress-event-id={group.progress.event.id}>
+    <summary aria-label={`查看执行过程：${summaryLabel}`}>
+      <ChevronRight size={14}/><span><b>{label}</b>{running && currentTitle && <small>{currentTitle}</small>}</span>{running && <LoaderCircle className="conversation-activity-spin" size={13}/>}
+    </summary>
+    <div className="conversation-progress-group-list">
+      {group.entries.map((entry, index) => <ActivityEntryRow key={entry.id} entry={entry} active={active} paused={paused} parentFailed={parentFailed} hideThought={index === 0 && entry.action?.event.id === group.progress.event.id} recoveredErrorEventIds={recoveredErrorEventIds} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/>)}
+    </div>
+  </details>;
 }
 
 function ActivityGroup({ items, active, completionConfirmed = false, paused = false, parentFailed = false, recoveredErrorEventIds = new Set(), startedAt, finishedAt, avatarSlots, workspaceRoot }: {
@@ -1196,6 +1295,7 @@ function ActivityGroup({ items, active, completionConfirmed = false, paused = fa
 }) {
   const elapsedSeconds = useElapsedSeconds(startedAt, finishedAt, active);
   const entries = groupedActivities(items);
+  const rows = activityRows(entries);
   const itemCount = entries.length;
   const hasUnfinishedTask = entries.some(entry => {
     const item = entry.action ?? entry.item;
@@ -1231,7 +1331,9 @@ function ActivityGroup({ items, active, completionConfirmed = false, paused = fa
   return <details className={`conversation-activity-group${active ? ' active' : ''}`} open={open} onToggle={event => setOpen(event.currentTarget.open)}>
     <summary>{summary}</summary>
     <div className="conversation-activity-list">
-      {entries.map(entry => <ActivityEntryRow key={entry.id} entry={entry} active={active} paused={paused} parentFailed={parentFailed} recoveredErrorEventIds={recoveredErrorEventIds} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/>)}
+      {rows.map(row => row.kind === 'progress-group'
+        ? <ProgressActivity key={row.group.id} group={row.group} active={active} paused={paused} parentFailed={parentFailed} recoveredErrorEventIds={recoveredErrorEventIds} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/>
+        : <ActivityEntryRow key={row.entry.id} entry={row.entry} active={active} paused={paused} parentFailed={parentFailed} recoveredErrorEventIds={recoveredErrorEventIds} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/>)}
     </div>
   </details>;
 }

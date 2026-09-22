@@ -9786,6 +9786,135 @@
           }
         }
       }
+    },
+    "/api/v1/agent-workspaces/{workspace_id}/conversations/{binding_id}/unread": {
+      "put": {
+        "summary": "Set Agent Conversation Unread",
+        "operationId": "set_agent_conversation_unread_api_v1_agent_workspaces__workspace_id__conversations__binding_id__unread_put",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Workspace Id"
+            }
+          },
+          {
+            "name": "binding_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Binding Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentConversationUnreadWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Set Agent Conversation Unread Api V1 Agent Workspaces  Workspace Id  Conversations  Binding Id  Unread Put"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/flow-runs/{flow_run_id}/node-attempts/{attempt_id}/agent-sessions/{binding_id}/unread": {
+      "put": {
+        "summary": "Set Node Session Unread",
+        "operationId": "set_node_session_unread_api_v1_flow_runs__flow_run_id__node_attempts__attempt_id__agent_sessions__binding_id__unread_put",
+        "parameters": [
+          {
+            "name": "flow_run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Flow Run Id"
+            }
+          },
+          {
+            "name": "attempt_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Attempt Id"
+            }
+          },
+          {
+            "name": "binding_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Binding Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NodeSessionUnreadWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Set Node Session Unread Api V1 Flow Runs  Flow Run Id  Node Attempts  Attempt Id  Agent Sessions  Binding Id  Unread Put"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -13136,6 +13265,34 @@
           "type"
         ],
         "title": "ValidationError"
+      },
+      "AgentConversationUnreadWrite": {
+        "properties": {
+          "unread": {
+            "type": "boolean",
+            "title": "Unread"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "unread"
+        ],
+        "title": "AgentConversationUnreadWrite"
+      },
+      "NodeSessionUnreadWrite": {
+        "properties": {
+          "unread": {
+            "type": "boolean",
+            "title": "Unread"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "unread"
+        ],
+        "title": "NodeSessionUnreadWrite"
       }
     }
   }

@@ -2311,6 +2311,62 @@ def test_node_session_list_orders_recent_activity_first(
         assert second["next_cursor"] is None
 
 
+def test_node_session_unread_state_persists_in_conversation_projection(
+    db_session_factory: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with db_session_factory() as db:
+        flow_run_id, runtime_session_id, attempt_id = _node_session_context(db)
+        attempt = db.get(NodeAttempt, attempt_id)
+        assert attempt is not None
+        binding = AgentConversationBinding(
+            workspace_id=None,
+            host_kind="FLOW_NODE",
+            host_id=flow_run_id,
+            conversation_scope_id=attempt_id,
+            flow_run_id=flow_run_id,
+            node_run_id=attempt.node_run_id,
+            node_attempt_id=attempt_id,
+            runtime_session_id=runtime_session_id,
+            working_directory=attempt.workspace_ref,
+            openhands_conversation_id="unread-node-conversation",
+            display_title="节点未读会话",
+            lifecycle="ACTIVE",
+            create_idempotency_key="unread-node",
+        )
+        db.add(binding)
+        db.flush()
+        monkeypatch.setattr(
+            conversation_service.agent_sessions,
+            "resolve_flow_node_session_host",
+            lambda *_args, **_kwargs: SimpleNamespace(),
+        )
+
+        updated_at = binding.updated_at
+        marked = conversation_service.set_node_session_unread(
+            db,
+            flow_run_id=flow_run_id,
+            attempt_id=attempt_id,
+            binding_id=binding.id,
+            unread=True,
+        )
+        page = conversation_service.list_node_session_page(
+            db, flow_run_id=flow_run_id, attempt_id=attempt_id
+        )
+
+        assert marked["unread"] is True
+        assert binding.updated_at == updated_at
+        assert page["items"][0]["unread"] is True
+
+        cleared = conversation_service.set_node_session_unread(
+            db,
+            flow_run_id=flow_run_id,
+            attempt_id=attempt_id,
+            binding_id=binding.id,
+            unread=False,
+        )
+        assert cleared["unread"] is False
+
+
 def test_node_workspace_projection_shares_project_across_node_attempts(
     settings, db_session_factory: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
 ) -> None:

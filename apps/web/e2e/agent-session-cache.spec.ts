@@ -99,6 +99,92 @@ test('Agent session renders a completed long Markdown reply without manual expan
   await expect.poll(() => eventRequests).toBe(2);
 });
 
+
+test('A delayed message response never renders in another conversation', async ({ page }) => {
+  let authenticated = false;
+  let releaseSend: (() => void) | undefined;
+  let sentBindingId: string | undefined;
+  const sentMessages: string[] = [];
+  const sendGate = new Promise<void>(resolve => { releaseSend = resolve; });
+  const workspace = {
+    id: 'send-switch-workspace', display_name: '消息隔离工作区', desired_state: 'RUNNING', updated_at: now,
+  };
+  const conversations = ['send-switch-a', 'send-switch-b'].map((id, index) => ({
+    id, display_title: index === 0 ? '发送会话 A' : '发送会话 B', title_state: 'MANUAL',
+    lifecycle: 'ACTIVE', streaming_callback_ready: true, write_available: true, execution_status: 'idle',
+    created_at: now, updated_at: now,
+  }));
+
+  await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path.endsWith('/auth/me')) return authenticated
+      ? json(route, user)
+      : json(route, { error: { code: 'AUTHENTICATION_REQUIRED', message: '请先登录' } }, 401);
+    if (path.endsWith('/auth/login') && request.method() === 'POST') { authenticated = true; return json(route, user); }
+    if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
+    if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
+    if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: conversations, next_cursor: null });
+    if (path.endsWith('/messages') && request.method() === 'POST') {
+      const bindingId = path.split('/').at(-2)!;
+      sentBindingId ??= bindingId;
+      sentMessages.push(bindingId);
+      if (bindingId === 'send-switch-a') await sendGate;
+      return json(route, { accepted: true, cursor: `${bindingId}-user-sent` });
+    }
+    if (path.endsWith('/events')) {
+      const id = path.split('/').at(-2)!;
+      return json(route, {
+        events: [{ id: `${id}-initial`, event_type: 'MESSAGE', payload: { source: 'agent', parent_id: '__root__', content: `初始消息 ${id}`, timestamp: now } }],
+        next_cursor: `${id}-initial`, history_cursor: null, result: { status: 'COMPLETED' },
+      });
+    }
+    if (path.endsWith('/work-directories')) return json(route, {
+      root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [],
+    });
+    if (path.endsWith('/workspace')) return json(route, {
+      root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' },
+      working_directory: '/runtime/workspace/project', work_directory: null, files: [], repositories: [],
+      runtime: {}, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '不可用', note: '' } },
+    });
+    if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
+    if (path.endsWith('/input-readiness')) return json(route, { ready: true, execution_status: 'idle' });
+    if (path.endsWith('/context')) return json(route, { model_name: 'test-model', window_tokens: 128_000, used_tokens: 1_024, usage_current: true });
+    if (path.endsWith('/model-providers') || path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
+    if (path.includes('/conversations/') && request.method() === 'GET') {
+      const id = path.split('/').at(-1)!;
+      return json(route, conversations.find(item => item.id === id));
+    }
+    return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+  });
+
+  await page.goto('/');
+  await login(page);
+  await page.goto('/agent/conversations/send-switch-a');
+  await expect(page.getByText('初始消息 send-switch-a')).toBeVisible();
+
+  const composer = page.getByLabel('发送 Agent 消息');
+  await composer.fill('只属于会话 A 的消息');
+  await page.getByLabel('发送消息').click();
+  await expect(page.locator('.conversation-message.user').filter({ hasText: '只属于会话 A 的消息' })).toBeVisible();
+  await expect.poll(() => sentBindingId).toBe('send-switch-a');
+
+  await page.getByRole('button', { name: '发送会话 B', exact: true }).click();
+  await expect(page).toHaveURL(/\/agent\/conversations\/send-switch-b$/);
+  await expect(page.getByText('初始消息 send-switch-b')).toBeVisible();
+  await expect(page.getByText('只属于会话 A 的消息')).toHaveCount(0);
+  await composer.fill('会话 B 正在编辑的草稿');
+  await page.getByLabel('发送消息').click();
+  await expect.poll(() => sentMessages).toEqual(['send-switch-a', 'send-switch-b']);
+  await expect(page.locator('.conversation-message.user').filter({ hasText: '会话 B 正在编辑的草稿' })).toBeVisible();
+
+  releaseSend?.();
+  await expect.poll(() => page.getByText('只属于会话 A 的消息').count()).toBe(0);
+  await expect(page.locator('.conversation-message.user').filter({ hasText: '会话 B 正在编辑的草稿' })).toBeVisible();
+  await expect(page.getByText('初始消息 send-switch-b')).toBeVisible();
+});
+
 test('Agent transcript keeps scroll ownership through streamed output and historical paging', async ({ page }) => {
   let authenticated = false;
   let activeEventRequests = 0;
@@ -417,6 +503,68 @@ test('Agent composer retains each conversation draft and uploaded attachment acr
   await expect(page.locator('.agent-composer .agent-attachments').getByText('保留附件.txt', { exact: true })).toHaveCount(0);
 });
 
+
+test('New conversation draft never leaks into existing conversations during rapid switching', async ({ page }) => {
+  let authenticated = false;
+  const workspace = { id: 'draft-race-workspace', display_name: '草稿竞态工作区', desired_state: 'RUNNING', updated_at: now };
+  const conversations = ['draft-race-a', 'draft-race-b', 'draft-race-c'].map((id, index) => ({
+    id, display_title: `竞态会话 ${String.fromCharCode(65 + index)}`, title_state: 'MANUAL',
+    lifecycle: 'ACTIVE', streaming_callback_ready: true, write_available: true, execution_status: 'idle', created_at: now, updated_at: now,
+  }));
+  await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path.endsWith('/auth/me')) return authenticated ? json(route, user) : json(route, { error: { code: 'AUTHENTICATION_REQUIRED', message: '请先登录' } }, 401);
+    if (path.endsWith('/auth/login') && request.method() === 'POST') { authenticated = true; return json(route, user); }
+    if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
+    if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
+    if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: conversations, next_cursor: null });
+    if (path.endsWith('/attachments') && request.method() === 'POST') return json(route, {
+      filename: '新会话附件.txt', mime_type: 'text/plain', byte_size: 9, path: '/runtime/workspace/project/uploads/new-draft.txt',
+    });
+    if (path.endsWith('/events')) return json(route, { events: [], next_cursor: null, history_cursor: null, result: { status: 'COMPLETED' } });
+    if (path.endsWith('/work-directories')) return json(route, { root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [] });
+    if (path.endsWith('/workspace')) return json(route, {
+      root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: '/runtime/workspace/project', work_directory: null, files: [], repositories: [], runtime: {}, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '不可用', note: '' } },
+    });
+    if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
+    if (path.endsWith('/input-readiness')) return json(route, { ready: true, execution_status: 'idle' });
+    if (path.endsWith('/context')) return json(route, { model_name: 'test-model', window_tokens: 128_000, used_tokens: 1_024, usage_current: true });
+    if (path.endsWith('/model-providers') || path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
+    if (path.includes('/conversations/') && request.method() === 'GET') return json(route, conversations.find(item => item.id === path.split('/').at(-1)));
+    return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+  });
+
+  await page.goto('/');
+  await login(page);
+  await page.goto('/agent');
+  await expect(page.getByRole('heading', { name: '新会话' })).toBeVisible();
+  const composer = page.getByLabel('发送 Agent 消息');
+  const draftAttachment = page.locator('.agent-composer .agent-attachments').getByText('新会话附件.txt', { exact: true });
+  await composer.fill('只属于新会话的未发送草稿');
+  await page.getByLabel('上传附件').setInputFiles({ name: '新会话附件.txt', mimeType: 'text/plain', buffer: Buffer.from('new-draft') });
+  await expect(draftAttachment).toBeVisible();
+
+  await page.getByRole('button', { name: '竞态会话 B', exact: true }).click();
+  await page.getByRole('button', { name: '竞态会话 C', exact: true }).click();
+  await expect(page).toHaveURL(/\/agent\/conversations\/draft-race-c$/);
+  await expect(composer).toHaveValue('');
+  await expect(draftAttachment).toHaveCount(0);
+
+  await page.getByRole('button', { name: '竞态会话 B', exact: true }).click();
+  await expect(composer).toHaveValue('');
+  await expect(draftAttachment).toHaveCount(0);
+  await expect.poll(() => page.evaluate(() => Object.entries(localStorage)
+    .filter(([key]) => key.includes('draft-race-workspace:draft-race-'))
+    .every(([, value]) => !value.includes('只属于新会话的未发送草稿') && !value.includes('新会话附件.txt')))).toBe(true);
+
+  await page.getByRole('button', { name: '在根工作区中新建会话' }).click();
+  await expect(page.getByRole('heading', { name: '新会话' })).toBeVisible();
+  await expect(composer).toHaveValue('只属于新会话的未发送草稿');
+  await expect(draftAttachment).toBeVisible();
+});
+
 test('First message keeps the new conversation visible while its routed read is pending', async ({ page }) => {
   let authenticated = false;
   let created = false;
@@ -559,8 +707,9 @@ test('Conversation context menu marks a conversation unread until it is opened a
   const workspace = { id: 'unread-workspace', display_name: '未读工作区', desired_state: 'RUNNING', updated_at: now };
   const conversations = ['unread-conversation-a', 'unread-conversation-b'].map((id, index) => ({
     id, display_title: index === 0 ? '未读会话 A' : '未读会话 B', title_state: 'MANUAL', lifecycle: 'ACTIVE',
-    streaming_callback_ready: true, write_available: true, execution_status: 'idle', created_at: now, updated_at: now,
+    streaming_callback_ready: true, write_available: true, execution_status: 'idle', unread: false, created_at: now, updated_at: now,
   }));
+  const unreadWrites: Array<{ id: string; unread: boolean }> = [];
 
   await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
   await page.route('**/api/v1/**', async route => {
@@ -571,6 +720,14 @@ test('Conversation context menu marks a conversation unread until it is opened a
     if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
     if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
     if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: conversations, next_cursor: null });
+    if (path.endsWith('/unread') && request.method() === 'PUT') {
+      const id = path.split('/').at(-2)!;
+      const conversation = conversations.find(item => item.id === id)!;
+      const body = request.postDataJSON() as { unread: boolean };
+      conversation.unread = body.unread;
+      unreadWrites.push({ id, unread: body.unread });
+      return json(route, conversation);
+    }
     if (path.endsWith('/events')) return json(route, { events: [], next_cursor: null, history_cursor: null, result: { status: 'COMPLETED' } });
     if (path.endsWith('/work-directories')) return json(route, { root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [] });
     if (path.endsWith('/workspace')) return json(route, {
@@ -598,7 +755,10 @@ test('Conversation context menu marks a conversation unread until it is opened a
   await conversationA.click({ button: 'right' });
   await page.getByRole('menuitem', { name: '标记为未读' }).click();
   await expect(unreadMarker).toBeVisible();
-  await expect.poll(() => page.evaluate(() => localStorage.getItem('flowweave:agent-workspace-unread:agent-workspace:unread-workspace'))).toContain('unread-conversation-a');
+  await expect.poll(() => unreadWrites).toEqual([{ id: 'unread-conversation-a', unread: true }]);
+
+  await page.reload();
+  await expect(unreadMarker).toBeVisible();
 
   await conversationB.click();
   await expect(page).toHaveURL(/\/agent\/conversations\/unread-conversation-b$/);
@@ -609,7 +769,10 @@ test('Conversation context menu marks a conversation unread until it is opened a
   await conversationA.click();
   await expect(page).toHaveURL(/\/agent\/conversations\/unread-conversation-a$/);
   await expect(unreadMarker).toHaveCount(0);
-  await expect.poll(() => page.evaluate(() => localStorage.getItem('flowweave:agent-workspace-unread:agent-workspace:unread-workspace'))).not.toContain('unread-conversation-a');
+  await expect.poll(() => unreadWrites).toEqual([
+    { id: 'unread-conversation-a', unread: true },
+    { id: 'unread-conversation-a', unread: false },
+  ]);
 });
 
 test('Conversation sidebar pins locally, orders activity, and reveals the selected source row', async ({ page }) => {
@@ -716,8 +879,17 @@ test('Conversation sidebar pins locally, orders activity, and reveals the select
     'sidebar-directory-running',
     'sidebar-root-unread',
   ]);
+  await expect(activity.locator('[data-conversation-binding-id="sidebar-directory-running"]')).toContainText('归属工作区');
+  await expect(activity.locator('[data-conversation-binding-id="sidebar-root-unread"]')).toContainText('根工作区');
 
-  await activity.getByRole('button', { name: '运行中目标会话', exact: true }).click();
+  const runningConversation = activity.getByRole('button', { name: '运行中目标会话', exact: true });
+  await runningConversation.click();
+  await expect(page).toHaveURL(/\/agent\/conversations\/sidebar-root-unread$/);
+  await expect(activity).toBeVisible();
+  await expect(runningConversation).toHaveClass(/active/);
+  await expect(page.getByText('会话 sidebar-directory-running', { exact: true })).toBeVisible();
+
+  await runningConversation.dblclick();
   await expect(page).toHaveURL(/\/agent\/conversations\/sidebar-directory-running$/);
   await expect(activity).toHaveCount(0);
   await expect(page.locator('[data-conversation-binding-id="sidebar-directory-running"]')).toHaveClass(/sidebar-reveal/);

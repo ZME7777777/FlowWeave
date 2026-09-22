@@ -15,7 +15,7 @@ from typing import Any
 from urllib.parse import urlencode
 from uuid import UUID, uuid4, uuid5
 
-from sqlalchemy import Numeric, and_, cast, func, or_, select
+from sqlalchemy import Numeric, and_, cast, func, or_, select, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -250,6 +250,7 @@ def _dict(
         ],
         "streaming_callback_ready": item.streaming_callback_ready,
         "write_available": write_available,
+        "unread": item.unread,
         "lifecycle": item.lifecycle,
         "created_at": item.created_at.isoformat(),
         "updated_at": item.updated_at.isoformat(),
@@ -361,6 +362,7 @@ def _page_dicts(
             "execution_status": execution_status_by_conversation_id.get(
                 item.openhands_conversation_id, "unknown"
             ),
+            "unread": item.unread,
             "lifecycle": item.lifecycle,
             "created_at": item.created_at.isoformat(),
             "updated_at": item.updated_at.isoformat(),
@@ -1721,6 +1723,19 @@ def patch_conversation(
     item.updated_at = now()
     command.state = "SUCCEEDED"
     db.flush()
+    return _dict(db, item)
+
+
+def set_conversation_unread(
+    db: Session, workspace_id: str, binding_id: str, *, unread: bool
+) -> dict[str, Any]:
+    item = _binding(db, workspace_id, binding_id, lock=True)
+    db.execute(
+        update(AgentConversationBinding)
+        .where(AgentConversationBinding.id == item.id)
+        .values(unread=unread, updated_at=item.updated_at)
+    )
+    db.refresh(item)
     return _dict(db, item)
 
 

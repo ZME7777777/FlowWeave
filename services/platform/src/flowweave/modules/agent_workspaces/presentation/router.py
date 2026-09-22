@@ -75,6 +75,10 @@ class AgentConversationPatchWrite(_Write):
     title: str = Field(min_length=1, max_length=200)
 
 
+class AgentConversationUnreadWrite(_Write):
+    unread: bool
+
+
 class AgentConversationSearchWrite(_Write):
     query: str = Field(min_length=1, max_length=500)
 
@@ -683,6 +687,21 @@ async def patch_agent_conversation(
         db,
         lambda session: conversations.patch_conversation(
             session, workspace_id, binding_id, payload.title
+        ),
+    )
+
+
+@router.put("/agent-workspaces/{workspace_id}/conversations/{binding_id}/unread")
+async def set_agent_conversation_unread(
+    workspace_id: str,
+    binding_id: str,
+    payload: AgentConversationUnreadWrite,
+    db: Db,
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: conversations.set_conversation_unread(
+            session, workspace_id, binding_id, unread=payload.unread
         ),
     )
 

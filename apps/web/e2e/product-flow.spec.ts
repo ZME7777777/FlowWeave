@@ -788,13 +788,14 @@ test('top-level Agent workspace creates a direct conversation and restores its U
           ] : []),
         ] : conversations.length ? [
           { id: 'user-request', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '检查工作目录', timestamp: '2026-08-26T10:00:00Z' } },
-          { id: 'progress-note', event_type: 'THOUGHT', payload: { source: 'agent', parent_id: 'user-request', content: '我先确认当前工作目录，再根据现有结构判断后续改动范围。', thought: '我先确认当前工作目录，再根据现有结构判断后续改动范围。', timestamp: '2026-08-26T10:00:01Z' } },
+          { id: 'progress-note', event_type: 'THOUGHT', payload: { source: 'agent', parent_id: 'user-request', llm_response_id: 'response-progress-1', content: '我先确认当前工作目录，再根据现有结构判断后续改动范围。', thought: '我先确认当前工作目录，再根据现有结构判断后续改动范围。', timestamp: '2026-08-26T10:00:01Z' } },
           { id: 'progress-note-observation', event_type: 'TOOL_RESULT', payload: { source: 'environment', parent_id: 'progress-note', event_name: 'ThinkObservation', content: 'Your thought has been logged.', timestamp: '2026-08-26T10:00:01.100Z' } },
-          { id: 'tool-request', event_type: 'TOOL_CALL', payload: { parent_id: 'progress-note', action_id: 'tool-request', tool_call_id: 'terminal-call', tool_name: 'terminal', event_name: 'TerminalAction', content: '我先检查当前工作目录。', thought: '我先检查当前工作目录。', summary: '检查当前工作目录', details: { command: 'pwd' }, timestamp: '2026-08-26T10:00:02Z' } },
+          { id: 'tool-request', event_type: 'TOOL_CALL', payload: { parent_id: 'progress-note', action_id: 'tool-request', tool_call_id: 'terminal-call', llm_response_id: 'response-progress-1', tool_name: 'terminal', event_name: 'TerminalAction', content: '我先检查当前工作目录。', thought: '我先检查当前工作目录。', summary: '检查当前工作目录', details: { command: 'pwd' }, timestamp: '2026-08-26T10:00:02Z' } },
           { id: 'tool-result', event_type: 'TOOL_RESULT', payload: { parent_id: 'unrelated-file-action', action_id: 'tool-request', tool_call_id: 'terminal-call', tool_name: 'terminal', event_name: 'TerminalObservation', content: '/workspace', details: { command: 'pwd', exit_code: 0, is_error: false }, timestamp: '2026-08-26T10:00:03Z' } },
-          { id: 'file-action', event_type: 'TOOL_CALL', payload: { parent_id: 'tool-result', action_id: 'file-action', tool_call_id: 'file-call', tool_name: 'file_editor', event_name: 'FileEditorAction', summary: '更新运行配置', details: { command: 'str_replace', path: '/runtime/workspace/project/src/config.ts', old_str: 'const mode = "old"', new_str: 'const mode = "new"' }, timestamp: '2026-08-26T10:00:03.200Z' } },
+          { id: 'file-action', event_type: 'TOOL_CALL', payload: { parent_id: 'tool-result', action_id: 'file-action', tool_call_id: 'file-call', llm_response_id: 'response-progress-1', tool_name: 'file_editor', event_name: 'FileEditorAction', summary: '更新运行配置', details: { command: 'str_replace', path: '/runtime/workspace/project/src/config.ts', old_str: 'const mode = "old"', new_str: 'const mode = "new"' }, timestamp: '2026-08-26T10:00:03.200Z' } },
           { id: 'file-result', event_type: 'TOOL_RESULT', payload: { parent_id: 'file-action', action_id: 'file-action', tool_call_id: 'file-call', tool_name: 'file_editor', event_name: 'FileEditorObservation', content: 'The file was edited successfully.', details: { command: 'str_replace', path: '/runtime/workspace/project/src/config.ts', is_error: false }, timestamp: '2026-08-26T10:00:03.500Z' } },
-          { id: 'java-read-action', event_type: 'TOOL_CALL', payload: { parent_id: 'file-result', action_id: 'java-read-action', tool_call_id: 'java-read-call', tool_name: 'file_editor', event_name: 'FileEditorAction', details: { command: 'view', path: '/runtime/workspace/project/src/Main.java' }, timestamp: '2026-08-26T10:00:03.520Z' } },
+          { id: 'progress-note-next', event_type: 'THOUGHT', payload: { source: 'agent', parent_id: 'file-result', llm_response_id: 'response-progress-2', content: '接下来检查不同类型的文件。', thought: '接下来检查不同类型的文件。', timestamp: '2026-08-26T10:00:03.510Z' } },
+          { id: 'java-read-action', event_type: 'TOOL_CALL', payload: { parent_id: 'progress-note-next', action_id: 'java-read-action', tool_call_id: 'java-read-call', llm_response_id: 'response-progress-2', tool_name: 'file_editor', event_name: 'FileEditorAction', details: { command: 'view', path: '/runtime/workspace/project/src/Main.java' }, timestamp: '2026-08-26T10:00:03.520Z' } },
           { id: 'java-read-result', event_type: 'TOOL_RESULT', payload: { parent_id: 'java-read-action', action_id: 'java-read-action', tool_call_id: 'java-read-call', tool_name: 'file_editor', event_name: 'FileEditorObservation', content: 'class Main {}', details: { command: 'view', path: '/runtime/workspace/project/src/Main.java', is_error: false }, timestamp: '2026-08-26T10:00:03.540Z' } },
           { id: 'properties-read-action', event_type: 'TOOL_CALL', payload: { parent_id: 'java-read-result', action_id: 'properties-read-action', tool_call_id: 'properties-read-call', tool_name: 'file_editor', event_name: 'FileEditorAction', details: { command: 'view', path: '/runtime/workspace/project/config/application.properties' }, timestamp: '2026-08-26T10:00:03.560Z' } },
           { id: 'properties-read-result', event_type: 'TOOL_RESULT', payload: { parent_id: 'properties-read-action', action_id: 'properties-read-action', tool_call_id: 'properties-read-call', tool_name: 'file_editor', event_name: 'FileEditorObservation', content: 'server.port=8080', details: { command: 'view', path: '/runtime/workspace/project/config/application.properties', is_error: false }, timestamp: '2026-08-26T10:00:03.580Z' } },
@@ -1240,6 +1241,18 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(completedProcess.getByText('耗时 2分钟19秒')).toBeVisible();
   await completedProcess.locator(':scope > summary').click();
   await expect(completedProcess).toHaveJSProperty('open', true);
+  const firstProgressGroup = completedProcess.locator('[data-progress-event-id="progress-note"]');
+  const nextProgressGroup = completedProcess.locator('[data-progress-event-id="progress-note-next"]');
+  await expect(firstProgressGroup.locator(':scope > summary')).toContainText('我先确认当前工作目录，再根据现有结构判断后续改动范围。');
+  await expect(firstProgressGroup).toHaveJSProperty('open', false);
+  await expect(firstProgressGroup.getByText('已运行 pwd')).toBeHidden();
+  await firstProgressGroup.locator(':scope > summary').click();
+  await expect(firstProgressGroup.getByText('已运行 pwd')).toBeVisible();
+  await expect(firstProgressGroup.getByText('已编辑 工作区/src/config.ts')).toBeVisible();
+  await expect(firstProgressGroup.getByText('已读取 工作区/src/Main.java')).toHaveCount(0);
+  await expect(nextProgressGroup.locator(':scope > summary')).toContainText('接下来检查不同类型的文件。');
+  await nextProgressGroup.locator(':scope > summary').click();
+  await expect(nextProgressGroup.getByText('已读取 工作区/src/Main.java')).toBeVisible();
   await expect(completedTurn).toHaveJSProperty('nodeName', 'SECTION');
   await expect.poll(() => completedTurn.evaluate(turn => {
     const process = turn.querySelector('.conversation-activity-group');
@@ -1544,8 +1557,14 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     type: 'event',
     event: { id: 'live-tool', event_type: 'TOOL_CALL', payload: { parent_id: 'running-user', action_id: 'live-tool', tool_call_id: 'live-call', llm_response_id: 'live-operation-batch-1', tool_name: 'terminal', event_name: 'TerminalAction', content: '已完成初步分析。', thought: '已完成初步分析。', summary: '核对项目上下文', details: { command: 'pwd' }, timestamp: new Date().toISOString() } },
   }));
-  await expect(activeProcess.getByText('已完成初步分析。')).toBeVisible();
-  await expect(activeProcess.getByText('正在运行 pwd')).toBeVisible();
+  const liveProgressGroup = activeProcess.locator('.conversation-progress-group').filter({ hasText: '已完成初步分析。' });
+  await expect(liveProgressGroup).toHaveCount(1);
+  await expect(liveProgressGroup).toHaveJSProperty('open', false);
+  await expect(liveProgressGroup.locator(':scope > summary')).toContainText('正在运行 pwd');
+  await expect(liveProgressGroup.getByText('正在运行 pwd')).toHaveCount(1);
+  await liveProgressGroup.locator(':scope > summary').click();
+  await expect(liveProgressGroup).toHaveJSProperty('open', true);
+  await expect(liveProgressGroup.getByRole('button', { name: '查看执行详情：正在运行 pwd' })).toBeVisible();
   await expectViewportAtLatest();
   // A bounded REST refresh may have the same formal action identity before it
   // includes the stream projection's command and commentary. The visible tool
@@ -1615,6 +1634,9 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     type: 'event',
     event: { id: 'live-tool-next-result', event_type: 'TOOL_RESULT', payload: { parent_id: 'live-tool-next', action_id: 'live-tool-next', tool_call_id: 'live-next-call', tool_name: 'terminal', event_name: 'TerminalObservation', details: { command: 'git status --short', exit_code: 0, is_error: false }, timestamp: new Date().toISOString() } },
   }));
+  await expect(liveProgressGroup).toHaveJSProperty('open', false);
+  await expect(liveProgressGroup.locator(':scope > summary')).toHaveText('已完成初步分析。');
+  await liveProgressGroup.locator(':scope > summary').click();
   await expect(activeProcess.getByRole('button', { name: '查看执行详情：已运行 git status --short' })).toBeVisible();
   await expect(activeProcess.getByRole('button', { name: '查看执行详情：已运行 pwd' })).toBeVisible();
   await expect(page.locator('.conversation-turn-status')).toHaveText('OpenHands 会话连接正常，等待响应');

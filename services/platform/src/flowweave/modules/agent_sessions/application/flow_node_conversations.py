@@ -555,6 +555,7 @@ def _node_session_dict(db: Session, item: AgentConversationBinding) -> dict[str,
         # read-only while its detached native Fork is a normal writable
         # conversation.
         "write_available": _node_session_write_available(db, item),
+        "unread": item.unread,
         "lifecycle": item.lifecycle,
         "created_at": item.created_at.isoformat(),
         "updated_at": item.updated_at.isoformat(),
@@ -672,6 +673,7 @@ def _node_session_page_dicts(
             "execution_status": (
                 "running" if item.openhands_conversation_id in running_conversation_ids else "idle"
             ),
+            "unread": item.unread,
             "lifecycle": item.lifecycle,
             "created_at": item.created_at.isoformat(),
             "updated_at": item.updated_at.isoformat(),
@@ -882,6 +884,30 @@ def get_node_session_view(
         db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
     )
     _capture_binding_usage(db, item)
+    return _node_session_dict(db, item)
+
+
+def set_node_session_unread(
+    db: Session,
+    *,
+    flow_run_id: str,
+    attempt_id: str,
+    binding_id: str,
+    unread: bool,
+) -> dict[str, Any]:
+    item = _binding_for_attempt(
+        db,
+        flow_run_id=flow_run_id,
+        attempt_id=attempt_id,
+        binding_id=binding_id,
+        lock=True,
+    )
+    db.execute(
+        update(AgentConversationBinding)
+        .where(AgentConversationBinding.id == item.id)
+        .values(unread=unread, updated_at=item.updated_at)
+    )
+    db.refresh(item)
     return _node_session_dict(db, item)
 
 

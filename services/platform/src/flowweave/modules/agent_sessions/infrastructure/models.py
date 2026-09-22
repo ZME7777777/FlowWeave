@@ -105,6 +105,7 @@ class AgentConversationBinding(Base):
     # NULL keeps the default creation-time order; only a dragged session has
     # a workspace-local explicit rank.
     manual_sort_rank: Mapped[Decimal | None] = mapped_column(Numeric(30, 12))
+    unread: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
     last_connected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

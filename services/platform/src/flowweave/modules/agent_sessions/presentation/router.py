@@ -61,6 +61,10 @@ class NodeSessionCreateWrite(_Write):
     work_directory_id: str | None = Field(default=None, min_length=1, max_length=36)
 
 
+class NodeSessionUnreadWrite(_Write):
+    unread: bool
+
+
 class NodeAttachmentReference(_Write):
     path: str = Field(min_length=1, max_length=300)
     image_data_url: str | None = Field(default=None, max_length=35_000_000)
@@ -856,6 +860,26 @@ async def patch_node_session(
         )
 
     return await run_sync(db, patch)
+
+
+@router.put(f"{_BASE}/{{binding_id}}/unread")
+async def set_node_session_unread(
+    flow_run_id: str,
+    attempt_id: str,
+    binding_id: str,
+    payload: NodeSessionUnreadWrite,
+    db: Db,
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: agent_sessions.flow_node_conversations.set_node_session_unread(
+            session,
+            flow_run_id=flow_run_id,
+            attempt_id=attempt_id,
+            binding_id=binding_id,
+            unread=payload.unread,
+        ),
+    )
 
 
 @router.delete(f"{_BASE}/{{binding_id}}", status_code=204)

@@ -123,6 +123,7 @@ export interface AgentSessionApi {
   readonly closeTerminal: (hostId: AgentSessionHostId, terminalInstanceId: string, options?: Omit<AgentSessionFileOptions, 'download'>) => Promise<void>;
   readonly bootstrapConversation: (hostId: AgentSessionHostId, conversationId: string, modelProviderId: string, modelName: string, reasoningEffort: string | null, content: string, attachments?: AgentAttachment[], references?: AgentConversationReference[], workspaceReferences?: AgentWorkspaceReference[], workDirectoryId?: AgentSessionWorkDirectoryId, capabilityVersionIds?: string[], idempotencyKey?: string, annotations?: AgentConversationAnnotation[]) => Promise<{ conversation: AgentConversation; accepted: boolean; cursor?: string | null }>;
   readonly updateConversation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, title: string) => Promise<AgentConversation>;
+  readonly setConversationUnread: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, unread: boolean) => Promise<AgentConversation>;
   /** Node-session hosts intentionally omit this workspace-local presentation control. */
   readonly reorderConversation?: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, orderedBindingIds: AgentSessionBindingId[]) => Promise<AgentConversation>;
   readonly deleteConversation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<void>;
@@ -178,6 +179,7 @@ export const agentWorkspaceSessionGateway: AgentSessionGateway = {
     startConversationSearch: api.startAgentConversationSearch,
     conversationSearch: api.agentConversationSearch,
     conversation: api.agentConversation,
+    setConversationUnread: api.setAgentConversationUnread,
     workDirectories: api.agentWorkDirectories,
     providers: api.providers,
     capabilities: api.capabilities,
@@ -302,6 +304,8 @@ export function flowNodeSessionGateway(
       },
       updateConversation: (_hostId, bindingId, title) =>
         nodeSessionApi.update(flowRunId, attemptId, bindingId, title),
+      setConversationUnread: (_hostId, bindingId, unread) =>
+        nodeSessionApi.setUnread(flowRunId, attemptId, bindingId, unread),
       deleteConversation: (_hostId, bindingId) => nodeSessionApi.remove(flowRunId, attemptId, bindingId),
       conversationEvents: (_hostId, bindingId, cursor, historyCursor) =>
         nodeSessionApi.events(flowRunId, attemptId, bindingId, cursor, historyCursor),
