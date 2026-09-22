@@ -1410,7 +1410,10 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(finishTurn.getByText('耗时 3秒')).toBeVisible();
   const trackerCard = finishTurn.getByLabel('任务列表：任务列表已更新');
   await expect(trackerCard).not.toHaveAttribute('open', '');
-  await expect(trackerCard).toContainText('2 / 3 已完成');
+  await expect(trackerCard).toHaveClass(/conversation-tool-detail/);
+  await expect(trackerCard).not.toHaveClass(/conversation-native-card/);
+  await expect(trackerCard.locator(':scope > summary > svg.lucide-clipboard-list')).toBeVisible();
+  await expect(trackerCard.locator(':scope > summary')).toContainText('已更新 · 2 / 3 已完成');
   await expect(trackerCard.getByText('检查构建', { exact: true })).toHaveCount(0);
   await trackerCard.locator(':scope > summary').click();
   await expect(trackerCard).toHaveAttribute('open', '');
@@ -1553,6 +1556,39 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   agentStream!.send(JSON.stringify({ type: 'message_complete' }));
   await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toBeVisible();
   await expectViewportAtLatest();
+  await expect(activeProcess.locator(':scope > summary')).toContainText(/已耗时 \d+秒/);
+  agentStream!.send(JSON.stringify({
+    type: 'event',
+    event: { id: 'live-condensation', event_type: 'CONDENSATION_REQUESTED', payload: { source: 'agent', parent_id: 'running-user', condensation_reason_detail: '上下文接近阈值。', timestamp: new Date().toISOString() } },
+  }));
+  const condensationRow = activeProcess.getByRole('status', { name: '开始压缩上下文' });
+  await expect(condensationRow).toHaveClass(/running/);
+  await expect(condensationRow.locator('b')).toHaveCSS('animation-name', 'conversation-progress-scan');
+  await expect(activeProcess.getByText(/已耗时 \d+秒/)).toBeVisible();
+  agentStream!.send(JSON.stringify({
+    type: 'event',
+    event: { id: 'live-condensation-complete', event_type: 'CONDENSATION_COMPLETED', payload: { source: 'agent', parent_id: 'live-condensation', condensation_request_event_id: 'live-condensation', condensation_triggered_at: new Date().toISOString(), condensation_completed_at: new Date().toISOString(), forgotten_event_ids: ['old-1', 'old-2'], timestamp: new Date().toISOString() } },
+  }));
+  await expect(activeProcess.getByRole('status', { name: '开始压缩上下文' })).toHaveCount(0);
+  const completedCondensationRow = activeProcess.getByRole('status', { name: '压缩完成' });
+  await expect(completedCondensationRow).toHaveCount(1);
+  await expect(completedCondensationRow).not.toHaveClass(/running/);
+  await expect(completedCondensationRow.locator('b')).toHaveCSS('animation-name', 'none');
+  await expect(activeProcess).toHaveCount(1);
+  await expect(activeProcess.locator(':scope > summary')).toContainText(/已耗时 \d+秒/);
+  await expect(activeProcess).not.toContainText('上下文接近阈值');
+  await expect(activeProcess).not.toContainText('old-1');
+  agentStream!.send(JSON.stringify({
+    type: 'event',
+    event: { id: 'live-workflow', event_type: 'TOOL_CALL', payload: { source: 'agent', parent_id: 'live-condensation-complete', action_id: 'live-workflow', tool_call_id: 'live-workflow-call', tool_name: 'workflow', event_name: 'WorkflowAction', summary: '并行核对压缩渲染、配对和计时边界', details: { name: 'analyze-condensation-flow' }, timestamp: new Date().toISOString() } },
+  }));
+  const workflowDetail = activeProcess.locator('.conversation-tool-detail.tool-workflow').filter({ hasText: '并行核对压缩渲染、配对和计时边界' });
+  await expect(workflowDetail.locator(':scope > summary > svg.lucide-workflow')).toBeVisible();
+  await expect(workflowDetail.locator(':scope > summary > svg.lucide-wrench')).toHaveCount(0);
+  agentStream!.send(JSON.stringify({
+    type: 'event',
+    event: { id: 'live-workflow-result', event_type: 'TOOL_RESULT', payload: { source: 'environment', parent_id: 'live-workflow', action_id: 'live-workflow', tool_call_id: 'live-workflow-call', tool_name: 'workflow', event_name: 'WorkflowObservation', details: { is_error: false }, timestamp: new Date().toISOString() } },
+  }));
   agentStream!.send(JSON.stringify({ type: 'delta', content: '正在核对上下文。' }));
   await expect(page.getByText('正在核对上下文。', { exact: true })).toHaveCount(0);
   agentStream!.send(JSON.stringify({ type: 'delta', content: '\n下一行内容应当稳定追加，不重新解析前文。' }));
@@ -1572,7 +1608,8 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(liveProgressGroup).toHaveJSProperty('open', false);
   await expect(liveProgressGroup).toHaveClass(/active/);
   await expect(liveProgressGroup.locator(':scope > summary > svg.lucide-chevron-right')).toHaveCount(0);
-  await expect(liveProgressGroup.locator(':scope > summary > svg.lucide-workflow')).toBeVisible();
+  await expect(liveProgressGroup.locator(':scope > summary > svg.lucide-square-terminal')).toBeVisible();
+  await expect(liveProgressGroup.locator(':scope > summary > svg.lucide-workflow')).toHaveCount(0);
   await expect(liveProgressGroup.locator(':scope > summary')).toContainText('正在运行 pwd');
   await expect(liveProgressGroup.locator('.conversation-progress-current')).toHaveText('正在运行 pwd');
   await expect(liveProgressGroup.locator(':scope > summary > span')).toHaveCSS('animation-name', 'conversation-progress-scan');
@@ -1626,7 +1663,8 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   const liveFileProgressGroup = activeProcess.locator('[data-progress-event-id="live-file-progress"]');
   await expect(liveFileProgressGroup).toHaveJSProperty('open', false);
   await expect(liveFileProgressGroup).toHaveClass(/active/);
-  await expect(liveFileProgressGroup.locator(':scope > summary > svg.lucide-workflow')).toBeVisible();
+  await expect(liveFileProgressGroup.locator(':scope > summary > svg.lucide-file-pen-line')).toBeVisible();
+  await expect(liveFileProgressGroup.locator(':scope > summary > svg.lucide-workflow')).toHaveCount(0);
   await expect(liveFileProgressGroup.locator('.conversation-progress-current')).toHaveText('正在编辑 工作区/src/live.ts');
   await expect(liveFileProgressGroup.locator(':scope > summary > span')).toHaveCSS('animation-name', 'conversation-progress-scan');
   await expect(liveFileProgressGroup.locator('.task-tracker')).toHaveCount(0);

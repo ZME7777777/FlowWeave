@@ -202,9 +202,7 @@ export function ConversationTaskPlan({ events, isGenerating, conversationScope }
   </section>;
 }
 
-type TurnProcessBlock =
-  | { kind: 'activity'; id: string; items: Item[]; startedAt?: number; finishedAt?: number; active: boolean }
-  | { kind: 'condensation'; id: string; items: Item[] };
+type TurnProcessBlock = { kind: 'activity'; id: string; items: Item[]; startedAt?: number; finishedAt?: number; active: boolean };
 
 function eventAttachments(event: OpenHandsConversationEvent): AgentAttachment[] {
   return Array.isArray(event.payload.attachments) ? event.payload.attachments : [];
@@ -390,8 +388,8 @@ function itemsFor(event: OpenHandsConversationEvent): Item[] {
   if (event.event_type === 'THOUGHT') {
     return [{ event, kind: 'thought', title: '', content: thought || content }];
   }
-  if (event.event_type === 'CONDENSATION_REQUESTED') return [{ event, kind: 'condensation', title: '正在自动压缩上下文', content: '' }];
-  if (event.event_type === 'CONDENSATION_COMPLETED') return [{ event, kind: 'condensation', title: '已自动压缩上下文', content: '' }];
+  if (event.event_type === 'CONDENSATION_REQUESTED') return [{ event, kind: 'condensation', title: '开始压缩上下文', content: '' }];
+  if (event.event_type === 'CONDENSATION_COMPLETED') return [{ event, kind: 'condensation', title: '压缩完成', content: '' }];
   if (event.event_type === 'TOOL_CALL') return [{ event, kind: 'tool', title: eventName, content: thought || content }];
   // Its native observation only confirms that text was logged, so rendering it
   // as a generic tool result creates a redundant "Think · 已完成" row.
@@ -509,11 +507,6 @@ function turnsFor(events: OpenHandsConversationEvent[]): Turn[] {
         current = { id: item.event.id, activity: [] };
         turns.push(current);
       }
-      if (item.kind === 'condensation' && (current.assistant || current.activity.some(value => value.kind === 'error'))) {
-        current = { id: item.event.id, activity: [item] };
-        turns.push(current);
-        continue;
-      }
       if (item.kind === 'assistant') current.assistant = item;
       else current.activity.push(item);
     }
@@ -574,7 +567,12 @@ function groupedActivities(items: Item[]): ActivityEntry[] {
   const entries: ActivityEntry[] = [];
   const actionsById = new Map<string, ActivityEntry>();
   const actionsByToolCall = new Map<string, ActivityEntry>();
+  const condensationRequests = new Map<string, ActivityEntry>();
   for (const item of items) {
+    if (item.kind === 'condensation' && item.event.event_type === 'CONDENSATION_REQUESTED') {
+      condensationRequests.set(item.event.id, { id: item.event.id, item, action: item, results: [] });
+      continue;
+    }
     if (item.kind !== 'tool' || item.event.event_type !== 'TOOL_CALL') continue;
     const entry = { id: item.event.id, item, action: item, results: [] } satisfies ActivityEntry;
     actionsById.set(item.event.id, entry);
@@ -583,6 +581,20 @@ function groupedActivities(items: Item[]): ActivityEntry[] {
   }
   const emitted = new Set<ActivityEntry>();
   for (const item of items) {
+    if (item.kind === 'condensation') {
+      if (item.event.event_type === 'CONDENSATION_REQUESTED') {
+        const entry = condensationRequests.get(item.event.id)!;
+        if (!emitted.has(entry)) { entries.push(entry); emitted.add(entry); }
+        continue;
+      }
+      const requestId = detailText(item.event.payload.condensation_request_event_id) || detailText(item.event.payload.parent_id);
+      const entry = requestId ? condensationRequests.get(requestId) : undefined;
+      if (entry) {
+        entry.results.push(item);
+        if (!emitted.has(entry)) { entries.push(entry); emitted.add(entry); }
+      } else entries.push({ id: item.event.id, item, results: [item] });
+      continue;
+    }
     if (item.kind === 'tool' && item.event.event_type === 'TOOL_CALL') {
       const entry = actionsById.get(item.event.id)!;
       if (!emitted.has(entry)) { entries.push(entry); emitted.add(entry); }
@@ -678,7 +690,7 @@ interface ActivityPresentation {
   resultTimestamp?: string;
 }
 
-type ToolVisualKind = 'terminal' | 'file' | 'task-tracker' | 'skill' | 'browser' | 'mcp' | 'subagent' | 'generic';
+type ToolVisualKind = 'terminal' | 'file' | 'task-tracker' | 'skill' | 'browser' | 'mcp' | 'subagent' | 'workflow' | 'generic';
 type FileOperationKind = 'read' | 'create' | 'edit' | 'undo' | 'generic';
 type FileKind = 'code' | 'config' | 'data' | 'markdown' | 'text' | 'generic';
 
@@ -721,13 +733,14 @@ function toolVisualPresentation(eventName: string, toolName?: string): ToolVisua
   if (normalizedEventName.includes('invokeskill')) return 'skill';
   if (normalizedEventName.includes('browser')) return 'browser';
   if (normalizedEventName.includes('mcp') || normalizedToolName.startsWith('mcp_')) return 'mcp';
+  if (normalizedEventName.includes('workflow') || normalizedToolName === 'workflow') return 'workflow';
   if (normalizedEventName === 'taskaction' || normalizedEventName === 'taskobservation') return 'subagent';
   return 'generic';
 }
 
 function activityPresentation(entry: ActivityEntry, active: boolean, workspaceRoot?: string | null, paused = false, parentFailed = false, recoveredErrorEventIds: ReadonlySet<string> = new Set()): ActivityPresentation {
   const item = entry.action ?? entry.item;
-  if (item.kind === 'condensation') return { title: item.title, status: item.event.event_type === 'CONDENSATION_COMPLETED' ? '已完成' : '处理中' };
+  if (item.kind === 'condensation') return { title: entry.results.some(result => result.event.event_type === 'CONDENSATION_COMPLETED') || item.event.event_type === 'CONDENSATION_COMPLETED' ? '压缩完成' : '开始压缩上下文', status: '' };
   if (item.kind === 'thought') {
     return {
       title: active ? '正在分析' : '分析',
@@ -803,6 +816,7 @@ function activityPresentation(entry: ActivityEntry, active: boolean, workspaceRo
   if (eventName === 'InvokeSkillObservation') return { title: '技能调用已完成', status: completed ? '已完成' : '处理中' };
   if (eventName.includes('Browser')) return { title: completed ? `${actionTitle('浏览器操作')} · 已完成` : actionTitle('正在操作浏览器'), status: completed ? '浏览器 · 已完成' : '浏览器', thought, actionDetails: details, resultDetails };
   if (eventName.includes('MCP')) return { title: completed ? `${actionTitle('MCP 工具调用')} · 已完成` : actionTitle('正在调用 MCP 工具'), status: completed ? 'MCP · 已完成' : 'MCP', thought, actionDetails: details, resultDetails };
+  if (eventName.includes('Workflow')) return { title: completed ? `${actionTitle('工作流')} · 已完成` : actionTitle('正在执行工作流'), status: completed ? '工作流 · 已完成' : '工作流', thought, actionDetails: details, resultDetails };
   if (eventName === 'TaskAction') {
     const runtimeTask = item.event.payload.runtime_task;
     const agentType = typeof runtimeTask?.subagent_type === 'string' && runtimeTask.subagent_type.trim()
@@ -925,10 +939,11 @@ function TaskTrackerCard({ entry, presentation }: { entry: ActivityEntry; presen
   const completed = snapshot?.items.filter(task => task.status === 'done').length ?? 0;
   const loading = !result && action.event.event_type === 'TOOL_CALL';
   const progress = snapshot ? `${completed} / ${snapshot.items.length} 已完成` : undefined;
-  return <details className={`conversation-native-card task-tracker${loading ? ' active' : ''}`} aria-label={`任务列表：${presentation.title}`}>
-    <summary><ClipboardList size={15}/><span><b>{presentation.title}</b><small>{loading ? '正在更新' : snapshot?.command === 'plan' ? '已更新' : '当前快照'}</small></span>{loading ? <LoaderCircle className="conversation-native-card-spinner" size={13}/> : progress && <small className="conversation-task-tracker-progress">{progress}</small>}<ChevronRight size={14}/></summary>
-    <div className="conversation-task-tracker-body">
-      {snapshot ? <><div className="conversation-task-list-summary"><span>{snapshot.command === 'plan' ? '任务清单' : '任务清单快照'}</span><small>{progress}</small></div><TaskListItems items={snapshot.items} source={snapshot.timestamp ? `OpenHands 原生任务事件 · ${formatMessageTime(snapshot.timestamp)}` : 'OpenHands 原生任务事件'}/></> : <p className="conversation-native-card-note">正在读取任务清单…</p>}
+  const status = loading ? '正在更新' : [snapshot?.command === 'plan' ? '已更新' : '当前快照', progress].filter(Boolean).join(' · ');
+  return <details className={`conversation-activity-row tool conversation-tool-detail task-tracker${loading ? ' running' : ''}`} aria-label={`任务列表：${presentation.title}`}>
+    <summary><ClipboardList size={14}/><div><b>{presentation.title}</b><small>{status}</small></div></summary>
+    <div className="conversation-tool-detail-panel conversation-task-tracker-body">
+      {snapshot ? <><div className="conversation-task-list-summary"><span>{snapshot.command === 'plan' ? '任务清单' : '任务清单快照'}</span><small>{progress}</small></div><TaskListItems items={snapshot.items} source={snapshot.timestamp ? `OpenHands 原生任务事件 · ${formatMessageTime(snapshot.timestamp)}` : 'OpenHands 原生任务事件'}/></> : <p className="conversation-task-tracker-note">正在读取任务清单…</p>}
     </div>
   </details>;
 }
@@ -963,88 +978,13 @@ function parsedEventTime(raw: unknown): number | undefined {
   return Number.isFinite(value) ? value : undefined;
 }
 
-function condensationTriggeredAt(item: Item): number | undefined {
-  return parsedEventTime(item.event.payload.condensation_triggered_at) ?? eventTime(item);
-}
-
-function condensationCompletedAt(item: Item): number | undefined {
-  return parsedEventTime(item.event.payload.condensation_completed_at) ?? eventTime(item);
-}
-
 function turnProcessBlocks(
   items: Item[],
   startedAt: number | undefined,
   finishedAt: number | undefined,
   active: boolean,
 ): TurnProcessBlock[] {
-  if (!items.some(item => item.kind === 'condensation')) {
-    return [{ kind: 'activity', id: 'activity-0', items, startedAt, finishedAt, active }];
-  }
-  const blocks: TurnProcessBlock[] = [];
-  let activities: Item[] = [];
-  let condensations: Item[] = [];
-  let segmentStart = startedAt;
-  let pending = false;
-  let sequence = 0;
-  const flushActivities = (end: number | undefined, force = false) => {
-    if (!activities.length && !force) return;
-    blocks.push({ kind: 'activity', id: `activity-${sequence++}`, items: activities, startedAt: segmentStart, finishedAt: end, active: false });
-    activities = [];
-  };
-  const flushCondensations = () => {
-    if (!condensations.length) return;
-    blocks.push({ kind: 'condensation', id: `condensation-${sequence++}`, items: condensations });
-    condensations = [];
-  };
-  for (const item of items) {
-    if (item.kind !== 'condensation') { activities.push(item); continue; }
-    if (item.event.event_type === 'CONDENSATION_REQUESTED') {
-      flushActivities(condensationTriggeredAt(item), true);
-      condensations.push(item);
-      pending = true;
-      segmentStart = undefined;
-      continue;
-    }
-    if (!pending) flushActivities(condensationTriggeredAt(item), true);
-    condensations.push(item);
-    flushCondensations();
-    pending = false;
-    segmentStart = condensationCompletedAt(item);
-  }
-  if (pending) flushCondensations();
-  else {
-    flushActivities(finishedAt, true);
-    const latest = [...blocks].reverse().find((block): block is Extract<TurnProcessBlock, { kind: 'activity' }> => block.kind === 'activity');
-    if (latest) latest.active = active;
-  }
-  return blocks;
-}
-
-function formatCondensationTime(raw: unknown): string {
-  if (typeof raw !== 'string' || !raw) return '时间未知';
-  const normalized = /(?:[zZ]|[+-]\d{2}:?\d{2})$/.test(raw) ? raw : `${raw}Z`;
-  const value = Date.parse(normalized);
-  if (!Number.isFinite(value)) return '时间未知';
-  return new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(value);
-}
-
-function CondensationNotices({ items }: { items: Item[] }) {
-  const requests = new Set(items.filter(item => item.event.event_type === 'CONDENSATION_REQUESTED').map(item => item.event.id));
-  const reason = (item: Item) => typeof item.event.payload.condensation_reason_detail === 'string' && item.event.payload.condensation_reason_detail.trim()
-    ? item.event.payload.condensation_reason_detail
-    : item.event.event_type === 'CONDENSATION_REQUESTED' ? 'OpenHands 正在整理较早的上下文。' : 'OpenHands 已完成较早上下文的摘要。';
-  return <div className="conversation-condensation-timeline" aria-label="上下文压缩记录">
-    {items.flatMap(item => {
-      if (item.event.event_type === 'CONDENSATION_REQUESTED') return [<article className="conversation-condensation-notice triggered" key={item.event.id} role="status"><CircleAlert size={17}/><div><header><b>已触发上下文压缩</b><time>{formatCondensationTime(item.event.payload.timestamp)}</time></header><p>{reason(item)}</p></div></article>];
-      const requestId = typeof item.event.payload.condensation_request_event_id === 'string' ? item.event.payload.condensation_request_event_id : undefined;
-      const forgotten = Array.isArray(item.event.payload.forgotten_event_ids) ? item.event.payload.forgotten_event_ids.length : 0;
-      const complete = forgotten ? `已完成摘要并从模型上下文中移除 ${forgotten} 个较早事件；完整事件记录仍然保留。` : '已完成较早上下文的摘要；完整事件记录仍然保留。';
-      return [
-        ...(!requestId || !requests.has(requestId) ? [<article className="conversation-condensation-notice triggered" key={`${item.event.id}-start`} role="status"><CircleAlert size={17}/><div><header><b>已触发上下文压缩</b><time>{formatCondensationTime(item.event.payload.condensation_triggered_at ?? item.event.payload.timestamp)}</time></header><p>{reason(item)}</p></div></article>] : []),
-        <article className="conversation-condensation-notice completed" key={item.event.id} role="status"><Check size={17}/><div><header><b>上下文压缩已完成</b><time>{formatCondensationTime(item.event.payload.condensation_completed_at ?? item.event.payload.timestamp)}</time></header><p>{complete}</p></div></article>,
-      ];
-    })}
-  </div>;
+  return [{ kind: 'activity', id: 'activity-0', items, startedAt, finishedAt, active }];
 }
 
 /** Format the wall-clock time attached to an actual OpenHands message event. */
@@ -1130,6 +1070,7 @@ function activeToolLabel(eventName: string, toolName?: string, summary?: string,
   if (eventName.includes('FileEditor')) return '正在处理文件';
   if (eventName.includes('Browser')) return '正在执行浏览器操作';
   if (eventName.includes('MCP')) return '正在调用 MCP 工具';
+  if (eventName.includes('Workflow')) return '正在执行工作流';
   if (eventName.includes('Skill')) return '正在加载 Skill';
   if (eventName.includes('Task')) return description ? `子智能体正在执行：${description}` : '子智能体正在执行';
   const normalized = explicitTool || eventName.replace(/(?:Action|Observation)$/, '');
@@ -1145,8 +1086,8 @@ function activeActivityLabel(entries: ActivityEntry[], requestSubmitting: boolea
     typeof pendingTool.event.payload.summary === 'string' ? pendingTool.event.payload.summary : undefined,
     pendingTool.event.payload.details,
   );
-  const latest = entries.at(-1)?.item;
-  if (latest?.kind === 'condensation' && latest.event.event_type === 'CONDENSATION_REQUESTED') return '正在压缩上下文';
+  const latest = entries.at(-1);
+  if (latest?.item.kind === 'condensation' && latest.item.event.event_type === 'CONDENSATION_REQUESTED' && latest.results.length === 0) return '正在压缩上下文';
   return '正在思考';
 }
 
@@ -1217,17 +1158,21 @@ function ActivityEntryRow({ entry, active, paused = false, parentFailed = false,
     ? subagentAvatarSlotForEvent(item.event, avatarSlots)
     : undefined;
   const presentation = activityPresentation(entry, active, workspaceRoot, paused, parentFailed, recoveredErrorEventIds);
-  const ToolIcon = toolVisual === 'terminal' ? SquareTerminal : toolVisual === 'file' ? fileToolIcon(presentation) : toolVisual === 'mcp' ? PlugZap : Icon;
+  const ToolIcon = toolVisual === 'terminal' ? SquareTerminal : toolVisual === 'file' ? fileToolIcon(presentation) : toolVisual === 'mcp' ? PlugZap : toolVisual === 'workflow' ? Workflow : Icon;
   const taskAvatar = avatarSlot && <SubagentAvatar slot={avatarSlot} status={taskAvatarStatus(entry, item, paused, parentFailed)} size={14}/>;
   const toolDetail = item.kind === 'tool'
     ? <ToolDetailPanel presentation={presentation} eventName={eventName} toolName={toolName || undefined} toolVisual={toolVisual} results={entry.results} workspaceRoot={workspaceRoot}/>
     : null;
   const nativeOperationRunning = active && !paused && !parentFailed && entry.results.length === 0 && (toolVisual === 'terminal' || toolVisual === 'file');
+  const condensationRunning = active && !paused && !parentFailed && item.kind === 'condensation' && item.event.event_type === 'CONDENSATION_REQUESTED' && entry.results.length === 0;
   const isNativeThink = item.event.event_type === 'THOUGHT';
   const referenceableThought = item.kind === 'thought' || (item.kind === 'tool' && Boolean(presentation.thought));
   const thoughtAttributes = referenceableThought ? { 'data-conversation-event-id': item.event.id } : {};
   if (item.kind === 'thought') return <article {...thoughtAttributes} className={`conversation-activity-row thought${isNativeThink ? ' native-think' : ''}`}>
     <MessageMarkdown>{presentation.thought ?? item.content}</MessageMarkdown>
+  </article>;
+  if (item.kind === 'condensation') return <article className={`conversation-activity-row tool condensation${condensationRunning ? ' running' : ''}`} role="status" aria-label={presentation.title}>
+    <Sparkles size={14}/><div><b>{presentation.title}</b></div>
   </article>;
   if (eventName === 'TaskTrackerAction' || eventName === 'TaskTrackerObservation') return <div className={`conversation-tool-entry semantic tool-${toolVisual}`}>
     {!hideThought && presentation.thought && <article {...thoughtAttributes} className={`conversation-activity-row thought tool-thought tool-${toolVisual}`}><MessageMarkdown>{presentation.thought}</MessageMarkdown></article>}
@@ -1274,11 +1219,18 @@ function ProgressActivity({ group, active, paused, parentFailed, recoveredErrorE
   const currentTitle = currentEntry
     ? activityPresentation(currentEntry, true, workspaceRoot, paused, parentFailed, recoveredErrorEventIds).title
     : undefined;
+  const firstEntry = group.entries.find(entry => entry.action);
+  const firstOperation = firstEntry?.action;
+  const firstPresentation = firstEntry
+    ? activityPresentation(firstEntry, active, workspaceRoot, paused, parentFailed, recoveredErrorEventIds)
+    : undefined;
+  const firstVisual = firstOperation ? toolVisualPresentation(String(firstOperation.event.payload.event_name ?? ''), detailText(firstOperation.event.payload.tool_name)) : 'generic';
+  const ProgressIcon = firstVisual === 'terminal' ? SquareTerminal : firstVisual === 'file' && firstPresentation ? fileToolIcon(firstPresentation) : firstVisual === 'mcp' ? PlugZap : firstVisual === 'workflow' ? Workflow : Wrench;
   const label = progressText(group.progress);
   const summaryLabel = currentTitle ? `${label}，${currentTitle}` : label;
   return <details className={`conversation-progress-group${running ? ' active' : ''}`} open={open} onToggle={event => setOpen(event.currentTarget.open)} data-progress-event-id={group.progress.event.id}>
     <summary aria-label={`查看执行过程：${summaryLabel}`}>
-      <Workflow className="conversation-progress-icon" size={13}/><span><b>{label}</b>{running && currentTitle && <small className="conversation-progress-current" role="status">{currentTitle}</small>}</span>
+      <ProgressIcon className="conversation-progress-icon" size={13}/><span><b>{label}</b>{running && currentTitle && <small className="conversation-progress-current" role="status">{currentTitle}</small>}</span>
     </summary>
     <div className="conversation-progress-group-list">
       {group.entries.map((entry, index) => <ActivityEntryRow key={entry.id} entry={entry} active={active} paused={paused} parentFailed={parentFailed} hideThought={index === 0 && entry.action?.event.id === group.progress.event.id} recoveredErrorEventIds={recoveredErrorEventIds} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/>)}
@@ -2200,21 +2152,19 @@ export const ConversationSurface = memo(function ConversationSurface({ events, l
           {turn.user && <div className="conversation-user-message">{editingEventId === turn.user.event.id
             ? <form className="conversation-message-edit" onSubmit={event => { event.preventDefault(); if (editingContent.trim()) onRewrite?.(turn.user!.event.id, editingContent.trim()); }}><textarea aria-label="编辑已发送消息" value={editingContent} disabled={rewritePending} onChange={event => setEditingContent(event.target.value)}/><footer><button type="button" onClick={() => setEditingEventId(undefined)}>取消</button><button type="submit" disabled={!editingContent.trim() || rewritePending}>重新思考</button></footer></form>
             : <article data-user-event-id={turn.user.event.id} data-conversation-event-id={turn.user.event.id} className="conversation-message user">{turn.user.content && <div className="conversation-message-content"><MessageMarkdown>{turn.user.content}</MessageMarkdown></div>}<MessageAttachments attachments={eventAttachments(turn.user.event)} references={turn.user.event.payload.conversation_references} workspaceReferences={turn.user.event.payload.workspace_references} annotations={eventAnnotations(turn.user.event)} onOpen={onOpenAttachment} onOpenReference={setViewingReference} onOpenWorkspaceReference={onOpenWorkspaceReference} onOpenAnnotation={locateAnnotation}/><footer className="conversation-message-meta user">{userDeliveryStatus && <small className="conversation-message-delivery-status" role="status">{userDeliveryStatus}</small>}{userTimestamp && <time dateTime={typeof turn.user.event.payload.timestamp === 'string' ? turn.user.event.payload.timestamp : undefined}>{userTimestamp}</time>}<div className="conversation-message-actions"><button type="button" className="conversation-message-copy" aria-label={copiedEventId === turn.user.event.id ? '消息已复制' : '复制消息'} title={copiedEventId === turn.user.event.id ? '已复制' : '复制消息'} onClick={() => copyUserMessage(turn.user!.event.id, turn.user!.content)}>{copiedEventId === turn.user.event.id ? <Check size={13}/> : <Copy size={13}/>}</button>{lastUserEventId === turn.user.event.id && <button type="button" className="conversation-message-rewrite" aria-label="编辑并重新思考" title="编辑并重新思考" onClick={() => { setEditingEventId(turn.user!.event.id); setEditingContent(turn.user!.content); }}><Pencil size={13}/></button>}</div></footer></article>}</div>}
-          {processBlocks.map(block => block.kind === 'condensation'
-            ? <CondensationNotices key={block.id} items={block.items}/>
-            : <ActivityGroup
-                key={block.id}
-                items={block.items}
-                active={block.active}
-                completionConfirmed={completionConfirmed}
-                paused={isCurrentPaused && !block.active}
-                parentFailed={parentFailed && !block.active}
-                recoveredErrorEventIds={recoveredErrorEventIds}
-                startedAt={block.startedAt}
-                finishedAt={block.finishedAt}
-                avatarSlots={avatarSlots}
-                workspaceRoot={workspaceRoot}
-              />)}
+          {processBlocks.map(block => <ActivityGroup
+            key={block.id}
+            items={block.items}
+            active={block.active}
+            completionConfirmed={completionConfirmed}
+            paused={isCurrentPaused && !block.active}
+            parentFailed={parentFailed && !block.active}
+            recoveredErrorEventIds={recoveredErrorEventIds}
+            startedAt={block.startedAt}
+            finishedAt={block.finishedAt}
+            avatarSlots={avatarSlots}
+            workspaceRoot={workspaceRoot}
+          />)}
           {isCurrent && !turn.assistant && !failures.length && (
             <CurrentTurnStatus items={turn.activity} liveText={liveText} requestSubmitting={requestSubmitting} statusOverride={emptyResponseRecoveryActive ? '模型返回空响应，OpenHands 正在自动重试' : undefined} monitoring={monitoring} connectionState={connectionState}/>
           )}
