@@ -1319,7 +1319,10 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(genericToolDetail.getByText('CodeSearchAction', { exact: true })).toBeVisible();
   await expect(genericToolDetail.getByText('code_search', { exact: true })).toBeVisible();
   const skillLoad = completedProcess.getByLabel('加载 Skill：collect-app-exception-logs');
-  await expect(skillLoad).toContainText('加载 Skill');
+  await expect(skillLoad).toHaveClass(/conversation-activity-row/);
+  await expect(skillLoad).not.toHaveClass(/conversation-native-card/);
+  await expect(skillLoad.locator(':scope > svg.lucide-book-open')).toBeVisible();
+  await expect(skillLoad).toContainText('加载 Skill collect-app-exception-logs');
   await expect(skillLoad).toContainText('已加载');
   await expect(skillLoad).not.toContainText('Skill instructions should not render as a generic tool result.');
   await expect(completedProcess.getByText('Think · 已完成', { exact: true })).toHaveCount(0);

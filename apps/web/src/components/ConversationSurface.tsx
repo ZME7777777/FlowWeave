@@ -864,7 +864,7 @@ function TaskTrackerCard({ entry, presentation }: { entry: ActivityEntry; presen
   </details>;
 }
 
-function SkillLoadCard({ entry }: { entry: ActivityEntry }) {
+function SkillLoadRow({ entry }: { entry: ActivityEntry }) {
   const action = entry.action ?? entry.item;
   const result = entry.results.at(-1);
   const actionSkill = action.event.payload.runtime_skill;
@@ -874,10 +874,9 @@ function SkillLoadCard({ entry }: { entry: ActivityEntry }) {
   const phase = resultSkill?.phase ?? actionSkill?.phase ?? (result ? 'LOADED' : 'INVOKED');
   const failed = phase === 'ERROR' || result?.event.payload.details?.is_error === true;
   const status = failed ? '加载失败' : phase === 'LOADED' ? '已加载' : '加载中';
-  return <section className={`conversation-native-card skill-load${failed ? ' error' : phase === 'INVOKED' ? ' active' : ''}`} aria-label={`加载 Skill：${skillName}`}>
-    <header><BookOpen size={15}/><span><b>加载 Skill</b><small>{status}</small></span>{phase === 'INVOKED' && <LoaderCircle className="conversation-native-card-spinner" size={13}/>}</header>
-    <code>{skillName}</code>
-  </section>;
+  return <article className={`conversation-activity-row tool skill-load${failed ? ' error' : phase === 'INVOKED' ? ' active' : ''}`} aria-label={`加载 Skill：${skillName}`}>
+    <BookOpen size={14}/><div><b>{`加载 Skill ${skillName}`}</b><small>{status}</small></div>
+  </article>;
 }
 
 function eventTime(item?: Item): number | undefined {
@@ -1165,7 +1164,7 @@ function ActivityEntryRow({ entry, active, paused = false, parentFailed = false,
   </div>;
   if (eventName === 'InvokeSkillAction' || eventName === 'InvokeSkillObservation') return <div className={`conversation-tool-entry semantic tool-${toolVisual}`}>
     {presentation.thought && <article {...thoughtAttributes} className={`conversation-activity-row thought tool-thought tool-${toolVisual}`}><MessageMarkdown>{presentation.thought}</MessageMarkdown></article>}
-    <SkillLoadCard entry={entry}/>
+    <SkillLoadRow entry={entry}/>
   </div>;
   if (item.kind === 'tool' && toolDetail) return <div className={`conversation-tool-entry tool-${toolVisual}`}>
     {presentation.thought && <article {...thoughtAttributes} className={`conversation-activity-row thought tool-thought tool-${toolVisual}`}>
