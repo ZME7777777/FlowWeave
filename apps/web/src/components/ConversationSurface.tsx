@@ -1587,6 +1587,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, l
     [events],
   );
   const turns = useMemo(() => turnsFor(visibleEvents), [visibleEvents]);
+  const visibleEventIds = useMemo(() => visibleEvents.map(event => event.id).join('\u001f'), [visibleEvents]);
   const avatarSlots = useMemo(() => subagentAvatarSlots(visibleEvents), [visibleEvents]);
   const userMessageNavigation = useMemo<UserMessageNavigationItem[]>(() => turns.flatMap(turn => turn.user ? [{
     id: turn.user.event.id,
@@ -1893,6 +1894,11 @@ export const ConversationSurface = memo(function ConversationSurface({ events, l
     historyAnchor.current = undefined;
     onHistoryAnchorRestored?.(historyPrepend);
   }, [alignWithLatest, conversationScope, historyPrepend, onHistoryAnchorCaptured, onHistoryAnchorRestored]);
+  // `events` is refreshed periodically even when the native projection is
+  // unchanged. Use its stable identity sequence rather than its array identity
+  // as a scroll trigger: writing the same bottom offset on every refresh makes
+  // the running-turn indicator visibly twitch. Rows that grow in place are
+  // covered by the ResizeObserver below.
   useLayoutEffect(() => {
     if (!initialPositioned.current && (turns.length || liveText || isGenerating)) {
       initialPositioned.current = true;
@@ -1906,7 +1912,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, l
       alignWithLatest();
     }
     wasGenerating.current = isGenerating;
-  }, [alignWithLatest, isGenerating, liveText, turns.length, visibleEvents]);
+  }, [alignWithLatest, isGenerating, liveText, turns.length, visibleEventIds]);
   useLayoutEffect(() => {
     const observedContent = content.current;
     if (!observedContent || typeof ResizeObserver === 'undefined') return;

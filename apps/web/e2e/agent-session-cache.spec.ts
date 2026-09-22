@@ -101,6 +101,7 @@ test('Agent session renders a completed long Markdown reply without manual expan
 
 test('Agent transcript keeps scroll ownership through streamed output and historical paging', async ({ page }) => {
   let authenticated = false;
+  let activeEventRequests = 0;
   let historyRequests = 0;
   let thirdHistoryCompleted = false;
   let releaseFirstHistory: (() => void) | undefined;
@@ -128,7 +129,7 @@ test('Agent transcript keeps scroll ownership through streamed output and histor
   const event = (id: string, eventType: string, payload: Record<string, unknown>) => ({
     id, event_type: eventType, payload: { timestamp: now, ...payload },
   });
-  const activeEvents = (id: string) => id === 'scroll-conversation-a' ? {
+  const activeEvents = (id: string, refreshMarker = 0) => id === 'scroll-conversation-a' ? {
     events: [
       event('scroll-a-user', 'MESSAGE', {
         source: 'user', parent_id: '__root__',
@@ -136,6 +137,9 @@ test('Agent transcript keeps scroll ownership through streamed output and histor
       }),
       event('scroll-a-thought', 'THOUGHT', {
         source: 'agent', parent_id: 'scroll-a-user', content: '稳定阅读锚点', thought: '稳定阅读锚点',
+        // This backend-only field changes on every reconciliation without
+        // changing the visible transcript row.
+        refresh_marker: refreshMarker,
       }),
     ],
     next_cursor: 'scroll-a-thought',
@@ -214,7 +218,8 @@ test('Agent transcript keeps scroll ownership through streamed output and histor
         thirdHistoryCompleted = true;
         return json(route, { error: { code: 'HISTORY_UNAVAILABLE', message: '历史页暂时不可用' } }, 503);
       }
-      return json(route, activeEvents(bindingId));
+      const refreshMarker = bindingId === 'scroll-conversation-a' ? ++activeEventRequests : 0;
+      return json(route, activeEvents(bindingId, refreshMarker));
     }
     if (path.endsWith('/work-directories')) return json(route, {
       root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [],
@@ -242,6 +247,34 @@ test('Agent transcript keeps scroll ownership through streamed output and histor
   await surface.hover();
   await page.mouse.wheel(0, 20_000);
   await expectAtLatest();
+
+  // A native refresh can change fields that have no visual representation.
+  // It must not write the transcript's bottom offset merely because its event
+  // array was reconciled. Wrap this instance only after its initial alignment.
+  await surface.evaluate(element => {
+    let prototype: object | null = element;
+    let descriptor: PropertyDescriptor | undefined;
+    while (prototype && !descriptor) {
+      descriptor = Object.getOwnPropertyDescriptor(prototype, 'scrollTop');
+      prototype = Object.getPrototypeOf(prototype);
+    }
+    if (!descriptor?.get || !descriptor.set) throw new Error('scrollTop descriptor is unavailable');
+    element.dataset.refreshScrollWrites = '0';
+    Object.defineProperty(element, 'scrollTop', {
+      configurable: true,
+      get: () => descriptor!.get!.call(element),
+      set: value => {
+        const writes = Number(element.dataset.refreshScrollWrites ?? '0') + 1;
+        element.dataset.refreshScrollWrites = String(writes);
+        descriptor!.set!.call(element, value);
+      },
+    });
+  });
+  await expect.poll(() => activeEventRequests).toBe(2);
+  await page.evaluate(() => new Promise<void>(resolve => {
+    requestAnimationFrame(() => requestAnimationFrame(resolve));
+  }));
+  await expect(surface).toHaveAttribute('data-refresh-scroll-writes', '0');
 
   agentStream!.send(JSON.stringify({
     type: 'event',

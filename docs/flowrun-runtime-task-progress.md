@@ -211,6 +211,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-503 | 逐步运行导入、拷贝与连续运行前端交互对齐 | DONE | 逐步运行新增、导入、记录选中、起始节点聚焦、右侧栏展示、配置下载/复制及首节点配置拷贝均复用连续运行的交互投影；后端导入重新生成 URL artifact 与 Gate ID，并保持待启动状态。 |
 | FR-504 | OpenHands 当前 View 事件数精确投影 | DONE | OpenHands `/context` 在同一活动 View 快照中返回正式 `event_count`；FlowWeave 底栏只展示该值，旧 Runtime 缺字段时保持未知，不再使用完整历史事件数。 |
 | FR-505 | 会话认证增量勾选收敛 | DONE | 移除认证页的撤销提示；已选择认证锁定且不能取消，只允许将未选择认证新增到本次同步。 |
+| FR-506 | 会话后台刷新滚动稳定性 | DONE | 运行中会话的定时事件对账仅在可见事件身份或真实内容高度变化时对齐最新内容，避免无可见变化的刷新重复写入底部滚动位置。 |
 | FR-457 | OpenHands 空响应自恢复与运行状态一致性 | DONE | 空 Agent Message 与 `source=environment` 的原生 corrective nudge 不再被识别为最终回复；纠正事件以“模型返回空响应，OpenHands 正在自动重试”呈现，左侧会话状态与底部按钮继续统一服从原生 execution status。 |
 | FR-458 | 空响应恢复提示瞬时化与会话状态统一 | DONE | corrective nudge 只在它是当前最新事件且原生会话仍运行时复用实时状态行显示；后续事件或终态立即隐藏，历史工作过程不保留该提示。工作台所有运行控件复用同一原生状态投影。 |
 | FR-459 | 原生错误事件的终态／可恢复呈现分流 | DONE | 仅 OpenHands ConversationErrorEvent 呈现为“本轮未能完成”的会话级终态卡片；AgentErrorEvent 与未知历史 ERROR 保持原生审计事实，按其正式父事件留在工作过程中呈现为可恢复异常，后续正式回复会明确标注 Agent 已继续完成，避免暂停／继续后的正常回复被历史错误卡片误覆盖。 |
@@ -6679,6 +6680,18 @@ scope；首条消息 bootstrap 成功后会清理已发送内容，避免发送�
 
 验收：Web TypeScript typecheck、受影响文件 ESLint、`git diff --check` 与任务状态唯一性检查通过；无迁移、无 OpenHands 或远端操作。
 
+### FR-506 会话后台刷新滚动稳定性 — DONE
+
+依赖：FR-502。
+
+目标：运行中 Agent 会话按固定间隔从 OpenHands 正式事件读取进行恢复对账时，未改变可见会话内容的后台响应不得重复重置 transcript 到底部，避免“正在思考”状态行及浏览器滚动条在刷新瞬间可见晃动；新增工作过程、正式消息或流式文本仍须保持最新内容锚点。
+
+范围：仅修改 Web `ConversationSurface` 的自动对齐触发条件，并补充既有 Agent 会话滚动 E2E 回归。不得修改事件读取间隔、API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。
+
+完成：自动对齐不再依赖定时对账产生的新事件数组引用，而使用过滤后可见事件的稳定 identity 序列；新事件仍会立即对齐，原地增长的原生行继续由 `ResizeObserver` 对齐。定向浏览器回归让同一事件在每次对账携带仅后端可见的变更字段，并拦截 transcript `scrollTop` 写入，确认该刷新不产生新的滚动写入，同时保留工作过程追加、正式回复与历史分页的原有锚点验证。
+
+验收：Web TypeScript typecheck、受影响文件 ESLint、`e2e/agent-session-cache.spec.ts` 中“Agent transcript keeps scroll ownership through streamed output and historical paging”定向 Playwright（1 passed）、`git diff --check` 与任务状态唯一性检查通过；无迁移、无 OpenHands 或远端操作。
+
 ### FR-504 OpenHands 当前 View 事件数精确投影 — DONE
 
 依赖：FR-493、FR-500。
@@ -7212,3 +7225,4 @@ FlowWeave 本地累加后猜测压缩边界。
 | 2026-08-26 | FR-29 | Agent Workspace 定向 pytest（10 passed）；受影响 Python Ruff/Pyright；Web ESLint/typecheck/build；本地 Alembic head、`git diff --check` 与任务状态核对 | PASS：新建会话与原生 fork 都冻结 `model_provider_id`；会话内模型切换 API 不再接受供应商参数，并只按 binding 的冻结供应商构造正式 `switch_llm`。前端下拉仅显示该供应商的模型名称。没有可审计供应商身份的历史 binding 不被猜测回填，继续可读写但模型切换被明确拒绝；新增 0062 迁移。无 CURRENT、READY 或下一切片。 |
 | 2026-08-26 | FR-30 | OpenHands active-head 定向 pytest（1 passed）；受影响 Python Ruff/Pyright；`git diff --check` 与任务状态核对 | PASS：`parent_id = "__root__"` 被识别为固定 OpenHands 事件树的合法终点，不再作为缺失 event 查找。正式 ERROR 事件可返回至页面；不重发消息、不改写事件树或掩盖上游模型错误。无 CURRENT、READY 或下一切片。 |
 | 2026-09-22 | FR-505 | Web TypeScript typecheck、受影响文件 ESLint、`git diff --check` 与任务状态唯一性 | PASS：认证页移除撤销提示；已选择认证显示为锁定且禁用，状态更新函数同样拒绝移除已有 ID；未选择认证仍可新增，新增后立即锁定。未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
+| 2026-09-22 | FR-506 | Web TypeScript typecheck、受影响文件 ESLint、Agent transcript scroll-ownership 定向 Playwright（1 passed）、`git diff --check` 与任务状态唯一性 | PASS：运行中会话的四秒正式事件对账即使更新仅后端可见字段，也不会重复写入 transcript 的底部滚动位置；新增事件、流式／正式输出及历史分页仍保持既有最新内容或阅读锚点。未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
