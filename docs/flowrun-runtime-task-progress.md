@@ -212,6 +212,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-504 | OpenHands 当前 View 事件数精确投影 | DONE | OpenHands `/context` 在同一活动 View 快照中返回正式 `event_count`；FlowWeave 底栏只展示该值，旧 Runtime 缺字段时保持未知，不再使用完整历史事件数。 |
 | FR-505 | 会话认证增量勾选收敛 | DONE | 移除认证页的撤销提示；已选择认证锁定且不能取消，只允许将未选择认证新增到本次同步。 |
 | FR-506 | 会话后台刷新滚动稳定性 | DONE | 运行中会话的定时事件对账仅在可见事件身份或真实内容高度变化时对齐最新内容，避免无可见变化的刷新重复写入底部滚动位置。 |
+| FR-507 | 会话前台恢复终态即时同步 | DONE | 浏览器从后台恢复或窗口重新聚焦时，立即从最新 OpenHands 事件窗口对账并刷新会话 readiness；合并连续恢复事件，避免完成结果必须刷新页面才显示。 |
 | FR-506 | 会话上下文 512k 默认压缩阈值 | DONE | 新建 Agent Workspace、FlowNode 会话及新 Fork 将 OpenHands `LLMSummarizingCondenser.max_tokens` 冻结为 512,000；工作台缺失正式阈值时使用同一默认值，既有会话继续展示并使用其已冻结配置。 |
 | FR-457 | OpenHands 空响应自恢复与运行状态一致性 | DONE | 空 Agent Message 与 `source=environment` 的原生 corrective nudge 不再被识别为最终回复；纠正事件以“模型返回空响应，OpenHands 正在自动重试”呈现，左侧会话状态与底部按钮继续统一服从原生 execution status。 |
 | FR-458 | 空响应恢复提示瞬时化与会话状态统一 | DONE | corrective nudge 只在它是当前最新事件且原生会话仍运行时复用实时状态行显示；后续事件或终态立即隐藏，历史工作过程不保留该提示。工作台所有运行控件复用同一原生状态投影。 |
@@ -6693,6 +6694,18 @@ scope；首条消息 bootstrap 成功后会清理已发送内容，避免发送�
 
 验收：Web TypeScript typecheck、受影响文件 ESLint、`e2e/agent-session-cache.spec.ts` 中“Agent transcript keeps scroll ownership through streamed output and historical paging”定向 Playwright（1 passed）、`git diff --check` 与任务状态唯一性检查通过；无迁移、无 OpenHands 或远端操作。
 
+### FR-507 会话前台恢复终态即时同步 — DONE
+
+依赖：FR-482、FR-506。
+
+目标：用户发送消息后离开浏览器，若 OpenHands 在页面后台期间完成该轮，重新切回页面必须自动显示正式最终结果并解除“正在同步上一轮结束状态”，不得要求手动刷新。
+
+范围：仅修改共享 Agent 会话工作台的浏览器前台恢复逻辑并补充定向 E2E；不修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。
+
+完成：监听 `visibilitychange` 与窗口 `focus`，在页面可见时通过 animation frame 合并同一轮连续恢复信号；立即从无 cursor 的最新 OpenHands 事件窗口对账，并刷新会话列表、input readiness 与 confirmation 投影。恢复信号只消费一次，不会因当前 binding 或依赖对象更新而重复触发，也不会把旧会话回调写入新会话。
+
+验收：Web TypeScript typecheck、受影响文件 ESLint、`git diff --check` 与任务状态唯一性通过。新增 Playwright 回归覆盖后台期间完成、返回前台后 1.5 秒内显示正式结果并恢复发送；当前执行环境缺少 Chrome，已有 Chromium 又缺少 `libglib-2.0.so.0`，浏览器进程未启动，故不将该 E2E 记为通过。
+
 ### FR-504 OpenHands 当前 View 事件数精确投影 — DONE
 
 依赖：FR-493、FR-500。
@@ -7240,3 +7253,4 @@ FlowWeave 本地累加后猜测压缩边界。
 | 2026-08-26 | FR-30 | OpenHands active-head 定向 pytest（1 passed）；受影响 Python Ruff/Pyright；`git diff --check` 与任务状态核对 | PASS：`parent_id = "__root__"` 被识别为固定 OpenHands 事件树的合法终点，不再作为缺失 event 查找。正式 ERROR 事件可返回至页面；不重发消息、不改写事件树或掩盖上游模型错误。无 CURRENT、READY 或下一切片。 |
 | 2026-09-22 | FR-505 | Web TypeScript typecheck、受影响文件 ESLint、`git diff --check` 与任务状态唯一性 | PASS：认证页移除撤销提示；已选择认证显示为锁定且禁用，状态更新函数同样拒绝移除已有 ID；未选择认证仍可新增，新增后立即锁定。未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-22 | FR-506 | Web TypeScript typecheck、受影响文件 ESLint、Agent transcript scroll-ownership 定向 Playwright（1 passed）、`git diff --check` 与任务状态唯一性 | PASS：运行中会话的四秒正式事件对账即使更新仅后端可见字段，也不会重复写入 transcript 的底部滚动位置；新增事件、流式／正式输出及历史分页仍保持既有最新内容或阅读锚点。未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
+| 2026-09-22 | FR-507 | Web TypeScript typecheck、受影响文件 ESLint、`git diff --check` 与任务状态唯一性；后台恢复定向 Playwright 尝试 | PASS（静态）：浏览器恢复可见或重新聚焦后立即从最新 OpenHands 事件窗口对账，并刷新会话列表、readiness 与 confirmation；连续 `visibilitychange`／`focus` 合并为一次恢复。新增 E2E 覆盖后台完成后无需刷新显示最终结果；当前环境缺少 Chrome，已有 Chromium 缺少 `libglib-2.0.so.0`，浏览器未启动，未将 E2E 记为通过。未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |

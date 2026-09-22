@@ -3950,6 +3950,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const [historyPrepend, setHistoryPrepend] = useState<ConversationHistoryPrepend>();
   const [streamHold, setStreamHold] = useState<{ bindingId: string; expiresAt: number }>();
   const [pageVisible, setPageVisible] = useState(() => document.visibilityState === 'visible');
+  const [foregroundRecoverySignal, setForegroundRecoverySignal] = useState(0);
+  const foregroundRecoveryFrame = useRef<number | undefined>(undefined);
+  const handledForegroundRecoverySignal = useRef(0);
   const [pendingCreatedId, setPendingCreatedId] = useState<string>();
   const [pendingMigratedSend, setPendingMigratedSend] = useState<BoundQueuedMessage>();
   const [conversationDraft, setConversationDraft] = useState<ConversationDraft | undefined>(() => initialBootstrapRecovery.current?.draft ?? initialConversationDraft.current?.draft);
@@ -4321,9 +4324,22 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     writePinnedConversationIds(pinnedStorageKey, next);
   }, [conversations, conversationsQuery.data, pinnedConversationIds, pinnedStorageKey]);
   useEffect(() => {
-    const onVisibilityChange = () => setPageVisible(document.visibilityState === 'visible');
-    document.addEventListener('visibilitychange', onVisibilityChange);
-    return () => document.removeEventListener('visibilitychange', onVisibilityChange);
+    const recoverOnForeground = () => {
+      const visible = document.visibilityState === 'visible';
+      setPageVisible(visible);
+      if (!visible || foregroundRecoveryFrame.current !== undefined) return;
+      foregroundRecoveryFrame.current = window.requestAnimationFrame(() => {
+        foregroundRecoveryFrame.current = undefined;
+        setForegroundRecoverySignal(current => current + 1);
+      });
+    };
+    document.addEventListener('visibilitychange', recoverOnForeground);
+    window.addEventListener('focus', recoverOnForeground);
+    return () => {
+      document.removeEventListener('visibilitychange', recoverOnForeground);
+      window.removeEventListener('focus', recoverOnForeground);
+      if (foregroundRecoveryFrame.current !== undefined) window.cancelAnimationFrame(foregroundRecoveryFrame.current);
+    };
   }, []);
   const composerCapabilityReferences = useMemo(() => {
     if (selected?.capabilities) return selected.capabilities;
@@ -4559,6 +4575,19 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       // read failure must not clear already-rendered native events.
     }
   }, [api, eventQueryKey, host, queryClient, selected, workspace]);
+  useEffect(() => {
+    if (!foregroundRecoverySignal || !pageVisible || !workspace || !selected
+      || foregroundRecoverySignal === handledForegroundRecoverySignal.current) return;
+    handledForegroundRecoverySignal.current = foregroundRecoverySignal;
+
+    // Background tabs may suspend timers and silently lose WebSocket frames.
+    // Re-read the latest native window immediately instead of waiting for the
+    // next cursor poll, which may no longer advance after the turn completed.
+    void synchronizeConversationEvents(true);
+    void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversations', workspace.id) });
+    void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-input-readiness', workspace.id, selected.id) });
+    void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-confirmation', workspace.id, selected.id) });
+  }, [foregroundRecoverySignal, host, pageVisible, queryClient, selected, synchronizeConversationEvents, workspace]);
   // Let the latest native window paint before background history starts. This
   // makes the first visual state deterministic. History is a read-only
   // native projection and must keep loading while the current turn runs.
