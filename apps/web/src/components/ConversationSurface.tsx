@@ -1230,7 +1230,7 @@ function ProgressActivity({ group, active, paused, parentFailed, recoveredErrorE
   const summaryLabel = currentTitle ? `${label}，${currentTitle}` : label;
   return <details className={`conversation-progress-group${running ? ' active' : ''}`} open={open} onToggle={event => setOpen(event.currentTarget.open)} data-progress-event-id={group.progress.event.id}>
     <summary aria-label={`查看执行过程：${summaryLabel}`}>
-      <ProgressIcon className="conversation-progress-icon" size={13}/><span><b>{label}</b>{running && currentTitle && <small className="conversation-progress-current" role="status">{currentTitle}</small>}</span>
+      <ProgressIcon className="conversation-progress-icon" size={15}/><span><b>{label}</b>{running && currentTitle && <small className="conversation-progress-current" role="status">{currentTitle}</small>}</span>
     </summary>
     <div className="conversation-progress-group-list">
       {group.entries.map((entry, index) => <ActivityEntryRow key={entry.id} entry={entry} active={active} paused={paused} parentFailed={parentFailed} hideThought={index === 0 && entry.action?.event.id === group.progress.event.id} recoveredErrorEventIds={recoveredErrorEventIds} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/>)}
