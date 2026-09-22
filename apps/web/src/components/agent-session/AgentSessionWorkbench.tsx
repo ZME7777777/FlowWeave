@@ -2686,21 +2686,21 @@ function selectedGitRepository(repositories: AgentSessionWorkspaceDetails['repos
     .sort((left, right) => right.path.length - left.path.length)[0];
 }
 
-function WorkspaceGitSidebar({ details, repository, selectedCommit, onSelectCommit, loadLog, loadCommit, loadDiff, loadChanges, loadWorkingDiff, onOpenFileDiff, onOpenWorkingDiff, closedDiffEpoch }: {
+function WorkspaceGitSidebar({ details, repository, mode, onModeChange, selectedCommit, onSelectCommit, loadLog, loadCommit, loadDiff, loadChanges, onOpenFileDiff, onOpenWorkingDiff, closedDiffEpoch }: {
   details: AgentSessionWorkspaceDetails;
   repository: AgentSessionWorkspaceDetails['repositories'][number];
+  mode: 'history' | 'changes';
+  onModeChange: (mode: 'history' | 'changes') => void;
   selectedCommit?: string;
   onSelectCommit: (commit?: string) => void;
   loadLog: (repositoryPath: string) => Promise<import('../../types').WorkspaceGitLog>;
   loadCommit: (repositoryPath: string, commit: string) => Promise<WorkspaceGitCommitDetails>;
   loadDiff: (repositoryPath: string, commit: string, path: string) => Promise<WorkspaceGitFileDiff>;
   loadChanges: (repositoryPath: string) => Promise<WorkspaceGitChanges>;
-  loadWorkingDiff: (repositoryPath: string, kind: WorkspaceGitChangeKind, path: string) => Promise<WorkspaceGitFileDiff>;
   onOpenFileDiff: (details: WorkspaceGitCommitDetails, diff: WorkspaceGitFileDiff) => void;
-  onOpenWorkingDiff: (changes: WorkspaceGitChanges, kind: WorkspaceGitChangeKind, file: WorkspaceGitChangedFile, diff: WorkspaceGitFileDiff) => void;
+  onOpenWorkingDiff: (repository: WorkspaceGitChanges['repository'], kind: WorkspaceGitChangeKind, file: WorkspaceGitChangedFile, changes: WorkspaceGitChanges) => void;
   closedDiffEpoch: number;
 }) {
-  const [mode, setMode] = useState<'history' | 'changes'>('history');
   const [selectedCommitFile, setSelectedCommitFile] = useState<string>();
   const openedDiffRef = useRef<string | undefined>(undefined);
   const [workingDiffError, setWorkingDiffError] = useState('');
@@ -2708,7 +2708,6 @@ function WorkspaceGitSidebar({ details, repository, selectedCommit, onSelectComm
     openedDiffRef.current = undefined;
     setSelectedCommitFile(undefined);
     setWorkingDiffError('');
-    setMode('history');
   }, [repository.path]);
   useEffect(() => {
     if (!closedDiffEpoch) return;
@@ -2744,21 +2743,14 @@ function WorkspaceGitSidebar({ details, repository, selectedCommit, onSelectComm
     openedDiffRef.current = key;
     onOpenFileDiff(commitQuery.data, diffQuery.data);
   }, [commitQuery.data, diffQuery.data, onOpenFileDiff, selectedCommitFile]);
-  const openWorkingFile = async (kind: WorkspaceGitChangeKind, file: WorkspaceGitChangedFile) => {
-    const key = `${kind}:${file.path}`;
-    if (openedDiffRef.current === key || !changesQuery.data) return;
-    openedDiffRef.current = key;
+  const openWorkingFile = (kind: WorkspaceGitChangeKind, file: WorkspaceGitChangedFile) => {
+    if (openedDiffRef.current === `${kind}:${file.path}` || !changesQuery.data) return;
+    openedDiffRef.current = `${kind}:${file.path}`;
     setWorkingDiffError('');
-    try {
-      const diff = await loadWorkingDiff(repository.path, kind, file.path);
-      onOpenWorkingDiff(changesQuery.data, kind, file, diff);
-    } catch {
-      openedDiffRef.current = undefined;
-      setWorkingDiffError('文件 Diff 读取失败，请重试。');
-    }
+    onOpenWorkingDiff(changesQuery.data.repository, kind, file, changesQuery.data);
   };
   const selectMode = (next: 'history' | 'changes') => {
-    setMode(next);
+    onModeChange(next);
     onSelectCommit(undefined);
     setSelectedCommitFile(undefined);
     setWorkingDiffError('');
@@ -2783,10 +2775,10 @@ type WorkspaceToolTab =
   | { id: 'changes'; kind: 'changes' }
   | { id: 'sources'; kind: 'sources' }
   | { id: 'git'; kind: 'git'; details: WorkspaceGitCommitDetails; diff: WorkspaceGitFileDiff }
-  | { id: 'git-working'; kind: 'git-working'; changes: WorkspaceGitChanges; changeKind: WorkspaceGitChangeKind; file: WorkspaceGitChangedFile; diff: WorkspaceGitFileDiff }
+  | { id: 'git-working'; kind: 'git-working'; repository: WorkspaceGitChanges['repository']; changes: WorkspaceGitChanges; changeKind: WorkspaceGitChangeKind; file: WorkspaceGitChangedFile; diff?: WorkspaceGitFileDiff; loading: boolean; error?: string }
   | { id: 'subagents'; kind: 'subagents' }
   | { id: string; kind: 'terminal'; terminalInstanceId: string };
-type WorkspaceToolScopeState = { tabs: WorkspaceToolTab[]; activeTabId?: string; selectedFile?: string; selectedChangeId?: string; selectedGitFile?: string; selectedGitCommit?: string; selectedGitRepositoryPath?: string; selectedRuntimeTaskId?: string };
+type WorkspaceToolScopeState = { tabs: WorkspaceToolTab[]; activeTabId?: string; selectedFile?: string; selectedChangeId?: string; selectedGitFile?: string; selectedGitCommit?: string; selectedGitRepositoryPath?: string; gitMode?: 'history' | 'changes'; selectedRuntimeTaskId?: string };
 type MarkdownFileRequest = { key: string; path: string };
 
 type ChangedFileTreeNode<T> = { name: string; path: string; value?: T; children: ChangedFileTreeNode<T>[] };
@@ -3078,40 +3070,28 @@ function WorkspaceGitCommitReview({ details, initialDiff, loadDiff, onOpenSource
     {diffQuery.isLoading ? <div className="agent-changes-empty"><span>正在读取文件 Diff…</span></div> : diffQuery.isError || !diffQuery.data ? <div className="agent-changes-empty"><b>文件 Diff 读取失败</b><span>请重新选择文件后重试。</span></div> : <WorkspaceGitFileDiffReview details={details} diff={diffQuery.data} onOpenSource={onOpenSource}/>}
   </section>;
 }
-
-function WorkspaceGitWorkingReview({ changes, initialKind, initialFile, initialDiff, loadDiff, onOpenSource }: {
-  changes: WorkspaceGitChanges;
-  initialKind: WorkspaceGitChangeKind;
-  initialFile: WorkspaceGitChangedFile;
-  initialDiff: WorkspaceGitFileDiff;
-  loadDiff: (kind: WorkspaceGitChangeKind, path: string) => Promise<WorkspaceGitFileDiff>;
+function WorkspaceGitWorkingDiffReview({ tab, onOpenSource, onSelectFile }: {
+  tab: Extract<WorkspaceToolTab, { kind: 'git-working' }>;
   onOpenSource: (path: string, line: number) => void;
+  onSelectFile: (kind: WorkspaceGitChangeKind, file: WorkspaceGitChangedFile) => void;
 }) {
-  const [selected, setSelected] = useState({ kind: initialKind, file: initialFile });
-  const selectedKey = `${selected.kind}:${selected.file.path}`;
-  const initialKey = `${initialKind}:${initialFile.path}`;
-  const diffQuery = useQuery({
-    queryKey: ['workspace-git-working-review-diff', changes.repository.path, selectedKey],
-    queryFn: () => selectedKey === initialKey ? Promise.resolve(initialDiff) : loadDiff(selected.kind, selected.file.path),
-  });
   const details: WorkspaceGitCommitDetails = {
-    repository: changes.repository,
+    repository: tab.repository,
     commit: {
-      id: selected.kind,
-      short_id: selected.kind === 'STAGED' ? '暂存区' : '未暂存',
+      id: tab.changeKind,
+      short_id: tab.changeKind === 'STAGED' ? '暂存区' : '未暂存',
       author: '',
       date: '',
-      subject: selected.kind === 'STAGED' ? '已加入暂存区' : '尚未加入暂存区',
+      subject: tab.changeKind === 'STAGED' ? '已加入暂存区' : '尚未加入暂存区',
     },
-    files: selected.kind === 'STAGED' ? changes.staged : changes.unstaged,
+    files: [tab.file],
   };
-  const select = (kind: WorkspaceGitChangeKind) => (file: WorkspaceGitChangedFile) => setSelected({ kind, file });
   return <section className="agent-git-commit-review agent-git-working-review">
-    <aside className="agent-git-working-file-trees">
-      <ChangedFilesTree title="暂存区" empty="暂存区没有文件。" items={changes.staged.map(file => ({ path: file.path, value: file }))} selectedPath={selected.kind === 'STAGED' ? selected.file.path : undefined} onSelect={select('STAGED')} renderMeta={file => <em>{file.status}</em>}/>
-      <ChangedFilesTree title="未暂存" empty="没有未暂存文件。" items={changes.unstaged.map(file => ({ path: file.path, value: file }))} selectedPath={selected.kind === 'UNSTAGED' ? selected.file.path : undefined} onSelect={select('UNSTAGED')} renderMeta={file => <em>{file.status}</em>}/>
+    <aside className="agent-git-working-file-trees" aria-label="本地改动文件">
+      <ChangedFilesTree title="暂存区" empty="暂存区没有文件。" items={tab.changes.staged.map(file => ({ path: file.path, value: file }))} selectedPath={tab.changeKind === 'STAGED' ? tab.file.path : undefined} onSelect={file => onSelectFile('STAGED', file)} renderMeta={file => <em>{file.status}</em>}/>
+      <ChangedFilesTree title="未暂存" empty="没有未暂存文件。" items={tab.changes.unstaged.map(file => ({ path: file.path, value: file }))} selectedPath={tab.changeKind === 'UNSTAGED' ? tab.file.path : undefined} onSelect={file => onSelectFile('UNSTAGED', file)} renderMeta={file => <em>{file.status}</em>}/>
     </aside>
-    {diffQuery.isLoading ? <div className="agent-changes-empty"><span>正在读取文件 Diff…</span></div> : diffQuery.isError || !diffQuery.data ? <div className="agent-changes-empty"><b>文件 Diff 读取失败</b><span>请重新选择文件后重试。</span></div> : <WorkspaceGitFileDiffReview details={details} diff={diffQuery.data} onOpenSource={onOpenSource}/>}
+    {tab.loading ? <div className="agent-changes-empty"><span>正在读取文件 Diff…</span></div> : tab.error ? <div className="agent-changes-empty"><b>文件 Diff 读取失败</b><span>{tab.error}</span></div> : tab.diff ? <WorkspaceGitFileDiffReview details={details} diff={tab.diff} onOpenSource={onOpenSource}/> : <div className="agent-changes-empty"><span>选择一个文件查看 Diff。</span></div>}
   </section>;
 }
 type CandidateFilePreviewRequest = { key: string; filename: string; url: string };
@@ -3535,16 +3515,27 @@ function WorkspaceDrawer({
     }));
     onOpen();
   }, [onOpen, updateScope]);
-  const openGitWorkingDiff = useCallback((changes: WorkspaceGitChanges, changeKind: WorkspaceGitChangeKind, file: WorkspaceGitChangedFile, diff: WorkspaceGitFileDiff) => {
+  const openGitWorkingDiff = useCallback((repository: WorkspaceGitChanges['repository'], changeKind: WorkspaceGitChangeKind, file: WorkspaceGitChangedFile, changes: WorkspaceGitChanges) => {
     updateScope(current => ({
       ...current,
       tabs: current.tabs.some(tab => tab.kind === 'git-working')
-        ? current.tabs.map(tab => tab.kind === 'git-working' ? { id: 'git-working', kind: 'git-working', changes, changeKind, file, diff } : tab)
-        : [...current.tabs, { id: 'git-working', kind: 'git-working', changes, changeKind, file, diff }],
+        ? current.tabs.map(tab => tab.kind === 'git-working' ? { id: 'git-working', kind: 'git-working', repository, changes, changeKind, file, diff: undefined, loading: true, error: undefined } : tab)
+        : [...current.tabs, { id: 'git-working', kind: 'git-working', repository, changes, changeKind, file, diff: undefined, loading: true }],
       activeTabId: 'git-working',
     }));
     onOpen();
-  }, [onOpen, updateScope]);
+    void api.gitWorkingDiff(workspaceId, repository.path, changeKind, file.path, { bindingId, workDirectoryId }).then(diff => {
+      updateScope(current => ({
+        ...current,
+        tabs: current.tabs.map(tab => tab.kind === 'git-working' && tab.changeKind === changeKind && tab.file.path === file.path ? { ...tab, diff, loading: false, error: undefined } : tab),
+      }));
+    }).catch(() => {
+      updateScope(current => ({
+        ...current,
+        tabs: current.tabs.map(tab => tab.kind === 'git-working' && tab.changeKind === changeKind && tab.file.path === file.path ? { ...tab, diff: undefined, loading: false, error: '请重新选择文件后重试。' } : tab),
+      }));
+    });
+  }, [api, bindingId, onOpen, updateScope, workDirectoryId, workspaceId]);
   const openGitHistory = useCallback(() => {
     if (!gitContextPath) return;
     setGitSidebarRequested(true);
@@ -3812,14 +3803,14 @@ function WorkspaceDrawer({
           {scopeState.tabs.some(tab => tab.kind === 'changes') && <div className={`agent-changes-tab-panel ${scopeState.activeTabId === 'changes' ? 'active' : ''}`}><WorkspaceChangesReview changes={reviewChanges} selectedId={scopeState.selectedChangeId} onSelect={selectedChangeId => updateScope(current => ({ ...current, selectedChangeId }))} onOpenSource={openSourceFile} workspaceRoot={details.working_directory}/></div>}
           {scopeState.tabs.some(tab => tab.kind === 'sources') && <div className={`agent-changes-tab-panel ${scopeState.activeTabId === 'sources' ? 'active' : ''}`}><ConversationSourcesReview sources={sources} onOpenAttachment={attachment => { setCandidatePreview(undefined); selectFile(attachment.path); }}/></div>}
           {scopeState.tabs.filter((tab): tab is Extract<WorkspaceToolTab, { kind: 'git' }> => tab.kind === 'git').map(tab => <div key={tab.id} className={`agent-changes-tab-panel agent-git-commit-tab ${scopeState.activeTabId === tab.id ? 'active' : ''}`}><WorkspaceGitCommitReview key={`${tab.details.commit.id}:${tab.diff.path}`} details={tab.details} initialDiff={tab.diff} loadDiff={path => api.gitDiff(workspaceId, tab.details.repository.path, tab.details.commit.id, path, gitOptions)} onOpenSource={openSourcePath}/></div>)}
-          {scopeState.tabs.filter((tab): tab is Extract<WorkspaceToolTab, { kind: 'git-working' }> => tab.kind === 'git-working').map(tab => <div key={tab.id} className={`agent-changes-tab-panel agent-git-commit-tab ${scopeState.activeTabId === tab.id ? 'active' : ''}`}><WorkspaceGitWorkingReview key={`${tab.changeKind}:${tab.file.path}`} changes={tab.changes} initialKind={tab.changeKind} initialFile={tab.file} initialDiff={tab.diff} loadDiff={(kind, path) => api.gitWorkingDiff(workspaceId, tab.changes.repository.path, kind, path, gitOptions)} onOpenSource={openSourcePath}/></div>)}
+          {scopeState.tabs.filter((tab): tab is Extract<WorkspaceToolTab, { kind: 'git-working' }> => tab.kind === 'git-working').map(tab => <div key={tab.id} className={`agent-changes-tab-panel agent-git-commit-tab ${scopeState.activeTabId === tab.id ? 'active' : ''}`}><WorkspaceGitWorkingDiffReview tab={tab} onOpenSource={openSourcePath} onSelectFile={(kind, file) => openGitWorkingDiff(tab.repository, kind, file, tab.changes)}/></div>)}
           {scopeState.tabs.some(tab => tab.kind === 'subagents') && <div className={`agent-subagent-tab-panel ${scopeState.activeTabId === 'subagents' ? 'active' : ''}`}><RuntimeTaskTab tasks={runtimeTasks} definitions={agentDefinitions} selectedTaskId={scopeState.selectedRuntimeTaskId} onSelect={taskId => updateScope(current => ({ ...current, selectedRuntimeTaskId: taskId }))} sessionStopped={sessionStopped}/></div>}
           {scopeState.tabs.filter((tab): tab is Extract<WorkspaceToolTab, { kind: 'terminal' }> => tab.kind === 'terminal').map(tab => <div key={tab.id} className={`agent-terminal-tab-panel ${scopeState.activeTabId === tab.id ? 'active' : ''}`}>{runtimeAvailable ? <WorkspaceTerminal workspaceId={workspaceId} terminalInstanceId={tab.terminalInstanceId} bindingId={bindingId} workDirectoryId={workDirectoryId} workingDirectory={details.working_directory}/> : <div className="agent-drawer-empty"><LoaderCircle className="agent-drawer-spinner" size={20}/><b>终端正在恢复</b><span>文件仍可使用；运行环境恢复后终端会自动可用。</span></div>}</div>)}
-          {gitSidebarVisible && gitRepository && <WorkspaceGitSidebar details={details} repository={gitRepository} selectedCommit={scopeState.selectedGitRepositoryPath === gitRepository.path ? scopeState.selectedGitCommit : undefined} onSelectCommit={commit => updateScope(current => ({
+          {gitSidebarVisible && gitRepository && <WorkspaceGitSidebar details={details} repository={gitRepository} mode={scopeState.gitMode ?? 'history'} onModeChange={mode => updateScope(current => ({ ...current, gitMode: mode }))} selectedCommit={scopeState.selectedGitRepositoryPath === gitRepository.path ? scopeState.selectedGitCommit : undefined} onSelectCommit={commit => updateScope(current => ({
             ...current,
             selectedGitRepositoryPath: commit ? gitRepository.path : undefined,
             selectedGitCommit: commit,
-          }))} loadLog={repositoryPath => api.gitLog(workspaceId, repositoryPath, gitOptions)} loadCommit={(repositoryPath, commit) => api.gitCommit(workspaceId, repositoryPath, commit, gitOptions)} loadDiff={(repositoryPath, commit, path) => api.gitDiff(workspaceId, repositoryPath, commit, path, gitOptions)} loadChanges={repositoryPath => api.gitChanges(workspaceId, repositoryPath, gitOptions)} loadWorkingDiff={(repositoryPath, kind, path) => api.gitWorkingDiff(workspaceId, repositoryPath, kind, path, gitOptions)} onOpenFileDiff={openGitFileDiff} onOpenWorkingDiff={openGitWorkingDiff} closedDiffEpoch={closedGitDiffEpoch}/>}
+          }))} loadLog={repositoryPath => api.gitLog(workspaceId, repositoryPath, gitOptions)} loadCommit={(repositoryPath, commit) => api.gitCommit(workspaceId, repositoryPath, commit, gitOptions)} loadDiff={(repositoryPath, commit, path) => api.gitDiff(workspaceId, repositoryPath, commit, path, gitOptions)} loadChanges={repositoryPath => api.gitChanges(workspaceId, repositoryPath, gitOptions)} onOpenFileDiff={openGitFileDiff} onOpenWorkingDiff={openGitWorkingDiff} closedDiffEpoch={closedGitDiffEpoch}/>}
         </div>)}
       </div>
     </section>{entryMenu && <div className="agent-file-context-menu" role="menu" aria-label="文件操作菜单" style={{ left: entryMenu.x, top: entryMenu.y }} onPointerDown={event => event.stopPropagation()}>{entryMenu.kind === 'directory' && <><button type="button" role="menuitem" onClick={() => { void createEntry(entryMenu.path, 'FILE'); setEntryMenu(undefined); }}><FileCode2 size={14}/>新建文件</button><button type="button" role="menuitem" onClick={() => { void createEntry(entryMenu.path, 'DIRECTORY'); setEntryMenu(undefined); }}><FolderPlus size={14}/>新建目录</button></>}<button type="button" className="danger" role="menuitem" onClick={() => { void removeEntries([{ path: entryMenu.path, kind: entryMenu.kind }]); setEntryMenu(undefined); }}><Trash2 size={14}/>{entryMenu.kind === 'directory' ? '删除目录' : '删除文件'}</button></div>}
