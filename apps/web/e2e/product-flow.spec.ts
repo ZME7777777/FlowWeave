@@ -1054,17 +1054,27 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   const repositoryDirectory = page.locator('.agent-file-tree-row').filter({ hasText: 'backend' });
   await repositoryDirectory.locator('.agent-file-tree-item.directory').click();
   await expect.poll(() => workspaceGitRepositoryRequests).toBe(1);
-  await expect(page.getByLabel('Git')).toBeVisible();
+  const gitSidebar = page.getByRole('complementary', { name: 'Git' });
+  await expect(gitSidebar).toBeVisible();
   await page.getByRole('button', { name: '本地改动', exact: true }).click();
   await expect(page.getByRole('navigation', { name: '暂存区' }).getByText('staged.ts', { exact: true })).toBeVisible();
   await expect(page.getByRole('navigation', { name: '未暂存' }).getByText('local.ts', { exact: true })).toBeVisible();
   await expect(page.getByRole('navigation', { name: '未暂存' }).getByText('new.ts', { exact: true })).toBeVisible();
-  await expect(page.getByLabel('Git').getByRole('button', { name: '暂存', exact: true })).toHaveCount(0);
-  await expect(page.getByLabel('Git').getByRole('button', { name: '撤销', exact: true })).toHaveCount(0);
-  await expect(page.getByLabel('Git').getByRole('button', { name: '提交', exact: true })).toHaveCount(0);
+  await expect(gitSidebar.getByRole('button', { name: '暂存', exact: true })).toHaveCount(0);
+  await expect(gitSidebar.getByRole('button', { name: '撤销', exact: true })).toHaveCount(0);
+  await expect(gitSidebar.getByRole('button', { name: '提交', exact: true })).toHaveCount(0);
   await page.getByRole('navigation', { name: '暂存区' }).getByText('staged.ts', { exact: true }).click();
+  const workingDiffFileTrees = page.locator('.agent-git-working-file-trees');
+  await expect(workingDiffFileTrees.getByRole('navigation', { name: '暂存区' }).getByText('staged.ts', { exact: true })).toBeVisible();
+  await expect(workingDiffFileTrees.getByRole('navigation', { name: '未暂存' }).getByText('local.ts', { exact: true })).toBeVisible();
+  await expect(workingDiffFileTrees.getByRole('navigation', { name: '未暂存' }).getByText('new.ts', { exact: true })).toBeVisible();
+  await workingDiffFileTrees.getByRole('navigation', { name: '未暂存' }).getByText('local.ts', { exact: true }).click();
   await expect(page.getByText('old value', { exact: true })).toBeVisible();
   await expect(page.getByText('new value', { exact: true })).toBeVisible();
+  const filesTab = page.locator('button.agent-workspace-tab-select').filter({ hasText: '文件' });
+  await expect(filesTab).toBeVisible();
+  await filesTab.click();
+  await expect(page.getByRole('tree', { name: '工作区目录树' })).toBeVisible();
   const sourceDirectory = page.locator('.agent-file-tree-row').filter({ hasText: 'src' });
   await sourceDirectory.locator('.agent-file-tree-item.directory').click();
   await expect(page.getByText('config.ts', { exact: true })).toBeVisible();
@@ -1076,7 +1086,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect.poll(() => workspaceEntryCreates).toEqual([{
     parent_path: '/runtime/workspace/project', name: 'notes.md', kind: 'FILE',
   }]);
-  await page.getByText('README.md', { exact: true }).click();
+  await page.getByRole('tree', { name: '工作区目录树' }).getByRole('button', { name: 'README.md', exact: true }).click();
   await expect(page.getByText('workspace file preview', { exact: true })).toBeVisible();
   await page.getByText('test-branches.properties', { exact: true }).click();
   await expect(page.getByText('workspace file preview', { exact: true })).toBeVisible();
