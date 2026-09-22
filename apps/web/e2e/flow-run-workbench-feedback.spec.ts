@@ -2243,8 +2243,7 @@ test('node sessions bound terminal reconciliation when the formal result is miss
   await expect(page.getByText('OpenHands 已结束，本轮未返回正式结果。你可以继续发送消息；同步期间排队的消息需要确认后重新编辑。')).toHaveCount(0);
   await expect(composer).toBeEnabled();
   await expect(page.locator('.agent-workspace-conversation-running')).toHaveCount(0);
-  const queue = page.getByLabel('消息投递队列');
-  await expect(queue.getByText('节点同步期间不得自动发送')).toBeVisible();
-  await expect(queue.getByText('结果不确定', { exact: true })).toBeVisible();
-  expect(messagePosts).toBe(0);
+  await expect(page.getByLabel('消息投递队列')).toHaveCount(0);
+  await expect(page.locator('.conversation-message.user').filter({ hasText: '节点同步期间不得自动发送' })).toBeVisible();
+  await expect.poll(() => messagePosts).toBe(1);
 });

@@ -483,6 +483,8 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   const firstBootstrapGate = new Promise<void>(resolve => { releaseFirstBootstrap = resolve; });
   let renameRequests = 0;
   let contextAvailable = false;
+  let contextMetricsTemporarilyUnavailable = false;
+  let contextRequests = 0;
   let forkRequests = 0;
   const workspaceEntryCreates: Array<{ parent_path: string; name: string; kind: string }> = [];
   const workspaceDirectoryRequests: string[] = [];
@@ -732,15 +734,20 @@ test('top-level Agent workspace creates a direct conversation and restores its U
       return;
     }
     if (path.endsWith('/context')) {
+      contextRequests += 1;
       const forkContext = path.includes('/conversations/agent-conversation-fork-1/');
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(forkContext ? {
         used_tokens: null, window_tokens: 922_000, cumulative_tokens: 0, condenser_max_tokens: 512_000,
         model_name: 'gpt-test', reasoning_effort: 'high', usage_current: true,
         condenser_max_size: 240, view_event_count: 12,
       } : contextAvailable ? {
-        used_tokens: 6_380, window_tokens: 922_000, cumulative_tokens: 12_716, condenser_max_tokens: 512_000,
-        model_name: 'gpt-test', reasoning_effort: 'high', usage_current: true,
-        condenser_max_size: 10_000, view_event_count: 42,
+        used_tokens: contextMetricsTemporarilyUnavailable ? null : 6_380,
+        window_tokens: 922_000,
+        cumulative_tokens: 12_716,
+        condenser_max_tokens: 512_000,
+        model_name: 'gpt-test', reasoning_effort: 'high', usage_current: !contextMetricsTemporarilyUnavailable,
+        condenser_max_size: 10_000,
+        view_event_count: contextMetricsTemporarilyUnavailable ? null : 42,
       } : {
         used_tokens: null, window_tokens: 922_000, cumulative_tokens: 12_716, condenser_max_tokens: 512_000,
         model_name: 'gpt-test', reasoning_effort: 'high', usage_current: false,
@@ -843,6 +850,13 @@ test('top-level Agent workspace creates a direct conversation and restores its U
           subagent_count: 0,
           active_subagents: [],
         } : undefined,
+      }) });
+      return;
+    }
+    if (path.endsWith('/attachments') && request.method() === 'POST') {
+      await route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify({
+        filename: '即时附件.png', mime_type: 'image/png', byte_size: 174 * 1024,
+        path: '/runtime/workspace/project/uploads/instant-attachment.png', image_data_url: 'data:image/png;base64,iVBORw==',
       }) });
       return;
     }
@@ -1197,6 +1211,19 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.locator('.agent-workspace-overview').getByText('累计 12,716 Token', { exact: true })).toBeVisible();
   await expect(page.locator('.agent-context-progress.activity')).toContainText('事件42 / 10,000');
   await expect(page.locator('.agent-context-progress.activity')).toHaveAttribute('title', /OpenHands 当前活动 View 事件 42 \/ 自动压缩阈值 10,000/);
+  const tokenProgress = page.locator('.agent-context-progress.token');
+  const eventProgress = page.locator('.agent-context-progress.activity');
+  await tokenProgress.evaluate(element => { (element as HTMLElement).dataset.stabilityMarker = 'token-progress'; });
+  await eventProgress.evaluate(element => { (element as HTMLElement).dataset.stabilityMarker = 'event-progress'; });
+  const contextRequestsBeforeTransientGap = contextRequests;
+  contextMetricsTemporarilyUnavailable = true;
+  agentStream!.send(JSON.stringify({ type: 'message_complete' }));
+  await expect.poll(() => contextRequests).toBeGreaterThan(contextRequestsBeforeTransientGap);
+  await expect(tokenProgress).toHaveAttribute('data-stability-marker', 'token-progress');
+  await expect(tokenProgress).toContainText('Token6,380 / 512,000');
+  await expect(eventProgress).toHaveAttribute('data-stability-marker', 'event-progress');
+  await expect(eventProgress).toContainText('事件42 / 10,000');
+  contextMetricsTemporarilyUnavailable = false;
   const composerAfterReload = page.getByLabel('发送 Agent 消息');
   await composerAfterReload.fill('/');
   const commandMenu = page.getByRole('listbox', { name: '选择命令或 MCP' });
@@ -1752,17 +1779,18 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expectViewportAtLatest();
   await composer.fill('运行中直接发送消息');
   await composer.press('Meta+Enter');
-  await expect(page.locator('.conversation-message.user').filter({ hasText: '运行中直接发送消息' })).toBeVisible();
-  await expect(page.locator('.conversation-message-delivery-status')).toHaveText('正在追加到当前回复');
+  const runningDirectMessage = page.locator('.conversation-message.user').filter({ hasText: '运行中直接发送消息' });
+  await expect(runningDirectMessage).toBeVisible();
+  await expect(page.locator('.conversation-message-delivery-status')).toHaveCount(0);
   await expect(page.getByLabel('消息投递队列').getByText('运行中直接发送消息')).toHaveCount(0);
   await expect.poll(() => runningDirectMessagePosts).toBe(1);
   agentStream!.send(JSON.stringify({
     type: 'event',
     event: { id: 'running-direct-stream-user', event_type: 'MESSAGE', payload: { source: 'user', content: '运行中直接发送消息' } },
   }));
-  await expect(page.locator('.conversation-message-delivery-status')).toHaveText('正在追加到当前回复');
-  releaseRunningDirectDelivery?.();
   await expect(page.locator('.conversation-message-delivery-status')).toHaveCount(0);
+  releaseRunningDirectDelivery?.();
+  await expect(runningDirectMessage).toBeVisible();
   const activeConversation = conversations.find(item => item.id === sentBinding);
   if (!activeConversation) throw new Error('Expected the active conversation to receive the direct message');
   activeConversation.streaming_callback_ready = false;
@@ -1776,8 +1804,14 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   expect(sentMessages).toBe(sentBeforeQueue);
   await page.reload();
   await expect(page.getByLabel('消息投递队列').getByText('待编辑排队消息')).toBeVisible();
-  await page.getByLabel('消息投递队列').getByRole('button', { name: '更多排队消息操作 1' }).click();
-  await page.getByLabel('消息投递队列').getByRole('menuitem', { name: '编辑消息' }).click();
+  const queueMoreButton = page.getByLabel('消息投递队列').getByRole('button', { name: '更多排队消息操作 1' });
+  await queueMoreButton.click();
+  const queueMenu = page.getByLabel('消息投递队列').getByRole('menu');
+  await expect(queueMenu).toBeVisible();
+  const queueMenuBox = await queueMenu.boundingBox();
+  const queueMoreBox = await queueMoreButton.boundingBox();
+  expect(queueMenuBox?.bottom).toBeLessThanOrEqual(queueMoreBox?.top ?? Number.POSITIVE_INFINITY);
+  await queueMenu.getByRole('menuitem', { name: '编辑消息' }).click();
   await expect(page.getByLabel('消息投递队列').locator('article')).toHaveCount(0);
   await expect(composer).toBeFocused();
   await expect(composer).toHaveValue('待编辑排队消息');
@@ -1812,16 +1846,32 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   modelIsResponding = true;
   await page.reload();
   activeConversation.streaming_callback_ready = true;
+  await page.evaluate(() => sessionStorage.setItem('flowweave.agent.message-queue.v1:agent-workspace-1:agent-conversation-streaming-1', JSON.stringify([{
+    id: 'legacy-dispatched-message', scope: 'agent-conversation-streaming-1', content: '旧版已发送消息', items: [], references: [], annotations: [], deliveryState: 'ambiguous', createdAt: Date.now(),
+  }])));
+  await page.reload();
+  await expect(page.getByLabel('消息投递队列')).toHaveCount(0);
+  await page.getByLabel('上传附件').setInputFiles({ name: '即时附件.png', mimeType: 'image/png', buffer: Buffer.from([1, 2, 3, 4]) });
+  await expect(page.locator('.agent-attachments').getByText('即时附件.png', { exact: true })).toBeVisible();
   await composer.fill('网络不确定消息');
   await composer.press('Meta+Enter');
-  await expect(queuedMessage.getByText('网络不确定消息')).toBeVisible();
-  await expect(queuedMessage.getByText('结果不确定', { exact: true })).toBeVisible();
+  const optimisticAmbiguousMessage = page.locator('.conversation-message.user').filter({ hasText: '网络不确定消息' });
+  await expect(optimisticAmbiguousMessage).toBeVisible();
+  const optimisticAttachment = optimisticAmbiguousMessage.locator('.conversation-message-attachment').filter({ hasText: '即时附件.png' });
+  await expect(optimisticAttachment).toBeVisible();
+  await expect(optimisticAttachment).toContainText('image/png · 174 KB');
+  await expect(page.locator('.conversation-message-delivery-status')).toHaveCount(0);
+  await expect(page.getByLabel('消息投递队列')).toHaveCount(0);
   await expect.poll(() => ambiguousMessagePosts).toBe(1);
-  await page.reload();
-  await expect(page.getByLabel('消息投递队列').getByText('网络不确定消息')).toBeVisible();
-  await expect(page.getByLabel('消息投递队列').getByText('结果不确定', { exact: true })).toBeVisible();
+  await expect(optimisticAmbiguousMessage).toBeVisible();
+  await expect(optimisticAttachment).toBeVisible();
+  await page.locator('[data-conversation-binding-id="agent-conversation-fork-1"]').getByRole('button').first().click();
+  await page.locator(`[data-conversation-binding-id="${sentBinding}"]`).getByRole('button').first().click();
+  await expect(page.getByLabel('消息投递队列')).toHaveCount(0);
+  const restoredOptimisticMessage = page.locator('.conversation-message.user').filter({ hasText: '网络不确定消息' });
+  await expect(restoredOptimisticMessage).toBeVisible();
+  await expect(restoredOptimisticMessage.getByLabel('消息附件').getByText('即时附件.png', { exact: true })).toBeVisible();
   expect(ambiguousMessagePosts).toBe(1);
-  await page.getByLabel('消息投递队列').getByRole('button', { name: '移除排队消息 1' }).click();
   const liveToolDetail = activeProcess.locator('.conversation-tool-detail').filter({ hasText: '已运行 pwd' });
   await expect(liveToolDetail).toHaveJSProperty('open', false);
   await liveToolDetail.locator(':scope > summary').click();
@@ -1829,16 +1879,23 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.locator('.agent-composer-actions .agent-send')).toHaveCount(1);
   // A stale readiness response may briefly report idle before the next native
   // snapshot reports this same turn as running. The process and bottom task
-  // plan must stay mounted so the composer dock does not flash or shift.
+  // plan must stay mounted so neither the transcript nor composer dock flashes.
   await taskPlan.evaluate(element => { (element as HTMLElement).dataset.stabilityMarker = 'live-task-plan'; });
+  await activeProcess.evaluate(element => { (element as HTMLElement).dataset.stabilityMarker = 'active-process'; });
   const stableTaskPlanTop = await taskPlan.evaluate(element => element.getBoundingClientRect().top);
   transientIdleReadiness = true;
   await expect(page.getByRole('button', { name: '发送消息' })).toBeVisible();
   await expect(activeProcess).toHaveJSProperty('open', true);
+  await expect(activeProcess).toHaveClass(/active/);
+  await expect(activeProcess).toHaveAttribute('data-stability-marker', 'active-process');
+  await expect(activeProcess.locator(':scope > summary .conversation-activity-spin')).toBeVisible();
   await expect(taskPlan).toHaveAttribute('data-stability-marker', 'live-task-plan');
   await expect.poll(() => taskPlan.evaluate(element => element.getBoundingClientRect().top)).toBe(stableTaskPlanTop);
   await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toBeVisible();
   await expect(activeProcess).toHaveJSProperty('open', true);
+  await expect(activeProcess).toHaveClass(/active/);
+  await expect(activeProcess).toHaveAttribute('data-stability-marker', 'active-process');
+  await expect(activeProcess.locator(':scope > summary .conversation-activity-spin')).toBeVisible();
   await expect(taskPlan).toHaveAttribute('data-stability-marker', 'live-task-plan');
   await expect.poll(() => taskPlan.evaluate(element => element.getBoundingClientRect().top)).toBe(stableTaskPlanTop);
   await page.getByRole('button', { name: '暂停当前 Agent' }).click();
@@ -1985,10 +2042,9 @@ test('terminal readiness without a formal result releases the composer after a b
   await expect(page.getByText('OpenHands 已结束，本轮未返回正式结果。你可以继续发送消息；同步期间排队的消息需要确认后重新编辑。')).toHaveCount(0);
   await expect(composer).toBeEnabled();
   await expect(page.locator('.agent-workspace-conversation-running')).toHaveCount(0);
-  const queue = page.getByLabel('消息投递队列');
-  await expect(queue.getByText('同步期间不得自动发送')).toBeVisible();
-  await expect(queue.getByText('结果不确定', { exact: true })).toBeVisible();
-  expect(messagePosts).toBe(0);
+  await expect(page.getByLabel('消息投递队列')).toHaveCount(0);
+  await expect(page.locator('.conversation-message.user').filter({ hasText: '同步期间不得自动发送' })).toBeVisible();
+  await expect.poll(() => messagePosts).toBe(1);
 });
 
 test('editing the latest user message locally replaces only its active branch', async ({ page }) => {

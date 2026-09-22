@@ -22,7 +22,7 @@ import { selectCapabilityVersion, selectCapabilityVersions } from '../../utils/c
 import { SubagentAvatar } from '../SubagentAvatar';
 import { subagentAvatarSlots, type SubagentAvatarSlot } from '../../utils/subagentAvatar';
 import { workspaceFileChanges, workspaceRelativePath, type WorkspaceFileChange } from './fileChanges';
-import type { AgentAttachment, AgentConversation, AgentConversationAnnotation, AgentConversationCredentialSyncEntry, AgentConversationPage, AgentConversationReference, AgentConversationSearch, AgentPendingConfirmationAction, AgentSessionCapability, AgentSessionMcpReadiness, AgentSessionWorkDirectory, AgentSessionWorkDirectoryList, AgentSessionWorkspaceDetails, AgentWorkspaceReference, CapabilityAsset, CapabilityCollection, ModelProvider, OpenHandsConversationEvent, OpenHandsConversationEventBatch, ProviderModel, RuntimeTaskControlSnapshot, RuntimeTaskUsageSnapshot, WorkspaceGitChangeKind, WorkspaceGitChangedFile, WorkspaceGitChanges, WorkspaceGitCommitDetails, WorkspaceGitFileDiff } from '../../types';
+import type { AgentAttachment, AgentConversation, AgentConversationAnnotation, AgentConversationContext, AgentConversationCredentialSyncEntry, AgentConversationPage, AgentConversationReference, AgentConversationSearch, AgentPendingConfirmationAction, AgentSessionCapability, AgentSessionMcpReadiness, AgentSessionWorkDirectory, AgentSessionWorkDirectoryList, AgentSessionWorkspaceDetails, AgentWorkspaceReference, CapabilityAsset, CapabilityCollection, ModelProvider, OpenHandsConversationEvent, OpenHandsConversationEventBatch, ProviderModel, RuntimeTaskControlSnapshot, RuntimeTaskUsageSnapshot, WorkspaceGitChangeKind, WorkspaceGitChangedFile, WorkspaceGitChanges, WorkspaceGitCommitDetails, WorkspaceGitFileDiff } from '../../types';
 import '../../pages/agent-workbench.css';
 import '../../pages/agent-workbench-layout.css';
 
@@ -39,7 +39,7 @@ const DEFAULT_CONTEXT_COMPACTION_THRESHOLD_TOKENS = 512_000;
 type StreamStatus = 'connecting' | 'live' | 'recovering' | 'disabled';
 type TurnState = 'idle' | 'running' | 'pausing' | 'paused' | 'resuming';
 type ConversationActivityState = TurnState | 'synchronizing';
-type QueueDeliveryState = 'queued' | 'dispatching' | 'ambiguous' | 'rejected';
+type QueueDeliveryState = 'queued';
 type ConversationOrderSync = { state: 'syncing' | 'failed'; orderedBindingIds: string[] };
 interface RewriteRequest {
   eventId: string;
@@ -62,7 +62,6 @@ interface QueuedMessage {
   /** A formal user event may be appended while the current turn is running. */
   nativeGuidance?: boolean;
   createdAt?: number;
-  deliveryError?: string;
 }
 type FileSelection = NonNullable<AgentWorkspaceReference['selection']>;
 
@@ -766,9 +765,8 @@ function queuedMessageFromStorage(value: unknown): QueuedMessage | undefined {
     || typeof item.path !== 'string')) return undefined;
   const references = candidate.references.filter((item): item is ConversationReference => Boolean(item)
     && typeof item.eventId === 'string' && typeof item.content === 'string').slice(0, 20);
-  const deliveryState: QueueDeliveryState = ['queued', 'dispatching', 'ambiguous', 'rejected'].includes(candidate.deliveryState ?? '')
-    ? candidate.deliveryState as QueueDeliveryState
-    : 'queued';
+  if (candidate.deliveryState && candidate.deliveryState !== 'queued') return undefined;
+  const deliveryState: QueueDeliveryState = 'queued';
   return {
     id: candidate.id,
     scope: candidate.scope,
@@ -783,7 +781,6 @@ function queuedMessageFromStorage(value: unknown): QueuedMessage | undefined {
     deliveryState,
     nativeGuidance: candidate.nativeGuidance === true,
     createdAt: typeof candidate.createdAt === 'number' ? candidate.createdAt : Date.now(),
-    deliveryError: typeof candidate.deliveryError === 'string' ? candidate.deliveryError.slice(0, 1000) : undefined,
   };
 }
 
@@ -835,14 +832,6 @@ function writeQueueMode(storageKey: string | undefined, enabled: boolean) {
   }
 }
 
-
-function isAmbiguousDelivery(error: unknown): boolean {
-  if (!(error instanceof ApiError)) return true;
-  return error.code === 'AGENT_MESSAGE_DELIVERY_AMBIGUOUS'
-    || error.code === 'NETWORK_ERROR'
-    || error.status === 0
-    || error.status >= 500;
-}
 
 function annotationsFromStorage(value: unknown): AgentConversationAnnotation[] {
   if (!Array.isArray(value)) return [];
@@ -1497,26 +1486,58 @@ function mergeConversationEvents(
   durable: OpenHandsConversationEvent[],
   transient: OpenHandsConversationEvent[],
 ): OpenHandsConversationEvent[] {
-  // REST remains the source of truth for fields it has persisted.  A current
-  // branch read is intentionally bounded, however, and the stream can carry a
-  // fuller projection of the same formal event before that read catches up.
-  // Merge by the native event ID so a refresh cannot make a visible ToolAction
-  // briefly disappear (or lose its command/details) while the turn is active.
-  // Append browser-only frames after the stable REST order so an optimistic
-  // current user turn cannot jump in front of its eventual formal parent.
-  const mergeEvent = (current: OpenHandsConversationEvent, incoming: OpenHandsConversationEvent): OpenHandsConversationEvent => ({
-    ...current,
-    ...incoming,
-    payload: {
-      ...current.payload,
-      ...incoming.payload,
-      details: { ...current.payload.details, ...incoming.payload.details },
-    },
-  });
+  const mergeEvent = (current: OpenHandsConversationEvent, incoming: OpenHandsConversationEvent): OpenHandsConversationEvent => {
+    const currentAttachments = Array.isArray(current.payload.attachments) ? current.payload.attachments : [];
+    const incomingAttachments = Array.isArray(incoming.payload.attachments) ? incoming.payload.attachments : [];
+    const attachments = [...currentAttachments, ...incomingAttachments].reduce<AgentAttachment[]>((items, attachment) => {
+      const index = items.findIndex(item => item.path === attachment.path);
+      if (index < 0) return [...items, attachment];
+      const next = [...items];
+      next[index] = { ...items[index], ...attachment, image_data_url: attachment.image_data_url ?? items[index].image_data_url };
+      return next;
+    }, []);
+    return {
+      ...current,
+      ...incoming,
+      payload: {
+        ...current.payload,
+        ...incoming.payload,
+        ...(attachments.length ? { attachments } : {}),
+        details: { ...current.payload.details, ...incoming.payload.details },
+      },
+    };
+  };
+  const isSubmittedUserEvent = (event: OpenHandsConversationEvent) => event.event_type === 'MESSAGE'
+    && event.payload.source === 'user'
+    && typeof event.payload._flowweave_submission_id === 'string';
+  const sameSubmittedMessage = (first: OpenHandsConversationEvent, second: OpenHandsConversationEvent) => {
+    if (first.event_type !== 'MESSAGE' || second.event_type !== 'MESSAGE'
+      || first.payload.source !== 'user' || second.payload.source !== 'user'
+      || first.payload.content !== second.payload.content) return false;
+    const firstTime = typeof first.payload.timestamp === 'string' ? Date.parse(first.payload.timestamp) : Number.NaN;
+    const secondTime = typeof second.payload.timestamp === 'string' ? Date.parse(second.payload.timestamp) : Number.NaN;
+    return !Number.isFinite(firstTime) || !Number.isFinite(secondTime) || Math.abs(firstTime - secondTime) <= 5 * 60_000;
+  };
   const merged = new Map(durable.map(event => [event.id, event]));
   for (const event of transient) {
     const current = merged.get(event.id);
-    merged.set(event.id, current ? mergeEvent(current, event) : event);
+    if (current) {
+      merged.set(event.id, mergeEvent(current, event));
+      continue;
+    }
+    const counterpart = [...merged.entries()].find(([, candidate]) => (
+      isSubmittedUserEvent(candidate) !== isSubmittedUserEvent(event)
+      && sameSubmittedMessage(candidate, event)
+    ));
+    if (!counterpart) {
+      merged.set(event.id, event);
+      continue;
+    }
+    const [counterpartId, candidate] = counterpart;
+    const formalEvent = isSubmittedUserEvent(candidate) ? event : candidate;
+    const submittedEvent = isSubmittedUserEvent(candidate) ? candidate : event;
+    merged.delete(counterpartId);
+    merged.set(formalEvent.id, { ...mergeEvent(formalEvent, submittedEvent), id: formalEvent.id });
   }
   return [...merged.values()];
 }
@@ -3962,7 +3983,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const queuedMessagesStorageKeyRef = useRef<string | undefined>(undefined);
   const queuedMessagesRef = useRef<QueuedMessage[]>([]);
   const sendingMessageIds = useRef(new Set<string>());
-  const nativeGuidanceOptimisticEventIds = useRef<Map<string, string>>(new Map());
+  const submittedUserEvents = useRef(new Map<string, ScopedConversationEvent>());
   useEffect(() => () => {
     for (const resource of [
       'conversation-events',
@@ -4472,24 +4493,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       : nativeTurnRunning
       ? 'running'
         : turnState;
-  // Delivery always enters the browser-local ledger before its one HTTP
-  // attempt. When the native Conversation is already idle (including after a
-  // formal error), that ledger entry is immediately eligible for dispatch; it
-  // is not user-visible queueing. Keep actual running-turn queue entries and
-  // every non-success outcome visible and actionable within its conversation.
-  const visibleQueuedMessages = queuedMessages.filter(message =>
-    message.scope === selected?.id
-    && message.deliveryState !== 'dispatching'
-    && (message.deliveryState === 'ambiguous'
-      || message.deliveryState === 'rejected'
-      || !queueModeEnabled
-      || effectiveTurnState !== 'idle'),
-  );
-  const nativeGuidanceDispatching = queuedMessages.some(message =>
-    message.nativeGuidance
-    && message.deliveryState === 'dispatching'
-    && message.scope === selected?.id,
-  );
+  // The browser queue contains only messages that have not started delivery.
+  // Once a request starts, the optimistic conversation event owns its display.
+  const visibleQueuedMessages = queuedMessages.filter(message => message.scope === selected?.id);
   const isGenerating = effectiveTurnState === 'running' || effectiveTurnState === 'pausing' || effectiveTurnState === 'resuming';
   const streamEnabled = Boolean(
     selected
@@ -4683,6 +4689,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       synchronizing,
     };
   }, [effectiveTurnState, hasUnfinishedFormalTurn, nativeTurnTerminal, terminalSyncExpired]);
+  const conversationVisuallyActive = conversationActivity.active || (hasUnfinishedFormalTurn && !terminalSyncExpired);
   const latestDisplayedEvent = displayedEvents.at(-1);
   const emptyResponseRecoveryActive = conversationActivity.state === 'running'
     && Boolean(latestDisplayedEvent && isOpenHandsEmptyResponseRecovery(latestDisplayedEvent));
@@ -4780,6 +4787,25 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     queryFn: () => api.conversationContext(workspace!.id, selected!.id),
     enabled: Boolean(workspace && selected),
   });
+  const lastCurrentContextByBinding = useRef(new Map<string, AgentConversationContext>());
+  const currentContext = useMemo(() => {
+    const bindingId = selected?.id;
+    const incoming = contextQuery.data;
+    if (!bindingId || !incoming) return incoming;
+    const previous = lastCurrentContextByBinding.current.get(bindingId);
+    const hasCurrentTokens = typeof incoming.used_tokens === 'number' && incoming.used_tokens >= 0;
+    const hasCurrentEventCount = typeof incoming.view_event_count === 'number' && incoming.view_event_count >= 0;
+    if (hasCurrentTokens || hasCurrentEventCount) {
+      const current = {
+        ...incoming,
+        used_tokens: hasCurrentTokens ? incoming.used_tokens : previous?.used_tokens,
+        view_event_count: hasCurrentEventCount ? incoming.view_event_count : previous?.view_event_count,
+      };
+      lastCurrentContextByBinding.current.set(bindingId, current);
+      return current;
+    }
+    return previous ? { ...incoming, used_tokens: previous.used_tokens, view_event_count: previous.view_event_count } : incoming;
+  }, [contextQuery.data, selected?.id]);
   const canWrite = Boolean(selected?.write_available);
   // A completed FlowRun keeps its source node Conversation read-only, but it
   // may create the same native Fork available in an ordinary Agent session.
@@ -4844,9 +4870,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     writeQueuedMessages(queuedMessagesStorageKeyRef.current, next);
     setQueuedMessages(next);
   }, []);
-  const updateQueuedMessage = useCallback((id: string, update: (message: QueuedMessage) => QueuedMessage) => {
-    commitQueuedMessages(current => current.map(message => message.id === id ? update(message) : message));
-  }, [commitQueuedMessages]);
   const onStreamEvent = useCallback((scope: string, event: AgentStreamEvent) => {
     // The upstream stream remains necessary for timely process/event delivery,
     // but text deltas are transient and must never appear as a partial final
@@ -4890,7 +4913,13 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       bootstrapTransitionScope.current = undefined;
       return;
     }
-    setEditing(false); setQueuedMessageMenuId(undefined); clearLiveText(); pendingLiveEvents.current = []; if (liveEventsFrame.current !== undefined) window.cancelAnimationFrame(liveEventsFrame.current); liveEventsFrame.current = undefined; setScopedLiveEvents(current => current.filter(item => item.scope === composerScope)); setHiddenEventIds(new Set()); setActiveTurnEventId(undefined); setExpiredTerminalSyncTurnKey(undefined); setRequestStartedAt(undefined); setConfirmationReason(''); setTurnState('idle'); queuedMessagesRef.current = []; nativeGuidanceOptimisticEventIds.current.clear(); setQueuedMessages([]); setPendingRewrite(undefined);
+    setEditing(false); setQueuedMessageMenuId(undefined); clearLiveText(); pendingLiveEvents.current = []; if (liveEventsFrame.current !== undefined) window.cancelAnimationFrame(liveEventsFrame.current); liveEventsFrame.current = undefined; setScopedLiveEvents(current => {
+      const byId = new Map(current
+        .filter(item => item.scope === composerScope)
+        .map(item => [item.event.id, item]));
+      for (const item of submittedUserEvents.current.values()) byId.set(item.event.id, item);
+      return [...byId.values()];
+    }); setHiddenEventIds(new Set()); setActiveTurnEventId(undefined); setExpiredTerminalSyncTurnKey(undefined); setRequestStartedAt(undefined); setConfirmationReason(''); setTurnState('idle'); queuedMessagesRef.current = []; setQueuedMessages([]); setPendingRewrite(undefined);
     if (recoveredComposer && composerScope) {
       composerDraftsByScope.current.set(composerScope, recoveredComposer);
       replaceComposerDraft(recoveredComposer.content, composerScope);
@@ -4913,15 +4942,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   }, [queuedMessages, queuedMessagesStorageKey]);
   useEffect(() => {
     if (!queuedMessagesStorageKey) return;
-    // A request that was in flight while the page closed has no formal
-    // OpenHands correlation field. Treat it as unresolved, never as safe to
-    // repeat; the user can refresh the transcript and decide explicitly.
     queuedMessagesStorageKeyRef.current = queuedMessagesStorageKey;
-    const restored: QueuedMessage[] = readQueuedMessages(queuedMessagesStorageKey).map(message =>
-      message.deliveryState === 'dispatching'
-        ? { ...message, deliveryState: 'ambiguous' as const, deliveryError: '页面在等待 OpenHands 确认时关闭；发送结果不确定，请刷新会话确认。' }
-        : message,
-    );
+    const restored = readQueuedMessages(queuedMessagesStorageKey);
     queuedMessagesRef.current = restored;
     writeQueuedMessages(queuedMessagesStorageKey, restored);
     setQueuedMessages(restored);
@@ -4981,19 +5003,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       clearLiveText();
       setStreamHold({ bindingId, expiresAt: Date.now() + STREAM_IDLE_GRACE_MS });
       setTurnState('idle');
-      commitQueuedMessages(messages => messages.map(message => (
-        message.scope === bindingId && message.deliveryState === 'queued'
-          ? {
-              ...message,
-              deliveryState: 'ambiguous' as const,
-              deliveryError: '会话同步结束前未自动发送；发送结果不确定，请刷新会话确认后重新编辑。',
-            }
-          : message
-      )));
       refresh();
     }, TERMINAL_EVENT_RECONCILIATION_MS);
     return () => window.clearTimeout(timer);
-  }, [clearLiveText, commitQueuedMessages, refresh, terminalSyncExpired, terminalSyncTurnKey]);
+  }, [clearLiveText, refresh, terminalSyncExpired, terminalSyncTurnKey]);
   useEffect(() => {
     if (!selected || !latestFormalTurnFinished) return;
 
@@ -5245,11 +5258,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       reportOperationError(selected?.id, persistModel.error as Error);
     },
   });
-  const showOptimisticUserBubble = useCallback((message: QueuedMessage, deliveryStatus?: string): string => {
-    const existing = nativeGuidanceOptimisticEventIds.current.get(message.id);
-    if (existing) return existing;
-    const optimisticEventId = `pending-user:${randomId()}`;
-    nativeGuidanceOptimisticEventIds.current.set(message.id, optimisticEventId);
+  const showOptimisticUserBubble = useCallback((message: QueuedMessage): string => {
+    const optimisticEventId = `pending-user:${message.id}`;
     const event: OpenHandsConversationEvent = {
       id: optimisticEventId,
       event_type: 'MESSAGE',
@@ -5260,26 +5270,22 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         conversation_references: message.references.map(item => ({ event_id: item.eventId, content: item.content })),
         workspace_references: message.workspaceReferences,
         collaboration_annotations: message.annotations,
-        ...(deliveryStatus ? { _flowweave_delivery_status: deliveryStatus } : {}),
+        timestamp: new Date().toISOString(),
+        _flowweave_submission_id: message.id,
       },
     };
-    setScopedLiveEvents(current => [...current, { scope: message.scope, event }]);
+    const submitted = { scope: message.scope, event };
+    submittedUserEvents.current.set(message.id, submitted);
+    setScopedLiveEvents(current => [...current, submitted]);
     return optimisticEventId;
   }, []);
   const send = useMutation({
     mutationFn: (message: BoundQueuedMessage) => api.sendMessage(workspace!.id, message.bindingId, message.content, message.items, message.references.map(item => ({ event_id: item.eventId, content: item.content })), message.workspaceReferences ?? [], message.annotations, message.id),
     onMutate: message => {
       sendingMessageIds.current.add(message.id);
-      const optimisticEventId = showOptimisticUserBubble(
-        message,
-        message.nativeGuidance ? '正在追加到当前回复' : undefined,
-      );
-      if (message.nativeGuidance) {
-        // The user has asked to append direction to the active turn, so show
-        // that intent immediately. It remains explicitly provisional until
-        // the append request returns a formal OpenHands cursor.
-        return { optimisticEventId, nativeGuidance: true };
-      }
+      commitQueuedMessages(current => current.filter(item => item.id !== message.id));
+      const optimisticEventId = showOptimisticUserBubble(message);
+      if (message.nativeGuidance) return { optimisticEventId, nativeGuidance: true };
       clearLiveText();
       setActiveTurnEventId(undefined);
       setRequestStartedAt(Date.now());
@@ -5288,27 +5294,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     },
     onSuccess: (value, message, context) => {
       sendingMessageIds.current.delete(message.id);
-      nativeGuidanceOptimisticEventIds.current.delete(message.id);
       const cursor = value.cursor;
-      if (cursor) {
-        if (!context?.nativeGuidance && activeComposerScope.current === message.bindingId) setActiveTurnEventId(cursor);
-        setScopedLiveEvents(current => {
-          const retained = current.filter(item => item.scope !== message.bindingId || item.event.id !== context?.optimisticEventId);
-          return [...retained, {
-            scope: message.bindingId,
-            event: { id: cursor, event_type: 'MESSAGE', payload: { source: 'user', content: message.content, attachments: message.items, conversation_references: message.references.map(item => ({ event_id: item.eventId, content: item.content })), workspace_references: message.workspaceReferences, collaboration_annotations: message.annotations } },
-          }];
-        });
-      }
-      if (value.accepted && cursor) {
-        commitQueuedMessages(current => current.filter(item => item.id !== message.id));
-      } else {
-        updateQueuedMessage(message.id, item => ({
-          ...item,
-          deliveryState: 'ambiguous',
-          deliveryError: '服务未返回可验证的 OpenHands 事件 ID；发送结果不确定，请刷新会话确认。',
-        }));
-      }
+      if (cursor && !context?.nativeGuidance && activeComposerScope.current === message.bindingId) setActiveTurnEventId(cursor);
       if (!context?.nativeGuidance && activeComposerScope.current === message.bindingId) {
         setAttachments([]);
         setComposerAnnotations([]);
@@ -5317,39 +5304,17 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     },
     onError: (error, message, context) => {
       sendingMessageIds.current.delete(message.id);
-      nativeGuidanceOptimisticEventIds.current.delete(message.id);
-      if (error instanceof ApiError && error.code === 'AGENT_CONVERSATION_BUSY') {
-        updateQueuedMessage(message.id, item => ({ ...item, deliveryState: 'queued', nativeGuidance: false, deliveryError: undefined }));
-      } else if (isAmbiguousDelivery(error)) {
-        updateQueuedMessage(message.id, item => ({
-          ...item,
-          deliveryState: 'ambiguous',
-          deliveryError: '发送结果不确定，请先刷新会话确认；系统不会自动重新发送。',
-        }));
-      } else {
-        updateQueuedMessage(message.id, item => ({
-          ...item,
-          deliveryState: 'rejected',
-          deliveryError: error instanceof Error ? error.message : '消息被服务器拒绝。',
-        }));
-      }
-      const removeOptimisticEvent = () => setScopedLiveEvents(current => current.filter(
-        item => item.scope !== message.bindingId || item.event.id !== context?.optimisticEventId,
-      ));
       if (context?.nativeGuidance) {
-        removeOptimisticEvent();
         reportOperationError(message.bindingId, error);
         return;
       }
       if (error instanceof ApiError && error.code === 'AGENT_CONVERSATION_BUSY') {
-        removeOptimisticEvent();
         if (activeComposerScope.current === message.bindingId) {
           setActiveTurnEventId(undefined);
           setTurnState('running');
         }
         return;
       }
-      removeOptimisticEvent();
       if (activeComposerScope.current === message.bindingId) {
         clearLiveText();
         setActiveTurnEventId(undefined);
@@ -5380,11 +5345,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         scope: value.id,
         deliveryState: 'queued',
         nativeGuidance: false,
-        deliveryError: undefined,
       };
-      const nextStorageKey = host.queuedMessagesStorageKey(workspace.id, value.id);
-      const existing = readQueuedMessages(nextStorageKey).filter(item => item.id !== message.id);
-      writeQueuedMessages(nextStorageKey, [...existing, nextScopeMessage]);
       commitQueuedMessages(current => current.filter(item => item.id !== message.id));
       setPendingCreatedId(value.id);
       setPendingMigratedSend({ ...nextScopeMessage, bindingId: value.id });
@@ -5392,13 +5353,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       onNavigate(host.conversationPath(value.id));
     },
     onError: (error, message) => {
-      updateQueuedMessage(message.id, item => ({
-        ...item,
-        deliveryState: isAmbiguousDelivery(error) ? 'ambiguous' : 'rejected',
-        deliveryError: isAmbiguousDelivery(error)
-          ? '会话迁移结果不确定，请刷新会话确认；系统不会自动重新发送。'
-          : error instanceof Error ? error.message : '会话迁移被服务器拒绝。',
-      }));
+      commitQueuedMessages(current => current.filter(item => item.id !== message.id));
       reportOperationError(message.scope, error);
     },
   });
@@ -5493,9 +5448,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     if (!pendingMigratedSend || selected?.id !== pendingMigratedSend.bindingId || send.isPending) return;
     const message = pendingMigratedSend;
     setPendingMigratedSend(undefined);
-    updateQueuedMessage(message.id, item => ({ ...item, deliveryState: 'dispatching' }));
     send.mutate(message);
-  }, [pendingMigratedSend, selected?.id, send, updateQueuedMessage]);
+  }, [pendingMigratedSend, selected?.id, send]);
   useEffect(() => {
     if (turnState !== 'pausing' || !inputReadinessQuery.data?.ready) return;
     if (pendingRewrite) {
@@ -5609,14 +5563,15 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     const queuedMessage: QueuedMessage = {
       ...message,
       nativeGuidance: false,
-      deliveryState: shouldQueue ? 'queued' : 'dispatching',
+      deliveryState: 'queued',
       createdAt: Date.now(),
     };
-    commitQueuedMessages(items => [...items, queuedMessage]);
-    if (queuedMessage.deliveryState === 'queued') return;
-    showOptimisticUserBubble(queuedMessage);
+    if (shouldQueue) {
+      commitQueuedMessages(items => [...items, queuedMessage]);
+      return;
+    }
     send.mutate({ ...queuedMessage, bindingId: selected.id });
-  }, [attachments, bootstrap, canBootstrap, canWrite, commitQueuedMessages, composerAnnotations, composerScope, conversationDraft, effectiveTurnState, host.id, migrateStreaming.isPending, pendingMigratedSend, queueModeEnabled, references, replaceComposerDraft, selected, send, showOptimisticUserBubble, workspace, workspaceReferences]);
+  }, [attachments, bootstrap, canBootstrap, canWrite, commitQueuedMessages, composerAnnotations, composerScope, conversationDraft, effectiveTurnState, host.id, migrateStreaming.isPending, pendingMigratedSend, queueModeEnabled, references, replaceComposerDraft, selected, send, workspace, workspaceReferences]);
   const sendDraftDirectly = useCallback((draftContent = composerDraftRef.current) => {
     const content = draftContent.trim();
     const hasComposerMessage = Boolean(content || attachments.length || references.length || workspaceReferences.length || composerAnnotations.length);
@@ -5625,10 +5580,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       if (!queueModeEnabled || !queuedMessage || !canWrite || conversationDraft || migrateStreaming.isPending || pendingMigratedSend
         || effectiveTurnState !== 'running' || !selected?.streaming_callback_ready || queuedMessage.scope !== selected.id) return;
       // With an empty composer, Command/Ctrl+Enter promotes the current queue
-      // head. Keep the durable entry and let the common dispatcher mark it
-      // in-flight before its one and only HTTP attempt.
-      showOptimisticUserBubble(queuedMessage, '正在追加到当前回复');
-      updateQueuedMessage(queuedMessage.id, message => ({ ...message, nativeGuidance: true }));
+      // head to an immediate append. The queue entry is removed as soon as the
+      // request starts and the conversation bubble becomes its only display.
+      send.mutate({ ...queuedMessage, bindingId: selected.id, nativeGuidance: true });
       return;
     }
     if (!canWrite || conversationDraft || !selected || (!queueModeEnabled && effectiveTurnState === 'running')) return;
@@ -5653,23 +5607,17 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       workspaceReferences,
       annotations: composerAnnotations,
       nativeGuidance: effectiveTurnState === 'running',
-      deliveryState: 'dispatching',
+      deliveryState: 'queued',
       createdAt: Date.now(),
     };
     setAttachments([]);
     setReferences([]); setWorkspaceReferences([]); setComposerAnnotations([]);
-    commitQueuedMessages(items => [...items, message]);
-    showOptimisticUserBubble(message, message.nativeGuidance ? '正在追加到当前回复' : undefined);
     send.mutate({ ...message, bindingId: selected.id });
-  }, [attachments, canWrite, commitQueuedMessages, composerAnnotations, composerScope, conversationDraft, effectiveTurnState, enqueueDraft, host.id, migrateStreaming.isPending, pendingMigratedSend, queueModeEnabled, queuedMessages, references, replaceComposerDraft, selected, send, showOptimisticUserBubble, workspace, workspaceReferences, updateQueuedMessage]);
+  }, [attachments, canWrite, composerAnnotations, composerScope, conversationDraft, effectiveTurnState, enqueueDraft, host.id, migrateStreaming.isPending, pendingMigratedSend, queueModeEnabled, queuedMessages, references, replaceComposerDraft, selected, send, workspace, workspaceReferences]);
   const sendQueuedMessageImmediately = useCallback((message: QueuedMessage) => {
     if (!queueModeEnabled || !canWrite || effectiveTurnState !== 'running' || !selected?.streaming_callback_ready || message.scope !== selected.id || message.deliveryState !== 'queued') return;
-    // The message stays in the persisted queue until the formal OpenHands
-    // event cursor returns. Mark it as native guidance so the dispatcher may
-    // append it during the current native turn.
-    showOptimisticUserBubble(message, '正在追加到当前回复');
-    updateQueuedMessage(message.id, item => ({ ...item, nativeGuidance: true }));
-  }, [canWrite, effectiveTurnState, queueModeEnabled, selected, showOptimisticUserBubble, updateQueuedMessage]);
+    send.mutate({ ...message, bindingId: selected.id, nativeGuidance: true });
+  }, [canWrite, effectiveTurnState, queueModeEnabled, selected, send]);
   const moveQueuedMessage = useCallback((sourceId: string, targetId: string) => {
     if (sourceId === targetId) return;
     commitQueuedMessages(items => {
@@ -5704,21 +5652,17 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     if (!queueModeEnabled || !selected || !eventsQuery.isSuccess || !queuedMessages.length || conversationActivity.synchronizing || migrateStreaming.isPending || pendingMigratedSend
       || (effectiveTurnState !== 'idle' && effectiveTurnState !== 'running' && effectiveTurnState !== 'paused')) return;
     const next = queuedMessages.find(message => message.scope === selected.id
-      && message.deliveryState === 'queued'
       && !sendingMessageIds.current.has(message.id)
       && (effectiveTurnState === 'running' ? message.nativeGuidance : !message.nativeGuidance));
     if (!next) return;
-    updateQueuedMessage(next.id, message => ({ ...message, deliveryState: 'dispatching', deliveryError: undefined }));
     if (selected.streaming_callback_ready) {
       // If native state became idle while this entry waited, it starts the
       // next ordinary turn. OpenHands is still the source of that decision.
       send.mutate({ ...next, bindingId: selected.id, nativeGuidance: effectiveTurnState === 'running' && next.nativeGuidance });
     } else if (effectiveTurnState === 'idle') {
       migrateStreaming.mutate(next);
-    } else {
-      updateQueuedMessage(next.id, message => ({ ...message, deliveryState: 'queued' }));
     }
-  }, [conversationActivity.synchronizing, effectiveTurnState, eventsQuery.isSuccess, migrateStreaming, pendingMigratedSend, queueModeEnabled, queuedMessages, selected, send, updateQueuedMessage]);
+  }, [conversationActivity.synchronizing, effectiveTurnState, eventsQuery.isSuccess, migrateStreaming, pendingMigratedSend, queueModeEnabled, queuedMessages, selected, send]);
   useEffect(() => {
     if (turnState === 'pausing' || !queuedMessages.length || !inputReadinessQuery.data?.ready) return;
     if (queuedMessages.some(message => message.scope === selected?.id && sendingMessageIds.current.has(message.id))) return;
@@ -5750,14 +5694,14 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   // The product limit is the frozen native condenser threshold, not the
   // model's larger physical input window. A Conversation supplies its exact
   // frozen value; a draft uses the platform's current frozen default.
-  const visibleContextWindow = typeof contextQuery.data?.condenser_max_tokens === 'number'
-    && contextQuery.data.condenser_max_tokens > 0
-    ? contextQuery.data.condenser_max_tokens
+  const visibleContextWindow = typeof currentContext?.condenser_max_tokens === 'number'
+    && currentContext.condenser_max_tokens > 0
+    ? currentContext.condenser_max_tokens
     : DEFAULT_CONTEXT_COMPACTION_THRESHOLD_TOKENS;
-  const currentContextTokens = contextQuery.data?.used_tokens;
+  const currentContextTokens = currentContext?.used_tokens;
   const hasCurrentContextUsage = typeof currentContextTokens === 'number' && currentContextTokens >= 0;
   const contextUsagePending = Boolean(
-    selected && (!hasCurrentContextUsage || contextQuery.data?.usage_current === false),
+    selected && (!hasCurrentContextUsage || (currentContext?.usage_current === false && contextQuery.data?.used_tokens === currentContextTokens)),
   );
   const visibleContextTokens = hasCurrentContextUsage ? currentContextTokens : undefined;
   const contextProgress = typeof visibleContextWindow === 'number' && visibleContextWindow > 0
@@ -5772,11 +5716,11 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     : undefined;
   // This is a passive View indicator only. OpenHands owns the actual
   // condensation decision and the resulting event history.
-  const currentViewEventCount = contextQuery.data?.view_event_count;
+  const currentViewEventCount = currentContext?.view_event_count;
   const hasCurrentViewEventCount = typeof currentViewEventCount === 'number' && currentViewEventCount >= 0;
-  const eventLimit = typeof contextQuery.data?.condenser_max_size === 'number'
-    && contextQuery.data.condenser_max_size > 0
-    ? contextQuery.data.condenser_max_size
+  const eventLimit = typeof currentContext?.condenser_max_size === 'number'
+    && currentContext.condenser_max_size > 0
+    ? currentContext.condenser_max_size
     : 10_000;
   const eventProgress = hasCurrentViewEventCount
     ? Math.min(100, Math.round((currentViewEventCount / eventLimit) * 100))
@@ -6042,7 +5986,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         key={selected?.id ?? conversationDraft?.id}
         events={displayedEvents}
         liveText={liveText}
-        isGenerating={conversationActivity.active}
+        isGenerating={conversationVisuallyActive}
         isPaused={conversationActivity.state === 'paused'}
         emptyResponseRecoveryActive={emptyResponseRecoveryActive}
         historyPending={Boolean(selected && historyLoadingBindingId === selected.id)}
@@ -6051,7 +5995,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         onHistoryAnchorCaptured={onHistoryAnchorCaptured}
         onHistoryAnchorRestored={onHistoryAnchorRestored}
         requestStartedAt={requestStartedAt}
-        requestSubmitting={(send.isPending && !nativeGuidanceDispatching) || bootstrap.isPending || rewrite.isPending}
+        requestSubmitting={send.isPending || bootstrap.isPending || rewrite.isPending}
         onRewrite={selected && canWrite && features.rewrite ? requestRewrite : undefined}
         onFork={canFork ? eventId => { if (fork.isPending) return; const directoryName = selected?.work_directory_id ? workDirectories.find(directory => directory.id === selected.work_directory_id)?.display_name ?? '当前工作区' : '节点工作目录'; void dialog.confirm({ title: '从此处分叉会话？', message: `将保留当前会话在“${directoryName}”中的工作目录和截至此回复的历史记录，创建一条可独立继续的新会话。源会话不会被修改。`, confirmLabel: '创建分叉会话' }).then(confirmed => { if (confirmed) fork.mutate(eventId); }); } : undefined}
         onOpenAttachment={features.attachments ? openAttachmentInDrawer : undefined}
@@ -6072,14 +6016,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         <div className={`agent-composer ${conversationActivity.active || pendingConfirmation ? 'busy' : ''}`}>
         {pendingConfirmation && <section className="agent-confirmation" aria-label="工具执行确认"><header><ShieldAlert size={17}/><div><b>工具正在等待你的确认</b><span>动作尚未执行。请核对整批内容后批准或拒绝。</span></div></header><div className="agent-confirmation-actions">{(pendingConfirmation.actions ?? []).map((action: AgentPendingConfirmationAction) => <article key={action.digest}><div><b>{action.summary || action.tool_name}</b><span>{action.security_risk || 'UNKNOWN'}</span></div>{Object.keys(action.arguments).length > 0 && <pre>{JSON.stringify(action.arguments, null, 2)}</pre>}</article>)}</div><textarea aria-label="工具确认理由" value={confirmationReason} maxLength={2000} placeholder="填写批准或拒绝理由…" onChange={event => setConfirmationReason(event.target.value)}/><footer><button type="button" className="danger" disabled={!confirmationReason.trim() || decideConfirmation.isPending} onClick={() => decideConfirmation.mutate(false)}><X size={14}/>拒绝整批</button><button type="button" className="primary" disabled={!confirmationReason.trim() || decideConfirmation.isPending} onClick={() => decideConfirmation.mutate(true)}><Check size={14}/>批准整批</button></footer></section>}
         {(visibleQueuedMessages.length > 0 || (selected && !queueModeEnabled)) && <section className="agent-queued-messages" aria-label="消息投递队列">
-          <header><b>消息队列</b><span>{queueModeEnabled ? `${visibleQueuedMessages.filter(message => message.deliveryState === 'queued').length} 条等待发送；结果不确定的消息不会自动重发` : `队列模式已关闭；保留 ${visibleQueuedMessages.length} 条消息`}</span>{!queueModeEnabled && visibleQueuedMessages.length === 0 && <button type="button" className="queue-mode-toggle" onClick={toggleQueueMode}><ListRestart size={12}/>启用队列模式</button>}</header>
+          <header><b>消息队列</b><span>{queueModeEnabled ? `${visibleQueuedMessages.length} 条等待发送` : `队列模式已关闭；保留 ${visibleQueuedMessages.length} 条消息`}</span>{!queueModeEnabled && visibleQueuedMessages.length === 0 && <button type="button" className="queue-mode-toggle" onClick={toggleQueueMode}><ListRestart size={12}/>启用队列模式</button>}</header>
           {visibleQueuedMessages.map((message, index) => {
-            const deliveryState = message.deliveryState ?? 'queued';
-            const status = deliveryState === 'dispatching' ? '正在提交'
-              : deliveryState === 'ambiguous' ? '结果不确定'
-                : deliveryState === 'rejected' ? '已被拒绝' : '等待发送';
-            const editable = deliveryState === 'queued';
-            const removable = deliveryState !== 'dispatching';
+            const editable = true;
+            const removable = true;
             return <article
               key={message.id}
               draggable={editable && queueModeEnabled}
@@ -6102,15 +6042,14 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
                 setDraggedQueuedMessageId(undefined);
               }}
               onDragEnd={() => setDraggedQueuedMessageId(undefined)}
-              className={`delivery-${deliveryState}${draggedQueuedMessageId === message.id ? ' dragging' : ''}`}
+              className={draggedQueuedMessageId === message.id ? 'dragging' : undefined}
             >
               <button type="button" className="queue-drag-handle" aria-label={`拖动排队消息 ${index + 1} 以调整顺序`} title="拖动调整顺序" disabled={!editable || !queueModeEnabled} tabIndex={-1}><GripVertical size={14}/></button>
               <small>{index + 1}</small>
               <p>{message.content || (message.references.length ? `会话引用 ${message.references.length} 条` : message.workspaceReferences?.length ? `工作区引用 ${message.workspaceReferences.length} 条` : '图片附件')}</p>
-              <span>{[status, message.items.length ? `${message.items.length} 个附件` : '', message.references.length ? `${message.references.length} 条会话引用` : '', message.workspaceReferences?.length ? `${message.workspaceReferences.length} 条工作区引用` : ''].filter(Boolean).join(' · ')}</span>
+              <span>{['等待发送', message.items.length ? `${message.items.length} 个附件` : '', message.references.length ? `${message.references.length} 条会话引用` : '', message.workspaceReferences?.length ? `${message.workspaceReferences.length} 条工作区引用` : ''].filter(Boolean).join(' · ')}</span>
               <div>
                 {editable && <button type="button" aria-label={`调整方向排队消息 ${index + 1}`} title={queueModeEnabled ? '立即发送，调整当前回复方向' : '队列模式已关闭'} disabled={!queueModeEnabled || !canWrite || effectiveTurnState !== 'running' || !selected?.streaming_callback_ready || message.scope !== selected.id} onClick={() => sendQueuedMessageImmediately(message)}><CornerDownRight size={12}/>调整方向</button>}
-                {deliveryState === 'ambiguous' && <button type="button" className="queue-refresh" aria-label={`刷新会话确认排队消息 ${index + 1}`} title="刷新会话确认，系统不会自动重发" onClick={() => refresh()}>刷新确认</button>}
                 <button type="button" className="queue-remove" aria-label={`移除排队消息 ${index + 1}`} disabled={!removable} onClick={() => { commitQueuedMessages(items => items.filter(item => item.id !== message.id)); setQueuedMessageMenuId(current => current === message.id ? undefined : current); }}><Trash2 size={13}/></button>
                 {editable && <button type="button" className="queue-more" aria-label={`更多排队消息操作 ${index + 1}`} title="更多操作" aria-expanded={queuedMessageMenuId === message.id} onClick={() => setQueuedMessageMenuId(current => current === message.id ? undefined : message.id)}><Ellipsis size={14}/></button>}
                 {editable && queuedMessageMenuId === message.id && <div className="queue-menu" role="menu">
@@ -6118,7 +6057,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
                   <button type="button" role="menuitem" onClick={toggleQueueMode}><ListRestart size={12}/>{queueModeEnabled ? '关闭队列模式' : '启用队列模式'}</button>
                 </div>}
               </div>
-              {message.deliveryError && <em className="queue-delivery-error">{message.deliveryError}</em>}
             </article>;
           })}
         </section>}
@@ -6145,7 +6083,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
           <button type="button" className={`agent-current-workspace${workspacePathCopied ? ' copied' : ''}`} title={`${workspacePathCopied ? '已复制' : '点击复制'}：${currentWorkspaceRelativePath}`} aria-label={workspacePathCopied ? `工作区路径已复制：${currentWorkspaceRelativePath}` : `当前工作区：${currentWorkspaceName}；点击复制相对根工作区路径：${currentWorkspaceRelativePath}`} onClick={copyCurrentWorkspacePath}>
             <Folder size={16}/><span>{currentWorkspaceName}</span>{workspacePathCopied && <small aria-live="polite">已复制</small>}
           </button>
-          <ConversationTaskPlan events={displayedEvents} isGenerating={conversationActivity.active || (hasUnfinishedFormalTurn && !terminalSyncExpired)} conversationScope={selected?.id ?? conversationDraft?.id}/>
+          <ConversationTaskPlan events={displayedEvents} isGenerating={conversationVisuallyActive} conversationScope={selected?.id ?? conversationDraft?.id}/>
         </div>
       </div>}
     </section>
