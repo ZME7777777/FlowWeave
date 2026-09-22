@@ -1336,11 +1336,19 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   const messageRuler = page.getByRole('navigation', { name: '用户消息导航' });
   await expect(messageRuler).toBeVisible();
   await expect(page.locator('.message-position-navigator, .message-position-preview')).toHaveCount(0);
-  await expect(messageRuler.getByRole('button')).toHaveCount(4);
-  await expect.poll(() => messageRuler.getByRole('button').evaluateAll(buttons => {
-    const tops = buttons.map(button => button.getBoundingClientRect().top);
-    return Math.max(...tops) - Math.min(...tops);
-  })).toBeGreaterThan(100);
+  const messageTicks = messageRuler.getByRole('button');
+  await expect(messageTicks).toHaveCount(4);
+  await expect.poll(() => messageTicks.evaluateAll(buttons => {
+    const ruler = buttons[0]?.parentElement?.getBoundingClientRect();
+    const centers = buttons.map(button => {
+      const bounds = button.getBoundingClientRect();
+      return bounds.top + bounds.height / 2;
+    });
+    return {
+      centerOffset: ruler ? (centers[0] + centers.at(-1)!) / 2 - (ruler.top + ruler.height / 2) : Number.NaN,
+      gaps: centers.slice(1).map((center, index) => center - centers[index]),
+    };
+  })).toEqual({ centerOffset: 0, gaps: [15, 15, 15] });
   const firstMessageTick = messageRuler.getByRole('button', { name: '定位到用户消息：检查工作目录' });
   await firstMessageTick.hover();
   await expect(page.locator('#conversation-message-preview')).toContainText('检查工作目录');
