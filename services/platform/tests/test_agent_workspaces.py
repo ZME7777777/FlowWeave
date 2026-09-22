@@ -3816,7 +3816,7 @@ def test_agent_workspace_forks_at_native_event(settings, db_session_factory, mon
             "assistant-event",
             True,
             10_000,
-            None,
+            512_000,
             None,
         )
         assert runtime.switched_conversation_ids == [fork["openhands_conversation_id"]]

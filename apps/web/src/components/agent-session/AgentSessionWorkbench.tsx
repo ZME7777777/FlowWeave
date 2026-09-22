@@ -35,7 +35,7 @@ const SESSION_PERFORMANCE_MARK_PREFIX = 'flowweave.agent-session.';
 // they are not a wall-clock deadline for the whole child task.
 const MODEL_REQUEST_TIMEOUT_SECONDS = 120;
 const MODEL_REQUEST_MAX_RETRIES = 3;
-const DEFAULT_CONTEXT_COMPACTION_THRESHOLD_TOKENS = 256_000;
+const DEFAULT_CONTEXT_COMPACTION_THRESHOLD_TOKENS = 512_000;
 type StreamStatus = 'connecting' | 'live' | 'recovering' | 'disabled';
 type TurnState = 'idle' | 'running' | 'pausing' | 'paused' | 'resuming';
 type ConversationActivityState = TurnState | 'synchronizing';

@@ -211,6 +211,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-503 | 逐步运行导入、拷贝与连续运行前端交互对齐 | DONE | 逐步运行新增、导入、记录选中、起始节点聚焦、右侧栏展示、配置下载/复制及首节点配置拷贝均复用连续运行的交互投影；后端导入重新生成 URL artifact 与 Gate ID，并保持待启动状态。 |
 | FR-504 | OpenHands 当前 View 事件数精确投影 | DONE | OpenHands `/context` 在同一活动 View 快照中返回正式 `event_count`；FlowWeave 底栏只展示该值，旧 Runtime 缺字段时保持未知，不再使用完整历史事件数。 |
 | FR-505 | 会话认证增量勾选收敛 | DONE | 移除认证页的撤销提示；已选择认证锁定且不能取消，只允许将未选择认证新增到本次同步。 |
+| FR-506 | 会话上下文 512k 默认压缩阈值 | DONE | 新建 Agent Workspace、FlowNode 会话及新 Fork 将 OpenHands `LLMSummarizingCondenser.max_tokens` 冻结为 512,000；工作台缺失正式阈值时使用同一默认值，既有会话继续展示并使用其已冻结配置。 |
 | FR-457 | OpenHands 空响应自恢复与运行状态一致性 | DONE | 空 Agent Message 与 `source=environment` 的原生 corrective nudge 不再被识别为最终回复；纠正事件以“模型返回空响应，OpenHands 正在自动重试”呈现，左侧会话状态与底部按钮继续统一服从原生 execution status。 |
 | FR-458 | 空响应恢复提示瞬时化与会话状态统一 | DONE | corrective nudge 只在它是当前最新事件且原生会话仍运行时复用实时状态行显示；后续事件或终态立即隐藏，历史工作过程不保留该提示。工作台所有运行控件复用同一原生状态投影。 |
 | FR-459 | 原生错误事件的终态／可恢复呈现分流 | DONE | 仅 OpenHands ConversationErrorEvent 呈现为“本轮未能完成”的会话级终态卡片；AgentErrorEvent 与未知历史 ERROR 保持原生审计事实，按其正式父事件留在工作过程中呈现为可恢复异常，后续正式回复会明确标注 Agent 已继续完成，避免暂停／继续后的正常回复被历史错误卡片误覆盖。 |
@@ -6762,6 +6763,19 @@ FlowWeave 本地累加后猜测压缩边界。
 范围：仅修改共享 `AgentSessionWorkbench` 的前端投影和浏览器回归。超时后不构造 assistant／ERROR／Finish 事件，不修改 OpenHands、数据库、API、Runtime Provider、Docker 或 FlowRun 调度；同会话尚未提交的队列项必须显式标记为结果不确定，绝不自动发送。
 
 完成：工作台以 `[binding_id, unfinished_user_event_id]` 唯一标识 8 秒补读窗口。窗口存在时所有运行标识、输入和主按钮保持同一同步锁；真正正式终态、新一轮或切换会话会清理窗口。窗口到期后只解除本地 UI 桥接、停止持续补读，不伪造事件；FR-491 进一步禁止将该本地兜底判断显示为页面错误。该会话尚未提交的队列项转为 `ambiguous`，自动分发还必须先完成当前正式事件页读取，避免刷新时在同步状态建立前抢先投递。
+
+### FR-506 会话上下文 512k 默认压缩阈值 — DONE
+
+依赖：FR-446、FR-450、FR-473、FR-493、FR-504。
+
+目标：将新建 Agent Workspace、FlowNode 会话及新 Fork 冻结给 OpenHands `LLMSummarizingCondenser` 的默认 Token 压缩阈值从 `256,000` 提高到 `512,000`，减少长编码会话过早压缩。工作台在 Runtime 未返回正式冻结值时使用相同默认值；已有会话继续以其持久化的 `condenser_max_tokens` 为准，不在线改写。
+
+范围：仅修改 FlowWeave 的共享 Runtime condenser 默认值、Web 缺省展示值及对应回归；事件阈值继续为 `1,000`，模型物理窗口继续由供应商目录提供，OpenHands 源码、数据库、Runtime Provider 与既有 Conversation 状态不变。
+
+完成：共享 Runtime 默认 `max_tokens`、Agent Workspace 异常恢复 Fork／普通 Fork、FlowNode Fork 与 Web 缺省展示统一为 `512,000`。FlowNode 发送前边界回归覆盖 `511,999` 不触发、`512,000` 触发；Runtime Agent spec 与普通 Fork 回归锁定新值。已有会话仍读取 OpenHands 持久化的正式 `condenser_max_tokens`，因此不会被在线改写；事件阈值和模型物理窗口未变。
+
+验收：受影响 Python `py_compile`、Ruff check／format、隔离后的 Web TypeScript typecheck、`git diff --check` 与任务状态唯一性通过。数据库型定向 pytest 已收集 5 项，但 session 级 Testcontainers PostgreSQL fixture 因本机 Docker socket 缺失在断言前阻断，未记为通过。当前同一 Web 文件另有并行中的会话事件隔离修改且尚未完成，全工作树 TypeScript build 被其遗留的 `setLiveEvents` 引用阻断；以 HEAD 加本切片单行阈值改动的隔离副本 typecheck 已通过。未修改 OpenHands、数据库、Runtime Provider 或远端环境。
+
 
 ## 7. 恢复工作检查表
 
