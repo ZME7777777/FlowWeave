@@ -83,3 +83,4 @@ git -C /Users/zhengmengen/WorkSpace/openhands/software-agent-sdk \
 - `AgentSessionWorkbench` 中会在异步发送、重写或流订阅回调内更新的本地事件和 UI 状态，必须携带并校验 `bindingId`；不能只依赖会话切换 effect 清空共享状态，否则旧会话的迟到回调会污染新会话。
 - 会话未读状态是用户隔离的服务端 `AgentConversationBinding.unread` 投影；Agent Workspace 与 FlowRun node-session 两种宿主必须共同读写该字段。浏览器 `localStorage` 仅用于置顶等设备本地展示偏好，不能作为未读事实源。
 - Composer 草稿的文本、附件、引用和注释必须作为带 `scope` 的同一快照读写；会话切换先持久化 outgoing scope，再恢复 incoming scope。子组件卸载 cleanup 不得从共享 ref 读取内容后写入捕获的旧 scope。
+- 会话底部任务计划的可见性不能只依赖可能短暂抖动的 Runtime readiness；只要正式事件树仍存在未完成用户轮次，就必须保持任务计划 DOM 挂载，避免轮询期间底部布局闪烁和跳动。

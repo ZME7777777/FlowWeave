@@ -1222,6 +1222,7 @@ function ActivityEntryRow({ entry, active, paused = false, parentFailed = false,
   const toolDetail = item.kind === 'tool'
     ? <ToolDetailPanel presentation={presentation} eventName={eventName} toolName={toolName || undefined} toolVisual={toolVisual} results={entry.results} workspaceRoot={workspaceRoot}/>
     : null;
+  const nativeOperationRunning = active && !paused && !parentFailed && entry.results.length === 0 && (toolVisual === 'terminal' || toolVisual === 'file');
   const isNativeThink = item.event.event_type === 'THOUGHT';
   const referenceableThought = item.kind === 'thought' || (item.kind === 'tool' && Boolean(presentation.thought));
   const thoughtAttributes = referenceableThought ? { 'data-conversation-event-id': item.event.id } : {};
@@ -1240,7 +1241,7 @@ function ActivityEntryRow({ entry, active, paused = false, parentFailed = false,
     {!hideThought && presentation.thought && <article {...thoughtAttributes} className={`conversation-activity-row thought tool-thought tool-${toolVisual}`}>
       <MessageMarkdown>{presentation.thought}</MessageMarkdown>
     </article>}
-    <details className={`conversation-activity-row tool conversation-tool-detail tool-${toolVisual}`} data-tool-kind={toolVisual} data-file-operation={toolVisual === 'file' ? presentation.fileOperation : undefined} data-file-kind={toolVisual === 'file' ? presentation.fileKind : undefined}>
+    <details className={`conversation-activity-row tool conversation-tool-detail tool-${toolVisual}${nativeOperationRunning ? ' running' : ''}`} data-tool-kind={toolVisual} data-file-operation={toolVisual === 'file' ? presentation.fileOperation : undefined} data-file-kind={toolVisual === 'file' ? presentation.fileKind : undefined}>
       <summary aria-label={`查看执行详情：${presentation.title}`}>{taskAvatar ?? <ToolIcon size={14}/>}<div><b title={presentation.title}>{presentation.title}</b></div></summary>
       {toolDetail}
     </details>

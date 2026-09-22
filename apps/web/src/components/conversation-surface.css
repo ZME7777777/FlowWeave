@@ -83,7 +83,7 @@
 .conversation-activity-row.error>svg{color:var(--red)}
 .conversation-activity-row.agent-error{margin:1px 0;border-left:2px solid #d8a765;padding-left:9px;color:#896334;font-size:12px;line-height:1.55}.conversation-activity-row.agent-error>svg{color:#ba7b2e}.conversation-activity-row.agent-error b{color:#79592f;font-size:12px}.conversation-activity-row.agent-error small{color:#a07843;font-size:10px}.conversation-activity-row.agent-error .conversation-activity-thought{margin-top:2px;color:#876b48;font-size:11px;line-height:1.45}
 .conversation-activity-row.thought{display:block;color:#222722;font-size:14px;line-height:1.78}
-.conversation-activity-row.thought.native-think{margin:2px 0 3px;color:#222722}
+.conversation-activity-row.thought.native-think{margin:2px 0 3px;color:#222722;font-weight:400}.conversation-activity-row.thought.native-think :is(strong,b){font-weight:400}
 .conversation-activity-row.thought.tool-thought{margin:1px 0 2px;color:#61766a;font-size:13px;line-height:1.62}
 .conversation-activity-row.thought>svg{display:none}
 .conversation-activity-row.thought>div{display:block;min-width:0}
@@ -138,7 +138,7 @@
 .conversation-tool-detail>summary:focus-visible{border-radius:3px;box-shadow:0 0 0 2px rgba(80,105,88,.18)}
 .conversation-tool-detail>summary>svg{color:var(--conversation-tool-accent)}
 .conversation-tool-detail>summary>div{min-width:0;overflow:hidden}
-.conversation-tool-detail>summary>div>b{display:block;min-width:0;max-width:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.conversation-tool-detail>summary>div>b{display:block;min-width:0;max-width:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.conversation-tool-detail.running>summary>div>b{background:linear-gradient(90deg,#949c97 0%,#949c97 34%,#356f4d 48%,#b6c5bb 52%,#949c97 66%,#949c97 100%);background-size:260% 100%;background-position:130% 0;background-clip:text;-webkit-background-clip:text;color:transparent;animation:conversation-progress-scan 1.8s linear infinite}.conversation-tool-detail.running>summary>svg{animation:conversation-progress-icon-pulse 1.8s ease-in-out infinite}@media (prefers-reduced-motion:reduce){.conversation-tool-detail.running>summary>div>b{animation:none;background:#66736b;background-clip:text;-webkit-background-clip:text}.conversation-tool-detail.running>summary>svg{animation:none}}
 .conversation-tool-detail-panel{box-sizing:border-box;width:100%;min-width:0;margin:6px 0 0;border:1px solid #e7ebe8;border-radius:6px;background:#fafbfa;padding:8px 9px;color:#737d76}
 .conversation-tool-detail-panel>b{display:block;margin-bottom:7px;color:#3e4841;font:11px/1.4 'DM Mono',ui-monospace,monospace}
 .conversation-tool-detail-panel>small{display:block;margin:8px 0 3px;color:#7c8780;font-size:9px}
