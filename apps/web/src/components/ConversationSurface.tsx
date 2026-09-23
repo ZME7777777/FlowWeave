@@ -1024,16 +1024,9 @@ function isolatedUserSelection(selection: Selection): { content: HTMLElement; te
   return { content, text: content.innerText };
 }
 
-function useElapsedSeconds(startedAt: number | undefined, finishedAt: number | undefined, active: boolean): number | undefined {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (!active || startedAt === undefined) return;
-    setNow(Date.now());
-    const timer = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => window.clearInterval(timer);
-  }, [active, startedAt]);
-  if (startedAt === undefined) return undefined;
-  return Math.max(0, ((finishedAt ?? now) - startedAt) / 1000);
+function elapsedSeconds(startedAt: number | undefined, finishedAt: number | undefined): number | undefined {
+  if (startedAt === undefined || finishedAt === undefined) return undefined;
+  return Math.max(0, (finishedAt - startedAt) / 1000);
 }
 
 function activeToolLabel(eventName: string, toolName?: string, summary?: string, details?: Record<string, unknown>): string {
@@ -1083,64 +1076,21 @@ function staleActivityLabel(
   return fallback;
 }
 
-function CurrentTurnStatus({ items, liveText, requestSubmitting, statusOverride, monitoring, connectionState = 'connected' }: {
+function CurrentTurnStatus({ items, requestSubmitting, statusOverride, monitoring, connectionState = 'connected' }: {
   items: Item[];
-  liveText: string;
   requestSubmitting: boolean;
   statusOverride?: string;
   monitoring?: AgentActivitySummary;
   connectionState?: ConversationConnectionState;
 }) {
-  const activityLabel = liveText
-    ? '正在生成回复'
-    : activeActivityLabel(groupedActivities(items), requestSubmitting);
-  const label = statusOverride ?? (liveText || requestSubmitting
+  const activityLabel = activeActivityLabel(groupedActivities(items), requestSubmitting);
+  const label = statusOverride ?? (requestSubmitting
     ? activityLabel
     : staleActivityLabel(activityLabel, monitoring, connectionState));
   return <div className="conversation-turn-status" role="status" aria-label={label}>
     <span>{label}</span>
     <span className="conversation-turn-status-dots" aria-hidden="true"><i/><i/><i/></span>
   </div>;
-}
-
-const LIVE_REPLY_CHUNK_LENGTH = 72;
-
-function nextLiveReplyChunk(content: string, offset: number): string {
-  const limit = Math.min(content.length, offset + LIVE_REPLY_CHUNK_LENGTH);
-  const newline = content.indexOf('\n', offset + 1);
-  if (newline >= offset && newline < limit) return content.slice(offset, newline + 1);
-  if (limit === content.length) return content.slice(offset);
-  for (let index = limit; index > offset + 16; index -= 1) {
-    if (/[\s,.;!?，。！？；：]/.test(content[index - 1])) return content.slice(offset, index);
-  }
-  return content.slice(offset, limit);
-}
-
-function LiveReply({ content }: { content: string }) {
-  const rendered = useRef('');
-  const [chunks, setChunks] = useState<string[]>([]);
-
-  useEffect(() => {
-    if (!content.startsWith(rendered.current)) {
-      rendered.current = '';
-      setChunks([]);
-    }
-    let frame: number | undefined;
-    const append = () => {
-      const offset = rendered.current.length;
-      if (offset >= content.length) return;
-      const chunk = nextLiveReplyChunk(content, offset);
-      rendered.current += chunk;
-      setChunks(current => [...current, chunk]);
-      frame = window.requestAnimationFrame(append);
-    };
-    frame = window.requestAnimationFrame(append);
-    return () => { if (frame !== undefined) window.cancelAnimationFrame(frame); };
-  }, [content]);
-
-  return <article className="conversation-message assistant conversation-live-reply" aria-label="正在生成的回复" aria-live="polite">
-    <div className="conversation-live-reply-content">{chunks.map((chunk, index) => <span key={index}>{chunk}</span>)}<i aria-hidden="true"/></div>
-  </article>;
 }
 
 function taskAvatarStatus(entry: ActivityEntry, item: Item, paused = false, parentFailed = false): 'running' | 'paused' | 'completed' | 'error' {
@@ -1265,7 +1215,7 @@ function ActivityGroup({ items, active, completionConfirmed = false, paused = fa
   avatarSlots: ReadonlyMap<string, SubagentAvatarSlot>;
   workspaceRoot?: string | null;
 }) {
-  const elapsedSeconds = useElapsedSeconds(startedAt, finishedAt, active);
+  const elapsed = elapsedSeconds(startedAt, finishedAt);
   const entries = groupedActivities(items);
   const rows = activityRows(entries);
   const itemCount = entries.length;
@@ -1286,10 +1236,10 @@ function ActivityGroup({ items, active, completionConfirmed = false, paused = fa
     if (hasBeenActive.current && completionConfirmed) setOpen(false);
   }, [active, completionConfirmed]);
   const label = active
-    ? elapsedSeconds === undefined ? '处理中' : `已耗时 ${formatDuration(elapsedSeconds)}`
+    ? '处理中'
     : paused ? '已暂停，结果未返回'
       : parentFailed && hasUnfinishedTask ? '本轮异常结束，结果未返回'
-      : finishedAt === undefined || elapsedSeconds === undefined ? '工作过程' : `耗时 ${formatDuration(elapsedSeconds)}`;
+      : elapsed === undefined ? '工作过程' : `耗时 ${formatDuration(elapsed)}`;
   const summary = <><ChevronRight size={14}/><span>{label}</span>{itemCount > 0 && <small>{itemCount} 项</small>}<span className={`conversation-activity-spinner-slot${active ? ' active' : ''}`} aria-hidden="true"><LoaderCircle className="conversation-activity-spin" size={13}/></span></>;
   const hasDetails = itemCount > 0;
   if (!hasDetails) return <div className="conversation-activity-group summary-only"><div className="conversation-activity-summary">{summary}</div></div>;
@@ -1575,9 +1525,8 @@ export interface ConversationHistoryPrepend {
   phase: 'capture' | 'restore';
 }
 
-export const ConversationSurface = memo(function ConversationSurface({ events, liveText, isGenerating, isPaused = false, emptyResponseRecoveryActive = false, historyPending = false, conversationScope, historyPrepend, onHistoryAnchorCaptured, onHistoryAnchorRestored, requestStartedAt, requestSubmitting = false, rewritePending = false, onRewrite, onFork, onOpenAttachment, onOpenWorkspaceReference, onPreviewCandidateFile, onReviewChanges, onOpenWorkspaceFile, workspaceRoot, annotations = [], onCreateAnnotation, onLocateAnnotation, taskControl = [], monitoring, connectionState }: {
+export const ConversationSurface = memo(function ConversationSurface({ events, isGenerating, isPaused = false, emptyResponseRecoveryActive = false, historyPending = false, conversationScope, historyPrepend, onHistoryAnchorCaptured, onHistoryAnchorRestored, requestStartedAt, requestSubmitting = false, rewritePending = false, onRewrite, onFork, onOpenAttachment, onOpenWorkspaceReference, onPreviewCandidateFile, onReviewChanges, onOpenWorkspaceFile, workspaceRoot, annotations = [], onCreateAnnotation, onLocateAnnotation, taskControl = [], monitoring, connectionState }: {
   events: OpenHandsConversationEvent[];
-  liveText: string;
   isGenerating: boolean;
   /** Formal native conversation pause state, used only to label unfinished Task actions. */
   isPaused?: boolean;
@@ -1654,7 +1603,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, l
   );
   const turns = useMemo(() => turnsFor(visibleEvents), [visibleEvents]);
   const visibleEventIds = useMemo(() => visibleEvents.map(event => event.id).join('\u001f'), [visibleEvents]);
-  const contentGrowthSignal = `${visibleEventIds}\u001e${liveText.length}`;
+  const contentGrowthSignal = visibleEventIds;
   const avatarSlots = useMemo(() => subagentAvatarSlots(visibleEvents), [visibleEvents]);
   const userMessageNavigation = useMemo<UserMessageNavigationItem[]>(() => turns.flatMap(turn => turn.user ? [{
     id: turn.user.event.id,
@@ -1663,10 +1612,12 @@ export const ConversationSurface = memo(function ConversationSurface({ events, l
   const alignWithLatest = useCallback(() => {
     const element = surface.current;
     if (!element) return;
+    const target = Math.max(0, element.scrollHeight - element.clientHeight);
+    if (Math.abs(element.scrollTop - target) <= 1) return;
     // Direct assignment is immediate and does not inherit page-level smooth
     // scrolling. Automatic transcript updates must not start an animation
     // that can compete with a user who starts reading history.
-    element.scrollTop = element.scrollHeight;
+    element.scrollTop = target;
   }, []);
   const scrollToLatest = useCallback(() => {
     if (automaticScrollFrame.current !== undefined) {
@@ -1971,14 +1922,13 @@ export const ConversationSurface = memo(function ConversationSurface({ events, l
   useLayoutEffect(() => {
     const contentChanged = previousContentSignal.current !== contentGrowthSignal;
     previousContentSignal.current = contentGrowthSignal;
-    if (!initialPositioned.current && (turns.length || liveText || isGenerating)) {
+    if (!initialPositioned.current && (turns.length || isGenerating)) {
       initialPositioned.current = true;
       alignWithLatest();
     } else if (contentChanged && followLatest.current && !userScrolledAway.current) {
       alignWithLatest();
-      scheduleLatestAlignment();
     }
-  }, [alignWithLatest, contentGrowthSignal, isGenerating, liveText, scheduleLatestAlignment, turns.length]);
+  }, [alignWithLatest, contentGrowthSignal, isGenerating, turns.length]);
   useLayoutEffect(() => {
     const observedContent = content.current;
     if (!observedContent || typeof ResizeObserver === 'undefined' || !contentGrowthSignal) return;
@@ -2071,8 +2021,8 @@ export const ConversationSurface = memo(function ConversationSurface({ events, l
     highlightReferenceText({ eventId: viewingReference.event_id, quote: viewingReference.content });
   }, [highlightReferenceText, stopFollowingLatest, viewingReference]);
   const lastUserEventId = useMemo(() => [...turns].reverse().find(turn => turn.user)?.user?.event.id, [turns]);
-  if (!turns.length && !liveText && !isGenerating) return <div className="conversation-surface-empty"><b>会话已就绪</b><span>发送第一条消息，开始与 Agent 协作。</span></div>;
-  const showJumpToLatest = !isAtLatest && Boolean(turns.length || liveText || isGenerating);
+  if (!turns.length && !isGenerating) return <div className="conversation-surface-empty"><b>会话已就绪</b><span>发送第一条消息，开始与 Agent 协作。</span></div>;
+  const showJumpToLatest = !isAtLatest && Boolean(turns.length || isGenerating);
   return <div ref={shell} className="conversation-surface-shell">
     {userMessageNavigation.length > 0 && <nav ref={messageNavigation} className="conversation-message-index" aria-label="用户消息导航" onPointerMove={handleMessageNavigationPointerMove} onPointerLeave={clearMessageNavigationPreview}>
       {userMessageNavigation.map((message, index) => <button
@@ -2158,15 +2108,14 @@ export const ConversationSurface = memo(function ConversationSurface({ events, l
             workspaceRoot={workspaceRoot}
           />)}
           {isCurrent && !turn.assistant && !failures.length && (
-            <CurrentTurnStatus items={turn.activity} liveText={liveText} requestSubmitting={requestSubmitting} statusOverride={emptyResponseRecoveryActive ? '模型返回空响应，OpenHands 正在自动重试' : undefined} monitoring={monitoring} connectionState={connectionState}/>
+            <CurrentTurnStatus items={turn.activity} requestSubmitting={requestSubmitting} statusOverride={emptyResponseRecoveryActive ? '模型返回空响应，OpenHands 正在自动重试' : undefined} monitoring={monitoring} connectionState={connectionState}/>
           )}
-          {isLatest && !turn.assistant && !failures.length && liveText && <LiveReply content={liveText}/>}
           {processBlocks.length > 0 && turn.assistant && <div className="conversation-process-divider" role="separator" aria-label="工作过程结束"/>}
           {turn.assistant && <AgentReply event={turn.assistant.event} content={turn.assistant.content} changes={fileChanges} onFork={!isGenerating ? () => onFork?.(turn.assistant!.event.id) : undefined} onPreviewCandidateFile={onPreviewCandidateFile} onReviewChanges={onReviewChanges} onOpenWorkspaceFile={onOpenWorkspaceFile} workspaceRoot={workspaceRoot} annotations={annotations} onLocateAnnotation={locateAnnotation}/>}
           {failures.map(item => <ConversationFailure key={item.event.id} item={item} taskControl={taskControl}/>)}
         </section>;
       })}
-      {turns.length === 0 && (liveText || isGenerating) && <><ActivityGroup items={[]} active startedAt={requestStartedAt} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/><CurrentTurnStatus items={[]} liveText={liveText} requestSubmitting={requestSubmitting} statusOverride={emptyResponseRecoveryActive ? '模型返回空响应，OpenHands 正在自动重试' : undefined} monitoring={monitoring} connectionState={connectionState}/>{liveText && <LiveReply content={liveText}/>}</>}
+      {turns.length === 0 && isGenerating && <><ActivityGroup items={[]} active startedAt={requestStartedAt} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/><CurrentTurnStatus items={[]} requestSubmitting={requestSubmitting} statusOverride={emptyResponseRecoveryActive ? '模型返回空响应，OpenHands 正在自动重试' : undefined} monitoring={monitoring} connectionState={connectionState}/></>}
       </div>
     </section>
     {viewingReference && <ConversationReferencePreview reference={viewingReference} onClose={() => setViewingReference(undefined)} onLocate={locateReferenceSource}/>}

@@ -107,8 +107,7 @@
 .conversation-turn-status>span:first-child{display:block;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .conversation-turn-status-dots{display:flex;align-items:center;gap:3px;padding-top:2px}
 .conversation-turn-status-dots i{width:3px;height:3px;border-radius:50%;background:currentColor;opacity:.55}
-.conversation-live-reply{margin:8px 0 14px}.conversation-live-reply-content{white-space:pre-wrap;overflow-wrap:anywhere}.conversation-live-reply-content span{white-space:pre-wrap}.conversation-live-reply-content i{display:inline-block;width:7px;height:1.1em;margin-left:2px;background:#4b8060;vertical-align:-.18em;animation:conversation-live-caret .8s steps(2,end) infinite}@keyframes conversation-live-caret{50%{opacity:0}}
-@media(prefers-reduced-motion:reduce){.conversation-turn-status-dots i,.conversation-live-reply-content i,.conversation-jump-dots i{animation:none;opacity:.55}}
+@media(prefers-reduced-motion:reduce){.conversation-turn-status-dots i,.conversation-jump-dots i{animation:none;opacity:.55}}
 .conversation-tool-entry{--conversation-tool-accent:#4f8060;display:grid;max-width:100%;min-width:0;gap:5px}
 .conversation-tool-detail{display:block!important;overflow:visible;margin:0;border:0}
 .conversation-tool-detail>summary{display:flex;align-items:center;gap:6px;width:max-content;max-width:100%;min-width:0;cursor:pointer;list-style:none;color:#7b857f;transition:color .15s ease}

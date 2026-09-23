@@ -28,6 +28,7 @@ import '../../pages/agent-workbench-layout.css';
 
 const WORKSPACE_FILE_TRANSFER_TYPE = 'application/x-flowweave-workspace-file-path';
 const ACTIVE_EVENT_RECOVERY_INTERVAL_MS = 4_000;
+const ACTIVE_EVENT_LATEST_RECHECK_INTERVAL_MS = 30_000;
 const WORKSPACE_PATH_COPIED_DURATION_MS = 1_500;
 const SESSION_PERFORMANCE_MARK_PREFIX = 'flowweave.agent-session.';
 // These are the frozen OpenHands/LiteLLM request settings applied by the
@@ -3965,10 +3966,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const composerRef = useRef<ComposerHandle>(null);
   const [composerHasText, setComposerHasText] = useState(() => Boolean(initialComposerDraft.trim()));
   const [streamStatus, setStreamStatus] = useState<StreamStatus>('disabled');
-  const [liveText, setLiveText] = useState('');
-  const pendingLiveText = useRef('');
-  const liveTextFrame = useRef<number | undefined>(undefined);
-  const liveStreamItemId = useRef<string | undefined>(undefined);
   const [scopedLiveEvents, setScopedLiveEvents] = useState<ScopedConversationEvent[]>([]);
   const [optimisticBootstrapTurn, setOptimisticBootstrapTurn] = useState<OptimisticBootstrapTurn>();
   const [pendingBootstrap, setPendingBootstrap] = useState<{ draft: ConversationDraft; message: QueuedMessage } | undefined>(() => {
@@ -4063,6 +4060,13 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const liveEventsFrame = useRef<number | undefined>(undefined);
   const historyLoadingScopes = useRef(new Set<string>());
   const historyFailedCursors = useRef(new Map<string, string>());
+  const exhaustedHistoryCursors = useRef(new Map<string, string>());
+  const eventSynchronization = useRef<{
+    scope?: string;
+    inFlight?: Promise<void>;
+    pendingLatest: boolean;
+    lastLatestReadAt: number;
+  }>({ pendingLatest: false, lastLatestReadAt: 0 });
   const historyPrependWaiters = useRef(new Map<number, {
     scope: string;
     capture?: (accepted: boolean) => void;
@@ -4130,6 +4134,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     initialPageParam: undefined as string | undefined,
     getNextPageParam: page => page.next_cursor || undefined,
     enabled: Boolean(workspace),
+    refetchOnWindowFocus: false,
     refetchInterval: query => {
       const pages = query.state.data?.pages ?? [];
       // Title generation is an isolated one-shot metadata task. Poll only
@@ -4213,6 +4218,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     queryKey: sessionQueryKey(host, 'conversation', workspace?.id, selectedBindingId),
     queryFn: () => api.conversation(workspace!.id, selectedBindingId!),
     enabled: Boolean(workspace && selectedBindingId),
+    refetchOnWindowFocus: false,
     retry: (count, error) => !(error instanceof ApiError && error.status < 500) && count < 2,
   });
   const selected = useMemo(
@@ -4307,6 +4313,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     queryKey: sessionQueryKey(host, 'workspace-details', workspace?.id, activeWorkspaceOptions.bindingId, activeWorkspaceOptions.workDirectoryId),
     queryFn: () => api.workspaceDetails(workspace!.id, activeWorkspaceOptions),
     enabled: Boolean(workspace && (selected || conversationDraft)),
+    refetchOnWindowFocus: false,
     retry: (count, error) => !(error instanceof ApiError && error.status < 500) && count < 2,
   });
   const workspaceReferenceIndexQuery = useQuery({
@@ -4593,6 +4600,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     // This is the formal OpenHands execution-state read used to restore an
     // in-flight turn after a browser reload. It is not persisted by FlowWeave.
     enabled: Boolean(workspace && selected),
+    refetchOnWindowFocus: false,
     refetchInterval: query => {
       const needsFallback = conversationIsRunning(selected?.execution_status)
         || turnState === 'pausing'
@@ -4632,72 +4640,120 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     queryKey: eventQueryKey,
     queryFn: async () => {
       const latest = await api.conversationEvents(workspace!.id, selected!.id);
+      if (eventSynchronization.current.scope !== selected!.id) {
+        eventSynchronization.current = { scope: selected!.id, pendingLatest: false, lastLatestReadAt: Date.now() };
+      } else {
+        eventSynchronization.current.lastLatestReadAt = Date.now();
+      }
       const current = queryClient.getQueryData<OpenHandsConversationEventBatch>(eventQueryKey);
       // The OpenHands latest-page cursor is a bounded branch projection, not
       // an instruction to clear already-rendered activity. Keep identities we
       // have read during this turn and let the newest REST payload refresh the
       // matching events' persisted fields.
       return current
-        ? { ...current, ...latest, events: mergeConversationEvents(current.events, latest.events), history_cursor: current.history_cursor ?? latest.history_cursor }
+        ? {
+            ...current,
+            ...latest,
+            events: mergeConversationEvents(current.events, latest.events),
+            history_cursor: latest.history_cursor
+              && exhaustedHistoryCursors.current.get(selected!.id) === latest.history_cursor
+              ? null
+              : (current.history_cursor ?? latest.history_cursor),
+          }
         : latest;
     },
     // Native event reads begin at the current leaf. The resulting bounded
-    // latest page is rendered before older pages are prefetched below.
+    // latest page is rendered before older pages are prefetched below. Running
+    // recovery is coordinated below so latest-window and cursor reads cannot
+    // race each other on independent timers.
     enabled: Boolean(workspace && selected),
-    refetchInterval: query => {
-      const selectedMayBeActive = conversationIsRunning(selected?.execution_status)
-        || query.state.data?.result?.status === 'RUNNING'
-        || Boolean(latestUnfinishedUserEventId(query.state.data?.events ?? []));
-      return pageVisible && selectedMayBeActive ? ACTIVE_EVENT_RECOVERY_INTERVAL_MS : false;
-    },
+    refetchOnWindowFocus: false,
     retry: (count, error) => !(error instanceof ApiError && error.status < 500) && count < 2,
   });
   useEffect(() => {
     if (selected && eventsQuery.data) markSessionPerformance('events-ready');
   }, [eventsQuery.data, selected]);
-  const synchronizeConversationEvents = useCallback(async (preferLatest = false) => {
-    if (!workspace || !selected) return;
-    const current = queryClient.getQueryData<OpenHandsConversationEventBatch>(eventQueryKey);
-    const cursor = preferLatest ? undefined : current?.next_cursor ?? undefined;
-    try {
-      const incoming = await api.conversationEvents(workspace.id, selected.id, cursor);
-      queryClient.setQueryData<OpenHandsConversationEventBatch>(eventQueryKey, existing => existing
-        ? (() => {
-            // A stream frame or another reconciliation may have advanced the
-            // cursor while this read was in flight. Never move that progress
-            // backwards merely because this older request completed later.
-            const cursorUnchanged = existing.next_cursor === cursor;
-            return {
-              ...existing,
-              ...incoming,
-              events: mergeConversationEvents(existing.events, incoming.events),
-              next_cursor: cursor
-                ? (cursorUnchanged ? (incoming.next_cursor ?? cursor) : existing.next_cursor)
-                : (incoming.next_cursor ?? existing.next_cursor),
-              history_cursor: existing.history_cursor ?? incoming.history_cursor,
-            };
-          })()
-        : incoming,
-      );
-      void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-context', workspace.id, selected.id) });
-    } catch {
-      // The next scheduled cursor reconciliation is sufficient. A transient
-      // read failure must not clear already-rendered native events.
+  const synchronizeConversationEvents = useCallback((preferLatest = false): Promise<void> => {
+    if (!workspace || !selected) return Promise.resolve();
+    const scope = selected.id;
+    if (eventSynchronization.current.scope !== scope) {
+      eventSynchronization.current = { scope, pendingLatest: false, lastLatestReadAt: 0 };
     }
+    if (eventSynchronization.current.inFlight) {
+      if (preferLatest) eventSynchronization.current.pendingLatest = true;
+      return eventSynchronization.current.inFlight;
+    }
+
+    const run = (forceLatest: boolean): Promise<void> => {
+      const current = queryClient.getQueryData<OpenHandsConversationEventBatch>(eventQueryKey);
+      const latestWindowDue = Date.now() - eventSynchronization.current.lastLatestReadAt
+        >= ACTIVE_EVENT_LATEST_RECHECK_INTERVAL_MS;
+      const cursor = forceLatest || latestWindowDue ? undefined : current?.next_cursor ?? undefined;
+      if (!cursor) eventSynchronization.current.lastLatestReadAt = Date.now();
+
+      return api.conversationEvents(workspace.id, scope, cursor).then(incoming => {
+        if (eventSynchronization.current.scope !== scope) return;
+        queryClient.setQueryData<OpenHandsConversationEventBatch>(eventQueryKey, existing => existing
+          ? (() => {
+              // A stream frame or another reconciliation may have advanced the
+              // cursor while this read was in flight. Never move that progress
+              // backwards merely because this older request completed later.
+              const cursorUnchanged = existing.next_cursor === cursor;
+              return {
+                ...existing,
+                ...incoming,
+                events: mergeConversationEvents(existing.events, incoming.events),
+                next_cursor: cursor
+                  ? (cursorUnchanged ? (incoming.next_cursor ?? cursor) : existing.next_cursor)
+                  : (incoming.next_cursor ?? existing.next_cursor),
+                history_cursor: incoming.history_cursor
+                  && exhaustedHistoryCursors.current.get(scope) === incoming.history_cursor
+                  ? null
+                  : (existing.history_cursor ?? incoming.history_cursor),
+              };
+            })()
+          : incoming,
+        );
+        void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-context', workspace.id, scope) });
+      }).catch(() => {
+        // The next scheduled reconciliation is sufficient. A transient read
+        // failure must not clear already-rendered native events.
+      }).then(async () => {
+        if (eventSynchronization.current.scope !== scope || !eventSynchronization.current.pendingLatest) return;
+        eventSynchronization.current.pendingLatest = false;
+        await run(true);
+      });
+    };
+
+    const synchronization = run(preferLatest).finally(() => {
+      if (eventSynchronization.current.scope === scope
+        && eventSynchronization.current.inFlight === synchronization) {
+        eventSynchronization.current.inFlight = undefined;
+      }
+    });
+    eventSynchronization.current.inFlight = synchronization;
+    return synchronization;
   }, [api, eventQueryKey, host, queryClient, selected, workspace]);
   useEffect(() => {
     if (!foregroundRecoverySignal || !pageVisible || !workspace || !selected
       || foregroundRecoverySignal === handledForegroundRecoverySignal.current) return;
     handledForegroundRecoverySignal.current = foregroundRecoverySignal;
+    const cachedTurnUnfinished = Boolean(latestUnfinishedUserEventId(eventsQuery.data?.events ?? []));
+    if (nativeTurnTerminal && !cachedTurnUnfinished) return;
+    const mayHaveMissedActiveEvents = conversationIsRunning(selected.execution_status)
+      || localTurnGenerating
+      || inputReadinessQuery.data?.ready === false
+      || cachedTurnUnfinished;
+    if (!mayHaveMissedActiveEvents) return;
 
     // Background tabs may suspend timers and silently lose WebSocket frames.
-    // Re-read the latest native window immediately instead of waiting for the
-    // next cursor poll, which may no longer advance after the turn completed.
+    // Active turns recover immediately; completed turns retain their stable
+    // projection because a focus event alone cannot add native work.
     void synchronizeConversationEvents(true);
     void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversations', workspace.id) });
     void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-input-readiness', workspace.id, selected.id) });
     void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-confirmation', workspace.id, selected.id) });
-  }, [foregroundRecoverySignal, host, pageVisible, queryClient, selected, synchronizeConversationEvents, workspace]);
+  }, [eventsQuery.data?.events, foregroundRecoverySignal, host, inputReadinessQuery.data?.ready, localTurnGenerating, nativeTurnTerminal, pageVisible, queryClient, selected, synchronizeConversationEvents, workspace]);
   // Let the latest native window paint before background history starts. This
   // makes the first visual state deterministic. History is a read-only
   // native projection and must keep loading while the current turn runs.
@@ -4748,6 +4804,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         if (!await restored || !scopeIsActive()) return;
         setHistoryPrepend(current => current?.id === transaction.id ? undefined : current);
         historyCursor = older.history_cursor;
+      }
+      if (eventsQuery.data.history_cursor) {
+        exhaustedHistoryCursors.current.set(scope, eventsQuery.data.history_cursor);
       }
     } catch (error) {
       if (historyCursor) historyFailedCursors.current.set(scope, historyCursor);
@@ -4922,6 +4981,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     queryKey: sessionQueryKey(host, 'conversation-context', workspace?.id, selected?.id),
     queryFn: () => api.conversationContext(workspace!.id, selected!.id),
     enabled: Boolean(workspace && selected),
+    refetchOnWindowFocus: false,
   });
   const lastCurrentContextByBinding = useRef(new Map<string, AgentConversationContext>());
   const currentContext = useMemo(() => {
@@ -4956,6 +5016,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     queryKey: sessionQueryKey(host, 'conversation-confirmation', workspace?.id, selected?.id),
     queryFn: () => api.pendingConfirmation(workspace!.id, selected!.id),
     enabled: Boolean(workspace && selected && canWrite && features.confirmations),
+    refetchOnWindowFocus: false,
     retry: (count, error) => !(error instanceof ApiError && error.status < 500) && count < 2,
   });
   const pendingConfirmation = confirmationQuery.data?.pending ? confirmationQuery.data : undefined;
@@ -4965,42 +5026,19 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversations', workspace.id) });
     if (bindingId) {
       void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation', workspace.id, bindingId) });
-      void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-events', workspace.id, bindingId) });
+      if (bindingId === selected?.id) void synchronizeConversationEvents(true);
+      else void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-events', workspace.id, bindingId) });
       void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-input-readiness', workspace.id, bindingId) });
       void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-confirmation', workspace.id, bindingId) });
       void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-context', workspace.id, bindingId) });
     }
-  }, [host, queryClient, selected?.id, workspace]);
+  }, [host, queryClient, selected?.id, synchronizeConversationEvents, workspace]);
   const reconcileConversationProjection = useCallback(() => {
     void synchronizeConversationEvents(true);
     if (!workspace || !selected) return;
     void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-input-readiness', workspace.id, selected.id) });
     void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-confirmation', workspace.id, selected.id) });
   }, [host, queryClient, selected, synchronizeConversationEvents, workspace]);
-  const clearLiveText = useCallback(() => {
-    pendingLiveText.current = '';
-    liveStreamItemId.current = undefined;
-    if (liveTextFrame.current !== undefined) window.cancelAnimationFrame(liveTextFrame.current);
-    liveTextFrame.current = undefined;
-    setLiveText('');
-  }, []);
-  const appendLiveText = useCallback((itemId: string, content: string) => {
-    if (liveStreamItemId.current && liveStreamItemId.current !== itemId) {
-      pendingLiveText.current = '';
-      if (liveTextFrame.current !== undefined) window.cancelAnimationFrame(liveTextFrame.current);
-      liveTextFrame.current = undefined;
-      setLiveText('');
-    }
-    liveStreamItemId.current = itemId;
-    pendingLiveText.current += content;
-    if (liveTextFrame.current !== undefined) return;
-    liveTextFrame.current = window.requestAnimationFrame(() => {
-      liveTextFrame.current = undefined;
-      const next = pendingLiveText.current;
-      pendingLiveText.current = '';
-      if (next) setLiveText(current => current + next);
-    });
-  }, []);
   const appendLiveEvent = useCallback((scope: string, event: OpenHandsConversationEvent) => {
     pendingLiveEvents.current.push({ scope, event });
     if (liveEventsFrame.current !== undefined) return;
@@ -5018,7 +5056,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     });
   }, []);
   useEffect(() => () => {
-    if (liveTextFrame.current !== undefined) window.cancelAnimationFrame(liveTextFrame.current);
     if (liveEventsFrame.current !== undefined) window.cancelAnimationFrame(liveEventsFrame.current);
   }, []);
   const commitQueuedMessages = useCallback((update: (current: QueuedMessage[]) => QueuedMessage[]) => {
@@ -5030,22 +5067,12 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   }, []);
   const onStreamEvent = useCallback((scope: string, event: AgentStreamEvent) => {
     if (scope !== activeComposerScope.current) return;
-    // Only the ordered StreamContext protocol carries an item identity. Legacy
-    // anonymous deltas cannot be tied safely to the active turn and stay hidden.
-    if (event.type === 'delta' && event.item_id && event.content && nativeTurnRunning) {
-      appendLiveText(event.item_id, event.content);
-    }
-    if (event.type === 'stream_reset' && event.item_id === liveStreamItemId.current) {
-      clearLiveText();
-    }
-    // A closed relay can race the durable event read. Preserve text already
-    // delivered to the browser while the authoritative projection catches up.
+    // Final replies render only from their durable MESSAGE event. Transient text
+    // deltas are deliberately ignored to avoid partial content being replaced.
     if (event.type === 'stream_closed') reconcileConversationProjection();
     if (event.type === 'event' && event.event) appendLiveEvent(scope, event.event);
-    // message_complete is only a wake-up signal. Keep the complete transient
-    // text visible until its same-ID durable event replaces it.
     if (event.type === 'message_complete') reconcileConversationProjection();
-  }, [appendLiveEvent, appendLiveText, clearLiveText, nativeTurnRunning, reconcileConversationProjection]);
+  }, [appendLiveEvent, reconcileConversationProjection]);
   const onStreamReconnect = useCallback((scope: string) => {
     // A WebSocket is a live projection only. Events written while the browser
     // was disconnected are recovered from the authoritative REST feed after
@@ -5077,7 +5104,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       bootstrapTransitionScope.current = undefined;
       return;
     }
-    setEditing(false); setQueuedMessageMenuId(undefined); clearLiveText(); pendingLiveEvents.current = []; if (liveEventsFrame.current !== undefined) window.cancelAnimationFrame(liveEventsFrame.current); liveEventsFrame.current = undefined; setScopedLiveEvents(current => {
+    setEditing(false); setQueuedMessageMenuId(undefined); pendingLiveEvents.current = []; if (liveEventsFrame.current !== undefined) window.cancelAnimationFrame(liveEventsFrame.current); liveEventsFrame.current = undefined; setScopedLiveEvents(current => {
       const byId = new Map(current
         .filter(item => item.scope === composerScope)
         .map(item => [item.event.id, item]));
@@ -5096,7 +5123,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       replaceComposerDraft('', composerScope); setAttachments([]); setReferences([]); setWorkspaceReferences([]); setComposerAnnotations([]);
     }
     setOperationError(undefined);
-  }, [clearLiveText, composerScope, conversationDraft, host.id, persistComposerDraft, replaceComposerDraft, selected, workspace]);
+  }, [composerScope, conversationDraft, host.id, persistComposerDraft, replaceComposerDraft, selected, workspace]);
   useEffect(() => {
     if (composerScope) persistComposerDraft(composerScope);
   }, [composerScope, persistComposerDraft]);
@@ -5182,11 +5209,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     setTurnState(current => current === 'running' || current === 'resuming' ? 'idle' : current);
     setStreamHold({ bindingId: selected.id, expiresAt: Date.now() + STREAM_IDLE_GRACE_MS });
   }, [latestFormalTurnFinished, selected]);
-  useEffect(() => {
-    if (!liveText || !liveStreamItemId.current) return;
-    if (!displayedEvents.some(event => event.id === liveStreamItemId.current)) return;
-    clearLiveText();
-  }, [clearLiveText, displayedEvents, liveText]);
   useEffect(() => {
     // On first entry, the native readiness request can be delayed by a Runtime
     // reconnect. A persisted, unfinished formal user event already proves the
@@ -5334,8 +5356,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       }
       setOptimisticBootstrapTurn(current => current?.scope === message.scope ? undefined : current);
       setPendingBootstrap(undefined);
-      clearLiveText();
-      setActiveTurnEventId(undefined);
+            setActiveTurnEventId(undefined);
       setRequestStartedAt(undefined);
       setTurnState('idle');
       setConversationDraft(current => current ?? draftForRecovery);
@@ -5355,8 +5376,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     }
     setOptimisticBootstrapTurn(current => current?.scope === message.scope ? undefined : current);
     setPendingBootstrap(undefined);
-    clearLiveText();
-    setActiveTurnEventId(undefined);
+        setActiveTurnEventId(undefined);
     setRequestStartedAt(undefined);
     setTurnState('idle');
     if (activeComposerScope.current === message.scope) {
@@ -5454,8 +5474,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       commitQueuedMessages(current => current.filter(item => item.id !== message.id));
       const optimisticEventId = showOptimisticUserBubble(message);
       if (message.nativeGuidance) return { optimisticEventId, nativeGuidance: true };
-      clearLiveText();
-      setActiveTurnEventId(undefined);
+            setActiveTurnEventId(undefined);
       setRequestStartedAt(Date.now());
       setTurnState('running');
       return { optimisticEventId, nativeGuidance: false };
@@ -5506,8 +5525,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         return;
       }
       if (activeComposerScope.current === message.bindingId) {
-        clearLiveText();
-        setActiveTurnEventId(undefined);
+                setActiveTurnEventId(undefined);
         setRequestStartedAt(undefined);
         setTurnState('idle');
       }
@@ -5586,8 +5604,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       const branch = eventBranchIds(displayedEvents, request.eventId);
       const replacementParentId = displayedEvents.find(event => event.id === request.eventId)?.payload.parent_id;
       commitQueuedMessages(() => []);
-      clearLiveText();
-      setHiddenEventIds(current => new Set([...current, ...branch]));
+            setHiddenEventIds(current => new Set([...current, ...branch]));
       setScopedLiveEvents(current => [...current.filter(item => item.scope !== scope), { scope, event: {
         id: optimisticEventId, event_type: 'MESSAGE', payload: {
           source: 'user', content: request.content, parent_id: replacementParentId,
@@ -5705,13 +5722,12 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     }
     setPendingBootstrap(undefined);
     setWorkspaceScopeMigration(undefined);
-    clearLiveText();
-    setScopedLiveEvents([]);
+        setScopedLiveEvents([]);
     setOptimisticBootstrapTurn(undefined);
     setHiddenEventIds(new Set());
     setTurnState('idle');
     onNavigate(host.rootPath);
-  }, [clearBootstrapRecovery, clearLiveText, host.id, host.rootPath, onNavigate, persistComposerDraft, replaceComposerDraft, workspace]);
+  }, [clearBootstrapRecovery, host.id, host.rootPath, onNavigate, persistComposerDraft, replaceComposerDraft, workspace]);
   useEffect(() => {
     if (!autoOpenDraft || !workspace || selectedBindingId || conversationDraft) return;
     openConversationDraft({ displayName: '根工作区' });
@@ -6174,7 +6190,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       {selected || conversationDraft ? <ConversationSurface
         key={selected?.id ?? conversationDraft?.id}
         events={displayedEvents}
-        liveText={liveText}
         isGenerating={conversationVisuallyActive}
         isPaused={conversationActivity.state === 'paused'}
         emptyResponseRecoveryActive={emptyResponseRecoveryActive}

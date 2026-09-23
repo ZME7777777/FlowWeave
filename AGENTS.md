@@ -81,12 +81,14 @@ git -C /Users/zhengmengen/WorkSpace/openhands/software-agent-sdk \
 ## Web 会话状态
 
 - `AgentSessionWorkbench` 中会在异步发送、重写或流订阅回调内更新的本地事件和 UI 状态，必须携带并校验 `bindingId`；不能只依赖会话切换 effect 清空共享状态，否则旧会话的迟到回调会污染新会话。
-- 会话未读状态是用户隔离的服务端 `AgentConversationBinding.unread` 投影；Agent Workspace 与 FlowRun node-session 两种宿主必须共同读写该字段。浏览器 `localStorage` 仅用于置顶等设备本地展示偏好，不能作为未读事实源。
+- 会话未读状态是用户隔离的服务端 `AgentConversationBinding.unread` 投影；Agent Workspace 与 FlowRun node-session 两种宿主必须共同读写该字段。浏览器 `localStorage` 仅用于置顶等设备本地展示偏好，不能作为未读事实源。前端切换会话时先乐观更新，再异步持久化；写请求未完成期间必须让本地目标值覆盖列表刷新，并用请求代次忽略同会话较旧写响应，避免旧服务端快照造成未读样式回退。
 - Composer 草稿的文本、附件、引用和注释必须作为带 `scope` 的同一快照读写；会话切换先持久化 outgoing scope，再恢复 incoming scope。子组件卸载 cleanup 不得从共享 ref 读取内容后写入捕获的旧 scope。
 - 会话运行中的视觉状态不能只依赖可能短暂抖动的 Runtime readiness；只要正式事件树仍存在未完成用户轮次且未超过终态同步期限，就必须保持会话活动和底部任务计划的 DOM、动画与布局稳定。
 - Token/事件上下文指标允许 Runtime 暂时返回未知；同一 binding 已有可信指标时应保留最近可信值，首次未知仍明确显示待更新，且不得跨 binding 复用。
-- 会话交互态与视觉态必须分离：暂停、继续、发送等操作服从 Runtime readiness；运行中展示按正式事件单调推进，不能因中间轮询回退。自动贴底仅由新事件、流正文增长、历史锚点恢复或用户操作触发，禁止用整个会话树的 ResizeObserver 响应状态文案和动画尺寸变化。
+- 会话交互态与视觉态必须分离：暂停、继续、发送等操作服从 Runtime readiness；运行中展示按正式事件单调推进，不能因中间轮询回退。自动贴底仅由新事件、历史锚点恢复或用户操作触发，禁止用整个会话树的 ResizeObserver 响应状态文案和动画尺寸变化；已到目标位置时不得重复写 `scrollTop`。
 - 浏览器从后台恢复可见或窗口重新获得焦点时，活动会话必须立即从无 cursor 的最新 OpenHands 事件窗口对账，并刷新会话与 readiness 投影；不能仅等待受后台节流的定时轮询或 WebSocket 重连。`visibilitychange` 与 `focus` 可能连续触发，应合并同一轮恢复。
-- OpenHands 新 StreamContext 中带 `item_id` 的有序文本 delta 可以作为浏览器内临时回复实时展示；`message_complete` 仅触发正式事件补读，不得清空已有预览或单独决定轮次结束。正式同 ID 事件渲染后再移除预览；匿名旧协议 delta 不展示，`stream_reset` 只清除同 item，断流时保留已收到文本等待正式事件。
+- 运行中 REST 事件恢复必须由单一协调器串行调度：有 `next_cursor` 时优先增量追赶，定期或在 `message_complete`、断流、WebSocket 重连、前台恢复时读取无 cursor 最新窗口；不得让 React Query 定时器与自建定时器并行轮询同一会话。强制最新窗口信号发生在增量请求期间时必须排队补读，不能被 in-flight 去重吞掉。
+- 历史分页完成后必须记住已耗尽的入口 `history_cursor`，避免最新窗口刷新重新激活同一分页链；若服务端返回新的入口游标，仍必须允许读取新增历史。
+- 最终回复正文只从 OpenHands 正式 `MESSAGE` 事件一次性渲染；浏览器不得展示 StreamContext 文本 delta 或模拟打字光标。`message_complete` 与断流只触发正式事件补读，不单独决定轮次结束；Tool、Thought、Task 等正式过程事件仍可实时追加展示。
 - Runtime readiness 一旦确认终态，输入框、按钮和侧栏运行样式必须立即恢复；正式终态事件的补读只能在后台进行，不能呈现“正在对账”或继续占用运行态。为避免上一轮排队消息误发，可设置短时且不可见的队列门控，但必须有界并保留用户确认权。
 - 会话配置仅管理能力与认证；新会话和既有会话的模型、供应商及推理程度都在发送框中选择。

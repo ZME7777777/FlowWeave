@@ -91,6 +91,24 @@ test('Agent session renders a completed long Markdown reply without manual expan
   await expect(table.locator('td').first()).toHaveCSS('white-space', 'nowrap');
   await expect(page.locator('.conversation-markdown-table-scroll')).toHaveCSS('overflow-x', 'auto');
   await expect(page.getByRole('button', { name: '渲染完整消息' })).toHaveCount(0);
+  const completedReply = page.locator('.conversation-message.assistant').filter({ hasText: '完整回复 cache-conversation-a' });
+  const completedSurface = page.locator('.conversation-surface');
+  await completedReply.evaluate(element => { (element as HTMLElement).dataset.focusStabilityMarker = 'stable'; });
+  const completedReplyRect = await completedReply.evaluate(element => element.getBoundingClientRect().toJSON());
+  const completedScrollTop = await completedSurface.evaluate(element => element.scrollTop);
+  const completedEventRequests = eventRequests;
+  await page.evaluate(() => {
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' });
+    document.dispatchEvent(new Event('visibilitychange'));
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'visible' });
+    document.dispatchEvent(new Event('visibilitychange'));
+    window.dispatchEvent(new Event('focus'));
+  });
+  await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  await expect(completedReply).toHaveAttribute('data-focus-stability-marker', 'stable');
+  await expect.poll(() => completedReply.evaluate(element => element.getBoundingClientRect().toJSON())).toEqual(completedReplyRect);
+  await expect.poll(() => completedSurface.evaluate(element => element.scrollTop)).toBe(completedScrollTop);
+  expect(eventRequests).toBe(completedEventRequests);
   const composer = page.getByLabel('发送 Agent 消息');
   await expect(composer).toBeEditable();
   await page.getByRole('button', { name: '缓存会话 B', exact: true }).click();
@@ -357,6 +375,8 @@ test('Agent transcript keeps scroll ownership through streamed output and histor
     });
   });
   await expect.poll(() => activeEventRequests).toBe(2);
+  await page.waitForTimeout(750);
+  expect(activeEventRequests).toBe(2);
   await page.evaluate(() => new Promise<void>(resolve => {
     requestAnimationFrame(() => requestAnimationFrame(resolve));
   }));
@@ -365,6 +385,15 @@ test('Agent transcript keeps scroll ownership through streamed output and histor
     element.dataset.refreshScrollWrites = '0';
     element.querySelector<HTMLElement>('.conversation-turn-status')?.style.setProperty('min-height', '36px');
   });
+  await page.evaluate(() => new Promise<void>(resolve => {
+    requestAnimationFrame(() => requestAnimationFrame(resolve));
+  }));
+  await expect(surface).toHaveAttribute('data-refresh-scroll-writes', '0');
+  await surface.evaluate(element => { element.dataset.refreshScrollWrites = '0'; });
+  agentStream!.send(JSON.stringify({
+    type: 'delta', item_id: 'scroll-live-preview', content: '最终回复应等待正式消息后一次性渲染。',
+  }));
+  await expect(page.getByLabel('正在生成的回复')).toHaveCount(0);
   await page.evaluate(() => new Promise<void>(resolve => {
     requestAnimationFrame(() => requestAnimationFrame(resolve));
   }));
@@ -810,6 +839,9 @@ test('Running Agent session reload restores older history pages', async ({ page 
   await expect(page.getByText('当前仍在处理的请求')).toBeVisible();
   await expect.poll(() => historyRequests).toBeGreaterThan(0);
   await expect(page.getByText('压缩前仍可见的历史会话')).toBeVisible();
+  const completedHistoryRequests = historyRequests;
+  await page.waitForTimeout(4_750);
+  expect(historyRequests).toBe(completedHistoryRequests);
 });
 
 test('Conversation context menu marks a conversation unread until it is opened again', async ({ page }) => {

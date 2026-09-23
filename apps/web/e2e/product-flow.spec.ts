@@ -1614,17 +1614,23 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect.poll(() => sentBinding).toBe('agent-conversation-streaming-1');
   await expect.poll(() => sentMessages).toBe(1);
   expect(sentProvider).toBeNull();
-  // Reloading during a native turn must restore the formal non-ready state,
-  // not leave a static zero-second process card behind.
+  // Reloading during a native turn must restore one stable process card. The
+  // running summary deliberately stays static; completed turns derive elapsed
+  // time from formal event timestamps instead of a one-second render timer.
   await page.reload();
-  await expect(page.getByText(/已耗时 \d+秒/)).toBeVisible();
+  await expect(page.getByText('处理中', { exact: true })).toBeVisible();
   await expect(page.getByText('仍在等待模型响应')).toHaveCount(0);
   const activeProcess = page.locator('.conversation-turn').last().locator('.conversation-activity-group');
   await expect(activeProcess).toHaveClass(/summary-only/);
-  await expect(activeProcess.getByText(/已耗时 \d+秒/)).toBeVisible();
-  await expect(activeProcess.getByText(/已耗时 .*小时/)).toHaveCount(0);
+  await expect(activeProcess.getByText('处理中', { exact: true })).toBeVisible();
+  await expect(activeProcess.getByText(/已耗时/)).toHaveCount(0);
   await expect(activeProcess.locator('.conversation-response-wait')).toHaveCount(0);
   await expect(page.locator('.conversation-turn-status')).toHaveText('OpenHands 会话连接正常，等待响应');
+  await activeProcess.evaluate(element => { (element as HTMLElement).dataset.periodicRenderMarker = 'stable'; });
+  const stableProcessSummary = await activeProcess.locator(':scope > summary').textContent();
+  await page.waitForTimeout(1_200);
+  await expect(activeProcess).toHaveAttribute('data-periodic-render-marker', 'stable');
+  await expect(activeProcess.locator(':scope > summary')).toHaveText(stableProcessSummary ?? '处理中');
   await expect(page.getByLabel('Agent 活动提醒')).toHaveCount(0);
   await expect.poll(() => Boolean(agentStream)).toBe(true);
   // A stale readiness endpoint can remain idle while the formal user turn is
@@ -1650,7 +1656,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   agentStream!.send(JSON.stringify({ type: 'message_complete' }));
   await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toBeVisible();
   await expectViewportAtLatest();
-  await expect(activeProcess.locator(':scope > summary')).toContainText(/已耗时 \d+秒/);
+  await expect(activeProcess.locator(':scope > summary')).toContainText('处理中');
   agentStream!.send(JSON.stringify({
     type: 'event',
     event: { id: 'live-condensation', event_type: 'CONDENSATION_REQUESTED', payload: { source: 'agent', parent_id: 'running-user', condensation_reason_detail: '上下文接近阈值。', timestamp: new Date().toISOString() } },
@@ -1658,7 +1664,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   const condensationRow = activeProcess.getByRole('status', { name: '开始压缩上下文' });
   await expect(condensationRow).toHaveClass(/running/);
   await expect(condensationRow.locator('b')).toHaveCSS('animation-name', 'none');
-  await expect(activeProcess.getByText(/已耗时 \d+秒/)).toBeVisible();
+  await expect(activeProcess.getByText('处理中', { exact: true })).toBeVisible();
   agentStream!.send(JSON.stringify({
     type: 'event',
     event: { id: 'live-condensation-complete', event_type: 'CONDENSATION_COMPLETED', payload: { source: 'agent', parent_id: 'live-condensation', condensation_request_event_id: 'live-condensation', condensation_triggered_at: new Date().toISOString(), condensation_completed_at: new Date().toISOString(), forgotten_event_ids: ['old-1', 'old-2'], timestamp: new Date().toISOString() } },
@@ -1669,7 +1675,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(completedCondensationRow).not.toHaveClass(/running/);
   await expect(completedCondensationRow.locator('b')).toHaveCSS('animation-name', 'none');
   await expect(activeProcess).toHaveCount(1);
-  await expect(activeProcess.locator(':scope > summary')).toContainText(/已耗时 \d+秒/);
+  await expect(activeProcess.locator(':scope > summary')).toContainText('处理中');
   await expect(activeProcess).not.toContainText('上下文接近阈值');
   await expect(activeProcess).not.toContainText('old-1');
   agentStream!.send(JSON.stringify({
@@ -1685,12 +1691,9 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     event: { id: 'live-workflow-result', event_type: 'TOOL_RESULT', payload: { source: 'environment', parent_id: 'live-workflow', action_id: 'live-workflow', tool_call_id: 'live-workflow-call', tool_name: 'workflow', event_name: 'WorkflowObservation', details: { is_error: false }, timestamp: new Date().toISOString() } },
   }));
   agentStream!.send(JSON.stringify({ type: 'delta', item_id: 'transient-preview', content: '正在核对上下文。' }));
-  const transientPreview = page.getByLabel('正在生成的回复');
-  await expect(transientPreview).toContainText('正在核对上下文。');
-  agentStream!.send(JSON.stringify({ type: 'delta', item_id: 'transient-preview', content: '\n下一行内容应当稳定追加，不重新解析前文。' }));
-  await expect(transientPreview).toContainText('下一行内容应当稳定追加，不重新解析前文。');
+  agentStream!.send(JSON.stringify({ type: 'delta', item_id: 'transient-preview', content: '\n最终回复只在正式消息到达后展示。' }));
+  await expect(page.getByLabel('正在生成的回复')).toHaveCount(0);
   agentStream!.send(JSON.stringify({ type: 'stream_reset', item_id: 'transient-preview' }));
-  await expect(transientPreview).toHaveCount(0);
   agentStream!.send(JSON.stringify({
     type: 'event',
     event: { id: 'live-progress', event_type: 'THOUGHT', payload: { source: 'agent', parent_id: 'running-user', llm_response_id: 'live-operation-batch-1', content: '范围已扩为终端与文件操作；现在做静态验证。', thought: '范围已扩为终端与文件操作；现在做静态验证。', timestamp: new Date().toISOString() } },
@@ -2041,13 +2044,13 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   // must retain the one formal execution-state interpretation until idle.
   agentStream!.send(JSON.stringify({ type: 'delta', item_id: 'live-reply-before-idle', content: '回复已经生成，原生会话仍在收尾。' }));
   agentStream!.send(JSON.stringify({ type: 'message_complete' }));
-  await expect(page.getByLabel('正在生成的回复')).toContainText('回复已经生成，原生会话仍在收尾。');
+  await expect(page.getByLabel('正在生成的回复')).toHaveCount(0);
+  await expect(page.locator('.conversation-message.assistant').filter({ hasText: '回复已经生成，原生会话仍在收尾。' })).toHaveCount(0);
   agentStream!.send(JSON.stringify({
     type: 'event',
     event: { id: 'live-reply-before-idle', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'live-tool-result', content: '回复已经生成，原生会话仍在收尾。', timestamp: new Date().toISOString() } },
   }));
   await expect(page.locator('.conversation-message.assistant').filter({ hasText: '回复已经生成，原生会话仍在收尾。' })).toBeVisible();
-  await expect(page.getByLabel('正在生成的回复')).toHaveCount(0);
   await expect(page.getByText('回复已生成，正在收尾')).toBeVisible();
   await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toBeVisible();
   await expect(page.locator('.agent-workspace-conversation-running')).toHaveCount(1);
@@ -2350,7 +2353,7 @@ test('editing the latest user message locally replaces only its active branch', 
   await expect(page.getByText('更早的回答', { exact: true })).toBeVisible();
   await expect(page.getByText('不应保留的旧回答', { exact: true })).toHaveCount(0);
   await expect(page.getByText('修改后的问题', { exact: true })).toBeVisible();
-  await expect(page.getByText(/已耗时 \d+秒/)).toBeVisible();
+  await expect(page.getByText('处理中', { exact: true })).toBeVisible();
   const thinkingStatus = page.locator('.conversation-turn-status');
   await expect(thinkingStatus).toHaveText(/正在思考/);
   await expect.poll(() => thinkingStatus.evaluate(status => {
@@ -2358,6 +2361,10 @@ test('editing the latest user message locally replaces only its active branch', 
     const dots = status.querySelector('.conversation-turn-status-dots')?.getBoundingClientRect();
     return label && dots ? Math.round(dots.left - label.right) : null;
   })).toBe(5);
+  const thinkingStatusWidth = await thinkingStatus.evaluate(status => (
+    status.querySelector(':scope > span:first-child')?.getBoundingClientRect().width ?? 0
+  ));
+  expect(thinkingStatusWidth).toBeLessThan(280);
   await expect.poll(() => Boolean(releaseRewrite)).toBe(true);
   expect(rerunPayload).toMatchObject({
     content: '修改后的问题',
