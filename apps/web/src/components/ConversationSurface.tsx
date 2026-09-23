@@ -5,7 +5,7 @@ import { SubagentAvatar } from './SubagentAvatar';
 import { useEscapeClose } from './useEscapeClose';
 import { subagentAvatarSlotForEvent, subagentAvatarSlots, type SubagentAvatarSlot } from '../utils/subagentAvatar';
 import { workspaceFileChanges, workspaceRelativePath, type WorkspaceFileChange } from './agent-session/fileChanges';
-import { isOpenHandsAgentReply, isOpenHandsEmptyResponseRecovery } from './conversationEvents';
+import { isOpenHandsAgentReply, isOpenHandsEmptyResponseRecovery, parseOpenHandsEventTime } from './conversationEvents';
 import './conversation-surface.css';
 
 type ItemKind = 'user' | 'assistant' | 'thought' | 'tool' | 'error' | 'agent-error' | 'condensation';
@@ -941,7 +941,7 @@ function TaskTrackerCard({ entry, presentation }: { entry: ActivityEntry; presen
   const progress = snapshot ? `${completed} / ${snapshot.items.length} 已完成` : undefined;
   const status = loading ? '正在更新' : [snapshot?.command === 'plan' ? '已更新' : '当前快照', progress].filter(Boolean).join(' · ');
   return <details className={`conversation-activity-row tool conversation-tool-detail task-tracker${loading ? ' running' : ''}`} aria-label={`任务列表：${presentation.title}`}>
-    <summary><ClipboardList size={14}/><div><b>{presentation.title}</b><small>{status}</small></div></summary>
+    <summary><ClipboardList size={13}/><div><b>{presentation.title}</b><small>{status}</small></div></summary>
     <div className="conversation-tool-detail-panel conversation-task-tracker-body">
       {snapshot ? <><div className="conversation-task-list-summary"><span>{snapshot.command === 'plan' ? '任务清单' : '任务清单快照'}</span><small>{progress}</small></div><TaskListItems items={snapshot.items} source={snapshot.timestamp ? `OpenHands 原生任务事件 · ${formatMessageTime(snapshot.timestamp)}` : 'OpenHands 原生任务事件'}/></> : <p className="conversation-task-tracker-note">正在读取任务清单…</p>}
     </div>
@@ -959,7 +959,7 @@ function SkillLoadRow({ entry }: { entry: ActivityEntry }) {
   const failed = phase === 'ERROR' || result?.event.payload.details?.is_error === true;
   const status = failed ? '加载失败' : phase === 'LOADED' ? '已加载' : '加载中';
   return <article className={`conversation-activity-row tool skill-load${failed ? ' error' : phase === 'INVOKED' ? ' active' : ''}`} aria-label={`加载 Skill：${skillName}`}>
-    <BookOpen size={14}/><div><b>{`加载 Skill ${skillName}`}</b><small>{status}</small></div>
+    <BookOpen size={13}/><div><b>{`加载 Skill ${skillName}`}</b><small>{status}</small></div>
   </article>;
 }
 
@@ -968,14 +968,7 @@ function eventTime(item?: Item): number | undefined {
 }
 
 function parsedEventTime(raw: unknown): number | undefined {
-  if (typeof raw !== 'string' || !raw) return undefined;
-  // OpenHands 1.42.0 creates Event.timestamp with datetime.now().isoformat().
-  // The Runtime container runs in UTC, but that value has no timezone suffix.
-  // Browsers otherwise interpret it as local time and inflate an active turn by
-  // the local UTC offset. Preserve explicitly zoned timestamps as-is.
-  const normalized = /(?:[zZ]|[+-]\d{2}:?\d{2})$/.test(raw) ? raw : `${raw}Z`;
-  const value = Date.parse(normalized);
-  return Number.isFinite(value) ? value : undefined;
+  return parseOpenHandsEventTime(raw);
 }
 
 function turnProcessBlocks(
@@ -989,10 +982,8 @@ function turnProcessBlocks(
 
 /** Format the wall-clock time attached to an actual OpenHands message event. */
 function formatMessageTime(raw: unknown): string | undefined {
-  if (typeof raw !== 'string' || !raw) return undefined;
-  const normalized = /(?:[zZ]|[+-]\d{2}:?\d{2})$/.test(raw) ? raw : `${raw}Z`;
-  const value = Date.parse(normalized);
-  if (!Number.isFinite(value)) return undefined;
+  const value = parseOpenHandsEventTime(raw);
+  if (value === undefined) return undefined;
   return new Intl.DateTimeFormat('zh-CN', {
     hour: '2-digit', minute: '2-digit', hour12: false,
   }).format(value);
@@ -1130,6 +1121,46 @@ function CurrentTurnStatus({ items, liveText, requestSubmitting, statusOverride,
   </div>;
 }
 
+const LIVE_REPLY_CHUNK_LENGTH = 72;
+
+function nextLiveReplyChunk(content: string, offset: number): string {
+  const limit = Math.min(content.length, offset + LIVE_REPLY_CHUNK_LENGTH);
+  const newline = content.indexOf('\n', offset + 1);
+  if (newline >= offset && newline < limit) return content.slice(offset, newline + 1);
+  if (limit === content.length) return content.slice(offset);
+  for (let index = limit; index > offset + 16; index -= 1) {
+    if (/[\s,.;!?，。！？；：]/.test(content[index - 1])) return content.slice(offset, index);
+  }
+  return content.slice(offset, limit);
+}
+
+function LiveReply({ content }: { content: string }) {
+  const rendered = useRef('');
+  const [chunks, setChunks] = useState<string[]>([]);
+
+  useEffect(() => {
+    if (!content.startsWith(rendered.current)) {
+      rendered.current = '';
+      setChunks([]);
+    }
+    let frame: number | undefined;
+    const append = () => {
+      const offset = rendered.current.length;
+      if (offset >= content.length) return;
+      const chunk = nextLiveReplyChunk(content, offset);
+      rendered.current += chunk;
+      setChunks(current => [...current, chunk]);
+      frame = window.requestAnimationFrame(append);
+    };
+    frame = window.requestAnimationFrame(append);
+    return () => { if (frame !== undefined) window.cancelAnimationFrame(frame); };
+  }, [content]);
+
+  return <article className="conversation-message assistant conversation-live-reply" aria-label="正在生成的回复" aria-live="polite">
+    <div className="conversation-live-reply-content">{chunks.map((chunk, index) => <span key={index}>{chunk}</span>)}<i aria-hidden="true"/></div>
+  </article>;
+}
+
 function taskAvatarStatus(entry: ActivityEntry, item: Item, paused = false, parentFailed = false): 'running' | 'paused' | 'completed' | 'error' {
   const phases = [item.event, ...entry.results.map(result => result.event)]
     .map(event => event.payload.runtime_task?.phase);
@@ -1159,7 +1190,7 @@ function ActivityEntryRow({ entry, active, paused = false, parentFailed = false,
     : undefined;
   const presentation = activityPresentation(entry, active, workspaceRoot, paused, parentFailed, recoveredErrorEventIds);
   const ToolIcon = toolVisual === 'terminal' ? SquareTerminal : toolVisual === 'file' ? fileToolIcon(presentation) : toolVisual === 'mcp' ? PlugZap : toolVisual === 'workflow' ? Workflow : Icon;
-  const taskAvatar = avatarSlot && <SubagentAvatar slot={avatarSlot} status={taskAvatarStatus(entry, item, paused, parentFailed)} size={14}/>;
+  const taskAvatar = avatarSlot && <SubagentAvatar slot={avatarSlot} status={taskAvatarStatus(entry, item, paused, parentFailed)} size={13}/>;
   const toolDetail = item.kind === 'tool'
     ? <ToolDetailPanel presentation={presentation} eventName={eventName} toolName={toolName || undefined} toolVisual={toolVisual} results={entry.results} workspaceRoot={workspaceRoot}/>
     : null;
@@ -1172,7 +1203,7 @@ function ActivityEntryRow({ entry, active, paused = false, parentFailed = false,
     <MessageMarkdown>{presentation.thought ?? item.content}</MessageMarkdown>
   </article>;
   if (item.kind === 'condensation') return <article className={`conversation-activity-row tool condensation${condensationRunning ? ' running' : ''}`} role="status" aria-label={presentation.title}>
-    <Sparkles size={14}/><div><b>{presentation.title}</b></div>
+    <Sparkles size={13}/><div><b>{presentation.title}</b></div>
   </article>;
   if (eventName === 'TaskTrackerAction' || eventName === 'TaskTrackerObservation') return <div className={`conversation-tool-entry semantic tool-${toolVisual}`}>
     {!hideThought && presentation.thought && <article {...thoughtAttributes} className={`conversation-activity-row thought tool-thought tool-${toolVisual}`}><MessageMarkdown>{presentation.thought}</MessageMarkdown></article>}
@@ -1187,12 +1218,12 @@ function ActivityEntryRow({ entry, active, paused = false, parentFailed = false,
       <MessageMarkdown>{presentation.thought}</MessageMarkdown>
     </article>}
     <details className={`conversation-activity-row tool conversation-tool-detail tool-${toolVisual}${nativeOperationRunning ? ' running' : ''}`} data-tool-kind={toolVisual} data-file-operation={toolVisual === 'file' ? presentation.fileOperation : undefined} data-file-kind={toolVisual === 'file' ? presentation.fileKind : undefined}>
-      <summary aria-label={`查看执行详情：${presentation.title}`}>{taskAvatar ?? <ToolIcon size={14}/>}<div><b title={presentation.title}>{presentation.title}</b></div></summary>
+      <summary aria-label={`查看执行详情：${presentation.title}`}>{taskAvatar ?? <ToolIcon size={13}/>}<div><b title={presentation.title}>{presentation.title}</b></div></summary>
       {toolDetail}
     </details>
   </div>;
   return <article className={`conversation-activity-row ${item.kind}`}>
-    {taskAvatar ?? <ToolIcon size={14}/>}<div className="conversation-activity-content"><b title={presentation.title}>{presentation.title}</b><small>{presentation.status}</small>
+    {taskAvatar ?? <ToolIcon size={13}/>}<div className="conversation-activity-content"><b title={presentation.title}>{presentation.title}</b><small>{presentation.status}</small>
       {presentation.thought && <span className="conversation-activity-thought"><MessageMarkdown>{presentation.thought}</MessageMarkdown></span>}
     </div>
   </article>;
@@ -1230,7 +1261,7 @@ function ProgressActivity({ group, active, paused, parentFailed, recoveredErrorE
   const summaryLabel = currentTitle ? `${label}，${currentTitle}` : label;
   return <details className={`conversation-progress-group${running ? ' active' : ''}`} open={open} onToggle={event => setOpen(event.currentTarget.open)} data-progress-event-id={group.progress.event.id}>
     <summary aria-label={`查看执行过程：${summaryLabel}`}>
-      <ProgressIcon className="conversation-progress-icon" size={15}/><span><b>{label}</b>{running && currentTitle && <small className="conversation-progress-current" role="status">{currentTitle}</small>}</span>
+      <ProgressIcon className="conversation-progress-icon" size={14}/><span><b>{label}</b>{running && currentTitle && <small className="conversation-progress-current" role="status">{currentTitle}</small>}</span>
     </summary>
     <div className="conversation-progress-group-list">
       {group.entries.map((entry, index) => <ActivityEntryRow key={entry.id} entry={entry} active={active} paused={paused} parentFailed={parentFailed} hideThought={index === 0 && entry.action?.event.id === group.progress.event.id} recoveredErrorEventIds={recoveredErrorEventIds} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/>)}
@@ -2118,8 +2149,9 @@ export const ConversationSurface = memo(function ConversationSurface({ events, l
       {referenceHighlightRects.length > 0 && <div className="conversation-reference-highlights" aria-hidden="true">{referenceHighlightRects.map((rect, index) => <i key={`${rect.left}:${rect.top}:${index}`} style={rect}/>)}</div>}
       {historyPending && <div className="conversation-history-loading" role="status"><LoaderCircle size={14}/>正在载入更早的会话记录…</div>}
       {turns.map((turn, index) => {
-        const isCurrent = index === turns.length - 1 && isGenerating;
-        const isCurrentPaused = index === turns.length - 1 && isPaused;
+        const isLatest = index === turns.length - 1;
+        const isCurrent = isLatest && isGenerating;
+        const isCurrentPaused = isLatest && isPaused;
         const errors = turn.activity.filter(item => item.kind === 'error' || item.kind === 'agent-error');
         const recoveredErrorEventIds = new Set(
           turn.assistant || isCurrent ? errors.map(item => item.event.id) : errors
@@ -2168,12 +2200,13 @@ export const ConversationSurface = memo(function ConversationSurface({ events, l
           {isCurrent && !turn.assistant && !failures.length && (
             <CurrentTurnStatus items={turn.activity} liveText={liveText} requestSubmitting={requestSubmitting} statusOverride={emptyResponseRecoveryActive ? '模型返回空响应，OpenHands 正在自动重试' : undefined} monitoring={monitoring} connectionState={connectionState}/>
           )}
+          {isLatest && !turn.assistant && !failures.length && liveText && <LiveReply content={liveText}/>}
           {processBlocks.length > 0 && turn.assistant && <div className="conversation-process-divider" role="separator" aria-label="工作过程结束"/>}
           {turn.assistant && <AgentReply event={turn.assistant.event} content={turn.assistant.content} changes={fileChanges} onFork={!isGenerating ? () => onFork?.(turn.assistant!.event.id) : undefined} onPreviewCandidateFile={onPreviewCandidateFile} onReviewChanges={onReviewChanges} onOpenWorkspaceFile={onOpenWorkspaceFile} workspaceRoot={workspaceRoot} annotations={annotations} onLocateAnnotation={locateAnnotation}/>}
           {failures.map(item => <ConversationFailure key={item.event.id} item={item} taskControl={taskControl}/>)}
         </section>;
       })}
-      {turns.length === 0 && (liveText || isGenerating) && <><ActivityGroup items={[]} active startedAt={requestStartedAt} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/><CurrentTurnStatus items={[]} liveText={liveText} requestSubmitting={requestSubmitting} statusOverride={emptyResponseRecoveryActive ? '模型返回空响应，OpenHands 正在自动重试' : undefined} monitoring={monitoring} connectionState={connectionState}/></>}
+      {turns.length === 0 && (liveText || isGenerating) && <><ActivityGroup items={[]} active startedAt={requestStartedAt} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/><CurrentTurnStatus items={[]} liveText={liveText} requestSubmitting={requestSubmitting} statusOverride={emptyResponseRecoveryActive ? '模型返回空响应，OpenHands 正在自动重试' : undefined} monitoring={monitoring} connectionState={connectionState}/>{liveText && <LiveReply content={liveText}/>}</>}
       </div>
     </section>
     {viewingReference && <ConversationReferencePreview reference={viewingReference} onClose={() => setViewingReference(undefined)} onLocate={locateReferenceSource}/>}

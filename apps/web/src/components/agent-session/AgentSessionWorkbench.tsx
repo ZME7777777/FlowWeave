@@ -13,7 +13,7 @@ import { agentWorkspaceSessionGateway, type AgentSessionGateway } from '../../ap
 import { withoutDeploymentBase } from '../../deploymentPath';
 import { agentWorkspaceSessionHost, type AgentSessionHost } from './session-host';
 import { ConversationSurface, ConversationTaskPlan, type ConversationHistoryPrepend, type ConversationReference } from '../ConversationSurface';
-import { isOpenHandsAgentReply, isOpenHandsEmptyResponseRecovery } from '../conversationEvents';
+import { isOpenHandsAgentReply, isOpenHandsEmptyResponseRecovery, parseOpenHandsEventTime } from '../conversationEvents';
 import { useProductDialog } from '../ProductDialogContext';
 import { useEscapeClose } from '../useEscapeClose';
 import { MermaidDiagram } from '../MermaidDiagram';
@@ -38,7 +38,6 @@ const MODEL_REQUEST_MAX_RETRIES = 3;
 const DEFAULT_CONTEXT_COMPACTION_THRESHOLD_TOKENS = 512_000;
 type StreamStatus = 'connecting' | 'live' | 'recovering' | 'disabled';
 type TurnState = 'idle' | 'running' | 'pausing' | 'paused' | 'resuming';
-type ConversationActivityState = TurnState | 'synchronizing';
 type QueueDeliveryState = 'queued';
 type ConversationOrderSync = { state: 'syncing' | 'failed'; orderedBindingIds: string[] };
 interface RewriteRequest {
@@ -521,10 +520,7 @@ function writePinnedConversationIds(storageKey: string | undefined, conversation
 
 const MAX_BOOTSTRAP_RECONCILIATION_ATTEMPTS = 3;
 const STREAM_IDLE_GRACE_MS = 5 * 60 * 1000;
-// A readiness terminal state can precede its formal OpenHands event page. Keep
-// the reconciliation window short so a missing event cannot permanently lock
-// the composer.
-const TERMINAL_EVENT_RECONCILIATION_MS = 8_000;
+const TERMINAL_EVENT_RECONCILIATION_MS = 2_000;
 
 const AgentSessionGatewayContext = createContext<AgentSessionGateway>(agentWorkspaceSessionGateway);
 const AgentSessionHostContext = createContext<AgentSessionHost>(agentWorkspaceSessionHost);
@@ -1185,16 +1181,28 @@ const ComposerCapabilityAutocomplete = forwardRef<ComposerHandle, {
   </div>;
 });
 
-function CapabilityManager({ workspaceId, bindingId, conversationCapabilities, draftCapabilityIds, onClose, onCreateEnhancedConversation }: {
+function CapabilityManager({ workspaceId, bindingId, conversationCapabilities, draftCapabilityIds, draftCapabilitySelection = true, draftModel, onClose, onCreateEnhancedConversation }: {
   workspaceId: string; bindingId?: string; conversationCapabilities?: AgentSessionCapability[]; onClose: () => void;
-  draftCapabilityIds?: string[]; onCreateEnhancedConversation?: (capabilityVersionIds: string[]) => void;
+  draftCapabilityIds?: string[]; draftCapabilitySelection?: boolean;
+  draftModel?: {
+    providers: ModelProvider[];
+    providerId: string;
+    modelName: string;
+    models: ProviderModel[];
+    efforts: string[];
+    effort: string;
+    onProviderChange: (value: string) => void;
+    onModelChange: (value: string) => void;
+    onEffortChange: (value: string) => void;
+  };
+  onCreateEnhancedConversation?: (capabilityVersionIds: string[]) => void;
 }) {
   const { api } = useAgentSessionGateway();
   const host = useAgentSessionHost();
   const queryClient = useQueryClient();
   const [query, setQuery] = useState('');
   const [kind, setKind] = useState<AgentCapabilityType | 'ALL'>('ALL');
-  const [managerTab, setManagerTab] = useState<'CAPABILITIES' | 'CREDENTIALS'>('CAPABILITIES');
+  const [managerTab, setManagerTab] = useState<'MODEL' | 'CAPABILITIES' | 'CREDENTIALS'>(bindingId ? 'CAPABILITIES' : 'MODEL');
   const [collectionMenuOpen, setCollectionMenuOpen] = useState(false);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [selectedCredentialIds, setSelectedCredentialIds] = useState<string[]>([]);
@@ -1352,8 +1360,8 @@ function CapabilityManager({ workspaceId, bindingId, conversationCapabilities, d
   return <div className="agent-capability-backdrop" role="presentation" onPointerDown={event => { if (event.target === event.currentTarget && !busy) onClose(); }}>
     <section ref={dialog} className={`agent-capability-manager${bindingId ? ' has-session-tabs' : ''}`} role="dialog" aria-modal="true" aria-labelledby="agent-capability-title" onKeyDown={trapFocus}>
       <header><h2 id="agent-capability-title">会话配置</h2><button ref={closeButton} type="button" aria-label="关闭会话配置" disabled={busy} onClick={onClose}><X size={18}/></button></header>
-      {bindingId && <div className="agent-session-config-tabs"><button type="button" className={managerTab === 'CAPABILITIES' ? 'active' : ''} onClick={() => setManagerTab('CAPABILITIES')}>能力</button><button type="button" className={managerTab === 'CREDENTIALS' ? 'active' : ''} onClick={() => setManagerTab('CREDENTIALS')}>认证</button></div>}
-      {managerTab === 'CREDENTIALS' ? <><div className="agent-capability-summary">{!credentialQuery.data?.initialized_at && <span>此会话未记录此前的认证同步状态</span>}<span>同步会追加新变量，并覆盖同名变量的当前值</span></div><div className="agent-capability-list">{credentialQuery.isLoading ? <p>正在读取认证信息…</p> : credentialQuery.error ? <p>{credentialQuery.error instanceof Error ? credentialQuery.error.message : '认证信息暂不可用。'}</p> : credentialQuery.data?.credentials.length ? credentialQuery.data.credentials.map(credential => { const checked = selectedCredentialIds.includes(credential.id); const state = credential.sync_state === 'CURRENT' ? '已同步' : credential.sync_state === 'NEEDS_SYNC' ? '需要同步' : '未记录'; return <button type="button" key={credential.id} className={checked ? 'selected locked' : ''} disabled={checked} aria-label={checked ? `${credential.name}（已选择，不能取消）` : undefined} title={checked ? '已选择的认证不能取消' : undefined} onClick={() => toggleCredential(credential)}><span className="agent-capability-icon plugin"><ShieldAlert size={17}/></span><span><b>{credential.name}</b><small>{credential.target_host}{credential.target_path} · {credential.auth_type === 'TOKEN' ? 'Token' : '用户名密码'}</small><em>{state}</em></span><i aria-hidden="true">{checked ? <Check size={15}/> : null}</i></button>; }) : <p>当前没有可同步的认证信息。</p>}</div>{credentialSync.error && <div className="agent-capability-error"><p>{credentialSync.error.message}</p></div>}<footer><button type="button" className="secondary" disabled={busy} onClick={onClose}>关闭</button><button type="button" className="primary" disabled={busy || credentialQuery.isLoading} onClick={() => credentialSync.mutate()}><RefreshCw size={14}/>{credentialSync.isPending ? '正在同步…' : '同步认证'}</button></footer></> : <>
+      <div className="agent-session-config-tabs">{draftModel && <button type="button" className={managerTab === 'MODEL' ? 'active' : ''} onClick={() => setManagerTab('MODEL')}>默认模型</button>}{(bindingId || draftCapabilitySelection) && <button type="button" className={managerTab === 'CAPABILITIES' ? 'active' : ''} onClick={() => setManagerTab('CAPABILITIES')}>能力</button>}{bindingId && <button type="button" className={managerTab === 'CREDENTIALS' ? 'active' : ''} onClick={() => setManagerTab('CREDENTIALS')}>认证</button>}</div>
+      {managerTab === 'MODEL' && draftModel ? <><div className="agent-capability-summary"><span>新会话默认配置</span><span>仅在此处修改；创建会话时自动使用。</span></div><div className="agent-session-default-model"><ComposerModelMenu {...draftModel} disabled={false}/></div><footer><button type="button" className="primary" onClick={onClose}>完成</button></footer></> : managerTab === 'CREDENTIALS' ? <><div className="agent-capability-summary">{!credentialQuery.data?.initialized_at && <span>此会话未记录此前的认证同步状态</span>}<span>同步会追加新变量，并覆盖同名变量的当前值</span></div><div className="agent-capability-list">{credentialQuery.isLoading ? <p>正在读取认证信息…</p> : credentialQuery.error ? <p>{credentialQuery.error instanceof Error ? credentialQuery.error.message : '认证信息暂不可用。'}</p> : credentialQuery.data?.credentials.length ? credentialQuery.data.credentials.map(credential => { const checked = selectedCredentialIds.includes(credential.id); const state = credential.sync_state === 'CURRENT' ? '已同步' : credential.sync_state === 'NEEDS_SYNC' ? '需要同步' : '未记录'; return <button type="button" key={credential.id} className={checked ? 'selected locked' : ''} disabled={checked} aria-label={checked ? `${credential.name}（已选择，不能取消）` : undefined} title={checked ? '已选择的认证不能取消' : undefined} onClick={() => toggleCredential(credential)}><span className="agent-capability-icon plugin"><ShieldAlert size={17}/></span><span><b>{credential.name}</b><small>{credential.target_host}{credential.target_path} · {credential.auth_type === 'TOKEN' ? 'Token' : '用户名密码'}</small><em>{state}</em></span><i aria-hidden="true">{checked ? <Check size={15}/> : null}</i></button>; }) : <p>当前没有可同步的认证信息。</p>}</div>{credentialSync.error && <div className="agent-capability-error"><p>{credentialSync.error.message}</p></div>}<footer><button type="button" className="secondary" disabled={busy} onClick={onClose}>关闭</button><button type="button" className="primary" disabled={busy || credentialQuery.isLoading} onClick={() => credentialSync.mutate()}><RefreshCw size={14}/>{credentialSync.isPending ? '正在同步…' : '同步认证'}</button></footer></> : <>
       <div className="agent-capability-toolbar"><div className="agent-capability-tabs">{([['ALL', 'all'], ['PLUGIN', 'plugin'], ['MCP', 'MCP'], ['SKILL', 'skill'], ['CONTEXT', 'context'], ['AGENT_DEFINITION', 'agent'], ['HOOK', 'hook']] as const).map(([value, label]) => <button type="button" key={value} className={kind === value ? 'active' : ''} onClick={() => { setKind(value); setCollectionMenuOpen(false); }}>{label}</button>)}</div><div className="agent-capability-toolbar-actions">{(kind === 'ALL' || kind === 'SKILL') && collectionsQuery.data?.length ? <div ref={collectionMenu} className="agent-capability-collection-menu"><button type="button" className="agent-capability-collection-trigger" aria-label="Skill 组合" title="Skill 组合" aria-expanded={collectionMenuOpen} onClick={() => setCollectionMenuOpen(current => !current)}><Layers3 size={15}/></button>{collectionMenuOpen && <div className="agent-capability-collection-popover" role="menu" aria-label="Skill 组合">{collectionsQuery.data.map(collection => { const memberIds = collection.members.map(member => member.id).filter(id => byId.has(id)); const selected = memberIds.length > 0 && memberIds.every(id => selectedIds.includes(id)); return <button type="button" role="menuitemcheckbox" aria-checked={selected} key={collection.id} className={selected ? 'selected' : ''} onClick={() => toggleCollection(collection)}><span><b>{collection.name}</b><small>{memberIds.length} 项能力</small></span>{selected && <Check size={14}/>}</button>; })}</div>}</div> : null}{!readonlyCreationOnly && <button type="button" className="agent-capability-select-visible" disabled={!selectableVisibleIds.length} onClick={toggleVisible}>{allVisibleSelected ? '取消选择筛选结果' : `选择筛选结果 (${selectableVisibleIds.length})`}</button>}<label className="agent-capability-search"><Search size={15}/><input value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索名称、说明或文件…"/></label></div></div>
       <div className="agent-capability-summary"><span>{readonlyCreationOnly ? <>已装配 <b>{kind === 'CONTEXT' ? frozenContextCount : kind === 'HOOK' ? frozenHookCount : frozenAgentCount}</b> 个 {kind === 'CONTEXT' ? 'Context' : kind === 'HOOK' ? 'Hook' : 'Agent'}</> : <>{bindingId ? '已注册' : '已选择'} <b>{selectedIds.length}</b> 项</>}</span><span>{readonlyCreationOnly ? `${kind === 'CONTEXT' ? 'Context' : kind === 'HOOK' ? 'Hook' : 'Agent'} 在创建会话时冻结，仅供查看，不能新增、编辑、取消或删除。` : bindingId ? '可继续注册新能力；已注册能力已锁定，不能取消或删除。' : '选择只作用于本次新会话，不会改变工作区或其他会话。'}</span></div>
       <div className="agent-capability-list">{catalogQuery.isLoading ? <p>正在读取能力仓库…</p> : visible.length === 0 ? <p>{readonlyCreationOnly ? `此会话创建时没有装配 ${kind === 'CONTEXT' ? 'Context' : kind === 'HOOK' ? 'Hook' : 'Agent'}。` : '没有匹配的已发布能力。'}</p> : visible.map(item => { const checked = selectedIds.includes(item.id); const isFrozenCreationOnly = Boolean(bindingId && ['CONTEXT', 'AGENT_DEFINITION', 'HOOK'].includes(item.capability_type) && frozenCreationOnlyIds.has(item.id)); const locked = Boolean(bindingId && (conversationCapabilities ?? []).some(enabled => enabled.id === item.id)); const isMcp = item.capability_type === 'MCP'; const readiness = mcpReadiness[item.id]; const checking = isMcp && checkingMcpIds.has(item.id); const readinessLabel = item.capability_type === 'CONTEXT' ? '系统上下文' : item.capability_type === 'AGENT_DEFINITION' ? 'Agent' : item.capability_type === 'HOOK' ? 'Hook' : !isMcp ? (item.capability_type === 'SKILL' ? '技能' : item.capability_type) : !checked ? 'MCP' : checking ? '检测中' : readiness?.state === 'READY' ? '已连接' : readiness?.error_kind === 'timeout' ? '连接超时' : readiness?.error_kind === 'connection' ? '连接失败' : '不可用'; const detail = isFrozenCreationOnly ? '创建会话时已装配，仅供查看，不能编辑或删除。' : locked ? '已注册到当前会话，不能取消或删除。' : item.capability_type === 'CONTEXT' ? '创建会话时冻结，并追加到 OpenHands 系统提示词后缀。' : item.capability_type === 'AGENT_DEFINITION' ? '创建会话时冻结为 OpenHands 原生子 Agent 定义。' : item.capability_type === 'HOOK' ? '创建会话时冻结，并通过 OpenHands 官方 hook_config 注册。' : isMcp && checked && readiness?.state === 'UNAVAILABLE' ? `MCP ${readinessLabel}；不会保存为新会话默认能力。` : item.description || item.filename; const lockedLabel = isFrozenCreationOnly ? `${item.capability_key}（创建时已装配，只读）` : `${item.capability_key}（已注册，不能取消）`; const lockedTitle = isFrozenCreationOnly ? '该能力在创建会话时已装配，仅供查看，不能新增、编辑或删除。' : '该能力已注册到当前会话，不能取消或删除。'; return <button type="button" key={item.id} className={`${checked ? 'selected' : ''}${locked ? ' locked' : ''}`} disabled={locked} aria-label={locked ? lockedLabel : undefined} title={locked ? lockedTitle : undefined} onClick={() => toggle(item)}><span className={`agent-capability-icon ${item.capability_type.toLowerCase()}`}><Boxes size={17}/></span><span><b>{item.capability_key}</b><small>{detail}</small><em className={isMcp && checked ? `mcp-status ${readiness?.state === 'READY' ? 'ready' : readiness?.state === 'UNAVAILABLE' ? 'unavailable' : 'checking'}` : undefined}>{readinessLabel}</em></span><i aria-hidden="true">{checked ? <Check size={15}/> : null}</i></button>; })}</div>
@@ -1393,7 +1401,7 @@ function ComposerModelMenu({
   const selectEffort = (value: string) => { onEffortChange(value); close(); };
   const currentProvider = providers.find(provider => provider.id === providerId)?.name ?? '选择供应商';
   const choices = [effort, ...efforts].filter((value, index, all): value is string => Boolean(value) && all.indexOf(value) === index);
-  const rootRow = (key: 'provider' | 'model' | 'effort', label: string, value: string, unavailable = false) => <button type="button" className="agent-model-picker-row" disabled={disabled || unavailable} onClick={() => setPanel(key)}><span>{label}</span><em>{value}</em><ChevronRight size={15}/></button>;
+  const rootRow = (key: 'provider' | 'model' | 'effort', label: string, value: string, unavailable = false) => <button type="button" className="agent-model-picker-row" aria-label={`${label} ${value}`} disabled={disabled || unavailable} onClick={() => setPanel(key)}><span>{label}</span><em>{value}</em><ChevronRight size={15}/></button>;
   const option = (key: string, label: string, selected: boolean, action: () => void) => <button type="button" key={key} className={`agent-model-picker-option${selected ? ' selected' : ''}`} onClick={action}><span>{label}</span>{selected && <Check size={15}/>}</button>;
   const panelTitle = panel === 'provider' ? '选择供应商' : panel === 'model' ? '选择模型' : '选择思考程度';
   useEffect(() => {
@@ -1514,9 +1522,9 @@ function mergeConversationEvents(
     if (first.event_type !== 'MESSAGE' || second.event_type !== 'MESSAGE'
       || first.payload.source !== 'user' || second.payload.source !== 'user'
       || first.payload.content !== second.payload.content) return false;
-    const firstTime = typeof first.payload.timestamp === 'string' ? Date.parse(first.payload.timestamp) : Number.NaN;
-    const secondTime = typeof second.payload.timestamp === 'string' ? Date.parse(second.payload.timestamp) : Number.NaN;
-    return !Number.isFinite(firstTime) || !Number.isFinite(secondTime) || Math.abs(firstTime - secondTime) <= 5 * 60_000;
+    const firstTime = parseOpenHandsEventTime(first.payload.timestamp);
+    const secondTime = parseOpenHandsEventTime(second.payload.timestamp);
+    return firstTime === undefined || secondTime === undefined || Math.abs(firstTime - secondTime) <= 5 * 60_000;
   };
   const merged = new Map(durable.map(event => [event.id, event]));
   for (const event of transient) {
@@ -3890,6 +3898,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const [composerHasText, setComposerHasText] = useState(() => Boolean(initialComposerDraft.trim()));
   const [streamStatus, setStreamStatus] = useState<StreamStatus>('disabled');
   const [liveText, setLiveText] = useState('');
+  const pendingLiveText = useRef('');
+  const liveTextFrame = useRef<number | undefined>(undefined);
+  const liveStreamItemId = useRef<string | undefined>(undefined);
   const [scopedLiveEvents, setScopedLiveEvents] = useState<ScopedConversationEvent[]>([]);
   const [optimisticBootstrapTurn, setOptimisticBootstrapTurn] = useState<OptimisticBootstrapTurn>();
   const [pendingBootstrap, setPendingBootstrap] = useState<{ draft: ConversationDraft; message: QueuedMessage } | undefined>(() => {
@@ -4686,14 +4697,13 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     return () => window.clearTimeout(timer);
   }, [conversationSearchTargetEventId, displayedEvents, selected]);
   const activeNativeTurnId = activeTurnEventId ?? latestUnfinishedUserEventId(displayedEvents);
-  const hasUnfinishedFormalTurn = Boolean(latestUnfinishedUserEventId(displayedEvents));
-  const terminalSyncTurnKey = selected && nativeTurnTerminal
-    ? (() => {
-        const userEventId = latestUnfinishedUserEventId(displayedEvents);
-        return userEventId ? `${selected.id}:${userEventId}` : undefined;
-      })()
+  const unfinishedFormalTurnId = latestUnfinishedUserEventId(displayedEvents);
+  const hasUnfinishedFormalTurn = Boolean(unfinishedFormalTurnId);
+  const terminalSyncTurnKey = selected && nativeTurnTerminal && unfinishedFormalTurnId
+    ? `${selected.id}:${unfinishedFormalTurnId}`
     : undefined;
-  const terminalSyncExpired = terminalSyncTurnKey === expiredTerminalSyncTurnKey;
+  const terminalResultMissing = Boolean(terminalSyncTurnKey);
+  const terminalEventReconciliationActive = Boolean(terminalSyncTurnKey && terminalSyncTurnKey !== expiredTerminalSyncTurnKey);
   const latestFormalUserEventId = [...displayedEvents].reverse().find(event => event.event_type === 'MESSAGE'
     && ['user', 'human'].includes(String(event.payload.source ?? '').toLowerCase()))?.id;
   // A durable OpenHands ERROR/Finish/assistant event is also authoritative
@@ -4704,21 +4714,13 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   );
   const finalReplyAwaitingNativeCompletion = nativeTurnRunning
     && Boolean(activeNativeTurnId && hasAssistantReplyForTurn(displayedEvents, activeNativeTurnId));
-  // All conversation controls consume this one projection. OpenHands
-  // readiness is the lifecycle authority; its formal event tree is the
-  // completion evidence. A terminal readiness result can arrive one request
-  // before the corresponding terminal event page, so keep the UI visibly
-  // synchronizing instead of letting separate controls disagree about idle.
-  const conversationActivity = useMemo(() => {
-    const synchronizing = nativeTurnTerminal && hasUnfinishedFormalTurn && !terminalSyncExpired;
-    const state: ConversationActivityState = synchronizing ? 'synchronizing' : effectiveTurnState;
-    return {
-      state,
-      active: state === 'running' || state === 'pausing' || state === 'resuming' || state === 'synchronizing',
-      synchronizing,
-    };
-  }, [effectiveTurnState, hasUnfinishedFormalTurn, nativeTurnTerminal, terminalSyncExpired]);
-  const conversationVisuallyActive = conversationActivity.active || (hasUnfinishedFormalTurn && !terminalSyncExpired);
+  // Readiness owns visible interaction state. Event reconciliation remains a
+  // background safety guard for queued delivery and never presents as running.
+  const conversationActivity = useMemo(() => ({
+    state: effectiveTurnState,
+    active: effectiveTurnState === 'running' || effectiveTurnState === 'pausing' || effectiveTurnState === 'resuming',
+  }), [effectiveTurnState]);
+  const conversationVisuallyActive = conversationActivity.active;
   const latestDisplayedEvent = displayedEvents.at(-1);
   const emptyResponseRecoveryActive = conversationActivity.state === 'running'
     && Boolean(latestDisplayedEvent && isOpenHandsEmptyResponseRecovery(latestDisplayedEvent));
@@ -4730,7 +4732,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     // read-only recovery alive without changing the displayed execution state.
     const recoverUnfinishedTurn = hasUnfinishedFormalTurn
       && !latestFormalTurnFinished
-      && !terminalSyncExpired;
+      && (!nativeTurnTerminal || terminalEventReconciliationActive);
     if (!workspace || !selected || !(isGenerating || recoverUnfinishedTurn) || !pageVisible) return;
     let cancelled = false;
     let timer: number | undefined;
@@ -4747,7 +4749,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       cancelled = true;
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [eventsQuery.data?.next_cursor, hasUnfinishedFormalTurn, isGenerating, latestFormalTurnFinished, pageVisible, selected, synchronizeConversationEvents, terminalSyncExpired, workspace]);
+  }, [eventsQuery.data?.next_cursor, hasUnfinishedFormalTurn, isGenerating, latestFormalTurnFinished, nativeTurnTerminal, pageVisible, selected, synchronizeConversationEvents, terminalEventReconciliationActive, workspace]);
   const messageAnnotations = useMemo(() => displayedEvents.flatMap(event => {
     const raw = event.payload.collaboration_annotations;
     return Array.isArray(raw) ? raw.filter((item): item is AgentConversationAnnotation => Boolean(
@@ -4871,7 +4873,28 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-confirmation', workspace.id, selected.id) });
   }, [host, queryClient, selected, synchronizeConversationEvents, workspace]);
   const clearLiveText = useCallback(() => {
+    pendingLiveText.current = '';
+    liveStreamItemId.current = undefined;
+    if (liveTextFrame.current !== undefined) window.cancelAnimationFrame(liveTextFrame.current);
+    liveTextFrame.current = undefined;
     setLiveText('');
+  }, []);
+  const appendLiveText = useCallback((itemId: string, content: string) => {
+    if (liveStreamItemId.current && liveStreamItemId.current !== itemId) {
+      pendingLiveText.current = '';
+      if (liveTextFrame.current !== undefined) window.cancelAnimationFrame(liveTextFrame.current);
+      liveTextFrame.current = undefined;
+      setLiveText('');
+    }
+    liveStreamItemId.current = itemId;
+    pendingLiveText.current += content;
+    if (liveTextFrame.current !== undefined) return;
+    liveTextFrame.current = window.requestAnimationFrame(() => {
+      liveTextFrame.current = undefined;
+      const next = pendingLiveText.current;
+      pendingLiveText.current = '';
+      if (next) setLiveText(current => current + next);
+    });
   }, []);
   const appendLiveEvent = useCallback((scope: string, event: OpenHandsConversationEvent) => {
     pendingLiveEvents.current.push({ scope, event });
@@ -4890,6 +4913,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     });
   }, []);
   useEffect(() => () => {
+    if (liveTextFrame.current !== undefined) window.cancelAnimationFrame(liveTextFrame.current);
     if (liveEventsFrame.current !== undefined) window.cancelAnimationFrame(liveEventsFrame.current);
   }, []);
   const commitQueuedMessages = useCallback((update: (current: QueuedMessage[]) => QueuedMessage[]) => {
@@ -4900,17 +4924,23 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     setQueuedMessages(next);
   }, []);
   const onStreamEvent = useCallback((scope: string, event: AgentStreamEvent) => {
-    // The upstream stream remains necessary for timely process/event delivery,
-    // but text deltas are transient and must never appear as a partial final
-    // reply. Final answer content is rendered only from formal OpenHands events.
     if (scope !== activeComposerScope.current) return;
+    // Only the ordered StreamContext protocol carries an item identity. Legacy
+    // anonymous deltas cannot be tied safely to the active turn and stay hidden.
+    if (event.type === 'delta' && event.item_id && event.content && nativeTurnRunning) {
+      appendLiveText(event.item_id, event.content);
+    }
+    if (event.type === 'stream_reset' && event.item_id === liveStreamItemId.current) {
+      clearLiveText();
+    }
+    // A closed relay can race the durable event read. Preserve text already
+    // delivered to the browser while the authoritative projection catches up.
     if (event.type === 'stream_closed') reconcileConversationProjection();
     if (event.type === 'event' && event.event) appendLiveEvent(scope, event.event);
-    // Completion frames do not identify the originating user event.  A stale
-    // frame must never complete a newer turn; durable assistant/error events
-    // associated with activeTurnEventId are the authoritative terminal signal.
-    if (event.type === 'message_complete') { clearLiveText(); reconcileConversationProjection(); }
-  }, [appendLiveEvent, clearLiveText, reconcileConversationProjection]);
+    // message_complete is only a wake-up signal. Keep the complete transient
+    // text visible until its same-ID durable event replaces it.
+    if (event.type === 'message_complete') reconcileConversationProjection();
+  }, [appendLiveEvent, appendLiveText, clearLiveText, nativeTurnRunning, reconcileConversationProjection]);
   const onStreamReconnect = useCallback((scope: string) => {
     // A WebSocket is a live projection only. Events written while the browser
     // was disconnected are recovered from the authoritative REST feed after
@@ -5020,33 +5050,28 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       setExpiredTerminalSyncTurnKey(undefined);
       return;
     }
-    if (terminalSyncExpired) return;
-
-    const [bindingId] = terminalSyncTurnKey.split(':', 1);
+    if (!terminalEventReconciliationActive) return;
+    void synchronizeConversationEvents(true);
     const timer = window.setTimeout(() => {
-      // Readiness is authoritative for whether OpenHands accepts new input,
-      // but no browser state may fabricate the missing formal result.
       setExpiredTerminalSyncTurnKey(terminalSyncTurnKey);
-      setActiveTurnEventId(undefined);
-      setRequestStartedAt(undefined);
-      clearLiveText();
-      setStreamHold({ bindingId, expiresAt: Date.now() + STREAM_IDLE_GRACE_MS });
-      setTurnState('idle');
-      refresh();
     }, TERMINAL_EVENT_RECONCILIATION_MS);
     return () => window.clearTimeout(timer);
-  }, [clearLiveText, refresh, terminalSyncExpired, terminalSyncTurnKey]);
+  }, [synchronizeConversationEvents, terminalEventReconciliationActive, terminalSyncTurnKey]);
   useEffect(() => {
     if (!selected || !latestFormalTurnFinished) return;
 
     // The latest formal user turn has reached an OpenHands terminal event.
     // It therefore cannot be revived by an older browser-local turn bridge.
-    clearLiveText();
     setActiveTurnEventId(undefined);
     setRequestStartedAt(undefined);
     setTurnState(current => current === 'running' || current === 'resuming' ? 'idle' : current);
     setStreamHold({ bindingId: selected.id, expiresAt: Date.now() + STREAM_IDLE_GRACE_MS });
-  }, [clearLiveText, displayedEvents, latestFormalTurnFinished, selected]);
+  }, [latestFormalTurnFinished, selected]);
+  useEffect(() => {
+    if (!liveText || !liveStreamItemId.current) return;
+    if (!displayedEvents.some(event => event.id === liveStreamItemId.current)) return;
+    clearLiveText();
+  }, [clearLiveText, displayedEvents, liveText]);
   useEffect(() => {
     // On first entry, the native readiness request can be delayed by a Runtime
     // reconnect. A persisted, unfinished formal user event already proves the
@@ -5061,7 +5086,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   }, [displayedEvents, inputReadinessQuery.data?.execution_status, inputReadinessQuery.data?.ready, selected]);
   useEffect(() => {
     if (nativeTurnTerminal && (turnState === 'running' || turnState === 'resuming') && activeTurnEventId && hasFinishedTurn(displayedEvents, activeTurnEventId)) {
-      clearLiveText();
       // OpenHands may already have accepted a Command/Ctrl+Enter guidance
       // message while the previous turn finishes. Follow that formal user
       // event instead of briefly reporting idle and releasing the Enter queue.
@@ -5080,7 +5104,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       }
       refresh();
     }
-  }, [activeTurnEventId, clearLiveText, displayedEvents, nativeTurnTerminal, refresh, selected?.id, turnState]);
+  }, [activeTurnEventId, displayedEvents, nativeTurnTerminal, refresh, selected?.id, turnState]);
   useEffect(() => {
     if (turnState !== 'paused' || !selected?.id) return;
     setStreamHold({ bindingId: selected.id, expiresAt: Date.now() + STREAM_IDLE_GRACE_MS });
@@ -5324,6 +5348,28 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     onSuccess: (value, message, context) => {
       sendingMessageIds.current.delete(message.id);
       const cursor = value.cursor;
+      if (cursor && context?.optimisticEventId) {
+        const submitted = submittedUserEvents.current.get(message.id);
+        if (submitted) {
+          submittedUserEvents.current.set(message.id, {
+            ...submitted,
+            event: { ...submitted.event, id: cursor },
+          });
+        }
+        setScopedLiveEvents(current => {
+          const optimistic = current.find(item => item.scope === message.bindingId && item.event.id === context.optimisticEventId);
+          if (!optimistic) return current;
+          const formal = current.find(item => item.scope === message.bindingId && item.event.id === cursor);
+          const event = formal
+            ? mergeConversationEvents([formal.event], [optimistic.event])[0]
+            : { ...optimistic.event, id: cursor };
+          return [
+            ...current.filter(item => item.scope !== message.bindingId
+              || (item.event.id !== context.optimisticEventId && item.event.id !== cursor)),
+            { scope: message.bindingId, event },
+          ];
+        });
+      }
       if (cursor && !context?.nativeGuidance && activeComposerScope.current === message.bindingId) setActiveTurnEventId(cursor);
       if (!context?.nativeGuidance && activeComposerScope.current === message.bindingId) {
         setAttachments([]);
@@ -5678,7 +5724,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   }, [queueModeEnabled, queueModeStorageKey]);
 
   useEffect(() => {
-    if (!queueModeEnabled || !selected || !eventsQuery.isSuccess || !queuedMessages.length || conversationActivity.synchronizing || migrateStreaming.isPending || pendingMigratedSend
+    if (!queueModeEnabled || !selected || !eventsQuery.isSuccess || !queuedMessages.length || terminalResultMissing || migrateStreaming.isPending || pendingMigratedSend
       || (effectiveTurnState !== 'idle' && effectiveTurnState !== 'running' && effectiveTurnState !== 'paused')) return;
     const next = queuedMessages.find(message => message.scope === selected.id
       && !sendingMessageIds.current.has(message.id)
@@ -5691,7 +5737,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     } else if (effectiveTurnState === 'idle') {
       migrateStreaming.mutate(next);
     }
-  }, [conversationActivity.synchronizing, effectiveTurnState, eventsQuery.isSuccess, migrateStreaming, pendingMigratedSend, queueModeEnabled, queuedMessages, selected, send]);
+  }, [effectiveTurnState, eventsQuery.isSuccess, migrateStreaming, pendingMigratedSend, queueModeEnabled, queuedMessages, selected, send, terminalResultMissing]);
   useEffect(() => {
     if (turnState === 'pausing' || !queuedMessages.length || !inputReadinessQuery.data?.ready) return;
     if (queuedMessages.some(message => message.scope === selected?.id && sendingMessageIds.current.has(message.id))) return;
@@ -5782,7 +5828,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     : undefined;
   const composerStatus = bootstrapRecovery
     ? '正在安全核对首条消息'
-    : conversationDraft && !newConversationModelName ? '请选择模型' : persistModel.isPending ? '正在保存模型设置' : migrateStreaming.isPending || pendingMigratedSend ? '正在迁移历史会话' : pendingConfirmation ? '等待工具确认' : conversationActivity.synchronizing ? '正在同步会话结束' : conversationActivity.state === 'pausing' ? '正在暂停' : conversationActivity.state === 'paused' ? '已暂停' : conversationActivity.state === 'resuming' ? '正在继续' : finalReplyAwaitingNativeCompletion ? '回复已生成，正在收尾' : conversationActivity.state === 'running' ? '正在处理' : streamStatus === 'recovering' ? '连接恢复中' : undefined;
+    : conversationDraft && !newConversationModelName ? '请选择模型' : persistModel.isPending ? '正在保存模型设置' : migrateStreaming.isPending || pendingMigratedSend ? '正在迁移历史会话' : pendingConfirmation ? '等待工具确认' : conversationActivity.state === 'pausing' ? '正在暂停' : conversationActivity.state === 'paused' ? '已暂停' : conversationActivity.state === 'resuming' ? '正在继续' : finalReplyAwaitingNativeCompletion ? '回复已生成，正在收尾' : conversationActivity.state === 'running' ? '正在处理' : streamStatus === 'recovering' ? '连接恢复中' : undefined;
   const composerNote = visibleQueuedMessages.length > 0
     ? queueModeEnabled ? `已排队 ${visibleQueuedMessages.length} 条` : `队列已关闭 · 保留 ${visibleQueuedMessages.length} 条`
     : '';
@@ -5790,8 +5836,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const composerHasContent = Boolean(
     composerHasText || attachments.length || references.length || workspaceReferences.length || composerAnnotations.length,
   );
-  const composerActionSends = composerHasContent && !pendingConfirmation && !conversationActivity.synchronizing;
-  const composerActionLabel = bootstrap.isPending ? '正在创建会话' : migrateStreaming.isPending || pendingMigratedSend ? '正在迁移历史会话' : pendingConfirmation ? '等待工具确认' : conversationActivity.synchronizing ? '正在同步会话结束' : composerActionSends
+  const composerActionSends = composerHasContent && !pendingConfirmation;
+  const composerActionLabel = bootstrap.isPending ? '正在创建会话' : migrateStreaming.isPending || pendingMigratedSend ? '正在迁移历史会话' : pendingConfirmation ? '等待工具确认' : composerActionSends
     ? '发送消息'
     : effectiveTurnState === 'idle'
       ? '发送消息'
@@ -5805,7 +5851,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     || bootstrap.isPending
     || migrateStreaming.isPending
     || Boolean(pendingMigratedSend)
-    || conversationActivity.synchronizing
     || (effectiveTurnState === 'idle' && (!composerHasContent || queuedMessages.some(message => message.scope === selected?.id && sendingMessageIds.current.has(message.id))))
     || effectiveTurnState === 'pausing'
     || effectiveTurnState === 'resuming';
@@ -6004,7 +6049,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
               {visibleCount => { const group = conversationsForDirectory(directory.id); return <>{pendingBootstrapItem && pendingBootstrap?.draft.workDirectoryId === directory.id ? pendingBootstrapItem : null}{group.slice(0, visibleCount).map(item => conversationRow(item, group))}</>}}
             </WorkspaceConversationGroup>)}</>}
       </div>
-      {features.capabilities && (selected || features.draftCapabilitySelection) && <footer className="agent-workbench-rail-footer"><button type="button" disabled={selected ? !canWrite : !runtimeWritable} onClick={() => setCapabilityManagerOpen(true)}><Boxes size={15}/><span><b>会话配置</b><small>{selected ? '管理当前会话配置' : '为新会话配置能力'}</small></span><ChevronRight size={14}/></button></footer>}
+      {(features.capabilities || (conversationDraft && features.modelSelection)) && (selected || conversationDraft) && <footer className="agent-workbench-rail-footer"><button type="button" disabled={selected ? !canWrite : !runtimeWritable} onClick={() => setCapabilityManagerOpen(true)}><Boxes size={15}/><span><b>会话配置</b><small>{selected ? '管理当前会话配置' : features.draftCapabilitySelection ? '配置默认模型与能力' : '配置默认模型'}</small></span><ChevronRight size={14}/></button></footer>}
     </aside>
     <section className="agent-workbench-main">
       <header className="agent-workbench-header"><div>{editing ? <div className="agent-title-edit"><input ref={titleInput} aria-label="会话标题" value={title} onChange={event => setTitle(event.target.value)} onBlur={() => { if (!rename.isPending) { setTitle(selected ? conversationName(selected) : ''); setEditing(false); } }} onKeyDown={event => { if (event.key === 'Enter' && title.trim()) { event.preventDefault(); rename.mutate(); } if (event.key === 'Escape') { setTitle(selected ? conversationName(selected) : ''); setEditing(false); } }}/></div> : !(hideDraftTitle && conversationDraft) && <h2 className="agent-session-title" title={selected ? conversationName(selected) : undefined} aria-label={selected && canWrite ? '双击修改标题' : undefined} onDoubleClick={() => { if (!selected || !canWrite) return; setTitle(conversationName(selected)); setEditing(true); }}><span>{selected ? conversationName(selected) : conversationDraft ? '新会话' : '开始一个新的会话'}</span></h2>}{features.modelSelection && (selected || conversationDraft) && <small className="agent-session-provider">当前供应商：{selected ? boundProviderInfo?.name ?? '未配置' : draftProviderInfo?.name ?? '请选择模型供应商'}{conversationDraft ? ` · ${conversationDraft.displayName}` : ''}</small>}</div><div className="agent-header-actions">{features.conversationDeletion && selected && <button type="button" className="danger" aria-label="删除会话" title={selectedConversationRunning ? '会话运行中，请先停止' : '删除会话'} disabled={!canWrite || selectedConversationRunning || remove.isPending} onClick={() => void confirmDeletion('会话', conversationName(selected)).then(ok => { if (ok) remove.mutate(selected.id); })}><Trash2 size={14}/></button>}</div></header>
@@ -6089,7 +6134,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
             </article>;
           })}
         </section>}
-        <ComposerCapabilityAutocomplete key={composerScope ?? 'composer'} ref={composerRef} initialDraft={composerDraftRef.current} scope={composerScope} suggestions={composerSuggestions} placeholder={pendingConfirmation ? '请先处理上方工具确认…' : conversationActivity.synchronizing ? '正在同步上一轮结束状态…' : '给 Agent 发消息…'} disabled={!canCompose || Boolean(pendingConfirmation) || bootstrap.isPending || migrateStreaming.isPending || Boolean(pendingMigratedSend) || conversationActivity.synchronizing || conversationActivity.state === 'pausing' || conversationActivity.state === 'resuming'} onDraftChange={setComposerDraft} onContentPresenceChange={onComposerContentPresenceChange} onDraftPersist={persistComposerDraft} onPaste={event => { if (!features.attachments || !composerScope) return; const files = transferredFiles(event.clipboardData); if (!files.length) return; event.preventDefault(); for (const file of files) upload.mutate({ file, scope: composerScope }); }} onDropFiles={features.attachments && composerScope ? files => { for (const file of files) upload.mutate({ file, scope: composerScope }); } : undefined} onDropWorkspaceFiles={paths => setWorkspaceReferences(current => [...current, ...paths.flatMap(path => current.some(reference => reference.path === path) ? [] : [{ path, kind: 'file' as const, display_name: path.split('/').filter(Boolean).pop() ?? path }])])} onSubmit={enqueueDraft} onDirectSubmit={sendDraftDirectly} onManageCapabilities={features.capabilities && (selected || features.draftCapabilitySelection) ? () => setCapabilityManagerOpen(true) : undefined} onWorkspaceReferenceSelected={() => { setWorkspaceReferenceQuery(''); setWorkspaceReferencePickerOpen(true); }}/>
+        <ComposerCapabilityAutocomplete key={composerScope ?? 'composer'} ref={composerRef} initialDraft={composerDraftRef.current} scope={composerScope} suggestions={composerSuggestions} placeholder={pendingConfirmation ? '请先处理上方工具确认…' : '给 Agent 发消息…'} disabled={!canCompose || Boolean(pendingConfirmation) || bootstrap.isPending || migrateStreaming.isPending || Boolean(pendingMigratedSend) || conversationActivity.state === 'pausing' || conversationActivity.state === 'resuming'} onDraftChange={setComposerDraft} onContentPresenceChange={onComposerContentPresenceChange} onDraftPersist={persistComposerDraft} onPaste={event => { if (!features.attachments || !composerScope) return; const files = transferredFiles(event.clipboardData); if (!files.length) return; event.preventDefault(); for (const file of files) upload.mutate({ file, scope: composerScope }); }} onDropFiles={features.attachments && composerScope ? files => { for (const file of files) upload.mutate({ file, scope: composerScope }); } : undefined} onDropWorkspaceFiles={paths => setWorkspaceReferences(current => [...current, ...paths.flatMap(path => current.some(reference => reference.path === path) ? [] : [{ path, kind: 'file' as const, display_name: path.split('/').filter(Boolean).pop() ?? path }])])} onSubmit={enqueueDraft} onDirectSubmit={sendDraftDirectly} onManageCapabilities={features.capabilities && (selected || features.draftCapabilitySelection) ? () => setCapabilityManagerOpen(true) : undefined} onWorkspaceReferenceSelected={() => { setWorkspaceReferenceQuery(''); setWorkspaceReferencePickerOpen(true); }}/>
         {features.attachments && attachments.length > 0 && <div className="agent-attachments">{attachments.map(item => <span key={item.path}><button type="button" className="agent-attachment-open" title={`在右侧查看附件：${item.filename}`} onClick={() => openAttachmentInDrawer(item)}>{item.image_data_url && <img src={item.image_data_url} alt=""/>}<em>{item.filename}</em></button><button type="button" className="agent-attachment-remove" aria-label={`移除附件 ${item.filename}`} onClick={() => setAttachments(all => all.filter(candidate => candidate.path !== item.path))}>×</button></span>)}</div>}
         {references.length > 0 && <div className="agent-attachments agent-conversation-references" aria-label="已添加的会话引用">{references.map((reference, index) => <span key={`${reference.eventId}:${reference.content}`}><span className="agent-attachment-open" title={reference.content}><Quote size={14}/><em>{`会话引用 ${index + 1}`}</em></span><button type="button" className="agent-attachment-remove" aria-label={`移除会话引用 ${index + 1}`} onClick={() => setReferences(current => current.filter(item => item !== reference))}>×</button></span>)}</div>}
         {(selected || conversationDraft) && <ComposerAnnotationList annotations={composerAnnotations} onLocate={locateAnnotation} onRemove={annotation => setComposerAnnotations(current => current.filter(item => item.id !== annotation.id))} onUpdate={(annotation, comment) => void updateAnnotation(annotation, comment)}/>}
@@ -6103,8 +6148,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
             {composerNote && <span className="agent-composer-note">{composerNote}</span>}
           </div>
           <div className="agent-composer-actions">
-            {features.modelSelection && (selected ? <ComposerModelMenu providers={connectedProviders} providerId={conversationProviderId} modelName={activeConversationModelName} models={availableConversationModels} efforts={supportedEfforts} effort={reasoningEffort ?? selected.reasoning_effort ?? contextQuery.data?.reasoning_effort ?? conversationModel?.default_reasoning_effort ?? ''} disabled={!canWrite || conversationActivity.active || queuedMessages.length > 0 || Boolean(pendingConfirmation) || persistModel.isPending || migrateStreaming.isPending || Boolean(pendingMigratedSend)} onProviderChange={providerId => { const provider = connectedProviders.find(item => item.id === providerId); const model = provider?.models.find(item => item.enabled && item.is_default); if (!provider || !model) return; const effort = model.default_reasoning_effort ?? null; setConversationProviderId(providerId); setConversationModelName(model.model_name); setReasoningEffort(effort); persistModel.mutate({ providerId, modelName: model.model_name, effort }); }} onModelChange={modelName => { const model = availableConversationModels.find(item => item.model_name === modelName); const effort = model?.default_reasoning_effort ?? null; setConversationModelName(modelName); setReasoningEffort(effort); persistModel.mutate({ providerId: conversationProviderId, modelName, effort }); }} onEffortChange={effort => { const nextEffort = effort || null; setReasoningEffort(nextEffort); persistModel.mutate({ providerId: conversationProviderId, modelName: activeConversationModelName, effort: nextEffort }); }}/> : <ComposerModelMenu providers={connectedProviders} providerId={newConversationProviderId} modelName={newConversationModelName} models={availableDraftModels} efforts={supportedDraftEfforts} effort={newConversationReasoningEffort ?? draftConversationModel?.default_reasoning_effort ?? ''} disabled={!canOpenConversation || bootstrap.isPending} onProviderChange={providerId => { const provider = connectedProviders.find(item => item.id === providerId); const model = provider?.models.find(item => item.enabled && item.is_default); if (!provider || !model) return; setNewConversationProviderId(providerId); setNewConversationModelName(model.model_name); setNewConversationReasoningEffort(model.default_reasoning_effort ?? null); }} onModelChange={modelName => { const model = availableDraftModels.find(item => item.model_name === modelName); setNewConversationModelName(modelName); setNewConversationReasoningEffort(model?.default_reasoning_effort ?? null); }} onEffortChange={effort => setNewConversationReasoningEffort(effort || null)}/>) }
-            <button type="button" className={`agent-send${!composerActionSends && (conversationActivity.state === 'paused' || conversationActivity.state === 'resuming') ? ' resume' : ''}`} aria-label={composerActionLabel} disabled={composerActionDisabled} onClick={runComposerAction}>{pendingConfirmation ? <ShieldAlert size={14}/> : conversationActivity.synchronizing ? <LoaderCircle className="conversation-activity-spin" size={14}/> : composerActionSends || conversationActivity.state === 'idle' ? <Send size={16}/> : conversationActivity.state === 'paused' || conversationActivity.state === 'resuming' ? <Play size={12} fill="currentColor"/> : <Square size={10} fill="currentColor"/>}</button>
+            {features.modelSelection && selected && <ComposerModelMenu providers={connectedProviders} providerId={conversationProviderId} modelName={activeConversationModelName} models={availableConversationModels} efforts={supportedEfforts} effort={reasoningEffort ?? selected.reasoning_effort ?? contextQuery.data?.reasoning_effort ?? conversationModel?.default_reasoning_effort ?? ''} disabled={!canWrite || conversationActivity.active || queuedMessages.length > 0 || Boolean(pendingConfirmation) || persistModel.isPending || migrateStreaming.isPending || Boolean(pendingMigratedSend)} onProviderChange={providerId => { const provider = connectedProviders.find(item => item.id === providerId); const model = provider?.models.find(item => item.enabled && item.is_default); if (!provider || !model) return; const effort = model.default_reasoning_effort ?? null; setConversationProviderId(providerId); setConversationModelName(model.model_name); setReasoningEffort(effort); persistModel.mutate({ providerId, modelName: model.model_name, effort }); }} onModelChange={modelName => { const model = availableConversationModels.find(item => item.model_name === modelName); const effort = model?.default_reasoning_effort ?? null; setConversationModelName(modelName); setReasoningEffort(effort); persistModel.mutate({ providerId: conversationProviderId, modelName, effort }); }} onEffortChange={effort => { const nextEffort = effort || null; setReasoningEffort(nextEffort); persistModel.mutate({ providerId: conversationProviderId, modelName: activeConversationModelName, effort }); }}/>}
+            <button type="button" className={`agent-send${!composerActionSends && (conversationActivity.state === 'paused' || conversationActivity.state === 'resuming') ? ' resume' : ''}`} aria-label={composerActionLabel} disabled={composerActionDisabled} onClick={runComposerAction}>{pendingConfirmation ? <ShieldAlert size={14}/> : composerActionSends || conversationActivity.state === 'idle' ? <Send size={16}/> : conversationActivity.state === 'paused' || conversationActivity.state === 'resuming' ? <Play size={12} fill="currentColor"/> : <Square size={10} fill="currentColor"/>}</button>
           </div>
         </footer>
         </div>
@@ -6164,6 +6209,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       queryClient.setQueryData<AgentSessionWorkDirectoryList>(sessionQueryKey(host, 'work-directories', workspace.id), current => current ? { ...current, items: [directory, ...current.items.filter(item => item.id !== directory.id)] } : current);
       void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'work-directories', workspace.id) });
     }}/>}
-    {capabilityManagerOpen && (selected || features.draftCapabilitySelection) && <CapabilityManager workspaceId={workspace.id} bindingId={selected?.id} conversationCapabilities={selected?.capabilities} draftCapabilityIds={conversationDraft?.capabilityVersionIds} onClose={() => setCapabilityManagerOpen(false)} onCreateEnhancedConversation={capabilityVersionIds => { const directory = selected?.work_directory_id ? workDirectories.find(item => item.id === selected.work_directory_id) : undefined; setCapabilityManagerOpen(false); if (conversationDraft) setConversationDraft(current => current ? { ...current, capabilityVersionIds } : current); else openConversationDraft({ workDirectoryId: directory?.id, displayName: directory?.display_name ?? '根工作区', capabilityVersionIds }); }}/>}
+    {capabilityManagerOpen && (selected || conversationDraft) && <CapabilityManager workspaceId={workspace.id} bindingId={selected?.id} conversationCapabilities={selected?.capabilities} draftCapabilityIds={conversationDraft?.capabilityVersionIds} draftCapabilitySelection={features.draftCapabilitySelection} draftModel={conversationDraft && features.modelSelection ? { providers: connectedProviders, providerId: newConversationProviderId, modelName: newConversationModelName, models: availableDraftModels, efforts: supportedDraftEfforts, effort: newConversationReasoningEffort ?? draftConversationModel?.default_reasoning_effort ?? '', onProviderChange: providerId => { const provider = connectedProviders.find(item => item.id === providerId); const model = provider?.models.find(item => item.enabled && item.is_default); if (!provider || !model) return; setNewConversationProviderId(providerId); setNewConversationModelName(model.model_name); setNewConversationReasoningEffort(model.default_reasoning_effort ?? null); }, onModelChange: modelName => { const model = availableDraftModels.find(item => item.model_name === modelName); setNewConversationModelName(modelName); setNewConversationReasoningEffort(model?.default_reasoning_effort ?? null); }, onEffortChange: effort => setNewConversationReasoningEffort(effort || null) } : undefined} onClose={() => setCapabilityManagerOpen(false)} onCreateEnhancedConversation={capabilityVersionIds => { const directory = selected?.work_directory_id ? workDirectories.find(item => item.id === selected.work_directory_id) : undefined; setCapabilityManagerOpen(false); if (conversationDraft) setConversationDraft(current => current ? { ...current, capabilityVersionIds } : current); else openConversationDraft({ workDirectoryId: directory?.id, displayName: directory?.display_name ?? '根工作区', capabilityVersionIds }); }}/>}
   </main>;
 }

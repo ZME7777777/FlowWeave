@@ -475,6 +475,8 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   let confirmationPending = false;
   let confirmationDecision: Record<string, unknown> | null = null;
   let bootstrapRequests = 0;
+  let bootstrapProviderId: string | null = null;
+  let bootstrapModelName: string | null = null;
   let bootstrapWorkDirectory: string | null = null;
   let bootstrapConversationId: string | null = null;
   let bootstrapIdempotencyKey: string | null = null;
@@ -650,6 +652,8 @@ test('top-level Agent workspace creates a direct conversation and restores its U
       bootstrapRequests += 1;
       const payload = JSON.parse(request.postData() ?? '{}') as Record<string, unknown>;
       const modelProviderId = payload.model_provider_id;
+      bootstrapProviderId = typeof payload.model_provider_id === 'string' ? payload.model_provider_id : null;
+      bootstrapModelName = typeof payload.model_name === 'string' ? payload.model_name : null;
       bootstrapWorkDirectory = typeof payload.work_directory_id === 'string' ? payload.work_directory_id : null;
       bootstrapConversationId = typeof payload.conversation_id === 'string' ? payload.conversation_id : null;
       bootstrapIdempotencyKey = await request.headerValue('Idempotency-Key');
@@ -879,7 +883,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
       if (payload.content === '暂停后直接发送消息') {
         pausedDirectMessagePosts += 1;
       }
-      await route.fulfill({ status: 202, contentType: 'application/json', body: JSON.stringify({ accepted: true, cursor: sentMessages === 1 ? 'running-user' : `sent-user-${sentMessages}` }) });
+      await route.fulfill({ status: 202, contentType: 'application/json', body: JSON.stringify({ accepted: true, cursor: payload.content === '运行中直接发送消息' ? 'running-direct-stream-user' : sentMessages === 1 ? 'running-user' : `sent-user-${sentMessages}` }) });
       return;
     }
     if (path.endsWith('/interrupt') && request.method() === 'POST') {
@@ -928,7 +932,8 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.getByText('后端服务', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: '在后端服务中新建会话' }).click();
   await expect(page.getByRole('heading', { name: '新会话' })).toBeVisible();
-  await expect(page.locator('.agent-composer-model-summary')).toHaveText('gpt-test');
+  await expect(page.locator('.agent-composer-actions .agent-composer-model-trigger')).toHaveCount(0);
+  await expect(page.getByText('配置默认模型与能力', { exact: true })).toBeVisible();
   expect(bootstrapRequests).toBe(0);
   await page.getByRole('button', { name: '新建会话' }).first().click();
   await expect(page).toHaveURL(/\/agent$/);
@@ -961,6 +966,8 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await page.reload();
   await expect(page).toHaveURL(/\/agent\/conversations\/agent-conversation-1$/);
   await expect.poll(() => bootstrapRequests).toBe(2);
+  expect(bootstrapProviderId).toBe('provider-1');
+  expect(bootstrapModelName).toBe('gpt-test');
   expect(bootstrapWorkDirectory).toBeNull();
   expect(bootstrapIdempotencyKey).toBe(bootstrapConversationId);
   expect(bootstrapIdempotencyKeys).toHaveLength(2);
@@ -1616,10 +1623,13 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     type: 'event',
     event: { id: 'live-workflow-result', event_type: 'TOOL_RESULT', payload: { source: 'environment', parent_id: 'live-workflow', action_id: 'live-workflow', tool_call_id: 'live-workflow-call', tool_name: 'workflow', event_name: 'WorkflowObservation', details: { is_error: false }, timestamp: new Date().toISOString() } },
   }));
-  agentStream!.send(JSON.stringify({ type: 'delta', content: '正在核对上下文。' }));
-  await expect(page.getByText('正在核对上下文。', { exact: true })).toHaveCount(0);
-  agentStream!.send(JSON.stringify({ type: 'delta', content: '\n下一行内容应当稳定追加，不重新解析前文。' }));
-  await expect(page.getByText('下一行内容应当稳定追加，不重新解析前文。', { exact: false })).toHaveCount(0);
+  agentStream!.send(JSON.stringify({ type: 'delta', item_id: 'transient-preview', content: '正在核对上下文。' }));
+  const transientPreview = page.getByLabel('正在生成的回复');
+  await expect(transientPreview).toContainText('正在核对上下文。');
+  agentStream!.send(JSON.stringify({ type: 'delta', item_id: 'transient-preview', content: '\n下一行内容应当稳定追加，不重新解析前文。' }));
+  await expect(transientPreview).toContainText('下一行内容应当稳定追加，不重新解析前文。');
+  agentStream!.send(JSON.stringify({ type: 'stream_reset', item_id: 'transient-preview' }));
+  await expect(transientPreview).toHaveCount(0);
   agentStream!.send(JSON.stringify({
     type: 'event',
     event: { id: 'live-progress', event_type: 'THOUGHT', payload: { source: 'agent', parent_id: 'running-user', llm_response_id: 'live-operation-batch-1', content: '范围已扩为终端与文件操作；现在做静态验证。', thought: '范围已扩为终端与文件操作；现在做静态验证。', timestamp: new Date().toISOString() } },
@@ -1663,6 +1673,15 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(liveProgressGroup).toHaveJSProperty('open', true);
   const runningPwdDetail = liveProgressGroup.locator('.conversation-tool-detail').filter({ hasText: '正在运行 pwd' });
   const runningStatusDetail = liveProgressGroup.locator('.conversation-tool-detail').filter({ hasText: '正在运行 git status --short' });
+  await expect(liveProgressGroup.locator(':scope > summary b')).toHaveCSS('font-size', '13px');
+  await expect(liveProgressGroup.locator('.conversation-progress-current')).toHaveCSS('font-size', '13px');
+  await expect(runningPwdDetail.locator(':scope > summary b')).toHaveCSS('font-size', '13px');
+  await expect(liveProgressGroup.locator('.conversation-progress-group-list')).toHaveCSS('margin-left', '0px');
+  await expect.poll(async () => {
+    const summaryLeft = await liveProgressGroup.locator(':scope > summary').evaluate(element => element.getBoundingClientRect().left);
+    const commandLeft = await runningPwdDetail.locator(':scope > summary').evaluate(element => element.getBoundingClientRect().left);
+    return Math.round(commandLeft - summaryLeft);
+  }).toBe(0);
   await expect(runningPwdDetail).toHaveClass(/running/);
   await expect(runningStatusDetail).toHaveClass(/running/);
   await expect(runningPwdDetail.locator(':scope > summary b')).toHaveCSS('animation-name', 'conversation-progress-scan');
@@ -1786,10 +1805,12 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect.poll(() => runningDirectMessagePosts).toBe(1);
   agentStream!.send(JSON.stringify({
     type: 'event',
-    event: { id: 'running-direct-stream-user', event_type: 'MESSAGE', payload: { source: 'user', content: '运行中直接发送消息' } },
+    event: { id: 'running-direct-stream-user', event_type: 'MESSAGE', payload: { source: 'user', content: '运行中直接发送消息', timestamp: new Date().toISOString().replace(/Z$/, '') } },
   }));
+  await expect(runningDirectMessage).toHaveCount(1);
   await expect(page.locator('.conversation-message-delivery-status')).toHaveCount(0);
   releaseRunningDirectDelivery?.();
+  await expect(runningDirectMessage).toHaveCount(1);
   await expect(runningDirectMessage).toBeVisible();
   const activeConversation = conversations.find(item => item.id === sentBinding);
   if (!activeConversation) throw new Error('Expected the active conversation to receive the direct message');
@@ -1928,12 +1949,15 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   // A rendered assistant reply is not itself a terminal state. OpenHands may
   // still be finishing the same native Agent loop, so every visible control
   // must retain the one formal execution-state interpretation until idle.
+  agentStream!.send(JSON.stringify({ type: 'delta', item_id: 'live-reply-before-idle', content: '回复已经生成，原生会话仍在收尾。' }));
+  agentStream!.send(JSON.stringify({ type: 'message_complete' }));
+  await expect(page.getByLabel('正在生成的回复')).toContainText('回复已经生成，原生会话仍在收尾。');
   agentStream!.send(JSON.stringify({
     type: 'event',
     event: { id: 'live-reply-before-idle', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'live-tool-result', content: '回复已经生成，原生会话仍在收尾。', timestamp: new Date().toISOString() } },
   }));
-  agentStream!.send(JSON.stringify({ type: 'message_complete' }));
-  await expect(page.getByText('回复已经生成，原生会话仍在收尾。')).toBeVisible();
+  await expect(page.locator('.conversation-message.assistant').filter({ hasText: '回复已经生成，原生会话仍在收尾。' })).toBeVisible();
+  await expect(page.getByLabel('正在生成的回复')).toHaveCount(0);
   await expect(page.getByText('回复已生成，正在收尾')).toBeVisible();
   await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toBeVisible();
   await expect(page.locator('.agent-workspace-conversation-running')).toHaveCount(1);
@@ -2044,7 +2068,7 @@ test('returning to a conversation completed in the background immediately restor
   await expect(page.getByText('正在同步上一轮结束状态…')).toHaveCount(0);
 });
 
-test('terminal readiness without a formal result releases the composer after a bounded reconciliation', async ({ page }) => {
+test('terminal readiness without a formal result keeps reconciliation non-blocking', async ({ page }) => {
   const now = new Date().toISOString();
   let terminal = false;
   let messagePosts = 0;
@@ -2096,20 +2120,17 @@ test('terminal readiness without a formal result releases the composer after a b
 
   terminal = true;
   await page.reload();
-  await expect(page.getByRole('button', { name: '正在同步会话结束' })).toBeDisabled();
-  await expect(composer).toBeDisabled();
-  // A reload must start a fresh bounded window rather than restore an
-  // unbounded synchronizing state from the incomplete formal event tree.
-  await page.waitForTimeout(500);
-  await page.reload();
-  await expect(page.getByRole('button', { name: '正在同步会话结束' })).toBeDisabled();
-  await expect(page.getByRole('button', { name: '发送消息' })).toBeVisible({ timeout: 12_000 });
+  // Native readiness owns whether new input is accepted. Event reconciliation
+  // remains a background read and must never put the composer into a fake
+  // running state when OpenHands is already idle.
+  await expect(page.getByRole('button', { name: '发送消息' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '正在同步会话结束' })).toHaveCount(0);
+  await expect(page.locator('.conversation-turn-status')).toHaveCount(0);
   await expect(page.getByText('OpenHands 已结束，本轮未返回正式结果。你可以继续发送消息；同步期间排队的消息需要确认后重新编辑。')).toHaveCount(0);
   await expect(composer).toBeEnabled();
   await expect(page.locator('.agent-workspace-conversation-running')).toHaveCount(0);
-  await expect(page.getByLabel('消息投递队列')).toHaveCount(0);
-  await expect(page.locator('.conversation-message.user').filter({ hasText: '同步期间不得自动发送' })).toBeVisible();
-  await expect.poll(() => messagePosts).toBe(1);
+  await expect(page.getByLabel('消息投递队列').getByText('同步期间不得自动发送')).toBeVisible();
+  await expect.poll(() => messagePosts).toBe(0);
 });
 
 test('editing the latest user message locally replaces only its active branch', async ({ page }) => {
@@ -2534,9 +2555,18 @@ test('Agent new session keeps full capabilities and can create an explicit works
   await expect(composer).toHaveValue('/lark-tools:summarize ');
   await composer.fill('');
 
-  await page.getByLabel('打开模型与推理设置').click();
-  await page.getByLabel('会话供应商', { exact: true }).selectOption('provider-pro');
-  await page.getByLabel('思考程度').selectOption('low');
+  await expect(page.locator('.agent-composer-actions .agent-composer-model-trigger')).toHaveCount(0);
+  await page.getByRole('button', { name: '会话配置' }).click();
+  const draftConfiguration = page.getByRole('dialog', { name: '会话配置' });
+  await expect(draftConfiguration.getByRole('button', { name: '默认模型' })).toHaveClass(/active/);
+  await draftConfiguration.getByLabel('打开模型与推理设置').click();
+  await draftConfiguration.getByRole('button', { name: '供应商 默认供应商' }).click();
+  await page.getByLabel('选择供应商').getByRole('button', { name: '专业供应商' }).click();
+  await draftConfiguration.getByLabel('打开模型与推理设置').click();
+  await draftConfiguration.getByRole('button', { name: '思考程度 高' }).click();
+  await page.getByLabel('选择思考程度').getByRole('button', { name: '低' }).click();
+  await draftConfiguration.getByRole('button', { name: '完成' }).click();
+  await expect(draftConfiguration).toBeHidden();
   await page.getByLabel('上传附件').setInputFiles({ name: '需求.png', mimeType: 'image/png', buffer: Buffer.from([1, 2, 3, 4]) });
   await expect(page.locator('.agent-attachments').getByText('需求.png', { exact: true })).toBeVisible();
   expect(attachmentUploads).toBe(1);
