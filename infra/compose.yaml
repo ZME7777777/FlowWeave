@@ -35,6 +35,10 @@ x-platform-env: &platform-env
   DATABASE_POOL_TIMEOUT_SECONDS: ${DATABASE_POOL_TIMEOUT_SECONDS:-2}
   BLOCKING_POOL_TIMEOUT_SECONDS: ${BLOCKING_POOL_TIMEOUT_SECONDS:-2}
   HISTORY_READ_POOL_SIZE: ${HISTORY_READ_POOL_SIZE:-1}
+  # The capacity check reserves this margin from PostgreSQL's configured
+  # maximum. It is a deployment invariant, not a request-time retry limit.
+  POSTGRES_CONNECTION_LIMIT: ${POSTGRES_CONNECTION_LIMIT:-100}
+  DATABASE_CONNECTION_RESERVE: ${DATABASE_CONNECTION_RESERVE:-20}
   SSE_MAX_SUBSCRIBERS: ${SSE_MAX_SUBSCRIBERS:-256}
   SSE_SUBSCRIBER_QUEUE_SIZE: ${SSE_SUBSCRIBER_QUEUE_SIZE:-8}
   RATE_LIMIT_REDIS_URL: ${RATE_LIMIT_REDIS_URL:-}
@@ -197,17 +201,13 @@ services:
     command: ["uvicorn", "flowweave.bootstrap.api:create_app", "--host", "0.0.0.0", "--port", "8080", "--factory", "--workers", "4"]
     environment:
       <<: [*platform-env, *docker-client-env]
-      # Four independent REST workers prevent one process failure from taking
-      # out the control plane. Keep each worker's async and blocking pools small
-      # so the aggregate PostgreSQL and Runtime concurrency remains bounded.
-      POOL_SIZE: 8
+      # 4 workers × (4 async + 3 interactive + 1 history + 1 control) = 36.
+      # The guarded deployment target is 3 interactive reads per API worker.
+      POOL_SIZE: ${API_POOL_SIZE:-4}
       POOL_MAX_OVERFLOW: 0
       DATABASE_POOL_TIMEOUT_SECONDS: 2
-      # Current execution state uses the interactive lane; older conversation
-      # pages use a separate one-connection history lane. Four interactive
-      # reads per API worker prevent a slow Runtime page from starving reload.
-      BLOCKING_POOL_SIZE: 4
-      HISTORY_READ_POOL_SIZE: 1
+      BLOCKING_POOL_SIZE: ${API_BLOCKING_POOL_SIZE:-3}
+      HISTORY_READ_POOL_SIZE: ${API_HISTORY_READ_POOL_SIZE:-1}
       BLOCKING_POOL_TIMEOUT_SECONDS: 2
       DOCKER_CONTROLLER_API_KEY: ${DOCKER_CONTROLLER_API_KEY:?set a random API controller key with at least 32 characters}
     labels:
@@ -247,14 +247,13 @@ services:
     command: ["uvicorn", "flowweave.bootstrap.api:create_app", "--host", "0.0.0.0", "--port", "8080", "--factory", "--workers", "4"]
     environment:
       <<: [*platform-env, *docker-client-env]
-      # A stream worker only reads a Runtime handle before it begins the
-      # WebSocket relay. Keep its per-process pool bounded even when many
-      # browser sessions are connected. REST owns its separate API pool.
-      POOL_SIZE: 4
+      # 4 workers × (2 async + 1 interactive + 1 history + 1 control) = 20.
+      # A WebSocket relay does not need the REST lane's wider database pool.
+      POOL_SIZE: ${STREAM_API_POOL_SIZE:-2}
       POOL_MAX_OVERFLOW: 0
       DATABASE_POOL_TIMEOUT_SECONDS: 2
-      BLOCKING_POOL_SIZE: 1
-      HISTORY_READ_POOL_SIZE: 1
+      BLOCKING_POOL_SIZE: ${STREAM_API_BLOCKING_POOL_SIZE:-1}
+      HISTORY_READ_POOL_SIZE: ${STREAM_API_HISTORY_READ_POOL_SIZE:-1}
       BLOCKING_POOL_TIMEOUT_SECONDS: 2
       DOCKER_CONTROLLER_API_KEY: ${DOCKER_CONTROLLER_API_KEY:?set a random API controller key with at least 32 characters}
     labels:
@@ -290,14 +289,15 @@ services:
     command: ["python", "-m", "flowweave.bootstrap.worker"]
     environment:
       <<: [*platform-env, *docker-client-env]
-      # One worker process owns a bounded 8-connection request pool plus
-      # separate blocking/control pools. Overflow remains disabled so the
-      # process cannot exceed its database connection budget under load.
-      POOL_SIZE: 8
+      # One process: 4 async + 4 task/read + 1 history + 1 control = 10.
+      # API + stream-api + worker steady state is 66 connections, leaving at
+      # least the configured 20-connection PostgreSQL reserve at the default.
+      POOL_SIZE: ${WORKER_POOL_SIZE:-4}
       POOL_MAX_OVERFLOW: 0
       DATABASE_POOL_TIMEOUT_SECONDS: 2
-      BLOCKING_POOL_SIZE: 4
-      HISTORY_READ_POOL_SIZE: 1
+      BLOCKING_POOL_SIZE: ${WORKER_BLOCKING_POOL_SIZE:-4}
+      HISTORY_READ_POOL_SIZE: ${WORKER_HISTORY_READ_POOL_SIZE:-1}
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-4}
       BLOCKING_POOL_TIMEOUT_SECONDS: 2
       DOCKER_CONTROLLER_API_KEY: ${DOCKER_CONTROLLER_WORKER_API_KEY:?set a different random Worker controller key with at least 32 characters}
     labels:

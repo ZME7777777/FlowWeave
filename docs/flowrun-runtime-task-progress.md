@@ -6824,6 +6824,18 @@ FlowWeave 本地累加后猜测压缩边界。
 
 验收：Web TypeScript typecheck、受影响文件 ESLint、两条定向 Playwright 回归（2 passed）、`git diff --check` 与任务状态唯一性通过。浏览器回归分别验证正常首屏只读取 hydration、没有任何独立 Runtime snapshot 请求，以及 hydration 返回 404 时安全恢复三条既有独立读取。未修改 OpenHands、数据库、API、Runtime Provider、Docker、供应商配置或远端环境。
 
+### FR-511 控制面数据库连接预算与读取容量 — DONE
+
+依赖：FR-456、FR-510。
+
+目标：为 API、stream-api、Worker 和不持有数据库连接的 Runtime Provider 明确 PostgreSQL 稳态连接预算。编排必须保留固定零 overflow，并使 API 的交互 Runtime 读取容量从生产现有的每进程 2 条受控提高至 3 条，而总连接上限必须为迁移和数据库保留足够余量；不得仅单独调大 `BLOCKING_POOL_SIZE`。
+
+范围：仅修改本地 Compose 的控制面容量配置及其静态预算校验。不连接数据库、不修改远端 Compose／环境、不开启生产发布或重启，也不修改 OpenHands、Runtime Provider 的业务实现或供应商配置。
+
+完成：Compose 将 API／stream-api／Worker 的池尺寸改为显式环境变量，默认稳态预算为 API `4 × (4 async + 3 interactive + 1 history + 1 control) = 36`、stream-api `4 × (2 + 1 + 1 + 1) = 20`、Worker `4 + 4 + 1 + 1 = 10`，总计 66 条。`POSTGRES_CONNECTION_LIMIT=100` 与 `DATABASE_CONNECTION_RESERVE=20` 作为同一渲染配置的硬性预算；API 交互读取容量为每进程 3 条、总计 12 条。新增静态校验，拒绝 overflow、超过预算、预算不一致和向 Runtime Provider 注入 `DATABASE_URL`。
+
+验收：受影响 Python Ruff format/check、`py_compile`、无容器容量断言、由 `.env.example` 渲染的 Compose JSON 容量校验、`git diff --check` 与任务状态唯一性通过。pytest 目标文件仍在 session 级 Testcontainers PostgreSQL fixture 初始化时被本机 Docker socket 缺失阻断，未计为通过。未连接数据库、未修改远端 Compose／环境、未发布或重启任何服务。
+
 
 ## 7. 恢复工作检查表
 
@@ -7278,3 +7290,4 @@ FlowWeave 本地累加后猜测压缩边界。
 | 2026-09-22 | FR-507 | Web TypeScript typecheck、受影响文件 ESLint、`git diff --check` 与任务状态唯一性；后台恢复定向 Playwright 尝试 | PASS（静态）：浏览器恢复可见或重新聚焦后立即从最新 OpenHands 事件窗口对账，并刷新会话列表、readiness 与 confirmation；连续 `visibilitychange`／`focus` 合并为一次恢复。新增 E2E 覆盖后台完成后无需刷新显示最终结果；当前环境缺少 Chrome，已有 Chromium 缺少 `libglib-2.0.so.0`，浏览器未启动，未将 E2E 记为通过。未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-22 | FR-508 | Web TypeScript typecheck、受影响文件 ESLint、生产构建、`git diff --check`；会话收尾与默认模型定向 Playwright 尝试 | PASS（静态）：带 `item_id` 的 OpenHands 文本 delta 作为浏览器临时回复流式展示，`message_complete` 只触发正式事件补读且不清空已生成文本，同 ID 正式事件无缝接管；Runtime 已终态时事件对账不再占用运行样式或禁用输入，旧排队消息仍受短时后台门控。新会话编辑区移除模型选择器，默认使用首个已连接供应商的默认模型，覆盖设置移入侧栏“会话配置”的“默认模型”页签。类型检查、ESLint、构建和 diff 检查通过；当前环境缺少 Chrome，定向 E2E 未启动。未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-23 | FR-510 | Web TypeScript typecheck、受影响文件 ESLint、Agent 首屏 hydration／回退定向 Playwright（2 passed）、`git diff --check` 与任务状态唯一性 | PASS：首次选择会话将正式 hydration 的 events、context、readiness 写入三项既有查询缓存，首屏不再并发请求三个 Runtime snapshot；confirmation 等 hydration 结算后再读取。浏览器回归确认正常路径仅调用 hydration，以及 hydration 404 时立即回退为三个既有独立读取。未修改 OpenHands、数据库、API、Runtime Provider、Docker、供应商配置或远端环境。 |
+| 2026-09-23 | FR-511 | 受影响 Python Ruff format/check、`py_compile`、无容器容量断言、由 `.env.example` 渲染的 Compose JSON 容量校验、`git diff --check` 与任务状态唯一性 | PASS（静态）：控制面稳态连接预算固定为 API 36 + stream-api 20 + Worker 10 = 66，并在 100 条上限中保留 20 条；API 每进程交互 Runtime 读取槽设为 3（合计 12）。校验器拒绝 overflow、超预算、预算不一致和 Runtime Provider 数据库凭据。pytest 目标文件因全局 Testcontainers fixture 缺少本机 Docker socket 而在断言前受阻，未计为通过；未连接数据库、未修改远端 Compose／环境、未发布或重启服务。 |
