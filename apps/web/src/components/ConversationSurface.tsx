@@ -941,7 +941,7 @@ function TaskTrackerCard({ entry, presentation }: { entry: ActivityEntry; presen
   const progress = snapshot ? `${completed} / ${snapshot.items.length} 已完成` : undefined;
   const status = loading ? '正在更新' : [snapshot?.command === 'plan' ? '已更新' : '当前快照', progress].filter(Boolean).join(' · ');
   return <details className={`conversation-activity-row tool conversation-tool-detail task-tracker${loading ? ' running' : ''}`} aria-label={`任务列表：${presentation.title}`}>
-    <summary><ClipboardList size={13}/><div><b>{presentation.title}</b><small>{status}</small></div></summary>
+    <summary><ClipboardList size={13}/><div><b>{presentation.title}</b><small>{status}</small></div><ChevronRight className="conversation-expand-arrow" size={12}/></summary>
     <div className="conversation-tool-detail-panel conversation-task-tracker-body">
       {snapshot ? <><div className="conversation-task-list-summary"><span>{snapshot.command === 'plan' ? '任务清单' : '任务清单快照'}</span><small>{progress}</small></div><TaskListItems items={snapshot.items} source={snapshot.timestamp ? `OpenHands 原生任务事件 · ${formatMessageTime(snapshot.timestamp)}` : 'OpenHands 原生任务事件'}/></> : <p className="conversation-task-tracker-note">正在读取任务清单…</p>}
     </div>
@@ -1218,7 +1218,7 @@ function ActivityEntryRow({ entry, active, paused = false, parentFailed = false,
       <MessageMarkdown>{presentation.thought}</MessageMarkdown>
     </article>}
     <details className={`conversation-activity-row tool conversation-tool-detail tool-${toolVisual}${nativeOperationRunning ? ' running' : ''}`} data-tool-kind={toolVisual} data-file-operation={toolVisual === 'file' ? presentation.fileOperation : undefined} data-file-kind={toolVisual === 'file' ? presentation.fileKind : undefined}>
-      <summary aria-label={`查看执行详情：${presentation.title}`}>{taskAvatar ?? <ToolIcon size={13}/>}<div><b title={presentation.title}>{presentation.title}</b></div></summary>
+      <summary aria-label={`查看执行详情：${presentation.title}`}>{taskAvatar ?? <ToolIcon size={13}/>}<div><b title={presentation.title}>{presentation.title}</b></div><ChevronRight className="conversation-expand-arrow" size={12}/></summary>
       {toolDetail}
     </details>
   </div>;
@@ -1250,18 +1250,23 @@ function ProgressActivity({ group, active, paused, parentFailed, recoveredErrorE
   const currentTitle = currentEntry
     ? activityPresentation(currentEntry, true, workspaceRoot, paused, parentFailed, recoveredErrorEventIds).title
     : undefined;
-  const firstEntry = group.entries.find(entry => entry.action);
-  const firstOperation = firstEntry?.action;
-  const firstPresentation = firstEntry
-    ? activityPresentation(firstEntry, active, workspaceRoot, paused, parentFailed, recoveredErrorEventIds)
-    : undefined;
-  const firstVisual = firstOperation ? toolVisualPresentation(String(firstOperation.event.payload.event_name ?? ''), detailText(firstOperation.event.payload.tool_name)) : 'generic';
-  const ProgressIcon = firstVisual === 'terminal' ? SquareTerminal : firstVisual === 'file' && firstPresentation ? fileToolIcon(firstPresentation) : firstVisual === 'mcp' ? PlugZap : firstVisual === 'workflow' ? Workflow : Wrench;
+  const operationIcons = group.entries.flatMap(entry => {
+    const operation = entry.action;
+    if (!operation) return [];
+    const presentation = activityPresentation(entry, active, workspaceRoot, paused, parentFailed, recoveredErrorEventIds);
+    const visual = toolVisualPresentation(String(operation.event.payload.event_name ?? ''), detailText(operation.event.payload.tool_name));
+    const OperationIcon = visual === 'terminal' ? SquareTerminal : visual === 'file' ? fileToolIcon(presentation) : visual === 'mcp' ? PlugZap : visual === 'workflow' ? Workflow : Wrench;
+    return [{ id: entry.id, Icon: OperationIcon, label: presentation.title }];
+  });
+  const visibleOperationIcons = operationIcons.slice(0, 3);
+  const hiddenOperationCount = operationIcons.length - visibleOperationIcons.length;
   const label = progressText(group.progress);
   const summaryLabel = currentTitle ? `${label}，${currentTitle}` : label;
   return <details className={`conversation-progress-group${running ? ' active' : ''}`} open={open} onToggle={event => setOpen(event.currentTarget.open)} data-progress-event-id={group.progress.event.id}>
     <summary aria-label={`查看执行过程：${summaryLabel}`}>
-      <ProgressIcon className="conversation-progress-icon" size={14}/><span><b>{label}</b>{running && currentTitle && <small className="conversation-progress-current" role="status">{currentTitle}</small>}</span>
+      <span><b>{label}</b>{running && currentTitle && <small className="conversation-progress-current" role="status">{currentTitle}</small>}</span>
+      <span className="conversation-progress-icons" aria-label={`包含 ${operationIcons.length} 个操作`}>{visibleOperationIcons.map(({ id, Icon: OperationIcon, label: operationLabel }) => <OperationIcon key={id} size={12} aria-label={operationLabel}/>)}{hiddenOperationCount > 0 && <small className="conversation-progress-overflow" aria-label={`另有 ${hiddenOperationCount} 个操作`}>{`+${hiddenOperationCount}`}</small>}</span>
+      <ChevronRight className="conversation-expand-arrow" size={12}/>
     </summary>
     <div className="conversation-progress-group-list">
       {group.entries.map((entry, index) => <ActivityEntryRow key={entry.id} entry={entry} active={active} paused={paused} parentFailed={parentFailed} hideThought={index === 0 && entry.action?.event.id === group.progress.event.id} recoveredErrorEventIds={recoveredErrorEventIds} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/>)}
@@ -1313,7 +1318,7 @@ function ActivityGroup({ items, active, completionConfirmed = false, paused = fa
     : paused ? '已暂停，结果未返回'
       : parentFailed && hasUnfinishedTask ? '本轮异常结束，结果未返回'
       : finishedAt === undefined || elapsedSeconds === undefined ? '工作过程' : `耗时 ${formatDuration(elapsedSeconds)}`;
-  const summary = <><ChevronRight size={14}/><span>{label}</span>{itemCount > 0 && <small>{itemCount} 项</small>}{active && <LoaderCircle className="conversation-activity-spin" size={13}/>}</>;
+  const summary = <><ChevronRight size={14}/><span>{label}</span>{itemCount > 0 && <small>{itemCount} 项</small>}<span className={`conversation-activity-spinner-slot${active ? ' active' : ''}`} aria-hidden="true"><LoaderCircle className="conversation-activity-spin" size={13}/></span></>;
   const hasDetails = itemCount > 0;
   if (!hasDetails) return <div className="conversation-activity-group summary-only"><div className="conversation-activity-summary">{summary}</div></div>;
   return <details className={`conversation-activity-group${active ? ' active' : ''}`} open={open} onToggle={event => setOpen(event.currentTarget.open)}>
@@ -1655,7 +1660,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, l
     element?: HTMLElement;
     offset?: number;
   } | undefined>(undefined);
-  const wasGenerating = useRef(isGenerating);
+  const previousContentSignal = useRef('');
   const copyResetTimer = useRef<number | undefined>(undefined);
   const referenceHighlightTimer = useRef<number | undefined>(undefined);
   const referenceLocationPending = useRef(false);
@@ -1677,6 +1682,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, l
   );
   const turns = useMemo(() => turnsFor(visibleEvents), [visibleEvents]);
   const visibleEventIds = useMemo(() => visibleEvents.map(event => event.id).join('\u001f'), [visibleEvents]);
+  const contentGrowthSignal = `${visibleEventIds}\u001e${liveText.length}`;
   const avatarSlots = useMemo(() => subagentAvatarSlots(visibleEvents), [visibleEvents]);
   const userMessageNavigation = useMemo<UserMessageNavigationItem[]>(() => turns.flatMap(turn => turn.user ? [{
     id: turn.user.event.id,
@@ -1713,9 +1719,9 @@ export const ConversationSurface = memo(function ConversationSurface({ events, l
     const element = surface.current;
     if (!element) return;
     const atLatest = element.scrollHeight - element.scrollTop - element.clientHeight <= 16;
-    // Scroll events also occur when layout, ResizeObserver corrections, and
-    // direct scrollTop assignments settle. They do not establish reading
-    // intent. Only the capture handlers below can leave or resume follow mode.
+    // Scroll events also occur when layout and direct scrollTop assignments
+    // settle. They do not establish reading intent. Only the capture handlers
+    // below can leave or resume follow mode.
     if (atLatest && (!userScrolledAway.current || scrollInteractionTowardLatest.current)) {
       userScrolledAway.current = false;
       followLatest.current = true;
@@ -1987,47 +1993,34 @@ export const ConversationSurface = memo(function ConversationSurface({ events, l
     historyAnchor.current = undefined;
     onHistoryAnchorRestored?.(historyPrepend);
   }, [alignWithLatest, conversationScope, historyPrepend, onHistoryAnchorCaptured, onHistoryAnchorRestored]);
-  // `events` is refreshed periodically even when the native projection is
-  // unchanged. Use its stable identity sequence rather than its array identity
-  // as a scroll trigger: writing the same bottom offset on every refresh makes
-  // the running-turn indicator visibly twitch. Rows that grow in place are
-  // covered by the ResizeObserver below.
+  // A REST reconciliation may replace event objects without adding visible
+  // content. Only event identities or appended live text may move the viewport;
+  // readiness, status, animation, and ResizeObserver updates never write it.
   useLayoutEffect(() => {
+    const contentChanged = previousContentSignal.current !== contentGrowthSignal;
+    previousContentSignal.current = contentGrowthSignal;
     if (!initialPositioned.current && (turns.length || liveText || isGenerating)) {
       initialPositioned.current = true;
       alignWithLatest();
-    } else if (!wasGenerating.current && isGenerating && !userScrolledAway.current) {
+    } else if (contentChanged && followLatest.current && !userScrolledAway.current) {
       alignWithLatest();
-    } else if (followLatest.current) {
-      // A completed turn, lazy Markdown, or asynchronously restored history
-      // must never replace the newest-message anchor with the terminal row.
-      // Keep the newest content at the bottom until the user scrolls away.
-      alignWithLatest();
+      scheduleLatestAlignment();
     }
-    wasGenerating.current = isGenerating;
-  }, [alignWithLatest, isGenerating, liveText, turns.length, visibleEventIds]);
+  }, [alignWithLatest, contentGrowthSignal, isGenerating, liveText, scheduleLatestAlignment, turns.length]);
   useLayoutEffect(() => {
     const observedContent = content.current;
-    if (!observedContent || typeof ResizeObserver === 'undefined') return;
+    if (!observedContent || typeof ResizeObserver === 'undefined' || !contentGrowthSignal) return;
+    const targets = observedContent.querySelectorAll<HTMLElement>('.conversation-message[data-conversation-event-id]');
+    const latestContent = targets.item(targets.length - 1);
+    if (!latestContent) return;
     const observer = new ResizeObserver(() => {
-      // Lazy Markdown and content-visibility can make historical rows taller
-      // after the initial restoration scroll. Keep following only when the
-      // user was already at the latest message; never pull them from history.
-      if (!followLatest.current || automaticScrollFrame.current !== undefined) return;
-      automaticScrollFrame.current = window.requestAnimationFrame(() => {
-        automaticScrollFrame.current = undefined;
-        if (followLatest.current) alignWithLatest();
-      });
+      if (!followLatest.current || userScrolledAway.current) return;
+      scheduleLatestAlignment();
     });
-    observer.observe(observedContent);
-    return () => {
-      observer.disconnect();
-      if (automaticScrollFrame.current !== undefined) {
-        window.cancelAnimationFrame(automaticScrollFrame.current);
-        automaticScrollFrame.current = undefined;
-      }
-    };
-  }, [alignWithLatest]);
+    observer.observe(latestContent);
+    return () => observer.disconnect();
+  }, [contentGrowthSignal, scheduleLatestAlignment]);
+
   useEffect(() => () => {
     if (copyResetTimer.current) window.clearTimeout(copyResetTimer.current);
   }, []);

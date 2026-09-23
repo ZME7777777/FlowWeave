@@ -85,6 +85,7 @@ git -C /Users/zhengmengen/WorkSpace/openhands/software-agent-sdk \
 - Composer 草稿的文本、附件、引用和注释必须作为带 `scope` 的同一快照读写；会话切换先持久化 outgoing scope，再恢复 incoming scope。子组件卸载 cleanup 不得从共享 ref 读取内容后写入捕获的旧 scope。
 - 会话运行中的视觉状态不能只依赖可能短暂抖动的 Runtime readiness；只要正式事件树仍存在未完成用户轮次且未超过终态同步期限，就必须保持会话活动和底部任务计划的 DOM、动画与布局稳定。
 - Token/事件上下文指标允许 Runtime 暂时返回未知；同一 binding 已有可信指标时应保留最近可信值，首次未知仍明确显示待更新，且不得跨 binding 复用。
+- 会话交互态与视觉态必须分离：暂停、继续、发送等操作服从 Runtime readiness；运行中展示按正式事件单调推进，不能因中间轮询回退。自动贴底仅由新事件、流正文增长、历史锚点恢复或用户操作触发，禁止用整个会话树的 ResizeObserver 响应状态文案和动画尺寸变化。
 - 浏览器从后台恢复可见或窗口重新获得焦点时，活动会话必须立即从无 cursor 的最新 OpenHands 事件窗口对账，并刷新会话与 readiness 投影；不能仅等待受后台节流的定时轮询或 WebSocket 重连。`visibilitychange` 与 `focus` 可能连续触发，应合并同一轮恢复。
 - OpenHands 新 StreamContext 中带 `item_id` 的有序文本 delta 可以作为浏览器内临时回复实时展示；`message_complete` 仅触发正式事件补读，不得清空已有预览或单独决定轮次结束。正式同 ID 事件渲染后再移除预览；匿名旧协议 delta 不展示，`stream_reset` 只清除同 item，断流时保留已收到文本等待正式事件。
 - Runtime readiness 一旦确认终态，输入框、按钮和侧栏运行样式必须立即恢复；正式终态事件的补读只能在后台进行，不能呈现“正在对账”或继续占用运行态。为避免上一轮排队消息误发，可设置短时且不可见的队列门控，但必须有界并保留用户确认权。

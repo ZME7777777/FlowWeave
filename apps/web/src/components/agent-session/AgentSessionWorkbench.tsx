@@ -3969,7 +3969,17 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const [queueMode, setQueueMode] = useState<{ storageKey?: string; enabled: boolean }>({ enabled: true });
   const [draggedQueuedMessageId, setDraggedQueuedMessageId] = useState<string>();
   const [queuedMessageMenuId, setQueuedMessageMenuId] = useState<string>();
+  const queuedMessageMenuRef = useRef<HTMLDivElement>(null);
   const [pendingRewrite, setPendingRewrite] = useState<RewriteRequest>();
+  useEffect(() => {
+    if (!queuedMessageMenuId) return;
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      if (event.target instanceof Node && !queuedMessageMenuRef.current?.contains(event.target)) setQueuedMessageMenuId(undefined);
+    };
+    document.addEventListener('pointerdown', closeOnOutsidePointer, true);
+    return () => document.removeEventListener('pointerdown', closeOnOutsidePointer, true);
+  }, [queuedMessageMenuId]);
+
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [reviewChanges, setReviewChanges] = useState<WorkspaceFileChange[]>([]);
   const [reviewRequestId, setReviewRequestId] = useState<string>();
@@ -4766,13 +4776,19 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   );
   const finalReplyAwaitingNativeCompletion = nativeTurnRunning
     && Boolean(activeNativeTurnId && hasAssistantReplyForTurn(displayedEvents, activeNativeTurnId));
-  // Readiness owns visible interaction state. Event reconciliation remains a
-  // background safety guard for queued delivery and never presents as running.
+  // Readiness owns interaction controls, but it may briefly report idle before
+  // the formal terminal event is readable. Keep the visual lifecycle monotonic:
+  // once a formal user turn is unfinished, only its terminal event or the
+  // bounded terminal reconciliation expiry may remove running presentation.
   const conversationActivity = useMemo(() => ({
     state: effectiveTurnState,
     active: effectiveTurnState === 'running' || effectiveTurnState === 'pausing' || effectiveTurnState === 'resuming',
   }), [effectiveTurnState]);
-  const conversationVisuallyActive = conversationActivity.active;
+  const conversationVisuallyActive = conversationActivity.active || (
+    effectiveTurnState !== 'paused'
+    && hasUnfinishedFormalTurn
+    && (!nativeTurnTerminal || terminalEventReconciliationActive)
+  );
   const latestDisplayedEvent = displayedEvents.at(-1);
   const emptyResponseRecoveryActive = conversationActivity.state === 'running'
     && Boolean(latestDisplayedEvent && isOpenHandsEmptyResponseRecovery(latestDisplayedEvent));
@@ -6149,7 +6165,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       {visibleError && <p className="agent-workbench-error">{visibleError.message}</p>}
       </div>
       {(selected || conversationDraft) && runtime?.state !== 'RECOVERING' && <div className="agent-composer-dock">
-        <div className={`agent-composer ${conversationActivity.active || pendingConfirmation ? 'busy' : ''}`}>
+        <div className={`agent-composer ${conversationVisuallyActive || pendingConfirmation ? 'busy' : ''}`}>
         {pendingConfirmation && <section className="agent-confirmation" aria-label="工具执行确认"><header><ShieldAlert size={17}/><div><b>工具正在等待你的确认</b><span>动作尚未执行。请核对整批内容后批准或拒绝。</span></div></header><div className="agent-confirmation-actions">{(pendingConfirmation.actions ?? []).map((action: AgentPendingConfirmationAction) => <article key={action.digest}><div><b>{action.summary || action.tool_name}</b><span>{action.security_risk || 'UNKNOWN'}</span></div>{Object.keys(action.arguments).length > 0 && <pre>{JSON.stringify(action.arguments, null, 2)}</pre>}</article>)}</div><textarea aria-label="工具确认理由" value={confirmationReason} maxLength={2000} placeholder="填写批准或拒绝理由…" onChange={event => setConfirmationReason(event.target.value)}/><footer><button type="button" className="danger" disabled={!confirmationReason.trim() || decideConfirmation.isPending} onClick={() => decideConfirmation.mutate(false)}><X size={14}/>拒绝整批</button><button type="button" className="primary" disabled={!confirmationReason.trim() || decideConfirmation.isPending} onClick={() => decideConfirmation.mutate(true)}><Check size={14}/>批准整批</button></footer></section>}
         {(visibleQueuedMessages.length > 0 || (selected && !queueModeEnabled)) && <section className="agent-queued-messages" aria-label="消息投递队列">
           <header><b>消息队列</b><span>{queueModeEnabled ? `${visibleQueuedMessages.length} 条等待发送` : `队列模式已关闭；保留 ${visibleQueuedMessages.length} 条消息`}</span>{!queueModeEnabled && visibleQueuedMessages.length === 0 && <button type="button" className="queue-mode-toggle" onClick={toggleQueueMode}><ListRestart size={12}/>启用队列模式</button>}</header>
@@ -6184,10 +6200,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
               <small>{index + 1}</small>
               <p>{message.content || (message.references.length ? `会话引用 ${message.references.length} 条` : message.workspaceReferences?.length ? `工作区引用 ${message.workspaceReferences.length} 条` : '图片附件')}</p>
               <span>{['等待发送', message.items.length ? `${message.items.length} 个附件` : '', message.references.length ? `${message.references.length} 条会话引用` : '', message.workspaceReferences?.length ? `${message.workspaceReferences.length} 条工作区引用` : ''].filter(Boolean).join(' · ')}</span>
-              <div>
+              <div ref={queuedMessageMenuId === message.id ? queuedMessageMenuRef : undefined}>
                 {editable && <button type="button" aria-label={`调整方向排队消息 ${index + 1}`} title={queueModeEnabled ? '立即发送，调整当前回复方向' : '队列模式已关闭'} disabled={!queueModeEnabled || !canWrite || effectiveTurnState !== 'running' || !selected?.streaming_callback_ready || message.scope !== selected.id} onClick={() => sendQueuedMessageImmediately(message)}><CornerDownRight size={12}/>调整方向</button>}
                 <button type="button" className="queue-remove" aria-label={`移除排队消息 ${index + 1}`} disabled={!removable} onClick={() => { commitQueuedMessages(items => items.filter(item => item.id !== message.id)); setQueuedMessageMenuId(current => current === message.id ? undefined : current); }}><Trash2 size={13}/></button>
-                {editable && <button type="button" className="queue-more" aria-label={`更多排队消息操作 ${index + 1}`} title="更多操作" aria-expanded={queuedMessageMenuId === message.id} onClick={() => setQueuedMessageMenuId(current => current === message.id ? undefined : message.id)}><Ellipsis size={14}/></button>}
+                {editable && <button type="button" className="queue-more" aria-label={`更多排队消息操作 ${index + 1}`} title="更多操作" aria-haspopup="menu" aria-expanded={queuedMessageMenuId === message.id} onClick={() => setQueuedMessageMenuId(current => current === message.id ? undefined : message.id)}><Ellipsis size={14}/></button>}
                 {editable && queuedMessageMenuId === message.id && <div className="queue-menu" role="menu">
                   <button type="button" role="menuitem" onClick={() => editQueuedMessage(message)}><Pencil size={12}/>编辑消息</button>
                   <button type="button" role="menuitem" onClick={toggleQueueMode}><ListRestart size={12}/>{queueModeEnabled ? '关闭队列模式' : '启用队列模式'}</button>
@@ -6206,8 +6222,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
             {features.attachments && (selected || conversationDraft) && <><input ref={attachmentInput} aria-label="上传附件" type="file" multiple hidden onChange={event => { if (composerScope) for (const file of Array.from(event.target.files ?? [])) upload.mutate({ file, scope: composerScope }); event.currentTarget.value = ''; }}/><button type="button" aria-label="添加附件" disabled={!canCompose || Boolean(pendingConfirmation) || upload.isPending} onClick={() => attachmentInput.current?.click()}><Plus size={17}/></button></>}
             {contextProgress ? <span className="agent-context-progress token" title={contextTitle} aria-label={`Token 上下文用量 ${contextProgress.percentage}%`}><i style={{ '--context-progress': `${contextProgress.percentage}%` } as CSSProperties}/><em><small>Token</small>{contextProgress.usedLabel} / {contextProgress.windowLabel}</em></span> : (selected || conversationDraft) && <span className="agent-context-progress token pending" title={tokenPendingTitle} aria-label={`Token 上下文用量${tokenPendingLabel}`}><i style={{ '--context-progress': '0%' } as CSSProperties}/><em><small>Token</small>{tokenPendingLabel}</em></span>}
             {(selected || conversationDraft) && (hasCurrentViewEventCount && eventProgress !== undefined ? <span className="agent-context-progress activity events" title={activityTitle} aria-label={`OpenHands 当前活动 View 事件 ${currentViewEventCount} 条，自动压缩阈值 ${eventLimit} 条`}><i style={{ '--context-progress': `${eventProgress}%` } as CSSProperties}/><em><small>事件</small>{exactCount(currentViewEventCount)} / {exactCount(eventLimit)}</em></span> : <span className="agent-context-progress activity events pending" title={eventPendingTitle} aria-label={`事件上下文用量${eventPendingLabel}`}><i style={{ '--context-progress': '0%' } as CSSProperties}/><em><small>事件</small>{eventPendingLabel}</em></span>)}
-            {composerStatus && <span className="agent-composer-status">{composerStatus}</span>}
-            {composerNote && <span className="agent-composer-note">{composerNote}</span>}
+            <span className="agent-composer-status agent-composer-status-slot" aria-hidden={!composerStatus}>{composerStatus}</span>
+            <span className="agent-composer-note agent-composer-note-slot" aria-hidden={!composerNote}>{composerNote}</span>
           </div>
           <div className="agent-composer-actions">
             {features.modelSelection && selected && <ComposerModelMenu providers={connectedProviders} providerId={conversationProviderId} modelName={activeConversationModelName} models={availableConversationModels} efforts={supportedEfforts} effort={reasoningEffort ?? selected.reasoning_effort ?? contextQuery.data?.reasoning_effort ?? conversationModel?.default_reasoning_effort ?? ''} disabled={!canWrite || conversationActivity.active || queuedMessages.length > 0 || Boolean(pendingConfirmation) || persistModel.isPending || migrateStreaming.isPending || Boolean(pendingMigratedSend)} onProviderChange={providerId => { const provider = connectedProviders.find(item => item.id === providerId); const model = provider?.models.find(item => item.enabled && item.is_default); if (!provider || !model) return; const effort = model.default_reasoning_effort ?? null; setConversationProviderId(providerId); setConversationModelName(model.model_name); setReasoningEffort(effort); persistModel.mutate({ providerId, modelName: model.model_name, effort }); }} onModelChange={modelName => { const model = availableConversationModels.find(item => item.model_name === modelName); const effort = model?.default_reasoning_effort ?? null; setConversationModelName(modelName); setReasoningEffort(effort); persistModel.mutate({ providerId: conversationProviderId, modelName, effort }); }} onEffortChange={effort => { const nextEffort = effort || null; setReasoningEffort(nextEffort); persistModel.mutate({ providerId: conversationProviderId, modelName: activeConversationModelName, effort }); }}/>}

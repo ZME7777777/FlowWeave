@@ -361,6 +361,14 @@ test('Agent transcript keeps scroll ownership through streamed output and histor
     requestAnimationFrame(() => requestAnimationFrame(resolve));
   }));
   await expect(surface).toHaveAttribute('data-refresh-scroll-writes', '0');
+  await surface.evaluate(element => {
+    element.dataset.refreshScrollWrites = '0';
+    element.querySelector<HTMLElement>('.conversation-turn-status')?.style.setProperty('min-height', '36px');
+  });
+  await page.evaluate(() => new Promise<void>(resolve => {
+    requestAnimationFrame(() => requestAnimationFrame(resolve));
+  }));
+  await expect(surface).toHaveAttribute('data-refresh-scroll-writes', '0');
 
   agentStream!.send(JSON.stringify({
     type: 'event',
