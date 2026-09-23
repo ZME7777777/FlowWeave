@@ -1699,7 +1699,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   }));
   const condensationRow = activeProcess.getByRole('status', { name: '开始压缩上下文' });
   await expect(condensationRow).toHaveClass(/running/);
-  await expect(condensationRow.locator('b')).toHaveCSS('animation-name', 'none');
+  await expect(condensationRow.locator('b')).toHaveCSS('animation-name', 'conversation-progress-scan');
   await expect(activeProcess.getByText('处理中', { exact: true })).toBeVisible();
   agentStream!.send(JSON.stringify({
     type: 'event',
@@ -1719,6 +1719,8 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     event: { id: 'live-workflow', event_type: 'TOOL_CALL', payload: { source: 'agent', parent_id: 'live-condensation-complete', action_id: 'live-workflow', tool_call_id: 'live-workflow-call', tool_name: 'workflow', event_name: 'WorkflowAction', summary: '并行核对压缩渲染、配对和计时边界', details: { name: 'analyze-condensation-flow' }, timestamp: new Date().toISOString() } },
   }));
   const workflowDetail = activeProcess.locator('.conversation-tool-detail.tool-workflow').filter({ hasText: '并行核对压缩渲染、配对和计时边界' });
+  await expect(workflowDetail).toHaveClass(/running/);
+  await expect(workflowDetail.locator(':scope > summary b')).toHaveCSS('animation-name', 'conversation-progress-scan');
   await expect(workflowDetail.locator(':scope > summary > svg.lucide-chevron-right')).toBeVisible();
   await expect(workflowDetail.locator(':scope > summary > svg.lucide-workflow')).toBeVisible();
   await expect(workflowDetail.locator(':scope > summary > svg.lucide-wrench')).toHaveCount(0);
@@ -1726,6 +1728,8 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     type: 'event',
     event: { id: 'live-workflow-result', event_type: 'TOOL_RESULT', payload: { source: 'environment', parent_id: 'live-workflow', action_id: 'live-workflow', tool_call_id: 'live-workflow-call', tool_name: 'workflow', event_name: 'WorkflowObservation', details: { is_error: false }, timestamp: new Date().toISOString() } },
   }));
+  await expect(workflowDetail).not.toHaveClass(/running/);
+  await expect(workflowDetail.locator(':scope > summary b')).toHaveCSS('animation-name', 'none');
   agentStream!.send(JSON.stringify({ type: 'delta', item_id: 'transient-preview', content: '正在核对上下文。' }));
   agentStream!.send(JSON.stringify({ type: 'delta', item_id: 'transient-preview', content: '\n最终回复只在正式消息到达后展示。' }));
   await expect(page.getByLabel('正在生成的回复')).toHaveCount(0);
@@ -1752,7 +1756,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(liveProgressSummary.locator(':scope > svg.lucide-chevron-right')).toBeVisible();
   await expect(liveProgressSummary).toContainText('正在运行 pwd');
   await expect(liveProgressGroup.locator('.conversation-progress-current')).toHaveText('正在运行 pwd');
-  await expect(liveProgressGroup.locator(':scope > summary > span').first()).toHaveCSS('animation-name', 'none');
+  await expect(liveProgressGroup.locator(':scope > summary > span').first()).toHaveCSS('animation-name', 'conversation-progress-scan');
   await expect(liveProgressGroup.locator('.conversation-progress-icon')).toHaveCount(0);
   await expect(liveProgressGroup.getByRole('button', { name: '查看执行详情：正在运行 pwd' })).toBeHidden();
   await expectViewportAtLatest();
@@ -1804,14 +1808,17 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   }).toBe(0);
   await expect(runningPwdDetail).toHaveClass(/running/);
   await expect(runningStatusDetail).toHaveClass(/running/);
-  await expect(runningPwdDetail.locator(':scope > summary b')).toHaveCSS('animation-name', 'none');
-  await expect(runningStatusDetail.locator(':scope > summary b')).toHaveCSS('animation-name', 'none');
+  await expect(runningPwdDetail.locator(':scope > summary b')).toHaveCSS('animation-name', 'conversation-progress-scan');
+  await expect(runningStatusDetail.locator(':scope > summary b')).toHaveCSS('animation-name', 'conversation-progress-scan');
   await expectViewportAtLatest();
   await expect(page.locator('.conversation-turn-status')).toHaveText(/正在后台执行命令/);
   agentStream!.send(JSON.stringify({
     type: 'event',
     event: { id: 'live-plan', event_type: 'TOOL_CALL', payload: { parent_id: 'live-tool', action_id: 'live-plan', tool_call_id: 'live-plan-call', tool_name: 'task_tracker', event_name: 'TaskTrackerAction', details: { command: 'plan', task_list: [{ title: '核对当前状态', notes: '已完成。', status: 'done' }, { title: '验证提交结果', notes: '正在等待命令结果。', status: 'in_progress' }, { title: '整理交付说明', notes: '', status: 'todo' }] }, timestamp: new Date().toISOString() } },
   }));
+  const runningTaskTracker = activeProcess.locator('.conversation-tool-detail.task-tracker');
+  await expect(runningTaskTracker).toHaveClass(/running/);
+  await expect(runningTaskTracker.locator(':scope > summary b')).toHaveCSS('animation-name', 'conversation-progress-scan');
   agentStream!.send(JSON.stringify({
     type: 'event',
     event: { id: 'live-plan-result', event_type: 'TOOL_RESULT', payload: { parent_id: 'live-plan', action_id: 'live-plan', tool_call_id: 'live-plan-call', tool_name: 'task_tracker', event_name: 'TaskTrackerObservation', details: { command: 'plan', is_error: false, task_list: [{ title: '核对当前状态', notes: '已完成。', status: 'done' }, { title: '验证提交结果', notes: '正在等待命令结果。', status: 'in_progress' }, { title: '整理交付说明', notes: '', status: 'todo' }] }, timestamp: new Date().toISOString() } },
@@ -1835,7 +1842,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(liveFileSummary.locator('.conversation-progress-icons > svg').nth(0)).toHaveClass(/lucide-file-pen-line/);
   await expect(liveFileSummary.locator(':scope > svg.lucide-chevron-right')).toBeVisible();
   await expect(liveFileProgressGroup.locator('.conversation-progress-current')).toHaveText('正在编辑 工作区/src/live.ts');
-  await expect(liveFileProgressGroup.locator(':scope > summary > span')).toHaveCSS('animation-name', 'none');
+  await expect(liveFileProgressGroup.locator(':scope > summary > span').first()).toHaveCSS('animation-name', 'conversation-progress-scan');
   await expect(liveFileProgressGroup.locator('.task-tracker')).toHaveCount(0);
   agentStream!.send(JSON.stringify({
     type: 'event',
@@ -2390,8 +2397,17 @@ test('editing the latest user message locally replaces only its active branch', 
   await page.getByRole('button', { name: '编辑并重新思考' }).click();
   await expect(page.getByText('需要重新思考的问题', { exact: true })).toHaveCount(0);
   await expect(page.locator('.conversation-message-edit')).toBeVisible();
-  await page.getByLabel('编辑已发送消息').fill('修改后的问题');
-  await page.getByRole('button', { name: '重新思考', exact: true }).click();
+  const rewriteEditor = page.getByLabel('编辑已发送消息');
+  await rewriteEditor.fill('修改后的');
+  await rewriteEditor.dispatchEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 229, isComposing: true });
+  await expect(rewriteEditor).toHaveValue('修改后的');
+  expect(releaseRewrite).toBeUndefined();
+  await rewriteEditor.press('Shift+Enter');
+  await rewriteEditor.type('问题');
+  await expect(rewriteEditor).toHaveValue('修改后的\n问题');
+  expect(releaseRewrite).toBeUndefined();
+  await rewriteEditor.fill('修改后的问题');
+  await rewriteEditor.press('Enter');
   await expect(page.getByText('更早的问题', { exact: true })).toBeVisible();
   await expect(page.getByText('更早的回答', { exact: true })).toBeVisible();
   await expect(page.getByText('不应保留的旧回答', { exact: true })).toHaveCount(0);

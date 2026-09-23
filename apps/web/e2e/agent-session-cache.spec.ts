@@ -1,6 +1,17 @@
 import { expect, test, type Page, type Route } from '@playwright/test';
 
 const now = '2026-09-12T09:30:00Z';
+const nestedMarkdownSource = [
+  '```markdown',
+  '# 内层标题',
+  '',
+  '```text',
+  'inner content',
+  '```',
+  '',
+  '外层源码的后续内容',
+  '```',
+].join('\n');
 const user = {
   id: '00000000-0000-0000-0000-000000000021',
   username: 'cache-user',
@@ -34,7 +45,7 @@ test('Agent session renders a completed long Markdown reply without manual expan
     events: [
       { id: `${id}-user`, event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: `问题 ${id}\n第二行 ${id}`, timestamp: now } },
       { id: `${id}-tool`, event_type: 'TOOL_RESULT', payload: { parent_id: `${id}-user`, content: 'x'.repeat(20_000), details: { stdout: 'x'.repeat(20_000) }, timestamp: now } },
-      { id: `${id}-assistant`, event_type: 'MESSAGE', payload: { source: 'agent', parent_id: `${id}-tool`, content: `完整回复 ${id}\n\n| 选择 | 项目 | 用途 | Git 地址 |\n| --- | --- | --- | --- |\n| #1 | \`hq-support\` | 同步 Kafka topic | \`https://gitlab.example.test/hq-support\` |\n\n${'完整 Markdown 内容 '.repeat(500)}`, timestamp: now } },
+      { id: `${id}-assistant`, event_type: 'MESSAGE', payload: { source: 'agent', parent_id: `${id}-tool`, content: `完整回复 ${id}\n\n| 选择 | 项目 | 用途 | Git 地址 |\n| --- | --- | --- | --- |\n| #1 | \`hq-support\` | 同步 Kafka topic | \`https://gitlab.example.test/hq-support\` |\n\n${'完整 Markdown 内容 '.repeat(500)}\n\n${nestedMarkdownSource}`, timestamp: now } },
     ],
     next_cursor: `${id}-head`,
     history_cursor: null,
@@ -90,6 +101,11 @@ test('Agent session renders a completed long Markdown reply without manual expan
   await expect(table.getByRole('columnheader', { name: '选择' })).toHaveCSS('white-space', 'nowrap');
   await expect(table.locator('td').first()).toHaveCSS('white-space', 'nowrap');
   await expect(page.locator('.conversation-markdown-table-scroll')).toHaveCSS('overflow-x', 'auto');
+  const nestedSourceBlock = page.locator('.conversation-code-block').filter({ hasText: '外层源码的后续内容' });
+  await expect(nestedSourceBlock).toHaveCount(1);
+  await expect(nestedSourceBlock.locator('pre')).toContainText('# 内层标题');
+  await expect(nestedSourceBlock.locator('pre')).toContainText('```text');
+  await expect(nestedSourceBlock.locator('pre')).toContainText('外层源码的后续内容');
   await expect(page.getByRole('button', { name: '渲染完整消息' })).toHaveCount(0);
   const completedReply = page.locator('.conversation-message.assistant').filter({ hasText: '完整回复 cache-conversation-a' });
   const completedSurface = page.locator('.conversation-surface');
@@ -598,8 +614,8 @@ test('New conversation draft never leaks into existing conversations during rapi
 
   await page.getByRole('button', { name: '在根工作区中新建会话' }).click();
   await expect(page.getByRole('heading', { name: '新会话' })).toBeVisible();
-  await expect(composer).toHaveValue('只属于新会话的未发送草稿');
-  await expect(draftAttachment).toBeVisible();
+  await expect(composer).toHaveValue('');
+  await expect(draftAttachment).toHaveCount(0);
 });
 
 test('First message keeps the new conversation visible while its routed read is pending', async ({ page }) => {

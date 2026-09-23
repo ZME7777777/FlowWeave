@@ -882,7 +882,7 @@ function ToolDetailContent({ details, resultDetails, results, presentation, isTe
     </>;
 }
 
-function TaskTrackerCard({ entry, presentation }: { entry: ActivityEntry; presentation: ActivityPresentation }) {
+function TaskTrackerCard({ entry, presentation, running }: { entry: ActivityEntry; presentation: ActivityPresentation; running: boolean }) {
   const action = entry.action ?? entry.item;
   const result = entry.results.at(-1);
   const snapshot = taskListSnapshot(
@@ -894,7 +894,7 @@ function TaskTrackerCard({ entry, presentation }: { entry: ActivityEntry; presen
   const loading = !result && action.event.event_type === 'TOOL_CALL';
   const progress = snapshot ? `${completed} / ${snapshot.items.length} 已完成` : undefined;
   const status = loading ? '正在更新' : [snapshot?.command === 'plan' ? '已更新' : '当前快照', progress].filter(Boolean).join(' · ');
-  return <details className={`conversation-activity-row tool conversation-tool-detail task-tracker${loading ? ' running' : ''}`} aria-label={`任务列表：${presentation.title}`}>
+  return <details className={`conversation-activity-row tool conversation-tool-detail task-tracker${running ? ' running' : ''}`} aria-label={`任务列表：${presentation.title}`}>
     <summary><ClipboardList size={13}/><div><b>{presentation.title}</b><small>{status}</small></div><ChevronRight className="conversation-expand-arrow" size={12}/></summary>
     <div className="conversation-tool-detail-panel conversation-task-tracker-body">
       {snapshot ? <><div className="conversation-task-list-summary"><span>{snapshot.command === 'plan' ? '任务清单' : '任务清单快照'}</span><small>{progress}</small></div><TaskListItems items={snapshot.items} source={snapshot.timestamp ? `OpenHands 原生任务事件 · ${formatMessageTime(snapshot.timestamp)}` : 'OpenHands 原生任务事件'}/></> : <p className="conversation-task-tracker-note">正在读取任务清单…</p>}
@@ -902,7 +902,7 @@ function TaskTrackerCard({ entry, presentation }: { entry: ActivityEntry; presen
   </details>;
 }
 
-function SkillLoadRow({ entry }: { entry: ActivityEntry }) {
+function SkillLoadRow({ entry, running }: { entry: ActivityEntry; running: boolean }) {
   const action = entry.action ?? entry.item;
   const result = entry.results.at(-1);
   const actionSkill = action.event.payload.runtime_skill;
@@ -912,7 +912,7 @@ function SkillLoadRow({ entry }: { entry: ActivityEntry }) {
   const phase = resultSkill?.phase ?? actionSkill?.phase ?? (result ? 'LOADED' : 'INVOKED');
   const failed = phase === 'ERROR' || result?.event.payload.details?.is_error === true;
   const status = failed ? '加载失败' : phase === 'LOADED' ? '已加载' : '加载中';
-  return <article className={`conversation-activity-row tool skill-load${failed ? ' error' : phase === 'INVOKED' ? ' active' : ''}`} aria-label={`加载 Skill：${skillName}`}>
+  return <article className={`conversation-activity-row tool skill-load${failed ? ' error' : running ? ' running' : ''}`} aria-label={`加载 Skill：${skillName}`}>
     <BookOpen size={13}/><div><b>{`加载 Skill ${skillName}`}</b><small>{status}</small></div>
   </article>;
 }
@@ -1097,11 +1097,11 @@ function ActivityEntryRow({ entry, active, paused = false, parentFailed = false,
   const toolDetail = item.kind === 'tool'
     ? <ToolDetailPanel presentation={presentation} eventName={eventName} toolName={toolName || undefined} toolVisual={toolVisual} results={entry.results} workspaceRoot={workspaceRoot}/>
     : null;
-  const nativeOperationRunning = active && !paused && !parentFailed && entry.results.length === 0 && (toolVisual === 'terminal' || toolVisual === 'file');
   const condensationRunning = active && !paused && !parentFailed && item.kind === 'condensation' && item.event.event_type === 'CONDENSATION_REQUESTED' && entry.results.length === 0;
   const isNativeThink = item.event.event_type === 'THOUGHT';
   const referenceableThought = item.kind === 'thought' || (item.kind === 'tool' && Boolean(presentation.thought));
   const thoughtAttributes = referenceableThought ? { 'data-conversation-event-id': item.event.id } : {};
+  const toolRunning = active && !paused && !parentFailed && entry.results.length === 0 && item.event.event_type === 'TOOL_CALL';
   if (item.kind === 'thought') return <article {...thoughtAttributes} className={`conversation-activity-row thought${isNativeThink ? ' native-think' : ''}`}>
     <MessageMarkdown>{presentation.thought ?? item.content}</MessageMarkdown>
   </article>;
@@ -1110,17 +1110,17 @@ function ActivityEntryRow({ entry, active, paused = false, parentFailed = false,
   </article>;
   if (eventName === 'TaskTrackerAction' || eventName === 'TaskTrackerObservation') return <div className={`conversation-tool-entry semantic tool-${toolVisual}`}>
     {!hideThought && presentation.thought && <article {...thoughtAttributes} className={`conversation-activity-row thought tool-thought tool-${toolVisual}`}><MessageMarkdown>{presentation.thought}</MessageMarkdown></article>}
-    <TaskTrackerCard entry={entry} presentation={presentation}/>
+    <TaskTrackerCard entry={entry} presentation={presentation} running={toolRunning}/>
   </div>;
   if (eventName === 'InvokeSkillAction' || eventName === 'InvokeSkillObservation') return <div className={`conversation-tool-entry semantic tool-${toolVisual}`}>
     {!hideThought && presentation.thought && <article {...thoughtAttributes} className={`conversation-activity-row thought tool-thought tool-${toolVisual}`}><MessageMarkdown>{presentation.thought}</MessageMarkdown></article>}
-    <SkillLoadRow entry={entry}/>
+    <SkillLoadRow entry={entry} running={toolRunning}/>
   </div>;
   if (item.kind === 'tool' && toolDetail) return <div className={`conversation-tool-entry tool-${toolVisual}`}>
     {!hideThought && presentation.thought && <article {...thoughtAttributes} className={`conversation-activity-row thought tool-thought tool-${toolVisual}`}>
       <MessageMarkdown>{presentation.thought}</MessageMarkdown>
     </article>}
-    <details className={`conversation-activity-row tool conversation-tool-detail tool-${toolVisual}${nativeOperationRunning ? ' running' : ''}`} data-tool-kind={toolVisual} data-file-operation={toolVisual === 'file' ? presentation.fileOperation : undefined} data-file-kind={toolVisual === 'file' ? presentation.fileKind : undefined}>
+    <details className={`conversation-activity-row tool conversation-tool-detail tool-${toolVisual}${toolRunning ? ' running' : ''}`} data-tool-kind={toolVisual} data-file-operation={toolVisual === 'file' ? presentation.fileOperation : undefined} data-file-kind={toolVisual === 'file' ? presentation.fileKind : undefined}>
       <summary aria-label={`查看执行详情：${presentation.title}`}>{taskAvatar ?? <ToolIcon size={13}/>}<div><b title={presentation.title}>{presentation.title}</b></div><ChevronRight className="conversation-expand-arrow" size={12}/></summary>
       {toolDetail}
     </details>
@@ -2091,7 +2091,11 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
           : undefined;
         return <section className="conversation-turn" key={turn.id} data-conversation-turn={turn.id}>
           {turn.user && <div className="conversation-user-message">{editingEventId === turn.user.event.id
-            ? <form className="conversation-message-edit" onSubmit={event => { event.preventDefault(); if (editingContent.trim()) onRewrite?.(turn.user!.event.id, editingContent.trim()); }}><textarea aria-label="编辑已发送消息" value={editingContent} disabled={rewritePending} onChange={event => setEditingContent(event.target.value)}/><footer><button type="button" onClick={() => setEditingEventId(undefined)}>取消</button><button type="submit" disabled={!editingContent.trim() || rewritePending}>重新思考</button></footer></form>
+            ? <form className="conversation-message-edit" onSubmit={event => { event.preventDefault(); if (editingContent.trim()) onRewrite?.(turn.user!.event.id, editingContent.trim()); }}><textarea aria-label="编辑已发送消息" value={editingContent} disabled={rewritePending} onChange={event => setEditingContent(event.target.value)} onKeyDown={event => {
+              if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing || event.keyCode === 229) return;
+              event.preventDefault();
+              event.currentTarget.form?.requestSubmit();
+            }}/><footer><button type="button" onClick={() => setEditingEventId(undefined)}>取消</button><button type="submit" disabled={!editingContent.trim() || rewritePending}>重新思考</button></footer></form>
             : <article data-user-event-id={turn.user.event.id} data-conversation-event-id={turn.user.event.id} className="conversation-message user">{turn.user.content && <div className="conversation-message-content"><MessageMarkdown>{turn.user.content}</MessageMarkdown></div>}<MessageAttachments attachments={eventAttachments(turn.user.event)} references={turn.user.event.payload.conversation_references} workspaceReferences={turn.user.event.payload.workspace_references} annotations={eventAnnotations(turn.user.event)} onOpen={onOpenAttachment} onOpenReference={setViewingReference} onOpenWorkspaceReference={onOpenWorkspaceReference} onOpenAnnotation={locateAnnotation}/><footer className="conversation-message-meta user">{userDeliveryStatus && <small className="conversation-message-delivery-status" role="status">{userDeliveryStatus}</small>}{userTimestamp && <time dateTime={typeof turn.user.event.payload.timestamp === 'string' ? turn.user.event.payload.timestamp : undefined}>{userTimestamp}</time>}<div className="conversation-message-actions"><button type="button" className="conversation-message-copy" aria-label={copiedEventId === turn.user.event.id ? '消息已复制' : '复制消息'} title={copiedEventId === turn.user.event.id ? '已复制' : '复制消息'} onClick={() => copyUserMessage(turn.user!.event.id, turn.user!.content)}>{copiedEventId === turn.user.event.id ? <Check size={13}/> : <Copy size={13}/>}</button>{lastUserEventId === turn.user.event.id && <button type="button" className="conversation-message-rewrite" aria-label="编辑并重新思考" title="编辑并重新思考" onClick={() => { setEditingEventId(turn.user!.event.id); setEditingContent(turn.user!.content); }}><Pencil size={13}/></button>}</div></footer></article>}</div>}
           {processBlocks.map(block => <ActivityGroup
             key={block.id}
