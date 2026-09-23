@@ -1007,14 +1007,10 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   recoverableAgentError = true;
   modelIsResponding = true;
   await page.reload();
-  const recoverableError = page.locator('.conversation-activity-row.agent-error').filter({ hasText: '执行过程出现可恢复错误' }).first();
   const recoveredReply = page.getByText('已恢复并完成部署状态查询。');
-  await expect(recoverableError).toBeVisible();
-  await expect(recoverableError.getByText('Agent 已继续完成本轮回复')).toBeVisible();
   await expect(recoveredReply).toBeVisible();
-  const recoverableErrorBox = await recoverableError.boundingBox();
-  const recoveredReplyBox = await recoveredReply.boundingBox();
-  expect(recoverableErrorBox?.y).toBeLessThan(recoveredReplyBox?.y ?? Number.POSITIVE_INFINITY);
+  await expect(page.getByText('执行过程出现可恢复错误')).toHaveCount(0);
+  await expect(page.getByText('Temporary upstream error; retrying the operation.')).toHaveCount(0);
   await expect(page.getByText('本轮未能完成')).toHaveCount(0);
   recoverableAgentError = false;
   modelIsResponding = false;
