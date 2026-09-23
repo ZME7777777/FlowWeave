@@ -1519,10 +1519,13 @@ function mergeConversationEvents(
   const isSubmittedUserEvent = (event: OpenHandsConversationEvent) => event.event_type === 'MESSAGE'
     && event.payload.source === 'user'
     && typeof event.payload._flowweave_submission_id === 'string';
+  const userMessageContent = (event: OpenHandsConversationEvent) => typeof event.payload.display_content === 'string'
+    ? event.payload.display_content
+    : event.payload.content;
   const sameSubmittedMessage = (first: OpenHandsConversationEvent, second: OpenHandsConversationEvent) => {
     if (first.event_type !== 'MESSAGE' || second.event_type !== 'MESSAGE'
       || first.payload.source !== 'user' || second.payload.source !== 'user'
-      || first.payload.content !== second.payload.content) return false;
+      || userMessageContent(first) !== userMessageContent(second)) return false;
     const firstTime = parseOpenHandsEventTime(first.payload.timestamp);
     const secondTime = parseOpenHandsEventTime(second.payload.timestamp);
     return firstTime === undefined || secondTime === undefined || Math.abs(firstTime - secondTime) <= 5 * 60_000;
