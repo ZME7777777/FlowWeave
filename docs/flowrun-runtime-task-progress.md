@@ -129,6 +129,12 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | --- | --- | --- | --- |
 | FR-514 | 模型调用内部重试没有真实进度投影，最终错误以高干扰错误卡片展示 | DONE | OpenHands baseline commit `4e130c408745934743bc9be5c4b18c830020957b` 新增非持久化结构化 retry frame，真实投影 `1/5` 至 `5/5`，保留正式终态错误与脱敏分类；FlowWeave 按 binding/session 隔离状态，区分模型重试与 WebSocket 恢复，不重发用户消息、不删除会话、不显示红色错误卡片。源码归档固定为仓库内不可变包，SHA-256 `13a1812371687a4f57a4874cbb6b8cabe91fce041b1ba758affd5140ea4ee770`；未推送远端、未创建 PR。 |
 
+### OpenHands 1.47 最小 Backport（2026-09-24）
+
+| 切片 | 风险 | 状态 | 范围 |
+| --- | --- | --- | --- |
+| FR-515 | 1.47 Runtime 丢弃孤立 Observation、跨 Responses 输出项混合 delta，或在 Secret masking 时损坏 opaque Base64 Tool payload | DONE | 在隔离 worktree 的 `codex/openhands-1.47-backports` 分支，从已冻结 `5efe25b00698d39bc615b9dbe759c793e0617a13` 依次以 `-x` 移植 `dd8d9f6f3a280ab01a00fb7a3dc9ca791a372674`、`bf0c72c4164464e70347147afe7ea9476131080a` 和 `e8b1b26fdd828dc8421993fac1241999d14d1d93`，对应 fork commits 为 `f725a46a20abe65aee44e484b37c383f1d9a2d0d`、`a3b33a3863ebdc116556b5ba4efbe2d164d04e9c` 与 `d4b16bc434a42315f8f9ce1b56d550e92f716f38`。上游定向回归 `46 passed`；四个包仍均为 `1.47.0`，工作树及 whitespace 检查通过。尚未构建或发布该源码对应镜像，现有 FlowWeave contract probe 严格锁定已发布的 `4e130c…` provenance，故本切片不将 Runtime contract probe 记为已通过；它必须在 provenance／镜像切片中针对新 digest 执行。 |
+
 ### FlowWeave Docker 网络收敛（2026-09-12）
 
 | 切片 | 风险 | 状态 | 范围 |
