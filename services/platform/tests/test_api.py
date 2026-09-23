@@ -2122,6 +2122,64 @@ def test_model_provider_connection_test_reports_result_and_persists_failure(monk
 
 
 @pytest.mark.asyncio
+async def test_model_provider_discovery_reports_expired_subscription_without_upstream_body():
+    import httpx
+
+    from flowweave.modules.model_providers.application.service import ProviderConnectionSnapshot
+    from flowweave.modules.model_providers.infrastructure.client import discover_provider_models
+    from flowweave.shared.errors import DomainError
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            403,
+            text="Account subscription expired for account private-account-123",
+        )
+
+    snapshot = ProviderConnectionSnapshot(
+        provider_id="provider-1",
+        base_url="https://models.example.test/v1",
+        headers={"Authorization": "Bearer configured-secret"},
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as upstream:
+        with pytest.raises(DomainError) as caught:
+            await discover_provider_models(upstream, snapshot)
+
+    assert caught.value.code == "MODEL_PROVIDER_ENTITLEMENT_UNAVAILABLE"
+    assert caught.value.status == 402
+    assert "private-account-123" not in caught.value.message
+
+
+@pytest.mark.asyncio
+async def test_model_provider_discovery_distinguishes_bad_credentials_and_timeouts():
+    import httpx
+
+    from flowweave.modules.model_providers.application.service import ProviderConnectionSnapshot
+    from flowweave.modules.model_providers.infrastructure.client import discover_provider_models
+    from flowweave.shared.errors import DomainError
+
+    snapshot = ProviderConnectionSnapshot(
+        provider_id="provider-1",
+        base_url="https://models.example.test/v1",
+        headers={"Authorization": "Bearer configured-secret"},
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda _request: httpx.Response(401))
+    ) as upstream:
+        with pytest.raises(DomainError) as caught:
+            await discover_provider_models(upstream, snapshot)
+    assert (caught.value.code, caught.value.status) == ("MODEL_PROVIDER_CREDENTIAL_REJECTED", 422)
+
+    async def timed_out(_request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("upstream timed out")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(timed_out)) as upstream:
+        with pytest.raises(DomainError) as caught:
+            await discover_provider_models(upstream, snapshot)
+    assert caught.value.code == "MODEL_PROVIDER_CONNECTION_TIMEOUT"
+
+
+@pytest.mark.asyncio
 async def test_model_provider_budget_probe_supports_litellm_root_after_v1():
     import httpx
 

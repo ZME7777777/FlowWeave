@@ -214,6 +214,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-506 | 会话后台刷新滚动稳定性 | DONE | 运行中会话的定时事件对账仅在可见事件身份或真实内容高度变化时对齐最新内容，避免无可见变化的刷新重复写入底部滚动位置。 |
 | FR-507 | 会话前台恢复终态即时同步 | DONE | 浏览器从后台恢复或窗口重新聚焦时，立即从最新 OpenHands 事件窗口对账并刷新会话 readiness；合并连续恢复事件，避免完成结果必须刷新页面才显示。 |
 | FR-512 | 会话乐观删除与相邻会话切换 | DONE | 确认删除后立即从本地会话投影移除目标并切换到可见列表中的相邻会话，DELETE 请求在后台执行；失败时恢复会话、置顶和未读投影，避免删除延迟造成“新会话”闪屏。 |
+| FR-513 | 模型服务连接测试可行动错误 | DONE | 将可识别的上游订阅／额度、认证、限流、地址、连接和服务故障映射为安全、可行动的模型配置提示，不回显上游正文。 |
 | FR-506 | 会话上下文 512k 默认压缩阈值 | DONE | 新建 Agent Workspace、FlowNode 会话及新 Fork 将 OpenHands `LLMSummarizingCondenser.max_tokens` 冻结为 512,000；工作台缺失正式阈值时使用同一默认值，既有会话继续展示并使用其已冻结配置。 |
 | FR-457 | OpenHands 空响应自恢复与运行状态一致性 | DONE | 空 Agent Message 与 `source=environment` 的原生 corrective nudge 不再被识别为最终回复；纠正事件以“模型返回空响应，OpenHands 正在自动重试”呈现，左侧会话状态与底部按钮继续统一服从原生 execution status。 |
 | FR-458 | 空响应恢复提示瞬时化与会话状态统一 | DONE | corrective nudge 只在它是当前最新事件且原生会话仍运行时复用实时状态行显示；后续事件或终态立即隐藏，历史工作过程不保留该提示。工作台所有运行控件复用同一原生状态投影。 |
@@ -6836,6 +6837,15 @@ FlowWeave 本地累加后猜测压缩边界。
 完成：Compose 将 API／stream-api／Worker 的池尺寸改为显式环境变量，默认稳态预算为 API `4 × (4 async + 3 interactive + 1 history + 1 control) = 36`、stream-api `4 × (2 + 1 + 1 + 1) = 20`、Worker `4 + 4 + 1 + 1 = 10`，总计 66 条。`POSTGRES_CONNECTION_LIMIT=100` 与 `DATABASE_CONNECTION_RESERVE=20` 作为同一渲染配置的硬性预算；API 交互读取容量为每进程 3 条、总计 12 条。新增静态校验，拒绝 overflow、超过预算、预算不一致和向 Runtime Provider 注入 `DATABASE_URL`。
 
 验收：受影响 Python Ruff format/check、`py_compile`、无容器容量断言、由 `.env.example` 渲染的 Compose JSON 容量校验、`git diff --check` 与任务状态唯一性通过。pytest 目标文件仍在 session 级 Testcontainers PostgreSQL fixture 初始化时被本机 Docker socket 缺失阻断，未计为通过。未连接数据库、未修改远端 Compose／环境、未发布或重启任何服务。
+### FR-513 模型服务连接测试可行动错误 — DONE
+
+依赖：无（模型服务配置的最小用户可见诊断切片）。
+
+目标：模型服务“测试连接”不得将上游可识别的订阅到期、余额／额度耗尽、认证拒绝、限流、地址错误、连接超时和上游暂不可用统一显示为“执行服务暂时不可用”。不得向浏览器回显上游错误正文、账号、端点或密钥。
+
+完成：模型列表探测按 HTTP 状态和有限的本地语义标记分类为稳定错误码；订阅／计划到期与余额或额度耗尽统一提示用户续费或更换仍有额度的 API Key。错误正文仅在服务端内存中用于分类，响应和页面均使用固定中文说明；其它模型调用路径与 Runtime 不变。
+
+验收：模型列表探测的无容器 MockTransport 回归覆盖订阅到期、认证拒绝和连接超时，确认上游账号文本不会进入错误消息；受影响 Python `py_compile`、Ruff check／format、Web TypeScript typecheck、受影响 ESLint、`git diff --check` 与任务状态唯一性通过。无迁移、OpenHands、Runtime Provider 或远端部署变更。
 
 
 ## 7. 恢复工作检查表
@@ -7293,3 +7303,4 @@ FlowWeave 本地累加后猜测压缩边界。
 | 2026-09-23 | FR-510 | Web TypeScript typecheck、受影响文件 ESLint、Agent 首屏 hydration／回退定向 Playwright（2 passed）、`git diff --check` 与任务状态唯一性 | PASS：首次选择会话将正式 hydration 的 events、context、readiness 写入三项既有查询缓存，首屏不再并发请求三个 Runtime snapshot；confirmation 等 hydration 结算后再读取。浏览器回归确认正常路径仅调用 hydration，以及 hydration 404 时立即回退为三个既有独立读取。未修改 OpenHands、数据库、API、Runtime Provider、Docker、供应商配置或远端环境。 |
 | 2026-09-23 | FR-511 | 受影响 Python Ruff format/check、`py_compile`、无容器容量断言、由 `.env.example` 渲染的 Compose JSON 容量校验、`git diff --check` 与任务状态唯一性 | PASS（静态）：控制面稳态连接预算固定为 API 36 + stream-api 20 + Worker 10 = 66，并在 100 条上限中保留 20 条；API 每进程交互 Runtime 读取槽设为 3（合计 12）。校验器拒绝 overflow、超预算、预算不一致和 Runtime Provider 数据库凭据。pytest 目标文件因全局 Testcontainers fixture 缺少本机 Docker socket 而在断言前受阻，未计为通过；未连接数据库、未修改远端 Compose／环境、未发布或重启服务。 |
 | 2026-09-23 | FR-512 | Web TypeScript typecheck、受影响文件 ESLint、定向 Playwright（1 passed）、`git diff --check` 与任务状态唯一性 | PASS：删除确认后，在 DELETE 响应尚未返回时立即从本地列表投影移除目标；若目标正在展示，则先导航到同一可见列表中的下一项（末项时回退上一项），不再出现“新会话”空页。删除失败会恢复列表缓存、置顶和未读投影；成功后才清理本地草稿。未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
+| 2026-09-23 | FR-513 | 受影响 Python Ruff format/check、`py_compile`；无容器 MockTransport 分类回归；Web TypeScript typecheck、受影响 ESLint、production build；Alembic head、`git diff --check` 与任务状态唯一性 | PASS（静态／隔离回归）：模型列表探测将订阅／计划到期、余额或额度耗尽映射为固定 entitlement 错误码；认证拒绝、超时等也各自拥有安全说明。MockTransport 断言上游账号文本不会进入 DomainError。数据库型 `tests/test_api.py` 定向 pytest 在 collection 前因本机 Docker socket 缺失、Testcontainers PostgreSQL 无法创建而阻断，未记为通过；同一新增断言在无容器隔离运行中通过。Web typecheck、ESLint 和 production build 通过（仅既有 chunk-size 警告）。无迁移、OpenHands、Runtime Provider、Docker 或远端部署变更。 |
