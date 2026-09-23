@@ -13,7 +13,7 @@ import { agentWorkspaceSessionGateway, type AgentSessionGateway } from '../../ap
 import { withoutDeploymentBase } from '../../deploymentPath';
 import { agentWorkspaceSessionHost, type AgentSessionHost } from './session-host';
 import { ConversationSurface, ConversationTaskPlan, type ConversationHistoryPrepend, type ConversationReference } from '../ConversationSurface';
-import { isOpenHandsAgentReply, isOpenHandsEmptyResponseRecovery, parseOpenHandsEventTime } from '../conversationEvents';
+import { isOpenHandsAgentReply, isOpenHandsEmptyResponseRecovery, orderOpenHandsConversationEvents, parseOpenHandsEventTime } from '../conversationEvents';
 import { useProductDialog } from '../ProductDialogContext';
 import { useEscapeClose } from '../useEscapeClose';
 import { MermaidDiagram } from '../MermaidDiagram';
@@ -1558,7 +1558,7 @@ function sourceUrl(value: string): string | undefined {
 
 function userProvidedSources(events: OpenHandsConversationEvent[]): ConversationSource[] {
   const sources = new Map<string, ConversationSource>();
-  for (const event of events) {
+  for (const event of orderOpenHandsConversationEvents(events)) {
     const isUserMessage = event.event_type === 'MESSAGE' && ['user', 'human'].includes(String(event.payload.source ?? '').toLowerCase());
     if (!isUserMessage) continue;
     for (const attachment of event.payload.attachments ?? []) {
@@ -4668,6 +4668,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     // race each other on independent timers.
     enabled: Boolean(workspace && selected),
     refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
     retry: (count, error) => !(error instanceof ApiError && error.status < 500) && count < 2,
   });
   useEffect(() => {
@@ -5470,7 +5471,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const send = useMutation({
     mutationFn: (message: BoundQueuedMessage) => api.sendMessage(workspace!.id, message.bindingId, message.content, message.items, message.references.map(item => ({ event_id: item.eventId, content: item.content })), message.workspaceReferences ?? [], message.annotations, message.id),
     onMutate: message => {
-      sendingMessageIds.current.add(message.id);
       commitQueuedMessages(current => current.filter(item => item.id !== message.id));
       const optimisticEventId = showOptimisticUserBubble(message);
       if (message.nativeGuidance) return { optimisticEventId, nativeGuidance: true };

@@ -106,7 +106,10 @@
 .conversation-turn-status{display:flex;align-items:center;gap:5px;min-height:28px;margin:2px 0 0;color:#a0a7a2;font-size:13px;letter-spacing:.01em}
 .conversation-turn-status>span:first-child{display:block;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .conversation-turn-status-dots{display:flex;align-items:center;gap:3px;padding-top:2px}
-.conversation-turn-status-dots i{width:3px;height:3px;border-radius:50%;background:currentColor;opacity:.55}
+.conversation-turn-status-dots i{width:3px;height:3px;border-radius:50%;background:currentColor;animation:conversation-turn-status-dot 1.2s ease-in-out infinite}
+.conversation-turn-status-dots i:nth-child(2){animation-delay:.16s}
+.conversation-turn-status-dots i:nth-child(3){animation-delay:.32s}
+@keyframes conversation-turn-status-dot{0%,65%,100%{opacity:.22;transform:translateY(0)}35%{opacity:.9;transform:translateY(-1px)}}
 @media(prefers-reduced-motion:reduce){.conversation-turn-status-dots i,.conversation-jump-dots i{animation:none;opacity:.55}}
 .conversation-tool-entry{--conversation-tool-accent:#4f8060;display:grid;max-width:100%;min-width:0;gap:5px}
 .conversation-tool-detail{display:block!important;overflow:visible;margin:0;border:0}
@@ -161,11 +164,13 @@
 .conversation-activity-command,.conversation-activity-path{display:block;max-width:100%;overflow:auto;margin-top:6px;border-radius:6px;background:#f2f4f2;padding:5px 7px;color:#546259;font:10px/1.45 'DM Mono',ui-monospace,monospace;white-space:pre-wrap}
 .conversation-activity-path{width:fit-content;background:transparent;padding:0;color:#7a877e}
 @media(min-width:760px){.conversation-surface{padding-left:clamp(54px,7vw,128px)}
-.conversation-message-index{position:absolute;z-index:3;top:30px;bottom:30px;left:17px;display:block!important;width:19px;height:auto!important;overflow:visible;transform:none}
-.conversation-message-index>button{position:absolute!important;top:var(--message-index-position);left:0;display:block;box-sizing:border-box;width:19px;height:15px!important;min-height:15px!important;margin:0;padding:4px 0;border:0;background:transparent;cursor:pointer;transform:translateY(-50%)!important}
-.conversation-message-index-tick{display:block;width:var(--message-index-width,8px);height:2px;margin-top:3px;margin-left:0;border-radius:2px;background:color-mix(in srgb,#607166 var(--message-index-proximity-percent,0%),#c8cfca);box-shadow:0 0 0 var(--message-index-halo,0px) #edf1ee;opacity:var(--message-index-opacity,.62);transform-origin:left center;transition:background .08s linear,box-shadow .08s linear,opacity .08s linear}
-.conversation-message-index>button:focus-visible .conversation-message-index-tick{--message-index-width:15px;--message-index-proximity-percent:100%;--message-index-halo:3px;--message-index-opacity:1}
-.conversation-message-index>button:focus-visible{outline:0}
+.conversation-message-index{position:absolute;z-index:3;top:30px;bottom:30px;left:17px;display:block!important;box-sizing:border-box;width:19px;height:auto!important;overflow-x:hidden;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:none;transform:none}
+.conversation-message-index::-webkit-scrollbar{display:none}
+.conversation-message-index-list{display:flex;box-sizing:border-box;height:100%;flex-direction:column;justify-content:safe center;padding:8px 0}
+.conversation-message-index-list>button{position:relative!important;left:0;display:block;box-sizing:border-box;width:19px;height:15px!important;min-height:8px!important;flex:0 1 15px;margin:0;padding:0;border:0;background:transparent;cursor:pointer}
+.conversation-message-index-tick{position:absolute;top:50%;left:0;display:block;width:var(--message-index-width,8px);height:2px;border-radius:2px;background:color-mix(in srgb,#607166 var(--message-index-proximity-percent,0%),#c8cfca);box-shadow:0 0 0 var(--message-index-halo,0px) #edf1ee;opacity:var(--message-index-opacity,.62);transform:translateY(-50%);transform-origin:left center;transition:background .08s linear,box-shadow .08s linear,opacity .08s linear}
+.conversation-message-index-list>button:focus-visible .conversation-message-index-tick{--message-index-width:15px;--message-index-proximity-percent:100%;--message-index-halo:3px;--message-index-opacity:1}
+.conversation-message-index-list>button:focus-visible{outline:0}
 .conversation-message-index-tooltip{position:absolute;z-index:4;left:44px;display:block;width:min(300px,32vw);max-height:180px;overflow:auto;border:1px solid #dde4df;border-radius:8px;background:color-mix(in srgb,#fff 96%,#f0f4f0);padding:7px 9px;color:#58655d;font-size:11px;line-height:1.4;text-align:left;box-shadow:0 7px 18px #25322818;pointer-events:none;transform:translateY(-50%)}
 .conversation-message-index-tooltip b{display:block;margin-bottom:2px;color:#3d4941;font-size:10px;font-weight:650}
 .conversation-message-index-tooltip span{display:block;white-space:pre-wrap;overflow-wrap:anywhere}

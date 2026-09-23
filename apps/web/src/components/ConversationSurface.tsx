@@ -1,11 +1,11 @@
 import { BookOpen, Check, ChevronDown, ChevronRight, CircleAlert, ClipboardList, Copy, ExternalLink, Eye, FileCode2, FileCog, FileJson, FilePenLine, FilePlus2, FileText, FileType2, GitFork, Link, LoaderCircle, PanelRightOpen, Pencil, PlugZap, Quote, Sparkles, SquareTerminal, Workflow, Wrench } from 'lucide-react';
-import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type RefObject } from 'react';
+import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type RefObject } from 'react';
 import type { AgentActivitySummary, AgentAttachment, AgentConversationAnnotation, AgentConversationReference, AgentWorkspaceReference, OpenHandsConversationEvent, RuntimeTaskControlSnapshot } from '../types';
 import { SubagentAvatar } from './SubagentAvatar';
 import { useEscapeClose } from './useEscapeClose';
 import { subagentAvatarSlotForEvent, subagentAvatarSlots, type SubagentAvatarSlot } from '../utils/subagentAvatar';
 import { workspaceFileChanges, workspaceRelativePath, type WorkspaceFileChange } from './agent-session/fileChanges';
-import { isOpenHandsAgentReply, isOpenHandsEmptyResponseRecovery, parseOpenHandsEventTime } from './conversationEvents';
+import { isOpenHandsAgentReply, isOpenHandsEmptyResponseRecovery, orderOpenHandsConversationEvents, parseOpenHandsEventTime } from './conversationEvents';
 import './conversation-surface.css';
 
 type ItemKind = 'user' | 'assistant' | 'thought' | 'tool' | 'error' | 'condensation';
@@ -414,34 +414,6 @@ function itemsFor(event: OpenHandsConversationEvent): Item[] {
   return content ? [{ event, kind: 'thought', title: eventName, content }] : [];
 }
 
-function orderedEvents(events: OpenHandsConversationEvent[]): OpenHandsConversationEvent[] {
-  // REST and live frames can arrive in a different order.  Event identity is
-  // authoritative: preserve the stable API order between unrelated events,
-  // but always render a parent before its descendants.
-  const byId = new Map(events.map(event => [event.id, event]));
-  const children = new Map<string, OpenHandsConversationEvent[]>();
-  const roots: OpenHandsConversationEvent[] = [];
-  for (const event of events) {
-    const parentId = event.payload.parent_id;
-    if (parentId && byId.has(parentId)) {
-      const bucket = children.get(parentId) ?? [];
-      bucket.push(event);
-      children.set(parentId, bucket);
-    } else roots.push(event);
-  }
-  const output: OpenHandsConversationEvent[] = [];
-  const seen = new Set<string>();
-  const visit = (event: OpenHandsConversationEvent) => {
-    if (seen.has(event.id)) return;
-    seen.add(event.id);
-    output.push(event);
-    for (const child of children.get(event.id) ?? []) visit(child);
-  };
-  for (const event of roots) visit(event);
-  for (const event of events) visit(event);
-  return output;
-}
-
 function userAncestorId(
   event: OpenHandsConversationEvent,
   byId: Map<string, OpenHandsConversationEvent>,
@@ -490,7 +462,7 @@ function isHistoricalAutoTitleError(
 function turnsFor(events: OpenHandsConversationEvent[]): Turn[] {
   const turns: Turn[] = [];
   let current: Turn | undefined;
-  const ordered = orderedEvents(events);
+  const ordered = orderOpenHandsConversationEvents(events);
   for (const event of ordered) {
     if (isHistoricalAutoTitleError(event, ordered)) continue;
     for (const item of itemsFor(event)) {
@@ -1569,6 +1541,8 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
   const scrollInteractionTowardLatest = useRef(false);
   const automaticScrollFrame = useRef<number | undefined>(undefined);
   const messageNavigation = useRef<HTMLElement>(null);
+  const messageNavigationAtLatest = useRef(true);
+  const messageNavigationScope = useRef<string | undefined>(undefined);
   const messageNavigationFrame = useRef<number | undefined>(undefined);
   const messageNavigationPreviewIndex = useRef<number | undefined>(undefined);
   const messageNavigationPointerY = useRef<number | undefined>(undefined);
@@ -1609,6 +1583,29 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
     id: turn.user.event.id,
     content: turn.user.content,
   }] : []), [turns]);
+  useLayoutEffect(() => {
+    const navigation = messageNavigation.current;
+    if (!navigation) return;
+    if (messageNavigationScope.current !== conversationScope) {
+      messageNavigationScope.current = conversationScope;
+      messageNavigationAtLatest.current = true;
+    }
+    const alignWithLatestMessage = () => {
+      if (messageNavigationAtLatest.current) navigation.scrollTop = navigation.scrollHeight;
+    };
+    alignWithLatestMessage();
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(alignWithLatestMessage);
+    observer.observe(navigation);
+    const list = navigation.firstElementChild;
+    if (list) observer.observe(list);
+    return () => observer.disconnect();
+  }, [conversationScope, userMessageNavigation.length]);
+  const handleMessageNavigationScroll = useCallback(() => {
+    const navigation = messageNavigation.current;
+    if (!navigation) return;
+    messageNavigationAtLatest.current = navigation.scrollHeight - navigation.scrollTop - navigation.clientHeight <= 1;
+  }, []);
   const alignWithLatest = useCallback(() => {
     const element = surface.current;
     if (!element) return;
@@ -2024,19 +2021,20 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
   if (!turns.length && !isGenerating) return <div className="conversation-surface-empty"><b>会话已就绪</b><span>发送第一条消息，开始与 Agent 协作。</span></div>;
   const showJumpToLatest = !isAtLatest && Boolean(turns.length || isGenerating);
   return <div ref={shell} className="conversation-surface-shell">
-    {userMessageNavigation.length > 0 && <nav ref={messageNavigation} className="conversation-message-index" aria-label="用户消息导航" onPointerMove={handleMessageNavigationPointerMove} onPointerLeave={clearMessageNavigationPreview}>
-      {userMessageNavigation.map((message, index) => <button
-        type="button"
-        key={message.id}
-        aria-label={`定位到用户消息：${messageSummary(message.content)}`}
-        aria-describedby={messagePreview?.id === message.id ? 'conversation-message-preview' : undefined}
-        style={{ '--message-index-position': `calc(50% + ${(index - (userMessageNavigation.length - 1) / 2) * 15}px)` } as CSSProperties}
-        onFocus={event => showMessagePreview(message, index, event.currentTarget)}
-        onBlur={() => setMessagePreview(current => current?.id === message.id ? undefined : current)}
-        onClick={() => scrollToUserMessage(message.id)}
-      >
-        <span className="conversation-message-index-tick" aria-hidden="true"/>
-      </button>)}
+    {userMessageNavigation.length > 0 && <nav ref={messageNavigation} className="conversation-message-index" aria-label="用户消息导航" onScroll={handleMessageNavigationScroll} onPointerMove={handleMessageNavigationPointerMove} onPointerLeave={clearMessageNavigationPreview}>
+      <div className="conversation-message-index-list">
+        {userMessageNavigation.map((message, index) => <button
+          type="button"
+          key={message.id}
+          aria-label={`定位到用户消息：${messageSummary(message.content)}`}
+          aria-describedby={messagePreview?.id === message.id ? 'conversation-message-preview' : undefined}
+          onFocus={event => showMessagePreview(message, index, event.currentTarget)}
+          onBlur={() => setMessagePreview(current => current?.id === message.id ? undefined : current)}
+          onClick={() => scrollToUserMessage(message.id)}
+        >
+          <span className="conversation-message-index-tick" aria-hidden="true"/>
+        </button>)}
+      </div>
     </nav>}
     {messagePreview && <aside id="conversation-message-preview" className="conversation-message-index-tooltip" role="tooltip" style={{ top: messagePreview.top }}><span>{messagePreview.content || '（空消息）'}</span></aside>}
     <section ref={surface} className="conversation-surface" aria-live="polite" onScroll={() => { handleScroll(); setSelectedReference(undefined); }} onClickCapture={event => {

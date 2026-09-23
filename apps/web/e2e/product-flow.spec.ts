@@ -805,7 +805,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
             { id: 'recoverable-agent-reply', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'recoverable-agent-error', content: '已恢复并完成部署状态查询。', timestamp: new Date().toISOString() } },
           ] : []),
         ] : conversations.length ? [
-          { id: 'user-request', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '检查工作目录', timestamp: '2026-08-26T10:00:00Z' } },
+          { id: 'user-request', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '检查工作目录', attachments: [{ filename: '最早来源.png', mime_type: 'image/png', byte_size: 96, path: '/runtime/workspace/project/uploads/earliest-source.png', image_data_url: 'data:image/png;base64,iVBORw==' }], timestamp: '2026-08-26T10:00:00Z' } },
           { id: 'progress-note', event_type: 'THOUGHT', payload: { source: 'agent', parent_id: 'user-request', llm_response_id: 'response-progress-1', content: '我先确认当前工作目录，再根据现有结构判断后续改动范围。', thought: '我先确认当前工作目录，再根据现有结构判断后续改动范围。', timestamp: '2026-08-26T10:00:01Z' } },
           { id: 'progress-note-observation', event_type: 'TOOL_RESULT', payload: { source: 'environment', parent_id: 'progress-note', event_name: 'ThinkObservation', content: 'Your thought has been logged.', timestamp: '2026-08-26T10:00:01.100Z' } },
           { id: 'tool-request', event_type: 'TOOL_CALL', payload: { parent_id: 'progress-note', action_id: 'tool-request', tool_call_id: 'terminal-call', llm_response_id: 'response-progress-1', tool_name: 'terminal', event_name: 'TerminalAction', content: '我先检查当前工作目录。', thought: '我先检查当前工作目录。', summary: '检查当前工作目录', details: { command: 'pwd' }, timestamp: '2026-08-26T10:00:02Z' } },
@@ -1457,6 +1457,34 @@ test('top-level Agent workspace creates a direct conversation and restores its U
       gaps: centers.slice(1).map((center, index) => center - centers[index]),
     };
   })).toEqual({ centerOffset: 0, gaps: [15, 15, 15] });
+  await messageRuler.evaluate(ruler => {
+    ruler.style.top = '0';
+    ruler.style.bottom = 'auto';
+    ruler.style.height = '36px';
+  });
+  await expect.poll(() => messageRuler.evaluate(ruler => {
+    const buttons = Array.from(ruler.querySelectorAll<HTMLElement>('button'));
+    const centers = buttons.map(button => {
+      const bounds = button.getBoundingClientRect();
+      return bounds.top + bounds.height / 2;
+    });
+    return {
+      gaps: centers.slice(1).map((center, index) => center - centers[index]),
+      isScrollable: ruler.scrollHeight > ruler.clientHeight,
+      isAtLatest: Math.abs(ruler.scrollHeight - ruler.clientHeight - ruler.scrollTop) <= 1,
+      scrollbarWidth: getComputedStyle(ruler).scrollbarWidth,
+    };
+  })).toEqual({ gaps: [8, 8, 8], isScrollable: true, isAtLatest: true, scrollbarWidth: 'none' });
+  const conversationScrollTop = await page.locator('.conversation-surface').evaluate(surface => surface.scrollTop);
+  await messageRuler.hover();
+  await page.mouse.wheel(0, -12);
+  await expect.poll(() => messageRuler.evaluate(ruler => ruler.scrollTop)).toBe(0);
+  await expect(page.locator('.conversation-surface')).toHaveJSProperty('scrollTop', conversationScrollTop);
+  await messageRuler.evaluate(ruler => {
+    ruler.style.removeProperty('top');
+    ruler.style.removeProperty('bottom');
+    ruler.style.removeProperty('height');
+  });
   const firstMessageTick = messageRuler.getByRole('button', { name: '定位到用户消息：检查工作目录' });
   await firstMessageTick.hover();
   await expect(page.locator('#conversation-message-preview')).toContainText('检查工作目录');
@@ -1494,6 +1522,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(sources).toContainText('需求截图.png');
   await expect(sources.getByRole('link', { name: 'input.example.test/brief' })).toHaveAttribute('href', 'https://input.example.test/brief');
   await expect(sources.getByRole('link', { name: 'output.example.test/result' })).toHaveCount(0);
+  await expect(sources.locator('button b')).toHaveText(['最早来源.png', '需求截图.png', 'input.example.test/brief']);
   await expect(directTurn.locator('.conversation-activity-group.summary-only').getByText('耗时 2秒')).toBeVisible();
   await expect(directTurn.locator('.conversation-activity-list')).toHaveCount(0);
   const finishTurn = page.locator('.conversation-turn').filter({ hasText: '任务跟踪已完成。' });
@@ -2379,6 +2408,11 @@ test('editing the latest user message locally replaces only its active branch', 
     status.querySelector(':scope > span:first-child')?.getBoundingClientRect().width ?? 0
   ));
   expect(thinkingStatusWidth).toBeLessThan(280);
+  const thinkingDots = thinkingStatus.locator('.conversation-turn-status-dots i');
+  await expect(thinkingDots).toHaveCount(3);
+  await expect(thinkingDots.nth(0)).toHaveCSS('animation-name', 'conversation-turn-status-dot');
+  await expect(thinkingDots.nth(1)).toHaveCSS('animation-delay', '0.16s');
+  await expect(thinkingDots.nth(2)).toHaveCSS('animation-delay', '0.32s');
   await expect.poll(() => Boolean(releaseRewrite)).toBe(true);
   expect(rerunPayload).toMatchObject({
     content: '修改后的问题',
