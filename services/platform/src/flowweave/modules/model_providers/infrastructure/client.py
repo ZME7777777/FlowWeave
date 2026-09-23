@@ -1,11 +1,80 @@
 from __future__ import annotations
 
+import re
 from typing import cast
 
 import httpx
 
 from flowweave.modules.model_providers.application.service import ProviderConnectionSnapshot
 from flowweave.shared.errors import DomainError
+
+_ENTITLEMENT_MARKERS = (
+    "subscription",
+    "billing",
+    "payment",
+    "insufficient_quota",
+    "insufficient quota",
+    "insufficient credit",
+    "insufficient balance",
+    "not enough credit",
+    "not enough balance",
+    "quota exceeded",
+    "quota exhausted",
+    "usage limit",
+    "credit balance",
+    "plan expired",
+)
+_EXPIRED_MODEL_PATTERN = re.compile(r"(?:model|plan|subscription).{0,48}expired")
+
+
+def _discovery_error(response: httpx.Response | None, exc: Exception) -> DomainError:
+    """Classify a model-list failure without exposing upstream response text.
+
+    Connection tests commonly exercise a gateway's entitlement check before a
+    model can be used.  Preserve that actionable distinction while keeping
+    vendor response bodies (which can contain endpoint or account details)
+    out of the API response and UI.
+    """
+
+    status_code = response.status_code if response is not None else None
+    body = response.text[:4096].lower() if response is not None else ""
+    if (
+        status_code == 402
+        or any(marker in body for marker in _ENTITLEMENT_MARKERS)
+        or _EXPIRED_MODEL_PATTERN.search(body)
+    ):
+        return DomainError(
+            "MODEL_PROVIDER_ENTITLEMENT_UNAVAILABLE",
+            "model provider subscription or quota is unavailable",
+            402,
+        )
+    if status_code == 429:
+        return DomainError("MODEL_PROVIDER_RATE_LIMITED", "model provider rate limit reached", 429)
+    if status_code in {401, 403}:
+        return DomainError(
+            "MODEL_PROVIDER_CREDENTIAL_REJECTED",
+            "model provider credentials were rejected",
+            422,
+        )
+    if status_code == 404:
+        return DomainError(
+            "MODEL_PROVIDER_ENDPOINT_NOT_FOUND", "model provider endpoint was not found", 404
+        )
+    if status_code is not None and 500 <= status_code <= 599:
+        return DomainError(
+            "MODEL_PROVIDER_UPSTREAM_UNAVAILABLE", "model provider is temporarily unavailable", 503
+        )
+    if isinstance(exc, httpx.TimeoutException):
+        return DomainError(
+            "MODEL_PROVIDER_CONNECTION_TIMEOUT", "model provider connection timed out", 504
+        )
+    if isinstance(exc, httpx.RequestError):
+        return DomainError(
+            "MODEL_PROVIDER_CONNECTION_FAILED", "model provider connection failed", 503
+        )
+    return DomainError(
+        "MODEL_PROVIDER_RESPONSE_INVALID", "model provider returned an invalid model list", 502
+    )
 
 
 def _number(value: object) -> float | None:
@@ -38,6 +107,7 @@ async def discover_provider_models(
 ) -> list[str]:
     """Perform provider I/O without holding a database transaction."""
 
+    response: httpx.Response | None = None
     try:
         response = await client.get(
             f"{snapshot.base_url}/models",
@@ -62,7 +132,7 @@ async def discover_provider_models(
                 models.add(str(value))
         return sorted(models)
     except (httpx.HTTPError, TypeError, ValueError) as exc:
-        raise DomainError("EXECUTOR_UNAVAILABLE", "model discovery failed", 503) from exc
+        raise _discovery_error(response, exc) from exc
 
 
 async def read_provider_budget(

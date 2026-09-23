@@ -213,6 +213,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-505 | 会话认证增量勾选收敛 | DONE | 移除认证页的撤销提示；已选择认证锁定且不能取消，只允许将未选择认证新增到本次同步。 |
 | FR-506 | 会话后台刷新滚动稳定性 | DONE | 运行中会话的定时事件对账仅在可见事件身份或真实内容高度变化时对齐最新内容，避免无可见变化的刷新重复写入底部滚动位置。 |
 | FR-507 | 会话前台恢复终态即时同步 | DONE | 浏览器从后台恢复或窗口重新聚焦时，立即从最新 OpenHands 事件窗口对账并刷新会话 readiness；合并连续恢复事件，避免完成结果必须刷新页面才显示。 |
+| FR-510 | 模型服务连接测试可行动错误 | DONE | 将可识别的上游订阅／额度、认证、限流、地址、连接和服务故障映射为安全、可行动的模型配置提示，不回显上游正文。 |
 | FR-506 | 会话上下文 512k 默认压缩阈值 | DONE | 新建 Agent Workspace、FlowNode 会话及新 Fork 将 OpenHands `LLMSummarizingCondenser.max_tokens` 冻结为 512,000；工作台缺失正式阈值时使用同一默认值，既有会话继续展示并使用其已冻结配置。 |
 | FR-457 | OpenHands 空响应自恢复与运行状态一致性 | DONE | 空 Agent Message 与 `source=environment` 的原生 corrective nudge 不再被识别为最终回复；纠正事件以“模型返回空响应，OpenHands 正在自动重试”呈现，左侧会话状态与底部按钮继续统一服从原生 execution status。 |
 | FR-458 | 空响应恢复提示瞬时化与会话状态统一 | DONE | corrective nudge 只在它是当前最新事件且原生会话仍运行时复用实时状态行显示；后续事件或终态立即隐藏，历史工作过程不保留该提示。工作台所有运行控件复用同一原生状态投影。 |
@@ -6812,6 +6813,16 @@ FlowWeave 本地累加后猜测压缩边界。
 
 验收：受影响 Python Ruff format/check 与 `py_compile` 通过；无容器 Retry-After／429 纯逻辑断言通过；`test_agent_workspaces.py` 的四项数据库型标题回归已收集，但 session 级 Testcontainers PostgreSQL fixture 因本机 Docker socket 缺失在断言前阻断，未记为通过。`git diff --check` 与任务状态唯一性通过。
 
+### FR-510 模型服务连接测试可行动错误 — DONE
+
+依赖：无（模型服务配置的最小用户可见诊断切片）。
+
+目标：模型服务“测试连接”不得将上游可识别的订阅到期、余额／额度耗尽、认证拒绝、限流、地址错误、连接超时和上游暂不可用统一显示为“执行服务暂时不可用”。不得向浏览器回显上游错误正文、账号、端点或密钥。
+
+完成：模型列表探测按 HTTP 状态和有限的本地语义标记分类为稳定错误码；订阅／计划到期与余额或额度耗尽统一提示用户续费或更换仍有额度的 API Key。错误正文仅在服务端内存中用于分类，响应和页面均使用固定中文说明；其它模型调用路径与 Runtime 不变。
+
+验收：模型列表探测的无容器 MockTransport 回归覆盖订阅到期、认证拒绝和连接超时，确认上游账号文本不会进入错误消息；受影响 Python `py_compile`、Ruff check／format、Web TypeScript typecheck、受影响 ESLint、`git diff --check` 与任务状态唯一性通过。无迁移、OpenHands、Runtime Provider 或远端部署变更。
+
 
 ## 7. 恢复工作检查表
 
@@ -7265,3 +7276,4 @@ FlowWeave 本地累加后猜测压缩边界。
 | 2026-09-22 | FR-506 | Web TypeScript typecheck、受影响文件 ESLint、Agent transcript scroll-ownership 定向 Playwright（1 passed）、`git diff --check` 与任务状态唯一性 | PASS：运行中会话的四秒正式事件对账即使更新仅后端可见字段，也不会重复写入 transcript 的底部滚动位置；新增事件、流式／正式输出及历史分页仍保持既有最新内容或阅读锚点。未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-22 | FR-507 | Web TypeScript typecheck、受影响文件 ESLint、`git diff --check` 与任务状态唯一性；后台恢复定向 Playwright 尝试 | PASS（静态）：浏览器恢复可见或重新聚焦后立即从最新 OpenHands 事件窗口对账，并刷新会话列表、readiness 与 confirmation；连续 `visibilitychange`／`focus` 合并为一次恢复。新增 E2E 覆盖后台完成后无需刷新显示最终结果；当前环境缺少 Chrome，已有 Chromium 缺少 `libglib-2.0.so.0`，浏览器未启动，未将 E2E 记为通过。未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-22 | FR-508 | Web TypeScript typecheck、受影响文件 ESLint、生产构建、`git diff --check`；会话收尾与默认模型定向 Playwright 尝试 | PASS（静态）：带 `item_id` 的 OpenHands 文本 delta 作为浏览器临时回复流式展示，`message_complete` 只触发正式事件补读且不清空已生成文本，同 ID 正式事件无缝接管；Runtime 已终态时事件对账不再占用运行样式或禁用输入，旧排队消息仍受短时后台门控。新会话编辑区移除模型选择器，默认使用首个已连接供应商的默认模型，覆盖设置移入侧栏“会话配置”的“默认模型”页签。类型检查、ESLint、构建和 diff 检查通过；当前环境缺少 Chrome，定向 E2E 未启动。未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
+| 2026-09-23 | FR-510 | 受影响 Python Ruff format/check、`py_compile`；无容器 MockTransport 分类回归；Web TypeScript typecheck、受影响 ESLint、production build；Alembic head、`git diff --check` 与任务状态唯一性 | PASS（静态／隔离回归）：模型列表探测将订阅／计划到期、余额或额度耗尽映射为固定 entitlement 错误码；认证拒绝、超时等也各自拥有安全说明。MockTransport 断言上游账号文本不会进入 DomainError。数据库型 `tests/test_api.py` 定向 pytest 在 collection 前因本机 Docker socket 缺失、Testcontainers PostgreSQL 无法创建而阻断，未记为通过；同一新增断言在无容器隔离运行中通过。Web typecheck、ESLint 和 production build 通过（仅既有 chunk-size 警告）。无迁移、OpenHands、Runtime Provider、Docker 或远端部署变更。 |
