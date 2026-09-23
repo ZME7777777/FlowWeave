@@ -466,6 +466,9 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   let pausedDirectMessagePosts = 0;
   let releaseRunningDirectDelivery: (() => void) | undefined;
   const runningDirectDeliveryGate = new Promise<void>(resolve => { releaseRunningDirectDelivery = resolve; });
+  let queuedDispatchPosts = 0;
+  let releaseQueuedDispatch: (() => void) | undefined;
+  const queuedDispatchGate = new Promise<void>(resolve => { releaseQueuedDispatch = resolve; });
   let ambiguousMessagePosts = 0;
   let sentProvider: string | null = null;
   let sentBinding: string | null = null;
@@ -886,6 +889,10 @@ test('top-level Agent workspace creates a direct conversation and restores its U
       }
       if (payload.content === '暂停后直接发送消息') {
         pausedDirectMessagePosts += 1;
+      }
+      if (payload.content === '已编辑的排队消息') {
+        queuedDispatchPosts += 1;
+        await queuedDispatchGate;
       }
       await route.fulfill({ status: 202, contentType: 'application/json', body: JSON.stringify({ accepted: true, cursor: payload.content === '运行中直接发送消息' ? 'running-direct-stream-user' : sentMessages === 1 ? 'running-user' : `sent-user-${sentMessages}` }) });
       return;
@@ -1885,11 +1892,14 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expectViewportAtLatest();
   await composer.fill('运行中直接发送消息');
   await composer.press('Meta+Enter');
+  await composer.press('Meta+Enter');
   const runningDirectMessage = page.locator('.conversation-message.user').filter({ hasText: '运行中直接发送消息' });
   await expect(runningDirectMessage).toBeVisible();
   await expect(page.locator('.conversation-message-delivery-status')).toHaveCount(0);
   await expect(page.getByLabel('消息投递队列').getByText('运行中直接发送消息')).toHaveCount(0);
   await expect.poll(() => runningDirectMessagePosts).toBe(1);
+  await page.waitForTimeout(250);
+  expect(runningDirectMessagePosts).toBe(1);
   agentStream!.send(JSON.stringify({
     type: 'event',
     event: { id: 'running-direct-stream-user', event_type: 'MESSAGE', payload: { source: 'user', content: 'FLOWWEAVE_MESSAGE_CONTEXT_V5:{"current_user_request":{"content":"运行中直接发送消息"}}', display_content: '运行中直接发送消息', timestamp: new Date().toISOString().replace(/Z$/, '') } },
@@ -1953,6 +1963,10 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.locator('.agent-composer-note')).toHaveText('已排队 1 条');
   modelIsResponding = false;
   await page.reload();
+  await expect.poll(() => queuedDispatchPosts).toBe(1);
+  await page.waitForTimeout(250);
+  expect(queuedDispatchPosts).toBe(1);
+  releaseQueuedDispatch?.();
   await expect.poll(() => sentMessages).toBe(sentBeforeQueue + 1);
   await expect(page.getByLabel('消息投递队列')).toHaveCount(0);
   modelIsResponding = true;

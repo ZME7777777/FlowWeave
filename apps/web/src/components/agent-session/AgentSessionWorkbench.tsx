@@ -1164,7 +1164,7 @@ const ComposerCapabilityAutocomplete = forwardRef<ComposerHandle, {
       if (isImeComposition(event)) return;
       if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !event.shiftKey) {
         event.preventDefault();
-        onDirectSubmit?.(draft);
+        onDirectSubmit?.(draftRef.current);
         return;
       }
       if (hasMenu && event.key === 'Escape') { updateDraft(draft.slice(0, -trigger!.query.length - 1)); return; }
@@ -1176,7 +1176,7 @@ const ComposerCapabilityAutocomplete = forwardRef<ComposerHandle, {
         return;
       }
       if (hasMenu && ['Enter', 'Tab'].includes(event.key)) { event.preventDefault(); return; }
-      if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); onSubmit(draft); }
+      if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); onSubmit(draftRef.current); }
     }}/>
     {fileDragActive && <div className="agent-composer-file-drop" aria-live="polite">松开以添加附件</div>}
     {hasMenu && <div id="agent-composer-capabilities" className="agent-composer-capability-menu" role="listbox" aria-label={trigger!.sigil === '$' ? '选择技能' : trigger!.sigil === '@' ? '选择引用类型' : '选择命令或 MCP'}>{hasSuggestions ? <>{visible.map((item, index) => <div className="agent-composer-capability-option" key={item.id}>{trigger!.sigil === '@' && index === 0 && <div className="agent-composer-capability-section">引用类型</div>}{trigger!.sigil === '/' && index === 0 && <div className="agent-composer-capability-section">MCP 与命令</div>}<button type="button" role="option" aria-selected={index === activeIndex} aria-disabled={item.available === false || undefined} disabled={item.available === false} className={`${index === activeIndex ? 'active' : ''}${item.available === false ? ' unavailable' : ''}`} onMouseDown={event => event.preventDefault()} onMouseEnter={() => setActiveIndex(index)} onClick={() => select(item)}><code>{item.token}</code><span><b>{item.label}</b><small>{item.detail}</small></span><em>{item.kind === 'SKILL' ? '技能' : item.kind === 'COMMAND' ? '命令' : item.kind === 'REFERENCE' ? '引用' : 'MCP'}</em></button></div>)}</> : <div className="agent-composer-capability-empty"><span><b>{trigger!.sigil === '@' ? '当前没有匹配的引用类型' : !suggestions.length ? trigger!.sigil === '$' ? '当前会话还没有加载 Skill' : '当前会话还没有加载命令或 MCP' : '当前会话没有匹配的能力'}</b><small>{trigger!.sigil === '@' ? '调整输入关键词以筛选引用类型。' : !suggestions.length ? `先为此会话加载能力，随后可在这里用 ${trigger!.sigil} 选择并插入。` : '调整输入关键词，或管理当前会话能力。'}</small></span></div>}{showCapabilityManager && <div className="agent-composer-capability-manage"><span>管理当前会话能力</span><button type="button" onMouseDown={event => event.preventDefault()} onClick={onManageCapabilities}>管理</button></div>}</div>}
@@ -5532,6 +5532,13 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       reportOperationError(message.bindingId, error);
     },
   });
+  const dispatchMessage = useCallback((message: BoundQueuedMessage) => {
+    // TanStack invokes onMutate after an async cache hook. Claim the browser
+    // message first so a queue effect cannot dispatch the same snapshot twice.
+    if (sendingMessageIds.current.has(message.id)) return;
+    sendingMessageIds.current.add(message.id);
+    send.mutate(message);
+  }, [send]);
   const migrateStreaming = useMutation({
     mutationFn: (_message: QueuedMessage) => {
       void _message;
@@ -5655,8 +5662,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     if (!pendingMigratedSend || selected?.id !== pendingMigratedSend.bindingId || send.isPending) return;
     const message = pendingMigratedSend;
     setPendingMigratedSend(undefined);
-    send.mutate(message);
-  }, [pendingMigratedSend, selected?.id, send]);
+    dispatchMessage(message);
+  }, [dispatchMessage, pendingMigratedSend, selected?.id, send.isPending]);
   useEffect(() => {
     if (turnState !== 'pausing' || !inputReadinessQuery.data?.ready) return;
     if (pendingRewrite) {
@@ -5776,8 +5783,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       commitQueuedMessages(items => [...items, queuedMessage]);
       return;
     }
-    send.mutate({ ...queuedMessage, bindingId: selected.id });
-  }, [attachments, bootstrap, canBootstrap, canWrite, commitQueuedMessages, composerAnnotations, composerScope, conversationDraft, effectiveTurnState, host.id, migrateStreaming.isPending, pendingMigratedSend, queueModeEnabled, references, replaceComposerDraft, selected, send, workspace, workspaceReferences]);
+    dispatchMessage({ ...queuedMessage, bindingId: selected.id });
+  }, [attachments, bootstrap, canBootstrap, canWrite, commitQueuedMessages, composerAnnotations, composerScope, conversationDraft, dispatchMessage, effectiveTurnState, host.id, migrateStreaming.isPending, pendingMigratedSend, queueModeEnabled, references, replaceComposerDraft, selected, workspace, workspaceReferences]);
   const sendDraftDirectly = useCallback((draftContent = composerDraftRef.current) => {
     const content = draftContent.trim();
     const hasComposerMessage = Boolean(content || attachments.length || references.length || workspaceReferences.length || composerAnnotations.length);
@@ -5788,7 +5795,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       // With an empty composer, Command/Ctrl+Enter promotes the current queue
       // head to an immediate append. The queue entry is removed as soon as the
       // request starts and the conversation bubble becomes its only display.
-      send.mutate({ ...queuedMessage, bindingId: selected.id, nativeGuidance: true });
+      dispatchMessage({ ...queuedMessage, bindingId: selected.id, nativeGuidance: true });
       return;
     }
     if (!canWrite || conversationDraft || !selected || (!queueModeEnabled && effectiveTurnState === 'running')) return;
@@ -5818,12 +5825,12 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     };
     setAttachments([]);
     setReferences([]); setWorkspaceReferences([]); setComposerAnnotations([]);
-    send.mutate({ ...message, bindingId: selected.id });
-  }, [attachments, canWrite, composerAnnotations, composerScope, conversationDraft, effectiveTurnState, enqueueDraft, host.id, migrateStreaming.isPending, pendingMigratedSend, queueModeEnabled, queuedMessages, references, replaceComposerDraft, selected, send, workspace, workspaceReferences]);
+    dispatchMessage({ ...message, bindingId: selected.id });
+  }, [attachments, canWrite, composerAnnotations, composerScope, conversationDraft, dispatchMessage, effectiveTurnState, enqueueDraft, host.id, migrateStreaming.isPending, pendingMigratedSend, queueModeEnabled, queuedMessages, references, replaceComposerDraft, selected, workspace, workspaceReferences]);
   const sendQueuedMessageImmediately = useCallback((message: QueuedMessage) => {
     if (!queueModeEnabled || !canWrite || effectiveTurnState !== 'running' || !selected?.streaming_callback_ready || message.scope !== selected.id || message.deliveryState !== 'queued') return;
-    send.mutate({ ...message, bindingId: selected.id, nativeGuidance: true });
-  }, [canWrite, effectiveTurnState, queueModeEnabled, selected, send]);
+    dispatchMessage({ ...message, bindingId: selected.id, nativeGuidance: true });
+  }, [canWrite, dispatchMessage, effectiveTurnState, queueModeEnabled, selected]);
   const moveQueuedMessage = useCallback((sourceId: string, targetId: string) => {
     if (sourceId === targetId) return;
     commitQueuedMessages(items => {
@@ -5864,11 +5871,11 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     if (selected.streaming_callback_ready) {
       // If native state became idle while this entry waited, it starts the
       // next ordinary turn. OpenHands is still the source of that decision.
-      send.mutate({ ...next, bindingId: selected.id, nativeGuidance: effectiveTurnState === 'running' && next.nativeGuidance });
+      dispatchMessage({ ...next, bindingId: selected.id, nativeGuidance: effectiveTurnState === 'running' && next.nativeGuidance });
     } else if (effectiveTurnState === 'idle') {
       migrateStreaming.mutate(next);
     }
-  }, [effectiveTurnState, eventsQuery.isSuccess, migrateStreaming, pendingMigratedSend, queueModeEnabled, queuedMessages, selected, send, terminalResultMissing]);
+  }, [dispatchMessage, effectiveTurnState, eventsQuery.isSuccess, migrateStreaming, pendingMigratedSend, queueModeEnabled, queuedMessages, selected, terminalResultMissing]);
   useEffect(() => {
     if (turnState === 'pausing' || !queuedMessages.length || !inputReadinessQuery.data?.ready) return;
     if (queuedMessages.some(message => message.scope === selected?.id && sendingMessageIds.current.has(message.id))) return;
