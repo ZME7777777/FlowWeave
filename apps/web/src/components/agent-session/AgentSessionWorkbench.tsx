@@ -4093,6 +4093,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const selectedBindingId = activityPreviewBindingId ?? routeBindingId;
   const previousComposerScope = useRef<string | undefined>(undefined);
   const activityBaseline = useRef<Map<string, boolean>>(new Map());
+  const pendingUnreadUpdates = useRef(new Map<string, { id: number; unread: boolean }>());
+  const nextUnreadUpdateId = useRef(0);
   const [unreadConversationIds, setUnreadConversationIds] = useState<Set<string>>(() => new Set());
   const [pinnedConversationIds, setPinnedConversationIds] = useState<Set<string>>(() => new Set());
   // A FlowRun may briefly report a recoverable 409 while its Attempt and
@@ -4321,6 +4323,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const setConversationUnread = useCallback((bindingId: string, unread: boolean) => {
     if (!workspace) return;
     const queryKey = sessionQueryKey(host, 'conversations', workspace.id);
+    const updateId = nextUnreadUpdateId.current += 1;
     const updateCachedConversation = (value: boolean) => {
       queryClient.setQueryData<InfiniteData<AgentConversationPage>>(
         queryKey,
@@ -4333,23 +4336,40 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         } : current,
       );
     };
-    updateCachedConversation(unread);
-    setUnreadConversationIds(current => {
-      const next = new Set(current);
-      if (unread) next.add(bindingId);
-      else next.delete(bindingId);
-      return next;
-    });
-    void api.setConversationUnread(workspace.id, bindingId, unread).then(updated => {
-      updateCachedConversation(Boolean(updated.unread));
-    }).catch(reason => {
-      updateCachedConversation(!unread);
+    const updateUnreadConversationIds = (value: boolean) => {
       setUnreadConversationIds(current => {
         const next = new Set(current);
-        if (unread) next.delete(bindingId);
-        else next.add(bindingId);
+        if (value) next.add(bindingId);
+        else next.delete(bindingId);
         return next;
       });
+    };
+    pendingUnreadUpdates.current.set(bindingId, { id: updateId, unread });
+    void queryClient.cancelQueries({ queryKey }).then(() => {
+      if (pendingUnreadUpdates.current.get(bindingId)?.id !== updateId) return;
+      updateCachedConversation(unread);
+    });
+    updateCachedConversation(unread);
+    updateUnreadConversationIds(unread);
+    void api.setConversationUnread(workspace.id, bindingId, unread).then(updated => {
+      const pending = pendingUnreadUpdates.current.get(bindingId);
+      if (pending?.id !== updateId) return;
+      const persistedUnread = Boolean(updated.unread);
+      updateCachedConversation(persistedUnread);
+      updateUnreadConversationIds(persistedUnread);
+      void queryClient.invalidateQueries({ queryKey }).catch(() => undefined).then(() => {
+        if (pendingUnreadUpdates.current.get(bindingId)?.id !== updateId) return;
+        pendingUnreadUpdates.current.delete(bindingId);
+        const latest = queryClient.getQueryData<InfiniteData<AgentConversationPage>>(queryKey)
+          ?.pages.flatMap(page => page.items).find(item => item.id === bindingId)?.unread;
+        updateUnreadConversationIds(latest === undefined ? persistedUnread : Boolean(latest));
+      });
+    }).catch(reason => {
+      const pending = pendingUnreadUpdates.current.get(bindingId);
+      if (pending?.id !== updateId) return;
+      pendingUnreadUpdates.current.delete(bindingId);
+      updateCachedConversation(!unread);
+      updateUnreadConversationIds(!unread);
       const error = reason instanceof Error ? reason : new Error('未读状态保存失败');
       console.error('conversation-unread', error);
     });
@@ -4386,10 +4406,12 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       && item.id !== routeBindingId
     ));
     setUnreadConversationIds(current => {
-      const next = new Set(conversations.filter(item => item.unread).map(item => item.id));
+      const next = new Set<string>();
       for (const item of conversations) {
+        const pendingUnread = pendingUnreadUpdates.current.get(item.id)?.unread;
+        if (pendingUnread ?? item.unread) next.add(item.id);
         if (completedInBackground.some(completed => completed.id === item.id)) next.add(item.id);
-        else if (current.has(item.id) && item.unread === undefined) next.add(item.id);
+        else if (current.has(item.id) && item.unread === undefined && pendingUnread === undefined) next.add(item.id);
       }
       return next;
     });
