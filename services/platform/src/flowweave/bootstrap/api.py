@@ -4,6 +4,7 @@ import logging
 import re
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from time import monotonic
 from typing import Any
 from uuid import uuid4
@@ -49,6 +50,45 @@ _SLOW_REQUEST_SECONDS = 1.0
 _MESSAGE_BINDING_PATH = re.compile(
     r"^/api/v1/(?:agent-workspaces/[^/]+/conversations|flow-runs/[^/]+/node-attempts/[^/]+/agent-sessions)/(?P<binding_id>[^/]+)/messages(?:/|$)"
 )
+_READ_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
+
+@dataclass(frozen=True, slots=True)
+class RateLimitPolicy:
+    scope: str
+    subject: str
+    limit: int
+    error_code: str
+    error_message: str
+
+
+def _rate_limit_policy(
+    method: str, path: str, user_id: str, settings: Settings
+) -> RateLimitPolicy:
+    message_match = _MESSAGE_BINDING_PATH.match(path)
+    if message_match is not None:
+        return RateLimitPolicy(
+            scope="conversation",
+            subject=f"{user_id}:{message_match.group('binding_id')}",
+            limit=settings.rate_limit_conversation_messages_per_minute,
+            error_code="CONVERSATION_RATE_LIMITED",
+            error_message="该会话发送过于频繁，请稍后重试",
+        )
+    if method in _READ_METHODS:
+        return RateLimitPolicy(
+            scope="read",
+            subject=user_id,
+            limit=settings.rate_limit_read_requests_per_minute,
+            error_code="READ_RATE_LIMITED",
+            error_message="页面刷新请求过于频繁，请稍后重试",
+        )
+    return RateLimitPolicy(
+        scope="user",
+        subject=user_id,
+        limit=settings.rate_limit_user_requests_per_minute,
+        error_code="RATE_LIMITED",
+        error_message="操作过于频繁，请稍后重试",
+    )
 
 
 def error_body(code: str, message: str, request_id: str, details: object = None) -> dict[str, Any]:
@@ -126,36 +166,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 headers={"X-Request-ID": request_id},
             )
         if principal is not None:
-            user_decision = await container.rate_limiter.allow(
-                "user",
-                principal.user_id,
-                limit=container.settings.rate_limit_user_requests_per_minute,
+            policy = _rate_limit_policy(
+                request.method, request.url.path, principal.user_id, container.settings
+            )
+            decision = await container.rate_limiter.allow(
+                policy.scope,
+                policy.subject,
+                limit=policy.limit,
                 window_seconds=60,
             )
-            if not user_decision.allowed:
+            if not decision.allowed:
                 return JSONResponse(
                     status_code=429,
-                    content=error_body("RATE_LIMITED", "请求过于频繁，请稍后重试", request_id),
+                    content=error_body(policy.error_code, policy.error_message, request_id),
                     headers={"Retry-After": "60", "X-Request-ID": request_id},
                 )
-            message_match = _MESSAGE_BINDING_PATH.match(request.url.path)
-            if message_match is not None:
-                message_decision = await container.rate_limiter.allow(
-                    "conversation",
-                    f"{principal.user_id}:{message_match.group('binding_id')}",
-                    limit=container.settings.rate_limit_conversation_messages_per_minute,
-                    window_seconds=60,
-                )
-                if not message_decision.allowed:
-                    return JSONResponse(
-                        status_code=429,
-                        content=error_body(
-                            "CONVERSATION_RATE_LIMITED",
-                            "该会话发送过于频繁，请稍后重试",
-                            request_id,
-                        ),
-                        headers={"Retry-After": "60", "X-Request-ID": request_id},
-                    )
         principal_token = bind_principal(principal)
         metrics_token = bind_metrics(container.metrics)
         settings_token = bind_settings(container.settings)

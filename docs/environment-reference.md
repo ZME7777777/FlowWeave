@@ -46,7 +46,12 @@
 | `MAVEN_SHARED_HOST_ROOT` | 可选的只读 Maven 根目录，需含 `Repository/` 和 `conf/settings.xml`，且必须是绝对路径。 |
 | `IDE_SSH_HOST` / `IDE_SSH_USER` / `IDE_SSH_PORT` | 可选 JetBrains Gateway SSH Remote 入口。 |
 | `PLUGIN_RESOLVER_ALLOWED_HOSTS` | Plugin resolver 可访问的来源域名白名单。 |
-| `RATE_LIMIT_REDIS_URL` | 可选 Redis 限流后端。 |
+| `RATE_LIMIT_REDIS_URL` | 可选 Redis/Valkey 限流后端；未配置时每个 API 进程独立计数。 |
+| `RATE_LIMIT_READ_REQUESTS_PER_MINUTE` | 每个登录用户的只读请求额度，默认 `600`；用于页面轮询、列表和状态查询。 |
+| `RATE_LIMIT_USER_REQUESTS_PER_MINUTE` | 每个登录用户的普通操作请求额度，默认 `120`；不包含只读请求和会话消息。 |
+| `RATE_LIMIT_CONVERSATION_MESSAGES_PER_MINUTE` | 同一用户在同一会话中的消息请求额度，默认 `20`。 |
+
+三类请求分别计数，页面轮询不会消耗普通操作或会话消息额度。超限响应为 HTTP `429`，并携带 `Retry-After: 60`。
 
 `egress` 只代表 Runtime 可以使用 Docker NAT；它不是出站白名单或代理策略。生产环境应在 Docker 主机或独立网络层施加出站控制。
 

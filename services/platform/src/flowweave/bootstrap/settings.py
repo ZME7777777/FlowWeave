@@ -54,6 +54,7 @@ class Settings(BaseSettings):
     runtime_relay_subscriber_queue_size: int = Field(default=32, ge=1, le=256)
     runtime_relay_idle_grace_seconds: float = Field(default=300.0, gt=0, le=3600)
     rate_limit_redis_url: str = ""
+    rate_limit_read_requests_per_minute: int = Field(default=600, ge=1, le=50_000)
     rate_limit_user_requests_per_minute: int = Field(default=120, ge=1, le=10_000)
     rate_limit_conversation_messages_per_minute: int = Field(default=20, ge=1, le=1_000)
     openhands_session_api_key: str = "flowweave-internal"
