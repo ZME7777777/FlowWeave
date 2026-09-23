@@ -8,7 +8,7 @@ import { workspaceFileChanges, workspaceRelativePath, type WorkspaceFileChange }
 import { isOpenHandsAgentReply, isOpenHandsEmptyResponseRecovery, parseOpenHandsEventTime } from './conversationEvents';
 import './conversation-surface.css';
 
-type ItemKind = 'user' | 'assistant' | 'thought' | 'tool' | 'error' | 'agent-error' | 'condensation';
+type ItemKind = 'user' | 'assistant' | 'thought' | 'tool' | 'error' | 'condensation';
 
 interface Item {
   event: OpenHandsConversationEvent;
@@ -396,12 +396,8 @@ function itemsFor(event: OpenHandsConversationEvent): Item[] {
   if (event.event_type === 'TOOL_RESULT' && eventName === 'ThinkObservation') return [];
   if (event.event_type === 'TOOL_RESULT') return [{ event, kind: 'tool', title: eventName, content }];
   if (event.event_type === 'ERROR') {
-    return [{
-      event,
-      kind: isConversationTerminalError(event) ? 'error' : 'agent-error',
-      title: isConversationTerminalError(event) ? '本轮未能完成' : '执行过程出现可恢复错误',
-      content,
-    }];
+    if (!isConversationTerminalError(event)) return [];
+    return [{ event, kind: 'error', title: '本轮未能完成', content }];
   }
   if (event.event_type === 'COMPLETED') {
     // OpenHands has two formal final-response paths: an assistant MessageEvent
@@ -738,7 +734,7 @@ function toolVisualPresentation(eventName: string, toolName?: string): ToolVisua
   return 'generic';
 }
 
-function activityPresentation(entry: ActivityEntry, active: boolean, workspaceRoot?: string | null, paused = false, parentFailed = false, recoveredErrorEventIds: ReadonlySet<string> = new Set()): ActivityPresentation {
+function activityPresentation(entry: ActivityEntry, active: boolean, workspaceRoot?: string | null, paused = false, parentFailed = false): ActivityPresentation {
   const item = entry.action ?? entry.item;
   if (item.kind === 'condensation') return { title: entry.results.some(result => result.event.event_type === 'CONDENSATION_COMPLETED') || item.event.event_type === 'CONDENSATION_COMPLETED' ? '压缩完成' : '开始压缩上下文', status: '' };
   if (item.kind === 'thought') {
@@ -748,21 +744,7 @@ function activityPresentation(entry: ActivityEntry, active: boolean, workspaceRo
       thought: item.content.slice(0, 2_000) || undefined,
     };
   }
-  if (item.kind === 'error') {
-    const recovered = recoveredErrorEventIds.has(item.event.id);
-    return {
-      title: recovered ? '执行过程出现可恢复错误' : '执行遇到问题',
-      status: recovered ? 'Agent 已继续完成本轮回复' : '失败',
-      thought: recovered ? item.content || undefined : undefined,
-    };
-  }
-  if (item.kind === 'agent-error') {
-    return {
-      title: '执行过程出现可恢复错误',
-      status: recoveredErrorEventIds.has(item.event.id) ? 'Agent 已继续完成本轮回复' : '会话仍可继续',
-      thought: item.content || undefined,
-    };
-  }
+  if (item.kind === 'error') return { title: '执行遇到问题', status: '失败' };
   const details = item.event.payload.details ?? {};
   const result = entry.results.at(-1);
   const resultDetails = result?.event.payload.details ?? {};
@@ -1170,25 +1152,24 @@ function taskAvatarStatus(entry: ActivityEntry, item: Item, paused = false, pare
   return paused ? 'paused' : 'running';
 }
 
-function ActivityEntryRow({ entry, active, paused = false, parentFailed = false, hideThought = false, recoveredErrorEventIds, avatarSlots, workspaceRoot }: {
+function ActivityEntryRow({ entry, active, paused = false, parentFailed = false, hideThought = false, avatarSlots, workspaceRoot }: {
   entry: ActivityEntry;
   active: boolean;
   paused?: boolean;
   parentFailed?: boolean;
   hideThought?: boolean;
-  recoveredErrorEventIds: ReadonlySet<string>;
   avatarSlots: ReadonlyMap<string, SubagentAvatarSlot>;
   workspaceRoot?: string | null;
 }) {
   const item = entry.action ?? entry.item;
-  const Icon = item.kind === 'error' || item.kind === 'agent-error' ? CircleAlert : item.kind === 'thought' || item.kind === 'condensation' ? Sparkles : Wrench;
+  const Icon = item.kind === 'error' ? CircleAlert : item.kind === 'thought' || item.kind === 'condensation' ? Sparkles : Wrench;
   const eventName = String(item.event.payload.event_name ?? '');
   const toolName = detailText(item.event.payload.tool_name);
   const toolVisual = toolVisualPresentation(eventName, toolName);
   const avatarSlot = eventName === 'TaskAction' || eventName === 'TaskObservation'
     ? subagentAvatarSlotForEvent(item.event, avatarSlots)
     : undefined;
-  const presentation = activityPresentation(entry, active, workspaceRoot, paused, parentFailed, recoveredErrorEventIds);
+  const presentation = activityPresentation(entry, active, workspaceRoot, paused, parentFailed);
   const ToolIcon = toolVisual === 'terminal' ? SquareTerminal : toolVisual === 'file' ? fileToolIcon(presentation) : toolVisual === 'mcp' ? PlugZap : toolVisual === 'workflow' ? Workflow : Icon;
   const taskAvatar = avatarSlot && <SubagentAvatar slot={avatarSlot} status={taskAvatarStatus(entry, item, paused, parentFailed)} size={13}/>;
   const toolDetail = item.kind === 'tool'
@@ -1229,12 +1210,11 @@ function ActivityEntryRow({ entry, active, paused = false, parentFailed = false,
   </article>;
 }
 
-function ProgressActivity({ group, active, paused, parentFailed, recoveredErrorEventIds, avatarSlots, workspaceRoot }: {
+function ProgressActivity({ group, active, paused, parentFailed, avatarSlots, workspaceRoot }: {
   group: ProgressActivityGroup;
   active: boolean;
   paused: boolean;
   parentFailed: boolean;
-  recoveredErrorEventIds: ReadonlySet<string>;
   avatarSlots: ReadonlyMap<string, SubagentAvatarSlot>;
   workspaceRoot?: string | null;
 }) {
@@ -1248,12 +1228,12 @@ function ProgressActivity({ group, active, paused, parentFailed, recoveredErrorE
   }, [running]);
   const currentEntry = pendingEntries.at(-1);
   const currentTitle = currentEntry
-    ? activityPresentation(currentEntry, true, workspaceRoot, paused, parentFailed, recoveredErrorEventIds).title
+    ? activityPresentation(currentEntry, true, workspaceRoot, paused, parentFailed).title
     : undefined;
   const operationIcons = group.entries.flatMap(entry => {
     const operation = entry.action;
     if (!operation) return [];
-    const presentation = activityPresentation(entry, active, workspaceRoot, paused, parentFailed, recoveredErrorEventIds);
+    const presentation = activityPresentation(entry, active, workspaceRoot, paused, parentFailed);
     const visual = toolVisualPresentation(String(operation.event.payload.event_name ?? ''), detailText(operation.event.payload.tool_name));
     const OperationIcon = visual === 'terminal' ? SquareTerminal : visual === 'file' ? fileToolIcon(presentation) : visual === 'mcp' ? PlugZap : visual === 'workflow' ? Workflow : Wrench;
     return [{ id: entry.id, Icon: OperationIcon, label: presentation.title }];
@@ -1269,18 +1249,17 @@ function ProgressActivity({ group, active, paused, parentFailed, recoveredErrorE
       <ChevronRight className="conversation-expand-arrow" size={12}/>
     </summary>
     <div className="conversation-progress-group-list">
-      {group.entries.map((entry, index) => <ActivityEntryRow key={entry.id} entry={entry} active={active} paused={paused} parentFailed={parentFailed} hideThought={index === 0 && entry.action?.event.id === group.progress.event.id} recoveredErrorEventIds={recoveredErrorEventIds} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/>)}
+      {group.entries.map((entry, index) => <ActivityEntryRow key={entry.id} entry={entry} active={active} paused={paused} parentFailed={parentFailed} hideThought={index === 0 && entry.action?.event.id === group.progress.event.id} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/>)}
     </div>
   </details>;
 }
 
-function ActivityGroup({ items, active, completionConfirmed = false, paused = false, parentFailed = false, recoveredErrorEventIds = new Set(), startedAt, finishedAt, avatarSlots, workspaceRoot }: {
+function ActivityGroup({ items, active, completionConfirmed = false, paused = false, parentFailed = false, startedAt, finishedAt, avatarSlots, workspaceRoot }: {
   items: Item[];
   active: boolean;
   completionConfirmed?: boolean;
   paused?: boolean;
   parentFailed?: boolean;
-  recoveredErrorEventIds?: ReadonlySet<string>;
   startedAt?: number;
   finishedAt?: number;
   avatarSlots: ReadonlyMap<string, SubagentAvatarSlot>;
@@ -1297,10 +1276,8 @@ function ActivityGroup({ items, active, completionConfirmed = false, paused = fa
   // A delayed readiness response can briefly make an active turn appear idle.
   // Preserve the visible details through that recovery; only a formal
   // reply/error together with a native terminal state may auto-collapse.
-  const hasRecoveredError = [...recoveredErrorEventIds].some(id => items.some(item => item.event.id === id));
-  const [open, setOpen] = useState(active || hasRecoveredError);
+  const [open, setOpen] = useState(active);
   const hasBeenActive = useRef(active);
-  const hasPresentedRecoverableError = useRef(hasRecoveredError);
   useLayoutEffect(() => {
     if (active) {
       hasBeenActive.current = true;
@@ -1308,11 +1285,6 @@ function ActivityGroup({ items, active, completionConfirmed = false, paused = fa
     }
     if (hasBeenActive.current && completionConfirmed) setOpen(false);
   }, [active, completionConfirmed]);
-  useLayoutEffect(() => {
-    if (!hasRecoveredError || hasPresentedRecoverableError.current) return;
-    hasPresentedRecoverableError.current = true;
-    setOpen(true);
-  }, [hasRecoveredError]);
   const label = active
     ? elapsedSeconds === undefined ? '处理中' : `已耗时 ${formatDuration(elapsedSeconds)}`
     : paused ? '已暂停，结果未返回'
@@ -1325,8 +1297,8 @@ function ActivityGroup({ items, active, completionConfirmed = false, paused = fa
     <summary>{summary}</summary>
     <div className="conversation-activity-list">
       {rows.map(row => row.kind === 'progress-group'
-        ? <ProgressActivity key={row.group.id} group={row.group} active={active} paused={paused} parentFailed={parentFailed} recoveredErrorEventIds={recoveredErrorEventIds} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/>
-        : <ActivityEntryRow key={row.entry.id} entry={row.entry} active={active} paused={paused} parentFailed={parentFailed} recoveredErrorEventIds={recoveredErrorEventIds} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/>)}
+        ? <ProgressActivity key={row.group.id} group={row.group} active={active} paused={paused} parentFailed={parentFailed} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/>
+        : <ActivityEntryRow key={row.entry.id} entry={row.entry} active={active} paused={paused} parentFailed={parentFailed} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/>)}
     </div>
   </details>;
 }
@@ -2145,13 +2117,9 @@ export const ConversationSurface = memo(function ConversationSurface({ events, l
         const isLatest = index === turns.length - 1;
         const isCurrent = isLatest && isGenerating;
         const isCurrentPaused = isLatest && isPaused;
-        const errors = turn.activity.filter(item => item.kind === 'error' || item.kind === 'agent-error');
-        const recoveredErrorEventIds = new Set(
-          turn.assistant || isCurrent ? errors.map(item => item.event.id) : errors
-            .filter(item => !isConversationTerminalError(item.event))
-            .map(item => item.event.id),
-        );
-        const failures = errors.filter(item => isConversationTerminalError(item.event) && !recoveredErrorEventIds.has(item.event.id));
+        const errors = turn.activity.filter(item => item.kind === 'error');
+        const recoveredErrorEventIds = new Set(turn.assistant || isCurrent ? errors.map(item => item.event.id) : []);
+        const failures = errors.filter(item => !recoveredErrorEventIds.has(item.event.id));
         const parentFailed = failures.length > 0;
         // A submitted turn can render before its formal OpenHands user event
         // replaces the prior active branch. During that bounded hand-off the
@@ -2162,7 +2130,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, l
           : eventTime(turn.user);
         const finishedAt = eventTime(turn.assistant ?? failures.at(-1));
         const processBlocks = turnProcessBlocks(
-          turn.activity.filter(item => item.kind !== 'error' || recoveredErrorEventIds.has(item.event.id)),
+          turn.activity.filter(item => item.kind !== 'error'),
           startedAt,
           finishedAt,
           isCurrent && !turn.assistant && !failures.length,
@@ -2184,7 +2152,6 @@ export const ConversationSurface = memo(function ConversationSurface({ events, l
             completionConfirmed={completionConfirmed}
             paused={isCurrentPaused && !block.active}
             parentFailed={parentFailed && !block.active}
-            recoveredErrorEventIds={recoveredErrorEventIds}
             startedAt={block.startedAt}
             finishedAt={block.finishedAt}
             avatarSlots={avatarSlots}
