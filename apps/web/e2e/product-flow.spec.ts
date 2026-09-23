@@ -936,8 +936,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.getByText('后端服务', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: '在后端服务中新建会话' }).click();
   await expect(page.getByRole('heading', { name: '新会话' })).toBeVisible();
-  await expect(page.locator('.agent-composer-actions .agent-composer-model-trigger')).toHaveCount(0);
-  await expect(page.getByText('配置默认模型与能力', { exact: true })).toBeVisible();
+  await expect(page.locator('.agent-composer-model-summary')).toHaveText('gpt-test');
   expect(bootstrapRequests).toBe(0);
   await page.getByRole('button', { name: '新建会话' }).first().click();
   await expect(page).toHaveURL(/\/agent$/);
@@ -2694,18 +2693,12 @@ test('Agent new session keeps full capabilities and can create an explicit works
   await expect(composer).toHaveValue('/lark-tools:summarize ');
   await composer.fill('');
 
-  await expect(page.locator('.agent-composer-actions .agent-composer-model-trigger')).toHaveCount(0);
-  await page.getByRole('button', { name: '会话配置' }).click();
-  const draftConfiguration = page.getByRole('dialog', { name: '会话配置' });
-  await expect(draftConfiguration.getByRole('button', { name: '默认模型' })).toHaveClass(/active/);
-  await draftConfiguration.getByLabel('打开模型与推理设置').click();
-  await draftConfiguration.getByRole('button', { name: '供应商 默认供应商' }).click();
+  await page.getByLabel('打开模型与推理设置').click();
+  await page.getByRole('button', { name: '供应商 默认供应商' }).click();
   await page.getByLabel('选择供应商').getByRole('button', { name: '专业供应商' }).click();
-  await draftConfiguration.getByLabel('打开模型与推理设置').click();
-  await draftConfiguration.getByRole('button', { name: '思考程度 高' }).click();
+  await page.getByLabel('打开模型与推理设置').click();
+  await page.getByRole('button', { name: '思考程度 高' }).click();
   await page.getByLabel('选择思考程度').getByRole('button', { name: '低' }).click();
-  await draftConfiguration.getByRole('button', { name: '完成' }).click();
-  await expect(draftConfiguration).toBeHidden();
   await page.getByLabel('上传附件').setInputFiles({ name: '需求.png', mimeType: 'image/png', buffer: Buffer.from([1, 2, 3, 4]) });
   await expect(page.locator('.agent-attachments').getByText('需求.png', { exact: true })).toBeVisible();
   expect(attachmentUploads).toBe(1);
