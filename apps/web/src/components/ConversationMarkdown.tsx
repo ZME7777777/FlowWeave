@@ -1,9 +1,9 @@
-import { isValidElement, useState, type ComponentPropsWithoutRef, type ReactNode } from 'react';
+import { isValidElement, useMemo, useState, type ComponentPropsWithoutRef, type ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { deploymentBasePath } from '../deploymentPath';
 import { MarkdownCodeBlock, MermaidDiagram } from './MermaidDiagram';
-import { isMermaidDiagram, markdownCodeText } from './markdownCodeBlock';
+import { isMermaidDiagram, markdownCodeText, normalizeNestedMarkdownFences } from './markdownCodeBlock';
 
 function MarkdownImage({ src, alt, ...props }: ComponentPropsWithoutRef<'img'>) {
   const [failed, setFailed] = useState(false);
@@ -52,8 +52,9 @@ function MarkdownTable({ children, node: _node, ...props }: ComponentPropsWithou
 }
 
 export function ConversationMarkdown({ children, onOpenWorkspaceFile }: { children: string; onOpenWorkspaceFile?: (href: string) => boolean }) {
+  const markdown = useMemo(() => normalizeNestedMarkdownFences(children), [children]);
   return <ReactMarkdown remarkPlugins={[remarkGfm]} components={{
     a: props => <MarkdownLink {...props} onOpenWorkspaceFile={onOpenWorkspaceFile}/>,
     img: MarkdownImage, pre: MarkdownPre, table: MarkdownTable,
-  }}>{children}</ReactMarkdown>;
+  }}>{markdown}</ReactMarkdown>;
 }

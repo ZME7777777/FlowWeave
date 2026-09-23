@@ -5693,11 +5693,11 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     }
     if (effectiveTurnState === 'idle' || effectiveTurnState === 'paused') rewrite.mutate(request);
   }, [displayedEvents, effectiveTurnState, interrupt, rewrite]);
-  const openConversationDraft = useCallback((next: Omit<ConversationDraft, 'id'>) => {
+  const openConversationDraft = useCallback((next: Omit<ConversationDraft, 'id'>, options: { restoreRecovery?: boolean } = {}) => {
     const outgoingScope = activeComposerScope.current;
     if (outgoingScope) persistComposerDraft(outgoingScope);
     clearBootstrapRecovery();
-    const recovery = workspace
+    const recovery = options.restoreRecovery && workspace
       ? readConversationDraft(conversationDraftStorageKey(host.id, workspace.id, next.workDirectoryId))
       : undefined;
     if (recovery) {
@@ -5719,6 +5719,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       setNewConversationModelName(recovery.modelName);
       setNewConversationReasoningEffort(recovery.reasoningEffort);
     } else {
+      if (workspace) writeConversationDraft(conversationDraftStorageKey(host.id, workspace.id, next.workDirectoryId), undefined);
       const draft = { ...next, id: randomId(), capabilityVersionIds: next.capabilityVersionIds ?? [] };
       composerDraftsByScope.current.set(draft.id, { content: '', attachments: [], references: [], workspaceReferences: [], annotations: [] });
       setConversationDraft(draft);
@@ -5737,7 +5738,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   }, [clearBootstrapRecovery, host.id, host.rootPath, onNavigate, persistComposerDraft, replaceComposerDraft, workspace]);
   useEffect(() => {
     if (!autoOpenDraft || !workspace || selectedBindingId || conversationDraft) return;
-    openConversationDraft({ displayName: '根工作区' });
+    openConversationDraft({ displayName: '根工作区' }, { restoreRecovery: true });
   }, [autoOpenDraft, conversationDraft, openConversationDraft, selectedBindingId, workspace]);
   const enqueueDraft = useCallback((draftContent = composerDraftRef.current) => {
     const content = draftContent.trim();
