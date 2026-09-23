@@ -2800,8 +2800,11 @@ function WorkspaceGitSidebar({ details, repository, mode, onModeChange, selected
       {selectedCommit && <WorkspaceGitCommitSidebarDetail details={commitQuery.data} loading={commitQuery.isLoading} error={commitQuery.isError} selectedPath={selectedCommitFile} onSelectFile={path => { openedDiffRef.current = undefined; setSelectedCommitFile(path); }} onClose={() => { onSelectCommit(undefined); setSelectedCommitFile(undefined); }}/>}
     </> : changesQuery.isLoading ? <p className="agent-git-loading">正在读取本地改动…</p> : changesQuery.isError ? <p className="agent-git-error">本地改动读取失败。<button type="button" onClick={() => void changesQuery.refetch()}>重试</button></p> : <div className="agent-git-local-changes">
       {workingDiffError && <p className="agent-git-error" role="alert">{workingDiffError}</p>}
-      <ChangedFilesTree title="暂存区" empty="暂存区没有文件。" items={(changesQuery.data?.staged ?? []).map(file => ({ path: file.path, value: file }))} onSelect={file => void openWorkingFile('STAGED', file)} renderMeta={file => <em>{file.status}</em>}/>
-      <ChangedFilesTree title="未暂存" empty="没有未暂存文件。" items={(changesQuery.data?.unstaged ?? []).map(file => ({ path: file.path, value: file }))} onSelect={file => void openWorkingFile('UNSTAGED', file)} renderMeta={file => <em>{file.status}</em>}/>
+      <GitChangedFilesSplit
+        staged={changesQuery.data?.staged ?? []}
+        unstaged={changesQuery.data?.unstaged ?? []}
+        onSelect={(kind, file) => void openWorkingFile(kind, file)}
+      />
     </div>}
   </aside>;
 }
@@ -2858,13 +2861,15 @@ function changedFileTree<T>(items: Array<{ path: string; value: T }>): ChangedFi
   return roots;
 }
 
-function ChangedFilesTree<T>({ items, selectedPath, title, empty, onSelect, renderMeta }: {
+function ChangedFilesTree<T>({ items, selectedPath, title, empty, onSelect, renderMeta, collapsed: panelCollapsed = false, onToggleCollapsed }: {
   items: Array<{ path: string; value: T }>;
   selectedPath?: string;
   title: string;
   empty: string;
   onSelect: (value: T) => void;
   renderMeta?: (value: T) => ReactNode;
+  collapsed?: boolean;
+  onToggleCollapsed?: () => void;
 }) {
   const tree = changedFileTree(items);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
@@ -2887,10 +2892,57 @@ function ChangedFilesTree<T>({ items, selectedPath, title, empty, onSelect, rend
       {directory && open && <div role="group">{renderTree(displayed.children as ChangedFileTreeNode<T>[], depth + 1)}</div>}
     </div>;
   });
-  return <nav className="agent-changes-file-tree" aria-label={title}>
-    <header><b>{title}</b><span>{items.length}</span></header>
-    {tree.length ? <div className="agent-git-file-tree" role="tree">{renderTree(tree)}</div> : <p>{empty}</p>}
+  return <nav className={`agent-changes-file-tree${panelCollapsed ? ' collapsed' : ''}`} aria-label={title}>
+    <header>
+      {onToggleCollapsed ? <button type="button" aria-label={`${panelCollapsed ? '展开' : '收起'}${title}`} aria-expanded={!panelCollapsed} onClick={onToggleCollapsed}>{panelCollapsed ? <ChevronRight size={13}/> : <ChevronDown size={13}/>}<b>{title}</b></button> : <b>{title}</b>}
+      <span>{items.length}</span>
+    </header>
+    {!panelCollapsed && (tree.length ? <div className="agent-git-file-tree" role="tree">{renderTree(tree)}</div> : <p>{empty}</p>)}
   </nav>;
+}
+
+function GitChangedFilesSplit({ staged, unstaged, selectedKind, selectedPath, onSelect }: {
+  staged: WorkspaceGitChangedFile[];
+  unstaged: WorkspaceGitChangedFile[];
+  selectedKind?: WorkspaceGitChangeKind;
+  selectedPath?: string;
+  onSelect: (kind: WorkspaceGitChangeKind, file: WorkspaceGitChangedFile) => void;
+}) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [collapsed, setCollapsed] = useState<Record<'staged' | 'unstaged', boolean>>({ staged: false, unstaged: false });
+  const [splitRatio, setSplitRatio] = useState(.5);
+  const bothExpanded = !collapsed.staged && !collapsed.unstaged;
+  const toggle = (panel: 'staged' | 'unstaged') => setCollapsed(current => ({ ...current, [panel]: !current[panel] }));
+  const startResize = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!bothExpanded || !containerRef.current) return;
+    event.preventDefault();
+    const container = containerRef.current;
+    const update = (pointer: PointerEvent) => {
+      const bounds = container.getBoundingClientRect();
+      const ratio = (pointer.clientY - bounds.top) / bounds.height;
+      setSplitRatio(Math.min(.8, Math.max(.2, ratio)));
+    };
+    const finish = () => {
+      window.removeEventListener('pointermove', update);
+      window.removeEventListener('pointerup', finish);
+      window.removeEventListener('pointercancel', finish);
+    };
+    window.addEventListener('pointermove', update);
+    window.addEventListener('pointerup', finish);
+    window.addEventListener('pointercancel', finish);
+  };
+  const rows = collapsed.staged && collapsed.unstaged
+    ? 'auto auto'
+    : collapsed.staged
+      ? 'auto minmax(0,1fr)'
+      : collapsed.unstaged
+        ? 'minmax(0,1fr) auto'
+        : `minmax(0,${splitRatio}fr) 7px minmax(0,${1 - splitRatio}fr)`;
+  return <div ref={containerRef} className="agent-git-change-split" style={{ gridTemplateRows: rows }}>
+    <ChangedFilesTree title="暂存区" empty="暂存区没有文件。" items={staged.map(file => ({ path: file.path, value: file }))} selectedPath={selectedKind === 'STAGED' ? selectedPath : undefined} onSelect={file => onSelect('STAGED', file)} renderMeta={file => <em>{file.status}</em>} collapsed={collapsed.staged} onToggleCollapsed={() => toggle('staged')}/>
+    {bothExpanded && <div className="agent-git-change-resizer" role="separator" aria-label="调整暂存区和未暂存区高度" aria-orientation="horizontal" aria-valuemin={20} aria-valuemax={80} aria-valuenow={Math.round(splitRatio * 100)} onPointerDown={startResize}/>}
+    <ChangedFilesTree title="未暂存" empty="没有未暂存文件。" items={unstaged.map(file => ({ path: file.path, value: file }))} selectedPath={selectedKind === 'UNSTAGED' ? selectedPath : undefined} onSelect={file => onSelect('UNSTAGED', file)} renderMeta={file => <em>{file.status}</em>} collapsed={collapsed.unstaged} onToggleCollapsed={() => toggle('unstaged')}/>
+  </div>;
 }
 
 type WorkspaceGitTreeNode = { name: string; path: string; status?: string; children: WorkspaceGitTreeNode[] };
@@ -3124,8 +3176,7 @@ function WorkspaceGitWorkingDiffReview({ tab, onOpenSource, onSelectFile }: {
   };
   return <section className="agent-git-commit-review agent-git-working-review">
     <aside className="agent-git-working-file-trees" aria-label="本地改动文件">
-      <ChangedFilesTree title="暂存区" empty="暂存区没有文件。" items={tab.changes.staged.map(file => ({ path: file.path, value: file }))} selectedPath={tab.changeKind === 'STAGED' ? tab.file.path : undefined} onSelect={file => onSelectFile('STAGED', file)} renderMeta={file => <em>{file.status}</em>}/>
-      <ChangedFilesTree title="未暂存" empty="没有未暂存文件。" items={tab.changes.unstaged.map(file => ({ path: file.path, value: file }))} selectedPath={tab.changeKind === 'UNSTAGED' ? tab.file.path : undefined} onSelect={file => onSelectFile('UNSTAGED', file)} renderMeta={file => <em>{file.status}</em>}/>
+      <GitChangedFilesSplit staged={tab.changes.staged} unstaged={tab.changes.unstaged} selectedKind={tab.changeKind} selectedPath={tab.file.path} onSelect={onSelectFile}/>
     </aside>
     {tab.loading ? <div className="agent-changes-empty"><span>正在读取文件 Diff…</span></div> : tab.error ? <div className="agent-changes-empty"><b>文件 Diff 读取失败</b><span>{tab.error}</span></div> : tab.diff ? <WorkspaceGitFileDiffReview details={details} diff={tab.diff} onOpenSource={onOpenSource}/> : <div className="agent-changes-empty"><span>选择一个文件查看 Diff。</span></div>}
   </section>;
