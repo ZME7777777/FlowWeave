@@ -664,11 +664,36 @@ export function flowRunTerminalUrl(runId: string, rows = 24, columns = 80): stri
 }
 
 export interface AgentStreamEvent {
-  type: 'delta' | 'event' | 'message_complete' | 'stream_reset' | 'stream_closed' | 'durable_cursor';
+  type: 'delta' | 'event' | 'message_complete' | 'stream_reset' | 'stream_closed' | 'durable_cursor' | 'model_retry';
   content?: string;
   item_id?: string;
   event?: OpenHandsConversationEvent;
   seq?: number;
+  attempt?: number;
+  max_attempts?: number;
+  failure_kind?: string;
+  final?: boolean;
+  model_role?: 'primary' | 'fallback';
+}
+
+function modelRetryEvent(event: Partial<AgentStreamEvent>): AgentStreamEvent | undefined {
+  const allowedKinds = new Set([
+    'timeout', 'connection', 'service_unavailable', 'empty_response', 'rate_limit',
+    'auth', 'quota', 'config', 'context_limit', 'content_policy', 'internal', 'unknown',
+  ]);
+  if (
+    event.type !== 'model_retry'
+    || !Number.isSafeInteger(event.attempt) || (event.attempt ?? 0) < 1
+    || !Number.isSafeInteger(event.max_attempts) || (event.max_attempts ?? 0) < (event.attempt ?? 0)
+    || (event.max_attempts ?? 0) > 5
+    || typeof event.failure_kind !== 'string' || !allowedKinds.has(event.failure_kind)
+    || typeof event.final !== 'boolean'
+    || (event.model_role !== 'primary' && event.model_role !== 'fallback')
+  ) return undefined;
+  return {
+    type: 'model_retry', attempt: event.attempt, max_attempts: event.max_attempts,
+    failure_kind: event.failure_kind, final: event.final, model_role: event.model_role,
+  };
 }
 
 export function agentStreamUrl(runId: string, conversationId: string, afterSeq?: number): string {
@@ -708,9 +733,13 @@ export function subscribeToConversationStream(
           onEvent({ type: 'durable_cursor', seq: afterSeq });
         } else if (event.type === 'message_complete') {
           onEvent({ type: 'message_complete' });
-        } else if ((event.type === 'stream_reset' || event.type === 'stream_closed')
-          && typeof event.item_id === 'string') {
-          onEvent({ type: event.type, item_id: event.item_id });
+        } else {
+          const retryEvent = modelRetryEvent(event);
+          if (retryEvent) onEvent(retryEvent);
+          if ((event.type === 'stream_reset' || event.type === 'stream_closed')
+            && typeof event.item_id === 'string') {
+            onEvent({ type: event.type, item_id: event.item_id });
+          }
         }
       } catch {
         // A malformed transient frame must not disrupt durable message polling.
@@ -792,7 +821,11 @@ export function subscribeToAgentWorkspaceStream(
           onEvent({ type: 'durable_cursor', seq: afterSeq });
         }
         else if (event.type === 'message_complete') onEvent({ type: 'message_complete' });
-        else if ((event.type === 'stream_reset' || event.type === 'stream_closed') && typeof event.item_id === 'string') onEvent({ type: event.type, item_id: event.item_id });
+        else {
+          const retryEvent = modelRetryEvent(event);
+          if (retryEvent) onEvent(retryEvent);
+          if ((event.type === 'stream_reset' || event.type === 'stream_closed') && typeof event.item_id === 'string') onEvent({ type: event.type, item_id: event.item_id });
+        }
       } catch {
         // The REST event source is authoritative; ignore an invalid live frame.
       }
@@ -1011,7 +1044,11 @@ export function subscribeToNodeSessionStream(
         onEvent({ type: 'durable_cursor', seq: afterSeq });
       }
       else if (event.type === 'message_complete') onEvent({ type: 'message_complete' });
-      else if ((event.type === 'stream_reset' || event.type === 'stream_closed') && typeof event.item_id === 'string') onEvent({ type: event.type, item_id: event.item_id });
+      else {
+        const retryEvent = modelRetryEvent(event);
+        if (retryEvent) onEvent(retryEvent);
+        if ((event.type === 'stream_reset' || event.type === 'stream_closed') && typeof event.item_id === 'string') onEvent({ type: event.type, item_id: event.item_id });
+      }
     } catch { /* REST remains authoritative. */ } };
     socket.onclose = event => { socket = undefined; if (event.code === 4401) { notifyAuthenticationRequired(); onStatus?.('disabled'); return; } if (disposed || event.code === 4409) { onStatus?.('disabled'); return; } onStatus?.('recovering'); retry = window.setTimeout(connect, Math.min(1000 * 2 ** attempts++, 10_000)); };
   };

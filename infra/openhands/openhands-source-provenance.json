@@ -4,11 +4,11 @@
     "schema_version": 1,
     "source_kind": "flowweave_fork",
     "repository": "https://github.com/ZME7777777/software-agent-sdk.git",
-    "archive_url": "https://codeload.github.com/ZME7777777/software-agent-sdk/tar.gz/5efe25b00698d39bc615b9dbe759c793e0617a13",
-    "archive_sha256": "ac664389c402a5f6334798164b6a16ede8542cdc4012b9db9cc2470a24f5dd9d",
+    "archive_url": "file:///runtime/openhands-source-4e130c408745934743bc9be5c4b18c830020957b.tar.gz",
+    "archive_sha256": "13a1812371687a4f57a4874cbb6b8cabe91fce041b1ba758affd5140ea4ee770",
     "upstream_base_commit": "30cf5832e42c71c24daa82a1a4fd5d25eb70d1b9",
-    "source_commit": "5efe25b00698d39bc615b9dbe759c793e0617a13",
-    "fork_commit": "5efe25b00698d39bc615b9dbe759c793e0617a13",
+    "source_commit": "4e130c408745934743bc9be5c4b18c830020957b",
+    "fork_commit": "4e130c408745934743bc9be5c4b18c830020957b",
     "package_version": "1.47.0",
     "packages": [
       "openhands-agent-server",
@@ -17,7 +17,7 @@
       "openhands-workspace"
     ]
   },
-  "source_archive_sha256": "ac664389c402a5f6334798164b6a16ede8542cdc4012b9db9cc2470a24f5dd9d",
+  "source_archive_sha256": "13a1812371687a4f57a4874cbb6b8cabe91fce041b1ba758affd5140ea4ee770",
   "source_root": "/opt/openhands-source",
   "overlays": {
     "patch_fork_condenser.py": "bc06937d2214df9265b348ab8e11356e8a82f13bf592b238f9eeb51073359d10"

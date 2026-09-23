@@ -24,6 +24,17 @@ interface Turn {
   activity: Item[];
 }
 
+export interface ModelRetryStatus {
+  /** Live retry frames always provide these; historical terminal events do not. */
+  attempt?: number;
+  maxAttempts?: number;
+  failureKind: string;
+  final: boolean;
+  modelRole: 'primary' | 'fallback';
+  subject?: 'model' | 'execution';
+  errorCode?: string;
+}
+
 interface UserMessageNavigationItem {
   id: string;
   content: string;
@@ -1048,13 +1059,49 @@ function staleActivityLabel(
   return fallback;
 }
 
-function CurrentTurnStatus({ items, requestSubmitting, statusOverride, monitoring, connectionState = 'connected' }: {
+function retryLabel(status: ModelRetryStatus): string {
+  const isModelFailure = status.subject !== 'execution';
+  const prefix = isModelFailure ? (status.modelRole === 'fallback' ? '备用模型' : '模型') : '本轮执行';
+  const reason: Record<string, string> = {
+    timeout: '响应超时', connection: '连接失败', service_unavailable: '服务暂不可用',
+    empty_response: '返回空响应', rate_limit: '受到速率限制', auth: '凭据无效',
+    quota: '额度不足', config: '配置不兼容', context_limit: '上下文超限',
+    content_policy: '内容安全策略拒绝', internal: '内部异常', unknown: '调用失败',
+  };
+  const suffix = status.attempt !== undefined && status.maxAttempts !== undefined
+    ? ` ${status.attempt}/${status.maxAttempts}`
+    : '';
+  if (status.final) {
+    return isModelFailure
+      ? `↳ ${prefix}${reason[status.failureKind] ?? '调用失败'}，本轮已停止${suffix}`
+      : `↳ ${prefix}失败，本轮已停止`;
+  }
+  if (status.failureKind === 'connection') return `↳ 正在重新连接${prefix}服务${suffix}`;
+  return `↳ ${prefix}${reason[status.failureKind] ?? '调用失败'}，正在重试${suffix}`;
+}
+
+function RetryStatus({ status }: { status: ModelRetryStatus }) {
+  const detail: Record<string, string> = {
+    timeout: '模型响应超时。', connection: '无法连接模型网关。', service_unavailable: '模型服务返回了暂时不可用的响应。',
+    empty_response: '模型没有返回完整的可用响应。', rate_limit: '模型服务暂时限制了请求速率。', auth: '模型凭据无效或权限不足。',
+    quota: '模型账户额度不足。', config: '模型或请求参数不兼容。', context_limit: '请求超过模型上下文窗口。',
+    content_policy: '模型内容安全策略拒绝了请求。', internal: '模型调用发生内部异常。', unknown: '模型调用发生未知异常。',
+  };
+  return <details className={`conversation-model-retry${status.final ? ' final' : ''}`}>
+    <summary role="status" aria-label={retryLabel(status)}><ChevronRight className="conversation-expand-arrow" size={13}/><span>{retryLabel(status)}</span>{!status.final && <span className="conversation-turn-status-dots" aria-hidden="true"><i/><i/><i/></span>}</summary>
+    <p>{status.subject === 'execution' ? '执行过程中发生了不可恢复错误。' : detail[status.failureKind] ?? detail.unknown}{status.errorCode ? ` · 错误码：${status.errorCode}` : ''}</p>
+  </details>;
+}
+
+function CurrentTurnStatus({ items, requestSubmitting, statusOverride, modelRetryStatus, monitoring, connectionState = 'connected' }: {
   items: Item[];
   requestSubmitting: boolean;
   statusOverride?: string;
+  modelRetryStatus?: ModelRetryStatus;
   monitoring?: AgentActivitySummary;
   connectionState?: ConversationConnectionState;
 }) {
+  if (modelRetryStatus) return <RetryStatus status={modelRetryStatus}/>;
   const activityLabel = activeActivityLabel(groupedActivities(items), requestSubmitting);
   const label = statusOverride ?? (requestSubmitting
     ? activityLabel
@@ -1362,95 +1409,6 @@ function conversationQuoteRange(root: HTMLElement, quote: string, compactStart?:
   return range;
 }
 
-interface FailurePresentation {
-  title: string;
-  content: string;
-}
-
-function presentConversationFailure(code: string, detail: string): FailurePresentation {
-  const normalizedCode = code.toLowerCase();
-  const normalizedDetail = detail.toLowerCase();
-  const hasCode = (...names: string[]) => names.some(name => normalizedCode === name.toLowerCase());
-  const contains = (...terms: string[]) => terms.some(term => normalizedDetail.includes(term.toLowerCase()));
-
-  if (hasCode('BadGatewayError', 'GatewayTimeoutError', 'LLMServiceUnavailableError', 'ServiceUnavailableError') || contains('bad gateway', 'gateway timeout', '502', '503', '504', 'tengine')) {
-    return {
-      title: '模型服务暂时不可用',
-      content: '模型服务暂时没有响应。本轮已停止，请稍后重试或切换模型。',
-    };
-  }
-  if (hasCode('LLMNoResponseError') && contains('ResponseIncompleteEvent', 'response incomplete', 'incomplete response')) {
-    return {
-      title: '模型返回不完整响应',
-      content: '模型服务已开始返回结果，但没有发送可确认完成的响应。本轮已在重试后停止；请稍后重试，或切换模型配置。',
-    };
-  }
-  if (hasCode('LLMNoResponseError') || contains('without a completed response', 'response choices is less than 1', 'empty response')) {
-    return {
-      title: '模型没有返回有效内容',
-      content: '模型调用结束后未收到可用回复。这通常是模型服务或网关返回空响应，不代表浏览器网络已断开；请稍后重试或切换模型配置。',
-    };
-  }
-  if (hasCode('LLMTimeoutError', 'LiteLLMTimeout', 'ReadTimeout', 'TimeoutError') || contains('timed out', 'timeout')) {
-    return {
-      title: '模型响应超时',
-      content: '模型服务未能在允许时间内完成响应。本轮已停止；请稍后重试，或改用响应更快的模型配置。',
-    };
-  }
-  if (contains('service unavailable', 'upstream unavailable')) {
-    return {
-      title: '模型服务暂不可用',
-      content: '当前模型服务或其上游网关暂时不可用。这是模型服务侧故障，不是浏览器页面断线；请稍后重试或切换模型配置。',
-    };
-  }
-  if (hasCode('APIConnectionError', 'ConnectError', 'ConnectionRefused', 'RequestError') || contains('connection refused', 'connection reset', 'connection failed', 'connect error')) {
-    return {
-      title: '模型网关连接失败',
-      content: '运行时无法连接当前模型服务的网关。请检查模型服务连通性或切换模型配置；FlowWeave 会话本身不一定断开。',
-    };
-  }
-  if (hasCode('LLMRateLimitError', 'RateLimitError', 'UsageLimitReachedError') || contains('rate limit', 'usage limit', 'quota', 'insufficient quota')) {
-    return {
-      title: '模型账户额度或速率受限',
-      content: '模型服务拒绝了本次请求：当前账户额度不足或调用频率受限。请等待额度恢复，或选择有可用额度的模型配置后重新思考。',
-    };
-  }
-  if (hasCode('NoCondensationAvailableException') && contains('summarization llm call failed', 'authenticationerror', 'invalid api key')) {
-    return {
-      title: '会话上下文压缩失败',
-      content: '失败发生在会话的历史摘要器，而不是当前模型调用。请检查该会话冻结的模型配置与摘要器凭据；系统不会用新会话替代或丢弃原有上下文。',
-    };
-  }
-  if (hasCode('AuthenticationError', 'UnauthorizedError', 'PermissionDeniedError', 'InvalidAPIKeyError') || contains('invalid api key', 'authentication', 'unauthorized', 'forbidden')) {
-    return {
-      title: '模型凭据无效或无权限',
-      content: '当前模型配置的凭据无效、已过期或没有调用权限。请在模型配置中重新测试或更新授权后重试。',
-    };
-  }
-  if (hasCode('LLMContextWindowExceededError', 'ContextWindowExceededError') || contains('context window', 'maximum context length', 'too many tokens')) {
-    return {
-      title: '请求超出模型上下文限制',
-      content: '当前会话上下文超过了模型可接受的长度。请压缩上下文、拆分问题，或切换到上下文窗口更大的模型配置。',
-    };
-  }
-  if (hasCode('BadRequestError', 'InvalidRequestError', 'UnsupportedParamsError') || contains('invalid request', 'unsupported parameter', 'unsupported model')) {
-    return {
-      title: '模型请求不被接受',
-      content: '模型服务拒绝了本次请求的参数、模型或协议格式。请检查该模型配置与当前能力是否兼容后重试。',
-    };
-  }
-  if (hasCode('ContentPolicyViolationError', 'SafetyError') || contains('content policy', 'safety policy')) {
-    return {
-      title: '模型安全策略拒绝了请求',
-      content: '模型服务因其安全策略拒绝处理本次输入。请调整请求内容后再试。',
-    };
-  }
-  return {
-    title: '本轮未能完成',
-    content: '模型服务未能完成本次请求。请稍后重试；若反复出现，可切换模型。',
-  };
-}
-
 function isPauseInterruption(item: Item): boolean {
   return isPauseInterruptionEvent(item.event);
 }
@@ -1468,7 +1426,46 @@ function isManualTaskInterruption(item: Item, taskControl: RuntimeTaskControlSna
   ].includes(control.control_state));
 }
 
-function ConversationFailure({ item, taskControl = [] }: { item: Item; taskControl?: RuntimeTaskControlSnapshot[] }) {
+function terminalRetryStatus(item: Item): ModelRetryStatus {
+  const code = String(item.event.payload.error_code ?? '');
+  const safeCode = /^(?:[A-Z][A-Za-z0-9]*(?:Error|Exception)|[A-Z][A-Z0-9_]{2,80})$/.test(code)
+    ? code
+    : '';
+  const modelErrorCodes = new Set([
+    'BadGatewayError', 'GatewayTimeoutError', 'ServiceUnavailableError', 'ReadTimeout',
+    'HTTPStatusError', 'RequestError', 'CloudflareError', 'OpenAIError', 'APIError',
+    'BaseLLMException', 'AnthropicError', 'OpenRouterException', 'OllamaError',
+  ]);
+  const isModelError = code.startsWith('LLM') || modelErrorCodes.has(code);
+  const classification = item.event.payload.classification;
+  const kind = classification && typeof classification === 'object'
+    ? String((classification as Record<string, unknown>).kind ?? '')
+    : '';
+  const failureKind = code === 'LLMTimeoutError' ? 'timeout'
+    : code === 'LLMNoResponseError' ? 'empty_response'
+    : code === 'LLMAuthenticationError' ? 'auth'
+    : code === 'LLMRateLimitError' ? 'rate_limit'
+    : code === 'LLMContextWindowExceedError' ? 'context_limit'
+    : code === 'LLMContentPolicyViolationError' ? 'content_policy'
+    : code === 'LLMBadRequestError' ? 'config'
+    : code === 'LLMServiceUnavailableError' ? 'service_unavailable'
+    : kind === 'quota' ? 'quota'
+    : kind === 'internal' ? 'internal'
+    : kind === 'config' ? 'config'
+    : kind === 'auth' ? 'auth'
+    : kind === 'rate_limit' ? 'rate_limit'
+    : kind === 'transient' ? 'service_unavailable'
+    : 'unknown';
+  return {
+    failureKind,
+    final: true,
+    modelRole: 'primary',
+    subject: isModelError ? 'model' : 'execution',
+    errorCode: safeCode || undefined,
+  };
+}
+
+function ConversationFailure({ item, taskControl = [], retryStatus }: { item: Item; taskControl?: RuntimeTaskControlSnapshot[]; retryStatus?: ModelRetryStatus }) {
   if (isPauseInterruption(item)) return null;
   if (isManualTaskInterruption(item, taskControl)) {
     return <article className="conversation-interruption" data-turn-terminal="true" data-event-id={item.event.id} role="status">
@@ -1485,10 +1482,7 @@ function ConversationFailure({ item, taskControl = [] }: { item: Item; taskContr
     && item.content.includes('OpenAIException')
     && item.content.includes('Error code: 404');
   if (isLegacyAutoTitleFailure) return null;
-  const presentation = presentConversationFailure(code, item.content);
-  return <article className="conversation-failure" data-turn-terminal="true" data-event-id={item.event.id} role="status">
-    <CircleAlert size={15}/><div><b>{presentation.title}</b><p>{presentation.content}</p></div>
-  </article>;
+  return <div data-turn-terminal="true" data-event-id={item.event.id}><RetryStatus status={retryStatus ?? terminalRetryStatus(item)}/></div>;
 }
 
 export interface ConversationHistoryPrepend {
@@ -1497,13 +1491,15 @@ export interface ConversationHistoryPrepend {
   phase: 'capture' | 'restore';
 }
 
-export const ConversationSurface = memo(function ConversationSurface({ events, isGenerating, isPaused = false, emptyResponseRecoveryActive = false, historyPending = false, conversationScope, historyPrepend, onHistoryAnchorCaptured, onHistoryAnchorRestored, requestStartedAt, requestSubmitting = false, rewritePending = false, onRewrite, onFork, onOpenAttachment, onOpenWorkspaceReference, onPreviewCandidateFile, onReviewChanges, onOpenWorkspaceFile, workspaceRoot, annotations = [], onCreateAnnotation, onLocateAnnotation, taskControl = [], monitoring, connectionState }: {
+export const ConversationSurface = memo(function ConversationSurface({ events, isGenerating, isPaused = false, emptyResponseRecoveryActive = false, modelRetryStatus, historyPending = false, conversationScope, historyPrepend, onHistoryAnchorCaptured, onHistoryAnchorRestored, requestStartedAt, requestSubmitting = false, rewritePending = false, onRewrite, onFork, onOpenAttachment, onOpenWorkspaceReference, onPreviewCandidateFile, onReviewChanges, onOpenWorkspaceFile, workspaceRoot, annotations = [], onCreateAnnotation, onLocateAnnotation, taskControl = [], monitoring, connectionState }: {
   events: OpenHandsConversationEvent[];
   isGenerating: boolean;
   /** Formal native conversation pause state, used only to label unfinished Task actions. */
   isPaused?: boolean;
   /** Transient UI only; the persisted corrective event never enters history. */
   emptyResponseRecoveryActive?: boolean;
+  /** Actual non-persistent transport retry progress for this binding only. */
+  modelRetryStatus?: ModelRetryStatus;
   /** Older native pages are being inserted above the current latest window. */
   historyPending?: boolean;
   /** Binding identity that owns this transcript viewport. */
@@ -2110,14 +2106,14 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
             workspaceRoot={workspaceRoot}
           />)}
           {isCurrent && !turn.assistant && !failures.length && (
-            <CurrentTurnStatus items={turn.activity} requestSubmitting={requestSubmitting} statusOverride={emptyResponseRecoveryActive ? '模型返回空响应，OpenHands 正在自动重试' : undefined} monitoring={monitoring} connectionState={connectionState}/>
+            <CurrentTurnStatus items={turn.activity} requestSubmitting={requestSubmitting} statusOverride={emptyResponseRecoveryActive ? '模型返回空响应，OpenHands 正在自动重试' : undefined} modelRetryStatus={modelRetryStatus} monitoring={monitoring} connectionState={connectionState}/>
           )}
           {processBlocks.length > 0 && turn.assistant && <div className="conversation-process-divider" role="separator" aria-label="工作过程结束"/>}
           {turn.assistant && <AgentReply event={turn.assistant.event} content={turn.assistant.content} changes={fileChanges} onFork={!isGenerating ? () => onFork?.(turn.assistant!.event.id) : undefined} onPreviewCandidateFile={onPreviewCandidateFile} onReviewChanges={onReviewChanges} onOpenWorkspaceFile={onOpenWorkspaceFile} workspaceRoot={workspaceRoot} annotations={annotations} onLocateAnnotation={locateAnnotation}/>}
-          {failures.map(item => <ConversationFailure key={item.event.id} item={item} taskControl={taskControl}/>)}
+          {failures.map(item => <ConversationFailure key={item.event.id} item={item} taskControl={taskControl} retryStatus={isLatest ? modelRetryStatus : undefined}/>)}
         </section>;
       })}
-      {turns.length === 0 && isGenerating && <><ActivityGroup items={[]} active startedAt={requestStartedAt} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/><CurrentTurnStatus items={[]} requestSubmitting={requestSubmitting} statusOverride={emptyResponseRecoveryActive ? '模型返回空响应，OpenHands 正在自动重试' : undefined} monitoring={monitoring} connectionState={connectionState}/></>}
+      {turns.length === 0 && isGenerating && <><ActivityGroup items={[]} active startedAt={requestStartedAt} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/><CurrentTurnStatus items={[]} requestSubmitting={requestSubmitting} statusOverride={emptyResponseRecoveryActive ? '模型返回空响应，OpenHands 正在自动重试' : undefined} modelRetryStatus={modelRetryStatus} monitoring={monitoring} connectionState={connectionState}/></>}
       </div>
     </section>
     {viewingReference && <ConversationReferencePreview reference={viewingReference} onClose={() => setViewingReference(undefined)} onLocate={locateReferenceSource}/>}

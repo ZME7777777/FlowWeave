@@ -94,6 +94,9 @@ _CONVERSATION_EVENT_BY_ID_PATH = re.compile(r"^/api/conversations/[^/]+/events/[
 _DIAGNOSTIC_EVENT_CACHE_LIMIT = 2_048
 _SAFE_DIAGNOSTIC_TOKEN = re.compile(r"^[A-Za-z0-9_.:-]{1,200}$")
 _SAFE_DIAGNOSTIC_MODEL = re.compile(r"^[A-Za-z0-9_.:/-]{1,200}$")
+_SAFE_ERROR_CODE = re.compile(
+    r"^(?:[A-Z][A-Za-z0-9]*(?:Error|Exception)|[A-Z][A-Z0-9_]{2,80})$"
+)
 
 
 def _codex_model_canonical_name(model: str) -> str:
@@ -221,6 +224,36 @@ class _TransientStreamProjection:
             del self._slots[item_id]
             return ({"type": "stream_closed", "item_id": item_id},)
 
+        if frame_type == "retry":
+            attempt = self._nonnegative_int(event.get("attempt"), minimum=1)
+            maximum = self._nonnegative_int(event.get("max_attempts"), minimum=1)
+            failure_kind = event.get("failure_kind")
+            final = event.get("final")
+            model_role = event.get("model_role")
+            allowed_kinds = {
+                "timeout", "connection", "service_unavailable", "empty_response",
+                "rate_limit", "auth", "quota", "config", "context_limit",
+                "content_policy", "internal", "unknown",
+            }
+            if (
+                attempt is None
+                or maximum is None
+                or attempt > maximum
+                or maximum > 5
+                or failure_kind not in allowed_kinds
+                or not isinstance(final, bool)
+                or model_role not in {"primary", "fallback"}
+            ):
+                return ()
+            return ({
+                "type": "model_retry",
+                "attempt": attempt,
+                "max_attempts": maximum,
+                "failure_kind": failure_kind,
+                "final": final,
+                "model_role": model_role,
+            },)
+
         if frame_type == "sync":
             # ``through_seq`` is a connection mark, not an acknowledgement:
             # a live-only client did not receive that earlier history.
@@ -318,6 +351,13 @@ class OpenHandsRuntime:
             return None
         normalized = value.strip()
         return normalized if _SAFE_DIAGNOSTIC_TOKEN.fullmatch(normalized) else None
+
+    @staticmethod
+    def _safe_error_code(value: object) -> str | None:
+        if not isinstance(value, str):
+            return None
+        normalized = value.strip()
+        return normalized if _SAFE_ERROR_CODE.fullmatch(normalized) else None
 
     @staticmethod
     def _safe_diagnostic_model(value: object) -> str | None:
@@ -1337,7 +1377,11 @@ class OpenHandsRuntime:
             # preventing the configured retry chain from ever running. This
             # shared payload covers FlowRun node sessions, direct Agent
             # Workspace conversations, LLM switches, and condensers.
-            "num_retries": 3,
+            # OpenHands interprets this as the total number of transport
+            # attempts, including the initial call. Keep the product
+            # contract at five attempts so live progress can truthfully reach
+            # 5/5 without a frontend timer or a second send.
+            "num_retries": 5,
             "retry_multiplier": 2.0,
             "retry_min_wait": 1,
             "retry_max_wait": 4,
@@ -2581,7 +2625,9 @@ class OpenHandsRuntime:
             payload["event_name"] = kind
             code = item.get("code")
             if isinstance(code, str):
-                payload["error_code"] = code[:200]
+                safe_code = cls._safe_error_code(code)
+                if safe_code is not None:
+                    payload["error_code"] = safe_code
             classification = item.get("classification")
             if isinstance(classification, dict):
                 payload["classification"] = cls._safe_event_detail(

@@ -10,6 +10,7 @@ import tarfile
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -90,6 +91,17 @@ def _safe_members(archive: tarfile.TarFile) -> list[tarfile.TarInfo]:
 
 def _download_archive(url: str, destination: Path) -> None:
     """Download a pinned archive with bounded retry for transient transport failures."""
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme == "file":
+        if parsed.netloc not in {"", "localhost"}:
+            raise RuntimeError("local OpenHands archive must use an absolute file URL")
+        source = Path(urllib.request.url2pathname(parsed.path))
+        if not source.is_file():
+            raise RuntimeError(f"local OpenHands archive does not exist: {source}")
+        shutil.copyfile(source, destination)
+        return
+    if parsed.scheme not in {"http", "https"}:
+        raise RuntimeError("OpenHands archive URL must use http(s) or file")
     for attempt in range(1, DOWNLOAD_ATTEMPTS + 1):
         try:
             with urllib.request.urlopen(url, timeout=120) as response:  # noqa: S310

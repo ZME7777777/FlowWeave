@@ -16,7 +16,7 @@
 “当前行为”的审计对象；是否保留必须重新按照本设计、固定 OpenHands 源码和真实运行证据判断。
 
 除 FR-493、FR-504 经用户单独授权并已在隔离工作树完成的最小 OpenHands fork 外，本任务只修改 FlowWeave。
-当前目标事实基线为 fork commit `5efe25b00698d39bc615b9dbe759c793e0617a13`，其上游基线为
+当前目标事实基线为 fork commit `4e130c408745934743bc9be5c4b18c830020957b`，其上游基线为
 `30cf5832e42c71c24daa82a1a4fd5d25eb70d1b9`，四个包版本仍固定为 `1.47.0`。此前完成记录中的旧版本号
 继续表示当时实际验收的历史基线，不做追溯改写。
 
@@ -122,6 +122,12 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | OPS-01 | Docker rollback image / BuildKit cache 容量增长 | DONE | 建立带运行引用保护、dry-run 和显式确认的回收工具，并完成生产候选边界核验。 |
 | OPS-02 | Docker rollback image / BuildKit cache 容量增长 | DONE | 已按授权使用 OPS-03 tag 级路径回收，并完成生产不变量与入口验证。 |
 | OPS-03 | 多 rollback tag image 的安全回收 | DONE | 改为逐 tag、重查 Container 引用、不使用 `--force` 的回收路径。 |
+
+### 模型调用重试与终态诊断（2026-09-23）
+
+| 切片 | 风险 | 状态 | 范围 |
+| --- | --- | --- | --- |
+| FR-514 | 模型调用内部重试没有真实进度投影，最终错误以高干扰错误卡片展示 | DONE | OpenHands baseline commit `4e130c408745934743bc9be5c4b18c830020957b` 新增非持久化结构化 retry frame，真实投影 `1/5` 至 `5/5`，保留正式终态错误与脱敏分类；FlowWeave 按 binding/session 隔离状态，区分模型重试与 WebSocket 恢复，不重发用户消息、不删除会话、不显示红色错误卡片。源码归档固定为仓库内不可变包，SHA-256 `13a1812371687a4f57a4874cbb6b8cabe91fce041b1ba758affd5140ea4ee770`；未推送远端、未创建 PR。 |
 
 ### FlowWeave Docker 网络收敛（2026-09-12）
 
@@ -7304,3 +7310,4 @@ FlowWeave 本地累加后猜测压缩边界。
 | 2026-09-23 | FR-511 | 受影响 Python Ruff format/check、`py_compile`、无容器容量断言、由 `.env.example` 渲染的 Compose JSON 容量校验、`git diff --check` 与任务状态唯一性 | PASS（静态）：控制面稳态连接预算固定为 API 36 + stream-api 20 + Worker 10 = 66，并在 100 条上限中保留 20 条；API 每进程交互 Runtime 读取槽设为 3（合计 12）。校验器拒绝 overflow、超预算、预算不一致和 Runtime Provider 数据库凭据。pytest 目标文件因全局 Testcontainers fixture 缺少本机 Docker socket 而在断言前受阻，未计为通过；未连接数据库、未修改远端 Compose／环境、未发布或重启服务。 |
 | 2026-09-23 | FR-512 | Web TypeScript typecheck、受影响文件 ESLint、定向 Playwright（1 passed）、`git diff --check` 与任务状态唯一性 | PASS：删除确认后，在 DELETE 响应尚未返回时立即从本地列表投影移除目标；若目标正在展示，则先导航到同一可见列表中的下一项（末项时回退上一项），不再出现“新会话”空页。删除失败会恢复列表缓存、置顶和未读投影；成功后才清理本地草稿。未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-23 | FR-513 | 受影响 Python Ruff format/check、`py_compile`；无容器 MockTransport 分类回归；Web TypeScript typecheck、受影响 ESLint、production build；Alembic head、`git diff --check` 与任务状态唯一性 | PASS（静态／隔离回归）：模型列表探测将订阅／计划到期、余额或额度耗尽映射为固定 entitlement 错误码；认证拒绝、超时等也各自拥有安全说明。MockTransport 断言上游账号文本不会进入 DomainError。数据库型 `tests/test_api.py` 定向 pytest 在 collection 前因本机 Docker socket 缺失、Testcontainers PostgreSQL 无法创建而阻断，未记为通过；同一新增断言在无容器隔离运行中通过。Web typecheck、ESLint 和 production build 通过（仅既有 chunk-size 警告）。无迁移、OpenHands、Runtime Provider、Docker 或远端部署变更。 |
+| 2026-09-23 | FR-514 | OpenHands 定向 Ruff、`py_compile`、LLM retry 单元测试、Agent Server session frame 测试；FlowWeave 平台定向 Ruff／`py_compile`／pytest；Web TypeScript typecheck、受影响 ESLint、production build；本地源码归档 fetch/digest 校验；`git diff --check` 与任务状态唯一性 | PASS（本地隔离）：OpenHands retry listener 与最终 `5/5` frame 测试通过，session retry frame 非持久化测试通过；FlowWeave 只转发合法结构化 retry frame，前端按会话 binding 隔离并将终态错误收敛为可展开状态行。使用仓库内固定源码包，避免未推送 commit 的 codeload 404；未运行 Docker、数据库迁移、真实 Runtime、远端部署或 E2E。 |

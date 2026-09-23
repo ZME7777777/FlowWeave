@@ -12,7 +12,7 @@ import { ApiError, randomId, type AgentStreamEvent } from '../../api/client';
 import { agentWorkspaceSessionGateway, type AgentSessionGateway } from '../../api/agent-session-gateway';
 import { withoutDeploymentBase } from '../../deploymentPath';
 import { agentWorkspaceSessionHost, type AgentSessionHost } from './session-host';
-import { ConversationSurface, ConversationTaskPlan, type ConversationHistoryPrepend, type ConversationReference } from '../ConversationSurface';
+import { ConversationSurface, ConversationTaskPlan, type ConversationHistoryPrepend, type ConversationReference, type ModelRetryStatus } from '../ConversationSurface';
 import { isOpenHandsAgentReply, isOpenHandsEmptyResponseRecovery, orderOpenHandsConversationEvents, parseOpenHandsEventTime } from '../conversationEvents';
 import { useProductDialog } from '../ProductDialogContext';
 import { useEscapeClose } from '../useEscapeClose';
@@ -39,7 +39,7 @@ const SESSION_PERFORMANCE_MARK_PREFIX = 'flowweave.agent-session.';
 // Runtime payload. They govern each model request made while a Task runs;
 // they are not a wall-clock deadline for the whole child task.
 const MODEL_REQUEST_TIMEOUT_SECONDS = 120;
-const MODEL_REQUEST_MAX_RETRIES = 3;
+const MODEL_REQUEST_MAX_RETRIES = 5;
 const DEFAULT_CONTEXT_COMPACTION_THRESHOLD_TOKENS = 512_000;
 type StreamStatus = 'connecting' | 'live' | 'recovering' | 'disabled';
 type TurnState = 'idle' | 'running' | 'pausing' | 'paused' | 'resuming';
@@ -453,7 +453,7 @@ function RuntimeTaskRecord({ task, definitions, sessionStopped }: {
   const usage = task.usage;
   return <section className="agent-subagent-record" aria-label={`${task.subagentType} 任务详情`}>
       <header><div><span className="eyebrow">SUBAGENT</span><h2>{task.subagentType}</h2><p>{runtimeTaskStatus(task, sessionStopped)}{task.taskId ? ` · ${task.taskId}` : ''}</p></div></header>
-      <section><h3>本次任务</h3><dl><dt>状态</dt><dd className={`agent-subagent-status ${runtimeTaskIsActive(task, sessionStopped) ? 'running' : task.status === 'COMPLETED' ? 'completed' : 'error'}`}>{runtimeTaskStatus(task, sessionStopped)}</dd><dt>任务说明</dt><dd>{task.description || 'OpenHands 未提供任务摘要。'}</dd><dt>子智能体类型</dt><dd><code>{task.subagentType}</code></dd><dt>模型请求策略</dt><dd>单次最长 {MODEL_REQUEST_TIMEOUT_SECONDS} 秒；失败最多重试 {MODEL_REQUEST_MAX_RETRIES} 次</dd><dt>子任务墙钟耗时</dt><dd title="从正式 TaskAction 到当前时间或正式 TaskObservation（或所属主会话的正式错误）的经过时间；包含模型调用、重试等待和工具执行。">{elapsedLabel}</dd>{task.startedAt && <><dt>开始时间</dt><dd>{new Date(task.startedAt).toLocaleString('zh-CN')}</dd></>}{task.finishedAt && <><dt>结束时间</dt><dd>{new Date(task.finishedAt).toLocaleString('zh-CN')}</dd></>}{task.parentTerminal?.at && <><dt>主会话异常时间</dt><dd>{new Date(task.parentTerminal.at).toLocaleString('zh-CN')}</dd></>}{task.lastEventType && <><dt>最近事件</dt><dd>{task.lastEventType}{task.lastEventAt ? ` · ${new Date(task.lastEventAt).toLocaleString('zh-CN')}` : ''}</dd></>}{task.lastEventSummary && <><dt>最近事件摘要</dt><dd>{task.lastEventSummary}</dd></>}{task.control && <><dt>平台处理</dt><dd>{task.control.control_state}{task.control.updated_at ? ` · ${new Date(task.control.updated_at).toLocaleString('zh-CN')}` : ''}</dd>{task.control.deadline_at && <><dt>观察截止</dt><dd>{new Date(task.control.deadline_at).toLocaleString('zh-CN')}</dd></>}{task.control.last_error && <><dt>处理错误</dt><dd>{task.control.last_error}</dd></>}</>}</dl><p className="agent-subagent-note">OpenHands 当前只发布 Task 的开始、结果和终态错误；单次模型重试在上游内部完成，未提供正式重试事件，因此这里不会把它猜测成“1/3”。{task.parentTerminal && ' 主会话已正式异常结束，但 OpenHands 未发布这个子任务的结果，因此不会把它伪装成子任务失败。'}</p></section>
+      <section><h3>本次任务</h3><dl><dt>状态</dt><dd className={`agent-subagent-status ${runtimeTaskIsActive(task, sessionStopped) ? 'running' : task.status === 'COMPLETED' ? 'completed' : 'error'}`}>{runtimeTaskStatus(task, sessionStopped)}</dd><dt>任务说明</dt><dd>{task.description || 'OpenHands 未提供任务摘要。'}</dd><dt>子智能体类型</dt><dd><code>{task.subagentType}</code></dd><dt>模型请求策略</dt><dd>单次最长 {MODEL_REQUEST_TIMEOUT_SECONDS} 秒；单次调用最多 {MODEL_REQUEST_MAX_RETRIES} 次总尝试</dd><dt>子任务墙钟耗时</dt><dd title="从正式 TaskAction 到当前时间或正式 TaskObservation（或所属主会话的正式错误）的经过时间；包含模型调用、重试等待和工具执行。">{elapsedLabel}</dd>{task.startedAt && <><dt>开始时间</dt><dd>{new Date(task.startedAt).toLocaleString('zh-CN')}</dd></>}{task.finishedAt && <><dt>结束时间</dt><dd>{new Date(task.finishedAt).toLocaleString('zh-CN')}</dd></>}{task.parentTerminal?.at && <><dt>主会话异常时间</dt><dd>{new Date(task.parentTerminal.at).toLocaleString('zh-CN')}</dd></>}{task.lastEventType && <><dt>最近事件</dt><dd>{task.lastEventType}{task.lastEventAt ? ` · ${new Date(task.lastEventAt).toLocaleString('zh-CN')}` : ''}</dd></>}{task.lastEventSummary && <><dt>最近事件摘要</dt><dd>{task.lastEventSummary}</dd></>}{task.control && <><dt>平台处理</dt><dd>{task.control.control_state}{task.control.updated_at ? ` · ${new Date(task.control.updated_at).toLocaleString('zh-CN')}` : ''}</dd>{task.control.deadline_at && <><dt>观察截止</dt><dd>{new Date(task.control.deadline_at).toLocaleString('zh-CN')}</dd></>}{task.control.last_error && <><dt>处理错误</dt><dd>{task.control.last_error}</dd></>}</>}</dl><p className="agent-subagent-note">OpenHands 当前只发布 Task 的开始、结果和终态错误；模型重试由同一次调用内部真实上报，不追加用户消息，也不会由前端计时猜测次数。{task.parentTerminal && ' 主会话已正式异常结束，但 OpenHands 未发布这个子任务的结果，因此不会把它伪装成子任务失败。'}</p></section>
       {usage && <section><h3>用量</h3><dl><dt>模型</dt><dd><code>{usage.model_name}</code></dd><dt>累计 Token</dt><dd>{(usage.prompt_tokens + usage.completion_tokens + usage.cache_read_tokens + usage.cache_write_tokens + usage.reasoning_tokens).toLocaleString('zh-CN')}</dd><dt>输入 / 输出</dt><dd>{usage.prompt_tokens.toLocaleString('zh-CN')} / {usage.completion_tokens.toLocaleString('zh-CN')}</dd><dt>推理 Token</dt><dd>{usage.reasoning_tokens.toLocaleString('zh-CN')}</dd><dt>缓存读 / 写</dt><dd>{usage.cache_read_tokens.toLocaleString('zh-CN')} / {usage.cache_write_tokens.toLocaleString('zh-CN')}</dd><dt>当前轮 Token</dt><dd>{usage.per_turn_tokens.toLocaleString('zh-CN')}</dd><dt>上下文窗口</dt><dd>{usage.context_window.toLocaleString('zh-CN')}</dd><dt>累计费用</dt><dd>${usage.accumulated_cost.toFixed(6)}</dd></dl></section>}
       <section><h3>子智能体定义</h3>{nativeDefinition ? <p className="agent-subagent-note">这是 OpenHands 原生 <code>{task.subagentType}</code> 类型。当前正式事件未携带可版本化的 FlowWeave Agent Definition，因此不会把它伪装成自定义定义。</p> : <><p>{definition.description || '已发布的 FlowWeave Agent Definition。'}</p><dl><dt>已发布版本</dt><dd>{definition.version}</dd><dt>内容摘要</dt><dd><code>{definition.content_hash.slice(0, 16)}</code></dd>{tools.length > 0 && <><dt>允许工具</dt><dd>{tools.join('、')}</dd></>}{skills.length > 0 && <><dt>技能</dt><dd>{skills.join('、')}</dd></>}</dl><p className="agent-subagent-note">此处展示当前可读取的已发布定义。会话运行时使用的定义版本由 OpenHands 创建请求冻结，事件未提供版本 ID 时不据此声称两者相同。</p></>}</section>
       {outcome && <section><h3>执行结果</h3><pre>{outcome}</pre></section>}
@@ -3976,6 +3976,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const composerRef = useRef<ComposerHandle>(null);
   const [composerHasText, setComposerHasText] = useState(() => Boolean(initialComposerDraft.trim()));
   const [streamStatus, setStreamStatus] = useState<StreamStatus>('disabled');
+  const [modelRetryStatus, setModelRetryStatus] = useState<ModelRetryStatus>();
   const [scopedLiveEvents, setScopedLiveEvents] = useState<ScopedConversationEvent[]>([]);
   const [optimisticBootstrapTurn, setOptimisticBootstrapTurn] = useState<OptimisticBootstrapTurn>();
   const [pendingBootstrap, setPendingBootstrap] = useState<{ draft: ConversationDraft; message: QueuedMessage } | undefined>(() => {
@@ -4935,6 +4936,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     && (!nativeTurnTerminal || terminalEventReconciliationActive)
   );
   const latestDisplayedEvent = displayedEvents.at(-1);
+  useEffect(() => {
+    setModelRetryStatus(undefined);
+  }, [selected?.id]);
   const emptyResponseRecoveryActive = conversationActivity.state === 'running'
     && Boolean(latestDisplayedEvent && isOpenHandsEmptyResponseRecovery(latestDisplayedEvent));
   useEffect(() => {
@@ -5125,7 +5129,19 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     // Final replies render only from their durable MESSAGE event. Transient text
     // deltas are deliberately ignored to avoid partial content being replaced.
     if (event.type === 'stream_closed') reconcileConversationProjection();
-    if (event.type === 'event' && event.event) appendLiveEvent(scope, event.event);
+    if (event.type === 'model_retry' && event.attempt && event.max_attempts && event.failure_kind && typeof event.final === 'boolean' && event.model_role) {
+      setModelRetryStatus({
+        attempt: event.attempt,
+        maxAttempts: event.max_attempts,
+        failureKind: event.failure_kind,
+        final: event.final,
+        modelRole: event.model_role,
+      });
+    }
+    if (event.type === 'event' && event.event) {
+      if (event.event.event_type === 'MESSAGE' && ['user', 'human'].includes(String(event.event.payload.source ?? '').toLowerCase())) setModelRetryStatus(undefined);
+      appendLiveEvent(scope, event.event);
+    }
     if (event.type === 'message_complete') reconcileConversationProjection();
   }, [appendLiveEvent, reconcileConversationProjection]);
   const onStreamReconnect = useCallback((scope: string) => {
@@ -6333,6 +6349,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         isGenerating={conversationVisuallyActive}
         isPaused={conversationActivity.state === 'paused'}
         emptyResponseRecoveryActive={emptyResponseRecoveryActive}
+        modelRetryStatus={modelRetryStatus}
         historyPending={Boolean(selected && historyLoadingBindingId === selected.id)}
         conversationScope={selected?.id ?? conversationDraft?.id}
         historyPrepend={historyPrepend}

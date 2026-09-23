@@ -985,7 +985,7 @@ def test_openhands_starts_real_agent_with_selected_provider_and_skill(
         "reasoning_effort": "high",
         "api_mode": "chat",
         "stream": True,
-        "num_retries": 3,
+        "num_retries": 5,
         "retry_multiplier": 2.0,
         "retry_min_wait": 1,
         "retry_max_wait": 4,
@@ -1700,7 +1700,7 @@ def test_openhands_configures_codex_oauth_for_responses(openhands_settings, monk
         "supports_responses_api": True,
         "supports_sampling_params": False,
     }
-    assert llm["num_retries"] == 3
+    assert llm["num_retries"] == 5
     assert llm["retry_multiplier"] == 2.0
     assert llm["retry_min_wait"] == 1
     assert llm["retry_max_wait"] == 4
@@ -3374,6 +3374,40 @@ def test_openhands_stream_projection_closes_open_slots_when_relay_ends():
     assert projection.close_all() == ({"type": "stream_closed", "item_id": "stream-1"},)
 
 
+def test_openhands_stream_projection_forwards_only_valid_model_retry_progress():
+    projection = openhands_module._TransientStreamProjection()
+
+    assert projection.project(
+        {
+            "type": "retry",
+            "attempt": 3,
+            "max_attempts": 5,
+            "failure_kind": "timeout",
+            "final": False,
+            "model_role": "primary",
+        },
+        OpenHandsRuntime._visible_stream_event,
+    ) == ({
+        "type": "model_retry",
+        "attempt": 3,
+        "max_attempts": 5,
+        "failure_kind": "timeout",
+        "final": False,
+        "model_role": "primary",
+    },)
+    assert projection.project(
+        {
+            "type": "retry",
+            "attempt": 6,
+            "max_attempts": 5,
+            "failure_kind": "timeout",
+            "final": False,
+            "model_role": "primary",
+        },
+        OpenHandsRuntime._visible_stream_event,
+    ) == ()
+
+
 def test_bash_wakeup_identity_excludes_command_output_and_marks_direct_actor():
     identity = OpenHandsRuntime._bash_event_identity(
         {
@@ -3736,7 +3770,7 @@ def test_openhands_switches_llm_in_place_with_reasoning(openhands_settings, monk
     assert payload["llm"]["stream"] is True
     assert payload["llm"]["temperature"] is None
     assert payload["llm"]["max_output_tokens"] is None
-    assert payload["llm"]["num_retries"] == 3
+    assert payload["llm"]["num_retries"] == 5
     assert payload["llm"]["retry_multiplier"] == 2.0
     assert payload["llm"]["retry_min_wait"] == 1
     assert payload["llm"]["retry_max_wait"] == 4
@@ -4233,7 +4267,7 @@ def test_openhands_serializes_frozen_summarizing_condenser(openhands_settings, m
             "reasoning_effort": "high",
             "api_mode": "chat",
             "stream": True,
-            "num_retries": 3,
+            "num_retries": 5,
             "retry_multiplier": 2.0,
             "retry_min_wait": 1,
             "retry_max_wait": 4,
@@ -4387,7 +4421,7 @@ def test_openhands_fork_replaces_only_the_governed_condenser(
             "reasoning_effort": "high",
             "api_mode": "chat",
             "stream": True,
-            "num_retries": 3,
+            "num_retries": 5,
             "retry_multiplier": 2.0,
             "retry_min_wait": 1,
             "retry_max_wait": 4,
@@ -5094,6 +5128,20 @@ def test_openhands_projects_native_conversation_error_details():
         "error_code": "LLMRateLimitError",
         "classification": {"kind": "rate_limit", "retryable": True, "user_action": "retry"},
     }
+
+
+def test_openhands_redacts_unstructured_native_error_code():
+    event = {
+        "kind": "ConversationErrorEvent",
+        "id": "error-private-code",
+        "source": "environment",
+        "code": "https://private.example/v1?token=secret",
+        "detail": "safe detail",
+    }
+
+    payload = OpenHandsRuntime._event_payload(event)
+
+    assert "error_code" not in payload
 
 
 def test_openhands_logs_one_redacted_native_terminal_error_diagnostic(
