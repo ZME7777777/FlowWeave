@@ -22,13 +22,17 @@ import { selectCapabilityVersion, selectCapabilityVersions } from '../../utils/c
 import { SubagentAvatar } from '../SubagentAvatar';
 import { subagentAvatarSlots, type SubagentAvatarSlot } from '../../utils/subagentAvatar';
 import { workspaceFileChanges, workspaceRelativePath, type WorkspaceFileChange } from './fileChanges';
-import type { AgentAttachment, AgentConversation, AgentConversationAnnotation, AgentConversationContext, AgentConversationCredentialSyncEntry, AgentConversationPage, AgentConversationReference, AgentConversationSearch, AgentPendingConfirmationAction, AgentSessionCapability, AgentSessionMcpReadiness, AgentSessionWorkDirectory, AgentSessionWorkDirectoryList, AgentSessionWorkspaceDetails, AgentWorkspaceReference, CapabilityAsset, CapabilityCollection, ModelProvider, OpenHandsConversationEvent, OpenHandsConversationEventBatch, ProviderModel, RuntimeTaskControlSnapshot, RuntimeTaskUsageSnapshot, WorkspaceGitChangeKind, WorkspaceGitChangedFile, WorkspaceGitChanges, WorkspaceGitCommitDetails, WorkspaceGitFileDiff } from '../../types';
+import type { AgentAttachment, AgentConversation, AgentConversationAnnotation, AgentConversationContext, AgentConversationCredentialSyncEntry, AgentConversationInputReadiness, AgentConversationPage, AgentConversationReference, AgentConversationSearch, AgentPendingConfirmationAction, AgentSessionCapability, AgentSessionMcpReadiness, AgentSessionWorkDirectory, AgentSessionWorkDirectoryList, AgentSessionWorkspaceDetails, AgentWorkspaceReference, CapabilityAsset, CapabilityCollection, ModelProvider, OpenHandsConversationEvent, OpenHandsConversationEventBatch, ProviderModel, RuntimeTaskControlSnapshot, RuntimeTaskUsageSnapshot, WorkspaceGitChangeKind, WorkspaceGitChangedFile, WorkspaceGitChanges, WorkspaceGitCommitDetails, WorkspaceGitFileDiff } from '../../types';
 import '../../pages/agent-workbench.css';
 import '../../pages/agent-workbench-layout.css';
 
 const WORKSPACE_FILE_TRANSFER_TYPE = 'application/x-flowweave-workspace-file-path';
 const ACTIVE_EVENT_RECOVERY_INTERVAL_MS = 4_000;
 const ACTIVE_EVENT_LATEST_RECHECK_INTERVAL_MS = 30_000;
+// A hydration response is a coherent native snapshot. Keep its three seeded
+// projections fresh long enough to prevent React Query from immediately
+// repeating the same Runtime reads as soon as the first screen has painted.
+const INITIAL_HYDRATION_STALE_TIME_MS = 30_000;
 const WORKSPACE_PATH_COPIED_DURATION_MS = 1_500;
 const SESSION_PERFORMANCE_MARK_PREFIX = 'flowweave.agent-session.';
 // These are the frozen OpenHands/LiteLLM request settings applied by the
@@ -4082,6 +4086,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const submittedUserEvents = useRef(new Map<string, ScopedConversationEvent>());
   useEffect(() => () => {
     for (const resource of [
+      'conversation-hydration',
       'conversation-events',
       'conversation-input-readiness',
       'conversation-context',
@@ -4594,12 +4599,43 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const canBootstrap = Boolean(canOpenConversation && conversationDraft && (!features.modelSelection || (newConversationProviderId && newConversationModelName)));
   const localTurnGenerating = turnState === 'running' || turnState === 'pausing' || turnState === 'resuming';
   const eventQueryKey = sessionQueryKey(host, 'conversation-events', workspace?.id, selected?.id);
+  const hydrationQueryKey = sessionQueryKey(host, 'conversation-hydration', workspace?.id, selected?.id);
+  const inputReadinessQueryKey = sessionQueryKey(host, 'conversation-input-readiness', workspace?.id, selected?.id);
+  const contextQueryKey = sessionQueryKey(host, 'conversation-context', workspace?.id, selected?.id);
+  const hydrationQuery = useQuery({
+    queryKey: hydrationQueryKey,
+    queryFn: async () => {
+      const hydration = await api.conversationHydration(workspace!.id, selected!.id);
+      // These queries have already mounted in their disabled fallback state.
+      // Seed their actual cache entries before hydration resolves so enabling
+      // them cannot issue a second first-screen Runtime read.
+      queryClient.setQueryData<OpenHandsConversationEventBatch>(eventQueryKey, hydration.events);
+      queryClient.setQueryData<AgentConversationInputReadiness>(inputReadinessQueryKey, hydration.readiness);
+      queryClient.setQueryData<AgentConversationContext>(contextQueryKey, hydration.context);
+      return hydration;
+    },
+    // A single native hydration read returns the coherent event, context and
+    // readiness snapshots required for the first paint. It deliberately does
+    // not replace the incremental event reconciler after that point.
+    enabled: Boolean(workspace && selected),
+    refetchOnWindowFocus: false,
+    retry: (count, error) => !(error instanceof ApiError && error.status < 500) && count < 2,
+  });
+  // Do not fan out fallback reads while hydration is still attempting. An
+  // exhausted hydration error restores the established independent paths so a
+  // transient or older Runtime cannot leave the conversation unusable.
+  const hydrationSettled = hydrationQuery.isSuccess || hydrationQuery.isError;
+  const hydrationData = hydrationQuery.data;
+  const hydrationDataUpdatedAt = hydrationQuery.dataUpdatedAt;
   const inputReadinessQuery = useQuery({
-    queryKey: sessionQueryKey(host, 'conversation-input-readiness', workspace?.id, selected?.id),
+    queryKey: inputReadinessQueryKey,
     queryFn: () => api.inputReadiness(workspace!.id, selected!.id),
     // This is the formal OpenHands execution-state read used to restore an
     // in-flight turn after a browser reload. It is not persisted by FlowWeave.
-    enabled: Boolean(workspace && selected),
+    enabled: Boolean(workspace && selected && hydrationSettled),
+    initialData: hydrationData?.readiness,
+    initialDataUpdatedAt: hydrationData ? hydrationDataUpdatedAt : undefined,
+    staleTime: INITIAL_HYDRATION_STALE_TIME_MS,
     refetchOnWindowFocus: false,
     refetchInterval: query => {
       const needsFallback = conversationIsRunning(selected?.execution_status)
@@ -4666,7 +4702,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     // latest page is rendered before older pages are prefetched below. Running
     // recovery is coordinated below so latest-window and cursor reads cannot
     // race each other on independent timers.
-    enabled: Boolean(workspace && selected),
+    enabled: Boolean(workspace && selected && hydrationSettled),
+    initialData: hydrationData?.events,
+    initialDataUpdatedAt: hydrationData ? hydrationDataUpdatedAt : undefined,
+    staleTime: INITIAL_HYDRATION_STALE_TIME_MS,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
     retry: (count, error) => !(error instanceof ApiError && error.status < 500) && count < 2,
@@ -4979,9 +5018,12 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     setDrawerOpen(true);
   }, [candidateOutputUrl, workspace]);
   const contextQuery = useQuery({
-    queryKey: sessionQueryKey(host, 'conversation-context', workspace?.id, selected?.id),
+    queryKey: contextQueryKey,
     queryFn: () => api.conversationContext(workspace!.id, selected!.id),
-    enabled: Boolean(workspace && selected),
+    enabled: Boolean(workspace && selected && hydrationSettled),
+    initialData: hydrationData?.context,
+    initialDataUpdatedAt: hydrationData ? hydrationDataUpdatedAt : undefined,
+    staleTime: INITIAL_HYDRATION_STALE_TIME_MS,
     refetchOnWindowFocus: false,
   });
   const lastCurrentContextByBinding = useRef(new Map<string, AgentConversationContext>());
@@ -5016,7 +5058,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const confirmationQuery = useQuery({
     queryKey: sessionQueryKey(host, 'conversation-confirmation', workspace?.id, selected?.id),
     queryFn: () => api.pendingConfirmation(workspace!.id, selected!.id),
-    enabled: Boolean(workspace && selected && canWrite && features.confirmations),
+    // Confirmation is intentionally not part of hydration. Wait for the
+    // snapshot to settle so a first paint cannot consume another Runtime read
+    // slot in parallel; later invalidations continue to refresh it directly.
+    enabled: Boolean(workspace && selected && hydrationSettled && canWrite && features.confirmations),
     refetchOnWindowFocus: false,
     retry: (count, error) => !(error instanceof ApiError && error.status < 500) && count < 2,
   });

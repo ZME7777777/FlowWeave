@@ -6812,6 +6812,18 @@ FlowWeave 本地累加后猜测压缩边界。
 
 验收：受影响 Python Ruff format/check 与 `py_compile` 通过；无容器 Retry-After／429 纯逻辑断言通过；`test_agent_workspaces.py` 的四项数据库型标题回归已收集，但 session 级 Testcontainers PostgreSQL fixture 因本机 Docker socket 缺失在断言前阻断，未记为通过。`git diff --check` 与任务状态唯一性通过。
 
+### FR-510 会话首屏 Runtime hydration 读取收敛 — DONE
+
+依赖：FR-456、FR-507。
+
+目标：首次选择既有 Agent Workspace 或 FlowNode 会话时，浏览器应优先使用已有的正式 hydration 接口，一次取得 OpenHands 事件、上下文和输入 readiness，避免首屏并发的三条 Runtime 读取耗尽受限读取槽。hydration 失败后必须恢复既有独立读取；运行中的事件增量同步、历史分页、前台恢复和确认读取语义保持不变。
+
+范围：仅修改共享 `AgentSessionWorkbench` 前端查询投影和浏览器回归。不修改 OpenHands、数据库、API、Runtime Provider、Docker、供应商配置或远端环境。
+
+完成：首次选择会话先调用正式 hydration，并在该请求成功时把同一快照的 events、context 和 readiness 写入既有 React Query 缓存；三个独立查询在 hydration 未完成时保持禁用，因此不会与 hydration 并发占用 Runtime 读取槽。hydration 返回后，这些缓存以短暂 freshness 供首屏使用，运行中 readiness 轮询、事件协调器、前台补读和历史分页仍走原有路径。hydration 不可用或失败并耗尽重试时，独立 events／readiness／context 查询会恢复；confirmation 不属于 hydration，改为在 hydration 已结算后才读取，避免首屏再并发抢占读取槽。
+
+验收：Web TypeScript typecheck、受影响文件 ESLint、两条定向 Playwright 回归（2 passed）、`git diff --check` 与任务状态唯一性通过。浏览器回归分别验证正常首屏只读取 hydration、没有任何独立 Runtime snapshot 请求，以及 hydration 返回 404 时安全恢复三条既有独立读取。未修改 OpenHands、数据库、API、Runtime Provider、Docker、供应商配置或远端环境。
+
 
 ## 7. 恢复工作检查表
 
@@ -7265,3 +7277,4 @@ FlowWeave 本地累加后猜测压缩边界。
 | 2026-09-22 | FR-506 | Web TypeScript typecheck、受影响文件 ESLint、Agent transcript scroll-ownership 定向 Playwright（1 passed）、`git diff --check` 与任务状态唯一性 | PASS：运行中会话的四秒正式事件对账即使更新仅后端可见字段，也不会重复写入 transcript 的底部滚动位置；新增事件、流式／正式输出及历史分页仍保持既有最新内容或阅读锚点。未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-22 | FR-507 | Web TypeScript typecheck、受影响文件 ESLint、`git diff --check` 与任务状态唯一性；后台恢复定向 Playwright 尝试 | PASS（静态）：浏览器恢复可见或重新聚焦后立即从最新 OpenHands 事件窗口对账，并刷新会话列表、readiness 与 confirmation；连续 `visibilitychange`／`focus` 合并为一次恢复。新增 E2E 覆盖后台完成后无需刷新显示最终结果；当前环境缺少 Chrome，已有 Chromium 缺少 `libglib-2.0.so.0`，浏览器未启动，未将 E2E 记为通过。未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-22 | FR-508 | Web TypeScript typecheck、受影响文件 ESLint、生产构建、`git diff --check`；会话收尾与默认模型定向 Playwright 尝试 | PASS（静态）：带 `item_id` 的 OpenHands 文本 delta 作为浏览器临时回复流式展示，`message_complete` 只触发正式事件补读且不清空已生成文本，同 ID 正式事件无缝接管；Runtime 已终态时事件对账不再占用运行样式或禁用输入，旧排队消息仍受短时后台门控。新会话编辑区移除模型选择器，默认使用首个已连接供应商的默认模型，覆盖设置移入侧栏“会话配置”的“默认模型”页签。类型检查、ESLint、构建和 diff 检查通过；当前环境缺少 Chrome，定向 E2E 未启动。未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
+| 2026-09-23 | FR-510 | Web TypeScript typecheck、受影响文件 ESLint、Agent 首屏 hydration／回退定向 Playwright（2 passed）、`git diff --check` 与任务状态唯一性 | PASS：首次选择会话将正式 hydration 的 events、context、readiness 写入三项既有查询缓存，首屏不再并发请求三个 Runtime snapshot；confirmation 等 hydration 结算后再读取。浏览器回归确认正常路径仅调用 hydration，以及 hydration 404 时立即回退为三个既有独立读取。未修改 OpenHands、数据库、API、Runtime Provider、Docker、供应商配置或远端环境。 |

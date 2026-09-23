@@ -30,6 +30,129 @@ async function login(page: Page) {
   await expect(page.getByRole('button', { name: '账户与设置' })).toContainText(user.username);
 }
 
+test('Agent session hydrates the first screen without parallel Runtime snapshot reads', async ({ page }) => {
+  let authenticated = false;
+  let hydrationReads = 0;
+  let fallbackReads = 0;
+  const workspace = {
+    id: 'hydration-workspace', display_name: '首屏水合工作区', desired_state: 'RUNNING', updated_at: now,
+  };
+  const conversation = {
+    id: 'hydration-conversation', display_title: '首屏水合会话', title_state: 'MANUAL',
+    lifecycle: 'ACTIVE', streaming_callback_ready: true, write_available: true, execution_status: 'idle',
+    created_at: now, updated_at: now,
+  };
+  const hydration = {
+    events: {
+      events: [
+        { id: 'hydration-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '读取首屏状态', timestamp: now } },
+        { id: 'hydration-agent', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'hydration-user', content: '已由 hydration 返回完整首屏。', timestamp: now } },
+      ],
+      next_cursor: 'hydration-agent', history_cursor: null, result: { status: 'COMPLETED' },
+    },
+    context: { model_name: 'hydration-model', window_tokens: 128_000, used_tokens: 2_048, usage_current: true },
+    readiness: { ready: true, execution_status: 'idle' },
+  };
+
+  await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path.endsWith('/auth/me')) return authenticated
+      ? json(route, user)
+      : json(route, { error: { code: 'AUTHENTICATION_REQUIRED', message: '请先登录' } }, 401);
+    if (path.endsWith('/auth/login') && request.method() === 'POST') { authenticated = true; return json(route, user); }
+    if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
+    if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
+    if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: [conversation], next_cursor: null });
+    if (path.endsWith('/hydration')) { hydrationReads += 1; return json(route, hydration); }
+    if (path.endsWith('/events') || path.endsWith('/input-readiness') || path.endsWith('/context')) {
+      fallbackReads += 1;
+      return json(route, { error: { code: 'UNEXPECTED_FALLBACK', message: '首屏不应并发读取独立 Runtime 快照' } }, 500);
+    }
+    if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
+    if (path.endsWith('/work-directories')) return json(route, {
+      root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [],
+    });
+    if (path.endsWith('/workspace')) return json(route, {
+      root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' },
+      working_directory: '/runtime/workspace/project', work_directory: null, files: [], repositories: [],
+      runtime: {}, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '不可用', note: '' } },
+    });
+    if (path.endsWith('/model-providers') || path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
+    if (path.includes('/conversations/') && request.method() === 'GET') return json(route, conversation);
+    return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+  });
+
+  await page.goto('/');
+  await login(page);
+  await page.goto('/agent/conversations/hydration-conversation');
+  await expect(page.getByText('已由 hydration 返回完整首屏。')).toBeVisible();
+  await expect(page.getByLabel('发送 Agent 消息')).toBeEditable();
+  expect(hydrationReads).toBe(1);
+  expect(fallbackReads).toBe(0);
+});
+
+test('Agent session restores independent Runtime reads when hydration is unavailable', async ({ page }) => {
+  let authenticated = false;
+  let hydrationReads = 0;
+  let fallbackReads = 0;
+  const workspace = {
+    id: 'hydration-fallback-workspace', display_name: '水合回退工作区', desired_state: 'RUNNING', updated_at: now,
+  };
+  const conversation = {
+    id: 'hydration-fallback-conversation', display_title: '水合回退会话', title_state: 'MANUAL',
+    lifecycle: 'ACTIVE', streaming_callback_ready: true, write_available: true, execution_status: 'idle',
+    created_at: now, updated_at: now,
+  };
+
+  await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path.endsWith('/auth/me')) return authenticated
+      ? json(route, user)
+      : json(route, { error: { code: 'AUTHENTICATION_REQUIRED', message: '请先登录' } }, 401);
+    if (path.endsWith('/auth/login') && request.method() === 'POST') { authenticated = true; return json(route, user); }
+    if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
+    if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
+    if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: [conversation], next_cursor: null });
+    if (path.endsWith('/hydration')) {
+      hydrationReads += 1;
+      return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: '旧 Runtime 不提供 hydration' } }, 404);
+    }
+    if (path.endsWith('/events')) {
+      fallbackReads += 1;
+      return json(route, {
+        events: [{ id: 'hydration-fallback-agent', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: '__root__', content: '已安全回退到独立读取。', timestamp: now } }],
+        next_cursor: 'hydration-fallback-agent', history_cursor: null, result: { status: 'COMPLETED' },
+      });
+    }
+    if (path.endsWith('/input-readiness')) { fallbackReads += 1; return json(route, { ready: true, execution_status: 'idle' }); }
+    if (path.endsWith('/context')) { fallbackReads += 1; return json(route, { model_name: 'fallback-model', window_tokens: 128_000, used_tokens: 1_024, usage_current: true }); }
+    if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
+    if (path.endsWith('/work-directories')) return json(route, {
+      root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [],
+    });
+    if (path.endsWith('/workspace')) return json(route, {
+      root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' },
+      working_directory: '/runtime/workspace/project', work_directory: null, files: [], repositories: [],
+      runtime: {}, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '不可用', note: '' } },
+    });
+    if (path.endsWith('/model-providers') || path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
+    if (path.includes('/conversations/') && request.method() === 'GET') return json(route, conversation);
+    return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+  });
+
+  await page.goto('/');
+  await login(page);
+  await page.goto('/agent/conversations/hydration-fallback-conversation');
+  await expect(page.getByText('已安全回退到独立读取。')).toBeVisible();
+  await expect(page.getByLabel('发送 Agent 消息')).toBeEditable();
+  expect(hydrationReads).toBe(1);
+  expect(fallbackReads).toBe(3);
+});
+
 test('Agent session renders a completed long Markdown reply without manual expansion', async ({ page }) => {
   let authenticated = false;
   let eventRequests = 0;
