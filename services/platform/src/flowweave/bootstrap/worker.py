@@ -353,6 +353,7 @@ class TaskWorker:
         exception: Exception,
     ) -> None:
         permanent = _is_permanent_task_failure(task, exception)
+        retry_delay_seconds = getattr(exception, "retry_delay_seconds", None)
         # Claimed tasks are global delivery records, but their terminal effects
         # can target tenant-scoped aggregates.  Failure handling runs outside
         # ``_execute_claimed_task`` and therefore must restore the same
@@ -361,7 +362,14 @@ class TaskWorker:
         with tenant_bypass():
             async with self.container.database.session() as session:
                 failed = await session.run_sync(
-                    lambda db: fail(db, lease, error, permanent=permanent, commit=False)
+                    lambda db: fail(
+                        db,
+                        lease,
+                        error,
+                        permanent=permanent,
+                        retry_delay_seconds=retry_delay_seconds,
+                        commit=False,
+                    )
                 )
                 if failed:
                     await session.run_sync(

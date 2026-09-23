@@ -9,6 +9,7 @@ from flowweave.modules.agent_sessions.application.search import (
     process as process_agent_conversation_search,
 )
 from flowweave.modules.agent_workspaces.public import (
+    finalize_agent_conversation_title_failure,
     process_agent_conversation_title,
     process_agent_workspace_runtime,
 )
@@ -311,6 +312,10 @@ def record_terminal_failure(db: Session, task_id: str, error: str) -> None:
     task = db.get(BackgroundTask, task_id)
     if task is None or task.state != TaskState.DEAD:
         return
+    if task.task_type == "GENERATE_AGENT_CONVERSATION_TITLE":
+        finalize_agent_conversation_title_failure(
+            db, task.aggregate_id, dict(task.payload_json or {}), task.id
+        )
     automatic_task_types = {
         "START_AUTOMATIC_RUN",
         "EVALUATE_READINESS",

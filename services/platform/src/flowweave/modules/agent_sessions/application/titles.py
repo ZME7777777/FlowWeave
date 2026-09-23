@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import logging
 import re
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from typing import Any, cast
 
 import httpx
@@ -25,6 +27,15 @@ _MECHANICAL_TITLE = re.compile(
     re.IGNORECASE,
 )
 _logger = logging.getLogger(__name__)
+_MAX_RETRY_AFTER_SECONDS = 300
+
+
+class RetryableTitleGenerationError(RuntimeError):
+    """A safe, bounded retry signal for the durable task worker."""
+
+    def __init__(self, reason: str, retry_delay_seconds: int | None = None) -> None:
+        super().__init__(f"title generation retryable failure: {reason}")
+        self.retry_delay_seconds = retry_delay_seconds
 
 
 def _clean_title(value: object, fallback: str) -> str:
@@ -61,6 +72,38 @@ def _failure_reason(exc: Exception) -> str:
         if message.startswith("Responses title request failed:"):
             return "responses_request_failed"
     return "unknown_title_generation_error"
+
+
+def _retry_after_seconds(response: httpx.Response) -> int | None:
+    """Return a bounded Retry-After delay without persisting provider details."""
+
+    raw = response.headers.get("Retry-After", "").strip()
+    if raw.isdecimal():
+        return min(max(int(raw), 1), _MAX_RETRY_AFTER_SECONDS)
+    if not raw:
+        return None
+    try:
+        retry_at = cast(datetime, parsedate_to_datetime(raw))
+        if retry_at.tzinfo is None:
+            retry_at = retry_at.replace(tzinfo=UTC)
+        seconds = int((retry_at - datetime.now(UTC)).total_seconds())
+    except (TypeError, ValueError, IndexError, OverflowError):
+        return None
+    return min(max(seconds, 1), _MAX_RETRY_AFTER_SECONDS)
+
+
+def _retryable_failure(exc: Exception) -> RetryableTitleGenerationError | None:
+    if isinstance(exc, httpx.TimeoutException):
+        return RetryableTitleGenerationError("http_timeout")
+    if isinstance(exc, httpx.HTTPStatusError):
+        status_code = exc.response.status_code
+        if status_code == 429 or status_code >= 500:
+            return RetryableTitleGenerationError(
+                f"http_status_{status_code}", _retry_after_seconds(exc.response)
+            )
+    if isinstance(exc, httpx.TransportError):
+        return RetryableTitleGenerationError("http_transport_error")
+    return None
 
 
 def _chat_title(snapshot: TitleProviderSnapshot, first_message: str) -> str:
@@ -212,6 +255,21 @@ def process_agent_conversation_title(
             fallback,
         )
     except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError) as exc:
+        reason = _failure_reason(exc)
+        retryable = _retryable_failure(exc)
+        if retryable is not None:
+            _logger.warning(
+                "Agent conversation title generation deferred for retry "
+                "binding_id=%s generation=%s provider_id=%s model=%s "
+                "reason=%s retry_after_seconds=%s",
+                binding_id,
+                generation,
+                provider_id if isinstance(provider_id, str) else None,
+                model_name if isinstance(model_name, str) else None,
+                reason,
+                retryable.retry_delay_seconds,
+            )
+            raise retryable from exc
         # Title generation is optional metadata.  Preserve the conversation
         # workflow, but leave an operational trace without logging the user's
         # first message or model response.
@@ -223,7 +281,7 @@ def process_agent_conversation_title(
             generation,
             provider_id if isinstance(provider_id, str) else None,
             model_name if isinstance(model_name, str) else None,
-            _failure_reason(exc),
+            reason,
             type(exc).__name__,
         )
         state = "FALLBACK"
@@ -248,3 +306,33 @@ def process_agent_conversation_title(
             )
         )
     _redact_task_seed(db, lease, generation)
+
+
+def finalize_agent_conversation_title_failure(
+    db: Session, binding_id: str, payload: dict[str, Any], task_id: str
+) -> None:
+    """Set a fallback only after the task worker exhausts transient retries."""
+
+    generation = payload.get("title_generation")
+    fallback = _clean_title(payload.get("fallback_title"), "新会话")
+    binding = db.get(AgentConversationBinding, binding_id)
+    if isinstance(generation, int) and generation >= 1 and binding is not None:
+        db.execute(
+            update(AgentConversationBinding)
+            .where(
+                AgentConversationBinding.id == binding_id,
+                AgentConversationBinding.lifecycle == "ACTIVE",
+                AgentConversationBinding.title_state == "PENDING",
+                AgentConversationBinding.title_generation == generation,
+            )
+            .values(
+                display_title=fallback,
+                title_state="FALLBACK",
+                updated_at=binding.updated_at,
+            )
+        )
+    db.execute(
+        update(BackgroundTask)
+        .where(BackgroundTask.id == task_id)
+        .values(payload_json={"title_generation": generation if isinstance(generation, int) else 0})
+    )

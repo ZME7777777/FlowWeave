@@ -26,6 +26,7 @@ from flowweave.modules.agent_workspaces.infrastructure.models import (
 )
 
 process_agent_conversation_title = agent_sessions.process_agent_conversation_title
+finalize_agent_conversation_title_failure = agent_sessions.finalize_agent_conversation_title_failure
 
 
 def conversation_work_directory_context(
@@ -267,6 +268,7 @@ __all__ = (
     "mark_agent_workspace_runtime_lost",
     "process_agent_workspace_runtime",
     "process_agent_conversation_title",
+    "finalize_agent_conversation_title_failure",
     "recover_default_agent_workspace_runtime_task",
     "resolve_agent_workspace_runtime_secret",
     "runtime_allocation_for_agent_workspace",

@@ -2041,6 +2041,7 @@ def test_agent_workspace_bootstrap_creates_only_on_first_message_and_freezes_dir
         assert title_task is not None
         assert title_task.aggregate_id == first["conversation"]["id"]
         assert title_task.payload_json["first_message"] == "实现接口"
+        assert title_task.available_at > title_task.created_at
         listed = conversations.list_conversations(db, workspace.id)
         assert listed[0]["work_directory_id"] == directory["id"]
         assert len(conversations.list_conversations(db, workspace.id)) == 1
@@ -2215,6 +2216,83 @@ def test_agent_workspace_title_task_retains_first_sentence_and_logs_failure(
             and "error_type=ValueError" in record.getMessage()
             for record in caplog.records
         )
+
+
+def test_title_retry_after_is_bounded_and_only_marks_transient_failures_retryable():
+    request = titles.httpx.Request("POST", "https://titles.example.test/v1/chat/completions")
+    response = titles.httpx.Response(429, headers={"Retry-After": "999"}, request=request)
+    retryable = titles._retryable_failure(
+        titles.httpx.HTTPStatusError("rate limited", request=request, response=response)
+    )
+
+    assert retryable is not None
+    assert retryable.retry_delay_seconds == 300
+    assert str(retryable) == "title generation retryable failure: http_status_429"
+
+    bad_request = titles.httpx.Response(400, request=request)
+    assert (
+        titles._retryable_failure(
+            titles.httpx.HTTPStatusError("bad request", request=request, response=bad_request)
+        )
+        is None
+    )
+
+
+def test_agent_workspace_title_task_429_keeps_pending_until_retries_exhaust(
+    settings, db_session_factory, monkeypatch
+):
+    monkeypatch.setattr(
+        conversations,
+        "runtime_provider",
+        lambda _db, asset, **kwargs: RuntimeProvider(
+            provider_id=asset["asset"]["executor"]["model_provider_id"],
+            base_url="https://models.example.test/v1",
+            model=kwargs.get("model_name") or "test-model",
+            api_key="x",
+        ),
+    )
+    request = titles.httpx.Request("POST", "https://titles.example.test/v1/chat/completions")
+    response = titles.httpx.Response(429, headers={"Retry-After": "30"}, request=request)
+    failure = titles.httpx.HTTPStatusError("rate limited", request=request, response=response)
+    monkeypatch.setattr(
+        titles, "title_provider_snapshot", lambda *_args: (_ for _ in ()).throw(failure)
+    )
+
+    with settings_context(settings), db_session_factory() as db, runtime_context(MockRuntime()):
+        workspace_item = _ready_workspace_for_conversation(db)
+        created = conversations.bootstrap_conversation(
+            db,
+            workspace_item.id,
+            work_directory_id=None,
+            model_provider_id=workspace_item.default_model_provider_id,
+            content="429 后应等待重试",
+            idempotency_key="title-task-429-retry",
+        )
+        task = db.scalar(
+            select(BackgroundTask).where(
+                BackgroundTask.task_type == "GENERATE_AGENT_CONVERSATION_TITLE"
+            )
+        )
+        assert task is not None
+        binding = db.get(AgentConversationBinding, created["conversation"]["id"])
+        assert binding is not None
+
+        with pytest.raises(titles.RetryableTitleGenerationError) as caught:
+            titles.process_agent_conversation_title(
+                db, binding.id, task.payload_json, _title_task_lease(task)
+            )
+
+        assert caught.value.retry_delay_seconds == 30
+        assert binding.title_state == "PENDING"
+        assert task.payload_json["first_message"] == "429 后应等待重试"
+
+        task.state = TaskState.DEAD
+        titles.finalize_agent_conversation_title_failure(db, binding.id, task.payload_json, task.id)
+        db.flush()
+        db.refresh(binding)
+        db.refresh(task)
+        assert binding.title_state == "FALLBACK"
+        assert task.payload_json == {"title_generation": 1}
 
 
 def test_chat_completions_title_uses_provider_protocol(monkeypatch):

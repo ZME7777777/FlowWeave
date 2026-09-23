@@ -8,7 +8,7 @@ import re
 import shutil
 import time
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -76,6 +76,7 @@ _PROJECT_ROOT = "/runtime/workspace/project"
 _logger = logging.getLogger(__name__)
 _SORT_RANK_QUANTUM = Decimal("0.000000000001")
 _AGENT_WORKSPACE_CONDENSER_MAX_EVENTS = 10_000
+_TITLE_TASK_INITIAL_DELAY_SECONDS = 5
 _CONDENSER_CREDENTIAL_FAILURE_CODE = "NoCondensationAvailableException"
 _DYNAMIC_CAPABILITY_TYPES = frozenset({"SKILL", "MCP", "PLUGIN"})
 _CREATION_CAPABILITY_TYPES = _DYNAMIC_CAPABILITY_TYPES | {"CONTEXT", "AGENT_DEFINITION", "HOOK"}
@@ -1378,6 +1379,9 @@ def _enqueue_title_task(db: Session, binding: AgentConversationBinding, first_me
             "first_message": " ".join(first_message.split())[:4000],
             "fallback_title": binding.display_title,
         },
+        # Metadata must not race the first Agent turn for a provider's tight
+        # shared request budget.
+        available_at=now() + timedelta(seconds=_TITLE_TASK_INITIAL_DELAY_SECONDS),
     )
 
 

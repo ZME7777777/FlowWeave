@@ -33,6 +33,16 @@ def process_agent_conversation_title(*args: Any, **kwargs: Any) -> None:
     process(*args, **kwargs)
 
 
+def finalize_agent_conversation_title_failure(*args: Any, **kwargs: Any) -> None:
+    """Finalize a title only after its durable retries are exhausted."""
+
+    from flowweave.modules.agent_sessions.application.titles import (
+        finalize_agent_conversation_title_failure as finalize,
+    )
+
+    finalize(*args, **kwargs)
+
+
 def ssh_remote_descriptor(*args: Any, **kwargs: Any) -> dict[str, Any]:
     """Expose the IDE descriptor without leaking an application module."""
 
@@ -153,6 +163,7 @@ __all__ = [
     "READ_SESSIONS",
     "WRITE_SESSIONS",
     "process_agent_conversation_title",
+    "finalize_agent_conversation_title_failure",
     "ssh_remote_descriptor",
     "delete_binding_records",
 ]

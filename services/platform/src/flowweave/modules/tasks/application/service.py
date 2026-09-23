@@ -214,6 +214,7 @@ def fail(
     error: str,
     *,
     permanent: bool = False,
+    retry_delay_seconds: int | None = None,
     commit: bool = True,
 ) -> bool:
     task = db.scalar(
@@ -226,10 +227,15 @@ def fail(
         if commit:
             db.rollback()
         return False
-    task.state = (
-        TaskState.DEAD if permanent or task.attempts >= task.max_attempts else TaskState.RETRY
+    exhausted = permanent or task.attempts >= task.max_attempts
+    task.state = TaskState.DEAD if exhausted else TaskState.RETRY
+    default_delay_seconds = min(2**task.attempts, 60)
+    delay_seconds = (
+        min(max(retry_delay_seconds, 1), 300)
+        if isinstance(retry_delay_seconds, int) and not isinstance(retry_delay_seconds, bool)
+        else default_delay_seconds
     )
-    task.available_at = datetime.now(UTC) + timedelta(seconds=min(2**task.attempts, 60))
+    task.available_at = datetime.now(UTC) + timedelta(seconds=delay_seconds)
     task.lease_owner = None
     task.lease_until = None
     task.last_error = error[:2000]

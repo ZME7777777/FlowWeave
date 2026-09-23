@@ -6802,6 +6802,16 @@ FlowWeave 本地累加后猜测压缩边界。
 
 验收：受影响 Python `py_compile`、Ruff check／format、隔离后的 Web TypeScript typecheck、`git diff --check` 与任务状态唯一性通过。数据库型定向 pytest 已收集 5 项，但 session 级 Testcontainers PostgreSQL fixture 因本机 Docker socket 缺失在断言前阻断，未记为通过。当前同一 Web 文件另有并行中的会话事件隔离修改且尚未完成，全工作树 TypeScript build 被其遗留的 `setLiveEvents` 引用阻断；以 HEAD 加本切片单行阈值改动的隔离副本 typecheck 已通过。未修改 OpenHands、数据库、Runtime Provider 或远端环境。
 
+### FR-509 Agent 会话标题上游退避与有界重试 — DONE
+
+依赖：无（生产供应商 429／超时恢复的最小用户可见切片）。
+
+目标：标题元数据不得与新会话的首个 Agent 请求争抢紧张的供应商预算。API-key 与 OAuth 标题路径的 429、5xx、传输错误和超时必须由既有 durable task 进行有界重试；若供应商返回 `Retry-After`，优先遵守该值但限制在安全上限。重试期间会话保持可用且标题维持 `PENDING`；只有任务重试耗尽后才保留本地首句 fallback。不得为标题静默切换供应商／模型，不记录消息、凭据或端点，也不得修改 OpenHands。
+
+完成：新标题任务延后五秒，避免与首个 Agent turn 同时抢占同一供应商请求额度。标题 handler 将 429、5xx、超时和传输错误转为脱敏的 retry 信号；Worker 将该信号携带的 `Retry-After` 秒数限制在 1–300 秒后重排既有 task，其他任务仍使用原有指数退避。第三次失败后才以 CAS 写入 `FALLBACK`，手动重命名和会话删除均不会被迟到任务覆盖；无论成功、不可恢复失败还是重试耗尽，首条消息临时载荷都会被清除。未引入迁移、远端发布、OpenHands、Runtime Provider 或供应商配置改写。
+
+验收：受影响 Python Ruff format/check 与 `py_compile` 通过；无容器 Retry-After／429 纯逻辑断言通过；`test_agent_workspaces.py` 的四项数据库型标题回归已收集，但 session 级 Testcontainers PostgreSQL fixture 因本机 Docker socket 缺失在断言前阻断，未记为通过。`git diff --check` 与任务状态唯一性通过。
+
 
 ## 7. 恢复工作检查表
 
