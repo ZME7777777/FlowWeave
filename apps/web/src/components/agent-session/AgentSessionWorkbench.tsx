@@ -521,6 +521,7 @@ function writePinnedConversationIds(storageKey: string | undefined, conversation
 const MAX_BOOTSTRAP_RECONCILIATION_ATTEMPTS = 3;
 const STREAM_IDLE_GRACE_MS = 5 * 60 * 1000;
 const TERMINAL_EVENT_RECONCILIATION_MS = 2_000;
+const TERMINAL_EVENT_RETRY_INTERVAL_MS = 250;
 
 const AgentSessionGatewayContext = createContext<AgentSessionGateway>(agentWorkspaceSessionGateway);
 const AgentSessionHostContext = createContext<AgentSessionHost>(agentWorkspaceSessionHost);
@@ -5102,11 +5103,21 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       return;
     }
     if (!terminalEventReconciliationActive) return;
-    void synchronizeConversationEvents(true);
-    const timer = window.setTimeout(() => {
+    let cancelled = false;
+    let retryTimer: number | undefined;
+    const reconcile = async () => {
+      await synchronizeConversationEvents(true);
+      if (!cancelled) retryTimer = window.setTimeout(() => { void reconcile(); }, TERMINAL_EVENT_RETRY_INTERVAL_MS);
+    };
+    void reconcile();
+    const expiryTimer = window.setTimeout(() => {
       setExpiredTerminalSyncTurnKey(terminalSyncTurnKey);
     }, TERMINAL_EVENT_RECONCILIATION_MS);
-    return () => window.clearTimeout(timer);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(expiryTimer);
+      if (retryTimer !== undefined) window.clearTimeout(retryTimer);
+    };
   }, [synchronizeConversationEvents, terminalEventReconciliationActive, terminalSyncTurnKey]);
   useEffect(() => {
     if (!selected || !latestFormalTurnFinished) return;
