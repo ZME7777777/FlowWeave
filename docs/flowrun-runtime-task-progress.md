@@ -213,6 +213,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-505 | 会话认证增量勾选收敛 | DONE | 移除认证页的撤销提示；已选择认证锁定且不能取消，只允许将未选择认证新增到本次同步。 |
 | FR-506 | 会话后台刷新滚动稳定性 | DONE | 运行中会话的定时事件对账仅在可见事件身份或真实内容高度变化时对齐最新内容，避免无可见变化的刷新重复写入底部滚动位置。 |
 | FR-507 | 会话前台恢复终态即时同步 | DONE | 浏览器从后台恢复或窗口重新聚焦时，立即从最新 OpenHands 事件窗口对账并刷新会话 readiness；合并连续恢复事件，避免完成结果必须刷新页面才显示。 |
+| FR-509 | 会话乐观删除与相邻会话切换 | DONE | 确认删除后立即从本地会话投影移除目标并切换到可见列表中的相邻会话，DELETE 请求在后台执行；失败时恢复会话、置顶和未读投影，避免删除延迟造成“新会话”闪屏。 |
 | FR-506 | 会话上下文 512k 默认压缩阈值 | DONE | 新建 Agent Workspace、FlowNode 会话及新 Fork 将 OpenHands `LLMSummarizingCondenser.max_tokens` 冻结为 512,000；工作台缺失正式阈值时使用同一默认值，既有会话继续展示并使用其已冻结配置。 |
 | FR-457 | OpenHands 空响应自恢复与运行状态一致性 | DONE | 空 Agent Message 与 `source=environment` 的原生 corrective nudge 不再被识别为最终回复；纠正事件以“模型返回空响应，OpenHands 正在自动重试”呈现，左侧会话状态与底部按钮继续统一服从原生 execution status。 |
 | FR-458 | 空响应恢复提示瞬时化与会话状态统一 | DONE | corrective nudge 只在它是当前最新事件且原生会话仍运行时复用实时状态行显示；后续事件或终态立即隐藏，历史工作过程不保留该提示。工作台所有运行控件复用同一原生状态投影。 |
@@ -7265,3 +7266,4 @@ FlowWeave 本地累加后猜测压缩边界。
 | 2026-09-22 | FR-506 | Web TypeScript typecheck、受影响文件 ESLint、Agent transcript scroll-ownership 定向 Playwright（1 passed）、`git diff --check` 与任务状态唯一性 | PASS：运行中会话的四秒正式事件对账即使更新仅后端可见字段，也不会重复写入 transcript 的底部滚动位置；新增事件、流式／正式输出及历史分页仍保持既有最新内容或阅读锚点。未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-22 | FR-507 | Web TypeScript typecheck、受影响文件 ESLint、`git diff --check` 与任务状态唯一性；后台恢复定向 Playwright 尝试 | PASS（静态）：浏览器恢复可见或重新聚焦后立即从最新 OpenHands 事件窗口对账，并刷新会话列表、readiness 与 confirmation；连续 `visibilitychange`／`focus` 合并为一次恢复。新增 E2E 覆盖后台完成后无需刷新显示最终结果；当前环境缺少 Chrome，已有 Chromium 缺少 `libglib-2.0.so.0`，浏览器未启动，未将 E2E 记为通过。未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-22 | FR-508 | Web TypeScript typecheck、受影响文件 ESLint、生产构建、`git diff --check`；会话收尾与默认模型定向 Playwright 尝试 | PASS（静态）：带 `item_id` 的 OpenHands 文本 delta 作为浏览器临时回复流式展示，`message_complete` 只触发正式事件补读且不清空已生成文本，同 ID 正式事件无缝接管；Runtime 已终态时事件对账不再占用运行样式或禁用输入，旧排队消息仍受短时后台门控。新会话编辑区移除模型选择器，默认使用首个已连接供应商的默认模型，覆盖设置移入侧栏“会话配置”的“默认模型”页签。类型检查、ESLint、构建和 diff 检查通过；当前环境缺少 Chrome，定向 E2E 未启动。未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
+| 2026-09-23 | FR-509 | Web TypeScript typecheck、受影响文件 ESLint、定向 Playwright（1 passed）、`git diff --check` 与任务状态唯一性 | PASS：删除确认后，在 DELETE 响应尚未返回时立即从本地列表投影移除目标；若目标正在展示，则先导航到同一可见列表中的下一项（末项时回退上一项），不再出现“新会话”空页。删除失败会恢复列表缓存、置顶和未读投影；成功后才清理本地草稿。未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
