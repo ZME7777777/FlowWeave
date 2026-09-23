@@ -824,7 +824,15 @@ export interface AgentSessionWorkspaceDirectory {
   entries: Array<{ path: string; kind: 'file' | 'directory'; size: number }>;
   next_cursor?: string | null;
 }
-export interface WorkspaceGitRepository { path: string; remote?: string; branch?: string; head?: string }
+export interface WorkspaceGitRepository {
+  path: string;
+  remote?: string;
+  branch?: string;
+  head?: string;
+  upstream?: string;
+  ahead?: number;
+  behind?: number;
+}
 export interface AgentSessionWorkspaceGitRepositories { repositories: WorkspaceGitRepository[] }
 export interface WorkspaceGitCommit {
   id: string;
@@ -832,6 +840,7 @@ export interface WorkspaceGitCommit {
   author: string;
   date: string;
   subject: string;
+  local_only?: boolean;
   author_email?: string;
   authored_at?: string;
   committer?: string;

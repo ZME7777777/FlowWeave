@@ -3,7 +3,7 @@ import { Terminal as XTerm } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
 import { type InfiniteData, useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import hljs from 'highlight.js/lib/common';
-import { ArrowLeft, Bell, Bot, Boxes, Check, ChevronDown, ChevronRight, CircleDot, Copy, CornerDownRight, Download, Ellipsis, FileCode2, FileText, Folder, FolderOpen, FolderPlus, GitBranch, GripVertical, ImageIcon, Layers3, Link2, ListRestart, LoaderCircle, Maximize2, Minimize2, MonitorCog, PanelRightOpen, Pencil, Pin, PinOff, Play, Plus, Quote, RefreshCw, Search, Send, ShieldAlert, Square, Trash2, X } from 'lucide-react';
+import { ArrowLeft, ArrowUp, Bell, Bot, Boxes, Check, ChevronDown, ChevronRight, CircleDot, Copy, CornerDownRight, Download, Ellipsis, FileCode2, FileText, Folder, FolderOpen, FolderPlus, GitBranch, GripVertical, ImageIcon, Layers3, Link2, ListRestart, LoaderCircle, Maximize2, Minimize2, MonitorCog, PanelRightOpen, Pencil, Pin, PinOff, Play, Plus, Quote, RefreshCw, Search, Send, ShieldAlert, Square, Trash2, X } from 'lucide-react';
 import { createContext, forwardRef, isValidElement, useCallback, useContext, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type ComponentPropsWithoutRef, type CSSProperties, type DragEvent as ReactDragEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type WheelEvent as ReactWheelEvent } from 'react';
 import { createPortal } from 'react-dom';
 import ReactMarkdown from 'react-markdown';
@@ -2744,10 +2744,12 @@ function WorkspaceGitSidebar({ details, repository, mode, onModeChange, selected
   const [selectedCommitFile, setSelectedCommitFile] = useState<string>();
   const openedDiffRef = useRef<string | undefined>(undefined);
   const [workingDiffError, setWorkingDiffError] = useState('');
+  const [localOnly, setLocalOnly] = useState(false);
   useEffect(() => {
     openedDiffRef.current = undefined;
     setSelectedCommitFile(undefined);
     setWorkingDiffError('');
+    setLocalOnly(false);
   }, [repository.path]);
   useEffect(() => {
     if (!closedDiffEpoch) return;
@@ -2796,13 +2798,30 @@ function WorkspaceGitSidebar({ details, repository, mode, onModeChange, selected
     setWorkingDiffError('');
     openedDiffRef.current = undefined;
   };
+  const historyRepository = logQuery.data?.repository;
+  const ahead = historyRepository?.ahead;
+  const behind = historyRepository?.behind;
+  const upstream = historyRepository?.upstream;
+  const commits = logQuery.data?.commits ?? [];
+  const visibleCommits = localOnly ? commits.filter(commit => commit.local_only) : commits;
   return <aside className="agent-workspace-git-sidebar" aria-label="Git">
     <header><div><span><GitBranch size={15}/>Git</span><b title={workspaceRelativePath(repository.path, details.root)}>{workspaceRelativePath(repository.path, details.root)}</b></div>{repository.branch && <em title="当前分支（只读，暂不支持切换）">{repository.branch}</em>}</header>
     <nav className="agent-git-view-tabs" aria-label="Git 视图"><button type="button" className={mode === 'history' ? 'active' : ''} aria-pressed={mode === 'history'} onClick={() => selectMode('history')}>提交记录</button><button type="button" className={mode === 'changes' ? 'active' : ''} aria-pressed={mode === 'changes'} onClick={() => selectMode('changes')}>本地改动</button></nav>
-    {mode === 'history' ? logQuery.isLoading ? <p className="agent-git-loading">正在读取提交历史…</p> : logQuery.isError ? <p className="agent-git-error">Git 历史读取失败。<button type="button" onClick={() => void logQuery.refetch()}>重试</button></p> : <>
-      <div className="agent-git-log">{(logQuery.data?.commits ?? []).map(commit => <button key={commit.id} type="button" onClick={() => { onSelectCommit(commit.id); setSelectedCommitFile(undefined); }}><b>{commit.subject || '（无提交说明）'}</b><span><code>{commit.short_id}</code><em>{commit.author}</em><time>{commit.date}</time></span></button>)}{!logQuery.data?.commits.length && <p>该仓库没有可展示的提交。</p>}</div>
-      {selectedCommit && <WorkspaceGitCommitSidebarDetail details={commitQuery.data} loading={commitQuery.isLoading} error={commitQuery.isError} selectedPath={selectedCommitFile} onSelectFile={path => { openedDiffRef.current = undefined; setSelectedCommitFile(path); }} onClose={() => { onSelectCommit(undefined); setSelectedCommitFile(undefined); }}/>}
-    </> : changesQuery.isLoading ? <p className="agent-git-loading">正在读取本地改动…</p> : changesQuery.isError ? <p className="agent-git-error">本地改动读取失败。<button type="button" onClick={() => void changesQuery.refetch()}>重试</button></p> : <div className="agent-git-local-changes">
+    {mode === 'history' ? logQuery.isLoading ? <p className="agent-git-loading">正在读取提交历史…</p> : logQuery.isError ? <p className="agent-git-error">Git 历史读取失败。<button type="button" onClick={() => void logQuery.refetch()}>重试</button></p> : <div className="agent-git-history">
+      <section className={`agent-git-sync-status${ahead ? ' has-local' : ''}`} aria-label="分支同步状态">
+        <div><span>{ahead ? <ArrowUp size={13}/> : <Check size={13}/>}<b>{ahead ? `${ahead} 个提交待推送` : upstream ? '已与远端同步' : '未设置上游分支'}</b></span>{upstream && <small title={upstream}>跟踪 {upstream}{behind ? ` · 落后 ${behind}` : ''}</small>}{!upstream && <small>设置 upstream 后可识别未推送提交</small>}</div>
+        {Boolean(ahead) && <button type="button" className={localOnly ? 'active' : ''} aria-pressed={localOnly} onClick={() => { setLocalOnly(current => !current); onSelectCommit(undefined); setSelectedCommitFile(undefined); }}>{localOnly ? '查看全部' : '仅看待推送'}</button>}
+      </section>
+      <div className="agent-git-log">{visibleCommits.map(commit => <button key={commit.id} type="button" className={selectedCommit === commit.id ? 'active' : ''} onClick={() => { onSelectCommit(commit.id); setSelectedCommitFile(undefined); }}><span className="agent-git-commit-title"><b>{commit.subject || '（无提交说明）'}</b>{commit.local_only && <i>待推送</i>}</span><span><code>{commit.short_id}</code><em>{commit.author}</em><time>{commit.date}</time></span></button>)}{!visibleCommits.length && <p>{localOnly ? '没有待推送的本地提交。' : '该仓库没有可展示的提交。'}</p>}</div>
+      {selectedCommit && <WorkspaceGitCommitSidebarDetail
+        details={commitQuery.data}
+        loading={commitQuery.isLoading}
+        error={commitQuery.isError}
+        selectedPath={selectedCommitFile}
+        onSelectFile={path => { openedDiffRef.current = undefined; setSelectedCommitFile(path); }}
+        onClose={() => { onSelectCommit(undefined); setSelectedCommitFile(undefined); }}
+      />}
+    </div> : changesQuery.isLoading ? <p className="agent-git-loading">正在读取本地改动…</p> : changesQuery.isError ? <p className="agent-git-error">本地改动读取失败。<button type="button" onClick={() => void changesQuery.refetch()}>重试</button></p> : <div className="agent-git-local-changes">
       {workingDiffError && <p className="agent-git-error" role="alert">{workingDiffError}</p>}
       <GitChangedFilesSplit
         staged={changesQuery.data?.staged ?? []}

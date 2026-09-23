@@ -162,6 +162,81 @@ def test_git_history_returns_reusable_object_ids_for_every_log_record(tmp_path):
         assert diff["path"] == "history.txt"
 
 
+def test_git_history_marks_commits_ahead_of_the_upstream_branch(tmp_path):
+    repository = tmp_path / "project"
+    repository.mkdir()
+
+    def git(*arguments: str) -> str:
+        return subprocess.run(
+            ["git", "-C", str(repository), *arguments],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+    git("init", "--initial-branch=main")
+    git("config", "user.name", "FlowWeave Test")
+    git("config", "user.email", "test@example.invalid")
+    (repository / "history.txt").write_text("pushed\n")
+    git("add", "history.txt")
+    git("commit", "-m", "pushed revision")
+    pushed_id = git("rev-parse", "HEAD")
+    git("remote", "add", "origin", str(tmp_path / "remote.git"))
+    git("update-ref", "refs/remotes/origin/main", pushed_id)
+    git("config", "branch.main.remote", "origin")
+    git("config", "branch.main.merge", "refs/heads/main")
+
+    for index in range(2):
+        (repository / "history.txt").write_text(f"local {index}\n")
+        git("add", "history.txt")
+        git("commit", "-m", f"local revision {index}")
+
+    history = workspace.git_log(
+        tmp_path,
+        "/runtime/workspace/project",
+        ("/runtime/workspace/project",),
+        "/runtime/workspace/project",
+    )
+
+    assert history["repository"]["upstream"] == "origin/main"
+    assert history["repository"]["ahead"] == 2
+    assert history["repository"]["behind"] == 0
+    assert [item["local_only"] for item in history["commits"]] == [True, True, False]
+
+
+def test_git_history_does_not_guess_unpushed_commits_without_upstream(tmp_path):
+    repository = tmp_path / "project"
+    repository.mkdir()
+    subprocess.run(["git", "-C", str(repository), "init"], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(repository), "config", "user.name", "FlowWeave Test"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repository), "config", "user.email", "test@example.invalid"],
+        check=True,
+    )
+    (repository / "history.txt").write_text("local\n")
+    subprocess.run(["git", "-C", str(repository), "add", "history.txt"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repository), "commit", "-m", "local revision"],
+        check=True,
+        capture_output=True,
+    )
+
+    history = workspace.git_log(
+        tmp_path,
+        "/runtime/workspace/project",
+        ("/runtime/workspace/project",),
+        "/runtime/workspace/project",
+    )
+
+    assert "upstream" not in history["repository"]
+    assert "ahead" not in history["repository"]
+    assert "behind" not in history["repository"]
+    assert history["commits"][0]["local_only"] is False
+
+
 def test_git_working_changes_separate_staged_unstaged_and_untracked_files(tmp_path):
     repository = tmp_path / "project"
     repository.mkdir()

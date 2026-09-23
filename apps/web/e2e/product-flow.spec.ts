@@ -581,8 +581,12 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     }
     if (path.endsWith('/workspace/git/log')) {
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
-        repository: { path: '/runtime/workspace/project/backend', remote: 'https://example.test/backend.git', branch: 'main', head: '1234567890ab' },
-        commits: [],
+        repository: { path: '/runtime/workspace/project/backend', remote: 'https://example.test/backend.git', branch: 'main', head: '1234567890ab', upstream: 'origin/main', ahead: 2, behind: 0 },
+        commits: [
+          { id: '1234567890ab', short_id: '1234567', author: 'OpenHands', date: '2026-09-23', subject: 'feat: add workspace review', local_only: true },
+          { id: '2234567890ab', short_id: '2234567', author: 'OpenHands', date: '2026-09-23', subject: 'fix: stabilize workspace review', local_only: true },
+          { id: '3234567890ab', short_id: '3234567', author: 'OpenHands', date: '2026-09-22', subject: 'feat: initialize workspace', local_only: false },
+        ],
       }) });
       return;
     }
@@ -1074,6 +1078,14 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect.poll(() => workspaceGitRepositoryRequests).toBe(1);
   const gitSidebar = page.getByRole('complementary', { name: 'Git' });
   await expect(gitSidebar).toBeVisible();
+  await expect(gitSidebar.getByRole('region', { name: '分支同步状态' })).toContainText('2 个提交待推送');
+  await expect(gitSidebar.getByText('待推送', { exact: true })).toHaveCount(2);
+  await expect(gitSidebar.getByText('feat: initialize workspace', { exact: true })).toBeVisible();
+  await gitSidebar.getByRole('button', { name: '仅看待推送' }).click();
+  await expect(gitSidebar.getByText('feat: initialize workspace', { exact: true })).toBeHidden();
+  await expect(gitSidebar.getByText('待推送', { exact: true })).toHaveCount(2);
+  await gitSidebar.getByRole('button', { name: '查看全部' }).click();
+
   await page.getByRole('button', { name: '本地改动', exact: true }).click();
   const sidebarStagedTree = page.getByRole('navigation', { name: '暂存区' });
   const sidebarUnstagedTree = page.getByRole('navigation', { name: '未暂存' });

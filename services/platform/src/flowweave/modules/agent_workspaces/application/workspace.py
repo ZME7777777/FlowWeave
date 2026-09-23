@@ -379,20 +379,33 @@ def _git_value(repository: Path, *arguments: str) -> str | None:
     return value if result.returncode == 0 and value else None
 
 
-def _repository_details(repository: Path, runtime_path: str) -> dict[str, str]:
+def _repository_details(repository: Path, runtime_path: str) -> dict[str, Any]:
     started_at = time.monotonic()
     outcome = "error"
     try:
-        details = {"path": runtime_path}
+        details: dict[str, Any] = {"path": runtime_path}
         branch = _git_value(repository, "branch", "--show-current")
         head = _git_value(repository, "rev-parse", "HEAD")
         remote = _git_value(repository, "remote", "get-url", "origin")
+        upstream = _git_value(
+            repository, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"
+        )
         if branch:
             details["branch"] = branch
         if head:
             details["head"] = head
         if remote:
             details["remote"] = remote
+        if upstream:
+            divergence = _git_value(
+                repository, "rev-list", "--left-right", "--count", f"HEAD...{upstream}"
+            )
+            if divergence:
+                counts = divergence.split()
+                if len(counts) == 2 and all(value.isdigit() for value in counts):
+                    details["upstream"] = upstream
+                    details["ahead"] = int(counts[0])
+                    details["behind"] = int(counts[1])
         outcome = "ok"
         return details
     finally:
@@ -404,7 +417,7 @@ def _repository_details(repository: Path, runtime_path: str) -> dict[str, str]:
             )
 
 
-def repository_details(repository: Path, runtime_path: str) -> dict[str, str]:
+def repository_details(repository: Path, runtime_path: str) -> dict[str, Any]:
     """Return safe metadata for an already-authorized repository root."""
 
     return _repository_details(repository, runtime_path)
@@ -472,6 +485,25 @@ def git_log(
         or b""
     )
     fields = output.decode("utf-8", errors="replace").split("\0")
+    repository_metadata = _repository_details(repository, runtime_path)
+    upstream = repository_metadata.get("upstream")
+    local_commit_ids = set()
+    if upstream:
+        local_output = (
+            _git_run(
+                repository,
+                "log",
+                f"--max-count={_GIT_LOG_LIMIT}",
+                "--format=%H",
+                f"{upstream}..HEAD",
+            )
+            or b""
+        )
+        local_commit_ids = {
+            commit_id.strip()
+            for commit_id in local_output.decode("ascii", errors="ignore").splitlines()
+            if commit_id.strip()
+        }
     commits = [
         {
             # Without `-z`, Git writes a newline between records even when the
@@ -484,11 +516,12 @@ def git_log(
             "author": fields[index + 2],
             "date": fields[index + 3],
             "subject": fields[index + 4],
+            "local_only": fields[index].strip() in local_commit_ids,
         }
         for index in range(0, max(0, len(fields) - 1), 5)
         if index + 4 < len(fields) and fields[index].strip()
     ]
-    return {"repository": _repository_details(repository, runtime_path), "commits": commits}
+    return {"repository": repository_metadata, "commits": commits}
 
 
 def git_commit(
