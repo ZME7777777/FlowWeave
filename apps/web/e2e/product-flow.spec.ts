@@ -1096,7 +1096,25 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await sidebarUnstagedTree.getByRole('button', { name: '收起未暂存' }).click();
   await expect(sidebarUnstagedTree.getByText('local.ts', { exact: true })).toBeHidden();
   await expect.poll(() => sidebarStagedTree.evaluate(element => element.getBoundingClientRect().height)).toBeGreaterThan(sidebarUnstagedHeightBeforeCollapse);
-  await sidebarUnstagedTree.getByRole('button', { name: '展开未暂存' }).click();
+  await sidebarStagedTree.getByRole('button', { name: '收起暂存区' }).click();
+  await expect(sidebarSplit.getByRole('separator', { name: '调整暂存区和未暂存区高度' })).toHaveCount(0);
+  await expect.poll(() => sidebarSplit.evaluate(element => {
+    const panels = Array.from(element.querySelectorAll<HTMLElement>('.agent-changes-file-tree'));
+    if (panels.length !== 2) return false;
+    const first = panels[0].getBoundingClientRect();
+    const second = panels[1].getBoundingClientRect();
+    return second.top - first.bottom <= 1 && second.bottom < element.getBoundingClientRect().bottom - 20;
+  })).toBeTruthy();
+  const stagedHeader = sidebarStagedTree.locator('header');
+  const stagedHeaderBox = await stagedHeader.boundingBox();
+  if (!stagedHeaderBox) throw new Error('Expected collapsed staged header');
+  await page.mouse.click(stagedHeaderBox.x + stagedHeaderBox.width * .7, stagedHeaderBox.y + stagedHeaderBox.height / 2);
+  await expect(sidebarStagedTree.getByText('staged.ts', { exact: true })).toBeVisible();
+  const unstagedHeader = sidebarUnstagedTree.locator('header');
+  const unstagedHeaderBox = await unstagedHeader.boundingBox();
+  if (!unstagedHeaderBox) throw new Error('Expected collapsed unstaged header');
+  await page.mouse.click(unstagedHeaderBox.x + unstagedHeaderBox.width * .9, unstagedHeaderBox.y + unstagedHeaderBox.height / 2);
+  await expect(sidebarUnstagedTree.getByText('local.ts', { exact: true })).toBeVisible();
   const sidebarResizer = sidebarSplit.getByRole('separator', { name: '调整暂存区和未暂存区高度' });
   const sidebarResizerBox = await sidebarResizer.boundingBox();
   if (!sidebarResizerBox) throw new Error('Expected local changes resizer');
@@ -1480,9 +1498,13 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(trackerCard).not.toHaveClass(/conversation-native-card/);
   await expect(trackerCard.locator(':scope > summary > svg.lucide-clipboard-list')).toBeVisible();
   await expect(trackerCard.locator(':scope > summary > svg.lucide-chevron-right')).toBeVisible();
-  await expect(trackerCard.locator(':scope > summary')).toContainText('已更新 · 2 / 3 已完成');
+  const trackerSummary = trackerCard.locator(':scope > summary');
+  await expect(trackerSummary).toContainText('已更新 · 2 / 3 已完成');
+  await trackerSummary.hover();
+  await expect(trackerSummary.locator('b')).toHaveCSS('color', 'rgb(57, 71, 62)');
+  await expect(trackerSummary.locator('small')).toHaveCSS('color', 'rgb(57, 71, 62)');
   await expect(trackerCard.getByText('检查构建', { exact: true })).toHaveCount(0);
-  await trackerCard.locator(':scope > summary').click();
+  await trackerSummary.click();
   await expect(trackerCard).toHaveAttribute('open', '');
   await expect(trackerCard).toContainText('任务清单');
   await expect(trackerCard.getByText('检查构建', { exact: true })).toBeVisible();
@@ -1522,6 +1544,9 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   const nativeThink = page.locator('.conversation-activity-row.thought.native-think').filter({ hasText: '我先确认当前工作目录，再根据现有结构判断后续改动范围。' });
   await expect(nativeThink).toHaveCount(1);
   await expect(nativeThink).toHaveCSS('color', 'rgb(102, 117, 108)');
+  await nativeThink.hover();
+  await expect(nativeThink).toHaveCSS('color', 'rgb(102, 117, 108)');
+  await expect(nativeThink).toHaveCSS('cursor', 'auto');
   await expect(page.getByText('ThinkAction', { exact: true })).toHaveCount(0);
   await expect(page.getByText('Your thought has been logged.', { exact: true })).toHaveCount(0);
   await expect(page.locator('.conversation-activity-row.thought.tool-thought').filter({ hasText: '我先检查当前工作目录。' })).toHaveCount(1);
@@ -1731,7 +1756,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(liveProgressSummary.locator(':scope > svg.lucide-chevron-right')).toHaveCSS('transform', 'matrix(0, 1, -1, 0, 0, 0)');
   await expect(runningPwdDetail.locator(':scope > summary > svg.lucide-chevron-right')).toBeVisible();
   await runningPwdDetail.locator(':scope > summary').hover();
-  await expect(runningPwdDetail.locator(':scope > summary b')).toHaveCSS('color', 'rgb(79, 93, 84)');
+  await expect(runningPwdDetail.locator(':scope > summary b')).toHaveCSS('color', 'rgb(57, 71, 62)');
   await expect(liveProgressGroup.locator('.conversation-progress-group-list')).toHaveCSS('margin-left', '0px');
   await expect.poll(async () => {
     const summaryLeft = await liveProgressGroup.locator(':scope > summary').evaluate(element => element.getBoundingClientRect().left);
@@ -2326,7 +2351,13 @@ test('editing the latest user message locally replaces only its active branch', 
   await expect(page.getByText('不应保留的旧回答', { exact: true })).toHaveCount(0);
   await expect(page.getByText('修改后的问题', { exact: true })).toBeVisible();
   await expect(page.getByText(/已耗时 \d+秒/)).toBeVisible();
-  await expect(page.locator('.conversation-turn-status')).toHaveText(/正在思考/);
+  const thinkingStatus = page.locator('.conversation-turn-status');
+  await expect(thinkingStatus).toHaveText(/正在思考/);
+  await expect.poll(() => thinkingStatus.evaluate(status => {
+    const label = status.querySelector(':scope > span:first-child')?.getBoundingClientRect();
+    const dots = status.querySelector('.conversation-turn-status-dots')?.getBoundingClientRect();
+    return label && dots ? Math.round(dots.left - label.right) : null;
+  })).toBe(5);
   await expect.poll(() => Boolean(releaseRewrite)).toBe(true);
   expect(rerunPayload).toMatchObject({
     content: '修改后的问题',

@@ -2905,8 +2905,9 @@ function ChangedFilesTree<T>({ items, selectedPath, title, empty, onSelect, rend
   });
   return <nav className={`agent-changes-file-tree${panelCollapsed ? ' collapsed' : ''}`} aria-label={title}>
     <header>
-      {onToggleCollapsed ? <button type="button" aria-label={`${panelCollapsed ? '展开' : '收起'}${title}`} aria-expanded={!panelCollapsed} onClick={onToggleCollapsed}>{panelCollapsed ? <ChevronRight size={13}/> : <ChevronDown size={13}/>}<b>{title}</b></button> : <b>{title}</b>}
-      <span>{items.length}</span>
+      {onToggleCollapsed
+        ? <button type="button" aria-label={`${panelCollapsed ? '展开' : '收起'}${title}`} aria-expanded={!panelCollapsed} onClick={event => { event.preventDefault(); event.stopPropagation(); onToggleCollapsed(); }}>{panelCollapsed ? <ChevronRight size={13}/> : <ChevronDown size={13}/>}<b>{title}</b><span>{items.length}</span></button>
+        : <><b>{title}</b><span>{items.length}</span></>}
     </header>
     {!panelCollapsed && (tree.length ? <div className="agent-git-file-tree" role="tree">{renderTree(tree)}</div> : <p>{empty}</p>)}
   </nav>;
@@ -2924,6 +2925,11 @@ function GitChangedFilesSplit({ staged, unstaged, selectedKind, selectedPath, on
   const [splitRatio, setSplitRatio] = useState(.5);
   const bothExpanded = !collapsed.staged && !collapsed.unstaged;
   const toggle = (panel: 'staged' | 'unstaged') => setCollapsed(current => ({ ...current, [panel]: !current[panel] }));
+  const preventHorizontalNavigation = (event: ReactWheelEvent<HTMLDivElement>) => {
+    if (Math.abs(event.deltaX) <= Math.abs(event.deltaY)) return;
+    event.preventDefault();
+    event.stopPropagation();
+  };
   const startResize = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (!bothExpanded || !containerRef.current) return;
     event.preventDefault();
@@ -2943,13 +2949,13 @@ function GitChangedFilesSplit({ staged, unstaged, selectedKind, selectedPath, on
     window.addEventListener('pointercancel', finish);
   };
   const rows = collapsed.staged && collapsed.unstaged
-    ? 'auto auto'
+    ? 'auto auto minmax(0,1fr)'
     : collapsed.staged
       ? 'auto minmax(0,1fr)'
       : collapsed.unstaged
         ? 'minmax(0,1fr) auto'
         : `minmax(0,${splitRatio}fr) 7px minmax(0,${1 - splitRatio}fr)`;
-  return <div ref={containerRef} className="agent-git-change-split" style={{ gridTemplateRows: rows }}>
+  return <div ref={containerRef} className={`agent-git-change-split${collapsed.staged && collapsed.unstaged ? ' both-collapsed' : ''}`} style={{ gridTemplateRows: rows }} onWheelCapture={preventHorizontalNavigation}>
     <ChangedFilesTree title="暂存区" empty="暂存区没有文件。" items={staged.map(file => ({ path: file.path, value: file }))} selectedPath={selectedKind === 'STAGED' ? selectedPath : undefined} onSelect={file => onSelect('STAGED', file)} renderMeta={file => <em>{file.status}</em>} collapsed={collapsed.staged} onToggleCollapsed={() => toggle('staged')}/>
     {bothExpanded && <div className="agent-git-change-resizer" role="separator" aria-label="调整暂存区和未暂存区高度" aria-orientation="horizontal" aria-valuemin={20} aria-valuemax={80} aria-valuenow={Math.round(splitRatio * 100)} onPointerDown={startResize}/>}
     <ChangedFilesTree title="未暂存" empty="没有未暂存文件。" items={unstaged.map(file => ({ path: file.path, value: file }))} selectedPath={selectedKind === 'UNSTAGED' ? selectedPath : undefined} onSelect={file => onSelect('UNSTAGED', file)} renderMeta={file => <em>{file.status}</em>} collapsed={collapsed.unstaged} onToggleCollapsed={() => toggle('unstaged')}/>
@@ -4154,15 +4160,14 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     return [...groups.values()].flatMap(group => {
       const local = conversationOrder[conversationScopeKey(group[0])];
       if (!local) return group;
-      const indexed = new Map(local.map((id, index) => [id, index]));
-      return [...group].sort((left, right) => {
-        const leftIndex = indexed.get(left.id);
-        const rightIndex = indexed.get(right.id);
-        if (leftIndex !== undefined && rightIndex !== undefined) return leftIndex - rightIndex;
-        if (leftIndex !== undefined) return -1;
-        if (rightIndex !== undefined) return 1;
-        return group.indexOf(left) - group.indexOf(right);
+      const groupById = new Map(group.map(item => [item.id, item]));
+      const locallyOrdered = local.flatMap(id => {
+        const item = groupById.get(id);
+        return item ? [item] : [];
       });
+      const locallyOrderedIds = new Set(locallyOrdered.map(item => item.id));
+      let localIndex = 0;
+      return group.map(item => locallyOrderedIds.has(item.id) ? locallyOrdered[localIndex++] : item);
     });
   }, [conversationOrder, conversationsQuery.data]);
   const pinnedConversations = useMemo(() => {

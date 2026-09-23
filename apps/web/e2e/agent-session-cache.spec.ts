@@ -645,6 +645,108 @@ test('First message keeps the new conversation visible while its routed read is 
   releaseConversationRead?.();
 });
 
+
+test('A new conversation stays first after an existing conversation was reordered', async ({ page }) => {
+  let authenticated = false;
+  let created = false;
+  let reordered = false;
+  const workspace = { id: 'new-order-workspace', display_name: '会话排序工作区', desired_state: 'RUNNING', updated_at: now };
+  const existing = [
+    {
+      id: 'new-order-a', display_title: '已有会话 A', title_state: 'MANUAL' as const,
+      lifecycle: 'ACTIVE' as const, streaming_callback_ready: true, write_available: true, execution_status: 'idle',
+      model_provider_id: 'new-order-provider', model_name: 'new-order-model', reasoning_effort: null,
+      created_at: '2026-09-12T09:20:00Z', updated_at: '2026-09-12T09:20:00Z', sort_key: '2',
+    },
+    {
+      id: 'new-order-b', display_title: '已有会话 B', title_state: 'MANUAL' as const,
+      lifecycle: 'ACTIVE' as const, streaming_callback_ready: true, write_available: true, execution_status: 'idle',
+      model_provider_id: 'new-order-provider', model_name: 'new-order-model', reasoning_effort: null,
+      created_at: '2026-09-12T09:10:00Z', updated_at: '2026-09-12T09:10:00Z', sort_key: '1',
+    },
+  ];
+  const createdConversation = {
+    id: 'new-order-created', display_title: '最新会话', title_state: 'PENDING' as const,
+    lifecycle: 'ACTIVE' as const, streaming_callback_ready: true, write_available: true, execution_status: 'running',
+    model_provider_id: 'new-order-provider', model_name: 'new-order-model', reasoning_effort: null,
+    created_at: '2026-09-12T09:30:00Z', updated_at: '2026-09-12T09:30:00Z', sort_key: '3',
+  };
+
+  await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path.endsWith('/auth/me')) return authenticated
+      ? json(route, user)
+      : json(route, { error: { code: 'AUTHENTICATION_REQUIRED', message: '请先登录' } }, 401);
+    if (path.endsWith('/auth/login') && request.method() === 'POST') { authenticated = true; return json(route, user); }
+    if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
+    if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
+    if (path.endsWith('/conversations') && request.method() === 'GET') {
+      return json(route, { items: created ? [createdConversation, ...existing] : existing, next_cursor: null });
+    }
+    if (path.endsWith('/conversations') && request.method() === 'POST') {
+      created = true;
+      return json(route, { conversation: createdConversation, accepted: true, cursor: 'new-order-user-event' }, 201);
+    }
+    if (path.endsWith('/order') && request.method() === 'POST') {
+      reordered = true;
+      return json(route, existing[1]);
+    }
+    if (path.endsWith('/events')) return json(route, {
+      events: [], next_cursor: null, history_cursor: null, result: { status: path.includes('new-order-created') ? 'RUNNING' : 'COMPLETED' },
+    });
+    if (path.endsWith('/work-directories')) return json(route, {
+      root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [],
+    });
+    if (path.endsWith('/workspace')) return json(route, {
+      root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' },
+      working_directory: '/runtime/workspace/project', work_directory: null, files: [], repositories: [],
+      runtime: {}, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '不可用', note: '' } },
+    });
+    if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
+    if (path.endsWith('/input-readiness')) return json(route, { ready: !path.includes('new-order-created'), execution_status: path.includes('new-order-created') ? 'running' : 'idle' });
+    if (path.endsWith('/context')) return json(route, { model_name: 'new-order-model', window_tokens: 128_000, used_tokens: 0, usage_current: true });
+    if (path.endsWith('/model-providers')) return json(route, [{
+      id: 'new-order-provider', name: '排序测试模型', connection_state: 'CONNECTED', models: [{ model_name: 'new-order-model', enabled: true, is_default: true }],
+    }]);
+    if (path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
+    if (path.includes('/conversations/') && request.method() === 'GET') {
+      const id = path.split('/').at(-1)!;
+      return json(route, id === createdConversation.id ? createdConversation : existing.find(item => item.id === id));
+    }
+    return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+  });
+
+  await page.goto('/');
+  await login(page);
+  await page.getByRole('button', { name: 'Agent 会话' }).click();
+  const source = page.getByRole('button', { name: '拖拽排序会话 已有会话 B' });
+  const target = page.locator('[data-conversation-binding-id="new-order-a"]');
+  const sourceBox = await source.boundingBox();
+  const targetBox = await target.boundingBox();
+  expect(sourceBox).not.toBeNull();
+  expect(targetBox).not.toBeNull();
+  await page.mouse.move(sourceBox!.x + sourceBox!.width / 2, sourceBox!.y + sourceBox!.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(targetBox!.x + targetBox!.width / 2, targetBox!.y + 2, { steps: 5 });
+  await page.mouse.up();
+  await expect.poll(() => reordered).toBe(true);
+
+  await page.getByRole('button', { name: '在根工作区中新建会话' }).click();
+  const composer = page.getByLabel('发送 Agent 消息');
+  await composer.fill('创建最新会话');
+  await page.getByLabel('发送消息').click();
+  await expect.poll(() => created).toBe(true);
+
+  const rootRows = page.locator('.agent-workspace-group').filter({ hasText: '根工作区' }).locator('[data-conversation-binding-id]');
+  await expect(rootRows).toHaveCount(3);
+  await expect.poll(() => rootRows.evaluateAll(rows => rows.map(row => row.getAttribute('data-conversation-binding-id')))).toEqual([
+    'new-order-created', 'new-order-b', 'new-order-a',
+  ]);
+});
+
+
 test('Running Agent session reload restores older history pages', async ({ page }) => {
   let authenticated = false;
   let historyRequests = 0;
