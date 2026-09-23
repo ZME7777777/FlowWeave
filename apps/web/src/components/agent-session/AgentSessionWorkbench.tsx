@@ -45,6 +45,12 @@ type StreamStatus = 'connecting' | 'live' | 'recovering' | 'disabled';
 type TurnState = 'idle' | 'running' | 'pausing' | 'paused' | 'resuming';
 type QueueDeliveryState = 'queued';
 type ConversationOrderSync = { state: 'syncing' | 'failed'; orderedBindingIds: string[] };
+interface OptimisticConversationRemoval {
+  conversations?: InfiniteData<AgentConversationPage>;
+  conversation?: AgentConversation;
+  pinnedConversationIds: Set<string>;
+  unreadConversationIds: Set<string>;
+}
 interface RewriteRequest {
   eventId: string;
   content: string;
@@ -4005,6 +4011,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const [dragTarget, setDragTarget] = useState<{ bindingId: string; after: boolean }>();
   const [conversationOrder, setConversationOrder] = useState<Record<string, string[]>>({});
   const [conversationOrderSync, setConversationOrderSync] = useState<Record<string, ConversationOrderSync>>({});
+  const [optimisticallyRemovedConversationIds, setOptimisticallyRemovedConversationIds] = useState<Set<string>>(() => new Set());
   const [title, setTitle] = useState('');
   const [newConversationProviderId, setNewConversationProviderId] = useState(() => initialBootstrapRecovery.current?.providerId ?? initialConversationDraft.current?.providerId ?? '');
   const [newConversationModelName, setNewConversationModelName] = useState(() => initialBootstrapRecovery.current?.modelName ?? initialConversationDraft.current?.modelName ?? '');
@@ -4157,11 +4164,13 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const providersQuery = useQuery({ queryKey: ['model-providers'], queryFn: api.providers, enabled: Boolean(workspace && features.modelSelection) });
   const capabilityCatalogQuery = useQuery({ queryKey: sessionQueryKey(host, 'capability-catalog'), queryFn: api.capabilities, enabled: Boolean(workspace && features.capabilities) });
   const conversations = useMemo(() => {
-    const serverOrder = [...(conversationsQuery.data?.pages.flatMap(page => page.items) ?? [])].sort(
+    const serverOrder = (conversationsQuery.data?.pages.flatMap(page => page.items) ?? [])
+      .filter(item => !optimisticallyRemovedConversationIds.has(item.id))
+      .sort(
       (left, right) => (Number(right.sort_key) || Date.parse(right.created_at))
         - (Number(left.sort_key) || Date.parse(left.created_at))
         || right.id.localeCompare(left.id),
-    );
+      );
     const groups = new Map<string, AgentConversation[]>();
     for (const item of serverOrder) {
       const scope = conversationScopeKey(item);
@@ -4181,7 +4190,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       let localIndex = 0;
       return group.map(item => locallyOrderedIds.has(item.id) ? locallyOrdered[localIndex++] : item);
     });
-  }, [conversationOrder, conversationsQuery.data]);
+  }, [conversationOrder, conversationsQuery.data, optimisticallyRemovedConversationIds]);
   const pinnedConversations = useMemo(() => {
     const conversationsById = new Map(conversations.map(item => [item.id, item]));
     return [...pinnedConversationIds].flatMap(bindingId => {
@@ -5455,13 +5464,91 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       tone: 'danger',
     });
   };
-  const remove = useMutation({ mutationFn: (bindingId: string) => api.deleteConversation(workspace!.id, bindingId), onSuccess: (_value, bindingId) => {
-    if (selected?.id === bindingId) {
-      setDrawerOpen(false);
-      onNavigate(host.rootPath, true);
-    }
-    refresh();
-  }, onError: error => setOperationError(error) });
+  const remove = useMutation<void, Error, string, OptimisticConversationRemoval>({
+    mutationFn: bindingId => api.deleteConversation(workspace!.id, bindingId),
+    onMutate: async bindingId => {
+      if (!workspace) return {
+        pinnedConversationIds: new Set(),
+        unreadConversationIds: new Set(),
+      };
+      const conversationsKey = sessionQueryKey(host, 'conversations', workspace.id);
+      const conversationKey = sessionQueryKey(host, 'conversation', workspace.id, bindingId);
+      await Promise.all([
+        queryClient.cancelQueries({ queryKey: conversationsKey }),
+        queryClient.cancelQueries({ queryKey: conversationKey, exact: true }),
+      ]);
+      const context = {
+        conversations: queryClient.getQueryData<InfiniteData<AgentConversationPage>>(conversationsKey),
+        conversation: queryClient.getQueryData<AgentConversation>(conversationKey),
+        pinnedConversationIds: new Set(pinnedConversationIds),
+        unreadConversationIds: new Set(unreadConversationIds),
+      };
+      // Remove the item and choose its visible neighbour before issuing the
+      // DELETE. This avoids both the stale row and the transient draft page
+      // while the server processes the irreversible operation.
+      const index = conversations.findIndex(item => item.id === bindingId);
+      const nextConversation = index >= 0
+        ? conversations[index + 1] ?? conversations[index - 1]
+        : conversations[0];
+      setOptimisticallyRemovedConversationIds(current => new Set(current).add(bindingId));
+      queryClient.setQueryData<InfiniteData<AgentConversationPage>>(conversationsKey, current => current && ({
+        ...current,
+        pages: current.pages.map(page => ({
+          ...page,
+          items: page.items.filter(item => item.id !== bindingId),
+        })),
+      }));
+      queryClient.removeQueries({ queryKey: conversationKey, exact: true });
+      setPinnedConversationIds(current => {
+        if (!current.has(bindingId)) return current;
+        const next = new Set(current);
+        next.delete(bindingId);
+        writePinnedConversationIds(pinnedStorageKey, next);
+        return next;
+      });
+      setUnreadConversationIds(current => {
+        if (!current.has(bindingId)) return current;
+        const next = new Set(current);
+        next.delete(bindingId);
+        return next;
+      });
+      if (selected?.id === bindingId) {
+        setDrawerOpen(false);
+        setActivityPreviewBindingId(undefined);
+        onNavigate(nextConversation ? host.conversationPath(nextConversation.id) : host.rootPath, true);
+      }
+      return context;
+    },
+    onSuccess: (_value, bindingId) => {
+      setOptimisticallyRemovedConversationIds(current => {
+        const next = new Set(current);
+        next.delete(bindingId);
+        return next;
+      });
+      composerDraftsByScope.current.delete(bindingId);
+      conversationDraftsByScope.current.delete(bindingId);
+      if (workspace) clearConversationComposerDraft(host.id, workspace.id, bindingId);
+      refresh();
+    },
+    onError: (error, bindingId, context) => {
+      if (workspace && context) {
+        const conversationsKey = sessionQueryKey(host, 'conversations', workspace.id);
+        const conversationKey = sessionQueryKey(host, 'conversation', workspace.id, bindingId);
+        queryClient.setQueryData(conversationsKey, context.conversations);
+        if (context.conversation) queryClient.setQueryData(conversationKey, context.conversation);
+        else queryClient.removeQueries({ queryKey: conversationKey, exact: true });
+        setPinnedConversationIds(context.pinnedConversationIds);
+        writePinnedConversationIds(pinnedStorageKey, context.pinnedConversationIds);
+        setUnreadConversationIds(context.unreadConversationIds);
+      }
+      setOptimisticallyRemovedConversationIds(current => {
+        const next = new Set(current);
+        next.delete(bindingId);
+        return next;
+      });
+      setOperationError(error);
+    },
+  });
   const synchronizeConversationOrder = useCallback((bindingId: string, orderedBindingIds: string[]) => {
     if (!workspace || !api.reorderConversation) return;
     setConversationOrderSync(current => ({ ...current, [bindingId]: { state: 'syncing', orderedBindingIds } }));
