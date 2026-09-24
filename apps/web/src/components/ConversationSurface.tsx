@@ -1012,6 +1012,15 @@ function elapsedSeconds(startedAt: number | undefined, finishedAt: number | unde
   return Math.max(0, (finishedAt - startedAt) / 1000);
 }
 
+function LiveElapsed({ startedAt }: { startedAt: number }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+  return <>已耗时 {formatDuration(Math.max(0, (now - startedAt) / 1000))}</>;
+}
+
 function activeToolLabel(eventName: string, toolName?: string, summary?: string, details?: Record<string, unknown>): string {
   const description = typeof details?.description === 'string' ? details.description.trim() : '';
   const explicitTool = summary?.trim() || toolName?.trim();
@@ -1257,12 +1266,11 @@ function ActivityGroup({ items, active, completionConfirmed = false, paused = fa
     }
     if (hasBeenActive.current && completionConfirmed) setOpen(false);
   }, [active, completionConfirmed]);
-  const label = active
-    ? '处理中'
-    : paused ? '已暂停，结果未返回'
-      : parentFailed && hasUnfinishedTask ? '本轮异常结束，结果未返回'
+  const label = paused
+    ? '已暂停，结果未返回'
+    : parentFailed && hasUnfinishedTask ? '本轮异常结束，结果未返回'
       : elapsed === undefined ? '工作过程' : `耗时 ${formatDuration(elapsed)}`;
-  const summary = <><ChevronRight size={14}/><span>{label}</span>{itemCount > 0 && <small>{itemCount} 项</small>}<span className={`conversation-activity-spinner-slot${active ? ' active' : ''}`} aria-hidden="true"><LoaderCircle className="conversation-activity-spin" size={13}/></span></>;
+  const summary = <><ChevronRight size={14}/><span>{active && startedAt !== undefined ? <LiveElapsed startedAt={startedAt}/> : active ? '处理中' : label}</span>{itemCount > 0 && <small>{itemCount} 项</small>}<span className={`conversation-activity-spinner-slot${active ? ' active' : ''}`} aria-hidden="true"><LoaderCircle className="conversation-activity-spin" size={13}/></span></>;
   const hasDetails = itemCount > 0;
   if (!hasDetails) return <div className="conversation-activity-group summary-only"><div className="conversation-activity-summary">{summary}</div></div>;
   return <details className={`conversation-activity-group${active ? ' active' : ''}`} open={open} onToggle={event => setOpen(event.currentTarget.open)}>
