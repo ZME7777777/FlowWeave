@@ -3285,6 +3285,43 @@ def test_agent_workspace_manual_condensation_does_not_send_a_message(monkeypatch
     assert runtime.send_calls == 0
 
 
+def test_agent_workspace_runtime_replacement_fences_only_active_generation(
+    settings, db_session_factory
+):
+    with settings_context(settings), db_session_factory() as db, runtime_context(MockRuntime()):
+        workspace = _ready_workspace_for_conversation(db)
+
+        result = conversations.request_runtime_replacement(db, workspace.id)
+
+        runtime = db.scalar(
+            select(AgentWorkspaceRuntime).where(AgentWorkspaceRuntime.workspace_id == workspace.id)
+        )
+        sandbox = db.scalar(
+            select(ManagedSandbox).where(
+                ManagedSandbox.owner_type == "AGENT_WORKSPACE",
+                ManagedSandbox.owner_id == workspace.id,
+                ManagedSandbox.generation == 1,
+            )
+        )
+        assert sandbox is not None
+        task = db.scalar(
+            select(BackgroundTask).where(
+                BackgroundTask.task_type == "PROVISION_AGENT_WORKSPACE_RUNTIME",
+                BackgroundTask.aggregate_id == workspace.id,
+                BackgroundTask.idempotency_key
+                == f"recover-agent-workspace-runtime:{workspace.id}:{sandbox.id}",
+            )
+        )
+
+        assert result["state"] == "RECOVERING"
+        assert result["write_available"] is False
+        assert runtime is not None
+        assert runtime.status == "RECONNECTING"
+        assert runtime.failure_code == "USER_REQUESTED_RUNTIME_REPLACEMENT"
+        assert sandbox.desired_state == "DELETED"
+        assert task is not None
+
+
 def test_agent_workspace_sends_directly_at_high_context_usage(
     settings, db_session_factory, monkeypatch
 ):

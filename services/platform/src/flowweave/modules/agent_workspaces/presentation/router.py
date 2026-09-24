@@ -327,6 +327,17 @@ async def get_agent_workspace_runtime(workspace_id: str, db: Db) -> dict[str, An
     return await run_sync(db, lambda session: conversations.runtime_status(session, workspace_id))
 
 
+@router.post("/agent-workspaces/{workspace_id}/runtime/replacements", status_code=202)
+async def replace_agent_workspace_runtime(
+    workspace_id: str, db: Db, idempotency_key: IdempotencyKey = None
+) -> dict[str, Any]:
+    del idempotency_key
+    return await run_sync(
+        db,
+        lambda session: conversations.request_runtime_replacement(session, workspace_id),
+    )
+
+
 @router.get("/agent-workspaces/{workspace_id}/work-directories")
 async def list_agent_work_directories(workspace_id: str, db: Db) -> dict[str, Any]:
     return await run_sync(

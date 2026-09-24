@@ -601,6 +601,53 @@ def runtime_status(db: Session, workspace_id: str) -> dict[str, Any]:
     }
 
 
+def request_runtime_replacement(db: Session, workspace_id: str) -> dict[str, Any]:
+    """Fence the active Agent Workspace generation and provision its successor.
+
+    This is an explicit, user-authorized control-plane operation.  It preserves
+    the Workspace allocation, OpenHands persistence and Conversation locators;
+    the Runtime Provider alone replaces the physical generation.
+    """
+
+    workspace = _workspace(db, workspace_id)
+    runtime = db.scalar(
+        select(AgentWorkspaceRuntime)
+        .where(AgentWorkspaceRuntime.workspace_id == workspace.id)
+        .with_for_update()
+    )
+    if runtime is None or runtime.status != "ACTIVE" or runtime.active_generation is None:
+        raise DomainError(
+            "AGENT_RUNTIME_REPLACEMENT_UNAVAILABLE",
+            "Agent 运行环境当前不可替换，请等待其恢复后重试",
+            409,
+        )
+    sandbox = db.scalar(
+        select(ManagedSandbox)
+        .where(
+            ManagedSandbox.owner_type == "AGENT_WORKSPACE",
+            ManagedSandbox.owner_id == workspace.id,
+            ManagedSandbox.generation == runtime.active_generation,
+            ManagedSandbox.desired_state == "RUNNING",
+        )
+        .with_for_update()
+    )
+    if sandbox is None:
+        raise DomainError(
+            "AGENT_RUNTIME_REPLACEMENT_FENCED",
+            "Agent Runtime generation 已变化，请刷新后重试",
+            409,
+        )
+    agent_workspace_host.mark_agent_workspace_runtime_lost(
+        db,
+        workspace.id,
+        sandbox.id,
+        failure_code="USER_REQUESTED_RUNTIME_REPLACEMENT",
+        failure_summary="The user requested a managed Agent Runtime replacement",
+    )
+    db.flush()
+    return runtime_status(db, workspace.id)
+
+
 def _handle(
     db: Session, workspace: AgentWorkspace, binding: AgentConversationBinding
 ) -> RuntimeHandle:
