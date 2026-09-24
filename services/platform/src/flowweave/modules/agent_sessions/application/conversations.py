@@ -31,6 +31,7 @@ from flowweave.modules.agent_sessions.application.event_branch import (
     complete_active_branch,
 )
 from flowweave.modules.agent_sessions.application.runtime_config import (
+    CONDENSER_MAX_EVENTS,
     NATIVE_CONDENSER_MAX_TOKENS,
     build_agent_spec,
     config_from_binding,
@@ -75,7 +76,6 @@ from flowweave.shared.settings import get_settings
 _PROJECT_ROOT = "/runtime/workspace/project"
 _logger = logging.getLogger(__name__)
 _SORT_RANK_QUANTUM = Decimal("0.000000000001")
-_AGENT_WORKSPACE_CONDENSER_MAX_EVENTS = 10_000
 _TITLE_TASK_INITIAL_DELAY_SECONDS = 5
 _CONDENSER_CREDENTIAL_FAILURE_CODE = "NoCondensationAvailableException"
 _DYNAMIC_CAPABILITY_TYPES = frozenset({"SKILL", "MCP", "PLUGIN"})
@@ -2342,7 +2342,7 @@ def message(
             reset_metrics=True,
             condenser=RuntimeCondenser(
                 kind="LLM_SUMMARIZING",
-                max_size=_AGENT_WORKSPACE_CONDENSER_MAX_EVENTS,
+                max_size=CONDENSER_MAX_EVENTS,
                 max_tokens=NATIVE_CONDENSER_MAX_TOKENS,
                 keep_first=4,
             ),
@@ -3211,7 +3211,7 @@ def _fork_conversation(
             reset_metrics=True,
             condenser=RuntimeCondenser(
                 kind="LLM_SUMMARIZING",
-                max_size=_AGENT_WORKSPACE_CONDENSER_MAX_EVENTS,
+                max_size=CONDENSER_MAX_EVENTS,
                 max_tokens=NATIVE_CONDENSER_MAX_TOKENS,
                 keep_first=4,
             ),
@@ -3401,9 +3401,7 @@ def resume(db: Session, workspace_id: str, binding_id: str) -> dict[str, Any]:
 
 
 # Shared FlowRun-node conversations use these helpers while retaining one
-# implementation for native Agent Workspace conversations.  Public aliases
-# keep that dependency explicit without exposing underscore-prefixed details.
-AGENT_WORKSPACE_CONDENSER_MAX_EVENTS = _AGENT_WORKSPACE_CONDENSER_MAX_EVENTS
+# implementation for native Agent Workspace conversations.
 ATTACHMENT_PATH = _ATTACHMENT_PATH
 enqueue_title_task = _enqueue_title_task
 frozen_runtime_capability = _frozen_runtime_capability

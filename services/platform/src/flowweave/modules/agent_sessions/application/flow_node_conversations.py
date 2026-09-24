@@ -18,7 +18,6 @@ from sqlalchemy.orm import Session
 from flowweave.modules.agent_sessions import public as agent_sessions
 from flowweave.modules.agent_sessions.application import usage as usage_projection
 from flowweave.modules.agent_sessions.application.conversations import (
-    AGENT_WORKSPACE_CONDENSER_MAX_EVENTS,
     ATTACHMENT_PATH,
     enqueue_title_task,
     frozen_runtime_capability,
@@ -46,6 +45,7 @@ from flowweave.modules.agent_sessions.application.flow_node_locator import (
     binding_locator,
 )
 from flowweave.modules.agent_sessions.application.runtime_config import (
+    CONDENSER_MAX_EVENTS,
     NATIVE_CONDENSER_MAX_TOKENS,
     FrozenSessionConfig,
     build_agent_spec,
@@ -3089,7 +3089,7 @@ def fork_node_conversation(
         reset_metrics=True,
         condenser=RuntimeCondenser(
             kind="LLM_SUMMARIZING",
-            max_size=AGENT_WORKSPACE_CONDENSER_MAX_EVENTS,
+            max_size=CONDENSER_MAX_EVENTS,
             max_tokens=NATIVE_CONDENSER_MAX_TOKENS,
             keep_first=4,
         ),

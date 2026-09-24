@@ -1192,7 +1192,7 @@ def test_agent_workspace_conversation_create_is_idempotent_and_uses_external_ide
         assert runtime.request is not None
         assert runtime.request.agent_spec.confirmation_policy == "NEVER"
         assert runtime.request.agent_spec.condenser.kind == "LLM_SUMMARIZING"
-        assert runtime.request.agent_spec.condenser.max_size == 10_000
+        assert runtime.request.agent_spec.condenser.max_size == 500
         assert runtime.request.agent_spec.condenser_provider is not None
         assert runtime.request.workspace_ref == "/runtime/workspace/project"
         assert runtime.request.agent_spec.agent_context.system_message_suffix == (
@@ -3233,7 +3233,7 @@ def test_agent_workspace_sends_directly_at_high_context_usage(
                 "provider_id": "provider-1",
                 "model_name": "test-model",
                 "reasoning_effort": None,
-                "condenser_max_size": 10_000,
+                "condenser_max_size": 500,
             }
 
         def condense(self, handle):
@@ -3448,7 +3448,7 @@ def test_agent_workspace_uses_native_attachments_context_and_model_switch(
                 "cumulative_tokens": 456,
                 "model_name": "test-model",
                 "reasoning_effort": "medium",
-                "condenser_max_size": 10_000,
+                "condenser_max_size": 500,
                 "condenser_max_tokens": 256_000,
             }
 
@@ -3541,7 +3541,7 @@ def test_agent_workspace_uses_native_attachments_context_and_model_switch(
             "cumulative_tokens": 456,
             "model_name": "test-model",
             "reasoning_effort": "medium",
-            "condenser_max_size": 10_000,
+            "condenser_max_size": 500,
             "condenser_max_tokens": 256_000,
             "usage_current": True,
         }
@@ -4004,7 +4004,7 @@ def test_agent_workspace_forks_at_native_event(settings, db_session_factory, mon
             "assistant-event",
             "assistant-event",
             True,
-            10_000,
+            500,
             384_000,
             None,
         )

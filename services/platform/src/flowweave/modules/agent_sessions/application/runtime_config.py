@@ -53,7 +53,9 @@ AgentWorkspaceCapability = agent_workspace_host.AgentWorkspaceCapability
 
 TOOLS = tuple(RuntimeTool(name=name) for name in FIXED_RUNTIME_TOOL_NAMES)
 PROJECT_ROOT = "/runtime/workspace/project"
-CONDENSER_MAX_EVENTS = 1_000
+# Event-count pressure is a complementary native guard for many small Tool
+# events; token pressure remains governed by ``NATIVE_CONDENSER_MAX_TOKENS``.
+CONDENSER_MAX_EVENTS = 500
 # Keep enough headroom for OpenHands to construct the summarization request and
 # receive its response.  This is a frozen native condenser policy for new
 # conversations, not a browser-side estimate of a model's physical window.
