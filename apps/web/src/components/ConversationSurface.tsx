@@ -274,7 +274,7 @@ function MessageAttachments({ attachments, references = [], workspaceReferences 
       title={`查看附件：${attachment.filename}`}
       onClick={() => onOpen?.(attachment)}
     >
-      <FileText size={16}/><span><b>{attachment.filename}</b><small>{attachment.mime_type || '文件'}{attachmentSize(attachment.byte_size) ? ` · ${attachmentSize(attachment.byte_size)}` : ''}</small></span><PanelRightOpen size={13}/>
+      <FileText size={16}/><span><b>{attachment.filename}</b><small>{attachment.mime_type || '文件'}{attachmentSize(attachment.byte_size) ? ` · ${attachmentSize(attachment.byte_size)}` : ''}</small></span><Eye size={13}/>
     </button>)}
     {references.map((reference, index) => <button type="button" key={`${reference.event_id}:${reference.content}`} className="conversation-message-attachment conversation-message-reference" aria-label={`查看会话引用 ${index + 1}`} title="查看引用内容" onClick={() => onOpenReference?.(reference)}>
       <Quote size={16}/><span><b>{`会话引用 ${index + 1}`}</b><small>已添加到本条消息</small></span>
@@ -310,8 +310,8 @@ function ConversationReferencePreview({ reference, onClose, onLocate }: {
 
 const ConversationMarkdown = lazy(() => import('./ConversationMarkdown').then(module => ({ default: module.ConversationMarkdown })));
 
-function MessageMarkdown({ children, onOpenWorkspaceFile }: { children: string; onOpenWorkspaceFile?: (href: string) => boolean }) {
-  return <Suspense fallback={<div className="conversation-markdown-loading">正在渲染消息…</div>}><ConversationMarkdown onOpenWorkspaceFile={onOpenWorkspaceFile}>{children}</ConversationMarkdown></Suspense>;
+function MessageMarkdown({ children, onOpenWorkspaceFile, onOpenImage }: { children: string; onOpenWorkspaceFile?: (href: string) => boolean; onOpenImage?: (src: string, alt?: string) => void }) {
+  return <Suspense fallback={<div className="conversation-markdown-loading">正在渲染消息…</div>}><ConversationMarkdown onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenImage={onOpenImage}>{children}</ConversationMarkdown></Suspense>;
 }
 
 interface CandidateOutput { fieldKey: string; artifactType: 'URL' | 'FILE'; value: string }
@@ -1275,11 +1275,12 @@ function ActivityGroup({ items, active, completionConfirmed = false, paused = fa
   </details>;
 }
 
-function AnnotationReplyContent({ content, annotations, onLocateAnnotation, onOpenWorkspaceFile }: {
+function AnnotationReplyContent({ content, annotations, onLocateAnnotation, onOpenWorkspaceFile, onOpenImage }: {
   content: string;
   annotations: AgentConversationAnnotation[];
   onLocateAnnotation?: (annotation: AgentConversationAnnotation) => void;
   onOpenWorkspaceFile?: (href: string) => boolean;
+  onOpenImage?: (src: string, alt?: string) => void;
 }) {
   const annotationById = useMemo(() => new Map(annotations.map(annotation => [annotation.id, annotation])), [annotations]);
   const parts = useMemo(() => {
@@ -1302,11 +1303,11 @@ function AnnotationReplyContent({ content, annotations, onLocateAnnotation, onOp
       className="conversation-annotation-marker"
       onPointerUp={event => event.stopPropagation()}
       onClick={() => onLocateAnnotation?.(part.annotation!)}
-    ><Quote size={12}/><span>注释 {annotations.findIndex(annotation => annotation.id === part.annotation!.id) + 1}</span></button> : part.content && <MessageMarkdown key={index} onOpenWorkspaceFile={onOpenWorkspaceFile}>{part.content}</MessageMarkdown>)}
+    ><Quote size={12}/><span>注释 {annotations.findIndex(annotation => annotation.id === part.annotation!.id) + 1}</span></button> : part.content && <MessageMarkdown key={index} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenImage={onOpenImage}>{part.content}</MessageMarkdown>)}
   </>;
 }
 
-function AgentReply({ event, content, changes = [], onFork, onPreviewCandidateFile, onReviewChanges, onOpenWorkspaceFile, workspaceRoot, annotations = [], onLocateAnnotation }: {
+function AgentReply({ event, content, changes = [], onFork, onPreviewCandidateFile, onReviewChanges, onOpenWorkspaceFile, onOpenImage, workspaceRoot, annotations = [], onLocateAnnotation }: {
   event: OpenHandsConversationEvent;
   content: string;
   changes?: WorkspaceFileChange[];
@@ -1314,6 +1315,7 @@ function AgentReply({ event, content, changes = [], onFork, onPreviewCandidateFi
   onPreviewCandidateFile?: (fieldKey: string, relativePath: string) => void;
   onReviewChanges?: (changes: WorkspaceFileChange[]) => void;
   onOpenWorkspaceFile?: (href: string) => boolean;
+  onOpenImage?: (src: string, alt?: string) => void;
   workspaceRoot?: string | null;
   annotations?: AgentConversationAnnotation[];
   onLocateAnnotation?: (annotation: AgentConversationAnnotation) => void;
@@ -1328,7 +1330,7 @@ function AgentReply({ event, content, changes = [], onFork, onPreviewCandidateFi
   // registering an Artifact.
   const candidateMessage = candidateOutputMessage(content);
   return <article className="conversation-message assistant" data-conversation-event-id={eventId} data-turn-terminal="true" data-event-id={eventId}>
-    {candidateMessage.businessConclusion ? <AnnotationReplyContent content={candidateMessage.businessConclusion} annotations={annotations} onLocateAnnotation={onLocateAnnotation} onOpenWorkspaceFile={onOpenWorkspaceFile}/> : !candidateMessage.outputs && content ? <AnnotationReplyContent content={content} annotations={annotations} onLocateAnnotation={onLocateAnnotation} onOpenWorkspaceFile={onOpenWorkspaceFile}/> : null}
+    {candidateMessage.businessConclusion ? <AnnotationReplyContent content={candidateMessage.businessConclusion} annotations={annotations} onLocateAnnotation={onLocateAnnotation} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenImage={onOpenImage}/> : !candidateMessage.outputs && content ? <AnnotationReplyContent content={content} annotations={annotations} onLocateAnnotation={onLocateAnnotation} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenImage={onOpenImage}/> : null}
     {candidateMessage.outputs && <CandidateOutputReply outputs={candidateMessage.outputs} onPreviewFile={onPreviewCandidateFile ? output => onPreviewCandidateFile(output.fieldKey, output.value) : undefined}/>}
     {!candidateMessage.businessConclusion && !candidateMessage.outputs && !content && <span className="conversation-typing"><i/><i/><i/></span>}
     {changes.length > 0 && <section className="conversation-file-changes" aria-label={`本轮编辑了 ${changes.length} 个文件`}>
@@ -1508,7 +1510,7 @@ export interface ConversationHistoryPrepend {
   phase: 'capture' | 'restore';
 }
 
-export const ConversationSurface = memo(function ConversationSurface({ events, isGenerating, isPaused = false, emptyResponseRecoveryActive = false, modelRetryStatus, historyPending = false, conversationScope, historyPrepend, onHistoryAnchorCaptured, onHistoryAnchorRestored, requestStartedAt, requestSubmitting = false, rewritePending = false, onRewrite, onFork, onOpenAttachment, onOpenWorkspaceReference, onPreviewCandidateFile, onReviewChanges, onOpenWorkspaceFile, workspaceRoot, annotations = [], onCreateAnnotation, onLocateAnnotation, taskControl = [], monitoring, connectionState }: {
+export const ConversationSurface = memo(function ConversationSurface({ events, isGenerating, isPaused = false, emptyResponseRecoveryActive = false, modelRetryStatus, historyPending = false, conversationScope, historyPrepend, onHistoryAnchorCaptured, onHistoryAnchorRestored, requestStartedAt, requestSubmitting = false, rewritePending = false, onRewrite, onFork, onOpenAttachment, onOpenWorkspaceReference, onPreviewCandidateFile, onReviewChanges, onOpenWorkspaceFile, onOpenImage, workspaceRoot, annotations = [], onCreateAnnotation, onLocateAnnotation, taskControl = [], monitoring, connectionState }: {
   events: OpenHandsConversationEvent[];
   isGenerating: boolean;
   /** Formal native conversation pause state, used only to label unfinished Task actions. */
@@ -1534,8 +1536,9 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
   onOpenWorkspaceReference?: (reference: AgentWorkspaceReference) => void;
   onPreviewCandidateFile?: (fieldKey: string, relativePath: string) => void;
   onReviewChanges?: (changes: WorkspaceFileChange[]) => void;
-  /** Returns true only when a Markdown link was handled by the file drawer. */
+  /** Returns true only when a Markdown link was handled by the file preview. */
   onOpenWorkspaceFile?: (href: string) => boolean;
+  onOpenImage?: (src: string, alt?: string) => void;
   workspaceRoot?: string | null;
   annotations?: AgentConversationAnnotation[];
   onCreateAnnotation?: (anchor: { event_id: string; quote: string; compact_start: number }) => void;
@@ -2135,7 +2138,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
             <CurrentTurnStatus items={turn.activity} requestSubmitting={requestSubmitting} statusOverride={emptyResponseRecoveryActive ? '模型返回空响应，OpenHands 正在自动重试' : undefined} modelRetryStatus={modelRetryStatus} monitoring={monitoring} connectionState={connectionState}/>
           )}
           {processBlocks.length > 0 && turn.assistant && <div className="conversation-process-divider" role="separator" aria-label="工作过程结束"/>}
-          {turn.assistant && <AgentReply event={turn.assistant.event} content={turn.assistant.content} changes={fileChanges} onFork={!isGenerating ? () => onFork?.(turn.assistant!.event.id) : undefined} onPreviewCandidateFile={onPreviewCandidateFile} onReviewChanges={onReviewChanges} onOpenWorkspaceFile={onOpenWorkspaceFile} workspaceRoot={workspaceRoot} annotations={annotations} onLocateAnnotation={locateAnnotation}/>}
+          {turn.assistant && <AgentReply event={turn.assistant.event} content={turn.assistant.content} changes={fileChanges} onFork={!isGenerating ? () => onFork?.(turn.assistant!.event.id) : undefined} onPreviewCandidateFile={onPreviewCandidateFile} onReviewChanges={onReviewChanges} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenImage={onOpenImage} workspaceRoot={workspaceRoot} annotations={annotations} onLocateAnnotation={locateAnnotation}/>}
           {failures.map(item => <ConversationFailure key={item.event.id} item={item} taskControl={taskControl} retryStatus={isLatest ? modelRetryStatus : undefined}/>)}
         </section>;
       })}

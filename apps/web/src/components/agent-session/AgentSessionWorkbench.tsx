@@ -2434,6 +2434,20 @@ function workspaceMarkdownLinkPath(href: string, workingDirectory?: string, sour
   return resolved === root || resolved.startsWith(`${root}/`) ? resolved : undefined;
 }
 
+function workspaceMarkdownImagePath(src: string, workingDirectory?: string): string | undefined {
+  const direct = workspaceMarkdownLinkPath(src, workingDirectory);
+  if (direct) return direct;
+  try {
+    const url = new URL(src, window.location.origin);
+    if (!url.pathname.endsWith('/workspace/file')) return undefined;
+    const path = url.searchParams.get('path');
+    return path ? workspaceMarkdownLinkPath(path, workingDirectory) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+
 function sourceParentDirectories(path: string, root: string): string[] {
   if (path === root || !path.startsWith(`${root}/`)) return [];
   const parts = path.slice(root.length + 1).split('/').filter(Boolean);
@@ -3255,6 +3269,105 @@ function clampWorkspaceToolWidth(value: number): number {
   return Math.max(300, Math.min(720, viewportMaximum, value));
 }
 
+type ConversationFilePreviewRequest =
+  | { key: string; kind: 'workspace'; path: string; filename: string; mimeType?: string; imageDataUrl?: string | null; attachment?: AgentAttachment }
+  | { key: string; kind: 'candidate'; filename: string; url: string; fieldKey: string; relativePath: string }
+  | { key: string; kind: 'image'; filename: string; url: string };
+
+function ConversationFilePreviewDialog({ request, workspaceId, bindingId, workDirectoryId, onClose, onOpenInFiles }: {
+  request: ConversationFilePreviewRequest;
+  workspaceId: string;
+  bindingId?: string;
+  workDirectoryId?: string;
+  onClose: () => void;
+  onOpenInFiles: (request: ConversationFilePreviewRequest) => void;
+}) {
+  const { api, fileUrl } = useAgentSessionGateway();
+  const host = useAgentSessionHost();
+  const [fullScreen, setFullScreen] = useState(false);
+  const [previewState, setPreviewState] = useState<{ path: string; content: string; totalBytes: number; nextOffset?: number }>();
+  const [previewMoreLoading, setPreviewMoreLoading] = useState(false);
+  const titleRef = useRef<HTMLHeadingElement>(null);
+  useEscapeClose(onClose);
+  useEffect(() => {
+    setFullScreen(false);
+    titleRef.current?.focus();
+  }, [request.key]);
+
+  const workspaceRequest = request.kind === 'workspace' ? request : undefined;
+  const textPreviewable = Boolean(workspaceRequest && isTextPreviewable(workspaceRequest.path, workspaceRequest.mimeType));
+  const previewQuery = useQuery({
+    queryKey: sessionQueryKey(host, 'conversation-file-preview', workspaceId, bindingId, workspaceRequest?.path),
+    queryFn: ({ signal }) => api.filePreview(workspaceId, workspaceRequest!.path, { bindingId, workDirectoryId }, undefined, signal),
+    enabled: textPreviewable,
+    retry: false,
+  });
+  useEffect(() => {
+    if (!workspaceRequest || !previewQuery.data) {
+      setPreviewState(undefined);
+      return;
+    }
+    setPreviewState({ path: workspaceRequest.path, ...previewQuery.data });
+  }, [previewQuery.data, workspaceRequest]);
+  const loadMorePreview = useCallback(async () => {
+    if (!workspaceRequest || previewState?.nextOffset === undefined || previewMoreLoading) return;
+    setPreviewMoreLoading(true);
+    try {
+      const next = await api.filePreview(workspaceId, workspaceRequest.path, { bindingId, workDirectoryId }, previewState.nextOffset);
+      setPreviewState(current => current?.path === workspaceRequest.path ? {
+        path: workspaceRequest.path,
+        content: current.content + next.content,
+        totalBytes: next.totalBytes || current.totalBytes,
+        nextOffset: next.nextOffset,
+      } : current);
+    } finally {
+      setPreviewMoreLoading(false);
+    }
+  }, [api, bindingId, previewMoreLoading, previewState, workDirectoryId, workspaceId, workspaceRequest]);
+
+  const path = request.kind === 'workspace' ? request.path : request.kind === 'candidate' ? request.relativePath : request.url;
+  const sourceUrl = request.kind === 'workspace'
+    ? request.imageDataUrl || fileUrl(workspaceId, request.path, { bindingId, workDirectoryId, download: false })
+    : request.url;
+  const downloadUrl = workspaceRequest ? fileUrl(workspaceId, workspaceRequest.path, { bindingId, workDirectoryId, download: true }) : undefined;
+  const canPreviewImage = Boolean(workspaceRequest && (workspaceRequest.mimeType?.startsWith('image/') || /\.(?:avif|gif|jpe?g|png|svg|webp)$/i.test(workspaceRequest.path)));
+  const canPreviewPdf = Boolean(workspaceRequest && (workspaceRequest.mimeType === 'application/pdf' || /\.pdf$/i.test(workspaceRequest.path)));
+  const lightweightPreview = Boolean(previewState && (previewState.totalBytes > 128 * 1024 || previewState.content.length > 128 * 1024));
+
+  return createPortal(<div className="agent-file-preview-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}>
+    <section className={`agent-file-preview-dialog${fullScreen ? ' fullscreen' : ''}`} role="dialog" aria-modal="true" aria-label="文件预览">
+      <header>
+        <div><span className="eyebrow">FILE PREVIEW</span><h2 ref={titleRef} tabIndex={-1} title={path}>{request.filename}</h2><small title={path}>{path}</small></div>
+        <div className="agent-file-preview-dialog-actions">
+          {downloadUrl && <a href={downloadUrl}><Download size={14}/>下载</a>}
+          <button type="button" aria-label={fullScreen ? '退出全屏预览' : '全屏预览'} title={fullScreen ? '退出全屏' : '全屏'} onClick={() => setFullScreen(current => !current)}>{fullScreen ? <Minimize2 size={16}/> : <Maximize2 size={16}/>}</button>
+          <button type="button" aria-label="关闭文件预览" title="关闭" onClick={onClose}><X size={17}/></button>
+        </div>
+      </header>
+      <div className="agent-file-preview-dialog-content">
+        {request.kind === 'candidate'
+          ? <iframe className="agent-file-media-preview" sandbox="" title={`${request.filename} 候选文件预览`} src={sourceUrl}/>
+          : request.kind === 'image'
+            ? <img className="agent-file-media-preview" src={sourceUrl} alt={request.filename}/>
+            : canPreviewImage
+            ? <img className="agent-file-media-preview" src={sourceUrl} alt={request.filename}/>
+            : canPreviewPdf
+              ? <iframe className="agent-file-media-preview" title={`${request.filename} PDF 预览`} src={sourceUrl}/>
+              : textPreviewable
+                ? previewQuery.isLoading
+                  ? <p>正在读取文件…</p>
+                  : previewQuery.isError
+                    ? <p>文件预览不可用，请在文件栏中查看或下载。</p>
+                    : previewState
+                      ? <div className="agent-file-preview-paged"><WorkspaceTextPreview path={previewState.path} content={previewState.content} lightweight={lightweightPreview}/>{previewState.nextOffset !== undefined && <footer><span>已加载 {formatFileSize(previewState.nextOffset)} / {formatFileSize(previewState.totalBytes)}</span><button type="button" onClick={() => void loadMorePreview()} disabled={previewMoreLoading}>{previewMoreLoading ? '正在加载…' : '加载更多'}</button></footer>}</div>
+                      : null
+                : <p>此文件不提供浏览器预览，请在文件栏中查看或下载。</p>}
+      </div>
+      <footer><button type="button" className="secondary" onClick={onClose}>关闭</button>{request.kind !== 'image' && <button type="button" className="primary" onClick={() => onOpenInFiles(request)}><PanelRightOpen size={14}/>在文件栏打开</button>}</footer>
+    </section>
+  </div>, document.body);
+}
+
 function readWorkspaceToolState(storageKey: string): Record<string, WorkspaceToolScopeState> {
   try {
     const parsed = JSON.parse(sessionStorage.getItem(storageKey) ?? '{}') as Record<string, WorkspaceToolScopeState>;
@@ -4034,8 +4147,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   );
   const [workspaceReferencePickerOpen, setWorkspaceReferencePickerOpen] = useState(false);
   const [workspaceReferenceQuery, setWorkspaceReferenceQuery] = useState('');
+  const [filePreviewRequest, setFilePreviewRequest] = useState<ConversationFilePreviewRequest>();
   const [attachmentRequest, setAttachmentRequest] = useState<{ key: string; attachment: AgentAttachment }>();
-  const [markdownFileRequest, setMarkdownFileRequest] = useState<MarkdownFileRequest>();
   const [fileSelectionReference, setFileSelectionReference] = useState<{ path: string; selection: FileSelection }>();
   useEffect(() => {
     const openSelection = (event: Event) => {
@@ -4248,6 +4361,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   );
   const activeHistoryScope = useRef<string | undefined>(selected?.id);
   activeHistoryScope.current = selected?.id;
+  useEffect(() => setFilePreviewRequest(undefined), [conversationDraft?.id, selected?.id]);
   const resolveHistoryPrepend = useCallback((transaction: ConversationHistoryPrepend, accepted: boolean) => {
     const waiter = historyPrependWaiters.current.get(transaction.id);
     if (!waiter || waiter.scope !== transaction.scope || activeHistoryScope.current !== transaction.scope) return;
@@ -5041,19 +5155,40 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     }
     return [...byId.values()];
   }, [attachments, displayedEvents]);
-  const openAttachmentInDrawer = useCallback((attachment: AgentAttachment) => {
-    setAttachmentRequest({ key: randomId(), attachment });
-    setDrawerOpen(true);
-  }, []);
-  const openCandidateFileInDrawer = useCallback((fieldKey: string, relativePath: string) => {
-    if (!workspace || !candidateOutputUrl) return;
-    setCandidatePreviewRequest({
+  const previewAttachment = useCallback((attachment: AgentAttachment) => {
+    setFilePreviewRequest({
       key: randomId(),
+      kind: 'workspace',
+      path: attachment.path,
+      filename: attachment.filename,
+      mimeType: attachment.mime_type,
+      imageDataUrl: attachment.image_data_url,
+      attachment,
+    });
+  }, []);
+  const previewCandidateFile = useCallback((fieldKey: string, relativePath: string) => {
+    if (!workspace || !candidateOutputUrl) return;
+    setFilePreviewRequest({
+      key: randomId(),
+      kind: 'candidate',
       filename: relativePath.split('/').at(-1) || relativePath,
       url: candidateOutputUrl(workspace.id, fieldKey, relativePath),
+      fieldKey,
+      relativePath,
     });
-    setDrawerOpen(true);
   }, [candidateOutputUrl, workspace]);
+  const openPreviewInFiles = useCallback((request: ConversationFilePreviewRequest) => {
+    if (request.kind === 'image') return;
+    setFilePreviewRequest(undefined);
+    if (request.kind === 'candidate') {
+      setCandidatePreviewRequest({ key: randomId(), filename: request.filename, url: request.url });
+    } else {
+      setAttachmentRequest(request.attachment
+        ? { key: randomId(), attachment: request.attachment }
+        : { key: randomId(), attachment: { filename: request.filename, mime_type: request.mimeType ?? '', byte_size: 0, path: request.path } });
+    }
+    setDrawerOpen(true);
+  }, []);
   const contextQuery = useQuery({
     queryKey: contextQueryKey,
     queryFn: () => api.conversationContext(workspace!.id, selected!.id),
@@ -6188,12 +6323,21 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const openWorkspaceFileLink = (href: string) => {
     const path = workspaceMarkdownLinkPath(href, activeWorkspaceRoot);
     if (!path) return false;
-    setFileSelectionReference(undefined);
-    setAttachmentRequest(undefined);
-    setCandidatePreviewRequest(undefined);
-    setMarkdownFileRequest({ key: randomId(), path });
-    setDrawerOpen(true);
+    setFilePreviewRequest({
+      key: randomId(),
+      kind: 'workspace',
+      path,
+      filename: path.split('/').filter(Boolean).at(-1) || path,
+    });
     return true;
+  };
+  const previewMarkdownImage = (src: string, alt?: string) => {
+    const path = workspaceMarkdownImagePath(src, activeWorkspaceRoot);
+    setFilePreviewRequest(path ? {
+      key: randomId(), kind: 'workspace', path, filename: alt || path.split('/').filter(Boolean).at(-1) || '图片', mimeType: 'image/*',
+    } : {
+      key: randomId(), kind: 'image', filename: alt || '会话图片', url: src,
+    });
   };
   const currentWorkspaceName = activeWorkspaceDetailsQuery.data?.scope.display_name
     ?? (selected?.work_directory_id
@@ -6347,6 +6491,15 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   return <main className="agent-workbench-page">
     {selected && <ConversationStreamObserver workspaceId={workspace.id} bindingId={selected.id} enabled={streamEnabled} onEvent={onStreamEvent} onStatus={updateStreamStatus} onReconnect={onStreamReconnect}/>}
     {conversationSearchOpen && <ConversationSearchDialog search={conversationSearchQuery.data} onClose={() => setConversationSearchOpen(false)} onSubmit={startConversationSearch} submitting={conversationSearchQuery.isFetching} onOpenHit={openConversationSearchHit}/>}
+    {filePreviewRequest && <ConversationFilePreviewDialog
+      key={filePreviewRequest.key}
+      request={filePreviewRequest}
+      workspaceId={workspace.id}
+      bindingId={selected?.id}
+      workDirectoryId={selected ? undefined : conversationDraft?.workDirectoryId}
+      onClose={() => setFilePreviewRequest(undefined)}
+      onOpenInFiles={openPreviewInFiles}
+    />}
     <aside className="agent-workbench-rail">
       <header className={!onReturnToSource && features.workDirectories ? 'agent-workbench-rail-actions-only' : undefined}>{onReturnToSource && <button type="button" className="agent-session-return" aria-label="返回节点执行" title="返回节点执行" onClick={onReturnToSource}><ArrowLeft size={16}/></button>}{(onReturnToSource || !features.workDirectories) && <div className="agent-session-host-heading"><span className="eyebrow">{onReturnToSource ? 'FLOWRUN NODE WORKSPACE' : 'FLOWRUN NODE'}</span><h1>{onReturnToSource ? workspace?.display_name || '节点会话' : '节点会话'}</h1></div>}<div className="agent-workbench-create-actions"><button type="button" className={`agent-workbench-activity-trigger${sidebarListMode === 'activity' ? ' active' : ''}`} aria-label={`查看活动会话${activityConversations.length ? `（${activityConversations.length}）` : ''}`} title="查看活动会话" onClick={toggleSidebarListMode}><Bell size={15}/>{activityConversations.length > 0 && <span aria-hidden="true">{activityConversations.length > 99 ? '99+' : activityConversations.length}</span>}</button><button className="primary" disabled={!conversationSearchSupported} onClick={() => setConversationSearchOpen(true)}>{conversationSearchQuery.data?.state === 'PENDING' || conversationSearchQuery.data?.state === 'RUNNING' ? <LoaderCircle className="conversation-activity-spin" size={15}/> : conversationSearchQuery.data?.state === 'SUCCEEDED' ? <Check size={15}/> : <Search size={15}/>}{conversationSearchQuery.data?.state === 'SUCCEEDED' ? '搜索完成' : '搜索会话'}</button>{features.workDirectories && <button type="button" className="secondary" aria-label="新增工作区" disabled={!runtimeWritable} onClick={() => setWorkDirectoryCreatorOpen(true)}><FolderPlus size={14}/>新增工作区</button>}</div></header>
       <div className="agent-workbench-list">
@@ -6383,10 +6536,11 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         requestSubmitting={send.isPending || bootstrap.isPending || rewrite.isPending}
         onRewrite={selected && canWrite && features.rewrite ? requestRewrite : undefined}
         onFork={canFork ? eventId => { if (fork.isPending) return; const directoryName = selected?.work_directory_id ? workDirectories.find(directory => directory.id === selected.work_directory_id)?.display_name ?? '当前工作区' : '节点工作目录'; void dialog.confirm({ title: '从此处分叉会话？', message: `将保留当前会话在“${directoryName}”中的工作目录和截至此回复的历史记录，创建一条可独立继续的新会话。源会话不会被修改。`, confirmLabel: '创建分叉会话' }).then(confirmed => { if (confirmed) fork.mutate(eventId); }); } : undefined}
-        onOpenAttachment={features.attachments ? openAttachmentInDrawer : undefined}
-        onPreviewCandidateFile={candidateOutputUrl && workspace ? openCandidateFileInDrawer : undefined}
+        onOpenAttachment={features.attachments ? previewAttachment : undefined}
+        onPreviewCandidateFile={candidateOutputUrl && workspace ? previewCandidateFile : undefined}
         onReviewChanges={openChangesReview}
         onOpenWorkspaceFile={openWorkspaceFileLink}
+        onOpenImage={previewMarkdownImage}
         workspaceRoot={activeWorkspaceRoot}
         annotations={messageAnnotations}
         onCreateAnnotation={selected && canWrite ? anchor => void createAnnotation('CONVERSATION_TEXT', anchor) : undefined}
@@ -6446,7 +6600,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
           })}
         </section>}
         <ComposerCapabilityAutocomplete key={composerScope ?? 'composer'} ref={composerRef} initialDraft={composerDraftRef.current} scope={composerScope} suggestions={composerSuggestions} placeholder={pendingConfirmation ? '请先处理上方工具确认…' : '给 Agent 发消息…'} disabled={!canCompose || Boolean(pendingConfirmation) || bootstrap.isPending || migrateStreaming.isPending || Boolean(pendingMigratedSend) || conversationActivity.state === 'pausing' || conversationActivity.state === 'resuming'} onDraftChange={setComposerDraft} onContentPresenceChange={onComposerContentPresenceChange} onDraftPersist={persistComposerDraft} onPaste={event => { if (!features.attachments || !composerScope) return; const files = transferredFiles(event.clipboardData); if (!files.length) return; event.preventDefault(); for (const file of files) upload.mutate({ file, scope: composerScope }); }} onDropFiles={features.attachments && composerScope ? files => { for (const file of files) upload.mutate({ file, scope: composerScope }); } : undefined} onDropWorkspaceFiles={paths => setWorkspaceReferences(current => [...current, ...paths.flatMap(path => current.some(reference => reference.path === path) ? [] : [{ path, kind: 'file' as const, display_name: path.split('/').filter(Boolean).pop() ?? path }])])} onSubmit={enqueueDraft} onDirectSubmit={sendDraftDirectly} onManageCapabilities={features.capabilities && (selected || features.draftCapabilitySelection) ? () => setCapabilityManagerOpen(true) : undefined} onWorkspaceReferenceSelected={() => { setWorkspaceReferenceQuery(''); setWorkspaceReferencePickerOpen(true); }}/>
-        {features.attachments && attachments.length > 0 && <div className="agent-attachments">{attachments.map(item => <span key={item.path}><button type="button" className="agent-attachment-open" title={`在右侧查看附件：${item.filename}`} onClick={() => openAttachmentInDrawer(item)}>{item.image_data_url && <img src={item.image_data_url} alt=""/>}<em>{item.filename}</em></button><button type="button" className="agent-attachment-remove" aria-label={`移除附件 ${item.filename}`} onClick={() => setAttachments(all => all.filter(candidate => candidate.path !== item.path))}>×</button></span>)}</div>}
+        {features.attachments && attachments.length > 0 && <div className="agent-attachments">{attachments.map(item => <span key={item.path}><button type="button" className="agent-attachment-open" title={`预览附件：${item.filename}`} onClick={() => previewAttachment(item)}>{item.image_data_url && <img src={item.image_data_url} alt=""/>}<em>{item.filename}</em></button><button type="button" className="agent-attachment-remove" aria-label={`移除附件 ${item.filename}`} onClick={() => setAttachments(all => all.filter(candidate => candidate.path !== item.path))}>×</button></span>)}</div>}
         {references.length > 0 && <div className="agent-attachments agent-conversation-references" aria-label="已添加的会话引用">{references.map((reference, index) => <span key={`${reference.eventId}:${reference.content}`}><span className="agent-attachment-open" title={reference.content}><Quote size={14}/><em>{`会话引用 ${index + 1}`}</em></span><button type="button" className="agent-attachment-remove" aria-label={`移除会话引用 ${index + 1}`} onClick={() => setReferences(current => current.filter(item => item !== reference))}>×</button></span>)}</div>}
         {(selected || conversationDraft) && <ComposerAnnotationList annotations={composerAnnotations} onLocate={locateAnnotation} onRemove={annotation => setComposerAnnotations(current => current.filter(item => item.id !== annotation.id))} onUpdate={(annotation, comment) => void updateAnnotation(annotation, comment)}/>}
         {workspaceReferences.length > 0 && <div className="agent-attachments agent-workspace-references" aria-label="已添加的工作区引用">{workspaceReferences.map(reference => <span key={workspaceReferenceKey(reference)} title={reference.path}><span className="agent-attachment-open">{reference.kind === 'directory' ? <Folder size={14}/> : <FileCode2 size={14}/>}<em><b>{reference.display_name}</b><small>{workspaceReferenceLabel(reference)}</small></em></span><button type="button" className="agent-attachment-remove" aria-label={'移除工作区引用 ' + reference.display_name} onClick={() => setWorkspaceReferences(current => current.filter(item => workspaceReferenceKey(item) !== workspaceReferenceKey(reference)))}>×</button></span>)}</div>}
@@ -6489,7 +6643,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       sources={drawerSources}
       attachmentRequest={attachmentRequest}
       candidatePreviewRequest={candidatePreviewRequest}
-      markdownFileRequest={markdownFileRequest}
       reviewChanges={reviewChanges}
       reviewRequestId={reviewRequestId}
       sessionChanges={sessionFileChanges}

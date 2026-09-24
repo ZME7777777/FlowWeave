@@ -5,7 +5,7 @@ import { deploymentBasePath } from '../deploymentPath';
 import { MarkdownCodeBlock, MermaidDiagram } from './MermaidDiagram';
 import { isMermaidDiagram, markdownCodeText, normalizeNestedMarkdownFences } from './markdownCodeBlock';
 
-function MarkdownImage({ src, alt, ...props }: ComponentPropsWithoutRef<'img'>) {
+function MarkdownImage({ src, alt, onOpenImage, ...props }: ComponentPropsWithoutRef<'img'> & { onOpenImage?: (src: string, alt?: string) => void }) {
   const [failed, setFailed] = useState(false);
   // Runtime message projection deliberately produces API-root paths so the
   // backend does not need to know where the web app is mounted.
@@ -21,7 +21,10 @@ function MarkdownImage({ src, alt, ...props }: ComponentPropsWithoutRef<'img'>) 
         : <small>图片地址无效</small>}
     </span>;
   }
-  return <img {...props} loading="lazy" decoding="async" className={`conversation-markdown-image${props.className ? ` ${props.className}` : ''}`} src={resolvedSource} alt={alt ?? ''} onError={() => setFailed(true)}/>;
+  const image = <img {...props} loading="lazy" decoding="async" className={`conversation-markdown-image${props.className ? ` ${props.className}` : ''}`} src={resolvedSource} alt={alt ?? ''} onError={() => setFailed(true)}/>;
+  return onOpenImage && typeof resolvedSource === 'string'
+    ? <button type="button" className="conversation-markdown-image-button" aria-label={`预览图片：${alt || '会话图片'}`} onClick={() => onOpenImage(resolvedSource, alt ?? undefined)}>{image}</button>
+    : image;
 }
 
 function MarkdownLink({ href, onClick, onOpenWorkspaceFile, ...props }: ComponentPropsWithoutRef<'a'> & {
@@ -51,10 +54,10 @@ function MarkdownTable({ children, node: _node, ...props }: ComponentPropsWithou
   return <div className="conversation-markdown-table-scroll"><table {...props}>{children}</table></div>;
 }
 
-export function ConversationMarkdown({ children, onOpenWorkspaceFile }: { children: string; onOpenWorkspaceFile?: (href: string) => boolean }) {
+export function ConversationMarkdown({ children, onOpenWorkspaceFile, onOpenImage }: { children: string; onOpenWorkspaceFile?: (href: string) => boolean; onOpenImage?: (src: string, alt?: string) => void }) {
   const markdown = useMemo(() => normalizeNestedMarkdownFences(children), [children]);
   return <ReactMarkdown remarkPlugins={[remarkGfm]} components={{
     a: props => <MarkdownLink {...props} onOpenWorkspaceFile={onOpenWorkspaceFile}/>,
-    img: MarkdownImage, pre: MarkdownPre, table: MarkdownTable,
+    img: props => <MarkdownImage {...props} onOpenImage={onOpenImage}/>, pre: MarkdownPre, table: MarkdownTable,
   }}>{markdown}</ReactMarkdown>;
 }
