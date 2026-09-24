@@ -4569,7 +4569,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   }, [bootstrapRecovery, clearConversationDraft, host.id, pendingBootstrap, workspace]);
   const connectedProviders = (providersQuery.data ?? []).filter(item => item.connection_state === 'CONNECTED' && item.models.some(model => model.enabled && model.is_default));
   useLayoutEffect(() => {
-    if (!composerScope || composerScope !== activeComposerScope.current) return;
+    // During a scope change, activeComposerScope already points at the incoming
+    // conversation while the controlled composer still contains the outgoing
+    // conversation's values. Wait until the scope transition has restored state.
+    if (!composerScope || previousComposerScope.current !== composerScope || composerScope !== activeComposerScope.current) return;
     composerDraftsByScope.current.set(composerScope, {
       content: composerDraftRef.current,
       attachments,
