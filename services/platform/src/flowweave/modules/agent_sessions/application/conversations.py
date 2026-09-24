@@ -300,11 +300,18 @@ def _decode_conversation_page_cursor(cursor: str) -> tuple[Decimal, str]:
 def _page_dicts(
     db: Session,
     items: list[AgentConversationBinding],
-    execution_status_by_conversation_id: dict[str, str],
     *,
     write_available: bool,
 ) -> list[dict[str, Any]]:
-    """Build list DTOs with two batch queries and exact native status reads."""
+    """Build a bounded control-plane list projection.
+
+    A list refresh must never perform an OpenHands request.  This function is
+    reached through ``AsyncSession.run_sync`` by the REST router, so a native
+    state request here would block an ASGI worker and could make unrelated
+    first-screen requests queue behind a degraded Runtime.  The selected
+    Conversation owns the exact native readiness read through the isolated
+    Runtime-read lane; unselected rows deliberately report ``unknown``.
+    """
 
     usage_by_binding = usage_projection.for_scope(
         db, field="binding_id", ids=(item.id for item in items)
@@ -360,9 +367,7 @@ def _page_dicts(
             "capabilities": capabilities_by_binding[item.id],
             "streaming_callback_ready": item.streaming_callback_ready,
             "write_available": write_available,
-            "execution_status": execution_status_by_conversation_id.get(
-                item.openhands_conversation_id, "unknown"
-            ),
+            "execution_status": "unknown",
             "unread": item.unread,
             "lifecycle": item.lifecycle,
             "created_at": item.created_at.isoformat(),
@@ -728,33 +733,10 @@ def list_conversation_page(
     )
     has_more = len(items) > limit
     page_items = items[:limit]
-    execution_status_by_conversation_id: dict[str, str] = {}
-    if page_items:
-        workspace = _workspace(db, workspace_id)
-        runtime = get_runtime()
-        for item in page_items:
-            try:
-                # The OpenHands search index can briefly retain a Conversation
-                # under `running` after its formal error event.  A spinner is a
-                # lifecycle claim, so make it only from the Conversation's
-                # exact native state read, never from that eventually-consistent
-                # list projection.  Pages are intentionally bounded to five.
-                execution_status_by_conversation_id[item.openhands_conversation_id] = (
-                    runtime.input_readiness(_handle(db, workspace, item))
-                    .execution_status.strip()
-                    .lower()
-                    or "unknown"
-                )
-            except (AttributeError, DomainError):
-                # Read-only navigation remains available while one Runtime is
-                # reconnecting.  Unknown deliberately does not claim a running
-                # turn; the selected Conversation will retry its exact read.
-                execution_status_by_conversation_id[item.openhands_conversation_id] = "unknown"
     return {
         "items": _page_dicts(
             db,
             page_items,
-            execution_status_by_conversation_id,
             write_available=_workspace_write_available(db, workspace),
         ),
         "next_cursor": _conversation_page_cursor(page_items[-1])
