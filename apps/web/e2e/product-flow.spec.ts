@@ -463,6 +463,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   const terminalResizes: Array<{ rows: number; columns: number }> = [];
   let sentMessages = 0;
   let runningDirectMessagePosts = 0;
+  let runningDirectFormalEventPersisted = false;
   let pausedDirectMessagePosts = 0;
   let releaseRunningDirectDelivery: (() => void) | undefined;
   const runningDirectDeliveryGate = new Promise<void>(resolve => { releaseRunningDirectDelivery = resolve; });
@@ -795,6 +796,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
         events: (modelIsResponding || parentTurnFailed || recoverableAgentError) ? [
           ...(!cursor ? [{ id: 'running-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'agent-reply', content: '正在处理的请求', timestamp: new Date(Date.now() - 12_000).toISOString().replace(/Z$/, '') } }] : []),
+          ...(runningDirectFormalEventPersisted && !cursor ? [{ id: 'running-direct-stream-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'running-user', content: 'FLOWWEAVE_MESSAGE_CONTEXT_V5:{"current_user_request":{"content":"运行中直接发送消息"}}', display_content: '运行中直接发送消息', timestamp: new Date().toISOString() } }] : []),
           ...(incompleteLiveToolProjection && !cursor ? [{ id: 'live-tool', event_type: 'TOOL_CALL', payload: { source: 'agent', parent_id: 'running-user', action_id: 'live-tool', tool_call_id: 'live-call', event_name: 'TerminalAction', timestamp: new Date().toISOString() } }] : []),
           ...(backfilledTaskAction && (cursor === 'running-user' || (cursorlessEventRecovery && !cursor)) ? [{ id: 'recovered-task-action', event_type: 'TOOL_CALL', payload: { source: 'agent', parent_id: 'running-user', action_id: 'recovered-task-action', tool_call_id: 'recovered-task-call', tool_name: 'task', event_name: 'TaskAction', summary: '检查依赖关系', runtime_task: { phase: 'REQUESTED', action_event_id: 'recovered-task-action', tool_call_id: 'recovered-task-call', subagent_type: 'general-purpose', description: '检查依赖关系' }, timestamp: new Date().toISOString() } }] : []),
           ...(cursorlessEventRecovery && !cursor ? [{ id: 'cursorless-task-action', event_type: 'TOOL_CALL', payload: { source: 'agent', parent_id: 'recovered-task-action', action_id: 'cursorless-task-action', tool_call_id: 'cursorless-task-call', tool_name: 'task', event_name: 'TaskAction', summary: '汇总子任务返回', runtime_task: { phase: 'REQUESTED', action_event_id: 'cursorless-task-action', tool_call_id: 'cursorless-task-call', subagent_type: 'reviewer', description: '汇总子任务返回' }, timestamp: new Date().toISOString() } }] : []),
@@ -1944,27 +1946,32 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await composer.press('Meta+Enter');
   const runningDirectMessage = page.locator('.conversation-message.user').filter({ hasText: '运行中直接发送消息' });
   await expect(runningDirectMessage).toBeVisible();
+  await runningDirectMessage.evaluate(element => { (element as HTMLElement).dataset.optimisticIdentity = 'stable'; });
   await expect(page.locator('.conversation-message-delivery-status')).toHaveCount(0);
   await expect(page.getByLabel('消息投递队列').getByText('运行中直接发送消息')).toHaveCount(0);
   await expect.poll(() => runningDirectMessagePosts).toBe(1);
   await page.waitForTimeout(250);
   expect(runningDirectMessagePosts).toBe(1);
-  releaseRunningDirectDelivery?.();
-  // The optimistic user event must remain visible after the POST is accepted,
-  // before OpenHands appends the formal MESSAGE event.
-  await expect(runningDirectMessage).toHaveCount(1);
-  await expect(runningDirectMessage).toBeVisible();
+  runningDirectFormalEventPersisted = true;
   agentStream!.send(JSON.stringify({
     type: 'event',
     event: { id: 'running-direct-stream-user', event_type: 'MESSAGE', payload: { source: 'user', content: 'FLOWWEAVE_MESSAGE_CONTEXT_V5:{"current_user_request":{"content":"运行中直接发送消息"}}', display_content: '运行中直接发送消息', timestamp: new Date().toISOString().replace(/Z$/, '') } },
   }));
   await expect(runningDirectMessage).toHaveCount(1);
+  await expect(runningDirectMessage).toHaveAttribute('data-optimistic-identity', 'stable');
+  releaseRunningDirectDelivery?.();
+  await expect(runningDirectMessage).toHaveCount(1);
+  await expect(runningDirectMessage).toHaveAttribute('data-optimistic-identity', 'stable');
   await expect(page.locator('.conversation-message-delivery-status')).toHaveCount(0);
   await expect(runningDirectMessage).toBeVisible();
+  const formalUserMessageCountBeforeReload = await page.locator('[data-user-event-id="running-direct-stream-user"]').count();
+  expect(formalUserMessageCountBeforeReload).toBe(1);
   const activeConversation = conversations.find(item => item.id === sentBinding);
   if (!activeConversation) throw new Error('Expected the active conversation to receive the direct message');
   activeConversation.streaming_callback_ready = false;
   await page.reload();
+  await expect(page.locator('[data-user-event-id="running-direct-stream-user"]')).toHaveCount(1);
+  await expect(page.locator('[data-user-event-id="running-direct-stream-user"]')).not.toHaveAttribute('data-optimistic-identity', 'stable');
   const sentBeforeQueue = sentMessages;
   await composer.fill('待编辑排队消息');
   await composer.press('Enter');
@@ -2439,7 +2446,9 @@ test('editing the latest user message locally replaces only its active branch', 
   await expect(page.getByText('更早的问题', { exact: true })).toBeVisible();
   await expect(page.getByText('更早的回答', { exact: true })).toBeVisible();
   await expect(page.getByText('不应保留的旧回答', { exact: true })).toHaveCount(0);
-  await expect(page.getByText('修改后的问题', { exact: true })).toBeVisible();
+  const rewrittenMessage = page.locator('.conversation-message.user').filter({ hasText: '修改后的问题' });
+  await expect(rewrittenMessage).toBeVisible();
+  await rewrittenMessage.evaluate(element => { (element as HTMLElement).dataset.optimisticIdentity = 'stable'; });
   await expect(page.getByText(/已耗时 \d+秒/)).toBeVisible();
   const thinkingStatus = page.locator('.conversation-turn-status');
   await expect(thinkingStatus).toHaveText(/正在思考/);
@@ -2468,6 +2477,8 @@ test('editing the latest user message locally replaces only its active branch', 
   if (!releaseRewrite) throw new Error('Expected rerun request');
   releaseRewrite();
   await expect(page.getByText('新的回答', { exact: true })).toBeVisible();
+  await expect(rewrittenMessage).toHaveCount(1);
+  await expect(rewrittenMessage).toHaveAttribute('data-optimistic-identity', 'stable');
   includeLateOldBranchEvent = true;
   await page.evaluate(() => window.dispatchEvent(new Event('focus')));
   await expect.poll(() => lateOldBranchEventWasRead).toBe(true);

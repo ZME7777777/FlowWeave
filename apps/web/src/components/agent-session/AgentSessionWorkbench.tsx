@@ -13,7 +13,7 @@ import { agentWorkspaceSessionGateway, type AgentSessionGateway } from '../../ap
 import { withoutDeploymentBase } from '../../deploymentPath';
 import { agentWorkspaceSessionHost, type AgentSessionHost } from './session-host';
 import { ConversationSurface, ConversationTaskPlan, type ConversationHistoryPrepend, type ConversationReference, type ModelRetryStatus } from '../ConversationSurface';
-import { isOpenHandsAgentReply, isOpenHandsEmptyResponseRecovery, orderOpenHandsConversationEvents, parseOpenHandsEventTime } from '../conversationEvents';
+import { isOpenHandsAgentReply, isOpenHandsEmptyResponseRecovery, orderOpenHandsConversationEvents } from '../conversationEvents';
 import { useProductDialog } from '../ProductDialogContext';
 import { useEscapeClose } from '../useEscapeClose';
 import { MermaidDiagram } from '../MermaidDiagram';
@@ -198,9 +198,15 @@ interface ConversationDraftPersistence {
   modelName: string;
   reasoningEffort: string | null;
 }
-interface OptimisticBootstrapTurn {
+type LocalMessageProjectionState = 'submitting' | 'accepted' | 'ambiguous';
+interface LocalMessageProjection {
+  submissionId: string;
   scope: string;
+  renderKey: string;
+  canonicalEventId?: string;
+  state: LocalMessageProjectionState;
   event: OpenHandsConversationEvent;
+  formalEventIdsAtSubmission: Set<string>;
 }
 interface ScopedConversationEvent {
   scope: string;
@@ -1505,67 +1511,89 @@ function pendingConversationName(message: QueuedMessage | undefined) {
   return firstLine.length > 36 ? `${firstLine.slice(0, 36)}…` : firstLine;
 }
 
+function mergeConversationEvent(
+  current: OpenHandsConversationEvent,
+  incoming: OpenHandsConversationEvent,
+): OpenHandsConversationEvent {
+  const currentAttachments = Array.isArray(current.payload.attachments) ? current.payload.attachments : [];
+  const incomingAttachments = Array.isArray(incoming.payload.attachments) ? incoming.payload.attachments : [];
+  const attachments = [...currentAttachments, ...incomingAttachments].reduce<AgentAttachment[]>((items, attachment) => {
+    const index = items.findIndex(item => item.path === attachment.path);
+    if (index < 0) return [...items, attachment];
+    const next = [...items];
+    next[index] = { ...items[index], ...attachment, image_data_url: attachment.image_data_url ?? items[index].image_data_url };
+    return next;
+  }, []);
+  return {
+    ...current,
+    ...incoming,
+    payload: {
+      ...current.payload,
+      ...incoming.payload,
+      ...(attachments.length ? { attachments } : {}),
+      details: { ...current.payload.details, ...incoming.payload.details },
+    },
+  };
+}
+
 function mergeConversationEvents(
   durable: OpenHandsConversationEvent[],
   transient: OpenHandsConversationEvent[],
 ): OpenHandsConversationEvent[] {
-  const mergeEvent = (current: OpenHandsConversationEvent, incoming: OpenHandsConversationEvent): OpenHandsConversationEvent => {
-    const currentAttachments = Array.isArray(current.payload.attachments) ? current.payload.attachments : [];
-    const incomingAttachments = Array.isArray(incoming.payload.attachments) ? incoming.payload.attachments : [];
-    const attachments = [...currentAttachments, ...incomingAttachments].reduce<AgentAttachment[]>((items, attachment) => {
-      const index = items.findIndex(item => item.path === attachment.path);
-      if (index < 0) return [...items, attachment];
-      const next = [...items];
-      next[index] = { ...items[index], ...attachment, image_data_url: attachment.image_data_url ?? items[index].image_data_url };
-      return next;
-    }, []);
-    return {
-      ...current,
-      ...incoming,
-      payload: {
-        ...current.payload,
-        ...incoming.payload,
-        ...(attachments.length ? { attachments } : {}),
-        details: { ...current.payload.details, ...incoming.payload.details },
-      },
-    };
-  };
-  const isSubmittedUserEvent = (event: OpenHandsConversationEvent) => event.event_type === 'MESSAGE'
-    && event.payload.source === 'user'
-    && typeof event.payload._flowweave_submission_id === 'string';
-  const userMessageContent = (event: OpenHandsConversationEvent) => typeof event.payload.display_content === 'string'
-    ? event.payload.display_content
-    : event.payload.content;
-  const sameSubmittedMessage = (first: OpenHandsConversationEvent, second: OpenHandsConversationEvent) => {
-    if (first.event_type !== 'MESSAGE' || second.event_type !== 'MESSAGE'
-      || first.payload.source !== 'user' || second.payload.source !== 'user'
-      || userMessageContent(first) !== userMessageContent(second)) return false;
-    const firstTime = parseOpenHandsEventTime(first.payload.timestamp);
-    const secondTime = parseOpenHandsEventTime(second.payload.timestamp);
-    return firstTime === undefined || secondTime === undefined || Math.abs(firstTime - secondTime) <= 5 * 60_000;
-  };
   const merged = new Map(durable.map(event => [event.id, event]));
   for (const event of transient) {
     const current = merged.get(event.id);
-    if (current) {
-      merged.set(event.id, mergeEvent(current, event));
-      continue;
-    }
-    const counterpart = [...merged.entries()].find(([, candidate]) => (
-      isSubmittedUserEvent(candidate) !== isSubmittedUserEvent(event)
-      && sameSubmittedMessage(candidate, event)
-    ));
-    if (!counterpart) {
-      merged.set(event.id, event);
-      continue;
-    }
-    const [counterpartId, candidate] = counterpart;
-    const formalEvent = isSubmittedUserEvent(candidate) ? event : candidate;
-    const submittedEvent = isSubmittedUserEvent(candidate) ? candidate : event;
-    merged.delete(counterpartId);
-    merged.set(formalEvent.id, { ...mergeEvent(formalEvent, submittedEvent), id: formalEvent.id });
+    merged.set(event.id, current ? mergeConversationEvent(current, event) : event);
   }
   return [...merged.values()];
+}
+
+function projectLocalMessages(
+  formalEvents: OpenHandsConversationEvent[],
+  projections: LocalMessageProjection[],
+): OpenHandsConversationEvent[] {
+  const projected = [...formalEvents];
+
+  for (const local of projections) {
+    const formalIndex = local.canonicalEventId
+      ? projected.findIndex(event => event.id === local.canonicalEventId)
+      : -1;
+    const formalEvent = formalIndex >= 0 ? projected[formalIndex] : undefined;
+    const mergedEvent = formalEvent ? mergeConversationEvent(local.event, formalEvent) : local.event;
+    const localEvent: OpenHandsConversationEvent = {
+      ...mergedEvent,
+      id: local.canonicalEventId ?? local.event.id,
+      payload: {
+        ...mergedEvent.payload,
+        ...(formalEvent && typeof local.event.payload.content === 'string'
+          ? { display_content: local.event.payload.content }
+          : {}),
+        _flowweave_render_key: local.renderKey,
+        _flowweave_submission_id: local.submissionId,
+        _flowweave_projection_state: local.state,
+      },
+    };
+    if (formalIndex >= 0) {
+      projected[formalIndex] = localEvent;
+      continue;
+    }
+    const childIndex = local.canonicalEventId
+      ? projected.findIndex(event => event.payload.parent_id === local.canonicalEventId)
+      : -1;
+    if (childIndex >= 0) projected.splice(childIndex, 0, localEvent);
+    else projected.push(localEvent);
+  }
+
+  const unresolved = projections.filter(item => !item.canonicalEventId);
+  const unclaimedRoots = projected.flatMap(event => {
+    const isUserMessage = event.event_type === 'MESSAGE'
+      && ['user', 'human'].includes(String(event.payload.source ?? '').toLowerCase());
+    if (!isUserMessage || !unresolved.length
+      || typeof event.payload._flowweave_submission_id === 'string') return [];
+    return unresolved.some(item => !item.formalEventIdsAtSubmission.has(event.id)) ? [event.id] : [];
+  });
+  const hiddenUntilReceipt = eventBranchIdsFromRoots(projected, unclaimedRoots);
+  return projected.filter(event => !hiddenUntilReceipt.has(event.id));
 }
 
 const USER_SOURCE_URL_PATTERN = /\b(?:https?:\/\/|www\.)[^\s<>"'`()[\]{}]+/gi;
@@ -4111,7 +4139,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const [streamStatus, setStreamStatus] = useState<StreamStatus>('disabled');
   const [modelRetryStatus, setModelRetryStatus] = useState<ModelRetryStatus>();
   const [scopedLiveEvents, setScopedLiveEvents] = useState<ScopedConversationEvent[]>([]);
-  const [optimisticBootstrapTurn, setOptimisticBootstrapTurn] = useState<OptimisticBootstrapTurn>();
+  const [localMessageProjectionRevision, setLocalMessageProjectionRevision] = useState(0);
   const [pendingBootstrap, setPendingBootstrap] = useState<{ draft: ConversationDraft; message: QueuedMessage } | undefined>(() => {
     const recovery = initialBootstrapRecovery.current;
     return recovery ? { draft: recovery.draft, message: recovery.message } : undefined;
@@ -4203,6 +4231,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const workspacePathCopyTimer = useRef<number | undefined>(undefined);
   const pendingLiveEvents = useRef<ScopedConversationEvent[]>([]);
   const liveEventsFrame = useRef<number | undefined>(undefined);
+  const deferredFormalUserEvents = useRef(new Map<string, ScopedConversationEvent>());
   const historyLoadingScopes = useRef(new Set<string>());
   const historyFailedCursors = useRef(new Map<string, string>());
   const exhaustedHistoryCursors = useRef(new Map<string, string>());
@@ -4224,7 +4253,11 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const queuedMessagesStorageKeyRef = useRef<string | undefined>(undefined);
   const queuedMessagesRef = useRef<QueuedMessage[]>([]);
   const sendingMessageIds = useRef(new Set<string>());
-  const submittedUserEvents = useRef(new Map<string, ScopedConversationEvent>());
+  const localMessageProjections = useRef(new Map<string, LocalMessageProjection>());
+  const updateLocalMessageProjections = useCallback((update: (current: Map<string, LocalMessageProjection>) => void) => {
+    update(localMessageProjections.current);
+    setLocalMessageProjectionRevision(current => current + 1);
+  }, []);
   useEffect(() => () => {
     for (const resource of [
       'conversation-hydration',
@@ -5043,26 +5076,25 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     const timer = window.setTimeout(() => { void loadAllHistory(); }, historyPrefetchDelayMs);
     return () => window.clearTimeout(timer);
   }, [eventsQuery.data?.history_cursor, historyPrefetchDelayMs, loadAllHistory, selected?.id]);
+  const activeScope = selected?.id ?? conversationDraft?.id;
+  const activeLocalMessageProjections = useMemo(() => {
+    void localMessageProjectionRevision;
+    return activeScope
+      ? [...localMessageProjections.current.values()]
+        .filter(item => item.scope === activeScope)
+        .map(item => ({ ...item, formalEventIdsAtSubmission: new Set(item.formalEventIdsAtSubmission) }))
+      : [];
+  }, [activeScope, localMessageProjectionRevision]);
   const displayedEvents = useMemo(() => {
     const activeScope = selected?.id ?? conversationDraft?.id;
     const liveEvents = scopedLiveEvents
       .filter(item => item.scope === activeScope)
       .map(item => item.event);
-    const submittedEvents = activeScope
-      ? [...submittedUserEvents.current.values()]
-        .filter(item => item.scope === activeScope)
-        .map(item => item.event)
-      : [];
-    const bootstrapEvent = optimisticBootstrapTurn && optimisticBootstrapTurn.scope === activeScope
-      ? [optimisticBootstrapTurn.event]
-      : [];
-    const mergedEvents = mergeConversationEvents(
-      mergeConversationEvents(eventsQuery.data?.events ?? [], [...liveEvents, ...submittedEvents]),
-      bootstrapEvent,
-    );
-    const hiddenBranchIds = eventBranchIdsFromRoots(mergedEvents, hiddenEventIds);
-    return mergedEvents.filter(event => !hiddenBranchIds.has(event.id));
-  }, [conversationDraft?.id, eventsQuery.data?.events, hiddenEventIds, optimisticBootstrapTurn, scopedLiveEvents, selected?.id]);
+    const formalEvents = mergeConversationEvents(eventsQuery.data?.events ?? [], liveEvents);
+    const hiddenBranchIds = eventBranchIdsFromRoots(formalEvents, hiddenEventIds);
+    const visibleFormalEvents = formalEvents.filter(event => !hiddenBranchIds.has(event.id));
+    return projectLocalMessages(visibleFormalEvents, activeLocalMessageProjections);
+  }, [activeLocalMessageProjections, conversationDraft?.id, eventsQuery.data?.events, hiddenEventIds, scopedLiveEvents, selected?.id]);
   useEffect(() => {
     if (!conversationSearchTargetEventId || !selected) return;
     const target = Array.from(document.querySelectorAll<HTMLElement>('[data-conversation-event-id]')).find(
@@ -5310,6 +5342,15 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-confirmation', workspace.id, selected.id) });
   }, [host, queryClient, selected, synchronizeConversationEvents, workspace]);
   const appendLiveEvent = useCallback((scope: string, event: OpenHandsConversationEvent) => {
+    const isUserMessage = event.event_type === 'MESSAGE'
+      && ['user', 'human'].includes(String(event.payload.source ?? '').toLowerCase());
+    const pendingProjections = [...localMessageProjections.current.values()].filter(item => (
+      item.scope === scope && item.state === 'submitting' && !item.canonicalEventId
+    ));
+    if (isUserMessage && pendingProjections.some(item => !item.formalEventIdsAtSubmission.has(event.id))) {
+      deferredFormalUserEvents.current.set(event.id, { scope, event });
+      return;
+    }
     pendingLiveEvents.current.push({ scope, event });
     if (liveEventsFrame.current !== undefined) return;
     liveEventsFrame.current = window.requestAnimationFrame(() => {
@@ -5325,6 +5366,23 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       });
     });
   }, []);
+  const releaseDeferredFormalUserEvents = useCallback((scope: string, force = false) => {
+    const hasPendingSubmission = [...localMessageProjections.current.values()].some(item => (
+      item.scope === scope && item.state === 'submitting' && !item.canonicalEventId
+    ));
+    if (!force && hasPendingSubmission) return;
+    const events = [...deferredFormalUserEvents.current.entries()].filter(([, item]) => item.scope === scope);
+    for (const [eventId] of events) deferredFormalUserEvents.current.delete(eventId);
+    for (const [, item] of events) appendLiveEvent(scope, item.event);
+  }, [appendLiveEvent]);
+  const removeLocalMessageProjection = useCallback((submissionId: string, scope: string) => {
+    updateLocalMessageProjections(current => { current.delete(submissionId); });
+    const hasPendingSubmission = [...localMessageProjections.current.values()].some(item => (
+      item.scope === scope && item.state === 'submitting' && !item.canonicalEventId
+    ));
+    releaseDeferredFormalUserEvents(scope, !hasPendingSubmission);
+  }, [releaseDeferredFormalUserEvents, updateLocalMessageProjections]);
+
   useEffect(() => () => {
     if (liveEventsFrame.current !== undefined) window.cancelAnimationFrame(liveEventsFrame.current);
   }, []);
@@ -5386,13 +5444,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       bootstrapTransitionScope.current = undefined;
       return;
     }
-    setEditing(false); setQueuedMessageMenuId(undefined); pendingLiveEvents.current = []; if (liveEventsFrame.current !== undefined) window.cancelAnimationFrame(liveEventsFrame.current); liveEventsFrame.current = undefined; setScopedLiveEvents(current => {
-      const byId = new Map(current
-        .filter(item => item.scope === composerScope)
-        .map(item => [item.event.id, item]));
-      for (const item of submittedUserEvents.current.values()) byId.set(item.event.id, item);
-      return [...byId.values()];
-    }); setHiddenEventIds(new Set()); setActiveTurnEventId(undefined); setExpiredTerminalSyncTurnKey(undefined); setRequestStartedAt(undefined); setConfirmationReason(''); setTurnState('idle'); queuedMessagesRef.current = []; setQueuedMessages([]); setPendingRewrite(undefined);
+    setEditing(false); setQueuedMessageMenuId(undefined); pendingLiveEvents.current = []; if (liveEventsFrame.current !== undefined) window.cancelAnimationFrame(liveEventsFrame.current); liveEventsFrame.current = undefined; setScopedLiveEvents(current => current.filter(item => item.scope === composerScope)); setLocalMessageProjectionRevision(current => current + 1); setHiddenEventIds(new Set()); setActiveTurnEventId(undefined); setExpiredTerminalSyncTurnKey(undefined); setRequestStartedAt(undefined); setConfirmationReason(''); setTurnState('idle'); queuedMessagesRef.current = []; setQueuedMessages([]); setPendingRewrite(undefined);
     if (recoveredComposer && composerScope) {
       composerDraftsByScope.current.set(composerScope, recoveredComposer);
       replaceComposerDraft(recoveredComposer.content, composerScope);
@@ -5602,7 +5654,17 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     setWorkspaceReferences([]);
     setComposerAnnotations([]);
     setActiveTurnEventId(value.cursor ?? undefined);
-    setOptimisticBootstrapTurn(current => current?.scope === message.scope ? undefined : current);
+    updateLocalMessageProjections(current => {
+      const projection = current.get(message.id);
+      if (!projection) return;
+      current.set(message.id, {
+        ...projection,
+        scope: conversation.id,
+        canonicalEventId: value.cursor ?? undefined,
+        state: value.cursor ? 'accepted' : 'ambiguous',
+      });
+    });
+    if (value.cursor) releaseDeferredFormalUserEvents(conversation.id);
     setPendingBootstrap(undefined);
     setConversationDraft(undefined);
     clearConversationDraft();
@@ -5635,9 +5697,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         setOperationError(undefined);
         return;
       }
-      setOptimisticBootstrapTurn(current => current?.scope === message.scope ? undefined : current);
+      updateLocalMessageProjections(current => { current.delete(message.id); });
       setPendingBootstrap(undefined);
-            setActiveTurnEventId(undefined);
+      setActiveTurnEventId(undefined);
       setRequestStartedAt(undefined);
       setTurnState('idle');
       setConversationDraft(current => current ?? draftForRecovery);
@@ -5655,9 +5717,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       ));
       return;
     }
-    setOptimisticBootstrapTurn(current => current?.scope === message.scope ? undefined : current);
+    updateLocalMessageProjections(current => { current.delete(message.id); });
     setPendingBootstrap(undefined);
-        setActiveTurnEventId(undefined);
+    setActiveTurnEventId(undefined);
     setRequestStartedAt(undefined);
     setTurnState('idle');
     if (activeComposerScope.current === message.scope) {
@@ -5805,10 +5867,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       reportOperationError(selected?.id, persistModel.error as Error);
     },
   });
-  const showOptimisticUserBubble = useCallback((message: QueuedMessage): string => {
-    const optimisticEventId = `pending-user:${message.id}`;
+  const showOptimisticUserBubble = useCallback((message: QueuedMessage, idPrefix = 'pending-user'): string => {
+    const renderKey = `${idPrefix}:${message.id}`;
     const event: OpenHandsConversationEvent = {
-      id: optimisticEventId,
+      id: renderKey,
       event_type: 'MESSAGE',
       payload: {
         source: 'user',
@@ -5818,21 +5880,25 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         workspace_references: message.workspaceReferences,
         collaboration_annotations: message.annotations,
         timestamp: new Date().toISOString(),
-        _flowweave_submission_id: message.id,
       },
     };
-    const submitted = { scope: message.scope, event };
-    submittedUserEvents.current.set(message.id, submitted);
-    setScopedLiveEvents(current => [...current, submitted]);
-    return optimisticEventId;
-  }, []);
+    updateLocalMessageProjections(current => current.set(message.id, {
+      submissionId: message.id,
+      scope: message.scope,
+      renderKey,
+      state: 'submitting',
+      event,
+      formalEventIdsAtSubmission: new Set((eventsQuery.data?.events ?? []).map(item => item.id)),
+    }));
+    return renderKey;
+  }, [eventsQuery.data?.events, updateLocalMessageProjections]);
   const send = useMutation({
     mutationFn: (message: BoundQueuedMessage) => api.sendMessage(workspace!.id, message.bindingId, message.content, message.items, message.references.map(item => ({ event_id: item.eventId, content: item.content })), message.workspaceReferences ?? [], message.annotations, message.id),
     onMutate: message => {
       commitQueuedMessages(current => current.filter(item => item.id !== message.id));
       const optimisticEventId = showOptimisticUserBubble(message);
       if (message.nativeGuidance) return { optimisticEventId, nativeGuidance: true };
-            setActiveTurnEventId(undefined);
+      setActiveTurnEventId(undefined);
       setRequestStartedAt(Date.now());
       setTurnState('running');
       return { optimisticEventId, nativeGuidance: false };
@@ -5841,26 +5907,12 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       sendingMessageIds.current.delete(message.id);
       const cursor = value.cursor;
       if (cursor && context?.optimisticEventId) {
-        const submitted = submittedUserEvents.current.get(message.id);
-        if (submitted) {
-          submittedUserEvents.current.set(message.id, {
-            ...submitted,
-            event: { ...submitted.event, id: cursor },
-          });
-        }
-        setScopedLiveEvents(current => {
-          const optimistic = current.find(item => item.scope === message.bindingId && item.event.id === context.optimisticEventId);
-          if (!optimistic) return current;
-          const formal = current.find(item => item.scope === message.bindingId && item.event.id === cursor);
-          const event = formal
-            ? mergeConversationEvents([formal.event], [optimistic.event])[0]
-            : { ...optimistic.event, id: cursor };
-          return [
-            ...current.filter(item => item.scope !== message.bindingId
-              || (item.event.id !== context.optimisticEventId && item.event.id !== cursor)),
-            { scope: message.bindingId, event },
-          ];
+        updateLocalMessageProjections(current => {
+          const projection = current.get(message.id);
+          if (!projection) return;
+          current.set(message.id, { ...projection, canonicalEventId: cursor, state: 'accepted' });
         });
+        releaseDeferredFormalUserEvents(message.bindingId);
       }
       if (cursor && !context?.nativeGuidance && activeComposerScope.current === message.bindingId) setActiveTurnEventId(cursor);
       if (!context?.nativeGuidance && activeComposerScope.current === message.bindingId) {
@@ -5871,19 +5923,31 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     },
     onError: (error, message, context) => {
       sendingMessageIds.current.delete(message.id);
+      if (error instanceof ApiError && error.code === 'AGENT_MESSAGE_DELIVERY_AMBIGUOUS') {
+        updateLocalMessageProjections(current => {
+          const projection = current.get(message.id);
+          if (projection) current.set(message.id, { ...projection, state: 'ambiguous' });
+        });
+        releaseDeferredFormalUserEvents(message.bindingId, true);
+        reportOperationError(message.bindingId, error);
+        return;
+      }
       if (context?.nativeGuidance) {
+        removeLocalMessageProjection(message.id, message.bindingId);
         reportOperationError(message.bindingId, error);
         return;
       }
       if (error instanceof ApiError && error.code === 'AGENT_CONVERSATION_BUSY') {
+        removeLocalMessageProjection(message.id, message.bindingId);
         if (activeComposerScope.current === message.bindingId) {
           setActiveTurnEventId(undefined);
           setTurnState('running');
         }
         return;
       }
+      removeLocalMessageProjection(message.id, message.bindingId);
       if (activeComposerScope.current === message.bindingId) {
-                setActiveTurnEventId(undefined);
+        setActiveTurnEventId(undefined);
         setRequestStartedAt(undefined);
         setTurnState('idle');
       }
@@ -5987,53 +6051,58 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         return branch.has(event.id) && typeof submissionId === 'string' ? [submissionId] : [];
       }));
       const replacementParentId = displayedEvents.find(event => event.id === request.eventId)?.payload.parent_id;
-      const removedSubmissions: Array<[string, ScopedConversationEvent]> = [];
+      const removedProjections: LocalMessageProjection[] = [];
       commitQueuedMessages(() => []);
-      for (const [submissionId, item] of submittedUserEvents.current) {
-        if (item.scope === scope && (branch.has(item.event.id) || branchSubmissionIds.has(submissionId))) {
-          removedSubmissions.push([submissionId, item]);
-          submittedUserEvents.current.delete(submissionId);
+      updateLocalMessageProjections(current => {
+        for (const [submissionId, item] of current) {
+          if (item.scope === scope && ((item.canonicalEventId && branch.has(item.canonicalEventId)) || branchSubmissionIds.has(submissionId))) {
+            removedProjections.push(item);
+            current.delete(submissionId);
+          }
         }
-      }
+        current.set(optimisticEventId, {
+          submissionId: optimisticEventId,
+          scope,
+          renderKey: optimisticEventId,
+          state: 'submitting',
+          event: { id: optimisticEventId, event_type: 'MESSAGE', payload: {
+            source: 'user', content: request.content, parent_id: replacementParentId,
+            attachments: request.attachments,
+            conversation_references: request.references,
+            workspace_references: request.workspaceReferences,
+            collaboration_annotations: request.annotations,
+          } },
+          formalEventIdsAtSubmission: new Set((eventsQuery.data?.events ?? []).map(item => item.id)),
+        });
+      });
       setHiddenEventIds(current => new Set([...current, ...branch]));
-      setScopedLiveEvents(current => [...current.filter(item => item.scope !== scope), { scope, event: {
-        id: optimisticEventId, event_type: 'MESSAGE', payload: {
-          source: 'user', content: request.content, parent_id: replacementParentId,
-          attachments: request.attachments,
-          conversation_references: request.references,
-          workspace_references: request.workspaceReferences,
-          collaboration_annotations: request.annotations,
-        },
-      } }]);
       setActiveTurnEventId(undefined);
       setRequestStartedAt(Date.now());
       setTurnState('running');
-      return { scope, optimisticEventId, branch, replacementParentId, removedSubmissions };
+      return { scope, optimisticEventId, branch, replacementParentId, removedProjections };
     },
     onSuccess: (value, request, context) => {
       const cursor = value.cursor;
       if (cursor && context) {
         if (activeComposerScope.current === context.scope) setActiveTurnEventId(cursor);
-        setScopedLiveEvents(current => [...current.filter(
-          item => item.scope !== context.scope || item.event.id !== context.optimisticEventId,
-        ), { scope: context.scope, event: { id: cursor, event_type: 'MESSAGE', payload: {
-          source: 'user', content: request.content, parent_id: context.replacementParentId,
-          attachments: request.attachments,
-          conversation_references: request.references,
-          workspace_references: request.workspaceReferences,
-          collaboration_annotations: request.annotations,
-        } } }]);
+        updateLocalMessageProjections(current => {
+          const projection = current.get(context.optimisticEventId);
+          if (!projection) return;
+          current.set(context.optimisticEventId, { ...projection, canonicalEventId: cursor, state: 'accepted' });
+        });
+        releaseDeferredFormalUserEvents(context.scope);
       }
       refresh();
     },
     onError: (error, _request, context) => {
-      if (context) setScopedLiveEvents(current => current.filter(
-        item => item.scope !== context.scope || item.event.id !== context.optimisticEventId,
-      ));
+      if (context) {
+        updateLocalMessageProjections(current => {
+          current.delete(context.optimisticEventId);
+          for (const projection of context.removedProjections) current.set(projection.submissionId, projection);
+        });
+        releaseDeferredFormalUserEvents(context.scope, true);
+      }
       if (context && activeComposerScope.current === context.scope) {
-        for (const [submissionId, item] of context.removedSubmissions) {
-          submittedUserEvents.current.set(submissionId, item);
-        }
         setHiddenEventIds(current => {
           const next = new Set(current);
           for (const eventId of context.branch) next.delete(eventId);
@@ -6117,12 +6186,13 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     }
     setPendingBootstrap(undefined);
     setWorkspaceScopeMigration(undefined);
-        setScopedLiveEvents([]);
-    setOptimisticBootstrapTurn(undefined);
+    setScopedLiveEvents([]);
+    updateLocalMessageProjections(current => { current.clear(); });
+    deferredFormalUserEvents.current.clear();
     setHiddenEventIds(new Set());
     setTurnState('idle');
     onNavigate(host.rootPath);
-  }, [clearBootstrapRecovery, host.id, host.rootPath, onNavigate, persistComposerDraft, replaceComposerDraft, workspace]);
+  }, [clearBootstrapRecovery, host.id, host.rootPath, onNavigate, persistComposerDraft, replaceComposerDraft, updateLocalMessageProjections, workspace]);
   useEffect(() => {
     if (!autoOpenDraft || !workspace || selectedBindingId || conversationDraft) return;
     openConversationDraft({ displayName: '根工作区' }, { restoreRecovery: true });
@@ -6142,10 +6212,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     if (conversationDraft) {
       if (canBootstrap && !bootstrap.isPending) {
         setPendingBootstrap({ draft: conversationDraft, message });
-        setOptimisticBootstrapTurn({
-          scope: conversationDraft.id,
-          event: { id: `pending-bootstrap:${message.id}`, event_type: 'MESSAGE', payload: { source: 'user', content, attachments, conversation_references: references.map(item => ({ event_id: item.eventId, content: item.content })), workspace_references: workspaceReferences, collaboration_annotations: composerAnnotations } },
-        });
+        showOptimisticUserBubble(message, 'pending-bootstrap');
         setRequestStartedAt(Date.now());
         setTurnState('running');
         bootstrap.mutate(message);
@@ -6172,7 +6239,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       return;
     }
     dispatchMessage({ ...queuedMessage, bindingId: selected.id });
-  }, [attachments, bootstrap, canBootstrap, canWrite, commitQueuedMessages, composerAnnotations, composerScope, conversationDraft, dispatchMessage, effectiveTurnState, host.id, migrateStreaming.isPending, pendingMigratedSend, queueModeEnabled, references, replaceComposerDraft, selected, workspace, workspaceReferences]);
+  }, [attachments, bootstrap, canBootstrap, canWrite, commitQueuedMessages, composerAnnotations, composerScope, conversationDraft, dispatchMessage, effectiveTurnState, host.id, migrateStreaming.isPending, pendingMigratedSend, queueModeEnabled, references, replaceComposerDraft, selected, showOptimisticUserBubble, workspace, workspaceReferences]);
   const sendDraftDirectly = useCallback((draftContent = composerDraftRef.current) => {
     const content = draftContent.trim();
     const hasComposerMessage = Boolean(content || attachments.length || references.length || workspaceReferences.length || composerAnnotations.length);

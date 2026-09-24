@@ -19,6 +19,7 @@ interface Item {
 
 interface Turn {
   id: string;
+  renderKey: string;
   user?: Item;
   assistant?: Item;
   activity: Item[];
@@ -478,12 +479,15 @@ function turnsFor(events: OpenHandsConversationEvent[]): Turn[] {
     if (isHistoricalAutoTitleError(event, ordered)) continue;
     for (const item of itemsFor(event)) {
       if (item.kind === 'user') {
-        current = { id: item.event.id, user: item, activity: [] };
+        const renderKey = typeof item.event.payload._flowweave_render_key === 'string'
+          ? item.event.payload._flowweave_render_key
+          : item.event.id;
+        current = { id: item.event.id, renderKey, user: item, activity: [] };
         turns.push(current);
         continue;
       }
       if (!current) {
-        current = { id: item.event.id, activity: [] };
+        current = { id: item.event.id, renderKey: item.event.id, activity: [] };
         turns.push(current);
       }
       if (item.kind === 'assistant') current.assistant = item;
@@ -2122,7 +2126,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
         const userDeliveryStatus = turn.user && typeof turn.user.event.payload._flowweave_delivery_status === 'string'
           ? turn.user.event.payload._flowweave_delivery_status
           : undefined;
-        return <section className="conversation-turn" key={turn.id} data-conversation-turn={turn.id}>
+        return <section className="conversation-turn" key={turn.renderKey} data-conversation-turn={turn.id}>
           {turn.user && <div className="conversation-user-message">{editingEventId === turn.user.event.id
             ? <form className="conversation-message-edit" onSubmit={event => { event.preventDefault(); if (editingContent.trim()) onRewrite?.(turn.user!.event.id, editingContent.trim()); }}><textarea ref={rewriteEditor} aria-label="编辑已发送消息" value={editingContent} disabled={rewritePending} onChange={event => setEditingContent(event.target.value)} onKeyDown={event => {
               if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing || event.keyCode === 229) return;
