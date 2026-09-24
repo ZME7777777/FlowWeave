@@ -2092,20 +2092,13 @@ def hydrate_node_conversation(
     attempt_id: str,
     binding_id: str,
 ) -> dict[str, Any]:
-    """Hydrate one node session from its complete formal OpenHands HEAD branch."""
+    """Hydrate one node session from its latest formal OpenHands event window."""
 
     _binding_for_attempt(db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id)
     binding = _binding_for_run(db, flow_run_id, binding_id)
     runtime = get_runtime()
     handle = _flow_run_handle(db, flow_run_id, binding_id)
-    try:
-        batch = complete_active_branch(runtime.read_active_events, handle)
-    except ValueError as exc:
-        raise DomainError(
-            "RUNTIME_ACTIVE_BRANCH_INCONSISTENT",
-            "OpenHands returned an inconsistent active branch during hydration",
-            409,
-        ) from exc
+    batch = runtime.read_active_events(handle)
     context = (
         dict(batch.context)
         if batch.context is not None

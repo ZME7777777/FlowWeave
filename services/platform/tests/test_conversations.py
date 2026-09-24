@@ -419,7 +419,7 @@ def test_complete_active_branch_rejects_head_drift_between_pages() -> None:
         complete_active_branch(read, RuntimeHandle(job_id="job", conversation_id="conversation"))
 
 
-def test_hydration_reuses_active_batch_context_and_readiness(
+def test_hydration_reuses_latest_batch_context_and_readiness(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     workspace = object()
@@ -428,14 +428,17 @@ def test_hydration_reuses_active_batch_context_and_readiness(
     context = {"model_name": "test-model", "window_tokens": 128_000}
     readiness = RuntimeInputReadiness(ready=False, execution_status="running")
     captured: dict[str, object] = {}
+    calls: list[object] = []
 
     class Runtime:
-        def read_active_events(self, _handle: object) -> RuntimeEventBatch:
+        def read_active_events(self, requested_handle: object) -> RuntimeEventBatch:
+            calls.append(requested_handle)
             return RuntimeEventBatch(
                 events=(RuntimeEvent("event", "MESSAGE", {"source": "user"}),),
                 cursor="event",
                 context=context,
                 readiness=readiness,
+                history_cursor="older",
             )
 
         def conversation_context(self, _handle: object):
@@ -451,30 +454,42 @@ def test_hydration_reuses_active_batch_context_and_readiness(
     monkeypatch.setattr(
         session_conversations,
         "events",
-        lambda *_args, **kwargs: captured.update(kwargs) or {"events": []},
+        lambda *_args, **kwargs: captured.update(kwargs)
+        or {"events": [], "history_cursor": "older"},
     )
 
     hydrated = session_conversations.hydrate_conversation(None, "workspace", "binding")
 
-    assert captured["context_override"] == context
+    batch = captured["batch_override"]
+    assert calls == [handle]
+    assert isinstance(batch, RuntimeEventBatch)
+    assert batch.history_cursor == "older"
     assert hydrated == {
-        "events": {"events": []},
+        "events": {"events": [], "history_cursor": "older"},
         "context": context,
         "readiness": readiness.as_dict(),
     }
 
 
-def test_node_hydration_reuses_active_batch_context_and_readiness(
+def test_node_hydration_reuses_latest_batch_context_and_readiness(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     binding = object()
     handle = RuntimeHandle(job_id="job", conversation_id="conversation")
     context = {"model_name": "node-model", "window_tokens": 128_000}
     readiness = RuntimeInputReadiness(ready=True, execution_status="idle")
+    calls: list[object] = []
+    captured: dict[str, RuntimeEventBatch] = {}
 
     class Runtime:
-        def read_active_events(self, _handle: object) -> RuntimeEventBatch:
-            return RuntimeEventBatch(cursor="event", context=context, readiness=readiness)
+        def read_active_events(self, requested_handle: object) -> RuntimeEventBatch:
+            calls.append(requested_handle)
+            return RuntimeEventBatch(
+                cursor="event",
+                context=context,
+                readiness=readiness,
+                history_cursor="older",
+            )
 
         def conversation_context(self, _handle: object):
             raise AssertionError("node hydration must reuse active-batch context")
@@ -492,14 +507,21 @@ def test_node_hydration_reuses_active_batch_context_and_readiness(
         flow_node_conversations, "_flow_run_handle", lambda *_args, **_kwargs: handle
     )
     monkeypatch.setattr(flow_node_conversations, "get_runtime", lambda: Runtime())
-    monkeypatch.setattr(flow_node_conversations, "_event_batch_dict", lambda *_args: {"events": []})
+    monkeypatch.setattr(
+        flow_node_conversations,
+        "_event_batch_dict",
+        lambda _db, _binding, batch: captured.update(batch=batch)
+        or {"events": [], "history_cursor": batch.history_cursor},
+    )
 
     hydrated = flow_node_conversations.hydrate_node_conversation(
         None, flow_run_id="run", attempt_id="attempt", binding_id="binding"
     )
 
+    assert calls == [handle]
+    assert captured["batch"].history_cursor == "older"
     assert hydrated == {
-        "events": {"events": []},
+        "events": {"events": [], "history_cursor": "older"},
         "context": context,
         "readiness": readiness.as_dict(),
     }

@@ -1665,23 +1665,21 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect.poll(() => sentBinding).toBe('agent-conversation-streaming-1');
   await expect.poll(() => sentMessages).toBe(1);
   expect(sentProvider).toBeNull();
-  // Reloading during a native turn must restore one stable process card. The
-  // running summary deliberately stays static; completed turns derive elapsed
-  // time from formal event timestamps instead of a one-second render timer.
+  // Reloading during a native turn must restore one stable process card. Only
+  // the isolated elapsed label updates every second; the activity group remains mounted.
   await page.reload();
-  await expect(page.getByText('处理中', { exact: true })).toBeVisible();
+  await expect(page.getByText(/已耗时 \d+秒/)).toBeVisible();
   await expect(page.getByText('仍在等待模型响应')).toHaveCount(0);
   const activeProcess = page.locator('.conversation-turn').last().locator('.conversation-activity-group');
   await expect(activeProcess).toHaveClass(/summary-only/);
-  await expect(activeProcess.getByText('处理中', { exact: true })).toBeVisible();
-  await expect(activeProcess.getByText(/已耗时/)).toHaveCount(0);
+  const elapsedLabel = activeProcess.getByText(/已耗时 \d+秒/);
+  await expect(elapsedLabel).toBeVisible();
   await expect(activeProcess.locator('.conversation-response-wait')).toHaveCount(0);
   await expect(page.locator('.conversation-turn-status')).toHaveText('OpenHands 会话连接正常，等待响应');
   await activeProcess.evaluate(element => { (element as HTMLElement).dataset.periodicRenderMarker = 'stable'; });
-  const stableProcessSummary = await activeProcess.locator(':scope > summary').textContent();
-  await page.waitForTimeout(1_200);
+  const initialElapsed = await elapsedLabel.textContent();
+  await expect.poll(() => elapsedLabel.textContent(), { timeout: 2_500 }).not.toBe(initialElapsed);
   await expect(activeProcess).toHaveAttribute('data-periodic-render-marker', 'stable');
-  await expect(activeProcess.locator(':scope > summary')).toHaveText(stableProcessSummary ?? '处理中');
   await expect(page.getByLabel('Agent 活动提醒')).toHaveCount(0);
   await expect.poll(() => Boolean(agentStream)).toBe(true);
   // A stale readiness endpoint can remain idle while the formal user turn is
@@ -1707,7 +1705,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   agentStream!.send(JSON.stringify({ type: 'message_complete' }));
   await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toBeVisible();
   await expectViewportAtLatest();
-  await expect(activeProcess.locator(':scope > summary')).toContainText('处理中');
+  await expect(activeProcess.locator(':scope > summary')).toContainText(/已耗时 \d+秒/);
   agentStream!.send(JSON.stringify({
     type: 'event',
     event: { id: 'live-condensation', event_type: 'CONDENSATION_REQUESTED', payload: { source: 'agent', parent_id: 'running-user', condensation_reason_detail: '上下文接近阈值。', timestamp: new Date().toISOString() } },
@@ -1715,7 +1713,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   const condensationRow = activeProcess.getByRole('status', { name: '开始压缩上下文' });
   await expect(condensationRow).toHaveClass(/running/);
   await expect(condensationRow.locator('b')).toHaveCSS('animation-name', 'conversation-progress-scan');
-  await expect(activeProcess.getByText('处理中', { exact: true })).toBeVisible();
+  await expect(activeProcess.getByText(/已耗时 \d+秒/)).toBeVisible();
   agentStream!.send(JSON.stringify({
     type: 'event',
     event: { id: 'live-condensation-complete', event_type: 'CONDENSATION_COMPLETED', payload: { source: 'agent', parent_id: 'live-condensation', condensation_request_event_id: 'live-condensation', condensation_triggered_at: new Date().toISOString(), condensation_completed_at: new Date().toISOString(), forgotten_event_ids: ['old-1', 'old-2'], timestamp: new Date().toISOString() } },
@@ -1726,7 +1724,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(completedCondensationRow).not.toHaveClass(/running/);
   await expect(completedCondensationRow.locator('b')).toHaveCSS('animation-name', 'none');
   await expect(activeProcess).toHaveCount(1);
-  await expect(activeProcess.locator(':scope > summary')).toContainText('处理中');
+  await expect(activeProcess.locator(':scope > summary')).toContainText(/已耗时 \d+秒/);
   await expect(activeProcess).not.toContainText('上下文接近阈值');
   await expect(activeProcess).not.toContainText('old-1');
   agentStream!.send(JSON.stringify({
@@ -2384,6 +2382,9 @@ test('editing the latest user message locally replaces only its active branch', 
     { id: 'original-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'earlier-answer', content: '需要重新思考的问题', attachments: [attachedReport], workspace_references: [referencedFile], timestamp: '2026-08-28T10:00:02Z' } },
     { id: 'old-answer', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'original-user', content: '不应保留的旧回答', timestamp: '2026-08-28T10:00:03Z' } },
   ];
+  let includeLateOldBranchEvent = false;
+  let lateOldBranchEventWasRead = false;
+  const lateOldBranchEvent = { id: 'late-old-continue', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'old-answer', content: '继续', timestamp: '2026-08-28T10:00:04Z' } };
   await page.route('**/api/v1/auth/me', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ id: 'rethink-user', username: 'tester', role: 'USER', is_super_admin: false }) }));
   await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
   await page.route('**/api/v1/agent-workspaces/**', async route => {
@@ -2392,7 +2393,11 @@ test('editing the latest user message locally replaces only its active branch', 
     if (path.endsWith('/default')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ id: 'rethink-workspace', display_name: 'Agent 工作区', desired_state: 'RUNNING', updated_at: new Date().toISOString() }) });
     if (path.endsWith('/runtime')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ state: 'ACTIVE', write_available: true, message: null, updated_at: new Date().toISOString() }) });
     if (path.endsWith('/conversations') && request.method() === 'GET') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([{ id: 'rethink-conversation', display_title: '重新思考', lifecycle: 'ACTIVE', streaming_callback_ready: true, model_provider_id: null, model_name: null, reasoning_effort: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString() }]) });
-    if (path.endsWith('/events')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ events: events(), next_cursor: null }) });
+    if (path.endsWith('/events')) {
+      const projectedEvents = includeLateOldBranchEvent ? [...events(), lateOldBranchEvent] : events();
+      lateOldBranchEventWasRead ||= includeLateOldBranchEvent;
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ events: projectedEvents, next_cursor: null }) });
+    }
     if (path.endsWith('/work-directories')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [] }) });
     if (path.endsWith('/workspace')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: '/runtime/workspace/project', work_directory: null, files: [], repositories: [], runtime: { container_id: 'single-runtime' }, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '未配置', note: '' } } }) });
     if (path.endsWith('/context')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ model_name: null, reasoning_effort: null }) });
@@ -2435,7 +2440,7 @@ test('editing the latest user message locally replaces only its active branch', 
   await expect(page.getByText('更早的回答', { exact: true })).toBeVisible();
   await expect(page.getByText('不应保留的旧回答', { exact: true })).toHaveCount(0);
   await expect(page.getByText('修改后的问题', { exact: true })).toBeVisible();
-  await expect(page.getByText('处理中', { exact: true })).toBeVisible();
+  await expect(page.getByText(/已耗时 \d+秒/)).toBeVisible();
   const thinkingStatus = page.locator('.conversation-turn-status');
   await expect(thinkingStatus).toHaveText(/正在思考/);
   await expect.poll(() => thinkingStatus.evaluate(status => {
@@ -2463,6 +2468,10 @@ test('editing the latest user message locally replaces only its active branch', 
   if (!releaseRewrite) throw new Error('Expected rerun request');
   releaseRewrite();
   await expect(page.getByText('新的回答', { exact: true })).toBeVisible();
+  includeLateOldBranchEvent = true;
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await expect.poll(() => lateOldBranchEventWasRead).toBe(true);
+  await expect(page.getByText('继续', { exact: true })).toHaveCount(0);
   await expect(page.getByText('不应保留的旧回答', { exact: true })).toHaveCount(0);
   await expect(page.locator('[data-user-event-id="rethink-user"]')).toContainText('审计报告.pdf');
   await expect(page.locator('[data-user-event-id="rethink-user"]')).toContainText('审计报告.md');

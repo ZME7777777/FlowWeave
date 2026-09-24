@@ -2987,11 +2987,11 @@ def _conversation_context_snapshot(
 
 
 def hydrate_conversation(db: Session, workspace_id: str, binding_id: str) -> dict[str, Any]:
-    """Return the complete formal active branch and current native snapshots.
+    """Return the latest formal event window and current native snapshots.
 
-    This endpoint is intentionally separate from incremental ``events``:
-    websocket recovery keeps its bounded current-window read, while initial
-    browser hydration gets all logical event identities in one response.
+    Initial rendering only needs the bounded HEAD window. Older pages remain
+    available through ``history_cursor`` and are fetched by the browser's
+    background history lane after the current state is visible.
     """
 
     workspace = _workspace(db, workspace_id)
@@ -3001,7 +3001,7 @@ def hydrate_conversation(db: Session, workspace_id: str, binding_id: str) -> dic
     started_at = time.monotonic()
     outcome = "error"
     try:
-        batch = complete_active_branch(runtime.read_active_events, handle)
+        batch = runtime.read_active_events(handle)
         context = (
             _conversation_context_snapshot(runtime, handle)
             if batch.context is None

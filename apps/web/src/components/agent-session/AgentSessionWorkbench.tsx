@@ -1641,7 +1641,7 @@ function latestUnfinishedUserEventId(events: OpenHandsConversationEvent[]): stri
   return [...userEvents].reverse().find(event => !hasFinishedTurn(events, event.id))?.id;
 }
 
-function eventBranchIds(events: OpenHandsConversationEvent[], rootEventId: string): Set<string> {
+function eventBranchIdsFromRoots(events: OpenHandsConversationEvent[], rootEventIds: Iterable<string>): Set<string> {
   const children = new Map<string, string[]>();
   for (const event of events) {
     const parentId = event.payload.parent_id;
@@ -1656,8 +1656,12 @@ function eventBranchIds(events: OpenHandsConversationEvent[], rootEventId: strin
     branch.add(eventId);
     for (const childId of children.get(eventId) ?? []) visit(childId);
   };
-  visit(rootEventId);
+  for (const rootEventId of rootEventIds) visit(rootEventId);
   return branch;
+}
+
+function eventBranchIds(events: OpenHandsConversationEvent[], rootEventId: string): Set<string> {
+  return eventBranchIdsFromRoots(events, [rootEventId]);
 }
 
 type TerminalContextMenu = { x: number; y: number; text: string; line: string };
@@ -4821,6 +4825,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const nativeTurnRunning = conversationIsRunning(nativeExecutionStatus);
   const nativeTurnTerminal = inputReadinessQuery.data?.ready === true
     && conversationHasReachedTerminalState(nativeExecutionStatus);
+  const nativeTurnStateKnown = nativeTurnRunning
+    || nativeTurnTerminal
+    || nativeExecutionStatus?.trim().toLowerCase() === 'paused';
   // OpenHands owns the Conversation execution lifecycle. Local state may
   // bridge a command request, but it must never declare a native turn ended.
   const effectiveTurnState: TurnState = nativeTurnTerminal
@@ -5049,11 +5056,12 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     const bootstrapEvent = optimisticBootstrapTurn && optimisticBootstrapTurn.scope === activeScope
       ? [optimisticBootstrapTurn.event]
       : [];
-    return mergeConversationEvents(
+    const mergedEvents = mergeConversationEvents(
       mergeConversationEvents(eventsQuery.data?.events ?? [], [...liveEvents, ...submittedEvents]),
       bootstrapEvent,
-    )
-      .filter(event => !hiddenEventIds.has(event.id));
+    );
+    const hiddenBranchIds = eventBranchIdsFromRoots(mergedEvents, hiddenEventIds);
+    return mergedEvents.filter(event => !hiddenBranchIds.has(event.id));
   }, [conversationDraft?.id, eventsQuery.data?.events, hiddenEventIds, optimisticBootstrapTurn, scopedLiveEvents, selected?.id]);
   useEffect(() => {
     if (!conversationSearchTargetEventId || !selected) return;
@@ -5088,15 +5096,15 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const finalReplyAwaitingNativeCompletion = nativeTurnRunning
     && Boolean(activeNativeTurnId && hasAssistantReplyForTurn(displayedEvents, activeNativeTurnId));
   // Readiness owns interaction controls, but it may briefly report idle before
-  // the formal terminal event is readable. Keep the visual lifecycle monotonic:
-  // once a formal user turn is unfinished, only its terminal event or the
-  // bounded terminal reconciliation expiry may remove running presentation.
+  // the formal terminal event is readable. Keep active turns visually stable;
+  // initial native-state hydration is rendered separately as loading.
   const conversationActivity = useMemo(() => ({
     state: effectiveTurnState,
     active: effectiveTurnState === 'running' || effectiveTurnState === 'pausing' || effectiveTurnState === 'resuming',
   }), [effectiveTurnState]);
   const conversationVisuallyActive = conversationActivity.active || (
-    effectiveTurnState !== 'paused'
+    !hydrationQuery.isPending
+    && effectiveTurnState !== 'paused'
     && hasUnfinishedFormalTurn
     && (!nativeTurnTerminal || terminalEventReconciliationActive)
   );
@@ -5484,17 +5492,16 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     setStreamHold({ bindingId: selected.id, expiresAt: Date.now() + STREAM_IDLE_GRACE_MS });
   }, [latestFormalTurnFinished, selected]);
   useEffect(() => {
-    // On first entry, the native readiness request can be delayed by a Runtime
-    // reconnect. A persisted, unfinished formal user event already proves the
-    // turn is active; do not render a Pause/Resume state until OpenHands has
-    // explicitly reported one.
-    if (!selected || inputReadinessQuery.data?.ready === true
-      || inputReadinessQuery.data?.execution_status?.toLowerCase() === 'paused') return;
+    // Do not infer "thinking" while the initial native state is still loading.
+    // Once readiness has answered, an unfinished formal user event can bridge
+    // a transient non-terminal status without mislabelling completed history.
+    if (!selected || !inputReadinessQuery.data || inputReadinessQuery.data.ready === true
+      || inputReadinessQuery.data.execution_status?.toLowerCase() === 'paused') return;
     const userEventId = latestUnfinishedUserEventId(displayedEvents);
     if (!userEventId) return;
     setActiveTurnEventId(current => current ?? userEventId);
     setTurnState(current => current === 'idle' ? 'running' : current);
-  }, [displayedEvents, inputReadinessQuery.data?.execution_status, inputReadinessQuery.data?.ready, selected]);
+  }, [displayedEvents, inputReadinessQuery.data, selected]);
   useEffect(() => {
     if (nativeTurnTerminal && (turnState === 'running' || turnState === 'resuming') && activeTurnEventId && hasFinishedTurn(displayedEvents, activeTurnEventId)) {
       // OpenHands may already have accepted a Command/Ctrl+Enter guidance
@@ -5975,9 +5982,20 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       const scope = selected!.id;
       const optimisticEventId = `pending-rewrite:${randomId()}`;
       const branch = eventBranchIds(displayedEvents, request.eventId);
+      const branchSubmissionIds = new Set(displayedEvents.flatMap(event => {
+        const submissionId = event.payload._flowweave_submission_id;
+        return branch.has(event.id) && typeof submissionId === 'string' ? [submissionId] : [];
+      }));
       const replacementParentId = displayedEvents.find(event => event.id === request.eventId)?.payload.parent_id;
+      const removedSubmissions: Array<[string, ScopedConversationEvent]> = [];
       commitQueuedMessages(() => []);
-            setHiddenEventIds(current => new Set([...current, ...branch]));
+      for (const [submissionId, item] of submittedUserEvents.current) {
+        if (item.scope === scope && (branch.has(item.event.id) || branchSubmissionIds.has(submissionId))) {
+          removedSubmissions.push([submissionId, item]);
+          submittedUserEvents.current.delete(submissionId);
+        }
+      }
+      setHiddenEventIds(current => new Set([...current, ...branch]));
       setScopedLiveEvents(current => [...current.filter(item => item.scope !== scope), { scope, event: {
         id: optimisticEventId, event_type: 'MESSAGE', payload: {
           source: 'user', content: request.content, parent_id: replacementParentId,
@@ -5990,7 +6008,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       setActiveTurnEventId(undefined);
       setRequestStartedAt(Date.now());
       setTurnState('running');
-      return { scope, optimisticEventId, branch, replacementParentId };
+      return { scope, optimisticEventId, branch, replacementParentId, removedSubmissions };
     },
     onSuccess: (value, request, context) => {
       const cursor = value.cursor;
@@ -6013,6 +6031,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         item => item.scope !== context.scope || item.event.id !== context.optimisticEventId,
       ));
       if (context && activeComposerScope.current === context.scope) {
+        for (const [submissionId, item] of context.removedSubmissions) {
+          submittedUserEvents.current.set(submissionId, item);
+        }
         setHiddenEventIds(current => {
           const next = new Set(current);
           for (const eventId of context.branch) next.delete(eventId);
@@ -6359,6 +6380,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     || (effectiveTurnState === 'idle' && (!composerHasContent || queuedMessages.some(message => message.scope === selected?.id && sendingMessageIds.current.has(message.id))))
     || effectiveTurnState === 'pausing'
     || effectiveTurnState === 'resuming';
+  const conversationInitialLoading = Boolean(
+    selected && !nativeTurnStateKnown && (hydrationQuery.isPending || inputReadinessQuery.isPending),
+  );
   const runComposerAction = () => {
     if (composerActionSends || conversationActivity.state === 'idle') enqueueDraft();
     else if (conversationActivity.state === 'running') interrupt.mutate();
@@ -6577,7 +6601,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       <div className="agent-workbench-content">
       {runtime?.state === 'RECOVERING' && <section className="agent-runtime-recover"><LoaderCircle size={18}/><div><b>运行环境正在恢复</b><span>{runtime.message || '历史会话和工作区文件仍可查看；恢复完成后可继续发送消息和使用终端。'}</span></div></section>}
       {runtime && !runtime.write_available && !selected?.write_available && runtime.state !== 'RECOVERING' && <section className="agent-runtime-recover"><ShieldAlert size={18}/><div><b>节点会话已切换为只读</b><span>{runtime.message || '节点执行已停止；历史会话和工作区文件仍可查看。'}</span></div></section>}
-      {selected || conversationDraft ? <ConversationSurface
+      {conversationInitialLoading ? <div className="conversation-surface-empty" role="status"><LoaderCircle className="conversation-activity-spin" size={16}/><b>正在加载会话</b><span>正在读取最新消息与会话状态…</span></div> : selected || conversationDraft ? <ConversationSurface
         key={selected?.id ?? conversationDraft?.id}
         events={displayedEvents}
         isGenerating={conversationVisuallyActive}
