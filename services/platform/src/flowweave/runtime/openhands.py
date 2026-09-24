@@ -30,6 +30,7 @@ from flowweave.runtime.base import (
     RuntimeCondenser,
     RuntimeContract,
     RuntimeConversationIdentity,
+    RuntimeConversationRuntime,
     RuntimeEvent,
     RuntimeEventBatch,
     RuntimeEventType,
@@ -94,9 +95,7 @@ _CONVERSATION_EVENT_BY_ID_PATH = re.compile(r"^/api/conversations/[^/]+/events/[
 _DIAGNOSTIC_EVENT_CACHE_LIMIT = 2_048
 _SAFE_DIAGNOSTIC_TOKEN = re.compile(r"^[A-Za-z0-9_.:-]{1,200}$")
 _SAFE_DIAGNOSTIC_MODEL = re.compile(r"^[A-Za-z0-9_.:/-]{1,200}$")
-_SAFE_ERROR_CODE = re.compile(
-    r"^(?:[A-Z][A-Za-z0-9]*(?:Error|Exception)|[A-Z][A-Z0-9_]{2,80})$"
-)
+_SAFE_ERROR_CODE = re.compile(r"^(?:[A-Z][A-Za-z0-9]*(?:Error|Exception)|[A-Z][A-Z0-9_]{2,80})$")
 
 
 def _codex_model_canonical_name(model: str) -> str:
@@ -231,9 +230,18 @@ class _TransientStreamProjection:
             final = event.get("final")
             model_role = event.get("model_role")
             allowed_kinds = {
-                "timeout", "connection", "service_unavailable", "empty_response",
-                "rate_limit", "auth", "quota", "config", "context_limit",
-                "content_policy", "internal", "unknown",
+                "timeout",
+                "connection",
+                "service_unavailable",
+                "empty_response",
+                "rate_limit",
+                "auth",
+                "quota",
+                "config",
+                "context_limit",
+                "content_policy",
+                "internal",
+                "unknown",
             }
             if (
                 attempt is None
@@ -245,14 +253,16 @@ class _TransientStreamProjection:
                 or model_role not in {"primary", "fallback"}
             ):
                 return ()
-            return ({
-                "type": "model_retry",
-                "attempt": attempt,
-                "max_attempts": maximum,
-                "failure_kind": failure_kind,
-                "final": final,
-                "model_role": model_role,
-            },)
+            return (
+                {
+                    "type": "model_retry",
+                    "attempt": attempt,
+                    "max_attempts": maximum,
+                    "failure_kind": failure_kind,
+                    "final": final,
+                    "model_role": model_role,
+                },
+            )
 
         if frame_type == "sync":
             # ``through_seq`` is a connection mark, not an acknowledgement:
@@ -324,6 +334,10 @@ class OpenHandsRuntime:
         # a bounded, process-local dedupe cache keyed only by opaque hashes.
         self._terminal_diagnostic_events: OrderedDict[str, None] = OrderedDict()
         self._terminal_diagnostic_lock = threading.Lock()
+        # Capability discovery is scoped to the generation-specific Agent
+        # Server URL. It contains no Conversation or Secret data and naturally
+        # expires when the Runtime Provider routes to a replacement generation.
+        self._conversation_runtime_route_support: dict[str, bool] = {}
 
     def _transport(self) -> HttpTransportPool:
         if self._http_transport is None:
@@ -2234,6 +2248,110 @@ class OpenHandsRuntime:
                 {"conversation_id": handle.conversation_id},
             )
         return state
+
+    @staticmethod
+    def _conversation_runtime_info(data: dict[str, Any]) -> RuntimeConversationRuntime:
+        raw_status = data.get("runtime_status")
+        raw_can_resume = data.get("can_resume")
+        if raw_status not in {
+            "available",
+            "starting",
+            "missing",
+            "ownership_lost",
+            "error",
+        } or not isinstance(raw_can_resume, bool):
+            raise DomainError(
+                "RUNTIME_CONVERSATION_RUNTIME_INVALID",
+                "OpenHands returned an invalid Conversation Runtime state",
+                502,
+            )
+        raw_error = data.get("runtime_error")
+        error_code: str | None = None
+        if raw_error is not None:
+            if not isinstance(raw_error, dict):
+                raise DomainError(
+                    "RUNTIME_CONVERSATION_RUNTIME_INVALID",
+                    "OpenHands returned an invalid Conversation Runtime state",
+                    502,
+                )
+            candidate = raw_error.get("code")
+            if isinstance(candidate, str) and _SAFE_DIAGNOSTIC_TOKEN.fullmatch(candidate):
+                error_code = candidate
+        return RuntimeConversationRuntime(
+            status=cast(
+                Literal["available", "starting", "missing", "ownership_lost", "error"], raw_status
+            ),
+            can_resume=raw_can_resume,
+            error_code=error_code,
+        )
+
+    def _supports_conversation_runtime_routes(self, handle: RuntimeHandle) -> bool:
+        """Discover the formal capability before using its optional new routes.
+
+        Existing frozen Runtime images remain readable even though their
+        contracts predate this capability. New contracts require it during
+        startup; the discovery fallback here prevents a control-plane rollout
+        from reclassifying historical conversations as missing.
+        """
+
+        base_url = self._base_url_for_handle(handle)
+        cached = self._conversation_runtime_route_support.get(base_url)
+        if cached is not None:
+            return cached
+        server_info = self._request(
+            "GET",
+            "/server_info",
+            base_url=base_url,
+            session_api_key=self._session_key_for_handle(handle),
+        )
+        raw_capabilities = server_info.get("capabilities")
+        if not isinstance(raw_capabilities, list) or any(
+            not isinstance(value, str) or not value for value in raw_capabilities
+        ):
+            raise DomainError(
+                "RUNTIME_SERVER_CAPABILITIES_INVALID",
+                "OpenHands returned invalid Server capabilities",
+                502,
+            )
+        capabilities = cast(list[str], raw_capabilities)
+        if len(capabilities) != len(set(capabilities)):
+            raise DomainError(
+                "RUNTIME_SERVER_CAPABILITIES_INVALID",
+                "OpenHands returned invalid Server capabilities",
+                502,
+            )
+        supported = "conversation_runtime_routes_v1" in capabilities
+        self._conversation_runtime_route_support[base_url] = supported
+        return supported
+
+    def conversation_runtime(self, handle: RuntimeHandle) -> RuntimeConversationRuntime:
+        """Read formal Conversation Runtime availability without taking ownership."""
+
+        data = self._request(
+            "GET",
+            f"/api/conversations/{handle.conversation_id}/runtime",
+            base_url=self._base_url_for_handle(handle),
+            session_api_key=self._session_key_for_handle(handle),
+            timeout=_INTERACTIVE_READ_TIMEOUT_SECONDS,
+        )
+        return self._conversation_runtime_info(data)
+
+    def reprovision_conversation_runtime(self, handle: RuntimeHandle) -> RuntimeConversationRuntime:
+        """Expose the formal route without making FlowWeave own its lifecycle.
+
+        FlowWeave deliberately does not invoke this as a recovery strategy:
+        the Runtime Provider owns generation replacement, and invoking the
+        upstream Docker-specific action would violate that boundary.
+        """
+
+        data = self._request(
+            "POST",
+            f"/api/conversations/{handle.conversation_id}/runtime/reprovision",
+            base_url=self._base_url_for_handle(handle),
+            session_api_key=self._session_key_for_handle(handle),
+            timeout=_INTERACTIVE_READ_TIMEOUT_SECONDS,
+        )
+        return self._conversation_runtime_info(data)
 
     def reload_conversation(
         self,
@@ -4774,6 +4892,17 @@ class OpenHandsRuntime:
         so an accepted interrupt request alone must not unlock a second send.
         """
 
+        if self._supports_conversation_runtime_routes(handle):
+            runtime_info = self.conversation_runtime(handle)
+            if runtime_info.status != "available":
+                # ``missing``, ``ownership_lost`` and ``error`` remain
+                # visible to the existing read paths, while this shared write
+                # gate makes the Conversation read-only until the Runtime
+                # Provider performs its own fenced recovery. ``can_resume``
+                # is intentionally not interpreted here.
+                return RuntimeInputReadiness(
+                    ready=False, execution_status=f"runtime_{runtime_info.status}"
+                )
         state = self._conversation_state(handle, timeout=_INTERACTIVE_READ_TIMEOUT_SECONDS)
         return self._input_readiness_from_state(state)
 

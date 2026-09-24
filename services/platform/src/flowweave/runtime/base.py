@@ -627,6 +627,20 @@ class RuntimeInputReadiness:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class RuntimeConversationRuntime:
+    """Formal, transient availability state owned by OpenHands.
+
+    FlowWeave never persists this status or turns ``can_resume`` into a
+    platform-owned lifecycle decision.  It is only used to gate writes while
+    existing Runtime Provider recovery retains ownership of generations.
+    """
+
+    status: Literal["available", "starting", "missing", "ownership_lost", "error"]
+    can_resume: bool
+    error_code: str | None = None
+
+
 class RuntimePort(Protocol):
     def probe_mcp(self, request: RuntimeMCPProbeRequest) -> RuntimeMCPProbeResult: ...
 
@@ -693,6 +707,12 @@ class RuntimePort(Protocol):
     def load_plugin(self, handle: RuntimeHandle, plugin_ref: str) -> None: ...
 
     def interrupt(self, handle: RuntimeHandle) -> None: ...
+
+    def conversation_runtime(self, handle: RuntimeHandle) -> RuntimeConversationRuntime: ...
+
+    def reprovision_conversation_runtime(
+        self, handle: RuntimeHandle
+    ) -> RuntimeConversationRuntime: ...
 
     def input_readiness(self, handle: RuntimeHandle) -> RuntimeInputReadiness: ...
 

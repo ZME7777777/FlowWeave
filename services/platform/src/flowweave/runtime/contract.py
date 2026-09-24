@@ -9,7 +9,7 @@ from flowweave.shared.domain.openhands import (
     OpenHandsServerIdentity,
 )
 
-RUNTIME_CONTRACT_SCHEMA_VERSION = 3
+RUNTIME_CONTRACT_SCHEMA_VERSION = 4
 
 OPENHANDS_PACKAGE_VERSIONS: tuple[tuple[str, str], ...] = (
     ("openhands-agent-server", OPENHANDS_VERSION),
@@ -29,6 +29,8 @@ REQUIRED_HTTP_OPERATIONS: tuple[tuple[str, str], ...] = tuple(
             ("POST", "/api/conversations"),
             ("POST", "/api/conversations/{conversation_id}/secrets"),
             ("GET", "/api/conversations/{conversation_id}"),
+            ("GET", "/api/conversations/{conversation_id}/runtime"),
+            ("POST", "/api/conversations/{conversation_id}/runtime/reprovision"),
             ("POST", "/api/conversations/{conversation_id}/events"),
             ("GET", "/api/conversations/{conversation_id}/events/{event_id}"),
             ("GET", "/api/conversations/{conversation_id}/events/search"),
@@ -82,11 +84,10 @@ REQUIRED_START_FIELDS: tuple[str, ...] = tuple(
     )
 )
 
-# The target 1.47.0 server currently declares only credential-binding
-# capabilities.  FlowWeave does not consume that product surface, so the
-# governed requirement is deliberately empty.  The adapter still requires the
-# formal ServerInfo.capabilities field to be a list of unique strings.
-REQUIRED_SERVER_CAPABILITIES: tuple[str, ...] = ()
+# Runtime status is an OpenHands-owned availability fact. FlowWeave uses it
+# only to gate writes and defer to its existing generation recovery, never to
+# create or manage an upstream per-conversation Docker runtime.
+REQUIRED_SERVER_CAPABILITIES: tuple[str, ...] = ("conversation_runtime_routes_v1",)
 
 
 def governed_runtime_contract(required_tools: tuple[str, ...]) -> RuntimeContract:
@@ -125,7 +126,7 @@ def agent_workspace_runtime_contract(required_tools: tuple[str, ...]) -> Runtime
 
     base = governed_runtime_contract(required_tools)
     return RuntimeContract(
-        schema_version=4,
+        schema_version=5,
         openhands_version=base.openhands_version,
         source_commit=base.source_commit,
         source_ref=base.source_ref,

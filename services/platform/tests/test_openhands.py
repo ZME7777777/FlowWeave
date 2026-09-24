@@ -33,6 +33,7 @@ from flowweave.runtime.base import (
     RuntimeAgentSpec,
     RuntimeBudgets,
     RuntimeCondenser,
+    RuntimeConversationRuntime,
     RuntimeCritic,
     RuntimeHandle,
     RuntimeInputReadiness,
@@ -675,11 +676,88 @@ def test_openhands_input_readiness_returns_atomic_native_execution_state(
         "_conversation_state",
         lambda _handle, **_kwargs: {"execution_status": execution_status},
     )
+    monkeypatch.setattr(runtime, "_supports_conversation_runtime_routes", lambda _handle: False)
 
     snapshot = runtime.input_readiness(_handle())
 
     assert snapshot.ready is ready
     assert snapshot.execution_status == execution_status
+
+
+@pytest.mark.parametrize("status", ("starting", "missing", "ownership_lost", "error"))
+def test_openhands_runtime_status_makes_only_writes_read_only(
+    openhands_settings, monkeypatch, status
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    monkeypatch.setattr(runtime, "_supports_conversation_runtime_routes", lambda _handle: True)
+    monkeypatch.setattr(
+        runtime,
+        "conversation_runtime",
+        lambda _handle: RuntimeConversationRuntime(status=status, can_resume=True),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_conversation_state",
+        lambda _handle, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("unavailable Runtime must not be interpreted from Conversation state")
+        ),
+    )
+
+    snapshot = runtime.input_readiness(_handle())
+
+    assert snapshot == RuntimeInputReadiness(ready=False, execution_status=f"runtime_{status}")
+
+
+def test_openhands_available_runtime_continues_to_use_native_execution_state(
+    openhands_settings, monkeypatch
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    monkeypatch.setattr(runtime, "_supports_conversation_runtime_routes", lambda _handle: True)
+    monkeypatch.setattr(
+        runtime,
+        "conversation_runtime",
+        lambda _handle: RuntimeConversationRuntime(status="available", can_resume=True),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_conversation_state",
+        lambda _handle, **_kwargs: {"execution_status": "paused"},
+    )
+
+    assert runtime.input_readiness(_handle()) == RuntimeInputReadiness(
+        ready=True, execution_status="paused"
+    )
+
+
+def test_openhands_runtime_status_routes_are_discovered_and_reprovision_is_explicit(
+    openhands_settings, monkeypatch
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    calls: list[tuple[str, str]] = []
+
+    def fake_request(method: str, path: str, **_kwargs: object) -> dict[str, object]:
+        calls.append((method, path))
+        if path == "/server_info":
+            return {"capabilities": ["conversation_runtime_routes_v1"]}
+        return {"runtime_status": "available", "can_resume": True}
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+
+    assert runtime._supports_conversation_runtime_routes(_handle()) is True  # pyright: ignore[reportPrivateUsage]
+    assert runtime.conversation_runtime(_handle()) == RuntimeConversationRuntime(
+        status="available", can_resume=True
+    )
+    assert runtime.reprovision_conversation_runtime(_handle()) == RuntimeConversationRuntime(
+        status="available", can_resume=True
+    )
+    assert calls == [
+        ("GET", "/server_info"),
+        ("GET", "/api/conversations/10000000-0000-4000-8000-000000000002/runtime"),
+        (
+            "POST",
+            "/api/conversations/10000000-0000-4000-8000-000000000002/runtime/reprovision",
+        ),
+    ]
 
 
 def test_openhands_lists_every_native_running_conversation(openhands_settings, monkeypatch):
@@ -3387,25 +3465,30 @@ def test_openhands_stream_projection_forwards_only_valid_model_retry_progress():
             "model_role": "primary",
         },
         OpenHandsRuntime._visible_stream_event,
-    ) == ({
-        "type": "model_retry",
-        "attempt": 3,
-        "max_attempts": 5,
-        "failure_kind": "timeout",
-        "final": False,
-        "model_role": "primary",
-    },)
-    assert projection.project(
+    ) == (
         {
-            "type": "retry",
-            "attempt": 6,
+            "type": "model_retry",
+            "attempt": 3,
             "max_attempts": 5,
             "failure_kind": "timeout",
             "final": False,
             "model_role": "primary",
         },
-        OpenHandsRuntime._visible_stream_event,
-    ) == ()
+    )
+    assert (
+        projection.project(
+            {
+                "type": "retry",
+                "attempt": 6,
+                "max_attempts": 5,
+                "failure_kind": "timeout",
+                "final": False,
+                "model_role": "primary",
+            },
+            OpenHandsRuntime._visible_stream_event,
+        )
+        == ()
+    )
 
 
 def test_bash_wakeup_identity_excludes_command_output_and_marks_direct_actor():

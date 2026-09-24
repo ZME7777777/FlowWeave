@@ -160,6 +160,8 @@ REQUIRED_PATHS = {
     "/ready",
     "/server_info",
     "/api/conversations",
+    "/api/conversations/{conversation_id}/runtime",
+    "/api/conversations/{conversation_id}/runtime/reprovision",
     "/api/conversations/{conversation_id}/condense",
     "/api/conversations/{conversation_id}/events/search",
     "/api/conversations/{conversation_id}/events/{event_id}",
@@ -485,6 +487,7 @@ def main() -> None:
     assert len(server_info.usable_tools) == len(set(server_info.usable_tools))
     assert {"file_editor", "task_tracker", "terminal"} <= set(server_info.usable_tools)
     assert len(server_info.capabilities) == len(set(server_info.capabilities))
+    assert "conversation_runtime_routes_v1" in server_info.capabilities
     _assert_memory_launch_contract()
     event_socket_source = getsource(events_socket)
     bash_socket_source = getsource(bash_events_socket)

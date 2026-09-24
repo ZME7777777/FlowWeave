@@ -47,6 +47,7 @@ def _server_info(*, tools: tuple[str, ...]) -> dict[str, object]:
         "build_git_sha": OPENHANDS_SOURCE_COMMIT,
         "build_git_ref": OPENHANDS_SOURCE_COMMIT,
         "capabilities": [
+            "conversation_runtime_routes_v1",
             "credential_binding_v1",
             "credential_binding_readiness_probe_v1",
             "credential_binding_activation_guard_v1",
@@ -126,6 +127,9 @@ def test_runtime_contract_uses_the_environment_frozen_server_identity() -> None:
         "GET",
         "/api/conversations/{conversation_id}/context",
     ) not in governed_runtime_contract(("file_editor", "terminal")).required_http_operations
+    assert governed_runtime_contract(("file_editor", "terminal")).required_server_capabilities == (
+        "conversation_runtime_routes_v1",
+    )
 
 
 def test_runtime_contract_normalizes_only_the_obsolete_optional_view_usage_operation() -> None:
@@ -236,6 +240,25 @@ def test_runtime_contract_rejects_incompatible_server(mutation: str, expected_re
         )
     assert error.value.code == "RUNTIME_CONTRACT_INCOMPATIBLE"
     assert _reason(error) == expected_reason
+
+
+def test_runtime_contract_rejects_missing_conversation_runtime_capability() -> None:
+    tools = ("file_editor", "terminal")
+    contract = governed_runtime_contract(tools)
+    server_info = _server_info(tools=tools)
+    server_info["capabilities"] = ["credential_binding_v1"]
+
+    with pytest.raises(DomainError) as error:
+        OpenHandsRuntime._validate_runtime_contract(  # pyright: ignore[reportPrivateUsage]
+            contract,
+            ready={"status": "ready"},
+            server_info=server_info,
+            openapi=_openapi(contract),
+        )
+
+    assert error.value.code == "RUNTIME_CONTRACT_INCOMPATIBLE"
+    assert _reason(error) == "missing_capabilities"
+    assert error.value.details["missing_server_capabilities"] == ["conversation_runtime_routes_v1"]
 
 
 def test_runtime_contract_accepts_historical_optional_context_route() -> None:
