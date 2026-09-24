@@ -1802,6 +1802,20 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(liveProgressIcons.locator(':scope > svg')).toHaveCount(3);
   await expect(liveProgressIcons.getByText('+3', { exact: true })).toBeVisible();
   await expect(liveProgressIcons).toHaveAttribute('aria-label', '包含 6 个操作');
+  await expect.poll(async () => liveProgressSummary.evaluate(summary => {
+    const content = summary.querySelector<HTMLElement>('.conversation-progress-summary-content');
+    const tail = summary.querySelector<HTMLElement>('.conversation-progress-tail');
+    if (!content || !tail) return false;
+    const range = document.createRange();
+    range.selectNodeContents(content);
+    range.setEndBefore(tail);
+    const textRects = [...range.getClientRects()].filter(rect => rect.width > 0 && rect.height > 0);
+    const lastTextRect = textRects.at(-1);
+    const tailRect = tail.getBoundingClientRect();
+    return Boolean(lastTextRect
+      && Math.abs(tailRect.left - lastTextRect.right) <= 10
+      && Math.abs(tailRect.top - lastTextRect.top) <= 4);
+  })).toBe(true);
   await expect(liveProgressGroup.getByRole('button', { name: '查看执行详情：正在运行 pwd' })).toBeHidden();
   await expect(liveProgressGroup.getByRole('button', { name: '查看执行详情：正在运行 git status --short' })).toBeHidden();
   await liveProgressGroup.locator(':scope > summary').click();

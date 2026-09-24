@@ -1229,9 +1229,7 @@ function ProgressActivity({ group, active, paused, parentFailed, avatarSlots, wo
   const summaryLabel = currentTitle ? `${label}，${currentTitle}` : label;
   return <details className={`conversation-progress-group${running ? ' active' : ''}`} open={open} onToggle={event => setOpen(event.currentTarget.open)} data-progress-event-id={group.progress.event.id}>
     <summary aria-label={`查看执行过程：${summaryLabel}`}>
-      <span><b>{label}</b>{running && currentTitle && <small className="conversation-progress-current" role="status">{currentTitle}</small>}</span>
-      <span className="conversation-progress-icons" aria-label={`包含 ${operationIcons.length} 个操作`}>{visibleOperationIcons.map(({ id, Icon: OperationIcon, label: operationLabel }) => <OperationIcon key={id} size={12} aria-label={operationLabel}/>)}{hiddenOperationCount > 0 && <small className="conversation-progress-overflow" aria-label={`另有 ${hiddenOperationCount} 个操作`}>{`+${hiddenOperationCount}`}</small>}</span>
-      <ChevronRight className="conversation-expand-arrow" size={12}/>
+      <span className="conversation-progress-summary-content"><b>{label}</b>{running && currentTitle && <small className="conversation-progress-current" role="status">{currentTitle}</small>}<span className="conversation-progress-tail"><span className="conversation-progress-icons" aria-label={`包含 ${operationIcons.length} 个操作`}>{visibleOperationIcons.map(({ id, Icon: OperationIcon, label: operationLabel }) => <OperationIcon key={id} size={12} aria-label={operationLabel}/>)}{hiddenOperationCount > 0 && <small className="conversation-progress-overflow" aria-label={`另有 ${hiddenOperationCount} 个操作`}>{`+${hiddenOperationCount}`}</small>}</span><ChevronRight className="conversation-expand-arrow" size={12}/></span></span>
     </summary>
     <div className="conversation-progress-group-list">
       {group.entries.map((entry, index) => <ActivityEntryRow key={entry.id} entry={entry} active={active} paused={paused} parentFailed={parentFailed} hideThought={index === 0 && entry.action?.event.id === group.progress.event.id} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/>)}
