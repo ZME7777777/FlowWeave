@@ -16,18 +16,13 @@ CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
 CODEX_CLIENT_VERSION = "0.144.1"
 DEVICE_VERIFICATION_URL = f"{ISSUER}/codex/device"
 DEVICE_REDIRECT_URI = f"{ISSUER}/deviceauth/callback"
-# This mirrors ``OPENAI_CODEX_MODELS`` in the fixed OpenHands 1.47.0 source
-# baseline. The Codex account catalog can also expose product aliases such as
-# ``codex-auto-review``. LiteLLM 1.93.1 treats those aliases as lacking native
-# Responses streaming and silently makes a non-streaming request, which the
-# Codex endpoint rejects. Only expose IDs that the fixed Agent Runtime can
-# execute through its formal streaming Responses path.
+# This mirrors the latest OpenHands Codex ACP registry. The Codex account
+# catalog can expose product aliases that the governed Runtime does not accept;
+# only surface IDs that the Runtime can execute through its formal path.
 _OPENHANDS_CODEX_MODELS = frozenset(
     {
-        "gpt-5.4",
-        "gpt-5.4-mini",
         "gpt-5.5",
-        "gpt-5.6",
+        "gpt-6-astra",
         "gpt-5.6-luna",
         "gpt-5.6-sol",
         "gpt-5.6-terra",

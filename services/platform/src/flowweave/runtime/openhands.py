@@ -405,7 +405,7 @@ class OpenHandsRuntime:
                 return reason
         if any(marker in detail for marker in ("gateway", "connection terminated", "timeout")):
             return "gateway_termination"
-        # OpenHands 1.47.0 currently drops the structured
+        # OpenHands currently drops the structured
         # ResponseIncompleteEvent.incomplete_details field.
         return "not_exposed"
 
@@ -1986,7 +1986,7 @@ class OpenHandsRuntime:
             request.execution_key.startswith("agent-workspace:")
             or request.interaction_mode == "COLLABORATION"
         ):
-            # The frozen OpenHands 1.47.0 auto-title path is not enabled for
+            # The frozen OpenHands auto-title path is not enabled for
             # every governed provider protocol. Keep title metadata isolated
             # from the Conversation/Event lifecycle and generate it once in a
             # FlowWeave worker with the binding's frozen provider selection.
@@ -5294,8 +5294,6 @@ class OpenHandsRuntime:
         from_event_id: str | None,
         expected_source_leaf_event_id: str,
         reset_metrics: bool,
-        condenser: RuntimeCondenser | None = None,
-        condenser_provider: RuntimeProvider | None = None,
     ) -> RuntimeForkResult:
         """Create or recover one native fork with a caller-owned identity."""
 
@@ -5321,8 +5319,6 @@ class OpenHandsRuntime:
             "title": title,
             "reset_metrics": reset_metrics,
         }
-        if condenser is not None:
-            payload["condenser"] = self._condenser_payload(condenser, condenser_provider)
         if from_event_id is not None:
             payload["from_event_id"] = from_event_id
         try:
@@ -5386,17 +5382,6 @@ class OpenHandsRuntime:
             matches=all(inherited_matches.values()),
             source_conversation_id=handle.conversation_id,
         )
-        if condenser_provider is not None:
-            expected_fork_llm = self._llm_payload(condenser_provider)
-            binding_matches = self._llm_diagnostic_matches(expected_fork_llm, fork_llm)
-            self._log_llm_binding_diagnostic(
-                fork_handle,
-                operation="fork_binding",
-                expected=expected_fork_llm,
-                actual=fork_llm,
-                matches=all(binding_matches.values()),
-                source_conversation_id=handle.conversation_id,
-            )
         self._log_fork_diagnostic(
             handle,
             fork_handle,

@@ -1424,9 +1424,9 @@ def _stamp_fixed_runtime_provenance(image_digest: str, reference: str, *, timeou
 
     A historical Runtime can contribute ``/runtime`` files through the user
     base image.  OpenHands' formal source build replaces ``/agent-server``,
-    but deliberately preserves that user base filesystem.  Its old provenance
-    and FlowWeave condenser overlay would therefore contradict the fixed
-    1.47 build even after the formal output is correct.  Copy the controller's
+    but deliberately preserves that user base filesystem. Its old provenance
+    would therefore contradict the fixed build even after the formal output
+    is correct. Copy the controller's
     fixed assets into a disposable container and commit that one governance
     layer; it never writes to the Setup container, Workspace, HOME, or a
     persistent Runtime mount. The Docker CLI is running inside the Runtime
@@ -1451,7 +1451,6 @@ def _stamp_fixed_runtime_provenance(image_digest: str, reference: str, *, timeou
         _copy_fixed_runtime_asset(
             stamp_name, "openhands-source-provenance.json", "/runtime", timeout=30
         )
-        _copy_fixed_runtime_asset(stamp_name, "patch_fork_condenser.py", "/runtime", timeout=30)
         return _run(
             [settings.docker_binary, "commit", stamp_name, reference],
             timeout=timeout,
@@ -1474,7 +1473,7 @@ def _copy_fixed_runtime_asset(
     a tiny tar stream is the portable way to make its frozen assets authoritative.
     """
 
-    if asset_name not in {"openhands-source-provenance.json", "patch_fork_condenser.py"}:
+    if asset_name != "openhands-source-provenance.json":
         raise ValueError(f"unsupported fixed Runtime asset: {asset_name}")
     try:
         content = (Path("/app") / asset_name).read_bytes()

@@ -405,10 +405,8 @@ class MockRuntime:
         from_event_id: str | None,
         expected_source_leaf_event_id: str,
         reset_metrics: bool,
-        condenser: RuntimeCondenser | None = None,
-        condenser_provider: RuntimeProvider | None = None,
     ) -> RuntimeForkResult:
-        del title, condenser_provider
+        del title
         fork_handle = RuntimeHandle(
             job_id=handle.job_id,
             conversation_id=target_conversation_id,
@@ -418,8 +416,9 @@ class MockRuntime:
             workspace_root=handle.workspace_root,
         )
         self._results[fork_handle.job_id] = RuntimeResult(status="IDLE", cursor=fork_handle.cursor)
-        if condenser is not None:
-            self._conversation_condensers[target_conversation_id] = condenser
+        inherited_condenser = self._conversation_condensers.get(handle.conversation_id)
+        if inherited_condenser is not None:
+            self._conversation_condensers[target_conversation_id] = inherited_condenser
         return RuntimeForkResult(
             handle=fork_handle,
             source_conversation_id=handle.conversation_id,

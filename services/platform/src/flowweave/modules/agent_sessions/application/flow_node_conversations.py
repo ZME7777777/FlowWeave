@@ -45,8 +45,6 @@ from flowweave.modules.agent_sessions.application.flow_node_locator import (
     binding_locator,
 )
 from flowweave.modules.agent_sessions.application.runtime_config import (
-    CONDENSER_MAX_EVENTS,
-    NATIVE_CONDENSER_MAX_TOKENS,
     FrozenSessionConfig,
     build_agent_spec,
     config_from_binding,
@@ -71,7 +69,6 @@ from flowweave.modules.model_providers.public import has_connected_default_model
 from flowweave.modules.sandboxes import public as sandboxes
 from flowweave.modules.tasks.public import enqueue
 from flowweave.runtime.base import (
-    RuntimeCondenser,
     RuntimeEventBatch,
     RuntimeHandle,
     RuntimeProvider,
@@ -3087,13 +3084,6 @@ def fork_node_conversation(
         from_event_id=fork_event_id,
         expected_source_leaf_event_id=source_identity.event_id,
         reset_metrics=True,
-        condenser=RuntimeCondenser(
-            kind="LLM_SUMMARIZING",
-            max_size=CONDENSER_MAX_EVENTS,
-            max_tokens=NATIVE_CONDENSER_MAX_TOKENS,
-            keep_first=4,
-        ),
-        condenser_provider=provider,
     )
     if result.handle.conversation_id != target.openhands_conversation_id:
         raise DomainError("RUNTIME_FORK_IDENTITY_DRIFT", "会话分叉身份校验失败", 409)

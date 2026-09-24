@@ -38,15 +38,12 @@ COPY infra/openhands/pyproject.toml infra/openhands/uv.lock ./
 ENV UV_PROJECT_ENV=/runtime/.venv
 RUN uv sync --frozen --no-dev
 COPY infra/openhands/source.lock.json /runtime/openhands-source.lock.json
-COPY infra/openhands/vendor/openhands-source-f427c83545c78321219f45a355b34343cf6d8218.tar.gz /runtime/openhands-source-f427c83545c78321219f45a355b34343cf6d8218.tar.gz
+COPY infra/openhands/vendor/openhands-source-e21d77673b738f056676044600c4ad81c5a575c8.tar.gz /runtime/openhands-source-e21d77673b738f056676044600c4ad81c5a575c8.tar.gz
 COPY infra/openhands/fetch_source.py /runtime/fetch_openhands_source.py
-COPY infra/openhands/patch_fork_condenser.py /runtime/patch_fork_condenser.py
 RUN /usr/local/bin/python /runtime/fetch_openhands_source.py \
       --lock /runtime/openhands-source.lock.json \
       --destination /opt/openhands-source \
-      --provenance /runtime/openhands-source-provenance.json \
-      --overlay /runtime/patch_fork_condenser.py
-RUN /usr/local/bin/python /runtime/patch_fork_condenser.py /opt/openhands-source
+      --provenance /runtime/openhands-source-provenance.json
 RUN uv pip install --python /runtime/.venv/bin/python --no-deps --reinstall \
       /opt/openhands-source/openhands-sdk \
       /opt/openhands-source/openhands-tools \
@@ -74,14 +71,14 @@ RUN set -eux; \
       echo "INSTALL_ACP_PROVIDERS is empty; no ACP providers will be installed"; \
     fi
 RUN /runtime/.venv/bin/python -c \
-      "from importlib.metadata import version; expected='1.47.0'; packages=('openhands-agent-server','openhands-sdk','openhands-tools','openhands-workspace'); actual={name: version(name) for name in packages}; assert all(value == expected for value in actual.values()), actual"
+      "from importlib.metadata import version; expected='1.49.5'; packages=('openhands-agent-server','openhands-sdk','openhands-tools','openhands-workspace'); actual={name: version(name) for name in packages}; assert all(value == expected for value in actual.values()), actual"
 COPY infra/openhands/contract_check.py /runtime/contract_check.py
 COPY infra/openhands/contract_check.py \
      /opt/openhands-source/openhands-agent-server/openhands/agent_server/flowweave_contract_check.py
 COPY infra/openhands/plugin_resolver.py /runtime/plugin_resolver.py
 ENV PATH="/runtime/.venv/bin:/usr/local/bin:$PATH"
-ENV OPENHANDS_BUILD_GIT_SHA="f427c83545c78321219f45a355b34343cf6d8218" \
-    OPENHANDS_BUILD_GIT_REF="f427c83545c78321219f45a355b34343cf6d8218"
+ENV OPENHANDS_BUILD_GIT_SHA="e21d77673b738f056676044600c4ad81c5a575c8" \
+    OPENHANDS_BUILD_GIT_REF="e21d77673b738f056676044600c4ad81c5a575c8"
 RUN /runtime/.venv/bin/python /runtime/contract_check.py
 RUN uv pip install --python /runtime/.venv/bin/python pip==25.1.1 \
  && ln -sf /runtime/.venv/bin/pip /usr/local/bin/pip \

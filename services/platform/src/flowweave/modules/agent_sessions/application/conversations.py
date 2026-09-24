@@ -31,8 +31,6 @@ from flowweave.modules.agent_sessions.application.event_branch import (
     complete_active_branch,
 )
 from flowweave.modules.agent_sessions.application.runtime_config import (
-    CONDENSER_MAX_EVENTS,
-    NATIVE_CONDENSER_MAX_TOKENS,
     build_agent_spec,
     config_from_binding,
     provider_for_config,
@@ -51,7 +49,6 @@ from flowweave.modules.sandboxes.public import ManagedSandbox
 from flowweave.modules.tasks.public import enqueue
 from flowweave.modules.users.application.security import user_runtime_project_root
 from flowweave.runtime.base import (
-    RuntimeCondenser,
     RuntimeEvent,
     RuntimeEventBatch,
     RuntimeHandle,
@@ -2259,7 +2256,7 @@ def message(
     readiness = runtime.input_readiness(handle)
     condenser_recovery_event_id = _condenser_credential_failure_event_id(runtime, handle)
     if not readiness.ready and condenser_recovery_event_id is None:
-        # OpenHands 1.47.0 formally accepts a user event while its standard
+        # OpenHands formally accepts a user event while its standard
         # Agent is running. The current LLM/tool step is left intact; the
         # native loop consumes the newly appended event on its next step.
         # Do not run model rebinding, fork recovery, or compaction here: each
@@ -2327,12 +2324,6 @@ def message(
                 f"finish-boundary-recovery:{handle.conversation_id}:{recovery.completed_event_id}",
             )
         )
-        recovery_provider = runtime_provider(
-            db,
-            {"asset": {"executor": {"model_provider_id": binding.model_provider_id}}},
-            model_name=binding.model_name,
-            reasoning_effort=binding.reasoning_effort,
-        )
         repaired = runtime.fork_conversation(
             source_handle,
             target_conversation_id=replacement_id,
@@ -2340,13 +2331,6 @@ def message(
             from_event_id=recovery.completed_event_id,
             expected_source_leaf_event_id=recovery.source_leaf_event_id,
             reset_metrics=True,
-            condenser=RuntimeCondenser(
-                kind="LLM_SUMMARIZING",
-                max_size=CONDENSER_MAX_EVENTS,
-                max_tokens=NATIVE_CONDENSER_MAX_TOKENS,
-                keep_first=4,
-            ),
-            condenser_provider=recovery_provider,
         )
         if repaired.leaf_event_id != recovery.completed_event_id:
             raise DomainError("RUNTIME_FORK_IDENTITY_DRIFT", "异常分叉会话恢复边界校验失败", 409)
@@ -3209,13 +3193,6 @@ def _fork_conversation(
             from_event_id=fork_event_id,
             expected_source_leaf_event_id=source_identity.event_id,
             reset_metrics=True,
-            condenser=RuntimeCondenser(
-                kind="LLM_SUMMARIZING",
-                max_size=CONDENSER_MAX_EVENTS,
-                max_tokens=NATIVE_CONDENSER_MAX_TOKENS,
-                keep_first=4,
-            ),
-            condenser_provider=fork_provider,
         )
         if (
             result.handle.conversation_id != target_id

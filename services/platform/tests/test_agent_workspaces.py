@@ -3943,9 +3943,6 @@ def test_agent_workspace_forks_at_native_event(settings, db_session_factory, mon
                 kwargs["from_event_id"],
                 kwargs["expected_source_leaf_event_id"],
                 kwargs["reset_metrics"],
-                kwargs["condenser"].max_size,
-                kwargs["condenser"].max_tokens,
-                kwargs["condenser"].max_tokens_ratio,
             )
             return super().fork_conversation(handle, **kwargs)
 
@@ -4013,9 +4010,6 @@ def test_agent_workspace_forks_at_native_event(settings, db_session_factory, mon
             "assistant-event",
             "assistant-event",
             True,
-            500,
-            384_000,
-            None,
         )
         assert runtime.switched_conversation_ids == [fork["openhands_conversation_id"]]
         assert (

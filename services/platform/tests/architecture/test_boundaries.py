@@ -141,26 +141,26 @@ def test_openhands_runtime_uses_digest_locked_source_build() -> None:
     assert "--build-context openhands_sdk" not in makefile
     assert "COPY --from=openhands_sdk" not in dockerfile
     assert source_lock["source_kind"] == "flowweave_fork"
-    assert source_lock["upstream_base_commit"] == ("5b36cacccc2bbe6f8fbce9e1d3ff4b0a3dcddadb")
-    assert source_lock["source_commit"] == "f427c83545c78321219f45a355b34343cf6d8218"
+    assert source_lock["upstream_base_commit"] == ("e21d77673b738f056676044600c4ad81c5a575c8")
+    assert source_lock["source_commit"] == "e21d77673b738f056676044600c4ad81c5a575c8"
     assert source_lock["fork_commit"] == source_lock["source_commit"]
     assert len(source_lock["source_commit"]) == 40
     assert len(source_lock["archive_sha256"]) == 64
     assert "fetch_openhands_source.py" in dockerfile
     assert "--lock /runtime/openhands-source.lock.json" in dockerfile
     assert "--destination /opt/openhands-source" in dockerfile
-    assert "--overlay /runtime/patch_fork_condenser.py" in dockerfile
-    assert "patch_fork_condenser.py /opt/openhands-source" in dockerfile
+    assert "--overlay" not in dockerfile
+    assert "patch_fork_condenser.py" not in dockerfile
     assert "/opt/openhands-source/openhands-sdk" in dockerfile
     assert "/opt/openhands-source/openhands-agent-server" in dockerfile
-    assert "expected='1.47.0'" in dockerfile
+    assert "expected='1.49.5'" in dockerfile
     for package in (
         "openhands-agent-server",
         "openhands-sdk",
         "openhands-tools",
         "openhands-workspace",
     ):
-        assert f'"{package}==1.47.0"' in project
+        assert f'"{package}==1.49.5"' in project
         assert f'name = "{package}"' in lockfile
 
 

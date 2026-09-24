@@ -9,7 +9,6 @@ default-value drift.
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import os
 from importlib.metadata import distribution, version
@@ -25,14 +24,19 @@ from pydantic import SecretStr
 
 os.environ.setdefault("OPENHANDS_SUPPRESS_BANNER", "1")
 os.environ.setdefault("OH_SECRET_KEY", "flowweave-contract-check-secret-000000000000")
-os.environ.setdefault("OH_PERSISTENCE_DIR", "/runtime/state/persistence")
+_PERSISTENCE_DIR = Path(
+    os.environ.get("OH_PERSISTENCE_DIR", "/runtime/state/persistence")
+)
+os.environ.setdefault("OH_PERSISTENCE_DIR", str(_PERSISTENCE_DIR))
 
 # OpenHands' official dynamic-image builder resolves its UV workspace while
 # importing the build module.  The Runtime image carries the pinned source at
 # this location, but the rest of this probe deliberately runs from /runtime so
 # its independent fixtures retain their normal path semantics.
 _PROBE_CWD = Path.cwd()
-_PINNED_SOURCE_ROOT = Path("/opt/openhands-source")
+_PINNED_SOURCE_ROOT = Path(
+    os.environ.get("FLOWWEAVE_OPENHANDS_SOURCE_ROOT", "/opt/openhands-source")
+)
 if _PINNED_SOURCE_ROOT.is_dir():
     os.chdir(_PINNED_SOURCE_ROOT)
 
@@ -54,7 +58,6 @@ from openhands.agent_server.mcp_router import (
 from openhands.agent_server.models import (
     BashEventPage,
     ConfirmationResponseRequest,
-    ConversationContext,
     ForkConversationRequest,
     NavigateConversationRequest,
     StartConversationRequest,
@@ -144,10 +147,10 @@ from openhands.tools.task import TaskAction, TaskObservation, TaskToolSet
 from openhands.tools.task.impl import TaskExecutor
 from openhands.tools.task.manager import Task, TaskManager, TaskStatus
 
-EXPECTED_VERSION = "1.47.0"
-EXPECTED_UPSTREAM_BASE = "5b36cacccc2bbe6f8fbce9e1d3ff4b0a3dcddadb"
-EXPECTED_SOURCE_COMMIT = "f427c83545c78321219f45a355b34343cf6d8218"
-EXPECTED_SOURCE_ARCHIVE_SHA256 = "af018ee81c38f2eafe44bc6c3a025ae0b2bdda32fd4ee3a2990c2e93a9097c9b"
+EXPECTED_VERSION = "1.49.5"
+EXPECTED_UPSTREAM_BASE = "e21d77673b738f056676044600c4ad81c5a575c8"
+EXPECTED_SOURCE_COMMIT = "e21d77673b738f056676044600c4ad81c5a575c8"
+EXPECTED_SOURCE_ARCHIVE_SHA256 = "994adb7195aa6a6e4aaa50a2593e973a91877a970a544630fb993896d117292b"
 PACKAGES = (
     "openhands-agent-server",
     "openhands-sdk",
@@ -321,7 +324,7 @@ def _assert_profile_provider_secret_and_condenser_behavior() -> None:
     assert child_environment == {"KEEP": "value", "AI_AGENT": "openhands"}
     assert redact_text_secrets("tool output sk-oh-abcdef1234567890") == "tool output <redacted>"
     assert redact_api_key_literals("tmux sk-oh-abcdef1234567890") == "tmux <redacted>"
-    persistence_dir = Path("/runtime/state/persistence")
+    persistence_dir = _PERSISTENCE_DIR
     assert get_user_persistence_dir() == persistence_dir
     default_profile_store = LLMProfileStore()
     assert default_profile_store.base_dir == persistence_dir / "profiles"
@@ -475,7 +478,6 @@ def main() -> None:
     assert "resend_mode" in bash_socket_parameters
     assert "after_timestamp" not in bash_socket_parameters
     assert set(BashEventPage.model_fields) == {"items", "next_page_id"}
-    assert set(ConversationContext.model_fields) == {"total_tokens", "event_count"}
     server_info = ServerInfo(uptime=0, idle_time=0)
     assert server_info.version == EXPECTED_VERSION
     assert server_info.sdk_version == EXPECTED_VERSION
@@ -492,8 +494,8 @@ def main() -> None:
     event_socket_source = getsource(events_socket)
     bash_socket_source = getsource(bash_events_socket)
     socket_source = event_socket_source + bash_socket_source
-    assert '@sockets_router.websocket("/events/{conversation_id}")' in event_socket_source
-    assert '@sockets_router.websocket("/bash-events")' in bash_socket_source
+    assert '@conversation_sockets_router.websocket("/events/{conversation_id}")' in event_socket_source
+    assert '@bash_sockets_router.websocket("/bash-events")' in bash_socket_source
     assert "_accept_authenticated_websocket(websocket, session_api_key)" in socket_source
     assert _WebSocketSubscriber.receives_streaming_deltas is True
     asyncio.run(_assert_targeted_streaming_delta_delivery())
@@ -513,10 +515,7 @@ def main() -> None:
     assert build_input["source_kind"] == "flowweave_fork"
     assert build_input["fork_commit"] == EXPECTED_SOURCE_COMMIT
     assert provenance["source_archive_sha256"] == EXPECTED_SOURCE_ARCHIVE_SHA256
-    patch_path = Path("/runtime/patch_fork_condenser.py")
-    assert provenance["overlays"] == {
-        patch_path.name: hashlib.sha256(patch_path.read_bytes()).hexdigest()
-    }
+    assert provenance["overlays"] == {}
     direct_urls = {}
     allowed_source_roots = (
         "file:///opt/openhands-source",
@@ -524,6 +523,8 @@ def main() -> None:
         # copied, non-editable fixed source below /agent-server.
         "file:///agent-server",
     )
+    if _PINNED_SOURCE_ROOT.is_dir():
+        allowed_source_roots += (f"file://{_PINNED_SOURCE_ROOT}",)
     for package in PACKAGES:
         direct_url = json.loads(distribution(package).read_text("direct_url.json") or "{}")
         actual_url = direct_url.get("url")
@@ -726,7 +727,7 @@ def main() -> None:
         agent_profile_id=governed_profile.id,
         revision=governed_profile.revision,
     )
-    assert launched_profile.model_dump(mode="json") == {
+    assert launched_profile.model_dump(mode="json", exclude_none=True) == {
         "agent_profile_id": str(governed_profile.id),
         "revision": 0,
     }
@@ -773,7 +774,7 @@ def main() -> None:
         resolved_local, resolved_ref = fetch_plugin_with_resolution(
             str(root), cache_dir=root / "cache", repo_path="nested/review"
         )
-        assert resolved_local == plugin_dir
+        assert resolved_local.resolve() == plugin_dir.resolve()
         assert resolved_ref is None
         for escaping_path in ("../outside", "escape"):
             try:
@@ -814,11 +815,12 @@ def main() -> None:
         assert fetched_marketplace.resolved_ref == marketplace_commit
         marketplace_plugin = fetched_marketplace.marketplace.get_plugin("review")
         assert marketplace_plugin is not None
-        assert fetched_marketplace.marketplace.resolve_plugin_source(marketplace_plugin) == (
-            str(marketplace_root / "plugins/review"),
-            None,
-            None,
+        resolved_source, resolved_ref, resolved_repo_path = (
+            fetched_marketplace.marketplace.resolve_plugin_source(marketplace_plugin)
         )
+        assert Path(resolved_source).resolve() == (marketplace_root / "plugins/review").resolve()
+        assert resolved_ref is None
+        assert resolved_repo_path is None
     response_schema = {
         "type": "object",
         "properties": {"outcome": {"type": "string"}},
@@ -876,7 +878,7 @@ def main() -> None:
 
     assert _field_default(ForkConversationRequest, "from_event_id") is None
     assert _field_default(ForkConversationRequest, "reset_metrics") is True
-    assert _field_default(ForkConversationRequest, "condenser") is None
+    assert "condenser" not in ForkConversationRequest.model_fields
     assert _field_default(NavigateConversationRequest, "event_id") is None
 
     goal_request_fields = StartGoalRequest.model_fields

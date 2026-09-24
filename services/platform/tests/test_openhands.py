@@ -4426,7 +4426,7 @@ def test_openhands_condense_uses_native_endpoint_and_waits_for_event(
     ]
 
 
-def test_openhands_fork_replaces_only_the_governed_condenser(
+def test_openhands_fork_preserves_the_native_source_configuration(
     openhands_settings, monkeypatch, caplog
 ):
     runtime = OpenHandsRuntime(openhands_settings)
@@ -4468,7 +4468,6 @@ def test_openhands_fork_replaces_only_the_governed_condenser(
         ),
     )
     caplog.set_level(logging.WARNING, logger=openhands_module.__name__)
-    request = _request()
     result = runtime.fork_conversation(
         _handle("event-4"),
         target_conversation_id="10000000-0000-4000-8000-000000000003",
@@ -4476,13 +4475,6 @@ def test_openhands_fork_replaces_only_the_governed_condenser(
         from_event_id="event-4",
         expected_source_leaf_event_id="event-4",
         reset_metrics=True,
-        condenser=RuntimeCondenser(
-            kind="LLM_SUMMARIZING",
-            max_size=10_000,
-            max_tokens_ratio=0.8,
-            keep_first=4,
-        ),
-        condenser_provider=request.agent_spec.provider,
     )
 
     assert result.handle.conversation_id == "10000000-0000-4000-8000-000000000003"
@@ -4494,30 +4486,7 @@ def test_openhands_fork_replaces_only_the_governed_condenser(
     assert method == "POST"
     assert path == "/api/conversations/10000000-0000-4000-8000-000000000002/fork"
     assert isinstance(payload, dict)
-    assert payload["condenser"] == {
-        "kind": "LLMSummarizingCondenser",
-        "llm": {
-            "model": "openai/gpt-5.6-sol",
-            "base_url": "http://host.docker.internal:1234/v1",
-            "api_key": "configured-secret",
-            "usage_id": "condenser",
-            "reasoning_effort": "high",
-            "api_mode": "chat",
-            "stream": True,
-            "num_retries": 5,
-            "retry_multiplier": 2.0,
-            "retry_min_wait": 1,
-            "retry_max_wait": 4,
-            "timeout": 120,
-            "max_input_tokens": 922_000,
-        },
-        "max_size": 10_000,
-        "max_tokens": 737_600,
-        "keep_first": 4,
-        "minimum_progress": 0.1,
-        "hard_context_reset_max_retries": 5,
-        "hard_context_reset_context_scaling": 0.8,
-    }
+    assert "condenser" not in payload
     assert payload["from_event_id"] == "event-4"
     assert payload["reset_metrics"] is True
     diagnostics = [
@@ -4525,12 +4494,9 @@ def test_openhands_fork_replaces_only_the_governed_condenser(
         for record in caplog.records
         if "native_llm_binding_diagnostic" in record.getMessage()
     ]
-    assert len(diagnostics) == 2
+    assert len(diagnostics) == 1
     assert "operation=fork_inheritance" in diagnostics[0]
     assert "matches=True" in diagnostics[0]
-    assert "operation=fork_binding" in diagnostics[1]
-    assert "matches=True" in diagnostics[1]
-    assert "actual_model=openai/gpt-5.6-sol" in diagnostics[1]
     assert "host.docker.internal" not in "\n".join(diagnostics)
     assert "configured-secret" not in "\n".join(diagnostics)
     fork_diagnostic = next(

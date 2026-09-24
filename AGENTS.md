@@ -24,16 +24,16 @@ scripts/verify-remote-deploy.sh --config .local/remote-deploy.env \
 - FlowWeave 是控制面，只负责能力治理、不可变版本冻结、权限、策略、审批、审计、资源隔离和业务投影。
 - Tool、Skill、Plugin、MCP、Hook、Agent Definition、Task 子 Agent、Condenser、Memory、Critic、Fork 和 ACP 等执行能力应由 OpenHands 正式类型、事件、API 和生命周期实现。
 - 不得用提示词、私有控制 JSON、文本约定、私有 HTTP 或平台自建执行器模拟 OpenHands 已提供的能力。
-- FlowWeave 显式传入的 Runtime 能力必须可追溯到固定 version、digest、blob/hash 和 Snapshot Runtime Manifest，明文 Secret 不得持久化进入 Runtime。OpenHands 1.47.0 原生的 HOME/项目 ambient Plugin 发现明确允许，它不是 FlowWeave 冻结 Plugin 的替代事实源，也不得用私有字段或源码补丁禁用。
+- FlowWeave 显式传入的 Runtime 能力必须可追溯到固定 version、digest、blob/hash 和 Snapshot Runtime Manifest，明文 Secret 不得持久化进入 Runtime。OpenHands 原生的 HOME/项目 ambient Plugin 发现明确允许，它不是 FlowWeave 冻结 Plugin 的替代事实源，也不得用私有字段或源码补丁禁用。
 - 事件关联必须使用 OpenHands 正式的 `id`、`parent_id`、`action_id`、`tool_call_id`、cursor 等字段，不得按事件顺序、名称或文本猜测。
 
 ## OpenHands 源码与镜像基线
 
-当前目标能力事实固定为 OpenHands `baseline` compatibility commit `f427c83545c78321219f45a355b34343cf6d8218`（在直接合并 upstream `5b36cacccc2bbe6f8fbce9e1d3ff4b0a3dcddadb` 的 `a5ae33a9477f657d7d32cb348190c77a326f25e7` 上修复 1.47 固定 ACP schema 兼容性，四包发布版本保持 `1.47.0`）。OpenHands `baseline` 工作树保持只读；不得在当前 `FR-*` 主线修改 OpenHands 源码或创建新的 fork。
+当前目标能力事实固定为 OpenHands `baseline` commit `e21d77673b738f056676044600c4ad81c5a575c8`（直接对齐 upstream `main`，四包发布版本为 `1.49.5`）。OpenHands `baseline` 工作树保持只读；不得在当前 `FR-*` 主线修改 OpenHands 源码或创建新的 fork。
 
 - SDK 源码：`/Users/zhengmengen/WorkSpace/openhands/software-agent-sdk-total-tokens-1.47`（`baseline`）
 - 历史兼容基线：`v1.42.0` / `f09e03eac772290feeb51b7d7390ffaefeca1a09`
-- 固定包版本：`openhands-agent-server==1.47.0`、`openhands-sdk==1.47.0`、`openhands-tools==1.47.0`、`openhands-workspace==1.47.0`
+- 固定包版本：`openhands-agent-server==1.49.5`、`openhands-sdk==1.49.5`、`openhands-tools==1.49.5`、`openhands-workspace==1.49.5`
 - 固定运行时镜像：`flowweave-openhands-runtime:1`
 - 契约探针：`infra/openhands/contract_check.py`
 
@@ -41,10 +41,10 @@ scripts/verify-remote-deploy.sh --config .local/remote-deploy.env \
 
 ```bash
 git -C /Users/zhengmengen/WorkSpace/openhands/software-agent-sdk-total-tokens-1.47 \
-  show f427c83545c78321219f45a355b34343cf6d8218:<相对路径>
+  show e21d77673b738f056676044600c4ad81c5a575c8:<相对路径>
 
 git -C /Users/zhengmengen/WorkSpace/openhands/software-agent-sdk-total-tokens-1.47 \
-  grep -n '<模式>' f427c83545c78321219f45a355b34343cf6d8218 -- \
+  grep -n '<模式>' e21d77673b738f056676044600c4ad81c5a575c8 -- \
   openhands-agent-server openhands-sdk openhands-tools openhands-workspace
 ```
 

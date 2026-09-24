@@ -299,7 +299,6 @@ def test_runtime_provenance_stamp_uses_only_disposable_governance_container(monk
     ]
     assert assets == [
         (name, "openhands-source-provenance.json", "/runtime", 30),
-        (name, "patch_fork_condenser.py", "/runtime", 30),
     ]
     assert commands[1] == [
         "docker",

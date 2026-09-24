@@ -3,8 +3,8 @@
 > 状态：`FR-00 FROZEN`
 > 日期：2026-08-21
 > OpenHands 事实基线：`software-agent-sdk`
-> `baseline` compatibility commit `f427c83545c78321219f45a355b34343cf6d8218`（在直接合并 OpenHands
-> `5b36cacccc2bbe6f8fbce9e1d3ff4b0a3dcddadb` 的 baseline 上保持四包发布版本 `1.47.0`）
+> `baseline` commit `e21d77673b738f056676044600c4ad81c5a575c8`（直接对齐 OpenHands upstream
+> `main`；四个发布包版本为 `1.49.5`）
 > 本文冻结目标架构和后续迁移边界，不表示后续运行时代码已经落地。
 
 ## 1. 决策摘要
@@ -132,7 +132,7 @@ FlowRun 启动和 replacement 只使用已发布 Runtime Image digest，遵循 `
 “基本预置能力”来自上述固定 OpenHands Runtime 层和用户 base image。FlowRun/Conversation 特定且由
 FlowWeave 显式绑定的 Skill、MCP、Plugin、Hook、Agent Definition、Policy 与 Memory 不烘焙进可变
 镜像，而按 Snapshot Runtime Manifest 只读物化，并在创建 Conversation 时通过 OpenHands 正式字段或
-Loader 加载。OpenHands 1.47.0 对 HOME 和项目目录的 ambient Plugin 原生扫描按上游默认保留；
+Loader 加载。OpenHands 对 HOME 和项目目录的 ambient Plugin 原生扫描按上游默认保留；
 FlowWeave 不再用私有请求字段或构建时源码补丁禁用它。
 
 ## 5. 持久化与可替换性
@@ -152,7 +152,7 @@ FlowWeave 不再用私有请求字段或构建时源码补丁禁用它。
 worktree 临时目录放在可丢弃层；若启用 OpenHands worktree，必须先另行把其持久化和清理契约纳入
 Runtime Provider，默认保持关闭。
 
-固定 OpenHands `1.47.0` 中，`OH_PERSISTENCE_DIR` 完整替代 `~/.openhands` 根目录；Profile、Provider
+固定 OpenHands `1.49.5` 中，`OH_PERSISTENCE_DIR` 完整替代 `~/.openhands` 根目录；Profile、Provider
 Connection、OAuth credential、用户 Memory、Skill cache、SOUL 和其他 SDK 辅助状态均从其子目录读取。
 Runtime 只挂载 `state/persistence → /runtime/state/persistence`，绝不再为
 `$HOME/.openhands/profiles` 建立第二个 bind mount 或控制面预创建目录。Environment HOME volume 仅保存
@@ -163,7 +163,7 @@ Runtime 只挂载 `state/persistence → /runtime/state/persistence`，绝不再
 可恢复。连接 API key 可轮换，但不得替代持久 secret key。所有挂载在容器启动前进行 owner、普通目录、
 符号链接、权限和租户边界复核。
 
-固定 OpenHands `1.47.0` 的正式命令执行器会在 Agent 驱动的子进程前移除 `OH_SECRET_KEY`、
+固定 OpenHands `1.49.5` 的正式命令执行器会在 Agent 驱动的子进程前移除 `OH_SECRET_KEY`、
 `SESSION_API_KEY` 和全部 `OH_SESSION_API_KEYS_*`，因此模型生成的 Shell／Tool 不能通过环境读取
 Runtime 持久化或会话密钥。FlowWeave 仍把这些值仅注入 Agent Server 启动边界，并对 Runtime Provider
 日志和所有安全事件投影递归屏蔽敏感字段、URL 凭据及识别出的 API-key 字面量（包含 `sk-oh-*`）；
@@ -304,7 +304,7 @@ HOME/项目的 ambient Plugin 扫描是例外：它保持上游原生默认语�
 FlowRun 多 Conversation 间串扰，再由 OpenHands 正式 `load_memory` 生命周期原生加载。固定镜像真实
 create/smoke 验证仍集中在 FR-12。
 
-固定 OpenHands 1.47.0 已正式负责 Agent Profile v1→v2 迁移、LLM Profile 预检、Provider Connection
+固定 OpenHands 1.49.5 已正式负责 Agent Profile v1→v2 迁移、LLM Profile 预检、Provider Connection
 凭据的 read-at-use 解析、Secret serializer 探测，以及 subscription LLM 的 condenser dispatch。FlowWeave
 不复制这些存储迁移、凭据刷新或 condenser 调度生命周期；镜像门禁以实际迁移、轮换后重读、嵌套 Secret
 识别和 subscription condenser 行为验收，而不冻结上游字段全集或默认值表。FlowWeave 仍只持有不可变
