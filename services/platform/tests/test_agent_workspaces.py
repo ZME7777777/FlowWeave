@@ -2295,6 +2295,15 @@ def test_agent_workspace_title_task_429_keeps_pending_until_retries_exhaust(
         assert task.payload_json == {"title_generation": 1}
 
 
+def test_title_cleaning_rejects_answer_like_output_and_keeps_short_phrases():
+    fallback = "你是谁"
+
+    assert titles._clean_title("我是 Codex，一个编程助手。", fallback) == fallback
+    assert titles._clean_title("我可以帮你修改代码", fallback) == fallback
+    assert titles._clean_title("检查当前目录", fallback) == "检查当前目录"
+    assert titles._clean_title("这是一段超过标题限制的中文内容" * 3, fallback) == fallback
+
+
 def test_chat_completions_title_uses_provider_protocol(monkeypatch):
     captured: dict[str, object] = {}
 

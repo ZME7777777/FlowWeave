@@ -1936,14 +1936,17 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect.poll(() => runningDirectMessagePosts).toBe(1);
   await page.waitForTimeout(250);
   expect(runningDirectMessagePosts).toBe(1);
+  releaseRunningDirectDelivery?.();
+  // The optimistic user event must remain visible after the POST is accepted,
+  // before OpenHands appends the formal MESSAGE event.
+  await expect(runningDirectMessage).toHaveCount(1);
+  await expect(runningDirectMessage).toBeVisible();
   agentStream!.send(JSON.stringify({
     type: 'event',
     event: { id: 'running-direct-stream-user', event_type: 'MESSAGE', payload: { source: 'user', content: 'FLOWWEAVE_MESSAGE_CONTEXT_V5:{"current_user_request":{"content":"运行中直接发送消息"}}', display_content: '运行中直接发送消息', timestamp: new Date().toISOString().replace(/Z$/, '') } },
   }));
   await expect(runningDirectMessage).toHaveCount(1);
   await expect(page.locator('.conversation-message-delivery-status')).toHaveCount(0);
-  releaseRunningDirectDelivery?.();
-  await expect(runningDirectMessage).toHaveCount(1);
   await expect(runningDirectMessage).toBeVisible();
   const activeConversation = conversations.find(item => item.id === sentBinding);
   if (!activeConversation) throw new Error('Expected the active conversation to receive the direct message');
@@ -2398,6 +2401,11 @@ test('editing the latest user message locally replaces only its active branch', 
   await expect(page.getByText('需要重新思考的问题', { exact: true })).toHaveCount(0);
   await expect(page.locator('.conversation-message-edit')).toBeVisible();
   const rewriteEditor = page.getByLabel('编辑已发送消息');
+  await expect(rewriteEditor).toBeFocused();
+  await expect.poll(() => rewriteEditor.evaluate(editor => ({
+    start: (editor as HTMLTextAreaElement).selectionStart,
+    end: (editor as HTMLTextAreaElement).selectionEnd,
+  }))).toEqual({ start: '需要重新思考的问题'.length, end: '需要重新思考的问题'.length });
   await rewriteEditor.fill('修改后的');
   await rewriteEditor.dispatchEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 229, isComposing: true });
   await expect(rewriteEditor).toHaveValue('修改后的');

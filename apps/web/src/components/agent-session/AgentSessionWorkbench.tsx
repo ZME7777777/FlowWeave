@@ -4584,7 +4584,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   }, [bootstrapRecovery, clearConversationDraft, host.id, pendingBootstrap, workspace]);
   const connectedProviders = (providersQuery.data ?? []).filter(item => item.connection_state === 'CONNECTED' && item.models.some(model => model.enabled && model.is_default));
   useLayoutEffect(() => {
-    if (!composerScope || composerScope !== activeComposerScope.current) return;
+    // During a scope change, activeComposerScope already points at the incoming
+    // conversation while the controlled composer still contains the outgoing
+    // conversation's values. Wait until the scope transition has restored state.
+    if (!composerScope || previousComposerScope.current !== composerScope || composerScope !== activeComposerScope.current) return;
     composerDraftsByScope.current.set(composerScope, {
       content: composerDraftRef.current,
       attachments,
@@ -4881,11 +4884,16 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     const liveEvents = scopedLiveEvents
       .filter(item => item.scope === activeScope)
       .map(item => item.event);
+    const submittedEvents = activeScope
+      ? [...submittedUserEvents.current.values()]
+        .filter(item => item.scope === activeScope)
+        .map(item => item.event)
+      : [];
     const bootstrapEvent = optimisticBootstrapTurn && optimisticBootstrapTurn.scope === activeScope
       ? [optimisticBootstrapTurn.event]
       : [];
     return mergeConversationEvents(
-      mergeConversationEvents(eventsQuery.data?.events ?? [], liveEvents),
+      mergeConversationEvents(eventsQuery.data?.events ?? [], [...liveEvents, ...submittedEvents]),
       bootstrapEvent,
     )
       .filter(event => !hiddenEventIds.has(event.id));
@@ -5163,7 +5171,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   }, [conversationDraft, conversations, conversationsQuery.isFetching, host, onNavigate, pendingCreatedId, routeBindingId, selected]);
   useEffect(() => { if (selected?.id === pendingCreatedId) setPendingCreatedId(undefined); }, [pendingCreatedId, selected?.id]);
   useLayoutEffect(() => {
-    if (previousComposerScope.current === composerScope) return;
+    if (!composerScope || previousComposerScope.current === composerScope) return;
     const previousScope = previousComposerScope.current;
     if (previousScope) persistComposerDraft(previousScope);
     previousComposerScope.current = composerScope;

@@ -1572,6 +1572,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
   const copyResetTimer = useRef<number | undefined>(undefined);
   const referenceHighlightTimer = useRef<number | undefined>(undefined);
   const referenceLocationPending = useRef(false);
+  const rewriteEditor = useRef<HTMLTextAreaElement>(null);
   const [isAtLatest, setIsAtLatest] = useState(true);
   const [editingEventId, setEditingEventId] = useState<string>();
   const [editingContent, setEditingContent] = useState('');
@@ -1581,6 +1582,14 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
   const [viewingReference, setViewingReference] = useState<AgentConversationReference>();
   const [highlightedReference, setHighlightedReference] = useState<ConversationTextHighlight>();
   const [referenceHighlightRects, setReferenceHighlightRects] = useState<ConversationHighlightRect[]>([]);
+  useLayoutEffect(() => {
+    if (!editingEventId) return;
+    const editor = rewriteEditor.current;
+    if (!editor) return;
+    editor.focus();
+    editor.setSelectionRange(editor.value.length, editor.value.length);
+  }, [editingEventId]);
+
   // Pausing a tool makes OpenHands emit one synthetic AgentErrorEvent. Keep
   // the authoritative event for recovery and audit, but it is neither an
   // execution failure nor useful conversation content.
@@ -2104,7 +2113,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
           : undefined;
         return <section className="conversation-turn" key={turn.id} data-conversation-turn={turn.id}>
           {turn.user && <div className="conversation-user-message">{editingEventId === turn.user.event.id
-            ? <form className="conversation-message-edit" onSubmit={event => { event.preventDefault(); if (editingContent.trim()) onRewrite?.(turn.user!.event.id, editingContent.trim()); }}><textarea aria-label="编辑已发送消息" value={editingContent} disabled={rewritePending} onChange={event => setEditingContent(event.target.value)} onKeyDown={event => {
+            ? <form className="conversation-message-edit" onSubmit={event => { event.preventDefault(); if (editingContent.trim()) onRewrite?.(turn.user!.event.id, editingContent.trim()); }}><textarea ref={rewriteEditor} aria-label="编辑已发送消息" value={editingContent} disabled={rewritePending} onChange={event => setEditingContent(event.target.value)} onKeyDown={event => {
               if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing || event.keyCode === 229) return;
               event.preventDefault();
               event.currentTarget.form?.requestSubmit();
