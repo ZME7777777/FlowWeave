@@ -3,8 +3,8 @@
 > 状态：`FR-00 FROZEN`
 > 日期：2026-08-21
 > OpenHands 事实基线：`software-agent-sdk`
-> `baseline` merge commit `a5ae33a9477f657d7d32cb348190c77a326f25e7`（直接合并 OpenHands
-> `5b36cacccc2bbe6f8fbce9e1d3ff4b0a3dcddadb`，四包发布版本保持 `1.47.0`）
+> `baseline` compatibility commit `f427c83545c78321219f45a355b34343cf6d8218`（在直接合并 OpenHands
+> `5b36cacccc2bbe6f8fbce9e1d3ff4b0a3dcddadb` 的 baseline 上保持四包发布版本 `1.47.0`）
 > 本文冻结目标架构和后续迁移边界，不表示后续运行时代码已经落地。
 
 ## 1. 决策摘要

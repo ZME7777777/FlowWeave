@@ -29,7 +29,7 @@ scripts/verify-remote-deploy.sh --config .local/remote-deploy.env \
 
 ## OpenHands 源码与镜像基线
 
-当前目标能力事实固定为 OpenHands `baseline` merge commit `a5ae33a9477f657d7d32cb348190c77a326f25e7`（直接合并 upstream `5b36cacccc2bbe6f8fbce9e1d3ff4b0a3dcddadb`，四包发布版本保持 `1.47.0`）。OpenHands `baseline` 工作树保持只读；不得在当前 `FR-*` 主线修改 OpenHands 源码或创建新的 fork。
+当前目标能力事实固定为 OpenHands `baseline` compatibility commit `f427c83545c78321219f45a355b34343cf6d8218`（在直接合并 upstream `5b36cacccc2bbe6f8fbce9e1d3ff4b0a3dcddadb` 的 `a5ae33a9477f657d7d32cb348190c77a326f25e7` 上修复 1.47 固定 ACP schema 兼容性，四包发布版本保持 `1.47.0`）。OpenHands `baseline` 工作树保持只读；不得在当前 `FR-*` 主线修改 OpenHands 源码或创建新的 fork。
 
 - SDK 源码：`/Users/zhengmengen/WorkSpace/openhands/software-agent-sdk-total-tokens-1.47`（`baseline`）
 - 历史兼容基线：`v1.42.0` / `f09e03eac772290feeb51b7d7390ffaefeca1a09`
@@ -41,10 +41,10 @@ scripts/verify-remote-deploy.sh --config .local/remote-deploy.env \
 
 ```bash
 git -C /Users/zhengmengen/WorkSpace/openhands/software-agent-sdk-total-tokens-1.47 \
-  show a5ae33a9477f657d7d32cb348190c77a326f25e7:<相对路径>
+  show f427c83545c78321219f45a355b34343cf6d8218:<相对路径>
 
 git -C /Users/zhengmengen/WorkSpace/openhands/software-agent-sdk-total-tokens-1.47 \
-  grep -n '<模式>' a5ae33a9477f657d7d32cb348190c77a326f25e7 -- \
+  grep -n '<模式>' f427c83545c78321219f45a355b34343cf6d8218 -- \
   openhands-agent-server openhands-sdk openhands-tools openhands-workspace
 ```
 

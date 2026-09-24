@@ -16,8 +16,8 @@
 “当前行为”的审计对象；是否保留必须重新按照本设计、固定 OpenHands 源码和真实运行证据判断。
 
 除 FR-493、FR-504 经用户单独授权并已在隔离工作树完成的最小 OpenHands fork 外，本任务只修改 FlowWeave。
-当前目标事实基线为 `baseline` fork commit `a5ae33a9477f657d7d32cb348190c77a326f25e7`，它直接合并了
-OpenHands upstream `5b36cacccc2bbe6f8fbce9e1d3ff4b0a3dcddadb`，并将四个发布包版本保持为 `1.47.0`。
+当前目标事实基线为 `baseline` compatibility commit `f427c83545c78321219f45a355b34343cf6d8218`，它在直接合并
+OpenHands upstream `5b36cacccc2bbe6f8fbce9e1d3ff4b0a3dcddadb` 的 baseline 上修复了固定 ACP schema 兼容性，并将四个发布包版本保持为 `1.47.0`。
 此前完成记录中的旧版本号继续表示当时实际验收的历史基线，不做追溯改写。
 
 ## 2. 最终目标
@@ -138,6 +138,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-517 | FlowWeave 尚未将 OpenHands 原生 Conversation Runtime 状态路由纳入受治理恢复决策 | DONE | 在已冻结的 `baseline` source/input 之上，接入 `conversation_runtime_routes_v1`、`GET /api/conversations/{id}/runtime` 与 `POST /api/conversations/{id}/runtime/reprovision` 的正式状态契约；优先读取原生状态，并将非 `available`（含 `missing`、`ownership_lost`、`error`）映射为既有只读门禁。适配器仅暴露 reprovision 正式路由，不在生产恢复路径调用它；FlowWeave Runtime Provider 继续独占 generation replacement，不采用上游 per-conversation Docker 生命周期，也不自行推断可恢复性。 |
 | FR-518 | 原生上下文压缩在 512k 边界才触发，压缩失败缺少安全、可行动的原因 | DONE | 新会话和新 Fork 将 OpenHands 原生 `LLMSummarizingCondenser.max_tokens` 冻结为 384,000（512,000 的 75%），保留原生 condense 生命周期；仅对正式 `NoCondensationAvailableException` 投影脱敏结构化压缩失败原因，并在会话工作过程呈现可展开终态，不重试或伪装成模型重连。既有会话保持其已持久化的原生阈值。 |
 | FR-519 | 新建会话、Fork 与恢复路径冻结了不同的事件压缩阈值，Fork 可退回 10,000 | DONE | 将原生 `LLMSummarizingCondenser.max_size` 收敛为共享的 500，覆盖 Agent Workspace 新建、Fork、摘要器凭据恢复及 FlowNode Fork；不在线改写既有 Conversation 的持久化 condenser。 |
+| FR-520 | 最新 baseline 的 ACP 代码引用了 1.47 固定 schema 中不存在的 `AcpMcpServer`，导致 Runtime image contract build 失败 | DONE | 在隔离 baseline 中移除不可用的 ACP-only 类型分支，保留固定 schema 已支持的 HTTP、SSE 与 stdio MCP transports；不更新依赖、lockfile、镜像基础 tag 或四个 OpenHands 包版本。FlowWeave source lock、provenance、Runtime Docker build identity 与 contract identity 已原子切换到新 compatibility commit。 |
 
 ### Agent 首屏 Runtime 读取隔离（2026-09-24）
 
@@ -6885,6 +6886,7 @@ FlowWeave 本地累加后猜测压缩边界。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-24 | FR-520 | 隔离 baseline ACP adapter `py_compile`、Ruff 与 whitespace；新不可变归档 SHA-256／布局、source lock/provenance 身份与 1.47.0 元数据核对；受影响 FlowWeave `py_compile`、Ruff format/check、Runtime contract pytest（11 passed）、`git diff --check` 与任务状态唯一性 | PASS（静态／定向）：`f427c83545c78321219f45a355b34343cf6d8218` 在 merged baseline 上仅移除 1.47 固定 ACP schema 不提供的 `AcpMcpServer` 类型分支；HTTP、SSE 与 stdio ACP MCP transport 不变。归档 SHA-256 为 `af018ee81c38f2eafe44bc6c3a025ae0b2bdda32fd4ee3a2990c2e93a9097c9b`，四包仍均为 `1.47.0`，lockfile 和基础 image tag 未变。架构 pytest 被本机 Docker socket 缺失的全局 Testcontainers fixture 阻断，未进入断言且未记为通过；真实 image contract probe 留待远端 commit-bound build。无 `CURRENT`。 |
 | 2026-09-24 | FR-519 | 受影响 Python `py_compile`、Ruff format/check、共享常量直接断言、OpenHands 原生压缩投影定向 pytest（5 passed）、`git diff --check` 与任务状态唯一性；Agent／FlowNode 创建与 Fork 数据库回归保留为定向目标 | PASS（静态／定向）：移除 Agent Workspace 私有 `10,000` 事件阈值，所有新建、Fork 和恢复 spec 都从共享 `CONDENSER_MAX_EVENTS=500` 读取；新值只在创建时冻结，既有 Conversation 不被在线改写。数据库回归仍需 Docker/Testcontainers，当前主机无 Docker socket，未在本切片启动。未修改 OpenHands、数据库、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-24 | FR-518 | 固定 OpenHands 1.47 condenser 行为取证；受影响 Python `py_compile`、Ruff format/check；原生错误投影定向 pytest（5 passed）；Web TypeScript typecheck、受影响 ESLint、`git diff --check` 与任务状态唯一性；Agent／FlowNode 数据库回归尝试 | PASS（静态／定向）：新建会话和新 Fork 的原生 `max_tokens` 冻结为 384,000，保留既有会话已持久化阈值；正式 `NoCondensationAvailableException` 仅投影 `no_eligible_events`、`insufficient_progress`、`summary_model_failed` 或 `unknown`，且不回传原始摘要器详情、私有 URL 或凭据。会话工作过程以可展开“上下文压缩未完成，本轮已停止”显示该终态，不伪装为模型重连。数据库回归在 fixture 初始化时因本机 Docker socket 不可用而阻断，未进入断言且未记为通过。未修改 OpenHands、数据库、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-24 | FR-517 | baseline 源码路由／capability 静态取证；受影响 Python `py_compile`、Ruff format/check；Conversation Runtime 合同定向 pytest（11 passed）；OpenHands adapter 定向 pytest（10 passed）；`git diff --check` 与任务状态唯一性 | PASS（静态／定向）：合同要求 `conversation_runtime_routes_v1` 及两条正式 Conversation Runtime HTTP 路由；缺失 capability 会在启动合同校验中失败。适配器按 generation-specific ServerInfo 发现能力，正式状态非 `available` 时只锁定写入，既有事件／历史读取不改；`available` 继续读取原生 execution state。源码取证确认 baseline 提供 GET runtime、POST reprovision 与 capability。未构建镜像、未运行 image contract probe、未生成新 image digest、未部署；未调用上游 reprovision，未引入 per-conversation Docker 生命周期。无 `CURRENT`，等待下一独立切片定义。 |
