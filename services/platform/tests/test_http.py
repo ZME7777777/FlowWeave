@@ -62,7 +62,11 @@ async def test_run_blocking_keeps_cancelled_thread_counted_until_it_exits() -> N
             blocking_control_executor=control_executor,
             blocking_control_slots=asyncio.Semaphore(1),
             database=_Database(),
-            settings=SimpleNamespace(blocking_pool_size=1, history_read_pool_size=1),
+            settings=SimpleNamespace(
+                blocking_pool_size=1,
+                blocking_pool_timeout_seconds=0.05,
+                history_read_pool_size=1,
+            ),
         )
         request = asyncio.create_task(run_blocking(container, blocked))
         for _ in range(100):
@@ -102,6 +106,50 @@ async def test_run_blocking_keeps_cancelled_thread_counted_until_it_exits() -> N
 
 
 @pytest.mark.asyncio
+async def test_run_blocking_waits_for_configured_runtime_read_budget() -> None:
+    started = threading.Event()
+    release = threading.Event()
+
+    def blocked(_session: _Session) -> str:
+        started.set()
+        assert release.wait(timeout=2)
+        return "released"
+
+    with (
+        ThreadPoolExecutor(max_workers=1) as executor,
+        ThreadPoolExecutor(max_workers=1) as control_executor,
+    ):
+        container = SimpleNamespace(
+            blocking_executor=executor,
+            blocking_io_slots=asyncio.Semaphore(1),
+            history_read_executor=executor,
+            history_read_slots=asyncio.Semaphore(1),
+            blocking_control_executor=control_executor,
+            blocking_control_slots=asyncio.Semaphore(1),
+            database=_Database(),
+            settings=SimpleNamespace(
+                blocking_pool_size=1,
+                # Deliberately longer than the former fixed 250ms deadline.
+                blocking_pool_timeout_seconds=0.4,
+                history_read_pool_size=1,
+            ),
+        )
+        first = asyncio.create_task(run_blocking(container, blocked))
+        for _ in range(100):
+            if started.is_set():
+                break
+            await asyncio.sleep(0.001)
+        assert started.is_set()
+
+        waiting = asyncio.create_task(run_blocking(container, lambda _session: "queued"))
+        await asyncio.sleep(0.3)
+        assert not waiting.done()
+        release.set()
+        assert await first == "released"
+        assert await waiting == "queued"
+
+
+@pytest.mark.asyncio
 async def test_history_reads_do_not_saturate_interactive_runtime_lane() -> None:
     history_started = threading.Event()
     history_release = threading.Event()
@@ -124,7 +172,11 @@ async def test_history_reads_do_not_saturate_interactive_runtime_lane() -> None:
             blocking_control_executor=control_executor,
             blocking_control_slots=asyncio.Semaphore(1),
             database=_Database(),
-            settings=SimpleNamespace(blocking_pool_size=1, history_read_pool_size=1),
+            settings=SimpleNamespace(
+                blocking_pool_size=1,
+                blocking_pool_timeout_seconds=0.05,
+                history_read_pool_size=1,
+            ),
         )
         history_task = asyncio.create_task(run_blocking_history(container, history_read))
         for _ in range(100):

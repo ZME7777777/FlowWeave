@@ -176,7 +176,14 @@ async def _run_blocking_lane(
     active_limit: int,
 ) -> T:
     try:
-        await asyncio.wait_for(slots.acquire(), timeout=0.25)
+        # Runtime reads are deliberately bounded, but ordinary concurrent
+        # hydration must be allowed to wait for the configured DB/Runtime
+        # budget.  A former fixed 250ms deadline bypassed
+        # BLOCKING_POOL_TIMEOUT_SECONDS and turned normal short reads into
+        # misleading 503 saturation responses.
+        await asyncio.wait_for(
+            slots.acquire(), timeout=container.settings.blocking_pool_timeout_seconds
+        )
     except TimeoutError as exc:
         logger.warning(
             "blocking Runtime %s pool saturated active_limit=%d",

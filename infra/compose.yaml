@@ -201,12 +201,12 @@ services:
     command: ["uvicorn", "flowweave.bootstrap.api:create_app", "--host", "0.0.0.0", "--port", "8080", "--factory", "--workers", "4"]
     environment:
       <<: [*platform-env, *docker-client-env]
-      # 4 workers × (4 async + 3 interactive + 1 history + 1 control) = 36.
-      # The guarded deployment target is 3 interactive reads per API worker.
+      # 4 workers × (4 async + 4 interactive + 1 history + 1 control) = 40.
+      # The guarded deployment target is 4 interactive reads per API worker.
       POOL_SIZE: ${API_POOL_SIZE:-4}
       POOL_MAX_OVERFLOW: 0
       DATABASE_POOL_TIMEOUT_SECONDS: 2
-      BLOCKING_POOL_SIZE: ${API_BLOCKING_POOL_SIZE:-3}
+      BLOCKING_POOL_SIZE: ${API_BLOCKING_POOL_SIZE:-4}
       HISTORY_READ_POOL_SIZE: ${API_HISTORY_READ_POOL_SIZE:-1}
       BLOCKING_POOL_TIMEOUT_SECONDS: 2
       DOCKER_CONTROLLER_API_KEY: ${DOCKER_CONTROLLER_API_KEY:?set a random API controller key with at least 32 characters}
