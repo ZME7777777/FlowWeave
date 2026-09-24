@@ -29,9 +29,9 @@ scripts/verify-remote-deploy.sh --config .local/remote-deploy.env \
 
 ## OpenHands 源码与镜像基线
 
-当前目标能力事实固定为 OpenHands 源码 commit `30cf5832e42c71c24daa82a1a4fd5d25eb70d1b9`（`v1.47.0-4-g30cf5832e`），只修改 FlowWeave。OpenHands 源码工作树保持只读；不得在当前 `FR-*` 主线中创建 fork、修改 OpenHands 源码或提前实施二开。
+当前目标能力事实固定为 OpenHands `baseline` merge commit `a5ae33a9477f657d7d32cb348190c77a326f25e7`（直接合并 upstream `5b36cacccc2bbe6f8fbce9e1d3ff4b0a3dcddadb`，四包发布版本保持 `1.47.0`）。OpenHands `baseline` 工作树保持只读；不得在当前 `FR-*` 主线修改 OpenHands 源码或创建新的 fork。
 
-- SDK 源码：`/Users/zhengmengen/WorkSpace/openhands/software-agent-sdk`
+- SDK 源码：`/Users/zhengmengen/WorkSpace/openhands/software-agent-sdk-total-tokens-1.47`（`baseline`）
 - 历史兼容基线：`v1.42.0` / `f09e03eac772290feeb51b7d7390ffaefeca1a09`
 - 固定包版本：`openhands-agent-server==1.47.0`、`openhands-sdk==1.47.0`、`openhands-tools==1.47.0`、`openhands-workspace==1.47.0`
 - 固定运行时镜像：`flowweave-openhands-runtime:1`
@@ -40,11 +40,11 @@ scripts/verify-remote-deploy.sh --config .local/remote-deploy.env \
 能力判断优先读取固定 commit，并只在当前切片确有需要时取证：
 
 ```bash
-git -C /Users/zhengmengen/WorkSpace/openhands/software-agent-sdk \
-  show 30cf5832e42c71c24daa82a1a4fd5d25eb70d1b9:<相对路径>
+git -C /Users/zhengmengen/WorkSpace/openhands/software-agent-sdk-total-tokens-1.47 \
+  show a5ae33a9477f657d7d32cb348190c77a326f25e7:<相对路径>
 
-git -C /Users/zhengmengen/WorkSpace/openhands/software-agent-sdk \
-  grep -n '<模式>' 30cf5832e42c71c24daa82a1a4fd5d25eb70d1b9 -- \
+git -C /Users/zhengmengen/WorkSpace/openhands/software-agent-sdk-total-tokens-1.47 \
+  grep -n '<模式>' a5ae33a9477f657d7d32cb348190c77a326f25e7 -- \
   openhands-agent-server openhands-sdk openhands-tools openhands-workspace
 ```
 

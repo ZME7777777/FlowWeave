@@ -145,9 +145,9 @@ from openhands.tools.task.impl import TaskExecutor
 from openhands.tools.task.manager import Task, TaskManager, TaskStatus
 
 EXPECTED_VERSION = "1.47.0"
-EXPECTED_UPSTREAM_BASE = "30cf5832e42c71c24daa82a1a4fd5d25eb70d1b9"
-EXPECTED_SOURCE_COMMIT = "4e130c408745934743bc9be5c4b18c830020957b"
-EXPECTED_SOURCE_ARCHIVE_SHA256 = "13a1812371687a4f57a4874cbb6b8cabe91fce041b1ba758affd5140ea4ee770"
+EXPECTED_UPSTREAM_BASE = "5b36cacccc2bbe6f8fbce9e1d3ff4b0a3dcddadb"
+EXPECTED_SOURCE_COMMIT = "a5ae33a9477f657d7d32cb348190c77a326f25e7"
+EXPECTED_SOURCE_ARCHIVE_SHA256 = "fb98f3e408236817df3b20dc7a012101ebc7cd3b0813554de4c5a57fb6ed2d8b"
 PACKAGES = (
     "openhands-agent-server",
     "openhands-sdk",

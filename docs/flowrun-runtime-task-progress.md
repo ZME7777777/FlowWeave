@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`IN PROGRESS`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`NONE`
+> 下一可执行切片：`FR-517`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -16,9 +16,9 @@
 “当前行为”的审计对象；是否保留必须重新按照本设计、固定 OpenHands 源码和真实运行证据判断。
 
 除 FR-493、FR-504 经用户单独授权并已在隔离工作树完成的最小 OpenHands fork 外，本任务只修改 FlowWeave。
-当前目标事实基线为 fork commit `4e130c408745934743bc9be5c4b18c830020957b`，其上游基线为
-`30cf5832e42c71c24daa82a1a4fd5d25eb70d1b9`，四个包版本仍固定为 `1.47.0`。此前完成记录中的旧版本号
-继续表示当时实际验收的历史基线，不做追溯改写。
+当前目标事实基线为 `baseline` fork commit `a5ae33a9477f657d7d32cb348190c77a326f25e7`，它直接合并了
+OpenHands upstream `5b36cacccc2bbe6f8fbce9e1d3ff4b0a3dcddadb`，并将四个发布包版本保持为 `1.47.0`。
+此前完成记录中的旧版本号继续表示当时实际验收的历史基线，不做追溯改写。
 
 ## 2. 最终目标
 
@@ -134,6 +134,8 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | 切片 | 风险 | 状态 | 范围 |
 | --- | --- | --- | --- |
 | FR-515 | 1.47 Runtime 丢弃孤立 Observation、跨 Responses 输出项混合 delta，或在 Secret masking 时损坏 opaque Base64 Tool payload | DONE | 在隔离 worktree 的 `codex/openhands-1.47-backports` 分支，从已冻结 `5efe25b00698d39bc615b9dbe759c793e0617a13` 依次以 `-x` 移植 `dd8d9f6f3a280ab01a00fb7a3dc9ca791a372674`、`bf0c72c4164464e70347147afe7ea9476131080a` 和 `e8b1b26fdd828dc8421993fac1241999d14d1d93`，对应 fork commits 为 `f725a46a20abe65aee44e484b37c383f1d9a2d0d`、`a3b33a3863ebdc116556b5ba4efbe2d164d04e9c` 与 `d4b16bc434a42315f8f9ce1b56d550e92f716f38`。上游定向回归 `46 passed`；四个包仍均为 `1.47.0`，工作树及 whitespace 检查通过。尚未构建或发布该源码对应镜像，现有 FlowWeave contract probe 严格锁定已发布的 `4e130c…` provenance，故本切片不将 Runtime contract probe 记为已通过；它必须在 provenance／镜像切片中针对新 digest 执行。 |
+| FR-516 | 最新 OpenHands 功能已合并到 `baseline`，但 FlowWeave Runtime 构建输入仍指向旧 fork 来源，导致构建身份不可追溯 | DONE | 已以不可变 `baseline` merge commit `a5ae33a9477f657d7d32cb348190c77a326f25e7` 创建本地归档，SHA-256 为 `fb98f3e408236817df3b20dc7a012101ebc7cd3b0813554de4c5a57fb6ed2d8b`；source lock、provenance、Runtime image build identity、共享身份与架构断言均指向该来源，上游合并父提交为 `5b36cacccc2bbe6f8fbce9e1d3ff4b0a3dcddadb`。归档内四个包元数据仍均为 `1.47.0`。完成归档/锁定一致性、Python 编译、Ruff、无数据库 fixture 的静态架构断言与 whitespace 检查；pytest 目标受本机无 Docker socket 的全局 Testcontainers fixture 阻断，未记为通过。未构建镜像、未运行容器 contract probe、未修改 Runtime Provider 或 Conversation 路由，故未伪造新的 image digest 或 Runtime Manifest 验证结论。 |
+| FR-517 | FlowWeave 尚未将 OpenHands 原生 Conversation Runtime 状态路由纳入受治理恢复决策 | READY | 在已冻结的 `baseline` source/input 之上，仅接入 `conversation_runtime_routes_v1`、`GET /api/conversations/{id}/runtime` 与 `POST /api/conversations/{id}/runtime/reprovision` 的正式状态契约；优先读取原生状态，并将 `missing`、`ownership_lost`、`error` 映射到既有受控恢复／只读路径。不得调用或采用上游 per-conversation Docker 生命周期，不得自行猜测可恢复性。 |
 
 ### FlowWeave Docker 网络收敛（2026-09-12）
 
@@ -6875,6 +6877,7 @@ FlowWeave 本地累加后猜测压缩边界。
 ## 8. 验证日志
 
 | 日期 | 切片 | 验证 | 结果 |
+| 2026-09-24 | FR-516 | `baseline` merge parent/版本元数据核对；本地不可变归档 SHA-256、source lock/provenance 一致性与包清单核对；受影响 Python `py_compile`、Ruff format/check；无数据库 fixture 的来源架构断言；`git diff --check` | PASS（静态／来源冻结）：固定 FlowWeave 输入为 `a5ae33a9477f657d7d32cb348190c77a326f25e7`，其 direct upstream merge parent 为 `5b36cacccc2bbe6f8fbce9e1d3ff4b0a3dcddadb`，归档 SHA-256 为 `fb98f3e408236817df3b20dc7a012101ebc7cd3b0813554de4c5a57fb6ed2d8b`；归档内四个受治理包均声明 `1.47.0`。Docker Runtime 构建输入、provenance、contract expected identity、共享身份与静态架构断言一致。目标 pytest 被全局 Testcontainers PostgreSQL fixture 在本机 Docker socket 缺失时阻断、未进入断言且未记为通过；未构建镜像、未运行 image contract probe、未生成新 image digest、未部署。无 `CURRENT`，FR-517 为下一切片。 |
 | 2026-09-21 | FR-504 | 受影响 Python Ruff format/check、`py_compile`；OpenHands 会话上下文定向 pytest（16 passed）与完整文件尝试；源码身份架构断言无容器直接执行；Web TypeScript typecheck 与受影响文件 ESLint；产品流定向 Playwright 尝试；source lock/provenance JSON、不可变归档 SHA-256、四包版本、远端 baseline ref、Alembic head、`git diff --check` 与任务状态唯一性 | PASS（静态／定向）：OpenHands fork commit 为 `5efe25b00698d39bc615b9dbe759c793e0617a13`，上游基线仍为 `30cf5832e42c71c24daa82a1a4fd5d25eb70d1b9`，四包版本保持 `1.47.0`，归档 SHA-256 为 `ac664389c402a5f6334798164b6a16ede8542cdc4012b9db9cc2470a24f5dd9d`；远端 `baseline` 与功能分支均指向该 commit。FlowWeave 只投影正式当前 View `event_count`，旧 Runtime 缺字段保持未知且不影响精确 Token。完整 `test_openhands.py` 有 179 项通过，随后仅在与本切片无关的既有 `secret_hint` fixture 失败。架构 pytest 被全局 Testcontainers fixture 在本机无 Docker socket 时提前阻断，相同源码身份断言无容器直接执行通过。产品流 Playwright 在本次新增事件断言前，于既有“暂停当前 Agent”断言（`product-flow.spec.ts:957`）超时，未记为浏览器回归通过。唯一 Alembic head 为 `0121_credential_sync_owner`；无迁移、无远端部署。 |
 | 2026-09-21 | FR-501 | 受影响 Python Ruff format/check、`py_compile`；认证同步 schema guard 纯逻辑回归（4 passed）；Alembic head、`git diff --check` 与任务状态唯一性 | PASS（静态／纯逻辑）：追加迁移从 Conversation binding 回填 credential sync 的 owner，随后收紧为非空并建立索引；三条原生会话创建路径均在 Runtime 创建前检查完整 schema。纯逻辑断言覆盖 PostgreSQL 缺列／缺表、非 schema 数据库异常及本次仅缺 credential sync `owner_user_id` 的情形。定向 pytest 在全局 Testcontainers fixture 初始化时因本机 Docker socket 缺失受阻，未进入断言且未记为通过。唯一 Alembic head 为 `0121_credential_sync_owner`；未修改 OpenHands、Runtime Provider、Docker 或远端环境。 |
 | 2026-09-21 | FR-503 | Web `tsc -b`、受影响页面与 API 的 ESLint、受影响 Python `py_compile`、Alembic head、`git diff --check`；逐步配置导入工作台回归 | PASS（静态／浏览器）：逐步新增、导入、记录选中、起始节点聚焦、右侧栏展示及配置下载／复制／拷贝均与连续运行复用同一交互投影；服务端定向 pytest 在全局 Docker fixture 初始化阶段因本机 Docker socket 缺失受阻，未进入业务断言；新增 Playwright 覆盖导入后记录、起始节点和右侧栏选中状态。唯一 Alembic head 为 `0120_agent_credential_sync`；未修改 OpenHands、Runtime Provider、Docker 或远端环境。 |
