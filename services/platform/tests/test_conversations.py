@@ -2311,6 +2311,49 @@ def test_node_session_list_orders_recent_activity_first(
         assert second["next_cursor"] is None
 
 
+def test_node_session_page_never_reads_native_runtime_state(
+    db_session_factory: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with db_session_factory() as db:
+        flow_run_id, runtime_session_id, attempt_id = _node_session_context(db)
+        attempt = db.get(NodeAttempt, attempt_id)
+        assert attempt is not None
+        binding = AgentConversationBinding(
+            workspace_id=None,
+            host_kind="FLOW_NODE",
+            host_id=flow_run_id,
+            conversation_scope_id=attempt_id,
+            flow_run_id=flow_run_id,
+            node_run_id=attempt.node_run_id,
+            node_attempt_id=attempt_id,
+            runtime_session_id=runtime_session_id,
+            working_directory=attempt.workspace_ref,
+            openhands_conversation_id="no-runtime-list-read",
+            display_title="不读取 Runtime",
+            lifecycle="ACTIVE",
+            create_idempotency_key="no-runtime-list-read",
+        )
+        db.add(binding)
+        db.flush()
+        monkeypatch.setattr(
+            conversation_service.agent_sessions,
+            "resolve_flow_node_session_host",
+            lambda *_args, **_kwargs: SimpleNamespace(),
+        )
+        monkeypatch.setattr(
+            conversation_service,
+            "get_runtime",
+            lambda: pytest.fail("node session list must not call the Runtime"),
+        )
+
+        page = conversation_service.list_node_session_page(
+            db, flow_run_id=flow_run_id, attempt_id=attempt_id
+        )
+
+        assert [item["id"] for item in page["items"]] == [binding.id]
+        assert page["items"][0]["execution_status"] == "unknown"
+
+
 def test_node_session_unread_state_persists_in_conversation_projection(
     db_session_factory: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -611,8 +611,16 @@ def _decode_node_session_page_cursor(cursor: str) -> tuple[datetime, datetime, s
 
 
 def _node_session_page_dicts(
-    db: Session, items: list[AgentConversationBinding], running_conversation_ids: set[str]
+    db: Session, items: list[AgentConversationBinding]
 ) -> list[dict[str, Any]]:
+    """Build a bounded node-session navigation projection.
+
+    Navigation is a control-plane operation.  It must not synchronously search
+    OpenHands for running Conversations while the REST endpoint is executing on
+    an ASGI worker: a degraded Runtime would otherwise block unrelated page
+    loads.  The selected Conversation obtains its exact readiness from the
+    isolated Runtime-read endpoint; other rows remain explicitly unknown.
+    """
     usage_by_binding = usage_projection.for_scope(
         db, field="binding_id", ids=(item.id for item in items)
     )
@@ -670,9 +678,7 @@ def _node_session_page_dicts(
             # session detail. Keep the detached Fork's independent write and
             # delete permission visible there as well.
             "write_available": _node_session_write_available(db, item),
-            "execution_status": (
-                "running" if item.openhands_conversation_id in running_conversation_ids else "idle"
-            ),
+            "execution_status": "unknown",
             "unread": item.unread,
             "lifecycle": item.lifecycle,
             "created_at": item.created_at.isoformat(),
@@ -861,16 +867,8 @@ def list_node_session_page(
     )
     has_more = len(items) > limit
     page_items = items[:limit]
-    running_conversation_ids: set[str] = set()
-    if page_items:
-        try:
-            running_conversation_ids = get_runtime().running_conversation_ids(
-                _handle(db, page_items[0].id)
-            )
-        except (AttributeError, DomainError):
-            pass
     return {
-        "items": _node_session_page_dicts(db, page_items, running_conversation_ids),
+        "items": _node_session_page_dicts(db, page_items),
         "next_cursor": _node_session_page_cursor(page_items[-1])
         if has_more and page_items
         else None,

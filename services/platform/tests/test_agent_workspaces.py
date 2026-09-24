@@ -3119,7 +3119,7 @@ def test_agent_workspace_unread_state_persists_in_conversation_projection(
         assert conversations.get_conversation(db, workspace.id, created["id"])["unread"] is False
 
 
-def test_agent_workspace_conversation_page_uses_exact_native_terminal_status(
+def test_agent_workspace_conversation_page_never_reads_native_runtime_state(
     settings, db_session_factory, monkeypatch
 ):
     monkeypatch.setattr(
@@ -3134,17 +3134,14 @@ def test_agent_workspace_conversation_page_uses_exact_native_terminal_status(
         ),
     )
 
-    class StaleSearchRuntime(MockRuntime):
-        def running_conversation_ids(self, _handle):
-            raise AssertionError("list status must not use the stale search projection")
-
+    class RuntimeThatMustNotBeRead(MockRuntime):
         def input_readiness(self, _handle):
-            return RuntimeInputReadiness(ready=True, execution_status="error")
+            raise AssertionError("conversation list must not call the Runtime")
 
     with (
         settings_context(settings),
         db_session_factory() as db,
-        runtime_context(StaleSearchRuntime()),
+        runtime_context(RuntimeThatMustNotBeRead()),
     ):
         workspace = _ready_workspace_for_conversation(db)
         created = conversations.create_conversation(
@@ -3154,7 +3151,7 @@ def test_agent_workspace_conversation_page_uses_exact_native_terminal_status(
         page = conversations.list_conversation_page(db, workspace.id)
 
         assert [item["id"] for item in page["items"]] == [created["id"]]
-        assert page["items"][0]["execution_status"] == "error"
+        assert page["items"][0]["execution_status"] == "unknown"
 
 
 def test_agent_workspace_conversation_dtos_project_runtime_write_availability(
