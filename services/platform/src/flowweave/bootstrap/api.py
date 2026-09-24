@@ -17,6 +17,7 @@ from sqlalchemy.exc import IntegrityError
 
 from flowweave.bootstrap.container import Container, build_container
 from flowweave.bootstrap.settings import Settings
+from flowweave.modules.admin_control.router import router as admin_control_router
 from flowweave.modules.agent_sessions.presentation.router import router as agent_sessions_router
 from flowweave.modules.agent_workspaces.presentation.router import router as agent_workspaces_router
 from flowweave.modules.catalog.presentation.router import router as catalog_router
@@ -153,12 +154,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     await auth_session.commit()
                 else:
                     await auth_session.rollback()
-        is_public = request.url.path.startswith("/health") or request.url.path in {
-            "/api/v1/auth/login",
-            "/api/v1/auth/logout",
-            "/api/v1/auth/me",
-            "/metrics",
-        }
+        is_public = (
+            request.url.path.startswith("/health")
+            or request.url.path.startswith("/internal/admin-control/")
+            or request.url.path
+            in {
+                "/api/v1/auth/login",
+                "/api/v1/auth/logout",
+                "/api/v1/auth/me",
+                "/metrics",
+            }
+        )
         if principal is None and not is_public:
             return JSONResponse(
                 status_code=401,
@@ -333,6 +339,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.add_api_route("/health", health, methods=["GET"])
     app.add_api_route("/metrics", metrics, methods=["GET"])
     app.include_router(users_router, prefix="/api/v1")
+    app.include_router(admin_control_router)
 
     app.include_router(
         agent_workspaces_router,

@@ -1,0 +1,226 @@
+import { Activity, Boxes, Database, MessageSquare, RefreshCw, RotateCw, Server, ShieldCheck, X } from 'lucide-react';
+import { useCallback, useEffect, useState } from 'react';
+import { adminApi, type AdminOperation, type Alert, type Conversation, type MetricHistoryPoint, type Overview, type Runtime, type Usage } from './api';
+
+type Tab = 'overview' | 'alerts' | 'services' | 'runtimes' | 'conversations' | 'operations';
+
+type AdminData = {
+  overview: Overview;
+  runtimes: Runtime[];
+  conversations: Conversation[];
+  operations: AdminOperation[];
+  alerts: Alert[];
+  alertSummary: { critical: number; warning: number };
+};
+
+const bytes = (value: number | undefined) => {
+  if (value === undefined) return '—';
+  if (value < 1024 ** 2) return `${(value / 1024).toFixed(1)} MiB`;
+  if (value < 1024 ** 3) return `${(value / 1024 ** 2).toFixed(1)} MiB`;
+  return `${(value / 1024 ** 3).toFixed(2)} GiB`;
+};
+
+const compact = (value: string | null | undefined) => value ? `${value.slice(0, 8)}…` : '—';
+
+function ResourceUsage({ usage }: { usage: Usage | null }) {
+  if (!usage) return <span className="muted">暂不可用</span>;
+  return <span className="usage"><b>{usage.cpu_usage_percent.toFixed(1)}%</b><small>CPU</small><b>{bytes(usage.memory_usage_bytes)}</b><small>内存</small></span>;
+}
+
+function MetricCount({ label, values }: { label: string; values: Array<{ value: string }> | undefined }) {
+  const total = (values ?? []).reduce((sum, item) => sum + Number(item.value), 0);
+  return <article className="metric-card"><span>{label}</span><b>{Number.isFinite(total) ? total.toLocaleString('zh-CN') : '—'}</b></article>;
+}
+
+function MetricTrend({ points, label, format }: { points: MetricHistoryPoint[]; label: string; format: (value: number) => string }) {
+  if (!points.length) return <p className="empty">尚无历史样本；采样服务启动后将显示最近 24 小时趋势。</p>;
+  const width = 720;
+  const height = 180;
+  const values = points.map(point => point.value);
+  const minimum = Math.min(...values);
+  const maximum = Math.max(...values);
+  const range = maximum - minimum || 1;
+  const polyline = points.map((point, index) => {
+    const x = points.length === 1 ? width / 2 : index / (points.length - 1) * width;
+    const y = height - 18 - (point.value - minimum) / range * (height - 36);
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(' ');
+  return <section className="trend"><header><b>{label}</b><span>{format(minimum)} – {format(maximum)}</span></header><svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`${label}趋势`}><polyline points={polyline} fill="none" stroke="#6aa8ff" strokeWidth="3" vectorEffect="non-scaling-stroke"/></svg><footer><span>{new Date(points[0].observed_at).toLocaleTimeString()}</span><span>{new Date(points.at(-1)!.observed_at).toLocaleTimeString()}</span></footer></section>;
+}
+
+function HistoryDialog({ scope, subject, title, onClose }: { scope: 'SERVICE' | 'RUNTIME'; subject: string; title: string; onClose: () => void }) {
+  const [cpu, setCpu] = useState<MetricHistoryPoint[]>();
+  const [memory, setMemory] = useState<MetricHistoryPoint[]>();
+  const [error, setError] = useState('');
+  useEffect(() => {
+    let active = true;
+    void Promise.all([
+      adminApi.metricHistory(scope, subject, 'cpu_usage_percent'),
+      adminApi.metricHistory(scope, subject, 'memory_usage_bytes'),
+    ]).then(([cpuHistory, memoryHistory]) => {
+      if (!active) return;
+      setCpu(cpuHistory.items);
+      setMemory(memoryHistory.items);
+    }).catch(reason => {
+      if (active) setError(reason instanceof Error ? reason.message : '历史指标读取失败。');
+    });
+    return () => { active = false; };
+  }, [scope, subject]);
+  return <div className="modal-backdrop" role="presentation"><section className="history-dialog" role="dialog" aria-modal="true" aria-labelledby="history-title"><header><div><span className="eyebrow">BOUNDED METRIC HISTORY</span><h2 id="history-title">{title} 趋势</h2></div><button className="icon-button" onClick={onClose} aria-label="关闭"><X size={18}/></button></header><p>显示最近 24 小时的分钟聚合样本。历史仅保存资源数值，不保存容器日志、会话正文或凭据。</p>{error ? <p className="operation-warning">{error}</p> : !cpu || !memory ? <section className="loading"><Activity className="spin" size={22}/><p>读取历史样本…</p></section> : <><MetricTrend points={cpu} label="CPU 使用率" format={value => `${value.toFixed(1)}%`}/><MetricTrend points={memory} label="内存使用量" format={bytes}/></>}<footer><button className="secondary" onClick={onClose}>关闭</button></footer></section></div>;
+}
+
+
+function AlertLifecycleDialog({ alert, onClose, onSubmitted }: { alert: Alert; onClose: () => void; onSubmitted: () => Promise<void> }) {
+  const [action, setAction] = useState<'ACKNOWLEDGE' | 'SILENCE'>('ACKNOWLEDGE');
+  const [reason, setReason] = useState('');
+  const [minutes, setMinutes] = useState(60);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const submit = async () => {
+    if (reason.trim().length < 10) return;
+    setBusy(true); setError('');
+    try {
+      await adminApi.updateAlertLifecycle({ alert_key: alert.key, action, reason: reason.trim(), ...(action === 'SILENCE' ? { silence_minutes: minutes } : {}) });
+      await onSubmitted(); onClose();
+    } catch (failure) { setError(failure instanceof Error ? failure.message : '告警状态更新失败。'); }
+    finally { setBusy(false); }
+  };
+  return <div className="modal-backdrop" role="presentation"><section className="replacement-dialog" role="dialog" aria-modal="true" aria-labelledby="alert-lifecycle-title"><header><div><span className="eyebrow">ALERT LIFECYCLE</span><h2 id="alert-lifecycle-title">确认或静默告警</h2></div><button className="icon-button" onClick={onClose} aria-label="关闭"><X size={18}/></button></header><p><b>{alert.title}</b><br/><small>{alert.key}</small></p><label>操作<select value={action} onChange={event => setAction(event.target.value as 'ACKNOWLEDGE' | 'SILENCE')}><option value="ACKNOWLEDGE">确认：已知悉，继续显示</option><option value="SILENCE">静默：在限定时间内隐藏</option></select></label>{action === 'SILENCE' && <label>静默时长<select value={minutes} onChange={event => setMinutes(Number(event.target.value))}><option value={30}>30 分钟</option><option value={60}>1 小时</option><option value={240}>4 小时</option><option value={1440}>24 小时</option></select></label>}<label>处理说明<textarea value={reason} minLength={10} maxLength={500} placeholder="说明已确认的原因或静默依据。" onChange={event => setReason(event.target.value)}/><small>至少 10 个字符；操作人、原因与静默截止时间会进入追加式审计。</small></label>{error && <p className="operation-warning">{error}</p>}<footer><button className="secondary" onClick={onClose} disabled={busy}>取消</button><button className="danger" disabled={busy || reason.trim().length < 10} onClick={() => void submit()}>{busy ? '提交中…' : action === 'SILENCE' ? '确认静默' : '确认告警'}</button></footer></section></div>;
+}
+
+function RuntimeReplacementDialog({ runtime, onClose, onSubmitted }: {
+  runtime: Runtime;
+  onClose: () => void;
+  onSubmitted: () => Promise<void>;
+}) {
+  const [reason, setReason] = useState('');
+  const [confirmed, setConfirmed] = useState(false);
+  const [idempotencyKey] = useState(() => crypto.randomUUID());
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const eligible = runtime.runtime_kind === 'FLOW_RUN'
+    && runtime.active_generation !== null
+    && runtime.status !== 'RECONNECTING';
+  const submit = async () => {
+    if (!eligible || runtime.active_generation === null || reason.trim().length < 10 || !confirmed) return;
+    setBusy(true);
+    setError('');
+    try {
+      await adminApi.replaceRuntime({
+        flow_run_id: runtime.owner_id,
+        runtime_session_id: runtime.runtime_session_id,
+        expected_generation: runtime.active_generation,
+        expected_session_row_version: runtime.row_version,
+        reason: reason.trim(),
+        idempotency_key: idempotencyKey,
+      });
+      await onSubmitted();
+      onClose();
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : '替换请求提交失败。');
+    } finally {
+      setBusy(false);
+    }
+  };
+  return <div className="modal-backdrop" role="presentation"><section className="replacement-dialog" role="dialog" aria-modal="true" aria-labelledby="replace-title"><header><div><span className="eyebrow">CONTROLLED RUNTIME OPERATION</span><h2 id="replace-title">替换 Runtime generation</h2></div><button className="icon-button" onClick={onClose} aria-label="关闭"><X size={18}/></button></header><p>该操作会冻结当前 generation 的新写入，并由既有 FlowWeave Runtime replacement 流程恢复原有 OpenHands 会话和 Workspace；不会执行 Docker restart。</p><dl><dt>Runtime Session</dt><dd><code>{runtime.runtime_session_id}</code></dd><dt>当前 generation</dt><dd>{runtime.active_generation ?? '—'}</dd><dt>当前状态</dt><dd>{runtime.status}</dd></dl>{!eligible && <p className="operation-warning">仅可替换当前可操作的 FlowRun Runtime；此 Runtime 的状态不允许提交替换。</p>}<label>替换原因<textarea value={reason} minLength={10} maxLength={500} placeholder="例如：OpenHands 健康探针持续失败，需恢复会话服务。" onChange={event => setReason(event.target.value)}/><small>至少 10 个字符；原因会进入不可变管理操作审计。</small></label><label className="confirm-check"><input type="checkbox" checked={confirmed} onChange={event => setConfirmed(event.target.checked)}/><span>我确认将替换当前 generation，并理解运行中会话将短暂进入恢复状态。</span></label>{error && <p className="operation-warning">{error}</p>}<footer><button className="secondary" onClick={onClose} disabled={busy}>取消</button><button className="danger" disabled={!eligible || !confirmed || reason.trim().length < 10 || busy} onClick={() => void submit()}>{busy ? '提交中…' : '确认替换 generation'}</button></footer></section></div>;
+}
+
+
+export function App() {
+  const [tab, setTab] = useState<Tab>('overview');
+  const [data, setData] = useState<AdminData>();
+  const [historyTarget, setHistoryTarget] = useState<{ scope: 'SERVICE' | 'RUNTIME'; subject: string; title: string }>();
+  const [alertTarget, setAlertTarget] = useState<Alert>();
+  const [replacementTarget, setReplacementTarget] = useState<Runtime>();
+  const [operationAction, setOperationAction] = useState<'ALL' | AdminOperation['action']>('ALL');
+  const [operationActor, setOperationActor] = useState('');
+  const [operationTarget, setOperationTarget] = useState('');
+  const [runtimeFilter, setRuntimeFilter] = useState('');
+  const [conversationRuntimeFilter, setConversationRuntimeFilter] = useState('');
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [updatedAt, setUpdatedAt] = useState<Date>();
+
+  const refresh = useCallback(async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const [overview, alertResponse, runtimeResponse, conversationResponse, operationResponse] = await Promise.all([
+        adminApi.overview(),
+        adminApi.alerts(),
+        adminApi.runtimes(),
+        adminApi.conversations(),
+        adminApi.operations(),
+      ]);
+      setData({
+        overview,
+        runtimes: runtimeResponse.items,
+        conversations: conversationResponse.items,
+        operations: operationResponse.items,
+        alerts: alertResponse.items,
+        alertSummary: alertResponse.summary,
+      });
+      setUpdatedAt(new Date());
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '管理数据读取失败。');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { void refresh(); }, [refresh]);
+  useEffect(() => {
+    const timer = window.setInterval(() => { void refresh(); }, 15_000);
+    return () => window.clearInterval(timer);
+  }, [refresh]);
+
+  const services = data?.overview.container_observability.services ?? [];
+  const metrics = data?.overview.services;
+  const runtimeStates = data?.overview.database.runtime_states ?? [];
+  const taskStates = data?.overview.database.tasks ?? [];
+  const databaseStates = data?.overview.database.database_connections ?? [];
+  const visibleAlerts = (data?.alerts ?? []).filter(alert => {
+    const until = alert.lifecycle?.silenced_until;
+    return !until || new Date(until).getTime() <= Date.now();
+  });
+  const filteredOperations = (data?.operations ?? []).filter(operation =>
+    (operationAction === 'ALL' || operation.action === operationAction)
+    && operation.actor_username.toLocaleLowerCase().includes(operationActor.trim().toLocaleLowerCase())
+    && operation.target_id.toLocaleLowerCase().includes(operationTarget.trim().toLocaleLowerCase())
+  );
+  const filteredRuntimes = (data?.runtimes ?? []).filter(runtime =>
+    runtime.runtime_session_id.includes(runtimeFilter.trim())
+  );
+  const filteredConversations = (data?.conversations ?? []).filter(conversation =>
+    conversation.runtime_session_id.includes(conversationRuntimeFilter.trim())
+  );
+  const locateRuntime = (runtimeSessionId: string) => {
+    setRuntimeFilter(runtimeSessionId); setTab('runtimes');
+  };
+  const locateConversations = (runtimeSessionId: string) => {
+    setConversationRuntimeFilter(runtimeSessionId); setTab('conversations');
+  };
+  const locateOperations = (targetId: string) => {
+    setOperationTarget(targetId); setTab('operations');
+  };
+  const runtimeIdFromAlert = (key: string) => {
+    const match = /^runtime:([^:]+)/.exec(key);
+    return match?.[1];
+  };
+
+
+  const visibleContent = () => {
+    if (!data) return null;
+    if (tab === 'services') return <section className="table-panel"><header><div><span className="eyebrow">CONTROL PLANE</span><h2>服务与容器</h2></div><p>仅采集 Compose 服务的只读资源快照。</p></header><div className="table"><div className="table-head"><span>服务</span><span>状态</span><span>CPU / 内存</span><span>容器</span><span>镜像</span></div>{services.map(service => <div className="table-row" key={service.container_id}><span><b>{service.service}</b><small>{service.status || '—'}</small></span><span className={`state ${service.state.toLowerCase()}`}>{service.state}</span><ResourceUsage usage={service.usage}/><span><code>{compact(service.container_id)}</code></span><span><button className="history-button" onClick={() => setHistoryTarget({ scope: 'SERVICE', subject: service.service, title: service.service })}>趋势</button><small>{service.image}</small></span></div>)}{!services.length && <p className="empty">Runtime Provider 尚未返回 Compose 容器资源快照。</p>}</div></section>;
+    if (tab === 'runtimes') return <section className="table-panel"><header><div><span className="eyebrow">OPENHANDS EXECUTION</span><h2>Runtime 与容器</h2></div><p>Runtime Session 是管理身份；容器仅是可替换 generation 的载体。</p></header><div className="resource-filter"><input value={runtimeFilter} placeholder="按 Runtime Session 定位" onChange={event => setRuntimeFilter(event.target.value)}/>{runtimeFilter && <button className="secondary" onClick={() => setRuntimeFilter('')}>清除定位</button>}</div><div className="table wide"><div className="table-head runtime-head"><span>Runtime</span><span>状态</span><span>会话</span><span>容器资源</span><span>活动</span><span>诊断</span><span>操作</span></div>{filteredRuntimes.map(runtime => <div className="table-row runtime-head" key={runtime.runtime_session_id}><span><b>{runtime.runtime_kind}</b><small title={runtime.runtime_session_id}>Session {compact(runtime.runtime_session_id)} · Gen {runtime.active_generation ?? '—'}</small><small>Owner {compact(runtime.owner_id)}</small></span><span><b className={`state ${runtime.status.toLowerCase()}`}>{runtime.status}</b><small>{runtime.generation_state ?? '未分配'} · {runtime.observed_state ?? '—'}</small></span><span><b>{runtime.active_conversation_count} / {runtime.conversation_count}</b><small>活跃 / 关联</small></span><ResourceUsage usage={runtime.usage}/><span><code>{compact(runtime.container_id)}</code><small>{runtime.last_activity_at ? new Date(runtime.last_activity_at).toLocaleString() : '无活动记录'}</small></span><span><b>{runtime.failure_code || runtime.last_error_code || '正常'}</b><small>{runtime.failure_summary || runtime.last_error_detail || '无诊断错误'}</small></span><span><button className="history-button" onClick={() => setHistoryTarget({ scope: 'RUNTIME', subject: runtime.managed_sandbox_id || runtime.runtime_session_id, title: `Runtime ${compact(runtime.runtime_session_id)}` })}>趋势</button><button className="locator-button" onClick={() => locateConversations(runtime.runtime_session_id)}>会话</button><button className="locator-button" onClick={() => locateOperations(runtime.runtime_session_id)}>审计</button><button className="replace-button" disabled={runtime.runtime_kind !== 'FLOW_RUN' || runtime.active_generation === null || runtime.status === 'RECONNECTING'} onClick={() => setReplacementTarget(runtime)}><RotateCw size={14}/>替换</button></span></div>)}{!filteredRuntimes.length && <p className="empty">没有符合当前定位条件的 Runtime。</p>}</div></section>;
+    if (tab === 'alerts') return <section className="table-panel"><header><div><span className="eyebrow">LIVE HEALTH SIGNALS</span><h2>实时健康告警</h2></div><p>基于当前服务、容器、Runtime、数据库连接和任务积压快照计算；此处不发送外部通知。</p></header><div className="alert-summary"><b className="critical-count">{data.alertSummary.critical} 严重</b><b className="warning-count">{data.alertSummary.warning} 警告</b><small>阈值由 Admin API 环境配置控制。</small></div><div className="table wide"><div className="table-head alert-head"><span>级别</span><span>来源</span><span>告警</span><span>详情</span><span>操作</span></div>{visibleAlerts.map(alert => <div className="table-row alert-head" key={alert.key}><span><b className={`alert-severity ${alert.severity.toLowerCase()}`}>{alert.severity}</b></span><span><b>{alert.source}</b></span><span>{alert.title}<small>{alert.lifecycle?.acknowledged_by_username ? `已由 ${alert.lifecycle.acknowledged_by_username} 确认` : '未确认'}</small></span><span><small className="reason">{alert.detail}</small></span><span><button className="history-button" onClick={() => setAlertTarget(alert)}>确认 / 静默</button><button className="locator-button" onClick={() => locateOperations(alert.key)}>审计</button>{runtimeIdFromAlert(alert.key) && <button className="locator-button" onClick={() => locateRuntime(runtimeIdFromAlert(alert.key)!)}>Runtime</button>}</span></div>)}{!visibleAlerts.length && <p className="empty">当前没有未静默的实时健康告警。</p>}</div></section>;
+
+    if (tab === 'conversations') return <section className="table-panel"><header><div><span className="eyebrow">OPENHANDS LOCATORS</span><h2>会话关联</h2></div><p>只显示定位与运行元数据，不读取会话正文或事件内容。</p></header><div className="resource-filter"><input value={conversationRuntimeFilter} placeholder="按 Runtime Session 定位" onChange={event => setConversationRuntimeFilter(event.target.value)}/>{conversationRuntimeFilter && <button className="secondary" onClick={() => setConversationRuntimeFilter('')}>清除定位</button>}</div><div className="table wide"><div className="table-head conversation-head"><span>会话</span><span>用户 / 宿主</span><span>Runtime</span><span>模型</span><span>连接时间</span></div>{filteredConversations.map(conversation => <div className="table-row conversation-head" key={conversation.binding_id}><span><b>{conversation.display_title || '未命名会话'}</b><small>Binding {compact(conversation.binding_id)} · {conversation.lifecycle}</small><small>OpenHands {compact(conversation.openhands_conversation_id)}</small></span><span><b>{conversation.username || compact(conversation.owner_user_id)}</b><small>{conversation.host_kind} · {compact(conversation.host_id)}</small></span><span><code>{compact(conversation.runtime_session_id)}</code><button className="locator-button" onClick={() => locateRuntime(conversation.runtime_session_id)}>查看 Runtime</button><small>{conversation.flow_run_id ? `FlowRun ${compact(conversation.flow_run_id)}` : 'Agent Workspace'}</small></span><span>{conversation.model_name || '—'}</span><span>{conversation.last_connected_at ? new Date(conversation.last_connected_at).toLocaleString() : '从未连接'}</span></div>)}{!filteredConversations.length && <p className="empty">没有符合当前定位条件的会话绑定。</p>}</div></section>;
+    if (tab === 'operations') return <section className="table-panel"><header><div><span className="eyebrow">IMMUTABLE ADMIN AUDIT</span><h2>全部管理操作审计</h2></div><p>合并展示 Runtime 替换、告警确认与静默；不显示密钥、会话正文或日志内容。</p></header><div className="operation-filters"><label>操作<select value={operationAction} onChange={event => setOperationAction(event.target.value as 'ALL' | AdminOperation['action'])}><option value="ALL">全部操作</option><option value="REPLACE_RUNTIME">Runtime 替换</option><option value="ACKNOWLEDGE">告警确认</option><option value="SILENCE">告警静默</option></select></label><label>操作人<input value={operationActor} placeholder="按管理员筛选" onChange={event => setOperationActor(event.target.value)}/></label><label>目标<input value={operationTarget} placeholder="按 Runtime 或告警键定位" onChange={event => setOperationTarget(event.target.value)}/></label>{operationTarget && <button className="secondary" onClick={() => setOperationTarget('')}>清除定位</button>}<small>当前加载最近 7 天的 200 条记录。</small></div><div className="table wide"><div className="table-head unified-operation-head"><span>操作</span><span>操作人</span><span>目标</span><span>原因</span><span>状态 / 时限</span></div>{filteredOperations.map(operation => <div className="table-row unified-operation-head" key={operation.id}><span><b>{operation.action}</b><small>{new Date(operation.created_at).toLocaleString()}</small><small>请求 {compact(operation.request_id)}</small></span><span><b>{operation.actor_username}</b><small>{compact(operation.actor_user_id)}</small></span><span><b>{operation.target_kind}</b><code>{compact(operation.target_id)}</code><small>{operation.target_detail ? `FlowRun ${compact(operation.target_detail)}` : '告警稳定键'}</small></span><span><small className="reason">{operation.reason}</small></span><span><b className={`operation-status ${operation.status.toLowerCase()}`}>{operation.status}</b><small>{operation.silenced_until ? `静默至 ${new Date(operation.silenced_until).toLocaleString()}` : operation.action === 'REPLACE_RUNTIME' ? '基于 Runtime / Generation 正式状态投影' : '已追加审计'}</small></span></div>)}{!filteredOperations.length && <p className="empty">没有符合筛选条件的管理操作。</p>}</div></section>;
+
+    return <><section className="hero"><div><span className="eyebrow">FLOWWEAVE ADMIN</span><h1>运行资源管理中心</h1><p>独立监控服务、请求连接池与 OpenHands Runtime 容器。FlowRun Runtime 替换须经原因确认、并发 fencing 与不可变审计后提交。</p></div><ShieldCheck size={44}/></section><section className="metrics"><MetricCount label="活跃 Runtime" values={runtimeStates.filter(item => item.status === 'ACTIVE').map(item => ({ value: String(item.count) }))}/><MetricCount label="运行中任务" values={taskStates.filter(item => item.state === 'RUNNING').map(item => ({ value: String(item.count) }))}/><MetricCount label="数据库连接" values={databaseStates.map(item => ({ value: String(item.count) }))}/><MetricCount label="API 请求计数" values={metrics?.api.metrics.flowweave_http_requests_total}/></section><section className="overview-grid"><article className="panel"><header><Activity size={17}/><h2>服务健康</h2></header>{Object.entries(metrics ?? {}).map(([name, value]) => <div className="status-line" key={name}><span>{name}</span><b className={`state ${value.health.toLowerCase()}`}>{value.health}</b></div>)}</article><article className="panel"><header><Database size={17}/><h2>数据库连接状态</h2></header>{databaseStates.map(item => <div className="status-line" key={item.state ?? 'unknown'}><span>{item.state || 'unknown'}</span><b>{item.count}</b></div>)}</article><article className="panel"><header><Boxes size={17}/><h2>Runtime 状态</h2></header>{runtimeStates.map(item => <div className="status-line" key={`${item.runtime_kind}-${item.status}`}><span>{item.runtime_kind} · {item.status}</span><b>{item.count}</b></div>)}</article><article className="panel"><header><MessageSquare size={17}/><h2>后台任务</h2></header>{taskStates.map(item => <div className="status-line" key={item.state}><span>{item.state}</span><b>{item.count}</b></div>)}</article></section></>;
+
+  };
+
+  return <><main><header className="topbar"><div><span className="brand-mark"><Server size={18}/></span><b>FlowWeave 管理中心</b><small>独立运维入口</small></div><nav>{([['overview', '总览'], ['alerts', '实时告警'], ['services', '服务'], ['runtimes', 'Runtime'], ['conversations', '会话'], ['operations', '操作审计']] as const).map(([value, label]) => <button className={tab === value ? 'active' : ''} key={value} onClick={() => setTab(value)}>{label}</button>)}</nav><button className="refresh" disabled={loading} onClick={() => void refresh()}><RefreshCw size={15} className={loading ? 'spin' : ''}/>{loading ? '刷新中' : '刷新'}</button></header><div className="content">{updatedAt && <p className="updated">最近刷新：{updatedAt.toLocaleTimeString()} · 每 15 秒自动更新</p>}{error ? <section className="error"><h2>无法读取管理数据</h2><p>{error}</p><button onClick={() => void refresh()}>重新尝试</button></section> : loading && !data ? <section className="loading"><Activity className="spin" size={28}/><p>正在读取独立管理数据…</p></section> : visibleContent()}</div>{replacementTarget && <RuntimeReplacementDialog runtime={replacementTarget} onClose={() => setReplacementTarget(undefined)} onSubmitted={refresh}/>}</main>{historyTarget && <HistoryDialog {...historyTarget} onClose={() => setHistoryTarget(undefined)}/>} {alertTarget && <AlertLifecycleDialog alert={alertTarget} onClose={() => setAlertTarget(undefined)} onSubmitted={refresh}/>}</>;
+}

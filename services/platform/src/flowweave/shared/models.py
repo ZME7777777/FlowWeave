@@ -91,7 +91,14 @@ from flowweave.modules.sandboxes.infrastructure.models import (
 from flowweave.modules.tasks.infrastructure.models import (
     BackgroundTask,
 )
-from flowweave.modules.users.infrastructure.models import User, UserOperationLog, UserSession
+from flowweave.modules.users.infrastructure.models import (
+    AdminAlertAction,
+    AdminAlertState,
+    AdminRuntimeOperation,
+    User,
+    UserOperationLog,
+    UserSession,
+)
 from flowweave.shared.database import now, uid
 from flowweave.shared.domain.enums import AttemptState, FlowRunState, NodeRunState, TaskState
 
@@ -105,6 +112,9 @@ __all__ = (
     "AgentConversationSearch",
     "AgentConversationSearchHit",
     "AgentConversationUsageBucket",
+    "AdminAlertAction",
+    "AdminAlertState",
+    "AdminRuntimeOperation",
     "AgentWorkDirectory",
     "AgentWorkDirectoryPath",
     "AgentWorkDirectoryVersion",

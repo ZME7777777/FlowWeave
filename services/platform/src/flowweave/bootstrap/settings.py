@@ -174,6 +174,8 @@ class Settings(BaseSettings):
     docker_controller_url: str = "http://runtime-provider:8090"
     docker_controller_api_key: str = ""
     docker_controller_worker_api_key: str = ""
+    admin_runtime_observer_key: str = ""
+    admin_control_api_key: str = ""
     docker_controller_terminal_idle_seconds: int = Field(default=1800, ge=60, le=86_400)
     docker_controller_terminal_hard_ttl_seconds: int = Field(default=28_800, ge=300, le=604_800)
 
@@ -248,6 +250,21 @@ class Settings(BaseSettings):
                     "DOCKER_CONTROLLER_API_KEY must contain at least 32 characters "
                     "when remote Docker control is enabled"
                 )
+        if self.admin_runtime_observer_key and len(self.admin_runtime_observer_key) < 32:
+            raise ValueError("ADMIN_RUNTIME_OBSERVER_KEY must contain at least 32 characters")
+        if self.admin_runtime_observer_key and self.admin_runtime_observer_key in {
+            self.docker_controller_api_key,
+            self.docker_controller_worker_api_key,
+        }:
+            raise ValueError("ADMIN_RUNTIME_OBSERVER_KEY must differ from Docker controller keys")
+        if self.admin_control_api_key and len(self.admin_control_api_key) < 32:
+            raise ValueError("ADMIN_CONTROL_API_KEY must contain at least 32 characters")
+        if self.admin_control_api_key and self.admin_control_api_key in {
+            self.admin_runtime_observer_key,
+            self.docker_controller_api_key,
+            self.docker_controller_worker_api_key,
+        }:
+            raise ValueError("ADMIN_CONTROL_API_KEY must be dedicated to the Admin API")
         if self.runtime_adapter not in {"openhands", "mock"}:
             raise ValueError("RUNTIME_ADAPTER must be openhands or mock")
         if self.rate_limit_redis_url and not self.rate_limit_redis_url.startswith(

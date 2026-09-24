@@ -1395,6 +1395,113 @@ def _usage_dict(value: object) -> dict[str, Any] | None:
     }
 
 
+def _admin_container_usage(
+    provider: DockerSandboxProvider, container_id: str
+) -> dict[str, Any] | None:
+    try:
+        stats_raw = provider._run(  # pyright: ignore[reportPrivateUsage]
+            [
+                provider.settings.docker_binary,
+                "stats",
+                "--no-stream",
+                "--format",
+                "{{json .}}",
+                container_id,
+            ],
+            timeout=10,
+        )
+        inspect_raw = provider._run(  # pyright: ignore[reportPrivateUsage]
+            [
+                provider.settings.docker_binary,
+                "inspect",
+                container_id,
+                "--size",
+                "--format",
+                "{{json .}}",
+            ],
+            timeout=10,
+        )
+        return _usage_dict(
+            DockerSandboxProvider._usage_from_local(  # pyright: ignore[reportPrivateUsage]
+                stats_raw, inspect_raw
+            )
+        )
+    except DomainError:
+        return None
+
+
+def _admin_observability_snapshot(configured: Settings) -> dict[str, Any]:
+    provider = DockerSandboxProvider(configured)
+    service_rows: list[dict[str, Any]] = []
+    try:
+        raw_services = provider._run(  # pyright: ignore[reportPrivateUsage]
+            [
+                configured.docker_binary,
+                "ps",
+                "--all",
+                "--filter",
+                "label=com.docker.compose.project=flowweave",
+                "--format",
+                "{{json .}}",
+            ],
+            timeout=10,
+        )
+        for line in raw_services.splitlines():
+            try:
+                item = cast(object, json.loads(line))
+            except ValueError:
+                continue
+            if not isinstance(item, dict):
+                continue
+            container_id = str(item.get("ID") or "")
+            if not container_id:
+                continue
+            service_rows.append(
+                {
+                    "service": str(item.get("Names") or "unknown"),
+                    "container_id": container_id,
+                    "image": str(item.get("Image") or ""),
+                    "state": str(item.get("State") or "unknown").upper(),
+                    "status": str(item.get("Status") or ""),
+                    "usage": _admin_container_usage(provider, container_id)
+                    if str(item.get("State") or "").lower() == "running"
+                    else None,
+                }
+            )
+    except DomainError:
+        service_rows = []
+
+    managed_resources: list[dict[str, Any]] = []
+    try:
+        for observation in provider.list_managed():
+            managed_resources.append(
+                {
+                    "resource_id": observation.resource_id,
+                    "resource_name": observation.resource_name,
+                    "container_id": observation.resource_identifier[:12],
+                    "state": observation.state,
+                    "kind": observation.labels.get("flowweave.kind"),
+                    "owner_type": observation.labels.get("flowweave.owner-type"),
+                    "owner_id": observation.labels.get("flowweave.owner-id"),
+                    "usage": (
+                        _usage_dict(
+                            provider.usage(observation.resource_name, observation.resource_id)
+                        )
+                        if observation.labels.get("flowweave.kind") == "agent-runtime"
+                        else None
+                    ),
+                }
+            )
+    except DomainError:
+        managed_resources = []
+    return {
+        "available": True,
+        "services": service_rows,
+        "managed_resources": managed_resources,
+    }
+
+
+
 def _resource(payload: SandboxResourceWrite) -> ManagedSandbox:
     resource_id = str(payload.id)
     expected_name = backend_name(
@@ -1515,6 +1622,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "/v1/sandboxes/delete": frozenset({"api", "worker"}),
                 "/v1/runtime-networks/delete": frozenset({"api", "worker"}),
                 "/v1/sandboxes/list": frozenset({"worker"}),
+                "/v1/admin/observability": frozenset({"admin_observer"}),
                 "/v1/environments/remove-image": frozenset({"worker"}),
                 # Worker resolves the platform-owned Agent Workspace image at
                 # bootstrap; both roles still receive only digest provenance.
@@ -1626,6 +1734,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         metrics.gauge("flowweave_runtime_relay_subscribers", subscriber_count)
         metrics.gauge("flowweave_runtime_relay_hub_capacity", configured.runtime_relay_max_hubs)
         return PlainTextResponse(metrics.render(), media_type="text/plain; version=0.0.4")
+
+    @app.get("/v1/admin/observability")
+    async def admin_observability(request: Request) -> dict[str, Any]:
+        if cast(str, request.state.controller_role) != "admin_observer":
+            raise DomainError("CONTROLLER_FORBIDDEN", "Observer access is required", 403)
+        return await asyncio.to_thread(_admin_observability_snapshot, configured)
 
     @app.post("/v1/sandboxes/ensure")
     async def ensure(request: Request, payload: SandboxResourceWrite) -> dict[str, Any]:

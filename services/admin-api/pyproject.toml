@@ -1,0 +1,42 @@
+[project]
+name = "flowweave-admin-api"
+version = "0.1.0"
+description = "Isolated FlowWeave administrator observability API"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "fastapi==0.115.12",
+  "httpx==0.28.1",
+  "psycopg[binary]==3.2.9",
+  "pydantic-settings==2.9.1",
+  "uvicorn[standard]==0.34.2",
+]
+
+[dependency-groups]
+dev = [
+  "pyright==1.1.405",
+  "ruff==0.11.11",
+]
+
+[build-system]
+requires = ["hatchling==1.27.0"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/flowweave_admin"]
+
+[tool.pyright]
+pythonVersion = "3.12"
+typeCheckingMode = "basic"
+include = ["src"]
+exclude = ["**/__pycache__"]
+venvPath = "."
+venv = ".venv"
+reportMissingTypeStubs = false
+reportUnusedFunction = false
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]

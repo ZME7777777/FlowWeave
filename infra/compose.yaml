@@ -16,6 +16,7 @@ x-platform-env: &platform-env
   RUNTIME_WAKEUP_TIMEOUT_SECONDS: ${RUNTIME_WAKEUP_TIMEOUT_SECONDS:-10}
   RUNTIME_WAKEUP_BACKOFF_MAX_SECONDS: ${RUNTIME_WAKEUP_BACKOFF_MAX_SECONDS:-30}
   OPENHANDS_SESSION_API_KEY: ${OPENHANDS_SESSION_API_KEY:-flowweave-internal}
+  ADMIN_CONTROL_API_KEY: ${ADMIN_CONTROL_API_KEY:?set a dedicated Admin API control key with at least 32 characters}
   AGENT_TASK_TIMEOUT_SECONDS: ${AGENT_TASK_TIMEOUT_SECONDS:-600}
   AGENT_WORKSPACE_RUNTIME_IMAGE: ${AGENT_WORKSPACE_RUNTIME_IMAGE:-flowweave-openhands-runtime:1}
   OPENHANDS_WORKSPACE_ROOT: /workspaces
@@ -161,6 +162,7 @@ services:
       DOCKER_CONTROLLER_MODE: local
       DOCKER_CONTROLLER_API_KEY: ${DOCKER_CONTROLLER_API_KEY:?set a random API controller key with at least 32 characters}
       DOCKER_CONTROLLER_WORKER_API_KEY: ${DOCKER_CONTROLLER_WORKER_API_KEY:?set a different random Worker controller key with at least 32 characters}
+      ADMIN_RUNTIME_OBSERVER_KEY: ${ADMIN_RUNTIME_OBSERVER_KEY:?set a third random observer key with at least 32 characters}
       SANDBOX_BACKEND: docker
       SANDBOX_IMAGE_PYTHON: flowweave-sandbox-python:1
       SANDBOX_IMAGE_JAVASCRIPT: flowweave-sandbox-javascript:1
@@ -325,6 +327,84 @@ services:
     network_mode: none
     restart: "no"
 
+  admin-api:
+    build: { context: .., dockerfile: services/admin-api/Dockerfile }
+    user: "10001:10001"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    init: true
+    cpus: "0.5"
+    mem_limit: 512m
+    pids_limit: 128
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=32m
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-flowweave}:${POSTGRES_PASSWORD:-flowweave_dev}@postgres:5432/${POSTGRES_DB:-flowweave}
+      PLATFORM_API_URL: http://api:8080
+      PLATFORM_STREAM_API_URL: http://stream-api:8080
+      RUNTIME_PROVIDER_URL: http://runtime-provider:8090
+      ADMIN_RUNTIME_OBSERVER_KEY: ${ADMIN_RUNTIME_OBSERVER_KEY:?set a third random observer key with at least 32 characters}
+      ADMIN_CONTROL_API_KEY: ${ADMIN_CONTROL_API_KEY:?set a dedicated Admin API control key with at least 32 characters}
+      ADMIN_DATABASE_POOL_SIZE: ${ADMIN_DATABASE_POOL_SIZE:-2}
+      ADMIN_API_REQUEST_TIMEOUT_SECONDS: ${ADMIN_API_REQUEST_TIMEOUT_SECONDS:-5}
+      ADMIN_ALERT_CPU_PERCENT_THRESHOLD: ${ADMIN_ALERT_CPU_PERCENT_THRESHOLD:-90}
+      ADMIN_ALERT_MEMORY_PERCENT_THRESHOLD: ${ADMIN_ALERT_MEMORY_PERCENT_THRESHOLD:-90}
+      ADMIN_ALERT_DATABASE_ACTIVE_CONNECTIONS_THRESHOLD: ${ADMIN_ALERT_DATABASE_ACTIVE_CONNECTIONS_THRESHOLD:-40}
+      ADMIN_ALERT_PENDING_TASK_THRESHOLD: ${ADMIN_ALERT_PENDING_TASK_THRESHOLD:-20}
+    depends_on:
+      postgres: { condition: service_healthy }
+      runtime-provider: { condition: service_healthy }
+      api: { condition: service_healthy }
+      stream-api: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8091/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+    networks:
+      - default
+      - docker-control
+
+  admin-metrics:
+    build: { context: .., dockerfile: services/admin-metrics/Dockerfile }
+    user: "10001:10001"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    init: true
+    cpus: "0.25"
+    mem_limit: 256m
+    pids_limit: 64
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-flowweave}:${POSTGRES_PASSWORD:-flowweave_dev}@postgres:5432/${POSTGRES_DB:-flowweave}
+      RUNTIME_PROVIDER_URL: http://runtime-provider:8090
+      ADMIN_RUNTIME_OBSERVER_KEY: ${ADMIN_RUNTIME_OBSERVER_KEY:?set a third random observer key with at least 32 characters}
+      ADMIN_METRICS_SAMPLE_INTERVAL_SECONDS: ${ADMIN_METRICS_SAMPLE_INTERVAL_SECONDS:-30}
+      ADMIN_METRICS_RETENTION_DAYS: ${ADMIN_METRICS_RETENTION_DAYS:-14}
+      ADMIN_METRICS_REQUEST_TIMEOUT_SECONDS: ${ADMIN_METRICS_REQUEST_TIMEOUT_SECONDS:-5}
+    depends_on:
+      postgres: { condition: service_healthy }
+      runtime-provider: { condition: service_healthy }
+    restart: unless-stopped
+    networks:
+      - default
+      - docker-control
+
+  admin-web:
+    build: { context: .., dockerfile: apps/admin-web/Dockerfile }
+    init: true
+    cpus: "0.25"
+    mem_limit: 128m
+    pids_limit: 64
+    depends_on:
+      admin-api: { condition: service_healthy }
+    networks:
+      - default
+
   web:
     build: { context: .., dockerfile: apps/web/Dockerfile }
     init: true
@@ -334,6 +414,8 @@ services:
     ports: ["${FLOWWEAVE_BIND_ADDRESS:-127.0.0.1}:5173:80"]
     depends_on:
       api: { condition: service_healthy }
+      admin-api: { condition: service_healthy }
+      admin-web: { condition: service_started }
 
 volumes:
   postgres-data:
