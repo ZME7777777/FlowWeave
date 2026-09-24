@@ -16,6 +16,16 @@ scripts/verify-remote-deploy.sh --config .local/remote-deploy.env \
 
 预检必须复述从本地配置读取的目标、部署根、主 Compose/env、构建/镜像目录、可选 stream-api Compose/env、发布范围和 commit，并通过只读 SSH 验证其 Compose 拓扑。未提供有效本地配置，或声明入口未通过预检时停止，不得猜测 SSH 别名、目标环境、Compose 入口或 stream-api 所属项目。普通部署严禁 `docker compose down -v`、删除 volume/Workspace、覆盖远端 Compose 或环境文件。`make rebuild-deploy` 和 `infra/compose.yaml` 仅用于本地；绝不可当作远端部署入口。
 
+### 受管内部服务器的配置变更
+
+仅当请求人在当前会话明确确认目标是其受管内部服务器，并明确授权本次变更时，发布人员可以在已通过预检的唯一目标上更新服务器侧 Compose 或环境文件。该例外仅用于让已提交版本新增或变更的服务可部署，且必须同时满足：
+
+- 先在服务器侧为原 Compose 和环境文件创建带时间戳、权限保持不变的备份；绝不将其复制到仓库、日志或聊天中。
+- Compose 改动必须是明确的服务级补丁，沿用已验证的网络、卷、镜像命名和健康检查约定；不得用本地 `infra/compose.yaml` 覆盖远端文件，或改变无关服务。
+- 新增密钥只能在目标服务器通过安全随机源生成并直接写入受保护环境文件；不得回显、记录、提交或在任何 URL／镜像层中传递明文。密钥变更只限本次新增服务所需变量。
+- 修改后必须先运行 `docker compose config --quiet`，再按受影响服务执行构建、迁移、健康检查和路由验证；若任一步失败，保留日志并从刚创建的备份仅恢复本次触及的文件或服务。
+- 即使适用本例外，仍禁止删除卷、工作区或持久数据，禁止 `docker compose down -v`、`--remove-orphans`、`docker system prune`、`reset --hard` 或任何未经单独明确授权的清理操作。
+
 远程 Compose、环境文件、持久数据路径和私有入口均为服务器侧资产，不得复制进仓库。更新 API 时，必须从同一已提交版本同步更新并 recreate `stream-api`；不得以 orphan 或 `--remove-orphans` 忽略它。发生故障时先保留日志和数据库错误状态，再仅回滚受影响服务；禁止使用删除 volume、清空 Workspace、`reset --hard` 或 `clean -f` 代替回滚。
 
 ## OpenHands-first 架构原则

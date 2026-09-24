@@ -75,7 +75,9 @@ make remote-deploy-preflight REMOTE_DEPLOY_CONFIG=.local/remote-deploy.env \
 
 预检先确认本地配置中的目标主机、部署目录、提交与范围；随后只读 SSH，检查部署根、构建/镜像目录、声明的 Compose/env 文件，运行 `docker compose config --quiet` 并确认本次范围所需服务。`platform` 必须验证 `migration`、`runtime-provider`、`api`、`worker` 和 `stream-api`；后者可在显式声明的独立 Compose 项目中。预检不会构建镜像、重建服务或改写服务器文件。
 
-不要猜测 SSH 别名、Compose 入口或 `stream-api` 所属项目；不要覆盖远端 Compose 或环境文件，也不要使用本地 `infra/compose.yaml` 替换服务器 Compose 文件。若预检报缺少入口或服务契约，先修正本机受保护的 `.local/remote-deploy.env`，再重新预检。
+不要猜测 SSH 别名、Compose 入口或 `stream-api` 所属项目，也不要使用本地 `infra/compose.yaml` 替换服务器 Compose 文件。若预检报缺少入口或服务契约，先修正本机受保护的 `.local/remote-deploy.env`，再重新预检。
+
+对于请求人明确确认并授权的受管内部服务器，新增服务所需的远端 Compose／环境变更可以作为本次发布的一部分执行。先在服务器内为两个文件创建时间戳备份；仅对新增服务作最小服务级补丁，沿用已验证的网络和镜像约定。新增密钥必须仅在服务器内生成、直接写入权限受限的环境文件且不回显。更新后先验证 `docker compose config --quiet`，随后再继续构建和重建；出现问题时保留日志并只恢复本次触及的配置或服务。该例外不允许覆盖整个 Compose、删除卷／工作区、`docker compose down -v`、`--remove-orphans` 或 Docker 全局清理。
 
 若已有仅含目标主机、用户和部署根的旧 `.local/remote-deploy.env`，可将新增入口字段单独写入同目录的 `.local/remote-deploy.entrypoints.env`（同样 `chmod 600`）。预检仅在该文件是普通文件时合并读取它；新环境仍建议将全部字段保存在单一 `remote-deploy.env`。
 
