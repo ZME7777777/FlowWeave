@@ -159,6 +159,101 @@ test('Completed conversation shows an explicit loading state without appearing t
   await expect(page.locator('.conversation-turn-status')).toHaveCount(0);
 });
 
+
+test('Re-entering a cached conversation waits for fresh hydration before rendering', async ({ page }) => {
+  let authenticated = false;
+  let conversationAHydrationReads = 0;
+  let releaseRefresh: (() => void) | undefined;
+  const refreshGate = new Promise<void>(resolve => { releaseRefresh = resolve; });
+  const workspace = {
+    id: 'atomic-loading-workspace', display_name: '原子加载工作区', desired_state: 'RUNNING', updated_at: now,
+  };
+  const conversations = [
+    {
+      id: 'atomic-loading-a', display_title: '原子加载会话 A', title_state: 'MANUAL',
+      lifecycle: 'ACTIVE', streaming_callback_ready: true, write_available: true, execution_status: 'idle',
+      created_at: now, updated_at: now,
+    },
+    {
+      id: 'atomic-loading-b', display_title: '原子加载会话 B', title_state: 'MANUAL',
+      lifecycle: 'ACTIVE', streaming_callback_ready: true, write_available: true, execution_status: 'idle',
+      created_at: now, updated_at: now,
+    },
+  ];
+  const hydration = (bindingId: string, content: string) => ({
+    events: {
+      events: [
+        { id: `${bindingId}-user`, event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: `问题 ${bindingId}`, timestamp: now } },
+        ...(content ? [{ id: `${bindingId}-agent`, event_type: 'MESSAGE', payload: { source: 'agent', parent_id: `${bindingId}-user`, content, timestamp: now } }] : []),
+      ],
+      next_cursor: content ? `${bindingId}-agent` : `${bindingId}-user`,
+      history_cursor: null,
+      result: { status: content ? 'COMPLETED' : 'RUNNING' },
+    },
+    context: { model_name: 'test-model', window_tokens: 128_000, used_tokens: 1_024, usage_current: true },
+    readiness: { ready: Boolean(content), execution_status: content ? 'idle' : 'running' },
+  });
+
+  await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path.endsWith('/auth/me')) return authenticated
+      ? json(route, user)
+      : json(route, { error: { code: 'AUTHENTICATION_REQUIRED', message: '请先登录' } }, 401);
+    if (path.endsWith('/auth/login') && request.method() === 'POST') { authenticated = true; return json(route, user); }
+    if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
+    if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
+    if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: conversations, next_cursor: null });
+    if (path.endsWith('/hydration')) {
+      const bindingId = path.split('/').at(-2)!;
+      if (bindingId === 'atomic-loading-a') {
+        conversationAHydrationReads += 1;
+        if (conversationAHydrationReads === 2) await refreshGate;
+        return json(route, hydration(bindingId, conversationAHydrationReads === 1 ? '' : '会话 A 的最新回复'));
+      }
+      return json(route, hydration(bindingId, '会话 B 的回复'));
+    }
+    if (path.endsWith('/events') || path.endsWith('/input-readiness') || path.endsWith('/context')) {
+      return json(route, { error: { code: 'UNEXPECTED_FALLBACK', message: 'hydration 成功后不应读取首屏回退接口' } }, 500);
+    }
+    if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
+    if (path.endsWith('/work-directories')) return json(route, {
+      root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [],
+    });
+    if (path.endsWith('/workspace')) return json(route, {
+      root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' },
+      working_directory: '/runtime/workspace/project', work_directory: null, files: [], repositories: [],
+      runtime: {}, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '不可用', note: '' } },
+    });
+    if (path.endsWith('/model-providers') || path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
+    if (path.includes('/conversations/') && request.method() === 'GET') {
+      return json(route, conversations.find(item => item.id === path.split('/').at(-1)));
+    }
+    return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+  });
+
+  await page.goto('/');
+  await login(page);
+  await page.goto('/agent/conversations/atomic-loading-a');
+  await expect(page.getByText('问题 atomic-loading-a', { exact: true })).toBeVisible();
+  await expect(page.getByText('正在思考', { exact: true })).toBeVisible();
+
+  await page.getByRole('button', { name: '原子加载会话 B', exact: true }).click();
+  await expect(page.getByText('会话 B 的回复', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '原子加载会话 A', exact: true }).click();
+
+  await expect.poll(() => conversationAHydrationReads).toBe(2);
+  await expect(page.getByRole('status').filter({ hasText: '正在加载会话' })).toBeVisible();
+  await expect(page.getByText('问题 atomic-loading-a', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('正在思考', { exact: true })).toHaveCount(0);
+  await expect(page.locator('.conversation-turn-status')).toHaveCount(0);
+
+  releaseRefresh?.();
+  await expect(page.getByText('会话 A 的最新回复', { exact: true })).toBeVisible();
+  await expect(page.getByRole('status').filter({ hasText: '正在加载会话' })).toHaveCount(0);
+});
+
 test('Agent session restores independent Runtime reads when hydration is unavailable', async ({ page }) => {
   let authenticated = false;
   let hydrationReads = 0;

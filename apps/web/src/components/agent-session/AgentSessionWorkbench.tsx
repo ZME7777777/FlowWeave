@@ -4800,41 +4800,84 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const hydrationQueryKey = sessionQueryKey(host, 'conversation-hydration', workspace?.id, selected?.id);
   const inputReadinessQueryKey = sessionQueryKey(host, 'conversation-input-readiness', workspace?.id, selected?.id);
   const contextQueryKey = sessionQueryKey(host, 'conversation-context', workspace?.id, selected?.id);
+  const [hydrationPhase, setHydrationPhase] = useState<{
+    bindingId: string;
+    state: 'loading' | 'ready' | 'fallback';
+  }>();
   const hydrationQuery = useQuery({
     queryKey: hydrationQueryKey,
     queryFn: async () => {
-      const hydration = await api.conversationHydration(workspace!.id, selected!.id);
-      // These queries have already mounted in their disabled fallback state.
-      // Seed their actual cache entries before hydration resolves so enabling
-      // them cannot issue a second first-screen Runtime read.
-      queryClient.setQueryData<OpenHandsConversationEventBatch>(eventQueryKey, hydration.events);
-      queryClient.setQueryData<AgentConversationInputReadiness>(inputReadinessQueryKey, hydration.readiness);
-      queryClient.setQueryData<AgentConversationContext>(contextQueryKey, hydration.context);
+      const workspaceId = workspace!.id;
+      const bindingId = selected!.id;
+      const hydration = await api.conversationHydration(workspaceId, bindingId);
+      // Publish the coherent snapshot together. The presentation gate remains
+      // closed until this request resolves, so none of these cache writes can
+      // expose an older or partially refreshed transcript.
+      queryClient.setQueryData<OpenHandsConversationEventBatch>(
+        sessionQueryKey(host, 'conversation-events', workspaceId, bindingId), hydration.events,
+      );
+      queryClient.setQueryData<AgentConversationInputReadiness>(
+        sessionQueryKey(host, 'conversation-input-readiness', workspaceId, bindingId), hydration.readiness,
+      );
+      queryClient.setQueryData<AgentConversationContext>(
+        sessionQueryKey(host, 'conversation-context', workspaceId, bindingId), hydration.context,
+      );
       return hydration;
     },
-    // A single native hydration read returns the coherent event, context and
-    // readiness snapshots required for the first paint. It deliberately does
-    // not replace the incremental event reconciler after that point.
-    enabled: Boolean(workspace && selected),
-    refetchOnWindowFocus: false,
-    // A Runtime-read 503 is capacity/back-pressure, not evidence that this
-    // Conversation lacks the newer hydration route. Keep one coordinated
-    // retry lane instead of fanning out events, readiness and context reads.
+    // Each selection explicitly refreshes below. Keeping this query disabled
+    // prevents cached success data from becoming authoritative on re-entry.
+    enabled: false,
     retry: (count, error) => !isRuntimeReadUnavailable(error)
       && !(error instanceof ApiError && error.status < 500)
       && count < 2,
-    refetchInterval: query => isRuntimeReadUnavailable(query.state.error) && pageVisible
-      ? 5_000
-      : false,
   });
-  // Do not fan out fallback reads while hydration is still attempting. An
-  // exhausted hydration error restores the established independent paths so a
-  // transient or older Runtime cannot leave the conversation unusable.
-  const hydrationFallbackAllowed = hydrationQuery.isSuccess || (
-    hydrationQuery.isError && !isRuntimeReadUnavailable(hydrationQuery.error)
-  );
-  const hydrationData = hydrationQuery.data;
-  const hydrationDataUpdatedAt = hydrationQuery.dataUpdatedAt;
+  const refreshConversationHydration = hydrationQuery.refetch;
+  useEffect(() => {
+    const workspaceId = workspace?.id;
+    const bindingId = selected?.id;
+    if (!workspaceId || !bindingId) {
+      setHydrationPhase(undefined);
+      return;
+    }
+    let cancelled = false;
+    let retryTimer: number | undefined;
+    setHydrationPhase({ bindingId, state: 'loading' });
+
+    const refresh = async () => {
+      const result = await refreshConversationHydration();
+      if (cancelled) return;
+      if (result.isSuccess) {
+        setHydrationPhase({ bindingId, state: 'ready' });
+        return;
+      }
+      if (isRuntimeReadUnavailable(result.error)) {
+        retryTimer = window.setTimeout(() => { void refresh(); }, 5_000);
+        return;
+      }
+      setHydrationPhase({ bindingId, state: 'fallback' });
+    };
+
+    for (const resource of ['conversation-events', 'conversation-input-readiness', 'conversation-context']) {
+      queryClient.removeQueries({
+        queryKey: sessionQueryKey(host, resource, workspaceId, bindingId),
+        exact: true,
+      });
+    }
+    void refresh();
+    return () => {
+      cancelled = true;
+      if (retryTimer !== undefined) window.clearTimeout(retryTimer);
+    };
+  }, [host, queryClient, refreshConversationHydration, selected?.id, workspace?.id]);
+  const selectedHydrationPhase = hydrationPhase && hydrationPhase.bindingId === selected?.id
+    ? hydrationPhase.state
+    : 'loading';
+  // Do not fan out fallback reads while hydration is still attempting. A
+  // non-capacity failure restores the established independent paths, but they
+  // remain behind the same first-screen gate until all snapshots are fresh.
+  const hydrationFallbackAllowed = selectedHydrationPhase !== 'loading';
+  const hydrationData = selectedHydrationPhase === 'ready' ? hydrationQuery.data : undefined;
+  const hydrationDataUpdatedAt = hydrationData ? hydrationQuery.dataUpdatedAt : undefined;
   const inputReadinessQuery = useQuery({
     queryKey: inputReadinessQueryKey,
     queryFn: () => api.inputReadiness(workspace!.id, selected!.id),
@@ -4860,9 +4903,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const nativeTurnRunning = conversationIsRunning(nativeExecutionStatus);
   const nativeTurnTerminal = inputReadinessQuery.data?.ready === true
     && conversationHasReachedTerminalState(nativeExecutionStatus);
-  const nativeTurnStateKnown = nativeTurnRunning
-    || nativeTurnTerminal
-    || nativeExecutionStatus?.trim().toLowerCase() === 'paused';
   // OpenHands owns the Conversation execution lifecycle. Local state may
   // bridge a command request, but it must never declare a native turn ended.
   const effectiveTurnState: TurnState = nativeTurnTerminal
@@ -6485,8 +6525,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     || (effectiveTurnState === 'idle' && (!composerHasContent || queuedMessages.some(message => message.scope === selected?.id && sendingMessageIds.current.has(message.id))))
     || effectiveTurnState === 'pausing'
     || effectiveTurnState === 'resuming';
+  const fallbackHydrationPending = selectedHydrationPhase === 'fallback'
+    && (eventsQuery.isPending || inputReadinessQuery.isPending || contextQuery.isPending);
   const conversationInitialLoading = Boolean(
-    selected && !nativeTurnStateKnown && (hydrationQuery.isPending || inputReadinessQuery.isPending),
+    selected && (selectedHydrationPhase === 'loading' || fallbackHydrationPending),
   );
   const runComposerAction = () => {
     if (composerActionSends || conversationActivity.state === 'idle') enqueueDraft();
