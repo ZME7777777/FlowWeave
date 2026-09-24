@@ -139,6 +139,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-519 | 新建会话、Fork 与恢复路径冻结了不同的事件压缩阈值，Fork 可退回 10,000 | DONE | 将原生 `LLMSummarizingCondenser.max_size` 收敛为共享的 500，覆盖 Agent Workspace 新建、Fork、摘要器凭据恢复及 FlowNode Fork；不在线改写既有 Conversation 的持久化 condenser。 |
 | FR-520 | 最新 baseline 的 ACP 代码引用了 1.47 固定 schema 中不存在的 `AcpMcpServer`，导致 Runtime image contract build 失败 | DONE | 在隔离 baseline 中移除不可用的 ACP-only 类型分支，保留固定 schema 已支持的 HTTP、SSE 与 stdio MCP transports；不更新依赖、lockfile、镜像基础 tag 或四个 OpenHands 包版本。FlowWeave source lock、provenance、Runtime Docker build identity 与 contract identity 已原子切换到新 compatibility commit。 |
 | FR-521 | 旧 1.47 ACP schema 兼容补丁与新上游依赖图不兼容，且 FlowWeave Runtime provenance 仍指向过时来源 | DONE | `baseline` 已直接对齐 upstream `e21d77673b738f056676044600c4ad81c5a575c8`；FlowWeave Runtime source archive、依赖锁、contract/provenance、Fork 请求和受控 Codex catalog 已迁移至 1.49.5，移除私有 fork-condenser overlay，并以真实固定源码 contract probe 校验。 |
+| FR-522 | Agent 首屏 hydration 读取池暂时饱和时，浏览器在 503 后扇出 events、readiness、context 与 confirmation 回退读取，导致所有会话持续不可读 | DONE | `AGENT_RUNTIME_UNAVAILABLE` 503 保持单一 hydration 协调器并以 5 秒退避重试；不再启用四条独立 Runtime 读取。404 等非容量兼容错误仍保留既有回退，避免旧 Runtime 缺少 hydration 时无法打开会话。 |
 
 ### Agent 首屏 Runtime 读取隔离（2026-09-24）
 

@@ -978,6 +978,12 @@ function isBootstrapAmbiguous(error: Error): boolean {
   ].includes((error as ApiError).code);
 }
 
+function isRuntimeReadUnavailable(error: unknown): boolean {
+  return error instanceof ApiError
+    && error.status === 503
+    && error.code === 'AGENT_RUNTIME_UNAVAILABLE';
+}
+
 type AgentCapabilityType = 'SKILL' | 'MCP' | 'PLUGIN' | 'CONTEXT' | 'AGENT_DEFINITION' | 'HOOK';
 type ComposerSuggestionKind = 'SKILL' | 'COMMAND' | 'MCP' | 'REFERENCE';
 interface ComposerSuggestion {
@@ -4632,12 +4638,22 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     // not replace the incremental event reconciler after that point.
     enabled: Boolean(workspace && selected),
     refetchOnWindowFocus: false,
-    retry: (count, error) => !(error instanceof ApiError && error.status < 500) && count < 2,
+    // A Runtime-read 503 is capacity/back-pressure, not evidence that this
+    // Conversation lacks the newer hydration route. Keep one coordinated
+    // retry lane instead of fanning out events, readiness and context reads.
+    retry: (count, error) => !isRuntimeReadUnavailable(error)
+      && !(error instanceof ApiError && error.status < 500)
+      && count < 2,
+    refetchInterval: query => isRuntimeReadUnavailable(query.state.error) && pageVisible
+      ? 5_000
+      : false,
   });
   // Do not fan out fallback reads while hydration is still attempting. An
   // exhausted hydration error restores the established independent paths so a
   // transient or older Runtime cannot leave the conversation unusable.
-  const hydrationSettled = hydrationQuery.isSuccess || hydrationQuery.isError;
+  const hydrationFallbackAllowed = hydrationQuery.isSuccess || (
+    hydrationQuery.isError && !isRuntimeReadUnavailable(hydrationQuery.error)
+  );
   const hydrationData = hydrationQuery.data;
   const hydrationDataUpdatedAt = hydrationQuery.dataUpdatedAt;
   const inputReadinessQuery = useQuery({
@@ -4645,7 +4661,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     queryFn: () => api.inputReadiness(workspace!.id, selected!.id),
     // This is the formal OpenHands execution-state read used to restore an
     // in-flight turn after a browser reload. It is not persisted by FlowWeave.
-    enabled: Boolean(workspace && selected && hydrationSettled),
+    enabled: Boolean(workspace && selected && hydrationFallbackAllowed),
     initialData: hydrationData?.readiness,
     initialDataUpdatedAt: hydrationData ? hydrationDataUpdatedAt : undefined,
     staleTime: INITIAL_HYDRATION_STALE_TIME_MS,
@@ -4715,7 +4731,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     // latest page is rendered before older pages are prefetched below. Running
     // recovery is coordinated below so latest-window and cursor reads cannot
     // race each other on independent timers.
-    enabled: Boolean(workspace && selected && hydrationSettled),
+    enabled: Boolean(workspace && selected && hydrationFallbackAllowed),
     initialData: hydrationData?.events,
     initialDataUpdatedAt: hydrationData ? hydrationDataUpdatedAt : undefined,
     staleTime: INITIAL_HYDRATION_STALE_TIME_MS,
@@ -5041,7 +5057,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const contextQuery = useQuery({
     queryKey: contextQueryKey,
     queryFn: () => api.conversationContext(workspace!.id, selected!.id),
-    enabled: Boolean(workspace && selected && hydrationSettled),
+    enabled: Boolean(workspace && selected && hydrationFallbackAllowed),
     initialData: hydrationData?.context,
     initialDataUpdatedAt: hydrationData ? hydrationDataUpdatedAt : undefined,
     staleTime: INITIAL_HYDRATION_STALE_TIME_MS,
@@ -5082,7 +5098,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     // Confirmation is intentionally not part of hydration. Wait for the
     // snapshot to settle so a first paint cannot consume another Runtime read
     // slot in parallel; later invalidations continue to refresh it directly.
-    enabled: Boolean(workspace && selected && hydrationSettled && canWrite && features.confirmations),
+    enabled: Boolean(workspace && selected && hydrationFallbackAllowed && canWrite && features.confirmations),
     refetchOnWindowFocus: false,
     retry: (count, error) => !(error instanceof ApiError && error.status < 500) && count < 2,
   });
