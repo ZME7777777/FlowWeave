@@ -824,6 +824,7 @@ async def agent_events(
     container: ContainerDep,
     cursor: str | None = Query(default=None, max_length=200),
     history_cursor: str | None = Query(default=None, max_length=200),
+    diagnostic_trigger: str | None = Query(default=None, max_length=40),
 ) -> dict[str, Any]:
     try:
         # ``history_cursor`` is a best-effort older-page prefetch. Reserve the
@@ -832,7 +833,12 @@ async def agent_events(
         return await execute(
             container,
             lambda session: conversations.events(
-                session, workspace_id, binding_id, cursor, history_cursor
+                session,
+                workspace_id,
+                binding_id,
+                cursor,
+                history_cursor,
+                diagnostic_trigger=diagnostic_trigger,
             ),
         )
     except DomainError as exc:

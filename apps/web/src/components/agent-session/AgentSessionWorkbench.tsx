@@ -4964,7 +4964,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   useEffect(() => {
     if (selected && eventsQuery.data) markSessionPerformance('events-ready');
   }, [eventsQuery.data, selected]);
-  const synchronizeConversationEvents = useCallback((preferLatest = false): Promise<void> => {
+  const synchronizeConversationEvents = useCallback((preferLatest = false, diagnosticTrigger = 'scheduled'): Promise<void> => {
     if (!workspace || !selected) return Promise.resolve();
     const scope = selected.id;
     if (eventSynchronization.current.scope !== scope) {
@@ -4982,7 +4982,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       const cursor = forceLatest || latestWindowDue ? undefined : current?.next_cursor ?? undefined;
       if (!cursor) eventSynchronization.current.lastLatestReadAt = Date.now();
 
-      return api.conversationEvents(workspace.id, scope, cursor).then(incoming => {
+      return api.conversationEvents(workspace.id, scope, cursor, undefined, diagnosticTrigger).then(incoming => {
         if (eventSynchronization.current.scope !== scope) return;
         queryClient.setQueryData<OpenHandsConversationEventBatch>(eventQueryKey, existing => existing
           ? (() => {
@@ -5040,7 +5040,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     // Background tabs may suspend timers and silently lose WebSocket frames.
     // Active turns recover immediately; completed turns retain their stable
     // projection because a focus event alone cannot add native work.
-    void synchronizeConversationEvents(true);
+    void synchronizeConversationEvents(true, 'foreground');
     void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversations', workspace.id) });
     void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-activity', workspace.id) });
     void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-input-readiness', workspace.id, selected.id) });
@@ -5439,7 +5439,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     if (scope !== activeComposerScope.current) return;
     // Final replies render only from their durable MESSAGE event. Transient text
     // deltas are deliberately ignored to avoid partial content being replaced.
-    if (event.type === 'stream_closed') reconcileConversationProjection();
+    if (event.type === 'stream_closed') void synchronizeConversationEvents(true, 'stream_closed');
     if (event.type === 'model_retry' && event.attempt && event.max_attempts && event.failure_kind && typeof event.final === 'boolean' && event.model_role) {
       setModelRetryStatus({
         attempt: event.attempt,
@@ -5453,14 +5453,14 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       if (event.event.event_type === 'MESSAGE' && ['user', 'human'].includes(String(event.event.payload.source ?? '').toLowerCase())) setModelRetryStatus(undefined);
       appendLiveEvent(scope, event.event);
     }
-    if (event.type === 'message_complete') reconcileConversationProjection();
-  }, [appendLiveEvent, reconcileConversationProjection]);
+    if (event.type === 'message_complete') void synchronizeConversationEvents(true, 'message_complete');
+  }, [appendLiveEvent, synchronizeConversationEvents]);
   const onStreamReconnect = useCallback((scope: string) => {
     // A WebSocket is a live projection only. Events written while the browser
     // was disconnected are recovered from the authoritative REST feed after
     // the socket is live again; only formal event projections are retained.
-    if (scope === activeComposerScope.current) reconcileConversationProjection();
-  }, [reconcileConversationProjection]);
+    if (scope === activeComposerScope.current) void synchronizeConversationEvents(true, 'stream_reconnect');
+  }, [synchronizeConversationEvents]);
   const updateStreamStatus = useCallback((scope: string, status: StreamStatus) => {
     if (scope === activeComposerScope.current) setStreamStatus(status);
   }, []);

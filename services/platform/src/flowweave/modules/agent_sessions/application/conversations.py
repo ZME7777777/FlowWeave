@@ -20,6 +20,9 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from flowweave.modules.agent_sessions.application import usage as usage_projection
+from flowweave.modules.agent_sessions.application.conversation_diagnostics import (
+    log_conversation_diagnostic,
+)
 from flowweave.modules.agent_sessions.application.credential_sync import (
     ensure_credential_sync_schema,
     list_credential_sync_state,
@@ -1875,6 +1878,7 @@ def events(
     history_cursor: str | None = None,
     *,
     batch_override: RuntimeEventBatch | None = None,
+    diagnostic_trigger: str | None = None,
 ) -> dict[str, Any]:
     workspace = _workspace(db, workspace_id)
     binding = _binding(db, workspace_id, binding_id)
@@ -1885,11 +1889,23 @@ def events(
         batch = batch_override or runtime.read_active_events(
             replace(handle, cursor=cursor, history_cursor=history_cursor)
         )
-    except Exception:
+    except Exception as exc:
         if metrics := current_metrics():
             metrics.observe_operation(
                 "agent_session.events", time.monotonic() - started_at, outcome="error"
             )
+        log_conversation_diagnostic(
+            operation="events",
+            host_kind="agent_workspace",
+            binding_id=binding_id,
+            workspace_id=workspace_id,
+            request_cursor=cursor,
+            history_cursor=history_cursor,
+            trigger=diagnostic_trigger,
+            outcome="error",
+            error_kind=type(exc).__name__,
+            force=True,
+        )
         raise
     if metrics := current_metrics():
         metrics.observe_operation(
@@ -1897,6 +1913,17 @@ def events(
             time.monotonic() - started_at,
             outcome="ok",
             items=len(batch.events),
+        )
+    if batch_override is None:
+        log_conversation_diagnostic(
+            operation="events",
+            host_kind="agent_workspace",
+            binding_id=binding_id,
+            workspace_id=workspace_id,
+            batch=batch,
+            request_cursor=cursor,
+            history_cursor=history_cursor,
+            trigger=diagnostic_trigger,
         )
     # A native Task blocks its parent and has no wall-clock timeout. Register
     # one durable watchdog from formal event identities while this normal REST
@@ -3066,13 +3093,41 @@ def hydrate_conversation(db: Session, workspace_id: str, binding_id: str) -> dic
             None,
             batch_override=batch,
         )
+        log_conversation_diagnostic(
+            operation="hydration",
+            host_kind="agent_workspace",
+            binding_id=binding_id,
+            workspace_id=workspace_id,
+            batch=batch,
+            readiness=readiness,
+        )
         outcome = "ok"
     except ValueError as exc:
+        log_conversation_diagnostic(
+            operation="hydration",
+            host_kind="agent_workspace",
+            binding_id=binding_id,
+            workspace_id=workspace_id,
+            outcome="error",
+            error_kind=type(exc).__name__,
+            force=True,
+        )
         raise DomainError(
             "RUNTIME_ACTIVE_BRANCH_INCONSISTENT",
             "OpenHands returned an inconsistent active branch during hydration",
             409,
         ) from exc
+    except Exception as exc:
+        log_conversation_diagnostic(
+            operation="hydration",
+            host_kind="agent_workspace",
+            binding_id=binding_id,
+            workspace_id=workspace_id,
+            outcome="error",
+            error_kind=type(exc).__name__,
+            force=True,
+        )
+        raise
     finally:
         if metrics := current_metrics():
             metrics.observe_operation(
@@ -3347,6 +3402,13 @@ def condense_conversation(db: Session, workspace_id: str, binding_id: str) -> di
 def interrupt(db: Session, workspace_id: str, binding_id: str) -> None:
     workspace = _workspace(db, workspace_id)
     binding = _binding(db, workspace_id, binding_id, lock=True)
+    log_conversation_diagnostic(
+        operation="interrupt_requested",
+        host_kind="agent_workspace",
+        binding_id=binding_id,
+        workspace_id=workspace_id,
+        force=True,
+    )
     runtime = db.scalar(
         select(AgentWorkspaceRuntime)
         .where(AgentWorkspaceRuntime.workspace_id == workspace.id)
@@ -3363,6 +3425,15 @@ def interrupt(db: Session, workspace_id: str, binding_id: str) -> None:
     try:
         native.interrupt(handle)
     except DomainError as exc:
+        log_conversation_diagnostic(
+            operation="interrupt_completed",
+            host_kind="agent_workspace",
+            binding_id=binding_id,
+            workspace_id=workspace_id,
+            outcome="error",
+            error_kind=exc.code,
+            force=True,
+        )
         if exc.code != "EXECUTOR_UNAVAILABLE":
             raise
         raise DomainError(
@@ -3370,12 +3441,26 @@ def interrupt(db: Session, workspace_id: str, binding_id: str) -> None:
             "Agent 运行环境未响应暂停请求，未自动修改会话或运行环境",
             503,
         ) from exc
+    log_conversation_diagnostic(
+        operation="interrupt_completed",
+        host_kind="agent_workspace",
+        binding_id=binding_id,
+        workspace_id=workspace_id,
+        force=True,
+    )
 
 
 def input_readiness(db: Session, workspace_id: str, binding_id: str) -> dict[str, bool | str]:
     workspace = _workspace(db, workspace_id)
     readiness = get_runtime().input_readiness(
         _handle(db, workspace, _binding(db, workspace_id, binding_id))
+    )
+    log_conversation_diagnostic(
+        operation="input_readiness",
+        host_kind="agent_workspace",
+        binding_id=binding_id,
+        workspace_id=workspace_id,
+        readiness=readiness,
     )
     return readiness.as_dict()
 
@@ -3448,6 +3533,13 @@ def resume(db: Session, workspace_id: str, binding_id: str) -> dict[str, Any]:
     runtime = get_runtime()
     binding = _binding(db, workspace_id, binding_id)
     handle = _handle(db, workspace, binding)
+    log_conversation_diagnostic(
+        operation="resume_requested",
+        host_kind="agent_workspace",
+        binding_id=binding_id,
+        workspace_id=workspace_id,
+        force=True,
+    )
     provider = provider_for_config(db, config_from_binding(db, binding))
     if provider is not None:
         # Refresh the same frozen provider before a formal native resume.
@@ -3455,7 +3547,27 @@ def resume(db: Session, workspace_id: str, binding_id: str) -> dict[str, Any]:
         # conversations created before a transport-policy release receive the
         # current bounded retry/timeout configuration.
         runtime.switch_model(handle, provider)
-    result = runtime.run(handle)
+    try:
+        result = runtime.run(handle)
+    except Exception as exc:
+        log_conversation_diagnostic(
+            operation="resume_completed",
+            host_kind="agent_workspace",
+            binding_id=binding_id,
+            workspace_id=workspace_id,
+            outcome="error",
+            error_kind=type(exc).__name__,
+            force=True,
+        )
+        raise
+    log_conversation_diagnostic(
+        operation="resume_completed",
+        host_kind="agent_workspace",
+        binding_id=binding_id,
+        workspace_id=workspace_id,
+        result=result,
+        force=True,
+    )
     return {"accepted": True, "cursor": result.cursor}
 
 

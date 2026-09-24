@@ -17,6 +17,9 @@ from sqlalchemy.orm import Session
 
 from flowweave.modules.agent_sessions import public as agent_sessions
 from flowweave.modules.agent_sessions.application import usage as usage_projection
+from flowweave.modules.agent_sessions.application.conversation_diagnostics import (
+    log_conversation_diagnostic,
+)
 from flowweave.modules.agent_sessions.application.conversations import (
     ATTACHMENT_PATH,
     enqueue_title_task,
@@ -2058,10 +2061,40 @@ def read_flow_run_conversation_events(
     *,
     cursor: str | None = None,
     history_cursor: str | None = None,
+    diagnostic_trigger: str | None = None,
 ) -> dict[str, Any]:
     binding = _binding_for_run(db, flow_run_id, binding_id)
-    batch = get_runtime().read_active_events(
-        _flow_run_handle(db, flow_run_id, binding_id, cursor=cursor, history_cursor=history_cursor)
+    try:
+        batch = get_runtime().read_active_events(
+            _flow_run_handle(
+                db, flow_run_id, binding_id, cursor=cursor, history_cursor=history_cursor
+            )
+        )
+    except Exception as exc:
+        log_conversation_diagnostic(
+            operation="events",
+            host_kind="flow_node",
+            binding_id=binding_id,
+            flow_run_id=flow_run_id,
+            attempt_id=binding.node_attempt_id,
+            request_cursor=cursor,
+            history_cursor=history_cursor,
+            trigger=diagnostic_trigger,
+            outcome="error",
+            error_kind=type(exc).__name__,
+            force=True,
+        )
+        raise
+    log_conversation_diagnostic(
+        operation="events",
+        host_kind="flow_node",
+        binding_id=binding_id,
+        flow_run_id=flow_run_id,
+        attempt_id=binding.node_attempt_id,
+        batch=batch,
+        request_cursor=cursor,
+        history_cursor=history_cursor,
+        trigger=diagnostic_trigger,
     )
     return _event_batch_dict(db, binding, batch)
 
@@ -2074,6 +2107,7 @@ def read_node_conversation_events(
     binding_id: str,
     cursor: str | None = None,
     history_cursor: str | None = None,
+    diagnostic_trigger: str | None = None,
 ) -> dict[str, Any]:
     _binding_for_attempt(db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id)
     return read_flow_run_conversation_events(
@@ -2082,6 +2116,7 @@ def read_node_conversation_events(
         binding_id,
         cursor=cursor,
         history_cursor=history_cursor,
+        diagnostic_trigger=diagnostic_trigger,
     )
 
 
@@ -2108,6 +2143,15 @@ def hydrate_node_conversation(
         batch.readiness.as_dict()
         if batch.readiness is not None
         else runtime.input_readiness(handle).as_dict()
+    )
+    log_conversation_diagnostic(
+        operation="hydration",
+        host_kind="flow_node",
+        binding_id=binding_id,
+        flow_run_id=flow_run_id,
+        attempt_id=attempt_id,
+        batch=batch,
+        readiness=readiness,
     )
     return {
         "events": _event_batch_dict(db, binding, batch),
@@ -3238,13 +3282,18 @@ def _node_handle(
 def node_input_readiness(
     db: Session, *, flow_run_id: str, attempt_id: str, binding_id: str
 ) -> dict[str, bool | str]:
-    return (
-        get_runtime()
-        .input_readiness(
-            _node_handle(db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id)
-        )
-        .as_dict()
+    readiness = get_runtime().input_readiness(
+        _node_handle(db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id)
     )
+    log_conversation_diagnostic(
+        operation="input_readiness",
+        host_kind="flow_node",
+        binding_id=binding_id,
+        flow_run_id=flow_run_id,
+        attempt_id=attempt_id,
+        readiness=readiness,
+    )
+    return readiness.as_dict()
 
 
 def node_conversation_context(
@@ -3335,17 +3384,43 @@ def interrupt_node_conversation(
     binding = _binding_for_attempt(
         db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
     )
-    if binding.node_attempt_id is None:
+    log_conversation_diagnostic(
+        operation="interrupt_requested",
+        host_kind="flow_node",
+        binding_id=binding_id,
+        flow_run_id=flow_run_id,
+        attempt_id=attempt_id,
+        force=True,
+    )
+    try:
         get_runtime().interrupt(
             _node_handle(db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id)
         )
+    except Exception as exc:
+        log_conversation_diagnostic(
+            operation="interrupt_completed",
+            host_kind="flow_node",
+            binding_id=binding_id,
+            flow_run_id=flow_run_id,
+            attempt_id=attempt_id,
+            outcome="error",
+            error_kind=type(exc).__name__,
+            force=True,
+        )
+        raise
+    log_conversation_diagnostic(
+        operation="interrupt_completed",
+        host_kind="flow_node",
+        binding_id=binding_id,
+        flow_run_id=flow_run_id,
+        attempt_id=attempt_id,
+        force=True,
+    )
+    if binding.node_attempt_id is None:
         return {"accepted": True}
     attempt = _attempt(db, attempt_id)
     expected_version = attempt.state_version
     should_pause = attempt.state == AttemptState.EXECUTING and attempt.runtime_phase == "RUNNING"
-    get_runtime().interrupt(
-        _node_handle(db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id)
-    )
     if should_pause:
         claimed_id = db.scalar(
             update(NodeAttempt)
@@ -3446,18 +3521,49 @@ def resume_node_conversation(
     )
     attempt = _attempt(db, attempt_id)
     runtime = get_runtime()
+    log_conversation_diagnostic(
+        operation="resume_requested",
+        host_kind="flow_node",
+        binding_id=binding_id,
+        flow_run_id=flow_run_id,
+        attempt_id=attempt_id,
+        force=True,
+    )
 
     def resume_runtime() -> RuntimeResult:
-        handle = _node_handle(
-            db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
+        try:
+            handle = _node_handle(
+                db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
+            )
+            provider = provider_for_config(db, config_from_binding(db, binding))
+            if provider is not None:
+                # OpenHands switch_llm is live-runtime state. Re-apply the
+                # persisted Conversation binding before resuming so a Runtime
+                # restart or native error cannot restore the creation-time model.
+                runtime.switch_model(handle, provider)
+            result = runtime.run(handle)
+        except Exception as exc:
+            log_conversation_diagnostic(
+                operation="resume_completed",
+                host_kind="flow_node",
+                binding_id=binding_id,
+                flow_run_id=flow_run_id,
+                attempt_id=attempt_id,
+                outcome="error",
+                error_kind=type(exc).__name__,
+                force=True,
+            )
+            raise
+        log_conversation_diagnostic(
+            operation="resume_completed",
+            host_kind="flow_node",
+            binding_id=binding_id,
+            flow_run_id=flow_run_id,
+            attempt_id=attempt_id,
+            result=result,
+            force=True,
         )
-        provider = provider_for_config(db, config_from_binding(db, binding))
-        if provider is not None:
-            # OpenHands switch_llm is live-runtime state. Re-apply the
-            # persisted Conversation binding before resuming so a Runtime
-            # restart or native error cannot restore the creation-time model.
-            runtime.switch_model(handle, provider)
-        return runtime.run(handle)
+        return result
 
     if binding.node_attempt_id is None:
         result = resume_runtime()

@@ -918,6 +918,7 @@ async def node_session_events(
     container: ContainerDep,
     cursor: str | None = Query(default=None, max_length=200),
     history_cursor: str | None = Query(default=None, max_length=200),
+    diagnostic_trigger: str | None = Query(default=None, max_length=40),
 ) -> dict[str, Any]:
     # The latest-window route is interactive. Older pages are browser prefetch
     # and must not occupy its Runtime/DB lane while a live turn is recovering.
@@ -931,6 +932,7 @@ async def node_session_events(
             binding_id=binding_id,
             cursor=cursor,
             history_cursor=history_cursor,
+            diagnostic_trigger=diagnostic_trigger,
         ),
     )
 
