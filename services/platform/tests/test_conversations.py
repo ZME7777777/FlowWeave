@@ -1979,7 +1979,7 @@ def test_idle_node_message_dispatch_rebinds_then_sends_without_database(
             calls.append("switch")
 
         def conversation_context(self, _handle: RuntimeHandle) -> dict[str, int]:
-            return {"used_tokens": 383_999, "condenser_max_tokens": 384_000}
+            return {"used_tokens": 409_599, "condenser_max_tokens": 409_600}
 
         def read_active_events(self, _handle: RuntimeHandle) -> RuntimeEventBatch:
             return RuntimeEventBatch(events=())
@@ -2048,7 +2048,7 @@ def test_idle_node_message_dispatch_condenses_at_the_frozen_native_threshold(
             calls.append("switch")
 
         def conversation_context(self, _handle: RuntimeHandle) -> dict[str, int]:
-            return {"used_tokens": 384_000, "condenser_max_tokens": 384_000}
+            return {"used_tokens": 409_600, "condenser_max_tokens": 409_600}
 
         def read_active_events(self, _handle: RuntimeHandle) -> RuntimeEventBatch:
             return RuntimeEventBatch(
@@ -2125,7 +2125,7 @@ def test_idle_node_message_dispatch_does_not_send_before_condensation_completes(
             return None
 
         def conversation_context(self, _handle: RuntimeHandle) -> dict[str, int]:
-            return {"used_tokens": 384_000, "condenser_max_tokens": 384_000}
+            return {"used_tokens": 409_600, "condenser_max_tokens": 409_600}
 
         def read_active_events(self, _handle: RuntimeHandle) -> RuntimeEventBatch:
             return RuntimeEventBatch(

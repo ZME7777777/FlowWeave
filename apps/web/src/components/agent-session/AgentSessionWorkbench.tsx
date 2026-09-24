@@ -40,7 +40,9 @@ const SESSION_PERFORMANCE_MARK_PREFIX = 'flowweave.agent-session.';
 // they are not a wall-clock deadline for the whole child task.
 const MODEL_REQUEST_TIMEOUT_SECONDS = 120;
 const MODEL_REQUEST_MAX_RETRIES = 5;
-const DEFAULT_CONTEXT_COMPACTION_THRESHOLD_TOKENS = 384_000;
+const PRODUCT_CONTEXT_WINDOW_TOKENS = 512_000;
+const CONTEXT_COMPACTION_TRIGGER_PERCENT = 80;
+const CONTEXT_COMPACTION_TRIGGER_TOKENS = 409_600;
 type StreamStatus = 'connecting' | 'live' | 'recovering' | 'disabled';
 type TurnState = 'idle' | 'running' | 'pausing' | 'paused' | 'resuming';
 type QueueDeliveryState = 'queued';
@@ -6359,13 +6361,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     ?? conversationProviderInfo?.models.find(model => model.enabled && model.is_default);
   const availableConversationModels = conversationProviderInfo?.models.filter(model => model.enabled) ?? [];
   const supportedEfforts = conversationModel?.supported_reasoning_efforts ?? [];
-  // The product limit is the frozen native condenser threshold, not the
-  // model's larger physical input window. A Conversation supplies its exact
-  // frozen value; a draft uses the platform's current frozen default.
-  const visibleContextWindow = typeof currentContext?.condenser_max_tokens === 'number'
-    && currentContext.condenser_max_tokens > 0
-    ? currentContext.condenser_max_tokens
-    : DEFAULT_CONTEXT_COMPACTION_THRESHOLD_TOKENS;
+  // Show the product context window, not the lower native trigger used to
+  // leave room for OpenHands to summarize. Provider-reported physical windows
+  // are intentionally not displayed here because they are model-dependent.
+  const visibleContextWindow = PRODUCT_CONTEXT_WINDOW_TOKENS;
   const currentContextTokens = currentContext?.used_tokens;
   const hasCurrentContextUsage = typeof currentContextTokens === 'number' && currentContextTokens >= 0;
   const contextUsagePending = Boolean(
@@ -6394,7 +6393,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     ? Math.min(100, Math.round((currentViewEventCount / eventLimit) * 100))
     : undefined;
   const contextTitle = contextProgress
-    ? `Token：OpenHands 当前 View ${contextProgress.used.toLocaleString()} / 自动压缩阈值 ${contextProgress.window.toLocaleString()}（${contextProgress.percentage}%）`
+    ? `Token：OpenHands 当前 View ${contextProgress.used.toLocaleString()} / 上下文窗口 ${contextProgress.window.toLocaleString()}（${contextProgress.percentage}%）；达到 ${CONTEXT_COMPACTION_TRIGGER_PERCENT}%（${CONTEXT_COMPACTION_TRIGGER_TOKENS.toLocaleString()} Token）时自动压缩`
     : undefined;
   const tokenPendingLabel = contextQuery.isLoading
     ? '读取中'

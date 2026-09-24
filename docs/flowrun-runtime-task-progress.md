@@ -143,6 +143,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-521 | 旧 1.47 ACP schema 兼容补丁与新上游依赖图不兼容，且 FlowWeave Runtime provenance 仍指向过时来源 | DONE | `baseline` 已直接对齐 upstream `e21d77673b738f056676044600c4ad81c5a575c8`；FlowWeave Runtime source archive、依赖锁、contract/provenance、Fork 请求和受控 Codex catalog 已迁移至 1.49.5，移除私有 fork-condenser overlay，并以真实固定源码 contract probe 校验。 |
 | FR-527 | 上游 1.49.5 基线不含当前 View 的精确 Token／事件指标路由，导致所有会话降级为未知 | DONE | 在合并上游后的 FlowWeave `baseline` 追加 `1d9e232635059f89c3015205f98e588894b9277c` 与 `7c432d8188ffe026ed15598683aba05bd72881f3`，恢复 `/api/conversations/{id}/context` 的 `total_tokens`、`event_count` 契约；FlowWeave Runtime source lock、归档、镜像 identity、domain identity 与 contract probe 都锁定新 commit，前端既有精确投影和未知态保护继续生效。 |
 | FR-525 | 已发布的新 Runtime 镜像不会替换仍健康的 Agent Workspace generation，用户无法将旧 `/context` 契约升级为新镜像 | DONE | 新增受认证的 `POST /agent-workspaces/{workspace_id}/runtime/replacements`。它仅 fence 当前 active generation 并投递既有 Provider provisioning 任务；持久 Workspace、OpenHands Conversation/Event 与 Secret reference 不变，替换成功后由 Provider 绑定 N+1。 |
+| FR-526 | 底栏把原生压缩触发值误展示为上下文窗口，且新会话仍在 75% 提前压缩 | DONE | 产品窗口固定为 512,000 Token；新会话与 Fork 把 OpenHands 原生压缩触发值冻结为该窗口的 80%（409,600）。底栏展示窗口而非触发值，并明确 80% 压缩策略。 |
 | FR-522 | Agent 首屏 hydration 读取池暂时饱和时，浏览器在 503 后扇出 events、readiness、context 与 confirmation 回退读取，导致所有会话持续不可读 | DONE | `AGENT_RUNTIME_UNAVAILABLE` 503 保持单一 hydration 协调器并以 5 秒退避重试；不再启用四条独立 Runtime 读取。404 等非容量兼容错误仍保留既有回退，避免旧 Runtime 缺少 hydration 时无法打开会话。 |
 | FR-523 | API Runtime read lane 忽略已声明的排队超时并将每个 worker 的三个短读槽在 250ms 后过早拒绝 | DONE | lane 现使用 `BLOCKING_POOL_TIMEOUT_SECONDS` 的受控 2 秒等待预算；API 默认互动读取容量从每 worker 3 提升到 4，四个 worker 的总数据库容量预算仍为 70/100，保留 20 条 PostgreSQL 连接余量。 |
 
@@ -6876,6 +6877,16 @@ FlowWeave 本地累加后猜测压缩边界。
 完成：模型列表探测按 HTTP 状态和有限的本地语义标记分类为稳定错误码；订阅／计划到期与余额或额度耗尽统一提示用户续费或更换仍有额度的 API Key。错误正文仅在服务端内存中用于分类，响应和页面均使用固定中文说明；其它模型调用路径与 Runtime 不变。
 
 验收：模型列表探测的无容器 MockTransport 回归覆盖订阅到期、认证拒绝和连接超时，确认上游账号文本不会进入错误消息；受影响 Python `py_compile`、Ruff check／format、Web TypeScript typecheck、受影响 ESLint、`git diff --check` 与任务状态唯一性通过。无迁移、OpenHands、Runtime Provider 或远端部署变更。
+
+### FR-526 512k 上下文窗口与 80% 原生压缩阈值 — DONE
+
+依赖：FR-518、FR-524。
+
+目标：发送框 Token 指标必须显示产品定义的 `512,000` 上下文窗口，不能再把给 OpenHands 留摘要余量的原生压缩触发值显示为窗口上限。新建 Agent Workspace／FlowNode 会话及其 Fork 必须在窗口使用量达到 `80%`，即 `409,600` Token 时触发既有 OpenHands 原生压缩；不得通过浏览器累计 Token 或事件伪造该决策。
+
+完成：共享 Runtime 配置将产品窗口与压缩比例显式定义为 `512,000 × 0.8`，新建和 Fork 复用现有 spec 路径冻结 `LLMSummarizingCondenser.max_tokens=409,600`。发送框固定显示 `512,000`，悬停说明区分当前正式 View 用量、产品窗口以及 `80%（409,600 Token）` 的自动压缩触发点；模型供应商的物理窗口及 Runtime 返回的原生触发值不再被误作界面上限。既有 Conversation 保持已冻结的原生压缩配置，不在线改写。
+
+验收：受影响 Python `py_compile`、Ruff check（排除同文件未改动的既有 E501 文案）与 Web TypeScript typecheck／ESLint 通过，`git diff --check` 通过。三条定向 Python 回归在断言前被本机缺失 Docker socket 的全局 Testcontainers PostgreSQL fixture 阻断；产品流 Playwright 已启动本地 Web，但在本切片 Token 断言前被既有“模型服务暂时不可用”断言阻断，未记为通过。无迁移、OpenHands 源码、Runtime Provider 或远端部署变更。
 
 
 ## 7. 恢复工作检查表

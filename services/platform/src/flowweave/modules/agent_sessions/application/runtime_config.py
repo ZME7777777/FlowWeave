@@ -56,10 +56,14 @@ PROJECT_ROOT = "/runtime/workspace/project"
 # Event-count pressure is a complementary native guard for many small Tool
 # events; token pressure remains governed by ``NATIVE_CONDENSER_MAX_TOKENS``.
 CONDENSER_MAX_EVENTS = 500
-# Keep enough headroom for OpenHands to construct the summarization request and
-# receive its response.  This is a frozen native condenser policy for new
-# conversations, not a browser-side estimate of a model's physical window.
-NATIVE_CONDENSER_MAX_TOKENS = 384_000
+# FlowWeave presents a stable product context window, independent from a
+# provider's larger physical input window.  Reserve the remaining 20% for the
+# native OpenHands summarization request and its response.
+CONTEXT_WINDOW_TOKENS = 512_000
+CONTEXT_COMPACTION_RATIO = 0.8
+# This is a frozen native condenser policy for new conversations, not a
+# browser-side estimate of a model's physical window.
+NATIVE_CONDENSER_MAX_TOKENS = int(CONTEXT_WINDOW_TOKENS * CONTEXT_COMPACTION_RATIO)
 AGENT_WORKSPACE_MAX_ITERATIONS = 300
 MATERIALIZED_CAPABILITY_TYPES = frozenset({"SKILL", "MCP", "PLUGIN"})
 PROJECT_ROOT_SYSTEM_CONTEXT = "\n".join(

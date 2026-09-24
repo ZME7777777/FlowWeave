@@ -101,7 +101,7 @@ def test_agent_context_is_compiled_only_into_openhands_system_suffix(settings):
     assert spec.budgets.max_iterations == AGENT_WORKSPACE_MAX_ITERATIONS
     assert spec.condenser is not None
     assert spec.condenser.max_size == 500
-    assert spec.condenser.max_tokens == 384_000
+    assert spec.condenser.max_tokens == 409_600
     assert "工具调用前导与 ThinkTool 的用途不同" in suffix
     assert "ThinkTool 本身也是工具调用" in suffix
     assert "应主动、持续使用 ThinkTool 向用户同步进展" in suffix

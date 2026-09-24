@@ -755,19 +755,19 @@ test('top-level Agent workspace creates a direct conversation and restores its U
       contextRequests += 1;
       const forkContext = path.includes('/conversations/agent-conversation-fork-1/');
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(forkContext ? {
-        used_tokens: null, window_tokens: 922_000, cumulative_tokens: 0, condenser_max_tokens: 512_000,
+        used_tokens: null, window_tokens: 922_000, cumulative_tokens: 0, condenser_max_tokens: 409_600,
         model_name: 'gpt-test', reasoning_effort: 'high', usage_current: true,
         condenser_max_size: 240, view_event_count: 12,
       } : contextAvailable ? {
         used_tokens: contextMetricsTemporarilyUnavailable ? null : 6_380,
         window_tokens: 922_000,
         cumulative_tokens: 12_716,
-        condenser_max_tokens: 512_000,
+        condenser_max_tokens: 409_600,
         model_name: 'gpt-test', reasoning_effort: 'high', usage_current: !contextMetricsTemporarilyUnavailable,
         condenser_max_size: 10_000,
         view_event_count: contextMetricsTemporarilyUnavailable ? null : 42,
       } : {
-        used_tokens: null, window_tokens: 922_000, cumulative_tokens: 12_716, condenser_max_tokens: 512_000,
+        used_tokens: null, window_tokens: 922_000, cumulative_tokens: 12_716, condenser_max_tokens: 409_600,
         model_name: 'gpt-test', reasoning_effort: 'high', usage_current: false,
       }) });
       return;
@@ -1283,7 +1283,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   contextAvailable = true;
   await page.reload();
   await expect(page.locator('.agent-context-progress.token')).toContainText('Token6,380 / 512,000');
-  await expect(page.locator('.agent-context-progress.token')).toHaveAttribute('title', /OpenHands 当前 View 6,380 \/ 自动压缩阈值 512,000/);
+  await expect(page.locator('.agent-context-progress.token')).toHaveAttribute('title', /OpenHands 当前 View 6,380 \/ 上下文窗口 512,000.*达到 80%（409,600 Token）时自动压缩/);
   await expect(page.locator('.agent-workspace-overview').getByText('累计 12,716 Token', { exact: true })).toBeVisible();
   await expect(page.locator('.agent-context-progress.activity')).toContainText('事件42 / 10,000');
   await expect(page.locator('.agent-context-progress.activity')).toHaveAttribute('title', /OpenHands 当前活动 View 事件 42 \/ 自动压缩阈值 10,000/);
