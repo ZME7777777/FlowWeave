@@ -200,7 +200,7 @@ interface ConversationDraftPersistence {
   modelName: string;
   reasoningEffort: string | null;
 }
-type LocalMessageProjectionState = 'submitting' | 'accepted' | 'ambiguous';
+type LocalMessageProjectionState = 'queued' | 'submitting' | 'accepted' | 'ambiguous';
 interface LocalMessageProjection {
   submissionId: string;
   scope: string;
@@ -5869,7 +5869,31 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       reportOperationError(selected?.id, persistModel.error as Error);
     },
   });
-  const showOptimisticUserBubble = useCallback((message: QueuedMessage, idPrefix = 'pending-user'): string => {
+  const showOptimisticUserBubble = useCallback((
+    message: QueuedMessage,
+    idPrefix = 'pending-user',
+    state: LocalMessageProjectionState = 'submitting',
+  ): string => {
+    const existing = localMessageProjections.current.get(message.id);
+    if (existing) {
+      updateLocalMessageProjections(current => current.set(message.id, {
+        ...existing,
+        scope: message.scope,
+        state,
+        event: {
+          ...existing.event,
+          payload: {
+            ...existing.event.payload,
+            content: message.content,
+            attachments: message.items,
+            conversation_references: message.references.map(item => ({ event_id: item.eventId, content: item.content })),
+            workspace_references: message.workspaceReferences,
+            collaboration_annotations: message.annotations,
+          },
+        },
+      }));
+      return existing.renderKey;
+    }
     const renderKey = `${idPrefix}:${message.id}`;
     const event: OpenHandsConversationEvent = {
       id: renderKey,
@@ -5888,23 +5912,26 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       submissionId: message.id,
       scope: message.scope,
       renderKey,
-      state: 'submitting',
+      state,
       event,
       formalEventIdsAtSubmission: new Set((eventsQuery.data?.events ?? []).map(item => item.id)),
     }));
     return renderKey;
   }, [eventsQuery.data?.events, updateLocalMessageProjections]);
+  useEffect(() => {
+    for (const message of queuedMessages) {
+      if (!localMessageProjections.current.has(message.id)) {
+        showOptimisticUserBubble(message, 'pending-user', 'queued');
+      }
+    }
+  }, [queuedMessages, showOptimisticUserBubble]);
+
   const send = useMutation({
     mutationFn: (message: BoundQueuedMessage) => api.sendMessage(workspace!.id, message.bindingId, message.content, message.items, message.references.map(item => ({ event_id: item.eventId, content: item.content })), message.workspaceReferences ?? [], message.annotations, message.id),
-    onMutate: message => {
-      commitQueuedMessages(current => current.filter(item => item.id !== message.id));
-      const optimisticEventId = showOptimisticUserBubble(message);
-      if (message.nativeGuidance) return { optimisticEventId, nativeGuidance: true };
-      setActiveTurnEventId(undefined);
-      setRequestStartedAt(Date.now());
-      setTurnState('running');
-      return { optimisticEventId, nativeGuidance: false };
-    },
+    onMutate: message => ({
+      optimisticEventId: localMessageProjections.current.get(message.id)?.renderKey,
+      nativeGuidance: message.nativeGuidance === true,
+    }),
     onSuccess: (value, message, context) => {
       sendingMessageIds.current.delete(message.id);
       const cursor = value.cursor;
@@ -5957,12 +5984,17 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     },
   });
   const dispatchMessage = useCallback((message: BoundQueuedMessage) => {
-    // TanStack invokes onMutate after an async cache hook. Claim the browser
-    // message first so a queue effect cannot dispatch the same snapshot twice.
     if (sendingMessageIds.current.has(message.id)) return;
     sendingMessageIds.current.add(message.id);
+    commitQueuedMessages(current => current.filter(item => item.id !== message.id));
+    showOptimisticUserBubble(message);
+    if (!message.nativeGuidance) {
+      setActiveTurnEventId(undefined);
+      setRequestStartedAt(Date.now());
+      setTurnState('running');
+    }
     send.mutate(message);
-  }, [send]);
+  }, [commitQueuedMessages, send, showOptimisticUserBubble]);
   const migrateStreaming = useMutation({
     mutationFn: (_message: QueuedMessage) => {
       void _message;
@@ -6057,7 +6089,12 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       commitQueuedMessages(() => []);
       updateLocalMessageProjections(current => {
         for (const [submissionId, item] of current) {
-          if (item.scope === scope && ((item.canonicalEventId && branch.has(item.canonicalEventId)) || branchSubmissionIds.has(submissionId))) {
+          if (item.scope !== scope) continue;
+          if (item.state === 'queued') {
+            current.delete(submissionId);
+            continue;
+          }
+          if ((item.canonicalEventId && branch.has(item.canonicalEventId)) || branchSubmissionIds.has(submissionId)) {
             removedProjections.push(item);
             current.delete(submissionId);
           }
@@ -6238,6 +6275,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     };
     if (shouldQueue) {
       commitQueuedMessages(items => [...items, queuedMessage]);
+      showOptimisticUserBubble(queuedMessage, 'pending-user', 'queued');
       return;
     }
     dispatchMessage({ ...queuedMessage, bindingId: selected.id });
@@ -6303,6 +6341,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const editQueuedMessage = useCallback((message: QueuedMessage) => {
     if (message.deliveryState !== 'queued') return;
     commitQueuedMessages(items => items.filter(item => item.id !== message.id));
+    removeLocalMessageProjection(message.id, message.scope);
     replaceComposerDraft(message.content);
     setAttachments(message.items);
     setReferences(message.references);
@@ -6310,7 +6349,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     setComposerAnnotations(message.annotations);
     setQueuedMessageMenuId(undefined);
     requestAnimationFrame(() => composerRef.current?.focus());
-  }, [commitQueuedMessages, replaceComposerDraft]);
+  }, [commitQueuedMessages, removeLocalMessageProjection, replaceComposerDraft]);
   const toggleQueueMode = useCallback(() => {
     const enabled = !queueModeEnabled;
     writeQueueMode(queueModeStorageKey, enabled);
@@ -6736,7 +6775,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
               <span>{['等待发送', message.items.length ? `${message.items.length} 个附件` : '', message.references.length ? `${message.references.length} 条会话引用` : '', message.workspaceReferences?.length ? `${message.workspaceReferences.length} 条工作区引用` : ''].filter(Boolean).join(' · ')}</span>
               <div ref={queuedMessageMenuId === message.id ? queuedMessageMenuRef : undefined}>
                 {editable && <button type="button" aria-label={`调整方向排队消息 ${index + 1}`} title={queueModeEnabled ? '立即发送，调整当前回复方向' : '队列模式已关闭'} disabled={!queueModeEnabled || !canWrite || effectiveTurnState !== 'running' || !selected?.streaming_callback_ready || message.scope !== selected.id} onClick={() => sendQueuedMessageImmediately(message)}><CornerDownRight size={12}/>调整方向</button>}
-                <button type="button" className="queue-remove" aria-label={`移除排队消息 ${index + 1}`} disabled={!removable} onClick={() => { commitQueuedMessages(items => items.filter(item => item.id !== message.id)); setQueuedMessageMenuId(current => current === message.id ? undefined : current); }}><Trash2 size={13}/></button>
+                <button type="button" className="queue-remove" aria-label={`移除排队消息 ${index + 1}`} disabled={!removable} onClick={() => { commitQueuedMessages(items => items.filter(item => item.id !== message.id)); removeLocalMessageProjection(message.id, message.scope); setQueuedMessageMenuId(current => current === message.id ? undefined : current); }}><Trash2 size={13}/></button>
                 {editable && <button type="button" className="queue-more" aria-label={`更多排队消息操作 ${index + 1}`} title="更多操作" aria-haspopup="menu" aria-expanded={queuedMessageMenuId === message.id} onClick={() => setQueuedMessageMenuId(current => current === message.id ? undefined : message.id)}><Ellipsis size={14}/></button>}
                 {editable && queuedMessageMenuId === message.id && <div className="queue-menu" role="menu">
                   <button type="button" role="menuitem" onClick={() => editQueuedMessage(message)}><Pencil size={12}/>编辑消息</button>

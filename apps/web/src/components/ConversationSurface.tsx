@@ -2123,9 +2123,14 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
         const completionConfirmed = !isGenerating && Boolean(turn.assistant || failures.length);
         const fileChanges = fileChangesForTurn(events, turn);
         const userTimestamp = turn.user ? formatMessageTime(turn.user.event.payload.timestamp) : undefined;
-        const userDeliveryStatus = turn.user && typeof turn.user.event.payload._flowweave_delivery_status === 'string'
-          ? turn.user.event.payload._flowweave_delivery_status
-          : undefined;
+        const projectionState = turn.user?.event.payload._flowweave_projection_state;
+        const userDeliveryStatus = projectionState === 'queued'
+          ? '等待发送'
+          : projectionState === 'ambiguous'
+            ? '发送结果待确认'
+            : turn.user && typeof turn.user.event.payload._flowweave_delivery_status === 'string'
+              ? turn.user.event.payload._flowweave_delivery_status
+              : undefined;
         return <section className="conversation-turn" key={turn.renderKey} data-conversation-turn={turn.id}>
           {turn.user && <div className="conversation-user-message">{editingEventId === turn.user.event.id
             ? <form className="conversation-message-edit" onSubmit={event => { event.preventDefault(); if (editingContent.trim()) onRewrite?.(turn.user!.event.id, editingContent.trim()); }}><textarea ref={rewriteEditor} aria-label="编辑已发送消息" value={editingContent} disabled={rewritePending} onChange={event => setEditingContent(event.target.value)} onKeyDown={event => {
