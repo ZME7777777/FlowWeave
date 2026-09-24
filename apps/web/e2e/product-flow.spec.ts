@@ -1936,14 +1936,17 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect.poll(() => runningDirectMessagePosts).toBe(1);
   await page.waitForTimeout(250);
   expect(runningDirectMessagePosts).toBe(1);
+  releaseRunningDirectDelivery?.();
+  // The optimistic user event must remain visible after the POST is accepted,
+  // before OpenHands appends the formal MESSAGE event.
+  await expect(runningDirectMessage).toHaveCount(1);
+  await expect(runningDirectMessage).toBeVisible();
   agentStream!.send(JSON.stringify({
     type: 'event',
     event: { id: 'running-direct-stream-user', event_type: 'MESSAGE', payload: { source: 'user', content: 'FLOWWEAVE_MESSAGE_CONTEXT_V5:{"current_user_request":{"content":"运行中直接发送消息"}}', display_content: '运行中直接发送消息', timestamp: new Date().toISOString().replace(/Z$/, '') } },
   }));
   await expect(runningDirectMessage).toHaveCount(1);
   await expect(page.locator('.conversation-message-delivery-status')).toHaveCount(0);
-  releaseRunningDirectDelivery?.();
-  await expect(runningDirectMessage).toHaveCount(1);
   await expect(runningDirectMessage).toBeVisible();
   const activeConversation = conversations.find(item => item.id === sentBinding);
   if (!activeConversation) throw new Error('Expected the active conversation to receive the direct message');

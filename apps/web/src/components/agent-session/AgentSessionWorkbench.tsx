@@ -4835,11 +4835,16 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     const liveEvents = scopedLiveEvents
       .filter(item => item.scope === activeScope)
       .map(item => item.event);
+    const submittedEvents = activeScope
+      ? [...submittedUserEvents.current.values()]
+        .filter(item => item.scope === activeScope)
+        .map(item => item.event)
+      : [];
     const bootstrapEvent = optimisticBootstrapTurn && optimisticBootstrapTurn.scope === activeScope
       ? [optimisticBootstrapTurn.event]
       : [];
     return mergeConversationEvents(
-      mergeConversationEvents(eventsQuery.data?.events ?? [], liveEvents),
+      mergeConversationEvents(eventsQuery.data?.events ?? [], [...liveEvents, ...submittedEvents]),
       bootstrapEvent,
     )
       .filter(event => !hiddenEventIds.has(event.id));
@@ -5096,7 +5101,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   }, [conversationDraft, conversations, conversationsQuery.isFetching, host, onNavigate, pendingCreatedId, routeBindingId, selected]);
   useEffect(() => { if (selected?.id === pendingCreatedId) setPendingCreatedId(undefined); }, [pendingCreatedId, selected?.id]);
   useLayoutEffect(() => {
-    if (previousComposerScope.current === composerScope) return;
+    if (!composerScope || previousComposerScope.current === composerScope) return;
     const previousScope = previousComposerScope.current;
     if (previousScope) persistComposerDraft(previousScope);
     previousComposerScope.current = composerScope;
