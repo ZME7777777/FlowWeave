@@ -2217,6 +2217,15 @@ def test_agent_workspace_title_task_retains_first_sentence_and_logs_failure(
         )
 
 
+def test_title_cleaning_rejects_answer_like_output_and_keeps_short_phrases():
+    fallback = "你是谁"
+
+    assert titles._clean_title("我是 Codex，一个编程助手。", fallback) == fallback
+    assert titles._clean_title("我可以帮你修改代码", fallback) == fallback
+    assert titles._clean_title("检查当前目录", fallback) == "检查当前目录"
+    assert titles._clean_title("这是一段超过标题限制的中文内容" * 3, fallback) == fallback
+
+
 def test_chat_completions_title_uses_provider_protocol(monkeypatch):
     captured: dict[str, object] = {}
 
@@ -2257,6 +2266,8 @@ def test_chat_completions_title_uses_provider_protocol(monkeypatch):
     assert captured["headers"]["Authorization"] == "Bearer token"
     assert captured["json"]["stream"] is False
     assert "temperature" not in captured["json"]
+    assert "不是对话助手" in captured["json"]["messages"][0]["content"]
+    assert captured["json"]["messages"][1]["content"] == "<user_message>\n你好\n</user_message>"
 
 
 def test_responses_title_uses_streaming_provider_protocol(monkeypatch):
@@ -2313,6 +2324,10 @@ def test_responses_title_uses_streaming_provider_protocol(monkeypatch):
     assert captured["headers"]["Accept"] == "text/event-stream"
     assert captured["json"]["stream"] is True
     assert captured["json"]["store"] is False
+    assert "不是对话助手" in captured["json"]["input"][0]["content"][0]["text"]
+    assert captured["json"]["input"][1]["content"][0]["text"] == (
+        "<user_message>\n你好\n</user_message>"
+    )
 
 
 def test_agent_workspace_terminal_session_names_are_safe_and_instance_scoped():
