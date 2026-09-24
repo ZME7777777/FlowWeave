@@ -3,8 +3,8 @@
 > 状态：`FR-00 FROZEN`
 > 日期：2026-08-21
 > OpenHands 事实基线：`software-agent-sdk`
-> `baseline` commit `e21d77673b738f056676044600c4ad81c5a575c8`（直接对齐 OpenHands upstream
-> `main`；四个发布包版本为 `1.49.5`）
+> upstream anchor `e21d77673b738f056676044600c4ad81c5a575c8`；FlowWeave `baseline` 在合并
+> upstream `main` 后可追加受审计扩展，实际 commit 由 Runtime source lock 固定；四个发布包版本为 `1.49.5`
 > 本文冻结目标架构和后续迁移边界，不表示后续运行时代码已经落地。
 
 ## 1. 决策摘要
@@ -38,7 +38,7 @@ ID 作为逻辑根，并可复用父 FlowRun 的物理 Runtime allocation。不�
 
 ## 2. OpenHands 能力事实与架构选择
 
-固定目标源码已经证明：
+锁定的 FlowWeave `baseline` 源码已经证明：
 
 - `StartConversationRequest.workspace` 的正式类型是 `LocalWorkspace`。
 - Agent Server 的 Event Service 要求服务进程本地可见的 `LocalWorkspace`。
@@ -120,7 +120,7 @@ overlay 的 Runtime Image。构建结果必须冻结：
 
 - 平台 Setup 启动镜像引用及创建会话时解析的内容 digest；
 - 用户 base image repository 和 digest；
-- OpenHands source commit、source archive digest 和四包版本；
+- OpenHands upstream anchor、FlowWeave `baseline` source commit、source archive digest 和四包版本；
 - overlay digest、build target、platform 和构建日志摘要；
 - 最终 Runtime Image repository 和 image digest；
 - `contract_check.py`、基础 Tool/Workspace 探针和安全扫描结果。

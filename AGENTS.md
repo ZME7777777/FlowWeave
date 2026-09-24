@@ -29,7 +29,11 @@ scripts/verify-remote-deploy.sh --config .local/remote-deploy.env \
 
 ## OpenHands 源码与镜像基线
 
-当前目标能力事实固定为 OpenHands `baseline` commit `e21d77673b738f056676044600c4ad81c5a575c8`（直接对齐 upstream `main`，四包发布版本为 `1.49.5`）。OpenHands `baseline` 工作树保持只读；不得在当前 `FR-*` 主线修改 OpenHands 源码或创建新的 fork。
+OpenHands `baseline` 是 FlowWeave 的持续集成基线：先合并已验证的 upstream `main`，再在同一 `baseline` 分支追加经审计的 FlowWeave Runtime 扩展。当前上游锚点为 `e21d77673b738f056676044600c4ad81c5a575c8`，四包发布版本为 `1.49.5`；实际 Runtime 身份始终以 `baseline` 的固定 HEAD commit、归档 SHA-256 和 source lock 为准，而非假定等于上游锚点。
+
+- SDK 源码工作树可在 `baseline` 分支实施最小、可测试的 FlowWeave 扩展；不得直接修改 `main`，不得基于浮动上游提交构建，也不得在镜像构建期施加未进入 `baseline` 提交的源码补丁。
+- 每次合并上游后必须重新验证所有 FlowWeave 扩展；发生冲突时保留扩展的明确契约、更新其测试，并以新的 `baseline` commit、不可变归档和镜像 provenance 锁定。
+- FlowWeave 适配器只能消费这些扩展提供的正式 OpenHands 路由、类型和事件生命周期；不得用平台侧重算、完整历史或模型 usage 统计伪造当前 View 指标。
 
 - SDK 源码：`/Users/zhengmengen/WorkSpace/openhands/software-agent-sdk-total-tokens-1.47`（`baseline`）
 - 历史兼容基线：`v1.42.0` / `f09e03eac772290feeb51b7d7390ffaefeca1a09`
@@ -37,14 +41,14 @@ scripts/verify-remote-deploy.sh --config .local/remote-deploy.env \
 - 固定运行时镜像：`flowweave-openhands-runtime:1`
 - 契约探针：`infra/openhands/contract_check.py`
 
-能力判断优先读取固定 commit，并只在当前切片确有需要时取证：
+能力判断优先读取 source lock 锁定的 `baseline` commit，并只在当前切片确有需要时取证：
 
 ```bash
 git -C /Users/zhengmengen/WorkSpace/openhands/software-agent-sdk-total-tokens-1.47 \
-  show e21d77673b738f056676044600c4ad81c5a575c8:<相对路径>
+  show <source.lock.json 的 source_commit>:<相对路径>
 
 git -C /Users/zhengmengen/WorkSpace/openhands/software-agent-sdk-total-tokens-1.47 \
-  grep -n '<模式>' e21d77673b738f056676044600c4ad81c5a575c8 -- \
+  grep -n '<模式>' <source.lock.json 的 source_commit> -- \
   openhands-agent-server openhands-sdk openhands-tools openhands-workspace
 ```
 

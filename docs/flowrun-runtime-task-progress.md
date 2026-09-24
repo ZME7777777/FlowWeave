@@ -15,8 +15,9 @@
 此前的重构决策不能作为本任务已经完成、可以跳过验证或必须保留现有实现的依据。现有源码只作为
 “当前行为”的审计对象；是否保留必须重新按照本设计、固定 OpenHands 源码和真实运行证据判断。
 
-除已完成的历史隔离 fork 外，本任务只修改 FlowWeave。当前目标事实基线为直接对齐 OpenHands upstream `main` 的
-`baseline` commit `e21d77673b738f056676044600c4ad81c5a575c8`，四个发布包版本均为 `1.49.5`。
+OpenHands `baseline` 是持续合并上游 `main` 后承载 FlowWeave Runtime 扩展的基线分支。当前上游锚点为
+`e21d77673b738f056676044600c4ad81c5a575c8`，四个发布包版本均为 `1.49.5`；每个切片的实际 Runtime
+源码身份由对应的固定 `baseline` commit、归档 SHA-256 与 source lock 共同决定。
 此前完成记录中的旧版本号继续表示当时实际验收的历史基线，不做追溯改写。
 
 ## 2. 最终目标
@@ -140,6 +141,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | FR-524 | 用户无法按需触发原生上下文压缩 | DONE | Agent Workspace 与 FlowRun node-session 的 `/` 菜单恢复“压缩上下文”；选择后只调用受授权的 OpenHands 原生 condense 控制接口，不追加用户 MESSAGE，压缩进度与结果继续仅由正式 `CONDENSATION_REQUESTED` / `CONDENSATION_COMPLETED` 事件渲染。 |
 | FR-520 | 最新 baseline 的 ACP 代码引用了 1.47 固定 schema 中不存在的 `AcpMcpServer`，导致 Runtime image contract build 失败 | DONE | 在隔离 baseline 中移除不可用的 ACP-only 类型分支，保留固定 schema 已支持的 HTTP、SSE 与 stdio MCP transports；不更新依赖、lockfile、镜像基础 tag 或四个 OpenHands 包版本。FlowWeave source lock、provenance、Runtime Docker build identity 与 contract identity 已原子切换到新 compatibility commit。 |
 | FR-521 | 旧 1.47 ACP schema 兼容补丁与新上游依赖图不兼容，且 FlowWeave Runtime provenance 仍指向过时来源 | DONE | `baseline` 已直接对齐 upstream `e21d77673b738f056676044600c4ad81c5a575c8`；FlowWeave Runtime source archive、依赖锁、contract/provenance、Fork 请求和受控 Codex catalog 已迁移至 1.49.5，移除私有 fork-condenser overlay，并以真实固定源码 contract probe 校验。 |
+| FR-527 | 上游 1.49.5 基线不含当前 View 的精确 Token／事件指标路由，导致所有会话降级为未知 | DONE | 在合并上游后的 FlowWeave `baseline` 追加 `1d9e232635059f89c3015205f98e588894b9277c` 与 `7c432d8188ffe026ed15598683aba05bd72881f3`，恢复 `/api/conversations/{id}/context` 的 `total_tokens`、`event_count` 契约；FlowWeave Runtime source lock、归档、镜像 identity、domain identity 与 contract probe 都锁定新 commit，前端既有精确投影和未知态保护继续生效。 |
 | FR-522 | Agent 首屏 hydration 读取池暂时饱和时，浏览器在 503 后扇出 events、readiness、context 与 confirmation 回退读取，导致所有会话持续不可读 | DONE | `AGENT_RUNTIME_UNAVAILABLE` 503 保持单一 hydration 协调器并以 5 秒退避重试；不再启用四条独立 Runtime 读取。404 等非容量兼容错误仍保留既有回退，避免旧 Runtime 缺少 hydration 时无法打开会话。 |
 | FR-523 | API Runtime read lane 忽略已声明的排队超时并将每个 worker 的三个短读槽在 250ms 后过早拒绝 | DONE | lane 现使用 `BLOCKING_POOL_TIMEOUT_SECONDS` 的受控 2 秒等待预算；API 默认互动读取容量从每 worker 3 提升到 4，四个 worker 的总数据库容量预算仍为 70/100，保留 20 条 PostgreSQL 连接余量。 |
 
@@ -6892,6 +6894,7 @@ FlowWeave 本地累加后猜测压缩边界。
 | 日期 | 切片 | 验证 | 结果 |
 | 2026-09-24 | FIX-02 | Python 编译、Ruff check/format、Web TypeScript typecheck、受影响 ESLint、静态不变量与 `git diff --check`；后端定向 pytest 与浏览器回归尝试 | PASS（静态）：列表 API 继续只读数据库；独立活动接口经 history Runtime-read lane 单次查询原生 running IDs，失败或慢响应不阻塞列表首屏，前端按 4 秒独立刷新并在短暂失败时保留最近可信快照。后端 pytest 被本机 Docker socket 缺失阻断；Playwright 被本机 Chromium 缺少 `libglib-2.0.so.0` 阻断，均未进入断言。 |
 | 2026-09-24 | FR-524 | 两类应用服务无数据库直接回归、OpenHands condense adapter pytest（1 passed）、Web TypeScript typecheck、受影响 ESLint、OpenAPI 新路由合同、Python Ruff/格式/编译、`git diff --check`；定向 Agent 工作台 Playwright 尝试 | PASS（静态／定向）：两类会话宿主恢复手动原生压缩控制路由；浏览器 `/condense` 选择不进入消息发送/队列或产生乐观用户气泡，正式压缩事件沿现有活动样式显示。完整 pytest 被全局 Testcontainers 的 Docker socket 缺失阻断；Playwright 因配置要求的系统 Chrome 不存在而未启动，项目内 Chromium 下载受环境限制未完成，均未伪记为通过。 |
+| 2026-09-24 | FR-527 | FlowWeave `baseline` 两个源码提交的受影响 OpenHands Router/EventService 定向 pytest（211 passed）、Ruff format/check、`py_compile`；FlowWeave 当前 View context adapter 定向 pytest（16 passed）、Ruff/`py_compile`；不可变归档 SHA-256、source lock/provenance 及解包后路由／模型／EventService 契约核对、`git diff --check` 与任务状态唯一性 | PASS（源码／定向）：`baseline` 的 `7c432d8188ffe026ed15598683aba05bd72881f3` 基于 upstream anchor `e21d77673b738f056676044600c4ad81c5a575c8`，并正式提供当前活动 View 的 `total_tokens` 与 `event_count`。FlowWeave 归档 SHA-256 为 `8a1ad5a755bd8589861e02f763cb5642bac2693b5219adabaf7eb7e351bd7455`；source lock、镜像 Build Git identity、domain identity 与 contract probe 一致。完整 FlowWeave architecture pytest 仍在全局 Testcontainers fixture 初始化时因本机 Docker socket 缺失阻断；实际镜像 contract probe 与部署后 generation 切换尚未执行，未记为通过。 |
 | 2026-09-24 | FR-523 | 受影响 Python Ruff/`py_compile`、read lane 配置等待定向回归、Compose PostgreSQL 容量校验、`git diff --check` 与任务状态唯一性 | PASS（本地静态／纯并发）：新回归证明配置的 0.4 秒读取预算不会被旧的 250ms 硬上限截断；容量脚本确认默认稳态占用 70/100，保留 20 条 PostgreSQL 连接余量。完整 pytest 被全局 Testcontainers fixture 的本机 Docker socket 缺失阻断，未进入断言；部署后还须确认多个会话 hydration 不再出现 `RUNTIME_READ_SATURATED`。 |
 | 2026-09-24 | FR-521 | 新 upstream baseline、四包 metadata、不可变 archive SHA-256、source lock/provenance、`uv lock --check`；本地 1.49.5 source install 的 `contract_check.py`；受影响 Python Ruff/`py_compile`、Fork adapter 定向 pytest、`git diff --check` 与任务状态唯一性 | PASS（本地来源／静态）：baseline 为 `e21d77673b738f056676044600c4ad81c5a575c8`，archive SHA-256 为 `994adb7195aa6a6e4aaa50a2593e973a91877a970a544630fb993896d117292b`，四包均为 `1.49.5`。移除了不属于上游 API 的 Fork `condenser` 字段和 source overlay，Fork 由最新 OpenHands 原生复制 source Conversation 配置；已验证正式 runtime route、OAuth、Plugin containment、event stream、Secret 和 capability contract。Docker 镜像构建及远端最终门禁尚待已提交源码的部署切片执行。 |
 | 2026-09-24 | FR-520 | 隔离 baseline ACP adapter `py_compile`、Ruff 与 whitespace；新不可变归档 SHA-256／布局、source lock/provenance 身份与 1.47.0 元数据核对；受影响 FlowWeave `py_compile`、Ruff format/check、Runtime contract pytest（11 passed）、`git diff --check` 与任务状态唯一性 | PASS（静态／定向）：`f427c83545c78321219f45a355b34343cf6d8218` 在 merged baseline 上仅移除 1.47 固定 ACP schema 不提供的 `AcpMcpServer` 类型分支；HTTP、SSE 与 stdio ACP MCP transport 不变。归档 SHA-256 为 `af018ee81c38f2eafe44bc6c3a025ae0b2bdda32fd4ee3a2990c2e93a9097c9b`，四包仍均为 `1.47.0`，lockfile 和基础 image tag 未变。架构 pytest 被本机 Docker socket 缺失的全局 Testcontainers fixture 阻断，未进入断言且未记为通过；真实 image contract probe 留待远端 commit-bound build。无 `CURRENT`。 |
