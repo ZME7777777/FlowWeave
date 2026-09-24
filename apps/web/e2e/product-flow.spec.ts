@@ -491,6 +491,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   let contextMetricsTemporarilyUnavailable = false;
   let contextRequests = 0;
   let forkRequests = 0;
+  let manualCondensations = 0;
   const workspaceEntryCreates: Array<{ parent_path: string; name: string; kind: string }> = [];
   const workspaceDirectoryRequests: string[] = [];
   const workspaceFilePreviewRequests: string[] = [];
@@ -694,6 +695,11 @@ test('top-level Agent workspace creates a direct conversation and restores its U
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(binding) });
       return;
     }
+    if (path.endsWith('/condense') && request.method() === 'POST') {
+      manualCondensations += 1;
+      await route.fulfill({ status: 202, contentType: 'application/json', body: JSON.stringify({ accepted: true, cursor: 'manual-condensation-completed' }) });
+      return;
+    }
     if (path.endsWith('/fork') && request.method() === 'POST') {
       forkRequests += 1;
       const created = {
@@ -848,6 +854,10 @@ test('top-level Agent workspace creates a direct conversation and restores its U
           // that first completed reply rather than follow arrival order.
           { id: 'late-root-file-action', event_type: 'TOOL_CALL', payload: { source: 'agent', parent_id: 'user-request', action_id: 'late-root-file-action', tool_call_id: 'late-root-file-call', tool_name: 'file_editor', event_name: 'FileEditorAction', details: { command: 'str_replace', path: '/runtime/workspace/project/src/root-owned.ts', old_content: 'export const owner = "old";', new_content: 'export const owner = "root";' }, timestamp: '2026-08-26T10:05:03Z' } },
           { id: 'late-root-file-result', event_type: 'TOOL_RESULT', payload: { source: 'environment', parent_id: 'late-root-file-action', action_id: 'late-root-file-action', tool_call_id: 'late-root-file-call', tool_name: 'file_editor', event_name: 'FileEditorObservation', details: { command: 'str_replace', path: '/runtime/workspace/project/src/root-owned.ts', old_content: 'export const owner = "old";', new_content: 'export const owner = "root";', is_error: false }, timestamp: '2026-08-26T10:05:04Z' } },
+          ...(manualCondensations ? [
+            { id: 'manual-condensation-request', event_type: 'CONDENSATION_REQUESTED', payload: { source: 'agent', parent_id: 'failure-event', timestamp: '2026-08-26T10:05:10Z' } },
+            { id: 'manual-condensation-completed', event_type: 'CONDENSATION_COMPLETED', payload: { source: 'agent', parent_id: 'manual-condensation-request', condensation_request_event_id: 'manual-condensation-request', forgotten_event_ids: ['progress-note'], timestamp: '2026-08-26T10:05:12Z' } },
+          ] : []),
         ] : [],
         next_cursor: modelIsResponding ? (cursorlessEventRecovery ? null : backfilledTaskAction && cursor === 'running-user' ? 'recovered-task-action' : cursor || 'running-user') : null,
         history_cursor: modelIsResponding && historyPrefetchEnabled && !cursor ? 'running-history-1' : null,
@@ -1289,11 +1299,16 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(eventProgress).toContainText('事件42 / 10,000');
   contextMetricsTemporarilyUnavailable = false;
   const composerAfterReload = page.getByLabel('发送 Agent 消息');
+  const messagesBeforeCondensation = sentMessages;
   await composerAfterReload.fill('/');
-  const commandMenu = page.getByRole('listbox', { name: '选择命令或 MCP' });
-  await expect(commandMenu.getByText('OpenHands 原生能力', { exact: true })).toHaveCount(0);
-  await expect(commandMenu.getByRole('option', { name: /压缩上下文/ })).toHaveCount(0);
-  await composerAfterReload.fill('');
+  const commandMenu = page.getByRole('listbox', { name: '选择 OpenHands 原生能力、命令或 MCP' });
+  await expect(commandMenu.getByText('OpenHands 原生能力', { exact: true })).toBeVisible();
+  await commandMenu.getByRole('option', { name: /压缩上下文/ }).click();
+  await expect.poll(() => manualCondensations).toBe(1);
+  await expect(composerAfterReload).toHaveValue('');
+  expect(sentMessages).toBe(messagesBeforeCondensation);
+  await expect(page.getByRole('status', { name: '压缩完成' })).toBeVisible();
+  await expect(page.getByText('/condense', { exact: true })).toHaveCount(0);
   const completedTurn = page.locator('.conversation-turn').filter({ hasText: '工作区已就绪。' });
   const completedProcess = completedTurn.locator('.conversation-activity-group');
   await expect(completedTurn.locator('.conversation-message-meta time')).toHaveText([/\d{2}:\d{2}/, /\d{2}:\d{2}/]);
@@ -3610,8 +3625,8 @@ test('current Agent conversation can select a 31st capability and keeps frozen C
   await page.goto('/agent/conversations/history-capability-conversation');
   const composer = page.getByLabel('发送 Agent 消息');
   await composer.fill('/');
-  const commandMenu = page.getByRole('listbox', { name: '选择命令或 MCP' });
-  await expect(commandMenu.getByRole('option', { name: /压缩上下文/ })).toHaveCount(0);
+  const commandMenu = page.getByRole('listbox', { name: '选择 OpenHands 原生能力、命令或 MCP' });
+  await expect(commandMenu.getByRole('option', { name: /压缩上下文/ })).toBeVisible();
   await expect(commandMenu.getByRole('button', { name: '管理' })).toBeVisible();
   await composer.fill('$');
   const skillMenu = page.getByRole('listbox', { name: '选择技能' });

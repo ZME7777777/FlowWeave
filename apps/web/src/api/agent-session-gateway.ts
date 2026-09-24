@@ -11,6 +11,7 @@ import type {
   AgentAttachment,
   AgentConversationAnnotation,
   AgentConversation,
+  AgentConversationActivity,
   AgentConversationHead,
   AgentConversationHydration,
   AgentConversationPage,
@@ -96,6 +97,7 @@ export interface AgentSessionApi {
   readonly defaultHost: () => Promise<AgentSessionHostDetails>;
   readonly runtime: (hostId: AgentSessionHostId) => Promise<AgentSessionRuntime>;
   readonly conversations: (hostId: AgentSessionHostId, cursor?: string) => Promise<AgentConversationPage>;
+  readonly conversationActivity: (hostId: AgentSessionHostId) => Promise<AgentConversationActivity>;
   readonly startConversationSearch?: (hostId: AgentSessionHostId, query: string) => Promise<AgentConversationSearch>;
   readonly conversationSearch?: (hostId: AgentSessionHostId, searchId: string) => Promise<AgentConversationSearch>;
   readonly conversation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<AgentConversation>;
@@ -146,6 +148,8 @@ export interface AgentSessionApi {
   readonly uploadConversationAttachment: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, file: File) => Promise<AgentAttachment>;
   readonly uploadDraftAttachment: (hostId: AgentSessionHostId, file: File, workDirectoryId?: AgentSessionWorkDirectoryId, conversationId?: string) => Promise<AgentAttachment>;
   readonly forkConversation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, eventId: string) => Promise<AgentConversation>;
+  /** Requests native context condensation without appending a user message. */
+  readonly condenseConversation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<{ accepted: boolean; cursor?: string | null }>;
   readonly interruptConversation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<{ accepted: boolean }>;
   readonly resumeConversation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<{ accepted: boolean; cursor?: string | null }>;
   readonly decideConfirmation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, expectedPendingDigest: string, accept: boolean, reason: string) => Promise<{ accepted: boolean; cursor?: string | null }>;
@@ -176,6 +180,7 @@ export const agentWorkspaceSessionGateway: AgentSessionGateway = {
     defaultHost: api.defaultAgentWorkspace,
     runtime: api.agentWorkspaceRuntime,
     conversations: api.agentConversations,
+    conversationActivity: api.agentConversationActivity,
     startConversationSearch: api.startAgentConversationSearch,
     conversationSearch: api.agentConversationSearch,
     conversation: api.agentConversation,
@@ -219,6 +224,7 @@ export const agentWorkspaceSessionGateway: AgentSessionGateway = {
     uploadConversationAttachment: api.uploadAgentAttachment,
     uploadDraftAttachment: api.uploadAgentWorkspaceAttachment,
     forkConversation: api.forkAgentConversation,
+    condenseConversation: api.condenseAgentConversation,
     interruptConversation: api.interruptAgentConversation,
     resumeConversation: api.resumeAgentConversation,
     decideConfirmation: api.decideAgentConfirmation,
@@ -248,6 +254,7 @@ export function flowNodeSessionGateway(
       defaultHost: () => nodeSessionApi.host(flowRunId, attemptId),
       runtime: () => nodeSessionApi.runtime(flowRunId, attemptId),
       conversations: (_hostId, cursor) => nodeSessionApi.conversations(flowRunId, attemptId, cursor),
+      conversationActivity: () => nodeSessionApi.activity(flowRunId, attemptId),
       conversation: (_hostId, bindingId) => nodeSessionApi.get(flowRunId, attemptId, bindingId),
       workDirectories: () => nodeSessionApi.workDirectories(flowRunId, attemptId),
       providers: api.providers,
@@ -331,6 +338,8 @@ export function flowNodeSessionGateway(
       uploadDraftAttachment: (_hostId, file, workDirectoryId, conversationId) =>
         nodeSessionApi.uploadDraftAttachment(flowRunId, attemptId, file, workDirectoryId, conversationId),
       forkConversation: (_hostId, bindingId, eventId) => nodeSessionApi.fork(flowRunId, attemptId, bindingId, eventId),
+      condenseConversation: (_hostId, bindingId) =>
+        nodeSessionApi.condense(flowRunId, attemptId, bindingId),
       interruptConversation: (_hostId, bindingId) =>
         nodeSessionApi.interrupt(flowRunId, attemptId, bindingId),
       resumeConversation: (_hostId, bindingId) =>

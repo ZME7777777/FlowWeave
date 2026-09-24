@@ -57,6 +57,7 @@ from flowweave.runtime.base import (
     RuntimeEvent,
     RuntimeEventBatch,
     RuntimeForkRecovery,
+    RuntimeHandle,
     RuntimeInputReadiness,
     RuntimePendingAction,
     RuntimePendingConfirmation,
@@ -3147,6 +3148,9 @@ def test_agent_workspace_conversation_page_never_reads_native_runtime_state(
         def input_readiness(self, _handle):
             raise AssertionError("conversation list must not call the Runtime")
 
+        def running_conversation_ids(self, _handle):
+            raise AssertionError("conversation list must not call the Runtime")
+
     with (
         settings_context(settings),
         db_session_factory() as db,
@@ -3161,6 +3165,49 @@ def test_agent_workspace_conversation_page_never_reads_native_runtime_state(
 
         assert [item["id"] for item in page["items"]] == [created["id"]]
         assert page["items"][0]["execution_status"] == "unknown"
+
+
+def test_agent_workspace_conversation_activity_maps_native_ids_once(
+    settings, db_session_factory, monkeypatch
+):
+    monkeypatch.setattr(
+        conversations,
+        "runtime_provider",
+        lambda _db, asset, **kwargs: RuntimeProvider(
+            provider_id=asset["asset"]["executor"]["model_provider_id"],
+            base_url="https://models.example.test/v1",
+            model=kwargs.get("model_name") or "test-model",
+            api_key="x",
+            reasoning_effort=kwargs.get("reasoning_effort"),
+        ),
+    )
+
+    class ActivityRuntime(MockRuntime):
+        calls = 0
+        running_id = ""
+
+        def running_conversation_ids(self, _handle):
+            self.calls += 1
+            return {self.running_id, "unbound-native-conversation"}
+
+    runtime = ActivityRuntime()
+    with settings_context(settings), db_session_factory() as db, runtime_context(runtime):
+        workspace = _ready_workspace_for_conversation(db)
+        idle = conversations.create_conversation(
+            db, workspace.id, "空闲会话", workspace.default_model_provider_id, "activity-idle"
+        )
+        running = conversations.create_conversation(
+            db, workspace.id, "运行会话", workspace.default_model_provider_id, "activity-running"
+        )
+        runtime.running_id = db.get(
+            AgentConversationBinding, running["id"]
+        ).openhands_conversation_id
+
+        activity = conversations.conversation_activity(db, workspace.id)
+
+    assert activity == {"running_binding_ids": [running["id"]]}
+    assert idle["id"] not in activity["running_binding_ids"]
+    assert runtime.calls == 1
 
 
 def test_agent_workspace_conversation_dtos_project_runtime_write_availability(
@@ -3204,6 +3251,38 @@ def test_agent_workspace_conversation_dtos_project_runtime_write_availability(
             conversations.list_conversation_page(db, workspace.id)["items"][0]["write_available"]
             is False
         )
+
+
+def test_agent_workspace_manual_condensation_does_not_send_a_message(monkeypatch):
+    workspace = object()
+    binding = object()
+    handle = RuntimeHandle(job_id="job", conversation_id="native-conversation")
+
+    class ManualCondensationRuntime(MockRuntime):
+        condense_calls = 0
+        send_calls = 0
+
+        def condense(self, actual_handle):
+            assert actual_handle is handle
+            self.condense_calls += 1
+            return RuntimeResult(status="RUNNING", cursor="condensation-request")
+
+        def send_message(self, actual_handle, content, image_urls=()):
+            del actual_handle, content, image_urls
+            self.send_calls += 1
+            raise AssertionError("manual condensation must not append a message")
+
+    runtime = ManualCondensationRuntime()
+    monkeypatch.setattr(conversations, "_workspace", lambda *_args: workspace)
+    monkeypatch.setattr(conversations, "_binding", lambda *_args, **_kwargs: binding)
+    monkeypatch.setattr(conversations, "_handle", lambda *_args: handle)
+
+    with runtime_context(runtime):
+        result = conversations.condense_conversation(object(), "workspace", "binding")
+
+    assert result == {"accepted": True, "cursor": "condensation-request"}
+    assert runtime.condense_calls == 1
+    assert runtime.send_calls == 0
 
 
 def test_agent_workspace_sends_directly_at_high_context_usage(

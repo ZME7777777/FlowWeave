@@ -808,6 +808,51 @@ def list_node_session_views(
     return [_node_session_dict(db, item) for item in items]
 
 
+def node_session_activity(
+    db: Session, *, flow_run_id: str, attempt_id: str
+) -> dict[str, list[str]]:
+    """Map one native running snapshot to authorized node-session binding IDs."""
+
+    agent_sessions.resolve_flow_node_session_host(
+        db,
+        flow_run_id=flow_run_id,
+        attempt_id=attempt_id,
+        require_start_permission=False,
+    )
+    bindings = list(
+        db.scalars(
+            select(AgentConversationBinding).where(
+                AgentConversationBinding.host_kind == _FLOW_NODE,
+                AgentConversationBinding.flow_run_id == flow_run_id,
+                or_(
+                    AgentConversationBinding.node_attempt_id == attempt_id,
+                    and_(
+                        AgentConversationBinding.node_attempt_id.is_(None),
+                        AgentConversationBinding.conversation_scope_id == attempt_id,
+                    ),
+                ),
+                AgentConversationBinding.lifecycle == "ACTIVE",
+                ~AgentConversationBinding.create_idempotency_key.like("gate-sidecar:%"),
+            )
+        )
+    )
+    if not bindings:
+        return {"running_binding_ids": []}
+    running_native_ids = get_runtime().running_conversation_ids(
+        _node_handle(
+            db,
+            flow_run_id=flow_run_id,
+            attempt_id=attempt_id,
+            binding_id=bindings[0].id,
+        )
+    )
+    return {
+        "running_binding_ids": [
+            item.id for item in bindings if item.openhands_conversation_id in running_native_ids
+        ]
+    }
+
+
 def list_node_session_page(
     db: Session,
     *,
@@ -3272,6 +3317,22 @@ def switch_node_conversation_model(
     }
 
 
+def condense_node_conversation(
+    db: Session, *, flow_run_id: str, attempt_id: str, binding_id: str
+) -> dict[str, Any]:
+    """Request native condensation without appending a user message."""
+
+    _assert_node_session_writable(
+        db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
+    )
+    handle = _node_handle(db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id)
+    runtime = get_runtime()
+    if not runtime.can_accept_input(handle):
+        raise DomainError("AGENT_CONVERSATION_BUSY", "请在当前回复完成或暂停后压缩上下文", 409)
+    result = runtime.condense(handle)
+    return {"accepted": True, "cursor": result.cursor}
+
+
 def interrupt_node_conversation(
     db: Session, *, flow_run_id: str, attempt_id: str, binding_id: str
 ) -> dict[str, bool]:
@@ -3574,6 +3635,7 @@ def ask_agent(
 
 __all__ = (
     "ask_agent",
+    "condense_node_conversation",
     "control_goal",
     "create_conversation",
     "create_flow_run_conversation",

@@ -1843,6 +1843,42 @@ def test_node_message_keeps_an_end_blocked_attempt_observing_native_events(
         )
 
 
+def test_node_manual_condensation_does_not_send_a_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    handle = RuntimeHandle(job_id="job", conversation_id="native-conversation")
+    calls: list[str] = []
+
+    class ManualCondensationRuntime:
+        def can_accept_input(self, actual_handle: RuntimeHandle) -> bool:
+            assert actual_handle is handle
+            return True
+
+        def condense(self, actual_handle: RuntimeHandle) -> RuntimeResult:
+            assert actual_handle is handle
+            calls.append("condense")
+            return RuntimeResult(status="RUNNING", cursor="condensation-request")
+
+        def send_message(self, *_args: object, **_kwargs: object) -> RuntimeResult:
+            calls.append("send")
+            raise AssertionError("manual condensation must not append a message")
+
+    monkeypatch.setattr(
+        flow_node_conversations,
+        "_assert_node_session_writable",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(flow_node_conversations, "_node_handle", lambda *_args, **_kwargs: handle)
+    monkeypatch.setattr(flow_node_conversations, "get_runtime", lambda: ManualCondensationRuntime())
+
+    result = flow_node_conversations.condense_node_conversation(
+        object(), flow_run_id="flow-run", attempt_id="attempt", binding_id="binding"
+    )
+
+    assert result == {"accepted": True, "cursor": "condensation-request"}
+    assert calls == ["condense"]
+
+
 def test_running_node_message_dispatch_has_no_database_dependency(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2352,6 +2388,63 @@ def test_node_session_page_never_reads_native_runtime_state(
 
         assert [item["id"] for item in page["items"]] == [binding.id]
         assert page["items"][0]["execution_status"] == "unknown"
+
+
+def test_node_session_activity_maps_native_ids_once(
+    db_session_factory: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with db_session_factory() as db:
+        flow_run_id, runtime_session_id, attempt_id = _node_session_context(db)
+        attempt = db.get(NodeAttempt, attempt_id)
+        assert attempt is not None
+        bindings = [
+            AgentConversationBinding(
+                workspace_id=None,
+                host_kind="FLOW_NODE",
+                host_id=flow_run_id,
+                conversation_scope_id=attempt_id,
+                flow_run_id=flow_run_id,
+                node_run_id=attempt.node_run_id,
+                node_attempt_id=attempt_id,
+                runtime_session_id=runtime_session_id,
+                working_directory=attempt.workspace_ref,
+                openhands_conversation_id=native_id,
+                display_title=title,
+                lifecycle="ACTIVE",
+                create_idempotency_key=f"activity-{native_id}",
+            )
+            for native_id, title in (("native-idle", "空闲会话"), ("native-running", "运行会话"))
+        ]
+        db.add_all(bindings)
+        db.flush()
+        monkeypatch.setattr(
+            flow_node_conversations.agent_sessions,
+            "resolve_flow_node_session_host",
+            lambda *_args, **_kwargs: SimpleNamespace(),
+        )
+        monkeypatch.setattr(
+            flow_node_conversations,
+            "_node_handle",
+            lambda *_args, **_kwargs: RuntimeHandle(job_id="job", conversation_id=""),
+        )
+
+        class ActivityRuntime:
+            calls = 0
+
+            def running_conversation_ids(self, _handle):
+                self.calls += 1
+                return {"native-running", "unbound-native-conversation"}
+
+        runtime = ActivityRuntime()
+        monkeypatch.setattr(flow_node_conversations, "get_runtime", lambda: runtime)
+
+        activity = flow_node_conversations.node_session_activity(
+            db, flow_run_id=flow_run_id, attempt_id=attempt_id
+        )
+
+    assert activity == {"running_binding_ids": [bindings[1].id]}
+    assert bindings[0].id not in activity["running_binding_ids"]
+    assert runtime.calls == 1
 
 
 def test_node_session_unread_state_persists_in_conversation_projection(

@@ -638,6 +638,16 @@ async def list_agent_conversations(
     )
 
 
+@router.get("/agent-workspaces/{workspace_id}/conversation-activity")
+async def agent_conversation_activity(
+    workspace_id: str, container: ContainerDep
+) -> dict[str, list[str]]:
+    return await run_blocking_history(
+        container,
+        lambda session: conversations.conversation_activity(session, workspace_id),
+    )
+
+
 @router.post("/agent-workspaces/{workspace_id}/conversations", status_code=201)
 async def create_agent_conversation(
     workspace_id: str,
@@ -1070,6 +1080,18 @@ async def agent_fork_conversation(
             payload.title,
             _key(idempotency_key, "fork-agent-conversation", binding_id),
         ),
+    )
+
+
+@router.post(
+    "/agent-workspaces/{workspace_id}/conversations/{binding_id}/condense", status_code=202
+)
+async def agent_condense_conversation(
+    workspace_id: str, binding_id: str, container: ContainerDep
+) -> dict[str, Any]:
+    return await run_blocking_control(
+        container,
+        lambda session: conversations.condense_conversation(session, workspace_id, binding_id),
     )
 
 

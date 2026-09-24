@@ -760,6 +760,9 @@ export interface AgentConversationPage {
   items: AgentConversation[];
   next_cursor?: string | null;
 }
+export interface AgentConversationActivity {
+  running_binding_ids: string[];
+}
 export interface AgentConversationSearchHit {
   binding_id: string;
   event_id: string;

@@ -696,6 +696,28 @@ def list_conversations(db: Session, workspace_id: str) -> list[dict[str, Any]]:
     ]
 
 
+def conversation_activity(db: Session, workspace_id: str) -> dict[str, list[str]]:
+    """Map one native running snapshot to authorized workspace binding IDs."""
+
+    workspace = _workspace(db, workspace_id)
+    bindings = list(
+        db.scalars(
+            select(AgentConversationBinding).where(
+                AgentConversationBinding.workspace_id == workspace_id,
+                AgentConversationBinding.lifecycle == "ACTIVE",
+            )
+        )
+    )
+    if not bindings:
+        return {"running_binding_ids": []}
+    running_native_ids = get_runtime().running_conversation_ids(_handle(db, workspace, bindings[0]))
+    return {
+        "running_binding_ids": [
+            item.id for item in bindings if item.openhands_conversation_id in running_native_ids
+        ]
+    }
+
+
 def list_conversation_page(
     db: Session, workspace_id: str, *, cursor: str | None = None, limit: int = 5
 ) -> dict[str, Any]:
@@ -3260,6 +3282,19 @@ def migrate_streaming_conversation(
         migration_model_name=model_name,
         migration_reasoning_effort=reasoning_effort,
     )
+
+
+def condense_conversation(db: Session, workspace_id: str, binding_id: str) -> dict[str, Any]:
+    """Request native condensation without appending a user message."""
+
+    workspace = _workspace(db, workspace_id)
+    binding = _binding(db, workspace_id, binding_id, lock=True)
+    handle = _handle(db, workspace, binding)
+    runtime = get_runtime()
+    if not runtime.can_accept_input(handle):
+        raise DomainError("AGENT_CONVERSATION_BUSY", "请在当前回复完成或暂停后压缩上下文", 409)
+    result = runtime.condense(handle)
+    return {"accepted": True, "cursor": result.cursor}
 
 
 def interrupt(db: Session, workspace_id: str, binding_id: str) -> None:

@@ -39,6 +39,7 @@ from flowweave.shared.http import (
     command_key,
     get_container,
     run_blocking,
+    run_blocking_control,
     run_blocking_history,
     run_sync,
 )
@@ -360,6 +361,20 @@ async def list_node_sessions(
             attempt_id=attempt_id,
             cursor=cursor,
             limit=limit,
+        ),
+    )
+
+
+@router.get(f"{_BASE}/activity")
+async def node_session_activity(
+    flow_run_id: str, attempt_id: str, container: ContainerDep
+) -> dict[str, list[str]]:
+    return await run_blocking_history(
+        container,
+        lambda session: agent_sessions.flow_node_conversations.node_session_activity(
+            session,
+            flow_run_id=flow_run_id,
+            attempt_id=attempt_id,
         ),
     )
 
@@ -1032,6 +1047,24 @@ async def switch_node_session_model(
             model_provider_id=payload.model_provider_id,
             model_name=payload.model_name,
             reasoning_effort=payload.reasoning_effort,
+        ),
+    )
+
+
+@router.post(f"{_BASE}/{{binding_id}}/condense", status_code=202)
+async def condense_node_session(
+    flow_run_id: str,
+    attempt_id: str,
+    binding_id: str,
+    container: ContainerDep,
+) -> dict[str, Any]:
+    return await run_blocking_control(
+        container,
+        lambda session: agent_sessions.flow_node_conversations.condense_node_conversation(
+            session,
+            flow_run_id=flow_run_id,
+            attempt_id=attempt_id,
+            binding_id=binding_id,
         ),
     )
 
