@@ -31,7 +31,7 @@ export interface ModelRetryStatus {
   failureKind: string;
   final: boolean;
   modelRole: 'primary' | 'fallback';
-  subject?: 'model' | 'execution';
+  subject?: 'model' | 'execution' | 'condensation';
   errorCode?: string;
 }
 
@@ -1060,6 +1060,7 @@ function staleActivityLabel(
 }
 
 function retryLabel(status: ModelRetryStatus): string {
+  if (status.subject === 'condensation') return '↳ 上下文压缩未完成，本轮已停止';
   const isModelFailure = status.subject !== 'execution';
   const prefix = isModelFailure ? (status.modelRole === 'fallback' ? '备用模型' : '模型') : '本轮执行';
   const reason: Record<string, string> = {
@@ -1086,6 +1087,8 @@ function RetryStatus({ status }: { status: ModelRetryStatus }) {
     empty_response: '模型没有返回完整的可用响应。', rate_limit: '模型服务暂时限制了请求速率。', auth: '模型凭据无效或权限不足。',
     quota: '模型账户额度不足。', config: '模型或请求参数不兼容。', context_limit: '请求超过模型上下文窗口。',
     content_policy: '模型内容安全策略拒绝了请求。', internal: '模型调用发生内部异常。', unknown: '模型调用发生未知异常。',
+    no_eligible_events: '没有可安全压缩的事件区间。', insufficient_progress: '可压缩范围不足以满足最小进度要求。',
+    summary_model_failed: '上下文摘要模型调用未完成。', condensation_unknown: '上下文压缩未能完成。',
   };
   return <details className={`conversation-model-retry${status.final ? ' final' : ''}`}>
     <summary role="status" aria-label={retryLabel(status)}><ChevronRight className="conversation-expand-arrow" size={13}/><span>{retryLabel(status)}</span>{!status.final && <span className="conversation-turn-status-dots" aria-hidden="true"><i/><i/><i/></span>}</summary>
@@ -1441,6 +1444,20 @@ function terminalRetryStatus(item: Item): ModelRetryStatus {
   const kind = classification && typeof classification === 'object'
     ? String((classification as Record<string, unknown>).kind ?? '')
     : '';
+  const condensationReason = classification && typeof classification === 'object'
+    ? String((classification as Record<string, unknown>).reason ?? '')
+    : '';
+  if (code === 'NoCondensationAvailableException' && kind === 'condensation') {
+    return {
+      failureKind: new Set(['no_eligible_events', 'insufficient_progress', 'summary_model_failed']).has(condensationReason)
+        ? condensationReason
+        : 'condensation_unknown',
+      final: true,
+      modelRole: 'primary',
+      subject: 'condensation',
+      errorCode: safeCode || undefined,
+    };
+  }
   const failureKind = code === 'LLMTimeoutError' ? 'timeout'
     : code === 'LLMNoResponseError' ? 'empty_response'
     : code === 'LLMAuthenticationError' ? 'auth'

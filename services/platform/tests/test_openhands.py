@@ -5213,6 +5213,46 @@ def test_openhands_projects_native_conversation_error_details():
     }
 
 
+@pytest.mark.parametrize(
+    ("detail", "reason"),
+    (
+        (
+            "Cannot condense 0 events. This typically occurs when a tool loop spans the view.",
+            "no_eligible_events",
+        ),
+        (
+            "Cannot apply condensation: events forgotten below minimum progress threshold.",
+            "insufficient_progress",
+        ),
+        (
+            "Summarization LLM call failed: https://private.example/v1 Bearer sk-secret",
+            "summary_model_failed",
+        ),
+        ("A future native condenser detail with untrusted text", "unknown"),
+    ),
+)
+def test_openhands_projects_condensation_failure_as_safe_structured_diagnostic(detail, reason):
+    payload = OpenHandsRuntime._event_payload(
+        {
+            "kind": "ConversationErrorEvent",
+            "id": "condensation-error",
+            "source": "environment",
+            "code": "NoCondensationAvailableException",
+            "detail": detail,
+        }
+    )
+
+    assert payload["error_code"] == "NoCondensationAvailableException"
+    assert payload["classification"] == {
+        "kind": "condensation",
+        "reason": reason,
+        "retryable": False,
+    }
+    assert payload["content"] == "Context condensation did not complete."
+    assert "private.example" not in json.dumps(payload)
+    assert "sk-secret" not in json.dumps(payload)
+
+
 def test_openhands_redacts_unstructured_native_error_code():
     event = {
         "kind": "ConversationErrorEvent",

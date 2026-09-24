@@ -54,7 +54,10 @@ AgentWorkspaceCapability = agent_workspace_host.AgentWorkspaceCapability
 TOOLS = tuple(RuntimeTool(name=name) for name in FIXED_RUNTIME_TOOL_NAMES)
 PROJECT_ROOT = "/runtime/workspace/project"
 CONDENSER_MAX_EVENTS = 1_000
-NATIVE_CONDENSER_MAX_TOKENS = 512_000
+# Keep enough headroom for OpenHands to construct the summarization request and
+# receive its response.  This is a frozen native condenser policy for new
+# conversations, not a browser-side estimate of a model's physical window.
+NATIVE_CONDENSER_MAX_TOKENS = 384_000
 AGENT_WORKSPACE_MAX_ITERATIONS = 300
 MATERIALIZED_CAPABILITY_TYPES = frozenset({"SKILL", "MCP", "PLUGIN"})
 PROJECT_ROOT_SYSTEM_CONTEXT = "\n".join(

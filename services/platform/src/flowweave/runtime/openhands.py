@@ -2661,13 +2661,42 @@ class OpenHandsRuntime:
             else redact_secret_text(str(value))
         )
 
+    @staticmethod
+    def _condensation_failure_classification(detail: str) -> dict[str, object]:
+        """Return a stable, non-sensitive category for native condenser failures.
+
+        OpenHands 1.47 currently emits ``NoCondensationAvailableException``
+        with a human-readable detail rather than a structured reason.  Restrict
+        this compatibility mapping to that one formal error code and never
+        expose the source detail, which can contain a provider exception.
+        """
+
+        if detail.startswith("Cannot condense 0 events") or detail.startswith(
+            "Unable to compute forgotten events"
+        ):
+            reason = "no_eligible_events"
+        elif detail.startswith(
+            "Cannot apply condensation: events forgotten below minimum progress"
+        ):
+            reason = "insufficient_progress"
+        elif detail.startswith("Summarization LLM call failed:"):
+            reason = "summary_model_failed"
+        else:
+            reason = "unknown"
+        return {
+            "kind": "condensation",
+            "reason": reason,
+            "retryable": False,
+        }
+
     @classmethod
     def _event_payload(cls, item: dict[str, Any]) -> dict[str, Any]:
         kind = str(item.get("kind") or "UNKNOWN")
+        event_text = cls._event_text(item)
         payload: dict[str, Any] = {
             "source_type": kind,
             "source": item.get("source"),
-            "content": redact_secret_text(cls._event_text(item)),
+            "content": redact_secret_text(event_text),
         }
         timestamp = item.get("timestamp")
         if isinstance(timestamp, str) and timestamp:
@@ -2746,11 +2775,18 @@ class OpenHandsRuntime:
                 safe_code = cls._safe_error_code(code)
                 if safe_code is not None:
                     payload["error_code"] = safe_code
-            classification = item.get("classification")
-            if isinstance(classification, dict):
-                payload["classification"] = cls._safe_event_detail(
-                    cast(dict[str, Any], classification)
-                )
+            if code == "NoCondensationAvailableException":
+                # Do not return a provider exception, request excerpt, endpoint,
+                # or stack embedded in the native condenser detail.  The formal
+                # error code plus this bounded category remains auditable.
+                payload["content"] = "Context condensation did not complete."
+                payload["classification"] = cls._condensation_failure_classification(event_text)
+            else:
+                classification = item.get("classification")
+                if isinstance(classification, dict):
+                    payload["classification"] = cls._safe_event_detail(
+                        cast(dict[str, Any], classification)
+                    )
         raw_detail = (
             item.get("action")
             if kind == "ActionEvent"
