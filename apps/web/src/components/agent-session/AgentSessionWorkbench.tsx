@@ -200,6 +200,12 @@ interface ConversationDraftPersistence {
   modelName: string;
   reasoningEffort: string | null;
 }
+
+function conversationDraftHasContent(recovery: ConversationDraftRecovery): boolean {
+  return Boolean(recovery.content.trim() || recovery.attachments.length || recovery.references.length
+    || recovery.workspaceReferences?.length || recovery.annotations.length);
+}
+
 type LocalMessageProjectionState = 'queued' | 'submitting' | 'accepted' | 'ambiguous';
 interface LocalMessageProjection {
   submissionId: string;
@@ -4217,6 +4223,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const [pendingCreatedId, setPendingCreatedId] = useState<string>();
   const [pendingMigratedSend, setPendingMigratedSend] = useState<BoundQueuedMessage>();
   const [conversationDraft, setConversationDraft] = useState<ConversationDraft | undefined>(() => initialBootstrapRecovery.current?.draft ?? initialConversationDraft.current?.draft);
+  const [recoverableConversationDrafts, setRecoverableConversationDrafts] = useState<Record<string, ConversationDraftRecovery>>({});
   const [bootstrapRecovery, setBootstrapRecovery] = useState<BootstrapRecovery | undefined>(() => initialBootstrapRecovery.current);
   const [workspaceScopeMigration, setWorkspaceScopeMigration] = useState<string>();
   const [workDirectoryCreatorOpen, setWorkDirectoryCreatorOpen] = useState(false);
@@ -4759,12 +4766,21 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       if (scope === activeComposerScope.current) clearConversationDraft();
       return;
     }
-    writeConversationDraft(draftPersistence.storageKey, {
+    const recovery = {
       draft: draftPersistence.draft,
       ...snapshot,
       providerId: draftPersistence.providerId,
       modelName: draftPersistence.modelName,
       reasoningEffort: draftPersistence.reasoningEffort,
+    };
+    writeConversationDraft(draftPersistence.storageKey, recovery);
+    const draftKey = draftPersistence.draft.workDirectoryId ?? 'root';
+    setRecoverableConversationDrafts(current => {
+      if (conversationDraftHasContent(recovery)) return { ...current, [draftKey]: recovery };
+      if (!current[draftKey]) return current;
+      const updated = { ...current };
+      delete updated[draftKey];
+      return updated;
     });
   }, [bootstrapRecovery, clearConversationDraft, host.id, pendingBootstrap, workspace]);
   const connectedProviders = (providersQuery.data ?? []).filter(item => item.connection_state === 'CONNECTED' && item.models.some(model => model.enabled && model.is_default));
@@ -5503,6 +5519,19 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   useEffect(() => {
     if (composerScope) persistComposerDraft(composerScope);
   }, [composerScope, persistComposerDraft]);
+  useEffect(() => {
+    if (!workspace) {
+      setRecoverableConversationDrafts({});
+      return;
+    }
+    const recoveries = [
+      readConversationDraft(conversationDraftStorageKey(host.id, workspace.id)),
+      ...(workDirectoriesQuery.data?.items ?? []).map(directory => (
+        readConversationDraft(conversationDraftStorageKey(host.id, workspace.id, directory.id))
+      )),
+    ].filter((recovery): recovery is ConversationDraftRecovery => Boolean(recovery && conversationDraftHasContent(recovery)));
+    setRecoverableConversationDrafts(Object.fromEntries(recoveries.map(recovery => [recovery.draft.workDirectoryId ?? 'root', recovery])));
+  }, [composerScope, host.id, workspace, workDirectoriesQuery.data?.items]);
   useEffect(() => {
     if (!queuedMessagesStorageKey || queuedMessagesStorageKeyRef.current !== queuedMessagesStorageKey) return;
     writeQueuedMessages(queuedMessagesStorageKey, queuedMessages);
@@ -6255,6 +6284,17 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       setNewConversationReasoningEffort(recovery.reasoningEffort);
     } else {
       if (workspace) writeConversationDraft(conversationDraftStorageKey(host.id, workspace.id, next.workDirectoryId), undefined);
+      const draftKey = next.workDirectoryId ?? 'root';
+      setRecoverableConversationDrafts(current => {
+        if (!current[draftKey]) return current;
+        const updated = { ...current };
+        delete updated[draftKey];
+        return updated;
+      });
+      if (conversationDraft && conversationDraft.id === outgoingScope && (conversationDraft.workDirectoryId ?? 'root') === draftKey) {
+        composerDraftsByScope.current.delete(conversationDraft.id);
+        conversationDraftsByScope.current.delete(conversationDraft.id);
+      }
       const draft = { ...next, id: randomId(), capabilityVersionIds: next.capabilityVersionIds ?? [] };
       composerDraftsByScope.current.set(draft.id, { content: '', attachments: [], references: [], workspaceReferences: [], annotations: [] });
       setConversationDraft(draft);
@@ -6271,7 +6311,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     setHiddenEventIds(new Set());
     setTurnState('idle');
     onNavigate(host.rootPath);
-  }, [clearBootstrapRecovery, host.id, host.rootPath, onNavigate, persistComposerDraft, replaceComposerDraft, updateLocalMessageProjections, workspace]);
+  }, [clearBootstrapRecovery, conversationDraft, host.id, host.rootPath, onNavigate, persistComposerDraft, replaceComposerDraft, updateLocalMessageProjections, workspace]);
   useEffect(() => {
     if (!autoOpenDraft || !workspace || selectedBindingId || conversationDraft) return;
     openConversationDraft({ displayName: '根工作区' }, { restoreRecovery: true });
@@ -6662,6 +6702,21 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const pendingBootstrapItem = pendingBootstrap
     ? <button className={pendingBootstrap.draft.id === conversationDraft?.id ? 'active' : ''} aria-current={pendingBootstrap.draft.id === conversationDraft?.id ? 'page' : undefined} aria-label={`${pendingConversationName(pendingBootstrap.message)}，正在创建会话`}><LoaderCircle className="conversation-activity-spin" size={13}/><span><b>{pendingConversationName(pendingBootstrap.message)}</b><small>正在创建会话</small></span><ChevronRight size={13}/></button>
     : null;
+  const recoverableDraftItem = (workDirectoryId: string | undefined, displayName: string) => {
+    const recovery = recoverableConversationDrafts[workDirectoryId ?? 'root'];
+    if (!recovery || pendingBootstrap?.draft.id === recovery.draft.id) return null;
+    const active = conversationDraft?.id === recovery.draft.id;
+    const contentSummary = recovery.content.trim().replace(/\s+/g, ' ');
+    const summary = contentSummary
+      ? `${contentSummary.slice(0, 80)}${contentSummary.length > 80 ? '…' : ''}`
+      : [
+        recovery.attachments.length ? `${recovery.attachments.length} 个附件` : '',
+        recovery.references.length ? `${recovery.references.length} 条会话引用` : '',
+        recovery.workspaceReferences?.length ? `${recovery.workspaceReferences.length} 条工作区引用` : '',
+        recovery.annotations.length ? `${recovery.annotations.length} 条注释` : '',
+      ].filter(Boolean).join(' · ');
+    return <button type="button" className={active ? 'active' : ''} aria-current={active ? 'page' : undefined} aria-label={`恢复${displayName}的未发送草稿`} onClick={() => openConversationDraft({ workDirectoryId, displayName }, { restoreRecovery: true })}><FileText size={13}/><span><b>未发送草稿</b><small>{summary}</small></span><ChevronRight size={13}/></button>;
+  };
   const rootConversations = unpinnedConversations.filter(item => !item.work_directory_id);
   const conversationsForDirectory = (workDirectoryId: string) => unpinnedConversations.filter(
     item => item.work_directory_id === workDirectoryId,
@@ -6735,10 +6790,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
           ? <section className="agent-workspace-activity" aria-label="活动会话"><header><div><span className="eyebrow">ACTIVITY</span><b>活动</b></div><button type="button" aria-label="返回工作区列表" title="返回工作区列表" onClick={() => { setActivityPreviewBindingId(undefined); setSidebarListMode('workspaces'); }}><ArrowLeft size={15}/></button></header>{activityConversations.length ? activityConversations.map(item => conversationRow(item, [], { allowDrag: false, workspaceName: activityWorkspaceName(item), onSelect: () => previewActivityConversation(item.id), onDoubleClick: () => openActivityConversation(item.id) })) : <p>没有正在运行或未读的会话。</p>}</section>
           : <>{pinnedConversations.length > 0 && <section className="agent-workspace-pinned" aria-label="置顶会话"><header><Pin size={13}/><span>置顶</span></header><div>{pinnedConversations.map(item => conversationRow(item, [], { allowDrag: false }))}</div></section>}
             <WorkspaceConversationGroup groupId="root" label="根工作区" conversationCount={rootConversations.length} forceExpanded={Boolean(revealedUnpinnedConversation && !revealedUnpinnedConversation.work_directory_id)} canCreateConversation={canOpenConversation} onCreateConversation={() => openConversationDraft({ displayName: '根工作区' })}>
-              {visibleCount => <>{pendingBootstrapItem && !pendingBootstrap?.draft.workDirectoryId ? pendingBootstrapItem : null}{rootConversations.slice(0, visibleCount).map(item => conversationRow(item, rootConversations))}</>}
+              {visibleCount => <>{pendingBootstrapItem && !pendingBootstrap?.draft.workDirectoryId ? pendingBootstrapItem : recoverableDraftItem(undefined, '根工作区')}{rootConversations.slice(0, visibleCount).map(item => conversationRow(item, rootConversations))}</>}
             </WorkspaceConversationGroup>
             {features.workDirectories && workDirectories.map(directory => <WorkspaceConversationGroup key={directory.id} groupId={directory.id} label={directory.display_name} conversationCount={conversationsForDirectory(directory.id).length} forceExpanded={revealedUnpinnedConversation?.work_directory_id === directory.id} canCreateConversation={canOpenConversation} onCreateConversation={() => openConversationDraft({ workDirectoryId: directory.id, displayName: directory.display_name })} onDelete={api.deleteWorkDirectory && runtimeWritable ? () => void removeWorkDirectory(directory) : undefined}>
-              {visibleCount => { const group = conversationsForDirectory(directory.id); return <>{pendingBootstrapItem && pendingBootstrap?.draft.workDirectoryId === directory.id ? pendingBootstrapItem : null}{group.slice(0, visibleCount).map(item => conversationRow(item, group))}</>}}
+              {visibleCount => { const group = conversationsForDirectory(directory.id); return <>{pendingBootstrapItem && pendingBootstrap?.draft.workDirectoryId === directory.id ? pendingBootstrapItem : recoverableDraftItem(directory.id, directory.display_name)}{group.slice(0, visibleCount).map(item => conversationRow(item, group))}</>}}
             </WorkspaceConversationGroup>)}</>}
       </div>
       {features.capabilities && (selected || features.draftCapabilitySelection) && <footer className="agent-workbench-rail-footer"><button type="button" disabled={selected ? !canWrite : !runtimeWritable} onClick={() => setCapabilityManagerOpen(true)}><Boxes size={15}/><span><b>会话配置</b><small>{selected ? '管理当前会话配置' : '为新会话配置能力'}</small></span><ChevronRight size={14}/></button></footer>}

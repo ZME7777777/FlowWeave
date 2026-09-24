@@ -1051,7 +1051,7 @@ test('Agent composer retains each conversation draft and uploaded attachment acr
 });
 
 
-test('New conversation draft never leaks into existing conversations during rapid switching', async ({ page }) => {
+test('New conversation draft remains isolated and can be resumed after switching', async ({ page }) => {
   let authenticated = false;
   const workspace = { id: 'draft-race-workspace', display_name: '草稿竞态工作区', desired_state: 'RUNNING', updated_at: now };
   const conversations = ['draft-race-a', 'draft-race-b', 'draft-race-c'].map((id, index) => ({
@@ -1106,10 +1106,23 @@ test('New conversation draft never leaks into existing conversations during rapi
     .filter(([key]) => key.includes('draft-race-workspace:draft-race-'))
     .every(([, value]) => !value.includes('只属于新会话的未发送草稿') && !value.includes('新会话附件.txt')))).toBe(true);
 
+  const recoverDraft = page.getByRole('button', { name: '恢复根工作区的未发送草稿' });
+  await recoverDraft.click();
+  await expect(page.getByRole('heading', { name: '新会话' })).toBeVisible();
+  await expect(composer).toHaveValue('只属于新会话的未发送草稿');
+  await expect(draftAttachment).toBeVisible();
+
+  await page.getByRole('button', { name: '竞态会话 B', exact: true }).click();
+  await page.reload();
+  await recoverDraft.click();
+  await expect(composer).toHaveValue('只属于新会话的未发送草稿');
+  await expect(draftAttachment).toBeVisible();
+
   await page.getByRole('button', { name: '在根工作区中新建会话' }).click();
   await expect(page.getByRole('heading', { name: '新会话' })).toBeVisible();
   await expect(composer).toHaveValue('');
   await expect(draftAttachment).toHaveCount(0);
+  await expect(recoverDraft).toHaveCount(0);
 });
 
 test('First message keeps the new conversation visible while its routed read is pending', async ({ page }) => {
