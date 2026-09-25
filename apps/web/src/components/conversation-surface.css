@@ -73,6 +73,7 @@
 .conversation-activity-group>summary:hover>svg,.conversation-activity-group>summary:focus-visible>svg{color:#425148}
 .conversation-activity-group[open]>summary>svg:first-child{transform:rotate(90deg)}
 .conversation-activity-group>summary small,.conversation-activity-summary small{color:#99a39c;font-size:11px}
+.conversation-live-elapsed{display:inline-block;min-width:13ch;font-variant-numeric:tabular-nums;white-space:nowrap}
 .conversation-activity-group.summary-only .conversation-activity-summary>svg{visibility:hidden}
 .conversation-activity-spinner-slot{display:grid;width:15px;height:15px;flex:0 0 15px;place-items:center}.conversation-activity-spinner-slot:not(.active){visibility:hidden}.conversation-activity-spin{width:13px;height:13px;animation:conversation-spin 1.1s linear infinite;color:#6f8f7a}
 @keyframes conversation-spin{to{transform:rotate(360deg)}

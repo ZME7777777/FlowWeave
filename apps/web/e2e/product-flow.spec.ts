@@ -1751,7 +1751,19 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.locator('.conversation-turn-status')).toHaveText('OpenHands 会话连接正常，等待响应');
   await activeProcess.evaluate(element => { (element as HTMLElement).dataset.periodicRenderMarker = 'stable'; });
   const initialElapsed = await elapsedLabel.textContent();
+  const initialElapsedBounds = await elapsedLabel.evaluate(element => {
+    const bounds = element.getBoundingClientRect();
+    return { width: bounds.width, height: bounds.height };
+  });
+  const initialProcessHeight = await activeProcess.evaluate(element => element.getBoundingClientRect().height);
+  const initialScrollTop = await page.locator('.conversation-surface').evaluate(element => element.scrollTop);
   await expect.poll(() => elapsedLabel.textContent(), { timeout: 2_500 }).not.toBe(initialElapsed);
+  await expect.poll(() => elapsedLabel.evaluate(element => {
+    const bounds = element.getBoundingClientRect();
+    return { width: bounds.width, height: bounds.height };
+  })).toEqual(initialElapsedBounds);
+  await expect.poll(() => activeProcess.evaluate(element => element.getBoundingClientRect().height)).toBe(initialProcessHeight);
+  await expect.poll(() => page.locator('.conversation-surface').evaluate(element => element.scrollTop)).toBe(initialScrollTop);
   await expect(activeProcess).toHaveAttribute('data-periodic-render-marker', 'stable');
   await expect(page.getByLabel('Agent 活动提醒')).toHaveCount(0);
   await expect.poll(() => Boolean(agentStream)).toBe(true);

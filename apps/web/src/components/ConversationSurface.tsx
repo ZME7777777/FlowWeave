@@ -1022,7 +1022,7 @@ function LiveElapsed({ startedAt }: { startedAt: number }) {
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
   }, []);
-  return <>已耗时 {formatDuration(Math.max(0, (now - startedAt) / 1000))}</>;
+  return <span className="conversation-live-elapsed">已耗时 {formatDuration(Math.max(0, (now - startedAt) / 1000))}</span>;
 }
 
 function activeToolLabel(eventName: string, toolName?: string, summary?: string, details?: Record<string, unknown>): string {
