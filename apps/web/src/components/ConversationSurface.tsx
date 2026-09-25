@@ -1235,7 +1235,7 @@ function ProgressActivity({ group, active, paused, parentFailed, avatarSlots, wo
   </details>;
 }
 
-function ActivityGroup({ items, active, completionConfirmed = false, paused = false, parentFailed = false, startedAt, finishedAt, avatarSlots, workspaceRoot }: {
+interface ActivityGroupProps {
   items: Item[];
   active: boolean;
   completionConfirmed?: boolean;
@@ -1245,7 +1245,15 @@ function ActivityGroup({ items, active, completionConfirmed = false, paused = fa
   finishedAt?: number;
   avatarSlots: ReadonlyMap<string, SubagentAvatarSlot>;
   workspaceRoot?: string | null;
-}) {
+}
+
+function sameActivityItems(left: Item[], right: Item[]): boolean {
+  return left.length === right.length && left.every((item, index) => (
+    item.event === right[index]?.event && item.kind === right[index]?.kind
+  ));
+}
+
+const ActivityGroup = memo(function ActivityGroup({ items, active, completionConfirmed = false, paused = false, parentFailed = false, startedAt, finishedAt, avatarSlots, workspaceRoot }: ActivityGroupProps) {
   const elapsed = elapsedSeconds(startedAt, finishedAt);
   const entries = groupedActivities(items);
   const rows = activityRows(entries);
@@ -1281,7 +1289,16 @@ function ActivityGroup({ items, active, completionConfirmed = false, paused = fa
         : <ActivityEntryRow key={row.entry.id} entry={row.entry} active={active} paused={paused} parentFailed={parentFailed} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/>)}
     </div>
   </details>;
-}
+}, (previous, next) => (
+  previous.active === next.active
+  && previous.completionConfirmed === next.completionConfirmed
+  && previous.paused === next.paused
+  && previous.parentFailed === next.parentFailed
+  && previous.startedAt === next.startedAt
+  && previous.finishedAt === next.finishedAt
+  && previous.workspaceRoot === next.workspaceRoot
+  && sameActivityItems(previous.items, next.items)
+));
 
 function AnnotationReplyContent({ content, annotations, onLocateAnnotation, onOpenWorkspaceFile, onOpenImage }: {
   content: string;

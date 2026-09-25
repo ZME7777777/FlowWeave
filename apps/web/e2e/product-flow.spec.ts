@@ -1770,6 +1770,9 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(activeProcess).toHaveAttribute('data-periodic-render-marker', 'stable');
   await expect(page.getByLabel('Agent 活动提醒')).toHaveCount(0);
   await expect.poll(() => Boolean(agentStream)).toBe(true);
+  const initialSpinnerTransform = await activeProcess.locator('.conversation-activity-spin').evaluate(element => getComputedStyle(element).transform);
+  await page.waitForTimeout(350);
+  await expect.poll(() => activeProcess.locator('.conversation-activity-spin').evaluate(element => getComputedStyle(element).transform)).not.toBe(initialSpinnerTransform);
   // Running reconciliation occurs every four seconds. A response with no new
   // formal event must retain the mounted transcript and its scroll position.
   const eventRequestsBeforeIdleRecovery = runningEventRequests;
