@@ -1775,6 +1775,12 @@ test('Conversation sidebar pins locally, orders activity, and reveals the select
       possibly_stuck_binding_ids: ['sidebar-directory-running'],
       failed_binding_ids: ['sidebar-root-unread'],
     });
+    if (path.endsWith('/unread') && request.method() === 'PUT') {
+      const bindingId = path.split('/').at(-2)!;
+      const conversation = conversations.find(item => item.id === bindingId)!;
+      conversation.unread = Boolean(request.postDataJSON().unread);
+      return json(route, conversation);
+    }
     if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: conversations, next_cursor: null });
     if (path.endsWith('/conversation-searches') && request.method() === 'POST') return json(route, search);
     if (path.endsWith('/conversation-searches/sidebar-search')) return json(route, search);
@@ -1830,7 +1836,7 @@ test('Conversation sidebar pins locally, orders activity, and reveals the select
   const stalledConversation = page.getByRole('button', { name: '运行中目标会话', exact: true });
   await stalledConversation.click({ button: 'right' });
   await page.getByRole('menuitem', { name: '标记为未读' }).click();
-  await page.getByRole('button', { name: /查看活动会话（2）/ }).click();
+  await page.getByRole('button', { name: /查看活动会话/ }).click();
   const activity = page.getByRole('region', { name: '活动会话' });
   await expect(activity).toBeVisible();
   await expect.poll(() => activity.locator('[data-conversation-binding-id]').evaluateAll(rows => rows.map(row => row.getAttribute('data-conversation-binding-id')))).toEqual([
@@ -1840,7 +1846,7 @@ test('Conversation sidebar pins locally, orders activity, and reveals the select
   await expect(activity.locator('[data-conversation-binding-id="sidebar-directory-running"]')).toContainText('归属工作区');
   await expect(activity.locator('[data-conversation-binding-id="sidebar-root-unread"]')).toContainText('根工作区');
   await expect(activity.locator('[data-conversation-binding-id="sidebar-directory-running"]').getByRole('img', { name: '后台长时间未产生可确认进展' })).toHaveClass(/running/);
-  await expect(activity.locator('[data-conversation-binding-id="sidebar-directory-running"]').getByRole('img', { name: '会话有未读回复' })).toBeVisible();
+  await expect(activity.locator('[data-conversation-binding-id="sidebar-directory-running"]').getByRole('img', { name: '会话有未读回复' })).toHaveCount(0);
   await expect(activity.locator('[data-conversation-binding-id="sidebar-root-unread"]').getByRole('img', { name: '会话异常结束' })).toBeVisible();
   await expect(activity.locator('[data-conversation-binding-id="sidebar-root-unread"]').getByRole('img', { name: '会话已完成，有未读回复' })).toHaveCount(0);
 
@@ -1854,7 +1860,17 @@ test('Conversation sidebar pins locally, orders activity, and reveals the select
   await runningConversation.dblclick();
   await expect(page).toHaveURL(/\/agent\/conversations\/sidebar-directory-running$/);
   await expect(activity).toHaveCount(0);
-  await expect(page.locator('[data-conversation-binding-id="sidebar-directory-running"]')).toHaveClass(/sidebar-reveal/);
+  const selectedRunningRow = page.locator('[data-conversation-binding-id="sidebar-directory-running"]');
+  await expect(selectedRunningRow).toHaveClass(/sidebar-reveal/);
+  await expect(selectedRunningRow.getByRole('img', { name: '后台长时间未产生可确认进展' })).toHaveCount(0);
+
+  await page.getByRole('button', { name: /查看活动会话/ }).click();
+  const reopenedActivity = page.getByRole('region', { name: '活动会话' });
+  const failedConversation = reopenedActivity.getByRole('button', { name: '未读根会话', exact: true });
+  await failedConversation.dblclick();
+  await expect(page).toHaveURL(/\/agent\/conversations\/sidebar-root-unread$/);
+  await expect(reopenedActivity).toHaveCount(0);
+  await expect(page.locator('[data-conversation-binding-id="sidebar-root-unread"]').getByRole('img', { name: '会话异常结束' })).toHaveCount(0);
 
   await page.getByRole('button', { name: '搜索会话' }).click();
   await page.getByLabel('搜索会话内容').fill('精准定位');

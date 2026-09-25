@@ -696,6 +696,8 @@ function WorkspaceConversationRow({
   reveal?: boolean;
 }) {
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number }>();
+  const showAlert = unread && (possiblyStuck || failed);
+  const alertIsRunning = showAlert && possiblyStuck && running && !failed;
   useEscapeClose(() => setContextMenu(undefined), Boolean(contextMenu));
   useEffect(() => {
     if (!contextMenu) return;
@@ -712,9 +714,9 @@ function WorkspaceConversationRow({
     <button type="button" className={`agent-workspace-conversation-select${item.id === selectedBindingId ? ' active' : ''}`} aria-label={conversationName(item)} onClick={onSelect} onDoubleClick={onDoubleClick}>
       <CircleDot size={13}/><span><b>{conversationName(item)}</b>{workspaceName && <small title={workspaceName}><Folder size={11}/><span>{workspaceName}</span></small>}</span>
     </button>
-    {(possiblyStuck || failed) && <CircleAlert className={`agent-workspace-conversation-alert${possiblyStuck && running && !failed ? ' running' : ''}`} role="img" aria-label={failed ? '会话异常结束' : '后台长时间未产生可确认进展'} size={14}/>}
-    {running && !possiblyStuck && <LoaderCircle className="agent-workspace-conversation-running" role="img" aria-label="会话正在运行" size={14}/>}
-    {unread && !failed && <span className="agent-workspace-conversation-unread" role="img" aria-label={running ? '会话有未读回复' : '会话已完成，有未读回复'} title="会话有未读回复"/>}
+    {showAlert && <CircleAlert className={`agent-workspace-conversation-alert${alertIsRunning ? ' running' : ''}`} role="img" aria-label={failed ? '会话异常结束' : '后台长时间未产生可确认进展'} size={14}/>}
+    {running && !showAlert && <LoaderCircle className="agent-workspace-conversation-running" role="img" aria-label="会话正在运行" size={14}/>}
+    {unread && !showAlert && <span className="agent-workspace-conversation-unread" role="img" aria-label={running ? '会话有未读回复' : '会话已完成，有未读回复'} title="会话有未读回复"/>}
     {orderSyncState === 'syncing' && <span className="agent-workspace-conversation-sync" title="排序正在后台同步" aria-label="排序正在后台同步"><LoaderCircle size={12}/></span>}
     {orderSyncState === 'failed' && <button type="button" className="agent-workspace-conversation-sync failed" title="排序暂未同步；点击重试。当前前端顺序已保留。" aria-label="排序暂未同步，点击重试" onClick={event => { event.stopPropagation(); onRetryOrder?.(); }}>!</button>}
     {onDelete && !running && <button type="button" className="agent-workspace-conversation-delete" aria-label={`删除会话 ${conversationName(item)}`} title={deleteDisabled ? '会话运行中，请先停止' : '删除会话'} disabled={!conversationWritable || deleteDisabled || removing} onClick={onDelete}><Trash2 size={13}/></button>}
@@ -4422,12 +4424,12 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   }, [conversations, pinnedConversationIds]);
   const unpinnedConversations = conversations.filter(item => !pinnedConversationIds.has(item.id));
   const activityConversations = useMemo(() => conversations
-    .filter(item => runningConversationIds.has(item.id) || condensingConversationIds.has(item.id) || possiblyStuckConversationIds.has(item.id) || failedConversationIds.has(item.id) || conversationIsRunning(item.execution_status) || unreadConversationIds.has(item.id))
+    .filter(item => runningConversationIds.has(item.id) || condensingConversationIds.has(item.id) || conversationIsRunning(item.execution_status) || unreadConversationIds.has(item.id))
     .sort((left, right) => {
       const leftUpdatedAt = Date.parse(left.updated_at) || Date.parse(left.created_at) || 0;
       const rightUpdatedAt = Date.parse(right.updated_at) || Date.parse(right.created_at) || 0;
       return rightUpdatedAt - leftUpdatedAt || right.id.localeCompare(left.id);
-    }), [condensingConversationIds, conversations, failedConversationIds, possiblyStuckConversationIds, runningConversationIds, unreadConversationIds]);
+    }), [condensingConversationIds, conversations, runningConversationIds, unreadConversationIds]);
   const revealedUnpinnedConversation = sidebarRevealBindingId && !pinnedConversationIds.has(sidebarRevealBindingId)
     ? conversations.find(item => item.id === sidebarRevealBindingId)
     : undefined;
