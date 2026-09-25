@@ -6952,6 +6952,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const previewActivityConversation = (bindingId: string) => {
     const outgoingScope = activeComposerScope.current;
     if (outgoingScope) persistComposerDraft(outgoingScope);
+    // A single click in Activity opens this binding in the workbench as a
+    // preview. It is still user-visible, so it must acknowledge any prior
+    // unread projection just like opening it from the workspace list does.
+    markConversationRead(bindingId);
     setConversationDraft(undefined);
     setActivityPreviewBindingId(bindingId);
   };

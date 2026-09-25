@@ -1727,6 +1727,20 @@ test('Conversation context menu marks a conversation unread until it is opened a
     { id: 'unread-conversation-a', unread: true },
     { id: 'unread-conversation-a', unread: false },
   ]);
+
+  await conversationA.click({ button: 'right' });
+  await page.getByRole('menuitem', { name: '标记为未读' }).click();
+  await expect(unreadMarker).toBeVisible();
+
+  await page.getByRole('button', { name: /查看活动会话/ }).click();
+  await conversationA.click();
+  await expect(unreadMarker).toHaveCount(0);
+  await expect.poll(() => unreadWrites).toEqual([
+    { id: 'unread-conversation-a', unread: true },
+    { id: 'unread-conversation-a', unread: false },
+    { id: 'unread-conversation-a', unread: true },
+    { id: 'unread-conversation-a', unread: false },
+  ]);
 });
 
 test('Opening a conversation stays read when an older list request finishes later', async ({ page }) => {
