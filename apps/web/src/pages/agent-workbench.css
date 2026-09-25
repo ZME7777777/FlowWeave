@@ -230,6 +230,10 @@
 
 /* A review may open the current authorized source file without treating the
    captured diff text as a substitute for the workspace file. */
+
+/* A red alert is static after a native failure; a stale but still-running
+   Conversation gets this restrained heartbeat to retain that distinction. */
+.agent-workspace-conversation-alert.running{animation:agent-workspace-conversation-alert-heartbeat 1.7s ease-in-out infinite;transform-origin:center}@keyframes agent-workspace-conversation-alert-heartbeat{0%,100%{transform:translateY(-50%) scale(1);filter:drop-shadow(0 0 1px #fff)}18%{transform:translateY(-50%) scale(1.2);filter:drop-shadow(0 0 4px #d45252)}36%{transform:translateY(-50%) scale(1)}48%{transform:translateY(-50%) scale(1.12);filter:drop-shadow(0 0 3px #d45252)}64%{transform:translateY(-50%) scale(1)}}@media(prefers-reduced-motion:reduce){.agent-workspace-conversation-alert.running{animation:none}}
 .agent-changes-diff-actions{display:flex;flex:0 0 auto;align-items:center;gap:6px}.agent-open-source-file{display:flex;align-items:center;gap:4px;border:1px solid #c8dace;border-radius:5px;background:#f7fbf8;padding:4px 6px;color:#286140;font-size:9px;white-space:nowrap}.agent-open-source-file:hover,.agent-open-source-file:focus-visible{border-color:#8dbba0;background:#eaf5ed;outline:0}.agent-diff-line{width:100%;border:0;background:transparent;padding:0;font:inherit;text-align:left}.agent-diff-line:not(.empty){cursor:pointer}.agent-diff-line:not(.empty):hover,.agent-diff-line:not(.empty):focus-visible{outline:2px solid #79ad8a;outline-offset:-2px}
 
 /* Keep Diff modes in the same horizontal, borderless tab family as the

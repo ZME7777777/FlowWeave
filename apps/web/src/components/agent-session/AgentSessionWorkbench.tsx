@@ -712,7 +712,7 @@ function WorkspaceConversationRow({
     <button type="button" className={`agent-workspace-conversation-select${item.id === selectedBindingId ? ' active' : ''}`} aria-label={conversationName(item)} onClick={onSelect} onDoubleClick={onDoubleClick}>
       <CircleDot size={13}/><span><b>{conversationName(item)}</b>{workspaceName && <small title={workspaceName}><Folder size={11}/><span>{workspaceName}</span></small>}</span>
     </button>
-    {(possiblyStuck || failed) && <CircleAlert className="agent-workspace-conversation-alert" role="img" aria-label={failed ? '会话异常结束' : '后台长时间未产生可确认进展'} size={14}/>}
+    {(possiblyStuck || failed) && <CircleAlert className={`agent-workspace-conversation-alert${possiblyStuck && running && !failed ? ' running' : ''}`} role="img" aria-label={failed ? '会话异常结束' : '后台长时间未产生可确认进展'} size={14}/>}
     {running && !possiblyStuck && <LoaderCircle className="agent-workspace-conversation-running" role="img" aria-label="会话正在运行" size={14}/>}
     {unread && !failed && <span className="agent-workspace-conversation-unread" role="img" aria-label={running ? '会话有未读回复' : '会话已完成，有未读回复'} title="会话有未读回复"/>}
     {orderSyncState === 'syncing' && <span className="agent-workspace-conversation-sync" title="排序正在后台同步" aria-label="排序正在后台同步"><LoaderCircle size={12}/></span>}

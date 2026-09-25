@@ -1839,7 +1839,7 @@ test('Conversation sidebar pins locally, orders activity, and reveals the select
   ]);
   await expect(activity.locator('[data-conversation-binding-id="sidebar-directory-running"]')).toContainText('归属工作区');
   await expect(activity.locator('[data-conversation-binding-id="sidebar-root-unread"]')).toContainText('根工作区');
-  await expect(activity.locator('[data-conversation-binding-id="sidebar-directory-running"]').getByRole('img', { name: '后台长时间未产生可确认进展' })).toBeVisible();
+  await expect(activity.locator('[data-conversation-binding-id="sidebar-directory-running"]').getByRole('img', { name: '后台长时间未产生可确认进展' })).toHaveClass(/running/);
   await expect(activity.locator('[data-conversation-binding-id="sidebar-directory-running"]').getByRole('img', { name: '会话有未读回复' })).toBeVisible();
   await expect(activity.locator('[data-conversation-binding-id="sidebar-root-unread"]').getByRole('img', { name: '会话异常结束' })).toBeVisible();
   await expect(activity.locator('[data-conversation-binding-id="sidebar-root-unread"]').getByRole('img', { name: '会话已完成，有未读回复' })).toHaveCount(0);
