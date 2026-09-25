@@ -23,6 +23,7 @@ from flowweave.modules.agent_sessions.application import usage as usage_projecti
 from flowweave.modules.agent_sessions.application.condensation import (
     enqueue_manual_condensation,
 )
+from flowweave.modules.agent_sessions.application.conversation_cache import ConversationCacheKey
 from flowweave.modules.agent_sessions.application.conversation_diagnostics import (
     log_conversation_diagnostic,
 )
@@ -53,7 +54,10 @@ from flowweave.modules.credentials.application.service import credentials_for_ag
 from flowweave.modules.model_providers.public import has_connected_default_model
 from flowweave.modules.sandboxes.public import ManagedSandbox
 from flowweave.modules.tasks.public import enqueue
-from flowweave.modules.users.application.security import user_runtime_project_root
+from flowweave.modules.users.application.security import (
+    current_principal,
+    user_runtime_project_root,
+)
 from flowweave.runtime.base import (
     RuntimeEvent,
     RuntimeEventBatch,
@@ -3097,6 +3101,22 @@ def _conversation_context_snapshot(
             "agent_session.context", time.monotonic() - started_at, outcome="ok"
         )
     return dict(context)
+
+
+def conversation_cache_key(db: Session, workspace_id: str, binding_id: str) -> ConversationCacheKey:
+    workspace = _workspace(db, workspace_id)
+    binding = _binding(db, workspace_id, binding_id)
+    handle = _handle(db, workspace, binding)
+    principal = current_principal()
+    return ConversationCacheKey(
+        user_id=principal.user_id if principal is not None else binding.owner_user_id,
+        host_kind=binding.host_kind,
+        host_id=workspace.id,
+        binding_id=binding.id,
+        runtime_session_id=binding.runtime_session_id,
+        runtime_generation=handle.runtime_resource_id,
+        conversation_id=binding.openhands_conversation_id,
+    )
 
 
 def hydrate_conversation(db: Session, workspace_id: str, binding_id: str) -> dict[str, Any]:

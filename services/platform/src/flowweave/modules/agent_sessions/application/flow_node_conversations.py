@@ -20,6 +20,7 @@ from flowweave.modules.agent_sessions.application import usage as usage_projecti
 from flowweave.modules.agent_sessions.application.condensation import (
     enqueue_manual_condensation,
 )
+from flowweave.modules.agent_sessions.application.conversation_cache import ConversationCacheKey
 from flowweave.modules.agent_sessions.application.conversation_diagnostics import (
     log_conversation_diagnostic,
 )
@@ -74,6 +75,7 @@ from flowweave.modules.environments.public import (
 from flowweave.modules.model_providers.public import has_connected_default_model
 from flowweave.modules.sandboxes import public as sandboxes
 from flowweave.modules.tasks.public import enqueue
+from flowweave.modules.users.application.security import current_principal
 from flowweave.runtime.base import (
     RuntimeEventBatch,
     RuntimeHandle,
@@ -2157,6 +2159,29 @@ def read_node_conversation_events(
         cursor=cursor,
         history_cursor=history_cursor,
         diagnostic_trigger=diagnostic_trigger,
+    )
+
+
+def node_conversation_cache_key(
+    db: Session, *, flow_run_id: str, attempt_id: str, binding_id: str
+) -> ConversationCacheKey:
+    _binding_for_attempt(
+        db,
+        flow_run_id=flow_run_id,
+        attempt_id=attempt_id,
+        binding_id=binding_id,
+    )
+    binding = _binding_for_run(db, flow_run_id, binding_id)
+    handle = _flow_run_handle(db, flow_run_id, binding_id)
+    principal = current_principal()
+    return ConversationCacheKey(
+        user_id=principal.user_id if principal is not None else binding.owner_user_id,
+        host_kind=binding.host_kind,
+        host_id=attempt_id,
+        binding_id=binding.id,
+        runtime_session_id=binding.runtime_session_id,
+        runtime_generation=handle.runtime_resource_id,
+        conversation_id=binding.openhands_conversation_id,
     )
 
 

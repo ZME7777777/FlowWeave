@@ -27,9 +27,11 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from flowweave.bootstrap.container import Container
 from flowweave.modules.agent_sessions import public as agent_sessions
+from flowweave.modules.agent_sessions.application.conversation_cache import ConversationCacheScope
 from flowweave.modules.agent_sessions.application.runtime_config import resolve_session_config
 from flowweave.modules.agent_workspaces import public as agent_workspace_host
 from flowweave.modules.environments import public as environments
+from flowweave.modules.users.application.security import current_principal
 from flowweave.runtime.dependencies import runtime_context
 from flowweave.runtime.routing import runtime_for
 from flowweave.shared.errors import DomainError
@@ -39,7 +41,6 @@ from flowweave.shared.http import (
     command_key,
     get_container,
     run_blocking,
-    run_blocking_control,
     run_blocking_history,
     run_sync,
 )
@@ -941,13 +942,37 @@ async def node_session_events(
 async def node_session_hydration(
     flow_run_id: str, attempt_id: str, binding_id: str, container: ContainerDep
 ) -> dict[str, Any]:
-    return await run_blocking(
+    principal = current_principal()
+    if principal is None:
+        raise DomainError("AUTHENTICATION_REQUIRED", "请先登录", 401)
+    scope = ConversationCacheScope(
+        user_id=principal.user_id,
+        host_kind="FLOW_NODE",
+        host_id=attempt_id,
+        binding_id=binding_id,
+    )
+    cached = await container.conversation_hydration_cache.get_current_for_scope(scope)
+    if cached is not None:
+        return cached
+    key = await run_blocking(
         container,
-        lambda session: agent_sessions.flow_node_conversations.hydrate_node_conversation(
+        lambda session: agent_sessions.flow_node_conversations.node_conversation_cache_key(
             session,
             flow_run_id=flow_run_id,
             attempt_id=attempt_id,
             binding_id=binding_id,
+        ),
+    )
+    return await container.conversation_hydration_cache.get_or_load(
+        key,
+        lambda: run_blocking(
+            container,
+            lambda session: agent_sessions.flow_node_conversations.hydrate_node_conversation(
+                session,
+                flow_run_id=flow_run_id,
+                attempt_id=attempt_id,
+                binding_id=binding_id,
+            ),
         ),
     )
 

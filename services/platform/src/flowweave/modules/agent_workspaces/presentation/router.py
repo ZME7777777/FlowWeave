@@ -21,9 +21,11 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from flowweave.bootstrap.container import Container
 from flowweave.modules.agent_sessions.application import search as conversation_search
+from flowweave.modules.agent_sessions.application.conversation_cache import ConversationCacheScope
 from flowweave.modules.agent_sessions.public import conversations
 from flowweave.modules.agent_workspaces.application import work_directories, workspace
 from flowweave.modules.environments import public as environments
+from flowweave.modules.users.application.security import current_principal
 from flowweave.runtime.dependencies import runtime_context
 from flowweave.runtime.routing import runtime_for
 from flowweave.shared.errors import DomainError
@@ -880,9 +882,30 @@ async def agent_conversation_hydration(
     workspace_id: str, binding_id: str, container: ContainerDep
 ) -> dict[str, Any]:
     try:
-        return await run_blocking(
+        principal = current_principal()
+        if principal is None:
+            raise DomainError("AUTHENTICATION_REQUIRED", "请先登录", 401)
+        scope = ConversationCacheScope(
+            user_id=principal.user_id,
+            host_kind="AGENT_WORKSPACE",
+            host_id=workspace_id,
+            binding_id=binding_id,
+        )
+        cached = await container.conversation_hydration_cache.get_current_for_scope(scope)
+        if cached is not None:
+            return cached
+        key = await run_blocking(
             container,
-            lambda session: conversations.hydrate_conversation(session, workspace_id, binding_id),
+            lambda session: conversations.conversation_cache_key(session, workspace_id, binding_id),
+        )
+        return await container.conversation_hydration_cache.get_or_load(
+            key,
+            lambda: run_blocking(
+                container,
+                lambda session: conversations.hydrate_conversation(
+                    session, workspace_id, binding_id
+                ),
+            ),
         )
     except DomainError as exc:
         if exc.code not in {"EXECUTOR_UNAVAILABLE", "RUNTIME_READ_SATURATED"}:

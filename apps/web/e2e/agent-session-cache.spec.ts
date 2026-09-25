@@ -241,6 +241,7 @@ test('Re-entering a recently loaded conversation reuses its trusted snapshot', a
 
   await expect(page.getByText('会话 A 的历史回复', { exact: true })).toBeVisible();
   await expect(page.getByRole('status').filter({ hasText: '正在加载会话' })).toHaveCount(0);
+  await page.waitForTimeout(300);
   expect(conversationAHydrationReads).toBe(1);
 });
 

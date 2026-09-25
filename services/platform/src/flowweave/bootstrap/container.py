@@ -8,6 +8,9 @@ from typing import Literal
 import httpx
 
 from flowweave.bootstrap.settings import Settings
+from flowweave.modules.agent_sessions.application.conversation_cache import (
+    ConversationHydrationCache,
+)
 from flowweave.modules.runs.infrastructure.event_listener import RunEventListener
 from flowweave.modules.users.application.audit import AuditWriter
 from flowweave.runtime.base import RuntimePort
@@ -39,6 +42,7 @@ class Container:
     http_transport: HttpTransportPool
     metrics: Metrics
     rate_limiter: RateLimiter
+    conversation_hydration_cache: ConversationHydrationCache
     runtime: RuntimePort
     artifact_store: ArtifactStorePort
     dependency_builder: DependencyBuilderPort
@@ -57,6 +61,7 @@ class Container:
         await self.run_event_listener.close()
         await self.audit_writer.close()
         await self.rate_limiter.close()
+        await self.conversation_hydration_cache.close()
         await self.http_transport.aclose()
         unregister_http_transport(self.settings, self.http_transport)
         await asyncio.to_thread(
@@ -111,6 +116,7 @@ def build_container(settings: Settings, *, role: Literal["api", "worker"]) -> Co
         http_transport=http_transport,
         metrics=metrics,
         rate_limiter=RateLimiter(settings, metrics),
+        conversation_hydration_cache=ConversationHydrationCache(),
         runtime=runtime,
         artifact_store=build_artifact_store(settings),
         dependency_builder=build_dependency_builder(settings),

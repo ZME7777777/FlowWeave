@@ -51,7 +51,25 @@ _SLOW_REQUEST_SECONDS = 1.0
 _MESSAGE_BINDING_PATH = re.compile(
     r"^/api/v1/(?:agent-workspaces/[^/]+/conversations|flow-runs/[^/]+/node-attempts/[^/]+/agent-sessions)/(?P<binding_id>[^/]+)/messages(?:/|$)"
 )
+_CONVERSATION_MUTATION_PATH = re.compile(
+    r"^/api/v1/(?:agent-workspaces/[^/]+/conversations|flow-runs/[^/]+/node-attempts/[^/]+/agent-sessions)/(?P<binding_id>[^/]+)/(?P<action>messages(?:/[^/]+/rerun)?|pending-confirmation/decision|model|condense|interrupt|resume)/?$"
+)
+_CONVERSATION_PATH = re.compile(
+    r"^/api/v1/(?:agent-workspaces/[^/]+/conversations|flow-runs/[^/]+/node-attempts/[^/]+/agent-sessions)/(?P<binding_id>[^/]+)/?$"
+)
 _READ_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
+
+def _conversation_mutation_binding_id(method: str, path: str) -> str | None:
+    if method in _READ_METHODS:
+        return None
+    match = _CONVERSATION_MUTATION_PATH.match(path)
+    if match is not None:
+        return match.group("binding_id")
+    if method == "DELETE":
+        match = _CONVERSATION_PATH.match(path)
+        return match.group("binding_id") if match is not None else None
+    return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -195,6 +213,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         resolver_token = bind_plugin_resolver(container.plugin_resolver)
         sandbox_token = bind_sandbox(container.sandbox)
         try:
+            mutation_binding_id = _conversation_mutation_binding_id(
+                request.method, request.url.path
+            )
+            if mutation_binding_id is not None and principal is not None:
+                await container.conversation_hydration_cache.invalidate_binding(
+                    principal.user_id,
+                    mutation_binding_id,
+                )
             response = await call_next(request)
             response.headers["X-Request-ID"] = request_id
             audit_principal = principal or getattr(request.state, "audit_principal", None)
