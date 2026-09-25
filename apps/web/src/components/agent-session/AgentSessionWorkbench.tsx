@@ -1540,16 +1540,18 @@ function mergeConversationEvent(
     next[index] = { ...items[index], ...attachment, image_data_url: attachment.image_data_url ?? items[index].image_data_url };
     return next;
   }, []);
-  return {
+  const details = { ...current.payload.details, ...incoming.payload.details };
+  const merged = {
     ...current,
     ...incoming,
     payload: {
       ...current.payload,
       ...incoming.payload,
       ...(attachments.length ? { attachments } : {}),
-      details: { ...current.payload.details, ...incoming.payload.details },
+      ...(Object.keys(details).length ? { details } : {}),
     },
   };
+  return JSON.stringify(current) === JSON.stringify(merged) ? current : merged;
 }
 
 function mergeConversationEvents(
@@ -1562,6 +1564,36 @@ function mergeConversationEvents(
     merged.set(event.id, current ? mergeConversationEvent(current, event) : event);
   }
   return [...merged.values()];
+}
+
+function sameConversationPresentation(
+  current: OpenHandsConversationEventBatch,
+  next: OpenHandsConversationEventBatch,
+): boolean {
+  if (current.events.length !== next.events.length
+    || current.events.some((event, index) => event !== next.events[index])) return false;
+  return JSON.stringify({
+    next_cursor: current.next_cursor,
+    history_cursor: current.history_cursor,
+    result: current.result,
+    task_usage: current.task_usage,
+    task_control: current.task_control,
+    possibly_stuck: current.monitoring?.possibly_stuck,
+  }) === JSON.stringify({
+    next_cursor: next.next_cursor,
+    history_cursor: next.history_cursor,
+    result: next.result,
+    task_usage: next.task_usage,
+    task_control: next.task_control,
+    possibly_stuck: next.monitoring?.possibly_stuck,
+  });
+}
+
+function retainConversationPresentation(
+  current: OpenHandsConversationEventBatch,
+  next: OpenHandsConversationEventBatch,
+): OpenHandsConversationEventBatch {
+  return sameConversationPresentation(current, next) ? current : next;
 }
 
 function projectLocalMessages(
@@ -5053,17 +5085,16 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       // an instruction to clear already-rendered activity. Keep identities we
       // have read during this turn and let the newest REST payload refresh the
       // matching events' persisted fields.
-      return current
-        ? {
-            ...current,
-            ...latest,
-            events: mergeConversationEvents(current.events, latest.events),
-            history_cursor: latest.history_cursor
-              && exhaustedHistoryCursors.current.get(selected!.id) === latest.history_cursor
-              ? null
-              : (current.history_cursor ?? latest.history_cursor),
-          }
-        : latest;
+      if (!current) return latest;
+      return retainConversationPresentation(current, {
+        ...current,
+        ...latest,
+        events: mergeConversationEvents(current.events, latest.events),
+        history_cursor: latest.history_cursor
+          && exhaustedHistoryCursors.current.get(selected!.id) === latest.history_cursor
+          ? null
+          : (current.history_cursor ?? latest.history_cursor),
+      });
     },
     // Native event reads begin at the current leaf. A trusted revisit keeps its
     // existing projection; running recovery below performs the latest-window
@@ -5105,7 +5136,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
               // cursor while this read was in flight. Never move that progress
               // backwards merely because this older request completed later.
               const cursorUnchanged = existing.next_cursor === cursor;
-              return {
+              return retainConversationPresentation(existing, {
                 ...existing,
                 ...incoming,
                 events: mergeConversationEvents(existing.events, incoming.events),
@@ -5116,7 +5147,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
                   && exhaustedHistoryCursors.current.get(scope) === incoming.history_cursor
                   ? null
                   : (existing.history_cursor ?? incoming.history_cursor),
-              };
+              });
             })()
           : incoming,
         );

@@ -457,6 +457,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   let historyPageRequests = 0;
   let releaseHistoryPage: (() => void) | undefined;
   const historyPageGate = new Promise<void>(resolve => { releaseHistoryPage = resolve; });
+  const runningUserTimestamp = new Date(Date.now() - 12_000).toISOString().replace(/Z$/, '');
   let agentStream: WebSocketRoute | undefined;
   let terminalSocket: WebSocketRoute | undefined;
   const terminalInputs: string[] = [];
@@ -491,6 +492,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   let contextAvailable = false;
   let contextMetricsTemporarilyUnavailable = false;
   let contextRequests = 0;
+  let runningEventRequests = 0;
   let forkRequests = 0;
   let manualCondensations = 0;
   let manualCondensationCompleted = false;
@@ -788,6 +790,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
       const eventUrl = new URL(request.url());
       const cursor = eventUrl.searchParams.get('cursor');
       const historyCursor = eventUrl.searchParams.get('history_cursor');
+      if (modelIsResponding && !historyCursor) runningEventRequests += 1;
       if (historyCursor === 'running-history-1') {
         historyPageRequests += 1;
         await historyPageGate;
@@ -799,7 +802,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
       }
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
         events: (modelIsResponding || parentTurnFailed || recoverableAgentError) ? [
-          ...(!cursor ? [{ id: 'running-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'agent-reply', content: '正在处理的请求', timestamp: new Date(Date.now() - 12_000).toISOString().replace(/Z$/, '') } }] : []),
+          ...(!cursor ? [{ id: 'running-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'agent-reply', content: '正在处理的请求', timestamp: runningUserTimestamp } }] : []),
           ...(runningDirectFormalEventPersisted && !cursor ? [{ id: 'running-direct-stream-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'running-user', content: 'FLOWWEAVE_MESSAGE_CONTEXT_V5:{"current_user_request":{"content":"运行中直接发送消息"}}', display_content: '运行中直接发送消息', timestamp: new Date().toISOString() } }] : []),
           ...(incompleteLiveToolProjection && !cursor ? [{ id: 'live-tool', event_type: 'TOOL_CALL', payload: { source: 'agent', parent_id: 'running-user', action_id: 'live-tool', tool_call_id: 'live-call', event_name: 'TerminalAction', timestamp: new Date().toISOString() } }] : []),
           ...(backfilledTaskAction && (cursor === 'running-user' || (cursorlessEventRecovery && !cursor)) ? [{ id: 'recovered-task-action', event_type: 'TOOL_CALL', payload: { source: 'agent', parent_id: 'running-user', action_id: 'recovered-task-action', tool_call_id: 'recovered-task-call', tool_name: 'task', event_name: 'TaskAction', summary: '检查依赖关系', runtime_task: { phase: 'REQUESTED', action_event_id: 'recovered-task-action', tool_call_id: 'recovered-task-call', subagent_type: 'general-purpose', description: '检查依赖关系' }, timestamp: new Date().toISOString() } }] : []),
@@ -1767,6 +1770,12 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(activeProcess).toHaveAttribute('data-periodic-render-marker', 'stable');
   await expect(page.getByLabel('Agent 活动提醒')).toHaveCount(0);
   await expect.poll(() => Boolean(agentStream)).toBe(true);
+  // Running reconciliation occurs every four seconds. A response with no new
+  // formal event must retain the mounted transcript and its scroll position.
+  const eventRequestsBeforeIdleRecovery = runningEventRequests;
+  await expect.poll(() => runningEventRequests, { timeout: 6_000 }).toBeGreaterThan(eventRequestsBeforeIdleRecovery);
+  await expect(activeProcess).toHaveAttribute('data-periodic-render-marker', 'stable');
+  await expect.poll(() => page.locator('.conversation-surface').evaluate(element => element.scrollTop)).toBe(initialScrollTop);
   // A stale readiness endpoint can remain idle while the formal user turn is
   // still unfinished. All visible controls must hold the same synchronizing
   // state until the native terminal event reaches the local projection.
