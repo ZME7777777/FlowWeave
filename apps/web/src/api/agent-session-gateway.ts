@@ -147,6 +147,7 @@ export interface AgentSessionApi {
   readonly migrateStreamingConversation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, modelProviderId: string, modelName?: string | null, reasoningEffort?: string | null) => Promise<AgentConversation>;
   readonly uploadConversationAttachment: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, file: File) => Promise<AgentAttachment>;
   readonly uploadDraftAttachment: (hostId: AgentSessionHostId, file: File, workDirectoryId?: AgentSessionWorkDirectoryId, conversationId?: string) => Promise<AgentAttachment>;
+  readonly deleteDraftAttachments: (hostId: AgentSessionHostId, conversationId: string, path?: string) => Promise<void>;
   readonly forkConversation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, eventId: string) => Promise<AgentConversation>;
   /** Requests native context condensation without appending a user message. */
   readonly condenseConversation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<{ accepted: boolean; task_id?: string | null }>;
@@ -224,6 +225,7 @@ export const agentWorkspaceSessionGateway: AgentSessionGateway = {
     migrateStreamingConversation: api.migrateAgentStreamingConversation,
     uploadConversationAttachment: api.uploadAgentAttachment,
     uploadDraftAttachment: api.uploadAgentWorkspaceAttachment,
+    deleteDraftAttachments: api.deleteAgentWorkspaceDraftAttachments,
     forkConversation: api.forkAgentConversation,
     condenseConversation: api.condenseAgentConversation,
     interruptConversation: api.interruptAgentConversation,
@@ -338,6 +340,8 @@ export function flowNodeSessionGateway(
         nodeSessionApi.uploadAttachment(flowRunId, attemptId, bindingId, file),
       uploadDraftAttachment: (_hostId, file, workDirectoryId, conversationId) =>
         nodeSessionApi.uploadDraftAttachment(flowRunId, attemptId, file, workDirectoryId, conversationId),
+      deleteDraftAttachments: (_hostId, conversationId, path) =>
+        nodeSessionApi.deleteDraftAttachments(flowRunId, attemptId, conversationId, path),
       forkConversation: (_hostId, bindingId, eventId) => nodeSessionApi.fork(flowRunId, attemptId, bindingId, eventId),
       condenseConversation: (_hostId, bindingId) =>
         nodeSessionApi.condense(flowRunId, attemptId, bindingId),

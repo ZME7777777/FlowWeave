@@ -45,6 +45,11 @@ from flowweave.modules.agent_sessions.application.credential_sync import (
     synchronize_credentials,
 )
 from flowweave.modules.agent_sessions.application.deletion import delete_binding_records
+from flowweave.modules.agent_sessions.application.draft_attachments import (
+    assert_attachment_owner_unbound,
+    delete_owned_attachment_files,
+    enqueue_draft_attachment_cleanup,
+)
 from flowweave.modules.agent_sessions.application.event_branch import complete_active_branch
 from flowweave.modules.agent_sessions.application.flow_node_locator import (
     active_runtime_handle,
@@ -1873,6 +1878,17 @@ def bootstrap_node_conversation(
                 "会话创建结果不确定，请使用同一请求标识重试",
                 504,
             ) from exc
+        try:
+            context = sandboxes.node_attempt_workspace_context(
+                db, flow_run_id=flow_run_id, node_attempt_id=attempt_id
+            )
+            delete_owned_attachment_files(
+                context.host_working_directory,
+                str(context.runtime_working_directory),
+                binding.id,
+            )
+        except DomainError:
+            pass
         _delete_node_bootstrap_reservation(db, binding, command)
         raise
 
@@ -1909,6 +1925,17 @@ def bootstrap_node_conversation(
                 504,
                 {"binding_id": binding.id},
             ) from exc
+        try:
+            context = sandboxes.node_attempt_workspace_context(
+                db, flow_run_id=flow_run_id, node_attempt_id=attempt_id
+            )
+            delete_owned_attachment_files(
+                context.host_working_directory,
+                str(context.runtime_working_directory),
+                binding.id,
+            )
+        except DomainError:
+            pass
         try:
             runtime.delete_conversation(handle)
         except DomainError:
@@ -2822,6 +2849,66 @@ def _ensure_blocked_attempt_wakeup(
     task.max_attempts = max(task.max_attempts, 100)
 
 
+
+def delete_node_draft_attachments(
+    db: Session,
+    *,
+    flow_run_id: str,
+    attempt_id: str,
+    owner_id: str,
+) -> int:
+    _assert_node_session_writable(db, flow_run_id=flow_run_id, attempt_id=attempt_id)
+    agent_sessions.resolve_flow_node_session_host(
+        db, flow_run_id=flow_run_id, attempt_id=attempt_id, require_start_permission=False
+    )
+    owner = assert_attachment_owner_unbound(
+        db,
+        owner_id,
+        host_kind=_FLOW_NODE,
+        host_id=flow_run_id,
+        host_scope_id=attempt_id,
+    )
+    context = sandboxes.node_attempt_workspace_context(
+        db, flow_run_id=flow_run_id, node_attempt_id=attempt_id
+    )
+    return delete_owned_attachment_files(
+        context.host_working_directory,
+        str(context.runtime_working_directory),
+        owner,
+    )
+
+
+def delete_node_draft_attachment(
+    db: Session,
+    *,
+    flow_run_id: str,
+    attempt_id: str,
+    owner_id: str,
+    path: str,
+) -> bool:
+    _assert_node_session_writable(db, flow_run_id=flow_run_id, attempt_id=attempt_id)
+    agent_sessions.resolve_flow_node_session_host(
+        db, flow_run_id=flow_run_id, attempt_id=attempt_id, require_start_permission=False
+    )
+    owner = assert_attachment_owner_unbound(
+        db,
+        owner_id,
+        host_kind=_FLOW_NODE,
+        host_id=flow_run_id,
+        host_scope_id=attempt_id,
+    )
+    context = sandboxes.node_attempt_workspace_context(
+        db, flow_run_id=flow_run_id, node_attempt_id=attempt_id
+    )
+    return bool(
+        delete_owned_attachment_files(
+            context.host_working_directory,
+            str(context.runtime_working_directory),
+            owner,
+            path=path,
+        )
+    )
+
 def upload_node_attachment(
     db: Session,
     *,
@@ -2885,6 +2972,15 @@ def upload_node_attachment(
     )
     if (matched := ATTACHMENT_PATH.fullmatch(path)) is None or matched.group("owner") != owner_id:
         raise DomainError("RUNTIME_PROTOCOL_ERROR", "OpenHands 返回了无效附件路径", 502)
+    if bound is None:
+        enqueue_draft_attachment_cleanup(
+            db,
+            host_kind=_FLOW_NODE,
+            host_id=flow_run_id,
+            host_scope_id=attempt_id,
+            owner_id=owner_id,
+            path=path,
+        )
     if bound is not None:
         db.add(
             AgentConversationMessageAttachment(
@@ -3079,6 +3175,14 @@ def delete_node_conversation(
             409,
         )
     get_runtime().delete_conversation(handle)
+    context = sandboxes.node_attempt_workspace_context(
+        db, flow_run_id=flow_run_id, node_attempt_id=attempt_id
+    )
+    delete_owned_attachment_files(
+        context.host_working_directory,
+        str(context.runtime_working_directory),
+        binding.id,
+    )
     delete_binding_records(db, binding.id)
     finish(db)
 

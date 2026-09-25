@@ -1034,6 +1034,45 @@ def _node_session_context(db: Session) -> tuple[str, str, str]:
     return flow_run_id, runtime_session_id, attempt.id
 
 
+def test_discarding_node_draft_deletes_only_its_private_attachments(
+    settings, db_session_factory: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with settings_context(settings), db_session_factory() as db:
+        flow_run_id, _runtime_session_id, attempt_id = _node_session_context(db)
+        project_root = (
+            settings.workspace_root / ".flow-run-runtimes" / flow_run_id / "workspace/project"
+        )
+        project_root.mkdir(parents=True, exist_ok=True)
+        uploads = project_root / "nodes/node-1/uploads"
+        uploads.mkdir(parents=True)
+        owner_id = str(uuid4())
+        other_owner_id = str(uuid4())
+        owned = uploads / f"{owner_id}-{'a' * 32}--draft.png"
+        other = uploads / f"{other_owner_id}-{'b' * 32}--other.png"
+        owned.write_bytes(b"draft")
+        other.write_bytes(b"other")
+        monkeypatch.setattr(
+            flow_node_conversations,
+            "_assert_node_session_writable",
+            lambda *_args, **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            flow_node_conversations.agent_sessions,
+            "resolve_flow_node_session_host",
+            lambda *_args, **_kwargs: None,
+        )
+
+        assert flow_node_conversations.delete_node_draft_attachments(
+            db,
+            flow_run_id=flow_run_id,
+            attempt_id=attempt_id,
+            owner_id=owner_id,
+        ) == 1
+        assert not owned.exists()
+        assert other.exists()
+
+
+
 def test_flow_node_host_resolves_a_frozen_shared_session_context(
     db_session_factory: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -1050,6 +1050,27 @@ async def agent_workspace_attachment(
     )
 
 
+@router.delete(
+    "/agent-workspaces/{workspace_id}/draft-attachments/{conversation_id}", status_code=204
+)
+async def delete_agent_workspace_draft_attachments(
+    workspace_id: str,
+    conversation_id: str,
+    db: Db,
+    path: str | None = Query(default=None),
+) -> Response:
+    await run_sync(
+        db,
+        lambda session: conversations.delete_draft_attachment(
+            session, workspace_id, conversation_id, path
+        )
+        if path
+        else conversations.delete_draft_attachments(session, workspace_id, conversation_id),
+    )
+    return Response(status_code=204)
+
+
+
 @router.get("/agent-workspaces/{workspace_id}/conversations/{binding_id}/context")
 async def agent_context(
     workspace_id: str, binding_id: str, container: ContainerDep

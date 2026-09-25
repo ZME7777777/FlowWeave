@@ -376,6 +376,11 @@ export const api = {
     if (!response.ok) throw await responseError(response);
     return response.json() as Promise<AgentAttachment>;
   },
+  deleteAgentWorkspaceDraftAttachments: (workspaceId: string, conversationId: string, path?: string) => {
+    const query = new URLSearchParams();
+    if (path) query.set('path', path);
+    return request<void>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/draft-attachments/${encodeURIComponent(conversationId)}${query.size ? `?${query}` : ''}`, json('DELETE', undefined, true));
+  },
   agentConversationContext: (workspaceId: string, bindingId: string) =>
     request<AgentConversationContext>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/context`),
   agentConversationCredentialSync: (workspaceId: string, bindingId: string) =>
@@ -922,6 +927,11 @@ export const nodeSessionApi = {
     const response = await fetch(`${API_BASE}${ROOT}${nodeSessionBase(flowRunId, attemptId)}/attachments${query.size ? `?${query}` : ''}`, { method: 'POST', body });
     if (!response.ok) throw await responseError(response);
     return response.json() as Promise<AgentAttachment>;
+  },
+  deleteDraftAttachments: (flowRunId: string, attemptId: string, conversationId: string, path?: string) => {
+    const query = new URLSearchParams();
+    if (path) query.set('path', path);
+    return request<void>(`${nodeSessionBase(flowRunId, attemptId)}/draft-attachments/${encodeURIComponent(conversationId)}${query.size ? `?${query}` : ''}`, json('DELETE', undefined, true));
   },
   condense: (flowRunId: string, attemptId: string, bindingId: string) =>
     request<{ accepted: boolean; task_id?: string | null }>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/condense`, json('POST', undefined, true)),
