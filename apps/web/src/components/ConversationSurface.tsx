@@ -2226,7 +2226,14 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
         return <section className="conversation-turn" key={turn.renderKey} data-conversation-turn={turn.id}>
           {turn.user && <div className="conversation-user-message">{editingEventId === turn.user.event.id
             ? <form className="conversation-message-edit" onSubmit={event => { event.preventDefault(); if (editingContent.trim()) onRewrite?.(turn.user!.event.id, editingContent.trim()); }}><textarea ref={rewriteEditor} aria-label="编辑已发送消息" value={editingContent} disabled={rewritePending} onChange={event => setEditingContent(event.target.value)} onKeyDown={event => {
-              if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing || event.keyCode === 229) return;
+              if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+              if (event.key === 'Escape') {
+                event.preventDefault();
+                event.stopPropagation();
+                setEditingEventId(undefined);
+                return;
+              }
+              if (event.key !== 'Enter' || event.shiftKey) return;
               event.preventDefault();
               event.currentTarget.form?.requestSubmit();
             }}/><footer><button type="button" onClick={() => setEditingEventId(undefined)}>取消</button><button type="submit" disabled={!editingContent.trim() || rewritePending}>重新思考</button></footer></form>
