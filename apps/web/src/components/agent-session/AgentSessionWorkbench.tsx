@@ -4026,6 +4026,11 @@ function WorkspaceDrawer({
   const canPreviewImage = Boolean(selectedFile && (selectedMimeType.startsWith('image/') || /\.(?:avif|gif|jpe?g|png|svg|webp)$/i.test(selectedFile)));
   const canPreviewPdf = Boolean(selectedFile && (selectedMimeType === 'application/pdf' || /\.pdf$/i.test(selectedFile)));
   const filesTabIsActive = scopeState.activeTabId === 'files';
+  useEffect(() => {
+    if (!fullScreen || !filesTabIsActive || !details?.working_directory || gitSidebarRequested || gitContextPath) return;
+    setGitContextPath(details.working_directory);
+    setGitSidebarRequested(true);
+  }, [details?.working_directory, filesTabIsActive, fullScreen, gitContextPath, gitSidebarRequested]);
   const gitRepositoriesQuery = useQuery({
     queryKey: sessionQueryKey(host, 'workspace-git-repositories', workspaceId, bindingId, workDirectoryId, gitContextPath),
     queryFn: () => api.gitRepositories(workspaceId, { bindingId, workDirectoryId }),

@@ -581,7 +581,10 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     if (path.endsWith('/workspace/git/repositories')) {
       workspaceGitRepositoryRequests += 1;
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
-        repositories: [{ path: '/runtime/workspace/project/backend', remote: 'https://example.test/backend.git', branch: 'main', head: '1234567890ab' }],
+        repositories: [
+          { path: '/runtime/workspace/project', remote: 'https://example.test/repo.git', branch: 'main', head: '1234567890ab' },
+          { path: '/runtime/workspace/project/backend', remote: 'https://example.test/backend.git', branch: 'main', head: '1234567890ab' },
+        ],
       }) });
       return;
     }
@@ -1079,6 +1082,9 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.getByText('README.md', { exact: true })).toBeVisible();
   await expect(page.locator('.agent-file-tree input[type=checkbox]')).toHaveCount(0);
   await page.getByLabel('全屏查看工作区工具').click();
+  await expect.poll(() => workspaceGitRepositoryRequests).toBe(1);
+  const gitSidebar = page.getByRole('complementary', { name: 'Git' });
+  await expect(gitSidebar).toBeVisible();
   await page.getByLabel('全部展开目录').click();
   await expect(page.getByText('config.ts', { exact: true })).toBeVisible();
   await expect(page.getByText('App.tsx', { exact: true })).toBeVisible();
@@ -1097,11 +1103,10 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await readmeRow.getByRole('button').hover();
   await expect(readmeRow.getByRole('link', { name: '下载 README.md' })).toBeVisible();
   await readmeRow.getByRole('button').click();
-  await expect(page.locator('.agent-workspace-git-sidebar')).toHaveCount(0);
+  await expect(gitSidebar).toBeVisible();
   const repositoryDirectory = page.locator('.agent-file-tree-row').filter({ hasText: 'backend' });
   await repositoryDirectory.locator('.agent-file-tree-item.directory').click();
-  await expect.poll(() => workspaceGitRepositoryRequests).toBe(1);
-  const gitSidebar = page.getByRole('complementary', { name: 'Git' });
+  await expect.poll(() => workspaceGitRepositoryRequests).toBe(2);
   await expect(gitSidebar).toBeVisible();
   await expect(gitSidebar.getByRole('region', { name: '分支同步状态' })).toContainText('2 个提交待推送');
   await expect(gitSidebar.getByText('待推送', { exact: true })).toHaveCount(2);
