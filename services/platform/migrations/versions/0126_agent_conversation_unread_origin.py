@@ -1,6 +1,6 @@
 """Record whether a conversation unread state was set manually or by the system.
 
-Revision ID: 0126_agent_conversation_unread_origin
+Revision ID: 0126_unread_origin
 Revises: 0125_admin_alert_lifecycle
 """
 
@@ -9,7 +9,7 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0126_agent_conversation_unread_origin"
+revision = "0126_unread_origin"
 down_revision = "0125_admin_alert_lifecycle"
 branch_labels = None
 depends_on = None
