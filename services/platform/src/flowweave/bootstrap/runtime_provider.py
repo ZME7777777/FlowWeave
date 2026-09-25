@@ -68,6 +68,10 @@ _RELAY_SUBSCRIBER_QUEUE_SIZE = 32
 _TERMINAL_SESSION_NAME = re.compile(r"[^a-z0-9_.-]+")
 _ADMIN_OBSERVABILITY_USAGE_WORKERS = 16
 _ADMIN_OBSERVABILITY_USAGE_BUDGET_SECONDS = 3.0
+_ADMIN_OBSERVABILITY_USAGE_EXECUTOR = ThreadPoolExecutor(
+    max_workers=_ADMIN_OBSERVABILITY_USAGE_WORKERS,
+    thread_name_prefix="flowweave-admin-usage",
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1455,11 +1459,16 @@ def _populate_admin_usage(
 
     if not samples:
         return
-    executor = ThreadPoolExecutor(
-        max_workers=min(_ADMIN_OBSERVABILITY_USAGE_WORKERS, len(samples)),
-        thread_name_prefix="flowweave-admin-usage",
-    )
-    futures = {executor.submit(reader): row for row, reader in samples}
+    futures = {}
+    for row, reader in samples:
+        try:
+            futures[_ADMIN_OBSERVABILITY_USAGE_EXECUTOR.submit(reader)] = row
+        except RuntimeError:
+            # Exhausted process resources must degrade only the individual sample,
+            # never turn an observability read into a 500 response.
+            row["usage"] = None
+    if not futures:
+        return
     completed, pending = wait(futures, timeout=_ADMIN_OBSERVABILITY_USAGE_BUDGET_SECONDS)
     for future in completed:
         row = futures[future]
@@ -1470,9 +1479,10 @@ def _populate_admin_usage(
     for future in pending:
         futures[future]["usage"] = None
         future.cancel()
-    # Running Docker subprocesses have their own bounded timeout.  Do not wait
-    # for a slow sample here: the caller must return before the Admin API deadline.
-    executor.shutdown(wait=False, cancel_futures=True)
+    # Running Docker subprocesses have their own bounded timeout.  The shared,
+    # process-level executor caps sampling threads across concurrent requests;
+    # do not wait for a slow sample here because the caller must return before
+    # the Admin API deadline.
 
 
 def _admin_observability_snapshot(configured: Settings) -> dict[str, Any]:

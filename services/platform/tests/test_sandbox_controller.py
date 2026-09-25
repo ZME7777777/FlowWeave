@@ -291,6 +291,23 @@ def test_admin_observability_keeps_inventory_when_usage_sampling_times_out(monke
     ]
 
 
+def test_admin_observability_keeps_inventory_when_sampling_threads_are_exhausted(
+    monkeypatch,
+) -> None:
+    class ExhaustedExecutor:
+        def submit(self, _reader):
+            raise RuntimeError("can't start new thread")
+
+    row = {"usage": "not-sampled"}
+    monkeypatch.setattr(
+        controller_module, "_ADMIN_OBSERVABILITY_USAGE_EXECUTOR", ExhaustedExecutor()
+    )
+
+    controller_module._populate_admin_usage([(row, lambda: None)])
+
+    assert row["usage"] is None
+
+
 def test_blocking_runtime_provision_does_not_block_controller_health(settings, monkeypatch):
     provisioning = threading.Event()
     release = threading.Event()
