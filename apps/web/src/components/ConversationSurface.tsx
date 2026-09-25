@@ -1520,7 +1520,7 @@ export interface ConversationHistoryPrepend {
   phase: 'capture' | 'restore';
 }
 
-export const ConversationSurface = memo(function ConversationSurface({ events, isGenerating, isPaused = false, emptyResponseRecoveryActive = false, modelRetryStatus, historyPending = false, conversationScope, historyPrepend, onHistoryAnchorCaptured, onHistoryAnchorRestored, requestStartedAt, requestSubmitting = false, rewritePending = false, onRewrite, onFork, onOpenAttachment, onOpenWorkspaceReference, onPreviewCandidateFile, onReviewChanges, onOpenWorkspaceFile, onOpenImage, workspaceRoot, annotations = [], onCreateAnnotation, onLocateAnnotation, taskControl = [], monitoring, connectionState }: {
+export const ConversationSurface = memo(function ConversationSurface({ events, isGenerating, isPaused = false, emptyResponseRecoveryActive = false, modelRetryStatus, historyPending = false, conversationScope, historyPrepend, onHistoryAnchorCaptured, onHistoryAnchorRestored, requestStartedAt, requestSubmitting = false, rewritePending = false, condensationPending = false, condensationStartedAt, onRewrite, onFork, onOpenAttachment, onOpenWorkspaceReference, onPreviewCandidateFile, onReviewChanges, onOpenWorkspaceFile, onOpenImage, workspaceRoot, annotations = [], onCreateAnnotation, onLocateAnnotation, taskControl = [], monitoring, connectionState }: {
   events: OpenHandsConversationEvent[];
   isGenerating: boolean;
   /** Formal native conversation pause state, used only to label unfinished Task actions. */
@@ -1540,6 +1540,8 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
   requestStartedAt?: number;
   requestSubmitting?: boolean;
   rewritePending?: boolean;
+  condensationPending?: boolean;
+  condensationStartedAt?: number;
   onRewrite?: (eventId: string, content: string) => void;
   onFork?: (eventId: string) => void;
   onOpenAttachment?: (attachment: AgentAttachment) => void;
@@ -1570,8 +1572,15 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
   const messageNavigationAtLatest = useRef(true);
   const messageNavigationScope = useRef<string | undefined>(undefined);
   const messageNavigationFrame = useRef<number | undefined>(undefined);
+  const messageNavigationAutoScrollFrame = useRef<number | undefined>(undefined);
   const messageNavigationPreviewIndex = useRef<number | undefined>(undefined);
   const messageNavigationPointerY = useRef<number | undefined>(undefined);
+  const messageNavigationDragPointerId = useRef<number | undefined>(undefined);
+  const messageNavigationDragCapture = useRef<HTMLElement | undefined>(undefined);
+  const messageNavigationDragStartY = useRef<number | undefined>(undefined);
+  const messageNavigationDragMoved = useRef(false);
+  const messageNavigationSuppressClick = useRef(false);
+  const messageNavigationLocatedIndex = useRef<number | undefined>(undefined);
   const messageNavigationStyledButtons = useRef<Set<HTMLButtonElement>>(new Set());
   const selectionReferenceFrame = useRef<number | undefined>(undefined);
   const historyAnchor = useRef<{
@@ -1590,6 +1599,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
   const [editingEventId, setEditingEventId] = useState<string>();
   const [editingContent, setEditingContent] = useState('');
   const [copiedEventId, setCopiedEventId] = useState<string>();
+  const [condensationElapsed, setCondensationElapsed] = useState(0);
   const [messagePreview, setMessagePreview] = useState<{ id: string; content: string; index: number; top: number }>();
   const [selectedReference, setSelectedReference] = useState<{ reference: ConversationAnnotationReference; left: number; top: number }>();
   const [viewingReference, setViewingReference] = useState<AgentConversationReference>();
@@ -1795,7 +1805,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
     window.addEventListener('flowweave:locate-conversation-annotation', locate);
     return () => window.removeEventListener('flowweave:locate-conversation-annotation', locate);
   }, [locateTextAnnotation]);
-  const scrollToUserMessage = useCallback((eventId: string) => {
+  const scrollToUserMessage = useCallback((eventId: string, behavior: ScrollBehavior = 'smooth') => {
     const element = surface.current;
     const target = element?.querySelectorAll<HTMLElement>('[data-user-event-id]');
     const message = Array.from(target ?? []).find(item => item.dataset.userEventId === eventId);
@@ -1803,7 +1813,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
     const top = message.getBoundingClientRect().top - element.getBoundingClientRect().top + element.scrollTop - 18;
     userScrolledAway.current = true;
     followLatest.current = false;
-    element.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
+    element.scrollTo({ top: Math.max(0, top), behavior });
   }, []);
   const showMessagePreview = useCallback((message: UserMessageNavigationItem, index: number, target: HTMLElement) => {
     const shellBounds = shell.current?.getBoundingClientRect();
@@ -1835,7 +1845,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
   }, []);
   const updateMessageNavigationPreview = useCallback((clientY: number) => {
     const buttons = Array.from(messageNavigation.current?.querySelectorAll<HTMLButtonElement>('button') ?? []);
-    if (!buttons.length) return;
+    if (!buttons.length) return undefined;
     const firstBounds = buttons[0].getBoundingClientRect();
     const lastBounds = buttons.at(-1)?.getBoundingClientRect() ?? firstBounds;
     const firstCenter = firstBounds.top + firstBounds.height / 2;
@@ -1867,22 +1877,92 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
     });
     messageNavigationStyledButtons.current = styledButtons;
     const previewIndex = Math.max(0, Math.min(userMessageNavigation.length - 1, Math.round(pointerIndex)));
-    if (messageNavigationPreviewIndex.current === previewIndex) return;
     const previewTarget = buttons[previewIndex];
     const previewMessage = userMessageNavigation[previewIndex];
-    if (!previewTarget || !previewMessage) return;
-    messageNavigationPreviewIndex.current = previewIndex;
-    showMessagePreview(previewMessage, previewIndex, previewTarget);
+    if (!previewTarget || !previewMessage) return undefined;
+    if (messageNavigationPreviewIndex.current !== previewIndex) {
+      messageNavigationPreviewIndex.current = previewIndex;
+      showMessagePreview(previewMessage, previewIndex, previewTarget);
+    }
+    return previewIndex;
   }, [showMessagePreview, userMessageNavigation]);
-  const handleMessageNavigationPointerMove = useCallback((event: ReactPointerEvent<HTMLElement>) => {
-    messageNavigationPointerY.current = event.clientY;
+  const updateMessageNavigationPointer = useCallback((clientY: number) => {
+    const index = updateMessageNavigationPreview(clientY);
+    if (index === undefined || !messageNavigationDragMoved.current || messageNavigationLocatedIndex.current === index) return;
+    const message = userMessageNavigation[index];
+    if (!message) return;
+    messageNavigationLocatedIndex.current = index;
+    scrollToUserMessage(message.id, 'auto');
+  }, [scrollToUserMessage, updateMessageNavigationPreview, userMessageNavigation]);
+  const scheduleMessageNavigationPointerUpdate = useCallback(() => {
     if (messageNavigationFrame.current !== undefined) return;
     messageNavigationFrame.current = window.requestAnimationFrame(() => {
       messageNavigationFrame.current = undefined;
       const clientY = messageNavigationPointerY.current;
-      if (clientY !== undefined) updateMessageNavigationPreview(clientY);
+      if (clientY !== undefined) updateMessageNavigationPointer(clientY);
     });
-  }, [updateMessageNavigationPreview]);
+  }, [updateMessageNavigationPointer]);
+  const startMessageNavigationAutoScroll = useCallback(() => {
+    if (messageNavigationAutoScrollFrame.current !== undefined) return;
+    const step = () => {
+      messageNavigationAutoScrollFrame.current = undefined;
+      const navigation = messageNavigation.current;
+      const clientY = messageNavigationPointerY.current;
+      if (!navigation || clientY === undefined || messageNavigationDragPointerId.current === undefined || !messageNavigationDragMoved.current) return;
+      const bounds = navigation.getBoundingClientRect();
+      const edgeSize = bounds.height / 4;
+      const topStrength = edgeSize > 0 ? Math.max(0, Math.min(1, (bounds.top + edgeSize - clientY) / edgeSize)) : 0;
+      const bottomStrength = edgeSize > 0 ? Math.max(0, Math.min(1, (clientY - (bounds.bottom - edgeSize)) / edgeSize)) : 0;
+      const delta = bottomStrength > 0 ? Math.max(1, bottomStrength * 12) : topStrength > 0 ? -Math.max(1, topStrength * 12) : 0;
+      if (!delta) return;
+      const previousScrollTop = navigation.scrollTop;
+      navigation.scrollTop += delta;
+      updateMessageNavigationPointer(clientY);
+      if (navigation.scrollTop !== previousScrollTop) messageNavigationAutoScrollFrame.current = window.requestAnimationFrame(step);
+    };
+    messageNavigationAutoScrollFrame.current = window.requestAnimationFrame(step);
+  }, [updateMessageNavigationPointer]);
+  const handleMessageNavigationPointerMove = useCallback((event: ReactPointerEvent<HTMLElement>) => {
+    messageNavigationPointerY.current = event.clientY;
+    if (messageNavigationDragPointerId.current === event.pointerId && messageNavigationDragStartY.current !== undefined
+      && Math.abs(event.clientY - messageNavigationDragStartY.current) > 2) {
+      messageNavigationDragMoved.current = true;
+    }
+    scheduleMessageNavigationPointerUpdate();
+    if (messageNavigationDragMoved.current) startMessageNavigationAutoScroll();
+  }, [scheduleMessageNavigationPointerUpdate, startMessageNavigationAutoScroll]);
+  const handleMessageNavigationPointerDown = useCallback((event: ReactPointerEvent<HTMLElement>) => {
+    if (event.pointerType === 'mouse' && event.button !== 0) return;
+    event.preventDefault();
+    messageNavigationDragPointerId.current = event.pointerId;
+    messageNavigationDragCapture.current = event.currentTarget;
+    messageNavigationDragStartY.current = event.clientY;
+    messageNavigationDragMoved.current = false;
+    messageNavigationSuppressClick.current = false;
+    messageNavigationLocatedIndex.current = undefined;
+    messageNavigationPointerY.current = event.clientY;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    scheduleMessageNavigationPointerUpdate();
+  }, [scheduleMessageNavigationPointerUpdate]);
+  const finishMessageNavigationDrag = useCallback((event: ReactPointerEvent<HTMLElement>, cancelled = false) => {
+    if (messageNavigationDragPointerId.current !== event.pointerId) return;
+    const capture = messageNavigationDragCapture.current;
+    if (capture?.hasPointerCapture(event.pointerId)) capture.releasePointerCapture(event.pointerId);
+    messageNavigationSuppressClick.current = !cancelled && messageNavigationDragMoved.current;
+    messageNavigationDragPointerId.current = undefined;
+    messageNavigationDragCapture.current = undefined;
+    messageNavigationDragStartY.current = undefined;
+    messageNavigationDragMoved.current = false;
+    messageNavigationLocatedIndex.current = undefined;
+    if (messageNavigationAutoScrollFrame.current !== undefined) {
+      window.cancelAnimationFrame(messageNavigationAutoScrollFrame.current);
+      messageNavigationAutoScrollFrame.current = undefined;
+    }
+    window.setTimeout(() => { messageNavigationSuppressClick.current = false; }, 0);
+  }, []);
+  const handleMessageNavigationPointerLeave = useCallback(() => {
+    if (messageNavigationDragPointerId.current === undefined) clearMessageNavigationPreview();
+  }, [clearMessageNavigationPreview]);
   const handleScroll = useCallback(() => {
     updateScrollPosition();
     scrollInteractionTowardLatest.current = false;
@@ -1978,10 +2058,20 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
   useEffect(() => () => {
     if (copyResetTimer.current) window.clearTimeout(copyResetTimer.current);
   }, []);
-  useEffect(() => () => {
-    if (messageNavigationFrame.current !== undefined) {
-      window.cancelAnimationFrame(messageNavigationFrame.current);
+  useEffect(() => {
+    if (!condensationPending) {
+      setCondensationElapsed(0);
+      return;
     }
+    const startedAt = condensationStartedAt ?? Date.now();
+    const update = () => setCondensationElapsed(Math.max(0, Date.now() - startedAt));
+    update();
+    const timer = window.setInterval(update, 1_000);
+    return () => window.clearInterval(timer);
+  }, [condensationPending, condensationStartedAt]);
+  useEffect(() => () => {
+    if (messageNavigationFrame.current !== undefined) window.cancelAnimationFrame(messageNavigationFrame.current);
+    if (messageNavigationAutoScrollFrame.current !== undefined) window.cancelAnimationFrame(messageNavigationAutoScrollFrame.current);
   }, []);
   useEffect(() => () => {
     if (selectionReferenceFrame.current !== undefined) {
@@ -2056,7 +2146,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
   if (!turns.length && !isGenerating) return <div className="conversation-surface-empty"><b>会话已就绪</b><span>发送第一条消息，开始与 Agent 协作。</span></div>;
   const showJumpToLatest = !isAtLatest && Boolean(turns.length || isGenerating);
   return <div ref={shell} className="conversation-surface-shell">
-    {userMessageNavigation.length > 0 && <nav ref={messageNavigation} className="conversation-message-index" aria-label="用户消息导航" onScroll={handleMessageNavigationScroll} onPointerMove={handleMessageNavigationPointerMove} onPointerLeave={clearMessageNavigationPreview}>
+    {userMessageNavigation.length > 0 && <nav ref={messageNavigation} className="conversation-message-index" aria-label="用户消息导航" onScroll={handleMessageNavigationScroll} onPointerDown={handleMessageNavigationPointerDown} onPointerMove={handleMessageNavigationPointerMove} onPointerUp={finishMessageNavigationDrag} onPointerCancel={event => finishMessageNavigationDrag(event, true)} onPointerLeave={handleMessageNavigationPointerLeave}>
       <div className="conversation-message-index-list">
         {userMessageNavigation.map((message, index) => <button
           type="button"
@@ -2065,7 +2155,13 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
           aria-describedby={messagePreview?.id === message.id ? 'conversation-message-preview' : undefined}
           onFocus={event => showMessagePreview(message, index, event.currentTarget)}
           onBlur={() => setMessagePreview(current => current?.id === message.id ? undefined : current)}
-          onClick={() => scrollToUserMessage(message.id)}
+          onClick={() => {
+            if (messageNavigationSuppressClick.current) {
+              messageNavigationSuppressClick.current = false;
+              return;
+            }
+            scrollToUserMessage(message.id);
+          }}
         >
           <span className="conversation-message-index-tick" aria-hidden="true"/>
         </button>)}
@@ -2136,7 +2232,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
               event.preventDefault();
               event.currentTarget.form?.requestSubmit();
             }}/><footer><button type="button" onClick={() => setEditingEventId(undefined)}>取消</button><button type="submit" disabled={!editingContent.trim() || rewritePending}>重新思考</button></footer></form>
-            : <article data-user-event-id={turn.user.event.id} data-conversation-event-id={turn.user.event.id} className="conversation-message user">{turn.user.content && <div className="conversation-message-content"><MessageMarkdown>{turn.user.content}</MessageMarkdown></div>}<MessageAttachments attachments={eventAttachments(turn.user.event)} references={turn.user.event.payload.conversation_references} workspaceReferences={turn.user.event.payload.workspace_references} annotations={eventAnnotations(turn.user.event)} onOpen={onOpenAttachment} onOpenReference={setViewingReference} onOpenWorkspaceReference={onOpenWorkspaceReference} onOpenAnnotation={locateAnnotation}/><footer className="conversation-message-meta user">{userDeliveryStatus && <small className="conversation-message-delivery-status" role="status">{userDeliveryStatus}</small>}{userTimestamp && <time dateTime={typeof turn.user.event.payload.timestamp === 'string' ? turn.user.event.payload.timestamp : undefined}>{userTimestamp}</time>}<div className="conversation-message-actions"><button type="button" className="conversation-message-copy" aria-label={copiedEventId === turn.user.event.id ? '消息已复制' : '复制消息'} title={copiedEventId === turn.user.event.id ? '已复制' : '复制消息'} onClick={() => copyUserMessage(turn.user!.event.id, turn.user!.content)}>{copiedEventId === turn.user.event.id ? <Check size={13}/> : <Copy size={13}/>}</button>{lastUserEventId === turn.user.event.id && <button type="button" className="conversation-message-rewrite" aria-label="编辑并重新思考" title="编辑并重新思考" onClick={() => { setEditingEventId(turn.user!.event.id); setEditingContent(turn.user!.content); }}><Pencil size={13}/></button>}</div></footer></article>}</div>}
+            : <article data-user-event-id={turn.user.event.id} data-conversation-event-id={turn.user.event.id} className="conversation-message user">{turn.user.content && <div className="conversation-message-content"><MessageMarkdown>{turn.user.content}</MessageMarkdown></div>}<MessageAttachments attachments={eventAttachments(turn.user.event)} references={turn.user.event.payload.conversation_references} workspaceReferences={turn.user.event.payload.workspace_references} annotations={eventAnnotations(turn.user.event)} onOpen={onOpenAttachment} onOpenReference={setViewingReference} onOpenWorkspaceReference={onOpenWorkspaceReference} onOpenAnnotation={locateAnnotation}/><footer className="conversation-message-meta user">{userDeliveryStatus && <small className="conversation-message-delivery-status" role="status">{userDeliveryStatus}</small>}{userTimestamp && <time dateTime={typeof turn.user.event.payload.timestamp === 'string' ? turn.user.event.payload.timestamp : undefined}>{userTimestamp}</time>}<div className={`conversation-message-actions${lastUserEventId === turn.user.event.id ? ' can-rewrite' : ''}`}><button type="button" className="conversation-message-copy" aria-label={copiedEventId === turn.user.event.id ? '消息已复制' : '复制消息'} title={copiedEventId === turn.user.event.id ? '已复制' : '复制消息'} onClick={() => copyUserMessage(turn.user!.event.id, turn.user!.content)}>{copiedEventId === turn.user.event.id ? <Check size={13}/> : <Copy size={13}/>}</button>{lastUserEventId === turn.user.event.id && <button type="button" className="conversation-message-rewrite" aria-label="编辑并重新思考" title="编辑并重新思考" onClick={() => { setEditingEventId(turn.user!.event.id); setEditingContent(turn.user!.content); }}><Pencil size={13}/></button>}</div></footer></article>}</div>}
           {processBlocks.map(block => <ActivityGroup
             key={block.id}
             items={block.items}
@@ -2157,7 +2253,11 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
           {failures.map(item => <ConversationFailure key={item.event.id} item={item} taskControl={taskControl} retryStatus={isLatest ? modelRetryStatus : undefined}/>)}
         </section>;
       })}
-      {turns.length === 0 && isGenerating && <><ActivityGroup items={[]} active startedAt={requestStartedAt} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/><CurrentTurnStatus items={[]} requestSubmitting={requestSubmitting} statusOverride={emptyResponseRecoveryActive ? '模型返回空响应，OpenHands 正在自动重试' : undefined} modelRetryStatus={modelRetryStatus} monitoring={monitoring} connectionState={connectionState}/></>}
+      {turns.length === 0 && isGenerating && !condensationPending && <><ActivityGroup items={[]} active startedAt={requestStartedAt} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/><CurrentTurnStatus items={[]} requestSubmitting={requestSubmitting} statusOverride={emptyResponseRecoveryActive ? '模型返回空响应，OpenHands 正在自动重试' : undefined} modelRetryStatus={modelRetryStatus} monitoring={monitoring} connectionState={connectionState}/></>}
+      {condensationPending && <article className="conversation-condensation-progress" role="status" aria-label="正在压缩上下文">
+        <LoaderCircle className="conversation-activity-spin" size={16}/>
+        <div><header><b>正在压缩上下文</b><time>{formatDuration(condensationElapsed / 1_000)}</time></header><p>{condensationElapsed < 2_000 ? '请求已接受，正在等待 OpenHands 开始压缩。' : 'Condenser 正在生成较早上下文的结构化摘要。你仍可编辑消息，发送后将进入队列。'}</p></div>
+      </article>}
       </div>
     </section>
     {viewingReference && <ConversationReferencePreview reference={viewingReference} onClose={() => setViewingReference(undefined)} onLocate={locateReferenceSource}/>}

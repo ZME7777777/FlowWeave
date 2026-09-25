@@ -17,6 +17,9 @@ from sqlalchemy.orm import Session
 
 from flowweave.modules.agent_sessions import public as agent_sessions
 from flowweave.modules.agent_sessions.application import usage as usage_projection
+from flowweave.modules.agent_sessions.application.condensation import (
+    enqueue_manual_condensation,
+)
 from flowweave.modules.agent_sessions.application.conversation_diagnostics import (
     log_conversation_diagnostic,
 )
@@ -93,6 +96,7 @@ from flowweave.shared.errors import DomainError, conflict, not_found
 from flowweave.shared.models import (
     AgentWorkDirectoryVersion,
     AttemptState,
+    BackgroundTask,
     FlowRun,
     FlowRunState,
     HumanAction,
@@ -100,6 +104,7 @@ from flowweave.shared.models import (
     NodeRun,
     RunEvent,
     RunSnapshot,
+    TaskState,
 )
 from flowweave.shared.schemas import (
     ConversationCreateWrite,
@@ -813,7 +818,7 @@ def list_node_session_views(
 
 def node_session_activity(
     db: Session, *, flow_run_id: str, attempt_id: str
-) -> dict[str, list[str]]:
+) -> dict[str, Any]:
     """Map one native running snapshot to authorized node-session binding IDs."""
 
     agent_sessions.resolve_flow_node_session_host(
@@ -840,7 +845,12 @@ def node_session_activity(
         )
     )
     if not bindings:
-        return {"running_binding_ids": []}
+        return {
+            "running_binding_ids": [],
+            "condensing_binding_ids": [],
+            "condensation_failed_binding_ids": [],
+        }
+    binding_ids = {item.id for item in bindings}
     running_native_ids = get_runtime().running_conversation_ids(
         _node_handle(
             db,
@@ -849,10 +859,40 @@ def node_session_activity(
             binding_id=bindings[0].id,
         )
     )
+    condensation_tasks = list(
+        db.execute(
+            select(BackgroundTask.aggregate_id, BackgroundTask.id, BackgroundTask.state)
+            .where(
+                BackgroundTask.task_type == "CONDENSE_AGENT_CONVERSATION",
+                BackgroundTask.aggregate_id.in_(binding_ids),
+            )
+            .order_by(BackgroundTask.created_at.desc())
+        )
+    )
+    latest_condensation_task: dict[str, tuple[str, str]] = {}
+    for binding_id, task_id, state in condensation_tasks:
+        latest_condensation_task.setdefault(binding_id, (task_id, state))
     return {
         "running_binding_ids": [
             item.id for item in bindings if item.openhands_conversation_id in running_native_ids
-        ]
+        ],
+        "condensing_binding_ids": [
+            item.id
+            for item in bindings
+            if latest_condensation_task.get(item.id, (None, None))[1]
+            in {TaskState.PENDING, TaskState.RUNNING}
+        ],
+        "condensation_failed_binding_ids": [
+            item.id
+            for item in bindings
+            if latest_condensation_task.get(item.id, (None, None))[1] == TaskState.DEAD
+        ],
+        "condensation_tasks": [
+            {"binding_id": item.id, "task_id": task_id, "state": state}
+            for item in bindings
+            if (task := latest_condensation_task.get(item.id)) is not None
+            for task_id, state in [task]
+        ],
     }
 
 
@@ -3360,19 +3400,29 @@ def switch_node_conversation_model(
 
 
 def condense_node_conversation(
-    db: Session, *, flow_run_id: str, attempt_id: str, binding_id: str
+    db: Session,
+    *,
+    flow_run_id: str,
+    attempt_id: str,
+    binding_id: str,
+    idempotency_key: str,
 ) -> dict[str, Any]:
-    """Request native condensation without appending a user message."""
+    """Accept one durable native condensation request without appending a message."""
 
     _assert_node_session_writable(
         db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
     )
-    handle = _node_handle(db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id)
-    runtime = get_runtime()
-    if not runtime.can_accept_input(handle):
-        raise DomainError("AGENT_CONVERSATION_BUSY", "请在当前回复完成或暂停后压缩上下文", 409)
-    result = runtime.condense(handle)
-    return {"accepted": True, "cursor": result.cursor}
+    binding = _binding_for_attempt(
+        db,
+        flow_run_id=flow_run_id,
+        attempt_id=attempt_id,
+        binding_id=binding_id,
+        lock=True,
+    )
+    task = enqueue_manual_condensation(
+        db, binding_id=binding.id, idempotency_key=idempotency_key
+    )
+    return {"accepted": True, "task_id": task.id}
 
 
 def interrupt_node_conversation(

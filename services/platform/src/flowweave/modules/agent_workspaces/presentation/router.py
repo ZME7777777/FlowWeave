@@ -1104,11 +1104,19 @@ async def agent_fork_conversation(
     "/agent-workspaces/{workspace_id}/conversations/{binding_id}/condense", status_code=202
 )
 async def agent_condense_conversation(
-    workspace_id: str, binding_id: str, container: ContainerDep
+    workspace_id: str,
+    binding_id: str,
+    db: Db,
+    idempotency_key: IdempotencyKey = None,
 ) -> dict[str, Any]:
-    return await run_blocking_control(
-        container,
-        lambda session: conversations.condense_conversation(session, workspace_id, binding_id),
+    return await run_sync(
+        db,
+        lambda session: conversations.condense_conversation(
+            session,
+            workspace_id,
+            binding_id,
+            _key(idempotency_key, "condense-agent-conversation", binding_id),
+        ),
     )
 
 

@@ -91,7 +91,7 @@ git -C /Users/zhengmengen/WorkSpace/openhands/software-agent-sdk-total-tokens-1.
 - Token/事件上下文指标允许 Runtime 暂时返回未知；同一 binding 已有可信指标时应保留最近可信值，首次未知仍明确显示待更新，且不得跨 binding 复用。
 - 会话交互态与视觉态必须分离：暂停、继续、发送等操作服从 Runtime readiness；运行中展示按正式事件单调推进，不能因中间轮询回退。首次打开会话且 Runtime 状态未知时只显示明确加载态，不得将历史事件缺口呈现为“正在思考”。自动贴底仅由新事件、历史锚点恢复或用户操作触发，禁止用整个会话树的 ResizeObserver 响应状态文案和动画尺寸变化；已到目标位置时不得重复写 `scrollTop`。
 - 会话首屏 hydration 只读取 OpenHands 最新事件窗口及同批 context/readiness；更早历史由浏览器低优先级分页恢复，不能为了首屏串行读取完整分支。
-- 每次进入既有会话都必须重新取得该 binding 的正式 hydration，并在结果返回前只显示“正在加载会话”；React Query、浏览器快照或上次选择留下的事件/readiness/context 不得抢先渲染，也不得参与“正在思考”判断。hydration 成功后一次性开放最新窗口，更早历史再后台分页。
+- 首次进入、刷新后或可信租约过期的既有会话必须重新取得该 binding 的正式 hydration，并在结果返回前只显示“正在加载会话”；React Query、浏览器持久快照或不完整事件不得抢先渲染，也不得参与“正在思考”判断。当前标签页内刚完成 hydration 的终态会话可短期直接复用完整快照；运行中会话短暂切换回来也应保留快照、立即恢复 WebSocket，并在后台补读最新窗口与 readiness。快速切换时必须合并短时间内的选择，并将 hydration 限制为单飞、完成后只追赶最后选择的 binding；宿主卸载时用 AbortSignal 取消浏览器请求，不能让每次点击都并发占用交互读取池。
 - 浏览器从后台恢复可见或窗口重新获得焦点时，活动会话必须立即从无 cursor 的最新 OpenHands 事件窗口对账，并刷新会话与 readiness 投影；不能仅等待受后台节流的定时轮询或 WebSocket 重连。`visibilitychange` 与 `focus` 可能连续触发，应合并同一轮恢复。
 - 运行中 REST 事件恢复必须由单一协调器串行调度：有 `next_cursor` 时优先增量追赶，定期或在 `message_complete`、断流、WebSocket 重连、前台恢复时读取无 cursor 最新窗口；不得让 React Query 定时器与自建定时器并行轮询同一会话。强制最新窗口信号发生在增量请求期间时必须排队补读，不能被 in-flight 去重吞掉。
 - 历史分页完成后必须记住已耗尽的入口 `history_cursor`，避免最新窗口刷新重新激活同一分页链；若服务端返回新的入口游标，仍必须允许读取新增历史。
@@ -99,5 +99,5 @@ git -C /Users/zhengmengen/WorkSpace/openhands/software-agent-sdk-total-tokens-1.
 - 当前页面发送的用户消息使用浏览器稳定 `renderKey` 和正式 OpenHands `event.id` 双身份：正式事件只认领并补全已有本地气泡，不能创建第二个用户气泡；刷新后直接按正式历史渲染。认领必须依赖提交 ID 与正式事件 ID，不得按正文或时间相似度猜测。
 - Runtime readiness 一旦确认终态，输入框、按钮和侧栏运行样式必须立即恢复；正式终态事件的补读只能在后台进行，不能呈现“正在对账”或继续占用运行态。为避免上一轮排队消息误发，可设置短时且不可见的队列门控，但必须有界并保留用户确认权。
 - 会话配置仅管理能力与认证；新会话和既有会话的模型、供应商及推理程度都在发送框中选择。
-- 已创建且可写、处于 idle 或 paused 的会话必须在 `/` 菜单提供“压缩上下文”；该操作只调用 OpenHands 原生 condense 控制接口，不得发送用户消息、进入消息队列或创建乐观消息气泡，展示仅来自正式 `CONDENSATION_REQUESTED` / `CONDENSATION_COMPLETED` 事件。
+- 已创建且可写、处于 idle 或 paused 的会话必须在 `/` 菜单提供“压缩上下文”；该操作只调用 OpenHands 原生 condense 控制接口，不得发送用户消息或创建乐观消息气泡。点击后的本地 pending 与持久任务投影仅用于立即反馈和刷新恢复，不能伪造普通 `execution_status=RUNNING`；最终历史展示与完成收口只认正式 `CONDENSATION_REQUESTED` / `CONDENSATION_COMPLETED` 事件。压缩期间输入保持可编辑，所有发送入口统一排入浏览器队列，禁止直接发送、重复压缩、展示暂停按钮或调用 interrupt。
 - 会话中的附件、工作区文件链接、候选输出文件和生成图片统一先在页面中央预览；工作区资源从预览弹窗显式跳转文件栏，不应在首次点击时直接展开侧栏。

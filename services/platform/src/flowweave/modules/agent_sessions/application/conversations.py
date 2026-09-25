@@ -20,6 +20,9 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from flowweave.modules.agent_sessions.application import usage as usage_projection
+from flowweave.modules.agent_sessions.application.condensation import (
+    enqueue_manual_condensation,
+)
 from flowweave.modules.agent_sessions.application.conversation_diagnostics import (
     log_conversation_diagnostic,
 )
@@ -70,6 +73,7 @@ from flowweave.runtime.workspace import (
 )
 from flowweave.shared.database import now
 from flowweave.shared.errors import DomainError, not_found
+from flowweave.shared.models import BackgroundTask, TaskState
 from flowweave.shared.observability import current_metrics
 from flowweave.shared.settings import get_settings
 
@@ -746,7 +750,7 @@ def list_conversations(db: Session, workspace_id: str) -> list[dict[str, Any]]:
     ]
 
 
-def conversation_activity(db: Session, workspace_id: str) -> dict[str, list[str]]:
+def conversation_activity(db: Session, workspace_id: str) -> dict[str, Any]:
     """Map one native running snapshot to authorized workspace binding IDs."""
 
     workspace = _workspace(db, workspace_id)
@@ -759,12 +763,47 @@ def conversation_activity(db: Session, workspace_id: str) -> dict[str, list[str]
         )
     )
     if not bindings:
-        return {"running_binding_ids": []}
+        return {
+            "running_binding_ids": [],
+            "condensing_binding_ids": [],
+            "condensation_failed_binding_ids": [],
+        }
+    binding_ids = {item.id for item in bindings}
     running_native_ids = get_runtime().running_conversation_ids(_handle(db, workspace, bindings[0]))
+    condensation_tasks = list(
+        db.execute(
+            select(BackgroundTask.aggregate_id, BackgroundTask.id, BackgroundTask.state)
+            .where(
+                BackgroundTask.task_type == "CONDENSE_AGENT_CONVERSATION",
+                BackgroundTask.aggregate_id.in_(binding_ids),
+            )
+            .order_by(BackgroundTask.created_at.desc())
+        )
+    )
+    latest_condensation_task: dict[str, tuple[str, str]] = {}
+    for binding_id, task_id, state in condensation_tasks:
+        latest_condensation_task.setdefault(binding_id, (task_id, state))
     return {
         "running_binding_ids": [
             item.id for item in bindings if item.openhands_conversation_id in running_native_ids
-        ]
+        ],
+        "condensing_binding_ids": [
+            item.id
+            for item in bindings
+            if latest_condensation_task.get(item.id, (None, None))[1]
+            in {TaskState.PENDING, TaskState.RUNNING}
+        ],
+        "condensation_failed_binding_ids": [
+            item.id
+            for item in bindings
+            if latest_condensation_task.get(item.id, (None, None))[1] == TaskState.DEAD
+        ],
+        "condensation_tasks": [
+            {"binding_id": item.id, "task_id": task_id, "state": state}
+            for item in bindings
+            if (task := latest_condensation_task.get(item.id)) is not None
+            for task_id, state in [task]
+        ],
     }
 
 
@@ -3386,17 +3425,20 @@ def migrate_streaming_conversation(
     )
 
 
-def condense_conversation(db: Session, workspace_id: str, binding_id: str) -> dict[str, Any]:
-    """Request native condensation without appending a user message."""
+def condense_conversation(
+    db: Session,
+    workspace_id: str,
+    binding_id: str,
+    idempotency_key: str,
+) -> dict[str, Any]:
+    """Accept one durable native condensation request without appending a message."""
 
-    workspace = _workspace(db, workspace_id)
+    _workspace(db, workspace_id)
     binding = _binding(db, workspace_id, binding_id, lock=True)
-    handle = _handle(db, workspace, binding)
-    runtime = get_runtime()
-    if not runtime.can_accept_input(handle):
-        raise DomainError("AGENT_CONVERSATION_BUSY", "请在当前回复完成或暂停后压缩上下文", 409)
-    result = runtime.condense(handle)
-    return {"accepted": True, "cursor": result.cursor}
+    task = enqueue_manual_condensation(
+        db, binding_id=binding.id, idempotency_key=idempotency_key
+    )
+    return {"accepted": True, "task_id": task.id}
 
 
 def interrupt(db: Session, workspace_id: str, binding_id: str) -> None:

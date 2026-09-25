@@ -59,6 +59,7 @@ _RUNTIME_TASK_TYPES = frozenset(
         "PROVISION_FLOW_RUN_RUNTIME",
         "PAUSE_FLOW_RUN_RUNTIME",
         "PROVISION_AGENT_WORKSPACE_RUNTIME",
+        "CONDENSE_AGENT_CONVERSATION",
         "POLL_RUNTIME",
         "WAIT_RUNTIME_WAKEUP",
         "RESUME_RUNTIME",
@@ -102,6 +103,8 @@ _DELIVERY_TASK_TYPES = frozenset(
 def _is_permanent_task_failure(task: Any, exception: Exception) -> bool:
     """Classify only deterministic task failures that cannot improve on retry."""
 
+    if task.task_type == "CONDENSE_AGENT_CONVERSATION":
+        return True
     if not isinstance(exception, DomainError):
         return False
     if task.task_type == "POLL_RUNTIME" and exception.code in {
@@ -221,6 +224,7 @@ class TaskWorker:
         if task.task_type in {
             "GENERATE_AGENT_CONVERSATION_TITLE",
             "SEARCH_AGENT_CONVERSATIONS",
+            "CONDENSE_AGENT_CONVERSATION",
             "WATCH_AGENT_TASK_TIMEOUT",
             "CONFIRM_AGENT_TASK_TIMEOUT",
             "RESUME_AGENT_TASK_TIMEOUT",

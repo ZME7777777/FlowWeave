@@ -61,12 +61,23 @@ def enqueue(
 
 def recover_expired(db: Session, *, commit: bool = True) -> int:
     now = datetime.now(UTC)
+    expired = (
+        BackgroundTask.state == TaskState.RUNNING,
+        BackgroundTask.lease_until < now,
+    )
+    terminal = db.execute(
+        update(BackgroundTask)
+        .where(*expired, BackgroundTask.task_type == "CONDENSE_AGENT_CONVERSATION")
+        .values(
+            state=TaskState.DEAD,
+            lease_owner=None,
+            lease_until=None,
+            last_error="LEASE_EXPIRED_UNKNOWN_CONDENSATION_RESULT",
+        )
+    )
     result = db.execute(
         update(BackgroundTask)
-        .where(
-            BackgroundTask.state == TaskState.RUNNING,
-            BackgroundTask.lease_until < now,
-        )
+        .where(*expired)
         .values(
             state=TaskState.RETRY,
             lease_owner=None,
@@ -79,7 +90,7 @@ def recover_expired(db: Session, *, commit: bool = True) -> int:
         db.commit()
     else:
         db.flush()
-    return result.rowcount
+    return terminal.rowcount + result.rowcount
 
 
 def cleanup_terminal(

@@ -29,6 +29,9 @@ import '../../pages/agent-workbench-layout.css';
 const WORKSPACE_FILE_TRANSFER_TYPE = 'application/x-flowweave-workspace-file-path';
 const ACTIVE_EVENT_RECOVERY_INTERVAL_MS = 4_000;
 const ACTIVE_EVENT_LATEST_RECHECK_INTERVAL_MS = 30_000;
+const CONVERSATION_HYDRATION_SELECTION_DELAY_MS = 120;
+const TERMINAL_CONVERSATION_CACHE_TTL_MS = 5 * 60 * 1000;
+const ACTIVE_CONVERSATION_CACHE_TTL_MS = 30_000;
 // A hydration response is a coherent native snapshot. Keep its three seeded
 // projections fresh long enough to prevent React Query from immediately
 // repeating the same Runtime reads as soon as the first screen has painted.
@@ -4216,6 +4219,12 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const [historyLoadingBindingId, setHistoryLoadingBindingId] = useState<string>();
   const [historyPrepend, setHistoryPrepend] = useState<ConversationHistoryPrepend>();
   const [streamHold, setStreamHold] = useState<{ bindingId: string; expiresAt: number }>();
+  const [condensationStatus, setCondensationStatus] = useState<{
+    bindingId: string;
+    startedAt: number;
+    existingEventIds: Set<string>;
+    taskId?: string;
+  }>();
   const [pageVisible, setPageVisible] = useState(() => document.visibilityState === 'visible');
   const [foregroundRecoverySignal, setForegroundRecoverySignal] = useState(0);
   const foregroundRecoveryFrame = useRef<number | undefined>(undefined);
@@ -4269,7 +4278,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   }, []);
   useEffect(() => () => {
     for (const resource of [
-      'conversation-hydration',
+      'conversation-hydration-request',
       'conversation-events',
       'conversation-input-readiness',
       'conversation-context',
@@ -4345,6 +4354,14 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     () => new Set(conversationActivityQuery.data?.running_binding_ids ?? []),
     [conversationActivityQuery.data],
   );
+  const condensingConversationIds = useMemo(
+    () => new Set(conversationActivityQuery.data?.condensing_binding_ids ?? []),
+    [conversationActivityQuery.data],
+  );
+  const condensationTasks = useMemo(
+    () => new Map((conversationActivityQuery.data?.condensation_tasks ?? []).map(task => [task.binding_id, task])),
+    [conversationActivityQuery.data],
+  );
   useEffect(() => {
     if (!workspace || !conversationsQuery.hasNextPage || conversationsQuery.isFetchingNextPage) return;
     void conversationsQuery.fetchNextPage();
@@ -4389,12 +4406,12 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   }, [conversations, pinnedConversationIds]);
   const unpinnedConversations = conversations.filter(item => !pinnedConversationIds.has(item.id));
   const activityConversations = useMemo(() => conversations
-    .filter(item => runningConversationIds.has(item.id) || conversationIsRunning(item.execution_status) || unreadConversationIds.has(item.id))
+    .filter(item => runningConversationIds.has(item.id) || condensingConversationIds.has(item.id) || conversationIsRunning(item.execution_status) || unreadConversationIds.has(item.id))
     .sort((left, right) => {
       const leftUpdatedAt = Date.parse(left.updated_at) || Date.parse(left.created_at) || 0;
       const rightUpdatedAt = Date.parse(right.updated_at) || Date.parse(right.created_at) || 0;
       return rightUpdatedAt - leftUpdatedAt || right.id.localeCompare(left.id);
-    }), [conversations, runningConversationIds, unreadConversationIds]);
+    }), [condensingConversationIds, conversations, runningConversationIds, unreadConversationIds]);
   const revealedUnpinnedConversation = sidebarRevealBindingId && !pinnedConversationIds.has(sidebarRevealBindingId)
     ? conversations.find(item => item.id === sidebarRevealBindingId)
     : undefined;
@@ -4813,19 +4830,31 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const canBootstrap = Boolean(canOpenConversation && conversationDraft && (!features.modelSelection || (newConversationProviderId && newConversationModelName)));
   const localTurnGenerating = turnState === 'running' || turnState === 'pausing' || turnState === 'resuming';
   const eventQueryKey = sessionQueryKey(host, 'conversation-events', workspace?.id, selected?.id);
-  const hydrationQueryKey = sessionQueryKey(host, 'conversation-hydration', workspace?.id, selected?.id);
   const inputReadinessQueryKey = sessionQueryKey(host, 'conversation-input-readiness', workspace?.id, selected?.id);
   const contextQueryKey = sessionQueryKey(host, 'conversation-context', workspace?.id, selected?.id);
   const [hydrationPhase, setHydrationPhase] = useState<{
     bindingId: string;
     state: 'loading' | 'ready' | 'fallback';
   }>();
+  const hydrationSelection = useRef<{
+    workspaceId: string;
+    bindingId: string;
+  } | undefined>(undefined);
+  const hydrationExecution = useRef<{
+    workspaceId: string;
+    bindingId: string;
+  } | undefined>(undefined);
+  const trustedHydrations = useRef(new Map<string, {
+    hydratedAt: number;
+    running: boolean;
+  }>());
   const hydrationQuery = useQuery({
-    queryKey: hydrationQueryKey,
-    queryFn: async () => {
-      const workspaceId = workspace!.id;
-      const bindingId = selected!.id;
-      const hydration = await api.conversationHydration(workspaceId, bindingId);
+    queryKey: sessionQueryKey(host, 'conversation-hydration-request'),
+    queryFn: async ({ signal }) => {
+      const request = hydrationExecution.current;
+      if (!request) throw new Error('Conversation hydration selection is unavailable');
+      const { workspaceId, bindingId } = request;
+      const hydration = await api.conversationHydration(workspaceId, bindingId, signal);
       // Publish the coherent snapshot together. The presentation gate remains
       // closed until this request resolves, so none of these cache writes can
       // expose an older or partially refreshed transcript.
@@ -4838,6 +4867,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       queryClient.setQueryData<AgentConversationContext>(
         sessionQueryKey(host, 'conversation-context', workspaceId, bindingId), hydration.context,
       );
+      trustedHydrations.current.set(bindingId, {
+        hydratedAt: Date.now(),
+        running: conversationIsRunning(hydration.readiness.execution_status),
+      });
       return hydration;
     },
     // Each selection explicitly refreshes below. Keeping this query disabled
@@ -4848,43 +4881,86 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       && count < 2,
   });
   const refreshConversationHydration = hydrationQuery.refetch;
+  const hydrationRequestInFlight = useRef(false);
+  const hydrationSelectionTimer = useRef<number | undefined>(undefined);
+  const hydrationRetryTimer = useRef<number | undefined>(undefined);
+  const runSelectedHydration = useCallback(async () => {
+    if (hydrationRequestInFlight.current) return;
+    const request = hydrationSelection.current;
+    if (!request) return;
+    hydrationRequestInFlight.current = true;
+    hydrationExecution.current = request;
+    const result = await refreshConversationHydration({ cancelRefetch: false });
+    hydrationRequestInFlight.current = false;
+
+    const current = hydrationSelection.current;
+    if (!current || current.workspaceId !== request.workspaceId || current.bindingId !== request.bindingId) {
+      void runSelectedHydration();
+      return;
+    }
+    if (result.isSuccess) {
+      setHydrationPhase({ bindingId: request.bindingId, state: 'ready' });
+      return;
+    }
+    if (isRuntimeReadUnavailable(result.error)) {
+      hydrationRetryTimer.current = window.setTimeout(() => {
+        hydrationRetryTimer.current = undefined;
+        void runSelectedHydration();
+      }, 5_000);
+      return;
+    }
+    setHydrationPhase({ bindingId: request.bindingId, state: 'fallback' });
+  }, [refreshConversationHydration]);
   useEffect(() => {
     const workspaceId = workspace?.id;
     const bindingId = selected?.id;
     if (!workspaceId || !bindingId) {
+      hydrationSelection.current = undefined;
       setHydrationPhase(undefined);
       return;
     }
-    let cancelled = false;
-    let retryTimer: number | undefined;
-    setHydrationPhase({ bindingId, state: 'loading' });
+    hydrationSelection.current = { workspaceId, bindingId };
+    const trusted = trustedHydrations.current.get(bindingId);
+    const ttl = trusted?.running
+      ? ACTIVE_CONVERSATION_CACHE_TTL_MS
+      : TERMINAL_CONVERSATION_CACHE_TTL_MS;
+    const reusable = Boolean(
+      trusted
+      && Date.now() - trusted.hydratedAt <= ttl
+      && queryClient.getQueryData(sessionQueryKey(host, 'conversation-events', workspaceId, bindingId))
+      && queryClient.getQueryData(sessionQueryKey(host, 'conversation-input-readiness', workspaceId, bindingId))
+      && queryClient.getQueryData(sessionQueryKey(host, 'conversation-context', workspaceId, bindingId)),
+    );
+    setHydrationPhase({ bindingId, state: reusable ? 'ready' : 'loading' });
 
-    const refresh = async () => {
-      const result = await refreshConversationHydration();
-      if (cancelled) return;
-      if (result.isSuccess) {
-        setHydrationPhase({ bindingId, state: 'ready' });
-        return;
-      }
-      if (isRuntimeReadUnavailable(result.error)) {
-        retryTimer = window.setTimeout(() => { void refresh(); }, 5_000);
-        return;
-      }
-      setHydrationPhase({ bindingId, state: 'fallback' });
-    };
-
+    if (hydrationSelectionTimer.current !== undefined) {
+      window.clearTimeout(hydrationSelectionTimer.current);
+    }
+    if (hydrationRetryTimer.current !== undefined) {
+      window.clearTimeout(hydrationRetryTimer.current);
+      hydrationRetryTimer.current = undefined;
+    }
+    if (reusable) return;
     for (const resource of ['conversation-events', 'conversation-input-readiness', 'conversation-context']) {
       queryClient.removeQueries({
         queryKey: sessionQueryKey(host, resource, workspaceId, bindingId),
         exact: true,
       });
     }
-    void refresh();
-    return () => {
-      cancelled = true;
-      if (retryTimer !== undefined) window.clearTimeout(retryTimer);
-    };
-  }, [host, queryClient, refreshConversationHydration, selected?.id, workspace?.id]);
+    hydrationSelectionTimer.current = window.setTimeout(() => {
+      hydrationSelectionTimer.current = undefined;
+      void runSelectedHydration();
+    }, CONVERSATION_HYDRATION_SELECTION_DELAY_MS);
+  }, [host, queryClient, runSelectedHydration, selected?.id, workspace?.id]);
+  useEffect(() => () => {
+    hydrationSelection.current = undefined;
+    hydrationExecution.current = undefined;
+    if (hydrationSelectionTimer.current !== undefined) window.clearTimeout(hydrationSelectionTimer.current);
+    if (hydrationRetryTimer.current !== undefined) window.clearTimeout(hydrationRetryTimer.current);
+    void queryClient.cancelQueries({
+      queryKey: sessionQueryKey(host, 'conversation-hydration-request'), exact: true,
+    });
+  }, [host, queryClient]);
   const selectedHydrationPhase = hydrationPhase && hydrationPhase.bindingId === selected?.id
     ? hydrationPhase.state
     : 'loading';
@@ -4892,14 +4968,19 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   // non-capacity failure restores the established independent paths, but they
   // remain behind the same first-screen gate until all snapshots are fresh.
   const hydrationFallbackAllowed = selectedHydrationPhase !== 'loading';
-  const hydrationData = selectedHydrationPhase === 'ready' ? hydrationQuery.data : undefined;
+  const hydrationData = selectedHydrationPhase === 'ready'
+    && hydrationExecution.current?.bindingId === selected?.id
+    ? hydrationQuery.data
+    : undefined;
   const hydrationDataUpdatedAt = hydrationData ? hydrationQuery.dataUpdatedAt : undefined;
+  const trustedHydration = selected?.id ? trustedHydrations.current.get(selected.id) : undefined;
   const inputReadinessQuery = useQuery({
     queryKey: inputReadinessQueryKey,
     queryFn: () => api.inputReadiness(workspace!.id, selected!.id),
     // This is the formal OpenHands execution-state read used to restore an
-    // in-flight turn after a browser reload. It is not persisted by FlowWeave.
-    enabled: Boolean(workspace && selected && hydrationFallbackAllowed),
+    // in-flight turn after a browser reload. A terminal trusted snapshot does
+    // not need another Runtime read merely because the user revisited it.
+    enabled: Boolean(workspace && selected && hydrationFallbackAllowed && trustedHydration?.running !== false),
     initialData: hydrationData?.readiness,
     initialDataUpdatedAt: hydrationData ? hydrationDataUpdatedAt : undefined,
     staleTime: INITIAL_HYDRATION_STALE_TIME_MS,
@@ -4965,11 +5046,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
           }
         : latest;
     },
-    // Native event reads begin at the current leaf. The resulting bounded
-    // latest page is rendered before older pages are prefetched below. Running
-    // recovery is coordinated below so latest-window and cursor reads cannot
-    // race each other on independent timers.
-    enabled: Boolean(workspace && selected && hydrationFallbackAllowed),
+    // Native event reads begin at the current leaf. A trusted revisit keeps its
+    // existing projection; running recovery below performs the latest-window
+    // reconciliation without replacing the transcript with a loading screen.
+    enabled: Boolean(workspace && selected && hydrationFallbackAllowed && !trustedHydration),
     initialData: hydrationData?.events,
     initialDataUpdatedAt: hydrationData ? hydrationDataUpdatedAt : undefined,
     staleTime: INITIAL_HYDRATION_STALE_TIME_MS,
@@ -5041,6 +5121,11 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     eventSynchronization.current.inFlight = synchronization;
     return synchronization;
   }, [api, eventQueryKey, host, queryClient, selected, workspace]);
+  useEffect(() => {
+    if (!selected || !trustedHydration?.running || selectedHydrationPhase !== 'ready') return;
+    void synchronizeConversationEvents(true, 'hot_reentry');
+    void queryClient.invalidateQueries({ queryKey: inputReadinessQueryKey, exact: true });
+  }, [inputReadinessQueryKey, queryClient, selected, selectedHydrationPhase, synchronizeConversationEvents, trustedHydration?.running]);
   useEffect(() => {
     if (!foregroundRecoverySignal || !pageVisible || !workspace || !selected
       || foregroundRecoverySignal === handledForegroundRecoverySignal.current) return;
@@ -5153,6 +5238,35 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     const visibleFormalEvents = formalEvents.filter(event => !hiddenBranchIds.has(event.id));
     return projectLocalMessages(visibleFormalEvents, activeLocalMessageProjections);
   }, [activeLocalMessageProjections, conversationDraft?.id, eventsQuery.data?.events, hiddenEventIds, scopedLiveEvents, selected?.id]);
+  const selectedCondensing = Boolean(selected && (
+    condensationStatus?.bindingId === selected.id || condensingConversationIds.has(selected.id)
+  ));
+  const latestCondensationEvent = useMemo(() => [...displayedEvents].reverse().find(event => (
+    event.event_type === 'CONDENSATION_REQUESTED'
+      || event.event_type === 'CONDENSATION_COMPLETED'
+      || (event.event_type === 'ERROR'
+        && event.payload.classification
+        && typeof event.payload.classification === 'object'
+        && String((event.payload.classification as Record<string, unknown>).kind ?? '') === 'condensation')
+  )), [displayedEvents]);
+  useEffect(() => {
+    if (!condensationStatus || condensationStatus.bindingId !== selected?.id) return;
+    const hasNewTerminalEvent = Boolean(latestCondensationEvent
+      && !condensationStatus.existingEventIds.has(latestCondensationEvent.id)
+      && (latestCondensationEvent.event_type === 'CONDENSATION_COMPLETED'
+        || latestCondensationEvent.event_type === 'ERROR'));
+    const latestTask = condensationTasks.get(selected.id);
+    const currentTaskFailed = Boolean(condensationStatus.taskId
+      && latestTask?.task_id === condensationStatus.taskId
+      && latestTask.state === 'DEAD');
+    if (!hasNewTerminalEvent && !currentTaskFailed) return;
+    setCondensationStatus(undefined);
+    if (!hasNewTerminalEvent) {
+      reportOperationError(selected.id, new Error('OpenHands 未能完成上下文压缩，请稍后重试。'));
+    }
+    void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-activity', workspace?.id) });
+    void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-context', workspace?.id, selected.id) });
+  }, [condensationStatus, condensationTasks, host, latestCondensationEvent, queryClient, reportOperationError, selected?.id, workspace?.id]);
   useEffect(() => {
     if (!conversationSearchTargetEventId || !selected) return;
     const target = Array.from(document.querySelectorAll<HTMLElement>('[data-conversation-event-id]')).find(
@@ -5189,9 +5303,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   // the formal terminal event is readable. Keep active turns visually stable;
   // initial native-state hydration is rendered separately as loading.
   const conversationActivity = useMemo(() => ({
-    state: effectiveTurnState,
-    active: effectiveTurnState === 'running' || effectiveTurnState === 'pausing' || effectiveTurnState === 'resuming',
-  }), [effectiveTurnState]);
+    state: selectedCondensing ? 'running' as const : effectiveTurnState,
+    active: selectedCondensing || effectiveTurnState === 'running' || effectiveTurnState === 'pausing' || effectiveTurnState === 'resuming',
+  }), [effectiveTurnState, selectedCondensing]);
   const conversationVisuallyActive = conversationActivity.active || (
     !hydrationQuery.isPending
     && effectiveTurnState !== 'paused'
@@ -5213,7 +5327,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     const recoverUnfinishedTurn = hasUnfinishedFormalTurn
       && !latestFormalTurnFinished
       && (!nativeTurnTerminal || terminalEventReconciliationActive);
-    if (!workspace || !selected || !(isGenerating || recoverUnfinishedTurn) || !pageVisible) return;
+    if (!workspace || !selected || !(isGenerating || recoverUnfinishedTurn || selectedCondensing) || !pageVisible) return;
     let cancelled = false;
     let timer: number | undefined;
     const recover = async () => {
@@ -5229,7 +5343,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       cancelled = true;
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [eventsQuery.data?.next_cursor, hasUnfinishedFormalTurn, isGenerating, latestFormalTurnFinished, nativeTurnTerminal, pageVisible, selected, synchronizeConversationEvents, terminalEventReconciliationActive, workspace]);
+  }, [eventsQuery.data?.next_cursor, hasUnfinishedFormalTurn, isGenerating, latestFormalTurnFinished, nativeTurnTerminal, pageVisible, selected, selectedCondensing, synchronizeConversationEvents, terminalEventReconciliationActive, workspace]);
   const messageAnnotations = useMemo(() => displayedEvents.flatMap(event => {
     const raw = event.payload.collaboration_annotations;
     return Array.isArray(raw) ? raw.filter((item): item is AgentConversationAnnotation => Boolean(
@@ -5317,7 +5431,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const contextQuery = useQuery({
     queryKey: contextQueryKey,
     queryFn: () => api.conversationContext(workspace!.id, selected!.id),
-    enabled: Boolean(workspace && selected && hydrationFallbackAllowed),
+    enabled: Boolean(workspace && selected && hydrationFallbackAllowed && trustedHydration?.running !== false),
     initialData: hydrationData?.context,
     initialDataUpdatedAt: hydrationData ? hydrationDataUpdatedAt : undefined,
     staleTime: INITIAL_HYDRATION_STALE_TIME_MS,
@@ -5349,7 +5463,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   // or any other session mutation writable again.
   const canFork = Boolean(selected && features.fork && (canWrite || runtime?.fork_available));
   const canCompose = Boolean(canWrite || (canOpenConversation && conversationDraft));
-  const canCondense = Boolean(selected && canWrite && inputReadinessQuery.data?.ready === true
+  const canCondense = Boolean(selected && canWrite && !selectedCondensing
+    && inputReadinessQuery.data?.ready === true
     && (effectiveTurnState === 'idle' || effectiveTurnState === 'paused'));
   const visibleComposerSuggestions = useMemo<ComposerSuggestion[]>(() => {
     if (!selected) return composerSuggestions;
@@ -6112,13 +6227,22 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     mutationFn: ({ workspaceId, bindingId }: { workspaceId: string; bindingId: string }) => api.condenseConversation(workspaceId, bindingId),
     onMutate: request => {
       setOperationError(undefined);
+      setCondensationStatus({
+        bindingId: request.bindingId,
+        startedAt: Date.now(),
+        existingEventIds: new Set(displayedEvents.map(event => event.id)),
+      });
       setStreamHold({ bindingId: request.bindingId, expiresAt: Date.now() + STREAM_IDLE_GRACE_MS });
     },
-    onSuccess: (_value, request) => {
-      refresh(request.bindingId);
-      void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-context', request.workspaceId, request.bindingId) });
+    onSuccess: (value, request) => {
+      setCondensationStatus(current => current?.bindingId === request.bindingId
+        ? { ...current, taskId: value.task_id ?? undefined }
+        : current);
+      if (request.bindingId === activeComposerScope.current) void synchronizeConversationEvents(true, 'condensation_accepted');
+      void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-activity', request.workspaceId) });
     },
     onError: (error, request) => {
+      setCondensationStatus(current => current?.bindingId === request.bindingId ? undefined : current);
       if (request.bindingId === activeComposerScope.current) reconcileConversationProjection();
       reportOperationError(request.bindingId, error);
     },
@@ -6345,7 +6469,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     // message in the browser queue and let the next native idle boundary
     // dispatch it. Only Command/Ctrl+Enter opts into native running-turn
     // append (see sendDraftDirectly below).
-    const shouldQueue = effectiveTurnState === 'running'
+    const shouldQueue = selectedCondensing
+      || effectiveTurnState === 'running'
       || (effectiveTurnState === 'idle' && !selected.streaming_callback_ready);
     const queuedMessage: QueuedMessage = {
       ...message,
@@ -6359,8 +6484,12 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       return;
     }
     dispatchMessage({ ...queuedMessage, bindingId: selected.id });
-  }, [attachments, bootstrap, canBootstrap, canWrite, commitQueuedMessages, composerAnnotations, composerScope, conversationDraft, dispatchMessage, effectiveTurnState, host.id, migrateStreaming.isPending, pendingMigratedSend, queueModeEnabled, references, replaceComposerDraft, selected, showOptimisticUserBubble, workspace, workspaceReferences]);
+  }, [attachments, bootstrap, canBootstrap, canWrite, commitQueuedMessages, composerAnnotations, composerScope, conversationDraft, dispatchMessage, effectiveTurnState, host.id, migrateStreaming.isPending, pendingMigratedSend, queueModeEnabled, references, replaceComposerDraft, selected, selectedCondensing, showOptimisticUserBubble, workspace, workspaceReferences]);
   const sendDraftDirectly = useCallback((draftContent = composerDraftRef.current) => {
+    if (selectedCondensing) {
+      enqueueDraft(draftContent);
+      return;
+    }
     const content = draftContent.trim();
     const hasComposerMessage = Boolean(content || attachments.length || references.length || workspaceReferences.length || composerAnnotations.length);
     if (!hasComposerMessage) {
@@ -6401,11 +6530,11 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     setAttachments([]);
     setReferences([]); setWorkspaceReferences([]); setComposerAnnotations([]);
     dispatchMessage({ ...message, bindingId: selected.id });
-  }, [attachments, canWrite, composerAnnotations, composerScope, conversationDraft, dispatchMessage, effectiveTurnState, enqueueDraft, host.id, migrateStreaming.isPending, pendingMigratedSend, queueModeEnabled, queuedMessages, references, replaceComposerDraft, selected, workspace, workspaceReferences]);
+  }, [attachments, canWrite, composerAnnotations, composerScope, conversationDraft, dispatchMessage, effectiveTurnState, enqueueDraft, host.id, migrateStreaming.isPending, pendingMigratedSend, queueModeEnabled, queuedMessages, references, replaceComposerDraft, selected, selectedCondensing, workspace, workspaceReferences]);
   const sendQueuedMessageImmediately = useCallback((message: QueuedMessage) => {
-    if (!queueModeEnabled || !canWrite || effectiveTurnState !== 'running' || !selected?.streaming_callback_ready || message.scope !== selected.id || message.deliveryState !== 'queued') return;
+    if (selectedCondensing || !queueModeEnabled || !canWrite || effectiveTurnState !== 'running' || !selected?.streaming_callback_ready || message.scope !== selected.id || message.deliveryState !== 'queued') return;
     dispatchMessage({ ...message, bindingId: selected.id, nativeGuidance: true });
-  }, [canWrite, dispatchMessage, effectiveTurnState, queueModeEnabled, selected]);
+  }, [canWrite, dispatchMessage, effectiveTurnState, queueModeEnabled, selected, selectedCondensing]);
   const moveQueuedMessage = useCallback((sourceId: string, targetId: string) => {
     if (sourceId === targetId) return;
     commitQueuedMessages(items => {
@@ -6539,7 +6668,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     : undefined;
   const composerStatus = bootstrapRecovery
     ? '正在安全核对首条消息'
-    : conversationDraft && !newConversationModelName ? '请选择模型' : persistModel.isPending ? '正在保存模型设置' : migrateStreaming.isPending || pendingMigratedSend ? '正在迁移历史会话' : pendingConfirmation ? '等待工具确认' : conversationActivity.state === 'pausing' ? '正在暂停' : conversationActivity.state === 'paused' ? '已暂停' : conversationActivity.state === 'resuming' ? '正在继续' : finalReplyAwaitingNativeCompletion ? '回复已生成，正在收尾' : conversationActivity.state === 'running' ? '正在处理' : streamStatus === 'recovering' ? '连接恢复中' : undefined;
+    : conversationDraft && !newConversationModelName ? '请选择模型' : selectedCondensing ? '正在压缩上下文' : persistModel.isPending ? '正在保存模型设置' : migrateStreaming.isPending || pendingMigratedSend ? '正在迁移历史会话' : pendingConfirmation ? '等待工具确认' : conversationActivity.state === 'pausing' ? '正在暂停' : conversationActivity.state === 'paused' ? '已暂停' : conversationActivity.state === 'resuming' ? '正在继续' : finalReplyAwaitingNativeCompletion ? '回复已生成，正在收尾' : streamStatus === 'recovering' ? '连接恢复中' : undefined;
   const composerNote = visibleQueuedMessages.length > 0
     ? queueModeEnabled ? `已排队 ${visibleQueuedMessages.length} 条` : `队列已关闭 · 保留 ${visibleQueuedMessages.length} 条`
     : '';
@@ -6549,9 +6678,11 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   );
   const composerActionSends = composerHasContent && !pendingConfirmation;
   const composerActionLabel = bootstrap.isPending ? '正在创建会话' : migrateStreaming.isPending || pendingMigratedSend ? '正在迁移历史会话' : pendingConfirmation ? '等待工具确认' : composerActionSends
-    ? '发送消息'
-    : effectiveTurnState === 'idle'
-      ? '发送消息'
+    ? selectedCondensing ? '发送后排队' : '发送消息'
+    : selectedCondensing
+      ? '正在压缩上下文'
+      : effectiveTurnState === 'idle'
+        ? '发送消息'
       : effectiveTurnState === 'running'
         ? '暂停当前 Agent'
         : effectiveTurnState === 'paused'
@@ -6562,6 +6693,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     || bootstrap.isPending
     || migrateStreaming.isPending
     || Boolean(pendingMigratedSend)
+    || (selectedCondensing && !composerHasContent)
     || (effectiveTurnState === 'idle' && (!composerHasContent || queuedMessages.some(message => message.scope === selected?.id && sendingMessageIds.current.has(message.id))))
     || effectiveTurnState === 'pausing'
     || effectiveTurnState === 'resuming';
@@ -6571,7 +6703,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     selected && (selectedHydrationPhase === 'loading' || fallbackHydrationPending),
   );
   const runComposerAction = () => {
-    if (composerActionSends || conversationActivity.state === 'idle') enqueueDraft();
+    if (composerActionSends || selectedCondensing || conversationActivity.state === 'idle') enqueueDraft();
     else if (conversationActivity.state === 'running') interrupt.mutate();
     else if (conversationActivity.state === 'paused') resume.mutate();
   };
@@ -6694,7 +6826,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     // conversations or letting a delayed batch snapshot override a terminal row.
     const running = item.id === selected?.id
       ? conversationActivity.active
-      : runningConversationIds.has(item.id) || conversationIsRunning(item.execution_status);
+      : runningConversationIds.has(item.id) || condensingConversationIds.has(item.id) || conversationIsRunning(item.execution_status);
     const conversationWritable = Boolean(item.write_available);
     const sync = conversationOrderSync[item.id];
     return <WorkspaceConversationRow key={item.id} item={item} selectedBindingId={selectedBindingId} workspaceName={options.workspaceName} running={running} unread={unreadConversationIds.has(item.id)} pinned={pinnedConversationIds.has(item.id)} conversationWritable={conversationWritable} removing={remove.isPending} deleteDisabled={running} dragging={options.allowDrag === false ? false : draggedBindingId === item.id} dropPosition={options.allowDrag === false ? undefined : dragTarget?.bindingId === item.id ? (dragTarget.after ? 'after' : 'before') : undefined} orderSyncState={options.allowDrag === false ? undefined : sync?.state} onPointerDragStart={options.allowDrag === false ? undefined : event => startPointerConversationDrag(event, item, group)} onRetryOrder={options.allowDrag === false || sync?.state !== 'failed' ? undefined : () => synchronizeConversationOrder(item.id, sync.orderedBindingIds)} onSelect={options.onSelect ?? (() => selectConversation(item.id))} onDoubleClick={options.onDoubleClick} onTogglePin={() => toggleConversationPin(item.id)} onMarkUnread={() => markConversationUnread(item.id)} onDelete={features.conversationDeletion && conversationWritable ? () => void confirmDeletion('会话', conversationName(item)).then(ok => { if (ok) remove.mutate(item.id); }) : undefined} reveal={sidebarListMode === 'workspaces' && sidebarRevealBindingId === item.id}/>;
@@ -6817,6 +6949,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         onHistoryAnchorRestored={onHistoryAnchorRestored}
         requestStartedAt={requestStartedAt}
         requestSubmitting={send.isPending || bootstrap.isPending || rewrite.isPending}
+        condensationPending={selectedCondensing}
+        condensationStartedAt={condensationStatus?.bindingId === selected?.id ? condensationStatus?.startedAt : undefined}
         onRewrite={selected && canWrite && features.rewrite ? requestRewrite : undefined}
         onFork={canFork ? eventId => { if (fork.isPending) return; const directoryName = selected?.work_directory_id ? workDirectories.find(directory => directory.id === selected.work_directory_id)?.display_name ?? '当前工作区' : '节点工作目录'; void dialog.confirm({ title: '从此处分叉会话？', message: `将保留当前会话在“${directoryName}”中的工作目录和截至此回复的历史记录，创建一条可独立继续的新会话。源会话不会被修改。`, confirmLabel: '创建分叉会话' }).then(confirmed => { if (confirmed) fork.mutate(eventId); }); } : undefined}
         onOpenAttachment={features.attachments ? previewAttachment : undefined}
@@ -6871,7 +7005,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
               <p>{message.content || (message.references.length ? `会话引用 ${message.references.length} 条` : message.workspaceReferences?.length ? `工作区引用 ${message.workspaceReferences.length} 条` : '图片附件')}</p>
               <span>{['等待发送', message.items.length ? `${message.items.length} 个附件` : '', message.references.length ? `${message.references.length} 条会话引用` : '', message.workspaceReferences?.length ? `${message.workspaceReferences.length} 条工作区引用` : ''].filter(Boolean).join(' · ')}</span>
               <div ref={queuedMessageMenuId === message.id ? queuedMessageMenuRef : undefined}>
-                {editable && <button type="button" aria-label={`调整方向排队消息 ${index + 1}`} title={queueModeEnabled ? '立即发送，调整当前回复方向' : '队列模式已关闭'} disabled={!queueModeEnabled || !canWrite || effectiveTurnState !== 'running' || !selected?.streaming_callback_ready || message.scope !== selected.id} onClick={() => sendQueuedMessageImmediately(message)}><CornerDownRight size={12}/>调整方向</button>}
+                {editable && <button type="button" aria-label={`调整方向排队消息 ${index + 1}`} title={queueModeEnabled ? '立即发送，调整当前回复方向' : '队列模式已关闭'} disabled={selectedCondensing || !queueModeEnabled || !canWrite || effectiveTurnState !== 'running' || !selected?.streaming_callback_ready || message.scope !== selected.id} onClick={() => sendQueuedMessageImmediately(message)}><CornerDownRight size={12}/>调整方向</button>}
                 <button type="button" className="queue-remove" aria-label={`移除排队消息 ${index + 1}`} disabled={!removable} onClick={() => { commitQueuedMessages(items => items.filter(item => item.id !== message.id)); removeLocalMessageProjection(message.id, message.scope); setQueuedMessageMenuId(current => current === message.id ? undefined : current); }}><Trash2 size={13}/></button>
                 {editable && <button type="button" className="queue-more" aria-label={`更多排队消息操作 ${index + 1}`} title="更多操作" aria-haspopup="menu" aria-expanded={queuedMessageMenuId === message.id} onClick={() => setQueuedMessageMenuId(current => current === message.id ? undefined : message.id)}><Ellipsis size={14}/></button>}
                 {editable && queuedMessageMenuId === message.id && <div className="queue-menu" role="menu">
@@ -6882,7 +7016,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
             </article>;
           })}
         </section>}
-        <ComposerCapabilityAutocomplete key={composerScope ?? 'composer'} ref={composerRef} initialDraft={composerDraftRef.current} scope={composerScope} suggestions={visibleComposerSuggestions} placeholder={pendingConfirmation ? '请先处理上方工具确认…' : '给 Agent 发消息…'} disabled={!canCompose || Boolean(pendingConfirmation) || bootstrap.isPending || condense.isPending || migrateStreaming.isPending || Boolean(pendingMigratedSend) || conversationActivity.state === 'pausing' || conversationActivity.state === 'resuming'} onDraftChange={setComposerDraft} onContentPresenceChange={onComposerContentPresenceChange} onDraftPersist={persistComposerDraft} onPaste={event => { if (!features.attachments || !composerScope) return; const files = transferredFiles(event.clipboardData); if (!files.length) return; event.preventDefault(); for (const file of files) upload.mutate({ file, scope: composerScope }); }} onDropFiles={features.attachments && composerScope ? files => { for (const file of files) upload.mutate({ file, scope: composerScope }); } : undefined} onDropWorkspaceFiles={paths => setWorkspaceReferences(current => [...current, ...paths.flatMap(path => current.some(reference => reference.path === path) ? [] : [{ path, kind: 'file' as const, display_name: path.split('/').filter(Boolean).pop() ?? path }])])} onSubmit={enqueueDraft} onDirectSubmit={sendDraftDirectly} onManageCapabilities={features.capabilities && (selected || features.draftCapabilitySelection) ? () => setCapabilityManagerOpen(true) : undefined} onNativeAction={action => { if (action === 'CONDENSE' && canCondense && !condense.isPending && workspace && selected) condense.mutate({ workspaceId: workspace.id, bindingId: selected.id }); }} onWorkspaceReferenceSelected={() => { setWorkspaceReferenceQuery(''); setWorkspaceReferencePickerOpen(true); }}/>
+        <ComposerCapabilityAutocomplete key={composerScope ?? 'composer'} ref={composerRef} initialDraft={composerDraftRef.current} scope={composerScope} suggestions={visibleComposerSuggestions} placeholder={pendingConfirmation ? '请先处理上方工具确认…' : selectedCondensing ? '可继续输入，发送后将排队…' : '给 Agent 发消息…'} disabled={!canCompose || Boolean(pendingConfirmation) || bootstrap.isPending || migrateStreaming.isPending || Boolean(pendingMigratedSend) || conversationActivity.state === 'pausing' || conversationActivity.state === 'resuming'} onDraftChange={setComposerDraft} onContentPresenceChange={onComposerContentPresenceChange} onDraftPersist={persistComposerDraft} onPaste={event => { if (!features.attachments || !composerScope) return; const files = transferredFiles(event.clipboardData); if (!files.length) return; event.preventDefault(); for (const file of files) upload.mutate({ file, scope: composerScope }); }} onDropFiles={features.attachments && composerScope ? files => { for (const file of files) upload.mutate({ file, scope: composerScope }); } : undefined} onDropWorkspaceFiles={paths => setWorkspaceReferences(current => [...current, ...paths.flatMap(path => current.some(reference => reference.path === path) ? [] : [{ path, kind: 'file' as const, display_name: path.split('/').filter(Boolean).pop() ?? path }])])} onSubmit={enqueueDraft} onDirectSubmit={sendDraftDirectly} onManageCapabilities={features.capabilities && (selected || features.draftCapabilitySelection) ? () => setCapabilityManagerOpen(true) : undefined} onNativeAction={action => { if (action === 'CONDENSE' && canCondense && !condense.isPending && workspace && selected) condense.mutate({ workspaceId: workspace.id, bindingId: selected.id }); }} onWorkspaceReferenceSelected={() => { setWorkspaceReferenceQuery(''); setWorkspaceReferencePickerOpen(true); }}/>
         {features.attachments && attachments.length > 0 && <div className="agent-attachments">{attachments.map(item => <span key={item.path}><button type="button" className="agent-attachment-open" title={`预览附件：${item.filename}`} onClick={() => previewAttachment(item)}>{item.image_data_url && <img src={item.image_data_url} alt=""/>}<em>{item.filename}</em></button><button type="button" className="agent-attachment-remove" aria-label={`移除附件 ${item.filename}`} onClick={() => setAttachments(all => all.filter(candidate => candidate.path !== item.path))}>×</button></span>)}</div>}
         {references.length > 0 && <div className="agent-attachments agent-conversation-references" aria-label="已添加的会话引用">{references.map((reference, index) => <span key={`${reference.eventId}:${reference.content}`}><span className="agent-attachment-open" title={reference.content}><Quote size={14}/><em>{`会话引用 ${index + 1}`}</em></span><button type="button" className="agent-attachment-remove" aria-label={`移除会话引用 ${index + 1}`} onClick={() => setReferences(current => current.filter(item => item !== reference))}>×</button></span>)}</div>}
         {(selected || conversationDraft) && <ComposerAnnotationList annotations={composerAnnotations} onLocate={locateAnnotation} onRemove={annotation => setComposerAnnotations(current => current.filter(item => item.id !== annotation.id))} onUpdate={(annotation, comment) => void updateAnnotation(annotation, comment)}/>}
@@ -6890,14 +7024,14 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         <footer>
           <div className="agent-composer-context">
             {features.attachments && (selected || conversationDraft) && <><input ref={attachmentInput} aria-label="上传附件" type="file" multiple hidden onChange={event => { if (composerScope) for (const file of Array.from(event.target.files ?? [])) upload.mutate({ file, scope: composerScope }); event.currentTarget.value = ''; }}/><button type="button" aria-label="添加附件" disabled={!canCompose || Boolean(pendingConfirmation) || upload.isPending} onClick={() => attachmentInput.current?.click()}><Plus size={17}/></button></>}
-            {contextProgress ? <span className="agent-context-progress token" title={contextTitle} aria-label={`Token 上下文用量 ${contextProgress.percentage}%`}><i style={{ '--context-progress': `${contextProgress.percentage}%` } as CSSProperties}/><em><small>Token</small>{contextProgress.usedLabel} / {contextProgress.windowLabel}</em></span> : (selected || conversationDraft) && <span className="agent-context-progress token pending" title={tokenPendingTitle} aria-label={`Token 上下文用量${tokenPendingLabel}`}><i style={{ '--context-progress': '0%' } as CSSProperties}/><em><small>Token</small>{tokenPendingLabel}</em></span>}
-            {(selected || conversationDraft) && (hasCurrentViewEventCount && eventProgress !== undefined ? <span className="agent-context-progress activity events" title={activityTitle} aria-label={`OpenHands 当前活动 View 事件 ${currentViewEventCount} 条，自动压缩阈值 ${eventLimit} 条`}><i style={{ '--context-progress': `${eventProgress}%` } as CSSProperties}/><em><small>事件</small>{exactCount(currentViewEventCount)} / {exactCount(eventLimit)}</em></span> : <span className="agent-context-progress activity events pending" title={eventPendingTitle} aria-label={`事件上下文用量${eventPendingLabel}`}><i style={{ '--context-progress': '0%' } as CSSProperties}/><em><small>事件</small>{eventPendingLabel}</em></span>)}
+            {selected && (contextProgress ? <span className="agent-context-progress token" title={contextTitle} aria-label={`Token 上下文用量 ${contextProgress.percentage}%`}><i style={{ '--context-progress': `${contextProgress.percentage}%` } as CSSProperties}/><em><small>Token</small>{contextProgress.usedLabel} / {contextProgress.windowLabel}</em></span> : <span className="agent-context-progress token pending" title={tokenPendingTitle} aria-label={`Token 上下文用量${tokenPendingLabel}`}><i style={{ '--context-progress': '0%' } as CSSProperties}/><em><small>Token</small>{tokenPendingLabel}</em></span>)}
+            {selected && (hasCurrentViewEventCount && eventProgress !== undefined ? <span className="agent-context-progress activity events" title={activityTitle} aria-label={`OpenHands 当前活动 View 事件 ${currentViewEventCount} 条，自动压缩阈值 ${eventLimit} 条`}><i style={{ '--context-progress': `${eventProgress}%` } as CSSProperties}/><em><small>事件</small>{exactCount(currentViewEventCount)} / {exactCount(eventLimit)}</em></span> : <span className="agent-context-progress activity events pending" title={eventPendingTitle} aria-label={`事件上下文用量${eventPendingLabel}`}><i style={{ '--context-progress': '0%' } as CSSProperties}/><em><small>事件</small>{eventPendingLabel}</em></span>)}
             <span className="agent-composer-status agent-composer-status-slot" aria-hidden={!composerStatus}>{composerStatus}</span>
             <span className="agent-composer-note agent-composer-note-slot" aria-hidden={!composerNote}>{composerNote}</span>
           </div>
           <div className="agent-composer-actions">
             {features.modelSelection && (selected ? <ComposerModelMenu providers={connectedProviders} providerId={conversationProviderId} modelName={activeConversationModelName} models={availableConversationModels} efforts={supportedEfforts} effort={reasoningEffort ?? selected.reasoning_effort ?? contextQuery.data?.reasoning_effort ?? conversationModel?.default_reasoning_effort ?? ''} disabled={!canWrite || conversationActivity.active || queuedMessages.length > 0 || Boolean(pendingConfirmation) || persistModel.isPending || migrateStreaming.isPending || Boolean(pendingMigratedSend)} onProviderChange={providerId => { const provider = connectedProviders.find(item => item.id === providerId); const model = provider?.models.find(item => item.enabled && item.is_default); if (!provider || !model) return; const effort = model.default_reasoning_effort ?? null; setConversationProviderId(providerId); setConversationModelName(model.model_name); setReasoningEffort(effort); persistModel.mutate({ providerId, modelName: model.model_name, effort }); }} onModelChange={modelName => { const model = availableConversationModels.find(item => item.model_name === modelName); const effort = model?.default_reasoning_effort ?? null; setConversationModelName(modelName); setReasoningEffort(effort); persistModel.mutate({ providerId: conversationProviderId, modelName, effort }); }} onEffortChange={effort => { const nextEffort = effort || null; setReasoningEffort(nextEffort); persistModel.mutate({ providerId: conversationProviderId, modelName: activeConversationModelName, effort }); }}/> : <ComposerModelMenu providers={connectedProviders} providerId={newConversationProviderId} modelName={newConversationModelName} models={availableDraftModels} efforts={supportedDraftEfforts} effort={newConversationReasoningEffort ?? draftConversationModel?.default_reasoning_effort ?? ''} disabled={!canOpenConversation || bootstrap.isPending} onProviderChange={providerId => { const provider = connectedProviders.find(item => item.id === providerId); const model = provider?.models.find(item => item.enabled && item.is_default); if (!provider || !model) return; setNewConversationProviderId(providerId); setNewConversationModelName(model.model_name); setNewConversationReasoningEffort(model.default_reasoning_effort ?? null); }} onModelChange={modelName => { const model = availableDraftModels.find(item => item.model_name === modelName); setNewConversationModelName(modelName); setNewConversationReasoningEffort(model?.default_reasoning_effort ?? null); }} onEffortChange={effort => setNewConversationReasoningEffort(effort || null)}/>) }
-            <button type="button" className={`agent-send${!composerActionSends && (conversationActivity.state === 'paused' || conversationActivity.state === 'resuming') ? ' resume' : ''}`} aria-label={composerActionLabel} disabled={composerActionDisabled} onClick={runComposerAction}>{pendingConfirmation ? <ShieldAlert size={14}/> : composerActionSends || conversationActivity.state === 'idle' ? <Send size={16}/> : conversationActivity.state === 'paused' || conversationActivity.state === 'resuming' ? <Play size={12} fill="currentColor"/> : <Square size={10} fill="currentColor"/>}</button>
+            <button type="button" className={`agent-send${!composerActionSends && !selectedCondensing && (conversationActivity.state === 'paused' || conversationActivity.state === 'resuming') ? ' resume' : ''}`} aria-label={composerActionLabel} disabled={composerActionDisabled} onClick={runComposerAction}>{pendingConfirmation ? <ShieldAlert size={14}/> : composerActionSends || selectedCondensing || conversationActivity.state === 'idle' ? <Send size={16}/> : conversationActivity.state === 'paused' || conversationActivity.state === 'resuming' ? <Play size={12} fill="currentColor"/> : <Square size={10} fill="currentColor"/>}</button>
           </div>
         </footer>
         </div>

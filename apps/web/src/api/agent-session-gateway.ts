@@ -130,7 +130,7 @@ export interface AgentSessionApi {
   readonly reorderConversation?: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, orderedBindingIds: AgentSessionBindingId[]) => Promise<AgentConversation>;
   readonly deleteConversation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<void>;
   readonly conversationEvents: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, cursor?: string, historyCursor?: string, diagnosticTrigger?: string) => Promise<OpenHandsConversationEventBatch>;
-  readonly conversationHydration: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<AgentConversationHydration>;
+  readonly conversationHydration: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, signal?: AbortSignal) => Promise<AgentConversationHydration>;
   /** Bounded native HEAD check before reusing an in-memory complete branch. */
   readonly conversationHead: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<AgentConversationHead>;
   readonly inputReadiness: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<AgentConversationInputReadiness>;
@@ -149,7 +149,7 @@ export interface AgentSessionApi {
   readonly uploadDraftAttachment: (hostId: AgentSessionHostId, file: File, workDirectoryId?: AgentSessionWorkDirectoryId, conversationId?: string) => Promise<AgentAttachment>;
   readonly forkConversation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, eventId: string) => Promise<AgentConversation>;
   /** Requests native context condensation without appending a user message. */
-  readonly condenseConversation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<{ accepted: boolean; cursor?: string | null }>;
+  readonly condenseConversation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<{ accepted: boolean; task_id?: string | null }>;
   readonly interruptConversation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<{ accepted: boolean }>;
   readonly resumeConversation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<{ accepted: boolean; cursor?: string | null }>;
   readonly decideConfirmation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, expectedPendingDigest: string, accept: boolean, reason: string) => Promise<{ accepted: boolean; cursor?: string | null }>;
@@ -317,8 +317,8 @@ export function flowNodeSessionGateway(
       deleteConversation: (_hostId, bindingId) => nodeSessionApi.remove(flowRunId, attemptId, bindingId),
       conversationEvents: (_hostId, bindingId, cursor, historyCursor, diagnosticTrigger) =>
         nodeSessionApi.events(flowRunId, attemptId, bindingId, cursor, historyCursor, diagnosticTrigger),
-      conversationHydration: (_hostId, bindingId) =>
-        nodeSessionApi.hydration(flowRunId, attemptId, bindingId),
+      conversationHydration: (_hostId, bindingId, signal) =>
+        nodeSessionApi.hydration(flowRunId, attemptId, bindingId, signal),
       conversationHead: (_hostId, bindingId) =>
         nodeSessionApi.head(flowRunId, attemptId, bindingId),
       inputReadiness: (_hostId, bindingId) =>

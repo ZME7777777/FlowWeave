@@ -10,6 +10,7 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -57,7 +58,6 @@ from flowweave.runtime.base import (
     RuntimeEvent,
     RuntimeEventBatch,
     RuntimeForkRecovery,
-    RuntimeHandle,
     RuntimeInputReadiness,
     RuntimePendingAction,
     RuntimePendingConfirmation,
@@ -3253,36 +3253,39 @@ def test_agent_workspace_conversation_dtos_project_runtime_write_availability(
         )
 
 
-def test_agent_workspace_manual_condensation_does_not_send_a_message(monkeypatch):
+def test_agent_workspace_manual_condensation_enqueues_without_runtime_io(monkeypatch):
     workspace = object()
-    binding = object()
-    handle = RuntimeHandle(job_id="job", conversation_id="native-conversation")
+    binding = SimpleNamespace(id="binding")
+    task = SimpleNamespace(id="condensation-task")
 
     class ManualCondensationRuntime(MockRuntime):
         condense_calls = 0
-        send_calls = 0
 
-        def condense(self, actual_handle):
-            assert actual_handle is handle
+        def can_accept_input(self, _actual_handle):
+            raise AssertionError("the request handler must not call the runtime")
+
+        def condense(self, _actual_handle):
             self.condense_calls += 1
-            return RuntimeResult(status="RUNNING", cursor="condensation-request")
-
-        def send_message(self, actual_handle, content, image_urls=()):
-            del actual_handle, content, image_urls
-            self.send_calls += 1
-            raise AssertionError("manual condensation must not append a message")
+            raise AssertionError("the request handler must not wait for native condensation")
 
     runtime = ManualCondensationRuntime()
     monkeypatch.setattr(conversations, "_workspace", lambda *_args: workspace)
     monkeypatch.setattr(conversations, "_binding", lambda *_args, **_kwargs: binding)
-    monkeypatch.setattr(conversations, "_handle", lambda *_args: handle)
+    monkeypatch.setattr(
+        conversations,
+        "enqueue_manual_condensation",
+        lambda _db, *, binding_id, idempotency_key: task
+        if (binding_id, idempotency_key) == ("binding", "condense-key")
+        else None,
+    )
 
     with runtime_context(runtime):
-        result = conversations.condense_conversation(object(), "workspace", "binding")
+        result = conversations.condense_conversation(
+            object(), "workspace", "binding", "condense-key"
+        )
 
-    assert result == {"accepted": True, "cursor": "condensation-request"}
-    assert runtime.condense_calls == 1
-    assert runtime.send_calls == 0
+    assert result == {"accepted": True, "task_id": "condensation-task"}
+    assert runtime.condense_calls == 0
 
 
 def test_agent_workspace_runtime_replacement_fences_only_active_generation(

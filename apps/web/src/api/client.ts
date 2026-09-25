@@ -114,7 +114,8 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
       cache: init.method === undefined || init.method === 'GET' ? 'no-store' : init.cache,
       headers: { 'Content-Type': 'application/json', ...init.headers },
     });
-  } catch {
+  } catch (error) {
+    if (init.signal?.aborted) throw error;
     throw new ApiError('无法连接服务器，请检查网络连接后重试。', 'NETWORK_ERROR', {}, 0);
   }
   if (!response.ok) {
@@ -346,8 +347,8 @@ export const api = {
     if (diagnosticTrigger) query.set('diagnostic_trigger', diagnosticTrigger);
     return request<OpenHandsConversationEventBatch>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/events${query.size ? `?${query}` : ''}`);
   },
-  agentConversationHydration: (workspaceId: string, bindingId: string) =>
-    request<import('../types').AgentConversationHydration>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/hydration`),
+  agentConversationHydration: (workspaceId: string, bindingId: string, signal?: AbortSignal) =>
+    request<import('../types').AgentConversationHydration>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/hydration`, { signal }),
   agentConversationHead: (workspaceId: string, bindingId: string) =>
     request<AgentConversationHead>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/head`),
   agentPendingConfirmation: (workspaceId: string, bindingId: string) =>
@@ -386,7 +387,7 @@ export const api = {
   migrateAgentStreamingConversation: (workspaceId: string, bindingId: string, model_provider_id: string, model_name?: string | null, reasoning_effort?: string | null) =>
     request<AgentConversation>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/streaming-migration`, json('POST', { model_provider_id, model_name, reasoning_effort }, true)),
   condenseAgentConversation: (workspaceId: string, bindingId: string) =>
-    request<{ accepted: boolean; cursor?: string | null }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/condense`, json('POST')),
+    request<{ accepted: boolean; task_id?: string | null }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/condense`, json('POST', undefined, true)),
   forkAgentConversation: (workspaceId: string, bindingId: string, event_id: string) =>
     request<AgentConversation>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/fork`, json('POST', { event_id }, true)),
   rerunAgentMessage: (workspaceId: string, bindingId: string, eventId: string, content: string, attachments: AgentAttachment[] = [], references: AgentConversationReference[] = [], workspace_references: AgentWorkspaceReference[] = [], annotations: AgentConversationAnnotation[] = []) =>
@@ -885,8 +886,8 @@ export const nodeSessionApi = {
     if (diagnosticTrigger) query.set('diagnostic_trigger', diagnosticTrigger);
     return request<import('../types').OpenHandsConversationEventBatch>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/events${query.size ? `?${query}` : ''}`);
   },
-  hydration: (flowRunId: string, attemptId: string, bindingId: string) =>
-    request<import('../types').AgentConversationHydration>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/hydration`),
+  hydration: (flowRunId: string, attemptId: string, bindingId: string, signal?: AbortSignal) =>
+    request<import('../types').AgentConversationHydration>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/hydration`, { signal }),
   head: (flowRunId: string, attemptId: string, bindingId: string) =>
     request<AgentConversationHead>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/head`),
   inputReadiness: (flowRunId: string, attemptId: string, bindingId: string) =>
@@ -923,7 +924,7 @@ export const nodeSessionApi = {
     return response.json() as Promise<AgentAttachment>;
   },
   condense: (flowRunId: string, attemptId: string, bindingId: string) =>
-    request<{ accepted: boolean; cursor?: string | null }>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/condense`, json('POST')),
+    request<{ accepted: boolean; task_id?: string | null }>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/condense`, json('POST', undefined, true)),
   interrupt: (flowRunId: string, attemptId: string, bindingId: string) =>
     request<{ accepted: boolean }>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/interrupt`, json('POST')),
   resume: (flowRunId: string, attemptId: string, bindingId: string) =>

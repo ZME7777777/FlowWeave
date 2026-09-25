@@ -1865,40 +1865,50 @@ def test_node_message_keeps_an_end_blocked_attempt_observing_native_events(
         )
 
 
-def test_node_manual_condensation_does_not_send_a_message(
+def test_node_manual_condensation_enqueues_without_runtime_io(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    handle = RuntimeHandle(job_id="job", conversation_id="native-conversation")
+    binding = SimpleNamespace(id="binding")
+    task = SimpleNamespace(id="condensation-task")
     calls: list[str] = []
 
     class ManualCondensationRuntime:
-        def can_accept_input(self, actual_handle: RuntimeHandle) -> bool:
-            assert actual_handle is handle
-            return True
+        def can_accept_input(self, _actual_handle: RuntimeHandle) -> bool:
+            raise AssertionError("the request handler must not call the runtime")
 
-        def condense(self, actual_handle: RuntimeHandle) -> RuntimeResult:
-            assert actual_handle is handle
+        def condense(self, _actual_handle: RuntimeHandle) -> RuntimeResult:
             calls.append("condense")
-            return RuntimeResult(status="RUNNING", cursor="condensation-request")
-
-        def send_message(self, *_args: object, **_kwargs: object) -> RuntimeResult:
-            calls.append("send")
-            raise AssertionError("manual condensation must not append a message")
+            raise AssertionError("the request handler must not wait for native condensation")
 
     monkeypatch.setattr(
         flow_node_conversations,
         "_assert_node_session_writable",
         lambda *_args, **_kwargs: None,
     )
-    monkeypatch.setattr(flow_node_conversations, "_node_handle", lambda *_args, **_kwargs: handle)
+    monkeypatch.setattr(
+        flow_node_conversations,
+        "_binding_for_attempt",
+        lambda *_args, **_kwargs: binding,
+    )
     monkeypatch.setattr(flow_node_conversations, "get_runtime", lambda: ManualCondensationRuntime())
-
-    result = flow_node_conversations.condense_node_conversation(
-        object(), flow_run_id="flow-run", attempt_id="attempt", binding_id="binding"
+    monkeypatch.setattr(
+        flow_node_conversations,
+        "enqueue_manual_condensation",
+        lambda _db, *, binding_id, idempotency_key: task
+        if (binding_id, idempotency_key) == ("binding", "condense-key")
+        else None,
     )
 
-    assert result == {"accepted": True, "cursor": "condensation-request"}
-    assert calls == ["condense"]
+    result = flow_node_conversations.condense_node_conversation(
+        object(),
+        flow_run_id="flow-run",
+        attempt_id="attempt",
+        binding_id="binding",
+        idempotency_key="condense-key",
+    )
+
+    assert result == {"accepted": True, "task_id": "condensation-task"}
+    assert calls == []
 
 
 def test_running_node_message_dispatch_has_no_database_dependency(

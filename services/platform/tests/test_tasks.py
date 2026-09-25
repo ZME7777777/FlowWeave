@@ -282,6 +282,33 @@ def test_task_lease_generation_fences_late_worker(db_session_factory):
         assert db.get(BackgroundTask, task_id).state == TaskState.SUCCEEDED
 
 
+def test_expired_manual_condensation_is_not_retried(db_session_factory):
+    with db_session_factory() as db:
+        task = enqueue(
+            db,
+            task_type="CONDENSE_AGENT_CONVERSATION",
+            aggregate_type="AGENT_CONVERSATION",
+            aggregate_id="binding-1",
+            idempotency_key="condense:binding-1",
+        )
+        db.commit()
+        task_id = task.id
+    with db_session_factory() as db:
+        claimed = claim(db, "worker-a", lease_seconds=30)
+        assert claimed is not None
+        claimed_task, _lease = claimed
+        assert claimed_task.id == task_id
+        claimed_task.lease_until = datetime.now(UTC) - timedelta(seconds=1)
+        db.commit()
+    with db_session_factory() as db:
+        assert recover_expired(db) == 1
+        task = db.get(BackgroundTask, task_id)
+        assert task is not None
+        assert task.state == TaskState.DEAD
+        assert task.last_error == "LEASE_EXPIRED_UNKNOWN_CONDENSATION_RESULT"
+        assert claim(db, "worker-b", lease_seconds=30) is None
+
+
 def test_concurrent_enqueue_reuses_one_postgres_idempotency_record(db_session_factory):
     """Concurrent recovery delivery must not leak an IntegrityError to a caller."""
 

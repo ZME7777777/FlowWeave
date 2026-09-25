@@ -762,6 +762,13 @@ export interface AgentConversationPage {
 }
 export interface AgentConversationActivity {
   running_binding_ids: string[];
+  condensing_binding_ids?: string[];
+  condensation_failed_binding_ids?: string[];
+  condensation_tasks?: Array<{
+    binding_id: string;
+    task_id: string;
+    state: 'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'RETRY' | 'DEAD';
+  }>;
 }
 export interface AgentConversationSearchHit {
   binding_id: string;

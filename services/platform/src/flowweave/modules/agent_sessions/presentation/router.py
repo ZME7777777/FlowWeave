@@ -1058,15 +1058,17 @@ async def condense_node_session(
     flow_run_id: str,
     attempt_id: str,
     binding_id: str,
-    container: ContainerDep,
+    db: Db,
+    idempotency_key: IdempotencyKey = None,
 ) -> dict[str, Any]:
-    return await run_blocking_control(
-        container,
+    return await run_sync(
+        db,
         lambda session: agent_sessions.flow_node_conversations.condense_node_conversation(
             session,
             flow_run_id=flow_run_id,
             attempt_id=attempt_id,
             binding_id=binding_id,
+            idempotency_key=_key(idempotency_key, "condense-node-session", binding_id),
         ),
     )
 

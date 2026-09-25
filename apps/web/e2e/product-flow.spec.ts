@@ -493,6 +493,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   let contextRequests = 0;
   let forkRequests = 0;
   let manualCondensations = 0;
+  let manualCondensationCompleted = false;
   const workspaceEntryCreates: Array<{ parent_path: string; name: string; kind: string }> = [];
   const workspaceDirectoryRequests: string[] = [];
   const workspaceFilePreviewRequests: string[] = [];
@@ -698,7 +699,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     }
     if (path.endsWith('/condense') && request.method() === 'POST') {
       manualCondensations += 1;
-      await route.fulfill({ status: 202, contentType: 'application/json', body: JSON.stringify({ accepted: true, cursor: 'manual-condensation-completed' }) });
+      await route.fulfill({ status: 202, contentType: 'application/json', body: JSON.stringify({ accepted: true, task_id: 'manual-condensation-task' }) });
       return;
     }
     if (path.endsWith('/fork') && request.method() === 'POST') {
@@ -858,7 +859,9 @@ test('top-level Agent workspace creates a direct conversation and restores its U
           { id: 'late-root-file-result', event_type: 'TOOL_RESULT', payload: { source: 'environment', parent_id: 'late-root-file-action', action_id: 'late-root-file-action', tool_call_id: 'late-root-file-call', tool_name: 'file_editor', event_name: 'FileEditorObservation', details: { command: 'str_replace', path: '/runtime/workspace/project/src/root-owned.ts', old_content: 'export const owner = "old";', new_content: 'export const owner = "root";', is_error: false }, timestamp: '2026-08-26T10:05:04Z' } },
           ...(manualCondensations ? [
             { id: 'manual-condensation-request', event_type: 'CONDENSATION_REQUESTED', payload: { source: 'agent', parent_id: 'failure-event', timestamp: '2026-08-26T10:05:10Z' } },
-            { id: 'manual-condensation-completed', event_type: 'CONDENSATION_COMPLETED', payload: { source: 'agent', parent_id: 'manual-condensation-request', condensation_request_event_id: 'manual-condensation-request', forgotten_event_ids: ['progress-note'], timestamp: '2026-08-26T10:05:12Z' } },
+            ...(manualCondensationCompleted ? [
+              { id: 'manual-condensation-completed', event_type: 'CONDENSATION_COMPLETED', payload: { source: 'agent', parent_id: 'manual-condensation-request', condensation_request_event_id: 'manual-condensation-request', forgotten_event_ids: ['progress-note'], timestamp: '2026-08-26T10:05:12Z' } },
+            ] : []),
           ] : []),
         ] : [],
         next_cursor: modelIsResponding ? (cursorlessEventRecovery ? null : backfilledTaskAction && cursor === 'running-user' ? 'recovered-task-action' : cursor || 'running-user') : null,
@@ -978,6 +981,8 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   expect(newConversationLayout.emptyBottom).toBeLessThanOrEqual(newConversationLayout.contentBottom + 1);
   expect(newConversationLayout.contentBottom).toBeLessThanOrEqual(newConversationLayout.composerTop + 1);
   expect(bootstrapRequests).toBe(0);
+  await expect(page.locator('.agent-context-progress')).toHaveCount(0);
+  await expect(page.getByText('待会话创建', { exact: true })).toHaveCount(0);
   await expect(page.getByRole('button', { name: '检查工作目录' })).toHaveCount(0);
   await page.getByLabel('发送 Agent 消息').fill('检查工作目录');
   await page.getByLabel('发送消息').click();
@@ -1010,6 +1015,8 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(emptyResponseStatus).toBeVisible();
   await expect(page.getByText('Your last response did not include a function call or a message.')).toHaveCount(0);
   await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toBeVisible();
+  await expect(page.locator('.agent-composer-status')).toHaveAttribute('aria-hidden', 'true');
+  await expect(page.locator('.agent-composer-status')).not.toHaveText('正在处理');
   await expect(page.locator('.agent-workspace-conversation-running')).toHaveCount(1);
   emptyResponseFollowup = true;
   await page.reload();
@@ -1309,11 +1316,36 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect.poll(() => manualCondensations).toBe(1);
   await expect(composerAfterReload).toHaveValue('');
   expect(sentMessages).toBe(messagesBeforeCondensation);
+  await expect(page.getByRole('status', { name: '正在压缩上下文' })).toBeVisible();
+  await expect(composerAfterReload).toBeEditable();
+  await composerAfterReload.fill('压缩完成后再发送');
+  await composerAfterReload.press('Enter');
+  await expect(page.getByRole('region', { name: '消息投递队列' })).toContainText('压缩完成后再发送');
+  expect(sentMessages).toBe(messagesBeforeCondensation);
+  manualCondensationCompleted = true;
   await expect(page.getByRole('status', { name: '压缩完成' })).toBeVisible();
   await expect(page.getByText('/condense', { exact: true })).toHaveCount(0);
   const completedTurn = page.locator('.conversation-turn').filter({ hasText: '工作区已就绪。' });
   const completedProcess = completedTurn.locator('.conversation-activity-group');
   await expect(completedTurn.locator('.conversation-message-meta time')).toHaveText([/\d{2}:\d{2}/, /\d{2}:\d{2}/]);
+  const userMessage = completedTurn.locator('.conversation-message.user');
+  const userMessageTime = userMessage.locator('.conversation-message-meta time');
+  const userMessageActions = userMessage.locator('.conversation-message-actions');
+  const messageBox = await userMessage.boundingBox();
+  const restingTimeBox = await userMessageTime.boundingBox();
+  expect(messageBox).not.toBeNull();
+  expect(restingTimeBox).not.toBeNull();
+  expect(Math.abs(restingTimeBox!.x + restingTimeBox!.width - messageBox!.x - messageBox!.width)).toBeLessThan(2);
+  await expect(userMessageActions).toHaveCSS('opacity', '0');
+  await userMessage.hover();
+  await expect(userMessageActions).toHaveCSS('opacity', '1');
+  await expect(userMessageActions).toHaveCSS('max-width', '23px');
+  const revealedTimeBox = await userMessageTime.boundingBox();
+  const revealedActionsBox = await userMessageActions.boundingBox();
+  expect(revealedTimeBox).not.toBeNull();
+  expect(revealedActionsBox).not.toBeNull();
+  expect(revealedTimeBox!.x).toBeLessThan(restingTimeBox!.x - 20);
+  expect(Math.abs(revealedActionsBox!.x + revealedActionsBox!.width - messageBox!.x - messageBox!.width)).toBeLessThan(2);
   await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
   await completedTurn.getByRole('button', { name: '复制消息' }).click();
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe('检查工作目录');
@@ -1517,6 +1549,40 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     if (!surface) throw new Error('Expected conversation surface');
     return message.getBoundingClientRect().top - surface.getBoundingClientRect().top;
   })).toBeLessThan(80);
+  const thirdMessageTick = messageTicks.nth(2);
+  const firstTickBox = await firstMessageTick.boundingBox();
+  const thirdTickBox = await thirdMessageTick.boundingBox();
+  expect(firstTickBox).not.toBeNull();
+  expect(thirdTickBox).not.toBeNull();
+  await page.mouse.move(firstTickBox!.x + firstTickBox!.width / 2, firstTickBox!.y + firstTickBox!.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(thirdTickBox!.x + thirdTickBox!.width / 2, thirdTickBox!.y + thirdTickBox!.height / 2);
+  await expect.poll(() => page.locator('[data-user-event-id]').nth(2).evaluate(message => {
+    const surface = message.closest('.conversation-surface');
+    if (!surface) throw new Error('Expected conversation surface');
+    return message.getBoundingClientRect().top - surface.getBoundingClientRect().top;
+  })).toBeLessThan(80);
+  await page.mouse.up();
+  await messageRuler.evaluate(ruler => {
+    ruler.style.top = '0';
+    ruler.style.bottom = 'auto';
+    ruler.style.height = '36px';
+    ruler.scrollTop = 0;
+  });
+  const rulerBox = await messageRuler.boundingBox();
+  const visibleFirstTickBox = await firstMessageTick.boundingBox();
+  expect(rulerBox).not.toBeNull();
+  expect(visibleFirstTickBox).not.toBeNull();
+  await page.mouse.move(visibleFirstTickBox!.x + visibleFirstTickBox!.width / 2, visibleFirstTickBox!.y + visibleFirstTickBox!.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(rulerBox!.x + rulerBox!.width / 2, rulerBox!.y + rulerBox!.height - 2);
+  await expect.poll(() => messageRuler.evaluate(ruler => ruler.scrollTop)).toBeGreaterThan(0);
+  await page.mouse.up();
+  await messageRuler.evaluate(ruler => {
+    ruler.style.removeProperty('top');
+    ruler.style.removeProperty('bottom');
+    ruler.style.removeProperty('height');
+  });
   const lastMessageTick = messageRuler.getByRole('button').last();
   await lastMessageTick.click();
   await expect.poll(() => page.locator('[data-user-event-id]').last().evaluate(message => {
