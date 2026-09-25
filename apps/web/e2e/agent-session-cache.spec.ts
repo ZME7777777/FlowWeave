@@ -94,6 +94,67 @@ test('Agent session hydrates the first screen without parallel Runtime snapshot 
 });
 
 
+test('Generated conversation title updates both the sidebar and current header', async ({ page }) => {
+  let authenticated = false;
+  let generated = false;
+  const workspace = {
+    id: 'generated-title-workspace', display_name: '自动标题工作区', desired_state: 'RUNNING', updated_at: now,
+  };
+  const initialConversation = {
+    id: 'generated-title-conversation', display_title: '原始标题', title_state: 'PENDING',
+    lifecycle: 'ACTIVE', streaming_callback_ready: true, write_available: true, execution_status: 'idle',
+    created_at: now, updated_at: now,
+  };
+  const generatedConversation = {
+    ...initialConversation, display_title: '自动生成的标题', title_state: 'GENERATED' as const,
+  };
+
+  await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path.endsWith('/auth/me')) return authenticated
+      ? json(route, user)
+      : json(route, { error: { code: 'AUTHENTICATION_REQUIRED', message: '请先登录' } }, 401);
+    if (path.endsWith('/auth/login') && request.method() === 'POST') { authenticated = true; return json(route, user); }
+    if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
+    if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
+    if (path.endsWith('/conversations') && request.method() === 'GET') {
+      return json(route, { items: [generated ? generatedConversation : initialConversation], next_cursor: null });
+    }
+    if (path.endsWith('/hydration')) return json(route, {
+      events: { events: [], next_cursor: null, history_cursor: null, result: { status: 'COMPLETED' } },
+      context: { model_name: 'test-model', window_tokens: 128_000, used_tokens: 0, usage_current: true },
+      readiness: { ready: true, execution_status: 'idle' },
+    });
+    if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
+    if (path.endsWith('/work-directories')) return json(route, {
+      root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [],
+    });
+    if (path.endsWith('/workspace')) return json(route, {
+      root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' },
+      working_directory: '/runtime/workspace/project', work_directory: null, files: [], repositories: [],
+      runtime: {}, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '不可用', note: '' } },
+    });
+    if (path.endsWith('/model-providers') || path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
+    if (path.includes('/conversations/') && request.method() === 'GET') return json(route, initialConversation);
+    return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+  });
+
+  await page.goto('/');
+  await login(page);
+  await page.goto('/agent/conversations/generated-title-conversation');
+  const sidebarConversation = page.locator('[data-conversation-binding-id="generated-title-conversation"]');
+  const headerTitle = page.locator('.agent-session-title');
+  await expect(sidebarConversation).toContainText('原始标题');
+  await expect(headerTitle).toHaveText('原始标题');
+
+  generated = true;
+  await expect(sidebarConversation).toContainText('自动生成的标题', { timeout: 5_000 });
+  await expect(headerTitle).toHaveText('自动生成的标题');
+});
+
+
 test('Completed conversation shows an explicit loading state without appearing to think', async ({ page }) => {
   let authenticated = false;
   let releaseHydration: (() => void) | undefined;
@@ -1583,8 +1644,15 @@ test('Background running conversations stay visible without blocking the convers
   await expect(backgroundRow.locator('.agent-workspace-conversation-running')).toHaveCount(0);
 
   releaseActivity?.();
-  await expect(backgroundRow.locator('.agent-workspace-conversation-running')).toBeVisible();
+  const runningIndicator = backgroundRow.locator('.agent-workspace-conversation-running');
+  await expect(runningIndicator).toBeVisible();
   await expect(selectedRow.locator('.agent-workspace-conversation-running')).toHaveCount(0);
+
+  await backgroundRow.getByRole('button', { name: '后台运行会话', exact: true }).click();
+  await expect(page).toHaveURL(/\/agent\/conversations\/background-running-conversation$/);
+  await expect(backgroundRow).toHaveClass(/active/);
+  await backgroundRow.hover();
+  await expect(runningIndicator).toBeVisible();
 });
 
 

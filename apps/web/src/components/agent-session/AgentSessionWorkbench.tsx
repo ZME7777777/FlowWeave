@@ -706,12 +706,13 @@ function WorkspaceConversationRow({
     window.addEventListener('resize', close);
     return () => { window.removeEventListener('pointerdown', close); window.removeEventListener('resize', close); };
   }, [contextMenu]);
-  return <div data-conversation-binding-id={item.id} className={`agent-workspace-conversation${dragging ? ' dragging' : ''}${dropPosition ? ` drop-${dropPosition}` : ''}${orderSyncState ? ` order-sync-${orderSyncState}` : ''}${reveal ? ' sidebar-reveal' : ''}`} onContextMenu={event => {
+  const selected = item.id === selectedBindingId;
+  return <div data-conversation-binding-id={item.id} className={`agent-workspace-conversation${selected ? ' active' : ''}${dragging ? ' dragging' : ''}${dropPosition ? ` drop-${dropPosition}` : ''}${orderSyncState ? ` order-sync-${orderSyncState}` : ''}${reveal ? ' sidebar-reveal' : ''}`} onContextMenu={event => {
     event.preventDefault();
     setContextMenu({ x: Math.min(event.clientX, window.innerWidth - 180), y: Math.min(event.clientY, window.innerHeight - 52) });
   }}>
     {onPointerDragStart && <button type="button" className="agent-workspace-conversation-drag" aria-label={`拖拽排序会话 ${conversationName(item)}`} title="拖拽调整当前工作区内的顺序" onClick={event => event.stopPropagation()} onPointerDown={onPointerDragStart}><GripVertical size={13}/></button>}
-    <button type="button" className={`agent-workspace-conversation-select${item.id === selectedBindingId ? ' active' : ''}`} aria-label={conversationName(item)} onClick={onSelect} onDoubleClick={onDoubleClick}>
+    <button type="button" className={`agent-workspace-conversation-select${selected ? ' active' : ''}`} aria-label={conversationName(item)} onClick={onSelect} onDoubleClick={onDoubleClick}>
       <CircleDot size={13}/><span><b>{conversationName(item)}</b>{workspaceName && <small title={workspaceName}><Folder size={11}/><span>{workspaceName}</span></small>}</span>
     </button>
     {showAlert && <CircleAlert className={`agent-workspace-conversation-alert${alertIsRunning ? ' running' : ''}`} role="img" aria-label={failed ? '会话异常结束' : '后台长时间未产生可确认进展'} size={14}/>}
@@ -4496,6 +4497,25 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     () => selectedConversationQuery.data ?? conversations.find(item => item.id === selectedBindingId),
     [conversations, selectedBindingId, selectedConversationQuery.data],
   );
+  useEffect(() => {
+    if (!workspace || !selectedBindingId) return;
+    const listedConversation = conversations.find(item => item.id === selectedBindingId);
+    if (!listedConversation) return;
+    const queryKey = sessionQueryKey(host, 'conversation', workspace.id, selectedBindingId);
+    queryClient.setQueryData<AgentConversation>(queryKey, current => {
+      if (!current || (
+        current.display_title === listedConversation.display_title
+        && current.title_state === listedConversation.title_state
+        && current.updated_at === listedConversation.updated_at
+      )) return current;
+      return {
+        ...current,
+        display_title: listedConversation.display_title,
+        title_state: listedConversation.title_state,
+        updated_at: listedConversation.updated_at,
+      };
+    });
+  }, [conversations, host, queryClient, selectedBindingId, workspace]);
   const activeHistoryScope = useRef<string | undefined>(selected?.id);
   activeHistoryScope.current = selected?.id;
   useEffect(() => setFilePreviewRequest(undefined), [conversationDraft?.id, selected?.id]);

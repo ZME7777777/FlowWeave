@@ -247,7 +247,7 @@ test('step configuration is saved before start and direct launch has its own tab
     }
     if (path === '/api/v1/node-attempts/saved-attempt/confirm-start' && request.method() === 'POST') {
       startBody = request.postDataJSON() as Record<string, unknown>;
-      const started = { ...currentStepRecord!.node_runs[0].attempts[0], state: 'EXECUTING', state_version: 2, runtime_phase: 'STARTING' };
+      const started = { ...currentStepRecord!.node_runs[0].attempts[0], state: 'EXECUTING', state_version: 2, runtime_phase: 'STARTING', binding_id: 'saved-node-binding' };
       currentStepRecord = { ...currentStepRecord!, node_runs: [{ ...currentStepRecord!.node_runs[0], attempts: [started] }] };
       return respond(started);
     }
@@ -322,12 +322,7 @@ test('step configuration is saved before start and direct launch has its own tab
     startup_mode: 'PROMPT',
     prompt: '读取流程输入并完成节点工作。',
   }));
-
-  await page.getByRole('tab', { name: '直接启动' }).click();
-  await expect(page.locator('.node-record-list > article')).toHaveCount(0);
-  await page.locator('.run-graph-node').filter({ hasText: '测试节点' }).filter({ hasNotText: '测试节点2' }).click();
-  await expect(page.locator('.node-console-mode-summary')).toContainText('直接启动');
-  await expect(page.getByRole('button', { name: '启动节点会话' })).toBeVisible();
+  await expect(page).toHaveURL(/\/flow-runs\/stepwise-record-1\/nodes\/saved-node-run\/attempts\/saved-attempt\/agent-sessions\/saved-node-binding$/);
 });
 
 test('stepwise record copy reuses the record selection and first-node configuration', async ({ page }) => {
@@ -953,7 +948,10 @@ test('run projection stays neutral until record selection and automatic save rep
     if (path === `/api/v1/flow-runs/${run.id}/stepwise-runs` && request.method() === 'GET') return respond([stepwiseRecord]);
     if (path === `/api/v1/flow-runs/${run.id}/stepwise-runs/${stepwiseRecord.id}` && request.method() === 'GET') return respond(stepwiseRecord);
     if (path === `/api/v1/flow-runs/${run.id}/automatic-runs/summaries` && request.method() === 'GET') return respond(automaticSummaries);
-    if (path === `/api/v1/flow-runs/${run.id}/automatic-runs/${automaticBase.id}` && request.method() === 'GET') return respond(frozenAutomaticBase);
+    if (path === `/api/v1/flow-runs/${run.id}/automatic-runs/${automaticBase.id}` && request.method() === 'GET') return respond({
+      ...frozenAutomaticBase,
+      row_version: saveRequests ? 2 : frozenAutomaticBase.row_version,
+    });
     if (path === '/api/v1/capabilities') return respond(capabilityCatalog);
     if (path === '/api/v1/capability-collections' || path === '/api/v1/model-providers') return respond([]);
     if (path === `/api/v1/flow-runs/${automaticBase.id}/nodes/first/input-artifacts` && request.method() === 'POST') return respond(inputArtifacts[0], 201);
@@ -961,10 +959,11 @@ test('run projection stays neutral until record selection and automatic save rep
     if (path === `/api/v1/flow-runs/${run.id}/automatic-runs/${automaticBase.id}` && request.method() === 'PUT') {
       saveRequests += 1;
       submittedBody = request.postDataJSON() as Record<string, unknown>;
-      if (saveRequests > 1) return respond({ error: { code: 'ILLEGAL_STATE_TRANSITION', message: '当前自动运行记录已启动，不能继续修改。', details: {} } }, 409);
+      if (saveRequests === 1) return respond({ error: { code: 'VERSION_CONFLICT', message: '记录版本已更新。', details: {} } }, 409);
+      if (saveRequests > 2) return respond({ error: { code: 'ILLEGAL_STATE_TRANSITION', message: '当前自动运行记录已启动，不能继续修改。', details: {} } }, 409);
       const plans = submittedBody.node_plans as Record<string, unknown>;
       return respond({
-        ...automaticBase, row_version: 2, artifacts: inputArtifacts,
+        ...automaticBase, row_version: 3, artifacts: inputArtifacts,
         automation_plan: {
           ...automaticBase.automation_plan, node_plans: plans,
           readiness: { ready: false, issues: [

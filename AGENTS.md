@@ -114,3 +114,5 @@ git -C /Users/zhengmengen/WorkSpace/openhands/software-agent-sdk-total-tokens-1.
 - 会话配置仅管理能力与认证；新会话和既有会话的模型、供应商及推理程度都在发送框中选择。
 - 已创建且可写、处于 idle 或 paused 的会话必须在 `/` 菜单提供“压缩上下文”；该操作只调用 OpenHands 原生 condense 控制接口，不得发送用户消息或创建乐观消息气泡。点击后的本地 pending 与持久任务投影仅用于立即反馈和刷新恢复，不能伪造普通 `execution_status=RUNNING`；最终历史展示与完成收口只认正式 `CONDENSATION_REQUESTED` / `CONDENSATION_COMPLETED` 事件。压缩期间输入保持可编辑，所有发送入口统一排入浏览器队列，禁止直接发送、重复压缩、展示暂停按钮或调用 interrupt。
 - 会话中的附件、工作区文件链接、候选输出文件和生成图片统一先在页面中央预览；工作区资源从预览弹窗显式跳转文件栏，不应在首次点击时直接展开侧栏。
+- 逐步节点启动的 `confirm-start` 会先原子预留 FlowNode `AgentConversationBinding`；Attempt 详情必须投影该 `binding_id`，前端收到成功响应后应以记录自身的 FlowRun ID、NodeRun ID、Attempt ID 和此 binding 打开节点会话，并同步失效逐步记录列表。不得通过猜测或等待 Runtime 的原生 conversation ID 来构造页面路由。
+- 连续运行草稿保存使用乐观锁 `expected_row_version`。前端遇到 `VERSION_CONFLICT` 时可仅对同一未启动草稿读取最新详情后，以用户当前编辑的严格写入载荷重试一次；不得回显详情中的冻结审计字段，也不得吞掉其他错误或无限重试。
