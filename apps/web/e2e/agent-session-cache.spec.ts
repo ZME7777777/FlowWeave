@@ -1205,6 +1205,8 @@ test('Agent composer retains each conversation draft and uploaded attachment acr
 
 test('New conversation draft remains isolated and can be resumed after switching', async ({ page }) => {
   let authenticated = false;
+  let uploadedDraftId: string | null = null;
+  let discardedDraftId: string | null = null;
   const workspace = { id: 'draft-race-workspace', display_name: '草稿竞态工作区', desired_state: 'RUNNING', updated_at: now };
   const conversations = ['draft-race-a', 'draft-race-b', 'draft-race-c'].map((id, index) => ({
     id, display_title: `竞态会话 ${String.fromCharCode(65 + index)}`, title_state: 'MANUAL',
@@ -1219,9 +1221,17 @@ test('New conversation draft remains isolated and can be resumed after switching
     if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
     if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
     if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: conversations, next_cursor: null });
-    if (path.endsWith('/attachments') && request.method() === 'POST') return json(route, {
-      filename: '新会话附件.txt', mime_type: 'text/plain', byte_size: 9, path: '/runtime/workspace/project/uploads/new-draft.txt',
-    });
+    if (path.endsWith('/attachments') && request.method() === 'POST') {
+      uploadedDraftId = new URL(request.url()).searchParams.get('conversation_id');
+      return json(route, {
+        filename: '新会话附件.txt', mime_type: 'text/plain', byte_size: 9,
+        path: `/runtime/workspace/project/uploads/${uploadedDraftId}-attachment--新会话附件.txt`,
+      });
+    }
+    if (path.includes('/draft-attachments/') && request.method() === 'DELETE') {
+      discardedDraftId = decodeURIComponent(path.split('/').at(-1)!);
+      return route.fulfill({ status: 204, body: '' });
+    }
     if (path.endsWith('/events')) return json(route, { events: [], next_cursor: null, history_cursor: null, result: { status: 'COMPLETED' } });
     if (path.endsWith('/work-directories')) return json(route, { root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [] });
     if (path.endsWith('/workspace')) return json(route, {
@@ -1274,6 +1284,67 @@ test('New conversation draft remains isolated and can be resumed after switching
   await expect(page.getByRole('heading', { name: '新会话' })).toBeVisible();
   await expect(composer).toHaveValue('');
   await expect(draftAttachment).toHaveCount(0);
+  await expect(recoverDraft).toHaveCount(0);
+  await expect.poll(() => discardedDraftId).toBe(uploadedDraftId);
+});
+
+test('First message removes the matching recoverable draft from the conversation rail', async ({ page }) => {
+  let authenticated = false;
+  let createdConversation: Record<string, unknown> | undefined;
+  const workspace = { id: 'draft-bootstrap-workspace', display_name: '草稿发送工作区', desired_state: 'RUNNING', updated_at: now };
+  await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path.endsWith('/auth/me')) return authenticated ? json(route, user) : json(route, { error: { code: 'AUTHENTICATION_REQUIRED', message: '请先登录' } }, 401);
+    if (path.endsWith('/auth/login') && request.method() === 'POST') { authenticated = true; return json(route, user); }
+    if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
+    if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
+    if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: createdConversation ? [createdConversation] : [], next_cursor: null });
+    if (path.endsWith('/conversations') && request.method() === 'POST') {
+      const payload = JSON.parse(request.postData() ?? '{}') as { conversation_id: string };
+      createdConversation = {
+        id: payload.conversation_id, display_title: '发送草稿', title_state: 'PENDING', lifecycle: 'ACTIVE',
+        model_provider_id: 'draft-bootstrap-provider', model_name: 'draft-bootstrap-model', reasoning_effort: null,
+        streaming_callback_ready: true, write_available: true, execution_status: 'running', created_at: now, updated_at: now,
+      };
+      return json(route, { conversation: createdConversation, accepted: true, cursor: 'draft-bootstrap-event' }, 201);
+    }
+    if (/\/conversations\/[^/]+$/.test(path) && request.method() === 'GET') return json(route, createdConversation);
+    if (path.endsWith('/events')) return json(route, {
+      events: [{ id: 'draft-bootstrap-event', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '发送这个草稿', timestamp: now } }],
+      next_cursor: 'draft-bootstrap-event', history_cursor: null, result: { status: 'RUNNING' },
+    });
+    if (path.endsWith('/work-directories')) return json(route, { root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [] });
+    if (path.endsWith('/workspace')) return json(route, {
+      root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: '/runtime/workspace/project', work_directory: null, files: [], repositories: [], runtime: {}, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '不可用', note: '' } },
+    });
+    if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
+    if (path.endsWith('/input-readiness')) return json(route, { ready: false, execution_status: 'running' });
+    if (path.endsWith('/context')) return json(route, { model_name: 'draft-bootstrap-model', window_tokens: 128_000, used_tokens: 0, usage_current: true });
+    if (path.endsWith('/model-providers')) return json(route, [{ id: 'draft-bootstrap-provider', name: '草稿模型', connection_state: 'CONNECTED', models: [{ model_name: 'draft-bootstrap-model', enabled: true, is_default: true }] }]);
+    if (path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
+    return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+  });
+
+  await page.goto('/');
+  await login(page);
+  const draftId = '10000000-0000-4000-8000-000000000099';
+  await page.evaluate(({ key, value }) => localStorage.setItem(key, JSON.stringify(value)), {
+    key: `flowweave:agent-conversation-draft:v2:agent-workspace:${workspace.id}:root`,
+    value: {
+      draft: { id: draftId, displayName: '根工作区', capabilityVersionIds: [] },
+      content: '发送这个草稿', attachments: [], references: [], workspaceReferences: [], annotations: [],
+      providerId: 'draft-bootstrap-provider', modelName: 'draft-bootstrap-model', reasoningEffort: null,
+    },
+  });
+  await page.goto('/agent');
+  const recoverDraft = page.getByRole('button', { name: '恢复根工作区的未发送草稿' });
+  await expect(recoverDraft).toBeVisible();
+  await recoverDraft.click();
+  await page.getByLabel('发送消息').click();
+
+  await expect.poll(() => createdConversation?.id).toBeTruthy();
   await expect(recoverDraft).toHaveCount(0);
 });
 

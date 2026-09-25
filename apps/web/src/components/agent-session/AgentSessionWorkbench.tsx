@@ -1541,16 +1541,18 @@ function mergeConversationEvent(
     next[index] = { ...items[index], ...attachment, image_data_url: attachment.image_data_url ?? items[index].image_data_url };
     return next;
   }, []);
-  return {
+  const details = { ...current.payload.details, ...incoming.payload.details };
+  const merged = {
     ...current,
     ...incoming,
     payload: {
       ...current.payload,
       ...incoming.payload,
       ...(attachments.length ? { attachments } : {}),
-      details: { ...current.payload.details, ...incoming.payload.details },
+      ...(Object.keys(details).length ? { details } : {}),
     },
   };
+  return JSON.stringify(current) === JSON.stringify(merged) ? current : merged;
 }
 
 function mergeConversationEvents(
@@ -1563,6 +1565,36 @@ function mergeConversationEvents(
     merged.set(event.id, current ? mergeConversationEvent(current, event) : event);
   }
   return [...merged.values()];
+}
+
+function sameConversationPresentation(
+  current: OpenHandsConversationEventBatch,
+  next: OpenHandsConversationEventBatch,
+): boolean {
+  if (current.events.length !== next.events.length
+    || current.events.some((event, index) => event !== next.events[index])) return false;
+  return JSON.stringify({
+    next_cursor: current.next_cursor,
+    history_cursor: current.history_cursor,
+    result: current.result,
+    task_usage: current.task_usage,
+    task_control: current.task_control,
+    possibly_stuck: current.monitoring?.possibly_stuck,
+  }) === JSON.stringify({
+    next_cursor: next.next_cursor,
+    history_cursor: next.history_cursor,
+    result: next.result,
+    task_usage: next.task_usage,
+    task_control: next.task_control,
+    possibly_stuck: next.monitoring?.possibly_stuck,
+  });
+}
+
+function retainConversationPresentation(
+  current: OpenHandsConversationEventBatch,
+  next: OpenHandsConversationEventBatch,
+): OpenHandsConversationEventBatch {
+  return sameConversationPresentation(current, next) ? current : next;
 }
 
 function projectLocalMessages(
@@ -4256,6 +4288,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const [activityPreviewBindingId, setActivityPreviewBindingId] = useState<string>();
   const [sidebarRevealBindingId, setSidebarRevealBindingId] = useState<string>();
   const attachmentInput = useRef<HTMLInputElement>(null);
+  const discardedDraftScopes = useRef(new Set<string>());
   const titleInput = useRef<HTMLInputElement>(null);
   const workspacePathCopyTimer = useRef<number | undefined>(undefined);
   const pendingLiveEvents = useRef<ScopedConversationEvent[]>([]);
@@ -5055,17 +5088,16 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       // an instruction to clear already-rendered activity. Keep identities we
       // have read during this turn and let the newest REST payload refresh the
       // matching events' persisted fields.
-      return current
-        ? {
-            ...current,
-            ...latest,
-            events: mergeConversationEvents(current.events, latest.events),
-            history_cursor: latest.history_cursor
-              && exhaustedHistoryCursors.current.get(selected!.id) === latest.history_cursor
-              ? null
-              : (current.history_cursor ?? latest.history_cursor),
-          }
-        : latest;
+      if (!current) return latest;
+      return retainConversationPresentation(current, {
+        ...current,
+        ...latest,
+        events: mergeConversationEvents(current.events, latest.events),
+        history_cursor: latest.history_cursor
+          && exhaustedHistoryCursors.current.get(selected!.id) === latest.history_cursor
+          ? null
+          : (current.history_cursor ?? latest.history_cursor),
+      });
     },
     // Native event reads begin at the current leaf. A trusted revisit keeps its
     // existing projection; running recovery below performs the latest-window
@@ -5107,7 +5139,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
               // cursor while this read was in flight. Never move that progress
               // backwards merely because this older request completed later.
               const cursorUnchanged = existing.next_cursor === cursor;
-              return {
+              return retainConversationPresentation(existing, {
                 ...existing,
                 ...incoming,
                 events: mergeConversationEvents(existing.events, incoming.events),
@@ -5118,7 +5150,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
                   && exhaustedHistoryCursors.current.get(scope) === incoming.history_cursor
                   ? null
                   : (existing.history_cursor ?? incoming.history_cursor),
-              };
+              });
             })()
           : incoming,
         );
@@ -5874,6 +5906,17 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     if (value.cursor) releaseDeferredFormalUserEvents(conversation.id);
     setPendingBootstrap(undefined);
     setConversationDraft(undefined);
+    const draftKey = message.scope === conversationDraft?.id
+      ? conversationDraft.workDirectoryId ?? 'root'
+      : undefined;
+    if (draftKey) {
+      setRecoverableConversationDrafts(current => {
+        if (!current[draftKey]) return current;
+        const updated = { ...current };
+        delete updated[draftKey];
+        return updated;
+      });
+    }
     clearConversationDraft();
     clearBootstrapRecovery();
     setOperationError(undefined);
@@ -6233,11 +6276,22 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       reportOperationError(message.scope, error);
     },
   });
-  const upload = useMutation({ mutationFn: ({ file }: { file: File; scope: string }) => selected
-    ? api.uploadConversationAttachment(workspace!.id, selected.id, file)
-    : api.uploadDraftAttachment(workspace!.id, file, conversationDraft?.workDirectoryId, conversationDraft?.id), onSuccess: (value, request) => {
+  const discardDraftAttachments = useCallback((scope: string) => {
+    if (!workspace) return;
+    discardedDraftScopes.current.add(scope);
+    void api.deleteDraftAttachments(workspace.id, scope).catch(() => undefined);
+  }, [api, workspace]);
+  const upload = useMutation({ mutationFn: ({ file, scope, bindingId, workDirectoryId }: { file: File; scope: string; bindingId?: string; workDirectoryId?: string }) => bindingId
+    ? api.uploadConversationAttachment(workspace!.id, bindingId, file)
+    : api.uploadDraftAttachment(workspace!.id, file, workDirectoryId, scope), onSuccess: (value, request) => {
+    if (discardedDraftScopes.current.has(request.scope)) {
+      if (workspace) void api.deleteDraftAttachments(workspace.id, request.scope, value.path).catch(() => undefined);
+      return;
+    }
     if (activeComposerScope.current === request.scope) setAttachments(items => [...items, value]);
-  }, onError: (error, request) => reportOperationError(request.scope, error) });
+  }, onError: (error, request) => {
+    if (!discardedDraftScopes.current.has(request.scope)) reportOperationError(request.scope, error);
+  } });
   const fork = useMutation({ mutationFn: (eventId: string) => api.forkConversation(workspace!.id, selected!.id, eventId), onSuccess: value => {
     if (!workspace) return;
     setPendingCreatedId(value.id);
@@ -6430,6 +6484,11 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     } else {
       if (workspace) writeConversationDraft(conversationDraftStorageKey(host.id, workspace.id, next.workDirectoryId), undefined);
       const draftKey = next.workDirectoryId ?? 'root';
+      const activeDraftId = conversationDraft && (conversationDraft.workDirectoryId ?? 'root') === draftKey
+        ? conversationDraft.id
+        : undefined;
+      const discardedDraftId = activeDraftId ?? recoverableConversationDrafts[draftKey]?.draft.id;
+      if (discardedDraftId) discardDraftAttachments(discardedDraftId);
       setRecoverableConversationDrafts(current => {
         if (!current[draftKey]) return current;
         const updated = { ...current };
@@ -6456,7 +6515,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     setHiddenEventIds(new Set());
     setTurnState('idle');
     onNavigate(host.rootPath);
-  }, [clearBootstrapRecovery, conversationDraft, host.id, host.rootPath, onNavigate, persistComposerDraft, replaceComposerDraft, updateLocalMessageProjections, workspace]);
+  }, [clearBootstrapRecovery, conversationDraft, discardDraftAttachments, host.id, host.rootPath, onNavigate, persistComposerDraft, recoverableConversationDrafts, replaceComposerDraft, updateLocalMessageProjections, workspace]);
   useEffect(() => {
     if (!autoOpenDraft || !workspace || selectedBindingId || conversationDraft) return;
     openConversationDraft({ displayName: '根工作区' }, { restoreRecovery: true });
@@ -7041,14 +7100,14 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
             </article>;
           })}
         </section>}
-        <ComposerCapabilityAutocomplete key={composerScope ?? 'composer'} ref={composerRef} initialDraft={composerDraftRef.current} scope={composerScope} suggestions={visibleComposerSuggestions} placeholder={pendingConfirmation ? '请先处理上方工具确认…' : selectedCondensing ? '可继续输入，发送后将排队…' : '给 Agent 发消息…'} disabled={!canCompose || Boolean(pendingConfirmation) || bootstrap.isPending || migrateStreaming.isPending || Boolean(pendingMigratedSend) || conversationActivity.state === 'pausing' || conversationActivity.state === 'resuming'} onDraftChange={setComposerDraft} onContentPresenceChange={onComposerContentPresenceChange} onDraftPersist={persistComposerDraft} onPaste={event => { if (!features.attachments || !composerScope) return; const files = transferredFiles(event.clipboardData); if (!files.length) return; event.preventDefault(); for (const file of files) upload.mutate({ file, scope: composerScope }); }} onDropFiles={features.attachments && composerScope ? files => { for (const file of files) upload.mutate({ file, scope: composerScope }); } : undefined} onDropWorkspaceFiles={paths => setWorkspaceReferences(current => [...current, ...paths.flatMap(path => current.some(reference => reference.path === path) ? [] : [{ path, kind: 'file' as const, display_name: path.split('/').filter(Boolean).pop() ?? path }])])} onSubmit={enqueueDraft} onDirectSubmit={sendDraftDirectly} onManageCapabilities={features.capabilities && (selected || features.draftCapabilitySelection) ? () => setCapabilityManagerOpen(true) : undefined} onNativeAction={action => { if (action === 'CONDENSE' && canCondense && !condense.isPending && workspace && selected) condense.mutate({ workspaceId: workspace.id, bindingId: selected.id }); }} onWorkspaceReferenceSelected={() => { setWorkspaceReferenceQuery(''); setWorkspaceReferencePickerOpen(true); }}/>
-        {features.attachments && attachments.length > 0 && <div className="agent-attachments">{attachments.map(item => <span key={item.path}><button type="button" className="agent-attachment-open" title={`预览附件：${item.filename}`} onClick={() => previewAttachment(item)}>{item.image_data_url && <img src={item.image_data_url} alt=""/>}<em>{item.filename}</em></button><button type="button" className="agent-attachment-remove" aria-label={`移除附件 ${item.filename}`} onClick={() => setAttachments(all => all.filter(candidate => candidate.path !== item.path))}>×</button></span>)}</div>}
+        <ComposerCapabilityAutocomplete key={composerScope ?? 'composer'} ref={composerRef} initialDraft={composerDraftRef.current} scope={composerScope} suggestions={visibleComposerSuggestions} placeholder={pendingConfirmation ? '请先处理上方工具确认…' : selectedCondensing ? '可继续输入，发送后将排队…' : '给 Agent 发消息…'} disabled={!canCompose || Boolean(pendingConfirmation) || bootstrap.isPending || migrateStreaming.isPending || Boolean(pendingMigratedSend) || conversationActivity.state === 'pausing' || conversationActivity.state === 'resuming'} onDraftChange={setComposerDraft} onContentPresenceChange={onComposerContentPresenceChange} onDraftPersist={persistComposerDraft} onPaste={event => { if (!features.attachments || !composerScope) return; const files = transferredFiles(event.clipboardData); if (!files.length) return; event.preventDefault(); for (const file of files) upload.mutate({ file, scope: composerScope, bindingId: selected?.id, workDirectoryId: conversationDraft?.workDirectoryId }); }} onDropFiles={features.attachments && composerScope ? files => { for (const file of files) upload.mutate({ file, scope: composerScope, bindingId: selected?.id, workDirectoryId: conversationDraft?.workDirectoryId }); } : undefined} onDropWorkspaceFiles={paths => setWorkspaceReferences(current => [...current, ...paths.flatMap(path => current.some(reference => reference.path === path) ? [] : [{ path, kind: 'file' as const, display_name: path.split('/').filter(Boolean).pop() ?? path }])])} onSubmit={enqueueDraft} onDirectSubmit={sendDraftDirectly} onManageCapabilities={features.capabilities && (selected || features.draftCapabilitySelection) ? () => setCapabilityManagerOpen(true) : undefined} onNativeAction={action => { if (action === 'CONDENSE' && canCondense && !condense.isPending && workspace && selected) condense.mutate({ workspaceId: workspace.id, bindingId: selected.id }); }} onWorkspaceReferenceSelected={() => { setWorkspaceReferenceQuery(''); setWorkspaceReferencePickerOpen(true); }}/>
+        {features.attachments && attachments.length > 0 && <div className="agent-attachments">{attachments.map(item => <span key={item.path}><button type="button" className="agent-attachment-open" title={`预览附件：${item.filename}`} onClick={() => previewAttachment(item)}>{item.image_data_url && <img src={item.image_data_url} alt=""/>}<em>{item.filename}</em></button><button type="button" className="agent-attachment-remove" aria-label={`移除附件 ${item.filename}`} onClick={() => { setAttachments(all => all.filter(candidate => candidate.path !== item.path)); if (conversationDraft && workspace) void api.deleteDraftAttachments(workspace.id, conversationDraft.id, item.path).catch(() => undefined); }}>×</button></span>)}</div>}
         {references.length > 0 && <div className="agent-attachments agent-conversation-references" aria-label="已添加的会话引用">{references.map((reference, index) => <span key={`${reference.eventId}:${reference.content}`}><span className="agent-attachment-open" title={reference.content}><Quote size={14}/><em>{`会话引用 ${index + 1}`}</em></span><button type="button" className="agent-attachment-remove" aria-label={`移除会话引用 ${index + 1}`} onClick={() => setReferences(current => current.filter(item => item !== reference))}>×</button></span>)}</div>}
         {(selected || conversationDraft) && <ComposerAnnotationList annotations={composerAnnotations} onLocate={locateAnnotation} onRemove={annotation => setComposerAnnotations(current => current.filter(item => item.id !== annotation.id))} onUpdate={(annotation, comment) => void updateAnnotation(annotation, comment)}/>}
         {workspaceReferences.length > 0 && <div className="agent-attachments agent-workspace-references" aria-label="已添加的工作区引用">{workspaceReferences.map(reference => <span key={workspaceReferenceKey(reference)} title={reference.path}><span className="agent-attachment-open">{reference.kind === 'directory' ? <Folder size={14}/> : <FileCode2 size={14}/>}<em><b>{reference.display_name}</b><small>{workspaceReferenceLabel(reference)}</small></em></span><button type="button" className="agent-attachment-remove" aria-label={'移除工作区引用 ' + reference.display_name} onClick={() => setWorkspaceReferences(current => current.filter(item => workspaceReferenceKey(item) !== workspaceReferenceKey(reference)))}>×</button></span>)}</div>}
         <footer>
           <div className="agent-composer-context">
-            {features.attachments && (selected || conversationDraft) && <><input ref={attachmentInput} aria-label="上传附件" type="file" multiple hidden onChange={event => { if (composerScope) for (const file of Array.from(event.target.files ?? [])) upload.mutate({ file, scope: composerScope }); event.currentTarget.value = ''; }}/><button type="button" aria-label="添加附件" disabled={!canCompose || Boolean(pendingConfirmation) || upload.isPending} onClick={() => attachmentInput.current?.click()}><Plus size={17}/></button></>}
+            {features.attachments && (selected || conversationDraft) && <><input ref={attachmentInput} aria-label="上传附件" type="file" multiple hidden onChange={event => { if (composerScope) for (const file of Array.from(event.target.files ?? [])) upload.mutate({ file, scope: composerScope, bindingId: selected?.id, workDirectoryId: conversationDraft?.workDirectoryId }); event.currentTarget.value = ''; }}/><button type="button" aria-label="添加附件" disabled={!canCompose || Boolean(pendingConfirmation) || upload.isPending} onClick={() => attachmentInput.current?.click()}><Plus size={17}/></button></>}
             {selected && (contextProgress ? <span className="agent-context-progress token" title={contextTitle} aria-label={`Token 上下文用量 ${contextProgress.percentage}%`}><i style={{ '--context-progress': `${contextProgress.percentage}%` } as CSSProperties}/><em><small>Token</small>{contextProgress.usedLabel} / {contextProgress.windowLabel}</em></span> : <span className="agent-context-progress token pending" title={tokenPendingTitle} aria-label={`Token 上下文用量${tokenPendingLabel}`}><i style={{ '--context-progress': '0%' } as CSSProperties}/><em><small>Token</small>{tokenPendingLabel}</em></span>)}
             {selected && (hasCurrentViewEventCount && eventProgress !== undefined ? <span className="agent-context-progress activity events" title={activityTitle} aria-label={`OpenHands 当前活动 View 事件 ${currentViewEventCount} 条，自动压缩阈值 ${eventLimit} 条`}><i style={{ '--context-progress': `${eventProgress}%` } as CSSProperties}/><em><small>事件</small>{exactCount(currentViewEventCount)} / {exactCount(eventLimit)}</em></span> : <span className="agent-context-progress activity events pending" title={eventPendingTitle} aria-label={`事件上下文用量${eventPendingLabel}`}><i style={{ '--context-progress': '0%' } as CSSProperties}/><em><small>事件</small>{eventPendingLabel}</em></span>)}
             <span className="agent-composer-status agent-composer-status-slot" aria-hidden={!composerStatus}>{composerStatus}</span>

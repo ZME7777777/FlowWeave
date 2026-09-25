@@ -1263,6 +1263,35 @@ async def upload_node_draft_attachment(
     )
 
 
+@router.delete(f"{_BASE}/draft-attachments/{{conversation_id}}", status_code=204)
+async def delete_node_draft_attachments(
+    flow_run_id: str,
+    attempt_id: str,
+    conversation_id: str,
+    db: Db,
+    path: str | None = Query(default=None),
+) -> Response:
+    await run_sync(
+        db,
+        lambda session: agent_sessions.flow_node_conversations.delete_node_draft_attachment(
+            session,
+            flow_run_id=flow_run_id,
+            attempt_id=attempt_id,
+            owner_id=conversation_id,
+            path=path,
+        )
+        if path
+        else agent_sessions.flow_node_conversations.delete_node_draft_attachments(
+            session,
+            flow_run_id=flow_run_id,
+            attempt_id=attempt_id,
+            owner_id=conversation_id,
+        ),
+    )
+    return Response(status_code=204)
+
+
+
 @router.post(f"{_BASE}/{{binding_id}}/interrupt", status_code=202)
 async def interrupt_node_session(
     flow_run_id: str, attempt_id: str, binding_id: str, db: Db

@@ -1735,6 +1735,43 @@ def test_agent_workspace_allows_only_bound_conversation_attachments_outside_scop
         assert not upload_path.exists()
 
 
+def test_discarding_agent_workspace_draft_deletes_only_its_private_attachments(
+    settings, db_session_factory
+):
+    with settings_context(settings), db_session_factory() as db:
+        item = _ready_workspace_for_conversation(db)
+        project_root = _agent_project_root(settings, db, item)
+        uploads = project_root / "uploads"
+        uploads.mkdir()
+        owner_id = str(uuid4())
+        other_owner_id = str(uuid4())
+        owned = uploads / f"{owner_id}-{'a' * 32}--draft.png"
+        other = uploads / f"{other_owner_id}-{'b' * 32}--other.png"
+        owned.write_bytes(b"draft")
+        other.write_bytes(b"other")
+
+        assert conversations.delete_draft_attachments(db, item.id, owner_id) == 1
+        assert not owned.exists()
+        assert other.exists()
+        assert conversations.delete_draft_attachments(db, item.id, owner_id) == 0
+
+
+def test_discarding_agent_workspace_draft_refuses_a_created_conversation(
+    settings, db_session_factory
+):
+    with settings_context(settings), db_session_factory() as db:
+        item = _ready_workspace_for_conversation(db)
+        created = conversations.create_conversation(
+            db, item.id, None, item.default_model_provider_id, "created-draft-owner"
+        )
+
+        with pytest.raises(DomainError) as caught:
+            conversations.delete_draft_attachments(db, item.id, created["id"])
+
+        assert caught.value.code == "AGENT_DRAFT_ALREADY_CREATED"
+
+
+
 def test_deleting_work_directory_cascades_its_conversations(settings, db_session_factory):
     with settings_context(settings), db_session_factory() as db, runtime_context(MockRuntime()):
         item = _ready_workspace_for_conversation(db)

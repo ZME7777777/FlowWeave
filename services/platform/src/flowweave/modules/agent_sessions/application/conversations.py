@@ -34,6 +34,11 @@ from flowweave.modules.agent_sessions.application.credential_sync import (
     synchronize_credentials,
 )
 from flowweave.modules.agent_sessions.application.deletion import delete_binding_records
+from flowweave.modules.agent_sessions.application.draft_attachments import (
+    assert_attachment_owner_unbound,
+    delete_owned_attachment_files,
+    enqueue_draft_attachment_cleanup,
+)
 from flowweave.modules.agent_sessions.application.event_branch import (
     complete_active_branch,
 )
@@ -3023,6 +3028,35 @@ def _record_message_attachments(
         db.flush()
 
 
+def delete_draft_attachments(db: Session, workspace_id: str, owner_id: str) -> int:
+    workspace = _workspace(db, workspace_id)
+    owner = assert_attachment_owner_unbound(
+        db, owner_id, host_kind="AGENT_WORKSPACE", host_id=workspace.id
+    )
+    return delete_owned_attachment_files(
+        agent_workspace_host.agent_workspace_record_path(db, workspace.id),
+        user_runtime_project_root(workspace.id),
+        owner,
+    )
+
+
+def delete_draft_attachment(
+    db: Session, workspace_id: str, owner_id: str, path: str
+) -> bool:
+    workspace = _workspace(db, workspace_id)
+    owner = assert_attachment_owner_unbound(
+        db, owner_id, host_kind="AGENT_WORKSPACE", host_id=workspace.id
+    )
+    return bool(
+        delete_owned_attachment_files(
+            agent_workspace_host.agent_workspace_record_path(db, workspace.id),
+            user_runtime_project_root(workspace.id),
+            owner,
+            path=path,
+        )
+    )
+
+
 def upload_attachment(
     db: Session,
     workspace_id: str,
@@ -3077,6 +3111,14 @@ def upload_attachment(
         or matched_path.group("workspace_root") != handle.workspace_root
     ):
         raise DomainError("RUNTIME_PROTOCOL_ERROR", "OpenHands 返回了无效附件路径", 502)
+    if bound_conversation is None:
+        enqueue_draft_attachment_cleanup(
+            db,
+            host_kind="AGENT_WORKSPACE",
+            host_id=workspace.id,
+            owner_id=owner_id,
+            path=path,
+        )
     # A conversation-bound upload is safe to preview before the user sends it.
     # Persist a pending projection so the file endpoint can authorize this exact
     # opaque upload path without exposing the shared uploads directory.  A
