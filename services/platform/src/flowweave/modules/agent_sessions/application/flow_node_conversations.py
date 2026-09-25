@@ -818,9 +818,7 @@ def list_node_session_views(
     return [_node_session_dict(db, item) for item in items]
 
 
-def node_session_activity(
-    db: Session, *, flow_run_id: str, attempt_id: str
-) -> dict[str, Any]:
+def node_session_activity(db: Session, *, flow_run_id: str, attempt_id: str) -> dict[str, Any]:
     """Map one native running snapshot to authorized node-session binding IDs."""
 
     agent_sessions.resolve_flow_node_session_host(
@@ -851,16 +849,18 @@ def node_session_activity(
             "running_binding_ids": [],
             "condensing_binding_ids": [],
             "condensation_failed_binding_ids": [],
+            "possibly_stuck_binding_ids": [],
+            "failed_binding_ids": [],
         }
     binding_ids = {item.id for item in bindings}
-    running_native_ids = get_runtime().running_conversation_ids(
-        _node_handle(
-            db,
-            flow_run_id=flow_run_id,
-            attempt_id=attempt_id,
-            binding_id=bindings[0].id,
-        )
+    runtime = get_runtime()
+    handle = _node_handle(
+        db,
+        flow_run_id=flow_run_id,
+        attempt_id=attempt_id,
+        binding_id=bindings[0].id,
     )
+    running_native_ids = runtime.running_conversation_ids(handle)
     condensation_tasks = list(
         db.execute(
             select(BackgroundTask.aggregate_id, BackgroundTask.id, BackgroundTask.state)
@@ -3469,9 +3469,7 @@ def condense_node_conversation(
         binding_id=binding_id,
         lock=True,
     )
-    task = enqueue_manual_condensation(
-        db, binding_id=binding.id, idempotency_key=idempotency_key
-    )
+    task = enqueue_manual_condensation(db, binding_id=binding.id, idempotency_key=idempotency_key)
     return {"accepted": True, "task_id": task.id}
 
 

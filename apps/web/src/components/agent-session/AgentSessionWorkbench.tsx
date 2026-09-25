@@ -4368,6 +4368,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   );
   const condensationTasks = useMemo(
     () => new Map((conversationActivityQuery.data?.condensation_tasks ?? []).map(task => [task.binding_id, task])),
+    [conversationActivityQuery.data],
+  );
   const possiblyStuckConversationIds = useMemo(
     () => new Set(conversationActivityQuery.data?.possibly_stuck_binding_ids ?? []),
     [conversationActivityQuery.data],

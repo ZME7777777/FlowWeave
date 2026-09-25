@@ -771,9 +771,13 @@ def conversation_activity(db: Session, workspace_id: str) -> dict[str, Any]:
             "running_binding_ids": [],
             "condensing_binding_ids": [],
             "condensation_failed_binding_ids": [],
+            "possibly_stuck_binding_ids": [],
+            "failed_binding_ids": [],
         }
     binding_ids = {item.id for item in bindings}
-    running_native_ids = get_runtime().running_conversation_ids(_handle(db, workspace, bindings[0]))
+    runtime = get_runtime()
+    handle = _handle(db, workspace, bindings[0])
+    running_native_ids = runtime.running_conversation_ids(handle)
     condensation_tasks = list(
         db.execute(
             select(BackgroundTask.aggregate_id, BackgroundTask.id, BackgroundTask.state)
@@ -3473,9 +3477,7 @@ def condense_conversation(
 
     _workspace(db, workspace_id)
     binding = _binding(db, workspace_id, binding_id, lock=True)
-    task = enqueue_manual_condensation(
-        db, binding_id=binding.id, idempotency_key=idempotency_key
-    )
+    task = enqueue_manual_condensation(db, binding_id=binding.id, idempotency_key=idempotency_key)
     return {"accepted": True, "task_id": task.id}
 
 
