@@ -334,8 +334,8 @@ export const api = {
     request<AgentConversation>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}`),
   updateAgentConversation: (workspaceId: string, bindingId: string, title: string) =>
     request<AgentConversation>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}`, json('PATCH', { title })),
-  setAgentConversationUnread: (workspaceId: string, bindingId: string, unread: boolean) =>
-    request<AgentConversation>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/unread`, json('PUT', { unread })),
+  setAgentConversationUnread: (workspaceId: string, bindingId: string, unread: boolean, unread_origin?: 'MANUAL' | 'SYSTEM') =>
+    request<AgentConversation>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/unread`, json('PUT', { unread, unread_origin })),
   reorderAgentConversation: (workspaceId: string, bindingId: string, ordered_binding_ids: string[]) =>
     request<AgentConversation>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/order`, json('POST', { ordered_binding_ids })),
   deleteAgentConversation: (workspaceId: string, bindingId: string) =>
@@ -882,8 +882,8 @@ export const nodeSessionApi = {
     request<import('../types').AgentConversation>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}`),
   update: (flowRunId: string, attemptId: string, bindingId: string, title: string) =>
     request<import('../types').AgentConversation>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}`, json('PATCH', { title })),
-  setUnread: (flowRunId: string, attemptId: string, bindingId: string, unread: boolean) =>
-    request<import('../types').AgentConversation>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/unread`, json('PUT', { unread })),
+  setUnread: (flowRunId: string, attemptId: string, bindingId: string, unread: boolean, unread_origin?: 'MANUAL' | 'SYSTEM') =>
+    request<import('../types').AgentConversation>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/unread`, json('PUT', { unread, unread_origin })),
   events: (flowRunId: string, attemptId: string, bindingId: string, cursor?: string, historyCursor?: string, diagnosticTrigger?: string) => {
     const query = new URLSearchParams();
     if (cursor) query.set('cursor', cursor);

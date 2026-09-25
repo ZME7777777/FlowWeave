@@ -2563,14 +2563,27 @@ def test_node_session_unread_state_persists_in_conversation_projection(
             attempt_id=attempt_id,
             binding_id=binding.id,
             unread=True,
+            unread_origin="MANUAL",
         )
         page = conversation_service.list_node_session_page(
             db, flow_run_id=flow_run_id, attempt_id=attempt_id
         )
 
         assert marked["unread"] is True
+        assert marked["unread_origin"] == "MANUAL"
         assert binding.updated_at == updated_at
         assert page["items"][0]["unread"] is True
+        assert page["items"][0]["unread_origin"] == "MANUAL"
+
+        system_marked = conversation_service.set_node_session_unread(
+            db,
+            flow_run_id=flow_run_id,
+            attempt_id=attempt_id,
+            binding_id=binding.id,
+            unread=True,
+            unread_origin="SYSTEM",
+        )
+        assert system_marked["unread_origin"] == "SYSTEM"
 
         cleared = conversation_service.set_node_session_unread(
             db,
@@ -2580,6 +2593,7 @@ def test_node_session_unread_state_persists_in_conversation_projection(
             unread=False,
         )
         assert cleared["unread"] is False
+        assert cleared["unread_origin"] is None
 
 
 def test_node_workspace_projection_shares_project_across_node_attempts(

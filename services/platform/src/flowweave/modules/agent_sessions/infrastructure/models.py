@@ -65,6 +65,10 @@ class AgentConversationBinding(Base):
             name="ck_agent_conversation_title_state",
         ),
         CheckConstraint("title_generation >= 1", name="ck_agent_conversation_title_generation"),
+        CheckConstraint(
+            "unread_origin IS NULL OR unread_origin IN ('MANUAL', 'SYSTEM')",
+            name="ck_agent_conversation_unread_origin",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
@@ -106,6 +110,9 @@ class AgentConversationBinding(Base):
     # a workspace-local explicit rank.
     manual_sort_rank: Mapped[Decimal | None] = mapped_column(Numeric(30, 12))
     unread: Mapped[bool] = mapped_column(Boolean, default=False)
+    # The unread bit remains the server-owned fact; the origin only determines
+    # whether a system abnormality may replace its ordinary blue presentation.
+    unread_origin: Mapped[str | None] = mapped_column(String(20))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
     last_connected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

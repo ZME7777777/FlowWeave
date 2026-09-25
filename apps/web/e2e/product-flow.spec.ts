@@ -1012,6 +1012,10 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   // `error` terminal state. The browser must not retain a running UI from the
   // prior state (spinner, "正在处理", and the stop button).
   modelIsResponding = true;
+  await page.reload();
+  const stalledStatus = page.locator('.conversation-turn-status').filter({ hasText: '后台长时间未产生可确认进展' });
+  await expect(stalledStatus).toBeVisible();
+  await expect(stalledStatus.getByRole('img', { name: '会话正在运行但后台长时间未产生可确认进展' })).toBeVisible();
   emptyResponseRecovery = true;
   await page.reload();
   // OpenHands 1.47 persists an empty Agent Message and an environment
@@ -1019,6 +1023,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   // end the turn or clear one of the two running indicators.
   const emptyResponseStatus = page.locator('.conversation-turn-status').filter({ hasText: '模型返回空响应，OpenHands 正在自动重试' });
   await expect(emptyResponseStatus).toBeVisible();
+  await expect(emptyResponseStatus.getByRole('img', { name: '会话正在运行但后台长时间未产生可确认进展' })).toHaveCount(0);
   await expect(page.getByText('Your last response did not include a function call or a message.')).toHaveCount(0);
   await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toBeVisible();
   await expect(page.locator('.agent-composer-status')).toHaveAttribute('aria-hidden', 'true');

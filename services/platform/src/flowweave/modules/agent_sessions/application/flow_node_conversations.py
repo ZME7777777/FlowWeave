@@ -568,6 +568,7 @@ def _node_session_dict(db: Session, item: AgentConversationBinding) -> dict[str,
         # conversation.
         "write_available": _node_session_write_available(db, item),
         "unread": item.unread,
+        "unread_origin": item.unread_origin,
         "lifecycle": item.lifecycle,
         "created_at": item.created_at.isoformat(),
         "updated_at": item.updated_at.isoformat(),
@@ -692,6 +693,7 @@ def _node_session_page_dicts(
             "write_available": _node_session_write_available(db, item),
             "execution_status": "unknown",
             "unread": item.unread,
+            "unread_origin": item.unread_origin,
             "lifecycle": item.lifecycle,
             "created_at": item.created_at.isoformat(),
             "updated_at": item.updated_at.isoformat(),
@@ -1009,6 +1011,7 @@ def set_node_session_unread(
     attempt_id: str,
     binding_id: str,
     unread: bool,
+    unread_origin: str | None = None,
 ) -> dict[str, Any]:
     item = _binding_for_attempt(
         db,
@@ -1017,10 +1020,15 @@ def set_node_session_unread(
         binding_id=binding_id,
         lock=True,
     )
+    origin = unread_origin if unread else None
+    if origin not in {None, "MANUAL", "SYSTEM"}:
+        raise DomainError("NODE_SESSION_UNREAD_ORIGIN_INVALID", "未读来源无效")
+    if unread and origin is None:
+        origin = "MANUAL"
     db.execute(
         update(AgentConversationBinding)
         .where(AgentConversationBinding.id == item.id)
-        .values(unread=unread, updated_at=item.updated_at)
+        .values(unread=unread, unread_origin=origin, updated_at=item.updated_at)
     )
     db.refresh(item)
     return _node_session_dict(db, item)

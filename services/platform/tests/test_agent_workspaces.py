@@ -3152,17 +3152,27 @@ def test_agent_workspace_unread_state_persists_in_conversation_projection(
         )
 
         updated_at = db.get(AgentConversationBinding, created["id"]).updated_at
-        marked = conversations.set_conversation_unread(db, workspace.id, created["id"], unread=True)
+        marked = conversations.set_conversation_unread(
+            db, workspace.id, created["id"], unread=True, unread_origin="MANUAL"
+        )
         page = conversations.list_conversation_page(db, workspace.id)
 
         assert marked["unread"] is True
+        assert marked["unread_origin"] == "MANUAL"
         assert db.get(AgentConversationBinding, created["id"]).updated_at == updated_at
         assert page["items"][0]["unread"] is True
+        assert page["items"][0]["unread_origin"] == "MANUAL"
+
+        system_marked = conversations.set_conversation_unread(
+            db, workspace.id, created["id"], unread=True, unread_origin="SYSTEM"
+        )
+        assert system_marked["unread_origin"] == "SYSTEM"
 
         cleared = conversations.set_conversation_unread(
             db, workspace.id, created["id"], unread=False
         )
         assert cleared["unread"] is False
+        assert cleared["unread_origin"] is None
         assert conversations.get_conversation(db, workspace.id, created["id"])["unread"] is False
 
 

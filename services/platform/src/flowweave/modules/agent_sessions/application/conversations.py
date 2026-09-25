@@ -265,6 +265,7 @@ def _dict(
         "streaming_callback_ready": item.streaming_callback_ready,
         "write_available": write_available,
         "unread": item.unread,
+        "unread_origin": item.unread_origin,
         "lifecycle": item.lifecycle,
         "created_at": item.created_at.isoformat(),
         "updated_at": item.updated_at.isoformat(),
@@ -382,6 +383,7 @@ def _page_dicts(
             "write_available": write_available,
             "execution_status": "unknown",
             "unread": item.unread,
+            "unread_origin": item.unread_origin,
             "lifecycle": item.lifecycle,
             "created_at": item.created_at.isoformat(),
             "updated_at": item.updated_at.isoformat(),
@@ -1852,13 +1854,23 @@ def patch_conversation(
 
 
 def set_conversation_unread(
-    db: Session, workspace_id: str, binding_id: str, *, unread: bool
+    db: Session,
+    workspace_id: str,
+    binding_id: str,
+    *,
+    unread: bool,
+    unread_origin: str | None = None,
 ) -> dict[str, Any]:
     item = _binding(db, workspace_id, binding_id, lock=True)
+    origin = unread_origin if unread else None
+    if origin not in {None, "MANUAL", "SYSTEM"}:
+        raise DomainError("AGENT_CONVERSATION_UNREAD_ORIGIN_INVALID", "未读来源无效")
+    if unread and origin is None:
+        origin = "MANUAL"
     db.execute(
         update(AgentConversationBinding)
         .where(AgentConversationBinding.id == item.id)
-        .values(unread=unread, updated_at=item.updated_at)
+        .values(unread=unread, unread_origin=origin, updated_at=item.updated_at)
     )
     db.refresh(item)
     return _dict(db, item)
