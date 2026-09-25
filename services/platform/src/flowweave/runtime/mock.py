@@ -306,11 +306,14 @@ class MockRuntime:
         return RuntimeInputReadiness(ready=ready, execution_status=status)
 
     def running_conversation_ids(self, handle: RuntimeHandle) -> set[str]:
+        return self.conversation_ids_by_status(handle, "running")
+
+    def conversation_ids_by_status(self, handle: RuntimeHandle, status: str) -> set[str]:
         del handle
         return {
             conversation_id
             for conversation_id, result in self._results.items()
-            if result.status == "RUNNING"
+            if result.status.casefold() == status.casefold()
         }
 
     def can_accept_input(self, handle: RuntimeHandle) -> bool:

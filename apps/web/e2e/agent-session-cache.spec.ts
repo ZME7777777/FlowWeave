@@ -1770,6 +1770,11 @@ test('Conversation sidebar pins locally, orders activity, and reveals the select
     if (path.endsWith('/auth/login') && request.method() === 'POST') { authenticated = true; return json(route, user); }
     if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
     if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
+    if (path.endsWith('/conversation-activity')) return json(route, {
+      running_binding_ids: ['sidebar-directory-running'],
+      possibly_stuck_binding_ids: ['sidebar-directory-running'],
+      failed_binding_ids: ['sidebar-root-unread'],
+    });
     if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: conversations, next_cursor: null });
     if (path.endsWith('/conversation-searches') && request.method() === 'POST') return json(route, search);
     if (path.endsWith('/conversation-searches/sidebar-search')) return json(route, search);
@@ -1822,6 +1827,9 @@ test('Conversation sidebar pins locally, orders activity, and reveals the select
   const unreadConversation = page.getByRole('button', { name: '未读根会话', exact: true });
   await unreadConversation.click({ button: 'right' });
   await page.getByRole('menuitem', { name: '标记为未读' }).click();
+  const stalledConversation = page.getByRole('button', { name: '运行中目标会话', exact: true });
+  await stalledConversation.click({ button: 'right' });
+  await page.getByRole('menuitem', { name: '标记为未读' }).click();
   await page.getByRole('button', { name: /查看活动会话（2）/ }).click();
   const activity = page.getByRole('region', { name: '活动会话' });
   await expect(activity).toBeVisible();
@@ -1831,6 +1839,10 @@ test('Conversation sidebar pins locally, orders activity, and reveals the select
   ]);
   await expect(activity.locator('[data-conversation-binding-id="sidebar-directory-running"]')).toContainText('归属工作区');
   await expect(activity.locator('[data-conversation-binding-id="sidebar-root-unread"]')).toContainText('根工作区');
+  await expect(activity.locator('[data-conversation-binding-id="sidebar-directory-running"]').getByRole('img', { name: '后台长时间未产生可确认进展' })).toBeVisible();
+  await expect(activity.locator('[data-conversation-binding-id="sidebar-directory-running"]').getByRole('img', { name: '会话有未读回复' })).toBeVisible();
+  await expect(activity.locator('[data-conversation-binding-id="sidebar-root-unread"]').getByRole('img', { name: '会话异常结束' })).toBeVisible();
+  await expect(activity.locator('[data-conversation-binding-id="sidebar-root-unread"]').getByRole('img', { name: '会话已完成，有未读回复' })).toHaveCount(0);
 
   const runningConversation = activity.getByRole('button', { name: '运行中目标会话', exact: true });
   await runningConversation.click();

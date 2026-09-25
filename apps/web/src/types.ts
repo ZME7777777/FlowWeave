@@ -769,6 +769,10 @@ export interface AgentConversationActivity {
     task_id: string;
     state: 'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'RETRY' | 'DEAD';
   }>;
+  /** Read-only formal-event projection; no conversation state is changed. */
+  possibly_stuck_binding_ids?: string[];
+  /** Native OpenHands execution status is `error` or `stuck`. */
+  failed_binding_ids?: string[];
 }
 export interface AgentConversationSearchHit {
   binding_id: string;

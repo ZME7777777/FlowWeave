@@ -874,10 +874,31 @@ def node_session_activity(
     latest_condensation_task: dict[str, tuple[str, str]] = {}
     for binding_id, task_id, state in condensation_tasks:
         latest_condensation_task.setdefault(binding_id, (task_id, state))
+    running_bindings = [
+        item for item in bindings if item.openhands_conversation_id in running_native_ids
+    ]
+    failed_native_ids = runtime.conversation_ids_by_status(
+        handle, "error"
+    ) | runtime.conversation_ids_by_status(handle, "stuck")
+    possibly_stuck_binding_ids: list[str] = []
+    from flowweave.shared.domain.event_monitoring import build_activity_summary
+
+    for item in running_bindings:
+        try:
+            batch = runtime.read_active_events(
+                _node_handle(
+                    db,
+                    flow_run_id=flow_run_id,
+                    attempt_id=attempt_id,
+                    binding_id=item.id,
+                )
+            )
+        except DomainError:
+            continue
+        if build_activity_summary(batch.events)["possibly_stuck"]:
+            possibly_stuck_binding_ids.append(item.id)
     return {
-        "running_binding_ids": [
-            item.id for item in bindings if item.openhands_conversation_id in running_native_ids
-        ],
+        "running_binding_ids": [item.id for item in running_bindings],
         "condensing_binding_ids": [
             item.id
             for item in bindings
@@ -894,6 +915,10 @@ def node_session_activity(
             for item in bindings
             if (task := latest_condensation_task.get(item.id)) is not None
             for task_id, state in [task]
+        ],
+        "possibly_stuck_binding_ids": possibly_stuck_binding_ids,
+        "failed_binding_ids": [
+            item.id for item in bindings if item.openhands_conversation_id in failed_native_ids
         ],
     }
 

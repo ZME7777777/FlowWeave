@@ -1065,11 +1065,7 @@ function staleActivityLabel(
   if (!monitoring?.possibly_stuck) return fallback;
   if (connectionState === 'unavailable') return '暂时无法读取 OpenHands 会话状态，正在重试连接';
   if (connectionState === 'checking') return '正在检查 OpenHands 会话连接';
-
-  const stalledSubagent = monitoring.active_subagents.find(task => task.possibly_stuck);
-  if (stalledSubagent) return '子智能体仍在运行，等待其返回';
-  if (fallback === '正在思考') return 'OpenHands 会话连接正常，等待响应';
-  return fallback;
+  return '后台长时间未产生可确认进展。可暂停后继续以重新建立调用。';
 }
 
 function retryLabel(status: ModelRetryStatus): string {
@@ -1122,9 +1118,11 @@ function CurrentTurnStatus({ items, requestSubmitting, statusOverride, modelRetr
   const label = statusOverride ?? (requestSubmitting
     ? activityLabel
     : staleActivityLabel(activityLabel, monitoring, connectionState));
+  const stalled = !statusOverride && !requestSubmitting && monitoring?.possibly_stuck
+    && connectionState === 'connected';
   return <div className="conversation-turn-status" role="status" aria-label={label}>
     <span>{label}</span>
-    <span className="conversation-turn-status-dots" aria-hidden="true"><i/><i/><i/></span>
+    {!stalled && <span className="conversation-turn-status-dots" aria-hidden="true"><i/><i/><i/></span>}
   </div>;
 }
 

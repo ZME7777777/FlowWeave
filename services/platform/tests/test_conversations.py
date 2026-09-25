@@ -2467,6 +2467,10 @@ def test_node_session_activity_maps_native_ids_once(
                 self.calls += 1
                 return {"native-running", "unbound-native-conversation"}
 
+            def conversation_ids_by_status(self, _handle, _status):
+                self.calls += 1
+                return set()
+
         runtime = ActivityRuntime()
         monkeypatch.setattr(flow_node_conversations, "get_runtime", lambda: runtime)
 
@@ -2474,9 +2478,13 @@ def test_node_session_activity_maps_native_ids_once(
             db, flow_run_id=flow_run_id, attempt_id=attempt_id
         )
 
-    assert activity == {"running_binding_ids": [bindings[1].id]}
+    assert activity == {
+        "running_binding_ids": [bindings[1].id],
+        "possibly_stuck_binding_ids": [],
+        "failed_binding_ids": [],
+    }
     assert bindings[0].id not in activity["running_binding_ids"]
-    assert runtime.calls == 1
+    assert runtime.calls == 3
 
 
 def test_node_session_unread_state_persists_in_conversation_projection(

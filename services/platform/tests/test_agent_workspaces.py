@@ -3190,6 +3190,10 @@ def test_agent_workspace_conversation_activity_maps_native_ids_once(
             self.calls += 1
             return {self.running_id, "unbound-native-conversation"}
 
+        def conversation_ids_by_status(self, _handle, _status):
+            self.calls += 1
+            return set()
+
     runtime = ActivityRuntime()
     with settings_context(settings), db_session_factory() as db, runtime_context(runtime):
         workspace = _ready_workspace_for_conversation(db)
@@ -3205,9 +3209,13 @@ def test_agent_workspace_conversation_activity_maps_native_ids_once(
 
         activity = conversations.conversation_activity(db, workspace.id)
 
-    assert activity == {"running_binding_ids": [running["id"]]}
+    assert activity == {
+        "running_binding_ids": [running["id"]],
+        "possibly_stuck_binding_ids": [],
+        "failed_binding_ids": [],
+    }
     assert idle["id"] not in activity["running_binding_ids"]
-    assert runtime.calls == 1
+    assert runtime.calls == 3
 
 
 def test_agent_workspace_conversation_dtos_project_runtime_write_availability(

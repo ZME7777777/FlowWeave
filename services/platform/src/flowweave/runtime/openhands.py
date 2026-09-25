@@ -4945,10 +4945,15 @@ class OpenHandsRuntime:
     def running_conversation_ids(self, handle: RuntimeHandle) -> set[str]:
         """Read native RUNNING conversations through OpenHands' list API."""
 
+        return self.conversation_ids_by_status(handle, "running")
+
+    def conversation_ids_by_status(self, handle: RuntimeHandle, status: str) -> set[str]:
+        """Read native conversations in one formal execution status."""
+
         page_id: str | None = None
-        running: set[str] = set()
+        conversation_ids: set[str] = set()
         while True:
-            params: dict[str, str | int] = {"status": "running", "limit": 100}
+            params: dict[str, str | int] = {"status": status, "limit": 100}
             if page_id:
                 params["page_id"] = page_id
             page = self._request(
@@ -4960,10 +4965,10 @@ class OpenHandsRuntime:
             )
             for item in page.get("items", []):
                 if isinstance(item, dict) and isinstance(item.get("id"), str):
-                    running.add(item["id"])
+                    conversation_ids.add(item["id"])
             next_page = page.get("next_page_id")
             if not isinstance(next_page, str) or not next_page or next_page == page_id:
-                return running
+                return conversation_ids
             page_id = next_page
 
     def can_accept_input(self, handle: RuntimeHandle) -> bool:
