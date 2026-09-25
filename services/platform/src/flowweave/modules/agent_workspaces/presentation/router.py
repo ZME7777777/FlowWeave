@@ -79,6 +79,7 @@ class AgentConversationPatchWrite(_Write):
 
 class AgentConversationUnreadWrite(_Write):
     unread: bool
+    unread_origin: Literal["MANUAL", "SYSTEM"] | None = None
 
 
 class AgentConversationSearchWrite(_Write):
@@ -724,7 +725,11 @@ async def set_agent_conversation_unread(
     return await run_sync(
         db,
         lambda session: conversations.set_conversation_unread(
-            session, workspace_id, binding_id, unread=payload.unread
+            session,
+            workspace_id,
+            binding_id,
+            unread=payload.unread,
+            unread_origin=payload.unread_origin,
         ),
     )
 

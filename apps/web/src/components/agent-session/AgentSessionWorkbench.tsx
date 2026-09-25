@@ -670,7 +670,7 @@ function ConversationStreamObserver({
 }
 
 function WorkspaceConversationRow({
-  item, selectedBindingId, workspaceName, running, possiblyStuck, failed, unread, pinned, conversationWritable, removing, deleteDisabled, dragging, dropPosition, orderSyncState, onPointerDragStart, onRetryOrder, onSelect, onDoubleClick, onTogglePin, onMarkUnread, onDelete, reveal,
+  item, selectedBindingId, workspaceName, running, possiblyStuck, failed, unread, unreadOrigin, pinned, conversationWritable, removing, deleteDisabled, dragging, dropPosition, orderSyncState, onPointerDragStart, onRetryOrder, onSelect, onDoubleClick, onTogglePin, onMarkUnread, onDelete, reveal,
 }: {
   item: AgentConversation;
   selectedBindingId?: string;
@@ -679,6 +679,7 @@ function WorkspaceConversationRow({
   possiblyStuck: boolean;
   failed: boolean;
   unread: boolean;
+  unreadOrigin?: AgentConversation['unread_origin'];
   pinned: boolean;
   conversationWritable: boolean;
   removing: boolean;
@@ -696,7 +697,7 @@ function WorkspaceConversationRow({
   reveal?: boolean;
 }) {
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number }>();
-  const showAlert = unread && (possiblyStuck || failed);
+  const showAlert = unread && unreadOrigin === 'SYSTEM' && (possiblyStuck || failed);
   const alertIsRunning = showAlert && possiblyStuck && running && !failed;
   useEscapeClose(() => setContextMenu(undefined), Boolean(contextMenu));
   useEffect(() => {
@@ -4305,7 +4306,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const selectedBindingId = activityPreviewBindingId ?? routeBindingId;
   const previousComposerScope = useRef<string | undefined>(undefined);
   const activityBaseline = useRef<Map<string, boolean>>(new Map());
-  const pendingUnreadUpdates = useRef(new Map<string, { id: number; unread: boolean }>());
+  const pendingUnreadUpdates = useRef(new Map<string, { id: number; unread: boolean; unreadOrigin?: AgentConversation['unread_origin'] }>());
   const nextUnreadUpdateId = useRef(0);
   const [unreadConversationIds, setUnreadConversationIds] = useState<Set<string>>(() => new Set());
   const [pinnedConversationIds, setPinnedConversationIds] = useState<Set<string>>(() => new Set());
@@ -4566,18 +4567,18 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       markSessionPerformance('workspace-ready');
     }
   }, [activeWorkspaceDetailsQuery.data, selected]);
-  const setConversationUnread = useCallback((bindingId: string, unread: boolean) => {
+  const setConversationUnread = useCallback((bindingId: string, unread: boolean, unreadOrigin?: 'MANUAL' | 'SYSTEM') => {
     if (!workspace) return;
     const queryKey = sessionQueryKey(host, 'conversations', workspace.id);
     const updateId = nextUnreadUpdateId.current += 1;
-    const updateCachedConversation = (value: boolean) => {
+    const updateCachedConversation = (value: boolean, origin?: AgentConversation['unread_origin']) => {
       queryClient.setQueryData<InfiniteData<AgentConversationPage>>(
         queryKey,
         current => current ? {
           ...current,
           pages: current.pages.map(page => ({
             ...page,
-            items: page.items.map(item => item.id === bindingId ? { ...item, unread: value } : item),
+            items: page.items.map(item => item.id === bindingId ? { ...item, unread: value, unread_origin: value ? origin ?? item.unread_origin ?? 'MANUAL' : null } : item),
           })),
         } : current,
       );
@@ -4590,18 +4591,18 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         return next;
       });
     };
-    pendingUnreadUpdates.current.set(bindingId, { id: updateId, unread });
+    pendingUnreadUpdates.current.set(bindingId, { id: updateId, unread, unreadOrigin });
     void queryClient.cancelQueries({ queryKey }).then(() => {
       if (pendingUnreadUpdates.current.get(bindingId)?.id !== updateId) return;
       updateCachedConversation(unread);
     });
-    updateCachedConversation(unread);
+    updateCachedConversation(unread, unreadOrigin);
     updateUnreadConversationIds(unread);
-    void api.setConversationUnread(workspace.id, bindingId, unread).then(updated => {
+    void api.setConversationUnread(workspace.id, bindingId, unread, unreadOrigin).then(updated => {
       const pending = pendingUnreadUpdates.current.get(bindingId);
       if (pending?.id !== updateId) return;
       const persistedUnread = Boolean(updated.unread);
-      updateCachedConversation(persistedUnread);
+      updateCachedConversation(persistedUnread, updated.unread_origin);
       updateUnreadConversationIds(persistedUnread);
       void queryClient.invalidateQueries({ queryKey }).catch(() => undefined).then(() => {
         if (pendingUnreadUpdates.current.get(bindingId)?.id !== updateId) return;
@@ -4624,8 +4625,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     if (unreadConversationIds.has(bindingId)) setConversationUnread(bindingId, false);
   }, [setConversationUnread, unreadConversationIds]);
   const markConversationUnread = useCallback((bindingId: string) => {
-    if (!unreadConversationIds.has(bindingId)) setConversationUnread(bindingId, true);
-  }, [setConversationUnread, unreadConversationIds]);
+    // An explicit user choice must override a system-origin alert even when
+    // the binding was already unread, restoring the ordinary blue marker.
+    setConversationUnread(bindingId, true, 'MANUAL');
+  }, [setConversationUnread]);
   const updatePinnedConversationIds = useCallback((update: (current: Set<string>) => Set<string>) => {
     setPinnedConversationIds(current => {
       const next = update(current);
@@ -4671,7 +4674,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       if (!present.has(bindingId)) activityBaseline.current.delete(bindingId);
     }
     for (const item of completedInBackground) {
-      if (!item.unread) setConversationUnread(item.id, true);
+      if (!item.unread) setConversationUnread(item.id, true, 'SYSTEM');
     }
   }, [conversations, routeBindingId, runningConversationIds, setConversationUnread]);
   useEffect(() => {
@@ -6851,7 +6854,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     const failed = failedConversationIds.has(item.id);
     const conversationWritable = Boolean(item.write_available);
     const sync = conversationOrderSync[item.id];
-    return <WorkspaceConversationRow key={item.id} item={item} selectedBindingId={selectedBindingId} workspaceName={options.workspaceName} running={running} possiblyStuck={possiblyStuck} failed={failed} unread={unreadConversationIds.has(item.id)} pinned={pinnedConversationIds.has(item.id)} conversationWritable={conversationWritable} removing={remove.isPending} deleteDisabled={running} dragging={options.allowDrag === false ? false : draggedBindingId === item.id} dropPosition={options.allowDrag === false ? undefined : dragTarget?.bindingId === item.id ? (dragTarget.after ? 'after' : 'before') : undefined} orderSyncState={options.allowDrag === false ? undefined : sync?.state} onPointerDragStart={options.allowDrag === false ? undefined : event => startPointerConversationDrag(event, item, group)} onRetryOrder={options.allowDrag === false || sync?.state !== 'failed' ? undefined : () => synchronizeConversationOrder(item.id, sync.orderedBindingIds)} onSelect={options.onSelect ?? (() => selectConversation(item.id))} onDoubleClick={options.onDoubleClick} onTogglePin={() => toggleConversationPin(item.id)} onMarkUnread={() => markConversationUnread(item.id)} onDelete={features.conversationDeletion && conversationWritable ? () => void confirmDeletion('会话', conversationName(item)).then(ok => { if (ok) remove.mutate(item.id); }) : undefined} reveal={sidebarListMode === 'workspaces' && sidebarRevealBindingId === item.id}/>;
+    return <WorkspaceConversationRow key={item.id} item={item} selectedBindingId={selectedBindingId} workspaceName={options.workspaceName} running={running} possiblyStuck={possiblyStuck} failed={failed} unread={unreadConversationIds.has(item.id)} unreadOrigin={item.unread_origin} pinned={pinnedConversationIds.has(item.id)} conversationWritable={conversationWritable} removing={remove.isPending} deleteDisabled={running} dragging={options.allowDrag === false ? false : draggedBindingId === item.id} dropPosition={options.allowDrag === false ? undefined : dragTarget?.bindingId === item.id ? (dragTarget.after ? 'after' : 'before') : undefined} orderSyncState={options.allowDrag === false ? undefined : sync?.state} onPointerDragStart={options.allowDrag === false ? undefined : event => startPointerConversationDrag(event, item, group)} onRetryOrder={options.allowDrag === false || sync?.state !== 'failed' ? undefined : () => synchronizeConversationOrder(item.id, sync.orderedBindingIds)} onSelect={options.onSelect ?? (() => selectConversation(item.id))} onDoubleClick={options.onDoubleClick} onTogglePin={() => toggleConversationPin(item.id)} onMarkUnread={() => markConversationUnread(item.id)} onDelete={features.conversationDeletion && conversationWritable ? () => void confirmDeletion('会话', conversationName(item)).then(ok => { if (ok) remove.mutate(item.id); }) : undefined} reveal={sidebarListMode === 'workspaces' && sidebarRevealBindingId === item.id}/>;
   };
   const pendingBootstrapItem = pendingBootstrap
     ? <button className={pendingBootstrap.draft.id === conversationDraft?.id ? 'active' : ''} aria-current={pendingBootstrap.draft.id === conversationDraft?.id ? 'page' : undefined} aria-label={`${pendingConversationName(pendingBootstrap.message)}，正在创建会话`}><LoaderCircle className="conversation-activity-spin" size={13}/><span><b>{pendingConversationName(pendingBootstrap.message)}</b><small>正在创建会话</small></span><ChevronRight size={13}/></button>

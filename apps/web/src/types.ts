@@ -748,6 +748,7 @@ export interface AgentConversation {
   write_available?: boolean;
   execution_status?: string | null;
   unread?: boolean;
+  unread_origin?: 'MANUAL' | 'SYSTEM' | null;
   lifecycle: 'PROVISIONING' | 'ACTIVE' | 'DELETE_PENDING' | 'FAILED';
   created_at: string;
   updated_at: string;

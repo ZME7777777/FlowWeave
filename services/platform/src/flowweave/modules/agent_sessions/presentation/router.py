@@ -65,6 +65,7 @@ class NodeSessionCreateWrite(_Write):
 
 class NodeSessionUnreadWrite(_Write):
     unread: bool
+    unread_origin: Literal["MANUAL", "SYSTEM"] | None = None
 
 
 class NodeAttachmentReference(_Write):
@@ -894,6 +895,7 @@ async def set_node_session_unread(
             attempt_id=attempt_id,
             binding_id=binding_id,
             unread=payload.unread,
+            unread_origin=payload.unread_origin,
         ),
     )
 
