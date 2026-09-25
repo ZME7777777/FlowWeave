@@ -108,12 +108,13 @@
 .conversation-condensation-progress{display:flex;align-items:flex-start;gap:10px;margin:14px 0;padding:12px 14px;border:1px solid #d7e5dc;border-radius:12px;background:#f7fbf8;color:#365d45}.conversation-condensation-progress>svg{margin-top:2px;flex:0 0 auto}.conversation-condensation-progress>div{min-width:0;flex:1}.conversation-condensation-progress header{display:flex;align-items:center;justify-content:space-between;gap:12px}.conversation-condensation-progress header b{font-size:13px}.conversation-condensation-progress time{font-size:11px;color:#789082}.conversation-condensation-progress p{margin:4px 0 0;font-size:12px;line-height:1.55;color:#66776c}
 .conversation-turn-status{display:flex;align-items:center;gap:5px;min-height:28px;margin:2px 0 0;color:#a0a7a2;font-size:13px;letter-spacing:.01em}
 .conversation-turn-status>span:first-child{display:block;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.conversation-turn-status.stalled{color:#b84a4a}.conversation-turn-status-alert{flex:0 0 auto;animation:conversation-turn-status-alert-pulse 1.7s ease-in-out infinite}@keyframes conversation-turn-status-alert-pulse{0%,100%{opacity:.55;transform:scale(.9)}50%{opacity:1;transform:scale(1.08)}}
 .conversation-turn-status-dots{display:flex;align-items:center;gap:3px;padding-top:2px}
 .conversation-turn-status-dots i{width:3px;height:3px;border-radius:50%;background:currentColor;animation:conversation-turn-status-dot 1.2s ease-in-out infinite}
 .conversation-turn-status-dots i:nth-child(2){animation-delay:.16s}
 .conversation-turn-status-dots i:nth-child(3){animation-delay:.32s}
 @keyframes conversation-turn-status-dot{0%,65%,100%{opacity:.22;transform:translateY(0)}35%{opacity:.9;transform:translateY(-1px)}}
-@media(prefers-reduced-motion:reduce){.conversation-turn-status-dots i,.conversation-jump-dots i{animation:none;opacity:.55}}
+@media(prefers-reduced-motion:reduce){.conversation-turn-status-dots i,.conversation-jump-dots i,.conversation-turn-status-alert{animation:none;opacity:.55}}
 .conversation-model-retry{margin:3px 0 0;color:#a0a7a2;font-size:13px}
 .conversation-model-retry summary{display:flex;align-items:center;gap:5px;min-height:28px;cursor:pointer;list-style:none}
 .conversation-model-retry summary::-webkit-details-marker{display:none}

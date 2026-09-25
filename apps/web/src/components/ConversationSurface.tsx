@@ -1120,7 +1120,8 @@ function CurrentTurnStatus({ items, requestSubmitting, statusOverride, modelRetr
     : staleActivityLabel(activityLabel, monitoring, connectionState));
   const stalled = !statusOverride && !requestSubmitting && monitoring?.possibly_stuck
     && connectionState === 'connected';
-  return <div className="conversation-turn-status" role="status" aria-label={label}>
+  return <div className={`conversation-turn-status${stalled ? ' stalled' : ''}`} role="status" aria-label={label}>
+    {stalled && <CircleAlert className="conversation-turn-status-alert" role="img" aria-label="会话正在运行但后台长时间未产生可确认进展" size={14}/>}
     <span>{label}</span>
     {!stalled && <span className="conversation-turn-status-dots" aria-hidden="true"><i/><i/><i/></span>}
   </div>;
