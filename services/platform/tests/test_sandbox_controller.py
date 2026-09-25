@@ -6,6 +6,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 import anyio
 import pytest
@@ -157,6 +158,137 @@ def test_runtime_provider_returns_owned_runtime_usage(settings, monkeypatch) -> 
             "storage_limit": None,
         }
     }
+
+
+def test_admin_observability_samples_usage_concurrently(monkeypatch) -> None:
+    barrier = threading.Barrier(4)
+
+    class FakeProvider:
+        def __init__(self, _configured) -> None:
+            pass
+
+        def _run(self, command, *, timeout):
+            assert command[1] == "ps"
+            assert timeout == 10
+            return "\n".join(
+                json.dumps(
+                    {
+                        "ID": f"service-{index}",
+                        "Names": f"service-{index}",
+                        "Image": "flowweave:test",
+                        "State": "running",
+                        "Status": "Up",
+                    }
+                )
+                for index in range(3)
+            )
+
+        def list_managed(self):
+            return [
+                SimpleNamespace(
+                    resource_id="managed-resource",
+                    resource_name="managed-runtime",
+                    resource_identifier="managed-container",
+                    state="RUNNING",
+                    labels={"flowweave.kind": "agent-runtime"},
+                )
+            ]
+
+        def usage(self, resource_name, resource_id):
+            assert (resource_name, resource_id) == ("managed-runtime", "managed-resource")
+            barrier.wait(timeout=2)
+            return DockerResourceUsage(
+                cpu_usage_percent=4.0,
+                memory_usage_bytes=5,
+                storage_usage_bytes=6,
+                storage_limit=None,
+            )
+
+    def service_usage(_provider, container_id):
+        assert container_id.startswith("service-")
+        barrier.wait(timeout=2)
+        return {
+            "cpu_usage_percent": 1.0,
+            "memory_usage_bytes": 2,
+            "storage_usage_bytes": 3,
+            "storage_limit": None,
+        }
+
+    monkeypatch.setattr(controller_module, "DockerSandboxProvider", FakeProvider)
+    monkeypatch.setattr(controller_module, "_admin_container_usage", service_usage)
+
+    snapshot = controller_module._admin_observability_snapshot(
+        SimpleNamespace(docker_binary="docker")
+    )
+
+    assert [item["usage"] for item in snapshot["services"]] == [
+        {
+            "cpu_usage_percent": 1.0,
+            "memory_usage_bytes": 2,
+            "storage_usage_bytes": 3,
+            "storage_limit": None,
+        }
+    ] * 3
+    assert snapshot["managed_resources"][0]["usage"] == {
+        "cpu_usage_percent": 4.0,
+        "memory_usage_bytes": 5,
+        "storage_usage_bytes": 6,
+        "storage_limit": None,
+    }
+
+
+def test_admin_observability_keeps_inventory_when_usage_sampling_times_out(monkeypatch) -> None:
+    started = threading.Event()
+    release = threading.Event()
+
+    class FakeProvider:
+        def __init__(self, _configured) -> None:
+            pass
+
+        def _run(self, command, *, timeout):
+            assert command[1] == "ps"
+            assert timeout == 10
+            return json.dumps(
+                {
+                    "ID": "slow-service",
+                    "Names": "slow-service",
+                    "Image": "flowweave:test",
+                    "State": "running",
+                    "Status": "Up",
+                }
+            )
+
+        def list_managed(self):
+            return []
+
+    def slow_service_usage(_provider, _container_id):
+        started.set()
+        assert release.wait(timeout=2)
+        return None
+
+    monkeypatch.setattr(controller_module, "DockerSandboxProvider", FakeProvider)
+    monkeypatch.setattr(controller_module, "_admin_container_usage", slow_service_usage)
+    monkeypatch.setattr(controller_module, "_ADMIN_OBSERVABILITY_USAGE_BUDGET_SECONDS", 0.01)
+
+    started_at = time.monotonic()
+    snapshot = controller_module._admin_observability_snapshot(
+        SimpleNamespace(docker_binary="docker")
+    )
+    elapsed = time.monotonic() - started_at
+    release.set()
+
+    assert started.is_set()
+    assert elapsed < 0.5
+    assert snapshot["services"] == [
+        {
+            "service": "slow-service",
+            "container_id": "slow-service",
+            "image": "flowweave:test",
+            "state": "RUNNING",
+            "status": "Up",
+            "usage": None,
+        }
+    ]
 
 
 def test_blocking_runtime_provision_does_not_block_controller_health(settings, monkeypatch):

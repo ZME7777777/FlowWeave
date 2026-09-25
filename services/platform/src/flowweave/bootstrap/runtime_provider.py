@@ -11,6 +11,7 @@ import subprocess
 import threading
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
+from concurrent.futures import ThreadPoolExecutor, wait
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
@@ -65,6 +66,8 @@ _RELAY_MAX_HUBS = 128
 _RELAY_MAX_SUBSCRIBERS_PER_HUB = 8
 _RELAY_SUBSCRIBER_QUEUE_SIZE = 32
 _TERMINAL_SESSION_NAME = re.compile(r"[^a-z0-9_.-]+")
+_ADMIN_OBSERVABILITY_USAGE_WORKERS = 16
+_ADMIN_OBSERVABILITY_USAGE_BUDGET_SECONDS = 3.0
 
 logger = logging.getLogger(__name__)
 
@@ -1430,9 +1433,52 @@ def _admin_container_usage(
         return None
 
 
+def _admin_managed_resource_usage(
+    provider: DockerSandboxProvider, resource_name: str, resource_id: str
+) -> dict[str, Any] | None:
+    try:
+        return _usage_dict(provider.usage(resource_name, resource_id))
+    except DomainError:
+        return None
+
+
+def _populate_admin_usage(
+    samples: list[tuple[dict[str, Any], Callable[[], dict[str, Any] | None]]],
+) -> None:
+    """Collect best-effort Docker usage without delaying the control-plane snapshot.
+
+    Docker ``stats`` needs one subprocess per container.  A serial pass can easily
+    exceed the Admin API's request deadline, making the otherwise healthy service
+    inventory disappear entirely.  Keep the inventory authoritative while giving
+    usage samples a bounded, concurrent collection window.
+    """
+
+    if not samples:
+        return
+    executor = ThreadPoolExecutor(
+        max_workers=min(_ADMIN_OBSERVABILITY_USAGE_WORKERS, len(samples)),
+        thread_name_prefix="flowweave-admin-usage",
+    )
+    futures = {executor.submit(reader): row for row, reader in samples}
+    completed, pending = wait(futures, timeout=_ADMIN_OBSERVABILITY_USAGE_BUDGET_SECONDS)
+    for future in completed:
+        row = futures[future]
+        try:
+            row["usage"] = future.result()
+        except Exception:  # observability must not hide the Compose inventory
+            row["usage"] = None
+    for future in pending:
+        futures[future]["usage"] = None
+        future.cancel()
+    # Running Docker subprocesses have their own bounded timeout.  Do not wait
+    # for a slow sample here: the caller must return before the Admin API deadline.
+    executor.shutdown(wait=False, cancel_futures=True)
+
+
 def _admin_observability_snapshot(configured: Settings) -> dict[str, Any]:
     provider = DockerSandboxProvider(configured)
     service_rows: list[dict[str, Any]] = []
+    usage_samples: list[tuple[dict[str, Any], Callable[[], dict[str, Any] | None]]] = []
     try:
         raw_services = provider._run(  # pyright: ignore[reportPrivateUsage]
             [
@@ -1456,50 +1502,59 @@ def _admin_observability_snapshot(configured: Settings) -> dict[str, Any]:
             container_id = str(item.get("ID") or "")
             if not container_id:
                 continue
-            service_rows.append(
-                {
-                    "service": str(item.get("Names") or "unknown"),
-                    "container_id": container_id,
-                    "image": str(item.get("Image") or ""),
-                    "state": str(item.get("State") or "unknown").upper(),
-                    "status": str(item.get("Status") or ""),
-                    "usage": _admin_container_usage(provider, container_id)
-                    if str(item.get("State") or "").lower() == "running"
-                    else None,
-                }
-            )
+            service = {
+                "service": str(item.get("Names") or "unknown"),
+                "container_id": container_id,
+                "image": str(item.get("Image") or ""),
+                "state": str(item.get("State") or "unknown").upper(),
+                "status": str(item.get("Status") or ""),
+                "usage": None,
+            }
+            service_rows.append(service)
+            if str(item.get("State") or "").lower() == "running":
+                usage_samples.append(
+                    (
+                        service,
+                        lambda container_id=container_id: _admin_container_usage(
+                            provider, container_id
+                        ),
+                    )
+                )
     except DomainError:
         service_rows = []
 
     managed_resources: list[dict[str, Any]] = []
     try:
         for observation in provider.list_managed():
-            managed_resources.append(
-                {
-                    "resource_id": observation.resource_id,
-                    "resource_name": observation.resource_name,
-                    "container_id": observation.resource_identifier[:12],
-                    "state": observation.state,
-                    "kind": observation.labels.get("flowweave.kind"),
-                    "owner_type": observation.labels.get("flowweave.owner-type"),
-                    "owner_id": observation.labels.get("flowweave.owner-id"),
-                    "usage": (
-                        _usage_dict(
-                            provider.usage(observation.resource_name, observation.resource_id)
-                        )
-                        if observation.labels.get("flowweave.kind") == "agent-runtime"
-                        else None
-                    ),
-                }
-            )
+            resource = {
+                "resource_id": observation.resource_id,
+                "resource_name": observation.resource_name,
+                "container_id": observation.resource_identifier[:12],
+                "state": observation.state,
+                "kind": observation.labels.get("flowweave.kind"),
+                "owner_type": observation.labels.get("flowweave.owner-type"),
+                "owner_id": observation.labels.get("flowweave.owner-id"),
+                "usage": None,
+            }
+            managed_resources.append(resource)
+            if observation.labels.get("flowweave.kind") == "agent-runtime":
+                usage_samples.append(
+                    (
+                        resource,
+                        lambda resource_name=observation.resource_name,
+                        resource_id=observation.resource_id: _admin_managed_resource_usage(
+                            provider, resource_name, resource_id
+                        ),
+                    )
+                )
     except DomainError:
         managed_resources = []
+    _populate_admin_usage(usage_samples)
     return {
         "available": True,
         "services": service_rows,
         "managed_resources": managed_resources,
     }
-
 
 
 def _resource(payload: SandboxResourceWrite) -> ManagedSandbox:
