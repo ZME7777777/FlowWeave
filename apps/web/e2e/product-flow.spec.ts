@@ -1765,6 +1765,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     const bounds = element.getBoundingClientRect();
     return { width: bounds.width, height: bounds.height };
   });
+  await expect(elapsedLabel).toHaveCSS('min-width', '0px');
   const initialProcessHeight = await activeProcess.evaluate(element => element.getBoundingClientRect().height);
   const initialScrollTop = await page.locator('.conversation-surface').evaluate(element => element.scrollTop);
   await expect.poll(() => elapsedLabel.textContent(), { timeout: 2_500 }).not.toBe(initialElapsed);
