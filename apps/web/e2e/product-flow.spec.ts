@@ -1738,6 +1738,9 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await composer.fill('第一条排队测试消息');
   await expect(page.locator('.agent-composer-actions .agent-send')).toHaveCount(1);
   await composer.press('Enter');
+  await expect(page.getByLabel('消息投递队列').getByText('第一条排队测试消息')).toBeVisible();
+  await expect(page.locator('.conversation-message.user').filter({ hasText: '第一条排队测试消息' })).toHaveCount(0);
+  await composer.press('Meta+Enter');
   await expect(page).toHaveURL(/\/agent\/conversations\/agent-conversation-streaming-1$/);
   await expect.poll(() => streamingMigrations).toBe(1);
   await expect.poll(() => streamingMigrationPayload).toEqual({
@@ -2101,6 +2104,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   const queuedMessage = page.getByLabel('消息投递队列');
   const editableQueuedMessage = queuedMessage.locator('article').filter({ hasText: '待编辑排队消息' });
   await expect(editableQueuedMessage).toBeVisible();
+  await expect(page.locator('.conversation-message.user').filter({ hasText: '待编辑排队消息' })).toHaveCount(0);
   expect(sentMessages).toBe(sentBeforeQueue);
   await page.reload();
   await expect(page.getByLabel('消息投递队列').getByText('待编辑排队消息')).toBeVisible();
@@ -2145,6 +2149,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.locator('.agent-composer-note')).toHaveText('已排队 1 条');
   modelIsResponding = false;
   await page.reload();
+  await page.getByLabel('发送 Agent 消息').press('Meta+Enter');
   await expect.poll(() => queuedDispatchPosts).toBe(1);
   await page.waitForTimeout(250);
   expect(queuedDispatchPosts).toBe(1);
@@ -2192,9 +2197,9 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await activeProcess.evaluate(element => { (element as HTMLElement).dataset.stabilityMarker = 'active-process'; });
   const stableTaskPlanTop = await taskPlan.evaluate(element => element.getBoundingClientRect().top);
   transientIdleReadiness = true;
-  await expect(page.getByRole('button', { name: '正在同步 Agent 状态' })).toBeDisabled();
+  await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toBeEnabled();
   await expect(page.getByRole('button', { name: '发送消息' })).toHaveCount(0);
-  await expect(composer).toBeDisabled();
+  await expect(composer).toBeEnabled();
   await expect(activeProcess).toHaveJSProperty('open', true);
   await expect(activeProcess).toHaveClass(/active/);
   await expect(activeProcess).toHaveAttribute('data-stability-marker', 'active-process');

@@ -946,6 +946,7 @@ function turnProcessBlocks(
   finishedAt: number | undefined,
   active: boolean,
 ): TurnProcessBlock[] {
+  if (!items.length) return [];
   return [{ kind: 'activity', id: 'activity-0', items, startedAt, finishedAt, active }];
 }
 
@@ -1998,22 +1999,17 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
     scrollInteractionTowardLatest.current = false;
   }, [updateScrollPosition]);
   const scheduleLatestAlignment = useCallback(() => {
-    if (!followLatest.current || userScrolledAway.current) return;
-    if (automaticScrollFrame.current !== undefined) window.cancelAnimationFrame(automaticScrollFrame.current);
+    if (!followLatest.current || userScrolledAway.current || automaticScrollFrame.current !== undefined) return;
     automaticScrollFrame.current = window.requestAnimationFrame(() => {
       automaticScrollFrame.current = undefined;
       if (followLatest.current && !userScrolledAway.current) alignWithLatest();
     });
   }, [alignWithLatest]);
   const handleNativeContentToggle = useCallback(() => {
-    // Native <details> changes do not necessarily re-render React. Preserve
-    // the latest anchor in the layout event itself; a reader's explicit lock
-    // still takes precedence over this programmatic height change.
-    if (followLatest.current && !userScrolledAway.current) {
-      alignWithLatest();
-      scheduleLatestAlignment();
-    }
-  }, [alignWithLatest, scheduleLatestAlignment]);
+    // Native <details> changes do not necessarily re-render React. Queue the
+    // alignment with other content growth so one layout change writes once.
+    scheduleLatestAlignment();
+  }, [scheduleLatestAlignment]);
   useEffect(() => {
     const observedContent = content.current;
     if (!observedContent) return;
@@ -2059,29 +2055,29 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
     onHistoryAnchorRestored?.(historyPrepend);
   }, [alignWithLatest, conversationScope, historyPrepend, onHistoryAnchorCaptured, onHistoryAnchorRestored]);
   // A REST reconciliation may replace event objects without adding visible
-  // content. Only event identities or appended live text may move the viewport;
-  // readiness, status, animation, and ResizeObserver updates never write it.
+  // content. New process events and post-layout growth share one frame-bound
+  // alignment, so a running turn remains anchored without double-jumping.
   useLayoutEffect(() => {
     const contentChanged = previousContentSignal.current !== contentGrowthSignal;
     previousContentSignal.current = contentGrowthSignal;
     if (!initialPositioned.current && (turns.length || isGenerating)) {
       initialPositioned.current = true;
       alignWithLatest();
-    } else if (contentChanged && followLatest.current && !userScrolledAway.current) {
-      alignWithLatest();
+    } else if (contentChanged) {
+      scheduleLatestAlignment();
     }
-  }, [alignWithLatest, contentGrowthSignal, isGenerating, turns.length]);
+  }, [alignWithLatest, contentGrowthSignal, isGenerating, scheduleLatestAlignment, turns.length]);
   useLayoutEffect(() => {
     const observedContent = content.current;
     if (!observedContent || typeof ResizeObserver === 'undefined' || !contentGrowthSignal) return;
-    const targets = observedContent.querySelectorAll<HTMLElement>('.conversation-message[data-conversation-event-id]');
-    const latestContent = targets.item(targets.length - 1);
-    if (!latestContent) return;
+    const turns = observedContent.querySelectorAll<HTMLElement>('[data-conversation-turn]');
+    const latestTurn = turns.item(turns.length - 1);
+    if (!latestTurn) return;
     const observer = new ResizeObserver(() => {
       if (!followLatest.current || userScrolledAway.current) return;
       scheduleLatestAlignment();
     });
-    observer.observe(latestContent);
+    observer.observe(latestTurn);
     return () => observer.disconnect();
   }, [contentGrowthSignal, scheduleLatestAlignment]);
 

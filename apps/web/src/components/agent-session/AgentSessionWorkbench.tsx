@@ -6815,17 +6815,20 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const conversationInitialLoading = Boolean(
     selected && (selectedHydrationPhase === 'loading' || fallbackHydrationPending),
   );
-  // Keep the composer control and the visual activity projection in one state
-  // machine. Formal events can keep the transcript visibly active while the
-  // native readiness read is catching up, but must not degrade its main action
-  // into an unexplained disabled send button.
+  // A formal unfinished turn remains actionable while readiness catches up.
+  // The Runtime still authorizes the interrupt request, so this does not use
+  // browser-local presentation to declare a native turn terminal.
+  const interruptableActiveTurn = canInterrupt && (
+    effectiveTurnState === 'running'
+    || (conversationVisuallyActive && hasUnfinishedFormalTurn)
+  );
   const composerControlMode: ComposerControlMode = selectedCondensing
     ? 'condensing'
     : !selected && !conversationDraft
       ? 'read-only'
       : conversationInitialLoading
         ? 'reconciling'
-        : effectiveTurnState === 'running' && canInterrupt
+        : interruptableActiveTurn
           ? 'running'
           : selected && !canWrite
             ? 'read-only'
