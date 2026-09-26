@@ -2107,7 +2107,7 @@ test('Conversation sidebar pins locally, orders activity, and reveals the select
   const rootRow = rootConversation.locator('xpath=..');
   const acknowledgeAlert = rootRow.getByRole('button', { name: '确认会话异常已读' });
   await expect(acknowledgeAlert).toBeVisible();
-  await acknowledgeAlert.click();
+  await rootConversation.click();
   await expect(acknowledgeAlert).toHaveCount(0);
   await expect.poll(() => unreadWrites).toEqual([{ id: 'sidebar-root-unread', unread: false }]);
 

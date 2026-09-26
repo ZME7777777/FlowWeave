@@ -4695,8 +4695,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   }, [api, host, queryClient, workspace]);
   const markConversationRead = useCallback((bindingId: string) => {
     const systemAlert = possiblyStuckConversationIds.has(bindingId) || failedConversationIds.has(bindingId);
-    if (unreadConversationIds.has(bindingId)) setConversationUnread(bindingId, false, systemAlert ? 'SYSTEM' : undefined);
-  }, [failedConversationIds, possiblyStuckConversationIds, setConversationUnread, unreadConversationIds]);
+    setConversationUnread(bindingId, false, systemAlert ? 'SYSTEM' : undefined);
+  }, [failedConversationIds, possiblyStuckConversationIds, setConversationUnread]);
   const markConversationUnread = useCallback((bindingId: string) => {
     // An explicit user choice must override a system-origin alert even when
     // the binding was already unread, restoring the ordinary blue marker.
