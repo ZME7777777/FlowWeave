@@ -10170,6 +10170,7 @@ def attempt_detail(
         "state_version": attempt.state_version,
         "runtime_phase": attempt.runtime_phase,
         "conversation_id": attempt.conversation_id,
+        "binding_id": session_binding.id if session_binding is not None else None,
         "workspace_ref": attempt.workspace_ref,
         "startup_mode": attempt.startup_mode,
         "startup_capability_key": attempt.startup_capability_key,

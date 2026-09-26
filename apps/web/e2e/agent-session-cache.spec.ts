@@ -94,6 +94,145 @@ test('Agent session hydrates the first screen without parallel Runtime snapshot 
 });
 
 
+test('Accepted message hides stale monitoring until its formal event arrives', async ({ page }) => {
+  let authenticated = false;
+  let messageAccepted = false;
+  let formalMessageVisible = false;
+  const workspace = { id: 'stale-monitoring-workspace', display_name: '陈旧监控工作区', desired_state: 'RUNNING', updated_at: now };
+  const conversation = {
+    id: 'stale-monitoring-conversation', display_title: '陈旧监控会话', title_state: 'MANUAL', lifecycle: 'ACTIVE',
+    streaming_callback_ready: true, write_available: true, execution_status: 'idle', created_at: now, updated_at: now,
+  };
+  const staleMonitoring = {
+    last_event_id: 'prior-turn', last_event_type: 'MESSAGE', last_event_at: '2026-09-12T09:28:00Z',
+    seconds_since_event: 90, stale_after_seconds: 60, possibly_stuck: true, subagent_count: 0, active_subagents: [],
+  };
+  const events = () => [
+    { id: 'prior-turn', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '上一轮请求', timestamp: '2026-09-12T09:28:00Z' } },
+    ...(formalMessageVisible ? [{ id: 'accepted-message', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'prior-turn', content: '刚发送的消息', timestamp: now } }] : []),
+  ];
+
+  await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path.endsWith('/auth/me')) return authenticated
+      ? json(route, user)
+      : json(route, { error: { code: 'AUTHENTICATION_REQUIRED', message: '请先登录' } }, 401);
+    if (path.endsWith('/auth/login') && request.method() === 'POST') { authenticated = true; return json(route, user); }
+    if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
+    if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
+    if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, {
+      items: [{ ...conversation, execution_status: messageAccepted ? 'running' : 'idle' }], next_cursor: null,
+    });
+    if (path.endsWith('/hydration')) return json(route, {
+      events: { events: events(), next_cursor: null, history_cursor: null, monitoring: staleMonitoring },
+      context: { model_name: 'test-model', window_tokens: 128_000, used_tokens: 0, usage_current: true },
+      readiness: { ready: !messageAccepted, execution_status: messageAccepted ? 'running' : 'idle' },
+    });
+    if (path.endsWith('/events')) return json(route, {
+      events: events(), next_cursor: null, history_cursor: null, monitoring: staleMonitoring,
+    });
+    if (path.endsWith('/input-readiness')) return json(route, {
+      ready: !messageAccepted, execution_status: messageAccepted ? 'running' : 'idle',
+    });
+    if (path.endsWith('/messages') && request.method() === 'POST') {
+      messageAccepted = true;
+      return json(route, { accepted: true, cursor: 'accepted-message' }, 202);
+    }
+    if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
+    if (path.endsWith('/work-directories')) return json(route, {
+      root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [],
+    });
+    if (path.endsWith('/workspace')) return json(route, {
+      root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' },
+      working_directory: '/runtime/workspace/project', work_directory: null, files: [], repositories: [],
+      runtime: {}, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '不可用', note: '' } },
+    });
+    if (path.endsWith('/model-providers')) return json(route, [{
+      id: 'test-provider', name: '测试模型', connection_state: 'CONNECTED', models: [{ model_name: 'test-model', enabled: true, is_default: true }],
+    }]);
+    if (path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
+    if (path.includes('/conversations/') && request.method() === 'GET') return json(route, conversation);
+    return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+  });
+
+  await page.goto('/');
+  await login(page);
+  await page.goto('/agent/conversations/stale-monitoring-conversation');
+  await page.getByLabel('发送 Agent 消息').fill('刚发送的消息');
+  await page.getByRole('button', { name: '发送消息' }).click();
+  await expect(page.getByText('正在提交消息', { exact: true })).toBeVisible();
+  await expect(page.getByRole('img', { name: '会话正在运行但后台长时间未产生可确认进展' })).toHaveCount(0);
+
+  formalMessageVisible = true;
+  await page.reload();
+  await expect(page.locator('[data-user-event-id="accepted-message"]')).toBeVisible();
+  await expect(page.getByText('后台长时间未产生可确认进展。可暂停后继续以重新建立调用。', { exact: true })).toBeVisible();
+});
+
+
+test('Generated conversation title updates both the sidebar and current header', async ({ page }) => {
+  let authenticated = false;
+  let generated = false;
+  const workspace = {
+    id: 'generated-title-workspace', display_name: '自动标题工作区', desired_state: 'RUNNING', updated_at: now,
+  };
+  const initialConversation = {
+    id: 'generated-title-conversation', display_title: '原始标题', title_state: 'PENDING',
+    lifecycle: 'ACTIVE', streaming_callback_ready: true, write_available: true, execution_status: 'idle',
+    created_at: now, updated_at: now,
+  };
+  const generatedConversation = {
+    ...initialConversation, display_title: '自动生成的标题', title_state: 'GENERATED' as const,
+  };
+
+  await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path.endsWith('/auth/me')) return authenticated
+      ? json(route, user)
+      : json(route, { error: { code: 'AUTHENTICATION_REQUIRED', message: '请先登录' } }, 401);
+    if (path.endsWith('/auth/login') && request.method() === 'POST') { authenticated = true; return json(route, user); }
+    if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
+    if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
+    if (path.endsWith('/conversations') && request.method() === 'GET') {
+      return json(route, { items: [generated ? generatedConversation : initialConversation], next_cursor: null });
+    }
+    if (path.endsWith('/hydration')) return json(route, {
+      events: { events: [], next_cursor: null, history_cursor: null, result: { status: 'COMPLETED' } },
+      context: { model_name: 'test-model', window_tokens: 128_000, used_tokens: 0, usage_current: true },
+      readiness: { ready: true, execution_status: 'idle' },
+    });
+    if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
+    if (path.endsWith('/work-directories')) return json(route, {
+      root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [],
+    });
+    if (path.endsWith('/workspace')) return json(route, {
+      root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' },
+      working_directory: '/runtime/workspace/project', work_directory: null, files: [], repositories: [],
+      runtime: {}, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '不可用', note: '' } },
+    });
+    if (path.endsWith('/model-providers') || path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
+    if (path.includes('/conversations/') && request.method() === 'GET') return json(route, initialConversation);
+    return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+  });
+
+  await page.goto('/');
+  await login(page);
+  await page.goto('/agent/conversations/generated-title-conversation');
+  const sidebarConversation = page.locator('[data-conversation-binding-id="generated-title-conversation"]');
+  const headerTitle = page.locator('.agent-session-title');
+  await expect(sidebarConversation).toContainText('原始标题');
+  await expect(headerTitle).toHaveText('原始标题');
+
+  generated = true;
+  await expect(sidebarConversation).toContainText('自动生成的标题', { timeout: 5_000 });
+  await expect(headerTitle).toHaveText('自动生成的标题');
+});
+
+
 test('Completed conversation shows an explicit loading state without appearing to think', async ({ page }) => {
   let authenticated = false;
   let releaseHydration: (() => void) | undefined;
@@ -1583,8 +1722,15 @@ test('Background running conversations stay visible without blocking the convers
   await expect(backgroundRow.locator('.agent-workspace-conversation-running')).toHaveCount(0);
 
   releaseActivity?.();
-  await expect(backgroundRow.locator('.agent-workspace-conversation-running')).toBeVisible();
+  const runningIndicator = backgroundRow.locator('.agent-workspace-conversation-running');
+  await expect(runningIndicator).toBeVisible();
   await expect(selectedRow.locator('.agent-workspace-conversation-running')).toHaveCount(0);
+
+  await backgroundRow.getByRole('button', { name: '后台运行会话', exact: true }).click();
+  await expect(page).toHaveURL(/\/agent\/conversations\/background-running-conversation$/);
+  await expect(backgroundRow).toHaveClass(/active/);
+  await backgroundRow.hover();
+  await expect(runningIndicator).toBeVisible();
 });
 
 
@@ -1656,7 +1802,7 @@ test('Running Agent session reload restores older history pages', async ({ page 
   expect(historyRequests).toBe(completedHistoryRequests);
 });
 
-test('Conversation context menu marks a conversation unread until it is opened again', async ({ page }) => {
+test('Conversation context menu marks a conversation unread until it is opened or marked read', async ({ page }) => {
   let authenticated = false;
   const workspace = { id: 'unread-workspace', display_name: '未读工作区', desired_state: 'RUNNING', updated_at: now };
   const conversations = ['unread-conversation-a', 'unread-conversation-b'].map((id, index) => ({
@@ -1733,9 +1879,40 @@ test('Conversation context menu marks a conversation unread until it is opened a
   await expect(unreadMarker).toBeVisible();
 
   await page.getByRole('button', { name: /查看活动会话/ }).click();
-  await conversationA.click();
+  const activity = page.getByRole('region', { name: '活动会话' });
+  const activityConversationA = activity.getByRole('button', { name: '未读会话 A', exact: true });
+  await activityConversationA.click();
+  await expect(activity).toBeVisible();
+  await expect(unreadMarker).toBeVisible();
+  await expect.poll(() => unreadWrites).toEqual([
+    { id: 'unread-conversation-a', unread: true },
+    { id: 'unread-conversation-a', unread: false },
+    { id: 'unread-conversation-a', unread: true },
+  ]);
+
+  await activityConversationA.click({ button: 'right' });
+  await page.getByRole('menuitem', { name: '标记为已读' }).click();
+  await expect(activityConversationA).toHaveCount(0);
+  await expect.poll(() => unreadWrites).toEqual([
+    { id: 'unread-conversation-a', unread: true },
+    { id: 'unread-conversation-a', unread: false },
+    { id: 'unread-conversation-a', unread: true },
+    { id: 'unread-conversation-a', unread: false },
+  ]);
+
+  await page.getByRole('button', { name: '返回工作区列表' }).click();
+  await conversationA.click({ button: 'right' });
+  await page.getByRole('menuitem', { name: '标记为未读' }).click();
+  await page.getByRole('button', { name: /查看活动会话/ }).click();
+  await expect(activityConversationA).toBeVisible();
+
+  await activityConversationA.dblclick();
+  await expect(page).toHaveURL(/\/agent\/conversations\/unread-conversation-a$/);
+  await expect(activity).toHaveCount(0);
   await expect(unreadMarker).toHaveCount(0);
   await expect.poll(() => unreadWrites).toEqual([
+    { id: 'unread-conversation-a', unread: true },
+    { id: 'unread-conversation-a', unread: false },
     { id: 'unread-conversation-a', unread: true },
     { id: 'unread-conversation-a', unread: false },
     { id: 'unread-conversation-a', unread: true },
@@ -1919,9 +2096,6 @@ test('Conversation sidebar pins locally, orders activity, and reveals the select
   await expect(page.getByRole('region', { name: '置顶会话' })).toHaveCount(0);
   await expect(page.locator('.agent-workspace-group').filter({ hasText: '归属工作区' }).getByRole('button', { name: '归属工作区会话', exact: true })).toBeVisible();
 
-  const stalledConversation = page.getByRole('button', { name: '运行中目标会话', exact: true });
-  await stalledConversation.click({ button: 'right' });
-  await page.getByRole('menuitem', { name: '标记为未读' }).click();
   await page.getByRole('button', { name: /查看活动会话/ }).click();
   const activity = page.getByRole('region', { name: '活动会话' });
   await expect(activity).toBeVisible();
@@ -1931,8 +2105,10 @@ test('Conversation sidebar pins locally, orders activity, and reveals the select
   ]);
   await expect(activity.locator('[data-conversation-binding-id="sidebar-directory-running"]')).toContainText('归属工作区');
   await expect(activity.locator('[data-conversation-binding-id="sidebar-root-unread"]')).toContainText('根工作区');
-  await expect(activity.locator('[data-conversation-binding-id="sidebar-directory-running"]').getByRole('img', { name: '后台长时间未产生可确认进展' })).toHaveCount(0);
-  await expect(activity.locator('[data-conversation-binding-id="sidebar-directory-running"]').getByRole('img', { name: '会话有未读回复' })).toBeVisible();
+  const stalledRow = activity.locator('[data-conversation-binding-id="sidebar-directory-running"]');
+  await expect(stalledRow.getByRole('img', { name: '后台长时间未产生可确认进展' })).toBeVisible();
+  await expect(stalledRow.locator('.agent-workspace-conversation-alert.running')).toBeVisible();
+  await expect(stalledRow.getByRole('img', { name: '会话有未读回复' })).toHaveCount(0);
   await expect(activity.locator('[data-conversation-binding-id="sidebar-root-unread"]').getByRole('img', { name: '会话异常结束' })).toBeVisible();
   await expect(activity.locator('[data-conversation-binding-id="sidebar-root-unread"]').getByRole('img', { name: '会话已完成，有未读回复' })).toHaveCount(0);
   const failedRow = activity.locator('[data-conversation-binding-id="sidebar-root-unread"]');

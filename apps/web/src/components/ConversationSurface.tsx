@@ -1,4 +1,4 @@
-import { BookOpen, Check, ChevronDown, ChevronRight, CircleAlert, ClipboardList, Copy, ExternalLink, Eye, FileCode2, FileCog, FileJson, FilePenLine, FilePlus2, FileText, FileType2, GitFork, Link, LoaderCircle, PanelRightOpen, Pencil, PlugZap, Quote, Sparkles, SquareTerminal, Workflow, Wrench } from 'lucide-react';
+import { BookOpen, Check, ChevronDown, ChevronRight, CircleAlert, ClipboardList, Copy, ExternalLink, Eye, FileCode2, FileCog, FileJson, FilePenLine, FilePlus2, FileText, FileType2, GitFork, Link, LoaderCircle, PanelRightOpen, Pencil, PlugZap, Quote, Search, Sparkles, SquareTerminal, Workflow, Wrench } from 'lucide-react';
 import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type RefObject } from 'react';
 import type { AgentActivitySummary, AgentAttachment, AgentConversationAnnotation, AgentConversationReference, AgentWorkspaceReference, OpenHandsConversationEvent, RuntimeTaskControlSnapshot } from '../types';
 import { SubagentAvatar } from './SubagentAvatar';
@@ -703,7 +703,7 @@ function fileToolIcon(presentation: ActivityPresentation) {
   if (presentation.fileKind === 'config') return FileCog;
   if (presentation.fileKind === 'data') return FileJson;
   if (presentation.fileKind === 'markdown') return FileType2;
-  if (presentation.fileOperation === 'read') return Eye;
+  if (presentation.fileOperation === 'read') return Search;
   return FileText;
 }
 
@@ -1236,7 +1236,7 @@ function ProgressActivity({ group, active, paused, parentFailed, avatarSlots, wo
   </details>;
 }
 
-function ActivityGroup({ items, active, completionConfirmed = false, paused = false, parentFailed = false, startedAt, finishedAt, avatarSlots, workspaceRoot }: {
+interface ActivityGroupProps {
   items: Item[];
   active: boolean;
   completionConfirmed?: boolean;
@@ -1246,7 +1246,15 @@ function ActivityGroup({ items, active, completionConfirmed = false, paused = fa
   finishedAt?: number;
   avatarSlots: ReadonlyMap<string, SubagentAvatarSlot>;
   workspaceRoot?: string | null;
-}) {
+}
+
+function sameActivityItems(left: Item[], right: Item[]): boolean {
+  return left.length === right.length && left.every((item, index) => (
+    item.event === right[index]?.event && item.kind === right[index]?.kind
+  ));
+}
+
+const ActivityGroup = memo(function ActivityGroup({ items, active, completionConfirmed = false, paused = false, parentFailed = false, startedAt, finishedAt, avatarSlots, workspaceRoot }: ActivityGroupProps) {
   const elapsed = elapsedSeconds(startedAt, finishedAt);
   const entries = groupedActivities(items);
   const rows = activityRows(entries);
@@ -1271,7 +1279,7 @@ function ActivityGroup({ items, active, completionConfirmed = false, paused = fa
     ? '已暂停，结果未返回'
     : parentFailed && hasUnfinishedTask ? '本轮异常结束，结果未返回'
       : elapsed === undefined ? '工作过程' : `耗时 ${formatDuration(elapsed)}`;
-  const summary = <><ChevronRight size={14}/><span>{active && startedAt !== undefined ? <LiveElapsed startedAt={startedAt}/> : active ? '处理中' : label}</span>{itemCount > 0 && <small>{itemCount} 项</small>}<span className={`conversation-activity-spinner-slot${active ? ' active' : ''}`} aria-hidden="true"><LoaderCircle className="conversation-activity-spin" size={13}/></span></>;
+  const summary = <><ChevronRight size={14}/><span className="conversation-activity-status"><span>{active && startedAt !== undefined ? <LiveElapsed startedAt={startedAt}/> : active ? '处理中' : label}</span><span className={`conversation-activity-spinner-slot${active ? ' active' : ''}`} aria-hidden="true"><LoaderCircle className="conversation-activity-spin" size={13}/></span></span>{itemCount > 0 && <small>{itemCount} 项</small>}</>;
   const hasDetails = itemCount > 0;
   if (!hasDetails) return <div className="conversation-activity-group summary-only"><div className="conversation-activity-summary">{summary}</div></div>;
   return <details className={`conversation-activity-group${active ? ' active' : ''}`} open={open} onToggle={event => setOpen(event.currentTarget.open)}>
@@ -1282,7 +1290,16 @@ function ActivityGroup({ items, active, completionConfirmed = false, paused = fa
         : <ActivityEntryRow key={row.entry.id} entry={row.entry} active={active} paused={paused} parentFailed={parentFailed} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/>)}
     </div>
   </details>;
-}
+}, (previous, next) => (
+  previous.active === next.active
+  && previous.completionConfirmed === next.completionConfirmed
+  && previous.paused === next.paused
+  && previous.parentFailed === next.parentFailed
+  && previous.startedAt === next.startedAt
+  && previous.finishedAt === next.finishedAt
+  && previous.workspaceRoot === next.workspaceRoot
+  && sameActivityItems(previous.items, next.items)
+));
 
 function AnnotationReplyContent({ content, annotations, onLocateAnnotation, onOpenWorkspaceFile, onOpenImage }: {
   content: string;
@@ -1566,6 +1583,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
   const userScrolledAway = useRef(false);
   const scrollInteractionStartY = useRef<number | null>(null);
   const scrollInteractionTowardLatest = useRef(false);
+  const scrollbarVisibilityTimer = useRef<number | undefined>(undefined);
   const automaticScrollFrame = useRef<number | undefined>(undefined);
   const messageNavigation = useRef<HTMLElement>(null);
   const messageNavigationAtLatest = useRef(true);
@@ -1745,7 +1763,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
         setReferenceHighlightRects([]);
         if (window.getSelection()?.toString() === highlightedReference.quote) window.getSelection()?.removeAllRanges();
         referenceHighlightTimer.current = undefined;
-      }, 3_800);
+      }, 1_500);
     }
     return true;
   }, [highlightedReference]);
@@ -1962,6 +1980,19 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
   const handleMessageNavigationPointerLeave = useCallback(() => {
     if (messageNavigationDragPointerId.current === undefined) clearMessageNavigationPreview();
   }, [clearMessageNavigationPreview]);
+  const showScrollbarTemporarily = useCallback(() => {
+    const element = surface.current;
+    if (!element) return;
+    element.classList.add('scrollbar-visible');
+    if (scrollbarVisibilityTimer.current !== undefined) window.clearTimeout(scrollbarVisibilityTimer.current);
+    scrollbarVisibilityTimer.current = window.setTimeout(() => {
+      surface.current?.classList.remove('scrollbar-visible');
+      scrollbarVisibilityTimer.current = undefined;
+    }, 700);
+  }, []);
+  useEffect(() => () => {
+    if (scrollbarVisibilityTimer.current !== undefined) window.clearTimeout(scrollbarVisibilityTimer.current);
+  }, []);
   const handleScroll = useCallback(() => {
     updateScrollPosition();
     scrollInteractionTowardLatest.current = false;
@@ -2170,6 +2201,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
     <section ref={surface} className="conversation-surface" aria-live="polite" onScroll={() => { handleScroll(); setSelectedReference(undefined); }} onClickCapture={event => {
       if (event.target instanceof Element && event.target.closest('summary')) scheduleLatestAlignment();
     }} onWheelCapture={event => {
+      showScrollbarTemporarily();
       const element = surface.current;
       if (event.deltaY < 0 && (element?.scrollTop ?? 0) > 0) stopFollowingLatest();
       else if (event.deltaY > 0) scrollInteractionTowardLatest.current = true;
@@ -2177,11 +2209,13 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
       // Touch drags always belong to the viewport. For a mouse, only track
       // the native scrollbar itself so text selection cannot disable follow.
       if (event.pointerType === 'touch' || event.target === surface.current) {
+        if (event.pointerType === 'mouse') showScrollbarTemporarily();
         scrollInteractionStartY.current = event.clientY;
         scrollInteractionTowardLatest.current = false;
       }
     }} onPointerMoveCapture={event => {
       if (scrollInteractionStartY.current === null) return;
+      if (event.pointerType === 'mouse') showScrollbarTemporarily();
       if (event.clientY - scrollInteractionStartY.current > 3 && (surface.current?.scrollTop ?? 0) > 0) stopFollowingLatest();
       else if (scrollInteractionStartY.current - event.clientY > 3) scrollInteractionTowardLatest.current = true;
     }} onPointerUp={event => { scrollInteractionStartY.current = null; offerSelectedReference(event); }} onPointerCancel={() => { scrollInteractionStartY.current = null; }} onKeyDown={event => {

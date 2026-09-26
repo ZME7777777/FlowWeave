@@ -3,7 +3,7 @@ import '@xyflow/react/dist/style.css';
 import { AlertTriangle, ArrowLeft, Bot, Boxes, Check, ChevronDown, ChevronRight, Copy, Download, ExternalLink, Eye, FileText, FolderClosed, GripVertical, Layers3, Play, Plus, RefreshCw, Send, StopCircle, Trash2, Upload, X } from 'lucide-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
-import { api, artifactContentUrl, subscribeToRun } from '../api/client';
+import { ApiError, api, artifactContentUrl, subscribeToRun } from '../api/client';
 import { flowMappingEdgeTypes, withMappingLabelOffsets } from '../components/flowMappingEdgeLayout';
 import { isOpenHandsAgentReply } from '../components/conversationEvents';
 import { Pagination } from '../components/Pagination';
@@ -1356,12 +1356,26 @@ function AutomaticRecordEditor({ parent, record, selectedKey, onDraft, onSaved }
     onDraft({ ...record, node_plans: nextPlans, artifacts: inputArtifacts });
   };
   const save = useMutation({
-    mutationFn: () => {
+    mutationFn: async () => {
       const nodePlans = activeKey && plan ? { ...plans, [activeKey]: plan } : plans;
-      return api.updateAutomaticRecord(parent.id, record.id, {
-        expected_row_version: record.row_version, name: name.trim() || record.name,
-        start_node_key: record.start_node_key, node_plans: nodePlans,
-      });
+      const payload = {
+        name: name.trim() || record.name,
+        start_node_key: record.start_node_key,
+        node_plans: nodePlans,
+      };
+      try {
+        return await api.updateAutomaticRecord(parent.id, record.id, {
+          expected_row_version: record.row_version,
+          ...payload,
+        });
+      } catch (reason) {
+        if (!(reason instanceof ApiError) || reason.code !== 'VERSION_CONFLICT') throw reason;
+        const latest = await api.automaticRecord(parent.id, record.id);
+        return api.updateAutomaticRecord(parent.id, record.id, {
+          expected_row_version: latest.row_version,
+          ...payload,
+        });
+      }
     },
     onMutate: () => setSaveFeedback(''),
     onSuccess: saved => {
@@ -2083,21 +2097,29 @@ export function WorkbenchPage() {
   };
   const startStepwiseNode = (record: NodeRun) => {
     const latest = record.attempts.at(-1);
-    if (!latest || latest.state !== 'WAITING_START_CONFIRMATION') return;
+    if (!latest || latest.state !== 'WAITING_START_CONFIRMATION' || !selectedStepwise) return;
     setManualBusyId(record.id);
     void api.confirmStart(latest.id, latest.state_version, { startup_mode: 'PROMPT', prompt: latest.startup_prompt ?? undefined }).then(started => {
-      qc.setQueryData<FlowRunStepwiseRecord>(['flow-run-stepwise-record', parentRun.id, selectedStepwiseId], current => current ? {
+      qc.setQueryData<FlowRunStepwiseRecord>(['flow-run-stepwise-record', parentRun.id, selectedStepwise.id], current => current ? {
         ...current,
         state: 'ACTIVE',
         node_runs: current.node_runs.map(item => item.id === record.id ? {
           ...item, attempts: item.attempts.map(candidate => candidate.id === started.id ? started : candidate),
         } : item),
       } : current);
+      openNodeSession(
+        selectedStepwise.id,
+        record.id,
+        started.id,
+        started.binding_id ?? undefined,
+        { runId: parentRun.id, mode: 'MANUAL', stepwiseRecordId: selectedStepwise.id },
+      );
     }).catch(reason => {
       window.alert(reason instanceof Error ? reason.message : '启动节点失败，请稍后重试。');
     }).finally(() => {
       setManualBusyId(undefined);
       void stepwiseDetail.refetch();
+      void qc.invalidateQueries({ queryKey: ['flow-run-stepwise-records', parentRun.id] });
     });
   };
   const refreshExecutionRecord = () => {

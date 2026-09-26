@@ -322,7 +322,7 @@ export interface NodeAttempt {
   id: string; node_run_id: string; attempt_no: number; snapshot_id: string;
   state: AttemptState; state_version: number; runtime_phase?: string | null;
   runtime_adapter?: string | null;
-  runtime_job_id?: string | null; conversation_id?: string | null; runtime_cursor?: string | null;
+  runtime_job_id?: string | null; conversation_id?: string | null; binding_id?: string | null; runtime_cursor?: string | null;
   workspace_ref?: string | null; error_code?: string | null; error_detail?: string | null;
   runtime_cancel_recovery_modes: Array<'RECONCILE_PARENT' | 'DELETE_MANAGED_RUNTIME'>;
   startup_mode?: 'SKILL' | 'PROMPT' | 'CHAT'; startup_capability_key?: string | null;

@@ -1755,6 +1755,8 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(activeProcess).toHaveClass(/summary-only/);
   const elapsedLabel = activeProcess.getByText(/已耗时 \d+秒/);
   await expect(elapsedLabel).toBeVisible();
+  const activityStatus = activeProcess.locator('.conversation-activity-status');
+  await expect(activityStatus).toHaveCSS('gap', '3px');
   await expect(activeProcess.locator('.conversation-response-wait')).toHaveCount(0);
   await expect(page.locator('.conversation-turn-status')).toHaveText('OpenHands 会话连接正常，等待响应');
   await activeProcess.evaluate(element => { (element as HTMLElement).dataset.periodicRenderMarker = 'stable'; });
@@ -1775,6 +1777,9 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(activeProcess).toHaveAttribute('data-periodic-render-marker', 'stable');
   await expect(page.getByLabel('Agent 活动提醒')).toHaveCount(0);
   await expect.poll(() => Boolean(agentStream)).toBe(true);
+  const initialSpinnerTransform = await activeProcess.locator('.conversation-activity-spin').evaluate(element => getComputedStyle(element).transform);
+  await page.waitForTimeout(350);
+  await expect.poll(() => activeProcess.locator('.conversation-activity-spin').evaluate(element => getComputedStyle(element).transform)).not.toBe(initialSpinnerTransform);
   // Running reconciliation occurs every four seconds. A response with no new
   // formal event must retain the mounted transcript and its scroll position.
   const eventRequestsBeforeIdleRecovery = runningEventRequests;
@@ -2183,7 +2188,9 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await activeProcess.evaluate(element => { (element as HTMLElement).dataset.stabilityMarker = 'active-process'; });
   const stableTaskPlanTop = await taskPlan.evaluate(element => element.getBoundingClientRect().top);
   transientIdleReadiness = true;
-  await expect(page.getByRole('button', { name: '发送消息' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '正在同步 Agent 状态' })).toBeDisabled();
+  await expect(page.getByRole('button', { name: '发送消息' })).toHaveCount(0);
+  await expect(composer).toBeDisabled();
   await expect(activeProcess).toHaveJSProperty('open', true);
   await expect(activeProcess).toHaveClass(/active/);
   await expect(activeProcess).toHaveAttribute('data-stability-marker', 'active-process');
@@ -2691,6 +2698,7 @@ test('selected conversation text is sent and rendered as a compact reference car
   await page.evaluate(() => window.getSelection()?.removeAllRanges());
   await expect(referenceHighlights).not.toHaveCount(0);
   await expect(referenceHighlights.first()).toHaveCSS('background-color', 'rgba(183, 223, 255, 0.85)');
+  await expect(referenceHighlights).toHaveCount(0, { timeout: 2_000 });
   await page.getByLabel('发送 Agent 消息').fill('请据此继续');
   await page.getByRole('button', { name: '发送消息' }).click();
   await expect.poll(() => sentPayload).toMatchObject({
