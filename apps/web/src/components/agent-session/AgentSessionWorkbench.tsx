@@ -217,6 +217,8 @@ interface LocalMessageProjection {
   scope: string;
   renderKey: string;
   canonicalEventId?: string;
+  suppressedFormalEventId?: string;
+  localOnly?: boolean;
   state: LocalMessageProjectionState;
   event: OpenHandsConversationEvent;
   formalEventIdsAtSubmission: Set<string>;
@@ -1615,7 +1617,10 @@ function projectLocalMessages(
   formalEvents: OpenHandsConversationEvent[],
   projections: LocalMessageProjection[],
 ): OpenHandsConversationEvent[] {
-  const projected = [...formalEvents];
+  const suppressedFormalEventIds = new Set(
+    projections.flatMap(item => item.localOnly && item.suppressedFormalEventId ? [item.suppressedFormalEventId] : []),
+  );
+  const projected = formalEvents.filter(event => !suppressedFormalEventIds.has(event.id));
 
   for (const local of projections) {
     const formalIndex = local.canonicalEventId
@@ -1647,7 +1652,7 @@ function projectLocalMessages(
     else projected.push(localEvent);
   }
 
-  const unresolved = projections.filter(item => !item.canonicalEventId);
+  const unresolved = projections.filter(item => !item.canonicalEventId && !item.suppressedFormalEventId);
   const unclaimedRoots = projected.flatMap(event => {
     const isUserMessage = event.event_type === 'MESSAGE'
       && ['user', 'human'].includes(String(event.payload.source ?? '').toLowerCase());
@@ -6189,6 +6194,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     message: QueuedMessage,
     idPrefix = 'pending-user',
     state: LocalMessageProjectionState = 'submitting',
+    localOnly = false,
   ): string => {
     const existing = localMessageProjections.current.get(message.id);
     if (existing) {
@@ -6196,6 +6202,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         ...existing,
         scope: message.scope,
         state,
+        localOnly: existing.localOnly || localOnly,
         event: {
           ...existing.event,
           payload: {
@@ -6229,6 +6236,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       scope: message.scope,
       renderKey,
       state,
+      localOnly,
       event,
       formalEventIdsAtSubmission: new Set((eventsQuery.data?.events ?? []).map(item => item.id)),
     }));
@@ -6255,7 +6263,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         updateLocalMessageProjections(current => {
           const projection = current.get(message.id);
           if (!projection) return;
-          current.set(message.id, { ...projection, canonicalEventId: cursor, state: 'accepted' });
+          current.set(message.id, projection.localOnly
+            ? { ...projection, canonicalEventId: cursor, suppressedFormalEventId: cursor, state: 'accepted' }
+            : { ...projection, canonicalEventId: cursor, state: 'accepted' });
         });
         releaseDeferredFormalUserEvents(message.bindingId);
       }
@@ -6304,7 +6314,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     if (sendingMessageIds.current.has(message.id)) return;
     sendingMessageIds.current.add(message.id);
     commitQueuedMessages(current => current.filter(item => item.id !== message.id));
-    showOptimisticUserBubble(message);
+    showOptimisticUserBubble(message, 'pending-user', 'submitting', message.nativeGuidance === true);
     if (!message.nativeGuidance) {
       setActiveTurnEventId(undefined);
       setRequestStartedAt(Date.now());
@@ -6614,12 +6624,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     }
     if (!canWrite) { replaceComposerDraft(content); setAttachments(attachments); setReferences(references); setWorkspaceReferences(workspaceReferences); setComposerAnnotations(composerAnnotations); return; }
     if (!selected) return;
-    // Enter only adds an editable message to the browser queue. Command/Ctrl+Enter
-    // is the explicit direct-send action (see sendDraftDirectly below).
-    const shouldQueue = queueModeEnabled
-      || selectedCondensing
-      || effectiveTurnState === 'running'
-      || (effectiveTurnState === 'idle' && !selected.streaming_callback_ready);
+    // Only a live turn or context condensation may defer Enter into the
+    // editable browser queue. Idle and paused conversations continue directly.
+    const shouldQueue = selectedCondensing || effectiveTurnState === 'running';
     const queuedMessage: QueuedMessage = {
       ...message,
       nativeGuidance: false,
@@ -6628,7 +6635,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     };
     if (shouldQueue) {
       commitQueuedMessages(items => [...items, queuedMessage]);
-      showOptimisticUserBubble(queuedMessage, 'pending-user', 'queued');
+      return;
+    }
+    if (!selected.streaming_callback_ready) {
+      migrateStreaming.mutate(queuedMessage);
       return;
     }
     dispatchMessage({ ...queuedMessage, bindingId: selected.id });

@@ -1735,12 +1735,11 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await composer.dispatchEvent('keydown', { key: 'Enter', code: 'Enter', isComposing: true });
   await expect.poll(() => sentMessages).toBe(0);
   await expect(composer).toHaveValue('maven');
-  await composer.fill('第一条排队测试消息');
+  await composer.fill('终态会话直接发送消息');
   await expect(page.locator('.agent-composer-actions .agent-send')).toHaveCount(1);
   await composer.press('Enter');
-  await expect(page.getByLabel('消息投递队列').getByText('第一条排队测试消息')).toBeVisible();
-  await expect(page.locator('.conversation-message.user').filter({ hasText: '第一条排队测试消息' })).toHaveCount(0);
-  await composer.press('Meta+Enter');
+  await expect(page.getByLabel('消息投递队列')).toHaveCount(0);
+  await expect(page.locator('.conversation-message.user').filter({ hasText: '终态会话直接发送消息' })).toBeVisible();
   await expect(page).toHaveURL(/\/agent\/conversations\/agent-conversation-streaming-1$/);
   await expect.poll(() => streamingMigrations).toBe(1);
   await expect.poll(() => streamingMigrationPayload).toEqual({
@@ -2067,13 +2066,13 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await composer.fill('运行中直接发送消息');
   await composer.press('Enter');
   const runningDirectMessage = page.locator('.conversation-message.user').filter({ hasText: '运行中直接发送消息' });
-  await expect(runningDirectMessage).toBeVisible();
-  await runningDirectMessage.evaluate(element => { (element as HTMLElement).dataset.optimisticIdentity = 'stable'; });
-  await expect(runningDirectMessage.getByText('等待发送', { exact: true })).toBeVisible();
+  await expect(runningDirectMessage).toHaveCount(0);
   await expect(page.getByLabel('消息投递队列').getByText('运行中直接发送消息')).toBeVisible();
   expect(runningDirectMessagePosts).toBe(0);
   await composer.press('Meta+Enter');
   await expect(page.getByLabel('消息投递队列').getByText('运行中直接发送消息')).toHaveCount(0);
+  await expect(runningDirectMessage).toBeVisible();
+  await runningDirectMessage.evaluate(element => { (element as HTMLElement).dataset.optimisticIdentity = 'stable'; });
   await expect(runningDirectMessage.getByText('等待发送', { exact: true })).toHaveCount(0);
   await expect.poll(() => runningDirectMessagePosts).toBe(1);
   await page.waitForTimeout(250);
