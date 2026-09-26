@@ -5719,8 +5719,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     if (scope === activeComposerScope.current) void synchronizeConversationEvents(true, 'stream_reconnect');
   }, [synchronizeConversationEvents]);
   const updateStreamStatus = useCallback((scope: string, status: StreamStatus) => {
-    if (scope === activeComposerScope.current) setStreamStatus(status);
-  }, []);
+    if (scope !== activeComposerScope.current) return;
+    setStreamStatus(status);
+    if (status === 'recovering') void synchronizeConversationEvents(true, 'stream_closed');
+  }, [synchronizeConversationEvents]);
   useEffect(() => {
     if (!streamEnabled) setStreamStatus('disabled');
   }, [streamEnabled]);
@@ -7010,7 +7012,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     // This keeps navigation reads free of Runtime calls without hiding active
     // conversations or letting a delayed batch snapshot override a terminal row.
     const running = item.id === selected?.id
-      ? conversationActivity.active
+      ? conversationVisuallyActive
       : runningConversationIds.has(item.id) || condensingConversationIds.has(item.id) || conversationIsRunning(item.execution_status);
     const possiblyStuck = item.id === selected?.id
       ? Boolean(eventsQuery.data?.monitoring?.possibly_stuck)
