@@ -118,8 +118,24 @@ def runtimes(connection: Any, *, limit: int) -> list[dict[str, Any]]:
                node_attempt.attempt_no AS node_attempt_no,
                node_attempt.state AS node_attempt_state,
                workspace.display_name AS workspace_display_name,
-               workspace.scope_key AS workspace_scope_key
+               workspace.scope_key AS workspace_scope_key,
+               observation.status AS business_diagnostic_status,
+               observation.impacted_bindings AS business_impacted_bindings,
+               observation.event_count AS business_event_count,
+               observation.readiness_status AS business_readiness_status,
+               observation.runtime_availability AS business_runtime_availability,
+               observation.stages_json AS business_stages,
+               observation.observed_at AS business_observed_at
         FROM all_runtimes AS runtime
+        LEFT JOIN LATERAL (
+          SELECT status, impacted_bindings, event_count, readiness_status,
+                 runtime_availability, stages_json, observed_at
+          FROM runtime_business_observations
+          WHERE runtime_session_id = runtime.id
+            AND generation = runtime.active_generation
+          ORDER BY observed_at DESC
+          LIMIT 1
+        ) AS observation ON true
         LEFT JOIN flow_runs AS flow_run
           ON runtime.runtime_kind = 'FLOW_RUN' AND flow_run.id = runtime.owner_id
         LEFT JOIN flow_definitions AS flow_definition
@@ -181,8 +197,24 @@ def runtime_detail(connection: Any, *, runtime_session_id: str) -> dict[str, Any
                node_attempt.attempt_no AS node_attempt_no,
                node_attempt.state AS node_attempt_state,
                workspace.display_name AS workspace_display_name,
-               workspace.scope_key AS workspace_scope_key
+               workspace.scope_key AS workspace_scope_key,
+               observation.status AS business_diagnostic_status,
+               observation.impacted_bindings AS business_impacted_bindings,
+               observation.event_count AS business_event_count,
+               observation.readiness_status AS business_readiness_status,
+               observation.runtime_availability AS business_runtime_availability,
+               observation.stages_json AS business_stages,
+               observation.observed_at AS business_observed_at
         FROM all_runtimes AS runtime
+        LEFT JOIN LATERAL (
+          SELECT status, impacted_bindings, event_count, readiness_status,
+                 runtime_availability, stages_json, observed_at
+          FROM runtime_business_observations
+          WHERE runtime_session_id = runtime.id
+            AND generation = runtime.active_generation
+          ORDER BY observed_at DESC
+          LIMIT 1
+        ) AS observation ON true
         LEFT JOIN flow_runs AS flow_run
           ON runtime.runtime_kind = 'FLOW_RUN' AND flow_run.id = runtime.owner_id
         LEFT JOIN flow_definitions AS flow_definition
@@ -364,6 +396,7 @@ def admin_operations(
                  operation.actor_user_id, operation.actor_username, operation.reason,
                  operation.request_id, operation.created_at,
                  CASE
+                   WHEN operation.action IN ('ISOLATE_RUNTIME', 'RESUME_RUNTIME') THEN 'RECORDED'
                    WHEN COALESCE(
                      flow_runtime.replacement_error_code, workspace_runtime.failure_code
                    ) IS NOT NULL THEN 'FAILED'

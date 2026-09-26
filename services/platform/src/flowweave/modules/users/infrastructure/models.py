@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import ClassVar
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, Integer, String, UniqueConstraint
+from sqlalchemy import JSON, Boolean, CheckConstraint, DateTime, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from flowweave.shared.database import Base, now, uid
@@ -61,7 +61,10 @@ class AdminRuntimeOperation(Base):
     __tenant_scoped__ = False
     owner_user_id: ClassVar[None] = None  # pyright: ignore[reportIncompatibleVariableOverride]
     __table_args__ = (
-        CheckConstraint("action = 'REPLACE_RUNTIME'", name="ck_admin_runtime_operation_action"),
+        CheckConstraint(
+            "action IN ('REPLACE_RUNTIME', 'ISOLATE_RUNTIME', 'RESUME_RUNTIME')",
+            name="ck_admin_runtime_operation_action",
+        ),
         CheckConstraint(
             "runtime_kind IN ('FLOW_RUN', 'AGENT_WORKSPACE')",
             name="ck_admin_runtime_operation_runtime_kind",
@@ -93,6 +96,38 @@ class AdminRuntimeOperation(Base):
     request_id: Mapped[str] = mapped_column(String(80), index=True)
     status: Mapped[str] = mapped_column(String(20), default="SUBMITTED")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, index=True)
+
+
+class RuntimeBusinessObservation(Base):
+    """Sanitized formal Runtime-read observation retained for administrator diagnosis."""
+
+    __tablename__ = "runtime_business_observations"
+    __tenant_scoped__ = False
+    owner_user_id: ClassVar[None] = None  # pyright: ignore[reportIncompatibleVariableOverride]
+    __table_args__ = (
+        CheckConstraint(
+            "runtime_kind IN ('FLOW_RUN', 'AGENT_WORKSPACE')",
+            name="ck_runtime_business_observation_kind",
+        ),
+        CheckConstraint(
+            "status IN ('OK', 'DEGRADED', 'NO_ACTIVE_CONVERSATION')",
+            name="ck_runtime_business_observation_status",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    runtime_kind: Mapped[str] = mapped_column(String(30), index=True)
+    runtime_session_id: Mapped[str] = mapped_column(String(36), index=True)
+    generation: Mapped[int] = mapped_column(Integer)
+    source: Mapped[str] = mapped_column(String(30), default="MANUAL", index=True)
+    status: Mapped[str] = mapped_column(String(30), index=True)
+    representative_binding_id: Mapped[str | None] = mapped_column(String(36))
+    impacted_bindings: Mapped[int] = mapped_column(Integer, default=0)
+    event_count: Mapped[int | None] = mapped_column(Integer)
+    readiness_status: Mapped[str | None] = mapped_column(String(80))
+    runtime_availability: Mapped[str | None] = mapped_column(String(40))
+    stages_json: Mapped[list[dict[str, object]]] = mapped_column(JSON, default=list)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, index=True)
 
 
 class AdminAlertState(Base):
@@ -132,6 +167,7 @@ __all__ = (
     "AdminAlertAction",
     "AdminAlertState",
     "AdminRuntimeOperation",
+    "RuntimeBusinessObservation",
     "User",
     "UserOperationLog",
     "UserSession",

@@ -524,7 +524,7 @@ def acquire_runtime_replacement_lease(
             409,
             {"flow_run_id": flow_run_id},
         )
-    if session.status not in {"ACTIVE", "REPLACING", "RECONNECTING", "DEGRADED"}:
+    if session.status not in {"ACTIVE", "REPLACING", "RECONNECTING", "DEGRADED", "MAINTENANCE"}:
         raise DomainError(
             "RUNTIME_REPLACEMENT_NOT_ALLOWED",
             "The Runtime Session does not allow replacement",

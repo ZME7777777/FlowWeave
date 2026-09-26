@@ -51,6 +51,13 @@ export type Runtime = {
   node_attempt_state: string | null;
   workspace_display_name: string | null;
   workspace_scope_key: string | null;
+  business_diagnostic_status: 'OK' | 'DEGRADED' | 'NO_ACTIVE_CONVERSATION' | null;
+  business_impacted_bindings: number | null;
+  business_event_count: number | null;
+  business_readiness_status: string | null;
+  business_runtime_availability: string | null;
+  business_stages: RuntimeDiagnostic['stages'] | null;
+  business_observed_at: string | null;
   usage: Usage | null;
 };
 
@@ -65,6 +72,16 @@ export type RuntimeGeneration = {
   updated_at: string;
   failure_code: string | null;
   failure_summary: string | null;
+};
+
+export type RuntimeDiagnostic = {
+  status: 'OK' | 'DEGRADED' | 'NO_ACTIVE_CONVERSATION';
+  representative_binding_id?: string;
+  impacted_bindings: number;
+  stages: Array<{ name: string; outcome: 'ok' | 'error'; duration_ms: number; error_code?: string }>;
+  event_count: number | null;
+  readiness: { ready: boolean; execution_status: string } | null;
+  runtime_availability: string | null;
 };
 
 export type RuntimeDetail = {
@@ -139,7 +156,7 @@ export type RuntimeOperation = {
 
 export type AdminOperation = {
   id: string;
-  action: 'REPLACE_RUNTIME' | 'ACKNOWLEDGE' | 'SILENCE';
+  action: 'REPLACE_RUNTIME' | 'ISOLATE_RUNTIME' | 'RESUME_RUNTIME' | 'ACKNOWLEDGE' | 'SILENCE';
   target_kind: 'RUNTIME' | 'ALERT';
   target_id: string;
   target_detail: string | null;
@@ -254,7 +271,15 @@ export const adminApi = {
   backgroundTasks: () => request<{ summary: BackgroundTaskSummary; items: BackgroundTask[] }>('/v1/admin/background-tasks'),
   runtimeOperations: () => request<{ items: RuntimeOperation[] }>('/v1/admin/runtime-operations'),
   operations: () => request<{ items: AdminOperation[] }>('/v1/admin/operations'),
-  replaceRuntime: (input: {
+  diagnoseRuntime: (input: {
+    runtime_kind: 'FLOW_RUN' | 'AGENT_WORKSPACE';
+    owner_id: string;
+    runtime_session_id: string;
+    expected_generation: number;
+    expected_session_row_version: number;
+  }) => request<RuntimeDiagnostic>('/v1/admin/runtime-diagnostics', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) }),
+  controlRuntime: (input: {
+    action: 'REPLACE_RUNTIME' | 'ISOLATE_RUNTIME' | 'RESUME_RUNTIME';
     runtime_kind: 'FLOW_RUN' | 'AGENT_WORKSPACE';
     owner_id: string;
     flow_run_id?: string;
@@ -263,7 +288,7 @@ export const adminApi = {
     expected_session_row_version: number;
     reason: string;
     idempotency_key: string;
-  }) => request('/v1/admin/runtime-replacements', {
+  }) => request('/v1/admin/runtime-controls', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(input),

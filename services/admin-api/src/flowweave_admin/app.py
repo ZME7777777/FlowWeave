@@ -13,8 +13,10 @@ from flowweave_admin.auth import require_super_admin
 from flowweave_admin.control import (
     AdminControlError,
     AlertLifecycleCommand,
-    RuntimeReplacementCommand,
-    request_runtime_replacement,
+    RuntimeControlCommand,
+    RuntimeDiagnosticCommand,
+    diagnose_runtime,
+    request_runtime_control,
     update_alert_lifecycle,
 )
 from flowweave_admin.database import connect
@@ -240,7 +242,13 @@ def create_app() -> FastAPI:
         since_hours: int = 168,
         limit: int = 200,
     ) -> dict[str, Any] | JSONResponse:
-        allowed_actions = {"REPLACE_RUNTIME", "ACKNOWLEDGE", "SILENCE"}
+        allowed_actions = {
+            "REPLACE_RUNTIME",
+            "ISOLATE_RUNTIME",
+            "RESUME_RUNTIME",
+            "ACKNOWLEDGE",
+            "SILENCE",
+        }
         if action is not None and action not in allowed_actions:
             return JSONResponse(
                 status_code=400, content={"error": {"message": "Invalid operation action"}}
@@ -261,15 +269,35 @@ def create_app() -> FastAPI:
                 )
             }
 
-    @app.post("/v1/admin/runtime-replacements", status_code=202, response_model=None)
-    async def admin_runtime_replacement(
-        payload: RuntimeReplacementCommand, request: Request
+    @app.post("/v1/admin/runtime-diagnostics", response_model=None)
+    async def admin_runtime_diagnostic(
+        payload: RuntimeDiagnosticCommand, request: Request
     ) -> dict[str, Any] | JSONResponse:
         active_settings: Settings = request.app.state.settings
         actor = request.state.admin
         request_id = request.headers.get("X-Request-ID") or str(uuid4())
         try:
-            return await request_runtime_replacement(
+            return await diagnose_runtime(
+                active_settings,
+                payload,
+                actor_user_id=str(actor["id"]),
+                actor_username=str(actor["username"]),
+                request_id=request_id,
+            )
+        except AdminControlError as exc:
+            return JSONResponse(
+                status_code=exc.status, content={"error": {"code": exc.code, "message": str(exc)}}
+            )
+
+    @app.post("/v1/admin/runtime-controls", status_code=202, response_model=None)
+    async def admin_runtime_replacement(
+        payload: RuntimeControlCommand, request: Request
+    ) -> dict[str, Any] | JSONResponse:
+        active_settings: Settings = request.app.state.settings
+        actor = request.state.admin
+        request_id = request.headers.get("X-Request-ID") or str(uuid4())
+        try:
+            return await request_runtime_control(
                 active_settings,
                 payload,
                 actor_user_id=str(actor["id"]),

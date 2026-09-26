@@ -89,7 +89,7 @@ class FlowRunRuntime(Base):
         CheckConstraint("runtime_image_digest <> ''", name="ck_flow_run_runtime_image_digest"),
         CheckConstraint(
             "status IN ('STARTING', 'ACTIVE', 'REPLACING', 'RECONNECTING', "
-            "'DEGRADED', 'STOPPED', 'DELETING')",
+            "'DEGRADED', 'MAINTENANCE', 'STOPPED', 'DELETING')",
             name="ck_flow_run_runtime_status",
         ),
     )

@@ -7407,10 +7407,14 @@ FlowWeave 本地累加后猜测压缩边界。
 
 验收：Admin API Ruff format/check、`py_compile` 与 Admin Web TypeScript typecheck、ESLint、production build、`git diff --check` 通过。未修改 Platform Worker、数据库 schema、Runtime、OpenHands、远端配置或服务器；不运行数据库型测试，因为本切片只添加 Admin API 的只读 PostgreSQL 投影，且本机 Testcontainers PostgreSQL 仍缺 Docker socket。
 
-### FR-530 Runtime 业务诊断与人工隔离控制 — CURRENT
+### FR-530 Runtime 业务诊断与人工隔离控制 — DONE
 
 依赖：FR-527、FR-528、FR-529。
 
 目标：Admin 必须能对一个 Runtime 按需执行正式 OpenHands Conversation 业务读取诊断，区分容器/控制面存活与 Conversation state、active event window、输入 readiness 的实际可用性；管理员可将有问题的 Runtime 隔离新写入，并在明确的 generation／row-version 栅栏下恢复路由。不得自动替换、自动熔断、读取会话正文或绕过 OpenHands 正式路由。
 
 范围：新增管理员按需诊断与 `ISOLATE_RUNTIME` / `RESUME_RUNTIME` 审计控制；诊断结果仅暴露阶段、耗时、事件计数、readiness 和稳定错误分类。替换仍沿用既有受控 replacement，不修改 Worker 自动策略。
+
+完成：Admin Runtime 详情可对一个最近活跃绑定执行 OpenHands 正式 `conversation_runtime`、active event window 与 input readiness 读取；持久化的观察结果仅包含阶段、耗时、稳定错误码、事件数量、readiness、Runtime availability 与受影响绑定数，不含正文、payload、凭据、URL 或原始异常。没有活跃会话时也会持久化 `NO_ACTIVE_CONVERSATION` 事实。管理员可在稳定 FlowRun Runtime 或 Agent Workspace Runtime 上将新写入隔离为 `MAINTENANCE`，操作含原因、身份、幂等键、generation 与 row-version 栅栏及追加审计；已有 workspace/conversation/persistence 不会被删除或重启。恢复只在当前 generation 对应的 ManagedSandbox 仍为期望和观察双 `RUNNING` 时发生。FlowRun node-attempt Runtime 不提供该人工路由控制，避免越过其独立生命周期；隔离态不允许通过诊断绕过正式 `ACTIVE` 路由。未实现自动告警、自动熔断、自动诊断或自动 replacement。
+
+验收：Platform/Admin API Ruff format/check、`py_compile`、Runtime control router Pyright、Admin Web TypeScript typecheck、ESLint、production build、Alembic head `0129_runtime_business_observations` 与 `git diff --check` 通过。新增的 3 条隔离/恢复/无活跃会话诊断定向测试及既有 4 条控制测试均已启动，但全部在 Testcontainers session fixture 创建 PostgreSQL 前被本机缺失 Docker socket 阻断，未进入断言、未计为通过。未运行远端迁移；不修改 Worker 自动策略、OpenHands、Runtime Provider、Docker 或远端配置。

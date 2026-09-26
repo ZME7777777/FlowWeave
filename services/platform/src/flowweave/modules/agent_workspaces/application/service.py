@@ -686,7 +686,7 @@ def request_agent_workspace_runtime_replacement(
                 "row_version": runtime.row_version,
             },
         )
-    if runtime.status not in {"ACTIVE", "DEGRADED"}:
+    if runtime.status not in {"ACTIVE", "DEGRADED", "MAINTENANCE"}:
         raise DomainError(
             "RUNTIME_REPLACEMENT_NOT_ALLOWED",
             "The Agent Workspace Runtime does not allow replacement",
