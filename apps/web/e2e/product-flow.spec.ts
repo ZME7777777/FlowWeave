@@ -1755,8 +1755,11 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(activeProcess).toHaveClass(/summary-only/);
   const elapsedLabel = activeProcess.getByText(/已耗时 \d+秒/);
   await expect(elapsedLabel).toBeVisible();
+  const activityMeta = activeProcess.locator('.conversation-activity-meta');
   const activityStatus = activeProcess.locator('.conversation-activity-status');
+  await expect(activityMeta).toHaveCSS('gap', '3px');
   await expect(activityStatus).toHaveCSS('gap', '3px');
+  await expect(activityStatus).toHaveCSS('min-width', '0px');
   await expect(activeProcess.locator('.conversation-response-wait')).toHaveCount(0);
   await expect(page.locator('.conversation-turn-status')).toHaveText('OpenHands 会话连接正常，等待响应');
   await activeProcess.evaluate(element => { (element as HTMLElement).dataset.periodicRenderMarker = 'stable'; });

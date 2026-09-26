@@ -77,8 +77,9 @@
 .conversation-activity-group>summary:hover>svg,.conversation-activity-group>summary:focus-visible>svg{color:#425148}
 .conversation-activity-group[open]>summary>svg:first-child{transform:rotate(90deg)}
 .conversation-activity-group>summary small,.conversation-activity-summary small{color:#99a39c;font-size:11px}
+.conversation-activity-meta{--conversation-live-elapsed-reserved-width:13ch;--conversation-activity-spinner-slot-width:15px;--conversation-activity-count-reserved-width:3ch;display:inline-flex;align-items:center;gap:3px;min-width:calc(var(--conversation-live-elapsed-reserved-width) + var(--conversation-activity-spinner-slot-width) + var(--conversation-activity-count-reserved-width) + 6px)}
 .conversation-live-elapsed{display:inline-block;min-width:0;font-variant-numeric:tabular-nums;white-space:nowrap}
-.conversation-activity-status{--conversation-live-elapsed-reserved-width:13ch;--conversation-activity-spinner-slot-width:15px;display:inline-flex;align-items:center;gap:3px;min-width:calc(var(--conversation-live-elapsed-reserved-width) + var(--conversation-activity-spinner-slot-width) + 3px)}
+.conversation-activity-status{display:inline-flex;align-items:center;gap:3px;min-width:0}
 .conversation-activity-group.summary-only .conversation-activity-summary>svg{visibility:hidden}
 .conversation-activity-spinner-slot{display:grid;width:var(--conversation-activity-spinner-slot-width);height:var(--conversation-activity-spinner-slot-width);flex:0 0 var(--conversation-activity-spinner-slot-width);place-items:center}.conversation-activity-spinner-slot:not(.active){visibility:hidden}.conversation-activity-spin{width:13px;height:13px;animation:conversation-spin .72s linear infinite;color:#6f8f7a;transform:translateZ(0);transform-origin:center;will-change:transform}
 @keyframes conversation-spin{to{transform:translateZ(0) rotate(360deg)}
