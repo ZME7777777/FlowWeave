@@ -5441,7 +5441,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const terminalSyncTurnKey = selected && nativeTurnTerminal && unfinishedFormalTurnId
     ? `${selected.id}:${unfinishedFormalTurnId}`
     : undefined;
-  const terminalResultMissing = Boolean(terminalSyncTurnKey);
   const terminalEventReconciliationActive = Boolean(terminalSyncTurnKey && terminalSyncTurnKey !== expiredTerminalSyncTurnKey);
   const latestFormalUserEventId = [...displayedEvents].reverse().find(event => event.event_type === 'MESSAGE'
     && ['user', 'human'].includes(String(event.payload.source ?? '').toLowerCase()))?.id;
@@ -6718,7 +6717,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     setAttachments([]);
     setReferences([]); setWorkspaceReferences([]); setComposerAnnotations([]);
     dispatchMessage({ ...message, bindingId: selected.id });
-  }, [attachments, canWrite, composerAnnotations, composerScope, conversationDraft, dispatchMessage, effectiveTurnState, enqueueDraft, host.id, migrateStreaming.isPending, pendingMigratedSend, queueModeEnabled, queuedMessages, references, replaceComposerDraft, selected, selectedCondensing, workspace, workspaceReferences]);
+  }, [attachments, canWrite, composerAnnotations, composerScope, conversationDraft, dispatchMessage, effectiveTurnState, enqueueDraft, host.id, migrateStreaming, pendingMigratedSend, queueModeEnabled, queuedMessages, references, replaceComposerDraft, selected, selectedCondensing, workspace, workspaceReferences]);
   const sendQueuedMessageImmediately = useCallback((message: QueuedMessage) => {
     if (selectedCondensing || !queueModeEnabled || !canWrite || effectiveTurnState !== 'running' || !selected?.streaming_callback_ready || message.scope !== selected.id || message.deliveryState !== 'queued') return;
     dispatchMessage({ ...message, bindingId: selected.id, nativeGuidance: true });
