@@ -136,13 +136,16 @@ def runtimes(connection: Any, *, limit: int) -> list[dict[str, Any]]:
           ORDER BY observed_at DESC
           LIMIT 1
         ) AS observation ON true
-        LEFT JOIN flow_runs AS flow_run
-          ON runtime.runtime_kind = 'FLOW_RUN' AND flow_run.id = runtime.owner_id
-        LEFT JOIN flow_definitions AS flow_definition
-          ON flow_definition.id = flow_run.flow_definition_id
+        LEFT JOIN flow_runs AS direct_flow_run
+          ON runtime.runtime_kind = 'FLOW_RUN' AND direct_flow_run.id = runtime.owner_id
         LEFT JOIN node_attempts AS node_attempt
           ON node_attempt.id = runtime.node_attempt_id
         LEFT JOIN node_runs AS node_run ON node_run.id = node_attempt.node_run_id
+        LEFT JOIN flow_runs AS attempt_flow_run ON attempt_flow_run.id = node_run.flow_run_id
+        LEFT JOIN flow_definitions AS flow_definition
+          ON flow_definition.id = coalesce(
+            direct_flow_run.flow_definition_id, attempt_flow_run.flow_definition_id
+          )
         LEFT JOIN agent_workspaces AS workspace
           ON runtime.runtime_kind = 'AGENT_WORKSPACE' AND workspace.id = runtime.owner_id
         LEFT JOIN all_generations AS generation
@@ -215,13 +218,16 @@ def runtime_detail(connection: Any, *, runtime_session_id: str) -> dict[str, Any
           ORDER BY observed_at DESC
           LIMIT 1
         ) AS observation ON true
-        LEFT JOIN flow_runs AS flow_run
-          ON runtime.runtime_kind = 'FLOW_RUN' AND flow_run.id = runtime.owner_id
-        LEFT JOIN flow_definitions AS flow_definition
-          ON flow_definition.id = flow_run.flow_definition_id
+        LEFT JOIN flow_runs AS direct_flow_run
+          ON runtime.runtime_kind = 'FLOW_RUN' AND direct_flow_run.id = runtime.owner_id
         LEFT JOIN node_attempts AS node_attempt
           ON node_attempt.id = runtime.node_attempt_id
         LEFT JOIN node_runs AS node_run ON node_run.id = node_attempt.node_run_id
+        LEFT JOIN flow_runs AS attempt_flow_run ON attempt_flow_run.id = node_run.flow_run_id
+        LEFT JOIN flow_definitions AS flow_definition
+          ON flow_definition.id = coalesce(
+            direct_flow_run.flow_definition_id, attempt_flow_run.flow_definition_id
+          )
         LEFT JOIN agent_workspaces AS workspace
           ON runtime.runtime_kind = 'AGENT_WORKSPACE' AND workspace.id = runtime.owner_id
         LEFT JOIN all_generations AS generation
