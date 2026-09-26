@@ -116,3 +116,4 @@ git -C /Users/zhengmengen/WorkSpace/openhands/software-agent-sdk-total-tokens-1.
 - 会话中的附件、工作区文件链接、候选输出文件和生成图片统一先在页面中央预览；工作区资源从预览弹窗显式跳转文件栏，不应在首次点击时直接展开侧栏。
 - 逐步节点启动的 `confirm-start` 会先原子预留 FlowNode `AgentConversationBinding`；Attempt 详情必须投影该 `binding_id`，前端收到成功响应后应以记录自身的 FlowRun ID、NodeRun ID、Attempt ID 和此 binding 打开节点会话，并同步失效逐步记录列表。不得通过猜测或等待 Runtime 的原生 conversation ID 来构造页面路由。
 - 连续运行草稿保存使用乐观锁 `expected_row_version`。前端遇到 `VERSION_CONFLICT` 时可仅对同一未启动草稿读取最新详情后，以用户当前编辑的严格写入载荷重试一次；不得回显详情中的冻结审计字段，也不得吞掉其他错误或无限重试。
+- 普通消息 POST 成功与 OpenHands 正式用户事件进入浏览器事件窗口之间存在短暂竞态；在当前 binding 收到服务端返回的 `cursor` 对应正式事件前，`AgentSessionWorkbench` 必须保留“正在提交消息”状态并抑制陈旧 `monitoring.possibly_stuck`，确认后立即恢复真实监控显示。该确认门控必须有界，并在失败、切换 binding 或超时后清除。

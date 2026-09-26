@@ -94,6 +94,84 @@ test('Agent session hydrates the first screen without parallel Runtime snapshot 
 });
 
 
+test('Accepted message hides stale monitoring until its formal event arrives', async ({ page }) => {
+  let authenticated = false;
+  let messageAccepted = false;
+  let formalMessageVisible = false;
+  const workspace = { id: 'stale-monitoring-workspace', display_name: '陈旧监控工作区', desired_state: 'RUNNING', updated_at: now };
+  const conversation = {
+    id: 'stale-monitoring-conversation', display_title: '陈旧监控会话', title_state: 'MANUAL', lifecycle: 'ACTIVE',
+    streaming_callback_ready: true, write_available: true, execution_status: 'idle', created_at: now, updated_at: now,
+  };
+  const staleMonitoring = {
+    last_event_id: 'prior-turn', last_event_type: 'MESSAGE', last_event_at: '2026-09-12T09:28:00Z',
+    seconds_since_event: 90, stale_after_seconds: 60, possibly_stuck: true, subagent_count: 0, active_subagents: [],
+  };
+  const events = () => [
+    { id: 'prior-turn', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '上一轮请求', timestamp: '2026-09-12T09:28:00Z' } },
+    ...(formalMessageVisible ? [{ id: 'accepted-message', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'prior-turn', content: '刚发送的消息', timestamp: now } }] : []),
+  ];
+
+  await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path.endsWith('/auth/me')) return authenticated
+      ? json(route, user)
+      : json(route, { error: { code: 'AUTHENTICATION_REQUIRED', message: '请先登录' } }, 401);
+    if (path.endsWith('/auth/login') && request.method() === 'POST') { authenticated = true; return json(route, user); }
+    if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
+    if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
+    if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, {
+      items: [{ ...conversation, execution_status: messageAccepted ? 'running' : 'idle' }], next_cursor: null,
+    });
+    if (path.endsWith('/hydration')) return json(route, {
+      events: { events: events(), next_cursor: null, history_cursor: null, monitoring: staleMonitoring },
+      context: { model_name: 'test-model', window_tokens: 128_000, used_tokens: 0, usage_current: true },
+      readiness: { ready: !messageAccepted, execution_status: messageAccepted ? 'running' : 'idle' },
+    });
+    if (path.endsWith('/events')) return json(route, {
+      events: events(), next_cursor: null, history_cursor: null, monitoring: staleMonitoring,
+    });
+    if (path.endsWith('/input-readiness')) return json(route, {
+      ready: !messageAccepted, execution_status: messageAccepted ? 'running' : 'idle',
+    });
+    if (path.endsWith('/messages') && request.method() === 'POST') {
+      messageAccepted = true;
+      return json(route, { accepted: true, cursor: 'accepted-message' }, 202);
+    }
+    if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
+    if (path.endsWith('/work-directories')) return json(route, {
+      root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [],
+    });
+    if (path.endsWith('/workspace')) return json(route, {
+      root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' },
+      working_directory: '/runtime/workspace/project', work_directory: null, files: [], repositories: [],
+      runtime: {}, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '不可用', note: '' } },
+    });
+    if (path.endsWith('/model-providers')) return json(route, [{
+      id: 'test-provider', name: '测试模型', connection_state: 'CONNECTED', models: [{ model_name: 'test-model', enabled: true, is_default: true }],
+    }]);
+    if (path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
+    if (path.includes('/conversations/') && request.method() === 'GET') return json(route, conversation);
+    return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+  });
+
+  await page.goto('/');
+  await login(page);
+  await page.goto('/agent/conversations/stale-monitoring-conversation');
+  await page.getByLabel('发送 Agent 消息').fill('刚发送的消息');
+  await page.getByRole('button', { name: '发送消息' }).click();
+  await expect(page.getByText('正在提交消息', { exact: true })).toBeVisible();
+  await expect(page.getByRole('img', { name: '会话正在运行但后台长时间未产生可确认进展' })).toHaveCount(0);
+
+  formalMessageVisible = true;
+  await page.reload();
+  await expect(page.locator('[data-user-event-id="accepted-message"]')).toBeVisible();
+  await expect(page.getByText('后台长时间未产生可确认进展。可暂停后继续以重新建立调用。', { exact: true })).toBeVisible();
+});
+
+
 test('Generated conversation title updates both the sidebar and current header', async ({ page }) => {
   let authenticated = false;
   let generated = false;
