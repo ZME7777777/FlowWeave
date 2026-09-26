@@ -3173,6 +3173,12 @@ def test_agent_workspace_unread_state_persists_in_conversation_projection(
         )
         assert cleared["unread"] is False
         assert cleared["unread_origin"] is None
+
+        acknowledged = conversations.set_conversation_unread(
+            db, workspace.id, created["id"], unread=False, unread_origin="SYSTEM"
+        )
+        assert acknowledged["unread"] is False
+        assert acknowledged["unread_origin"] == "SYSTEM"
         assert conversations.get_conversation(db, workspace.id, created["id"])["unread"] is False
 
 

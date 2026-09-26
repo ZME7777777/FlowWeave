@@ -163,6 +163,7 @@ test('Accepted message hides stale monitoring until its formal event arrives', a
   await page.getByLabel('发送 Agent 消息').fill('刚发送的消息');
   await page.getByRole('button', { name: '发送消息' }).click();
   await expect(page.getByText('正在提交消息', { exact: true })).toBeVisible();
+  await expect(page.getByText('工作过程', { exact: true })).toHaveCount(0);
   await expect(page.getByRole('img', { name: '会话正在运行但后台长时间未产生可确认进展' })).toHaveCount(0);
 
   formalMessageVisible = true;
@@ -1200,6 +1201,7 @@ test('Agent transcript keeps scroll ownership through streamed output and histor
   }));
   await expect(surface).toHaveAttribute('data-refresh-scroll-writes', '0');
 
+  await surface.evaluate(element => { element.dataset.refreshScrollWrites = '0'; });
   agentStream!.send(JSON.stringify({
     type: 'event',
     event: event('scroll-tool-one', 'TOOL_CALL', {
@@ -1208,6 +1210,10 @@ test('Agent transcript keeps scroll ownership through streamed output and histor
     }),
   }));
   await expect(page.getByText('正在运行 git status --short')).toBeVisible();
+  await page.evaluate(() => new Promise<void>(resolve => {
+    requestAnimationFrame(() => requestAnimationFrame(resolve));
+  }));
+  await expect(surface).toHaveAttribute('data-refresh-scroll-writes', '1');
   await expectAtLatest();
   agentStream!.send(JSON.stringify({
     type: 'event',
@@ -2043,9 +2049,8 @@ test('Conversation sidebar pins locally, orders activity, and reveals the select
       const bindingId = path.split('/').at(-2)!;
       const conversation = conversations.find(item => item.id === bindingId)!;
       conversation.unread = Boolean(request.postDataJSON().unread);
-      conversation.unread_origin = conversation.unread
-        ? request.postDataJSON().unread_origin ?? 'MANUAL'
-        : null;
+      conversation.unread_origin = request.postDataJSON().unread_origin
+        ?? (conversation.unread ? 'MANUAL' : null);
       unreadWrites.push({ id: bindingId, unread: conversation.unread });
       return json(route, conversation);
     }
@@ -2100,9 +2105,10 @@ test('Conversation sidebar pins locally, orders activity, and reveals the select
 
   const rootConversation = page.getByRole('button', { name: '未读根会话', exact: true });
   const rootRow = rootConversation.locator('xpath=..');
-  await expect(rootRow.getByRole('img', { name: '会话异常结束' })).toBeVisible();
-  await rootConversation.click();
-  await expect(rootRow.getByRole('img', { name: '会话异常结束' })).toHaveCount(0);
+  const acknowledgeAlert = rootRow.getByRole('button', { name: '确认会话异常已读' });
+  await expect(acknowledgeAlert).toBeVisible();
+  await acknowledgeAlert.click();
+  await expect(acknowledgeAlert).toHaveCount(0);
   await expect.poll(() => unreadWrites).toEqual([{ id: 'sidebar-root-unread', unread: false }]);
 
   await page.getByRole('button', { name: /查看活动会话/ }).click();

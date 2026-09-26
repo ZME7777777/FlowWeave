@@ -2595,6 +2595,17 @@ def test_node_session_unread_state_persists_in_conversation_projection(
         assert cleared["unread"] is False
         assert cleared["unread_origin"] is None
 
+        acknowledged = conversation_service.set_node_session_unread(
+            db,
+            flow_run_id=flow_run_id,
+            attempt_id=attempt_id,
+            binding_id=binding.id,
+            unread=False,
+            unread_origin="SYSTEM",
+        )
+        assert acknowledged["unread"] is False
+        assert acknowledged["unread_origin"] == "SYSTEM"
+
 
 def test_node_workspace_projection_shares_project_across_node_attempts(
     settings, db_session_factory: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch

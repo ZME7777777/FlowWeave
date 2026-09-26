@@ -814,6 +814,13 @@ def conversation_activity(db: Session, workspace_id: str) -> dict[str, Any]:
             continue
         if build_activity_summary(batch.events)["possibly_stuck"]:
             possibly_stuck_binding_ids.append(item.id)
+    attention_binding_ids = set(possibly_stuck_binding_ids) | {
+        item.id for item in bindings if item.openhands_conversation_id in failed_native_ids
+    }
+    for item in bindings:
+        if not item.unread and item.unread_origin == "SYSTEM" and item.id not in attention_binding_ids:
+            item.unread_origin = None
+    db.flush()
     return {
         "running_binding_ids": [item.id for item in running_bindings],
         "condensing_binding_ids": [
@@ -1862,7 +1869,7 @@ def set_conversation_unread(
     unread_origin: str | None = None,
 ) -> dict[str, Any]:
     item = _binding(db, workspace_id, binding_id, lock=True)
-    origin = unread_origin if unread else None
+    origin = unread_origin
     if origin not in {None, "MANUAL", "SYSTEM"}:
         raise DomainError("AGENT_CONVERSATION_UNREAD_ORIGIN_INVALID", "未读来源无效")
     if unread and origin is None:

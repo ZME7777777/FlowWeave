@@ -110,8 +110,8 @@ class AgentConversationBinding(Base):
     # a workspace-local explicit rank.
     manual_sort_rank: Mapped[Decimal | None] = mapped_column(Numeric(30, 12))
     unread: Mapped[bool] = mapped_column(Boolean, default=False)
-    # The unread bit remains the server-owned fact; the origin only determines
-    # whether a system abnormality may replace its ordinary blue presentation.
+    # The unread bit remains the server-owned fact. SYSTEM with unread=False
+    # records that the user acknowledged the current abnormality.
     unread_origin: Mapped[str | None] = mapped_column(String(20))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
