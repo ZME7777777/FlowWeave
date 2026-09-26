@@ -710,6 +710,22 @@ class NodeRunStart(ApiModel):
         return self
 
 
+class StepwiseNodeDraftWrite(NodeRunStart):
+    """Editable node configuration for one stepwise record.
+
+    Saving this command never creates an Attempt. The configuration is copied
+    into an immutable Attempt only by the explicit node-start command.
+    """
+
+    expected_row_version: int = Field(ge=1)
+
+
+class StepwiseNodeDraftStartWrite(ApiModel):
+    """Optimistic-lock one draft before materialising its first Attempt."""
+
+    expected_row_version: int = Field(ge=1)
+
+
 class FlowRunScheduleWrite(ApiModel):
     """A recurring execution frozen from one ready continuous-run record."""
 

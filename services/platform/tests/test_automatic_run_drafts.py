@@ -738,6 +738,60 @@ def test_nested_stepwise_record_is_empty_and_scoped_to_its_parent(client, db_ses
     assert client.get(f"/api/v1/flow-runs/{parent['id']}/stepwise-runs").json() == [record]
 
 
+def test_stepwise_node_draft_remains_editable_until_explicit_start(client):
+    flow = _create_flow(client)
+    parent = client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={"environment_version_id": client.environment_version_id},
+    ).json()
+    record = client.post(
+        f"/api/v1/flow-runs/{parent['id']}/stepwise-runs",
+        json={"name": "可编辑草稿", "start_node_key": "first"},
+    ).json()
+    input_artifact = client.post(
+        f"/api/v1/flow-runs/{record['id']}/nodes/first/input-artifacts",
+        json={
+            "field_key": "source",
+            "artifact_type": "URL",
+            "uri": "https://example.com/stepwise-draft-input",
+        },
+    )
+    assert input_artifact.status_code == 201, input_artifact.text
+    node_plan = _node_plan(client, "第一版提示词", artifact_id=input_artifact.json()["id"])
+    payload = {
+        "expected_row_version": 1,
+        "startup_mode": "PROMPT",
+        **node_plan,
+    }
+    saved = client.put(f"/api/v1/flow-runs/{record['id']}/stepwise-node-drafts/first", json=payload)
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["row_version"] == 2
+    detail = client.get(f"/api/v1/flow-runs/{record['id']}").json()
+    assert detail["node_runs"] == []
+    assert detail["stepwise_node_drafts"]["first"]["startup_prompt"] == "第一版提示词"
+
+    payload["expected_row_version"] = 2
+    payload["startup_prompt"] = "第二版提示词"
+    updated = client.put(
+        f"/api/v1/flow-runs/{record['id']}/stepwise-node-drafts/first", json=payload
+    )
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["row_version"] == 3
+    assert client.get(f"/api/v1/flow-runs/{record['id']}").json()["node_runs"] == []
+
+    started = client.post(
+        f"/api/v1/flow-runs/{record['id']}/stepwise-node-drafts/first/start",
+        json={"expected_row_version": 3},
+        headers={"Idempotency-Key": "start-stepwise-editable-draft"},
+    )
+    assert started.status_code == 200, started.text
+    attempt = started.json()
+    assert attempt["startup_prompt"] == "第二版提示词"
+    assert attempt["state"] in {"EXECUTING", "WAITING_ACCEPTANCE"}
+    detail = client.get(f"/api/v1/flow-runs/{record['id']}").json()
+    assert len(detail["node_runs"]) == 1
+
+
 def test_copy_nested_stepwise_record_preserves_first_configuration_and_human_inputs(client):
     flow = _create_flow(client)
     parent_response = client.post(
@@ -893,12 +947,13 @@ def test_stepwise_record_config_export_import_preserves_only_initial_configurati
     assert "environment_version_id" not in exported
     exported_config = exported["records"][0]
     assert exported_config["start_node_key"] == "first"
-    assert exported_config["initial_configuration"]["startup_prompt"] == source_attempt[
-        "startup_prompt"
-    ]
-    assert exported_config["initial_configuration"]["agent_preset"] == source_attempt[
-        "agent_preset"
-    ]
+    assert (
+        exported_config["initial_configuration"]["startup_prompt"]
+        == source_attempt["startup_prompt"]
+    )
+    assert (
+        exported_config["initial_configuration"]["agent_preset"] == source_attempt["agent_preset"]
+    )
     assert exported_config["initial_configuration"]["input_urls"] == {
         "source": "https://example.com/stepwise-config-input"
     }

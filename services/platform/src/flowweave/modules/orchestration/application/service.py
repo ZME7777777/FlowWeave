@@ -131,6 +131,8 @@ from flowweave.shared.schemas import (
     RuntimeCancelRecoveryWrite,
     RuntimeCompletionReconciliationWrite,
     RuntimeConfirmationDecisionWrite,
+    StepwiseNodeDraftStartWrite,
+    StepwiseNodeDraftWrite,
     StepwiseRecordConfigExportWrite,
     StepwiseRecordConfigImportWrite,
     StepwiseRunRecordCopyWrite,
@@ -4216,15 +4218,292 @@ def _stepwise_initial_node(db: Session, record: FlowRun) -> tuple[str, NodeRun |
 
     if source_node is None:
         has_other_node = db.scalar(
-            select(NodeRun.id)
-            .where(NodeRun.flow_run_id == record.id)
-            .limit(1)
+            select(NodeRun.id).where(NodeRun.flow_run_id == record.id).limit(1)
         )
         if has_other_node is not None:
             raise DomainError(
                 "RUN_STATE_INVALID", "stepwise record has no initial node configuration", 409
             )
     return start_node_key, source_node
+
+
+def _stepwise_node_drafts(record: FlowRun) -> dict[str, dict[str, Any]]:
+    plan = dict(record.automation_plan_json or {})
+    raw_drafts = plan.get("node_drafts")
+    if not isinstance(raw_drafts, dict):
+        return {}
+    return {
+        str(node_key): copy.deepcopy(cast(dict[str, Any], draft))
+        for node_key, draft in raw_drafts.items()
+        if isinstance(node_key, str) and isinstance(draft, dict)
+    }
+
+
+def _save_stepwise_node_drafts(record: FlowRun, drafts: dict[str, dict[str, Any]]) -> None:
+    plan = dict(record.automation_plan_json or {})
+    plan["node_drafts"] = drafts
+    record.automation_plan_json = plan
+
+
+def _stepwise_draft_bindings(draft: dict[str, Any]) -> dict[str, dict[str, str]]:
+    raw_bindings = draft.get("input_bindings")
+    if not isinstance(raw_bindings, dict):
+        return {}
+    return {
+        str(field_key): {
+            "artifact_version_id": str(binding.get("artifact_version_id") or ""),
+            "binding_source": str(binding.get("binding_source") or "HUMAN_START"),
+        }
+        for field_key, binding in raw_bindings.items()
+        if isinstance(field_key, str)
+        and isinstance(binding, dict)
+        and str(binding.get("artifact_version_id") or "")
+    }
+
+
+def _stepwise_draft_projection(draft: dict[str, Any]) -> dict[str, Any]:
+    bindings = _stepwise_draft_bindings(draft)
+    return {
+        "row_version": int(draft.get("row_version") or 1),
+        "startup_mode": str(draft.get("startup_mode") or "PROMPT"),
+        "startup_prompt": draft.get("startup_prompt"),
+        "agent_preset": draft.get("agent_preset"),
+        "gates": list(draft.get("gates") or []),
+        "context_ids": draft.get("context_ids"),
+        "input_bindings": [
+            {
+                "input_field_key": field_key,
+                "artifact_version_id": binding["artifact_version_id"],
+                "binding_source": binding["binding_source"],
+            }
+            for field_key, binding in sorted(bindings.items())
+        ],
+    }
+
+
+def _stepwise_draft_ready(node: dict[str, Any], draft: dict[str, Any]) -> bool:
+    if str(draft.get("startup_mode") or "PROMPT") != "PROMPT":
+        return False
+    if not str(draft.get("startup_prompt") or "").strip() or not isinstance(
+        draft.get("agent_preset"), dict
+    ):
+        return False
+    bindings = _stepwise_draft_bindings(draft)
+    return all(str(field.get("field_key") or "") in bindings for field in node["asset"]["inputs"])
+
+
+def _stepwise_node_draft(record: FlowRun, node_key: str) -> dict[str, Any] | None:
+    return _stepwise_node_drafts(record).get(node_key)
+
+
+def save_stepwise_node_draft(
+    db: Session,
+    run_id: str,
+    instance_key: str,
+    payload: StepwiseNodeDraftWrite,
+) -> dict[str, Any]:
+    """Save editable stepwise configuration without creating an Attempt."""
+
+    run = _locked_run(db, run_id)
+    if run.run_mode != "MANUAL" or run.parent_flow_run_id is None:
+        raise illegal("only a stepwise record can save a node draft", state=run.state)
+    if run.state in {FlowRunState.COMPLETED, FlowRunState.CANCELLED}:
+        raise illegal("terminal stepwise record cannot save configuration", state=run.state)
+    if payload.startup_mode != "PROMPT":
+        raise DomainError(
+            "STEPWISE_DRAFT_MODE_INVALID", "stepwise drafts require PROMPT startup", 422
+        )
+    snapshot = _active_snapshot(db, run)
+    node = _node(snapshot, instance_key)
+    drafts = _stepwise_node_drafts(run)
+    existing = drafts.get(instance_key)
+    existing_version = int(existing.get("row_version") or 1) if existing else 1
+    if payload.expected_row_version != existing_version:
+        raise conflict(
+            "stepwise node draft was modified",
+            expected=payload.expected_row_version,
+            actual=existing_version,
+        )
+    existing_bindings = _stepwise_draft_bindings(existing or {})
+    artifact_ids = dict(payload.artifact_ids)
+    for field_key, binding in existing_bindings.items():
+        if binding["binding_source"] != "PORT_MAPPING":
+            continue
+        requested = artifact_ids.get(field_key)
+        if requested is not None and requested != binding["artifact_version_id"]:
+            raise DomainError(
+                "INPUT_BINDING_IMMUTABLE",
+                "a mapped upstream input cannot be replaced by manual input",
+                409,
+                {"field": field_key},
+            )
+        artifact_ids[field_key] = binding["artifact_version_id"]
+    input_fields = {field.key: field.data_type for field in _input_fields(node)}
+    unknown_urls = sorted(set(payload.input_urls) - set(input_fields))
+    non_url_inputs = sorted(
+        field_key for field_key in payload.input_urls if input_fields[field_key] != "URL"
+    )
+    if unknown_urls or non_url_inputs:
+        raise DomainError(
+            "INPUT_BINDING_INVALID",
+            "input URL does not match the target node input",
+            422,
+            {"fields": unknown_urls or non_url_inputs},
+        )
+    for field_key, uri in payload.input_urls.items():
+        artifact = _register_artifact(
+            db,
+            run.id,
+            prepare_artifact(
+                ArtifactWrite(
+                    field_key=field_key,
+                    artifact_type="URL",
+                    uri=uri,
+                    metadata={"source": "STEPWISE_DRAFT"},
+                )
+            ),
+            source="STEPWISE_DRAFT",
+            consumer_node_key=instance_key,
+        )
+        artifact_ids[field_key] = artifact.id
+    _validate_input_bindings(db, run, node, artifact_ids)
+    preset = payload.agent_preset.model_dump()
+    executor = cast(dict[str, Any], node.get("asset", {}).get("executor") or {})
+    effective_context_prompt = (
+        str(preset["node_context_prompt"])
+        if preset.get("node_context_prompt") is not None
+        else str(executor.get("context_prompt") or "")
+    )
+    drafts[instance_key] = {
+        "row_version": existing_version + 1,
+        "startup_mode": "PROMPT",
+        "startup_prompt": payload.startup_prompt,
+        "agent_preset": preset,
+        "gates": [
+            {
+                "id": str(uuid4()),
+                "stage": gate.stage,
+                "position": gate.position,
+                "gate_type": gate.gate_type,
+                "enabled": gate.enabled,
+                "timeout_seconds": gate.timeout_seconds,
+                "config": gate.config,
+                "agent_preset": gate.agent_preset.model_dump(),
+            }
+            for gate in payload.gates
+        ],
+        "context_ids": (
+            [_MANUAL_NODE_CONTEXT_ID]
+            if preset["node_context_enabled"] and effective_context_prompt.strip()
+            else []
+        ),
+        "input_bindings": {
+            field_key: {
+                "artifact_version_id": artifact_id,
+                "binding_source": (
+                    existing_bindings[field_key]["binding_source"]
+                    if field_key in existing_bindings
+                    and existing_bindings[field_key]["binding_source"] == "PORT_MAPPING"
+                    else "HUMAN_START"
+                ),
+            }
+            for field_key, artifact_id in artifact_ids.items()
+        },
+    }
+    _save_stepwise_node_drafts(run, drafts)
+    run.row_version += 1
+    _event(
+        db,
+        run.id,
+        "STEPWISE_NODE_DRAFT_SAVED",
+        {"flow_node_key": instance_key, "row_version": existing_version + 1},
+    )
+    finish(db)
+    return _stepwise_draft_projection(drafts[instance_key])
+
+
+def start_stepwise_node_draft(
+    db: Session,
+    run_id: str,
+    instance_key: str,
+    payload: StepwiseNodeDraftStartWrite,
+    idempotency_key: str,
+) -> dict[str, Any]:
+    """Freeze the saved draft into an Attempt, then use normal start semantics."""
+
+    run = _locked_run(db, run_id)
+    if run.run_mode != "MANUAL" or run.parent_flow_run_id is None:
+        raise illegal("only a stepwise record can start a node draft", state=run.state)
+    if run.state in {FlowRunState.COMPLETED, FlowRunState.CANCELLED}:
+        raise illegal("terminal stepwise record cannot start a node draft", state=run.state)
+    snapshot = _active_snapshot(db, run)
+    node = _node(snapshot, instance_key)
+    draft = _stepwise_node_draft(run, instance_key)
+    if draft is None:
+        raise DomainError(
+            "STEPWISE_DRAFT_MISSING", "stepwise node configuration has not been saved", 409
+        )
+    draft_version = int(draft.get("row_version") or 1)
+    if draft_version != payload.expected_row_version:
+        raise conflict(
+            "stepwise node draft was modified",
+            expected=payload.expected_row_version,
+            actual=draft_version,
+        )
+    if not _stepwise_draft_ready(node, draft):
+        raise DomainError(
+            "STEPWISE_DRAFT_NOT_READY",
+            "stepwise node configuration is incomplete",
+            422,
+            {"flow_node_key": instance_key},
+        )
+    action = db.scalar(select(HumanAction).where(HumanAction.idempotency_key == idempotency_key))
+    if action is not None:
+        if action.action_type != "START_STEPWISE_NODE_DRAFT" or not action.attempt_id:
+            raise conflict("stepwise start idempotency key is already used")
+        return attempt_detail(db, action.attempt_id)
+    bindings = _stepwise_draft_bindings(draft)
+    node_run, attempt = _create_node_run(
+        db,
+        run,
+        instance_key,
+        {field_key: value["artifact_version_id"] for field_key, value in bindings.items()},
+        "STEPWISE_DRAFT_START",
+        copy.deepcopy(cast(list[dict[str, Any]], draft["gates"])),
+        context_ids=copy.deepcopy(cast(list[str], draft["context_ids"])),
+        agent_preset=copy.deepcopy(cast(dict[str, Any], draft["agent_preset"])),
+        startup_prompt=str(draft["startup_prompt"]),
+        awaiting_start_confirmation=True,
+    )
+    for binding in _bindings(db, attempt.id):
+        binding.binding_source = bindings[binding.input_field_key]["binding_source"]
+    _action(
+        db,
+        run.id,
+        "START_STEPWISE_NODE_DRAFT",
+        idempotency_key,
+        {"flow_node_key": instance_key, "draft_row_version": draft_version},
+        node_run.id,
+        attempt.id,
+    )
+    _event(
+        db,
+        run.id,
+        "STEPWISE_NODE_DRAFT_STARTED",
+        {"flow_node_key": instance_key, "draft_row_version": draft_version},
+        node_run.id,
+        attempt.id,
+    )
+    return confirm_start(
+        db,
+        attempt.id,
+        AttemptStartWrite(
+            expected_state_version=attempt.state_version,
+            startup_mode="PROMPT",
+            prompt=attempt.startup_prompt,
+        ),
+        f"stepwise-draft-start:{attempt.id}",
+    )
 
 
 def copy_nested_stepwise_run_record(
@@ -4840,9 +5119,7 @@ def export_nested_stepwise_run_configs(
                 "start_node_key": start_node_key,
                 "initial_configuration": {
                     "startup_prompt": initial.startup_prompt,
-                    "agent_preset": _portable_automatic_agent_preset(
-                        initial.agent_preset_json
-                    ),
+                    "agent_preset": _portable_automatic_agent_preset(initial.agent_preset_json),
                     "gates": [
                         _portable_automatic_gate(gate)
                         for gate in list(initial.gate_policies_json or [])
@@ -4886,9 +5163,7 @@ def import_nested_stepwise_run_configs(
         input_types = {field.key: field.data_type for field in _input_fields(node)}
         input_urls = dict(config.initial_configuration.input_urls)
         invalid_fields = sorted(
-            field_key
-            for field_key in input_urls
-            if input_types.get(field_key) != "URL"
+            field_key for field_key in input_urls if input_types.get(field_key) != "URL"
         )
         if invalid_fields:
             raise DomainError(
@@ -8502,11 +8777,50 @@ def _bind_transition_artifacts(
 
 
 def _create_configurable_targets(db: Session, run: FlowRun, accepted: NodeRun) -> None:
-    """Expose frozen downstream work without starting its Agent or gates."""
+    """Advance manual work without executing the successor.
+
+    Nested records are the product's stepwise mode: accepted outputs populate
+    editable downstream drafts and an explicit start later materialises the
+    Attempt. Top-level manual FlowRuns retain the historical NodeRun/Attempt
+    placeholder contract for compatibility with direct workbench APIs.
+    """
 
     snapshot = _active_snapshot(db, run)
     accepted_attempt = _attempt(db, accepted.accepted_attempt_id or "")
     source_artifacts = _accepted_transition_outputs(db, accepted_attempt)
+    if run.parent_flow_run_id is not None:
+        drafts = _stepwise_node_drafts(run)
+        for target_key in _successor_keys(snapshot, accepted.flow_node_snapshot_key):
+            mapped = _transition_bindings(
+                snapshot, accepted.flow_node_snapshot_key, target_key, source_artifacts
+            )
+            node = _node(snapshot, target_key)
+            _validate_input_bindings(db, run, node, mapped)
+            draft = drafts.get(target_key, {"row_version": 1, "input_bindings": {}})
+            draft_bindings = _stepwise_draft_bindings(draft)
+            for field_key, artifact_id in mapped.items():
+                draft_bindings[field_key] = {
+                    "artifact_version_id": artifact_id,
+                    "binding_source": "PORT_MAPPING",
+                }
+            draft["input_bindings"] = draft_bindings
+            draft["row_version"] = int(draft.get("row_version") or 1) + 1
+            drafts[target_key] = draft
+            _event(
+                db,
+                run.id,
+                "DOWNSTREAM_NODE_DRAFT_AVAILABLE",
+                {
+                    "fields": sorted(mapped),
+                    "source_node_key": accepted.flow_node_snapshot_key,
+                    "target_node_key": target_key,
+                    "row_version": draft["row_version"],
+                },
+            )
+        _save_stepwise_node_drafts(run, drafts)
+        run.row_version += 1
+        return
+
     for target_key in _successor_keys(snapshot, accepted.flow_node_snapshot_key):
         bindings = _transition_bindings(
             snapshot, accepted.flow_node_snapshot_key, target_key, source_artifacts
@@ -10369,6 +10683,14 @@ def run_detail(db: Session, run_id: str, *, include_artifacts: bool = True) -> d
         x.state in {NodeRunState.ACCEPTED, NodeRunState.FAILED, NodeRunState.CANCELLED}
         for x in node_runs
     )
+    stepwise_node_drafts = (
+        {
+            node_key: _stepwise_draft_projection(draft)
+            for node_key, draft in _stepwise_node_drafts(run).items()
+        }
+        if run.run_mode == "MANUAL" and run.parent_flow_run_id is not None
+        else {}
+    )
     automatic_block = None
     if run.run_mode == "AUTOMATIC" and run.state == FlowRunState.WAITING_HUMAN:
         blocked_event = db.scalar(
@@ -10415,6 +10737,7 @@ def run_detail(db: Session, run_id: str, *, include_artifacts: bool = True) -> d
         "name": run.name,
         "run_mode": run.run_mode,
         "automation_plan": run.automation_plan_json,
+        "stepwise_node_drafts": stepwise_node_drafts,
         "start_node_key": start_node_key if isinstance(start_node_key, str) else None,
         "parent_flow_run_id": run.parent_flow_run_id,
         "schedule_id": run.schedule_id,

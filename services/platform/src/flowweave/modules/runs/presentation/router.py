@@ -40,9 +40,11 @@ from flowweave.shared.schemas import (
     RuntimeConfirmationDecisionWrite,
     RuntimeLifecycleWrite,
     RuntimeReplacementWrite,
-    StepwiseRunRecordCopyWrite,
+    StepwiseNodeDraftStartWrite,
+    StepwiseNodeDraftWrite,
     StepwiseRecordConfigExportWrite,
     StepwiseRecordConfigImportWrite,
+    StepwiseRunRecordCopyWrite,
     StepwiseRunRecordWrite,
     SyncSnapshotWrite,
 )
@@ -156,15 +158,46 @@ async def copy_nested_stepwise_run(
     )
 
 
+@router.put("/flow-runs/{run_id}/stepwise-node-drafts/{flow_node_key}")
+async def save_stepwise_node_draft(
+    run_id: str,
+    flow_node_key: str,
+    payload: StepwiseNodeDraftWrite,
+    db: Db,
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: service.save_stepwise_node_draft(session, run_id, flow_node_key, payload),
+    )
+
+
+@router.post("/flow-runs/{run_id}/stepwise-node-drafts/{flow_node_key}/start")
+async def start_stepwise_node_draft(
+    run_id: str,
+    flow_node_key: str,
+    payload: StepwiseNodeDraftStartWrite,
+    db: Db,
+    idempotency_key: IdempotencyKey = None,
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: service.start_stepwise_node_draft(
+            session,
+            run_id,
+            flow_node_key,
+            payload,
+            _key(idempotency_key, "start-stepwise-node-draft", f"{run_id}:{flow_node_key}"),
+        ),
+    )
+
+
 @router.post("/flow-runs/{parent_run_id}/stepwise-runs/config-exports")
 async def export_nested_stepwise_run_configs(
     parent_run_id: str, payload: StepwiseRecordConfigExportWrite, db: Db
 ) -> dict[str, Any]:
     return await run_sync(
         db,
-        lambda session: service.export_nested_stepwise_run_configs(
-            session, parent_run_id, payload
-        ),
+        lambda session: service.export_nested_stepwise_run_configs(session, parent_run_id, payload),
     )
 
 
@@ -174,9 +207,7 @@ async def import_nested_stepwise_run_configs(
 ) -> list[dict[str, Any]]:
     return await run_sync(
         db,
-        lambda session: service.import_nested_stepwise_run_configs(
-            session, parent_run_id, payload
-        ),
+        lambda session: service.import_nested_stepwise_run_configs(session, parent_run_id, payload),
     )
 
 
