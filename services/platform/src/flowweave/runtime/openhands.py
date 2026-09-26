@@ -11,7 +11,8 @@ import tarfile
 import threading
 import time
 from collections import OrderedDict
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal, cast
@@ -338,6 +339,14 @@ class OpenHandsRuntime:
         # Server URL. It contains no Conversation or Secret data and naturally
         # expires when the Runtime Provider routes to a replacement generation.
         self._conversation_runtime_route_support: dict[str, bool] = {}
+        # Formal read calls are synchronous at this adapter boundary. These
+        # semaphores provide a process-local bulkhead keyed by the generation
+        # URL, so a Runtime with many bound Conversations cannot exhaust the
+        # shared HTTP client or API read worker capacity. Reentrancy matters:
+        # readiness may call the formal Runtime availability route.
+        self._formal_read_slots: dict[str, threading.BoundedSemaphore] = {}
+        self._formal_read_slots_lock = threading.Lock()
+        self._formal_read_depth = threading.local()
 
     def _transport(self) -> HttpTransportPool:
         if self._http_transport is None:
@@ -828,6 +837,25 @@ class OpenHandsRuntime:
                     "status_code": exc.response.status_code,
                     "outcome_unknown": False,
                 },
+            ) from exc
+        except httpx.TimeoutException as exc:
+            outcome = "timeout"
+            formal_read_depths = cast(
+                dict[str, int] | None,
+                getattr(self._formal_read_depth, "depths", None),
+            )
+            if formal_read_depths:
+                raise DomainError(
+                    "RUNTIME_BUSINESS_READ_TIMEOUT",
+                    "OpenHands formal Runtime read exceeded its deadline",
+                    504,
+                    {"outcome_unknown": True},
+                ) from exc
+            raise DomainError(
+                "EXECUTOR_UNAVAILABLE",
+                "OpenHands Agent Server request exceeded its deadline",
+                503,
+                {"outcome_unknown": True},
             ) from exc
         except httpx.HTTPError as exc:
             raise DomainError(
@@ -2184,6 +2212,59 @@ class OpenHandsRuntime:
             cls._formal_identity(item.get("tool_call_id"), field="tool_call_id", required=False),
         )
 
+    @contextmanager
+    def _formal_read_bulkhead(self, handle: RuntimeHandle) -> Iterator[None]:
+        """Bound formal state reads for one Runtime generation.
+
+        The key is the generation-scoped Runtime URL, never a Conversation ID,
+        so metrics/logs do not gain high-cardinality or user-visible labels.
+        Nested formal reads for the same Runtime are reentrant and consume one
+        slot, rather than self-deadlocking readiness/availability checks.
+        """
+
+        key = self._base_url_for_handle(handle)
+        depths = cast(
+            dict[str, int] | None,
+            getattr(self._formal_read_depth, "depths", None),
+        )
+        if depths is None:
+            depths = {}
+            self._formal_read_depth.depths = depths
+        depth = int(depths.get(key, 0))
+        if depth:
+            depths[key] = depth + 1
+            try:
+                yield
+            finally:
+                remaining = int(depths[key]) - 1
+                if remaining:
+                    depths[key] = remaining
+                else:
+                    depths.pop(key, None)
+            return
+        with self._formal_read_slots_lock:
+            slot = self._formal_read_slots.get(key)
+            if slot is None:
+                slot = threading.BoundedSemaphore(
+                    self.settings.runtime_read_per_runtime_concurrency
+                )
+                self._formal_read_slots[key] = slot
+        if not slot.acquire(timeout=self.settings.runtime_read_slot_timeout_seconds):
+            if metrics := current_metrics():
+                metrics.increment("flowweave_runtime_read_bulkhead_saturated_total")
+            raise DomainError(
+                "RUNTIME_READ_PER_RUNTIME_SATURATED",
+                "This Runtime has too many active formal reads; retry shortly",
+                503,
+                {"outcome_unknown": False},
+            )
+        depths[key] = 1
+        try:
+            yield
+        finally:
+            depths.pop(key, None)
+            slot.release()
+
     def _conversation_state(
         self, handle: RuntimeHandle, *, timeout: float | None = None
     ) -> dict[str, Any]:
@@ -2327,6 +2408,10 @@ class OpenHandsRuntime:
     def conversation_runtime(self, handle: RuntimeHandle) -> RuntimeConversationRuntime:
         """Read formal Conversation Runtime availability without taking ownership."""
 
+        with self._formal_read_bulkhead(handle):
+            return self._conversation_runtime(handle)
+
+    def _conversation_runtime(self, handle: RuntimeHandle) -> RuntimeConversationRuntime:
         data = self._request(
             "GET",
             f"/api/conversations/{handle.conversation_id}/runtime",
@@ -3667,6 +3752,10 @@ class OpenHandsRuntime:
         return False
 
     def read_events(self, handle: RuntimeHandle) -> RuntimeEventBatch:
+        with self._formal_read_bulkhead(handle):
+            return self._read_events(handle)
+
+    def _read_events(self, handle: RuntimeHandle) -> RuntimeEventBatch:
         base_url = self._base_url_for_handle(handle)
         session_api_key = self._session_key_for_handle(handle)
         if handle.cursor:
@@ -3736,6 +3825,10 @@ class OpenHandsRuntime:
     def read_active_events(self, handle: RuntimeHandle) -> RuntimeEventBatch:
         """Read only the native HEAD branch without hiding or deleting old events."""
 
+        with self._formal_read_bulkhead(handle):
+            return self._read_active_events(handle)
+
+    def _read_active_events(self, handle: RuntimeHandle) -> RuntimeEventBatch:
         base_url = self._base_url_for_handle(handle)
         session_api_key = self._session_key_for_handle(handle)
         state: dict[str, Any] | None = None
@@ -4928,6 +5021,10 @@ class OpenHandsRuntime:
         so an accepted interrupt request alone must not unlock a second send.
         """
 
+        with self._formal_read_bulkhead(handle):
+            return self._input_readiness(handle)
+
+    def _input_readiness(self, handle: RuntimeHandle) -> RuntimeInputReadiness:
         if self._supports_conversation_runtime_routes(handle):
             runtime_info = self.conversation_runtime(handle)
             if runtime_info.status != "available":

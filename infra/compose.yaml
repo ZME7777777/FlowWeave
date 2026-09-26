@@ -36,6 +36,7 @@ x-platform-env: &platform-env
   DATABASE_POOL_TIMEOUT_SECONDS: ${DATABASE_POOL_TIMEOUT_SECONDS:-2}
   BLOCKING_POOL_TIMEOUT_SECONDS: ${BLOCKING_POOL_TIMEOUT_SECONDS:-2}
   HISTORY_READ_POOL_SIZE: ${HISTORY_READ_POOL_SIZE:-1}
+  RUNTIME_POLL_WORKER_CONCURRENCY: ${RUNTIME_POLL_WORKER_CONCURRENCY:-1}
   # The capacity check reserves this margin from PostgreSQL's configured
   # maximum. It is a deployment invariant, not a request-time retry limit.
   POSTGRES_CONNECTION_LIMIT: ${POSTGRES_CONNECTION_LIMIT:-100}
@@ -291,14 +292,16 @@ services:
     command: ["python", "-m", "flowweave.bootstrap.worker"]
     environment:
       <<: [*platform-env, *docker-client-env]
-      # One process: 4 async + 4 task/read + 1 history + 1 control = 10.
-      # API + stream-api + worker steady state is 66 connections, leaving at
-      # least the configured 20-connection PostgreSQL reserve at the default.
+      # One Worker process: 4 async + 4 control/read + 1 poll + 1 history
+      # + 1 recovery control = 11. API + stream-api + worker steady state is
+      # 71 connections, leaving at least the configured 20-connection
+      # PostgreSQL reserve at the default.
       POOL_SIZE: ${WORKER_POOL_SIZE:-4}
       POOL_MAX_OVERFLOW: 0
       DATABASE_POOL_TIMEOUT_SECONDS: 2
       BLOCKING_POOL_SIZE: ${WORKER_BLOCKING_POOL_SIZE:-4}
       HISTORY_READ_POOL_SIZE: ${WORKER_HISTORY_READ_POOL_SIZE:-1}
+      RUNTIME_POLL_WORKER_CONCURRENCY: ${RUNTIME_POLL_WORKER_CONCURRENCY:-1}
       WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-4}
       BLOCKING_POOL_TIMEOUT_SECONDS: 2
       DOCKER_CONTROLLER_API_KEY: ${DOCKER_CONTROLLER_WORKER_API_KEY:?set a different random Worker controller key with at least 32 characters}

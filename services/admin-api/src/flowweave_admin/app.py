@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from contextlib import asynccontextmanager
 from typing import Any
 from uuid import uuid4
@@ -13,24 +14,36 @@ from flowweave_admin.auth import require_super_admin
 from flowweave_admin.control import (
     AdminControlError,
     AlertLifecycleCommand,
-    RuntimeReplacementCommand,
-    request_runtime_replacement,
+    RuntimeControlCommand,
+    RuntimeDiagnosticCommand,
+    diagnose_runtime,
+    request_runtime_control,
     update_alert_lifecycle,
 )
 from flowweave_admin.database import connect
 from flowweave_admin.observability import (
     admin_operations,
     alert_states,
+    background_task_summary,
+    background_tasks,
     conversations,
     enrich_runtime_operation_status,
     metric_history,
     overview,
+    runtime_detail,
     runtime_observations,
     runtime_operations,
     runtimes,
     service_metrics,
 )
 from flowweave_admin.settings import Settings
+
+logger = logging.getLogger(__name__)
+
+
+def _request_id(request: Request) -> str:
+    raw = request.headers.get("X-Request-ID")
+    return raw if raw and len(raw) <= 80 else str(uuid4())
 
 
 def create_app() -> FastAPI:
@@ -42,7 +55,37 @@ def create_app() -> FastAPI:
         yield
 
     app = FastAPI(title="FlowWeave Admin API", version="0.1.0", lifespan=lifespan)
+
+    @app.middleware("http")
+    async def attach_request_id(request: Request, call_next: Any) -> Any:
+        request_id = _request_id(request)
+        request.state.request_id = request_id
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = request_id
+        return response
+
     app.middleware("http")(require_super_admin)
+
+    @app.exception_handler(Exception)
+    async def unhandled_admin_error(request: Request, exc: Exception) -> JSONResponse:
+        request_id = getattr(request.state, "request_id", _request_id(request))
+        logger.exception(
+            "admin_request_failed route=%s request_id=%s error_type=%s",
+            request.url.path,
+            request_id,
+            type(exc).__name__,
+        )
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": {
+                    "code": "ADMIN_INTERNAL_ERROR",
+                    "message": "Administrator data could not be read",
+                    "request_id": request_id,
+                }
+            },
+            headers={"X-Request-ID": request_id},
+        )
 
     @app.get("/health")
     async def health() -> dict[str, str]:
@@ -104,10 +147,6 @@ def create_app() -> FastAPI:
                 "warning": sum(item["severity"] == "WARNING" for item in alerts),
             },
         }
-
-
-
-
 
     @app.post("/v1/admin/alerts/lifecycle", response_model=None)
     async def admin_alert_lifecycle(
@@ -180,6 +219,46 @@ def create_app() -> FastAPI:
             "container_observability_available": observations.get("available", False),
         }
 
+    @app.get("/v1/admin/runtimes/{runtime_session_id}", response_model=None)
+    async def admin_runtime_detail(
+        runtime_session_id: str, request: Request
+    ) -> dict[str, Any] | JSONResponse:
+        if len(runtime_session_id) != 36:
+            return JSONResponse(
+                status_code=400, content={"error": {"message": "Invalid Runtime Session"}}
+            )
+        active_settings: Settings = request.app.state.settings
+        with connect(active_settings) as connection:
+            detail = runtime_detail(connection, runtime_session_id=runtime_session_id)
+        if detail is None:
+            return JSONResponse(
+                status_code=404, content={"error": {"message": "Runtime was not found"}}
+            )
+        observations = await runtime_observations(active_settings)
+        sandbox_id = detail["runtime"].get("managed_sandbox_id")
+        usage_by_resource = {
+            str(item.get("resource_id")): item.get("usage")
+            for item in observations.get("managed_resources", [])
+            if isinstance(item, dict)
+        }
+        detail["runtime"]["usage"] = (
+            usage_by_resource.get(str(sandbox_id)) if sandbox_id is not None else None
+        )
+        detail["container_observability_available"] = observations.get("available", False)
+        return detail
+
+    @app.get("/v1/admin/background-tasks")
+    async def admin_background_tasks(request: Request, limit: int = 500) -> dict[str, Any]:
+        active_settings: Settings = request.app.state.settings
+        bounded_limit = min(max(limit, 1), 500)
+        with connect(active_settings) as connection:
+            return {
+                "summary": background_task_summary(
+                    connection, retention_days=active_settings.task_terminal_retention_days
+                ),
+                "items": background_tasks(connection, limit=bounded_limit),
+            }
+
     @app.get("/v1/admin/conversations")
     async def admin_conversations(request: Request, limit: int = 100) -> dict[str, Any]:
         active_settings: Settings = request.app.state.settings
@@ -193,7 +272,6 @@ def create_app() -> FastAPI:
             entries = runtime_operations(connection, limit=min(max(limit, 1), 500))
         return {"items": enrich_runtime_operation_status(entries)}
 
-
     @app.get("/v1/admin/operations", response_model=None)
     async def all_admin_operations(
         request: Request,
@@ -202,7 +280,13 @@ def create_app() -> FastAPI:
         since_hours: int = 168,
         limit: int = 200,
     ) -> dict[str, Any] | JSONResponse:
-        allowed_actions = {"REPLACE_RUNTIME", "ACKNOWLEDGE", "SILENCE"}
+        allowed_actions = {
+            "REPLACE_RUNTIME",
+            "ISOLATE_RUNTIME",
+            "RESUME_RUNTIME",
+            "ACKNOWLEDGE",
+            "SILENCE",
+        }
         if action is not None and action not in allowed_actions:
             return JSONResponse(
                 status_code=400, content={"error": {"message": "Invalid operation action"}}
@@ -223,16 +307,43 @@ def create_app() -> FastAPI:
                 )
             }
 
-
-    @app.post("/v1/admin/runtime-replacements", status_code=202, response_model=None)
-    async def admin_runtime_replacement(
-        payload: RuntimeReplacementCommand, request: Request
+    @app.post("/v1/admin/runtime-diagnostics", response_model=None)
+    async def admin_runtime_diagnostic(
+        payload: RuntimeDiagnosticCommand, request: Request
     ) -> dict[str, Any] | JSONResponse:
         active_settings: Settings = request.app.state.settings
         actor = request.state.admin
         request_id = request.headers.get("X-Request-ID") or str(uuid4())
         try:
-            return await request_runtime_replacement(
+            return await diagnose_runtime(
+                active_settings,
+                payload,
+                actor_user_id=str(actor["id"]),
+                actor_username=str(actor["username"]),
+                request_id=request_id,
+            )
+        except AdminControlError as exc:
+            return JSONResponse(
+                status_code=exc.status,
+                content={
+                    "error": {
+                        "code": exc.code,
+                        "message": str(exc),
+                        "request_id": getattr(request.state, "request_id", None),
+                    }
+                },
+                headers={"X-Request-ID": getattr(request.state, "request_id", "")},
+            )
+
+    @app.post("/v1/admin/runtime-controls", status_code=202, response_model=None)
+    async def admin_runtime_replacement(
+        payload: RuntimeControlCommand, request: Request
+    ) -> dict[str, Any] | JSONResponse:
+        active_settings: Settings = request.app.state.settings
+        actor = request.state.admin
+        request_id = request.headers.get("X-Request-ID") or str(uuid4())
+        try:
+            return await request_runtime_control(
                 active_settings,
                 payload,
                 actor_user_id=str(actor["id"]),
@@ -244,6 +355,5 @@ def create_app() -> FastAPI:
                 status_code=exc.status,
                 content={"error": {"code": exc.code, "message": str(exc)}},
             )
-
 
     return app

@@ -645,6 +645,92 @@ def process_agent_workspace_runtime(db: Session, workspace_id: str) -> None:
     db.flush()
 
 
+def request_agent_workspace_runtime_replacement(
+    db: Session,
+    *,
+    workspace_id: str,
+    runtime_session_id: str,
+    expected_generation: int,
+    expected_session_row_version: int,
+) -> dict[str, object]:
+    """Fence and recover one Agent Workspace Runtime through its native lifecycle.
+
+    This is a deliberate administrator request, not a Docker-level restart.  It
+    retains the externally persisted workspace and OpenHands Conversation state,
+    makes the old generation non-routable, and delegates creation of the next
+    generation to the existing provision task.
+    """
+
+    runtime = db.scalar(
+        select(AgentWorkspaceRuntime)
+        .where(
+            AgentWorkspaceRuntime.id == runtime_session_id,
+            AgentWorkspaceRuntime.workspace_id == workspace_id,
+        )
+        .with_for_update()
+    )
+    if runtime is None:
+        raise DomainError(
+            "ADMIN_RUNTIME_NOT_FOUND", "The selected Agent Workspace Runtime was not found", 404
+        )
+    if (
+        runtime.active_generation != expected_generation
+        or runtime.row_version != expected_session_row_version
+    ):
+        raise DomainError(
+            "ADMIN_RUNTIME_VERSION_CONFLICT",
+            "The Agent Workspace Runtime changed; refresh its observation before retrying",
+            409,
+            {
+                "active_generation": runtime.active_generation,
+                "row_version": runtime.row_version,
+            },
+        )
+    if runtime.status not in {"ACTIVE", "DEGRADED", "MAINTENANCE"}:
+        raise DomainError(
+            "RUNTIME_REPLACEMENT_NOT_ALLOWED",
+            "The Agent Workspace Runtime does not allow replacement",
+            409,
+            {"runtime_session_id": runtime.id, "status": runtime.status},
+        )
+    if runtime.active_generation is None:
+        raise DomainError(
+            "RUNTIME_REPLACEMENT_NOT_ALLOWED",
+            "The Agent Workspace Runtime has no active generation to replace",
+            409,
+            {"runtime_session_id": runtime.id},
+        )
+    generation = db.scalar(
+        select(AgentWorkspaceRuntimeGeneration)
+        .where(
+            AgentWorkspaceRuntimeGeneration.runtime_session_id == runtime.id,
+            AgentWorkspaceRuntimeGeneration.generation == runtime.active_generation,
+        )
+        .with_for_update()
+    )
+    if generation is None or generation.managed_runtime_id is None:
+        raise DomainError(
+            "RUNTIME_REPLACEMENT_TARGET_MISSING",
+            "The active Agent Workspace Runtime generation has no managed resource",
+            409,
+            {"runtime_session_id": runtime.id, "generation": runtime.active_generation},
+        )
+    mark_agent_workspace_runtime_lost(
+        db,
+        workspace_id,
+        generation.managed_runtime_id,
+        failure_code="ADMIN_RUNTIME_REPLACEMENT_REQUESTED",
+        failure_summary="An administrator submitted a controlled Runtime replacement",
+    )
+    return {
+        "runtime_session_id": runtime.id,
+        "runtime_kind": "AGENT_WORKSPACE",
+        "owner_id": workspace_id,
+        "status": "RECONNECTING",
+        "expected_generation": expected_generation,
+    }
+
+
 def mark_agent_workspace_runtime_lost(
     db: Session,
     workspace_id: str,
@@ -691,6 +777,7 @@ __all__ = (
     "ensure_default_agent_workspace",
     "mark_agent_workspace_runtime_lost",
     "process_agent_workspace_runtime",
+    "request_agent_workspace_runtime_replacement",
     "recover_default_agent_workspace_runtime_task",
     "resolve_agent_workspace_runtime_secret",
     "runtime_allocation_for_agent_workspace",

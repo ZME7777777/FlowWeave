@@ -12,12 +12,19 @@ _CHECKER = runpy.run_path(str(Path(__file__).parents[1] / "scripts" / "compose_c
 check_document = _CHECKER["check_document"]
 
 
-def _environment(pool_size: int, blocking_pool_size: int, history_pool_size: int) -> dict[str, str]:
+def _environment(
+    pool_size: int,
+    blocking_pool_size: int,
+    history_pool_size: int,
+    *,
+    poll_pool_size: int = 1,
+) -> dict[str, str]:
     return {
         "POOL_SIZE": str(pool_size),
         "POOL_MAX_OVERFLOW": "0",
         "BLOCKING_POOL_SIZE": str(blocking_pool_size),
         "HISTORY_READ_POOL_SIZE": str(history_pool_size),
+        "RUNTIME_POLL_WORKER_CONCURRENCY": str(poll_pool_size),
         "POSTGRES_CONNECTION_LIMIT": "100",
         "DATABASE_CONNECTION_RESERVE": "20",
     }
@@ -73,4 +80,12 @@ def test_compose_capacity_check_rejects_unsafe_topology(
     mutate(document)
 
     with pytest.raises(SystemExit, match=message):
+        check_document(document)
+
+
+def test_compose_capacity_check_counts_worker_poll_pool() -> None:
+    document = _document()
+    document["services"]["worker"]["environment"]["RUNTIME_POLL_WORKER_CONCURRENCY"] = "20"
+
+    with pytest.raises(SystemExit, match="exceeds budget"):
         check_document(document)

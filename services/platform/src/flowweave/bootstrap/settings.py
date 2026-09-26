@@ -43,6 +43,11 @@ class Settings(BaseSettings):
     # Transitional switch used only until synchronous orchestration is removed.
     execution_mode: str = "worker"
     runtime_poll_seconds: float = Field(default=1.0, gt=0)
+    # A single Agent Server generation can host many Conversations. Cap
+    # formal state/event/readiness reads per generation before they consume
+    # the process-wide HTTP pool or blocking read lanes.
+    runtime_read_per_runtime_concurrency: int = Field(default=2, ge=1, le=16)
+    runtime_read_slot_timeout_seconds: float = Field(default=0.25, gt=0, le=5)
     runtime_wakeup_timeout_seconds: float = Field(default=10.0, gt=0, le=25)
     runtime_wakeup_backoff_max_seconds: float = Field(default=30.0, gt=0, le=300)
     sse_event_batch_size: int = Field(default=100, ge=1, le=500)
@@ -109,6 +114,10 @@ class Settings(BaseSettings):
     seed_demo: bool = False
     worker_id: str = ""
     worker_concurrency: int = Field(default=4, ge=1, le=64)
+    # Formal OpenHands polling can block on an unhealthy Runtime. Keep its
+    # executor and database pool deliberately separate from Runtime control
+    # work so one stalled read cannot consume provision/recovery capacity.
+    runtime_poll_worker_concurrency: int = Field(default=1, ge=1, le=16)
     task_lease_seconds: int = Field(default=30, ge=5)
     task_heartbeat_seconds: int = Field(default=10, ge=1)
     # The task ledger is an execution/audit window, not an unbounded event
@@ -185,6 +194,8 @@ class Settings(BaseSettings):
             raise ValueError("TASK_HEARTBEAT_SECONDS must be less than TASK_LEASE_SECONDS")
         if self.runtime_wakeup_timeout_seconds >= self.task_lease_seconds:
             raise ValueError("RUNTIME_WAKEUP_TIMEOUT_SECONDS must be less than TASK_LEASE_SECONDS")
+        if self.runtime_poll_worker_concurrency > self.worker_concurrency:
+            raise ValueError("RUNTIME_POLL_WORKER_CONCURRENCY must not exceed WORKER_CONCURRENCY")
         if self.sandbox_backend not in {"process", "docker"}:
             raise ValueError("SANDBOX_BACKEND must be process or docker")
         if self.dependency_builder_backend not in {"disabled", "docker"}:

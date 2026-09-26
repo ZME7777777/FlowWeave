@@ -52,16 +52,18 @@ def worker_processes(service: dict[str, Any], name: str) -> int:
     return workers
 
 
-def process_connection_limit(values: dict[str, str], name: str) -> int:
+def process_connection_limit(values: dict[str, str], name: str, *, worker: bool) -> int:
     pool_size = integer(values, "POOL_SIZE", name, minimum=1)
     overflow = integer(values, "POOL_MAX_OVERFLOW", name, minimum=0)
     if overflow != 0:
         fail(f"{name} POOL_MAX_OVERFLOW must be 0 for a deterministic budget")
     blocking = integer(values, "BLOCKING_POOL_SIZE", name, minimum=1)
     history = integer(values, "HISTORY_READ_POOL_SIZE", name, minimum=1)
-    # Database owns an async, blocking, history and control engine. The control
-    # engine also inherits overflow, which is required to remain zero above.
-    return pool_size + blocking + history + 1
+    poll = integer(values, "RUNTIME_POLL_WORKER_CONCURRENCY", name, minimum=1) if worker else 0
+    # Database owns an async, blocking, history and control engine. The Worker
+    # additionally owns an isolated poll pool. The control engine also inherits
+    # overflow, which is required to remain zero above.
+    return pool_size + blocking + history + poll + 1
 
 
 def check_document(document: dict[str, Any]) -> None:
@@ -81,7 +83,7 @@ def check_document(document: dict[str, Any]) -> None:
         service = mapping(services[name], name)
         values = environment(service, name)
         processes = worker_processes(service, name)
-        total += processes * process_connection_limit(values, name)
+        total += processes * process_connection_limit(values, name, worker=name == "worker")
         limits.add(integer(values, "POSTGRES_CONNECTION_LIMIT", name, minimum=1))
         reserves.add(integer(values, "DATABASE_CONNECTION_RESERVE", name, minimum=1))
 

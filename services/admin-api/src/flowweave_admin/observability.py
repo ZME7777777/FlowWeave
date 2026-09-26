@@ -109,8 +109,45 @@ def runtimes(connection: Any, *, limit: int) -> list[dict[str, Any]]:
                sandbox.last_error_detail,
                coalesce(bindings.conversation_count, 0) AS conversation_count,
                coalesce(bindings.active_conversation_count, 0) AS active_conversation_count,
-               bindings.last_connected_at
+               bindings.last_connected_at,
+               flow_definition.name AS flow_definition_name,
+               coalesce(direct_flow_run.name, attempt_flow_run.name) AS flow_run_name,
+               coalesce(direct_flow_run.run_no, attempt_flow_run.run_no) AS flow_run_no,
+               coalesce(direct_flow_run.state, attempt_flow_run.state) AS flow_run_state,
+               node_run.name AS node_run_name, node_run.sequence_no AS node_run_sequence_no,
+               node_attempt.attempt_no AS node_attempt_no,
+               node_attempt.state AS node_attempt_state,
+               workspace.display_name AS workspace_display_name,
+               workspace.scope_key AS workspace_scope_key,
+               observation.status AS business_diagnostic_status,
+               observation.impacted_bindings AS business_impacted_bindings,
+               observation.event_count AS business_event_count,
+               observation.readiness_status AS business_readiness_status,
+               observation.runtime_availability AS business_runtime_availability,
+               observation.stages_json AS business_stages,
+               observation.observed_at AS business_observed_at
         FROM all_runtimes AS runtime
+        LEFT JOIN LATERAL (
+          SELECT status, impacted_bindings, event_count, readiness_status,
+                 runtime_availability, stages_json, observed_at
+          FROM runtime_business_observations
+          WHERE runtime_session_id = runtime.id
+            AND generation = runtime.active_generation
+          ORDER BY observed_at DESC
+          LIMIT 1
+        ) AS observation ON true
+        LEFT JOIN flow_runs AS direct_flow_run
+          ON runtime.runtime_kind = 'FLOW_RUN' AND direct_flow_run.id = runtime.owner_id
+        LEFT JOIN node_attempts AS node_attempt
+          ON node_attempt.id = runtime.node_attempt_id
+        LEFT JOIN node_runs AS node_run ON node_run.id = node_attempt.node_run_id
+        LEFT JOIN flow_runs AS attempt_flow_run ON attempt_flow_run.id = node_run.flow_run_id
+        LEFT JOIN flow_definitions AS flow_definition
+          ON flow_definition.id = coalesce(
+            direct_flow_run.flow_definition_id, attempt_flow_run.flow_definition_id
+          )
+        LEFT JOIN agent_workspaces AS workspace
+          ON runtime.runtime_kind = 'AGENT_WORKSPACE' AND workspace.id = runtime.owner_id
         LEFT JOIN all_generations AS generation
           ON generation.runtime_session_id = runtime.id
          AND generation.generation = runtime.active_generation
@@ -121,6 +158,140 @@ def runtimes(connection: Any, *, limit: int) -> list[dict[str, Any]]:
         """,
         (limit,),
     )
+
+
+def runtime_detail(connection: Any, *, runtime_session_id: str) -> dict[str, Any] | None:
+    runtime_rows = _rows(
+        connection,
+        """
+        WITH all_runtimes AS (
+          SELECT id, 'FLOW_RUN'::text AS runtime_kind, flow_run_id AS owner_id,
+                 node_attempt_id, status, active_generation, row_version,
+                 runtime_image_digest, created_at, updated_at,
+                 replacement_error_code AS failure_code,
+                 replacement_error_summary AS failure_summary
+          FROM flow_run_runtimes
+          UNION ALL
+          SELECT id, 'AGENT_WORKSPACE'::text AS runtime_kind, workspace_id AS owner_id,
+                 NULL::text AS node_attempt_id, status, active_generation, row_version,
+                 runtime_image_digest, created_at, updated_at, failure_code, failure_summary
+          FROM agent_workspace_runtimes
+        ), all_generations AS (
+          SELECT runtime_session_id, generation, managed_runtime_id, state, ready_at,
+                 started_at, stopped_at, created_at, updated_at, failure_code, failure_summary
+          FROM runtime_generations
+          UNION ALL
+          SELECT runtime_session_id, generation, managed_runtime_id, state, ready_at,
+                 started_at, stopped_at, created_at, updated_at, failure_code, failure_summary
+          FROM agent_workspace_runtime_generations
+        )
+        SELECT runtime.*, generation.managed_runtime_id AS managed_sandbox_id,
+               generation.state AS generation_state, generation.ready_at,
+               sandbox.backend_resource_id AS container_id,
+               sandbox.backend_resource_name AS container_name,
+               sandbox.desired_state, sandbox.observed_state, sandbox.last_activity_at,
+               sandbox.idle_expires_at, sandbox.hard_expires_at, sandbox.last_error_code,
+               sandbox.last_error_detail,
+               flow_definition.name AS flow_definition_name,
+               coalesce(direct_flow_run.name, attempt_flow_run.name) AS flow_run_name,
+               coalesce(direct_flow_run.run_no, attempt_flow_run.run_no) AS flow_run_no,
+               coalesce(direct_flow_run.state, attempt_flow_run.state) AS flow_run_state,
+               node_run.name AS node_run_name, node_run.sequence_no AS node_run_sequence_no,
+               node_attempt.attempt_no AS node_attempt_no,
+               node_attempt.state AS node_attempt_state,
+               workspace.display_name AS workspace_display_name,
+               workspace.scope_key AS workspace_scope_key,
+               observation.status AS business_diagnostic_status,
+               observation.impacted_bindings AS business_impacted_bindings,
+               observation.event_count AS business_event_count,
+               observation.readiness_status AS business_readiness_status,
+               observation.runtime_availability AS business_runtime_availability,
+               observation.stages_json AS business_stages,
+               observation.observed_at AS business_observed_at
+        FROM all_runtimes AS runtime
+        LEFT JOIN LATERAL (
+          SELECT status, impacted_bindings, event_count, readiness_status,
+                 runtime_availability, stages_json, observed_at
+          FROM runtime_business_observations
+          WHERE runtime_session_id = runtime.id
+            AND generation = runtime.active_generation
+          ORDER BY observed_at DESC
+          LIMIT 1
+        ) AS observation ON true
+        LEFT JOIN flow_runs AS direct_flow_run
+          ON runtime.runtime_kind = 'FLOW_RUN' AND direct_flow_run.id = runtime.owner_id
+        LEFT JOIN node_attempts AS node_attempt
+          ON node_attempt.id = runtime.node_attempt_id
+        LEFT JOIN node_runs AS node_run ON node_run.id = node_attempt.node_run_id
+        LEFT JOIN flow_runs AS attempt_flow_run ON attempt_flow_run.id = node_run.flow_run_id
+        LEFT JOIN flow_definitions AS flow_definition
+          ON flow_definition.id = coalesce(
+            direct_flow_run.flow_definition_id, attempt_flow_run.flow_definition_id
+          )
+        LEFT JOIN agent_workspaces AS workspace
+          ON runtime.runtime_kind = 'AGENT_WORKSPACE' AND workspace.id = runtime.owner_id
+        LEFT JOIN all_generations AS generation
+          ON generation.runtime_session_id = runtime.id
+         AND generation.generation = runtime.active_generation
+        LEFT JOIN managed_sandboxes AS sandbox ON sandbox.id = generation.managed_runtime_id
+        WHERE runtime.id = %s
+        """,
+        (runtime_session_id,),
+    )
+    if not runtime_rows:
+        return None
+    runtime = runtime_rows[0]
+    generations = _rows(
+        connection,
+        """
+        SELECT generation, state, managed_runtime_id, started_at, ready_at, stopped_at,
+               created_at, updated_at, failure_code, failure_summary
+        FROM (
+          SELECT runtime_session_id, generation, state, managed_runtime_id, started_at,
+                 ready_at, stopped_at, created_at, updated_at, failure_code, failure_summary
+          FROM runtime_generations
+          UNION ALL
+          SELECT runtime_session_id, generation, state, managed_runtime_id, started_at,
+                 ready_at, stopped_at, created_at, updated_at, failure_code, failure_summary
+          FROM agent_workspace_runtime_generations
+        ) AS all_generations
+        WHERE runtime_session_id = %s
+        ORDER BY generation DESC
+        LIMIT 20
+        """,
+        (runtime_session_id,),
+    )
+    conversation_summary = _rows(
+        connection,
+        """
+        SELECT lifecycle, count(*)::int AS count, max(updated_at) AS last_updated_at,
+               max(last_connected_at) AS last_connected_at
+        FROM agent_conversation_bindings
+        WHERE runtime_session_id = %s
+        GROUP BY lifecycle
+        ORDER BY lifecycle
+        """,
+        (runtime_session_id,),
+    )
+    operations = _rows(
+        connection,
+        """
+        SELECT id AS operation_id, action, status, runtime_kind, owner_id,
+               expected_generation, expected_session_row_version, actor_username,
+               reason, request_id, created_at
+        FROM admin_runtime_operations
+        WHERE runtime_session_id = %s
+        ORDER BY created_at DESC, id DESC
+        LIMIT 20
+        """,
+        (runtime_session_id,),
+    )
+    return {
+        "runtime": runtime,
+        "generations": generations,
+        "conversation_summary": conversation_summary,
+        "operations": operations,
+    }
 
 
 def conversations(connection: Any, *, limit: int) -> list[dict[str, Any]]:
@@ -142,17 +313,34 @@ def conversations(connection: Any, *, limit: int) -> list[dict[str, Any]]:
     )
 
 
-
-
 def runtime_operations(connection: Any, *, limit: int) -> list[dict[str, Any]]:
     return _rows(
         connection,
         """
+        WITH all_runtimes AS (
+          SELECT id, 'FLOW_RUN'::text AS runtime_kind, flow_run_id AS owner_id, status,
+                 active_generation, row_version, replacement_generation,
+                 replacement_started_at, replacement_error_code, replacement_error_summary
+          FROM flow_run_runtimes
+          UNION ALL
+          SELECT id, 'AGENT_WORKSPACE'::text AS runtime_kind, workspace_id AS owner_id, status,
+                 active_generation, row_version, NULL::integer AS replacement_generation,
+                 NULL::timestamptz AS replacement_started_at,
+                 failure_code AS replacement_error_code,
+                 failure_summary AS replacement_error_summary
+          FROM agent_workspace_runtimes
+        ), all_generations AS (
+          SELECT runtime_session_id, generation, state, ready_at, failure_code, failure_summary
+          FROM runtime_generations
+          UNION ALL
+          SELECT runtime_session_id, generation, state, ready_at, failure_code, failure_summary
+          FROM agent_workspace_runtime_generations
+        )
         SELECT operation.id AS operation_id, operation.action, operation.status,
-               operation.actor_user_id, operation.actor_username, operation.flow_run_id,
-               operation.runtime_session_id, operation.expected_generation,
-               operation.expected_session_row_version, operation.reason,
-               operation.request_id, operation.created_at,
+               operation.actor_user_id, operation.actor_username, operation.runtime_kind,
+               operation.owner_id, operation.flow_run_id, operation.runtime_session_id,
+               operation.expected_generation, operation.expected_session_row_version,
+               operation.reason, operation.request_id, operation.created_at,
                runtime.status AS current_runtime_status,
                runtime.active_generation AS current_generation,
                runtime.replacement_generation, runtime.replacement_started_at,
@@ -163,8 +351,10 @@ def runtime_operations(connection: Any, *, limit: int) -> list[dict[str, Any]]:
                replacement.failure_code AS replacement_failure_code,
                replacement.failure_summary AS replacement_failure_summary
         FROM admin_runtime_operations AS operation
-        LEFT JOIN flow_run_runtimes AS runtime ON runtime.id = operation.runtime_session_id
-        LEFT JOIN runtime_generations AS replacement
+        LEFT JOIN all_runtimes AS runtime
+          ON runtime.id = operation.runtime_session_id
+         AND runtime.runtime_kind = operation.runtime_kind
+        LEFT JOIN all_generations AS replacement
           ON replacement.runtime_session_id = operation.runtime_session_id
          AND replacement.generation = operation.expected_generation + 1
         ORDER BY operation.created_at DESC, operation.id DESC
@@ -172,7 +362,6 @@ def runtime_operations(connection: Any, *, limit: int) -> list[dict[str, Any]]:
         """,
         (limit,),
     )
-
 
 
 def enrich_runtime_operation_status(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -200,7 +389,6 @@ def _replacement_status(entry: dict[str, Any]) -> str:
     return "SUBMITTED"
 
 
-
 def admin_operations(
     connection: Any, *, limit: int, action: str | None, actor: str | None, since_hours: int
 ) -> list[dict[str, Any]]:
@@ -209,24 +397,46 @@ def admin_operations(
         """
         WITH operations AS (
           SELECT operation.id, operation.action, 'RUNTIME'::text AS target_kind,
-                 operation.runtime_session_id AS target_id, operation.flow_run_id AS target_detail,
+                 operation.runtime_session_id AS target_id,
+                 operation.runtime_kind || ':' || operation.owner_id AS target_detail,
                  operation.actor_user_id, operation.actor_username, operation.reason,
                  operation.request_id, operation.created_at,
                  CASE
-                   WHEN runtime.replacement_error_code IS NOT NULL THEN 'FAILED'
-                   WHEN replacement.state = 'FAILED' THEN 'FAILED'
-                   WHEN runtime.active_generation > operation.expected_generation
-                        AND replacement.state = 'READY' THEN 'RECOVERED'
-                   WHEN replacement.state IN ('PROVISIONING', 'READY', 'DRAINING')
-                        OR runtime.replacement_generation IS NOT NULL THEN 'RECOVERING'
+                   WHEN operation.action IN ('ISOLATE_RUNTIME', 'RESUME_RUNTIME') THEN 'RECORDED'
+                   WHEN COALESCE(
+                     flow_runtime.replacement_error_code, workspace_runtime.failure_code
+                   ) IS NOT NULL THEN 'FAILED'
+                   WHEN COALESCE(
+                     flow_generation.state, workspace_generation.state
+                   ) = 'FAILED' THEN 'FAILED'
+                   WHEN COALESCE(
+                     flow_runtime.active_generation, workspace_runtime.active_generation
+                   ) > operation.expected_generation
+                   AND COALESCE(
+                     flow_generation.state, workspace_generation.state
+                   ) = 'READY' THEN 'RECOVERED'
+                   WHEN COALESCE(
+                     flow_generation.state, workspace_generation.state
+                   ) IN ('PROVISIONING', 'READY', 'DRAINING')
+                   OR flow_runtime.replacement_generation IS NOT NULL THEN 'RECOVERING'
                    ELSE 'SUBMITTED'
                  END AS status,
                  NULL::timestamptz AS silenced_until
           FROM admin_runtime_operations AS operation
-          LEFT JOIN flow_run_runtimes AS runtime ON runtime.id = operation.runtime_session_id
-          LEFT JOIN runtime_generations AS replacement
-            ON replacement.runtime_session_id = operation.runtime_session_id
-           AND replacement.generation = operation.expected_generation + 1
+          LEFT JOIN flow_run_runtimes AS flow_runtime
+            ON operation.runtime_kind = 'FLOW_RUN'
+           AND flow_runtime.id = operation.runtime_session_id
+          LEFT JOIN agent_workspace_runtimes AS workspace_runtime
+            ON operation.runtime_kind = 'AGENT_WORKSPACE'
+           AND workspace_runtime.id = operation.runtime_session_id
+          LEFT JOIN runtime_generations AS flow_generation
+            ON operation.runtime_kind = 'FLOW_RUN'
+           AND flow_generation.runtime_session_id = operation.runtime_session_id
+           AND flow_generation.generation = operation.expected_generation + 1
+          LEFT JOIN agent_workspace_runtime_generations AS workspace_generation
+            ON operation.runtime_kind = 'AGENT_WORKSPACE'
+           AND workspace_generation.runtime_session_id = operation.runtime_session_id
+           AND workspace_generation.generation = operation.expected_generation + 1
           UNION ALL
           SELECT action.id, action.action, 'ALERT'::text AS target_kind,
                  action.alert_key AS target_id, NULL::text AS target_detail,
@@ -244,6 +454,7 @@ def admin_operations(
         """,
         (action, action, actor, actor, since_hours, limit),
     )
+
 
 def alert_states(connection: Any, *, keys: list[str]) -> list[dict[str, Any]]:
     if not keys:
@@ -319,9 +530,7 @@ async def runtime_observations(settings: Settings) -> dict[str, Any]:
     if not settings.admin_runtime_observer_key:
         return {"available": False, "services": [], "managed_resources": []}
     try:
-        async with httpx.AsyncClient(
-            timeout=settings.admin_api_request_timeout_seconds
-        ) as client:
+        async with httpx.AsyncClient(timeout=settings.admin_api_request_timeout_seconds) as client:
             response = await client.get(
                 f"{settings.runtime_provider_url.rstrip('/')}/v1/admin/observability",
                 headers={"Authorization": f"Bearer {settings.admin_runtime_observer_key}"},
@@ -334,3 +543,95 @@ async def runtime_observations(settings: Settings) -> dict[str, Any]:
         return {"available": False, "services": [], "managed_resources": []}
     except (httpx.HTTPError, ValueError):
         return {"available": False, "services": [], "managed_resources": []}
+
+
+_TASK_ERROR_CODE = re.compile(r"\b([A-Z][A-Z0-9_]{2,100})\b")
+
+
+def _task_error_code(value: object) -> str | None:
+    """Expose only a stable error classification, never raw task error text."""
+
+    if not isinstance(value, str):
+        return None
+    match = _TASK_ERROR_CODE.search(value)
+    return match.group(1) if match else "UNCLASSIFIED"
+
+
+def background_task_summary(connection: Any, *, retention_days: int) -> dict[str, Any]:
+    states = _rows(
+        connection,
+        """
+        SELECT state, count(*)::int AS count
+        FROM background_tasks
+        GROUP BY state
+        ORDER BY state
+        """,
+    )
+    expired = _rows(
+        connection,
+        """
+        SELECT state, count(*)::int AS count
+        FROM background_tasks
+        WHERE state IN ('SUCCEEDED', 'DEAD')
+          AND updated_at < now() - (%s * interval '1 day')
+        GROUP BY state
+        ORDER BY state
+        """,
+        (retention_days,),
+    )
+    groups = _rows(
+        connection,
+        """
+        SELECT state, task_type, count(*)::int AS count,
+               min(created_at) AS oldest_created_at, max(updated_at) AS newest_updated_at
+        FROM background_tasks
+        GROUP BY state, task_type
+        ORDER BY count(*) DESC, state, task_type
+        LIMIT 100
+        """,
+    )
+    return {
+        "states": states,
+        "expired_terminal": expired,
+        "groups": groups,
+        "retention_days": retention_days,
+    }
+
+
+def background_tasks(connection: Any, *, limit: int) -> list[dict[str, Any]]:
+    rows = _rows(
+        connection,
+        """
+        SELECT task.id, task.task_type, task.aggregate_type, task.aggregate_id, task.state,
+               task.attempts, task.max_attempts, task.available_at, task.created_at,
+               task.updated_at, task.last_error,
+               flow_definition.name AS flow_definition_name,
+               coalesce(direct_flow_run.name, attempt_flow_run.name) AS flow_run_name,
+               coalesce(direct_flow_run.run_no, attempt_flow_run.run_no) AS flow_run_no,
+               coalesce(direct_flow_run.state, attempt_flow_run.state) AS flow_run_state,
+               node_run.name AS node_run_name, node_run.sequence_no AS node_run_sequence_no,
+               node_attempt.attempt_no AS node_attempt_no,
+               node_attempt.state AS node_attempt_state,
+               workspace.display_name AS workspace_display_name,
+               workspace.scope_key AS workspace_scope_key
+        FROM background_tasks AS task
+        LEFT JOIN node_attempts AS node_attempt
+          ON task.aggregate_type = 'ATTEMPT' AND node_attempt.id = task.aggregate_id
+        LEFT JOIN node_runs AS node_run ON node_run.id = node_attempt.node_run_id
+        LEFT JOIN flow_runs AS direct_flow_run
+          ON task.aggregate_type = 'FLOW_RUN' AND direct_flow_run.id = task.aggregate_id
+        LEFT JOIN flow_runs AS attempt_flow_run ON attempt_flow_run.id = node_run.flow_run_id
+        LEFT JOIN flow_definitions AS flow_definition
+          ON flow_definition.id = coalesce(
+            direct_flow_run.flow_definition_id, attempt_flow_run.flow_definition_id
+          )
+        LEFT JOIN agent_workspaces AS workspace
+          ON task.aggregate_type = 'AGENT_WORKSPACE' AND workspace.id = task.aggregate_id
+        ORDER BY task.updated_at DESC, task.id DESC
+        LIMIT %s
+        """,
+        (limit,),
+    )
+    for row in rows:
+        row["failure_code"] = _task_error_code(row.pop("last_error", None))
+    return rows

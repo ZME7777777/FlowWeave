@@ -13,6 +13,7 @@ from flowweave.modules.agent_workspaces.application.service import (
     mark_agent_workspace_runtime_lost,
     process_agent_workspace_runtime,
     recover_default_agent_workspace_runtime_task,
+    request_agent_workspace_runtime_replacement,
     resolve_agent_workspace_runtime_secret,
     runtime_allocation_for_agent_workspace,
 )
@@ -267,6 +268,7 @@ __all__ = (
     "list_flow_run_work_directories",
     "mark_agent_workspace_runtime_lost",
     "process_agent_workspace_runtime",
+    "request_agent_workspace_runtime_replacement",
     "process_agent_conversation_title",
     "finalize_agent_conversation_title_failure",
     "recover_default_agent_workspace_runtime_task",

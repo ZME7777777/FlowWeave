@@ -7,14 +7,26 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
-from flowweave.modules.admin_control.router import RuntimeReplacementRequest, _request_replacement
+from flowweave.modules.admin_control.router import (
+    RuntimeControlRequest,
+    RuntimeDiagnosticRequest,
+    _control_runtime,
+    _diagnose_runtime,
+)
 from flowweave.modules.sandboxes.application.runtime_sessions import (
     activate_runtime_generation,
     ensure_runtime_generation,
 )
+from flowweave.modules.users.infrastructure.models import RuntimeBusinessObservation
 from flowweave.shared.errors import DomainError
 from flowweave.shared.models import (
     AdminRuntimeOperation,
+    AgentWorkspace,
+    AgentWorkspaceRuntime,
+    AgentWorkspaceRuntimeAllocation,
+    AgentWorkspaceRuntimeGeneration,
+    AgentWorkspaceRuntimeSecretReference,
+    BackgroundTask,
     EnvironmentVersion,
     FlowDefinition,
     FlowRun,
@@ -108,8 +120,11 @@ def _seed_active_runtime(db: Session) -> tuple[str, str]:
     return run.id, runtime.id
 
 
-def _command(flow_run_id: str, runtime_session_id: str, *, key: str) -> RuntimeReplacementRequest:
-    return RuntimeReplacementRequest(
+def _command(flow_run_id: str, runtime_session_id: str, *, key: str) -> RuntimeControlRequest:
+    return RuntimeControlRequest(
+        action="REPLACE_RUNTIME",
+        runtime_kind="FLOW_RUN",
+        owner_id=flow_run_id,
         flow_run_id=flow_run_id,
         runtime_session_id=runtime_session_id,
         expected_generation=1,
@@ -127,7 +142,7 @@ def test_admin_replacement_records_audit_and_replays_idempotently(
 ) -> None:
     with db_session_factory() as db:
         flow_run_id, runtime_session_id = _seed_active_runtime(db)
-        first = _request_replacement(
+        first = _control_runtime(
             db, _command(flow_run_id, runtime_session_id, key="replay-key-000001")
         )
         db.commit()
@@ -142,7 +157,7 @@ def test_admin_replacement_records_audit_and_replays_idempotently(
         assert runtime is not None
         assert runtime.status == "RECONNECTING"
         assert runtime.row_version == 2
-        replay = _request_replacement(
+        replay = _control_runtime(
             db, _command(flow_run_id, runtime_session_id, key="replay-key-000001")
         )
         assert replay["idempotent_replay"] is True
@@ -156,15 +171,241 @@ def test_admin_replacement_rejects_reused_key_for_different_command(
 ) -> None:
     with db_session_factory() as db:
         flow_run_id, runtime_session_id = _seed_active_runtime(db)
-        _request_replacement(
-            db, _command(flow_run_id, runtime_session_id, key="conflict-key-00001")
-        )
+        _control_runtime(db, _command(flow_run_id, runtime_session_id, key="conflict-key-00001"))
         db.commit()
         with pytest.raises(DomainError, match="idempotency key") as caught:
-            _request_replacement(
+            _control_runtime(
                 db,
                 _command(flow_run_id, runtime_session_id, key="conflict-key-00001").model_copy(
                     update={"reason": "A different replacement request must be rejected safely."}
                 ),
             )
         assert caught.value.code == "ADMIN_OPERATION_IDEMPOTENCY_CONFLICT"
+
+
+def _seed_active_agent_workspace_runtime(db: Session) -> tuple[str, str]:
+    workspace = AgentWorkspace(
+        scope_key=f"admin-control-workspace-{uuid4()}",
+        display_name="Admin control workspace",
+    )
+    db.add(workspace)
+    db.flush()
+    secret = AgentWorkspaceRuntimeSecretReference(
+        workspace_id=workspace.id,
+        encrypted_secret_key=b"encrypted",
+        secret_digest=uuid4().hex + uuid4().hex,
+    )
+    db.add(secret)
+    db.flush()
+    allocation = AgentWorkspaceRuntimeAllocation(
+        workspace_id=workspace.id,
+        secret_reference_id=secret.id,
+        relative_root=f".agent-workspaces/{workspace.id}",
+    )
+    runtime = AgentWorkspaceRuntime(
+        workspace_id=workspace.id,
+        runtime_image_digest="sha256:" + "3" * 64,
+        workspace_allocation_id=allocation.id,
+        active_generation=1,
+        status="ACTIVE",
+    )
+    sandbox = ManagedSandbox(
+        kind="AGENT_RUNTIME",
+        owner_type="AGENT_WORKSPACE",
+        owner_id=workspace.id,
+        backend="docker",
+        backend_resource_name=f"fw-sbx-admin-workspace-{workspace.id[:8]}",
+        backend_resource_id=f"admin-workspace-{workspace.id[:8]}",
+        desired_state="RUNNING",
+        observed_state="RUNNING",
+        generation=1,
+        image_reference="sha256:" + "3" * 64,
+        runtime_allocation_id=allocation.id,
+        spec_json={"port": 8000, "bound": True},
+        hard_expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    db.add_all((allocation, runtime, sandbox))
+    db.flush()
+    generation = AgentWorkspaceRuntimeGeneration(
+        runtime_session_id=runtime.id,
+        generation=1,
+        managed_runtime_id=sandbox.id,
+        runtime_image_digest=runtime.runtime_image_digest,
+        state="READY",
+        fence_token=str(uuid4()),
+        ready_at=datetime.now(UTC),
+    )
+    db.add(generation)
+    db.commit()
+    return workspace.id, runtime.id
+
+
+def _workspace_command(
+    workspace_id: str, runtime_session_id: str, *, key: str
+) -> RuntimeControlRequest:
+    return RuntimeControlRequest(
+        action="REPLACE_RUNTIME",
+        runtime_kind="AGENT_WORKSPACE",
+        owner_id=workspace_id,
+        runtime_session_id=runtime_session_id,
+        expected_generation=1,
+        expected_session_row_version=1,
+        reason="Authenticated conversation reads are consistently timing out.",
+        idempotency_key=key,
+        actor_user_id="11111111-1111-4111-8111-111111111111",
+        actor_username="super-admin",
+        request_id="admin-control-workspace-test",
+    )
+
+
+def test_admin_replacement_recovers_agent_workspace_through_existing_task(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with db_session_factory() as db:
+        workspace_id, runtime_session_id = _seed_active_agent_workspace_runtime(db)
+        result = _control_runtime(
+            db, _workspace_command(workspace_id, runtime_session_id, key="workspace-replace-0001")
+        )
+        db.commit()
+        assert result["runtime"]["status"] == "RECONNECTING"
+        operation = db.scalar(select(AdminRuntimeOperation))
+        runtime = db.scalar(
+            select(AgentWorkspaceRuntime).where(AgentWorkspaceRuntime.id == runtime_session_id)
+        )
+        task = db.scalar(
+            select(BackgroundTask).where(
+                BackgroundTask.task_type == "PROVISION_AGENT_WORKSPACE_RUNTIME",
+                BackgroundTask.aggregate_id == workspace_id,
+            )
+        )
+        assert operation is not None
+        assert operation.runtime_kind == "AGENT_WORKSPACE"
+        assert operation.owner_id == workspace_id
+        assert operation.flow_run_id is None
+        assert runtime is not None
+        assert runtime.status == "RECONNECTING"
+        assert runtime.row_version == 2
+        assert task is not None
+        assert task.idempotency_key.startswith("recover-agent-workspace-runtime:")
+
+
+def test_admin_workspace_replacement_rejects_stale_runtime_version(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with db_session_factory() as db:
+        workspace_id, runtime_session_id = _seed_active_agent_workspace_runtime(db)
+        with pytest.raises(DomainError) as caught:
+            _control_runtime(
+                db,
+                _workspace_command(
+                    workspace_id, runtime_session_id, key="workspace-stale-0001"
+                ).model_copy(update={"expected_session_row_version": 2}),
+            )
+        assert caught.value.code == "ADMIN_RUNTIME_VERSION_CONFLICT"
+
+
+def _diagnostic_command(flow_run_id: str, runtime_session_id: str) -> RuntimeDiagnosticRequest:
+    return RuntimeDiagnosticRequest(
+        runtime_kind="FLOW_RUN",
+        owner_id=flow_run_id,
+        runtime_session_id=runtime_session_id,
+        expected_generation=1,
+        expected_session_row_version=1,
+        actor_user_id="11111111-1111-4111-8111-111111111111",
+        actor_username="super-admin",
+        request_id="admin-control-diagnostic-test",
+    )
+
+
+def test_admin_isolation_and_resume_are_fenced_and_audited(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with db_session_factory() as db:
+        flow_run_id, runtime_session_id = _seed_active_runtime(db)
+        isolated = _control_runtime(
+            db,
+            _command(flow_run_id, runtime_session_id, key="isolate-key-000001").model_copy(
+                update={"action": "ISOLATE_RUNTIME"}
+            ),
+        )
+        db.commit()
+        runtime = db.get(FlowRunRuntime, runtime_session_id)
+        operation = db.scalar(
+            select(AdminRuntimeOperation).where(
+                AdminRuntimeOperation.id == isolated["operation"]["id"]
+            )
+        )
+        assert runtime is not None
+        assert runtime.status == "MAINTENANCE"
+        assert runtime.row_version == 2
+        assert operation is not None
+        assert operation.action == "ISOLATE_RUNTIME"
+
+        resumed = _control_runtime(
+            db,
+            _command(flow_run_id, runtime_session_id, key="resume-key-0000001").model_copy(
+                update={
+                    "action": "RESUME_RUNTIME",
+                    "expected_session_row_version": 2,
+                }
+            ),
+        )
+        db.commit()
+        assert resumed["runtime"]["status"] == "ACTIVE"
+        refreshed = db.get(FlowRunRuntime, runtime_session_id)
+        assert refreshed is not None
+        assert refreshed.row_version == 3
+
+
+def test_admin_resume_requires_a_healthy_current_generation(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with db_session_factory() as db:
+        flow_run_id, runtime_session_id = _seed_active_runtime(db)
+        _control_runtime(
+            db,
+            _command(flow_run_id, runtime_session_id, key="isolate-unready-001").model_copy(
+                update={"action": "ISOLATE_RUNTIME"}
+            ),
+        )
+        sandbox = db.scalar(select(ManagedSandbox).where(ManagedSandbox.owner_id == flow_run_id))
+        assert sandbox is not None
+        sandbox.observed_state = "STOPPED"
+        db.commit()
+        with pytest.raises(DomainError) as caught:
+            _control_runtime(
+                db,
+                _command(flow_run_id, runtime_session_id, key="resume-unready-0001").model_copy(
+                    update={
+                        "action": "RESUME_RUNTIME",
+                        "expected_session_row_version": 2,
+                    }
+                ),
+            )
+        assert caught.value.code == "RUNTIME_RESUME_UNAVAILABLE"
+
+
+def test_admin_diagnostic_records_no_active_conversation_without_reading_content(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with db_session_factory() as db:
+        flow_run_id, runtime_session_id = _seed_active_runtime(db)
+        result = _diagnose_runtime(db, _diagnostic_command(flow_run_id, runtime_session_id))
+        db.commit()
+        observation = db.scalar(
+            select(RuntimeBusinessObservation).where(
+                RuntimeBusinessObservation.runtime_session_id == runtime_session_id
+            )
+        )
+        assert result == {
+            "status": "NO_ACTIVE_CONVERSATION",
+            "stages": [],
+            "impacted_bindings": 0,
+            "event_count": None,
+            "readiness": None,
+            "runtime_availability": None,
+        }
+        assert observation is not None
+        assert observation.status == "NO_ACTIVE_CONVERSATION"
+        assert observation.representative_binding_id is None
+        assert observation.stages_json == []

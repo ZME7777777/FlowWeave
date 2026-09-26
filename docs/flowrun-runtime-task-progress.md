@@ -7370,3 +7370,87 @@ FlowWeave 本地累加后猜测压缩边界。
 | 2026-09-23 | FR-513 | 受影响 Python Ruff format/check、`py_compile`；无容器 MockTransport 分类回归；Web TypeScript typecheck、受影响 ESLint、production build；Alembic head、`git diff --check` 与任务状态唯一性 | PASS（静态／隔离回归）：模型列表探测将订阅／计划到期、余额或额度耗尽映射为固定 entitlement 错误码；认证拒绝、超时等也各自拥有安全说明。MockTransport 断言上游账号文本不会进入 DomainError。数据库型 `tests/test_api.py` 定向 pytest 在 collection 前因本机 Docker socket 缺失、Testcontainers PostgreSQL 无法创建而阻断，未记为通过；同一新增断言在无容器隔离运行中通过。Web typecheck、ESLint 和 production build 通过（仅既有 chunk-size 警告）。无迁移、OpenHands、Runtime Provider、Docker 或远端部署变更。 |
 | 2026-09-23 | FR-514 | OpenHands 定向 Ruff、`py_compile`、LLM retry 单元测试、Agent Server session frame 测试；FlowWeave 平台定向 Ruff／`py_compile`／pytest；Web TypeScript typecheck、受影响 ESLint、production build；本地源码归档 fetch/digest 校验；`git diff --check` 与任务状态唯一性 | PASS（本地隔离）：OpenHands retry listener 与最终 `5/5` frame 测试通过，session retry frame 非持久化测试通过；FlowWeave 只转发合法结构化 retry frame，前端按会话 binding 隔离并将终态错误收敛为可展开状态行。使用仓库内固定源码包，避免未推送 commit 的 codeload 404；未运行 Docker、数据库迁移、真实 Runtime、远端部署或 E2E。 |
 | 2026-09-25 | FR-515 | Web TypeScript typecheck、受影响文件 ESLint、源码 Vite 上 Agent Workspace 定向 Playwright（1 passed）、`git diff --check` 与任务状态唯一性 | PASS：Activity 列表中的单击预览现在与工作区列表正式打开一致，会立即清除该 binding 既有的未读投影；因此运行中会话不会因历史未读而在当前用户已查看时继续显示蓝点。定向浏览器回归覆盖手动标未读后进入 Activity 并单击预览，断言未读标记消失且已读状态写回。未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
+
+### FR-527 Admin Runtime 观测与 Agent Workspace 受控恢复 — DONE
+
+依赖：FR-511、FR-510。
+
+目标：Admin 必须将 `FLOW_RUN` 与 `AGENT_WORKSPACE` Runtime 作为同等的受管 Runtime 展示，提供按需的 generation 生命周期、控制面／容器观测可用性、会话影响范围及管理操作审计；`AGENT_WORKSPACE` 必须能够在管理员明确提交原因和确认后，通过既有持久化恢复生命周期替换当前 generation。不得将容器 `ACTIVE`／`READY` 误称为 Conversation 业务健康；不得暴露 Docker restart、删除容器、清空 Workspace 或清除 Conversation 的管理动作。
+
+范围：仅新增只读 Admin Runtime 详情和人工受控 replacement。详情不读取会话正文、容器日志或凭据，也不触发 Runtime 探针、告警、自动熔断或自动 replacement；后续业务探针、告警与自动化故障收敛另立切片。
+
+完成：Admin Runtime 列表将无错误状态明确显示为“未见控制面错误／未执行业务探针”，新增按需详情以显示 Runtime／generation 生命周期、容器观察可用性、会话生命周期汇总和最近受控操作。管理员 replacement 请求现在携带 Runtime 类型和 owner，审计模型可记录 `FLOW_RUN` 或 `AGENT_WORKSPACE`；FlowRun 保留既有 fenced replacement，Agent Workspace 则以 generation 与 row-version 乐观锁校验后进入既有 `RECONNECTING` 和 `PROVISION_AGENT_WORKSPACE_RUNTIME` 持久化恢复任务，绝不直接 Docker restart 或删除持久数据。迁移 `0127_admin_runtime_scope` 将审计表泛化到两类 Runtime。
+
+验收：Admin Web TypeScript typecheck、ESLint 和 production build 通过；Platform/Admin API Ruff format/check、`py_compile`、修改 Runtime 控制入口 Pyright、Alembic head `0127_admin_runtime_scope`、`git diff --check` 通过。新增的 Admin control 定向 pytest 已启动，但所有 4 条用例均在 Testcontainers session fixture 创建 PostgreSQL 前被本机缺失 Docker socket 阻断，未进入断言、未计为通过。未运行数据库迁移，不修改 OpenHands、Runtime Provider、Docker、远端配置或服务器；未实现告警、自动探针、自动熔断或自动 replacement。
+
+### FR-528 Admin Runtime 业务资源关联投影 — DONE
+
+依赖：FR-527。
+
+目标：Admin 的 Runtime 列表与详情必须用平台可读的业务身份关联底层 Runtime，不得只显示 Owner UUID。`FLOW_RUN` Runtime 应显示流程定义、FlowRun 名称／编号、FlowRun 状态，以及存在时的 NodeRun／Attempt；`AGENT_WORKSPACE` Runtime 应显示工作区名称与 scope。技术 UUID 仍作为次级精确定位信息保留。
+
+范围：仅扩展 Admin API 的 Runtime 只读投影和 Admin Web 渲染／筛选；不新增数据库迁移、后台任务页、Runtime 探针、告警、自动熔断、替换策略或远端部署。
+
+完成：Runtime 列表和按需详情通过只读关系查询关联 `flow_runs`、`flow_definitions`、`node_attempts`、`node_runs` 与 `agent_workspaces`。界面以“流程 / FlowRun 名称 #编号”或 Agent Workspace 名称作为主身份，并在辅助行显示节点／Attempt 或 Workspace scope；Runtime 筛选同时支持 Session、Owner UUID、流程、Run、节点和工作区名称。缺失历史关联时明确显示未关联／未命名，避免伪造业务身份。
+
+验收：Admin API Ruff format/check 与 `py_compile`、Admin Web TypeScript typecheck、ESLint、production build、`git diff --check`、Alembic head 和任务状态唯一性通过。未修改 Platform Runtime、OpenHands、数据库 schema、后台任务或远端环境；不运行数据库型测试，因为本切片无新的 ORM 写行为且本机 Testcontainers PostgreSQL 仍缺 Docker socket。
+
+### FR-529 Admin 后台任务诊断页 — DONE
+
+依赖：FR-528。
+
+目标：Admin 必须将 Background Task 的活跃工作与终态执行账本分开，并可按任务类型、状态和平台资源查看任务；`DEAD`／`SUCCEEDED` 不得被误呈现为当前积压。任务需尽可能关联 FlowRun／流程、Node Attempt 或 Agent Workspace，且只显示安全失败分类，不返回 payload、会话正文或原始错误。
+
+范围：新增只读后台任务 API 与独立 Admin 导航页、终态保留预览及任务类型／状态汇总。不得增加删除、直接改状态、全量重试或手动清理功能；不得修改 Worker 的既有终态保留策略。
+
+完成：Admin API 返回当前状态汇总、超过配置保留期的终态候选数量、按任务类型／状态的聚合及最新 500 条任务。任务行关联 FlowRun／流程、节点 Attempt 或 Agent Workspace，并将 `last_error` 仅归一化为大写稳定错误分类。页面分开展示活跃待处理、最终失败账本、最终成功账本和可由既有 Worker 策略回收的终态数量，提供按任务／资源筛选和类型汇总；不显示 payload、原始错误、凭据或会话内容。
+
+验收：Admin API Ruff format/check、`py_compile` 与 Admin Web TypeScript typecheck、ESLint、production build、`git diff --check` 通过。未修改 Platform Worker、数据库 schema、Runtime、OpenHands、远端配置或服务器；不运行数据库型测试，因为本切片只添加 Admin API 的只读 PostgreSQL 投影，且本机 Testcontainers PostgreSQL 仍缺 Docker socket。
+
+### FR-530 Runtime 业务诊断与人工隔离控制 — DONE
+
+依赖：FR-527、FR-528、FR-529。
+
+目标：Admin 必须能对一个 Runtime 按需执行正式 OpenHands Conversation 业务读取诊断，区分容器/控制面存活与 Conversation state、active event window、输入 readiness 的实际可用性；管理员可将有问题的 Runtime 隔离新写入，并在明确的 generation／row-version 栅栏下恢复路由。不得自动替换、自动熔断、读取会话正文或绕过 OpenHands 正式路由。
+
+范围：新增管理员按需诊断与 `ISOLATE_RUNTIME` / `RESUME_RUNTIME` 审计控制；诊断结果仅暴露阶段、耗时、事件计数、readiness 和稳定错误分类。替换仍沿用既有受控 replacement，不修改 Worker 自动策略。
+
+完成：Admin Runtime 详情可对一个最近活跃绑定执行 OpenHands 正式 `conversation_runtime`、active event window 与 input readiness 读取；持久化的观察结果仅包含阶段、耗时、稳定错误码、事件数量、readiness、Runtime availability 与受影响绑定数，不含正文、payload、凭据、URL 或原始异常。没有活跃会话时也会持久化 `NO_ACTIVE_CONVERSATION` 事实。管理员可在稳定 FlowRun Runtime 或 Agent Workspace Runtime 上将新写入隔离为 `MAINTENANCE`，操作含原因、身份、幂等键、generation 与 row-version 栅栏及追加审计；已有 workspace/conversation/persistence 不会被删除或重启。恢复只在当前 generation 对应的 ManagedSandbox 仍为期望和观察双 `RUNNING` 时发生。FlowRun node-attempt Runtime 不提供该人工路由控制，避免越过其独立生命周期；隔离态不允许通过诊断绕过正式 `ACTIVE` 路由。未实现自动告警、自动熔断、自动诊断或自动 replacement。
+
+验收：Platform/Admin API Ruff format/check、`py_compile`、Runtime control router Pyright、Admin Web TypeScript typecheck、ESLint、production build、Alembic head `0129_runtime_business_obs` 与 `git diff --check` 通过。新增的 3 条隔离/恢复/无活跃会话诊断定向测试及既有 4 条控制测试均已启动，但全部在 Testcontainers session fixture 创建 PostgreSQL 前被本机缺失 Docker socket 阻断，未进入断言、未计为通过。未运行远端迁移；不修改 Worker 自动策略、OpenHands、Runtime Provider、Docker 或远端配置。
+
+### FR-531 Runtime Poll 执行舱壁隔离 — DONE
+
+依赖：FR-530。
+
+目标：一个卡住的正式 OpenHands `POLL_RUNTIME` 读取不得占用 FlowRun／Agent Workspace Runtime 的 provision、replace、resume、cancel 等恢复控制任务的 Worker 执行容量或同步数据库连接容量，避免单个 Runtime 的业务读阻塞传播为平台级恢复饥饿。
+
+范围：仅拆分 Worker 内 `POLL_RUNTIME` 的 task lane、线程 executor 与同步数据库连接池；保持任务账本、lease、正式 OpenHands 读取、retry 与人工恢复语义不变。不得自动替换、自动熔断、删除 Runtime／Workspace／Conversation 或修改 OpenHands。
+
+完成：`POLL_RUNTIME` 已从 Runtime control task 集合拆出。默认四并发 Worker 形成互斥的 `runtime-control`、`runtime-poll`、`delivery`、`maintenance` 四条 lane；poll lane 受 `RUNTIME_POLL_WORKER_CONCURRENCY`（默认 1）严格限制，并使用独立 poll executor 与 PostgreSQL synchronous pool。poll 读取仍在调用正式 Runtime 前释放 SQL 事务，但即使底层 OpenHands 读取长期阻塞，也只会占用 poll lane 的一条线程和一条 poll pool 连接，不会耗尽控制任务使用的 ordinary blocking executor/pool。单/双 Worker 并发保留兼容降级分配，不伪造不存在的容量；生产默认四并发启用完整舱壁。
+
+验收：新增 Worker lane 集合互斥、默认 poll/control lane 分离、POLL 任务专属 executor/pool 断言；受影响 Ruff format/check、`py_compile` 与目标 source Pyright 通过，`git diff --check` 通过。定向 pytest 已启动，但本机 Testcontainers PostgreSQL session fixture 在创建用例前因 Docker socket 缺失失败，未进入断言、未计为通过。未运行数据库迁移，不修改远端配置、OpenHands 或自动恢复策略。
+
+### FR-532 Admin 局部失败与请求关联 — DONE
+
+依赖：FR-529、FR-530。
+
+目标：管理中心并行读取总览、告警、Runtime、会话、后台任务和操作审计时，任一只读投影失败不得将已成功的数据折叠为全页不可用；管理员必须能看到失败的具体数据块、稳定错误码、HTTP 状态和请求关联 ID，以便精确取证。
+
+范围：Admin Web 刷新策略和 Admin API 安全错误关联；不改变 Runtime、后台任务、数据库 schema、告警语义或权限边界。
+
+完成：Admin Web 将全量 `Promise.all` 改为 `Promise.allSettled`，保留最近一次或本轮成功的数据块，仅将失败的数据块显示为局部诊断卡；每次请求生成并传递 `X-Request-ID`，失败卡显示资源名称、稳定错误码、HTTP 状态与截短 request ID。Admin API 对响应回传 request ID，并把未处理异常归一化为不含 SQL／堆栈／凭据的 `ADMIN_INTERNAL_ERROR`，服务端日志按 route、request ID 与异常类型关联。认证／授权／数据不可用错误同样返回 request ID。
+
+验收：Admin API Ruff format/check、`py_compile`、Pyright；Admin Web TypeScript typecheck、ESLint、production build 与 `git diff --check` 通过。未运行数据库型测试；不修改 Platform Runtime、OpenHands、schema、远端配置或自动恢复策略。
+
+### FR-533 Runtime 正式读取按 generation 舱壁 — DONE
+
+依赖：FR-531。
+
+目标：同一 Agent Server generation 承载大量 Conversation 时，正式 Runtime state／active event window／input readiness 读取不得同时涌入并耗尽进程级 HTTP client、API blocking reader 或同一 Agent Server 的工作资源；一个 generation 卡住应快速、可分类地拒绝额外读取，而其他 generation 必须保留读取容量。
+
+范围：在 OpenHands adapter 的正式读入口增加按 generation-scoped Runtime URL 的本地、有界、可重入 bulkhead；为正式读超时提供稳定错误码。不得持久化消息／event 内容，不得自动隔离、替换或重启 Runtime，也不改 OpenHands 协议。
+
+完成：`conversation_runtime`、`read_events`、`read_active_events` 与 `input_readiness` 都在同一 generation-scoped bulkhead 中执行。默认每 generation 最多 2 个并发正式读取，等待槽位最多 250ms；配置为 `RUNTIME_READ_PER_RUNTIME_CONCURRENCY` 和 `RUNTIME_READ_SLOT_TIMEOUT_SECONDS`。同一调用链中的嵌套 availability/readiness 检查可重入而不会自锁。超限快速返回 `RUNTIME_READ_PER_RUNTIME_SATURATED`，不会继续占用共享 HTTP/worker 容量；正式读取的底层 HTTP timeout 返回 `RUNTIME_BUSINESS_READ_TIMEOUT`（非正式操作的 timeout 保持既有 `EXECUTOR_UNAVAILABLE` 语义）。指标只增加低基数 bulkhead 饱和计数，不把 Runtime、会话、用户、URL 或事件 ID 当作指标标签。
+
+验收：新增受控并发断言证明同 generation 的第二个读被稳定拒绝、不同 generation 仍可取得自己的读取槽位；新增正式 HTTP read timeout 稳定错误码断言，两个定向 OpenHands pytest 通过（2 passed）。受影响 Ruff format/check、`py_compile`、Alembic head 和 `git diff --check` 通过。OpenHands adapter 的 Pyright 基线既有 6 条动态 JSON/Optional 错误，修改前后数目和位置等价，未引入新增 Pyright 诊断。未运行数据库迁移，不修改自动 replacement、OpenHands 容器或远端配置。

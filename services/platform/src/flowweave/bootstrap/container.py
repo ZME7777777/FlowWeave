@@ -52,6 +52,8 @@ class Container:
     audit_writer: AuditWriter
     blocking_executor: ThreadPoolExecutor
     blocking_io_slots: asyncio.Semaphore
+    poll_executor: ThreadPoolExecutor
+    poll_io_slots: asyncio.Semaphore
     history_read_executor: ThreadPoolExecutor
     history_read_slots: asyncio.Semaphore
     blocking_control_executor: ThreadPoolExecutor
@@ -66,6 +68,11 @@ class Container:
         unregister_http_transport(self.settings, self.http_transport)
         await asyncio.to_thread(
             self.blocking_executor.shutdown,
+            wait=True,
+            cancel_futures=True,
+        )
+        await asyncio.to_thread(
+            self.poll_executor.shutdown,
             wait=True,
             cancel_futures=True,
         )
@@ -91,7 +98,10 @@ def build_container(settings: Settings, *, role: Literal["api", "worker"]) -> Co
         runtime = MockRuntime()
     else:
         raise ValueError(f"Unsupported runtime adapter: {settings.runtime_adapter}")
-    database = Database(settings)
+    database = Database(
+        settings,
+        poll_pool_size=settings.runtime_poll_worker_concurrency if role == "worker" else 0,
+    )
     metrics = Metrics()
     blocking_workers = (
         settings.worker_concurrency if role == "worker" else settings.blocking_pool_size
@@ -99,6 +109,10 @@ def build_container(settings: Settings, *, role: Literal["api", "worker"]) -> Co
     blocking_executor = ThreadPoolExecutor(
         max_workers=blocking_workers,
         thread_name_prefix=f"flowweave-{role}-blocking",
+    )
+    poll_executor = ThreadPoolExecutor(
+        max_workers=settings.runtime_poll_worker_concurrency,
+        thread_name_prefix=f"flowweave-{role}-runtime-poll",
     )
     history_read_executor = ThreadPoolExecutor(
         max_workers=settings.history_read_pool_size,
@@ -130,6 +144,8 @@ def build_container(settings: Settings, *, role: Literal["api", "worker"]) -> Co
         audit_writer=AuditWriter(database.sessions),
         blocking_executor=blocking_executor,
         blocking_io_slots=asyncio.Semaphore(blocking_workers),
+        poll_executor=poll_executor,
+        poll_io_slots=asyncio.Semaphore(settings.runtime_poll_worker_concurrency),
         history_read_executor=history_read_executor,
         history_read_slots=asyncio.Semaphore(settings.history_read_pool_size),
         blocking_control_executor=blocking_control_executor,

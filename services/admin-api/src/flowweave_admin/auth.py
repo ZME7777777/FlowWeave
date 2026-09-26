@@ -13,6 +13,16 @@ from flowweave_admin.settings import Settings
 _SESSION_COOKIE = "flowweave_session"
 
 
+def _error_response(request: Request, *, status: int, code: str) -> JSONResponse:
+    request_id = getattr(request.state, "request_id", request.headers.get("X-Request-ID"))
+    headers = {"X-Request-ID": request_id} if isinstance(request_id, str) else None
+    return JSONResponse(
+        status_code=status,
+        content={"error": {"code": code, "request_id": request_id}},
+        headers=headers,
+    )
+
+
 async def require_super_admin(
     request: Request,
     call_next: Callable[[Request], Awaitable[Any]],
@@ -22,7 +32,7 @@ async def require_super_admin(
     settings: Settings = request.app.state.settings
     token = request.cookies.get(_SESSION_COOKIE)
     if not token:
-        return JSONResponse(status_code=401, content={"error": {"code": "AUTHENTICATION_REQUIRED"}})
+        return _error_response(request, status=401, code="AUTHENTICATION_REQUIRED")
     try:
         with connect(settings) as connection:
             row = connection.execute(
@@ -38,8 +48,8 @@ async def require_super_admin(
                 (hashlib.sha256(token.encode("utf-8")).hexdigest(),),
             ).fetchone()
     except Exception:
-        return JSONResponse(status_code=503, content={"error": {"code": "ADMIN_DATA_UNAVAILABLE"}})
+        return _error_response(request, status=503, code="ADMIN_DATA_UNAVAILABLE")
     if row is None:
-        return JSONResponse(status_code=403, content={"error": {"code": "ADMIN_ACCESS_REQUIRED"}})
+        return _error_response(request, status=403, code="ADMIN_ACCESS_REQUIRED")
     request.state.admin = row
     return await call_next(request)
