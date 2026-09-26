@@ -7454,3 +7454,15 @@ FlowWeave 本地累加后猜测压缩边界。
 完成：`conversation_runtime`、`read_events`、`read_active_events` 与 `input_readiness` 都在同一 generation-scoped bulkhead 中执行。默认每 generation 最多 2 个并发正式读取，等待槽位最多 250ms；配置为 `RUNTIME_READ_PER_RUNTIME_CONCURRENCY` 和 `RUNTIME_READ_SLOT_TIMEOUT_SECONDS`。同一调用链中的嵌套 availability/readiness 检查可重入而不会自锁。超限快速返回 `RUNTIME_READ_PER_RUNTIME_SATURATED`，不会继续占用共享 HTTP/worker 容量；正式读取的底层 HTTP timeout 返回 `RUNTIME_BUSINESS_READ_TIMEOUT`（非正式操作的 timeout 保持既有 `EXECUTOR_UNAVAILABLE` 语义）。指标只增加低基数 bulkhead 饱和计数，不把 Runtime、会话、用户、URL 或事件 ID 当作指标标签。
 
 验收：新增受控并发断言证明同 generation 的第二个读被稳定拒绝、不同 generation 仍可取得自己的读取槽位；新增正式 HTTP read timeout 稳定错误码断言，两个定向 OpenHands pytest 通过（2 passed）。受影响 Ruff format/check、`py_compile`、Alembic head 和 `git diff --check` 通过。OpenHands adapter 的 Pyright 基线既有 6 条动态 JSON/Optional 错误，修改前后数目和位置等价，未引入新增 Pyright 诊断。未运行数据库迁移，不修改自动 replacement、OpenHands 容器或远端配置。
+
+### FR-534 Agent Workspace hydration 超时、取消与降级恢复 — DONE
+
+依赖：FR-533。
+
+目标：Agent Workspace 与 FlowRun 节点会话的首屏宿主读取和会话 hydration 必须有浏览器端有限超时；切换会话必须取消旧 hydration，不能因旧 Runtime／代理请求悬挂而阻塞最后选择的会话；同一 Runtime generation 的正式读取饱和或业务读超时必须投影为统一、可恢复的会话读取合同。Runtime 暂时不可读时，前端只能有界重试，随后保留会话页面并提供显式重试，不能无限 loading 或放大为多条并行 Runtime 读取。
+
+范围：Web request deadline、AgentSessionWorkbench hydration 单飞/取消/局部错误态、两类 hydration 路由的稳定错误归一化，以及定向浏览器回归。不得修改 OpenHands 协议、Runtime 生命周期、自动 replacement、数据库 schema 或远端配置。
+
+完成：默认宿主和 hydration 关键读取在浏览器端均有 15 秒 deadline，调用方 AbortSignal 与 timeout 信号合并；切换 binding 时取消旧 hydration query，并按 workspace/binding 隔离请求，迟到/取消的旧请求不会启动中间会话读取或污染当前选择。Runtime 暂不可读或客户端超时最多后台重试两次，随后展示局部错误和“重新读取会话”入口，不再无限 loading 或扇出三条独立 Runtime 读取；旧 Runtime 的非容量 hydration 失败仍保留原有独立读取兼容回退。Agent Workspace 与 FlowRun node hydration 对 `RUNTIME_READ_PER_RUNTIME_SATURATED`、`RUNTIME_BUSINESS_READ_TIMEOUT` 等正式读临时失败统一投影为 `AGENT_RUNTIME_UNAVAILABLE`（503）。
+
+验收：Web TypeScript typecheck、ESLint 和 production build 通过；定向 Playwright hydration 切换／兼容回退（2 passed）通过，且第一个 hydration 不释放时最后选择的会话仍可渲染。受影响 Python Ruff format/check 和 `py_compile` 通过；新增两类宿主的错误合同 pytest 已启动，但均在全局 Testcontainers PostgreSQL fixture 创建前因本机 Docker socket 缺失失败，未进入断言、未计为通过。完整 Agent session cache Playwright 24 项中 21 项通过；3 项既有非本切片场景（附件按钮严格定位、历史滚动请求计数、侧栏异常图标）稳定失败，未将其记为通过。未修改数据库 schema、OpenHands、Runtime 生命周期或远端配置。

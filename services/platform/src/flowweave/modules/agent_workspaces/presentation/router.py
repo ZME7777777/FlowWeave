@@ -849,7 +849,12 @@ async def agent_events(
             ),
         )
     except DomainError as exc:
-        if exc.code not in {"EXECUTOR_UNAVAILABLE", "RUNTIME_READ_SATURATED"}:
+        if exc.code not in {
+            "EXECUTOR_UNAVAILABLE",
+            "RUNTIME_READ_SATURATED",
+            "RUNTIME_READ_PER_RUNTIME_SATURATED",
+            "RUNTIME_BUSINESS_READ_TIMEOUT",
+        }:
             raise
         raise DomainError(
             "AGENT_RUNTIME_UNAVAILABLE",
@@ -913,7 +918,12 @@ async def agent_conversation_hydration(
             ),
         )
     except DomainError as exc:
-        if exc.code not in {"EXECUTOR_UNAVAILABLE", "RUNTIME_READ_SATURATED"}:
+        if exc.code not in {
+            "EXECUTOR_UNAVAILABLE",
+            "RUNTIME_READ_SATURATED",
+            "RUNTIME_READ_PER_RUNTIME_SATURATED",
+            "RUNTIME_BUSINESS_READ_TIMEOUT",
+        }:
             raise
         raise DomainError(
             "AGENT_RUNTIME_UNAVAILABLE",
@@ -1073,7 +1083,6 @@ async def delete_agent_workspace_draft_attachments(
         else conversations.delete_draft_attachments(session, workspace_id, conversation_id),
     )
     return Response(status_code=204)
-
 
 
 @router.get("/agent-workspaces/{workspace_id}/conversations/{binding_id}/context")

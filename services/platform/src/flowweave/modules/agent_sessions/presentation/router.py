@@ -956,27 +956,41 @@ async def node_session_hydration(
     cached = await container.conversation_hydration_cache.get_current_for_scope(scope)
     if cached is not None:
         return cached
-    key = await run_blocking(
-        container,
-        lambda session: agent_sessions.flow_node_conversations.node_conversation_cache_key(
-            session,
-            flow_run_id=flow_run_id,
-            attempt_id=attempt_id,
-            binding_id=binding_id,
-        ),
-    )
-    return await container.conversation_hydration_cache.get_or_load(
-        key,
-        lambda: run_blocking(
+    try:
+        key = await run_blocking(
             container,
-            lambda session: agent_sessions.flow_node_conversations.hydrate_node_conversation(
+            lambda session: agent_sessions.flow_node_conversations.node_conversation_cache_key(
                 session,
                 flow_run_id=flow_run_id,
                 attempt_id=attempt_id,
                 binding_id=binding_id,
             ),
-        ),
-    )
+        )
+        return await container.conversation_hydration_cache.get_or_load(
+            key,
+            lambda: run_blocking(
+                container,
+                lambda session: agent_sessions.flow_node_conversations.hydrate_node_conversation(
+                    session,
+                    flow_run_id=flow_run_id,
+                    attempt_id=attempt_id,
+                    binding_id=binding_id,
+                ),
+            ),
+        )
+    except DomainError as exc:
+        if exc.code not in {
+            "EXECUTOR_UNAVAILABLE",
+            "RUNTIME_READ_SATURATED",
+            "RUNTIME_READ_PER_RUNTIME_SATURATED",
+            "RUNTIME_BUSINESS_READ_TIMEOUT",
+        }:
+            raise
+        raise DomainError(
+            "AGENT_RUNTIME_UNAVAILABLE",
+            "Agent 运行环境暂时不可读取，请稍后重试；FlowWeave 未自动修改会话或运行环境",
+            503,
+        ) from exc
 
 
 @router.get(f"{_BASE}/{{binding_id}}/head")
@@ -1289,7 +1303,6 @@ async def delete_node_draft_attachments(
         ),
     )
     return Response(status_code=204)
-
 
 
 @router.post(f"{_BASE}/{{binding_id}}/interrupt", status_code=202)

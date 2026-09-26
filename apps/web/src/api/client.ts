@@ -12,6 +12,7 @@ import { deploymentBasePath } from '../deploymentPath';
 // root-level /api route.
 const API_BASE = import.meta.env.VITE_API_BASE_URL || deploymentBasePath;
 const ROOT = '/api/v1';
+const INTERACTIVE_REQUEST_TIMEOUT_MS = 15_000;
 const absoluteApiUrl = (path: string) => new URL(`${API_BASE}${ROOT}${path}`, window.location.origin);
 const notifyAuthenticationRequired = () => window.dispatchEvent(new Event('flowweave:auth-required'));
 export const randomId = () => {
@@ -103,20 +104,36 @@ async function requestText(path: string, signal?: AbortSignal): Promise<string> 
   }
   return response.text();
 }
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+type RequestOptions = RequestInit & { timeoutMs?: number };
+
+async function request<T>(path: string, init: RequestOptions = {}): Promise<T> {
+  const { timeoutMs, signal: callerSignal, ...requestInit } = init;
+  const timeoutController = timeoutMs === undefined ? undefined : new AbortController();
+  const signal = timeoutController
+    ? callerSignal ? AbortSignal.any([callerSignal, timeoutController.signal]) : timeoutController.signal
+    : callerSignal;
+  const timeout = timeoutController
+    ? window.setTimeout(() => timeoutController.abort(), timeoutMs)
+    : undefined;
   let response: Response;
   try {
     response = await fetch(`${API_BASE}${ROOT}${path}`, {
-      ...init,
+      ...requestInit,
+      signal,
       credentials: 'include',
       // Runtime replacement and other control-plane state may recover without
       // changing the route. Never let the browser reuse a stale dynamic GET.
-      cache: init.method === undefined || init.method === 'GET' ? 'no-store' : init.cache,
-      headers: { 'Content-Type': 'application/json', ...init.headers },
+      cache: requestInit.method === undefined || requestInit.method === 'GET' ? 'no-store' : requestInit.cache,
+      headers: { 'Content-Type': 'application/json', ...requestInit.headers },
     });
   } catch (error) {
-    if (init.signal?.aborted) throw error;
+    if (callerSignal?.aborted) throw error;
+    if (timeoutController?.signal.aborted) {
+      throw new ApiError('请求超时，请重试。', 'REQUEST_TIMEOUT', {}, 408);
+    }
     throw new ApiError('无法连接服务器，请检查网络连接后重试。', 'NETWORK_ERROR', {}, 0);
+  } finally {
+    if (timeout !== undefined) window.clearTimeout(timeout);
   }
   if (!response.ok) {
     const error = await responseError(response);
@@ -209,7 +226,7 @@ export const api = {
   login: (username: string, password: string) =>
     request<AuthUser>('/auth/login', json('POST', { username, password })),
   logout: () => request<void>('/auth/logout', json('POST')),
-  defaultAgentWorkspace: () => request<AgentWorkspace>('/agent-workspaces/default'),
+  defaultAgentWorkspace: (signal?: AbortSignal) => request<AgentWorkspace>('/agent-workspaces/default', { signal, timeoutMs: INTERACTIVE_REQUEST_TIMEOUT_MS }),
   agentWorkspace: (id: string) => request<AgentWorkspace>(`/agent-workspaces/${encodeURIComponent(id)}`),
   agentWorkspaceCapabilities: (id: string) =>
     request<AgentWorkspaceCapability[]>(`/agent-workspaces/${encodeURIComponent(id)}/capabilities`),
@@ -348,7 +365,7 @@ export const api = {
     return request<OpenHandsConversationEventBatch>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/events${query.size ? `?${query}` : ''}`);
   },
   agentConversationHydration: (workspaceId: string, bindingId: string, signal?: AbortSignal) =>
-    request<import('../types').AgentConversationHydration>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/hydration`, { signal }),
+    request<import('../types').AgentConversationHydration>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/hydration`, { signal, timeoutMs: INTERACTIVE_REQUEST_TIMEOUT_MS }),
   agentConversationHead: (workspaceId: string, bindingId: string) =>
     request<AgentConversationHead>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/head`),
   agentPendingConfirmation: (workspaceId: string, bindingId: string) =>
@@ -865,7 +882,7 @@ function nodeSessionBase(flowRunId: string, attemptId: string): string {
 }
 
 export const nodeSessionApi = {
-  host: (flowRunId: string, attemptId: string) => request<import('../types').AgentSessionHostDetails>(`${nodeSessionBase(flowRunId, attemptId)}/host`),
+  host: (flowRunId: string, attemptId: string, signal?: AbortSignal) => request<import('../types').AgentSessionHostDetails>(`${nodeSessionBase(flowRunId, attemptId)}/host`, { signal, timeoutMs: INTERACTIVE_REQUEST_TIMEOUT_MS }),
   runtime: (flowRunId: string, attemptId: string) => request<import('../types').AgentSessionRuntime>(`${nodeSessionBase(flowRunId, attemptId)}/runtime`),
   conversations: (flowRunId: string, attemptId: string, cursor?: string) => {
     const query = new URLSearchParams({ limit: '5' });
@@ -892,7 +909,7 @@ export const nodeSessionApi = {
     return request<import('../types').OpenHandsConversationEventBatch>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/events${query.size ? `?${query}` : ''}`);
   },
   hydration: (flowRunId: string, attemptId: string, bindingId: string, signal?: AbortSignal) =>
-    request<import('../types').AgentConversationHydration>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/hydration`, { signal }),
+    request<import('../types').AgentConversationHydration>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/hydration`, { signal, timeoutMs: INTERACTIVE_REQUEST_TIMEOUT_MS }),
   head: (flowRunId: string, attemptId: string, bindingId: string) =>
     request<AgentConversationHead>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/head`),
   inputReadiness: (flowRunId: string, attemptId: string, bindingId: string) =>

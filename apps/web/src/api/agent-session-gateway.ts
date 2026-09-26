@@ -94,7 +94,7 @@ const fullSessionFeatures: AgentSessionFeatures = {
  * these DTOs and preserve the same OpenHands session semantics.
  */
 export interface AgentSessionApi {
-  readonly defaultHost: () => Promise<AgentSessionHostDetails>;
+  readonly defaultHost: (signal?: AbortSignal) => Promise<AgentSessionHostDetails>;
   readonly runtime: (hostId: AgentSessionHostId) => Promise<AgentSessionRuntime>;
   readonly conversations: (hostId: AgentSessionHostId, cursor?: string) => Promise<AgentConversationPage>;
   readonly conversationActivity: (hostId: AgentSessionHostId) => Promise<AgentConversationActivity>;
@@ -255,7 +255,7 @@ export function flowNodeSessionGateway(
     // work directories are owned by the FlowRun and can be selected by every
     // node entry that belongs to it.
     api: {
-      defaultHost: () => nodeSessionApi.host(flowRunId, attemptId),
+      defaultHost: signal => nodeSessionApi.host(flowRunId, attemptId, signal),
       runtime: () => nodeSessionApi.runtime(flowRunId, attemptId),
       conversations: (_hostId, cursor) => nodeSessionApi.conversations(flowRunId, attemptId, cursor),
       conversationActivity: () => nodeSessionApi.activity(flowRunId, attemptId),

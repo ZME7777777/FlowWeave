@@ -31,6 +31,7 @@ const ACTIVE_EVENT_RECOVERY_INTERVAL_MS = 4_000;
 const ACTIVE_EVENT_LATEST_RECHECK_INTERVAL_MS = 30_000;
 const SUBMISSION_EVENT_CONFIRMATION_TIMEOUT_MS = 60_000;
 const CONVERSATION_HYDRATION_SELECTION_DELAY_MS = 120;
+const MAX_UNAVAILABLE_HYDRATION_RETRIES = 2;
 const TERMINAL_CONVERSATION_CACHE_TTL_MS = 5 * 60 * 1000;
 const ACTIVE_CONVERSATION_CACHE_TTL_MS = 30_000;
 // A hydration response is a coherent native snapshot. Keep its three seeded
@@ -1016,9 +1017,10 @@ function isBootstrapAmbiguous(error: Error): boolean {
 }
 
 function isRuntimeReadUnavailable(error: unknown): boolean {
-  return error instanceof ApiError
-    && error.status === 503
-    && error.code === 'AGENT_RUNTIME_UNAVAILABLE';
+  return error instanceof ApiError && (
+    (error.status === 503 && error.code === 'AGENT_RUNTIME_UNAVAILABLE')
+    || error.code === 'REQUEST_TIMEOUT'
+  );
 }
 
 type AgentCapabilityType = 'SKILL' | 'MCP' | 'PLUGIN' | 'CONTEXT' | 'AGENT_DEFINITION' | 'HOOK';
@@ -4363,7 +4365,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   // permanently stuck on the first transient response.
   const workspaceQuery = useQuery({
     queryKey: sessionQueryKey(host, 'default-host'),
-    queryFn: api.defaultHost,
+    queryFn: ({ signal }) => api.defaultHost(signal),
     retry: (count, error) => !(error instanceof ApiError && error.status < 500 && error.status !== 409) && count < 3,
     retryDelay: attempt => Math.min(1000 * 2 ** attempt, 5000),
     refetchOnWindowFocus: true,
@@ -4932,7 +4934,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const contextQueryKey = sessionQueryKey(host, 'conversation-context', workspace?.id, selected?.id);
   const [hydrationPhase, setHydrationPhase] = useState<{
     bindingId: string;
-    state: 'loading' | 'ready' | 'fallback';
+    state: 'loading' | 'ready' | 'fallback' | 'unavailable';
+    error?: Error;
   }>();
   const hydrationSelection = useRef<{
     workspaceId: string;
@@ -4946,8 +4949,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     hydratedAt: number;
     running: boolean;
   }>());
+  const hydrationQueryKey = sessionQueryKey(host, 'conversation-hydration-request', workspace?.id, selected?.id);
   const hydrationQuery = useQuery({
-    queryKey: sessionQueryKey(host, 'conversation-hydration-request'),
+    queryKey: hydrationQueryKey,
     queryFn: async ({ signal }) => {
       const request = hydrationExecution.current;
       if (!request) throw new Error('Conversation hydration selection is unavailable');
@@ -4980,6 +4984,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   });
   const refreshConversationHydration = hydrationQuery.refetch;
   const hydrationRequestInFlight = useRef(false);
+  const hydrationAttemptCount = useRef(0);
   const hydrationSelectionTimer = useRef<number | undefined>(undefined);
   const hydrationRetryTimer = useRef<number | undefined>(undefined);
   const runSelectedHydration = useCallback(async () => {
@@ -4988,12 +4993,18 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     if (!request) return;
     hydrationRequestInFlight.current = true;
     hydrationExecution.current = request;
-    const result = await refreshConversationHydration({ cancelRefetch: false });
-    hydrationRequestInFlight.current = false;
+    let result: Awaited<ReturnType<typeof refreshConversationHydration>>;
+    try {
+      result = await refreshConversationHydration({ cancelRefetch: false });
+    } finally {
+      hydrationRequestInFlight.current = false;
+    }
 
     const current = hydrationSelection.current;
     if (!current || current.workspaceId !== request.workspaceId || current.bindingId !== request.bindingId) {
-      void runSelectedHydration();
+      // The latest selection owns its own debounce timer. Do not let a
+      // cancelled, stale request bypass that timer and start an intermediate
+      // conversation hydration while the user is still switching sessions.
       return;
     }
     if (result.isSuccess) {
@@ -5001,14 +5012,25 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       return;
     }
     if (isRuntimeReadUnavailable(result.error)) {
-      hydrationRetryTimer.current = window.setTimeout(() => {
-        hydrationRetryTimer.current = undefined;
-        void runSelectedHydration();
-      }, 5_000);
+      hydrationAttemptCount.current += 1;
+      if (hydrationAttemptCount.current <= MAX_UNAVAILABLE_HYDRATION_RETRIES) {
+        hydrationRetryTimer.current = window.setTimeout(() => {
+          hydrationRetryTimer.current = undefined;
+          void runSelectedHydration();
+        }, 5_000);
+        return;
+      }
+      setHydrationPhase({
+        bindingId: request.bindingId,
+        state: 'unavailable',
+        error: result.error instanceof Error ? result.error : new Error('Agent 会话暂时无法读取。'),
+      });
       return;
     }
     setHydrationPhase({ bindingId: request.bindingId, state: 'fallback' });
   }, [refreshConversationHydration]);
+  const runSelectedHydrationRef = useRef(runSelectedHydration);
+  runSelectedHydrationRef.current = runSelectedHydration;
   useEffect(() => {
     const workspaceId = workspace?.id;
     const bindingId = selected?.id;
@@ -5017,7 +5039,13 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       setHydrationPhase(undefined);
       return;
     }
+    void queryClient.cancelQueries({
+      queryKey: sessionQueryKey(host, 'conversation-hydration-request'),
+      exact: false,
+    });
+    hydrationRequestInFlight.current = false;
     hydrationSelection.current = { workspaceId, bindingId };
+    hydrationAttemptCount.current = 0;
     const trusted = trustedHydrations.current.get(bindingId);
     const ttl = trusted?.running
       ? ACTIVE_CONVERSATION_CACHE_TTL_MS
@@ -5047,16 +5075,19 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     }
     hydrationSelectionTimer.current = window.setTimeout(() => {
       hydrationSelectionTimer.current = undefined;
-      void runSelectedHydration();
+      void runSelectedHydrationRef.current();
     }, CONVERSATION_HYDRATION_SELECTION_DELAY_MS);
-  }, [host, queryClient, runSelectedHydration, selected?.id, workspace?.id]);
+  // The execution callback changes with the per-binding query key. Keep this
+  // selection effect scoped to the selection itself so a refetch identity
+  // change cannot restart an intermediate hydration during rapid navigation.
+  }, [host, queryClient, selected?.id, workspace?.id]);
   useEffect(() => () => {
     hydrationSelection.current = undefined;
     hydrationExecution.current = undefined;
     if (hydrationSelectionTimer.current !== undefined) window.clearTimeout(hydrationSelectionTimer.current);
     if (hydrationRetryTimer.current !== undefined) window.clearTimeout(hydrationRetryTimer.current);
     void queryClient.cancelQueries({
-      queryKey: sessionQueryKey(host, 'conversation-hydration-request'), exact: true,
+      queryKey: sessionQueryKey(host, 'conversation-hydration-request'), exact: false,
     });
   }, [host, queryClient]);
   const selectedHydrationPhase = hydrationPhase && hydrationPhase.bindingId === selected?.id
@@ -5065,12 +5096,18 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   // Do not fan out fallback reads while hydration is still attempting. A
   // non-capacity failure restores the established independent paths, but they
   // remain behind the same first-screen gate until all snapshots are fresh.
-  const hydrationFallbackAllowed = selectedHydrationPhase !== 'loading';
+  const hydrationFallbackAllowed = selectedHydrationPhase === 'ready' || selectedHydrationPhase === 'fallback';
   const hydrationData = selectedHydrationPhase === 'ready'
     && hydrationExecution.current?.bindingId === selected?.id
     ? hydrationQuery.data
     : undefined;
   const hydrationDataUpdatedAt = hydrationData ? hydrationQuery.dataUpdatedAt : undefined;
+  const retryConversationHydration = useCallback(() => {
+    if (!hydrationSelection.current) return;
+    hydrationAttemptCount.current = 0;
+    setHydrationPhase({ bindingId: hydrationSelection.current.bindingId, state: 'loading' });
+    void runSelectedHydration();
+  }, [runSelectedHydration]);
   const trustedHydration = selected?.id ? trustedHydrations.current.get(selected.id) : undefined;
   const inputReadinessQuery = useQuery({
     queryKey: inputReadinessQueryKey,
@@ -6805,7 +6842,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const composerNote = visibleQueuedMessages.length > 0
     ? queueModeEnabled ? `已排队 ${visibleQueuedMessages.length} 条` : `队列已关闭 · 保留 ${visibleQueuedMessages.length} 条`
     : '';
-  const visibleError = operationError ?? confirmationQuery.error ?? eventsQuery.error;
+  const hydrationError = selectedHydrationPhase === 'unavailable' ? hydrationPhase?.error : undefined;
+  const visibleError = operationError ?? hydrationError ?? confirmationQuery.error ?? eventsQuery.error;
   const composerHasContent = Boolean(
     composerHasText || attachments.length || references.length || workspaceReferences.length || composerAnnotations.length,
   );
@@ -7145,7 +7183,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         monitoring={eventsQuery.data?.monitoring}
         connectionState={inputReadinessQuery.isError ? 'unavailable' : streamStatus === 'recovering' ? 'recovering' : streamStatus === 'connecting' ? 'checking' : inputReadinessQuery.isFetching && !inputReadinessQuery.data ? 'checking' : 'connected'}
       /> : <div className="agent-workbench-empty"><Bot size={32}/><b>新建会话开始协作</b><span>{features.workDirectories ? '每个会话共享同一工作区，但保留独立的对话与事件记录。' : '会话固定在当前节点 Attempt 的隔离工作目录。'}</span><button className="primary" disabled={!canOpenConversation} onClick={() => openConversationDraft({ displayName: features.workDirectories ? '根工作区' : '节点工作目录' })}><Plus size={15}/>新建会话</button></div>}
-      {visibleError && <p className="agent-workbench-error">{visibleError.message}</p>}
+      {visibleError && <p className="agent-workbench-error">{visibleError.message}{hydrationError && <button type="button" className="secondary" onClick={retryConversationHydration}>重新读取会话</button>}</p>}
       </div>
       {(selected || conversationDraft) && runtime?.state !== 'RECOVERING' && <div className="agent-composer-dock">
         <div className={`agent-composer ${conversationVisuallyActive || pendingConfirmation ? 'busy' : ''}`}>
