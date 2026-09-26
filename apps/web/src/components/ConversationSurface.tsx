@@ -1279,7 +1279,7 @@ const ActivityGroup = memo(function ActivityGroup({ items, active, completionCon
     ? '已暂停，结果未返回'
     : parentFailed && hasUnfinishedTask ? '本轮异常结束，结果未返回'
       : elapsed === undefined ? '工作过程' : `耗时 ${formatDuration(elapsed)}`;
-  const summary = <><ChevronRight size={14}/><span>{active && startedAt !== undefined ? <LiveElapsed startedAt={startedAt}/> : active ? '处理中' : label}</span>{itemCount > 0 && <small>{itemCount} 项</small>}<span className={`conversation-activity-spinner-slot${active ? ' active' : ''}`} aria-hidden="true"><LoaderCircle className="conversation-activity-spin" size={13}/></span></>;
+  const summary = <><ChevronRight size={14}/><span className="conversation-activity-status"><span>{active && startedAt !== undefined ? <LiveElapsed startedAt={startedAt}/> : active ? '处理中' : label}</span><span className={`conversation-activity-spinner-slot${active ? ' active' : ''}`} aria-hidden="true"><LoaderCircle className="conversation-activity-spin" size={13}/></span></span>{itemCount > 0 && <small>{itemCount} 项</small>}</>;
   const hasDetails = itemCount > 0;
   if (!hasDetails) return <div className="conversation-activity-group summary-only"><div className="conversation-activity-summary">{summary}</div></div>;
   return <details className={`conversation-activity-group${active ? ' active' : ''}`} open={open} onToggle={event => setOpen(event.currentTarget.open)}>

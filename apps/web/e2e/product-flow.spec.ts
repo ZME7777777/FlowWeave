@@ -1755,6 +1755,8 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(activeProcess).toHaveClass(/summary-only/);
   const elapsedLabel = activeProcess.getByText(/已耗时 \d+秒/);
   await expect(elapsedLabel).toBeVisible();
+  const activityStatus = activeProcess.locator('.conversation-activity-status');
+  await expect(activityStatus).toHaveCSS('gap', '3px');
   await expect(activeProcess.locator('.conversation-response-wait')).toHaveCount(0);
   await expect(page.locator('.conversation-turn-status')).toHaveText('OpenHands 会话连接正常，等待响应');
   await activeProcess.evaluate(element => { (element as HTMLElement).dataset.periodicRenderMarker = 'stable'; });
@@ -2186,7 +2188,9 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await activeProcess.evaluate(element => { (element as HTMLElement).dataset.stabilityMarker = 'active-process'; });
   const stableTaskPlanTop = await taskPlan.evaluate(element => element.getBoundingClientRect().top);
   transientIdleReadiness = true;
-  await expect(page.getByRole('button', { name: '发送消息' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '正在同步 Agent 状态' })).toBeDisabled();
+  await expect(page.getByRole('button', { name: '发送消息' })).toHaveCount(0);
+  await expect(composer).toBeDisabled();
   await expect(activeProcess).toHaveJSProperty('open', true);
   await expect(activeProcess).toHaveClass(/active/);
   await expect(activeProcess).toHaveAttribute('data-stability-marker', 'active-process');
