@@ -7394,3 +7394,15 @@ FlowWeave 本地累加后猜测压缩边界。
 完成：Runtime 列表和按需详情通过只读关系查询关联 `flow_runs`、`flow_definitions`、`node_attempts`、`node_runs` 与 `agent_workspaces`。界面以“流程 / FlowRun 名称 #编号”或 Agent Workspace 名称作为主身份，并在辅助行显示节点／Attempt 或 Workspace scope；Runtime 筛选同时支持 Session、Owner UUID、流程、Run、节点和工作区名称。缺失历史关联时明确显示未关联／未命名，避免伪造业务身份。
 
 验收：Admin API Ruff format/check 与 `py_compile`、Admin Web TypeScript typecheck、ESLint、production build、`git diff --check`、Alembic head 和任务状态唯一性通过。未修改 Platform Runtime、OpenHands、数据库 schema、后台任务或远端环境；不运行数据库型测试，因为本切片无新的 ORM 写行为且本机 Testcontainers PostgreSQL 仍缺 Docker socket。
+
+### FR-529 Admin 后台任务诊断页 — DONE
+
+依赖：FR-528。
+
+目标：Admin 必须将 Background Task 的活跃工作与终态执行账本分开，并可按任务类型、状态和平台资源查看任务；`DEAD`／`SUCCEEDED` 不得被误呈现为当前积压。任务需尽可能关联 FlowRun／流程、Node Attempt 或 Agent Workspace，且只显示安全失败分类，不返回 payload、会话正文或原始错误。
+
+范围：新增只读后台任务 API 与独立 Admin 导航页、终态保留预览及任务类型／状态汇总。不得增加删除、直接改状态、全量重试或手动清理功能；不得修改 Worker 的既有终态保留策略。
+
+完成：Admin API 返回当前状态汇总、超过配置保留期的终态候选数量、按任务类型／状态的聚合及最新 500 条任务。任务行关联 FlowRun／流程、节点 Attempt 或 Agent Workspace，并将 `last_error` 仅归一化为大写稳定错误分类。页面分开展示活跃待处理、最终失败账本、最终成功账本和可由既有 Worker 策略回收的终态数量，提供按任务／资源筛选和类型汇总；不显示 payload、原始错误、凭据或会话内容。
+
+验收：Admin API Ruff format/check、`py_compile` 与 Admin Web TypeScript typecheck、ESLint、production build、`git diff --check` 通过。未修改 Platform Worker、数据库 schema、Runtime、OpenHands、远端配置或服务器；不运行数据库型测试，因为本切片只添加 Admin API 的只读 PostgreSQL 投影，且本机 Testcontainers PostgreSQL 仍缺 Docker socket。

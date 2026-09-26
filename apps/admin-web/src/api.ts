@@ -179,6 +179,43 @@ export type MetricHistory = {
 };
 
 
+export type BackgroundTask = {
+  id: string;
+  task_type: string;
+  aggregate_type: string;
+  aggregate_id: string;
+  state: 'PENDING' | 'RETRY' | 'RUNNING' | 'SUCCEEDED' | 'DEAD';
+  attempts: number;
+  max_attempts: number;
+  available_at: string;
+  created_at: string;
+  updated_at: string;
+  failure_code: string | null;
+  flow_definition_name: string | null;
+  flow_run_name: string | null;
+  flow_run_no: number | null;
+  flow_run_state: string | null;
+  node_run_name: string | null;
+  node_run_sequence_no: number | null;
+  node_attempt_no: number | null;
+  node_attempt_state: string | null;
+  workspace_display_name: string | null;
+  workspace_scope_key: string | null;
+};
+
+export type BackgroundTaskSummary = {
+  states: Array<{ state: string; count: number }>;
+  expired_terminal: Array<{ state: string; count: number }>;
+  groups: Array<{
+    state: string;
+    task_type: string;
+    count: number;
+    oldest_created_at: string;
+    newest_updated_at: string;
+  }>;
+  retention_days: number;
+};
+
 export type Overview = {
   database: {
     runtime_states: Array<{ runtime_kind: string; status: string; count: number }>;
@@ -214,6 +251,7 @@ export const adminApi = {
   runtimes: () => request<{ items: Runtime[]; container_observability_available: boolean }>('/v1/admin/runtimes'),
   runtimeDetail: (runtimeSessionId: string) => request<RuntimeDetail>(`/v1/admin/runtimes/${encodeURIComponent(runtimeSessionId)}`),
   conversations: () => request<{ items: Conversation[] }>('/v1/admin/conversations'),
+  backgroundTasks: () => request<{ summary: BackgroundTaskSummary; items: BackgroundTask[] }>('/v1/admin/background-tasks'),
   runtimeOperations: () => request<{ items: RuntimeOperation[] }>('/v1/admin/runtime-operations'),
   operations: () => request<{ items: AdminOperation[] }>('/v1/admin/operations'),
   replaceRuntime: (input: {

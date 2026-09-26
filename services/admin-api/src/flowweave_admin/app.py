@@ -21,6 +21,8 @@ from flowweave_admin.database import connect
 from flowweave_admin.observability import (
     admin_operations,
     alert_states,
+    background_task_summary,
+    background_tasks,
     conversations,
     enrich_runtime_operation_status,
     metric_history,
@@ -204,6 +206,18 @@ def create_app() -> FastAPI:
         )
         detail["container_observability_available"] = observations.get("available", False)
         return detail
+
+    @app.get("/v1/admin/background-tasks")
+    async def admin_background_tasks(request: Request, limit: int = 500) -> dict[str, Any]:
+        active_settings: Settings = request.app.state.settings
+        bounded_limit = min(max(limit, 1), 500)
+        with connect(active_settings) as connection:
+            return {
+                "summary": background_task_summary(
+                    connection, retention_days=active_settings.task_terminal_retention_days
+                ),
+                "items": background_tasks(connection, limit=bounded_limit),
+            }
 
     @app.get("/v1/admin/conversations")
     async def admin_conversations(request: Request, limit: int = 100) -> dict[str, Any]:

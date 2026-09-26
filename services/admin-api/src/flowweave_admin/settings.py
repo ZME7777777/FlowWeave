@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     admin_alert_memory_percent_threshold: float = Field(default=90.0, ge=1, le=100)
     admin_alert_database_active_connections_threshold: int = Field(default=40, ge=1, le=10_000)
     admin_alert_pending_task_threshold: int = Field(default=20, ge=1, le=100_000)
+    task_terminal_retention_days: int = Field(default=30, ge=1, le=3_650)
 
     @model_validator(mode="after")
     def validate_control_key(self) -> Settings:
@@ -31,7 +32,6 @@ class Settings(BaseSettings):
         ):
             raise ValueError("ADMIN_CONTROL_API_KEY must differ from ADMIN_RUNTIME_OBSERVER_KEY")
         return self
-
 
     @property
     def normalized_database_url(self) -> str:

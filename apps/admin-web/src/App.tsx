@@ -1,13 +1,15 @@
 import { Activity, Boxes, Database, MessageSquare, RefreshCw, RotateCw, Server, ShieldCheck, X } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
-import { adminApi, type AdminOperation, type Alert, type Conversation, type MetricHistoryPoint, type Overview, type Runtime, type RuntimeDetail, type Usage } from './api';
+import { adminApi, type AdminOperation, type Alert, type BackgroundTask, type BackgroundTaskSummary, type Conversation, type MetricHistoryPoint, type Overview, type Runtime, type RuntimeDetail, type Usage } from './api';
 
-type Tab = 'overview' | 'alerts' | 'services' | 'runtimes' | 'conversations' | 'operations';
+type Tab = 'overview' | 'alerts' | 'services' | 'runtimes' | 'conversations' | 'tasks' | 'operations';
 
 type AdminData = {
   overview: Overview;
   runtimes: Runtime[];
   conversations: Conversation[];
+  tasks: BackgroundTask[];
+  taskSummary: BackgroundTaskSummary;
   operations: AdminOperation[];
   alerts: Alert[];
   alertSummary: { critical: number; warning: number };
@@ -31,6 +33,16 @@ const runtimeOwnerLabel = (runtime: Runtime) => {
 const runtimeExecutionLabel = (runtime: Runtime) => runtime.node_attempt_no === null
   ? (runtime.flow_run_state ? `FlowRun · ${runtime.flow_run_state}` : 'FlowRun 级 Runtime')
   : `${runtime.node_run_name || `节点 #${runtime.node_run_sequence_no ?? '—'}`} · Attempt #${runtime.node_attempt_no} · ${runtime.node_attempt_state || '未知'}`;
+
+const taskOwnerLabel = (task: BackgroundTask) => {
+  if (task.workspace_display_name) return `${task.workspace_display_name} / ${task.workspace_scope_key || 'Agent Workspace'}`;
+  if (task.flow_run_name) return `${task.flow_definition_name || '未命名流程'} / ${task.flow_run_name} #${task.flow_run_no ?? '—'}`;
+  return `${task.aggregate_type} · ${compact(task.aggregate_id)}`;
+};
+
+const taskExecutionLabel = (task: BackgroundTask) => task.node_attempt_no === null
+  ? (task.flow_run_state ? `FlowRun · ${task.flow_run_state}` : task.aggregate_type)
+  : `${task.node_run_name || `节点 #${task.node_run_sequence_no ?? '—'}`} · Attempt #${task.node_attempt_no} · ${task.node_attempt_state || '未知'}`;
 
 function ResourceUsage({ usage }: { usage: Usage | null }) {
   if (!usage) return <span className="muted">暂不可用</span>;
@@ -166,6 +178,8 @@ export function App() {
   const [operationTarget, setOperationTarget] = useState('');
   const [runtimeFilter, setRuntimeFilter] = useState('');
   const [conversationRuntimeFilter, setConversationRuntimeFilter] = useState('');
+  const [taskStateFilter, setTaskStateFilter] = useState<'ALL' | BackgroundTask['state']>('ALL');
+  const [taskFilter, setTaskFilter] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   const [updatedAt, setUpdatedAt] = useState<Date>();
@@ -174,17 +188,20 @@ export function App() {
     setLoading(true);
     setError('');
     try {
-      const [overview, alertResponse, runtimeResponse, conversationResponse, operationResponse] = await Promise.all([
+      const [overview, alertResponse, runtimeResponse, conversationResponse, taskResponse, operationResponse] = await Promise.all([
         adminApi.overview(),
         adminApi.alerts(),
         adminApi.runtimes(),
         adminApi.conversations(),
+        adminApi.backgroundTasks(),
         adminApi.operations(),
       ]);
       setData({
         overview,
         runtimes: runtimeResponse.items,
         conversations: conversationResponse.items,
+        tasks: taskResponse.items,
+        taskSummary: taskResponse.summary,
         operations: operationResponse.items,
         alerts: alertResponse.items,
         alertSummary: alertResponse.summary,
@@ -232,6 +249,14 @@ export function App() {
   const filteredConversations = (data?.conversations ?? []).filter(conversation =>
     conversation.runtime_session_id.includes(conversationRuntimeFilter.trim())
   );
+  const filteredTasks = (data?.tasks ?? []).filter(task => {
+    const query = taskFilter.trim().toLocaleLowerCase();
+    return (taskStateFilter === 'ALL' || task.state === taskStateFilter)
+      && (!query || [task.task_type, taskOwnerLabel(task), taskExecutionLabel(task), task.failure_code, task.aggregate_id]
+        .some(value => value?.toLocaleLowerCase().includes(query)));
+  });
+  const taskStateCount = (state: string) => data?.taskSummary.states.find(item => item.state === state)?.count ?? 0;
+  const expiredTerminalCount = (data?.taskSummary.expired_terminal ?? []).reduce((sum, item) => sum + item.count, 0);
   const locateRuntime = (runtimeSessionId: string) => {
     setRuntimeFilter(runtimeSessionId); setTab('runtimes');
   };
@@ -254,11 +279,13 @@ export function App() {
     if (tab === 'alerts') return <section className="table-panel"><header><div><span className="eyebrow">LIVE HEALTH SIGNALS</span><h2>实时健康告警</h2></div><p>基于当前服务、容器、Runtime、数据库连接和任务积压快照计算；此处不发送外部通知。</p></header><div className="alert-summary"><b className="critical-count">{data.alertSummary.critical} 严重</b><b className="warning-count">{data.alertSummary.warning} 警告</b><small>阈值由 Admin API 环境配置控制。</small></div><div className="table wide"><div className="table-head alert-head"><span>级别</span><span>来源</span><span>告警</span><span>详情</span><span>操作</span></div>{visibleAlerts.map(alert => <div className="table-row alert-head" key={alert.key}><span><b className={`alert-severity ${alert.severity.toLowerCase()}`}>{alert.severity}</b></span><span><b>{alert.source}</b></span><span>{alert.title}<small>{alert.lifecycle?.acknowledged_by_username ? `已由 ${alert.lifecycle.acknowledged_by_username} 确认` : '未确认'}</small></span><span><small className="reason">{alert.detail}</small></span><span><button className="history-button" onClick={() => setAlertTarget(alert)}>确认 / 静默</button><button className="locator-button" onClick={() => locateOperations(alert.key)}>审计</button>{runtimeIdFromAlert(alert.key) && <button className="locator-button" onClick={() => locateRuntime(runtimeIdFromAlert(alert.key)!)}>Runtime</button>}</span></div>)}{!visibleAlerts.length && <p className="empty">当前没有未静默的实时健康告警。</p>}</div></section>;
 
     if (tab === 'conversations') return <section className="table-panel"><header><div><span className="eyebrow">OPENHANDS LOCATORS</span><h2>会话关联</h2></div><p>只显示定位与运行元数据，不读取会话正文或事件内容。</p></header><div className="resource-filter"><input value={conversationRuntimeFilter} placeholder="按 Runtime、FlowRun、节点或工作区定位" onChange={event => setConversationRuntimeFilter(event.target.value)}/>{conversationRuntimeFilter && <button className="secondary" onClick={() => setConversationRuntimeFilter('')}>清除定位</button>}</div><div className="table wide"><div className="table-head conversation-head"><span>会话</span><span>用户 / 宿主</span><span>Runtime</span><span>模型</span><span>连接时间</span></div>{filteredConversations.map(conversation => <div className="table-row conversation-head" key={conversation.binding_id}><span><b>{conversation.display_title || '未命名会话'}</b><small>Binding {compact(conversation.binding_id)} · {conversation.lifecycle}</small><small>OpenHands {compact(conversation.openhands_conversation_id)}</small></span><span><b>{conversation.username || compact(conversation.owner_user_id)}</b><small>{conversation.host_kind} · {compact(conversation.host_id)}</small></span><span><code>{compact(conversation.runtime_session_id)}</code><button className="locator-button" onClick={() => locateRuntime(conversation.runtime_session_id)}>查看 Runtime</button><small>{conversation.flow_run_id ? `FlowRun ${compact(conversation.flow_run_id)}` : 'Agent Workspace'}</small></span><span>{conversation.model_name || '—'}</span><span>{conversation.last_connected_at ? new Date(conversation.last_connected_at).toLocaleString() : '从未连接'}</span></div>)}{!filteredConversations.length && <p className="empty">没有符合当前定位条件的会话绑定。</p>}</div></section>;
+    if (tab === 'tasks') return <section className="table-panel"><header><div><span className="eyebrow">DURABLE DELIVERY LEDGER</span><h2>后台任务</h2></div><p>活跃工作与终态执行账本分开展示；列表不返回 payload、会话正文或原始错误。终态记录只会在超过 {data.taskSummary.retention_days} 天保留期后由既有 Worker 策略分批回收。</p></header><section className="task-summary"><article><span>活跃待处理</span><b>{taskStateCount('PENDING') + taskStateCount('RETRY') + taskStateCount('RUNNING')}</b><small>PENDING / RETRY / RUNNING</small></article><article><span>最终失败账本</span><b>{taskStateCount('DEAD')}</b><small>DEAD，不会继续重试</small></article><article><span>最终成功账本</span><b>{taskStateCount('SUCCEEDED')}</b><small>SUCCEEDED，保留供诊断</small></article><article><span>已到期可回收</span><b>{expiredTerminalCount}</b><small>仅终态；无手工删除入口</small></article></section><div className="operation-filters"><label>状态<select value={taskStateFilter} onChange={event => setTaskStateFilter(event.target.value as 'ALL' | BackgroundTask['state'])}><option value="ALL">全部状态</option><option value="PENDING">PENDING</option><option value="RETRY">RETRY</option><option value="RUNNING">RUNNING</option><option value="DEAD">DEAD</option><option value="SUCCEEDED">SUCCEEDED</option></select></label><label>任务 / 资源<input value={taskFilter} placeholder="按类型、FlowRun、节点、工作区或失败码筛选" onChange={event => setTaskFilter(event.target.value)}/></label>{taskFilter && <button className="secondary" onClick={() => setTaskFilter('')}>清除定位</button>}<small>当前加载最新 500 条；下方分组展示全量 Top 100。</small></div><div className="table wide"><div className="table-head task-head"><span>任务</span><span>状态 / 重试</span><span>关联资源</span><span>时间</span><span>失败分类</span></div>{filteredTasks.map(task => <div className="table-row task-head" key={task.id}><span><b>{task.task_type}</b><small>{task.aggregate_type} · {compact(task.id)}</small></span><span><b className={`operation-status ${task.state.toLowerCase()}`}>{task.state}</b><small>{task.attempts} / {task.max_attempts} 次 · {task.state === 'DEAD' ? '最终失败' : task.state === 'SUCCEEDED' ? '已完成' : '可处理'}</small></span><span><b>{taskOwnerLabel(task)}</b><small>{taskExecutionLabel(task)}</small></span><span><small>创建 {new Date(task.created_at).toLocaleString()}</small><small>更新 {new Date(task.updated_at).toLocaleString()}</small></span><span><b>{task.failure_code || '—'}</b><small>{task.failure_code ? '已脱敏稳定分类' : '无最终错误'}</small></span></div>)}{!filteredTasks.length && <p className="empty">没有符合筛选条件的后台任务。</p>}</div><section className="task-groups"><h3>类型 / 状态汇总</h3><div className="detail-table">{data.taskSummary.groups.map(group => <div key={`${group.state}-${group.task_type}`}><b>{group.task_type}</b><span>{group.state} · {group.count}</span><small>最早 {new Date(group.oldest_created_at).toLocaleString()} · 最近 {new Date(group.newest_updated_at).toLocaleString()}</small></div>)}</div></section></section>;
+
     if (tab === 'operations') return <section className="table-panel"><header><div><span className="eyebrow">IMMUTABLE ADMIN AUDIT</span><h2>全部管理操作审计</h2></div><p>合并展示 Runtime 替换、告警确认与静默；不显示密钥、会话正文或日志内容。</p></header><div className="operation-filters"><label>操作<select value={operationAction} onChange={event => setOperationAction(event.target.value as 'ALL' | AdminOperation['action'])}><option value="ALL">全部操作</option><option value="REPLACE_RUNTIME">Runtime 替换</option><option value="ACKNOWLEDGE">告警确认</option><option value="SILENCE">告警静默</option></select></label><label>操作人<input value={operationActor} placeholder="按管理员筛选" onChange={event => setOperationActor(event.target.value)}/></label><label>目标<input value={operationTarget} placeholder="按 Runtime 或告警键定位" onChange={event => setOperationTarget(event.target.value)}/></label>{operationTarget && <button className="secondary" onClick={() => setOperationTarget('')}>清除定位</button>}<small>当前加载最近 7 天的 200 条记录。</small></div><div className="table wide"><div className="table-head unified-operation-head"><span>操作</span><span>操作人</span><span>目标</span><span>原因</span><span>状态 / 时限</span></div>{filteredOperations.map(operation => <div className="table-row unified-operation-head" key={operation.id}><span><b>{operation.action}</b><small>{new Date(operation.created_at).toLocaleString()}</small><small>请求 {compact(operation.request_id)}</small></span><span><b>{operation.actor_username}</b><small>{compact(operation.actor_user_id)}</small></span><span><b>{operation.target_kind}</b><code>{compact(operation.target_id)}</code><small>{operation.target_detail ? `FlowRun ${compact(operation.target_detail)}` : '告警稳定键'}</small></span><span><small className="reason">{operation.reason}</small></span><span><b className={`operation-status ${operation.status.toLowerCase()}`}>{operation.status}</b><small>{operation.silenced_until ? `静默至 ${new Date(operation.silenced_until).toLocaleString()}` : operation.action === 'REPLACE_RUNTIME' ? '基于 Runtime / Generation 正式状态投影' : '已追加审计'}</small></span></div>)}{!filteredOperations.length && <p className="empty">没有符合筛选条件的管理操作。</p>}</div></section>;
 
     return <><section className="hero"><div><span className="eyebrow">FLOWWEAVE ADMIN</span><h1>运行资源管理中心</h1><p>独立监控服务、请求连接池与 OpenHands Runtime 容器。两类 Runtime 的替换均须经原因确认、并发 fencing 与不可变审计后提交。</p></div><ShieldCheck size={44}/></section><section className="metrics"><MetricCount label="活跃 Runtime" values={runtimeStates.filter(item => item.status === 'ACTIVE').map(item => ({ value: String(item.count) }))}/><MetricCount label="运行中任务" values={taskStates.filter(item => item.state === 'RUNNING').map(item => ({ value: String(item.count) }))}/><MetricCount label="数据库连接" values={databaseStates.map(item => ({ value: String(item.count) }))}/><MetricCount label="API 请求计数" values={metrics?.api.metrics.flowweave_http_requests_total}/></section><section className="overview-grid"><article className="panel"><header><Activity size={17}/><h2>服务健康</h2></header>{Object.entries(metrics ?? {}).map(([name, value]) => <div className="status-line" key={name}><span>{name}</span><b className={`state ${value.health.toLowerCase()}`}>{value.health}</b></div>)}</article><article className="panel"><header><Database size={17}/><h2>数据库连接状态</h2></header>{databaseStates.map(item => <div className="status-line" key={item.state ?? 'unknown'}><span>{item.state || 'unknown'}</span><b>{item.count}</b></div>)}</article><article className="panel"><header><Boxes size={17}/><h2>Runtime 状态</h2></header>{runtimeStates.map(item => <div className="status-line" key={`${item.runtime_kind}-${item.status}`}><span>{item.runtime_kind} · {item.status}</span><b>{item.count}</b></div>)}</article><article className="panel"><header><MessageSquare size={17}/><h2>后台任务</h2></header>{taskStates.map(item => <div className="status-line" key={item.state}><span>{item.state}</span><b>{item.count}</b></div>)}</article></section></>;
 
   };
 
-  return <><main><header className="topbar"><div><span className="brand-mark"><Server size={18}/></span><b>FlowWeave 管理中心</b><small>独立运维入口</small></div><nav>{([['overview', '总览'], ['alerts', '实时告警'], ['services', '服务'], ['runtimes', 'Runtime'], ['conversations', '会话'], ['operations', '操作审计']] as const).map(([value, label]) => <button className={tab === value ? 'active' : ''} key={value} onClick={() => setTab(value)}>{label}</button>)}</nav><button className="refresh" disabled={loading} onClick={() => void refresh()}><RefreshCw size={15} className={loading ? 'spin' : ''}/>{loading ? '刷新中' : '刷新'}</button></header><div className="content">{updatedAt && <p className="updated">最近刷新：{updatedAt.toLocaleTimeString()} · 每 15 秒自动更新</p>}{error ? <section className="error"><h2>无法读取管理数据</h2><p>{error}</p><button onClick={() => void refresh()}>重新尝试</button></section> : loading && !data ? <section className="loading"><Activity className="spin" size={28}/><p>正在读取独立管理数据…</p></section> : visibleContent()}</div>{replacementTarget && <RuntimeReplacementDialog runtime={replacementTarget} onClose={() => setReplacementTarget(undefined)} onSubmitted={refresh}/>}</main>{detailTarget && <RuntimeDetailDialog runtime={detailTarget} onClose={() => setDetailTarget(undefined)}/>} {historyTarget && <HistoryDialog {...historyTarget} onClose={() => setHistoryTarget(undefined)}/>} {alertTarget && <AlertLifecycleDialog alert={alertTarget} onClose={() => setAlertTarget(undefined)} onSubmitted={refresh}/>}</>;
+  return <><main><header className="topbar"><div><span className="brand-mark"><Server size={18}/></span><b>FlowWeave 管理中心</b><small>独立运维入口</small></div><nav>{([['overview', '总览'], ['alerts', '实时告警'], ['services', '服务'], ['runtimes', 'Runtime'], ['conversations', '会话'], ['tasks', '后台任务'], ['operations', '操作审计']] as const).map(([value, label]) => <button className={tab === value ? 'active' : ''} key={value} onClick={() => setTab(value)}>{label}</button>)}</nav><button className="refresh" disabled={loading} onClick={() => void refresh()}><RefreshCw size={15} className={loading ? 'spin' : ''}/>{loading ? '刷新中' : '刷新'}</button></header><div className="content">{updatedAt && <p className="updated">最近刷新：{updatedAt.toLocaleTimeString()} · 每 15 秒自动更新</p>}{error ? <section className="error"><h2>无法读取管理数据</h2><p>{error}</p><button onClick={() => void refresh()}>重新尝试</button></section> : loading && !data ? <section className="loading"><Activity className="spin" size={28}/><p>正在读取独立管理数据…</p></section> : visibleContent()}</div>{replacementTarget && <RuntimeReplacementDialog runtime={replacementTarget} onClose={() => setReplacementTarget(undefined)} onSubmitted={refresh}/>}</main>{detailTarget && <RuntimeDetailDialog runtime={detailTarget} onClose={() => setDetailTarget(undefined)}/>} {historyTarget && <HistoryDialog {...historyTarget} onClose={() => setHistoryTarget(undefined)}/>} {alertTarget && <AlertLifecycleDialog alert={alertTarget} onClose={() => setAlertTarget(undefined)} onSubmitted={refresh}/>}</>;
 }

@@ -111,8 +111,9 @@ def runtimes(connection: Any, *, limit: int) -> list[dict[str, Any]]:
                coalesce(bindings.active_conversation_count, 0) AS active_conversation_count,
                bindings.last_connected_at,
                flow_definition.name AS flow_definition_name,
-               flow_run.name AS flow_run_name, flow_run.run_no AS flow_run_no,
-               flow_run.state AS flow_run_state,
+               coalesce(direct_flow_run.name, attempt_flow_run.name) AS flow_run_name,
+               coalesce(direct_flow_run.run_no, attempt_flow_run.run_no) AS flow_run_no,
+               coalesce(direct_flow_run.state, attempt_flow_run.state) AS flow_run_state,
                node_run.name AS node_run_name, node_run.sequence_no AS node_run_sequence_no,
                node_attempt.attempt_no AS node_attempt_no,
                node_attempt.state AS node_attempt_state,
@@ -173,8 +174,9 @@ def runtime_detail(connection: Any, *, runtime_session_id: str) -> dict[str, Any
                sandbox.idle_expires_at, sandbox.hard_expires_at, sandbox.last_error_code,
                sandbox.last_error_detail,
                flow_definition.name AS flow_definition_name,
-               flow_run.name AS flow_run_name, flow_run.run_no AS flow_run_no,
-               flow_run.state AS flow_run_state,
+               coalesce(direct_flow_run.name, attempt_flow_run.name) AS flow_run_name,
+               coalesce(direct_flow_run.run_no, attempt_flow_run.run_no) AS flow_run_no,
+               coalesce(direct_flow_run.state, attempt_flow_run.state) AS flow_run_state,
                node_run.name AS node_run_name, node_run.sequence_no AS node_run_sequence_no,
                node_attempt.attempt_no AS node_attempt_no,
                node_attempt.state AS node_attempt_state,
@@ -502,3 +504,95 @@ async def runtime_observations(settings: Settings) -> dict[str, Any]:
         return {"available": False, "services": [], "managed_resources": []}
     except (httpx.HTTPError, ValueError):
         return {"available": False, "services": [], "managed_resources": []}
+
+
+_TASK_ERROR_CODE = re.compile(r"\b([A-Z][A-Z0-9_]{2,100})\b")
+
+
+def _task_error_code(value: object) -> str | None:
+    """Expose only a stable error classification, never raw task error text."""
+
+    if not isinstance(value, str):
+        return None
+    match = _TASK_ERROR_CODE.search(value)
+    return match.group(1) if match else "UNCLASSIFIED"
+
+
+def background_task_summary(connection: Any, *, retention_days: int) -> dict[str, Any]:
+    states = _rows(
+        connection,
+        """
+        SELECT state, count(*)::int AS count
+        FROM background_tasks
+        GROUP BY state
+        ORDER BY state
+        """,
+    )
+    expired = _rows(
+        connection,
+        """
+        SELECT state, count(*)::int AS count
+        FROM background_tasks
+        WHERE state IN ('SUCCEEDED', 'DEAD')
+          AND updated_at < now() - (%s * interval '1 day')
+        GROUP BY state
+        ORDER BY state
+        """,
+        (retention_days,),
+    )
+    groups = _rows(
+        connection,
+        """
+        SELECT state, task_type, count(*)::int AS count,
+               min(created_at) AS oldest_created_at, max(updated_at) AS newest_updated_at
+        FROM background_tasks
+        GROUP BY state, task_type
+        ORDER BY count(*) DESC, state, task_type
+        LIMIT 100
+        """,
+    )
+    return {
+        "states": states,
+        "expired_terminal": expired,
+        "groups": groups,
+        "retention_days": retention_days,
+    }
+
+
+def background_tasks(connection: Any, *, limit: int) -> list[dict[str, Any]]:
+    rows = _rows(
+        connection,
+        """
+        SELECT task.id, task.task_type, task.aggregate_type, task.aggregate_id, task.state,
+               task.attempts, task.max_attempts, task.available_at, task.created_at,
+               task.updated_at, task.last_error,
+               flow_definition.name AS flow_definition_name,
+               coalesce(direct_flow_run.name, attempt_flow_run.name) AS flow_run_name,
+               coalesce(direct_flow_run.run_no, attempt_flow_run.run_no) AS flow_run_no,
+               coalesce(direct_flow_run.state, attempt_flow_run.state) AS flow_run_state,
+               node_run.name AS node_run_name, node_run.sequence_no AS node_run_sequence_no,
+               node_attempt.attempt_no AS node_attempt_no,
+               node_attempt.state AS node_attempt_state,
+               workspace.display_name AS workspace_display_name,
+               workspace.scope_key AS workspace_scope_key
+        FROM background_tasks AS task
+        LEFT JOIN node_attempts AS node_attempt
+          ON task.aggregate_type = 'ATTEMPT' AND node_attempt.id = task.aggregate_id
+        LEFT JOIN node_runs AS node_run ON node_run.id = node_attempt.node_run_id
+        LEFT JOIN flow_runs AS direct_flow_run
+          ON task.aggregate_type = 'FLOW_RUN' AND direct_flow_run.id = task.aggregate_id
+        LEFT JOIN flow_runs AS attempt_flow_run ON attempt_flow_run.id = node_run.flow_run_id
+        LEFT JOIN flow_definitions AS flow_definition
+          ON flow_definition.id = coalesce(
+            direct_flow_run.flow_definition_id, attempt_flow_run.flow_definition_id
+          )
+        LEFT JOIN agent_workspaces AS workspace
+          ON task.aggregate_type = 'AGENT_WORKSPACE' AND workspace.id = task.aggregate_id
+        ORDER BY task.updated_at DESC, task.id DESC
+        LIMIT %s
+        """,
+        (limit,),
+    )
+    for row in rows:
+        row["failure_code"] = _task_error_code(row.pop("last_error", None))
+    return rows
