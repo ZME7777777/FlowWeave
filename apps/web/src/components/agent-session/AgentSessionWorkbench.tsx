@@ -31,6 +31,7 @@ const ACTIVE_EVENT_RECOVERY_INTERVAL_MS = 4_000;
 const ACTIVE_EVENT_LATEST_RECHECK_INTERVAL_MS = 30_000;
 const SUBMISSION_EVENT_CONFIRMATION_TIMEOUT_MS = 60_000;
 const CONVERSATION_HYDRATION_SELECTION_DELAY_MS = 120;
+const HYDRATION_UI_DEADLINE_MS = 12_000;
 const MAX_UNAVAILABLE_HYDRATION_RETRIES = 2;
 const TERMINAL_CONVERSATION_CACHE_TTL_MS = 5 * 60 * 1000;
 const ACTIVE_CONVERSATION_CACHE_TTL_MS = 30_000;
@@ -1017,10 +1018,13 @@ function isBootstrapAmbiguous(error: Error): boolean {
 }
 
 function isRuntimeReadUnavailable(error: unknown): boolean {
-  return error instanceof ApiError && (
-    (error.status === 503 && error.code === 'AGENT_RUNTIME_UNAVAILABLE')
-    || error.code === 'REQUEST_TIMEOUT'
-  );
+  return error instanceof ApiError
+    && error.status === 503
+    && error.code === 'AGENT_RUNTIME_UNAVAILABLE';
+}
+
+function isHydrationRequestTimeout(error: unknown): boolean {
+  return error instanceof ApiError && error.code === 'REQUEST_TIMEOUT';
 }
 
 type AgentCapabilityType = 'SKILL' | 'MCP' | 'PLUGIN' | 'CONTEXT' | 'AGENT_DEFINITION' | 'HOOK';
@@ -4978,19 +4982,25 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const hydrationAttemptCount = useRef(0);
   const hydrationSelectionTimer = useRef<number | undefined>(undefined);
   const hydrationRetryTimer = useRef<number | undefined>(undefined);
+  const hydrationRequestGeneration = useRef(0);
   const runSelectedHydration = useCallback(async () => {
     if (hydrationRequestInFlight.current) return;
     const request = hydrationSelection.current;
     if (!request) return;
     hydrationRequestInFlight.current = true;
     hydrationExecution.current = request;
+    const requestGeneration = hydrationRequestGeneration.current + 1;
+    hydrationRequestGeneration.current = requestGeneration;
     let result: Awaited<ReturnType<typeof refreshConversationHydration>>;
     try {
       result = await refreshConversationHydration({ cancelRefetch: false });
     } finally {
-      hydrationRequestInFlight.current = false;
+      if (hydrationRequestGeneration.current === requestGeneration) {
+        hydrationRequestInFlight.current = false;
+      }
     }
 
+    if (hydrationRequestGeneration.current !== requestGeneration) return;
     const current = hydrationSelection.current;
     if (!current || current.workspaceId !== request.workspaceId || current.bindingId !== request.bindingId) {
       // The latest selection owns its own debounce timer. Do not let a
@@ -5000,6 +5010,17 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     }
     if (result.isSuccess) {
       setHydrationPhase({ bindingId: request.bindingId, state: 'ready' });
+      return;
+    }
+    if (isHydrationRequestTimeout(result.error)) {
+      // Retrying a browser-side deadline repeats the same stalled proxy/body
+      // read and keeps the whole session surface blocked. Stop immediately;
+      // the user can explicitly retry after the transport has recovered.
+      setHydrationPhase({
+        bindingId: request.bindingId,
+        state: 'unavailable',
+        error: result.error instanceof Error ? result.error : new Error('读取会话超时，请重试。'),
+      });
       return;
     }
     if (isRuntimeReadUnavailable(result.error)) {
@@ -5035,6 +5056,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       exact: false,
     });
     hydrationRequestInFlight.current = false;
+    hydrationRequestGeneration.current += 1;
     hydrationSelection.current = { workspaceId, bindingId };
     hydrationAttemptCount.current = 0;
     const trusted = trustedHydrations.current.get(bindingId);
@@ -5075,6 +5097,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   useEffect(() => () => {
     hydrationSelection.current = undefined;
     hydrationExecution.current = undefined;
+    hydrationRequestGeneration.current += 1;
     if (hydrationSelectionTimer.current !== undefined) window.clearTimeout(hydrationSelectionTimer.current);
     if (hydrationRetryTimer.current !== undefined) window.clearTimeout(hydrationRetryTimer.current);
     void queryClient.cancelQueries({
@@ -5084,6 +5107,33 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const selectedHydrationPhase = hydrationPhase && hydrationPhase.bindingId === selected?.id
     ? hydrationPhase.state
     : 'loading';
+  useEffect(() => {
+    const workspaceId = workspace?.id;
+    const bindingId = selected?.id;
+    if (!workspaceId || !bindingId || selectedHydrationPhase !== 'loading') return;
+    const timer = window.setTimeout(() => {
+      const current = hydrationSelection.current;
+      if (
+        !current
+        || current.workspaceId !== workspaceId
+        || current.bindingId !== bindingId
+      ) return;
+      // Advance the generation before cancelling. A late query/fetch completion
+      // is then stale and cannot replace this recoverable local error.
+      hydrationRequestGeneration.current += 1;
+      hydrationRequestInFlight.current = false;
+      void queryClient.cancelQueries({
+        queryKey: sessionQueryKey(host, 'conversation-hydration-request', workspaceId, bindingId),
+        exact: true,
+      });
+      setHydrationPhase({
+        bindingId,
+        state: 'unavailable',
+        error: new ApiError('读取会话超时，请重试。', 'REQUEST_TIMEOUT', {}, 408),
+      });
+    }, HYDRATION_UI_DEADLINE_MS);
+    return () => window.clearTimeout(timer);
+  }, [host, queryClient, selected?.id, selectedHydrationPhase, workspace?.id]);
   // Do not fan out fallback reads while hydration is still attempting. A
   // non-capacity failure restores the established independent paths, but they
   // remain behind the same first-screen gate until all snapshots are fresh.

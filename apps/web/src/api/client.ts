@@ -112,39 +112,51 @@ async function request<T>(path: string, init: RequestOptions = {}): Promise<T> {
   const signal = timeoutController
     ? callerSignal ? AbortSignal.any([callerSignal, timeoutController.signal]) : timeoutController.signal
     : callerSignal;
-  const timeout = timeoutController
-    ? window.setTimeout(() => timeoutController.abort(), timeoutMs)
+  let timeout: number | undefined;
+  const timedOut = timeoutController
+    ? new Promise<never>((_resolve, reject) => {
+        timeout = window.setTimeout(() => {
+          timeoutController.abort();
+          reject(new ApiError('请求超时，请重试。', 'REQUEST_TIMEOUT', {}, 408));
+        }, timeoutMs);
+      })
     : undefined;
-  let response: Response;
   try {
-    response = await fetch(`${API_BASE}${ROOT}${path}`, {
-      ...requestInit,
-      signal,
-      credentials: 'include',
-      // Runtime replacement and other control-plane state may recover without
-      // changing the route. Never let the browser reuse a stale dynamic GET.
-      cache: requestInit.method === undefined || requestInit.method === 'GET' ? 'no-store' : requestInit.cache,
-      headers: { 'Content-Type': 'application/json', ...requestInit.headers },
-    });
+    // The deadline must cover both headers and body parsing. Some proxies can
+    // send headers, then indefinitely stall JSON body delivery; abort alone is
+    // not enough because a browser may leave response.text() pending.
+    const performRequest = async (): Promise<T> => {
+      const response = await fetch(`${API_BASE}${ROOT}${path}`, {
+        ...requestInit,
+        signal,
+        credentials: 'include',
+        // Runtime replacement and other control-plane state may recover without
+        // changing the route. Never let the browser reuse a stale dynamic GET.
+        cache: requestInit.method === undefined || requestInit.method === 'GET' ? 'no-store' : requestInit.cache,
+        headers: { 'Content-Type': 'application/json', ...requestInit.headers },
+      });
+      if (!response.ok) {
+        const error = await responseError(response);
+        if (response.status === 401 && path !== '/auth/me' && path !== '/auth/login') {
+          notifyAuthenticationRequired();
+        }
+        throw error;
+      }
+      if (response.status === 204) return undefined as T;
+      const responseText = await response.text();
+      return responseText ? JSON.parse(responseText) as T : undefined as T;
+    };
+    return timedOut ? await Promise.race([performRequest(), timedOut]) : await performRequest();
   } catch (error) {
     if (callerSignal?.aborted) throw error;
     if (timeoutController?.signal.aborted) {
       throw new ApiError('请求超时，请重试。', 'REQUEST_TIMEOUT', {}, 408);
     }
+    if (error instanceof ApiError) throw error;
     throw new ApiError('无法连接服务器，请检查网络连接后重试。', 'NETWORK_ERROR', {}, 0);
   } finally {
     if (timeout !== undefined) window.clearTimeout(timeout);
   }
-  if (!response.ok) {
-    const error = await responseError(response);
-    if (response.status === 401 && path !== '/auth/me' && path !== '/auth/login') {
-      notifyAuthenticationRequired();
-    }
-    throw error;
-  }
-  if (response.status === 204) return undefined as T;
-  const responseText = await response.text();
-  return responseText ? JSON.parse(responseText) as T : undefined as T;
 }
 
 const json = (method: string, body?: unknown, idempotencyKey?: string | true): RequestInit => ({

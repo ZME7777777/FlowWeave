@@ -7466,3 +7466,15 @@ FlowWeave 本地累加后猜测压缩边界。
 完成：默认宿主和 hydration 关键读取在浏览器端均有 15 秒 deadline，调用方 AbortSignal 与 timeout 信号合并；切换 binding 时取消旧 hydration query，并按 workspace/binding 隔离请求，迟到/取消的旧请求不会启动中间会话读取或污染当前选择。Runtime 暂不可读或客户端超时最多后台重试两次，随后展示局部错误和“重新读取会话”入口，不再无限 loading 或扇出三条独立 Runtime 读取；旧 Runtime 的非容量 hydration 失败仍保留原有独立读取兼容回退。Agent Workspace 与 FlowRun node hydration 对 `RUNTIME_READ_PER_RUNTIME_SATURATED`、`RUNTIME_BUSINESS_READ_TIMEOUT` 等正式读临时失败统一投影为 `AGENT_RUNTIME_UNAVAILABLE`（503）。
 
 验收：Web TypeScript typecheck、ESLint 和 production build 通过；定向 Playwright hydration 切换／兼容回退（2 passed）通过，且第一个 hydration 不释放时最后选择的会话仍可渲染。受影响 Python Ruff format/check 和 `py_compile` 通过；新增两类宿主的错误合同 pytest 已启动，但均在全局 Testcontainers PostgreSQL fixture 创建前因本机 Docker socket 缺失失败，未进入断言、未计为通过。完整 Agent session cache Playwright 24 项中 21 项通过；3 项既有非本切片场景（附件按钮严格定位、历史滚动请求计数、侧栏异常图标）稳定失败，未将其记为通过。未修改数据库 schema、OpenHands、Runtime 生命周期或远端配置。
+
+### FR-535 Agent Workspace hydration 响应体 deadline 收口 — DONE
+
+依赖：FR-534。
+
+目标：Agent Workspace／FlowRun node 的关键浏览器请求 deadline 必须覆盖 HTTP 响应头、错误体和成功 JSON 响应体的完整读取生命周期。若代理或 API 在响应体阶段悬挂，当前会话必须在 deadline 后退出首屏 loading，保留页面并提供显式重试；不得将同一条已超时的浏览器 hydration 自动重试而持续占用 loading。
+
+范围：Web request helper 的完整生命周期 timeout、AgentSessionWorkbench 的客户端 hydration timeout 收口及定向浏览器回归。不得修改 OpenHands 协议、Runtime 生命周期、数据库 schema 或远端配置。
+
+完成：`request()` 的 deadline 现在同时覆盖 fetch、HTTP 错误体和成功 JSON 响应体解析；无论 AbortSignal 是否被底层浏览器／代理正确兑现，Race deadline 都返回稳定 `REQUEST_TIMEOUT`。`AgentSessionWorkbench` 另有 12 秒的独立 loading-gate watchdog：超时时取消当前 hydration query、推进请求代次以拒绝迟到回调、解除全页 loading 并展示“读取会话超时，请重试”及显式重试。浏览器侧 timeout 不再自动重试同一悬挂请求；Runtime 明确返回的 `AGENT_RUNTIME_UNAVAILABLE` 仍保持既有有界重试。
+
+验收：Web TypeScript typecheck、ESLint 与 production build 通过。定向 Playwright 3 passed：快速切换不受旧 hydration 阻塞、旧 Runtime hydration 失败仍兼容回退、hydration 永不 settle 时 12 秒内退出 loading gate 且仅有一次 hydration 请求。未修改后端、数据库 schema、OpenHands、Runtime 生命周期或远端配置。
