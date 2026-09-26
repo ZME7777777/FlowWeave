@@ -2932,8 +2932,13 @@ function WorkspaceGitSidebar({ details, repository, mode, onModeChange, selected
   const upstream = historyRepository?.upstream;
   const commits = logQuery.data?.commits ?? [];
   const visibleCommits = localOnly ? commits.filter(commit => commit.local_only) : commits;
+  const refreshCurrentView = () => {
+    if (mode === 'history') void logQuery.refetch();
+    else void changesQuery.refetch();
+  };
+  const refreshing = mode === 'history' ? logQuery.isFetching : changesQuery.isFetching;
   return <aside className="agent-workspace-git-sidebar" aria-label="Git">
-    <header><div><span><GitBranch size={15}/>Git</span><b title={workspaceRelativePath(repository.path, details.root)}>{workspaceRelativePath(repository.path, details.root)}</b></div>{repository.branch && <em title="当前分支（只读，暂不支持切换）">{repository.branch}</em>}</header>
+    <header><div><span><GitBranch size={15}/>Git</span><b title={workspaceRelativePath(repository.path, details.root)}>{workspaceRelativePath(repository.path, details.root)}</b></div><div className="agent-git-header-actions">{repository.branch && <em title="当前分支（只读，暂不支持切换）">{repository.branch}</em>}<button type="button" aria-label="刷新 Git 状态" title="刷新 Git 状态" disabled={refreshing} onClick={refreshCurrentView}><RefreshCw className={refreshing ? 'spin' : undefined} size={13}/></button></div></header>
     <nav className="agent-git-view-tabs" aria-label="Git 视图"><button type="button" className={mode === 'history' ? 'active' : ''} aria-pressed={mode === 'history'} onClick={() => selectMode('history')}>提交记录</button><button type="button" className={mode === 'changes' ? 'active' : ''} aria-pressed={mode === 'changes'} onClick={() => selectMode('changes')}>本地改动</button></nav>
     {mode === 'history' ? logQuery.isLoading ? <p className="agent-git-loading">正在读取提交历史…</p> : logQuery.isError ? <p className="agent-git-error">Git 历史读取失败。<button type="button" onClick={() => void logQuery.refetch()}>重试</button></p> : <div className="agent-git-history">
       <section className={`agent-git-sync-status${ahead ? ' has-local' : ''}`} aria-label="分支同步状态">

@@ -500,6 +500,8 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   const workspaceDirectoryRequests: string[] = [];
   const workspaceFilePreviewRequests: string[] = [];
   let workspaceGitRepositoryRequests = 0;
+  let workspaceGitLogRequests = 0;
+  let workspaceGitChangesRequests = 0;
   const longFinalReply = Array.from(
     { length: 90 },
     (_, index) => `最终回复第 ${index + 1} 段：这是用于验证长回复稳定贴住会话底部的正式内容。`,
@@ -591,6 +593,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
       return;
     }
     if (path.endsWith('/workspace/git/log')) {
+      workspaceGitLogRequests += 1;
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
         repository: { path: '/runtime/workspace/project/backend', remote: 'https://example.test/backend.git', branch: 'main', head: '1234567890ab', upstream: 'origin/main', ahead: 2, behind: 0 },
         commits: [
@@ -602,6 +605,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
       return;
     }
     if (path.endsWith('/workspace/git/changes')) {
+      workspaceGitChangesRequests += 1;
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
         repository: { path: '/runtime/workspace/project/backend', remote: 'https://example.test/backend.git', branch: 'main', head: '1234567890ab' },
         staged: [{ path: 'src/staged.ts', status: 'M' }],
@@ -1119,6 +1123,9 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(gitSidebar.getByRole('region', { name: '分支同步状态' })).toContainText('2 个提交待推送');
   await expect(gitSidebar.getByText('待推送', { exact: true })).toHaveCount(2);
   await expect(gitSidebar.getByText('feat: initialize workspace', { exact: true })).toBeVisible();
+  const gitLogRequestsBeforeRefresh = workspaceGitLogRequests;
+  await gitSidebar.getByRole('button', { name: '刷新 Git 状态' }).click();
+  await expect.poll(() => workspaceGitLogRequests).toBe(gitLogRequestsBeforeRefresh + 1);
   await gitSidebar.getByRole('button', { name: '仅看待推送' }).click();
   await expect(gitSidebar.getByText('feat: initialize workspace', { exact: true })).toBeHidden();
   await expect(gitSidebar.getByText('待推送', { exact: true })).toHaveCount(2);
@@ -1130,6 +1137,9 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(sidebarStagedTree.getByText('staged.ts', { exact: true })).toBeVisible();
   await expect(sidebarUnstagedTree.getByText('local.ts', { exact: true })).toBeVisible();
   await expect(sidebarUnstagedTree.getByText('new.ts', { exact: true })).toBeVisible();
+  const gitChangesRequestsBeforeRefresh = workspaceGitChangesRequests;
+  await gitSidebar.getByRole('button', { name: '刷新 Git 状态' }).click();
+  await expect.poll(() => workspaceGitChangesRequests).toBe(gitChangesRequestsBeforeRefresh + 1);
   const sidebarSplit = gitSidebar.locator('.agent-git-change-split');
   const sidebarUnstagedHeightBeforeCollapse = await sidebarUnstagedTree.evaluate(element => element.getBoundingClientRect().height);
   await sidebarUnstagedTree.getByRole('button', { name: '收起未暂存' }).click();
