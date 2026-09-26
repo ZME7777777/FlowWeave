@@ -41,6 +41,16 @@ export type Runtime = {
   conversation_count: number;
   active_conversation_count: number;
   last_connected_at: string | null;
+  flow_definition_name: string | null;
+  flow_run_name: string | null;
+  flow_run_no: number | null;
+  flow_run_state: string | null;
+  node_run_name: string | null;
+  node_run_sequence_no: number | null;
+  node_attempt_no: number | null;
+  node_attempt_state: string | null;
+  workspace_display_name: string | null;
+  workspace_scope_key: string | null;
   usage: Usage | null;
 };
 

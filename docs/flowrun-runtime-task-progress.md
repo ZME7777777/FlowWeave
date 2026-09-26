@@ -7382,3 +7382,15 @@ FlowWeave 本地累加后猜测压缩边界。
 完成：Admin Runtime 列表将无错误状态明确显示为“未见控制面错误／未执行业务探针”，新增按需详情以显示 Runtime／generation 生命周期、容器观察可用性、会话生命周期汇总和最近受控操作。管理员 replacement 请求现在携带 Runtime 类型和 owner，审计模型可记录 `FLOW_RUN` 或 `AGENT_WORKSPACE`；FlowRun 保留既有 fenced replacement，Agent Workspace 则以 generation 与 row-version 乐观锁校验后进入既有 `RECONNECTING` 和 `PROVISION_AGENT_WORKSPACE_RUNTIME` 持久化恢复任务，绝不直接 Docker restart 或删除持久数据。迁移 `0127_admin_runtime_scope` 将审计表泛化到两类 Runtime。
 
 验收：Admin Web TypeScript typecheck、ESLint 和 production build 通过；Platform/Admin API Ruff format/check、`py_compile`、修改 Runtime 控制入口 Pyright、Alembic head `0127_admin_runtime_scope`、`git diff --check` 通过。新增的 Admin control 定向 pytest 已启动，但所有 4 条用例均在 Testcontainers session fixture 创建 PostgreSQL 前被本机缺失 Docker socket 阻断，未进入断言、未计为通过。未运行数据库迁移，不修改 OpenHands、Runtime Provider、Docker、远端配置或服务器；未实现告警、自动探针、自动熔断或自动 replacement。
+
+### FR-528 Admin Runtime 业务资源关联投影 — DONE
+
+依赖：FR-527。
+
+目标：Admin 的 Runtime 列表与详情必须用平台可读的业务身份关联底层 Runtime，不得只显示 Owner UUID。`FLOW_RUN` Runtime 应显示流程定义、FlowRun 名称／编号、FlowRun 状态，以及存在时的 NodeRun／Attempt；`AGENT_WORKSPACE` Runtime 应显示工作区名称与 scope。技术 UUID 仍作为次级精确定位信息保留。
+
+范围：仅扩展 Admin API 的 Runtime 只读投影和 Admin Web 渲染／筛选；不新增数据库迁移、后台任务页、Runtime 探针、告警、自动熔断、替换策略或远端部署。
+
+完成：Runtime 列表和按需详情通过只读关系查询关联 `flow_runs`、`flow_definitions`、`node_attempts`、`node_runs` 与 `agent_workspaces`。界面以“流程 / FlowRun 名称 #编号”或 Agent Workspace 名称作为主身份，并在辅助行显示节点／Attempt 或 Workspace scope；Runtime 筛选同时支持 Session、Owner UUID、流程、Run、节点和工作区名称。缺失历史关联时明确显示未关联／未命名，避免伪造业务身份。
+
+验收：Admin API Ruff format/check 与 `py_compile`、Admin Web TypeScript typecheck、ESLint、production build、`git diff --check`、Alembic head 和任务状态唯一性通过。未修改 Platform Runtime、OpenHands、数据库 schema、后台任务或远端环境；不运行数据库型测试，因为本切片无新的 ORM 写行为且本机 Testcontainers PostgreSQL 仍缺 Docker socket。

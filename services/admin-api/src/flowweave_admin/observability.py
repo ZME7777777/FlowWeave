@@ -109,8 +109,25 @@ def runtimes(connection: Any, *, limit: int) -> list[dict[str, Any]]:
                sandbox.last_error_detail,
                coalesce(bindings.conversation_count, 0) AS conversation_count,
                coalesce(bindings.active_conversation_count, 0) AS active_conversation_count,
-               bindings.last_connected_at
+               bindings.last_connected_at,
+               flow_definition.name AS flow_definition_name,
+               flow_run.name AS flow_run_name, flow_run.run_no AS flow_run_no,
+               flow_run.state AS flow_run_state,
+               node_run.name AS node_run_name, node_run.sequence_no AS node_run_sequence_no,
+               node_attempt.attempt_no AS node_attempt_no,
+               node_attempt.state AS node_attempt_state,
+               workspace.display_name AS workspace_display_name,
+               workspace.scope_key AS workspace_scope_key
         FROM all_runtimes AS runtime
+        LEFT JOIN flow_runs AS flow_run
+          ON runtime.runtime_kind = 'FLOW_RUN' AND flow_run.id = runtime.owner_id
+        LEFT JOIN flow_definitions AS flow_definition
+          ON flow_definition.id = flow_run.flow_definition_id
+        LEFT JOIN node_attempts AS node_attempt
+          ON node_attempt.id = runtime.node_attempt_id
+        LEFT JOIN node_runs AS node_run ON node_run.id = node_attempt.node_run_id
+        LEFT JOIN agent_workspaces AS workspace
+          ON runtime.runtime_kind = 'AGENT_WORKSPACE' AND workspace.id = runtime.owner_id
         LEFT JOIN all_generations AS generation
           ON generation.runtime_session_id = runtime.id
          AND generation.generation = runtime.active_generation
@@ -154,8 +171,25 @@ def runtime_detail(connection: Any, *, runtime_session_id: str) -> dict[str, Any
                sandbox.backend_resource_name AS container_name,
                sandbox.desired_state, sandbox.observed_state, sandbox.last_activity_at,
                sandbox.idle_expires_at, sandbox.hard_expires_at, sandbox.last_error_code,
-               sandbox.last_error_detail
+               sandbox.last_error_detail,
+               flow_definition.name AS flow_definition_name,
+               flow_run.name AS flow_run_name, flow_run.run_no AS flow_run_no,
+               flow_run.state AS flow_run_state,
+               node_run.name AS node_run_name, node_run.sequence_no AS node_run_sequence_no,
+               node_attempt.attempt_no AS node_attempt_no,
+               node_attempt.state AS node_attempt_state,
+               workspace.display_name AS workspace_display_name,
+               workspace.scope_key AS workspace_scope_key
         FROM all_runtimes AS runtime
+        LEFT JOIN flow_runs AS flow_run
+          ON runtime.runtime_kind = 'FLOW_RUN' AND flow_run.id = runtime.owner_id
+        LEFT JOIN flow_definitions AS flow_definition
+          ON flow_definition.id = flow_run.flow_definition_id
+        LEFT JOIN node_attempts AS node_attempt
+          ON node_attempt.id = runtime.node_attempt_id
+        LEFT JOIN node_runs AS node_run ON node_run.id = node_attempt.node_run_id
+        LEFT JOIN agent_workspaces AS workspace
+          ON runtime.runtime_kind = 'AGENT_WORKSPACE' AND workspace.id = runtime.owner_id
         LEFT JOIN all_generations AS generation
           ON generation.runtime_session_id = runtime.id
          AND generation.generation = runtime.active_generation
