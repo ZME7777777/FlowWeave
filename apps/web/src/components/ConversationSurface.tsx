@@ -1762,7 +1762,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
         setReferenceHighlightRects([]);
         if (window.getSelection()?.toString() === highlightedReference.quote) window.getSelection()?.removeAllRanges();
         referenceHighlightTimer.current = undefined;
-      }, 3_800);
+      }, 1_500);
     }
     return true;
   }, [highlightedReference]);

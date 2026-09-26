@@ -2694,6 +2694,7 @@ test('selected conversation text is sent and rendered as a compact reference car
   await page.evaluate(() => window.getSelection()?.removeAllRanges());
   await expect(referenceHighlights).not.toHaveCount(0);
   await expect(referenceHighlights.first()).toHaveCSS('background-color', 'rgba(183, 223, 255, 0.85)');
+  await expect(referenceHighlights).toHaveCount(0, { timeout: 2_000 });
   await page.getByLabel('发送 Agent 消息').fill('请据此继续');
   await page.getByRole('button', { name: '发送消息' }).click();
   await expect.poll(() => sentPayload).toMatchObject({

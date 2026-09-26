@@ -2217,7 +2217,7 @@ function WorkspaceTextPreview({ path, content, highlight, highlightLine, onAnnot
       preview.classList.remove('workspace-selection-flash');
       setLineHighlight(current => current === line ? undefined : current);
       setPinnedSelectionHighlights(undefined);
-    }, highlight ? 3_800 : 1_600);
+    }, highlight ? 1_500 : 1_600);
     preview.classList.add('workspace-selection-flash');
     return () => window.clearTimeout(timer);
   }, [content, highlight, highlightLine, highlightRange, markdownPreview]);
