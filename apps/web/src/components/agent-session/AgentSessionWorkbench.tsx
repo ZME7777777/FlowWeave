@@ -6726,7 +6726,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       return;
     }
     dispatchMessage({ ...queuedMessage, bindingId: selected.id });
-  }, [attachments, bootstrap, canBootstrap, canWrite, commitQueuedMessages, composerAnnotations, composerScope, conversationDraft, dispatchMessage, effectiveTurnState, host.id, migrateStreaming.isPending, pendingMigratedSend, queueModeEnabled, references, replaceComposerDraft, selected, selectedCondensing, showOptimisticUserBubble, workspace, workspaceReferences]);
+  }, [attachments, bootstrap, canBootstrap, canWrite, commitQueuedMessages, composerAnnotations, composerScope, conversationDraft, dispatchMessage, effectiveTurnState, host.id, migrateStreaming, pendingMigratedSend, queueModeEnabled, references, replaceComposerDraft, selected, selectedCondensing, showOptimisticUserBubble, workspace, workspaceReferences]);
   const sendDraftDirectly = useCallback((draftContent = composerDraftRef.current) => {
     if (selectedCondensing) {
       enqueueDraft(draftContent);
