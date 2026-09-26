@@ -219,6 +219,8 @@ interface LocalMessageProjection {
   scope: string;
   renderKey: string;
   canonicalEventId?: string;
+  suppressedFormalEventId?: string;
+  localOnly?: boolean;
   state: LocalMessageProjectionState;
   event: OpenHandsConversationEvent;
   formalEventIdsAtSubmission: Set<string>;
@@ -1621,7 +1623,10 @@ function projectLocalMessages(
   formalEvents: OpenHandsConversationEvent[],
   projections: LocalMessageProjection[],
 ): OpenHandsConversationEvent[] {
-  const projected = [...formalEvents];
+  const suppressedFormalEventIds = new Set(
+    projections.flatMap(item => item.localOnly && item.suppressedFormalEventId ? [item.suppressedFormalEventId] : []),
+  );
+  const projected = formalEvents.filter(event => !suppressedFormalEventIds.has(event.id));
 
   for (const local of projections) {
     const formalIndex = local.canonicalEventId
@@ -1653,7 +1658,7 @@ function projectLocalMessages(
     else projected.push(localEvent);
   }
 
-  const unresolved = projections.filter(item => !item.canonicalEventId);
+  const unresolved = projections.filter(item => !item.canonicalEventId && !item.suppressedFormalEventId);
   const unclaimedRoots = projected.flatMap(event => {
     const isUserMessage = event.event_type === 'MESSAGE'
       && ['user', 'human'].includes(String(event.payload.source ?? '').toLowerCase());
@@ -2933,8 +2938,13 @@ function WorkspaceGitSidebar({ details, repository, mode, onModeChange, selected
   const upstream = historyRepository?.upstream;
   const commits = logQuery.data?.commits ?? [];
   const visibleCommits = localOnly ? commits.filter(commit => commit.local_only) : commits;
+  const refreshCurrentView = () => {
+    if (mode === 'history') void logQuery.refetch();
+    else void changesQuery.refetch();
+  };
+  const refreshing = mode === 'history' ? logQuery.isFetching : changesQuery.isFetching;
   return <aside className="agent-workspace-git-sidebar" aria-label="Git">
-    <header><div><span><GitBranch size={15}/>Git</span><b title={workspaceRelativePath(repository.path, details.root)}>{workspaceRelativePath(repository.path, details.root)}</b></div>{repository.branch && <em title="当前分支（只读，暂不支持切换）">{repository.branch}</em>}</header>
+    <header><div><span><GitBranch size={15}/>Git</span><b title={workspaceRelativePath(repository.path, details.root)}>{workspaceRelativePath(repository.path, details.root)}</b></div><div className="agent-git-header-actions">{repository.branch && <em title="当前分支（只读，暂不支持切换）">{repository.branch}</em>}<button type="button" aria-label="刷新 Git 状态" title="刷新 Git 状态" disabled={refreshing} onClick={refreshCurrentView}><RefreshCw className={refreshing ? 'spin' : undefined} size={13}/></button></div></header>
     <nav className="agent-git-view-tabs" aria-label="Git 视图"><button type="button" className={mode === 'history' ? 'active' : ''} aria-pressed={mode === 'history'} onClick={() => selectMode('history')}>提交记录</button><button type="button" className={mode === 'changes' ? 'active' : ''} aria-pressed={mode === 'changes'} onClick={() => selectMode('changes')}>本地改动</button></nav>
     {mode === 'history' ? logQuery.isLoading ? <p className="agent-git-loading">正在读取提交历史…</p> : logQuery.isError ? <p className="agent-git-error">Git 历史读取失败。<button type="button" onClick={() => void logQuery.refetch()}>重试</button></p> : <div className="agent-git-history">
       <section className={`agent-git-sync-status${ahead ? ' has-local' : ''}`} aria-label="分支同步状态">
@@ -4696,8 +4706,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   }, [api, host, queryClient, workspace]);
   const markConversationRead = useCallback((bindingId: string) => {
     const systemAlert = possiblyStuckConversationIds.has(bindingId) || failedConversationIds.has(bindingId);
-    if (unreadConversationIds.has(bindingId)) setConversationUnread(bindingId, false, systemAlert ? 'SYSTEM' : undefined);
-  }, [failedConversationIds, possiblyStuckConversationIds, setConversationUnread, unreadConversationIds]);
+    setConversationUnread(bindingId, false, systemAlert ? 'SYSTEM' : undefined);
+  }, [failedConversationIds, possiblyStuckConversationIds, setConversationUnread]);
   const markConversationUnread = useCallback((bindingId: string) => {
     // An explicit user choice must override a system-origin alert even when
     // the binding was already unread, restoring the ordinary blue marker.
@@ -5791,8 +5801,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     if (scope === activeComposerScope.current) void synchronizeConversationEvents(true, 'stream_reconnect');
   }, [synchronizeConversationEvents]);
   const updateStreamStatus = useCallback((scope: string, status: StreamStatus) => {
-    if (scope === activeComposerScope.current) setStreamStatus(status);
-  }, []);
+    if (scope !== activeComposerScope.current) return;
+    setStreamStatus(status);
+    if (status === 'recovering') void synchronizeConversationEvents(true, 'stream_closed');
+  }, [synchronizeConversationEvents]);
   useEffect(() => {
     if (!streamEnabled) setStreamStatus('disabled');
   }, [streamEnabled]);
@@ -6266,6 +6278,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     message: QueuedMessage,
     idPrefix = 'pending-user',
     state: LocalMessageProjectionState = 'submitting',
+    localOnly = false,
   ): string => {
     const existing = localMessageProjections.current.get(message.id);
     if (existing) {
@@ -6273,6 +6286,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         ...existing,
         scope: message.scope,
         state,
+        localOnly: existing.localOnly || localOnly,
         event: {
           ...existing.event,
           payload: {
@@ -6306,6 +6320,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       scope: message.scope,
       renderKey,
       state,
+      localOnly,
       event,
       formalEventIdsAtSubmission: new Set((eventsQuery.data?.events ?? []).map(item => item.id)),
     }));
@@ -6332,7 +6347,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         updateLocalMessageProjections(current => {
           const projection = current.get(message.id);
           if (!projection) return;
-          current.set(message.id, { ...projection, canonicalEventId: cursor, state: 'accepted' });
+          current.set(message.id, projection.localOnly
+            ? { ...projection, canonicalEventId: cursor, suppressedFormalEventId: cursor, state: 'accepted' }
+            : { ...projection, canonicalEventId: cursor, state: 'accepted' });
         });
         releaseDeferredFormalUserEvents(message.bindingId);
       }
@@ -6381,7 +6398,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     if (sendingMessageIds.current.has(message.id)) return;
     sendingMessageIds.current.add(message.id);
     commitQueuedMessages(current => current.filter(item => item.id !== message.id));
-    showOptimisticUserBubble(message);
+    showOptimisticUserBubble(message, 'pending-user', 'submitting', message.nativeGuidance === true);
     if (!message.nativeGuidance) {
       setActiveTurnEventId(undefined);
       setRequestStartedAt(Date.now());
@@ -6691,12 +6708,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     }
     if (!canWrite) { replaceComposerDraft(content); setAttachments(attachments); setReferences(references); setWorkspaceReferences(workspaceReferences); setComposerAnnotations(composerAnnotations); return; }
     if (!selected) return;
-    // Enter only adds an editable message to the browser queue. Command/Ctrl+Enter
-    // is the explicit direct-send action (see sendDraftDirectly below).
-    const shouldQueue = queueModeEnabled
-      || selectedCondensing
-      || effectiveTurnState === 'running'
-      || (effectiveTurnState === 'idle' && !selected.streaming_callback_ready);
+    // Only a live turn or context condensation may defer Enter into the
+    // editable browser queue. Idle and paused conversations continue directly.
+    const shouldQueue = selectedCondensing || effectiveTurnState === 'running';
     const queuedMessage: QueuedMessage = {
       ...message,
       nativeGuidance: false,
@@ -6705,7 +6719,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     };
     if (shouldQueue) {
       commitQueuedMessages(items => [...items, queuedMessage]);
-      showOptimisticUserBubble(queuedMessage, 'pending-user', 'queued');
+      return;
+    }
+    if (!selected.streaming_callback_ready) {
+      migrateStreaming.mutate(queuedMessage);
       return;
     }
     dispatchMessage({ ...queuedMessage, bindingId: selected.id });
@@ -7078,7 +7095,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     // This keeps navigation reads free of Runtime calls without hiding active
     // conversations or letting a delayed batch snapshot override a terminal row.
     const running = item.id === selected?.id
-      ? conversationActivity.active
+      ? conversationVisuallyActive
       : runningConversationIds.has(item.id) || condensingConversationIds.has(item.id) || conversationIsRunning(item.execution_status);
     const possiblyStuck = item.id === selected?.id
       ? Boolean(eventsQuery.data?.monitoring?.possibly_stuck)

@@ -187,7 +187,7 @@ test('step configuration is saved before start and direct launch has its own tab
       stepwiseCreateBody = request.postDataJSON() as Record<string, unknown>;
       currentStepRecord = {
         ...currentRun, id: 'stepwise-record-1', name: '测试逐步记录', parent_flow_run_id: run.id,
-        start_node_key: String(stepwiseCreateBody.start_node_key),
+        start_node_key: String(stepwiseCreateBody.start_node_key), stepwise_node_drafts: {},
         node_runs: [], artifacts: [], progress: { accepted: 0, terminal: 0, active: 0 },
       };
       return respond(currentStepRecord, 201);
@@ -225,30 +225,25 @@ test('step configuration is saved before start and direct launch has its own tab
     }
     if (path === `/api/v1/flow-runs/${run.id}/stepwise-runs/stepwise-record-1` && request.method() === 'GET') return respond(currentStepRecord);
     if (path === `/api/v1/flow-runs/${run.id}/automatic-runs`) return respond([]);
-    if (path === '/api/v1/flow-runs/stepwise-record-1/nodes/second/runs' && request.method() === 'POST') {
+    if (path === '/api/v1/flow-runs/stepwise-record-1/stepwise-node-drafts/second' && request.method() === 'PUT') {
       savedBody = request.postDataJSON() as Record<string, unknown>;
-      const savedAttempt = {
-        ...attempt,
-        id: 'saved-attempt',
-        node_run_id: 'saved-node-run',
-        state: 'WAITING_START_CONFIRMATION',
-        runtime_phase: null,
+      const draft = {
+        row_version: 2,
+        startup_mode: 'PROMPT',
         startup_prompt: savedBody.startup_prompt,
+        agent_preset: savedBody.agent_preset,
+        gates: savedBody.gates,
+        context_ids: [],
+        input_bindings: [],
       };
-      const savedRecord = {
-        ...nodeRun,
-        id: 'saved-node-run',
-        flow_node_snapshot_key: 'second',
-        created_from: 'HUMAN_START',
-        attempts: [savedAttempt],
-      };
-      currentStepRecord = { ...currentStepRecord!, node_runs: [savedRecord], progress: { accepted: 0, terminal: 0, active: 1 } };
-      return respond(savedRecord, 201);
+      currentStepRecord = { ...currentStepRecord!, stepwise_node_drafts: { second: draft }, node_runs: [], progress: { accepted: 0, terminal: 0, active: 0 } };
+      return respond(draft);
     }
-    if (path === '/api/v1/node-attempts/saved-attempt/confirm-start' && request.method() === 'POST') {
+    if (path === '/api/v1/flow-runs/stepwise-record-1/stepwise-node-drafts/second/start' && request.method() === 'POST') {
       startBody = request.postDataJSON() as Record<string, unknown>;
-      const started = { ...currentStepRecord!.node_runs[0].attempts[0], state: 'EXECUTING', state_version: 2, runtime_phase: 'STARTING', binding_id: 'saved-node-binding' };
-      currentStepRecord = { ...currentStepRecord!, node_runs: [{ ...currentStepRecord!.node_runs[0], attempts: [started] }] };
+      const started = { ...attempt, id: 'saved-attempt', node_run_id: 'saved-node-run', state: 'EXECUTING', state_version: 1, runtime_phase: 'STARTING', binding_id: 'saved-node-binding' };
+      const savedRecord = { ...nodeRun, id: 'saved-node-run', flow_run_id: 'stepwise-record-1', flow_node_snapshot_key: 'second', created_from: 'STEPWISE_DRAFT_START', attempts: [started] };
+      currentStepRecord = { ...currentStepRecord!, node_runs: [savedRecord], progress: { accepted: 0, terminal: 0, active: 1 } };
       return respond(started);
     }
     return respond({ error: { code: 'RESOURCE_NOT_FOUND', message: `未配置测试路由：${path}`, details: {} } }, 404);
@@ -315,13 +310,10 @@ test('step configuration is saved before start and direct launch has its own tab
   expect(startBody).toBeUndefined();
 
   await expect(page.locator('.node-record-list')).toContainText('测试逐步记录');
-  await page.locator('.run-graph-node').filter({ hasText: '测试节点2' }).click();
-  await expect(page.getByTestId('attempt-state')).toHaveText('WAITING_START_CONFIRMATION');
-  await page.getByRole('button', { name: '启动逐步运行 测试节点' }).click();
-  await expect.poll(() => startBody).toEqual(expect.objectContaining({
-    startup_mode: 'PROMPT',
-    prompt: '读取流程输入并完成节点工作。',
-  }));
+  await expect.poll(() => currentStepRecord?.node_runs).toEqual([]);
+  await expect(page.getByTestId('attempt-state')).toHaveCount(0);
+  await consolePanel.getByRole('button', { name: '启动', exact: true }).click();
+  await expect.poll(() => startBody).toEqual({ expected_row_version: 2 });
   await expect(page).toHaveURL(/\/flow-runs\/stepwise-record-1\/nodes\/saved-node-run\/attempts\/saved-attempt\/agent-sessions\/saved-node-binding$/);
 });
 

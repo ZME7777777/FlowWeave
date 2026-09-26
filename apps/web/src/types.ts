@@ -384,11 +384,22 @@ export interface FlowRunAutomaticRecord extends FlowRun {
   node_plans: Record<string, AutomaticNodePlan>;
   readiness: { ready: boolean; issues: Array<{ code: string; node_key: string; message: string }> };
 }
+export interface StepwiseNodeDraft {
+  row_version: number;
+  startup_mode: 'PROMPT';
+  startup_prompt?: string | null;
+  agent_preset?: AgentPreset | null;
+  gates: GatePolicy[];
+  context_ids?: string[] | null;
+  input_bindings: Array<Pick<InputBinding, 'input_field_key' | 'artifact_version_id' | 'binding_source'>>;
+}
 export interface FlowRunStepwiseRecord extends FlowRun {
   /** The top-level FlowRun whose workbench owns this stepwise execution. */
   parent_flow_run_id: string;
   /** Persisted initial canvas selection for records that have no NodeRun yet. */
   start_node_key?: string | null;
+  /** Editable node configuration; an Attempt exists only after explicit start. */
+  stepwise_node_drafts?: Record<string, StepwiseNodeDraft>;
 }
 export interface FlowRunStepwiseRecordWrite {
   name?: string;

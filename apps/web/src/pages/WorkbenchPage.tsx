@@ -11,7 +11,7 @@ import { useProductDialog } from '../components/ProductDialogContext';
 import { RuntimeConfirmationPanel } from '../components/RuntimeConfirmationPanel';
 import { useEscapeClose } from '../components/useEscapeClose';
 import { useWorkbenchStore } from '../store/workbench';
-import type { AgentPreset, ArtifactVersion, AttemptState, AutomaticNodePlan, AutomaticRecordConfigDocument, CapabilityAsset, CapabilityCollection, FlowRun, FlowRunAutomaticRecord, FlowRunAutomaticRecordSummary, FlowRunStepwiseRecord, GateAgentPreset, GateEvaluation, GatePolicy, GateRemediationResult, NodeAttempt, NodeRun, OpenHandsConversationEvent, OpenHandsConversationEventBatch, RecordConfigDocument, SnapshotFlowNode, TokenUsageSummary } from '../types';
+import type { AgentPreset, ArtifactVersion, AttemptState, AutomaticNodePlan, AutomaticRecordConfigDocument, CapabilityAsset, CapabilityCollection, FlowRun, FlowRunAutomaticRecord, FlowRunAutomaticRecordSummary, FlowRunStepwiseRecord, GateAgentPreset, GateEvaluation, GatePolicy, GateRemediationResult, NodeAttempt, NodeRun, OpenHandsConversationEvent, OpenHandsConversationEventBatch, RecordConfigDocument, SnapshotFlowNode, StepwiseNodeDraft, TokenUsageSummary } from '../types';
 import { withDeploymentBase } from '../deploymentPath';
 import { selectCapabilityVersion, selectCapabilityVersions } from '../utils/capabilitySelection';
 
@@ -983,12 +983,10 @@ function NodeConfigurationPanel({
   return <aside className={panelClassName} data-testid="node-configuration-panel"><header><div><b>{title}</b><small>{subtitle}</small></div></header>{feedback}<div className="node-console-mode-bar">{fixedModeLabel ? <div className="node-console-mode-summary"><b>{fixedModeLabel}</b><small>{mode === 'CHAT' ? '人工直接进入节点会话' : '保存配置后从左侧记录启动'}</small></div> : <nav className="node-console-mode-tabs" aria-label="启动方式"><button className={mode === 'PROMPT' ? 'active' : ''} aria-pressed={mode === 'PROMPT'} onClick={() => onModeChange('PROMPT')}><span>提示词执行</span><small>按节点配置自动执行</small></button><button className={mode === 'CHAT' ? 'active' : ''} aria-pressed={mode === 'CHAT'} disabled={!chatEnabled} title={chatDisabledTitle} onClick={() => onModeChange('CHAT')}><span>会话启动</span><small>人工进入会话引导</small></button></nav>}{action}</div>{mode === 'PROMPT' && <PromptConfigurationTabs active={promptTab} onChange={onPromptTabChange}/>}<div className="action-content">{mode === 'PROMPT' ? <>{promptTab === 'inputs' && promptContent}{promptTab === 'agent' && agentContent}{promptTab === 'gates' && gateContent}{promptTab === 'history' && historyContent}</> : chatContent}{belowContent}</div></aside>;
 }
 
-function NodeConsole({ run, node, startupMode, pendingNodeRun, initialBindings, refresh, onActivated, onSelectExecution }: { run: FlowRun; node: SnapshotFlowNode; startupMode: 'PROMPT' | 'CHAT'; pendingNodeRun?: NodeRun; initialBindings?: Record<string, string>; refresh: () => void; onActivated: (nodeRun: NodeRun) => void; onSelectExecution: (nodeRun: NodeRun) => void }) {
+function NodeConsole({ run, node, startupMode, stepwiseDraft, initialBindings, refresh, onActivated, onDraftSaved, onStartDraft, onSelectExecution }: { run: FlowRun; node: SnapshotFlowNode; startupMode: 'PROMPT' | 'CHAT'; stepwiseDraft?: StepwiseNodeDraft; initialBindings?: Record<string, string>; refresh: () => void; onActivated: (nodeRun: NodeRun) => void; onDraftSaved?: (draft: StepwiseNodeDraft) => void; onStartDraft?: (draft: StepwiseNodeDraft) => void; onSelectExecution: (nodeRun: NodeRun) => void }) {
   const terminal = run.state === 'COMPLETED' || run.state === 'CANCELLED';
-  const pendingAttempt = pendingNodeRun?.attempts.at(-1);
-  const inheritedBindingsJson = JSON.stringify(initialBindings ?? Object.fromEntries(
-    (pendingAttempt?.input_bindings ?? []).map(item => [item.input_field_key, item.artifact_version_id]),
-  ));
+  const draftBindings = Object.fromEntries((stepwiseDraft?.input_bindings ?? []).map(item => [item.input_field_key, item.artifact_version_id]));
+  const inheritedBindingsJson = JSON.stringify(initialBindings ?? draftBindings);
   const [promptTab, setPromptTab] = useState<PromptConfigurationTab>('inputs');
   const [inputDialogOpen, setInputDialogOpen] = useState(false);
   const [promptDialogOpen, setPromptDialogOpen] = useState(false);
@@ -997,35 +995,29 @@ function NodeConsole({ run, node, startupMode, pendingNodeRun, initialBindings, 
   const [gates, setGates] = useState<GatePolicy[]>([]);
   const [agentPreset, setAgentPreset] = useState<AgentPreset>({ capability_version_ids: [], node_context_enabled: false, node_context_prompt: node.asset.executor?.context_prompt ?? '' });
   const [prompt, setPrompt] = useState(node.asset.executor?.startup_prompt ?? '');
-  useEffect(() => { setPromptTab('inputs'); setInputDialogOpen(false); setPromptDialogOpen(false); setBindings(JSON.parse(inheritedBindingsJson) as Record<string, string>); setGates([]); setAgentPreset({ capability_version_ids: [], node_context_enabled: false, node_context_prompt: node.asset.executor?.context_prompt ?? '' }); setPrompt(node.asset.executor?.startup_prompt ?? ''); }, [inheritedBindingsJson, node.instance_key, node.asset.executor?.startup_prompt, node.asset.executor?.context_prompt, startupMode]);
+  useEffect(() => { setPromptTab('inputs'); setInputDialogOpen(false); setPromptDialogOpen(false); setBindings(JSON.parse(inheritedBindingsJson) as Record<string, string>); setGates(stepwiseDraft?.gates ?? []); setAgentPreset(stepwiseDraft?.agent_preset ?? { capability_version_ids: [], node_context_enabled: false, node_context_prompt: node.asset.executor?.context_prompt ?? '' }); setPrompt(stepwiseDraft?.startup_prompt ?? node.asset.executor?.startup_prompt ?? ''); }, [inheritedBindingsJson, node.instance_key, node.asset.executor?.startup_prompt, node.asset.executor?.context_prompt, startupMode, stepwiseDraft]);
   useEffect(() => setInputArtifacts(current => mergeArtifacts(current, run.artifacts)), [run.artifacts]);
   const mutation = useMutation({
     mutationFn: async (nextBindings: Record<string, string>) => {
+      if (stepwiseDraft && startupMode === 'PROMPT') return { draft: await api.saveStepwiseNodeDraft(run.id, node.instance_key, { expected_row_version: stepwiseDraft.row_version, startup_mode: 'PROMPT', startup_prompt: prompt, artifact_ids: nextBindings, input_urls: {}, gates, agent_preset: agentPreset }) };
       const sessionOnly = startupMode === 'CHAT';
-      const activated = await api.activateNode(
-        run.id,
-        node.instance_key,
-        sessionOnly ? {} : nextBindings,
-        sessionOnly ? [] : gates,
-        {},
-        startupMode,
-        sessionOnly ? undefined : agentPreset,
-        sessionOnly ? undefined : prompt,
-      );
-      if (sessionOnly) return { created: activated, openDraft: true };
-      return { created: activated };
+      const activated = await api.activateNode(run.id, node.instance_key, sessionOnly ? {} : nextBindings, sessionOnly ? [] : gates, {}, startupMode, sessionOnly ? undefined : agentPreset, sessionOnly ? undefined : prompt);
+      return { created: activated, openDraft: sessionOnly };
     },
-    onSuccess: result => { onActivated(result.created); refresh(); if (result.openDraft) { const attempt = result.created.attempts.at(-1); if (attempt) openNodeSession(run.id, result.created.id, attempt.id); } },
+    onSuccess: result => { if ('draft' in result) { onDraftSaved?.(result.draft); refresh(); return; } onActivated(result.created); refresh(); if (result.openDraft) { const attempt = result.created.attempts.at(-1); if (attempt) openNodeSession(run.id, result.created.id, attempt.id); } },
   });
   const invalidMode = startupMode === 'PROMPT' && !prompt.trim();
   const invalidGates = startupMode === 'PROMPT' && gates.some(gate => !String(gate.config.prompt || '').trim());
   const missingInputs = node.asset.inputs.some(field => !bindings[field.field_key]);
   const nodeRuns = run.node_runs.filter(item => item.flow_node_snapshot_key === node.instance_key && isDirectNodeRun(item) === (startupMode === 'CHAT'));
   const visits = nodeRuns.length;
-  const runAction = <button className="primary node-run-button" disabled={terminal || invalidMode || invalidGates || mutation.isPending} onClick={() => startupMode === 'PROMPT' && missingInputs ? setPromptTab('inputs') : mutation.mutate(bindings)}><Play size={15}/>{mutation.isPending ? '正在创建…' : startupMode === 'PROMPT' && missingInputs ? '请先填写节点输入' : startupMode === 'CHAT' ? '启动节点会话' : '保存配置'}</button>;
+  const saveDisabled = terminal || invalidMode || invalidGates || mutation.isPending;
+  const runAction = stepwiseDraft && startupMode === 'PROMPT'
+    ? <div className="node-run-button-group"><button className="secondary node-run-button" disabled={saveDisabled} onClick={() => missingInputs ? setPromptTab('inputs') : mutation.mutate(bindings)}>{mutation.isPending ? '保存中…' : missingInputs ? '请先填写节点输入' : '保存配置'}</button><button className="primary node-run-button" disabled={terminal || !stepwiseDraft.startup_prompt?.trim()} onClick={() => onStartDraft?.(stepwiseDraft)}><Play size={15}/>启动</button></div>
+    : <button className="primary node-run-button" disabled={saveDisabled} onClick={() => startupMode === 'PROMPT' && missingInputs ? setPromptTab('inputs') : mutation.mutate(bindings)}><Play size={15}/>{mutation.isPending ? '保存中…' : startupMode === 'PROMPT' && missingInputs ? '请先填写节点输入' : startupMode === 'CHAT' ? '启动节点会话' : '保存配置'}</button>;
   const historyRun = { ...run, node_runs: run.node_runs.filter(item => isDirectNodeRun(item) === (startupMode === 'CHAT')) };
   const history = <NodeExecutionHistory run={historyRun} node={node} onSelectExecution={onSelectExecution}/>;
-  return <><NodeConfigurationPanel className={startupMode === 'PROMPT' ? 'automatic-record-editor' : undefined} title={node.alias || node.asset.name} subtitle={`节点控制台 · 已执行 ${visits} 次`} mode={startupMode} fixedModeLabel={startupMode === 'CHAT' ? '直接启动' : '逐步运行'} onModeChange={() => undefined} promptTab={promptTab} onPromptTabChange={setPromptTab} action={runAction} promptContent={<>{(pendingAttempt || Object.keys(initialBindings ?? {}).length > 0) && <p className="field-hint">上游节点的映射产物已自动填入；可继续补充本节点配置，保存后再从左侧启动。</p>}<InputSummary fields={node.asset.inputs} bindings={bindings} artifacts={inputArtifacts}/>{node.asset.inputs.length > 0 && <button className="secondary full" onClick={() => setInputDialogOpen(true)}><Upload size={14}/>填写节点输入</button>}<StartupPromptSummary prompt={prompt} freezeHint="保存配置后会随记录冻结。" onEdit={() => setPromptDialogOpen(true)}/></>} agentContent={<AgentPresetEditor preset={agentPreset} nodeContext={node.asset.executor?.context_prompt ?? ''} onChange={setAgentPreset}/>} gateContent={<GateDraftEditor gates={gates} onChange={setGates}/>} historyContent={history} chatContent={history} belowContent={<>{invalidGates && <p className="error">每个门禁都需要填写判定提示词。</p>}{terminal && <p className="field-hint">流程已结束，不能创建新的节点执行。</p>}{mutation.error && <p className="error"><AlertTriangle size={14}/>{mutation.error.message}</p>}</>}/>{inputDialogOpen && <NodeInputDialog run={{ ...run, artifacts: inputArtifacts }} node={node} initialBindings={bindings} onClose={() => setInputDialogOpen(false)} onSubmit={({ bindings: nextBindings, artifacts }) => { setBindings(nextBindings); setInputArtifacts(current => mergeArtifacts(current, artifacts)); setInputDialogOpen(false); }}/>} {promptDialogOpen && <StartupPromptDialog prompt={prompt} onChange={setPrompt} onClose={() => setPromptDialogOpen(false)}/>}</>;
+  return <><NodeConfigurationPanel className={startupMode === 'PROMPT' ? 'automatic-record-editor' : undefined} title={node.alias || node.asset.name} subtitle={`节点控制台 · 已执行 ${visits} 次`} mode={startupMode} fixedModeLabel={startupMode === 'CHAT' ? '直接启动' : '逐步运行'} onModeChange={() => undefined} promptTab={promptTab} onPromptTabChange={setPromptTab} action={runAction} promptContent={<>{(stepwiseDraft || Object.keys(initialBindings ?? {}).length > 0) && <p className="field-hint">保存后仍可继续编辑；上游映射产物会保留在当前节点输入中，点击启动时才冻结为本轮 Attempt。</p>}<InputSummary fields={node.asset.inputs} bindings={bindings} artifacts={inputArtifacts}/>{node.asset.inputs.length > 0 && <button className="secondary full" onClick={() => setInputDialogOpen(true)}><Upload size={14}/>填写节点输入</button>}<StartupPromptSummary prompt={prompt} freezeHint="点击启动时才会随 Attempt 冻结。" onEdit={() => setPromptDialogOpen(true)}/></>} agentContent={<AgentPresetEditor preset={agentPreset} nodeContext={node.asset.executor?.context_prompt ?? ''} onChange={setAgentPreset}/>} gateContent={<GateDraftEditor gates={gates} onChange={setGates}/>} historyContent={history} chatContent={history} belowContent={<>{invalidGates && <p className="error">每个门禁都需要填写判定提示词。</p>}{terminal && <p className="field-hint">流程已结束，不能创建新的节点执行。</p>}{mutation.error && <p className="error"><AlertTriangle size={14}/>{mutation.error.message}</p>}</>}/>{inputDialogOpen && <NodeInputDialog run={{ ...run, artifacts: inputArtifacts }} node={node} initialBindings={bindings} onClose={() => setInputDialogOpen(false)} onSubmit={({ bindings: nextBindings, artifacts }) => { setBindings(nextBindings); setInputArtifacts(current => mergeArtifacts(current, artifacts)); setInputDialogOpen(false); }}/>} {promptDialogOpen && <StartupPromptDialog prompt={prompt} onChange={setPrompt} onClose={() => setPromptDialogOpen(false)}/>}</>;
 }
 
 const AUTOMATIC_STAGE_ORDER = ['INPUT_READINESS', 'START_GATES', 'START_HANDOFF', 'RUNTIME_START', 'AGENT_RUNNING', 'END_GATES', 'FLOW_ADVANCE'];
@@ -1622,6 +1614,10 @@ export function WorkbenchPage() {
   const pendingConfigurationNodeRun = mode === 'MANUAL' && selectedNodeKey
     ? nodeRecords.find(item => item.flow_node_snapshot_key === selectedNodeKey && isUnconfiguredStepRecord(item))
     : undefined;
+  const selectedStepwiseDraft = mode === 'MANUAL' && selectedStepwise && selectedNodeKey
+    ? selectedStepwise.stepwise_node_drafts?.[selectedNodeKey]
+      ?? { row_version: 1, startup_mode: 'PROMPT' as const, gates: [], input_bindings: [] }
+    : undefined;
   const inheritedTransitionBindings = (() => {
     if (pendingConfigurationNodeRun || !snapshot || !selectedNodeKey) return undefined;
     // Resolve inherited inputs from this record's durable accepted path, not
@@ -1746,10 +1742,13 @@ export function WorkbenchPage() {
       const next = [...updated.node_runs].reverse().find(item => item.state === 'ACTIVE' && successorKeys.has(item.flow_node_snapshot_key))
         ?? [...updated.node_runs].reverse().find(item => item.state === 'ACTIVE')
         ?? updated.node_runs.at(-1);
-      if (next) {
-        // The service has already created the next durable Flow transition.
-        // Focus it immediately in both modes so a completed N1 behaves like
-        // continuous execution: the next node is visibly active and selected.
+      const nextDraftKey = mode === 'MANUAL'
+        ? [...successorKeys].find(key => Boolean((updated as FlowRunStepwiseRecord).stepwise_node_drafts?.[key]))
+        : undefined;
+      if (nextDraftKey) {
+        setSelectedNodeKey(nextDraftKey);
+        useWorkbenchStore.setState({ selectedNodeRunId: undefined, selectedAttemptId: undefined });
+      } else if (next) {
         setSelectedNodeKey(next.flow_node_snapshot_key);
         if (mode === 'MANUAL' && isUnconfiguredStepRecord(next)) {
           setManualSelectedIds(new Set([next.id]));
@@ -2107,15 +2106,22 @@ export function WorkbenchPage() {
           ...item, attempts: item.attempts.map(candidate => candidate.id === started.id ? started : candidate),
         } : item),
       } : current);
-      openNodeSession(
-        selectedStepwise.id,
-        record.id,
-        started.id,
-        started.binding_id ?? undefined,
-        { runId: parentRun.id, mode: 'MANUAL', stepwiseRecordId: selectedStepwise.id },
-      );
+      openNodeSession(selectedStepwise.id, record.id, started.id, started.binding_id ?? undefined, { runId: parentRun.id, mode: 'MANUAL', stepwiseRecordId: selectedStepwise.id });
     }).catch(reason => {
       window.alert(reason instanceof Error ? reason.message : '启动节点失败，请稍后重试。');
+    }).finally(() => {
+      setManualBusyId(undefined);
+      void stepwiseDetail.refetch();
+      void qc.invalidateQueries({ queryKey: ['flow-run-stepwise-records', parentRun.id] });
+    });
+  };
+  const startStepwiseDraft = (nodeKey: string, draft: StepwiseNodeDraft) => {
+    if (!selectedStepwise) return;
+    setManualBusyId(nodeKey);
+    void api.startStepwiseNodeDraft(selectedStepwise.id, nodeKey, draft.row_version).then(started => {
+      openNodeSession(selectedStepwise.id, started.node_run_id, started.id, started.binding_id ?? undefined, { runId: parentRun.id, mode: 'MANUAL', stepwiseRecordId: selectedStepwise.id });
+    }).catch(reason => {
+      window.alert(reason instanceof Error ? reason.message : '启动节点失败，请先保存最新配置后重试。');
     }).finally(() => {
       setManualBusyId(undefined);
       void stepwiseDetail.refetch();
@@ -2143,7 +2149,7 @@ export function WorkbenchPage() {
       />
     : undefined;
   const nodeConfigurationPanel = selectedNode
-    ? <NodeConsole run={categorizedRun} node={selectedNode} startupMode={mode === 'DIRECT' ? 'CHAT' : 'PROMPT'} pendingNodeRun={pendingConfigurationNodeRun} initialBindings={inheritedTransitionBindings} refresh={() => { void stepwiseDetail.refetch(); }} onActivated={created => { setSelectedNodeKey(undefined); navigate(created, 'activate'); }} onSelectExecution={item => { setSelectedNodeKey(item.flow_node_snapshot_key); selectExecution(item.id, item.attempts.at(-1)?.id); }}/>
+    ? <NodeConsole run={categorizedRun} node={selectedNode} startupMode={mode === 'DIRECT' ? 'CHAT' : 'PROMPT'} stepwiseDraft={mode === 'MANUAL' ? selectedStepwiseDraft : undefined} initialBindings={inheritedTransitionBindings} refresh={() => { void stepwiseDetail.refetch(); }} onActivated={created => { setSelectedNodeKey(undefined); navigate(created, 'activate'); }} onDraftSaved={draft => { if (!selectedStepwise || !selectedNodeKey) return; qc.setQueryData<FlowRunStepwiseRecord>(['flow-run-stepwise-record', parentRun.id, selectedStepwise.id], current => current ? { ...current, stepwise_node_drafts: { ...(current.stepwise_node_drafts ?? {}), [selectedNodeKey]: draft } } : current); }} onStartDraft={draft => { if (selectedNodeKey) startStepwiseDraft(selectedNodeKey, draft); }} onSelectExecution={item => { setSelectedNodeKey(item.flow_node_snapshot_key); selectExecution(item.id, item.attempts.at(-1)?.id); }}/>
     : undefined;
   const stepwiseRecordPanel = executionDetailPanel
     ?? nodeConfigurationPanel
