@@ -3,9 +3,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 from dataclasses import replace
 from pathlib import Path, PurePosixPath
+from threading import Event
 from types import SimpleNamespace
 from typing import cast
 
@@ -5883,3 +5885,56 @@ def test_openhands_routes_agent_workspace_rename_and_delete(openhands_settings, 
             openhands_settings.sandbox_manager_scope,
             "fw-sbx-agent-workspace-1",
         )
+
+
+def test_formal_reads_are_bounded_per_runtime_generation(openhands_settings, monkeypatch):
+    configured = openhands_settings.model_copy(
+        update={
+            "runtime_read_per_runtime_concurrency": 1,
+            "runtime_read_slot_timeout_seconds": 0.05,
+        }
+    )
+    runtime = OpenHandsRuntime(configured)
+    handle_a = _handle()
+    handle_b = replace(handle_a, job_id="env-exec:fw-sbx-flow-run-2")
+    started = Event()
+    release = Event()
+
+    def runtime_url(handle: RuntimeHandle) -> str:
+        return f"http://{handle.job_id.removeprefix('env-exec:')}:8000"
+
+    monkeypatch.setattr(runtime, "_base_url_for_handle", runtime_url)
+
+    def blocked_read() -> None:
+        with runtime._formal_read_bulkhead(handle_a):  # pyright: ignore[reportPrivateUsage]
+            started.set()
+            assert release.wait(timeout=1)
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        blocked = executor.submit(blocked_read)
+        assert started.wait(timeout=1)
+        with pytest.raises(DomainError) as caught:
+            with runtime._formal_read_bulkhead(handle_a):  # pyright: ignore[reportPrivateUsage]
+                raise AssertionError("the Runtime bulkhead should reject this read")
+        assert caught.value.code == "RUNTIME_READ_PER_RUNTIME_SATURATED"
+        # A different Runtime generation retains its own formal-read capacity.
+        with runtime._formal_read_bulkhead(handle_b):  # pyright: ignore[reportPrivateUsage]
+            pass
+        release.set()
+        blocked.result(timeout=1)
+
+
+def test_formal_read_timeout_has_a_stable_business_code(openhands_settings, monkeypatch):
+    runtime = OpenHandsRuntime(openhands_settings)
+    handle = _handle()
+    monkeypatch.setattr(runtime, "_base_url_for_handle", lambda _handle: "http://runtime:8000")
+    monkeypatch.setattr(runtime, "_session_key_for_handle", lambda _handle: "session-key")
+
+    class Client:
+        def request(self, *_args, **_kwargs):
+            raise httpx.ReadTimeout("formal read timed out")
+
+    monkeypatch.setattr(runtime, "_transport", lambda: SimpleNamespace(regular=Client()))
+    with pytest.raises(DomainError) as caught:
+        runtime.conversation_runtime(handle)
+    assert caught.value.code == "RUNTIME_BUSINESS_READ_TIMEOUT"

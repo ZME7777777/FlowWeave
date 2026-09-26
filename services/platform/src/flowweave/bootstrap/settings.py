@@ -43,6 +43,11 @@ class Settings(BaseSettings):
     # Transitional switch used only until synchronous orchestration is removed.
     execution_mode: str = "worker"
     runtime_poll_seconds: float = Field(default=1.0, gt=0)
+    # A single Agent Server generation can host many Conversations. Cap
+    # formal state/event/readiness reads per generation before they consume
+    # the process-wide HTTP pool or blocking read lanes.
+    runtime_read_per_runtime_concurrency: int = Field(default=2, ge=1, le=16)
+    runtime_read_slot_timeout_seconds: float = Field(default=0.25, gt=0, le=5)
     runtime_wakeup_timeout_seconds: float = Field(default=10.0, gt=0, le=25)
     runtime_wakeup_backoff_max_seconds: float = Field(default=30.0, gt=0, le=300)
     sse_event_batch_size: int = Field(default=100, ge=1, le=500)

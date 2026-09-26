@@ -7442,3 +7442,15 @@ FlowWeave 本地累加后猜测压缩边界。
 完成：Admin Web 将全量 `Promise.all` 改为 `Promise.allSettled`，保留最近一次或本轮成功的数据块，仅将失败的数据块显示为局部诊断卡；每次请求生成并传递 `X-Request-ID`，失败卡显示资源名称、稳定错误码、HTTP 状态与截短 request ID。Admin API 对响应回传 request ID，并把未处理异常归一化为不含 SQL／堆栈／凭据的 `ADMIN_INTERNAL_ERROR`，服务端日志按 route、request ID 与异常类型关联。认证／授权／数据不可用错误同样返回 request ID。
 
 验收：Admin API Ruff format/check、`py_compile`、Pyright；Admin Web TypeScript typecheck、ESLint、production build 与 `git diff --check` 通过。未运行数据库型测试；不修改 Platform Runtime、OpenHands、schema、远端配置或自动恢复策略。
+
+### FR-533 Runtime 正式读取按 generation 舱壁 — DONE
+
+依赖：FR-531。
+
+目标：同一 Agent Server generation 承载大量 Conversation 时，正式 Runtime state／active event window／input readiness 读取不得同时涌入并耗尽进程级 HTTP client、API blocking reader 或同一 Agent Server 的工作资源；一个 generation 卡住应快速、可分类地拒绝额外读取，而其他 generation 必须保留读取容量。
+
+范围：在 OpenHands adapter 的正式读入口增加按 generation-scoped Runtime URL 的本地、有界、可重入 bulkhead；为正式读超时提供稳定错误码。不得持久化消息／event 内容，不得自动隔离、替换或重启 Runtime，也不改 OpenHands 协议。
+
+完成：`conversation_runtime`、`read_events`、`read_active_events` 与 `input_readiness` 都在同一 generation-scoped bulkhead 中执行。默认每 generation 最多 2 个并发正式读取，等待槽位最多 250ms；配置为 `RUNTIME_READ_PER_RUNTIME_CONCURRENCY` 和 `RUNTIME_READ_SLOT_TIMEOUT_SECONDS`。同一调用链中的嵌套 availability/readiness 检查可重入而不会自锁。超限快速返回 `RUNTIME_READ_PER_RUNTIME_SATURATED`，不会继续占用共享 HTTP/worker 容量；正式读取的底层 HTTP timeout 返回 `RUNTIME_BUSINESS_READ_TIMEOUT`（非正式操作的 timeout 保持既有 `EXECUTOR_UNAVAILABLE` 语义）。指标只增加低基数 bulkhead 饱和计数，不把 Runtime、会话、用户、URL 或事件 ID 当作指标标签。
+
+验收：新增受控并发断言证明同 generation 的第二个读被稳定拒绝、不同 generation 仍可取得自己的读取槽位；新增正式 HTTP read timeout 稳定错误码断言，两个定向 OpenHands pytest 通过（2 passed）。受影响 Ruff format/check、`py_compile`、Alembic head 和 `git diff --check` 通过。OpenHands adapter 的 Pyright 基线既有 6 条动态 JSON/Optional 错误，修改前后数目和位置等价，未引入新增 Pyright 诊断。未运行数据库迁移，不修改自动 replacement、OpenHands 容器或远端配置。
