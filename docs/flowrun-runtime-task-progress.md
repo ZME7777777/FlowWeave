@@ -7406,3 +7406,11 @@ FlowWeave 本地累加后猜测压缩边界。
 完成：Admin API 返回当前状态汇总、超过配置保留期的终态候选数量、按任务类型／状态的聚合及最新 500 条任务。任务行关联 FlowRun／流程、节点 Attempt 或 Agent Workspace，并将 `last_error` 仅归一化为大写稳定错误分类。页面分开展示活跃待处理、最终失败账本、最终成功账本和可由既有 Worker 策略回收的终态数量，提供按任务／资源筛选和类型汇总；不显示 payload、原始错误、凭据或会话内容。
 
 验收：Admin API Ruff format/check、`py_compile` 与 Admin Web TypeScript typecheck、ESLint、production build、`git diff --check` 通过。未修改 Platform Worker、数据库 schema、Runtime、OpenHands、远端配置或服务器；不运行数据库型测试，因为本切片只添加 Admin API 的只读 PostgreSQL 投影，且本机 Testcontainers PostgreSQL 仍缺 Docker socket。
+
+### FR-530 Runtime 业务诊断与人工隔离控制 — CURRENT
+
+依赖：FR-527、FR-528、FR-529。
+
+目标：Admin 必须能对一个 Runtime 按需执行正式 OpenHands Conversation 业务读取诊断，区分容器/控制面存活与 Conversation state、active event window、输入 readiness 的实际可用性；管理员可将有问题的 Runtime 隔离新写入，并在明确的 generation／row-version 栅栏下恢复路由。不得自动替换、自动熔断、读取会话正文或绕过 OpenHands 正式路由。
+
+范围：新增管理员按需诊断与 `ISOLATE_RUNTIME` / `RESUME_RUNTIME` 审计控制；诊断结果仅暴露阶段、耗时、事件计数、readiness 和稳定错误分类。替换仍沿用既有受控 replacement，不修改 Worker 自动策略。
