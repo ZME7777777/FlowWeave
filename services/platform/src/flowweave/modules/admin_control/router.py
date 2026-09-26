@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, Header, Request
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 
+from flowweave.modules.agent_workspaces import public as agent_workspaces
 from flowweave.modules.sandboxes import public as sandboxes
 from flowweave.modules.sandboxes.infrastructure.models import FlowRunRuntime
 from flowweave.modules.users.infrastructure.models import (
@@ -25,7 +26,9 @@ AdminControlKey = Annotated[str | None, Header(alias="X-FlowWeave-Admin-Control-
 class RuntimeReplacementRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    flow_run_id: str = Field(min_length=36, max_length=36)
+    runtime_kind: Literal["FLOW_RUN", "AGENT_WORKSPACE"]
+    owner_id: str = Field(min_length=36, max_length=36)
+    flow_run_id: str | None = Field(default=None, min_length=36, max_length=36)
     runtime_session_id: str = Field(min_length=36, max_length=36)
     expected_generation: int = Field(ge=1)
     expected_session_row_version: int = Field(ge=1)
@@ -34,7 +37,6 @@ class RuntimeReplacementRequest(BaseModel):
     actor_user_id: str = Field(min_length=36, max_length=36)
     actor_username: str = Field(min_length=1, max_length=80)
     request_id: str = Field(min_length=1, max_length=80)
-
 
 
 class AlertLifecycleRequest(BaseModel):
@@ -51,8 +53,10 @@ class AlertLifecycleRequest(BaseModel):
 
 def require_admin_control_key(request: Request, key: AdminControlKey) -> None:
     settings = request.app.state.container.settings
-    if not settings.admin_control_api_key or key is None or not hmac.compare_digest(
-        key, settings.admin_control_api_key
+    if (
+        not settings.admin_control_api_key
+        or key is None
+        or not hmac.compare_digest(key, settings.admin_control_api_key)
     ):
         raise DomainError(
             "ADMIN_CONTROL_FORBIDDEN", "Administrator control authentication failed", 403
@@ -122,7 +126,6 @@ def _update_alert_lifecycle(session: Any, payload: AlertLifecycleRequest) -> dic
     }
 
 
-
 def _request_replacement(session: Any, payload: RuntimeReplacementRequest) -> dict[str, Any]:
     existing = session.scalar(
         select(AdminRuntimeOperation).where(
@@ -132,7 +135,8 @@ def _request_replacement(session: Any, payload: RuntimeReplacementRequest) -> di
     )
     if existing is not None:
         if (
-            existing.flow_run_id != payload.flow_run_id
+            existing.runtime_kind != payload.runtime_kind
+            or existing.owner_id != payload.owner_id
             or existing.runtime_session_id != payload.runtime_session_id
             or existing.expected_generation != payload.expected_generation
             or existing.expected_session_row_version != payload.expected_session_row_version
@@ -145,22 +149,39 @@ def _request_replacement(session: Any, payload: RuntimeReplacementRequest) -> di
             )
         return _operation_response(existing, idempotent_replay=True)
 
-    runtime = session.scalar(
-        select(FlowRunRuntime).where(
-            FlowRunRuntime.id == payload.runtime_session_id,
-            FlowRunRuntime.flow_run_id == payload.flow_run_id,
-            FlowRunRuntime.node_attempt_id.is_(None),
+    flow_run_id = payload.flow_run_id
+    if payload.runtime_kind == "FLOW_RUN":
+        if flow_run_id is None or payload.owner_id != flow_run_id:
+            raise DomainError(
+                "ADMIN_RUNTIME_REQUEST_INVALID",
+                "A FlowRun Runtime replacement requires its matching FlowRun owner",
+                422,
+            )
+        assert flow_run_id is not None
+        runtime = session.scalar(
+            select(FlowRunRuntime).where(
+                FlowRunRuntime.id == payload.runtime_session_id,
+                FlowRunRuntime.flow_run_id == flow_run_id,
+                FlowRunRuntime.node_attempt_id.is_(None),
+            )
         )
-    )
-    if runtime is None:
+        if runtime is None:
+            raise DomainError(
+                "ADMIN_RUNTIME_NOT_FOUND", "The selected FlowRun Runtime was not found", 404
+            )
+    elif payload.flow_run_id is not None:
         raise DomainError(
-            "ADMIN_RUNTIME_NOT_FOUND", "The selected FlowRun Runtime was not found", 404
+            "ADMIN_RUNTIME_REQUEST_INVALID",
+            "An Agent Workspace Runtime replacement cannot include a FlowRun owner",
+            422,
         )
 
     operation = AdminRuntimeOperation(
         actor_user_id=payload.actor_user_id,
         actor_username=payload.actor_username,
-        flow_run_id=payload.flow_run_id,
+        runtime_kind=payload.runtime_kind,
+        owner_id=payload.owner_id,
+        flow_run_id=flow_run_id,
         runtime_session_id=payload.runtime_session_id,
         expected_generation=payload.expected_generation,
         expected_session_row_version=payload.expected_session_row_version,
@@ -170,12 +191,23 @@ def _request_replacement(session: Any, payload: RuntimeReplacementRequest) -> di
     )
     session.add(operation)
     session.flush()
-    overview = sandboxes.request_runtime_replacement(
-        session,
-        payload.flow_run_id,
-        expected_generation=payload.expected_generation,
-        expected_session_row_version=payload.expected_session_row_version,
-    )
+    if payload.runtime_kind == "FLOW_RUN":
+        if flow_run_id is None:
+            raise AssertionError("validated FlowRun replacement lost its owner")
+        overview = sandboxes.request_runtime_replacement(
+            session,
+            flow_run_id,
+            expected_generation=payload.expected_generation,
+            expected_session_row_version=payload.expected_session_row_version,
+        )
+    else:
+        overview = agent_workspaces.request_agent_workspace_runtime_replacement(
+            session,
+            workspace_id=payload.owner_id,
+            runtime_session_id=payload.runtime_session_id,
+            expected_generation=payload.expected_generation,
+            expected_session_row_version=payload.expected_session_row_version,
+        )
     return {
         "operation": _operation_response(operation, idempotent_replay=False),
         "runtime": overview,
@@ -183,11 +215,14 @@ def _request_replacement(session: Any, payload: RuntimeReplacementRequest) -> di
 
 
 def _operation_response(
-    operation: AdminRuntimeOperation, *, idempotent_replay: bool) -> dict[str, object]:
+    operation: AdminRuntimeOperation, *, idempotent_replay: bool
+) -> dict[str, object]:
     return {
         "id": operation.id,
         "action": operation.action,
         "status": operation.status,
+        "runtime_kind": operation.runtime_kind,
+        "owner_id": operation.owner_id,
         "flow_run_id": operation.flow_run_id,
         "runtime_session_id": operation.runtime_session_id,
         "expected_generation": operation.expected_generation,

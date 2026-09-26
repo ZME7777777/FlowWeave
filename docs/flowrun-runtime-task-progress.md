@@ -7370,3 +7370,15 @@ FlowWeave 本地累加后猜测压缩边界。
 | 2026-09-23 | FR-513 | 受影响 Python Ruff format/check、`py_compile`；无容器 MockTransport 分类回归；Web TypeScript typecheck、受影响 ESLint、production build；Alembic head、`git diff --check` 与任务状态唯一性 | PASS（静态／隔离回归）：模型列表探测将订阅／计划到期、余额或额度耗尽映射为固定 entitlement 错误码；认证拒绝、超时等也各自拥有安全说明。MockTransport 断言上游账号文本不会进入 DomainError。数据库型 `tests/test_api.py` 定向 pytest 在 collection 前因本机 Docker socket 缺失、Testcontainers PostgreSQL 无法创建而阻断，未记为通过；同一新增断言在无容器隔离运行中通过。Web typecheck、ESLint 和 production build 通过（仅既有 chunk-size 警告）。无迁移、OpenHands、Runtime Provider、Docker 或远端部署变更。 |
 | 2026-09-23 | FR-514 | OpenHands 定向 Ruff、`py_compile`、LLM retry 单元测试、Agent Server session frame 测试；FlowWeave 平台定向 Ruff／`py_compile`／pytest；Web TypeScript typecheck、受影响 ESLint、production build；本地源码归档 fetch/digest 校验；`git diff --check` 与任务状态唯一性 | PASS（本地隔离）：OpenHands retry listener 与最终 `5/5` frame 测试通过，session retry frame 非持久化测试通过；FlowWeave 只转发合法结构化 retry frame，前端按会话 binding 隔离并将终态错误收敛为可展开状态行。使用仓库内固定源码包，避免未推送 commit 的 codeload 404；未运行 Docker、数据库迁移、真实 Runtime、远端部署或 E2E。 |
 | 2026-09-25 | FR-515 | Web TypeScript typecheck、受影响文件 ESLint、源码 Vite 上 Agent Workspace 定向 Playwright（1 passed）、`git diff --check` 与任务状态唯一性 | PASS：Activity 列表中的单击预览现在与工作区列表正式打开一致，会立即清除该 binding 既有的未读投影；因此运行中会话不会因历史未读而在当前用户已查看时继续显示蓝点。定向浏览器回归覆盖手动标未读后进入 Activity 并单击预览，断言未读标记消失且已读状态写回。未修改 API、数据库、OpenHands、Runtime Provider、Docker 或远端环境。 |
+
+### FR-527 Admin Runtime 观测与 Agent Workspace 受控恢复 — DONE
+
+依赖：FR-511、FR-510。
+
+目标：Admin 必须将 `FLOW_RUN` 与 `AGENT_WORKSPACE` Runtime 作为同等的受管 Runtime 展示，提供按需的 generation 生命周期、控制面／容器观测可用性、会话影响范围及管理操作审计；`AGENT_WORKSPACE` 必须能够在管理员明确提交原因和确认后，通过既有持久化恢复生命周期替换当前 generation。不得将容器 `ACTIVE`／`READY` 误称为 Conversation 业务健康；不得暴露 Docker restart、删除容器、清空 Workspace 或清除 Conversation 的管理动作。
+
+范围：仅新增只读 Admin Runtime 详情和人工受控 replacement。详情不读取会话正文、容器日志或凭据，也不触发 Runtime 探针、告警、自动熔断或自动 replacement；后续业务探针、告警与自动化故障收敛另立切片。
+
+完成：Admin Runtime 列表将无错误状态明确显示为“未见控制面错误／未执行业务探针”，新增按需详情以显示 Runtime／generation 生命周期、容器观察可用性、会话生命周期汇总和最近受控操作。管理员 replacement 请求现在携带 Runtime 类型和 owner，审计模型可记录 `FLOW_RUN` 或 `AGENT_WORKSPACE`；FlowRun 保留既有 fenced replacement，Agent Workspace 则以 generation 与 row-version 乐观锁校验后进入既有 `RECONNECTING` 和 `PROVISION_AGENT_WORKSPACE_RUNTIME` 持久化恢复任务，绝不直接 Docker restart 或删除持久数据。迁移 `0127_admin_runtime_scope` 将审计表泛化到两类 Runtime。
+
+验收：Admin Web TypeScript typecheck、ESLint 和 production build 通过；Platform/Admin API Ruff format/check、`py_compile`、修改 Runtime 控制入口 Pyright、Alembic head `0127_admin_runtime_scope`、`git diff --check` 通过。新增的 Admin control 定向 pytest 已启动，但所有 4 条用例均在 Testcontainers session fixture 创建 PostgreSQL 前被本机缺失 Docker socket 阻断，未进入断言、未计为通过。未运行数据库迁移，不修改 OpenHands、Runtime Provider、Docker、远端配置或服务器；未实现告警、自动探针、自动熔断或自动 replacement。

@@ -11,9 +11,7 @@ from flowweave.shared.database import Base, now, uid
 
 class User(Base):
     __tablename__ = "users"
-    __table_args__ = (
-        CheckConstraint("role IN ('SUPER_ADMIN', 'USER')", name="ck_user_role"),
-    )
+    __table_args__ = (CheckConstraint("role IN ('SUPER_ADMIN', 'USER')", name="ck_user_role"),)
     __tenant_scoped__ = False
     owner_user_id: ClassVar[None] = None
 
@@ -64,6 +62,10 @@ class AdminRuntimeOperation(Base):
     owner_user_id: ClassVar[None] = None  # pyright: ignore[reportIncompatibleVariableOverride]
     __table_args__ = (
         CheckConstraint("action = 'REPLACE_RUNTIME'", name="ck_admin_runtime_operation_action"),
+        CheckConstraint(
+            "runtime_kind IN ('FLOW_RUN', 'AGENT_WORKSPACE')",
+            name="ck_admin_runtime_operation_runtime_kind",
+        ),
         CheckConstraint("expected_generation >= 1", name="ck_admin_runtime_operation_generation"),
         CheckConstraint(
             "expected_session_row_version >= 1", name="ck_admin_runtime_operation_version"
@@ -80,7 +82,9 @@ class AdminRuntimeOperation(Base):
     actor_user_id: Mapped[str] = mapped_column(String(36), index=True)
     actor_username: Mapped[str] = mapped_column(String(80))
     action: Mapped[str] = mapped_column(String(40), default="REPLACE_RUNTIME")
-    flow_run_id: Mapped[str] = mapped_column(String(36), index=True)
+    runtime_kind: Mapped[str] = mapped_column(String(30), default="FLOW_RUN", index=True)
+    owner_id: Mapped[str] = mapped_column(String(36), index=True)
+    flow_run_id: Mapped[str | None] = mapped_column(String(36), index=True)
     runtime_session_id: Mapped[str] = mapped_column(String(36), index=True)
     expected_generation: Mapped[int] = mapped_column(Integer)
     expected_session_row_version: Mapped[int] = mapped_column(Integer)
@@ -89,8 +93,6 @@ class AdminRuntimeOperation(Base):
     request_id: Mapped[str] = mapped_column(String(80), index=True)
     status: Mapped[str] = mapped_column(String(20), default="SUBMITTED")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, index=True)
-
-
 
 
 class AdminAlertState(Base):

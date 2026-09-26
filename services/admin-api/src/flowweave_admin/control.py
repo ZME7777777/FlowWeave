@@ -11,14 +11,14 @@ from flowweave_admin.settings import Settings
 class RuntimeReplacementCommand(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    flow_run_id: str = Field(min_length=36, max_length=36)
+    runtime_kind: str = Field(pattern=r"^(FLOW_RUN|AGENT_WORKSPACE)$")
+    owner_id: str = Field(min_length=36, max_length=36)
+    flow_run_id: str | None = Field(default=None, min_length=36, max_length=36)
     runtime_session_id: str = Field(min_length=36, max_length=36)
     expected_generation: int = Field(ge=1)
     expected_session_row_version: int = Field(ge=1)
     reason: str = Field(min_length=10, max_length=500)
     idempotency_key: str = Field(min_length=16, max_length=200)
-
-
 
 
 class AlertLifecycleCommand(BaseModel):
@@ -28,6 +28,7 @@ class AlertLifecycleCommand(BaseModel):
     action: str = Field(pattern=r"^(ACKNOWLEDGE|SILENCE)$")
     reason: str = Field(min_length=10, max_length=500)
     silence_minutes: int | None = Field(default=None, ge=5, le=1_440)
+
 
 class AdminControlError(RuntimeError):
     def __init__(self, *, status: int, code: str, message: str) -> None:

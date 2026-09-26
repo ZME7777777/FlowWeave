@@ -25,6 +25,7 @@ from flowweave_admin.observability import (
     enrich_runtime_operation_status,
     metric_history,
     overview,
+    runtime_detail,
     runtime_observations,
     runtime_operations,
     runtimes,
@@ -105,10 +106,6 @@ def create_app() -> FastAPI:
             },
         }
 
-
-
-
-
     @app.post("/v1/admin/alerts/lifecycle", response_model=None)
     async def admin_alert_lifecycle(
         payload: AlertLifecycleCommand, request: Request
@@ -180,6 +177,34 @@ def create_app() -> FastAPI:
             "container_observability_available": observations.get("available", False),
         }
 
+    @app.get("/v1/admin/runtimes/{runtime_session_id}", response_model=None)
+    async def admin_runtime_detail(
+        runtime_session_id: str, request: Request
+    ) -> dict[str, Any] | JSONResponse:
+        if len(runtime_session_id) != 36:
+            return JSONResponse(
+                status_code=400, content={"error": {"message": "Invalid Runtime Session"}}
+            )
+        active_settings: Settings = request.app.state.settings
+        with connect(active_settings) as connection:
+            detail = runtime_detail(connection, runtime_session_id=runtime_session_id)
+        if detail is None:
+            return JSONResponse(
+                status_code=404, content={"error": {"message": "Runtime was not found"}}
+            )
+        observations = await runtime_observations(active_settings)
+        sandbox_id = detail["runtime"].get("managed_sandbox_id")
+        usage_by_resource = {
+            str(item.get("resource_id")): item.get("usage")
+            for item in observations.get("managed_resources", [])
+            if isinstance(item, dict)
+        }
+        detail["runtime"]["usage"] = (
+            usage_by_resource.get(str(sandbox_id)) if sandbox_id is not None else None
+        )
+        detail["container_observability_available"] = observations.get("available", False)
+        return detail
+
     @app.get("/v1/admin/conversations")
     async def admin_conversations(request: Request, limit: int = 100) -> dict[str, Any]:
         active_settings: Settings = request.app.state.settings
@@ -192,7 +217,6 @@ def create_app() -> FastAPI:
         with connect(active_settings) as connection:
             entries = runtime_operations(connection, limit=min(max(limit, 1), 500))
         return {"items": enrich_runtime_operation_status(entries)}
-
 
     @app.get("/v1/admin/operations", response_model=None)
     async def all_admin_operations(
@@ -223,7 +247,6 @@ def create_app() -> FastAPI:
                 )
             }
 
-
     @app.post("/v1/admin/runtime-replacements", status_code=202, response_model=None)
     async def admin_runtime_replacement(
         payload: RuntimeReplacementCommand, request: Request
@@ -244,6 +267,5 @@ def create_app() -> FastAPI:
                 status_code=exc.status,
                 content={"error": {"code": exc.code, "message": str(exc)}},
             )
-
 
     return app

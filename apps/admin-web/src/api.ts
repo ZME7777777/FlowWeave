@@ -44,6 +44,44 @@ export type Runtime = {
   usage: Usage | null;
 };
 
+export type RuntimeGeneration = {
+  generation: number;
+  state: string;
+  managed_runtime_id: string | null;
+  started_at: string | null;
+  ready_at: string | null;
+  stopped_at: string | null;
+  created_at: string;
+  updated_at: string;
+  failure_code: string | null;
+  failure_summary: string | null;
+};
+
+export type RuntimeDetail = {
+  runtime: Runtime & { created_at: string };
+  generations: RuntimeGeneration[];
+  conversation_summary: Array<{
+    lifecycle: string;
+    count: number;
+    last_updated_at: string | null;
+    last_connected_at: string | null;
+  }>;
+  operations: Array<{
+    operation_id: string;
+    action: string;
+    status: string;
+    runtime_kind: string;
+    owner_id: string;
+    expected_generation: number;
+    expected_session_row_version: number;
+    actor_username: string;
+    reason: string;
+    request_id: string;
+    created_at: string;
+  }>;
+  container_observability_available: boolean;
+};
+
 export type Conversation = {
   binding_id: string;
   owner_user_id: string;
@@ -164,11 +202,14 @@ export const adminApi = {
   updateAlertLifecycle: (input: { alert_key: string; action: 'ACKNOWLEDGE' | 'SILENCE'; reason: string; silence_minutes?: number }) => request('/v1/admin/alerts/lifecycle', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) }),
   metricHistory: (scope: 'SERVICE' | 'RUNTIME', subject: string, metric: 'cpu_usage_percent' | 'memory_usage_bytes' | 'storage_usage_bytes') => request<MetricHistory>(`/v1/admin/metric-history?scope=${scope}&subject=${encodeURIComponent(subject)}&metric=${metric}`),
   runtimes: () => request<{ items: Runtime[]; container_observability_available: boolean }>('/v1/admin/runtimes'),
+  runtimeDetail: (runtimeSessionId: string) => request<RuntimeDetail>(`/v1/admin/runtimes/${encodeURIComponent(runtimeSessionId)}`),
   conversations: () => request<{ items: Conversation[] }>('/v1/admin/conversations'),
   runtimeOperations: () => request<{ items: RuntimeOperation[] }>('/v1/admin/runtime-operations'),
   operations: () => request<{ items: AdminOperation[] }>('/v1/admin/operations'),
   replaceRuntime: (input: {
-    flow_run_id: string;
+    runtime_kind: 'FLOW_RUN' | 'AGENT_WORKSPACE';
+    owner_id: string;
+    flow_run_id?: string;
     runtime_session_id: string;
     expected_generation: number;
     expected_session_row_version: number;

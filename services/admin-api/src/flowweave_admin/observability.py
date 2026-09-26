@@ -123,6 +123,103 @@ def runtimes(connection: Any, *, limit: int) -> list[dict[str, Any]]:
     )
 
 
+def runtime_detail(connection: Any, *, runtime_session_id: str) -> dict[str, Any] | None:
+    runtime_rows = _rows(
+        connection,
+        """
+        WITH all_runtimes AS (
+          SELECT id, 'FLOW_RUN'::text AS runtime_kind, flow_run_id AS owner_id,
+                 node_attempt_id, status, active_generation, row_version,
+                 runtime_image_digest, created_at, updated_at,
+                 replacement_error_code AS failure_code,
+                 replacement_error_summary AS failure_summary
+          FROM flow_run_runtimes
+          UNION ALL
+          SELECT id, 'AGENT_WORKSPACE'::text AS runtime_kind, workspace_id AS owner_id,
+                 NULL::text AS node_attempt_id, status, active_generation, row_version,
+                 runtime_image_digest, created_at, updated_at, failure_code, failure_summary
+          FROM agent_workspace_runtimes
+        ), all_generations AS (
+          SELECT runtime_session_id, generation, managed_runtime_id, state, ready_at,
+                 started_at, stopped_at, created_at, updated_at, failure_code, failure_summary
+          FROM runtime_generations
+          UNION ALL
+          SELECT runtime_session_id, generation, managed_runtime_id, state, ready_at,
+                 started_at, stopped_at, created_at, updated_at, failure_code, failure_summary
+          FROM agent_workspace_runtime_generations
+        )
+        SELECT runtime.*, generation.managed_runtime_id AS managed_sandbox_id,
+               generation.state AS generation_state, generation.ready_at,
+               sandbox.backend_resource_id AS container_id,
+               sandbox.backend_resource_name AS container_name,
+               sandbox.desired_state, sandbox.observed_state, sandbox.last_activity_at,
+               sandbox.idle_expires_at, sandbox.hard_expires_at, sandbox.last_error_code,
+               sandbox.last_error_detail
+        FROM all_runtimes AS runtime
+        LEFT JOIN all_generations AS generation
+          ON generation.runtime_session_id = runtime.id
+         AND generation.generation = runtime.active_generation
+        LEFT JOIN managed_sandboxes AS sandbox ON sandbox.id = generation.managed_runtime_id
+        WHERE runtime.id = %s
+        """,
+        (runtime_session_id,),
+    )
+    if not runtime_rows:
+        return None
+    runtime = runtime_rows[0]
+    generations = _rows(
+        connection,
+        """
+        SELECT generation, state, managed_runtime_id, started_at, ready_at, stopped_at,
+               created_at, updated_at, failure_code, failure_summary
+        FROM (
+          SELECT runtime_session_id, generation, state, managed_runtime_id, started_at,
+                 ready_at, stopped_at, created_at, updated_at, failure_code, failure_summary
+          FROM runtime_generations
+          UNION ALL
+          SELECT runtime_session_id, generation, state, managed_runtime_id, started_at,
+                 ready_at, stopped_at, created_at, updated_at, failure_code, failure_summary
+          FROM agent_workspace_runtime_generations
+        ) AS all_generations
+        WHERE runtime_session_id = %s
+        ORDER BY generation DESC
+        LIMIT 20
+        """,
+        (runtime_session_id,),
+    )
+    conversation_summary = _rows(
+        connection,
+        """
+        SELECT lifecycle, count(*)::int AS count, max(updated_at) AS last_updated_at,
+               max(last_connected_at) AS last_connected_at
+        FROM agent_conversation_bindings
+        WHERE runtime_session_id = %s
+        GROUP BY lifecycle
+        ORDER BY lifecycle
+        """,
+        (runtime_session_id,),
+    )
+    operations = _rows(
+        connection,
+        """
+        SELECT id AS operation_id, action, status, runtime_kind, owner_id,
+               expected_generation, expected_session_row_version, actor_username,
+               reason, request_id, created_at
+        FROM admin_runtime_operations
+        WHERE runtime_session_id = %s
+        ORDER BY created_at DESC, id DESC
+        LIMIT 20
+        """,
+        (runtime_session_id,),
+    )
+    return {
+        "runtime": runtime,
+        "generations": generations,
+        "conversation_summary": conversation_summary,
+        "operations": operations,
+    }
+
+
 def conversations(connection: Any, *, limit: int) -> list[dict[str, Any]]:
     return _rows(
         connection,
@@ -142,17 +239,34 @@ def conversations(connection: Any, *, limit: int) -> list[dict[str, Any]]:
     )
 
 
-
-
 def runtime_operations(connection: Any, *, limit: int) -> list[dict[str, Any]]:
     return _rows(
         connection,
         """
+        WITH all_runtimes AS (
+          SELECT id, 'FLOW_RUN'::text AS runtime_kind, flow_run_id AS owner_id, status,
+                 active_generation, row_version, replacement_generation,
+                 replacement_started_at, replacement_error_code, replacement_error_summary
+          FROM flow_run_runtimes
+          UNION ALL
+          SELECT id, 'AGENT_WORKSPACE'::text AS runtime_kind, workspace_id AS owner_id, status,
+                 active_generation, row_version, NULL::integer AS replacement_generation,
+                 NULL::timestamptz AS replacement_started_at,
+                 failure_code AS replacement_error_code,
+                 failure_summary AS replacement_error_summary
+          FROM agent_workspace_runtimes
+        ), all_generations AS (
+          SELECT runtime_session_id, generation, state, ready_at, failure_code, failure_summary
+          FROM runtime_generations
+          UNION ALL
+          SELECT runtime_session_id, generation, state, ready_at, failure_code, failure_summary
+          FROM agent_workspace_runtime_generations
+        )
         SELECT operation.id AS operation_id, operation.action, operation.status,
-               operation.actor_user_id, operation.actor_username, operation.flow_run_id,
-               operation.runtime_session_id, operation.expected_generation,
-               operation.expected_session_row_version, operation.reason,
-               operation.request_id, operation.created_at,
+               operation.actor_user_id, operation.actor_username, operation.runtime_kind,
+               operation.owner_id, operation.flow_run_id, operation.runtime_session_id,
+               operation.expected_generation, operation.expected_session_row_version,
+               operation.reason, operation.request_id, operation.created_at,
                runtime.status AS current_runtime_status,
                runtime.active_generation AS current_generation,
                runtime.replacement_generation, runtime.replacement_started_at,
@@ -163,8 +277,10 @@ def runtime_operations(connection: Any, *, limit: int) -> list[dict[str, Any]]:
                replacement.failure_code AS replacement_failure_code,
                replacement.failure_summary AS replacement_failure_summary
         FROM admin_runtime_operations AS operation
-        LEFT JOIN flow_run_runtimes AS runtime ON runtime.id = operation.runtime_session_id
-        LEFT JOIN runtime_generations AS replacement
+        LEFT JOIN all_runtimes AS runtime
+          ON runtime.id = operation.runtime_session_id
+         AND runtime.runtime_kind = operation.runtime_kind
+        LEFT JOIN all_generations AS replacement
           ON replacement.runtime_session_id = operation.runtime_session_id
          AND replacement.generation = operation.expected_generation + 1
         ORDER BY operation.created_at DESC, operation.id DESC
@@ -172,7 +288,6 @@ def runtime_operations(connection: Any, *, limit: int) -> list[dict[str, Any]]:
         """,
         (limit,),
     )
-
 
 
 def enrich_runtime_operation_status(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -200,7 +315,6 @@ def _replacement_status(entry: dict[str, Any]) -> str:
     return "SUBMITTED"
 
 
-
 def admin_operations(
     connection: Any, *, limit: int, action: str | None, actor: str | None, since_hours: int
 ) -> list[dict[str, Any]]:
@@ -209,24 +323,45 @@ def admin_operations(
         """
         WITH operations AS (
           SELECT operation.id, operation.action, 'RUNTIME'::text AS target_kind,
-                 operation.runtime_session_id AS target_id, operation.flow_run_id AS target_detail,
+                 operation.runtime_session_id AS target_id,
+                 operation.runtime_kind || ':' || operation.owner_id AS target_detail,
                  operation.actor_user_id, operation.actor_username, operation.reason,
                  operation.request_id, operation.created_at,
                  CASE
-                   WHEN runtime.replacement_error_code IS NOT NULL THEN 'FAILED'
-                   WHEN replacement.state = 'FAILED' THEN 'FAILED'
-                   WHEN runtime.active_generation > operation.expected_generation
-                        AND replacement.state = 'READY' THEN 'RECOVERED'
-                   WHEN replacement.state IN ('PROVISIONING', 'READY', 'DRAINING')
-                        OR runtime.replacement_generation IS NOT NULL THEN 'RECOVERING'
+                   WHEN COALESCE(
+                     flow_runtime.replacement_error_code, workspace_runtime.failure_code
+                   ) IS NOT NULL THEN 'FAILED'
+                   WHEN COALESCE(
+                     flow_generation.state, workspace_generation.state
+                   ) = 'FAILED' THEN 'FAILED'
+                   WHEN COALESCE(
+                     flow_runtime.active_generation, workspace_runtime.active_generation
+                   ) > operation.expected_generation
+                   AND COALESCE(
+                     flow_generation.state, workspace_generation.state
+                   ) = 'READY' THEN 'RECOVERED'
+                   WHEN COALESCE(
+                     flow_generation.state, workspace_generation.state
+                   ) IN ('PROVISIONING', 'READY', 'DRAINING')
+                   OR flow_runtime.replacement_generation IS NOT NULL THEN 'RECOVERING'
                    ELSE 'SUBMITTED'
                  END AS status,
                  NULL::timestamptz AS silenced_until
           FROM admin_runtime_operations AS operation
-          LEFT JOIN flow_run_runtimes AS runtime ON runtime.id = operation.runtime_session_id
-          LEFT JOIN runtime_generations AS replacement
-            ON replacement.runtime_session_id = operation.runtime_session_id
-           AND replacement.generation = operation.expected_generation + 1
+          LEFT JOIN flow_run_runtimes AS flow_runtime
+            ON operation.runtime_kind = 'FLOW_RUN'
+           AND flow_runtime.id = operation.runtime_session_id
+          LEFT JOIN agent_workspace_runtimes AS workspace_runtime
+            ON operation.runtime_kind = 'AGENT_WORKSPACE'
+           AND workspace_runtime.id = operation.runtime_session_id
+          LEFT JOIN runtime_generations AS flow_generation
+            ON operation.runtime_kind = 'FLOW_RUN'
+           AND flow_generation.runtime_session_id = operation.runtime_session_id
+           AND flow_generation.generation = operation.expected_generation + 1
+          LEFT JOIN agent_workspace_runtime_generations AS workspace_generation
+            ON operation.runtime_kind = 'AGENT_WORKSPACE'
+           AND workspace_generation.runtime_session_id = operation.runtime_session_id
+           AND workspace_generation.generation = operation.expected_generation + 1
           UNION ALL
           SELECT action.id, action.action, 'ALERT'::text AS target_kind,
                  action.alert_key AS target_id, NULL::text AS target_detail,
@@ -244,6 +379,7 @@ def admin_operations(
         """,
         (action, action, actor, actor, since_hours, limit),
     )
+
 
 def alert_states(connection: Any, *, keys: list[str]) -> list[dict[str, Any]]:
     if not keys:
@@ -319,9 +455,7 @@ async def runtime_observations(settings: Settings) -> dict[str, Any]:
     if not settings.admin_runtime_observer_key:
         return {"available": False, "services": [], "managed_resources": []}
     try:
-        async with httpx.AsyncClient(
-            timeout=settings.admin_api_request_timeout_seconds
-        ) as client:
+        async with httpx.AsyncClient(timeout=settings.admin_api_request_timeout_seconds) as client:
             response = await client.get(
                 f"{settings.runtime_provider_url.rstrip('/')}/v1/admin/observability",
                 headers={"Authorization": f"Bearer {settings.admin_runtime_observer_key}"},
