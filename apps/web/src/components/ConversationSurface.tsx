@@ -1,4 +1,4 @@
-import { BookOpen, Check, ChevronDown, ChevronRight, CircleAlert, ClipboardList, Copy, ExternalLink, Eye, FileCode2, FileCog, FileJson, FilePenLine, FilePlus2, FileText, FileType2, GitFork, Link, LoaderCircle, PanelRightOpen, Pencil, PlugZap, Quote, Sparkles, SquareTerminal, Workflow, Wrench } from 'lucide-react';
+import { BookOpen, Check, ChevronDown, ChevronRight, CircleAlert, ClipboardList, Copy, ExternalLink, Eye, FileCode2, FileCog, FileJson, FilePenLine, FilePlus2, FileText, FileType2, GitFork, Link, LoaderCircle, PanelRightOpen, Pencil, PlugZap, Quote, Search, Sparkles, SquareTerminal, Workflow, Wrench } from 'lucide-react';
 import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type RefObject } from 'react';
 import type { AgentActivitySummary, AgentAttachment, AgentConversationAnnotation, AgentConversationReference, AgentWorkspaceReference, OpenHandsConversationEvent, RuntimeTaskControlSnapshot } from '../types';
 import { SubagentAvatar } from './SubagentAvatar';
@@ -703,7 +703,7 @@ function fileToolIcon(presentation: ActivityPresentation) {
   if (presentation.fileKind === 'config') return FileCog;
   if (presentation.fileKind === 'data') return FileJson;
   if (presentation.fileKind === 'markdown') return FileType2;
-  if (presentation.fileOperation === 'read') return Eye;
+  if (presentation.fileOperation === 'read') return Search;
   return FileText;
 }
 
