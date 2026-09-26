@@ -245,17 +245,44 @@ export type Overview = {
 
 const adminApiBase = `${import.meta.env.BASE_URL.replace(/admin\/?$/, 'admin-api').replace(/\/?$/, '/')}`;
 
+export class AdminRequestError extends Error {
+  constructor(
+    readonly path: string,
+    readonly status: number,
+    readonly code: string,
+    readonly requestId: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'AdminRequestError';
+  }
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
+  const requestId = crypto.randomUUID();
+  const headers = new Headers(options?.headers);
+  headers.set('X-Request-ID', requestId);
   const response = await fetch(`${adminApiBase}${path.replace(/^\//, '')}`, {
     credentials: 'include',
     ...options,
+    headers,
   });
   if (!response.ok) {
+    const body = await response.json().catch(() => null) as {
+      error?: { code?: string; message?: string; request_id?: string };
+    } | null;
+    const error = body?.error;
+    const effectiveRequestId = response.headers.get('X-Request-ID') || error?.request_id || requestId;
     if (response.status === 401 || response.status === 403) {
-      throw new Error('需要使用 FlowWeave 超级管理员账户登录后访问管理中心。');
+      throw new AdminRequestError(path, response.status, 'ADMIN_AUTH_REQUIRED', effectiveRequestId, '需要使用 FlowWeave 超级管理员账户登录后访问管理中心。');
     }
-    const body = await response.json().catch(() => null) as { error?: { message?: string } } | null;
-    throw new Error(body?.error?.message || `管理数据读取失败（${response.status}）。`);
+    throw new AdminRequestError(
+      path,
+      response.status,
+      error?.code || 'ADMIN_REQUEST_FAILED',
+      effectiveRequestId,
+      error?.message || `管理数据读取失败（${response.status}）。`,
+    );
   }
   return response.json() as Promise<T>;
 }

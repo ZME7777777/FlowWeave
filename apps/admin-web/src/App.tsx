@@ -1,6 +1,6 @@
 import { Activity, Boxes, Database, MessageSquare, RefreshCw, RotateCw, Server, ShieldCheck, X } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
-import { adminApi, type AdminOperation, type Alert, type BackgroundTask, type BackgroundTaskSummary, type Conversation, type MetricHistoryPoint, type Overview, type Runtime, type RuntimeDetail, type RuntimeDiagnostic, type Usage } from './api';
+import { AdminRequestError, adminApi, type AdminOperation, type Alert, type BackgroundTask, type BackgroundTaskSummary, type Conversation, type MetricHistoryPoint, type Overview, type Runtime, type RuntimeDetail, type RuntimeDiagnostic, type Usage } from './api';
 
 type Tab = 'overview' | 'alerts' | 'services' | 'runtimes' | 'conversations' | 'tasks' | 'operations';
 
@@ -14,6 +14,26 @@ type AdminData = {
   alerts: Alert[];
   alertSummary: { critical: number; warning: number };
 };
+
+type AdminSection = 'overview' | 'alerts' | 'runtimes' | 'conversations' | 'tasks' | 'operations';
+type SectionFailure = { section: AdminSection; message: string; status: number | null; code: string; requestId: string | null };
+
+const sectionLabels: Record<AdminSection, string> = {
+  overview: '总览',
+  alerts: '实时告警',
+  runtimes: 'Runtime',
+  conversations: '会话',
+  tasks: '后台任务',
+  operations: '操作审计',
+};
+
+const emptyOverview: Overview = {
+  database: { runtime_states: [], tasks: [], database_connections: [] },
+  services: {},
+  container_observability: { available: false, services: [] },
+};
+
+const emptyTaskSummary: BackgroundTaskSummary = { states: [], expired_terminal: [], groups: [], retention_days: 0 };
 
 const bytes = (value: number | undefined) => {
   if (value === undefined) return '—';
@@ -212,38 +232,60 @@ export function App() {
   const [conversationRuntimeFilter, setConversationRuntimeFilter] = useState('');
   const [taskStateFilter, setTaskStateFilter] = useState<'ALL' | BackgroundTask['state']>('ALL');
   const [taskFilter, setTaskFilter] = useState('');
-  const [error, setError] = useState('');
+  const [failures, setFailures] = useState<SectionFailure[]>([]);
   const [loading, setLoading] = useState(true);
   const [updatedAt, setUpdatedAt] = useState<Date>();
 
   const refresh = useCallback(async () => {
     setLoading(true);
-    setError('');
-    try {
-      const [overview, alertResponse, runtimeResponse, conversationResponse, taskResponse, operationResponse] = await Promise.all([
-        adminApi.overview(),
-        adminApi.alerts(),
-        adminApi.runtimes(),
-        adminApi.conversations(),
-        adminApi.backgroundTasks(),
-        adminApi.operations(),
-      ]);
-      setData({
-        overview,
-        runtimes: runtimeResponse.items,
-        conversations: conversationResponse.items,
-        tasks: taskResponse.items,
-        taskSummary: taskResponse.summary,
-        operations: operationResponse.items,
-        alerts: alertResponse.items,
-        alertSummary: alertResponse.summary,
+    const requests: Array<{ section: AdminSection; request: Promise<unknown> }> = [
+      { section: 'overview', request: adminApi.overview() },
+      { section: 'alerts', request: adminApi.alerts() },
+      { section: 'runtimes', request: adminApi.runtimes() },
+      { section: 'conversations', request: adminApi.conversations() },
+      { section: 'tasks', request: adminApi.backgroundTasks() },
+      { section: 'operations', request: adminApi.operations() },
+    ];
+    const results = await Promise.allSettled(requests.map(item => item.request));
+    const nextFailures: SectionFailure[] = [];
+    setData(previous => {
+      const next: AdminData = previous ?? {
+        overview: emptyOverview,
+        runtimes: [],
+        conversations: [],
+        tasks: [],
+        taskSummary: emptyTaskSummary,
+        operations: [],
+        alerts: [],
+        alertSummary: { critical: 0, warning: 0 },
+      };
+      results.forEach((result, index) => {
+        const section = requests[index].section;
+        if (result.status === 'rejected') {
+          const failure = result.reason;
+          nextFailures.push(failure instanceof AdminRequestError
+            ? { section, message: failure.message, status: failure.status, code: failure.code, requestId: failure.requestId }
+            : { section, message: failure instanceof Error ? failure.message : '管理数据读取失败。', status: null, code: 'ADMIN_REQUEST_UNCLASSIFIED', requestId: null });
+          return;
+        }
+        if (section === 'overview') next.overview = result.value as Overview;
+        if (section === 'alerts') {
+          const value = result.value as { items: Alert[]; summary: { critical: number; warning: number } };
+          next.alerts = value.items; next.alertSummary = value.summary;
+        }
+        if (section === 'runtimes') next.runtimes = (result.value as { items: Runtime[] }).items;
+        if (section === 'conversations') next.conversations = (result.value as { items: Conversation[] }).items;
+        if (section === 'tasks') {
+          const value = result.value as { summary: BackgroundTaskSummary; items: BackgroundTask[] };
+          next.tasks = value.items; next.taskSummary = value.summary;
+        }
+        if (section === 'operations') next.operations = (result.value as { items: AdminOperation[] }).items;
       });
-      setUpdatedAt(new Date());
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '管理数据读取失败。');
-    } finally {
-      setLoading(false);
-    }
+      return { ...next };
+    });
+    setFailures(nextFailures);
+    if (nextFailures.length < requests.length) setUpdatedAt(new Date());
+    setLoading(false);
   }, []);
 
   useEffect(() => { void refresh(); }, [refresh]);
@@ -319,5 +361,5 @@ export function App() {
 
   };
 
-  return <><main><header className="topbar"><div><span className="brand-mark"><Server size={18}/></span><b>FlowWeave 管理中心</b><small>独立运维入口</small></div><nav>{([['overview', '总览'], ['alerts', '实时告警'], ['services', '服务'], ['runtimes', 'Runtime'], ['conversations', '会话'], ['tasks', '后台任务'], ['operations', '操作审计']] as const).map(([value, label]) => <button className={tab === value ? 'active' : ''} key={value} onClick={() => setTab(value)}>{label}</button>)}</nav><button className="refresh" disabled={loading} onClick={() => void refresh()}><RefreshCw size={15} className={loading ? 'spin' : ''}/>{loading ? '刷新中' : '刷新'}</button></header><div className="content">{updatedAt && <p className="updated">最近刷新：{updatedAt.toLocaleTimeString()} · 每 15 秒自动更新</p>}{error ? <section className="error"><h2>无法读取管理数据</h2><p>{error}</p><button onClick={() => void refresh()}>重新尝试</button></section> : loading && !data ? <section className="loading"><Activity className="spin" size={28}/><p>正在读取独立管理数据…</p></section> : visibleContent()}</div>{replacementTarget && <RuntimeReplacementDialog runtime={replacementTarget} onClose={() => setReplacementTarget(undefined)} onSubmitted={refresh}/>}</main>{detailTarget && <RuntimeDetailDialog runtime={detailTarget} onClose={() => setDetailTarget(undefined)} onSubmitted={refresh}/>} {historyTarget && <HistoryDialog {...historyTarget} onClose={() => setHistoryTarget(undefined)}/>} {alertTarget && <AlertLifecycleDialog alert={alertTarget} onClose={() => setAlertTarget(undefined)} onSubmitted={refresh}/>}</>;
+  return <><main><header className="topbar"><div><span className="brand-mark"><Server size={18}/></span><b>FlowWeave 管理中心</b><small>独立运维入口</small></div><nav>{([['overview', '总览'], ['alerts', '实时告警'], ['services', '服务'], ['runtimes', 'Runtime'], ['conversations', '会话'], ['tasks', '后台任务'], ['operations', '操作审计']] as const).map(([value, label]) => <button className={tab === value ? 'active' : ''} key={value} onClick={() => setTab(value)}>{label}</button>)}</nav><button className="refresh" disabled={loading} onClick={() => void refresh()}><RefreshCw size={15} className={loading ? 'spin' : ''}/>{loading ? '刷新中' : '刷新'}</button></header><div className="content">{updatedAt && <p className="updated">最近刷新：{updatedAt.toLocaleTimeString()} · 每 15 秒自动更新</p>}{failures.length > 0 && <section className="partial-error"><h2>{failures.length === 6 ? '管理数据暂时不可用' : '部分管理数据暂时不可用'}</h2><p>其余数据会保留并继续刷新；请使用下列错误码和请求 ID 查询服务端日志。</p>{failures.map(failure => <div key={failure.section}><b>{sectionLabels[failure.section]}</b><span>{failure.message}</span><code>{failure.code}{failure.status !== null ? ` · HTTP ${failure.status}` : ''}{failure.requestId ? ` · 请求 ${compact(failure.requestId)}` : ''}</code></div>)}<button onClick={() => void refresh()}>重新尝试</button></section>}{loading && !data ? <section className="loading"><Activity className="spin" size={28}/><p>正在读取独立管理数据…</p></section> : visibleContent()}</div>{replacementTarget && <RuntimeReplacementDialog runtime={replacementTarget} onClose={() => setReplacementTarget(undefined)} onSubmitted={refresh}/>}</main>{detailTarget && <RuntimeDetailDialog runtime={detailTarget} onClose={() => setDetailTarget(undefined)} onSubmitted={refresh}/>} {historyTarget && <HistoryDialog {...historyTarget} onClose={() => setHistoryTarget(undefined)}/>} {alertTarget && <AlertLifecycleDialog alert={alertTarget} onClose={() => setAlertTarget(undefined)} onSubmitted={refresh}/>}</>;
 }

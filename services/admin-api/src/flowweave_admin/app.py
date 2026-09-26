@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from contextlib import asynccontextmanager
 from typing import Any
 from uuid import uuid4
@@ -37,6 +38,13 @@ from flowweave_admin.observability import (
 )
 from flowweave_admin.settings import Settings
 
+logger = logging.getLogger(__name__)
+
+
+def _request_id(request: Request) -> str:
+    raw = request.headers.get("X-Request-ID")
+    return raw if raw and len(raw) <= 80 else str(uuid4())
+
 
 def create_app() -> FastAPI:
     settings = Settings()
@@ -47,7 +55,37 @@ def create_app() -> FastAPI:
         yield
 
     app = FastAPI(title="FlowWeave Admin API", version="0.1.0", lifespan=lifespan)
+
+    @app.middleware("http")
+    async def attach_request_id(request: Request, call_next: Any) -> Any:
+        request_id = _request_id(request)
+        request.state.request_id = request_id
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = request_id
+        return response
+
     app.middleware("http")(require_super_admin)
+
+    @app.exception_handler(Exception)
+    async def unhandled_admin_error(request: Request, exc: Exception) -> JSONResponse:
+        request_id = getattr(request.state, "request_id", _request_id(request))
+        logger.exception(
+            "admin_request_failed route=%s request_id=%s error_type=%s",
+            request.url.path,
+            request_id,
+            type(exc).__name__,
+        )
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": {
+                    "code": "ADMIN_INTERNAL_ERROR",
+                    "message": "Administrator data could not be read",
+                    "request_id": request_id,
+                }
+            },
+            headers={"X-Request-ID": request_id},
+        )
 
     @app.get("/health")
     async def health() -> dict[str, str]:
@@ -286,7 +324,15 @@ def create_app() -> FastAPI:
             )
         except AdminControlError as exc:
             return JSONResponse(
-                status_code=exc.status, content={"error": {"code": exc.code, "message": str(exc)}}
+                status_code=exc.status,
+                content={
+                    "error": {
+                        "code": exc.code,
+                        "message": str(exc),
+                        "request_id": getattr(request.state, "request_id", None),
+                    }
+                },
+                headers={"X-Request-ID": getattr(request.state, "request_id", "")},
             )
 
     @app.post("/v1/admin/runtime-controls", status_code=202, response_model=None)

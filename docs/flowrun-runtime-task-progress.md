@@ -7430,3 +7430,15 @@ FlowWeave 本地累加后猜测压缩边界。
 完成：`POLL_RUNTIME` 已从 Runtime control task 集合拆出。默认四并发 Worker 形成互斥的 `runtime-control`、`runtime-poll`、`delivery`、`maintenance` 四条 lane；poll lane 受 `RUNTIME_POLL_WORKER_CONCURRENCY`（默认 1）严格限制，并使用独立 poll executor 与 PostgreSQL synchronous pool。poll 读取仍在调用正式 Runtime 前释放 SQL 事务，但即使底层 OpenHands 读取长期阻塞，也只会占用 poll lane 的一条线程和一条 poll pool 连接，不会耗尽控制任务使用的 ordinary blocking executor/pool。单/双 Worker 并发保留兼容降级分配，不伪造不存在的容量；生产默认四并发启用完整舱壁。
 
 验收：新增 Worker lane 集合互斥、默认 poll/control lane 分离、POLL 任务专属 executor/pool 断言；受影响 Ruff format/check、`py_compile` 与目标 source Pyright 通过，`git diff --check` 通过。定向 pytest 已启动，但本机 Testcontainers PostgreSQL session fixture 在创建用例前因 Docker socket 缺失失败，未进入断言、未计为通过。未运行数据库迁移，不修改远端配置、OpenHands 或自动恢复策略。
+
+### FR-532 Admin 局部失败与请求关联 — DONE
+
+依赖：FR-529、FR-530。
+
+目标：管理中心并行读取总览、告警、Runtime、会话、后台任务和操作审计时，任一只读投影失败不得将已成功的数据折叠为全页不可用；管理员必须能看到失败的具体数据块、稳定错误码、HTTP 状态和请求关联 ID，以便精确取证。
+
+范围：Admin Web 刷新策略和 Admin API 安全错误关联；不改变 Runtime、后台任务、数据库 schema、告警语义或权限边界。
+
+完成：Admin Web 将全量 `Promise.all` 改为 `Promise.allSettled`，保留最近一次或本轮成功的数据块，仅将失败的数据块显示为局部诊断卡；每次请求生成并传递 `X-Request-ID`，失败卡显示资源名称、稳定错误码、HTTP 状态与截短 request ID。Admin API 对响应回传 request ID，并把未处理异常归一化为不含 SQL／堆栈／凭据的 `ADMIN_INTERNAL_ERROR`，服务端日志按 route、request ID 与异常类型关联。认证／授权／数据不可用错误同样返回 request ID。
+
+验收：Admin API Ruff format/check、`py_compile`、Pyright；Admin Web TypeScript typecheck、ESLint、production build 与 `git diff --check` 通过。未运行数据库型测试；不修改 Platform Runtime、OpenHands、schema、远端配置或自动恢复策略。
