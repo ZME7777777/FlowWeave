@@ -4727,14 +4727,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       && !isRunning(item)
       && item.id !== routeBindingId
     ));
-    const attentionInBackground = conversations.filter(item => (
-      item.id !== routeBindingId
-      && (possiblyStuckConversationIds.has(item.id) || failedConversationIds.has(item.id))
-    ));
     const systemUnreadInBackground = new Map(
-      [...completedInBackground, ...attentionInBackground]
-        .filter(item => !(!item.unread && item.unread_origin === 'SYSTEM'))
-        .map(item => [item.id, item]),
+      completedInBackground.map(item => [item.id, item]),
     );
     setUnreadConversationIds(current => {
       const next = new Set<string>();
@@ -4751,9 +4745,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     }
     for (const bindingId of activityBaseline.current.keys()) {
       if (!present.has(bindingId)) activityBaseline.current.delete(bindingId);
-    }
-    for (const item of systemUnreadInBackground.values()) {
-      if (!item.unread) setConversationUnread(item.id, true, 'SYSTEM');
     }
   }, [conversations, failedConversationIds, possiblyStuckConversationIds, routeBindingId, runningConversationIds, setConversationUnread]);
   useEffect(() => {
@@ -7043,9 +7034,13 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       ? Boolean(eventsQuery.data?.monitoring?.possibly_stuck)
       : possiblyStuckConversationIds.has(item.id);
     const failed = failedConversationIds.has(item.id);
+    // Unread is a user-isolated server projection. Activity only decides
+    // whether a persisted SYSTEM unread record is an alert right now.
+    const unread = unreadConversationIds.has(item.id);
+    const unreadOrigin = item.unread_origin;
     const conversationWritable = Boolean(item.write_available);
     const sync = conversationOrderSync[item.id];
-    return <WorkspaceConversationRow key={item.id} item={item} selectedBindingId={selectedBindingId} workspaceName={options.workspaceName} running={running} possiblyStuck={possiblyStuck} failed={failed} unread={unreadConversationIds.has(item.id)} unreadOrigin={item.unread_origin} pinned={pinnedConversationIds.has(item.id)} conversationWritable={conversationWritable} removing={remove.isPending} deleteDisabled={running} dragging={options.allowDrag === false ? false : draggedBindingId === item.id} dropPosition={options.allowDrag === false ? undefined : dragTarget?.bindingId === item.id ? (dragTarget.after ? 'after' : 'before') : undefined} orderSyncState={options.allowDrag === false ? undefined : sync?.state} onPointerDragStart={options.allowDrag === false ? undefined : event => startPointerConversationDrag(event, item, group)} onRetryOrder={options.allowDrag === false || sync?.state !== 'failed' ? undefined : () => synchronizeConversationOrder(item.id, sync.orderedBindingIds)} onSelect={options.onSelect ?? (() => selectConversation(item.id))} onDoubleClick={options.onDoubleClick} onTogglePin={() => toggleConversationPin(item.id)} onMarkUnread={() => markConversationUnread(item.id)} onMarkRead={options.onMarkRead} onAcknowledgeAlert={() => markConversationRead(item.id)} onDelete={features.conversationDeletion && conversationWritable ? () => void confirmDeletion('会话', conversationName(item)).then(ok => { if (ok) remove.mutate(item.id); }) : undefined} reveal={sidebarListMode === 'workspaces' && sidebarRevealBindingId === item.id}/>;
+    return <WorkspaceConversationRow key={item.id} item={item} selectedBindingId={selectedBindingId} workspaceName={options.workspaceName} running={running} possiblyStuck={possiblyStuck} failed={failed} unread={unread} unreadOrigin={unreadOrigin} pinned={pinnedConversationIds.has(item.id)} conversationWritable={conversationWritable} removing={remove.isPending} deleteDisabled={running} dragging={options.allowDrag === false ? false : draggedBindingId === item.id} dropPosition={options.allowDrag === false ? undefined : dragTarget?.bindingId === item.id ? (dragTarget.after ? 'after' : 'before') : undefined} orderSyncState={options.allowDrag === false ? undefined : sync?.state} onPointerDragStart={options.allowDrag === false ? undefined : event => startPointerConversationDrag(event, item, group)} onRetryOrder={options.allowDrag === false || sync?.state !== 'failed' ? undefined : () => synchronizeConversationOrder(item.id, sync.orderedBindingIds)} onSelect={options.onSelect ?? (() => selectConversation(item.id))} onDoubleClick={options.onDoubleClick} onTogglePin={() => toggleConversationPin(item.id)} onMarkUnread={() => markConversationUnread(item.id)} onMarkRead={options.onMarkRead} onAcknowledgeAlert={() => markConversationRead(item.id)} onDelete={features.conversationDeletion && conversationWritable ? () => void confirmDeletion('会话', conversationName(item)).then(ok => { if (ok) remove.mutate(item.id); }) : undefined} reveal={sidebarListMode === 'workspaces' && sidebarRevealBindingId === item.id}/>;
   };
   const pendingBootstrapItem = pendingBootstrap
     ? <button className={pendingBootstrap.draft.id === conversationDraft?.id ? 'active' : ''} aria-current={pendingBootstrap.draft.id === conversationDraft?.id ? 'page' : undefined} aria-label={`${pendingConversationName(pendingBootstrap.message)}，正在创建会话`}><LoaderCircle className="conversation-activity-spin" size={13}/><span><b>{pendingConversationName(pendingBootstrap.message)}</b><small>正在创建会话</small></span><ChevronRight size={13}/></button>

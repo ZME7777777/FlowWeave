@@ -3271,6 +3271,59 @@ def test_agent_workspace_conversation_activity_maps_native_ids_once(
     assert runtime.calls == 3
 
 
+
+def test_agent_workspace_activity_persists_system_unread_and_honors_acknowledgement(
+    settings, db_session_factory, monkeypatch
+):
+    monkeypatch.setattr(
+        conversations,
+        "runtime_provider",
+        lambda _db, asset, **kwargs: RuntimeProvider(
+            provider_id=asset["asset"]["executor"]["model_provider_id"],
+            base_url="https://models.example.test/v1",
+            model=kwargs.get("model_name") or "test-model",
+            api_key="x",
+            reasoning_effort=kwargs.get("reasoning_effort"),
+        ),
+    )
+
+    class ActivityRuntime(MockRuntime):
+        failed_id = ""
+
+        def running_conversation_ids(self, _handle):
+            return set()
+
+        def conversation_ids_by_status(self, _handle, status):
+            return {self.failed_id} if status == "error" else set()
+
+    runtime = ActivityRuntime()
+    with settings_context(settings), db_session_factory() as db, runtime_context(runtime):
+        workspace = _ready_workspace_for_conversation(db)
+        created = conversations.create_conversation(
+            db, workspace.id, "异常未读会话", workspace.default_model_provider_id, "activity-system-unread"
+        )
+        binding = db.get(AgentConversationBinding, created["id"])
+        assert binding is not None
+        runtime.failed_id = binding.openhands_conversation_id
+
+        activity = conversations.conversation_activity(db, workspace.id)
+        assert activity["failed_binding_ids"] == [binding.id]
+        assert binding.unread is True
+        assert binding.unread_origin == "SYSTEM"
+
+        acknowledged = conversations.set_conversation_unread(
+            db, workspace.id, binding.id, unread=False, unread_origin="SYSTEM"
+        )
+        assert acknowledged["unread"] is False
+        conversations.conversation_activity(db, workspace.id)
+        assert binding.unread is False
+        assert binding.unread_origin == "SYSTEM"
+
+        runtime.failed_id = ""
+        conversations.conversation_activity(db, workspace.id)
+        assert binding.unread_origin is None
+
+
 def test_agent_workspace_conversation_dtos_project_runtime_write_availability(
     settings, db_session_factory
 ):

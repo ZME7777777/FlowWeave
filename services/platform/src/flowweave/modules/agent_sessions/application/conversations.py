@@ -818,7 +818,14 @@ def conversation_activity(db: Session, workspace_id: str) -> dict[str, Any]:
         item.id for item in bindings if item.openhands_conversation_id in failed_native_ids
     }
     for item in bindings:
-        if not item.unread and item.unread_origin == "SYSTEM" and item.id not in attention_binding_ids:
+        if item.id in attention_binding_ids:
+            # Preserve MANUAL unread and an explicit SYSTEM acknowledgement
+            # (SYSTEM + unread=False). Otherwise an active native abnormality
+            # is a server-owned SYSTEM unread fact.
+            if not item.unread and item.unread_origin != "SYSTEM":
+                item.unread = True
+                item.unread_origin = "SYSTEM"
+        elif not item.unread and item.unread_origin == "SYSTEM":
             item.unread_origin = None
     db.flush()
     return {

@@ -2014,6 +2014,7 @@ test('Conversation sidebar pins locally, orders activity, and reveals the select
     {
       id: 'sidebar-directory-running', display_title: '运行中目标会话', title_state: 'MANUAL', lifecycle: 'ACTIVE',
       streaming_callback_ready: true, write_available: true, execution_status: 'running', work_directory_id: directory.id,
+      unread: true, unread_origin: 'SYSTEM',
       created_at: '2026-09-12T09:30:00Z', updated_at: '2026-09-12T09:50:00Z',
     },
     {
@@ -2109,6 +2110,10 @@ test('Conversation sidebar pins locally, orders activity, and reveals the select
   await acknowledgeAlert.click();
   await expect(acknowledgeAlert).toHaveCount(0);
   await expect.poll(() => unreadWrites).toEqual([{ id: 'sidebar-root-unread', unread: false }]);
+  const runningRowInWorkspaceList = page.locator('[data-conversation-binding-id="sidebar-directory-running"]');
+  const runningAlertInWorkspaceList = runningRowInWorkspaceList.getByRole('button', { name: '确认会话长时间未产生进展已读' });
+  await expect(runningAlertInWorkspaceList).toBeVisible();
+  await expect(runningAlertInWorkspaceList).toHaveCSS('color', 'rgb(197, 63, 63)');
 
   await page.getByRole('button', { name: /查看活动会话/ }).click();
   const activity = page.getByRole('region', { name: '活动会话' });
@@ -2117,8 +2122,10 @@ test('Conversation sidebar pins locally, orders activity, and reveals the select
     'sidebar-directory-running',
   ]);
   const stalledRow = activity.locator('[data-conversation-binding-id="sidebar-directory-running"]');
-  await expect(stalledRow.getByRole('img', { name: '后台长时间未产生可确认进展' })).toBeVisible();
-  await expect(stalledRow.locator('.agent-workspace-conversation-alert.running')).toBeVisible();
+  const stalledAlert = stalledRow.getByRole('button', { name: '确认会话长时间未产生进展已读' });
+  await expect(stalledAlert).toBeVisible();
+  await expect(stalledAlert).toHaveCSS('color', 'rgb(197, 63, 63)');
+  await expect(stalledAlert).toHaveClass(/running/);
 
   const runningConversation = activity.getByRole('button', { name: '运行中目标会话', exact: true });
   await runningConversation.click();

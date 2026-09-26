@@ -2607,6 +2607,74 @@ def test_node_session_unread_state_persists_in_conversation_projection(
         assert acknowledged["unread_origin"] == "SYSTEM"
 
 
+
+def test_node_session_activity_persists_system_unread_and_honors_acknowledgement(
+    db_session_factory: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with db_session_factory() as db:
+        flow_run_id, runtime_session_id, attempt_id = _node_session_context(db)
+        attempt = db.get(NodeAttempt, attempt_id)
+        assert attempt is not None
+        binding = AgentConversationBinding(
+            workspace_id=None,
+            host_kind="FLOW_NODE",
+            host_id=flow_run_id,
+            conversation_scope_id=attempt_id,
+            flow_run_id=flow_run_id,
+            node_run_id=attempt.node_run_id,
+            node_attempt_id=attempt_id,
+            runtime_session_id=runtime_session_id,
+            working_directory=attempt.workspace_ref,
+            openhands_conversation_id="node-system-unread",
+            display_title="节点异常未读会话",
+            lifecycle="ACTIVE",
+            create_idempotency_key="node-system-unread",
+        )
+        db.add(binding)
+        db.flush()
+        monkeypatch.setattr(
+            conversation_service.agent_sessions,
+            "resolve_flow_node_session_host",
+            lambda *_args, **_kwargs: SimpleNamespace(),
+        )
+        monkeypatch.setattr(
+            conversation_service,
+            "_node_handle",
+            lambda *_args, **_kwargs: RuntimeHandle(job_id="job", conversation_id=""),
+        )
+
+        class FailedRuntime:
+            failed = True
+
+            def running_conversation_ids(self, _handle):
+                return set()
+
+            def conversation_ids_by_status(self, _handle, status):
+                return {binding.openhands_conversation_id} if self.failed and status == "error" else set()
+
+        runtime = FailedRuntime()
+        monkeypatch.setattr(conversation_service, "get_runtime", lambda: runtime)
+
+        activity = conversation_service.node_session_activity(
+            db, flow_run_id=flow_run_id, attempt_id=attempt_id
+        )
+        assert activity["failed_binding_ids"] == [binding.id]
+        assert binding.unread is True
+        assert binding.unread_origin == "SYSTEM"
+
+        conversation_service.set_node_session_unread(
+            db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding.id,
+            unread=False, unread_origin="SYSTEM",
+        )
+        conversation_service.node_session_activity(db, flow_run_id=flow_run_id, attempt_id=attempt_id)
+        assert binding.unread is False
+        assert binding.unread_origin == "SYSTEM"
+
+        runtime.failed = False
+        conversation_service.node_session_activity(db, flow_run_id=flow_run_id, attempt_id=attempt_id)
+        assert binding.unread_origin is None
+
+
 def test_node_workspace_projection_shares_project_across_node_attempts(
     settings, db_session_factory: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
 ) -> None:
