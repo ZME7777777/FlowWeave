@@ -4353,6 +4353,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const selectedBindingId = activityPreviewBindingId ?? routeBindingId;
   const previousComposerScope = useRef<string | undefined>(undefined);
   const activityBaseline = useRef<Map<string, boolean>>(new Map());
+  const acknowledgedSystemUnread = useRef(new Set<string>());
   const pendingUnreadUpdates = useRef(new Map<string, { id: number; unread: boolean; unreadOrigin?: AgentConversation['unread_origin'] }>());
   const nextUnreadUpdateId = useRef(0);
   const [unreadConversationIds, setUnreadConversationIds] = useState<Set<string>>(() => new Set());
@@ -4688,8 +4689,11 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     });
   }, [api, host, queryClient, workspace]);
   const markConversationRead = useCallback((bindingId: string) => {
+    if (possiblyStuckConversationIds.has(bindingId) || failedConversationIds.has(bindingId)) {
+      acknowledgedSystemUnread.current.add(bindingId);
+    }
     if (unreadConversationIds.has(bindingId)) setConversationUnread(bindingId, false);
-  }, [setConversationUnread, unreadConversationIds]);
+  }, [failedConversationIds, possiblyStuckConversationIds, setConversationUnread, unreadConversationIds]);
   const markConversationUnread = useCallback((bindingId: string) => {
     // An explicit user choice must override a system-origin alert even when
     // the binding was already unread, restoring the ordinary blue marker.
@@ -4727,8 +4731,14 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       item.id !== routeBindingId
       && (possiblyStuckConversationIds.has(item.id) || failedConversationIds.has(item.id))
     ));
+    const attentionBindingIds = new Set(attentionInBackground.map(item => item.id));
+    for (const bindingId of acknowledgedSystemUnread.current) {
+      if (!attentionBindingIds.has(bindingId)) acknowledgedSystemUnread.current.delete(bindingId);
+    }
     const systemUnreadInBackground = new Map(
-      [...completedInBackground, ...attentionInBackground].map(item => [item.id, item]),
+      [...completedInBackground, ...attentionInBackground]
+        .filter(item => !acknowledgedSystemUnread.current.has(item.id))
+        .map(item => [item.id, item]),
     );
     setUnreadConversationIds(current => {
       const next = new Set<string>();
