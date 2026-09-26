@@ -1,6 +1,10 @@
 .conversation-surface-shell{position:relative;min-height:0;overflow:hidden;background:#fff}
 .conversation-add-reference{position:fixed;z-index:40;display:flex;align-items:center;gap:6px;border:1px solid #d7e0da;border-radius:9px;background:#fff;padding:3px;box-shadow:0 8px 24px #18271d24}.conversation-add-reference>button{display:flex;align-items:center;gap:6px;border:0;border-radius:6px;background:transparent;padding:5px 7px;color:#405047;font:600 11px inherit;cursor:pointer}.conversation-add-reference:hover{border-color:#91b6a0;background:#f1f8f3}.conversation-add-reference>button:hover{color:#205d3c}.conversation-add-reference>button:focus-visible{outline:2px solid #78a98e;outline-offset:2px}
-.conversation-surface{height:100%;min-height:0;overflow:auto;overflow-anchor:none;padding:34px clamp(22px,6vw,110px) 26px;background:#fff}
+.conversation-surface{height:100%;min-height:0;overflow:auto;overflow-anchor:none;scrollbar-color:transparent transparent;padding:34px clamp(22px,6vw,110px) 26px;background:#fff}
+.conversation-surface::-webkit-scrollbar{width:10px;height:10px}
+.conversation-surface::-webkit-scrollbar-thumb{border:3px solid transparent;border-radius:999px;background:transparent;background-clip:content-box}
+.conversation-surface.scrollbar-visible{scrollbar-color:#a5b0a8 transparent}
+.conversation-surface.scrollbar-visible::-webkit-scrollbar-thumb{background:#a5b0a8;background-clip:content-box}
 .conversation-surface ::selection,.conversation-surface::selection{background:#b7dfff;color:#183143}
 .conversation-surface>*{width:min(780px,100%);margin-left:auto;margin-right:auto}
 .conversation-surface-content{position:relative}

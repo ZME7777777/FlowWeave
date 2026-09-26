@@ -1583,6 +1583,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
   const userScrolledAway = useRef(false);
   const scrollInteractionStartY = useRef<number | null>(null);
   const scrollInteractionTowardLatest = useRef(false);
+  const scrollbarVisibilityTimer = useRef<number | undefined>(undefined);
   const automaticScrollFrame = useRef<number | undefined>(undefined);
   const messageNavigation = useRef<HTMLElement>(null);
   const messageNavigationAtLatest = useRef(true);
@@ -1979,6 +1980,19 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
   const handleMessageNavigationPointerLeave = useCallback(() => {
     if (messageNavigationDragPointerId.current === undefined) clearMessageNavigationPreview();
   }, [clearMessageNavigationPreview]);
+  const showScrollbarTemporarily = useCallback(() => {
+    const element = surface.current;
+    if (!element) return;
+    element.classList.add('scrollbar-visible');
+    if (scrollbarVisibilityTimer.current !== undefined) window.clearTimeout(scrollbarVisibilityTimer.current);
+    scrollbarVisibilityTimer.current = window.setTimeout(() => {
+      surface.current?.classList.remove('scrollbar-visible');
+      scrollbarVisibilityTimer.current = undefined;
+    }, 700);
+  }, []);
+  useEffect(() => () => {
+    if (scrollbarVisibilityTimer.current !== undefined) window.clearTimeout(scrollbarVisibilityTimer.current);
+  }, []);
   const handleScroll = useCallback(() => {
     updateScrollPosition();
     scrollInteractionTowardLatest.current = false;
@@ -2187,6 +2201,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
     <section ref={surface} className="conversation-surface" aria-live="polite" onScroll={() => { handleScroll(); setSelectedReference(undefined); }} onClickCapture={event => {
       if (event.target instanceof Element && event.target.closest('summary')) scheduleLatestAlignment();
     }} onWheelCapture={event => {
+      showScrollbarTemporarily();
       const element = surface.current;
       if (event.deltaY < 0 && (element?.scrollTop ?? 0) > 0) stopFollowingLatest();
       else if (event.deltaY > 0) scrollInteractionTowardLatest.current = true;
@@ -2194,11 +2209,13 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
       // Touch drags always belong to the viewport. For a mouse, only track
       // the native scrollbar itself so text selection cannot disable follow.
       if (event.pointerType === 'touch' || event.target === surface.current) {
+        if (event.pointerType === 'mouse') showScrollbarTemporarily();
         scrollInteractionStartY.current = event.clientY;
         scrollInteractionTowardLatest.current = false;
       }
     }} onPointerMoveCapture={event => {
       if (scrollInteractionStartY.current === null) return;
+      if (event.pointerType === 'mouse') showScrollbarTemporarily();
       if (event.clientY - scrollInteractionStartY.current > 3 && (surface.current?.scrollTop ?? 0) > 0) stopFollowingLatest();
       else if (scrollInteractionStartY.current - event.clientY > 3) scrollInteractionTowardLatest.current = true;
     }} onPointerUp={event => { scrollInteractionStartY.current = null; offerSelectedReference(event); }} onPointerCancel={() => { scrollInteractionStartY.current = null; }} onKeyDown={event => {
