@@ -7418,3 +7418,15 @@ FlowWeave 本地累加后猜测压缩边界。
 完成：Admin Runtime 详情可对一个最近活跃绑定执行 OpenHands 正式 `conversation_runtime`、active event window 与 input readiness 读取；持久化的观察结果仅包含阶段、耗时、稳定错误码、事件数量、readiness、Runtime availability 与受影响绑定数，不含正文、payload、凭据、URL 或原始异常。没有活跃会话时也会持久化 `NO_ACTIVE_CONVERSATION` 事实。管理员可在稳定 FlowRun Runtime 或 Agent Workspace Runtime 上将新写入隔离为 `MAINTENANCE`，操作含原因、身份、幂等键、generation 与 row-version 栅栏及追加审计；已有 workspace/conversation/persistence 不会被删除或重启。恢复只在当前 generation 对应的 ManagedSandbox 仍为期望和观察双 `RUNNING` 时发生。FlowRun node-attempt Runtime 不提供该人工路由控制，避免越过其独立生命周期；隔离态不允许通过诊断绕过正式 `ACTIVE` 路由。未实现自动告警、自动熔断、自动诊断或自动 replacement。
 
 验收：Platform/Admin API Ruff format/check、`py_compile`、Runtime control router Pyright、Admin Web TypeScript typecheck、ESLint、production build、Alembic head `0129_runtime_business_obs` 与 `git diff --check` 通过。新增的 3 条隔离/恢复/无活跃会话诊断定向测试及既有 4 条控制测试均已启动，但全部在 Testcontainers session fixture 创建 PostgreSQL 前被本机缺失 Docker socket 阻断，未进入断言、未计为通过。未运行远端迁移；不修改 Worker 自动策略、OpenHands、Runtime Provider、Docker 或远端配置。
+
+### FR-531 Runtime Poll 执行舱壁隔离 — DONE
+
+依赖：FR-530。
+
+目标：一个卡住的正式 OpenHands `POLL_RUNTIME` 读取不得占用 FlowRun／Agent Workspace Runtime 的 provision、replace、resume、cancel 等恢复控制任务的 Worker 执行容量或同步数据库连接容量，避免单个 Runtime 的业务读阻塞传播为平台级恢复饥饿。
+
+范围：仅拆分 Worker 内 `POLL_RUNTIME` 的 task lane、线程 executor 与同步数据库连接池；保持任务账本、lease、正式 OpenHands 读取、retry 与人工恢复语义不变。不得自动替换、自动熔断、删除 Runtime／Workspace／Conversation 或修改 OpenHands。
+
+完成：`POLL_RUNTIME` 已从 Runtime control task 集合拆出。默认四并发 Worker 形成互斥的 `runtime-control`、`runtime-poll`、`delivery`、`maintenance` 四条 lane；poll lane 受 `RUNTIME_POLL_WORKER_CONCURRENCY`（默认 1）严格限制，并使用独立 poll executor 与 PostgreSQL synchronous pool。poll 读取仍在调用正式 Runtime 前释放 SQL 事务，但即使底层 OpenHands 读取长期阻塞，也只会占用 poll lane 的一条线程和一条 poll pool 连接，不会耗尽控制任务使用的 ordinary blocking executor/pool。单/双 Worker 并发保留兼容降级分配，不伪造不存在的容量；生产默认四并发启用完整舱壁。
+
+验收：新增 Worker lane 集合互斥、默认 poll/control lane 分离、POLL 任务专属 executor/pool 断言；受影响 Ruff format/check、`py_compile` 与目标 source Pyright 通过，`git diff --check` 通过。定向 pytest 已启动，但本机 Testcontainers PostgreSQL session fixture 在创建用例前因 Docker socket 缺失失败，未进入断言、未计为通过。未运行数据库迁移，不修改远端配置、OpenHands 或自动恢复策略。

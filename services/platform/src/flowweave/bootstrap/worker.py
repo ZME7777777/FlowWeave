@@ -10,6 +10,8 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
+from sqlalchemy.orm import Session, sessionmaker
+
 from flowweave.bootstrap.container import Container, build_container
 from flowweave.bootstrap.settings import Settings
 from flowweave.modules.agent_sessions.application import usage_reconciliation
@@ -53,14 +55,14 @@ from flowweave.shared.settings import settings_context
 
 logger = logging.getLogger(__name__)
 
-_RUNTIME_TASK_TYPES = frozenset(
+_POLL_TASK_TYPES = frozenset({"POLL_RUNTIME"})
+_RUNTIME_CONTROL_TASK_TYPES = frozenset(
     {
         "START_RUNTIME",
         "PROVISION_FLOW_RUN_RUNTIME",
         "PAUSE_FLOW_RUN_RUNTIME",
         "PROVISION_AGENT_WORKSPACE_RUNTIME",
         "CONDENSE_AGENT_CONVERSATION",
-        "POLL_RUNTIME",
         "WAIT_RUNTIME_WAKEUP",
         "RESUME_RUNTIME",
         "RESPOND_RUNTIME_CONFIRMATION",
@@ -69,6 +71,7 @@ _RUNTIME_TASK_TYPES = frozenset(
         "STOP_FLOW_RUN_RUNTIMES",
     }
 )
+_RUNTIME_TASK_TYPES = _RUNTIME_CONTROL_TASK_TYPES | _POLL_TASK_TYPES
 _MAINTENANCE_TASK_TYPES = frozenset(
     {
         "MATERIALIZE_FLOW_RUN_SCHEDULE",
@@ -322,12 +325,34 @@ class TaskWorker:
                 renewer.stop()
             return True
 
+    def _task_execution_resources(
+        self, task: Any
+    ) -> tuple[Any, asyncio.Semaphore, sessionmaker[Session]]:
+        """Return the isolated executor/pool assigned to one claimed task."""
+
+        if task.task_type in _POLL_TASK_TYPES:
+            poll_sessions = self.container.database.poll_sessions
+            if poll_sessions is None:
+                raise RuntimeError("Worker poll execution requires a dedicated poll database pool")
+            return (
+                self.container.poll_executor,
+                self.container.poll_io_slots,
+                poll_sessions,
+            )
+        return (
+            self.container.blocking_executor,
+            self.container.blocking_io_slots,
+            self.container.database.blocking_sessions,
+        )
+
     async def _execute_claimed_task(self, task: Any, lease: Lease) -> bool:
-        """Run synchronous task work off-loop in the Worker-only bounded executor."""
+        """Run synchronous task work off-loop in its bounded execution lane."""
+
+        executor, slots, session_factory = self._task_execution_resources(task)
 
         def execute() -> bool:
             with self._task_tenant_context(task):
-                with self.container.database.blocking_sessions() as session:
+                with session_factory() as session:
                     mark_uow_owned(session)
                     try:
                         handle(session, task, lease)
@@ -343,10 +368,10 @@ class TaskWorker:
                     run_commit_actions(session)
                     return True
 
-        async with self.container.blocking_io_slots:
+        async with slots:
             context = contextvars.copy_context()
             return await asyncio.get_running_loop().run_in_executor(
-                self.container.blocking_executor,
+                executor,
                 context.run,
                 execute,
             )
@@ -555,14 +580,29 @@ class TaskWorker:
         if concurrency == 1:
             return (("all", _ALL_TASK_TYPES, 1),)
         if concurrency == 2:
+            # A two-slot deployment cannot reserve every class independently.
+            # Keep the historical partition instead of silently starving
+            # delivery; production defaults to four slots and uses the full
+            # poll/control isolation below.
             return (
                 ("runtime", _RUNTIME_TASK_TYPES, 1),
                 ("delivery", _DELIVERY_TASK_TYPES | _MAINTENANCE_TASK_TYPES, 1),
             )
-        runtime_slots = max(1, concurrency // 2)
-        delivery_slots = concurrency - runtime_slots - 1
+        if concurrency == 3:
+            return (
+                ("runtime-control", _RUNTIME_CONTROL_TASK_TYPES, 1),
+                ("runtime-poll", _POLL_TASK_TYPES, 1),
+                ("delivery-maintenance", _DELIVERY_TASK_TYPES | _MAINTENANCE_TASK_TYPES, 1),
+            )
+        poll_slots = min(
+            self.container.settings.runtime_poll_worker_concurrency,
+            concurrency - 3,
+        )
+        control_slots = max(1, (concurrency - poll_slots - 1) // 2)
+        delivery_slots = concurrency - poll_slots - control_slots - 1
         return (
-            ("runtime", _RUNTIME_TASK_TYPES, runtime_slots),
+            ("runtime-control", _RUNTIME_CONTROL_TASK_TYPES, control_slots),
+            ("runtime-poll", _POLL_TASK_TYPES, poll_slots),
             ("delivery", _DELIVERY_TASK_TYPES, delivery_slots),
             ("maintenance", _MAINTENANCE_TASK_TYPES, 1),
         )

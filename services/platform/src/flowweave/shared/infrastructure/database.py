@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import QueuePool
 
 from flowweave.bootstrap.settings import Settings
@@ -22,7 +22,7 @@ from flowweave.shared.application.uow import SqlAlchemyUnitOfWork
 class Database:
     """Async PostgreSQL resources owned by a process container."""
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, *, poll_pool_size: int = 0) -> None:
         if not settings.database_url.startswith("postgresql+psycopg://"):
             raise ValueError("FlowWeave supports PostgreSQL through psycopg only")
         self.engine: AsyncEngine = create_async_engine(
@@ -49,6 +49,23 @@ class Database:
         self.blocking_sessions = sessionmaker(
             self.blocking_engine, expire_on_commit=False, autoflush=False
         )
+        # Polling formal OpenHands state can remain blocked while a Runtime is
+        # unhealthy. Only the Worker owns this dedicated pool; API processes
+        # must not allocate an otherwise unused poll connection budget.
+        self.poll_engine: Engine | None = None
+        self.poll_sessions: sessionmaker[Session] | None = None
+        if poll_pool_size:
+            self.poll_engine = create_engine(
+                settings.database_url,
+                pool_pre_ping=True,
+                pool_size=poll_pool_size,
+                max_overflow=0,
+                pool_timeout=settings.blocking_pool_timeout_seconds,
+                connect_args={"options": f"-c statement_timeout={settings.statement_timeout_ms}"},
+            )
+            self.poll_sessions = sessionmaker(
+                self.poll_engine, expire_on_commit=False, autoflush=False
+            )
         # Background history reads can take several seconds against a large
         # OpenHands conversation. They must never reserve the same database
         # connection budget as the interactive state/readiness path.
@@ -94,6 +111,8 @@ class Database:
     async def dispose(self) -> None:
         await self.engine.dispose()
         await asyncio.to_thread(self.blocking_engine.dispose)
+        if self.poll_engine is not None:
+            await asyncio.to_thread(self.poll_engine.dispose)
         await asyncio.to_thread(self.history_engine.dispose)
         await asyncio.to_thread(self.control_engine.dispose)
 
@@ -101,6 +120,11 @@ class Database:
         pools = {
             "async": cast(QueuePool, self.engine.sync_engine.pool),
             "blocking": cast(QueuePool, self.blocking_engine.pool),
+            **(
+                {"poll": cast(QueuePool, self.poll_engine.pool)}
+                if self.poll_engine is not None
+                else {}
+            ),
             "history": cast(QueuePool, self.history_engine.pool),
             "control": cast(QueuePool, self.control_engine.pool),
         }
