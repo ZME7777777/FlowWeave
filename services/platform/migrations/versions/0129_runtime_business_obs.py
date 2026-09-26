@@ -1,6 +1,6 @@
 """Store sanitized formal Runtime business observations.
 
-Revision ID: 0129_runtime_business_observations
+Revision ID: 0129_runtime_business_obs
 Revises: 0128_admin_runtime_isolation
 """
 
@@ -9,7 +9,7 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0129_runtime_business_observations"
+revision = "0129_runtime_business_obs"
 down_revision = "0128_admin_runtime_isolation"
 branch_labels = None
 depends_on = None
