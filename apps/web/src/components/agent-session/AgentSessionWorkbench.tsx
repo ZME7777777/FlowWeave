@@ -6526,7 +6526,13 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     setTurnState('running');
     reportOperationError(selected?.id, error);
   } });
-  const resume = useMutation({ mutationFn: () => api.resumeConversation(workspace!.id, selected!.id), onMutate: () => setTurnState('resuming'), onSuccess: value => { if (value.cursor) setActiveTurnEventId(value.cursor); setTurnState('running'); reconcileConversationProjection(); onHostStateChanged?.(); }, onError: error => { setTurnState('paused'); reportOperationError(selected?.id, error); } });
+  const resume = useMutation({ mutationFn: () => api.resumeConversation(workspace!.id, selected!.id), onMutate: () => setTurnState('resuming'), onSuccess: value => {
+    if (value.cursor) setActiveTurnEventId(value.cursor);
+    setConversationUnread(selected!.id, false);
+    setTurnState('running');
+    reconcileConversationProjection();
+    onHostStateChanged?.();
+  }, onError: error => { setTurnState('paused'); reportOperationError(selected?.id, error); } });
   const decideConfirmation = useMutation({
     mutationFn: (accept: boolean) => api.decideConfirmation(workspace!.id, selected!.id, pendingConfirmation!.pending_actions_digest!, accept, confirmationReason.trim()),
     onSuccess: value => {

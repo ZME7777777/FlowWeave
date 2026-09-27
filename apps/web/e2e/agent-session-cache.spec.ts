@@ -2041,6 +2041,77 @@ test('A background conversation completion is persisted and shown as unread', as
   ]);
 });
 
+
+test('Resuming an unread conversation clears its unread marker before it renders as running', async ({ page }) => {
+  let authenticated = false;
+  let resumed = false;
+  const unreadWrites: Array<{ unread: boolean; unread_origin?: string }> = [];
+  const workspace = { id: 'resume-unread-workspace', display_name: '继续未读工作区', desired_state: 'RUNNING', updated_at: now };
+  const conversation = {
+    id: 'resume-unread-conversation', display_title: '待继续未读会话', title_state: 'MANUAL', lifecycle: 'ACTIVE',
+    streaming_callback_ready: true, write_available: true, execution_status: 'paused', unread: true, unread_origin: 'SYSTEM', created_at: now, updated_at: now,
+  };
+  const events = {
+    events: [
+      { id: 'resume-unread-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '继续前的任务', timestamp: now } },
+    ],
+    next_cursor: 'resume-unread-user', history_cursor: null, result: { status: 'PAUSED' },
+  };
+
+  await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path.endsWith('/auth/me')) return authenticated ? json(route, user) : json(route, { error: { code: 'AUTHENTICATION_REQUIRED', message: '请先登录' } }, 401);
+    if (path.endsWith('/auth/login') && request.method() === 'POST') { authenticated = true; return json(route, user); }
+    if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
+    if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
+    if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: [{ ...conversation, execution_status: resumed ? 'running' : 'paused' }], next_cursor: null });
+    if (path.endsWith('/conversation-activity')) return json(route, { running_binding_ids: resumed ? [conversation.id] : [] });
+    if (path.endsWith('/hydration')) return json(route, {
+      events: { ...events, result: { status: resumed ? 'RUNNING' : 'PAUSED' } },
+      context: { model_name: 'test-model', window_tokens: 128_000, used_tokens: 1_024, usage_current: true },
+      readiness: { ready: !resumed, execution_status: resumed ? 'running' : 'paused' },
+    });
+    if (path.endsWith('/resume') && request.method() === 'POST') {
+      resumed = true;
+      return json(route, { accepted: true, cursor: 'resume-unread-user' });
+    }
+    if (path.endsWith('/unread') && request.method() === 'PUT') {
+      const body = request.postDataJSON() as { unread: boolean; unread_origin?: string };
+      conversation.unread = body.unread;
+      conversation.unread_origin = body.unread ? body.unread_origin ?? 'MANUAL' : null;
+      unreadWrites.push(body);
+      return json(route, conversation);
+    }
+    if (path.endsWith('/events')) return json(route, { ...events, result: { status: resumed ? 'RUNNING' : 'PAUSED' } });
+    if (path.endsWith('/input-readiness')) return json(route, { ready: !resumed, execution_status: resumed ? 'running' : 'paused' });
+    if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
+    if (path.endsWith('/context')) return json(route, { model_name: 'test-model', window_tokens: 128_000, used_tokens: 1_024, usage_current: true });
+    if (path.endsWith('/work-directories')) return json(route, { root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [] });
+    if (path.endsWith('/workspace')) return json(route, {
+      root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: '/runtime/workspace/project',
+      work_directory: null, files: [], repositories: [], runtime: {}, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '不可用', note: '' } },
+    });
+    if (path.endsWith('/model-providers') || path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
+    if (path.includes('/conversations/') && request.method() === 'GET') return json(route, conversation);
+    return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+  });
+
+  await page.goto('/');
+  await login(page);
+  await page.goto('/agent/conversations/resume-unread-conversation');
+  const row = page.locator('[data-conversation-binding-id="resume-unread-conversation"]');
+  await expect(page.getByRole('button', { name: '继续当前 Agent' })).toBeVisible();
+  await expect(row.getByRole('img', { name: '会话已完成，有未读回复' })).toBeVisible();
+
+  await page.getByRole('button', { name: '继续当前 Agent' }).click();
+
+  await expect.poll(() => unreadWrites).toEqual([{ unread: false }]);
+  await expect(row.locator('.agent-workspace-conversation-running')).toBeVisible();
+  await expect(row.locator('.agent-workspace-conversation-unread')).toHaveCount(0);
+});
+
 test('Conversation context menu marks a conversation unread until it is opened or marked read', async ({ page }) => {
   let authenticated = false;
   const workspace = { id: 'unread-workspace', display_name: '未读工作区', desired_state: 'RUNNING', updated_at: now };
