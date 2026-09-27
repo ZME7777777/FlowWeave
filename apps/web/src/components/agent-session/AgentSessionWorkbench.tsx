@@ -4762,6 +4762,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       && !isRunning(item)
       && item.id !== routeBindingId
     ));
+    const attentionInBackground = conversations.filter(item => (
+      item.id !== routeBindingId
+      && (possiblyStuckConversationIds.has(item.id) || failedConversationIds.has(item.id))
+    ));
     const systemUnreadInBackground = new Map(
       [...completedInBackground, ...attentionInBackground]
         .filter(item => !(
@@ -4771,6 +4775,11 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         ))
         .map(item => [item.id, item]),
     );
+    for (const item of systemUnreadInBackground.values()) {
+      const pendingUnread = pendingUnreadUpdates.current.get(item.id)?.unread;
+      if (pendingUnread ?? item.unread) continue;
+      setConversationUnread(item.id, true, 'SYSTEM');
+    }
     setUnreadConversationIds(current => {
       const next = new Set<string>();
       for (const item of conversations) {
