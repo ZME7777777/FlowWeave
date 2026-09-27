@@ -419,13 +419,24 @@ def test_complete_active_branch_rejects_head_drift_between_pages() -> None:
         complete_active_branch(read, RuntimeHandle(job_id="job", conversation_id="conversation"))
 
 
-def test_hydration_reuses_latest_batch_context_and_readiness(
+def test_hydration_merges_formal_current_view_metrics_into_batch_context(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     workspace = object()
     binding = object()
     handle = RuntimeHandle(job_id="job", conversation_id="conversation")
-    context = {"model_name": "test-model", "window_tokens": 128_000}
+    context = {
+        "model_name": "test-model",
+        "window_tokens": 128_000,
+        "used_tokens": None,
+        "view_event_count": None,
+        "usage_current": False,
+    }
+    formal_context = {
+        "used_tokens": 67_947,
+        "view_event_count": 49,
+        "usage_current": True,
+    }
     readiness = RuntimeInputReadiness(ready=False, execution_status="running")
     captured: dict[str, object] = {}
     calls: list[object] = []
@@ -441,8 +452,9 @@ def test_hydration_reuses_latest_batch_context_and_readiness(
                 history_cursor="older",
             )
 
-        def conversation_context(self, _handle: object):
-            raise AssertionError("hydration must reuse its active-batch context")
+        def conversation_context(self, requested_handle: object):
+            calls.append(requested_handle)
+            return formal_context
 
         def input_readiness(self, _handle: object):
             raise AssertionError("hydration must reuse its active-batch readiness")
@@ -461,22 +473,33 @@ def test_hydration_reuses_latest_batch_context_and_readiness(
     hydrated = session_conversations.hydrate_conversation(None, "workspace", "binding")
 
     batch = captured["batch_override"]
-    assert calls == [handle]
+    assert calls == [handle, handle]
     assert isinstance(batch, RuntimeEventBatch)
     assert batch.history_cursor == "older"
     assert hydrated == {
         "events": {"events": [], "history_cursor": "older"},
-        "context": context,
+        "context": {**context, **formal_context},
         "readiness": readiness.as_dict(),
     }
 
 
-def test_node_hydration_reuses_latest_batch_context_and_readiness(
+def test_node_hydration_merges_formal_current_view_metrics_into_batch_context(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     binding = object()
     handle = RuntimeHandle(job_id="job", conversation_id="conversation")
-    context = {"model_name": "node-model", "window_tokens": 128_000}
+    context = {
+        "model_name": "node-model",
+        "window_tokens": 128_000,
+        "used_tokens": None,
+        "view_event_count": None,
+        "usage_current": False,
+    }
+    formal_context = {
+        "used_tokens": 12_345,
+        "view_event_count": 17,
+        "usage_current": True,
+    }
     readiness = RuntimeInputReadiness(ready=True, execution_status="idle")
     calls: list[object] = []
     captured: dict[str, RuntimeEventBatch] = {}
@@ -491,8 +514,9 @@ def test_node_hydration_reuses_latest_batch_context_and_readiness(
                 history_cursor="older",
             )
 
-        def conversation_context(self, _handle: object):
-            raise AssertionError("node hydration must reuse active-batch context")
+        def conversation_context(self, requested_handle: object):
+            calls.append(requested_handle)
+            return formal_context
 
         def input_readiness(self, _handle: object):
             raise AssertionError("node hydration must reuse active-batch readiness")
@@ -518,11 +542,11 @@ def test_node_hydration_reuses_latest_batch_context_and_readiness(
         None, flow_run_id="run", attempt_id="attempt", binding_id="binding"
     )
 
-    assert calls == [handle]
+    assert calls == [handle, handle]
     assert captured["batch"].history_cursor == "older"
     assert hydrated == {
         "events": {"events": [], "history_cursor": "older"},
-        "context": context,
+        "context": {**context, **formal_context},
         "readiness": readiness.as_dict(),
     }
 
@@ -2605,6 +2629,74 @@ def test_node_session_unread_state_persists_in_conversation_projection(
         )
         assert acknowledged["unread"] is False
         assert acknowledged["unread_origin"] == "SYSTEM"
+
+
+
+def test_node_session_activity_persists_system_unread_and_honors_acknowledgement(
+    db_session_factory: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with db_session_factory() as db:
+        flow_run_id, runtime_session_id, attempt_id = _node_session_context(db)
+        attempt = db.get(NodeAttempt, attempt_id)
+        assert attempt is not None
+        binding = AgentConversationBinding(
+            workspace_id=None,
+            host_kind="FLOW_NODE",
+            host_id=flow_run_id,
+            conversation_scope_id=attempt_id,
+            flow_run_id=flow_run_id,
+            node_run_id=attempt.node_run_id,
+            node_attempt_id=attempt_id,
+            runtime_session_id=runtime_session_id,
+            working_directory=attempt.workspace_ref,
+            openhands_conversation_id="node-system-unread",
+            display_title="节点异常未读会话",
+            lifecycle="ACTIVE",
+            create_idempotency_key="node-system-unread",
+        )
+        db.add(binding)
+        db.flush()
+        monkeypatch.setattr(
+            conversation_service.agent_sessions,
+            "resolve_flow_node_session_host",
+            lambda *_args, **_kwargs: SimpleNamespace(),
+        )
+        monkeypatch.setattr(
+            conversation_service,
+            "_node_handle",
+            lambda *_args, **_kwargs: RuntimeHandle(job_id="job", conversation_id=""),
+        )
+
+        class FailedRuntime:
+            failed = True
+
+            def running_conversation_ids(self, _handle):
+                return set()
+
+            def conversation_ids_by_status(self, _handle, status):
+                return {binding.openhands_conversation_id} if self.failed and status == "error" else set()
+
+        runtime = FailedRuntime()
+        monkeypatch.setattr(conversation_service, "get_runtime", lambda: runtime)
+
+        activity = conversation_service.node_session_activity(
+            db, flow_run_id=flow_run_id, attempt_id=attempt_id
+        )
+        assert activity["failed_binding_ids"] == [binding.id]
+        assert binding.unread is True
+        assert binding.unread_origin == "SYSTEM"
+
+        conversation_service.set_node_session_unread(
+            db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding.id,
+            unread=False, unread_origin="SYSTEM",
+        )
+        conversation_service.node_session_activity(db, flow_run_id=flow_run_id, attempt_id=attempt_id)
+        assert binding.unread is False
+        assert binding.unread_origin == "SYSTEM"
+
+        runtime.failed = False
+        conversation_service.node_session_activity(db, flow_run_id=flow_run_id, attempt_id=attempt_id)
+        assert binding.unread_origin is None
 
 
 def test_node_workspace_projection_shares_project_across_node_attempts(

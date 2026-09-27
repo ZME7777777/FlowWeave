@@ -7454,3 +7454,49 @@ FlowWeave 本地累加后猜测压缩边界。
 完成：`conversation_runtime`、`read_events`、`read_active_events` 与 `input_readiness` 都在同一 generation-scoped bulkhead 中执行。默认每 generation 最多 2 个并发正式读取，等待槽位最多 250ms；配置为 `RUNTIME_READ_PER_RUNTIME_CONCURRENCY` 和 `RUNTIME_READ_SLOT_TIMEOUT_SECONDS`。同一调用链中的嵌套 availability/readiness 检查可重入而不会自锁。超限快速返回 `RUNTIME_READ_PER_RUNTIME_SATURATED`，不会继续占用共享 HTTP/worker 容量；正式读取的底层 HTTP timeout 返回 `RUNTIME_BUSINESS_READ_TIMEOUT`（非正式操作的 timeout 保持既有 `EXECUTOR_UNAVAILABLE` 语义）。指标只增加低基数 bulkhead 饱和计数，不把 Runtime、会话、用户、URL 或事件 ID 当作指标标签。
 
 验收：新增受控并发断言证明同 generation 的第二个读被稳定拒绝、不同 generation 仍可取得自己的读取槽位；新增正式 HTTP read timeout 稳定错误码断言，两个定向 OpenHands pytest 通过（2 passed）。受影响 Ruff format/check、`py_compile`、Alembic head 和 `git diff --check` 通过。OpenHands adapter 的 Pyright 基线既有 6 条动态 JSON/Optional 错误，修改前后数目和位置等价，未引入新增 Pyright 诊断。未运行数据库迁移，不修改自动 replacement、OpenHands 容器或远端配置。
+
+### FR-534 Agent Workspace hydration 超时、取消与降级恢复 — DONE
+
+依赖：FR-533。
+
+目标：Agent Workspace 与 FlowRun 节点会话的首屏宿主读取和会话 hydration 必须有浏览器端有限超时；切换会话必须取消旧 hydration，不能因旧 Runtime／代理请求悬挂而阻塞最后选择的会话；同一 Runtime generation 的正式读取饱和或业务读超时必须投影为统一、可恢复的会话读取合同。Runtime 暂时不可读时，前端只能有界重试，随后保留会话页面并提供显式重试，不能无限 loading 或放大为多条并行 Runtime 读取。
+
+范围：Web request deadline、AgentSessionWorkbench hydration 单飞/取消/局部错误态、两类 hydration 路由的稳定错误归一化，以及定向浏览器回归。不得修改 OpenHands 协议、Runtime 生命周期、自动 replacement、数据库 schema 或远端配置。
+
+完成：默认宿主和 hydration 关键读取在浏览器端均有 15 秒 deadline，调用方 AbortSignal 与 timeout 信号合并；切换 binding 时取消旧 hydration query，并按 workspace/binding 隔离请求，迟到/取消的旧请求不会启动中间会话读取或污染当前选择。Runtime 暂不可读或客户端超时最多后台重试两次，随后展示局部错误和“重新读取会话”入口，不再无限 loading 或扇出三条独立 Runtime 读取；旧 Runtime 的非容量 hydration 失败仍保留原有独立读取兼容回退。Agent Workspace 与 FlowRun node hydration 对 `RUNTIME_READ_PER_RUNTIME_SATURATED`、`RUNTIME_BUSINESS_READ_TIMEOUT` 等正式读临时失败统一投影为 `AGENT_RUNTIME_UNAVAILABLE`（503）。
+
+验收：Web TypeScript typecheck、ESLint 和 production build 通过；定向 Playwright hydration 切换／兼容回退（2 passed）通过，且第一个 hydration 不释放时最后选择的会话仍可渲染。受影响 Python Ruff format/check 和 `py_compile` 通过；新增两类宿主的错误合同 pytest 已启动，但均在全局 Testcontainers PostgreSQL fixture 创建前因本机 Docker socket 缺失失败，未进入断言、未计为通过。完整 Agent session cache Playwright 24 项中 21 项通过；3 项既有非本切片场景（附件按钮严格定位、历史滚动请求计数、侧栏异常图标）稳定失败，未将其记为通过。未修改数据库 schema、OpenHands、Runtime 生命周期或远端配置。
+
+### FR-535 Agent Workspace hydration 响应体 deadline 收口 — DONE
+
+依赖：FR-534。
+
+目标：Agent Workspace／FlowRun node 的关键浏览器请求 deadline 必须覆盖 HTTP 响应头、错误体和成功 JSON 响应体的完整读取生命周期。若代理或 API 在响应体阶段悬挂，当前会话必须在 deadline 后退出首屏 loading，保留页面并提供显式重试；不得将同一条已超时的浏览器 hydration 自动重试而持续占用 loading。
+
+范围：Web request helper 的完整生命周期 timeout、AgentSessionWorkbench 的客户端 hydration timeout 收口及定向浏览器回归。不得修改 OpenHands 协议、Runtime 生命周期、数据库 schema 或远端配置。
+
+完成：`request()` 的 deadline 现在同时覆盖 fetch、HTTP 错误体和成功 JSON 响应体解析；无论 AbortSignal 是否被底层浏览器／代理正确兑现，Race deadline 都返回稳定 `REQUEST_TIMEOUT`。`AgentSessionWorkbench` 另有 12 秒的独立 loading-gate watchdog：超时时取消当前 hydration query、推进请求代次以拒绝迟到回调、解除全页 loading 并展示“读取会话超时，请重试”及显式重试。浏览器侧 timeout 不再自动重试同一悬挂请求；Runtime 明确返回的 `AGENT_RUNTIME_UNAVAILABLE` 仍保持既有有界重试。
+
+验收：Web TypeScript typecheck、ESLint 与 production build 通过。定向 Playwright 3 passed：快速切换不受旧 hydration 阻塞、旧 Runtime hydration 失败仍兼容回退、hydration 永不 settle 时 12 秒内退出 loading gate 且仅有一次 hydration 请求。未修改后端、数据库 schema、OpenHands、Runtime 生命周期或远端配置。
+
+### FR-536 刷新后的会话上下文可信指标恢复 — DONE
+
+依赖：FR-535。
+
+目标：已展示过可信 OpenHands 当前 View Token／事件指标的会话，在浏览器刷新后 Runtime 暂时无法返回指标时，仍必须在同一用户、宿主、工作区和 binding 的当前标签页内保留最后可信值；不得将未知值伪造成零、跨用户／会话复用，或把消息历史持久化为该恢复机制的一部分。
+
+完成：Agent Session 的 sessionStorage 恢复缓存新增独立、身份隔离的 context 指标快照，只接受正式 Runtime 返回的非负 `used_tokens`／`view_event_count`，且键由用户身份、宿主、工作区和 binding 共同限定。重新 hydration 或后续 context 读取缺少任一指标时不会擦除该指标；Runtime 返回新正式数值后立即覆盖。退出登录和身份切换会和既有会话缓存一并清除。
+
+验收：Web TypeScript typecheck、ESLint、production build 与 `git diff --check` 通过；定向 Playwright 已启动，但在本切片新增刷新断言前，于既有“模型服务暂时不可用”断言超时（`product-flow.spec.ts:1045`），未将其伪记为通过。任务状态唯一性通过。未修改 OpenHands、数据库 schema、Runtime 生命周期或远端配置。
+
+### FR-537 Hydration 当前 View 指标准确投影 — DONE
+
+依赖：FR-536。
+
+目标：会话 hydration 不得将 OpenHands 事件读取附带的基础 state context 误认为精确 current-View 指标。无论会话运行中或终态，刷新后的 hydration 都必须读取正式 `/context` 合同并返回 Token、当前 View 事件数及可信标识。
+
+范围：仅修复 Agent Workspace 与 FlowRun 节点会话 hydration 的 context 聚合及定向回归；不修改 OpenHands 协议、数据库 schema、Runtime 生命周期、自动 replacement 或远端配置。
+
+完成：`read_active_events` 继续提供同次原生 state 的模型、窗口、累计用量和 readiness 投影，但 hydration 不再把这份基础 context 误认为精确 current-View 用量。Agent Workspace 与 FlowRun 节点会话均补读正式 `conversation_context()`，只合并其 `used_tokens`、`view_event_count` 与 `usage_current` 字段，因而终态会话刷新也会返回 OpenHands `/context` 的正式 Token／事件指标。
+
+验收：两条无数据库直接 hydration 回归通过（2 passed），覆盖基础 batch context 的未知指标被正式 current-View Token／事件数覆盖；受影响 Python `py_compile`、Ruff format/check，以及 Web TypeScript typecheck、ESLint、production build 通过；`git diff --check` 与任务状态唯一性通过。标准 pytest 命令已启动，但全局 PostgreSQL Testcontainers fixture 因本机 Docker daemon 缺失而在断言前失败，未伪记为通过。未修改 OpenHands、数据库 schema、Runtime 生命周期或远端配置。

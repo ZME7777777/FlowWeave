@@ -1317,6 +1317,11 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.locator('.agent-workspace-overview').getByText('累计 12,716 Token', { exact: true })).toBeVisible();
   await expect(page.locator('.agent-context-progress.activity')).toContainText('事件42 / 10,000');
   await expect(page.locator('.agent-context-progress.activity')).toHaveAttribute('title', /OpenHands 当前活动 View 事件 42 \/ 自动压缩阈值 10,000/);
+  contextAvailable = false;
+  await page.reload();
+  await expect(page.locator('.agent-context-progress.token')).toContainText('Token6,380 / 512,000');
+  await expect(page.locator('.agent-context-progress.activity')).toContainText('事件42 / 10,000');
+  contextAvailable = true;
   const tokenProgress = page.locator('.agent-context-progress.token');
   const eventProgress = page.locator('.agent-context-progress.activity');
   await tokenProgress.evaluate(element => { (element as HTMLElement).dataset.stabilityMarker = 'token-progress'; });

@@ -12,6 +12,7 @@ import { ApiError, randomId, type AgentStreamEvent } from '../../api/client';
 import { agentWorkspaceSessionGateway, type AgentSessionGateway } from '../../api/agent-session-gateway';
 import { withoutDeploymentBase } from '../../deploymentPath';
 import { agentWorkspaceSessionHost, type AgentSessionHost } from './session-host';
+import { readConversationContextSnapshot, writeConversationContextSnapshot } from './conversation-cache';
 import { ConversationSurface, ConversationTaskPlan, type ConversationHistoryPrepend, type ConversationReference, type ModelRetryStatus } from '../ConversationSurface';
 import { isOpenHandsAgentReply, isOpenHandsEmptyResponseRecovery, orderOpenHandsConversationEvents } from '../conversationEvents';
 import { useProductDialog } from '../ProductDialogContext';
@@ -31,6 +32,8 @@ const ACTIVE_EVENT_RECOVERY_INTERVAL_MS = 4_000;
 const ACTIVE_EVENT_LATEST_RECHECK_INTERVAL_MS = 30_000;
 const SUBMISSION_EVENT_CONFIRMATION_TIMEOUT_MS = 60_000;
 const CONVERSATION_HYDRATION_SELECTION_DELAY_MS = 120;
+const HYDRATION_UI_DEADLINE_MS = 12_000;
+const MAX_UNAVAILABLE_HYDRATION_RETRIES = 2;
 const TERMINAL_CONVERSATION_CACHE_TTL_MS = 5 * 60 * 1000;
 const ACTIVE_CONVERSATION_CACHE_TTL_MS = 30_000;
 // A hydration response is a coherent native snapshot. Keep its three seeded
@@ -1023,6 +1026,10 @@ function isRuntimeReadUnavailable(error: unknown): boolean {
     && error.code === 'AGENT_RUNTIME_UNAVAILABLE';
 }
 
+function isHydrationRequestTimeout(error: unknown): boolean {
+  return error instanceof ApiError && error.code === 'REQUEST_TIMEOUT';
+}
+
 type AgentCapabilityType = 'SKILL' | 'MCP' | 'PLUGIN' | 'CONTEXT' | 'AGENT_DEFINITION' | 'HOOK';
 type ComposerSuggestionKind = 'SKILL' | 'COMMAND' | 'MCP' | 'NATIVE' | 'REFERENCE';
 type NativeComposerAction = 'CONDENSE';
@@ -1623,9 +1630,9 @@ function projectLocalMessages(
   const projected = formalEvents.filter(event => !suppressedFormalEventIds.has(event.id));
 
   for (const local of projections) {
-    const formalIndex = local.canonicalEventId
-      ? projected.findIndex(event => event.id === local.canonicalEventId)
-      : -1;
+    const formalIndex = local.localOnly || !local.canonicalEventId
+      ? -1
+      : projected.findIndex(event => event.id === local.canonicalEventId);
     const formalEvent = formalIndex >= 0 ? projected[formalIndex] : undefined;
     const mergedEvent = formalEvent ? mergeConversationEvent(local.event, formalEvent) : local.event;
     const localEvent: OpenHandsConversationEvent = {
@@ -1652,16 +1659,7 @@ function projectLocalMessages(
     else projected.push(localEvent);
   }
 
-  const unresolved = projections.filter(item => !item.canonicalEventId && !item.suppressedFormalEventId);
-  const unclaimedRoots = projected.flatMap(event => {
-    const isUserMessage = event.event_type === 'MESSAGE'
-      && ['user', 'human'].includes(String(event.payload.source ?? '').toLowerCase());
-    if (!isUserMessage || !unresolved.length
-      || typeof event.payload._flowweave_submission_id === 'string') return [];
-    return unresolved.some(item => !item.formalEventIdsAtSubmission.has(event.id)) ? [event.id] : [];
-  });
-  const hiddenUntilReceipt = eventBranchIdsFromRoots(projected, unclaimedRoots);
-  return projected.filter(event => !hiddenUntilReceipt.has(event.id));
+  return projected;
 }
 
 const USER_SOURCE_URL_PATTERN = /\b(?:https?:\/\/|www\.)[^\s<>"'`()[\]{}]+/gi;
@@ -4373,7 +4371,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   // permanently stuck on the first transient response.
   const workspaceQuery = useQuery({
     queryKey: sessionQueryKey(host, 'default-host'),
-    queryFn: api.defaultHost,
+    queryFn: ({ signal }) => api.defaultHost(signal),
     retry: (count, error) => !(error instanceof ApiError && error.status < 500 && error.status !== 409) && count < 3,
     retryDelay: attempt => Math.min(1000 * 2 ** attempt, 5000),
     refetchOnWindowFocus: true,
@@ -4735,10 +4733,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       && !isRunning(item)
       && item.id !== routeBindingId
     ));
-    const attentionInBackground = conversations.filter(item => (
-      item.id !== routeBindingId
-      && (possiblyStuckConversationIds.has(item.id) || failedConversationIds.has(item.id))
-    ));
     const systemUnreadInBackground = new Map(
       [...completedInBackground, ...attentionInBackground]
         .filter(item => !(
@@ -4763,9 +4757,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     }
     for (const bindingId of activityBaseline.current.keys()) {
       if (!present.has(bindingId)) activityBaseline.current.delete(bindingId);
-    }
-    for (const item of systemUnreadInBackground.values()) {
-      if (!item.unread) setConversationUnread(item.id, true, 'SYSTEM');
     }
   }, [conversations, failedConversationIds, possiblyStuckConversationIds, routeBindingId, runningConversationIds, setConversationUnread]);
   useEffect(() => {
@@ -4946,7 +4937,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const contextQueryKey = sessionQueryKey(host, 'conversation-context', workspace?.id, selected?.id);
   const [hydrationPhase, setHydrationPhase] = useState<{
     bindingId: string;
-    state: 'loading' | 'ready' | 'fallback';
+    state: 'loading' | 'ready' | 'fallback' | 'unavailable';
+    error?: Error;
   }>();
   const hydrationSelection = useRef<{
     workspaceId: string;
@@ -4960,8 +4952,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     hydratedAt: number;
     running: boolean;
   }>());
+  const hydrationQueryKey = sessionQueryKey(host, 'conversation-hydration-request', workspace?.id, selected?.id);
   const hydrationQuery = useQuery({
-    queryKey: sessionQueryKey(host, 'conversation-hydration-request'),
+    queryKey: hydrationQueryKey,
     queryFn: async ({ signal }) => {
       const request = hydrationExecution.current;
       if (!request) throw new Error('Conversation hydration selection is unavailable');
@@ -4994,35 +4987,70 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   });
   const refreshConversationHydration = hydrationQuery.refetch;
   const hydrationRequestInFlight = useRef(false);
+  const hydrationAttemptCount = useRef(0);
   const hydrationSelectionTimer = useRef<number | undefined>(undefined);
   const hydrationRetryTimer = useRef<number | undefined>(undefined);
+  const hydrationRequestGeneration = useRef(0);
   const runSelectedHydration = useCallback(async () => {
     if (hydrationRequestInFlight.current) return;
     const request = hydrationSelection.current;
     if (!request) return;
     hydrationRequestInFlight.current = true;
     hydrationExecution.current = request;
-    const result = await refreshConversationHydration({ cancelRefetch: false });
-    hydrationRequestInFlight.current = false;
+    const requestGeneration = hydrationRequestGeneration.current + 1;
+    hydrationRequestGeneration.current = requestGeneration;
+    let result: Awaited<ReturnType<typeof refreshConversationHydration>>;
+    try {
+      result = await refreshConversationHydration({ cancelRefetch: false });
+    } finally {
+      if (hydrationRequestGeneration.current === requestGeneration) {
+        hydrationRequestInFlight.current = false;
+      }
+    }
 
+    if (hydrationRequestGeneration.current !== requestGeneration) return;
     const current = hydrationSelection.current;
     if (!current || current.workspaceId !== request.workspaceId || current.bindingId !== request.bindingId) {
-      void runSelectedHydration();
+      // The latest selection owns its own debounce timer. Do not let a
+      // cancelled, stale request bypass that timer and start an intermediate
+      // conversation hydration while the user is still switching sessions.
       return;
     }
     if (result.isSuccess) {
       setHydrationPhase({ bindingId: request.bindingId, state: 'ready' });
       return;
     }
+    if (isHydrationRequestTimeout(result.error)) {
+      // Retrying a browser-side deadline repeats the same stalled proxy/body
+      // read and keeps the whole session surface blocked. Stop immediately;
+      // the user can explicitly retry after the transport has recovered.
+      setHydrationPhase({
+        bindingId: request.bindingId,
+        state: 'unavailable',
+        error: result.error instanceof Error ? result.error : new Error('读取会话超时，请重试。'),
+      });
+      return;
+    }
     if (isRuntimeReadUnavailable(result.error)) {
-      hydrationRetryTimer.current = window.setTimeout(() => {
-        hydrationRetryTimer.current = undefined;
-        void runSelectedHydration();
-      }, 5_000);
+      hydrationAttemptCount.current += 1;
+      if (hydrationAttemptCount.current <= MAX_UNAVAILABLE_HYDRATION_RETRIES) {
+        hydrationRetryTimer.current = window.setTimeout(() => {
+          hydrationRetryTimer.current = undefined;
+          void runSelectedHydration();
+        }, 5_000);
+        return;
+      }
+      setHydrationPhase({
+        bindingId: request.bindingId,
+        state: 'unavailable',
+        error: result.error instanceof Error ? result.error : new Error('Agent 会话暂时无法读取。'),
+      });
       return;
     }
     setHydrationPhase({ bindingId: request.bindingId, state: 'fallback' });
   }, [refreshConversationHydration]);
+  const runSelectedHydrationRef = useRef(runSelectedHydration);
+  runSelectedHydrationRef.current = runSelectedHydration;
   useEffect(() => {
     const workspaceId = workspace?.id;
     const bindingId = selected?.id;
@@ -5031,7 +5059,14 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       setHydrationPhase(undefined);
       return;
     }
+    void queryClient.cancelQueries({
+      queryKey: sessionQueryKey(host, 'conversation-hydration-request'),
+      exact: false,
+    });
+    hydrationRequestInFlight.current = false;
+    hydrationRequestGeneration.current += 1;
     hydrationSelection.current = { workspaceId, bindingId };
+    hydrationAttemptCount.current = 0;
     const trusted = trustedHydrations.current.get(bindingId);
     const ttl = trusted?.running
       ? ACTIVE_CONVERSATION_CACHE_TTL_MS
@@ -5061,30 +5096,67 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     }
     hydrationSelectionTimer.current = window.setTimeout(() => {
       hydrationSelectionTimer.current = undefined;
-      void runSelectedHydration();
+      void runSelectedHydrationRef.current();
     }, CONVERSATION_HYDRATION_SELECTION_DELAY_MS);
-  }, [host, queryClient, runSelectedHydration, selected?.id, workspace?.id]);
+  // The execution callback changes with the per-binding query key. Keep this
+  // selection effect scoped to the selection itself so a refetch identity
+  // change cannot restart an intermediate hydration during rapid navigation.
+  }, [host, queryClient, selected?.id, workspace?.id]);
   useEffect(() => () => {
     hydrationSelection.current = undefined;
     hydrationExecution.current = undefined;
+    hydrationRequestGeneration.current += 1;
     if (hydrationSelectionTimer.current !== undefined) window.clearTimeout(hydrationSelectionTimer.current);
     if (hydrationRetryTimer.current !== undefined) window.clearTimeout(hydrationRetryTimer.current);
     void queryClient.cancelQueries({
-      queryKey: sessionQueryKey(host, 'conversation-hydration-request'), exact: true,
+      queryKey: sessionQueryKey(host, 'conversation-hydration-request'), exact: false,
     });
   }, [host, queryClient]);
   const selectedHydrationPhase = hydrationPhase && hydrationPhase.bindingId === selected?.id
     ? hydrationPhase.state
     : 'loading';
+  useEffect(() => {
+    const workspaceId = workspace?.id;
+    const bindingId = selected?.id;
+    if (!workspaceId || !bindingId || selectedHydrationPhase !== 'loading') return;
+    const timer = window.setTimeout(() => {
+      const current = hydrationSelection.current;
+      if (
+        !current
+        || current.workspaceId !== workspaceId
+        || current.bindingId !== bindingId
+      ) return;
+      // Advance the generation before cancelling. A late query/fetch completion
+      // is then stale and cannot replace this recoverable local error.
+      hydrationRequestGeneration.current += 1;
+      hydrationRequestInFlight.current = false;
+      void queryClient.cancelQueries({
+        queryKey: sessionQueryKey(host, 'conversation-hydration-request', workspaceId, bindingId),
+        exact: true,
+      });
+      setHydrationPhase({
+        bindingId,
+        state: 'unavailable',
+        error: new ApiError('读取会话超时，请重试。', 'REQUEST_TIMEOUT', {}, 408),
+      });
+    }, HYDRATION_UI_DEADLINE_MS);
+    return () => window.clearTimeout(timer);
+  }, [host, queryClient, selected?.id, selectedHydrationPhase, workspace?.id]);
   // Do not fan out fallback reads while hydration is still attempting. A
   // non-capacity failure restores the established independent paths, but they
   // remain behind the same first-screen gate until all snapshots are fresh.
-  const hydrationFallbackAllowed = selectedHydrationPhase !== 'loading';
+  const hydrationFallbackAllowed = selectedHydrationPhase === 'ready' || selectedHydrationPhase === 'fallback';
   const hydrationData = selectedHydrationPhase === 'ready'
     && hydrationExecution.current?.bindingId === selected?.id
     ? hydrationQuery.data
     : undefined;
   const hydrationDataUpdatedAt = hydrationData ? hydrationQuery.dataUpdatedAt : undefined;
+  const retryConversationHydration = useCallback(() => {
+    if (!hydrationSelection.current) return;
+    hydrationAttemptCount.current = 0;
+    setHydrationPhase({ bindingId: hydrationSelection.current.bindingId, state: 'loading' });
+    void runSelectedHydration();
+  }, [runSelectedHydration]);
   const trustedHydration = selected?.id ? trustedHydrations.current.get(selected.id) : undefined;
   const inputReadinessQuery = useQuery({
     queryKey: inputReadinessQueryKey,
@@ -5418,7 +5490,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const terminalSyncTurnKey = selected && nativeTurnTerminal && unfinishedFormalTurnId
     ? `${selected.id}:${unfinishedFormalTurnId}`
     : undefined;
-  const terminalResultMissing = Boolean(terminalSyncTurnKey);
   const terminalEventReconciliationActive = Boolean(terminalSyncTurnKey && terminalSyncTurnKey !== expiredTerminalSyncTurnKey);
   const latestFormalUserEventId = [...displayedEvents].reverse().find(event => event.event_type === 'MESSAGE'
     && ['user', 'human'].includes(String(event.payload.source ?? '').toLowerCase()))?.id;
@@ -5568,12 +5639,19 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     staleTime: INITIAL_HYDRATION_STALE_TIME_MS,
     refetchOnWindowFocus: false,
   });
+  const storedCurrentContext = useMemo(() => workspace && selected
+    ? readConversationContextSnapshot(host.id, workspace.id, selected.id)
+    : undefined, [host.id, selected, workspace]);
+  useEffect(() => {
+    if (!workspace || !selected || !contextQuery.data) return;
+    writeConversationContextSnapshot(host.id, workspace.id, selected.id, contextQuery.data);
+  }, [contextQuery.data, host.id, selected, workspace]);
   const lastCurrentContextByBinding = useRef(new Map<string, AgentConversationContext>());
   const currentContext = useMemo(() => {
     const bindingId = selected?.id;
     const incoming = contextQuery.data;
-    if (!bindingId || !incoming) return incoming;
-    const previous = lastCurrentContextByBinding.current.get(bindingId);
+    if (!bindingId || !incoming) return incoming ?? storedCurrentContext;
+    const previous = lastCurrentContextByBinding.current.get(bindingId) ?? storedCurrentContext;
     const hasCurrentTokens = typeof incoming.used_tokens === 'number' && incoming.used_tokens >= 0;
     const hasCurrentEventCount = typeof incoming.view_event_count === 'number' && incoming.view_event_count >= 0;
     if (hasCurrentTokens || hasCurrentEventCount) {
@@ -5586,7 +5664,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       return current;
     }
     return previous ? { ...incoming, used_tokens: previous.used_tokens, view_event_count: previous.view_event_count } : incoming;
-  }, [contextQuery.data, selected?.id]);
+  }, [contextQuery.data, selected?.id, storedCurrentContext]);
   const canWrite = Boolean(selected?.write_available);
   // Interrupting an active native turn is separate from appending a message.
   // The Runtime validates the request again, so this never grants write access
@@ -6653,7 +6731,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       return;
     }
     dispatchMessage({ ...queuedMessage, bindingId: selected.id });
-  }, [attachments, bootstrap, canBootstrap, canWrite, commitQueuedMessages, composerAnnotations, composerScope, conversationDraft, dispatchMessage, effectiveTurnState, host.id, migrateStreaming.isPending, pendingMigratedSend, queueModeEnabled, references, replaceComposerDraft, selected, selectedCondensing, showOptimisticUserBubble, workspace, workspaceReferences]);
+  }, [attachments, bootstrap, canBootstrap, canWrite, commitQueuedMessages, composerAnnotations, composerScope, conversationDraft, dispatchMessage, effectiveTurnState, host.id, migrateStreaming, pendingMigratedSend, queueModeEnabled, references, replaceComposerDraft, selected, selectedCondensing, showOptimisticUserBubble, workspace, workspaceReferences]);
   const sendDraftDirectly = useCallback((draftContent = composerDraftRef.current) => {
     if (selectedCondensing) {
       enqueueDraft(draftContent);
@@ -6702,7 +6780,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     setAttachments([]);
     setReferences([]); setWorkspaceReferences([]); setComposerAnnotations([]);
     dispatchMessage({ ...message, bindingId: selected.id });
-  }, [attachments, canWrite, composerAnnotations, composerScope, conversationDraft, dispatchMessage, effectiveTurnState, enqueueDraft, host.id, migrateStreaming.isPending, pendingMigratedSend, queueModeEnabled, queuedMessages, references, replaceComposerDraft, selected, selectedCondensing, workspace, workspaceReferences]);
+  }, [attachments, canWrite, composerAnnotations, composerScope, conversationDraft, dispatchMessage, effectiveTurnState, enqueueDraft, host.id, migrateStreaming, pendingMigratedSend, queueModeEnabled, queuedMessages, references, replaceComposerDraft, selected, selectedCondensing, workspace, workspaceReferences]);
   const sendQueuedMessageImmediately = useCallback((message: QueuedMessage) => {
     if (selectedCondensing || !queueModeEnabled || !canWrite || effectiveTurnState !== 'running' || !selected?.streaming_callback_ready || message.scope !== selected.id || message.deliveryState !== 'queued') return;
     dispatchMessage({ ...message, bindingId: selected.id, nativeGuidance: true });
@@ -6826,7 +6904,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const composerNote = visibleQueuedMessages.length > 0
     ? queueModeEnabled ? `已排队 ${visibleQueuedMessages.length} 条` : `队列已关闭 · 保留 ${visibleQueuedMessages.length} 条`
     : '';
-  const visibleError = operationError ?? confirmationQuery.error ?? eventsQuery.error;
+  const hydrationError = selectedHydrationPhase === 'unavailable' ? hydrationPhase?.error : undefined;
+  const visibleError = operationError ?? hydrationError ?? confirmationQuery.error ?? eventsQuery.error;
   const composerHasContent = Boolean(
     composerHasText || attachments.length || references.length || workspaceReferences.length || composerAnnotations.length,
   );
@@ -7027,9 +7106,13 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       ? Boolean(eventsQuery.data?.monitoring?.possibly_stuck)
       : possiblyStuckConversationIds.has(item.id);
     const failed = failedConversationIds.has(item.id);
+    // Unread is a user-isolated server projection. Activity only decides
+    // whether a persisted SYSTEM unread record is an alert right now.
+    const unread = unreadConversationIds.has(item.id);
+    const unreadOrigin = item.unread_origin;
     const conversationWritable = Boolean(item.write_available);
     const sync = conversationOrderSync[item.id];
-    return <WorkspaceConversationRow key={item.id} item={item} selectedBindingId={selectedBindingId} workspaceName={options.workspaceName} running={running} possiblyStuck={possiblyStuck} failed={failed} unread={unreadConversationIds.has(item.id)} unreadOrigin={item.unread_origin} pinned={pinnedConversationIds.has(item.id)} conversationWritable={conversationWritable} removing={remove.isPending} deleteDisabled={running} dragging={options.allowDrag === false ? false : draggedBindingId === item.id} dropPosition={options.allowDrag === false ? undefined : dragTarget?.bindingId === item.id ? (dragTarget.after ? 'after' : 'before') : undefined} orderSyncState={options.allowDrag === false ? undefined : sync?.state} onPointerDragStart={options.allowDrag === false ? undefined : event => startPointerConversationDrag(event, item, group)} onRetryOrder={options.allowDrag === false || sync?.state !== 'failed' ? undefined : () => synchronizeConversationOrder(item.id, sync.orderedBindingIds)} onSelect={options.onSelect ?? (() => selectConversation(item.id))} onDoubleClick={options.onDoubleClick} onTogglePin={() => toggleConversationPin(item.id)} onMarkUnread={() => markConversationUnread(item.id)} onMarkRead={options.onMarkRead} onAcknowledgeAlert={() => markConversationRead(item.id)} onDelete={features.conversationDeletion && conversationWritable ? () => void confirmDeletion('会话', conversationName(item)).then(ok => { if (ok) remove.mutate(item.id); }) : undefined} reveal={sidebarListMode === 'workspaces' && sidebarRevealBindingId === item.id}/>;
+    return <WorkspaceConversationRow key={item.id} item={item} selectedBindingId={selectedBindingId} workspaceName={options.workspaceName} running={running} possiblyStuck={possiblyStuck} failed={failed} unread={unread} unreadOrigin={unreadOrigin} pinned={pinnedConversationIds.has(item.id)} conversationWritable={conversationWritable} removing={remove.isPending} deleteDisabled={running} dragging={options.allowDrag === false ? false : draggedBindingId === item.id} dropPosition={options.allowDrag === false ? undefined : dragTarget?.bindingId === item.id ? (dragTarget.after ? 'after' : 'before') : undefined} orderSyncState={options.allowDrag === false ? undefined : sync?.state} onPointerDragStart={options.allowDrag === false ? undefined : event => startPointerConversationDrag(event, item, group)} onRetryOrder={options.allowDrag === false || sync?.state !== 'failed' ? undefined : () => synchronizeConversationOrder(item.id, sync.orderedBindingIds)} onSelect={options.onSelect ?? (() => selectConversation(item.id))} onDoubleClick={options.onDoubleClick} onTogglePin={() => toggleConversationPin(item.id)} onMarkUnread={() => markConversationUnread(item.id)} onMarkRead={options.onMarkRead} onAcknowledgeAlert={() => markConversationRead(item.id)} onDelete={features.conversationDeletion && conversationWritable ? () => void confirmDeletion('会话', conversationName(item)).then(ok => { if (ok) remove.mutate(item.id); }) : undefined} reveal={sidebarListMode === 'workspaces' && sidebarRevealBindingId === item.id}/>;
   };
   const pendingBootstrapItem = pendingBootstrap
     ? <button className={pendingBootstrap.draft.id === conversationDraft?.id ? 'active' : ''} aria-current={pendingBootstrap.draft.id === conversationDraft?.id ? 'page' : undefined} aria-label={`${pendingConversationName(pendingBootstrap.message)}，正在创建会话`}><LoaderCircle className="conversation-activity-spin" size={13}/><span><b>{pendingConversationName(pendingBootstrap.message)}</b><small>正在创建会话</small></span><ChevronRight size={13}/></button>
@@ -7166,7 +7249,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         monitoring={eventsQuery.data?.monitoring}
         connectionState={inputReadinessQuery.isError ? 'unavailable' : streamStatus === 'recovering' ? 'recovering' : streamStatus === 'connecting' ? 'checking' : inputReadinessQuery.isFetching && !inputReadinessQuery.data ? 'checking' : 'connected'}
       /> : <div className="agent-workbench-empty"><Bot size={32}/><b>新建会话开始协作</b><span>{features.workDirectories ? '每个会话共享同一工作区，但保留独立的对话与事件记录。' : '会话固定在当前节点 Attempt 的隔离工作目录。'}</span><button className="primary" disabled={!canOpenConversation} onClick={() => openConversationDraft({ displayName: features.workDirectories ? '根工作区' : '节点工作目录' })}><Plus size={15}/>新建会话</button></div>}
-      {visibleError && <p className="agent-workbench-error">{visibleError.message}</p>}
+      {visibleError && <p className="agent-workbench-error">{visibleError.message}{hydrationError && <button type="button" className="secondary" onClick={retryConversationHydration}>重新读取会话</button>}</p>}
       </div>
       {(selected || conversationDraft) && runtime?.state !== 'RECOVERING' && <div className="agent-composer-dock">
         <div className={`agent-composer ${conversationVisuallyActive || pendingConfirmation ? 'busy' : ''}`}>

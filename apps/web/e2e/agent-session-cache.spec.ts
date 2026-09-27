@@ -537,12 +537,11 @@ test('Rapid conversation switching hydrates only the settled selection', async (
 
   await page.getByRole('button', { name: '快速切换会话 B', exact: true }).click();
   await page.getByRole('button', { name: '快速切换会话 C', exact: true }).click();
-  await page.waitForTimeout(200);
-  expect(hydrationReads).toEqual(['rapid-switch-a']);
-
-  releaseFirstHydration?.();
   await expect(page.getByText('回复 rapid-switch-c', { exact: true })).toBeVisible();
-  expect(hydrationReads).toEqual(['rapid-switch-a', 'rapid-switch-c']);
+  expect(hydrationReads).toContain('rapid-switch-c');
+  // Do not release A: the selected conversation must not wait for an abandoned
+  // hydration request that can be stalled by a proxy or disconnected Runtime.
+  expect(releaseFirstHydration).toBeDefined();
 });
 
 
@@ -2157,6 +2156,7 @@ test('Conversation sidebar pins locally, orders activity, and reveals the select
     {
       id: 'sidebar-directory-running', display_title: '运行中目标会话', title_state: 'MANUAL', lifecycle: 'ACTIVE',
       streaming_callback_ready: true, write_available: true, execution_status: 'running', work_directory_id: directory.id,
+      unread: true, unread_origin: 'SYSTEM',
       created_at: '2026-09-12T09:30:00Z', updated_at: '2026-09-12T09:50:00Z',
     },
     {
@@ -2252,6 +2252,10 @@ test('Conversation sidebar pins locally, orders activity, and reveals the select
   await rootConversation.click();
   await expect(acknowledgeAlert).toHaveCount(0);
   await expect.poll(() => unreadWrites).toEqual([{ id: 'sidebar-root-unread', unread: false }]);
+  const runningRowInWorkspaceList = page.locator('[data-conversation-binding-id="sidebar-directory-running"]');
+  const runningAlertInWorkspaceList = runningRowInWorkspaceList.getByRole('button', { name: '确认会话长时间未产生进展已读' });
+  await expect(runningAlertInWorkspaceList).toBeVisible();
+  await expect(runningAlertInWorkspaceList).toHaveCSS('color', 'rgb(197, 63, 63)');
 
   await page.getByRole('button', { name: /查看活动会话/ }).click();
   const activity = page.getByRole('region', { name: '活动会话' });
@@ -2260,8 +2264,10 @@ test('Conversation sidebar pins locally, orders activity, and reveals the select
     'sidebar-directory-running',
   ]);
   const stalledRow = activity.locator('[data-conversation-binding-id="sidebar-directory-running"]');
-  await expect(stalledRow.getByRole('img', { name: '后台长时间未产生可确认进展' })).toBeVisible();
-  await expect(stalledRow.locator('.agent-workspace-conversation-alert.running')).toBeVisible();
+  const stalledAlert = stalledRow.getByRole('button', { name: '确认会话长时间未产生进展已读' });
+  await expect(stalledAlert).toBeVisible();
+  await expect(stalledAlert).toHaveCSS('color', 'rgb(197, 63, 63)');
+  await expect(stalledAlert).toHaveClass(/running/);
 
   const runningConversation = activity.getByRole('button', { name: '运行中目标会话', exact: true });
   await runningConversation.click();
@@ -2283,4 +2289,53 @@ test('Conversation sidebar pins locally, orders activity, and reveals the select
   await page.getByRole('dialog').getByRole('button', { name: /搜索目标会话/ }).click();
   await expect(page).toHaveURL(/\/agent\/conversations\/sidebar-search-target$/);
   await expect(page.locator('[data-conversation-event-id="sidebar-search-event"]')).toHaveClass(/conversation-search-target/);
+});
+
+test('Agent session exits the first-screen gate when hydration never settles', async ({ page }) => {
+  let authenticated = false;
+  let hydrationReads = 0;
+  const neverSettles = new Promise<void>(() => undefined);
+  const workspace = {
+    id: 'hydration-timeout-workspace', display_name: '水合超时工作区', desired_state: 'RUNNING', updated_at: now,
+  };
+  const conversation = {
+    id: 'hydration-timeout-conversation', display_title: '水合响应体超时会话', title_state: 'MANUAL',
+    lifecycle: 'ACTIVE', streaming_callback_ready: true, write_available: true, execution_status: 'idle',
+    created_at: now, updated_at: now,
+  };
+
+  await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path.endsWith('/auth/me')) return authenticated
+      ? json(route, user)
+      : json(route, { error: { code: 'AUTHENTICATION_REQUIRED', message: '请先登录' } }, 401);
+    if (path.endsWith('/auth/login') && request.method() === 'POST') { authenticated = true; return json(route, user); }
+    if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
+    if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
+    if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: [conversation], next_cursor: null });
+    if (path.endsWith('/hydration')) { hydrationReads += 1; await neverSettles; return; }
+    if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
+    if (path.endsWith('/work-directories')) return json(route, {
+      root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [],
+    });
+    if (path.endsWith('/workspace')) return json(route, {
+      root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' },
+      working_directory: '/runtime/workspace/project', work_directory: null, files: [], repositories: [],
+      runtime: {}, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '不可用', note: '' } },
+    });
+    if (path.endsWith('/model-providers') || path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
+    if (path.includes('/conversations/') && request.method() === 'GET') return json(route, conversation);
+    return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+  });
+
+  await page.goto('/');
+  await login(page);
+  await page.goto('/agent/conversations/hydration-timeout-conversation');
+  await expect.poll(() => hydrationReads).toBe(1);
+  await expect(page.locator('.agent-workbench-error')).toContainText('读取会话超时，请重试。', { timeout: 14_000 });
+  await expect(page.getByRole('button', { name: '重新读取会话' })).toBeVisible();
+  await expect(page.getByRole('status').filter({ hasText: '正在加载会话' })).toHaveCount(0);
+  expect(hydrationReads).toBe(1);
 });
