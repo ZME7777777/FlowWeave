@@ -605,6 +605,98 @@ test('Agent session restores independent Runtime reads when hydration is unavail
   expect(fallbackReads).toBe(3);
 });
 
+
+test('Foreground recovery reconciles a stale terminal snapshot for a running conversation', async ({ page }) => {
+  let authenticated = false;
+  let runtimeRunning = false;
+  let eventReads = 0;
+  const workspace = {
+    id: 'foreground-recovery-workspace', display_name: '前台恢复工作区', desired_state: 'RUNNING', updated_at: now,
+  };
+  const conversation = {
+    id: 'foreground-recovery-conversation', display_title: '后台仍在运行的会话', title_state: 'MANUAL', lifecycle: 'ACTIVE',
+    streaming_callback_ready: true, write_available: true, execution_status: 'idle', created_at: now, updated_at: now,
+  };
+  const terminalEvents = {
+    events: [
+      { id: 'foreground-old-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '上一轮已完成请求', timestamp: now } },
+      { id: 'foreground-old-agent', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'foreground-old-user', content: '上一轮回复', timestamp: now } },
+    ],
+    next_cursor: 'foreground-old-agent', history_cursor: null, result: { status: 'COMPLETED' },
+  };
+  const runningEvents = {
+    events: [
+      ...terminalEvents.events,
+      { id: 'foreground-running-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'foreground-old-agent', content: '后台继续处理的请求', timestamp: now } },
+    ],
+    next_cursor: 'foreground-running-user', history_cursor: null, result: { status: 'RUNNING' },
+  };
+
+  await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path.endsWith('/auth/me')) return authenticated
+      ? json(route, user)
+      : json(route, { error: { code: 'AUTHENTICATION_REQUIRED', message: '请先登录' } }, 401);
+    if (path.endsWith('/auth/login') && request.method() === 'POST') { authenticated = true; return json(route, user); }
+    if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
+    if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
+    if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, {
+      items: [{ ...conversation, execution_status: runtimeRunning ? 'running' : 'idle' }], next_cursor: null,
+    });
+    if (path.endsWith('/conversation-activity')) return json(route, {
+      running_binding_ids: runtimeRunning ? [conversation.id] : [],
+    });
+    if (path.endsWith('/hydration')) return json(route, {
+      events: terminalEvents,
+      context: { model_name: 'test-model', window_tokens: 128_000, used_tokens: 1_024, usage_current: true },
+      readiness: { ready: true, execution_status: 'idle' },
+    });
+    if (path.endsWith('/events')) {
+      eventReads += 1;
+      return json(route, runtimeRunning ? runningEvents : terminalEvents);
+    }
+    if (path.endsWith('/input-readiness')) return json(route, {
+      ready: !runtimeRunning, execution_status: runtimeRunning ? 'running' : 'idle',
+    });
+    if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
+    if (path.endsWith('/work-directories')) return json(route, {
+      root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [],
+    });
+    if (path.endsWith('/workspace')) return json(route, {
+      root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' },
+      working_directory: '/runtime/workspace/project', work_directory: null, files: [], repositories: [],
+      runtime: {}, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '不可用', note: '' } },
+    });
+    if (path.endsWith('/model-providers') || path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
+    if (path.includes('/conversations/') && request.method() === 'GET') return json(route, conversation);
+    return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+  });
+
+  await page.goto('/');
+  await login(page);
+  await page.goto('/agent/conversations/foreground-recovery-conversation');
+  await expect(page.getByText('上一轮回复', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '发送消息' })).toBeVisible();
+  const readsBeforeForeground = eventReads;
+
+  runtimeRunning = true;
+  await page.evaluate(() => {
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' });
+    document.dispatchEvent(new Event('visibilitychange'));
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'visible' });
+    document.dispatchEvent(new Event('visibilitychange'));
+    window.dispatchEvent(new Event('focus'));
+  });
+
+  await expect.poll(() => eventReads).toBeGreaterThan(readsBeforeForeground);
+  await expect(page.getByText('后台继续处理的请求', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toBeVisible();
+  await expect(page.locator('[data-conversation-binding-id="foreground-recovery-conversation"] .agent-workspace-conversation-running')).toBeVisible();
+});
+
+
 test('Agent session renders a completed long Markdown reply without manual expansion', async ({ page }) => {
   let authenticated = false;
   let eventRequests = 0;

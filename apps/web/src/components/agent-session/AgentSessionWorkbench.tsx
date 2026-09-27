@@ -1652,8 +1652,9 @@ function projectLocalMessages(
       projected[formalIndex] = localEvent;
       continue;
     }
-    const childIndex = local.canonicalEventId
-      ? projected.findIndex(event => event.payload.parent_id === local.canonicalEventId)
+    const formalAnchorId = local.canonicalEventId ?? local.suppressedFormalEventId;
+    const childIndex = formalAnchorId
+      ? projected.findIndex(event => event.payload.parent_id === formalAnchorId)
       : -1;
     if (childIndex >= 0) projected.splice(childIndex, 0, localEvent);
     else projected.push(localEvent);
@@ -5164,7 +5165,12 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     // This is the formal OpenHands execution-state read used to restore an
     // in-flight turn after a browser reload. A terminal trusted snapshot does
     // not need another Runtime read merely because the user revisited it.
-    enabled: Boolean(workspace && selected && hydrationFallbackAllowed && trustedHydration?.running !== false),
+    enabled: Boolean(
+      workspace
+      && selected
+      && hydrationFallbackAllowed
+      && (trustedHydration?.running !== false || runningConversationIds.has(selected.id)),
+    ),
     initialData: hydrationData?.readiness,
     initialDataUpdatedAt: hydrationData ? hydrationDataUpdatedAt : undefined,
     staleTime: INITIAL_HYDRATION_STALE_TIME_MS,
@@ -5313,23 +5319,17 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     if (!foregroundRecoverySignal || !pageVisible || !workspace || !selected
       || foregroundRecoverySignal === handledForegroundRecoverySignal.current) return;
     handledForegroundRecoverySignal.current = foregroundRecoverySignal;
-    const cachedTurnUnfinished = Boolean(latestUnfinishedUserEventId(eventsQuery.data?.events ?? []));
-    if (nativeTurnTerminal && !cachedTurnUnfinished) return;
-    const mayHaveMissedActiveEvents = conversationIsRunning(selected.execution_status)
-      || localTurnGenerating
-      || inputReadinessQuery.data?.ready === false
-      || cachedTurnUnfinished;
-    if (!mayHaveMissedActiveEvents) return;
 
-    // Background tabs may suspend timers and silently lose WebSocket frames.
-    // Active turns recover immediately; completed turns retain their stable
-    // projection because a focus event alone cannot add native work.
+    // Browsers can suspend both the event cache and the readiness request while
+    // a tab is hidden. A stale terminal readiness plus an incomplete cache must
+    // not suppress reconciliation: the current Runtime snapshot decides whether
+    // the turn ended after the foreground transition.
     void synchronizeConversationEvents(true, 'foreground');
     void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversations', workspace.id) });
     void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-activity', workspace.id) });
     void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-input-readiness', workspace.id, selected.id) });
     void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-confirmation', workspace.id, selected.id) });
-  }, [eventsQuery.data?.events, foregroundRecoverySignal, host, inputReadinessQuery.data?.ready, localTurnGenerating, nativeTurnTerminal, pageVisible, queryClient, selected, synchronizeConversationEvents, workspace]);
+  }, [foregroundRecoverySignal, host, pageVisible, queryClient, selected, synchronizeConversationEvents, workspace]);
   // Let the latest native window paint before background history starts. This
   // makes the first visual state deterministic. History is a read-only
   // native projection and must keep loading while the current turn runs.
@@ -5508,12 +5508,14 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     state: selectedCondensing ? 'running' as const : effectiveTurnState,
     active: selectedCondensing || effectiveTurnState === 'running' || effectiveTurnState === 'pausing' || effectiveTurnState === 'resuming',
   }), [effectiveTurnState, selectedCondensing]);
-  const conversationVisuallyActive = conversationActivity.active || (
-    !hydrationQuery.isPending
-    && effectiveTurnState !== 'paused'
-    && hasUnfinishedFormalTurn
-    && (!nativeTurnTerminal || terminalEventReconciliationActive)
-  );
+  const conversationVisuallyActive = conversationActivity.active
+    || (runningConversationIds.has(selected?.id ?? '') && !latestFormalTurnFinished)
+    || (
+      !hydrationQuery.isPending
+      && effectiveTurnState !== 'paused'
+      && hasUnfinishedFormalTurn
+      && (!nativeTurnTerminal || terminalEventReconciliationActive)
+    );
   const latestDisplayedEvent = displayedEvents.at(-1);
   useEffect(() => {
     setModelRetryStatus(undefined);
@@ -6353,7 +6355,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
           const projection = current.get(message.id);
           if (!projection) return;
           current.set(message.id, projection.localOnly
-            ? { ...projection, canonicalEventId: cursor, suppressedFormalEventId: cursor, state: 'accepted' }
+            ? { ...projection, suppressedFormalEventId: cursor, state: 'accepted' }
             : { ...projection, canonicalEventId: cursor, state: 'accepted' });
         });
         releaseDeferredFormalUserEvents(message.bindingId);
@@ -6403,7 +6405,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     if (sendingMessageIds.current.has(message.id)) return;
     sendingMessageIds.current.add(message.id);
     commitQueuedMessages(current => current.filter(item => item.id !== message.id));
-    showOptimisticUserBubble(message, 'pending-user', 'submitting', message.nativeGuidance === true);
+    // The current page owns its submitted user bubble. The native event only
+    // anchors subsequent process/reply events and suppresses its duplicate.
+    showOptimisticUserBubble(message, 'pending-user', 'submitting', true);
     if (!message.nativeGuidance) {
       setActiveTurnEventId(undefined);
       setRequestStartedAt(Date.now());
