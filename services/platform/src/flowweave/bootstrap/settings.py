@@ -61,7 +61,7 @@ class Settings(BaseSettings):
     rate_limit_redis_url: str = ""
     rate_limit_read_requests_per_minute: int = Field(default=600, ge=1, le=50_000)
     rate_limit_user_requests_per_minute: int = Field(default=120, ge=1, le=10_000)
-    rate_limit_conversation_messages_per_minute: int = Field(default=20, ge=1, le=1_000)
+    rate_limit_conversation_messages_per_minute: int = Field(default=60, ge=1, le=1_000)
     openhands_session_api_key: str = "flowweave-internal"
     openhands_workspace_root: Path = Path("/workspaces")
     # Uploaded executable capability assets are mounted separately from the
@@ -113,11 +113,11 @@ class Settings(BaseSettings):
     capability_import_ttl_seconds: int = Field(default=900, ge=60)
     seed_demo: bool = False
     worker_id: str = ""
-    worker_concurrency: int = Field(default=4, ge=1, le=64)
+    worker_concurrency: int = Field(default=8, ge=1, le=64)
     # Formal OpenHands polling can block on an unhealthy Runtime. Keep its
     # executor and database pool deliberately separate from Runtime control
     # work so one stalled read cannot consume provision/recovery capacity.
-    runtime_poll_worker_concurrency: int = Field(default=1, ge=1, le=16)
+    runtime_poll_worker_concurrency: int = Field(default=2, ge=1, le=16)
     task_lease_seconds: int = Field(default=30, ge=5)
     task_heartbeat_seconds: int = Field(default=10, ge=1)
     # The task ledger is an execution/audit window, not an unbounded event
