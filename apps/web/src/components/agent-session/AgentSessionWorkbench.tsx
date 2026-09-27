@@ -3535,7 +3535,9 @@ function WorkspaceDrawer({
   const [expandedFilePaths, setExpandedFilePaths] = useState<Set<string>>(new Set());
   const [expandAllFileDirectories, setExpandAllFileDirectories] = useState(false);
   const [entryMenu, setEntryMenu] = useState<{ path: string; kind: 'file' | 'directory'; x: number; y: number }>();
+  const deletedEntryPaths = useRef(new Set<string>());
   useEscapeClose(() => setEntryMenu(undefined), Boolean(entryMenu));
+  const isDeletedEntryPath = useCallback((path?: string) => Boolean(path && [...deletedEntryPaths.current].some(deleted => path === deleted || path.startsWith(`${deleted}/`))), []);
   const scopeState = scopeStates[scopeKey] ?? { tabs: [] };
   const updateScope = useCallback((updater: (current: WorkspaceToolScopeState) => WorkspaceToolScopeState) => {
     setScopeStates(current => ({ ...current, [scopeKey]: updater(current[scopeKey] ?? { tabs: [] }) }));
@@ -3624,15 +3626,16 @@ function WorkspaceDrawer({
         return next;
       });
     } catch (reason) {
-      setPanelError(reason instanceof Error ? reason.message : '读取目录失败');
+      if (!isDeletedEntryPath(parentPath)) setPanelError(reason instanceof Error ? reason.message : '读取目录失败');
     } finally {
       loadingDirectories.current.delete(key);
       setLoadingDirectoryPaths(paths => { const next = new Set(paths); next.delete(key); return next; });
     }
-  }, [api, bindingId, directoryPages, workDirectoryId, workspaceId]);
+  }, [api, bindingId, directoryPages, isDeletedEntryPath, workDirectoryId, workspaceId]);
   useEffect(() => {
     // A directory belongs to the currently authorized session scope. Never
     // reuse a selection after switching conversations or work directories.
+    deletedEntryPaths.current.clear();
     setActiveDirectory(undefined);
     setSelectedEntryPaths(new Set());
     setGitContextPath(undefined);
@@ -3750,11 +3753,11 @@ function WorkspaceDrawer({
         nextOffset: next.nextOffset,
       } : current);
     } catch (reason) {
-      setPanelError(reason instanceof Error ? reason.message : '继续读取文件失败');
+      if (!isDeletedEntryPath(selectedFile)) setPanelError(reason instanceof Error ? reason.message : '继续读取文件失败');
     } finally {
       setPreviewMoreLoading(false);
     }
-  }, [api, bindingId, previewMoreLoading, previewState, selectedFile, workDirectoryId, workspaceId]);
+  }, [api, bindingId, isDeletedEntryPath, previewMoreLoading, previewState, selectedFile, workDirectoryId, workspaceId]);
   const lightweightPreview = Boolean(
     previewState && (previewState.totalBytes > 128 * 1024 || previewState.content.length > 128 * 1024),
   );
@@ -3973,15 +3976,25 @@ function WorkspaceDrawer({
     if (!api.deleteFile || !items.length) return;
     const directories = items.filter(item => item.kind === 'directory');
     if (!await dialog.confirm({ title: `删除 ${items.length} 项？`, message: directories.length ? '目录将递归删除其内容；此操作无法撤销。会话附件和不安全路径会受到保护。' : '所选文件会被永久删除，且无法撤销。', confirmLabel: '确认删除', tone: 'danger' })) return;
+    const isDeleted = (path?: string) => Boolean(path && items.some(item => path === item.path || path.startsWith(`${item.path}/`)));
+    items.forEach(item => deletedEntryPaths.current.add(item.path));
     setPanelError('');
+    setSourceFileNavigation(current => current && isDeleted(current.path) ? undefined : current);
+    setPendingSourceNavigation(current => current && isDeleted(current.path) ? undefined : current);
+    setSelectedEntryPaths(current => new Set([...current].filter(path => !isDeleted(path))));
+    setExpandedFilePaths(current => new Set([...current].filter(path => !isDeleted(path))));
+    setActiveDirectory(current => isDeleted(current) ? undefined : current);
+    setGitContextPath(current => isDeleted(current) ? undefined : current);
+    updateScope(current => isDeleted(current.selectedFile) ? { ...current, selectedFile: undefined } : current);
     try {
       await Promise.all(items.map(item => api.deleteFile!(workspaceId, item.path, { bindingId, workDirectoryId, recursive: item.kind === 'directory' })));
-      if (items.some(item => selectedFile === item.path || selectedFile?.startsWith(`${item.path}/`))) updateScope(current => ({ ...current, selectedFile: undefined }));
-      setSelectedEntryPaths(new Set());
       await queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'workspace-details', workspaceId, bindingId, workDirectoryId) });
       setDirectoryPages(new Map());
       await queryClient.invalidateQueries({ queryKey: directoryQueryKey });
-    } catch (reason) { setPanelError(reason instanceof Error ? reason.message : '删除文件失败'); }
+    } catch (reason) {
+      items.forEach(item => deletedEntryPaths.current.delete(item.path));
+      setPanelError(reason instanceof Error ? reason.message : '删除文件失败');
+    }
   };
   const createEntry = async (parentPath: string, kind: 'FILE' | 'DIRECTORY') => {
     if (!api.createFile) return;
