@@ -312,7 +312,9 @@ test('step configuration is saved before start and direct launch has its own tab
   await expect(page.locator('.node-record-list')).toContainText('测试逐步记录');
   await expect.poll(() => currentStepRecord?.node_runs).toEqual([]);
   await expect(page.getByTestId('attempt-state')).toHaveCount(0);
-  await consolePanel.getByRole('button', { name: '启动', exact: true }).click();
+  const recordLaunchBar = page.locator('.stepwise-record-launch-bar');
+  await expect(recordLaunchBar).toContainText('当前节点“测试节点2”已保存配置，可从记录启动。');
+  await recordLaunchBar.getByRole('button', { name: '启动', exact: true }).click();
   await expect.poll(() => startBody).toEqual({ expected_row_version: 2 });
   await expect(page).toHaveURL(/\/flow-runs\/stepwise-record-1\/nodes\/saved-node-run\/attempts\/saved-attempt\/agent-sessions\/saved-node-binding$/);
 });
