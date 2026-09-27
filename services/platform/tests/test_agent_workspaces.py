@@ -238,6 +238,70 @@ def test_git_history_does_not_guess_unpushed_commits_without_upstream(tmp_path):
     assert history["commits"][0]["local_only"] is False
 
 
+def test_git_sync_updates_the_origin_tracking_reference(tmp_path):
+    remote = tmp_path / "remote.git"
+    repository = tmp_path / "project"
+
+    def git(directory: Path, *arguments: str) -> str:
+        return subprocess.run(
+            ["git", "-C", str(directory), *arguments],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+    subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True)
+    repository.mkdir()
+    git(repository, "init", "--initial-branch=main")
+    git(repository, "config", "user.name", "FlowWeave Test")
+    git(repository, "config", "user.email", "test@example.invalid")
+    git(repository, "remote", "add", "origin", str(remote))
+    (repository / "history.txt").write_text("base\n")
+    git(repository, "add", "history.txt")
+    git(repository, "commit", "-m", "base revision")
+    git(repository, "push", "-u", "origin", "main")
+
+    upstream_clone = tmp_path / "upstream"
+    subprocess.run(
+        ["git", "clone", "--branch", "main", str(remote), str(upstream_clone)],
+        check=True,
+        capture_output=True,
+    )
+    git(upstream_clone, "config", "user.name", "FlowWeave Test")
+    git(upstream_clone, "config", "user.email", "test@example.invalid")
+    (upstream_clone / "history.txt").write_text("remote revision\n")
+    git(upstream_clone, "add", "history.txt")
+    git(upstream_clone, "commit", "-m", "remote revision")
+    git(upstream_clone, "push", "origin", "main")
+
+    details = workspace.git_sync(
+        repository,
+        "/runtime/workspace/project",
+        ("/runtime/workspace/project",),
+        "/runtime/workspace/project",
+    )
+
+    assert details["upstream"] == "origin/main"
+    assert details["ahead"] == 0
+    assert details["behind"] == 1
+
+
+def test_git_sync_rejects_repositories_without_origin(tmp_path):
+    repository = tmp_path / "project"
+    repository.mkdir()
+    subprocess.run(["git", "-C", str(repository), "init"], check=True, capture_output=True)
+
+    with pytest.raises(DomainError) as error:
+        workspace.git_sync(
+            repository,
+            "/runtime/workspace/project",
+            ("/runtime/workspace/project",),
+            "/runtime/workspace/project",
+        )
+
+    assert error.value.code == "AGENT_WORKSPACE_GIT_REMOTE_NOT_FOUND"
+
+
 def test_git_working_changes_separate_staged_unstaged_and_untracked_files(tmp_path):
     repository = tmp_path / "project"
     repository.mkdir()

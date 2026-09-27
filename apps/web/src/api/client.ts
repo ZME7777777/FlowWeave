@@ -273,6 +273,12 @@ export const api = {
     if (options.workDirectoryId) query.set('work_directory_id', options.workDirectoryId);
     return request<import('../types').AgentSessionWorkspaceGitRepositories>(`/agent-workspaces/${encodeURIComponent(id)}/workspace/git/repositories${query.size ? `?${query}` : ''}`);
   },
+  syncAgentWorkspaceGitRepository: async (id: string, repositoryPath: string, options: { bindingId?: string; workDirectoryId?: string } = {}) => {
+    const query = new URLSearchParams({ repository_path: repositoryPath });
+    if (options.bindingId) query.set('binding_id', options.bindingId);
+    if (options.workDirectoryId) query.set('work_directory_id', options.workDirectoryId);
+    await request<void>(`/agent-workspaces/${encodeURIComponent(id)}/workspace/git/sync?${query}`, json('POST'));
+  },
   agentWorkspaceGitLog: (id: string, repositoryPath: string, options: { bindingId?: string; workDirectoryId?: string } = {}) => {
     const query = new URLSearchParams({ repository_path: repositoryPath });
     if (options.bindingId) query.set('binding_id', options.bindingId);
@@ -1004,6 +1010,12 @@ export const nodeSessionApi = {
     if (bindingId) query.set('binding_id', bindingId);
     if (workDirectoryId) query.set('work_directory_id', workDirectoryId);
     return request<import('../types').AgentSessionWorkspaceGitRepositories>(`${nodeSessionBase(flowRunId, attemptId)}/workspace/git/repositories${query.size ? `?${query}` : ''}`);
+  },
+  syncGitRepository: async (flowRunId: string, attemptId: string, repositoryPath: string, bindingId?: string, workDirectoryId?: string) => {
+    const query = new URLSearchParams({ repository_path: repositoryPath });
+    if (bindingId) query.set('binding_id', bindingId);
+    if (workDirectoryId) query.set('work_directory_id', workDirectoryId);
+    await request<void>(`${nodeSessionBase(flowRunId, attemptId)}/workspace/git/sync?${query}`, json('POST'));
   },
   gitLog: (flowRunId: string, attemptId: string, repositoryPath: string, bindingId?: string, workDirectoryId?: string) => {
     const query = new URLSearchParams({ repository_path: repositoryPath });

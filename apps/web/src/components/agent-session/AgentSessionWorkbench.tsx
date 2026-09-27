@@ -2853,13 +2853,14 @@ function selectedGitRepository(repositories: AgentSessionWorkspaceDetails['repos
     .sort((left, right) => right.path.length - left.path.length)[0];
 }
 
-function WorkspaceGitSidebar({ details, repository, mode, onModeChange, selectedCommit, onSelectCommit, loadLog, loadCommit, loadDiff, loadChanges, onOpenFileDiff, onOpenWorkingDiff, closedDiffEpoch }: {
+function WorkspaceGitSidebar({ details, repository, mode, onModeChange, selectedCommit, onSelectCommit, syncRepository, loadLog, loadCommit, loadDiff, loadChanges, onOpenFileDiff, onOpenWorkingDiff, closedDiffEpoch }: {
   details: AgentSessionWorkspaceDetails;
   repository: AgentSessionWorkspaceDetails['repositories'][number];
   mode: 'history' | 'changes';
   onModeChange: (mode: 'history' | 'changes') => void;
   selectedCommit?: string;
   onSelectCommit: (commit?: string) => void;
+  syncRepository: (repositoryPath: string) => Promise<void>;
   loadLog: (repositoryPath: string) => Promise<import('../../types').WorkspaceGitLog>;
   loadCommit: (repositoryPath: string, commit: string) => Promise<WorkspaceGitCommitDetails>;
   loadDiff: (repositoryPath: string, commit: string, path: string) => Promise<WorkspaceGitFileDiff>;
@@ -2871,11 +2872,15 @@ function WorkspaceGitSidebar({ details, repository, mode, onModeChange, selected
   const [selectedCommitFile, setSelectedCommitFile] = useState<string>();
   const openedDiffRef = useRef<string | undefined>(undefined);
   const [workingDiffError, setWorkingDiffError] = useState('');
+  const [syncError, setSyncError] = useState('');
+  const [syncing, setSyncing] = useState(false);
   const [localOnly, setLocalOnly] = useState(false);
   useEffect(() => {
     openedDiffRef.current = undefined;
     setSelectedCommitFile(undefined);
     setWorkingDiffError('');
+    setSyncError('');
+    setSyncing(false);
     setLocalOnly(false);
   }, [repository.path]);
   useEffect(() => {
@@ -2931,14 +2936,24 @@ function WorkspaceGitSidebar({ details, repository, mode, onModeChange, selected
   const upstream = historyRepository?.upstream;
   const commits = logQuery.data?.commits ?? [];
   const visibleCommits = localOnly ? commits.filter(commit => commit.local_only) : commits;
-  const refreshCurrentView = () => {
-    if (mode === 'history') void logQuery.refetch();
-    else void changesQuery.refetch();
+  const refreshCurrentView = async () => {
+    setSyncError('');
+    setSyncing(true);
+    try {
+      await syncRepository(repository.path);
+      if (mode === 'history') await logQuery.refetch();
+      else await changesQuery.refetch();
+    } catch (error) {
+      setSyncError(error instanceof Error ? error.message : '无法同步远端 Git 状态，请重试。');
+    } finally {
+      setSyncing(false);
+    }
   };
-  const refreshing = mode === 'history' ? logQuery.isFetching : changesQuery.isFetching;
+  const refreshing = syncing || (mode === 'history' ? logQuery.isFetching : changesQuery.isFetching);
   return <aside className="agent-workspace-git-sidebar" aria-label="Git">
-    <header><div><span><GitBranch size={15}/>Git</span><b title={workspaceRelativePath(repository.path, details.root)}>{workspaceRelativePath(repository.path, details.root)}</b></div><div className="agent-git-header-actions">{repository.branch && <em title="当前分支（只读，暂不支持切换）">{repository.branch}</em>}<button type="button" aria-label="刷新 Git 状态" title="刷新 Git 状态" disabled={refreshing} onClick={refreshCurrentView}><RefreshCw className={refreshing ? 'spin' : undefined} size={13}/></button></div></header>
+    <header><div><span><GitBranch size={15}/>Git</span><b title={workspaceRelativePath(repository.path, details.root)}>{workspaceRelativePath(repository.path, details.root)}</b></div><div className="agent-git-header-actions">{repository.branch && <em title="当前分支（只读，暂不支持切换）">{repository.branch}</em>}<button type="button" aria-label="同步远端 Git 状态" title="同步远端 Git 状态" disabled={refreshing} onClick={() => void refreshCurrentView()}><RefreshCw className={refreshing ? 'spin' : undefined} size={13}/></button></div></header>
     <nav className="agent-git-view-tabs" aria-label="Git 视图"><button type="button" className={mode === 'history' ? 'active' : ''} aria-pressed={mode === 'history'} onClick={() => selectMode('history')}>提交记录</button><button type="button" className={mode === 'changes' ? 'active' : ''} aria-pressed={mode === 'changes'} onClick={() => selectMode('changes')}>本地改动</button></nav>
+    {syncError && <p className="agent-git-error" role="alert">远端 Git 同步失败：{syncError}</p>}
     {mode === 'history' ? logQuery.isLoading ? <p className="agent-git-loading">正在读取提交历史…</p> : logQuery.isError ? <p className="agent-git-error">Git 历史读取失败。<button type="button" onClick={() => void logQuery.refetch()}>重试</button></p> : <div className="agent-git-history">
       <section className={`agent-git-sync-status${ahead ? ' has-local' : ''}`} aria-label="分支同步状态">
         <div><span>{ahead ? <ArrowUp size={13}/> : <Check size={13}/>}<b>{ahead ? `${ahead} 个提交待推送` : upstream ? '已与远端同步' : '未设置上游分支'}</b></span>{upstream && <small title={upstream}>跟踪 {upstream}{behind ? ` · 落后 ${behind}` : ''}</small>}{!upstream && <small>设置 upstream 后可识别未推送提交</small>}</div>
@@ -4176,7 +4191,7 @@ function WorkspaceDrawer({
             ...current,
             selectedGitRepositoryPath: commit ? gitRepository.path : undefined,
             selectedGitCommit: commit,
-          }))} loadLog={repositoryPath => api.gitLog(workspaceId, repositoryPath, gitOptions)} loadCommit={(repositoryPath, commit) => api.gitCommit(workspaceId, repositoryPath, commit, gitOptions)} loadDiff={(repositoryPath, commit, path) => api.gitDiff(workspaceId, repositoryPath, commit, path, gitOptions)} loadChanges={repositoryPath => api.gitChanges(workspaceId, repositoryPath, gitOptions)} onOpenFileDiff={openGitFileDiff} onOpenWorkingDiff={openGitWorkingDiff} closedDiffEpoch={closedGitDiffEpoch}/>}
+          }))} syncRepository={repositoryPath => api.syncGitRepository(workspaceId, repositoryPath, gitOptions)} loadLog={repositoryPath => api.gitLog(workspaceId, repositoryPath, gitOptions)} loadCommit={(repositoryPath, commit) => api.gitCommit(workspaceId, repositoryPath, commit, gitOptions)} loadDiff={(repositoryPath, commit, path) => api.gitDiff(workspaceId, repositoryPath, commit, path, gitOptions)} loadChanges={repositoryPath => api.gitChanges(workspaceId, repositoryPath, gitOptions)} onOpenFileDiff={openGitFileDiff} onOpenWorkingDiff={openGitWorkingDiff} closedDiffEpoch={closedGitDiffEpoch}/>}
         </div>)}
       </div>
     </section>{entryMenu && <div className="agent-file-context-menu" role="menu" aria-label="文件操作菜单" style={{ left: entryMenu.x, top: entryMenu.y }} onPointerDown={event => event.stopPropagation()}>{entryMenu.kind === 'directory' && <><button type="button" role="menuitem" onClick={() => { void createEntry(entryMenu.path, 'FILE'); setEntryMenu(undefined); }}><FileCode2 size={14}/>新建文件</button><button type="button" role="menuitem" onClick={() => { void createEntry(entryMenu.path, 'DIRECTORY'); setEntryMenu(undefined); }}><FolderPlus size={14}/>新建目录</button></>}<button type="button" className="danger" role="menuitem" onClick={() => { void removeEntries([{ path: entryMenu.path, kind: entryMenu.kind }]); setEntryMenu(undefined); }}><Trash2 size={14}/>{entryMenu.kind === 'directory' ? '删除目录' : '删除文件'}</button></div>}

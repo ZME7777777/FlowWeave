@@ -630,6 +630,30 @@ def git_history(
     return agent_workspace_host.git_log(project_root, str(runtime_root), roots, repository_path)
 
 
+def sync_git_repository(
+    db: Session,
+    *,
+    flow_run_id: str,
+    attempt_id: str,
+    repository_path: str,
+    binding_id: str | None = None,
+    work_directory_id: str | None = None,
+) -> dict[str, Any]:
+    project_root, runtime_root, _, _ = _authorize_entry(
+        db, flow_run_id=flow_run_id, attempt_id=attempt_id
+    )
+    _, _, roots = _scope(
+        db,
+        flow_run_id=flow_run_id,
+        attempt_id=attempt_id,
+        binding_id=binding_id,
+        work_directory_id=work_directory_id,
+        runtime_root=runtime_root,
+    )
+    _validate_scope_roots(project_root, runtime_root, roots)
+    return agent_workspace_host.git_sync(project_root, str(runtime_root), roots, repository_path)
+
+
 def git_changes(
     db: Session,
     *,

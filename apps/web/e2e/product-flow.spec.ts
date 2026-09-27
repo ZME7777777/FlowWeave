@@ -466,6 +466,8 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   let runningDirectMessagePosts = 0;
   let runningDirectFormalEventPersisted = false;
   let runningDirectAssistantReplyPersisted = false;
+  let gitSyncRequests = 0;
+  let gitSynchronizesToRemote = false;
   let pausedDirectMessagePosts = 0;
   let releaseRunningDirectDelivery: (() => void) | undefined;
   const runningDirectDeliveryGate = new Promise<void>(resolve => { releaseRunningDirectDelivery = resolve; });
@@ -593,11 +595,19 @@ test('top-level Agent workspace creates a direct conversation and restores its U
       }) });
       return;
     }
+    if (path.endsWith('/workspace/git/sync')) {
+      gitSyncRequests += 1;
+      gitSynchronizesToRemote = true;
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({}) });
+      return;
+    }
     if (path.endsWith('/workspace/git/log')) {
       workspaceGitLogRequests += 1;
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
-        repository: { path: '/runtime/workspace/project/backend', remote: 'https://example.test/backend.git', branch: 'main', head: '1234567890ab', upstream: 'origin/main', ahead: 2, behind: 0 },
-        commits: [
+        repository: { path: '/runtime/workspace/project/backend', remote: 'https://example.test/backend.git', branch: 'main', head: '1234567890ab', upstream: 'origin/main', ahead: gitSynchronizesToRemote ? 0 : 2, behind: 0 },
+        commits: gitSynchronizesToRemote ? [
+          { id: '3234567890ab', short_id: '3234567', author: 'OpenHands', date: '2026-09-22', subject: 'feat: initialize workspace', local_only: false },
+        ] : [
           { id: '1234567890ab', short_id: '1234567', author: 'OpenHands', date: '2026-09-23', subject: 'feat: add workspace review', local_only: true },
           { id: '2234567890ab', short_id: '2234567', author: 'OpenHands', date: '2026-09-23', subject: 'fix: stabilize workspace review', local_only: true },
           { id: '3234567890ab', short_id: '3234567', author: 'OpenHands', date: '2026-09-22', subject: 'feat: initialize workspace', local_only: false },
@@ -1126,12 +1136,11 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(gitSidebar.getByText('待推送', { exact: true })).toHaveCount(2);
   await expect(gitSidebar.getByText('feat: initialize workspace', { exact: true })).toBeVisible();
   const gitLogRequestsBeforeRefresh = workspaceGitLogRequests;
-  await gitSidebar.getByRole('button', { name: '刷新 Git 状态' }).click();
+  await gitSidebar.getByRole('button', { name: '同步远端 Git 状态' }).click();
+  await expect.poll(() => gitSyncRequests).toBe(1);
   await expect.poll(() => workspaceGitLogRequests).toBe(gitLogRequestsBeforeRefresh + 1);
-  await gitSidebar.getByRole('button', { name: '仅看待推送' }).click();
-  await expect(gitSidebar.getByText('feat: initialize workspace', { exact: true })).toBeHidden();
-  await expect(gitSidebar.getByText('待推送', { exact: true })).toHaveCount(2);
-  await gitSidebar.getByRole('button', { name: '查看全部' }).click();
+  await expect(gitSidebar.getByRole('region', { name: '分支同步状态' })).toContainText('已与远端同步');
+  await expect(gitSidebar.getByText('待推送', { exact: true })).toHaveCount(0);
 
   await page.getByRole('button', { name: '本地改动', exact: true }).click();
   const sidebarStagedTree = page.getByRole('navigation', { name: '暂存区' });
@@ -1140,7 +1149,8 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(sidebarUnstagedTree.getByText('local.ts', { exact: true })).toBeVisible();
   await expect(sidebarUnstagedTree.getByText('new.ts', { exact: true })).toBeVisible();
   const gitChangesRequestsBeforeRefresh = workspaceGitChangesRequests;
-  await gitSidebar.getByRole('button', { name: '刷新 Git 状态' }).click();
+  await gitSidebar.getByRole('button', { name: '同步远端 Git 状态' }).click();
+  await expect.poll(() => gitSyncRequests).toBe(2);
   await expect.poll(() => workspaceGitChangesRequests).toBe(gitChangesRequestsBeforeRefresh + 1);
   const sidebarSplit = gitSidebar.locator('.agent-git-change-split');
   const sidebarUnstagedHeightBeforeCollapse = await sidebarUnstagedTree.evaluate(element => element.getBoundingClientRect().height);

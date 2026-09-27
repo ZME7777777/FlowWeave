@@ -461,6 +461,22 @@ async def agent_workspace_git_log(
     )
 
 
+@router.post("/agent-workspaces/{workspace_id}/workspace/git/sync")
+async def sync_agent_workspace_git_repository(
+    workspace_id: str,
+    db: Db,
+    repository_path: str = Query(...),
+    binding_id: str | None = Query(default=None),
+    work_directory_id: str | None = Query(default=None),
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: workspace.sync_git_repository(
+            session, workspace_id, repository_path, binding_id, work_directory_id
+        ),
+    )
+
+
 @router.get("/agent-workspaces/{workspace_id}/workspace/git/changes")
 async def agent_workspace_git_changes(
     workspace_id: str,

@@ -599,6 +599,28 @@ async def node_session_workspace_git_log(
     )
 
 
+@router.post(f"{_BASE}/workspace/git/sync")
+async def sync_node_session_workspace_git_repository(
+    flow_run_id: str,
+    attempt_id: str,
+    db: Db,
+    repository_path: str = Query(...),
+    binding_id: str | None = Query(default=None),
+    work_directory_id: str | None = Query(default=None),
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: agent_sessions.flow_node_workspace.sync_git_repository(
+            session,
+            flow_run_id=flow_run_id,
+            attempt_id=attempt_id,
+            repository_path=repository_path,
+            binding_id=binding_id,
+            work_directory_id=work_directory_id,
+        ),
+    )
+
+
 @router.get(f"{_BASE}/workspace/git/changes")
 async def node_session_workspace_git_changes(
     flow_run_id: str,

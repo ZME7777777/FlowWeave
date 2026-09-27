@@ -37,6 +37,7 @@ from flowweave.shared.observability import current_metrics
 _MAX_INDEX_ENTRIES = 20_000
 _PREVIEW_CHUNK_BYTES = 512 * 1024
 _GIT_TIMEOUT_SECONDS = 2
+_GIT_SYNC_TIMEOUT_SECONDS = 10
 _GIT_LOG_LIMIT = 80
 _GIT_DIFF_LIMIT = 512 * 1024
 _GIT_OBJECT_ID = re.compile(r"^[0-9a-fA-F]{7,64}$")
@@ -439,6 +440,45 @@ def _git_run(repository: Path, *arguments: str) -> bytes | None:
     return result.stdout if result.returncode == 0 else None
 
 
+def _fetch_origin(repository: Path) -> None:
+    """Update the configured origin without accepting a browser-supplied remote."""
+
+    if not _git_value(repository, "remote", "get-url", "origin"):
+        raise DomainError(
+            "AGENT_WORKSPACE_GIT_REMOTE_NOT_FOUND", "该仓库没有可同步的 origin 远端", 409
+        )
+    try:
+        result = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repository),
+                "-c",
+                "fetch.recurseSubmodules=false",
+                "fetch",
+                "--no-tags",
+                "--no-recurse-submodules",
+                "origin",
+            ],
+            capture_output=True,
+            check=False,
+            env={"PATH": os.defpath, "GIT_TERMINAL_PROMPT": "0"},
+            timeout=_GIT_SYNC_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise DomainError(
+            "AGENT_WORKSPACE_GIT_SYNC_FAILED",
+            "无法同步 origin 远端，请检查网络和认证后重试",
+            502,
+        ) from exc
+    if result.returncode != 0:
+        raise DomainError(
+            "AGENT_WORKSPACE_GIT_SYNC_FAILED",
+            "无法同步 origin 远端，请检查网络和认证后重试",
+            502,
+        )
+
+
 def _authorized_repository(
     project_root: Path, runtime_root: str, file_roots: tuple[str, ...], repository_path: str
 ) -> tuple[Path, str]:
@@ -463,6 +503,18 @@ def _git_commit(repository: Path, commit: str) -> str:
     if not resolved:
         raise DomainError("AGENT_WORKSPACE_GIT_COMMIT_NOT_FOUND", "Git 提交不存在", 404)
     return resolved.decode("ascii", errors="ignore").strip()
+
+
+def git_sync(
+    project_root: Path, runtime_root: str, file_roots: tuple[str, ...], repository_path: str
+) -> dict[str, Any]:
+    """Synchronize the configured origin for one authorized repository."""
+
+    repository, runtime_path = _authorized_repository(
+        project_root, runtime_root, file_roots, repository_path
+    )
+    _fetch_origin(repository)
+    return _repository_details(repository, runtime_path)
 
 
 def git_log(
@@ -1269,6 +1321,19 @@ def git_history(
         db, workspace_id, work_directory_id, binding_id
     )
     return git_log(project_root, runtime_root, file_roots, repository_path)
+
+
+def sync_git_repository(
+    db: Session,
+    workspace_id: str,
+    repository_path: str,
+    binding_id: str | None = None,
+    work_directory_id: str | None = None,
+) -> dict[str, Any]:
+    project_root, runtime_root, file_roots = _git_scope(
+        db, workspace_id, work_directory_id, binding_id
+    )
+    return git_sync(project_root, runtime_root, file_roots, repository_path)
 
 
 def git_commit_details(

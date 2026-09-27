@@ -112,6 +112,7 @@ export interface AgentSessionApi {
   readonly workspaceDetails: (hostId: AgentSessionHostId, options?: AgentSessionWorkspaceOptions) => Promise<AgentSessionWorkspaceDetails>;
   readonly workspaceDirectory: (hostId: AgentSessionHostId, options?: AgentSessionDirectoryOptions) => Promise<AgentSessionWorkspaceDirectory>;
   readonly gitRepositories: (hostId: AgentSessionHostId, options?: Omit<AgentSessionFileOptions, 'download'>) => Promise<AgentSessionWorkspaceGitRepositories>;
+  readonly syncGitRepository: (hostId: AgentSessionHostId, repositoryPath: string, options?: Omit<AgentSessionFileOptions, 'download'>) => Promise<void>;
   readonly gitLog: (hostId: AgentSessionHostId, repositoryPath: string, options?: Omit<AgentSessionFileOptions, 'download'>) => Promise<WorkspaceGitLog>;
   readonly gitChanges: (hostId: AgentSessionHostId, repositoryPath: string, options?: Omit<AgentSessionFileOptions, 'download'>) => Promise<WorkspaceGitChanges>;
   readonly gitWorkingDiff: (hostId: AgentSessionHostId, repositoryPath: string, kind: WorkspaceGitChangeKind, path: string, options?: Omit<AgentSessionFileOptions, 'download'>) => Promise<WorkspaceGitFileDiff>;
@@ -198,6 +199,7 @@ export const agentWorkspaceSessionGateway: AgentSessionGateway = {
     workspaceDetails: api.agentWorkspaceDetails,
     workspaceDirectory: api.agentWorkspaceDirectory,
     gitRepositories: api.agentWorkspaceGitRepositories,
+    syncGitRepository: api.syncAgentWorkspaceGitRepository,
     gitLog: api.agentWorkspaceGitLog,
     gitChanges: api.agentWorkspaceGitChanges,
     gitWorkingDiff: api.agentWorkspaceGitWorkingDiff,
@@ -277,6 +279,11 @@ export function flowNodeSessionGateway(
         nodeSessionApi.workspaceDirectory(flowRunId, attemptId, options?.bindingId, options?.workDirectoryId, options?.parentPath, options?.cursor),
       gitRepositories: (_hostId, options) =>
         nodeSessionApi.gitRepositories(flowRunId, attemptId, options?.bindingId, options?.workDirectoryId),
+      syncGitRepository: async (_hostId, repositoryPath, options) => {
+        await nodeSessionApi.syncGitRepository(
+          flowRunId, attemptId, repositoryPath, options?.bindingId, options?.workDirectoryId,
+        );
+      },
       gitLog: (_hostId, repositoryPath, options) =>
         nodeSessionApi.gitLog(flowRunId, attemptId, repositoryPath, options?.bindingId, options?.workDirectoryId),
       gitChanges: (_hostId, repositoryPath, options) =>

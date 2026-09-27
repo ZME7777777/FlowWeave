@@ -183,6 +183,14 @@ def git_repository_details(repository: Path, runtime_path: str) -> dict[str, str
     return workspace.repository_details(repository, runtime_path)
 
 
+def git_sync(
+    project_root: Path, runtime_root: str, file_roots: tuple[str, ...], repository_path: str
+) -> dict[str, Any]:
+    from flowweave.modules.agent_workspaces.application import workspace
+
+    return workspace.git_sync(project_root, runtime_root, file_roots, repository_path)
+
+
 def git_log(
     project_root: Path, runtime_root: str, file_roots: tuple[str, ...], repository_path: str
 ) -> dict[str, Any]:
@@ -259,6 +267,7 @@ __all__ = (
     "git_commit",
     "git_file_diff",
     "git_log",
+    "git_sync",
     "git_repository_details",
     "git_repositories",
     "git_working_changes",
