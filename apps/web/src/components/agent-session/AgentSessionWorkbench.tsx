@@ -4741,7 +4741,11 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     ));
     const systemUnreadInBackground = new Map(
       [...completedInBackground, ...attentionInBackground]
-        .filter(item => !(!item.unread && item.unread_origin === 'SYSTEM'))
+        .filter(item => !(
+          attentionInBackground.includes(item)
+          && !item.unread
+          && item.unread_origin === 'SYSTEM'
+        ))
         .map(item => [item.id, item]),
     );
     setUnreadConversationIds(current => {
