@@ -11,6 +11,7 @@ export const INACTIVE_CONVERSATION_CACHE_TTL_MS = 5 * 60 * 1000;
 
 const CACHE_IDENTITY_KEY = 'flowweave:agent-session-cache-identity.v1';
 const SNAPSHOT_KEY_PREFIX = 'flowweave:agent-session-shell.v1:';
+const CONTEXT_KEY_PREFIX = 'flowweave:agent-session-context.v1:';
 const SNAPSHOT_VERSION = 1;
 const MAX_SNAPSHOT_EVENTS = 16;
 const MAX_SNAPSHOT_TEXT_LENGTH = 8_000;
@@ -21,6 +22,12 @@ export interface ConversationShellSnapshot {
   events: OpenHandsConversationEventBatch;
   context?: AgentConversationContext;
   readiness?: AgentConversationInputReadiness;
+}
+
+export interface ConversationContextSnapshot {
+  version: number;
+  savedAt: number;
+  context: AgentConversationContext;
 }
 
 export interface LogicalConversationCacheEntry {
@@ -48,6 +55,12 @@ function snapshotKey(hostId: string, workspaceId: string, bindingId: string): st
   return `${SNAPSHOT_KEY_PREFIX}${encodeURIComponent(userIdentity)}:${encodeURIComponent(hostId)}:${encodeURIComponent(workspaceId)}:${encodeURIComponent(bindingId)}`;
 }
 
+function contextKey(hostId: string, workspaceId: string, bindingId: string): string | undefined {
+  const userIdentity = identity();
+  if (!userIdentity) return undefined;
+  return `${CONTEXT_KEY_PREFIX}${encodeURIComponent(userIdentity)}:${encodeURIComponent(hostId)}:${encodeURIComponent(workspaceId)}:${encodeURIComponent(bindingId)}`;
+}
+
 /** Set only after authentication; changing identity removes all old tab snapshots. */
 export function setAgentSessionCacheIdentity(userId: string): void {
   const storage = safeStorage();
@@ -63,7 +76,7 @@ export function clearAgentSessionCacheStorage(): void {
   const storage = safeStorage();
   if (!storage) return;
   for (const key of Object.keys(storage)) {
-    if (key === CACHE_IDENTITY_KEY || key.startsWith(SNAPSHOT_KEY_PREFIX)) storage.removeItem(key);
+    if (key === CACHE_IDENTITY_KEY || key.startsWith(SNAPSHOT_KEY_PREFIX) || key.startsWith(CONTEXT_KEY_PREFIX)) storage.removeItem(key);
   }
 }
 
@@ -127,6 +140,70 @@ export function writeConversationShellSnapshot(
   try { storage.setItem(key, JSON.stringify(snapshot)); } catch {
     // Quota/storage failures only lose the optional fast shell. The formal
     // hydration path remains available and is deliberately unaffected.
+  }
+}
+
+function currentMetric(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+/**
+ * Persist only previously formal current-View metrics. This is intentionally
+ * separate from the optional transcript shell so a fresh Runtime hydration
+ * that temporarily lacks the metric contract cannot erase a trusted display
+ * value during a browser reload.
+ */
+export function writeConversationContextSnapshot(
+  hostId: string,
+  workspaceId: string,
+  bindingId: string,
+  context: AgentConversationContext,
+): void {
+  const storage = safeStorage();
+  const key = contextKey(hostId, workspaceId, bindingId);
+  if (!storage || !key) return;
+  const usedTokens = currentMetric(context.used_tokens);
+  const viewEventCount = currentMetric(context.view_event_count);
+  if (usedTokens === undefined && viewEventCount === undefined) return;
+  const previous = readConversationContextSnapshot(hostId, workspaceId, bindingId);
+  const snapshot: ConversationContextSnapshot = {
+    version: SNAPSHOT_VERSION,
+    savedAt: Date.now(),
+    context: {
+      ...context,
+      used_tokens: usedTokens ?? previous?.used_tokens,
+      view_event_count: viewEventCount ?? previous?.view_event_count,
+    },
+  };
+  try { storage.setItem(key, JSON.stringify(snapshot)); } catch {
+    // This is a display-only recovery aid; formal Runtime reads remain source of truth.
+  }
+}
+
+export function readConversationContextSnapshot(
+  hostId: string,
+  workspaceId: string,
+  bindingId: string,
+): AgentConversationContext | undefined {
+  const storage = safeStorage();
+  const key = contextKey(hostId, workspaceId, bindingId);
+  if (!storage || !key) return undefined;
+  try {
+    const value: unknown = JSON.parse(storage.getItem(key) ?? 'null');
+    if (!value || typeof value !== 'object') return undefined;
+    const snapshot = value as Partial<ConversationContextSnapshot>;
+    if (snapshot.version !== SNAPSHOT_VERSION || typeof snapshot.savedAt !== 'number'
+      || !snapshot.context || typeof snapshot.context !== 'object') return undefined;
+    const usedTokens = currentMetric(snapshot.context.used_tokens);
+    const viewEventCount = currentMetric(snapshot.context.view_event_count);
+    if (usedTokens === undefined && viewEventCount === undefined) return undefined;
+    return {
+      ...snapshot.context,
+      used_tokens: usedTokens,
+      view_event_count: viewEventCount,
+    };
+  } catch {
+    return undefined;
   }
 }
 

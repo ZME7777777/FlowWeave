@@ -419,13 +419,24 @@ def test_complete_active_branch_rejects_head_drift_between_pages() -> None:
         complete_active_branch(read, RuntimeHandle(job_id="job", conversation_id="conversation"))
 
 
-def test_hydration_reuses_latest_batch_context_and_readiness(
+def test_hydration_merges_formal_current_view_metrics_into_batch_context(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     workspace = object()
     binding = object()
     handle = RuntimeHandle(job_id="job", conversation_id="conversation")
-    context = {"model_name": "test-model", "window_tokens": 128_000}
+    context = {
+        "model_name": "test-model",
+        "window_tokens": 128_000,
+        "used_tokens": None,
+        "view_event_count": None,
+        "usage_current": False,
+    }
+    formal_context = {
+        "used_tokens": 67_947,
+        "view_event_count": 49,
+        "usage_current": True,
+    }
     readiness = RuntimeInputReadiness(ready=False, execution_status="running")
     captured: dict[str, object] = {}
     calls: list[object] = []
@@ -441,8 +452,9 @@ def test_hydration_reuses_latest_batch_context_and_readiness(
                 history_cursor="older",
             )
 
-        def conversation_context(self, _handle: object):
-            raise AssertionError("hydration must reuse its active-batch context")
+        def conversation_context(self, requested_handle: object):
+            calls.append(requested_handle)
+            return formal_context
 
         def input_readiness(self, _handle: object):
             raise AssertionError("hydration must reuse its active-batch readiness")
@@ -461,22 +473,33 @@ def test_hydration_reuses_latest_batch_context_and_readiness(
     hydrated = session_conversations.hydrate_conversation(None, "workspace", "binding")
 
     batch = captured["batch_override"]
-    assert calls == [handle]
+    assert calls == [handle, handle]
     assert isinstance(batch, RuntimeEventBatch)
     assert batch.history_cursor == "older"
     assert hydrated == {
         "events": {"events": [], "history_cursor": "older"},
-        "context": context,
+        "context": {**context, **formal_context},
         "readiness": readiness.as_dict(),
     }
 
 
-def test_node_hydration_reuses_latest_batch_context_and_readiness(
+def test_node_hydration_merges_formal_current_view_metrics_into_batch_context(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     binding = object()
     handle = RuntimeHandle(job_id="job", conversation_id="conversation")
-    context = {"model_name": "node-model", "window_tokens": 128_000}
+    context = {
+        "model_name": "node-model",
+        "window_tokens": 128_000,
+        "used_tokens": None,
+        "view_event_count": None,
+        "usage_current": False,
+    }
+    formal_context = {
+        "used_tokens": 12_345,
+        "view_event_count": 17,
+        "usage_current": True,
+    }
     readiness = RuntimeInputReadiness(ready=True, execution_status="idle")
     calls: list[object] = []
     captured: dict[str, RuntimeEventBatch] = {}
@@ -491,8 +514,9 @@ def test_node_hydration_reuses_latest_batch_context_and_readiness(
                 history_cursor="older",
             )
 
-        def conversation_context(self, _handle: object):
-            raise AssertionError("node hydration must reuse active-batch context")
+        def conversation_context(self, requested_handle: object):
+            calls.append(requested_handle)
+            return formal_context
 
         def input_readiness(self, _handle: object):
             raise AssertionError("node hydration must reuse active-batch readiness")
@@ -518,11 +542,11 @@ def test_node_hydration_reuses_latest_batch_context_and_readiness(
         None, flow_run_id="run", attempt_id="attempt", binding_id="binding"
     )
 
-    assert calls == [handle]
+    assert calls == [handle, handle]
     assert captured["batch"].history_cursor == "older"
     assert hydrated == {
         "events": {"events": [], "history_cursor": "older"},
-        "context": context,
+        "context": {**context, **formal_context},
         "readiness": readiness.as_dict(),
     }
 

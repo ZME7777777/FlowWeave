@@ -3193,6 +3193,33 @@ def _conversation_context_snapshot(
     return dict(context)
 
 
+def hydration_context_snapshot(
+    runtime: Any,
+    handle: RuntimeHandle,
+    batch_context: dict[str, int | str | None] | None,
+) -> dict[str, int | float | str | bool | None]:
+    """Merge formal current-View metrics into a native event-batch context.
+
+    ``read_active_events`` includes an efficient state-derived context snapshot,
+    but that snapshot deliberately has no exact current-View Token or event
+    count. Hydration must not mistake its presence for the separate OpenHands
+    ``/context`` contract, otherwise reloads of idle conversations render the
+    metrics as unknown.
+    """
+
+    context: dict[str, int | float | str | bool | None] = dict(batch_context or {})
+    formal_context = _conversation_context_snapshot(runtime, handle)
+    if not context:
+        return formal_context
+    context.update(
+        {
+            field: formal_context.get(field)
+            for field in ("used_tokens", "view_event_count", "usage_current")
+        }
+    )
+    return context
+
+
 def conversation_cache_key(db: Session, workspace_id: str, binding_id: str) -> ConversationCacheKey:
     workspace = _workspace(db, workspace_id)
     binding = _binding(db, workspace_id, binding_id)
@@ -3225,11 +3252,7 @@ def hydrate_conversation(db: Session, workspace_id: str, binding_id: str) -> dic
     outcome = "error"
     try:
         batch = runtime.read_active_events(handle)
-        context = (
-            _conversation_context_snapshot(runtime, handle)
-            if batch.context is None
-            else dict(batch.context)
-        )
+        context = hydration_context_snapshot(runtime, handle, batch.context)
         readiness = (
             runtime.input_readiness(handle).as_dict()
             if batch.readiness is None

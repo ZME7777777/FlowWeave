@@ -28,6 +28,7 @@ from flowweave.modules.agent_sessions.application.conversations import (
     ATTACHMENT_PATH,
     enqueue_title_task,
     frozen_runtime_capability,
+    hydration_context_snapshot,
     initial_user_event_id,
     message_payload,
     normalized_first_sentence,
@@ -2273,11 +2274,7 @@ def hydrate_node_conversation(
     runtime = get_runtime()
     handle = _flow_run_handle(db, flow_run_id, binding_id)
     batch = runtime.read_active_events(handle)
-    context = (
-        dict(batch.context)
-        if batch.context is not None
-        else dict(runtime.conversation_context(handle))
-    )
+    context = hydration_context_snapshot(runtime, handle, batch.context)
     readiness = (
         batch.readiness.as_dict()
         if batch.readiness is not None
@@ -2871,7 +2868,6 @@ def _ensure_blocked_attempt_wakeup(
     task.max_attempts = max(task.max_attempts, 100)
 
 
-
 def delete_node_draft_attachments(
     db: Session,
     *,
@@ -2930,6 +2926,7 @@ def delete_node_draft_attachment(
             path=path,
         )
     )
+
 
 def upload_node_attachment(
     db: Session,

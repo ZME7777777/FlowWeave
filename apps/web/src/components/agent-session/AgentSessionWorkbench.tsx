@@ -12,6 +12,7 @@ import { ApiError, randomId, type AgentStreamEvent } from '../../api/client';
 import { agentWorkspaceSessionGateway, type AgentSessionGateway } from '../../api/agent-session-gateway';
 import { withoutDeploymentBase } from '../../deploymentPath';
 import { agentWorkspaceSessionHost, type AgentSessionHost } from './session-host';
+import { readConversationContextSnapshot, writeConversationContextSnapshot } from './conversation-cache';
 import { ConversationSurface, ConversationTaskPlan, type ConversationHistoryPrepend, type ConversationReference, type ModelRetryStatus } from '../ConversationSurface';
 import { isOpenHandsAgentReply, isOpenHandsEmptyResponseRecovery, orderOpenHandsConversationEvents } from '../conversationEvents';
 import { useProductDialog } from '../ProductDialogContext';
@@ -5641,12 +5642,19 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     staleTime: INITIAL_HYDRATION_STALE_TIME_MS,
     refetchOnWindowFocus: false,
   });
+  const storedCurrentContext = useMemo(() => workspace && selected
+    ? readConversationContextSnapshot(host.id, workspace.id, selected.id)
+    : undefined, [host.id, selected, workspace]);
+  useEffect(() => {
+    if (!workspace || !selected || !contextQuery.data) return;
+    writeConversationContextSnapshot(host.id, workspace.id, selected.id, contextQuery.data);
+  }, [contextQuery.data, host.id, selected, workspace]);
   const lastCurrentContextByBinding = useRef(new Map<string, AgentConversationContext>());
   const currentContext = useMemo(() => {
     const bindingId = selected?.id;
     const incoming = contextQuery.data;
-    if (!bindingId || !incoming) return incoming;
-    const previous = lastCurrentContextByBinding.current.get(bindingId);
+    if (!bindingId || !incoming) return incoming ?? storedCurrentContext;
+    const previous = lastCurrentContextByBinding.current.get(bindingId) ?? storedCurrentContext;
     const hasCurrentTokens = typeof incoming.used_tokens === 'number' && incoming.used_tokens >= 0;
     const hasCurrentEventCount = typeof incoming.view_event_count === 'number' && incoming.view_event_count >= 0;
     if (hasCurrentTokens || hasCurrentEventCount) {
@@ -5659,7 +5667,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       return current;
     }
     return previous ? { ...incoming, used_tokens: previous.used_tokens, view_event_count: previous.view_event_count } : incoming;
-  }, [contextQuery.data, selected?.id]);
+  }, [contextQuery.data, selected?.id, storedCurrentContext]);
   const canWrite = Boolean(selected?.write_available);
   // Interrupting an active native turn is separate from appending a message.
   // The Runtime validates the request again, so this never grants write access
