@@ -194,31 +194,26 @@ test('step configuration is saved before start and direct launch has its own tab
     }
     if (path === `/api/v1/flow-runs/${run.id}/stepwise-runs/config-imports` && request.method() === 'POST') {
       stepwiseImportBody = request.postDataJSON() as Record<string, unknown>;
-      const importedAttempt = {
-        ...attempt,
-        id: 'imported-stepwise-attempt',
-        node_run_id: 'imported-stepwise-node',
-        state: 'WAITING_START_CONFIRMATION',
-        runtime_phase: null,
-        startup_prompt: '导入的逐步启动提示词',
-      };
-      const importedNode = {
-        ...nodeRun,
-        id: 'imported-stepwise-node',
-        flow_run_id: 'imported-stepwise-record',
-        flow_node_snapshot_key: 'second',
-        created_from: 'RECORD_CONFIG_IMPORT',
-        attempts: [importedAttempt],
-      };
       const importedRecord = {
         ...currentRun,
         id: 'imported-stepwise-record',
         name: '导入逐步记录',
         parent_flow_run_id: run.id,
         start_node_key: 'second',
-        node_runs: [importedNode],
+        stepwise_node_drafts: {
+          second: {
+            row_version: 1,
+            startup_mode: 'PROMPT',
+            startup_prompt: '导入的逐步启动提示词',
+            agent_preset: { capability_version_ids: [], node_context_enabled: false },
+            gates: [],
+            context_ids: [],
+            input_bindings: [],
+          },
+        },
+        node_runs: [],
         artifacts: [],
-        progress: { accepted: 0, terminal: 0, active: 1 },
+        progress: { accepted: 0, terminal: 0, active: 0 },
       };
       currentStepRecord = importedRecord;
       return respond([importedRecord], 201);
@@ -284,6 +279,8 @@ test('step configuration is saved before start and direct launch has its own tab
   await expect(page.locator('.node-record-list > article.active')).toContainText('导入逐步记录');
   await expect(page.locator('.run-graph-node[data-selected="true"]')).toContainText('测试节点2');
   await expect(page.locator('.run-side-panel')).toBeVisible();
+  await expect(page.getByTestId('attempt-state')).toHaveCount(0);
+  await expect(page.locator('.stepwise-record-launch-bar')).toContainText('当前节点“测试节点2”已保存配置，可从记录启动。');
   await page.getByRole('button', { name: '新增' }).click();
   const stepwiseDialogAfterImport = page.getByRole('dialog', { name: '新增逐步运行记录' });
   await stepwiseDialogAfterImport.getByRole('textbox', { name: '逐步运行记录名称' }).fill('测试逐步记录');
@@ -381,23 +378,22 @@ test('stepwise record copy reuses the record selection and first-node configurat
     }
     if (path === `/api/v1/flow-runs/${run.id}/stepwise-runs/${sourceRecord.id}/copy` && request.method() === 'POST') {
       copyBody = request.postDataJSON() as Record<string, unknown>;
-      const copiedAttempt = {
-        ...sourceAttempt,
-        id: 'copied-stepwise-attempt',
-        node_run_id: 'copied-stepwise-node',
-      };
-      const copiedNode = {
-        ...sourceNode,
-        id: 'copied-stepwise-node',
-        flow_run_id: 'copied-stepwise-record',
-        created_from: 'RECORD_COPY',
-        attempts: [copiedAttempt],
-      };
       const copied = {
         ...sourceRecord,
         id: 'copied-stepwise-record',
         name: copyBody.name,
-        node_runs: [copiedNode],
+        node_runs: [],
+        stepwise_node_drafts: {
+          first: {
+            row_version: 1,
+            startup_mode: 'PROMPT',
+            startup_prompt: sourceAttempt.startup_prompt,
+            agent_preset: sourceAttempt.agent_preset,
+            gates: [],
+            context_ids: [],
+            input_bindings: [],
+          },
+        },
       };
       records = [copied, ...records];
       return respond(copied, 201);
@@ -424,7 +420,8 @@ test('stepwise record copy reuses the record selection and first-node configurat
   await expect(page.locator('.node-record-list > article.active')).toContainText('拷贝逐步运行记录');
   await expect(page.locator('.run-graph-node[data-selected="true"]')).toContainText('测试节点');
   await expect(page.locator('.run-side-panel')).toBeVisible();
-  await expect(page.getByTestId('attempt-state')).toHaveText('WAITING_START_CONFIRMATION');
+  await expect(page.getByTestId('attempt-state')).toHaveCount(0);
+  await expect(page.locator('.stepwise-record-launch-bar')).toContainText('当前节点“测试节点”已保存配置，可从记录启动。');
 
   await sourceSelect.click({ modifiers: ['Meta'] });
   await expect(page.locator('.manual-record-toolbar').getByRole('button', { name: '导出 (2)', exact: true })).toBeEnabled();

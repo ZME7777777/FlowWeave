@@ -706,11 +706,11 @@ def test_nested_stepwise_record_is_empty_and_scoped_to_its_parent(client, db_ses
                     FlowRunRuntimeAllocation.flow_run_id == parent["id"]
                 )
             )
-            is not None
+            is None
         )
         assert (
             db.scalar(select(FlowRunRuntime).where(FlowRunRuntime.flow_run_id == parent["id"]))
-            is not None
+            is None
         )
         assert (
             db.scalar(
@@ -823,13 +823,12 @@ def test_copy_nested_stepwise_record_preserves_first_configuration_and_human_inp
         "保留首节点初始配置",
         artifact_id=source_input.json()["id"],
     )
-    activated = client.post(
-        f"/api/v1/flow-runs/{source['id']}/nodes/first/runs",
-        json=source_plan,
+    saved = client.put(
+        f"/api/v1/flow-runs/{source['id']}/stepwise-node-drafts/first",
+        json={"expected_row_version": 1, "startup_mode": "PROMPT", **source_plan},
     )
-    assert activated.status_code == 201, activated.text
-    source_node = activated.json()
-    source_attempt = source_node["attempts"][-1]
+    assert saved.status_code == 200, saved.text
+    source_draft = saved.json()
 
     copied_response = client.post(
         f"/api/v1/flow-runs/{parent['id']}/stepwise-runs/{source['id']}/copy",
@@ -841,24 +840,16 @@ def test_copy_nested_stepwise_record_preserves_first_configuration_and_human_inp
     assert copied["parent_flow_run_id"] == parent["id"]
     assert copied["name"] == "已拷贝逐步记录"
     assert copied["start_node_key"] == "first"
-    assert copied["automation_plan"] == {"start_node_key": "first"}
-    assert len(copied["node_runs"]) == 1
-    copied_node = copied["node_runs"][0]
-    copied_attempt = copied_node["attempts"][-1]
-    assert copied_node["created_from"] == "RECORD_COPY"
-    assert copied_node["flow_node_snapshot_key"] == "first"
-    assert copied_attempt["state"] == "WAITING_START_CONFIRMATION"
-    assert copied_attempt["startup_prompt"] == source_attempt["startup_prompt"]
-    assert copied_attempt["agent_preset"] == source_attempt["agent_preset"]
-    assert copied_attempt["gate_policies"] == source_attempt["gate_policies"]
-    assert copied_attempt["context_ids"] == source_attempt["context_ids"]
-    assert copied_attempt["conversation_id"] is None
-    assert copied_attempt["runtime_phase"] is None
-    assert copied_attempt["artifacts"] == []
-    assert copied_attempt["gate_evaluations"] == []
-    assert len(copied_attempt["input_bindings"]) == 1
-    copied_binding = copied_attempt["input_bindings"][0]
-    assert copied_binding["binding_source"] == "RECORD_COPY"
+    assert copied["automation_plan"]["start_node_key"] == "first"
+    assert copied["node_runs"] == []
+    copied_draft = copied["stepwise_node_drafts"]["first"]
+    assert copied_draft["startup_prompt"] == source_draft["startup_prompt"]
+    assert copied_draft["agent_preset"] == source_draft["agent_preset"]
+    assert copied_draft["gates"] == source_draft["gates"]
+    assert copied_draft["context_ids"] == source_draft["context_ids"]
+    assert len(copied_draft["input_bindings"]) == 1
+    copied_binding = copied_draft["input_bindings"][0]
+    assert copied_binding["binding_source"] == "HUMAN_START"
     assert copied_binding["artifact_version_id"] != source_input.json()["id"]
 
 
@@ -970,19 +961,14 @@ def test_stepwise_record_config_export_import_preserves_only_initial_configurati
     record = imported[0]
     assert record["id"] != source["id"]
     assert record["parent_flow_run_id"] == parent["id"]
-    assert record["automation_plan"] == {"start_node_key": "first"}
-    assert len(record["node_runs"]) == 1
-    node_run = record["node_runs"][0]
-    attempt = node_run["attempts"][-1]
-    assert node_run["created_from"] == "RECORD_CONFIG_IMPORT"
-    assert attempt["state"] == "WAITING_START_CONFIRMATION"
-    assert attempt["startup_prompt"] == source_attempt["startup_prompt"]
-    assert attempt["agent_preset"] == source_attempt["agent_preset"]
-    assert attempt["conversation_id"] is None
-    assert attempt["runtime_phase"] is None
-    assert attempt["gate_evaluations"] == []
-    assert len(attempt["input_bindings"]) == 1
-    assert attempt["input_bindings"][0]["artifact_version_id"] != source_input.json()["id"]
+    assert record["automation_plan"]["start_node_key"] == "first"
+    assert record["node_runs"] == []
+    imported_draft = record["stepwise_node_drafts"]["first"]
+    assert imported_draft["startup_prompt"] == source_attempt["startup_prompt"]
+    assert imported_draft["agent_preset"] == source_attempt["agent_preset"]
+    assert imported_draft["gates"] == source_attempt["gate_policies"]
+    assert len(imported_draft["input_bindings"]) == 1
+    assert imported_draft["input_bindings"][0]["artifact_version_id"] != source_input.json()["id"]
     assert record["artifacts"][0]["source"] == "STEPWISE_RECORD_CONFIG_IMPORT"
 
 

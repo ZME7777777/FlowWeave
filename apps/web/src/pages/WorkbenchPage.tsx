@@ -350,7 +350,7 @@ function readyAutomaticPlanKeys(record?: FlowRunAutomaticRecord): Set<string> {
   return new Set(Object.keys(record.node_plans).filter(key => !incomplete.has(key)));
 }
 
-function SnapshotGraph({ run, snapshotId, selectedKey, activeNodeRunId, onSelect, onClearSelection, reachableKeys, selectableKeys, configuredPlanKeys, executionRun, missingPlanKeys, showExecutionState = true, neutralHelp, neutralView = false }: { run: FlowRun; snapshotId?: string; selectedKey?: string; activeNodeRunId?: string; onSelect: (key: string) => void; onClearSelection?: () => void; reachableKeys?: Iterable<string>; selectableKeys?: Iterable<string>; configuredPlanKeys?: Iterable<string>; executionRun?: FlowRun; missingPlanKeys?: Iterable<string>; showExecutionState?: boolean; neutralHelp?: string; neutralView?: boolean }) {
+function SnapshotGraph({ run, snapshotId, selectedKey, activeNodeRunId, activeNodeKey, onSelect, onClearSelection, reachableKeys, selectableKeys, configuredPlanKeys, executionRun, missingPlanKeys, showExecutionState = true, neutralHelp, neutralView = false }: { run: FlowRun; snapshotId?: string; selectedKey?: string; activeNodeRunId?: string; activeNodeKey?: string; onSelect: (key: string) => void; onClearSelection?: () => void; reachableKeys?: Iterable<string>; selectableKeys?: Iterable<string>; configuredPlanKeys?: Iterable<string>; executionRun?: FlowRun; missingPlanKeys?: Iterable<string>; showExecutionState?: boolean; neutralHelp?: string; neutralView?: boolean }) {
   const [linkMode, setLinkMode] = useState<'flow' | 'data'>('flow');
   // A NodeAttempt executes against its immutable snapshot.  Its facts and the
   // graph shown beside them must therefore come from the same definition; the
@@ -367,7 +367,7 @@ function SnapshotGraph({ run, snapshotId, selectedKey, activeNodeRunId, onSelect
       const visits = (executionRun?.node_runs ?? []).filter(nodeRun => nodeRun.flow_node_snapshot_key === item.instance_key);
       const latest = visits.at(-1);
       const latestAttempt = latest?.attempts.at(-1);
-      const activeFlowTarget = latest?.id === activeNodeRunId;
+      const activeFlowTarget = latest?.id === activeNodeRunId || item.instance_key === activeNodeKey;
       const blocked = latestAttempt?.state === 'START_BLOCKED' || latestAttempt?.state === 'END_BLOCKED';
       const waiting = latestAttempt?.state === 'WAITING_HUMAN'
         || latestAttempt?.state === 'WAITING_CONFIRMATION'
@@ -405,7 +405,7 @@ function SnapshotGraph({ run, snapshotId, selectedKey, activeNodeRunId, onSelect
       ...mappingEdges.map(edge => ({ ...edge, selectable: false, style: { opacity: linkMode === 'data' ? 1 : 0.16 } })),
     ];
     return [graphNodes, graphEdges] as const;
-  }, [activeNodeRunId, configuredPlans, executionRun?.node_runs, linkMode, missingPlans, neutralView, reachable, selectable, selectedKey, showExecutionState, snapshot]);
+  }, [activeNodeKey, activeNodeRunId, configuredPlans, executionRun?.node_runs, linkMode, missingPlans, neutralView, reachable, selectable, selectedKey, showExecutionState, snapshot]);
   const [nodes, setNodes, onNodesChange] = useNodesState<Node<SnapshotGraphNodeData>>([]);
   useEffect(() => {
     setNodes(current => graphNodes.map(node => ({
@@ -1689,6 +1689,11 @@ export function WorkbenchPage() {
     : mode === 'MANUAL'
       ? activeFlowNodeRun(nodeRecords)
       : undefined;
+  const activeStepwiseDraftKey = mode === 'MANUAL' && selectedStepwiseRecord
+    ? [...(selectedStepwiseRecord.stepwise_node_drafts ? Object.keys(selectedStepwiseRecord.stepwise_node_drafts) : [])]
+      .reverse()
+      .find(key => !selectedStepwiseRecord.node_runs.some(nodeRun => nodeRun.flow_node_snapshot_key === key))
+    : undefined;
   const selectedStepwiseNodeRun = mode === 'MANUAL'
     ? selectedRecordNodeRun(selectedStepwise, selectedNodeRunId, selectedNodeKey)
     : undefined;
@@ -2314,7 +2319,7 @@ export function WorkbenchPage() {
           {(run.state === 'COMPLETED' || run.state === 'CANCELLED') && <TerminalRunDelete run={run} onDeleted={() => navigate(undefined, 'delete')}/>}
         </div>
         {mode !== 'AUTOMATIC' && run.state !== 'COMPLETED' && run.state !== 'CANCELLED' && <SnapshotSync run={run} currentVersion={flow.data?.row_version} onSynced={updated => navigate(updated, 'sync')}/>}
-        <SnapshotGraph run={graphRun} snapshotId={graphSnapshotId} selectedKey={graphSelectedKey} activeNodeRunId={activeExecutionNodeRun?.id} reachableKeys={graphReachableKeys} selectableKeys={graphSelectableKeys} configuredPlanKeys={configuredAutomaticPlanKeys} executionRun={selectedExecutionRecord ?? directExecutionRun} missingPlanKeys={missingAutomaticPlanKeys} showExecutionState={showExecutionState} neutralHelp={neutralGraphHelp} neutralView={automaticNeutralView} onClearSelection={clearSelection} onSelect={selectGraphNode}/>
+        <SnapshotGraph run={graphRun} snapshotId={graphSnapshotId} selectedKey={graphSelectedKey} activeNodeRunId={activeExecutionNodeRun?.id} activeNodeKey={activeStepwiseDraftKey} reachableKeys={graphReachableKeys} selectableKeys={graphSelectableKeys} configuredPlanKeys={configuredAutomaticPlanKeys} executionRun={selectedExecutionRecord ?? directExecutionRun} missingPlanKeys={missingAutomaticPlanKeys} showExecutionState={showExecutionState} neutralHelp={neutralGraphHelp} neutralView={automaticNeutralView} onClearSelection={clearSelection} onSelect={selectGraphNode}/>
       </main>
       {hasPanel && <aside className="run-side-panel">
         <div className="run-side-resizer" role="separator" aria-label="调整右侧栏宽度" aria-orientation="vertical" onPointerDown={beginSideResize}/>
