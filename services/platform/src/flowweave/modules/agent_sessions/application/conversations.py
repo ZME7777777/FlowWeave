@@ -103,7 +103,7 @@ _SANDBOX_PROJECT_IMAGE = re.compile(
     rf"sandbox:({_RUNTIME_WORKSPACE_PATH}/[A-Za-z0-9][A-Za-z0-9._/-]*)"
 )
 _RELATIVE_MARKDOWN_IMAGE = re.compile(
-    r"(!\[[^\]\r\n]*\]\()([A-Za-z0-9][A-Za-z0-9._/-]*\.(?:avif|gif|jpe?g|png|webp))(\))",
+    r"(!\[[^\]\r\n]*\]\()([A-Za-z0-9][A-Za-z0-9._/-]*\.(?:avif|gif|jpe?g|png|svg|webp))(\))",
     re.IGNORECASE,
 )
 _MECHANICAL_TITLE = re.compile(

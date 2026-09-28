@@ -297,25 +297,44 @@ _RUNTIME_WORKSPACE_PATH = r"/runtime/workspace/(?:project(?:/users/[0-9a-f-]{36}
 _SANDBOX_PROJECT_IMAGE = re.compile(
     rf"sandbox:({_RUNTIME_WORKSPACE_PATH}/[A-Za-z0-9][A-Za-z0-9._/-]*)"
 )
+_RELATIVE_MARKDOWN_IMAGE = re.compile(
+    r"(!\[[^\]\r\n]*\]\()([A-Za-z0-9][A-Za-z0-9._/-]*\.(?:avif|gif|jpe?g|png|svg|webp))(\))",
+    re.IGNORECASE,
+)
 
 
 def project_sandbox_images(
     content: str, *, flow_run_id: str, attempt_id: str, binding_id: str
 ) -> str:
-    """Map Runtime-local images to the scoped FlowRun file endpoint.
+    """Map Runtime-local and safe relative images to the scoped FlowRun file endpoint.
 
     Only node-workspace paths are projected. The endpoint still validates the
     FlowRun, Attempt and Conversation before returning the inline image.
     """
 
-    def replace_url(match: re.Match[str]) -> str:
-        query = urlencode({"path": match.group(1), "binding_id": binding_id})
+    def file_url(path: str) -> str:
+        query = urlencode({"path": path, "binding_id": binding_id})
         return (
             f"/api/v1/flow-runs/{flow_run_id}/node-attempts/{attempt_id}"
             f"/agent-sessions/workspace/file?{query}"
         )
 
-    return _SANDBOX_PROJECT_IMAGE.sub(replace_url, content)
+    def replace_sandbox_url(match: re.Match[str]) -> str:
+        return file_url(match.group(1))
+
+    def replace_relative_url(match: re.Match[str]) -> str:
+        relative_path = match.group(2)
+        parts = relative_path.split("/")
+        if any(part in {"", ".", ".."} or part.startswith(".") for part in parts):
+            return match.group(0)
+        return (
+            f"{match.group(1)}"
+            f"{file_url(f'{_RUNTIME_PROJECT}/{relative_path}')}"
+            f"{match.group(3)}"
+        )
+
+    projected = _SANDBOX_PROJECT_IMAGE.sub(replace_sandbox_url, content)
+    return _RELATIVE_MARKDOWN_IMAGE.sub(replace_relative_url, projected)
 
 
 def _node_context_suffix(
