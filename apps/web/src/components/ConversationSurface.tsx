@@ -281,7 +281,7 @@ function MessageAttachments({ attachments, references = [], workspaceReferences 
       <Quote size={16}/><span><b>{`会话引用 ${index + 1}`}</b><small>已添加到本条消息</small></span>
       <PanelRightOpen size={13}/>
     </button>)}
-    {workspaceReferences.map(reference => <button type="button" key={`${reference.path}:${JSON.stringify(reference.selection ?? {})}`} className="conversation-message-attachment conversation-message-workspace-reference" title={reference.path} onClick={() => { onOpenWorkspaceReference?.(reference); window.dispatchEvent(new CustomEvent('flowweave:open-workspace-selection', { detail: reference })); }}>
+    {workspaceReferences.map(reference => <button type="button" key={`${reference.path}:${JSON.stringify(reference.selection ?? {})}`} className="conversation-message-attachment conversation-message-workspace-reference" title={reference.path} onClick={() => onOpenWorkspaceReference?.(reference)}>
       <FileText size={16}/><span><b>{reference.display_name}</b><small>{workspaceReferenceLabel(reference)}</small></span>
     </button>)}
     {annotations.map((annotation, index) => {

@@ -4298,17 +4298,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const [filePreviewRequest, setFilePreviewRequest] = useState<ConversationFilePreviewRequest>();
   const [attachmentRequest, setAttachmentRequest] = useState<{ key: string; attachment: AgentAttachment }>();
   const [fileSelectionReference, setFileSelectionReference] = useState<{ path: string; selection: FileSelection }>();
-  useEffect(() => {
-    const openSelection = (event: Event) => {
-      const reference = (event as CustomEvent<AgentWorkspaceReference>).detail;
-      if (reference?.selection) {
-        setFileSelectionReference({ path: reference.path, selection: { ...reference.selection } });
-        setDrawerOpen(true);
-      }
-    };
-    window.addEventListener('flowweave:open-workspace-selection', openSelection);
-    return () => window.removeEventListener('flowweave:open-workspace-selection', openSelection);
-  }, []);
   const [candidatePreviewRequest, setCandidatePreviewRequest] = useState<CandidateFilePreviewRequest>();
   const [operationError, setOperationError] = useState<Error>();
   const [historyLoadingBindingId, setHistoryLoadingBindingId] = useState<string>();
@@ -5644,6 +5633,14 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       mimeType: attachment.mime_type,
       imageDataUrl: attachment.image_data_url,
       attachment,
+    });
+  }, []);
+  const previewWorkspaceReference = useCallback((reference: AgentWorkspaceReference) => {
+    setFilePreviewRequest({
+      key: randomId(),
+      kind: 'workspace',
+      path: reference.path,
+      filename: reference.display_name || reference.path.split('/').filter(Boolean).at(-1) || reference.path,
     });
   }, []);
   const previewCandidateFile = useCallback((fieldKey: string, relativePath: string) => {
@@ -7284,6 +7281,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         onRewrite={selected && canWrite && features.rewrite ? requestRewrite : undefined}
         onFork={canFork ? eventId => { if (fork.isPending) return; const directoryName = selected?.work_directory_id ? workDirectories.find(directory => directory.id === selected.work_directory_id)?.display_name ?? '当前工作区' : '节点工作目录'; void dialog.confirm({ title: '从此处分叉会话？', message: `将保留当前会话在“${directoryName}”中的工作目录和截至此回复的历史记录，创建一条可独立继续的新会话。源会话不会被修改。`, confirmLabel: '创建分叉会话' }).then(confirmed => { if (confirmed) fork.mutate(eventId); }); } : undefined}
         onOpenAttachment={features.attachments ? previewAttachment : undefined}
+        onOpenWorkspaceReference={previewWorkspaceReference}
         onPreviewCandidateFile={candidateOutputUrl && workspace ? previewCandidateFile : undefined}
         onReviewChanges={openChangesReview}
         onOpenWorkspaceFile={openWorkspaceFileLink}
