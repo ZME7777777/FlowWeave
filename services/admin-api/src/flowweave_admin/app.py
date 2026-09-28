@@ -46,6 +46,28 @@ def _request_id(request: Request) -> str:
     return raw if raw and len(raw) <= 80 else str(uuid4())
 
 
+def _usage_by_resource(observations: dict[str, Any]) -> dict[str, object]:
+    """Associate managed resources with their best available usage sample.
+
+    Runtime Provider observations can include both a managed Runtime container
+    and its generation metadata under the same resource ID. Only the container
+    record has a Docker usage sample, so a later metadata record must not
+    overwrite that usable sample with ``None``.
+    """
+
+    usage_by_resource: dict[str, object] = {}
+    for item in observations.get("managed_resources", []):
+        if not isinstance(item, dict):
+            continue
+        resource_id = str(item.get("resource_id") or "")
+        if not resource_id:
+            continue
+        usage = item.get("usage")
+        if resource_id not in usage_by_resource or usage is not None:
+            usage_by_resource[resource_id] = usage
+    return usage_by_resource
+
+
 def create_app() -> FastAPI:
     settings = Settings()
 
@@ -122,11 +144,7 @@ def create_app() -> FastAPI:
         services, observations = await asyncio.gather(
             service_metrics(active_settings), runtime_observations(active_settings)
         )
-        usage_by_resource = {
-            str(item.get("resource_id")): item.get("usage")
-            for item in observations.get("managed_resources", [])
-            if isinstance(item, dict)
-        }
+        usage_by_resource = _usage_by_resource(observations)
         for runtime in runtime_entries:
             sandbox_id = runtime.get("managed_sandbox_id")
             runtime["usage"] = usage_by_resource.get(str(sandbox_id)) if sandbox_id else None
@@ -206,11 +224,7 @@ def create_app() -> FastAPI:
         with connect(active_settings) as connection:
             entries = runtimes(connection, limit=bounded_limit)
         observations = await runtime_observations(active_settings)
-        usage_by_resource = {
-            str(item.get("resource_id")): item.get("usage")
-            for item in observations.get("managed_resources", [])
-            if isinstance(item, dict)
-        }
+        usage_by_resource = _usage_by_resource(observations)
         for entry in entries:
             sandbox_id = entry.get("managed_sandbox_id")
             entry["usage"] = usage_by_resource.get(str(sandbox_id)) if sandbox_id else None
@@ -236,11 +250,7 @@ def create_app() -> FastAPI:
             )
         observations = await runtime_observations(active_settings)
         sandbox_id = detail["runtime"].get("managed_sandbox_id")
-        usage_by_resource = {
-            str(item.get("resource_id")): item.get("usage")
-            for item in observations.get("managed_resources", [])
-            if isinstance(item, dict)
-        }
+        usage_by_resource = _usage_by_resource(observations)
         detail["runtime"]["usage"] = (
             usage_by_resource.get(str(sandbox_id)) if sandbox_id is not None else None
         )
