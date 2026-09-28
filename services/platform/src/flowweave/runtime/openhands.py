@@ -2517,20 +2517,33 @@ class OpenHandsRuntime:
         )
         event: dict[str, Any] | None = None
         if probe_event_id is not None:
-            event = self._request(
-                "GET",
-                f"/api/conversations/{handle.conversation_id}/events/{probe_event_id}",
-                base_url=self._base_url_for_handle(handle),
-                session_api_key=self._session_key_for_handle(handle),
-            )
-            if str(event.get("id") or "") != probe_event_id:
+            try:
+                event = self._request(
+                    "GET",
+                    f"/api/conversations/{handle.conversation_id}/events/{probe_event_id}",
+                    base_url=self._base_url_for_handle(handle),
+                    session_api_key=self._session_key_for_handle(handle),
+                )
+            except DomainError as exc:
+                # A restored Conversation can retain a non-tree terminal
+                # ConversationErrorEvent as ``leaf_event_id``.  The native
+                # state route has already loaded the Conversation, but that
+                # artifact is intentionally unavailable from the per-event
+                # route.  For ordinary history reads, use the latest formal
+                # event window instead of treating the whole Conversation as
+                # missing.  Strict callers that supplied an expected identity
+                # keep their fail-closed behavior.
+                if exc.code != "RUNTIME_CONVERSATION_MISSING" or expected is not None:
+                    raise
+                probe_event_id = None
+            if event is not None and str(event.get("id") or "") != probe_event_id:
                 raise DomainError(
                     "RUNTIME_EVENT_IDENTITY_DRIFT",
                     "OpenHands reloaded a different event identity",
                     409,
                     {"conversation_id": handle.conversation_id},
                 )
-        else:
+        if probe_event_id is None:
             page = self._request(
                 "GET",
                 f"/api/conversations/{handle.conversation_id}/events/search",

@@ -1479,6 +1479,54 @@ def test_openhands_returns_none_for_missing_event_by_id(openhands_settings, monk
     assert calls[0]["missing_ok"] is True
 
 
+def test_openhands_reload_uses_latest_event_when_error_leaf_is_not_routable(
+    openhands_settings, monkeypatch
+):
+    """A persisted non-tree error leaf does not make its Conversation missing."""
+    runtime = OpenHandsRuntime(openhands_settings)
+    handle = _handle()
+    calls: list[str] = []
+    monkeypatch.setattr(
+        runtime,
+        "_conversation_state",
+        lambda _handle: {
+            "leaf_event_id": "error-leaf",
+            "workspace": {"working_dir": handle.workspace_root},
+            "persistence_dir": "/runtime/state/conversations/10000000000040008000000000000002",
+        },
+    )
+
+    def request(method, path, **_kwargs):
+        assert method == "GET"
+        calls.append(path)
+        if path.endswith("/events/error-leaf"):
+            raise DomainError(
+                "RUNTIME_CONVERSATION_MISSING",
+                "The original OpenHands Conversation is unavailable and cannot be replaced",
+                409,
+            )
+        assert path.endswith("/events/search")
+        return {
+            "items": [
+                {
+                    "id": "latest-formal-event",
+                    "parent_id": "prior-event",
+                }
+            ]
+        }
+
+    monkeypatch.setattr(runtime, "_request", request)
+
+    identity = runtime.reload_conversation(handle)
+
+    assert identity.conversation_id == handle.conversation_id
+    assert identity.event_id == "latest-formal-event"
+    assert calls == [
+        f"/api/conversations/{handle.conversation_id}/events/error-leaf",
+        f"/api/conversations/{handle.conversation_id}/events/search",
+    ]
+
+
 def test_openhands_maps_missing_delete_conversation_400_to_idempotent_missing(
     openhands_settings, monkeypatch
 ):
