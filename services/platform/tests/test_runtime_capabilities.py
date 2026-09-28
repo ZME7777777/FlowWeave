@@ -62,6 +62,11 @@ def test_publish_schema_rejects_upstream_docker_build_args() -> None:
         )
 
 
+def test_publish_schema_enables_browser_by_default_but_allows_an_explicit_minimal_image() -> None:
+    assert EnvironmentPublishWrite().runtime_capabilities == ["browser"]
+    assert EnvironmentPublishWrite(runtime_capabilities=[]).runtime_capabilities == []
+
+
 def test_formal_build_receives_only_the_canonical_governed_value(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

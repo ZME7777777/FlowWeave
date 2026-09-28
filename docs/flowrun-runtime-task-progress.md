@@ -6894,6 +6894,18 @@ FlowWeave 本地累加后猜测压缩边界。
 
 验收：受影响 Python `py_compile`、Ruff check（排除同文件未改动的既有 E501 文案）与 Web TypeScript typecheck／ESLint 通过，`git diff --check` 通过。三条定向 Python 回归在断言前被本机缺失 Docker socket 的全局 Testcontainers PostgreSQL fixture 阻断；产品流 Playwright 已启动本地 Web，但在本切片 Token 断言前被既有“模型服务暂时不可用”断言阻断，未记为通过。无迁移、OpenHands 源码、Runtime Provider 或远端部署变更。
 
+### FR-528 Runtime 基线 Chromium 与 OpenHands 浏览器工具 — BLOCKED
+
+依赖：无（用户要求 Agent Workspace 与新发布 FlowRun Environment 默认具备浏览器能力）。
+
+目标：固定 `flowweave-openhands-runtime` 必须安装 Chromium，并以 OpenHands 正式 `browser_tool_set` 作为所有新建 Agent 会话的固定工具；终端环境发布 UI、API 省略字段和应用服务默认均选择受治理的 `browser` Runtime capability，显式空数组仍可请求最小镜像。不可修改已发布 Environment Version，不得直接进入 Runtime 容器安装软件，也不得将浏览器控制改为平台私有协议。
+
+完成（待镜像验证）：固定 Runtime Dockerfile 已安装 Chromium、设置 OpenHands/Playwright 的标准可执行文件环境变量，并在镜像构建期检查 Chromium 与 `BrowserToolSet` 可发现性。FlowWeave 固定工具集合已加入 `browser_tool_set`；终端环境发布表单与服务端省略值默认选择 `browser`，新增版本仍通过 OpenHands 正式 `INSTALL_CAPABILITIES=browser` 构建，用户可显式取消为 minimal。新增 schema 与 Web 回归覆盖默认选择。
+
+阻塞：本机 Docker Unix socket 不存在，`test_fixed_runtime_tools.py` 的 Testcontainers fixture、`docker build`、Runtime 镜像契约探针以及本地 Compose 的 Agent Workspace／FlowRun Runtime replacement 均无法启动；没有将它们记为通过。Docker daemon 可用后，使用已提交源码构建 `flowweave-openhands-runtime:1`，运行镜像内 Chromium／BrowserToolSet 探针，随后通过本地 Compose 受控 replacement 启动新的 Agent Workspace generation；已有已发布 Environment Version 保持不可变，须由其 Setup Session 发布新的 browser-capable 版本后供新的 FlowRun 显式选择。
+
+验收：Python `py_compile`、Ruff format/check、Web TypeScript typecheck、受影响 Web ESLint 与 `git diff --check` 通过；`test_runtime_capabilities.py` 11 passed。`test_fixed_runtime_tools.py` 在断言前被本机 Docker/Testcontainers 初始化阻断，未记为通过。
+
 
 ## 7. 恢复工作检查表
 

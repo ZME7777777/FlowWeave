@@ -217,7 +217,9 @@ class CredentialBulkDeleteWrite(ApiModel):
 
 class EnvironmentPublishWrite(ApiModel):
     description: str = Field(default="", max_length=2000)
-    runtime_capabilities: list[str] = Field(default_factory=list, max_length=3)
+    # Browser is part of the product Runtime baseline. Clients can still send
+    # an explicit empty list when they intentionally need a minimal image.
+    runtime_capabilities: list[str] = Field(default_factory=lambda: ["browser"], max_length=3)
 
     @model_validator(mode="after")
     def validate_runtime_capabilities(self) -> EnvironmentPublishWrite:

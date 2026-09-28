@@ -26,6 +26,15 @@ RUN apt-get -o Acquire::Retries=5 update \
  && apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
       build-essential default-jdk-headless maven vim \
  && rm -rf /var/lib/apt/lists/*
+# The fixed Agent Workspace seed and every Environment setup session start
+# from this image. Keep Chromium in that common baseline so browser-enabled
+# OpenHands conversations never depend on a session-local package install.
+RUN apt-get -o Acquire::Retries=5 update \
+ && apt-get -o Acquire::Retries=5 install -y --no-install-recommends chromium \
+ && rm -rf /var/lib/apt/lists/*
+ENV CHROME_BIN=/usr/bin/chromium \
+    PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium \
+    CHROMIUM_FLAGS="--no-sandbox --disable-dev-shm-usage --disable-gpu"
 RUN python3.13 -m pip install --break-system-packages --no-cache-dir uv==0.7.8 \
  && npm install --global @larksuite/cli@1.0.84 \
  && npm cache clean --force \
@@ -86,9 +95,11 @@ RUN uv pip install --python /runtime/.venv/bin/python pip==25.1.1 \
 RUN set -eu; \
     for command in bash node npm npx python python3 pip pip3 uv java javac mvn mysql \
       git ssh curl wget jq zip unzip tar gzip make gcc g++ sed awk grep find xargs ps top \
-      ip ping nslookup nc tmux vim agent-server; do \
+      ip ping nslookup nc tmux vim chromium agent-server; do \
       command -v "$command" >/dev/null; \
     done
+RUN /runtime/.venv/bin/python -c \
+    "from openhands.tools.browser_use import BrowserToolSet; from openhands.tools.browser_use.impl import BrowserToolExecutor; assert BrowserToolSet.name == 'browser_tool_set'; assert BrowserToolExecutor.check_chromium_available() == '/usr/bin/chromium'"
 EXPOSE 8000
 ENTRYPOINT []
 CMD ["agent-server", "--host", "0.0.0.0", "--port", "8000"]

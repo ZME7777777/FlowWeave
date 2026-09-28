@@ -31,6 +31,7 @@ CURRENT_OPENHANDS_SERVER_IDENTITY = OpenHandsServerIdentity(
 )
 
 FIXED_RUNTIME_TOOL_NAMES: tuple[str, ...] = (
+    "browser_tool_set",
     "file_editor",
     # ``task`` is the executor-backed child Tool returned by TaskToolSet and
     # is not a public factory: resolving it directly makes the SDK inject

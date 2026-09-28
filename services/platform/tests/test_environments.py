@@ -822,12 +822,12 @@ def test_terminal_environment_publish_does_not_bind_nodes(client, worker_contain
         version_no,
         base_image_reference,
         base_image_digest,
-        runtime_capabilities=(),
+        runtime_capabilities=("browser",),
     ):
         assert version_id
         assert base_image_reference == _BASE_IMAGE
         assert base_image_digest == "sha256:" + "1" * 64
-        assert runtime_capabilities == ()
+        assert runtime_capabilities == ("browser",)
         published_container_ids.append(container_id)
         return PublishedImage(
             reference=f"flowweave/environment-{environment_id}:v{version_no}",

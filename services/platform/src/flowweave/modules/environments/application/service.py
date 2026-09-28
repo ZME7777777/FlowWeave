@@ -906,7 +906,7 @@ def publish_setup_session(
     db: Session,
     session_id: str,
     description: str = "",
-    runtime_capabilities: tuple[str, ...] = (),
+    runtime_capabilities: tuple[str, ...] = ("browser",),
     *,
     execute: bool = True,
     retry_on_error: bool = False,
