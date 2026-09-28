@@ -1271,8 +1271,11 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   if (!resizerBox) throw new Error('Expected workspace drawer resizer');
   await page.mouse.move(resizerBox.x + resizerBox.width / 2, resizerBox.y + 80);
   await page.mouse.down();
+  await expect(page.locator('body')).toHaveClass(/agent-workspace-resizing/);
+  await expect(page.locator('.agent-workspace-drawer')).toHaveCSS('transition-property', 'none');
   await page.mouse.move(Math.max(2, resizerBox.x - 500), resizerBox.y + 80, { steps: 12 });
   await page.mouse.up();
+  await expect(page.locator('body')).not.toHaveClass(/agent-workspace-resizing/);
   await expect.poll(() => page.locator('.agent-workspace-drawer').evaluate(drawer => drawer.getBoundingClientRect().width)).toBeGreaterThan(initialDrawerWidth + 150);
   await expect.poll(() => terminalResizes.at(-1)?.columns ?? 0).toBeGreaterThan(initialColumns);
   const expandedLayout = await page.getByLabel('Agent 工作区终端').evaluate(host => {

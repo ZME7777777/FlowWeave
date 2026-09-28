@@ -3345,8 +3345,8 @@ function clampWorkspaceSummaryWidth(value: number): number {
 }
 
 function clampConversationRailWidth(value: number): number {
-  if (window.innerWidth <= 1100) return Math.max(220, Math.min(420, value));
-  return Math.max(220, Math.min(420, window.innerWidth - 700, value));
+  if (window.innerWidth <= 1100) return Math.max(300, Math.min(420, value));
+  return Math.max(300, Math.min(420, window.innerWidth - 700, value));
 }
 
 
@@ -4092,21 +4092,33 @@ function WorkspaceDrawer({
     event.preventDefault();
     const startX = event.clientX;
     const startWidth = open ? panelWidth : summaryWidth;
+    let frame: number | undefined;
+    let nextWidth = startWidth;
+    const applyWidth = () => {
+      frame = undefined;
+      if (open) setPanelWidth(clampWorkspaceToolWidth(nextWidth));
+      else setSummaryWidth(clampWorkspaceSummaryWidth(nextWidth));
+    };
     const move = (moveEvent: PointerEvent) => {
-      const next = startWidth + startX - moveEvent.clientX;
-      if (open) setPanelWidth(clampWorkspaceToolWidth(next));
-      else setSummaryWidth(clampWorkspaceSummaryWidth(next));
+      nextWidth = startWidth + startX - moveEvent.clientX;
+      if (frame === undefined) frame = window.requestAnimationFrame(applyWidth);
     };
     const stop = () => {
       window.removeEventListener('pointermove', move);
       window.removeEventListener('pointerup', stop);
+      window.removeEventListener('pointercancel', stop);
+      if (frame !== undefined) window.cancelAnimationFrame(frame);
+      applyWidth();
+      document.body.classList.remove('agent-workspace-resizing');
       document.body.style.removeProperty('cursor');
       document.body.style.removeProperty('user-select');
     };
+    document.body.classList.add('agent-workspace-resizing');
     document.body.style.cursor = 'col-resize';
     document.body.style.userSelect = 'none';
     window.addEventListener('pointermove', move);
     window.addEventListener('pointerup', stop, { once: true });
+    window.addEventListener('pointercancel', stop, { once: true });
   };
   const startFileTreeResize = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (window.innerWidth <= 680) return;
@@ -4330,7 +4342,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const [sidebarQuestion, setSidebarQuestion] = useState<{ sourceBindingId: string; reference?: AgentConversationReference; sidebarBindingId?: string }>();
   const [conversationRailWidth, setConversationRailWidth] = useState(() => {
     const stored = Number(localStorage.getItem('flowweave:conversation-rail-width'));
-    return clampConversationRailWidth(Number.isFinite(stored) ? stored : 240);
+    return clampConversationRailWidth(Number.isFinite(stored) ? stored : 300);
   });
   const [operationError, setOperationError] = useState<Error>();
   const [historyLoadingBindingId, setHistoryLoadingBindingId] = useState<string>();
@@ -7401,12 +7413,22 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     event.preventDefault();
     const startX = event.clientX;
     const startWidth = conversationRailWidth;
-    const move = (moveEvent: PointerEvent) => setConversationRailWidth(
-      clampConversationRailWidth(startWidth + moveEvent.clientX - startX),
-    );
+    let frame: number | undefined;
+    let nextWidth = startWidth;
+    const applyWidth = () => {
+      frame = undefined;
+      setConversationRailWidth(clampConversationRailWidth(nextWidth));
+    };
+    const move = (moveEvent: PointerEvent) => {
+      nextWidth = startWidth + moveEvent.clientX - startX;
+      if (frame === undefined) frame = window.requestAnimationFrame(applyWidth);
+    };
     const stop = () => {
       window.removeEventListener('pointermove', move);
       window.removeEventListener('pointerup', stop);
+      window.removeEventListener('pointercancel', stop);
+      if (frame !== undefined) window.cancelAnimationFrame(frame);
+      applyWidth();
       document.body.style.removeProperty('cursor');
       document.body.style.removeProperty('user-select');
     };
@@ -7414,6 +7436,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     document.body.style.userSelect = 'none';
     window.addEventListener('pointermove', move);
     window.addEventListener('pointerup', stop, { once: true });
+    window.addEventListener('pointercancel', stop, { once: true });
   };
   return <main className="agent-workbench-page" style={{ '--conversation-rail-width': `${conversationRailWidth}px` } as CSSProperties}>
     {selected && <ConversationStreamObserver workspaceId={workspace.id} bindingId={selected.id} enabled={streamEnabled} onEvent={onStreamEvent} onStatus={updateStreamStatus} onReconnect={onStreamReconnect}/>}
