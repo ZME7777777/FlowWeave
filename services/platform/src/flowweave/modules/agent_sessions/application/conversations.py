@@ -42,6 +42,7 @@ from flowweave.modules.agent_sessions.application.draft_attachments import (
 from flowweave.modules.agent_sessions.application.event_branch import (
     complete_active_branch,
 )
+from flowweave.modules.agent_sessions.application import resumable_attachments
 from flowweave.modules.agent_sessions.application.runtime_config import (
     build_agent_spec,
     config_from_binding,
@@ -3183,6 +3184,75 @@ def upload_attachment(
         "path": path,
         "image_data_url": image_data_url,
     }
+
+
+def create_resumable_attachment_upload(
+    db: Session,
+    workspace_id: str,
+    binding_id: str | None,
+    *,
+    filename: str,
+    content_type: str,
+    total_size: int,
+    work_directory_id: str | None = None,
+    attachment_owner_id: str | None = None,
+) -> dict[str, object]:
+    workspace = _workspace(db, workspace_id)
+    if binding_id is None:
+        owner_id = attachment_owner_id or ""
+        agent_workspace_host.conversation_work_directory_context(db, workspace.id, work_directory_id)
+    else:
+        owner_id = _binding(db, workspace_id, binding_id).id
+    upload = resumable_attachments.create_upload(
+        db,
+        host_kind="AGENT_WORKSPACE",
+        host_id=workspace.id,
+        host_scope_id=None,
+        binding_id=binding_id,
+        work_directory_id=work_directory_id,
+        attachment_owner_id=owner_id,
+        filename=filename,
+        mime_type=content_type,
+        total_size=total_size,
+    )
+    return resumable_attachments.upload_status(upload, [])
+
+
+def _resumable_attachment_upload(db: Session, workspace_id: str, binding_id: str | None, upload_id: str):
+    _workspace(db, workspace_id)
+    if binding_id is not None:
+        _binding(db, workspace_id, binding_id)
+    return resumable_attachments.upload_for_host(
+        db, upload_id, host_kind="AGENT_WORKSPACE", host_id=workspace_id, host_scope_id=None, binding_id=binding_id
+    )
+
+
+def resumable_attachment_upload_status(db: Session, workspace_id: str, binding_id: str | None, upload_id: str) -> dict[str, object]:
+    upload = _resumable_attachment_upload(db, workspace_id, binding_id, upload_id)
+    return resumable_attachments.upload_status(upload, resumable_attachments.list_parts(db, upload))
+
+
+def upload_resumable_attachment_part(db: Session, workspace_id: str, binding_id: str | None, upload_id: str, part_number: int, content: bytes) -> dict[str, object]:
+    upload = _resumable_attachment_upload(db, workspace_id, binding_id, upload_id)
+    resumable_attachments.put_part(db, upload, part_number=part_number, content=content)
+    db.flush()
+    return resumable_attachments.upload_status(upload, resumable_attachments.list_parts(db, upload))
+
+
+def complete_resumable_attachment_upload(db: Session, workspace_id: str, binding_id: str | None, upload_id: str) -> dict[str, str | int | None]:
+    upload = _resumable_attachment_upload(db, workspace_id, binding_id, upload_id)
+    content = resumable_attachments.assemble(db, upload)
+    attachment = upload_attachment(
+        db, workspace_id, binding_id, filename=upload.filename, content_type=upload.mime_type, content=content,
+        work_directory_id=upload.work_directory_id, attachment_owner_id=upload.attachment_owner_id,
+    )
+    resumable_attachments.close_upload(db, upload, status="COMPLETED")
+    return attachment
+
+
+def cancel_resumable_attachment_upload(db: Session, workspace_id: str, binding_id: str | None, upload_id: str) -> None:
+    upload = _resumable_attachment_upload(db, workspace_id, binding_id, upload_id)
+    resumable_attachments.close_upload(db, upload, status="CANCELLED")
 
 
 def conversation_context(

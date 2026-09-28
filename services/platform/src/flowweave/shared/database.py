@@ -23,6 +23,8 @@ _USER_ISOLATED_TABLES = frozenset(
         "agent_conversation_capabilities",
         "agent_conversation_commands",
         "agent_conversation_message_attachments",
+        "agent_attachment_uploads",
+        "agent_attachment_upload_parts",
         "agent_sidebar_conversations",
         "agent_conversation_searches",
         "agent_conversation_search_hits",

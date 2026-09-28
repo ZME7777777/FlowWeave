@@ -18,6 +18,7 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     Integer,
+    LargeBinary,
     Numeric,
     String,
     Text,
@@ -158,6 +159,50 @@ class AgentConversationMessageAttachment(Base):
     mime_type: Mapped[str] = mapped_column(String(200))
     byte_size: Mapped[int] = mapped_column(Integer)
     path: Mapped[str] = mapped_column(String(300))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class AgentAttachmentUpload(Base):
+    """Private, resumable upload state; only completion creates a workspace file."""
+
+    __tablename__ = "agent_attachment_uploads"
+    __table_args__ = (
+        CheckConstraint("host_kind IN ('AGENT_WORKSPACE', 'FLOW_NODE')", name="ck_agent_attachment_upload_host_kind"),
+        CheckConstraint("total_size > 0 AND total_size <= 26214400", name="ck_agent_attachment_upload_total_size"),
+        CheckConstraint("chunk_size = 262144", name="ck_agent_attachment_upload_chunk_size"),
+        CheckConstraint("status IN ('ACTIVE', 'COMPLETED', 'CANCELLED')", name="ck_agent_attachment_upload_status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    host_kind: Mapped[str] = mapped_column(String(30), index=True)
+    host_id: Mapped[str] = mapped_column(String(36), index=True)
+    host_scope_id: Mapped[str | None] = mapped_column(String(36), index=True)
+    binding_id: Mapped[str | None] = mapped_column(String(36), index=True)
+    work_directory_id: Mapped[str | None] = mapped_column(String(36), index=True)
+    attachment_owner_id: Mapped[str] = mapped_column(String(36), index=True)
+    filename: Mapped[str] = mapped_column(String(240))
+    mime_type: Mapped[str] = mapped_column(String(200))
+    total_size: Mapped[int] = mapped_column(Integer)
+    chunk_size: Mapped[int] = mapped_column(Integer, default=262144)
+    status: Mapped[str] = mapped_column(String(20), default="ACTIVE", index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
+class AgentAttachmentUploadPart(Base):
+    """One validated 256 KiB chunk belonging to a private upload session."""
+
+    __tablename__ = "agent_attachment_upload_parts"
+    __table_args__ = (
+        UniqueConstraint("upload_id", "part_number", name="uq_agent_attachment_upload_part"),
+        CheckConstraint("part_number >= 0", name="ck_agent_attachment_upload_part_number"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    upload_id: Mapped[str] = mapped_column(String(36), index=True)
+    part_number: Mapped[int] = mapped_column(Integer)
+    content: Mapped[bytes] = mapped_column(LargeBinary)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
