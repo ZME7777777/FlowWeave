@@ -81,6 +81,7 @@ from flowweave.runtime.workspace import (
     materialize_agent_workspace_capability_marketplace,
 )
 from flowweave.shared.database import now
+from flowweave.shared.domain.event_monitoring import activity_timestamp_is_stale
 from flowweave.shared.errors import DomainError, not_found
 from flowweave.shared.models import BackgroundTask, TaskState
 from flowweave.shared.observability import current_metrics
@@ -784,7 +785,7 @@ def conversation_activity(db: Session, workspace_id: str) -> dict[str, Any]:
     binding_ids = {item.id for item in bindings}
     runtime = get_runtime()
     handle = _handle(db, workspace, bindings[0])
-    running_native_ids = runtime.running_conversation_ids(handle)
+    native_activity = runtime.conversation_activity_snapshot(handle)
     condensation_tasks = list(
         db.execute(
             select(BackgroundTask.aggregate_id, BackgroundTask.id, BackgroundTask.state)
@@ -799,21 +800,21 @@ def conversation_activity(db: Session, workspace_id: str) -> dict[str, Any]:
     for binding_id, task_id, state in condensation_tasks:
         latest_condensation_task.setdefault(binding_id, (task_id, state))
     running_bindings = [
-        item for item in bindings if item.openhands_conversation_id in running_native_ids
+        item
+        for item in bindings
+        if native_activity.get(item.openhands_conversation_id, None) is not None
+        and native_activity[item.openhands_conversation_id].execution_status == "running"
     ]
-    failed_native_ids = runtime.conversation_ids_by_status(
-        handle, "error"
-    ) | runtime.conversation_ids_by_status(handle, "stuck")
-    possibly_stuck_binding_ids: list[str] = []
-    from flowweave.shared.domain.event_monitoring import build_activity_summary
-
-    for item in running_bindings:
-        try:
-            batch = runtime.read_active_events(_handle(db, workspace, item))
-        except DomainError:
-            continue
-        if build_activity_summary(batch.events)["possibly_stuck"]:
-            possibly_stuck_binding_ids.append(item.id)
+    failed_native_ids = {
+        conversation_id
+        for conversation_id, activity in native_activity.items()
+        if activity.execution_status in {"error", "stuck"}
+    }
+    possibly_stuck_binding_ids = [
+        item.id
+        for item in running_bindings
+        if activity_timestamp_is_stale(native_activity[item.openhands_conversation_id].updated_at)
+    ]
     attention_binding_ids = set(possibly_stuck_binding_ids) | {
         item.id for item in bindings if item.openhands_conversation_id in failed_native_ids
     }
@@ -3054,9 +3055,7 @@ def delete_draft_attachments(db: Session, workspace_id: str, owner_id: str) -> i
     )
 
 
-def delete_draft_attachment(
-    db: Session, workspace_id: str, owner_id: str, path: str
-) -> bool:
+def delete_draft_attachment(db: Session, workspace_id: str, owner_id: str, path: str) -> bool:
     workspace = _workspace(db, workspace_id)
     owner = assert_attachment_owner_unbound(
         db, owner_id, host_kind="AGENT_WORKSPACE", host_id=workspace.id

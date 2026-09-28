@@ -35,6 +35,7 @@ from flowweave.runtime.base import (
     RuntimeAgentSpec,
     RuntimeBudgets,
     RuntimeCondenser,
+    RuntimeConversationActivity,
     RuntimeConversationRuntime,
     RuntimeCritic,
     RuntimeHandle,
@@ -759,6 +760,69 @@ def test_openhands_runtime_status_routes_are_discovered_and_reprovision_is_expli
             "POST",
             "/api/conversations/10000000-0000-4000-8000-000000000002/runtime/reprovision",
         ),
+    ]
+
+
+def test_openhands_activity_snapshot_paginates_and_normalizes_native_ids(
+    openhands_settings, monkeypatch
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    requests: list[dict[str, str | int]] = []
+    pages = iter(
+        (
+            {
+                "items": [
+                    {
+                        "id": "10000000000040008000000000000001",
+                        "execution_status": "RUNNING",
+                        "updated_at": "2026-09-28T00:00:00Z",
+                    }
+                ],
+                "next_page_id": "next-activity-page",
+            },
+            {
+                "items": [
+                    {
+                        "id": "invalid-native-id",
+                        "execution_status": "RUNNING",
+                        "updated_at": "2026-09-28T00:00:00Z",
+                    },
+                    {
+                        "id": "10000000-0000-4000-8000-000000000002",
+                        "execution_status": "ERROR",
+                        "updated_at": "2026-09-28T00:01:00+00:00",
+                    },
+                ],
+                "next_page_id": None,
+            },
+        )
+    )
+
+    def fake_request(method: str, path: str, **kwargs: object) -> dict[str, object]:
+        assert method == "GET"
+        assert path == "/api/conversations/activity"
+        params = kwargs.get("params")
+        assert isinstance(params, dict)
+        requests.append(params)
+        return next(pages)
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+
+    assert runtime.conversation_activity_snapshot(_handle()) == {
+        "10000000-0000-4000-8000-000000000001": RuntimeConversationActivity(
+            conversation_id="10000000-0000-4000-8000-000000000001",
+            execution_status="running",
+            updated_at="2026-09-28T00:00:00Z",
+        ),
+        "10000000-0000-4000-8000-000000000002": RuntimeConversationActivity(
+            conversation_id="10000000-0000-4000-8000-000000000002",
+            execution_status="error",
+            updated_at="2026-09-28T00:01:00+00:00",
+        ),
+    }
+    assert requests == [
+        {"limit": 100},
+        {"limit": 100, "page_id": "next-activity-page"},
     ]
 
 

@@ -100,6 +100,7 @@ from flowweave.runtime.workspace import (
 )
 from flowweave.shared.application.transactions import finish
 from flowweave.shared.database import now
+from flowweave.shared.domain.event_monitoring import activity_timestamp_is_stale
 from flowweave.shared.errors import DomainError, conflict, not_found
 from flowweave.shared.models import (
     AgentWorkDirectoryVersion,
@@ -868,7 +869,7 @@ def node_session_activity(db: Session, *, flow_run_id: str, attempt_id: str) -> 
         attempt_id=attempt_id,
         binding_id=bindings[0].id,
     )
-    running_native_ids = runtime.running_conversation_ids(handle)
+    native_activity = runtime.conversation_activity_snapshot(handle)
     condensation_tasks = list(
         db.execute(
             select(BackgroundTask.aggregate_id, BackgroundTask.id, BackgroundTask.state)
@@ -883,28 +884,21 @@ def node_session_activity(db: Session, *, flow_run_id: str, attempt_id: str) -> 
     for binding_id, task_id, state in condensation_tasks:
         latest_condensation_task.setdefault(binding_id, (task_id, state))
     running_bindings = [
-        item for item in bindings if item.openhands_conversation_id in running_native_ids
+        item
+        for item in bindings
+        if native_activity.get(item.openhands_conversation_id, None) is not None
+        and native_activity[item.openhands_conversation_id].execution_status == "running"
     ]
-    failed_native_ids = runtime.conversation_ids_by_status(
-        handle, "error"
-    ) | runtime.conversation_ids_by_status(handle, "stuck")
-    possibly_stuck_binding_ids: list[str] = []
-    from flowweave.shared.domain.event_monitoring import build_activity_summary
-
-    for item in running_bindings:
-        try:
-            batch = runtime.read_active_events(
-                _node_handle(
-                    db,
-                    flow_run_id=flow_run_id,
-                    attempt_id=attempt_id,
-                    binding_id=item.id,
-                )
-            )
-        except DomainError:
-            continue
-        if build_activity_summary(batch.events)["possibly_stuck"]:
-            possibly_stuck_binding_ids.append(item.id)
+    failed_native_ids = {
+        conversation_id
+        for conversation_id, activity in native_activity.items()
+        if activity.execution_status in {"error", "stuck"}
+    }
+    possibly_stuck_binding_ids = [
+        item.id
+        for item in running_bindings
+        if activity_timestamp_is_stale(native_activity[item.openhands_conversation_id].updated_at)
+    ]
     attention_binding_ids = set(possibly_stuck_binding_ids) | {
         item.id for item in bindings if item.openhands_conversation_id in failed_native_ids
     }

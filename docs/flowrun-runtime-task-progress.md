@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`IN PROGRESS`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`FR-545B2`
+> 下一可执行切片：`FR-546`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -7553,7 +7553,7 @@ FlowWeave 本地累加后猜测压缩边界。
 | FR-544 | DONE | FR-543 | 空闲回收只在短全局生命周期段内摘除会话；单会话 close 在锁外执行，同时保留该会话锁、lease 与持久事件身份。 |
 | FR-545A | DONE | FR-544 | 为低优先级原生消息搜索和 Workspace 聚合扫描增加分页、单会话命中、会话数与总命中硬预算；预算耗尽明确失败，不伪造完整结果。 |
 | FR-545B1 | DONE | FR-545A | 搜索状态仅在终态按 cursor 分页投影并验证当前页 native hit；运行中轮询仅读取数据库元数据。 |
-| FR-545B2 | READY | FR-545B1 | 状态轮询去逐条 Runtime 回读，并核对正式批量活动投影、数据库事务释放和正式读取优先级。 |
+| FR-545B2 | DONE | FR-545B1 | 状态轮询改为一次正式批量活动投影；不再按运行会话读取 active events，并以原生正式事件活动时间识别可能卡住。 |
 | FR-546 | PENDING | FR-545B2 | 将标题、搜索、依赖构建等辅助任务与流程推进、恢复任务隔离到底层 executor/数据库连接预算。 |
 | FR-547 | PENDING | FR-546 | 缩短跨 Runtime 调用的数据库事务，核对 Worker heartbeat 等独立连接的全局预算；对任务 claim 索引只依据实际查询证据优化。 |
 | FR-548 | PENDING | FR-547 | Admin 同步数据库读取进入有界执行通道，合并重复 Docker 采样；Runtime Provider 的控制、构建与观测使用独立容量。 |
@@ -7599,6 +7599,10 @@ FR-545A 完成：低优先级原生 EventLog 搜索新增四层硬预算：每 c
 FR-545B1 完成：Agent Workspace 搜索状态接口新增稳定 keyset `cursor`／`limit` 分页，默认每页最多 20、最大 50 个 durable hit。Worker 仍仅持久化正式 binding/event identity；运行中浏览器每秒轮询只读取搜索元数据，不逐个调用 Runtime 读取 hit。任务终态后才在当前页对正式 native event 重新授权和投影，页面提供显式“加载更多结果”；下一页由用户动作触发，避免一次 status 刷新耗尽低优先级 history/search lane。
 
 验收：搜索结果 cursor／状态条件／路由分页参数和浏览器加载更多的静态契约、OpenHands adapter 搜索预算 pytest（3 passed）、受影响 Python `py_compile`、Ruff format/check、`git diff --check`、唯一 `CURRENT` 状态及 staged diff 复核通过。Web TypeScript typecheck 未运行：`apps/web` 未安装依赖，`tsc` 不在 PATH；未安装依赖。按本轮要求未运行数据库、Runtime、完整构建或 E2E；不修改 schema、OpenHands 或远端环境。下一切片为 FR-545B2。
+
+FR-545B2 完成：OpenHands baseline 新增只读 `/api/conversations/activity` 目录页，仅投影 native conversation ID、正式 execution status 与由正式非状态事件维护的 `updated_at`；该路径不加载 EventLog、不获取 live Conversation FIFO state lock。FlowWeave Runtime adapter 用有界分页一次读取该目录，统一规范化 UUID，并将 Agent Workspace 与 FlowRun 节点会话活动轮询改为只消费该 snapshot。`possibly_stuck` 依据该 native formal-event activity timestamp 的既有 60 秒阈值判断；`error`/`stuck` 仍写入 SYSTEM unread。活动轮询不再对每个 running binding 调用 `read_active_events()`。新 baseline `3517f8e597d3d75a8da68a43ba7b0cc50257167d` 与归档 SHA-256 `1aa308d7b895de329848336916d50a79a770a8e43e6dc77f82a04eea38c628bc` 已冻结至 source lock、provenance、Dockerfile、契约探针和平台域常量。
+
+验收：OpenHands 新活动目录 service/router 定向 pytest 各 1 passed；受影响 OpenHands 与 FlowWeave Python 文件通过 `py_compile`、Ruff check/format 和 `git diff --check`；源码归档以本地 file URL 通过 `fetch_source.py` digest 与四包结构验证。平台定向 pytest 在收集阶段因本机缺少 `psycopg` 被阻断，未安装依赖；完整 `contract_check.py` 在本地可运行至镜像安装 provenance 断言，但本地 venv 不具备 Runtime 镜像的 `/opt/openhands-source` direct URL metadata，未将其记为镜像契约通过。下一可执行切片为 FR-546。
 
 FR-541B 完成：Agent Workspace 的文件树、文件预览、Git 仓库发现／历史／diff／同步和文件创建／删除已从 `AsyncSession.run_sync()` 移至低优先级有界线程。工作目录创建／修改需要同步文件路径校验，删除会级联执行正式 Runtime 会话删除，也进入同一通道。该通道与历史分页复用原有小型 executor 和同步数据库池；默认最多一个后台操作，不新增 PostgreSQL 连接预算，繁重文件／Git 操作不再占用 ASGI event loop 或交互读取／写入／恢复容量。纯数据库工作目录列表和详情仍留在原入口。
 

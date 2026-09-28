@@ -55,6 +55,7 @@ from flowweave.modules.sandboxes.infrastructure.docker import (
 )
 from flowweave.modules.tasks.public import Lease
 from flowweave.runtime.base import (
+    RuntimeConversationActivity,
     RuntimeConversationIdentity,
     RuntimeEvent,
     RuntimeEventBatch,
@@ -1962,7 +1963,6 @@ def test_discarding_agent_workspace_draft_refuses_a_created_conversation(
         assert caught.value.code == "AGENT_DRAFT_ALREADY_CREATED"
 
 
-
 def test_deleting_work_directory_cascades_its_conversations(settings, db_session_factory):
     with settings_context(settings), db_session_factory() as db, runtime_context(MockRuntime()):
         item = _ready_workspace_for_conversation(db)
@@ -3430,13 +3430,23 @@ def test_agent_workspace_conversation_activity_maps_native_ids_once(
         calls = 0
         running_id = ""
 
-        def running_conversation_ids(self, _handle):
+        def conversation_activity_snapshot(self, _handle):
             self.calls += 1
-            return {self.running_id, "unbound-native-conversation"}
+            return {
+                self.running_id: RuntimeConversationActivity(
+                    conversation_id=self.running_id,
+                    execution_status="running",
+                    updated_at="2999-01-01T00:00:00+00:00",
+                ),
+                "unbound-native-conversation": RuntimeConversationActivity(
+                    conversation_id="unbound-native-conversation",
+                    execution_status="running",
+                    updated_at="2999-01-01T00:00:00+00:00",
+                ),
+            }
 
-        def conversation_ids_by_status(self, _handle, _status):
-            self.calls += 1
-            return set()
+        def read_active_events(self, _handle):
+            raise AssertionError("activity polling must not read per-conversation events")
 
     runtime = ActivityRuntime()
     with settings_context(settings), db_session_factory() as db, runtime_context(runtime):
@@ -3459,8 +3469,7 @@ def test_agent_workspace_conversation_activity_maps_native_ids_once(
         "failed_binding_ids": [],
     }
     assert idle["id"] not in activity["running_binding_ids"]
-    assert runtime.calls == 3
-
+    assert runtime.calls == 1
 
 
 def test_agent_workspace_activity_persists_system_unread_and_honors_acknowledgement(
@@ -3481,17 +3490,28 @@ def test_agent_workspace_activity_persists_system_unread_and_honors_acknowledgem
     class ActivityRuntime(MockRuntime):
         failed_id = ""
 
-        def running_conversation_ids(self, _handle):
-            return set()
-
-        def conversation_ids_by_status(self, _handle, status):
-            return {self.failed_id} if status == "error" else set()
+        def conversation_activity_snapshot(self, _handle):
+            return (
+                {
+                    self.failed_id: RuntimeConversationActivity(
+                        conversation_id=self.failed_id,
+                        execution_status="error",
+                        updated_at="2999-01-01T00:00:00+00:00",
+                    )
+                }
+                if self.failed_id
+                else {}
+            )
 
     runtime = ActivityRuntime()
     with settings_context(settings), db_session_factory() as db, runtime_context(runtime):
         workspace = _ready_workspace_for_conversation(db)
         created = conversations.create_conversation(
-            db, workspace.id, "异常未读会话", workspace.default_model_provider_id, "activity-system-unread"
+            db,
+            workspace.id,
+            "异常未读会话",
+            workspace.default_model_provider_id,
+            "activity-system-unread",
         )
         binding = db.get(AgentConversationBinding, created["id"])
         assert binding is not None

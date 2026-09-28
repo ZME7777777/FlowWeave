@@ -151,9 +151,9 @@ from openhands.tools.task.manager import Task, TaskManager, TaskStatus
 
 EXPECTED_VERSION = "1.49.5"
 EXPECTED_UPSTREAM_BASE = "e21d77673b738f056676044600c4ad81c5a575c8"
-EXPECTED_SOURCE_COMMIT = "0c00fba533425a55b36abeb56818d22260b6ce63"
+EXPECTED_SOURCE_COMMIT = "3517f8e597d3d75a8da68a43ba7b0cc50257167d"
 EXPECTED_SOURCE_ARCHIVE_SHA256 = (
-    "8d8ede85dcf5b5a8eb7fe4daa68d416ac6c06eabe705cb03c7b91a62591b627f"
+    "1aa308d7b895de329848336916d50a79a770a8e43e6dc77f82a04eea38c628bc"
 )
 PACKAGES = (
     "openhands-agent-server",
@@ -167,6 +167,7 @@ REQUIRED_PATHS = {
     "/ready",
     "/server_info",
     "/api/conversations",
+    "/api/conversations/activity",
     "/api/conversations/{conversation_id}/runtime",
     "/api/conversations/{conversation_id}/runtime/reprovision",
     "/api/conversations/{conversation_id}/condense",
@@ -585,6 +586,16 @@ def main() -> None:
     assert not missing_paths, {"missing_paths": missing_paths}
     assert set(schema["paths"]["/ready"]) == {"get"}
     assert set(schema["paths"]["/server_info"]) == {"get"}
+    activity_operation = schema["paths"]["/api/conversations/activity"]["get"]
+    activity_schema = activity_operation["responses"]["200"]["content"]["application/json"][
+        "schema"
+    ]
+    assert activity_schema == {"$ref": "#/components/schemas/ConversationActivityPage"}
+    assert set(schema["components"]["schemas"]["ConversationActivityInfo"]["properties"]) == {
+        "id",
+        "execution_status",
+        "updated_at",
+    }
     server_info_schema = schema["components"]["schemas"]["ServerInfo"]
     assert {
         "version",
