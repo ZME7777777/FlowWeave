@@ -1,4 +1,4 @@
-import { BookOpen, Check, ChevronDown, ChevronRight, CircleAlert, ClipboardList, Copy, ExternalLink, Eye, FileCode2, FileCog, FileJson, FilePenLine, FilePlus2, FileText, FileType2, GitFork, Link, LoaderCircle, PanelRightOpen, Pencil, PlugZap, Quote, Search, Sparkles, SquareTerminal, Workflow, Wrench } from 'lucide-react';
+import { BookOpen, Check, ChevronDown, ChevronRight, CircleAlert, ClipboardList, Copy, ExternalLink, Eye, FileCode2, FileCog, FileJson, FilePenLine, FilePlus2, FileText, FileType2, GitFork, Link, LoaderCircle, PanelRightOpen, PanelTop, Pencil, PlugZap, Quote, Search, Sparkles, SquareTerminal, Workflow, Wrench } from 'lucide-react';
 import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type RefObject } from 'react';
 import type { AgentActivitySummary, AgentAttachment, AgentConversationAnnotation, AgentConversationReference, AgentWorkspaceReference, OpenHandsConversationEvent, RuntimeTaskControlSnapshot } from '../types';
 import { SubagentAvatar } from './SubagentAvatar';
@@ -1155,7 +1155,7 @@ function ActivityEntryRow({ entry, active, paused = false, parentFailed = false,
     ? subagentAvatarSlotForEvent(item.event, avatarSlots)
     : undefined;
   const presentation = activityPresentation(entry, active, workspaceRoot, paused, parentFailed);
-  const ToolIcon = toolVisual === 'terminal' ? SquareTerminal : toolVisual === 'file' ? fileToolIcon(presentation) : toolVisual === 'mcp' ? PlugZap : toolVisual === 'workflow' ? Workflow : Icon;
+  const ToolIcon = toolVisual === 'terminal' ? SquareTerminal : toolVisual === 'file' ? fileToolIcon(presentation) : toolVisual === 'browser' ? PanelTop : toolVisual === 'mcp' ? PlugZap : toolVisual === 'workflow' ? Workflow : Icon;
   const taskAvatar = avatarSlot && <SubagentAvatar slot={avatarSlot} status={taskAvatarStatus(entry, item, paused, parentFailed)} size={13}/>;
   const toolDetail = item.kind === 'tool'
     ? <ToolDetailPanel presentation={presentation} eventName={eventName} toolName={toolName || undefined} toolVisual={toolVisual} results={entry.results} workspaceRoot={workspaceRoot}/>
@@ -1220,7 +1220,7 @@ function ProgressActivity({ group, active, paused, parentFailed, avatarSlots, wo
     if (!operation) return [];
     const presentation = activityPresentation(entry, active, workspaceRoot, paused, parentFailed);
     const visual = toolVisualPresentation(String(operation.event.payload.event_name ?? ''), detailText(operation.event.payload.tool_name));
-    const OperationIcon = visual === 'terminal' ? SquareTerminal : visual === 'file' ? fileToolIcon(presentation) : visual === 'mcp' ? PlugZap : visual === 'workflow' ? Workflow : Wrench;
+    const OperationIcon = visual === 'terminal' ? SquareTerminal : visual === 'file' ? fileToolIcon(presentation) : visual === 'browser' ? PanelTop : visual === 'mcp' ? PlugZap : visual === 'workflow' ? Workflow : Wrench;
     return [{ id: entry.id, Icon: OperationIcon, label: presentation.title }];
   });
   const visibleOperationIcons = operationIcons.slice(0, 3);
@@ -1537,7 +1537,7 @@ export interface ConversationHistoryPrepend {
   phase: 'capture' | 'restore';
 }
 
-export const ConversationSurface = memo(function ConversationSurface({ events, isGenerating, isPaused = false, emptyResponseRecoveryActive = false, modelRetryStatus, historyPending = false, conversationScope, historyPrepend, onHistoryAnchorCaptured, onHistoryAnchorRestored, requestStartedAt, requestSubmitting = false, rewritePending = false, condensationPending = false, condensationStartedAt, onRewrite, onFork, onOpenAttachment, onOpenWorkspaceReference, onPreviewCandidateFile, onReviewChanges, onOpenWorkspaceFile, onOpenImage, workspaceRoot, annotations = [], onCreateAnnotation, onLocateAnnotation, taskControl = [], monitoring, connectionState }: {
+export const ConversationSurface = memo(function ConversationSurface({ events, isGenerating, isPaused = false, emptyResponseRecoveryActive = false, modelRetryStatus, historyPending = false, conversationScope, historyPrepend, onHistoryAnchorCaptured, onHistoryAnchorRestored, requestStartedAt, requestSubmitting = false, rewritePending = false, condensationPending = false, condensationStartedAt, onRewrite, onFork, onOpenAttachment, onOpenWorkspaceReference, onPreviewCandidateFile, onReviewChanges, onOpenWorkspaceFile, onOpenImage, workspaceRoot, annotations = [], onCreateAnnotation, onSidebarQuestion, onLocateAnnotation, taskControl = [], monitoring, connectionState }: {
   events: OpenHandsConversationEvent[];
   isGenerating: boolean;
   /** Formal native conversation pause state, used only to label unfinished Task actions. */
@@ -1571,6 +1571,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
   workspaceRoot?: string | null;
   annotations?: AgentConversationAnnotation[];
   onCreateAnnotation?: (anchor: { event_id: string; quote: string; compact_start: number }) => void;
+  onSidebarQuestion?: (reference: ConversationReference) => void;
   onLocateAnnotation?: (annotation: AgentConversationAnnotation) => void;
   taskControl?: RuntimeTaskControlSnapshot[];
   monitoring?: AgentActivitySummary;
@@ -2286,6 +2287,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
     {viewingReference && <ConversationReferencePreview reference={viewingReference} onClose={() => setViewingReference(undefined)} onLocate={locateReferenceSource}/>}
     {selectedReference && <span className="conversation-add-reference" style={{ left: selectedReference.left, top: selectedReference.top }}>
       <button type="button" onPointerDown={event => event.preventDefault()} onClick={() => { onCreateAnnotation?.({ event_id: selectedReference.reference.eventId, quote: selectedReference.reference.content, compact_start: selectedReference.reference.compactStart }); window.getSelection()?.removeAllRanges(); setSelectedReference(undefined); }}><Quote size={14}/>添加到会话</button>
+      {onSidebarQuestion && <button type="button" onPointerDown={event => event.preventDefault()} onClick={() => { onSidebarQuestion(selectedReference.reference); window.getSelection()?.removeAllRanges(); setSelectedReference(undefined); }}><PanelRightOpen size={14}/>在侧边聊天提问</button>}
     </span>}
     {showJumpToLatest && <button
       type="button"

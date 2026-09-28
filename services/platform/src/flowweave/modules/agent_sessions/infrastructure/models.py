@@ -125,6 +125,24 @@ class AgentConversationBinding(Base):
     )
 
 
+class AgentSidebarConversation(Base):
+    """A short-lived side conversation linked to one authorized source binding."""
+
+    __tablename__ = "agent_sidebar_conversations"
+    __table_args__ = (
+        UniqueConstraint("sidebar_binding_id", name="uq_agent_sidebar_binding"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    workspace_id: Mapped[str] = mapped_column(String(36), index=True)
+    owner_user_id: Mapped[str] = mapped_column(String(36), index=True)
+    source_binding_id: Mapped[str] = mapped_column(String(36), index=True)
+    sidebar_binding_id: Mapped[str] = mapped_column(String(36), index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    expired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
 class AgentConversationMessageAttachment(Base):
     """A display projection for files attached to a formal user MessageEvent."""
 
@@ -351,6 +369,7 @@ event.listen(AgentConversationCommand, "before_insert", _normalize_default_host)
 
 __all__ = (
     "AgentConversationBinding",
+    "AgentSidebarConversation",
     "AgentConversationCapability",
     "AgentConversationCommand",
     "AgentConversationMessageAttachment",

@@ -1880,6 +1880,18 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   }));
   await expect(workflowDetail).not.toHaveClass(/running/);
   await expect(workflowDetail.locator(':scope > summary b')).toHaveCSS('animation-name', 'none');
+  agentStream!.send(JSON.stringify({
+    type: 'event',
+    event: { id: 'live-browser', event_type: 'TOOL_CALL', payload: { source: 'agent', parent_id: 'live-condensation-complete', action_id: 'live-browser', tool_call_id: 'live-browser-call', tool_name: 'browser_navigate', event_name: 'BrowserNavigateAction', summary: '打开管理页面', details: { url: 'https://example.test/admin' }, timestamp: new Date().toISOString() } },
+  }));
+  const browserDetail = activeProcess.locator('.conversation-tool-detail.tool-browser').filter({ hasText: '打开管理页面' });
+  await expect(browserDetail.locator(':scope > summary > svg.lucide-panel-top')).toBeVisible();
+  await expect(browserDetail.locator(':scope > summary > svg.lucide-wrench')).toHaveCount(0);
+  agentStream!.send(JSON.stringify({
+    type: 'event',
+    event: { id: 'live-browser-result', event_type: 'TOOL_RESULT', payload: { source: 'environment', parent_id: 'live-browser', action_id: 'live-browser', tool_call_id: 'live-browser-call', tool_name: 'browser_navigate', event_name: 'BrowserNavigateObservation', details: { is_error: false }, timestamp: new Date().toISOString() } },
+  }));
+  await expect(browserDetail).not.toHaveClass(/running/);
   agentStream!.send(JSON.stringify({ type: 'delta', item_id: 'transient-preview', content: '正在核对上下文。' }));
   agentStream!.send(JSON.stringify({ type: 'delta', item_id: 'transient-preview', content: '\n最终回复只在正式消息到达后展示。' }));
   await expect(page.getByLabel('正在生成的回复')).toHaveCount(0);

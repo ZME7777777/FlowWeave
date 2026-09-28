@@ -52,6 +52,7 @@ from flowweave.modules.agent_sessions.infrastructure.models import (
     AgentConversationCapability,
     AgentConversationCommand,
     AgentConversationMessageAttachment,
+    AgentSidebarConversation,
 )
 from flowweave.modules.agent_workspaces import public as agent_workspace_host
 from flowweave.modules.catalog.public import resolve_version
@@ -752,6 +753,7 @@ def list_conversations(db: Session, workspace_id: str) -> list[dict[str, Any]]:
             .where(
                 AgentConversationBinding.workspace_id == workspace_id,
                 AgentConversationBinding.lifecycle == "ACTIVE",
+                ~AgentConversationBinding.id.in_(select(AgentSidebarConversation.sidebar_binding_id)),
             )
             .order_by(
                 _conversation_sort_expression().desc(),
@@ -770,6 +772,7 @@ def conversation_activity(db: Session, workspace_id: str) -> dict[str, Any]:
             select(AgentConversationBinding).where(
                 AgentConversationBinding.workspace_id == workspace_id,
                 AgentConversationBinding.lifecycle == "ACTIVE",
+                ~AgentConversationBinding.id.in_(select(AgentSidebarConversation.sidebar_binding_id)),
             )
         )
     )
@@ -863,6 +866,7 @@ def list_conversation_page(
     query = select(AgentConversationBinding).where(
         AgentConversationBinding.workspace_id == workspace_id,
         AgentConversationBinding.lifecycle == "ACTIVE",
+        ~AgentConversationBinding.id.in_(select(AgentSidebarConversation.sidebar_binding_id)),
     )
     if cursor:
         sort_key, binding_id = _decode_conversation_page_cursor(cursor)
@@ -1167,6 +1171,7 @@ def _create_native_conversation(
     working_directory: str,
     *,
     allow_existing: bool = False,
+    system_message_suffix_append: str = "",
 ) -> RuntimeHandle:
     ensure_credential_sync_schema(db)
     runtime = db.scalar(
@@ -1203,6 +1208,7 @@ def _create_native_conversation(
         working_directory=working_directory,
         host_root=host_root,
         runtime_root=runtime_root,
+        system_message_suffix_append=system_message_suffix_append,
     )
     conversation_secrets, credential_context = credentials_for_agent(db)
     if credential_context:
@@ -1608,6 +1614,8 @@ def bootstrap_conversation(
     annotations: tuple[dict[str, Any], ...] = (),
     capability_version_ids: tuple[str, ...] = (),
     idempotency_key: str,
+    sidebar_source_binding_id: str | None = None,
+    system_message_suffix_append: str = "",
 ) -> dict[str, Any]:
     """Create a native conversation only while accepting its first user event.
 
@@ -1618,7 +1626,7 @@ def bootstrap_conversation(
     """
 
     message_text = content.strip()
-    if references:
+    if references and sidebar_source_binding_id is None:
         raise DomainError(
             "AGENT_CONVERSATION_REFERENCE_UNAVAILABLE",
             "新会话首条消息不能引用尚未存在的会话内容",
@@ -1724,8 +1732,14 @@ def bootstrap_conversation(
         binding_id=binding.id,
         allow_provisioning=True,
     )
+    source_references: tuple[dict[str, str], ...] = ()
+    if sidebar_source_binding_id is not None:
+        source = _binding(db, workspace.id, sidebar_source_binding_id)
+        source_references = _resolve_conversation_references(
+            get_runtime(), _handle(db, workspace, source), references
+        )
     prompt, image_urls = _message_payload(
-        message_text, attachments, (), normalized_workspace_references, annotations
+        message_text, attachments, source_references, normalized_workspace_references, annotations
     )
     _validate_attachment_owners(
         binding.id,
@@ -1760,6 +1774,7 @@ def bootstrap_conversation(
             provider,
             binding.working_directory,
             allow_existing=command.attempt_count > 1,
+            system_message_suffix_append=system_message_suffix_append,
         )
         previous_event_id = get_runtime().reload_conversation(handle).event_id
         binding.bootstrap_parent_event_id = previous_event_id

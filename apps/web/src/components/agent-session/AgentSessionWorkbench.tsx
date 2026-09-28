@@ -12,6 +12,7 @@ import { ApiError, randomId, type AgentStreamEvent } from '../../api/client';
 import { agentWorkspaceSessionGateway, type AgentSessionGateway } from '../../api/agent-session-gateway';
 import { withoutDeploymentBase } from '../../deploymentPath';
 import { agentWorkspaceSessionHost, type AgentSessionHost } from './session-host';
+import { SidebarConversationPane } from './SidebarConversationPane';
 import { readConversationContextSnapshot, writeConversationContextSnapshot } from './conversation-cache';
 import { ConversationSurface, ConversationTaskPlan, type ConversationHistoryPrepend, type ConversationReference, type ModelRetryStatus } from '../ConversationSurface';
 import { isOpenHandsAgentReply, isOpenHandsEmptyResponseRecovery, orderOpenHandsConversationEvents } from '../conversationEvents';
@@ -4299,6 +4300,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const [attachmentRequest, setAttachmentRequest] = useState<{ key: string; attachment: AgentAttachment }>();
   const [fileSelectionReference, setFileSelectionReference] = useState<{ path: string; selection: FileSelection }>();
   const [candidatePreviewRequest, setCandidatePreviewRequest] = useState<CandidateFilePreviewRequest>();
+  const [sidebarQuestion, setSidebarQuestion] = useState<{ sourceBindingId: string; reference?: AgentConversationReference }>();
   const [operationError, setOperationError] = useState<Error>();
   const [historyLoadingBindingId, setHistoryLoadingBindingId] = useState<string>();
   const [historyPrepend, setHistoryPrepend] = useState<ConversationHistoryPrepend>();
@@ -7270,7 +7272,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       {features.capabilities && (selected || features.draftCapabilitySelection) && <footer className="agent-workbench-rail-footer"><button type="button" disabled={selected ? !canWrite : !runtimeWritable} onClick={() => setCapabilityManagerOpen(true)}><Boxes size={15}/><span><b>会话配置</b><small>{selected ? '管理当前会话配置' : '为新会话配置能力'}</small></span><ChevronRight size={14}/></button></footer>}
     </aside>
     <section className="agent-workbench-main">
-      <header className="agent-workbench-header"><div>{editing ? <div className="agent-title-edit"><input ref={titleInput} aria-label="会话标题" value={title} onChange={event => setTitle(event.target.value)} onBlur={() => { if (!rename.isPending) { setTitle(selected ? conversationName(selected) : ''); setEditing(false); } }} onKeyDown={event => { if (event.key === 'Enter' && title.trim()) { event.preventDefault(); rename.mutate(); } if (event.key === 'Escape') { setTitle(selected ? conversationName(selected) : ''); setEditing(false); } }}/></div> : !(hideDraftTitle && conversationDraft) && <h2 className="agent-session-title" title={selected ? conversationName(selected) : undefined} aria-label={selected && canWrite ? '双击修改标题' : undefined} onDoubleClick={() => { if (!selected || !canWrite) return; setTitle(conversationName(selected)); setEditing(true); }}><span>{selected ? conversationName(selected) : conversationDraft ? '新会话' : '开始一个新的会话'}</span></h2>}{features.modelSelection && (selected || conversationDraft) && <small className="agent-session-provider">当前供应商：{selected ? boundProviderInfo?.name ?? '未配置' : draftProviderInfo?.name ?? '请选择模型供应商'}{conversationDraft ? ` · ${conversationDraft.displayName}` : ''}</small>}</div><div className="agent-header-actions">{features.conversationDeletion && selected && <button type="button" className="danger" aria-label="删除会话" title={selectedConversationRunning ? '会话运行中，请先停止' : '删除会话'} disabled={!canWrite || selectedConversationRunning || remove.isPending} onClick={() => void confirmDeletion('会话', conversationName(selected)).then(ok => { if (ok) remove.mutate(selected.id); })}><Trash2 size={14}/></button>}</div></header>
+      <header className="agent-workbench-header"><div>{editing ? <div className="agent-title-edit"><input ref={titleInput} aria-label="会话标题" value={title} onChange={event => setTitle(event.target.value)} onBlur={() => { if (!rename.isPending) { setTitle(selected ? conversationName(selected) : ''); setEditing(false); } }} onKeyDown={event => { if (event.key === 'Enter' && title.trim()) { event.preventDefault(); rename.mutate(); } if (event.key === 'Escape') { setTitle(selected ? conversationName(selected) : ''); setEditing(false); } }}/></div> : !(hideDraftTitle && conversationDraft) && <h2 className="agent-session-title" title={selected ? conversationName(selected) : undefined} aria-label={selected && canWrite ? '双击修改标题' : undefined} onDoubleClick={() => { if (!selected || !canWrite) return; setTitle(conversationName(selected)); setEditing(true); }}><span>{selected ? conversationName(selected) : conversationDraft ? '新会话' : '开始一个新的会话'}</span></h2>}{features.modelSelection && (selected || conversationDraft) && <small className="agent-session-provider">当前供应商：{selected ? boundProviderInfo?.name ?? '未配置' : draftProviderInfo?.name ?? '请选择模型供应商'}{conversationDraft ? ` · ${conversationDraft.displayName}` : ''}</small>}</div><div className="agent-header-actions">{selected && <button type="button" aria-label="打开侧边聊天" title="打开侧边聊天" onClick={() => setSidebarQuestion({ sourceBindingId: selected.id })}><PanelRightOpen size={14}/></button>}{features.conversationDeletion && selected && <button type="button" className="danger" aria-label="删除会话" title={selectedConversationRunning ? '会话运行中，请先停止' : '删除会话'} disabled={!canWrite || selectedConversationRunning || remove.isPending} onClick={() => void confirmDeletion('会话', conversationName(selected)).then(ok => { if (ok) remove.mutate(selected.id); })}><Trash2 size={14}/></button>}</div></header>
       <div className="agent-workbench-content">
       {runtime?.state === 'RECOVERING' && <section className="agent-runtime-recover"><LoaderCircle size={18}/><div><b>运行环境正在恢复</b><span>{runtime.message || '历史会话和工作区文件仍可查看；恢复完成后可继续发送消息和使用终端。'}</span></div></section>}
       {runtime && !runtime.write_available && !selected?.write_available && runtime.state !== 'RECOVERING' && <section className="agent-runtime-recover"><ShieldAlert size={18}/><div><b>节点会话已切换为只读</b><span>{runtime.message || '节点执行已停止；历史会话和工作区文件仍可查看。'}</span></div></section>}
@@ -7301,6 +7303,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         workspaceRoot={activeWorkspaceRoot}
         annotations={messageAnnotations}
         onCreateAnnotation={selected && canWrite ? anchor => void createAnnotation('CONVERSATION_TEXT', anchor) : undefined}
+        onSidebarQuestion={selected ? reference => setSidebarQuestion({
+          sourceBindingId: selected.id,
+          reference: { event_id: reference.eventId, content: reference.content },
+        }) : undefined}
         onLocateAnnotation={locateAnnotation}
         taskControl={eventsQuery.data?.task_control ?? EMPTY_TASK_CONTROL}
         monitoring={eventsQuery.data?.monitoring}
@@ -7383,6 +7389,13 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         </div>
       </div>}
     </section>
+    {sidebarQuestion && <SidebarConversationPane
+      workspaceId={workspace.id}
+      sourceBindingId={sidebarQuestion.sourceBindingId}
+      sourceTitle={selected?.id === sidebarQuestion.sourceBindingId ? conversationName(selected) : undefined}
+      initialReference={sidebarQuestion.reference}
+      onClose={() => setSidebarQuestion(undefined)}
+    />}
     <WorkspaceDrawer
       open={drawerOpen}
       onOpen={() => setDrawerOpen(true)}

@@ -14,6 +14,9 @@ from flowweave.modules.agent_sessions.application.draft_attachments import (
 from flowweave.modules.agent_sessions.application.search import (
     process as process_agent_conversation_search,
 )
+from flowweave.modules.agent_sessions.application.sidebar_conversations import (
+    expire_sidebar_conversation,
+)
 from flowweave.modules.agent_workspaces.public import (
     finalize_agent_conversation_title_failure,
     process_agent_conversation_title,
@@ -114,6 +117,12 @@ def _cleanup_draft_attachment(
     db: Session, aggregate_id: str, payload: dict[str, Any], _lease: Lease
 ) -> None:
     process_draft_attachment_cleanup(db, aggregate_id, payload)
+
+
+def _expire_agent_sidebar_conversation(
+    db: Session, aggregate_id: str, _payload: dict[str, Any], _lease: Lease
+) -> None:
+    expire_sidebar_conversation(db, aggregate_id)
 
 
 def _watch_agent_task_timeout(
@@ -294,6 +303,7 @@ HANDLERS: dict[str, Handler] = {
     "PROVISION_AGENT_WORKSPACE_RUNTIME": _provision_agent_workspace_runtime,
     "CONDENSE_AGENT_CONVERSATION": _condense_agent_conversation,
     "CLEANUP_DRAFT_ATTACHMENT": _cleanup_draft_attachment,
+    "EXPIRE_AGENT_SIDEBAR_CONVERSATION": _expire_agent_sidebar_conversation,
     "GENERATE_AGENT_CONVERSATION_TITLE": _generate_agent_conversation_title,
     "SEARCH_AGENT_CONVERSATIONS": _search_agent_conversations,
     "WATCH_AGENT_TASK_TIMEOUT": _watch_agent_task_timeout,
