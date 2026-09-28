@@ -12,6 +12,7 @@ from flowweave.modules.agent_sessions.application import conversations
 from flowweave.modules.agent_sessions.application.deletion import delete_binding_records
 from flowweave.modules.agent_sessions.infrastructure.models import (
     AgentConversationBinding,
+    AgentConversationCapability,
     AgentSidebarConversation,
 )
 from flowweave.modules.agent_workspaces import public as agent_workspace_host
@@ -74,16 +75,25 @@ def create_sidebar_conversation(
     idempotency_key: str,
 ) -> dict[str, Any]:
     source = _source_binding(db, workspace_id, source_binding_id)
+    capability_version_ids = tuple(
+        item.capability_version_id
+        for item in db.scalars(
+            select(AgentConversationCapability)
+            .where(AgentConversationCapability.binding_id == source.id)
+            .order_by(AgentConversationCapability.position)
+        )
+    )
     result = conversations.bootstrap_conversation(
         db,
         workspace_id,
-        work_directory_id=None,
+        work_directory_id=conversations._work_directory_id(db, source),
         conversation_id=conversation_id,
         model_provider_id=model_provider_id,
         model_name=model_name,
         reasoning_effort=reasoning_effort,
         content=content,
         references=references,
+        capability_version_ids=capability_version_ids,
         idempotency_key=idempotency_key,
         sidebar_source_binding_id=source.id,
         system_message_suffix_append=_source_context(source),
@@ -159,15 +169,8 @@ def assert_sidebar_writable(
     return link
 
 
-def expire_sidebar_conversation(db: Session, binding_id: str) -> None:
-    link = db.scalar(
-        select(AgentSidebarConversation)
-        .where(AgentSidebarConversation.sidebar_binding_id == binding_id)
-        .with_for_update()
-    )
-    if link is None or link.expired_at is not None or link.expires_at > now():
-        return
-    binding = db.get(AgentConversationBinding, binding_id)
+def _delete_sidebar_conversation(db: Session, link: AgentSidebarConversation) -> None:
+    binding = db.get(AgentConversationBinding, link.sidebar_binding_id)
     if binding is not None:
         workspace = conversations._workspace(db, link.workspace_id)
         try:
@@ -181,8 +184,34 @@ def expire_sidebar_conversation(db: Session, binding_id: str) -> None:
     db.commit()
 
 
+def close_sidebar_conversation(db: Session, workspace_id: str, binding_id: str) -> None:
+    link = db.scalar(
+        select(AgentSidebarConversation)
+        .where(
+            AgentSidebarConversation.workspace_id == workspace_id,
+            AgentSidebarConversation.sidebar_binding_id == binding_id,
+        )
+        .with_for_update()
+    )
+    if link is None or link.expired_at is not None:
+        return
+    _delete_sidebar_conversation(db, link)
+
+
+def expire_sidebar_conversation(db: Session, binding_id: str) -> None:
+    link = db.scalar(
+        select(AgentSidebarConversation)
+        .where(AgentSidebarConversation.sidebar_binding_id == binding_id)
+        .with_for_update()
+    )
+    if link is None or link.expired_at is not None or link.expires_at > now():
+        return
+    _delete_sidebar_conversation(db, link)
+
+
 __all__ = (
     "assert_sidebar_writable",
+    "close_sidebar_conversation",
     "create_sidebar_conversation",
     "expire_sidebar_conversation",
     "sidebar_conversation",

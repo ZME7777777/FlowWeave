@@ -9,62 +9,51 @@ const MARKDOWN_SYNTAX = /(^|\n)\s{0,3}(?:#{1,6}\s|[-*+]\s|\d+[.)]\s|>|```)|[`*_~
 
 function PlainTextReveal({ children, reveal }: { children: string; reveal: boolean }) {
   const characters = useMemo(() => Array.from(children), [children]);
-  const visibleLength = useRef(0);
+  const visibleLength = useRef(characters.length);
   const previousText = useRef<string | undefined>(undefined);
-  const revealStarted = useRef(reveal);
-  const [visible, setVisible] = useState(() => reveal ? 0 : characters.length);
+  const previousReveal = useRef(reveal);
+  const [visible, setVisible] = useState(characters.length);
 
   useLayoutEffect(() => {
-    const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
     const previous = previousText.current;
     previousText.current = children;
-    const startsReveal = reveal && !revealStarted.current;
-    if (startsReveal) revealStarted.current = true;
-    if (reducedMotion || (!reveal && !revealStarted.current)) {
+    const startsReveal = reveal && !previousReveal.current;
+    previousReveal.current = reveal;
+    if (!reveal || window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
       visibleLength.current = characters.length;
       setVisible(characters.length);
       return;
     }
 
-    let current = startsReveal ? 0 : previous && children.startsWith(previous)
+    const initial = startsReveal ? 0 : previous && children.startsWith(previous)
       ? Math.min(visibleLength.current, characters.length)
       : 0;
+    const addedCharacters = characters.length - initial;
+    if (addedCharacters <= 0) return;
+
     let frame: number | undefined;
     const startedAt = performance.now();
-    let previousFrame = startedAt;
-    const maximumDuration = Math.min(4_800, Math.max(1_600, 900 + characters.length * 14));
-    let nextStepAt = startedAt;
-    visibleLength.current = current;
-    setVisible(current);
+    const duration = Math.min(3_600, Math.max(1_400, 650 + addedCharacters * 14));
+    visibleLength.current = initial;
+    setVisible(initial);
 
     const advance = (now: number) => {
-      const elapsed = now - startedAt;
-      const delta = now - previousFrame;
-      previousFrame = now;
-      const remaining = characters.length - current;
-      const progress = Math.min(1, elapsed / maximumDuration);
-      const charactersPerSecond = Math.min(180, 10 + progress * 95 + remaining * 0.035);
-      if (now >= nextStepAt) {
-        const chunkSize = Math.min(remaining, Math.max(1, Math.round(charactersPerSecond * Math.max(delta, 90) / 1_000)));
-        current += chunkSize;
-        visibleLength.current = current;
-        setVisible(current);
-        nextStepAt = now + Math.max(45, 150 - progress * 80);
+      const progress = Math.min(1, (now - startedAt) / duration);
+      const easedProgress = progress ** 1.25;
+      const next = initial + Math.round(addedCharacters * easedProgress);
+      if (next !== visibleLength.current) {
+        visibleLength.current = next;
+        setVisible(next);
       }
-      if (current < characters.length && elapsed < maximumDuration) {
-        frame = window.requestAnimationFrame(advance);
-      } else if (current < characters.length) {
-        visibleLength.current = characters.length;
-        setVisible(characters.length);
-      }
+      if (progress < 1) frame = window.requestAnimationFrame(advance);
     };
 
     frame = window.requestAnimationFrame(advance);
     return () => { if (frame !== undefined) window.cancelAnimationFrame(frame); };
   }, [characters.length, children, reveal]);
 
-  const revealing = visible < characters.length;
-  return <span className="conversation-text-reveal" data-reveal={revealStarted.current || undefined} data-revealing={revealing || undefined} aria-label={children}>{characters.slice(0, visible).join('')}</span>;
+  const revealing = reveal && visible < characters.length;
+  return <span className="conversation-text-reveal" data-revealing={revealing || undefined} aria-label={children}>{characters.slice(0, visible).join('')}</span>;
 }
 
 function MarkdownImage({ src, alt, onOpenImage, ...props }: ComponentPropsWithoutRef<'img'> & { onOpenImage?: (src: string, alt?: string) => void }) {

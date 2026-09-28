@@ -1154,9 +1154,10 @@ function taskAvatarStatus(entry: ActivityEntry, item: Item, paused = false, pare
   return paused ? 'paused' : 'running';
 }
 
-function ActivityEntryRow({ entry, active, paused = false, parentFailed = false, hideThought = false, avatarSlots, workspaceRoot }: {
+function ActivityEntryRow({ entry, active, reveal = false, paused = false, parentFailed = false, hideThought = false, avatarSlots, workspaceRoot }: {
   entry: ActivityEntry;
   active: boolean;
+  reveal?: boolean;
   paused?: boolean;
   parentFailed?: boolean;
   hideThought?: boolean;
@@ -1183,22 +1184,22 @@ function ActivityEntryRow({ entry, active, paused = false, parentFailed = false,
   const thoughtAttributes = referenceableThought ? { 'data-conversation-event-id': item.event.id } : {};
   const toolRunning = active && !paused && !parentFailed && entry.results.length === 0 && item.event.event_type === 'TOOL_CALL';
   if (item.kind === 'thought') return <article {...thoughtAttributes} className={`conversation-activity-row thought${isNativeThink ? ' native-think' : ''}`}>
-    <MessageMarkdown reveal={active}>{presentation.thought ?? item.content}</MessageMarkdown>
+    <MessageMarkdown reveal={reveal}>{presentation.thought ?? item.content}</MessageMarkdown>
   </article>;
   if (item.kind === 'condensation') return <article className={`conversation-activity-row tool condensation${condensationRunning ? ' running' : ''}`} role="status" aria-label={presentation.title}>
     <Sparkles size={13}/><div><b>{presentation.title}</b></div>
   </article>;
   if (eventName === 'TaskTrackerAction' || eventName === 'TaskTrackerObservation') return <div className={`conversation-tool-entry semantic tool-${toolVisual}`}>
-    {!hideThought && presentation.thought && <article {...thoughtAttributes} className={`conversation-activity-row thought tool-thought tool-${toolVisual}`}><MessageMarkdown reveal={active}>{presentation.thought}</MessageMarkdown></article>}
+    {!hideThought && presentation.thought && <article {...thoughtAttributes} className={`conversation-activity-row thought tool-thought tool-${toolVisual}`}><MessageMarkdown reveal={reveal}>{presentation.thought}</MessageMarkdown></article>}
     <TaskTrackerCard entry={entry} presentation={presentation} running={toolRunning}/>
   </div>;
   if (eventName === 'InvokeSkillAction' || eventName === 'InvokeSkillObservation') return <div className={`conversation-tool-entry semantic tool-${toolVisual}`}>
-    {!hideThought && presentation.thought && <article {...thoughtAttributes} className={`conversation-activity-row thought tool-thought tool-${toolVisual}`}><MessageMarkdown reveal={active}>{presentation.thought}</MessageMarkdown></article>}
+    {!hideThought && presentation.thought && <article {...thoughtAttributes} className={`conversation-activity-row thought tool-thought tool-${toolVisual}`}><MessageMarkdown reveal={reveal}>{presentation.thought}</MessageMarkdown></article>}
     <SkillLoadRow entry={entry} running={toolRunning}/>
   </div>;
   if (item.kind === 'tool' && toolDetail) return <div className={`conversation-tool-entry tool-${toolVisual}`}>
     {!hideThought && presentation.thought && <article {...thoughtAttributes} className={`conversation-activity-row thought tool-thought tool-${toolVisual}`}>
-      <MessageMarkdown reveal={active}>{presentation.thought}</MessageMarkdown>
+      <MessageMarkdown reveal={reveal}>{presentation.thought}</MessageMarkdown>
     </article>}
     <details className={`conversation-activity-row tool conversation-tool-detail tool-${toolVisual}${toolRunning ? ' running' : ''}`} data-tool-kind={toolVisual} data-file-operation={toolVisual === 'file' ? presentation.fileOperation : undefined} data-file-kind={toolVisual === 'file' ? presentation.fileKind : undefined}>
       <summary aria-label={`查看执行详情：${presentation.title}`}>{taskAvatar ?? <ToolIcon size={13}/>}<div><b title={presentation.title}>{presentation.title}</b></div><ChevronRight className="conversation-expand-arrow" size={12}/></summary>
@@ -1207,14 +1208,15 @@ function ActivityEntryRow({ entry, active, paused = false, parentFailed = false,
   </div>;
   return <article className={`conversation-activity-row ${item.kind}`}>
     {taskAvatar ?? <ToolIcon size={13}/>}<div className="conversation-activity-content"><b title={presentation.title}>{presentation.title}</b><small>{presentation.status}</small>
-      {presentation.thought && <span className="conversation-activity-thought"><MessageMarkdown reveal={active}>{presentation.thought}</MessageMarkdown></span>}
+      {presentation.thought && <span className="conversation-activity-thought"><MessageMarkdown reveal={reveal}>{presentation.thought}</MessageMarkdown></span>}
     </div>
   </article>;
 }
 
-function ProgressActivity({ group, active, paused, parentFailed, avatarSlots, workspaceRoot }: {
+function ProgressActivity({ group, active, revealEventIds, paused, parentFailed, avatarSlots, workspaceRoot }: {
   group: ProgressActivityGroup;
   active: boolean;
+  revealEventIds: ReadonlySet<string>;
   paused: boolean;
   parentFailed: boolean;
   avatarSlots: ReadonlyMap<string, SubagentAvatarSlot>;
@@ -1249,7 +1251,7 @@ function ProgressActivity({ group, active, paused, parentFailed, avatarSlots, wo
       <span className="conversation-progress-summary-content"><b>{label}</b>{running && currentTitle && <small className="conversation-progress-current" role="status">{currentTitle}</small>}<span className="conversation-progress-tail"><span className="conversation-progress-icons" aria-label={`包含 ${operationIcons.length} 个操作`}>{visibleOperationIcons.map(({ id, Icon: OperationIcon, label: operationLabel }) => <OperationIcon key={id} size={12} aria-label={operationLabel}/>)}{hiddenOperationCount > 0 && <small className="conversation-progress-overflow" aria-label={`另有 ${hiddenOperationCount} 个操作`}>{`+${hiddenOperationCount}`}</small>}</span><ChevronRight className="conversation-expand-arrow" size={12}/></span></span>
     </summary>
     <div className="conversation-progress-group-list">
-      {group.entries.map((entry, index) => <ActivityEntryRow key={entry.id} entry={entry} active={active} paused={paused} parentFailed={parentFailed} hideThought={index === 0 && entry.action?.event.id === group.progress.event.id} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/>)}
+      {group.entries.map((entry, index) => <ActivityEntryRow key={entry.id} entry={entry} active={active} reveal={revealEventIds.has(entry.item.event.id)} paused={paused} parentFailed={parentFailed} hideThought={index === 0 && entry.action?.event.id === group.progress.event.id} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/>)}
     </div>
   </details>;
 }
@@ -1257,6 +1259,7 @@ function ProgressActivity({ group, active, paused, parentFailed, avatarSlots, wo
 interface ActivityGroupProps {
   items: Item[];
   active: boolean;
+  revealEventIds: ReadonlySet<string>;
   completionConfirmed?: boolean;
   paused?: boolean;
   parentFailed?: boolean;
@@ -1272,7 +1275,7 @@ function sameActivityItems(left: Item[], right: Item[]): boolean {
   ));
 }
 
-const ActivityGroup = memo(function ActivityGroup({ items, active, completionConfirmed = false, paused = false, parentFailed = false, startedAt, finishedAt, avatarSlots, workspaceRoot }: ActivityGroupProps) {
+const ActivityGroup = memo(function ActivityGroup({ items, active, revealEventIds, completionConfirmed = false, paused = false, parentFailed = false, startedAt, finishedAt, avatarSlots, workspaceRoot }: ActivityGroupProps) {
   const elapsed = elapsedSeconds(startedAt, finishedAt);
   const entries = groupedActivities(items);
   const rows = activityRows(entries);
@@ -1304,12 +1307,13 @@ const ActivityGroup = memo(function ActivityGroup({ items, active, completionCon
     <summary>{summary}</summary>
     <div className="conversation-activity-list">
       {rows.map(row => row.kind === 'progress-group'
-        ? <ProgressActivity key={row.group.id} group={row.group} active={active} paused={paused} parentFailed={parentFailed} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/>
-        : <ActivityEntryRow key={row.entry.id} entry={row.entry} active={active} paused={paused} parentFailed={parentFailed} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/>)}
+        ? <ProgressActivity key={row.group.id} group={row.group} active={active} revealEventIds={revealEventIds} paused={paused} parentFailed={parentFailed} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/>
+        : <ActivityEntryRow key={row.entry.id} entry={row.entry} active={active} reveal={revealEventIds.has(row.entry.item.event.id)} paused={paused} parentFailed={parentFailed} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/>)}
     </div>
   </details>;
 }, (previous, next) => (
   previous.active === next.active
+  && previous.revealEventIds === next.revealEventIds
   && previous.completionConfirmed === next.completionConfirmed
   && previous.paused === next.paused
   && previous.parentFailed === next.parentFailed
@@ -1556,9 +1560,11 @@ export interface ConversationHistoryPrepend {
   phase: 'capture' | 'restore';
 }
 
-export const ConversationSurface = memo(function ConversationSurface({ events, isGenerating, isPaused = false, emptyResponseRecoveryActive = false, modelRetryStatus, historyPending = false, conversationScope, historyPrepend, onHistoryAnchorCaptured, onHistoryAnchorRestored, requestStartedAt, requestSubmitting = false, rewritePending = false, condensationPending = false, condensationStartedAt, onRewrite, onFork, onOpenAttachment, onOpenWorkspaceReference, onPreviewCandidateFile, onReviewChanges, onOpenWorkspaceFile, onOpenImage, workspaceRoot, annotations = [], onCreateAnnotation, onSidebarQuestion, onLocateAnnotation, taskControl = [], monitoring, connectionState }: {
+export const ConversationSurface = memo(function ConversationSurface({ events, isGenerating, liveTextReveal = false, isPaused = false, emptyResponseRecoveryActive = false, modelRetryStatus, historyPending = false, conversationScope, historyPrepend, onHistoryAnchorCaptured, onHistoryAnchorRestored, requestStartedAt, requestSubmitting = false, rewritePending = false, condensationPending = false, condensationStartedAt, onRewrite, onFork, onOpenAttachment, onOpenWorkspaceReference, onPreviewCandidateFile, onReviewChanges, onOpenWorkspaceFile, onOpenImage, workspaceRoot, annotations = [], onCreateAnnotation, onSidebarQuestion, onLocateAnnotation, taskControl = [], monitoring, connectionState }: {
   events: OpenHandsConversationEvent[];
   isGenerating: boolean;
+  /** Strict native running state; unlike visual activity it never animates history reconciliation. */
+  liveTextReveal?: boolean;
   /** Formal native conversation pause state, used only to label unfinished Task actions. */
   isPaused?: boolean;
   /** Transient UI only; the persisted corrective event never enters history. */
@@ -1658,6 +1664,29 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
     () => events.filter(event => !isPauseInterruptionEvent(event)),
     [events],
   );
+  const visibleEventSignature = useMemo(() => visibleEvents.map(event => [
+    event.id,
+    typeof event.payload.content === 'string' ? event.payload.content : '',
+    typeof event.payload.thought === 'string' ? event.payload.thought : '',
+  ] as const), [visibleEvents]);
+  const revealedEventContent = useRef(new Map<string, string>());
+  const revealScope = useRef<string | undefined>(undefined);
+  const [revealEventIds, setRevealEventIds] = useState<ReadonlySet<string>>(() => new Set());
+  useLayoutEffect(() => {
+    const current = new Map(visibleEventSignature.map(([id, content, thought]) => [id, `${content}\u001f${thought}`]));
+    if (revealScope.current !== conversationScope || !liveTextReveal) {
+      revealScope.current = conversationScope;
+      revealedEventContent.current = current;
+      setRevealEventIds(new Set());
+      return;
+    }
+    const newlyRendered = new Set<string>();
+    for (const [id, text] of current) {
+      if (revealedEventContent.current.get(id) !== text) newlyRendered.add(id);
+    }
+    revealedEventContent.current = current;
+    setRevealEventIds(newlyRendered);
+  }, [conversationScope, liveTextReveal, visibleEventSignature]);
   const turns = useMemo(() => turnsFor(visibleEvents), [visibleEvents]);
   const visibleEventIds = useMemo(() => visibleEvents.map(event => event.id).join('\u001f'), [visibleEvents]);
   const contentGrowthSignal = visibleEventIds;
@@ -2280,6 +2309,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
             key={block.id}
             items={block.items}
             active={block.active}
+            revealEventIds={revealEventIds}
             completionConfirmed={completionConfirmed}
             paused={isCurrentPaused && !block.active}
             parentFailed={parentFailed && !block.active}
@@ -2292,11 +2322,11 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
             <CurrentTurnStatus items={turn.activity} requestSubmitting={requestSubmitting} statusOverride={emptyResponseRecoveryActive ? '模型返回空响应，OpenHands 正在自动重试' : undefined} modelRetryStatus={modelRetryStatus} monitoring={monitoring} connectionState={connectionState}/>
           )}
           {processBlocks.length > 0 && turn.assistant && <div className="conversation-process-divider" role="separator" aria-label="工作过程结束"/>}
-          {turn.assistant && <AgentReply event={turn.assistant.event} content={turn.assistant.content} reveal={isCurrent} changes={fileChanges} onFork={!isGenerating ? () => onFork?.(turn.assistant!.event.id) : undefined} onPreviewCandidateFile={onPreviewCandidateFile} onReviewChanges={onReviewChanges} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenImage={onOpenImage} workspaceRoot={workspaceRoot} annotations={annotations} onLocateAnnotation={locateAnnotation}/>}
+          {turn.assistant && <AgentReply event={turn.assistant.event} content={turn.assistant.content} reveal={revealEventIds.has(turn.assistant.event.id)} changes={fileChanges} onFork={!isGenerating ? () => onFork?.(turn.assistant!.event.id) : undefined} onPreviewCandidateFile={onPreviewCandidateFile} onReviewChanges={onReviewChanges} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenImage={onOpenImage} workspaceRoot={workspaceRoot} annotations={annotations} onLocateAnnotation={locateAnnotation}/>}
           {failures.map(item => <ConversationFailure key={item.event.id} item={item} taskControl={taskControl} retryStatus={isLatest ? modelRetryStatus : undefined}/>)}
         </section>;
       })}
-      {turns.length === 0 && isGenerating && !condensationPending && <><ActivityGroup items={[]} active startedAt={requestStartedAt} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/><CurrentTurnStatus items={[]} requestSubmitting={requestSubmitting} statusOverride={emptyResponseRecoveryActive ? '模型返回空响应，OpenHands 正在自动重试' : undefined} modelRetryStatus={modelRetryStatus} monitoring={monitoring} connectionState={connectionState}/></>}
+      {turns.length === 0 && isGenerating && !condensationPending && <><ActivityGroup items={[]} active revealEventIds={revealEventIds} startedAt={requestStartedAt} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/><CurrentTurnStatus items={[]} requestSubmitting={requestSubmitting} statusOverride={emptyResponseRecoveryActive ? '模型返回空响应，OpenHands 正在自动重试' : undefined} modelRetryStatus={modelRetryStatus} monitoring={monitoring} connectionState={connectionState}/></>}
 
       {condensationPending && <article className="conversation-condensation-progress" role="status" aria-label="正在压缩上下文">
         <LoaderCircle className="conversation-activity-spin" size={16}/>

@@ -7,8 +7,9 @@ import { ArrowLeft, ArrowUp, Bell, Bot, Boxes, Check, ChevronDown, ChevronRight,
 import { createContext, forwardRef, isValidElement, useCallback, useContext, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type ComponentPropsWithoutRef, type CSSProperties, type DragEvent as ReactDragEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type WheelEvent as ReactWheelEvent } from 'react';
 import { createPortal, flushSync } from 'react-dom';
 import ReactMarkdown from 'react-markdown';
+import { ComposerModelMenu } from './ComposerModelMenu';
 import remarkGfm from 'remark-gfm';
-import { ApiError, randomId, type AgentStreamEvent } from '../../api/client';
+import { api as agentWorkspaceApi, ApiError, randomId, type AgentStreamEvent } from '../../api/client';
 import { agentWorkspaceSessionGateway, type AgentSessionGateway } from '../../api/agent-session-gateway';
 import { withoutDeploymentBase } from '../../deploymentPath';
 import { agentWorkspaceSessionHost, type AgentSessionHost } from './session-host';
@@ -24,7 +25,7 @@ import { selectCapabilityVersion, selectCapabilityVersions } from '../../utils/c
 import { SubagentAvatar } from '../SubagentAvatar';
 import { subagentAvatarSlots, type SubagentAvatarSlot } from '../../utils/subagentAvatar';
 import { workspaceFileChanges, workspaceRelativePath, type WorkspaceFileChange } from './fileChanges';
-import type { AgentAttachment, AgentConversation, AgentConversationAnnotation, AgentConversationContext, AgentConversationCredentialSyncEntry, AgentConversationInputReadiness, AgentConversationPage, AgentConversationReference, AgentConversationSearch, AgentPendingConfirmationAction, AgentSessionCapability, AgentSessionMcpReadiness, AgentSessionWorkDirectory, AgentSessionWorkDirectoryList, AgentSessionWorkspaceDetails, AgentWorkspaceReference, CapabilityAsset, CapabilityCollection, ModelProvider, OpenHandsConversationEvent, OpenHandsConversationEventBatch, ProviderModel, RuntimeTaskControlSnapshot, RuntimeTaskUsageSnapshot, WorkspaceGitChangeKind, WorkspaceGitChangedFile, WorkspaceGitChanges, WorkspaceGitCommitDetails, WorkspaceGitFileDiff } from '../../types';
+import type { AgentAttachment, AgentConversation, AgentConversationAnnotation, AgentConversationContext, AgentConversationCredentialSyncEntry, AgentConversationInputReadiness, AgentConversationPage, AgentConversationReference, AgentConversationSearch, AgentPendingConfirmationAction, AgentSessionCapability, AgentSessionMcpReadiness, AgentSessionWorkDirectory, AgentSessionWorkDirectoryList, AgentSessionWorkspaceDetails, AgentWorkspaceReference, CapabilityAsset, CapabilityCollection, ModelProvider, OpenHandsConversationEvent, OpenHandsConversationEventBatch, RuntimeTaskControlSnapshot, RuntimeTaskUsageSnapshot, WorkspaceGitChangeKind, WorkspaceGitChangedFile, WorkspaceGitChanges, WorkspaceGitCommitDetails, WorkspaceGitFileDiff } from '../../types';
 import '../../pages/agent-workbench.css';
 import '../../pages/agent-workbench-layout.css';
 
@@ -1446,85 +1447,6 @@ function CapabilityManager({ workspaceId, bindingId, conversationCapabilities, d
       <footer>{!readonlyCreationOnly && selectedMcpIds.length > 0 && <button type="button" className="secondary" disabled={save.isPending || checkingMcpIds.size > 0} onClick={() => void checkMcpReadiness(selectedMcpIds)}>重新检测 MCP</button>}<button type="button" className="secondary" disabled={save.isPending} onClick={onClose}>{readonlyCreationOnly ? '关闭' : '取消'}</button>{!readonlyCreationOnly && <button type="button" className="primary" disabled={save.isPending || checkingMcpIds.size > 0} onClick={() => save.mutate()}>{save.isPending ? '正在注册…' : bindingId ? '注册到当前会话' : '用于新建会话'}</button>}</footer></>}
     </section>
   </div>;
-}
-
-function ComposerModelMenu({
-  providers, providerId, modelName, models, efforts, effort, disabled, onProviderChange, onModelChange, onEffortChange,
-}: {
-  providers: ModelProvider[]; providerId: string; modelName: string; models: ProviderModel[]; efforts: string[];
-  effort: string; disabled: boolean; onProviderChange: (value: string) => void; onModelChange: (value: string) => void;
-  onEffortChange: (value: string) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const [panel, setPanel] = useState<'root' | 'provider' | 'model' | 'effort'>('root');
-  const menu = useRef<HTMLDivElement>(null);
-  const popover = useRef<HTMLElement>(null);
-  const sidePanel = useRef<HTMLElement>(null);
-  const [sidePosition, setSidePosition] = useState<{ left: number; top: number }>();
-  useEffect(() => {
-    if (disabled) { setOpen(false); setPanel('root'); }
-  }, [disabled]);
-  useEffect(() => {
-    if (!open) return;
-    const closeOnOutsidePointer = (event: PointerEvent) => {
-      if (event.target instanceof Node && !menu.current?.contains(event.target) && !sidePanel.current?.contains(event.target)) close();
-    };
-    document.addEventListener('pointerdown', closeOnOutsidePointer);
-    return () => document.removeEventListener('pointerdown', closeOnOutsidePointer);
-  }, [open]);
-  const close = () => { setOpen(false); setPanel('root'); };
-  const selectProvider = (value: string) => { onProviderChange(value); close(); };
-  const selectModel = (value: string) => { onModelChange(value); close(); };
-  const selectEffort = (value: string) => { onEffortChange(value); close(); };
-  const currentProvider = providers.find(provider => provider.id === providerId)?.name ?? '选择供应商';
-  const choices = [effort, ...efforts].filter((value, index, all): value is string => Boolean(value) && all.indexOf(value) === index);
-  const rootRow = (key: 'provider' | 'model' | 'effort', label: string, value: string, unavailable = false) => <button type="button" className="agent-model-picker-row" aria-label={`${label} ${value}`} disabled={disabled || unavailable} onClick={() => setPanel(key)}><span>{label}</span><em>{value}</em><ChevronRight size={15}/></button>;
-  const option = (key: string, label: string, selected: boolean, action: () => void) => <button type="button" key={key} className={`agent-model-picker-option${selected ? ' selected' : ''}`} onClick={action}><span>{label}</span>{selected && <Check size={15}/>}</button>;
-  const panelTitle = panel === 'provider' ? '选择供应商' : panel === 'model' ? '选择模型' : '选择思考程度';
-  useEffect(() => {
-    if (!open || panel === 'root') { setSidePosition(undefined); return; }
-    const place = () => {
-      const anchor = popover.current?.getBoundingClientRect();
-      if (!anchor) return;
-      const width = Math.min(320, Math.max(220, window.innerWidth - anchor.right - 20));
-      setSidePosition({ left: Math.min(anchor.right + 8, window.innerWidth - width - 12), top: Math.max(12, anchor.top) });
-    };
-    place();
-    window.addEventListener('resize', place);
-    window.addEventListener('scroll', place, true);
-    return () => { window.removeEventListener('resize', place); window.removeEventListener('scroll', place, true); };
-  }, [open, panel]);
-  const pickerPanel = panel !== 'root' && sidePosition && <section ref={sidePanel} className="agent-model-picker-side-panel agent-model-picker-side-panel-portal" aria-label={panelTitle} style={sidePosition}>
-    <header><b>{panelTitle}</b></header>
-    <div className="agent-model-picker-options">
-      {panel === 'provider' && providers.map(provider => option(provider.id, provider.name, provider.id === providerId, () => selectProvider(provider.id)))}
-      {panel === 'model' && models.map(model => option(model.model_name, model.model_name, model.model_name === modelName, () => selectModel(model.model_name)))}
-      {panel === 'effort' && choices.map(value => option(value, reasoningEffortLabel(value), value === effort, () => selectEffort(value)))}
-    </div>
-  </section>;
-  return <div ref={menu} className="agent-composer-model-menu" onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); close(); } }}>
-    <button type="button" className="agent-composer-model-trigger" aria-label="打开模型与推理设置" aria-expanded={open} disabled={disabled} onClick={() => { setOpen(current => !current); setPanel('root'); }}><span className="agent-composer-model-summary"><span>{modelName || '选择模型'}</span>{effort && <em>{reasoningEffortLabel(effort)}</em>}</span><ChevronDown size={14}/></button>
-    {open && <div className={`agent-composer-model-flyout${panel === 'root' ? '' : ' has-side-panel'}`}>
-      <section ref={popover} className="agent-composer-model-popover" aria-label="模型与推理设置">
-        {rootRow('provider', '供应商', currentProvider)}
-        {rootRow('model', '模型', modelName || '选择模型', !providerId)}
-        {efforts.length > 0 && rootRow('effort', '思考程度', effort ? reasoningEffortLabel(effort) : '默认', !providerId)}
-        <p className="agent-model-picker-note">设置仅作用于当前会话。</p>
-      </section>
-    </div>}
-    {pickerPanel && createPortal(pickerPanel, document.body)}
-  </div>;
-}
-
-function reasoningEffortLabel(value: string): string {
-  return {
-    low: '低',
-    medium: '中',
-    high: '高',
-    xhigh: '很高',
-    max: '最高',
-    ultra: '极高',
-  }[value] ?? value;
 }
 
 function exactCount(value: number): string {
@@ -3537,9 +3459,9 @@ function readWorkspaceToolState(storageKey: string): Record<string, WorkspaceToo
 }
 
 function WorkspaceDrawer({
-  open, onOpen, onClose, onAnnotateFileSelection, highlightedFileSelection, workspaceId, scopeKey, migrateFromScopeKey, bindingId, workDirectoryId, conversation, conversationCumulativeTokens, attachments, sources, attachmentRequest, candidatePreviewRequest, markdownFileRequest, reviewChanges = [], reviewRequestId, sessionChanges = [], onReviewChanges, runtimeAvailable, runtimeTasks, agentDefinitions, sessionStopped, sidebarQuestion, onOpenSidebarQuestion, onCloseSidebarQuestion,
+  open, onOpen, onClose, onAnnotateFileSelection, highlightedFileSelection, workspaceId, scopeKey, migrateFromScopeKey, bindingId, workDirectoryId, conversation, conversationCumulativeTokens, attachments, sources, attachmentRequest, candidatePreviewRequest, markdownFileRequest, reviewChanges = [], reviewRequestId, sessionChanges = [], onReviewChanges, runtimeAvailable, runtimeTasks, agentDefinitions, sessionStopped, sidebarQuestion, onSidebarBindingCreated, onOpenSidebarQuestion, onCloseSidebarQuestion,
 }: {
-  open: boolean; onOpen: () => void; onClose: () => void; onAnnotateFileSelection?: (path: string, selection: FileSelection, quote: string) => void; highlightedFileSelection?: { path: string; selection: FileSelection }; workspaceId: string; scopeKey: string; migrateFromScopeKey?: string; bindingId?: string; workDirectoryId?: string; conversation?: AgentConversation; conversationCumulativeTokens?: number | null; attachments: AgentAttachment[]; sources: ConversationSource[]; attachmentRequest?: { key: string; attachment: AgentAttachment }; candidatePreviewRequest?: CandidateFilePreviewRequest; markdownFileRequest?: MarkdownFileRequest; reviewChanges?: WorkspaceFileChange[]; reviewRequestId?: string; sessionChanges?: WorkspaceFileChange[]; onReviewChanges?: (changes: WorkspaceFileChange[]) => void; runtimeAvailable: boolean; runtimeTasks: RuntimeTaskProjection[]; agentDefinitions: CapabilityAsset[]; sessionStopped: boolean; sidebarQuestion?: { sourceBindingId: string; sourceTitle?: string | null; reference?: AgentConversationReference }; onOpenSidebarQuestion?: () => void; onCloseSidebarQuestion: () => void;
+  open: boolean; onOpen: () => void; onClose: () => void; onAnnotateFileSelection?: (path: string, selection: FileSelection, quote: string) => void; highlightedFileSelection?: { path: string; selection: FileSelection }; workspaceId: string; scopeKey: string; migrateFromScopeKey?: string; bindingId?: string; workDirectoryId?: string; conversation?: AgentConversation; conversationCumulativeTokens?: number | null; attachments: AgentAttachment[]; sources: ConversationSource[]; attachmentRequest?: { key: string; attachment: AgentAttachment }; candidatePreviewRequest?: CandidateFilePreviewRequest; markdownFileRequest?: MarkdownFileRequest; reviewChanges?: WorkspaceFileChange[]; reviewRequestId?: string; sessionChanges?: WorkspaceFileChange[]; onReviewChanges?: (changes: WorkspaceFileChange[]) => void; runtimeAvailable: boolean; runtimeTasks: RuntimeTaskProjection[]; agentDefinitions: CapabilityAsset[]; sessionStopped: boolean; sidebarQuestion?: { sourceBindingId: string; reference?: AgentConversationReference; sidebarBindingId?: string }; onSidebarBindingCreated: (bindingId: string) => void; onOpenSidebarQuestion?: () => void; onCloseSidebarQuestion: () => void;
 }) {
   const { api, fileUrl } = useAgentSessionGateway();
   const host = useAgentSessionHost();
@@ -4121,6 +4043,15 @@ function WorkspaceDrawer({
     if (upload) startWorkspaceUpload(upload.file, id);
   }, [startWorkspaceUpload, workspaceUploads]);
   const closeTab = async (tab: WorkspaceToolTab) => {
+    if (tab.kind === 'sidebar-chat' && sidebarQuestion?.sidebarBindingId) {
+      setPanelError('');
+      try {
+        await agentWorkspaceApi.deleteAgentSidebarConversation(workspaceId, sidebarQuestion.sidebarBindingId);
+      } catch (error) {
+        setPanelError(error instanceof Error ? error.message : '侧边聊天关闭失败，请稍后重试。');
+        return;
+      }
+    }
     if (tab.kind === 'terminal') {
       setPanelError('');
       setClosingTerminalId(tab.terminalInstanceId);
@@ -4280,7 +4211,7 @@ function WorkspaceDrawer({
           {scopeState.tabs.filter((tab): tab is Extract<WorkspaceToolTab, { kind: 'git' }> => tab.kind === 'git').map(tab => <div key={tab.id} className={`agent-changes-tab-panel agent-git-commit-tab ${scopeState.activeTabId === tab.id ? 'active' : ''}`}><WorkspaceGitCommitReview key={`${tab.details.commit.id}:${tab.diff.path}`} details={tab.details} initialDiff={tab.diff} loadDiff={path => api.gitDiff(workspaceId, tab.details.repository.path, tab.details.commit.id, path, gitOptions)} onOpenSource={openSourcePath}/></div>)}
           {scopeState.tabs.filter((tab): tab is Extract<WorkspaceToolTab, { kind: 'git-working' }> => tab.kind === 'git-working').map(tab => <div key={tab.id} className={`agent-changes-tab-panel agent-git-commit-tab ${scopeState.activeTabId === tab.id ? 'active' : ''}`}><WorkspaceGitWorkingDiffReview tab={tab} onOpenSource={openSourcePath} onSelectFile={(kind, file) => openGitWorkingDiff(tab.repository, kind, file, tab.changes)}/></div>)}
           {scopeState.tabs.some(tab => tab.kind === 'subagents') && <div className={`agent-subagent-tab-panel ${scopeState.activeTabId === 'subagents' ? 'active' : ''}`}><RuntimeTaskTab tasks={runtimeTasks} definitions={agentDefinitions} selectedTaskId={scopeState.selectedRuntimeTaskId} onSelect={taskId => updateScope(current => ({ ...current, selectedRuntimeTaskId: taskId }))} sessionStopped={sessionStopped}/></div>}
-          {sidebarQuestion && scopeState.tabs.some(tab => tab.kind === 'sidebar-chat') && <div className={`agent-sidebar-chat-tab-panel ${scopeState.activeTabId === 'sidebar-chat' ? 'active' : ''}`}><SidebarConversationPane workspaceId={workspaceId} sourceBindingId={sidebarQuestion.sourceBindingId} sourceTitle={sidebarQuestion.sourceTitle} initialReference={sidebarQuestion.reference}/></div>}
+          {sidebarQuestion && scopeState.tabs.some(tab => tab.kind === 'sidebar-chat') && <div className={`agent-sidebar-chat-tab-panel ${scopeState.activeTabId === 'sidebar-chat' ? 'active' : ''}`}><SidebarConversationPane workspaceId={workspaceId} sourceBindingId={sidebarQuestion.sourceBindingId} initialReference={sidebarQuestion.reference} onBindingCreated={onSidebarBindingCreated}/></div>}
           {scopeState.tabs.filter((tab): tab is Extract<WorkspaceToolTab, { kind: 'terminal' }> => tab.kind === 'terminal').map(tab => <div key={tab.id} className={`agent-terminal-tab-panel ${scopeState.activeTabId === tab.id ? 'active' : ''}`}>{runtimeAvailable ? <WorkspaceTerminal workspaceId={workspaceId} terminalInstanceId={tab.terminalInstanceId} bindingId={bindingId} workDirectoryId={workDirectoryId} workingDirectory={details.working_directory}/> : <div className="agent-drawer-empty"><LoaderCircle className="agent-drawer-spinner" size={20}/><b>终端正在恢复</b><span>文件仍可使用；运行环境恢复后终端会自动可用。</span></div>}</div>)}
           {gitSidebarVisible && gitRepository && <WorkspaceGitSidebar details={details} repository={gitRepository} mode={scopeState.gitMode ?? 'history'} onModeChange={mode => updateScope(current => ({ ...current, gitMode: mode }))} selectedCommit={scopeState.selectedGitRepositoryPath === gitRepository.path ? scopeState.selectedGitCommit : undefined} onSelectCommit={commit => updateScope(current => ({
             ...current,
@@ -4396,7 +4327,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const [attachmentRequest, setAttachmentRequest] = useState<{ key: string; attachment: AgentAttachment }>();
   const [fileSelectionReference, setFileSelectionReference] = useState<{ path: string; selection: FileSelection }>();
   const [candidatePreviewRequest, setCandidatePreviewRequest] = useState<CandidateFilePreviewRequest>();
-  const [sidebarQuestion, setSidebarQuestion] = useState<{ sourceBindingId: string; sourceTitle?: string | null; reference?: AgentConversationReference }>();
+  const [sidebarQuestion, setSidebarQuestion] = useState<{ sourceBindingId: string; reference?: AgentConversationReference; sidebarBindingId?: string }>();
   const [conversationRailWidth, setConversationRailWidth] = useState(() => {
     const stored = Number(localStorage.getItem('flowweave:conversation-rail-width'));
     return clampConversationRailWidth(Number.isFinite(stored) ? stored : 240);
@@ -6523,6 +6454,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     onSuccess: (value, message, context) => {
       sendingMessageIds.current.delete(message.id);
       const cursor = value.cursor;
+      if (cursor && !context?.nativeGuidance) setConversationUnread(message.bindingId, false);
       if (cursor && !context?.nativeGuidance && activeComposerScope.current === message.bindingId) {
         setPendingSubmissionConfirmation({
           submissionId: message.id,
@@ -7512,7 +7444,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       {features.capabilities && (selected || features.draftCapabilitySelection) && <footer className="agent-workbench-rail-footer"><button type="button" disabled={selected ? !canWrite : !runtimeWritable} onClick={() => setCapabilityManagerOpen(true)}><Boxes size={15}/><span><b>会话配置</b><small>{selected ? '管理当前会话配置' : '为新会话配置能力'}</small></span><ChevronRight size={14}/></button></footer>}
     </aside>
     <section className="agent-workbench-main">
-      <header className="agent-workbench-header"><div>{editing ? <div className="agent-title-edit"><input ref={titleInput} aria-label="会话标题" value={title} onChange={event => setTitle(event.target.value)} onBlur={() => { if (!rename.isPending) { setTitle(selected ? conversationName(selected) : ''); setEditing(false); } }} onKeyDown={event => { if (event.key === 'Enter' && title.trim()) { event.preventDefault(); rename.mutate(); } if (event.key === 'Escape') { setTitle(selected ? conversationName(selected) : ''); setEditing(false); } }}/></div> : !(hideDraftTitle && conversationDraft) && <h2 className="agent-session-title" title={selected ? conversationName(selected) : undefined} aria-label={selected && canWrite ? '双击修改标题' : undefined} onDoubleClick={() => { if (!selected || !canWrite) return; setTitle(conversationName(selected)); setEditing(true); }}><span>{selected ? conversationName(selected) : conversationDraft ? '新会话' : '开始一个新的会话'}</span></h2>}{features.modelSelection && (selected || conversationDraft) && <small className="agent-session-provider">当前供应商：{selected ? boundProviderInfo?.name ?? '未配置' : draftProviderInfo?.name ?? '请选择模型供应商'}{conversationDraft ? ` · ${conversationDraft.displayName}` : ''}</small>}</div><div className="agent-header-actions">{selected && <button type="button" aria-label="打开侧边聊天" title="打开侧边聊天" onClick={() => setSidebarQuestion({ sourceBindingId: selected.id, sourceTitle: conversationName(selected) })}><PanelRightOpen size={14}/></button>}{features.conversationDeletion && selected && <button type="button" className="danger" aria-label="删除会话" title={selectedConversationRunning ? '会话运行中，请先停止' : '删除会话'} disabled={!canWrite || selectedConversationRunning || remove.isPending} onClick={() => void confirmDeletion('会话', conversationName(selected)).then(ok => { if (ok) remove.mutate(selected.id); })}><Trash2 size={14}/></button>}</div></header>
+      <header className="agent-workbench-header"><div>{editing ? <div className="agent-title-edit"><input ref={titleInput} aria-label="会话标题" value={title} onChange={event => setTitle(event.target.value)} onBlur={() => { if (!rename.isPending) { setTitle(selected ? conversationName(selected) : ''); setEditing(false); } }} onKeyDown={event => { if (event.key === 'Enter' && title.trim()) { event.preventDefault(); rename.mutate(); } if (event.key === 'Escape') { setTitle(selected ? conversationName(selected) : ''); setEditing(false); } }}/></div> : !(hideDraftTitle && conversationDraft) && <h2 className="agent-session-title" title={selected ? conversationName(selected) : undefined} aria-label={selected && canWrite ? '双击修改标题' : undefined} onDoubleClick={() => { if (!selected || !canWrite) return; setTitle(conversationName(selected)); setEditing(true); }}><span>{selected ? conversationName(selected) : conversationDraft ? '新会话' : '开始一个新的会话'}</span></h2>}{features.modelSelection && (selected || conversationDraft) && <small className="agent-session-provider">当前供应商：{selected ? boundProviderInfo?.name ?? '未配置' : draftProviderInfo?.name ?? '请选择模型供应商'}{conversationDraft ? ` · ${conversationDraft.displayName}` : ''}</small>}</div><div className="agent-header-actions">{selected && <button type="button" aria-label="打开侧边聊天" title="打开侧边聊天" onClick={() => setSidebarQuestion({ sourceBindingId: selected.id })}><PanelRightOpen size={14}/></button>}{features.conversationDeletion && selected && <button type="button" className="danger" aria-label="删除会话" title={selectedConversationRunning ? '会话运行中，请先停止' : '删除会话'} disabled={!canWrite || selectedConversationRunning || remove.isPending} onClick={() => void confirmDeletion('会话', conversationName(selected)).then(ok => { if (ok) remove.mutate(selected.id); })}><Trash2 size={14}/></button>}</div></header>
       <div className="agent-workbench-content">
       {runtime?.state === 'RECOVERING' && <section className="agent-runtime-recover"><LoaderCircle size={18}/><div><b>运行环境正在恢复</b><span>{runtime.message || '历史会话和工作区文件仍可查看；恢复完成后可继续发送消息和使用终端。'}</span></div></section>}
       {runtime && !runtime.write_available && !selected?.write_available && runtime.state !== 'RECOVERING' && <section className="agent-runtime-recover"><ShieldAlert size={18}/><div><b>节点会话已切换为只读</b><span>{runtime.message || '节点执行已停止；历史会话和工作区文件仍可查看。'}</span></div></section>}
@@ -7520,6 +7452,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         key={selected?.id ?? conversationDraft?.id}
         events={displayedEvents}
         isGenerating={conversationVisuallyActive}
+        liveTextReveal={nativeTurnRunning}
         isPaused={conversationActivity.state === 'paused'}
         emptyResponseRecoveryActive={emptyResponseRecoveryActive}
         modelRetryStatus={modelRetryStatus}
@@ -7545,7 +7478,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         onCreateAnnotation={selected && canWrite ? anchor => void createAnnotation('CONVERSATION_TEXT', anchor) : undefined}
         onSidebarQuestion={selected ? reference => setSidebarQuestion({
           sourceBindingId: selected.id,
-          sourceTitle: conversationName(selected),
           reference: { event_id: reference.eventId, content: reference.content },
         }) : undefined}
         onLocateAnnotation={locateAnnotation}
@@ -7656,7 +7588,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       agentDefinitions={agentDefinitionAssets}
       sessionStopped={sessionStopped}
       sidebarQuestion={sidebarQuestion}
-      onOpenSidebarQuestion={selected ? () => setSidebarQuestion({ sourceBindingId: selected.id, sourceTitle: conversationName(selected) }) : undefined}
+      onSidebarBindingCreated={sidebarBindingId => setSidebarQuestion(current => current ? { ...current, sidebarBindingId } : current)}
+      onOpenSidebarQuestion={selected ? () => setSidebarQuestion({ sourceBindingId: selected.id }) : undefined}
       onCloseSidebarQuestion={() => setSidebarQuestion(undefined)}
     />
     {workspaceReferencePickerOpen && <WorkspaceReferencePicker
