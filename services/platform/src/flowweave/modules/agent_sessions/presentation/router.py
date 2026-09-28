@@ -41,6 +41,7 @@ from flowweave.shared.http import (
     command_key,
     get_container,
     run_blocking,
+    run_blocking_control,
     run_blocking_history,
     run_sync,
 )
@@ -1329,10 +1330,10 @@ async def delete_node_draft_attachments(
 
 @router.post(f"{_BASE}/{{binding_id}}/interrupt", status_code=202)
 async def interrupt_node_session(
-    flow_run_id: str, attempt_id: str, binding_id: str, db: Db
+    flow_run_id: str, attempt_id: str, binding_id: str, container: ContainerDep
 ) -> dict[str, bool]:
-    return await run_sync(
-        db,
+    return await run_blocking_control(
+        container,
         lambda session: agent_sessions.flow_node_conversations.interrupt_node_conversation(
             session,
             flow_run_id=flow_run_id,

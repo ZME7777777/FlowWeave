@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`IN PROGRESS`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`NONE`
+> 下一可执行切片：`FR-541`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -7535,3 +7535,25 @@ FlowWeave 本地累加后猜测压缩边界。
 完成：搜索范围以 `work_directory_ids` 和 `include_root` 固化；`null` 保持既有“全部工作区”语义，显式范围验证目录归属并拒绝空范围。搜索仅扫描根会话与所选目录的冻结版本，且同一 Agent Workspace 同时只允许一个 pending/running 搜索。Web 搜索对话框提供“全部工作区”与根工作区、多个目录的复选范围。OpenHands adapter 为搜索单设 generation-scoped 低优先级舱壁，默认单并发、0.1 秒取槽预算、2 秒单页预算；每页和命中详情读取都会在正式 hydration 读取活跃时让出，不进入正式读取舱壁。
 
 验收：OpenHands 搜索分页短超时与正式读取优先的定向 pytest（2 passed）；受影响 Python Ruff、`py_compile`、Alembic 单一 head、Web TypeScript typecheck、ESLint、production build 与 `git diff --check` 通过。新增数据库型范围/并发测试已启动，但全局 Testcontainers PostgreSQL fixture 在测试断言前因本机 Docker daemon 不可用失败，未计为通过。未运行数据库迁移，不修改远端配置、OpenHands Runtime 或自动恢复策略。
+
+### 并发稳定性待办（2026-09-28）
+
+本轮以已提交 FR-539 为基线，逐项处理会话加载、Runtime 故障传播和平台资源争抢。此前审计将 `RUNTIME_READ_PER_RUNTIME_CONCURRENCY=2` 误解释为全平台统一上限；实际舱壁在每个 API 进程内、按 Runtime generation URL 分配。不得把直接升到 16 当作无条件修复；容量调整须结合单 generation 并发、排队时间、Runtime CPU／内存和错误率取证。
+
+| 切片 | 状态 | 依赖 | 交付边界 |
+| --- | --- | --- | --- |
+| FR-540 | DONE | FR-539 | FlowRun 节点会话 interrupt 从 ASGI `run_sync` 转入预留控制 executor 和数据库池。 |
+| FR-541 | READY | FR-540 | 梳理两类会话其余同步 Runtime HTTP/文件调用，按可独立验证的入口拆分事务、执行线程和结果持久化，优先恢复／模型切换／消息 fallback。 |
+| FR-542 | PENDING | FR-541 | 首屏正式事件和 readiness 与精确 Context 指标解耦；指标按正式 OpenHands 合同异步刷新、保留可信同 binding 值，并限制重复统计。 |
+| FR-543 | PENDING | FR-542 | 固定 OpenHands baseline 的默认 executor 中将正式交互、搜索/统计和租约续期隔离；冻结新的 source commit、归档与 provenance。 |
+| FR-544 | PENDING | FR-543 | 消除单个 Conversation 加载/关闭卡住时空闲回收的全局生命周期阻塞，维持 OpenHands lease 与持久事件身份。 |
+| FR-545 | PENDING | FR-544 | 完成搜索命中分页、总工作量预算、事务释放和正式读取优先级，消除状态轮询逐条 Runtime 回读。 |
+| FR-546 | PENDING | FR-545 | 将标题、搜索、依赖构建等辅助任务与流程推进、恢复任务隔离到底层 executor/数据库连接预算。 |
+| FR-547 | PENDING | FR-546 | 缩短跨 Runtime 调用的数据库事务，核对 Worker heartbeat 等独立连接的全局预算；对任务 claim 索引只依据实际查询证据优化。 |
+| FR-548 | PENDING | FR-547 | Admin 同步数据库读取进入有界执行通道，合并重复 Docker 采样；Runtime Provider 的控制、构建与观测使用独立容量。 |
+| FR-549 | PENDING | FR-548 | Web 历史预取与 Context 失效设置工作量预算，明确浏览器取消与后端执行的不同生命周期。 |
+| FR-550 | PENDING | FR-549 | 用并发与故障数据校准每进程、每 generation 的正式读舱壁；验证会话 A 故障时同 Runtime B、其他 Runtime 和控制面分别可用。 |
+
+FR-540 完成：节点 interrupt 原先在 `AsyncSession.run_sync()` 内同步请求 OpenHands，会占用 ASGI 事件循环及普通 async 数据库连接。路由现在与 Agent Workspace interrupt 一样使用 `run_blocking_control()`；控制线程自行取得独立同步 Session，并在实际外部调用结束后释放预留槽。FlowRun／Attempt／binding 校验与原服务事务结果不变。
+
+验收：目标 Python 文件 AST 解析、`git diff --check`、任务状态唯一性和 staged diff 复核通过。按本轮请求未运行数据库、Runtime、构建或 E2E 测试；此切片不改数据库 schema、OpenHands 或远端环境。下一可执行切片为 FR-541。
