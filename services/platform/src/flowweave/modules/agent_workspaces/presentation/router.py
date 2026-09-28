@@ -32,14 +32,18 @@ from flowweave.shared.errors import DomainError
 from flowweave.shared.http import (
     Db,
     IdempotencyKey,
+    acquire_terminal_slot,
     command_key,
     get_container,
+    release_terminal_slot,
     run_blocking,
     run_blocking_auxiliary,
     run_blocking_control,
     run_blocking_history,
     run_blocking_mutation,
     run_sync,
+    run_terminal_control,
+    run_terminal_stream,
 )
 from flowweave.shared.settings import bind_settings, reset_settings
 
@@ -1322,6 +1326,7 @@ async def agent_workspace_terminal(
 ) -> None:
     settings_token = bind_settings(container.settings)
     terminal: environments.ManagedTerminal | None = None
+    terminal_slot_acquired = False
     try:
         try:
             rows = max(2, min(int(websocket.query_params.get("rows", "24")), 200))
@@ -1352,14 +1357,18 @@ async def agent_workspace_terminal(
             workspace_id, container_id, terminal_instance_id
         )
         try:
-            terminal = await asyncio.to_thread(
-                environments.open_managed_terminal,
-                resource_name,
-                resource_id=runtime_id,
-                session_name=session_name,
-                working_dir=working_directory,
-                rows=rows,
-                columns=columns,
+            await acquire_terminal_slot(container)
+            terminal_slot_acquired = True
+            terminal = await run_terminal_control(
+                container,
+                lambda: environments.open_managed_terminal(
+                    resource_name,
+                    resource_id=runtime_id,
+                    session_name=session_name,
+                    working_dir=working_directory,
+                    rows=rows,
+                    columns=columns,
+                ),
             )
         except DomainError as exc:
             await websocket.close(code=4409, reason=exc.message)
@@ -1368,7 +1377,7 @@ async def agent_workspace_terminal(
 
         async def forward_output() -> None:
             while True:
-                chunk, eof = await asyncio.to_thread(terminal.read)
+                chunk, eof = await run_terminal_stream(container, terminal.read)
                 if chunk:
                     await websocket.send_bytes(chunk)
                 if eof:
@@ -1388,19 +1397,27 @@ async def agent_workspace_terminal(
                 except json.JSONDecodeError:
                     value = {"type": "input", "data": text}
                 if value.get("type") == "resize":
-                    await asyncio.to_thread(
-                        terminal.resize,
-                        max(2, min(int(value.get("rows", 24)), 200)),
-                        max(20, min(int(value.get("columns", 80)), 400)),
+                    terminal_rows = max(2, min(int(value.get("rows", 24)), 200))
+                    terminal_columns = max(20, min(int(value.get("columns", 80)), 400))
+                    await run_terminal_control(
+                        container,
+                        lambda rows=terminal_rows, columns=terminal_columns: terminal.resize(
+                            rows, columns
+                        ),
                     )
                 elif value.get("type") == "input":
-                    await asyncio.to_thread(terminal.write, str(value.get("data", "")).encode())
+                    terminal_input = str(value.get("data", "")).encode()
+                    await run_terminal_control(
+                        container, lambda data=terminal_input: terminal.write(data)
+                    )
                 elif value.get("type") == "close-pane":
-                    await asyncio.to_thread(
-                        environments.kill_managed_terminal_pane,
-                        resource_name,
-                        resource_id=runtime_id,
-                        session_name=session_name,
+                    await run_terminal_control(
+                        container,
+                        lambda: environments.kill_managed_terminal_pane(
+                            resource_name,
+                            resource_id=runtime_id,
+                            session_name=session_name,
+                        ),
                     )
         except WebSocketDisconnect:
             pass
@@ -1408,9 +1425,13 @@ async def agent_workspace_terminal(
             output.cancel()
             await asyncio.gather(output, return_exceptions=True)
     finally:
-        if terminal is not None:
-            await asyncio.to_thread(terminal.close)
-        reset_settings(settings_token)
+        try:
+            if terminal is not None:
+                await run_terminal_control(container, terminal.close)
+        finally:
+            if terminal_slot_acquired:
+                release_terminal_slot(container)
+            reset_settings(settings_token)
 
 
 @router.delete("/agent-workspaces/{workspace_id}/terminals/{terminal_instance_id}", status_code=204)
@@ -1434,11 +1455,13 @@ async def close_agent_workspace_terminal(
                 )
             )
         session_name = workspace.terminal_session_name(workspace_id, container_id, instance_id)
-        await asyncio.to_thread(
-            environments.destroy_managed_terminal_session,
-            resource_name,
-            resource_id=runtime_id,
-            session_name=session_name,
+        await run_terminal_control(
+            container,
+            lambda: environments.destroy_managed_terminal_session(
+                resource_name,
+                resource_id=runtime_id,
+                session_name=session_name,
+            ),
         )
         return Response(status_code=204)
     finally:

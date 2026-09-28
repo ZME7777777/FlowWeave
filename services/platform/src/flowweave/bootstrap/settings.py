@@ -32,6 +32,10 @@ class Settings(BaseSettings):
     # a separate, deliberately tiny lane so they cannot consume the Runtime
     # state-read connections that restore a live conversation after reload.
     history_read_pool_size: int = Field(default=1, ge=1, le=4)
+    # Terminal reads may block for the lifetime of a browser attachment. Keep
+    # them out of the default asyncio executor and cap them independently from
+    # interactive Runtime hydration and recovery controls.
+    terminal_stream_pool_size: int = Field(default=4, ge=1, le=32)
     statement_timeout_ms: int = Field(default=30_000, ge=100)
 
     credentials_master_key: str = ""

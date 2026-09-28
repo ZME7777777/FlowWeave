@@ -38,14 +38,18 @@ from flowweave.shared.errors import DomainError
 from flowweave.shared.http import (
     Db,
     IdempotencyKey,
+    acquire_terminal_slot,
     command_key,
     get_container,
+    release_terminal_slot,
     run_blocking,
     run_blocking_auxiliary,
     run_blocking_control,
     run_blocking_history,
     run_blocking_mutation,
     run_sync,
+    run_terminal_control,
+    run_terminal_stream,
 )
 from flowweave.shared.schemas import ConversationPatchWrite
 from flowweave.shared.settings import bind_settings, reset_settings
@@ -1441,6 +1445,7 @@ async def node_session_terminal(
 ) -> None:
     token = bind_settings(container.settings)
     terminal: environments.ManagedTerminal | None = None
+    terminal_slot_acquired = False
     try:
         try:
             rows = max(2, min(int(websocket.query_params.get("rows", "24")), 200))
@@ -1478,21 +1483,25 @@ async def node_session_terminal(
             except DomainError as exc:
                 await websocket.close(code=4409, reason=exc.message)
                 return
-        terminal = await asyncio.to_thread(
-            environments.open_managed_terminal,
-            resource_name,
-            resource_id=runtime_id,
-            session_name=f"flowweave-node-{binding_id or 'draft'}",
-            working_dir=working_directory,
-            rows=rows,
-            columns=columns,
+        await acquire_terminal_slot(container)
+        terminal_slot_acquired = True
+        terminal = await run_terminal_control(
+            container,
+            lambda: environments.open_managed_terminal(
+                resource_name,
+                resource_id=runtime_id,
+                session_name=f"flowweave-node-{binding_id or 'draft'}",
+                working_dir=working_directory,
+                rows=rows,
+                columns=columns,
+            ),
         )
         await websocket.accept()
 
         async def forward_output() -> None:
             assert terminal is not None
             while True:
-                chunk, eof = await asyncio.to_thread(terminal.read)
+                chunk, eof = await run_terminal_stream(container, terminal.read)
                 if chunk:
                     await websocket.send_bytes(chunk)
                 if eof:
@@ -1512,19 +1521,29 @@ async def node_session_terminal(
                 except json.JSONDecodeError:
                     value = {"type": "input", "data": text}
                 if value.get("type") == "resize":
-                    await asyncio.to_thread(
-                        terminal.resize,
-                        max(2, min(int(value.get("rows", 24)), 200)),
-                        max(20, min(int(value.get("columns", 80)), 400)),
+                    terminal_rows = max(2, min(int(value.get("rows", 24)), 200))
+                    terminal_columns = max(20, min(int(value.get("columns", 80)), 400))
+                    await run_terminal_control(
+                        container,
+                        lambda rows=terminal_rows, columns=terminal_columns: terminal.resize(
+                            rows, columns
+                        ),
                     )
                 elif value.get("type") == "input":
-                    await asyncio.to_thread(terminal.write, str(value.get("data", "")).encode())
+                    terminal_input = str(value.get("data", "")).encode()
+                    await run_terminal_control(
+                        container, lambda data=terminal_input: terminal.write(data)
+                    )
         except WebSocketDisconnect:
             pass
         finally:
             output.cancel()
             await asyncio.gather(output, return_exceptions=True)
     finally:
-        if terminal is not None:
-            await asyncio.to_thread(terminal.close)
-        reset_settings(token)
+        try:
+            if terminal is not None:
+                await run_terminal_control(container, terminal.close)
+        finally:
+            if terminal_slot_acquired:
+                release_terminal_slot(container)
+            reset_settings(token)

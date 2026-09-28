@@ -181,6 +181,60 @@ async def run_blocking_history(container: Container, operation: Callable[[Sessio
     )
 
 
+async def acquire_terminal_slot(container: Container) -> None:
+    """Reserve one bounded terminal stream slot for a WebSocket lifetime."""
+
+    try:
+        await asyncio.wait_for(
+            container.terminal_slots.acquire(),
+            timeout=container.settings.blocking_pool_timeout_seconds,
+        )
+    except TimeoutError as exc:
+        logger.warning(
+            "terminal stream pool saturated active_limit=%d",
+            container.settings.terminal_stream_pool_size,
+        )
+        raise DomainError(
+            "RUNTIME_TERMINAL_SATURATED",
+            "Terminal capacity is busy; retry shortly",
+            503,
+        ) from exc
+
+
+def release_terminal_slot(container: Container) -> None:
+    """Release a terminal stream slot after its terminal has been closed."""
+
+    container.terminal_slots.release()
+
+
+async def run_terminal_control(container: Container, operation: Callable[[], T]) -> T:
+    """Run short terminal setup/control I/O off the default asyncio executor."""
+
+    return await _run_executor_operation(container.terminal_control_executor, operation)
+
+
+async def run_terminal_stream(container: Container, operation: Callable[[], T]) -> T:
+    """Run a potentially blocking terminal read on its dedicated stream pool."""
+
+    return await _run_executor_operation(container.terminal_stream_executor, operation)
+
+
+async def _run_executor_operation(executor: ThreadPoolExecutor, operation: Callable[[], T]) -> T:
+    """Offload non-DB I/O while preserving request context in a named pool."""
+
+    context = contextvars.copy_context()
+    worker = asyncio.ensure_future(
+        asyncio.get_running_loop().run_in_executor(executor, context.run, operation)
+    )
+
+    def consume_exception(completed: asyncio.Future[T]) -> None:
+        if not completed.cancelled():
+            completed.exception()
+
+    worker.add_done_callback(consume_exception)
+    return await asyncio.shield(worker)
+
+
 async def run_blocking_auxiliary(container: Container, operation: Callable[[Session], T]) -> T:
     """Run workspace and Git I/O on the low-priority history lane.
 

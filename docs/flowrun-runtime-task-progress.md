@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`IN PROGRESS`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`FR-541D`
+> 下一可执行切片：`FR-542`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -7547,8 +7547,8 @@ FlowWeave 本地累加后猜测压缩边界。
 | FR-541A | DONE | FR-541 | FlowRun 节点会话的恢复、模型、Fork、重写、附件等同步 Runtime 调用移出 API event loop，沿用同一写入容量保护。 |
 | FR-541B | DONE | FR-541A | Agent Workspace 文件／Git 与涉及文件校验、级联删除的工作目录入口从 `run_sync` 移至低优先级有界执行通道。 |
 | FR-541C | DONE | FR-541B | FlowRun 节点会话的文件／Git、候选输出与涉及文件校验、级联删除的工作目录入口从 `run_sync` 移至低优先级有界执行通道。 |
-| FR-541D | READY | FR-541C | 核对两类宿主的 WebSocket／终端与剩余兼容入口，消除仍在 API event loop 执行的同步外部 I/O；跨调用事务时长另由 FR-547 收口。 |
-| FR-542 | PENDING | FR-541D | 首屏正式事件和 readiness 与精确 Context 指标解耦；指标按正式 OpenHands 合同异步刷新、保留可信同 binding 值，并限制重复统计。 |
+| FR-541D | DONE | FR-541C | 两类宿主的终端 I/O 使用独立有界 stream/control executor 与会话槽位；WebSocket Runtime stream 已异步消费，剩余兼容入口核对后均为纯数据库事务或已有隔离调用。 |
+| FR-542 | READY | FR-541D | 首屏正式事件和 readiness 与精确 Context 指标解耦；指标按正式 OpenHands 合同异步刷新、保留可信同 binding 值，并限制重复统计。 |
 | FR-543 | PENDING | FR-542 | 固定 OpenHands baseline 的默认 executor 中将正式交互、搜索/统计和租约续期隔离；冻结新的 source commit、归档与 provenance。 |
 | FR-544 | PENDING | FR-543 | 消除单个 Conversation 加载/关闭卡住时空闲回收的全局生命周期阻塞，维持 OpenHands lease 与持久事件身份。 |
 | FR-545 | PENDING | FR-544 | 完成搜索命中分页、总工作量预算、事务释放和正式读取优先级，消除状态轮询逐条 Runtime 回读。 |
@@ -7573,6 +7573,10 @@ FR-541A 完成：本切片覆盖的 FlowRun 节点会话同步 OpenHands 及文�
 FR-541C 完成：FlowRun 节点会话的工作区详情／目录、文件预览和下载、Git 仓库发现／历史／diff／同步、文件创建／删除及候选输出读取已从 `AsyncSession.run_sync()` 移至低优先级有界线程。工作目录创建需要同步文件路径校验，删除会级联执行正式 Runtime 会话删除，也进入同一通道。该通道与历史分页复用原有小型 executor 和同步数据库池；默认最多一个后台操作，不新增 PostgreSQL 连接预算。纯数据库工作目录列表虽保留宿主权限校验，仍随同一组入口置入通道以避免未来实现增加文件系统工作时重新占用 hydration 容量。
 
 验收：受影响 Python AST 解析、路由通道映射断言、Ruff format/check、`git diff --check`、唯一 `CURRENT` 状态及 staged diff 复核通过。按本轮要求未运行数据库、Runtime、完整构建或 E2E；不修改 schema、OpenHands 或远端环境。下一切片为 FR-541D。
+
+FR-541D 完成：两类 Agent 宿主的 Runtime 事件 WebSocket 已直接消费异步 Runtime stream；终端打开、读取、写入、resize、关闭与 pane 清理不再占用 asyncio 默认线程池。新增按 API／worker 进程独立的 terminal stream/control executor 与有界 WebSocket 槽位（默认四个），使一个阻塞 PTY／远程终端读取最多耗尽终端自身容量，不会挤占会话 hydration、Runtime mutation／control、文件／Git 或默认 Python 后台工作。终端关闭路径保持先关闭资源再释放槽位；迟到线程异常被回收。剩余 `run_sync` 入口逐项核对为纯数据库读取／投影、原生压缩任务持久化或消息 prepare/finalize，不包含同步 Runtime／文件／Git I/O；跨 Runtime 的事务边界留待 FR-547。
+
+验收：受影响 Python AST 解析、Ruff format/check、`git diff --check`、唯一 `CURRENT` 状态及 staged diff 复核通过。按本轮要求未运行数据库、Runtime、完整构建或 E2E；不修改 schema、OpenHands 或远端环境。下一切片为 FR-542。
 
 FR-541B 完成：Agent Workspace 的文件树、文件预览、Git 仓库发现／历史／diff／同步和文件创建／删除已从 `AsyncSession.run_sync()` 移至低优先级有界线程。工作目录创建／修改需要同步文件路径校验，删除会级联执行正式 Runtime 会话删除，也进入同一通道。该通道与历史分页复用原有小型 executor 和同步数据库池；默认最多一个后台操作，不新增 PostgreSQL 连接预算，繁重文件／Git 操作不再占用 ASGI event loop 或交互读取／写入／恢复容量。纯数据库工作目录列表和详情仍留在原入口。
 

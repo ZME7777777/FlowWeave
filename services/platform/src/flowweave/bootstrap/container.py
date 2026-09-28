@@ -57,6 +57,9 @@ class Container:
     poll_io_slots: asyncio.Semaphore
     history_read_executor: ThreadPoolExecutor
     history_read_slots: asyncio.Semaphore
+    terminal_stream_executor: ThreadPoolExecutor
+    terminal_control_executor: ThreadPoolExecutor
+    terminal_slots: asyncio.Semaphore
     blocking_control_executor: ThreadPoolExecutor
     blocking_control_slots: asyncio.Semaphore
 
@@ -79,6 +82,16 @@ class Container:
         )
         await asyncio.to_thread(
             self.history_read_executor.shutdown,
+            wait=True,
+            cancel_futures=True,
+        )
+        await asyncio.to_thread(
+            self.terminal_stream_executor.shutdown,
+            wait=True,
+            cancel_futures=True,
+        )
+        await asyncio.to_thread(
+            self.terminal_control_executor.shutdown,
             wait=True,
             cancel_futures=True,
         )
@@ -119,6 +132,14 @@ def build_container(settings: Settings, *, role: Literal["api", "worker"]) -> Co
         max_workers=settings.history_read_pool_size,
         thread_name_prefix=f"flowweave-{role}-history-read",
     )
+    terminal_stream_executor = ThreadPoolExecutor(
+        max_workers=settings.terminal_stream_pool_size,
+        thread_name_prefix=f"flowweave-{role}-terminal-stream",
+    )
+    terminal_control_executor = ThreadPoolExecutor(
+        max_workers=settings.terminal_stream_pool_size,
+        thread_name_prefix=f"flowweave-{role}-terminal-control",
+    )
     blocking_control_executor = ThreadPoolExecutor(
         max_workers=1,
         thread_name_prefix=f"flowweave-{role}-runtime-control",
@@ -152,6 +173,9 @@ def build_container(settings: Settings, *, role: Literal["api", "worker"]) -> Co
         poll_io_slots=asyncio.Semaphore(settings.runtime_poll_worker_concurrency),
         history_read_executor=history_read_executor,
         history_read_slots=asyncio.Semaphore(settings.history_read_pool_size),
+        terminal_stream_executor=terminal_stream_executor,
+        terminal_control_executor=terminal_control_executor,
+        terminal_slots=asyncio.Semaphore(settings.terminal_stream_pool_size),
         blocking_control_executor=blocking_control_executor,
         blocking_control_slots=asyncio.Semaphore(1),
     )
