@@ -5,7 +5,7 @@ import { type InfiniteData, useInfiniteQuery, useMutation, useQuery, useQueryCli
 import hljs from 'highlight.js/lib/common';
 import { ArrowLeft, ArrowUp, Bell, Bot, Boxes, Check, ChevronDown, ChevronRight, CircleAlert, CircleDot, Copy, CornerDownRight, Download, Ellipsis, FileCode2, FileText, Folder, FolderOpen, FolderPlus, GitBranch, GripVertical, ImageIcon, Layers3, Link2, ListRestart, LoaderCircle, Maximize2, Minimize2, MonitorCog, PanelRightOpen, Pencil, Pin, PinOff, Play, Plus, Quote, RefreshCw, Search, Send, ShieldAlert, Square, Trash2, X } from 'lucide-react';
 import { createContext, forwardRef, isValidElement, useCallback, useContext, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type ComponentPropsWithoutRef, type CSSProperties, type DragEvent as ReactDragEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type WheelEvent as ReactWheelEvent } from 'react';
-import { createPortal } from 'react-dom';
+import { createPortal, flushSync } from 'react-dom';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { ApiError, randomId, type AgentStreamEvent } from '../../api/client';
@@ -2569,16 +2569,7 @@ function workspaceMarkdownLinkPath(href: string, workingDirectory?: string, sour
 }
 
 function workspaceMarkdownImagePath(src: string, workingDirectory?: string): string | undefined {
-  const direct = workspaceMarkdownLinkPath(src, workingDirectory);
-  if (direct) return direct;
-  try {
-    const url = new URL(src, window.location.origin);
-    if (!url.pathname.endsWith('/workspace/file')) return undefined;
-    const path = url.searchParams.get('path');
-    return path ? workspaceMarkdownLinkPath(path, workingDirectory) : undefined;
-  } catch {
-    return undefined;
-  }
+  return workspaceMarkdownLinkPath(src, workingDirectory);
 }
 
 
@@ -3012,6 +3003,7 @@ type WorkspaceToolTab =
   | { id: 'git'; kind: 'git'; details: WorkspaceGitCommitDetails; diff: WorkspaceGitFileDiff }
   | { id: 'git-working'; kind: 'git-working'; repository: WorkspaceGitChanges['repository']; changes: WorkspaceGitChanges; changeKind: WorkspaceGitChangeKind; file: WorkspaceGitChangedFile; diff?: WorkspaceGitFileDiff; loading: boolean; error?: string }
   | { id: 'subagents'; kind: 'subagents' }
+  | { id: 'sidebar-chat'; kind: 'sidebar-chat' }
   | { id: string; kind: 'terminal'; terminalInstanceId: string };
 type WorkspaceToolScopeState = { tabs: WorkspaceToolTab[]; activeTabId?: string; selectedFile?: string; selectedChangeId?: string; selectedGitFile?: string; selectedGitCommit?: string; selectedGitRepositoryPath?: string; gitMode?: 'history' | 'changes'; selectedRuntimeTaskId?: string };
 type MarkdownFileRequest = { key: string; path: string };
@@ -3534,9 +3526,9 @@ function readWorkspaceToolState(storageKey: string): Record<string, WorkspaceToo
 }
 
 function WorkspaceDrawer({
-  open, onOpen, onClose, onAnnotateFileSelection, highlightedFileSelection, workspaceId, scopeKey, migrateFromScopeKey, bindingId, workDirectoryId, conversation, conversationCumulativeTokens, attachments, sources, attachmentRequest, candidatePreviewRequest, markdownFileRequest, reviewChanges = [], reviewRequestId, sessionChanges = [], onReviewChanges, runtimeAvailable, runtimeTasks, agentDefinitions, sessionStopped,
+  open, onOpen, onClose, onAnnotateFileSelection, highlightedFileSelection, workspaceId, scopeKey, migrateFromScopeKey, bindingId, workDirectoryId, conversation, conversationCumulativeTokens, attachments, sources, attachmentRequest, candidatePreviewRequest, markdownFileRequest, reviewChanges = [], reviewRequestId, sessionChanges = [], onReviewChanges, runtimeAvailable, runtimeTasks, agentDefinitions, sessionStopped, sidebarQuestion, onOpenSidebarQuestion, onCloseSidebarQuestion,
 }: {
-  open: boolean; onOpen: () => void; onClose: () => void; onAnnotateFileSelection?: (path: string, selection: FileSelection, quote: string) => void; highlightedFileSelection?: { path: string; selection: FileSelection }; workspaceId: string; scopeKey: string; migrateFromScopeKey?: string; bindingId?: string; workDirectoryId?: string; conversation?: AgentConversation; conversationCumulativeTokens?: number | null; attachments: AgentAttachment[]; sources: ConversationSource[]; attachmentRequest?: { key: string; attachment: AgentAttachment }; candidatePreviewRequest?: CandidateFilePreviewRequest; markdownFileRequest?: MarkdownFileRequest; reviewChanges?: WorkspaceFileChange[]; reviewRequestId?: string; sessionChanges?: WorkspaceFileChange[]; onReviewChanges?: (changes: WorkspaceFileChange[]) => void; runtimeAvailable: boolean; runtimeTasks: RuntimeTaskProjection[]; agentDefinitions: CapabilityAsset[]; sessionStopped: boolean;
+  open: boolean; onOpen: () => void; onClose: () => void; onAnnotateFileSelection?: (path: string, selection: FileSelection, quote: string) => void; highlightedFileSelection?: { path: string; selection: FileSelection }; workspaceId: string; scopeKey: string; migrateFromScopeKey?: string; bindingId?: string; workDirectoryId?: string; conversation?: AgentConversation; conversationCumulativeTokens?: number | null; attachments: AgentAttachment[]; sources: ConversationSource[]; attachmentRequest?: { key: string; attachment: AgentAttachment }; candidatePreviewRequest?: CandidateFilePreviewRequest; markdownFileRequest?: MarkdownFileRequest; reviewChanges?: WorkspaceFileChange[]; reviewRequestId?: string; sessionChanges?: WorkspaceFileChange[]; onReviewChanges?: (changes: WorkspaceFileChange[]) => void; runtimeAvailable: boolean; runtimeTasks: RuntimeTaskProjection[]; agentDefinitions: CapabilityAsset[]; sessionStopped: boolean; sidebarQuestion?: { sourceBindingId: string; sourceTitle?: string | null; reference?: AgentConversationReference }; onOpenSidebarQuestion?: () => void; onCloseSidebarQuestion: () => void;
 }) {
   const { api, fileUrl } = useAgentSessionGateway();
   const host = useAgentSessionHost();
@@ -3968,6 +3960,30 @@ function WorkspaceDrawer({
     }));
     onOpen();
   }, [onOpen, runtimeAvailable, updateScope]);
+  useEffect(() => {
+    if (!sidebarQuestion) {
+      updateScope(current => {
+        const tabs = current.tabs.filter(tab => tab.kind !== 'sidebar-chat');
+        if (tabs.length === current.tabs.length) return current;
+        return {
+          ...current,
+          tabs,
+          activeTabId: current.activeTabId === 'sidebar-chat' ? tabs.at(-1)?.id : current.activeTabId,
+        };
+      });
+      return;
+    }
+    updateScope(current => {
+      const hasTab = current.tabs.some(tab => tab.kind === 'sidebar-chat');
+      if (hasTab && current.activeTabId === 'sidebar-chat') return current;
+      return {
+        ...current,
+        tabs: hasTab ? current.tabs : [...current.tabs, { id: 'sidebar-chat', kind: 'sidebar-chat' }],
+        activeTabId: 'sidebar-chat',
+      };
+    });
+    onOpen();
+  }, [onOpen, sidebarQuestion, updateScope]);
   const selectFile = (path?: string) => {
     setCandidatePreview(undefined);
     setGitContextPath(path);
@@ -4105,6 +4121,7 @@ function WorkspaceDrawer({
         selectedGitFile: tab.kind === 'git' ? undefined : current.selectedGitFile,
       };
     });
+    if (tab.kind === 'sidebar-chat') onCloseSidebarQuestion();
     if (tab.kind === 'git' || tab.kind === 'git-working') setClosedGitDiffEpoch(current => current + 1);
     if (scopeState.tabs.length === 1 && scopeState.tabs[0]?.id === tab.id) {
       setFullScreen(false);
@@ -4210,11 +4227,11 @@ function WorkspaceDrawer({
     <div className="agent-workspace-resizer" role="separator" aria-label="调整工作区工具宽度" aria-orientation="vertical" onPointerDown={startResize}/>
     <section className={`agent-workspace-summary ${open ? 'panel-hidden' : ''}`}>
       <header><div><span className="eyebrow">WORKSPACE</span><b>环境信息</b></div><button type="button" aria-label="打开工作区工具" onClick={onOpen}><PanelRightOpen size={16}/></button></header>
-      <div className="agent-workspace-quick-actions"><button type="button" onClick={() => openFiles()}><FileCode2 size={14}/>文件</button><button type="button" disabled={!runtimeAvailable} onClick={openTerminal}><Plus size={14}/>新终端</button></div>
+      <div className="agent-workspace-quick-actions"><button type="button" onClick={() => openFiles()}><FileCode2 size={14}/>文件</button><button type="button" disabled={!runtimeAvailable} onClick={openTerminal}><Plus size={14}/>新终端</button>{onOpenSidebarQuestion && <button type="button" onClick={onOpenSidebarQuestion}><PanelRightOpen size={14}/>侧边聊天</button>}</div>
       {loadingOrError || summary}
     </section>
     <section className={`agent-workspace-tool-shell ${open ? '' : 'panel-hidden'}`}>
-      <header><nav className="agent-workspace-tabs" aria-label="工作区工具页签">{scopeState.tabs.map(tab => <div key={tab.id} className={scopeState.activeTabId === tab.id ? 'active' : ''}><button type="button" className="agent-workspace-tab-select" onClick={() => updateScope(current => ({ ...current, activeTabId: tab.id }))}><span>{tab.kind === 'files' ? '文件' : tab.kind === 'changes' ? `审查${reviewChanges.length ? ` · ${reviewChanges.length}` : ''}` : tab.kind === 'sources' ? `来源${sources.length ? ` · ${sources.length}` : ''}` : tab.kind === 'git' ? `提交 · ${tab.details.commit.short_id}` : tab.kind === 'git-working' ? `${tab.changeKind === 'STAGED' ? '暂存' : '本地'} · ${tab.file.path.split('/').at(-1)}` : tab.kind === 'subagents' ? '子智能体' : tab.kind === 'sidebar-chat' ? '侧边聊天' : details?.runtime.container_id || (details?.runtime.write_available ? '终端' : '连接中…')}</span></button><button type="button" className="agent-workspace-tab-close" aria-label={`关闭${tab.kind === 'files' ? '文件' : tab.kind === 'changes' ? '改动审查' : tab.kind === 'sources' ? '来源' : tab.kind === 'git' ? '提交审查' : tab.kind === 'git-working' ? '本地改动 Diff' : tab.kind === 'subagents' ? '子智能体' : tab.kind === 'sidebar-chat' ? '侧边聊天' : `终端 ${details?.runtime.container_id || ''}`}页签`} disabled={tab.kind === 'terminal' && closingTerminalId === tab.terminalInstanceId} onClick={() => { if (tab.kind !== 'terminal' || closingTerminalId !== tab.terminalInstanceId) requestCloseTab(tab); }}><X size={12}/></button></div>)}</nav><div className="agent-workspace-tool-actions"><div ref={toolMenuRef} className="agent-workspace-tool-menu"><button type="button" className="agent-workspace-tool-menu-trigger" aria-label="新增工作区工具" aria-expanded={toolMenuOpen} aria-haspopup="menu" onClick={() => setToolMenuOpen(current => !current)}><Plus size={15}/></button>{toolMenuOpen && <div role="menu"><button type="button" role="menuitem" onClick={() => { openFiles(); setToolMenuOpen(false); }}><FileCode2 size={13}/>文件</button><button type="button" role="menuitem" onClick={() => { openGitHistory(); setToolMenuOpen(false); }}><GitBranch size={13}/>Git 历史</button>{reviewChanges.length > 0 && <button type="button" role="menuitem" onClick={() => { openChanges(); setToolMenuOpen(false); }}><FileText size={13}/>审查改动</button>}{sources.length > 0 && <button type="button" role="menuitem" onClick={() => { openSources(); setToolMenuOpen(false); }}><Link2 size={13}/>来源</button>}{runtimeTasks.length > 0 && <button type="button" role="menuitem" onClick={() => { openRuntimeTasks(); setToolMenuOpen(false); }}><Bot size={13}/>子智能体</button>}<button type="button" role="menuitem" disabled={!runtimeAvailable} onClick={() => { openTerminal(); setToolMenuOpen(false); }}><Plus size={13}/>终端</button></div>}</div><button type="button" aria-label={fullScreen ? '退出全屏' : '全屏查看工作区工具'} title={fullScreen ? '退出全屏（Esc）' : '全屏查看'} onClick={() => setFullScreen(current => !current)}>{fullScreen ? <Minimize2 size={16}/> : <Maximize2 size={16}/>}</button><button type="button" aria-label="关闭工作区工具" onClick={() => { setFullScreen(false); onClose(); }}><X size={16}/></button></div></header>
+      <header><nav className="agent-workspace-tabs" aria-label="工作区工具页签">{scopeState.tabs.map(tab => <div key={tab.id} className={scopeState.activeTabId === tab.id ? 'active' : ''}><button type="button" className="agent-workspace-tab-select" onClick={() => updateScope(current => ({ ...current, activeTabId: tab.id }))}><span>{tab.kind === 'files' ? '文件' : tab.kind === 'changes' ? `审查${reviewChanges.length ? ` · ${reviewChanges.length}` : ''}` : tab.kind === 'sources' ? `来源${sources.length ? ` · ${sources.length}` : ''}` : tab.kind === 'git' ? `提交 · ${tab.details.commit.short_id}` : tab.kind === 'git-working' ? `${tab.changeKind === 'STAGED' ? '暂存' : '本地'} · ${tab.file.path.split('/').at(-1)}` : tab.kind === 'subagents' ? '子智能体' : tab.kind === 'sidebar-chat' ? '侧边聊天' : details?.runtime.container_id || (details?.runtime.write_available ? '终端' : '连接中…')}</span></button><button type="button" className="agent-workspace-tab-close" aria-label={`关闭${tab.kind === 'files' ? '文件' : tab.kind === 'changes' ? '改动审查' : tab.kind === 'sources' ? '来源' : tab.kind === 'git' ? '提交审查' : tab.kind === 'git-working' ? '本地改动 Diff' : tab.kind === 'subagents' ? '子智能体' : tab.kind === 'sidebar-chat' ? '侧边聊天' : `终端 ${details?.runtime.container_id || ''}`}页签`} disabled={tab.kind === 'terminal' && closingTerminalId === tab.terminalInstanceId} onClick={() => { if (tab.kind !== 'terminal' || closingTerminalId !== tab.terminalInstanceId) requestCloseTab(tab); }}><X size={12}/></button></div>)}</nav><div className="agent-workspace-tool-actions"><div ref={toolMenuRef} className="agent-workspace-tool-menu"><button type="button" className="agent-workspace-tool-menu-trigger" aria-label="新增工作区工具" aria-expanded={toolMenuOpen} aria-haspopup="menu" onClick={() => setToolMenuOpen(current => !current)}><Plus size={15}/></button>{toolMenuOpen && <div role="menu"><button type="button" role="menuitem" onClick={() => { openFiles(); setToolMenuOpen(false); }}><FileCode2 size={13}/>文件</button>{onOpenSidebarQuestion && <button type="button" role="menuitem" onClick={() => { onOpenSidebarQuestion(); setToolMenuOpen(false); }}><PanelRightOpen size={13}/>侧边聊天</button>}<button type="button" role="menuitem" onClick={() => { openGitHistory(); setToolMenuOpen(false); }}><GitBranch size={13}/>Git 历史</button>{reviewChanges.length > 0 && <button type="button" role="menuitem" onClick={() => { openChanges(); setToolMenuOpen(false); }}><FileText size={13}/>审查改动</button>}{sources.length > 0 && <button type="button" role="menuitem" onClick={() => { openSources(); setToolMenuOpen(false); }}><Link2 size={13}/>来源</button>}{runtimeTasks.length > 0 && <button type="button" role="menuitem" onClick={() => { openRuntimeTasks(); setToolMenuOpen(false); }}><Bot size={13}/>子智能体</button>}<button type="button" role="menuitem" disabled={!runtimeAvailable} onClick={() => { openTerminal(); setToolMenuOpen(false); }}><Plus size={13}/>终端</button></div>}</div><button type="button" aria-label={fullScreen ? '退出全屏' : '全屏查看工作区工具'} title={fullScreen ? '退出全屏（Esc）' : '全屏查看'} onClick={() => setFullScreen(current => !current)}>{fullScreen ? <Minimize2 size={16}/> : <Maximize2 size={16}/>}</button><button type="button" aria-label="关闭工作区工具" onClick={() => { setFullScreen(false); onClose(); }}><X size={16}/></button></div></header>
       <div className="agent-workspace-tool-body">
         {panelError && <p className="agent-workspace-panel-error" role="alert"><span>{panelError}</span><button type="button" aria-label="关闭错误提示" onClick={() => setPanelError('')}><X size={13}/></button></p>}
         {loadingOrError || (!scopeState.tabs.length ? <div className="agent-drawer-empty"><b>选择工作区工具</b><span>文件仅打开一个页签；终端可按需打开多个独立实例。</span><div><button type="button" className="secondary" onClick={() => openFiles()}>打开文件</button><button type="button" className="secondary" disabled={!runtimeAvailable} onClick={openTerminal}>新建终端</button></div></div> : details && <div className={`agent-workspace-tool-content${gitSidebarVisible ? ' fullscreen-git-layout' : ''}`}>
@@ -4354,7 +4371,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const [attachmentRequest, setAttachmentRequest] = useState<{ key: string; attachment: AgentAttachment }>();
   const [fileSelectionReference, setFileSelectionReference] = useState<{ path: string; selection: FileSelection }>();
   const [candidatePreviewRequest, setCandidatePreviewRequest] = useState<CandidateFilePreviewRequest>();
-  const [sidebarQuestion, setSidebarQuestion] = useState<{ sourceBindingId: string; reference?: AgentConversationReference }>();
+  const [sidebarQuestion, setSidebarQuestion] = useState<{ sourceBindingId: string; sourceTitle?: string | null; reference?: AgentConversationReference }>();
   const [operationError, setOperationError] = useState<Error>();
   const [historyLoadingBindingId, setHistoryLoadingBindingId] = useState<string>();
   const [historyPrepend, setHistoryPrepend] = useState<ConversationHistoryPrepend>();
@@ -5920,7 +5937,13 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       if (event.event.event_type === 'MESSAGE' && ['user', 'human'].includes(String(event.event.payload.source ?? '').toLowerCase())) setModelRetryStatus(undefined);
       appendLiveEvent(scope, event.event);
     }
-    if (event.type === 'message_complete') void synchronizeConversationEvents(true, 'message_complete');
+    if (event.type === 'message_complete') {
+      setMessageCompleteBindingId(scope);
+      setActiveTurnEventId(undefined);
+      setRequestStartedAt(undefined);
+      setTurnState(current => current === 'running' || current === 'resuming' ? 'idle' : current);
+      void synchronizeConversationEvents(true, 'message_complete');
+    }
   }, [appendLiveEvent, synchronizeConversationEvents]);
   const onStreamReconnect = useCallback((scope: string) => {
     // A WebSocket is a live projection only. Events written while the browser
@@ -5955,7 +5978,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       bootstrapTransitionScope.current = undefined;
       return;
     }
-    setEditing(false); setQueuedMessageMenuId(undefined); pendingLiveEvents.current = []; if (liveEventsFrame.current !== undefined) window.cancelAnimationFrame(liveEventsFrame.current); liveEventsFrame.current = undefined; setScopedLiveEvents(current => current.filter(item => item.scope === composerScope)); setLocalMessageProjectionRevision(current => current + 1); setHiddenEventIds(new Set()); setActiveTurnEventId(undefined); setExpiredTerminalSyncTurnKey(undefined); setRequestStartedAt(undefined); setConfirmationReason(''); setTurnState('idle'); queuedMessagesRef.current = []; setQueuedMessages([]); setPendingRewrite(undefined);
+    setEditing(false); setQueuedMessageMenuId(undefined); pendingLiveEvents.current = []; if (liveEventsFrame.current !== undefined) window.cancelAnimationFrame(liveEventsFrame.current); liveEventsFrame.current = undefined; setScopedLiveEvents(current => current.filter(item => item.scope === composerScope)); setLocalMessageProjectionRevision(current => current + 1); setHiddenEventIds(new Set()); setMessageCompleteBindingId(undefined); setActiveTurnEventId(undefined); setExpiredTerminalSyncTurnKey(undefined); setRequestStartedAt(undefined); setConfirmationReason(''); setTurnState('idle'); queuedMessagesRef.current = []; setQueuedMessages([]); setPendingRewrite(undefined);
     if (recoveredComposer && composerScope) {
       composerDraftsByScope.current.set(composerScope, recoveredComposer);
       replaceComposerDraft(recoveredComposer.content, composerScope);
@@ -6522,19 +6545,27 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       reportOperationError(message.bindingId, error);
     },
   });
-  const dispatchMessage = useCallback((message: BoundQueuedMessage) => {
+  const dispatchMessage = useCallback((message: BoundQueuedMessage, immediate = false) => {
     if (sendingMessageIds.current.has(message.id)) return;
     sendingMessageIds.current.add(message.id);
-    commitQueuedMessages(current => current.filter(item => item.id !== message.id));
-    // The current page owns its submitted user bubble. The native event only
-    // anchors subsequent process/reply events and suppresses its duplicate.
-    showOptimisticUserBubble(message, 'pending-user', 'submitting', true);
-    if (!message.nativeGuidance) {
-      setActiveTurnEventId(undefined);
-      setRequestStartedAt(Date.now());
-      setTurnState('running');
+    const showLocalMessage = () => {
+      setMessageCompleteBindingId(current => current === message.bindingId ? undefined : current);
+      // The current page owns its submitted user bubble. The native event only
+      // anchors subsequent process/reply events and suppresses its duplicate.
+      showOptimisticUserBubble(message, 'pending-user', 'submitting', true);
+      if (!message.nativeGuidance) {
+        setActiveTurnEventId(undefined);
+        setRequestStartedAt(Date.now());
+        setTurnState('running');
+      }
+    };
+    if (immediate) flushSync(showLocalMessage);
+    else showLocalMessage();
+    if (queuedMessagesRef.current.some(item => item.id === message.id)) {
+      commitQueuedMessages(current => current.filter(item => item.id !== message.id));
     }
-    send.mutate(message);
+    if (immediate) window.setTimeout(() => send.mutate(message), 0);
+    else send.mutate(message);
   }, [commitQueuedMessages, send, showOptimisticUserBubble]);
   const migrateStreaming = useMutation({
     mutationFn: (_message: QueuedMessage) => {
@@ -6905,7 +6936,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       migrateStreaming.mutate(queuedMessage);
       return;
     }
-    dispatchMessage({ ...queuedMessage, bindingId: selected.id });
+    dispatchMessage({ ...queuedMessage, bindingId: selected.id }, true);
   }, [attachments, bootstrap, canBootstrap, canWrite, commitQueuedMessages, composerAnnotations, composerScope, conversationDraft, dispatchMessage, effectiveTurnState, host.id, migrateStreaming, pendingAttachments, pendingMigratedSend, queueModeEnabled, references, replaceComposerDraft, selected, selectedCondensing, showOptimisticUserBubble, workspace, workspaceReferences]);
   const sendDraftDirectly = useCallback((draftContent = composerDraftRef.current) => {
     if (selectedCondensing) {
@@ -6963,7 +6994,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     };
     setAttachments([]);
     setReferences([]); setWorkspaceReferences([]); setComposerAnnotations([]);
-    dispatchMessage({ ...message, bindingId: selected.id });
+    dispatchMessage({ ...message, bindingId: selected.id }, true);
   }, [attachments, canWrite, composerAnnotations, composerScope, conversationDraft, dispatchMessage, effectiveTurnState, enqueueDraft, host.id, migrateStreaming, pendingAttachments, pendingMigratedSend, queueModeEnabled, queuedMessages, references, replaceComposerDraft, selected, selectedCondensing, workspace, workspaceReferences]);
   const sendQueuedMessageImmediately = useCallback((message: QueuedMessage) => {
     if (selectedCondensing || !queueModeEnabled || !canWrite || effectiveTurnState !== 'running' || !selected?.streaming_callback_ready || message.scope !== selected.id || message.deliveryState !== 'queued') return;
@@ -7424,7 +7455,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       {features.capabilities && (selected || features.draftCapabilitySelection) && <footer className="agent-workbench-rail-footer"><button type="button" disabled={selected ? !canWrite : !runtimeWritable} onClick={() => setCapabilityManagerOpen(true)}><Boxes size={15}/><span><b>会话配置</b><small>{selected ? '管理当前会话配置' : '为新会话配置能力'}</small></span><ChevronRight size={14}/></button></footer>}
     </aside>
     <section className="agent-workbench-main">
-      <header className="agent-workbench-header"><div>{editing ? <div className="agent-title-edit"><input ref={titleInput} aria-label="会话标题" value={title} onChange={event => setTitle(event.target.value)} onBlur={() => { if (!rename.isPending) { setTitle(selected ? conversationName(selected) : ''); setEditing(false); } }} onKeyDown={event => { if (event.key === 'Enter' && title.trim()) { event.preventDefault(); rename.mutate(); } if (event.key === 'Escape') { setTitle(selected ? conversationName(selected) : ''); setEditing(false); } }}/></div> : !(hideDraftTitle && conversationDraft) && <h2 className="agent-session-title" title={selected ? conversationName(selected) : undefined} aria-label={selected && canWrite ? '双击修改标题' : undefined} onDoubleClick={() => { if (!selected || !canWrite) return; setTitle(conversationName(selected)); setEditing(true); }}><span>{selected ? conversationName(selected) : conversationDraft ? '新会话' : '开始一个新的会话'}</span></h2>}{features.modelSelection && (selected || conversationDraft) && <small className="agent-session-provider">当前供应商：{selected ? boundProviderInfo?.name ?? '未配置' : draftProviderInfo?.name ?? '请选择模型供应商'}{conversationDraft ? ` · ${conversationDraft.displayName}` : ''}</small>}</div><div className="agent-header-actions">{selected && <button type="button" aria-label="打开侧边聊天" title="打开侧边聊天" onClick={() => setSidebarQuestion({ sourceBindingId: selected.id })}><PanelRightOpen size={14}/></button>}{features.conversationDeletion && selected && <button type="button" className="danger" aria-label="删除会话" title={selectedConversationRunning ? '会话运行中，请先停止' : '删除会话'} disabled={!canWrite || selectedConversationRunning || remove.isPending} onClick={() => void confirmDeletion('会话', conversationName(selected)).then(ok => { if (ok) remove.mutate(selected.id); })}><Trash2 size={14}/></button>}</div></header>
+      <header className="agent-workbench-header"><div>{editing ? <div className="agent-title-edit"><input ref={titleInput} aria-label="会话标题" value={title} onChange={event => setTitle(event.target.value)} onBlur={() => { if (!rename.isPending) { setTitle(selected ? conversationName(selected) : ''); setEditing(false); } }} onKeyDown={event => { if (event.key === 'Enter' && title.trim()) { event.preventDefault(); rename.mutate(); } if (event.key === 'Escape') { setTitle(selected ? conversationName(selected) : ''); setEditing(false); } }}/></div> : !(hideDraftTitle && conversationDraft) && <h2 className="agent-session-title" title={selected ? conversationName(selected) : undefined} aria-label={selected && canWrite ? '双击修改标题' : undefined} onDoubleClick={() => { if (!selected || !canWrite) return; setTitle(conversationName(selected)); setEditing(true); }}><span>{selected ? conversationName(selected) : conversationDraft ? '新会话' : '开始一个新的会话'}</span></h2>}{features.modelSelection && (selected || conversationDraft) && <small className="agent-session-provider">当前供应商：{selected ? boundProviderInfo?.name ?? '未配置' : draftProviderInfo?.name ?? '请选择模型供应商'}{conversationDraft ? ` · ${conversationDraft.displayName}` : ''}</small>}</div><div className="agent-header-actions">{selected && <button type="button" aria-label="打开侧边聊天" title="打开侧边聊天" onClick={() => setSidebarQuestion({ sourceBindingId: selected.id, sourceTitle: conversationName(selected) })}><PanelRightOpen size={14}/></button>}{features.conversationDeletion && selected && <button type="button" className="danger" aria-label="删除会话" title={selectedConversationRunning ? '会话运行中，请先停止' : '删除会话'} disabled={!canWrite || selectedConversationRunning || remove.isPending} onClick={() => void confirmDeletion('会话', conversationName(selected)).then(ok => { if (ok) remove.mutate(selected.id); })}><Trash2 size={14}/></button>}</div></header>
       <div className="agent-workbench-content">
       {runtime?.state === 'RECOVERING' && <section className="agent-runtime-recover"><LoaderCircle size={18}/><div><b>运行环境正在恢复</b><span>{runtime.message || '历史会话和工作区文件仍可查看；恢复完成后可继续发送消息和使用终端。'}</span></div></section>}
       {runtime && !runtime.write_available && !selected?.write_available && runtime.state !== 'RECOVERING' && <section className="agent-runtime-recover"><ShieldAlert size={18}/><div><b>节点会话已切换为只读</b><span>{runtime.message || '节点执行已停止；历史会话和工作区文件仍可查看。'}</span></div></section>}
@@ -7457,6 +7488,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         onCreateAnnotation={selected && canWrite ? anchor => void createAnnotation('CONVERSATION_TEXT', anchor) : undefined}
         onSidebarQuestion={selected ? reference => setSidebarQuestion({
           sourceBindingId: selected.id,
+          sourceTitle: conversationName(selected),
           reference: { event_id: reference.eventId, content: reference.content },
         }) : undefined}
         onLocateAnnotation={locateAnnotation}
@@ -7537,17 +7569,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
           <button type="button" className={`agent-current-workspace${workspacePathCopied ? ' copied' : ''}`} title={`${workspacePathCopied ? '已复制' : '点击复制'}：${currentWorkspaceRelativePath}`} aria-label={workspacePathCopied ? `工作区路径已复制：${currentWorkspaceRelativePath}` : `当前工作区：${currentWorkspaceName}；点击复制相对根工作区路径：${currentWorkspaceRelativePath}`} onClick={copyCurrentWorkspacePath}>
             <Folder size={16}/><span>{currentWorkspaceName}</span>{workspacePathCopied && <small aria-live="polite">已复制</small>}
           </button>
-          <ConversationTaskPlan events={displayedEvents} isGenerating={conversationVisuallyActive} conversationScope={selected?.id ?? conversationDraft?.id}/>
+          <ConversationTaskPlan events={displayedEvents} isGenerating={taskPlanLayoutActive} conversationScope={selected?.id ?? conversationDraft?.id}/>
         </div>
       </div>}
     </section>
-    {sidebarQuestion && <SidebarConversationPane
-      workspaceId={workspace.id}
-      sourceBindingId={sidebarQuestion.sourceBindingId}
-      sourceTitle={selected?.id === sidebarQuestion.sourceBindingId ? conversationName(selected) : undefined}
-      initialReference={sidebarQuestion.reference}
-      onClose={() => setSidebarQuestion(undefined)}
-    />}
     <WorkspaceDrawer
       open={drawerOpen}
       onOpen={() => setDrawerOpen(true)}
@@ -7573,6 +7598,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       runtimeTasks={runtimeTasks}
       agentDefinitions={agentDefinitionAssets}
       sessionStopped={sessionStopped}
+      sidebarQuestion={sidebarQuestion}
+      onOpenSidebarQuestion={selected ? () => setSidebarQuestion({ sourceBindingId: selected.id, sourceTitle: conversationName(selected) }) : undefined}
+      onCloseSidebarQuestion={() => setSidebarQuestion(undefined)}
     />
     {workspaceReferencePickerOpen && <WorkspaceReferencePicker
       entries={workspaceReferenceIndexQuery.data?.files ?? []}

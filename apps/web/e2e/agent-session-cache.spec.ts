@@ -94,10 +94,12 @@ test('Agent session hydrates the first screen without parallel Runtime snapshot 
 });
 
 
-test('Accepted message hides stale monitoring until its formal event arrives', async ({ page }) => {
+test('Accepted message renders a local bubble before its formal event arrives', async ({ page }) => {
   let authenticated = false;
   let messageAccepted = false;
   let formalMessageVisible = false;
+  let releaseMessageAcceptance: (() => void) | undefined;
+  const messageAcceptance = new Promise<void>(resolve => { releaseMessageAcceptance = resolve; });
   const workspace = { id: 'stale-monitoring-workspace', display_name: '陈旧监控工作区', desired_state: 'RUNNING', updated_at: now };
   const conversation = {
     id: 'stale-monitoring-conversation', display_title: '陈旧监控会话', title_state: 'MANUAL', lifecycle: 'ACTIVE',
@@ -163,13 +165,19 @@ test('Accepted message hides stale monitoring until its formal event arrives', a
   await page.goto('/agent/conversations/stale-monitoring-conversation');
   await page.getByLabel('发送 Agent 消息').fill('刚发送的消息');
   await page.getByRole('button', { name: '发送消息' }).click();
+  const localMessage = page.locator('[data-user-event-id^="pending-user:"]');
+  await expect(localMessage).toHaveCount(1);
+  await expect(localMessage).toContainText('刚发送的消息');
+  await expect(page.locator('[data-user-event-id="accepted-message"]')).toHaveCount(0);
   await expect(page.getByText('正在提交消息', { exact: true })).toBeVisible();
   await expect(page.getByText('工作过程', { exact: true })).toHaveCount(0);
   await expect(page.getByRole('img', { name: '会话正在运行但后台长时间未产生可确认进展' })).toHaveCount(0);
 
+  releaseMessageAcceptance?.();
+  await expect.poll(() => messageAccepted).toBe(true);
   formalMessageVisible = true;
   await page.reload();
-  await expect(page.locator('[data-user-event-id="accepted-message"]')).toBeVisible();
+  await expect(page.locator('[data-user-event-id="accepted-message"]')).toHaveCount(1);
   await expect(page.getByText('后台长时间未产生可确认进展。可暂停后继续以重新建立调用。', { exact: true })).toBeVisible();
 });
 
@@ -2013,6 +2021,71 @@ test('A dropped running-session stream immediately reconciles formal events', as
   await expect.poll(() => eventsAfterDisconnect).toBeGreaterThan(0);
   await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toBeVisible();
 });
+
+
+test('Foreground message completion releases only the active conversation visual state', async ({ page }) => {
+  let authenticated = false;
+  let stream: WebSocketRoute | undefined;
+  const workspace = { id: 'message-complete-workspace', display_name: '完成事件工作区', desired_state: 'RUNNING', updated_at: now };
+  const activeConversation = {
+    id: 'message-complete-active', display_title: '当前完成会话', title_state: 'MANUAL', lifecycle: 'ACTIVE',
+    streaming_callback_ready: true, write_available: true, execution_status: 'running', created_at: now, updated_at: now,
+  };
+  const backgroundConversation = {
+    id: 'message-complete-background', display_title: '后台运行会话', title_state: 'MANUAL', lifecycle: 'ACTIVE',
+    streaming_callback_ready: true, write_available: true, execution_status: 'running', created_at: now, updated_at: now,
+  };
+  const runningEvents = {
+    events: [
+      { id: 'message-complete-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '请完成当前回复', timestamp: now } },
+      { id: 'message-complete-plan', event_type: 'TOOL_CALL', payload: { parent_id: 'message-complete-user', action_id: 'message-complete-plan', tool_call_id: 'message-complete-plan-call', tool_name: 'task_tracker', event_name: 'TaskTrackerAction', details: { command: 'plan', task_list: [{ title: '保持底部计划布局', notes: '等待正式终态事件。', status: 'in_progress' }] }, timestamp: now } },
+      { id: 'message-complete-plan-result', event_type: 'TOOL_RESULT', payload: { parent_id: 'message-complete-plan', action_id: 'message-complete-plan', tool_call_id: 'message-complete-plan-call', tool_name: 'task_tracker', event_name: 'TaskTrackerObservation', details: { command: 'plan', is_error: false, task_list: [{ title: '保持底部计划布局', notes: '等待正式终态事件。', status: 'in_progress' }] }, timestamp: now } },
+    ],
+    next_cursor: 'message-complete-plan-result', history_cursor: null, result: { status: 'RUNNING' },
+  };
+
+  await page.routeWebSocket('**/agent-workspaces/**/stream', route => { stream = route; });
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path.endsWith('/auth/me')) return authenticated ? json(route, user) : json(route, { error: { code: 'AUTHENTICATION_REQUIRED', message: '请先登录' } }, 401);
+    if (path.endsWith('/auth/login') && request.method() === 'POST') { authenticated = true; return json(route, user); }
+    if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
+    if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
+    if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: [activeConversation, backgroundConversation], next_cursor: null });
+    if (path.endsWith('/conversation-activity')) return json(route, { running_binding_ids: [activeConversation.id, backgroundConversation.id] });
+    if (path.endsWith('/hydration')) return json(route, {
+      events: runningEvents,
+      context: { model_name: 'test-model', window_tokens: 128_000, used_tokens: 1_024, usage_current: true },
+      readiness: { ready: false, execution_status: 'running' },
+    });
+    if (path.endsWith('/events')) return json(route, runningEvents);
+    if (path.endsWith('/input-readiness')) return json(route, { ready: false, execution_status: 'running' });
+    if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
+    if (path.endsWith('/work-directories')) return json(route, { root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [] });
+    if (path.endsWith('/workspace')) return json(route, { root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: '/runtime/workspace/project', work_directory: null, files: [], repositories: [], runtime: {}, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '不可用', note: '' } } });
+    if (path.endsWith('/context')) return json(route, { model_name: 'test-model', window_tokens: 128_000, used_tokens: 1_024, usage_current: true });
+    if (path.endsWith('/model-providers') || path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
+    if (path.includes('/conversations/') && request.method() === 'GET') return json(route, activeConversation);
+    return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+  });
+
+  await page.goto('/');
+  await login(page);
+  await page.goto('/agent/conversations/message-complete-active');
+  await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toBeVisible();
+  await expect(page.getByLabel('任务：0 / 1 已完成')).toBeVisible();
+  await expect.poll(() => stream).toBeTruthy();
+  await expect(page.locator('[data-conversation-binding-id="message-complete-background"] .agent-workspace-conversation-running')).toBeVisible();
+
+  stream!.send(JSON.stringify({ type: 'message_complete' }));
+
+  await expect(page.getByRole('button', { name: '发送消息' })).toBeVisible();
+  await expect(page.getByLabel('任务：0 / 1 已完成')).toBeVisible();
+  await expect(page.locator('[data-conversation-binding-id="message-complete-active"] .agent-workspace-conversation-running')).toHaveCount(0);
+  await expect(page.locator('[data-conversation-binding-id="message-complete-background"] .agent-workspace-conversation-running')).toBeVisible();
+});
+
 
 
 
