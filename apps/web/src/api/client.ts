@@ -153,9 +153,8 @@ async function uploadAttachmentPartWithRetry(url: string, file: Blob, filename: 
   }
 }
 
-async function uploadFormData<T = AgentAttachment>(createPath: string, operationPath: string, file: File, payload: Record<string, unknown>, onProgress?: UploadProgressHandler): Promise<T> {
+async function uploadFormData<T = AgentAttachment>(createPath: string, operationPath: string, file: File, payload: Record<string, unknown>, onProgress?: UploadProgressHandler, bindingId?: string): Promise<T> {
   const sessionKey = `${operationPath}:${file.name}:${file.size}:${file.lastModified}:${String(payload.conversation_id ?? '')}:${String(payload.parent_path ?? '')}`;
-  const bindingId = typeof payload.conversation_id === 'string' ? payload.conversation_id : undefined;
   const bindingQuery = bindingId ? `?binding_id=${encodeURIComponent(bindingId)}` : '';
   let upload = resumableUploadSessions.get(sessionKey) ?? savedResumableUpload(sessionKey);
   if (upload) {
@@ -500,7 +499,7 @@ export const api = {
   sendAgentMessage: (workspaceId: string, bindingId: string, content: string, attachments: AgentAttachment[] = [], references: AgentConversationReference[] = [], workspace_references: AgentWorkspaceReference[] = [], annotations: AgentConversationAnnotation[] = [], idempotencyKey?: string) =>
     request<{ accepted: boolean; cursor?: string | null; compacted?: boolean; queued_during_turn?: boolean }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/messages`, json('POST', { content, attachments: attachmentReferences(attachments), references: conversationReferencePayload(references), workspace_references: workspaceReferencePayload(workspace_references), annotations }, idempotencyKey)),
   uploadAgentAttachment: (workspaceId: string, bindingId: string, file: File, onProgress?: UploadProgressHandler): Promise<AgentAttachment> =>
-    uploadFormData(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/attachments/uploads`, `/agent-workspaces/${encodeURIComponent(workspaceId)}/attachments/uploads`, file, { filename: file.name, mime_type: file.type, total_size: file.size, conversation_id: bindingId }, onProgress),
+    uploadFormData(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/attachments/uploads`, `/agent-workspaces/${encodeURIComponent(workspaceId)}/attachments/uploads`, file, { filename: file.name, mime_type: file.type, total_size: file.size }, onProgress, bindingId),
   uploadAgentWorkspaceAttachment: (workspaceId: string, file: File, workDirectoryId?: string, conversationId?: string, onProgress?: UploadProgressHandler): Promise<AgentAttachment> =>
     uploadFormData(`/agent-workspaces/${encodeURIComponent(workspaceId)}/attachments/uploads`, `/agent-workspaces/${encodeURIComponent(workspaceId)}/attachments/uploads`, file, { filename: file.name, mime_type: file.type, total_size: file.size, work_directory_id: workDirectoryId, conversation_id: conversationId }, onProgress),
   uploadAgentWorkspaceFile: (workspaceId: string, file: File, options: { parentPath?: string; workDirectoryId?: string; conversationId?: string } = {}, onProgress?: UploadProgressHandler): Promise<AgentWorkspaceReference> =>
@@ -1047,7 +1046,7 @@ export const nodeSessionApi = {
   decideConfirmation: (flowRunId: string, attemptId: string, bindingId: string, expected_pending_digest: string, accept: boolean, reason: string) =>
     request<{ accepted: boolean; cursor?: string | null }>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/pending-confirmation/decision`, json('POST', { expected_pending_digest, accept, reason })),
   uploadAttachment: (flowRunId: string, attemptId: string, bindingId: string, file: File, onProgress?: UploadProgressHandler): Promise<AgentAttachment> =>
-    uploadFormData(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/attachments/uploads`, `${nodeSessionBase(flowRunId, attemptId)}/attachments/uploads`, file, { filename: file.name, mime_type: file.type, total_size: file.size, conversation_id: bindingId }, onProgress),
+    uploadFormData(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/attachments/uploads`, `${nodeSessionBase(flowRunId, attemptId)}/attachments/uploads`, file, { filename: file.name, mime_type: file.type, total_size: file.size }, onProgress, bindingId),
   uploadDraftAttachment: (flowRunId: string, attemptId: string, file: File, _workDirectoryId?: string, conversationId?: string, onProgress?: UploadProgressHandler): Promise<AgentAttachment> =>
     uploadFormData(`${nodeSessionBase(flowRunId, attemptId)}/attachments/uploads`, `${nodeSessionBase(flowRunId, attemptId)}/attachments/uploads`, file, { filename: file.name, mime_type: file.type, total_size: file.size, conversation_id: conversationId }, onProgress),
   deleteDraftAttachments: (flowRunId: string, attemptId: string, conversationId: string, path?: string) => {
