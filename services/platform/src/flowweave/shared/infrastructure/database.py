@@ -22,7 +22,13 @@ from flowweave.shared.application.uow import SqlAlchemyUnitOfWork
 class Database:
     """Async PostgreSQL resources owned by a process container."""
 
-    def __init__(self, settings: Settings, *, poll_pool_size: int = 0) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        poll_pool_size: int = 0,
+        auxiliary_pool_size: int = 0,
+    ) -> None:
         if not settings.database_url.startswith("postgresql+psycopg://"):
             raise ValueError("FlowWeave supports PostgreSQL through psycopg only")
         self.engine: AsyncEngine = create_async_engine(
@@ -49,6 +55,24 @@ class Database:
         self.blocking_sessions = sessionmaker(
             self.blocking_engine, expire_on_commit=False, autoflush=False
         )
+        # Optional background tasks can wait on model providers, package
+        # registries or controller builds. Only Worker processes allocate this
+        # small separate SQL pool, preserving ordinary delivery connections for
+        # Runtime progression and recovery.
+        self.auxiliary_engine: Engine | None = None
+        self.auxiliary_sessions: sessionmaker[Session] | None = None
+        if auxiliary_pool_size:
+            self.auxiliary_engine = create_engine(
+                settings.database_url,
+                pool_pre_ping=True,
+                pool_size=auxiliary_pool_size,
+                max_overflow=0,
+                pool_timeout=settings.blocking_pool_timeout_seconds,
+                connect_args={"options": f"-c statement_timeout={settings.statement_timeout_ms}"},
+            )
+            self.auxiliary_sessions = sessionmaker(
+                self.auxiliary_engine, expire_on_commit=False, autoflush=False
+            )
         # Polling formal OpenHands state can remain blocked while a Runtime is
         # unhealthy. Only the Worker owns this dedicated pool; API processes
         # must not allocate an otherwise unused poll connection budget.
@@ -111,6 +135,8 @@ class Database:
     async def dispose(self) -> None:
         await self.engine.dispose()
         await asyncio.to_thread(self.blocking_engine.dispose)
+        if self.auxiliary_engine is not None:
+            await asyncio.to_thread(self.auxiliary_engine.dispose)
         if self.poll_engine is not None:
             await asyncio.to_thread(self.poll_engine.dispose)
         await asyncio.to_thread(self.history_engine.dispose)
@@ -120,6 +146,11 @@ class Database:
         pools = {
             "async": cast(QueuePool, self.engine.sync_engine.pool),
             "blocking": cast(QueuePool, self.blocking_engine.pool),
+            **(
+                {"auxiliary": cast(QueuePool, self.auxiliary_engine.pool)}
+                if self.auxiliary_engine is not None
+                else {}
+            ),
             **(
                 {"poll": cast(QueuePool, self.poll_engine.pool)}
                 if self.poll_engine is not None

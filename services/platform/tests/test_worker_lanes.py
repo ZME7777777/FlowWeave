@@ -9,6 +9,7 @@ import pytest
 from flowweave.bootstrap.settings import Settings
 from flowweave.bootstrap.worker import (
     _ALL_TASK_TYPES,
+    _AUXILIARY_TASK_TYPES,
     _DELIVERY_TASK_TYPES,
     _MAINTENANCE_TASK_TYPES,
     _POLL_TASK_TYPES,
@@ -30,8 +31,11 @@ def test_worker_lanes_cover_each_handler_once_with_bounded_total_concurrency() -
     assert _RUNTIME_TASK_TYPES == _RUNTIME_CONTROL_TASK_TYPES | _POLL_TASK_TYPES
     assert not (_RUNTIME_CONTROL_TASK_TYPES & _POLL_TASK_TYPES)
     assert not (_RUNTIME_TASK_TYPES & _DELIVERY_TASK_TYPES)
+    assert not (_RUNTIME_TASK_TYPES & _AUXILIARY_TASK_TYPES)
     assert not (_RUNTIME_TASK_TYPES & _MAINTENANCE_TASK_TYPES)
+    assert not (_DELIVERY_TASK_TYPES & _AUXILIARY_TASK_TYPES)
     assert not (_DELIVERY_TASK_TYPES & _MAINTENANCE_TASK_TYPES)
+    assert not (_AUXILIARY_TASK_TYPES & _MAINTENANCE_TASK_TYPES)
 
 
 def test_single_worker_uses_one_generic_lane() -> None:
@@ -50,6 +54,50 @@ def test_default_worker_reserves_a_poll_lane_from_runtime_control() -> None:
     assert lanes["runtime-poll"] == (_POLL_TASK_TYPES, 1)
     assert lanes["runtime-control"] == (_RUNTIME_CONTROL_TASK_TYPES, 1)
     assert not (lanes["runtime-poll"][0] & lanes["runtime-control"][0])
+
+
+def test_default_worker_reserves_auxiliary_lane_from_delivery() -> None:
+    worker = object.__new__(TaskWorker)
+    worker.container = SimpleNamespace(settings=Settings(worker_concurrency=4))
+
+    lanes = dict((name, (task_types, slots)) for name, task_types, slots in worker._lane_specs())
+
+    assert lanes["delivery"] == (_DELIVERY_TASK_TYPES, 1)
+    assert lanes["auxiliary-maintenance"] == (
+        _AUXILIARY_TASK_TYPES | _MAINTENANCE_TASK_TYPES,
+        1,
+    )
+    assert not (lanes["delivery"][0] & lanes["auxiliary-maintenance"][0])
+
+
+def test_auxiliary_tasks_use_their_dedicated_executor_and_database_pool() -> None:
+    worker = object.__new__(TaskWorker)
+    auxiliary_executor = object()
+    auxiliary_slots = object()
+    auxiliary_sessions = object()
+    worker.container = SimpleNamespace(
+        auxiliary_executor=auxiliary_executor,
+        auxiliary_io_slots=auxiliary_slots,
+        poll_executor=object(),
+        poll_io_slots=object(),
+        blocking_executor=object(),
+        blocking_io_slots=object(),
+        database=SimpleNamespace(
+            auxiliary_sessions=auxiliary_sessions,
+            poll_sessions=object(),
+            blocking_sessions=object(),
+        ),
+    )
+
+    executor, slots, sessions = worker._task_execution_resources(
+        SimpleNamespace(task_type="BUILD_CAPABILITY_DEPENDENCIES")
+    )
+
+    assert (executor, slots, sessions) == (
+        auxiliary_executor,
+        auxiliary_slots,
+        auxiliary_sessions,
+    )
 
 
 def test_poll_tasks_use_their_dedicated_executor_and_database_pool() -> None:

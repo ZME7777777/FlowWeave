@@ -72,6 +72,17 @@ _RUNTIME_CONTROL_TASK_TYPES = frozenset(
     }
 )
 _RUNTIME_TASK_TYPES = _RUNTIME_CONTROL_TASK_TYPES | _POLL_TASK_TYPES
+# Auxiliary work may call a model provider, scan native history, fetch a
+# plugin, or run a dependency builder. It must not borrow delivery capacity
+# needed to advance or recover a FlowRun.
+_AUXILIARY_TASK_TYPES = frozenset(
+    {
+        "GENERATE_AGENT_CONVERSATION_TITLE",
+        "SEARCH_AGENT_CONVERSATIONS",
+        "BUILD_CAPABILITY_DEPENDENCIES",
+        "RESOLVE_PLUGIN_SOURCE",
+    }
+)
 _MAINTENANCE_TASK_TYPES = frozenset(
     {
         "MATERIALIZE_FLOW_RUN_SCHEDULE",
@@ -93,13 +104,9 @@ _DELIVERY_TASK_TYPES = frozenset(
         "START_AUTOMATIC_RUN",
         "START_AUTOMATIC_ATTEMPT",
         "ADVANCE_AUTOMATIC_ATTEMPT",
-        "GENERATE_AGENT_CONVERSATION_TITLE",
-        "SEARCH_AGENT_CONVERSATIONS",
         "WATCH_AGENT_TASK_TIMEOUT",
         "CONFIRM_AGENT_TASK_TIMEOUT",
         "RESUME_AGENT_TASK_TIMEOUT",
-        "BUILD_CAPABILITY_DEPENDENCIES",
-        "RESOLVE_PLUGIN_SOURCE",
     }
 )
 
@@ -136,7 +143,9 @@ def _is_permanent_task_failure(task: Any, exception: Exception) -> bool:
     )
 
 
-_ALL_TASK_TYPES = _RUNTIME_TASK_TYPES | _MAINTENANCE_TASK_TYPES | _DELIVERY_TASK_TYPES
+_ALL_TASK_TYPES = (
+    _RUNTIME_TASK_TYPES | _AUXILIARY_TASK_TYPES | _MAINTENANCE_TASK_TYPES | _DELIVERY_TASK_TYPES
+)
 
 
 class LeaseHeartbeat:
@@ -338,6 +347,15 @@ class TaskWorker:
                 self.container.poll_executor,
                 self.container.poll_io_slots,
                 poll_sessions,
+            )
+        if task.task_type in _AUXILIARY_TASK_TYPES:
+            auxiliary_sessions = self.container.database.auxiliary_sessions
+            if auxiliary_sessions is None:
+                raise RuntimeError("Worker auxiliary execution requires a dedicated database pool")
+            return (
+                self.container.auxiliary_executor,
+                self.container.auxiliary_io_slots,
+                auxiliary_sessions,
             )
         return (
             self.container.blocking_executor,
@@ -586,24 +604,40 @@ class TaskWorker:
             # poll/control isolation below.
             return (
                 ("runtime", _RUNTIME_TASK_TYPES, 1),
-                ("delivery", _DELIVERY_TASK_TYPES | _MAINTENANCE_TASK_TYPES, 1),
+                (
+                    "delivery",
+                    _DELIVERY_TASK_TYPES | _AUXILIARY_TASK_TYPES | _MAINTENANCE_TASK_TYPES,
+                    1,
+                ),
             )
         if concurrency == 3:
             return (
                 ("runtime-control", _RUNTIME_CONTROL_TASK_TYPES, 1),
                 ("runtime-poll", _POLL_TASK_TYPES, 1),
-                ("delivery-maintenance", _DELIVERY_TASK_TYPES | _MAINTENANCE_TASK_TYPES, 1),
+                (
+                    "delivery-maintenance",
+                    _DELIVERY_TASK_TYPES | _AUXILIARY_TASK_TYPES | _MAINTENANCE_TASK_TYPES,
+                    1,
+                ),
+            )
+        if concurrency == 4:
+            return (
+                ("runtime-control", _RUNTIME_CONTROL_TASK_TYPES, 1),
+                ("runtime-poll", _POLL_TASK_TYPES, 1),
+                ("delivery", _DELIVERY_TASK_TYPES, 1),
+                ("auxiliary-maintenance", _AUXILIARY_TASK_TYPES | _MAINTENANCE_TASK_TYPES, 1),
             )
         poll_slots = min(
             self.container.settings.runtime_poll_worker_concurrency,
-            concurrency - 3,
+            concurrency - 4,
         )
-        control_slots = max(1, (concurrency - poll_slots - 1) // 2)
-        delivery_slots = concurrency - poll_slots - control_slots - 1
+        control_slots = max(1, (concurrency - poll_slots - 2) // 2)
+        delivery_slots = concurrency - poll_slots - control_slots - 2
         return (
             ("runtime-control", _RUNTIME_CONTROL_TASK_TYPES, control_slots),
             ("runtime-poll", _POLL_TASK_TYPES, poll_slots),
             ("delivery", _DELIVERY_TASK_TYPES, delivery_slots),
+            ("auxiliary", _AUXILIARY_TASK_TYPES, 1),
             ("maintenance", _MAINTENANCE_TASK_TYPES, 1),
         )
 

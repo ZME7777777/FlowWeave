@@ -53,6 +53,8 @@ class Container:
     blocking_executor: ThreadPoolExecutor
     blocking_io_slots: asyncio.Semaphore
     blocking_mutation_slots: asyncio.Semaphore
+    auxiliary_executor: ThreadPoolExecutor
+    auxiliary_io_slots: asyncio.Semaphore
     poll_executor: ThreadPoolExecutor
     poll_io_slots: asyncio.Semaphore
     history_read_executor: ThreadPoolExecutor
@@ -72,6 +74,11 @@ class Container:
         unregister_http_transport(self.settings, self.http_transport)
         await asyncio.to_thread(
             self.blocking_executor.shutdown,
+            wait=True,
+            cancel_futures=True,
+        )
+        await asyncio.to_thread(
+            self.auxiliary_executor.shutdown,
             wait=True,
             cancel_futures=True,
         )
@@ -115,6 +122,7 @@ def build_container(settings: Settings, *, role: Literal["api", "worker"]) -> Co
     database = Database(
         settings,
         poll_pool_size=settings.runtime_poll_worker_concurrency if role == "worker" else 0,
+        auxiliary_pool_size=(settings.auxiliary_task_worker_concurrency if role == "worker" else 0),
     )
     metrics = Metrics()
     blocking_workers = (
@@ -123,6 +131,10 @@ def build_container(settings: Settings, *, role: Literal["api", "worker"]) -> Co
     blocking_executor = ThreadPoolExecutor(
         max_workers=blocking_workers,
         thread_name_prefix=f"flowweave-{role}-blocking",
+    )
+    auxiliary_executor = ThreadPoolExecutor(
+        max_workers=settings.auxiliary_task_worker_concurrency,
+        thread_name_prefix=f"flowweave-{role}-auxiliary",
     )
     poll_executor = ThreadPoolExecutor(
         max_workers=settings.runtime_poll_worker_concurrency,
@@ -169,6 +181,8 @@ def build_container(settings: Settings, *, role: Literal["api", "worker"]) -> Co
         # Writes share the existing executor and DB pool, but cannot occupy
         # every slot needed to hydrate an unrelated conversation.
         blocking_mutation_slots=asyncio.Semaphore(min(2, max(1, settings.blocking_pool_size // 2))),
+        auxiliary_executor=auxiliary_executor,
+        auxiliary_io_slots=asyncio.Semaphore(settings.auxiliary_task_worker_concurrency),
         poll_executor=poll_executor,
         poll_io_slots=asyncio.Semaphore(settings.runtime_poll_worker_concurrency),
         history_read_executor=history_read_executor,

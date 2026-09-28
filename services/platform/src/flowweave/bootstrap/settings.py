@@ -131,6 +131,10 @@ class Settings(BaseSettings):
     seed_demo: bool = False
     worker_id: str = ""
     worker_concurrency: int = Field(default=8, ge=1, le=64)
+    # Optional title, search and capability preparation work has its own small
+    # executor and SQL connection lane in Worker processes. This preserves
+    # Runtime progression and recovery capacity when helpers are backlogged.
+    auxiliary_task_worker_concurrency: int = Field(default=1, ge=1, le=4)
     # Formal OpenHands polling can block on an unhealthy Runtime. Keep its
     # executor and database pool deliberately separate from Runtime control
     # work so one stalled read cannot consume provision/recovery capacity.
