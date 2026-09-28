@@ -805,6 +805,7 @@ export interface AgentConversationSearch {
   created_at: string;
   completed_at?: string | null;
   hits?: AgentConversationSearchHit[];
+  next_cursor?: string | null;
 }
 export interface AgentSessionWorkDirectory {
   id: string;

@@ -99,7 +99,7 @@ export interface AgentSessionApi {
   readonly conversations: (hostId: AgentSessionHostId, cursor?: string) => Promise<AgentConversationPage>;
   readonly conversationActivity: (hostId: AgentSessionHostId) => Promise<AgentConversationActivity>;
   readonly startConversationSearch?: (hostId: AgentSessionHostId, query: string, workDirectoryIds?: string[], includeRoot?: boolean) => Promise<AgentConversationSearch>;
-  readonly conversationSearch?: (hostId: AgentSessionHostId, searchId: string) => Promise<AgentConversationSearch>;
+  readonly conversationSearch?: (hostId: AgentSessionHostId, searchId: string, cursor?: string) => Promise<AgentConversationSearch>;
   readonly conversation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<AgentConversation>;
   readonly workDirectories: (hostId: AgentSessionHostId) => Promise<AgentSessionWorkDirectoryList>;
   readonly providers: () => Promise<ModelProvider[]>;
@@ -184,7 +184,8 @@ export const agentWorkspaceSessionGateway: AgentSessionGateway = {
     conversations: api.agentConversations,
     conversationActivity: api.agentConversationActivity,
     startConversationSearch: api.startAgentConversationSearch,
-    conversationSearch: api.agentConversationSearch,
+    conversationSearch: (_hostId, searchId, cursor) =>
+      api.agentConversationSearch(_hostId, searchId, cursor),
     conversation: api.agentConversation,
     setConversationUnread: (_hostId, bindingId, unread, unreadOrigin) =>
       api.setAgentConversationUnread(_hostId, bindingId, unread, unreadOrigin),

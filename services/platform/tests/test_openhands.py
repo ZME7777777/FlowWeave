@@ -6018,3 +6018,15 @@ def test_openhands_background_search_stops_at_native_match_budget(openhands_sett
         runtime.search_message_events(_handle(), "needle")
 
     assert error.value.code == "RUNTIME_BACKGROUND_SEARCH_BUDGET_EXHAUSTED"
+
+
+def test_openhands_search_page_budget_allows_terminal_page_at_limit(
+    openhands_settings, monkeypatch
+):
+    settings = openhands_settings.model_copy(update={"runtime_background_search_max_pages": 1})
+    runtime = OpenHandsRuntime(settings)
+    monkeypatch.setattr(
+        runtime, "_request", lambda *_args, **_kwargs: {"items": [], "next_page_id": None}
+    )
+
+    assert runtime.search_message_events(_handle(), "needle") == ()

@@ -915,11 +915,15 @@ async def agent_conversation_search_status(
     workspace_id: str,
     search_id: str,
     container: ContainerDep,
+    cursor: str | None = Query(default=None, max_length=500),
+    limit: int = Query(default=20, ge=1, le=50),
 ) -> dict[str, Any]:
     with runtime_context(container.runtime):
         return await run_blocking_history(
             container,
-            lambda session: conversation_search.status(session, workspace_id, search_id),
+            lambda session: conversation_search.status(
+                session, workspace_id, search_id, cursor=cursor, limit=limit
+            ),
         )
 
 

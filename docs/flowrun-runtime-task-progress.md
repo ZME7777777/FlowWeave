@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`IN PROGRESS`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`FR-545B`
+> 下一可执行切片：`FR-545B2`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -7552,8 +7552,9 @@ FlowWeave 本地累加后猜测压缩边界。
 | FR-543 | DONE | FR-542 | 固定 OpenHands baseline 将正式交互、搜索/统计和租约续期隔离到有界 executor；新的 source commit、归档与 provenance 已冻结。 |
 | FR-544 | DONE | FR-543 | 空闲回收只在短全局生命周期段内摘除会话；单会话 close 在锁外执行，同时保留该会话锁、lease 与持久事件身份。 |
 | FR-545A | DONE | FR-544 | 为低优先级原生消息搜索和 Workspace 聚合扫描增加分页、单会话命中、会话数与总命中硬预算；预算耗尽明确失败，不伪造完整结果。 |
-| FR-545B | READY | FR-545A | 完成可见搜索命中分页与结果投影、状态轮询去逐条 Runtime 回读，并核对数据库事务释放和正式读取优先级。 |
-| FR-546 | PENDING | FR-545B | 将标题、搜索、依赖构建等辅助任务与流程推进、恢复任务隔离到底层 executor/数据库连接预算。 |
+| FR-545B1 | DONE | FR-545A | 搜索状态仅在终态按 cursor 分页投影并验证当前页 native hit；运行中轮询仅读取数据库元数据。 |
+| FR-545B2 | READY | FR-545B1 | 状态轮询去逐条 Runtime 回读，并核对正式批量活动投影、数据库事务释放和正式读取优先级。 |
+| FR-546 | PENDING | FR-545B2 | 将标题、搜索、依赖构建等辅助任务与流程推进、恢复任务隔离到底层 executor/数据库连接预算。 |
 | FR-547 | PENDING | FR-546 | 缩短跨 Runtime 调用的数据库事务，核对 Worker heartbeat 等独立连接的全局预算；对任务 claim 索引只依据实际查询证据优化。 |
 | FR-548 | PENDING | FR-547 | Admin 同步数据库读取进入有界执行通道，合并重复 Docker 采样；Runtime Provider 的控制、构建与观测使用独立容量。 |
 | FR-549 | PENDING | FR-548 | Web 历史预取与 Context 失效设置工作量预算，明确浏览器取消与后端执行的不同生命周期。 |
@@ -7594,6 +7595,10 @@ FR-544 完成：固定 OpenHands `baseline` 新增 commit `0c00fba533425a55b36ab
 FR-545A 完成：低优先级原生 EventLog 搜索新增四层硬预算：每 conversation 最多 8 个 native search page、100 个 native match；每 Agent Workspace 搜索最多检查 100 个授权 conversation binding、收集 200 个总 hit。每页仍在正式 hydration 读取活跃时让出，单页沿用 2 秒 timeout；预算超出以稳定 `RUNTIME_BACKGROUND_SEARCH_BUDGET_EXHAUSTED` 或 `AGENT_CONVERSATION_SEARCH_BUDGET_EXHAUSTED` 失败，不持久化部分 hit 或把截断扫描伪装为完整成功。Worker 保持先提交 RUNNING 状态并在扫描期间不保留 SQL row lock／事务。
 
 验收：OpenHands adapter 分页与匹配预算定向 pytest（2 passed）、受影响 Python `py_compile`、Ruff format/check、`git diff --check`、唯一 `CURRENT` 状态及 staged diff 复核通过。按本轮要求未运行数据库、Runtime、完整构建或 E2E；不修改 schema、OpenHands 或远端环境。下一切片为 FR-545B。
+
+FR-545B1 完成：Agent Workspace 搜索状态接口新增稳定 keyset `cursor`／`limit` 分页，默认每页最多 20、最大 50 个 durable hit。Worker 仍仅持久化正式 binding/event identity；运行中浏览器每秒轮询只读取搜索元数据，不逐个调用 Runtime 读取 hit。任务终态后才在当前页对正式 native event 重新授权和投影，页面提供显式“加载更多结果”；下一页由用户动作触发，避免一次 status 刷新耗尽低优先级 history/search lane。
+
+验收：搜索结果 cursor／状态条件／路由分页参数和浏览器加载更多的静态契约、OpenHands adapter 搜索预算 pytest（3 passed）、受影响 Python `py_compile`、Ruff format/check、`git diff --check`、唯一 `CURRENT` 状态及 staged diff 复核通过。Web TypeScript typecheck 未运行：`apps/web` 未安装依赖，`tsc` 不在 PATH；未安装依赖。按本轮要求未运行数据库、Runtime、完整构建或 E2E；不修改 schema、OpenHands 或远端环境。下一切片为 FR-545B2。
 
 FR-541B 完成：Agent Workspace 的文件树、文件预览、Git 仓库发现／历史／diff／同步和文件创建／删除已从 `AsyncSession.run_sync()` 移至低优先级有界线程。工作目录创建／修改需要同步文件路径校验，删除会级联执行正式 Runtime 会话删除，也进入同一通道。该通道与历史分页复用原有小型 executor 和同步数据库池；默认最多一个后台操作，不新增 PostgreSQL 连接预算，繁重文件／Git 操作不再占用 ASGI event loop 或交互读取／写入／恢复容量。纯数据库工作目录列表和详情仍留在原入口。
 

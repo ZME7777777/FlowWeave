@@ -614,13 +614,17 @@ function conversationSearchSnippet(content: string, query: string): string {
   return (start ? '…' : '') + text.slice(start, end) + (end < text.length ? '…' : '');
 }
 
-function ConversationSearchDialog({ search, workDirectories, rootLabel, onClose, onSubmit, submitting, onOpenHit }: {
+function ConversationSearchDialog({ search, hits, hasMore, workDirectories, rootLabel, onClose, onSubmit, onLoadMore, submitting, loadingMore, onOpenHit }: {
   search?: AgentConversationSearch;
+  hits: AgentConversationSearch['hits'];
+  hasMore: boolean;
   workDirectories: AgentSessionWorkDirectory[];
   rootLabel: string;
   onClose: () => void;
   onSubmit: (query: string, scope: { workDirectoryIds?: string[]; includeRoot: boolean }) => void;
+  onLoadMore: () => void;
   submitting: boolean;
+  loadingMore: boolean;
   onOpenHit: (bindingId: string, eventId: string) => void;
 }) {
   const [query, setQuery] = useState(search?.query ?? '');
@@ -685,10 +689,11 @@ function ConversationSearchDialog({ search, workDirectories, rootLabel, onClose,
         {!search && <p>输入关键词并按回车。关闭窗口不会取消后台搜索。</p>}
         {running && <p>正在逐个搜索所选工作区会话的原生消息记录。你可以关闭窗口，完成后从左上角按钮重新打开结果。</p>}
         {state === 'FAILED' && <p>{search?.failure_summary || '搜索无法完成，请重新搜索。'}</p>}
-        {state === 'SUCCEEDED' && !search?.hits?.length && <p>没有找到包含该内容的会话消息。</p>}
-        {search?.hits?.map(hit => <button type="button" className="agent-conversation-search-hit" key={hit.binding_id + ':' + hit.event_id} onClick={() => onOpenHit(hit.binding_id, hit.event_id)}>
+        {state === 'SUCCEEDED' && !hits?.length && <p>没有找到包含该内容的会话消息。</p>}
+        {hits?.map(hit => <button type="button" className="agent-conversation-search-hit" key={hit.binding_id + ':' + hit.event_id} onClick={() => onOpenHit(hit.binding_id, hit.event_id)}>
           <span><b>{hit.title}</b><small>{hit.source === 'user' || hit.source === 'human' ? '你的消息' : 'Agent 回复'}{hit.timestamp ? ' · ' + new Date(hit.timestamp).toLocaleString() : ''}</small></span><p>{conversationSearchSnippet(hit.content, search.query)}</p><ChevronRight size={16}/>
         </button>)}
+        {state === 'SUCCEEDED' && hasMore && <button type="button" className="secondary" disabled={loadingMore} onClick={onLoadMore}>{loadingMore ? <LoaderCircle className="conversation-activity-spin" size={14}/> : null}加载更多结果</button>}
       </div>
     </section>
   </div>;
@@ -4384,6 +4389,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const [workspacePathCopied, setWorkspacePathCopied] = useState(false);
   const [conversationSearchOpen, setConversationSearchOpen] = useState(false);
   const [conversationSearchId, setConversationSearchId] = useState<string>();
+  const [conversationSearchCursor, setConversationSearchCursor] = useState<string>();
+  const [conversationSearchHits, setConversationSearchHits] = useState<AgentConversationSearch['hits']>([]);
   const [conversationSearchTargetEventId, setConversationSearchTargetEventId] = useState<string>();
   const [sidebarListMode, setSidebarListMode] = useState<'workspaces' | 'activity'>('workspaces');
   const [activityPreviewBindingId, setActivityPreviewBindingId] = useState<string>();
@@ -4457,15 +4464,33 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const workspace = workspaceQuery.data;
   const conversationSearchSupported = Boolean(api.startConversationSearch && api.conversationSearch);
   const conversationSearchQuery = useQuery<AgentConversationSearch>({
-    queryKey: sessionQueryKey(host, 'conversation-search', workspace?.id, conversationSearchId),
-    queryFn: () => api.conversationSearch!(workspace!.id, conversationSearchId!),
+    queryKey: sessionQueryKey(host, 'conversation-search', workspace?.id, conversationSearchId, conversationSearchCursor),
+    queryFn: () => api.conversationSearch!(workspace!.id, conversationSearchId!, conversationSearchCursor),
     enabled: Boolean(workspace && conversationSearchId && api.conversationSearch),
+    // Running search polls metadata only; its native hit identities are read
+    // after completion in bounded pages below.
     refetchInterval: query => {
       const state = query.state.data?.state;
-      return state === 'PENDING' || state === 'RUNNING' ? 1_000 : false;
+      return conversationSearchCursor === undefined && (state === 'PENDING' || state === 'RUNNING') ? 1_000 : false;
     },
     retry: (count, error) => !(error instanceof ApiError && error.status < 500) && count < 2,
+    // Keep the visible results page while an explicit cursor fetches the next
+    // page, so loading more never clears the existing search result list.
+    placeholderData: previous => previous,
   });
+  useEffect(() => {
+    const page = conversationSearchQuery.data;
+    if (!page || conversationSearchCursor !== undefined) return;
+    setConversationSearchHits(page.hits ?? []);
+  }, [conversationSearchCursor, conversationSearchQuery.data]);
+  useEffect(() => {
+    const page = conversationSearchQuery.data;
+    if (!page || conversationSearchCursor === undefined) return;
+    setConversationSearchHits(current => {
+      const seen = new Set(current.map(hit => `${hit.binding_id}:${hit.event_id}`));
+      return [...current, ...(page.hits ?? []).filter(hit => !seen.has(`${hit.binding_id}:${hit.event_id}`))];
+    });
+  }, [conversationSearchCursor, conversationSearchQuery.data]);
   const draftRecoveryStorageKey = workspace && conversationDraft
     ? conversationDraftStorageKey(host.id, workspace.id, conversationDraft.workDirectoryId)
     : undefined;
@@ -7268,6 +7293,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     if (!workspace || !api.startConversationSearch) return;
     void api.startConversationSearch(workspace.id, query, scope.workDirectoryIds, scope.includeRoot).then(search => {
       setConversationSearchId(search.id);
+      setConversationSearchCursor(undefined);
+      setConversationSearchHits([]);
       setConversationSearchOpen(true);
     }).catch(reason => {
       setOperationError(reason instanceof Error ? reason : new Error('无法开始会话搜索'));
@@ -7290,7 +7317,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   };
   return <main className="agent-workbench-page">
     {selected && <ConversationStreamObserver workspaceId={workspace.id} bindingId={selected.id} enabled={streamEnabled} onEvent={onStreamEvent} onStatus={updateStreamStatus} onReconnect={onStreamReconnect}/>}
-    {conversationSearchOpen && <ConversationSearchDialog search={conversationSearchQuery.data} workDirectories={workDirectories} rootLabel={workDirectoriesQuery.data?.root.display_name ?? '根工作区'} onClose={() => setConversationSearchOpen(false)} onSubmit={startConversationSearch} submitting={conversationSearchQuery.isFetching} onOpenHit={openConversationSearchHit}/>}{/* Conversation search */}
+    {conversationSearchOpen && <ConversationSearchDialog search={conversationSearchQuery.data} hits={conversationSearchHits} hasMore={Boolean(conversationSearchQuery.data?.next_cursor)} workDirectories={workDirectories} rootLabel={workDirectoriesQuery.data?.root.display_name ?? '根工作区'} onClose={() => setConversationSearchOpen(false)} onSubmit={startConversationSearch} onLoadMore={() => { if (conversationSearchQuery.data?.next_cursor) setConversationSearchCursor(conversationSearchQuery.data.next_cursor); }} submitting={conversationSearchQuery.isFetching && conversationSearchCursor === undefined} loadingMore={conversationSearchQuery.isFetching && conversationSearchCursor !== undefined} onOpenHit={openConversationSearchHit}/>}{/* Conversation search */}
     {filePreviewRequest && <ConversationFilePreviewDialog
       key={filePreviewRequest.key}
       request={filePreviewRequest}
