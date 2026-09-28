@@ -30,6 +30,7 @@
 | --- | --- |
 | `RUNTIME_ADAPTER` | 正常运行使用 `openhands`；`mock` 只用于明确的测试。 |
 | `AGENT_WORKSPACE_RUNTIME_IMAGE` | Agent Workspace 使用的固定 Runtime image。 |
+| `AGENT_WORKSPACE_RUNTIME_MEMORY` / `AGENT_WORKSPACE_RUNTIME_CPUS` | Agent Workspace 专属内存／CPU 限额；默认分别为 `2g`、`2.0`，不影响 FlowRun 或 Environment Runtime。 |
 | `OPENHANDS_RUNTIME_BUILDER_IMAGE` | 发布 Environment Version 时用于官方 OpenHands 构建链的镜像。 |
 | `SANDBOX_MANAGER_SCOPE` | Runtime Provider 所管理资源的作用域标签。 |
 | `SANDBOX_RUNTIME_IDLE_TTL_SECONDS` / `SANDBOX_RUNTIME_HARD_TTL_SECONDS` | 可控 Runtime 的空闲/硬性存活上限。 |

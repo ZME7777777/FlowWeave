@@ -557,6 +557,8 @@ def process_agent_workspace_runtime(db: Session, workspace_id: str) -> None:
                 "runtime_allocation_id": allocation.id,
                 "runtime_allocation_relative": allocation.relative_root,
                 "runtime_secret_reference_id": allocation.secret_reference_id,
+                "cpu_limit": str(get_settings().agent_workspace_runtime_cpus),
+                "memory_limit": get_settings().agent_workspace_runtime_memory,
             },
             hard_expires_at=now + timedelta(days=3650),
             observed_state="CREATING",

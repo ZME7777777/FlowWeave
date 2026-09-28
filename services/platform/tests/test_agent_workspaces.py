@@ -1141,7 +1141,13 @@ def test_workspace_runtime_image_drift_replaces_the_old_generation(
 def test_agent_workspace_runtime_spec_matches_runtime_provider_contract(
     settings, db_session_factory, monkeypatch
 ):
-    configured = settings.model_copy(update={"terminal_environment_backend": "docker"})
+    configured = settings.model_copy(
+        update={
+            "terminal_environment_backend": "docker",
+            "agent_workspace_runtime_cpus": 3.0,
+            "agent_workspace_runtime_memory": "4g",
+        }
+    )
     captured: list[ManagedSandbox] = []
 
     def ensure_running(_self, resource, *, runtime_secret_key):
@@ -1176,6 +1182,8 @@ def test_agent_workspace_runtime_spec_matches_runtime_provider_contract(
             }
         )
         assert str(payload.spec.runtime_allocation_id) == resource.agent_workspace_allocation_id
+        assert payload.spec.cpu_limit == "3.0"
+        assert payload.spec.memory_limit == "4g"
 
 
 def _ready_workspace_for_conversation(db):
