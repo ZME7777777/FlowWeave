@@ -54,6 +54,7 @@ from flowweave.modules.sandboxes.infrastructure.docker import (
     DockerSandboxProvider,
 )
 from flowweave.modules.tasks.public import Lease
+from flowweave.modules.users.application.security import user_runtime_project_root
 from flowweave.runtime.base import (
     RuntimeConversationActivity,
     RuntimeConversationIdentity,
@@ -3446,7 +3447,7 @@ def test_agent_workspace_conversation_page_never_reads_native_runtime_state(
         assert page["items"][0]["execution_status"] == "unknown"
 
 
-def test_agent_workspace_conversation_activity_maps_native_ids_once(
+def test_agent_workspace_conversation_activity_maps_native_unready_ids(
     settings, db_session_factory, monkeypatch
 ):
     monkeypatch.setattr(
@@ -3463,19 +3464,19 @@ def test_agent_workspace_conversation_activity_maps_native_ids_once(
 
     class ActivityRuntime(MockRuntime):
         calls = 0
-        running_id = ""
+        unready_id = ""
 
         def conversation_activity_snapshot(self, _handle):
             self.calls += 1
             return {
-                self.running_id: RuntimeConversationActivity(
-                    conversation_id=self.running_id,
-                    execution_status="running",
+                self.unready_id: RuntimeConversationActivity(
+                    conversation_id=self.unready_id,
+                    execution_status="waiting_for_confirmation",
                     updated_at="2999-01-01T00:00:00+00:00",
                 ),
                 "unbound-native-conversation": RuntimeConversationActivity(
                     conversation_id="unbound-native-conversation",
-                    execution_status="running",
+                    execution_status="waiting_for_confirmation",
                     updated_at="2999-01-01T00:00:00+00:00",
                 ),
             }
@@ -3492,7 +3493,7 @@ def test_agent_workspace_conversation_activity_maps_native_ids_once(
         running = conversations.create_conversation(
             db, workspace.id, "运行会话", workspace.default_model_provider_id, "activity-running"
         )
-        runtime.running_id = db.get(
+        runtime.unready_id = db.get(
             AgentConversationBinding, running["id"]
         ).openhands_conversation_id
 

@@ -16,6 +16,7 @@ from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from flowweave.modules.agent_sessions import public as agent_sessions
+from flowweave.modules.agent_sessions.application import resumable_attachments
 from flowweave.modules.agent_sessions.application import usage as usage_projection
 from flowweave.modules.agent_sessions.application.condensation import (
     condensation_task_failure_reason,
@@ -52,7 +53,6 @@ from flowweave.modules.agent_sessions.application.draft_attachments import (
     delete_owned_attachment_files,
     enqueue_draft_attachment_cleanup,
 )
-from flowweave.modules.agent_sessions.application import resumable_attachments
 from flowweave.modules.agent_sessions.application.event_branch import complete_active_branch
 from flowweave.modules.agent_sessions.application.flow_node_locator import (
     active_runtime_handle,
@@ -295,6 +295,13 @@ def _attempt_context(db: Session, attempt: NodeAttempt) -> tuple[NodeRun, FlowRu
 
 _FLOW_NODE = "FLOW_NODE"
 _MANUAL_NODE_CONTEXT_ID = "__node_context_prompt__"
+_UNREADY_EXECUTION_STATUSES = (
+    "starting",
+    "running",
+    "executing",
+    "stopping",
+    "waiting_for_confirmation",
+)
 _RUNTIME_PROJECT = PurePosixPath("/runtime/workspace/project")
 _RUNTIME_WORKSPACE_PATH = r"/runtime/workspace/(?:project(?:/users/[0-9a-f-]{36})?|[0-9a-f-]{36})"
 _SANDBOX_PROJECT_IMAGE = re.compile(
@@ -334,11 +341,7 @@ def project_sandbox_images(
         parts = relative_path.split("/")
         if any(part in {"", ".", ".."} or part.startswith(".") for part in parts):
             return match.group(0)
-        return (
-            f"{match.group(1)}"
-            f"{file_url(f'{_RUNTIME_PROJECT}/{relative_path}')}"
-            f"{match.group(3)}"
-        )
+        return f"{match.group(1)}{file_url(f'{_RUNTIME_PROJECT}/{relative_path}')}{match.group(3)}"
 
     def replace_absolute_workspace_url(match: re.Match[str]) -> str:
         return f"{match.group(1)}{file_url(match.group(2))}{match.group(3)}"
@@ -924,7 +927,8 @@ def node_session_activity(db: Session, *, flow_run_id: str, attempt_id: str) -> 
         item
         for item in bindings
         if native_activity.get(item.openhands_conversation_id, None) is not None
-        and native_activity[item.openhands_conversation_id].execution_status == "running"
+        and native_activity[item.openhands_conversation_id].execution_status
+        in _UNREADY_EXECUTION_STATUSES
     ]
     failed_native_ids = {
         conversation_id
@@ -3063,57 +3067,130 @@ def upload_node_attachment(
     }
 
 
-
 def create_resumable_node_attachment_upload(
-    db: Session, *, flow_run_id: str, attempt_id: str, binding_id: str | None,
-    filename: str, content_type: str, total_size: int, attachment_owner_id: str | None = None,
+    db: Session,
+    *,
+    flow_run_id: str,
+    attempt_id: str,
+    binding_id: str | None,
+    filename: str,
+    content_type: str,
+    total_size: int,
+    attachment_owner_id: str | None = None,
 ) -> dict[str, object]:
-    _assert_node_session_writable(db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id)
+    _assert_node_session_writable(
+        db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
+    )
     if binding_id is None:
         owner_id = attachment_owner_id or ""
     else:
-        owner_id = _binding_for_attempt(db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id).id
+        owner_id = _binding_for_attempt(
+            db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
+        ).id
     upload = resumable_attachments.create_upload(
-        db, host_kind=_FLOW_NODE, host_id=flow_run_id, host_scope_id=attempt_id, binding_id=binding_id,
-        work_directory_id=None, attachment_owner_id=owner_id, filename=filename, mime_type=content_type, total_size=total_size,
+        db,
+        host_kind=_FLOW_NODE,
+        host_id=flow_run_id,
+        host_scope_id=attempt_id,
+        binding_id=binding_id,
+        work_directory_id=None,
+        attachment_owner_id=owner_id,
+        filename=filename,
+        mime_type=content_type,
+        total_size=total_size,
     )
     return resumable_attachments.upload_status(upload, [])
 
 
-def _resumable_node_attachment_upload(db: Session, *, flow_run_id: str, attempt_id: str, binding_id: str | None, upload_id: str):
-    _assert_node_session_writable(db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id)
+def _resumable_node_attachment_upload(
+    db: Session, *, flow_run_id: str, attempt_id: str, binding_id: str | None, upload_id: str
+):
+    _assert_node_session_writable(
+        db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
+    )
     if binding_id is not None:
-        _binding_for_attempt(db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id)
+        _binding_for_attempt(
+            db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
+        )
     return resumable_attachments.upload_for_host(
-        db, upload_id, host_kind=_FLOW_NODE, host_id=flow_run_id, host_scope_id=attempt_id, binding_id=binding_id
+        db,
+        upload_id,
+        host_kind=_FLOW_NODE,
+        host_id=flow_run_id,
+        host_scope_id=attempt_id,
+        binding_id=binding_id,
     )
 
 
-def resumable_node_attachment_upload_status(db: Session, *, flow_run_id: str, attempt_id: str, binding_id: str | None, upload_id: str) -> dict[str, object]:
-    upload = _resumable_node_attachment_upload(db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id, upload_id=upload_id)
+def resumable_node_attachment_upload_status(
+    db: Session, *, flow_run_id: str, attempt_id: str, binding_id: str | None, upload_id: str
+) -> dict[str, object]:
+    upload = _resumable_node_attachment_upload(
+        db,
+        flow_run_id=flow_run_id,
+        attempt_id=attempt_id,
+        binding_id=binding_id,
+        upload_id=upload_id,
+    )
     return resumable_attachments.upload_status(upload, resumable_attachments.list_parts(db, upload))
 
 
-def upload_resumable_node_attachment_part(db: Session, *, flow_run_id: str, attempt_id: str, binding_id: str | None, upload_id: str, part_number: int, content: bytes) -> dict[str, object]:
-    upload = _resumable_node_attachment_upload(db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id, upload_id=upload_id)
+def upload_resumable_node_attachment_part(
+    db: Session,
+    *,
+    flow_run_id: str,
+    attempt_id: str,
+    binding_id: str | None,
+    upload_id: str,
+    part_number: int,
+    content: bytes,
+) -> dict[str, object]:
+    upload = _resumable_node_attachment_upload(
+        db,
+        flow_run_id=flow_run_id,
+        attempt_id=attempt_id,
+        binding_id=binding_id,
+        upload_id=upload_id,
+    )
     resumable_attachments.put_part(db, upload, part_number=part_number, content=content)
     db.flush()
     return resumable_attachments.upload_status(upload, resumable_attachments.list_parts(db, upload))
 
 
-def complete_resumable_node_attachment_upload(db: Session, *, flow_run_id: str, attempt_id: str, binding_id: str | None, upload_id: str) -> dict[str, str | int | None]:
-    upload = _resumable_node_attachment_upload(db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id, upload_id=upload_id)
+def complete_resumable_node_attachment_upload(
+    db: Session, *, flow_run_id: str, attempt_id: str, binding_id: str | None, upload_id: str
+) -> dict[str, str | int | None]:
+    upload = _resumable_node_attachment_upload(
+        db,
+        flow_run_id=flow_run_id,
+        attempt_id=attempt_id,
+        binding_id=binding_id,
+        upload_id=upload_id,
+    )
     attachment = upload_node_attachment(
-        db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id,
-        attachment_owner_id=upload.attachment_owner_id, filename=upload.filename, content_type=upload.mime_type,
+        db,
+        flow_run_id=flow_run_id,
+        attempt_id=attempt_id,
+        binding_id=binding_id,
+        attachment_owner_id=upload.attachment_owner_id,
+        filename=upload.filename,
+        content_type=upload.mime_type,
         content=resumable_attachments.assemble(db, upload),
     )
     resumable_attachments.close_upload(db, upload, status="COMPLETED")
     return attachment
 
 
-def cancel_resumable_node_attachment_upload(db: Session, *, flow_run_id: str, attempt_id: str, binding_id: str | None, upload_id: str) -> None:
-    upload = _resumable_node_attachment_upload(db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id, upload_id=upload_id)
+def cancel_resumable_node_attachment_upload(
+    db: Session, *, flow_run_id: str, attempt_id: str, binding_id: str | None, upload_id: str
+) -> None:
+    upload = _resumable_node_attachment_upload(
+        db,
+        flow_run_id=flow_run_id,
+        attempt_id=attempt_id,
+        binding_id=binding_id,
+        upload_id=upload_id,
+    )
     resumable_attachments.close_upload(db, upload, status="CANCELLED")
 
 

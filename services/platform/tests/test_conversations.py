@@ -262,7 +262,7 @@ def test_workspace_generated_images_project_svg_and_preserve_untrusted_paths() -
             "![完整工作区 PNG](https://hq-ai.example.test/runtime/workspace/project/.tmp/panel-top.png)",
             "![隐藏文件 PNG](https://hq-ai.example.test/runtime/workspace/project/.hidden.png)",
             "![越界路径](../outside.svg)",
-            "<svg><path d=\"M0 0\"/></svg>",
+            '<svg><path d="M0 0"/></svg>',
         )
     )
 
@@ -286,7 +286,7 @@ def test_workspace_generated_images_project_svg_and_preserve_untrusted_paths() -
             f"![完整工作区 PNG]({png_file_url})",
             f"![隐藏文件 PNG]({hidden_file_url})",
             "![越界路径](../outside.svg)",
-            "<svg><path d=\"M0 0\"/></svg>",
+            '<svg><path d="M0 0"/></svg>',
         )
     )
 
@@ -2548,7 +2548,7 @@ def test_node_session_page_never_reads_native_runtime_state(
         assert page["items"][0]["execution_status"] == "unknown"
 
 
-def test_node_session_activity_maps_native_ids_once(
+def test_node_session_activity_maps_native_unready_ids(
     db_session_factory: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     with db_session_factory() as db:
@@ -2594,12 +2594,12 @@ def test_node_session_activity_maps_native_ids_once(
                 return {
                     "native-running": RuntimeConversationActivity(
                         conversation_id="native-running",
-                        execution_status="running",
+                        execution_status="waiting_for_confirmation",
                         updated_at="2999-01-01T00:00:00+00:00",
                     ),
                     "unbound-native-conversation": RuntimeConversationActivity(
                         conversation_id="unbound-native-conversation",
-                        execution_status="running",
+                        execution_status="waiting_for_confirmation",
                         updated_at="2999-01-01T00:00:00+00:00",
                     ),
                 }

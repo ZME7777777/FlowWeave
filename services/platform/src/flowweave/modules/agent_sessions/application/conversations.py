@@ -19,6 +19,7 @@ from sqlalchemy import Numeric, and_, cast, func, or_, select, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from flowweave.modules.agent_sessions.application import resumable_attachments
 from flowweave.modules.agent_sessions.application import usage as usage_projection
 from flowweave.modules.agent_sessions.application.condensation import (
     condensation_task_failure_reason,
@@ -43,7 +44,6 @@ from flowweave.modules.agent_sessions.application.draft_attachments import (
 from flowweave.modules.agent_sessions.application.event_branch import (
     complete_active_branch,
 )
-from flowweave.modules.agent_sessions.application import resumable_attachments
 from flowweave.modules.agent_sessions.application.runtime_config import (
     build_agent_spec,
     config_from_binding,
@@ -97,6 +97,13 @@ _TITLE_TASK_INITIAL_DELAY_SECONDS = 5
 _CONDENSER_CREDENTIAL_FAILURE_CODE = "NoCondensationAvailableException"
 _DYNAMIC_CAPABILITY_TYPES = frozenset({"SKILL", "MCP", "PLUGIN"})
 _CREATION_CAPABILITY_TYPES = _DYNAMIC_CAPABILITY_TYPES | {"CONTEXT", "AGENT_DEFINITION", "HOOK"}
+_UNREADY_EXECUTION_STATUSES = (
+    "starting",
+    "running",
+    "executing",
+    "stopping",
+    "waiting_for_confirmation",
+)
 # A FlowRun Runtime physically mounts ``project`` but each product record is
 # rooted at ``project/<record-id>``.  Keep the older attempt-private root and
 # the user-scoped project root for their explicit compatibility paths.
@@ -832,7 +839,8 @@ def conversation_activity(db: Session, workspace_id: str) -> dict[str, Any]:
         item
         for item in bindings
         if native_activity.get(item.openhands_conversation_id, None) is not None
-        and native_activity[item.openhands_conversation_id].execution_status == "running"
+        and native_activity[item.openhands_conversation_id].execution_status
+        in _UNREADY_EXECUTION_STATUSES
     ]
     failed_native_ids = {
         conversation_id
@@ -3233,7 +3241,9 @@ def create_resumable_attachment_upload(
     workspace = _workspace(db, workspace_id)
     if binding_id is None:
         owner_id = attachment_owner_id or ""
-        agent_workspace_host.conversation_work_directory_context(db, workspace.id, work_directory_id)
+        agent_workspace_host.conversation_work_directory_context(
+            db, workspace.id, work_directory_id
+        )
     else:
         owner_id = _binding(db, workspace_id, binding_id).id
     upload = resumable_attachments.create_upload(
@@ -3290,28 +3300,46 @@ def create_resumable_workspace_file_upload(
     return resumable_attachments.upload_status(upload, [])
 
 
-def _resumable_attachment_upload(db: Session, workspace_id: str, binding_id: str | None, upload_id: str):
+def _resumable_attachment_upload(
+    db: Session, workspace_id: str, binding_id: str | None, upload_id: str
+):
     _workspace(db, workspace_id)
     if binding_id is not None:
         _binding(db, workspace_id, binding_id)
     return resumable_attachments.upload_for_host(
-        db, upload_id, host_kind="AGENT_WORKSPACE", host_id=workspace_id, host_scope_id=None, binding_id=binding_id
+        db,
+        upload_id,
+        host_kind="AGENT_WORKSPACE",
+        host_id=workspace_id,
+        host_scope_id=None,
+        binding_id=binding_id,
     )
 
 
-def resumable_attachment_upload_status(db: Session, workspace_id: str, binding_id: str | None, upload_id: str) -> dict[str, object]:
+def resumable_attachment_upload_status(
+    db: Session, workspace_id: str, binding_id: str | None, upload_id: str
+) -> dict[str, object]:
     upload = _resumable_attachment_upload(db, workspace_id, binding_id, upload_id)
     return resumable_attachments.upload_status(upload, resumable_attachments.list_parts(db, upload))
 
 
-def upload_resumable_attachment_part(db: Session, workspace_id: str, binding_id: str | None, upload_id: str, part_number: int, content: bytes) -> dict[str, object]:
+def upload_resumable_attachment_part(
+    db: Session,
+    workspace_id: str,
+    binding_id: str | None,
+    upload_id: str,
+    part_number: int,
+    content: bytes,
+) -> dict[str, object]:
     upload = _resumable_attachment_upload(db, workspace_id, binding_id, upload_id)
     resumable_attachments.put_part(db, upload, part_number=part_number, content=content)
     db.flush()
     return resumable_attachments.upload_status(upload, resumable_attachments.list_parts(db, upload))
 
 
-def complete_resumable_attachment_upload(db: Session, workspace_id: str, binding_id: str | None, upload_id: str) -> dict[str, str | int | None]:
+def complete_resumable_attachment_upload(
+    db: Session, workspace_id: str, binding_id: str | None, upload_id: str
+) -> dict[str, str | int | None]:
     upload = _resumable_attachment_upload(db, workspace_id, binding_id, upload_id)
     content = resumable_attachments.assemble(db, upload)
     if upload.upload_kind == "WORKSPACE_FILE":
@@ -3335,14 +3363,22 @@ def complete_resumable_attachment_upload(db: Session, workspace_id: str, binding
         }
     else:
         result = upload_attachment(
-            db, workspace_id, binding_id, filename=upload.filename, content_type=upload.mime_type, content=content,
-            work_directory_id=upload.work_directory_id, attachment_owner_id=upload.attachment_owner_id,
+            db,
+            workspace_id,
+            binding_id,
+            filename=upload.filename,
+            content_type=upload.mime_type,
+            content=content,
+            work_directory_id=upload.work_directory_id,
+            attachment_owner_id=upload.attachment_owner_id,
         )
     resumable_attachments.close_upload(db, upload, status="COMPLETED")
     return result
 
 
-def cancel_resumable_attachment_upload(db: Session, workspace_id: str, binding_id: str | None, upload_id: str) -> None:
+def cancel_resumable_attachment_upload(
+    db: Session, workspace_id: str, binding_id: str | None, upload_id: str
+) -> None:
     upload = _resumable_attachment_upload(db, workspace_id, binding_id, upload_id)
     resumable_attachments.close_upload(db, upload, status="CANCELLED")
 

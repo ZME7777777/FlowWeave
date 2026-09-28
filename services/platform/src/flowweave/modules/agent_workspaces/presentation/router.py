@@ -778,6 +778,23 @@ async def get_agent_sidebar_conversation(
     )
 
 
+@router.delete(
+    "/agent-workspaces/{workspace_id}/sidebars/{binding_id}",
+    status_code=204,
+    response_class=Response,
+)
+async def close_agent_sidebar_conversation(
+    workspace_id: str, binding_id: str, db: Db
+) -> Response:
+    await run_sync(
+        db,
+        lambda session: sidebar_conversations.close_sidebar_conversation(
+            session, workspace_id, binding_id
+        ),
+    )
+    return Response(status_code=204)
+
+
 @router.get("/agent-workspaces/{workspace_id}/conversations/{binding_id}")
 async def get_agent_conversation(
     workspace_id: str, binding_id: str, container: ContainerDep
