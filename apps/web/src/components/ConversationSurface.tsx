@@ -1079,16 +1079,15 @@ function retryLabel(status: ModelRetryStatus): string {
     quota: '额度不足', config: '配置不兼容', context_limit: '上下文超限',
     content_policy: '内容安全策略拒绝', internal: '内部异常', unknown: '调用失败',
   };
-  const suffix = status.attempt !== undefined && status.maxAttempts !== undefined
-    ? ` ${status.attempt}/${status.maxAttempts}`
+  const attempt = status.attempt !== undefined && status.maxAttempts !== undefined
+    ? `（${status.attempt}/${status.maxAttempts}）`
     : '';
   if (status.final) {
     return isModelFailure
-      ? `↳ ${prefix}${reason[status.failureKind] ?? '调用失败'}，本轮已停止${suffix}`
+      ? `↳ ${prefix}${reason[status.failureKind] ?? '调用失败'}，本轮已停止${attempt}`
       : `↳ ${prefix}失败，本轮已停止`;
   }
-  if (status.failureKind === 'connection') return `↳ 正在重新连接${prefix}服务${suffix}`;
-  return `↳ ${prefix}${reason[status.failureKind] ?? '调用失败'}，正在重试${suffix}`;
+  return `↳ ${prefix}服务短暂波动，正在自动重试${attempt}`;
 }
 
 function RetryStatus({ status }: { status: ModelRetryStatus }) {
@@ -1100,9 +1099,10 @@ function RetryStatus({ status }: { status: ModelRetryStatus }) {
     no_eligible_events: '没有可安全压缩的事件区间。', insufficient_progress: '可压缩范围不足以满足最小进度要求。',
     summary_model_failed: '上下文摘要模型调用未完成。', condensation_unknown: '上下文压缩未能完成。',
   };
+  const recoveringDetail = '检测到可恢复的模型调用波动，系统正在按退避策略自动重试。';
   return <details className={`conversation-model-retry${status.final ? ' final' : ''}`}>
     <summary role="status" aria-label={retryLabel(status)}><ChevronRight className="conversation-expand-arrow" size={13}/><span>{retryLabel(status)}</span>{!status.final && <span className="conversation-turn-status-dots" aria-hidden="true"><i/><i/><i/></span>}</summary>
-    <p>{status.subject === 'execution' ? '执行过程中发生了不可恢复错误。' : detail[status.failureKind] ?? detail.unknown}{status.errorCode ? ` · 错误码：${status.errorCode}` : ''}</p>
+    <p>{status.final ? (status.subject === 'execution' ? '执行过程中发生了不可恢复错误。' : detail[status.failureKind] ?? detail.unknown) : recoveringDetail}{status.errorCode ? ` · 错误码：${status.errorCode}` : ''}</p>
   </details>;
 }
 
@@ -2055,8 +2055,8 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
     onHistoryAnchorRestored?.(historyPrepend);
   }, [alignWithLatest, conversationScope, historyPrepend, onHistoryAnchorCaptured, onHistoryAnchorRestored]);
   // A REST reconciliation may replace event objects without adding visible
-  // content. New process events and post-layout growth share one frame-bound
-  // alignment, so a running turn remains anchored without double-jumping.
+  // content. Only new formal event identities may move the viewport: status
+  // text and live elapsed counters resize independently while a turn runs.
   useLayoutEffect(() => {
     const contentChanged = previousContentSignal.current !== contentGrowthSignal;
     previousContentSignal.current = contentGrowthSignal;
@@ -2067,19 +2067,6 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
       scheduleLatestAlignment();
     }
   }, [alignWithLatest, contentGrowthSignal, isGenerating, scheduleLatestAlignment, turns.length]);
-  useLayoutEffect(() => {
-    const observedContent = content.current;
-    if (!observedContent || typeof ResizeObserver === 'undefined' || !contentGrowthSignal) return;
-    const turns = observedContent.querySelectorAll<HTMLElement>('[data-conversation-turn]');
-    const latestTurn = turns.item(turns.length - 1);
-    if (!latestTurn) return;
-    const observer = new ResizeObserver(() => {
-      if (!followLatest.current || userScrolledAway.current) return;
-      scheduleLatestAlignment();
-    });
-    observer.observe(latestTurn);
-    return () => observer.disconnect();
-  }, [contentGrowthSignal, scheduleLatestAlignment]);
 
   useEffect(() => () => {
     if (copyResetTimer.current) window.clearTimeout(copyResetTimer.current);
