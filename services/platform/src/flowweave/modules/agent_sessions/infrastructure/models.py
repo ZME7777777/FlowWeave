@@ -110,6 +110,7 @@ class AgentConversationBinding(Base):
     # NULL keeps the default creation-time order; only a dragged session has
     # a workspace-local explicit rank.
     manual_sort_rank: Mapped[Decimal | None] = mapped_column(Numeric(30, 12))
+    activity_was_running: Mapped[bool] = mapped_column(Boolean, default=False)
     unread: Mapped[bool] = mapped_column(Boolean, default=False)
     # The unread bit remains the server-owned fact. SYSTEM with unread=False
     # records that the user acknowledged the current abnormality.

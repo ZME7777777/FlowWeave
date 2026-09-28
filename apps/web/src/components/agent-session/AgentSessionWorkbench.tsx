@@ -32,6 +32,7 @@ import '../../pages/agent-workbench-layout.css';
 const WORKSPACE_FILE_TRANSFER_TYPE = 'application/x-flowweave-workspace-file-path';
 const ACTIVE_EVENT_RECOVERY_INTERVAL_MS = 4_000;
 const ACTIVE_EVENT_LATEST_RECHECK_INTERVAL_MS = 30_000;
+const INPUT_READINESS_MIN_REQUEST_INTERVAL_MS = 2_000;
 const SUBMISSION_EVENT_CONFIRMATION_TIMEOUT_MS = 60_000;
 const CONVERSATION_HYDRATION_SELECTION_DELAY_MS = 120;
 const HYDRATION_UI_DEADLINE_MS = 12_000;
@@ -4391,6 +4392,11 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     pendingLatest: boolean;
     lastLatestReadAt: number;
   }>({ pendingLatest: false, lastLatestReadAt: 0 });
+  const readinessSynchronization = useRef<{
+    scope?: string;
+    inFlight?: Promise<AgentConversationInputReadiness>;
+    lastRequestAt: number;
+  }>({ lastRequestAt: 0 });
   const historyPrependWaiters = useRef(new Map<number, {
     scope: string;
     capture?: (accepted: boolean) => void;
@@ -4435,6 +4441,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const selectedBindingId = activityPreviewBindingId ?? routeBindingId;
   const previousComposerScope = useRef<string | undefined>(undefined);
   const activityBaseline = useRef<Map<string, boolean>>(new Map());
+  const activityBaselineInitialized = useRef(false);
   const pendingUnreadUpdates = useRef(new Map<string, { id: number; unread: boolean; unreadOrigin?: AgentConversation['unread_origin'] }>());
   const nextUnreadUpdateId = useRef(0);
   const [unreadConversationIds, setUnreadConversationIds] = useState<Set<string>>(() => new Set());
@@ -4483,8 +4490,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     },
   });
   const conversationActivityQuery = useQuery({
-    queryKey: sessionQueryKey(host, 'conversation-activity', workspace?.id),
-    queryFn: () => api.conversationActivity(workspace!.id),
+    queryKey: sessionQueryKey(host, 'conversation-activity', workspace?.id, selectedBindingId),
+    queryFn: () => api.conversationActivity(workspace!.id, selectedBindingId),
     enabled: Boolean(workspace && pageVisible),
     refetchOnWindowFocus: true,
     refetchInterval: pageVisible ? 4_000 : false,
@@ -4513,7 +4520,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   useEffect(() => {
     if (!workspace || !conversationsQuery.hasNextPage || conversationsQuery.isFetchingNextPage) return;
     void conversationsQuery.fetchNextPage();
-  }, [conversationsQuery, workspace]);
+  }, [conversationsQuery.fetchNextPage, conversationsQuery.hasNextPage, conversationsQuery.isFetchingNextPage, workspace]);
   const workDirectoriesQuery = useQuery({ queryKey: sessionQueryKey(host, 'work-directories', workspace?.id), queryFn: () => api.workDirectories(workspace!.id), enabled: Boolean(workspace && features.workDirectories) });
   const providersQuery = useQuery({ queryKey: ['model-providers'], queryFn: api.providers, enabled: Boolean(workspace && features.modelSelection) });
   const capabilityCatalogQuery = useQuery({ queryKey: sessionQueryKey(host, 'capability-catalog'), queryFn: api.capabilities, enabled: Boolean(workspace && features.capabilities) });
@@ -4797,10 +4804,25 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     setPinnedConversationIds(readPinnedConversationIds(pinnedStorageKey));
   }, [pinnedStorageKey]);
   useEffect(() => {
+    setUnreadConversationIds(current => {
+      const next = new Set<string>();
+      for (const item of conversations) {
+        const pendingUnread = pendingUnreadUpdates.current.get(item.id)?.unread;
+        if (pendingUnread ?? item.unread) next.add(item.id);
+        else if (current.has(item.id) && item.unread === undefined && pendingUnread === undefined) next.add(item.id);
+      }
+      return next;
+    });
+  }, [conversations]);
+  useEffect(() => {
+    if (!conversationActivityQuery.data || !conversationsQuery.data) return;
     const present = new Set(conversations.map(item => item.id));
-    const isRunning = (item: AgentConversation) => (
-      runningConversationIds.has(item.id) || conversationIsRunning(item.execution_status)
-    );
+    const isRunning = (item: AgentConversation) => runningConversationIds.has(item.id);
+    if (!activityBaselineInitialized.current) {
+      for (const item of conversations) activityBaseline.current.set(item.id, isRunning(item));
+      activityBaselineInitialized.current = true;
+      return;
+    }
     const completedInBackground = conversations.filter(item => (
       activityBaseline.current.get(item.id) === true
       && !isRunning(item)
@@ -4816,7 +4838,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       && item.unread_origin === 'SYSTEM'
     );
     const systemUnreadInBackground = new Map(
-      [...completedInBackground, ...attentionInBackground]
+      attentionInBackground
         .filter(item => !suppressAcknowledgedSystemAlert(item))
         .map(item => [item.id, item]),
     );
@@ -5252,9 +5274,29 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     void runSelectedHydration();
   }, [runSelectedHydration]);
   const trustedHydration = selected?.id ? trustedHydrations.current.get(selected.id) : undefined;
+  const readInputReadiness = useCallback((): Promise<AgentConversationInputReadiness> => {
+    const workspaceId = workspace?.id;
+    const scope = selected?.id;
+    if (!workspaceId || !scope) return Promise.reject(new Error('Conversation readiness selection is unavailable'));
+    const now = Date.now();
+    const synchronization = readinessSynchronization.current;
+    if (synchronization.scope === scope && synchronization.inFlight) return synchronization.inFlight;
+    if (synchronization.scope === scope && now - synchronization.lastRequestAt < INPUT_READINESS_MIN_REQUEST_INTERVAL_MS) {
+      const cached = queryClient.getQueryData<AgentConversationInputReadiness>(inputReadinessQueryKey);
+      if (cached) return Promise.resolve(cached);
+    }
+    let request: Promise<AgentConversationInputReadiness>;
+    request = api.inputReadiness(workspaceId, scope).finally(() => {
+      if (readinessSynchronization.current.scope === scope && readinessSynchronization.current.inFlight === request) {
+        readinessSynchronization.current.inFlight = undefined;
+      }
+    });
+    readinessSynchronization.current = { scope, inFlight: request, lastRequestAt: now };
+    return request;
+  }, [api, inputReadinessQueryKey, queryClient, selected?.id, workspace?.id]);
   const inputReadinessQuery = useQuery({
     queryKey: inputReadinessQueryKey,
-    queryFn: () => api.inputReadiness(workspace!.id, selected!.id),
+    queryFn: readInputReadiness,
     // This is the formal OpenHands execution-state read used to restore an
     // in-flight turn after a browser reload. A terminal trusted snapshot does
     // not need another Runtime read merely because the user revisited it.
@@ -5269,12 +5311,12 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     staleTime: INITIAL_HYDRATION_STALE_TIME_MS,
     refetchOnWindowFocus: false,
     refetchInterval: query => {
-      const needsFallback = conversationIsRunning(selected?.execution_status)
-        || turnState === 'pausing'
+      const needsReadiness = turnState === 'pausing'
+        || turnState === 'resuming'
         || queuedMessages.length > 0
         || localTurnGenerating
         || query.state.data?.ready === false;
-      if (!pageVisible || !needsFallback) return false;
+      if (!pageVisible || !needsReadiness) return false;
       return Math.min(2000 * 2 ** query.state.fetchFailureCount, 10_000);
     },
     retry: (count, error) => !(error instanceof ApiError && error.status < 500) && count < 2,
@@ -5408,10 +5450,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     return synchronization;
   }, [api, eventQueryKey, host, queryClient, selected, workspace]);
   useEffect(() => {
-    if (!selected || !trustedHydration?.running || selectedHydrationPhase !== 'ready') return;
+    if (!selected?.id || !trustedHydration?.running || selectedHydrationPhase !== 'ready') return;
     void synchronizeConversationEvents(true, 'hot_reentry');
-    void queryClient.invalidateQueries({ queryKey: inputReadinessQueryKey, exact: true });
-  }, [inputReadinessQueryKey, queryClient, selected, selectedHydrationPhase, synchronizeConversationEvents, trustedHydration?.running]);
+  }, [selected?.id, selectedHydrationPhase, synchronizeConversationEvents, trustedHydration?.running]);
   useEffect(() => {
     if (!foregroundRecoverySignal || !pageVisible || !workspace || !selected
       || foregroundRecoverySignal === handledForegroundRecoverySignal.current) return;
@@ -5836,7 +5877,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation', workspace.id, bindingId) });
       if (bindingId === selected?.id) void synchronizeConversationEvents(true);
       else void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-events', workspace.id, bindingId) });
-      void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-input-readiness', workspace.id, bindingId) });
       void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-confirmation', workspace.id, bindingId) });
       void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-context', workspace.id, bindingId) });
     }
@@ -5844,7 +5884,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const reconcileConversationProjection = useCallback(() => {
     void synchronizeConversationEvents(true);
     if (!workspace || !selected) return;
-    void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-input-readiness', workspace.id, selected.id) });
     void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-confirmation', workspace.id, selected.id) });
   }, [host, queryClient, selected, synchronizeConversationEvents, workspace]);
   const appendLiveEvent = useCallback((scope: string, event: OpenHandsConversationEvent) => {

@@ -683,11 +683,15 @@ async def list_agent_conversations(
 
 @router.get("/agent-workspaces/{workspace_id}/conversation-activity")
 async def agent_conversation_activity(
-    workspace_id: str, container: ContainerDep
+    workspace_id: str,
+    container: ContainerDep,
+    active_binding_id: str | None = Query(default=None, min_length=1, max_length=36),
 ) -> dict[str, list[str]]:
     return await run_blocking_history(
         container,
-        lambda session: conversations.conversation_activity(session, workspace_id),
+        lambda session: conversations.conversation_activity(
+            session, workspace_id, active_binding_id=active_binding_id
+        ),
     )
 
 

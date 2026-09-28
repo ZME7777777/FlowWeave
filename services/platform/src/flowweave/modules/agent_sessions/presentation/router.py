@@ -369,7 +369,10 @@ async def list_node_sessions(
 
 @router.get(f"{_BASE}/activity")
 async def node_session_activity(
-    flow_run_id: str, attempt_id: str, container: ContainerDep
+    flow_run_id: str,
+    attempt_id: str,
+    container: ContainerDep,
+    active_binding_id: str | None = Query(default=None, min_length=1, max_length=36),
 ) -> dict[str, list[str]]:
     return await run_blocking_history(
         container,
@@ -377,6 +380,7 @@ async def node_session_activity(
             session,
             flow_run_id=flow_run_id,
             attempt_id=attempt_id,
+            active_binding_id=active_binding_id,
         ),
     )
 
