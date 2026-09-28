@@ -2581,7 +2581,8 @@ test('Conversation sidebar pins locally, orders activity, and reveals the select
 test('Agent session exits the first-screen gate when hydration never settles', async ({ page }) => {
   let authenticated = false;
   let hydrationReads = 0;
-  const neverSettles = new Promise<void>(() => undefined);
+  let releaseHydration: (() => void) | undefined;
+  const delayedHydration = new Promise<void>(resolve => { releaseHydration = resolve; });
   const workspace = {
     id: 'hydration-timeout-workspace', display_name: '水合超时工作区', desired_state: 'RUNNING', updated_at: now,
   };
@@ -2589,6 +2590,17 @@ test('Agent session exits the first-screen gate when hydration never settles', a
     id: 'hydration-timeout-conversation', display_title: '水合响应体超时会话', title_state: 'MANUAL',
     lifecycle: 'ACTIVE', streaming_callback_ready: true, write_available: true, execution_status: 'idle',
     created_at: now, updated_at: now,
+  };
+  const hydration = {
+    events: {
+      events: [
+        { id: 'hydration-recovered-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '恢复读取后的问题', timestamp: now } },
+        { id: 'hydration-recovered-agent', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'hydration-recovered-user', content: '已重新读取会话。', timestamp: now } },
+      ],
+      next_cursor: 'hydration-recovered-agent', history_cursor: null, result: { status: 'COMPLETED' },
+    },
+    context: { model_name: 'test-model', window_tokens: 128_000, used_tokens: 1_024, usage_current: true },
+    readiness: { ready: true, execution_status: 'idle' },
   };
 
   await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
@@ -2602,7 +2614,11 @@ test('Agent session exits the first-screen gate when hydration never settles', a
     if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
     if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
     if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: [conversation], next_cursor: null });
-    if (path.endsWith('/hydration')) { hydrationReads += 1; await neverSettles; return; }
+    if (path.endsWith('/hydration')) {
+      hydrationReads += 1;
+      if (hydrationReads === 1) await delayedHydration;
+      return json(route, hydration);
+    }
     if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
     if (path.endsWith('/work-directories')) return json(route, {
       root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [],
@@ -2621,8 +2637,17 @@ test('Agent session exits the first-screen gate when hydration never settles', a
   await login(page);
   await page.goto('/agent/conversations/hydration-timeout-conversation');
   await expect.poll(() => hydrationReads).toBe(1);
-  await expect(page.locator('.agent-workbench-error')).toContainText('读取会话超时，请重试。', { timeout: 14_000 });
-  await expect(page.getByRole('button', { name: '重新读取会话' })).toBeVisible();
+  const timeoutAlert = page.getByRole('alert');
+  await expect(timeoutAlert).toContainText('会话暂时无法读取', { timeout: 14_000 });
+  await expect(timeoutAlert).toContainText('读取会话超时，请重试。');
+  await expect(timeoutAlert.getByRole('button', { name: '重新读取会话' })).toBeVisible();
   await expect(page.getByRole('status').filter({ hasText: '正在加载会话' })).toHaveCount(0);
   expect(hydrationReads).toBe(1);
+
+  await timeoutAlert.getByRole('button', { name: '重新读取会话' }).click();
+  await expect(page.getByText('已重新读取会话。', { exact: true })).toBeVisible();
+  expect(releaseHydration).toBeDefined();
+  releaseHydration?.();
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  expect(hydrationReads).toBe(2);
 });

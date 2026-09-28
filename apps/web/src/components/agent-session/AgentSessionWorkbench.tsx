@@ -5018,6 +5018,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         hydratedAt: Date.now(),
         running: conversationIsRunning(hydration.readiness.execution_status),
       });
+      const currentSelection = hydrationSelection.current;
+      if (currentSelection?.workspaceId === workspaceId && currentSelection.bindingId === bindingId) {
+        setHydrationPhase({ bindingId, state: 'ready' });
+      }
       return hydration;
     },
     // Each selection explicitly refreshes below. Keeping this query disabled
@@ -7345,7 +7349,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         monitoring={eventsQuery.data?.monitoring}
         connectionState={inputReadinessQuery.isError ? 'unavailable' : streamStatus === 'recovering' ? 'recovering' : streamStatus === 'connecting' ? 'checking' : inputReadinessQuery.isFetching && !inputReadinessQuery.data ? 'checking' : 'connected'}
       /> : <div className="agent-workbench-empty"><Bot size={32}/><b>新建会话开始协作</b><span>{features.workDirectories ? '每个会话共享同一工作区，但保留独立的对话与事件记录。' : '会话固定在当前节点 Attempt 的隔离工作目录。'}</span><button className="primary" disabled={!canOpenConversation} onClick={() => openConversationDraft({ displayName: features.workDirectories ? '根工作区' : '节点工作目录' })}><Plus size={15}/>新建会话</button></div>}
-      {visibleError && <p className="agent-workbench-error">{visibleError.message}{hydrationError && <button type="button" className="secondary" onClick={retryConversationHydration}>重新读取会话</button>}</p>}
+      {visibleError && <section className="agent-workbench-error" role="alert"><CircleAlert size={17}/><div><b>{hydrationError ? '会话暂时无法读取' : '操作未完成'}</b><span>{visibleError.message}</span></div>{hydrationError && <button type="button" className="secondary" onClick={retryConversationHydration}><RefreshCw size={14}/>重新读取会话</button>}</section>}
       </div>
       {(selected || conversationDraft) && runtime?.state !== 'RECOVERING' && <div className="agent-composer-dock">
         <div className={`agent-composer ${conversationVisuallyActive || pendingConfirmation ? 'busy' : ''}`}>
