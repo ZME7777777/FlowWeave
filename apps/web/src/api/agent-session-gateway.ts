@@ -98,7 +98,7 @@ export interface AgentSessionApi {
   readonly runtime: (hostId: AgentSessionHostId) => Promise<AgentSessionRuntime>;
   readonly conversations: (hostId: AgentSessionHostId, cursor?: string) => Promise<AgentConversationPage>;
   readonly conversationActivity: (hostId: AgentSessionHostId) => Promise<AgentConversationActivity>;
-  readonly startConversationSearch?: (hostId: AgentSessionHostId, query: string) => Promise<AgentConversationSearch>;
+  readonly startConversationSearch?: (hostId: AgentSessionHostId, query: string, workDirectoryIds?: string[], includeRoot?: boolean) => Promise<AgentConversationSearch>;
   readonly conversationSearch?: (hostId: AgentSessionHostId, searchId: string) => Promise<AgentConversationSearch>;
   readonly conversation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<AgentConversation>;
   readonly workDirectories: (hostId: AgentSessionHostId) => Promise<AgentSessionWorkDirectoryList>;

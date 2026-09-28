@@ -7523,3 +7523,15 @@ FlowWeave 本地累加后猜测压缩边界。
 完成：非暂停的正式 `ERROR`（含 `AgentErrorEvent`）进入会话错误投影；同一 turn 一旦已有正式 Agent 回复或仍处于当前运行态，既有恢复抑制逻辑继续隐藏该错误。没有回复的终态错误以失败卡展示稳定分类与原始正式错误内容。历史页继续由既有 `history_cursor` 分页恢复，回归同时覆盖终态 Agent 错误详情与更早用户消息。
 
 验收：Agent Workspace 定向 Playwright、Web TypeScript typecheck、受影响 ESLint、`git diff --check` 与任务状态唯一性通过。未修改 OpenHands、数据库 schema、Runtime 生命周期或远端配置。
+
+### FR-539 会话搜索范围与 hydration 隔离 — DONE
+
+依赖：FR-533、FR-534。
+
+目标：Agent Workspace 会话全文搜索可由用户多选根工作区和指定工作目录；后台原生 EventLog 扫描及命中内容读取不得占用 hydration 的正式读取舱壁，且在 hydration 活跃时必须让出后续搜索页。
+
+范围：搜索请求/结果的持久范围、Agent Workspace 搜索对话框、OpenHands adapter 的低优先级搜索通道及相应配置。不得复制消息正文、修改 OpenHands 协议、Runtime 生命周期或自动恢复策略。
+
+完成：搜索范围以 `work_directory_ids` 和 `include_root` 固化；`null` 保持既有“全部工作区”语义，显式范围验证目录归属并拒绝空范围。搜索仅扫描根会话与所选目录的冻结版本，且同一 Agent Workspace 同时只允许一个 pending/running 搜索。Web 搜索对话框提供“全部工作区”与根工作区、多个目录的复选范围。OpenHands adapter 为搜索单设 generation-scoped 低优先级舱壁，默认单并发、0.1 秒取槽预算、2 秒单页预算；每页和命中详情读取都会在正式 hydration 读取活跃时让出，不进入正式读取舱壁。
+
+验收：OpenHands 搜索分页短超时与正式读取优先的定向 pytest（2 passed）；受影响 Python Ruff、`py_compile`、Alembic 单一 head、Web TypeScript typecheck、ESLint、production build 与 `git diff --check` 通过。新增数据库型范围/并发测试已启动，但全局 Testcontainers PostgreSQL fixture 在测试断言前因本机 Docker daemon 不可用失败，未计为通过。未运行数据库迁移，不修改远端配置、OpenHands Runtime 或自动恢复策略。

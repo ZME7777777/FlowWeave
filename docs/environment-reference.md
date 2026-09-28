@@ -29,6 +29,7 @@
 | 变量 | 用途 |
 | --- | --- |
 | `RUNTIME_ADAPTER` | 正常运行使用 `openhands`；`mock` 只用于明确的测试。 |
+| `RUNTIME_BACKGROUND_SEARCH_PER_RUNTIME_CONCURRENCY` / `RUNTIME_BACKGROUND_SEARCH_SLOT_TIMEOUT_SECONDS` / `RUNTIME_BACKGROUND_SEARCH_PAGE_TIMEOUT_SECONDS` | 会话全文搜索的每个 Runtime 并发、等待和单页请求预算；默认 `1`／`0.1`／`2` 秒。该低优先级通道会在 hydration 读取活跃时让出后续搜索页。 |
 | `AGENT_WORKSPACE_RUNTIME_IMAGE` | Agent Workspace 使用的固定 Runtime image。 |
 | `AGENT_WORKSPACE_RUNTIME_MEMORY` / `AGENT_WORKSPACE_RUNTIME_CPUS` | Agent Workspace 专属内存／CPU 限额；默认分别为 `2g`、`2.0`，不影响 FlowRun 或 Environment Runtime。 |
 | `OPENHANDS_RUNTIME_BUILDER_IMAGE` | 发布 Environment Version 时用于官方 OpenHands 构建链的镜像。 |

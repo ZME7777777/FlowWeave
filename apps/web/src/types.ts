@@ -797,6 +797,9 @@ export interface AgentConversationSearchHit {
 export interface AgentConversationSearch {
   id: string;
   query: string;
+  /** `null` means every workspace; otherwise only these work-directory groups. */
+  work_directory_ids?: string[] | null;
+  include_root?: boolean;
   state: 'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'FAILED';
   failure_summary?: string | null;
   created_at: string;

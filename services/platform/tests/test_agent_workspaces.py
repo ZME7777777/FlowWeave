@@ -17,6 +17,7 @@ import pytest
 from sqlalchemy import select
 
 from flowweave.bootstrap.runtime_provider import RuntimeProviderResourceWrite
+from flowweave.modules.agent_sessions.application import search as conversation_search
 from flowweave.modules.agent_sessions.application.host import (
     READ_SESSIONS,
     AgentSessionHostContext,
@@ -1225,6 +1226,124 @@ def _ready_workspace_for_conversation(db):
     )
     db.flush()
     return workspace
+
+
+def test_conversation_search_scopes_to_selected_work_directories_and_serializes_starts(
+    settings, db_session_factory, monkeypatch
+):
+    """A durable search may target root and multiple frozen directory groups."""
+
+    class ScopedSearchRuntime(MockRuntime):
+        def __init__(self) -> None:
+            super().__init__()
+            self.messages: dict[str, tuple[RuntimeEvent, ...]] = {}
+
+        def search_message_events(self, handle, query):
+            needle = query.casefold()
+            return tuple(
+                event
+                for event in self.messages.get(handle.conversation_id, ())
+                if needle in str(event.payload.get("content") or "").casefold()
+            )
+
+        def read_search_event(self, handle, event_id):
+            return next(
+                (
+                    event
+                    for event in self.messages.get(handle.conversation_id, ())
+                    if event.cursor == event_id
+                ),
+                None,
+            )
+
+    monkeypatch.setattr(
+        conversations,
+        "runtime_provider",
+        lambda _db, asset, **_kwargs: RuntimeProvider(
+            provider_id=asset["asset"]["executor"]["model_provider_id"],
+            base_url="https://models.example.test/v1",
+            model="test-model",
+            api_key="test-key",
+        ),
+    )
+    runtime = ScopedSearchRuntime()
+    with settings_context(settings), db_session_factory() as db, runtime_context(runtime):
+        item = _ready_workspace_for_conversation(db)
+        selected = work_directories.create_work_directory(db, item.id, "后端", ("backend",))
+        ignored = work_directories.create_work_directory(db, item.id, "前端", ("frontend",))
+        root = conversations.create_conversation(
+            db, item.id, "根目录", item.default_model_provider_id, "search-root"
+        )
+        selected_conversation = conversations.create_conversation(
+            db, item.id, "后端", item.default_model_provider_id, "search-selected"
+        )
+        ignored_conversation = conversations.create_conversation(
+            db, item.id, "前端", item.default_model_provider_id, "search-ignored"
+        )
+        for conversation, directory in (
+            (selected_conversation, selected),
+            (ignored_conversation, ignored),
+        ):
+            binding = db.get(AgentConversationBinding, conversation["id"])
+            assert binding is not None
+            binding.work_directory_version_id = directory["current_version"]["id"]
+        bindings = {
+            item.id: item
+            for item in db.scalars(
+                select(AgentConversationBinding).where(
+                    AgentConversationBinding.id.in_(
+                        (root["id"], selected_conversation["id"], ignored_conversation["id"])
+                    )
+                )
+            )
+        }
+        for binding_id, cursor in (
+            (root["id"], "root-event"),
+            (selected_conversation["id"], "selected-event"),
+            (ignored_conversation["id"], "ignored-event"),
+        ):
+            binding = bindings[binding_id]
+            runtime.messages[binding.openhands_conversation_id] = (
+                RuntimeEvent(
+                    cursor,
+                    "MESSAGE",
+                    {"source": "user", "content": "needle: scoped search"},
+                ),
+            )
+
+        started = conversation_search.start(
+            db,
+            item.id,
+            "needle",
+            work_directory_ids=[selected["id"]],
+            include_root=False,
+        )
+        assert started["work_directory_ids"] == [selected["id"]]
+        assert started["include_root"] is False
+        conversation_search.process(db, started["id"])
+        result = conversation_search.status(db, item.id, started["id"])
+        assert result["state"] == "SUCCEEDED"
+        assert {hit["binding_id"] for hit in result["hits"]} == {selected_conversation["id"]}
+
+        with pytest.raises(DomainError) as invalid_scope:
+            conversation_search.start(
+                db, item.id, "needle", work_directory_ids=[], include_root=False
+            )
+        assert invalid_scope.value.code == "AGENT_CONVERSATION_SEARCH_SCOPE_INVALID"
+        with pytest.raises(DomainError) as unavailable_scope:
+            conversation_search.start(
+                db,
+                item.id,
+                "needle",
+                work_directory_ids=[str(uuid4())],
+                include_root=False,
+            )
+        assert unavailable_scope.value.code == "AGENT_CONVERSATION_SEARCH_SCOPE_INVALID"
+
+        conversation_search.start(db, item.id, "queued search")
+        with pytest.raises(DomainError) as already_running:
+            conversation_search.start(db, item.id, "another search")
+        assert already_running.value.code == "AGENT_CONVERSATION_SEARCH_IN_PROGRESS"
 
 
 def test_agent_workspace_conversation_create_is_idempotent_and_uses_external_identity(

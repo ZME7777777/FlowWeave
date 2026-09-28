@@ -347,6 +347,12 @@ class OpenHandsRuntime:
         self._formal_read_slots: dict[str, threading.BoundedSemaphore] = {}
         self._formal_read_slots_lock = threading.Lock()
         self._formal_read_depth = threading.local()
+        self._formal_read_active: dict[str, int] = {}
+        # Historical full-text scans are explicitly lower priority than formal
+        # browser reads. They use a separate one-at-a-time bulkhead and a
+        # short page timeout, rather than occupying the hydration bulkhead.
+        self._background_search_slots: dict[str, threading.BoundedSemaphore] = {}
+        self._background_search_slots_lock = threading.Lock()
 
     def _transport(self) -> HttpTransportPool:
         if self._http_transport is None:
@@ -2259,11 +2265,58 @@ class OpenHandsRuntime:
                 {"outcome_unknown": False},
             )
         depths[key] = 1
+        with self._formal_read_slots_lock:
+            self._formal_read_active[key] = self._formal_read_active.get(key, 0) + 1
         try:
             yield
         finally:
             depths.pop(key, None)
+            with self._formal_read_slots_lock:
+                remaining_active = self._formal_read_active.get(key, 1) - 1
+                if remaining_active:
+                    self._formal_read_active[key] = remaining_active
+                else:
+                    self._formal_read_active.pop(key, None)
             slot.release()
+
+    @contextmanager
+    def _background_search_bulkhead(self, handle: RuntimeHandle) -> Iterator[None]:
+        """Allow one short, low-priority event search per Runtime generation."""
+
+        key = self._base_url_for_handle(handle)
+        with self._background_search_slots_lock:
+            slot = self._background_search_slots.get(key)
+            if slot is None:
+                slot = threading.BoundedSemaphore(
+                    self.settings.runtime_background_search_per_runtime_concurrency
+                )
+                self._background_search_slots[key] = slot
+        if not slot.acquire(timeout=self.settings.runtime_background_search_slot_timeout_seconds):
+            if metrics := current_metrics():
+                metrics.increment("flowweave_runtime_background_search_bulkhead_saturated_total")
+            raise DomainError(
+                "RUNTIME_BACKGROUND_SEARCH_SATURATED",
+                "A low-priority conversation search is already running for this Runtime",
+                503,
+                {"outcome_unknown": False},
+            )
+        try:
+            yield
+        finally:
+            slot.release()
+
+    def _yield_background_search_to_formal_reads(self, handle: RuntimeHandle) -> None:
+        """Keep the next low-priority search page behind active hydration reads."""
+
+        key = self._base_url_for_handle(handle)
+        while True:
+            with self._formal_read_slots_lock:
+                if not self._formal_read_active.get(key, 0):
+                    return
+            # At most one short search request is in flight. Once it returns,
+            # yield between pages until browser hydration drains instead of
+            # adding another native EventLog request.
+            time.sleep(0.025)
 
     def _conversation_state(
         self, handle: RuntimeHandle, *, timeout: float | None = None
@@ -3920,7 +3973,9 @@ class OpenHandsRuntime:
             readiness=self._input_readiness_from_state(state) if state is not None else None,
         )
 
-    def read_event(self, handle: RuntimeHandle, event_id: str) -> RuntimeEvent | None:
+    def _read_event(
+        self, handle: RuntimeHandle, event_id: str, *, timeout: float | None = None
+    ) -> RuntimeEvent | None:
         """Read one formal event identity without scanning a history window.
 
         OpenHands scopes this endpoint to the supplied Conversation, so the
@@ -3931,12 +3986,14 @@ class OpenHandsRuntime:
 
         validated_event_id = self._formal_identity(event_id, field="id", required=True)
         assert validated_event_id is not None
+        request_options: dict[str, Any] = {"timeout": timeout} if timeout is not None else {}
         item = self._request(
             "GET",
             f"/api/conversations/{handle.conversation_id}/events/{validated_event_id}",
             missing_ok=True,
             base_url=self._base_url_for_handle(handle),
             session_api_key=self._session_key_for_handle(handle),
+            **request_options,
         )
         if item.get("_flowweave_missing") is True:
             return None
@@ -3951,6 +4008,22 @@ class OpenHandsRuntime:
             event_type=self._event_type(item),
             payload=self._event_payload(item),
         )
+
+    def read_event(self, handle: RuntimeHandle, event_id: str) -> RuntimeEvent | None:
+        """Read one formal event for an interactive conversation operation."""
+
+        return self._read_event(handle, event_id)
+
+    def read_search_event(self, handle: RuntimeHandle, event_id: str) -> RuntimeEvent | None:
+        """Read a durable search hit without entering the interactive read lane."""
+
+        with self._background_search_bulkhead(handle):
+            self._yield_background_search_to_formal_reads(handle)
+            return self._read_event(
+                handle,
+                event_id,
+                timeout=self.settings.runtime_background_search_page_timeout_seconds,
+            )
 
     def search_message_events(self, handle: RuntimeHandle, query: str) -> tuple[RuntimeEvent, ...]:
         """Search one native EventLog without creating a FlowWeave transcript copy.
@@ -3969,61 +4042,64 @@ class OpenHandsRuntime:
         seen_page_ids: set[str] = set()
         seen_event_ids: set[str] = set()
         matches: list[RuntimeEvent] = []
-        while True:
-            if page_id is not None:
-                if page_id in seen_page_ids:
+        with self._background_search_bulkhead(handle):
+            while True:
+                self._yield_background_search_to_formal_reads(handle)
+                if page_id is not None:
+                    if page_id in seen_page_ids:
+                        raise DomainError(
+                            "RUNTIME_EVENT_IDENTITY_INVALID",
+                            "OpenHands returned a cyclic event-search continuation",
+                            502,
+                        )
+                    seen_page_ids.add(page_id)
+                params: dict[str, str | int] = {
+                    "body": needle,
+                    "limit": _EVENT_HISTORY_PAGE_SIZE,
+                    "sort_order": "TIMESTAMP_DESC",
+                }
+                if page_id is not None:
+                    params["page_id"] = page_id
+                page = self._request(
+                    "GET",
+                    f"/api/conversations/{handle.conversation_id}/events/search",
+                    base_url=base_url,
+                    session_api_key=session_api_key,
+                    params=params,
+                    timeout=self.settings.runtime_background_search_page_timeout_seconds,
+                )
+                raw_items = page.get("items", [])
+                if not isinstance(raw_items, list) or any(
+                    not isinstance(item, dict) for item in cast(list[object], raw_items)
+                ):
                     raise DomainError(
                         "RUNTIME_EVENT_IDENTITY_INVALID",
-                        "OpenHands returned a cyclic event-search continuation",
+                        "OpenHands returned an invalid event-search page",
                         502,
                     )
-                seen_page_ids.add(page_id)
-            params: dict[str, str | int] = {
-                "body": needle,
-                "limit": _EVENT_HISTORY_PAGE_SIZE,
-                "sort_order": "TIMESTAMP_DESC",
-            }
-            if page_id is not None:
-                params["page_id"] = page_id
-            page = self._request(
-                "GET",
-                f"/api/conversations/{handle.conversation_id}/events/search",
-                base_url=base_url,
-                session_api_key=session_api_key,
-                params=params,
-            )
-            raw_items = page.get("items", [])
-            if not isinstance(raw_items, list) or any(
-                not isinstance(item, dict) for item in cast(list[object], raw_items)
-            ):
-                raise DomainError(
-                    "RUNTIME_EVENT_IDENTITY_INVALID",
-                    "OpenHands returned an invalid event-search page",
-                    502,
-                )
-            for raw in cast(list[object], raw_items):
-                item = cast(dict[str, Any], raw)
-                event_id = self._event_identity(item)[0]
-                if event_id in seen_event_ids:
-                    continue
-                seen_event_ids.add(event_id)
-                event = RuntimeEvent(
-                    cursor=event_id,
-                    event_type=self._event_type(item),
-                    payload=self._event_payload(item),
-                )
-                source = str(event.payload.get("source") or "").lower()
-                content = str(event.payload.get("content") or "")
-                if (
-                    event.event_type == "MESSAGE"
-                    and source in {"user", "human", "agent", "assistant"}
-                    and needle.casefold() in content.casefold()
-                ):
-                    matches.append(event)
-            next_page_id = page.get("next_page_id")
-            if not isinstance(next_page_id, str) or not next_page_id:
-                return tuple(matches)
-            page_id = self._formal_identity(next_page_id, field="next_page_id", required=True)
+                for raw in cast(list[object], raw_items):
+                    item = cast(dict[str, Any], raw)
+                    event_id = self._event_identity(item)[0]
+                    if event_id in seen_event_ids:
+                        continue
+                    seen_event_ids.add(event_id)
+                    event = RuntimeEvent(
+                        cursor=event_id,
+                        event_type=self._event_type(item),
+                        payload=self._event_payload(item),
+                    )
+                    source = str(event.payload.get("source") or "").lower()
+                    content = str(event.payload.get("content") or "")
+                    if (
+                        event.event_type == "MESSAGE"
+                        and source in {"user", "human", "agent", "assistant"}
+                        and needle.casefold() in content.casefold()
+                    ):
+                        matches.append(event)
+                next_page_id = page.get("next_page_id")
+                if not isinstance(next_page_id, str) or not next_page_id:
+                    return tuple(matches)
+                page_id = self._formal_identity(next_page_id, field="next_page_id", required=True)
 
     @classmethod
     def _usage_snapshots(cls, state: dict[str, Any]) -> tuple[RuntimeUsageSnapshot, ...]:

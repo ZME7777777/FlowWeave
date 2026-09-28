@@ -1439,6 +1439,10 @@ def test_openhands_searches_native_message_events_with_body_pagination(
         "sort_order": "TIMESTAMP_DESC",
         "page_id": "older-page",
     }
+    assert [call["timeout"] for call in calls] == [
+        openhands_settings.runtime_background_search_page_timeout_seconds,
+        openhands_settings.runtime_background_search_page_timeout_seconds,
+    ]
 
 
 def test_openhands_rejects_event_by_id_identity_drift(openhands_settings, monkeypatch):
@@ -5922,6 +5926,34 @@ def test_formal_reads_are_bounded_per_runtime_generation(openhands_settings, mon
             pass
         release.set()
         blocked.result(timeout=1)
+
+
+def test_background_search_yields_to_active_formal_reads(openhands_settings, monkeypatch):
+    runtime = OpenHandsRuntime(openhands_settings)
+    handle = _handle()
+    monkeypatch.setattr(runtime, "_base_url_for_handle", lambda _handle: "http://runtime:8000")
+    formal_started = Event()
+    release_formal = Event()
+    background_finished = Event()
+
+    def formal_read() -> None:
+        with runtime._formal_read_bulkhead(handle):  # pyright: ignore[reportPrivateUsage]
+            formal_started.set()
+            assert release_formal.wait(timeout=1)
+
+    def background_wait() -> None:
+        runtime._yield_background_search_to_formal_reads(handle)  # pyright: ignore[reportPrivateUsage]
+        background_finished.set()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        formal = executor.submit(formal_read)
+        assert formal_started.wait(timeout=1)
+        background = executor.submit(background_wait)
+        assert not background_finished.wait(timeout=0.1)
+        release_formal.set()
+        formal.result(timeout=1)
+        background.result(timeout=1)
+        assert background_finished.is_set()
 
 
 def test_formal_read_timeout_has_a_stable_business_code(openhands_settings, monkeypatch):

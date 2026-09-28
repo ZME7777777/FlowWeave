@@ -84,6 +84,8 @@ class AgentConversationUnreadWrite(_Write):
 
 class AgentConversationSearchWrite(_Write):
     query: str = Field(min_length=1, max_length=500)
+    work_directory_ids: list[str] | None = Field(default=None, max_length=100)
+    include_root: bool = True
 
 
 class AgentConversationOrderWrite(_Write):
@@ -886,7 +888,14 @@ async def start_agent_conversation_search(
     db: Db,
 ) -> dict[str, Any]:
     return await run_sync(
-        db, lambda session: conversation_search.start(session, workspace_id, payload.query)
+        db,
+        lambda session: conversation_search.start(
+            session,
+            workspace_id,
+            payload.query,
+            work_directory_ids=payload.work_directory_ids,
+            include_root=payload.include_root,
+        ),
     )
 
 

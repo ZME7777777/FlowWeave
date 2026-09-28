@@ -297,6 +297,12 @@ class AgentConversationSearch(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
     workspace_id: Mapped[str] = mapped_column(String(36), index=True)
     query: Mapped[str] = mapped_column(String(500))
+    # ``None`` means every work directory in the Agent Workspace. A concrete
+    # list freezes the user-selected directory groups for this durable job;
+    # historical bindings retain their original version but still belong to
+    # that stable group identity.
+    work_directory_ids: Mapped[list[str] | None] = mapped_column(JSON)
+    include_root: Mapped[bool] = mapped_column(Boolean, default=True)
     state: Mapped[str] = mapped_column(String(20), default="PENDING", index=True)
     failure_summary: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)

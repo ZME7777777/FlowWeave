@@ -357,8 +357,8 @@ export const api = {
   },
   agentConversationActivity: (workspaceId: string) =>
     request<import('../types').AgentConversationActivity>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-activity`),
-  startAgentConversationSearch: (workspaceId: string, query: string) =>
-    request<import('../types').AgentConversationSearch>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-searches`, json('POST', { query })),
+  startAgentConversationSearch: (workspaceId: string, query: string, workDirectoryIds?: string[], includeRoot = true) =>
+    request<import('../types').AgentConversationSearch>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-searches`, json('POST', { query, work_directory_ids: workDirectoryIds, include_root: includeRoot })),
   agentConversationSearch: (workspaceId: string, searchId: string) =>
     request<import('../types').AgentConversationSearch>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-searches/${encodeURIComponent(searchId)}`),
   addAgentConversationCapability: (workspaceId: string, bindingId: string, capability_version_id: string) =>

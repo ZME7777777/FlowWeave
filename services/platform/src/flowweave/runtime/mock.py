@@ -222,6 +222,9 @@ class MockRuntime:
                 return event
         return None
 
+    def read_search_event(self, handle: RuntimeHandle, event_id: str) -> RuntimeEvent | None:
+        return self.read_event(handle, event_id)
+
     def search_message_events(self, handle: RuntimeHandle, query: str) -> tuple[RuntimeEvent, ...]:
         needle = query.casefold()
         return tuple(
