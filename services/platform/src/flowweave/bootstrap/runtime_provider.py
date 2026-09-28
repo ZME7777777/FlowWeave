@@ -13,6 +13,7 @@ import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from concurrent.futures import Future, ThreadPoolExecutor, wait
 from contextlib import asynccontextmanager
+from contextvars import copy_context
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import PurePosixPath
@@ -1719,20 +1720,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         max_workers=2, thread_name_prefix="flowweave-runtime-provider-observe"
     )
 
-    async def run_control(call: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Any:
+    async def run_in_lane(
+        executor: ThreadPoolExecutor, call: Callable[..., Any], /, *args: Any, **kwargs: Any
+    ) -> Any:
+        # Controller routes bind Settings in a ContextVar. Executor threads do
+        # not inherit ContextVars, so snapshot the request context before
+        # submitting work; otherwise synchronous Docker helpers fail only when
+        # they call the compatibility get_settings() boundary in a lane.
+        context = copy_context()
         return await asyncio.get_running_loop().run_in_executor(
-            control_executor, lambda: call(*args, **kwargs)
+            executor, lambda: context.run(call, *args, **kwargs)
         )
+
+    async def run_control(call: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Any:
+        return await run_in_lane(control_executor, call, *args, **kwargs)
 
     async def run_build(call: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Any:
-        return await asyncio.get_running_loop().run_in_executor(
-            build_executor, lambda: call(*args, **kwargs)
-        )
+        return await run_in_lane(build_executor, call, *args, **kwargs)
 
     async def run_observe(call: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Any:
-        return await asyncio.get_running_loop().run_in_executor(
-            observe_executor, lambda: call(*args, **kwargs)
-        )
+        return await run_in_lane(observe_executor, call, *args, **kwargs)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:

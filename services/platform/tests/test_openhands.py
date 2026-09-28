@@ -1001,6 +1001,8 @@ def test_runtime_provider_separates_control_build_and_observation_capacity() -> 
 
     for executor in ("control_executor", "build_executor", "observe_executor"):
         assert executor in source
+    assert "context = copy_context()" in source
+    assert "context.run(call, *args, **kwargs)" in source
     assert "return await run_observe(_admin_observability_snapshot, configured)" in source
     assert "DockerSandboxProvider(configured).ensure_running" in source
     assert "bundle = await run_build(builder.build, payload.dependencies)" in source
