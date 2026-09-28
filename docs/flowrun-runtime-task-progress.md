@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`IN PROGRESS`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`FR-547`
+> 下一可执行切片：`FR-548`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -7555,7 +7555,7 @@ FlowWeave 本地累加后猜测压缩边界。
 | FR-545B1 | DONE | FR-545A | 搜索状态仅在终态按 cursor 分页投影并验证当前页 native hit；运行中轮询仅读取数据库元数据。 |
 | FR-545B2 | DONE | FR-545B1 | 状态轮询改为一次正式批量活动投影；不再按运行会话读取 active events，并以原生正式事件活动时间识别可能卡住。 |
 | FR-546 | DONE | FR-545B2 | 标题、搜索、依赖构建和插件解析使用独立辅助 executor/数据库池与 worker lane，流程推进和恢复保留容量。 |
-| FR-547 | PENDING | FR-546 | 缩短跨 Runtime 调用的数据库事务，核对 Worker heartbeat 等独立连接的全局预算；对任务 claim 索引只依据实际查询证据优化。 |
+| FR-547 | DONE | FR-546 | FlowRun provisioning 在外部 Provider 调用前释放 Worker 事务；heartbeat 有界且无池；按实际 claim 谓词新增部分队列索引。 |
 | FR-548 | PENDING | FR-547 | Admin 同步数据库读取进入有界执行通道，合并重复 Docker 采样；Runtime Provider 的控制、构建与观测使用独立容量。 |
 | FR-549 | PENDING | FR-548 | Web 历史预取与 Context 失效设置工作量预算，明确浏览器取消与后端执行的不同生命周期。 |
 | FR-550 | PENDING | FR-549 | 用并发与故障数据校准每进程、每 generation 的正式读舱壁；验证会话 A 故障时同 Runtime B、其他 Runtime 和控制面分别可用。 |
@@ -7607,6 +7607,10 @@ FR-545B2 完成：OpenHands baseline 新增只读 `/api/conversations/activity` 
 FR-546 完成：将 `GENERATE_AGENT_CONVERSATION_TITLE`、`SEARCH_AGENT_CONVERSATIONS`、`BUILD_CAPABILITY_DEPENDENCIES` 与 `RESOLVE_PLUGIN_SOURCE` 从流程 delivery task 集合拆入 auxiliary task 集合。Worker 进程为该集合独立分配默认一个线程的 executor、受同一容量约束的 slot 和独立 SQLAlchemy 同步连接池；API 进程不分配该额外数据库预算。worker 并发达到四个槽位时，Runtime control、Runtime poll、流程 delivery 和 auxiliary/maintenance 各保留一个 lane；更高并发下 auxiliary 仍保持独立，避免模型标题、native 搜索、package registry 或 Docker dependency builder 阻塞推进／恢复任务。两槽、三槽部署保留既有兼容分区但仍覆盖全部 task 类型。
 
 验收：受影响 Python `py_compile`、Ruff check/format、`git diff --check` 和不依赖数据库的 worker lane 静态契约通过，契约覆盖所有 handler 的唯一 lane 归属、默认四槽 delivery 与 auxiliary 的互斥及 auxiliary executor/SQL pool 路由。`tests/test_worker_lanes.py` 已尝试运行，但全局 Testcontainers PostgreSQL fixture 因本机 Docker socket 不可用在收集前失败，未将其记为通过；未运行数据库、Runtime、镜像或 E2E 验证。下一可执行切片为 FR-547。
+
+FR-547 完成：FlowRun Runtime provisioning 在生成冻结 Environment/Runtime identity 后、进入 Docker/Provider 控制路径前调用 Worker transaction release；Provider 自身继续使用既有独立控制事务，外部 provisioning 不再占用 delivery handler 的同步数据库连接。Lease heartbeat 不再为每个运行 task 构造包含 async、blocking、history、poll、control 等多个 pool 的完整 `Database` 容器；改为 `NullPool` 的单次独立连接，且 Worker 注入全局有界 heartbeat semaphore（默认 2），只限制一行 lease renewal，不限制实际 Runtime I/O。任务 `claim()` 的实际谓词与排序为 `state IN (PENDING, RETRY) AND available_at <= now ORDER BY available_at, created_at`；据此新增 `ix_background_tasks_claim_ready` 部分索引，仅包含可领取状态且键顺序完全匹配，不对其他假设查询增索引。
+
+验收：受影响 Python `py_compile`、Ruff check/format、`git diff --check`、迁移唯一 head `0131_background_task_claim_index` 与不依赖数据库的 FR-547 静态契约通过；后者验证 provisioning 事务释放先于 Provider 调用、heartbeat 使用 `NullPool` 与共享 slot、索引 DDL 与实际 `claim()` 谓词/排序一致。未运行迁移实跑、数据库、Runtime、镜像或 E2E 验证。下一可执行切片为 FR-548。
 
 FR-541B 完成：Agent Workspace 的文件树、文件预览、Git 仓库发现／历史／diff／同步和文件创建／删除已从 `AsyncSession.run_sync()` 移至低优先级有界线程。工作目录创建／修改需要同步文件路径校验，删除会级联执行正式 Runtime 会话删除，也进入同一通道。该通道与历史分页复用原有小型 executor 和同步数据库池；默认最多一个后台操作，不新增 PostgreSQL 连接预算，繁重文件／Git 操作不再占用 ASGI event loop 或交互读取／写入／恢复容量。纯数据库工作目录列表和详情仍留在原入口。
 

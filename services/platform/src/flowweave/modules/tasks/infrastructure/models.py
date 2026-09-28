@@ -12,6 +12,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -28,6 +29,15 @@ class BackgroundTask(Base):
     __table_args__ = (
         UniqueConstraint("owner_user_id", "idempotency_key", name="uq_background_task_owner_key"),
         Index("ix_background_tasks_terminal_updated_at", "state", "updated_at"),
+        # Matches claim(): eligible states and available_at predicate, followed
+        # by its deterministic queue ordering. Terminal and leased rows stay
+        # out of the hot worker queue index.
+        Index(
+            "ix_background_tasks_claim_ready",
+            "available_at",
+            "created_at",
+            postgresql_where=text("state IN ('PENDING', 'RETRY')"),
+        ),
         CheckConstraint("lease_generation >= 0", name="ck_task_generation_nonnegative"),
         CheckConstraint("attempts >= 0", name="ck_task_attempts_nonnegative"),
     )

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -118,6 +119,18 @@ def test_poll_tasks_use_their_dedicated_executor_and_database_pool() -> None:
     )
 
     assert (executor, slots, sessions) == (poll_executor, poll_slots, poll_sessions)
+
+
+def test_lease_heartbeat_uses_one_unpooled_connection_and_shared_slot() -> None:
+    from flowweave.bootstrap.worker import LeaseHeartbeat
+
+    source = Path(LeaseHeartbeat.__module__.replace(".", "/") + ".py")
+    del source
+    worker_source = Path("src/flowweave/bootstrap/worker.py").read_text()
+
+    assert "poolclass=NullPool" in worker_source
+    assert "with self.slots:" in worker_source
+    assert "slots=self.container.heartbeat_slots" in worker_source
 
 
 @pytest.mark.asyncio

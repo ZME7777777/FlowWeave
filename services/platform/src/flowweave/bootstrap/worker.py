@@ -10,7 +10,9 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import NullPool
 
 from flowweave.bootstrap.container import Container, build_container
 from flowweave.bootstrap.settings import Settings
@@ -48,7 +50,6 @@ from flowweave.shared.application.transactions import (
 from flowweave.shared.artifact_store import artifact_store_context
 from flowweave.shared.dependency_builder import dependency_builder_context
 from flowweave.shared.errors import DomainError
-from flowweave.shared.infrastructure.database import Database
 from flowweave.shared.plugin_resolver import plugin_resolver_context
 from flowweave.shared.sandbox import sandbox_context
 from flowweave.shared.settings import settings_context
@@ -158,11 +159,13 @@ class LeaseHeartbeat:
         *,
         interval_seconds: int,
         lease_seconds: int,
+        slots: threading.BoundedSemaphore | None = None,
     ) -> None:
         self.settings = settings
         self.lease = lease
         self.interval_seconds = interval_seconds
         self.lease_seconds = lease_seconds
+        self.slots = slots or threading.BoundedSemaphore(1)
         self.lost = threading.Event()
         self._stop = threading.Event()
         self._thread = threading.Thread(
@@ -182,23 +185,35 @@ class LeaseHeartbeat:
         asyncio.run(self._run_async())
 
     async def _run_async(self) -> None:
-        database = Database(self.settings)
+        # A heartbeat updates exactly one lease row. It must not construct the
+        # Worker container's async, blocking, history, poll and control pools
+        # for every running task; a single isolated connection is enough.
+        engine = create_async_engine(
+            self.settings.database_url,
+            pool_pre_ping=True,
+            poolclass=NullPool,
+            connect_args={"options": f"-c statement_timeout={self.settings.statement_timeout_ms}"},
+        )
+        sessions = async_sessionmaker(engine, expire_on_commit=False, autoflush=False)
         try:
             while not self._stop.wait(self.interval_seconds):
                 try:
-                    async with database.session() as session:
-                        renewed = await session.run_sync(
-                            lambda db: heartbeat(
-                                db,
-                                self.lease,
-                                lease_seconds=self.lease_seconds,
-                                commit=False,
+                    # The slot covers only the one-row renewal transaction;
+                    # it never serializes the task's external Runtime work.
+                    with self.slots:
+                        async with sessions() as session:
+                            renewed = await session.run_sync(
+                                lambda db: heartbeat(
+                                    db,
+                                    self.lease,
+                                    lease_seconds=self.lease_seconds,
+                                    commit=False,
+                                )
                             )
-                        )
-                        if renewed:
-                            await session.commit()
-                        else:
-                            await session.rollback()
+                            if renewed:
+                                await session.commit()
+                            else:
+                                await session.rollback()
                 except Exception:
                     self.lost.set()
                     return
@@ -206,7 +221,7 @@ class LeaseHeartbeat:
                     self.lost.set()
                     return
         finally:
-            await database.dispose()
+            await engine.dispose()
 
 
 class TaskWorker:
@@ -310,6 +325,7 @@ class TaskWorker:
                 lease,
                 interval_seconds=self.container.settings.task_heartbeat_seconds,
                 lease_seconds=self.container.settings.task_lease_seconds,
+                slots=self.container.heartbeat_slots,
             )
             renewer.start()
             execution = asyncio.create_task(self._execute_claimed_task(task, lease))

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Literal
@@ -64,6 +65,7 @@ class Container:
     terminal_slots: asyncio.Semaphore
     blocking_control_executor: ThreadPoolExecutor
     blocking_control_slots: asyncio.Semaphore
+    heartbeat_slots: threading.BoundedSemaphore
 
     async def close(self) -> None:
         await self.run_event_listener.close()
@@ -192,4 +194,5 @@ def build_container(settings: Settings, *, role: Literal["api", "worker"]) -> Co
         terminal_slots=asyncio.Semaphore(settings.terminal_stream_pool_size),
         blocking_control_executor=blocking_control_executor,
         blocking_control_slots=asyncio.Semaphore(1),
+        heartbeat_slots=threading.BoundedSemaphore(settings.task_heartbeat_concurrency),
     )

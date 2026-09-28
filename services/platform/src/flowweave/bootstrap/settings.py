@@ -141,6 +141,10 @@ class Settings(BaseSettings):
     runtime_poll_worker_concurrency: int = Field(default=2, ge=1, le=16)
     task_lease_seconds: int = Field(default=30, ge=5)
     task_heartbeat_seconds: int = Field(default=10, ge=1)
+    # Lease renewals use short, independent connections. Bound their global
+    # Worker concurrency so many stalled tasks cannot fan out into a database
+    # connection surge merely to retain their leases.
+    task_heartbeat_concurrency: int = Field(default=2, ge=1, le=16)
     # The task ledger is an execution/audit window, not an unbounded event
     # store. Keep terminal rows long enough for operational diagnosis, then
     # reclaim them in small maintenance batches. Active and leased work is
