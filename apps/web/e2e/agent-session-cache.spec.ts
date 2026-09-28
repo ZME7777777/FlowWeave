@@ -2310,6 +2310,75 @@ test('Resuming an unread conversation clears its unread marker before it renders
   await expect(row.locator('.agent-workspace-conversation-unread')).toHaveCount(0);
 });
 
+
+test('Sending a new message clears an unread marker before the conversation renders as running', async ({ page }) => {
+  let authenticated = false;
+  let sent = false;
+  const unreadWrites: Array<{ unread: boolean; unread_origin?: string }> = [];
+  const workspace = { id: 'send-unread-workspace', display_name: '发送未读工作区', desired_state: 'RUNNING', updated_at: now };
+  const conversation = {
+    id: 'send-unread-conversation', display_title: '异常后待继续会话', title_state: 'MANUAL', lifecycle: 'ACTIVE',
+    streaming_callback_ready: true, write_available: true, execution_status: 'idle', unread: true, unread_origin: 'SYSTEM', created_at: now, updated_at: now,
+  };
+  const events = {
+    events: [{ id: 'prior-error', event_type: 'ERROR', payload: { error_code: 'BadGatewayError', content: '上一轮模型服务不可用', timestamp: now } }],
+    next_cursor: 'prior-error', history_cursor: null, result: { status: 'ERROR' },
+  };
+
+  await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path.endsWith('/auth/me')) return authenticated ? json(route, user) : json(route, { error: { code: 'AUTHENTICATION_REQUIRED', message: '请先登录' } }, 401);
+    if (path.endsWith('/auth/login') && request.method() === 'POST') { authenticated = true; return json(route, user); }
+    if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
+    if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
+    if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: [{ ...conversation, execution_status: sent ? 'running' : 'idle' }], next_cursor: null });
+    if (path.endsWith('/conversation-activity')) return json(route, { running_binding_ids: sent ? [conversation.id] : [] });
+    if (path.endsWith('/hydration')) return json(route, {
+      events: { ...events, result: { status: sent ? 'RUNNING' : 'ERROR' } },
+      context: { model_name: 'test-model', window_tokens: 128_000, used_tokens: 1_024, usage_current: true },
+      readiness: { ready: !sent, execution_status: sent ? 'running' : 'idle' },
+    });
+    if (path.endsWith('/messages') && request.method() === 'POST') {
+      sent = true;
+      return json(route, { accepted: true, cursor: 'continued-message' }, 202);
+    }
+    if (path.endsWith('/unread') && request.method() === 'PUT') {
+      const body = request.postDataJSON() as { unread: boolean; unread_origin?: string };
+      conversation.unread = body.unread;
+      conversation.unread_origin = body.unread ? body.unread_origin ?? 'MANUAL' : null;
+      unreadWrites.push(body);
+      return json(route, conversation);
+    }
+    if (path.endsWith('/events')) return json(route, { ...events, result: { status: sent ? 'RUNNING' : 'ERROR' } });
+    if (path.endsWith('/input-readiness')) return json(route, { ready: !sent, execution_status: sent ? 'running' : 'idle' });
+    if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
+    if (path.endsWith('/context')) return json(route, { model_name: 'test-model', window_tokens: 128_000, used_tokens: 1_024, usage_current: true });
+    if (path.endsWith('/work-directories')) return json(route, { root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [] });
+    if (path.endsWith('/workspace')) return json(route, {
+      root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: '/runtime/workspace/project',
+      work_directory: null, files: [], repositories: [], runtime: {}, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '不可用', note: '' } },
+    });
+    if (path.endsWith('/model-providers') || path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
+    if (path.includes('/conversations/') && request.method() === 'GET') return json(route, conversation);
+    return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+  });
+
+  await page.goto('/');
+  await login(page);
+  await page.goto('/agent/conversations/send-unread-conversation');
+  const row = page.locator('[data-conversation-binding-id="send-unread-conversation"]');
+  await expect(row.getByRole('img', { name: '会话已完成，有未读回复' })).toBeVisible();
+
+  await page.getByLabel('发送 Agent 消息').fill('请从失败处继续');
+  await page.getByRole('button', { name: '发送消息' }).click();
+
+  await expect.poll(() => unreadWrites).toEqual([{ unread: false }]);
+  await expect(row.locator('.agent-workspace-conversation-running')).toBeVisible();
+  await expect(row.locator('.agent-workspace-conversation-unread')).toHaveCount(0);
+});
+
 test('Conversation context menu marks a conversation unread until it is opened or marked read', async ({ page }) => {
   let authenticated = false;
   const workspace = { id: 'unread-workspace', display_name: '未读工作区', desired_state: 'RUNNING', updated_at: now };
