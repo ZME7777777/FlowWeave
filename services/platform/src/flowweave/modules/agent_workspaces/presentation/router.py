@@ -35,6 +35,7 @@ from flowweave.shared.http import (
     command_key,
     get_container,
     run_blocking,
+    run_blocking_auxiliary,
     run_blocking_control,
     run_blocking_history,
     run_blocking_mutation,
@@ -354,13 +355,13 @@ async def list_agent_work_directories(workspace_id: str, db: Db) -> dict[str, An
 @router.get("/agent-workspaces/{workspace_id}/workspace")
 async def get_agent_workspace_details(
     workspace_id: str,
-    db: Db,
+    container: ContainerDep,
     work_directory_id: str | None = Query(default=None),
     binding_id: str | None = Query(default=None),
     full_index: bool = Query(default=False),
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking_auxiliary(
+        container,
         lambda session: workspace.details(
             session,
             workspace_id,
@@ -374,15 +375,15 @@ async def get_agent_workspace_details(
 @router.get("/agent-workspaces/{workspace_id}/workspace/directory")
 async def list_agent_workspace_directory(
     workspace_id: str,
-    db: Db,
+    container: ContainerDep,
     parent_path: str | None = Query(default=None, max_length=500),
     cursor: str | None = Query(default=None, max_length=500),
     limit: int = Query(default=100, ge=1, le=250),
     work_directory_id: str | None = Query(default=None),
     binding_id: str | None = Query(default=None),
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking_auxiliary(
+        container,
         lambda session: workspace.list_directory(
             session,
             workspace_id,
@@ -398,12 +399,12 @@ async def list_agent_workspace_directory(
 @router.get("/agent-workspaces/{workspace_id}/workspace/git/repositories")
 async def list_agent_workspace_git_repositories(
     workspace_id: str,
-    db: Db,
+    container: ContainerDep,
     binding_id: str | None = Query(default=None),
     work_directory_id: str | None = Query(default=None),
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking_auxiliary(
+        container,
         lambda session: {
             "repositories": workspace.git_repositories(
                 session, workspace_id, binding_id, work_directory_id
@@ -415,7 +416,7 @@ async def list_agent_workspace_git_repositories(
 @router.get("/agent-workspaces/{workspace_id}/workspace/file")
 async def download_agent_workspace_file(
     workspace_id: str,
-    db: Db,
+    container: ContainerDep,
     path: str = Query(...),
     binding_id: str | None = Query(default=None),
     work_directory_id: str | None = Query(default=None),
@@ -423,8 +424,8 @@ async def download_agent_workspace_file(
     preview: bool = Query(default=False),
     offset: int = Query(default=0, ge=0),
 ) -> Response:
-    item = await run_sync(
-        db,
+    item = await run_blocking_auxiliary(
+        container,
         lambda session: workspace.download(
             session,
             workspace_id,
@@ -451,13 +452,13 @@ async def download_agent_workspace_file(
 @router.get("/agent-workspaces/{workspace_id}/workspace/git/log")
 async def agent_workspace_git_log(
     workspace_id: str,
-    db: Db,
+    container: ContainerDep,
     repository_path: str = Query(...),
     binding_id: str | None = Query(default=None),
     work_directory_id: str | None = Query(default=None),
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking_auxiliary(
+        container,
         lambda session: workspace.git_history(
             session, workspace_id, repository_path, binding_id, work_directory_id
         ),
@@ -467,13 +468,13 @@ async def agent_workspace_git_log(
 @router.post("/agent-workspaces/{workspace_id}/workspace/git/sync")
 async def sync_agent_workspace_git_repository(
     workspace_id: str,
-    db: Db,
+    container: ContainerDep,
     repository_path: str = Query(...),
     binding_id: str | None = Query(default=None),
     work_directory_id: str | None = Query(default=None),
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking_auxiliary(
+        container,
         lambda session: workspace.sync_git_repository(
             session, workspace_id, repository_path, binding_id, work_directory_id
         ),
@@ -483,13 +484,13 @@ async def sync_agent_workspace_git_repository(
 @router.get("/agent-workspaces/{workspace_id}/workspace/git/changes")
 async def agent_workspace_git_changes(
     workspace_id: str,
-    db: Db,
+    container: ContainerDep,
     repository_path: str = Query(...),
     binding_id: str | None = Query(default=None),
     work_directory_id: str | None = Query(default=None),
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking_auxiliary(
+        container,
         lambda session: workspace.git_changes(
             session, workspace_id, repository_path, binding_id, work_directory_id
         ),
@@ -499,15 +500,15 @@ async def agent_workspace_git_changes(
 @router.get("/agent-workspaces/{workspace_id}/workspace/git/working-diff")
 async def agent_workspace_git_working_diff(
     workspace_id: str,
-    db: Db,
+    container: ContainerDep,
     repository_path: str = Query(...),
     kind: str = Query(...),
     path: str = Query(...),
     binding_id: str | None = Query(default=None),
     work_directory_id: str | None = Query(default=None),
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking_auxiliary(
+        container,
         lambda session: workspace.git_change_file_diff(
             session, workspace_id, repository_path, kind, path, binding_id, work_directory_id
         ),
@@ -517,14 +518,14 @@ async def agent_workspace_git_working_diff(
 @router.get("/agent-workspaces/{workspace_id}/workspace/git/commit")
 async def agent_workspace_git_commit(
     workspace_id: str,
-    db: Db,
+    container: ContainerDep,
     repository_path: str = Query(...),
     commit: str = Query(...),
     binding_id: str | None = Query(default=None),
     work_directory_id: str | None = Query(default=None),
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking_auxiliary(
+        container,
         lambda session: workspace.git_commit_details(
             session, workspace_id, repository_path, commit, binding_id, work_directory_id
         ),
@@ -534,15 +535,15 @@ async def agent_workspace_git_commit(
 @router.get("/agent-workspaces/{workspace_id}/workspace/git/diff")
 async def agent_workspace_git_diff(
     workspace_id: str,
-    db: Db,
+    container: ContainerDep,
     repository_path: str = Query(...),
     commit: str = Query(...),
     path: str = Query(...),
     binding_id: str | None = Query(default=None),
     work_directory_id: str | None = Query(default=None),
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking_auxiliary(
+        container,
         lambda session: workspace.git_commit_file_diff(
             session, workspace_id, repository_path, commit, path, binding_id, work_directory_id
         ),
@@ -553,12 +554,12 @@ async def agent_workspace_git_diff(
 async def delete_agent_workspace_entries(
     workspace_id: str,
     payload: AgentWorkspaceEntriesDeleteWrite,
-    db: Db,
+    container: ContainerDep,
     binding_id: str | None = Query(default=None),
     work_directory_id: str | None = Query(default=None),
 ) -> dict[str, list[str]]:
-    deleted = await run_sync(
-        db,
+    deleted = await run_blocking_auxiliary(
+        container,
         lambda session: workspace.delete_entries(
             session, workspace_id, tuple(payload.paths), binding_id, work_directory_id
         ),
@@ -570,12 +571,12 @@ async def delete_agent_workspace_entries(
 async def create_agent_workspace_entry(
     workspace_id: str,
     payload: AgentWorkspaceEntryCreateWrite,
-    db: Db,
+    container: ContainerDep,
     binding_id: str | None = Query(default=None),
     work_directory_id: str | None = Query(default=None),
 ) -> Response:
-    await run_sync(
-        db,
+    await run_blocking_auxiliary(
+        container,
         lambda session: workspace.create_entry(
             session,
             workspace_id,
@@ -591,10 +592,10 @@ async def create_agent_workspace_entry(
 
 @router.post("/agent-workspaces/{workspace_id}/work-directories", status_code=201)
 async def create_agent_work_directory(
-    workspace_id: str, payload: AgentWorkDirectoryCreateWrite, db: Db
+    workspace_id: str, payload: AgentWorkDirectoryCreateWrite, container: ContainerDep
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking_auxiliary(
+        container,
         lambda session: work_directories.create_work_directory(
             session,
             workspace_id,
@@ -621,12 +622,12 @@ async def patch_agent_work_directory(
     workspace_id: str,
     work_directory_id: str,
     payload: AgentWorkDirectoryPatchWrite,
-    db: Db,
+    container: ContainerDep,
 ) -> dict[str, Any]:
     if payload.display_name is None and payload.selected_paths is None:
         raise DomainError("AGENT_WORK_DIRECTORY_PATCH_EMPTY", "工作目录修改内容不能为空", 422)
-    return await run_sync(
-        db,
+    return await run_blocking_auxiliary(
+        container,
         lambda session: work_directories.update_work_directory(
             session,
             workspace_id,
@@ -645,10 +646,10 @@ async def patch_agent_work_directory(
     response_class=Response,
 )
 async def delete_agent_work_directory(
-    workspace_id: str, work_directory_id: str, db: Db
+    workspace_id: str, work_directory_id: str, container: ContainerDep
 ) -> Response:
-    await run_sync(
-        db,
+    await run_blocking_auxiliary(
+        container,
         lambda session: work_directories.delete_work_directory(
             session, workspace_id, work_directory_id
         ),

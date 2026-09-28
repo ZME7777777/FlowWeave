@@ -164,7 +164,8 @@ async def run_blocking_history(container: Container, operation: Callable[[Sessio
     A browser may prefetch many historical OpenHands pages after it has painted
     the latest window. This lane is intentionally small and independently
     pooled: saturation drops the prefetch rather than delaying readiness or
-    confirmation reads for a running conversation.
+    confirmation reads for a running conversation. Workspace/Git operations
+    share this background capacity for the same reason.
     """
 
     return await _run_blocking_lane(
@@ -176,6 +177,27 @@ async def run_blocking_history(container: Container, operation: Callable[[Sessio
         saturation_code="RUNTIME_HISTORY_READ_SATURATED",
         saturation_message="Conversation history is being loaded; retry shortly",
         lane_name="history",
+        active_limit=container.settings.history_read_pool_size,
+    )
+
+
+async def run_blocking_auxiliary(container: Container, operation: Callable[[Session], T]) -> T:
+    """Run workspace and Git I/O on the low-priority history lane.
+
+    These calls may perform filesystem scans or subprocess work. Sharing the
+    existing small background pool keeps them away from interactive hydration
+    without increasing the process's PostgreSQL connection budget.
+    """
+
+    return await _run_blocking_lane(
+        container,
+        operation,
+        executor=container.history_read_executor,
+        slots=container.history_read_slots,
+        session_factory=container.database.history_sessions,
+        saturation_code="RUNTIME_AUXILIARY_SATURATED",
+        saturation_message="Workspace operations are busy; retry shortly",
+        lane_name="auxiliary",
         active_limit=container.settings.history_read_pool_size,
     )
 

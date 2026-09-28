@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`IN PROGRESS`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`FR-541B`
+> 下一可执行切片：`FR-541C`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -7545,8 +7545,10 @@ FlowWeave 本地累加后猜测压缩边界。
 | FR-540 | DONE | FR-539 | FlowRun 节点会话 interrupt 从 ASGI `run_sync` 转入预留控制 executor 和数据库池。 |
 | FR-541 | DONE | FR-540 | Agent Workspace 会话创建、详情、发送、附件、模型、Fork、重写、认证与恢复等同步 Runtime 调用移出 API event loop；默认写入最多占普通读取池的一半槽位，中断／恢复使用独立控制舱壁。 |
 | FR-541A | DONE | FR-541 | FlowRun 节点会话的恢复、模型、Fork、重写、附件等同步 Runtime 调用移出 API event loop，沿用同一写入容量保护。 |
-| FR-541B | READY | FR-541A | 核对两类宿主的 workspace 文件／Git 与其余兼容入口，消除仍在 `run_sync` 中执行的同步外部 I/O；跨调用事务时长另由 FR-547 收口。 |
-| FR-542 | PENDING | FR-541B | 首屏正式事件和 readiness 与精确 Context 指标解耦；指标按正式 OpenHands 合同异步刷新、保留可信同 binding 值，并限制重复统计。 |
+| FR-541B | DONE | FR-541A | Agent Workspace 文件／Git 与涉及文件校验、级联删除的工作目录入口从 `run_sync` 移至低优先级有界执行通道。 |
+| FR-541C | READY | FR-541B | FlowRun 节点会话的文件／Git、候选输出与工作目录入口移出 `run_sync`，不占用会话 hydration 容量。 |
+| FR-541D | PENDING | FR-541C | 核对两类宿主的 WebSocket／终端与剩余兼容入口，消除仍在 API event loop 执行的同步外部 I/O；跨调用事务时长另由 FR-547 收口。 |
+| FR-542 | PENDING | FR-541D | 首屏正式事件和 readiness 与精确 Context 指标解耦；指标按正式 OpenHands 合同异步刷新、保留可信同 binding 值，并限制重复统计。 |
 | FR-543 | PENDING | FR-542 | 固定 OpenHands baseline 的默认 executor 中将正式交互、搜索/统计和租约续期隔离；冻结新的 source commit、归档与 provenance。 |
 | FR-544 | PENDING | FR-543 | 消除单个 Conversation 加载/关闭卡住时空闲回收的全局生命周期阻塞，维持 OpenHands lease 与持久事件身份。 |
 | FR-545 | PENDING | FR-544 | 完成搜索命中分页、总工作量预算、事务释放和正式读取优先级，消除状态轮询逐条 Runtime 回读。 |
@@ -7567,3 +7569,7 @@ FR-541 完成：Agent Workspace 会话写入口的同步 OpenHands HTTP／文件
 FR-541A 完成：本切片覆盖的 FlowRun 节点会话同步 OpenHands 及文件调用已从 API event loop 移至有界执行线程。创建／bootstrap、能力与认证同步、确认、模型切换、消息投递、重写、Fork、附件和删除走 FR-541 的写入准入；会话详情和 MCP 探针走有界读取通道。节点宿主与 Runtime 状态查询可能触发 Attempt Runtime 预置，也使用写入准入，避免占满会话读取槽位。恢复与停止走预留控制通道；附件内容在进入同步执行线程前完成异步读取。纯数据库入口和跨 Runtime 调用的事务边界保持现状，文件／Git 与其他兼容入口留待 FR-541B、事务边界留待 FR-547 核对。
 
 验收：受影响 Python AST 解析、Ruff format、`git diff --check`、唯一 `CURRENT` 状态及 staged diff 复核通过。按本轮要求未运行数据库、Runtime、完整构建或 E2E；不修改 schema、OpenHands 或远端环境。下一切片为 FR-541B。
+
+FR-541B 完成：Agent Workspace 的文件树、文件预览、Git 仓库发现／历史／diff／同步和文件创建／删除已从 `AsyncSession.run_sync()` 移至低优先级有界线程。工作目录创建／修改需要同步文件路径校验，删除会级联执行正式 Runtime 会话删除，也进入同一通道。该通道与历史分页复用原有小型 executor 和同步数据库池；默认最多一个后台操作，不新增 PostgreSQL 连接预算，繁重文件／Git 操作不再占用 ASGI event loop 或交互读取／写入／恢复容量。纯数据库工作目录列表和详情仍留在原入口。
+
+验收：受影响 Python AST 解析、Ruff format/check、`git diff --check`、唯一 `CURRENT` 状态和 staged diff 复核通过。按本轮要求未运行数据库、Runtime、完整构建或 E2E；不修改 schema、OpenHands 或远端环境。下一切片为 FR-541C。
