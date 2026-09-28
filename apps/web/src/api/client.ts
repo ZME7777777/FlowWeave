@@ -378,12 +378,12 @@ export const api = {
     request<AgentConversation>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/order`, json('POST', { ordered_binding_ids })),
   deleteAgentConversation: (workspaceId: string, bindingId: string) =>
     request<void>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}`, json('DELETE', undefined, true)),
-  agentConversationEvents: (workspaceId: string, bindingId: string, cursor?: string, historyCursor?: string, diagnosticTrigger?: string) => {
+  agentConversationEvents: (workspaceId: string, bindingId: string, cursor?: string, historyCursor?: string, diagnosticTrigger?: string, signal?: AbortSignal) => {
     const query = new URLSearchParams();
     if (cursor) query.set('cursor', cursor);
     if (historyCursor) query.set('history_cursor', historyCursor);
     if (diagnosticTrigger) query.set('diagnostic_trigger', diagnosticTrigger);
-    return request<OpenHandsConversationEventBatch>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/events${query.size ? `?${query}` : ''}`);
+    return request<OpenHandsConversationEventBatch>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/events${query.size ? `?${query}` : ''}`, { signal });
   },
   agentConversationHydration: (workspaceId: string, bindingId: string, signal?: AbortSignal) =>
     request<import('../types').AgentConversationHydration>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/hydration`, { signal, timeoutMs: INTERACTIVE_REQUEST_TIMEOUT_MS }),

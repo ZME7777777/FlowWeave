@@ -130,7 +130,7 @@ export interface AgentSessionApi {
   /** Node-session hosts intentionally omit this workspace-local presentation control. */
   readonly reorderConversation?: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, orderedBindingIds: AgentSessionBindingId[]) => Promise<AgentConversation>;
   readonly deleteConversation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<void>;
-  readonly conversationEvents: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, cursor?: string, historyCursor?: string, diagnosticTrigger?: string) => Promise<OpenHandsConversationEventBatch>;
+  readonly conversationEvents: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, cursor?: string, historyCursor?: string, diagnosticTrigger?: string, signal?: AbortSignal) => Promise<OpenHandsConversationEventBatch>;
   readonly conversationHydration: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, signal?: AbortSignal) => Promise<AgentConversationHydration>;
   /** Bounded native HEAD check before reusing an in-memory complete branch. */
   readonly conversationHead: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<AgentConversationHead>;
@@ -216,8 +216,8 @@ export const agentWorkspaceSessionGateway: AgentSessionGateway = {
     updateConversation: api.updateAgentConversation,
     reorderConversation: api.reorderAgentConversation,
     deleteConversation: api.deleteAgentConversation,
-    conversationEvents: (workspaceId, bindingId, cursor, historyCursor, diagnosticTrigger) =>
-      api.agentConversationEvents(workspaceId, bindingId, cursor, historyCursor, diagnosticTrigger),
+    conversationEvents: (workspaceId, bindingId, cursor, historyCursor, diagnosticTrigger, signal) =>
+      api.agentConversationEvents(workspaceId, bindingId, cursor, historyCursor, diagnosticTrigger, signal),
     conversationHydration: api.agentConversationHydration,
     conversationHead: api.agentConversationHead,
     inputReadiness: api.agentConversationInputReadiness,
@@ -326,7 +326,7 @@ export function flowNodeSessionGateway(
       setConversationUnread: (_hostId, bindingId, unread, unreadOrigin) =>
         nodeSessionApi.setUnread(flowRunId, attemptId, bindingId, unread, unreadOrigin),
       deleteConversation: (_hostId, bindingId) => nodeSessionApi.remove(flowRunId, attemptId, bindingId),
-      conversationEvents: (_hostId, bindingId, cursor, historyCursor, diagnosticTrigger) =>
+      conversationEvents: (_hostId, bindingId, cursor, historyCursor, diagnosticTrigger, _signal) =>
         nodeSessionApi.events(flowRunId, attemptId, bindingId, cursor, historyCursor, diagnosticTrigger),
       conversationHydration: (_hostId, bindingId, signal) =>
         nodeSessionApi.hydration(flowRunId, attemptId, bindingId, signal),

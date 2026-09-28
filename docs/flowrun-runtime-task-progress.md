@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`IN PROGRESS`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`FR-549`
+> 下一可执行切片：`FR-550`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -7557,7 +7557,7 @@ FlowWeave 本地累加后猜测压缩边界。
 | FR-546 | DONE | FR-545B2 | 标题、搜索、依赖构建和插件解析使用独立辅助 executor/数据库池与 worker lane，流程推进和恢复保留容量。 |
 | FR-547 | DONE | FR-546 | FlowRun provisioning 在外部 Provider 调用前释放 Worker 事务；heartbeat 有界且无池；按实际 claim 谓词新增部分队列索引。 |
 | FR-548 | DONE | FR-547 | Admin 读/诊断进入独立受限 executor/数据库池；Runtime Provider 控制、构建、观测隔离，并合并重复 Docker 采样。 |
-| FR-549 | PENDING | FR-548 | Web 历史预取与 Context 失效设置工作量预算，明确浏览器取消与后端执行的不同生命周期。 |
+| FR-549 | DONE | FR-548 | Web 历史预取设置单轮/总页预算并可取消；Context 失效按会话合并冷却，明确取消不等于后端执行已释放。 |
 | FR-550 | PENDING | FR-549 | 用并发与故障数据校准每进程、每 generation 的正式读舱壁；验证会话 A 故障时同 Runtime B、其他 Runtime 和控制面分别可用。 |
 
 FR-540 完成：节点 interrupt 原先在 `AsyncSession.run_sync()` 内同步请求 OpenHands，会占用 ASGI 事件循环及普通 async 数据库连接。路由现在与 Agent Workspace interrupt 一样使用 `run_blocking_control()`；控制线程自行取得独立同步 Session，并在实际外部调用结束后释放预留槽。FlowRun／Attempt／binding 校验与原服务事务结果不变。
@@ -7615,6 +7615,10 @@ FR-547 完成：FlowRun Runtime provisioning 在生成冻结 Environment/Runtime
 FR-548 完成：API Container 增加 admin 专用单线程 executor、slot 和同步数据库池；`/internal/admin-control` 的 Runtime 控制、正式诊断和 alert lifecycle 均从普通 async request UoW 改走 `run_blocking_admin`，不再与会话 hydration、历史分页或 Worker auxiliary pool 争抢。Runtime Provider 新增 control（2）、build（1）、observe（2）三个显式 executor；Sandbox ensure/delete/drain、环境清理、网络恢复走 control，image/dependency/gate/plugin build 走 build，inspect/usage/list、Runtime ownership 验证和 Admin snapshot 走 observe，默认 asyncio executor 只保留终端专用工作及 shutdown。Admin snapshot 以规范化 Docker ID 过滤 Compose 列表中已由 managed runtime 投影覆盖的容器，避免同一 Agent Runtime 重复 `stats`/`inspect` 采样。
 
 验收：受影响 Python `py_compile`、Ruff check/format、`git diff --check`、迁移唯一 head `0131_background_task_claim_index` 和不依赖数据库的 FR-548 静态契约通过；契约覆盖 Admin route 的专用 lane、Provider control/build/observe 分区、Admin snapshot 观测 lane及重复采样过滤。未运行数据库、Runtime、镜像或 E2E 验证。下一可执行切片为 FR-549。
+
+FR-549 完成：`AgentSessionWorkbench` 的后台 native history prefetch 改为每轮最多 2 页、同一 binding/history root cursor 总计最多 8 页，保留首屏 latest window 优先；后续轮次以短延迟继续而不形成单次无界 EventLog 扫描。history 请求通过 gateway/client 传递 `AbortSignal`；切换 binding、宿主卸载或 scope 变化时 abort 浏览器 fetch，并在捕获 abort 后不写失败状态或展示错误。该 abort 只停止浏览器等待／结果合并，不宣称已终止后端已开始的 Runtime 历史读取，后端 lane 仍按真实执行结束释放容量。事件对账不再每次立即 invalidate `/context`；按 workspace/binding 合并 Context refresh，最小间隔 15 秒，且切换／卸载会取消过期 timer。
+
+验收：API client/gateway JavaScript syntax、`git diff --check` 和不依赖前端依赖的 FR-549 源码契约通过，覆盖 history 单轮/总预算、AbortSignal 透传、abort 正常收口、Context refresh 合并/冷却及过期 timer 清理。`npm run typecheck` 与 `npm run lint` 均尝试执行，但 `tsc`、`eslint` 不在 PATH（Web dependencies 未安装）；未安装依赖，未运行 Runtime、镜像或 E2E 验证。下一可执行切片为 FR-550。
 
 FR-541B 完成：Agent Workspace 的文件树、文件预览、Git 仓库发现／历史／diff／同步和文件创建／删除已从 `AsyncSession.run_sync()` 移至低优先级有界线程。工作目录创建／修改需要同步文件路径校验，删除会级联执行正式 Runtime 会话删除，也进入同一通道。该通道与历史分页复用原有小型 executor 和同步数据库池；默认最多一个后台操作，不新增 PostgreSQL 连接预算，繁重文件／Git 操作不再占用 ASGI event loop 或交互读取／写入／恢复容量。纯数据库工作目录列表和详情仍留在原入口。
 

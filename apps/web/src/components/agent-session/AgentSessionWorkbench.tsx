@@ -41,6 +41,14 @@ const ACTIVE_CONVERSATION_CACHE_TTL_MS = 30_000;
 // reads immediately after the first screen has painted; Context refreshes
 // independently because its exact metrics are intentionally deferred.
 const INITIAL_HYDRATION_STALE_TIME_MS = 30_000;
+// Older history is background-only. Limit each prefetch turn so it cannot
+// monopolize the dedicated backend history lane after a session is selected.
+const HISTORY_PREFETCH_MAX_PAGES = 2;
+const HISTORY_PREFETCH_MAX_TOTAL_PAGES = 8;
+const HISTORY_PREFETCH_DELAY_MS = 250;
+// Exact Context metrics are deferred from hydration. Merge bursts of event
+// reconciliation into one bounded refresh instead of invalidating per frame.
+const CONTEXT_REFRESH_MIN_INTERVAL_MS = 15_000;
 const WORKSPACE_PATH_COPIED_DURATION_MS = 1_500;
 const SESSION_PERFORMANCE_MARK_PREFIX = 'flowweave.agent-session.';
 // These are the frozen OpenHands/LiteLLM request settings applied by the
@@ -4403,7 +4411,11 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const liveEventsFrame = useRef<number | undefined>(undefined);
   const deferredFormalUserEvents = useRef(new Map<string, ScopedConversationEvent>());
   const historyLoadingScopes = useRef(new Set<string>());
+  const historyAbortControllers = useRef(new Map<string, AbortController>());
   const historyFailedCursors = useRef(new Map<string, string>());
+  const historyPrefetchPagesByRootCursor = useRef(new Map<string, number>());
+  const contextRefreshTimers = useRef(new Map<string, number>());
+  const lastContextRefreshAt = useRef(new Map<string, number>());
   const exhaustedHistoryCursors = useRef(new Map<string, string>());
   const eventSynchronization = useRef<{
     scope?: string;
@@ -4429,6 +4441,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     setLocalMessageProjectionRevision(current => current + 1);
   }, []);
   useEffect(() => () => {
+    for (const controller of historyAbortControllers.current.values()) controller.abort();
+    historyAbortControllers.current.clear();
+    for (const timer of contextRefreshTimers.current.values()) window.clearTimeout(timer);
+    contextRefreshTimers.current.clear();
     for (const resource of [
       'conversation-hydration-request',
       'conversation-events',
@@ -5360,6 +5376,23 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   useEffect(() => {
     if (selected && eventsQuery.data) markSessionPerformance('events-ready');
   }, [eventsQuery.data, selected]);
+  const scheduleContextRefresh = useCallback((workspaceId: string, bindingId: string) => {
+    const key = `${workspaceId}:${bindingId}`;
+    if (contextRefreshTimers.current.has(key)) return;
+    const elapsed = Date.now() - (lastContextRefreshAt.current.get(key) ?? 0);
+    const delay = Math.max(0, CONTEXT_REFRESH_MIN_INTERVAL_MS - elapsed);
+    const timer = window.setTimeout(() => {
+      contextRefreshTimers.current.delete(key);
+      lastContextRefreshAt.current.set(key, Date.now());
+      void queryClient.invalidateQueries({
+        queryKey: sessionQueryKey(host, 'conversation-context', workspaceId, bindingId),
+        exact: true,
+      });
+    }, delay);
+    contextRefreshTimers.current.set(key, timer);
+  }, [host, queryClient]);
+  const scheduleContextRefreshRef = useRef(scheduleContextRefresh);
+  scheduleContextRefreshRef.current = scheduleContextRefresh;
   const synchronizeConversationEvents = useCallback((preferLatest = false, diagnosticTrigger = 'scheduled'): Promise<void> => {
     if (!workspace || !selected) return Promise.resolve();
     const scope = selected.id;
@@ -5401,7 +5434,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
             })()
           : incoming,
         );
-        void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-context', workspace.id, scope) });
+        scheduleContextRefreshRef.current(workspace.id, scope);
       }).catch(() => {
         // The next scheduled reconciliation is sufficient. A transient read
         // failure must not clear already-rendered native events.
@@ -5444,27 +5477,41 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   // Let the latest native window paint before background history starts. This
   // makes the first visual state deterministic. History is a read-only
   // native projection and must keep loading while the current turn runs.
-  const historyPrefetchDelayMs = 100;
+  const historyPrefetchDelayMs = HISTORY_PREFETCH_DELAY_MS;
   const loadAllHistory = useCallback(async () => {
     if (!workspace || !selected || !eventsQuery.data?.history_cursor) return;
     const scope = selected.id;
     const scopeIsActive = () => activeHistoryScope.current === scope;
     if (historyLoadingScopes.current.has(scope)) return;
     historyLoadingScopes.current.add(scope);
+    const controller = new AbortController();
+    historyAbortControllers.current.set(scope, controller);
     setHistoryLoadingBindingId(scope);
-    let historyCursor: string | null | undefined = eventsQuery.data.history_cursor;
+    const historyRootCursor = eventsQuery.data.history_cursor;
+    const budgetKey = `${scope}:${historyRootCursor}`;
+    let historyCursor: string | null | undefined = historyRootCursor;
+    let pagesRead = 0;
     if (historyFailedCursors.current.get(scope) !== historyCursor) historyFailedCursors.current.delete(scope);
     const seenHistoryCursors = new Set<string>();
     try {
       // The first response is the native latest page. Prepend older pages only
       // after it has been positioned, yielding between pages so a long branch
       // never delays the initial conversation view.
-      while (historyCursor) {
+      while (
+        historyCursor
+        && pagesRead < HISTORY_PREFETCH_MAX_PAGES
+        && (historyPrefetchPagesByRootCursor.current.get(budgetKey) ?? 0) < HISTORY_PREFETCH_MAX_TOTAL_PAGES
+      ) {
         const cursor = historyCursor;
         if (seenHistoryCursors.has(cursor)) throw new Error('读取更早会话记录时，历史分页游标没有推进。');
         seenHistoryCursors.add(cursor);
-        const older = await api.conversationEvents(workspace.id, scope, undefined, cursor);
-        if (!scopeIsActive()) return;
+        const older = await api.conversationEvents(workspace.id, scope, undefined, cursor, undefined, controller.signal);
+        pagesRead += 1;
+        historyPrefetchPagesByRootCursor.current.set(
+          budgetKey,
+          (historyPrefetchPagesByRootCursor.current.get(budgetKey) ?? 0) + 1,
+        );
+        if (!scopeIsActive() || controller.signal.aborted) return;
         // This transaction captures the actual viewport immediately before
         // this exact page is inserted, then restores only after React has
         // rendered the matching page. It cannot leak into another session.
@@ -5492,17 +5539,31 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         setHistoryPrepend(current => current?.id === transaction.id ? undefined : current);
         historyCursor = older.history_cursor;
       }
-      if (eventsQuery.data.history_cursor) {
+      if (!historyCursor && eventsQuery.data.history_cursor) {
         exhaustedHistoryCursors.current.set(scope, eventsQuery.data.history_cursor);
       }
     } catch (error) {
+      if (controller.signal.aborted) return;
       if (historyCursor) historyFailedCursors.current.set(scope, historyCursor);
       reportOperationError(scope, error instanceof Error ? error : new Error('读取更早会话记录失败'));
     } finally {
       historyLoadingScopes.current.delete(scope);
+      historyAbortControllers.current.delete(scope);
       setHistoryLoadingBindingId(current => current === scope ? undefined : current);
     }
   }, [api, eventQueryKey, eventsQuery.data?.history_cursor, queryClient, reportOperationError, selected, workspace]);
+  useEffect(() => {
+    const activeBindingId = selected?.id;
+    for (const [bindingId, controller] of historyAbortControllers.current) {
+      if (bindingId !== activeBindingId) controller.abort();
+    }
+    for (const [key, timer] of contextRefreshTimers.current) {
+      if (!activeBindingId || !key.endsWith(`:${activeBindingId}`)) {
+        window.clearTimeout(timer);
+        contextRefreshTimers.current.delete(key);
+      }
+    }
+  }, [selected?.id]);
   useEffect(() => {
     const bindingId = selected?.id;
     const historyCursor = eventsQuery.data?.history_cursor;
@@ -5755,7 +5816,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     // Hydration carries only the inexpensive event-batch context. Exact
     // current-View metrics come from the formal /context read, which starts
     // after first paint instead of holding events and readiness hostage.
-    staleTime: 0,
+    staleTime: CONTEXT_REFRESH_MIN_INTERVAL_MS,
     refetchOnWindowFocus: false,
   });
   const storedCurrentContext = useMemo(() => workspace && selected
