@@ -372,8 +372,11 @@ function isPauseInterruptionEvent(event: OpenHandsConversationEvent): boolean {
 }
 
 function isConversationTerminalError(event: OpenHandsConversationEvent): boolean {
-  return event.event_type === 'ERROR'
-    && String(event.payload.source_type ?? '') === 'ConversationErrorEvent';
+  // AgentErrorEvent is often recoverable, but OpenHands does not emit a
+  // separate ConversationErrorEvent when it is the last formal event in a
+  // turn. Keep every non-pause ERROR in the transcript; turnsFor() later
+  // suppresses it when a formal assistant reply proves recovery.
+  return event.event_type === 'ERROR' && !isPauseInterruptionEvent(event);
 }
 
 function itemsFor(event: OpenHandsConversationEvent): Item[] {
@@ -1528,7 +1531,13 @@ function ConversationFailure({ item, taskControl = [], retryStatus }: { item: It
     && item.content.includes('OpenAIException')
     && item.content.includes('Error code: 404');
   if (isLegacyAutoTitleFailure) return null;
-  return <div data-turn-terminal="true" data-event-id={item.event.id}><RetryStatus status={retryStatus ?? terminalRetryStatus(item)}/></div>;
+  return <div className="conversation-failure" data-turn-terminal="true" data-event-id={item.event.id} role="status">
+    <CircleAlert size={15}/><div>
+      <b>本轮未能完成</b>
+      <p>{item.content || 'OpenHands 未返回可展示的错误详情。'}</p>
+      <RetryStatus status={retryStatus ?? terminalRetryStatus(item)}/>
+    </div>
+  </div>;
 }
 
 export interface ConversationHistoryPrepend {

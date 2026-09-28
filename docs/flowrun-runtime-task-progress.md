@@ -7510,3 +7510,15 @@ FlowWeave 本地累加后猜测压缩边界。
 完成：`read_active_events` 继续提供同次原生 state 的模型、窗口、累计用量和 readiness 投影，但 hydration 不再把这份基础 context 误认为精确 current-View 用量。Agent Workspace 与 FlowRun 节点会话均补读正式 `conversation_context()`，只合并其 `used_tokens`、`view_event_count` 与 `usage_current` 字段，因而终态会话刷新也会返回 OpenHands `/context` 的正式 Token／事件指标。
 
 验收：两条无数据库直接 hydration 回归通过（2 passed），覆盖基础 batch context 的未知指标被正式 current-View Token／事件数覆盖；受影响 Python `py_compile`、Ruff format/check，以及 Web TypeScript typecheck、ESLint、production build 通过；`git diff --check` 与任务状态唯一性通过。标准 pytest 命令已启动，但全局 PostgreSQL Testcontainers fixture 因本机 Docker daemon 缺失而在断言前失败，未伪记为通过。未修改 OpenHands、数据库 schema、Runtime 生命周期或远端配置。
+
+### FR-538 AgentErrorEvent 终态与历史渲染 — DONE
+
+依赖：FR-537。
+
+目标：当 OpenHands 正式事件窗口以 `AgentErrorEvent` 收尾时，Agent Workspace 与 FlowRun 节点会话必须保留可读历史，并将该正式终态的具体错误呈现给授权用户；不得把用户暂停导致的中断伪装为失败，也不得在后续已有正式回复时保留已恢复的旧错误。
+
+范围：仅调整 Web 会话事件渲染与其 Agent Workspace 浏览器回归；不修改 OpenHands 事件、会话存储、hydration API、Runtime 生命周期、数据库 schema 或远端配置。
+
+完成：非暂停的正式 `ERROR`（含 `AgentErrorEvent`）进入会话错误投影；同一 turn 一旦已有正式 Agent 回复或仍处于当前运行态，既有恢复抑制逻辑继续隐藏该错误。没有回复的终态错误以失败卡展示稳定分类与原始正式错误内容。历史页继续由既有 `history_cursor` 分页恢复，回归同时覆盖终态 Agent 错误详情与更早用户消息。
+
+验收：Agent Workspace 定向 Playwright、Web TypeScript typecheck、受影响 ESLint、`git diff --check` 与任务状态唯一性通过。未修改 OpenHands、数据库 schema、Runtime 生命周期或远端配置。
