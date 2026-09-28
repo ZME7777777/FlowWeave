@@ -141,8 +141,20 @@ async function uploadAttachmentPart(url: string, file: Blob, filename: string, u
   });
 }
 
-async function uploadFormData(createPath: string, operationPath: string, file: File, payload: Record<string, unknown>, onProgress?: UploadProgressHandler): Promise<AgentAttachment> {
-  const sessionKey = `${operationPath}:${file.name}:${file.size}:${file.lastModified}:${String(payload.conversation_id ?? '')}`;
+async function uploadAttachmentPartWithRetry(url: string, file: Blob, filename: string, uploadedBytes: number, totalBytes: number, onProgress?: UploadProgressHandler): Promise<void> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await uploadAttachmentPart(url, file, filename, uploadedBytes, totalBytes, onProgress);
+      return;
+    } catch (error) {
+      if (attempt >= 2 || error instanceof ApiError && error.status >= 400 && error.status < 500) throw error;
+      await new Promise(resolve => window.setTimeout(resolve, 400 * 2 ** attempt));
+    }
+  }
+}
+
+async function uploadFormData<T = AgentAttachment>(createPath: string, operationPath: string, file: File, payload: Record<string, unknown>, onProgress?: UploadProgressHandler): Promise<T> {
+  const sessionKey = `${operationPath}:${file.name}:${file.size}:${file.lastModified}:${String(payload.conversation_id ?? '')}:${String(payload.parent_path ?? '')}`;
   const bindingId = typeof payload.conversation_id === 'string' ? payload.conversation_id : undefined;
   const bindingQuery = bindingId ? `?binding_id=${encodeURIComponent(bindingId)}` : '';
   let upload = resumableUploadSessions.get(sessionKey) ?? savedResumableUpload(sessionKey);
@@ -170,14 +182,14 @@ async function uploadFormData(createPath: string, operationPath: string, file: F
   for (let partNumber = 0, offset = 0; offset < file.size; partNumber += 1, offset += chunkSize) {
     if (completed.has(partNumber)) continue;
     const chunk = file.slice(offset, Math.min(offset + chunkSize, file.size));
-    await uploadAttachmentPart(`${API_BASE}${ROOT}${operationPath.replace(/\/?$/, '')}/${encodeURIComponent(upload.upload_id)}/parts/${partNumber}${bindingQuery}`, chunk, file.name, offset, file.size, onProgress);
+    await uploadAttachmentPartWithRetry(`${API_BASE}${ROOT}${operationPath.replace(/\/?$/, '')}/${encodeURIComponent(upload.upload_id)}/parts/${partNumber}${bindingQuery}`, chunk, file.name, offset, file.size, onProgress);
   }
   const complete = await fetch(`${API_BASE}${ROOT}${operationPath.replace(/\/?$/, '')}/${encodeURIComponent(upload.upload_id)}/complete${bindingQuery}`, { method: 'POST', credentials: 'include' }).catch(() => { throw new ApiError('无法上传附件，请检查网络后重试。', 'NETWORK_ERROR', {}, 0); });
   if (!complete.ok) throw await responseError(complete);
   resumableUploadSessions.delete(sessionKey);
   saveResumableUpload(sessionKey, undefined);
   onProgress?.(100);
-  return complete.json() as Promise<AgentAttachment>;
+  return complete.json() as Promise<T>;
 }
 
 export const artifactContentUrl = (artifactId: string, download = false) =>
@@ -491,6 +503,8 @@ export const api = {
     uploadFormData(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/attachments/uploads`, `/agent-workspaces/${encodeURIComponent(workspaceId)}/attachments/uploads`, file, { filename: file.name, mime_type: file.type, total_size: file.size, conversation_id: bindingId }, onProgress),
   uploadAgentWorkspaceAttachment: (workspaceId: string, file: File, workDirectoryId?: string, conversationId?: string, onProgress?: UploadProgressHandler): Promise<AgentAttachment> =>
     uploadFormData(`/agent-workspaces/${encodeURIComponent(workspaceId)}/attachments/uploads`, `/agent-workspaces/${encodeURIComponent(workspaceId)}/attachments/uploads`, file, { filename: file.name, mime_type: file.type, total_size: file.size, work_directory_id: workDirectoryId, conversation_id: conversationId }, onProgress),
+  uploadAgentWorkspaceFile: (workspaceId: string, file: File, options: { parentPath?: string; workDirectoryId?: string; conversationId?: string } = {}, onProgress?: UploadProgressHandler): Promise<AgentWorkspaceReference> =>
+    uploadFormData<AgentAttachment>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/workspace/uploads`, `/agent-workspaces/${encodeURIComponent(workspaceId)}/workspace/uploads`, file, { filename: file.name, mime_type: file.type, total_size: file.size, parent_path: options.parentPath, work_directory_id: options.workDirectoryId, conversation_id: options.conversationId }, onProgress).then(item => ({ path: item.path, kind: 'file', display_name: item.filename })),
   deleteAgentWorkspaceDraftAttachments: (workspaceId: string, conversationId: string, path?: string) => {
     const query = new URLSearchParams();
     if (path) query.set('path', path);

@@ -149,6 +149,7 @@ export interface AgentSessionApi {
   readonly migrateStreamingConversation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, modelProviderId: string, modelName?: string | null, reasoningEffort?: string | null) => Promise<AgentConversation>;
   readonly uploadConversationAttachment: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, file: File, onProgress?: UploadProgressHandler) => Promise<AgentAttachment>;
   readonly uploadDraftAttachment: (hostId: AgentSessionHostId, file: File, workDirectoryId?: AgentSessionWorkDirectoryId, conversationId?: string, onProgress?: UploadProgressHandler) => Promise<AgentAttachment>;
+  readonly uploadWorkspaceFile?: (hostId: AgentSessionHostId, file: File, options?: { parentPath?: string; workDirectoryId?: AgentSessionWorkDirectoryId; conversationId?: string }, onProgress?: UploadProgressHandler) => Promise<AgentWorkspaceReference>;
   readonly deleteDraftAttachments: (hostId: AgentSessionHostId, conversationId: string, path?: string) => Promise<void>;
   readonly forkConversation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, eventId: string) => Promise<AgentConversation>;
   /** Requests native context condensation without appending a user message. */
@@ -229,6 +230,7 @@ export const agentWorkspaceSessionGateway: AgentSessionGateway = {
     migrateStreamingConversation: api.migrateAgentStreamingConversation,
     uploadConversationAttachment: api.uploadAgentAttachment,
     uploadDraftAttachment: api.uploadAgentWorkspaceAttachment,
+    uploadWorkspaceFile: api.uploadAgentWorkspaceFile,
     deleteDraftAttachments: api.deleteAgentWorkspaceDraftAttachments,
     forkConversation: api.forkAgentConversation,
     condenseConversation: api.condenseAgentConversation,

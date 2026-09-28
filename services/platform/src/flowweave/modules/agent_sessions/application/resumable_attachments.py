@@ -15,6 +15,7 @@ from flowweave.shared.errors import DomainError
 
 CHUNK_SIZE = 256 * 1024
 MAX_ATTACHMENT_SIZE = 25 * 1024 * 1024
+MAX_WORKSPACE_FILE_SIZE = 100 * 1024 * 1024
 UPLOAD_RETENTION = timedelta(hours=24)
 
 
@@ -26,22 +27,30 @@ def create_upload(
     host_scope_id: str | None,
     binding_id: str | None,
     work_directory_id: str | None,
-    attachment_owner_id: str,
+    attachment_owner_id: str | None,
     filename: str,
     mime_type: str,
     total_size: int,
+    upload_kind: str = "ATTACHMENT",
+    target_path: str | None = None,
 ) -> AgentAttachmentUpload:
-    try:
-        owner_id = str(UUID(attachment_owner_id))
-    except ValueError as exc:
-        raise DomainError("AGENT_CONVERSATION_ID_INVALID", "附件必须关联有效会话", 422) from exc
+    if upload_kind not in {"ATTACHMENT", "WORKSPACE_FILE"}:
+        raise DomainError("AGENT_UPLOAD_INVALID", "上传类型无效", 422)
+    owner_id: str | None = None
+    if upload_kind == "ATTACHMENT":
+        try:
+            owner_id = str(UUID(attachment_owner_id or ""))
+        except ValueError as exc:
+            raise DomainError("AGENT_CONVERSATION_ID_INVALID", "附件必须关联有效会话", 422) from exc
     if not filename or len(filename) > 240 or "\x00" in filename:
-        raise DomainError("AGENT_ATTACHMENT_INVALID", "附件文件名无效", 422)
-    if total_size <= 0 or total_size > MAX_ATTACHMENT_SIZE:
-        raise DomainError("AGENT_ATTACHMENT_TOO_LARGE", "单个附件不能超过 25 MiB", 422)
+        raise DomainError("AGENT_ATTACHMENT_INVALID", "上传文件名无效", 422)
+    max_size = MAX_ATTACHMENT_SIZE if upload_kind == "ATTACHMENT" else MAX_WORKSPACE_FILE_SIZE
+    if total_size <= 0 or total_size > max_size:
+        label = "附件" if upload_kind == "ATTACHMENT" else "工作区文件"
+        raise DomainError("AGENT_ATTACHMENT_TOO_LARGE", f"单个{label}不能超过 {max_size // 1024 // 1024} MiB", 422)
     normalized_mime_type = mime_type.lower().strip() or "application/octet-stream"
     if len(normalized_mime_type) > 200:
-        raise DomainError("AGENT_ATTACHMENT_INVALID", "附件类型无效", 422)
+        raise DomainError("AGENT_ATTACHMENT_INVALID", "上传文件类型无效", 422)
     upload = AgentAttachmentUpload(
         host_kind=host_kind,
         host_id=host_id,
@@ -49,6 +58,8 @@ def create_upload(
         binding_id=binding_id,
         work_directory_id=work_directory_id,
         attachment_owner_id=owner_id,
+        upload_kind=upload_kind,
+        target_path=target_path,
         filename=filename,
         mime_type=normalized_mime_type,
         total_size=total_size,

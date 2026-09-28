@@ -3218,6 +3218,45 @@ def create_resumable_attachment_upload(
     return resumable_attachments.upload_status(upload, [])
 
 
+def create_resumable_workspace_file_upload(
+    db: Session,
+    workspace_id: str,
+    *,
+    binding_id: str | None,
+    work_directory_id: str | None,
+    parent_path: str | None,
+    filename: str,
+    content_type: str,
+    total_size: int,
+) -> dict[str, object]:
+    workspace = _workspace(db, workspace_id)
+    if binding_id is not None:
+        _binding(db, workspace_id, binding_id)
+    target_path = agent_workspace_host.validate_uploaded_workspace_file_target(
+        db,
+        workspace.id,
+        parent_path,
+        filename,
+        work_directory_id=work_directory_id,
+        binding_id=binding_id,
+    )
+    upload = resumable_attachments.create_upload(
+        db,
+        host_kind="AGENT_WORKSPACE",
+        host_id=workspace.id,
+        host_scope_id=None,
+        binding_id=binding_id,
+        work_directory_id=work_directory_id,
+        attachment_owner_id=None,
+        filename=filename,
+        mime_type=content_type,
+        total_size=total_size,
+        upload_kind="WORKSPACE_FILE",
+        target_path=target_path,
+    )
+    return resumable_attachments.upload_status(upload, [])
+
+
 def _resumable_attachment_upload(db: Session, workspace_id: str, binding_id: str | None, upload_id: str):
     _workspace(db, workspace_id)
     if binding_id is not None:
@@ -3242,12 +3281,32 @@ def upload_resumable_attachment_part(db: Session, workspace_id: str, binding_id:
 def complete_resumable_attachment_upload(db: Session, workspace_id: str, binding_id: str | None, upload_id: str) -> dict[str, str | int | None]:
     upload = _resumable_attachment_upload(db, workspace_id, binding_id, upload_id)
     content = resumable_attachments.assemble(db, upload)
-    attachment = upload_attachment(
-        db, workspace_id, binding_id, filename=upload.filename, content_type=upload.mime_type, content=content,
-        work_directory_id=upload.work_directory_id, attachment_owner_id=upload.attachment_owner_id,
-    )
+    if upload.upload_kind == "WORKSPACE_FILE":
+        if upload.target_path is None:
+            raise DomainError("AGENT_UPLOAD_INVALID", "工作区上传目标无效", 409)
+        path = agent_workspace_host.write_uploaded_workspace_file(
+            db,
+            workspace_id,
+            upload.target_path,
+            upload.filename,
+            content,
+            work_directory_id=upload.work_directory_id,
+            binding_id=binding_id,
+        )
+        result: dict[str, str | int | None] = {
+            "filename": upload.filename,
+            "mime_type": upload.mime_type,
+            "byte_size": upload.total_size,
+            "path": path,
+            "image_data_url": None,
+        }
+    else:
+        result = upload_attachment(
+            db, workspace_id, binding_id, filename=upload.filename, content_type=upload.mime_type, content=content,
+            work_directory_id=upload.work_directory_id, attachment_owner_id=upload.attachment_owner_id,
+        )
     resumable_attachments.close_upload(db, upload, status="COMPLETED")
-    return attachment
+    return result
 
 
 def cancel_resumable_attachment_upload(db: Session, workspace_id: str, binding_id: str | None, upload_id: str) -> None:

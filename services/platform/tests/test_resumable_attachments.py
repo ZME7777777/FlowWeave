@@ -59,3 +59,40 @@ def test_resumable_upload_rejects_conflicting_retry(
         resumable_attachments.put_part(db, upload, part_number=0, content=b"a")
         with pytest.raises(DomainError, match="不一致"):
             resumable_attachments.put_part(db, upload, part_number=0, content=b"b")
+
+
+def test_resumable_workspace_file_allows_100_mib_and_has_no_attachment_owner(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with db_session_factory() as db:
+        upload = resumable_attachments.create_upload(
+            db,
+            host_kind="AGENT_WORKSPACE",
+            host_id=str(uuid4()),
+            host_scope_id=None,
+            binding_id=None,
+            work_directory_id=None,
+            attachment_owner_id=None,
+            filename="archive.bin",
+            mime_type="application/octet-stream",
+            total_size=resumable_attachments.MAX_WORKSPACE_FILE_SIZE,
+            upload_kind="WORKSPACE_FILE",
+            target_path="/runtime/workspace/project",
+        )
+        assert upload.attachment_owner_id is None
+        assert upload.upload_kind == "WORKSPACE_FILE"
+        with pytest.raises(DomainError, match="100 MiB"):
+            resumable_attachments.create_upload(
+                db,
+                host_kind="AGENT_WORKSPACE",
+                host_id=str(uuid4()),
+                host_scope_id=None,
+                binding_id=None,
+                work_directory_id=None,
+                attachment_owner_id=None,
+                filename="too-large.bin",
+                mime_type="application/octet-stream",
+                total_size=resumable_attachments.MAX_WORKSPACE_FILE_SIZE + 1,
+                upload_kind="WORKSPACE_FILE",
+                target_path="/runtime/workspace/project",
+            )

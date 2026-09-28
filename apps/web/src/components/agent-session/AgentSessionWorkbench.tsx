@@ -3374,6 +3374,7 @@ function WorkspaceGitWorkingDiffReview({ tab, onOpenSource, onSelectFile }: {
   </section>;
 }
 type CandidateFilePreviewRequest = { key: string; filename: string; url: string };
+type WorkspaceUpload = { id: string; file: File; progress: number; state: 'uploading' | 'failed' };
 
 function SshAccessGuide({
   host, port, path, onClose,
@@ -3560,6 +3561,8 @@ function WorkspaceDrawer({
   const [pendingSourceNavigation, setPendingSourceNavigation] = useState<{ path: string; line: number; directories: string[] }>();
   const [selectedEntryPaths, setSelectedEntryPaths] = useState<Set<string>>(new Set());
   const [activeDirectory, setActiveDirectory] = useState<string>();
+  const [workspaceUploads, setWorkspaceUploads] = useState<WorkspaceUpload[]>([]);
+  const workspaceUploadInput = useRef<HTMLInputElement>(null);
   const [gitContextPath, setGitContextPath] = useState<string>();
   const [gitSidebarRequested, setGitSidebarRequested] = useState(false);
   const [closedGitDiffEpoch, setClosedGitDiffEpoch] = useState(0);
@@ -4048,6 +4051,28 @@ function WorkspaceDrawer({
     }
     void createEntry(parentPath, kind);
   };
+  const startWorkspaceUpload = useCallback((file: File, retryId?: string) => {
+    if (!api.uploadWorkspaceFile || !details) return;
+    const id = retryId ?? randomId();
+    const parentPath = activeDirectory ?? details.working_directory;
+    setWorkspaceUploads(current => retryId
+      ? current.map(item => item.id === id ? { ...item, state: 'uploading', progress: 0 } : item)
+      : [...current, { id, file, progress: 0, state: 'uploading' }]);
+    void api.uploadWorkspaceFile(workspaceId, file, { parentPath, workDirectoryId, conversationId: bindingId }, progress => {
+      setWorkspaceUploads(current => current.map(item => item.id === id ? { ...item, progress } : item));
+    }).then(() => {
+      setWorkspaceUploads(current => current.filter(item => item.id !== id));
+      void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'workspace-details', workspaceId, bindingId, workDirectoryId) });
+      setDirectoryPages(new Map());
+      void queryClient.invalidateQueries({ queryKey: directoryQueryKey });
+    }, () => {
+      setWorkspaceUploads(current => current.map(item => item.id === id ? { ...item, state: 'failed', progress: 100 } : item));
+    });
+  }, [activeDirectory, api, bindingId, details, directoryQueryKey, host, queryClient, workDirectoryId, workspaceId]);
+  const retryWorkspaceUpload = useCallback((id: string) => {
+    const upload = workspaceUploads.find(item => item.id === id);
+    if (upload) startWorkspaceUpload(upload.file, id);
+  }, [startWorkspaceUpload, workspaceUploads]);
   const closeTab = async (tab: WorkspaceToolTab) => {
     if (tab.kind === 'terminal') {
       setPanelError('');
@@ -4185,7 +4210,8 @@ function WorkspaceDrawer({
         {loadingOrError || (!scopeState.tabs.length ? <div className="agent-drawer-empty"><b>选择工作区工具</b><span>文件仅打开一个页签；终端可按需打开多个独立实例。</span><div><button type="button" className="secondary" onClick={() => openFiles()}>打开文件</button><button type="button" className="secondary" disabled={!runtimeAvailable} onClick={openTerminal}>新建终端</button></div></div> : details && <div className={`agent-workspace-tool-content${gitSidebarVisible ? ' fullscreen-git-layout' : ''}`}>
           {scopeState.tabs.some(tab => tab.kind === 'files') && <section className={`agent-workspace-files ${scopeState.activeTabId === 'files' ? 'active' : ''}${gitSidebarVisible ? ' fullscreen-git' : ''}`} style={{ '--file-tree-width': `${fileTreeWidth}px` } as CSSProperties}>
             <div className="agent-file-tree-pane">
-              <header className="agent-file-tree-toolbar"><span>{selectedEntryPaths.size ? `已选 ${selectedEntryPaths.size} 项` : '文件'}</span><div className="agent-file-tree-actions"><button type="button" title="新建文件" aria-label="新建文件" onClick={() => createAtActiveDirectory('FILE')}><FileCode2 size={13}/></button><button type="button" title="新建目录" aria-label="新建目录" onClick={() => createAtActiveDirectory('DIRECTORY')}><FolderPlus size={13}/></button><button type="button" className={`agent-file-tree-expand-toggle${expandAllFileDirectories ? ' expanded' : ''}`} title={expandAllFileDirectories ? '全部收起' : '全部展开'} aria-label={expandAllFileDirectories ? '全部收起目录' : '全部展开目录'} disabled={!fileDirectoryPaths.length} onClick={toggleAllFileDirectories}>{expandAllFileDirectories ? <ChevronRight size={13}/> : <ChevronDown size={13}/>}</button><button type="button" className="danger" title="删除选中项" aria-label="删除选中项" disabled={!selectedEntryRoots.length} onClick={() => void removeEntries(selectedEntryRoots.map(path => ({ path, kind: visibleFiles.find(item => item.path === path)?.kind ?? 'directory' })))}><Trash2 size={13}/></button></div></header>
+              <header className="agent-file-tree-toolbar"><span>{selectedEntryPaths.size ? `已选 ${selectedEntryPaths.size} 项` : '文件'}</span><div className="agent-file-tree-actions"><input ref={workspaceUploadInput} type="file" multiple hidden onChange={event => { Array.from(event.target.files ?? []).forEach(file => startWorkspaceUpload(file)); event.currentTarget.value = ''; }}/><button type="button" title="上传文件" aria-label="上传文件" disabled={!api.uploadWorkspaceFile} onClick={() => workspaceUploadInput.current?.click()}><ArrowUp size={13}/></button><button type="button" title="新建文件" aria-label="新建文件" onClick={() => createAtActiveDirectory('FILE')}><FileCode2 size={13}/></button><button type="button" title="新建目录" aria-label="新建目录" onClick={() => createAtActiveDirectory('DIRECTORY')}><FolderPlus size={13}/></button><button type="button" className={`agent-file-tree-expand-toggle${expandAllFileDirectories ? ' expanded' : ''}`} title={expandAllFileDirectories ? '全部收起' : '全部展开'} aria-label={expandAllFileDirectories ? '全部收起目录' : '全部展开目录'} disabled={!fileDirectoryPaths.length} onClick={toggleAllFileDirectories}>{expandAllFileDirectories ? <ChevronRight size={13}/> : <ChevronDown size={13}/>}</button><button type="button" className="danger" title="删除选中项" aria-label="删除选中项" disabled={!selectedEntryRoots.length} onClick={() => void removeEntries(selectedEntryRoots.map(path => ({ path, kind: visibleFiles.find(item => item.path === path)?.kind ?? 'directory' })))}><Trash2 size={13}/></button></div></header>
+              {workspaceUploads.length > 0 && <div className="agent-workspace-upload-list" aria-label="工作区上传">{workspaceUploads.map(item => <article key={item.id} className={item.state}><span>{item.file.name}</span><small>{item.state === 'uploading' ? `${item.progress}%` : '上传失败'}</small>{item.state === 'uploading' ? <i style={{ '--upload-progress': `${item.progress}%` } as CSSProperties}/> : <button type="button" onClick={() => retryWorkspaceUpload(item.id)}>重试</button>}</article>)}</div>}
               <WorkspaceFileTree entries={visibleFiles} root={details.working_directory} selectedFile={selectedFile} selectedPaths={selectedEntryPaths} expanded={expandedFilePaths} pagination={new Map([...directoryPages].map(([path, page]) => [path, page.nextCursor]))} loadingDirectories={loadingDirectoryPaths} onExpandedChange={updateExpandedFilePaths} onLoadMore={parentPath => { void loadDirectory(parentPath); }} onSelect={path => { setActiveDirectory(undefined); selectFile(path); }} onSelectionChange={setSelectedEntryPaths} onActivateDirectory={path => { setActiveDirectory(path); setGitContextPath(path); setGitSidebarRequested(Boolean(path)); }} onContextMenu={(path, kind, event) => { setEntryMenu({ path, kind, x: Math.min(event.clientX, window.innerWidth - 190), y: Math.min(event.clientY, window.innerHeight - 190) }); }} fileDownloadUrl={path => fileUrl(workspaceId, path, { bindingId, workDirectoryId, download: true })}/>
             </div>
             <div className="agent-file-tree-resizer" role="separator" aria-label="调整文件目录宽度" aria-orientation="vertical" onPointerDown={startFileTreeResize}/>

@@ -163,12 +163,13 @@ class AgentConversationMessageAttachment(Base):
 
 
 class AgentAttachmentUpload(Base):
-    """Private, resumable upload state; only completion creates a workspace file."""
+    """Resumable transfer state; completion creates an attachment or workspace file."""
 
     __tablename__ = "agent_attachment_uploads"
     __table_args__ = (
         CheckConstraint("host_kind IN ('AGENT_WORKSPACE', 'FLOW_NODE')", name="ck_agent_attachment_upload_host_kind"),
-        CheckConstraint("total_size > 0 AND total_size <= 26214400", name="ck_agent_attachment_upload_total_size"),
+        CheckConstraint("upload_kind IN ('ATTACHMENT', 'WORKSPACE_FILE')", name="ck_agent_attachment_upload_kind"),
+        CheckConstraint("total_size > 0 AND total_size <= 104857600", name="ck_agent_attachment_upload_total_size"),
         CheckConstraint("chunk_size = 262144", name="ck_agent_attachment_upload_chunk_size"),
         CheckConstraint("status IN ('ACTIVE', 'COMPLETED', 'CANCELLED')", name="ck_agent_attachment_upload_status"),
     )
@@ -179,7 +180,9 @@ class AgentAttachmentUpload(Base):
     host_scope_id: Mapped[str | None] = mapped_column(String(36), index=True)
     binding_id: Mapped[str | None] = mapped_column(String(36), index=True)
     work_directory_id: Mapped[str | None] = mapped_column(String(36), index=True)
-    attachment_owner_id: Mapped[str] = mapped_column(String(36), index=True)
+    attachment_owner_id: Mapped[str | None] = mapped_column(String(36), index=True)
+    upload_kind: Mapped[str] = mapped_column(String(20), default="ATTACHMENT")
+    target_path: Mapped[str | None] = mapped_column(String(500))
     filename: Mapped[str] = mapped_column(String(240))
     mime_type: Mapped[str] = mapped_column(String(200))
     total_size: Mapped[int] = mapped_column(Integer)
