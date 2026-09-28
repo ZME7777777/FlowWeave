@@ -52,6 +52,7 @@ class Container:
     audit_writer: AuditWriter
     blocking_executor: ThreadPoolExecutor
     blocking_io_slots: asyncio.Semaphore
+    blocking_mutation_slots: asyncio.Semaphore
     poll_executor: ThreadPoolExecutor
     poll_io_slots: asyncio.Semaphore
     history_read_executor: ThreadPoolExecutor
@@ -144,6 +145,9 @@ def build_container(settings: Settings, *, role: Literal["api", "worker"]) -> Co
         audit_writer=AuditWriter(database.sessions),
         blocking_executor=blocking_executor,
         blocking_io_slots=asyncio.Semaphore(blocking_workers),
+        # Writes share the existing executor and DB pool, but cannot occupy
+        # every slot needed to hydrate an unrelated conversation.
+        blocking_mutation_slots=asyncio.Semaphore(min(2, max(1, settings.blocking_pool_size // 2))),
         poll_executor=poll_executor,
         poll_io_slots=asyncio.Semaphore(settings.runtime_poll_worker_concurrency),
         history_read_executor=history_read_executor,

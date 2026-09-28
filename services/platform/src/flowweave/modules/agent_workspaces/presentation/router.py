@@ -37,6 +37,7 @@ from flowweave.shared.http import (
     run_blocking,
     run_blocking_control,
     run_blocking_history,
+    run_blocking_mutation,
     run_sync,
 )
 from flowweave.shared.settings import bind_settings, reset_settings
@@ -317,10 +318,10 @@ async def put_agent_workspace_capabilities(
 
 @router.post("/agent-workspaces/{workspace_id}/capabilities/{capability_version_id}/mcp-readiness")
 async def probe_agent_workspace_mcp_readiness(
-    workspace_id: str, capability_version_id: str, db: Db
+    workspace_id: str, capability_version_id: str, container: ContainerDep
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking(
+        container,
         lambda session: conversations.probe_workspace_mcp_readiness(
             session, workspace_id, capability_version_id
         ),
@@ -684,7 +685,7 @@ async def agent_conversation_activity(
 async def create_agent_conversation(
     workspace_id: str,
     payload: AgentConversationBootstrapWrite,
-    db: Db,
+    container: ContainerDep,
     idempotency_key: IdempotencyKey = None,
 ) -> dict[str, Any]:
     if idempotency_key is None:
@@ -693,8 +694,8 @@ async def create_agent_conversation(
             "首条消息必须携带幂等请求标识",
             422,
         )
-    return await run_sync(
-        db,
+    return await run_blocking_mutation(
+        container,
         lambda session: conversations.bootstrap_conversation(
             session,
             workspace_id,
@@ -715,18 +716,23 @@ async def create_agent_conversation(
 
 
 @router.get("/agent-workspaces/{workspace_id}/conversations/{binding_id}")
-async def get_agent_conversation(workspace_id: str, binding_id: str, db: Db) -> dict[str, Any]:
-    return await run_sync(
-        db, lambda session: conversations.get_conversation(session, workspace_id, binding_id)
+async def get_agent_conversation(
+    workspace_id: str, binding_id: str, container: ContainerDep
+) -> dict[str, Any]:
+    return await run_blocking(
+        container, lambda session: conversations.get_conversation(session, workspace_id, binding_id)
     )
 
 
 @router.patch("/agent-workspaces/{workspace_id}/conversations/{binding_id}")
 async def patch_agent_conversation(
-    workspace_id: str, binding_id: str, payload: AgentConversationPatchWrite, db: Db
+    workspace_id: str,
+    binding_id: str,
+    payload: AgentConversationPatchWrite,
+    container: ContainerDep,
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking_mutation(
+        container,
         lambda session: conversations.patch_conversation(
             session, workspace_id, binding_id, payload.title
         ),
@@ -782,10 +788,10 @@ async def add_agent_conversation_capability(
     workspace_id: str,
     binding_id: str,
     payload: AgentConversationCapabilityAddWrite,
-    db: Db,
+    container: ContainerDep,
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking_mutation(
+        container,
         lambda session: conversations.add_conversation_capability(
             session, workspace_id, binding_id, payload.capability_version_id
         ),
@@ -809,10 +815,10 @@ async def synchronize_agent_conversation_credentials(
     workspace_id: str,
     binding_id: str,
     payload: AgentConversationCredentialSyncWrite,
-    db: Db,
+    container: ContainerDep,
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking_mutation(
+        container,
         lambda session: conversations.synchronize_conversation_credentials(
             session, workspace_id, binding_id, tuple(payload.credential_ids)
         ),
@@ -827,11 +833,11 @@ async def synchronize_agent_conversation_credentials(
 async def delete_agent_conversation(
     workspace_id: str,
     binding_id: str,
-    db: Db,
+    container: ContainerDep,
     idempotency_key: IdempotencyKey = None,
 ) -> Response:
-    await run_sync(
-        db,
+    await run_blocking_mutation(
+        container,
         lambda session: conversations.delete_conversation(
             session,
             workspace_id,
@@ -985,10 +991,10 @@ async def agent_confirmation_decision(
     workspace_id: str,
     binding_id: str,
     payload: AgentConfirmationDecisionWrite,
-    db: Db,
+    container: ContainerDep,
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking_mutation(
+        container,
         lambda session: conversations.decide_confirmation(
             session,
             workspace_id,
@@ -1024,7 +1030,7 @@ async def agent_message(
             session, workspace_id, binding_id, payload.content, **arguments
         ),
     )
-    running_result = await run_blocking(
+    running_result = await run_blocking_mutation(
         container, lambda _session: conversations.dispatch_running_message(prepared)
     )
     if running_result is not None:
@@ -1034,8 +1040,8 @@ async def agent_message(
                 session, prepared, running_result
             ),
         )
-    return await run_sync(
-        db,
+    return await run_blocking_mutation(
+        container,
         lambda session: conversations.message(
             session,
             workspace_id,
@@ -1050,11 +1056,11 @@ async def agent_message(
     "/agent-workspaces/{workspace_id}/conversations/{binding_id}/attachments", status_code=201
 )
 async def agent_attachment(
-    workspace_id: str, binding_id: str, db: Db, file: Annotated[UploadFile, File()]
+    workspace_id: str, binding_id: str, container: ContainerDep, file: Annotated[UploadFile, File()]
 ) -> dict[str, Any]:
     content = await file.read(25 * 1024 * 1024 + 1)
-    return await run_sync(
-        db,
+    return await run_blocking_mutation(
+        container,
         lambda session: conversations.upload_attachment(
             session,
             workspace_id,
@@ -1069,14 +1075,14 @@ async def agent_attachment(
 @router.post("/agent-workspaces/{workspace_id}/attachments", status_code=201)
 async def agent_workspace_attachment(
     workspace_id: str,
-    db: Db,
+    container: ContainerDep,
     file: Annotated[UploadFile, File()],
     work_directory_id: str | None = Query(default=None),
     conversation_id: str | None = Query(default=None, min_length=36, max_length=36),
 ) -> dict[str, Any]:
     content = await file.read(25 * 1024 * 1024 + 1)
-    return await run_sync(
-        db,
+    return await run_blocking_mutation(
+        container,
         lambda session: conversations.upload_attachment(
             session,
             workspace_id,
@@ -1096,11 +1102,11 @@ async def agent_workspace_attachment(
 async def delete_agent_workspace_draft_attachments(
     workspace_id: str,
     conversation_id: str,
-    db: Db,
+    container: ContainerDep,
     path: str | None = Query(default=None),
 ) -> Response:
-    await run_sync(
-        db,
+    await run_blocking_mutation(
+        container,
         lambda session: conversations.delete_draft_attachment(
             session, workspace_id, conversation_id, path
         )
@@ -1122,10 +1128,13 @@ async def agent_context(
 
 @router.post("/agent-workspaces/{workspace_id}/conversations/{binding_id}/model")
 async def agent_conversation_model(
-    workspace_id: str, binding_id: str, payload: AgentConversationModelWrite, db: Db
+    workspace_id: str,
+    binding_id: str,
+    payload: AgentConversationModelWrite,
+    container: ContainerDep,
 ) -> dict[str, str | None]:
-    return await run_sync(
-        db,
+    return await run_blocking_mutation(
+        container,
         lambda session: conversations.switch_conversation_model(
             session,
             workspace_id,
@@ -1145,11 +1154,11 @@ async def agent_streaming_migration(
     workspace_id: str,
     binding_id: str,
     payload: AgentStreamingMigrationWrite,
-    db: Db,
+    container: ContainerDep,
     idempotency_key: IdempotencyKey = None,
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking_mutation(
+        container,
         lambda session: conversations.migrate_streaming_conversation(
             session,
             workspace_id,
@@ -1167,11 +1176,11 @@ async def agent_fork_conversation(
     workspace_id: str,
     binding_id: str,
     payload: AgentConversationForkWrite,
-    db: Db,
+    container: ContainerDep,
     idempotency_key: IdempotencyKey = None,
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking_mutation(
+        container,
         lambda session: conversations.fork_conversation(
             session,
             workspace_id,
@@ -1235,10 +1244,10 @@ async def agent_rerun_edited_message(
     binding_id: str,
     event_id: str,
     payload: AgentMessageWrite,
-    db: Db,
+    container: ContainerDep,
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking_mutation(
+        container,
         lambda session: conversations.rewrite_message(
             session,
             workspace_id,
@@ -1254,9 +1263,11 @@ async def agent_rerun_edited_message(
 
 
 @router.post("/agent-workspaces/{workspace_id}/conversations/{binding_id}/resume", status_code=202)
-async def agent_resume(workspace_id: str, binding_id: str, db: Db) -> dict[str, Any]:
-    return await run_sync(
-        db, lambda session: conversations.resume(session, workspace_id, binding_id)
+async def agent_resume(
+    workspace_id: str, binding_id: str, container: ContainerDep
+) -> dict[str, Any]:
+    return await run_blocking_control(
+        container, lambda session: conversations.resume(session, workspace_id, binding_id)
     )
 
 

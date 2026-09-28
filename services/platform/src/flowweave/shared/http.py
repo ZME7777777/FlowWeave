@@ -125,6 +125,23 @@ async def run_blocking(container: Container, operation: Callable[[Session], T]) 
     )
 
 
+async def run_blocking_mutation(container: Container, operation: Callable[[Session], T]) -> T:
+    """Offload a Runtime write without taking every interactive read slot."""
+
+    return await _run_blocking_lane(
+        container,
+        operation,
+        executor=container.blocking_executor,
+        slots=container.blocking_io_slots,
+        admission_slots=container.blocking_mutation_slots,
+        session_factory=container.database.blocking_sessions,
+        saturation_code="RUNTIME_MUTATION_SATURATED",
+        saturation_message="Agent Runtime writes are busy; retry shortly",
+        lane_name="mutation",
+        active_limit=min(2, max(1, container.settings.blocking_pool_size // 2)),
+    )
+
+
 async def run_blocking_control(container: Container, operation: Callable[[Session], T]) -> T:
     """Run an Agent Runtime control command on its reserved recovery lane."""
 
@@ -174,8 +191,15 @@ async def _run_blocking_lane(
     saturation_message: str,
     lane_name: str,
     active_limit: int,
+    admission_slots: asyncio.Semaphore | None = None,
 ) -> T:
+    admitted = False
     try:
+        if admission_slots is not None:
+            await asyncio.wait_for(
+                admission_slots.acquire(), timeout=container.settings.blocking_pool_timeout_seconds
+            )
+            admitted = True
         # Runtime reads are deliberately bounded, but ordinary concurrent
         # hydration must be allowed to wait for the configured DB/Runtime
         # budget.  A former fixed 250ms deadline bypassed
@@ -185,6 +209,8 @@ async def _run_blocking_lane(
             slots.acquire(), timeout=container.settings.blocking_pool_timeout_seconds
         )
     except TimeoutError as exc:
+        if admitted and admission_slots is not None:
+            admission_slots.release()
         logger.warning(
             "blocking Runtime %s pool saturated active_limit=%d",
             lane_name,
@@ -195,6 +221,10 @@ async def _run_blocking_lane(
             saturation_message,
             503,
         ) from exc
+    except BaseException:
+        if admitted and admission_slots is not None:
+            admission_slots.release()
+        raise
 
     def execute() -> T:
         with session_factory() as session:
@@ -210,16 +240,24 @@ async def _run_blocking_lane(
             return result
 
     context = contextvars.copy_context()
-    worker = asyncio.ensure_future(
-        asyncio.get_running_loop().run_in_executor(
-            executor,
-            context.run,
-            execute,
+    try:
+        worker = asyncio.ensure_future(
+            asyncio.get_running_loop().run_in_executor(
+                executor,
+                context.run,
+                execute,
+            )
         )
-    )
+    except BaseException:
+        slots.release()
+        if admitted and admission_slots is not None:
+            admission_slots.release()
+        raise
 
     def release_slot(completed: asyncio.Future[T]) -> None:
         slots.release()
+        if admitted and admission_slots is not None:
+            admission_slots.release()
         # A disconnected HTTP client cancels the request coroutine, but Python
         # cannot stop an already-running thread. Consume its eventual exception
         # and release capacity only after its bounded Runtime call has exited.

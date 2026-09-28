@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`IN PROGRESS`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`FR-541`
+> 下一可执行切片：`FR-541A`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -7543,8 +7543,10 @@ FlowWeave 本地累加后猜测压缩边界。
 | 切片 | 状态 | 依赖 | 交付边界 |
 | --- | --- | --- | --- |
 | FR-540 | DONE | FR-539 | FlowRun 节点会话 interrupt 从 ASGI `run_sync` 转入预留控制 executor 和数据库池。 |
-| FR-541 | READY | FR-540 | 梳理两类会话其余同步 Runtime HTTP/文件调用，按可独立验证的入口拆分事务、执行线程和结果持久化，优先恢复／模型切换／消息 fallback。 |
-| FR-542 | PENDING | FR-541 | 首屏正式事件和 readiness 与精确 Context 指标解耦；指标按正式 OpenHands 合同异步刷新、保留可信同 binding 值，并限制重复统计。 |
+| FR-541 | DONE | FR-540 | Agent Workspace 会话创建、详情、发送、附件、模型、Fork、重写、认证与恢复等同步 Runtime 调用移出 API event loop；默认写入最多占普通读取池的一半槽位，中断／恢复使用独立控制舱壁。 |
+| FR-541A | READY | FR-541 | FlowRun 节点会话的恢复、模型、Fork、重写、附件等同步 Runtime 调用移出 API event loop，沿用同一写入容量保护。 |
+| FR-541B | PENDING | FR-541A | 核对两类宿主的 workspace 文件／Git 与其余兼容入口，消除仍在 `run_sync` 中执行的同步外部 I/O；跨调用事务时长另由 FR-547 收口。 |
+| FR-542 | PENDING | FR-541B | 首屏正式事件和 readiness 与精确 Context 指标解耦；指标按正式 OpenHands 合同异步刷新、保留可信同 binding 值，并限制重复统计。 |
 | FR-543 | PENDING | FR-542 | 固定 OpenHands baseline 的默认 executor 中将正式交互、搜索/统计和租约续期隔离；冻结新的 source commit、归档与 provenance。 |
 | FR-544 | PENDING | FR-543 | 消除单个 Conversation 加载/关闭卡住时空闲回收的全局生命周期阻塞，维持 OpenHands lease 与持久事件身份。 |
 | FR-545 | PENDING | FR-544 | 完成搜索命中分页、总工作量预算、事务释放和正式读取优先级，消除状态轮询逐条 Runtime 回读。 |
@@ -7557,3 +7559,7 @@ FlowWeave 本地累加后猜测压缩边界。
 FR-540 完成：节点 interrupt 原先在 `AsyncSession.run_sync()` 内同步请求 OpenHands，会占用 ASGI 事件循环及普通 async 数据库连接。路由现在与 Agent Workspace interrupt 一样使用 `run_blocking_control()`；控制线程自行取得独立同步 Session，并在实际外部调用结束后释放预留槽。FlowRun／Attempt／binding 校验与原服务事务结果不变。
 
 验收：目标 Python 文件 AST 解析、`git diff --check`、任务状态唯一性和 staged diff 复核通过。按本轮请求未运行数据库、Runtime、构建或 E2E 测试；此切片不改数据库 schema、OpenHands 或远端环境。下一可执行切片为 FR-541。
+
+FR-541 完成：Agent Workspace 会话写入口的同步 OpenHands HTTP／文件调用改由独立同步 Session 的有界执行线程承载，包括首次创建、运行中消息、静止消息 fallback、附件、模型切换、Fork、重写、动态能力与凭据同步、删除和手动改名；会话详情的原生事件读取与 MCP 探针也移出 ASGI event loop。正式恢复使用预留控制 lane。普通写入增加单独准入槽，默认最多占普通 blocking executor／数据库池的一半（池容量为 1 时无法预留读取槽），槽位在后台线程真正结束后释放；浏览器取消不能提前放开已在执行的写入。未增加 PostgreSQL 连接预算，也不占用历史分页或恢复控制容量。原服务内部的事务跨外部调用仍需在 FR-547 拆分。
+
+验收：受影响 Python AST 解析、`git diff --check`、唯一 `CURRENT` 状态及 staged diff 复核通过。按本轮要求未运行数据库、Runtime、完整构建或 E2E；不修改 schema、OpenHands 或远端环境。下一切片为 FR-541A。
