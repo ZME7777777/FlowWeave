@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`IN PROGRESS`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`FR-544`
+> 下一可执行切片：`FR-545`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -7550,8 +7550,8 @@ FlowWeave 本地累加后猜测压缩边界。
 | FR-541D | DONE | FR-541C | 两类宿主的终端 I/O 使用独立有界 stream/control executor 与会话槽位；WebSocket Runtime stream 已异步消费，剩余兼容入口核对后均为纯数据库事务或已有隔离调用。 |
 | FR-542 | DONE | FR-541D | 首屏正式事件和 readiness 与精确 Context 指标解耦；批次状态先行呈现，正式 Context 按同 binding 后台刷新并保留可信指标。 |
 | FR-543 | DONE | FR-542 | 固定 OpenHands baseline 将正式交互、搜索/统计和租约续期隔离到有界 executor；新的 source commit、归档与 provenance 已冻结。 |
-| FR-544 | READY | FR-543 | 消除单个 Conversation 加载/关闭卡住时空闲回收的全局生命周期阻塞，维持 OpenHands lease 与持久事件身份。 |
-| FR-545 | PENDING | FR-544 | 完成搜索命中分页、总工作量预算、事务释放和正式读取优先级，消除状态轮询逐条 Runtime 回读。 |
+| FR-544 | DONE | FR-543 | 空闲回收只在短全局生命周期段内摘除会话；单会话 close 在锁外执行，同时保留该会话锁、lease 与持久事件身份。 |
+| FR-545 | READY | FR-544 | 完成搜索命中分页、总工作量预算、事务释放和正式读取优先级，消除状态轮询逐条 Runtime 回读。 |
 | FR-546 | PENDING | FR-545 | 将标题、搜索、依赖构建等辅助任务与流程推进、恢复任务隔离到底层 executor/数据库连接预算。 |
 | FR-547 | PENDING | FR-546 | 缩短跨 Runtime 调用的数据库事务，核对 Worker heartbeat 等独立连接的全局预算；对任务 claim 索引只依据实际查询证据优化。 |
 | FR-548 | PENDING | FR-547 | Admin 同步数据库读取进入有界执行通道，合并重复 Docker 采样；Runtime Provider 的控制、构建与观测使用独立容量。 |
@@ -7585,6 +7585,10 @@ FR-542 完成：两类宿主的 hydration 仅读取 OpenHands 最新正式事件
 FR-543 完成：固定 OpenHands `baseline` 新增 commit `6334a2b34afd66d29d8d53099e5f13248dcb46d9`。ConversationService 现在拥有并向每个生产 EventService 注入四条有界 executor lane：既有同步 run、正式交互、低优先级搜索／统计／目录扫描、以及单线程 lease 文件 I/O。EventService 与 ConversationService 的生产路径不再调用 loop 默认 executor：正式 send／pause／确认／插件／模型／关闭走交互 lane，事件搜索、计数、精确 current-View Context、自动标题和目录状态扫描走后台 lane，lease claim／renew／release 走独立 lease lane。单个耗时搜索或统计不再消耗 Agent 控制／交互或 lease 容量。新的不可变源码归档为 `infra/openhands/vendor/openhands-source-6334a2b34afd66d29d8d53099e5f13248dcb46d9.tar.gz`，SHA-256 `0670dd513e481ab982c5a577ec0362fed442b7988ea13a4d05ffc17c8a5f2f98`；source lock、provenance、Docker build identity、contract 预期和平台 Runtime 身份已原子切换。
 
 验收：baseline 受影响 Python `py_compile`、Ruff format/check、默认 executor 调用与 executor 注入的 AST 断言、`git diff --check`；归档 SHA-256 与 source lock/provenance 一致性、临时本地 URL 的 `fetch_source.py` 四包安全解包验证、FlowWeave 受影响 Python 语法/Ruff check 通过。按本轮要求未运行数据库、镜像构建、Runtime、完整构建或 E2E；不修改 schema 或远端环境。下一切片为 FR-544。
+
+FR-544 完成：固定 OpenHands `baseline` 新增 commit `0c00fba533425a55b36abeb56818d22260b6ce63`。空闲回收在短暂 exclusive lifecycle 段内仅筛选并从 live registry 原子摘除候选，同时取得各候选自己的 conversation lock；实际 `EventService.close()`／lease 释放与 Runtime drain 在全局 gate 之外执行。相同会话的重载继续等待其自身锁，避免旧 Runtime 尚未关闭时与新 Runtime／lease 并存；其他会话的加载、关闭和控制不再因单个卡住的 close 被全局阻塞。回收前仍把最新 stored metadata、凭据绑定和持久事件身份保留在 catalog，close 返回后才释放会话锁。新增并发回归模拟一个 close 挂起，并证明另一个 conversation 仍能进入生命周期。新的不可变源码归档为 `infra/openhands/vendor/openhands-source-0c00fba533425a55b36abeb56818d22260b6ce63.tar.gz`，SHA-256 `8d8ede85dcf5b5a8eb7fe4daa68d416ac6c06eabe705cb03c7b91a62591b627f`；source lock、provenance、Docker build identity、contract 预期和平台 Runtime 身份已同步切换。
+
+验收：baseline 受影响 Python `py_compile`、Ruff format/check、定向 idle eviction 并发 pytest（1 passed）、`git diff --check`；归档 SHA-256 与 source lock/provenance 一致性、临时本地 URL 的 `fetch_source.py` 四包安全解包验证、FlowWeave 受影响 Python 语法/Ruff check 通过。按本轮要求未运行数据库、镜像构建、Runtime、完整构建或 E2E；不修改 schema 或远端环境。下一切片为 FR-545。
 
 FR-541B 完成：Agent Workspace 的文件树、文件预览、Git 仓库发现／历史／diff／同步和文件创建／删除已从 `AsyncSession.run_sync()` 移至低优先级有界线程。工作目录创建／修改需要同步文件路径校验，删除会级联执行正式 Runtime 会话删除，也进入同一通道。该通道与历史分页复用原有小型 executor 和同步数据库池；默认最多一个后台操作，不新增 PostgreSQL 连接预算，繁重文件／Git 操作不再占用 ASGI event loop 或交互读取／写入／恢复容量。纯数据库工作目录列表和详情仍留在原入口。
 
