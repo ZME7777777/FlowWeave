@@ -311,8 +311,8 @@ function ConversationReferencePreview({ reference, onClose, onLocate }: {
 
 const ConversationMarkdown = lazy(() => import('./ConversationMarkdown').then(module => ({ default: module.ConversationMarkdown })));
 
-function MessageMarkdown({ children, onOpenWorkspaceFile, onOpenImage }: { children: string; onOpenWorkspaceFile?: (href: string) => boolean; onOpenImage?: (src: string, alt?: string) => void }) {
-  return <Suspense fallback={<div className="conversation-markdown-loading">正在渲染消息…</div>}><ConversationMarkdown onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenImage={onOpenImage}>{children}</ConversationMarkdown></Suspense>;
+function MessageMarkdown({ children, reveal = false, onOpenWorkspaceFile, onOpenImage }: { children: string; reveal?: boolean; onOpenWorkspaceFile?: (href: string) => boolean; onOpenImage?: (src: string, alt?: string) => void }) {
+  return <Suspense fallback={<div className="conversation-markdown-loading">正在渲染消息…</div>}><ConversationMarkdown reveal={reveal} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenImage={onOpenImage}>{children}</ConversationMarkdown></Suspense>;
 }
 
 interface CandidateOutput { fieldKey: string; artifactType: 'URL' | 'FILE'; value: string }
@@ -1166,22 +1166,22 @@ function ActivityEntryRow({ entry, active, paused = false, parentFailed = false,
   const thoughtAttributes = referenceableThought ? { 'data-conversation-event-id': item.event.id } : {};
   const toolRunning = active && !paused && !parentFailed && entry.results.length === 0 && item.event.event_type === 'TOOL_CALL';
   if (item.kind === 'thought') return <article {...thoughtAttributes} className={`conversation-activity-row thought${isNativeThink ? ' native-think' : ''}`}>
-    <MessageMarkdown>{presentation.thought ?? item.content}</MessageMarkdown>
+    <MessageMarkdown reveal={active}>{presentation.thought ?? item.content}</MessageMarkdown>
   </article>;
   if (item.kind === 'condensation') return <article className={`conversation-activity-row tool condensation${condensationRunning ? ' running' : ''}`} role="status" aria-label={presentation.title}>
     <Sparkles size={13}/><div><b>{presentation.title}</b></div>
   </article>;
   if (eventName === 'TaskTrackerAction' || eventName === 'TaskTrackerObservation') return <div className={`conversation-tool-entry semantic tool-${toolVisual}`}>
-    {!hideThought && presentation.thought && <article {...thoughtAttributes} className={`conversation-activity-row thought tool-thought tool-${toolVisual}`}><MessageMarkdown>{presentation.thought}</MessageMarkdown></article>}
+    {!hideThought && presentation.thought && <article {...thoughtAttributes} className={`conversation-activity-row thought tool-thought tool-${toolVisual}`}><MessageMarkdown reveal={active}>{presentation.thought}</MessageMarkdown></article>}
     <TaskTrackerCard entry={entry} presentation={presentation} running={toolRunning}/>
   </div>;
   if (eventName === 'InvokeSkillAction' || eventName === 'InvokeSkillObservation') return <div className={`conversation-tool-entry semantic tool-${toolVisual}`}>
-    {!hideThought && presentation.thought && <article {...thoughtAttributes} className={`conversation-activity-row thought tool-thought tool-${toolVisual}`}><MessageMarkdown>{presentation.thought}</MessageMarkdown></article>}
+    {!hideThought && presentation.thought && <article {...thoughtAttributes} className={`conversation-activity-row thought tool-thought tool-${toolVisual}`}><MessageMarkdown reveal={active}>{presentation.thought}</MessageMarkdown></article>}
     <SkillLoadRow entry={entry} running={toolRunning}/>
   </div>;
   if (item.kind === 'tool' && toolDetail) return <div className={`conversation-tool-entry tool-${toolVisual}`}>
     {!hideThought && presentation.thought && <article {...thoughtAttributes} className={`conversation-activity-row thought tool-thought tool-${toolVisual}`}>
-      <MessageMarkdown>{presentation.thought}</MessageMarkdown>
+      <MessageMarkdown reveal={active}>{presentation.thought}</MessageMarkdown>
     </article>}
     <details className={`conversation-activity-row tool conversation-tool-detail tool-${toolVisual}${toolRunning ? ' running' : ''}`} data-tool-kind={toolVisual} data-file-operation={toolVisual === 'file' ? presentation.fileOperation : undefined} data-file-kind={toolVisual === 'file' ? presentation.fileKind : undefined}>
       <summary aria-label={`查看执行详情：${presentation.title}`}>{taskAvatar ?? <ToolIcon size={13}/>}<div><b title={presentation.title}>{presentation.title}</b></div><ChevronRight className="conversation-expand-arrow" size={12}/></summary>
@@ -1190,7 +1190,7 @@ function ActivityEntryRow({ entry, active, paused = false, parentFailed = false,
   </div>;
   return <article className={`conversation-activity-row ${item.kind}`}>
     {taskAvatar ?? <ToolIcon size={13}/>}<div className="conversation-activity-content"><b title={presentation.title}>{presentation.title}</b><small>{presentation.status}</small>
-      {presentation.thought && <span className="conversation-activity-thought"><MessageMarkdown>{presentation.thought}</MessageMarkdown></span>}
+      {presentation.thought && <span className="conversation-activity-thought"><MessageMarkdown reveal={active}>{presentation.thought}</MessageMarkdown></span>}
     </div>
   </article>;
 }
@@ -1302,8 +1302,9 @@ const ActivityGroup = memo(function ActivityGroup({ items, active, completionCon
   && sameActivityItems(previous.items, next.items)
 ));
 
-function AnnotationReplyContent({ content, annotations, onLocateAnnotation, onOpenWorkspaceFile, onOpenImage }: {
+function AnnotationReplyContent({ content, reveal = false, annotations, onLocateAnnotation, onOpenWorkspaceFile, onOpenImage }: {
   content: string;
+  reveal?: boolean;
   annotations: AgentConversationAnnotation[];
   onLocateAnnotation?: (annotation: AgentConversationAnnotation) => void;
   onOpenWorkspaceFile?: (href: string) => boolean;
@@ -1330,13 +1331,14 @@ function AnnotationReplyContent({ content, annotations, onLocateAnnotation, onOp
       className="conversation-annotation-marker"
       onPointerUp={event => event.stopPropagation()}
       onClick={() => onLocateAnnotation?.(part.annotation!)}
-    ><Quote size={12}/><span>注释 {annotations.findIndex(annotation => annotation.id === part.annotation!.id) + 1}</span></button> : part.content && <MessageMarkdown key={index} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenImage={onOpenImage}>{part.content}</MessageMarkdown>)}
+    ><Quote size={12}/><span>注释 {annotations.findIndex(annotation => annotation.id === part.annotation!.id) + 1}</span></button> : part.content && <MessageMarkdown key={index} reveal={reveal} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenImage={onOpenImage}>{part.content}</MessageMarkdown>)}
   </>;
 }
 
-function AgentReply({ event, content, changes = [], onFork, onPreviewCandidateFile, onReviewChanges, onOpenWorkspaceFile, onOpenImage, workspaceRoot, annotations = [], onLocateAnnotation }: {
+function AgentReply({ event, content, reveal = false, changes = [], onFork, onPreviewCandidateFile, onReviewChanges, onOpenWorkspaceFile, onOpenImage, workspaceRoot, annotations = [], onLocateAnnotation }: {
   event: OpenHandsConversationEvent;
   content: string;
+  reveal?: boolean;
   changes?: WorkspaceFileChange[];
   onFork?: () => void;
   onPreviewCandidateFile?: (fieldKey: string, relativePath: string) => void;
@@ -1357,7 +1359,7 @@ function AgentReply({ event, content, changes = [], onFork, onPreviewCandidateFi
   // registering an Artifact.
   const candidateMessage = candidateOutputMessage(content);
   return <article className="conversation-message assistant" data-conversation-event-id={eventId} data-turn-terminal="true" data-event-id={eventId}>
-    {candidateMessage.businessConclusion ? <AnnotationReplyContent content={candidateMessage.businessConclusion} annotations={annotations} onLocateAnnotation={onLocateAnnotation} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenImage={onOpenImage}/> : !candidateMessage.outputs && content ? <AnnotationReplyContent content={content} annotations={annotations} onLocateAnnotation={onLocateAnnotation} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenImage={onOpenImage}/> : null}
+    {candidateMessage.businessConclusion ? <AnnotationReplyContent content={candidateMessage.businessConclusion} reveal={reveal} annotations={annotations} onLocateAnnotation={onLocateAnnotation} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenImage={onOpenImage}/> : !candidateMessage.outputs && content ? <MessageMarkdown reveal={reveal} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenImage={onOpenImage}>{content}</MessageMarkdown> : null}
     {candidateMessage.outputs && <CandidateOutputReply outputs={candidateMessage.outputs} onPreviewFile={onPreviewCandidateFile ? output => onPreviewCandidateFile(output.fieldKey, output.value) : undefined}/>}
     {!candidateMessage.businessConclusion && !candidateMessage.outputs && !content && <span className="conversation-typing"><i/><i/><i/></span>}
     {changes.length > 0 && <section className="conversation-file-changes" aria-label={`本轮编辑了 ${changes.length} 个文件`}>
@@ -2273,7 +2275,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
             <CurrentTurnStatus items={turn.activity} requestSubmitting={requestSubmitting} statusOverride={emptyResponseRecoveryActive ? '模型返回空响应，OpenHands 正在自动重试' : undefined} modelRetryStatus={modelRetryStatus} monitoring={monitoring} connectionState={connectionState}/>
           )}
           {processBlocks.length > 0 && turn.assistant && <div className="conversation-process-divider" role="separator" aria-label="工作过程结束"/>}
-          {turn.assistant && <AgentReply event={turn.assistant.event} content={turn.assistant.content} changes={fileChanges} onFork={!isGenerating ? () => onFork?.(turn.assistant!.event.id) : undefined} onPreviewCandidateFile={onPreviewCandidateFile} onReviewChanges={onReviewChanges} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenImage={onOpenImage} workspaceRoot={workspaceRoot} annotations={annotations} onLocateAnnotation={locateAnnotation}/>}
+          {turn.assistant && <AgentReply event={turn.assistant.event} content={turn.assistant.content} reveal={isCurrent} changes={fileChanges} onFork={!isGenerating ? () => onFork?.(turn.assistant!.event.id) : undefined} onPreviewCandidateFile={onPreviewCandidateFile} onReviewChanges={onReviewChanges} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenImage={onOpenImage} workspaceRoot={workspaceRoot} annotations={annotations} onLocateAnnotation={locateAnnotation}/>}
           {failures.map(item => <ConversationFailure key={item.event.id} item={item} taskControl={taskControl} retryStatus={isLatest ? modelRetryStatus : undefined}/>)}
         </section>;
       })}
