@@ -866,6 +866,22 @@ def test_openhands_lists_every_native_running_conversation(openhands_settings, m
     ]
 
 
+def test_runtime_provider_separates_control_build_and_observation_capacity() -> None:
+    source = Path("src/flowweave/bootstrap/runtime_provider.py").read_text()
+
+    for executor in ("control_executor", "build_executor", "observe_executor"):
+        assert executor in source
+    assert "return await run_observe(_admin_observability_snapshot, configured)" in source
+    assert "DockerSandboxProvider(configured).ensure_running" in source
+    assert "bundle = await run_build(builder.build, payload.dependencies)" in source
+    assert "managed_container_ids" in source
+    assert "[:12] not in managed_container_ids" in source
+    provider_routes = source[
+        source.index("async def ensure(") : source.index('@app.post("/v1/terminals/start")')
+    ]
+    assert "asyncio.to_thread" not in provider_routes
+
+
 def test_openhands_preserves_agent_workspace_selected_subdirectory(openhands_settings):
     runtime = OpenHandsRuntime(openhands_settings)
     request = replace(

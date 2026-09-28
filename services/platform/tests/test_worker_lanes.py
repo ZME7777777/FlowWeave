@@ -133,6 +133,20 @@ def test_lease_heartbeat_uses_one_unpooled_connection_and_shared_slot() -> None:
     assert "slots=self.container.heartbeat_slots" in worker_source
 
 
+def test_admin_control_routes_use_their_reserved_database_lane() -> None:
+    admin_router = Path("src/flowweave/modules/admin_control/router.py").read_text()
+    http = Path("src/flowweave/shared/http.py").read_text()
+    container = Path("src/flowweave/bootstrap/container.py").read_text()
+    database = Path("src/flowweave/shared/infrastructure/database.py").read_text()
+
+    assert "run_blocking_admin" in admin_router
+    assert "run_sync" not in admin_router
+    assert "admin_executor" in container and "admin_io_slots" in container
+    assert 'admin_pool_size=1 if role == "api" else 0' in container
+    assert "self.admin_sessions" in database
+    assert 'lane_name="admin"' in http
+
+
 @pytest.mark.asyncio
 async def test_stalled_poll_executor_does_not_block_runtime_control_executor() -> None:
     poll_started = asyncio.Event()

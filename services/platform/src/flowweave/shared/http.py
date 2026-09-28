@@ -235,6 +235,25 @@ async def _run_executor_operation(executor: ThreadPoolExecutor, operation: Calla
     return await asyncio.shield(worker)
 
 
+async def run_blocking_admin(container: Container, operation: Callable[[Session], T]) -> T:
+    """Run an operator diagnostic/control database action on its own lane."""
+
+    admin_sessions = container.database.admin_sessions
+    if admin_sessions is None:
+        raise RuntimeError("Admin execution requires the API admin database pool")
+    return await _run_blocking_lane(
+        container,
+        operation,
+        executor=container.admin_executor,
+        slots=container.admin_io_slots,
+        session_factory=admin_sessions,
+        saturation_code="ADMIN_CONTROL_SATURATED",
+        saturation_message="Administrator control work is busy; retry shortly",
+        lane_name="admin",
+        active_limit=1,
+    )
+
+
 async def run_blocking_auxiliary(container: Container, operation: Callable[[Session], T]) -> T:
     """Run workspace and Git I/O on the low-priority history lane.
 

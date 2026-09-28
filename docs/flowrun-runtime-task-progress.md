@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`IN PROGRESS`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`FR-548`
+> 下一可执行切片：`FR-549`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -7556,7 +7556,7 @@ FlowWeave 本地累加后猜测压缩边界。
 | FR-545B2 | DONE | FR-545B1 | 状态轮询改为一次正式批量活动投影；不再按运行会话读取 active events，并以原生正式事件活动时间识别可能卡住。 |
 | FR-546 | DONE | FR-545B2 | 标题、搜索、依赖构建和插件解析使用独立辅助 executor/数据库池与 worker lane，流程推进和恢复保留容量。 |
 | FR-547 | DONE | FR-546 | FlowRun provisioning 在外部 Provider 调用前释放 Worker 事务；heartbeat 有界且无池；按实际 claim 谓词新增部分队列索引。 |
-| FR-548 | PENDING | FR-547 | Admin 同步数据库读取进入有界执行通道，合并重复 Docker 采样；Runtime Provider 的控制、构建与观测使用独立容量。 |
+| FR-548 | DONE | FR-547 | Admin 读/诊断进入独立受限 executor/数据库池；Runtime Provider 控制、构建、观测隔离，并合并重复 Docker 采样。 |
 | FR-549 | PENDING | FR-548 | Web 历史预取与 Context 失效设置工作量预算，明确浏览器取消与后端执行的不同生命周期。 |
 | FR-550 | PENDING | FR-549 | 用并发与故障数据校准每进程、每 generation 的正式读舱壁；验证会话 A 故障时同 Runtime B、其他 Runtime 和控制面分别可用。 |
 
@@ -7611,6 +7611,10 @@ FR-546 完成：将 `GENERATE_AGENT_CONVERSATION_TITLE`、`SEARCH_AGENT_CONVERSA
 FR-547 完成：FlowRun Runtime provisioning 在生成冻结 Environment/Runtime identity 后、进入 Docker/Provider 控制路径前调用 Worker transaction release；Provider 自身继续使用既有独立控制事务，外部 provisioning 不再占用 delivery handler 的同步数据库连接。Lease heartbeat 不再为每个运行 task 构造包含 async、blocking、history、poll、control 等多个 pool 的完整 `Database` 容器；改为 `NullPool` 的单次独立连接，且 Worker 注入全局有界 heartbeat semaphore（默认 2），只限制一行 lease renewal，不限制实际 Runtime I/O。任务 `claim()` 的实际谓词与排序为 `state IN (PENDING, RETRY) AND available_at <= now ORDER BY available_at, created_at`；据此新增 `ix_background_tasks_claim_ready` 部分索引，仅包含可领取状态且键顺序完全匹配，不对其他假设查询增索引。
 
 验收：受影响 Python `py_compile`、Ruff check/format、`git diff --check`、迁移唯一 head `0131_background_task_claim_index` 与不依赖数据库的 FR-547 静态契约通过；后者验证 provisioning 事务释放先于 Provider 调用、heartbeat 使用 `NullPool` 与共享 slot、索引 DDL 与实际 `claim()` 谓词/排序一致。未运行迁移实跑、数据库、Runtime、镜像或 E2E 验证。下一可执行切片为 FR-548。
+
+FR-548 完成：API Container 增加 admin 专用单线程 executor、slot 和同步数据库池；`/internal/admin-control` 的 Runtime 控制、正式诊断和 alert lifecycle 均从普通 async request UoW 改走 `run_blocking_admin`，不再与会话 hydration、历史分页或 Worker auxiliary pool 争抢。Runtime Provider 新增 control（2）、build（1）、observe（2）三个显式 executor；Sandbox ensure/delete/drain、环境清理、网络恢复走 control，image/dependency/gate/plugin build 走 build，inspect/usage/list、Runtime ownership 验证和 Admin snapshot 走 observe，默认 asyncio executor 只保留终端专用工作及 shutdown。Admin snapshot 以规范化 Docker ID 过滤 Compose 列表中已由 managed runtime 投影覆盖的容器，避免同一 Agent Runtime 重复 `stats`/`inspect` 采样。
+
+验收：受影响 Python `py_compile`、Ruff check/format、`git diff --check`、迁移唯一 head `0131_background_task_claim_index` 和不依赖数据库的 FR-548 静态契约通过；契约覆盖 Admin route 的专用 lane、Provider control/build/observe 分区、Admin snapshot 观测 lane及重复采样过滤。未运行数据库、Runtime、镜像或 E2E 验证。下一可执行切片为 FR-549。
 
 FR-541B 完成：Agent Workspace 的文件树、文件预览、Git 仓库发现／历史／diff／同步和文件创建／删除已从 `AsyncSession.run_sync()` 移至低优先级有界线程。工作目录创建／修改需要同步文件路径校验，删除会级联执行正式 Runtime 会话删除，也进入同一通道。该通道与历史分页复用原有小型 executor 和同步数据库池；默认最多一个后台操作，不新增 PostgreSQL 连接预算，繁重文件／Git 操作不再占用 ASGI event loop 或交互读取／写入／恢复容量。纯数据库工作目录列表和详情仍留在原入口。
 

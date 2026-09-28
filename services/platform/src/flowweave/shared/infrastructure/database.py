@@ -28,6 +28,7 @@ class Database:
         *,
         poll_pool_size: int = 0,
         auxiliary_pool_size: int = 0,
+        admin_pool_size: int = 0,
     ) -> None:
         if not settings.database_url.startswith("postgresql+psycopg://"):
             raise ValueError("FlowWeave supports PostgreSQL through psycopg only")
@@ -72,6 +73,23 @@ class Database:
             )
             self.auxiliary_sessions = sessionmaker(
                 self.auxiliary_engine, expire_on_commit=False, autoflush=False
+            )
+        # Admin diagnostics are operator-triggered, potentially slow Runtime
+        # reads. Give API processes a separate, tiny pool so diagnostics cannot
+        # exhaust request, hydration, history or Worker auxiliary capacity.
+        self.admin_engine: Engine | None = None
+        self.admin_sessions: sessionmaker[Session] | None = None
+        if admin_pool_size:
+            self.admin_engine = create_engine(
+                settings.database_url,
+                pool_pre_ping=True,
+                pool_size=admin_pool_size,
+                max_overflow=0,
+                pool_timeout=settings.blocking_pool_timeout_seconds,
+                connect_args={"options": f"-c statement_timeout={settings.statement_timeout_ms}"},
+            )
+            self.admin_sessions = sessionmaker(
+                self.admin_engine, expire_on_commit=False, autoflush=False
             )
         # Polling formal OpenHands state can remain blocked while a Runtime is
         # unhealthy. Only the Worker owns this dedicated pool; API processes
@@ -137,6 +155,8 @@ class Database:
         await asyncio.to_thread(self.blocking_engine.dispose)
         if self.auxiliary_engine is not None:
             await asyncio.to_thread(self.auxiliary_engine.dispose)
+        if self.admin_engine is not None:
+            await asyncio.to_thread(self.admin_engine.dispose)
         if self.poll_engine is not None:
             await asyncio.to_thread(self.poll_engine.dispose)
         await asyncio.to_thread(self.history_engine.dispose)
@@ -149,6 +169,11 @@ class Database:
             **(
                 {"auxiliary": cast(QueuePool, self.auxiliary_engine.pool)}
                 if self.auxiliary_engine is not None
+                else {}
+            ),
+            **(
+                {"admin": cast(QueuePool, self.admin_engine.pool)}
+                if self.admin_engine is not None
                 else {}
             ),
             **(
