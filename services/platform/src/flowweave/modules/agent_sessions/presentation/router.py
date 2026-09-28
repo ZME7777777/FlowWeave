@@ -43,6 +43,7 @@ from flowweave.shared.http import (
     run_blocking,
     run_blocking_control,
     run_blocking_history,
+    run_blocking_mutation,
     run_sync,
 )
 from flowweave.shared.schemas import ConversationPatchWrite
@@ -252,9 +253,12 @@ _BASE = "/flow-runs/{flow_run_id}/node-attempts/{attempt_id}/agent-sessions"
 
 
 @router.get(f"{_BASE}/host")
-async def node_session_host(flow_run_id: str, attempt_id: str, db: Db) -> dict[str, Any]:
-    return await run_sync(
-        db,
+async def node_session_host(
+    flow_run_id: str, attempt_id: str, container: ContainerDep
+) -> dict[str, Any]:
+    # Resolving a node host may provision its Attempt Runtime.
+    return await run_blocking_mutation(
+        container,
         lambda session: agent_sessions.flow_node_conversations.node_host_details(
             session, flow_run_id=flow_run_id, attempt_id=attempt_id
         ),
@@ -262,9 +266,12 @@ async def node_session_host(flow_run_id: str, attempt_id: str, db: Db) -> dict[s
 
 
 @router.get(f"{_BASE}/runtime")
-async def node_session_runtime(flow_run_id: str, attempt_id: str, db: Db) -> dict[str, Any]:
-    return await run_sync(
-        db,
+async def node_session_runtime(
+    flow_run_id: str, attempt_id: str, container: ContainerDep
+) -> dict[str, Any]:
+    # Existing sessions may also provision on a status lookup after recovery.
+    return await run_blocking_mutation(
+        container,
         lambda session: agent_sessions.flow_node_conversations.node_runtime_status(
             session, flow_run_id=flow_run_id, attempt_id=attempt_id
         ),
@@ -273,10 +280,10 @@ async def node_session_runtime(flow_run_id: str, attempt_id: str, db: Db) -> dic
 
 @router.post(f"{_BASE}/capabilities/{{capability_version_id}}/mcp-readiness")
 async def node_session_mcp_readiness(
-    flow_run_id: str, attempt_id: str, capability_version_id: str, db: Db
+    flow_run_id: str, attempt_id: str, capability_version_id: str, container: ContainerDep
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking(
+        container,
         lambda session: (
             agent_sessions.resolve_flow_node_session_host(
                 session,
@@ -299,10 +306,10 @@ async def add_node_session_capability(
     attempt_id: str,
     binding_id: str,
     payload: NodeCapabilityAddWrite,
-    db: Db,
+    container: ContainerDep,
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking_mutation(
+        container,
         lambda session: agent_sessions.flow_node_conversations.add_node_conversation_capability(
             session,
             flow_run_id=flow_run_id,
@@ -334,10 +341,10 @@ async def synchronize_node_session_credentials(
     attempt_id: str,
     binding_id: str,
     payload: NodeCredentialSyncWrite,
-    db: Db,
+    container: ContainerDep,
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking_mutation(
+        container,
         lambda session: agent_sessions.flow_node_conversations.synchronize_node_credentials(
             session,
             flow_run_id=flow_run_id,
@@ -387,7 +394,7 @@ async def create_node_session(
     flow_run_id: str,
     attempt_id: str,
     payload: NodeSessionCreateWrite,
-    db: Db,
+    container: ContainerDep,
     idempotency_key: IdempotencyKey = None,
 ) -> dict[str, Any]:
     def create(session: Any) -> dict[str, Any]:
@@ -412,7 +419,7 @@ async def create_node_session(
             binding_id=str(created["id"]),
         )
 
-    return await run_sync(db, create)
+    return await run_blocking_mutation(container, create)
 
 
 @router.post(f"{_BASE}/bootstrap", status_code=201)
@@ -420,7 +427,7 @@ async def bootstrap_node_session(
     flow_run_id: str,
     attempt_id: str,
     payload: NodeSessionBootstrapFullWrite,
-    db: Db,
+    container: ContainerDep,
     idempotency_key: IdempotencyKey = None,
 ) -> dict[str, Any]:
     legacy_image_urls: list[str] = []
@@ -442,8 +449,8 @@ async def bootstrap_node_session(
                     422,
                 )
             legacy_image_urls.append(f"data:{mime_type};base64,{encoded}")
-    return await run_sync(
-        db,
+    return await run_blocking_mutation(
+        container,
         lambda session: agent_sessions.flow_node_conversations.bootstrap_node_conversation(
             session,
             flow_run_id=flow_run_id,
@@ -866,10 +873,10 @@ async def delete_flow_run_work_directory(
 
 @router.get(f"{_BASE}/{{binding_id}}")
 async def get_node_session(
-    flow_run_id: str, attempt_id: str, binding_id: str, db: Db
+    flow_run_id: str, attempt_id: str, binding_id: str, container: ContainerDep
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking(
+        container,
         lambda session: agent_sessions.flow_node_conversations.get_node_session_view(
             session, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
         ),
@@ -882,7 +889,7 @@ async def patch_node_session(
     attempt_id: str,
     binding_id: str,
     payload: ConversationPatchWrite,
-    db: Db,
+    container: ContainerDep,
 ) -> dict[str, Any]:
     def patch(session: Any) -> dict[str, Any]:
         agent_sessions.flow_node_conversations.patch_node_conversation(
@@ -899,7 +906,7 @@ async def patch_node_session(
             binding_id=binding_id,
         )
 
-    return await run_sync(db, patch)
+    return await run_blocking_mutation(container, patch)
 
 
 @router.put(f"{_BASE}/{{binding_id}}/unread")
@@ -925,10 +932,10 @@ async def set_node_session_unread(
 
 @router.delete(f"{_BASE}/{{binding_id}}", status_code=204)
 async def delete_node_session(
-    flow_run_id: str, attempt_id: str, binding_id: str, db: Db
+    flow_run_id: str, attempt_id: str, binding_id: str, container: ContainerDep
 ) -> Response:
-    await run_sync(
-        db,
+    await run_blocking_mutation(
+        container,
         lambda session: agent_sessions.flow_node_conversations.delete_node_conversation(
             session, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
         ),
@@ -1079,10 +1086,10 @@ async def decide_node_confirmation(
     attempt_id: str,
     binding_id: str,
     payload: NodeConfirmationDecisionWrite,
-    db: Db,
+    container: ContainerDep,
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking_mutation(
+        container,
         lambda session: agent_sessions.flow_node_conversations.decide_node_confirmation(
             session,
             flow_run_id=flow_run_id,
@@ -1101,10 +1108,10 @@ async def switch_node_session_model(
     attempt_id: str,
     binding_id: str,
     payload: NodeSessionModelWrite,
-    db: Db,
+    container: ContainerDep,
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking_mutation(
+        container,
         lambda session: agent_sessions.flow_node_conversations.switch_node_conversation_model(
             session,
             flow_run_id=flow_run_id,
@@ -1168,7 +1175,7 @@ async def node_session_message(
             **arguments,
         ),
     )
-    result, queued_during_turn, compacted = await run_blocking(
+    result, queued_during_turn, compacted = await run_blocking_mutation(
         container,
         lambda _session: agent_sessions.flow_node_conversations.dispatch_running_node_message(
             prepared
@@ -1193,10 +1200,10 @@ async def rerun_node_message(
     binding_id: str,
     event_id: str,
     payload: NodeSessionMessageWrite,
-    db: Db,
+    container: ContainerDep,
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking_mutation(
+        container,
         lambda session: agent_sessions.flow_node_conversations.rerun_node_message(
             session,
             flow_run_id=flow_run_id,
@@ -1221,11 +1228,11 @@ async def fork_node_session(
     attempt_id: str,
     binding_id: str,
     payload: NodeForkWrite,
-    db: Db,
+    container: ContainerDep,
     idempotency_key: IdempotencyKey = None,
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking_mutation(
+        container,
         lambda session: agent_sessions.flow_node_conversations.fork_node_conversation(
             session,
             flow_run_id=flow_run_id,
@@ -1244,13 +1251,13 @@ async def migrate_node_session(
     attempt_id: str,
     binding_id: str,
     payload: NodeSessionModelWrite,
-    db: Db,
+    container: ContainerDep,
 ) -> dict[str, Any]:
     # New node conversations already have the shared streaming callback.  The
     # route is retained for parity and returns the same scoped conversation.
     del payload
-    return await run_sync(
-        db,
+    return await run_blocking(
+        container,
         lambda session: agent_sessions.flow_node_conversations.get_node_session_view(
             session, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
         ),
@@ -1259,10 +1266,15 @@ async def migrate_node_session(
 
 @router.post(f"{_BASE}/{{binding_id}}/attachments", status_code=201)
 async def upload_node_attachment(
-    flow_run_id: str, attempt_id: str, binding_id: str, db: Db, file: Annotated[UploadFile, File()]
+    flow_run_id: str,
+    attempt_id: str,
+    binding_id: str,
+    container: ContainerDep,
+    file: Annotated[UploadFile, File()],
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    content = await file.read(25 * 1024 * 1024 + 1)
+    return await run_blocking_mutation(
+        container,
         lambda session: agent_sessions.flow_node_conversations.upload_node_attachment(
             session,
             flow_run_id=flow_run_id,
@@ -1270,7 +1282,7 @@ async def upload_node_attachment(
             binding_id=binding_id,
             filename=file.filename or "attachment",
             content_type=file.content_type or "application/octet-stream",
-            content=file.file.read(25 * 1024 * 1024 + 1),
+            content=content,
         ),
     )
 
@@ -1279,15 +1291,15 @@ async def upload_node_attachment(
 async def upload_node_draft_attachment(
     flow_run_id: str,
     attempt_id: str,
-    db: Db,
+    container: ContainerDep,
     file: Annotated[UploadFile, File()],
     conversation_id: str | None = Query(default=None, min_length=36, max_length=36),
     work_directory_id: str | None = Query(default=None),
 ) -> dict[str, Any]:
     del work_directory_id
     content = await file.read(25 * 1024 * 1024 + 1)
-    return await run_sync(
-        db,
+    return await run_blocking_mutation(
+        container,
         lambda session: agent_sessions.flow_node_conversations.upload_node_attachment(
             session,
             flow_run_id=flow_run_id,
@@ -1305,11 +1317,11 @@ async def delete_node_draft_attachments(
     flow_run_id: str,
     attempt_id: str,
     conversation_id: str,
-    db: Db,
+    container: ContainerDep,
     path: str | None = Query(default=None),
 ) -> Response:
-    await run_sync(
-        db,
+    await run_blocking_mutation(
+        container,
         lambda session: agent_sessions.flow_node_conversations.delete_node_draft_attachment(
             session,
             flow_run_id=flow_run_id,
@@ -1345,10 +1357,10 @@ async def interrupt_node_session(
 
 @router.post(f"{_BASE}/{{binding_id}}/resume", status_code=202)
 async def resume_node_session(
-    flow_run_id: str, attempt_id: str, binding_id: str, db: Db
+    flow_run_id: str, attempt_id: str, binding_id: str, container: ContainerDep
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking_control(
+        container,
         lambda session: agent_sessions.flow_node_conversations.resume_node_conversation(
             session,
             flow_run_id=flow_run_id,
@@ -1360,10 +1372,10 @@ async def resume_node_session(
 
 @router.post(f"{_BASE}/{{binding_id}}/stop", status_code=202)
 async def stop_node_session(
-    flow_run_id: str, attempt_id: str, binding_id: str, db: Db
+    flow_run_id: str, attempt_id: str, binding_id: str, container: ContainerDep
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking_control(
+        container,
         lambda session: agent_sessions.flow_node_conversations.stop_node_conversation(
             session, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
         ),
