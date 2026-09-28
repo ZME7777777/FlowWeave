@@ -191,12 +191,21 @@ require_service() {
 case "$DEPLOY_SCOPE" in
   web) require_service main web "$main_services" ;;
   platform)
+    # Ordinary API/stream/worker deployments deliberately leave the Runtime
+    # Provider running: it owns live external Agent Server connections.
+    for service in migration api worker; do
+      require_service main "$service" "$main_services"
+    done
+    require_service stream stream-api "$stream_services"
+    ;;
+  runtime)
+    # Provider, Docker controller, Runtime protocol, or OpenHands image
+    # changes require one synchronized control-plane replacement.
     for service in migration runtime-provider api worker; do
       require_service main "$service" "$main_services"
     done
     require_service stream stream-api "$stream_services"
     ;;
-  runtime) require_service main runtime-provider "$main_services" ;;
   other) ;;
 esac
 
@@ -213,6 +222,6 @@ Required next steps from AGENTS.md:
 1. Build only the images affected by scope '${scope}' for linux/amd64, then inspect each image platform.
 2. Package source with 'git archive' from ${resolved_commit}; do not package this working tree. Use the verified build and image roots.
 3. Preserve the verified environment and Compose files, named volumes, and persistent workspaces.
-4. Never run 'docker compose down -v'. Update only affected services; platform changes run migration first.
+4. Never run 'docker compose down -v'. Update only affected services; platform and runtime changes run migration first. Only runtime scope recreates runtime-provider.
 5. Validate server health, prefixed API/static requests, the public FlowWeave page, deep Agent route, and FastGPT login.
 EOF

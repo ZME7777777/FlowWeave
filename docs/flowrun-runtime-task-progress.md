@@ -7667,3 +7667,13 @@ FR-541B 完成：Agent Workspace 的文件树、文件预览、Git 仓库发现�
 完成：手动压缩将 Runtime 的限流、5xx 暂不可用、认证、确定拒绝、无效响应、超时结果未知、连接中断结果未知、其他不可用和未知异常映射到固定 `CONDENSATION_*` 任务错误码。Agent Workspace 与 Flow node 的活动投影仅从这些错误码导出 `failure_reason`，不传递原始 `last_error`。页面优先显示该安全分类，即使 OpenHands 同时持久化一个故意泛化的压缩 `ERROR` 事件。压缩请求开始、被 Runtime 接受及失败都记录绑定级结构化诊断，错误只含稳定错误码。超时与连接中断保持“结果未知”，不自动重试，避免重复请求已被上游接受的压缩；用户先刷新正式事件再决定是否重试。
 
 验收：受影响 Python Ruff format/check、`py_compile`、安全分类 smoke `4` 例、Web TypeScript typecheck、production build 和 `git diff --check` 通过。定向 pytest 已启动，但本机 Docker daemon/socket 不可用，Testcontainers 全局 fixture 在测试断言前失败，未记为通过；未运行数据库、Runtime、远端或部署。
+
+### FR-554 发布范围隔离与 Agent Workspace 启动恢复保护 — DONE
+
+依赖：FR-550。
+
+目标：普通 Platform 发布不得因共享控制面镜像而重建 Runtime Provider、干扰正在运行的 Agent Workspace／FlowRun Runtime；Worker 在启动恢复时不得只因控制面刚重启、持久观测短暂滞后就把仍可能存活的 Agent Workspace writer 再次送入 `ensure_running`。真正的物理丢失仍必须由既有 Sandbox reconciliation 发现后恢复。
+
+完成：远端预检将普通 `platform` 范围收窄为 `migration`、`api`、`stream-api` 与 `worker`，明确排除 `runtime-provider`；只有 `runtime` 范围才验证并重建 Provider，适用于 Provider／Docker Provider／Runtime 协议／固定 OpenHands Runtime 变更。部署说明同步要求普通 Platform 发布保留 Provider，且 runtime 发布需先确认活跃会话的中断影响。Agent Workspace 的终态 provision task 恢复新增 active-writer 保护：当 Runtime 仍是 `ACTIVE`，当前 generation 仍有 `RUNNING` 意图和已登记的物理 resource ID 时，不因短暂的非 RUNNING 观测重新打开任务；Sandbox reconciliation 先确认物理丢失，只有实际非活动 Runtime 才进入既有 recovery／replacement 路径。
+
+验收：受影响 Python Ruff format/check、`py_compile`、Bash `-n`、`git diff --check`、Alembic 唯一 head `0135_agent_search_partial`、及本地受保护远端配置下 `platform`／`runtime` 两种只读预检均通过。新增 Agent Workspace 数据库回归已启动，但 Testcontainers PostgreSQL fixture 在断言前因本机 Docker daemon/socket 不可用失败，未记为通过；未运行迁移实跑、Runtime、镜像构建或远端部署。

@@ -246,6 +246,35 @@ def _has_healthy_active_resource(db: Session, workspace_id: str, generation: int
     )
 
 
+def _has_recovery_protected_active_resource(
+    db: Session, workspace_id: str, generation: int | None
+) -> bool:
+    """Keep a possibly live writer out of worker-startup recovery.
+
+    A control-plane restart can leave the persisted observation temporarily
+    stale even though the external Agent Runtime container is still the active
+    writer. The sandbox reconciler owns physical loss detection; reopening a
+    terminal provisioning task before that check can route a healthy runtime
+    through ``ensure_running`` during an otherwise unrelated deployment.
+    """
+
+    if generation is None:
+        return False
+    return (
+        db.scalar(
+            select(ManagedSandbox.id).where(
+                ManagedSandbox.kind == "AGENT_RUNTIME",
+                ManagedSandbox.owner_type == "AGENT_WORKSPACE",
+                ManagedSandbox.owner_id == workspace_id,
+                ManagedSandbox.generation == generation,
+                ManagedSandbox.desired_state == "RUNNING",
+                ManagedSandbox.backend_resource_id != "",
+            )
+        )
+        is not None
+    )
+
+
 def _reset_terminal_runtime_task(
     db: Session, workspace: AgentWorkspace, runtime: AgentWorkspaceRuntime
 ) -> bool:
@@ -262,6 +291,10 @@ def _reset_terminal_runtime_task(
     if task is None:
         return False
     if _has_healthy_active_resource(db, workspace.id, runtime.active_generation):
+        return False
+    if runtime.status == "ACTIVE" and _has_recovery_protected_active_resource(
+        db, workspace.id, runtime.active_generation
+    ):
         return False
     task.state = TaskState.RETRY
     task.attempts = 0

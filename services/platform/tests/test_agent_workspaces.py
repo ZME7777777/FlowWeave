@@ -854,10 +854,22 @@ def test_dead_workspace_runtime_task_retries_when_resource_is_not_healthy(
         assert recover_default_agent_workspace_runtime_task(db) is False
         assert task.state == TaskState.SUCCEEDED
 
+        # A Worker restart may observe a stale ERROR projection while the
+        # external active writer is still alive. Do not re-open provisioning
+        # merely because the control plane restarted; sandbox reconciliation
+        # must establish physical loss first.
+        healthy_resource.observed_state = "ERROR"
+        runtime.status = "ACTIVE"
+        db.flush()
+
+        assert recover_default_agent_workspace_runtime_task(db) is False
+        assert task.state == TaskState.SUCCEEDED
+
         # A no-cache deployment can change the pinned image after the old
         # physical writer disappeared. Re-open the latest terminal provision
         # command so desired-state recovery can create N+1.
         healthy_resource.observed_state = "ERROR"
+        runtime.status = "DEGRADED"
         db.flush()
 
         assert recover_default_agent_workspace_runtime_task(db) is True
