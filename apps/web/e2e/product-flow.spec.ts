@@ -474,6 +474,8 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   let queuedDispatchPosts = 0;
   let releaseQueuedDispatch: (() => void) | undefined;
   const queuedDispatchGate = new Promise<void>(resolve => { releaseQueuedDispatch = resolve; });
+  let priorityDraftPosts = 0;
+  let priorityQueuedPosts = 0;
   let ambiguousMessagePosts = 0;
   let sentProvider: string | null = null;
   let sentBinding: string | null = null;
@@ -931,6 +933,8 @@ test('top-level Agent workspace creates a direct conversation and restores its U
         queuedDispatchPosts += 1;
         await queuedDispatchGate;
       }
+      if (payload.content === '输入优先消息') priorityDraftPosts += 1;
+      if (payload.content === '输入优先队列消息') priorityQueuedPosts += 1;
       await route.fulfill({ status: 202, contentType: 'application/json', body: JSON.stringify({ accepted: true, cursor: payload.content === '运行中直接发送消息' ? 'running-direct-stream-user' : sentMessages === 1 ? 'running-user' : `sent-user-${sentMessages}` }) });
       return;
     }
@@ -2194,12 +2198,29 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.locator('.agent-composer-note')).toHaveText('已排队 1 条');
   modelIsResponding = false;
   await page.reload();
-  await page.getByLabel('发送 Agent 消息').press('Meta+Enter');
   await expect.poll(() => queuedDispatchPosts).toBe(1);
   await page.waitForTimeout(250);
   expect(queuedDispatchPosts).toBe(1);
   releaseQueuedDispatch?.();
   await expect.poll(() => sentMessages).toBe(sentBeforeQueue + 1);
+  await expect(page.getByLabel('消息投递队列')).toHaveCount(0);
+  modelIsResponding = true;
+  await composer.fill('输入优先队列消息');
+  await composer.press('Enter');
+  await expect(page.getByLabel('消息投递队列').getByText('输入优先队列消息')).toBeVisible();
+  await composer.fill('输入优先消息');
+  modelIsResponding = false;
+  await page.reload();
+  await expect(page.getByLabel('发送 Agent 消息')).toHaveValue('输入优先消息');
+  await expect.poll(() => priorityQueuedPosts).toBe(0);
+  await page.getByLabel('发送 Agent 消息').press('Enter');
+  await expect.poll(() => priorityDraftPosts).toBe(1);
+  await expect.poll(() => priorityQueuedPosts).toBe(0);
+  modelIsResponding = true;
+  await page.reload();
+  modelIsResponding = false;
+  await page.reload();
+  await expect.poll(() => priorityQueuedPosts).toBe(1);
   await expect(page.getByLabel('消息投递队列')).toHaveCount(0);
   modelIsResponding = true;
   await page.reload();

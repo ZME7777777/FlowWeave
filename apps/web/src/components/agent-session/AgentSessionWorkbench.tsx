@@ -536,6 +536,10 @@ function conversationHasReachedTerminalState(executionStatus: string | null | un
   );
 }
 
+function conversationHasCompletedNormally(executionStatus: string | null | undefined): boolean {
+  return ['idle', 'completed', 'finished'].includes(executionStatus?.trim().toLowerCase() ?? '');
+}
+
 function pinnedConversationStorageKey(hostId: string, workspaceId: string): string {
   return `flowweave:agent-workspace-pinned:${hostId}:${workspaceId}`;
 }
@@ -4259,6 +4263,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const [confirmationReason, setConfirmationReason] = useState('');
   const [queuedMessages, setQueuedMessages] = useState<QueuedMessage[]>([]);
   const [queueMode, setQueueMode] = useState<{ storageKey?: string; enabled: boolean }>({ enabled: true });
+  const autoDispatchedQueueTerminal = useRef<string | undefined>(undefined);
   const [draggedQueuedMessageId, setDraggedQueuedMessageId] = useState<string>();
   const [queuedMessageMenuId, setQueuedMessageMenuId] = useState<string>();
   const queuedMessageMenuRef = useRef<HTMLDivElement>(null);
@@ -5226,6 +5231,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const nativeTurnRunning = conversationIsRunning(nativeExecutionStatus);
   const nativeTurnTerminal = inputReadinessQuery.data?.ready === true
     && conversationHasReachedTerminalState(nativeExecutionStatus);
+  const nativeTurnCompletedNormally = inputReadinessQuery.data?.ready === true
+    && conversationHasCompletedNormally(nativeExecutionStatus);
   // OpenHands owns the Conversation execution lifecycle. Local state may
   // bridge a command request, but it must never declare a native turn ended.
   const effectiveTurnState: TurnState = nativeTurnTerminal
@@ -6880,6 +6887,35 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     setTurnState('idle');
   }, [inputReadinessQuery.data?.ready, queuedMessages, selected?.id, turnState]);
 
+  const composerHasContent = Boolean(
+    composerHasText || attachments.length || references.length || workspaceReferences.length || composerAnnotations.length,
+  );
+
+  useEffect(() => {
+    if (!selected || !queueModeEnabled || !nativeTurnCompletedNormally) return;
+    const queueHead = queuedMessages.find(message => message.scope === selected.id && message.deliveryState === 'queued');
+    if (!queueHead || sendingMessageIds.current.has(queueHead.id)) return;
+    const terminalKey = selected.id;
+    if (autoDispatchedQueueTerminal.current === terminalKey) return;
+    // A draft belongs to this just-completed turn. Mark its terminal edge as
+    // handled so submitting that draft cannot race a stale idle readiness read.
+    if (composerHasContent) {
+      autoDispatchedQueueTerminal.current = terminalKey;
+      return;
+    }
+    if (selectedCondensing || pendingConfirmation || migrateStreaming.isPending || pendingMigratedSend) return;
+    autoDispatchedQueueTerminal.current = terminalKey;
+    if (!selected.streaming_callback_ready) {
+      migrateStreaming.mutate(queueHead);
+      return;
+    }
+    dispatchMessage({ ...queueHead, bindingId: selected.id, nativeGuidance: false });
+  }, [composerHasContent, dispatchMessage, migrateStreaming, nativeTurnCompletedNormally, pendingConfirmation, pendingMigratedSend, queueModeEnabled, queuedMessages, selected, selectedCondensing]);
+
+  useEffect(() => {
+    if (!nativeTurnCompletedNormally || !selected?.id) autoDispatchedQueueTerminal.current = undefined;
+  }, [nativeTurnCompletedNormally, selected?.id]);
+
   if (workspaceQuery.isLoading) return <main className="agent-workbench-loading">正在打开 Agent 工作台…</main>;
   if (workspaceQuery.error || !workspace) {
     const error = workspaceQuery.error;
@@ -6964,9 +7000,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     : '';
   const hydrationError = selectedHydrationPhase === 'unavailable' ? hydrationPhase?.error : undefined;
   const visibleError = operationError ?? hydrationError ?? confirmationQuery.error ?? eventsQuery.error;
-  const composerHasContent = Boolean(
-    composerHasText || attachments.length || references.length || workspaceReferences.length || composerAnnotations.length,
-  );
   const composerActionSends = composerHasContent && !pendingConfirmation;
   const fallbackHydrationPending = selectedHydrationPhase === 'fallback'
     && (eventsQuery.isPending || inputReadinessQuery.isPending || contextQuery.isPending);
