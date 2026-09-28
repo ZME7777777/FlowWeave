@@ -34,11 +34,14 @@ def _source_binding(db: Session, workspace_id: str, binding_id: str) -> AgentCon
     )
     if binding is None:
         raise DomainError("AGENT_CONVERSATION_NOT_FOUND", "主会话不存在或已删除", 404)
-    if db.scalar(
-        select(AgentSidebarConversation.id).where(
-            AgentSidebarConversation.sidebar_binding_id == binding.id
+    if (
+        db.scalar(
+            select(AgentSidebarConversation.id).where(
+                AgentSidebarConversation.sidebar_binding_id == binding.id
+            )
         )
-    ) is not None:
+        is not None
+    ):
         raise DomainError("AGENT_SIDEBAR_SOURCE_INVALID", "临时侧边会话不能作为主会话", 422)
     return binding
 
@@ -115,9 +118,7 @@ def create_sidebar_conversation(
     return {**result, "expires_at": expires_at.isoformat()}
 
 
-def sidebar_conversation(
-    db: Session, workspace_id: str, binding_id: str
-) -> dict[str, Any]:
+def sidebar_conversation(db: Session, workspace_id: str, binding_id: str) -> dict[str, Any]:
     link = db.scalar(
         select(AgentSidebarConversation).where(
             AgentSidebarConversation.workspace_id == workspace_id,
@@ -152,7 +153,9 @@ def assert_sidebar_writable(
     if link is None:
         return None
     if link.expired_at is not None or link.expires_at <= now():
-        raise DomainError("AGENT_SIDEBAR_CONVERSATION_EXPIRED", "侧边聊天会话已过期，无法继续发送消息", 410)
+        raise DomainError(
+            "AGENT_SIDEBAR_CONVERSATION_EXPIRED", "侧边聊天会话已过期，无法继续发送消息", 410
+        )
     return link
 
 

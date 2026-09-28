@@ -23,6 +23,7 @@ _USER_ISOLATED_TABLES = frozenset(
         "agent_conversation_capabilities",
         "agent_conversation_commands",
         "agent_conversation_message_attachments",
+        "agent_sidebar_conversations",
         "agent_conversation_searches",
         "agent_conversation_search_hits",
         "agent_conversation_usage_buckets",
@@ -77,6 +78,7 @@ def _bind_tenant_context(session: Session, _transaction: object, connection: obj
         current_user_id,
         tenant_filter_bypassed,
     )
+
     connection.execute(  # type: ignore[attr-defined]
         text(
             "SELECT set_config('flowweave.user_id', :user_id, true), "
@@ -112,8 +114,7 @@ def _enforce_tenant_writes(session: Session, _flush_context: object, _instances:
                 raise RuntimeError("Cross-user record creation is forbidden")
     for item in session.dirty.union(session.deleted):
         if (
-            _is_user_isolated_model(type(item))
-            and item.owner_user_id != user_id  # type: ignore[attr-defined]
+            _is_user_isolated_model(type(item)) and item.owner_user_id != user_id  # type: ignore[attr-defined]
         ):
             raise RuntimeError("Cross-user record mutation is forbidden")
 
@@ -146,9 +147,7 @@ def _enforce_tenant_reads(execute_state: Any) -> None:
             )
         execute_state.statement = statement
         return
-    if getattr(execute_state, "is_update", False) or getattr(
-        execute_state, "is_delete", False
-    ):
+    if getattr(execute_state, "is_update", False) or getattr(execute_state, "is_delete", False):
         mapper = execute_state.bind_arguments.get("mapper")
         if mapper is not None and _is_user_isolated_model(mapper.class_):
             execute_state.statement = execute_state.statement.where(

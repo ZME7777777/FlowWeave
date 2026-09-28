@@ -239,7 +239,11 @@ def _dict(
 ) -> dict[str, Any]:
     work_directory_id = _work_directory_id(db, item)
     if write_available is None:
-        write_available = _workspace_write_available(db, _workspace(db, item.workspace_id))
+        write_available = (
+            _workspace_write_available(db, _workspace(db, item.workspace_id))
+            if item.workspace_id is not None
+            else False
+        )
     return {
         "id": item.id,
         "display_title": item.display_title,
@@ -753,7 +757,9 @@ def list_conversations(db: Session, workspace_id: str) -> list[dict[str, Any]]:
             .where(
                 AgentConversationBinding.workspace_id == workspace_id,
                 AgentConversationBinding.lifecycle == "ACTIVE",
-                ~AgentConversationBinding.id.in_(select(AgentSidebarConversation.sidebar_binding_id)),
+                ~AgentConversationBinding.id.in_(
+                    select(AgentSidebarConversation.sidebar_binding_id)
+                ),
             )
             .order_by(
                 _conversation_sort_expression().desc(),
@@ -772,7 +778,9 @@ def conversation_activity(db: Session, workspace_id: str) -> dict[str, Any]:
             select(AgentConversationBinding).where(
                 AgentConversationBinding.workspace_id == workspace_id,
                 AgentConversationBinding.lifecycle == "ACTIVE",
-                ~AgentConversationBinding.id.in_(select(AgentSidebarConversation.sidebar_binding_id)),
+                ~AgentConversationBinding.id.in_(
+                    select(AgentSidebarConversation.sidebar_binding_id)
+                ),
             )
         )
     )
@@ -3069,9 +3077,7 @@ def delete_draft_attachments(db: Session, workspace_id: str, owner_id: str) -> i
     )
 
 
-def delete_draft_attachment(
-    db: Session, workspace_id: str, owner_id: str, path: str
-) -> bool:
+def delete_draft_attachment(db: Session, workspace_id: str, owner_id: str, path: str) -> bool:
     workspace = _workspace(db, workspace_id)
     owner = assert_attachment_owner_unbound(
         db, owner_id, host_kind="AGENT_WORKSPACE", host_id=workspace.id
