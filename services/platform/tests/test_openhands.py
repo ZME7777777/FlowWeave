@@ -5970,3 +5970,51 @@ def test_formal_read_timeout_has_a_stable_business_code(openhands_settings, monk
     with pytest.raises(DomainError) as caught:
         runtime.conversation_runtime(handle)
     assert caught.value.code == "RUNTIME_BUSINESS_READ_TIMEOUT"
+
+
+def test_openhands_background_search_stops_at_native_page_budget(openhands_settings, monkeypatch):
+    settings = openhands_settings.model_copy(update={"runtime_background_search_max_pages": 1})
+    runtime = OpenHandsRuntime(settings)
+    calls: list[dict[str, object]] = []
+
+    def request(*_args, **kwargs):
+        calls.append(kwargs)
+        return {"items": [], "next_page_id": "another-page"}
+
+    monkeypatch.setattr(runtime, "_request", request)
+    with pytest.raises(DomainError) as error:
+        runtime.search_message_events(_handle(), "needle")
+
+    assert error.value.code == "RUNTIME_BACKGROUND_SEARCH_BUDGET_EXHAUSTED"
+    assert len(calls) == 1
+
+
+def test_openhands_background_search_stops_at_native_match_budget(openhands_settings, monkeypatch):
+    settings = openhands_settings.model_copy(update={"runtime_background_search_max_matches": 1})
+    runtime = OpenHandsRuntime(settings)
+    monkeypatch.setattr(
+        runtime,
+        "_request",
+        lambda *_args, **_kwargs: {
+            "items": [
+                {
+                    "kind": "MessageEvent",
+                    "id": "first",
+                    "source": "user",
+                    "llm_message": {"role": "user", "content": "needle one"},
+                },
+                {
+                    "kind": "MessageEvent",
+                    "id": "second",
+                    "source": "assistant",
+                    "llm_message": {"role": "assistant", "content": "needle two"},
+                },
+            ],
+            "next_page_id": None,
+        },
+    )
+
+    with pytest.raises(DomainError) as error:
+        runtime.search_message_events(_handle(), "needle")
+
+    assert error.value.code == "RUNTIME_BACKGROUND_SEARCH_BUDGET_EXHAUSTED"

@@ -22,6 +22,7 @@ from flowweave.modules.agent_workspaces.infrastructure.models import (
 from flowweave.modules.tasks.public import enqueue
 from flowweave.runtime.dependencies import get_runtime
 from flowweave.shared.errors import DomainError, not_found
+from flowweave.shared.settings import get_settings
 
 
 def _search(
@@ -238,13 +239,51 @@ def process(db: Session, search_id: str) -> None:
                     AgentConversationBinding.work_directory_version_id.in_(selected_versions)
                 )
             statement = statement.where(or_(*scopes))
-        bindings = list(db.scalars(statement.order_by(AgentConversationBinding.created_at.desc())))
+        settings = get_settings()
+        bindings = list(
+            db.scalars(
+                statement.order_by(AgentConversationBinding.created_at.desc()).limit(
+                    settings.agent_conversation_search_max_bindings + 1
+                )
+            )
+        )
+        if len(bindings) > settings.agent_conversation_search_max_bindings:
+            raise DomainError(
+                "AGENT_CONVERSATION_SEARCH_BUDGET_EXHAUSTED",
+                "搜索范围包含过多会话，请缩小工作区范围后重试",
+                422,
+            )
         hit_keys: list[tuple[str, str]] = []
         for binding in bindings:
             for event in get_runtime().search_message_events(
                 conversations._handle(db, workspace, binding), query
             ):
+                if len(hit_keys) >= settings.agent_conversation_search_max_hits:
+                    raise DomainError(
+                        "AGENT_CONVERSATION_SEARCH_BUDGET_EXHAUSTED",
+                        "搜索命中过多，请缩小关键词或工作区范围后重试",
+                        422,
+                    )
                 hit_keys.append((binding.id, event.cursor))
+    except DomainError as exc:
+        search = db.scalar(
+            select(AgentConversationSearch)
+            .where(AgentConversationSearch.id == search_id)
+            .with_for_update()
+        )
+        if search is not None:
+            search.state = "FAILED"
+            search.failure_summary = (
+                "搜索工作量超过安全上限，请缩小关键词或工作区范围后重试"
+                if exc.code
+                in {
+                    "RUNTIME_BACKGROUND_SEARCH_BUDGET_EXHAUSTED",
+                    "AGENT_CONVERSATION_SEARCH_BUDGET_EXHAUSTED",
+                }
+                else "搜索暂时无法完成，请稍后重新搜索"
+            )
+            search.completed_at = datetime.now(UTC)
+        return
     except Exception:
         search = db.scalar(
             select(AgentConversationSearch)
