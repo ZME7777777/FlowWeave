@@ -1982,9 +1982,19 @@ def events(
     started_at = time.monotonic()
     runtime = get_runtime()
     try:
-        batch = batch_override or runtime.read_active_events(
-            replace(handle, cursor=cursor, history_cursor=history_cursor)
-        )
+        if batch_override is None:
+            # Agent Workspace Runtime generations are replaceable.  A fresh
+            # Agent Server has the persisted Conversation directory mounted,
+            # but does not populate its in-memory service until the formal
+            # Conversation identity is loaded.  Reload the original UUID
+            # before reading events; this never creates a replacement
+            # Conversation or replays an interrupted action.
+            runtime.reload_conversation(handle)
+            batch = runtime.read_active_events(
+                replace(handle, cursor=cursor, history_cursor=history_cursor)
+            )
+        else:
+            batch = batch_override
     except Exception as exc:
         if metrics := current_metrics():
             metrics.observe_operation(
@@ -3251,6 +3261,10 @@ def hydrate_conversation(db: Session, workspace_id: str, binding_id: str) -> dic
     started_at = time.monotonic()
     outcome = "error"
     try:
+        # See events(): after a managed Runtime generation replacement, load
+        # the persisted native Conversation before asking the new Agent Server
+        # for its initial event window or readiness snapshot.
+        runtime.reload_conversation(handle)
         batch = runtime.read_active_events(handle)
         context = hydration_context_snapshot(runtime, handle, batch.context)
         readiness = (

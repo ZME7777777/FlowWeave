@@ -1411,6 +1411,12 @@ def test_agent_workspace_projects_runtime_sandbox_images_for_the_browser(
     settings, db_session_factory, monkeypatch
 ):
     class ImageEventRuntime(MockRuntime):
+        reload_calls = 0
+
+        def reload_conversation(self, handle, *, expected=None):
+            self.reload_calls += 1
+            return super().reload_conversation(handle, expected=expected)
+
         def read_active_events(self, handle):
             del handle
             return RuntimeEventBatch(
@@ -1444,9 +1450,11 @@ def test_agent_workspace_projects_runtime_sandbox_images_for_the_browser(
         created = conversations.create_conversation(
             db, workspace.id, "二维码", workspace.default_model_provider_id, "image-event-key"
         )
+        runtime.reload_calls = 0
 
         event = conversations.events(db, workspace.id, created["id"], None)["events"][0]
 
+    assert runtime.reload_calls == 1
     assert event["payload"]["content"] == (
         "扫码：![二维码](/api/v1/agent-workspaces/"
         f"{workspace.id}/workspace/file?path=%2Fruntime%2Fworkspace%2Fproject%2F"
