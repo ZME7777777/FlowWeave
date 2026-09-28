@@ -715,7 +715,7 @@ function ConversationSearchDialog({ search, hits, hasMore, workDirectories, root
         {state === 'FAILED' && <p>{search?.failure_summary || '搜索无法完成，请重新搜索。'}</p>}
         {state === 'SUCCEEDED' && !hits?.length && <p>没有找到包含该内容的会话消息。</p>}
         {hits?.map(hit => <button type="button" className="agent-conversation-search-hit" key={hit.binding_id + ':' + hit.event_id} onClick={() => onOpenHit(hit.binding_id, hit.event_id)}>
-          <span><b>{hit.title}</b><small>{hit.source === 'user' || hit.source === 'human' ? '你的消息' : 'Agent 回复'}{hit.timestamp ? ' · ' + new Date(hit.timestamp).toLocaleString() : ''}</small></span><p>{conversationSearchSnippet(hit.content, search.query)}</p><ChevronRight size={16}/>
+          <span><b>{hit.title}</b><small>{hit.source === 'user' || hit.source === 'human' ? '你的消息' : 'Agent 回复'}{hit.timestamp ? ' · ' + new Date(hit.timestamp).toLocaleString() : ''}</small></span><p>{conversationSearchSnippet(hit.content, search?.query ?? '')}</p><ChevronRight size={16}/>
         </button>)}
         {state === 'SUCCEEDED' && hasMore && <button type="button" className="secondary" disabled={loadingMore} onClick={onLoadMore}>{loadingMore ? <LoaderCircle className="conversation-activity-spin" size={14}/> : null}加载更多结果</button>}
       </div>
@@ -4432,7 +4432,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const [conversationSearchOpen, setConversationSearchOpen] = useState(false);
   const [conversationSearchId, setConversationSearchId] = useState<string>();
   const [conversationSearchCursor, setConversationSearchCursor] = useState<string>();
-  const [conversationSearchHits, setConversationSearchHits] = useState<AgentConversationSearch['hits']>([]);
+  const [conversationSearchHits, setConversationSearchHits] = useState<NonNullable<AgentConversationSearch['hits']>>([]);
   const [conversationSearchTargetEventId, setConversationSearchTargetEventId] = useState<string>();
   const [sidebarListMode, setSidebarListMode] = useState<'workspaces' | 'activity'>('workspaces');
   const [activityPreviewBindingId, setActivityPreviewBindingId] = useState<string>();
