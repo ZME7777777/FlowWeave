@@ -1,15 +1,15 @@
 """add password-only website credentials.
 
-Revision ID: 0131_website_credential_password_only
-Revises: 0130_temporary_sidebar_conversations
+Revision ID: 0131_website_pwd_auth
+Revises: 0130_tmp_sidebar_convos
 """
 
 from __future__ import annotations
 
 from alembic import op
 
-revision = "0131_website_credential_password_only"
-down_revision = "0130_temporary_sidebar_conversations"
+revision = "0131_website_pwd_auth"
+down_revision = "0130_tmp_sidebar_convos"
 branch_labels = None
 depends_on = None
 

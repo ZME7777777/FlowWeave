@@ -1,16 +1,16 @@
 """add resumable agent attachment uploads.
 
-Revision ID: 0132_resumable_agent_attachment_uploads
-Revises: 0131_website_credential_password_only
+Revision ID: 0132_resumable_attach
+Revises: 0131_website_pwd_auth
 """
 
 from __future__ import annotations
 
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
 
-revision = "0132_resumable_agent_attachment_uploads"
-down_revision = "0131_website_credential_password_only"
+revision = "0132_resumable_attach"
+down_revision = "0131_website_pwd_auth"
 branch_labels = None
 depends_on = None
 
@@ -34,13 +34,33 @@ def upgrade() -> None:
         sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
-        sa.CheckConstraint("host_kind IN ('AGENT_WORKSPACE', 'FLOW_NODE')", name="ck_agent_attachment_upload_host_kind"),
-        sa.CheckConstraint("total_size > 0 AND total_size <= 26214400", name="ck_agent_attachment_upload_total_size"),
+        sa.CheckConstraint(
+            "host_kind IN ('AGENT_WORKSPACE', 'FLOW_NODE')",
+            name="ck_agent_attachment_upload_host_kind",
+        ),
+        sa.CheckConstraint(
+            "total_size > 0 AND total_size <= 26214400",
+            name="ck_agent_attachment_upload_total_size",
+        ),
         sa.CheckConstraint("chunk_size = 262144", name="ck_agent_attachment_upload_chunk_size"),
-        sa.CheckConstraint("status IN ('ACTIVE', 'COMPLETED', 'CANCELLED')", name="ck_agent_attachment_upload_status"),
+        sa.CheckConstraint(
+            "status IN ('ACTIVE', 'COMPLETED', 'CANCELLED')",
+            name="ck_agent_attachment_upload_status",
+        ),
     )
-    for column in ("owner_user_id", "host_kind", "host_id", "host_scope_id", "binding_id", "attachment_owner_id", "status", "expires_at"):
-        op.create_index(f"ix_agent_attachment_uploads_{column}", "agent_attachment_uploads", [column])
+    for column in (
+        "owner_user_id",
+        "host_kind",
+        "host_id",
+        "host_scope_id",
+        "binding_id",
+        "attachment_owner_id",
+        "status",
+        "expires_at",
+    ):
+        op.create_index(
+            f"ix_agent_attachment_uploads_{column}", "agent_attachment_uploads", [column]
+        )
     op.create_table(
         "agent_attachment_upload_parts",
         sa.Column("id", sa.String(length=36), primary_key=True),
@@ -52,19 +72,27 @@ def upgrade() -> None:
         sa.UniqueConstraint("upload_id", "part_number", name="uq_agent_attachment_upload_part"),
         sa.CheckConstraint("part_number >= 0", name="ck_agent_attachment_upload_part_number"),
     )
-    op.create_index("ix_agent_attachment_upload_parts_owner_user_id", "agent_attachment_upload_parts", ["owner_user_id"])
-    op.create_index("ix_agent_attachment_upload_parts_upload_id", "agent_attachment_upload_parts", ["upload_id"])
+    op.create_index(
+        "ix_agent_attachment_upload_parts_owner_user_id",
+        "agent_attachment_upload_parts",
+        ["owner_user_id"],
+    )
+    op.create_index(
+        "ix_agent_attachment_upload_parts_upload_id", "agent_attachment_upload_parts", ["upload_id"]
+    )
     for table in ("agent_attachment_uploads", "agent_attachment_upload_parts"):
         policy = f"pl_tenant_{table}"
         op.execute(sa.text(f'ALTER TABLE "{table}" ENABLE ROW LEVEL SECURITY'))
         op.execute(sa.text(f'ALTER TABLE "{table}" FORCE ROW LEVEL SECURITY'))
-        op.execute(sa.text(
-            f'CREATE POLICY "{policy}" ON "{table}" '
-            "USING (current_setting('flowweave.bypass', true) = 'on' OR "
-            "owner_user_id = current_setting('flowweave.user_id', true)) "
-            "WITH CHECK (current_setting('flowweave.bypass', true) = 'on' OR "
-            "owner_user_id = current_setting('flowweave.user_id', true))"
-        ))
+        op.execute(
+            sa.text(
+                f'CREATE POLICY "{policy}" ON "{table}" '
+                "USING (current_setting('flowweave.bypass', true) = 'on' OR "
+                "owner_user_id = current_setting('flowweave.user_id', true)) "
+                "WITH CHECK (current_setting('flowweave.bypass', true) = 'on' OR "
+                "owner_user_id = current_setting('flowweave.user_id', true))"
+            )
+        )
 
 
 def downgrade() -> None:
