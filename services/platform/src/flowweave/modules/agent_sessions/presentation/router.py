@@ -41,6 +41,7 @@ from flowweave.shared.http import (
     command_key,
     get_container,
     run_blocking,
+    run_blocking_auxiliary,
     run_blocking_control,
     run_blocking_history,
     run_blocking_mutation,
@@ -481,13 +482,13 @@ async def bootstrap_node_session(
 async def node_session_workspace(
     flow_run_id: str,
     attempt_id: str,
-    db: Db,
+    container: ContainerDep,
     binding_id: str | None = Query(default=None),
     work_directory_id: str | None = Query(default=None),
     full_index: bool = Query(default=False),
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking_auxiliary(
+        container,
         lambda session: agent_sessions.flow_node_workspace.details(
             session,
             flow_run_id=flow_run_id,
@@ -503,15 +504,15 @@ async def node_session_workspace(
 async def node_session_workspace_directory(
     flow_run_id: str,
     attempt_id: str,
-    db: Db,
+    container: ContainerDep,
     parent_path: str | None = Query(default=None, max_length=500),
     cursor: str | None = Query(default=None, max_length=500),
     limit: int = Query(default=100, ge=1, le=250),
     binding_id: str | None = Query(default=None),
     work_directory_id: str | None = Query(default=None),
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking_auxiliary(
+        container,
         lambda session: agent_sessions.flow_node_workspace.list_directory(
             session,
             flow_run_id=flow_run_id,
@@ -529,12 +530,12 @@ async def node_session_workspace_directory(
 async def node_session_workspace_git_repositories(
     flow_run_id: str,
     attempt_id: str,
-    db: Db,
+    container: ContainerDep,
     binding_id: str | None = Query(default=None),
     work_directory_id: str | None = Query(default=None),
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking_auxiliary(
+        container,
         lambda session: {
             "repositories": agent_sessions.flow_node_workspace.git_repositories(
                 session,
@@ -551,7 +552,7 @@ async def node_session_workspace_git_repositories(
 async def node_session_workspace_file(
     flow_run_id: str,
     attempt_id: str,
-    db: Db,
+    container: ContainerDep,
     path: str = Query(...),
     binding_id: str | None = Query(default=None),
     work_directory_id: str | None = Query(default=None),
@@ -559,8 +560,8 @@ async def node_session_workspace_file(
     preview: bool = Query(default=False),
     offset: int = Query(default=0, ge=0),
 ) -> Response:
-    content, content_type, filename, total_size, next_offset = await run_sync(
-        db,
+    content, content_type, filename, total_size, next_offset = await run_blocking_auxiliary(
+        container,
         lambda session: agent_sessions.flow_node_workspace.read_file(
             session,
             flow_run_id=flow_run_id,
@@ -589,13 +590,13 @@ async def node_session_workspace_file(
 async def node_session_workspace_git_log(
     flow_run_id: str,
     attempt_id: str,
-    db: Db,
+    container: ContainerDep,
     repository_path: str = Query(...),
     binding_id: str | None = Query(default=None),
     work_directory_id: str | None = Query(default=None),
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking_auxiliary(
+        container,
         lambda session: agent_sessions.flow_node_workspace.git_history(
             session,
             flow_run_id=flow_run_id,
@@ -611,13 +612,13 @@ async def node_session_workspace_git_log(
 async def sync_node_session_workspace_git_repository(
     flow_run_id: str,
     attempt_id: str,
-    db: Db,
+    container: ContainerDep,
     repository_path: str = Query(...),
     binding_id: str | None = Query(default=None),
     work_directory_id: str | None = Query(default=None),
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking_auxiliary(
+        container,
         lambda session: agent_sessions.flow_node_workspace.sync_git_repository(
             session,
             flow_run_id=flow_run_id,
@@ -633,13 +634,13 @@ async def sync_node_session_workspace_git_repository(
 async def node_session_workspace_git_changes(
     flow_run_id: str,
     attempt_id: str,
-    db: Db,
+    container: ContainerDep,
     repository_path: str = Query(...),
     binding_id: str | None = Query(default=None),
     work_directory_id: str | None = Query(default=None),
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking_auxiliary(
+        container,
         lambda session: agent_sessions.flow_node_workspace.git_changes(
             session,
             flow_run_id=flow_run_id,
@@ -655,15 +656,15 @@ async def node_session_workspace_git_changes(
 async def node_session_workspace_git_working_diff(
     flow_run_id: str,
     attempt_id: str,
-    db: Db,
+    container: ContainerDep,
     repository_path: str = Query(...),
     kind: str = Query(...),
     path: str = Query(...),
     binding_id: str | None = Query(default=None),
     work_directory_id: str | None = Query(default=None),
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking_auxiliary(
+        container,
         lambda session: agent_sessions.flow_node_workspace.git_change_file_diff(
             session,
             flow_run_id=flow_run_id,
@@ -681,14 +682,14 @@ async def node_session_workspace_git_working_diff(
 async def node_session_workspace_git_commit(
     flow_run_id: str,
     attempt_id: str,
-    db: Db,
+    container: ContainerDep,
     repository_path: str = Query(...),
     commit: str = Query(...),
     binding_id: str | None = Query(default=None),
     work_directory_id: str | None = Query(default=None),
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking_auxiliary(
+        container,
         lambda session: agent_sessions.flow_node_workspace.git_commit_details(
             session,
             flow_run_id=flow_run_id,
@@ -705,15 +706,15 @@ async def node_session_workspace_git_commit(
 async def node_session_workspace_git_diff(
     flow_run_id: str,
     attempt_id: str,
-    db: Db,
+    container: ContainerDep,
     repository_path: str = Query(...),
     commit: str = Query(...),
     path: str = Query(...),
     binding_id: str | None = Query(default=None),
     work_directory_id: str | None = Query(default=None),
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking_auxiliary(
+        container,
         lambda session: agent_sessions.flow_node_workspace.git_commit_file_diff(
             session,
             flow_run_id=flow_run_id,
@@ -732,12 +733,12 @@ async def delete_node_session_workspace_entries(
     flow_run_id: str,
     attempt_id: str,
     payload: WorkspaceEntriesDeleteWrite,
-    db: Db,
+    container: ContainerDep,
     binding_id: str | None = Query(default=None),
     work_directory_id: str | None = Query(default=None),
 ) -> dict[str, list[str]]:
-    deleted = await run_sync(
-        db,
+    deleted = await run_blocking_auxiliary(
+        container,
         lambda session: agent_sessions.flow_node_workspace.delete_entries(
             session,
             flow_run_id=flow_run_id,
@@ -755,12 +756,12 @@ async def create_node_session_workspace_entry(
     flow_run_id: str,
     attempt_id: str,
     payload: WorkspaceEntryCreateWrite,
-    db: Db,
+    container: ContainerDep,
     binding_id: str | None = Query(default=None),
     work_directory_id: str | None = Query(default=None),
 ) -> Response:
-    await run_sync(
-        db,
+    await run_blocking_auxiliary(
+        container,
         lambda session: agent_sessions.flow_node_workspace.create_entry(
             session,
             flow_run_id=flow_run_id,
@@ -779,12 +780,12 @@ async def create_node_session_workspace_entry(
 async def node_session_candidate_output_file(
     flow_run_id: str,
     attempt_id: str,
-    db: Db,
+    container: ContainerDep,
     field_key: str = Query(...),
     path: str = Query(...),
 ) -> Response:
-    content, content_type, filename = await run_sync(
-        db,
+    content, content_type, filename = await run_blocking_auxiliary(
+        container,
         lambda session: agent_sessions.flow_node_workspace.read_candidate_output_file(
             session,
             flow_run_id=flow_run_id,
@@ -809,10 +810,10 @@ async def node_session_candidate_output_file(
 
 @router.get(f"{_BASE}/work-directories")
 async def list_flow_run_work_directories(
-    flow_run_id: str, attempt_id: str, db: Db
+    flow_run_id: str, attempt_id: str, container: ContainerDep
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking_auxiliary(
+        container,
         lambda session: (
             agent_sessions.resolve_flow_node_session_host(
                 session,
@@ -830,7 +831,7 @@ async def create_flow_run_work_directory(
     flow_run_id: str,
     attempt_id: str,
     payload: FlowRunWorkDirectoryCreateWrite,
-    db: Db,
+    container: ContainerDep,
 ) -> dict[str, Any]:
     def create(session: Any) -> dict[str, Any]:
         agent_sessions.resolve_flow_node_session_host(
@@ -847,15 +848,15 @@ async def create_flow_run_work_directory(
             tuple(payload.selected_paths),
         )
 
-    return await run_sync(db, create)
+    return await run_blocking_auxiliary(container, create)
 
 
 @router.delete(f"{_BASE}/work-directories/{{work_directory_id}}", status_code=204)
 async def delete_flow_run_work_directory(
-    flow_run_id: str, attempt_id: str, work_directory_id: str, db: Db
+    flow_run_id: str, attempt_id: str, work_directory_id: str, container: ContainerDep
 ) -> Response:
-    await run_sync(
-        db,
+    await run_blocking_auxiliary(
+        container,
         lambda session: (
             agent_sessions.resolve_flow_node_session_host(
                 session,
