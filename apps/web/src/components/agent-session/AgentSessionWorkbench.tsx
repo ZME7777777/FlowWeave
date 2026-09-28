@@ -706,10 +706,10 @@ function ConversationSearchDialog({ search, hits, hasMore, workDirectories, root
           <div className="agent-conversation-search-scope-actions"><button type="button" onClick={selectAll} disabled={allSelected}>全部选择</button><button type="button" onClick={clearAll} disabled={!selectedCount}>全部取消</button></div>
         </div>
         <div className="agent-conversation-search-scope-cards" role="group" aria-label="搜索工作区范围">
-          <button type="button" aria-pressed={includeRoot} className={`agent-conversation-search-scope-card${includeRoot ? ' selected' : ''}`} onClick={() => setIncludeRoot(current => !current)}><Check size={14}/><span><b>{rootLabel}</b><small>根工作区</small></span></button>
+          <button type="button" aria-pressed={includeRoot} className={`agent-conversation-search-scope-card${includeRoot ? ' selected' : ''}`} onClick={() => setIncludeRoot(current => !current)}><Check size={14}/><span><b>{rootLabel}</b></span></button>
           {workDirectories.map(directory => {
             const selectedDirectory = selectedWorkDirectoryIds.includes(directory.id);
-            return <button type="button" key={directory.id} aria-pressed={selectedDirectory} className={`agent-conversation-search-scope-card${selectedDirectory ? ' selected' : ''}`} onClick={() => toggleDirectory(directory.id)}><Check size={14}/><span><b>{directory.display_name}</b><small>工作区</small></span></button>;
+            return <button type="button" key={directory.id} aria-pressed={selectedDirectory} className={`agent-conversation-search-scope-card${selectedDirectory ? ' selected' : ''}`} onClick={() => toggleDirectory(directory.id)}><Check size={14}/><span><b>{directory.display_name}</b></span></button>;
           })}
         </div>
         <small className="agent-conversation-search-scope-summary">当前：{scopeLabel}</small>
