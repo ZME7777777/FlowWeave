@@ -130,7 +130,9 @@
 .conversation-model-retry summary::-webkit-details-marker{display:none}
 .conversation-model-retry .conversation-expand-arrow{transition:transform .16s ease}
 .conversation-model-retry[open] .conversation-expand-arrow{transform:rotate(90deg)}
-.conversation-model-retry p{margin:2px 0 0 18px;color:#7e8780;font-size:12px;line-height:1.5}
+.conversation-model-retry-detail{padding:2px 0 0 18px}
+.conversation-model-retry p{margin:0;color:#7e8780;font-size:12px;line-height:1.5}
+.conversation-model-retry pre{max-height:180px;overflow:auto;margin:7px 0 0;border:1px solid #eadfdb;border-radius:5px;background:#fff;padding:7px;color:#76514c;font:10px/1.5 'DM Mono',ui-monospace,monospace;white-space:pre-wrap;overflow-wrap:anywhere}
 .conversation-model-retry.final{color:#b08165}
 .conversation-tool-entry{--conversation-tool-accent:#4f8060;display:grid;max-width:100%;min-width:0;gap:5px}
 .conversation-tool-detail{display:block!important;overflow:visible;margin:0;border:0}

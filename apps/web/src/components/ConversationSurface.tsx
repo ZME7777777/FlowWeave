@@ -1090,7 +1090,7 @@ function retryLabel(status: ModelRetryStatus): string {
   return `↳ ${prefix}服务短暂波动，正在自动重试${attempt}`;
 }
 
-function RetryStatus({ status }: { status: ModelRetryStatus }) {
+function RetryStatus({ status, errorDetail }: { status: ModelRetryStatus; errorDetail?: string }) {
   const detail: Record<string, string> = {
     timeout: '模型响应超时。', connection: '无法连接模型网关。', service_unavailable: '模型服务返回了暂时不可用的响应。',
     empty_response: '模型没有返回完整的可用响应。', rate_limit: '模型服务暂时限制了请求速率。', auth: '模型凭据无效或权限不足。',
@@ -1099,10 +1099,27 @@ function RetryStatus({ status }: { status: ModelRetryStatus }) {
     no_eligible_events: '没有可安全压缩的事件区间。', insufficient_progress: '可压缩范围不足以满足最小进度要求。',
     summary_model_failed: '上下文摘要模型调用未完成。', condensation_unknown: '上下文压缩未能完成。',
   };
+  const finalTitle: Record<string, string> = {
+    timeout: '模型响应超时', connection: '模型连接失败', service_unavailable: '模型服务暂不可用',
+    empty_response: '模型返回不完整响应', rate_limit: '模型请求受限', auth: '模型认证失败',
+    quota: '模型额度不足', config: '模型配置不兼容', context_limit: '模型上下文超限',
+    content_policy: '请求被安全策略拒绝', internal: '模型内部异常', unknown: '模型调用失败',
+    no_eligible_events: '没有可压缩的上下文', insufficient_progress: '上下文不足以压缩',
+    summary_model_failed: '上下文摘要生成失败', condensation_unknown: '上下文压缩未完成',
+  };
   const recoveringDetail = '检测到可恢复的模型调用波动，系统正在按退避策略自动重试。';
+  const summary = status.final
+    ? (status.subject === 'execution' ? '本轮执行失败' : finalTitle[status.failureKind] ?? finalTitle.unknown)
+    : retryLabel(status);
+  const detailText = status.final
+    ? (status.subject === 'execution' ? '执行过程中发生了不可恢复错误。' : detail[status.failureKind] ?? detail.unknown)
+    : recoveringDetail;
   return <details className={`conversation-model-retry${status.final ? ' final' : ''}`}>
-    <summary role="status" aria-label={retryLabel(status)}><ChevronRight className="conversation-expand-arrow" size={13}/><span>{retryLabel(status)}</span>{!status.final && <span className="conversation-turn-status-dots" aria-hidden="true"><i/><i/><i/></span>}</summary>
-    <p>{status.final ? (status.subject === 'execution' ? '执行过程中发生了不可恢复错误。' : detail[status.failureKind] ?? detail.unknown) : recoveringDetail}{status.errorCode ? ` · 错误码：${status.errorCode}` : ''}</p>
+    <summary role="status" aria-label={summary}><ChevronRight className="conversation-expand-arrow" size={13}/><span>{summary}</span>{!status.final && <span className="conversation-turn-status-dots" aria-hidden="true"><i/><i/><i/></span>}</summary>
+    <div className="conversation-model-retry-detail">
+      <p>{detailText}{status.errorCode ? ` · 错误码：${status.errorCode}` : ''}</p>
+      {status.final && errorDetail?.trim() && <pre aria-label="原始错误详情">{errorDetail.trim()}</pre>}
+    </div>
   </details>;
 }
 
@@ -1530,7 +1547,7 @@ function ConversationFailure({ item, taskControl = [], retryStatus }: { item: It
     && item.content.includes('OpenAIException')
     && item.content.includes('Error code: 404');
   if (isLegacyAutoTitleFailure) return null;
-  return <div data-turn-terminal="true" data-event-id={item.event.id}><RetryStatus status={retryStatus ?? terminalRetryStatus(item)}/></div>;
+  return <div data-turn-terminal="true" data-event-id={item.event.id}><RetryStatus status={retryStatus ?? terminalRetryStatus(item)} errorDetail={item.content}/></div>;
 }
 
 export interface ConversationHistoryPrepend {
