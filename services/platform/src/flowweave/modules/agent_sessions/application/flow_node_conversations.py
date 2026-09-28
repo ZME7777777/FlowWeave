@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 from flowweave.modules.agent_sessions import public as agent_sessions
 from flowweave.modules.agent_sessions.application import usage as usage_projection
 from flowweave.modules.agent_sessions.application.condensation import (
+    condensation_task_failure_reason,
     enqueue_manual_condensation,
 )
 from flowweave.modules.agent_sessions.application.conversation_cache import ConversationCacheKey
@@ -892,7 +893,12 @@ def node_session_activity(db: Session, *, flow_run_id: str, attempt_id: str) -> 
     native_activity = runtime.conversation_activity_snapshot(handle)
     condensation_tasks = list(
         db.execute(
-            select(BackgroundTask.aggregate_id, BackgroundTask.id, BackgroundTask.state)
+            select(
+                BackgroundTask.aggregate_id,
+                BackgroundTask.id,
+                BackgroundTask.state,
+                BackgroundTask.last_error,
+            )
             .where(
                 BackgroundTask.task_type == "CONDENSE_AGENT_CONVERSATION",
                 BackgroundTask.aggregate_id.in_(binding_ids),
@@ -900,9 +906,12 @@ def node_session_activity(db: Session, *, flow_run_id: str, attempt_id: str) -> 
             .order_by(BackgroundTask.created_at.desc())
         )
     )
-    latest_condensation_task: dict[str, tuple[str, str]] = {}
-    for binding_id, task_id, state in condensation_tasks:
-        latest_condensation_task.setdefault(binding_id, (task_id, state))
+    latest_condensation_task: dict[str, tuple[str, str, str | None]] = {}
+    for binding_id, task_id, state, last_error in condensation_tasks:
+        latest_condensation_task.setdefault(
+            binding_id,
+            (task_id, state, condensation_task_failure_reason(last_error)),
+        )
     running_bindings = [
         item
         for item in bindings
@@ -938,19 +947,24 @@ def node_session_activity(db: Session, *, flow_run_id: str, attempt_id: str) -> 
         "condensing_binding_ids": [
             item.id
             for item in bindings
-            if latest_condensation_task.get(item.id, (None, None))[1]
+            if latest_condensation_task.get(item.id, (None, None, None))[1]
             in {TaskState.PENDING, TaskState.RUNNING}
         ],
         "condensation_failed_binding_ids": [
             item.id
             for item in bindings
-            if latest_condensation_task.get(item.id, (None, None))[1] == TaskState.DEAD
+            if latest_condensation_task.get(item.id, (None, None, None))[1] == TaskState.DEAD
         ],
         "condensation_tasks": [
-            {"binding_id": item.id, "task_id": task_id, "state": state}
+            {
+                "binding_id": item.id,
+                "task_id": task_id,
+                "state": state,
+                "failure_reason": failure_reason,
+            }
             for item in bindings
             if (task := latest_condensation_task.get(item.id)) is not None
-            for task_id, state in [task]
+            for task_id, state, failure_reason in [task]
         ],
         "possibly_stuck_binding_ids": possibly_stuck_binding_ids,
         "failed_binding_ids": [

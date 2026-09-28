@@ -7657,3 +7657,13 @@ FR-541B 完成：Agent Workspace 的文件树、文件预览、Git 仓库发现�
 完成：搜索 HTTP 请求使用独立的后台连接池（不占用 hydration 的正式连接池），后台池最多 4 个连接，连接／读／写／池等待均为 300 秒。每 Runtime 的搜索 bulkhead 继续为默认单并发，但不再在 0.1 秒即拒绝，而是最多排队 300 秒；每个原生搜索页和命中详情读取也最多等待 300 秒。搜索仍会在 hydration 正式读取活跃时在下一页前让出，且不设会话数、页数或命中数限制。范围对话框改为根工作区及各子工作区的独立可点击卡片，打开时默认全选；“全部选择”“全部取消”与单卡切换均明确可见，提交全选时保留既有全部工作区 API 语义。
 
 验收：OpenHands 定向 pytest `6 passed`，覆盖独立后台连接池、300 秒预算、完整多页／多命中搜索与 hydration 优先；受影响 Python Ruff、`py_compile`、Alembic 唯一 head `0135_agent_search_partial`、Web TypeScript typecheck、production build、`git diff --check` 通过。未运行数据库型测试：本机 Docker daemon/socket 不可用，Testcontainers 无法初始化；未运行远端前的 Runtime E2E。
+
+### FR-553 手动上下文压缩运行时失败分类与诊断 — DONE
+
+依赖：FR-84、FR-538。
+
+目标：手动压缩不能将 Runtime HTTP、超时、连接或响应协议失败统一伪装为 OpenHands `NoCondensationAvailableException`；浏览器只显示安全、可行动的失败类别，日志与任务账本可关联诊断，且不记录上游响应、请求正文、地址、模型凭据或 Secret。
+
+完成：手动压缩将 Runtime 的限流、5xx 暂不可用、认证、确定拒绝、无效响应、超时结果未知、连接中断结果未知、其他不可用和未知异常映射到固定 `CONDENSATION_*` 任务错误码。Agent Workspace 与 Flow node 的活动投影仅从这些错误码导出 `failure_reason`，不传递原始 `last_error`。页面优先显示该安全分类，即使 OpenHands 同时持久化一个故意泛化的压缩 `ERROR` 事件。压缩请求开始、被 Runtime 接受及失败都记录绑定级结构化诊断，错误只含稳定错误码。超时与连接中断保持“结果未知”，不自动重试，避免重复请求已被上游接受的压缩；用户先刷新正式事件再决定是否重试。
+
+验收：受影响 Python Ruff format/check、`py_compile`、安全分类 smoke `4` 例、Web TypeScript typecheck、production build 和 `git diff --check` 通过。定向 pytest 已启动，但本机 Docker daemon/socket 不可用，Testcontainers 全局 fixture 在测试断言前失败，未记为通过；未运行数据库、Runtime、远端或部署。

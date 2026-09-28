@@ -5692,22 +5692,26 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       && latestTask.state === 'DEAD');
     if (!hasNewTerminalEvent && !currentTaskFailed) return;
     setCondensationStatus(undefined);
-    if (!hasNewTerminalEvent) {
-      const condensationFailureMessage: Record<string, string> = {
-        runtime_rate_limited: '上下文压缩请求被运行时限流，请稍后重试。',
-        runtime_service_unavailable: '上下文压缩运行时暂不可用，请稍后重试。',
-        runtime_auth_failed: '上下文压缩运行时认证失败，请检查运行时凭据后重试。',
-        runtime_request_rejected: '上下文压缩请求被运行时拒绝，未执行摘要。',
-        runtime_response_invalid: '上下文压缩运行时返回了无效响应，未执行摘要。',
-        runtime_timeout_unknown: '上下文压缩请求超时，结果未知；系统已避免自动重试，请先刷新事件后再决定是否重试。',
-        runtime_connection_unknown: '上下文压缩连接中断，结果未知；系统已避免自动重试，请先刷新事件后再决定是否重试。',
-        runtime_unavailable_unknown: '上下文压缩运行时不可用，结果未知；系统已避免自动重试，请先刷新事件后再决定是否重试。',
-        runtime_unknown: '上下文压缩运行时发生未知错误，请查看诊断日志后重试。',
-      };
-      const failureReason = latestTask?.failure_reason ?? '';
+    const condensationFailureMessage: Record<string, string> = {
+      runtime_rate_limited: '上下文压缩请求被运行时限流，请稍后重试。',
+      runtime_service_unavailable: '上下文压缩运行时暂不可用，请稍后重试。',
+      runtime_auth_failed: '上下文压缩运行时认证失败，请检查运行时凭据后重试。',
+      runtime_request_rejected: '上下文压缩请求被运行时拒绝，未执行摘要。',
+      runtime_response_invalid: '上下文压缩运行时返回了无效响应，未执行摘要。',
+      runtime_timeout_unknown: '上下文压缩请求超时，结果未知；系统已避免自动重试，请先刷新事件后再决定是否重试。',
+      runtime_connection_unknown: '上下文压缩连接中断，结果未知；系统已避免自动重试，请先刷新事件后再决定是否重试。',
+      runtime_unavailable_unknown: '上下文压缩运行时不可用，结果未知；系统已避免自动重试，请先刷新事件后再决定是否重试。',
+      runtime_unknown: '上下文压缩运行时发生未知错误，请查看诊断日志后重试。',
+    };
+    const failureReason = latestTask?.failure_reason ?? '';
+    // A native terminal event can be deliberately generic to avoid exposing
+    // provider errors. Prefer the task's independently persisted safe reason
+    // whenever it is available, including beside that generic event.
+    const failureMessage = condensationFailureMessage[failureReason];
+    if (failureMessage || !hasNewTerminalEvent) {
       reportOperationError(
         selected.id,
-        new Error(condensationFailureMessage[failureReason] ?? 'OpenHands 未能完成上下文压缩，请稍后重试。'),
+        new Error(failureMessage ?? 'OpenHands 未能完成上下文压缩，请稍后重试。'),
       );
     }
     void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-activity', workspace?.id) });
