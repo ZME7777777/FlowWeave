@@ -1,4 +1,4 @@
-import { isValidElement, useEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type ReactNode } from 'react';
+import { isValidElement, useLayoutEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { deploymentBasePath } from '../deploymentPath';
@@ -14,25 +14,26 @@ function PlainTextReveal({ children, reveal }: { children: string; reveal: boole
   const revealStarted = useRef(reveal);
   const [visible, setVisible] = useState(() => reveal ? 0 : characters.length);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
     const previous = previousText.current;
     previousText.current = children;
-    if (reveal) revealStarted.current = true;
+    const startsReveal = reveal && !revealStarted.current;
+    if (startsReveal) revealStarted.current = true;
     if (reducedMotion || (!reveal && !revealStarted.current)) {
       visibleLength.current = characters.length;
       setVisible(characters.length);
       return;
     }
 
-    let current = previous && children.startsWith(previous)
+    let current = startsReveal ? 0 : previous && children.startsWith(previous)
       ? Math.min(visibleLength.current, characters.length)
       : 0;
-    let remainder = 0;
     let frame: number | undefined;
     const startedAt = performance.now();
     let previousFrame = startedAt;
-    const maximumDuration = Math.min(820, 240 + characters.length * 2);
+    const maximumDuration = Math.min(4_800, Math.max(1_600, 900 + characters.length * 14));
+    let nextStepAt = startedAt;
     visibleLength.current = current;
     setVisible(current);
 
@@ -41,14 +42,14 @@ function PlainTextReveal({ children, reveal }: { children: string; reveal: boole
       const delta = now - previousFrame;
       previousFrame = now;
       const remaining = characters.length - current;
-      const charactersPerSecond = Math.min(900, 36 + elapsed * 0.5 + remaining * 0.28);
-      remainder += charactersPerSecond * delta / 1_000;
-      const next = Math.min(characters.length, current + Math.max(1, Math.floor(remainder)));
-      remainder -= Math.floor(remainder);
-      if (next !== current) {
-        current = next;
+      const progress = Math.min(1, elapsed / maximumDuration);
+      const charactersPerSecond = Math.min(180, 10 + progress * 95 + remaining * 0.035);
+      if (now >= nextStepAt) {
+        const chunkSize = Math.min(remaining, Math.max(1, Math.round(charactersPerSecond * Math.max(delta, 90) / 1_000)));
+        current += chunkSize;
         visibleLength.current = current;
         setVisible(current);
+        nextStepAt = now + Math.max(45, 150 - progress * 80);
       }
       if (current < characters.length && elapsed < maximumDuration) {
         frame = window.requestAnimationFrame(advance);
@@ -94,8 +95,11 @@ function MarkdownLink({ href, onClick, onOpenWorkspaceFile, ...props }: Componen
   const isExternal = typeof href === 'string' && /^(?:https?:\/\/|mailto:)/i.test(href);
   return <a {...props} href={href} {...(isExternal ? { target: '_blank', rel: 'noopener noreferrer' } : {})} onClick={event => {
     onClick?.(event);
-    if (event.defaultPrevented || !href || isExternal || !onOpenWorkspaceFile?.(href)) return;
-    event.preventDefault();
+    if (event.defaultPrevented || !href) return;
+    if (onOpenWorkspaceFile?.(href)) {
+      event.preventDefault();
+      return;
+    }
   }}/>;
 }
 

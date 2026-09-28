@@ -5,7 +5,7 @@ import { type InfiniteData, useInfiniteQuery, useMutation, useQuery, useQueryCli
 import hljs from 'highlight.js/lib/common';
 import { ArrowLeft, ArrowUp, Bell, Bot, Boxes, Check, ChevronDown, ChevronRight, CircleAlert, CircleDot, Copy, CornerDownRight, Download, Ellipsis, FileCode2, FileText, Folder, FolderOpen, FolderPlus, GitBranch, GripVertical, ImageIcon, Layers3, Link2, ListRestart, LoaderCircle, Maximize2, Minimize2, MonitorCog, PanelRightOpen, Pencil, Pin, PinOff, Play, Plus, Quote, RefreshCw, Search, Send, ShieldAlert, Square, Trash2, X } from 'lucide-react';
 import { createContext, forwardRef, isValidElement, useCallback, useContext, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type ComponentPropsWithoutRef, type CSSProperties, type DragEvent as ReactDragEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type WheelEvent as ReactWheelEvent } from 'react';
-import { createPortal } from 'react-dom';
+import { createPortal, flushSync } from 'react-dom';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { ApiError, randomId, type AgentStreamEvent } from '../../api/client';
@@ -2614,7 +2614,17 @@ function workspaceMarkdownFileHref(href: string): boolean {
 
 function workspaceMarkdownLinkPath(href: string, workingDirectory?: string, sourcePath?: string): string | undefined {
   const root = workingDirectory ? normalizedWorkspacePath(workingDirectory.replace(/\\/g, '/')) : '';
-  if (!root || !workspaceMarkdownFileHref(href)) return undefined;
+  if (!root) return undefined;
+  try {
+    const url = new URL(href, window.location.origin);
+    if (url.origin === window.location.origin && url.pathname.endsWith('/workspace/file')) {
+      const path = url.searchParams.get('path');
+      return path ? workspaceMarkdownLinkPath(path, workingDirectory, sourcePath) : undefined;
+    }
+  } catch {
+    return undefined;
+  }
+  if (!workspaceMarkdownFileHref(href)) return undefined;
   const rawPath = href.split(/[?#]/, 1)[0];
   if (!rawPath) return undefined;
   let path: string;
@@ -2628,16 +2638,7 @@ function workspaceMarkdownLinkPath(href: string, workingDirectory?: string, sour
 }
 
 function workspaceMarkdownImagePath(src: string, workingDirectory?: string): string | undefined {
-  const direct = workspaceMarkdownLinkPath(src, workingDirectory);
-  if (direct) return direct;
-  try {
-    const url = new URL(src, window.location.origin);
-    if (!url.pathname.endsWith('/workspace/file')) return undefined;
-    const path = url.searchParams.get('path');
-    return path ? workspaceMarkdownLinkPath(path, workingDirectory) : undefined;
-  } catch {
-    return undefined;
-  }
+  return workspaceMarkdownLinkPath(src, workingDirectory);
 }
 
 
@@ -3071,6 +3072,7 @@ type WorkspaceToolTab =
   | { id: 'git'; kind: 'git'; details: WorkspaceGitCommitDetails; diff: WorkspaceGitFileDiff }
   | { id: 'git-working'; kind: 'git-working'; repository: WorkspaceGitChanges['repository']; changes: WorkspaceGitChanges; changeKind: WorkspaceGitChangeKind; file: WorkspaceGitChangedFile; diff?: WorkspaceGitFileDiff; loading: boolean; error?: string }
   | { id: 'subagents'; kind: 'subagents' }
+  | { id: 'sidebar-chat'; kind: 'sidebar-chat' }
   | { id: string; kind: 'terminal'; terminalInstanceId: string };
 type WorkspaceToolScopeState = { tabs: WorkspaceToolTab[]; activeTabId?: string; selectedFile?: string; selectedChangeId?: string; selectedGitFile?: string; selectedGitCommit?: string; selectedGitRepositoryPath?: string; gitMode?: 'history' | 'changes'; selectedRuntimeTaskId?: string };
 type MarkdownFileRequest = { key: string; path: string };
@@ -3483,6 +3485,17 @@ function clampWorkspaceToolWidth(value: number): number {
   return Math.max(300, Math.min(720, viewportMaximum, value));
 }
 
+function clampWorkspaceSummaryWidth(value: number): number {
+  if (window.innerWidth <= 1100) return Math.max(248, Math.min(720, value));
+  const viewportMaximum = Math.max(248, window.innerWidth - 700);
+  return Math.max(248, Math.min(720, viewportMaximum, value));
+}
+
+function clampConversationRailWidth(value: number): number {
+  if (window.innerWidth <= 1100) return Math.max(220, Math.min(420, value));
+  return Math.max(220, Math.min(420, window.innerWidth - 700, value));
+}
+
 
 type ConversationFilePreviewRequest =
   | { key: string; kind: 'workspace'; path: string; filename: string; mimeType?: string; imageDataUrl?: string | null; attachment?: AgentAttachment }
@@ -3593,9 +3606,9 @@ function readWorkspaceToolState(storageKey: string): Record<string, WorkspaceToo
 }
 
 function WorkspaceDrawer({
-  open, onOpen, onClose, onAnnotateFileSelection, highlightedFileSelection, workspaceId, scopeKey, migrateFromScopeKey, bindingId, workDirectoryId, conversation, conversationCumulativeTokens, attachments, sources, attachmentRequest, candidatePreviewRequest, markdownFileRequest, reviewChanges = [], reviewRequestId, sessionChanges = [], onReviewChanges, runtimeAvailable, runtimeTasks, agentDefinitions, sessionStopped,
+  open, onOpen, onClose, onAnnotateFileSelection, highlightedFileSelection, workspaceId, scopeKey, migrateFromScopeKey, bindingId, workDirectoryId, conversation, conversationCumulativeTokens, attachments, sources, attachmentRequest, candidatePreviewRequest, markdownFileRequest, reviewChanges = [], reviewRequestId, sessionChanges = [], onReviewChanges, runtimeAvailable, runtimeTasks, agentDefinitions, sessionStopped, sidebarQuestion, onOpenSidebarQuestion, onCloseSidebarQuestion,
 }: {
-  open: boolean; onOpen: () => void; onClose: () => void; onAnnotateFileSelection?: (path: string, selection: FileSelection, quote: string) => void; highlightedFileSelection?: { path: string; selection: FileSelection }; workspaceId: string; scopeKey: string; migrateFromScopeKey?: string; bindingId?: string; workDirectoryId?: string; conversation?: AgentConversation; conversationCumulativeTokens?: number | null; attachments: AgentAttachment[]; sources: ConversationSource[]; attachmentRequest?: { key: string; attachment: AgentAttachment }; candidatePreviewRequest?: CandidateFilePreviewRequest; markdownFileRequest?: MarkdownFileRequest; reviewChanges?: WorkspaceFileChange[]; reviewRequestId?: string; sessionChanges?: WorkspaceFileChange[]; onReviewChanges?: (changes: WorkspaceFileChange[]) => void; runtimeAvailable: boolean; runtimeTasks: RuntimeTaskProjection[]; agentDefinitions: CapabilityAsset[]; sessionStopped: boolean;
+  open: boolean; onOpen: () => void; onClose: () => void; onAnnotateFileSelection?: (path: string, selection: FileSelection, quote: string) => void; highlightedFileSelection?: { path: string; selection: FileSelection }; workspaceId: string; scopeKey: string; migrateFromScopeKey?: string; bindingId?: string; workDirectoryId?: string; conversation?: AgentConversation; conversationCumulativeTokens?: number | null; attachments: AgentAttachment[]; sources: ConversationSource[]; attachmentRequest?: { key: string; attachment: AgentAttachment }; candidatePreviewRequest?: CandidateFilePreviewRequest; markdownFileRequest?: MarkdownFileRequest; reviewChanges?: WorkspaceFileChange[]; reviewRequestId?: string; sessionChanges?: WorkspaceFileChange[]; onReviewChanges?: (changes: WorkspaceFileChange[]) => void; runtimeAvailable: boolean; runtimeTasks: RuntimeTaskProjection[]; agentDefinitions: CapabilityAsset[]; sessionStopped: boolean; sidebarQuestion?: { sourceBindingId: string; sourceTitle?: string | null; reference?: AgentConversationReference }; onOpenSidebarQuestion?: () => void; onCloseSidebarQuestion: () => void;
 }) {
   const { api, fileUrl } = useAgentSessionGateway();
   const host = useAgentSessionHost();
@@ -3606,6 +3619,10 @@ function WorkspaceDrawer({
   const [panelWidth, setPanelWidth] = useState(() => {
     const stored = Number(localStorage.getItem('flowweave:workspace-tool-width'));
     return clampWorkspaceToolWidth(Number.isFinite(stored) ? stored : 400);
+  });
+  const [summaryWidth, setSummaryWidth] = useState(() => {
+    const stored = Number(localStorage.getItem('flowweave:workspace-summary-width'));
+    return clampWorkspaceSummaryWidth(Number.isFinite(stored) ? stored : 272);
   });
   const [fileTreeWidth, setFileTreeWidth] = useState(() => {
     const stored = Number(localStorage.getItem('flowweave:workspace-file-tree-width'));
@@ -3662,10 +3679,16 @@ function WorkspaceDrawer({
     localStorage.setItem('flowweave:workspace-tool-width', String(panelWidth));
   }, [panelWidth]);
   useEffect(() => {
+    localStorage.setItem('flowweave:workspace-summary-width', String(summaryWidth));
+  }, [summaryWidth]);
+  useEffect(() => {
     localStorage.setItem('flowweave:workspace-file-tree-width', String(fileTreeWidth));
   }, [fileTreeWidth]);
   useEffect(() => {
-    const clamp = () => setPanelWidth(current => clampWorkspaceToolWidth(current));
+    const clamp = () => {
+      setPanelWidth(current => clampWorkspaceToolWidth(current));
+      setSummaryWidth(current => clampWorkspaceSummaryWidth(current));
+    };
     window.addEventListener('resize', clamp);
     return () => window.removeEventListener('resize', clamp);
   }, []);
@@ -4027,6 +4050,30 @@ function WorkspaceDrawer({
     }));
     onOpen();
   }, [onOpen, runtimeAvailable, updateScope]);
+  useEffect(() => {
+    if (!sidebarQuestion) {
+      updateScope(current => {
+        const tabs = current.tabs.filter(tab => tab.kind !== 'sidebar-chat');
+        if (tabs.length === current.tabs.length) return current;
+        return {
+          ...current,
+          tabs,
+          activeTabId: current.activeTabId === 'sidebar-chat' ? tabs.at(-1)?.id : current.activeTabId,
+        };
+      });
+      return;
+    }
+    updateScope(current => {
+      const hasTab = current.tabs.some(tab => tab.kind === 'sidebar-chat');
+      if (hasTab && current.activeTabId === 'sidebar-chat') return current;
+      return {
+        ...current,
+        tabs: hasTab ? current.tabs : [...current.tabs, { id: 'sidebar-chat', kind: 'sidebar-chat' }],
+        activeTabId: 'sidebar-chat',
+      };
+    });
+    onOpen();
+  }, [onOpen, sidebarQuestion, updateScope]);
   const selectFile = (path?: string) => {
     setCandidatePreview(undefined);
     setGitContextPath(path);
@@ -4164,6 +4211,7 @@ function WorkspaceDrawer({
         selectedGitFile: tab.kind === 'git' ? undefined : current.selectedGitFile,
       };
     });
+    if (tab.kind === 'sidebar-chat') onCloseSidebarQuestion();
     if (tab.kind === 'git' || tab.kind === 'git-working') setClosedGitDiffEpoch(current => current + 1);
     if (scopeState.tabs.length === 1 && scopeState.tabs[0]?.id === tab.id) {
       setFullScreen(false);
@@ -4178,11 +4226,15 @@ function WorkspaceDrawer({
     void closeTab(tab);
   };
   const startResize = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (!open || window.innerWidth <= 960) return;
+    if (window.innerWidth <= 960) return;
     event.preventDefault();
     const startX = event.clientX;
-    const startWidth = panelWidth;
-    const move = (moveEvent: PointerEvent) => setPanelWidth(clampWorkspaceToolWidth(startWidth + startX - moveEvent.clientX));
+    const startWidth = open ? panelWidth : summaryWidth;
+    const move = (moveEvent: PointerEvent) => {
+      const next = startWidth + startX - moveEvent.clientX;
+      if (open) setPanelWidth(clampWorkspaceToolWidth(next));
+      else setSummaryWidth(clampWorkspaceSummaryWidth(next));
+    };
     const stop = () => {
       window.removeEventListener('pointermove', move);
       window.removeEventListener('pointerup', stop);
@@ -4265,15 +4317,15 @@ function WorkspaceDrawer({
     <article className="agent-workspace-ide"><MonitorCog size={16}/><div><small>IDEA / Gateway</small><b>{details.ide.gateway.status}</b>{sshRemoteReady ? <button type="button" className="agent-ssh-access-trigger" onClick={() => setSshAccessOpen(true)}>SSH 接入说明<ChevronRight size={13}/></button> : <code>{details.ide.workspace_path}</code>}<p>{details.ide.gateway.note}</p></div></article>
     <article className="agent-workspace-sources"><Link2 size={16}/><div><small>来源</small>{sources.length ? <><div className="agent-workspace-source-list">{visibleSources.map(source => <button type="button" key={source.id} title={`查看来源详情：${source.label}`} onClick={openSources}><span className="agent-workspace-source-glyph"><ConversationSourceGlyph source={source} size={12}/></span><span><b>{source.label}</b><em>{conversationSourceKind(source)}</em></span></button>)}</div>{sources.length > visibleSources.length && <button type="button" className="agent-workspace-view-all-sources" onClick={openSources}><Link2 size={12}/><span>查看全部</span><em>{sources.length}</em><ChevronRight size={13}/></button>}</> : <p>用户输入的链接、文件和图片会集中显示在这里。</p>}</div></article>
   </section>;
-  return <><aside className={`agent-workspace-drawer ${open ? 'tools-open' : 'summary-open'}${fullScreen ? ' fullscreen' : ''}`} style={{ width: fullScreen ? undefined : open ? panelWidth : 272 }} role={fullScreen ? 'dialog' : undefined} aria-modal={fullScreen || undefined} aria-label={fullScreen ? '全屏工作区工具' : undefined}>
+  return <><aside className={`agent-workspace-drawer ${open ? 'tools-open' : 'summary-open'}${fullScreen ? ' fullscreen' : ''}`} style={{ width: fullScreen ? undefined : open ? panelWidth : summaryWidth }} role={fullScreen ? 'dialog' : undefined} aria-modal={fullScreen || undefined} aria-label={fullScreen ? '全屏工作区工具' : undefined}>
     <div className="agent-workspace-resizer" role="separator" aria-label="调整工作区工具宽度" aria-orientation="vertical" onPointerDown={startResize}/>
     <section className={`agent-workspace-summary ${open ? 'panel-hidden' : ''}`}>
       <header><div><span className="eyebrow">WORKSPACE</span><b>环境信息</b></div><button type="button" aria-label="打开工作区工具" onClick={onOpen}><PanelRightOpen size={16}/></button></header>
-      <div className="agent-workspace-quick-actions"><button type="button" onClick={() => openFiles()}><FileCode2 size={14}/>文件</button><button type="button" disabled={!runtimeAvailable} onClick={openTerminal}><Plus size={14}/>新终端</button></div>
+      <div className="agent-workspace-quick-actions"><button type="button" className="agent-workspace-quick-files" onClick={() => openFiles()}><FileCode2 size={14}/>文件</button><button type="button" className="agent-workspace-quick-terminal" disabled={!runtimeAvailable} onClick={openTerminal}><Plus size={14}/>新终端</button>{onOpenSidebarQuestion && <button type="button" className="agent-workspace-quick-sidebar-chat" onClick={onOpenSidebarQuestion}><PanelRightOpen size={14}/>侧边聊天</button>}</div>
       {loadingOrError || summary}
     </section>
     <section className={`agent-workspace-tool-shell ${open ? '' : 'panel-hidden'}`}>
-      <header><nav className="agent-workspace-tabs" aria-label="工作区工具页签">{scopeState.tabs.map(tab => <div key={tab.id} className={scopeState.activeTabId === tab.id ? 'active' : ''}><button type="button" className="agent-workspace-tab-select" onClick={() => updateScope(current => ({ ...current, activeTabId: tab.id }))}><span>{tab.kind === 'files' ? '文件' : tab.kind === 'changes' ? `审查${reviewChanges.length ? ` · ${reviewChanges.length}` : ''}` : tab.kind === 'sources' ? `来源${sources.length ? ` · ${sources.length}` : ''}` : tab.kind === 'git' ? `提交 · ${tab.details.commit.short_id}` : tab.kind === 'git-working' ? `${tab.changeKind === 'STAGED' ? '暂存' : '本地'} · ${tab.file.path.split('/').at(-1)}` : tab.kind === 'subagents' ? '子智能体' : details?.runtime.container_id || (details?.runtime.write_available ? '终端' : '连接中…')}</span></button><button type="button" className="agent-workspace-tab-close" aria-label={`关闭${tab.kind === 'files' ? '文件' : tab.kind === 'changes' ? '改动审查' : tab.kind === 'sources' ? '来源' : tab.kind === 'git' ? '提交审查' : tab.kind === 'git-working' ? '本地改动 Diff' : tab.kind === 'subagents' ? '子智能体' : `终端 ${details?.runtime.container_id || ''}`}页签`} disabled={tab.kind === 'terminal' && closingTerminalId === tab.terminalInstanceId} onClick={() => { if (tab.kind !== 'terminal' || closingTerminalId !== tab.terminalInstanceId) requestCloseTab(tab); }}><X size={12}/></button></div>)}</nav><div className="agent-workspace-tool-actions"><div ref={toolMenuRef} className="agent-workspace-tool-menu"><button type="button" className="agent-workspace-tool-menu-trigger" aria-label="新增工作区工具" aria-expanded={toolMenuOpen} aria-haspopup="menu" onClick={() => setToolMenuOpen(current => !current)}><Plus size={15}/></button>{toolMenuOpen && <div role="menu"><button type="button" role="menuitem" onClick={() => { openFiles(); setToolMenuOpen(false); }}><FileCode2 size={13}/>文件</button><button type="button" role="menuitem" onClick={() => { openGitHistory(); setToolMenuOpen(false); }}><GitBranch size={13}/>Git 历史</button>{reviewChanges.length > 0 && <button type="button" role="menuitem" onClick={() => { openChanges(); setToolMenuOpen(false); }}><FileText size={13}/>审查改动</button>}{sources.length > 0 && <button type="button" role="menuitem" onClick={() => { openSources(); setToolMenuOpen(false); }}><Link2 size={13}/>来源</button>}{runtimeTasks.length > 0 && <button type="button" role="menuitem" onClick={() => { openRuntimeTasks(); setToolMenuOpen(false); }}><Bot size={13}/>子智能体</button>}<button type="button" role="menuitem" disabled={!runtimeAvailable} onClick={() => { openTerminal(); setToolMenuOpen(false); }}><Plus size={13}/>终端</button></div>}</div><button type="button" aria-label={fullScreen ? '退出全屏' : '全屏查看工作区工具'} title={fullScreen ? '退出全屏（Esc）' : '全屏查看'} onClick={() => setFullScreen(current => !current)}>{fullScreen ? <Minimize2 size={16}/> : <Maximize2 size={16}/>}</button><button type="button" aria-label="关闭工作区工具" onClick={() => { setFullScreen(false); onClose(); }}><X size={16}/></button></div></header>
+      <header><nav className="agent-workspace-tabs" aria-label="工作区工具页签">{scopeState.tabs.map(tab => <div key={tab.id} className={scopeState.activeTabId === tab.id ? 'active' : ''}><button type="button" className="agent-workspace-tab-select" onClick={() => updateScope(current => ({ ...current, activeTabId: tab.id }))}><span>{tab.kind === 'files' ? '文件' : tab.kind === 'changes' ? `审查${reviewChanges.length ? ` · ${reviewChanges.length}` : ''}` : tab.kind === 'sources' ? `来源${sources.length ? ` · ${sources.length}` : ''}` : tab.kind === 'git' ? `提交 · ${tab.details.commit.short_id}` : tab.kind === 'git-working' ? `${tab.changeKind === 'STAGED' ? '暂存' : '本地'} · ${tab.file.path.split('/').at(-1)}` : tab.kind === 'subagents' ? '子智能体' : tab.kind === 'sidebar-chat' ? '侧边聊天' : details?.runtime.container_id || (details?.runtime.write_available ? '终端' : '连接中…')}</span></button><button type="button" className="agent-workspace-tab-close" aria-label={`关闭${tab.kind === 'files' ? '文件' : tab.kind === 'changes' ? '改动审查' : tab.kind === 'sources' ? '来源' : tab.kind === 'git' ? '提交审查' : tab.kind === 'git-working' ? '本地改动 Diff' : tab.kind === 'subagents' ? '子智能体' : tab.kind === 'sidebar-chat' ? '侧边聊天' : `终端 ${details?.runtime.container_id || ''}`}页签`} disabled={tab.kind === 'terminal' && closingTerminalId === tab.terminalInstanceId} onClick={() => { if (tab.kind !== 'terminal' || closingTerminalId !== tab.terminalInstanceId) requestCloseTab(tab); }}><X size={12}/></button></div>)}</nav><div className="agent-workspace-tool-actions"><div ref={toolMenuRef} className="agent-workspace-tool-menu"><button type="button" className="agent-workspace-tool-menu-trigger" aria-label="新增工作区工具" aria-expanded={toolMenuOpen} aria-haspopup="menu" onClick={() => setToolMenuOpen(current => !current)}><Plus size={15}/></button>{toolMenuOpen && <div role="menu"><button type="button" role="menuitem" onClick={() => { openFiles(); setToolMenuOpen(false); }}><FileCode2 size={13}/>文件</button>{onOpenSidebarQuestion && <button type="button" role="menuitem" onClick={() => { onOpenSidebarQuestion(); setToolMenuOpen(false); }}><PanelRightOpen size={13}/>侧边聊天</button>}<button type="button" role="menuitem" onClick={() => { openGitHistory(); setToolMenuOpen(false); }}><GitBranch size={13}/>Git 历史</button>{reviewChanges.length > 0 && <button type="button" role="menuitem" onClick={() => { openChanges(); setToolMenuOpen(false); }}><FileText size={13}/>审查改动</button>}{sources.length > 0 && <button type="button" role="menuitem" onClick={() => { openSources(); setToolMenuOpen(false); }}><Link2 size={13}/>来源</button>}{runtimeTasks.length > 0 && <button type="button" role="menuitem" onClick={() => { openRuntimeTasks(); setToolMenuOpen(false); }}><Bot size={13}/>子智能体</button>}<button type="button" role="menuitem" disabled={!runtimeAvailable} onClick={() => { openTerminal(); setToolMenuOpen(false); }}><Plus size={13}/>终端</button></div>}</div><button type="button" aria-label={fullScreen ? '退出全屏' : '全屏查看工作区工具'} title={fullScreen ? '退出全屏（Esc）' : '全屏查看'} onClick={() => setFullScreen(current => !current)}>{fullScreen ? <Minimize2 size={16}/> : <Maximize2 size={16}/>}</button><button type="button" aria-label="关闭工作区工具" onClick={() => { setFullScreen(false); onClose(); }}><X size={16}/></button></div></header>
       <div className="agent-workspace-tool-body">
         {panelError && <p className="agent-workspace-panel-error" role="alert"><span>{panelError}</span><button type="button" aria-label="关闭错误提示" onClick={() => setPanelError('')}><X size={13}/></button></p>}
         {loadingOrError || (!scopeState.tabs.length ? <div className="agent-drawer-empty"><b>选择工作区工具</b><span>文件仅打开一个页签；终端可按需打开多个独立实例。</span><div><button type="button" className="secondary" onClick={() => openFiles()}>打开文件</button><button type="button" className="secondary" disabled={!runtimeAvailable} onClick={openTerminal}>新建终端</button></div></div> : details && <div className={`agent-workspace-tool-content${gitSidebarVisible ? ' fullscreen-git-layout' : ''}`}>
@@ -4297,6 +4349,7 @@ function WorkspaceDrawer({
           {scopeState.tabs.filter((tab): tab is Extract<WorkspaceToolTab, { kind: 'git' }> => tab.kind === 'git').map(tab => <div key={tab.id} className={`agent-changes-tab-panel agent-git-commit-tab ${scopeState.activeTabId === tab.id ? 'active' : ''}`}><WorkspaceGitCommitReview key={`${tab.details.commit.id}:${tab.diff.path}`} details={tab.details} initialDiff={tab.diff} loadDiff={path => api.gitDiff(workspaceId, tab.details.repository.path, tab.details.commit.id, path, gitOptions)} onOpenSource={openSourcePath}/></div>)}
           {scopeState.tabs.filter((tab): tab is Extract<WorkspaceToolTab, { kind: 'git-working' }> => tab.kind === 'git-working').map(tab => <div key={tab.id} className={`agent-changes-tab-panel agent-git-commit-tab ${scopeState.activeTabId === tab.id ? 'active' : ''}`}><WorkspaceGitWorkingDiffReview tab={tab} onOpenSource={openSourcePath} onSelectFile={(kind, file) => openGitWorkingDiff(tab.repository, kind, file, tab.changes)}/></div>)}
           {scopeState.tabs.some(tab => tab.kind === 'subagents') && <div className={`agent-subagent-tab-panel ${scopeState.activeTabId === 'subagents' ? 'active' : ''}`}><RuntimeTaskTab tasks={runtimeTasks} definitions={agentDefinitions} selectedTaskId={scopeState.selectedRuntimeTaskId} onSelect={taskId => updateScope(current => ({ ...current, selectedRuntimeTaskId: taskId }))} sessionStopped={sessionStopped}/></div>}
+          {sidebarQuestion && scopeState.tabs.some(tab => tab.kind === 'sidebar-chat') && <div className={`agent-sidebar-chat-tab-panel ${scopeState.activeTabId === 'sidebar-chat' ? 'active' : ''}`}><SidebarConversationPane workspaceId={workspaceId} sourceBindingId={sidebarQuestion.sourceBindingId} sourceTitle={sidebarQuestion.sourceTitle} initialReference={sidebarQuestion.reference}/></div>}
           {scopeState.tabs.filter((tab): tab is Extract<WorkspaceToolTab, { kind: 'terminal' }> => tab.kind === 'terminal').map(tab => <div key={tab.id} className={`agent-terminal-tab-panel ${scopeState.activeTabId === tab.id ? 'active' : ''}`}>{runtimeAvailable ? <WorkspaceTerminal workspaceId={workspaceId} terminalInstanceId={tab.terminalInstanceId} bindingId={bindingId} workDirectoryId={workDirectoryId} workingDirectory={details.working_directory}/> : <div className="agent-drawer-empty"><LoaderCircle className="agent-drawer-spinner" size={20}/><b>终端正在恢复</b><span>文件仍可使用；运行环境恢复后终端会自动可用。</span></div>}</div>)}
           {gitSidebarVisible && gitRepository && <WorkspaceGitSidebar details={details} repository={gitRepository} mode={scopeState.gitMode ?? 'history'} onModeChange={mode => updateScope(current => ({ ...current, gitMode: mode }))} selectedCommit={scopeState.selectedGitRepositoryPath === gitRepository.path ? scopeState.selectedGitCommit : undefined} onSelectCommit={commit => updateScope(current => ({
             ...current,
@@ -4412,11 +4465,16 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const [attachmentRequest, setAttachmentRequest] = useState<{ key: string; attachment: AgentAttachment }>();
   const [fileSelectionReference, setFileSelectionReference] = useState<{ path: string; selection: FileSelection }>();
   const [candidatePreviewRequest, setCandidatePreviewRequest] = useState<CandidateFilePreviewRequest>();
-  const [sidebarQuestion, setSidebarQuestion] = useState<{ sourceBindingId: string; reference?: AgentConversationReference }>();
+  const [sidebarQuestion, setSidebarQuestion] = useState<{ sourceBindingId: string; sourceTitle?: string | null; reference?: AgentConversationReference }>();
+  const [conversationRailWidth, setConversationRailWidth] = useState(() => {
+    const stored = Number(localStorage.getItem('flowweave:conversation-rail-width'));
+    return clampConversationRailWidth(Number.isFinite(stored) ? stored : 240);
+  });
   const [operationError, setOperationError] = useState<Error>();
   const [historyLoadingBindingId, setHistoryLoadingBindingId] = useState<string>();
   const [historyPrepend, setHistoryPrepend] = useState<ConversationHistoryPrepend>();
   const [streamHold, setStreamHold] = useState<{ bindingId: string; expiresAt: number }>();
+  const [messageCompleteBindingId, setMessageCompleteBindingId] = useState<string>();
   const [condensationStatus, setCondensationStatus] = useState<{
     bindingId: string;
     startedAt: number;
@@ -4499,6 +4557,14 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   }, [host, queryClient]);
   useEffect(() => () => {
     if (workspacePathCopyTimer.current !== undefined) window.clearTimeout(workspacePathCopyTimer.current);
+  }, []);
+  useEffect(() => {
+    localStorage.setItem('flowweave:conversation-rail-width', String(conversationRailWidth));
+  }, [conversationRailWidth]);
+  useEffect(() => {
+    const clamp = () => setConversationRailWidth(current => clampConversationRailWidth(current));
+    window.addEventListener('resize', clamp);
+    return () => window.removeEventListener('resize', clamp);
   }, []);
   const bootstrapTransitionScope = useRef<string | undefined>(undefined);
   const routeBindingId = host.bindingIdFromPathname(withoutDeploymentBase(window.location.pathname));
@@ -5373,9 +5439,11 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     && conversationHasReachedTerminalState(nativeExecutionStatus);
   const nativeTurnCompletedNormally = inputReadinessQuery.data?.ready === true
     && conversationHasCompletedNormally(nativeExecutionStatus);
-  // OpenHands owns the Conversation execution lifecycle. Local state may
-  // bridge a command request, but it must never declare a native turn ended.
-  const effectiveTurnState: TurnState = nativeTurnTerminal
+  const messageCompleteForSelected = messageCompleteBindingId === selected?.id;
+  // OpenHands owns the Conversation execution lifecycle. A foreground
+  // message_complete only closes the current page's visual turn while native
+  // readiness continues to govern background conversations.
+  const effectiveTurnState: TurnState = messageCompleteForSelected || nativeTurnTerminal
     ? 'idle'
     : nativeExecutionStatus?.trim().toLowerCase() === 'paused'
       ? 'paused'
@@ -5755,7 +5823,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     state: selectedCondensing ? 'running' as const : effectiveTurnState,
     active: selectedCondensing || effectiveTurnState === 'running' || effectiveTurnState === 'pausing' || effectiveTurnState === 'resuming',
   }), [effectiveTurnState, selectedCondensing]);
-  const conversationVisuallyActive = conversationActivity.active
+  const conversationVisuallyActive = !messageCompleteForSelected && (
+    conversationActivity.active
     || (
       !nativeTurnTerminal
       && runningConversationIds.has(selected?.id ?? '')
@@ -5766,7 +5835,15 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       && effectiveTurnState !== 'paused'
       && hasUnfinishedFormalTurn
       && (!nativeTurnTerminal || terminalEventReconciliationActive)
-    );
+    )
+  );
+  // A foreground message_complete restores the composer controls immediately,
+  // but its terminal event may still be reconciling. Keep an unfinished task
+  // plan mounted through that handoff so the composer dock cannot collapse.
+  const taskPlanLayoutActive = conversationVisuallyActive || (
+    hasUnfinishedFormalTurn
+    && (!nativeTurnTerminal || terminalEventReconciliationActive)
+  );
   const latestDisplayedEvent = displayedEvents.at(-1);
   useEffect(() => {
     setModelRetryStatus(undefined);
@@ -6064,7 +6141,13 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       if (event.event.event_type === 'MESSAGE' && ['user', 'human'].includes(String(event.event.payload.source ?? '').toLowerCase())) setModelRetryStatus(undefined);
       appendLiveEvent(scope, event.event);
     }
-    if (event.type === 'message_complete') void synchronizeConversationEvents(true, 'message_complete');
+    if (event.type === 'message_complete') {
+      setMessageCompleteBindingId(scope);
+      setActiveTurnEventId(undefined);
+      setRequestStartedAt(undefined);
+      setTurnState(current => current === 'running' || current === 'resuming' ? 'idle' : current);
+      void synchronizeConversationEvents(true, 'message_complete');
+    }
   }, [appendLiveEvent, synchronizeConversationEvents]);
   const onStreamReconnect = useCallback((scope: string) => {
     // A WebSocket is a live projection only. Events written while the browser
@@ -6099,7 +6182,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       bootstrapTransitionScope.current = undefined;
       return;
     }
-    setEditing(false); setQueuedMessageMenuId(undefined); pendingLiveEvents.current = []; if (liveEventsFrame.current !== undefined) window.cancelAnimationFrame(liveEventsFrame.current); liveEventsFrame.current = undefined; setScopedLiveEvents(current => current.filter(item => item.scope === composerScope)); setLocalMessageProjectionRevision(current => current + 1); setHiddenEventIds(new Set()); setActiveTurnEventId(undefined); setExpiredTerminalSyncTurnKey(undefined); setRequestStartedAt(undefined); setConfirmationReason(''); setTurnState('idle'); queuedMessagesRef.current = []; setQueuedMessages([]); setPendingRewrite(undefined);
+    setEditing(false); setQueuedMessageMenuId(undefined); pendingLiveEvents.current = []; if (liveEventsFrame.current !== undefined) window.cancelAnimationFrame(liveEventsFrame.current); liveEventsFrame.current = undefined; setScopedLiveEvents(current => current.filter(item => item.scope === composerScope)); setLocalMessageProjectionRevision(current => current + 1); setHiddenEventIds(new Set()); setMessageCompleteBindingId(undefined); setActiveTurnEventId(undefined); setExpiredTerminalSyncTurnKey(undefined); setRequestStartedAt(undefined); setConfirmationReason(''); setTurnState('idle'); queuedMessagesRef.current = []; setQueuedMessages([]); setPendingRewrite(undefined);
     if (recoveredComposer && composerScope) {
       composerDraftsByScope.current.set(composerScope, recoveredComposer);
       replaceComposerDraft(recoveredComposer.content, composerScope);
@@ -6666,19 +6749,27 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       reportOperationError(message.bindingId, error);
     },
   });
-  const dispatchMessage = useCallback((message: BoundQueuedMessage) => {
+  const dispatchMessage = useCallback((message: BoundQueuedMessage, immediate = false) => {
     if (sendingMessageIds.current.has(message.id)) return;
     sendingMessageIds.current.add(message.id);
-    commitQueuedMessages(current => current.filter(item => item.id !== message.id));
-    // The current page owns its submitted user bubble. The native event only
-    // anchors subsequent process/reply events and suppresses its duplicate.
-    showOptimisticUserBubble(message, 'pending-user', 'submitting', true);
-    if (!message.nativeGuidance) {
-      setActiveTurnEventId(undefined);
-      setRequestStartedAt(Date.now());
-      setTurnState('running');
+    const showLocalMessage = () => {
+      setMessageCompleteBindingId(current => current === message.bindingId ? undefined : current);
+      // The current page owns its submitted user bubble. The native event only
+      // anchors subsequent process/reply events and suppresses its duplicate.
+      showOptimisticUserBubble(message, 'pending-user', 'submitting', true);
+      if (!message.nativeGuidance) {
+        setActiveTurnEventId(undefined);
+        setRequestStartedAt(Date.now());
+        setTurnState('running');
+      }
+    };
+    if (immediate) flushSync(showLocalMessage);
+    else showLocalMessage();
+    if (queuedMessagesRef.current.some(item => item.id === message.id)) {
+      commitQueuedMessages(current => current.filter(item => item.id !== message.id));
     }
-    send.mutate(message);
+    if (immediate) window.setTimeout(() => send.mutate(message), 0);
+    else send.mutate(message);
   }, [commitQueuedMessages, send, showOptimisticUserBubble]);
   const migrateStreaming = useMutation({
     mutationFn: (_message: QueuedMessage) => {
@@ -7049,7 +7140,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       migrateStreaming.mutate(queuedMessage);
       return;
     }
-    dispatchMessage({ ...queuedMessage, bindingId: selected.id });
+    dispatchMessage({ ...queuedMessage, bindingId: selected.id }, true);
   }, [attachments, bootstrap, canBootstrap, canWrite, commitQueuedMessages, composerAnnotations, composerScope, conversationDraft, dispatchMessage, effectiveTurnState, host.id, migrateStreaming, pendingAttachments, pendingMigratedSend, queueModeEnabled, references, replaceComposerDraft, selected, selectedCondensing, showOptimisticUserBubble, workspace, workspaceReferences]);
   const sendDraftDirectly = useCallback((draftContent = composerDraftRef.current) => {
     if (selectedCondensing) {
@@ -7107,7 +7198,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     };
     setAttachments([]);
     setReferences([]); setWorkspaceReferences([]); setComposerAnnotations([]);
-    dispatchMessage({ ...message, bindingId: selected.id });
+    dispatchMessage({ ...message, bindingId: selected.id }, true);
   }, [attachments, canWrite, composerAnnotations, composerScope, conversationDraft, dispatchMessage, effectiveTurnState, enqueueDraft, host.id, migrateStreaming, pendingAttachments, pendingMigratedSend, queueModeEnabled, queuedMessages, references, replaceComposerDraft, selected, selectedCondensing, workspace, workspaceReferences]);
   const sendQueuedMessageImmediately = useCallback((message: QueuedMessage) => {
     if (selectedCondensing || !queueModeEnabled || !canWrite || effectiveTurnState !== 'running' || !selected?.streaming_callback_ready || message.scope !== selected.id || message.deliveryState !== 'queued') return;
@@ -7542,7 +7633,26 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       setOperationError(undefined);
     } catch (reason) { reportOperationError('work-directory-delete', reason instanceof Error ? reason : new Error('删除工作区失败')); }
   };
-  return <main className="agent-workbench-page">
+  const startConversationRailResize = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (window.innerWidth <= 1100) return;
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = conversationRailWidth;
+    const move = (moveEvent: PointerEvent) => setConversationRailWidth(
+      clampConversationRailWidth(startWidth + moveEvent.clientX - startX),
+    );
+    const stop = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', stop);
+      document.body.style.removeProperty('cursor');
+      document.body.style.removeProperty('user-select');
+    };
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', stop, { once: true });
+  };
+  return <main className="agent-workbench-page" style={{ '--conversation-rail-width': `${conversationRailWidth}px` } as CSSProperties}>
     {selected && <ConversationStreamObserver workspaceId={workspace.id} bindingId={selected.id} enabled={streamEnabled} onEvent={onStreamEvent} onStatus={updateStreamStatus} onReconnect={onStreamReconnect}/>}
     {conversationSearchOpen && <ConversationSearchDialog search={conversationSearchQuery.data} hits={conversationSearchHits} hasMore={Boolean(conversationSearchQuery.data?.next_cursor)} workDirectories={workDirectories} rootLabel={workDirectoriesQuery.data?.root.display_name ?? '根工作区'} onClose={() => setConversationSearchOpen(false)} onSubmit={startConversationSearch} onLoadMore={() => { if (conversationSearchQuery.data?.next_cursor) setConversationSearchCursor(conversationSearchQuery.data.next_cursor); }} submitting={conversationSearchQuery.isFetching && conversationSearchCursor === undefined} loadingMore={conversationSearchQuery.isFetching && conversationSearchCursor !== undefined} onOpenHit={openConversationSearchHit}/>}{/* Conversation search */}
     {filePreviewRequest && <ConversationFilePreviewDialog
@@ -7555,6 +7665,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       onOpenInFiles={openPreviewInFiles}
     />}
     <aside className="agent-workbench-rail">
+      <div className="agent-conversation-rail-resizer" role="separator" aria-label="调整会话列表宽度" aria-orientation="vertical" onPointerDown={startConversationRailResize}/>
       <header className={!onReturnToSource && features.workDirectories ? 'agent-workbench-rail-actions-only' : undefined}>{onReturnToSource && <button type="button" className="agent-session-return" aria-label="返回节点执行" title="返回节点执行" onClick={onReturnToSource}><ArrowLeft size={16}/></button>}{(onReturnToSource || !features.workDirectories) && <div className="agent-session-host-heading"><span className="eyebrow">{onReturnToSource ? 'FLOWRUN NODE WORKSPACE' : 'FLOWRUN NODE'}</span><h1>{onReturnToSource ? workspace?.display_name || '节点会话' : '节点会话'}</h1></div>}<div className="agent-workbench-create-actions"><button type="button" className={`agent-workbench-activity-trigger${sidebarListMode === 'activity' ? ' active' : ''}`} aria-label={`查看活动会话${activityConversations.length ? `（${activityConversations.length}）` : ''}`} title="查看活动会话" onClick={toggleSidebarListMode}><Bell size={15}/>{activityConversations.length > 0 && <span aria-hidden="true">{activityConversations.length > 99 ? '99+' : activityConversations.length}</span>}</button><button className="primary" disabled={!conversationSearchSupported} onClick={() => setConversationSearchOpen(true)}>{conversationSearchQuery.data?.state === 'PENDING' || conversationSearchQuery.data?.state === 'RUNNING' ? <LoaderCircle className="conversation-activity-spin" size={15}/> : conversationSearchQuery.data?.state === 'SUCCEEDED' ? <Check size={15}/> : <Search size={15}/>}{conversationSearchQuery.data?.state === 'SUCCEEDED' ? '搜索完成' : '搜索会话'}</button>{features.workDirectories && <button type="button" className="secondary" aria-label="新增工作区" disabled={!runtimeWritable} onClick={() => setWorkDirectoryCreatorOpen(true)}><FolderPlus size={14}/>新增工作区</button>}</div></header>
       <div className="agent-workbench-list">
         {sidebarListMode === 'activity'
@@ -7570,7 +7681,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       {features.capabilities && (selected || features.draftCapabilitySelection) && <footer className="agent-workbench-rail-footer"><button type="button" disabled={selected ? !canWrite : !runtimeWritable} onClick={() => setCapabilityManagerOpen(true)}><Boxes size={15}/><span><b>会话配置</b><small>{selected ? '管理当前会话配置' : '为新会话配置能力'}</small></span><ChevronRight size={14}/></button></footer>}
     </aside>
     <section className="agent-workbench-main">
-      <header className="agent-workbench-header"><div>{editing ? <div className="agent-title-edit"><input ref={titleInput} aria-label="会话标题" value={title} onChange={event => setTitle(event.target.value)} onBlur={() => { if (!rename.isPending) { setTitle(selected ? conversationName(selected) : ''); setEditing(false); } }} onKeyDown={event => { if (event.key === 'Enter' && title.trim()) { event.preventDefault(); rename.mutate(); } if (event.key === 'Escape') { setTitle(selected ? conversationName(selected) : ''); setEditing(false); } }}/></div> : !(hideDraftTitle && conversationDraft) && <h2 className="agent-session-title" title={selected ? conversationName(selected) : undefined} aria-label={selected && canWrite ? '双击修改标题' : undefined} onDoubleClick={() => { if (!selected || !canWrite) return; setTitle(conversationName(selected)); setEditing(true); }}><span>{selected ? conversationName(selected) : conversationDraft ? '新会话' : '开始一个新的会话'}</span></h2>}{features.modelSelection && (selected || conversationDraft) && <small className="agent-session-provider">当前供应商：{selected ? boundProviderInfo?.name ?? '未配置' : draftProviderInfo?.name ?? '请选择模型供应商'}{conversationDraft ? ` · ${conversationDraft.displayName}` : ''}</small>}</div><div className="agent-header-actions">{selected && <button type="button" aria-label="打开侧边聊天" title="打开侧边聊天" onClick={() => setSidebarQuestion({ sourceBindingId: selected.id })}><PanelRightOpen size={14}/></button>}{features.conversationDeletion && selected && <button type="button" className="danger" aria-label="删除会话" title={selectedConversationRunning ? '会话运行中，请先停止' : '删除会话'} disabled={!canWrite || selectedConversationRunning || remove.isPending} onClick={() => void confirmDeletion('会话', conversationName(selected)).then(ok => { if (ok) remove.mutate(selected.id); })}><Trash2 size={14}/></button>}</div></header>
+      <header className="agent-workbench-header"><div>{editing ? <div className="agent-title-edit"><input ref={titleInput} aria-label="会话标题" value={title} onChange={event => setTitle(event.target.value)} onBlur={() => { if (!rename.isPending) { setTitle(selected ? conversationName(selected) : ''); setEditing(false); } }} onKeyDown={event => { if (event.key === 'Enter' && title.trim()) { event.preventDefault(); rename.mutate(); } if (event.key === 'Escape') { setTitle(selected ? conversationName(selected) : ''); setEditing(false); } }}/></div> : !(hideDraftTitle && conversationDraft) && <h2 className="agent-session-title" title={selected ? conversationName(selected) : undefined} aria-label={selected && canWrite ? '双击修改标题' : undefined} onDoubleClick={() => { if (!selected || !canWrite) return; setTitle(conversationName(selected)); setEditing(true); }}><span>{selected ? conversationName(selected) : conversationDraft ? '新会话' : '开始一个新的会话'}</span></h2>}{features.modelSelection && (selected || conversationDraft) && <small className="agent-session-provider">当前供应商：{selected ? boundProviderInfo?.name ?? '未配置' : draftProviderInfo?.name ?? '请选择模型供应商'}{conversationDraft ? ` · ${conversationDraft.displayName}` : ''}</small>}</div><div className="agent-header-actions">{selected && <button type="button" aria-label="打开侧边聊天" title="打开侧边聊天" onClick={() => setSidebarQuestion({ sourceBindingId: selected.id, sourceTitle: conversationName(selected) })}><PanelRightOpen size={14}/></button>}{features.conversationDeletion && selected && <button type="button" className="danger" aria-label="删除会话" title={selectedConversationRunning ? '会话运行中，请先停止' : '删除会话'} disabled={!canWrite || selectedConversationRunning || remove.isPending} onClick={() => void confirmDeletion('会话', conversationName(selected)).then(ok => { if (ok) remove.mutate(selected.id); })}><Trash2 size={14}/></button>}</div></header>
       <div className="agent-workbench-content">
       {runtime?.state === 'RECOVERING' && <section className="agent-runtime-recover"><LoaderCircle size={18}/><div><b>运行环境正在恢复</b><span>{runtime.message || '历史会话和工作区文件仍可查看；恢复完成后可继续发送消息和使用终端。'}</span></div></section>}
       {runtime && !runtime.write_available && !selected?.write_available && runtime.state !== 'RECOVERING' && <section className="agent-runtime-recover"><ShieldAlert size={18}/><div><b>节点会话已切换为只读</b><span>{runtime.message || '节点执行已停止；历史会话和工作区文件仍可查看。'}</span></div></section>}
@@ -7603,6 +7714,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         onCreateAnnotation={selected && canWrite ? anchor => void createAnnotation('CONVERSATION_TEXT', anchor) : undefined}
         onSidebarQuestion={selected ? reference => setSidebarQuestion({
           sourceBindingId: selected.id,
+          sourceTitle: conversationName(selected),
           reference: { event_id: reference.eventId, content: reference.content },
         }) : undefined}
         onLocateAnnotation={locateAnnotation}
@@ -7683,17 +7795,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
           <button type="button" className={`agent-current-workspace${workspacePathCopied ? ' copied' : ''}`} title={`${workspacePathCopied ? '已复制' : '点击复制'}：${currentWorkspaceRelativePath}`} aria-label={workspacePathCopied ? `工作区路径已复制：${currentWorkspaceRelativePath}` : `当前工作区：${currentWorkspaceName}；点击复制相对根工作区路径：${currentWorkspaceRelativePath}`} onClick={copyCurrentWorkspacePath}>
             <Folder size={16}/><span>{currentWorkspaceName}</span>{workspacePathCopied && <small aria-live="polite">已复制</small>}
           </button>
-          <ConversationTaskPlan events={displayedEvents} isGenerating={conversationVisuallyActive} conversationScope={selected?.id ?? conversationDraft?.id}/>
+          <ConversationTaskPlan events={displayedEvents} isGenerating={taskPlanLayoutActive} conversationScope={selected?.id ?? conversationDraft?.id}/>
         </div>
       </div>}
     </section>
-    {sidebarQuestion && <SidebarConversationPane
-      workspaceId={workspace.id}
-      sourceBindingId={sidebarQuestion.sourceBindingId}
-      sourceTitle={selected?.id === sidebarQuestion.sourceBindingId ? conversationName(selected) : undefined}
-      initialReference={sidebarQuestion.reference}
-      onClose={() => setSidebarQuestion(undefined)}
-    />}
     <WorkspaceDrawer
       open={drawerOpen}
       onOpen={() => setDrawerOpen(true)}
@@ -7719,6 +7824,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       runtimeTasks={runtimeTasks}
       agentDefinitions={agentDefinitionAssets}
       sessionStopped={sessionStopped}
+      sidebarQuestion={sidebarQuestion}
+      onOpenSidebarQuestion={selected ? () => setSidebarQuestion({ sourceBindingId: selected.id, sourceTitle: conversationName(selected) }) : undefined}
+      onCloseSidebarQuestion={() => setSidebarQuestion(undefined)}
     />
     {workspaceReferencePickerOpen && <WorkspaceReferencePicker
       entries={workspaceReferenceIndexQuery.data?.files ?? []}

@@ -2300,6 +2300,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
         </section>;
       })}
       {turns.length === 0 && isGenerating && !condensationPending && <><ActivityGroup items={[]} active startedAt={requestStartedAt} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/><CurrentTurnStatus items={[]} requestSubmitting={requestSubmitting} statusOverride={emptyResponseRecoveryActive ? '模型返回空响应，OpenHands 正在自动重试' : undefined} modelRetryStatus={modelRetryStatus} monitoring={monitoring} connectionState={connectionState}/></>}
+
       {condensationPending && <article className="conversation-condensation-progress" role="status" aria-label="正在压缩上下文">
         <LoaderCircle className="conversation-activity-spin" size={16}/>
         <div><header><b>正在压缩上下文</b><time>{formatDuration(condensationElapsed / 1_000)}</time></header><p>{condensationElapsed < 2_000 ? '请求已接受，正在等待 OpenHands 开始压缩。' : 'Condenser 正在生成较早上下文的结构化摘要。你仍可编辑消息，发送后将进入队列。'}</p></div>

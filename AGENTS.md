@@ -109,7 +109,7 @@ git -C /Users/zhengmengen/WorkSpace/openhands/software-agent-sdk-total-tokens-1.
 - 浏览器从后台恢复可见或窗口重新获得焦点时，活动会话必须立即从无 cursor 的最新 OpenHands 事件窗口对账，并刷新会话与 readiness 投影；不能仅等待受后台节流的定时轮询或 WebSocket 重连。`visibilitychange` 与 `focus` 可能连续触发，应合并同一轮恢复。
 - 运行中 REST 事件恢复必须由单一协调器串行调度：有 `next_cursor` 时优先增量追赶，定期或在 `message_complete`、断流、WebSocket 重连、前台恢复时读取无 cursor 最新窗口；不得让 React Query 定时器与自建定时器并行轮询同一会话。强制最新窗口信号发生在增量请求期间时必须排队补读，不能被 in-flight 去重吞掉。
 - 历史分页完成后必须记住已耗尽的入口 `history_cursor`，避免最新窗口刷新重新激活同一分页链；若服务端返回新的入口游标，仍必须允许读取新增历史。
-- 最终回复正文只从 OpenHands 正式 `MESSAGE` 事件一次性渲染；浏览器不得展示 StreamContext 文本 delta 或模拟打字光标。`message_complete` 与断流只触发正式事件补读，不单独决定轮次结束；Tool、Thought、Task 等正式过程事件仍可实时追加展示。
+- 最终回复正文只从 OpenHands 正式 `MESSAGE` 事件一次性渲染；浏览器不得展示 StreamContext 文本 delta 或模拟打字光标。`message_complete` 与断流仍触发正式事件补读；但当前页面已订阅的 binding 收到 `message_complete` 时，必须立即结束该 binding 的本地视觉运行态（发送框暂停按钮、侧栏当前行圆环），直到下一次发送或切换会话。该覆盖不得持久化或影响后台会话，后台会话仍以 Runtime `input-readiness`／活动投影判断。Tool、Thought、Task 等正式过程事件仍可实时追加展示。
 - 当前页面发送的用户消息使用浏览器稳定 `renderKey` 和正式 OpenHands `event.id` 双身份：正式事件只认领并补全已有本地气泡，不能创建第二个用户气泡；刷新后直接按正式历史渲染。认领必须依赖提交 ID 与正式事件 ID，不得按正文或时间相似度猜测。
 - Runtime readiness 一旦确认终态，输入框、按钮和侧栏运行样式必须立即恢复；正式终态事件的补读只能在后台进行，不能呈现“正在对账”或继续占用运行态。为避免上一轮排队消息误发，可设置短时且不可见的队列门控，但必须有界并保留用户确认权。
 - 会话配置仅管理能力与认证；新会话和既有会话的模型、供应商及推理程度都在发送框中选择。
