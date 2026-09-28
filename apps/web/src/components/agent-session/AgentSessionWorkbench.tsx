@@ -4755,13 +4755,14 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       item.id !== routeBindingId
       && (possiblyStuckConversationIds.has(item.id) || failedConversationIds.has(item.id))
     ));
+    const suppressAcknowledgedSystemAlert = (item: AgentConversation) => (
+      attentionInBackground.includes(item)
+      && !item.unread
+      && item.unread_origin === 'SYSTEM'
+    );
     const systemUnreadInBackground = new Map(
       [...completedInBackground, ...attentionInBackground]
-        .filter(item => !(
-          attentionInBackground.includes(item)
-          && !item.unread
-          && item.unread_origin === 'SYSTEM'
-        ))
+        .filter(item => !suppressAcknowledgedSystemAlert(item))
         .map(item => [item.id, item]),
     );
     for (const item of systemUnreadInBackground.values()) {
@@ -4769,6 +4770,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       if (pendingUnread ?? item.unread) continue;
       setConversationUnread(item.id, true, 'SYSTEM');
     }
+    const newlyCompletedInBackground = completedInBackground.filter(item => {
+      const pendingUnread = pendingUnreadUpdates.current.get(item.id)?.unread;
+      return !item.unread && pendingUnread !== true && !suppressAcknowledgedSystemAlert(item);
+    });
     setUnreadConversationIds(current => {
       const next = new Set<string>();
       for (const item of conversations) {
@@ -4781,6 +4786,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     });
     for (const item of conversations) {
       activityBaseline.current.set(item.id, isRunning(item));
+    }
+    for (const item of newlyCompletedInBackground) {
+      setConversationUnread(item.id, true, 'MANUAL');
     }
     for (const bindingId of activityBaseline.current.keys()) {
       if (!present.has(bindingId)) activityBaseline.current.delete(bindingId);
@@ -5535,7 +5543,11 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     active: selectedCondensing || effectiveTurnState === 'running' || effectiveTurnState === 'pausing' || effectiveTurnState === 'resuming',
   }), [effectiveTurnState, selectedCondensing]);
   const conversationVisuallyActive = conversationActivity.active
-    || (runningConversationIds.has(selected?.id ?? '') && !latestFormalTurnFinished)
+    || (
+      !nativeTurnTerminal
+      && runningConversationIds.has(selected?.id ?? '')
+      && !latestFormalTurnFinished
+    )
     || (
       !hydrationQuery.isPending
       && effectiveTurnState !== 'paused'
