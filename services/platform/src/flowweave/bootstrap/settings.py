@@ -156,8 +156,8 @@ class Settings(BaseSettings):
     # Keep the interactive Agent Workspace capacity independent from generic
     # Environment/FlowRun defaults. Existing deployments retain their current
     # capacity unless these dedicated settings are explicitly raised.
-    agent_workspace_runtime_memory: str = "2g"
-    agent_workspace_runtime_cpus: float = Field(default=2.0, gt=0, le=16)
+    agent_workspace_runtime_memory: str = "4g"
+    agent_workspace_runtime_cpus: float = Field(default=3.0, gt=0, le=16)
     terminal_environment_session_ttl_seconds: int = Field(default=14_400, ge=300, le=86_400)
     terminal_environment_cleanup_seconds: int = Field(default=30, ge=5, le=3600)
     # OpenHands usage is an absolute, conversation-owned counter.  Reconcile it
