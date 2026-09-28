@@ -7647,3 +7647,13 @@ FR-541B 完成：Agent Workspace 的文件树、文件预览、Git 仓库发现�
 完成：移除会话搜索的每会话页数／命中数及工作区会话数／总命中数上限。搜索按最近更新会话开始，对每个授权会话以 OpenHands `TIMESTAMP_DESC` 完整翻页直至无 continuation，并持久化全部命中后按正式事件时间倒序分页展示。Worker 的独立任务 heartbeat 保持长搜索租约有效。资源保护不变：每 Runtime 仍只有一个低优先级搜索、每页最多 2 秒且在 hydration 活跃时在下一页前让出；搜索可变慢但不再因数量截断。保留已有部分结果 schema 字段仅用于历史兼容，新搜索总是完整完成。
 
 验收：OpenHands 定向 pytest `5 passed`，其中覆盖超过旧上限的 `9` 页及 `101` 个命中均完整返回；Python `py_compile`、Ruff check、Alembic 唯一 head `0135_agent_search_partial`、Web TypeScript typecheck、production build 与 `git diff --check` 通过。未运行数据库型测试：本机 Docker daemon/socket 不可用，Testcontainers 无法初始化；未运行远端前的迁移实跑或 Runtime E2E。
+
+### FR-553 搜索慢页容忍与工作区卡片选择 — DONE
+
+依赖：FR-552。
+
+目标：完整会话搜索不能再因原生 EventLog 单页超过旧的 2 秒预算而立即失败；允许慢搜索，但单次排队或单页等待最多 5 分钟。同时将范围选择改为清晰的工作区区块，默认全选并支持全部选择、全部取消与单独切换。
+
+完成：搜索 HTTP 请求使用独立的后台连接池（不占用 hydration 的正式连接池），后台池最多 4 个连接，连接／读／写／池等待均为 300 秒。每 Runtime 的搜索 bulkhead 继续为默认单并发，但不再在 0.1 秒即拒绝，而是最多排队 300 秒；每个原生搜索页和命中详情读取也最多等待 300 秒。搜索仍会在 hydration 正式读取活跃时在下一页前让出，且不设会话数、页数或命中数限制。范围对话框改为根工作区及各子工作区的独立可点击卡片，打开时默认全选；“全部选择”“全部取消”与单卡切换均明确可见，提交全选时保留既有全部工作区 API 语义。
+
+验收：OpenHands 定向 pytest `6 passed`，覆盖独立后台连接池、300 秒预算、完整多页／多命中搜索与 hydration 优先；受影响 Python Ruff、`py_compile`、Alembic 唯一 head `0135_agent_search_partial`、Web TypeScript typecheck、production build、`git diff --check` 通过。未运行数据库型测试：本机 Docker daemon/socket 不可用，Testcontainers 无法初始化；未运行远端前的 Runtime E2E。

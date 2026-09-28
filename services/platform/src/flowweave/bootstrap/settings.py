@@ -53,15 +53,15 @@ class Settings(BaseSettings):
     runtime_read_per_runtime_concurrency: int = Field(default=2, ge=1, le=16)
     runtime_read_slot_timeout_seconds: float = Field(default=0.25, gt=0, le=5)
     # Full-text conversation searches are background work. Keep at most one
-    # native scan active for one Runtime and make every page yield quickly,
-    # leaving the interactive hydration budget available for the browser.
+    # native scan active for one Runtime, yielding between pages whenever a
+    # hydration read is active. Each queue/page wait is bounded at five minutes.
     runtime_background_search_per_runtime_concurrency: int = Field(default=1, ge=1, le=4)
-    runtime_background_search_slot_timeout_seconds: float = Field(default=0.1, gt=0, le=5)
-    runtime_background_search_page_timeout_seconds: float = Field(default=2.0, gt=0, le=10)
+    runtime_background_search_slot_timeout_seconds: float = Field(default=300.0, gt=0, le=300)
+    runtime_background_search_page_timeout_seconds: float = Field(default=300.0, gt=0, le=300)
     # Conversation search intentionally has no page, hit, or workspace-wide
-    # result cap.  It progresses through the complete native EventLog at low
-    # priority; the per-Runtime bulkhead and short per-page deadline below keep
-    # that exhaustive work from competing with browser hydration.
+    # result cap. It progresses through the complete native EventLog at low
+    # priority; the per-Runtime bulkhead keeps that exhaustive work from
+    # competing with browser hydration.
     runtime_wakeup_timeout_seconds: float = Field(default=10.0, gt=0, le=25)
     runtime_wakeup_backoff_max_seconds: float = Field(default=30.0, gt=0, le=300)
     sse_event_batch_size: int = Field(default=100, ge=1, le=500)

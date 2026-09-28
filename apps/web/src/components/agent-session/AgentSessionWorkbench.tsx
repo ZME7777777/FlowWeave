@@ -652,61 +652,67 @@ function ConversationSearchDialog({ search, hits, hasMore, workDirectories, root
   onOpenHit: (bindingId: string, eventId: string) => void;
 }) {
   const [query, setQuery] = useState(search?.query ?? '');
-  const [allWorkDirectories, setAllWorkDirectories] = useState(true);
   const [includeRoot, setIncludeRoot] = useState(true);
   const [selectedWorkDirectoryIds, setSelectedWorkDirectoryIds] = useState<string[]>([]);
   useEscapeClose(onClose);
   useEffect(() => { setQuery(search?.query ?? ''); }, [search?.id, search?.query]);
   useEffect(() => {
     if (search?.work_directory_ids == null) {
-      setAllWorkDirectories(true);
       setIncludeRoot(true);
       setSelectedWorkDirectoryIds(workDirectories.map(item => item.id));
       return;
     }
-    setAllWorkDirectories(false);
     setIncludeRoot(search.include_root ?? false);
     setSelectedWorkDirectoryIds(search.work_directory_ids);
   }, [search?.id, search?.include_root, search?.work_directory_ids, workDirectories]);
   const state = search?.state;
   const running = state === 'PENDING' || state === 'RUNNING';
   const selectedCount = Number(includeRoot) + selectedWorkDirectoryIds.length;
-  const scopeLabel = allWorkDirectories
+  const selectableCount = workDirectories.length + 1;
+  const allSelected = selectedCount === selectableCount;
+  const scopeLabel = allSelected
     ? '全部工作区'
-    : [includeRoot ? rootLabel : '', ...workDirectories.filter(item => selectedWorkDirectoryIds.includes(item.id)).map(item => item.display_name)].filter(Boolean).join('、') || '未选择工作区';
-  const toggleDirectory = (id: string, checked: boolean) => {
-    setAllWorkDirectories(false);
-    setSelectedWorkDirectoryIds(current => checked
-      ? [...new Set([...current, id])]
-      : current.filter(item => item !== id));
+    : selectedCount ? `已选择 ${selectedCount} 个工作区` : '未选择工作区';
+  const selectAll = () => {
+    setIncludeRoot(true);
+    setSelectedWorkDirectoryIds(workDirectories.map(item => item.id));
+  };
+  const clearAll = () => {
+    setIncludeRoot(false);
+    setSelectedWorkDirectoryIds([]);
+  };
+  const toggleDirectory = (id: string) => {
+    setSelectedWorkDirectoryIds(current => current.includes(id)
+      ? current.filter(item => item !== id)
+      : [...new Set([...current, id])]);
   };
   return <div className="agent-conversation-search-backdrop" onPointerDown={event => { if (event.target === event.currentTarget) onClose(); }}>
     <section className="agent-conversation-search-dialog" role="dialog" aria-modal="true" aria-labelledby="agent-conversation-search-title">
       <form onSubmit={event => {
         event.preventDefault();
-        if (!query.trim() || submitting || running || (!allWorkDirectories && !selectedCount)) return;
+        if (!query.trim() || submitting || running || !selectedCount) return;
         onSubmit(query.trim(), {
-          workDirectoryIds: allWorkDirectories ? undefined : selectedWorkDirectoryIds,
-          includeRoot: allWorkDirectories || includeRoot,
+          workDirectoryIds: allSelected ? undefined : selectedWorkDirectoryIds,
+          includeRoot,
         });
       }}>
         <Search size={21}/><input autoFocus aria-label="搜索会话内容" value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索会话内容…"/><kbd>↵</kbd>
         <button type="button" aria-label="关闭搜索" onClick={onClose}><X size={17}/></button>
       </form>
       <fieldset className="agent-conversation-search-scope" disabled={running || submitting}>
-        <legend>搜索范围</legend>
-        <label><input type="checkbox" checked={allWorkDirectories} onChange={event => {
-          setAllWorkDirectories(event.target.checked);
-          if (event.target.checked) {
-            setIncludeRoot(true);
-            setSelectedWorkDirectoryIds(workDirectories.map(item => item.id));
-          }
-        }}/>全部工作区</label>
-        {!allWorkDirectories && <div className="agent-conversation-search-scope-options">
-          <label><input type="checkbox" checked={includeRoot} onChange={event => setIncludeRoot(event.target.checked)}/>{rootLabel}</label>
-          {workDirectories.map(directory => <label key={directory.id}><input type="checkbox" checked={selectedWorkDirectoryIds.includes(directory.id)} onChange={event => toggleDirectory(directory.id, event.target.checked)}/>{directory.display_name}</label>)}
-        </div>}
-        <small>当前：{scopeLabel}</small>
+        <legend>选择搜索工作区</legend>
+        <div className="agent-conversation-search-scope-header">
+          <div><b>搜索范围</b><small>默认全部选择；可点击单个工作区切换。</small></div>
+          <div className="agent-conversation-search-scope-actions"><button type="button" onClick={selectAll} disabled={allSelected}>全部选择</button><button type="button" onClick={clearAll} disabled={!selectedCount}>全部取消</button></div>
+        </div>
+        <div className="agent-conversation-search-scope-cards" role="group" aria-label="搜索工作区范围">
+          <button type="button" aria-pressed={includeRoot} className={`agent-conversation-search-scope-card${includeRoot ? ' selected' : ''}`} onClick={() => setIncludeRoot(current => !current)}><Check size={14}/><span><b>{rootLabel}</b><small>根工作区</small></span></button>
+          {workDirectories.map(directory => {
+            const selectedDirectory = selectedWorkDirectoryIds.includes(directory.id);
+            return <button type="button" key={directory.id} aria-pressed={selectedDirectory} className={`agent-conversation-search-scope-card${selectedDirectory ? ' selected' : ''}`} onClick={() => toggleDirectory(directory.id)}><Check size={14}/><span><b>{directory.display_name}</b><small>工作区</small></span></button>;
+          })}
+        </div>
+        <small className="agent-conversation-search-scope-summary">当前：{scopeLabel}</small>
       </fieldset>
       <header><div><span className="eyebrow">CONVERSATION SEARCH</span><h2 id="agent-conversation-search-title">{search ? '“' + search.query + '”' : '搜索会话'}</h2></div>{running && <span className="agent-conversation-search-state running"><LoaderCircle size={13}/>后台搜索中</span>}{state === 'SUCCEEDED' && <span className="agent-conversation-search-state done"><Check size={13}/>{search?.is_partial ? '已返回最近结果' : '已完成'}</span>}{state === 'FAILED' && <span className="agent-conversation-search-state failed">搜索失败</span>}</header>
       <div className="agent-conversation-search-results">
@@ -5687,7 +5693,22 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     if (!hasNewTerminalEvent && !currentTaskFailed) return;
     setCondensationStatus(undefined);
     if (!hasNewTerminalEvent) {
-      reportOperationError(selected.id, new Error('OpenHands 未能完成上下文压缩，请稍后重试。'));
+      const condensationFailureMessage: Record<string, string> = {
+        runtime_rate_limited: '上下文压缩请求被运行时限流，请稍后重试。',
+        runtime_service_unavailable: '上下文压缩运行时暂不可用，请稍后重试。',
+        runtime_auth_failed: '上下文压缩运行时认证失败，请检查运行时凭据后重试。',
+        runtime_request_rejected: '上下文压缩请求被运行时拒绝，未执行摘要。',
+        runtime_response_invalid: '上下文压缩运行时返回了无效响应，未执行摘要。',
+        runtime_timeout_unknown: '上下文压缩请求超时，结果未知；系统已避免自动重试，请先刷新事件后再决定是否重试。',
+        runtime_connection_unknown: '上下文压缩连接中断，结果未知；系统已避免自动重试，请先刷新事件后再决定是否重试。',
+        runtime_unavailable_unknown: '上下文压缩运行时不可用，结果未知；系统已避免自动重试，请先刷新事件后再决定是否重试。',
+        runtime_unknown: '上下文压缩运行时发生未知错误，请查看诊断日志后重试。',
+      };
+      const failureReason = latestTask?.failure_reason ?? '';
+      reportOperationError(
+        selected.id,
+        new Error(condensationFailureMessage[failureReason] ?? 'OpenHands 未能完成上下文压缩，请稍后重试。'),
+      );
     }
     void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-activity', workspace?.id) });
     void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-context', workspace?.id, selected.id) });

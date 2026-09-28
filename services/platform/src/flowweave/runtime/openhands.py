@@ -772,6 +772,7 @@ class OpenHandsRuntime:
         path: str,
         *,
         missing_ok: bool = False,
+        background: bool = False,
         base_url: str,
         session_api_key: str,
         **kwargs: Any,
@@ -779,7 +780,8 @@ class OpenHandsRuntime:
         started_at = time.monotonic()
         outcome = "error"
         try:
-            response = self._transport().regular.request(
+            client = self._transport().background if background else self._transport().regular
+            response = client.request(
                 method,
                 f"{base_url.rstrip('/')}{path}",
                 headers={"X-Session-API-Key": session_api_key},
@@ -859,20 +861,20 @@ class OpenHandsRuntime:
                     "RUNTIME_BUSINESS_READ_TIMEOUT",
                     "OpenHands formal Runtime read exceeded its deadline",
                     504,
-                    {"outcome_unknown": True},
+                    {"outcome_unknown": True, "transport_failure": "timeout"},
                 ) from exc
             raise DomainError(
                 "EXECUTOR_UNAVAILABLE",
                 "OpenHands Agent Server request exceeded its deadline",
                 503,
-                {"outcome_unknown": True},
+                {"outcome_unknown": True, "transport_failure": "timeout"},
             ) from exc
         except httpx.HTTPError as exc:
             raise DomainError(
                 "EXECUTOR_UNAVAILABLE",
                 "OpenHands Agent Server connection was interrupted before a response",
                 503,
-                {"outcome_unknown": True},
+                {"outcome_unknown": True, "transport_failure": "connection"},
             ) from exc
         except ValueError as exc:
             raise DomainError(
@@ -2319,12 +2321,15 @@ class OpenHandsRuntime:
                     self.settings.runtime_background_search_per_runtime_concurrency
                 )
                 self._background_search_slots[key] = slot
+        # A complete background scan queues behind the existing search rather
+        # than failing after the former 0.1-second deadline. It remains bounded
+        # so a lost Runtime request cannot strand the Worker indefinitely.
         if not slot.acquire(timeout=self.settings.runtime_background_search_slot_timeout_seconds):
             if metrics := current_metrics():
                 metrics.increment("flowweave_runtime_background_search_bulkhead_saturated_total")
             raise DomainError(
-                "RUNTIME_BACKGROUND_SEARCH_SATURATED",
-                "A low-priority conversation search is already running for this Runtime",
+                "RUNTIME_BACKGROUND_SEARCH_QUEUE_TIMEOUT",
+                "Background conversation search waited too long for its Runtime",
                 503,
                 {"outcome_unknown": False},
             )
@@ -4015,7 +4020,12 @@ class OpenHandsRuntime:
         )
 
     def _read_event(
-        self, handle: RuntimeHandle, event_id: str, *, timeout: float | None = None
+        self,
+        handle: RuntimeHandle,
+        event_id: str,
+        *,
+        timeout: float | None = None,
+        background: bool = False,
     ) -> RuntimeEvent | None:
         """Read one formal event identity without scanning a history window.
 
@@ -4032,6 +4042,7 @@ class OpenHandsRuntime:
             "GET",
             f"/api/conversations/{handle.conversation_id}/events/{validated_event_id}",
             missing_ok=True,
+            background=background,
             base_url=self._base_url_for_handle(handle),
             session_api_key=self._session_key_for_handle(handle),
             **request_options,
@@ -4063,6 +4074,7 @@ class OpenHandsRuntime:
             return self._read_event(
                 handle,
                 event_id,
+                background=True,
                 timeout=self.settings.runtime_background_search_page_timeout_seconds,
             )
 
@@ -4106,6 +4118,7 @@ class OpenHandsRuntime:
                 page = self._request(
                     "GET",
                     f"/api/conversations/{handle.conversation_id}/events/search",
+                    background=True,
                     base_url=base_url,
                     session_api_key=session_api_key,
                     params=params,

@@ -1066,6 +1066,18 @@ async def test_openhands_uses_the_container_owned_http_transport(openhands_setti
         await transport.aclose()
 
 
+@pytest.mark.asyncio
+async def test_openhands_background_search_uses_an_isolated_five_minute_transport():
+    transport = HttpTransportPool.build()
+    try:
+        assert transport.background is not transport.regular
+        assert transport.background.timeout.read == 300
+        assert transport.background.timeout.pool == 300
+        assert transport.background._transport._pool._max_connections == 4  # pyright: ignore[reportPrivateUsage]
+    finally:
+        await transport.aclose()
+
+
 @pytest.mark.parametrize(
     "working_directory",
     [

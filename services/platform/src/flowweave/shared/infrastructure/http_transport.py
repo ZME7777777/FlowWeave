@@ -8,10 +8,11 @@ import httpx
 
 @dataclass(slots=True)
 class HttpTransportPool:
-    """Bounded process-lifetime clients for regular and control traffic."""
+    """Bounded process-lifetime clients for regular, control, and search traffic."""
 
     regular: httpx.Client
     control: httpx.Client
+    background: httpx.Client
     async_regular: httpx.AsyncClient
     async_control: httpx.AsyncClient
 
@@ -19,6 +20,10 @@ class HttpTransportPool:
     def build(cls) -> HttpTransportPool:
         timeout = httpx.Timeout(connect=5, read=30, write=30, pool=5)
         control_timeout = httpx.Timeout(connect=5, read=None, write=30, pool=5)
+        # Historical search deliberately permits a slow native EventLog page.
+        # It has an independent pool, so it cannot exhaust regular connections
+        # reserved for formal browser hydration reads.
+        background_timeout = httpx.Timeout(connect=5, read=300, write=300, pool=300)
         return cls(
             regular=httpx.Client(
                 timeout=timeout,
@@ -35,6 +40,15 @@ class HttpTransportPool:
                     max_connections=4,
                     max_keepalive_connections=2,
                     keepalive_expiry=15,
+                ),
+                follow_redirects=False,
+            ),
+            background=httpx.Client(
+                timeout=background_timeout,
+                limits=httpx.Limits(
+                    max_connections=4,
+                    max_keepalive_connections=4,
+                    keepalive_expiry=30,
                 ),
                 follow_redirects=False,
             ),
@@ -63,6 +77,7 @@ class HttpTransportPool:
         await self.async_control.aclose()
         self.regular.close()
         self.control.close()
+        self.background.close()
 
 
 _pools: dict[tuple[str, str, str], HttpTransportPool] = {}
