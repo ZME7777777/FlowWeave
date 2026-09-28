@@ -11,7 +11,7 @@ import subprocess
 import threading
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
-from concurrent.futures import ThreadPoolExecutor, wait
+from concurrent.futures import Future, ThreadPoolExecutor, wait
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
@@ -66,11 +66,21 @@ _RELAY_MAX_HUBS = 128
 _RELAY_MAX_SUBSCRIBERS_PER_HUB = 8
 _RELAY_SUBSCRIBER_QUEUE_SIZE = 32
 _TERMINAL_SESSION_NAME = re.compile(r"[^a-z0-9_.-]+")
-_ADMIN_OBSERVABILITY_USAGE_WORKERS = 16
+_ADMIN_OBSERVABILITY_AGENT_WORKSPACE_USAGE_WORKERS = 4
+_ADMIN_OBSERVABILITY_FLOW_RUN_USAGE_WORKERS = 4
+_ADMIN_OBSERVABILITY_SERVICE_USAGE_WORKERS = 8
 _ADMIN_OBSERVABILITY_USAGE_BUDGET_SECONDS = 3.0
-_ADMIN_OBSERVABILITY_USAGE_EXECUTOR = ThreadPoolExecutor(
-    max_workers=_ADMIN_OBSERVABILITY_USAGE_WORKERS,
-    thread_name_prefix="flowweave-admin-usage",
+_ADMIN_OBSERVABILITY_AGENT_WORKSPACE_USAGE_EXECUTOR = ThreadPoolExecutor(
+    max_workers=_ADMIN_OBSERVABILITY_AGENT_WORKSPACE_USAGE_WORKERS,
+    thread_name_prefix="flowweave-admin-agent-workspace-usage",
+)
+_ADMIN_OBSERVABILITY_FLOW_RUN_USAGE_EXECUTOR = ThreadPoolExecutor(
+    max_workers=_ADMIN_OBSERVABILITY_FLOW_RUN_USAGE_WORKERS,
+    thread_name_prefix="flowweave-admin-flow-run-usage",
+)
+_ADMIN_OBSERVABILITY_SERVICE_USAGE_EXECUTOR = ThreadPoolExecutor(
+    max_workers=_ADMIN_OBSERVABILITY_SERVICE_USAGE_WORKERS,
+    thread_name_prefix="flowweave-admin-service-usage",
 )
 
 logger = logging.getLogger(__name__)
@@ -1448,6 +1458,9 @@ def _admin_managed_resource_usage(
 
 def _populate_admin_usage(
     samples: list[tuple[dict[str, Any], Callable[[], dict[str, Any] | None]]],
+    *,
+    executor: ThreadPoolExecutor,
+    budget_seconds: float = _ADMIN_OBSERVABILITY_USAGE_BUDGET_SECONDS,
 ) -> None:
     """Collect best-effort Docker usage without delaying the control-plane snapshot.
 
@@ -1459,17 +1472,17 @@ def _populate_admin_usage(
 
     if not samples:
         return
-    futures = {}
+    futures: dict[Future[dict[str, Any] | None], dict[str, Any]] = {}
     for row, reader in samples:
         try:
-            futures[_ADMIN_OBSERVABILITY_USAGE_EXECUTOR.submit(reader)] = row
+            futures[executor.submit(reader)] = row
         except RuntimeError:
             # Exhausted process resources must degrade only the individual sample,
             # never turn an observability read into a 500 response.
             row["usage"] = None
     if not futures:
         return
-    completed, pending = wait(futures, timeout=_ADMIN_OBSERVABILITY_USAGE_BUDGET_SECONDS)
+    completed, pending = wait(futures, timeout=budget_seconds)
     for future in completed:
         row = futures[future]
         try:
@@ -1485,10 +1498,43 @@ def _populate_admin_usage(
     # the Admin API deadline.
 
 
+def _populate_admin_usage_groups(
+    groups: list[
+        tuple[
+            list[tuple[dict[str, Any], Callable[[], dict[str, Any] | None]]],
+            ThreadPoolExecutor,
+        ]
+    ],
+    *,
+    budget_seconds: float = _ADMIN_OBSERVABILITY_USAGE_BUDGET_SECONDS,
+) -> None:
+    """Collect lower-priority sample classes in a shared bounded window."""
+
+    futures: dict[Future[dict[str, Any] | None], dict[str, Any]] = {}
+    for samples, executor in groups:
+        for row, reader in samples:
+            try:
+                futures[executor.submit(reader)] = row
+            except RuntimeError:
+                row["usage"] = None
+    if not futures:
+        return
+    completed, pending = wait(futures, timeout=budget_seconds)
+    for future in completed:
+        row = futures[future]
+        try:
+            row["usage"] = future.result()
+        except Exception:  # observability must not hide the Compose inventory
+            row["usage"] = None
+    for future in pending:
+        futures[future]["usage"] = None
+        future.cancel()
+
+
 def _admin_observability_snapshot(configured: Settings) -> dict[str, Any]:
     provider = DockerSandboxProvider(configured)
     service_rows: list[dict[str, Any]] = []
-    usage_samples: list[tuple[dict[str, Any], Callable[[], dict[str, Any] | None]]] = []
+    service_usage_samples: list[tuple[dict[str, Any], Callable[[], dict[str, Any] | None]]] = []
     try:
         raw_services = provider._run(  # pyright: ignore[reportPrivateUsage]
             [
@@ -1509,6 +1555,7 @@ def _admin_observability_snapshot(configured: Settings) -> dict[str, Any]:
                 continue
             if not isinstance(item, dict):
                 continue
+            item = cast(dict[str, object], item)
             container_id = str(item.get("ID") or "")
             if not container_id:
                 continue
@@ -1522,7 +1569,7 @@ def _admin_observability_snapshot(configured: Settings) -> dict[str, Any]:
             }
             service_rows.append(service)
             if str(item.get("State") or "").lower() == "running":
-                usage_samples.append(
+                service_usage_samples.append(
                     (
                         service,
                         lambda container_id=container_id: _admin_container_usage(
@@ -1534,6 +1581,10 @@ def _admin_observability_snapshot(configured: Settings) -> dict[str, Any]:
         service_rows = []
 
     managed_resources: list[dict[str, Any]] = []
+    agent_workspace_usage_samples: list[
+        tuple[dict[str, Any], Callable[[], dict[str, Any] | None]]
+    ] = []
+    flow_run_usage_samples: list[tuple[dict[str, Any], Callable[[], dict[str, Any] | None]]] = []
     try:
         for observation in provider.list_managed():
             resource = {
@@ -1548,18 +1599,40 @@ def _admin_observability_snapshot(configured: Settings) -> dict[str, Any]:
             }
             managed_resources.append(resource)
             if observation.labels.get("flowweave.kind") == "agent-runtime":
-                usage_samples.append(
-                    (
-                        resource,
-                        lambda resource_name=observation.resource_name,
-                        resource_id=observation.resource_id: _admin_managed_resource_usage(
-                            provider, resource_name, resource_id
-                        ),
-                    )
+                sample = (
+                    resource,
+                    lambda resource_name=observation.resource_name,
+                    resource_id=observation.resource_id: _admin_managed_resource_usage(
+                        provider, resource_name, resource_id
+                    ),
                 )
+                if observation.labels.get("flowweave.owner-type") == "AGENT_WORKSPACE":
+                    agent_workspace_usage_samples.append(sample)
+                else:
+                    flow_run_usage_samples.append(sample)
     except DomainError:
         managed_resources = []
-    _populate_admin_usage(usage_samples)
+    # Docker may serialize concurrent stats reads internally.  Collect the
+    # independent Agent Workspace Runtime first so busy FlowRun and Compose
+    # samples cannot consume its only observation window; then spend only the
+    # remaining part of that same bounded window on lower-priority samples.
+    usage_started_at = time.monotonic()
+    _populate_admin_usage(
+        agent_workspace_usage_samples,
+        executor=_ADMIN_OBSERVABILITY_AGENT_WORKSPACE_USAGE_EXECUTOR,
+    )
+    remaining_budget_seconds = max(
+        0.0,
+        _ADMIN_OBSERVABILITY_USAGE_BUDGET_SECONDS - (time.monotonic() - usage_started_at),
+    )
+    if remaining_budget_seconds > 0:
+        _populate_admin_usage_groups(
+            [
+                (flow_run_usage_samples, _ADMIN_OBSERVABILITY_FLOW_RUN_USAGE_EXECUTOR),
+                (service_usage_samples, _ADMIN_OBSERVABILITY_SERVICE_USAGE_EXECUTOR),
+            ],
+            budget_seconds=remaining_budget_seconds,
+        )
     return {
         "available": True,
         "services": service_rows,

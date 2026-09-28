@@ -291,21 +291,90 @@ def test_admin_observability_keeps_inventory_when_usage_sampling_times_out(monke
     ]
 
 
-def test_admin_observability_keeps_inventory_when_sampling_threads_are_exhausted(
-    monkeypatch,
-) -> None:
+def test_admin_observability_keeps_inventory_when_sampling_threads_are_exhausted() -> None:
     class ExhaustedExecutor:
         def submit(self, _reader):
             raise RuntimeError("can't start new thread")
 
     row = {"usage": "not-sampled"}
-    monkeypatch.setattr(
-        controller_module, "_ADMIN_OBSERVABILITY_USAGE_EXECUTOR", ExhaustedExecutor()
-    )
-
-    controller_module._populate_admin_usage([(row, lambda: None)])
+    controller_module._populate_admin_usage([(row, lambda: None)], executor=ExhaustedExecutor())
 
     assert row["usage"] is None
+
+
+def test_admin_observability_prioritizes_agent_workspace_usage(monkeypatch) -> None:
+    class FakeProvider:
+        def __init__(self, _configured) -> None:
+            pass
+
+        def _run(self, _command, *, timeout):
+            assert timeout == 10
+            return ""
+
+        def list_managed(self):
+            return [
+                SimpleNamespace(
+                    resource_id="flow-run-resource",
+                    resource_name="flow-run-runtime",
+                    resource_identifier="flow-run-container",
+                    state="RUNNING",
+                    labels={
+                        "flowweave.kind": "agent-runtime",
+                        "flowweave.owner-type": "FLOW_RUN",
+                    },
+                ),
+                SimpleNamespace(
+                    resource_id="workspace-resource",
+                    resource_name="workspace-runtime",
+                    resource_identifier="workspace-container",
+                    state="RUNNING",
+                    labels={
+                        "flowweave.kind": "agent-runtime",
+                        "flowweave.owner-type": "AGENT_WORKSPACE",
+                    },
+                ),
+            ]
+
+        def usage(self, resource_name, _resource_id):
+            return DockerResourceUsage(
+                cpu_usage_percent=4.0 if resource_name == "workspace-runtime" else 1.0,
+                memory_usage_bytes=5,
+                storage_usage_bytes=6,
+                storage_limit=None,
+            )
+
+    class ExhaustedExecutor:
+        def submit(self, _reader):
+            raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(controller_module, "DockerSandboxProvider", FakeProvider)
+    monkeypatch.setattr(
+        controller_module,
+        "_ADMIN_OBSERVABILITY_FLOW_RUN_USAGE_EXECUTOR",
+        ExhaustedExecutor(),
+    )
+    monkeypatch.setattr(
+        controller_module,
+        "_ADMIN_OBSERVABILITY_SERVICE_USAGE_EXECUTOR",
+        ExhaustedExecutor(),
+    )
+    with ThreadPoolExecutor(max_workers=1) as workspace_executor:
+        monkeypatch.setattr(
+            controller_module,
+            "_ADMIN_OBSERVABILITY_AGENT_WORKSPACE_USAGE_EXECUTOR",
+            workspace_executor,
+        )
+        snapshot = controller_module._admin_observability_snapshot(
+            SimpleNamespace(docker_binary="docker")
+        )
+
+    assert snapshot["managed_resources"][0]["usage"] is None
+    assert snapshot["managed_resources"][1]["usage"] == {
+        "cpu_usage_percent": 4.0,
+        "memory_usage_bytes": 5,
+        "storage_usage_bytes": 6,
+        "storage_limit": None,
+    }
 
 
 def test_blocking_runtime_provision_does_not_block_controller_health(settings, monkeypatch):

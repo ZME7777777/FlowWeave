@@ -123,6 +123,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | OPS-02 | Docker rollback image / BuildKit cache 容量增长 | DONE | 已按授权使用 OPS-03 tag 级路径回收，并完成生产不变量与入口验证。 |
 | OPS-03 | 多 rollback tag image 的安全回收 | DONE | 改为逐 tag、重查 Container 引用、不使用 `--force` 的回收路径。 |
 | OPS-04 | 管理中心服务快照被串行 Docker 资源采样拖至请求超时 | DONE | Runtime Provider 将 Compose 与受管 Runtime 的资源采样改为最多 16 路并发、3 秒有界的 best-effort 收集；服务清单始终返回，超时样本仅显示为空。 |
+| OPS-05 | 管理页并发读取导致 Agent Workspace 资源快照相互竞争 | DONE | Runtime Provider 在同一 3 秒只读窗口内优先采集 Agent Workspace，随后才用剩余预算采集 FlowRun 与 Compose 服务；独立有界线程池隔离工作容量，Docker daemon 串行部分 stats 请求时也不会让较低优先级样本挤掉 Agent Workspace 指标。 |
 
 ### 模型调用重试与终态诊断（2026-09-23）
 
