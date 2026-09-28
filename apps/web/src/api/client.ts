@@ -457,8 +457,10 @@ export const api = {
     if (cursor) query.set('cursor', cursor);
     return request<import('../types').AgentConversationPage>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations?${query}`);
   },
-  agentConversationActivity: (workspaceId: string) =>
-    request<import('../types').AgentConversationActivity>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-activity`),
+  agentConversationActivity: (workspaceId: string, activeBindingId?: string) => {
+    const query = activeBindingId ? `?active_binding_id=${encodeURIComponent(activeBindingId)}` : '';
+    return request<import('../types').AgentConversationActivity>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-activity${query}`);
+  },
   startAgentConversationSearch: (workspaceId: string, query: string, workDirectoryIds?: string[], includeRoot = true) =>
     request<import('../types').AgentConversationSearch>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-searches`, json('POST', { query, work_directory_ids: workDirectoryIds, include_root: includeRoot })),
   agentConversationSearch: (workspaceId: string, searchId: string, cursor?: string) => {
@@ -1009,8 +1011,10 @@ export const nodeSessionApi = {
     if (cursor) query.set('cursor', cursor);
     return request<import('../types').AgentConversationPage>(`${nodeSessionBase(flowRunId, attemptId)}?${query}`);
   },
-  activity: (flowRunId: string, attemptId: string) =>
-    request<import('../types').AgentConversationActivity>(`${nodeSessionBase(flowRunId, attemptId)}/activity`),
+  activity: (flowRunId: string, attemptId: string, activeBindingId?: string) => {
+    const query = activeBindingId ? `?active_binding_id=${encodeURIComponent(activeBindingId)}` : '';
+    return request<import('../types').AgentConversationActivity>(`${nodeSessionBase(flowRunId, attemptId)}/activity${query}`);
+  },
   create: (flowRunId: string, attemptId: string, title: string | undefined, model_provider_id: string, model_name: string, reasoning_effort: string | null, idempotencyKey = randomId(), work_directory_id?: string) =>
     request<import('../types').AgentConversation>(nodeSessionBase(flowRunId, attemptId), json('POST', { title, model_provider_id, model_name, reasoning_effort, work_directory_id }, idempotencyKey)),
   bootstrap: (flowRunId: string, attemptId: string, content: string, model_provider_id: string, model_name: string, reasoning_effort: string | null, attachments: AgentAttachment[] = [], references: AgentConversationReference[] = [], workspace_references: AgentWorkspaceReference[] = [], work_directory_id?: string, idempotencyKey = randomId(), annotations: AgentConversationAnnotation[] = []) =>

@@ -245,6 +245,7 @@ test('Generated conversation title updates both the sidebar and current header',
 
 test('Completed conversation shows an explicit loading state without appearing to think', async ({ page }) => {
   let authenticated = false;
+  const unreadWrites: Array<{ unread: boolean; unread_origin?: string }> = [];
   let releaseHydration: (() => void) | undefined;
   const hydrationGate = new Promise<void>(resolve => { releaseHydration = resolve; });
   const workspace = {
@@ -266,7 +267,13 @@ test('Completed conversation shows an explicit loading state without appearing t
     if (path.endsWith('/auth/login') && request.method() === 'POST') { authenticated = true; return json(route, user); }
     if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
     if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
+    if (path.endsWith('/conversation-activity')) return json(route, { running_binding_ids: [] });
     if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: [conversation], next_cursor: null });
+    if (path.endsWith('/unread') && request.method() === 'PUT') {
+      const body = request.postDataJSON() as { unread: boolean; unread_origin?: string };
+      unreadWrites.push(body);
+      return json(route, { ...conversation, unread: body.unread, unread_origin: body.unread ? body.unread_origin ?? 'MANUAL' : null });
+    }
     if (path.endsWith('/hydration')) {
       await hydrationGate;
       return json(route, {
@@ -301,11 +308,15 @@ test('Completed conversation shows an explicit loading state without appearing t
   await expect(page.getByRole('status').filter({ hasText: '正在加载会话' })).toBeVisible();
   await expect(page.locator('.conversation-turn-status')).toHaveCount(0);
   await expect(page.getByText('正在思考', { exact: true })).toHaveCount(0);
+  await expect(page.locator('.conversation-live-task-plan')).toHaveCount(0);
+  await expect.poll(() => unreadWrites).toEqual([]);
 
   releaseHydration?.();
   await expect(page.getByText('历史回复', { exact: true })).toBeVisible();
   await expect(page.getByRole('status').filter({ hasText: '正在加载会话' })).toHaveCount(0);
   await expect(page.locator('.conversation-turn-status')).toHaveCount(0);
+  await expect(page.locator('.conversation-live-task-plan')).toHaveCount(0);
+  await expect.poll(() => unreadWrites).toEqual([]);
 });
 
 
@@ -399,6 +410,7 @@ test('Re-entering a recently loaded running conversation keeps progress visible 
   let authenticated = false;
   let hydrationReads = 0;
   let eventReads = 0;
+  let readinessReads = 0;
   const workspace = {
     id: 'running-hot-cache-workspace', display_name: '运行中热缓存工作区', desired_state: 'RUNNING', updated_at: now,
   };
@@ -451,7 +463,7 @@ test('Re-entering a recently loaded running conversation keeps progress visible 
       eventReads += 1;
       return json(route, hydration('running-hot-a', true).events);
     }
-    if (path.endsWith('/input-readiness')) return json(route, { ready: false, execution_status: 'running' });
+    if (path.endsWith('/input-readiness')) { readinessReads += 1; return json(route, { ready: false, execution_status: 'running' }); }
     if (path.endsWith('/context')) return json(route, hydration('running-hot-a', true).context);
     if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
     if (path.endsWith('/work-directories')) return json(route, {
@@ -480,6 +492,8 @@ test('Re-entering a recently loaded running conversation keeps progress visible 
   await expect(page.getByRole('status').filter({ hasText: '正在加载会话' })).toHaveCount(0);
   expect(hydrationReads).toBe(2);
   await expect.poll(() => eventReads).toBeGreaterThan(readsBeforeReturn);
+  await page.waitForTimeout(500);
+  expect(readinessReads).toBeLessThanOrEqual(1);
 });
 
 test('Rapid conversation switching hydrates only the settled selection', async ({ page }) => {

@@ -859,7 +859,13 @@ def list_node_session_views(
     return [_node_session_dict(db, item) for item in items]
 
 
-def node_session_activity(db: Session, *, flow_run_id: str, attempt_id: str) -> dict[str, Any]:
+def node_session_activity(
+    db: Session,
+    *,
+    flow_run_id: str,
+    attempt_id: str,
+    active_binding_id: str | None = None,
+) -> dict[str, Any]:
     """Map one native running snapshot to authorized node-session binding IDs."""
 
     agent_sessions.resolve_flow_node_session_host(
@@ -940,10 +946,20 @@ def node_session_activity(db: Session, *, flow_run_id: str, attempt_id: str) -> 
         for item in running_bindings
         if activity_timestamp_is_stale(native_activity[item.openhands_conversation_id].updated_at)
     ]
+    running_binding_ids = {item.id for item in running_bindings}
     attention_binding_ids = set(possibly_stuck_binding_ids) | {
         item.id for item in bindings if item.openhands_conversation_id in failed_native_ids
     }
     for item in bindings:
+        is_running = item.id in running_binding_ids
+        completed_in_background = (
+            item.activity_was_running
+            and not is_running
+            and item.id != active_binding_id
+        )
+        if completed_in_background and not item.unread:
+            item.unread = True
+            item.unread_origin = "MANUAL"
         if item.id in attention_binding_ids:
             # Preserve MANUAL unread and an explicit SYSTEM acknowledgement
             # (SYSTEM + unread=False). Otherwise an active native abnormality
@@ -953,6 +969,8 @@ def node_session_activity(db: Session, *, flow_run_id: str, attempt_id: str) -> 
                 item.unread_origin = "SYSTEM"
         elif not item.unread and item.unread_origin == "SYSTEM":
             item.unread_origin = None
+        if item.activity_was_running != is_running:
+            item.activity_was_running = is_running
     db.flush()
     return {
         "running_binding_ids": [item.id for item in running_bindings],
