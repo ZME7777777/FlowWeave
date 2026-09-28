@@ -527,6 +527,20 @@ class RuntimeEvent:
 
 
 @dataclass(frozen=True, slots=True)
+class RuntimeMessageSearchResult:
+    """Bounded native full-text search result for one Conversation.
+
+    ``truncated`` means the Runtime deliberately stopped after returning its
+    newest matching events.  It is not a Runtime failure: callers may persist
+    and show the returned events while clearly communicating that older
+    history was not scanned.
+    """
+
+    events: tuple[RuntimeEvent, ...] = ()
+    truncated: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class RuntimeTaskUsageSnapshot:
     """One transient cumulative OpenHands ``task:<task_id>`` metrics snapshot.
 
@@ -696,7 +710,7 @@ class RuntimePort(Protocol):
 
     def search_message_events(
         self, handle: RuntimeHandle, query: str
-    ) -> tuple[RuntimeEvent, ...]: ...
+    ) -> RuntimeMessageSearchResult: ...
 
     def stream_events(
         self, handle: RuntimeHandle, *, after_seq: int | None = None

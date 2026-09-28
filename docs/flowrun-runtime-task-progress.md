@@ -7627,3 +7627,13 @@ FR-550 完成：正式 Runtime read bulkhead 继续按每 API/Worker 进程、�
 FR-541B 完成：Agent Workspace 的文件树、文件预览、Git 仓库发现／历史／diff／同步和文件创建／删除已从 `AsyncSession.run_sync()` 移至低优先级有界线程。工作目录创建／修改需要同步文件路径校验，删除会级联执行正式 Runtime 会话删除，也进入同一通道。该通道与历史分页复用原有小型 executor 和同步数据库池；默认最多一个后台操作，不新增 PostgreSQL 连接预算，繁重文件／Git 操作不再占用 ASGI event loop 或交互读取／写入／恢复容量。纯数据库工作目录列表和详情仍留在原入口。
 
 验收：受影响 Python AST 解析、Ruff format/check、`git diff --check`、唯一 `CURRENT` 状态和 staged diff 复核通过。按本轮要求未运行数据库、Runtime、完整构建或 E2E；不修改 schema、OpenHands 或远端环境。下一切片为 FR-541C。
+
+### FR-551 搜索软预算与最新结果优先 — DONE
+
+依赖：FR-545A、FR-545B1、FR-539。
+
+目标：会话搜索达到低优先级安全预算时，不能因保护 hydration 而丢弃已找到的结果并显示“搜索失败”；应在不扩大 Runtime 搜索并发、取槽或单页超时的前提下，返回可获得的最新结果并明确标注未完整扫描。
+
+完成：原生搜索返回有界 `RuntimeMessageSearchResult`，达到每会话页数或命中预算时保留当前按 OpenHands `TIMESTAMP_DESC` 顺序已找到的事件并标记截断，不再抛出预算失败。Workspace 聚合继续最多扫描 100 个最新会话、每会话最多 8 页／100 命中，保留跨会话最新的 200 个命中；达到任一预算后完成搜索、持久化 `is_partial`／摘要及正式事件时间，并以事件时间倒序分页。搜索对话框显示“已返回最近结果”及较早记录未扫描的说明。低优先级单 Runtime 并发 `1`、取槽 `0.1` 秒、单页 `2` 秒与 hydration 活跃时让出机制均未放宽；相应预算已写入环境示例、Compose 与环境参考。
+
+验收：OpenHands 搜索分页、页预算部分完成、命中预算部分完成、终页边界和 hydration 优先定向 pytest `5 passed`；受影响 Python `py_compile`、Ruff format/check、Alembic 唯一 head `0135_agent_search_partial`、Web TypeScript typecheck、production build 与 `git diff --check` 通过。Agent Workspace 数据库型范围／部分结果回归已启动，但 Testcontainers 在断言前因本机 Docker daemon/socket 不可用失败，未记为通过。全量 Web lint 仍被既有 `agent-session-gateway.ts` 未使用 `_signal` 错误及本组件既有 Hook 依赖 warning 阻断；本组件精确 lint 仅报告该既有 warning。未运行迁移实跑、Runtime、远端或部署。

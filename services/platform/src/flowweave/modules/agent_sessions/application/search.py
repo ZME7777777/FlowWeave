@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import heapq
 import json
 from datetime import UTC, datetime
 from typing import Any
@@ -125,22 +126,39 @@ def start(
 
 
 def _hit_cursor(hit: AgentConversationSearchHit) -> str:
-    payload = json.dumps(["v1", hit.created_at.isoformat(), hit.id], separators=(",", ":")).encode(
-        "utf-8"
-    )
+    payload = json.dumps(
+        [
+            "v2",
+            hit.occurred_at.isoformat() if hit.occurred_at else None,
+            hit.created_at.isoformat(),
+            hit.id,
+        ],
+        separators=(",", ":"),
+    ).encode("utf-8")
     return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
 
 
-def _decode_hit_cursor(cursor: str) -> tuple[datetime, str]:
+def _decode_hit_cursor(cursor: str) -> tuple[datetime | None, datetime, str]:
     try:
         padded = cursor + "=" * (-len(cursor) % 4)
-        version, created_at, hit_id = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")))
-        if version != "v1" or not isinstance(created_at, str) or not isinstance(hit_id, str):
+        version, occurred_at, created_at, hit_id = json.loads(
+            base64.urlsafe_b64decode(padded.encode("ascii"))
+        )
+        if (
+            version != "v2"
+            or occurred_at is not None
+            and not isinstance(occurred_at, str)
+            or not isinstance(created_at, str)
+            or not isinstance(hit_id, str)
+        ):
             raise ValueError("invalid cursor values")
-        parsed = datetime.fromisoformat(created_at)
-        if parsed.tzinfo is None:
+        parsed_created_at = datetime.fromisoformat(created_at)
+        parsed_occurred_at = datetime.fromisoformat(occurred_at) if occurred_at else None
+        if parsed_created_at.tzinfo is None or (
+            parsed_occurred_at is not None and parsed_occurred_at.tzinfo is None
+        ):
             raise ValueError("missing timezone")
-        return parsed, hit_id
+        return parsed_occurred_at, parsed_created_at, hit_id
     except (TypeError, ValueError, binascii.Error, json.JSONDecodeError) as exc:
         raise DomainError(
             "AGENT_CONVERSATION_SEARCH_CURSOR_INVALID", "搜索结果游标无效", 422
@@ -161,6 +179,8 @@ def _status(
         "work_directory_ids": search.work_directory_ids,
         "include_root": search.include_root,
         "state": search.state,
+        "is_partial": search.is_partial,
+        "partial_summary": search.partial_summary,
         "failure_summary": search.failure_summary,
         "created_at": search.created_at.isoformat(),
         "completed_at": search.completed_at.isoformat() if search.completed_at else None,
@@ -200,20 +220,41 @@ def _hits(
         AgentConversationSearchHit.search_id == search.id
     )
     if cursor:
-        created_at, hit_id = _decode_hit_cursor(cursor)
-        statement = statement.where(
-            or_(
-                AgentConversationSearchHit.created_at < created_at,
-                and_(
-                    AgentConversationSearchHit.created_at == created_at,
-                    AgentConversationSearchHit.id < hit_id,
+        occurred_at, created_at, hit_id = _decode_hit_cursor(cursor)
+        if occurred_at is None:
+            statement = statement.where(
+                AgentConversationSearchHit.occurred_at.is_(None),
+                or_(
+                    AgentConversationSearchHit.created_at < created_at,
+                    and_(
+                        AgentConversationSearchHit.created_at == created_at,
+                        AgentConversationSearchHit.id < hit_id,
+                    ),
                 ),
             )
-        )
+        else:
+            statement = statement.where(
+                or_(
+                    AgentConversationSearchHit.occurred_at < occurred_at,
+                    AgentConversationSearchHit.occurred_at.is_(None),
+                    and_(
+                        AgentConversationSearchHit.occurred_at == occurred_at,
+                        or_(
+                            AgentConversationSearchHit.created_at < created_at,
+                            and_(
+                                AgentConversationSearchHit.created_at == created_at,
+                                AgentConversationSearchHit.id < hit_id,
+                            ),
+                        ),
+                    ),
+                )
+            )
     rows = list(
         db.scalars(
             statement.order_by(
-                AgentConversationSearchHit.created_at.desc(), AgentConversationSearchHit.id.desc()
+                AgentConversationSearchHit.occurred_at.desc().nulls_last(),
+                AgentConversationSearchHit.created_at.desc(),
+                AgentConversationSearchHit.id.desc(),
             ).limit(limit + 1)
         )
     )
@@ -267,6 +308,16 @@ def _hits(
     return results, _hit_cursor(rows[-1]) if has_more and rows else None
 
 
+def _event_occurred_at(event_timestamp: object) -> datetime | None:
+    if not isinstance(event_timestamp, str) or not event_timestamp:
+        return None
+    try:
+        value = datetime.fromisoformat(event_timestamp.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return value if value.tzinfo is not None else None
+
+
 def process(db: Session, search_id: str) -> None:
     search = db.scalar(
         select(AgentConversationSearch)
@@ -314,30 +365,50 @@ def process(db: Session, search_id: str) -> None:
         settings = get_settings()
         bindings = list(
             db.scalars(
-                statement.order_by(AgentConversationBinding.created_at.desc()).limit(
-                    settings.agent_conversation_search_max_bindings + 1
-                )
+                statement.order_by(
+                    AgentConversationBinding.updated_at.desc(),
+                    AgentConversationBinding.id.desc(),
+                ).limit(settings.agent_conversation_search_max_bindings + 1)
             )
         )
-        if len(bindings) > settings.agent_conversation_search_max_bindings:
-            raise DomainError(
-                "AGENT_CONVERSATION_SEARCH_BUDGET_EXHAUSTED",
-                "搜索范围包含过多会话，请缩小工作区范围后重试",
-                422,
-            )
-        hit_keys: list[tuple[str, str]] = []
+        is_partial = len(bindings) > settings.agent_conversation_search_max_bindings
+        bindings = bindings[: settings.agent_conversation_search_max_bindings]
+        # Keep the globally newest bounded result page while every selected
+        # Conversation continues to receive its own low-priority scan. Stopping
+        # at the first 200 hits would make a busy, older Conversation hide
+        # matches from a newer one simply because bindings are scanned in a
+        # deterministic order.
+        hit_heap: list[tuple[datetime, int, str, str, datetime | None]] = []
+        hit_sequence = 0
         for binding in bindings:
-            for event in get_runtime().search_message_events(
+            search_result = get_runtime().search_message_events(
                 conversations._handle(db, workspace, binding), query
-            ):
-                if len(hit_keys) >= settings.agent_conversation_search_max_hits:
-                    raise DomainError(
-                        "AGENT_CONVERSATION_SEARCH_BUDGET_EXHAUSTED",
-                        "搜索命中过多，请缩小关键词或工作区范围后重试",
-                        422,
-                    )
-                hit_keys.append((binding.id, event.cursor))
-    except DomainError as exc:
+            )
+            is_partial = is_partial or search_result.truncated
+            for event in search_result.events:
+                occurred_at = _event_occurred_at(event.payload.get("timestamp"))
+                hit_sequence += 1
+                candidate = (
+                    occurred_at or datetime.min.replace(tzinfo=UTC),
+                    hit_sequence,
+                    binding.id,
+                    event.cursor,
+                    occurred_at,
+                )
+                if len(hit_heap) < settings.agent_conversation_search_max_hits:
+                    heapq.heappush(hit_heap, candidate)
+                elif candidate > hit_heap[0]:
+                    heapq.heapreplace(hit_heap, candidate)
+                    is_partial = True
+                else:
+                    is_partial = True
+        hit_keys = [
+            (binding_id, event_id, occurred_at)
+            for _timestamp, _sequence, binding_id, event_id, occurred_at in sorted(
+                hit_heap, reverse=True
+            )
+        ]
+    except DomainError:
         search = db.scalar(
             select(AgentConversationSearch)
             .where(AgentConversationSearch.id == search_id)
@@ -345,15 +416,7 @@ def process(db: Session, search_id: str) -> None:
         )
         if search is not None:
             search.state = "FAILED"
-            search.failure_summary = (
-                "搜索工作量超过安全上限，请缩小关键词或工作区范围后重试"
-                if exc.code
-                in {
-                    "RUNTIME_BACKGROUND_SEARCH_BUDGET_EXHAUSTED",
-                    "AGENT_CONVERSATION_SEARCH_BUDGET_EXHAUSTED",
-                }
-                else "搜索暂时无法完成，请稍后重新搜索"
-            )
+            search.failure_summary = "搜索暂时无法完成，请稍后重新搜索"
             search.completed_at = datetime.now(UTC)
         return
     except Exception:
@@ -382,15 +445,22 @@ def process(db: Session, search_id: str) -> None:
             )
         )
     }
-    for binding_id, event_id in hit_keys:
+    for binding_id, event_id, occurred_at in hit_keys:
         if (binding_id, event_id) not in existing:
             db.add(
                 AgentConversationSearchHit(
                     search_id=search.id,
                     binding_id=binding_id,
                     event_id=event_id,
+                    occurred_at=occurred_at,
                 )
             )
     search.state = "SUCCEEDED"
     search.completed_at = datetime.now(UTC)
+    search.is_partial = is_partial
+    search.partial_summary = (
+        "已按最新消息展示可扫描的结果；为避免影响会话加载，较早记录尚未扫描。"
+        if is_partial
+        else None
+    )
     search.failure_summary = None

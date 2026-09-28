@@ -1636,10 +1636,11 @@ def test_openhands_searches_native_message_events_with_body_pagination(
 
     monkeypatch.setattr(runtime, "_request", request)
 
-    events = runtime.search_message_events(_handle(), "opensdk")
+    result = runtime.search_message_events(_handle(), "opensdk")
 
-    assert [event.cursor for event in events] == ["assistant-hit", "user-hit"]
-    assert all(event.event_type == "MESSAGE" for event in events)
+    assert [event.cursor for event in result.events] == ["assistant-hit", "user-hit"]
+    assert not result.truncated
+    assert all(event.event_type == "MESSAGE" for event in result.events)
     assert calls[0]["params"] == {
         "body": "opensdk",
         "limit": 100,
@@ -6292,7 +6293,9 @@ def test_formal_read_timeout_has_a_stable_business_code(openhands_settings, monk
     assert caught.value.code == "RUNTIME_BUSINESS_READ_TIMEOUT"
 
 
-def test_openhands_background_search_stops_at_native_page_budget(openhands_settings, monkeypatch):
+def test_openhands_background_search_returns_partial_results_at_native_page_budget(
+    openhands_settings, monkeypatch
+):
     settings = openhands_settings.model_copy(update={"runtime_background_search_max_pages": 1})
     runtime = OpenHandsRuntime(settings)
     calls: list[dict[str, object]] = []
@@ -6302,14 +6305,16 @@ def test_openhands_background_search_stops_at_native_page_budget(openhands_setti
         return {"items": [], "next_page_id": "another-page"}
 
     monkeypatch.setattr(runtime, "_request", request)
-    with pytest.raises(DomainError) as error:
-        runtime.search_message_events(_handle(), "needle")
+    result = runtime.search_message_events(_handle(), "needle")
 
-    assert error.value.code == "RUNTIME_BACKGROUND_SEARCH_BUDGET_EXHAUSTED"
+    assert result.events == ()
+    assert result.truncated
     assert len(calls) == 1
 
 
-def test_openhands_background_search_stops_at_native_match_budget(openhands_settings, monkeypatch):
+def test_openhands_background_search_returns_newest_partial_results_at_native_match_budget(
+    openhands_settings, monkeypatch
+):
     settings = openhands_settings.model_copy(update={"runtime_background_search_max_matches": 1})
     runtime = OpenHandsRuntime(settings)
     monkeypatch.setattr(
@@ -6334,10 +6339,10 @@ def test_openhands_background_search_stops_at_native_match_budget(openhands_sett
         },
     )
 
-    with pytest.raises(DomainError) as error:
-        runtime.search_message_events(_handle(), "needle")
+    result = runtime.search_message_events(_handle(), "needle")
 
-    assert error.value.code == "RUNTIME_BACKGROUND_SEARCH_BUDGET_EXHAUSTED"
+    assert [event.cursor for event in result.events] == ["first"]
+    assert result.truncated
 
 
 def test_openhands_search_page_budget_allows_terminal_page_at_limit(
@@ -6349,4 +6354,7 @@ def test_openhands_search_page_budget_allows_terminal_page_at_limit(
         runtime, "_request", lambda *_args, **_kwargs: {"items": [], "next_page_id": None}
     )
 
-    assert runtime.search_message_events(_handle(), "needle") == ()
+    result = runtime.search_message_events(_handle(), "needle")
+
+    assert result.events == ()
+    assert not result.truncated

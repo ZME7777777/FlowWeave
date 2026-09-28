@@ -801,6 +801,9 @@ export interface AgentConversationSearch {
   work_directory_ids?: string[] | null;
   include_root?: boolean;
   state: 'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'FAILED';
+  /** Newest results are available, but the low-priority scan stopped at its safety budget. */
+  is_partial?: boolean;
+  partial_summary?: string | null;
   failure_summary?: string | null;
   created_at: string;
   completed_at?: string | null;

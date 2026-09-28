@@ -708,11 +708,12 @@ function ConversationSearchDialog({ search, hits, hasMore, workDirectories, root
         </div>}
         <small>当前：{scopeLabel}</small>
       </fieldset>
-      <header><div><span className="eyebrow">CONVERSATION SEARCH</span><h2 id="agent-conversation-search-title">{search ? '“' + search.query + '”' : '搜索会话'}</h2></div>{running && <span className="agent-conversation-search-state running"><LoaderCircle size={13}/>后台搜索中</span>}{state === 'SUCCEEDED' && <span className="agent-conversation-search-state done"><Check size={13}/>已完成</span>}{state === 'FAILED' && <span className="agent-conversation-search-state failed">搜索失败</span>}</header>
+      <header><div><span className="eyebrow">CONVERSATION SEARCH</span><h2 id="agent-conversation-search-title">{search ? '“' + search.query + '”' : '搜索会话'}</h2></div>{running && <span className="agent-conversation-search-state running"><LoaderCircle size={13}/>后台搜索中</span>}{state === 'SUCCEEDED' && <span className="agent-conversation-search-state done"><Check size={13}/>{search?.is_partial ? '已返回最近结果' : '已完成'}</span>}{state === 'FAILED' && <span className="agent-conversation-search-state failed">搜索失败</span>}</header>
       <div className="agent-conversation-search-results">
         {!search && <p>输入关键词并按回车。关闭窗口不会取消后台搜索。</p>}
         {running && <p>正在逐个搜索所选工作区会话的原生消息记录。你可以关闭窗口，完成后从左上角按钮重新打开结果。</p>}
         {state === 'FAILED' && <p>{search?.failure_summary || '搜索无法完成，请重新搜索。'}</p>}
+        {state === 'SUCCEEDED' && search?.is_partial && <p>{search.partial_summary || '已按最新消息展示可扫描的结果；较早记录尚未扫描。'}</p>}
         {state === 'SUCCEEDED' && !hits?.length && <p>没有找到包含该内容的会话消息。</p>}
         {hits?.map(hit => <button type="button" className="agent-conversation-search-hit" key={hit.binding_id + ':' + hit.event_id} onClick={() => onOpenHit(hit.binding_id, hit.event_id)}>
           <span><b>{hit.title}</b><small>{hit.source === 'user' || hit.source === 'human' ? '你的消息' : 'Agent 回复'}{hit.timestamp ? ' · ' + new Date(hit.timestamp).toLocaleString() : ''}</small></span><p>{conversationSearchSnippet(hit.content, search?.query ?? '')}</p><ChevronRight size={16}/>

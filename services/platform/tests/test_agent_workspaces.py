@@ -61,6 +61,7 @@ from flowweave.runtime.base import (
     RuntimeEventBatch,
     RuntimeForkRecovery,
     RuntimeInputReadiness,
+    RuntimeMessageSearchResult,
     RuntimePendingAction,
     RuntimePendingConfirmation,
     RuntimeProvider,
@@ -1238,13 +1239,17 @@ def test_conversation_search_scopes_to_selected_work_directories_and_serializes_
         def __init__(self) -> None:
             super().__init__()
             self.messages: dict[str, tuple[RuntimeEvent, ...]] = {}
+            self.search_is_partial = False
 
         def search_message_events(self, handle, query):
             needle = query.casefold()
-            return tuple(
-                event
-                for event in self.messages.get(handle.conversation_id, ())
-                if needle in str(event.payload.get("content") or "").casefold()
+            return RuntimeMessageSearchResult(
+                events=tuple(
+                    event
+                    for event in self.messages.get(handle.conversation_id, ())
+                    if needle in str(event.payload.get("content") or "").casefold()
+                ),
+                truncated=self.search_is_partial,
             )
 
         def read_search_event(self, handle, event_id):
@@ -1324,7 +1329,17 @@ def test_conversation_search_scopes_to_selected_work_directories_and_serializes_
         conversation_search.process(db, started["id"])
         result = conversation_search.status(db, item.id, started["id"])
         assert result["state"] == "SUCCEEDED"
+        assert result["is_partial"] is False
         assert {hit["binding_id"] for hit in result["hits"]} == {selected_conversation["id"]}
+
+        runtime.search_is_partial = True
+        partial_started = conversation_search.start(db, item.id, "needle")
+        conversation_search.process(db, partial_started["id"])
+        partial_result = conversation_search.status(db, item.id, partial_started["id"])
+        assert partial_result["state"] == "SUCCEEDED"
+        assert partial_result["is_partial"] is True
+        assert partial_result["partial_summary"]
+        assert partial_result["failure_summary"] is None
 
         with pytest.raises(DomainError) as invalid_scope:
             conversation_search.start(

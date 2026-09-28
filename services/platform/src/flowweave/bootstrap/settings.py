@@ -59,8 +59,9 @@ class Settings(BaseSettings):
     runtime_background_search_slot_timeout_seconds: float = Field(default=0.1, gt=0, le=5)
     runtime_background_search_page_timeout_seconds: float = Field(default=2.0, gt=0, le=10)
     # A low-priority native EventLog search must have a finite total cost, even
-    # when every page returns a continuation. The Workspace worker applies the
-    # aggregate binding/hit budgets below before writing durable search results.
+    # when every page returns a continuation. Reaching a budget preserves the
+    # newest results found so far and marks the durable search partial instead
+    # of failing it; the Workspace worker also retains only the newest hits.
     runtime_background_search_max_pages: int = Field(default=8, ge=1, le=100)
     runtime_background_search_max_matches: int = Field(default=100, ge=1, le=2_000)
     agent_conversation_search_max_bindings: int = Field(default=100, ge=1, le=2_000)

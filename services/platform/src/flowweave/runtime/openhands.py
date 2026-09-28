@@ -47,6 +47,7 @@ from flowweave.runtime.base import (
     RuntimeMCPOAuthStatus,
     RuntimeMCPProbeRequest,
     RuntimeMCPProbeResult,
+    RuntimeMessageSearchResult,
     RuntimePendingAction,
     RuntimePendingConfirmation,
     RuntimePluginValidationRequest,
@@ -4065,7 +4066,9 @@ class OpenHandsRuntime:
                 timeout=self.settings.runtime_background_search_page_timeout_seconds,
             )
 
-    def search_message_events(self, handle: RuntimeHandle, query: str) -> tuple[RuntimeEvent, ...]:
+    def search_message_events(
+        self, handle: RuntimeHandle, query: str
+    ) -> RuntimeMessageSearchResult:
         """Search one native EventLog without creating a FlowWeave transcript copy.
 
         The fixed Agent Server owns filtering and pagination. This is a
@@ -4075,7 +4078,7 @@ class OpenHandsRuntime:
 
         needle = query.strip()
         if not needle:
-            return ()
+            return RuntimeMessageSearchResult()
         base_url = self._base_url_for_handle(handle)
         session_api_key = self._session_key_for_handle(handle)
         page_id: str | None = None
@@ -4085,13 +4088,6 @@ class OpenHandsRuntime:
         pages_read = 0
         with self._background_search_bulkhead(handle):
             while True:
-                if pages_read >= self.settings.runtime_background_search_max_pages:
-                    raise DomainError(
-                        "RUNTIME_BACKGROUND_SEARCH_BUDGET_EXHAUSTED",
-                        "Conversation search exceeded its native page budget",
-                        503,
-                        {"outcome_unknown": False},
-                    )
                 self._yield_background_search_to_formal_reads(handle)
                 if page_id is not None:
                     if page_id in seen_page_ids:
@@ -4145,16 +4141,13 @@ class OpenHandsRuntime:
                         and needle.casefold() in content.casefold()
                     ):
                         if len(matches) >= self.settings.runtime_background_search_max_matches:
-                            raise DomainError(
-                                "RUNTIME_BACKGROUND_SEARCH_BUDGET_EXHAUSTED",
-                                "Conversation search exceeded its native match budget",
-                                503,
-                                {"outcome_unknown": False},
-                            )
+                            return RuntimeMessageSearchResult(events=tuple(matches), truncated=True)
                         matches.append(event)
                 next_page_id = page.get("next_page_id")
                 if not isinstance(next_page_id, str) or not next_page_id:
-                    return tuple(matches)
+                    return RuntimeMessageSearchResult(events=tuple(matches))
+                if pages_read >= self.settings.runtime_background_search_max_pages:
+                    return RuntimeMessageSearchResult(events=tuple(matches), truncated=True)
                 page_id = self._formal_identity(next_page_id, field="next_page_id", required=True)
 
     @classmethod

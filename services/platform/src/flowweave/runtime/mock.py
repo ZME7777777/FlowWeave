@@ -22,6 +22,7 @@ from flowweave.runtime.base import (
     RuntimeMCPOAuthStatus,
     RuntimeMCPProbeRequest,
     RuntimeMCPProbeResult,
+    RuntimeMessageSearchResult,
     RuntimePendingConfirmation,
     RuntimePluginValidationRequest,
     RuntimePluginValidationResult,
@@ -226,13 +227,17 @@ class MockRuntime:
     def read_search_event(self, handle: RuntimeHandle, event_id: str) -> RuntimeEvent | None:
         return self.read_event(handle, event_id)
 
-    def search_message_events(self, handle: RuntimeHandle, query: str) -> tuple[RuntimeEvent, ...]:
+    def search_message_events(
+        self, handle: RuntimeHandle, query: str
+    ) -> RuntimeMessageSearchResult:
         needle = query.casefold()
-        return tuple(
-            event
-            for event in self._events.get(handle.job_id, ())
-            if event.event_type == "MESSAGE"
-            and needle in str(event.payload.get("content") or "").casefold()
+        return RuntimeMessageSearchResult(
+            events=tuple(
+                event
+                for event in self._events.get(handle.job_id, ())
+                if event.event_type == "MESSAGE"
+                and needle in str(event.payload.get("content") or "").casefold()
+            )
         )
 
     def switch_model(self, handle: RuntimeHandle, provider: RuntimeProvider) -> None:
