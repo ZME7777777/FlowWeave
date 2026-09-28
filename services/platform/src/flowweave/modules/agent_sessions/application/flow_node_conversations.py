@@ -293,6 +293,9 @@ def _attempt_context(db: Session, attempt: NodeAttempt) -> tuple[NodeRun, FlowRu
 
 _FLOW_NODE = "FLOW_NODE"
 _MANUAL_NODE_CONTEXT_ID = "__node_context_prompt__"
+_UNREADY_EXECUTION_STATUSES = (
+    "starting", "running", "executing", "stopping", "waiting_for_confirmation",
+)
 _RUNTIME_PROJECT = PurePosixPath("/runtime/workspace/project")
 _RUNTIME_WORKSPACE_PATH = r"/runtime/workspace/(?:project(?:/users/[0-9a-f-]{36})?|[0-9a-f-]{36})"
 _SANDBOX_PROJECT_IMAGE = re.compile(
@@ -896,7 +899,10 @@ def node_session_activity(db: Session, *, flow_run_id: str, attempt_id: str) -> 
         attempt_id=attempt_id,
         binding_id=bindings[0].id,
     )
-    running_native_ids = runtime.running_conversation_ids(handle)
+    running_native_ids = set().union(*(
+        runtime.conversation_ids_by_status(handle, status)
+        for status in _UNREADY_EXECUTION_STATUSES
+    ))
     condensation_tasks = list(
         db.execute(
             select(BackgroundTask.aggregate_id, BackgroundTask.id, BackgroundTask.state)

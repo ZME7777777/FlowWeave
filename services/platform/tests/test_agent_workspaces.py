@@ -3307,7 +3307,7 @@ def test_agent_workspace_conversation_page_never_reads_native_runtime_state(
         assert page["items"][0]["execution_status"] == "unknown"
 
 
-def test_agent_workspace_conversation_activity_maps_native_ids_once(
+def test_agent_workspace_conversation_activity_maps_native_unready_ids(
     settings, db_session_factory, monkeypatch
 ):
     monkeypatch.setattr(
@@ -3324,14 +3324,12 @@ def test_agent_workspace_conversation_activity_maps_native_ids_once(
 
     class ActivityRuntime(MockRuntime):
         calls = 0
-        running_id = ""
+        unready_id = ""
 
-        def running_conversation_ids(self, _handle):
+        def conversation_ids_by_status(self, _handle, status):
             self.calls += 1
-            return {self.running_id, "unbound-native-conversation"}
-
-        def conversation_ids_by_status(self, _handle, _status):
-            self.calls += 1
+            if status == "waiting_for_confirmation":
+                return {self.unready_id, "unbound-native-conversation"}
             return set()
 
     runtime = ActivityRuntime()
@@ -3343,7 +3341,7 @@ def test_agent_workspace_conversation_activity_maps_native_ids_once(
         running = conversations.create_conversation(
             db, workspace.id, "运行会话", workspace.default_model_provider_id, "activity-running"
         )
-        runtime.running_id = db.get(
+        runtime.unready_id = db.get(
             AgentConversationBinding, running["id"]
         ).openhands_conversation_id
 
@@ -3355,7 +3353,7 @@ def test_agent_workspace_conversation_activity_maps_native_ids_once(
         "failed_binding_ids": [],
     }
     assert idle["id"] not in activity["running_binding_ids"]
-    assert runtime.calls == 3
+    assert runtime.calls == 7
 
 
 

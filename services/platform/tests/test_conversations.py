@@ -2557,7 +2557,7 @@ def test_node_session_page_never_reads_native_runtime_state(
         assert page["items"][0]["execution_status"] == "unknown"
 
 
-def test_node_session_activity_maps_native_ids_once(
+def test_node_session_activity_maps_native_unready_ids(
     db_session_factory: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     with db_session_factory() as db:
@@ -2598,12 +2598,10 @@ def test_node_session_activity_maps_native_ids_once(
         class ActivityRuntime:
             calls = 0
 
-            def running_conversation_ids(self, _handle):
+            def conversation_ids_by_status(self, _handle, status):
                 self.calls += 1
-                return {"native-running", "unbound-native-conversation"}
-
-            def conversation_ids_by_status(self, _handle, _status):
-                self.calls += 1
+                if status == "waiting_for_confirmation":
+                    return {"native-running", "unbound-native-conversation"}
                 return set()
 
         runtime = ActivityRuntime()
@@ -2619,7 +2617,7 @@ def test_node_session_activity_maps_native_ids_once(
         "failed_binding_ids": [],
     }
     assert bindings[0].id not in activity["running_binding_ids"]
-    assert runtime.calls == 3
+    assert runtime.calls == 7
 
 
 def test_node_session_unread_state_persists_in_conversation_projection(

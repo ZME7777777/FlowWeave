@@ -95,6 +95,9 @@ _TITLE_TASK_INITIAL_DELAY_SECONDS = 5
 _CONDENSER_CREDENTIAL_FAILURE_CODE = "NoCondensationAvailableException"
 _DYNAMIC_CAPABILITY_TYPES = frozenset({"SKILL", "MCP", "PLUGIN"})
 _CREATION_CAPABILITY_TYPES = _DYNAMIC_CAPABILITY_TYPES | {"CONTEXT", "AGENT_DEFINITION", "HOOK"}
+_UNREADY_EXECUTION_STATUSES = (
+    "starting", "running", "executing", "stopping", "waiting_for_confirmation",
+)
 # A FlowRun Runtime physically mounts ``project`` but each product record is
 # rooted at ``project/<record-id>``.  Keep the older attempt-private root and
 # the user-scoped project root for their explicit compatibility paths.
@@ -804,7 +807,10 @@ def conversation_activity(db: Session, workspace_id: str) -> dict[str, Any]:
     binding_ids = {item.id for item in bindings}
     runtime = get_runtime()
     handle = _handle(db, workspace, bindings[0])
-    running_native_ids = runtime.running_conversation_ids(handle)
+    running_native_ids = set().union(*(
+        runtime.conversation_ids_by_status(handle, status)
+        for status in _UNREADY_EXECUTION_STATUSES
+    ))
     condensation_tasks = list(
         db.execute(
             select(BackgroundTask.aggregate_id, BackgroundTask.id, BackgroundTask.state)
