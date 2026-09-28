@@ -780,6 +780,8 @@ export interface AgentConversationActivity {
     binding_id: string;
     task_id: string;
     state: 'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'RETRY' | 'DEAD';
+    /** Safe server-side category; raw Runtime errors are never exposed. */
+    failure_reason?: 'runtime_rate_limited' | 'runtime_service_unavailable' | 'runtime_auth_failed' | 'runtime_request_rejected' | 'runtime_response_invalid' | 'runtime_timeout_unknown' | 'runtime_connection_unknown' | 'runtime_unavailable_unknown' | 'runtime_unknown' | null;
   }>;
   /** Read-only formal-event projection; no conversation state is changed. */
   possibly_stuck_binding_ids?: string[];
