@@ -419,7 +419,7 @@ def test_complete_active_branch_rejects_head_drift_between_pages() -> None:
         complete_active_branch(read, RuntimeHandle(job_id="job", conversation_id="conversation"))
 
 
-def test_hydration_merges_formal_current_view_metrics_into_batch_context(
+def test_hydration_defers_formal_current_view_metrics_until_context_refresh(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     workspace = object()
@@ -431,11 +431,6 @@ def test_hydration_merges_formal_current_view_metrics_into_batch_context(
         "used_tokens": None,
         "view_event_count": None,
         "usage_current": False,
-    }
-    formal_context = {
-        "used_tokens": 67_947,
-        "view_event_count": 49,
-        "usage_current": True,
     }
     readiness = RuntimeInputReadiness(ready=False, execution_status="running")
     captured: dict[str, object] = {}
@@ -452,9 +447,8 @@ def test_hydration_merges_formal_current_view_metrics_into_batch_context(
                 history_cursor="older",
             )
 
-        def conversation_context(self, requested_handle: object):
-            calls.append(requested_handle)
-            return formal_context
+        def conversation_context(self, _handle: object):
+            raise AssertionError("hydration must defer formal context metrics")
 
         def input_readiness(self, _handle: object):
             raise AssertionError("hydration must reuse its active-batch readiness")
@@ -473,17 +467,17 @@ def test_hydration_merges_formal_current_view_metrics_into_batch_context(
     hydrated = session_conversations.hydrate_conversation(None, "workspace", "binding")
 
     batch = captured["batch_override"]
-    assert calls == [handle, handle]
+    assert calls == [handle]
     assert isinstance(batch, RuntimeEventBatch)
     assert batch.history_cursor == "older"
     assert hydrated == {
         "events": {"events": [], "history_cursor": "older"},
-        "context": {**context, **formal_context},
+        "context": context,
         "readiness": readiness.as_dict(),
     }
 
 
-def test_node_hydration_merges_formal_current_view_metrics_into_batch_context(
+def test_node_hydration_defers_formal_current_view_metrics_until_context_refresh(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     binding = object()
@@ -494,11 +488,6 @@ def test_node_hydration_merges_formal_current_view_metrics_into_batch_context(
         "used_tokens": None,
         "view_event_count": None,
         "usage_current": False,
-    }
-    formal_context = {
-        "used_tokens": 12_345,
-        "view_event_count": 17,
-        "usage_current": True,
     }
     readiness = RuntimeInputReadiness(ready=True, execution_status="idle")
     calls: list[object] = []
@@ -514,9 +503,8 @@ def test_node_hydration_merges_formal_current_view_metrics_into_batch_context(
                 history_cursor="older",
             )
 
-        def conversation_context(self, requested_handle: object):
-            calls.append(requested_handle)
-            return formal_context
+        def conversation_context(self, _handle: object):
+            raise AssertionError("hydration must defer formal context metrics")
 
         def input_readiness(self, _handle: object):
             raise AssertionError("node hydration must reuse active-batch readiness")
@@ -542,11 +530,11 @@ def test_node_hydration_merges_formal_current_view_metrics_into_batch_context(
         None, flow_run_id="run", attempt_id="attempt", binding_id="binding"
     )
 
-    assert calls == [handle, handle]
+    assert calls == [handle]
     assert captured["batch"].history_cursor == "older"
     assert hydrated == {
         "events": {"events": [], "history_cursor": "older"},
-        "context": {**context, **formal_context},
+        "context": context,
         "readiness": readiness.as_dict(),
     }
 

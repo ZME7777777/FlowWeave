@@ -36,9 +36,10 @@ const HYDRATION_UI_DEADLINE_MS = 12_000;
 const MAX_UNAVAILABLE_HYDRATION_RETRIES = 2;
 const TERMINAL_CONVERSATION_CACHE_TTL_MS = 5 * 60 * 1000;
 const ACTIVE_CONVERSATION_CACHE_TTL_MS = 30_000;
-// A hydration response is a coherent native snapshot. Keep its three seeded
-// projections fresh long enough to prevent React Query from immediately
-// repeating the same Runtime reads as soon as the first screen has painted.
+// A hydration response seeds the coherent event and readiness projections.
+// Keep those snapshots fresh long enough to avoid repeating their Runtime
+// reads immediately after the first screen has painted; Context refreshes
+// independently because its exact metrics are intentionally deferred.
 const INITIAL_HYDRATION_STALE_TIME_MS = 30_000;
 const WORKSPACE_PATH_COPIED_DURATION_MS = 1_500;
 const SESSION_PERFORMANCE_MARK_PREFIX = 'flowweave.agent-session.';
@@ -5720,10 +5721,16 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const contextQuery = useQuery({
     queryKey: contextQueryKey,
     queryFn: () => api.conversationContext(workspace!.id, selected!.id),
-    enabled: Boolean(workspace && selected && hydrationFallbackAllowed && trustedHydration?.running !== false),
+    // Every successful hydration seeds this query with only the cheap batch
+    // snapshot. Run the formal Context read for both terminal and running
+    // sessions once the first screen is available.
+    enabled: Boolean(workspace && selected && hydrationFallbackAllowed),
     initialData: hydrationData?.context,
     initialDataUpdatedAt: hydrationData ? hydrationDataUpdatedAt : undefined,
-    staleTime: INITIAL_HYDRATION_STALE_TIME_MS,
+    // Hydration carries only the inexpensive event-batch context. Exact
+    // current-View metrics come from the formal /context read, which starts
+    // after first paint instead of holding events and readiness hostage.
+    staleTime: 0,
     refetchOnWindowFocus: false,
   });
   const storedCurrentContext = useMemo(() => workspace && selected

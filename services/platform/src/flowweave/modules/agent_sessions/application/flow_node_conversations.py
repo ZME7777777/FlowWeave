@@ -2274,7 +2274,7 @@ def hydrate_node_conversation(
     runtime = get_runtime()
     handle = _flow_run_handle(db, flow_run_id, binding_id)
     batch = runtime.read_active_events(handle)
-    context = hydration_context_snapshot(runtime, handle, batch.context)
+    context = hydration_context_snapshot(batch.context)
     readiness = (
         batch.readiness.as_dict()
         if batch.readiness is not None
