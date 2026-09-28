@@ -30,6 +30,7 @@ from flowweave.runtime.base import (
     RuntimeAskAgentResult,
     RuntimeCondenser,
     RuntimeContract,
+    RuntimeConversationActivity,
     RuntimeConversationIdentity,
     RuntimeConversationRuntime,
     RuntimeEvent,
@@ -90,6 +91,8 @@ _EVENT_HISTORY_PAGE_SIZE = 100
 # within its shared interactive read deadline. Older history remains available
 # through the explicit page endpoint and durable session replay.
 _EVENT_HISTORY_MAX_PAGES = 8
+# Activity polling is bounded even if a malformed native cursor keeps advancing.
+_CONVERSATION_ACTIVITY_MAX_PAGES = 8
 _CONVERSATION_STATE_PATH = re.compile(r"^/api/conversations/[^/]+$")
 _CONVERSATION_EVENTS_SEARCH_PATH = re.compile(r"^/api/conversations/[^/]+/events/search$")
 _CONVERSATION_EVENT_BY_ID_PATH = re.compile(r"^/api/conversations/[^/]+/events/[^/]+$")
@@ -2223,6 +2226,22 @@ class OpenHandsRuntime:
             cls._formal_identity(item.get("tool_call_id"), field="tool_call_id", required=False),
         )
 
+    def _record_formal_read_bulkhead_metrics(self) -> None:
+        """Publish aggregate bulkhead pressure without Runtime-identifying labels."""
+
+        metrics = current_metrics()
+        if metrics is None:
+            return
+        with self._formal_read_slots_lock:
+            active = sum(self._formal_read_active.values())
+            generations = len(self._formal_read_slots)
+        metrics.gauge("flowweave_runtime_formal_read_active", active)
+        metrics.gauge(
+            "flowweave_runtime_formal_read_capacity",
+            generations * self.settings.runtime_read_per_runtime_concurrency,
+        )
+        metrics.gauge("flowweave_runtime_formal_read_generations", generations)
+
     @contextmanager
     def _formal_read_bulkhead(self, handle: RuntimeHandle) -> Iterator[None]:
         """Bound formal state reads for one Runtime generation.
@@ -2263,6 +2282,7 @@ class OpenHandsRuntime:
         if not slot.acquire(timeout=self.settings.runtime_read_slot_timeout_seconds):
             if metrics := current_metrics():
                 metrics.increment("flowweave_runtime_read_bulkhead_saturated_total")
+            self._record_formal_read_bulkhead_metrics()
             raise DomainError(
                 "RUNTIME_READ_PER_RUNTIME_SATURATED",
                 "This Runtime has too many active formal reads; retry shortly",
@@ -2272,6 +2292,7 @@ class OpenHandsRuntime:
         depths[key] = 1
         with self._formal_read_slots_lock:
             self._formal_read_active[key] = self._formal_read_active.get(key, 0) + 1
+        self._record_formal_read_bulkhead_metrics()
         try:
             yield
         finally:
@@ -2283,6 +2304,7 @@ class OpenHandsRuntime:
                 else:
                     self._formal_read_active.pop(key, None)
             slot.release()
+            self._record_formal_read_bulkhead_metrics()
 
     @contextmanager
     def _background_search_bulkhead(self, handle: RuntimeHandle) -> Iterator[None]:
@@ -4060,8 +4082,16 @@ class OpenHandsRuntime:
         seen_page_ids: set[str] = set()
         seen_event_ids: set[str] = set()
         matches: list[RuntimeEvent] = []
+        pages_read = 0
         with self._background_search_bulkhead(handle):
             while True:
+                if pages_read >= self.settings.runtime_background_search_max_pages:
+                    raise DomainError(
+                        "RUNTIME_BACKGROUND_SEARCH_BUDGET_EXHAUSTED",
+                        "Conversation search exceeded its native page budget",
+                        503,
+                        {"outcome_unknown": False},
+                    )
                 self._yield_background_search_to_formal_reads(handle)
                 if page_id is not None:
                     if page_id in seen_page_ids:
@@ -4086,6 +4116,7 @@ class OpenHandsRuntime:
                     params=params,
                     timeout=self.settings.runtime_background_search_page_timeout_seconds,
                 )
+                pages_read += 1
                 raw_items = page.get("items", [])
                 if not isinstance(raw_items, list) or any(
                     not isinstance(item, dict) for item in cast(list[object], raw_items)
@@ -4113,6 +4144,13 @@ class OpenHandsRuntime:
                         and source in {"user", "human", "agent", "assistant"}
                         and needle.casefold() in content.casefold()
                     ):
+                        if len(matches) >= self.settings.runtime_background_search_max_matches:
+                            raise DomainError(
+                                "RUNTIME_BACKGROUND_SEARCH_BUDGET_EXHAUSTED",
+                                "Conversation search exceeded its native match budget",
+                                503,
+                                {"outcome_unknown": False},
+                            )
                         matches.append(event)
                 next_page_id = page.get("next_page_id")
                 if not isinstance(next_page_id, str) or not next_page_id:
@@ -5132,6 +5170,55 @@ class OpenHandsRuntime:
                 )
         state = self._conversation_state(handle, timeout=_INTERACTIVE_READ_TIMEOUT_SECONDS)
         return self._input_readiness_from_state(state)
+
+    def conversation_activity_snapshot(
+        self, handle: RuntimeHandle
+    ) -> dict[str, RuntimeConversationActivity]:
+        """Read bounded native catalog activity without per-conversation state reads."""
+
+        page_id: str | None = None
+        pages_read = 0
+        activity: dict[str, RuntimeConversationActivity] = {}
+        with self._formal_read_bulkhead(handle):
+            while pages_read < _CONVERSATION_ACTIVITY_MAX_PAGES:
+                params: dict[str, str | int] = {"limit": 100}
+                if page_id:
+                    params["page_id"] = page_id
+                page = self._request(
+                    "GET",
+                    "/api/conversations/activity",
+                    base_url=self._base_url_for_handle(handle),
+                    session_api_key=self._session_key_for_handle(handle),
+                    params=params,
+                    timeout=_INTERACTIVE_READ_TIMEOUT_SECONDS,
+                )
+                pages_read += 1
+                for item in page.get("items", []):
+                    if not isinstance(item, dict):
+                        continue
+                    conversation_id = item.get("id")
+                    status = item.get("execution_status")
+                    updated_at = item.get("updated_at")
+                    if not (
+                        isinstance(conversation_id, str)
+                        and isinstance(status, str)
+                        and isinstance(updated_at, str)
+                    ):
+                        continue
+                    try:
+                        canonical_conversation_id = str(UUID(conversation_id))
+                    except ValueError:
+                        continue
+                    activity[canonical_conversation_id] = RuntimeConversationActivity(
+                        conversation_id=canonical_conversation_id,
+                        execution_status=status.casefold(),
+                        updated_at=updated_at,
+                    )
+                next_page = page.get("next_page_id")
+                if not isinstance(next_page, str) or not next_page or next_page == page_id:
+                    return activity
+                page_id = next_page
+        return activity
 
     def running_conversation_ids(self, handle: RuntimeHandle) -> set[str]:
         """Read native RUNNING conversations through OpenHands' list API."""

@@ -32,6 +32,10 @@ class Settings(BaseSettings):
     # a separate, deliberately tiny lane so they cannot consume the Runtime
     # state-read connections that restore a live conversation after reload.
     history_read_pool_size: int = Field(default=1, ge=1, le=4)
+    # Terminal reads may block for the lifetime of a browser attachment. Keep
+    # them out of the default asyncio executor and cap them independently from
+    # interactive Runtime hydration and recovery controls.
+    terminal_stream_pool_size: int = Field(default=4, ge=1, le=32)
     statement_timeout_ms: int = Field(default=30_000, ge=100)
 
     credentials_master_key: str = ""
@@ -54,6 +58,13 @@ class Settings(BaseSettings):
     runtime_background_search_per_runtime_concurrency: int = Field(default=1, ge=1, le=4)
     runtime_background_search_slot_timeout_seconds: float = Field(default=0.1, gt=0, le=5)
     runtime_background_search_page_timeout_seconds: float = Field(default=2.0, gt=0, le=10)
+    # A low-priority native EventLog search must have a finite total cost, even
+    # when every page returns a continuation. The Workspace worker applies the
+    # aggregate binding/hit budgets below before writing durable search results.
+    runtime_background_search_max_pages: int = Field(default=8, ge=1, le=100)
+    runtime_background_search_max_matches: int = Field(default=100, ge=1, le=2_000)
+    agent_conversation_search_max_bindings: int = Field(default=100, ge=1, le=2_000)
+    agent_conversation_search_max_hits: int = Field(default=200, ge=1, le=10_000)
     runtime_wakeup_timeout_seconds: float = Field(default=10.0, gt=0, le=25)
     runtime_wakeup_backoff_max_seconds: float = Field(default=30.0, gt=0, le=300)
     sse_event_batch_size: int = Field(default=100, ge=1, le=500)
@@ -120,12 +131,20 @@ class Settings(BaseSettings):
     seed_demo: bool = False
     worker_id: str = ""
     worker_concurrency: int = Field(default=8, ge=1, le=64)
+    # Optional title, search and capability preparation work has its own small
+    # executor and SQL connection lane in Worker processes. This preserves
+    # Runtime progression and recovery capacity when helpers are backlogged.
+    auxiliary_task_worker_concurrency: int = Field(default=1, ge=1, le=4)
     # Formal OpenHands polling can block on an unhealthy Runtime. Keep its
     # executor and database pool deliberately separate from Runtime control
     # work so one stalled read cannot consume provision/recovery capacity.
     runtime_poll_worker_concurrency: int = Field(default=2, ge=1, le=16)
     task_lease_seconds: int = Field(default=30, ge=5)
     task_heartbeat_seconds: int = Field(default=10, ge=1)
+    # Lease renewals use short, independent connections. Bound their global
+    # Worker concurrency so many stalled tasks cannot fan out into a database
+    # connection surge merely to retain their leases.
+    task_heartbeat_concurrency: int = Field(default=2, ge=1, le=16)
     # The task ledger is an execution/audit window, not an unbounded event
     # store. Keep terminal rows long enough for operational diagnosis, then
     # reclaim them in small maintenance batches. Active and leased work is

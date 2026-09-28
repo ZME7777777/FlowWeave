@@ -83,6 +83,7 @@ from flowweave.runtime.workspace import (
     materialize_agent_workspace_capability_marketplace,
 )
 from flowweave.shared.database import now
+from flowweave.shared.domain.event_monitoring import activity_timestamp_is_stale
 from flowweave.shared.errors import DomainError, not_found
 from flowweave.shared.models import BackgroundTask, TaskState
 from flowweave.shared.observability import current_metrics
@@ -796,7 +797,7 @@ def conversation_activity(db: Session, workspace_id: str) -> dict[str, Any]:
     binding_ids = {item.id for item in bindings}
     runtime = get_runtime()
     handle = _handle(db, workspace, bindings[0])
-    running_native_ids = runtime.running_conversation_ids(handle)
+    native_activity = runtime.conversation_activity_snapshot(handle)
     condensation_tasks = list(
         db.execute(
             select(BackgroundTask.aggregate_id, BackgroundTask.id, BackgroundTask.state)
@@ -811,21 +812,21 @@ def conversation_activity(db: Session, workspace_id: str) -> dict[str, Any]:
     for binding_id, task_id, state in condensation_tasks:
         latest_condensation_task.setdefault(binding_id, (task_id, state))
     running_bindings = [
-        item for item in bindings if item.openhands_conversation_id in running_native_ids
+        item
+        for item in bindings
+        if native_activity.get(item.openhands_conversation_id, None) is not None
+        and native_activity[item.openhands_conversation_id].execution_status == "running"
     ]
-    failed_native_ids = runtime.conversation_ids_by_status(
-        handle, "error"
-    ) | runtime.conversation_ids_by_status(handle, "stuck")
-    possibly_stuck_binding_ids: list[str] = []
-    from flowweave.shared.domain.event_monitoring import build_activity_summary
-
-    for item in running_bindings:
-        try:
-            batch = runtime.read_active_events(_handle(db, workspace, item))
-        except DomainError:
-            continue
-        if build_activity_summary(batch.events)["possibly_stuck"]:
-            possibly_stuck_binding_ids.append(item.id)
+    failed_native_ids = {
+        conversation_id
+        for conversation_id, activity in native_activity.items()
+        if activity.execution_status in {"error", "stuck"}
+    }
+    possibly_stuck_binding_ids = [
+        item.id
+        for item in running_bindings
+        if activity_timestamp_is_stale(native_activity[item.openhands_conversation_id].updated_at)
+    ]
     attention_binding_ids = set(possibly_stuck_binding_ids) | {
         item.id for item in bindings if item.openhands_conversation_id in failed_native_ids
     }
@@ -3354,30 +3355,18 @@ def _conversation_context_snapshot(
 
 
 def hydration_context_snapshot(
-    runtime: Any,
-    handle: RuntimeHandle,
     batch_context: dict[str, int | str | None] | None,
 ) -> dict[str, int | float | str | bool | None]:
-    """Merge formal current-View metrics into a native event-batch context.
+    """Project the cheap native event-batch state for first paint only.
 
-    ``read_active_events`` includes an efficient state-derived context snapshot,
-    but that snapshot deliberately has no exact current-View Token or event
-    count. Hydration must not mistake its presence for the separate OpenHands
-    ``/context`` contract, otherwise reloads of idle conversations render the
-    metrics as unknown.
+    ``read_active_events`` returns model and window state alongside the bounded
+    formal event window, but it intentionally does not promise exact
+    current-View token or event metrics. Those require the separate official
+    ``/context`` contract and must refresh after hydration rather than delay
+    events and readiness for a first screen.
     """
 
-    context: dict[str, int | float | str | bool | None] = dict(batch_context or {})
-    formal_context = _conversation_context_snapshot(runtime, handle)
-    if not context:
-        return formal_context
-    context.update(
-        {
-            field: formal_context.get(field)
-            for field in ("used_tokens", "view_event_count", "usage_current")
-        }
-    )
-    return context
+    return dict(batch_context or {})
 
 
 def conversation_cache_key(db: Session, workspace_id: str, binding_id: str) -> ConversationCacheKey:
@@ -3416,7 +3405,7 @@ def hydrate_conversation(db: Session, workspace_id: str, binding_id: str) -> dic
         # for its initial event window or readiness snapshot.
         runtime.reload_conversation(handle)
         batch = runtime.read_active_events(handle)
-        context = hydration_context_snapshot(runtime, handle, batch.context)
+        context = hydration_context_snapshot(batch.context)
         readiness = (
             runtime.input_readiness(handle).as_dict()
             if batch.readiness is None

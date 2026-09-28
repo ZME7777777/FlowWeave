@@ -10,7 +10,9 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import NullPool
 
 from flowweave.bootstrap.container import Container, build_container
 from flowweave.bootstrap.settings import Settings
@@ -48,7 +50,6 @@ from flowweave.shared.application.transactions import (
 from flowweave.shared.artifact_store import artifact_store_context
 from flowweave.shared.dependency_builder import dependency_builder_context
 from flowweave.shared.errors import DomainError
-from flowweave.shared.infrastructure.database import Database
 from flowweave.shared.plugin_resolver import plugin_resolver_context
 from flowweave.shared.sandbox import sandbox_context
 from flowweave.shared.settings import settings_context
@@ -72,6 +73,17 @@ _RUNTIME_CONTROL_TASK_TYPES = frozenset(
     }
 )
 _RUNTIME_TASK_TYPES = _RUNTIME_CONTROL_TASK_TYPES | _POLL_TASK_TYPES
+# Auxiliary work may call a model provider, scan native history, fetch a
+# plugin, or run a dependency builder. It must not borrow delivery capacity
+# needed to advance or recover a FlowRun.
+_AUXILIARY_TASK_TYPES = frozenset(
+    {
+        "GENERATE_AGENT_CONVERSATION_TITLE",
+        "SEARCH_AGENT_CONVERSATIONS",
+        "BUILD_CAPABILITY_DEPENDENCIES",
+        "RESOLVE_PLUGIN_SOURCE",
+    }
+)
 _MAINTENANCE_TASK_TYPES = frozenset(
     {
         "MATERIALIZE_FLOW_RUN_SCHEDULE",
@@ -93,13 +105,9 @@ _DELIVERY_TASK_TYPES = frozenset(
         "START_AUTOMATIC_RUN",
         "START_AUTOMATIC_ATTEMPT",
         "ADVANCE_AUTOMATIC_ATTEMPT",
-        "GENERATE_AGENT_CONVERSATION_TITLE",
-        "SEARCH_AGENT_CONVERSATIONS",
         "WATCH_AGENT_TASK_TIMEOUT",
         "CONFIRM_AGENT_TASK_TIMEOUT",
         "RESUME_AGENT_TASK_TIMEOUT",
-        "BUILD_CAPABILITY_DEPENDENCIES",
-        "RESOLVE_PLUGIN_SOURCE",
     }
 )
 
@@ -136,7 +144,9 @@ def _is_permanent_task_failure(task: Any, exception: Exception) -> bool:
     )
 
 
-_ALL_TASK_TYPES = _RUNTIME_TASK_TYPES | _MAINTENANCE_TASK_TYPES | _DELIVERY_TASK_TYPES
+_ALL_TASK_TYPES = (
+    _RUNTIME_TASK_TYPES | _AUXILIARY_TASK_TYPES | _MAINTENANCE_TASK_TYPES | _DELIVERY_TASK_TYPES
+)
 
 
 class LeaseHeartbeat:
@@ -149,11 +159,13 @@ class LeaseHeartbeat:
         *,
         interval_seconds: int,
         lease_seconds: int,
+        slots: threading.BoundedSemaphore | None = None,
     ) -> None:
         self.settings = settings
         self.lease = lease
         self.interval_seconds = interval_seconds
         self.lease_seconds = lease_seconds
+        self.slots = slots or threading.BoundedSemaphore(1)
         self.lost = threading.Event()
         self._stop = threading.Event()
         self._thread = threading.Thread(
@@ -173,23 +185,35 @@ class LeaseHeartbeat:
         asyncio.run(self._run_async())
 
     async def _run_async(self) -> None:
-        database = Database(self.settings)
+        # A heartbeat updates exactly one lease row. It must not construct the
+        # Worker container's async, blocking, history, poll and control pools
+        # for every running task; a single isolated connection is enough.
+        engine = create_async_engine(
+            self.settings.database_url,
+            pool_pre_ping=True,
+            poolclass=NullPool,
+            connect_args={"options": f"-c statement_timeout={self.settings.statement_timeout_ms}"},
+        )
+        sessions = async_sessionmaker(engine, expire_on_commit=False, autoflush=False)
         try:
             while not self._stop.wait(self.interval_seconds):
                 try:
-                    async with database.session() as session:
-                        renewed = await session.run_sync(
-                            lambda db: heartbeat(
-                                db,
-                                self.lease,
-                                lease_seconds=self.lease_seconds,
-                                commit=False,
+                    # The slot covers only the one-row renewal transaction;
+                    # it never serializes the task's external Runtime work.
+                    with self.slots:
+                        async with sessions() as session:
+                            renewed = await session.run_sync(
+                                lambda db: heartbeat(
+                                    db,
+                                    self.lease,
+                                    lease_seconds=self.lease_seconds,
+                                    commit=False,
+                                )
                             )
-                        )
-                        if renewed:
-                            await session.commit()
-                        else:
-                            await session.rollback()
+                            if renewed:
+                                await session.commit()
+                            else:
+                                await session.rollback()
                 except Exception:
                     self.lost.set()
                     return
@@ -197,7 +221,7 @@ class LeaseHeartbeat:
                     self.lost.set()
                     return
         finally:
-            await database.dispose()
+            await engine.dispose()
 
 
 class TaskWorker:
@@ -301,6 +325,7 @@ class TaskWorker:
                 lease,
                 interval_seconds=self.container.settings.task_heartbeat_seconds,
                 lease_seconds=self.container.settings.task_lease_seconds,
+                slots=self.container.heartbeat_slots,
             )
             renewer.start()
             execution = asyncio.create_task(self._execute_claimed_task(task, lease))
@@ -338,6 +363,15 @@ class TaskWorker:
                 self.container.poll_executor,
                 self.container.poll_io_slots,
                 poll_sessions,
+            )
+        if task.task_type in _AUXILIARY_TASK_TYPES:
+            auxiliary_sessions = self.container.database.auxiliary_sessions
+            if auxiliary_sessions is None:
+                raise RuntimeError("Worker auxiliary execution requires a dedicated database pool")
+            return (
+                self.container.auxiliary_executor,
+                self.container.auxiliary_io_slots,
+                auxiliary_sessions,
             )
         return (
             self.container.blocking_executor,
@@ -586,24 +620,40 @@ class TaskWorker:
             # poll/control isolation below.
             return (
                 ("runtime", _RUNTIME_TASK_TYPES, 1),
-                ("delivery", _DELIVERY_TASK_TYPES | _MAINTENANCE_TASK_TYPES, 1),
+                (
+                    "delivery",
+                    _DELIVERY_TASK_TYPES | _AUXILIARY_TASK_TYPES | _MAINTENANCE_TASK_TYPES,
+                    1,
+                ),
             )
         if concurrency == 3:
             return (
                 ("runtime-control", _RUNTIME_CONTROL_TASK_TYPES, 1),
                 ("runtime-poll", _POLL_TASK_TYPES, 1),
-                ("delivery-maintenance", _DELIVERY_TASK_TYPES | _MAINTENANCE_TASK_TYPES, 1),
+                (
+                    "delivery-maintenance",
+                    _DELIVERY_TASK_TYPES | _AUXILIARY_TASK_TYPES | _MAINTENANCE_TASK_TYPES,
+                    1,
+                ),
+            )
+        if concurrency == 4:
+            return (
+                ("runtime-control", _RUNTIME_CONTROL_TASK_TYPES, 1),
+                ("runtime-poll", _POLL_TASK_TYPES, 1),
+                ("delivery", _DELIVERY_TASK_TYPES, 1),
+                ("auxiliary-maintenance", _AUXILIARY_TASK_TYPES | _MAINTENANCE_TASK_TYPES, 1),
             )
         poll_slots = min(
             self.container.settings.runtime_poll_worker_concurrency,
-            concurrency - 3,
+            concurrency - 4,
         )
-        control_slots = max(1, (concurrency - poll_slots - 1) // 2)
-        delivery_slots = concurrency - poll_slots - control_slots - 1
+        control_slots = max(1, (concurrency - poll_slots - 2) // 2)
+        delivery_slots = concurrency - poll_slots - control_slots - 2
         return (
             ("runtime-control", _RUNTIME_CONTROL_TASK_TYPES, control_slots),
             ("runtime-poll", _POLL_TASK_TYPES, poll_slots),
             ("delivery", _DELIVERY_TASK_TYPES, delivery_slots),
+            ("auxiliary", _AUXILIARY_TASK_TYPES, 1),
             ("maintenance", _MAINTENANCE_TASK_TYPES, 1),
         )
 

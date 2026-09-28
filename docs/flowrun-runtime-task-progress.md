@@ -7535,3 +7535,95 @@ FlowWeave 本地累加后猜测压缩边界。
 完成：搜索范围以 `work_directory_ids` 和 `include_root` 固化；`null` 保持既有“全部工作区”语义，显式范围验证目录归属并拒绝空范围。搜索仅扫描根会话与所选目录的冻结版本，且同一 Agent Workspace 同时只允许一个 pending/running 搜索。Web 搜索对话框提供“全部工作区”与根工作区、多个目录的复选范围。OpenHands adapter 为搜索单设 generation-scoped 低优先级舱壁，默认单并发、0.1 秒取槽预算、2 秒单页预算；每页和命中详情读取都会在正式 hydration 读取活跃时让出，不进入正式读取舱壁。
 
 验收：OpenHands 搜索分页短超时与正式读取优先的定向 pytest（2 passed）；受影响 Python Ruff、`py_compile`、Alembic 单一 head、Web TypeScript typecheck、ESLint、production build 与 `git diff --check` 通过。新增数据库型范围/并发测试已启动，但全局 Testcontainers PostgreSQL fixture 在测试断言前因本机 Docker daemon 不可用失败，未计为通过。未运行数据库迁移，不修改远端配置、OpenHands Runtime 或自动恢复策略。
+
+### 并发稳定性待办（2026-09-28）
+
+本轮以已提交 FR-539 为基线，逐项处理会话加载、Runtime 故障传播和平台资源争抢。此前审计将 `RUNTIME_READ_PER_RUNTIME_CONCURRENCY=2` 误解释为全平台统一上限；实际舱壁在每个 API 进程内、按 Runtime generation URL 分配。不得把直接升到 16 当作无条件修复；容量调整须结合单 generation 并发、排队时间、Runtime CPU／内存和错误率取证。
+
+| 切片 | 状态 | 依赖 | 交付边界 |
+| --- | --- | --- | --- |
+| FR-540 | DONE | FR-539 | FlowRun 节点会话 interrupt 从 ASGI `run_sync` 转入预留控制 executor 和数据库池。 |
+| FR-541 | DONE | FR-540 | Agent Workspace 会话创建、详情、发送、附件、模型、Fork、重写、认证与恢复等同步 Runtime 调用移出 API event loop；默认写入最多占普通读取池的一半槽位，中断／恢复使用独立控制舱壁。 |
+| FR-541A | DONE | FR-541 | FlowRun 节点会话的恢复、模型、Fork、重写、附件等同步 Runtime 调用移出 API event loop，沿用同一写入容量保护。 |
+| FR-541B | DONE | FR-541A | Agent Workspace 文件／Git 与涉及文件校验、级联删除的工作目录入口从 `run_sync` 移至低优先级有界执行通道。 |
+| FR-541C | DONE | FR-541B | FlowRun 节点会话的文件／Git、候选输出与涉及文件校验、级联删除的工作目录入口从 `run_sync` 移至低优先级有界执行通道。 |
+| FR-541D | DONE | FR-541C | 两类宿主的终端 I/O 使用独立有界 stream/control executor 与会话槽位；WebSocket Runtime stream 已异步消费，剩余兼容入口核对后均为纯数据库事务或已有隔离调用。 |
+| FR-542 | DONE | FR-541D | 首屏正式事件和 readiness 与精确 Context 指标解耦；批次状态先行呈现，正式 Context 按同 binding 后台刷新并保留可信指标。 |
+| FR-543 | DONE | FR-542 | 固定 OpenHands baseline 将正式交互、搜索/统计和租约续期隔离到有界 executor；新的 source commit、归档与 provenance 已冻结。 |
+| FR-544 | DONE | FR-543 | 空闲回收只在短全局生命周期段内摘除会话；单会话 close 在锁外执行，同时保留该会话锁、lease 与持久事件身份。 |
+| FR-545A | DONE | FR-544 | 为低优先级原生消息搜索和 Workspace 聚合扫描增加分页、单会话命中、会话数与总命中硬预算；预算耗尽明确失败，不伪造完整结果。 |
+| FR-545B1 | DONE | FR-545A | 搜索状态仅在终态按 cursor 分页投影并验证当前页 native hit；运行中轮询仅读取数据库元数据。 |
+| FR-545B2 | DONE | FR-545B1 | 状态轮询改为一次正式批量活动投影；不再按运行会话读取 active events，并以原生正式事件活动时间识别可能卡住。 |
+| FR-546 | DONE | FR-545B2 | 标题、搜索、依赖构建和插件解析使用独立辅助 executor/数据库池与 worker lane，流程推进和恢复保留容量。 |
+| FR-547 | DONE | FR-546 | FlowRun provisioning 在外部 Provider 调用前释放 Worker 事务；heartbeat 有界且无池；按实际 claim 谓词新增部分队列索引。 |
+| FR-548 | DONE | FR-547 | Admin 读/诊断进入独立受限 executor/数据库池；Runtime Provider 控制、构建、观测隔离，并合并重复 Docker 采样。 |
+| FR-549 | DONE | FR-548 | Web 历史预取设置单轮/总页预算并可取消；Context 失效按会话合并冷却，明确取消不等于后端执行已释放。 |
+| FR-550 | DONE | FR-549 | 保持每 generation 正式读舱壁默认容量并发布低基数压力指标；验证同 Runtime、跨 Runtime 与控制 executor 的故障隔离。 |
+
+FR-540 完成：节点 interrupt 原先在 `AsyncSession.run_sync()` 内同步请求 OpenHands，会占用 ASGI 事件循环及普通 async 数据库连接。路由现在与 Agent Workspace interrupt 一样使用 `run_blocking_control()`；控制线程自行取得独立同步 Session，并在实际外部调用结束后释放预留槽。FlowRun／Attempt／binding 校验与原服务事务结果不变。
+
+验收：目标 Python 文件 AST 解析、`git diff --check`、任务状态唯一性和 staged diff 复核通过。按本轮请求未运行数据库、Runtime、构建或 E2E 测试；此切片不改数据库 schema、OpenHands 或远端环境。下一可执行切片为 FR-541。
+
+FR-541 完成：Agent Workspace 会话写入口的同步 OpenHands HTTP／文件调用改由独立同步 Session 的有界执行线程承载，包括首次创建、运行中消息、静止消息 fallback、附件、模型切换、Fork、重写、动态能力与凭据同步、删除和手动改名；会话详情的原生事件读取与 MCP 探针也移出 ASGI event loop。正式恢复使用预留控制 lane。普通写入增加单独准入槽，默认最多占普通 blocking executor／数据库池的一半（池容量为 1 时无法预留读取槽），槽位在后台线程真正结束后释放；浏览器取消不能提前放开已在执行的写入。未增加 PostgreSQL 连接预算，也不占用历史分页或恢复控制容量。原服务内部的事务跨外部调用仍需在 FR-547 拆分。
+
+验收：受影响 Python AST 解析、`git diff --check`、唯一 `CURRENT` 状态及 staged diff 复核通过。按本轮要求未运行数据库、Runtime、完整构建或 E2E；不修改 schema、OpenHands 或远端环境。下一切片为 FR-541A。
+
+FR-541A 完成：本切片覆盖的 FlowRun 节点会话同步 OpenHands 及文件调用已从 API event loop 移至有界执行线程。创建／bootstrap、能力与认证同步、确认、模型切换、消息投递、重写、Fork、附件和删除走 FR-541 的写入准入；会话详情和 MCP 探针走有界读取通道。节点宿主与 Runtime 状态查询可能触发 Attempt Runtime 预置，也使用写入准入，避免占满会话读取槽位。恢复与停止走预留控制通道；附件内容在进入同步执行线程前完成异步读取。纯数据库入口和跨 Runtime 调用的事务边界保持现状，文件／Git 与其他兼容入口留待 FR-541B、事务边界留待 FR-547 核对。
+
+验收：受影响 Python AST 解析、Ruff format、`git diff --check`、唯一 `CURRENT` 状态及 staged diff 复核通过。按本轮要求未运行数据库、Runtime、完整构建或 E2E；不修改 schema、OpenHands 或远端环境。下一切片为 FR-541B。
+
+FR-541C 完成：FlowRun 节点会话的工作区详情／目录、文件预览和下载、Git 仓库发现／历史／diff／同步、文件创建／删除及候选输出读取已从 `AsyncSession.run_sync()` 移至低优先级有界线程。工作目录创建需要同步文件路径校验，删除会级联执行正式 Runtime 会话删除，也进入同一通道。该通道与历史分页复用原有小型 executor 和同步数据库池；默认最多一个后台操作，不新增 PostgreSQL 连接预算。纯数据库工作目录列表虽保留宿主权限校验，仍随同一组入口置入通道以避免未来实现增加文件系统工作时重新占用 hydration 容量。
+
+验收：受影响 Python AST 解析、路由通道映射断言、Ruff format/check、`git diff --check`、唯一 `CURRENT` 状态及 staged diff 复核通过。按本轮要求未运行数据库、Runtime、完整构建或 E2E；不修改 schema、OpenHands 或远端环境。下一切片为 FR-541D。
+
+FR-541D 完成：两类 Agent 宿主的 Runtime 事件 WebSocket 已直接消费异步 Runtime stream；终端打开、读取、写入、resize、关闭与 pane 清理不再占用 asyncio 默认线程池。新增按 API／worker 进程独立的 terminal stream/control executor 与有界 WebSocket 槽位（默认四个），使一个阻塞 PTY／远程终端读取最多耗尽终端自身容量，不会挤占会话 hydration、Runtime mutation／control、文件／Git 或默认 Python 后台工作。终端关闭路径保持先关闭资源再释放槽位；迟到线程异常被回收。剩余 `run_sync` 入口逐项核对为纯数据库读取／投影、原生压缩任务持久化或消息 prepare/finalize，不包含同步 Runtime／文件／Git I/O；跨 Runtime 的事务边界留待 FR-547。
+
+验收：受影响 Python AST 解析、Ruff format/check、`git diff --check`、唯一 `CURRENT` 状态及 staged diff 复核通过。按本轮要求未运行数据库、Runtime、完整构建或 E2E；不修改 schema、OpenHands 或远端环境。下一切片为 FR-542。
+
+FR-542 完成：两类宿主的 hydration 仅读取 OpenHands 最新正式事件窗口及同批 readiness／轻量状态，不再串行调用正式 `/context` 来统计精确 current-View token 或事件指标。浏览器收到 hydration 后立即呈现事件和 readiness；Context query 将批次状态视为立即过期的占位，随后按同一 user／host／workspace／binding 后台读取正式 `/context`。现有 per-binding 可信指标快照与合并逻辑保留已知 token／事件数，首次未知显示待更新，不跨 binding 复用。终态与运行中会话都在首屏后进行一次单飞 Context 回填，避免终态指标永久未知或 hydration 延迟。
+
+验收：受影响 Python AST 解析、Hydration 不调用 `conversation_context` 的静态断言、Ruff check、`git diff --check`、唯一 `CURRENT` 状态及 staged diff 复核通过。按本轮要求未运行数据库、Runtime、完整构建或 E2E；不修改 schema、OpenHands 或远端环境。下一切片为 FR-543。
+
+FR-543 完成：固定 OpenHands `baseline` 新增 commit `6334a2b34afd66d29d8d53099e5f13248dcb46d9`。ConversationService 现在拥有并向每个生产 EventService 注入四条有界 executor lane：既有同步 run、正式交互、低优先级搜索／统计／目录扫描、以及单线程 lease 文件 I/O。EventService 与 ConversationService 的生产路径不再调用 loop 默认 executor：正式 send／pause／确认／插件／模型／关闭走交互 lane，事件搜索、计数、精确 current-View Context、自动标题和目录状态扫描走后台 lane，lease claim／renew／release 走独立 lease lane。单个耗时搜索或统计不再消耗 Agent 控制／交互或 lease 容量。新的不可变源码归档为 `infra/openhands/vendor/openhands-source-6334a2b34afd66d29d8d53099e5f13248dcb46d9.tar.gz`，SHA-256 `0670dd513e481ab982c5a577ec0362fed442b7988ea13a4d05ffc17c8a5f2f98`；source lock、provenance、Docker build identity、contract 预期和平台 Runtime 身份已原子切换。
+
+验收：baseline 受影响 Python `py_compile`、Ruff format/check、默认 executor 调用与 executor 注入的 AST 断言、`git diff --check`；归档 SHA-256 与 source lock/provenance 一致性、临时本地 URL 的 `fetch_source.py` 四包安全解包验证、FlowWeave 受影响 Python 语法/Ruff check 通过。按本轮要求未运行数据库、镜像构建、Runtime、完整构建或 E2E；不修改 schema 或远端环境。下一切片为 FR-544。
+
+FR-544 完成：固定 OpenHands `baseline` 新增 commit `0c00fba533425a55b36abeb56818d22260b6ce63`。空闲回收在短暂 exclusive lifecycle 段内仅筛选并从 live registry 原子摘除候选，同时取得各候选自己的 conversation lock；实际 `EventService.close()`／lease 释放与 Runtime drain 在全局 gate 之外执行。相同会话的重载继续等待其自身锁，避免旧 Runtime 尚未关闭时与新 Runtime／lease 并存；其他会话的加载、关闭和控制不再因单个卡住的 close 被全局阻塞。回收前仍把最新 stored metadata、凭据绑定和持久事件身份保留在 catalog，close 返回后才释放会话锁。新增并发回归模拟一个 close 挂起，并证明另一个 conversation 仍能进入生命周期。新的不可变源码归档为 `infra/openhands/vendor/openhands-source-0c00fba533425a55b36abeb56818d22260b6ce63.tar.gz`，SHA-256 `8d8ede85dcf5b5a8eb7fe4daa68d416ac6c06eabe705cb03c7b91a62591b627f`；source lock、provenance、Docker build identity、contract 预期和平台 Runtime 身份已同步切换。
+
+验收：baseline 受影响 Python `py_compile`、Ruff format/check、定向 idle eviction 并发 pytest（1 passed）、`git diff --check`；归档 SHA-256 与 source lock/provenance 一致性、临时本地 URL 的 `fetch_source.py` 四包安全解包验证、FlowWeave 受影响 Python 语法/Ruff check 通过。按本轮要求未运行数据库、镜像构建、Runtime、完整构建或 E2E；不修改 schema 或远端环境。下一切片为 FR-545。
+
+FR-545A 完成：低优先级原生 EventLog 搜索新增四层硬预算：每 conversation 最多 8 个 native search page、100 个 native match；每 Agent Workspace 搜索最多检查 100 个授权 conversation binding、收集 200 个总 hit。每页仍在正式 hydration 读取活跃时让出，单页沿用 2 秒 timeout；预算超出以稳定 `RUNTIME_BACKGROUND_SEARCH_BUDGET_EXHAUSTED` 或 `AGENT_CONVERSATION_SEARCH_BUDGET_EXHAUSTED` 失败，不持久化部分 hit 或把截断扫描伪装为完整成功。Worker 保持先提交 RUNNING 状态并在扫描期间不保留 SQL row lock／事务。
+
+验收：OpenHands adapter 分页与匹配预算定向 pytest（2 passed）、受影响 Python `py_compile`、Ruff format/check、`git diff --check`、唯一 `CURRENT` 状态及 staged diff 复核通过。按本轮要求未运行数据库、Runtime、完整构建或 E2E；不修改 schema、OpenHands 或远端环境。下一切片为 FR-545B。
+
+FR-545B1 完成：Agent Workspace 搜索状态接口新增稳定 keyset `cursor`／`limit` 分页，默认每页最多 20、最大 50 个 durable hit。Worker 仍仅持久化正式 binding/event identity；运行中浏览器每秒轮询只读取搜索元数据，不逐个调用 Runtime 读取 hit。任务终态后才在当前页对正式 native event 重新授权和投影，页面提供显式“加载更多结果”；下一页由用户动作触发，避免一次 status 刷新耗尽低优先级 history/search lane。
+
+验收：搜索结果 cursor／状态条件／路由分页参数和浏览器加载更多的静态契约、OpenHands adapter 搜索预算 pytest（3 passed）、受影响 Python `py_compile`、Ruff format/check、`git diff --check`、唯一 `CURRENT` 状态及 staged diff 复核通过。Web TypeScript typecheck 未运行：`apps/web` 未安装依赖，`tsc` 不在 PATH；未安装依赖。按本轮要求未运行数据库、Runtime、完整构建或 E2E；不修改 schema、OpenHands 或远端环境。下一切片为 FR-545B2。
+
+FR-545B2 完成：OpenHands baseline 新增只读 `/api/conversations/activity` 目录页，仅投影 native conversation ID、正式 execution status 与由正式非状态事件维护的 `updated_at`；该路径不加载 EventLog、不获取 live Conversation FIFO state lock。FlowWeave Runtime adapter 用有界分页一次读取该目录，统一规范化 UUID，并将 Agent Workspace 与 FlowRun 节点会话活动轮询改为只消费该 snapshot。`possibly_stuck` 依据该 native formal-event activity timestamp 的既有 60 秒阈值判断；`error`/`stuck` 仍写入 SYSTEM unread。活动轮询不再对每个 running binding 调用 `read_active_events()`。新 baseline `3517f8e597d3d75a8da68a43ba7b0cc50257167d` 与归档 SHA-256 `1aa308d7b895de329848336916d50a79a770a8e43e6dc77f82a04eea38c628bc` 已冻结至 source lock、provenance、Dockerfile、契约探针和平台域常量。
+
+验收：OpenHands 新活动目录 service/router 定向 pytest 各 1 passed；受影响 OpenHands 与 FlowWeave Python 文件通过 `py_compile`、Ruff check/format 和 `git diff --check`；源码归档以本地 file URL 通过 `fetch_source.py` digest 与四包结构验证。平台定向 pytest 在收集阶段因本机缺少 `psycopg` 被阻断，未安装依赖；完整 `contract_check.py` 在本地可运行至镜像安装 provenance 断言，但本地 venv 不具备 Runtime 镜像的 `/opt/openhands-source` direct URL metadata，未将其记为镜像契约通过。下一可执行切片为 FR-546。
+
+FR-546 完成：将 `GENERATE_AGENT_CONVERSATION_TITLE`、`SEARCH_AGENT_CONVERSATIONS`、`BUILD_CAPABILITY_DEPENDENCIES` 与 `RESOLVE_PLUGIN_SOURCE` 从流程 delivery task 集合拆入 auxiliary task 集合。Worker 进程为该集合独立分配默认一个线程的 executor、受同一容量约束的 slot 和独立 SQLAlchemy 同步连接池；API 进程不分配该额外数据库预算。worker 并发达到四个槽位时，Runtime control、Runtime poll、流程 delivery 和 auxiliary/maintenance 各保留一个 lane；更高并发下 auxiliary 仍保持独立，避免模型标题、native 搜索、package registry 或 Docker dependency builder 阻塞推进／恢复任务。两槽、三槽部署保留既有兼容分区但仍覆盖全部 task 类型。
+
+验收：受影响 Python `py_compile`、Ruff check/format、`git diff --check` 和不依赖数据库的 worker lane 静态契约通过，契约覆盖所有 handler 的唯一 lane 归属、默认四槽 delivery 与 auxiliary 的互斥及 auxiliary executor/SQL pool 路由。`tests/test_worker_lanes.py` 已尝试运行，但全局 Testcontainers PostgreSQL fixture 因本机 Docker socket 不可用在收集前失败，未将其记为通过；未运行数据库、Runtime、镜像或 E2E 验证。下一可执行切片为 FR-547。
+
+FR-547 完成：FlowRun Runtime provisioning 在生成冻结 Environment/Runtime identity 后、进入 Docker/Provider 控制路径前调用 Worker transaction release；Provider 自身继续使用既有独立控制事务，外部 provisioning 不再占用 delivery handler 的同步数据库连接。Lease heartbeat 不再为每个运行 task 构造包含 async、blocking、history、poll、control 等多个 pool 的完整 `Database` 容器；改为 `NullPool` 的单次独立连接，且 Worker 注入全局有界 heartbeat semaphore（默认 2），只限制一行 lease renewal，不限制实际 Runtime I/O。任务 `claim()` 的实际谓词与排序为 `state IN (PENDING, RETRY) AND available_at <= now ORDER BY available_at, created_at`；据此新增 `ix_background_tasks_claim_ready` 部分索引，仅包含可领取状态且键顺序完全匹配，不对其他假设查询增索引。
+
+验收：受影响 Python `py_compile`、Ruff check/format、`git diff --check`、迁移唯一 head `0131_background_task_claim_index` 与不依赖数据库的 FR-547 静态契约通过；后者验证 provisioning 事务释放先于 Provider 调用、heartbeat 使用 `NullPool` 与共享 slot、索引 DDL 与实际 `claim()` 谓词/排序一致。未运行迁移实跑、数据库、Runtime、镜像或 E2E 验证。下一可执行切片为 FR-548。
+
+FR-548 完成：API Container 增加 admin 专用单线程 executor、slot 和同步数据库池；`/internal/admin-control` 的 Runtime 控制、正式诊断和 alert lifecycle 均从普通 async request UoW 改走 `run_blocking_admin`，不再与会话 hydration、历史分页或 Worker auxiliary pool 争抢。Runtime Provider 新增 control（2）、build（1）、observe（2）三个显式 executor；Sandbox ensure/delete/drain、环境清理、网络恢复走 control，image/dependency/gate/plugin build 走 build，inspect/usage/list、Runtime ownership 验证和 Admin snapshot 走 observe，默认 asyncio executor 只保留终端专用工作及 shutdown。Admin snapshot 以规范化 Docker ID 过滤 Compose 列表中已由 managed runtime 投影覆盖的容器，避免同一 Agent Runtime 重复 `stats`/`inspect` 采样。
+
+验收：受影响 Python `py_compile`、Ruff check/format、`git diff --check`、迁移唯一 head `0131_background_task_claim_index` 和不依赖数据库的 FR-548 静态契约通过；契约覆盖 Admin route 的专用 lane、Provider control/build/observe 分区、Admin snapshot 观测 lane及重复采样过滤。未运行数据库、Runtime、镜像或 E2E 验证。下一可执行切片为 FR-549。
+
+FR-549 完成：`AgentSessionWorkbench` 的后台 native history prefetch 改为每轮最多 2 页、同一 binding/history root cursor 总计最多 8 页，保留首屏 latest window 优先；后续轮次以短延迟继续而不形成单次无界 EventLog 扫描。history 请求通过 gateway/client 传递 `AbortSignal`；切换 binding、宿主卸载或 scope 变化时 abort 浏览器 fetch，并在捕获 abort 后不写失败状态或展示错误。该 abort 只停止浏览器等待／结果合并，不宣称已终止后端已开始的 Runtime 历史读取，后端 lane 仍按真实执行结束释放容量。事件对账不再每次立即 invalidate `/context`；按 workspace/binding 合并 Context refresh，最小间隔 15 秒，且切换／卸载会取消过期 timer。
+
+验收：API client/gateway JavaScript syntax、`git diff --check` 和不依赖前端依赖的 FR-549 源码契约通过，覆盖 history 单轮/总预算、AbortSignal 透传、abort 正常收口、Context refresh 合并/冷却及过期 timer 清理。`npm run typecheck` 与 `npm run lint` 均尝试执行，但 `tsc`、`eslint` 不在 PATH（Web dependencies 未安装）；未安装依赖，未运行 Runtime、镜像或 E2E 验证。下一可执行切片为 FR-550。
+
+FR-550 完成：正式 Runtime read bulkhead 继续按每 API/Worker 进程、每 Runtime generation URL 分配，默认容量保持 2，未将其在缺乏 Runtime CPU／内存、排队延迟和 saturation 数据时任意放大。新增不带 Runtime、会话、用户等高基数 label 的聚合 gauges：活跃正式 read 数、已创建 generation 总容量与 generation 数；原有 saturation counter 保留，用于以实际压力校准配置。并发回归覆盖同一 generation 中会话 A/B 占满 2 个槽后第三个会话被稳定拒绝、另一 generation 不受影响；另有独立 executor 回归证明阻塞 formal read 不阻塞 Runtime control。
+
+验收：OpenHands formal-read 定向 pytest `2 passed`；受影响 Python `py_compile`、Ruff check/format、`git diff --check`、迁移唯一 head `0131_background_task_claim_index` 和 bulkhead 指标静态契约通过。按本轮约束未运行数据库、Runtime、镜像、完整构建或 E2E 验证；全部 FR-540–FR-550 并发稳定性切片已完成。
+
+FR-541B 完成：Agent Workspace 的文件树、文件预览、Git 仓库发现／历史／diff／同步和文件创建／删除已从 `AsyncSession.run_sync()` 移至低优先级有界线程。工作目录创建／修改需要同步文件路径校验，删除会级联执行正式 Runtime 会话删除，也进入同一通道。该通道与历史分页复用原有小型 executor 和同步数据库池；默认最多一个后台操作，不新增 PostgreSQL 连接预算，繁重文件／Git 操作不再占用 ASGI event loop 或交互读取／写入／恢复容量。纯数据库工作目录列表和详情仍留在原入口。
+
+验收：受影响 Python AST 解析、Ruff format/check、`git diff --check`、唯一 `CURRENT` 状态和 staged diff 复核通过。按本轮要求未运行数据库、Runtime、完整构建或 E2E；不修改 schema、OpenHands 或远端环境。下一切片为 FR-541C。

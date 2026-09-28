@@ -5672,16 +5672,26 @@ def process_provision_flow_run_runtime(
     validate_runtime_manifest(environment.manifest_json, environment_version_id=environment.id)
     if not lease_is_current(db, lease):
         raise RuntimeError("task lease was lost before Runtime provisioning")
+    # The sandbox provider owns its own short control transactions and can
+    # block on Docker or the controller. Drop this handler's read transaction
+    # before entering it so provisioning cannot reserve a delivery connection.
+    flow_run_id = run.id
+    environment_image = environment.image_digest
+    environment_id = environment.environment_id
+    environment_version_id = environment.id
+    environment_version_no = environment.version_no
+    server_identity = runtime_server_identity(
+        environment.manifest_json, environment_version_id=environment.id
+    )
+    _release_worker_read_transaction(db, lease)
     sandboxes.ensure_flow_run_runtime(
         db,
-        flow_run_id=run.id,
-        image=environment.image_digest,
-        environment_id=environment.environment_id,
-        environment_version_id=environment.id,
-        environment_version_no=environment.version_no,
-        runtime_server_identity=runtime_server_identity(
-            environment.manifest_json, environment_version_id=environment.id
-        ),
+        flow_run_id=flow_run_id,
+        image=environment_image,
+        environment_id=environment_id,
+        environment_version_id=environment_version_id,
+        environment_version_no=environment_version_no,
+        runtime_server_identity=server_identity,
     )
     if not lease_is_current(db, lease):
         raise RuntimeError("task lease was lost during Runtime provisioning")

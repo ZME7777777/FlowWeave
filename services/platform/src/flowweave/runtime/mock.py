@@ -8,6 +8,7 @@ from uuid import uuid4
 from flowweave.runtime.base import (
     RuntimeAskAgentResult,
     RuntimeCondenser,
+    RuntimeConversationActivity,
     RuntimeConversationIdentity,
     RuntimeEvent,
     RuntimeEventBatch,
@@ -307,6 +308,19 @@ class MockRuntime:
         }:
             status = "running"
         return RuntimeInputReadiness(ready=ready, execution_status=status)
+
+    def conversation_activity_snapshot(
+        self, handle: RuntimeHandle
+    ) -> dict[str, RuntimeConversationActivity]:
+        del handle
+        return {
+            conversation_id: RuntimeConversationActivity(
+                conversation_id=conversation_id,
+                execution_status=result.status.casefold(),
+                updated_at="1970-01-01T00:00:00+00:00",
+            )
+            for conversation_id, result in self._results.items()
+        }
 
     def running_conversation_ids(self, handle: RuntimeHandle) -> set[str]:
         return self.conversation_ids_by_status(handle, "running")

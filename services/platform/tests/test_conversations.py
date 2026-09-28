@@ -35,6 +35,7 @@ from flowweave.modules.agent_workspaces.application import work_directories
 from flowweave.modules.conversations.application import locator
 from flowweave.modules.conversations.application import service as conversation_service
 from flowweave.runtime.base import (
+    RuntimeConversationActivity,
     RuntimeEvent,
     RuntimeEventBatch,
     RuntimeHandle,
@@ -481,7 +482,7 @@ def test_complete_active_branch_rejects_head_drift_between_pages() -> None:
         complete_active_branch(read, RuntimeHandle(job_id="job", conversation_id="conversation"))
 
 
-def test_hydration_merges_formal_current_view_metrics_into_batch_context(
+def test_hydration_defers_formal_current_view_metrics_until_context_refresh(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     workspace = object()
@@ -493,11 +494,6 @@ def test_hydration_merges_formal_current_view_metrics_into_batch_context(
         "used_tokens": None,
         "view_event_count": None,
         "usage_current": False,
-    }
-    formal_context = {
-        "used_tokens": 67_947,
-        "view_event_count": 49,
-        "usage_current": True,
     }
     readiness = RuntimeInputReadiness(ready=False, execution_status="running")
     captured: dict[str, object] = {}
@@ -514,9 +510,8 @@ def test_hydration_merges_formal_current_view_metrics_into_batch_context(
                 history_cursor="older",
             )
 
-        def conversation_context(self, requested_handle: object):
-            calls.append(requested_handle)
-            return formal_context
+        def conversation_context(self, _handle: object):
+            raise AssertionError("hydration must defer formal context metrics")
 
         def input_readiness(self, _handle: object):
             raise AssertionError("hydration must reuse its active-batch readiness")
@@ -535,17 +530,17 @@ def test_hydration_merges_formal_current_view_metrics_into_batch_context(
     hydrated = session_conversations.hydrate_conversation(None, "workspace", "binding")
 
     batch = captured["batch_override"]
-    assert calls == [handle, handle]
+    assert calls == [handle]
     assert isinstance(batch, RuntimeEventBatch)
     assert batch.history_cursor == "older"
     assert hydrated == {
         "events": {"events": [], "history_cursor": "older"},
-        "context": {**context, **formal_context},
+        "context": context,
         "readiness": readiness.as_dict(),
     }
 
 
-def test_node_hydration_merges_formal_current_view_metrics_into_batch_context(
+def test_node_hydration_defers_formal_current_view_metrics_until_context_refresh(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     binding = object()
@@ -556,11 +551,6 @@ def test_node_hydration_merges_formal_current_view_metrics_into_batch_context(
         "used_tokens": None,
         "view_event_count": None,
         "usage_current": False,
-    }
-    formal_context = {
-        "used_tokens": 12_345,
-        "view_event_count": 17,
-        "usage_current": True,
     }
     readiness = RuntimeInputReadiness(ready=True, execution_status="idle")
     calls: list[object] = []
@@ -576,9 +566,8 @@ def test_node_hydration_merges_formal_current_view_metrics_into_batch_context(
                 history_cursor="older",
             )
 
-        def conversation_context(self, requested_handle: object):
-            calls.append(requested_handle)
-            return formal_context
+        def conversation_context(self, _handle: object):
+            raise AssertionError("hydration must defer formal context metrics")
 
         def input_readiness(self, _handle: object):
             raise AssertionError("node hydration must reuse active-batch readiness")
@@ -604,11 +593,11 @@ def test_node_hydration_merges_formal_current_view_metrics_into_batch_context(
         None, flow_run_id="run", attempt_id="attempt", binding_id="binding"
     )
 
-    assert calls == [handle, handle]
+    assert calls == [handle]
     assert captured["batch"].history_cursor == "older"
     assert hydrated == {
         "events": {"events": [], "history_cursor": "older"},
-        "context": {**context, **formal_context},
+        "context": context,
         "readiness": readiness.as_dict(),
     }
 
@@ -1148,15 +1137,17 @@ def test_discarding_node_draft_deletes_only_its_private_attachments(
             lambda *_args, **_kwargs: None,
         )
 
-        assert flow_node_conversations.delete_node_draft_attachments(
-            db,
-            flow_run_id=flow_run_id,
-            attempt_id=attempt_id,
-            owner_id=owner_id,
-        ) == 1
+        assert (
+            flow_node_conversations.delete_node_draft_attachments(
+                db,
+                flow_run_id=flow_run_id,
+                attempt_id=attempt_id,
+                owner_id=owner_id,
+            )
+            == 1
+        )
         assert not owned.exists()
         assert other.exists()
-
 
 
 def test_flow_node_host_resolves_a_frozen_shared_session_context(
@@ -2588,13 +2579,23 @@ def test_node_session_activity_maps_native_ids_once(
         class ActivityRuntime:
             calls = 0
 
-            def running_conversation_ids(self, _handle):
+            def conversation_activity_snapshot(self, _handle):
                 self.calls += 1
-                return {"native-running", "unbound-native-conversation"}
+                return {
+                    "native-running": RuntimeConversationActivity(
+                        conversation_id="native-running",
+                        execution_status="running",
+                        updated_at="2999-01-01T00:00:00+00:00",
+                    ),
+                    "unbound-native-conversation": RuntimeConversationActivity(
+                        conversation_id="unbound-native-conversation",
+                        execution_status="running",
+                        updated_at="2999-01-01T00:00:00+00:00",
+                    ),
+                }
 
-            def conversation_ids_by_status(self, _handle, _status):
-                self.calls += 1
-                return set()
+            def read_active_events(self, _handle):
+                raise AssertionError("activity polling must not read per-conversation events")
 
         runtime = ActivityRuntime()
         monkeypatch.setattr(flow_node_conversations, "get_runtime", lambda: runtime)
@@ -2609,7 +2610,7 @@ def test_node_session_activity_maps_native_ids_once(
         "failed_binding_ids": [],
     }
     assert bindings[0].id not in activity["running_binding_ids"]
-    assert runtime.calls == 3
+    assert runtime.calls == 1
 
 
 def test_node_session_unread_state_persists_in_conversation_projection(
@@ -2693,7 +2694,6 @@ def test_node_session_unread_state_persists_in_conversation_projection(
         assert acknowledged["unread_origin"] == "SYSTEM"
 
 
-
 def test_node_session_activity_persists_system_unread_and_honors_acknowledgement(
     db_session_factory: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2732,11 +2732,18 @@ def test_node_session_activity_persists_system_unread_and_honors_acknowledgement
         class FailedRuntime:
             failed = True
 
-            def running_conversation_ids(self, _handle):
-                return set()
-
-            def conversation_ids_by_status(self, _handle, status):
-                return {binding.openhands_conversation_id} if self.failed and status == "error" else set()
+            def conversation_activity_snapshot(self, _handle):
+                return (
+                    {
+                        binding.openhands_conversation_id: RuntimeConversationActivity(
+                            conversation_id=binding.openhands_conversation_id,
+                            execution_status="error",
+                            updated_at="2999-01-01T00:00:00+00:00",
+                        )
+                    }
+                    if self.failed
+                    else {}
+                )
 
         runtime = FailedRuntime()
         monkeypatch.setattr(conversation_service, "get_runtime", lambda: runtime)
@@ -2749,15 +2756,23 @@ def test_node_session_activity_persists_system_unread_and_honors_acknowledgement
         assert binding.unread_origin == "SYSTEM"
 
         conversation_service.set_node_session_unread(
-            db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding.id,
-            unread=False, unread_origin="SYSTEM",
+            db,
+            flow_run_id=flow_run_id,
+            attempt_id=attempt_id,
+            binding_id=binding.id,
+            unread=False,
+            unread_origin="SYSTEM",
         )
-        conversation_service.node_session_activity(db, flow_run_id=flow_run_id, attempt_id=attempt_id)
+        conversation_service.node_session_activity(
+            db, flow_run_id=flow_run_id, attempt_id=attempt_id
+        )
         assert binding.unread is False
         assert binding.unread_origin == "SYSTEM"
 
         runtime.failed = False
-        conversation_service.node_session_activity(db, flow_run_id=flow_run_id, attempt_id=attempt_id)
+        conversation_service.node_session_activity(
+            db, flow_run_id=flow_run_id, attempt_id=attempt_id
+        )
         assert binding.unread_origin is None
 
 

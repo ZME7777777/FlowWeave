@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -9,6 +10,7 @@ import pytest
 from flowweave.bootstrap.settings import Settings
 from flowweave.bootstrap.worker import (
     _ALL_TASK_TYPES,
+    _AUXILIARY_TASK_TYPES,
     _DELIVERY_TASK_TYPES,
     _MAINTENANCE_TASK_TYPES,
     _POLL_TASK_TYPES,
@@ -30,8 +32,11 @@ def test_worker_lanes_cover_each_handler_once_with_bounded_total_concurrency() -
     assert _RUNTIME_TASK_TYPES == _RUNTIME_CONTROL_TASK_TYPES | _POLL_TASK_TYPES
     assert not (_RUNTIME_CONTROL_TASK_TYPES & _POLL_TASK_TYPES)
     assert not (_RUNTIME_TASK_TYPES & _DELIVERY_TASK_TYPES)
+    assert not (_RUNTIME_TASK_TYPES & _AUXILIARY_TASK_TYPES)
     assert not (_RUNTIME_TASK_TYPES & _MAINTENANCE_TASK_TYPES)
+    assert not (_DELIVERY_TASK_TYPES & _AUXILIARY_TASK_TYPES)
     assert not (_DELIVERY_TASK_TYPES & _MAINTENANCE_TASK_TYPES)
+    assert not (_AUXILIARY_TASK_TYPES & _MAINTENANCE_TASK_TYPES)
 
 
 def test_single_worker_uses_one_generic_lane() -> None:
@@ -52,6 +57,50 @@ def test_default_worker_reserves_a_poll_lane_from_runtime_control() -> None:
     assert not (lanes["runtime-poll"][0] & lanes["runtime-control"][0])
 
 
+def test_default_worker_reserves_auxiliary_lane_from_delivery() -> None:
+    worker = object.__new__(TaskWorker)
+    worker.container = SimpleNamespace(settings=Settings(worker_concurrency=4))
+
+    lanes = dict((name, (task_types, slots)) for name, task_types, slots in worker._lane_specs())
+
+    assert lanes["delivery"] == (_DELIVERY_TASK_TYPES, 1)
+    assert lanes["auxiliary-maintenance"] == (
+        _AUXILIARY_TASK_TYPES | _MAINTENANCE_TASK_TYPES,
+        1,
+    )
+    assert not (lanes["delivery"][0] & lanes["auxiliary-maintenance"][0])
+
+
+def test_auxiliary_tasks_use_their_dedicated_executor_and_database_pool() -> None:
+    worker = object.__new__(TaskWorker)
+    auxiliary_executor = object()
+    auxiliary_slots = object()
+    auxiliary_sessions = object()
+    worker.container = SimpleNamespace(
+        auxiliary_executor=auxiliary_executor,
+        auxiliary_io_slots=auxiliary_slots,
+        poll_executor=object(),
+        poll_io_slots=object(),
+        blocking_executor=object(),
+        blocking_io_slots=object(),
+        database=SimpleNamespace(
+            auxiliary_sessions=auxiliary_sessions,
+            poll_sessions=object(),
+            blocking_sessions=object(),
+        ),
+    )
+
+    executor, slots, sessions = worker._task_execution_resources(
+        SimpleNamespace(task_type="BUILD_CAPABILITY_DEPENDENCIES")
+    )
+
+    assert (executor, slots, sessions) == (
+        auxiliary_executor,
+        auxiliary_slots,
+        auxiliary_sessions,
+    )
+
+
 def test_poll_tasks_use_their_dedicated_executor_and_database_pool() -> None:
     worker = object.__new__(TaskWorker)
     poll_executor = object()
@@ -70,6 +119,59 @@ def test_poll_tasks_use_their_dedicated_executor_and_database_pool() -> None:
     )
 
     assert (executor, slots, sessions) == (poll_executor, poll_slots, poll_sessions)
+
+
+def test_lease_heartbeat_uses_one_unpooled_connection_and_shared_slot() -> None:
+    from flowweave.bootstrap.worker import LeaseHeartbeat
+
+    source = Path(LeaseHeartbeat.__module__.replace(".", "/") + ".py")
+    del source
+    worker_source = Path("src/flowweave/bootstrap/worker.py").read_text()
+
+    assert "poolclass=NullPool" in worker_source
+    assert "with self.slots:" in worker_source
+    assert "slots=self.container.heartbeat_slots" in worker_source
+
+
+def test_admin_control_routes_use_their_reserved_database_lane() -> None:
+    admin_router = Path("src/flowweave/modules/admin_control/router.py").read_text()
+    http = Path("src/flowweave/shared/http.py").read_text()
+    container = Path("src/flowweave/bootstrap/container.py").read_text()
+    database = Path("src/flowweave/shared/infrastructure/database.py").read_text()
+
+    assert "run_blocking_admin" in admin_router
+    assert "run_sync" not in admin_router
+    assert "admin_executor" in container and "admin_io_slots" in container
+    assert 'admin_pool_size=1 if role == "api" else 0' in container
+    assert "self.admin_sessions" in database
+    assert 'lane_name="admin"' in http
+
+
+@pytest.mark.asyncio
+async def test_stalled_formal_read_does_not_block_runtime_control_executor() -> None:
+    read_started = asyncio.Event()
+    release_read = asyncio.Event()
+    loop = asyncio.get_running_loop()
+
+    def blocked_read() -> str:
+        loop.call_soon_threadsafe(read_started.set)
+        asyncio.run_coroutine_threadsafe(release_read.wait(), loop).result(timeout=2)
+        return "read-released"
+
+    with (
+        ThreadPoolExecutor(max_workers=1) as formal_read_executor,
+        ThreadPoolExecutor(max_workers=1) as control_executor,
+    ):
+        blocked = loop.run_in_executor(formal_read_executor, blocked_read)
+        await asyncio.wait_for(read_started.wait(), timeout=1)
+        assert (
+            await asyncio.wait_for(
+                loop.run_in_executor(control_executor, lambda: "control-ran"), timeout=0.2
+            )
+            == "control-ran"
+        )
+        release_read.set()
+        assert await asyncio.wait_for(blocked, timeout=1) == "read-released"
 
 
 @pytest.mark.asyncio

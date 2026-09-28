@@ -428,6 +428,15 @@ class RuntimeWorkspaceFile:
 
 
 @dataclass(frozen=True, slots=True)
+class RuntimeConversationActivity:
+    """One native catalog activity projection, scoped to a Runtime generation."""
+
+    conversation_id: str
+    execution_status: str
+    updated_at: str
+
+
+@dataclass(frozen=True, slots=True)
 class RuntimeConversationIdentity:
     """Ephemeral OpenHands identity evidence used to verify an original-ID reload."""
 
@@ -717,6 +726,10 @@ class RuntimePort(Protocol):
     ) -> RuntimeConversationRuntime: ...
 
     def input_readiness(self, handle: RuntimeHandle) -> RuntimeInputReadiness: ...
+
+    def conversation_activity_snapshot(
+        self, handle: RuntimeHandle
+    ) -> dict[str, RuntimeConversationActivity]: ...
 
     def running_conversation_ids(self, handle: RuntimeHandle) -> set[str]: ...
 

@@ -462,8 +462,11 @@ export const api = {
     request<import('../types').AgentConversationActivity>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-activity`),
   startAgentConversationSearch: (workspaceId: string, query: string, workDirectoryIds?: string[], includeRoot = true) =>
     request<import('../types').AgentConversationSearch>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-searches`, json('POST', { query, work_directory_ids: workDirectoryIds, include_root: includeRoot })),
-  agentConversationSearch: (workspaceId: string, searchId: string) =>
-    request<import('../types').AgentConversationSearch>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-searches/${encodeURIComponent(searchId)}`),
+  agentConversationSearch: (workspaceId: string, searchId: string, cursor?: string) => {
+    const query = new URLSearchParams({ limit: '20' });
+    if (cursor) query.set('cursor', cursor);
+    return request<import('../types').AgentConversationSearch>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-searches/${encodeURIComponent(searchId)}?${query}`);
+  },
   addAgentConversationCapability: (workspaceId: string, bindingId: string, capability_version_id: string) =>
     request<AgentConversation>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/capabilities`, json('POST', { capability_version_id })),
   bootstrapAgentConversation: (workspaceId: string, conversation_id: string, model_provider_id: string, model_name: string, reasoning_effort: string | null, content: string, attachments: AgentAttachment[] = [], references: AgentConversationReference[] = [], workspace_references: AgentWorkspaceReference[] = [], work_directory_id?: string, capability_version_ids: string[] = [], idempotencyKey = conversation_id, annotations: AgentConversationAnnotation[] = []) =>
@@ -482,12 +485,12 @@ export const api = {
     request<AgentConversation>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/order`, json('POST', { ordered_binding_ids })),
   deleteAgentConversation: (workspaceId: string, bindingId: string) =>
     request<void>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}`, json('DELETE', undefined, true)),
-  agentConversationEvents: (workspaceId: string, bindingId: string, cursor?: string, historyCursor?: string, diagnosticTrigger?: string) => {
+  agentConversationEvents: (workspaceId: string, bindingId: string, cursor?: string, historyCursor?: string, diagnosticTrigger?: string, signal?: AbortSignal) => {
     const query = new URLSearchParams();
     if (cursor) query.set('cursor', cursor);
     if (historyCursor) query.set('history_cursor', historyCursor);
     if (diagnosticTrigger) query.set('diagnostic_trigger', diagnosticTrigger);
-    return request<OpenHandsConversationEventBatch>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/events${query.size ? `?${query}` : ''}`);
+    return request<OpenHandsConversationEventBatch>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/events${query.size ? `?${query}` : ''}`, { signal });
   },
   agentConversationHydration: (workspaceId: string, bindingId: string, signal?: AbortSignal) =>
     request<import('../types').AgentConversationHydration>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/hydration`, { signal, timeoutMs: INTERACTIVE_REQUEST_TIMEOUT_MS }),
