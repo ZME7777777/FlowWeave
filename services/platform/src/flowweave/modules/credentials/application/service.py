@@ -34,6 +34,8 @@ def _summary(item: WebsiteCredential) -> dict[str, Any]:
             "password": f"{prefix}_PASSWORD",
         }
         if item.auth_type == "USERNAME_PASSWORD"
+        else {"password": f"{prefix}_PASSWORD"}
+        if item.auth_type == "PASSWORD"
         else {"token": f"{prefix}_TOKEN"}
     )
     return {
@@ -89,7 +91,11 @@ def save_credential(
             target_path=payload.target_path,
             include_subdomains=payload.include_subdomains,
             auth_type=payload.auth_type,
-            encrypted_username=encrypt_secret(payload.username) if payload.username else None,
+            encrypted_username=(
+                encrypt_secret(payload.username)
+                if payload.auth_type == "USERNAME_PASSWORD" and payload.username
+                else None
+            ),
             encrypted_secret=encrypt_secret(secret or ""),
             secret_hint=(secret or "")[-4:] or None,
         )
@@ -102,7 +108,9 @@ def save_credential(
             payload.include_subdomains,
             payload.auth_type,
         )
-        if payload.username is not None:
+        if payload.auth_type != "USERNAME_PASSWORD":
+            item.encrypted_username = None
+        elif payload.username is not None:
             item.encrypted_username = encrypt_secret(payload.username) if payload.username else None
         if secret:
             item.encrypted_secret, item.secret_hint = encrypt_secret(secret), secret[-4:]
@@ -182,6 +190,10 @@ def resolve_credentials_for_agent(
                 "password": f"${prefix}_PASSWORD",
             }
             auth_type = "username_password"
+        elif item.auth_type == "PASSWORD":
+            values[f"{prefix}_PASSWORD"] = decrypt_secret(item.encrypted_secret)
+            source_env = {"password": f"${prefix}_PASSWORD"}
+            auth_type = "password"
         else:
             values[f"{prefix}_TOKEN"] = decrypt_secret(item.encrypted_secret)
             source_env = {"token": f"${prefix}_TOKEN"}
@@ -202,9 +214,11 @@ def resolve_credentials_for_agent(
         "# 受控认证协议\n\n"
         "你只能按照下方凭据目录使用认证变量。\n\n"
         "执行任何可能访问网络的命令前：\n"
-        "1. 从该命令实际访问的 URL 提取并规范化主机名和路径；路径为空时视为 `/`，"
-        "忽略 query 与 fragment。\n"
-        "2. 先从主机匹配的条目中选择 `target_path` 最长且按完整目录边界匹配的条目：`/admin` 可匹配 "
+        "1. 从该命令实际访问的 URL 提取并规范化主机名、端口和路径；路径为空时视为 `/`，"
+        "忽略 query 与 fragment。若 URL 明确端口，`target_host` 必须包含相同端口；"
+        "未明确端口时不得使用带端口条目。\n"
+        "2. 先从主机和端口均匹配的条目中选择 `target_path` 最长且按完整目录边界匹配的条目："
+        "`/admin` 可匹配 "
         "`/admin` 或 `/admin/users`，不能匹配 `/administrator`。`/` 是整台主机的兜底路径。\n"
         "3. 若没有具体路径范围命中，才按主机从完整主机名开始逐层去掉最左标签，"
         "选择最具体的可用条目；"

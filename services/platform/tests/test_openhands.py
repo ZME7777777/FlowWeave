@@ -272,6 +272,10 @@ def test_credential_context_is_a_structured_host_scoped_directory(
         target_path="/console",
         include_subdomains=False,
         name="EasySearch",
+        secret_hint=None,
+        row_version=1,
+        created_at=SimpleNamespace(isoformat=lambda: "2026-01-01T00:00:00+00:00"),
+        updated_at=SimpleNamespace(isoformat=lambda: "2026-01-01T00:00:00+00:00"),
     )
     token_credential = SimpleNamespace(
         id="20000000-0000-4000-8000-000000000002",
@@ -282,6 +286,10 @@ def test_credential_context_is_a_structured_host_scoped_directory(
         target_path="/",
         include_subdomains=True,
         name="Example API",
+        secret_hint=None,
+        row_version=1,
+        created_at=SimpleNamespace(isoformat=lambda: "2026-01-01T00:00:00+00:00"),
+        updated_at=SimpleNamespace(isoformat=lambda: "2026-01-01T00:00:00+00:00"),
     )
 
     class CredentialDb:
@@ -344,6 +352,87 @@ def test_credential_path_matching_uses_directory_boundaries() -> None:
     assert credential_service.matches_path(credential, "/admin")
     assert credential_service.matches_path(credential, "/admin/users")
     assert not credential_service.matches_path(credential, "/administrator")
+
+
+def test_password_only_credential_injects_only_a_password_variable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    credential = SimpleNamespace(
+        id="30000000-0000-4000-8000-000000000003",
+        auth_type="PASSWORD",
+        encrypted_username=None,
+        encrypted_secret=b"password",
+        target_host="192.168.91.58:8888",
+        target_path="/",
+        include_subdomains=False,
+        name="Internal Admin",
+        secret_hint=None,
+        row_version=1,
+        created_at=SimpleNamespace(isoformat=lambda: "2026-01-01T00:00:00+00:00"),
+        updated_at=SimpleNamespace(isoformat=lambda: "2026-01-01T00:00:00+00:00"),
+    )
+
+    class CredentialDb:
+        def scalars(self, _query: object):
+            return iter((credential,))
+
+    monkeypatch.setattr(
+        credential_service,
+        "decrypt_secret",
+        lambda value: {b"password": "secret"}[value],
+    )
+
+    values, context = credential_service.credentials_for_agent(CredentialDb())
+
+    assert values == {"FLOWWEAVE_AUTH_30000000000040008000000000000003_PASSWORD": "secret"}
+    directory = json.loads(context.split("```json\n", 1)[1].split("\n```", 1)[0])
+    assert directory["credentials"] == [
+        {
+            "target_host": "192.168.91.58:8888",
+            "target_path": "/",
+            "host_scope": "exact",
+            "auth_type": "password",
+            "source_env": {"password": "$FLOWWEAVE_AUTH_30000000000040008000000000000003_PASSWORD"},
+        }
+    ]
+    assert "主机名、端口和路径" in context
+
+
+def test_credential_target_host_accepts_ip_addresses_and_ports() -> None:
+    ip_credential = WebsiteCredentialWrite(
+        name="Internal Admin",
+        target_host="192.168.91.58:08888",
+        target_path="/",
+        auth_type="PASSWORD",
+        secret="secret",
+    )
+    ipv6_credential = WebsiteCredentialWrite(
+        name="IPv6 Admin",
+        target_host="[2001:0db8::1]:8443",
+        target_path="/",
+        auth_type="PASSWORD",
+        secret="secret",
+    )
+
+    assert ip_credential.target_host == "192.168.91.58:8888"
+    assert ipv6_credential.target_host == "[2001:db8::1]:8443"
+    with pytest.raises(ValueError, match="include_subdomains"):
+        WebsiteCredentialWrite(
+            name="Invalid scope",
+            target_host="192.168.91.58:8888",
+            target_path="/",
+            include_subdomains=True,
+            auth_type="PASSWORD",
+            secret="secret",
+        )
+    with pytest.raises(ValueError, match="port"):
+        WebsiteCredentialWrite(
+            name="Invalid port",
+            target_host="192.168.91.58:65536",
+            target_path="/",
+            auth_type="PASSWORD",
+            secret="secret",
+        )
 
 
 def test_credential_target_path_is_normalized_and_rejects_url_components() -> None:
