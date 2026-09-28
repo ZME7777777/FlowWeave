@@ -13,6 +13,7 @@ from flowweave.modules.model_providers.application.service import (
     get_provider,
     has_connected_default_model,
     prompt_provider_snapshot,
+    provider_auth_headers,
 )
 from flowweave.modules.model_providers.infrastructure.codex_oauth import CODEX_BASE_URL
 from flowweave.modules.sandboxes.application.runtime_allocation import (
@@ -214,6 +215,23 @@ def runtime_provider(
             auth_type="CODEX_OAUTH",
             api_protocol="RESPONSES",
             extra_headers=headers,
+            reasoning_effort=selected_effort,
+        )
+    if provider.auth_type == "ANTHROPIC_API_KEY":
+        authorization = provider_auth_headers(provider).get("Authorization", "")
+        api_key = authorization.removeprefix("Bearer ").strip()
+        if not api_key:
+            raise DomainError(
+                "MODEL_CREDENTIAL_REQUIRED",
+                "The selected Anthropic provider does not have an API key",
+                422,
+            )
+        return RuntimeProvider(
+            provider_id=provider_id,
+            base_url="https://api.anthropic.com",
+            model=selected_model,
+            api_key=api_key,
+            auth_type="ANTHROPIC_API_KEY",
             reasoning_effort=selected_effort,
         )
     selected = prompt_provider_snapshot(

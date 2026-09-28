@@ -165,7 +165,8 @@ def provider_dict(db: Session, item: ModelProvider) -> dict[str, Any]:
         "available_for_nodes": item.connection_state == "CONNECTED"
         and provider_has_runtime_credentials(item)
         and any(model.enabled and model.is_default for model in models),
-        "available_for_prompt_gates": item.connection_state == "CONNECTED"
+        "available_for_prompt_gates": item.auth_type != "ANTHROPIC_API_KEY"
+        and item.connection_state == "CONNECTED"
         and provider_has_runtime_credentials(item)
         and any(model.enabled and model.is_default for model in models),
         "row_version": item.row_version,
@@ -202,14 +203,9 @@ def get_provider(db: Session, provider_id: str) -> ModelProvider:
 
 
 def provider_has_runtime_credentials(item: ModelProvider) -> bool:
-    """Whether a provider can supply credentials when OpenHands starts.
+    """Whether a provider can supply credentials when OpenHands starts."""
 
-    A successful connection test is historical.  The next Runtime request also
-    needs a current API key, or both Codex OAuth tokens so the access token can
-    safely refresh between pre-flight and use.
-    """
-
-    if item.auth_type == "API_KEY":
+    if item.auth_type in {"API_KEY", "ANTHROPIC_API_KEY"}:
         return item.encrypted_api_key is not None
     if item.auth_type == "CODEX_OAUTH":
         return (
@@ -430,15 +426,20 @@ def save_provider(
         if payload.auth_type == "CODEX_OAUTH" and item.encrypted_oauth_refresh_token
         else "UNTESTED"
     )
-    if payload.auth_type == "API_KEY" and payload.api_key:
+    if payload.auth_type in {"API_KEY", "ANTHROPIC_API_KEY"} and payload.api_key:
         item.encrypted_api_key = _fernet().encrypt(payload.api_key.encode())
         item.api_key_hint = f"••••{payload.api_key[-4:]}"
     if previous_auth_type != payload.auth_type:
-        if payload.auth_type == "API_KEY":
+        if payload.auth_type in {"API_KEY", "ANTHROPIC_API_KEY"}:
             _clear_oauth(item)
+            if previous_auth_type in {"API_KEY", "ANTHROPIC_API_KEY"} and not payload.api_key:
+                item.encrypted_api_key = None
+                item.api_key_hint = None
         else:
             item.encrypted_api_key = None
             item.api_key_hint = None
+    if payload.auth_type == "ANTHROPIC_API_KEY":
+        item.connection_state = "CONNECTED" if item.encrypted_api_key else "UNTESTED"
     previous_models = {
         model.model_name: model
         for model in db.scalars(
@@ -532,7 +533,9 @@ def provider_connection_snapshot(db: Session, provider_id: str) -> ProviderConne
 
     item = get_provider(db, provider_id)
     if item.auth_type != "API_KEY":
-        raise ValueError("Codex OAuth providers do not expose an OpenAI model-list endpoint")
+        raise ValueError(
+            "Only OpenAI-compatible API-key providers expose an OpenAI model-list endpoint"
+        )
     return ProviderConnectionSnapshot(
         provider_id=item.id,
         base_url=item.base_url.rstrip("/"),

@@ -210,6 +210,46 @@ def _request() -> StartAttemptRequest:
     )
 
 
+def test_anthropic_api_provider_uses_litellm_anthropic_model(
+    monkeypatch: pytest.MonkeyPatch, openhands_settings: Settings
+) -> None:
+    runtime = OpenHandsRuntime(openhands_settings)
+    request = _request()
+    request = replace(
+        request,
+        agent_spec=replace(
+            request.agent_spec,
+            provider=RuntimeProvider(
+                provider_id="anthropic",
+                base_url="https://api.anthropic.com",
+                model="claude-sonnet-4-5",
+                api_key="anthropic-api-key",
+                auth_type="ANTHROPIC_API_KEY",
+            ),
+        ),
+    )
+    captured: dict[str, object] = {}
+
+    def fake_request(method: str, path: str, **kwargs: object) -> dict[str, object]:
+        if method == "POST" and path == "/api/conversations":
+            captured.update(cast(dict[str, object], kwargs["json"]))
+            return {
+                "id": "10000000-0000-4000-8000-000000000099",
+                "agent": {"llm": cast(dict[str, object], captured["agent"])["llm"]},
+            }
+        raise AssertionError((method, path))
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+
+    runtime.start(request)
+
+    agent = cast(dict[str, object], captured["agent"])
+    llm = cast(dict[str, object], agent["llm"])
+    assert llm["model"] == "anthropic/claude-sonnet-4-5"
+    assert llm["base_url"] == "https://api.anthropic.com"
+    assert llm["api_key"] == "anthropic-api-key"
+
+
 def test_collaboration_request_keeps_host_scoped_credentials_without_node_execution_context(
     monkeypatch: pytest.MonkeyPatch,
 ):
