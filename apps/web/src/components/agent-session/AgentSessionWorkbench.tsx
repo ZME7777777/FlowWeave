@@ -3416,6 +3416,17 @@ function clampWorkspaceToolWidth(value: number): number {
   return Math.max(300, Math.min(720, viewportMaximum, value));
 }
 
+function clampWorkspaceSummaryWidth(value: number): number {
+  if (window.innerWidth <= 1100) return Math.max(248, Math.min(720, value));
+  const viewportMaximum = Math.max(248, window.innerWidth - 700);
+  return Math.max(248, Math.min(720, viewportMaximum, value));
+}
+
+function clampConversationRailWidth(value: number): number {
+  if (window.innerWidth <= 1100) return Math.max(220, Math.min(420, value));
+  return Math.max(220, Math.min(420, window.innerWidth - 700, value));
+}
+
 
 type ConversationFilePreviewRequest =
   | { key: string; kind: 'workspace'; path: string; filename: string; mimeType?: string; imageDataUrl?: string | null; attachment?: AgentAttachment }
@@ -3540,6 +3551,10 @@ function WorkspaceDrawer({
     const stored = Number(localStorage.getItem('flowweave:workspace-tool-width'));
     return clampWorkspaceToolWidth(Number.isFinite(stored) ? stored : 400);
   });
+  const [summaryWidth, setSummaryWidth] = useState(() => {
+    const stored = Number(localStorage.getItem('flowweave:workspace-summary-width'));
+    return clampWorkspaceSummaryWidth(Number.isFinite(stored) ? stored : 272);
+  });
   const [fileTreeWidth, setFileTreeWidth] = useState(() => {
     const stored = Number(localStorage.getItem('flowweave:workspace-file-tree-width'));
     return Math.min(520, Math.max(180, Number.isFinite(stored) ? stored : 300));
@@ -3595,10 +3610,16 @@ function WorkspaceDrawer({
     localStorage.setItem('flowweave:workspace-tool-width', String(panelWidth));
   }, [panelWidth]);
   useEffect(() => {
+    localStorage.setItem('flowweave:workspace-summary-width', String(summaryWidth));
+  }, [summaryWidth]);
+  useEffect(() => {
     localStorage.setItem('flowweave:workspace-file-tree-width', String(fileTreeWidth));
   }, [fileTreeWidth]);
   useEffect(() => {
-    const clamp = () => setPanelWidth(current => clampWorkspaceToolWidth(current));
+    const clamp = () => {
+      setPanelWidth(current => clampWorkspaceToolWidth(current));
+      setSummaryWidth(current => clampWorkspaceSummaryWidth(current));
+    };
     window.addEventListener('resize', clamp);
     return () => window.removeEventListener('resize', clamp);
   }, []);
@@ -4136,11 +4157,15 @@ function WorkspaceDrawer({
     void closeTab(tab);
   };
   const startResize = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (!open || window.innerWidth <= 960) return;
+    if (window.innerWidth <= 960) return;
     event.preventDefault();
     const startX = event.clientX;
-    const startWidth = panelWidth;
-    const move = (moveEvent: PointerEvent) => setPanelWidth(clampWorkspaceToolWidth(startWidth + startX - moveEvent.clientX));
+    const startWidth = open ? panelWidth : summaryWidth;
+    const move = (moveEvent: PointerEvent) => {
+      const next = startWidth + startX - moveEvent.clientX;
+      if (open) setPanelWidth(clampWorkspaceToolWidth(next));
+      else setSummaryWidth(clampWorkspaceSummaryWidth(next));
+    };
     const stop = () => {
       window.removeEventListener('pointermove', move);
       window.removeEventListener('pointerup', stop);
@@ -4223,11 +4248,11 @@ function WorkspaceDrawer({
     <article className="agent-workspace-ide"><MonitorCog size={16}/><div><small>IDEA / Gateway</small><b>{details.ide.gateway.status}</b>{sshRemoteReady ? <button type="button" className="agent-ssh-access-trigger" onClick={() => setSshAccessOpen(true)}>SSH 接入说明<ChevronRight size={13}/></button> : <code>{details.ide.workspace_path}</code>}<p>{details.ide.gateway.note}</p></div></article>
     <article className="agent-workspace-sources"><Link2 size={16}/><div><small>来源</small>{sources.length ? <><div className="agent-workspace-source-list">{visibleSources.map(source => <button type="button" key={source.id} title={`查看来源详情：${source.label}`} onClick={openSources}><span className="agent-workspace-source-glyph"><ConversationSourceGlyph source={source} size={12}/></span><span><b>{source.label}</b><em>{conversationSourceKind(source)}</em></span></button>)}</div>{sources.length > visibleSources.length && <button type="button" className="agent-workspace-view-all-sources" onClick={openSources}><Link2 size={12}/><span>查看全部</span><em>{sources.length}</em><ChevronRight size={13}/></button>}</> : <p>用户输入的链接、文件和图片会集中显示在这里。</p>}</div></article>
   </section>;
-  return <><aside className={`agent-workspace-drawer ${open ? 'tools-open' : 'summary-open'}${fullScreen ? ' fullscreen' : ''}`} style={{ width: fullScreen ? undefined : open ? panelWidth : 272 }} role={fullScreen ? 'dialog' : undefined} aria-modal={fullScreen || undefined} aria-label={fullScreen ? '全屏工作区工具' : undefined}>
+  return <><aside className={`agent-workspace-drawer ${open ? 'tools-open' : 'summary-open'}${fullScreen ? ' fullscreen' : ''}`} style={{ width: fullScreen ? undefined : open ? panelWidth : summaryWidth }} role={fullScreen ? 'dialog' : undefined} aria-modal={fullScreen || undefined} aria-label={fullScreen ? '全屏工作区工具' : undefined}>
     <div className="agent-workspace-resizer" role="separator" aria-label="调整工作区工具宽度" aria-orientation="vertical" onPointerDown={startResize}/>
     <section className={`agent-workspace-summary ${open ? 'panel-hidden' : ''}`}>
       <header><div><span className="eyebrow">WORKSPACE</span><b>环境信息</b></div><button type="button" aria-label="打开工作区工具" onClick={onOpen}><PanelRightOpen size={16}/></button></header>
-      <div className="agent-workspace-quick-actions"><button type="button" onClick={() => openFiles()}><FileCode2 size={14}/>文件</button><button type="button" disabled={!runtimeAvailable} onClick={openTerminal}><Plus size={14}/>新终端</button>{onOpenSidebarQuestion && <button type="button" onClick={onOpenSidebarQuestion}><PanelRightOpen size={14}/>侧边聊天</button>}</div>
+      <div className="agent-workspace-quick-actions"><button type="button" className="agent-workspace-quick-files" onClick={() => openFiles()}><FileCode2 size={14}/>文件</button><button type="button" className="agent-workspace-quick-terminal" disabled={!runtimeAvailable} onClick={openTerminal}><Plus size={14}/>新终端</button>{onOpenSidebarQuestion && <button type="button" className="agent-workspace-quick-sidebar-chat" onClick={onOpenSidebarQuestion}><PanelRightOpen size={14}/>侧边聊天</button>}</div>
       {loadingOrError || summary}
     </section>
     <section className={`agent-workspace-tool-shell ${open ? '' : 'panel-hidden'}`}>
@@ -4372,6 +4397,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const [fileSelectionReference, setFileSelectionReference] = useState<{ path: string; selection: FileSelection }>();
   const [candidatePreviewRequest, setCandidatePreviewRequest] = useState<CandidateFilePreviewRequest>();
   const [sidebarQuestion, setSidebarQuestion] = useState<{ sourceBindingId: string; sourceTitle?: string | null; reference?: AgentConversationReference }>();
+  const [conversationRailWidth, setConversationRailWidth] = useState(() => {
+    const stored = Number(localStorage.getItem('flowweave:conversation-rail-width'));
+    return clampConversationRailWidth(Number.isFinite(stored) ? stored : 240);
+  });
   const [operationError, setOperationError] = useState<Error>();
   const [historyLoadingBindingId, setHistoryLoadingBindingId] = useState<string>();
   const [historyPrepend, setHistoryPrepend] = useState<ConversationHistoryPrepend>();
@@ -4449,6 +4478,14 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   }, [host, queryClient]);
   useEffect(() => () => {
     if (workspacePathCopyTimer.current !== undefined) window.clearTimeout(workspacePathCopyTimer.current);
+  }, []);
+  useEffect(() => {
+    localStorage.setItem('flowweave:conversation-rail-width', String(conversationRailWidth));
+  }, [conversationRailWidth]);
+  useEffect(() => {
+    const clamp = () => setConversationRailWidth(current => clampConversationRailWidth(current));
+    window.addEventListener('resize', clamp);
+    return () => window.removeEventListener('resize', clamp);
   }, []);
   const bootstrapTransitionScope = useRef<string | undefined>(undefined);
   const routeBindingId = host.bindingIdFromPathname(withoutDeploymentBase(window.location.pathname));
@@ -7427,7 +7464,26 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       setOperationError(undefined);
     } catch (reason) { reportOperationError('work-directory-delete', reason instanceof Error ? reason : new Error('删除工作区失败')); }
   };
-  return <main className="agent-workbench-page">
+  const startConversationRailResize = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (window.innerWidth <= 1100) return;
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = conversationRailWidth;
+    const move = (moveEvent: PointerEvent) => setConversationRailWidth(
+      clampConversationRailWidth(startWidth + moveEvent.clientX - startX),
+    );
+    const stop = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', stop);
+      document.body.style.removeProperty('cursor');
+      document.body.style.removeProperty('user-select');
+    };
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', stop, { once: true });
+  };
+  return <main className="agent-workbench-page" style={{ '--conversation-rail-width': `${conversationRailWidth}px` } as CSSProperties}>
     {selected && <ConversationStreamObserver workspaceId={workspace.id} bindingId={selected.id} enabled={streamEnabled} onEvent={onStreamEvent} onStatus={updateStreamStatus} onReconnect={onStreamReconnect}/>}
     {conversationSearchOpen && <ConversationSearchDialog search={conversationSearchQuery.data} onClose={() => setConversationSearchOpen(false)} onSubmit={startConversationSearch} submitting={conversationSearchQuery.isFetching} onOpenHit={openConversationSearchHit}/>}
     {filePreviewRequest && <ConversationFilePreviewDialog
@@ -7440,6 +7496,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       onOpenInFiles={openPreviewInFiles}
     />}
     <aside className="agent-workbench-rail">
+      <div className="agent-conversation-rail-resizer" role="separator" aria-label="调整会话列表宽度" aria-orientation="vertical" onPointerDown={startConversationRailResize}/>
       <header className={!onReturnToSource && features.workDirectories ? 'agent-workbench-rail-actions-only' : undefined}>{onReturnToSource && <button type="button" className="agent-session-return" aria-label="返回节点执行" title="返回节点执行" onClick={onReturnToSource}><ArrowLeft size={16}/></button>}{(onReturnToSource || !features.workDirectories) && <div className="agent-session-host-heading"><span className="eyebrow">{onReturnToSource ? 'FLOWRUN NODE WORKSPACE' : 'FLOWRUN NODE'}</span><h1>{onReturnToSource ? workspace?.display_name || '节点会话' : '节点会话'}</h1></div>}<div className="agent-workbench-create-actions"><button type="button" className={`agent-workbench-activity-trigger${sidebarListMode === 'activity' ? ' active' : ''}`} aria-label={`查看活动会话${activityConversations.length ? `（${activityConversations.length}）` : ''}`} title="查看活动会话" onClick={toggleSidebarListMode}><Bell size={15}/>{activityConversations.length > 0 && <span aria-hidden="true">{activityConversations.length > 99 ? '99+' : activityConversations.length}</span>}</button><button className="primary" disabled={!conversationSearchSupported} onClick={() => setConversationSearchOpen(true)}>{conversationSearchQuery.data?.state === 'PENDING' || conversationSearchQuery.data?.state === 'RUNNING' ? <LoaderCircle className="conversation-activity-spin" size={15}/> : conversationSearchQuery.data?.state === 'SUCCEEDED' ? <Check size={15}/> : <Search size={15}/>}{conversationSearchQuery.data?.state === 'SUCCEEDED' ? '搜索完成' : '搜索会话'}</button>{features.workDirectories && <button type="button" className="secondary" aria-label="新增工作区" disabled={!runtimeWritable} onClick={() => setWorkDirectoryCreatorOpen(true)}><FolderPlus size={14}/>新增工作区</button>}</div></header>
       <div className="agent-workbench-list">
         {sidebarListMode === 'activity'
