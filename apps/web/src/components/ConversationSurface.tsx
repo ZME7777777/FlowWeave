@@ -1,4 +1,4 @@
-import { BookOpen, Check, ChevronDown, ChevronRight, CircleAlert, ClipboardList, Copy, ExternalLink, Eye, FileCode2, FileCog, FileJson, FilePenLine, FilePlus2, FileText, FileType2, GitFork, Link, LoaderCircle, PanelRightOpen, Pencil, PlugZap, Quote, Search, Sparkles, SquareTerminal, Workflow, Wrench } from 'lucide-react';
+import { BookOpen, Check, ChevronDown, ChevronRight, CircleAlert, ClipboardList, Copy, ExternalLink, Eye, FileCode2, FileCog, FileJson, FilePenLine, FilePlus2, FileText, FileType2, GitFork, Link, LoaderCircle, PanelRightOpen, PanelTop, Pencil, PlugZap, Quote, Search, Sparkles, SquareTerminal, Workflow, Wrench } from 'lucide-react';
 import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type RefObject } from 'react';
 import type { AgentActivitySummary, AgentAttachment, AgentConversationAnnotation, AgentConversationReference, AgentWorkspaceReference, OpenHandsConversationEvent, RuntimeTaskControlSnapshot } from '../types';
 import { SubagentAvatar } from './SubagentAvatar';
@@ -281,7 +281,7 @@ function MessageAttachments({ attachments, references = [], workspaceReferences 
       <Quote size={16}/><span><b>{`会话引用 ${index + 1}`}</b><small>已添加到本条消息</small></span>
       <PanelRightOpen size={13}/>
     </button>)}
-    {workspaceReferences.map(reference => <button type="button" key={`${reference.path}:${JSON.stringify(reference.selection ?? {})}`} className="conversation-message-attachment conversation-message-workspace-reference" title={reference.path} onClick={() => { onOpenWorkspaceReference?.(reference); window.dispatchEvent(new CustomEvent('flowweave:open-workspace-selection', { detail: reference })); }}>
+    {workspaceReferences.map(reference => <button type="button" key={`${reference.path}:${JSON.stringify(reference.selection ?? {})}`} className="conversation-message-attachment conversation-message-workspace-reference" title={reference.path} onClick={() => onOpenWorkspaceReference?.(reference)}>
       <FileText size={16}/><span><b>{reference.display_name}</b><small>{workspaceReferenceLabel(reference)}</small></span>
     </button>)}
     {annotations.map((annotation, index) => {
@@ -311,8 +311,8 @@ function ConversationReferencePreview({ reference, onClose, onLocate }: {
 
 const ConversationMarkdown = lazy(() => import('./ConversationMarkdown').then(module => ({ default: module.ConversationMarkdown })));
 
-function MessageMarkdown({ children, onOpenWorkspaceFile, onOpenImage }: { children: string; onOpenWorkspaceFile?: (href: string) => boolean; onOpenImage?: (src: string, alt?: string) => void }) {
-  return <Suspense fallback={<div className="conversation-markdown-loading">正在渲染消息…</div>}><ConversationMarkdown onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenImage={onOpenImage}>{children}</ConversationMarkdown></Suspense>;
+function MessageMarkdown({ children, reveal = false, onOpenWorkspaceFile, onOpenImage }: { children: string; reveal?: boolean; onOpenWorkspaceFile?: (href: string) => boolean; onOpenImage?: (src: string, alt?: string) => void }) {
+  return <Suspense fallback={<div className="conversation-markdown-loading">正在渲染消息…</div>}><ConversationMarkdown reveal={reveal} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenImage={onOpenImage}>{children}</ConversationMarkdown></Suspense>;
 }
 
 interface CandidateOutput { fieldKey: string; artifactType: 'URL' | 'FILE'; value: string }
@@ -1082,19 +1082,18 @@ function retryLabel(status: ModelRetryStatus): string {
     quota: '额度不足', config: '配置不兼容', context_limit: '上下文超限',
     content_policy: '内容安全策略拒绝', internal: '内部异常', unknown: '调用失败',
   };
-  const suffix = status.attempt !== undefined && status.maxAttempts !== undefined
-    ? ` ${status.attempt}/${status.maxAttempts}`
+  const attempt = status.attempt !== undefined && status.maxAttempts !== undefined
+    ? `（${status.attempt}/${status.maxAttempts}）`
     : '';
   if (status.final) {
     return isModelFailure
-      ? `↳ ${prefix}${reason[status.failureKind] ?? '调用失败'}，本轮已停止${suffix}`
+      ? `↳ ${prefix}${reason[status.failureKind] ?? '调用失败'}，本轮已停止${attempt}`
       : `↳ ${prefix}失败，本轮已停止`;
   }
-  if (status.failureKind === 'connection') return `↳ 正在重新连接${prefix}服务${suffix}`;
-  return `↳ ${prefix}${reason[status.failureKind] ?? '调用失败'}，正在重试${suffix}`;
+  return `↳ ${prefix}服务短暂波动，正在自动重试${attempt}`;
 }
 
-function RetryStatus({ status }: { status: ModelRetryStatus }) {
+function RetryStatus({ status, errorDetail }: { status: ModelRetryStatus; errorDetail?: string }) {
   const detail: Record<string, string> = {
     timeout: '模型响应超时。', connection: '无法连接模型网关。', service_unavailable: '模型服务返回了暂时不可用的响应。',
     empty_response: '模型没有返回完整的可用响应。', rate_limit: '模型服务暂时限制了请求速率。', auth: '模型凭据无效或权限不足。',
@@ -1103,9 +1102,27 @@ function RetryStatus({ status }: { status: ModelRetryStatus }) {
     no_eligible_events: '没有可安全压缩的事件区间。', insufficient_progress: '可压缩范围不足以满足最小进度要求。',
     summary_model_failed: '上下文摘要模型调用未完成。', condensation_unknown: '上下文压缩未能完成。',
   };
+  const finalTitle: Record<string, string> = {
+    timeout: '模型响应超时', connection: '模型连接失败', service_unavailable: '模型服务暂不可用',
+    empty_response: '模型返回不完整响应', rate_limit: '模型请求受限', auth: '模型认证失败',
+    quota: '模型额度不足', config: '模型配置不兼容', context_limit: '模型上下文超限',
+    content_policy: '请求被安全策略拒绝', internal: '模型内部异常', unknown: '模型调用失败',
+    no_eligible_events: '没有可压缩的上下文', insufficient_progress: '上下文不足以压缩',
+    summary_model_failed: '上下文摘要生成失败', condensation_unknown: '上下文压缩未完成',
+  };
+  const recoveringDetail = '检测到可恢复的模型调用波动，系统正在按退避策略自动重试。';
+  const summary = status.final
+    ? (status.subject === 'execution' ? '本轮执行失败' : finalTitle[status.failureKind] ?? finalTitle.unknown)
+    : retryLabel(status);
+  const detailText = status.final
+    ? (status.subject === 'execution' ? '执行过程中发生了不可恢复错误。' : detail[status.failureKind] ?? detail.unknown)
+    : recoveringDetail;
   return <details className={`conversation-model-retry${status.final ? ' final' : ''}`}>
-    <summary role="status" aria-label={retryLabel(status)}><ChevronRight className="conversation-expand-arrow" size={13}/><span>{retryLabel(status)}</span>{!status.final && <span className="conversation-turn-status-dots" aria-hidden="true"><i/><i/><i/></span>}</summary>
-    <p>{status.subject === 'execution' ? '执行过程中发生了不可恢复错误。' : detail[status.failureKind] ?? detail.unknown}{status.errorCode ? ` · 错误码：${status.errorCode}` : ''}</p>
+    <summary role="status" aria-label={summary}><ChevronRight className="conversation-expand-arrow" size={13}/><span>{summary}</span>{!status.final && <span className="conversation-turn-status-dots" aria-hidden="true"><i/><i/><i/></span>}</summary>
+    <div className="conversation-model-retry-detail">
+      <p>{detailText}{status.errorCode ? ` · 错误码：${status.errorCode}` : ''}</p>
+      {status.final && errorDetail?.trim() && <pre aria-label="原始错误详情">{errorDetail.trim()}</pre>}
+    </div>
   </details>;
 }
 
@@ -1158,7 +1175,7 @@ function ActivityEntryRow({ entry, active, paused = false, parentFailed = false,
     ? subagentAvatarSlotForEvent(item.event, avatarSlots)
     : undefined;
   const presentation = activityPresentation(entry, active, workspaceRoot, paused, parentFailed);
-  const ToolIcon = toolVisual === 'terminal' ? SquareTerminal : toolVisual === 'file' ? fileToolIcon(presentation) : toolVisual === 'mcp' ? PlugZap : toolVisual === 'workflow' ? Workflow : Icon;
+  const ToolIcon = toolVisual === 'terminal' ? SquareTerminal : toolVisual === 'file' ? fileToolIcon(presentation) : toolVisual === 'browser' ? PanelTop : toolVisual === 'mcp' ? PlugZap : toolVisual === 'workflow' ? Workflow : Icon;
   const taskAvatar = avatarSlot && <SubagentAvatar slot={avatarSlot} status={taskAvatarStatus(entry, item, paused, parentFailed)} size={13}/>;
   const toolDetail = item.kind === 'tool'
     ? <ToolDetailPanel presentation={presentation} eventName={eventName} toolName={toolName || undefined} toolVisual={toolVisual} results={entry.results} workspaceRoot={workspaceRoot}/>
@@ -1169,22 +1186,22 @@ function ActivityEntryRow({ entry, active, paused = false, parentFailed = false,
   const thoughtAttributes = referenceableThought ? { 'data-conversation-event-id': item.event.id } : {};
   const toolRunning = active && !paused && !parentFailed && entry.results.length === 0 && item.event.event_type === 'TOOL_CALL';
   if (item.kind === 'thought') return <article {...thoughtAttributes} className={`conversation-activity-row thought${isNativeThink ? ' native-think' : ''}`}>
-    <MessageMarkdown>{presentation.thought ?? item.content}</MessageMarkdown>
+    <MessageMarkdown reveal={active}>{presentation.thought ?? item.content}</MessageMarkdown>
   </article>;
   if (item.kind === 'condensation') return <article className={`conversation-activity-row tool condensation${condensationRunning ? ' running' : ''}`} role="status" aria-label={presentation.title}>
     <Sparkles size={13}/><div><b>{presentation.title}</b></div>
   </article>;
   if (eventName === 'TaskTrackerAction' || eventName === 'TaskTrackerObservation') return <div className={`conversation-tool-entry semantic tool-${toolVisual}`}>
-    {!hideThought && presentation.thought && <article {...thoughtAttributes} className={`conversation-activity-row thought tool-thought tool-${toolVisual}`}><MessageMarkdown>{presentation.thought}</MessageMarkdown></article>}
+    {!hideThought && presentation.thought && <article {...thoughtAttributes} className={`conversation-activity-row thought tool-thought tool-${toolVisual}`}><MessageMarkdown reveal={active}>{presentation.thought}</MessageMarkdown></article>}
     <TaskTrackerCard entry={entry} presentation={presentation} running={toolRunning}/>
   </div>;
   if (eventName === 'InvokeSkillAction' || eventName === 'InvokeSkillObservation') return <div className={`conversation-tool-entry semantic tool-${toolVisual}`}>
-    {!hideThought && presentation.thought && <article {...thoughtAttributes} className={`conversation-activity-row thought tool-thought tool-${toolVisual}`}><MessageMarkdown>{presentation.thought}</MessageMarkdown></article>}
+    {!hideThought && presentation.thought && <article {...thoughtAttributes} className={`conversation-activity-row thought tool-thought tool-${toolVisual}`}><MessageMarkdown reveal={active}>{presentation.thought}</MessageMarkdown></article>}
     <SkillLoadRow entry={entry} running={toolRunning}/>
   </div>;
   if (item.kind === 'tool' && toolDetail) return <div className={`conversation-tool-entry tool-${toolVisual}`}>
     {!hideThought && presentation.thought && <article {...thoughtAttributes} className={`conversation-activity-row thought tool-thought tool-${toolVisual}`}>
-      <MessageMarkdown>{presentation.thought}</MessageMarkdown>
+      <MessageMarkdown reveal={active}>{presentation.thought}</MessageMarkdown>
     </article>}
     <details className={`conversation-activity-row tool conversation-tool-detail tool-${toolVisual}${toolRunning ? ' running' : ''}`} data-tool-kind={toolVisual} data-file-operation={toolVisual === 'file' ? presentation.fileOperation : undefined} data-file-kind={toolVisual === 'file' ? presentation.fileKind : undefined}>
       <summary aria-label={`查看执行详情：${presentation.title}`}>{taskAvatar ?? <ToolIcon size={13}/>}<div><b title={presentation.title}>{presentation.title}</b></div><ChevronRight className="conversation-expand-arrow" size={12}/></summary>
@@ -1193,7 +1210,7 @@ function ActivityEntryRow({ entry, active, paused = false, parentFailed = false,
   </div>;
   return <article className={`conversation-activity-row ${item.kind}`}>
     {taskAvatar ?? <ToolIcon size={13}/>}<div className="conversation-activity-content"><b title={presentation.title}>{presentation.title}</b><small>{presentation.status}</small>
-      {presentation.thought && <span className="conversation-activity-thought"><MessageMarkdown>{presentation.thought}</MessageMarkdown></span>}
+      {presentation.thought && <span className="conversation-activity-thought"><MessageMarkdown reveal={active}>{presentation.thought}</MessageMarkdown></span>}
     </div>
   </article>;
 }
@@ -1223,7 +1240,7 @@ function ProgressActivity({ group, active, paused, parentFailed, avatarSlots, wo
     if (!operation) return [];
     const presentation = activityPresentation(entry, active, workspaceRoot, paused, parentFailed);
     const visual = toolVisualPresentation(String(operation.event.payload.event_name ?? ''), detailText(operation.event.payload.tool_name));
-    const OperationIcon = visual === 'terminal' ? SquareTerminal : visual === 'file' ? fileToolIcon(presentation) : visual === 'mcp' ? PlugZap : visual === 'workflow' ? Workflow : Wrench;
+    const OperationIcon = visual === 'terminal' ? SquareTerminal : visual === 'file' ? fileToolIcon(presentation) : visual === 'browser' ? PanelTop : visual === 'mcp' ? PlugZap : visual === 'workflow' ? Workflow : Wrench;
     return [{ id: entry.id, Icon: OperationIcon, label: presentation.title }];
   });
   const visibleOperationIcons = operationIcons.slice(0, 3);
@@ -1305,8 +1322,9 @@ const ActivityGroup = memo(function ActivityGroup({ items, active, completionCon
   && sameActivityItems(previous.items, next.items)
 ));
 
-function AnnotationReplyContent({ content, annotations, onLocateAnnotation, onOpenWorkspaceFile, onOpenImage }: {
+function AnnotationReplyContent({ content, reveal = false, annotations, onLocateAnnotation, onOpenWorkspaceFile, onOpenImage }: {
   content: string;
+  reveal?: boolean;
   annotations: AgentConversationAnnotation[];
   onLocateAnnotation?: (annotation: AgentConversationAnnotation) => void;
   onOpenWorkspaceFile?: (href: string) => boolean;
@@ -1333,13 +1351,14 @@ function AnnotationReplyContent({ content, annotations, onLocateAnnotation, onOp
       className="conversation-annotation-marker"
       onPointerUp={event => event.stopPropagation()}
       onClick={() => onLocateAnnotation?.(part.annotation!)}
-    ><Quote size={12}/><span>注释 {annotations.findIndex(annotation => annotation.id === part.annotation!.id) + 1}</span></button> : part.content && <MessageMarkdown key={index} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenImage={onOpenImage}>{part.content}</MessageMarkdown>)}
+    ><Quote size={12}/><span>注释 {annotations.findIndex(annotation => annotation.id === part.annotation!.id) + 1}</span></button> : part.content && <MessageMarkdown key={index} reveal={reveal} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenImage={onOpenImage}>{part.content}</MessageMarkdown>)}
   </>;
 }
 
-function AgentReply({ event, content, changes = [], onFork, onPreviewCandidateFile, onReviewChanges, onOpenWorkspaceFile, onOpenImage, workspaceRoot, annotations = [], onLocateAnnotation }: {
+function AgentReply({ event, content, reveal = false, changes = [], onFork, onPreviewCandidateFile, onReviewChanges, onOpenWorkspaceFile, onOpenImage, workspaceRoot, annotations = [], onLocateAnnotation }: {
   event: OpenHandsConversationEvent;
   content: string;
+  reveal?: boolean;
   changes?: WorkspaceFileChange[];
   onFork?: () => void;
   onPreviewCandidateFile?: (fieldKey: string, relativePath: string) => void;
@@ -1360,7 +1379,7 @@ function AgentReply({ event, content, changes = [], onFork, onPreviewCandidateFi
   // registering an Artifact.
   const candidateMessage = candidateOutputMessage(content);
   return <article className="conversation-message assistant" data-conversation-event-id={eventId} data-turn-terminal="true" data-event-id={eventId}>
-    {candidateMessage.businessConclusion ? <AnnotationReplyContent content={candidateMessage.businessConclusion} annotations={annotations} onLocateAnnotation={onLocateAnnotation} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenImage={onOpenImage}/> : !candidateMessage.outputs && content ? <AnnotationReplyContent content={content} annotations={annotations} onLocateAnnotation={onLocateAnnotation} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenImage={onOpenImage}/> : null}
+    {candidateMessage.businessConclusion ? <AnnotationReplyContent content={candidateMessage.businessConclusion} reveal={reveal} annotations={annotations} onLocateAnnotation={onLocateAnnotation} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenImage={onOpenImage}/> : !candidateMessage.outputs && content ? <MessageMarkdown reveal={reveal} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenImage={onOpenImage}>{content}</MessageMarkdown> : null}
     {candidateMessage.outputs && <CandidateOutputReply outputs={candidateMessage.outputs} onPreviewFile={onPreviewCandidateFile ? output => onPreviewCandidateFile(output.fieldKey, output.value) : undefined}/>}
     {!candidateMessage.businessConclusion && !candidateMessage.outputs && !content && <span className="conversation-typing"><i/><i/><i/></span>}
     {changes.length > 0 && <section className="conversation-file-changes" aria-label={`本轮编辑了 ${changes.length} 个文件`}>
@@ -1531,13 +1550,7 @@ function ConversationFailure({ item, taskControl = [], retryStatus }: { item: It
     && item.content.includes('OpenAIException')
     && item.content.includes('Error code: 404');
   if (isLegacyAutoTitleFailure) return null;
-  return <div className="conversation-failure" data-turn-terminal="true" data-event-id={item.event.id} role="status">
-    <CircleAlert size={15}/><div>
-      <b>本轮未能完成</b>
-      <p>{item.content || 'OpenHands 未返回可展示的错误详情。'}</p>
-      <RetryStatus status={retryStatus ?? terminalRetryStatus(item)}/>
-    </div>
-  </div>;
+return <div data-turn-terminal="true" data-event-id={item.event.id}><RetryStatus status={retryStatus ?? terminalRetryStatus(item)} errorDetail={item.content}/></div>;
 }
 
 export interface ConversationHistoryPrepend {
@@ -1546,7 +1559,7 @@ export interface ConversationHistoryPrepend {
   phase: 'capture' | 'restore';
 }
 
-export const ConversationSurface = memo(function ConversationSurface({ events, isGenerating, isPaused = false, emptyResponseRecoveryActive = false, modelRetryStatus, historyPending = false, conversationScope, historyPrepend, onHistoryAnchorCaptured, onHistoryAnchorRestored, requestStartedAt, requestSubmitting = false, rewritePending = false, condensationPending = false, condensationStartedAt, onRewrite, onFork, onOpenAttachment, onOpenWorkspaceReference, onPreviewCandidateFile, onReviewChanges, onOpenWorkspaceFile, onOpenImage, workspaceRoot, annotations = [], onCreateAnnotation, onLocateAnnotation, taskControl = [], monitoring, connectionState }: {
+export const ConversationSurface = memo(function ConversationSurface({ events, isGenerating, isPaused = false, emptyResponseRecoveryActive = false, modelRetryStatus, historyPending = false, conversationScope, historyPrepend, onHistoryAnchorCaptured, onHistoryAnchorRestored, requestStartedAt, requestSubmitting = false, rewritePending = false, condensationPending = false, condensationStartedAt, onRewrite, onFork, onOpenAttachment, onOpenWorkspaceReference, onPreviewCandidateFile, onReviewChanges, onOpenWorkspaceFile, onOpenImage, workspaceRoot, annotations = [], onCreateAnnotation, onSidebarQuestion, onLocateAnnotation, taskControl = [], monitoring, connectionState }: {
   events: OpenHandsConversationEvent[];
   isGenerating: boolean;
   /** Formal native conversation pause state, used only to label unfinished Task actions. */
@@ -1580,6 +1593,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
   workspaceRoot?: string | null;
   annotations?: AgentConversationAnnotation[];
   onCreateAnnotation?: (anchor: { event_id: string; quote: string; compact_start: number }) => void;
+  onSidebarQuestion?: (reference: ConversationReference) => void;
   onLocateAnnotation?: (annotation: AgentConversationAnnotation) => void;
   taskControl?: RuntimeTaskControlSnapshot[];
   monitoring?: AgentActivitySummary;
@@ -2064,8 +2078,8 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
     onHistoryAnchorRestored?.(historyPrepend);
   }, [alignWithLatest, conversationScope, historyPrepend, onHistoryAnchorCaptured, onHistoryAnchorRestored]);
   // A REST reconciliation may replace event objects without adding visible
-  // content. New process events and post-layout growth share one frame-bound
-  // alignment, so a running turn remains anchored without double-jumping.
+  // content. Only new formal event identities may move the viewport: status
+  // text and live elapsed counters resize independently while a turn runs.
   useLayoutEffect(() => {
     const contentChanged = previousContentSignal.current !== contentGrowthSignal;
     previousContentSignal.current = contentGrowthSignal;
@@ -2076,19 +2090,6 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
       scheduleLatestAlignment();
     }
   }, [alignWithLatest, contentGrowthSignal, isGenerating, scheduleLatestAlignment, turns.length]);
-  useLayoutEffect(() => {
-    const observedContent = content.current;
-    if (!observedContent || typeof ResizeObserver === 'undefined' || !contentGrowthSignal) return;
-    const turns = observedContent.querySelectorAll<HTMLElement>('[data-conversation-turn]');
-    const latestTurn = turns.item(turns.length - 1);
-    if (!latestTurn) return;
-    const observer = new ResizeObserver(() => {
-      if (!followLatest.current || userScrolledAway.current) return;
-      scheduleLatestAlignment();
-    });
-    observer.observe(latestTurn);
-    return () => observer.disconnect();
-  }, [contentGrowthSignal, scheduleLatestAlignment]);
 
   useEffect(() => () => {
     if (copyResetTimer.current) window.clearTimeout(copyResetTimer.current);
@@ -2294,7 +2295,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
             <CurrentTurnStatus items={turn.activity} requestSubmitting={requestSubmitting} statusOverride={emptyResponseRecoveryActive ? '模型返回空响应，OpenHands 正在自动重试' : undefined} modelRetryStatus={modelRetryStatus} monitoring={monitoring} connectionState={connectionState}/>
           )}
           {processBlocks.length > 0 && turn.assistant && <div className="conversation-process-divider" role="separator" aria-label="工作过程结束"/>}
-          {turn.assistant && <AgentReply event={turn.assistant.event} content={turn.assistant.content} changes={fileChanges} onFork={!isGenerating ? () => onFork?.(turn.assistant!.event.id) : undefined} onPreviewCandidateFile={onPreviewCandidateFile} onReviewChanges={onReviewChanges} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenImage={onOpenImage} workspaceRoot={workspaceRoot} annotations={annotations} onLocateAnnotation={locateAnnotation}/>}
+          {turn.assistant && <AgentReply event={turn.assistant.event} content={turn.assistant.content} reveal={isCurrent} changes={fileChanges} onFork={!isGenerating ? () => onFork?.(turn.assistant!.event.id) : undefined} onPreviewCandidateFile={onPreviewCandidateFile} onReviewChanges={onReviewChanges} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenImage={onOpenImage} workspaceRoot={workspaceRoot} annotations={annotations} onLocateAnnotation={locateAnnotation}/>}
           {failures.map(item => <ConversationFailure key={item.event.id} item={item} taskControl={taskControl} retryStatus={isLatest ? modelRetryStatus : undefined}/>)}
         </section>;
       })}
@@ -2308,6 +2309,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
     {viewingReference && <ConversationReferencePreview reference={viewingReference} onClose={() => setViewingReference(undefined)} onLocate={locateReferenceSource}/>}
     {selectedReference && <span className="conversation-add-reference" style={{ left: selectedReference.left, top: selectedReference.top }}>
       <button type="button" onPointerDown={event => event.preventDefault()} onClick={() => { onCreateAnnotation?.({ event_id: selectedReference.reference.eventId, quote: selectedReference.reference.content, compact_start: selectedReference.reference.compactStart }); window.getSelection()?.removeAllRanges(); setSelectedReference(undefined); }}><Quote size={14}/>添加到会话</button>
+      {onSidebarQuestion && <button type="button" onPointerDown={event => event.preventDefault()} onClick={() => { onSidebarQuestion(selectedReference.reference); window.getSelection()?.removeAllRanges(); setSelectedReference(undefined); }}><PanelRightOpen size={14}/>在侧边聊天提问</button>}
     </span>}
     {showJumpToLatest && <button
       type="button"

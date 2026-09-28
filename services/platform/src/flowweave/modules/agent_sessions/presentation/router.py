@@ -1256,6 +1256,54 @@ async def migrate_node_session(
     )
 
 
+
+
+class ResumableNodeAttachmentWrite(_Write):
+    filename: str = Field(min_length=1, max_length=240)
+    mime_type: str = Field(default="application/octet-stream", max_length=200)
+    total_size: int = Field(gt=0, le=25 * 1024 * 1024)
+    conversation_id: str | None = Field(default=None, min_length=36, max_length=36)
+
+
+async def _resumable_node_attachment_part(file: UploadFile) -> bytes:
+    content = await file.read(256 * 1024 + 1)
+    if len(content) > 256 * 1024:
+        raise DomainError("AGENT_ATTACHMENT_PART_INVALID", "附件分片不能超过 256 KiB", 422)
+    return content
+
+
+@router.post(f"{_BASE}/attachments/uploads", status_code=201)
+async def create_resumable_node_draft_attachment_upload(flow_run_id: str, attempt_id: str, payload: ResumableNodeAttachmentWrite, db: Db) -> dict[str, Any]:
+    return await run_sync(db, lambda session: agent_sessions.flow_node_conversations.create_resumable_node_attachment_upload(session, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=None, filename=payload.filename, content_type=payload.mime_type, total_size=payload.total_size, attachment_owner_id=payload.conversation_id))
+
+
+@router.post(f"{_BASE}/{{binding_id}}/attachments/uploads", status_code=201)
+async def create_resumable_node_attachment_upload(flow_run_id: str, attempt_id: str, binding_id: str, payload: ResumableNodeAttachmentWrite, db: Db) -> dict[str, Any]:
+    return await run_sync(db, lambda session: agent_sessions.flow_node_conversations.create_resumable_node_attachment_upload(session, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id, filename=payload.filename, content_type=payload.mime_type, total_size=payload.total_size))
+
+
+@router.get(f"{_BASE}/attachments/uploads/{{upload_id}}")
+async def resumable_node_attachment_upload_status(flow_run_id: str, attempt_id: str, upload_id: str, db: Db, binding_id: str | None = Query(default=None)) -> dict[str, Any]:
+    return await run_sync(db, lambda session: agent_sessions.flow_node_conversations.resumable_node_attachment_upload_status(session, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id, upload_id=upload_id))
+
+
+@router.put(f"{_BASE}/attachments/uploads/{{upload_id}}/parts/{{part_number}}")
+async def upload_resumable_node_attachment_part(flow_run_id: str, attempt_id: str, upload_id: str, part_number: int, db: Db, file: Annotated[UploadFile, File()], binding_id: str | None = Query(default=None)) -> dict[str, Any]:
+    content = await _resumable_node_attachment_part(file)
+    return await run_sync(db, lambda session: agent_sessions.flow_node_conversations.upload_resumable_node_attachment_part(session, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id, upload_id=upload_id, part_number=part_number, content=content))
+
+
+@router.post(f"{_BASE}/attachments/uploads/{{upload_id}}/complete", status_code=201)
+async def complete_resumable_node_attachment_upload(flow_run_id: str, attempt_id: str, upload_id: str, db: Db, binding_id: str | None = Query(default=None)) -> dict[str, Any]:
+    return await run_sync(db, lambda session: agent_sessions.flow_node_conversations.complete_resumable_node_attachment_upload(session, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id, upload_id=upload_id))
+
+
+@router.delete(f"{_BASE}/attachments/uploads/{{upload_id}}", status_code=204)
+async def cancel_resumable_node_attachment_upload(flow_run_id: str, attempt_id: str, upload_id: str, db: Db, binding_id: str | None = Query(default=None)) -> Response:
+    await run_sync(db, lambda session: agent_sessions.flow_node_conversations.cancel_resumable_node_attachment_upload(session, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id, upload_id=upload_id))
+    return Response(status_code=204)
+
+
 @router.post(f"{_BASE}/{{binding_id}}/attachments", status_code=201)
 async def upload_node_attachment(
     flow_run_id: str, attempt_id: str, binding_id: str, db: Db, file: Annotated[UploadFile, File()]

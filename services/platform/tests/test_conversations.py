@@ -250,6 +250,68 @@ def test_plain_message_bypasses_context_envelope() -> None:
     assert workspace_references == ()
 
 
+def test_workspace_generated_images_project_svg_and_preserve_untrusted_paths() -> None:
+    workspace_id = "workspace-1"
+    binding_id = "binding-1"
+    working_directory = "/runtime/workspace/project"
+    content = "\n".join(
+        (
+            "![相对 SVG](assets/panel-top.svg)",
+            "![运行时 SVG](sandbox:/runtime/workspace/project/assets/panel-top.svg)",
+            "![越界路径](../outside.svg)",
+            "<svg><path d=\"M0 0\"/></svg>",
+        )
+    )
+
+    projected = session_conversations.project_sandbox_images(
+        content,
+        workspace_id=workspace_id,
+        binding_id=binding_id,
+        working_directory=working_directory,
+    )
+
+    file_url = (
+        "/api/v1/agent-workspaces/workspace-1/workspace/file?"
+        "path=%2Fruntime%2Fworkspace%2Fproject%2Fassets%2Fpanel-top.svg&binding_id=binding-1"
+    )
+    assert projected == "\n".join(
+        (
+            f"![相对 SVG]({file_url})",
+            f"![运行时 SVG]({file_url})",
+            "![越界路径](../outside.svg)",
+            "<svg><path d=\"M0 0\"/></svg>",
+        )
+    )
+
+
+def test_node_workspace_generated_images_project_svg_and_preserve_untrusted_paths() -> None:
+    content = "\n".join(
+        (
+            "![相对 SVG](assets/panel-top.svg)",
+            "![运行时 SVG](sandbox:/runtime/workspace/project/assets/panel-top.svg)",
+            "![越界路径](../outside.svg)",
+        )
+    )
+
+    projected = flow_node_conversations.project_sandbox_images(
+        content,
+        flow_run_id="flow-run-1",
+        attempt_id="attempt-1",
+        binding_id="binding-1",
+    )
+
+    file_url = (
+        "/api/v1/flow-runs/flow-run-1/node-attempts/attempt-1/agent-sessions/workspace/file?"
+        "path=%2Fruntime%2Fworkspace%2Fproject%2Fassets%2Fpanel-top.svg&binding_id=binding-1"
+    )
+    assert projected == "\n".join(
+        (
+            f"![相对 SVG]({file_url})",
+            f"![运行时 SVG]({file_url})",
+            "![越界路径](../outside.svg)",
+        )
+    )
+
 def test_attachment_only_message_bypasses_context_envelope() -> None:
     attachment_path = (
         "/runtime/workspace/project/uploads/"

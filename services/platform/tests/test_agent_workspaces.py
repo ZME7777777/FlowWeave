@@ -1806,6 +1806,29 @@ def test_agent_workspace_creates_entries_at_the_authorized_root_and_subdirectory
         assert (project_root / "docs/guide.md").is_file()
 
 
+def test_agent_workspace_uploaded_file_target_rejects_out_of_scope_and_writes_once(
+    settings, db_session_factory
+):
+    with settings_context(settings), db_session_factory() as db:
+        item = _ready_workspace_for_conversation(db)
+        project_root = _agent_project_root(settings, db, item)
+        (project_root / "docs").mkdir()
+        runtime_root = user_runtime_project_root(item.id)
+        path = workspace.write_uploaded_file(
+            db, item.id, f"{runtime_root}/docs", "brief.txt", b"brief"
+        )
+        assert path == f"{runtime_root}/docs/brief.txt"
+        assert (project_root / "docs/brief.txt").read_bytes() == b"brief"
+        with pytest.raises(DomainError, match="同名"):
+            workspace.write_uploaded_file(
+                db, item.id, f"{runtime_root}/docs", "brief.txt", b"second"
+            )
+        with pytest.raises(DomainError, match="文件不存在"):
+            workspace.write_uploaded_file(
+                db, item.id, f"{runtime_root}/outside", "brief.txt", b"outside"
+            )
+
+
 def test_agent_workspace_details_exposes_configured_ssh_remote(settings, db_session_factory):
     configured = settings.model_copy(
         update={

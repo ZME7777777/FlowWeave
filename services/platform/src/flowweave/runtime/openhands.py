@@ -1392,13 +1392,18 @@ class OpenHandsRuntime:
         return self._oauth_status(response)
 
     @staticmethod
-    def _model_name(model: str) -> str:
-        return model if "/" in model else f"openai/{model}"
+    def _model_name(provider: RuntimeProvider) -> str:
+        model = provider.model
+        if "/" in model:
+            return model
+        if provider.auth_type == "ANTHROPIC_API_KEY":
+            return f"anthropic/{model}"
+        return f"openai/{model}"
 
     def _llm_payload(
         self, provider: RuntimeProvider, *, fallback_profile_names: tuple[str, ...] = ()
     ) -> dict[str, Any]:
-        model = self._model_name(provider.model)
+        model = self._model_name(provider)
         # FlowWeave stores ``None`` as the product-level "default" choice.
         # OpenHands 1.47 defines that default as ``high``, while its persisted
         # ConversationState uses ``exclude_none=True``.  Sending a literal null

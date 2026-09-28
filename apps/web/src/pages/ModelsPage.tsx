@@ -1,6 +1,6 @@
-import { CheckCircle2, CheckSquare, ExternalLink, KeyRound, Link2, LoaderCircle, LogIn, LogOut, Pencil, Plus, Server, ShieldCheck, ShieldX, Trash2 } from 'lucide-react';
+import { CheckCircle2, CheckSquare, ChevronDown, ExternalLink, KeyRound, Link2, LoaderCircle, LogIn, LogOut, Pencil, Plus, Server, ShieldCheck, ShieldX, Trash2 } from 'lucide-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { FormEvent, useCallback, useEffect, useState } from 'react';
+import { FormEvent, KeyboardEvent, useCallback, useEffect, useId, useRef, useState } from 'react';
 import { api } from '../api/client';
 import { useProductDialog } from '../components/ProductDialogContext';
 import { useEscapeClose } from '../components/useEscapeClose';
@@ -10,7 +10,49 @@ import type { CodexDeviceAuthorization, CodexOAuthStatus, ModelProvider, ModelPr
 const blank = (): ModelProviderWrite => ({ name: '', auth_type: 'API_KEY', api_protocol: 'CHAT_COMPLETIONS', base_url: '', api_key: '', models: [{ model_name: '', enabled: true, is_default: true }] });
 const CONNECTION_STATE_LABELS: Record<string, string> = { UNTESTED: '未测试', AUTHORIZING: '等待登录', CONNECTED: '已连接', FAILED: '连接失败' };
 type TestFeedback = { state: 'testing' | 'success' | 'error'; message: string };
+type ProviderAuthType = ModelProviderWrite['auth_type'];
+const providerAuthOptions: ReadonlyArray<{ value: ProviderAuthType; label: string }> = [
+  { value: 'API_KEY', label: 'OpenAI 兼容 API Key' },
+  { value: 'ANTHROPIC_API_KEY', label: 'Anthropic API Key（Claude）' },
+  { value: 'CODEX_OAUTH', label: 'Codex OAuth（ChatGPT 订阅）' },
+];
+const isApiKeyProvider = (authType: ProviderAuthType) => authType !== 'CODEX_OAUTH';
 const budgetNumber = (value: number) => value.toLocaleString(undefined, { maximumFractionDigits: 4 });
+
+function ProviderAuthSelect({ value, onChange }: { value: ProviderAuthType; onChange: (value: ProviderAuthType) => void }) {
+  const [open, setOpen] = useState(false);
+  const root = useRef<HTMLDivElement>(null);
+  const listId = useId();
+  const selected = providerAuthOptions.find(option => option.value === value) ?? providerAuthOptions[0];
+
+  useEffect(() => {
+    const closeIfOutside = (event: MouseEvent) => {
+      if (root.current && !root.current.contains(event.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', closeIfOutside);
+    return () => document.removeEventListener('mousedown', closeIfOutside);
+  }, []);
+
+  const select = (next: ProviderAuthType) => {
+    onChange(next);
+    setOpen(false);
+  };
+  const move = (event: KeyboardEvent<HTMLButtonElement>, offset: number) => {
+    event.preventDefault();
+    const current = providerAuthOptions.findIndex(option => option.value === value);
+    const next = (current + offset + providerAuthOptions.length) % providerAuthOptions.length;
+    select(providerAuthOptions[next].value);
+  };
+
+  return <div className="credential-auth-select" ref={root}>
+    <button type="button" className="credential-auth-trigger" aria-haspopup="listbox" aria-expanded={open} aria-controls={listId} onClick={() => setOpen(current => !current)} onKeyDown={event => {
+      if (event.key === 'ArrowDown') move(event, 1);
+      else if (event.key === 'ArrowUp') move(event, -1);
+      else if (event.key === 'Escape') setOpen(false);
+    }}><span>{selected.label}</span><ChevronDown size={16} aria-hidden="true"/></button>
+    {open && <div id={listId} className="credential-auth-options" role="listbox" aria-label="认证方式">{providerAuthOptions.map(option => <button key={option.value} type="button" role="option" aria-selected={option.value === value} onClick={() => select(option.value)}>{option.label}</button>)}</div>}
+  </div>;
+}
 function ProviderUsagePanel({ provider, value, loading, onRefresh }: { provider: ModelProvider; value?: ModelProviderUsage; loading: boolean; onRefresh: () => void }) {
   if (provider.auth_type !== 'API_KEY') return <div className="provider-usage unavailable"><span>上游 Key 预算</span><b>该认证方式不支持查询</b></div>;
   const detail = value?.status === 'AVAILABLE'
@@ -85,9 +127,9 @@ function ProviderEditor({ provider, onClose }: { provider?: ModelProvider; onClo
   const discover = async () => {
     setBusy(true); setError('');
     try {
-      const result = form.auth_type === 'API_KEY'
-        ? await api.previewProviderModels({ base_url: form.base_url, api_key: form.api_key, provider_id: provider?.id })
-        : await api.discoverProviderModels(provider!.id);
+      const result = form.auth_type === 'CODEX_OAUTH'
+        ? await api.discoverProviderModels(provider!.id)
+        : await api.previewProviderModels({ base_url: form.base_url, api_key: form.api_key, provider_id: provider?.id });
       applyDiscovery(result);
     }
     catch (reason) { setError(reason instanceof Error ? reason.message : '发现模型失败'); }
@@ -126,22 +168,22 @@ function ProviderEditor({ provider, onClose }: { provider?: ModelProvider; onClo
     }
     return { ...old, models };
   });
-  const changeAuthType = (auth_type: ModelProviderWrite['auth_type']) => setForm(old => ({
+  const changeAuthType = (auth_type: ProviderAuthType) => setForm(old => ({
     ...old,
     auth_type,
-    api_protocol: auth_type === 'CODEX_OAUTH' ? 'RESPONSES' : old.api_protocol,
-    base_url: auth_type === 'CODEX_OAUTH' ? '' : old.base_url,
+    api_protocol: auth_type === 'CODEX_OAUTH' ? 'RESPONSES' : 'CHAT_COMPLETIONS',
+    base_url: auth_type === 'ANTHROPIC_API_KEY' || auth_type === 'CODEX_OAUTH' ? '' : old.base_url,
     api_key: '',
     models: auth_type === 'CODEX_OAUTH' ? [] : old.models.length ? old.models : [{ model_name: '', enabled: true, is_default: true }],
   }));
   return <div className="modal-backdrop"><form className="modal model-editor" onSubmit={save}><header><div><span className="eyebrow">MODEL PROVIDER</span><h2>{provider ? '编辑模型服务' : '新增模型服务'}</h2><p>API Key 与 Codex OAuth 凭据均加密保存且永不返回浏览器。</p></div><button type="button" className="ghost" onClick={onClose}>关闭</button></header>
-    <div className="form-grid"><label>服务名称<input required value={form.name} onChange={e => setForm({ ...form, name: e.target.value })}/></label><label>认证方式<select value={form.auth_type} onChange={e => changeAuthType(e.target.value as ModelProviderWrite['auth_type'])}><option value="API_KEY">OpenAI 兼容 API Key</option><option value="CODEX_OAUTH">Codex OAuth（ChatGPT 订阅）</option></select></label>{form.auth_type === 'API_KEY' ? <><label>调用协议<select value={form.api_protocol} onChange={e => setForm({ ...form, api_protocol: e.target.value as ModelProviderWrite['api_protocol'] })}><option value="CHAT_COMPLETIONS">Chat Completions（/chat/completions）</option><option value="RESPONSES">Responses（/responses）</option></select></label><label>Base URL<input required value={form.base_url} placeholder="https://api.example.com/v1" onChange={e => setForm({ ...form, base_url: e.target.value })}/></label><label className="wide">API Key<input type="password" value={form.api_key ?? ''} placeholder={provider?.has_api_key ? `留空保留现有密钥 ${provider.api_key_hint ?? ''}` : '输入 API Key'} onChange={e => setForm({ ...form, api_key: e.target.value })}/></label></> : <p className="startpoint wide">保存后在服务卡片点击“登录 Codex”，使用设备码连接 ChatGPT 订阅。OAuth 服务仅用于 Agent 节点，不用于 Prompt Gate。</p>}</div>
-    <div className="model-discovery-head"><div><b>可用模型</b><small>{form.auth_type === 'API_KEY' ? '填写连接信息后拉取模型，再选择启用项和默认模型' : provider?.oauth_connected ? '已按当前登录账号自动拉取；也可手动刷新' : '登录 Codex 后可按账号自动拉取模型'}</small></div>{(form.auth_type === 'API_KEY' || (provider && provider.oauth_connected)) && <button type="button" className="secondary" disabled={busy || (form.auth_type === 'API_KEY' && !form.base_url.trim())} onClick={() => void discover()}>{busy ? '拉取中…' : form.auth_type === 'CODEX_OAUTH' ? '刷新模型' : '拉取模型'}</button>}</div>
-    {form.auth_type === 'API_KEY' && discovered.length > 0 && <div className="model-tags discovery-tags">{discovered.map(name => { const selected = form.models.some(item => item.model_name === name); return <button type="button" key={name} className={selected ? 'selected' : ''} aria-pressed={selected} onClick={() => toggle(name)}>{name}</button>; })}</div>}
-    <div className={`provider-model-list ${form.auth_type === 'CODEX_OAUTH' ? 'oauth-model-list' : ''}`}>{form.models.map((model, index) => <div className="provider-model-row" key={model.model_name || index}>{form.auth_type === 'CODEX_OAUTH' ? <span className="synced-model-name"><b>{model.model_name}</b><small>由当前 Codex 账号同步{model.supported_reasoning_efforts?.length ? ` · 支持 ${model.supported_reasoning_efforts.join(' / ')}` : ''}</small></span> : <input aria-label={`模型 ${index + 1}`} required value={model.model_name} placeholder="模型标识" onChange={e => updateModel(index, { model_name: e.target.value })}/>}<label><input type="checkbox" checked={model.enabled} onChange={e => updateModel(index, { enabled: e.target.checked })}/>启用</label><label><input type="radio" name="default-model" checked={model.is_default} onChange={() => updateModel(index, { is_default: true, enabled: true })}/>默认</label>{form.auth_type === 'API_KEY' && <button type="button" className="danger model-remove-button" aria-label={`移除模型 ${model.model_name}`} onClick={() => removeModel(index)}><Trash2 size={16}/>删除</button>}</div>)}</div>
-    {form.auth_type === 'API_KEY' && <button type="button" className="ghost" onClick={() => setForm(old => ({ ...old, models: [...old.models, { model_name: '', enabled: true, is_default: old.models.length === 0 }] }))}><Plus size={13}/>手动添加模型</button>}
+    <div className="form-grid"><label>服务名称<input required value={form.name} onChange={e => setForm({ ...form, name: e.target.value })}/></label><label>认证方式<ProviderAuthSelect value={form.auth_type} onChange={changeAuthType}/></label>{form.auth_type === 'CODEX_OAUTH' ? <p className="startpoint wide">保存后在服务卡片点击“登录 Codex”，使用设备码连接 ChatGPT 订阅。OAuth 服务仅用于 Agent 节点，不用于 Prompt Gate。</p> : <>{form.auth_type === 'API_KEY' && <><label>调用协议<select value={form.api_protocol} onChange={e => setForm({ ...form, api_protocol: e.target.value as ModelProviderWrite['api_protocol'] })}><option value="CHAT_COMPLETIONS">Chat Completions（/chat/completions）</option><option value="RESPONSES">Responses（/responses）</option></select></label><label>Base URL<input required value={form.base_url} placeholder="https://api.example.com/v1" onChange={e => setForm({ ...form, base_url: e.target.value })}/></label></>}<label className="wide">{form.auth_type === 'ANTHROPIC_API_KEY' ? 'Anthropic API Key' : 'API Key'}<input type="password" value={form.api_key ?? ''} placeholder={provider?.has_api_key ? `留空保留现有密钥 ${provider.api_key_hint ?? ''}` : form.auth_type === 'ANTHROPIC_API_KEY' ? '输入 ANTHROPIC_API_KEY' : '输入 API Key'} onChange={e => setForm({ ...form, api_key: e.target.value })}/></label>{form.auth_type === 'ANTHROPIC_API_KEY' && <p className="startpoint wide">Claude 模型由 OpenHands 的 CodeActAgent 通过 LiteLLM 调用 Anthropic API；支持上下文压缩、fallback 与 Critic。独立标题生成和 Prompt Gate 仍需使用 OpenAI 兼容供应商。</p>}</>}</div>
+    <div className="model-discovery-head"><div><b>可用模型</b><small>{form.auth_type === 'CODEX_OAUTH' ? provider?.oauth_connected ? '已按当前登录账号自动拉取；也可手动刷新' : '登录 Codex 后可按账号自动拉取模型' : form.auth_type === 'ANTHROPIC_API_KEY' ? 'Anthropic 未提供 OpenAI 兼容模型目录；请手动填写可用的 Claude 模型标识' : '填写连接信息后拉取模型，再选择启用项和默认模型'}</small></div>{(form.auth_type === 'API_KEY' || (form.auth_type === 'CODEX_OAUTH' && provider?.oauth_connected)) && <button type="button" className="secondary" disabled={busy || !form.base_url.trim() && form.auth_type === 'API_KEY'} onClick={() => void discover()}>{busy ? '拉取中…' : form.auth_type === 'CODEX_OAUTH' ? '刷新模型' : '拉取模型'}</button>}</div>
+    {isApiKeyProvider(form.auth_type) && discovered.length > 0 && <div className="model-tags discovery-tags">{discovered.map(name => { const selected = form.models.some(item => item.model_name === name); return <button type="button" key={name} className={selected ? 'selected' : ''} aria-pressed={selected} onClick={() => toggle(name)}>{name}</button>; })}</div>}
+    <div className={`provider-model-list ${form.auth_type === 'CODEX_OAUTH' ? 'oauth-model-list' : ''}`}>{form.models.map((model, index) => <div className="provider-model-row" key={model.model_name || index}>{form.auth_type === 'CODEX_OAUTH' ? <span className="synced-model-name"><b>{model.model_name}</b><small>由当前 Codex 账号同步{model.supported_reasoning_efforts?.length ? ` · 支持 ${model.supported_reasoning_efforts.join(' / ')}` : ''}</small></span> : <input aria-label={`模型 ${index + 1}`} required value={model.model_name} placeholder="模型标识" onChange={e => updateModel(index, { model_name: e.target.value })}/>}<label><input type="checkbox" checked={model.enabled} onChange={e => updateModel(index, { enabled: e.target.checked })}/>启用</label><label><input type="radio" name="default-model" checked={model.is_default} onChange={() => updateModel(index, { is_default: true, enabled: true })}/>默认</label>{isApiKeyProvider(form.auth_type) && <button type="button" className="danger model-remove-button" aria-label={`移除模型 ${model.model_name}`} onClick={() => removeModel(index)}><Trash2 size={16}/>删除</button>}</div>)}</div>
+    {isApiKeyProvider(form.auth_type) && <button type="button" className="ghost" onClick={() => setForm(old => ({ ...old, models: [...old.models, { model_name: '', enabled: true, is_default: old.models.length === 0 }] }))}><Plus size={13}/>手动添加模型</button>}
     {form.auth_type === 'CODEX_OAUTH' && provider?.oauth_connected && !busy && !form.models.length && <p className="model-discovery-empty">当前账号没有返回可用模型，请点击“刷新模型”重试。</p>}
-    {error && <p className="error">{error}</p>}<footer><button type="button" className="ghost" onClick={onClose}>取消</button><button className="primary" disabled={busy || (form.auth_type === 'API_KEY' && !form.models.length)}>{busy ? '处理中…' : '保存模型服务'}</button></footer>
+    {error && <p className="error">{error}</p>}<footer><button type="button" className="ghost" onClick={onClose}>取消</button><button className="primary" disabled={busy || (isApiKeyProvider(form.auth_type) && !form.models.length)}>{busy ? '处理中…' : '保存模型服务'}</button></footer>
   </form></div>;
 }
 function CodexLoginDialog({ provider, authorization, onClose, onConnected }: { provider: ModelProvider; authorization: CodexDeviceAuthorization; onClose: () => void; onConnected: (status: CodexOAuthStatus) => void }) {

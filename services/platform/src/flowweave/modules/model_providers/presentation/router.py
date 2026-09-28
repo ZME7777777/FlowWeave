@@ -168,6 +168,10 @@ async def test_provider(provider_id: str, db: Db, container: ContainerDep) -> di
             raise
         await run_sync(db, lambda session: service.sync_codex_models(session, provider_id, models))
         return {"connection_state": "CONNECTED", "model_count": len(models)}
+    if provider["auth_type"] == "ANTHROPIC_API_KEY":
+        if not provider["has_api_key"]:
+            raise DomainError("ANTHROPIC_API_KEY_REQUIRED", "Anthropic API key is required", 409)
+        return {"connection_state": "CONNECTED", "model_count": len(provider["models"])}
     try:
         models = await _discover(provider_id, db, container)
     except DomainError:

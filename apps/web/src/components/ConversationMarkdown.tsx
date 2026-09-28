@@ -1,9 +1,70 @@
-import { isValidElement, useMemo, useState, type ComponentPropsWithoutRef, type ReactNode } from 'react';
+import { isValidElement, useEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { deploymentBasePath } from '../deploymentPath';
 import { MarkdownCodeBlock, MermaidDiagram } from './MermaidDiagram';
 import { isMermaidDiagram, markdownCodeText, normalizeNestedMarkdownFences } from './markdownCodeBlock';
+
+const MARKDOWN_SYNTAX = /(^|\n)\s{0,3}(?:#{1,6}\s|[-*+]\s|\d+[.)]\s|>|```)|[`*_~]|!?\[[^\]]*\]\([^)]*\)|\|/;
+
+function PlainTextReveal({ children, reveal }: { children: string; reveal: boolean }) {
+  const characters = useMemo(() => Array.from(children), [children]);
+  const visibleLength = useRef(0);
+  const previousText = useRef<string | undefined>(undefined);
+  const revealStarted = useRef(reveal);
+  const [visible, setVisible] = useState(() => reveal ? 0 : characters.length);
+
+  useEffect(() => {
+    const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    const previous = previousText.current;
+    previousText.current = children;
+    if (reveal) revealStarted.current = true;
+    if (reducedMotion || (!reveal && !revealStarted.current)) {
+      visibleLength.current = characters.length;
+      setVisible(characters.length);
+      return;
+    }
+
+    let current = previous && children.startsWith(previous)
+      ? Math.min(visibleLength.current, characters.length)
+      : 0;
+    let remainder = 0;
+    let frame: number | undefined;
+    const startedAt = performance.now();
+    let previousFrame = startedAt;
+    const maximumDuration = Math.min(820, 240 + characters.length * 2);
+    visibleLength.current = current;
+    setVisible(current);
+
+    const advance = (now: number) => {
+      const elapsed = now - startedAt;
+      const delta = now - previousFrame;
+      previousFrame = now;
+      const remaining = characters.length - current;
+      const charactersPerSecond = Math.min(900, 36 + elapsed * 0.5 + remaining * 0.28);
+      remainder += charactersPerSecond * delta / 1_000;
+      const next = Math.min(characters.length, current + Math.max(1, Math.floor(remainder)));
+      remainder -= Math.floor(remainder);
+      if (next !== current) {
+        current = next;
+        visibleLength.current = current;
+        setVisible(current);
+      }
+      if (current < characters.length && elapsed < maximumDuration) {
+        frame = window.requestAnimationFrame(advance);
+      } else if (current < characters.length) {
+        visibleLength.current = characters.length;
+        setVisible(characters.length);
+      }
+    };
+
+    frame = window.requestAnimationFrame(advance);
+    return () => { if (frame !== undefined) window.cancelAnimationFrame(frame); };
+  }, [characters.length, children, reveal]);
+
+  const revealing = visible < characters.length;
+  return <span className="conversation-text-reveal" data-reveal={revealStarted.current || undefined} data-revealing={revealing || undefined} aria-label={children}>{characters.slice(0, visible).join('')}</span>;
+}
 
 function MarkdownImage({ src, alt, onOpenImage, ...props }: ComponentPropsWithoutRef<'img'> & { onOpenImage?: (src: string, alt?: string) => void }) {
   const [failed, setFailed] = useState(false);
@@ -54,8 +115,9 @@ function MarkdownTable({ children, node: _node, ...props }: ComponentPropsWithou
   return <div className="conversation-markdown-table-scroll"><table {...props}>{children}</table></div>;
 }
 
-export function ConversationMarkdown({ children, onOpenWorkspaceFile, onOpenImage }: { children: string; onOpenWorkspaceFile?: (href: string) => boolean; onOpenImage?: (src: string, alt?: string) => void }) {
+export function ConversationMarkdown({ children, reveal = false, onOpenWorkspaceFile, onOpenImage }: { children: string; reveal?: boolean; onOpenWorkspaceFile?: (href: string) => boolean; onOpenImage?: (src: string, alt?: string) => void }) {
   const markdown = useMemo(() => normalizeNestedMarkdownFences(children), [children]);
+  if (!MARKDOWN_SYNTAX.test(markdown)) return <p><PlainTextReveal reveal={reveal}>{markdown}</PlainTextReveal></p>;
   return <ReactMarkdown remarkPlugins={[remarkGfm]} components={{
     a: props => <MarkdownLink {...props} onOpenWorkspaceFile={onOpenWorkspaceFile}/>,
     img: props => <MarkdownImage {...props} onOpenImage={onOpenImage}/>, pre: MarkdownPre, table: MarkdownTable,

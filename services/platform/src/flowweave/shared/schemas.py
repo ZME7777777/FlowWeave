@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import ipaddress
+import re
 from typing import Any, Literal, cast
 from urllib.parse import urlparse
 
@@ -168,26 +170,67 @@ class WebsiteCredentialWrite(ApiModel):
     target_host: str = Field(min_length=1, max_length=253)
     target_path: str = Field(default="/", min_length=1, max_length=2048)
     include_subdomains: bool = False
-    auth_type: Literal["USERNAME_PASSWORD", "TOKEN", "BEARER_TOKEN"] = "USERNAME_PASSWORD"
+    auth_type: Literal["USERNAME_PASSWORD", "PASSWORD", "TOKEN", "BEARER_TOKEN"] = (
+        "USERNAME_PASSWORD"
+    )
     username: str | None = Field(default=None, max_length=320)
     secret: SecretStr | None = Field(default=None, max_length=4096)
     row_version: int | None = Field(default=None, ge=1)
 
     @model_validator(mode="after")
     def normalize_target_host(self) -> WebsiteCredentialWrite:
-        value = self.target_host.strip().rstrip(".").lower()
-        if (
-            not value
-            or "/" in value
-            or ":" in value
-            or "@" in value
-            or not all(
-                part and len(part) <= 63 and part.replace("-", "").isalnum()
-                for part in value.split(".")
-            )
-        ):
-            raise ValueError("target_host must be a DNS host without scheme, path, or port")
-        self.target_host = value
+        value = self.target_host.strip().lower()
+        if not value or "/" in value or "@" in value:
+            raise ValueError("target_host must be a DNS name or IP address, optionally with a port")
+        is_ip_address = False
+        has_port = False
+        if value.startswith("["):
+            match = re.fullmatch(r"\[([0-9a-f:]+)\](?::([0-9]{1,5}))?", value)
+            if match is None:
+                raise ValueError("target_host must use brackets around an IPv6 address")
+            try:
+                address = ipaddress.ip_address(match.group(1))
+            except ValueError as exc:
+                raise ValueError("target_host must contain a valid IP address") from exc
+            if address.version != 6:
+                raise ValueError("target_host brackets are only valid for IPv6 addresses")
+            is_ip_address = True
+            port = match.group(2)
+            if port is not None and not 1 <= int(port) <= 65535:
+                raise ValueError("target_host port must be between 1 and 65535")
+            has_port = port is not None
+            self.target_host = f"[{address.compressed}]" + (f":{int(port)}" if port else "")
+        else:
+            host, separator, port = value.rpartition(":")
+            if separator:
+                if not host or ":" in host or not port.isdigit():
+                    raise ValueError(
+                        "target_host must use a DNS name or IPv4 address with an optional port"
+                    )
+            else:
+                host, port = value, None
+            host = host.rstrip(".")
+            try:
+                normalized_host = str(ipaddress.ip_address(host))
+                is_ip_address = True
+            except ValueError as exc:
+                if not all(
+                    part and len(part) <= 63 and part.replace("-", "").isalnum()
+                    for part in host.split(".")
+                ):
+                    raise ValueError(
+                        "target_host must contain a valid DNS name or IP address"
+                    ) from exc
+                normalized_host = host
+            if port is not None:
+                port_number = int(port)
+                if not 1 <= port_number <= 65535:
+                    raise ValueError("target_host port must be between 1 and 65535")
+                has_port = True
+                normalized_host = f"{normalized_host}:{port_number}"
+            self.target_host = normalized_host
+        if self.include_subdomains and (is_ip_address or has_port):
+            raise ValueError("include_subdomains requires a DNS name without a port")
         path = self.target_path.strip()
         if (
             not path.startswith("/")
@@ -317,7 +360,7 @@ class ModelProviderDiscoveryWrite(ApiModel):
 
 class ModelProviderWrite(ApiModel):
     name: str = Field(min_length=1, max_length=200)
-    auth_type: Literal["API_KEY", "CODEX_OAUTH"] = "API_KEY"
+    auth_type: Literal["API_KEY", "ANTHROPIC_API_KEY", "CODEX_OAUTH"] = "API_KEY"
     api_protocol: Literal["CHAT_COMPLETIONS", "RESPONSES"] = "CHAT_COMPLETIONS"
     base_url: str = ""
     api_key: str | None = None
@@ -331,8 +374,8 @@ class ModelProviderWrite(ApiModel):
             self.api_protocol = "RESPONSES"
         if self.auth_type == "API_KEY" and not self.base_url:
             raise ValueError("base_url is required for API key providers")
-        if self.auth_type == "API_KEY" and not self.models:
-            raise ValueError("at least one model is required for API key providers")
+        if self.auth_type in {"API_KEY", "ANTHROPIC_API_KEY"} and not self.models:
+            raise ValueError("at least one model is required for this provider")
         names = [item.model_name for item in self.models]
         if len(names) != len(set(names)):
             raise ValueError("model names must be unique")

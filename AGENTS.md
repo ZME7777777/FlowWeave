@@ -95,7 +95,7 @@ git -C /Users/zhengmengen/WorkSpace/openhands/software-agent-sdk-total-tokens-1.
 ## Web 会话状态
 
 - `AgentSessionWorkbench` 中会在异步发送、重写或流订阅回调内更新的本地事件和 UI 状态，必须携带并校验 `bindingId`；不能只依赖会话切换 effect 清空共享状态，否则旧会话的迟到回调会污染新会话。
-- 会话未读状态是用户隔离的服务端 `AgentConversationBinding.unread` 投影；Agent Workspace 与 FlowRun node-session 两种宿主必须共同读写该字段。浏览器 `localStorage` 仅用于置顶等设备本地展示偏好，不能作为未读事实源。前端切换会话时先乐观更新，再异步持久化；写请求未完成期间必须让本地目标值覆盖列表刷新，并用请求代次忽略同会话较旧写响应，避免旧服务端快照造成未读样式回退。活动会话列表的单击仅预览，不得更新未读状态或改变列表归属；只有双击进入正式会话路由时才可标记已读。活动列表中未读项的右键菜单必须提供显式“标记为已读”，普通列表则保留“标记为未读”。
+- 会话未读状态是用户隔离的服务端 `AgentConversationBinding.unread` 投影；Agent Workspace 与 FlowRun node-session 两种宿主必须共同读写该字段。浏览器 `localStorage` 仅用于置顶等设备本地展示偏好，不能作为未读事实源。后台会话从运行转为终态时，必须将普通未读标记持久化到服务端，不能只更新浏览器内存状态。前端切换会话时先乐观更新，再异步持久化；写请求未完成期间必须让本地目标值覆盖列表刷新，并用请求代次忽略同会话较旧写响应，避免旧服务端快照造成未读样式回退。活动会话列表的单击仅预览，不得更新未读状态或改变列表归属；只有双击进入正式会话路由时才可标记已读。活动列表中未读项的右键菜单必须提供显式“标记为已读”，普通列表则保留“标记为未读”。
 - 侧栏红色异常标识仅在 `unread_origin === 'SYSTEM'` 且服务端活动投影为 `possibly_stuck` 或 `failed` 时显示；后台会话进入这两种投影应自动写入系统未读。`possibly_stuck` 在 native running 状态显示心跳动画，`error`/`stuck` 终态显示静态标识；用户手动未读必须覆盖为普通蓝点。
 - Composer 草稿的文本、附件、引用和注释必须作为带 `scope` 的同一快照读写；会话切换先持久化 outgoing scope，再恢复 incoming scope。子组件卸载 cleanup 不得从共享 ref 读取内容后写入捕获的旧 scope。未创建草稿切换后必须保留可发现的恢复入口；用户显式新建会话仍须创建全新的空 scope，仅页面自动进入或用户点击草稿入口时才允许恢复同工作区的未创建草稿。
 - 会话运行中的视觉状态不能只依赖可能短暂抖动的 Runtime readiness；只要正式事件树仍存在未完成用户轮次且未超过终态同步期限，就必须保持会话活动和底部任务计划的 DOM、动画与布局稳定。
@@ -118,3 +118,4 @@ git -C /Users/zhengmengen/WorkSpace/openhands/software-agent-sdk-total-tokens-1.
 - 逐步节点启动的 `confirm-start` 会先原子预留 FlowNode `AgentConversationBinding`；Attempt 详情必须投影该 `binding_id`，前端收到成功响应后应以记录自身的 FlowRun ID、NodeRun ID、Attempt ID 和此 binding 打开节点会话，并同步失效逐步记录列表。不得通过猜测或等待 Runtime 的原生 conversation ID 来构造页面路由。
 - 连续运行草稿保存使用乐观锁 `expected_row_version`。前端遇到 `VERSION_CONFLICT` 时可仅对同一未启动草稿读取最新详情后，以用户当前编辑的严格写入载荷重试一次；不得回显详情中的冻结审计字段，也不得吞掉其他错误或无限重试。
 - 普通消息 POST 成功与 OpenHands 正式用户事件进入浏览器事件窗口之间存在短暂竞态；在当前 binding 收到服务端返回的 `cursor` 对应正式事件前，`AgentSessionWorkbench` 必须保留“正在提交消息”状态并抑制陈旧 `monitoring.possibly_stuck`，确认后立即恢复真实监控显示。该确认门控必须有界，并在失败、切换 binding 或超时后清除。
+- 临时侧边聊天必须由服务端 `AgentSidebarConversation` 以主会话 binding 关联，并在一小时 TTL 到期后由后台任务删除 OpenHands 原生会话、绑定私有记录和附件；浏览器已取得的事件可继续阅读，但后续发送必须以 `AGENT_SIDEBAR_CONVERSATION_EXPIRED` 拒绝。临时 binding 不得出现在普通会话列表、活动列表或搜索投影中；侧栏首条消息可携带主会话的正式事件引用，主会话元数据只作为受限系统上下文。

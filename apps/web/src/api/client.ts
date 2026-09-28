@@ -89,6 +89,109 @@ async function responseError(response: Response): Promise<ApiError> {
     response.status,
   );
 }
+
+export type UploadProgressHandler = (progress: number) => void;
+
+const ATTACHMENT_CHUNK_SIZE = 256 * 1024;
+
+type ResumableUpload = { upload_id: string; chunk_size: number; uploaded_parts: number[] };
+
+const resumableUploadSessions = new Map<string, ResumableUpload>();
+const resumableUploadStorageKey = (key: string) => `flowweave:attachment-upload:${key}`;
+
+function savedResumableUpload(key: string): ResumableUpload | undefined {
+  try {
+    const value = localStorage.getItem(resumableUploadStorageKey(key));
+    if (!value) return undefined;
+    const parsed = JSON.parse(value) as Partial<ResumableUpload>;
+    return typeof parsed.upload_id === 'string' && typeof parsed.chunk_size === 'number' && Array.isArray(parsed.uploaded_parts)
+      ? parsed as ResumableUpload
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function saveResumableUpload(key: string, upload: ResumableUpload | undefined): void {
+  try {
+    if (upload) localStorage.setItem(resumableUploadStorageKey(key), JSON.stringify(upload));
+    else localStorage.removeItem(resumableUploadStorageKey(key));
+  } catch {
+    // Upload continuation remains available for this page through the in-memory map.
+  }
+}
+
+async function uploadAttachmentPart(url: string, file: Blob, filename: string, uploadedBytes: number, totalBytes: number, onProgress?: UploadProgressHandler): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    request.open('PUT', url);
+    request.withCredentials = true;
+    request.upload.onprogress = event => {
+      if (event.lengthComputable) onProgress?.(Math.round((uploadedBytes + event.loaded) / totalBytes * 100));
+    };
+    request.onerror = () => reject(new ApiError('无法上传附件，请检查网络后重试。', 'NETWORK_ERROR', {}, 0));
+    request.onload = () => {
+      const response = new Response(request.responseText, { status: request.status, statusText: request.statusText, headers: { 'content-type': request.getResponseHeader('content-type') ?? 'application/json' } });
+      if (!response.ok) { void responseError(response).then(reject); return; }
+      resolve();
+    };
+    const body = new FormData();
+    body.append('file', file, filename);
+    request.send(body);
+  });
+}
+
+async function uploadAttachmentPartWithRetry(url: string, file: Blob, filename: string, uploadedBytes: number, totalBytes: number, onProgress?: UploadProgressHandler): Promise<void> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await uploadAttachmentPart(url, file, filename, uploadedBytes, totalBytes, onProgress);
+      return;
+    } catch (error) {
+      if (attempt >= 2 || error instanceof ApiError && error.status >= 400 && error.status < 500) throw error;
+      await new Promise(resolve => window.setTimeout(resolve, 400 * 2 ** attempt));
+    }
+  }
+}
+
+async function uploadFormData<T = AgentAttachment>(createPath: string, operationPath: string, file: File, payload: Record<string, unknown>, onProgress?: UploadProgressHandler): Promise<T> {
+  const sessionKey = `${operationPath}:${file.name}:${file.size}:${file.lastModified}:${String(payload.conversation_id ?? '')}:${String(payload.parent_path ?? '')}`;
+  const bindingId = typeof payload.conversation_id === 'string' ? payload.conversation_id : undefined;
+  const bindingQuery = bindingId ? `?binding_id=${encodeURIComponent(bindingId)}` : '';
+  let upload = resumableUploadSessions.get(sessionKey) ?? savedResumableUpload(sessionKey);
+  if (upload) {
+    const status = await fetch(`${API_BASE}${ROOT}${operationPath}/${encodeURIComponent(upload.upload_id)}${bindingQuery}`, { credentials: 'include' });
+    if (status.ok) {
+      upload = await status.json() as ResumableUpload;
+      resumableUploadSessions.set(sessionKey, upload);
+      saveResumableUpload(sessionKey, upload);
+    } else {
+      resumableUploadSessions.delete(sessionKey);
+      saveResumableUpload(sessionKey, undefined);
+      upload = undefined;
+    }
+  }
+  if (!upload) {
+    const create = await fetch(`${API_BASE}${ROOT}${createPath}`, { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) }).catch(() => { throw new ApiError('无法上传附件，请检查网络后重试。', 'NETWORK_ERROR', {}, 0); });
+    if (!create.ok) throw await responseError(create);
+    upload = await create.json() as ResumableUpload;
+    resumableUploadSessions.set(sessionKey, upload);
+    saveResumableUpload(sessionKey, upload);
+  }
+  const chunkSize = upload.chunk_size || ATTACHMENT_CHUNK_SIZE;
+  const completed = new Set(upload.uploaded_parts);
+  for (let partNumber = 0, offset = 0; offset < file.size; partNumber += 1, offset += chunkSize) {
+    if (completed.has(partNumber)) continue;
+    const chunk = file.slice(offset, Math.min(offset + chunkSize, file.size));
+    await uploadAttachmentPartWithRetry(`${API_BASE}${ROOT}${operationPath.replace(/\/?$/, '')}/${encodeURIComponent(upload.upload_id)}/parts/${partNumber}${bindingQuery}`, chunk, file.name, offset, file.size, onProgress);
+  }
+  const complete = await fetch(`${API_BASE}${ROOT}${operationPath.replace(/\/?$/, '')}/${encodeURIComponent(upload.upload_id)}/complete${bindingQuery}`, { method: 'POST', credentials: 'include' }).catch(() => { throw new ApiError('无法上传附件，请检查网络后重试。', 'NETWORK_ERROR', {}, 0); });
+  if (!complete.ok) throw await responseError(complete);
+  resumableUploadSessions.delete(sessionKey);
+  saveResumableUpload(sessionKey, undefined);
+  onProgress?.(100);
+  return complete.json() as Promise<T>;
+}
+
 export const artifactContentUrl = (artifactId: string, download = false) =>
   `${API_BASE}${ROOT}/artifact-versions/${artifactId}/content${download ? '?download=true' : ''}`;
 
@@ -365,6 +468,10 @@ export const api = {
     request<AgentConversation>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/capabilities`, json('POST', { capability_version_id })),
   bootstrapAgentConversation: (workspaceId: string, conversation_id: string, model_provider_id: string, model_name: string, reasoning_effort: string | null, content: string, attachments: AgentAttachment[] = [], references: AgentConversationReference[] = [], workspace_references: AgentWorkspaceReference[] = [], work_directory_id?: string, capability_version_ids: string[] = [], idempotencyKey = conversation_id, annotations: AgentConversationAnnotation[] = []) =>
     request<{ conversation: AgentConversation; accepted: boolean; cursor?: string | null }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations`, json('POST', { conversation_id, model_provider_id, model_name, reasoning_effort, content, attachments: attachmentReferences(attachments), references: conversationReferencePayload(references), workspace_references: workspaceReferencePayload(workspace_references), work_directory_id, capability_version_ids, annotations }, idempotencyKey)),
+  createAgentSidebarConversation: (workspaceId: string, sourceBindingId: string, conversation_id: string, model_provider_id: string, model_name: string, content: string, references: AgentConversationReference[] = []) =>
+    request<{ conversation: AgentConversation; accepted: boolean; cursor?: string | null; expires_at: string }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(sourceBindingId)}/sidebar`, json('POST', { conversation_id, model_provider_id, model_name, content, references: conversationReferencePayload(references) }, conversation_id)),
+  agentSidebarConversation: (workspaceId: string, bindingId: string) =>
+    request<{ binding_id: string; source_binding_id?: string; expires_at: string; expired: boolean }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/sidebars/${encodeURIComponent(bindingId)}`),
   agentConversation: (workspaceId: string, bindingId: string) =>
     request<AgentConversation>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}`),
   updateAgentConversation: (workspaceId: string, bindingId: string, title: string) =>
@@ -392,25 +499,12 @@ export const api = {
     request<{ accepted: boolean; cursor?: string | null }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/pending-confirmation/decision`, json('POST', { expected_pending_digest, accept, reason })),
   sendAgentMessage: (workspaceId: string, bindingId: string, content: string, attachments: AgentAttachment[] = [], references: AgentConversationReference[] = [], workspace_references: AgentWorkspaceReference[] = [], annotations: AgentConversationAnnotation[] = [], idempotencyKey?: string) =>
     request<{ accepted: boolean; cursor?: string | null; compacted?: boolean; queued_during_turn?: boolean }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/messages`, json('POST', { content, attachments: attachmentReferences(attachments), references: conversationReferencePayload(references), workspace_references: workspaceReferencePayload(workspace_references), annotations }, idempotencyKey)),
-  uploadAgentAttachment: async (workspaceId: string, bindingId: string, file: File): Promise<AgentAttachment> => {
-    const body = new FormData(); body.append('file', file, file.name);
-    let response: Response;
-    try { response = await fetch(`${API_BASE}${ROOT}/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/attachments`, { method: 'POST', body }); }
-    catch { throw new ApiError('无法上传附件，请检查网络后重试。', 'NETWORK_ERROR', {}, 0); }
-    if (!response.ok) throw await responseError(response);
-    return response.json() as Promise<AgentAttachment>;
-  },
-  uploadAgentWorkspaceAttachment: async (workspaceId: string, file: File, workDirectoryId?: string, conversationId?: string): Promise<AgentAttachment> => {
-    const body = new FormData(); body.append('file', file, file.name);
-    const query = new URLSearchParams();
-    if (workDirectoryId) query.set('work_directory_id', workDirectoryId);
-    if (conversationId) query.set('conversation_id', conversationId);
-    let response: Response;
-    try { response = await fetch(`${API_BASE}${ROOT}/agent-workspaces/${encodeURIComponent(workspaceId)}/attachments${query.size ? `?${query}` : ''}`, { method: 'POST', body }); }
-    catch { throw new ApiError('无法上传附件，请检查网络后重试。', 'NETWORK_ERROR', {}, 0); }
-    if (!response.ok) throw await responseError(response);
-    return response.json() as Promise<AgentAttachment>;
-  },
+  uploadAgentAttachment: (workspaceId: string, bindingId: string, file: File, onProgress?: UploadProgressHandler): Promise<AgentAttachment> =>
+    uploadFormData(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/attachments/uploads`, `/agent-workspaces/${encodeURIComponent(workspaceId)}/attachments/uploads`, file, { filename: file.name, mime_type: file.type, total_size: file.size, conversation_id: bindingId }, onProgress),
+  uploadAgentWorkspaceAttachment: (workspaceId: string, file: File, workDirectoryId?: string, conversationId?: string, onProgress?: UploadProgressHandler): Promise<AgentAttachment> =>
+    uploadFormData(`/agent-workspaces/${encodeURIComponent(workspaceId)}/attachments/uploads`, `/agent-workspaces/${encodeURIComponent(workspaceId)}/attachments/uploads`, file, { filename: file.name, mime_type: file.type, total_size: file.size, work_directory_id: workDirectoryId, conversation_id: conversationId }, onProgress),
+  uploadAgentWorkspaceFile: (workspaceId: string, file: File, options: { parentPath?: string; workDirectoryId?: string; conversationId?: string } = {}, onProgress?: UploadProgressHandler): Promise<AgentWorkspaceReference> =>
+    uploadFormData<AgentAttachment>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/workspace/uploads`, `/agent-workspaces/${encodeURIComponent(workspaceId)}/workspace/uploads`, file, { filename: file.name, mime_type: file.type, total_size: file.size, parent_path: options.parentPath, work_directory_id: options.workDirectoryId, conversation_id: options.conversationId }, onProgress).then(item => ({ path: item.path, kind: 'file', display_name: item.filename })),
   deleteAgentWorkspaceDraftAttachments: (workspaceId: string, conversationId: string, path?: string) => {
     const query = new URLSearchParams();
     if (path) query.set('path', path);
@@ -952,21 +1046,10 @@ export const nodeSessionApi = {
     request<import('../types').AgentPendingConfirmation>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/pending-confirmation`),
   decideConfirmation: (flowRunId: string, attemptId: string, bindingId: string, expected_pending_digest: string, accept: boolean, reason: string) =>
     request<{ accepted: boolean; cursor?: string | null }>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/pending-confirmation/decision`, json('POST', { expected_pending_digest, accept, reason })),
-  uploadAttachment: async (flowRunId: string, attemptId: string, bindingId: string, file: File): Promise<AgentAttachment> => {
-    const body = new FormData(); body.append('file', file, file.name);
-    const response = await fetch(`${API_BASE}${ROOT}${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/attachments`, { method: 'POST', body });
-    if (!response.ok) throw await responseError(response);
-    return response.json() as Promise<AgentAttachment>;
-  },
-  uploadDraftAttachment: async (flowRunId: string, attemptId: string, file: File, workDirectoryId?: string, conversationId?: string): Promise<AgentAttachment> => {
-    const body = new FormData(); body.append('file', file, file.name);
-    const query = new URLSearchParams();
-    if (workDirectoryId) query.set('work_directory_id', workDirectoryId);
-    if (conversationId) query.set('conversation_id', conversationId);
-    const response = await fetch(`${API_BASE}${ROOT}${nodeSessionBase(flowRunId, attemptId)}/attachments${query.size ? `?${query}` : ''}`, { method: 'POST', body });
-    if (!response.ok) throw await responseError(response);
-    return response.json() as Promise<AgentAttachment>;
-  },
+  uploadAttachment: (flowRunId: string, attemptId: string, bindingId: string, file: File, onProgress?: UploadProgressHandler): Promise<AgentAttachment> =>
+    uploadFormData(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/attachments/uploads`, `${nodeSessionBase(flowRunId, attemptId)}/attachments/uploads`, file, { filename: file.name, mime_type: file.type, total_size: file.size, conversation_id: bindingId }, onProgress),
+  uploadDraftAttachment: (flowRunId: string, attemptId: string, file: File, _workDirectoryId?: string, conversationId?: string, onProgress?: UploadProgressHandler): Promise<AgentAttachment> =>
+    uploadFormData(`${nodeSessionBase(flowRunId, attemptId)}/attachments/uploads`, `${nodeSessionBase(flowRunId, attemptId)}/attachments/uploads`, file, { filename: file.name, mime_type: file.type, total_size: file.size, conversation_id: conversationId }, onProgress),
   deleteDraftAttachments: (flowRunId: string, attemptId: string, conversationId: string, path?: string) => {
     const query = new URLSearchParams();
     if (path) query.set('path', path);

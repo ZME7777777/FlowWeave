@@ -120,14 +120,14 @@ export interface TerminalEnvironmentWrite {
 }
 export interface WebsiteCredential {
   id: string; name: string; target_host: string; target_path: string; include_subdomains: boolean;
-  auth_type: 'USERNAME_PASSWORD' | 'TOKEN'; has_username: boolean; has_secret: boolean;
+  auth_type: 'USERNAME_PASSWORD' | 'PASSWORD' | 'TOKEN'; has_username: boolean; has_secret: boolean;
   secret_hint?: string | null; row_version: number;
   environment_names: { username?: string; password?: string; token?: string };
   created_at: string; updated_at: string;
 }
 export interface WebsiteCredentialWrite {
   name: string; target_host: string; target_path: string; include_subdomains: boolean;
-  auth_type: 'USERNAME_PASSWORD' | 'TOKEN'; username?: string | null; secret?: string | null;
+  auth_type: 'USERNAME_PASSWORD' | 'PASSWORD' | 'TOKEN'; username?: string | null; secret?: string | null;
   row_version?: number | null;
 }
 export interface AgentConversationCredentialSyncEntry extends WebsiteCredential {
@@ -158,7 +158,7 @@ export interface ProviderModel {
   context_window?: number | null;
 }
 export interface ModelProvider {
-  id: string; name: string; base_url: string; auth_type: 'API_KEY' | 'CODEX_OAUTH';
+  id: string; name: string; base_url: string; auth_type: 'API_KEY' | 'ANTHROPIC_API_KEY' | 'CODEX_OAUTH';
   api_protocol: 'CHAT_COMPLETIONS' | 'RESPONSES';
   has_api_key: boolean; api_key_hint?: string | null; oauth_connected: boolean;
   oauth_account_email?: string | null; oauth_device_pending: boolean;
@@ -168,7 +168,7 @@ export interface ModelProvider {
   created_at: string; updated_at: string;
 }
 export interface ModelProviderWrite {
-  name: string; auth_type: 'API_KEY' | 'CODEX_OAUTH'; base_url: string;
+  name: string; auth_type: 'API_KEY' | 'ANTHROPIC_API_KEY' | 'CODEX_OAUTH'; base_url: string;
   api_protocol: 'CHAT_COMPLETIONS' | 'RESPONSES';
   api_key?: string | null; row_version?: number | null;
   models: ProviderModel[];

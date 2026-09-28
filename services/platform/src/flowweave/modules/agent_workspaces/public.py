@@ -146,6 +146,50 @@ def validate_message_workspace_references(
     )
 
 
+def validate_uploaded_workspace_file_target(
+    db: Session,
+    workspace_id: str,
+    parent_path: str | None,
+    filename: str,
+    *,
+    work_directory_id: str | None = None,
+    binding_id: str | None = None,
+) -> str:
+    from flowweave.modules.agent_workspaces.application import workspace
+
+    return workspace.validate_uploaded_file_target(
+        db,
+        workspace_id,
+        parent_path,
+        filename,
+        work_directory_id=work_directory_id,
+        binding_id=binding_id,
+    )
+
+
+def write_uploaded_workspace_file(
+    db: Session,
+    workspace_id: str,
+    parent_path: str,
+    filename: str,
+    content: bytes,
+    *,
+    work_directory_id: str | None = None,
+    binding_id: str | None = None,
+) -> str:
+    from flowweave.modules.agent_workspaces.application import workspace
+
+    return workspace.write_uploaded_file(
+        db,
+        workspace_id,
+        parent_path,
+        filename,
+        content,
+        work_directory_id=work_directory_id,
+        binding_id=binding_id,
+    )
+
+
 def validate_flow_run_workspace_references(
     db: Session,
     flow_run_id: str,

@@ -51,6 +51,7 @@ from flowweave.modules.agent_sessions.application.draft_attachments import (
     delete_owned_attachment_files,
     enqueue_draft_attachment_cleanup,
 )
+from flowweave.modules.agent_sessions.application import resumable_attachments
 from flowweave.modules.agent_sessions.application.event_branch import complete_active_branch
 from flowweave.modules.agent_sessions.application.flow_node_locator import (
     active_runtime_handle,
@@ -297,25 +298,44 @@ _RUNTIME_WORKSPACE_PATH = r"/runtime/workspace/(?:project(?:/users/[0-9a-f-]{36}
 _SANDBOX_PROJECT_IMAGE = re.compile(
     rf"sandbox:({_RUNTIME_WORKSPACE_PATH}/[A-Za-z0-9][A-Za-z0-9._/-]*)"
 )
+_RELATIVE_MARKDOWN_IMAGE = re.compile(
+    r"(!\[[^\]\r\n]*\]\()([A-Za-z0-9][A-Za-z0-9._/-]*\.(?:avif|gif|jpe?g|png|svg|webp))(\))",
+    re.IGNORECASE,
+)
 
 
 def project_sandbox_images(
     content: str, *, flow_run_id: str, attempt_id: str, binding_id: str
 ) -> str:
-    """Map Runtime-local images to the scoped FlowRun file endpoint.
+    """Map Runtime-local and safe relative images to the scoped FlowRun file endpoint.
 
     Only node-workspace paths are projected. The endpoint still validates the
     FlowRun, Attempt and Conversation before returning the inline image.
     """
 
-    def replace_url(match: re.Match[str]) -> str:
-        query = urlencode({"path": match.group(1), "binding_id": binding_id})
+    def file_url(path: str) -> str:
+        query = urlencode({"path": path, "binding_id": binding_id})
         return (
             f"/api/v1/flow-runs/{flow_run_id}/node-attempts/{attempt_id}"
             f"/agent-sessions/workspace/file?{query}"
         )
 
-    return _SANDBOX_PROJECT_IMAGE.sub(replace_url, content)
+    def replace_sandbox_url(match: re.Match[str]) -> str:
+        return file_url(match.group(1))
+
+    def replace_relative_url(match: re.Match[str]) -> str:
+        relative_path = match.group(2)
+        parts = relative_path.split("/")
+        if any(part in {"", ".", ".."} or part.startswith(".") for part in parts):
+            return match.group(0)
+        return (
+            f"{match.group(1)}"
+            f"{file_url(f'{_RUNTIME_PROJECT}/{relative_path}')}"
+            f"{match.group(3)}"
+        )
+
+    projected = _SANDBOX_PROJECT_IMAGE.sub(replace_sandbox_url, content)
+    return _RELATIVE_MARKDOWN_IMAGE.sub(replace_relative_url, projected)
 
 
 def _node_context_suffix(
@@ -3025,6 +3045,60 @@ def upload_node_attachment(
         "path": path,
         "image_data_url": image_data_url,
     }
+
+
+
+def create_resumable_node_attachment_upload(
+    db: Session, *, flow_run_id: str, attempt_id: str, binding_id: str | None,
+    filename: str, content_type: str, total_size: int, attachment_owner_id: str | None = None,
+) -> dict[str, object]:
+    _assert_node_session_writable(db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id)
+    if binding_id is None:
+        owner_id = attachment_owner_id or ""
+    else:
+        owner_id = _binding_for_attempt(db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id).id
+    upload = resumable_attachments.create_upload(
+        db, host_kind=_FLOW_NODE, host_id=flow_run_id, host_scope_id=attempt_id, binding_id=binding_id,
+        work_directory_id=None, attachment_owner_id=owner_id, filename=filename, mime_type=content_type, total_size=total_size,
+    )
+    return resumable_attachments.upload_status(upload, [])
+
+
+def _resumable_node_attachment_upload(db: Session, *, flow_run_id: str, attempt_id: str, binding_id: str | None, upload_id: str):
+    _assert_node_session_writable(db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id)
+    if binding_id is not None:
+        _binding_for_attempt(db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id)
+    return resumable_attachments.upload_for_host(
+        db, upload_id, host_kind=_FLOW_NODE, host_id=flow_run_id, host_scope_id=attempt_id, binding_id=binding_id
+    )
+
+
+def resumable_node_attachment_upload_status(db: Session, *, flow_run_id: str, attempt_id: str, binding_id: str | None, upload_id: str) -> dict[str, object]:
+    upload = _resumable_node_attachment_upload(db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id, upload_id=upload_id)
+    return resumable_attachments.upload_status(upload, resumable_attachments.list_parts(db, upload))
+
+
+def upload_resumable_node_attachment_part(db: Session, *, flow_run_id: str, attempt_id: str, binding_id: str | None, upload_id: str, part_number: int, content: bytes) -> dict[str, object]:
+    upload = _resumable_node_attachment_upload(db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id, upload_id=upload_id)
+    resumable_attachments.put_part(db, upload, part_number=part_number, content=content)
+    db.flush()
+    return resumable_attachments.upload_status(upload, resumable_attachments.list_parts(db, upload))
+
+
+def complete_resumable_node_attachment_upload(db: Session, *, flow_run_id: str, attempt_id: str, binding_id: str | None, upload_id: str) -> dict[str, str | int | None]:
+    upload = _resumable_node_attachment_upload(db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id, upload_id=upload_id)
+    attachment = upload_node_attachment(
+        db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id,
+        attachment_owner_id=upload.attachment_owner_id, filename=upload.filename, content_type=upload.mime_type,
+        content=resumable_attachments.assemble(db, upload),
+    )
+    resumable_attachments.close_upload(db, upload, status="COMPLETED")
+    return attachment
+
+
+def cancel_resumable_node_attachment_upload(db: Session, *, flow_run_id: str, attempt_id: str, binding_id: str | None, upload_id: str) -> None:
+    upload = _resumable_node_attachment_upload(db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id, upload_id=upload_id)
+    resumable_attachments.close_upload(db, upload, status="CANCELLED")
 
 
 def add_node_conversation_capability(

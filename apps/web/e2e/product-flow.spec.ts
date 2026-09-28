@@ -474,6 +474,8 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   let queuedDispatchPosts = 0;
   let releaseQueuedDispatch: (() => void) | undefined;
   const queuedDispatchGate = new Promise<void>(resolve => { releaseQueuedDispatch = resolve; });
+  let priorityDraftPosts = 0;
+  let priorityQueuedPosts = 0;
   let ambiguousMessagePosts = 0;
   let sentProvider: string | null = null;
   let sentBinding: string | null = null;
@@ -931,6 +933,8 @@ test('top-level Agent workspace creates a direct conversation and restores its U
         queuedDispatchPosts += 1;
         await queuedDispatchGate;
       }
+      if (payload.content === '输入优先消息') priorityDraftPosts += 1;
+      if (payload.content === '输入优先队列消息') priorityQueuedPosts += 1;
       await route.fulfill({ status: 202, contentType: 'application/json', body: JSON.stringify({ accepted: true, cursor: payload.content === '运行中直接发送消息' ? 'running-direct-stream-user' : sentMessages === 1 ? 'running-user' : `sent-user-${sentMessages}` }) });
       return;
     }
@@ -1054,7 +1058,10 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   emptyResponseFollowup = false;
   modelIsResponding = false;
   parentTurnFailed = true;
-  await expect(page.getByText('模型服务暂时不可用')).toBeVisible();
+  const runningFailureDetail = page.locator('.conversation-model-retry.final').filter({ hasText: '模型服务暂不可用' });
+  await expect(runningFailureDetail).toHaveCount(1);
+  await expect(runningFailureDetail.locator('summary')).toHaveText('模型服务暂不可用');
+  await expect(runningFailureDetail).not.toHaveAttribute('open', '');
   await expect(emptyResponseStatus).toHaveCount(0);
   await expect(page.getByRole('button', { name: '发送消息' })).toBeVisible();
   await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toHaveCount(0);
@@ -1672,12 +1679,24 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(trackerCard.getByText('等待构建完成后核对结果。')).toBeVisible();
   await expect(finishTurn.getByText('我先把执行步骤整理成任务列表。')).toBeVisible();
   await expect(finishTurn.getByText('任务跟踪已完成。')).toHaveCount(1);
-  const failureTurn = page.locator('.conversation-turn').filter({ hasText: '模型服务暂不可用' });
-  await expect(failureTurn).toContainText('当前模型服务或其上游网关暂时不可用');
+  const failureTurn = page.locator('.conversation-turn').filter({ hasText: '触发失败' });
+  const failureDetail = failureTurn.locator('.conversation-model-retry.final');
+  await expect(failureDetail).not.toHaveAttribute('open', '');
+  await expect(failureDetail.locator('summary')).toHaveText('模型服务暂不可用');
+  await expect(failureTurn).not.toContainText('模型服务返回了暂时不可用的响应。');
   await expect(failureTurn).not.toContainText('upstream connection refused');
-  const incompleteResponseTurn = page.locator('.conversation-turn').filter({ hasText: '模型返回不完整响应' });
-  await expect(incompleteResponseTurn).toContainText('没有发送可确认完成的响应');
-  await expect(incompleteResponseTurn).not.toContainText('网络连接异常');
+  await failureDetail.locator('summary').click();
+  await expect(failureDetail).toHaveAttribute('open', '');
+  await expect(failureDetail).toContainText('模型服务返回了暂时不可用的响应。');
+  await expect(failureDetail.getByLabel('原始错误详情')).toHaveText('upstream connection refused');
+  const incompleteResponseTurn = page.locator('.conversation-turn').filter({ hasText: '触发不完整流响应' });
+  const incompleteResponseDetail = incompleteResponseTurn.locator('.conversation-model-retry.final');
+  await expect(incompleteResponseDetail).not.toHaveAttribute('open', '');
+  await expect(incompleteResponseDetail.locator('summary')).toHaveText('模型返回不完整响应');
+  await expect(incompleteResponseTurn).not.toContainText('没有发送可确认完成的响应');
+  await incompleteResponseDetail.locator('summary').click();
+  await expect(incompleteResponseDetail).toContainText('模型没有返回完整的可用响应。');
+  await expect(incompleteResponseDetail).not.toContainText('网络连接异常');
   await expect(failureTurn.locator('.conversation-turn-status')).toHaveCount(0);
   await expect(failureTurn.locator('.conversation-activity-group').getByText('耗时 3秒')).toBeVisible();
   await expect(failureTurn.locator('.conversation-message.assistant')).toHaveCount(0);
@@ -1880,6 +1899,18 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   }));
   await expect(workflowDetail).not.toHaveClass(/running/);
   await expect(workflowDetail.locator(':scope > summary b')).toHaveCSS('animation-name', 'none');
+  agentStream!.send(JSON.stringify({
+    type: 'event',
+    event: { id: 'live-browser', event_type: 'TOOL_CALL', payload: { source: 'agent', parent_id: 'live-condensation-complete', action_id: 'live-browser', tool_call_id: 'live-browser-call', tool_name: 'browser_navigate', event_name: 'BrowserNavigateAction', summary: '打开管理页面', details: { url: 'https://example.test/admin' }, timestamp: new Date().toISOString() } },
+  }));
+  const browserDetail = activeProcess.locator('.conversation-tool-detail.tool-browser').filter({ hasText: '打开管理页面' });
+  await expect(browserDetail.locator(':scope > summary > svg.lucide-panel-top')).toBeVisible();
+  await expect(browserDetail.locator(':scope > summary > svg.lucide-wrench')).toHaveCount(0);
+  agentStream!.send(JSON.stringify({
+    type: 'event',
+    event: { id: 'live-browser-result', event_type: 'TOOL_RESULT', payload: { source: 'environment', parent_id: 'live-browser', action_id: 'live-browser', tool_call_id: 'live-browser-call', tool_name: 'browser_navigate', event_name: 'BrowserNavigateObservation', details: { is_error: false }, timestamp: new Date().toISOString() } },
+  }));
+  await expect(browserDetail).not.toHaveClass(/running/);
   agentStream!.send(JSON.stringify({ type: 'delta', item_id: 'transient-preview', content: '正在核对上下文。' }));
   agentStream!.send(JSON.stringify({ type: 'delta', item_id: 'transient-preview', content: '\n最终回复只在正式消息到达后展示。' }));
   await expect(page.getByLabel('正在生成的回复')).toHaveCount(0);
@@ -2182,12 +2213,29 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.locator('.agent-composer-note')).toHaveText('已排队 1 条');
   modelIsResponding = false;
   await page.reload();
-  await page.getByLabel('发送 Agent 消息').press('Meta+Enter');
   await expect.poll(() => queuedDispatchPosts).toBe(1);
   await page.waitForTimeout(250);
   expect(queuedDispatchPosts).toBe(1);
   releaseQueuedDispatch?.();
   await expect.poll(() => sentMessages).toBe(sentBeforeQueue + 1);
+  await expect(page.getByLabel('消息投递队列')).toHaveCount(0);
+  modelIsResponding = true;
+  await composer.fill('输入优先队列消息');
+  await composer.press('Enter');
+  await expect(page.getByLabel('消息投递队列').getByText('输入优先队列消息')).toBeVisible();
+  await composer.fill('输入优先消息');
+  modelIsResponding = false;
+  await page.reload();
+  await expect(page.getByLabel('发送 Agent 消息')).toHaveValue('输入优先消息');
+  await expect.poll(() => priorityQueuedPosts).toBe(0);
+  await page.getByLabel('发送 Agent 消息').press('Enter');
+  await expect.poll(() => priorityDraftPosts).toBe(1);
+  await expect.poll(() => priorityQueuedPosts).toBe(0);
+  modelIsResponding = true;
+  await page.reload();
+  modelIsResponding = false;
+  await page.reload();
+  await expect.poll(() => priorityQueuedPosts).toBe(1);
   await expect(page.getByLabel('消息投递队列')).toHaveCount(0);
   modelIsResponding = true;
   await page.reload();

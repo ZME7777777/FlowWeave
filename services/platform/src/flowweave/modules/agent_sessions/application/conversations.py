@@ -42,6 +42,7 @@ from flowweave.modules.agent_sessions.application.draft_attachments import (
 from flowweave.modules.agent_sessions.application.event_branch import (
     complete_active_branch,
 )
+from flowweave.modules.agent_sessions.application import resumable_attachments
 from flowweave.modules.agent_sessions.application.runtime_config import (
     build_agent_spec,
     config_from_binding,
@@ -52,6 +53,7 @@ from flowweave.modules.agent_sessions.infrastructure.models import (
     AgentConversationCapability,
     AgentConversationCommand,
     AgentConversationMessageAttachment,
+    AgentSidebarConversation,
 )
 from flowweave.modules.agent_workspaces import public as agent_workspace_host
 from flowweave.modules.catalog.public import resolve_version
@@ -103,7 +105,7 @@ _SANDBOX_PROJECT_IMAGE = re.compile(
     rf"sandbox:({_RUNTIME_WORKSPACE_PATH}/[A-Za-z0-9][A-Za-z0-9._/-]*)"
 )
 _RELATIVE_MARKDOWN_IMAGE = re.compile(
-    r"(!\[[^\]\r\n]*\]\()([A-Za-z0-9][A-Za-z0-9._/-]*\.(?:avif|gif|jpe?g|png|webp))(\))",
+    r"(!\[[^\]\r\n]*\]\()([A-Za-z0-9][A-Za-z0-9._/-]*\.(?:avif|gif|jpe?g|png|svg|webp))(\))",
     re.IGNORECASE,
 )
 _MECHANICAL_TITLE = re.compile(
@@ -238,7 +240,11 @@ def _dict(
 ) -> dict[str, Any]:
     work_directory_id = _work_directory_id(db, item)
     if write_available is None:
-        write_available = _workspace_write_available(db, _workspace(db, item.workspace_id))
+        write_available = (
+            _workspace_write_available(db, _workspace(db, item.workspace_id))
+            if item.workspace_id is not None
+            else False
+        )
     return {
         "id": item.id,
         "display_title": item.display_title,
@@ -752,6 +758,9 @@ def list_conversations(db: Session, workspace_id: str) -> list[dict[str, Any]]:
             .where(
                 AgentConversationBinding.workspace_id == workspace_id,
                 AgentConversationBinding.lifecycle == "ACTIVE",
+                ~AgentConversationBinding.id.in_(
+                    select(AgentSidebarConversation.sidebar_binding_id)
+                ),
             )
             .order_by(
                 _conversation_sort_expression().desc(),
@@ -770,6 +779,9 @@ def conversation_activity(db: Session, workspace_id: str) -> dict[str, Any]:
             select(AgentConversationBinding).where(
                 AgentConversationBinding.workspace_id == workspace_id,
                 AgentConversationBinding.lifecycle == "ACTIVE",
+                ~AgentConversationBinding.id.in_(
+                    select(AgentSidebarConversation.sidebar_binding_id)
+                ),
             )
         )
     )
@@ -863,6 +875,7 @@ def list_conversation_page(
     query = select(AgentConversationBinding).where(
         AgentConversationBinding.workspace_id == workspace_id,
         AgentConversationBinding.lifecycle == "ACTIVE",
+        ~AgentConversationBinding.id.in_(select(AgentSidebarConversation.sidebar_binding_id)),
     )
     if cursor:
         sort_key, binding_id = _decode_conversation_page_cursor(cursor)
@@ -1167,6 +1180,7 @@ def _create_native_conversation(
     working_directory: str,
     *,
     allow_existing: bool = False,
+    system_message_suffix_append: str = "",
 ) -> RuntimeHandle:
     ensure_credential_sync_schema(db)
     runtime = db.scalar(
@@ -1203,6 +1217,7 @@ def _create_native_conversation(
         working_directory=working_directory,
         host_root=host_root,
         runtime_root=runtime_root,
+        system_message_suffix_append=system_message_suffix_append,
     )
     conversation_secrets, credential_context = credentials_for_agent(db)
     if credential_context:
@@ -1608,6 +1623,8 @@ def bootstrap_conversation(
     annotations: tuple[dict[str, Any], ...] = (),
     capability_version_ids: tuple[str, ...] = (),
     idempotency_key: str,
+    sidebar_source_binding_id: str | None = None,
+    system_message_suffix_append: str = "",
 ) -> dict[str, Any]:
     """Create a native conversation only while accepting its first user event.
 
@@ -1618,7 +1635,7 @@ def bootstrap_conversation(
     """
 
     message_text = content.strip()
-    if references:
+    if references and sidebar_source_binding_id is None:
         raise DomainError(
             "AGENT_CONVERSATION_REFERENCE_UNAVAILABLE",
             "新会话首条消息不能引用尚未存在的会话内容",
@@ -1724,8 +1741,14 @@ def bootstrap_conversation(
         binding_id=binding.id,
         allow_provisioning=True,
     )
+    source_references: tuple[dict[str, str], ...] = ()
+    if sidebar_source_binding_id is not None:
+        source = _binding(db, workspace.id, sidebar_source_binding_id)
+        source_references = _resolve_conversation_references(
+            get_runtime(), _handle(db, workspace, source), references
+        )
     prompt, image_urls = _message_payload(
-        message_text, attachments, (), normalized_workspace_references, annotations
+        message_text, attachments, source_references, normalized_workspace_references, annotations
     )
     _validate_attachment_owners(
         binding.id,
@@ -1760,6 +1783,7 @@ def bootstrap_conversation(
             provider,
             binding.working_directory,
             allow_existing=command.attempt_count > 1,
+            system_message_suffix_append=system_message_suffix_append,
         )
         previous_event_id = get_runtime().reload_conversation(handle).event_id
         binding.bootstrap_parent_event_id = previous_event_id
@@ -3064,9 +3088,7 @@ def delete_draft_attachments(db: Session, workspace_id: str, owner_id: str) -> i
     )
 
 
-def delete_draft_attachment(
-    db: Session, workspace_id: str, owner_id: str, path: str
-) -> bool:
+def delete_draft_attachment(db: Session, workspace_id: str, owner_id: str, path: str) -> bool:
     workspace = _workspace(db, workspace_id)
     owner = assert_attachment_owner_unbound(
         db, owner_id, host_kind="AGENT_WORKSPACE", host_id=workspace.id
@@ -3172,6 +3194,134 @@ def upload_attachment(
         "path": path,
         "image_data_url": image_data_url,
     }
+
+
+def create_resumable_attachment_upload(
+    db: Session,
+    workspace_id: str,
+    binding_id: str | None,
+    *,
+    filename: str,
+    content_type: str,
+    total_size: int,
+    work_directory_id: str | None = None,
+    attachment_owner_id: str | None = None,
+) -> dict[str, object]:
+    workspace = _workspace(db, workspace_id)
+    if binding_id is None:
+        owner_id = attachment_owner_id or ""
+        agent_workspace_host.conversation_work_directory_context(db, workspace.id, work_directory_id)
+    else:
+        owner_id = _binding(db, workspace_id, binding_id).id
+    upload = resumable_attachments.create_upload(
+        db,
+        host_kind="AGENT_WORKSPACE",
+        host_id=workspace.id,
+        host_scope_id=None,
+        binding_id=binding_id,
+        work_directory_id=work_directory_id,
+        attachment_owner_id=owner_id,
+        filename=filename,
+        mime_type=content_type,
+        total_size=total_size,
+    )
+    return resumable_attachments.upload_status(upload, [])
+
+
+def create_resumable_workspace_file_upload(
+    db: Session,
+    workspace_id: str,
+    *,
+    binding_id: str | None,
+    work_directory_id: str | None,
+    parent_path: str | None,
+    filename: str,
+    content_type: str,
+    total_size: int,
+) -> dict[str, object]:
+    workspace = _workspace(db, workspace_id)
+    if binding_id is not None:
+        _binding(db, workspace_id, binding_id)
+    target_path = agent_workspace_host.validate_uploaded_workspace_file_target(
+        db,
+        workspace.id,
+        parent_path,
+        filename,
+        work_directory_id=work_directory_id,
+        binding_id=binding_id,
+    )
+    upload = resumable_attachments.create_upload(
+        db,
+        host_kind="AGENT_WORKSPACE",
+        host_id=workspace.id,
+        host_scope_id=None,
+        binding_id=binding_id,
+        work_directory_id=work_directory_id,
+        attachment_owner_id=None,
+        filename=filename,
+        mime_type=content_type,
+        total_size=total_size,
+        upload_kind="WORKSPACE_FILE",
+        target_path=target_path,
+    )
+    return resumable_attachments.upload_status(upload, [])
+
+
+def _resumable_attachment_upload(db: Session, workspace_id: str, binding_id: str | None, upload_id: str):
+    _workspace(db, workspace_id)
+    if binding_id is not None:
+        _binding(db, workspace_id, binding_id)
+    return resumable_attachments.upload_for_host(
+        db, upload_id, host_kind="AGENT_WORKSPACE", host_id=workspace_id, host_scope_id=None, binding_id=binding_id
+    )
+
+
+def resumable_attachment_upload_status(db: Session, workspace_id: str, binding_id: str | None, upload_id: str) -> dict[str, object]:
+    upload = _resumable_attachment_upload(db, workspace_id, binding_id, upload_id)
+    return resumable_attachments.upload_status(upload, resumable_attachments.list_parts(db, upload))
+
+
+def upload_resumable_attachment_part(db: Session, workspace_id: str, binding_id: str | None, upload_id: str, part_number: int, content: bytes) -> dict[str, object]:
+    upload = _resumable_attachment_upload(db, workspace_id, binding_id, upload_id)
+    resumable_attachments.put_part(db, upload, part_number=part_number, content=content)
+    db.flush()
+    return resumable_attachments.upload_status(upload, resumable_attachments.list_parts(db, upload))
+
+
+def complete_resumable_attachment_upload(db: Session, workspace_id: str, binding_id: str | None, upload_id: str) -> dict[str, str | int | None]:
+    upload = _resumable_attachment_upload(db, workspace_id, binding_id, upload_id)
+    content = resumable_attachments.assemble(db, upload)
+    if upload.upload_kind == "WORKSPACE_FILE":
+        if upload.target_path is None:
+            raise DomainError("AGENT_UPLOAD_INVALID", "工作区上传目标无效", 409)
+        path = agent_workspace_host.write_uploaded_workspace_file(
+            db,
+            workspace_id,
+            upload.target_path,
+            upload.filename,
+            content,
+            work_directory_id=upload.work_directory_id,
+            binding_id=binding_id,
+        )
+        result: dict[str, str | int | None] = {
+            "filename": upload.filename,
+            "mime_type": upload.mime_type,
+            "byte_size": upload.total_size,
+            "path": path,
+            "image_data_url": None,
+        }
+    else:
+        result = upload_attachment(
+            db, workspace_id, binding_id, filename=upload.filename, content_type=upload.mime_type, content=content,
+            work_directory_id=upload.work_directory_id, attachment_owner_id=upload.attachment_owner_id,
+        )
+    resumable_attachments.close_upload(db, upload, status="COMPLETED")
+    return result
+
+
+def cancel_resumable_attachment_upload(db: Session, workspace_id: str, binding_id: str | None, upload_id: str) -> None:
+    upload = _resumable_attachment_upload(db, workspace_id, binding_id, upload_id)
+    resumable_attachments.close_upload(db, upload, status="CANCELLED")
 
 
 def conversation_context(

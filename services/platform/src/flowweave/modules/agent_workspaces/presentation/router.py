@@ -11,6 +11,7 @@ from fastapi import (
     APIRouter,
     Depends,
     File,
+    HTTPException,
     Query,
     Response,
     UploadFile,
@@ -21,6 +22,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from flowweave.bootstrap.container import Container
 from flowweave.modules.agent_sessions.application import search as conversation_search
+from flowweave.modules.agent_sessions.application import sidebar_conversations
 from flowweave.modules.agent_sessions.application.conversation_cache import ConversationCacheScope
 from flowweave.modules.agent_sessions.public import conversations
 from flowweave.modules.agent_workspaces.application import work_directories, workspace
@@ -172,6 +174,17 @@ class AgentConversationModelWrite(_Write):
 class AgentConversationForkWrite(_Write):
     event_id: str = Field(min_length=1, max_length=200)
     title: str | None = Field(default=None, max_length=240)
+
+
+class AgentSidebarConversationWrite(_Write):
+    conversation_id: str = Field(min_length=36, max_length=36)
+    model_provider_id: str = Field(min_length=1, max_length=36)
+    model_name: str = Field(min_length=1, max_length=240)
+    reasoning_effort: str | None = Field(default=None, max_length=30)
+    content: str = Field(min_length=1, max_length=200_000)
+    references: list[AgentConversationReference] = Field(
+        default_factory=_empty_conversation_references, max_length=10
+    )
 
 
 class AgentStreamingMigrationWrite(_Write):
@@ -714,6 +727,51 @@ async def create_agent_conversation(
     )
 
 
+@router.post(
+    "/agent-workspaces/{workspace_id}/conversations/{source_binding_id}/sidebar", status_code=201
+)
+async def create_agent_sidebar_conversation(
+    workspace_id: str,
+    source_binding_id: str,
+    payload: AgentSidebarConversationWrite,
+    db: Db,
+    idempotency_key: IdempotencyKey = None,
+) -> dict[str, Any]:
+    if idempotency_key is None:
+        raise DomainError(
+            "AGENT_SIDEBAR_IDEMPOTENCY_KEY_REQUIRED",
+            "侧边聊天首条消息必须携带幂等请求标识",
+            422,
+        )
+    return await run_sync(
+        db,
+        lambda session: sidebar_conversations.create_sidebar_conversation(
+            session,
+            workspace_id,
+            source_binding_id=source_binding_id,
+            conversation_id=payload.conversation_id,
+            model_provider_id=payload.model_provider_id,
+            model_name=payload.model_name,
+            reasoning_effort=payload.reasoning_effort,
+            content=payload.content,
+            references=tuple(item.model_dump() for item in payload.references),
+            idempotency_key=idempotency_key,
+        ),
+    )
+
+
+@router.get("/agent-workspaces/{workspace_id}/sidebars/{binding_id}")
+async def get_agent_sidebar_conversation(
+    workspace_id: str, binding_id: str, db: Db
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: sidebar_conversations.sidebar_conversation(
+            session, workspace_id, binding_id
+        ),
+    )
+
+
 @router.get("/agent-workspaces/{workspace_id}/conversations/{binding_id}")
 async def get_agent_conversation(workspace_id: str, binding_id: str, db: Db) -> dict[str, Any]:
     return await run_sync(
@@ -1020,9 +1078,12 @@ async def agent_message(
     }
     prepared = await run_sync(
         db,
-        lambda session: conversations.prepare_running_message(
-            session, workspace_id, binding_id, payload.content, **arguments
-        ),
+        lambda session: (
+            sidebar_conversations.assert_sidebar_writable(session, workspace_id, binding_id),
+            conversations.prepare_running_message(
+                session, workspace_id, binding_id, payload.content, **arguments
+            ),
+        )[1],
     )
     running_result = await run_blocking(
         container, lambda _session: conversations.dispatch_running_message(prepared)
@@ -1065,6 +1126,114 @@ async def agent_attachment(
         ),
     )
 
+
+
+
+class ResumableAttachmentUploadWrite(_Write):
+    filename: str = Field(min_length=1, max_length=240)
+    mime_type: str = Field(default="application/octet-stream", max_length=200)
+    total_size: int = Field(gt=0, le=25 * 1024 * 1024)
+    work_directory_id: str | None = None
+    conversation_id: str | None = Field(default=None, min_length=36, max_length=36)
+
+
+class ResumableWorkspaceFileUploadWrite(_Write):
+    filename: str = Field(min_length=1, max_length=240)
+    mime_type: str = Field(default="application/octet-stream", max_length=200)
+    total_size: int = Field(gt=0, le=100 * 1024 * 1024)
+    parent_path: str | None = Field(default=None, max_length=500)
+    work_directory_id: str | None = None
+    conversation_id: str | None = Field(default=None, min_length=36, max_length=36)
+
+
+async def _resumable_attachment_part(file: UploadFile) -> bytes:
+    content = await file.read(256 * 1024 + 1)
+    if len(content) > 256 * 1024:
+        raise HTTPException(status_code=422, detail="附件分片不能超过 256 KiB")
+    return content
+
+
+
+@router.post("/agent-workspaces/{workspace_id}/workspace/uploads", status_code=201)
+async def create_resumable_agent_workspace_file_upload(
+    workspace_id: str,
+    payload: ResumableWorkspaceFileUploadWrite,
+    db: Db,
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: conversations.create_resumable_workspace_file_upload(
+            session,
+            workspace_id,
+            binding_id=payload.conversation_id,
+            work_directory_id=payload.work_directory_id,
+            parent_path=payload.parent_path,
+            filename=payload.filename,
+            content_type=payload.mime_type,
+            total_size=payload.total_size,
+        ),
+    )
+
+
+@router.post("/agent-workspaces/{workspace_id}/attachments/uploads", status_code=201)
+async def create_resumable_agent_workspace_attachment_upload(
+    workspace_id: str, payload: ResumableAttachmentUploadWrite, db: Db
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: conversations.create_resumable_attachment_upload(
+            session, workspace_id, None, filename=payload.filename, content_type=payload.mime_type,
+            total_size=payload.total_size, work_directory_id=payload.work_directory_id,
+            attachment_owner_id=payload.conversation_id,
+        ),
+    )
+
+
+@router.post("/agent-workspaces/{workspace_id}/conversations/{binding_id}/attachments/uploads", status_code=201)
+async def create_resumable_agent_attachment_upload(
+    workspace_id: str, binding_id: str, payload: ResumableAttachmentUploadWrite, db: Db
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: conversations.create_resumable_attachment_upload(
+            session, workspace_id, binding_id, filename=payload.filename, content_type=payload.mime_type,
+            total_size=payload.total_size,
+        ),
+    )
+
+
+@router.get("/agent-workspaces/{workspace_id}/workspace/uploads/{upload_id}")
+@router.get("/agent-workspaces/{workspace_id}/attachments/uploads/{upload_id}")
+async def resumable_agent_workspace_attachment_upload_status(
+    workspace_id: str, upload_id: str, db: Db, binding_id: str | None = Query(default=None)
+) -> dict[str, Any]:
+    return await run_sync(db, lambda session: conversations.resumable_attachment_upload_status(session, workspace_id, binding_id, upload_id))
+
+
+@router.put("/agent-workspaces/{workspace_id}/workspace/uploads/{upload_id}/parts/{part_number}")
+@router.put("/agent-workspaces/{workspace_id}/attachments/uploads/{upload_id}/parts/{part_number}")
+async def upload_resumable_agent_workspace_attachment_part(
+    workspace_id: str, upload_id: str, part_number: int, db: Db, file: Annotated[UploadFile, File()], binding_id: str | None = Query(default=None)
+) -> dict[str, Any]:
+    content = await _resumable_attachment_part(file)
+    return await run_sync(db, lambda session: conversations.upload_resumable_attachment_part(session, workspace_id, binding_id, upload_id, part_number, content))
+
+
+@router.post("/agent-workspaces/{workspace_id}/workspace/uploads/{upload_id}/complete", status_code=201)
+@router.post("/agent-workspaces/{workspace_id}/attachments/uploads/{upload_id}/complete", status_code=201)
+async def complete_resumable_agent_workspace_attachment_upload(
+    workspace_id: str, upload_id: str, db: Db, binding_id: str | None = Query(default=None)
+) -> dict[str, Any]:
+    return await run_sync(db, lambda session: conversations.complete_resumable_attachment_upload(session, workspace_id, binding_id, upload_id))
+
+
+@router.delete("/agent-workspaces/{workspace_id}/workspace/uploads/{upload_id}", status_code=204)
+@router.delete("/agent-workspaces/{workspace_id}/attachments/uploads/{upload_id}", status_code=204)
+async def cancel_resumable_agent_workspace_attachment_upload(
+    workspace_id: str, upload_id: str, db: Db, binding_id: str | None = Query(default=None)
+) -> Response:
+    await run_sync(db, lambda session: conversations.cancel_resumable_attachment_upload(session, workspace_id, binding_id, upload_id))
+    return Response(status_code=204)
 
 @router.post("/agent-workspaces/{workspace_id}/attachments", status_code=201)
 async def agent_workspace_attachment(

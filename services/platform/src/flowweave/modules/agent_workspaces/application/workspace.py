@@ -1582,6 +1582,76 @@ def delete_entry(
         ) from exc
 
 
+def validate_uploaded_file_target(
+    db: Session,
+    workspace_id: str,
+    parent_path: str | None,
+    filename: str,
+    *,
+    binding_id: str | None = None,
+    work_directory_id: str | None = None,
+) -> str:
+    """Authorize an upload target without mutating the workspace."""
+
+    _workspace(db, workspace_id)
+    working_directory, directory = _working_directory(db, workspace_id, work_directory_id, binding_id)
+    parent_path = parent_path or working_directory
+    runtime_root = _runtime_root(workspace_id)
+    filename = filename.strip()
+    if not filename or filename in {".", ".."} or filename.startswith(".") or "/" in filename or "\\" in filename:
+        raise DomainError("AGENT_WORKSPACE_ENTRY_NAME_INVALID", "名称必须是非隐藏的单级文件名", 422)
+    parsed = PurePosixPath(parent_path)
+    if parent_path != runtime_root and (
+        not parent_path.startswith(runtime_root + "/")
+        or parsed.as_posix() != parent_path
+        or ".." in parsed.parts
+        or any(part.startswith(".") for part in parsed.parts)
+    ):
+        raise DomainError("AGENT_WORKSPACE_PATH_INVALID", "父目录不在工作区范围内", 422)
+    file_roots = _file_scope_roots(db, workspace_id, work_directory_id, binding_id, directory)
+    if not any(parent_path == root or parent_path.startswith(root.rstrip("/") + "/") for root in file_roots):
+        raise DomainError("AGENT_WORKSPACE_PATH_INVALID", "父目录不在当前工作目录范围内", 422)
+    project_root = _project_root(db, workspace_id)
+    parent = project_root if parent_path == runtime_root else _host_path(project_root, runtime_root, parent_path, require_file=False)
+    try:
+        parent_mode = parent.lstat().st_mode
+    except OSError as exc:
+        raise DomainError("AGENT_WORKSPACE_FILE_NOT_FOUND", "父目录不存在", 404) from exc
+    if stat.S_ISLNK(parent_mode) or not stat.S_ISDIR(parent_mode):
+        raise DomainError("AGENT_WORKSPACE_PATH_INVALID", "父路径不是可用目录", 422)
+    return parent_path
+
+
+def write_uploaded_file(
+    db: Session,
+    workspace_id: str,
+    parent_path: str,
+    filename: str,
+    content: bytes,
+    *,
+    binding_id: str | None = None,
+    work_directory_id: str | None = None,
+) -> str:
+    """Persist one completed browser upload in an authorized ordinary directory."""
+
+    parent_path = validate_uploaded_file_target(
+        db, workspace_id, parent_path, filename, binding_id=binding_id, work_directory_id=work_directory_id
+    )
+    project_root = _project_root(db, workspace_id)
+    runtime_root = _runtime_root(workspace_id)
+    parent = project_root if parent_path == runtime_root else _host_path(project_root, runtime_root, parent_path, require_file=False)
+    target = parent / filename.strip()
+    try:
+        descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(content)
+    except FileExistsError as exc:
+        raise DomainError("AGENT_WORKSPACE_ENTRY_EXISTS", "同名文件或目录已存在", 409) from exc
+    except OSError as exc:
+        raise DomainError("AGENT_WORKSPACE_CREATE_FAILED", "工作区文件写入失败", 503) from exc
+    return f"{parent_path.rstrip('/')}/{filename.strip()}"
+
+
 def create_entry(
     db: Session,
     workspace_id: str,

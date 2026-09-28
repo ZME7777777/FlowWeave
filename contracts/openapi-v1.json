@@ -19808,6 +19808,7 @@
             "type": "string",
             "enum": [
               "USERNAME_PASSWORD",
+              "PASSWORD",
               "TOKEN",
               "BEARER_TOKEN"
             ],
