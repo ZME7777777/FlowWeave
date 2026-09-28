@@ -137,6 +137,7 @@ test('Accepted message hides stale monitoring until its formal event arrives', a
       ready: !messageAccepted, execution_status: messageAccepted ? 'running' : 'idle',
     });
     if (path.endsWith('/messages') && request.method() === 'POST') {
+      await messageAcceptance;
       messageAccepted = true;
       return json(route, { accepted: true, cursor: 'accepted-message' }, 202);
     }
