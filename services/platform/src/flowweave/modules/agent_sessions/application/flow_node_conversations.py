@@ -302,6 +302,10 @@ _RELATIVE_MARKDOWN_IMAGE = re.compile(
     r"(!\[[^\]\r\n]*\]\()([A-Za-z0-9][A-Za-z0-9._/-]*\.(?:avif|gif|jpe?g|png|svg|webp))(\))",
     re.IGNORECASE,
 )
+_ABSOLUTE_WORKSPACE_MARKDOWN_IMAGE = re.compile(
+    rf"(!\[[^\]\r\n]*\]\()https?://[^/\s)]+({_RUNTIME_WORKSPACE_PATH}/[A-Za-z0-9.][A-Za-z0-9._/-]*\.(?:avif|gif|jpe?g|png|svg|webp))(\))",
+    re.IGNORECASE,
+)
 
 
 def project_sandbox_images(
@@ -334,7 +338,11 @@ def project_sandbox_images(
             f"{match.group(3)}"
         )
 
+    def replace_absolute_workspace_url(match: re.Match[str]) -> str:
+        return f"{match.group(1)}{file_url(match.group(2))}{match.group(3)}"
+
     projected = _SANDBOX_PROJECT_IMAGE.sub(replace_sandbox_url, content)
+    projected = _ABSOLUTE_WORKSPACE_MARKDOWN_IMAGE.sub(replace_absolute_workspace_url, projected)
     return _RELATIVE_MARKDOWN_IMAGE.sub(replace_relative_url, projected)
 
 

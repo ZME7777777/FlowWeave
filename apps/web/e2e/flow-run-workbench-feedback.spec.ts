@@ -1995,6 +1995,7 @@ test('workspace Markdown links open the referenced node-session file without nav
   const sourcePath = `${root}/filtered_business_exceptions.md`;
   const reportDirectory = `${root}/filtered_business_exception_reports`;
   const targetPath = `${reportDirectory}/hq-admin.md`;
+  const imagePath = `${root}/.tmp/panel-top-preview.png`;
   const sessionBase = `/api/v1/flow-runs/${flowRunId}/node-attempts/${attemptId}/agent-sessions`;
   const sessionPath = `/flow-runs/${flowRunId}/nodes/${nodeRunId}/attempts/${attemptId}/agent-sessions/${conversation.id}`;
   const previewPaths: string[] = [];
@@ -2026,23 +2027,32 @@ test('workspace Markdown links open the referenced node-session file without nav
         { path: reportDirectory, kind: 'directory', size: 0 },
       ], next_cursor: null });
     }
-    if (path === `${sessionBase}/workspace/file` && url.searchParams.get('preview') === 'true') {
+    if (path === `${sessionBase}/workspace/file`) {
       const requestedPath = url.searchParams.get('path') ?? '';
-      previewPaths.push(requestedPath);
-      const content = requestedPath === sourcePath
-        ? '# 筛选后业务异常日志汇总\n\n```mermaid\nflowchart LR\n  A[开始] --> B[结束]\n```\n\n[越界路径](../outside.md)\n\n| 文档 |\n| --- |\n| [hq-admin](filtered_business_exception_reports/hq-admin.md) |'
-        : requestedPath === targetPath ? '# HQ Admin report\n\n已正确打开目标文件。' : 'unexpected file';
-      return route.fulfill({
-        status: 200,
-        contentType: 'text/markdown',
-        headers: { 'X-Preview-Total-Bytes': String(content.length) },
-        body: content,
-      });
+      if (requestedPath === imagePath && url.searchParams.get('preview') !== 'true') {
+        return route.fulfill({
+          status: 200,
+          contentType: 'image/png',
+          body: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL6HwAAAABJRU5ErkJggg==', 'base64'),
+        });
+      }
+      if (url.searchParams.get('preview') === 'true') {
+        previewPaths.push(requestedPath);
+        const content = requestedPath === sourcePath
+          ? '# 筛选后业务异常日志汇总\n\n```mermaid\nflowchart LR\n  A[开始] --> B[结束]\n```\n\n[越界路径](../outside.md)\n\n| 文档 |\n| --- |\n| [hq-admin](filtered_business_exception_reports/hq-admin.md) |'
+          : requestedPath === targetPath ? '# HQ Admin report\n\n已正确打开目标文件。' : 'unexpected file';
+        return route.fulfill({
+          status: 200,
+          contentType: 'text/markdown',
+          headers: { 'X-Preview-Total-Bytes': String(content.length) },
+          body: content,
+        });
+      }
     }
     if (path === `${sessionBase}/${conversation.id}/events`) return respond({
       events: [
         { id: 'markdown-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '查看异常报告', timestamp: now } },
-        { id: 'markdown-agent', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'markdown-user', content: '[打开汇总](filtered_business_exceptions.md)', timestamp: now } },
+        { id: 'markdown-agent', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'markdown-user', content: '[打开汇总](filtered_business_exceptions.md)\n\n![会话图片](/api/v1/flow-runs/markdown-link-run/node-attempts/markdown-link-attempt/agent-sessions/workspace/file?path=%2Fruntime%2Fworkspace%2Fproject%2F.tmp%2Fpanel-top-preview.png&binding_id=markdown-link-conversation)', timestamp: now } },
       ],
       next_cursor: 'markdown-agent', history_cursor: null, result: { status: 'COMPLETED' },
     });
@@ -2053,6 +2063,11 @@ test('workspace Markdown links open the referenced node-session file without nav
   });
 
   await page.goto(sessionPath);
+  const conversationImage = page.getByRole('button', { name: '预览图片：会话图片' });
+  await expect(conversationImage.locator('img')).toBeVisible();
+  await conversationImage.click();
+  await expect(page.getByRole('dialog', { name: '文件预览' })).toContainText('会话图片');
+  await page.getByRole('button', { name: '关闭' }).click();
   await page.getByRole('link', { name: '打开汇总' }).click();
   await expect(page.locator('.agent-file-preview > header')).toContainText('filtered_business_exceptions.md');
   await expect(page).toHaveURL(new RegExp(`${sessionPath}$`));

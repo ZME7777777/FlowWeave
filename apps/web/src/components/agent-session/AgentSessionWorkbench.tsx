@@ -2545,7 +2545,17 @@ function workspaceMarkdownFileHref(href: string): boolean {
 
 function workspaceMarkdownLinkPath(href: string, workingDirectory?: string, sourcePath?: string): string | undefined {
   const root = workingDirectory ? normalizedWorkspacePath(workingDirectory.replace(/\\/g, '/')) : '';
-  if (!root || !workspaceMarkdownFileHref(href)) return undefined;
+  if (!root) return undefined;
+  try {
+    const url = new URL(href, window.location.origin);
+    if (url.origin === window.location.origin && url.pathname.endsWith('/workspace/file')) {
+      const path = url.searchParams.get('path');
+      return path ? workspaceMarkdownLinkPath(path, workingDirectory, sourcePath) : undefined;
+    }
+  } catch {
+    return undefined;
+  }
+  if (!workspaceMarkdownFileHref(href)) return undefined;
   const rawPath = href.split(/[?#]/, 1)[0];
   if (!rawPath) return undefined;
   let path: string;

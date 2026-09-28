@@ -258,6 +258,8 @@ def test_workspace_generated_images_project_svg_and_preserve_untrusted_paths() -
         (
             "![相对 SVG](assets/panel-top.svg)",
             "![运行时 SVG](sandbox:/runtime/workspace/project/assets/panel-top.svg)",
+            "![完整工作区 PNG](https://hq-ai.example.test/runtime/workspace/project/.tmp/panel-top.png)",
+            "![隐藏文件 PNG](https://hq-ai.example.test/runtime/workspace/project/.hidden.png)",
             "![越界路径](../outside.svg)",
             "<svg><path d=\"M0 0\"/></svg>",
         )
@@ -274,10 +276,14 @@ def test_workspace_generated_images_project_svg_and_preserve_untrusted_paths() -
         "/api/v1/agent-workspaces/workspace-1/workspace/file?"
         "path=%2Fruntime%2Fworkspace%2Fproject%2Fassets%2Fpanel-top.svg&binding_id=binding-1"
     )
+    png_file_url = file_url.replace("assets%2Fpanel-top.svg", ".tmp%2Fpanel-top.png")
+    hidden_file_url = file_url.replace("assets%2Fpanel-top.svg", ".hidden.png")
     assert projected == "\n".join(
         (
             f"![相对 SVG]({file_url})",
             f"![运行时 SVG]({file_url})",
+            f"![完整工作区 PNG]({png_file_url})",
+            f"![隐藏文件 PNG]({hidden_file_url})",
             "![越界路径](../outside.svg)",
             "<svg><path d=\"M0 0\"/></svg>",
         )
@@ -289,6 +295,7 @@ def test_node_workspace_generated_images_project_svg_and_preserve_untrusted_path
         (
             "![相对 SVG](assets/panel-top.svg)",
             "![运行时 SVG](sandbox:/runtime/workspace/project/assets/panel-top.svg)",
+            "![完整工作区 PNG](https://hq-ai.example.test/runtime/workspace/project/.tmp/panel-top.png)",
             "![越界路径](../outside.svg)",
         )
     )
@@ -304,13 +311,16 @@ def test_node_workspace_generated_images_project_svg_and_preserve_untrusted_path
         "/api/v1/flow-runs/flow-run-1/node-attempts/attempt-1/agent-sessions/workspace/file?"
         "path=%2Fruntime%2Fworkspace%2Fproject%2Fassets%2Fpanel-top.svg&binding_id=binding-1"
     )
+    png_file_url = file_url.replace("assets%2Fpanel-top.svg", ".tmp%2Fpanel-top.png")
     assert projected == "\n".join(
         (
             f"![相对 SVG]({file_url})",
             f"![运行时 SVG]({file_url})",
+            f"![完整工作区 PNG]({png_file_url})",
             "![越界路径](../outside.svg)",
         )
     )
+
 
 def test_attachment_only_message_bypasses_context_envelope() -> None:
     attachment_path = (
