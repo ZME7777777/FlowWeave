@@ -64,6 +64,7 @@ from flowweave.shared.infrastructure.http_transport import (
     register_http_transport,
     unregister_http_transport,
 )
+from flowweave.shared.observability import Metrics, bind_metrics, reset_metrics
 from flowweave.shared.schemas import WebsiteCredentialWrite
 
 
@@ -5969,6 +5970,66 @@ def test_openhands_routes_agent_workspace_rename_and_delete(openhands_settings, 
             openhands_settings.sandbox_manager_scope,
             "fw-sbx-agent-workspace-1",
         )
+
+
+def test_formal_reads_are_isolated_by_generation_and_preserve_one_peer_slot(
+    openhands_settings, monkeypatch
+):
+    configured = openhands_settings.model_copy(
+        update={
+            "runtime_read_per_runtime_concurrency": 2,
+            "runtime_read_slot_timeout_seconds": 0.05,
+        }
+    )
+    runtime = OpenHandsRuntime(configured)
+    handle_a = _handle()
+    handle_b = replace(handle_a, conversation_id="20000000-0000-4000-8000-000000000001")
+    handle_other_runtime = replace(handle_a, job_id="env-exec:fw-sbx-flow-run-2")
+    started_a = Event()
+    started_b = Event()
+    release = Event()
+    metrics = Metrics()
+
+    def runtime_url(handle: RuntimeHandle) -> str:
+        return f"http://{handle.job_id.removeprefix('env-exec:')}:8000"
+
+    monkeypatch.setattr(runtime, "_base_url_for_handle", runtime_url)
+
+    def blocked_read(handle: RuntimeHandle, started: Event) -> None:
+        token = bind_metrics(metrics)
+        try:
+            with runtime._formal_read_bulkhead(handle):  # pyright: ignore[reportPrivateUsage]
+                started.set()
+                assert release.wait(timeout=1)
+        finally:
+            reset_metrics(token)
+
+    token = bind_metrics(metrics)
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            blocked_a = executor.submit(blocked_read, handle_a, started_a)
+            blocked_b = executor.submit(blocked_read, handle_b, started_b)
+            assert started_a.wait(timeout=1)
+            assert started_b.wait(timeout=1)
+            # A and B occupy the two slots of one Runtime generation. A third
+            # read is rejected locally rather than queueing behind their stall.
+            with pytest.raises(DomainError) as caught:
+                with runtime._formal_read_bulkhead(handle_b):  # pyright: ignore[reportPrivateUsage]
+                    raise AssertionError("the Runtime bulkhead should reject the third read")
+            assert caught.value.code == "RUNTIME_READ_PER_RUNTIME_SATURATED"
+            # A different Runtime generation remains available despite A/B.
+            with runtime._formal_read_bulkhead(handle_other_runtime):  # pyright: ignore[reportPrivateUsage]
+                pass
+            release.set()
+            blocked_a.result(timeout=1)
+            blocked_b.result(timeout=1)
+    finally:
+        reset_metrics(token)
+
+    rendered = metrics.render()
+    assert "flowweave_runtime_formal_read_active 0" in rendered
+    assert "flowweave_runtime_formal_read_capacity 4" in rendered
+    assert "flowweave_runtime_formal_read_generations 2" in rendered
 
 
 def test_formal_reads_are_bounded_per_runtime_generation(openhands_settings, monkeypatch):

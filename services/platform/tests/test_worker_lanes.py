@@ -148,6 +148,33 @@ def test_admin_control_routes_use_their_reserved_database_lane() -> None:
 
 
 @pytest.mark.asyncio
+async def test_stalled_formal_read_does_not_block_runtime_control_executor() -> None:
+    read_started = asyncio.Event()
+    release_read = asyncio.Event()
+    loop = asyncio.get_running_loop()
+
+    def blocked_read() -> str:
+        loop.call_soon_threadsafe(read_started.set)
+        asyncio.run_coroutine_threadsafe(release_read.wait(), loop).result(timeout=2)
+        return "read-released"
+
+    with (
+        ThreadPoolExecutor(max_workers=1) as formal_read_executor,
+        ThreadPoolExecutor(max_workers=1) as control_executor,
+    ):
+        blocked = loop.run_in_executor(formal_read_executor, blocked_read)
+        await asyncio.wait_for(read_started.wait(), timeout=1)
+        assert (
+            await asyncio.wait_for(
+                loop.run_in_executor(control_executor, lambda: "control-ran"), timeout=0.2
+            )
+            == "control-ran"
+        )
+        release_read.set()
+        assert await asyncio.wait_for(blocked, timeout=1) == "read-released"
+
+
+@pytest.mark.asyncio
 async def test_stalled_poll_executor_does_not_block_runtime_control_executor() -> None:
     poll_started = asyncio.Event()
     release_poll = asyncio.Event()

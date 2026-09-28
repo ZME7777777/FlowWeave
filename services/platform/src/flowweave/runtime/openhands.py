@@ -2221,6 +2221,22 @@ class OpenHandsRuntime:
             cls._formal_identity(item.get("tool_call_id"), field="tool_call_id", required=False),
         )
 
+    def _record_formal_read_bulkhead_metrics(self) -> None:
+        """Publish aggregate bulkhead pressure without Runtime-identifying labels."""
+
+        metrics = current_metrics()
+        if metrics is None:
+            return
+        with self._formal_read_slots_lock:
+            active = sum(self._formal_read_active.values())
+            generations = len(self._formal_read_slots)
+        metrics.gauge("flowweave_runtime_formal_read_active", active)
+        metrics.gauge(
+            "flowweave_runtime_formal_read_capacity",
+            generations * self.settings.runtime_read_per_runtime_concurrency,
+        )
+        metrics.gauge("flowweave_runtime_formal_read_generations", generations)
+
     @contextmanager
     def _formal_read_bulkhead(self, handle: RuntimeHandle) -> Iterator[None]:
         """Bound formal state reads for one Runtime generation.
@@ -2261,6 +2277,7 @@ class OpenHandsRuntime:
         if not slot.acquire(timeout=self.settings.runtime_read_slot_timeout_seconds):
             if metrics := current_metrics():
                 metrics.increment("flowweave_runtime_read_bulkhead_saturated_total")
+            self._record_formal_read_bulkhead_metrics()
             raise DomainError(
                 "RUNTIME_READ_PER_RUNTIME_SATURATED",
                 "This Runtime has too many active formal reads; retry shortly",
@@ -2270,6 +2287,7 @@ class OpenHandsRuntime:
         depths[key] = 1
         with self._formal_read_slots_lock:
             self._formal_read_active[key] = self._formal_read_active.get(key, 0) + 1
+        self._record_formal_read_bulkhead_metrics()
         try:
             yield
         finally:
@@ -2281,6 +2299,7 @@ class OpenHandsRuntime:
                 else:
                     self._formal_read_active.pop(key, None)
             slot.release()
+            self._record_formal_read_bulkhead_metrics()
 
     @contextmanager
     def _background_search_bulkhead(self, handle: RuntimeHandle) -> Iterator[None]:
