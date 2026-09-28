@@ -58,14 +58,10 @@ class Settings(BaseSettings):
     runtime_background_search_per_runtime_concurrency: int = Field(default=1, ge=1, le=4)
     runtime_background_search_slot_timeout_seconds: float = Field(default=0.1, gt=0, le=5)
     runtime_background_search_page_timeout_seconds: float = Field(default=2.0, gt=0, le=10)
-    # A low-priority native EventLog search must have a finite total cost, even
-    # when every page returns a continuation. Reaching a budget preserves the
-    # newest results found so far and marks the durable search partial instead
-    # of failing it; the Workspace worker also retains only the newest hits.
-    runtime_background_search_max_pages: int = Field(default=8, ge=1, le=100)
-    runtime_background_search_max_matches: int = Field(default=100, ge=1, le=2_000)
-    agent_conversation_search_max_bindings: int = Field(default=100, ge=1, le=2_000)
-    agent_conversation_search_max_hits: int = Field(default=200, ge=1, le=10_000)
+    # Conversation search intentionally has no page, hit, or workspace-wide
+    # result cap.  It progresses through the complete native EventLog at low
+    # priority; the per-Runtime bulkhead and short per-page deadline below keep
+    # that exhaustive work from competing with browser hydration.
     runtime_wakeup_timeout_seconds: float = Field(default=10.0, gt=0, le=25)
     runtime_wakeup_backoff_max_seconds: float = Field(default=30.0, gt=0, le=300)
     sse_event_batch_size: int = Field(default=100, ge=1, le=500)

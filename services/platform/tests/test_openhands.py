@@ -6293,63 +6293,55 @@ def test_formal_read_timeout_has_a_stable_business_code(openhands_settings, monk
     assert caught.value.code == "RUNTIME_BUSINESS_READ_TIMEOUT"
 
 
-def test_openhands_background_search_returns_partial_results_at_native_page_budget(
-    openhands_settings, monkeypatch
-):
-    settings = openhands_settings.model_copy(update={"runtime_background_search_max_pages": 1})
-    runtime = OpenHandsRuntime(settings)
+def test_openhands_background_search_reads_all_native_pages(openhands_settings, monkeypatch):
+    runtime = OpenHandsRuntime(openhands_settings)
     calls: list[dict[str, object]] = []
 
     def request(*_args, **kwargs):
         calls.append(kwargs)
-        return {"items": [], "next_page_id": "another-page"}
+        return {
+            "items": [],
+            "next_page_id": f"page-{len(calls)}" if len(calls) < 9 else None,
+        }
 
     monkeypatch.setattr(runtime, "_request", request)
     result = runtime.search_message_events(_handle(), "needle")
 
     assert result.events == ()
-    assert result.truncated
-    assert len(calls) == 1
+    assert not result.truncated
+    assert len(calls) == 9
 
 
-def test_openhands_background_search_returns_newest_partial_results_at_native_match_budget(
-    openhands_settings, monkeypatch
-):
-    settings = openhands_settings.model_copy(update={"runtime_background_search_max_matches": 1})
-    runtime = OpenHandsRuntime(settings)
+def test_openhands_background_search_returns_all_native_matches(openhands_settings, monkeypatch):
+    runtime = OpenHandsRuntime(openhands_settings)
+    items = [
+        {
+            "kind": "MessageEvent",
+            "id": f"event-{index}",
+            "source": "user",
+            "llm_message": {"role": "user", "content": f"needle {index}"},
+        }
+        for index in range(101)
+    ]
     monkeypatch.setattr(
         runtime,
         "_request",
         lambda *_args, **_kwargs: {
-            "items": [
-                {
-                    "kind": "MessageEvent",
-                    "id": "first",
-                    "source": "user",
-                    "llm_message": {"role": "user", "content": "needle one"},
-                },
-                {
-                    "kind": "MessageEvent",
-                    "id": "second",
-                    "source": "assistant",
-                    "llm_message": {"role": "assistant", "content": "needle two"},
-                },
-            ],
+            "items": items,
             "next_page_id": None,
         },
     )
 
     result = runtime.search_message_events(_handle(), "needle")
 
-    assert [event.cursor for event in result.events] == ["first"]
-    assert result.truncated
+    assert [event.cursor for event in result.events] == [f"event-{index}" for index in range(101)]
+    assert not result.truncated
 
 
-def test_openhands_search_page_budget_allows_terminal_page_at_limit(
+def test_openhands_background_search_finishes_when_native_pagination_ends(
     openhands_settings, monkeypatch
 ):
-    settings = openhands_settings.model_copy(update={"runtime_background_search_max_pages": 1})
-    runtime = OpenHandsRuntime(settings)
+    runtime = OpenHandsRuntime(openhands_settings)
     monkeypatch.setattr(
         runtime, "_request", lambda *_args, **_kwargs: {"items": [], "next_page_id": None}
     )

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import base64
 import binascii
-import heapq
 import json
 from datetime import UTC, datetime
 from typing import Any
@@ -26,7 +25,6 @@ from flowweave.modules.agent_workspaces.infrastructure.models import (
 from flowweave.modules.tasks.public import enqueue
 from flowweave.runtime.dependencies import get_runtime
 from flowweave.shared.errors import DomainError, not_found
-from flowweave.shared.settings import get_settings
 
 
 def _search(
@@ -362,52 +360,20 @@ def process(db: Session, search_id: str) -> None:
                     AgentConversationBinding.work_directory_version_id.in_(selected_versions)
                 )
             statement = statement.where(or_(*scopes))
-        settings = get_settings()
-        bindings = list(
-            db.scalars(
-                statement.order_by(
-                    AgentConversationBinding.updated_at.desc(),
-                    AgentConversationBinding.id.desc(),
-                ).limit(settings.agent_conversation_search_max_bindings + 1)
+        bindings = db.scalars(
+            statement.order_by(
+                AgentConversationBinding.updated_at.desc(),
+                AgentConversationBinding.id.desc(),
             )
         )
-        is_partial = len(bindings) > settings.agent_conversation_search_max_bindings
-        bindings = bindings[: settings.agent_conversation_search_max_bindings]
-        # Keep the globally newest bounded result page while every selected
-        # Conversation continues to receive its own low-priority scan. Stopping
-        # at the first 200 hits would make a busy, older Conversation hide
-        # matches from a newer one simply because bindings are scanned in a
-        # deterministic order.
-        hit_heap: list[tuple[datetime, int, str, str, datetime | None]] = []
-        hit_sequence = 0
+        hit_keys: list[tuple[str, str, datetime | None]] = []
         for binding in bindings:
             search_result = get_runtime().search_message_events(
                 conversations._handle(db, workspace, binding), query
             )
-            is_partial = is_partial or search_result.truncated
             for event in search_result.events:
                 occurred_at = _event_occurred_at(event.payload.get("timestamp"))
-                hit_sequence += 1
-                candidate = (
-                    occurred_at or datetime.min.replace(tzinfo=UTC),
-                    hit_sequence,
-                    binding.id,
-                    event.cursor,
-                    occurred_at,
-                )
-                if len(hit_heap) < settings.agent_conversation_search_max_hits:
-                    heapq.heappush(hit_heap, candidate)
-                elif candidate > hit_heap[0]:
-                    heapq.heapreplace(hit_heap, candidate)
-                    is_partial = True
-                else:
-                    is_partial = True
-        hit_keys = [
-            (binding_id, event_id, occurred_at)
-            for _timestamp, _sequence, binding_id, event_id, occurred_at in sorted(
-                hit_heap, reverse=True
-            )
-        ]
+                hit_keys.append((binding.id, event.cursor, occurred_at))
     except DomainError:
         search = db.scalar(
             select(AgentConversationSearch)
@@ -457,10 +423,6 @@ def process(db: Session, search_id: str) -> None:
             )
     search.state = "SUCCEEDED"
     search.completed_at = datetime.now(UTC)
-    search.is_partial = is_partial
-    search.partial_summary = (
-        "已按最新消息展示可扫描的结果；为避免影响会话加载，较早记录尚未扫描。"
-        if is_partial
-        else None
-    )
+    search.is_partial = False
+    search.partial_summary = None
     search.failure_summary = None

@@ -4085,7 +4085,6 @@ class OpenHandsRuntime:
         seen_page_ids: set[str] = set()
         seen_event_ids: set[str] = set()
         matches: list[RuntimeEvent] = []
-        pages_read = 0
         with self._background_search_bulkhead(handle):
             while True:
                 self._yield_background_search_to_formal_reads(handle)
@@ -4112,7 +4111,6 @@ class OpenHandsRuntime:
                     params=params,
                     timeout=self.settings.runtime_background_search_page_timeout_seconds,
                 )
-                pages_read += 1
                 raw_items = page.get("items", [])
                 if not isinstance(raw_items, list) or any(
                     not isinstance(item, dict) for item in cast(list[object], raw_items)
@@ -4140,14 +4138,10 @@ class OpenHandsRuntime:
                         and source in {"user", "human", "agent", "assistant"}
                         and needle.casefold() in content.casefold()
                     ):
-                        if len(matches) >= self.settings.runtime_background_search_max_matches:
-                            return RuntimeMessageSearchResult(events=tuple(matches), truncated=True)
                         matches.append(event)
                 next_page_id = page.get("next_page_id")
                 if not isinstance(next_page_id, str) or not next_page_id:
                     return RuntimeMessageSearchResult(events=tuple(matches))
-                if pages_read >= self.settings.runtime_background_search_max_pages:
-                    return RuntimeMessageSearchResult(events=tuple(matches), truncated=True)
                 page_id = self._formal_identity(next_page_id, field="next_page_id", required=True)
 
     @classmethod

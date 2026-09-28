@@ -7637,3 +7637,13 @@ FR-541B 完成：Agent Workspace 的文件树、文件预览、Git 仓库发现�
 完成：原生搜索返回有界 `RuntimeMessageSearchResult`，达到每会话页数或命中预算时保留当前按 OpenHands `TIMESTAMP_DESC` 顺序已找到的事件并标记截断，不再抛出预算失败。Workspace 聚合继续最多扫描 100 个最新会话、每会话最多 8 页／100 命中，保留跨会话最新的 200 个命中；达到任一预算后完成搜索、持久化 `is_partial`／摘要及正式事件时间，并以事件时间倒序分页。搜索对话框显示“已返回最近结果”及较早记录未扫描的说明。低优先级单 Runtime 并发 `1`、取槽 `0.1` 秒、单页 `2` 秒与 hydration 活跃时让出机制均未放宽；相应预算已写入环境示例、Compose 与环境参考。
 
 验收：OpenHands 搜索分页、页预算部分完成、命中预算部分完成、终页边界和 hydration 优先定向 pytest `5 passed`；受影响 Python `py_compile`、Ruff format/check、Alembic 唯一 head `0135_agent_search_partial`、Web TypeScript typecheck、production build 与 `git diff --check` 通过。Agent Workspace 数据库型范围／部分结果回归已启动，但 Testcontainers 在断言前因本机 Docker daemon/socket 不可用失败，未记为通过。全量 Web lint 仍被既有 `agent-session-gateway.ts` 未使用 `_signal` 错误及本组件既有 Hook 依赖 warning 阻断；本组件精确 lint 仅报告该既有 warning。未运行迁移实跑、Runtime、远端或部署。
+
+### FR-552 会话搜索完整原生历史 — DONE
+
+依赖：FR-551。
+
+目标：用户选择的工作区范围内，即使历史很长，搜索也必须继续直到 OpenHands 原生分页结束；允许搜索慢，但不得因为会话数、页数或命中数上限而遗漏结果或以“安全上限”失败。
+
+完成：移除会话搜索的每会话页数／命中数及工作区会话数／总命中数上限。搜索按最近更新会话开始，对每个授权会话以 OpenHands `TIMESTAMP_DESC` 完整翻页直至无 continuation，并持久化全部命中后按正式事件时间倒序分页展示。Worker 的独立任务 heartbeat 保持长搜索租约有效。资源保护不变：每 Runtime 仍只有一个低优先级搜索、每页最多 2 秒且在 hydration 活跃时在下一页前让出；搜索可变慢但不再因数量截断。保留已有部分结果 schema 字段仅用于历史兼容，新搜索总是完整完成。
+
+验收：OpenHands 定向 pytest `5 passed`，其中覆盖超过旧上限的 `9` 页及 `101` 个命中均完整返回；Python `py_compile`、Ruff check、Alembic 唯一 head `0135_agent_search_partial`、Web TypeScript typecheck、production build 与 `git diff --check` 通过。未运行数据库型测试：本机 Docker daemon/socket 不可用，Testcontainers 无法初始化；未运行远端前的迁移实跑或 Runtime E2E。

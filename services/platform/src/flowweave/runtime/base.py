@@ -528,12 +528,11 @@ class RuntimeEvent:
 
 @dataclass(frozen=True, slots=True)
 class RuntimeMessageSearchResult:
-    """Bounded native full-text search result for one Conversation.
+    """Complete native full-text search result for one Conversation.
 
-    ``truncated`` means the Runtime deliberately stopped after returning its
-    newest matching events.  It is not a Runtime failure: callers may persist
-    and show the returned events while clearly communicating that older
-    history was not scanned.
+    The current Runtime contract always exhausts native pagination.  The
+    ``truncated`` field remains only to deserialize searches created by the
+    prior bounded implementation; new searches must return ``False``.
     """
 
     events: tuple[RuntimeEvent, ...] = ()
