@@ -2016,9 +2016,15 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
   }, [scheduleMessageNavigationPointerUpdate]);
   const finishMessageNavigationDrag = useCallback((event: ReactPointerEvent<HTMLElement>, cancelled = false) => {
     if (messageNavigationDragPointerId.current !== event.pointerId) return;
+    const moved = messageNavigationDragMoved.current;
+    if (!cancelled && !moved) {
+      const index = updateMessageNavigationPreview(event.clientY);
+      const message = index === undefined ? undefined : userMessageNavigation[index];
+      if (message) scrollToUserMessage(message.id);
+    }
     const capture = messageNavigationDragCapture.current;
     if (capture?.hasPointerCapture(event.pointerId)) capture.releasePointerCapture(event.pointerId);
-    messageNavigationSuppressClick.current = !cancelled && messageNavigationDragMoved.current;
+    messageNavigationSuppressClick.current = !cancelled;
     messageNavigationDragPointerId.current = undefined;
     messageNavigationDragCapture.current = undefined;
     messageNavigationDragStartY.current = undefined;
@@ -2029,7 +2035,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
       messageNavigationAutoScrollFrame.current = undefined;
     }
     window.setTimeout(() => { messageNavigationSuppressClick.current = false; }, 0);
-  }, []);
+  }, [scrollToUserMessage, updateMessageNavigationPreview, userMessageNavigation]);
   const handleMessageNavigationPointerLeave = useCallback(() => {
     if (messageNavigationDragPointerId.current === undefined) clearMessageNavigationPreview();
   }, [clearMessageNavigationPreview]);
