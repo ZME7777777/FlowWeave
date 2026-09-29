@@ -4620,13 +4620,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     () => new Set(conversationActivityQuery.data?.failed_binding_ids ?? []),
     [conversationActivityQuery.data],
   );
-  useEffect(() => {
-    // A server-side page failure must not be retried by every render through
-    // automatic cursor chasing. Preserve successfully loaded pages and wait
-    // for an explicit invalidation/refresh instead.
-    if (!workspace || conversationsQuery.isError || conversationsQuery.isFetchNextPageError || !conversationsQuery.hasNextPage || conversationsQuery.isFetchingNextPage) return;
-    void conversationsQuery.fetchNextPage();
-  }, [conversationsQuery.fetchNextPage, conversationsQuery.hasNextPage, conversationsQuery.isError, conversationsQuery.isFetchNextPageError, conversationsQuery.isFetchingNextPage, workspace]);
+  // Do not automatically chase every cursor page. An Agent Workspace can own
+  // hundreds of bindings; repeatedly fetching its complete history turns one
+  // route entry into a request storm that competes with the selected session's
+  // hydration. Additional pages are requested only by the explicit list UI.
   const workDirectoriesQuery = useQuery({ queryKey: sessionQueryKey(host, 'work-directories', workspace?.id), queryFn: () => api.workDirectories(workspace!.id), enabled: Boolean(workspace && features.workDirectories) });
   const providersQuery = useQuery({ queryKey: ['model-providers'], queryFn: api.providers, enabled: Boolean(workspace && features.modelSelection) });
   const capabilityCatalogQuery = useQuery({ queryKey: sessionQueryKey(host, 'capability-catalog'), queryFn: api.capabilities, enabled: Boolean(workspace && features.capabilities) });
