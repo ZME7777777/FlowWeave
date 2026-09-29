@@ -1030,6 +1030,61 @@ test('Existing conversation composers keep text and attachments isolated', async
   await expect(attachment('composer-scope-a.txt')).toHaveCount(0);
 });
 
+
+test('Sidebar chat tabs stay isolated to their source conversation', async ({ page }) => {
+  let authenticated = false;
+  const workspace = { id: 'sidebar-chat-scope-workspace', display_name: '侧边聊天隔离工作区', desired_state: 'RUNNING', updated_at: now };
+  const conversations = ['sidebar-chat-scope-a', 'sidebar-chat-scope-b'].map((id, index) => ({
+    id, display_title: `侧边聊天会话 ${String.fromCharCode(65 + index)}`, title_state: 'MANUAL',
+    lifecycle: 'ACTIVE', streaming_callback_ready: true, write_available: true, execution_status: 'idle',
+    created_at: now, updated_at: now,
+  }));
+
+  await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path.endsWith('/auth/me')) return authenticated ? json(route, user) : json(route, { error: { code: 'AUTHENTICATION_REQUIRED', message: '请先登录' } }, 401);
+    if (path.endsWith('/auth/login') && request.method() === 'POST') { authenticated = true; return json(route, user); }
+    if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
+    if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
+    if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: conversations, next_cursor: null });
+    if (path.endsWith('/hydration')) return json(route, {
+      events: { events: [], next_cursor: null, history_cursor: null, result: { status: 'COMPLETED' } },
+      context: { model_name: 'test-model', window_tokens: 128_000, used_tokens: 0, usage_current: true },
+      readiness: { ready: true, execution_status: 'idle' },
+    });
+    if (path.endsWith('/work-directories')) return json(route, { root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [] });
+    if (path.endsWith('/workspace')) return json(route, {
+      root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: '/runtime/workspace/project',
+      work_directory: null, files: [], repositories: [], runtime: {}, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '不可用', note: '' } },
+    });
+    if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
+    if (path.endsWith('/model-providers')) return json(route, [{
+      id: 'test-provider', name: '测试模型', connection_state: 'CONNECTED', models: [{ model_name: 'test-model', enabled: true, is_default: true }],
+    }]);
+    if (path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
+    if (path.includes('/conversations/') && request.method() === 'GET') return json(route, conversations.find(item => item.id === path.split('/').at(-1)));
+    return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+  });
+
+  await page.goto('/');
+  await login(page);
+  await page.goto('/agent/conversations/sidebar-chat-scope-a');
+  await page.getByRole('button', { name: '打开侧边聊天', exact: true }).click();
+  await expect(page.getByRole('region', { name: '侧边聊天' })).toBeVisible();
+  await expect(page.getByText('向主会话追问', { exact: true })).toBeVisible();
+
+  await page.getByRole('button', { name: '侧边聊天会话 B', exact: true }).click();
+  await expect(page).toHaveURL(/\/agent\/conversations\/sidebar-chat-scope-b$/);
+  await expect(page.getByRole('region', { name: '侧边聊天' })).toHaveCount(0);
+
+  await page.getByRole('button', { name: '侧边聊天会话 A', exact: true }).click();
+  await expect(page).toHaveURL(/\/agent\/conversations\/sidebar-chat-scope-a$/);
+  await expect(page.getByRole('region', { name: '侧边聊天' })).toBeVisible();
+  await expect(page.getByText('向主会话追问', { exact: true })).toBeVisible();
+});
+
 test('Conversation attachments open in a preview dialog before the file sidebar', async ({ page }) => {
   let authenticated = false;
   const workspace = { id: 'attachment-preview-workspace', display_name: '附件预览工作区', desired_state: 'RUNNING', updated_at: now };
@@ -2037,7 +2092,7 @@ test('A dropped running-session stream immediately reconciles formal events', as
 });
 
 
-test('Foreground message completion releases only the active conversation visual state', async ({ page }) => {
+test('Stream message completion keeps a native running conversation active', async ({ page }) => {
   let authenticated = false;
   let stream: WebSocketRoute | undefined;
   const workspace = { id: 'message-complete-workspace', display_name: '完成事件工作区', desired_state: 'RUNNING', updated_at: now };
@@ -2094,9 +2149,9 @@ test('Foreground message completion releases only the active conversation visual
 
   stream!.send(JSON.stringify({ type: 'message_complete' }));
 
-  await expect(page.getByRole('button', { name: '发送消息' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toBeVisible();
   await expect(page.getByLabel('任务：0 / 1 已完成')).toBeVisible();
-  await expect(page.locator('[data-conversation-binding-id="message-complete-active"] .agent-workspace-conversation-running')).toHaveCount(0);
+  await expect(page.locator('[data-conversation-binding-id="message-complete-active"] .agent-workspace-conversation-running')).toBeVisible();
   await expect(page.locator('[data-conversation-binding-id="message-complete-background"] .agent-workspace-conversation-running')).toBeVisible();
 });
 
@@ -2393,7 +2448,7 @@ test('Sending a new message clears an unread marker before the conversation rend
   await expect(row.locator('.agent-workspace-conversation-unread')).toHaveCount(0);
 });
 
-test('Conversation context menu marks a conversation unread until it is opened or marked read', async ({ page }) => {
+test('Conversation context menu keeps a normal-list unread marker until explicitly marked read', async ({ page }) => {
   let authenticated = false;
   const workspace = { id: 'unread-workspace', display_name: '未读工作区', desired_state: 'RUNNING', updated_at: now };
   const conversations = ['unread-conversation-a', 'unread-conversation-b'].map((id, index) => ({
@@ -2459,10 +2514,9 @@ test('Conversation context menu marks a conversation unread until it is opened o
 
   await conversationA.click();
   await expect(page).toHaveURL(/\/agent\/conversations\/unread-conversation-a$/);
-  await expect(unreadMarker).toHaveCount(0);
+  await expect(unreadMarker).toBeVisible();
   await expect.poll(() => unreadWrites).toEqual([
     { id: 'unread-conversation-a', unread: true },
-    { id: 'unread-conversation-a', unread: false },
   ]);
 
   await conversationA.click({ button: 'right' });
@@ -2477,7 +2531,6 @@ test('Conversation context menu marks a conversation unread until it is opened o
   await expect(unreadMarker).toBeVisible();
   await expect.poll(() => unreadWrites).toEqual([
     { id: 'unread-conversation-a', unread: true },
-    { id: 'unread-conversation-a', unread: false },
     { id: 'unread-conversation-a', unread: true },
   ]);
 
@@ -2485,8 +2538,6 @@ test('Conversation context menu marks a conversation unread until it is opened o
   await page.getByRole('menuitem', { name: '标记为已读' }).click();
   await expect(activityConversationA).toHaveCount(0);
   await expect.poll(() => unreadWrites).toEqual([
-    { id: 'unread-conversation-a', unread: true },
-    { id: 'unread-conversation-a', unread: false },
     { id: 'unread-conversation-a', unread: true },
     { id: 'unread-conversation-a', unread: false },
   ]);
@@ -2506,12 +2557,10 @@ test('Conversation context menu marks a conversation unread until it is opened o
     { id: 'unread-conversation-a', unread: false },
     { id: 'unread-conversation-a', unread: true },
     { id: 'unread-conversation-a', unread: false },
-    { id: 'unread-conversation-a', unread: true },
-    { id: 'unread-conversation-a', unread: false },
   ]);
 });
 
-test('Opening a conversation stays read when an older list request finishes later', async ({ page }) => {
+test('Opening a conversation keeps its unread marker when an older list request finishes later', async ({ page }) => {
   let authenticated = false;
   let listReads = 0;
   let staleListDelivered = false;
@@ -2572,10 +2621,10 @@ test('Opening a conversation stays read when an older list request finishes late
   await expect.poll(() => listReads).toBeGreaterThanOrEqual(2);
 
   await conversationA.click();
-  await expect(unreadMarker).toHaveCount(0);
+  await expect(unreadMarker).toBeVisible();
   await conversationB.click();
   await expect.poll(() => staleListDelivered).toBe(true);
-  await expect(unreadMarker).toHaveCount(0);
+  await expect(unreadMarker).toBeVisible();
 });
 
 test('Conversation sidebar pins locally, orders activity, and reveals the selected source row', async ({ page }) => {
