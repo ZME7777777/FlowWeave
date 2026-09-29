@@ -52,8 +52,11 @@ function PlainTextReveal({ children, reveal }: { children: string; reveal: boole
     return () => { if (frame !== undefined) window.cancelAnimationFrame(frame); };
   }, [characters.length, children, reveal]);
 
-  const revealing = reveal && visible < characters.length;
-  return <span className="conversation-text-reveal" data-revealing={revealing || undefined} aria-label={children}>{characters.slice(0, visible).join('')}</span>;
+  if (!reveal) return <span className="conversation-text-reveal" aria-label={children}>{children}</span>;
+  const tailStart = Math.max(0, visible - 18);
+  const stableText = characters.slice(0, tailStart).join('');
+  const tail = characters.slice(tailStart, visible);
+  return <span className="conversation-text-reveal" aria-label={children}>{stableText}{tail.map((character, index) => <span className="conversation-text-reveal-tail" key={tailStart + index}>{character}</span>)}</span>;
 }
 
 function MarkdownImage({ src, alt, onOpenImage, ...props }: ComponentPropsWithoutRef<'img'> & { onOpenImage?: (src: string, alt?: string) => void }) {
