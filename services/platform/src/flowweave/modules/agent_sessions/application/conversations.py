@@ -965,7 +965,9 @@ def list_conversation_page(
                 )
             ),
         )
-        query = query.where(AgentConversationBinding.work_directory_version_id.in_(directory_versions))
+        query = query.where(
+            AgentConversationBinding.work_directory_version_id.in_(directory_versions)
+        )
     if cursor:
         sort_key, binding_id = _decode_conversation_page_cursor(cursor)
         order_key = _conversation_sort_expression()
@@ -1009,7 +1011,7 @@ def reorder_conversation(
     *,
     ordered_binding_ids: tuple[str, ...],
 ) -> dict[str, Any]:
-    """Persist the browser's complete order for exactly one work directory."""
+    """Persist a browser-provided local order within one work directory."""
 
     _workspace(db, workspace_id)
     if not ordered_binding_ids or len(ordered_binding_ids) != len(set(ordered_binding_ids)):
@@ -1062,13 +1064,27 @@ def reorder_conversation(
             for candidate in workspace_bindings
             if scope(candidate) == scope(item)
         }
-        if set(ordered_binding_ids) != set(scope_bindings):
+        submitted_ids = set(ordered_binding_ids)
+        if not submitted_ids.issubset(scope_bindings):
             raise DomainError(
                 "AGENT_CONVERSATION_ORDER_SCOPE_INVALID",
-                "提交顺序必须包含当前工作区全部会话且不能跨工作区",
+                "提交顺序不能包含其他工作区的会话",
                 409,
             )
-        ordered = [scope_bindings[ordered_id] for ordered_id in ordered_binding_ids]
+        # The sidebar is paginated, so a drag request may only contain the
+        # visible portion of this work-directory scope.  Merge that local
+        # order into the authoritative complete order rather than rejecting
+        # the interaction or moving unloaded conversations unexpectedly.
+        current_ordered = sorted(
+            scope_bindings.values(),
+            key=lambda candidate: (_conversation_sort_key(candidate), candidate.id),
+            reverse=True,
+        )
+        submitted = iter(scope_bindings[ordered_id] for ordered_id in ordered_binding_ids)
+        ordered = [
+            next(submitted) if candidate.id in submitted_ids else candidate
+            for candidate in current_ordered
+        ]
         manual_ids = {
             candidate.id for candidate in ordered if candidate.manual_sort_rank is not None
         }
@@ -1082,7 +1098,11 @@ def reorder_conversation(
             while position < len(ordered) and ordered[position].id in manual_ids:
                 position += 1
             run = ordered[start:position]
-            upper = _default_sort_rank(_conversation_message_at(ordered[start - 1])) if start else None
+            upper = (
+                _default_sort_rank(_conversation_message_at(ordered[start - 1]))
+                if start
+                else None
+            )
             lower = (
                 _default_sort_rank(_conversation_message_at(ordered[position]))
                 if position < len(ordered)
@@ -1100,7 +1120,10 @@ def reorder_conversation(
             elif upper is not None:
                 ranks = [upper - Decimal(index + 1) for index in range(len(run))]
             else:
-                base = max(_default_sort_rank(_conversation_message_at(candidate)) for candidate in run)
+                base = max(
+                    _default_sort_rank(_conversation_message_at(candidate))
+                    for candidate in run
+                )
                 ranks = [base + Decimal(len(run) - index) for index in range(len(run))]
             normalized = [rank.quantize(_SORT_RANK_QUANTUM) for rank in ranks]
             if (

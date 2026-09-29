@@ -3036,3 +3036,84 @@ test('Agent session keeps background activity visible without readiness polling 
   await expect.poll(() => unreadWrites).toContainEqual({ bindingId: background.id, unread: true });
   await expect(backgroundRow.getByRole('img', { name: '会话已完成，有未读回复' })).toBeVisible();
 });
+
+test('Accepted message immediately promotes a historical conversation by recent activity', async ({ page }) => {
+  let authenticated = false;
+  let accepted = false;
+  const workspace = { id: 'recent-activity-workspace', display_name: '最近活动排序工作区', desired_state: 'RUNNING', updated_at: now };
+  const conversations = [
+    {
+      id: 'recent-activity-current', display_title: '当前会话', title_state: 'MANUAL' as const,
+      lifecycle: 'ACTIVE' as const, streaming_callback_ready: true, write_available: true, execution_status: 'idle',
+      created_at: '2026-09-12T09:30:00Z', updated_at: '2026-09-12T09:30:00Z', sort_key: '3',
+    },
+    {
+      id: 'recent-activity-middle', display_title: '中间会话', title_state: 'MANUAL' as const,
+      lifecycle: 'ACTIVE' as const, streaming_callback_ready: true, write_available: true, execution_status: 'idle',
+      created_at: '2026-09-12T09:20:00Z', updated_at: '2026-09-12T09:20:00Z', sort_key: '2',
+    },
+    {
+      id: 'recent-activity-history', display_title: '历史会话', title_state: 'MANUAL' as const,
+      lifecycle: 'ACTIVE' as const, streaming_callback_ready: true, write_available: true, execution_status: 'idle',
+      created_at: '2026-09-12T09:10:00Z', updated_at: '2026-09-12T09:10:00Z', sort_key: '1',
+    },
+  ];
+
+  await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path.endsWith('/auth/me')) return authenticated
+      ? json(route, user)
+      : json(route, { error: { code: 'AUTHENTICATION_REQUIRED', message: '请先登录' } }, 401);
+    if (path.endsWith('/auth/login') && request.method() === 'POST') { authenticated = true; return json(route, user); }
+    if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
+    if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
+    if (path.endsWith('/conversations') && request.method() === 'GET') {
+      // Keep returning the original order. The immediate move must not wait
+      // for a refreshed server list projection.
+      return json(route, { items: conversations, next_cursor: null });
+    }
+    if (path.endsWith('/messages') && request.method() === 'POST') {
+      accepted = true;
+      return json(route, { accepted: true, cursor: 'recent-activity-user-event' });
+    }
+    if (path.endsWith('/hydration')) return json(route, {
+      events: { events: [], next_cursor: null, history_cursor: null, result: { status: 'COMPLETED' } },
+      context: { model_name: 'recent-activity-model', window_tokens: 128_000, used_tokens: 0, usage_current: true },
+      readiness: { ready: true, execution_status: 'idle' },
+    });
+    if (path.endsWith('/conversation-activity')) return json(route, { running_binding_ids: [] });
+    if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
+    if (path.endsWith('/work-directories')) return json(route, {
+      root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [],
+    });
+    if (path.endsWith('/workspace')) return json(route, {
+      root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' },
+      working_directory: '/runtime/workspace/project', work_directory: null, files: [], repositories: [],
+      runtime: {}, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '不可用', note: '' } },
+    });
+    if (path.endsWith('/input-readiness')) return json(route, { ready: true, execution_status: 'idle' });
+    if (path.endsWith('/context')) return json(route, { model_name: 'recent-activity-model', window_tokens: 128_000, used_tokens: 0, usage_current: true });
+    if (path.endsWith('/model-providers')) return json(route, []);
+    if (path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
+    if (path.includes('/conversations/') && request.method() === 'GET') {
+      return json(route, conversations.find(item => path.endsWith(item.id)));
+    }
+    return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+  });
+
+  await page.goto('/');
+  await login(page);
+  await page.goto('/agent/conversations/recent-activity-history');
+  const composer = page.getByLabel('发送 Agent 消息');
+  await expect(composer).toBeVisible();
+  await composer.fill('让历史会话立刻成为最近活动');
+  await page.getByLabel('发送消息').click();
+  await expect.poll(() => accepted).toBe(true);
+
+  const rootRows = page.locator('.agent-workspace-group').filter({ hasText: '根工作区' }).locator('[data-conversation-binding-id]');
+  await expect.poll(() => rootRows.evaluateAll(rows => rows.map(row => row.getAttribute('data-conversation-binding-id')))).toEqual([
+    'recent-activity-history', 'recent-activity-current', 'recent-activity-middle',
+  ]);
+});

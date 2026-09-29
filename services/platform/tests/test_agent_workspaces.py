@@ -3179,7 +3179,10 @@ def test_agent_workspace_conversation_default_sort_uses_last_message_not_metadat
         updated_at=older_message,
     )
 
-    assert conversations._conversation_sort_key(recent_message_item) > conversations._conversation_sort_key(metadata_item)
+    assert (
+        conversations._conversation_sort_key(recent_message_item)
+        > conversations._conversation_sort_key(metadata_item)
+    )
 
 
 def test_agent_workspace_conversation_drag_order_overrides_only_moved_binding(
@@ -3301,6 +3304,60 @@ def test_agent_workspace_conversation_drag_order_keeps_unique_ranks_after_repeat
         ]
         assert len(manual_ranks) == len(set(manual_ranks))
         assert db.get(AgentConversationBinding, created[2]["id"]).manual_sort_rank is None
+
+
+def test_agent_workspace_conversation_drag_order_accepts_a_paginated_scope_subset(
+    settings, db_session_factory, monkeypatch
+):
+    monkeypatch.setattr(
+        conversations,
+        "runtime_provider",
+        lambda _db, asset, **kwargs: RuntimeProvider(
+            provider_id=asset["asset"]["executor"]["model_provider_id"],
+            base_url="https://models.example.test/v1",
+            model=kwargs.get("model_name") or "test-model",
+            api_key="x",
+            reasoning_effort=kwargs.get("reasoning_effort"),
+        ),
+    )
+    with settings_context(settings), db_session_factory() as db, runtime_context(MockRuntime()):
+        workspace = _ready_workspace_for_conversation(db)
+        created = [
+            conversations.create_conversation(
+                db,
+                workspace.id,
+                f"分页会话 {index}",
+                workspace.default_model_provider_id,
+                f"partial-drag-{index}",
+            )
+            for index in range(4)
+        ]
+        baseline = datetime.now(UTC) - timedelta(days=1)
+        for index, candidate in enumerate(created):
+            binding = db.get(AgentConversationBinding, candidate["id"])
+            assert binding is not None
+            binding.created_at = baseline + timedelta(minutes=index)
+        db.flush()
+
+        # The first sidebar page contains only the three newest bindings.
+        # Reordering that page must not require loading the oldest binding.
+        conversations.reorder_conversation(
+            db,
+            workspace.id,
+            created[1]["id"],
+            ordered_binding_ids=(
+                created[1]["id"],
+                created[3]["id"],
+                created[2]["id"],
+            ),
+        )
+
+        assert [item["id"] for item in conversations.list_conversations(db, workspace.id)] == [
+            created[1]["id"],
+            created[3]["id"],
+            created[2]["id"],
+            created[0]["id"],
+        ]
 
 
 def test_agent_workspace_conversation_drag_order_rejects_other_work_directory(
