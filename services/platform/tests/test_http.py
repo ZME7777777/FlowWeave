@@ -11,8 +11,39 @@ from types import SimpleNamespace
 import pytest
 
 from flowweave.bootstrap import api as api_module
+from flowweave.bootstrap.settings import Settings
+from flowweave.runtime.read_budget import hydration_read_budget
 from flowweave.shared.errors import DomainError
-from flowweave.shared.http import run_blocking, run_blocking_control, run_blocking_history
+from flowweave.shared.http import (
+    run_blocking,
+    run_blocking_control,
+    run_blocking_history,
+    run_blocking_hydration,
+)
+from flowweave.shared.infrastructure.database import Database
+
+
+@pytest.fixture(autouse=True)
+def database():
+    """These executor tests use in-memory session doubles, not PostgreSQL."""
+
+    yield
+
+
+@pytest.mark.asyncio
+async def test_hydration_pool_partitions_existing_blocking_database_budget() -> None:
+    resources = Database(Settings(blocking_pool_size=4, pool_max_overflow=0), hydration_pool_size=2)
+    try:
+        assert resources.blocking_engine.pool.size() == 2
+        assert resources.hydration_engine is not None
+        assert resources.hydration_engine.pool.size() == 2
+        assert (
+            resources.pool_metrics()["blocking"]["size"]
+            + resources.pool_metrics()["hydration"]["size"]
+            == 4
+        )
+    finally:
+        await resources.dispose()
 
 
 class _Session:
@@ -38,6 +69,81 @@ class _Database:
     @contextmanager
     def history_sessions(self):
         yield _Session()
+
+    @contextmanager
+    def hydration_sessions(self):
+        yield _Session()
+
+
+@pytest.mark.asyncio
+async def test_hydration_keeps_reserved_capacity_when_ordinary_read_is_stalled() -> None:
+    started = threading.Event()
+    release = threading.Event()
+
+    def ordinary(_session: _Session) -> str:
+        started.set()
+        assert release.wait(timeout=2)
+        return "ordinary"
+
+    with (
+        ThreadPoolExecutor(max_workers=1) as ordinary_executor,
+        ThreadPoolExecutor(max_workers=1) as hydration_executor,
+    ):
+        container = SimpleNamespace(
+            blocking_executor=ordinary_executor,
+            blocking_io_slots=asyncio.Semaphore(1),
+            hydration_executor=hydration_executor,
+            hydration_io_slots=asyncio.Semaphore(1),
+            hydration_capacity=1,
+            blocking_capacity=1,
+            database=_Database(),
+            settings=SimpleNamespace(blocking_pool_size=2, blocking_pool_timeout_seconds=0.05),
+        )
+        blocked = asyncio.create_task(run_blocking(container, ordinary))
+        assert await asyncio.to_thread(started.wait, 1)
+        try:
+            with hydration_read_budget(0.5):
+                assert await run_blocking_hydration(container, lambda _session: "first-screen") == (
+                    "first-screen"
+                )
+        finally:
+            release.set()
+        assert await blocked == "ordinary"
+
+
+@pytest.mark.asyncio
+async def test_cancelled_hydration_retains_slot_until_worker_exits() -> None:
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow(_session: _Session) -> str:
+        started.set()
+        assert release.wait(timeout=2)
+        return "finished"
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        container = SimpleNamespace(
+            hydration_executor=executor,
+            hydration_io_slots=asyncio.Semaphore(1),
+            hydration_capacity=1,
+            blocking_capacity=1,
+            database=_Database(),
+            settings=SimpleNamespace(blocking_pool_timeout_seconds=0.05),
+        )
+        with hydration_read_budget(0.5):
+            request = asyncio.create_task(run_blocking_hydration(container, slow))
+            assert await asyncio.to_thread(started.wait, 1)
+            request.cancel()
+            await asyncio.gather(request, return_exceptions=True)
+            with pytest.raises(DomainError) as caught:
+                await run_blocking_hydration(container, lambda _session: "incorrect")
+            assert caught.value.code == "RUNTIME_READ_SATURATED"
+            release.set()
+            for _ in range(100):
+                if not container.hydration_io_slots.locked():
+                    break
+                await asyncio.sleep(0.001)
+            assert await run_blocking_hydration(container, lambda _session: "ready") == "ready"
 
 
 @pytest.mark.asyncio

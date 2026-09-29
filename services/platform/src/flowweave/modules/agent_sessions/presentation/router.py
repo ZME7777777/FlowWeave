@@ -33,6 +33,7 @@ from flowweave.modules.agent_workspaces import public as agent_workspace_host
 from flowweave.modules.environments import public as environments
 from flowweave.modules.users.application.security import current_principal
 from flowweave.runtime.dependencies import runtime_context
+from flowweave.runtime.read_budget import hydration_response_budget
 from flowweave.runtime.routing import runtime_for
 from flowweave.shared.errors import DomainError
 from flowweave.shared.http import (
@@ -46,6 +47,7 @@ from flowweave.shared.http import (
     run_blocking_auxiliary,
     run_blocking_control,
     run_blocking_history,
+    run_blocking_hydration,
     run_blocking_mutation,
     run_sync,
     run_terminal_control,
@@ -998,27 +1000,29 @@ async def node_session_hydration(
     if cached is not None:
         return cached
     try:
-        key = await run_blocking(
-            container,
-            lambda session: agent_sessions.flow_node_conversations.node_conversation_cache_key(
-                session,
-                flow_run_id=flow_run_id,
-                attempt_id=attempt_id,
-                binding_id=binding_id,
-            ),
-        )
-        return await container.conversation_hydration_cache.get_or_load(
-            key,
-            lambda: run_blocking(
+        node_conversations = agent_sessions.flow_node_conversations
+        async with hydration_response_budget(container.settings.hydration_read_timeout_seconds):
+            key = await run_blocking_hydration(
                 container,
-                lambda session: agent_sessions.flow_node_conversations.hydrate_node_conversation(
+                lambda session: node_conversations.node_conversation_cache_key(
                     session,
                     flow_run_id=flow_run_id,
                     attempt_id=attempt_id,
                     binding_id=binding_id,
                 ),
-            ),
-        )
+            )
+            return await container.conversation_hydration_cache.get_or_load(
+                key,
+                lambda: run_blocking_hydration(
+                    container,
+                    lambda session: node_conversations.hydrate_node_conversation(
+                        session,
+                        flow_run_id=flow_run_id,
+                        attempt_id=attempt_id,
+                        binding_id=binding_id,
+                    ),
+                ),
+            )
     except DomainError as exc:
         if exc.code not in {
             "EXECUTOR_UNAVAILABLE",

@@ -211,8 +211,9 @@ services:
     command: ["uvicorn", "flowweave.bootstrap.api:create_app", "--host", "0.0.0.0", "--port", "8080", "--factory", "--workers", "4"]
     environment:
       <<: [*platform-env, *docker-client-env]
-      # 4 workers × (4 async + 4 interactive + 1 history + 1 control) = 40.
-      # The guarded deployment target is 4 interactive reads per API worker.
+      # 4 workers × (4 async + 2 hydration + 2 other interactive +
+      # 1 history + 1 control) = 40. Hydration is carved out of the existing
+      # four-slot blocking budget rather than adding PostgreSQL connections.
       POOL_SIZE: ${API_POOL_SIZE:-4}
       POOL_MAX_OVERFLOW: 0
       DATABASE_POOL_TIMEOUT_SECONDS: 2
