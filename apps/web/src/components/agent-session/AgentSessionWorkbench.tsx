@@ -5932,8 +5932,18 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       || runningConversationIds.has(selected?.id ?? '')
       || terminalEventReconciliationActive
     ));
-  const effectiveTurnState: TurnState = currentFormalTurnFinished
+  // A draft has no native Conversation until its first bootstrap request is
+  // actually in flight. Route/query cleanup for the previously selected
+  // binding can lag behind opening the draft, so this guard belongs at the
+  // state source rather than only in later presentation components.
+  const idleUncreatedConversationDraft = Boolean(
+    conversationDraft
+    && pendingBootstrap?.draft.id !== conversationDraft.id,
+  );
+  const effectiveTurnState: TurnState = idleUncreatedConversationDraft
     ? 'idle'
+    : currentFormalTurnFinished
+      ? 'idle'
     : nativeExecutionStatus?.trim().toLowerCase() === 'paused'
       ? 'paused'
       : turnState === 'pausing' || turnState === 'resuming' || turnState === 'paused'
@@ -6062,9 +6072,14 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     setConversationSearchTargetEventId(undefined);
     return () => window.clearTimeout(timer);
   }, [conversationSearchTargetEventId, displayedEvents, selected]);
+  // A draft has no OpenHands Conversation or event branch yet. It must never
+  // inherit execution/readiness state from the previously selected binding.
+  // The sole exception is its own first-message bootstrap, which explicitly
+  // owns the transition from draft to a created Conversation.
+  const uncreatedConversationDraft = idleUncreatedConversationDraft;
   const activeNativeTurnId = activeTurnEventId ?? latestUnfinishedUserEventId(displayedEvents);
   const unfinishedFormalTurnId = latestUnfinishedUserEventId(displayedEvents);
-  const hasUnfinishedFormalTurn = Boolean(unfinishedFormalTurnId);
+  const hasUnfinishedFormalTurn = !uncreatedConversationDraft && Boolean(unfinishedFormalTurnId);
   // Keep the presentation aliases near the task-plan logic below. The
   // completed formal tree was already used above to close foreground controls.
   const latestFormalTurnFinished = currentFormalTurnFinished;
@@ -6073,11 +6088,14 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   // Readiness owns interaction controls, but it may briefly report idle before
   // the formal terminal event is readable. Keep active turns visually stable;
   // initial native-state hydration is rendered separately as loading.
-  const conversationActivity = useMemo(() => ({
-    state: selectedCondensing ? 'running' as const : effectiveTurnState,
-    active: selectedCondensing || effectiveTurnState === 'running' || effectiveTurnState === 'pausing' || effectiveTurnState === 'resuming',
-  }), [effectiveTurnState, selectedCondensing]);
-  const conversationVisuallyActive = conversationActivity.active
+  const conversationActivity = useMemo(() => uncreatedConversationDraft
+    ? { state: 'idle' as const, active: false }
+    : {
+        state: selectedCondensing ? 'running' as const : effectiveTurnState,
+        active: selectedCondensing || effectiveTurnState === 'running' || effectiveTurnState === 'pausing' || effectiveTurnState === 'resuming',
+      }, [effectiveTurnState, selectedCondensing, uncreatedConversationDraft]);
+  const conversationVisuallyActive = !uncreatedConversationDraft && (
+    conversationActivity.active
     || (
       !nativeTurnTerminal
       && runningConversationIds.has(selected?.id ?? '')
@@ -6088,13 +6106,14 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       && effectiveTurnState !== 'paused'
       && hasUnfinishedFormalTurn
       && (!nativeTurnTerminal || terminalEventReconciliationActive)
-    );
+    )
+  );
   // Keep an unfinished task plan mounted through native terminal-event
   // reconciliation so the composer dock cannot collapse during that handoff.
-  const taskPlanLayoutActive = conversationVisuallyActive || (
+  const taskPlanLayoutActive = !uncreatedConversationDraft && (conversationVisuallyActive || (
     hasUnfinishedFormalTurn
     && (!nativeTurnTerminal || terminalEventReconciliationActive)
-  );
+  ));
   const latestDisplayedEvent = displayedEvents.at(-1);
   useEffect(() => {
     setModelRetryStatus(undefined);
@@ -7335,6 +7354,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const openConversationDraft = useCallback((next: Omit<ConversationDraft, 'id'>, options: { restoreRecovery?: boolean } = {}) => {
     const outgoingScope = activeComposerScope.current;
     if (outgoingScope) persistComposerDraft(outgoingScope);
+    setForegroundTurn(undefined);
+    setActiveTurnEventId(undefined);
+    setRequestStartedAt(undefined);
+    setTurnState('idle');
     clearBootstrapRecovery();
     const recovery = options.restoreRecovery && workspace
       ? readConversationDraft(conversationDraftStorageKey(host.id, workspace.id, next.workDirectoryId))
@@ -7560,11 +7583,13 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     effectiveTurnState === 'running'
     || (conversationVisuallyActive && hasUnfinishedFormalTurn)
   );
-  const composerControlMode: ComposerControlMode = selectedCondensing
-    ? 'condensing'
-    : !selected && !conversationDraft
-      ? 'read-only'
-      : conversationInitialLoading
+  const composerControlMode: ComposerControlMode = uncreatedConversationDraft
+    ? 'idle'
+    : selectedCondensing
+      ? 'condensing'
+      : !selected && !conversationDraft
+        ? 'read-only'
+        : conversationInitialLoading
         ? 'reconciling'
         : effectiveTurnState === 'pausing'
           ? 'pausing'
@@ -7723,9 +7748,11 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         };
     }
   })();
-  const composerStatus = bootstrapRecovery
-    ? '正在安全核对首条消息'
-    : conversationDraft && !newConversationModelName ? '请选择模型' : persistModel.isPending ? '正在保存模型设置' : pendingConfirmation ? '等待工具确认' : finalReplyAwaitingNativeCompletion ? '回复已生成，正在收尾' : streamStatus === 'recovering' ? '连接恢复中' : composerControlMode === 'reconciling' ? '正在同步 Agent 状态' : composerControlMode === 'read-only' ? '当前会话不可编辑' : composerControlMode === 'condensing' ? '正在压缩上下文' : composerControlMode === 'pausing' ? '正在暂停' : composerControlMode === 'paused' ? '已暂停' : composerControlMode === 'resuming' ? '正在继续' : undefined;
+  const composerStatus = idleUncreatedConversationDraft
+    ? (conversationDraft && !newConversationModelName ? '请选择模型' : undefined)
+    : bootstrapRecovery
+      ? '正在安全核对首条消息'
+      : conversationDraft && !newConversationModelName ? '请选择模型' : persistModel.isPending ? '正在保存模型设置' : pendingConfirmation ? '等待工具确认' : finalReplyAwaitingNativeCompletion ? '回复已生成，正在收尾' : streamStatus === 'recovering' ? '连接恢复中' : composerControlMode === 'reconciling' ? '正在同步 Agent 状态' : composerControlMode === 'read-only' ? '当前会话不可编辑' : composerControlMode === 'condensing' ? '正在压缩上下文' : composerControlMode === 'pausing' ? '正在暂停' : composerControlMode === 'paused' ? '已暂停' : composerControlMode === 'resuming' ? '正在继续' : undefined;
   const runComposerAction = () => {
     if (composerControl.action === 'send') enqueueDraft();
     else if (composerControl.action === 'interrupt') interrupt.mutate();

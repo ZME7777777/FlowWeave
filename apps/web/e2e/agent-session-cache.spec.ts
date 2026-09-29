@@ -1856,6 +1856,12 @@ test('New conversation draft remains isolated and can be resumed after switching
   await login(page);
   await page.goto('/agent');
   await expect(page.getByRole('heading', { name: '新会话' })).toBeVisible();
+  // An unsubmitted draft owns no native Conversation. Even if the previous
+  // selected binding is still unwinding, it must remain editable and idle.
+  await expect(page.getByRole('button', { name: '发送消息' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toHaveCount(0);
+  await expect(page.getByText('正在同步 Agent 状态', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('正在提交消息', { exact: true })).toHaveCount(0);
   const composer = page.getByLabel('发送 Agent 消息');
   const draftAttachment = page.locator('.agent-composer .agent-attachments').getByText('新会话附件.txt', { exact: true });
   await composer.fill('只属于新会话的未发送草稿');
@@ -3231,4 +3237,62 @@ test('Accepted message keeps a historical conversation in creation-time order', 
   await expect.poll(() => rootRows.evaluateAll(rows => rows.map(row => row.getAttribute('data-conversation-binding-id')))).toEqual([
     'recent-activity-current', 'recent-activity-middle', 'recent-activity-history',
   ]);
+});
+
+test('Opening an unsubmitted draft clears a running conversation presentation', async ({ page }) => {
+  let authenticated = false;
+  const workspace = { id: 'draft-from-running-workspace', display_name: '运行会话草稿隔离', desired_state: 'RUNNING', updated_at: now };
+  const runningConversation = {
+    id: 'draft-from-running-conversation', display_title: '仍在运行的旧会话', title_state: 'MANUAL', lifecycle: 'ACTIVE',
+    streaming_callback_ready: true, write_available: true, execution_status: 'running', created_at: now, updated_at: now,
+  };
+  const runningEvents = {
+    events: [
+      { id: 'draft-from-running-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '仍在运行', timestamp: now } },
+      { id: 'draft-from-running-thought', event_type: 'THOUGHT', payload: { source: 'agent', parent_id: 'draft-from-running-user', content: '旧会话过程', timestamp: now } },
+    ], next_cursor: 'draft-from-running-thought', history_cursor: null, result: { status: 'RUNNING' },
+  };
+
+  await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path.endsWith('/auth/me')) return authenticated
+      ? json(route, user)
+      : json(route, { error: { code: 'AUTHENTICATION_REQUIRED', message: '请先登录' } }, 401);
+    if (path.endsWith('/auth/login') && request.method() === 'POST') { authenticated = true; return json(route, user); }
+    if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
+    if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
+    if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: [runningConversation], next_cursor: null });
+    if (path.endsWith('/conversation-activity')) return json(route, { running_binding_ids: [runningConversation.id] });
+    if (path.endsWith('/hydration')) return json(route, {
+      events: runningEvents,
+      context: { model_name: 'draft-model', window_tokens: 128_000, used_tokens: 1_024, usage_current: true },
+      readiness: { ready: false, execution_status: 'running' },
+    });
+    if (path.endsWith('/events')) return json(route, runningEvents);
+    if (path.endsWith('/input-readiness')) return json(route, { ready: false, execution_status: 'running' });
+    if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
+    if (path.endsWith('/work-directories')) return json(route, { root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [] });
+    if (path.endsWith('/workspace')) return json(route, {
+      root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: '/runtime/workspace/project', work_directory: null, files: [], repositories: [], runtime: {}, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '不可用', note: '' }, },
+    });
+    if (path.endsWith('/context')) return json(route, { model_name: 'draft-model', window_tokens: 128_000, used_tokens: 1_024, usage_current: true });
+    if (path.endsWith('/model-providers')) return json(route, [{ id: 'draft-provider', name: '草稿模型', connection_state: 'CONNECTED', models: [{ model_name: 'draft-model', enabled: true, is_default: true }] }]);
+    if (path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
+    if (path.includes('/conversations/') && request.method() === 'GET') return json(route, runningConversation);
+    return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+  });
+
+  await page.goto('/');
+  await login(page);
+  await page.goto('/agent/conversations/draft-from-running-conversation');
+  await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toBeVisible();
+  await page.getByRole('button', { name: '在根工作区中新建会话' }).click();
+  await expect(page.getByRole('heading', { name: '新会话' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '发送消息' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toHaveCount(0);
+  await expect(page.getByText('正在同步 Agent 状态', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('正在提交消息', { exact: true })).toHaveCount(0);
+  await expect(page.getByLabel('发送 Agent 消息')).toBeEditable();
 });
