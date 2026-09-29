@@ -46,8 +46,7 @@ const ACTIVE_CONVERSATION_CACHE_TTL_MS = 30_000;
 const INITIAL_HYDRATION_STALE_TIME_MS = 30_000;
 // Older history is background-only. Limit each prefetch turn so it cannot
 // monopolize the dedicated backend history lane after a session is selected.
-const HISTORY_PREFETCH_MAX_PAGES = 2;
-const HISTORY_PREFETCH_MAX_TOTAL_PAGES = 8;
+const HISTORY_MEMORY_CACHE_TTL_MS = 5 * 60 * 1000;
 const HISTORY_PREFETCH_DELAY_MS = 250;
 // Exact Context metrics are deferred from hydration. Merge bursts of event
 // reconciliation into one bounded refresh instead of invalidating per frame.
@@ -604,29 +603,21 @@ function useAgentSessionHost(): AgentSessionHost {
 
 function WorkspaceConversationGroup({ groupId, label, children, conversationCount, forceExpanded = false, canCreateConversation = false, onCreateConversation, onDelete }: WorkspaceConversationGroupProps) {
   const [collapsed, setCollapsed] = useState(false);
-  const [visibleCount, setVisibleCount] = useState(3);
   const contentId = `agent-workspace-group-${groupId}`;
-  const canLoadMore = visibleCount < conversationCount;
   useEffect(() => {
-    if (!forceExpanded) return;
-    setCollapsed(false);
-    setVisibleCount(conversationCount);
-  }, [conversationCount, forceExpanded]);
+    if (forceExpanded) setCollapsed(false);
+  }, [forceExpanded]);
 
   return <section className={`agent-workspace-group${collapsed ? ' collapsed' : ''}`}>
     <header>
-      <button type="button" className="agent-workspace-group-toggle" aria-label={`${collapsed ? '展开' : '收起'}工作区 ${label}`} aria-expanded={!collapsed} aria-controls={contentId} onClick={() => setCollapsed(current => {
-        if (!current) setVisibleCount(3);
-        return !current;
-      })}>
+      <button type="button" className="agent-workspace-group-toggle" aria-label={`${collapsed ? '展开' : '收起'}工作区 ${label}`} aria-expanded={!collapsed} aria-controls={contentId} onClick={() => setCollapsed(current => !current)}>
         <Folder size={14}/><span>{label}</span><ChevronDown size={13}/>
       </button>
       <div className="agent-workspace-group-actions">{onCreateConversation && <button type="button" aria-label={`在${label}中新建会话`} disabled={!canCreateConversation} onClick={onCreateConversation}><Plus size={13}/></button>}
       {onDelete && <button type="button" className="danger" aria-label={`删除工作区 ${label}`} onClick={onDelete}><Trash2 size={13}/></button>}</div>
     </header>
     <div id={contentId} className="agent-workspace-group-content" hidden={collapsed}>
-      {children(visibleCount)}
-      {canLoadMore && <button type="button" className="agent-workspace-group-more" onClick={() => setVisibleCount(current => current + 3)}>展开显示</button>}
+      {children(conversationCount)}
     </div>
   </section>;
 }
@@ -4458,10 +4449,11 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const historyLoadingScopes = useRef(new Set<string>());
   const historyAbortControllers = useRef(new Map<string, AbortController>());
   const historyFailedCursors = useRef(new Map<string, string>());
-  const historyPrefetchPagesByRootCursor = useRef(new Map<string, number>());
+  const historyCacheByScope = useRef(new Map<string, { rootCursor: string; expiresAt: number; pages: OpenHandsConversationEventBatch[]; complete: boolean }>());
+  const revealedHistoryPageCounts = useRef(new Map<string, number>());
+  const [historyCacheRevision, setHistoryCacheRevision] = useState(0);
   const contextRefreshTimers = useRef(new Map<string, number>());
   const lastContextRefreshAt = useRef(new Map<string, number>());
-  const exhaustedHistoryCursors = useRef(new Map<string, string>());
   const eventSynchronization = useRef<{
     scope?: string;
     inFlight?: Promise<void>;
@@ -4574,19 +4566,11 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const runtimeQuery = useQuery({ queryKey: sessionQueryKey(host, 'runtime', workspace?.id), queryFn: () => api.runtime(workspace!.id), enabled: Boolean(workspace), refetchInterval: query => query.state.data?.state === 'RECOVERING' ? 5000 : false });
   const conversationsQuery = useInfiniteQuery({
     queryKey: sessionQueryKey(host, 'conversations', workspace?.id),
-    queryFn: ({ pageParam }) => api.conversations(workspace!.id, pageParam),
+    queryFn: ({ pageParam }) => api.conversations(workspace!.id, pageParam, 3),
     initialPageParam: undefined as string | undefined,
     getNextPageParam: page => page.next_cursor || undefined,
     enabled: Boolean(workspace),
     refetchOnWindowFocus: false,
-    refetchInterval: query => {
-      const pages = query.state.data?.pages ?? [];
-      // Title generation is an isolated one-shot metadata task. Poll only
-      // while it is pending; otherwise refresh the control-plane list at a
-      // bounded rate while the page is visible.
-      if (pages.some(page => page.items.some(item => item.title_state === 'PENDING'))) return 1000;
-      return pageVisible ? 10_000 : false;
-    },
   });
   const conversationActivityQuery = useQuery({
     // A sidebar preview is not a formal route entry. Only the route binding may
@@ -4620,35 +4604,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     () => new Set(conversationActivityQuery.data?.failed_binding_ids ?? []),
     [conversationActivityQuery.data],
   );
-  useEffect(() => {
-    // The sidebar must eventually contain every authorized conversation, but
-    // cursor pages are background work. Schedule exactly one page after a
-    // short yield so route hydration, message delivery and formal event reads
-    // get first access to their dedicated lanes. Leaving the page cancels the
-    // queued background page; returning resumes from the saved cursor.
-    if (
-      !workspace
-      || !pageVisible
-      || conversationsQuery.isError
-      || conversationsQuery.isFetchNextPageError
-      || !conversationsQuery.hasNextPage
-      || conversationsQuery.isFetchingNextPage
-    ) {
-      return;
-    }
-    const timer = window.setTimeout(() => {
-      void conversationsQuery.fetchNextPage();
-    }, 1_500);
-    return () => window.clearTimeout(timer);
-  }, [
-    conversationsQuery.fetchNextPage,
-    conversationsQuery.hasNextPage,
-    conversationsQuery.isError,
-    conversationsQuery.isFetchNextPageError,
-    conversationsQuery.isFetchingNextPage,
-    pageVisible,
-    workspace,
-  ]);
   const workDirectoriesQuery = useQuery({ queryKey: sessionQueryKey(host, 'work-directories', workspace?.id), queryFn: () => api.workDirectories(workspace!.id), enabled: Boolean(workspace && features.workDirectories) });
   const providersQuery = useQuery({ queryKey: ['model-providers'], queryFn: api.providers, enabled: Boolean(workspace && features.modelSelection) });
   const capabilityCatalogQuery = useQuery({ queryKey: sessionQueryKey(host, 'capability-catalog'), queryFn: api.capabilities, enabled: Boolean(workspace && features.capabilities) });
@@ -5468,10 +5423,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         ...current,
         ...latest,
         events: mergeConversationEvents(current.events, latest.events),
-        history_cursor: latest.history_cursor
-          && exhaustedHistoryCursors.current.get(selected!.id) === latest.history_cursor
-          ? null
-          : (current.history_cursor ?? latest.history_cursor),
+        history_cursor: current.history_cursor ?? latest.history_cursor,
       });
     },
     // Native event reads begin at the current leaf. A trusted revisit keeps its
@@ -5538,10 +5490,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
                 next_cursor: cursor
                   ? (cursorUnchanged ? (incoming.next_cursor ?? cursor) : existing.next_cursor)
                   : (incoming.next_cursor ?? existing.next_cursor),
-                history_cursor: incoming.history_cursor
-                  && exhaustedHistoryCursors.current.get(scope) === incoming.history_cursor
-                  ? null
-                  : (existing.history_cursor ?? incoming.history_cursor),
+                history_cursor: existing.history_cursor ?? incoming.history_cursor,
               });
             })()
           : incoming,
@@ -5587,89 +5536,100 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     // not suppress reconciliation: the current Runtime snapshot decides whether
     // the turn ended after the foreground transition.
     void synchronizeConversationEvents(true, 'foreground');
-    void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversations', workspace.id) });
     void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-activity', workspace.id) });
     void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-input-readiness', workspace.id, selected.id) });
     void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-confirmation', workspace.id, selected.id) });
   }, [foregroundRecoverySignal, host, pageVisible, queryClient, selected, synchronizeConversationEvents, workspace]);
-  // Let the latest native window paint before background history starts. This
-  // makes the first visual state deterministic. History is a read-only
-  // native projection and must keep loading while the current turn runs.
+  // Older native pages are loaded once into volatile browser memory. They do
+  // not enter the rendered event projection until the reader reaches the top.
   const historyPrefetchDelayMs = HISTORY_PREFETCH_DELAY_MS;
   const loadAllHistory = useCallback(async () => {
     if (!workspace || !selected || !eventsQuery.data?.history_cursor) return;
     const scope = selected.id;
+    const historyRootCursor = eventsQuery.data.history_cursor;
+    const now = Date.now();
+    let cache = historyCacheByScope.current.get(scope);
+    if (!cache || cache.rootCursor !== historyRootCursor || cache.expiresAt <= now) {
+      cache = {
+        rootCursor: historyRootCursor,
+        expiresAt: now + HISTORY_MEMORY_CACHE_TTL_MS,
+        pages: [],
+        complete: false,
+      };
+      historyCacheByScope.current.set(scope, cache);
+      revealedHistoryPageCounts.current.delete(scope);
+      historyFailedCursors.current.delete(scope);
+      setHistoryCacheRevision(current => current + 1);
+    }
+    if (cache.complete || historyLoadingScopes.current.has(scope)) return;
     const scopeIsActive = () => activeHistoryScope.current === scope;
-    if (historyLoadingScopes.current.has(scope)) return;
     historyLoadingScopes.current.add(scope);
     const controller = new AbortController();
     historyAbortControllers.current.set(scope, controller);
     setHistoryLoadingBindingId(scope);
-    const historyRootCursor = eventsQuery.data.history_cursor;
-    const budgetKey = `${scope}:${historyRootCursor}`;
-    let historyCursor: string | null | undefined = historyRootCursor;
-    let pagesRead = 0;
-    if (historyFailedCursors.current.get(scope) !== historyCursor) historyFailedCursors.current.delete(scope);
+    let historyCursor: string | null | undefined = cache.pages.at(-1)?.history_cursor ?? historyRootCursor;
     const seenHistoryCursors = new Set<string>();
     try {
-      // The first response is the native latest page. Prepend older pages only
-      // after it has been positioned, yielding between pages so a long branch
-      // never delays the initial conversation view.
-      while (
-        historyCursor
-        && pagesRead < HISTORY_PREFETCH_MAX_PAGES
-        && (historyPrefetchPagesByRootCursor.current.get(budgetKey) ?? 0) < HISTORY_PREFETCH_MAX_TOTAL_PAGES
-      ) {
+      // Fetch serially and yield between pages. This keeps the selected
+      // transcript responsive while retaining the complete history in RAM.
+      while (historyCursor && Date.now() < cache.expiresAt) {
         const cursor = historyCursor;
         if (seenHistoryCursors.has(cursor)) throw new Error('读取更早会话记录时，历史分页游标没有推进。');
         seenHistoryCursors.add(cursor);
         const older = await api.conversationEvents(workspace.id, scope, undefined, cursor, undefined, controller.signal);
-        pagesRead += 1;
-        historyPrefetchPagesByRootCursor.current.set(
-          budgetKey,
-          (historyPrefetchPagesByRootCursor.current.get(budgetKey) ?? 0) + 1,
-        );
         if (!scopeIsActive() || controller.signal.aborted) return;
-        // This transaction captures the actual viewport immediately before
-        // this exact page is inserted, then restores only after React has
-        // rendered the matching page. It cannot leak into another session.
-        const transaction: ConversationHistoryPrepend = {
-          id: ++nextHistoryPrependId.current,
-          scope,
-          phase: 'capture',
-        };
-        const captured = new Promise<boolean>(resolve => {
-          historyPrependWaiters.current.set(transaction.id, { scope, capture: resolve });
-        });
-        setHistoryPrepend(transaction);
-        if (!await captured || !scopeIsActive()) return;
-        queryClient.setQueryData<OpenHandsConversationEventBatch>(eventQueryKey, current => current
-          ? { ...current, events: mergeConversationEvents(older.events, current.events), history_cursor: older.history_cursor }
-          : older,
-        );
-        const restored = new Promise<boolean>(resolve => {
-          const waiter = historyPrependWaiters.current.get(transaction.id);
-          if (waiter) waiter.restore = resolve;
-          else resolve(false);
-        });
-        setHistoryPrepend({ ...transaction, phase: 'restore' });
-        if (!await restored || !scopeIsActive()) return;
-        setHistoryPrepend(current => current?.id === transaction.id ? undefined : current);
+        cache.pages.push(older);
         historyCursor = older.history_cursor;
+        setHistoryCacheRevision(current => current + 1);
+        if (historyCursor) await new Promise<void>(resolve => window.setTimeout(resolve, historyPrefetchDelayMs));
       }
-      if (!historyCursor && eventsQuery.data.history_cursor) {
-        exhaustedHistoryCursors.current.set(scope, eventsQuery.data.history_cursor);
+      if (!historyCursor) {
+        cache.complete = true;
+        setHistoryCacheRevision(current => current + 1);
       }
     } catch (error) {
       if (controller.signal.aborted) return;
-      if (historyCursor) historyFailedCursors.current.set(scope, historyCursor);
+      historyFailedCursors.current.set(scope, historyRootCursor);
       reportOperationError(scope, error instanceof Error ? error : new Error('读取更早会话记录失败'));
     } finally {
       historyLoadingScopes.current.delete(scope);
       historyAbortControllers.current.delete(scope);
       setHistoryLoadingBindingId(current => current === scope ? undefined : current);
     }
-  }, [api, eventQueryKey, eventsQuery.data?.history_cursor, queryClient, reportOperationError, selected, workspace]);
+  }, [api, eventsQuery.data?.history_cursor, reportOperationError, selected, workspace]);
+  const revealNextHistoryPage = useCallback(async () => {
+    if (!workspace || !selected || !eventsQuery.data?.history_cursor) return;
+    const scope = selected.id;
+    const cache = historyCacheByScope.current.get(scope);
+    if (!cache || cache.rootCursor !== eventsQuery.data.history_cursor || cache.expiresAt <= Date.now()) return;
+    const revealed = revealedHistoryPageCounts.current.get(scope) ?? 0;
+    const older = cache.pages[revealed];
+    if (!older) return;
+    const transaction: ConversationHistoryPrepend = {
+      id: ++nextHistoryPrependId.current,
+      scope,
+      phase: 'capture',
+    };
+    const captured = new Promise<boolean>(resolve => {
+      historyPrependWaiters.current.set(transaction.id, { scope, capture: resolve });
+    });
+    setHistoryPrepend(transaction);
+    if (!await captured || activeHistoryScope.current !== scope) return;
+    queryClient.setQueryData<OpenHandsConversationEventBatch>(eventQueryKey, current => current
+      ? { ...current, events: mergeConversationEvents(older.events, current.events) }
+      : older,
+    );
+    revealedHistoryPageCounts.current.set(scope, revealed + 1);
+    setHistoryCacheRevision(current => current + 1);
+    const restored = new Promise<boolean>(resolve => {
+      const waiter = historyPrependWaiters.current.get(transaction.id);
+      if (waiter) waiter.restore = resolve;
+      else resolve(false);
+    });
+    setHistoryPrepend({ ...transaction, phase: 'restore' });
+    await restored;
+    setHistoryPrepend(current => current?.id === transaction.id ? undefined : current);
+  }, [eventQueryKey, eventsQuery.data?.history_cursor, queryClient, selected, workspace]);
   useEffect(() => {
     const activeBindingId = selected?.id;
     for (const [bindingId, controller] of historyAbortControllers.current) {
@@ -5685,13 +5645,16 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   useEffect(() => {
     const bindingId = selected?.id;
     const historyCursor = eventsQuery.data?.history_cursor;
-    // A refreshed running conversation must recover its complete native
-    // history too. Prepending pages preserves the reader viewport, so this
-    // read-only pagination can proceed independently of live event recovery.
-    if (!bindingId || !historyCursor || historyLoadingScopes.current.has(bindingId) || historyFailedCursors.current.get(bindingId) === historyCursor) return;
-    const timer = window.setTimeout(() => { void loadAllHistory(); }, historyPrefetchDelayMs);
+    if (!bindingId || !historyCursor || historyLoadingScopes.current.has(bindingId)) return;
+    const cache = historyCacheByScope.current.get(bindingId);
+    const cacheExpired = !cache || cache.rootCursor !== historyCursor || cache.expiresAt <= Date.now();
+    if (!cacheExpired && historyFailedCursors.current.get(bindingId) === historyCursor) return;
+    const delay = cache && cache.rootCursor === historyCursor
+      ? Math.max(0, cache.expiresAt - Date.now())
+      : historyPrefetchDelayMs;
+    const timer = window.setTimeout(() => { void loadAllHistory(); }, delay);
     return () => window.clearTimeout(timer);
-  }, [eventsQuery.data?.history_cursor, historyPrefetchDelayMs, loadAllHistory, selected?.id]);
+  }, [eventsQuery.data?.history_cursor, historyCacheRevision, historyPrefetchDelayMs, loadAllHistory, selected?.id]);
   const activeScope = selected?.id ?? conversationDraft?.id;
   const activeLocalMessageProjections = useMemo(() => {
     void localMessageProjectionRevision;
@@ -5713,6 +5676,16 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     const visibleFormalEvents = currentFormalEvents.filter(event => !hiddenBranchIds.has(event.id));
     return projectLocalMessages(visibleFormalEvents, activeLocalMessageProjections);
   }, [activeLocalMessageProjections, currentFormalEvents, hiddenEventIds]);
+  const cachedHistoryMarkerCount = useMemo(() => {
+    void historyCacheRevision;
+    if (!selected || !eventsQuery.data?.history_cursor) return 0;
+    const cache = historyCacheByScope.current.get(selected.id);
+    if (!cache || cache.rootCursor !== eventsQuery.data.history_cursor || cache.expiresAt <= Date.now()) return 0;
+    const revealed = revealedHistoryPageCounts.current.get(selected.id) ?? 0;
+    return cache.pages.slice(revealed).flatMap(page => page.events).filter(event => event.event_type === 'MESSAGE'
+      && ['user', 'human'].includes(String(event.payload.source ?? '').toLowerCase())).length;
+  }, [eventsQuery.data?.history_cursor, historyCacheRevision, selected]);
+  const hasCachedOlderHistory = cachedHistoryMarkerCount > 0;
   const latestFormalUserEventId = [...currentFormalEvents].reverse().find(event => event.event_type === 'MESSAGE'
     && ['user', 'human'].includes(String(event.payload.source ?? '').toLowerCase()))?.id;
   // The selected conversation has the authoritative formal event tree in the
@@ -7725,6 +7698,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
               {visibleCount => { const group = conversationsForDirectory(directory.id); return <>{pendingBootstrapItem && pendingBootstrap?.draft.workDirectoryId === directory.id ? pendingBootstrapItem : recoverableDraftItem(directory.id, directory.display_name)}{group.slice(0, visibleCount).map(item => conversationRow(item, group))}</>}}
             </WorkspaceConversationGroup>)}</>}
       </div>
+      {sidebarListMode === 'workspaces' && conversationsQuery.hasNextPage && <button type="button" className="secondary agent-workbench-load-more" disabled={conversationsQuery.isFetchingNextPage} onClick={() => void conversationsQuery.fetchNextPage()}>{conversationsQuery.isFetchingNextPage ? <LoaderCircle className="conversation-activity-spin" size={14}/> : null}加载更多会话</button>}
       {features.capabilities && (selected || features.draftCapabilitySelection) && <footer className="agent-workbench-rail-footer"><button type="button" disabled={selected ? !canWrite : !runtimeWritable} onClick={() => setCapabilityManagerOpen(true)}><Boxes size={15}/><span><b>会话配置</b><small>{selected ? '管理当前会话配置' : '为新会话配置能力'}</small></span><ChevronRight size={14}/></button></footer>}
     </aside>
     <section className="agent-workbench-main">
@@ -7741,6 +7715,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         emptyResponseRecoveryActive={emptyResponseRecoveryActive}
         modelRetryStatus={modelRetryStatus}
         historyPending={Boolean(selected && historyLoadingBindingId === selected.id)}
+        cachedHistoryMarkerCount={cachedHistoryMarkerCount}
+        hasCachedOlderHistory={hasCachedOlderHistory}
+        onRequestOlderHistory={revealNextHistoryPage}
         conversationScope={selected?.id ?? conversationDraft?.id}
         historyPrepend={historyPrepend}
         onHistoryAnchorCaptured={onHistoryAnchorCaptured}

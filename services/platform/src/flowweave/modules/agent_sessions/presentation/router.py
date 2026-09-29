@@ -369,7 +369,7 @@ async def list_node_sessions(
     attempt_id: str,
     db: Db,
     cursor: str | None = Query(default=None, max_length=200),
-    limit: int = Query(default=5, ge=1, le=5),
+    limit: int = Query(default=3, ge=1, le=3),
 ) -> dict[str, Any]:
     return await run_sync(
         db,

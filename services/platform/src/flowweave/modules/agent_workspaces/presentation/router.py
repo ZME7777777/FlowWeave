@@ -682,7 +682,7 @@ async def list_agent_conversations(
     workspace_id: str,
     container: ContainerDep,
     cursor: str | None = Query(default=None, max_length=200),
-    limit: int = Query(default=5, ge=1, le=5),
+    limit: int = Query(default=3, ge=1, le=3),
 ) -> dict[str, Any]:
     # The first page paints the sidebar; later cursor pages reconstruct its
     # full history in a quiet background lane. Do not inject an AsyncSession

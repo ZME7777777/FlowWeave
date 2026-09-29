@@ -39,6 +39,7 @@ export interface ModelRetryStatus {
 interface UserMessageNavigationItem {
   id: string;
   content: string;
+  cached?: boolean;
 }
 
 export interface ConversationReference {
@@ -1563,7 +1564,7 @@ export interface ConversationHistoryPrepend {
   phase: 'capture' | 'restore';
 }
 
-export const ConversationSurface = memo(function ConversationSurface({ events, isGenerating, liveTextReveal = false, isPaused = false, emptyResponseRecoveryActive = false, modelRetryStatus, historyPending = false, conversationScope, historyPrepend, onHistoryAnchorCaptured, onHistoryAnchorRestored, requestStartedAt, requestSubmitting = false, rewritePending = false, condensationPending = false, condensationStartedAt, onRewrite, onFork, onOpenAttachment, onOpenWorkspaceReference, onPreviewCandidateFile, onReviewChanges, onOpenWorkspaceFile, onOpenImage, workspaceRoot, annotations = [], onCreateAnnotation, onSidebarQuestion, onLocateAnnotation, taskControl = [], monitoring, connectionState }: {
+export const ConversationSurface = memo(function ConversationSurface({ events, isGenerating, liveTextReveal = false, isPaused = false, emptyResponseRecoveryActive = false, modelRetryStatus, historyPending = false, cachedHistoryMarkerCount = 0, hasCachedOlderHistory = false, onRequestOlderHistory, conversationScope, historyPrepend, onHistoryAnchorCaptured, onHistoryAnchorRestored, requestStartedAt, requestSubmitting = false, rewritePending = false, condensationPending = false, condensationStartedAt, onRewrite, onFork, onOpenAttachment, onOpenWorkspaceReference, onPreviewCandidateFile, onReviewChanges, onOpenWorkspaceFile, onOpenImage, workspaceRoot, annotations = [], onCreateAnnotation, onSidebarQuestion, onLocateAnnotation, taskControl = [], monitoring, connectionState }: {
   events: OpenHandsConversationEvent[];
   isGenerating: boolean;
   /** Strict native running state; unlike visual activity it never animates history reconciliation. */
@@ -1576,6 +1577,10 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
   modelRetryStatus?: ModelRetryStatus;
   /** Older native pages are being inserted above the current latest window. */
   historyPending?: boolean;
+  /** Lightweight ruler ticks for historical user messages held outside the rendered transcript. */
+  cachedHistoryMarkerCount?: number;
+  hasCachedOlderHistory?: boolean;
+  onRequestOlderHistory?: () => void | Promise<void>;
   /** Binding identity that owns this transcript viewport. */
   conversationScope?: string;
   /** Explicitly brackets one scoped historical prepend. */
@@ -1629,6 +1634,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
   const messageNavigationSuppressClick = useRef(false);
   const messageNavigationLocatedIndex = useRef<number | undefined>(undefined);
   const messageNavigationStyledButtons = useRef<Set<HTMLButtonElement>>(new Set());
+  const historyRequestPending = useRef(false);
   const selectionReferenceFrame = useRef<number | undefined>(undefined);
   const historyAnchor = useRef<{
     id: number;
@@ -1694,10 +1700,18 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
   const visibleEventIds = useMemo(() => visibleEvents.map(event => event.id).join('\u001f'), [visibleEvents]);
   const contentGrowthSignal = visibleEventIds;
   const avatarSlots = useMemo(() => subagentAvatarSlots(visibleEvents), [visibleEvents]);
-  const userMessageNavigation = useMemo<UserMessageNavigationItem[]>(() => turns.flatMap(turn => turn.user ? [{
-    id: turn.user.event.id,
-    content: turn.user.content,
-  }] : []), [turns]);
+  const userMessageNavigation = useMemo<UserMessageNavigationItem[]>(() => [
+    ...Array.from({ length: cachedHistoryMarkerCount }, (_, index) => ({
+      id: `cached-history:${index}`,
+      content: '更早的历史消息',
+      cached: true,
+    })),
+    ...turns.flatMap(turn => turn.user ? [{
+      id: turn.user.event.id,
+      content: turn.user.content,
+      cached: false,
+    }] : []),
+  ], [cachedHistoryMarkerCount, turns]);
   useLayoutEffect(() => {
     const navigation = messageNavigation.current;
     if (!navigation) return;
@@ -1750,9 +1764,17 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
       if (followLatest.current && !userScrolledAway.current) alignWithLatest();
     });
   }, [alignWithLatest]);
+  const requestOlderHistory = useCallback(() => {
+    if (!hasCachedOlderHistory || historyRequestPending.current || !onRequestOlderHistory) return;
+    historyRequestPending.current = true;
+    void Promise.resolve(onRequestOlderHistory()).finally(() => {
+      historyRequestPending.current = false;
+    });
+  }, [hasCachedOlderHistory, onRequestOlderHistory]);
   const updateScrollPosition = useCallback(() => {
     const element = surface.current;
     if (!element) return;
+    if (element.scrollTop <= 16) requestOlderHistory();
     const atLatest = element.scrollHeight - element.scrollTop - element.clientHeight <= 16;
     // Scroll events also occur when layout and direct scrollTop assignments
     // settle. They do not establish reading intent. Only the capture handlers
@@ -1764,7 +1786,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
       return;
     }
     if (!followLatest.current) setIsAtLatest(false);
-  }, []);
+  }, [requestOlderHistory]);
   const stopFollowingLatest = useCallback(() => {
     if (automaticScrollFrame.current !== undefined) {
       window.cancelAnimationFrame(automaticScrollFrame.current);
@@ -1962,8 +1984,9 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
     const message = userMessageNavigation[index];
     if (!message) return;
     messageNavigationLocatedIndex.current = index;
-    scrollToUserMessage(message.id, 'auto');
-  }, [scrollToUserMessage, updateMessageNavigationPreview, userMessageNavigation]);
+    if (message.cached) requestOlderHistory();
+    else scrollToUserMessage(message.id, 'auto');
+  }, [requestOlderHistory, scrollToUserMessage, updateMessageNavigationPreview, userMessageNavigation]);
   const scheduleMessageNavigationPointerUpdate = useCallback(() => {
     if (messageNavigationFrame.current !== undefined) return;
     messageNavigationFrame.current = window.requestAnimationFrame(() => {
@@ -2035,7 +2058,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
       messageNavigationAutoScrollFrame.current = undefined;
     }
     window.setTimeout(() => { messageNavigationSuppressClick.current = false; }, 0);
-  }, [scrollToUserMessage, updateMessageNavigationPreview, userMessageNavigation]);
+  }, [requestOlderHistory, scrollToUserMessage, updateMessageNavigationPreview, userMessageNavigation]);
   const handleMessageNavigationPointerLeave = useCallback(() => {
     if (messageNavigationDragPointerId.current === undefined) clearMessageNavigationPreview();
   }, [clearMessageNavigationPreview]);
@@ -2231,7 +2254,8 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
               messageNavigationSuppressClick.current = false;
               return;
             }
-            scrollToUserMessage(message.id);
+            if (message.cached) onRequestOlderHistory?.();
+            else scrollToUserMessage(message.id);
           }}
         >
           <span className="conversation-message-index-tick" aria-hidden="true"/>
