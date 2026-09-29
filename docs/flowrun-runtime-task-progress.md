@@ -7711,6 +7711,8 @@ Agent Workspace 与 FlowRun node 两种宿主的首条 bootstrap、常规消息�
 
 验收：`tests/test_http.py` 的 hydration／message／取消筛选 `7 passed, 3 deselected`，覆盖 SQL pool 总容量守恒、慢 mutation 期间消息可立即派发、以及两种宿主三个消息触发点均走 message lane；受影响 Ruff 和 `py_compile` 通过。该切片未运行 Runtime 负载、浏览器 E2E 或远端部署。
 
+容量调整（2026-09-29）：按请求将默认 `API_BLOCKING_POOL_SIZE` 提升至 8。每个 API worker 为 2 hydration、1 message、5 普通同步交互／慢 mutation；四个 API worker 加 stream-api 和 Worker 的稳态连接预算为 88。PostgreSQL 容器现在以 `max_connections=120` 启动，`POSTGRES_CONNECTION_LIMIT=120` 与启动参数由容量检查强制一致，并继续保留 20 条连接余量。此项调整扩大普通 lane，未改变 hydration／message 的保留数量、无 overflow 约束或 `stream-api`／Worker 的默认 blocking 配额。
+
 ### FR-555B2B 慢变更与后台通道分离 — READY
 
 依赖：FR-555B2A。
