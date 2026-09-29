@@ -66,7 +66,7 @@ const taskExecutionLabel = (task: BackgroundTask) => task.node_attempt_no === nu
 
 function ResourceUsage({ usage }: { usage: Usage | null }) {
   if (!usage) return <span className="muted">暂不可用</span>;
-  return <span className="usage"><b>{usage.cpu_usage_percent.toFixed(1)}%</b><small>CPU</small><b>{bytes(usage.memory_usage_bytes)}</b><small>内存</small></span>;
+  return <span className="usage"><b>{usage.cpu_usage_percent.toFixed(1)}%</b><small>CPU</small><b>{bytes(usage.memory_usage_bytes)}</b><small>内存</small>{usage.storage_usage_bytes !== null && <><b>{bytes(usage.storage_usage_bytes)}</b><small>可写层</small></>}</span>;
 }
 
 

@@ -1,7 +1,7 @@
 export type Usage = {
   cpu_usage_percent: number;
   memory_usage_bytes: number;
-  storage_usage_bytes: number;
+  storage_usage_bytes: number | null;
   storage_limit: string | null;
 };
 
