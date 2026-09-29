@@ -1010,6 +1010,7 @@ def list_node_session_page(
     attempt_id: str,
     cursor: str | None = None,
     limit: int = 5,
+    work_directory_id: str | None = None,
 ) -> dict[str, Any]:
     """Read one bounded page for the current node-Attempt session host."""
 
@@ -1032,6 +1033,24 @@ def list_node_session_page(
         AgentConversationBinding.lifecycle == "ACTIVE",
         ~AgentConversationBinding.create_idempotency_key.like("gate-sidecar:%"),
     )
+    if work_directory_id is None:
+        query = query.where(AgentConversationBinding.work_directory_version_id.is_(None))
+    else:
+        query = query.where(
+            AgentConversationBinding.work_directory_version_id.in_(
+                select(AgentWorkDirectoryVersion.id)
+                .join(
+                    agent_workspace_host.AgentWorkDirectory,
+                    agent_workspace_host.AgentWorkDirectory.id
+                    == AgentWorkDirectoryVersion.work_directory_id,
+                )
+                .where(
+                    AgentWorkDirectoryVersion.work_directory_id == work_directory_id,
+                    agent_workspace_host.AgentWorkDirectory.flow_run_id == flow_run_id,
+                    agent_workspace_host.AgentWorkDirectory.node_attempt_id == attempt_id,
+                )
+            )
+        )
     if cursor:
         updated_at, created_at, binding_id = _decode_node_session_page_cursor(cursor)
         query = query.where(

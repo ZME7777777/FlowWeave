@@ -97,7 +97,7 @@ const fullSessionFeatures: AgentSessionFeatures = {
 export interface AgentSessionApi {
   readonly defaultHost: (signal?: AbortSignal) => Promise<AgentSessionHostDetails>;
   readonly runtime: (hostId: AgentSessionHostId) => Promise<AgentSessionRuntime>;
-  readonly conversations: (hostId: AgentSessionHostId, cursor?: string, limit?: number) => Promise<AgentConversationPage>;
+  readonly conversations: (hostId: AgentSessionHostId, cursor?: string, limit?: number, workDirectoryId?: string) => Promise<AgentConversationPage>;
   readonly conversationActivity: (hostId: AgentSessionHostId, activeBindingId?: AgentSessionBindingId) => Promise<AgentConversationActivity>;
   readonly startConversationSearch?: (hostId: AgentSessionHostId, query: string, workDirectoryIds?: string[], includeRoot?: boolean) => Promise<AgentConversationSearch>;
   readonly conversationSearch?: (hostId: AgentSessionHostId, searchId: string, cursor?: string) => Promise<AgentConversationSearch>;
@@ -263,7 +263,7 @@ export function flowNodeSessionGateway(
     api: {
       defaultHost: signal => nodeSessionApi.host(flowRunId, attemptId, signal),
       runtime: () => nodeSessionApi.runtime(flowRunId, attemptId),
-      conversations: (_hostId, cursor, limit) => nodeSessionApi.conversations(flowRunId, attemptId, cursor, limit),
+      conversations: (_hostId, cursor, limit, workDirectoryId) => nodeSessionApi.conversations(flowRunId, attemptId, cursor, limit, workDirectoryId),
       conversationActivity: (_hostId, activeBindingId) => nodeSessionApi.activity(flowRunId, attemptId, activeBindingId),
       conversation: (_hostId, bindingId) => nodeSessionApi.get(flowRunId, attemptId, bindingId),
       workDirectories: () => nodeSessionApi.workDirectories(flowRunId, attemptId),

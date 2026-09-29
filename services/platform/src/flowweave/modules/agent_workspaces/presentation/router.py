@@ -682,17 +682,22 @@ async def list_agent_conversations(
     workspace_id: str,
     container: ContainerDep,
     cursor: str | None = Query(default=None, max_length=200),
-    limit: int = Query(default=3, ge=1, le=3),
+    limit: int = Query(default=3, ge=1, le=5),
+    work_directory_id: str | None = Query(default=None, min_length=1, max_length=36),
 ) -> dict[str, Any]:
-    # The first page paints the sidebar; later cursor pages reconstruct its
-    # full history in a quiet background lane. Do not inject an AsyncSession
-    # here: FastAPI would reserve an ordinary pool connection even when the
-    # cursor branch correctly selects the isolated history SQL pool.
+    # Each work-directory owns a short, user-driven cursor chain. The first
+    # page paints that group; later pages only run after its "展开显示" action.
+    # Keep cursor pages in the isolated low-priority SQL lane so they cannot
+    # occupy the interactive first-screen pool.
     execute = run_blocking_history if cursor is not None else run_blocking
     return await execute(
         container,
         lambda session: conversations.list_conversation_page(
-            session, workspace_id, cursor=cursor, limit=limit
+            session,
+            workspace_id,
+            cursor=cursor,
+            limit=limit,
+            work_directory_id=work_directory_id,
         ),
     )
 

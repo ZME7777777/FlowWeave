@@ -452,9 +452,10 @@ export const api = {
     if (options.workDirectoryId) query.set('work_directory_id', options.workDirectoryId);
     return request<void>(`/agent-workspaces/${encodeURIComponent(id)}/terminals/${encodeURIComponent(terminalInstanceId)}${query.size ? `?${query}` : ''}`, json('DELETE'));
   },
-  agentConversations: (workspaceId: string, cursor?: string, limit = 3) => {
+  agentConversations: (workspaceId: string, cursor?: string, limit = 3, workDirectoryId?: string) => {
     const query = new URLSearchParams({ limit: String(limit) });
     if (cursor) query.set('cursor', cursor);
+    if (workDirectoryId) query.set('work_directory_id', workDirectoryId);
     return request<import('../types').AgentConversationPage>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations?${query}`);
   },
   agentConversationActivity: (workspaceId: string, activeBindingId?: string) => {
@@ -1006,9 +1007,10 @@ function nodeSessionBase(flowRunId: string, attemptId: string): string {
 export const nodeSessionApi = {
   host: (flowRunId: string, attemptId: string, signal?: AbortSignal) => request<import('../types').AgentSessionHostDetails>(`${nodeSessionBase(flowRunId, attemptId)}/host`, { signal, timeoutMs: INTERACTIVE_REQUEST_TIMEOUT_MS }),
   runtime: (flowRunId: string, attemptId: string) => request<import('../types').AgentSessionRuntime>(`${nodeSessionBase(flowRunId, attemptId)}/runtime`),
-  conversations: (flowRunId: string, attemptId: string, cursor?: string, limit = 3) => {
+  conversations: (flowRunId: string, attemptId: string, cursor?: string, limit = 3, workDirectoryId?: string) => {
     const query = new URLSearchParams({ limit: String(limit) });
     if (cursor) query.set('cursor', cursor);
+    if (workDirectoryId) query.set('work_directory_id', workDirectoryId);
     return request<import('../types').AgentConversationPage>(`${nodeSessionBase(flowRunId, attemptId)}?${query}`);
   },
   activity: (flowRunId: string, attemptId: string, activeBindingId?: string) => {

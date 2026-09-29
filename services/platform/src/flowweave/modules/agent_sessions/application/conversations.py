@@ -152,6 +152,7 @@ _PROJECT_ROOT_SYSTEM_CONTEXT = "\n".join(
 # The default Agent Workspace is a host adapter.  Keep its compatibility ORM
 # aliases local so the shared session implementation never imports its private
 # application or infrastructure modules.
+AgentWorkDirectory = agent_workspace_host.AgentWorkDirectory
 AgentWorkDirectoryVersion = agent_workspace_host.AgentWorkDirectoryVersion
 AgentWorkspace = agent_workspace_host.AgentWorkspace
 AgentWorkspaceCapability = agent_workspace_host.AgentWorkspaceCapability
@@ -912,7 +913,12 @@ def conversation_activity(
 
 
 def list_conversation_page(
-    db: Session, workspace_id: str, *, cursor: str | None = None, limit: int = 5
+    db: Session,
+    workspace_id: str,
+    *,
+    cursor: str | None = None,
+    limit: int = 5,
+    work_directory_id: str | None = None,
 ) -> dict[str, Any]:
     """Read one bounded, stable page of direct Agent conversations."""
 
@@ -922,6 +928,18 @@ def list_conversation_page(
         AgentConversationBinding.lifecycle == "ACTIVE",
         ~AgentConversationBinding.id.in_(select(AgentSidebarConversation.sidebar_binding_id)),
     )
+    if work_directory_id is None:
+        query = query.where(AgentConversationBinding.work_directory_version_id.is_(None))
+    else:
+        directory_versions = select(AgentWorkDirectoryVersion.id).where(
+            AgentWorkDirectoryVersion.work_directory_id == work_directory_id,
+            AgentWorkDirectoryVersion.work_directory_id.in_(
+                select(AgentWorkDirectory.id).where(
+                    AgentWorkDirectory.workspace_id == workspace_id
+                )
+            ),
+        )
+        query = query.where(AgentConversationBinding.work_directory_version_id.in_(directory_versions))
     if cursor:
         sort_key, binding_id = _decode_conversation_page_cursor(cursor)
         order_key = _conversation_sort_expression()
