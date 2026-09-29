@@ -329,7 +329,7 @@ export function flowNodeSessionGateway(
       setConversationUnread: (_hostId, bindingId, unread, unreadOrigin) =>
         nodeSessionApi.setUnread(flowRunId, attemptId, bindingId, unread, unreadOrigin),
       deleteConversation: (_hostId, bindingId) => nodeSessionApi.remove(flowRunId, attemptId, bindingId),
-      conversationEvents: (_hostId, bindingId, cursor, historyCursor, diagnosticTrigger, _signal) =>
+      conversationEvents: (_hostId, bindingId, cursor, historyCursor, diagnosticTrigger) =>
         nodeSessionApi.events(flowRunId, attemptId, bindingId, cursor, historyCursor, diagnosticTrigger),
       conversationHydration: (_hostId, bindingId, signal) =>
         nodeSessionApi.hydration(flowRunId, attemptId, bindingId, signal),

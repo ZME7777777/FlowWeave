@@ -752,10 +752,10 @@ test('Native terminal readiness overrides a stale activity running projection', 
     if (path.endsWith('/hydration')) return json(route, {
       events: terminalEvents,
       context: { model_name: 'test-model', window_tokens: 128_000, used_tokens: 1_024, usage_current: true },
-      readiness: { ready: true, execution_status: 'idle' },
+      readiness: { ready: false, execution_status: 'running' },
     });
     if (path.endsWith('/events')) return json(route, terminalEvents);
-    if (path.endsWith('/input-readiness')) return json(route, { ready: true, execution_status: 'idle' });
+    if (path.endsWith('/input-readiness')) return json(route, { ready: false, execution_status: 'running' });
     if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
     if (path.endsWith('/context')) return json(route, { model_name: 'test-model', window_tokens: 128_000, used_tokens: 1_024, usage_current: true });
     if (path.endsWith('/work-directories')) return json(route, {
@@ -777,6 +777,7 @@ test('Native terminal readiness overrides a stale activity running projection', 
 
   await expect(page.getByText('已完成的回复', { exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: '发送消息' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toHaveCount(0);
   const row = page.locator('[data-conversation-binding-id="terminal-readiness-conversation"]');
   await expect(row.locator('.agent-workspace-conversation-running')).toHaveCount(0);
   await expect(row.locator('.agent-workspace-conversation-unread')).toHaveCount(0);
@@ -2810,4 +2811,98 @@ test('Agent session exits the first-screen gate when hydration never settles', a
   releaseHydration?.();
   await expect(page.getByRole('alert')).toHaveCount(0);
   expect(hydrationReads).toBe(2);
+});
+
+test('Agent session keeps background activity visible without readiness polling or preview-suppressed unread', async ({ page }) => {
+  let authenticated = false;
+  let backgroundRunning = true;
+  let inputReadinessReads = 0;
+  const activityActiveBindings: Array<string | null> = [];
+  const unreadWrites: Array<{ bindingId: string; unread: boolean }> = [];
+  const workspace = {
+    id: 'activity-regression-workspace', display_name: '活动回归工作区', desired_state: 'RUNNING', updated_at: now,
+  };
+  const foreground = {
+    id: 'activity-foreground', display_title: '当前正式会话', title_state: 'MANUAL', lifecycle: 'ACTIVE',
+    streaming_callback_ready: true, write_available: true, execution_status: 'idle', created_at: now, updated_at: now,
+  };
+  const background = {
+    id: 'activity-background', display_title: '后台运行会话', title_state: 'MANUAL', lifecycle: 'ACTIVE',
+    streaming_callback_ready: true, write_available: true, execution_status: 'idle', created_at: now, updated_at: now,
+  };
+  const conversations = [foreground, background];
+
+  await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const path = url.pathname;
+    if (path.endsWith('/auth/me')) return authenticated
+      ? json(route, user)
+      : json(route, { error: { code: 'AUTHENTICATION_REQUIRED', message: '请先登录' } }, 401);
+    if (path.endsWith('/auth/login') && request.method() === 'POST') { authenticated = true; return json(route, user); }
+    if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
+    if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
+    if (path.endsWith('/conversation-activity')) {
+      activityActiveBindings.push(url.searchParams.get('active_binding_id'));
+      return json(route, { running_binding_ids: backgroundRunning ? [background.id] : [] });
+    }
+    if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, {
+      items: conversations.map(item => item.id === background.id
+        ? { ...item, execution_status: backgroundRunning ? 'running' : 'idle' }
+        : item),
+      next_cursor: null,
+    });
+    if (path.endsWith('/hydration')) {
+      const bindingId = path.split('/').at(-2)!;
+      return json(route, {
+        events: { events: [], next_cursor: null, history_cursor: null, result: { status: bindingId === background.id && backgroundRunning ? 'RUNNING' : 'COMPLETED' } },
+        context: { model_name: 'test-model', window_tokens: 128_000, used_tokens: 1_024, usage_current: true },
+        readiness: { ready: bindingId !== background.id || !backgroundRunning, execution_status: bindingId === background.id && backgroundRunning ? 'running' : 'idle' },
+      });
+    }
+    if (path.endsWith('/input-readiness')) {
+      inputReadinessReads += 1;
+      return json(route, { ready: true, execution_status: 'idle' });
+    }
+    if (path.endsWith('/events')) return json(route, { events: [], next_cursor: null, history_cursor: null, result: { status: backgroundRunning ? 'RUNNING' : 'COMPLETED' } });
+    if (path.endsWith('/unread') && request.method() === 'PUT') {
+      const bindingId = path.split('/').at(-2)!;
+      const body = request.postDataJSON() as { unread: boolean };
+      unreadWrites.push({ bindingId, unread: body.unread });
+      const conversation = conversations.find(item => item.id === bindingId)!;
+      Object.assign(conversation, { unread: body.unread, unread_origin: body.unread ? 'MANUAL' : null });
+      return json(route, conversation);
+    }
+    if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
+    if (path.endsWith('/work-directories')) return json(route, { root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [] });
+    if (path.endsWith('/workspace')) return json(route, {
+      root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: '/runtime/workspace/project',
+      work_directory: null, files: [], repositories: [], runtime: {}, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '不可用', note: '' } },
+    });
+    if (path.endsWith('/model-providers') || path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
+    if (path.includes('/conversations/') && request.method() === 'GET') return json(route, conversations.find(item => item.id === path.split('/').at(-1)!));
+    return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+  });
+
+  await page.goto('/');
+  await login(page);
+  await page.goto(`/agent/conversations/${foreground.id}`);
+  const backgroundRow = page.locator(`[data-conversation-binding-id="${background.id}"]`);
+  await expect(backgroundRow.getByRole('img', { name: '会话正在运行' })).toBeVisible();
+
+  await page.getByRole('button', { name: /查看活动会话/ }).click();
+  const activity = page.getByRole('region', { name: '活动会话' });
+  await activity.getByRole('button', { name: background.display_title, exact: true }).click();
+  await expect(page).toHaveURL(new RegExp(`/agent/conversations/${foreground.id}$`));
+  await expect.poll(() => activityActiveBindings.at(-1)).toBe(foreground.id);
+
+  // A stable running hydration must not start an exact readiness polling loop.
+  await page.waitForTimeout(2_500);
+  expect(inputReadinessReads).toBeLessThanOrEqual(1);
+
+  backgroundRunning = false;
+  await page.waitForTimeout(2_500);
+  await expect.poll(() => unreadWrites).toContainEqual({ bindingId: background.id, unread: true });
+  await expect(backgroundRow.getByRole('img', { name: '会话已完成，有未读回复' })).toBeVisible();
 });

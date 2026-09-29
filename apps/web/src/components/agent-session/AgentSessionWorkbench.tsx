@@ -4472,6 +4472,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     inFlight?: Promise<AgentConversationInputReadiness>;
     lastRequestAt: number;
   }>({ lastRequestAt: 0 });
+  const hotReentryHydrationKey = useRef<string | undefined>(undefined);
   const historyPrependWaiters = useRef(new Map<number, {
     scope: string;
     capture?: (accepted: boolean) => void;
@@ -4587,8 +4588,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     },
   });
   const conversationActivityQuery = useQuery({
-    queryKey: sessionQueryKey(host, 'conversation-activity', workspace?.id, selectedBindingId),
-    queryFn: () => api.conversationActivity(workspace!.id, selectedBindingId),
+    // A sidebar preview is not a formal route entry. Only the route binding may
+    // suppress the server-owned "completed in background" unread transition.
+    queryKey: sessionQueryKey(host, 'conversation-activity', workspace?.id, routeBindingId),
+    queryFn: () => api.conversationActivity(workspace!.id, routeBindingId),
     enabled: Boolean(workspace && pageVisible),
     refetchOnWindowFocus: true,
     refetchInterval: pageVisible ? 4_000 : false,
@@ -5140,7 +5143,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const runtimeWritable = Boolean(workspace && runtime?.write_available);
   const canOpenConversation = Boolean(workspace && (runtime?.write_available || runtime?.fork_available));
   const canBootstrap = Boolean(canOpenConversation && conversationDraft && (!features.modelSelection || (newConversationProviderId && newConversationModelName)));
-  const localTurnGenerating = turnState === 'running' || turnState === 'pausing' || turnState === 'resuming';
   const eventQueryKey = sessionQueryKey(host, 'conversation-events', workspace?.id, selected?.id);
   const inputReadinessQueryKey = sessionQueryKey(host, 'conversation-input-readiness', workspace?.id, selected?.id);
   const contextQueryKey = sessionQueryKey(host, 'conversation-context', workspace?.id, selected?.id);
@@ -5382,8 +5384,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       const cached = queryClient.getQueryData<AgentConversationInputReadiness>(inputReadinessQueryKey);
       if (cached) return Promise.resolve(cached);
     }
-    let request: Promise<AgentConversationInputReadiness>;
-    request = api.inputReadiness(workspaceId, scope).finally(() => {
+    const request = api.inputReadiness(workspaceId, scope).finally(() => {
       if (readinessSynchronization.current.scope === scope && readinessSynchronization.current.inFlight === request) {
         readinessSynchronization.current.inFlight = undefined;
       }
@@ -5407,15 +5408,11 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     initialDataUpdatedAt: hydrationData ? hydrationDataUpdatedAt : undefined,
     staleTime: INITIAL_HYDRATION_STALE_TIME_MS,
     refetchOnWindowFocus: false,
-    refetchInterval: query => {
-      const needsReadiness = turnState === 'pausing'
-        || turnState === 'resuming'
-        || queuedMessages.length > 0
-        || localTurnGenerating
-        || query.state.data?.ready === false;
-      if (!pageVisible || !needsReadiness) return false;
-      return Math.min(2000 * 2 ** query.state.fetchFailureCount, 10_000);
-    },
+    // Do not poll a per-conversation Runtime endpoint while a turn is
+    // running. The formal event coordinator and the batched activity snapshot
+    // own running presentation; readiness is refreshed on hydration, explicit
+    // controls, and a foreground recovery only.
+    refetchInterval: false,
     retry: (count, error) => !(error instanceof ApiError && error.status < 500) && count < 2,
   });
   const nativeExecutionStatus = inputReadinessQuery.data?.execution_status;
@@ -5424,28 +5421,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     && conversationHasReachedTerminalState(nativeExecutionStatus);
   const nativeTurnCompletedNormally = inputReadinessQuery.data?.ready === true
     && conversationHasCompletedNormally(nativeExecutionStatus);
-  const messageCompleteForSelected = messageCompleteBindingId === selected?.id;
-  // OpenHands owns the Conversation execution lifecycle. A foreground
-  // message_complete only closes the current page's visual turn while native
-  // readiness continues to govern background conversations.
-  const effectiveTurnState: TurnState = messageCompleteForSelected || nativeTurnTerminal
-    ? 'idle'
-    : nativeExecutionStatus?.trim().toLowerCase() === 'paused'
-      ? 'paused'
-      : turnState === 'pausing' || turnState === 'resuming' || turnState === 'paused'
-        ? turnState
-      : nativeTurnRunning
-      ? 'running'
-        : turnState;
-  // The browser queue contains only messages that have not started delivery.
-  // Once a request starts, the optimistic conversation event owns its display.
-  const visibleQueuedMessages = queuedMessages.filter(message => message.scope === selected?.id);
-  const isGenerating = effectiveTurnState === 'running' || effectiveTurnState === 'pausing' || effectiveTurnState === 'resuming';
-  const streamEnabled = Boolean(
-    selected
-    && (runtime?.write_available || selected.write_available)
-    && (isGenerating || streamHold?.bindingId === selected.id),
-  );
   const eventsQuery = useQuery<OpenHandsConversationEventBatch>({
     queryKey: eventQueryKey,
     queryFn: async () => {
@@ -5565,8 +5540,15 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   }, [api, eventQueryKey, host, queryClient, selected, workspace]);
   useEffect(() => {
     if (!selected?.id || !trustedHydration?.running || selectedHydrationPhase !== 'ready') return;
+    // `synchronizeConversationEvents` is intentionally rebuilt as the event
+    // projection changes. Run this recovery once per successful hydration,
+    // rather than turning those normal renders into repeated latest-window
+    // reads (and indirect readiness refetches).
+    const hydrationKey = `${selected.id}:${trustedHydration.hydratedAt}`;
+    if (hotReentryHydrationKey.current === hydrationKey) return;
+    hotReentryHydrationKey.current = hydrationKey;
     void synchronizeConversationEvents(true, 'hot_reentry');
-  }, [selected?.id, selectedHydrationPhase, synchronizeConversationEvents, trustedHydration?.running]);
+  }, [selected?.id, selectedHydrationPhase, synchronizeConversationEvents, trustedHydration?.hydratedAt, trustedHydration?.running]);
   useEffect(() => {
     if (!foregroundRecoverySignal || !pageVisible || !workspace || !selected
       || foregroundRecoverySignal === handledForegroundRecoverySignal.current) return;
@@ -5703,6 +5685,34 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     const visibleFormalEvents = currentFormalEvents.filter(event => !hiddenBranchIds.has(event.id));
     return projectLocalMessages(visibleFormalEvents, activeLocalMessageProjections);
   }, [activeLocalMessageProjections, currentFormalEvents, hiddenEventIds]);
+  const latestFormalUserEventId = [...currentFormalEvents].reverse().find(event => event.event_type === 'MESSAGE'
+    && ['user', 'human'].includes(String(event.payload.source ?? '').toLowerCase()))?.id;
+  // The selected conversation has the authoritative formal event tree in the
+  // browser. Once its latest user turn has a durable final reply / FinishAction
+  // / ERROR descendant, close the foreground controls immediately; do not wait
+  // for a later readiness poll or the sidebar's background activity sweep.
+  const selectedFormalTurnFinished = Boolean(
+    latestFormalUserEventId && hasFinishedTurn(currentFormalEvents, latestFormalUserEventId),
+  );
+  const messageCompleteForSelected = messageCompleteBindingId === selected?.id;
+  const effectiveTurnState: TurnState = messageCompleteForSelected || selectedFormalTurnFinished || nativeTurnTerminal
+    ? 'idle'
+    : nativeExecutionStatus?.trim().toLowerCase() === 'paused'
+      ? 'paused'
+      : turnState === 'pausing' || turnState === 'resuming' || turnState === 'paused'
+        ? turnState
+      : nativeTurnRunning
+      ? 'running'
+        : turnState;
+  // The browser queue contains only messages that have not started delivery.
+  // Once a request starts, the optimistic conversation event owns its display.
+  const visibleQueuedMessages = queuedMessages.filter(message => message.scope === selected?.id);
+  const isGenerating = effectiveTurnState === 'running' || effectiveTurnState === 'pausing' || effectiveTurnState === 'resuming';
+  const streamEnabled = Boolean(
+    selected
+    && (runtime?.write_available || selected.write_available)
+    && (isGenerating || streamHold?.bindingId === selected.id),
+  );
   useEffect(() => {
     if (!pendingSubmissionConfirmation) return;
     if (selected?.id !== pendingSubmissionConfirmation.bindingId
@@ -5790,14 +5800,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     ? `${selected.id}:${unfinishedFormalTurnId}`
     : undefined;
   const terminalEventReconciliationActive = Boolean(terminalSyncTurnKey && terminalSyncTurnKey !== expiredTerminalSyncTurnKey);
-  const latestFormalUserEventId = [...displayedEvents].reverse().find(event => event.event_type === 'MESSAGE'
-    && ['user', 'human'].includes(String(event.payload.source ?? '').toLowerCase()))?.id;
-  // A durable OpenHands ERROR/Finish/assistant event is also authoritative
-  // while the exact readiness request is still loading or reconnecting.
-  // This is not a browser-side lifecycle guess: it is the native event tree.
-  const latestFormalTurnFinished = Boolean(
-    latestFormalUserEventId && hasFinishedTurn(displayedEvents, latestFormalUserEventId),
-  );
+  // Keep the presentation aliases near the task-plan logic below. The
+  // completed formal tree was already used above to close foreground controls.
+  const latestFormalTurnFinished = selectedFormalTurnFinished;
   const finalReplyAwaitingNativeCompletion = nativeTurnRunning
     && Boolean(activeNativeTurnId && hasAssistantReplyForTurn(displayedEvents, activeNativeTurnId));
   // Readiness owns interaction controls, but it may briefly report idle before
@@ -6051,6 +6056,12 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const reconcileConversationProjection = useCallback(() => {
     void synchronizeConversationEvents(true);
     if (!workspace || !selected) return;
+    // A control action is an explicit state transition, so this is one of the
+    // few places permitted to refresh its exact Runtime readiness.
+    void queryClient.invalidateQueries({
+      queryKey: sessionQueryKey(host, 'conversation-input-readiness', workspace.id, selected.id),
+      exact: true,
+    });
     void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-confirmation', workspace.id, selected.id) });
   }, [host, queryClient, selected, synchronizeConversationEvents, workspace]);
   const appendLiveEvent = useCallback((scope: string, event: OpenHandsConversationEvent) => {
@@ -7523,13 +7534,21 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     window.addEventListener('pointercancel', end, true);
   }
   const conversationRow = (item: AgentConversation, group: AgentConversation[], options: { allowDrag?: boolean; workspaceName?: string; onSelect?: () => void; onDoubleClick?: () => void; onMarkRead?: () => void } = {}) => {
-    // Background rows use the independently fetched native running set, while
-    // the selected row keeps its more precise readiness and event projection.
-    // This keeps navigation reads free of Runtime calls without hiding active
-    // conversations or letting a delayed batch snapshot override a terminal row.
-    const running = item.id === selected?.id
-      ? conversationVisuallyActive
-      : runningConversationIds.has(item.id) || condensingConversationIds.has(item.id) || conversationIsRunning(item.execution_status);
+    // The batched native activity snapshot is the sidebar's authority for
+    // every row. A selected transcript may temporarily show its local send /
+    // pause / resume transition before that snapshot catches up, but a stale
+    // hydration readiness must never keep only the selected row spinning after
+    // the shared snapshot has observed completion.
+    const selectedHasFinalFormalReply = item.id === selected?.id
+      && (messageCompleteForSelected || selectedFormalTurnFinished);
+    const selectedLocalTransition = item.id === selected?.id
+      && !selectedHasFinalFormalReply
+      && (turnState === 'running' || turnState === 'pausing' || turnState === 'resuming');
+    const running = selectedHasFinalFormalReply
+      ? false
+      : runningConversationIds.has(item.id)
+        || condensingConversationIds.has(item.id)
+        || selectedLocalTransition;
     const possiblyStuck = item.id === selected?.id
       ? Boolean(eventsQuery.data?.monitoring?.possibly_stuck)
       : possiblyStuckConversationIds.has(item.id);
