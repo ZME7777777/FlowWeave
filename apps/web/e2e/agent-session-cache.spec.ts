@@ -946,6 +946,10 @@ test('Deleting the selected conversation immediately hides it and opens its neig
   await login(page);
   await page.goto('/agent/conversations/optimistic-delete-a');
   await expect(page.locator('h2.agent-session-title')).toHaveText('待删除会话');
+  const deletingRow = page.locator('[data-conversation-binding-id="optimistic-delete-a"]');
+  await deletingRow.hover();
+  await expect(deletingRow.getByRole('button', { name: '删除会话 待删除会话' })).toBeVisible();
+  await expect(deletingRow.locator('.agent-workspace-conversation-drag, .agent-workspace-conversation-select svg')).toBeHidden();
   await page.getByRole('button', { name: '删除会话', exact: true }).click();
   const dialog = page.getByRole('alertdialog');
   await dialog.getByRole('button', { name: '确认删除', exact: true }).click();
