@@ -353,6 +353,13 @@ class OpenHandsRuntime:
         self._formal_read_slots_lock = threading.Lock()
         self._formal_read_depth = threading.local()
         self._formal_read_active: dict[str, int] = {}
+        # Context, pending-confirmation and workspace activity are display
+        # projections. Keep one low-priority read per Runtime generation so a
+        # browser refresh storm cannot create unbounded native HTTP work or
+        # take slots needed by hydration and formal event recovery.
+        self._auxiliary_read_slots: dict[str, threading.BoundedSemaphore] = {}
+        self._auxiliary_read_slots_lock = threading.Lock()
+        self._auxiliary_read_depth = threading.local()
         # Historical full-text scans are explicitly lower priority than formal
         # browser reads. They use a separate one-at-a-time bulkhead and a
         # short page timeout, rather than occupying the hydration bulkhead.
@@ -2320,6 +2327,53 @@ class OpenHandsRuntime:
             self._record_formal_read_bulkhead_metrics()
 
     @contextmanager
+    def _auxiliary_read_bulkhead(self, handle: RuntimeHandle) -> Iterator[None]:
+        """Run one low-priority display read per Runtime generation.
+
+        These projections may be retried by a browser as a session surface
+        settles. They deliberately never consume the formal event-read lane;
+        on contention the caller receives a bounded 503 instead of adding
+        another blocked OpenHands HTTP request.
+        """
+
+        key = self._base_url_for_handle(handle)
+        depths = getattr(self._auxiliary_read_depth, "depths", None)
+        if depths is None:
+            depths = {}
+            self._auxiliary_read_depth.depths = depths
+        if key in depths:
+            depths[key] += 1
+            try:
+                yield
+            finally:
+                remaining = int(depths[key]) - 1
+                if remaining:
+                    depths[key] = remaining
+                else:
+                    depths.pop(key, None)
+            return
+        with self._auxiliary_read_slots_lock:
+            slot = self._auxiliary_read_slots.get(key)
+            if slot is None:
+                slot = threading.BoundedSemaphore(1)
+                self._auxiliary_read_slots[key] = slot
+        if not slot.acquire(timeout=self.settings.runtime_read_slot_timeout_seconds):
+            if metrics := current_metrics():
+                metrics.increment("flowweave_runtime_auxiliary_read_saturated_total")
+            raise DomainError(
+                "RUNTIME_AUXILIARY_READ_SATURATED",
+                "This Runtime is busy with an auxiliary display read; retry shortly",
+                503,
+                {"outcome_unknown": False},
+            )
+        depths[key] = 1
+        try:
+            yield
+        finally:
+            depths.pop(key, None)
+            slot.release()
+
+    @contextmanager
     def _background_search_bulkhead(self, handle: RuntimeHandle) -> Iterator[None]:
         """Allow one short, low-priority event search per Runtime generation."""
 
@@ -3582,6 +3636,10 @@ class OpenHandsRuntime:
         return tuple(pending)
 
     def get_pending_confirmation(self, handle: RuntimeHandle) -> RuntimePendingConfirmation | None:
+        with self._auxiliary_read_bulkhead(handle):
+            return self._get_pending_confirmation(handle)
+
+    def _get_pending_confirmation(self, handle: RuntimeHandle) -> RuntimePendingConfirmation | None:
         base_url = self._base_url_for_handle(handle)
         session_api_key = self._session_key_for_handle(handle)
         state = self._conversation_state(handle, timeout=_INTERACTIVE_READ_TIMEOUT_SECONDS)
@@ -3611,7 +3669,7 @@ class OpenHandsRuntime:
         accept: bool,
         reason: str,
     ) -> RuntimeResult:
-        pending = self.get_pending_confirmation(handle)
+        pending = self._get_pending_confirmation(handle)
         if pending is None or pending.pending_actions_digest != expected_pending_digest:
             raise DomainError(
                 "RUNTIME_CONFIRMATION_DRIFTED",
@@ -5051,14 +5109,15 @@ class OpenHandsRuntime:
         return total_tokens, event_count
 
     def conversation_context(self, handle: RuntimeHandle) -> dict[str, int | str | None]:
-        context = self._conversation_context_from_state(
-            self._conversation_state(handle, timeout=_INTERACTIVE_READ_TIMEOUT_SECONDS)
-        )
-        metrics = self._conversation_view_context_metrics(handle)
-        context["used_tokens"] = metrics[0] if metrics is not None else None
-        context["view_event_count"] = metrics[1] if metrics is not None else None
-        context["usage_current"] = metrics is not None
-        return context
+        with self._auxiliary_read_bulkhead(handle):
+            context = self._conversation_context_from_state(
+                self._conversation_state(handle, timeout=_INTERACTIVE_READ_TIMEOUT_SECONDS)
+            )
+            metrics = self._conversation_view_context_metrics(handle)
+            context["used_tokens"] = metrics[0] if metrics is not None else None
+            context["view_event_count"] = metrics[1] if metrics is not None else None
+            context["usage_current"] = metrics is not None
+            return context
 
     def switch_model(self, handle: RuntimeHandle, provider: RuntimeProvider) -> None:
         session_api_key = self._session_key_for_handle(handle)
@@ -5198,7 +5257,7 @@ class OpenHandsRuntime:
         page_id: str | None = None
         pages_read = 0
         activity: dict[str, RuntimeConversationActivity] = {}
-        with self._formal_read_bulkhead(handle):
+        with self._auxiliary_read_bulkhead(handle):
             while pages_read < _CONVERSATION_ACTIVITY_MAX_PAGES:
                 params: dict[str, str | int] = {"limit": 100}
                 if page_id:

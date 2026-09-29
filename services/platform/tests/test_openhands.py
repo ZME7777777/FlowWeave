@@ -6285,6 +6285,39 @@ def test_hydration_deadline_is_shared_by_successive_native_requests(
     assert 0 < timeouts[1] < timeouts[0] <= 0.15
 
 
+def test_auxiliary_reads_do_not_consume_formal_runtime_capacity(openhands_settings, monkeypatch):
+    configured = openhands_settings.model_copy(
+        update={
+            "runtime_read_per_runtime_concurrency": 1,
+            "runtime_read_slot_timeout_seconds": 0.05,
+        }
+    )
+    runtime = OpenHandsRuntime(configured)
+    handle = _handle()
+    monkeypatch.setattr(runtime, "_base_url_for_handle", lambda _handle: "http://runtime:8000")
+    started = Event()
+    release = Event()
+
+    def blocked_auxiliary_read() -> None:
+        with runtime._auxiliary_read_bulkhead(handle):  # pyright: ignore[reportPrivateUsage]
+            started.set()
+            assert release.wait(timeout=1)
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        blocked = executor.submit(blocked_auxiliary_read)
+        assert started.wait(timeout=1)
+        # Auxiliary display refreshes have their own lane and must not consume
+        # the formal event-recovery capacity for this Runtime generation.
+        with runtime._formal_read_bulkhead(handle):  # pyright: ignore[reportPrivateUsage]
+            pass
+        with pytest.raises(DomainError) as caught:
+            with runtime._auxiliary_read_bulkhead(handle):  # pyright: ignore[reportPrivateUsage]
+                raise AssertionError("the auxiliary lane should reject this read")
+        assert caught.value.code == "RUNTIME_AUXILIARY_READ_SATURATED"
+        release.set()
+        blocked.result(timeout=1)
+
+
 def test_formal_reads_are_bounded_per_runtime_generation(openhands_settings, monkeypatch):
     configured = openhands_settings.model_copy(
         update={

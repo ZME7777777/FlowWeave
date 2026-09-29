@@ -51,7 +51,7 @@ const HISTORY_PREFETCH_MAX_TOTAL_PAGES = 8;
 const HISTORY_PREFETCH_DELAY_MS = 250;
 // Exact Context metrics are deferred from hydration. Merge bursts of event
 // reconciliation into one bounded refresh instead of invalidating per frame.
-const CONTEXT_REFRESH_MIN_INTERVAL_MS = 15_000;
+const CONTEXT_REFRESH_MIN_INTERVAL_MS = 60_000;
 const WORKSPACE_PATH_COPIED_DURATION_MS = 1_500;
 const SESSION_PERFORMANCE_MARK_PREFIX = 'flowweave.agent-session.';
 // These are the frozen OpenHands/LiteLLM request settings applied by the
@@ -4593,9 +4593,11 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     // suppress the server-owned "completed in background" unread transition.
     queryKey: sessionQueryKey(host, 'conversation-activity', workspace?.id, routeBindingId),
     queryFn: () => api.conversationActivity(workspace!.id, routeBindingId),
+    // Activity is a workspace-wide native catalog read. It must not poll at a
+    // rate that competes with the selected conversation's event recovery.
     enabled: Boolean(workspace && pageVisible),
-    refetchOnWindowFocus: true,
-    refetchInterval: pageVisible ? 4_000 : false,
+    refetchOnWindowFocus: false,
+    refetchInterval: pageVisible ? 15_000 : false,
     retry: false,
   });
   const runningConversationIds = useMemo(
@@ -5960,10 +5962,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const contextQuery = useQuery({
     queryKey: contextQueryKey,
     queryFn: () => api.conversationContext(workspace!.id, selected!.id),
-    // Every successful hydration seeds this query with only the cheap batch
-    // snapshot. Run the formal Context read for both terminal and running
-    // sessions once the first screen is available.
-    enabled: Boolean(workspace && selected && hydrationFallbackAllowed),
+    // Hydration seeds a coherent, inexpensive context snapshot. Exact View
+    // metrics are auxiliary state: do not begin another Runtime request until
+    // the selected session has painted and the page is visible.
+    enabled: Boolean(workspace && selected && pageVisible && hydrationFallbackAllowed),
     initialData: hydrationData?.context,
     initialDataUpdatedAt: hydrationData ? hydrationDataUpdatedAt : undefined,
     // Hydration carries only the inexpensive event-batch context. Exact
@@ -5971,6 +5973,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     // after first paint instead of holding events and readiness hostage.
     staleTime: CONTEXT_REFRESH_MIN_INTERVAL_MS,
     refetchOnWindowFocus: false,
+    retry: false,
   });
   const storedCurrentContext = useMemo(() => workspace && selected
     ? readConversationContextSnapshot(host.id, workspace.id, selected.id)
@@ -6035,9 +6038,20 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     // Confirmation is intentionally not part of hydration. Wait for the
     // snapshot to settle so a first paint cannot consume another Runtime read
     // slot in parallel; later invalidations continue to refresh it directly.
-    enabled: Boolean(workspace && selected && hydrationFallbackAllowed && canWrite && features.confirmations),
+    // This route reads native state plus an event page. Only ask for it once
+    // the selected conversation is formally known to be waiting for a user
+    // decision; normal composer renders must not repeatedly probe it.
+    enabled: Boolean(
+      workspace
+      && selected
+      && pageVisible
+      && hydrationFallbackAllowed
+      && canWrite
+      && features.confirmations
+      && nativeExecutionStatus?.toLowerCase() === 'waiting_for_confirmation',
+    ),
     refetchOnWindowFocus: false,
-    retry: (count, error) => !(error instanceof ApiError && error.status < 500) && count < 2,
+    retry: false,
   });
   const pendingConfirmation = confirmationQuery.data?.pending ? confirmationQuery.data : undefined;
   const refresh = useCallback((bindingId = selected?.id) => {

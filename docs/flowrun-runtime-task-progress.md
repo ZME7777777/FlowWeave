@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`IN PROGRESS`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`FR-555B2B`
+> 下一可执行切片：`FR-555C`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -7713,8 +7713,20 @@ Agent Workspace 与 FlowRun node 两种宿主的首条 bootstrap、常规消息�
 
 容量调整（2026-09-29）：按请求将默认 `API_BLOCKING_POOL_SIZE` 提升至 8。每个 API worker 为 2 hydration、1 message、5 普通同步交互／慢 mutation；四个 API worker 加 stream-api 和 Worker 的稳态连接预算为 88。PostgreSQL 容器现在以 `max_connections=120` 启动，`POSTGRES_CONNECTION_LIMIT=120` 与启动参数由容量检查强制一致，并继续保留 20 条连接余量。此项调整扩大普通 lane，未改变 hydration／message 的保留数量、无 overflow 约束或 `stream-api`／Worker 的默认 blocking 配额。
 
-### FR-555B2B 慢变更与后台通道分离 — READY
+### FR-555B2B 辅助 Runtime 读取隔离与浏览器请求收敛 — DONE
 
 依赖：FR-555B2A。
 
-目标：继续审计模型／能力／凭据／fork／删除等慢生命周期 mutation，以及 Context／历史恢复和后台任务的队列、取消和实际 completion 释放语义；在不扩张 PostgreSQL 连接预算的前提下，将低频、无需快速响应的工作放入独立有界通道，并为两类宿主保留一致的 deadline、单飞和错误映射约束。依据实际调用链和负载数据决定容量，不以延长浏览器超时或无限扩池替代隔离。
+完成：生产 503 取证显示并非 API 8 槽或 PostgreSQL 120 连接耗尽：同一长运行 Agent Workspace Runtime 上的正式 `/events/search` 在约 8 秒超时，而浏览器同时重复请求 `context`、`conversation-activity` 与 `pending-confirmation`。这些展示性读取曾与首屏 hydration、事件恢复和消息确认共用同一 generation 的 formal-read bulkhead，浏览器 503 重试又会把读压进一步放大。
+
+OpenHands adapter 现为 context、activity 和 pending-confirmation 增加每 Runtime 单槽、可重入的辅助读取 bulkhead；它与正式事件读取分离，辅助通道拥塞会快速返回 `RUNTIME_AUXILIARY_READ_SATURATED`，而不会积压 OpenHands HTTP 或占用 hydration／事件恢复容量。确认决策内部复用已取得的辅助槽，避免嵌套获取。浏览器端 activity 轮询由 4 秒降为 15 秒并取消 focus 刷新；context 只在可见且 hydration 后读取、最短刷新从 15 秒升至 60 秒且不重试 503；pending-confirmation 仅在正式 readiness 为 `waiting_for_confirmation` 时才读取，且不重试。
+
+运行取证与修复前置：受管服务器根盘曾 100% 使用（约 1.2 GiB 可用），Docker 有约 70 GiB 未使用镜像和约 20 GiB BuildKit cache；在明确授权下仅使用 image/builder prune 回收未被容器引用的对象，未删除 volume、工作区或运行中 Runtime，根盘恢复至约 82 GiB 可用。数据库当时仅 50/120 连接、1 活跃连接；API／Provider 健康，说明磁盘写压与同 Runtime 请求风暴是主要诱因。
+
+验收：OpenHands／HTTP／hydration 定向 pytest `44 passed, 183 deselected`；新增回归证明辅助读取不会占用正式 Runtime 容量，辅助自身同 Runtime 只允许一个请求；Ruff、`py_compile`、Web TypeScript 和 production build、Alembic head、`git diff --check` 通过。Web lint 仍被该文件原有 3 条 React Hook dependency warnings 以 `--max-warnings=0` 拒绝，本切片未新增 lint error。未在本切片运行全量 Runtime 负载或浏览器 E2E。
+
+### FR-555C 慢生命周期变更与后台任务通道 — READY
+
+依赖：FR-555B2B。
+
+目标：继续审计模型／能力／凭据／fork／删除等慢生命周期 mutation 与后台任务的队列、取消和实际 completion 释放语义；在不扩张 PostgreSQL 连接预算的前提下，将低频、无需快速响应的工作放入独立有界通道。依据真实调用链和负载数据决定容量，并继续保护 hydration、消息派发和正式事件恢复。
