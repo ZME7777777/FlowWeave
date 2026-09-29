@@ -180,6 +180,20 @@ export function writeConversationContextSnapshot(
   }
 }
 
+/** Remove every browser-local presentation snapshot for one deleted binding. */
+export function clearConversationSnapshots(
+  hostId: string,
+  workspaceId: string,
+  bindingId: string,
+): void {
+  const storage = safeStorage();
+  if (!storage) return;
+  const keys = [snapshotKey(hostId, workspaceId, bindingId), contextKey(hostId, workspaceId, bindingId)];
+  for (const key of keys) {
+    if (key) storage.removeItem(key);
+  }
+}
+
 export function readConversationContextSnapshot(
   hostId: string,
   workspaceId: string,

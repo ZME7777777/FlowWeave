@@ -14,7 +14,7 @@ import { agentWorkspaceSessionGateway, type AgentSessionGateway } from '../../ap
 import { withoutDeploymentBase } from '../../deploymentPath';
 import { agentWorkspaceSessionHost, type AgentSessionHost } from './session-host';
 import { SidebarConversationPane } from './SidebarConversationPane';
-import { readConversationContextSnapshot, writeConversationContextSnapshot } from './conversation-cache';
+import { clearConversationSnapshots, readConversationContextSnapshot, writeConversationContextSnapshot } from './conversation-cache';
 import { ConversationSurface, ConversationTaskPlan, type ConversationHistoryPrepend, type ConversationReference, type ModelRetryStatus } from '../ConversationSurface';
 import { isOpenHandsAgentReply, isOpenHandsEmptyResponseRecovery, orderOpenHandsConversationEvents } from '../conversationEvents';
 import { useProductDialog } from '../ProductDialogContext';
@@ -555,6 +555,12 @@ interface WorkspaceConversationGroupProps {
 
 function sessionQueryKey(host: AgentSessionHost, resource: string, ...identifiers: Array<string | undefined>) {
   return host.queryKey(resource, ...identifiers);
+}
+
+function isMissingConversationError(error: unknown): error is ApiError {
+  return error instanceof ApiError
+    && error.status === 404
+    && error.code === 'AGENT_CONVERSATION_NOT_FOUND';
 }
 
 function conversationIsRunning(executionStatus: string | null | undefined): boolean {
@@ -6242,6 +6248,92 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     }
     setDrawerOpen(true);
   }, []);
+  const reconciledMissingConversationIds = useRef(new Set<string>());
+  const reconcileMissingConversation = useCallback((bindingId: string) => {
+    if (!workspace || reconciledMissingConversationIds.current.has(bindingId)) return;
+    reconciledMissingConversationIds.current.add(bindingId);
+    const nextConversation = conversations.find(item => item.id !== bindingId);
+    const resources = [
+      'conversation',
+      'conversation-hydration-request',
+      'conversation-events',
+      'conversation-input-readiness',
+      'conversation-context',
+      'conversation-confirmation',
+      'workspace-details',
+      'workspace-reference-index',
+      'workspace-directory',
+      'workspace-git-repositories',
+      'workspace-git-log',
+      'workspace-git-changes',
+      'conversation-file-preview',
+      'file-preview',
+    ];
+    for (const resource of resources) {
+      const queryKey = sessionQueryKey(host, resource, workspace.id, bindingId);
+      void queryClient.cancelQueries({ queryKey, exact: false });
+      queryClient.removeQueries({ queryKey, exact: false });
+    }
+    historyAbortControllers.current.get(bindingId)?.abort();
+    historyAbortControllers.current.delete(bindingId);
+    historyLoadingScopes.current.delete(bindingId);
+    historyFailedCursors.current.delete(bindingId);
+    historyCacheByScope.current.delete(bindingId);
+    revealedHistoryPageCounts.current.delete(bindingId);
+    trustedHydrations.current.delete(bindingId);
+    composerDraftsByScope.current.delete(bindingId);
+    conversationDraftsByScope.current.delete(bindingId);
+    clearConversationComposerDraft(host.id, workspace.id, bindingId);
+    clearConversationSnapshots(host.id, workspace.id, bindingId);
+    deferredFormalUserEvents.current.forEach((event, eventId) => {
+      if (event.scope === bindingId) deferredFormalUserEvents.current.delete(eventId);
+    });
+    updateLocalMessageProjections(current => {
+      for (const [messageId, projection] of current) {
+        if (projection.scope === bindingId) current.delete(messageId);
+      }
+    });
+    setScopedLiveEvents(current => current.filter(item => item.scope !== bindingId));
+    setConversationPagesByScope(current => Object.fromEntries(Object.entries(current).map(([scope, page]) => [scope, {
+      ...page,
+      items: page.items.filter(item => item.id !== bindingId),
+    }])));
+    setOptimisticallyRemovedConversationIds(current => new Set(current).add(bindingId));
+    setPinnedConversationIds(current => {
+      if (!current.has(bindingId)) return current;
+      const next = new Set(current);
+      next.delete(bindingId);
+      writePinnedConversationIds(pinnedStorageKey, next);
+      return next;
+    });
+    setUnreadConversationIds(current => {
+      if (!current.has(bindingId)) return current;
+      const next = new Set(current);
+      next.delete(bindingId);
+      return next;
+    });
+    setOperationError(undefined);
+    if (activityPreviewBindingId === bindingId) setActivityPreviewBindingId(undefined);
+    if (selectedBindingId === bindingId) {
+      setDrawerOpen(false);
+      onNavigate(nextConversation ? host.conversationPath(nextConversation.id) : host.rootPath, true);
+    }
+    void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversations', workspace.id) });
+    void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-activity', workspace.id) });
+  }, [activityPreviewBindingId, conversations, host, onNavigate, pinnedStorageKey, queryClient, selectedBindingId, updateLocalMessageProjections, workspace]);
+  const missingConversationError = [
+    selectedConversationQuery.error,
+    activeWorkspaceDetailsQuery.error,
+    workspaceReferenceIndexQuery.error,
+    hydrationQuery.error,
+    inputReadinessQuery.error,
+    eventsQuery.error,
+  ].find(isMissingConversationError);
+  useEffect(() => {
+    if (!selectedBindingId || !isMissingConversationError(missingConversationError)) return;
+    reconcileMissingConversation(selectedBindingId);
+  }, [missingConversationError, reconcileMissingConversation, selectedBindingId]);
+
   const contextQuery = useQuery({
     queryKey: contextQueryKey,
     queryFn: () => api.conversationContext(workspace!.id, selected!.id),
@@ -6894,13 +6986,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       // delete) that has already removed the binding. The API's scoped 404 is
       // therefore the idempotent terminal state for this DELETE, not a reason
       // to restore a Conversation that the server confirms no longer exists.
-      if (error instanceof ApiError
-        && error.status === 404
-        && error.code === 'AGENT_CONVERSATION_NOT_FOUND') {
-        composerDraftsByScope.current.delete(bindingId);
-        conversationDraftsByScope.current.delete(bindingId);
-        if (workspace) clearConversationComposerDraft(host.id, workspace.id, bindingId);
-        refresh();
+      if (isMissingConversationError(error)) {
+        reconcileMissingConversation(bindingId);
         return;
       }
       if (workspace && context) {
