@@ -3157,6 +3157,31 @@ def test_agent_workspace_conversation_order_stays_at_creation_time(
         assert older_binding.updated_at > newer_binding.updated_at
 
 
+
+def test_agent_workspace_conversation_default_sort_uses_last_message_not_metadata_update() -> None:
+    from types import SimpleNamespace
+
+    older_message = datetime(2026, 1, 1, tzinfo=UTC)
+    newer_message = datetime(2026, 1, 2, tzinfo=UTC)
+    # `updated_at` can move for metadata work after a conversation has gone
+    # idle; it must not make that conversation newer than a real message.
+    metadata_newer = datetime(2026, 1, 3, tzinfo=UTC)
+    metadata_item = SimpleNamespace(
+        manual_sort_rank=None,
+        last_message_at=older_message,
+        created_at=older_message,
+        updated_at=metadata_newer,
+    )
+    recent_message_item = SimpleNamespace(
+        manual_sort_rank=None,
+        last_message_at=newer_message,
+        created_at=older_message,
+        updated_at=older_message,
+    )
+
+    assert conversations._conversation_sort_key(recent_message_item) > conversations._conversation_sort_key(metadata_item)
+
+
 def test_agent_workspace_conversation_drag_order_overrides_only_moved_binding(
     settings, db_session_factory, monkeypatch
 ):

@@ -107,8 +107,8 @@ class AgentConversationBinding(Base):
     # native-forked conversations. We never infer secret injection from a
     # Conversation's environment or event history.
     credential_sync_initialized_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    # NULL keeps the default creation-time order; only a dragged session has
-    # a workspace-local explicit rank.
+    # NULL uses automatic recent-message ordering; only a dragged session has
+    # a workspace-local explicit rank until its next user message.
     manual_sort_rank: Mapped[Decimal | None] = mapped_column(Numeric(30, 12))
     activity_was_running: Mapped[bool] = mapped_column(Boolean, default=False)
     unread: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -117,6 +117,10 @@ class AgentConversationBinding(Base):
     unread_origin: Mapped[str | None] = mapped_column(String(20))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+    # Only a successfully accepted user message advances this value. It is
+    # deliberately distinct from `updated_at`, which also records metadata,
+    # unread, title and Runtime lifecycle changes.
+    last_message_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     last_connected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # A Worker-owned scheduling projection. It is intentionally separate from
     # the authoritative OpenHands usage counters and is only used to throttle
