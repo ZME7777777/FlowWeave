@@ -197,11 +197,11 @@ function selectedRecordNodeRun(record: FlowRun | undefined, selectedNodeRunId?: 
   return selectedById ?? (!selectedNodeRunId ? active : undefined);
 }
 
-function RunRail({ run, mode, nodeRecords, manualRecords, automaticRecords, automaticError, selected, selectedStepwiseId, canCopyManualRecord, canDeleteManualRecords, manualSelectedIds, stepwiseSelectedIds, automaticSelectedIds, manualBusyId, selectedAutomaticId, automaticBusyId, onModeChange, onSelect, onSelectManualRecord, onCreateManualRecord, onCopyManual, onExportManual, onDeleteManualRecord, onDeleteNode, onSelectAutomatic, onClearSelection, onCreateAutomatic, onDeleteAutomatic, onCopyAutomatic, onExportAutomatic, onStartAutomatic }: {
+function RunRail({ run, mode, nodeRecords, manualRecords, automaticRecords, automaticError, selected, selectedStepwiseId, canCopyManualRecord, canDeleteManualRecords, manualSelectedIds, stepwiseSelectedIds, automaticSelectedIds, manualBusyId, selectedAutomaticId, automaticBusyId, stepwiseLaunch, onModeChange, onSelect, onSelectManualRecord, onCreateManualRecord, onCopyManual, onExportManual, onDeleteManualRecord, onDeleteNode, onSelectAutomatic, onClearSelection, onCreateAutomatic, onDeleteAutomatic, onCopyAutomatic, onExportAutomatic, onStartAutomatic }: {
   run: FlowRun; mode: WorkbenchMode; nodeRecords: NodeRun[]; manualRecords: FlowRunStepwiseRecord[]; automaticRecords: FlowRunAutomaticRecordSummary[]; selected?: string; selectedStepwiseId?: string; canCopyManualRecord: boolean; canDeleteManualRecords: boolean;
   automaticError?: string; manualSelectedIds: Set<string>; stepwiseSelectedIds: Set<string>; automaticSelectedIds: Set<string>;
   manualBusyId?: string;
-  selectedAutomaticId?: string; automaticBusyId?: string; onModeChange: (mode: WorkbenchMode) => void;
+  selectedAutomaticId?: string; automaticBusyId?: string; stepwiseLaunch?: { recordId: string; ready: boolean; busy: boolean; onStart: () => void }; onModeChange: (mode: WorkbenchMode) => void;
   onSelect: (id: string, modifiers: SelectionModifiers) => void; onSelectManualRecord: (id: string, modifiers: SelectionModifiers) => void; onCreateManualRecord: () => void; onCopyManual: () => void; onExportManual: () => void; onDeleteManualRecord: () => void; onDeleteNode: () => void; onSelectAutomatic: (id: string, modifiers: SelectionModifiers) => void; onCreateAutomatic: () => void;
   onClearSelection: () => void; onDeleteAutomatic: () => void; onCopyAutomatic: () => void; onExportAutomatic: () => void; onStartAutomatic: (record: FlowRunAutomaticRecordSummary) => void;
 }) {
@@ -244,8 +244,10 @@ function RunRail({ run, mode, nodeRecords, manualRecords, automaticRecords, auto
   const nodeRecordLabel = mode === 'DIRECT' ? '直接启动记录' : '逐步运行记录';
   const manualRecordItem = (record: FlowRunStepwiseRecord) => {
     const stateLabel = FLOW_STATE_LABELS[record.state] ?? record.state;
+    const launch = stepwiseLaunch?.recordId === record.id ? stepwiseLaunch : undefined;
     return <article key={record.id} className={stepwiseSelectedIds.has(record.id) ? 'active' : ''} data-record-state={record.state.toLowerCase()}>
       <button type="button" className="automatic-record-select" aria-pressed={stepwiseSelectedIds.has(record.id)} onClick={event => onSelectManualRecord(record.id, modifiers(event))}><i title={stateLabel} aria-label={stateLabel}/><span><b>{record.name}</b></span></button>
+      {launch && <button type="button" className="automatic-record-start" aria-label={`启动逐步运行 ${record.name}`} disabled={!launch.ready || launch.busy} onClick={launch.onStart}><Play size={12}/>{launch.busy ? '启动中…' : '启动'}</button>}
     </article>;
   };
   return <aside className="run-rail flow-run-inner-rail" onClick={event => { if (!isInteractiveClick(event.target)) onClearSelection(); }}>
@@ -1041,7 +1043,7 @@ function AutomaticProgressPanel({ progress }: { progress: NonNullable<NodeAttemp
   return <section className={`automatic-progress-panel${progress.needs_attention || progress.task_state === 'DEAD' ? ' attention' : ''}`} data-testid="automatic-progress"><header><span><b>{title}</b><small>{progress.task_state ? TASK_STATE_LABELS[progress.task_state] ?? progress.task_state : '状态已持久化'}</small></span>{currentIndex >= 0 && <em>第 {currentIndex + 1}/{AUTOMATIC_STAGE_ORDER.length} 步</em>}</header>{currentIndex >= 0 && <ol>{AUTOMATIC_STAGE_ORDER.map((stage, index) => <li key={stage} className={index < currentIndex ? 'done' : index === currentIndex ? 'current' : ''}><i aria-hidden="true"/><span>{AUTOMATIC_STAGE_LABELS[stage]}</span></li>)}</ol>}<dl>{hasRuntimeTaskDetails ? runtimeTasks.map(([label, task]) => task && <Fragment key={label}><dt>{label}</dt><dd>{task.attempts} 次 / 上限 {task.max_attempts} · {TASK_STATE_LABELS[task.task_state] ?? task.task_state}</dd></Fragment>) : <>{progress.attempts > 0 && <><dt>后台尝试</dt><dd>{progress.attempts} 次{progress.max_attempts ? ` / 上限 ${progress.max_attempts}` : ''}</dd></>}{processedAt && <><dt>最近处理</dt><dd>{processedAt}</dd></>}{retryAt && <><dt>下次重试</dt><dd>{retryAt}</dd></>}</>}</dl>{progress.task_error && <p role="alert">{progress.task_error}</p>}{progress.needs_attention && <p role="status">任务已被领取但业务状态没有前进；平台会按持久记录自动重新计算并继续，不需要反复刷新或重新创建运行。</p>}</section>;
 }
 
-function AttemptPanel({ run, nodeRun, attempt, refresh, navigate, sessionReturnContext, automaticArtifactScope, onStartStepwise }: { run: FlowRun; nodeRun: NodeRun; attempt: NodeAttempt; refresh: () => void; navigate: (result: unknown, kind: string) => void; sessionReturnContext?: { runId: string; mode: WorkbenchMode; automaticRecordId?: string; stepwiseRecordId?: string }; automaticArtifactScope?: { parentRunId: string; recordId: string }; onStartStepwise?: () => void }) {
+function AttemptPanel({ run, nodeRun, attempt, refresh, navigate, sessionReturnContext, automaticArtifactScope }: { run: FlowRun; nodeRun: NodeRun; attempt: NodeAttempt; refresh: () => void; navigate: (result: unknown, kind: string) => void; sessionReturnContext?: { runId: string; mode: WorkbenchMode; automaticRecordId?: string; stepwiseRecordId?: string }; automaticArtifactScope?: { parentRunId: string; recordId: string } }) {
   const dialog = useProductDialog();
   const [text, setText] = useState('');
   const [inputArtifacts, setInputArtifacts] = useState<ArtifactVersion[]>(run.artifacts);
@@ -1200,7 +1202,7 @@ function AttemptPanel({ run, nodeRun, attempt, refresh, navigate, sessionReturnC
       : undefined;
   return <aside className="action-panel attempt-control"><header><div><b>{nodeRunName(run, nodeRun)}</b><small>第 {nodeVisitNumber(run, nodeRun)} 次执行 / 第 {attempt.attempt_no} 轮</small></div><small className="attempt-token-usage">{usageLabel(attempt.usage)}</small></header><nav className="attempt-detail-tabs" aria-label="执行详情"><button className={tab === 'overview' ? 'active' : ''} onClick={() => setTab('overview')}>概览</button><button className={tab === 'gates' ? 'active' : ''} onClick={() => setTab('gates')}>门禁结果</button><button className={tab === 'outputs' ? 'active' : ''} onClick={() => setTab('outputs')}>输出</button>{automaticArtifactScope && <button className={tab === 'audit' ? 'active' : ''} onClick={() => setTab('audit')}>历史审计</button>}</nav><div className="action-content">{tab === 'overview' && <><div className="state-banner"><span>当前轮次状态</span><b>{runtimeFailed ? '节点执行失败' : ATTEMPT_STATE_LABELS[attempt.state] ?? attempt.state}</b><small><span data-testid="attempt-state">{attempt.state}</span> · 状态版本 {attempt.state_version}</small></div>{automaticAttempt && attempt.automatic_progress && <AutomaticProgressPanel progress={attempt.automatic_progress}/>} {attemptNode && <NodeContextSummary node={attemptNode} contextIds={attempt.context_ids ?? null} frozenSessionContexts={attempt.frozen_session_contexts} frozenAgentCapabilities={attempt.frozen_agent_capabilities} agentPreset={attempt.agent_preset} mode={attempt.startup_mode === 'CHAT' ? 'CHAT' : 'PROMPT'}/>}<InputSummary fields={attemptNode?.asset.inputs ?? []} bindings={nodeInputBindings} artifacts={resolvedInputArtifacts}/>{automaticArtifactScope && automaticInputArtifacts.isError && <p className="error">读取本轮输入失败：{automaticInputArtifacts.error.message}</p>}<p className="field-hint">输入已随本轮创建冻结，仅供查看。</p>
     {attempt.runtime_phase === 'CANCEL_FAILED' && <section className="terminal-run-panel"><h4>Agent 停止状态未确认</h4><p>{attempt.error_detail || '运行时停止失败，需要重新对账。FlowRun Runtime 的健康、替换和诊断入口位于会话工作台。'}</p>{attempt.runtime_cancel_recovery_modes.includes('RECONCILE_PARENT') && <button className="secondary full" disabled={mutation.isPending} onClick={() => act('retry-cancel')}>重新对账并重试停止</button>}</section>}
-    {terminal ? <button className="secondary full node-session-entry" onClick={() => openNodeSession(run.id, nodeRun.id, attempt.id, undefined, sessionReturnContext)}><Send size={15}/>查看节点会话（只读）</button> : (attempt.startup_mode === 'PROMPT' && attempt.state === 'WAITING_START_CONFIRMATION' ? automaticAttempt ? !attempt.automatic_progress && <section className="terminal-run-panel"><h4>正在自动启动</h4><p>连续运行已通过启动条件；平台正在启动当前节点，并会在完成后自动流转至后继节点。</p></section> : <section className="terminal-run-panel"><h4>配置已保存</h4><p>当前节点已就绪。启动后将执行该节点，并在完成后停在下一个节点。</p>{onStartStepwise && <button className="primary full" disabled={mutation.isPending} aria-label={`启动逐步运行 ${nodeRunName(run, nodeRun)}`} onClick={onStartStepwise}><Play size={15}/>启动</button>}</section> : <button className="secondary full node-session-entry" onClick={() => openNodeSession(run.id, nodeRun.id, attempt.id, undefined, sessionReturnContext)}><Send size={15}/>进入节点会话</button>)}
+    {terminal ? <button className="secondary full node-session-entry" onClick={() => openNodeSession(run.id, nodeRun.id, attempt.id, undefined, sessionReturnContext)}><Send size={15}/>查看节点会话（只读）</button> : (attempt.startup_mode === 'PROMPT' && attempt.state === 'WAITING_START_CONFIRMATION' ? automaticAttempt ? !attempt.automatic_progress && <section className="terminal-run-panel"><h4>正在自动启动</h4><p>连续运行已通过启动条件；平台正在启动当前节点，并会在完成后自动流转至后继节点。</p></section> : <section className="terminal-run-panel"><h4>配置已保存</h4><p>请在左侧当前逐步运行记录上启动该节点；完成后会停在下一个节点。</p></section> : <button className="secondary full node-session-entry" onClick={() => openNodeSession(run.id, nodeRun.id, attempt.id, undefined, sessionReturnContext)}><Send size={15}/>进入节点会话</button>)}
     {nodeRun.attempts.length > 1 && <section className="attempt-switcher"><h4>修订轮次</h4><div>{nodeRun.attempts.map(item => <button key={item.id} className={item.id === attempt.id ? 'active' : ''} onClick={() => useWorkbenchStore.getState().selectAttempt(item.id)}>第 {item.attempt_no} 轮</button>)}</div></section>}
       {terminal ? <section className="terminal-run-panel"><h4>{run.state === 'CANCELLED' ? '流程已取消' : '流程已完成'}</h4><p>会话历史已只读保留；可通过上方入口查看会话，并继续在右侧文件与终端中操作工作区。流程级操作位于上方“流程运行态管理”。</p></section> : <>
       {(attempt.startup_mode === 'CHAT' && attempt.state === 'WAITING_START_CONFIRMATION' || automaticOutputOverrideRequired) && <section className="manual-session-outputs"><h4>{automaticOutputOverrideRequired ? '选择已有输出并强制流转' : '提交会话产出'}</h4><p>{automaticOutputOverrideRequired ? '请选择本节点已经生成的输出文件，平台会直接复用所选产物并记录人工降级决定；无需填写运行时路径。' : '会话回复不会自动成为节点输出。请按冻结输出合同填写 URL 或共享工作区文件路径，平台校验并复制为候选产物后再运行完成门禁。'}</p>{automaticOutputOverrideRequired && automaticArtifacts.isLoading && <p className="field-hint">正在读取当前节点输出…</p>}{automaticOutputOverrideRequired && automaticArtifacts.isError && <p className="error">读取当前节点输出失败：{automaticArtifacts.error.message}</p>}{manualOutputFields.map(field => <label key={field.field_key}>{field.display_name || field.field_key} · {field.data_type}{automaticOutputOverrideRequired ? <LaunchOptionMenu label={`选择输出 ${field.display_name || field.field_key}`} value={manualOutputs[field.field_key] ?? ''} options={[{ value: '', label: '请选择节点输出' }, ...(manualOutputCandidates.get(field.field_key) ?? []).map(item => ({ value: item.id, label: `${item.metadata?.filename ? String(item.metadata.filename) : `${item.field_key} · v${item.version_no}`} · ${item.byte_size} B` }))]} disabled={automaticArtifacts.isLoading || (manualOutputCandidates.get(field.field_key) ?? []).length === 0} onChange={value => setManualOutputs(current => ({ ...current, [field.field_key]: value }))}/> : <input aria-label={`提交输出 ${field.display_name || field.field_key}`} value={manualOutputs[field.field_key] ?? ''} onChange={event => setManualOutputs(current => ({ ...current, [field.field_key]: event.target.value }))} placeholder={field.data_type === 'FILE' ? '/runtime/workspace/project/...' : 'https://...'}/>}</label>)}<button className="danger full" disabled={!manualOutputsReady || mutation.isPending || automaticArtifacts.isLoading || automaticArtifacts.isError} onClick={() => automaticOutputOverrideRequired ? void dialog.confirm({ title: '确认降级并强制流转？', message: '平台将复用你选择的节点输出，跳过后续门禁并记录人工降级决定。', confirmLabel: '确认强制流转', tone: 'danger' }).then(ok => ok && act('force-manual-outputs', manualOutputsPayload)) : act('manual-outputs', manualOutputsPayload)}>{mutation.isPending ? '提交中…' : automaticOutputOverrideRequired ? '确认降级并强制流转' : '提交候选输出并运行完成门禁'}</button></section>}
@@ -1313,18 +1315,15 @@ function RecordConfigExportDialog({ mode, count, onClose, onExport }: { mode: 'A
 }
 
 
-function StepwiseRecordLaunchBar({ node, draft, busy, onStart }: { node?: SnapshotFlowNode; draft?: StepwiseNodeDraft; busy: boolean; onStart: () => void }) {
-  const ready = Boolean(
+function stepwiseDraftReady(node?: SnapshotFlowNode, draft?: StepwiseNodeDraft): boolean {
+  return Boolean(
     node
     && draft
     && draft.startup_prompt?.trim()
     && draft.agent_preset
     && node.asset.inputs.every(field => draft.input_bindings.some(binding => binding.input_field_key === field.field_key)),
   );
-  const label = node ? node.alias || node.asset.name : '当前节点';
-  return <section className="stepwise-record-launch-bar"><div><b>逐步运行</b><small>{ready ? `当前节点“${label}”已保存配置，可从记录启动。` : `请先完成当前节点“${label}”的输入和配置。`}</small></div><button type="button" className="primary" disabled={!ready || busy} onClick={onStart}><Play size={15}/>{busy ? '启动中…' : '启动'}</button></section>;
 }
-
 
 function AutomaticRecordEditor({ parent, record, selectedKey, onDraft, onSaved }: { parent: FlowRun; record: FlowRunAutomaticRecord; selectedKey?: string; onDraft: (record: FlowRunAutomaticRecord) => void; onSaved: (record: FlowRunAutomaticRecord) => void }) {
   // A continuous record owns its own frozen FlowRun snapshot.  The parent can
@@ -2158,6 +2157,13 @@ export function WorkbenchPage() {
     }
     void stepwiseDetail.refetch();
   };
+  const stepwiseLaunch = mode === 'MANUAL' && selectedStepwise
+    ? selectedExecutionNodeRun && selectedExecutionAttempt?.state === 'WAITING_START_CONFIRMATION'
+      ? { recordId: selectedStepwise.id, ready: true, busy: manualBusyId === selectedExecutionNodeRun.id, onStart: () => startStepwiseNode(selectedExecutionNodeRun) }
+      : selectedNode && selectedNodeKey && selectedStepwiseDraft
+        ? { recordId: selectedStepwise.id, ready: stepwiseDraftReady(selectedNode, selectedStepwiseDraft), busy: manualBusyId === selectedNodeKey, onStart: () => startStepwiseDraft(selectedNodeKey, selectedStepwiseDraft) }
+        : undefined
+    : undefined;
   const executionDetailPanel = selectedExecutionRecord && selectedExecutionNodeRun && selectedExecutionAttempt
     ? <AttemptPanel
         run={selectedExecutionRecord}
@@ -2167,11 +2173,10 @@ export function WorkbenchPage() {
         navigate={mode === 'AUTOMATIC' ? refreshExecutionRecord : navigate}
         sessionReturnContext={selectedExecutionSessionReturn}
         automaticArtifactScope={mode === 'AUTOMATIC' ? { parentRunId: parentRun.id, recordId: selectedExecutionRecord.id } : undefined}
-        onStartStepwise={mode === 'MANUAL' ? () => startStepwiseNode(selectedExecutionNodeRun) : undefined}
       />
     : undefined;
   const nodeConfigurationPanel = selectedNode
-    ? <NodeConsole run={categorizedRun} node={selectedNode} startupMode={mode === 'DIRECT' ? 'CHAT' : 'PROMPT'} stepwiseDraft={mode === 'MANUAL' ? selectedStepwiseDraft : undefined} initialBindings={inheritedTransitionBindings} recordControl={mode === 'MANUAL' && selectedStepwise ? <StepwiseRecordLaunchBar node={selectedNode} draft={selectedStepwiseDraft} busy={Boolean(manualBusyId)} onStart={() => { if (selectedNodeKey && selectedStepwiseDraft) startStepwiseDraft(selectedNodeKey, selectedStepwiseDraft); }}/> : undefined} refresh={() => { void stepwiseDetail.refetch(); }} onActivated={created => { setSelectedNodeKey(undefined); navigate(created, 'activate'); }} onDraftSaved={draft => { if (!selectedStepwise || !selectedNodeKey) return; qc.setQueryData<FlowRunStepwiseRecord>(['flow-run-stepwise-record', parentRun.id, selectedStepwise.id], current => current ? { ...current, stepwise_node_drafts: { ...(current.stepwise_node_drafts ?? {}), [selectedNodeKey]: draft } } : current); }} onSelectExecution={item => { setSelectedNodeKey(item.flow_node_snapshot_key); selectExecution(item.id, item.attempts.at(-1)?.id); }}/>
+    ? <NodeConsole run={categorizedRun} node={selectedNode} startupMode={mode === 'DIRECT' ? 'CHAT' : 'PROMPT'} stepwiseDraft={mode === 'MANUAL' ? selectedStepwiseDraft : undefined} initialBindings={inheritedTransitionBindings} refresh={() => { void stepwiseDetail.refetch(); }} onActivated={created => { setSelectedNodeKey(undefined); navigate(created, 'activate'); }} onDraftSaved={draft => { if (!selectedStepwise || !selectedNodeKey) return; qc.setQueryData<FlowRunStepwiseRecord>(['flow-run-stepwise-record', parentRun.id, selectedStepwise.id], current => current ? { ...current, stepwise_node_drafts: { ...(current.stepwise_node_drafts ?? {}), [selectedNodeKey]: draft } } : current); }} onSelectExecution={item => { setSelectedNodeKey(item.flow_node_snapshot_key); selectExecution(item.id, item.attempts.at(-1)?.id); }}/>
     : undefined;
   const stepwiseRecordPanel = executionDetailPanel
     ?? nodeConfigurationPanel
@@ -2196,6 +2201,7 @@ export function WorkbenchPage() {
     manualBusyId={manualBusyId}
     selectedAutomaticId={selectedAutomaticId}
     automaticBusyId={automaticBusyId}
+    stepwiseLaunch={stepwiseLaunch}
     onModeChange={next => { setMode(next); clearSelection(); }}
     onSelect={selectHistory}
     onSelectManualRecord={selectStepwiseRecord}
