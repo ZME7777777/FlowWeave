@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 from dataclasses import replace
@@ -55,6 +56,7 @@ from flowweave.runtime.base import (
     StartAttemptRequest,
 )
 from flowweave.runtime.openhands import OpenHandsRuntime
+from flowweave.runtime.read_budget import hydration_read_budget
 from flowweave.runtime.request import build_runtime_request
 from flowweave.shared.errors import DomainError
 from flowweave.shared.infrastructure import docker_controller as docker_controller_module
@@ -6222,6 +6224,65 @@ def test_formal_reads_are_isolated_by_generation_and_preserve_one_peer_slot(
     assert "flowweave_runtime_formal_read_active 0" in rendered
     assert "flowweave_runtime_formal_read_capacity 4" in rendered
     assert "flowweave_runtime_formal_read_generations 2" in rendered
+
+
+def test_reload_reserves_same_generation_formal_read_slot(openhands_settings, monkeypatch):
+    runtime = OpenHandsRuntime(
+        openhands_settings.model_copy(
+            update={
+                "runtime_read_per_runtime_concurrency": 1,
+                "runtime_read_slot_timeout_seconds": 0.02,
+            }
+        )
+    )
+    handle = _handle()
+    started = Event()
+    release = Event()
+    monkeypatch.setattr(runtime, "_base_url_for_handle", lambda _handle: "http://runtime:8000")
+
+    def blocked_reload(_handle, *, expected=None):
+        started.set()
+        assert release.wait(timeout=1)
+        return None
+
+    monkeypatch.setattr(runtime, "_reload_conversation", blocked_reload)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(runtime.reload_conversation, handle)
+        assert started.wait(timeout=1)
+        try:
+            with pytest.raises(DomainError) as caught:
+                with runtime._formal_read_bulkhead(handle):  # pyright: ignore[reportPrivateUsage]
+                    pass
+            assert caught.value.code == "RUNTIME_READ_PER_RUNTIME_SATURATED"
+        finally:
+            release.set()
+        future.result(timeout=1)
+
+
+def test_hydration_deadline_is_shared_by_successive_native_requests(
+    openhands_settings, monkeypatch
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    timeouts: list[float] = []
+
+    class SlowClient:
+        def request(self, method, url, **kwargs):
+            timeouts.append(kwargs["timeout"])
+            time.sleep(0.05 if len(timeouts) == 1 else 0.12)
+            return httpx.Response(200, json={}, request=httpx.Request(method, url))
+
+    monkeypatch.setattr(runtime, "_transport", lambda: SimpleNamespace(regular=SlowClient()))
+    with hydration_read_budget(0.15):
+        runtime._request(  # pyright: ignore[reportPrivateUsage]
+            "GET", "/first", base_url="http://runtime:8000", session_api_key="test"
+        )
+        with pytest.raises(DomainError) as caught:
+            runtime._request(  # pyright: ignore[reportPrivateUsage]
+                "GET", "/second", base_url="http://runtime:8000", session_api_key="test"
+            )
+    assert caught.value.code == "RUNTIME_BUSINESS_READ_TIMEOUT"
+    assert len(timeouts) == 2
+    assert 0 < timeouts[1] < timeouts[0] <= 0.15
 
 
 def test_formal_reads_are_bounded_per_runtime_generation(openhands_settings, monkeypatch):

@@ -29,6 +29,7 @@ from flowweave.modules.agent_workspaces.application import work_directories, wor
 from flowweave.modules.environments import public as environments
 from flowweave.modules.users.application.security import current_principal
 from flowweave.runtime.dependencies import runtime_context
+from flowweave.runtime.read_budget import hydration_response_budget
 from flowweave.runtime.routing import runtime_for
 from flowweave.shared.errors import DomainError
 from flowweave.shared.http import (
@@ -42,6 +43,8 @@ from flowweave.shared.http import (
     run_blocking_auxiliary,
     run_blocking_control,
     run_blocking_history,
+    run_blocking_hydration,
+    run_blocking_message,
     run_blocking_mutation,
     run_sync,
     run_terminal_control,
@@ -719,7 +722,7 @@ async def create_agent_conversation(
             "首条消息必须携带幂等请求标识",
             422,
         )
-    return await run_blocking_mutation(
+    return await run_blocking_message(
         container,
         lambda session: conversations.bootstrap_conversation(
             session,
@@ -1026,19 +1029,22 @@ async def agent_conversation_hydration(
         cached = await container.conversation_hydration_cache.get_current_for_scope(scope)
         if cached is not None:
             return cached
-        key = await run_blocking(
-            container,
-            lambda session: conversations.conversation_cache_key(session, workspace_id, binding_id),
-        )
-        return await container.conversation_hydration_cache.get_or_load(
-            key,
-            lambda: run_blocking(
+        async with hydration_response_budget(container.settings.hydration_read_timeout_seconds):
+            key = await run_blocking_hydration(
                 container,
-                lambda session: conversations.hydrate_conversation(
+                lambda session: conversations.conversation_cache_key(
                     session, workspace_id, binding_id
                 ),
-            ),
-        )
+            )
+            return await container.conversation_hydration_cache.get_or_load(
+                key,
+                lambda: run_blocking_hydration(
+                    container,
+                    lambda session: conversations.hydrate_conversation(
+                        session, workspace_id, binding_id
+                    ),
+                ),
+            )
     except DomainError as exc:
         if exc.code not in {
             "EXECUTOR_UNAVAILABLE",
@@ -1124,7 +1130,7 @@ async def agent_message(
             ),
         )[1],
     )
-    running_result = await run_blocking_mutation(
+    running_result = await run_blocking_message(
         container, lambda _session: conversations.dispatch_running_message(prepared)
     )
     if running_result is not None:
@@ -1134,7 +1140,7 @@ async def agent_message(
                 session, prepared, running_result
             ),
         )
-    return await run_blocking_mutation(
+    return await run_blocking_message(
         container,
         lambda session: conversations.message(
             session,
@@ -1448,7 +1454,7 @@ async def agent_rerun_edited_message(
     payload: AgentMessageWrite,
     container: ContainerDep,
 ) -> dict[str, Any]:
-    return await run_blocking_mutation(
+    return await run_blocking_message(
         container,
         lambda session: conversations.rewrite_message(
             session,

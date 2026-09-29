@@ -25,7 +25,7 @@ def _environment(
         "BLOCKING_POOL_SIZE": str(blocking_pool_size),
         "HISTORY_READ_POOL_SIZE": str(history_pool_size),
         "RUNTIME_POLL_WORKER_CONCURRENCY": str(poll_pool_size),
-        "POSTGRES_CONNECTION_LIMIT": "100",
+        "POSTGRES_CONNECTION_LIMIT": "120",
         "DATABASE_CONNECTION_RESERVE": "20",
     }
 
@@ -34,9 +34,10 @@ def _document() -> dict[str, Any]:
     return {
         "services": {
             "runtime-provider": {"environment": {}},
+            "postgres": {"command": ["postgres", "-c", "max_connections=120"]},
             "api": {
                 "command": ["uvicorn", "app", "--workers", "4"],
-                "environment": _environment(4, 3, 1),
+                "environment": _environment(4, 8, 1),
             },
             "stream-api": {
                 "command": ["uvicorn", "app", "--workers", "4"],
@@ -52,7 +53,11 @@ def test_compose_capacity_check_accepts_reserved_connection_budget() -> None:
 
 
 def _increase_api_blocking_pool(document: dict[str, Any]) -> None:
-    document["services"]["api"]["environment"]["BLOCKING_POOL_SIZE"] = "7"
+    document["services"]["api"]["environment"]["BLOCKING_POOL_SIZE"] = "12"
+
+
+def _mismatch_postgres_connection_limit(document: dict[str, Any]) -> None:
+    document["services"]["postgres"]["command"][-1] = "max_connections=100"
 
 
 def _enable_pool_overflow(document: dict[str, Any]) -> None:
@@ -69,6 +74,7 @@ def _leak_database_url_to_runtime_provider(document: dict[str, Any]) -> None:
     ("mutate", "message"),
     (
         (_increase_api_blocking_pool, "exceeds budget"),
+        (_mismatch_postgres_connection_limit, "does not match"),
         (_enable_pool_overflow, "must be 0"),
         (_leak_database_url_to_runtime_provider, "must not receive DATABASE_URL"),
     ),

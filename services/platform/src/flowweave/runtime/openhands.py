@@ -64,6 +64,7 @@ from flowweave.runtime.base import (
 )
 from flowweave.runtime.contract import OPTIONAL_HTTP_OPERATIONS
 from flowweave.runtime.model_catalog import declared_context_window
+from flowweave.runtime.read_budget import hydration_time_left
 from flowweave.shared.errors import DomainError
 from flowweave.shared.infrastructure.docker_controller import (
     DockerControllerClient,
@@ -780,6 +781,9 @@ class OpenHandsRuntime:
         started_at = time.monotonic()
         outcome = "error"
         try:
+            remaining = hydration_time_left()
+            if remaining is not None:
+                kwargs["timeout"] = min(float(kwargs.get("timeout", 30.0)), remaining)
             client = self._transport().background if background else self._transport().regular
             response = client.request(
                 method,
@@ -787,6 +791,7 @@ class OpenHandsRuntime:
                 headers={"X-Session-API-Key": session_api_key},
                 **kwargs,
             )
+            hydration_time_left()
             if missing_ok and response.status_code == 404:
                 return {"_flowweave_missing": True}
             response.raise_for_status()
@@ -2282,7 +2287,12 @@ class OpenHandsRuntime:
                     self.settings.runtime_read_per_runtime_concurrency
                 )
                 self._formal_read_slots[key] = slot
-        if not slot.acquire(timeout=self.settings.runtime_read_slot_timeout_seconds):
+        remaining = hydration_time_left()
+        slot_timeout = self.settings.runtime_read_slot_timeout_seconds
+        if remaining is not None:
+            slot_timeout = min(slot_timeout, remaining)
+        if not slot.acquire(timeout=slot_timeout):
+            hydration_time_left()
             if metrics := current_metrics():
                 metrics.increment("flowweave_runtime_read_bulkhead_saturated_total")
             self._record_formal_read_bulkhead_metrics()
@@ -2532,6 +2542,15 @@ class OpenHandsRuntime:
     ) -> RuntimeConversationIdentity:
         """Hydrate one persisted Conversation by its original OpenHands identity."""
 
+        with self._formal_read_bulkhead(handle):
+            return self._reload_conversation(handle, expected=expected)
+
+    def _reload_conversation(
+        self,
+        handle: RuntimeHandle,
+        *,
+        expected: RuntimeConversationIdentity | None = None,
+    ) -> RuntimeConversationIdentity:
         if expected is not None and expected.conversation_id != handle.conversation_id:
             raise DomainError(
                 "RUNTIME_RELOAD_IDENTITY_MISMATCH",

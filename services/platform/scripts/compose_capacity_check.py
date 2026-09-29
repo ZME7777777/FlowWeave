@@ -33,6 +33,28 @@ def integer(values: dict[str, str], name: str, service: str, *, minimum: int) ->
     return value
 
 
+def postgres_connection_limit(service: dict[str, Any]) -> int:
+    command = service.get("command", [])
+    if not isinstance(command, list):
+        fail("postgres command must be a list")
+    arguments = [str(value) for value in command]
+    try:
+        option = arguments.index("-c")
+        setting = arguments[option + 1]
+    except (ValueError, IndexError):
+        fail("postgres command must set max_connections")
+    prefix = "max_connections="
+    if not setting.startswith(prefix):
+        fail("postgres command must set max_connections")
+    try:
+        limit = int(setting.removeprefix(prefix))
+    except ValueError:
+        limit = 0
+    if limit < 1:
+        fail("postgres max_connections must be a positive integer")
+    return limit
+
+
 def worker_processes(service: dict[str, Any], name: str) -> int:
     command = service.get("command", [])
     if not isinstance(command, list):
@@ -75,6 +97,7 @@ def check_document(document: dict[str, Any]) -> None:
     runtime_provider = mapping(services["runtime-provider"], "runtime-provider")
     if "DATABASE_URL" in environment(runtime_provider, "runtime-provider"):
         fail("runtime-provider must not receive DATABASE_URL")
+    postgres_limit = postgres_connection_limit(mapping(services.get("postgres"), "postgres"))
 
     total = 0
     limits: set[int] = set()
@@ -91,6 +114,11 @@ def check_document(document: dict[str, Any]) -> None:
         fail("api, stream-api, and worker must declare the same database budget")
     limit = limits.pop()
     reserve = reserves.pop()
+    if limit != postgres_limit:
+        fail(
+            "POSTGRES_CONNECTION_LIMIT "
+            f"{limit} does not match postgres max_connections {postgres_limit}"
+        )
     if reserve >= limit:
         fail("DATABASE_CONNECTION_RESERVE must be smaller than POSTGRES_CONNECTION_LIMIT")
     if total > limit - reserve:

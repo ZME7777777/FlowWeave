@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`IN PROGRESS`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`FR-555B`
+> 下一可执行切片：`FR-555B2B`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -7689,8 +7689,32 @@ FR-541B 完成：Agent Workspace 的文件树、文件预览、Git 仓库发现�
 
 验收：新增 10 项真实 ConversationService／EventService 入口的故障注入回归覆盖 live／reloaded 会话：阻塞后台搜索与统计、生命周期插件加载或发送池时，分别验证正式窗口／单事件／详情、发送／暂停及纯持久读取的独立容量；修改前固定源码 10 项失败，修改后源码与安全解包后的归档各 10 项通过。夹具关闭自动标题，避免外部模型调用。扩大到事件服务／会话服务／回收／lease／事件路由共 285 项，274 passed、11 failed；全部 11 项失败已在未修改的固定源码复现（10 项既有自动标题 mock 与 1 项 pause/hydration 竞态），本次无新增失败。受影响 OpenHands 文件 Ruff／PEP8／Pyright、平台身份文件 Ruff／格式和 AST、归档 digest／四包布局／身份一致性、唯一 Alembic head `0136_merge_activity_search`、git diff --check 与 staged diff 复核通过。完整 pre-commit 的动态属性全局门禁被既有 `openhands-sdk/build/lib` 生成物阻断，未删除生成物或记为通过；原有 contract_check.py 的 58 条 E402 Ruff 提示与修改前完全一致。本轮未构建 Runtime 镜像、未做线上负载／浏览器 E2E、未部署；线程池隔离不保证同会话锁等待、平台排队或端到端超时已解决。
 
-### FR-555B 平台交互通道与 hydration 全链路预算 — READY
+### FR-555B1 首屏 hydration 保留通道与全链路预算 — DONE
 
 依赖：FR-555A。
 
-目标：在显式数据库连接预算内分离首屏／实时事件、消息写入、慢变更和后台 Context／历史通道；将 reload 纳入正式读取并发限制与端到端 deadline，避免浏览器已取消但后端长期持槽。实现前审计取消、同 binding 单飞及 Agent Workspace／FlowRun node 两类宿主的调用链，保留真实执行结束才释放容量的约束。依据真实队列与调用耗时校准预算，不以单纯延长浏览器超时或无限扩池代替修复。
+完成：截图中约 11.88 秒的取消来自浏览器 `AgentSessionWorkbench` 的 12 秒 hydration watchdog；在约 120ms 的请求启动延迟后，它会中止等待，但不会中止已经运行的 Python 线程或 OpenHands HTTP 调用。此前两类宿主都先 `reload_conversation()` 再读取 active events，且与普通同步交互共用 blocking executor／SQL pool，没有共同端到端 deadline；因此页面已放弃等待时，旧请求仍可继续占用线程和数据库容量，继而挤压新的首屏请求。
+
+B1 初始将既有默认 `BLOCKING_POOL_SIZE=4` 逻辑分为 2 个首屏 hydration 保留线程／SQL 连接和 2 个普通同步交互容量；总 PostgreSQL blocking 预算不增加，两个 SQL pool 都禁止 overflow。后续容量调整已将默认 blocking 预算提升至 8，详见 B2A 的容量调整记录。`stream-api` 保持单一 blocking capacity，worker 不创建 hydration lane。两种宿主的 cache key 查询与正式 hydration load 都走保留通道；`reload_conversation()` 也纳入 OpenHands generation-scoped formal-read bulkhead，并与 active-event read 重入共用同一 generation slot。
+
+首屏请求获得 10 秒共享后端预算，覆盖 cache-key SQL、reload、active-event read 及其 OpenHands HTTP 子请求；HTTP timeout 和 formal-read 入场等待均取剩余预算。API 外层到期即返回标准 Runtime unavailable 响应，给浏览器的 12 秒 watchdog 保留余量。取消或 deadline 不会虚假释放已经提交的线程／HTTP 操作，其线程和数据库槽位只在实际操作结束后释放，避免超过真实容量；这项行为由回归覆盖。该切片不改消息写、慢变更和后台 Context／历史的通道划分。
+
+验收：`tests/test_http.py`、`tests/test_hydration_runtime_unavailable.py`、`tests/test_openhands.py` 的 hydration／reload／取消筛选共 `15 passed, 208 deselected`；覆盖普通 read 阻塞时首屏保留容量、两种宿主的共享预算与超时映射、取消后真实 completion 才释放容量、reload 的 formal-read 限制、递减 HTTP 剩余预算及 SQL pool 总容量不变。受影响 Ruff、`py_compile`、`git diff --check` 和唯一 Alembic head `0136_merge_activity_search` 通过。扩大筛选时一个无关 slow-request 测试在断言前被本机缺失 Docker socket 的全局 Testcontainers fixture 阻断，未记为通过；未运行浏览器 E2E、Runtime 负载或远端部署。
+
+### FR-555B2A 消息派发保留通道 — DONE
+
+依赖：FR-555B1。
+
+完成：审计确认常规消息、首条 bootstrap 消息和消息重发先前都与模型切换、capability／凭据同步、fork、会话删除及附件等慢 mutation 共享 admission slot 和 blocking SQL pool；一个被 OpenHands 或文件 I/O 拖慢的 mutation 可延迟高频用户消息。API 默认既有 4 个 blocking 容量现分为 2 个 hydration、1 个消息派发和 1 个普通同步交互／慢 mutation 容量。消息线程和 SQL pool 都独立且不允许 overflow，普通 blocking pool 相应缩小，因此 PostgreSQL 总 blocking 连接预算仍为 4。单槽 `stream-api` 和 Worker 保留现有单一通道，不创建没有容量余量的 message pool。
+
+Agent Workspace 与 FlowRun node 两种宿主的首条 bootstrap、常规消息、运行中派发和重发入口均改用消息 lane；消息完成前仍保留既有预处理／收口事务、正式 event identity 与同会话 Runtime 约束。其他 mutation 暂留普通 lane，消息 lane 饱和时返回明确 `RUNTIME_MESSAGE_SATURATED`，且被取消的实际线程仍只在完成后归还容量。
+
+验收：`tests/test_http.py` 的 hydration／message／取消筛选 `7 passed, 3 deselected`，覆盖 SQL pool 总容量守恒、慢 mutation 期间消息可立即派发、以及两种宿主三个消息触发点均走 message lane；受影响 Ruff 和 `py_compile` 通过。该切片未运行 Runtime 负载、浏览器 E2E 或远端部署。
+
+容量调整（2026-09-29）：按请求将默认 `API_BLOCKING_POOL_SIZE` 提升至 8。每个 API worker 为 2 hydration、1 message、5 普通同步交互／慢 mutation；四个 API worker 加 stream-api 和 Worker 的稳态连接预算为 88。PostgreSQL 容器现在以 `max_connections=120` 启动，`POSTGRES_CONNECTION_LIMIT=120` 与启动参数由容量检查强制一致，并继续保留 20 条连接余量。此项调整扩大普通 lane，未改变 hydration／message 的保留数量、无 overflow 约束或 `stream-api`／Worker 的默认 blocking 配额。
+
+### FR-555B2B 慢变更与后台通道分离 — READY
+
+依赖：FR-555B2A。
+
+目标：继续审计模型／能力／凭据／fork／删除等慢生命周期 mutation，以及 Context／历史恢复和后台任务的队列、取消和实际 completion 释放语义；在不扩张 PostgreSQL 连接预算的前提下，将低频、无需快速响应的工作放入独立有界通道，并为两类宿主保留一致的 deadline、单飞和错误映射约束。依据实际调用链和负载数据决定容量，不以延长浏览器超时或无限扩池替代隔离。

@@ -22,6 +22,7 @@ from flowweave.modules.users.application.security import (
     tenant_bypass,
     tenant_user,
 )
+from flowweave.runtime.read_budget import hydration_time_left
 from flowweave.shared.application.transactions import (
     mark_uow_owned,
     run_commit_actions,
@@ -121,7 +122,7 @@ async def run_blocking(container: Container, operation: Callable[[Session], T]) 
         saturation_code="RUNTIME_READ_SATURATED",
         saturation_message="Agent Runtime reads are busy; retry shortly",
         lane_name="read",
-        active_limit=container.settings.blocking_pool_size,
+        active_limit=getattr(container, "blocking_capacity", container.settings.blocking_pool_size),
     )
 
 
@@ -138,7 +139,50 @@ async def run_blocking_mutation(container: Container, operation: Callable[[Sessi
         saturation_code="RUNTIME_MUTATION_SATURATED",
         saturation_message="Agent Runtime writes are busy; retry shortly",
         lane_name="mutation",
-        active_limit=min(2, max(1, container.settings.blocking_pool_size // 2)),
+        active_limit=min(2, max(1, container.blocking_capacity // 2))
+        if hasattr(container, "blocking_capacity")
+        else min(2, max(1, container.settings.blocking_pool_size // 2)),
+    )
+
+
+async def run_blocking_message(container: Container, operation: Callable[[Session], T]) -> T:
+    """Run latency-sensitive user message delivery on its reserved API lane."""
+
+    sessions = container.database.message_sessions or container.database.blocking_sessions
+    return await _run_blocking_lane(
+        container,
+        operation,
+        executor=container.message_executor,
+        slots=container.message_io_slots,
+        session_factory=sessions,
+        saturation_code="RUNTIME_MESSAGE_SATURATED",
+        saturation_message="Agent message delivery is busy; retry shortly",
+        lane_name="message",
+        active_limit=container.message_capacity or container.blocking_capacity,
+    )
+
+
+async def run_blocking_hydration(container: Container, operation: Callable[[Session], T]) -> T:
+    """Give cache-key lookup and formal first-screen reads reserved API capacity."""
+
+    def within_budget(session: Session) -> T:
+        hydration_time_left()
+        result = operation(session)
+        hydration_time_left()
+        return result
+
+    sessions = container.database.hydration_sessions or container.database.blocking_sessions
+    return await _run_blocking_lane(
+        container,
+        within_budget,
+        executor=container.hydration_executor,
+        slots=container.hydration_io_slots,
+        session_factory=sessions,
+        saturation_code="RUNTIME_READ_SATURATED",
+        saturation_message="Agent Runtime first-screen reads are busy; retry shortly",
+        lane_name="hydration",
+        active_limit=container.hydration_capacity or container.blocking_capacity,
+        wait_timeout=hydration_time_left(),
     )
 
 
@@ -287,6 +331,7 @@ async def _run_blocking_lane(
     lane_name: str,
     active_limit: int,
     admission_slots: asyncio.Semaphore | None = None,
+    wait_timeout: float | None = None,
 ) -> T:
     admitted = False
     try:
@@ -301,11 +346,16 @@ async def _run_blocking_lane(
         # BLOCKING_POOL_TIMEOUT_SECONDS and turned normal short reads into
         # misleading 503 saturation responses.
         await asyncio.wait_for(
-            slots.acquire(), timeout=container.settings.blocking_pool_timeout_seconds
+            slots.acquire(),
+            timeout=min(container.settings.blocking_pool_timeout_seconds, wait_timeout)
+            if wait_timeout is not None
+            else container.settings.blocking_pool_timeout_seconds,
         )
     except TimeoutError as exc:
         if admitted and admission_slots is not None:
             admission_slots.release()
+        if wait_timeout is not None:
+            hydration_time_left()
         logger.warning(
             "blocking Runtime %s pool saturated active_limit=%d",
             lane_name,

@@ -44,7 +44,7 @@ x-platform-env: &platform-env
   RUNTIME_POLL_WORKER_CONCURRENCY: ${RUNTIME_POLL_WORKER_CONCURRENCY:-2}
   # The capacity check reserves this margin from PostgreSQL's configured
   # maximum. It is a deployment invariant, not a request-time retry limit.
-  POSTGRES_CONNECTION_LIMIT: ${POSTGRES_CONNECTION_LIMIT:-100}
+  POSTGRES_CONNECTION_LIMIT: ${POSTGRES_CONNECTION_LIMIT:-120}
   DATABASE_CONNECTION_RESERVE: ${DATABASE_CONNECTION_RESERVE:-20}
   SSE_MAX_SUBSCRIBERS: ${SSE_MAX_SUBSCRIBERS:-256}
   SSE_SUBSCRIBER_QUEUE_SIZE: ${SSE_SUBSCRIBER_QUEUE_SIZE:-8}
@@ -98,6 +98,7 @@ services:
   postgres:
     image: flowweave-postgres:16.9-amd64
     build: { context: .., dockerfile: infra/postgres/Dockerfile }
+    command: ["postgres", "-c", "max_connections=${POSTGRES_CONNECTION_LIMIT:-120}"]
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-flowweave}
       POSTGRES_USER: ${POSTGRES_USER:-flowweave}
@@ -211,12 +212,13 @@ services:
     command: ["uvicorn", "flowweave.bootstrap.api:create_app", "--host", "0.0.0.0", "--port", "8080", "--factory", "--workers", "4"]
     environment:
       <<: [*platform-env, *docker-client-env]
-      # 4 workers × (4 async + 4 interactive + 1 history + 1 control) = 40.
-      # The guarded deployment target is 4 interactive reads per API worker.
+      # 4 workers × (4 async + 2 hydration + 1 message + 5 other interactive +
+      # 1 history + 1 control) = 56. Hydration and message dispatch are carved
+      # from the eight-slot blocking budget, not extra PostgreSQL connections.
       POOL_SIZE: ${API_POOL_SIZE:-4}
       POOL_MAX_OVERFLOW: 0
       DATABASE_POOL_TIMEOUT_SECONDS: 2
-      BLOCKING_POOL_SIZE: ${API_BLOCKING_POOL_SIZE:-4}
+      BLOCKING_POOL_SIZE: ${API_BLOCKING_POOL_SIZE:-8}
       HISTORY_READ_POOL_SIZE: ${API_HISTORY_READ_POOL_SIZE:-1}
       BLOCKING_POOL_TIMEOUT_SECONDS: 2
       DOCKER_CONTROLLER_API_KEY: ${DOCKER_CONTROLLER_API_KEY:?set a random API controller key with at least 32 characters}
@@ -300,9 +302,9 @@ services:
     environment:
       <<: [*platform-env, *docker-client-env]
       # One Worker process: 4 async + 4 control/read + 1 poll + 1 history
-      # + 1 recovery control = 11. API + stream-api + worker steady state is
-      # 71 connections, leaving at least the configured 20-connection
-      # PostgreSQL reserve at the default.
+      # + 1 recovery control = 12. API + stream-api + worker steady state is
+      # 88 connections, leaving the configured 20-connection PostgreSQL
+      # reserve within the default 120-connection maximum.
       POOL_SIZE: ${WORKER_POOL_SIZE:-4}
       POOL_MAX_OVERFLOW: 0
       DATABASE_POOL_TIMEOUT_SECONDS: 2

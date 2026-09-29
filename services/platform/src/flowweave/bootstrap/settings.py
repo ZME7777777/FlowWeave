@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     database_pool_timeout_seconds: float = Field(default=2.0, gt=0, le=30)
     blocking_pool_size: int = Field(default=4, ge=1, le=16)
     blocking_pool_timeout_seconds: float = Field(default=2.0, gt=0, le=30)
+    hydration_read_timeout_seconds: float = Field(default=10.0, gt=0, le=14)
     # Older conversation pages are best-effort browser prefetch. Keep them on
     # a separate, deliberately tiny lane so they cannot consume the Runtime
     # state-read connections that restore a live conversation after reload.
