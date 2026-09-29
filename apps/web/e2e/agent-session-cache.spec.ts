@@ -99,6 +99,7 @@ test('Accepted message reconciles its formal event without a second submission o
   let messageAccepted = false;
   let formalMessageVisible = false;
   let eventReadsAfterAcceptance = 0;
+  let readinessReads = 0;
   let releaseMessageAcceptance: (() => void) | undefined;
   const messageAcceptance = new Promise<void>(resolve => { releaseMessageAcceptance = resolve; });
   const workspace = { id: 'stale-monitoring-workspace', display_name: '陈旧监控工作区', desired_state: 'RUNNING', updated_at: now };
@@ -108,12 +109,13 @@ test('Accepted message reconciles its formal event without a second submission o
   };
   const staleMonitoring = {
     last_event_id: 'prior-turn', last_event_type: 'MESSAGE', last_event_at: '2026-09-12T09:28:00Z',
-    seconds_since_event: 90, stale_after_seconds: 60, possibly_stuck: true, subagent_count: 0, active_subagents: [],
+    seconds_since_event: 90, stale_after_seconds: 60, possibly_stuck: false, subagent_count: 0, active_subagents: [],
   };
   const events = () => [
     { id: 'prior-turn', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '上一轮请求', timestamp: '2026-09-12T09:28:00Z' } },
+    { id: 'prior-reply', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'prior-turn', content: '上一轮已完成', timestamp: '2026-09-12T09:29:00Z' } },
     ...(formalMessageVisible ? [
-      { id: 'accepted-message', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'prior-turn', content: '刚发送的消息', timestamp: now } },
+      { id: 'accepted-message', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'prior-reply', content: '刚发送的消息', timestamp: now } },
       { id: 'accepted-error', event_type: 'ERROR', payload: { source: 'agent', parent_id: 'accepted-message', content: '模型服务暂不可用。', timestamp: now } },
     ] : []),
   ];
@@ -139,15 +141,18 @@ test('Accepted message reconciles its formal event without a second submission o
     if (path.endsWith('/events')) {
       if (messageAccepted) {
         eventReadsAfterAcceptance += 1;
-        if (eventReadsAfterAcceptance >= 2) formalMessageVisible = true;
+        if (eventReadsAfterAcceptance >= 15) formalMessageVisible = true;
       }
       return json(route, {
         events: events(), next_cursor: formalMessageVisible ? 'accepted-message' : 'prior-turn', history_cursor: null, monitoring: staleMonitoring,
       });
     }
-    if (path.endsWith('/input-readiness')) return json(route, {
-      ready: !messageAccepted, execution_status: messageAccepted ? 'running' : 'idle',
-    });
+    if (path.endsWith('/input-readiness')) {
+      readinessReads += 1;
+      // Model the stale terminal snapshot that can remain readable while the
+      // accepted user event has not yet reached the formal event window.
+      return json(route, { ready: true, execution_status: 'idle' });
+    }
     if (path.endsWith('/messages') && request.method() === 'POST') {
       await messageAcceptance;
       messageAccepted = true;
@@ -185,6 +190,14 @@ test('Accepted message reconciles its formal event without a second submission o
   releaseMessageAcceptance?.();
   await expect.poll(() => messageAccepted).toBe(true);
   await expect.poll(() => eventReadsAfterAcceptance).toBeGreaterThanOrEqual(2);
+  // The preceding formal turn is complete and readiness is still stale idle,
+  // but this accepted submission has not appeared in the event window yet.
+  // It must retain the current turn's interrupt control until formal identity
+  // catches up; otherwise the UI falsely offers a second send.
+  await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '发送消息' })).toHaveCount(0);
+  expect(readinessReads).toBeGreaterThan(0);
+  await expect.poll(() => formalMessageVisible).toBe(true);
   await expect(localMessage).toHaveCount(1);
   await expect(page.locator('[aria-label="原始错误详情"]')).toContainText('模型服务暂不可用。');
 });
