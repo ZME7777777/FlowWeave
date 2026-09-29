@@ -94,10 +94,11 @@ test('Agent session hydrates the first screen without parallel Runtime snapshot 
 });
 
 
-test('Accepted message renders a local bubble before its formal event arrives', async ({ page }) => {
+test('Accepted message reconciles its formal event without a second submission or reload', async ({ page }) => {
   let authenticated = false;
   let messageAccepted = false;
   let formalMessageVisible = false;
+  let eventReadsAfterAcceptance = 0;
   let releaseMessageAcceptance: (() => void) | undefined;
   const messageAcceptance = new Promise<void>(resolve => { releaseMessageAcceptance = resolve; });
   const workspace = { id: 'stale-monitoring-workspace', display_name: '陈旧监控工作区', desired_state: 'RUNNING', updated_at: now };
@@ -111,7 +112,10 @@ test('Accepted message renders a local bubble before its formal event arrives', 
   };
   const events = () => [
     { id: 'prior-turn', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '上一轮请求', timestamp: '2026-09-12T09:28:00Z' } },
-    ...(formalMessageVisible ? [{ id: 'accepted-message', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'prior-turn', content: '刚发送的消息', timestamp: now } }] : []),
+    ...(formalMessageVisible ? [
+      { id: 'accepted-message', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'prior-turn', content: '刚发送的消息', timestamp: now } },
+      { id: 'accepted-error', event_type: 'ERROR', payload: { source: 'agent', parent_id: 'accepted-message', content: '模型服务暂不可用。', timestamp: now } },
+    ] : []),
   ];
 
   await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
@@ -132,9 +136,15 @@ test('Accepted message renders a local bubble before its formal event arrives', 
       context: { model_name: 'test-model', window_tokens: 128_000, used_tokens: 0, usage_current: true },
       readiness: { ready: !messageAccepted, execution_status: messageAccepted ? 'running' : 'idle' },
     });
-    if (path.endsWith('/events')) return json(route, {
-      events: events(), next_cursor: null, history_cursor: null, monitoring: staleMonitoring,
-    });
+    if (path.endsWith('/events')) {
+      if (messageAccepted) {
+        eventReadsAfterAcceptance += 1;
+        if (eventReadsAfterAcceptance >= 2) formalMessageVisible = true;
+      }
+      return json(route, {
+        events: events(), next_cursor: formalMessageVisible ? 'accepted-message' : 'prior-turn', history_cursor: null, monitoring: staleMonitoring,
+      });
+    }
     if (path.endsWith('/input-readiness')) return json(route, {
       ready: !messageAccepted, execution_status: messageAccepted ? 'running' : 'idle',
     });
@@ -171,14 +181,12 @@ test('Accepted message renders a local bubble before its formal event arrives', 
   await expect(page.locator('[data-user-event-id="accepted-message"]')).toHaveCount(0);
   await expect(page.getByText('正在提交消息', { exact: true })).toBeVisible();
   await expect(page.getByText('工作过程', { exact: true })).toHaveCount(0);
-  await expect(page.getByRole('img', { name: '会话正在运行但后台长时间未产生可确认进展' })).toHaveCount(0);
 
   releaseMessageAcceptance?.();
   await expect.poll(() => messageAccepted).toBe(true);
-  formalMessageVisible = true;
-  await page.reload();
-  await expect(page.locator('[data-user-event-id="accepted-message"]')).toHaveCount(1);
-  await expect(page.getByText('后台长时间未产生可确认进展。可暂停后继续以重新建立调用。', { exact: true })).toBeVisible();
+  await expect.poll(() => eventReadsAfterAcceptance).toBeGreaterThanOrEqual(2);
+  await expect(localMessage).toHaveCount(1);
+  await expect(page.locator('[aria-label="原始错误详情"]')).toContainText('模型服务暂不可用。');
 });
 
 
@@ -2730,6 +2738,7 @@ test('Opening an unread conversation keeps it read when an older list request fi
 
 test('Conversation sidebar pins locally, orders activity, and reveals the selected source row', async ({ page }) => {
   let authenticated = false;
+  let runningConversationPossiblyStuck = true;
   const workspace = { id: 'sidebar-workspace', display_name: '侧栏工作区', desired_state: 'RUNNING', updated_at: now };
   const directory = {
     id: 'sidebar-directory', display_name: '归属工作区',
@@ -2778,7 +2787,7 @@ test('Conversation sidebar pins locally, orders activity, and reveals the select
     if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
     if (path.endsWith('/conversation-activity')) return json(route, {
       running_binding_ids: ['sidebar-directory-running'],
-      possibly_stuck_binding_ids: ['sidebar-directory-running'],
+      possibly_stuck_binding_ids: runningConversationPossiblyStuck ? ['sidebar-directory-running'] : [],
       failed_binding_ids: ['sidebar-root-unread'],
     });
     if (path.endsWith('/unread') && request.method() === 'PUT') {
@@ -2847,9 +2856,10 @@ test('Conversation sidebar pins locally, orders activity, and reveals the select
   await expect(acknowledgeAlert).toHaveCount(0);
   await expect.poll(() => unreadWrites).toEqual([{ id: 'sidebar-root-unread', unread: false }]);
   const runningRowInWorkspaceList = page.locator('[data-conversation-binding-id="sidebar-directory-running"]');
-  const runningAlertInWorkspaceList = runningRowInWorkspaceList.getByRole('button', { name: '确认会话长时间未产生进展已读' });
+  const runningAlertInWorkspaceList = runningRowInWorkspaceList.getByRole('img', { name: '会话正在运行但后台长时间未产生可确认进展' });
   await expect(runningAlertInWorkspaceList).toBeVisible();
   await expect(runningAlertInWorkspaceList).toHaveCSS('color', 'rgb(197, 63, 63)');
+  await expect(runningAlertInWorkspaceList).toHaveClass(/running/);
 
   await page.getByRole('button', { name: /查看活动会话/ }).click();
   const activity = page.getByRole('region', { name: '活动会话' });
@@ -2858,7 +2868,7 @@ test('Conversation sidebar pins locally, orders activity, and reveals the select
     'sidebar-directory-running',
   ]);
   const stalledRow = activity.locator('[data-conversation-binding-id="sidebar-directory-running"]');
-  const stalledAlert = stalledRow.getByRole('button', { name: '确认会话长时间未产生进展已读' });
+  const stalledAlert = stalledRow.getByRole('img', { name: '会话正在运行但后台长时间未产生可确认进展' });
   await expect(stalledAlert).toBeVisible();
   await expect(stalledAlert).toHaveCSS('color', 'rgb(197, 63, 63)');
   await expect(stalledAlert).toHaveClass(/running/);
@@ -2875,7 +2885,16 @@ test('Conversation sidebar pins locally, orders activity, and reveals the select
   await expect(activity).toHaveCount(0);
   const selectedRunningRow = page.locator('[data-conversation-binding-id="sidebar-directory-running"]');
   await expect(selectedRunningRow).toHaveClass(/sidebar-reveal/);
-  await expect(selectedRunningRow.getByRole('img', { name: '后台长时间未产生可确认进展' })).toHaveCount(0);
+  await expect(selectedRunningRow.getByRole('img', { name: '会话正在运行但后台长时间未产生可确认进展' })).toBeVisible();
+  await expect.poll(() => unreadWrites).toEqual([
+    { id: 'sidebar-root-unread', unread: false },
+    { id: 'sidebar-directory-running', unread: false },
+  ]);
+
+  runningConversationPossiblyStuck = false;
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await expect(selectedRunningRow.getByRole('img', { name: '会话正在运行但后台长时间未产生可确认进展' })).toHaveCount(0);
+  await expect(selectedRunningRow.getByRole('img', { name: '会话正在运行' })).toBeVisible();
 
   await page.getByRole('button', { name: '搜索会话' }).click();
   await page.getByLabel('搜索会话内容').fill('精准定位');

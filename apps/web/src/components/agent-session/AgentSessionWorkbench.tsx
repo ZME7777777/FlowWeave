@@ -5610,6 +5610,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     eventSynchronization.current.inFlight = synchronization;
     return synchronization;
   }, [api, eventQueryKey, host, queryClient, selected, workspace]);
+  const synchronizeConversationEventsRef = useRef(synchronizeConversationEvents);
+  synchronizeConversationEventsRef.current = synchronizeConversationEvents;
   useEffect(() => {
     if (!selected?.id || !trustedHydration?.running || selectedHydrationPhase !== 'ready') return;
     // `synchronizeConversationEvents` is intentionally rebuilt as the event
@@ -5872,7 +5874,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     let timer: number | undefined;
     const reconcile = () => {
       if (cancelled || Date.now() >= retryDeadline) return;
-      void synchronizeConversationEvents(true, 'submission_confirmation').finally(() => {
+      void synchronizeConversationEventsRef.current(true, 'submission_confirmation').finally(() => {
         if (!cancelled && Date.now() < retryDeadline) {
           timer = window.setTimeout(reconcile, SUBMISSION_EVENT_CONFIRMATION_RETRY_INTERVAL_MS);
         }
@@ -5883,7 +5885,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       cancelled = true;
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [pendingSubmissionConfirmation, selected?.id, submissionConfirmationPending, synchronizeConversationEvents]);
+  }, [pendingSubmissionConfirmation?.bindingId, pendingSubmissionConfirmation?.cursor, pendingSubmissionConfirmation?.expiresAt, selected?.id, submissionConfirmationPending]);
   const selectedCondensing = Boolean(selected && (
     condensationStatus?.bindingId === selected.id || condensingConversationIds.has(selected.id)
   ));
@@ -7799,8 +7801,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       : runningConversationIds.has(item.id)
         || condensingConversationIds.has(item.id)
         || selectedLocalTransition;
+    const selectedPossiblyStuck = eventsQuery.data?.monitoring?.possibly_stuck;
     const possiblyStuck = item.id === selected?.id
-      ? !selectedFormalTurnFinished && Boolean(eventsQuery.data?.monitoring?.possibly_stuck)
+      ? !selectedFormalTurnFinished && (selectedPossiblyStuck ?? possiblyStuckConversationIds.has(item.id))
       : possiblyStuckConversationIds.has(item.id);
     const failed = failedConversationIds.has(item.id);
     // Unread is a user-isolated server projection. Activity only decides
