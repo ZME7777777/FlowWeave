@@ -308,7 +308,7 @@ def process_agent_conversation_title(
     # A user rename takes the binding row lock and increments title_generation.
     # The guarded update is a compare-and-swap: late output cannot overwrite a
     # manual title. Title metadata is not a user-message activity signal, so
-    # preserve the timestamp used by the recent-activity ordering contract.
+    # preserve the immutable creation timestamp used by the default ordering contract.
     if lease_is_current(db, lease):
         db.execute(
             update(AgentConversationBinding)

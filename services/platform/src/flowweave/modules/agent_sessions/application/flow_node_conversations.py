@@ -609,7 +609,7 @@ def _node_session_dict(db: Session, item: AgentConversationBinding) -> dict[str,
         "last_connected_at": (
             item.last_connected_at.isoformat() if item.last_connected_at else None
         ),
-        "sort_key": str(_node_session_message_at(item).timestamp()),
+        "sort_key": str(item.created_at.timestamp()),
     }
 
 
@@ -634,31 +634,26 @@ def _node_session_write_available(db: Session, item: AgentConversationBinding) -
     )
 
 
-def _node_session_message_at(item: AgentConversationBinding) -> datetime:
-    return item.last_message_at or item.created_at
-
-
 def _node_session_page_cursor(item: AgentConversationBinding) -> str:
     payload = json.dumps(
-        ["v2", _node_session_message_at(item).isoformat(), item.created_at.isoformat(), item.id],
+        ["v2", item.created_at.isoformat(), item.id],
         separators=(",", ":"),
     ).encode("utf-8")
     return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
 
 
-def _decode_node_session_page_cursor(cursor: str) -> tuple[datetime, datetime, str]:
+def _decode_node_session_page_cursor(cursor: str) -> tuple[datetime, str]:
     try:
         padded = cursor + "=" * (-len(cursor) % 4)
         value = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")))
-        version, message_at, created_at, binding_id = value
+        version, created_at, binding_id = value
         if (
             version != "v2"
-            or not isinstance(message_at, str)
             or not isinstance(created_at, str)
             or not isinstance(binding_id, str)
         ):
             raise ValueError("invalid cursor values")
-        return datetime.fromisoformat(message_at), datetime.fromisoformat(created_at), binding_id
+        return datetime.fromisoformat(created_at), binding_id
     except (TypeError, ValueError, binascii.Error, json.JSONDecodeError) as exc:
         raise DomainError("AGENT_CONVERSATION_CURSOR_INVALID", "会话列表游标无效", 422) from exc
 
@@ -740,7 +735,7 @@ def _node_session_page_dicts(
             "last_connected_at": item.last_connected_at.isoformat()
             if item.last_connected_at
             else None,
-            "sort_key": str(_node_session_message_at(item).timestamp()),
+            "sort_key": str(item.created_at.timestamp()),
             "usage": usage_by_binding.get(item.id, usage_projection.empty()),
         }
         for item in items
@@ -1069,21 +1064,12 @@ def list_node_session_page(
                 )
             )
         )
-    message_at = func.coalesce(
-        AgentConversationBinding.last_message_at,
-        AgentConversationBinding.created_at,
-    )
     if cursor:
-        cursor_message_at, created_at, binding_id = _decode_node_session_page_cursor(cursor)
+        created_at, binding_id = _decode_node_session_page_cursor(cursor)
         query = query.where(
             or_(
-                message_at < cursor_message_at,
+                AgentConversationBinding.created_at < created_at,
                 and_(
-                    message_at == cursor_message_at,
-                    AgentConversationBinding.created_at < created_at,
-                ),
-                and_(
-                    message_at == cursor_message_at,
                     AgentConversationBinding.created_at == created_at,
                     AgentConversationBinding.id < binding_id,
                 ),
@@ -1092,7 +1078,6 @@ def list_node_session_page(
     items = list(
         db.scalars(
             query.order_by(
-                message_at.desc(),
                 AgentConversationBinding.created_at.desc(),
                 AgentConversationBinding.id.desc(),
             ).limit(limit + 1)
@@ -2632,9 +2617,7 @@ def send_question(
         )
     )
     activity_at = now()
-    # A fresh user message returns this conversation to the automatic
-    # recent-message ordering, so historical manual ranks never suppress it.
-    item.manual_sort_rank = None
+    # New messages do not change the default creation-time or manual ordering.
     item.last_message_at = activity_at
     item.last_connected_at = activity_at
     item.updated_at = activity_at
@@ -2842,9 +2825,7 @@ def finalize_running_node_message(
             db, binding, result.cursor, prepared.content.strip(), prepared.attachments
         )
     activity_at = now()
-    # A fresh user message returns this conversation to the automatic
-    # recent-message ordering, so historical manual ranks never suppress it.
-    binding.manual_sort_rank = None
+    # New messages do not change the default creation-time or manual ordering.
     binding.last_message_at = activity_at
     binding.last_connected_at = activity_at
     binding.updated_at = activity_at
@@ -2934,9 +2915,7 @@ def send_node_message(
     if result.cursor:
         record_message_attachments(db, binding, result.cursor, content.strip(), attachments)
     activity_at = now()
-    # A fresh user message returns this conversation to the automatic
-    # recent-message ordering, so historical manual ranks never suppress it.
-    binding.manual_sort_rank = None
+    # New messages do not change the default creation-time or manual ordering.
     binding.last_message_at = activity_at
     binding.last_connected_at = activity_at
     binding.updated_at = activity_at
@@ -3542,9 +3521,7 @@ def rerun_node_message(
     if result.cursor:
         record_message_attachments(db, binding, result.cursor, content.strip(), attachments)
     activity_at = now()
-    # A fresh user message returns this conversation to the automatic
-    # recent-message ordering, so historical manual ranks never suppress it.
-    binding.manual_sort_rank = None
+    # New messages do not change the default creation-time or manual ordering.
     binding.last_message_at = activity_at
     binding.last_connected_at = activity_at
     binding.updated_at = activity_at

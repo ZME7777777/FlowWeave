@@ -4722,8 +4722,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     const serverOrder = (Object.values(conversationPagesByScope).flatMap(page => page.items) ?? [])
       .filter(item => !optimisticallyRemovedConversationIds.has(item.id))
       .sort(
-      (left, right) => (Number(right.sort_key) || Date.parse(right.updated_at))
-        - (Number(left.sort_key) || Date.parse(left.updated_at))
+      (left, right) => (Number(right.sort_key) || Date.parse(right.created_at))
+        - (Number(left.sort_key) || Date.parse(left.created_at))
         || right.id.localeCompare(left.id),
       );
     const groups = new Map<string, AgentConversation[]>();
@@ -4746,35 +4746,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       return group.map(item => locallyOrderedIds.has(item.id) ? locallyOrdered[localIndex++] : item);
     });
   }, [conversationOrder, conversationPagesByScope, optimisticallyRemovedConversationIds]);
-  const markConversationRecentlyActive = useCallback((bindingId: string) => {
-    const updatedAt = new Date().toISOString();
-    setConversationPagesByScope(current => {
-      let newestKnownSortKey = Date.now() / 1000;
-      for (const page of Object.values(current)) {
-        for (const item of page.items) {
-          const sortKey = Number(item.sort_key) || Date.parse(item.updated_at) / 1000;
-          if (Number.isFinite(sortKey)) newestKnownSortKey = Math.max(newestKnownSortKey, sortKey);
-        }
-      }
-      const sortKey = String(newestKnownSortKey + 0.001);
-      let changed = false;
-      const next = Object.fromEntries(Object.entries(current).map(([scope, page]) => [scope, {
-        ...page,
-        items: page.items.map(item => {
-          if (item.id !== bindingId) return item;
-          changed = true;
-          return { ...item, sort_key: sortKey, updated_at: updatedAt };
-        }),
-      }])) as ConversationPagesByScope;
-      return changed ? next : current;
-    });
-    // An accepted user message resets the server-side manual rank. Discard the
-    // matching browser-only drag order as well, so it cannot mask the new
-    // recent-activity order before the authoritative list refresh arrives.
-    setConversationOrder(current => Object.fromEntries(
-      Object.entries(current).filter(([, orderedBindingIds]) => !orderedBindingIds.includes(bindingId)),
-    ));
-  }, []);
   const pinnedConversations = useMemo(() => {
     const conversationsById = new Map(conversations.map(item => [item.id, item]));
     return [...pinnedConversationIds].flatMap(bindingId => {
@@ -6817,7 +6788,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         setAttachments([]);
         setComposerAnnotations([]);
       }
-      if (value.accepted) markConversationRecentlyActive(message.bindingId);
       refresh(message.bindingId);
     },
     onError: (error, message, context) => {

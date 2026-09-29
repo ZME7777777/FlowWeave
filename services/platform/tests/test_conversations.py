@@ -2407,7 +2407,7 @@ def test_legacy_flow_run_question_queues_during_native_async_turn(
         assert sent == [("继续处理当前任务", ())]
 
 
-def test_node_session_list_orders_recent_activity_first(
+def test_node_session_list_orders_creation_time_first(
     db_session_factory: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Node session navigation follows the Agent Workspace ordering contract."""
@@ -2481,9 +2481,9 @@ def test_node_session_list_orders_recent_activity_first(
         )
 
         assert [item["id"] for item in items] == [
-            oldest_but_recently_active.id,
             newest.id,
             oldest.id,
+            oldest_but_recently_active.id,
         ]
 
         first = conversation_service.list_node_session_page(
@@ -2498,10 +2498,10 @@ def test_node_session_list_orders_recent_activity_first(
         )
 
         assert [item["id"] for item in first["items"]] == [
-            oldest_but_recently_active.id,
             newest.id,
+            oldest.id,
         ]
-        assert [item["id"] for item in second["items"]] == [oldest.id]
+        assert [item["id"] for item in second["items"]] == [oldest_but_recently_active.id]
         assert second["next_cursor"] is None
 
 

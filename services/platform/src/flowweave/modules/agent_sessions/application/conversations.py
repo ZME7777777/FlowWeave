@@ -298,33 +298,20 @@ def _dict(
     }
 
 
-def _default_sort_rank(message_at: datetime) -> Decimal:
-    """Rank unpinned conversations by their latest accepted user message."""
+def _default_sort_rank(created_at: datetime) -> Decimal:
+    """Rank unpinned conversations by creation time."""
 
-    return Decimal(str(message_at.timestamp()))
-
-
-def _conversation_message_at(item: AgentConversationBinding) -> datetime:
-    return item.last_message_at or item.created_at
+    return Decimal(str(created_at.timestamp()))
 
 
 def _conversation_sort_key(item: AgentConversationBinding) -> Decimal:
-    return item.manual_sort_rank or _default_sort_rank(_conversation_message_at(item))
+    return item.manual_sort_rank or _default_sort_rank(item.created_at)
 
 
 def _conversation_sort_expression():
     return func.coalesce(
         AgentConversationBinding.manual_sort_rank,
-        cast(
-            func.extract(
-                "epoch",
-                func.coalesce(
-                    AgentConversationBinding.last_message_at,
-                    AgentConversationBinding.created_at,
-                ),
-            ),
-            Numeric(30, 12),
-        ),
+        cast(func.extract("epoch", AgentConversationBinding.created_at), Numeric(30, 12)),
     )
 
 
@@ -1099,12 +1086,12 @@ def reorder_conversation(
                 position += 1
             run = ordered[start:position]
             upper = (
-                _default_sort_rank(_conversation_message_at(ordered[start - 1]))
+                _default_sort_rank(ordered[start - 1].created_at)
                 if start
                 else None
             )
             lower = (
-                _default_sort_rank(_conversation_message_at(ordered[position]))
+                _default_sort_rank(ordered[position].created_at)
                 if position < len(ordered)
                 else None
             )
@@ -1121,7 +1108,7 @@ def reorder_conversation(
                 ranks = [upper - Decimal(index + 1) for index in range(len(run))]
             else:
                 base = max(
-                    _default_sort_rank(_conversation_message_at(candidate))
+                    _default_sort_rank(candidate.created_at)
                     for candidate in run
                 )
                 ranks = [base + Decimal(len(run) - index) for index in range(len(run))]
@@ -2510,9 +2497,7 @@ def finalize_running_message(
             db, binding, result.cursor, prepared.content.strip(), prepared.attachments
         )
     activity_at = now()
-    # A fresh user message returns this conversation to the automatic
-    # recent-message ordering, so historical manual ranks never suppress it.
-    binding.manual_sort_rank = None
+    # New messages do not change the default creation-time or manual ordering.
     binding.last_message_at = activity_at
     binding.last_connected_at = activity_at
     binding.updated_at = activity_at
@@ -2744,9 +2729,7 @@ def message(
     if result.cursor:
         _record_message_attachments(db, binding, result.cursor, content.strip(), attachments)
     activity_at = now()
-    # A fresh user message returns this conversation to the automatic
-    # recent-message ordering, so historical manual ranks never suppress it.
-    binding.manual_sort_rank = None
+    # New messages do not change the default creation-time or manual ordering.
     binding.last_message_at = activity_at
     binding.last_connected_at = activity_at
     binding.updated_at = activity_at
@@ -3997,9 +3980,7 @@ def rewrite_message(
     if result.cursor:
         _record_message_attachments(db, binding, result.cursor, content.strip(), attachments)
     activity_at = now()
-    # A fresh user message returns this conversation to the automatic
-    # recent-message ordering, so historical manual ranks never suppress it.
-    binding.manual_sort_rank = None
+    # New messages do not change the default creation-time or manual ordering.
     binding.last_message_at = activity_at
     binding.last_connected_at = activity_at
     binding.updated_at = activity_at

@@ -107,8 +107,8 @@ class AgentConversationBinding(Base):
     # native-forked conversations. We never infer secret injection from a
     # Conversation's environment or event history.
     credential_sync_initialized_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    # NULL uses automatic recent-message ordering; only a dragged session has
-    # a workspace-local explicit rank until its next user message.
+    # NULL keeps the default creation-time order; a dragged session has a
+    # workspace-local explicit rank that later messages preserve.
     manual_sort_rank: Mapped[Decimal | None] = mapped_column(Numeric(30, 12))
     activity_was_running: Mapped[bool] = mapped_column(Boolean, default=False)
     unread: Mapped[bool] = mapped_column(Boolean, default=False)

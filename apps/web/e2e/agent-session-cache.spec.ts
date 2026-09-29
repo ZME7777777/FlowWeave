@@ -3037,10 +3037,10 @@ test('Agent session keeps background activity visible without readiness polling 
   await expect(backgroundRow.getByRole('img', { name: '会话已完成，有未读回复' })).toBeVisible();
 });
 
-test('Accepted message immediately promotes a historical conversation by recent activity', async ({ page }) => {
+test('Accepted message keeps a historical conversation in creation-time order', async ({ page }) => {
   let authenticated = false;
   let accepted = false;
-  const workspace = { id: 'recent-activity-workspace', display_name: '最近活动排序工作区', desired_state: 'RUNNING', updated_at: now };
+  const workspace = { id: 'recent-activity-workspace', display_name: '创建时间排序工作区', desired_state: 'RUNNING', updated_at: now };
   const conversations = [
     {
       id: 'recent-activity-current', display_title: '当前会话', title_state: 'MANUAL' as const,
@@ -3108,12 +3108,12 @@ test('Accepted message immediately promotes a historical conversation by recent 
   await page.goto('/agent/conversations/recent-activity-history');
   const composer = page.getByLabel('发送 Agent 消息');
   await expect(composer).toBeVisible();
-  await composer.fill('让历史会话立刻成为最近活动');
+  await composer.fill('继续历史会话，但不要改变排序');
   await page.getByLabel('发送消息').click();
   await expect.poll(() => accepted).toBe(true);
 
   const rootRows = page.locator('.agent-workspace-group').filter({ hasText: '根工作区' }).locator('[data-conversation-binding-id]');
   await expect.poll(() => rootRows.evaluateAll(rows => rows.map(row => row.getAttribute('data-conversation-binding-id')))).toEqual([
-    'recent-activity-history', 'recent-activity-current', 'recent-activity-middle',
+    'recent-activity-current', 'recent-activity-middle', 'recent-activity-history',
   ]);
 });

@@ -764,7 +764,7 @@ export interface AgentConversation {
   created_at: string;
   updated_at: string;
   last_connected_at?: string | null;
-  /** Server-owned effective ordering key. Automatic ordering uses last accepted message activity. */
+  /** Server-owned effective ordering key. Untouched conversations use creation time. */
   sort_key?: string;
   usage?: TokenUsageSummary;
 }

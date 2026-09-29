@@ -3158,30 +3158,28 @@ def test_agent_workspace_conversation_order_stays_at_creation_time(
 
 
 
-def test_agent_workspace_conversation_default_sort_uses_last_message_not_metadata_update() -> None:
+def test_agent_workspace_conversation_default_sort_uses_creation_time() -> None:
     from types import SimpleNamespace
 
-    older_message = datetime(2026, 1, 1, tzinfo=UTC)
-    newer_message = datetime(2026, 1, 2, tzinfo=UTC)
-    # `updated_at` can move for metadata work after a conversation has gone
-    # idle; it must not make that conversation newer than a real message.
-    metadata_newer = datetime(2026, 1, 3, tzinfo=UTC)
-    metadata_item = SimpleNamespace(
+    older_created = datetime(2026, 1, 1, tzinfo=UTC)
+    newer_created = datetime(2026, 1, 2, tzinfo=UTC)
+    # Metadata and later accepted messages must not move an untouched
+    # conversation ahead of a newer one.
+    older_item = SimpleNamespace(
         manual_sort_rank=None,
-        last_message_at=older_message,
-        created_at=older_message,
-        updated_at=metadata_newer,
+        last_message_at=datetime(2026, 1, 3, tzinfo=UTC),
+        created_at=older_created,
+        updated_at=datetime(2026, 1, 4, tzinfo=UTC),
     )
-    recent_message_item = SimpleNamespace(
+    newer_item = SimpleNamespace(
         manual_sort_rank=None,
-        last_message_at=newer_message,
-        created_at=older_message,
-        updated_at=older_message,
+        last_message_at=None,
+        created_at=newer_created,
+        updated_at=older_created,
     )
 
-    assert (
-        conversations._conversation_sort_key(recent_message_item)
-        > conversations._conversation_sort_key(metadata_item)
+    assert conversations._conversation_sort_key(newer_item) > conversations._conversation_sort_key(
+        older_item
     )
 
 
@@ -3224,6 +3222,14 @@ def test_agent_workspace_conversation_drag_order_overrides_only_moved_binding(
 
         assert moved["sort_key"] > str(newer_binding.created_at.timestamp())
         assert newer_binding.manual_sort_rank is None
+        assert [item["id"] for item in conversations.list_conversations(db, workspace.id)] == [
+            older["id"],
+            newer["id"],
+        ]
+
+        conversations.message(db, workspace.id, older["id"], "拖拽后继续发送消息")
+
+        assert older_binding.manual_sort_rank == Decimal(moved["sort_key"])
         assert [item["id"] for item in conversations.list_conversations(db, workspace.id)] == [
             older["id"],
             newer["id"],
