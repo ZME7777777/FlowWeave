@@ -4474,6 +4474,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const draggedWorkDirectoryRef = useRef<string | undefined>(undefined);
   const workDirectoryDropTargetRef = useRef<{ id: string; after: boolean } | undefined>(undefined);
   const [optimisticallyRemovedConversationIds, setOptimisticallyRemovedConversationIds] = useState<Set<string>>(() => new Set());
+  const [confirmedMissingConversationIds, setConfirmedMissingConversationIds] = useState<Set<string>>(() => new Set());
   const [title, setTitle] = useState('');
   const [newConversationProviderId, setNewConversationProviderId] = useState(() => initialBootstrapRecovery.current?.providerId ?? initialConversationDraft.current?.providerId ?? '');
   const [newConversationModelName, setNewConversationModelName] = useState(() => initialBootstrapRecovery.current?.modelName ?? initialConversationDraft.current?.modelName ?? '');
@@ -4552,6 +4553,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     pendingLatest: boolean;
     lastLatestReadAt: number;
   }>({ pendingLatest: false, lastLatestReadAt: 0 });
+  const reconciledMissingConversationIds = useRef(new Set<string>());
+  const reconcileMissingConversationRef = useRef<(bindingId: string) => void>(() => undefined);
   const readinessSynchronization = useRef<{
     scope?: string;
     inFlight?: Promise<AgentConversationInputReadiness>;
@@ -4703,6 +4706,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   useEffect(() => {
     setConversationPagesByScope({});
     setLoadingConversationScope(undefined);
+    reconciledMissingConversationIds.current.clear();
+    setConfirmedMissingConversationIds(new Set());
   }, [workspace?.id]);
   useEffect(() => {
     setConversationPagesByScope(current => {
@@ -4878,10 +4883,12 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     refetchOnWindowFocus: false,
     retry: (count, error) => !(error instanceof ApiError && error.status < 500) && count < 2,
   });
-  const selected = useMemo(
-    () => selectedConversationQuery.data ?? conversations.find(item => item.id === selectedBindingId),
-    [conversations, selectedBindingId, selectedConversationQuery.data],
-  );
+  const selected = useMemo(() => {
+    // A binding that an authoritative host read confirmed missing must never
+    // remain a source for child queries while route navigation settles.
+    if (selectedBindingId && confirmedMissingConversationIds.has(selectedBindingId)) return undefined;
+    return selectedConversationQuery.data ?? conversations.find(item => item.id === selectedBindingId);
+  }, [confirmedMissingConversationIds, conversations, selectedBindingId, selectedConversationQuery.data]);
   useEffect(() => {
     if (!workspace || !selectedBindingId) return;
     const listedConversation = conversations.find(item => item.id === selectedBindingId);
@@ -5614,6 +5621,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const synchronizeConversationEvents = useCallback((preferLatest = false, diagnosticTrigger = 'scheduled'): Promise<void> => {
     if (!workspace || !selected) return Promise.resolve();
     const scope = selected.id;
+    // Recovery callbacks can outlive the route that scheduled them. Once a
+    // binding is authoritatively gone, never let an old closure restart REST
+    // reconciliation for it after the visible session has already changed.
+    if (reconciledMissingConversationIds.current.has(scope)) return Promise.resolve();
     if (eventSynchronization.current.scope !== scope) {
       eventSynchronization.current = { scope, pendingLatest: false, lastLatestReadAt: 0 };
     }
@@ -5652,7 +5663,15 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
           : incoming,
         );
         scheduleContextRefreshRef.current(workspace.id, scope);
-      }).catch(() => {
+      }).catch(error => {
+        if (isMissingConversationError(error)) {
+          // This path bypasses React Query while a hot-reentry, stream-close,
+          // or foreground reconciliation is in flight. It must still treat an
+          // authoritative missing binding as terminal, otherwise the closure
+          // can keep scheduling 404 event reads after the UI left the session.
+          reconcileMissingConversationRef.current(scope);
+          return;
+        }
         // The next scheduled reconciliation is sufficient. A transient read
         // failure must not clear already-rendered native events.
       }).then(async () => {
@@ -6248,10 +6267,12 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     }
     setDrawerOpen(true);
   }, []);
-  const reconciledMissingConversationIds = useRef(new Set<string>());
   const reconcileMissingConversation = useCallback((bindingId: string) => {
     if (!workspace || reconciledMissingConversationIds.current.has(bindingId)) return;
     reconciledMissingConversationIds.current.add(bindingId);
+    setConfirmedMissingConversationIds(current => current.has(bindingId)
+      ? current
+      : new Set(current).add(bindingId));
     const nextConversation = conversations.find(item => item.id !== bindingId);
     const resources = [
       'conversation',
@@ -6274,6 +6295,15 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       void queryClient.cancelQueries({ queryKey, exact: false });
       queryClient.removeQueries({ queryKey, exact: false });
     }
+    if (eventSynchronization.current.scope === bindingId) {
+      eventSynchronization.current = { pendingLatest: false, lastLatestReadAt: 0 };
+    }
+    if (readinessSynchronization.current.scope === bindingId) {
+      readinessSynchronization.current = { lastRequestAt: 0 };
+    }
+    hotReentryHydrationKey.current = hotReentryHydrationKey.current?.startsWith(`${bindingId}:`)
+      ? undefined
+      : hotReentryHydrationKey.current;
     historyAbortControllers.current.get(bindingId)?.abort();
     historyAbortControllers.current.delete(bindingId);
     historyLoadingScopes.current.delete(bindingId);
@@ -6321,6 +6351,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversations', workspace.id) });
     void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-activity', workspace.id) });
   }, [activityPreviewBindingId, conversations, host, onNavigate, pinnedStorageKey, queryClient, selectedBindingId, updateLocalMessageProjections, workspace]);
+  reconcileMissingConversationRef.current = reconcileMissingConversation;
   const missingConversationError = [
     selectedConversationQuery.error,
     activeWorkspaceDetailsQuery.error,

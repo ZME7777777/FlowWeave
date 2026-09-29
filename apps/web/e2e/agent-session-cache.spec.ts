@@ -3361,16 +3361,17 @@ test('Deleting a stale conversation row treats the server-side missing binding a
   await expect(page.getByText('会话不存在或已删除')).toHaveCount(0);
 });
 
-test('A binding confirmed missing by a background workspace read clears its cached transcript and route', async ({ page }) => {
+test('A binding confirmed missing by background event synchronization clears its transcript and stops retries', async ({ page }) => {
   let authenticated = false;
-  let releaseWorkspaceRead: (() => void) | undefined;
-  const workspaceRead = new Promise<void>(resolve => { releaseWorkspaceRead = resolve; });
+  let releaseEventsRead: (() => void) | undefined;
+  let eventReads = 0;
+  const eventsRead = new Promise<void>(resolve => { releaseEventsRead = resolve; });
   const workspace = {
     id: 'background-missing-workspace', display_name: '后台删除工作区', desired_state: 'RUNNING', updated_at: now,
   };
   const deleted = {
     id: 'background-missing-conversation', display_title: '已删除但仍缓存的会话', title_state: 'MANUAL',
-    lifecycle: 'ACTIVE', streaming_callback_ready: true, write_available: true, execution_status: 'idle',
+    lifecycle: 'ACTIVE', streaming_callback_ready: true, write_available: true, execution_status: 'running',
     created_at: now, updated_at: now,
   };
   const survivor = {
@@ -3393,10 +3394,15 @@ test('A binding confirmed missing by a background workspace read clears its cach
     if (path.endsWith(`/conversations/${deleted.id}`) && request.method() === 'GET') return json(route, deleted);
     if (path.endsWith(`/conversations/${survivor.id}`) && request.method() === 'GET') return json(route, survivor);
     if (path.endsWith('/hydration')) return json(route, {
-      events: { events: [{ id: 'deleted-message', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: '__root__', content: '这段缓存的会话正文必须消失', timestamp: now } }], next_cursor: null, history_cursor: null, result: { status: 'COMPLETED' } },
+      events: { events: [{ id: 'deleted-message', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: '__root__', content: '这段缓存的会话正文必须消失', timestamp: now } }], next_cursor: null, history_cursor: null, result: { status: 'RUNNING' } },
       context: { model_name: 'missing-model', window_tokens: 128_000, used_tokens: 1, usage_current: true },
-      readiness: { ready: true, execution_status: 'idle' },
+      readiness: { ready: false, execution_status: 'running' },
     });
+    if (path.endsWith('/events')) {
+      eventReads += 1;
+      await eventsRead;
+      return json(route, { error: { code: 'AGENT_CONVERSATION_NOT_FOUND', message: '会话不存在或已删除' } }, 404);
+    }
     if (path.endsWith('/conversation-activity')) return json(route, {
       running_binding_ids: [], condensing_binding_ids: [], condensation_failed_binding_ids: [],
       possibly_stuck_binding_ids: [], failed_binding_ids: [],
@@ -3405,17 +3411,11 @@ test('A binding confirmed missing by a background workspace read clears its cach
     if (path.endsWith('/work-directories')) return json(route, {
       root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [],
     });
-    if (path.endsWith('/workspace')) {
-      if (new URL(request.url()).searchParams.get('binding_id') === deleted.id) {
-        await workspaceRead;
-        return json(route, { error: { code: 'AGENT_CONVERSATION_NOT_FOUND', message: '会话不存在或已删除' } }, 404);
-      }
-      return json(route, {
-        root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' },
-        working_directory: '/runtime/workspace/project', work_directory: null, files: [], repositories: [],
-        runtime: {}, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '不可用', note: '' } },
-      });
-    }
+    if (path.endsWith('/workspace')) return json(route, {
+      root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' },
+      working_directory: '/runtime/workspace/project', work_directory: null, files: [], repositories: [],
+      runtime: {}, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '不可用', note: '' } },
+    });
     if (path.endsWith('/model-providers') || path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
     return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
   });
@@ -3424,9 +3424,16 @@ test('A binding confirmed missing by a background workspace read clears its cach
   await login(page);
   await page.goto(`/agent/conversations/${deleted.id}`);
   await expect(page.getByText('这段缓存的会话正文必须消失')).toBeVisible();
-  releaseWorkspaceRead?.();
+  await expect.poll(() => eventReads).toBe(1);
+  releaseEventsRead?.();
   await expect(page).not.toHaveURL(new RegExp(`/agent/conversations/${deleted.id}$`));
   await expect(page.locator(`[data-conversation-binding-id="${deleted.id}"]`)).toHaveCount(0);
   await expect(page.getByText('这段缓存的会话正文必须消失')).toHaveCount(0);
-  await expect(page.getByText('会话不存在或已删除')).toHaveCount(0);
+  // A first-screen query and a recovery query may already be in flight when
+  // the authoritative 404 arrives. Once those settle, no delayed callback may
+  // restart the deleted binding's event stream.
+  await page.waitForTimeout(1_500);
+  const readsAfterInflightDrain = eventReads;
+  await page.waitForTimeout(2_000);
+  expect(eventReads).toBe(readsAfterInflightDrain);
 });
