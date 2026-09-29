@@ -176,7 +176,7 @@ test('Accepted message reconciles its formal event without a second submission o
     { id: 'prior-reply', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'prior-turn', content: '上一轮已完成', timestamp: '2026-09-12T09:29:00Z' } },
     ...(formalMessageVisible ? [
       { id: 'accepted-message', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'prior-reply', content: '刚发送的消息', timestamp: now } },
-      { id: 'accepted-error', event_type: 'ERROR', payload: { source: 'agent', parent_id: 'accepted-message', content: '模型服务暂不可用。', timestamp: now } },
+      { id: 'accepted-thought', event_type: 'THOUGHT', payload: { source: 'agent', parent_id: 'accepted-message', content: '正在执行当前任务', timestamp: now } },
     ] : []),
   ];
 
@@ -201,7 +201,7 @@ test('Accepted message reconciles its formal event without a second submission o
     if (path.endsWith('/events')) {
       if (messageAccepted) {
         eventReadsAfterAcceptance += 1;
-        if (eventReadsAfterAcceptance >= 15) formalMessageVisible = true;
+        if (eventReadsAfterAcceptance >= 2) formalMessageVisible = true;
       }
       return json(route, {
         events: events(), next_cursor: formalMessageVisible ? 'accepted-message' : 'prior-turn', history_cursor: null, monitoring: staleMonitoring,
@@ -244,8 +244,7 @@ test('Accepted message reconciles its formal event without a second submission o
   await expect(localMessage).toHaveCount(1);
   await expect(localMessage).toContainText('刚发送的消息');
   await expect(page.locator('[data-user-event-id="accepted-message"]')).toHaveCount(0);
-  await expect(page.getByText('正在提交消息', { exact: true })).toBeVisible();
-  await expect(page.getByText('工作过程', { exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '发送消息' })).toBeDisabled();
 
   releaseMessageAcceptance?.();
   await expect.poll(() => messageAccepted).toBe(true);
@@ -258,8 +257,12 @@ test('Accepted message reconciles its formal event without a second submission o
   await expect(page.getByRole('button', { name: '发送消息' })).toHaveCount(0);
   expect(readinessReads).toBeGreaterThan(0);
   await expect.poll(() => formalMessageVisible).toBe(true);
+  await expect(page.getByText('正在执行当前任务', { exact: true })).toBeVisible();
+  // Formal identity is now present, so the submission bridge has ended. The
+  // stale terminal readiness must still not collapse this active formal branch.
+  await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '发送消息' })).toHaveCount(0);
   await expect(localMessage).toHaveCount(1);
-  await expect(page.locator('[aria-label="原始错误详情"]')).toContainText('模型服务暂不可用。');
 });
 
 

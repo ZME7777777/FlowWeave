@@ -258,6 +258,11 @@ interface PendingSubmissionConfirmation {
   cursor: string;
   expiresAt: number;
 }
+interface ForegroundTurn {
+  submissionId: string;
+  bindingId: string;
+  cursor?: string;
+}
 interface ScopedConversationEvent {
   scope: string;
   event: OpenHandsConversationEvent;
@@ -598,7 +603,7 @@ function writePinnedConversationIds(storageKey: string | undefined, conversation
 
 const MAX_BOOTSTRAP_RECONCILIATION_ATTEMPTS = 3;
 const STREAM_IDLE_GRACE_MS = 5 * 60 * 1000;
-const TERMINAL_EVENT_RECONCILIATION_MS = 2_000;
+const TERMINAL_EVENT_RECONCILIATION_MS = 8_000;
 const TERMINAL_EVENT_RETRY_INTERVAL_MS = 250;
 
 const AgentSessionGatewayContext = createContext<AgentSessionGateway>(agentWorkspaceSessionGateway);
@@ -1764,6 +1769,22 @@ function hasAssistantReplyForTurn(events: OpenHandsConversationEvent[], userEven
   const byId = new Map(events.map(event => [event.id, event]));
   return events.some(event => {
     if (!isOpenHandsAgentReply(event)) return false;
+    const visited = new Set<string>();
+    let parentId = event.payload.parent_id;
+    while (parentId && parentId !== '__root__' && !visited.has(parentId)) {
+      if (parentId === userEventId) return true;
+      visited.add(parentId);
+      parentId = byId.get(parentId)?.payload.parent_id;
+    }
+    return false;
+  });
+}
+
+function hasNonTerminalRuntimeActivityForTurn(events: OpenHandsConversationEvent[], userEventId: string): boolean {
+  const byId = new Map(events.map(event => [event.id, event]));
+  return events.some(event => {
+    if (event.id === userEventId || isOpenHandsAgentReply(event) || event.event_type === 'ERROR'
+      || (event.event_type === 'COMPLETED' && event.payload.event_name === 'FinishAction')) return false;
     const visited = new Set<string>();
     let parentId = event.payload.parent_id;
     while (parentId && parentId !== '__root__' && !visited.has(parentId)) {
@@ -4420,6 +4441,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const [expiredTerminalSyncTurnKey, setExpiredTerminalSyncTurnKey] = useState<string>();
   const [requestStartedAt, setRequestStartedAt] = useState<number>();
   const [pendingSubmissionConfirmation, setPendingSubmissionConfirmation] = useState<PendingSubmissionConfirmation>();
+  const [foregroundTurn, setForegroundTurn] = useState<ForegroundTurn>();
   const [confirmationReason, setConfirmationReason] = useState('');
   const [queuedMessages, setQueuedMessages] = useState<QueuedMessage[]>([]);
   const [queueMode, setQueueMode] = useState<{ storageKey?: string; enabled: boolean }>({ enabled: true });
@@ -5875,22 +5897,58 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   // turn (or its cached idle readiness) close this foreground turn in that
   // handoff. The bridge is restricted to the current submission and ends as
   // soon as its formal event is visible or the bounded confirmation expires.
-  const foregroundSubmissionAwaitingFormalEvent = Boolean(
+  const currentForegroundTurn = foregroundTurn?.bindingId === selected?.id ? foregroundTurn : undefined;
+  const foregroundTurnPending = Boolean(
+    currentForegroundTurn && (!currentForegroundTurn.cursor || !hasFinishedTurn(currentFormalEvents, currentForegroundTurn.cursor)),
+  );
+  const foregroundSubmissionAwaitingFormalEvent = foregroundTurnPending || Boolean(
     activeLocalMessageProjections.some(projection => projection.state === 'submitting')
     || (
       pendingSubmissionConfirmation?.bindingId === selected?.id
       && !currentFormalEvents.some(event => event.id === pendingSubmissionConfirmation?.cursor)
     ),
   );
-  const effectiveTurnState: TurnState = !foregroundSubmissionAwaitingFormalEvent && (selectedFormalTurnFinished || nativeTurnTerminal)
+  const activeFormalTurnId = activeTurnEventId && currentFormalEvents.some(event => event.id === activeTurnEventId)
+    ? activeTurnEventId
+    : latestFormalUserEventId;
+  const activeFormalTurnFinished = Boolean(
+    activeFormalTurnId && hasFinishedTurn(currentFormalEvents, activeFormalTurnId),
+  );
+  const activeFormalTurnUnfinished = Boolean(
+    activeFormalTurnId && !activeFormalTurnFinished,
+  );
+  const currentFormalTurnFinished = activeFormalTurnId
+    ? activeFormalTurnFinished
+    : selectedFormalTurnFinished;
+  const activeFormalTurnHasRuntimeActivity = Boolean(
+    activeFormalTurnId && hasNonTerminalRuntimeActivityForTurn(currentFormalEvents, activeFormalTurnId),
+  );
+  const terminalSyncTurnKey = selected && nativeTurnTerminal && activeFormalTurnUnfinished && activeFormalTurnId
+    ? `${selected.id}:${activeFormalTurnId}`
+    : undefined;
+  const terminalEventReconciliationActive = Boolean(terminalSyncTurnKey && terminalSyncTurnKey !== expiredTerminalSyncTurnKey);
+  // A stale terminal readiness may arrive before the Runtime has exposed its
+  // current branch. A formal process event or the server activity projection
+  // is stronger evidence that this turn still runs, while the bounded
+  // reconciliation window protects the no-event handoff without hiding a
+  // genuine terminal state indefinitely.
+  const foregroundTurnStillRunning = foregroundSubmissionAwaitingFormalEvent
+    || (activeFormalTurnUnfinished && (
+      activeFormalTurnHasRuntimeActivity
+      || runningConversationIds.has(selected?.id ?? '')
+      || terminalEventReconciliationActive
+    ));
+  const effectiveTurnState: TurnState = currentFormalTurnFinished
     ? 'idle'
     : nativeExecutionStatus?.trim().toLowerCase() === 'paused'
       ? 'paused'
       : turnState === 'pausing' || turnState === 'resuming' || turnState === 'paused'
         ? turnState
-      : nativeTurnRunning
-      ? 'running'
-        : turnState;
+      : foregroundTurnStillRunning || nativeTurnRunning
+        ? 'running'
+        : nativeTurnTerminal
+          ? 'idle'
+          : turnState;
   // The browser queue contains only messages that have not started delivery.
   // Once a request starts, the optimistic conversation event owns its display.
   const visibleQueuedMessages = queuedMessages.filter(message => message.scope === selected?.id);
@@ -5917,6 +5975,14 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     )), remaining);
     return () => window.clearTimeout(timer);
   }, [currentFormalEvents, pendingSubmissionConfirmation, selected?.id]);
+  useEffect(() => {
+    const completedForegroundTurn = foregroundTurn;
+    if (!completedForegroundTurn?.cursor) return;
+    if (currentFormalEvents.some(event => event.id === completedForegroundTurn.cursor)
+      && hasFinishedTurn(currentFormalEvents, completedForegroundTurn.cursor)) {
+      setForegroundTurn(current => current?.submissionId === completedForegroundTurn.submissionId ? undefined : current);
+    }
+  }, [currentFormalEvents, foregroundTurn]);
   const submissionConfirmationPending = pendingSubmissionConfirmation?.bindingId === selected?.id;
   useEffect(() => {
     if (!submissionConfirmationPending || !selected?.id || !pendingSubmissionConfirmation) return;
@@ -6005,13 +6071,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const activeNativeTurnId = activeTurnEventId ?? latestUnfinishedUserEventId(displayedEvents);
   const unfinishedFormalTurnId = latestUnfinishedUserEventId(displayedEvents);
   const hasUnfinishedFormalTurn = Boolean(unfinishedFormalTurnId);
-  const terminalSyncTurnKey = selected && nativeTurnTerminal && unfinishedFormalTurnId
-    ? `${selected.id}:${unfinishedFormalTurnId}`
-    : undefined;
-  const terminalEventReconciliationActive = Boolean(terminalSyncTurnKey && terminalSyncTurnKey !== expiredTerminalSyncTurnKey);
   // Keep the presentation aliases near the task-plan logic below. The
   // completed formal tree was already used above to close foreground controls.
-  const latestFormalTurnFinished = selectedFormalTurnFinished;
+  const latestFormalTurnFinished = currentFormalTurnFinished;
   const finalReplyAwaitingNativeCompletion = nativeTurnRunning
     && Boolean(activeNativeTurnId && hasAssistantReplyForTurn(displayedEvents, activeNativeTurnId));
   // Readiness owns interaction controls, but it may briefly report idle before
@@ -6392,7 +6454,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       bootstrapTransitionScope.current = undefined;
       return;
     }
-    setEditing(false); setQueuedMessageMenuId(undefined); pendingLiveEvents.current = []; if (liveEventsFrame.current !== undefined) window.cancelAnimationFrame(liveEventsFrame.current); liveEventsFrame.current = undefined; setScopedLiveEvents(current => current.filter(item => item.scope === composerScope)); setLocalMessageProjectionRevision(current => current + 1); setHiddenEventIds(new Set()); setDeferredRewriteUserEventIds(new Set()); setPauseDisplayFreeze(undefined); setActiveTurnEventId(undefined); setExpiredTerminalSyncTurnKey(undefined); setRequestStartedAt(undefined); setConfirmationReason(''); setTurnState('idle'); queuedMessagesRef.current = []; setQueuedMessages([]); setPendingRewrite(undefined);
+    setEditing(false); setQueuedMessageMenuId(undefined); pendingLiveEvents.current = []; if (liveEventsFrame.current !== undefined) window.cancelAnimationFrame(liveEventsFrame.current); liveEventsFrame.current = undefined; setScopedLiveEvents(current => current.filter(item => item.scope === composerScope)); setLocalMessageProjectionRevision(current => current + 1); setHiddenEventIds(new Set()); setDeferredRewriteUserEventIds(new Set()); setPauseDisplayFreeze(undefined); setActiveTurnEventId(undefined); setForegroundTurn(undefined); setExpiredTerminalSyncTurnKey(undefined); setRequestStartedAt(undefined); setConfirmationReason(''); setTurnState('idle'); queuedMessagesRef.current = []; setQueuedMessages([]); setPendingRewrite(undefined);
     if (recoveredComposer && composerScope) {
       composerDraftsByScope.current.set(composerScope, recoveredComposer);
       replaceComposerDraft(recoveredComposer.content, composerScope);
@@ -6912,6 +6974,11 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     onSuccess: (value, message, context) => {
       sendingMessageIds.current.delete(message.id);
       const cursor = value.cursor;
+      if (!context?.nativeGuidance && activeComposerScope.current === message.bindingId) {
+        setForegroundTurn(current => current?.submissionId === message.id
+          ? { ...current, cursor: cursor ?? undefined }
+          : current);
+      }
       if (cursor && !context?.nativeGuidance) setConversationUnread(message.bindingId, false);
       if (cursor && !context?.nativeGuidance && activeComposerScope.current === message.bindingId) {
         setPendingSubmissionConfirmation({
@@ -6949,6 +7016,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     },
     onError: (error, message, context) => {
       sendingMessageIds.current.delete(message.id);
+      setForegroundTurn(current => current?.submissionId === message.id ? undefined : current);
       if (error instanceof ApiError && error.code === 'AGENT_MESSAGE_DELIVERY_AMBIGUOUS') {
         updateLocalMessageProjections(current => {
           const projection = current.get(message.id);
@@ -6985,6 +7053,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     if (sendingMessageIds.current.has(message.id)) return;
     sendingMessageIds.current.add(message.id);
     const showLocalMessage = () => {
+      if (!message.nativeGuidance) setForegroundTurn({ submissionId: message.id, bindingId: message.bindingId });
       // The current page owns its submitted user bubble. The native event only
       // anchors subsequent process/reply events and suppresses its duplicate.
       showOptimisticUserBubble(message, 'pending-user', 'submitting', true);
