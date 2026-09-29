@@ -44,6 +44,7 @@ from flowweave.shared.http import (
     run_blocking_control,
     run_blocking_history,
     run_blocking_hydration,
+    run_blocking_message,
     run_blocking_mutation,
     run_sync,
     run_terminal_control,
@@ -721,7 +722,7 @@ async def create_agent_conversation(
             "首条消息必须携带幂等请求标识",
             422,
         )
-    return await run_blocking_mutation(
+    return await run_blocking_message(
         container,
         lambda session: conversations.bootstrap_conversation(
             session,
@@ -1129,7 +1130,7 @@ async def agent_message(
             ),
         )[1],
     )
-    running_result = await run_blocking_mutation(
+    running_result = await run_blocking_message(
         container, lambda _session: conversations.dispatch_running_message(prepared)
     )
     if running_result is not None:
@@ -1139,7 +1140,7 @@ async def agent_message(
                 session, prepared, running_result
             ),
         )
-    return await run_blocking_mutation(
+    return await run_blocking_message(
         container,
         lambda session: conversations.message(
             session,
@@ -1453,7 +1454,7 @@ async def agent_rerun_edited_message(
     payload: AgentMessageWrite,
     container: ContainerDep,
 ) -> dict[str, Any]:
-    return await run_blocking_mutation(
+    return await run_blocking_message(
         container,
         lambda session: conversations.rewrite_message(
             session,

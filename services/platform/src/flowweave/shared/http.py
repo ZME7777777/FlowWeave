@@ -145,6 +145,23 @@ async def run_blocking_mutation(container: Container, operation: Callable[[Sessi
     )
 
 
+async def run_blocking_message(container: Container, operation: Callable[[Session], T]) -> T:
+    """Run latency-sensitive user message delivery on its reserved API lane."""
+
+    sessions = container.database.message_sessions or container.database.blocking_sessions
+    return await _run_blocking_lane(
+        container,
+        operation,
+        executor=container.message_executor,
+        slots=container.message_io_slots,
+        session_factory=sessions,
+        saturation_code="RUNTIME_MESSAGE_SATURATED",
+        saturation_message="Agent message delivery is busy; retry shortly",
+        lane_name="message",
+        active_limit=container.message_capacity or container.blocking_capacity,
+    )
+
+
 async def run_blocking_hydration(container: Container, operation: Callable[[Session], T]) -> T:
     """Give cache-key lookup and formal first-screen reads reserved API capacity."""
 

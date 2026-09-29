@@ -48,6 +48,7 @@ from flowweave.shared.http import (
     run_blocking_control,
     run_blocking_history,
     run_blocking_hydration,
+    run_blocking_message,
     run_blocking_mutation,
     run_sync,
     run_terminal_control,
@@ -462,7 +463,7 @@ async def bootstrap_node_session(
                     422,
                 )
             legacy_image_urls.append(f"data:{mime_type};base64,{encoded}")
-    return await run_blocking_mutation(
+    return await run_blocking_message(
         container,
         lambda session: agent_sessions.flow_node_conversations.bootstrap_node_conversation(
             session,
@@ -1190,7 +1191,7 @@ async def node_session_message(
             **arguments,
         ),
     )
-    result, queued_during_turn, compacted = await run_blocking_mutation(
+    result, queued_during_turn, compacted = await run_blocking_message(
         container,
         lambda _session: agent_sessions.flow_node_conversations.dispatch_running_node_message(
             prepared
@@ -1217,7 +1218,7 @@ async def rerun_node_message(
     payload: NodeSessionMessageWrite,
     container: ContainerDep,
 ) -> dict[str, Any]:
-    return await run_blocking_mutation(
+    return await run_blocking_message(
         container,
         lambda session: agent_sessions.flow_node_conversations.rerun_node_message(
             session,

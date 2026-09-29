@@ -54,6 +54,9 @@ class Container:
     blocking_executor: ThreadPoolExecutor
     blocking_io_slots: asyncio.Semaphore
     blocking_mutation_slots: asyncio.Semaphore
+    message_executor: ThreadPoolExecutor
+    message_io_slots: asyncio.Semaphore
+    message_capacity: int
     hydration_executor: ThreadPoolExecutor
     hydration_io_slots: asyncio.Semaphore
     hydration_capacity: int
@@ -88,6 +91,12 @@ class Container:
         if self.hydration_executor is not self.blocking_executor:
             await asyncio.to_thread(
                 self.hydration_executor.shutdown,
+                wait=True,
+                cancel_futures=True,
+            )
+        if self.message_executor is not self.blocking_executor:
+            await asyncio.to_thread(
+                self.message_executor.shutdown,
                 wait=True,
                 cancel_futures=True,
             )
@@ -141,13 +150,19 @@ def build_container(settings: Settings, *, role: Literal["api", "worker"]) -> Co
     # Reserve two of the existing API blocking connections for first-screen
     # reads. One-slot stream API configurations retain their existing lane.
     hydration_capacity = min(2, settings.blocking_pool_size - 1) if role == "api" else 0
-    blocking_capacity = settings.blocking_pool_size - hydration_capacity
+    # Keep one of the remaining API slots for message delivery whenever the
+    # configured capacity can still leave an ordinary interactive slot.
+    message_capacity = (
+        1 if role == "api" and settings.blocking_pool_size - hydration_capacity >= 2 else 0
+    )
+    blocking_capacity = settings.blocking_pool_size - hydration_capacity - message_capacity
     database = Database(
         settings,
         poll_pool_size=settings.runtime_poll_worker_concurrency if role == "worker" else 0,
         auxiliary_pool_size=(settings.auxiliary_task_worker_concurrency if role == "worker" else 0),
         admin_pool_size=1 if role == "api" else 0,
         hydration_pool_size=hydration_capacity,
+        message_pool_size=message_capacity,
     )
     metrics = Metrics()
     blocking_workers = settings.worker_concurrency if role == "worker" else blocking_capacity
@@ -161,6 +176,11 @@ def build_container(settings: Settings, *, role: Literal["api", "worker"]) -> Co
             thread_name_prefix="flowweave-api-hydration",
         )
         if hydration_capacity
+        else blocking_executor
+    )
+    message_executor = (
+        ThreadPoolExecutor(max_workers=message_capacity, thread_name_prefix="flowweave-api-message")
+        if message_capacity
         else blocking_executor
     )
     auxiliary_executor = ThreadPoolExecutor(
@@ -216,6 +236,9 @@ def build_container(settings: Settings, *, role: Literal["api", "worker"]) -> Co
         # Writes share the existing executor and DB pool, but cannot occupy
         # every slot needed to hydrate an unrelated conversation.
         blocking_mutation_slots=asyncio.Semaphore(min(2, max(1, blocking_capacity // 2))),
+        message_executor=message_executor,
+        message_io_slots=asyncio.Semaphore(message_capacity or blocking_workers),
+        message_capacity=message_capacity,
         hydration_executor=hydration_executor,
         hydration_io_slots=asyncio.Semaphore(hydration_capacity or blocking_workers),
         hydration_capacity=hydration_capacity,

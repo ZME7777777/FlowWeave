@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`IN PROGRESS`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`FR-555B2`
+> 下一可执行切片：`FR-555B2B`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -7701,8 +7701,18 @@ API 进程现将既有默认 `BLOCKING_POOL_SIZE=4` 逻辑分为 2 个首屏 hyd
 
 验收：`tests/test_http.py`、`tests/test_hydration_runtime_unavailable.py`、`tests/test_openhands.py` 的 hydration／reload／取消筛选共 `15 passed, 208 deselected`；覆盖普通 read 阻塞时首屏保留容量、两种宿主的共享预算与超时映射、取消后真实 completion 才释放容量、reload 的 formal-read 限制、递减 HTTP 剩余预算及 SQL pool 总容量不变。受影响 Ruff、`py_compile`、`git diff --check` 和唯一 Alembic head `0136_merge_activity_search` 通过。扩大筛选时一个无关 slow-request 测试在断言前被本机缺失 Docker socket 的全局 Testcontainers fixture 阻断，未记为通过；未运行浏览器 E2E、Runtime 负载或远端部署。
 
-### FR-555B2 消息写、慢变更与后台通道分离 — READY
+### FR-555B2A 消息派发保留通道 — DONE
 
 依赖：FR-555B1。
 
-目标：在不扩张 PostgreSQL 连接预算的前提下，继续审计消息写入、慢生命周期变更、Context／历史恢复及后台任务的队列和取消语义；将高频用户交互与低频、无需快速响应的工作放入独立有界通道，并为各宿主保留一致的 deadline、单飞和真实 completion 释放约束。依据实际调用链和负载数据决定容量，不以延长浏览器超时或无限扩池替代隔离。
+完成：审计确认常规消息、首条 bootstrap 消息和消息重发先前都与模型切换、capability／凭据同步、fork、会话删除及附件等慢 mutation 共享 admission slot 和 blocking SQL pool；一个被 OpenHands 或文件 I/O 拖慢的 mutation 可延迟高频用户消息。API 默认既有 4 个 blocking 容量现分为 2 个 hydration、1 个消息派发和 1 个普通同步交互／慢 mutation 容量。消息线程和 SQL pool 都独立且不允许 overflow，普通 blocking pool 相应缩小，因此 PostgreSQL 总 blocking 连接预算仍为 4。单槽 `stream-api` 和 Worker 保留现有单一通道，不创建没有容量余量的 message pool。
+
+Agent Workspace 与 FlowRun node 两种宿主的首条 bootstrap、常规消息、运行中派发和重发入口均改用消息 lane；消息完成前仍保留既有预处理／收口事务、正式 event identity 与同会话 Runtime 约束。其他 mutation 暂留普通 lane，消息 lane 饱和时返回明确 `RUNTIME_MESSAGE_SATURATED`，且被取消的实际线程仍只在完成后归还容量。
+
+验收：`tests/test_http.py` 的 hydration／message／取消筛选 `7 passed, 3 deselected`，覆盖 SQL pool 总容量守恒、慢 mutation 期间消息可立即派发、以及两种宿主三个消息触发点均走 message lane；受影响 Ruff 和 `py_compile` 通过。该切片未运行 Runtime 负载、浏览器 E2E 或远端部署。
+
+### FR-555B2B 慢变更与后台通道分离 — READY
+
+依赖：FR-555B2A。
+
+目标：继续审计模型／能力／凭据／fork／删除等慢生命周期 mutation，以及 Context／历史恢复和后台任务的队列、取消和实际 completion 释放语义；在不扩张 PostgreSQL 连接预算的前提下，将低频、无需快速响应的工作放入独立有界通道，并为两类宿主保留一致的 deadline、单飞和错误映射约束。依据实际调用链和负载数据决定容量，不以延长浏览器超时或无限扩池替代隔离。
