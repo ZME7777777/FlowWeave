@@ -386,7 +386,9 @@ async def node_session_activity(
     attempt_id: str,
     container: ContainerDep,
     active_binding_id: str | None = Query(default=None, min_length=1, max_length=36),
-) -> dict[str, list[str]]:
+) -> dict[str, Any]:
+    # The shared activity projection contains both binding-id lists and
+    # structured condensation task records.
     return await run_blocking_history(
         container,
         lambda session: agent_sessions.flow_node_conversations.node_session_activity(

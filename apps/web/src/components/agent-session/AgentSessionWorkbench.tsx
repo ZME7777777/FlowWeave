@@ -4618,9 +4618,12 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     [conversationActivityQuery.data],
   );
   useEffect(() => {
-    if (!workspace || !conversationsQuery.hasNextPage || conversationsQuery.isFetchingNextPage) return;
+    // A server-side page failure must not be retried by every render through
+    // automatic cursor chasing. Preserve successfully loaded pages and wait
+    // for an explicit invalidation/refresh instead.
+    if (!workspace || conversationsQuery.isError || conversationsQuery.isFetchNextPageError || !conversationsQuery.hasNextPage || conversationsQuery.isFetchingNextPage) return;
     void conversationsQuery.fetchNextPage();
-  }, [conversationsQuery.fetchNextPage, conversationsQuery.hasNextPage, conversationsQuery.isFetchingNextPage, workspace]);
+  }, [conversationsQuery.fetchNextPage, conversationsQuery.hasNextPage, conversationsQuery.isError, conversationsQuery.isFetchNextPageError, conversationsQuery.isFetchingNextPage, workspace]);
   const workDirectoriesQuery = useQuery({ queryKey: sessionQueryKey(host, 'work-directories', workspace?.id), queryFn: () => api.workDirectories(workspace!.id), enabled: Boolean(workspace && features.workDirectories) });
   const providersQuery = useQuery({ queryKey: ['model-providers'], queryFn: api.providers, enabled: Boolean(workspace && features.modelSelection) });
   const capabilityCatalogQuery = useQuery({ queryKey: sessionQueryKey(host, 'capability-catalog'), queryFn: api.capabilities, enabled: Boolean(workspace && features.capabilities) });
