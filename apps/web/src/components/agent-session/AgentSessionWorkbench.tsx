@@ -537,6 +537,10 @@ interface WorkspaceConversationGroupProps {
   hasMore?: boolean;
   loadingMore?: boolean;
   onLoadMore?: () => Promise<void>;
+  draggable?: boolean;
+  dragging?: boolean;
+  dropPosition?: 'before' | 'after';
+  onPointerDragStart?: (event: React.PointerEvent<HTMLElement>) => void;
   forceExpanded?: boolean;
   canCreateConversation?: boolean;
   onCreateConversation?: () => void;
@@ -607,7 +611,7 @@ function useAgentSessionHost(): AgentSessionHost {
   return useContext(AgentSessionHostContext);
 }
 
-function WorkspaceConversationGroup({ groupId, label, children, conversationCount, hasMore = false, loadingMore = false, onLoadMore, forceExpanded = false, canCreateConversation = false, onCreateConversation, onDelete }: WorkspaceConversationGroupProps) {
+function WorkspaceConversationGroup({ groupId, label, children, conversationCount, hasMore = false, loadingMore = false, onLoadMore, draggable = false, dragging = false, dropPosition, onPointerDragStart, forceExpanded = false, canCreateConversation = false, onCreateConversation, onDelete }: WorkspaceConversationGroupProps) {
   const [collapsed, setCollapsed] = useState(false);
   const [visibleCount, setVisibleCount] = useState(3);
   const initializedItemCount = useRef(false);
@@ -630,8 +634,8 @@ function WorkspaceConversationGroup({ groupId, label, children, conversationCoun
     if (added > 0 && !collapsed) setVisibleCount(current => current + added);
   }, [collapsed, conversationCount]);
 
-  return <section className={`agent-workspace-group${collapsed ? ' collapsed' : ''}`}>
-    <header>
+  return <section data-work-directory-id={draggable ? groupId : undefined} className={`agent-workspace-group${collapsed ? ' collapsed' : ''}${dragging ? ' dragging' : ''}${dropPosition ? ` drop-${dropPosition}` : ''}`}>
+    <header onPointerDown={draggable ? onPointerDragStart : undefined}>
       <button type="button" className="agent-workspace-group-toggle" aria-label={`${collapsed ? '展开' : '收起'}工作区 ${label}`} aria-expanded={!collapsed} aria-controls={contentId} onClick={() => setCollapsed(current => {
         if (!current) setVisibleCount(3);
         return !current;
@@ -4408,6 +4412,11 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const [dragTarget, setDragTarget] = useState<{ bindingId: string; after: boolean }>();
   const [conversationOrder, setConversationOrder] = useState<Record<string, string[]>>({});
   const [conversationOrderSync, setConversationOrderSync] = useState<Record<string, ConversationOrderSync>>({});
+  const [workDirectoryOrder, setWorkDirectoryOrder] = useState<string[]>([]);
+  const [draggedWorkDirectoryId, setDraggedWorkDirectoryId] = useState<string>();
+  const [workDirectoryDropTarget, setWorkDirectoryDropTarget] = useState<{ id: string; after: boolean }>();
+  const draggedWorkDirectoryRef = useRef<string | undefined>(undefined);
+  const workDirectoryDropTargetRef = useRef<{ id: string; after: boolean } | undefined>(undefined);
   const [optimisticallyRemovedConversationIds, setOptimisticallyRemovedConversationIds] = useState<Set<string>>(() => new Set());
   const [title, setTitle] = useState('');
   const [newConversationProviderId, setNewConversationProviderId] = useState(() => initialBootstrapRecovery.current?.providerId ?? initialConversationDraft.current?.providerId ?? '');
@@ -7481,7 +7490,34 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     else if (composerControl.action === 'interrupt') interrupt.mutate();
     else if (composerControl.action === 'resume') resume.mutate();
   };
-  const workDirectories = workDirectoriesQuery.data?.items ?? [];
+  const workDirectoryOrderStorageKey = workspace ? `flowweave:work-directory-order:${host.id}:${workspace.id}` : undefined;
+  useEffect(() => {
+    if (!workDirectoryOrderStorageKey) {
+      setWorkDirectoryOrder([]);
+      return;
+    }
+    try {
+      const parsed = JSON.parse(localStorage.getItem(workDirectoryOrderStorageKey) ?? '[]');
+      setWorkDirectoryOrder(Array.isArray(parsed) && parsed.every(value => typeof value === 'string') ? parsed : []);
+    } catch {
+      setWorkDirectoryOrder([]);
+    }
+  }, [workDirectoryOrderStorageKey]);
+  const workDirectories = useMemo(() => {
+    const items = workDirectoriesQuery.data?.items ?? [];
+    const byId = new Map(items.map(item => [item.id, item]));
+    const ordered = workDirectoryOrder.flatMap(id => {
+      const item = byId.get(id);
+      return item ? [item] : [];
+    });
+    const known = new Set(ordered.map(item => item.id));
+    return [...ordered, ...items.filter(item => !known.has(item.id))];
+  }, [workDirectoriesQuery.data?.items, workDirectoryOrder]);
+  const persistWorkDirectoryOrder = useCallback((orderedIds: string[]) => {
+    setWorkDirectoryOrder(orderedIds);
+    if (!workDirectoryOrderStorageKey) return;
+    try { localStorage.setItem(workDirectoryOrderStorageKey, JSON.stringify(orderedIds)); } catch { /* browser preference only */ }
+  }, [workDirectoryOrderStorageKey]);
   // A conversation can predate the explicit work-directory binding while
   // still carrying its authoritative working_directory.  Prefer it over the
   // shared project root so paths in its transcript stay relative to the
@@ -7535,6 +7571,61 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       }, WORKSPACE_PATH_COPIED_DURATION_MS);
     }).catch(() => undefined);
   };
+  function previewPointerWorkDirectoryDrop(clientY: number, clientX: number) {
+    const target = document.elementFromPoint(clientX, clientY)?.closest<HTMLElement>('[data-work-directory-id]');
+    const id = target?.dataset.workDirectoryId;
+    const draggedId = draggedWorkDirectoryRef.current;
+    if (!target || !id || !draggedId || id === draggedId) return;
+    const after = clientY >= target.getBoundingClientRect().top + target.getBoundingClientRect().height / 2;
+    const next = { id, after };
+    workDirectoryDropTargetRef.current = next;
+    setWorkDirectoryDropTarget(current => current?.id === id && current.after === after ? current : next);
+  }
+  function endPointerWorkDirectoryDrag() {
+    const draggedId = draggedWorkDirectoryRef.current;
+    const target = workDirectoryDropTargetRef.current;
+    if (draggedId && target && draggedId !== target.id) {
+      const reordered = workDirectories.filter(item => item.id !== draggedId);
+      const targetIndex = reordered.findIndex(item => item.id === target.id);
+      if (targetIndex >= 0) reordered.splice(targetIndex + (target.after ? 1 : 0), 0, workDirectories.find(item => item.id === draggedId)!);
+      persistWorkDirectoryOrder(reordered.map(item => item.id));
+    }
+    draggedWorkDirectoryRef.current = undefined;
+    workDirectoryDropTargetRef.current = undefined;
+    setDraggedWorkDirectoryId(undefined);
+    setWorkDirectoryDropTarget(undefined);
+  }
+  function startPointerWorkDirectoryDrag(event: React.PointerEvent<HTMLElement>, directoryId: string) {
+    if (event.button !== 0 || (event.target instanceof Element && event.target.closest('.agent-workspace-group-actions'))) return;
+    const startX = event.clientX;
+    const startY = event.clientY;
+    let dragging = false;
+    const move = (pointerEvent: PointerEvent) => {
+      if (!dragging && Math.hypot(pointerEvent.clientX - startX, pointerEvent.clientY - startY) < 6) return;
+      if (!dragging) {
+        dragging = true;
+        draggedWorkDirectoryRef.current = directoryId;
+        workDirectoryDropTargetRef.current = undefined;
+        setDraggedWorkDirectoryId(directoryId);
+        setWorkDirectoryDropTarget(undefined);
+        document.body.style.userSelect = 'none';
+      }
+      previewPointerWorkDirectoryDrop(pointerEvent.clientY, pointerEvent.clientX);
+    };
+    const end = (pointerEvent: PointerEvent) => {
+      window.removeEventListener('pointermove', move, true);
+      window.removeEventListener('pointerup', end, true);
+      window.removeEventListener('pointercancel', end, true);
+      if (dragging) {
+        pointerEvent.preventDefault();
+        document.body.style.userSelect = '';
+        endPointerWorkDirectoryDrag();
+      }
+    };
+    window.addEventListener('pointermove', move, true);
+    window.addEventListener('pointerup', end, true);
+    window.addEventListener('pointercancel', end, true);
+  }
   function previewPointerConversationDrop(clientX: number, clientY: number) {
     const target = document.elementFromPoint(clientX, clientY)
       ?.closest<HTMLElement>('[data-conversation-binding-id]');
@@ -7747,7 +7838,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
             <WorkspaceConversationGroup groupId="root" label="根工作区" conversationCount={rootConversations.length} hasMore={Boolean(conversationPagesByScope.__root__?.next_cursor)} loadingMore={loadingConversationScope === '__root__'} onLoadMore={() => loadMoreConversations('__root__')} forceExpanded={Boolean(revealedUnpinnedConversation && !revealedUnpinnedConversation.work_directory_id)} canCreateConversation={canOpenConversation} onCreateConversation={() => openConversationDraft({ displayName: '根工作区' })}>
               {visibleCount => <>{pendingBootstrapItem && !pendingBootstrap?.draft.workDirectoryId ? pendingBootstrapItem : recoverableDraftItem(undefined, '根工作区')}{rootConversations.slice(0, visibleCount).map(item => conversationRow(item, rootConversations))}</>}
             </WorkspaceConversationGroup>
-            {features.workDirectories && workDirectories.map(directory => <WorkspaceConversationGroup key={directory.id} groupId={directory.id} label={directory.display_name} conversationCount={conversationsForDirectory(directory.id).length} hasMore={Boolean(conversationPagesByScope[directory.id]?.next_cursor)} loadingMore={loadingConversationScope === directory.id} onLoadMore={() => loadMoreConversations(directory.id)} forceExpanded={revealedUnpinnedConversation?.work_directory_id === directory.id} canCreateConversation={canOpenConversation} onCreateConversation={() => openConversationDraft({ workDirectoryId: directory.id, displayName: directory.display_name })} onDelete={api.deleteWorkDirectory && runtimeWritable ? () => void removeWorkDirectory(directory) : undefined}>
+            {features.workDirectories && workDirectories.map(directory => <WorkspaceConversationGroup key={directory.id} groupId={directory.id} label={directory.display_name} conversationCount={conversationsForDirectory(directory.id).length} hasMore={Boolean(conversationPagesByScope[directory.id]?.next_cursor)} loadingMore={loadingConversationScope === directory.id} onLoadMore={() => loadMoreConversations(directory.id)} draggable dragging={draggedWorkDirectoryId === directory.id} dropPosition={workDirectoryDropTarget?.id === directory.id ? (workDirectoryDropTarget.after ? 'after' : 'before') : undefined} onPointerDragStart={event => startPointerWorkDirectoryDrag(event, directory.id)} forceExpanded={revealedUnpinnedConversation?.work_directory_id === directory.id} canCreateConversation={canOpenConversation} onCreateConversation={() => openConversationDraft({ workDirectoryId: directory.id, displayName: directory.display_name })} onDelete={api.deleteWorkDirectory && runtimeWritable ? () => void removeWorkDirectory(directory) : undefined}>
               {visibleCount => { const group = conversationsForDirectory(directory.id); return <>{pendingBootstrapItem && pendingBootstrap?.draft.workDirectoryId === directory.id ? pendingBootstrapItem : recoverableDraftItem(directory.id, directory.display_name)}{group.slice(0, visibleCount).map(item => conversationRow(item, group))}</>}}
             </WorkspaceConversationGroup>)}</>}
       </div>
