@@ -4726,9 +4726,12 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         if (
           refreshedItems.length !== existing.items.length
           || refreshedItems.some((item, index) => item !== existing.items[index])
-          || page.next_cursor !== existing.next_cursor
         ) {
-          next[scope.key] = { ...existing, next_cursor: page.next_cursor, items: refreshedItems };
+          // `existing.next_cursor` is the tail of the cursor chain after every
+          // page the user has already revealed. The initial query only refreshes
+          // the first page; replacing that tail with its first-page cursor would
+          // request an already-rendered page again on the next “展开显示”.
+          next[scope.key] = { ...existing, items: refreshedItems };
           changed = true;
         }
       }
@@ -6887,6 +6890,19 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       refresh();
     },
     onError: (error, bindingId, context) => {
+      // A stale browser row can race another tab (or an earlier completed
+      // delete) that has already removed the binding. The API's scoped 404 is
+      // therefore the idempotent terminal state for this DELETE, not a reason
+      // to restore a Conversation that the server confirms no longer exists.
+      if (error instanceof ApiError
+        && error.status === 404
+        && error.code === 'AGENT_CONVERSATION_NOT_FOUND') {
+        composerDraftsByScope.current.delete(bindingId);
+        conversationDraftsByScope.current.delete(bindingId);
+        if (workspace) clearConversationComposerDraft(host.id, workspace.id, bindingId);
+        refresh();
+        return;
+      }
       if (workspace && context) {
         const conversationsKey = sessionQueryKey(host, 'conversations', workspace.id);
         const conversationKey = sessionQueryKey(host, 'conversation', workspace.id, bindingId);
