@@ -951,15 +951,26 @@ def node_session_activity(
         item.id for item in bindings if item.openhands_conversation_id in failed_native_ids
     }
     for item in bindings:
+        activity = native_activity.get(item.openhands_conversation_id)
         is_running = item.id in running_binding_ids
         completed_in_background = (
             item.activity_was_running
-            and not is_running
+            and activity is not None
+            and activity.execution_status == "finished"
             and item.id != active_binding_id
         )
-        if completed_in_background and not item.unread:
-            item.unread = True
-            item.unread_origin = "MANUAL"
+        if completed_in_background:
+            result = runtime.read_active_events(_handle(db, item)).result
+            if (
+                result is not None
+                and result.status == "COMPLETED"
+                and result.completion_event_kind == "ASSISTANT_MESSAGE"
+                and result.completion_event_id is not None
+                and result.final_message
+                and not item.unread
+            ):
+                item.unread = True
+                item.unread_origin = "MANUAL"
         if item.id in attention_binding_ids:
             # Preserve MANUAL unread and an explicit SYSTEM acknowledgement
             # (SYSTEM + unread=False). Otherwise an active native abnormality
@@ -969,7 +980,7 @@ def node_session_activity(
                 item.unread_origin = "SYSTEM"
         elif not item.unread and item.unread_origin == "SYSTEM":
             item.unread_origin = None
-        if item.activity_was_running != is_running:
+        if activity is not None and item.activity_was_running != is_running:
             item.activity_was_running = is_running
     db.flush()
     return {

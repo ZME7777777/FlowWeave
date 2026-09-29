@@ -4377,6 +4377,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     return recovery ? { draft: recovery.draft, message: recovery.message } : undefined;
   });
   const [hiddenEventIds, setHiddenEventIds] = useState<Set<string>>(() => new Set());
+  const [deferredRewriteUserEventIds, setDeferredRewriteUserEventIds] = useState<Set<string>>(() => new Set());
   const [turnState, setTurnState] = useState<TurnState>('idle');
   const [activeTurnEventId, setActiveTurnEventId] = useState<string>();
   const [expiredTerminalSyncTurnKey, setExpiredTerminalSyncTurnKey] = useState<string>();
@@ -4539,8 +4540,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const routeBindingId = host.bindingIdFromPathname(withoutDeploymentBase(window.location.pathname));
   const selectedBindingId = activityPreviewBindingId ?? routeBindingId;
   const previousComposerScope = useRef<string | undefined>(undefined);
-  const activityBaseline = useRef<Map<string, boolean>>(new Map());
-  const activityBaselineInitialized = useRef(false);
   const pendingUnreadUpdates = useRef(new Map<string, { id: number; unread: boolean; unreadOrigin?: AgentConversation['unread_origin'] }>());
   const nextUnreadUpdateId = useRef(0);
   const [unreadConversationIds, setUnreadConversationIds] = useState<Set<string>>(() => new Set());
@@ -4662,6 +4661,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     refetchInterval: pageVisible ? 15_000 : false,
     retry: false,
   });
+  useEffect(() => {
+    if (!workspace || !conversationActivityQuery.data) return;
+    void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversations', workspace.id) });
+  }, [conversationActivityQuery.data, host, queryClient, workspace]);
   const runningConversationIds = useMemo(
     () => new Set(conversationActivityQuery.data?.running_binding_ids ?? []),
     [conversationActivityQuery.data],
@@ -4980,63 +4983,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       return next;
     });
   }, [conversations]);
-  useEffect(() => {
-    if (!conversationActivityQuery.data || Object.keys(conversationPagesByScope).length === 0) return;
-    const present = new Set(conversations.map(item => item.id));
-    const isRunning = (item: AgentConversation) => runningConversationIds.has(item.id);
-    if (!activityBaselineInitialized.current) {
-      for (const item of conversations) activityBaseline.current.set(item.id, isRunning(item));
-      activityBaselineInitialized.current = true;
-      return;
-    }
-    const completedInBackground = conversations.filter(item => (
-      activityBaseline.current.get(item.id) === true
-      && !isRunning(item)
-      && item.id !== routeBindingId
-    ));
-    const attentionInBackground = conversations.filter(item => (
-      item.id !== routeBindingId
-      && (possiblyStuckConversationIds.has(item.id) || failedConversationIds.has(item.id))
-    ));
-    const suppressAcknowledgedSystemAlert = (item: AgentConversation) => (
-      attentionInBackground.includes(item)
-      && !item.unread
-      && item.unread_origin === 'SYSTEM'
-    );
-    const systemUnreadInBackground = new Map(
-      attentionInBackground
-        .filter(item => !suppressAcknowledgedSystemAlert(item))
-        .map(item => [item.id, item]),
-    );
-    for (const item of systemUnreadInBackground.values()) {
-      const pendingUnread = pendingUnreadUpdates.current.get(item.id)?.unread;
-      if (pendingUnread ?? item.unread) continue;
-      setConversationUnread(item.id, true, 'SYSTEM');
-    }
-    const newlyCompletedInBackground = completedInBackground.filter(item => {
-      const pendingUnread = pendingUnreadUpdates.current.get(item.id)?.unread;
-      return !item.unread && pendingUnread !== true && !suppressAcknowledgedSystemAlert(item);
-    });
-    setUnreadConversationIds(current => {
-      const next = new Set<string>();
-      for (const item of conversations) {
-        const pendingUnread = pendingUnreadUpdates.current.get(item.id)?.unread;
-        if (pendingUnread ?? item.unread) next.add(item.id);
-        if (systemUnreadInBackground.has(item.id)) next.add(item.id);
-        else if (current.has(item.id) && item.unread === undefined && pendingUnread === undefined) next.add(item.id);
-      }
-      return next;
-    });
-    for (const item of conversations) {
-      activityBaseline.current.set(item.id, isRunning(item));
-    }
-    for (const item of newlyCompletedInBackground) {
-      setConversationUnread(item.id, true, 'MANUAL');
-    }
-    for (const bindingId of activityBaseline.current.keys()) {
-      if (!present.has(bindingId)) activityBaseline.current.delete(bindingId);
-    }
-  }, [conversations, failedConversationIds, possiblyStuckConversationIds, routeBindingId, runningConversationIds, setConversationUnread]);
   useEffect(() => {
     if (Object.keys(conversationPagesByScope).length === 0) return;
     const present = new Set(conversations.map(item => item.id));
@@ -5756,9 +5702,11 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   }, [conversationDraft?.id, eventsQuery.data?.events, scopedLiveEvents, selected?.id]);
   const displayedEvents = useMemo(() => {
     const hiddenBranchIds = eventBranchIdsFromRoots(currentFormalEvents, hiddenEventIds);
-    const visibleFormalEvents = currentFormalEvents.filter(event => !hiddenBranchIds.has(event.id));
+    const visibleFormalEvents = currentFormalEvents.filter(event => (
+      !hiddenBranchIds.has(event.id) && !deferredRewriteUserEventIds.has(event.id)
+    ));
     return projectLocalMessages(visibleFormalEvents, activeLocalMessageProjections);
-  }, [activeLocalMessageProjections, currentFormalEvents, hiddenEventIds]);
+  }, [activeLocalMessageProjections, currentFormalEvents, deferredRewriteUserEventIds, hiddenEventIds]);
   const cachedHistoryMarkerCount = useMemo(() => {
     void historyCacheRevision;
     if (!selected || !eventsQuery.data?.history_cursor) return 0;
@@ -6266,7 +6214,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       bootstrapTransitionScope.current = undefined;
       return;
     }
-    setEditing(false); setQueuedMessageMenuId(undefined); pendingLiveEvents.current = []; if (liveEventsFrame.current !== undefined) window.cancelAnimationFrame(liveEventsFrame.current); liveEventsFrame.current = undefined; setScopedLiveEvents(current => current.filter(item => item.scope === composerScope)); setLocalMessageProjectionRevision(current => current + 1); setHiddenEventIds(new Set()); setActiveTurnEventId(undefined); setExpiredTerminalSyncTurnKey(undefined); setRequestStartedAt(undefined); setConfirmationReason(''); setTurnState('idle'); queuedMessagesRef.current = []; setQueuedMessages([]); setPendingRewrite(undefined);
+    setEditing(false); setQueuedMessageMenuId(undefined); pendingLiveEvents.current = []; if (liveEventsFrame.current !== undefined) window.cancelAnimationFrame(liveEventsFrame.current); liveEventsFrame.current = undefined; setScopedLiveEvents(current => current.filter(item => item.scope === composerScope)); setLocalMessageProjectionRevision(current => current + 1); setHiddenEventIds(new Set()); setDeferredRewriteUserEventIds(new Set()); setActiveTurnEventId(undefined); setExpiredTerminalSyncTurnKey(undefined); setRequestStartedAt(undefined); setConfirmationReason(''); setTurnState('idle'); queuedMessagesRef.current = []; setQueuedMessages([]); setPendingRewrite(undefined);
     if (recoveredComposer && composerScope) {
       composerDraftsByScope.current.set(composerScope, recoveredComposer);
       replaceComposerDraft(recoveredComposer.content, composerScope);
@@ -7071,6 +7019,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
           if (!projection) return;
           current.set(context.optimisticEventId, { ...projection, canonicalEventId: cursor, state: 'accepted' });
         });
+        setDeferredRewriteUserEventIds(current => new Set([...current, cursor]));
         releaseDeferredFormalUserEvents(context.scope);
       }
       refresh();

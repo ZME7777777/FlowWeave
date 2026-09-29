@@ -3520,6 +3520,121 @@ def test_agent_workspace_conversation_activity_maps_native_unready_ids(
     assert runtime.calls == 1
 
 
+def test_agent_workspace_activity_marks_background_unread_only_after_formal_final_reply(
+    settings, db_session_factory, monkeypatch
+):
+    monkeypatch.setattr(
+        conversations,
+        "runtime_provider",
+        lambda _db, asset, **kwargs: RuntimeProvider(
+            provider_id=asset["asset"]["executor"]["model_provider_id"],
+            base_url="https://models.example.test/v1",
+            model=kwargs.get("model_name") or "test-model",
+            api_key="x",
+            reasoning_effort=kwargs.get("reasoning_effort"),
+        ),
+    )
+
+    class ActivityRuntime(MockRuntime):
+        conversation_id = ""
+        status = "running"
+        final_result: RuntimeResult | None = None
+
+        def conversation_activity_snapshot(self, _handle):
+            return {
+                self.conversation_id: RuntimeConversationActivity(
+                    conversation_id=self.conversation_id,
+                    execution_status=self.status,
+                    updated_at="2999-01-01T00:00:00+00:00",
+                )
+            }
+
+        def read_active_events(self, _handle):
+            return RuntimeEventBatch(result=self.final_result)
+
+    runtime = ActivityRuntime()
+    with settings_context(settings), db_session_factory() as db, runtime_context(runtime):
+        workspace = _ready_workspace_for_conversation(db)
+        created = conversations.create_conversation(
+            db,
+            workspace.id,
+            "后台完成会话",
+            workspace.default_model_provider_id,
+            "final-reply-unread",
+        )
+        binding = db.get(AgentConversationBinding, created["id"])
+        assert binding is not None
+        runtime.conversation_id = binding.openhands_conversation_id
+
+        conversations.conversation_activity(db, workspace.id)
+        assert binding.activity_was_running is True
+
+        runtime.status = "finished"
+        conversations.conversation_activity(db, workspace.id)
+        assert binding.unread is False
+
+        binding.activity_was_running = True
+        runtime.final_result = RuntimeResult(
+            status="COMPLETED",
+            final_message="正式最终回复",
+            completion_event_id="assistant-final",
+            completion_event_kind="ASSISTANT_MESSAGE",
+        )
+        conversations.conversation_activity(db, workspace.id)
+        assert binding.unread is True
+        assert binding.unread_origin == "MANUAL"
+
+
+def test_agent_workspace_activity_ignores_missing_snapshot_for_running_conversation(
+    settings, db_session_factory, monkeypatch
+):
+    monkeypatch.setattr(
+        conversations,
+        "runtime_provider",
+        lambda _db, asset, **kwargs: RuntimeProvider(
+            provider_id=asset["asset"]["executor"]["model_provider_id"],
+            base_url="https://models.example.test/v1",
+            model=kwargs.get("model_name") or "test-model",
+            api_key="x",
+            reasoning_effort=kwargs.get("reasoning_effort"),
+        ),
+    )
+
+    class ActivityRuntime(MockRuntime):
+        conversation_id = ""
+        visible = True
+
+        def conversation_activity_snapshot(self, _handle):
+            if not self.visible:
+                return {}
+            return {
+                self.conversation_id: RuntimeConversationActivity(
+                    conversation_id=self.conversation_id,
+                    execution_status="running",
+                    updated_at="2999-01-01T00:00:00+00:00",
+                )
+            }
+
+    runtime = ActivityRuntime()
+    with settings_context(settings), db_session_factory() as db, runtime_context(runtime):
+        workspace = _ready_workspace_for_conversation(db)
+        created = conversations.create_conversation(
+            db, workspace.id, "运行中会话", workspace.default_model_provider_id, "missing-activity"
+        )
+        binding = db.get(AgentConversationBinding, created["id"])
+        assert binding is not None
+        runtime.conversation_id = binding.openhands_conversation_id
+
+        conversations.conversation_activity(db, workspace.id)
+        assert binding.activity_was_running is True
+
+        runtime.visible = False
+        conversations.conversation_activity(db, workspace.id)
+        assert binding.activity_was_running is True
+        assert binding.unread is False
+
+
+
 def test_agent_workspace_activity_persists_system_unread_and_honors_acknowledgement(
     settings, db_session_factory, monkeypatch
 ):
