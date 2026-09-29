@@ -2,6 +2,7 @@ import { BookOpen, Check, ChevronDown, ChevronRight, CircleAlert, ClipboardList,
 import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type RefObject } from 'react';
 import type { AgentActivitySummary, AgentAttachment, AgentConversationAnnotation, AgentConversationReference, AgentWorkspaceReference, OpenHandsConversationEvent, RuntimeTaskControlSnapshot } from '../types';
 import { SubagentAvatar } from './SubagentAvatar';
+import { ConversationTextReveal } from './ConversationTextReveal';
 import { useEscapeClose } from './useEscapeClose';
 import { subagentAvatarSlotForEvent, subagentAvatarSlots, type SubagentAvatarSlot } from '../utils/subagentAvatar';
 import { workspaceFileChanges, workspaceRelativePath, type WorkspaceFileChange } from './agent-session/fileChanges';
@@ -523,6 +524,11 @@ function detailContent(value: unknown): string {
   return typeof value === 'string' ? value.trim().slice(0, 12_000) : '';
 }
 
+function eventRevealSignature(event: OpenHandsConversationEvent): string {
+  const { content, thought, summary, event_name: eventName, tool_name: toolName, details, runtime_skill: runtimeSkill, runtime_task: runtimeTask } = event.payload;
+  return JSON.stringify({ content, thought, summary, eventName, toolName, details, runtimeSkill, runtimeTask });
+}
+
 function workspacePath(value: string, workspaceRoot?: string | null): string {
   return workspaceRelativePath(value, workspaceRoot);
 }
@@ -819,12 +825,13 @@ function displayDetails(details: Record<string, unknown>, workspaceRoot?: string
   return Object.keys(visible).length ? workspaceRelativeText(JSON.stringify(visible, null, 2), workspaceRoot).slice(0, 12_000) : '';
 }
 
-function ToolDetailPanel({ presentation, eventName, toolName, toolVisual, results, workspaceRoot }: {
+function ToolDetailPanel({ presentation, eventName, toolName, toolVisual, results, reveal = false, workspaceRoot }: {
   presentation: ActivityPresentation;
   eventName: string;
   toolName?: string;
   toolVisual: ToolVisualKind;
   results: Item[];
+  reveal?: boolean;
   workspaceRoot?: string | null;
 }) {
   const details = presentation.actionDetails ?? {};
@@ -848,11 +855,12 @@ function ToolDetailPanel({ presentation, eventName, toolName, toolVisual, result
     isTaskTracker={isTaskTracker}
     eventName={eventName}
     toolName={toolName}
+    reveal={reveal}
     workspaceRoot={workspaceRoot}
   /></div>;
 }
 
-function ToolDetailContent({ details, resultDetails, results, presentation, isTerminal, isFile, isTaskTracker, eventName, toolName, workspaceRoot }: {
+function ToolDetailContent({ details, resultDetails, results, presentation, isTerminal, isFile, isTaskTracker, eventName, toolName, reveal = false, workspaceRoot }: {
   details: Record<string, unknown>;
   resultDetails: Record<string, unknown>;
   results: Item[];
@@ -862,6 +870,7 @@ function ToolDetailContent({ details, resultDetails, results, presentation, isTe
   isTaskTracker: boolean;
   eventName: string;
   toolName?: string;
+  reveal?: boolean;
   workspaceRoot?: string | null;
 }) {
   const taskSnapshot = isTaskTracker ? taskListSnapshot(details, resultDetails, presentation.resultTimestamp) : undefined;
@@ -884,24 +893,24 @@ function ToolDetailContent({ details, resultDetails, results, presentation, isTe
         </div>
         <TaskListItems items={taskSnapshot.items} source={taskSnapshot.timestamp ? `OpenHands 原生任务事件 · ${formatMessageTime(taskSnapshot.timestamp)}` : 'OpenHands 原生任务事件'}/>
       </>}
-      {isTerminal && presentation.command && <pre><code>{`$ ${presentation.command}`}</code></pre>}
+      {isTerminal && presentation.command && <pre><code><ConversationTextReveal reveal={reveal}>{`$ ${presentation.command}`}</ConversationTextReveal></code></pre>}
       {isFile && <dl>
-        {presentation.operation && <><dt>操作</dt><dd>{presentation.operation}</dd></>}
-        {presentation.path && <><dt>路径</dt><dd>{presentation.path}</dd></>}
-        {Array.isArray(details.view_range) && <><dt>行范围</dt><dd>{details.view_range.join(' - ')}</dd></>}
-        {typeof details.insert_line === 'number' && <><dt>插入行</dt><dd>{details.insert_line}</dd></>}
+        {presentation.operation && <><dt>操作</dt><dd><ConversationTextReveal reveal={reveal}>{presentation.operation}</ConversationTextReveal></dd></>}
+        {presentation.path && <><dt>路径</dt><dd><ConversationTextReveal reveal={reveal}>{presentation.path}</ConversationTextReveal></dd></>}
+        {Array.isArray(details.view_range) && <><dt>行范围</dt><dd><ConversationTextReveal reveal={reveal}>{details.view_range.join(' - ')}</ConversationTextReveal></dd></>}
+        {typeof details.insert_line === 'number' && <><dt>插入行</dt><dd><ConversationTextReveal reveal={reveal}>{String(details.insert_line)}</ConversationTextReveal></dd></>}
       </dl>}
-      {fileText && <><small>写入内容</small><pre><code>{fileText}</code></pre></>}
-      {oldText && <><small>替换前</small><pre><code>{oldText}</code></pre></>}
-      {newText && <><small>替换后</small><pre><code>{newText}</code></pre></>}
-      {!isTerminal && !isFile && !isTaskTracker && structured && <><small>原始操作</small><pre><code>{structured}</code></pre></>}
-      {!isTaskTracker && output && <><small>执行结果</small><pre><code>{output}</code></pre></>}
-      {!isTerminal && !isFile && !isTaskTracker && structuredResult && <><small>结果信息</small><pre><code>{structuredResult}</code></pre></>}
+      {fileText && <><small>写入内容</small><pre><code><ConversationTextReveal reveal={reveal}>{fileText}</ConversationTextReveal></code></pre></>}
+      {oldText && <><small>替换前</small><pre><code><ConversationTextReveal reveal={reveal}>{oldText}</ConversationTextReveal></code></pre></>}
+      {newText && <><small>替换后</small><pre><code><ConversationTextReveal reveal={reveal}>{newText}</ConversationTextReveal></code></pre></>}
+      {!isTerminal && !isFile && !isTaskTracker && structured && <><small>原始操作</small><pre><code><ConversationTextReveal reveal={reveal}>{structured}</ConversationTextReveal></code></pre></>}
+      {!isTaskTracker && output && <><small>执行结果</small><pre><code><ConversationTextReveal reveal={reveal}>{output}</ConversationTextReveal></code></pre></>}
+      {!isTerminal && !isFile && !isTaskTracker && structuredResult && <><small>结果信息</small><pre><code><ConversationTextReveal reveal={reveal}>{structuredResult}</ConversationTextReveal></code></pre></>}
       {presentation.exitCode && <small>退出码 {presentation.exitCode}</small>}
     </>;
 }
 
-function TaskTrackerCard({ entry, presentation, running }: { entry: ActivityEntry; presentation: ActivityPresentation; running: boolean }) {
+function TaskTrackerCard({ entry, presentation, reveal = false, running }: { entry: ActivityEntry; presentation: ActivityPresentation; reveal?: boolean; running: boolean }) {
   const action = entry.action ?? entry.item;
   const result = entry.results.at(-1);
   const snapshot = taskListSnapshot(
@@ -913,7 +922,7 @@ function TaskTrackerCard({ entry, presentation, running }: { entry: ActivityEntr
   const loading = !result && action.event.event_type === 'TOOL_CALL';
   const progress = snapshot ? `${completed} / ${snapshot.items.length} 已完成` : undefined;
   const status = loading ? '正在更新' : [snapshot?.command === 'plan' ? '已更新' : '当前快照', progress].filter(Boolean).join(' · ');
-  return <details className={`conversation-activity-row tool conversation-tool-detail task-tracker${running ? ' running' : ''}`} aria-label={`任务列表：${presentation.title}`}>
+  return <details className={`conversation-activity-row tool conversation-tool-detail task-tracker${running ? ' running' : ''}${reveal ? ' conversation-text-reveal-block' : ''}`} aria-label={`任务列表：${presentation.title}`}>
     <summary><ClipboardList size={13}/><div><b>{presentation.title}</b><small>{status}</small></div><ChevronRight className="conversation-expand-arrow" size={12}/></summary>
     <div className="conversation-tool-detail-panel conversation-task-tracker-body">
       {snapshot ? <><div className="conversation-task-list-summary"><span>{snapshot.command === 'plan' ? '任务清单' : '任务清单快照'}</span><small>{progress}</small></div><TaskListItems items={snapshot.items} source={snapshot.timestamp ? `OpenHands 原生任务事件 · ${formatMessageTime(snapshot.timestamp)}` : 'OpenHands 原生任务事件'}/></> : <p className="conversation-task-tracker-note">正在读取任务清单…</p>}
@@ -921,7 +930,7 @@ function TaskTrackerCard({ entry, presentation, running }: { entry: ActivityEntr
   </details>;
 }
 
-function SkillLoadRow({ entry, running }: { entry: ActivityEntry; running: boolean }) {
+function SkillLoadRow({ entry, reveal = false, running }: { entry: ActivityEntry; reveal?: boolean; running: boolean }) {
   const action = entry.action ?? entry.item;
   const result = entry.results.at(-1);
   const actionSkill = action.event.payload.runtime_skill;
@@ -931,7 +940,7 @@ function SkillLoadRow({ entry, running }: { entry: ActivityEntry; running: boole
   const phase = resultSkill?.phase ?? actionSkill?.phase ?? (result ? 'LOADED' : 'INVOKED');
   const failed = phase === 'ERROR' || result?.event.payload.details?.is_error === true;
   const status = failed ? '加载失败' : phase === 'LOADED' ? '已加载' : '加载中';
-  return <article className={`conversation-activity-row tool skill-load${failed ? ' error' : running ? ' running' : ''}`} aria-label={`加载 Skill：${skillName}`}>
+  return <article className={`conversation-activity-row tool skill-load${failed ? ' error' : running ? ' running' : ''}${reveal ? ' conversation-text-reveal-block' : ''}`} aria-label={`加载 Skill：${skillName}`}>
     <BookOpen size={13}/><div><b>{`加载 Skill ${skillName}`}</b><small>{status}</small></div>
   </article>;
 }
@@ -1180,7 +1189,7 @@ function ActivityEntryRow({ entry, active, reveal = false, paused = false, paren
   const ToolIcon = toolVisual === 'terminal' ? SquareTerminal : toolVisual === 'file' ? fileToolIcon(presentation) : toolVisual === 'browser' ? PanelTop : toolVisual === 'mcp' ? PlugZap : toolVisual === 'workflow' ? Workflow : Icon;
   const taskAvatar = avatarSlot && <SubagentAvatar slot={avatarSlot} status={taskAvatarStatus(entry, item, paused, parentFailed)} size={13}/>;
   const toolDetail = item.kind === 'tool'
-    ? <ToolDetailPanel presentation={presentation} eventName={eventName} toolName={toolName || undefined} toolVisual={toolVisual} results={entry.results} workspaceRoot={workspaceRoot}/>
+    ? <ToolDetailPanel presentation={presentation} eventName={eventName} toolName={toolName || undefined} toolVisual={toolVisual} results={entry.results} reveal={reveal} workspaceRoot={workspaceRoot}/>
     : null;
   const condensationRunning = active && !paused && !parentFailed && item.kind === 'condensation' && item.event.event_type === 'CONDENSATION_REQUESTED' && entry.results.length === 0;
   const isNativeThink = item.event.event_type === 'THOUGHT';
@@ -1195,11 +1204,11 @@ function ActivityEntryRow({ entry, active, reveal = false, paused = false, paren
   </article>;
   if (eventName === 'TaskTrackerAction' || eventName === 'TaskTrackerObservation') return <div className={`conversation-tool-entry semantic tool-${toolVisual}`}>
     {!hideThought && presentation.thought && <article {...thoughtAttributes} className={`conversation-activity-row thought tool-thought tool-${toolVisual}`}><MessageMarkdown reveal={reveal}>{presentation.thought}</MessageMarkdown></article>}
-    <TaskTrackerCard entry={entry} presentation={presentation} running={toolRunning}/>
+    <TaskTrackerCard entry={entry} presentation={presentation} reveal={reveal} running={toolRunning}/>
   </div>;
   if (eventName === 'InvokeSkillAction' || eventName === 'InvokeSkillObservation') return <div className={`conversation-tool-entry semantic tool-${toolVisual}`}>
     {!hideThought && presentation.thought && <article {...thoughtAttributes} className={`conversation-activity-row thought tool-thought tool-${toolVisual}`}><MessageMarkdown reveal={reveal}>{presentation.thought}</MessageMarkdown></article>}
-    <SkillLoadRow entry={entry} running={toolRunning}/>
+    <SkillLoadRow entry={entry} reveal={reveal} running={toolRunning}/>
   </div>;
   if (item.kind === 'tool' && toolDetail) return <div className={`conversation-tool-entry tool-${toolVisual}`}>
     {!hideThought && presentation.thought && <article {...thoughtAttributes} className={`conversation-activity-row thought tool-thought tool-${toolVisual}`}>
@@ -1255,7 +1264,7 @@ function ProgressActivity({ group, active, revealEventIds, paused, parentFailed,
       <span className="conversation-progress-summary-content"><b>{label}</b>{running && currentTitle && <small className="conversation-progress-current" role="status">{currentTitle}</small>}<span className="conversation-progress-tail"><span className="conversation-progress-icons" aria-label={`包含 ${operationIcons.length} 个操作`}>{visibleOperationIcons.map(({ id, Icon: OperationIcon, label: operationLabel }) => <OperationIcon key={id} size={12} aria-label={operationLabel}/>)}{hiddenOperationCount > 0 && <small className="conversation-progress-overflow" aria-label={`另有 ${hiddenOperationCount} 个操作`}>{`+${hiddenOperationCount}`}</small>}</span><ChevronRight className="conversation-expand-arrow" size={12}/></span></span>
     </summary>
     <div className="conversation-progress-group-list">
-      {group.entries.map((entry, index) => <ActivityEntryRow key={entry.id} entry={entry} active={active} reveal={revealEventIds.has(entry.item.event.id)} paused={paused} parentFailed={parentFailed} hideThought={index === 0 && entry.action?.event.id === group.progress.event.id} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/>)}
+      {group.entries.map((entry, index) => <ActivityEntryRow key={entry.id} entry={entry} active={active} reveal={entryHasRevealedText(entry, revealEventIds)} paused={paused} parentFailed={parentFailed} hideThought={index === 0 && entry.action?.event.id === group.progress.event.id} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/>)}
     </div>
   </details>;
 }
@@ -1277,6 +1286,12 @@ function sameActivityItems(left: Item[], right: Item[]): boolean {
   return left.length === right.length && left.every((item, index) => (
     item.event === right[index]?.event && item.kind === right[index]?.kind
   ));
+}
+
+function entryHasRevealedText(entry: ActivityEntry, revealEventIds: ReadonlySet<string>): boolean {
+  return revealEventIds.has(entry.item.event.id)
+    || Boolean(entry.action && revealEventIds.has(entry.action.event.id))
+    || entry.results.some(result => revealEventIds.has(result.event.id));
 }
 
 const ActivityGroup = memo(function ActivityGroup({ items, active, revealEventIds, completionConfirmed = false, paused = false, parentFailed = false, startedAt, finishedAt, avatarSlots, workspaceRoot }: ActivityGroupProps) {
@@ -1312,7 +1327,7 @@ const ActivityGroup = memo(function ActivityGroup({ items, active, revealEventId
     <div className="conversation-activity-list">
       {rows.map(row => row.kind === 'progress-group'
         ? <ProgressActivity key={row.group.id} group={row.group} active={active} revealEventIds={revealEventIds} paused={paused} parentFailed={parentFailed} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/>
-        : <ActivityEntryRow key={row.entry.id} entry={row.entry} active={active} reveal={revealEventIds.has(row.entry.item.event.id)} paused={paused} parentFailed={parentFailed} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/>)}
+        : <ActivityEntryRow key={row.entry.id} entry={row.entry} active={active} reveal={entryHasRevealedText(row.entry, revealEventIds)} paused={paused} parentFailed={parentFailed} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/>)}
     </div>
   </details>;
 }, (previous, next) => (
@@ -1673,16 +1688,15 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
     () => events.filter(event => !isPauseInterruptionEvent(event)),
     [events],
   );
-  const visibleEventSignature = useMemo(() => visibleEvents.map(event => [
-    event.id,
-    typeof event.payload.content === 'string' ? event.payload.content : '',
-    typeof event.payload.thought === 'string' ? event.payload.thought : '',
-  ] as const), [visibleEvents]);
+  const visibleEventSignature = useMemo(
+    () => visibleEvents.map(event => [event.id, eventRevealSignature(event)] as const),
+    [visibleEvents],
+  );
   const revealedEventContent = useRef(new Map<string, string>());
   const revealScope = useRef<string | undefined>(undefined);
   const [revealEventIds, setRevealEventIds] = useState<ReadonlySet<string>>(() => new Set());
   useLayoutEffect(() => {
-    const current = new Map(visibleEventSignature.map(([id, content, thought]) => [id, `${content}\u001f${thought}`]));
+    const current = new Map(visibleEventSignature);
     if (revealScope.current !== conversationScope || !liveTextReveal) {
       revealScope.current = conversationScope;
       revealedEventContent.current = current;
