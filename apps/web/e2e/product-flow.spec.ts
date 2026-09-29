@@ -2270,6 +2270,12 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   const optimisticAttachment = optimisticAmbiguousMessage.locator('.conversation-message-attachment').filter({ hasText: '即时附件.png' });
   await expect(optimisticAttachment).toBeVisible();
   await expect(optimisticAttachment).toContainText('image/png · 174 KB');
+  const attachmentBeforeContent = await optimisticAmbiguousMessage.evaluate(message => {
+    const attachments = message.querySelector(':scope > .conversation-message-attachments');
+    const content = message.querySelector(':scope > .conversation-message-content');
+    return Boolean(attachments && content && (attachments.compareDocumentPosition(content) & Node.DOCUMENT_POSITION_FOLLOWING));
+  });
+  expect(attachmentBeforeContent).toBe(true);
   await expect(page.locator('.conversation-message-delivery-status')).toHaveCount(0);
   await expect(page.getByLabel('消息投递队列')).toHaveCount(0);
   await expect.poll(() => ambiguousMessagePosts).toBe(1);
