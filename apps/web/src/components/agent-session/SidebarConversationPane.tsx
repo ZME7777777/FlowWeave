@@ -1,6 +1,6 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { CircleAlert, Clock3, LoaderCircle, MessageSquarePlus, Play, Plus, Quote, Send, Square } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { CircleAlert, Clock3, FileText, LoaderCircle, MessageSquarePlus, Play, Plus, Quote, Send, Square } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { api, ApiError, randomId, subscribeToAgentWorkspaceStream } from '../../api/client';
 import { ConversationSurface } from '../ConversationSurface';
 import type { AgentAttachment, AgentConversationReference, ModelProvider, OpenHandsConversationEvent } from '../../types';
@@ -12,6 +12,15 @@ interface SidebarConversationPaneProps {
   initialReference?: AgentConversationReference;
   sidebarBindingId?: string;
   onBindingCreated: (bindingId: string) => void;
+  onPreviewAttachment: (attachment: AgentAttachment, bindingId?: string) => void;
+}
+
+interface PendingSidebarAttachment {
+  id: string;
+  file: File;
+  previewUrl?: string;
+  progress: number;
+  state: 'uploading' | 'failed';
 }
 
 function defaultModel(providers: ModelProvider[], sourceProviderId?: string | null, sourceModelName?: string | null, sourceReasoningEffort?: string | null) {
@@ -32,18 +41,19 @@ function transferredFiles(transfer: DataTransfer): File[] {
     .filter((file): file is File => file !== null);
 }
 
-export function SidebarConversationPane({ workspaceId, sourceBindingId, initialReference, sidebarBindingId, onBindingCreated }: SidebarConversationPaneProps) {
+export function SidebarConversationPane({ workspaceId, sourceBindingId, initialReference, sidebarBindingId, onBindingCreated, onPreviewAttachment }: SidebarConversationPaneProps) {
   const queryClient = useQueryClient();
   const attachmentInput = useRef<HTMLInputElement>(null);
+  const removedPendingAttachmentIds = useRef(new Set<string>());
   const [bindingId, setBindingId] = useState<string | undefined>(sidebarBindingId);
   const bindingIdRef = useRef(bindingId);
   const [draftConversationId] = useState(randomId);
   const [reference, setReference] = useState<AgentConversationReference | undefined>(initialReference);
   const [content, setContent] = useState('');
   const [attachments, setAttachments] = useState<AgentAttachment[]>([]);
+  const [pendingAttachments, setPendingAttachments] = useState<PendingSidebarAttachment[]>([]);
   const [error, setError] = useState<string>();
   const [sending, setSending] = useState(false);
-  const [uploading, setUploading] = useState(false);
   const [selectedModelKey, setSelectedModelKey] = useState<string>();
   const sourceQuery = useQuery({
     queryKey: ['agent-session', 'sidebar-source', workspaceId, sourceBindingId],
@@ -100,7 +110,7 @@ export function SidebarConversationPane({ workspaceId, sourceBindingId, initialR
   const markExpired = () => queryClient.setQueryData(['agent-session', 'sidebar', workspaceId, bindingId], (current: Record<string, unknown> | undefined) => ({ ...current, expired: true }));
   const send = async () => {
     const message = content.trim();
-    if ((!message && !attachments.length) || sending || uploading || !selectedModel || expired || running) return;
+    if ((!message && !attachments.length) || sending || pendingAttachments.length > 0 || !selectedModel || expired || running) return;
     setSending(true);
     setError(undefined);
     try {
@@ -146,21 +156,49 @@ export function SidebarConversationPane({ workspaceId, sourceBindingId, initialR
       setSending(false);
     }
   };
-  const upload = async (files: File[]) => {
-    if (!files.length || expired || sending || uploading) return;
-    setUploading(true);
+  const upload = async (request: PendingSidebarAttachment) => {
+    if (expired || sending) return;
     setError(undefined);
     try {
       const ownerId = bindingIdRef.current ?? draftConversationId;
-      const added = await Promise.all(files.map(file => bindingIdRef.current
-        ? api.uploadAgentAttachment(workspaceId, bindingIdRef.current, file)
-        : api.uploadAgentWorkspaceAttachment(workspaceId, file, undefined, ownerId)));
-      setAttachments(current => [...current, ...added]);
+      const added = bindingIdRef.current
+        ? await api.uploadAgentAttachment(workspaceId, bindingIdRef.current, request.file, progress => setPendingAttachments(current => current.map(item => item.id === request.id ? { ...item, progress } : item)))
+        : await api.uploadAgentWorkspaceAttachment(workspaceId, request.file, undefined, ownerId, progress => setPendingAttachments(current => current.map(item => item.id === request.id ? { ...item, progress } : item)));
+      const removed = removedPendingAttachmentIds.current.delete(request.id);
+      setPendingAttachments(current => current.filter(item => item.id !== request.id));
+      if (!removed) setAttachments(current => [...current, added]);
+      if (request.previewUrl) URL.revokeObjectURL(request.previewUrl);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '附件上传失败');
-    } finally {
-      setUploading(false);
+      setPendingAttachments(current => current.map(item => item.id === request.id ? { ...item, progress: 100, state: 'failed' } : item));
     }
+  };
+  const startAttachmentUpload = (file: File) => {
+    if (expired || sending) return;
+    const request: PendingSidebarAttachment = {
+      id: randomId(),
+      file,
+      previewUrl: file.type.startsWith('image/') ? URL.createObjectURL(file) : undefined,
+      progress: 0,
+      state: 'uploading',
+    };
+    setPendingAttachments(current => [...current, request]);
+    void upload(request);
+  };
+  const retryPendingAttachment = (id: string) => {
+    const request = pendingAttachments.find(item => item.id === id);
+    if (!request) return;
+    const next = { ...request, progress: 0, state: 'uploading' as const };
+    setPendingAttachments(current => current.map(item => item.id === id ? next : item));
+    void upload(next);
+  };
+  const removePendingAttachment = (id: string) => {
+    removedPendingAttachmentIds.current.add(id);
+    setPendingAttachments(current => {
+      const request = current.find(item => item.id === id);
+      if (request?.previewUrl) URL.revokeObjectURL(request.previewUrl);
+      return current.filter(item => item.id !== id);
+    });
   };
   const updateModel = async (providerId: string, modelName: string, reasoningEffort: string | null) => {
     if (!bindingId) return;
@@ -189,21 +227,22 @@ export function SidebarConversationPane({ workspaceId, sourceBindingId, initialR
       {error && <section className="agent-workbench-error" role="alert"><CircleAlert size={17}/><div><b>操作未完成</b><span>{error}</span></div></section>}
     </div>
     <div className="agent-sidebar-chat-composer">
-      {reference && <div className="agent-attachments agent-conversation-references" aria-label="已添加的会话引用"><span><span className="agent-attachment-open" title={reference.content}><Quote size={14}/><em>会话引用</em></span><button type="button" onClick={() => setReference(undefined)} aria-label="移除引用">×</button></span></div>}
-      {attachments.length > 0 && <div className="agent-attachments">{attachments.map(item => <span key={item.path}><span className="agent-attachment-open"><em>{item.filename}</em></span><button type="button" aria-label={`移除附件 ${item.filename}`} onClick={() => setAttachments(current => current.filter(candidate => candidate.path !== item.path))}>×</button></span>)}</div>}
       <div className="agent-composer">
+        {reference && <div className="agent-attachments agent-conversation-references" aria-label="已添加的会话引用"><span><span className="agent-attachment-open" title={reference.content}><Quote size={14}/><em>会话引用</em></span><button type="button" className="agent-attachment-remove" onClick={() => setReference(undefined)} aria-label="移除引用">×</button></span></div>}
+        {(attachments.length > 0 || pendingAttachments.length > 0) && <div className="agent-attachments" aria-label="已添加的附件">{attachments.map(item => <span key={item.path}><button type="button" className="agent-attachment-open" title={`预览附件：${item.filename}`} onClick={() => onPreviewAttachment(item, bindingId)}>{item.image_data_url && <img src={item.image_data_url} alt=""/>}<em>{item.filename}</em></button><button type="button" className="agent-attachment-remove" aria-label={`移除附件 ${item.filename}`} onClick={() => setAttachments(current => current.filter(candidate => candidate.path !== item.path))}>×</button></span>)}{pendingAttachments.map(item => <span key={item.id} className={`agent-pending-attachment ${item.state}`} title={item.state === 'failed' ? '附件上传失败，请重试或删除。' : `正在上传 ${item.progress}%`}><span className="agent-attachment-open">{item.previewUrl ? <img src={item.previewUrl} alt=""/> : <FileText size={14}/>}<em>{item.file.name}</em>{item.state === 'uploading' && <small>{item.progress}%</small>}{item.state === 'failed' && <span className="agent-attachment-retry-overlay"><button type="button" onClick={() => retryPendingAttachment(item.id)}>重试</button></span>}</span>{item.state === 'uploading' && <i className="agent-attachment-progress" style={{ '--upload-progress': `${item.progress}%` } as CSSProperties}/>}<button type="button" className="agent-attachment-remove" aria-label={`移除附件 ${item.file.name}`} onClick={() => removePendingAttachment(item.id)}>×</button></span>)}</div>}
         <textarea aria-label="发送侧边聊天消息" value={content} disabled={composerDisabled} placeholder={expired ? '侧边聊天会话已过期' : running ? '当前回复完成后可继续发送' : '向侧边聊天提问…'} onChange={event => setContent(event.target.value)} onPaste={event => {
           const files = transferredFiles(event.clipboardData);
           if (!files.length) return;
           event.preventDefault();
-          void upload(files);
+          files.forEach(startAttachmentUpload);
         }} onKeyDown={event => {
           if (event.nativeEvent.isComposing || event.keyCode === 229 || event.key !== 'Enter' || event.shiftKey) return;
           event.preventDefault();
           void send();
         }}/>
-        <footer><div className="agent-composer-context"><input ref={attachmentInput} aria-label="上传侧边聊天附件" type="file" multiple hidden onChange={event => { void upload(Array.from(event.currentTarget.files ?? [])); event.currentTarget.value = ''; }}/><button type="button" aria-label="添加附件" disabled={composerDisabled || uploading} onClick={() => attachmentInput.current?.click()}><Plus size={17}/></button></div><div className="agent-composer-actions"><ComposerModelMenu providers={connectedProviders} providerId={currentModel?.providerId ?? ''} modelName={currentModel?.modelName ?? ''} models={availableModels} efforts={efforts} effort={currentModel?.reasoningEffort ?? ''} disabled={composerDisabled || uploading} onProviderChange={providerId => { const nextProvider = connectedProviders.find(item => item.id === providerId); const nextModel = nextProvider?.models.find(item => item.enabled && item.is_default) ?? nextProvider?.models.find(item => item.enabled); if (nextModel) { if (bindingId) void updateModel(providerId, nextModel.model_name, nextModel.default_reasoning_effort ?? null); else setSelectedModelKey(`${providerId}:${nextModel.model_name}`); } }} onModelChange={modelName => { const model = availableModels.find(item => item.model_name === modelName); if (bindingId && currentModel) void updateModel(currentModel.providerId, modelName, model?.default_reasoning_effort ?? null); else if (currentModel) setSelectedModelKey(`${currentModel.providerId}:${modelName}`); }} onEffortChange={effort => { if (bindingId && currentModel) void updateModel(currentModel.providerId, currentModel.modelName, effort || null); }}/>{bindingId && (running || paused) && <button type="button" className="agent-interrupt" aria-label={running ? '暂停侧边聊天 Agent' : '继续侧边聊天 Agent'} disabled={sending || expired} onClick={() => void control()}>{running ? <Square size={10} fill="currentColor"/> : <Play size={12} fill="currentColor"/>}</button>}<button type="button" className="agent-send" aria-label="发送侧边聊天消息" disabled={(!content.trim() && !attachments.length) || composerDisabled || uploading} onClick={() => void send()}>{sending ? <LoaderCircle className="conversation-activity-spin" size={15}/> : <Send size={16}/>}</button></div></footer>
+        <footer><div className="agent-composer-context"><input ref={attachmentInput} aria-label="上传侧边聊天附件" type="file" multiple hidden onChange={event => { Array.from(event.currentTarget.files ?? []).forEach(startAttachmentUpload); event.currentTarget.value = ''; }}/><button type="button" aria-label="添加附件" disabled={composerDisabled} onClick={() => attachmentInput.current?.click()}><Plus size={17}/></button></div><div className="agent-composer-actions"><ComposerModelMenu providers={connectedProviders} providerId={currentModel?.providerId ?? ''} modelName={currentModel?.modelName ?? ''} models={availableModels} efforts={efforts} effort={currentModel?.reasoningEffort ?? ''} disabled={composerDisabled || pendingAttachments.length > 0} onProviderChange={providerId => { const nextProvider = connectedProviders.find(item => item.id === providerId); const nextModel = nextProvider?.models.find(item => item.enabled && item.is_default) ?? nextProvider?.models.find(item => item.enabled); if (nextModel) { if (bindingId) void updateModel(providerId, nextModel.model_name, nextModel.default_reasoning_effort ?? null); else setSelectedModelKey(`${providerId}:${nextModel.model_name}`); } }} onModelChange={modelName => { const model = availableModels.find(item => item.model_name === modelName); if (bindingId && currentModel) void updateModel(currentModel.providerId, modelName, model?.default_reasoning_effort ?? null); else if (currentModel) setSelectedModelKey(`${currentModel.providerId}:${modelName}`); }} onEffortChange={effort => { if (bindingId && currentModel) void updateModel(currentModel.providerId, currentModel.modelName, effort || null); }}/>{bindingId && (running || paused) && <button type="button" className="agent-interrupt" aria-label={running ? '暂停侧边聊天 Agent' : '继续侧边聊天 Agent'} disabled={sending || expired} onClick={() => void control()}>{running ? <Square size={10} fill="currentColor"/> : <Play size={12} fill="currentColor"/>}</button>}<button type="button" className="agent-send" aria-label="发送侧边聊天消息" disabled={(!content.trim() && !attachments.length) || composerDisabled || pendingAttachments.length > 0} onClick={() => void send()}>{sending ? <LoaderCircle className="conversation-activity-spin" size={15}/> : <Send size={16}/>}</button></div></footer>
       </div>
+      <div className="agent-sidebar-composer-bottom" aria-hidden="true"/>
     </div>
   </section>;
 }
