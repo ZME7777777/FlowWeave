@@ -14,8 +14,10 @@ from flowweave_admin.auth import require_super_admin
 from flowweave_admin.control import (
     AdminControlError,
     AlertLifecycleCommand,
+    ResourceCleanupCommand,
     RuntimeControlCommand,
     RuntimeDiagnosticCommand,
+    cleanup_expired_tasks,
     diagnose_runtime,
     request_runtime_control,
     update_alert_lifecycle,
@@ -269,6 +271,27 @@ def create_app() -> FastAPI:
                 "items": background_tasks(connection, limit=bounded_limit),
             }
 
+    @app.post("/v1/admin/resource-cleanups", response_model=None)
+    async def admin_resource_cleanup(
+        payload: ResourceCleanupCommand, request: Request
+    ) -> dict[str, Any] | JSONResponse:
+        active_settings: Settings = request.app.state.settings
+        actor = request.state.admin
+        request_id = request.headers.get("X-Request-ID") or str(uuid4())
+        try:
+            return await cleanup_expired_tasks(
+                active_settings,
+                payload,
+                actor_user_id=str(actor["id"]),
+                actor_username=str(actor["username"]),
+                request_id=request_id,
+            )
+        except AdminControlError as exc:
+            return JSONResponse(
+                status_code=exc.status,
+                content={"error": {"code": exc.code, "message": str(exc)}},
+            )
+
     @app.get("/v1/admin/conversations")
     async def admin_conversations(request: Request, limit: int = 100) -> dict[str, Any]:
         active_settings: Settings = request.app.state.settings
@@ -296,6 +319,7 @@ def create_app() -> FastAPI:
             "RESUME_RUNTIME",
             "ACKNOWLEDGE",
             "SILENCE",
+            "CLEANUP_EXPIRED_TASKS",
         }
         if action is not None and action not in allowed_actions:
             return JSONResponse(

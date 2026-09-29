@@ -87,7 +87,7 @@ class DockerResourceUsage:
 
     cpu_usage_percent: float
     memory_usage_bytes: int
-    storage_usage_bytes: int
+    storage_usage_bytes: int | None
     storage_limit: str | None
 
 
@@ -2494,7 +2494,6 @@ chmod 0700 "$target"
         if (
             cpu_usage_percent < 0
             or memory_usage_bytes is None
-            or storage_usage_bytes is None
             or (storage_limit is not None and cls._docker_byte_size(storage_limit) is None)
         ):
             raise DomainError("SANDBOX_DOCKER_PROTOCOL_ERROR", "Invalid Docker usage data", 502)

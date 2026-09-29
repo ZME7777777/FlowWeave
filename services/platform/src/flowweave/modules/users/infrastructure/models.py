@@ -98,6 +98,44 @@ class AdminRuntimeOperation(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, index=True)
 
 
+class AdminResourceCleanupOperation(Base):
+    """Append-only audit fact for an administrator resource cleanup request."""
+
+    __tablename__ = "admin_resource_cleanup_operations"
+    __tenant_scoped__ = False
+    owner_user_id: ClassVar[None] = None  # pyright: ignore[reportIncompatibleVariableOverride]
+    __table_args__ = (
+        CheckConstraint(
+            "action = 'CLEANUP_EXPIRED_TASKS'",
+            name="ck_admin_resource_cleanup_operation_action",
+        ),
+        CheckConstraint(
+            "retention_days >= 1", name="ck_admin_resource_cleanup_operation_retention"
+        ),
+        CheckConstraint(
+            "batch_size >= 1 AND batch_size <= 500",
+            name="ck_admin_resource_cleanup_operation_batch",
+        ),
+        UniqueConstraint(
+            "actor_user_id",
+            "idempotency_key",
+            name="uq_admin_resource_cleanup_operation_actor_key",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    actor_user_id: Mapped[str] = mapped_column(String(36), index=True)
+    actor_username: Mapped[str] = mapped_column(String(80))
+    action: Mapped[str] = mapped_column(String(40), default="CLEANUP_EXPIRED_TASKS")
+    retention_days: Mapped[int] = mapped_column(Integer)
+    batch_size: Mapped[int] = mapped_column(Integer)
+    deleted_count: Mapped[int] = mapped_column(Integer)
+    reason: Mapped[str] = mapped_column(String(500))
+    idempotency_key: Mapped[str] = mapped_column(String(200))
+    request_id: Mapped[str] = mapped_column(String(80), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, index=True)
+
+
 class RuntimeBusinessObservation(Base):
     """Sanitized formal Runtime-read observation retained for administrator diagnosis."""
 
@@ -166,6 +204,7 @@ class AdminAlertAction(Base):
 __all__ = (
     "AdminAlertAction",
     "AdminAlertState",
+    "AdminResourceCleanupOperation",
     "AdminRuntimeOperation",
     "RuntimeBusinessObservation",
     "User",

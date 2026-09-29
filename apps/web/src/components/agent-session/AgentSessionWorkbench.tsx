@@ -573,10 +573,6 @@ function conversationHasReachedTerminalState(executionStatus: string | null | un
   );
 }
 
-function conversationHasCompletedNormally(executionStatus: string | null | undefined): boolean {
-  return ['idle', 'completed', 'finished'].includes(executionStatus?.trim().toLowerCase() ?? '');
-}
-
 function pinnedConversationStorageKey(hostId: string, workspaceId: string): string {
   return `flowweave:agent-workspace-pinned:${hostId}:${workspaceId}`;
 }
@@ -5553,8 +5549,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const nativeTurnRunning = conversationIsRunning(nativeExecutionStatus);
   const nativeTurnTerminal = inputReadinessQuery.data?.ready === true
     && conversationHasReachedTerminalState(nativeExecutionStatus);
-  const nativeTurnCompletedNormally = inputReadinessQuery.data?.ready === true
-    && conversationHasCompletedNormally(nativeExecutionStatus);
   const eventsQuery = useQuery<OpenHandsConversationEventBatch>({
     queryKey: eventQueryKey,
     queryFn: async () => {
@@ -7557,9 +7551,39 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const composerHasContent = Boolean(
     composerHasText || attachments.length || pendingAttachments.some(item => item.scope === composerScope) || references.length || workspaceReferences.length || composerAnnotations.length,
   );
-
+  const fallbackHydrationPending = selectedHydrationPhase === 'fallback'
+    && (eventsQuery.isPending || inputReadinessQuery.isPending || contextQuery.isPending);
+  const conversationInitialLoading = Boolean(
+    selected && (selectedHydrationPhase === 'loading' || fallbackHydrationPending),
+  );
+  const interruptableActiveTurn = canInterrupt && (
+    effectiveTurnState === 'running'
+    || (conversationVisuallyActive && hasUnfinishedFormalTurn)
+  );
+  const composerControlMode: ComposerControlMode = selectedCondensing
+    ? 'condensing'
+    : !selected && !conversationDraft
+      ? 'read-only'
+      : conversationInitialLoading
+        ? 'reconciling'
+        : effectiveTurnState === 'pausing'
+          ? 'pausing'
+          : interruptableActiveTurn
+            ? 'running'
+            : selected && !canWrite
+              ? 'read-only'
+              : effectiveTurnState === 'running'
+                ? 'reconciling'
+                : effectiveTurnState === 'paused'
+                  ? 'paused'
+                  : effectiveTurnState === 'resuming'
+                    ? 'resuming'
+                    : conversationVisuallyActive
+                      ? 'reconciling'
+                      : 'idle';
+  const queueDispatchReady = composerControlMode === 'idle';
   useEffect(() => {
-    if (!selected || !queueModeEnabled || !nativeTurnCompletedNormally) return;
+    if (!selected || !queueModeEnabled || !queueDispatchReady) return;
     const queueHead = queuedMessages.find(message => message.scope === selected.id && message.deliveryState === 'queued');
     if (!queueHead || sendingMessageIds.current.has(queueHead.id)) return;
     const terminalKey = selected.id;
@@ -7570,18 +7594,18 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       autoDispatchedQueueTerminal.current = terminalKey;
       return;
     }
-    if (selectedCondensing || pendingConfirmation || migrateStreaming.isPending || pendingMigratedSend) return;
+    if (pendingConfirmation || migrateStreaming.isPending || pendingMigratedSend) return;
     autoDispatchedQueueTerminal.current = terminalKey;
     if (!selected.streaming_callback_ready) {
       migrateStreaming.mutate(queueHead);
       return;
     }
     dispatchMessage({ ...queueHead, bindingId: selected.id, nativeGuidance: false });
-  }, [composerHasContent, dispatchMessage, migrateStreaming, nativeTurnCompletedNormally, pendingConfirmation, pendingMigratedSend, queueModeEnabled, queuedMessages, selected, selectedCondensing]);
+  }, [composerHasContent, dispatchMessage, migrateStreaming, pendingConfirmation, pendingMigratedSend, queueDispatchReady, queueModeEnabled, queuedMessages, selected]);
 
   useEffect(() => {
-    if (!nativeTurnCompletedNormally || !selected?.id) autoDispatchedQueueTerminal.current = undefined;
-  }, [nativeTurnCompletedNormally, selected?.id]);
+    if (!queueDispatchReady || !selected?.id) autoDispatchedQueueTerminal.current = undefined;
+  }, [queueDispatchReady, selected?.id]);
 
   if (workspaceQuery.isLoading) return <main className="agent-workbench-loading">正在打开 Agent 工作台…</main>;
   if (workspaceQuery.error || !workspace) {
@@ -7668,39 +7692,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const hydrationError = selectedHydrationPhase === 'unavailable' ? hydrationPhase?.error : undefined;
   const visibleError = operationError ?? hydrationError ?? confirmationQuery.error ?? eventsQuery.error;
   const composerActionSends = composerHasContent && !pendingConfirmation;
-  const fallbackHydrationPending = selectedHydrationPhase === 'fallback'
-    && (eventsQuery.isPending || inputReadinessQuery.isPending || contextQuery.isPending);
-  const conversationInitialLoading = Boolean(
-    selected && (selectedHydrationPhase === 'loading' || fallbackHydrationPending),
-  );
-  // A formal unfinished turn remains actionable while readiness catches up.
-  // The Runtime still authorizes the interrupt request, so this does not use
-  // browser-local presentation to declare a native turn terminal.
-  const interruptableActiveTurn = canInterrupt && (
-    effectiveTurnState === 'running'
-    || (conversationVisuallyActive && hasUnfinishedFormalTurn)
-  );
-  const composerControlMode: ComposerControlMode = selectedCondensing
-    ? 'condensing'
-    : !selected && !conversationDraft
-      ? 'read-only'
-      : conversationInitialLoading
-        ? 'reconciling'
-        : effectiveTurnState === 'pausing'
-          ? 'pausing'
-          : interruptableActiveTurn
-            ? 'running'
-            : selected && !canWrite
-              ? 'read-only'
-              : effectiveTurnState === 'running'
-                ? 'reconciling'
-                : effectiveTurnState === 'paused'
-                  ? 'paused'
-                  : effectiveTurnState === 'resuming'
-                    ? 'resuming'
-                    : conversationVisuallyActive
-                      ? 'reconciling'
-                      : 'idle';
   const composerControl = (() => {
     const actionBlocked = Boolean(pendingConfirmation)
       || bootstrap.isPending

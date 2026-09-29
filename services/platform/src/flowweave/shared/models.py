@@ -94,6 +94,7 @@ from flowweave.modules.tasks.infrastructure.models import (
 from flowweave.modules.users.infrastructure.models import (
     AdminAlertAction,
     AdminAlertState,
+    AdminResourceCleanupOperation,
     AdminRuntimeOperation,
     User,
     UserOperationLog,
@@ -114,6 +115,7 @@ __all__ = (
     "AgentConversationUsageBucket",
     "AdminAlertAction",
     "AdminAlertState",
+    "AdminResourceCleanupOperation",
     "AdminRuntimeOperation",
     "AgentWorkDirectory",
     "AgentWorkDirectoryPath",

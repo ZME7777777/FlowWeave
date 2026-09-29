@@ -21,9 +21,11 @@ from flowweave.modules.sandboxes.infrastructure.models import (
     ManagedSandbox,
     RuntimeGeneration,
 )
+from flowweave.modules.tasks.application.service import cleanup_terminal
 from flowweave.modules.users.infrastructure.models import (
     AdminAlertAction,
     AdminAlertState,
+    AdminResourceCleanupOperation,
     AdminRuntimeOperation,
     RuntimeBusinessObservation,
 )
@@ -78,6 +80,17 @@ class AlertLifecycleRequest(BaseModel):
     request_id: str = Field(min_length=1, max_length=80)
 
 
+class ResourceCleanupRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    action: Literal["CLEANUP_EXPIRED_TASKS"]
+    reason: str = Field(min_length=10, max_length=500)
+    idempotency_key: str = Field(min_length=16, max_length=200)
+    actor_user_id: str = Field(min_length=36, max_length=36)
+    actor_username: str = Field(min_length=1, max_length=80)
+    request_id: str = Field(min_length=1, max_length=80)
+
+
 def require_admin_control_key(request: Request, key: AdminControlKey) -> None:
     settings = request.app.state.container.settings
     if (
@@ -123,6 +136,24 @@ async def update_alert_lifecycle(
     )
 
 
+@router.post("/resource-cleanups")
+async def cleanup_resources(
+    payload: ResourceCleanupRequest,
+    request: Request,
+    _: Annotated[None, Depends(require_admin_control_key)],
+) -> dict[str, object]:
+    settings = request.app.state.container.settings
+    return await run_blocking_admin(
+        get_container(request),
+        lambda session: _cleanup_expired_tasks(
+            session,
+            payload,
+            retention_days=settings.task_terminal_retention_days,
+            batch_size=settings.task_terminal_cleanup_batch_size,
+        ),
+    )
+
+
 def _update_alert_lifecycle(session: Any, payload: AlertLifecycleRequest) -> dict[str, object]:
     if payload.action == "ACKNOWLEDGE" and payload.silence_minutes is not None:
         raise DomainError(
@@ -165,6 +196,68 @@ def _update_alert_lifecycle(session: Any, payload: AlertLifecycleRequest) -> dic
         "acknowledged_by_username": state.acknowledged_by_username,
         "silenced_until": state.silenced_until.isoformat() if state.silenced_until else None,
         "reason": state.reason,
+    }
+
+
+def _cleanup_expired_tasks(
+    session: Any,
+    payload: ResourceCleanupRequest,
+    *,
+    retention_days: int,
+    batch_size: int,
+) -> dict[str, object]:
+    existing = session.scalar(
+        select(AdminResourceCleanupOperation).where(
+            AdminResourceCleanupOperation.actor_user_id == payload.actor_user_id,
+            AdminResourceCleanupOperation.idempotency_key == payload.idempotency_key,
+        )
+    )
+    if existing is not None:
+        if existing.action != payload.action or existing.reason != payload.reason:
+            raise DomainError(
+                "ADMIN_OPERATION_IDEMPOTENCY_CONFLICT",
+                "The idempotency key was already used for a different resource cleanup",
+                409,
+            )
+        return {
+            "operation": _resource_cleanup_response(existing, idempotent_replay=True),
+            "deleted_count": existing.deleted_count,
+        }
+
+    deleted_count = cleanup_terminal(
+        session,
+        retention_days=retention_days,
+        batch_size=batch_size,
+        commit=False,
+    )
+    operation = AdminResourceCleanupOperation(
+        actor_user_id=payload.actor_user_id,
+        actor_username=payload.actor_username,
+        retention_days=retention_days,
+        batch_size=batch_size,
+        deleted_count=deleted_count,
+        reason=payload.reason,
+        idempotency_key=payload.idempotency_key,
+        request_id=payload.request_id,
+    )
+    session.add(operation)
+    session.flush()
+    return {
+        "operation": _resource_cleanup_response(operation, idempotent_replay=False),
+        "deleted_count": deleted_count,
+    }
+
+
+def _resource_cleanup_response(
+    operation: AdminResourceCleanupOperation, *, idempotent_replay: bool
+) -> dict[str, object]:
+    return {
+        "id": operation.id,
+        "action": operation.action,
+        "retention_days": operation.retention_days,
+        "batch_size": operation.batch_size,
+        "deleted_count": operation.deleted_count,
+        "idempotent_replay": idempotent_replay,
     }
 
 

@@ -160,6 +160,19 @@ def test_runtime_provider_returns_owned_runtime_usage(settings, monkeypatch) -> 
     }
 
 
+
+def test_docker_usage_keeps_cpu_and_memory_when_writable_layer_size_is_unknown() -> None:
+    usage = DockerSandboxProvider._usage_from_local(
+        '{"CPUPerc":"12.50%","MemUsage":"512MiB / 4GiB"}',
+        '{"HostConfig":{"StorageOpt":{}}}',
+    )
+
+    assert usage.cpu_usage_percent == 12.5
+    assert usage.memory_usage_bytes == 512 * 1024**2
+    assert usage.storage_usage_bytes is None
+    assert usage.storage_limit is None
+
+
 def test_admin_observability_samples_usage_concurrently(monkeypatch) -> None:
     barrier = threading.Barrier(4)
 

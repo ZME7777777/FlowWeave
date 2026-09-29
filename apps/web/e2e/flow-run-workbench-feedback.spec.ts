@@ -280,7 +280,9 @@ test('step configuration is saved before start and direct launch has its own tab
   await expect(page.locator('.run-graph-node[data-selected="true"]')).toContainText('测试节点2');
   await expect(page.locator('.run-side-panel')).toBeVisible();
   await expect(page.getByTestId('attempt-state')).toHaveCount(0);
-  await expect(page.locator('.stepwise-record-launch-bar')).toContainText('当前节点“测试节点2”已保存配置，可从记录启动。');
+  await expect(page.locator('.node-record-list > article.active')).toContainText('导入逐步记录');
+  await expect(page.locator('.node-record-list > article.active').getByRole('button', { name: '启动逐步运行 导入逐步记录' })).toBeVisible();
+  await expect(page.locator('.run-side-panel').getByRole('button', { name: '启动', exact: true })).toHaveCount(0);
   await page.getByRole('button', { name: '新增' }).click();
   const stepwiseDialogAfterImport = page.getByRole('dialog', { name: '新增逐步运行记录' });
   await stepwiseDialogAfterImport.getByRole('textbox', { name: '逐步运行记录名称' }).fill('测试逐步记录');
@@ -309,9 +311,10 @@ test('step configuration is saved before start and direct launch has its own tab
   await expect(page.locator('.node-record-list')).toContainText('测试逐步记录');
   await expect.poll(() => currentStepRecord?.node_runs).toEqual([]);
   await expect(page.getByTestId('attempt-state')).toHaveCount(0);
-  const recordLaunchBar = page.locator('.stepwise-record-launch-bar');
-  await expect(recordLaunchBar).toContainText('当前节点“测试节点2”已保存配置，可从记录启动。');
-  await recordLaunchBar.getByRole('button', { name: '启动', exact: true }).click();
+  const stepwiseRecord = page.locator('.node-record-list > article.active');
+  await expect(stepwiseRecord).toContainText('测试逐步记录');
+  await expect(consolePanel.getByRole('button', { name: '启动', exact: true })).toHaveCount(0);
+  await stepwiseRecord.getByRole('button', { name: '启动逐步运行 测试逐步记录' }).click();
   await expect.poll(() => startBody).toEqual({ expected_row_version: 2 });
   await expect(page).toHaveURL(/\/flow-runs\/stepwise-record-1\/nodes\/saved-node-run\/attempts\/saved-attempt\/agent-sessions\/saved-node-binding$/);
 });
@@ -421,7 +424,8 @@ test('stepwise record copy reuses the record selection and first-node configurat
   await expect(page.locator('.run-graph-node[data-selected="true"]')).toContainText('测试节点');
   await expect(page.locator('.run-side-panel')).toBeVisible();
   await expect(page.getByTestId('attempt-state')).toHaveCount(0);
-  await expect(page.locator('.stepwise-record-launch-bar')).toContainText('当前节点“测试节点”已保存配置，可从记录启动。');
+  await expect(page.locator('.node-record-list > article.active').getByRole('button', { name: '启动逐步运行 拷贝逐步运行记录' })).toBeVisible();
+  await expect(page.locator('.run-side-panel').getByRole('button', { name: '启动', exact: true })).toHaveCount(0);
 
   await sourceSelect.click({ modifiers: ['Meta'] });
   await expect(page.locator('.manual-record-toolbar').getByRole('button', { name: '导出 (2)', exact: true })).toBeEnabled();

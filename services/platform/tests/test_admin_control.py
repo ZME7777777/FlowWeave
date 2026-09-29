@@ -8,8 +8,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from flowweave.modules.admin_control.router import (
+    ResourceCleanupRequest,
     RuntimeControlRequest,
     RuntimeDiagnosticRequest,
+    _cleanup_expired_tasks,
     _control_runtime,
     _diagnose_runtime,
 )
@@ -20,6 +22,7 @@ from flowweave.modules.sandboxes.application.runtime_sessions import (
 from flowweave.modules.users.infrastructure.models import RuntimeBusinessObservation
 from flowweave.shared.errors import DomainError
 from flowweave.shared.models import (
+    AdminResourceCleanupOperation,
     AdminRuntimeOperation,
     AgentWorkspace,
     AgentWorkspaceRuntime,
@@ -135,6 +138,82 @@ def _command(flow_run_id: str, runtime_session_id: str, *, key: str) -> RuntimeC
         actor_username="super-admin",
         request_id="admin-control-test",
     )
+
+
+def _cleanup_command(*, key: str) -> ResourceCleanupRequest:
+    return ResourceCleanupRequest(
+        action="CLEANUP_EXPIRED_TASKS",
+        reason="Routine removal of terminal task records beyond the retention window.",
+        idempotency_key=key,
+        actor_user_id="11111111-1111-4111-8111-111111111111",
+        actor_username="super-admin",
+        request_id="admin-resource-cleanup-test",
+    )
+
+
+def test_admin_resource_cleanup_only_removes_expired_terminal_tasks(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    old = datetime.now(UTC) - timedelta(days=8)
+    with db_session_factory() as db:
+        expired = BackgroundTask(
+            owner_user_id="11111111-1111-4111-8111-111111111111",
+            task_type="CLEANUP_DRAFT_ATTACHMENT",
+            aggregate_type="AGENT_WORKSPACE",
+            aggregate_id=str(uuid4()),
+            idempotency_key="expired-terminal-task",
+            state="SUCCEEDED",
+            created_at=old,
+            updated_at=old,
+        )
+        live = BackgroundTask(
+            owner_user_id="11111111-1111-4111-8111-111111111111",
+            task_type="PROVISION_AGENT_WORKSPACE_RUNTIME",
+            aggregate_type="AGENT_WORKSPACE",
+            aggregate_id=str(uuid4()),
+            idempotency_key="live-task-not-cleaned",
+            state="RUNNING",
+            created_at=old,
+            updated_at=old,
+        )
+        recent = BackgroundTask(
+            owner_user_id="11111111-1111-4111-8111-111111111111",
+            task_type="CLEANUP_DRAFT_ATTACHMENT",
+            aggregate_type="AGENT_WORKSPACE",
+            aggregate_id=str(uuid4()),
+            idempotency_key="recent-terminal-not-cleaned",
+            state="DEAD",
+        )
+        db.add_all((expired, live, recent))
+        db.flush()
+        result = _cleanup_expired_tasks(
+            db, _cleanup_command(key="resource-cleanup-key-0001"), retention_days=7, batch_size=100
+        )
+        db.commit()
+        assert result["deleted_count"] == 1
+        assert db.get(BackgroundTask, expired.id) is None
+        assert db.get(BackgroundTask, live.id) is not None
+        assert db.get(BackgroundTask, recent.id) is not None
+        operation = db.scalar(select(AdminResourceCleanupOperation))
+        assert operation is not None
+        assert operation.deleted_count == 1
+        assert operation.retention_days == 7
+
+
+def test_admin_resource_cleanup_replays_without_repeating_deletion(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with db_session_factory() as db:
+        first = _cleanup_expired_tasks(
+            db, _cleanup_command(key="resource-cleanup-key-0002"), retention_days=7, batch_size=100
+        )
+        db.commit()
+        replay = _cleanup_expired_tasks(
+            db, _cleanup_command(key="resource-cleanup-key-0002"), retention_days=7, batch_size=100
+        )
+        assert first["deleted_count"] == replay["deleted_count"]
+        assert replay["operation"]["idempotent_replay"] is True
+        assert len(list(db.scalars(select(AdminResourceCleanupOperation)))) == 1
 
 
 def test_admin_replacement_records_audit_and_replays_idempotently(
