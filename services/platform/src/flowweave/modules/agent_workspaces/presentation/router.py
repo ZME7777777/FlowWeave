@@ -190,7 +190,10 @@ class AgentSidebarConversationWrite(_Write):
     model_provider_id: str = Field(min_length=1, max_length=36)
     model_name: str = Field(min_length=1, max_length=240)
     reasoning_effort: str | None = Field(default=None, max_length=30)
-    content: str = Field(min_length=1, max_length=200_000)
+    content: str = Field(max_length=200_000)
+    attachments: list[AgentAttachmentReference] = Field(
+        default_factory=_empty_attachment_references, max_length=10
+    )
     references: list[AgentConversationReference] = Field(
         default_factory=_empty_conversation_references, max_length=10
     )
@@ -780,6 +783,7 @@ async def create_agent_sidebar_conversation(
             model_name=payload.model_name,
             reasoning_effort=payload.reasoning_effort,
             content=payload.content,
+            attachments=tuple(item.model_dump(exclude_none=True) for item in payload.attachments),
             references=tuple(item.model_dump() for item in payload.references),
             idempotency_key=idempotency_key,
         ),

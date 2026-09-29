@@ -71,6 +71,7 @@ def create_sidebar_conversation(
     model_name: str,
     reasoning_effort: str | None,
     content: str,
+    attachments: tuple[dict[str, str | int], ...],
     references: tuple[dict[str, str], ...],
     idempotency_key: str,
 ) -> dict[str, Any]:
@@ -92,6 +93,7 @@ def create_sidebar_conversation(
         model_name=model_name,
         reasoning_effort=reasoning_effort,
         content=content,
+        attachments=attachments,
         references=references,
         capability_version_ids=capability_version_ids,
         idempotency_key=idempotency_key,

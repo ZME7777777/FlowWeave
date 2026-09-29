@@ -23,15 +23,27 @@ function defaultModel(providers: ModelProvider[], sourceProviderId?: string | nu
   return provider && model ? { providerId: provider.id, modelName: model.model_name, reasoningEffort: sourceReasoningEffort ?? model.default_reasoning_effort ?? null } : undefined;
 }
 
+function transferredFiles(transfer: DataTransfer): File[] {
+  const files = Array.from(transfer.files);
+  if (files.length) return files;
+  return Array.from(transfer.items)
+    .filter(item => item.kind === 'file')
+    .map(item => item.getAsFile())
+    .filter((file): file is File => file !== null);
+}
+
 export function SidebarConversationPane({ workspaceId, sourceBindingId, initialReference, sidebarBindingId, onBindingCreated }: SidebarConversationPaneProps) {
   const queryClient = useQueryClient();
   const attachmentInput = useRef<HTMLInputElement>(null);
   const [bindingId, setBindingId] = useState<string | undefined>(sidebarBindingId);
+  const bindingIdRef = useRef(bindingId);
+  const [draftConversationId] = useState(randomId);
   const [reference, setReference] = useState<AgentConversationReference | undefined>(initialReference);
   const [content, setContent] = useState('');
   const [attachments, setAttachments] = useState<AgentAttachment[]>([]);
   const [error, setError] = useState<string>();
   const [sending, setSending] = useState(false);
+  const [uploading, setUploading] = useState(false);
   const [selectedModelKey, setSelectedModelKey] = useState<string>();
   const sourceQuery = useQuery({
     queryKey: ['agent-session', 'sidebar-source', workspaceId, sourceBindingId],
@@ -88,19 +100,19 @@ export function SidebarConversationPane({ workspaceId, sourceBindingId, initialR
   const markExpired = () => queryClient.setQueryData(['agent-session', 'sidebar', workspaceId, bindingId], (current: Record<string, unknown> | undefined) => ({ ...current, expired: true }));
   const send = async () => {
     const message = content.trim();
-    if ((!message && !attachments.length) || sending || !selectedModel || expired || running) return;
+    if ((!message && !attachments.length) || sending || uploading || !selectedModel || expired || running) return;
     setSending(true);
     setError(undefined);
     try {
       if (!bindingId) {
-        if (attachments.length) throw new Error('请先发送首条文本消息，再添加附件。');
-        const conversationId = randomId();
         const result = await api.createAgentSidebarConversation(
-          workspaceId, sourceBindingId, conversationId, selectedModel.providerId, selectedModel.modelName, selectedModel.reasoningEffort, message, reference ? [reference] : [],
+          workspaceId, sourceBindingId, draftConversationId, selectedModel.providerId, selectedModel.modelName, selectedModel.reasoningEffort, message, attachments, reference ? [reference] : [],
         );
+        bindingIdRef.current = result.conversation.id;
         setBindingId(result.conversation.id);
         onBindingCreated(result.conversation.id);
         setContent('');
+        setAttachments([]);
         setReference(undefined);
         queryClient.setQueryData(['agent-session', 'sidebar', workspaceId, result.conversation.id], {
           binding_id: result.conversation.id, source_binding_id: sourceBindingId, expires_at: result.expires_at, expired: false,
@@ -135,15 +147,19 @@ export function SidebarConversationPane({ workspaceId, sourceBindingId, initialR
     }
   };
   const upload = async (files: File[]) => {
-    if (!bindingId || expired) {
-      setError('请先发送首条文本消息，再添加附件。');
-      return;
-    }
+    if (!files.length || expired || sending || uploading) return;
+    setUploading(true);
+    setError(undefined);
     try {
-      const added = await Promise.all(files.map(file => api.uploadAgentAttachment(workspaceId, bindingId, file)));
+      const ownerId = bindingIdRef.current ?? draftConversationId;
+      const added = await Promise.all(files.map(file => bindingIdRef.current
+        ? api.uploadAgentAttachment(workspaceId, bindingIdRef.current, file)
+        : api.uploadAgentWorkspaceAttachment(workspaceId, file, undefined, ownerId)));
       setAttachments(current => [...current, ...added]);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '附件上传失败');
+    } finally {
+      setUploading(false);
     }
   };
   const updateModel = async (providerId: string, modelName: string, reasoningEffort: string | null) => {
@@ -156,6 +172,9 @@ export function SidebarConversationPane({ workspaceId, sourceBindingId, initialR
     }
   };
   useEffect(() => setReference(initialReference), [initialReference]);
+  useEffect(() => () => {
+    if (!bindingIdRef.current) void api.deleteAgentWorkspaceDraftAttachments(workspaceId, draftConversationId).catch(() => undefined);
+  }, [draftConversationId, workspaceId]);
   const connectedProviders = (providersQuery.data ?? []).filter(provider => provider.connection_state === 'CONNECTED');
   const provider = connectedProviders.find(item => item.id === currentModel?.providerId);
   const availableModels = provider?.models.filter(item => item.enabled) ?? [];
@@ -173,12 +192,17 @@ export function SidebarConversationPane({ workspaceId, sourceBindingId, initialR
       {reference && <div className="agent-attachments agent-conversation-references" aria-label="已添加的会话引用"><span><span className="agent-attachment-open" title={reference.content}><Quote size={14}/><em>会话引用</em></span><button type="button" onClick={() => setReference(undefined)} aria-label="移除引用">×</button></span></div>}
       {attachments.length > 0 && <div className="agent-attachments">{attachments.map(item => <span key={item.path}><span className="agent-attachment-open"><em>{item.filename}</em></span><button type="button" aria-label={`移除附件 ${item.filename}`} onClick={() => setAttachments(current => current.filter(candidate => candidate.path !== item.path))}>×</button></span>)}</div>}
       <div className="agent-composer">
-        <textarea aria-label="发送侧边聊天消息" value={content} disabled={composerDisabled} placeholder={expired ? '侧边聊天会话已过期' : running ? '当前回复完成后可继续发送' : '向侧边聊天提问…'} onChange={event => setContent(event.target.value)} onKeyDown={event => {
+        <textarea aria-label="发送侧边聊天消息" value={content} disabled={composerDisabled} placeholder={expired ? '侧边聊天会话已过期' : running ? '当前回复完成后可继续发送' : '向侧边聊天提问…'} onChange={event => setContent(event.target.value)} onPaste={event => {
+          const files = transferredFiles(event.clipboardData);
+          if (!files.length) return;
+          event.preventDefault();
+          void upload(files);
+        }} onKeyDown={event => {
           if (event.nativeEvent.isComposing || event.keyCode === 229 || event.key !== 'Enter' || event.shiftKey) return;
           event.preventDefault();
           void send();
         }}/>
-        <footer><div className="agent-composer-context"><input ref={attachmentInput} type="file" multiple hidden onChange={event => { void upload(Array.from(event.currentTarget.files ?? [])); event.currentTarget.value = ''; }}/><button type="button" aria-label="添加附件" disabled={!bindingId || composerDisabled} onClick={() => attachmentInput.current?.click()}><Plus size={17}/></button></div><div className="agent-composer-actions"><ComposerModelMenu providers={connectedProviders} providerId={currentModel?.providerId ?? ''} modelName={currentModel?.modelName ?? ''} models={availableModels} efforts={efforts} effort={currentModel?.reasoningEffort ?? ''} disabled={composerDisabled} onProviderChange={providerId => { const nextProvider = connectedProviders.find(item => item.id === providerId); const nextModel = nextProvider?.models.find(item => item.enabled && item.is_default) ?? nextProvider?.models.find(item => item.enabled); if (nextModel) { if (bindingId) void updateModel(providerId, nextModel.model_name, nextModel.default_reasoning_effort ?? null); else setSelectedModelKey(`${providerId}:${nextModel.model_name}`); } }} onModelChange={modelName => { const model = availableModels.find(item => item.model_name === modelName); if (bindingId && currentModel) void updateModel(currentModel.providerId, modelName, model?.default_reasoning_effort ?? null); else if (currentModel) setSelectedModelKey(`${currentModel.providerId}:${modelName}`); }} onEffortChange={effort => { if (bindingId && currentModel) void updateModel(currentModel.providerId, currentModel.modelName, effort || null); }}/>{bindingId && (running || paused) && <button type="button" className="agent-interrupt" aria-label={running ? '暂停侧边聊天 Agent' : '继续侧边聊天 Agent'} disabled={sending || expired} onClick={() => void control()}>{running ? <Square size={10} fill="currentColor"/> : <Play size={12} fill="currentColor"/>}</button>}<button type="button" className="agent-send" aria-label="发送侧边聊天消息" disabled={(!content.trim() && !attachments.length) || composerDisabled} onClick={() => void send()}>{sending ? <LoaderCircle className="conversation-activity-spin" size={15}/> : <Send size={16}/>}</button></div></footer>
+        <footer><div className="agent-composer-context"><input ref={attachmentInput} aria-label="上传侧边聊天附件" type="file" multiple hidden onChange={event => { void upload(Array.from(event.currentTarget.files ?? [])); event.currentTarget.value = ''; }}/><button type="button" aria-label="添加附件" disabled={composerDisabled || uploading} onClick={() => attachmentInput.current?.click()}><Plus size={17}/></button></div><div className="agent-composer-actions"><ComposerModelMenu providers={connectedProviders} providerId={currentModel?.providerId ?? ''} modelName={currentModel?.modelName ?? ''} models={availableModels} efforts={efforts} effort={currentModel?.reasoningEffort ?? ''} disabled={composerDisabled || uploading} onProviderChange={providerId => { const nextProvider = connectedProviders.find(item => item.id === providerId); const nextModel = nextProvider?.models.find(item => item.enabled && item.is_default) ?? nextProvider?.models.find(item => item.enabled); if (nextModel) { if (bindingId) void updateModel(providerId, nextModel.model_name, nextModel.default_reasoning_effort ?? null); else setSelectedModelKey(`${providerId}:${nextModel.model_name}`); } }} onModelChange={modelName => { const model = availableModels.find(item => item.model_name === modelName); if (bindingId && currentModel) void updateModel(currentModel.providerId, modelName, model?.default_reasoning_effort ?? null); else if (currentModel) setSelectedModelKey(`${currentModel.providerId}:${modelName}`); }} onEffortChange={effort => { if (bindingId && currentModel) void updateModel(currentModel.providerId, currentModel.modelName, effort || null); }}/>{bindingId && (running || paused) && <button type="button" className="agent-interrupt" aria-label={running ? '暂停侧边聊天 Agent' : '继续侧边聊天 Agent'} disabled={sending || expired} onClick={() => void control()}>{running ? <Square size={10} fill="currentColor"/> : <Play size={12} fill="currentColor"/>}</button>}<button type="button" className="agent-send" aria-label="发送侧边聊天消息" disabled={(!content.trim() && !attachments.length) || composerDisabled || uploading} onClick={() => void send()}>{sending ? <LoaderCircle className="conversation-activity-spin" size={15}/> : <Send size={16}/>}</button></div></footer>
       </div>
     </div>
   </section>;

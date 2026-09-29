@@ -950,7 +950,8 @@ test('Deleting the selected conversation immediately hides it and opens its neig
   const deletingRow = page.locator('[data-conversation-binding-id="optimistic-delete-a"]');
   await deletingRow.hover();
   await expect(deletingRow.getByRole('button', { name: '删除会话 待删除会话' })).toBeVisible();
-  await expect(deletingRow.locator('.agent-workspace-conversation-drag, .agent-workspace-conversation-select svg')).toBeHidden();
+  await expect(deletingRow.locator('.agent-workspace-conversation-drag')).toBeVisible();
+  await expect(deletingRow.locator('.agent-workspace-conversation-select svg')).toBeHidden();
   await page.getByRole('button', { name: '删除会话', exact: true }).click();
   const dialog = page.getByRole('alertdialog');
   await dialog.getByRole('button', { name: '确认删除', exact: true }).click();
@@ -1089,6 +1090,77 @@ test('Sidebar chat tabs stay isolated to their source conversation', async ({ pa
   await expect(page.getByRole('region', { name: '侧边聊天' })).toBeVisible();
   await expect(page.getByText('向主会话追问', { exact: true })).toBeVisible();
 });
+
+
+test('Sidebar chat accepts selected and pasted attachments before its first message', async ({ page }) => {
+  let authenticated = false;
+  const workspace = { id: 'sidebar-attachments-workspace', display_name: '侧边附件工作区', desired_state: 'RUNNING', updated_at: now };
+  const source = {
+    id: 'sidebar-attachments-source', display_title: '主会话', title_state: 'MANUAL', lifecycle: 'ACTIVE', streaming_callback_ready: true, write_available: true,
+    execution_status: 'idle', created_at: now, updated_at: now,
+  };
+  const sidebar = { ...source, id: 'sidebar-attachments-draft', display_title: '侧边临时聊天' };
+  const completedUploads: string[] = [];
+  const uploadRequests: string[] = [];
+  let firstMessage: Record<string, unknown> | undefined;
+
+  await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path.endsWith('/auth/me')) return authenticated ? json(route, user) : json(route, { error: { code: 'AUTHENTICATION_REQUIRED', message: '请先登录' } }, 401);
+    if (path.endsWith('/auth/login') && request.method() === 'POST') { authenticated = true; return json(route, user); }
+    if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
+    if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
+    if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: [source], next_cursor: null });
+    if (path.endsWith('/model-providers')) return json(route, [{ id: 'test-provider', name: '测试模型', connection_state: 'CONNECTED', models: [{ model_name: 'test-model', enabled: true, is_default: true, supported_reasoning_efforts: [] }] }]);
+    if (path.endsWith('/hydration')) return json(route, { events: { events: [], next_cursor: null, history_cursor: null, result: { status: 'COMPLETED' } }, context: { model_name: 'test-model', window_tokens: 128_000, used_tokens: 0, usage_current: true }, readiness: { ready: true, execution_status: 'idle' } });
+    if (path.endsWith('/work-directories')) return json(route, { root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [] });
+    if (path.endsWith('/workspace')) return json(route, { root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: '/runtime/workspace/project', work_directory: null, files: [], repositories: [], runtime: {}, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '不可用', note: '' } } });
+    if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
+    if (path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
+    if (path.includes('/attachments/uploads')) uploadRequests.push(`${request.method()} ${path}`);
+    if (path.includes('/attachments/uploads') && request.method() === 'POST' && !path.endsWith('/complete')) return json(route, { upload_id: `sidebar-upload-${completedUploads.length}`, chunk_size: 262_144, uploaded_parts: [] }, 201);
+    if (path.includes('/attachments/uploads') && request.method() === 'PUT') return route.fulfill({ status: 200 });
+    if (path.includes('/attachments/uploads') && path.endsWith('/complete') && request.method() === 'POST') {
+      const filename = completedUploads.length === 0 ? 'selected.txt' : 'pasted.png';
+      completedUploads.push(filename);
+      return json(route, { filename, mime_type: filename.endsWith('.png') ? 'image/png' : 'text/plain', byte_size: 4, path: `/runtime/workspace/project/uploads/sidebar-attachments-draft-${filename}` }, 201);
+    }
+    if (path.endsWith('/sidebar') && request.method() === 'POST') {
+      firstMessage = request.postDataJSON() as Record<string, unknown>;
+      return json(route, { conversation: sidebar, accepted: true, expires_at: new Date(Date.now() + 3_600_000).toISOString() }, 201);
+    }
+    if (path.includes('/sidebars/')) return json(route, { binding_id: sidebar.id, source_binding_id: source.id, expires_at: new Date(Date.now() + 3_600_000).toISOString(), expired: false });
+    if (path.includes('/conversations/') && request.method() === 'GET') return json(route, path.endsWith(sidebar.id) ? sidebar : source);
+    return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+  });
+
+  await page.goto('/');
+  await login(page);
+  await page.goto(`/agent/conversations/${source.id}`);
+  await page.getByRole('button', { name: '打开侧边聊天', exact: true }).click();
+  const sidebarPane = page.getByRole('region', { name: '侧边聊天' });
+  await expect(sidebarPane.getByLabel('添加附件')).toBeEnabled();
+  await sidebarPane.getByLabel('上传侧边聊天附件').setInputFiles({ name: 'selected.txt', mimeType: 'text/plain', buffer: Buffer.from('file') });
+  await expect.poll(() => uploadRequests).toHaveLength(3);
+  await expect(sidebarPane.getByText('selected.txt', { exact: true })).toBeVisible();
+  const sidebarInput = sidebarPane.getByRole('textbox', { name: '发送侧边聊天消息' });
+  await sidebarInput.evaluate(element => {
+    const clipboardData = new DataTransfer();
+    clipboardData.items.add(new File(['png'], 'pasted.png', { type: 'image/png' }));
+    element.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, clipboardData }));
+  });
+  await expect.poll(() => uploadRequests).toHaveLength(6);
+  await expect(sidebarPane.getByText('pasted.png', { exact: true })).toBeVisible();
+  await sidebarInput.fill('请分析两个附件');
+  await sidebarPane.getByRole('button', { name: '发送侧边聊天消息' }).click();
+  await expect.poll(() => firstMessage).toMatchObject({
+    content: '请分析两个附件',
+    attachments: [{ filename: 'selected.txt' }, { filename: 'pasted.png' }],
+  });
+});
+
 
 test('Conversation attachments open in a preview dialog before the file sidebar', async ({ page }) => {
   let authenticated = false;
