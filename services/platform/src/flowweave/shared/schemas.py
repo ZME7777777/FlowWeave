@@ -370,8 +370,8 @@ class ModelProviderWrite(ApiModel):
         self.base_url = self.base_url.strip()
         if self.auth_type == "CODEX_OAUTH":
             self.api_protocol = "RESPONSES"
-        if self.auth_type == "API_KEY" and not self.base_url:
-            raise ValueError("base_url is required for API key providers")
+        if self.auth_type in {"API_KEY", "ANTHROPIC_API_KEY"} and not self.base_url:
+            raise ValueError("base_url is required for API-key providers")
         if self.auth_type in {"API_KEY", "ANTHROPIC_API_KEY"} and not self.models:
             raise ValueError("at least one model is required for this provider")
         names = [item.model_name for item in self.models]
