@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`IN PROGRESS`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`NONE`
+> 下一可执行切片：`FR-555B`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -7677,3 +7677,20 @@ FR-541B 完成：Agent Workspace 的文件树、文件预览、Git 仓库发现�
 完成：远端预检将普通 `platform` 范围收窄为 `migration`、`api`、`stream-api` 与 `worker`，明确排除 `runtime-provider`；只有 `runtime` 范围才验证并重建 Provider，适用于 Provider／Docker Provider／Runtime 协议／固定 OpenHands Runtime 变更。部署说明同步要求普通 Platform 发布保留 Provider，且 runtime 发布需先确认活跃会话的中断影响。Agent Workspace 的终态 provision task 恢复新增 active-writer 保护：当 Runtime 仍是 `ACTIVE`，当前 generation 仍有 `RUNNING` 意图和已登记的物理 resource ID 时，不因短暂的非 RUNNING 观测重新打开任务；Sandbox reconciliation 先确认物理丢失，只有实际非活动 Runtime 才进入既有 recovery／replacement 路径。
 
 验收：受影响 Python Ruff format/check、`py_compile`、Bash `-n`、`git diff --check`、Alembic 唯一 head `0135_agent_search_partial`、及本地受保护远端配置下 `platform`／`runtime` 两种只读预检均通过。新增 Agent Workspace 数据库回归已启动，但 Testcontainers PostgreSQL fixture 在断言前因本机 Docker daemon/socket 不可用失败，未记为通过；未运行迁移实跑、Runtime、镜像构建或远端部署。
+
+
+### FR-555A Runtime 高频交互与后台执行隔离 — DONE
+
+依赖：FR-543、FR-544、FR-550、FR-554（均 DONE）。
+
+完成：OpenHands baseline 将高频单会话详情、按 ID 读取事件及无过滤的有界事件窗口迁入独立 read executor（2 线程）；发送和普通状态推进保留 interactive executor（max_concurrent_runs）；暂停、拒绝待确认动作及暂停／中断后的正式状态发布进入 control executor（2 线程）。插件加载、换模、凭据更新、压缩、fork 和关闭等同步生命周期调用迁入 lifecycle executor（2 线程）；带过滤条件的搜索、Context 统计、目录扫描、标题等继续使用 background executor（最多 2 线程）。Agent run 与 lease 续期仍各自独立。所有池由 ConversationService 创建和关闭，新建、重载、fork 与纯持久 EventService 共用统一注入入口；纯持久事件读取不再落到 asyncio 默认池。不修改 REST 字段、事件身份或同会话状态锁；有界历史页仍与正式事件窗口共用 Runtime read 池，平台侧优先级／完整 deadline 由 FR-555B 收口。
+
+固定 baseline commit：`b556fd8b0d62af2c8d7d63c63a532b74f8f7e168`；不可变归档 `infra/openhands/vendor/openhands-source-b556fd8b0d62af2c8d7d63c63a532b74f8f7e168.tar.gz`，SHA-256 `d2d172fc7393478d60a3ad42955d097cce01c5136712b59a96c9b5d4b03d835a`。source lock、provenance、Dockerfile、契约预期和平台 Runtime 身份同步冻结。
+
+验收：新增 10 项真实 ConversationService／EventService 入口的故障注入回归覆盖 live／reloaded 会话：阻塞后台搜索与统计、生命周期插件加载或发送池时，分别验证正式窗口／单事件／详情、发送／暂停及纯持久读取的独立容量；修改前固定源码 10 项失败，修改后源码与安全解包后的归档各 10 项通过。夹具关闭自动标题，避免外部模型调用。扩大到事件服务／会话服务／回收／lease／事件路由共 285 项，274 passed、11 failed；全部 11 项失败已在未修改的固定源码复现（10 项既有自动标题 mock 与 1 项 pause/hydration 竞态），本次无新增失败。受影响 OpenHands 文件 Ruff／PEP8／Pyright、平台身份文件 Ruff／格式和 AST、归档 digest／四包布局／身份一致性、唯一 Alembic head `0136_merge_activity_search`、git diff --check 与 staged diff 复核通过。完整 pre-commit 的动态属性全局门禁被既有 `openhands-sdk/build/lib` 生成物阻断，未删除生成物或记为通过；原有 contract_check.py 的 58 条 E402 Ruff 提示与修改前完全一致。本轮未构建 Runtime 镜像、未做线上负载／浏览器 E2E、未部署；线程池隔离不保证同会话锁等待、平台排队或端到端超时已解决。
+
+### FR-555B 平台交互通道与 hydration 全链路预算 — READY
+
+依赖：FR-555A。
+
+目标：在显式数据库连接预算内分离首屏／实时事件、消息写入、慢变更和后台 Context／历史通道；将 reload 纳入正式读取并发限制与端到端 deadline，避免浏览器已取消但后端长期持槽。实现前审计取消、同 binding 单飞及 Agent Workspace／FlowRun node 两类宿主的调用链，保留真实执行结束才释放容量的约束。依据真实队列与调用耗时校准预算，不以单纯延长浏览器超时或无限扩池代替修复。
