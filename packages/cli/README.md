@@ -40,3 +40,7 @@ npx skills add ZME7777777/FlowWeave -g -y
 ```
 
 仓库尚未发布该 npm 包前，进入 `packages/cli` 后运行 `npm pack` 生成 tarball，并以 `npm install -g ./flowweave-ai-cli-*.tgz` 安装。发布到 npm registry 需要拥有 `@flowweave-ai` scope 的发布权限；本仓库不会自动发布。
+
+## 0.6.0：Runtime、临时侧栏与逐步草稿
+
+`agent runtime-replace <workspace-id>`、`agent sidebar-create|sidebar|sidebar-close` 与 `run stepwise-draft|stepwise-start` 已同步当前公开 API。Runtime replacement、侧栏首条消息和逐步草稿启动均会改变受控状态，CLI 要求 `-H 'Idempotency-Key: <uuid>'`；保存逐步草稿不创建 Attempt，只有显式 `stepwise-start` 才会原子预留并启动。可恢复分片上传继续通过通用 `api`/`upload`：先读取创建上传响应，再用响应的 upload ID 与分片编号上传和完成，不能猜测 upload ID、分片或 owner。

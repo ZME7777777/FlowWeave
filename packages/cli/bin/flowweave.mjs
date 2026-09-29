@@ -37,10 +37,10 @@ function usage() {
   environment <list|get|create|update|delete|setup|publish|stop|version-delete> ...
   credential <list|create|update|delete|delete-many> ...
   flow <list|get|create|update|validate|delete> ...
-  run <list|get|start|delete|runtime|replace|pause|resume|cancel|complete|events|node|node-copy|node-delete|workspace-details|workspace-directory|workspace-git-repositories|workspace-git-log|workspace-git-commit|workspace-git-diff|workspace-entry-create|workspace-delete|work-directory-delete|hydration|head|automatic-config-export|automatic-config-import|reconcile-runtime-completion> ...
+  run <list|get|start|delete|runtime|replace|pause|resume|cancel|complete|events|node|node-copy|node-delete|stepwise-draft|stepwise-start|workspace-details|workspace-directory|workspace-git-repositories|workspace-git-log|workspace-git-commit|workspace-git-diff|workspace-entry-create|workspace-delete|work-directory-delete|hydration|head|automatic-config-export|automatic-config-import|reconcile-runtime-completion> ...
   schedule <list|templates|occurrences|create|pause|resume|trigger|delete> ...
   model <list|create|update|delete|discover|usage|test|oauth-start|oauth-poll|oauth-status|oauth-revoke> ...
-  agent <default|workspace|runtime|conversations|conversation|create|send|interrupt|resume|work-directories|work-directory-create|work-directory-delete|workspace-details|workspace-directory|workspace-git-repositories|workspace-git-log|workspace-git-commit|workspace-git-diff|workspace-entry-create|file-delete|hydration|head> ...
+  agent <default|workspace|runtime|runtime-replace|conversations|conversation|create|send|interrupt|resume|sidebar-create|sidebar|sidebar-close|work-directories|work-directory-create|work-directory-delete|workspace-details|workspace-directory|workspace-git-repositories|workspace-git-log|workspace-git-commit|workspace-git-diff|workspace-entry-create|file-delete|hydration|head> ...
 
 所有写入操作都可加 --dry-run 仅查看最终请求。运行 flowweave <命令> --help 查看该命令说明。`;
 }
@@ -165,6 +165,12 @@ function pathUrl(baseUrl, path, { raw = false, query = [] } = {}) {
 }
 
 function headers(args) { return Object.fromEntries(pairs(optionValues(args, '-H').concat(optionValues(args, '--header')), ':', '--header').map(([name, value]) => [name.trim(), value.trim()])); }
+
+function requireIdempotencyKey(args, command) {
+  const key = Object.entries(headers(args)).find(([name]) => name.toLowerCase() === 'idempotency-key')?.[1]?.trim();
+  if (!key) throw new CliError(`${command} 需要 -H 'Idempotency-Key: <uuid>'`);
+  return key;
+}
 function queries(args) { return pairs(optionValues(args, '-q').concat(optionValues(args, '--query')), '=', '--query'); }
 
 function sessionTokenFrom(response) {
@@ -534,6 +540,14 @@ async function run(args) {
     if (action === 'node-copy') return request('POST', `${path}/copy`, args, { body: await objectPayload(args) });
     return request('DELETE', path, args);
   }
+  if (action === 'stepwise-draft' || action === 'stepwise-start') {
+    const nodeKey = option(args, '--node-key');
+    if (!nodeKey) throw new CliError(`run ${action} 需要 --node-key <flow-node-key>`);
+    const path = `/flow-runs/${id}/stepwise-node-drafts/${nodeKey}`;
+    if (action === 'stepwise-draft') return request('PUT', path, args, { body: await objectPayload(args) });
+    requireIdempotencyKey(args, 'run stepwise-start');
+    return request('POST', `${path}/start`, args, { body: await objectPayload(args) });
+  }
   const attemptId = option(args, '--attempt');
   const workspaceBase = attemptId
     ? `/flow-runs/${id}/node-attempts/${attemptId}/agent-sessions`
@@ -600,7 +614,7 @@ async function run(args) {
   if (action === 'cancel') return request('POST', `/flow-runs/${id}/cancel`, args, { body: {} });
   if (action === 'complete') return request('POST', `/flow-runs/${id}/complete`, args, { body: {} });
   if (action === 'events') return request('GET', `/flow-runs/${id}/events`, args);
-  throw new CliError('run 支持 list|get|start|delete|runtime|replace|pause|resume|cancel|complete|events|node|node-copy|node-delete|workspace-details|workspace-directory|workspace-git-repositories|workspace-git-log|workspace-git-commit|workspace-git-diff|workspace-entry-create|workspace-delete|work-directory-delete|hydration|head|automatic-config-export|automatic-config-import|reconcile-runtime-completion');
+  throw new CliError('run 支持 list|get|start|delete|runtime|replace|pause|resume|cancel|complete|events|node|node-copy|node-delete|stepwise-draft|stepwise-start|workspace-details|workspace-directory|workspace-git-repositories|workspace-git-log|workspace-git-commit|workspace-git-diff|workspace-entry-create|workspace-delete|work-directory-delete|hydration|head|automatic-config-export|automatic-config-import|reconcile-runtime-completion');
 }
 
 async function schedule(args) {
@@ -676,6 +690,10 @@ async function agent(args) {
   const base = `/agent-workspaces/${workspace}`;
   if (action === 'workspace') return request('GET', base, args);
   if (action === 'runtime') return request('GET', `${base}/runtime`, args);
+  if (action === 'runtime-replace') {
+    requireIdempotencyKey(args, 'agent runtime-replace');
+    return request('POST', `${base}/runtime/replacements`, args, { body: {} });
+  }
   if (action === 'conversations') return request('GET', `${base}/conversations`, args);
   if (action === 'work-directories') return request('GET', `${base}/work-directories`, args);
   if (action === 'work-directory-create') {
@@ -715,13 +733,20 @@ async function agent(args) {
     });
   }
   if (action === 'create') return request('POST', `${base}/conversations`, args);
+  if (action === 'sidebar-create') {
+    if (!binding) throw new CliError('agent sidebar-create 需要源会话 binding ID');
+    requireIdempotencyKey(args, 'agent sidebar-create');
+    return request('POST', `${base}/conversations/${binding}/sidebar`, args, { body: await objectPayload(args) });
+  }
   if (!binding) throw new CliError(`agent ${action || ''} 需要会话 binding ID`);
+  if (action === 'sidebar') return request('GET', `${base}/sidebars/${binding}`, args);
+  if (action === 'sidebar-close') return request('DELETE', `${base}/sidebars/${binding}`, args);
   if (action === 'conversation') return request('GET', `${base}/conversations/${binding}`, args);
   if (action === 'hydration' || action === 'head') return request('GET', `${base}/conversations/${binding}/${action}`, args);
   if (action === 'send') return request('POST', `${base}/conversations/${binding}/messages`, args);
   if (action === 'interrupt') return request('POST', `${base}/conversations/${binding}/interrupt`, args, { body: {} });
   if (action === 'resume') return request('POST', `${base}/conversations/${binding}/resume`, args, { body: {} });
-  throw new CliError('agent 支持 default|workspace|runtime|conversations|conversation|create|send|interrupt|resume|work-directories|work-directory-create|work-directory-delete|workspace-details|workspace-directory|workspace-git-repositories|workspace-git-log|workspace-git-commit|workspace-git-diff|workspace-entry-create|file-delete|hydration|head');
+  throw new CliError('agent 支持 default|workspace|runtime|runtime-replace|conversations|conversation|create|send|interrupt|resume|sidebar-create|sidebar|sidebar-close|work-directories|work-directory-create|work-directory-delete|workspace-details|workspace-directory|workspace-git-repositories|workspace-git-log|workspace-git-commit|workspace-git-diff|workspace-entry-create|file-delete|hydration|head');
 }
 
 async function upload(args) {

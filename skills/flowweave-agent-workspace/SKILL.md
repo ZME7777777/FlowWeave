@@ -41,6 +41,14 @@ flowweave agent conversations <workspace-id>
 
 工作目录、附件上传、能力绑定、MCP readiness、模型选择、pending confirmation、fork、condense、rerun 和 terminal 都是同一工作区域的原子 API。先读取目标会话/工作区和在线 OpenAPI，再使用 `flowweave api` 或 `upload`。能力必须是平台已治理的版本，先转 `flowweave-capabilities` 导入或定位；不能将文件复制进 Runtime 作为绑定。
 
+### 可恢复上传、临时侧栏与 Runtime replacement
+
+大附件采用公开的可恢复上传协议：先以 `api post /agent-workspaces/<workspace-id>/attachments/uploads --data-file ./.tmp/upload.json` 创建（工作区文件用 `/workspace/uploads`，既有 binding 附件用 `/conversations/<binding-id>/attachments/uploads`）；只用响应返回的 upload ID 和未完成分片号调用 `upload put .../parts/<part-number> --file file=./part.bin`，再 `api post .../complete`。用 `api get .../uploads/<upload-id>` 读取状态，只有用户明确放弃时才 DELETE；草稿附件清理由平台 draft UUID owner 约束，不能用别的 binding 或路径代替。
+
+临时侧栏聊天是主 binding 的受限、一小时 TTL 子会话，不会出现在普通会话列表。先读取主 binding 和被引用的正式事件，再使用 `agent sidebar-create <workspace-id> <source-binding-id> -H 'Idempotency-Key: <uuid>' --data-file ./.tmp/sidebar.json --dry-run`。请求体中的 conversation、模型、内容、附件及正式事件引用均必须来自公开读取结果；用 `agent sidebar` 读取、`agent sidebar-close` 显式关闭，过期后不得重试发送。
+
+Runtime replacement 会替换该 Workspace 的受管计算载体。先读取 `agent runtime <workspace-id>` 并取得用户对精确 Workspace 的明确确认，才执行 `agent runtime-replace <workspace-id> -H 'Idempotency-Key: <uuid>' --dry-run`；收到 `202` 后轮询 Runtime，绝不通过 Docker、Runtime Provider 或私有 OpenHands 路由替代该操作。
+
 工作区目录与 Git 历史只能通过公开只读接口浏览，路径、仓库和 commit 都来自此前响应；不要把本机文件系统当作 Agent Workspace 的事实源：
 
 ```bash

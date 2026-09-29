@@ -49,7 +49,7 @@ flowweave config show
 
 ## 统一调用方式
 
-页面高频操作有快捷命令：`node`、`node-directory`、`capability`、`event-trigger`、`environment`、`credential`、`flow`、`run`、`schedule`、`model`、`agent`。`credential` 是网站凭据资源，不是 `auth` 用户登录。`agent` 与 `run` 还覆盖各自范围内的工作区目录、Git 历史、条目创建和会话原生状态读取；`credential` 不等于 `auth` 用户登录。它们之外的原子操作并未缺失：按以下优先级使用通用入口。
+页面高频操作有快捷命令：`node`、`node-directory`、`capability`、`event-trigger`、`environment`、`credential`、`flow`、`run`、`schedule`、`model`、`agent`。`credential` 是网站凭据资源，不是 `auth` 用户登录。`agent` 与 `run` 还覆盖各自范围内的工作区目录、Git 历史、条目创建和会话原生状态读取；当前 CLI 还提供 Agent Runtime replacement、临时侧栏会话与逐步节点草稿的安全快捷命令。`credential` 不等于 `auth` 用户登录。它们之外的原子操作并未缺失：按以下优先级使用通用入口。
 
 ```bash
 # 先查看当前服务真正暴露的路径和 schema
@@ -64,7 +64,7 @@ flowweave upload post /some-upload --file file=./input.pdf --form field_key=sour
 flowweave ws /some-stream --max-messages 20
 ```
 
-在线 OpenAPI 与服务端返回是路径、字段、枚举、状态和响应结构的唯一权威。不要根据文档示例臆造字段；先以 `--dry-run` 审核最终 URL/方法/JSON，再执行写操作。对会被网络重试的写命令，用唯一的 `-H 'Idempotency-Key: <uuid>'`；同一逻辑操作重试时复用同一个 key。
+在线 OpenAPI 与服务端返回是路径、字段、枚举、状态和响应结构的唯一权威。不要根据文档示例臆造字段；先以 `--dry-run` 审核最终 URL/方法/JSON，再执行写操作。对会被网络重试的写命令，用唯一的 `-H 'Idempotency-Key: <uuid>'`；同一逻辑操作重试时复用同一个 key。Runtime replacement、临时侧栏首条消息和逐步节点草稿启动必须带该键，且只能在用户明确确认目标 ID 与动作后执行。
 
 ## 通用工作闭环
 

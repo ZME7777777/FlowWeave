@@ -377,3 +377,42 @@ test('工作区历史、会话水合与连续记录配置快捷命令映射新�
   assert.equal(invoke(config, 'run', 'hydration', 'run-1', '--attempt', 'attempt-1', '--dry-run').status, 2);
   assert.equal(invoke(config, 'run', 'head', 'run-1', '--binding', 'binding-1', '--dry-run').status, 2);
 });
+
+test('new runtime, sidebar, and stepwise draft shortcuts preserve contract paths and idempotency boundaries', async () => {
+  const config = await configured();
+  const initialized = invoke(config, 'config', 'init', '--base-url', 'https://example.test/flowweave');
+  assert.equal(initialized.status, 0, initialized.stderr);
+  const runtime = invoke(config, 'agent', 'runtime-replace', 'workspace-1', '-H', 'Idempotency-Key: replacement-1', '--dry-run');
+  assert.equal(runtime.status, 0, runtime.stderr);
+  assert.deepEqual(JSON.parse(runtime.stdout), {
+    method: 'POST',
+    payload: {},
+    url: 'https://example.test/flowweave/api/v1/agent-workspaces/workspace-1/runtime/replacements',
+  });
+
+  const sidebar = invoke(config, 'agent', 'sidebar-create', 'workspace-1', 'binding-1', '-H', 'Idempotency-Key: sidebar-1', '--data', '{"conversation_id":"conversation-1","model_provider_id":"provider-1","model_name":"model-1","content":"Inspect this event"}', '--dry-run');
+  assert.equal(sidebar.status, 0, sidebar.stderr);
+  assert.equal(JSON.parse(sidebar.stdout).url, 'https://example.test/flowweave/api/v1/agent-workspaces/workspace-1/conversations/binding-1/sidebar');
+  const sidebarRead = invoke(config, 'agent', 'sidebar', 'workspace-1', 'sidebar-binding-1', '--dry-run');
+  assert.equal(sidebarRead.status, 0, sidebarRead.stderr);
+  assert.equal(JSON.parse(sidebarRead.stdout).url, 'https://example.test/flowweave/api/v1/agent-workspaces/workspace-1/sidebars/sidebar-binding-1');
+  const sidebarClose = invoke(config, 'agent', 'sidebar-close', 'workspace-1', 'sidebar-binding-1', '--dry-run');
+  assert.equal(sidebarClose.status, 0, sidebarClose.stderr);
+  assert.equal(JSON.parse(sidebarClose.stdout).method, 'DELETE');
+
+  const draft = invoke(config, 'run', 'stepwise-draft', 'run-1', '--node-key', 'review', '--data', '{"expected_row_version":4,"startup_mode":"PROMPT"}', '--dry-run');
+  assert.equal(draft.status, 0, draft.stderr);
+  assert.deepEqual(JSON.parse(draft.stdout), {
+    method: 'PUT',
+    payload: { expected_row_version: 4, startup_mode: 'PROMPT' },
+    url: 'https://example.test/flowweave/api/v1/flow-runs/run-1/stepwise-node-drafts/review',
+  });
+  const start = invoke(config, 'run', 'stepwise-start', 'run-1', '--node-key', 'review', '-H', 'Idempotency-Key: start-1', '--data', '{"expected_row_version":4}', '--dry-run');
+  assert.equal(start.status, 0, start.stderr);
+  assert.equal(JSON.parse(start.stdout).url, 'https://example.test/flowweave/api/v1/flow-runs/run-1/stepwise-node-drafts/review/start');
+
+  assert.equal(invoke(config, 'agent', 'runtime-replace', 'workspace-1', '--dry-run').status, 2);
+  assert.equal(invoke(config, 'agent', 'sidebar-create', 'workspace-1', 'binding-1', '--data', '{}', '--dry-run').status, 2);
+  assert.equal(invoke(config, 'run', 'stepwise-start', 'run-1', '--node-key', 'review', '--data', '{"expected_row_version":4}', '--dry-run').status, 2);
+  assert.equal(invoke(config, 'run', 'stepwise-draft', 'run-1', '--dry-run').status, 2);
+});

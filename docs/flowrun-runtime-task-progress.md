@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`IN PROGRESS`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`FR-555C2`
+> 下一可执行切片：`NONE`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -7775,3 +7775,13 @@ OpenHands adapter 现为 context、activity 和 pending-confirmation 增加每 R
 完成：通过 `TaskWorker.run_once` 和真实线程 executor 的故障注入，复现首次取消后再次取消可中断等待、使租约续期器在同步事务结束前失去收尾控制；直接取消执行 coroutine 也可能让仍在运行的线程提前释放 lane。现在对执行、失败记录、续期器停止及 Worker lane 排空使用可承受重复取消的 shield 等待，直到实际 completion 才释放槽位并停止租约；取消语义在资源收尾后继续向调用方传播。失败时在租约仍有效的条件下完成正式失败记录，租约已丢失时不使用旧 generation 写失败。`run_until_stopped` 排空 lane 后再退出，`run_worker` 等待容器关闭完成。容器先等待所有 executor 中的在途工作，再关闭 HTTP transport，最后释放 SQL pool，避免线程持有已关闭的 Runtime 连接。
 
 验收：不依赖数据库的 Worker／容器定向故障注入 `7 passed`，覆盖重复及直接取消、失败记录期间再次取消、续期继续与租约丢失、lane 排空和 transport／SQL 释放顺序；修复前重复取消与 transport 顺序两项按预期失败。受影响 Ruff format/check、`py_compile`、唯一 Alembic head `0137_conversation_message_order`、`git diff --check` 通过。定向 Pyright 仅剩 `container.py` 未修改的 `MockRuntime` 与 `RuntimePort` 协议不匹配诊断，未将其记为通过。本切片未运行真实数据库、迁移、Runtime 镜像、线上多用户负载或远端部署；不改队列／数据库容量。当前无已定义的下一切片。
+
+### FR-556 CLI、Skill 与 OpenAPI 契约同步 — DONE
+
+依赖：无（公开控制面契约同步）。
+
+范围：以当前平台应用实际生成的 OpenAPI 为唯一事实源，审计自 `FR-402` 以来公开接口变化；同步发布 CLI 快捷命令和页面 Skill，保持未知或低频原子接口由通用 `api`／`upload`／`ws` 覆盖。不得暴露内部 admin-control 入口、Docker、Runtime Provider、数据库或 OpenHands 私有接口，不得猜测上传 owner、分片、binding、草稿 UUID 或会话 ID。
+
+完成：将 `contracts/openapi-v1.json` 更新至当前 251 条路径的应用生成契约，覆盖新增的可恢复工作区／会话附件上传、草稿附件清理、临时侧栏会话、Agent Runtime replacement 和逐步节点草稿／启动等公共接口。CLI 发布版本升至 `0.6.0`，新增 Agent Runtime replacement、临时侧栏创建／读取／关闭和 FlowRun 逐步草稿保存／启动快捷命令；replacement、侧栏首条消息及草稿启动强制调用方提供 `Idempotency-Key`，草稿保存保持乐观锁请求体且不创建 Attempt。可恢复分片上传继续经通用 JSON／multipart 入口，并在顶层 Skill、Agent Workspace Skill、FlowRun 工作台 Skill 与 CLI README 中明确创建、读取状态、按响应分片上传、完成／明确取消的边界。同步记录了新接口不会授权绕过用户确认、平台返回的身份或 Runtime 生命周期。
+
+验收：CLI `npm test` 为 `14 passed`，`npm run lint`（`node --check`）和 `npm pack --dry-run` 通过；应用工厂生成 OpenAPI 与更新的 `contracts/openapi-v1.json` 完全相同（251 paths）；12 个 FlowWeave Skill frontmatter 校验与 `uv run alembic heads`（唯一 `0138_admin_resource_cleanup_operations`）通过；`git diff --check` 通过。`tests/contract/test_contracts.py` 已尝试但本机没有 Docker socket，Testcontainers PostgreSQL fixture 在测试断言前失败，故未记为通过；用不依赖数据库的应用工厂比较替代验证 OpenAPI 基线。无迁移实跑、Runtime 镜像、远端或生产操作。当前无已定义的下一切片。

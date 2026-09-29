@@ -158,6 +158,238 @@
         }
       }
     },
+    "/internal/admin-control/runtime-controls": {
+      "post": {
+        "summary": "Control Runtime",
+        "operationId": "control_runtime_internal_admin_control_runtime_controls_post",
+        "parameters": [
+          {
+            "name": "X-FlowWeave-Admin-Control-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Flowweave-Admin-Control-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RuntimeControlRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Control Runtime Internal Admin Control Runtime Controls Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/internal/admin-control/runtime-diagnostics": {
+      "post": {
+        "summary": "Diagnose Runtime",
+        "operationId": "diagnose_runtime_internal_admin_control_runtime_diagnostics_post",
+        "parameters": [
+          {
+            "name": "X-FlowWeave-Admin-Control-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Flowweave-Admin-Control-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RuntimeDiagnosticRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Diagnose Runtime Internal Admin Control Runtime Diagnostics Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/internal/admin-control/alert-lifecycle": {
+      "post": {
+        "summary": "Update Alert Lifecycle",
+        "operationId": "update_alert_lifecycle_internal_admin_control_alert_lifecycle_post",
+        "parameters": [
+          {
+            "name": "X-FlowWeave-Admin-Control-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Flowweave-Admin-Control-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AlertLifecycleRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Update Alert Lifecycle Internal Admin Control Alert Lifecycle Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/internal/admin-control/resource-cleanups": {
+      "post": {
+        "summary": "Cleanup Resources",
+        "operationId": "cleanup_resources_internal_admin_control_resource_cleanups_post",
+        "parameters": [
+          {
+            "name": "X-FlowWeave-Admin-Control-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Flowweave-Admin-Control-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResourceCleanupRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Cleanup Resources Internal Admin Control Resource Cleanups Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/agent-workspaces/default": {
       "get": {
         "summary": "Get Default Agent Workspace",
@@ -393,6 +625,63 @@
                   "type": "object",
                   "additionalProperties": true,
                   "title": "Response Get Agent Workspace Runtime Api V1 Agent Workspaces  Workspace Id  Runtime Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/agent-workspaces/{workspace_id}/runtime/replacements": {
+      "post": {
+        "summary": "Replace Agent Workspace Runtime",
+        "operationId": "replace_agent_workspace_runtime_api_v1_agent_workspaces__workspace_id__runtime_replacements_post",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Workspace Id"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Replace Agent Workspace Runtime Api V1 Agent Workspaces  Workspace Id  Runtime Replacements Post"
                 }
               }
             }
@@ -949,6 +1238,88 @@
                   "type": "object",
                   "additionalProperties": true,
                   "title": "Response Agent Workspace Git Log Api V1 Agent Workspaces  Workspace Id  Workspace Git Log Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/agent-workspaces/{workspace_id}/workspace/git/sync": {
+      "post": {
+        "summary": "Sync Agent Workspace Git Repository",
+        "operationId": "sync_agent_workspace_git_repository_api_v1_agent_workspaces__workspace_id__workspace_git_sync_post",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Workspace Id"
+            }
+          },
+          {
+            "name": "repository_path",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Repository Path"
+            }
+          },
+          {
+            "name": "binding_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Binding Id"
+            }
+          },
+          {
+            "name": "work_directory_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Work Directory Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Sync Agent Workspace Git Repository Api V1 Agent Workspaces  Workspace Id  Workspace Git Sync Post"
                 }
               }
             }
@@ -1690,8 +2061,26 @@
               "type": "integer",
               "maximum": 5,
               "minimum": 1,
-              "default": 5,
+              "default": 3,
               "title": "Limit"
+            }
+          },
+          {
+            "name": "work_directory_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 36
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Work Directory Id"
             }
           }
         ],
@@ -1799,6 +2188,24 @@
               "type": "string",
               "title": "Workspace Id"
             }
+          },
+          {
+            "name": "active_binding_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 36
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Active Binding Id"
+            }
           }
         ],
         "responses": {
@@ -1808,16 +2215,176 @@
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "additionalProperties": {
-                    "type": "array",
-                    "items": {
-                      "type": "string"
-                    }
-                  },
+                  "additionalProperties": true,
                   "title": "Response Agent Conversation Activity Api V1 Agent Workspaces  Workspace Id  Conversation Activity Get"
                 }
               }
             }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/agent-workspaces/{workspace_id}/conversations/{source_binding_id}/sidebar": {
+      "post": {
+        "summary": "Create Agent Sidebar Conversation",
+        "operationId": "create_agent_sidebar_conversation_api_v1_agent_workspaces__workspace_id__conversations__source_binding_id__sidebar_post",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Workspace Id"
+            }
+          },
+          {
+            "name": "source_binding_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Source Binding Id"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentSidebarConversationWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Create Agent Sidebar Conversation Api V1 Agent Workspaces  Workspace Id  Conversations  Source Binding Id  Sidebar Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/agent-workspaces/{workspace_id}/sidebars/{binding_id}": {
+      "get": {
+        "summary": "Get Agent Sidebar Conversation",
+        "operationId": "get_agent_sidebar_conversation_api_v1_agent_workspaces__workspace_id__sidebars__binding_id__get",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Workspace Id"
+            }
+          },
+          {
+            "name": "binding_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Binding Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Get Agent Sidebar Conversation Api V1 Agent Workspaces  Workspace Id  Sidebars  Binding Id  Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Close Agent Sidebar Conversation",
+        "operationId": "close_agent_sidebar_conversation_api_v1_agent_workspaces__workspace_id__sidebars__binding_id__delete",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Workspace Id"
+            }
+          },
+          {
+            "name": "binding_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Binding Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
           },
           "422": {
             "description": "Validation Error",
@@ -2339,6 +2906,23 @@
               ],
               "title": "History Cursor"
             }
+          },
+          {
+            "name": "diagnostic_trigger",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 40
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Diagnostic Trigger"
+            }
           }
         ],
         "responses": {
@@ -2439,6 +3023,35 @@
             "schema": {
               "type": "string",
               "title": "Search Id"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 500
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 50,
+              "minimum": 1,
+              "default": 20,
+              "title": "Limit"
             }
           }
         ],
@@ -2823,6 +3436,712 @@
         }
       }
     },
+    "/api/v1/agent-workspaces/{workspace_id}/workspace/uploads": {
+      "post": {
+        "summary": "Create Resumable Agent Workspace File Upload",
+        "operationId": "create_resumable_agent_workspace_file_upload_api_v1_agent_workspaces__workspace_id__workspace_uploads_post",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Workspace Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResumableWorkspaceFileUploadWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Create Resumable Agent Workspace File Upload Api V1 Agent Workspaces  Workspace Id  Workspace Uploads Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/agent-workspaces/{workspace_id}/attachments/uploads": {
+      "post": {
+        "summary": "Create Resumable Agent Workspace Attachment Upload",
+        "operationId": "create_resumable_agent_workspace_attachment_upload_api_v1_agent_workspaces__workspace_id__attachments_uploads_post",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Workspace Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResumableAttachmentUploadWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Create Resumable Agent Workspace Attachment Upload Api V1 Agent Workspaces  Workspace Id  Attachments Uploads Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/agent-workspaces/{workspace_id}/conversations/{binding_id}/attachments/uploads": {
+      "post": {
+        "summary": "Create Resumable Agent Attachment Upload",
+        "operationId": "create_resumable_agent_attachment_upload_api_v1_agent_workspaces__workspace_id__conversations__binding_id__attachments_uploads_post",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Workspace Id"
+            }
+          },
+          {
+            "name": "binding_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Binding Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResumableAttachmentUploadWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Create Resumable Agent Attachment Upload Api V1 Agent Workspaces  Workspace Id  Conversations  Binding Id  Attachments Uploads Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/agent-workspaces/{workspace_id}/attachments/uploads/{upload_id}": {
+      "get": {
+        "summary": "Resumable Agent Workspace Attachment Upload Status",
+        "operationId": "resumable_agent_workspace_attachment_upload_status_api_v1_agent_workspaces__workspace_id__attachments_uploads__upload_id__get",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Workspace Id"
+            }
+          },
+          {
+            "name": "upload_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Upload Id"
+            }
+          },
+          {
+            "name": "binding_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Binding Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Resumable Agent Workspace Attachment Upload Status Api V1 Agent Workspaces  Workspace Id  Attachments Uploads  Upload Id  Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Cancel Resumable Agent Workspace Attachment Upload",
+        "operationId": "cancel_resumable_agent_workspace_attachment_upload_api_v1_agent_workspaces__workspace_id__attachments_uploads__upload_id__delete",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Workspace Id"
+            }
+          },
+          {
+            "name": "upload_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Upload Id"
+            }
+          },
+          {
+            "name": "binding_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Binding Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/agent-workspaces/{workspace_id}/workspace/uploads/{upload_id}": {
+      "get": {
+        "summary": "Resumable Agent Workspace Attachment Upload Status",
+        "operationId": "resumable_agent_workspace_attachment_upload_status_api_v1_agent_workspaces__workspace_id__workspace_uploads__upload_id__get",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Workspace Id"
+            }
+          },
+          {
+            "name": "upload_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Upload Id"
+            }
+          },
+          {
+            "name": "binding_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Binding Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Resumable Agent Workspace Attachment Upload Status Api V1 Agent Workspaces  Workspace Id  Workspace Uploads  Upload Id  Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Cancel Resumable Agent Workspace Attachment Upload",
+        "operationId": "cancel_resumable_agent_workspace_attachment_upload_api_v1_agent_workspaces__workspace_id__workspace_uploads__upload_id__delete",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Workspace Id"
+            }
+          },
+          {
+            "name": "upload_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Upload Id"
+            }
+          },
+          {
+            "name": "binding_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Binding Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/agent-workspaces/{workspace_id}/attachments/uploads/{upload_id}/parts/{part_number}": {
+      "put": {
+        "summary": "Upload Resumable Agent Workspace Attachment Part",
+        "operationId": "upload_resumable_agent_workspace_attachment_part_api_v1_agent_workspaces__workspace_id__attachments_uploads__upload_id__parts__part_number__put",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Workspace Id"
+            }
+          },
+          {
+            "name": "upload_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Upload Id"
+            }
+          },
+          {
+            "name": "part_number",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Part Number"
+            }
+          },
+          {
+            "name": "binding_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Binding Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_upload_resumable_agent_workspace_attachment_part_api_v1_agent_workspaces__workspace_id__attachments_uploads__upload_id__parts__part_number__put"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Upload Resumable Agent Workspace Attachment Part Api V1 Agent Workspaces  Workspace Id  Attachments Uploads  Upload Id  Parts  Part Number  Put"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/agent-workspaces/{workspace_id}/workspace/uploads/{upload_id}/parts/{part_number}": {
+      "put": {
+        "summary": "Upload Resumable Agent Workspace Attachment Part",
+        "operationId": "upload_resumable_agent_workspace_attachment_part_api_v1_agent_workspaces__workspace_id__workspace_uploads__upload_id__parts__part_number__put",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Workspace Id"
+            }
+          },
+          {
+            "name": "upload_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Upload Id"
+            }
+          },
+          {
+            "name": "part_number",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Part Number"
+            }
+          },
+          {
+            "name": "binding_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Binding Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_upload_resumable_agent_workspace_attachment_part_api_v1_agent_workspaces__workspace_id__workspace_uploads__upload_id__parts__part_number__put"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Upload Resumable Agent Workspace Attachment Part Api V1 Agent Workspaces  Workspace Id  Workspace Uploads  Upload Id  Parts  Part Number  Put"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/agent-workspaces/{workspace_id}/attachments/uploads/{upload_id}/complete": {
+      "post": {
+        "summary": "Complete Resumable Agent Workspace Attachment Upload",
+        "operationId": "complete_resumable_agent_workspace_attachment_upload_api_v1_agent_workspaces__workspace_id__attachments_uploads__upload_id__complete_post",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Workspace Id"
+            }
+          },
+          {
+            "name": "upload_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Upload Id"
+            }
+          },
+          {
+            "name": "binding_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Binding Id"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Complete Resumable Agent Workspace Attachment Upload Api V1 Agent Workspaces  Workspace Id  Attachments Uploads  Upload Id  Complete Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/agent-workspaces/{workspace_id}/workspace/uploads/{upload_id}/complete": {
+      "post": {
+        "summary": "Complete Resumable Agent Workspace Attachment Upload",
+        "operationId": "complete_resumable_agent_workspace_attachment_upload_api_v1_agent_workspaces__workspace_id__workspace_uploads__upload_id__complete_post",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Workspace Id"
+            }
+          },
+          {
+            "name": "upload_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Upload Id"
+            }
+          },
+          {
+            "name": "binding_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Binding Id"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Complete Resumable Agent Workspace Attachment Upload Api V1 Agent Workspaces  Workspace Id  Workspace Uploads  Upload Id  Complete Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/agent-workspaces/{workspace_id}/attachments": {
       "post": {
         "summary": "Agent Workspace Attachment",
@@ -2894,6 +4213,63 @@
                 }
               }
             }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/agent-workspaces/{workspace_id}/draft-attachments/{conversation_id}": {
+      "delete": {
+        "summary": "Delete Agent Workspace Draft Attachments",
+        "operationId": "delete_agent_workspace_draft_attachments_api_v1_agent_workspaces__workspace_id__draft_attachments__conversation_id__delete",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Workspace Id"
+            }
+          },
+          {
+            "name": "conversation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Conversation Id"
+            }
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Path"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
           },
           "422": {
             "description": "Validation Error",
@@ -3218,6 +4594,22 @@
             "schema": {
               "type": "string",
               "title": "Binding Id"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
             }
           }
         ],
@@ -3952,8 +5344,26 @@
               "type": "integer",
               "maximum": 5,
               "minimum": 1,
-              "default": 5,
+              "default": 3,
               "title": "Limit"
+            }
+          },
+          {
+            "name": "work_directory_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 36
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Work Directory Id"
             }
           }
         ],
@@ -4079,6 +5489,24 @@
               "type": "string",
               "title": "Attempt Id"
             }
+          },
+          {
+            "name": "active_binding_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 36
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Active Binding Id"
+            }
           }
         ],
         "responses": {
@@ -4088,12 +5516,7 @@
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "additionalProperties": {
-                    "type": "array",
-                    "items": {
-                      "type": "string"
-                    }
-                  },
+                  "additionalProperties": true,
                   "title": "Response Node Session Activity Api V1 Flow Runs  Flow Run Id  Node Attempts  Attempt Id  Agent Sessions Activity Get"
                 }
               }
@@ -4682,6 +6105,97 @@
                   "type": "object",
                   "additionalProperties": true,
                   "title": "Response Node Session Workspace Git Log Api V1 Flow Runs  Flow Run Id  Node Attempts  Attempt Id  Agent Sessions Workspace Git Log Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/flow-runs/{flow_run_id}/node-attempts/{attempt_id}/agent-sessions/workspace/git/sync": {
+      "post": {
+        "summary": "Sync Node Session Workspace Git Repository",
+        "operationId": "sync_node_session_workspace_git_repository_api_v1_flow_runs__flow_run_id__node_attempts__attempt_id__agent_sessions_workspace_git_sync_post",
+        "parameters": [
+          {
+            "name": "flow_run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Flow Run Id"
+            }
+          },
+          {
+            "name": "attempt_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Attempt Id"
+            }
+          },
+          {
+            "name": "repository_path",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Repository Path"
+            }
+          },
+          {
+            "name": "binding_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Binding Id"
+            }
+          },
+          {
+            "name": "work_directory_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Work Directory Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Sync Node Session Workspace Git Repository Api V1 Flow Runs  Flow Run Id  Node Attempts  Attempt Id  Agent Sessions Workspace Git Sync Post"
                 }
               }
             }
@@ -5821,6 +7335,23 @@
               ],
               "title": "History Cursor"
             }
+          },
+          {
+            "name": "diagnostic_trigger",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 40
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Diagnostic Trigger"
+            }
           }
         ],
         "responses": {
@@ -6331,6 +7862,22 @@
               "type": "string",
               "title": "Binding Id"
             }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
           }
         ],
         "responses": {
@@ -6676,6 +8223,443 @@
         }
       }
     },
+    "/api/v1/flow-runs/{flow_run_id}/node-attempts/{attempt_id}/agent-sessions/attachments/uploads": {
+      "post": {
+        "summary": "Create Resumable Node Draft Attachment Upload",
+        "operationId": "create_resumable_node_draft_attachment_upload_api_v1_flow_runs__flow_run_id__node_attempts__attempt_id__agent_sessions_attachments_uploads_post",
+        "parameters": [
+          {
+            "name": "flow_run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Flow Run Id"
+            }
+          },
+          {
+            "name": "attempt_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Attempt Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResumableNodeAttachmentWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Create Resumable Node Draft Attachment Upload Api V1 Flow Runs  Flow Run Id  Node Attempts  Attempt Id  Agent Sessions Attachments Uploads Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/flow-runs/{flow_run_id}/node-attempts/{attempt_id}/agent-sessions/{binding_id}/attachments/uploads": {
+      "post": {
+        "summary": "Create Resumable Node Attachment Upload",
+        "operationId": "create_resumable_node_attachment_upload_api_v1_flow_runs__flow_run_id__node_attempts__attempt_id__agent_sessions__binding_id__attachments_uploads_post",
+        "parameters": [
+          {
+            "name": "flow_run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Flow Run Id"
+            }
+          },
+          {
+            "name": "attempt_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Attempt Id"
+            }
+          },
+          {
+            "name": "binding_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Binding Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResumableNodeAttachmentWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Create Resumable Node Attachment Upload Api V1 Flow Runs  Flow Run Id  Node Attempts  Attempt Id  Agent Sessions  Binding Id  Attachments Uploads Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/flow-runs/{flow_run_id}/node-attempts/{attempt_id}/agent-sessions/attachments/uploads/{upload_id}": {
+      "get": {
+        "summary": "Resumable Node Attachment Upload Status",
+        "operationId": "resumable_node_attachment_upload_status_api_v1_flow_runs__flow_run_id__node_attempts__attempt_id__agent_sessions_attachments_uploads__upload_id__get",
+        "parameters": [
+          {
+            "name": "flow_run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Flow Run Id"
+            }
+          },
+          {
+            "name": "attempt_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Attempt Id"
+            }
+          },
+          {
+            "name": "upload_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Upload Id"
+            }
+          },
+          {
+            "name": "binding_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Binding Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Resumable Node Attachment Upload Status Api V1 Flow Runs  Flow Run Id  Node Attempts  Attempt Id  Agent Sessions Attachments Uploads  Upload Id  Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Cancel Resumable Node Attachment Upload",
+        "operationId": "cancel_resumable_node_attachment_upload_api_v1_flow_runs__flow_run_id__node_attempts__attempt_id__agent_sessions_attachments_uploads__upload_id__delete",
+        "parameters": [
+          {
+            "name": "flow_run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Flow Run Id"
+            }
+          },
+          {
+            "name": "attempt_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Attempt Id"
+            }
+          },
+          {
+            "name": "upload_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Upload Id"
+            }
+          },
+          {
+            "name": "binding_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Binding Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/flow-runs/{flow_run_id}/node-attempts/{attempt_id}/agent-sessions/attachments/uploads/{upload_id}/parts/{part_number}": {
+      "put": {
+        "summary": "Upload Resumable Node Attachment Part",
+        "operationId": "upload_resumable_node_attachment_part_api_v1_flow_runs__flow_run_id__node_attempts__attempt_id__agent_sessions_attachments_uploads__upload_id__parts__part_number__put",
+        "parameters": [
+          {
+            "name": "flow_run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Flow Run Id"
+            }
+          },
+          {
+            "name": "attempt_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Attempt Id"
+            }
+          },
+          {
+            "name": "upload_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Upload Id"
+            }
+          },
+          {
+            "name": "part_number",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Part Number"
+            }
+          },
+          {
+            "name": "binding_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Binding Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_upload_resumable_node_attachment_part_api_v1_flow_runs__flow_run_id__node_attempts__attempt_id__agent_sessions_attachments_uploads__upload_id__parts__part_number__put"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Upload Resumable Node Attachment Part Api V1 Flow Runs  Flow Run Id  Node Attempts  Attempt Id  Agent Sessions Attachments Uploads  Upload Id  Parts  Part Number  Put"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/flow-runs/{flow_run_id}/node-attempts/{attempt_id}/agent-sessions/attachments/uploads/{upload_id}/complete": {
+      "post": {
+        "summary": "Complete Resumable Node Attachment Upload",
+        "operationId": "complete_resumable_node_attachment_upload_api_v1_flow_runs__flow_run_id__node_attempts__attempt_id__agent_sessions_attachments_uploads__upload_id__complete_post",
+        "parameters": [
+          {
+            "name": "flow_run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Flow Run Id"
+            }
+          },
+          {
+            "name": "attempt_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Attempt Id"
+            }
+          },
+          {
+            "name": "upload_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Upload Id"
+            }
+          },
+          {
+            "name": "binding_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Binding Id"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Complete Resumable Node Attachment Upload Api V1 Flow Runs  Flow Run Id  Node Attempts  Attempt Id  Agent Sessions Attachments Uploads  Upload Id  Complete Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/flow-runs/{flow_run_id}/node-attempts/{attempt_id}/agent-sessions/{binding_id}/attachments": {
       "post": {
         "summary": "Upload Node Attachment",
@@ -6825,6 +8809,72 @@
                 }
               }
             }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/flow-runs/{flow_run_id}/node-attempts/{attempt_id}/agent-sessions/draft-attachments/{conversation_id}": {
+      "delete": {
+        "summary": "Delete Node Draft Attachments",
+        "operationId": "delete_node_draft_attachments_api_v1_flow_runs__flow_run_id__node_attempts__attempt_id__agent_sessions_draft_attachments__conversation_id__delete",
+        "parameters": [
+          {
+            "name": "flow_run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Flow Run Id"
+            }
+          },
+          {
+            "name": "attempt_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Attempt Id"
+            }
+          },
+          {
+            "name": "conversation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Conversation Id"
+            }
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Path"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
           },
           "422": {
             "description": "Validation Error",
@@ -11198,6 +13248,142 @@
         }
       }
     },
+    "/api/v1/flow-runs/{run_id}/stepwise-node-drafts/{flow_node_key}": {
+      "put": {
+        "summary": "Save Stepwise Node Draft",
+        "operationId": "save_stepwise_node_draft_api_v1_flow_runs__run_id__stepwise_node_drafts__flow_node_key__put",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          },
+          {
+            "name": "flow_node_key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Flow Node Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StepwiseNodeDraftWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Save Stepwise Node Draft Api V1 Flow Runs  Run Id  Stepwise Node Drafts  Flow Node Key  Put"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/flow-runs/{run_id}/stepwise-node-drafts/{flow_node_key}/start": {
+      "post": {
+        "summary": "Start Stepwise Node Draft",
+        "operationId": "start_stepwise_node_draft_api_v1_flow_runs__run_id__stepwise_node_drafts__flow_node_key__start_post",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          },
+          {
+            "name": "flow_node_key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Flow Node Key"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StepwiseNodeDraftStartWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Start Stepwise Node Draft Api V1 Flow Runs  Run Id  Stepwise Node Drafts  Flow Node Key  Start Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/flow-runs/{parent_run_id}/stepwise-runs/config-exports": {
       "post": {
         "summary": "Export Nested Stepwise Run Configs",
@@ -15016,179 +17202,6 @@
           }
         }
       }
-    },
-    "/api/v1/agent-workspaces/{workspace_id}/workspace/git/sync": {
-      "post": {
-        "summary": "Sync Agent Workspace Git Repository",
-        "operationId": "sync_agent_workspace_git_repository_api_v1_agent_workspaces__workspace_id__workspace_git_sync_post",
-        "parameters": [
-          {
-            "name": "workspace_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Workspace Id"
-            }
-          },
-          {
-            "name": "repository_path",
-            "in": "query",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Repository Path"
-            }
-          },
-          {
-            "name": "binding_id",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Binding Id"
-            }
-          },
-          {
-            "name": "work_directory_id",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Work Directory Id"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "additionalProperties": true,
-                  "title": "Response Sync Agent Workspace Git Repository Api V1 Agent Workspaces  Workspace Id  Workspace Git Sync Post"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/v1/flow-runs/{flow_run_id}/node-attempts/{attempt_id}/agent-sessions/workspace/git/sync": {
-      "post": {
-        "summary": "Sync Node Session Workspace Git Repository",
-        "operationId": "sync_node_session_workspace_git_repository_api_v1_flow_runs__flow_run_id__node_attempts__attempt_id__agent_sessions_workspace_git_sync_post",
-        "parameters": [
-          {
-            "name": "flow_run_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Flow Run Id"
-            }
-          },
-          {
-            "name": "attempt_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Attempt Id"
-            }
-          },
-          {
-            "name": "repository_path",
-            "in": "query",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Repository Path"
-            }
-          },
-          {
-            "name": "binding_id",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Binding Id"
-            }
-          },
-          {
-            "name": "work_directory_id",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Work Directory Id"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "additionalProperties": true,
-                  "title": "Response Sync Node Session Workspace Git Repository Api V1 Flow Runs  Flow Run Id  Node Attempts  Attempt Id  Agent Sessions Workspace Git Sync Post"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
     }
   },
   "components": {
@@ -15545,6 +17558,26 @@
             "maxLength": 500,
             "minLength": 1,
             "title": "Query"
+          },
+          "work_directory_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array",
+                "maxItems": 100
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Work Directory Ids"
+          },
+          "include_root": {
+            "type": "boolean",
+            "title": "Include Root",
+            "default": true
           }
         },
         "additionalProperties": false,
@@ -15559,6 +17592,21 @@
           "unread": {
             "type": "boolean",
             "title": "Unread"
+          },
+          "unread_origin": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "MANUAL",
+                  "SYSTEM"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unread Origin"
           }
         },
         "additionalProperties": false,
@@ -15746,6 +17794,70 @@
           "document"
         ],
         "title": "AgentProfileRevisionWrite"
+      },
+      "AgentSidebarConversationWrite": {
+        "properties": {
+          "conversation_id": {
+            "type": "string",
+            "maxLength": 36,
+            "minLength": 36,
+            "title": "Conversation Id"
+          },
+          "model_provider_id": {
+            "type": "string",
+            "maxLength": 36,
+            "minLength": 1,
+            "title": "Model Provider Id"
+          },
+          "model_name": {
+            "type": "string",
+            "maxLength": 240,
+            "minLength": 1,
+            "title": "Model Name"
+          },
+          "reasoning_effort": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 30
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reasoning Effort"
+          },
+          "content": {
+            "type": "string",
+            "maxLength": 200000,
+            "title": "Content"
+          },
+          "attachments": {
+            "items": {
+              "$ref": "#/components/schemas/AgentAttachmentReference"
+            },
+            "type": "array",
+            "maxItems": 10,
+            "title": "Attachments"
+          },
+          "references": {
+            "items": {
+              "$ref": "#/components/schemas/AgentConversationReference"
+            },
+            "type": "array",
+            "maxItems": 10,
+            "title": "References"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "conversation_id",
+          "model_provider_id",
+          "model_name",
+          "content"
+        ],
+        "title": "AgentSidebarConversationWrite"
       },
       "AgentStreamingMigrationWrite": {
         "properties": {
@@ -15964,6 +18076,72 @@
           "display_name"
         ],
         "title": "AgentWorkspaceReference"
+      },
+      "AlertLifecycleRequest": {
+        "properties": {
+          "alert_key": {
+            "type": "string",
+            "maxLength": 300,
+            "minLength": 3,
+            "title": "Alert Key"
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "ACKNOWLEDGE",
+              "SILENCE"
+            ],
+            "title": "Action"
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 500,
+            "minLength": 10,
+            "title": "Reason"
+          },
+          "silence_minutes": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 1440.0,
+                "minimum": 5.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Silence Minutes"
+          },
+          "actor_user_id": {
+            "type": "string",
+            "maxLength": 36,
+            "minLength": 36,
+            "title": "Actor User Id"
+          },
+          "actor_username": {
+            "type": "string",
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Actor Username"
+          },
+          "request_id": {
+            "type": "string",
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Request Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "alert_key",
+          "action",
+          "reason",
+          "actor_user_id",
+          "actor_username",
+          "request_id"
+        ],
+        "title": "AlertLifecycleRequest"
       },
       "ArtifactWrite": {
         "properties": {
@@ -16518,6 +18696,48 @@
           "file"
         ],
         "title": "Body_upload_node_input_artifact_api_v1_flow_runs__run_id__nodes__flow_node_key__input_artifacts_upload_post"
+      },
+      "Body_upload_resumable_agent_workspace_attachment_part_api_v1_agent_workspaces__workspace_id__attachments_uploads__upload_id__parts__part_number__put": {
+        "properties": {
+          "file": {
+            "type": "string",
+            "format": "binary",
+            "title": "File"
+          }
+        },
+        "type": "object",
+        "required": [
+          "file"
+        ],
+        "title": "Body_upload_resumable_agent_workspace_attachment_part_api_v1_agent_workspaces__workspace_id__attachments_uploads__upload_id__parts__part_number__put"
+      },
+      "Body_upload_resumable_agent_workspace_attachment_part_api_v1_agent_workspaces__workspace_id__workspace_uploads__upload_id__parts__part_number__put": {
+        "properties": {
+          "file": {
+            "type": "string",
+            "format": "binary",
+            "title": "File"
+          }
+        },
+        "type": "object",
+        "required": [
+          "file"
+        ],
+        "title": "Body_upload_resumable_agent_workspace_attachment_part_api_v1_agent_workspaces__workspace_id__workspace_uploads__upload_id__parts__part_number__put"
+      },
+      "Body_upload_resumable_node_attachment_part_api_v1_flow_runs__flow_run_id__node_attempts__attempt_id__agent_sessions_attachments_uploads__upload_id__parts__part_number__put": {
+        "properties": {
+          "file": {
+            "type": "string",
+            "format": "binary",
+            "title": "File"
+          }
+        },
+        "type": "object",
+        "required": [
+          "file"
+        ],
+        "title": "Body_upload_resumable_node_attachment_part_api_v1_flow_runs__flow_run_id__node_attempts__attempt_id__agent_sessions_attachments_uploads__upload_id__parts__part_number__put"
       },
       "CapabilityBulkDeleteWrite": {
         "properties": {
@@ -18440,6 +20660,7 @@
             "type": "string",
             "enum": [
               "API_KEY",
+              "ANTHROPIC_API_KEY",
               "CODEX_OAUTH"
             ],
             "title": "Auth Type",
@@ -19123,6 +21344,21 @@
           "unread": {
             "type": "boolean",
             "title": "Unread"
+          },
+          "unread_origin": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "MANUAL",
+                  "SYSTEM"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unread Origin"
           }
         },
         "additionalProperties": false,
@@ -19323,6 +21559,216 @@
         ],
         "title": "RejectWrite"
       },
+      "ResourceCleanupRequest": {
+        "properties": {
+          "action": {
+            "type": "string",
+            "const": "CLEANUP_EXPIRED_TASKS",
+            "title": "Action"
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 500,
+            "minLength": 10,
+            "title": "Reason"
+          },
+          "idempotency_key": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 16,
+            "title": "Idempotency Key"
+          },
+          "actor_user_id": {
+            "type": "string",
+            "maxLength": 36,
+            "minLength": 36,
+            "title": "Actor User Id"
+          },
+          "actor_username": {
+            "type": "string",
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Actor Username"
+          },
+          "request_id": {
+            "type": "string",
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Request Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "action",
+          "reason",
+          "idempotency_key",
+          "actor_user_id",
+          "actor_username",
+          "request_id"
+        ],
+        "title": "ResourceCleanupRequest"
+      },
+      "ResumableAttachmentUploadWrite": {
+        "properties": {
+          "filename": {
+            "type": "string",
+            "maxLength": 240,
+            "minLength": 1,
+            "title": "Filename"
+          },
+          "mime_type": {
+            "type": "string",
+            "maxLength": 200,
+            "title": "Mime Type",
+            "default": "application/octet-stream"
+          },
+          "total_size": {
+            "type": "integer",
+            "maximum": 26214400.0,
+            "exclusiveMinimum": 0.0,
+            "title": "Total Size"
+          },
+          "work_directory_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Work Directory Id"
+          },
+          "conversation_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 36,
+                "minLength": 36
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conversation Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "filename",
+          "total_size"
+        ],
+        "title": "ResumableAttachmentUploadWrite"
+      },
+      "ResumableNodeAttachmentWrite": {
+        "properties": {
+          "filename": {
+            "type": "string",
+            "maxLength": 240,
+            "minLength": 1,
+            "title": "Filename"
+          },
+          "mime_type": {
+            "type": "string",
+            "maxLength": 200,
+            "title": "Mime Type",
+            "default": "application/octet-stream"
+          },
+          "total_size": {
+            "type": "integer",
+            "maximum": 26214400.0,
+            "exclusiveMinimum": 0.0,
+            "title": "Total Size"
+          },
+          "conversation_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 36,
+                "minLength": 36
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conversation Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "filename",
+          "total_size"
+        ],
+        "title": "ResumableNodeAttachmentWrite"
+      },
+      "ResumableWorkspaceFileUploadWrite": {
+        "properties": {
+          "filename": {
+            "type": "string",
+            "maxLength": 240,
+            "minLength": 1,
+            "title": "Filename"
+          },
+          "mime_type": {
+            "type": "string",
+            "maxLength": 200,
+            "title": "Mime Type",
+            "default": "application/octet-stream"
+          },
+          "total_size": {
+            "type": "integer",
+            "maximum": 104857600.0,
+            "exclusiveMinimum": 0.0,
+            "title": "Total Size"
+          },
+          "parent_path": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 500
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Path"
+          },
+          "work_directory_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Work Directory Id"
+          },
+          "conversation_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 36,
+                "minLength": 36
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conversation Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "filename",
+          "total_size"
+        ],
+        "title": "ResumableWorkspaceFileUploadWrite"
+      },
       "RunStart": {
         "properties": {
           "name": {
@@ -19436,6 +21882,173 @@
         ],
         "title": "RuntimeConfirmationDecisionWrite"
       },
+      "RuntimeControlRequest": {
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "REPLACE_RUNTIME",
+              "ISOLATE_RUNTIME",
+              "RESUME_RUNTIME"
+            ],
+            "title": "Action"
+          },
+          "runtime_kind": {
+            "type": "string",
+            "enum": [
+              "FLOW_RUN",
+              "AGENT_WORKSPACE"
+            ],
+            "title": "Runtime Kind"
+          },
+          "owner_id": {
+            "type": "string",
+            "maxLength": 36,
+            "minLength": 36,
+            "title": "Owner Id"
+          },
+          "flow_run_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 36,
+                "minLength": 36
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Flow Run Id"
+          },
+          "runtime_session_id": {
+            "type": "string",
+            "maxLength": 36,
+            "minLength": 36,
+            "title": "Runtime Session Id"
+          },
+          "expected_generation": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Expected Generation"
+          },
+          "expected_session_row_version": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Expected Session Row Version"
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 500,
+            "minLength": 10,
+            "title": "Reason"
+          },
+          "idempotency_key": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 16,
+            "title": "Idempotency Key"
+          },
+          "actor_user_id": {
+            "type": "string",
+            "maxLength": 36,
+            "minLength": 36,
+            "title": "Actor User Id"
+          },
+          "actor_username": {
+            "type": "string",
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Actor Username"
+          },
+          "request_id": {
+            "type": "string",
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Request Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "action",
+          "runtime_kind",
+          "owner_id",
+          "runtime_session_id",
+          "expected_generation",
+          "expected_session_row_version",
+          "reason",
+          "idempotency_key",
+          "actor_user_id",
+          "actor_username",
+          "request_id"
+        ],
+        "title": "RuntimeControlRequest"
+      },
+      "RuntimeDiagnosticRequest": {
+        "properties": {
+          "runtime_kind": {
+            "type": "string",
+            "enum": [
+              "FLOW_RUN",
+              "AGENT_WORKSPACE"
+            ],
+            "title": "Runtime Kind"
+          },
+          "owner_id": {
+            "type": "string",
+            "maxLength": 36,
+            "minLength": 36,
+            "title": "Owner Id"
+          },
+          "runtime_session_id": {
+            "type": "string",
+            "maxLength": 36,
+            "minLength": 36,
+            "title": "Runtime Session Id"
+          },
+          "expected_generation": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Expected Generation"
+          },
+          "expected_session_row_version": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Expected Session Row Version"
+          },
+          "actor_user_id": {
+            "type": "string",
+            "maxLength": 36,
+            "minLength": 36,
+            "title": "Actor User Id"
+          },
+          "actor_username": {
+            "type": "string",
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Actor Username"
+          },
+          "request_id": {
+            "type": "string",
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Request Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "runtime_kind",
+          "owner_id",
+          "runtime_session_id",
+          "expected_generation",
+          "expected_session_row_version",
+          "actor_user_id",
+          "actor_username",
+          "request_id"
+        ],
+        "title": "RuntimeDiagnosticRequest"
+      },
       "RuntimeLifecycleWrite": {
         "properties": {
           "expected_generation": {
@@ -19515,6 +22128,90 @@
         "type": "object",
         "title": "StepwiseInitialConfigurationWrite",
         "description": "Portable first-node configuration for a stepwise record."
+      },
+      "StepwiseNodeDraftStartWrite": {
+        "properties": {
+          "expected_row_version": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Expected Row Version"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "expected_row_version"
+        ],
+        "title": "StepwiseNodeDraftStartWrite",
+        "description": "Optimistic-lock one draft before materialising its first Attempt."
+      },
+      "StepwiseNodeDraftWrite": {
+        "properties": {
+          "startup_mode": {
+            "type": "string",
+            "enum": [
+              "PROMPT",
+              "CHAT"
+            ],
+            "title": "Startup Mode",
+            "default": "PROMPT"
+          },
+          "startup_prompt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 200000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Startup Prompt"
+          },
+          "artifact_ids": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Artifact Ids"
+          },
+          "input_urls": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Input Urls"
+          },
+          "gates": {
+            "items": {
+              "$ref": "#/components/schemas/GateWrite"
+            },
+            "type": "array",
+            "title": "Gates"
+          },
+          "agent_preset": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AgentPresetWrite"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "expected_row_version": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Expected Row Version"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "expected_row_version"
+        ],
+        "title": "StepwiseNodeDraftWrite",
+        "description": "Editable node configuration for one stepwise record.\n\nSaving this command never creates an Attempt. The configuration is copied\ninto an immutable Attempt only by the explicit node-start command."
       },
       "StepwiseRecordConfigExportWrite": {
         "properties": {

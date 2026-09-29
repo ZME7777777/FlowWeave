@@ -46,6 +46,12 @@ flowweave upload post /flow-runs/<run-id>/artifacts/upload \
 
 节点专属输入上传使用 `/flow-runs/<run-id>/nodes/<flow-node-key>/input-artifacts/upload`。上传返回的 Artifact ID 必须再通过读取 Run/NodeRun 验证其归属与绑定。
 
+## 逐步节点草稿
+
+逐步节点的编辑草稿和首次启动是两次不同操作。先从 FlowRun 详情读取实际 `flow_node_key` 与草稿 `row_version`；使用 `run stepwise-draft <run-id> --node-key <flow-node-key> --data-file ./.tmp/draft.json --dry-run` 保存配置。请求体必须包含当前 `expected_row_version`，保存不会创建 Attempt。只有用户明确要求启动该节点时，才执行 `run stepwise-start <run-id> --node-key <flow-node-key> -H 'Idempotency-Key: <uuid>' --data-file ./.tmp/start.json --dry-run`；成功响应返回的平台预留 binding/Attempt 才能用于后续节点会话路由，不能猜测 OpenHands conversation ID。
+
+节点会话的可恢复附件上传使用 `/flow-runs/<run-id>/node-attempts/<attempt-id>/agent-sessions/.../attachments/uploads`：创建、按响应的 upload ID/part number 单分片上传、读取状态、complete 或明确取消。草稿附件只属于其 draft UUID owner；用户放弃草稿时才调用对应的 draft-attachments DELETE，不能直接删除 Runtime 文件。
+
 ## 门禁、会话与自动运行
 
 接受/拒绝、retry gate、Runtime confirmation batch decision、人工输出、自动运行草稿/启动、节点会话等均是平台控制的状态机动作。每一步都先读当前 Attempt/批次/Run，并以 OpenAPI 取得真实 body；需要幂等保障时使用 `Idempotency-Key`。顶层聊天任务不要混用节点会话，转 `flowweave-agent-workspace`。
