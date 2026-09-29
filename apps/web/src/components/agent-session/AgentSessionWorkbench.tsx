@@ -34,6 +34,8 @@ const ACTIVE_EVENT_RECOVERY_INTERVAL_MS = 4_000;
 const ACTIVE_EVENT_LATEST_RECHECK_INTERVAL_MS = 30_000;
 const INPUT_READINESS_MIN_REQUEST_INTERVAL_MS = 2_000;
 const SUBMISSION_EVENT_CONFIRMATION_TIMEOUT_MS = 60_000;
+const SUBMISSION_EVENT_CONFIRMATION_RETRY_WINDOW_MS = 5_000;
+const SUBMISSION_EVENT_CONFIRMATION_RETRY_INTERVAL_MS = 250;
 const CONVERSATION_HYDRATION_SELECTION_DELAY_MS = 120;
 const HYDRATION_UI_DEADLINE_MS = 12_000;
 const MAX_UNAVAILABLE_HYDRATION_RETRIES = 2;
@@ -820,8 +822,9 @@ function WorkspaceConversationRow({
   reveal?: boolean;
 }) {
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number }>();
-  const showAlert = unread && unreadOrigin === 'SYSTEM' && (possiblyStuck || failed);
-  const alertIsRunning = showAlert && possiblyStuck && running && !failed;
+  const showRunningAlert = possiblyStuck && running && !failed;
+  const showFailedUnreadAlert = unread && unreadOrigin === 'SYSTEM' && failed;
+  const showAlert = showRunningAlert || showFailedUnreadAlert;
   useEscapeClose(() => setContextMenu(undefined), Boolean(contextMenu));
   useEffect(() => {
     if (!contextMenu) return;
@@ -839,9 +842,10 @@ function WorkspaceConversationRow({
     <button type="button" className={`agent-workspace-conversation-select${selected ? ' active' : ''}`} aria-label={conversationName(item)} onClick={onSelect} onDoubleClick={onDoubleClick}>
       <span><b>{conversationName(item)}</b>{workspaceName && <small title={workspaceName}><Folder size={11}/><span>{workspaceName}</span></small>}</span>
     </button>
-    {showAlert && <button type="button" className={`agent-workspace-conversation-alert${alertIsRunning ? ' running' : ''}`} aria-label={failed ? '确认会话异常已读' : '确认会话长时间未产生进展已读'} title="标记为已读" onClick={event => { event.stopPropagation(); onAcknowledgeAlert?.(); }}><CircleAlert aria-hidden="true" size={14}/></button>}
+    {showRunningAlert && <span className="agent-workspace-conversation-alert running" role="img" aria-label="会话正在运行但后台长时间未产生可确认进展" title="会话可能需要暂停后继续，但后续仍可能自行恢复"><CircleAlert aria-hidden="true" size={14}/></span>}
+    {showFailedUnreadAlert && <button type="button" className="agent-workspace-conversation-alert" aria-label="确认会话异常已读" title="标记为已读" onClick={event => { event.stopPropagation(); onAcknowledgeAlert?.(); }}><CircleAlert aria-hidden="true" size={14}/></button>}
     {unread && !showAlert && !running && <span className="agent-workspace-conversation-unread" role="img" aria-label="会话已完成，有未读回复" title="会话有未读回复"/>}
-    {running && !showAlert && <LoaderCircle className="agent-workspace-conversation-running" role="img" aria-label="会话正在运行" size={14}/>}
+    {running && !showRunningAlert && <LoaderCircle className="agent-workspace-conversation-running" role="img" aria-label="会话正在运行" size={14}/>}
     {orderSyncState === 'syncing' && !showAlert && !unread && !running && <span className="agent-workspace-conversation-sync" title="排序正在后台同步" aria-label="排序正在后台同步"><LoaderCircle size={12}/></span>}
     {orderSyncState === 'failed' && !showAlert && !unread && !running && <button type="button" className="agent-workspace-conversation-sync failed" title="排序暂未同步；点击重试。当前前端顺序已保留。" aria-label="排序暂未同步，点击重试" onClick={event => { event.stopPropagation(); onRetryOrder?.(); }}>!</button>}
     {onDelete && !running && !showAlert && <button type="button" className="agent-workspace-conversation-delete" aria-label={`删除会话 ${conversationName(item)}`} title={deleteDisabled ? '会话运行中，请先停止' : '删除会话'} disabled={!conversationWritable || deleteDisabled || removing} onClick={onDelete}><Trash2 size={13}/></button>}
@@ -4383,6 +4387,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   });
   const [hiddenEventIds, setHiddenEventIds] = useState<Set<string>>(() => new Set());
   const [deferredRewriteUserEventIds, setDeferredRewriteUserEventIds] = useState<Set<string>>(() => new Set());
+  const [pauseDisplayFreeze, setPauseDisplayFreeze] = useState<{ bindingId: string; visibleEventIds: Set<string> }>();
   const [turnState, setTurnState] = useState<TurnState>('idle');
   const [activeTurnEventId, setActiveTurnEventId] = useState<string>();
   const [expiredTerminalSyncTurnKey, setExpiredTerminalSyncTurnKey] = useState<string>();
@@ -5782,11 +5787,16 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   }, [conversationDraft?.id, eventsQuery.data?.events, scopedLiveEvents, selected?.id]);
   const displayedEvents = useMemo(() => {
     const hiddenBranchIds = eventBranchIdsFromRoots(currentFormalEvents, hiddenEventIds);
+    const pausedVisibleEventIds = pauseDisplayFreeze && pauseDisplayFreeze.bindingId === selected?.id
+      ? pauseDisplayFreeze.visibleEventIds
+      : undefined;
     const visibleFormalEvents = currentFormalEvents.filter(event => (
-      !hiddenBranchIds.has(event.id) && !deferredRewriteUserEventIds.has(event.id)
+      !hiddenBranchIds.has(event.id)
+      && !deferredRewriteUserEventIds.has(event.id)
+      && (!pausedVisibleEventIds || pausedVisibleEventIds.has(event.id))
     ));
     return projectLocalMessages(visibleFormalEvents, activeLocalMessageProjections);
-  }, [activeLocalMessageProjections, currentFormalEvents, deferredRewriteUserEventIds, hiddenEventIds]);
+  }, [activeLocalMessageProjections, currentFormalEvents, deferredRewriteUserEventIds, hiddenEventIds, pauseDisplayFreeze, selected?.id]);
   const cachedHistoryUserEventIds = useMemo(() => {
     void historyCacheRevision;
     if (!selected || !eventsQuery.data?.history_cursor) return [];
@@ -5852,6 +5862,28 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     return () => window.clearTimeout(timer);
   }, [currentFormalEvents, pendingSubmissionConfirmation, selected?.id]);
   const submissionConfirmationPending = pendingSubmissionConfirmation?.bindingId === selected?.id;
+  useEffect(() => {
+    if (!submissionConfirmationPending || !selected?.id || !pendingSubmissionConfirmation) return;
+    const retryDeadline = Math.min(
+      pendingSubmissionConfirmation.expiresAt,
+      Date.now() + SUBMISSION_EVENT_CONFIRMATION_RETRY_WINDOW_MS,
+    );
+    let cancelled = false;
+    let timer: number | undefined;
+    const reconcile = () => {
+      if (cancelled || Date.now() >= retryDeadline) return;
+      void synchronizeConversationEvents(true, 'submission_confirmation').finally(() => {
+        if (!cancelled && Date.now() < retryDeadline) {
+          timer = window.setTimeout(reconcile, SUBMISSION_EVENT_CONFIRMATION_RETRY_INTERVAL_MS);
+        }
+      });
+    };
+    reconcile();
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [pendingSubmissionConfirmation, selected?.id, submissionConfirmationPending, synchronizeConversationEvents]);
   const selectedCondensing = Boolean(selected && (
     condensationStatus?.bindingId === selected.id || condensingConversationIds.has(selected.id)
   ));
@@ -6305,7 +6337,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       bootstrapTransitionScope.current = undefined;
       return;
     }
-    setEditing(false); setQueuedMessageMenuId(undefined); pendingLiveEvents.current = []; if (liveEventsFrame.current !== undefined) window.cancelAnimationFrame(liveEventsFrame.current); liveEventsFrame.current = undefined; setScopedLiveEvents(current => current.filter(item => item.scope === composerScope)); setLocalMessageProjectionRevision(current => current + 1); setHiddenEventIds(new Set()); setDeferredRewriteUserEventIds(new Set()); setActiveTurnEventId(undefined); setExpiredTerminalSyncTurnKey(undefined); setRequestStartedAt(undefined); setConfirmationReason(''); setTurnState('idle'); queuedMessagesRef.current = []; setQueuedMessages([]); setPendingRewrite(undefined);
+    setEditing(false); setQueuedMessageMenuId(undefined); pendingLiveEvents.current = []; if (liveEventsFrame.current !== undefined) window.cancelAnimationFrame(liveEventsFrame.current); liveEventsFrame.current = undefined; setScopedLiveEvents(current => current.filter(item => item.scope === composerScope)); setLocalMessageProjectionRevision(current => current + 1); setHiddenEventIds(new Set()); setDeferredRewriteUserEventIds(new Set()); setPauseDisplayFreeze(undefined); setActiveTurnEventId(undefined); setExpiredTerminalSyncTurnKey(undefined); setRequestStartedAt(undefined); setConfirmationReason(''); setTurnState('idle'); queuedMessagesRef.current = []; setQueuedMessages([]); setPendingRewrite(undefined);
     if (recoveredComposer && composerScope) {
       composerDraftsByScope.current.set(composerScope, recoveredComposer);
       replaceComposerDraft(recoveredComposer.content, composerScope);
@@ -6379,6 +6411,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   useEffect(() => {
     if (turnState === 'pausing' && nativeExecutionStatus?.toLowerCase() === 'paused') {
       setTurnState('paused');
+      setPauseDisplayFreeze(undefined);
     }
   }, [nativeExecutionStatus, turnState]);
   useEffect(() => {
@@ -7029,10 +7062,22 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       reportOperationError(request.bindingId, error);
     },
   });
-  const interrupt = useMutation({ mutationFn: () => api.interruptConversation(workspace!.id, selected!.id), onMutate: () => setTurnState('pausing'), onSuccess: () => { reconcileConversationProjection(); onHostStateChanged?.(); }, onError: error => {
-    setTurnState('running');
-    reportOperationError(selected?.id, error);
-  } });
+  const interrupt = useMutation({
+    mutationFn: () => api.interruptConversation(workspace!.id, selected!.id),
+    onMutate: () => {
+      setPauseDisplayFreeze(selected ? {
+        bindingId: selected.id,
+        visibleEventIds: new Set(currentFormalEvents.map(event => event.id)),
+      } : undefined);
+      setTurnState('pausing');
+    },
+    onSuccess: () => { reconcileConversationProjection(); onHostStateChanged?.(); },
+    onError: error => {
+      setPauseDisplayFreeze(undefined);
+      setTurnState('running');
+      reportOperationError(selected?.id, error);
+    },
+  });
   const resume = useMutation({ mutationFn: () => api.resumeConversation(workspace!.id, selected!.id), onMutate: () => setTurnState('resuming'), onSuccess: value => {
     if (value.cursor) setActiveTurnEventId(value.cursor);
     setConversationUnread(selected!.id, false);
@@ -7518,21 +7563,21 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       ? 'read-only'
       : conversationInitialLoading
         ? 'reconciling'
-        : interruptableActiveTurn
-          ? 'running'
-          : selected && !canWrite
-            ? 'read-only'
-            : effectiveTurnState === 'running'
-              ? 'reconciling'
-            : effectiveTurnState === 'pausing'
-              ? 'pausing'
-              : effectiveTurnState === 'paused'
-                ? 'paused'
-                : effectiveTurnState === 'resuming'
-                  ? 'resuming'
-                  : conversationVisuallyActive
-                    ? 'reconciling'
-                    : 'idle';
+        : effectiveTurnState === 'pausing'
+          ? 'pausing'
+          : interruptableActiveTurn
+            ? 'running'
+            : selected && !canWrite
+              ? 'read-only'
+              : effectiveTurnState === 'running'
+                ? 'reconciling'
+                : effectiveTurnState === 'paused'
+                  ? 'paused'
+                  : effectiveTurnState === 'resuming'
+                    ? 'resuming'
+                    : conversationVisuallyActive
+                      ? 'reconciling'
+                      : 'idle';
   const composerControl = (() => {
     const actionBlocked = Boolean(pendingConfirmation)
       || bootstrap.isPending
@@ -7544,7 +7589,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       case 'paused':
         return { label: '继续当前 Agent', disabled: actionBlocked, editable: canWrite && !actionBlocked, action: 'resume' as const };
       case 'pausing':
-        return { label: '正在暂停 Agent', disabled: true, editable: false, action: 'none' as const };
+        return { label: '暂停请求已发送', disabled: true, editable: false, action: 'none' as const };
       case 'resuming':
         return { label: '正在继续 Agent', disabled: true, editable: false, action: 'none' as const };
       case 'reconciling':
@@ -8013,7 +8058,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
           </div>
           <div className="agent-composer-actions">
             {features.modelSelection && (selected ? <ComposerModelMenu providers={connectedProviders} providerId={conversationProviderId} modelName={activeConversationModelName} models={availableConversationModels} efforts={supportedEfforts} effort={reasoningEffort ?? selected.reasoning_effort ?? contextQuery.data?.reasoning_effort ?? conversationModel?.default_reasoning_effort ?? ''} disabled={!canWrite || conversationActivity.active || queuedMessages.length > 0 || Boolean(pendingConfirmation) || persistModel.isPending || migrateStreaming.isPending || Boolean(pendingMigratedSend)} onProviderChange={providerId => { const provider = connectedProviders.find(item => item.id === providerId); const model = provider?.models.find(item => item.enabled && item.is_default); if (!provider || !model) return; const effort = model.default_reasoning_effort ?? null; setConversationProviderId(providerId); setConversationModelName(model.model_name); setReasoningEffort(effort); persistModel.mutate({ providerId, modelName: model.model_name, effort }); }} onModelChange={modelName => { const model = availableConversationModels.find(item => item.model_name === modelName); const effort = model?.default_reasoning_effort ?? null; setConversationModelName(modelName); setReasoningEffort(effort); persistModel.mutate({ providerId: conversationProviderId, modelName, effort }); }} onEffortChange={effort => { const nextEffort = effort || null; setReasoningEffort(nextEffort); persistModel.mutate({ providerId: conversationProviderId, modelName: activeConversationModelName, effort }); }}/> : <ComposerModelMenu providers={connectedProviders} providerId={newConversationProviderId} modelName={newConversationModelName} models={availableDraftModels} efforts={supportedDraftEfforts} effort={newConversationReasoningEffort ?? draftConversationModel?.default_reasoning_effort ?? ''} disabled={!canOpenConversation || bootstrap.isPending} onProviderChange={providerId => { const provider = connectedProviders.find(item => item.id === providerId); const model = provider?.models.find(item => item.enabled && item.is_default); if (!provider || !model) return; setNewConversationProviderId(providerId); setNewConversationModelName(model.model_name); setNewConversationReasoningEffort(model.default_reasoning_effort ?? null); }} onModelChange={modelName => { const model = availableDraftModels.find(item => item.model_name === modelName); setNewConversationModelName(modelName); setNewConversationReasoningEffort(model?.default_reasoning_effort ?? null); }} onEffortChange={effort => setNewConversationReasoningEffort(effort || null)}/>) }
-            <button type="button" className={`agent-send${composerControl.action === 'resume' ? ' resume' : ''}`} aria-label={composerControl.label} disabled={composerControl.disabled} onClick={runComposerAction}>{pendingConfirmation ? <ShieldAlert size={14}/> : composerControl.action === 'send' ? <Send size={16}/> : composerControl.action === 'resume' ? <Play size={12} fill="currentColor"/> : composerControlMode === 'read-only' ? <CircleAlert size={15}/> : composerControl.action === 'interrupt' ? <Square size={10} fill="currentColor"/> : <LoaderCircle className="conversation-activity-spin" size={15}/>}</button>
+            <button type="button" className={`agent-send${composerControl.action === 'resume' || composerControlMode === 'pausing' ? ' resume' : ''}`} aria-label={composerControl.label} disabled={composerControl.disabled} onClick={runComposerAction}>{pendingConfirmation ? <ShieldAlert size={14}/> : composerControl.action === 'send' ? <Send size={16}/> : composerControl.action === 'resume' || composerControlMode === 'pausing' ? <Play size={12} fill="currentColor"/> : composerControlMode === 'read-only' ? <CircleAlert size={15}/> : composerControl.action === 'interrupt' ? <Square size={10} fill="currentColor"/> : <LoaderCircle className="conversation-activity-spin" size={15}/>}</button>
           </div>
         </footer>
         </div>

@@ -446,6 +446,9 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   let transientIdleReadiness = false;
   let readinessReportsIdle = false;
   let interrupted = false;
+  let pauseReadinessGate: Promise<void> | undefined;
+  let releasePauseReadiness: (() => void) | undefined;
+  let pauseBufferedEvent = false;
   let backfilledTaskAction = false;
   let incompleteLiveToolProjection = false;
   let parentTurnFailed = false;
@@ -831,6 +834,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
             ...(emptyResponseFollowup ? [{ id: 'empty-response-followup', event_type: 'THOUGHT', payload: { source: 'agent', parent_id: 'empty-response-nudge', content: '已恢复，继续检查工作区。', thought: '已恢复，继续检查工作区。', timestamp: new Date().toISOString() } }] : []),
           ] : []),
           ...(interrupted ? [{ id: 'paused-tool-error', event_type: 'ERROR', payload: { source_type: 'AgentErrorEvent', parent_id: 'running-user', content: 'Tool call interrupted before completion. The conversation was paused.' } }] : []),
+          ...(pauseBufferedEvent ? [{ id: 'pause-buffered-event', event_type: 'THOUGHT', payload: { source: 'agent', parent_id: 'running-user', content: '暂停请求确认前到达的正式事件。', thought: '暂停请求确认前到达的正式事件。', timestamp: new Date().toISOString() } }] : []),
           ...(parentTurnFailed ? [{ id: 'running-parent-error', event_type: 'ERROR', payload: { source_type: 'ConversationErrorEvent', source: 'environment', parent_id: backfilledTaskAction ? 'recovered-task-action' : 'running-user', content: '模型服务暂时不可用，本轮已停止', error_code: 'LLMServiceUnavailableError', timestamp: new Date().toISOString() } }] : []),
           ...(recoverableAgentError ? [
             { id: 'recoverable-tool', event_type: 'TOOL_CALL', payload: { source: 'agent', parent_id: 'running-user', action_id: 'recoverable-tool', tool_call_id: 'recoverable-tool-call', event_name: 'TerminalAction', details: { command: 'fetch deployment state' }, timestamp: new Date().toISOString() } },
@@ -953,6 +957,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
         await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ready: true, execution_status: 'idle' }) });
         return;
       }
+      if (interrupted && pauseReadinessGate) await pauseReadinessGate;
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
         ready: !modelIsResponding || interrupted,
         execution_status: modelIsResponding ? (interrupted ? 'paused' : 'running') : 'idle',
@@ -2307,7 +2312,15 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(activeProcess.locator(':scope > summary .conversation-activity-spin')).toBeVisible();
   await expect(taskPlan).toHaveAttribute('data-stability-marker', 'live-task-plan');
   await expect.poll(() => taskPlan.evaluate(element => element.getBoundingClientRect().top)).toBe(stableTaskPlanTop);
+  pauseReadinessGate = new Promise<void>(resolve => { releasePauseReadiness = resolve; });
   await page.getByRole('button', { name: '暂停当前 Agent' }).click();
+  await expect(page.getByRole('button', { name: '暂停请求已发送' })).toBeDisabled();
+  pauseBufferedEvent = true;
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await expect(page.getByText('暂停请求确认前到达的正式事件。')).toHaveCount(0);
+  releasePauseReadiness?.();
+  pauseReadinessGate = undefined;
+  await expect(page.getByText('暂停请求确认前到达的正式事件。')).toBeVisible();
   await expect(page.getByRole('button', { name: '继续当前 Agent' })).toBeVisible();
   await expect(activeProcess.getByText('已暂停，结果未返回')).toBeVisible();
   await expect(activeProcess).toHaveJSProperty('open', true);
