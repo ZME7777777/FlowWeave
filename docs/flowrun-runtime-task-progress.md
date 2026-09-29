@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`IN PROGRESS`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`FR-555C`
+> 下一可执行切片：`FR-555C2`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -7736,7 +7736,7 @@ OpenHands adapter 现为 context、activity 和 pending-confirmation 增加每 R
 
 验收：新增独立 Playwright 回归 `conversation-scroll-stability.spec.ts`，覆盖同 ID 的 24 段 Thought 正文扩展、新 Tool 正式事件和用户上滚后的 Tool Result，`1 passed`；Web TypeScript、production build 与 `git diff --check` 通过。Web lint 仍被原有 3 条 React Hook dependency warning 以 `--max-warnings=0` 拒绝，本切片未新增 lint error。既有综合滚动／历史分页场景的滚动阶段通过，随后在未修改的历史预取夹具等待“第一历史页”超时，未将该综合场景记为通过。未修改 Runtime、数据库 schema 或远端环境。下一可执行切片仍为 FR-555C。
 
-### FR-555C 慢生命周期变更与后台任务通道 — READY
+### FR-555C 慢生命周期变更与后台任务通道（拆分为 FR-555C1 / FR-555C2）
 
 依赖：FR-555B2B。
 
@@ -7753,3 +7753,21 @@ OpenHands adapter 现为 context、activity 和 pending-confirmation 增加每 R
 固定 source lock 的 `b556fd8b0d62af2c8d7d63c63a532b74f8f7e168` 只读审计确认，无过滤有界事件窗口走 Runtime 两线程 read executor，历史与当前窗口仍共享该执行资源。本切片将 Web 历史页间隔由 250ms 调至 1.5 秒，隐藏页面取消在途浏览器请求并在下一页派发前检查可见性／binding／AbortSignal，恢复可见后续读；工作区详情、目录、引用索引和 Git 查询不自动重试 503。完成的原生入口游标不因五分钟缓存期限或焦点恢复重新扫描；最新窗口指向已加载正式 event id 时沿用旧链，指向尚未加载的正式身份时允许新链，防止旧游标永久覆盖新入口。活动分页每页续期，避免长历史在五分钟内未读完就丢弃已取得页并从头重来。不限制完整历史数量，不改正式消息／事件身份。
 
 验收：HTTP／executor 定向 pytest `20 passed, 1 deselected`（排除需要数据库的 slow-request logging 测试），覆盖 API／Worker 的 1、4、5、8 槽总预算、fallback 共享准入、history／workspace 双向阻塞时首屏与消息保留容量、取消后继续占槽与实际 completion 后恢复；旧 helper 的相同阻塞场景按预期失败。新增 Playwright 路由夹具回归 `1 passed`，覆盖隐藏暂停、恢复完整三页、至少 1.5 秒间隔、workspace 503 无自动重试、六分钟后相同／已加载入口不重扫和未知新入口可加载。受影响 Python Ruff／py_compile、Web 精确 ESLint、TypeScript、production build、唯一 Alembic head `0137_conversation_message_order` 与 git diff --check 通过；构建仍提示现有大 chunk。未运行真实数据库／迁移、Runtime 镜像或线上多用户负载，未部署。进程内通道隔离不能证明跨 API worker 的 Runtime 总并发或服务器 I/O 容量已充分，下一可执行切片仍为 FR-555C。
+
+### FR-555C1 API 慢生命周期变更独立通道 — DONE
+
+依赖：FR-555B2B、FR-555B2D（均 DONE）。
+
+范围：将两类宿主的显式模型／能力／凭据／fork／删除及原生重命名、节点创建／宿主预置从普通同步 mutation 通道移入独立有界 lifecycle executor／SQL pool。预留容量从既有 blocking 预算划分，普通交互至少保留一槽，小配置沿用同一个 mutation 准入。API 同步完成、租户上下文、事务和原生生命周期契约不变；不把写操作响应超时当作写入撤销，不自动重试。验证慢变更与正式事件／确认／消息／首屏／workspace／history／control 隔离、排队取消、执行中取消及失败后的实际资源归还。
+
+完成：两类宿主共 14 个已审计入口改用 `run_blocking_lifecycle`：Agent Workspace 的原生重命名、能力加载、认证同步、删除、换模、streaming migration 和 fork；Flow node 的宿主预置、能力加载、认证同步、创建、删除、换模和 fork。节点普通状态查询及仅本地改名仍走既有通道；确认决策与附件 mutation 不进入 lifecycle，消息、首屏、工作区、历史和控制保留既有隔离。API 从原 blocking 预算再预留一个 lifecycle executor／SQL pool，默认 8 槽变为 hydration 2、message 1、workspace 1、lifecycle 1、普通交互 3。默认总 PostgreSQL 连接预算仍为 88；API 预算小于 6 或 Worker 回退到同一个普通 mutation 准入，不能凭空创建额外并发。新 SQL pool 无 overflow，metrics 可观察 lifecycle pool。
+
+准入沿用 `BLOCKING_POOL_TIMEOUT_SECONDS`，未获得槽位时返回 `RUNTIME_LIFECYCLE_SATURATED`，操作尚未开始；已提交的线程不因 HTTP coroutine 取消而提前归还容量，正式操作、事务及 commit／rollback callback 全部完成后才释放。写 API 仍同步等待正式结果，不自动重试或宣称取消写入。固定 OpenHands `b556fd8b0d62af2c8d7d63c63a532b74f8f7e168` 的 lifecycle executor 与正式调用入口已只读核对，未修改其类型、路由、锁、镜像或源码。进程内保留通道不消除同 binding 的 SQL 行锁／OpenHands 状态锁，也不代表跨进程 Runtime 负载已验证。
+
+验收：`tests/test_http.py -k 'not slow_request'` 为 `34 passed, 1 deselected`。新增／扩展覆盖 API 和 Worker 在 1、2、3、4、5、6、8、16 槽下预算守恒和 fallback 共享；两类真实路由进入线程后阻塞换模时，普通读取／确认准入、首屏、消息、工作区、历史和控制均可执行，request context 不丢失；排队取消不执行、执行中取消不提前释放、失败 rollback 和后续准入恢复；普通 read 全满仍能执行 lifecycle。将该反向阻塞测试改回共享 mutation helper，按预期复现 `RUNTIME_MUTATION_SATURATED`。所有受影响 Python py_compile、除 node router 外的精确 Ruff check/format、唯一 Alembic head `0137_conversation_message_order`、git diff --check 和状态唯一性通过。Node router 的 12 条既有 Ruff E501 诊断已逐条与 HEAD 对照，数量、错误码与说明不变；未将该文件完整 lint 记为通过，未混入附件路由格式化。未运行真实数据库／迁移、Runtime／线上负载或部署；没有 Web 变更。下一可执行切片为 FR-555C2。
+
+### FR-555C2 Worker 取消、租约与退出收尾验证 — READY
+
+依赖：FR-555C1。
+
+范围：Worker 已有辅助 executor／SQL pool 和 claim lane；进一步验证重复取消、线程实际 completion、租约持续续期与失败收口，复核容器退出时 HTTP transport、executor 和 SQL pool 的释放顺序。不得因 coroutine 取消而允许后台线程与下一次执行重复持有任务。以真实入口故障注入决定是否需要修复；不扩大队列或数据库预算。

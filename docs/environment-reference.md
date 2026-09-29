@@ -44,11 +44,21 @@
 ## API 并发通道
 
 `API_BLOCKING_POOL_SIZE` 是每个 API worker 的同步数据库／线程总预算，不是每个 Runtime 的并发数。
-默认 `8` 分为首屏 hydration `2`、消息派发 `1`、工作区文件／Git `1`、普通交互／变更 `4`。
+默认 `8` 分为首屏 hydration `2`、消息派发 `1`、工作区文件／Git `1`、慢生命周期 `1`、普通交互／变更 `3`。
 工作区通道从已有预算中预留，SQL pool 不允许 overflow；原有独立 history pool 继续处理历史事件和侧栏分页，
 不会再被文件扫描或 Git 操作占用。`/metrics` 的数据库 pool 指标可分别观察 `workspace` 和 `history`。
 API blocking 预算小于 `5` 时没有额外预留空间，工作区仍与 history 共用同一个 semaphore、executor 和 SQL pool；
 单槽 stream-api 与 Worker 保持原有预算。默认 Compose 总连接预算仍为 `88`，没有增加 PostgreSQL 上限。
+
+模型切换、能力加载、凭据同步、fork、删除、原生重命名和节点创建／宿主预置走独立 lifecycle 通道，
+确认决策保留普通 mutation 准入，发送／首屏／中断继续使用各自保留通道。`/metrics` 的数据库 pool 指标包含
+`lifecycle`。API blocking 预算小于 `6` 或 Worker 不分配 lifecycle 保留容量，回退到原 mutation 的同一个
+准入、executor 与 SQL pool。默认单槽 lifecycle 限制每进程的慢变更压力，不是跨进程或跨 Runtime 的全局锁；
+同会话的数据库行锁及 OpenHands 原生状态锁仍然有效。
+
+`RUNTIME_LIFECYCLE_SATURATED` 表示慢变更尚未开始执行，等待 `BLOCKING_POOL_TIMEOUT_SECONDS` 后未获得槽位。
+取消排队请求不会启动写操作；取消已提交线程的浏览器请求不代表撤销写操作，槽位一直持有到实际执行、
+事务提交／回滚及回调完成。此通道不自动重试写操作，也不把既有同步 API 改为后台任务。
 
 `RUNTIME_AUXILIARY_SATURATED` 表示 API 工作区通道排队超时；
 `RUNTIME_AUXILIARY_READ_SATURATED` 则表示适配器的每 Runtime 展示性读取通道饱和，两者不能混淆。

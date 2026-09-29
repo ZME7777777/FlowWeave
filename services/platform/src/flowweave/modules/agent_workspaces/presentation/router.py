@@ -44,6 +44,7 @@ from flowweave.shared.http import (
     run_blocking_control,
     run_blocking_history,
     run_blocking_hydration,
+    run_blocking_lifecycle,
     run_blocking_message,
     run_blocking_mutation,
     run_sync,
@@ -833,7 +834,7 @@ async def patch_agent_conversation(
     payload: AgentConversationPatchWrite,
     container: ContainerDep,
 ) -> dict[str, Any]:
-    return await run_blocking_mutation(
+    return await run_blocking_lifecycle(
         container,
         lambda session: conversations.patch_conversation(
             session, workspace_id, binding_id, payload.title
@@ -892,7 +893,7 @@ async def add_agent_conversation_capability(
     payload: AgentConversationCapabilityAddWrite,
     container: ContainerDep,
 ) -> dict[str, Any]:
-    return await run_blocking_mutation(
+    return await run_blocking_lifecycle(
         container,
         lambda session: conversations.add_conversation_capability(
             session, workspace_id, binding_id, payload.capability_version_id
@@ -919,7 +920,7 @@ async def synchronize_agent_conversation_credentials(
     payload: AgentConversationCredentialSyncWrite,
     container: ContainerDep,
 ) -> dict[str, Any]:
-    return await run_blocking_mutation(
+    return await run_blocking_lifecycle(
         container,
         lambda session: conversations.synchronize_conversation_credentials(
             session, workspace_id, binding_id, tuple(payload.credential_ids)
@@ -938,7 +939,7 @@ async def delete_agent_conversation(
     container: ContainerDep,
     idempotency_key: IdempotencyKey = None,
 ) -> Response:
-    await run_blocking_mutation(
+    await run_blocking_lifecycle(
         container,
         lambda session: conversations.delete_conversation(
             session,
@@ -1392,7 +1393,7 @@ async def agent_conversation_model(
     payload: AgentConversationModelWrite,
     container: ContainerDep,
 ) -> dict[str, str | None]:
-    return await run_blocking_mutation(
+    return await run_blocking_lifecycle(
         container,
         lambda session: conversations.switch_conversation_model(
             session,
@@ -1416,7 +1417,7 @@ async def agent_streaming_migration(
     container: ContainerDep,
     idempotency_key: IdempotencyKey = None,
 ) -> dict[str, Any]:
-    return await run_blocking_mutation(
+    return await run_blocking_lifecycle(
         container,
         lambda session: conversations.migrate_streaming_conversation(
             session,
@@ -1438,7 +1439,7 @@ async def agent_fork_conversation(
     container: ContainerDep,
     idempotency_key: IdempotencyKey = None,
 ) -> dict[str, Any]:
-    return await run_blocking_mutation(
+    return await run_blocking_lifecycle(
         container,
         lambda session: conversations.fork_conversation(
             session,

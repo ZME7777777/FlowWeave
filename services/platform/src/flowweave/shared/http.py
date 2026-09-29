@@ -145,6 +145,33 @@ async def run_blocking_mutation(container: Container, operation: Callable[[Sessi
     )
 
 
+async def run_blocking_lifecycle(container: Container, operation: Callable[[Session], T]) -> T:
+    """Isolate slow native lifecycle mutations without changing write semantics.
+
+    Admission is bounded before executing the operation. Once submitted, a
+    cancelled caller cannot undo the write or free its real thread/SQL capacity;
+    _run_blocking_lane holds that capacity through commit/rollback callbacks.
+    Small configurations share the existing mutation admission, not a new queue.
+    """
+
+    if not container.lifecycle_capacity:
+        return await run_blocking_mutation(container, operation)
+    sessions = container.database.lifecycle_sessions
+    if sessions is None:
+        raise RuntimeError("Lifecycle reservation requires its dedicated database pool")
+    return await _run_blocking_lane(
+        container,
+        operation,
+        executor=container.lifecycle_executor,
+        slots=container.lifecycle_io_slots,
+        session_factory=sessions,
+        saturation_code="RUNTIME_LIFECYCLE_SATURATED",
+        saturation_message="Agent lifecycle changes are busy; retry shortly",
+        lane_name="lifecycle",
+        active_limit=container.lifecycle_capacity,
+    )
+
+
 async def run_blocking_message(container: Container, operation: Callable[[Session], T]) -> T:
     """Run latency-sensitive user message delivery on its reserved API lane."""
 

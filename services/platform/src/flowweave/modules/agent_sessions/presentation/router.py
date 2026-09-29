@@ -48,6 +48,7 @@ from flowweave.shared.http import (
     run_blocking_control,
     run_blocking_history,
     run_blocking_hydration,
+    run_blocking_lifecycle,
     run_blocking_message,
     run_blocking_mutation,
     run_sync,
@@ -265,7 +266,7 @@ async def node_session_host(
     flow_run_id: str, attempt_id: str, container: ContainerDep
 ) -> dict[str, Any]:
     # Resolving a node host may provision its Attempt Runtime.
-    return await run_blocking_mutation(
+    return await run_blocking_lifecycle(
         container,
         lambda session: agent_sessions.flow_node_conversations.node_host_details(
             session, flow_run_id=flow_run_id, attempt_id=attempt_id
@@ -316,7 +317,7 @@ async def add_node_session_capability(
     payload: NodeCapabilityAddWrite,
     container: ContainerDep,
 ) -> dict[str, Any]:
-    return await run_blocking_mutation(
+    return await run_blocking_lifecycle(
         container,
         lambda session: agent_sessions.flow_node_conversations.add_node_conversation_capability(
             session,
@@ -351,7 +352,7 @@ async def synchronize_node_session_credentials(
     payload: NodeCredentialSyncWrite,
     container: ContainerDep,
 ) -> dict[str, Any]:
-    return await run_blocking_mutation(
+    return await run_blocking_lifecycle(
         container,
         lambda session: agent_sessions.flow_node_conversations.synchronize_node_credentials(
             session,
@@ -435,7 +436,7 @@ async def create_node_session(
             binding_id=str(created["id"]),
         )
 
-    return await run_blocking_mutation(container, create)
+    return await run_blocking_lifecycle(container, create)
 
 
 @router.post(f"{_BASE}/bootstrap", status_code=201)
@@ -950,7 +951,7 @@ async def set_node_session_unread(
 async def delete_node_session(
     flow_run_id: str, attempt_id: str, binding_id: str, container: ContainerDep
 ) -> Response:
-    await run_blocking_mutation(
+    await run_blocking_lifecycle(
         container,
         lambda session: agent_sessions.flow_node_conversations.delete_node_conversation(
             session, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
@@ -1128,7 +1129,7 @@ async def switch_node_session_model(
     payload: NodeSessionModelWrite,
     container: ContainerDep,
 ) -> dict[str, Any]:
-    return await run_blocking_mutation(
+    return await run_blocking_lifecycle(
         container,
         lambda session: agent_sessions.flow_node_conversations.switch_node_conversation_model(
             session,
@@ -1249,7 +1250,7 @@ async def fork_node_session(
     container: ContainerDep,
     idempotency_key: IdempotencyKey = None,
 ) -> dict[str, Any]:
-    return await run_blocking_mutation(
+    return await run_blocking_lifecycle(
         container,
         lambda session: agent_sessions.flow_node_conversations.fork_node_conversation(
             session,

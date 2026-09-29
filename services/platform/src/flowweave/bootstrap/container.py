@@ -64,6 +64,9 @@ class Container:
     workspace_executor: ThreadPoolExecutor
     workspace_io_slots: asyncio.Semaphore
     workspace_capacity: int
+    lifecycle_executor: ThreadPoolExecutor
+    lifecycle_io_slots: asyncio.Semaphore
+    lifecycle_capacity: int
     auxiliary_executor: ThreadPoolExecutor
     auxiliary_io_slots: asyncio.Semaphore
     admin_executor: ThreadPoolExecutor
@@ -102,6 +105,10 @@ class Container:
                 self.message_executor.shutdown,
                 wait=True,
                 cancel_futures=True,
+            )
+        if self.lifecycle_executor is not self.blocking_executor:
+            await asyncio.to_thread(
+                self.lifecycle_executor.shutdown, wait=True, cancel_futures=True
             )
         if self.workspace_executor is not self.history_read_executor:
             await asyncio.to_thread(
@@ -174,6 +181,11 @@ def build_container(settings: Settings, *, role: Literal["api", "worker"]) -> Co
     blocking_capacity = (
         settings.blocking_pool_size - hydration_capacity - message_capacity - workspace_capacity
     )
+    # Slow native lifecycle operations must not hold the interactive write
+    # admission slot (e.g. confirmation) or formal-event SQL connections.
+    # Carve out one existing slot only if an ordinary slot remains.
+    lifecycle_capacity = 1 if role == "api" and blocking_capacity >= 2 else 0
+    blocking_capacity -= lifecycle_capacity
     database = Database(
         settings,
         poll_pool_size=settings.runtime_poll_worker_concurrency if role == "worker" else 0,
@@ -182,6 +194,7 @@ def build_container(settings: Settings, *, role: Literal["api", "worker"]) -> Co
         hydration_pool_size=hydration_capacity,
         message_pool_size=message_capacity,
         workspace_pool_size=workspace_capacity,
+        lifecycle_pool_size=lifecycle_capacity,
     )
     metrics = Metrics()
     blocking_workers = settings.worker_concurrency if role == "worker" else blocking_capacity
@@ -200,6 +213,13 @@ def build_container(settings: Settings, *, role: Literal["api", "worker"]) -> Co
     message_executor = (
         ThreadPoolExecutor(max_workers=message_capacity, thread_name_prefix="flowweave-api-message")
         if message_capacity
+        else blocking_executor
+    )
+    lifecycle_executor = (
+        ThreadPoolExecutor(
+            max_workers=lifecycle_capacity, thread_name_prefix="flowweave-api-lifecycle"
+        )
+        if lifecycle_capacity
         else blocking_executor
     )
     auxiliary_executor = ThreadPoolExecutor(
@@ -238,6 +258,7 @@ def build_container(settings: Settings, *, role: Literal["api", "worker"]) -> Co
         thread_name_prefix=f"flowweave-{role}-runtime-control",
     )
     history_slots = asyncio.Semaphore(settings.history_read_pool_size)
+    blocking_slots = asyncio.Semaphore(blocking_workers)
     return Container(
         settings=settings,
         role=role,
@@ -259,7 +280,7 @@ def build_container(settings: Settings, *, role: Literal["api", "worker"]) -> Co
         ),
         audit_writer=AuditWriter(database.sessions),
         blocking_executor=blocking_executor,
-        blocking_io_slots=asyncio.Semaphore(blocking_workers),
+        blocking_io_slots=blocking_slots,
         # Writes share the existing executor and DB pool, but cannot occupy
         # every slot needed to hydrate an unrelated conversation.
         blocking_mutation_slots=asyncio.Semaphore(min(2, max(1, blocking_capacity // 2))),
@@ -275,6 +296,11 @@ def build_container(settings: Settings, *, role: Literal["api", "worker"]) -> Co
         if workspace_capacity
         else history_slots,
         workspace_capacity=workspace_capacity,
+        lifecycle_executor=lifecycle_executor,
+        lifecycle_io_slots=asyncio.Semaphore(lifecycle_capacity)
+        if lifecycle_capacity
+        else blocking_slots,
+        lifecycle_capacity=lifecycle_capacity,
         auxiliary_executor=auxiliary_executor,
         auxiliary_io_slots=asyncio.Semaphore(settings.auxiliary_task_worker_concurrency),
         admin_executor=admin_executor,

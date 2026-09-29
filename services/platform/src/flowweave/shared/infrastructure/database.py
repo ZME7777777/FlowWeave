@@ -32,6 +32,7 @@ class Database:
         hydration_pool_size: int = 0,
         message_pool_size: int = 0,
         workspace_pool_size: int = 0,
+        lifecycle_pool_size: int = 0,
     ) -> None:
         if not settings.database_url.startswith("postgresql+psycopg://"):
             raise ValueError("FlowWeave supports PostgreSQL through psycopg only")
@@ -56,6 +57,7 @@ class Database:
                 - hydration_pool_size
                 - message_pool_size
                 - workspace_pool_size
+                - lifecycle_pool_size
             ),
             max_overflow=settings.pool_max_overflow,
             pool_timeout=settings.blocking_pool_timeout_seconds,
@@ -108,6 +110,21 @@ class Database:
             )
             self.workspace_sessions = sessionmaker(
                 self.workspace_engine, expire_on_commit=False, autoflush=False
+            )
+        # Partition, do not add to, the API blocking connection budget.
+        self.lifecycle_engine: Engine | None = None
+        self.lifecycle_sessions: sessionmaker[Session] | None = None
+        if lifecycle_pool_size:
+            self.lifecycle_engine = create_engine(
+                settings.database_url,
+                pool_pre_ping=True,
+                pool_size=lifecycle_pool_size,
+                max_overflow=0,
+                pool_timeout=settings.blocking_pool_timeout_seconds,
+                connect_args={"options": f"-c statement_timeout={settings.statement_timeout_ms}"},
+            )
+            self.lifecycle_sessions = sessionmaker(
+                self.lifecycle_engine, expire_on_commit=False, autoflush=False
             )
         # Optional background tasks can wait on model providers, package
         # registries or controller builds. Only Worker processes allocate this
@@ -212,6 +229,8 @@ class Database:
             await asyncio.to_thread(self.message_engine.dispose)
         if self.workspace_engine is not None:
             await asyncio.to_thread(self.workspace_engine.dispose)
+        if self.lifecycle_engine is not None:
+            await asyncio.to_thread(self.lifecycle_engine.dispose)
         if self.auxiliary_engine is not None:
             await asyncio.to_thread(self.auxiliary_engine.dispose)
         if self.admin_engine is not None:
@@ -253,6 +272,11 @@ class Database:
             **(
                 {"workspace": cast(QueuePool, self.workspace_engine.pool)}
                 if self.workspace_engine is not None
+                else {}
+            ),
+            **(
+                {"lifecycle": cast(QueuePool, self.lifecycle_engine.pool)}
+                if self.lifecycle_engine is not None
                 else {}
             ),
             "history": cast(QueuePool, self.history_engine.pool),

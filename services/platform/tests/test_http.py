@@ -14,6 +14,10 @@ from flowweave.bootstrap import api as api_module
 from flowweave.bootstrap.container import build_container
 from flowweave.bootstrap.settings import Settings
 from flowweave.runtime.read_budget import hydration_read_budget
+from flowweave.shared.application.transactions import (
+    register_commit_action,
+    register_rollback_action,
+)
 from flowweave.shared.errors import DomainError
 from flowweave.shared.http import (
     run_blocking,
@@ -21,6 +25,7 @@ from flowweave.shared.http import (
     run_blocking_control,
     run_blocking_history,
     run_blocking_hydration,
+    run_blocking_lifecycle,
     run_blocking_message,
     run_blocking_mutation,
 )
@@ -97,6 +102,10 @@ class _Database:
 
     @contextmanager
     def hydration_sessions(self):
+        yield _Session()
+
+    @contextmanager
+    def lifecycle_sessions(self):
         yield _Session()
 
     @contextmanager
@@ -451,7 +460,7 @@ def test_cursor_conversation_pages_use_background_history_lane() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("role", ["api", "worker"])
-@pytest.mark.parametrize("budget", [1, 4, 5, 8])
+@pytest.mark.parametrize("budget", [1, 2, 3, 4, 5, 6, 8, 16])
 async def test_workspace_reservation_preserves_total_budget_and_fallback(role, budget) -> None:
     container = build_container(
         Settings(_env_file=None, blocking_pool_size=budget, runtime_adapter="mock"), role=role
@@ -461,7 +470,7 @@ async def test_workspace_reservation_preserves_total_budget_and_fallback(role, b
         assert (
             sum(
                 pools.get(name, {}).get("size", 0)
-                for name in ("blocking", "hydration", "message", "workspace")
+                for name in ("blocking", "hydration", "message", "workspace", "lifecycle")
             )
             == budget
         )
@@ -478,6 +487,18 @@ async def test_workspace_reservation_preserves_total_budget_and_fallback(role, b
             assert container.workspace_executor is container.history_read_executor
             assert container.workspace_io_slots is container.history_read_slots
             assert container.database.workspace_sessions is None
+        lifecycle = 1 if role == "api" and budget >= 6 else 0
+        assert container.lifecycle_capacity == lifecycle
+        assert container.blocking_capacity >= 1
+        if lifecycle:
+            assert container.lifecycle_executor is not container.blocking_executor
+            assert container.lifecycle_io_slots is not container.blocking_io_slots
+            assert pools["lifecycle"]["size"] == 1
+            assert container.database.lifecycle_engine.pool._max_overflow == 0
+        else:
+            assert container.lifecycle_executor is container.blocking_executor
+            assert container.lifecycle_io_slots is container.blocking_io_slots
+            assert container.database.lifecycle_sessions is None
     finally:
         await container.close()
 
@@ -534,5 +555,217 @@ async def test_workspace_and_history_do_not_block_each_other(blocked_lane) -> No
     finally:
         release.set()
         await asyncio.gather(task, return_exceptions=True)
+        container.database = resources
+        await container.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("host", ["agent_workspaces", "agent_sessions"])
+async def test_slow_model_route_keeps_interactive_routes_available(host, monkeypatch) -> None:
+    import importlib
+
+    router = importlib.import_module(f"flowweave.modules.{host}.presentation.router")
+    container = build_container(
+        Settings(
+            _env_file=None,
+            blocking_pool_size=8,
+            runtime_adapter="mock",
+            blocking_pool_timeout_seconds=0.05,
+        ),
+        role="api",
+    )
+    resources = container.database
+    database = _Database()
+    database.workspace_sessions = database.blocking_sessions
+    container.database = database
+    started, release = threading.Event(), threading.Event()
+    observed = []
+    marker = contextvars.ContextVar("lifecycle-test-principal", default="missing")
+    token = marker.set("request-principal")
+    caller_thread = threading.get_ident()
+
+    def slow_model(session, *args, **kwargs):
+        assert threading.get_ident() != caller_thread
+        observed.append(marker.get())
+        register_commit_action(session, lambda: observed.append("committed"))
+        started.set()
+        assert release.wait(3)
+        return {"model_name": "new-model"}
+
+    payload = SimpleNamespace(
+        model_provider_id="provider", model_name="new-model", reasoning_effort=None
+    )
+    if host == "agent_workspaces":
+        monkeypatch.setattr(router.conversations, "switch_conversation_model", slow_model)
+        request = router.agent_conversation_model("workspace", "binding", payload, container)
+    else:
+        monkeypatch.setattr(
+            router.agent_sessions.flow_node_conversations,
+            "switch_node_conversation_model",
+            slow_model,
+        )
+        request = router.switch_node_session_model("run", "attempt", "binding", payload, container)
+    task = asyncio.create_task(request)
+    try:
+        assert await asyncio.to_thread(started.wait, 1)
+        # Ordinary confirmation, formal event reads and all reserved lanes remain available.
+        for execute in (
+            run_blocking_mutation,
+            run_blocking,
+            run_blocking_message,
+            run_blocking_hydration,
+            run_blocking_auxiliary,
+            run_blocking_history,
+            run_blocking_control,
+        ):
+            assert await asyncio.wait_for(execute(container, lambda _db: "ready"), 0.5) == "ready"
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        # Cancelled HTTP response leaves the accepted write running exactly once.
+        with pytest.raises(DomainError, match="busy") as exc:
+            await run_blocking_lifecycle(container, lambda _db: observed.append("unexpected"))
+        assert exc.value.code == "RUNTIME_LIFECYCLE_SATURATED"
+        release.set()
+        assert await run_blocking_lifecycle(container, lambda _db: "next") == "next"
+        assert observed == ["request-principal", "committed"]
+    finally:
+        marker.reset(token)
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)
+        container.database = resources
+        await container.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("budget", [4, 8])
+async def test_lifecycle_queue_cancel_and_rollback_release_real_capacity(budget) -> None:
+    container = build_container(
+        Settings(
+            _env_file=None,
+            blocking_pool_size=budget,
+            runtime_adapter="mock",
+            blocking_pool_timeout_seconds=0.1,
+        ),
+        role="api",
+    )
+    resources = container.database
+    container.database = _Database()
+    started, release = threading.Event(), threading.Event()
+    actions = []
+
+    def failed_write(session):
+        register_rollback_action(session, lambda: actions.append("rollback"))
+        register_commit_action(session, lambda: actions.append("must not commit"))
+        started.set()
+        assert release.wait(3)
+        raise DomainError("MODEL_REJECTED", "model rejected", 409)
+
+    first = asyncio.create_task(run_blocking_lifecycle(container, failed_write))
+    queued = None
+    try:
+        assert await asyncio.to_thread(started.wait, 1)
+        queued = asyncio.create_task(
+            run_blocking_lifecycle(container, lambda _db: actions.append("must not start"))
+        )
+        await asyncio.sleep(0)  # Let the waiter enter admission before cancelling it.
+        queued.cancel()
+        await asyncio.gather(queued, return_exceptions=True)
+        if budget == 4:
+            # The fallback must share ordinary mutation admission even though
+            # it has no reserved executor or SQL connection.
+            with pytest.raises(DomainError) as exc:
+                await run_blocking_mutation(container, lambda _db: "blocked")
+            assert exc.value.code == "RUNTIME_MUTATION_SATURATED"
+        else:
+            assert (
+                await run_blocking_mutation(container, lambda _db: "interactive") == "interactive"
+            )
+        release.set()
+        with pytest.raises(DomainError) as exc:
+            await first
+        assert exc.value.code == "MODEL_REJECTED"
+        assert await run_blocking_lifecycle(container, lambda _db: "recovered") == "recovered"
+        assert actions == ["rollback"]
+    finally:
+        release.set()
+        await asyncio.gather(first, *([queued] if queued else []), return_exceptions=True)
+        container.database = resources
+        await container.close()
+
+
+def test_audited_lifecycle_routes_keep_confirmation_and_message_lanes_separate() -> None:
+    import ast
+    from pathlib import Path
+
+    expected = {
+        "agent_workspaces": {
+            "patch_agent_conversation",
+            "add_agent_conversation_capability",
+            "synchronize_agent_conversation_credentials",
+            "delete_agent_conversation",
+            "agent_conversation_model",
+            "agent_streaming_migration",
+            "agent_fork_conversation",
+        },
+        "agent_sessions": {
+            "node_session_host",
+            "add_node_session_capability",
+            "synchronize_node_session_credentials",
+            "create_node_session",
+            "delete_node_session",
+            "switch_node_session_model",
+            "fork_node_session",
+        },
+    }
+    for module, names in expected.items():
+        tree = ast.parse(Path(f"src/flowweave/modules/{module}/presentation/router.py").read_text())
+        mapped = {
+            node.name
+            for node in tree.body
+            if isinstance(node, ast.AsyncFunctionDef)
+            and any(
+                isinstance(call, ast.Call)
+                and isinstance(call.func, ast.Name)
+                and call.func.id == "run_blocking_lifecycle"
+                for call in ast.walk(node)
+            )
+        }
+        assert mapped == names
+
+
+@pytest.mark.asyncio
+async def test_lifecycle_can_execute_when_all_ordinary_read_slots_are_occupied() -> None:
+    container = build_container(
+        Settings(
+            _env_file=None,
+            blocking_pool_size=8,
+            runtime_adapter="mock",
+            blocking_pool_timeout_seconds=0.05,
+        ),
+        role="api",
+    )
+    resources = container.database
+    container.database = _Database()
+    release = threading.Event()
+    started = [threading.Event() for _ in range(container.blocking_capacity)]
+
+    def read(index):
+        def operation(_session):
+            started[index].set()
+            assert release.wait(3)
+
+        return operation
+
+    tasks = [asyncio.create_task(run_blocking(container, read(i))) for i in range(len(started))]
+    try:
+        for signal in started:
+            assert await asyncio.to_thread(signal.wait, 1)
+        assert await run_blocking_lifecycle(container, lambda _db: "lifecycle") == "lifecycle"
+        with pytest.raises(DomainError) as exc:
+            await run_blocking(container, lambda _db: "saturated")
+        assert exc.value.code == "RUNTIME_READ_SATURATED"
+    finally:
+        release.set()
+        await asyncio.gather(*tasks, return_exceptions=True)
         container.database = resources
         await container.close()
