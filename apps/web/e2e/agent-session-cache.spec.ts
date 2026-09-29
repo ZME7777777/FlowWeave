@@ -196,6 +196,9 @@ test('Generated conversation title updates both the sidebar and current header',
   const generatedConversation = {
     ...initialConversation, display_title: '自动生成的标题', title_state: 'GENERATED' as const,
   };
+  const alternateConversation = {
+    ...initialConversation, id: 'generated-title-alternate-conversation', display_title: '另一条会话', title_state: 'MANUAL' as const,
+  };
 
   await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
   await page.route('**/api/v1/**', async route => {
@@ -208,7 +211,7 @@ test('Generated conversation title updates both the sidebar and current header',
     if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
     if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
     if (path.endsWith('/conversations') && request.method() === 'GET') {
-      return json(route, { items: [generated ? generatedConversation : initialConversation], next_cursor: null });
+      return json(route, { items: [generated ? generatedConversation : initialConversation, alternateConversation], next_cursor: null });
     }
     if (path.endsWith('/hydration')) return json(route, {
       events: { events: [], next_cursor: null, history_cursor: null, result: { status: 'COMPLETED' } },
@@ -225,7 +228,8 @@ test('Generated conversation title updates both the sidebar and current header',
       runtime: {}, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '不可用', note: '' } },
     });
     if (path.endsWith('/model-providers') || path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
-    if (path.includes('/conversations/') && request.method() === 'GET') return json(route, initialConversation);
+    if (path.endsWith('/conversations/generated-title-conversation') && request.method() === 'GET') return json(route, generated ? generatedConversation : initialConversation);
+    if (path.endsWith('/conversations/generated-title-alternate-conversation') && request.method() === 'GET') return json(route, alternateConversation);
     return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
   });
 
@@ -239,6 +243,12 @@ test('Generated conversation title updates both the sidebar and current header',
 
   generated = true;
   await expect(sidebarConversation).toContainText('自动生成的标题', { timeout: 5_000 });
+  await expect(headerTitle).toHaveText('自动生成的标题');
+
+  await page.locator('[data-conversation-binding-id="generated-title-alternate-conversation"]').dblclick();
+  await expect(page.locator('.agent-session-title')).toHaveText('另一条会话');
+  await page.locator('[data-conversation-binding-id="generated-title-conversation"]').dblclick();
+  await expect(sidebarConversation).toContainText('自动生成的标题');
   await expect(headerTitle).toHaveText('自动生成的标题');
 });
 

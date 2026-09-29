@@ -4639,6 +4639,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       enabled: Boolean(workspace),
       staleTime: Infinity,
       refetchOnWindowFocus: false,
+      refetchInterval: (query: { state: { data?: AgentConversationPage } }) => pageVisible && query.state.data?.items.some(item => item.title_state === 'PENDING') ? 1_000 : false,
       retry: false,
     })),
   });
@@ -4655,8 +4656,30 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       for (let index = 0; index < conversationScopes.length; index += 1) {
         const scope = conversationScopes[index];
         const page = initialConversationQueries[index]?.data;
-        if (page && !next[scope.key]) {
+        if (!page) continue;
+        const existing = next[scope.key];
+        if (!existing) {
           next[scope.key] = page;
+          changed = true;
+          continue;
+        }
+        const existingById = new Map(existing.items.map(item => [item.id, item]));
+        const refreshedIds = new Set(page.items.map(item => item.id));
+        const refreshedItems = [
+          ...page.items.map(item => {
+            const previous = existingById.get(item.id);
+            if (!previous) return item;
+            const merged = { ...previous, ...item };
+            return JSON.stringify(previous) === JSON.stringify(merged) ? previous : merged;
+          }),
+          ...existing.items.filter(item => !refreshedIds.has(item.id)),
+        ];
+        if (
+          refreshedItems.length !== existing.items.length
+          || refreshedItems.some((item, index) => item !== existing.items[index])
+          || page.next_cursor !== existing.next_cursor
+        ) {
+          next[scope.key] = { ...existing, next_cursor: page.next_cursor, items: refreshedItems };
           changed = true;
         }
       }
@@ -5664,14 +5687,14 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       setHistoryLoadingBindingId(current => current === scope ? undefined : current);
     }
   }, [api, eventsQuery.data?.history_cursor, reportOperationError, selected, workspace]);
-  const revealNextHistoryPage = useCallback(async () => {
-    if (!workspace || !selected || !eventsQuery.data?.history_cursor) return;
+  const revealNextHistoryPage = useCallback(async (): Promise<OpenHandsConversationEventBatch | undefined> => {
+    if (!workspace || !selected || !eventsQuery.data?.history_cursor) return undefined;
     const scope = selected.id;
     const cache = historyCacheByScope.current.get(scope);
-    if (!cache || cache.rootCursor !== eventsQuery.data.history_cursor || cache.expiresAt <= Date.now()) return;
+    if (!cache || cache.rootCursor !== eventsQuery.data.history_cursor || cache.expiresAt <= Date.now()) return undefined;
     const revealed = revealedHistoryPageCounts.current.get(scope) ?? 0;
     const older = cache.pages[revealed];
-    if (!older) return;
+    if (!older) return undefined;
     const transaction: ConversationHistoryPrepend = {
       id: ++nextHistoryPrependId.current,
       scope,
@@ -5681,7 +5704,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       historyPrependWaiters.current.set(transaction.id, { scope, capture: resolve });
     });
     setHistoryPrepend(transaction);
-    if (!await captured || activeHistoryScope.current !== scope) return;
+    if (!await captured || activeHistoryScope.current !== scope) return undefined;
     queryClient.setQueryData<OpenHandsConversationEventBatch>(eventQueryKey, current => current
       ? { ...current, events: mergeConversationEvents(older.events, current.events) }
       : older,
@@ -5694,9 +5717,28 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       else resolve(false);
     });
     setHistoryPrepend({ ...transaction, phase: 'restore' });
-    await restored;
+    const restoredSuccessfully = await restored;
     setHistoryPrepend(current => current?.id === transaction.id ? undefined : current);
+    return restoredSuccessfully ? older : undefined;
   }, [eventQueryKey, eventsQuery.data?.history_cursor, queryClient, selected, workspace]);
+  const revealHistoryThrough = useCallback(async (eventId: string): Promise<boolean> => {
+    if (!workspace || !selected || !eventsQuery.data?.history_cursor) return false;
+    const scope = selected.id;
+    const cache = historyCacheByScope.current.get(scope);
+    if (!cache || cache.rootCursor !== eventsQuery.data.history_cursor || cache.expiresAt <= Date.now()) return false;
+    const existing = queryClient.getQueryData<OpenHandsConversationEventBatch>(eventQueryKey);
+    if (existing?.events.some(event => event.id === eventId)) return true;
+    const targetPage = cache.pages.findIndex(page => page.events.some(event => event.id === eventId));
+    if (targetPage < 0) return false;
+    while ((revealedHistoryPageCounts.current.get(scope) ?? 0) <= targetPage) {
+      const revealed = await revealNextHistoryPage();
+      if (!revealed || activeHistoryScope.current !== scope) return false;
+    }
+    return true;
+  }, [eventQueryKey, eventsQuery.data?.history_cursor, queryClient, revealNextHistoryPage, selected, workspace]);
+  const requestNextHistoryPage = useCallback(async (): Promise<void> => {
+    await revealNextHistoryPage();
+  }, [revealNextHistoryPage]);
   useEffect(() => {
     const activeBindingId = selected?.id;
     for (const [bindingId, controller] of historyAbortControllers.current) {
@@ -5745,16 +5787,26 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     ));
     return projectLocalMessages(visibleFormalEvents, activeLocalMessageProjections);
   }, [activeLocalMessageProjections, currentFormalEvents, deferredRewriteUserEventIds, hiddenEventIds]);
-  const cachedHistoryMarkerCount = useMemo(() => {
+  const cachedHistoryUserEventIds = useMemo(() => {
     void historyCacheRevision;
-    if (!selected || !eventsQuery.data?.history_cursor) return 0;
+    if (!selected || !eventsQuery.data?.history_cursor) return [];
     const cache = historyCacheByScope.current.get(selected.id);
-    if (!cache || cache.rootCursor !== eventsQuery.data.history_cursor || cache.expiresAt <= Date.now()) return 0;
+    if (!cache || cache.rootCursor !== eventsQuery.data.history_cursor || cache.expiresAt <= Date.now()) return [];
     const revealed = revealedHistoryPageCounts.current.get(selected.id) ?? 0;
-    return cache.pages.slice(revealed).flatMap(page => page.events).filter(event => event.event_type === 'MESSAGE'
-      && ['user', 'human'].includes(String(event.payload.source ?? '').toLowerCase())).length;
+    return cache.pages.slice(revealed).reverse().flatMap(page => page.events).flatMap(event => (
+      event.event_type === 'MESSAGE' && ['user', 'human'].includes(String(event.payload.source ?? '').toLowerCase())
+        ? [event.id]
+        : []
+    ));
   }, [eventsQuery.data?.history_cursor, historyCacheRevision, selected]);
-  const hasCachedOlderHistory = cachedHistoryMarkerCount > 0;
+  const cachedHistoryMarkerCount = cachedHistoryUserEventIds.length;
+  const hasCachedOlderHistory = useMemo(() => {
+    void historyCacheRevision;
+    if (!selected || !eventsQuery.data?.history_cursor) return false;
+    const cache = historyCacheByScope.current.get(selected.id);
+    if (!cache || cache.rootCursor !== eventsQuery.data.history_cursor || cache.expiresAt <= Date.now()) return false;
+    return (revealedHistoryPageCounts.current.get(selected.id) ?? 0) < cache.pages.length;
+  }, [eventsQuery.data?.history_cursor, historyCacheRevision, selected]);
   const latestFormalUserEventId = [...currentFormalEvents].reverse().find(event => event.event_type === 'MESSAGE'
     && ['user', 'human'].includes(String(event.payload.source ?? '').toLowerCase()))?.id;
   // The selected conversation has the authoritative formal event tree in the
@@ -7861,8 +7913,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         modelRetryStatus={modelRetryStatus}
         historyPending={Boolean(selected && historyLoadingBindingId === selected.id)}
         cachedHistoryMarkerCount={cachedHistoryMarkerCount}
+        cachedHistoryUserEventIds={cachedHistoryUserEventIds}
         hasCachedOlderHistory={hasCachedOlderHistory}
-        onRequestOlderHistory={revealNextHistoryPage}
+        onRequestOlderHistory={requestNextHistoryPage}
+        onRevealHistoryThrough={revealHistoryThrough}
         conversationScope={selected?.id ?? conversationDraft?.id}
         historyPrepend={historyPrepend}
         onHistoryAnchorCaptured={onHistoryAnchorCaptured}

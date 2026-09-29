@@ -43,6 +43,9 @@ interface UserMessageNavigationItem {
   cached?: boolean;
 }
 
+const HISTORY_REVEAL_WINDOW_MIN_PX = 360;
+const HISTORY_REVEAL_WINDOW_VIEWPORT_RATIO = 0.75;
+
 export interface ConversationReference {
   eventId: string;
   content: string;
@@ -1579,7 +1582,7 @@ export interface ConversationHistoryPrepend {
   phase: 'capture' | 'restore';
 }
 
-export const ConversationSurface = memo(function ConversationSurface({ events, isGenerating, liveTextReveal = false, isPaused = false, emptyResponseRecoveryActive = false, modelRetryStatus, historyPending = false, cachedHistoryMarkerCount = 0, hasCachedOlderHistory = false, onRequestOlderHistory, conversationScope, historyPrepend, onHistoryAnchorCaptured, onHistoryAnchorRestored, requestStartedAt, requestSubmitting = false, rewritePending = false, condensationPending = false, condensationStartedAt, onRewrite, onFork, onOpenAttachment, onOpenWorkspaceReference, onPreviewCandidateFile, onReviewChanges, onOpenWorkspaceFile, onOpenImage, workspaceRoot, annotations = [], onCreateAnnotation, onSidebarQuestion, onLocateAnnotation, taskControl = [], monitoring, connectionState }: {
+export const ConversationSurface = memo(function ConversationSurface({ events, isGenerating, liveTextReveal = false, isPaused = false, emptyResponseRecoveryActive = false, modelRetryStatus, historyPending = false, cachedHistoryMarkerCount = 0, cachedHistoryUserEventIds = [], hasCachedOlderHistory = false, onRequestOlderHistory, onRevealHistoryThrough, conversationScope, historyPrepend, onHistoryAnchorCaptured, onHistoryAnchorRestored, requestStartedAt, requestSubmitting = false, rewritePending = false, condensationPending = false, condensationStartedAt, onRewrite, onFork, onOpenAttachment, onOpenWorkspaceReference, onPreviewCandidateFile, onReviewChanges, onOpenWorkspaceFile, onOpenImage, workspaceRoot, annotations = [], onCreateAnnotation, onSidebarQuestion, onLocateAnnotation, taskControl = [], monitoring, connectionState }: {
   events: OpenHandsConversationEvent[];
   isGenerating: boolean;
   /** Strict native running state; unlike visual activity it never animates history reconciliation. */
@@ -1594,8 +1597,12 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
   historyPending?: boolean;
   /** Lightweight ruler ticks for historical user messages held outside the rendered transcript. */
   cachedHistoryMarkerCount?: number;
+  /** Formal user-event identities for cached ruler ticks, oldest to newest. */
+  cachedHistoryUserEventIds?: readonly string[];
   hasCachedOlderHistory?: boolean;
   onRequestOlderHistory?: () => void | Promise<void>;
+  /** Reveals cached pages until the requested formal user event is rendered. */
+  onRevealHistoryThrough?: (eventId: string) => Promise<boolean>;
   /** Binding identity that owns this transcript viewport. */
   conversationScope?: string;
   /** Explicitly brackets one scoped historical prepend. */
@@ -1650,6 +1657,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
   const messageNavigationLocatedIndex = useRef<number | undefined>(undefined);
   const messageNavigationStyledButtons = useRef<Set<HTMLButtonElement>>(new Set());
   const historyRequestPending = useRef(false);
+  const queuedHistoryTargetEventId = useRef<string | undefined>(undefined);
   const selectionReferenceFrame = useRef<number | undefined>(undefined);
   const historyAnchor = useRef<{
     id: number;
@@ -1714,8 +1722,8 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
   const contentGrowthSignal = visibleEventSignature;
   const avatarSlots = useMemo(() => subagentAvatarSlots(visibleEvents), [visibleEvents]);
   const userMessageNavigation = useMemo<UserMessageNavigationItem[]>(() => [
-    ...Array.from({ length: cachedHistoryMarkerCount }, (_, index) => ({
-      id: `cached-history:${index}`,
+    ...cachedHistoryUserEventIds.map(id => ({
+      id,
       content: '更早的历史消息',
       cached: true,
     })),
@@ -1724,7 +1732,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
       content: turn.user.content,
       cached: false,
     }] : []),
-  ], [cachedHistoryMarkerCount, turns]);
+  ], [cachedHistoryUserEventIds, turns]);
   useLayoutEffect(() => {
     const navigation = messageNavigation.current;
     if (!navigation) return;
@@ -1777,17 +1785,45 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
       if (followLatest.current && !userScrolledAway.current) alignWithLatest();
     });
   }, [alignWithLatest]);
-  const requestOlderHistory = useCallback(() => {
-    if (!hasCachedOlderHistory || historyRequestPending.current || !onRequestOlderHistory) return;
+  const locateUserMessage = useCallback((eventId: string, behavior: ScrollBehavior = 'smooth') => {
+    const element = surface.current;
+    const target = element?.querySelectorAll<HTMLElement>('[data-user-event-id]');
+    const message = Array.from(target ?? []).find(item => item.dataset.userEventId === eventId);
+    if (!element || !message) return false;
+    const top = message.getBoundingClientRect().top - element.getBoundingClientRect().top + element.scrollTop - 18;
+    userScrolledAway.current = true;
+    followLatest.current = false;
+    element.scrollTo({ top: Math.max(0, top), behavior });
+    return true;
+  }, []);
+  const requestOlderHistory = useCallback((eventId?: string) => {
+    if (eventId) queuedHistoryTargetEventId.current = eventId;
+    if (historyRequestPending.current) return;
+    const reveal = () => {
+      const targetEventId = queuedHistoryTargetEventId.current;
+      queuedHistoryTargetEventId.current = undefined;
+      const request = targetEventId && onRevealHistoryThrough
+        ? onRevealHistoryThrough(targetEventId)
+        : hasCachedOlderHistory && onRequestOlderHistory
+          ? onRequestOlderHistory()
+          : undefined;
+      if (!request) return Promise.resolve(false);
+      return Promise.resolve(request).then(revealed => {
+        if (targetEventId && revealed !== false) locateUserMessage(targetEventId, 'auto');
+        return revealed;
+      });
+    };
     historyRequestPending.current = true;
-    void Promise.resolve(onRequestOlderHistory()).finally(() => {
+    void reveal().finally(() => {
       historyRequestPending.current = false;
+      if (queuedHistoryTargetEventId.current) requestOlderHistory();
     });
-  }, [hasCachedOlderHistory, onRequestOlderHistory]);
+  }, [hasCachedOlderHistory, locateUserMessage, onRequestOlderHistory, onRevealHistoryThrough]);
   const updateScrollPosition = useCallback(() => {
     const element = surface.current;
     if (!element) return;
-    if (element.scrollTop <= 16) requestOlderHistory();
+    const revealWindow = Math.max(HISTORY_REVEAL_WINDOW_MIN_PX, element.clientHeight * HISTORY_REVEAL_WINDOW_VIEWPORT_RATIO);
+    if (element.scrollTop <= revealWindow) requestOlderHistory();
     const atLatest = element.scrollHeight - element.scrollTop - element.clientHeight <= 16;
     // Scroll events also occur when layout and direct scrollTop assignments
     // settle. They do not establish reading intent. Only the capture handlers
@@ -1800,6 +1836,11 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
     }
     if (!followLatest.current) setIsAtLatest(false);
   }, [requestOlderHistory]);
+  useEffect(() => {
+    // Short transcripts may never emit a meaningful scroll event. Re-evaluate
+    // the same reveal window when cached history or rendered content changes.
+    updateScrollPosition();
+  }, [cachedHistoryMarkerCount, conversationScope, hasCachedOlderHistory, historyPending, updateScrollPosition, visibleEvents.length]);
   const stopFollowingLatest = useCallback(() => {
     if (automaticScrollFrame.current !== undefined) {
       window.cancelAnimationFrame(automaticScrollFrame.current);
@@ -1911,15 +1952,8 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
     return () => window.removeEventListener('flowweave:locate-conversation-annotation', locate);
   }, [locateTextAnnotation]);
   const scrollToUserMessage = useCallback((eventId: string, behavior: ScrollBehavior = 'smooth') => {
-    const element = surface.current;
-    const target = element?.querySelectorAll<HTMLElement>('[data-user-event-id]');
-    const message = Array.from(target ?? []).find(item => item.dataset.userEventId === eventId);
-    if (!element || !message) return;
-    const top = message.getBoundingClientRect().top - element.getBoundingClientRect().top + element.scrollTop - 18;
-    userScrolledAway.current = true;
-    followLatest.current = false;
-    element.scrollTo({ top: Math.max(0, top), behavior });
-  }, []);
+    locateUserMessage(eventId, behavior);
+  }, [locateUserMessage]);
   const showMessagePreview = useCallback((message: UserMessageNavigationItem, index: number, target: HTMLElement) => {
     const shellBounds = shell.current?.getBoundingClientRect();
     const targetBounds = target.getBoundingClientRect();
@@ -1997,7 +2031,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
     const message = userMessageNavigation[index];
     if (!message) return;
     messageNavigationLocatedIndex.current = index;
-    if (message.cached) requestOlderHistory();
+    if (message.cached) requestOlderHistory(message.id);
     else scrollToUserMessage(message.id, 'auto');
   }, [requestOlderHistory, scrollToUserMessage, updateMessageNavigationPreview, userMessageNavigation]);
   const scheduleMessageNavigationPointerUpdate = useCallback(() => {
@@ -2056,7 +2090,8 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
     if (!cancelled && !moved) {
       const index = updateMessageNavigationPreview(event.clientY);
       const message = index === undefined ? undefined : userMessageNavigation[index];
-      if (message) scrollToUserMessage(message.id);
+      if (message?.cached) requestOlderHistory(message.id);
+      else if (message) scrollToUserMessage(message.id);
     }
     const capture = messageNavigationDragCapture.current;
     if (capture?.hasPointerCapture(event.pointerId)) capture.releasePointerCapture(event.pointerId);
@@ -2276,7 +2311,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
               messageNavigationSuppressClick.current = false;
               return;
             }
-            if (message.cached) onRequestOlderHistory?.();
+            if (message.cached) requestOlderHistory(message.id);
             else scrollToUserMessage(message.id);
           }}
         >
