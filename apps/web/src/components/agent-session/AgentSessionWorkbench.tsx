@@ -49,7 +49,7 @@ const INITIAL_HYDRATION_STALE_TIME_MS = 30_000;
 // Older history is background-only. Limit each prefetch turn so it cannot
 // monopolize the dedicated backend history lane after a session is selected.
 const HISTORY_MEMORY_CACHE_TTL_MS = 5 * 60 * 1000;
-const HISTORY_PREFETCH_DELAY_MS = 250;
+const HISTORY_PREFETCH_DELAY_MS = 1_500;
 // Exact Context metrics are deferred from hydration. Merge bursts of event
 // reconciliation into one bounded refresh instead of invalidating per frame.
 const CONTEXT_REFRESH_MIN_INTERVAL_MS = 60_000;
@@ -1616,6 +1616,23 @@ function mergeConversationEvents(
     merged.set(event.id, current ? mergeConversationEvent(current, event) : event);
   }
   return [...merged.values()];
+}
+
+function latestHistoryCursor(
+  current: OpenHandsConversationEventBatch,
+  incoming: OpenHandsConversationEventBatch,
+  prefetched: OpenHandsConversationEventBatch[] = [],
+): string | null | undefined {
+  const anchor = incoming.history_cursor;
+  // A moving latest window normally points into events already held in RAM.
+  // Preserve the older pagination chain in that case; only an unknown formal
+  // event identity starts a new chain (including after an exhausted cursor).
+  if (!anchor || anchor === current.history_cursor
+    || current.events.some(event => event.id === anchor)
+    || prefetched.some(page => page.events.some(event => event.id === anchor))) {
+    return current.history_cursor ?? anchor;
+  }
+  return anchor;
 }
 
 function sameConversationPresentation(
@@ -3669,7 +3686,7 @@ function WorkspaceDrawer({
     queryKey: sessionQueryKey(host, 'workspace-details', workspaceId, bindingId, workDirectoryId),
     queryFn: () => api.workspaceDetails(workspaceId, { bindingId, workDirectoryId }),
     enabled: true,
-    retry: (count, error) => !(error instanceof ApiError && error.status < 500) && count < 2,
+    retry: (count, error) => !(error instanceof ApiError && (error.status < 500 || error.status === 503)) && count < 2,
   });
   const details = detailsQuery.data;
   const directoryQueryKey = sessionQueryKey(host, 'workspace-directory', workspaceId, bindingId, workDirectoryId);
@@ -3677,7 +3694,7 @@ function WorkspaceDrawer({
     queryKey: [...directoryQueryKey, 'root'],
     queryFn: () => api.workspaceDirectory(workspaceId, { bindingId, workDirectoryId }),
     enabled: Boolean(open && scopeState.activeTabId === 'files'),
-    retry: (count, error) => !(error instanceof ApiError && error.status < 500) && count < 2,
+    retry: (count, error) => !(error instanceof ApiError && (error.status < 500 || error.status === 503)) && count < 2,
   });
   const [directoryPages, setDirectoryPages] = useState<Map<string, WorkspaceDirectoryPage>>(() => new Map());
   const loadingDirectories = useRef(new Set<string>());
@@ -4254,7 +4271,7 @@ function WorkspaceDrawer({
     queryFn: () => api.gitRepositories(workspaceId, { bindingId, workDirectoryId }),
     enabled: Boolean(fullScreen && filesTabIsActive && gitSidebarRequested && gitContextPath),
     staleTime: 15_000,
-    retry: (count, error) => !(error instanceof ApiError && error.status < 500) && count < 2,
+    retry: (count, error) => !(error instanceof ApiError && (error.status < 500 || error.status === 503)) && count < 2,
   });
   const gitRepository = useMemo(() => selectedGitRepository(gitRepositoriesQuery.data?.repositories ?? [], gitContextPath), [gitContextPath, gitRepositoriesQuery.data?.repositories]);
   const gitSidebarVisible = fullScreen && filesTabIsActive && gitSidebarRequested && Boolean(gitRepository);
@@ -4932,13 +4949,13 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     queryFn: () => api.workspaceDetails(workspace!.id, activeWorkspaceOptions),
     enabled: Boolean(workspace && (selected || conversationDraft)),
     refetchOnWindowFocus: false,
-    retry: (count, error) => !(error instanceof ApiError && error.status < 500) && count < 2,
+    retry: (count, error) => !(error instanceof ApiError && (error.status < 500 || error.status === 503)) && count < 2,
   });
   const workspaceReferenceIndexQuery = useQuery({
     queryKey: sessionQueryKey(host, 'workspace-reference-index', workspace?.id, activeWorkspaceOptions.bindingId, activeWorkspaceOptions.workDirectoryId),
     queryFn: () => api.workspaceDetails(workspace!.id, { ...activeWorkspaceOptions, fullIndex: true }),
     enabled: Boolean(workspace && workspaceReferencePickerOpen && (selected || conversationDraft)),
-    retry: (count, error) => !(error instanceof ApiError && error.status < 500) && count < 2,
+    retry: (count, error) => !(error instanceof ApiError && (error.status < 500 || error.status === 503)) && count < 2,
   });
   useEffect(() => {
     if (selected && activeWorkspaceDetailsQuery.data) {
@@ -5512,7 +5529,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         ...current,
         ...latest,
         events: mergeConversationEvents(current.events, latest.events),
-        history_cursor: current.history_cursor ?? latest.history_cursor,
+        history_cursor: latestHistoryCursor(current, latest, historyCacheByScope.current.get(selected!.id)?.pages),
       });
     },
     // Native event reads begin at the current leaf. A trusted revisit keeps its
@@ -5579,7 +5596,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
                 next_cursor: cursor
                   ? (cursorUnchanged ? (incoming.next_cursor ?? cursor) : existing.next_cursor)
                   : (incoming.next_cursor ?? existing.next_cursor),
-                history_cursor: existing.history_cursor ?? incoming.history_cursor,
+                history_cursor: cursor
+                  ? existing.history_cursor ?? incoming.history_cursor
+                  : latestHistoryCursor(existing, incoming, historyCacheByScope.current.get(scope)?.pages),
               });
             })()
           : incoming,
@@ -5635,12 +5654,12 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   // not enter the rendered event projection until the reader reaches the top.
   const historyPrefetchDelayMs = HISTORY_PREFETCH_DELAY_MS;
   const loadAllHistory = useCallback(async () => {
-    if (!workspace || !selected || !eventsQuery.data?.history_cursor) return;
+    if (!workspace || !selected || !pageVisible || !eventsQuery.data?.history_cursor) return;
     const scope = selected.id;
     const historyRootCursor = eventsQuery.data.history_cursor;
     const now = Date.now();
     let cache = historyCacheByScope.current.get(scope);
-    if (!cache || cache.rootCursor !== historyRootCursor || cache.expiresAt <= now) {
+    if (!cache || cache.rootCursor !== historyRootCursor || (!cache.complete && cache.expiresAt <= now)) {
       cache = {
         rootCursor: historyRootCursor,
         expiresAt: now + HISTORY_MEMORY_CACHE_TTL_MS,
@@ -5664,12 +5683,14 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       // Fetch serially and yield between pages. This keeps the selected
       // transcript responsive while retaining the complete history in RAM.
       while (historyCursor && Date.now() < cache.expiresAt) {
+        if (!scopeIsActive() || controller.signal.aborted || document.visibilityState !== 'visible') return;
         const cursor = historyCursor;
         if (seenHistoryCursors.has(cursor)) throw new Error('读取更早会话记录时，历史分页游标没有推进。');
         seenHistoryCursors.add(cursor);
         const older = await api.conversationEvents(workspace.id, scope, undefined, cursor, undefined, controller.signal);
         if (!scopeIsActive() || controller.signal.aborted) return;
         cache.pages.push(older);
+        cache.expiresAt = Date.now() + HISTORY_MEMORY_CACHE_TTL_MS;
         historyCursor = older.history_cursor;
         setHistoryCacheRevision(current => current + 1);
         if (historyCursor) await new Promise<void>(resolve => window.setTimeout(resolve, historyPrefetchDelayMs));
@@ -5686,13 +5707,16 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       historyLoadingScopes.current.delete(scope);
       historyAbortControllers.current.delete(scope);
       setHistoryLoadingBindingId(current => current === scope ? undefined : current);
+      // A hidden tab can become visible before an aborted request settles.
+      // Wake the scheduler after actual completion so that it resumes once.
+      setHistoryCacheRevision(current => current + 1);
     }
-  }, [api, eventsQuery.data?.history_cursor, historyPrefetchDelayMs, reportOperationError, selected, workspace]);
+  }, [api, eventsQuery.data?.history_cursor, historyPrefetchDelayMs, pageVisible, reportOperationError, selected, workspace]);
   const revealNextHistoryPage = useCallback(async (): Promise<OpenHandsConversationEventBatch | undefined> => {
     if (!workspace || !selected || !eventsQuery.data?.history_cursor) return undefined;
     const scope = selected.id;
     const cache = historyCacheByScope.current.get(scope);
-    if (!cache || cache.rootCursor !== eventsQuery.data.history_cursor || cache.expiresAt <= Date.now()) return undefined;
+    if (!cache || cache.rootCursor !== eventsQuery.data.history_cursor || (!cache.complete && cache.expiresAt <= Date.now())) return undefined;
     const revealed = revealedHistoryPageCounts.current.get(scope) ?? 0;
     const older = cache.pages[revealed];
     if (!older) return undefined;
@@ -5726,7 +5750,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     if (!workspace || !selected || !eventsQuery.data?.history_cursor) return false;
     const scope = selected.id;
     const cache = historyCacheByScope.current.get(scope);
-    if (!cache || cache.rootCursor !== eventsQuery.data.history_cursor || cache.expiresAt <= Date.now()) return false;
+    if (!cache || cache.rootCursor !== eventsQuery.data.history_cursor || (!cache.complete && cache.expiresAt <= Date.now())) return false;
     const existing = queryClient.getQueryData<OpenHandsConversationEventBatch>(eventQueryKey);
     if (existing?.events.some(event => event.id === eventId)) return true;
     const targetPage = cache.pages.findIndex(page => page.events.some(event => event.id === eventId));
@@ -5743,7 +5767,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   useEffect(() => {
     const activeBindingId = selected?.id;
     for (const [bindingId, controller] of historyAbortControllers.current) {
-      if (bindingId !== activeBindingId) controller.abort();
+      if (bindingId !== activeBindingId || !pageVisible) controller.abort();
     }
     for (const [key, timer] of contextRefreshTimers.current) {
       if (!activeBindingId || !key.endsWith(`:${activeBindingId}`)) {
@@ -5751,20 +5775,21 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         contextRefreshTimers.current.delete(key);
       }
     }
-  }, [selected?.id]);
+  }, [pageVisible, selected?.id]);
   useEffect(() => {
     const bindingId = selected?.id;
     const historyCursor = eventsQuery.data?.history_cursor;
-    if (!bindingId || !historyCursor || historyLoadingScopes.current.has(bindingId)) return;
+    if (!pageVisible || !bindingId || !historyCursor || historyLoadingScopes.current.has(bindingId)) return;
     const cache = historyCacheByScope.current.get(bindingId);
-    const cacheExpired = !cache || cache.rootCursor !== historyCursor || cache.expiresAt <= Date.now();
+    const cacheExpired = !cache || cache.rootCursor !== historyCursor || (!cache.complete && cache.expiresAt <= Date.now());
     if (!cacheExpired && historyFailedCursors.current.get(bindingId) === historyCursor) return;
-    const delay = cache && cache.rootCursor === historyCursor
-      ? Math.max(0, cache.expiresAt - Date.now())
-      : historyPrefetchDelayMs;
+    // Exhausted history stays exhausted for this entry cursor. A visibility
+    // change or a latest-window refresh must not scan the same branch again.
+    if (cache?.rootCursor === historyCursor && cache.complete) return;
+    const delay = historyPrefetchDelayMs;
     const timer = window.setTimeout(() => { void loadAllHistory(); }, delay);
     return () => window.clearTimeout(timer);
-  }, [eventsQuery.data?.history_cursor, historyCacheRevision, historyPrefetchDelayMs, loadAllHistory, selected?.id]);
+  }, [eventsQuery.data?.history_cursor, historyCacheRevision, historyPrefetchDelayMs, loadAllHistory, pageVisible, selected?.id]);
   const activeScope = selected?.id ?? conversationDraft?.id;
   const activeLocalMessageProjections = useMemo(() => {
     void localMessageProjectionRevision;
@@ -5797,7 +5822,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     void historyCacheRevision;
     if (!selected || !eventsQuery.data?.history_cursor) return [];
     const cache = historyCacheByScope.current.get(selected.id);
-    if (!cache || cache.rootCursor !== eventsQuery.data.history_cursor || cache.expiresAt <= Date.now()) return [];
+    if (!cache || cache.rootCursor !== eventsQuery.data.history_cursor || (!cache.complete && cache.expiresAt <= Date.now())) return [];
     const revealed = revealedHistoryPageCounts.current.get(selected.id) ?? 0;
     return cache.pages.slice(revealed).reverse().flatMap(page => page.events).flatMap(event => (
       event.event_type === 'MESSAGE' && ['user', 'human'].includes(String(event.payload.source ?? '').toLowerCase())
@@ -5810,7 +5835,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     void historyCacheRevision;
     if (!selected || !eventsQuery.data?.history_cursor) return false;
     const cache = historyCacheByScope.current.get(selected.id);
-    if (!cache || cache.rootCursor !== eventsQuery.data.history_cursor || cache.expiresAt <= Date.now()) return false;
+    if (!cache || cache.rootCursor !== eventsQuery.data.history_cursor || (!cache.complete && cache.expiresAt <= Date.now())) return false;
     return (revealedHistoryPageCounts.current.get(selected.id) ?? 0) < cache.pages.length;
   }, [eventsQuery.data?.history_cursor, historyCacheRevision, selected]);
   const latestFormalUserEventId = [...currentFormalEvents].reverse().find(event => event.event_type === 'MESSAGE'

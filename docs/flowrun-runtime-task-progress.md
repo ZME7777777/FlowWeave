@@ -7741,3 +7741,15 @@ OpenHands adapter 现为 context、activity 和 pending-confirmation 增加每 R
 依赖：FR-555B2B。
 
 目标：继续审计模型／能力／凭据／fork／删除等慢生命周期 mutation 与后台任务的队列、取消和实际 completion 释放语义；在不扩张 PostgreSQL 连接预算的前提下，将低频、无需快速响应的工作放入独立有界通道。依据真实调用链和负载数据决定容量，并继续保护 hydration、消息派发和正式事件恢复。
+
+### FR-555B2D 工作区与历史通道隔离及后台预取退让 — DONE
+
+依赖：FR-555B2A、FR-555B2B、FR-555B2C（均 DONE）。
+
+范围：针对截图 `RUNTIME_AUXILIARY_SATURATED`，隔离工作区文件／Git 与原生历史分页，保持现有 PostgreSQL 总预算、首屏／消息保留容量及真实 completion 释放语义；收敛浏览器历史预取和辅助请求重试。固定 Runtime 源码只读审计，不变更 OpenHands 契约或镜像。不将无线上负载数据的线程扩容作为已验证结论。下一切片仍为 FR-555C。
+
+完成：截图 `RUNTIME_AUXILIARY_SATURATED` 来自 API 的 `run_blocking_auxiliary` 入场超时，而非 OpenHands 服务直接返回；旧代码将文件／Git 和历史事件／侧栏分页放进同一个默认单槽 history executor／SQL pool。通过从 HEAD 提取旧 helper 并阻塞历史操作，已复现同样错误。API blocking 预算充足时，从已有预算预留一个 workspace executor／SQL pool；默认 8 槽现在为 hydration 2、message 1、workspace 1、普通交互 4。工作区与 history 双向故障隔离，不扩大总数据库预算。预算小于 5 或 Worker 不预留新通道，继续共享同一组 history 资源，明确保留小配置限制。取消请求仍在实际线程结束后才释放容量；pool 指标新增 workspace 维度。
+
+固定 source lock 的 `b556fd8b0d62af2c8d7d63c63a532b74f8f7e168` 只读审计确认，无过滤有界事件窗口走 Runtime 两线程 read executor，历史与当前窗口仍共享该执行资源。本切片将 Web 历史页间隔由 250ms 调至 1.5 秒，隐藏页面取消在途浏览器请求并在下一页派发前检查可见性／binding／AbortSignal，恢复可见后续读；工作区详情、目录、引用索引和 Git 查询不自动重试 503。完成的原生入口游标不因五分钟缓存期限或焦点恢复重新扫描；最新窗口指向已加载正式 event id 时沿用旧链，指向尚未加载的正式身份时允许新链，防止旧游标永久覆盖新入口。活动分页每页续期，避免长历史在五分钟内未读完就丢弃已取得页并从头重来。不限制完整历史数量，不改正式消息／事件身份。
+
+验收：HTTP／executor 定向 pytest `20 passed, 1 deselected`（排除需要数据库的 slow-request logging 测试），覆盖 API／Worker 的 1、4、5、8 槽总预算、fallback 共享准入、history／workspace 双向阻塞时首屏与消息保留容量、取消后继续占槽与实际 completion 后恢复；旧 helper 的相同阻塞场景按预期失败。新增 Playwright 路由夹具回归 `1 passed`，覆盖隐藏暂停、恢复完整三页、至少 1.5 秒间隔、workspace 503 无自动重试、六分钟后相同／已加载入口不重扫和未知新入口可加载。受影响 Python Ruff／py_compile、Web 精确 ESLint、TypeScript、production build、唯一 Alembic head `0137_conversation_message_order` 与 git diff --check 通过；构建仍提示现有大 chunk。未运行真实数据库／迁移、Runtime 镜像或线上多用户负载，未部署。进程内通道隔离不能证明跨 API worker 的 Runtime 总并发或服务器 I/O 容量已充分，下一可执行切片仍为 FR-555C。

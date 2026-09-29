@@ -61,6 +61,9 @@ class Container:
     hydration_io_slots: asyncio.Semaphore
     hydration_capacity: int
     blocking_capacity: int
+    workspace_executor: ThreadPoolExecutor
+    workspace_io_slots: asyncio.Semaphore
+    workspace_capacity: int
     auxiliary_executor: ThreadPoolExecutor
     auxiliary_io_slots: asyncio.Semaphore
     admin_executor: ThreadPoolExecutor
@@ -99,6 +102,10 @@ class Container:
                 self.message_executor.shutdown,
                 wait=True,
                 cancel_futures=True,
+            )
+        if self.workspace_executor is not self.history_read_executor:
+            await asyncio.to_thread(
+                self.workspace_executor.shutdown, wait=True, cancel_futures=True
             )
         await asyncio.to_thread(
             self.auxiliary_executor.shutdown,
@@ -155,7 +162,18 @@ def build_container(settings: Settings, *, role: Literal["api", "worker"]) -> Co
     message_capacity = (
         1 if role == "api" and settings.blocking_pool_size - hydration_capacity >= 2 else 0
     )
-    blocking_capacity = settings.blocking_pool_size - hydration_capacity - message_capacity
+    # Workspace/Git operations must not queue behind native history HTTP reads.
+    # Reserve from the existing budget only when an ordinary slot remains;
+    # small/stream configurations retain their bounded history fallback.
+    workspace_capacity = (
+        1
+        if role == "api"
+        and settings.blocking_pool_size - hydration_capacity - message_capacity >= 2
+        else 0
+    )
+    blocking_capacity = (
+        settings.blocking_pool_size - hydration_capacity - message_capacity - workspace_capacity
+    )
     database = Database(
         settings,
         poll_pool_size=settings.runtime_poll_worker_concurrency if role == "worker" else 0,
@@ -163,6 +181,7 @@ def build_container(settings: Settings, *, role: Literal["api", "worker"]) -> Co
         admin_pool_size=1 if role == "api" else 0,
         hydration_pool_size=hydration_capacity,
         message_pool_size=message_capacity,
+        workspace_pool_size=workspace_capacity,
     )
     metrics = Metrics()
     blocking_workers = settings.worker_concurrency if role == "worker" else blocking_capacity
@@ -199,6 +218,13 @@ def build_container(settings: Settings, *, role: Literal["api", "worker"]) -> Co
         max_workers=settings.history_read_pool_size,
         thread_name_prefix=f"flowweave-{role}-history-read",
     )
+    workspace_executor = (
+        ThreadPoolExecutor(
+            max_workers=workspace_capacity, thread_name_prefix="flowweave-api-workspace"
+        )
+        if workspace_capacity
+        else history_read_executor
+    )
     terminal_stream_executor = ThreadPoolExecutor(
         max_workers=settings.terminal_stream_pool_size,
         thread_name_prefix=f"flowweave-{role}-terminal-stream",
@@ -211,6 +237,7 @@ def build_container(settings: Settings, *, role: Literal["api", "worker"]) -> Co
         max_workers=1,
         thread_name_prefix=f"flowweave-{role}-runtime-control",
     )
+    history_slots = asyncio.Semaphore(settings.history_read_pool_size)
     return Container(
         settings=settings,
         role=role,
@@ -243,6 +270,11 @@ def build_container(settings: Settings, *, role: Literal["api", "worker"]) -> Co
         hydration_io_slots=asyncio.Semaphore(hydration_capacity or blocking_workers),
         hydration_capacity=hydration_capacity,
         blocking_capacity=blocking_capacity,
+        workspace_executor=workspace_executor,
+        workspace_io_slots=asyncio.Semaphore(workspace_capacity)
+        if workspace_capacity
+        else history_slots,
+        workspace_capacity=workspace_capacity,
         auxiliary_executor=auxiliary_executor,
         auxiliary_io_slots=asyncio.Semaphore(settings.auxiliary_task_worker_concurrency),
         admin_executor=admin_executor,
@@ -250,7 +282,7 @@ def build_container(settings: Settings, *, role: Literal["api", "worker"]) -> Co
         poll_executor=poll_executor,
         poll_io_slots=asyncio.Semaphore(settings.runtime_poll_worker_concurrency),
         history_read_executor=history_read_executor,
-        history_read_slots=asyncio.Semaphore(settings.history_read_pool_size),
+        history_read_slots=history_slots,
         terminal_stream_executor=terminal_stream_executor,
         terminal_control_executor=terminal_control_executor,
         terminal_slots=asyncio.Semaphore(settings.terminal_stream_pool_size),

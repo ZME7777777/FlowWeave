@@ -11,11 +11,13 @@ from types import SimpleNamespace
 import pytest
 
 from flowweave.bootstrap import api as api_module
+from flowweave.bootstrap.container import build_container
 from flowweave.bootstrap.settings import Settings
 from flowweave.runtime.read_budget import hydration_read_budget
 from flowweave.shared.errors import DomainError
 from flowweave.shared.http import (
     run_blocking,
+    run_blocking_auxiliary,
     run_blocking_control,
     run_blocking_history,
     run_blocking_hydration,
@@ -445,3 +447,92 @@ def test_cursor_conversation_pages_use_background_history_lane() -> None:
         and call.func.id == "run_sync"
         for call in ast.walk(route)
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("role", ["api", "worker"])
+@pytest.mark.parametrize("budget", [1, 4, 5, 8])
+async def test_workspace_reservation_preserves_total_budget_and_fallback(role, budget) -> None:
+    container = build_container(
+        Settings(_env_file=None, blocking_pool_size=budget, runtime_adapter="mock"), role=role
+    )
+    try:
+        pools = container.database.pool_metrics()
+        assert (
+            sum(
+                pools.get(name, {}).get("size", 0)
+                for name in ("blocking", "hydration", "message", "workspace")
+            )
+            == budget
+        )
+        expected = 1 if role == "api" and budget >= 5 else 0
+        assert container.workspace_capacity == expected
+        if expected:
+            assert container.workspace_executor is not container.history_read_executor
+            assert container.workspace_io_slots is not container.history_read_slots
+            assert container.database.workspace_engine.pool.size() == 1
+            assert container.database.workspace_engine.pool._max_overflow == 0
+            assert container.hydration_capacity == 2
+            assert container.message_capacity == 1
+        else:
+            assert container.workspace_executor is container.history_read_executor
+            assert container.workspace_io_slots is container.history_read_slots
+            assert container.database.workspace_sessions is None
+    finally:
+        await container.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("blocked_lane", ["history", "workspace"])
+async def test_workspace_and_history_do_not_block_each_other(blocked_lane) -> None:
+    """Reproduce the screenshot: stalled native history cannot deny workspace I/O."""
+    container = build_container(
+        Settings(
+            _env_file=None,
+            blocking_pool_size=8,
+            runtime_adapter="mock",
+            blocking_pool_timeout_seconds=0.05,
+        ),
+        role="api",
+    )
+    # Keep the actual production executors and SQL pool partition, substituting
+    # only sessions: the fault is Runtime/file I/O, not database availability.
+    database = _Database()
+    database.workspace_sessions = database.blocking_sessions
+    resources = container.database
+    container.database = database
+    started, release = threading.Event(), threading.Event()
+
+    def slow(_session):
+        started.set()
+        assert release.wait(3)
+
+    blocked = run_blocking_history if blocked_lane == "history" else run_blocking_auxiliary
+    independent = run_blocking_auxiliary if blocked_lane == "history" else run_blocking_history
+    task = asyncio.create_task(blocked(container, slow))
+    try:
+        assert await asyncio.to_thread(started.wait, 1)
+        assert await independent(container, lambda _session: "independent") == "independent"
+        assert await run_blocking_hydration(container, lambda _session: "hydration") == "hydration"
+        assert await run_blocking_message(container, lambda _session: "message") == "message"
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        # Cancellation of the browser request cannot release a still-running thread.
+        with pytest.raises(DomainError) as exc:
+            await blocked(container, lambda _session: "must wait")
+        assert exc.value.code == (
+            "RUNTIME_HISTORY_READ_SATURATED"
+            if blocked_lane == "history"
+            else "RUNTIME_AUXILIARY_SATURATED"
+        )
+        assert (
+            await independent(container, lambda _session: "still independent")
+            == "still independent"
+        )
+        release.set()
+        assert await blocked(container, lambda _session: "recovered") == "recovered"
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)
+        container.database = resources
+        await container.close()

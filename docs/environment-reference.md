@@ -41,6 +41,21 @@
 
 持久根目录由平台按运行分配。不要手工递归 `chmod`、`chown`、删除 `.agent-workspaces` 或 OpenHands state 目录；权限和所有权不符合预期会使分配失败。
 
+## API 并发通道
+
+`API_BLOCKING_POOL_SIZE` 是每个 API worker 的同步数据库／线程总预算，不是每个 Runtime 的并发数。
+默认 `8` 分为首屏 hydration `2`、消息派发 `1`、工作区文件／Git `1`、普通交互／变更 `4`。
+工作区通道从已有预算中预留，SQL pool 不允许 overflow；原有独立 history pool 继续处理历史事件和侧栏分页，
+不会再被文件扫描或 Git 操作占用。`/metrics` 的数据库 pool 指标可分别观察 `workspace` 和 `history`。
+API blocking 预算小于 `5` 时没有额外预留空间，工作区仍与 history 共用同一个 semaphore、executor 和 SQL pool；
+单槽 stream-api 与 Worker 保持原有预算。默认 Compose 总连接预算仍为 `88`，没有增加 PostgreSQL 上限。
+
+`RUNTIME_AUXILIARY_SATURATED` 表示 API 工作区通道排队超时；
+`RUNTIME_AUXILIARY_READ_SATURATED` 则表示适配器的每 Runtime 展示性读取通道饱和，两者不能混淆。
+当前固定 OpenHands 的无过滤事件窗口共用两个 read executor 线程；浏览器历史预取每页至少间隔 `1.5` 秒，
+隐藏页面时停止并取消浏览器在途请求，恢复可见后从已加载的下一页继续。同入口游标完成后不自动重复扫描，
+新入口游标仍可加载；这些措施不限制完整历史条数。取消浏览器请求不会提前释放仍在执行的后端线程。
+
 ## 网络、集成与开发体验
 
 | 变量 | 用途 |

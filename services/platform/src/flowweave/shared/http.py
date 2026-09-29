@@ -209,7 +209,7 @@ async def run_blocking_history(container: Container, operation: Callable[[Sessio
     the latest window. This lane is intentionally small and independently
     pooled: saturation drops the prefetch rather than delaying readiness or
     confirmation reads for a running conversation. Workspace/Git operations
-    share this background capacity for the same reason.
+    use their own reservation when the configured blocking budget permits it.
     """
 
     return await _run_blocking_lane(
@@ -299,23 +299,24 @@ async def run_blocking_admin(container: Container, operation: Callable[[Session]
 
 
 async def run_blocking_auxiliary(container: Container, operation: Callable[[Session], T]) -> T:
-    """Run workspace and Git I/O on the low-priority history lane.
+    """Run filesystem/Git I/O independently of slow native history requests.
 
-    These calls may perform filesystem scans or subprocess work. Sharing the
-    existing small background pool keeps them away from interactive hydration
-    without increasing the process's PostgreSQL connection budget.
+    The reservation partitions the existing blocking SQL budget. Small API
+    configurations without room for a reservation share the *same* bounded
+    history semaphore, executor and SQL pool, never a second admission limit.
     """
 
+    sessions = container.database.workspace_sessions or container.database.history_sessions
     return await _run_blocking_lane(
         container,
         operation,
-        executor=container.history_read_executor,
-        slots=container.history_read_slots,
-        session_factory=container.database.history_sessions,
+        executor=container.workspace_executor,
+        slots=container.workspace_io_slots,
+        session_factory=sessions,
         saturation_code="RUNTIME_AUXILIARY_SATURATED",
         saturation_message="Workspace operations are busy; retry shortly",
-        lane_name="auxiliary",
-        active_limit=container.settings.history_read_pool_size,
+        lane_name="workspace",
+        active_limit=container.workspace_capacity or container.settings.history_read_pool_size,
     )
 
 
