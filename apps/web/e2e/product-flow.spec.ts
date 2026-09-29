@@ -3122,6 +3122,8 @@ test('Agent new session keeps full capabilities and can create an explicit works
   await expect(environmentSummary.getByRole('button', { name: '复制 SSH 与目录', exact: true })).toBeVisible();
   expect(workspaceScopeRequests.at(-1)).toEqual({ bindingId: null, workDirectoryId: 'fr58-frontend' });
   await expect(page.getByText('2fae71c74c89', { exact: true })).toBeVisible();
+  await page.locator('.agent-workspace-drawer').evaluate(drawer => { drawer.style.width = '294px'; });
+  await expect(environmentSummary.getByRole('button', { name: '新终端', exact: true })).toBeVisible();
   await page.getByRole('button', { name: '新终端', exact: true }).click();
   await page.getByLabel('新增工作区工具').click();
   await expect(page.getByRole('menu')).toBeVisible();
