@@ -479,6 +479,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   const queuedDispatchGate = new Promise<void>(resolve => { releaseQueuedDispatch = resolve; });
   let priorityDraftPosts = 0;
   let priorityQueuedPosts = 0;
+  let formalTerminalQueuePosts = 0;
   let ambiguousMessagePosts = 0;
   let sentProvider: string | null = null;
   let sentBinding: string | null = null;
@@ -939,6 +940,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
       }
       if (payload.content === '输入优先消息') priorityDraftPosts += 1;
       if (payload.content === '输入优先队列消息') priorityQueuedPosts += 1;
+      if (payload.content === '正式终态后自动发送') formalTerminalQueuePosts += 1;
       await route.fulfill({ status: 202, contentType: 'application/json', body: JSON.stringify({ accepted: true, cursor: payload.content === '运行中直接发送消息' ? 'running-direct-stream-user' : sentMessages === 1 ? 'running-user' : `sent-user-${sentMessages}` }) });
       return;
     }
@@ -1061,8 +1063,13 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toBeVisible();
   emptyResponseRecovery = false;
   emptyResponseFollowup = false;
+  await page.getByLabel('发送 Agent 消息').fill('正式终态后自动发送');
+  await page.getByLabel('发送 Agent 消息').press('Enter');
+  await expect(page.getByLabel('消息投递队列').getByText('正式终态后自动发送')).toBeVisible();
+  expect(formalTerminalQueuePosts).toBe(0);
   modelIsResponding = false;
   parentTurnFailed = true;
+  agentStream!.send(JSON.stringify({ type: 'message_complete' }));
   const runningFailureDetail = page.locator('.conversation-model-retry.final').filter({ hasText: '模型服务暂不可用' });
   await expect(runningFailureDetail).toHaveCount(1);
   await expect(runningFailureDetail.locator('summary')).toHaveText('模型服务暂不可用');
@@ -1072,6 +1079,10 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toHaveCount(0);
   await expect(page.locator('.agent-composer-status')).toHaveAttribute('aria-hidden', 'true');
   await expect(page.locator('.agent-workspace-conversation-running')).toHaveCount(0);
+  await expect.poll(() => formalTerminalQueuePosts).toBe(1);
+  await page.waitForTimeout(250);
+  expect(formalTerminalQueuePosts).toBe(1);
+  await expect(page.getByLabel('消息投递队列')).toHaveCount(0);
   recoverableAgentError = true;
   modelIsResponding = true;
   await page.reload();
