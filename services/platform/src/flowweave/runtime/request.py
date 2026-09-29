@@ -228,7 +228,7 @@ def runtime_provider(
             )
         return RuntimeProvider(
             provider_id=provider_id,
-            base_url="https://api.anthropic.com",
+            base_url=provider.base_url.rstrip("/"),
             model=selected_model,
             api_key=api_key,
             auth_type="ANTHROPIC_API_KEY",

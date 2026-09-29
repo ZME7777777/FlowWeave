@@ -223,7 +223,7 @@ def test_anthropic_api_provider_uses_litellm_anthropic_model(
             request.agent_spec,
             provider=RuntimeProvider(
                 provider_id="anthropic",
-                base_url="https://api.anthropic.com",
+                base_url="https://anthropic-gateway.example.test/v1",
                 model="claude-sonnet-4-5",
                 api_key="anthropic-api-key",
                 auth_type="ANTHROPIC_API_KEY",
@@ -248,7 +248,7 @@ def test_anthropic_api_provider_uses_litellm_anthropic_model(
     agent = cast(dict[str, object], captured["agent"])
     llm = cast(dict[str, object], agent["llm"])
     assert llm["model"] == "anthropic/claude-sonnet-4-5"
-    assert llm["base_url"] == "https://api.anthropic.com"
+    assert llm["base_url"] == "https://anthropic-gateway.example.test/v1"
     assert llm["api_key"] == "anthropic-api-key"
 
 

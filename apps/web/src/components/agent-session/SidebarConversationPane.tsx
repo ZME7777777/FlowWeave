@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Clock3, LoaderCircle, MessageSquarePlus, Paperclip, Play, Send, Square } from 'lucide-react';
+import { CircleAlert, Clock3, LoaderCircle, MessageSquarePlus, Play, Plus, Quote, Send, Square } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api, ApiError, randomId, subscribeToAgentWorkspaceStream } from '../../api/client';
 import { ConversationSurface } from '../ConversationSurface';
@@ -10,6 +10,7 @@ interface SidebarConversationPaneProps {
   workspaceId: string;
   sourceBindingId: string;
   initialReference?: AgentConversationReference;
+  sidebarBindingId?: string;
   onBindingCreated: (bindingId: string) => void;
 }
 
@@ -22,10 +23,10 @@ function defaultModel(providers: ModelProvider[], sourceProviderId?: string | nu
   return provider && model ? { providerId: provider.id, modelName: model.model_name, reasoningEffort: sourceReasoningEffort ?? model.default_reasoning_effort ?? null } : undefined;
 }
 
-export function SidebarConversationPane({ workspaceId, sourceBindingId, initialReference, onBindingCreated }: SidebarConversationPaneProps) {
+export function SidebarConversationPane({ workspaceId, sourceBindingId, initialReference, sidebarBindingId, onBindingCreated }: SidebarConversationPaneProps) {
   const queryClient = useQueryClient();
   const attachmentInput = useRef<HTMLInputElement>(null);
-  const [bindingId, setBindingId] = useState<string>();
+  const [bindingId, setBindingId] = useState<string | undefined>(sidebarBindingId);
   const [reference, setReference] = useState<AgentConversationReference | undefined>(initialReference);
   const [content, setContent] = useState('');
   const [attachments, setAttachments] = useState<AgentAttachment[]>([]);
@@ -166,18 +167,18 @@ export function SidebarConversationPane({ workspaceId, sourceBindingId, initialR
         : bindingId ? <ConversationSurface events={events} isGenerating={running} liveTextReveal={running} isPaused={paused} conversationScope={bindingId} requestSubmitting={sending} taskControl={hydrationQuery.data?.events.task_control} monitoring={hydrationQuery.data?.events.monitoring} connectionState={hydrationQuery.isError ? 'unavailable' : 'connected'}/>
           : <div className="agent-workbench-empty"><MessageSquarePlus size={28}/><b>向主会话追问</b><span>这是临时聊天：关闭后会删除，最长保留一小时。</span></div>}
       {expired && <section className="agent-sidebar-expired" role="status"><Clock3 size={16}/><span>侧边聊天会话已过期。已显示的内容仍可阅读，但不能继续发送消息。</span></section>}
-      {error && <p className="agent-workbench-error">{error}</p>}
+      {error && <section className="agent-workbench-error" role="alert"><CircleAlert size={17}/><div><b>操作未完成</b><span>{error}</span></div></section>}
     </div>
-    <div className="agent-sidebar-chat-composer agent-composer-dock">
-      {reference && <div className="agent-sidebar-reference"><span>引用主会话内容</span><button type="button" onClick={() => setReference(undefined)} aria-label="移除引用">×</button><p>{reference.content}</p></div>}
-      {attachments.length > 0 && <div className="agent-attachments">{attachments.map(item => <span key={item.path}><em>{item.filename}</em><button type="button" aria-label={`移除附件 ${item.filename}`} onClick={() => setAttachments(current => current.filter(candidate => candidate.path !== item.path))}>×</button></span>)}</div>}
+    <div className="agent-sidebar-chat-composer">
+      {reference && <div className="agent-attachments agent-conversation-references" aria-label="已添加的会话引用"><span><span className="agent-attachment-open" title={reference.content}><Quote size={14}/><em>会话引用</em></span><button type="button" onClick={() => setReference(undefined)} aria-label="移除引用">×</button></span></div>}
+      {attachments.length > 0 && <div className="agent-attachments">{attachments.map(item => <span key={item.path}><span className="agent-attachment-open"><em>{item.filename}</em></span><button type="button" aria-label={`移除附件 ${item.filename}`} onClick={() => setAttachments(current => current.filter(candidate => candidate.path !== item.path))}>×</button></span>)}</div>}
       <div className="agent-composer">
         <textarea aria-label="发送侧边聊天消息" value={content} disabled={composerDisabled} placeholder={expired ? '侧边聊天会话已过期' : running ? '当前回复完成后可继续发送' : '向侧边聊天提问…'} onChange={event => setContent(event.target.value)} onKeyDown={event => {
           if (event.nativeEvent.isComposing || event.keyCode === 229 || event.key !== 'Enter' || event.shiftKey) return;
           event.preventDefault();
           void send();
         }}/>
-        <footer><div className="agent-composer-context"><input ref={attachmentInput} type="file" multiple hidden onChange={event => { void upload(Array.from(event.currentTarget.files ?? [])); event.currentTarget.value = ''; }}/><button type="button" aria-label="添加附件" disabled={!bindingId || composerDisabled} onClick={() => attachmentInput.current?.click()}><Paperclip size={17}/></button></div><div className="agent-composer-actions"><ComposerModelMenu providers={connectedProviders} providerId={currentModel?.providerId ?? ''} modelName={currentModel?.modelName ?? ''} models={availableModels} efforts={efforts} effort={currentModel?.reasoningEffort ?? ''} disabled={composerDisabled} onProviderChange={providerId => { const nextProvider = connectedProviders.find(item => item.id === providerId); const nextModel = nextProvider?.models.find(item => item.enabled && item.is_default) ?? nextProvider?.models.find(item => item.enabled); if (nextModel) { if (bindingId) void updateModel(providerId, nextModel.model_name, nextModel.default_reasoning_effort ?? null); else setSelectedModelKey(`${providerId}:${nextModel.model_name}`); } }} onModelChange={modelName => { const model = availableModels.find(item => item.model_name === modelName); if (bindingId && currentModel) void updateModel(currentModel.providerId, modelName, model?.default_reasoning_effort ?? null); else if (currentModel) setSelectedModelKey(`${currentModel.providerId}:${modelName}`); }} onEffortChange={effort => { if (bindingId && currentModel) void updateModel(currentModel.providerId, currentModel.modelName, effort || null); }}/>{bindingId && (running || paused) && <button type="button" className="agent-interrupt" aria-label={running ? '暂停侧边聊天 Agent' : '继续侧边聊天 Agent'} disabled={sending || expired} onClick={() => void control()}>{running ? <Square size={10} fill="currentColor"/> : <Play size={12} fill="currentColor"/>}</button>}<button type="button" className="agent-send" aria-label="发送侧边聊天消息" disabled={(!content.trim() && !attachments.length) || composerDisabled} onClick={() => void send()}>{sending ? <LoaderCircle className="conversation-activity-spin" size={15}/> : <Send size={16}/>}</button></div></footer>
+        <footer><div className="agent-composer-context"><input ref={attachmentInput} type="file" multiple hidden onChange={event => { void upload(Array.from(event.currentTarget.files ?? [])); event.currentTarget.value = ''; }}/><button type="button" aria-label="添加附件" disabled={!bindingId || composerDisabled} onClick={() => attachmentInput.current?.click()}><Plus size={17}/></button></div><div className="agent-composer-actions"><ComposerModelMenu providers={connectedProviders} providerId={currentModel?.providerId ?? ''} modelName={currentModel?.modelName ?? ''} models={availableModels} efforts={efforts} effort={currentModel?.reasoningEffort ?? ''} disabled={composerDisabled} onProviderChange={providerId => { const nextProvider = connectedProviders.find(item => item.id === providerId); const nextModel = nextProvider?.models.find(item => item.enabled && item.is_default) ?? nextProvider?.models.find(item => item.enabled); if (nextModel) { if (bindingId) void updateModel(providerId, nextModel.model_name, nextModel.default_reasoning_effort ?? null); else setSelectedModelKey(`${providerId}:${nextModel.model_name}`); } }} onModelChange={modelName => { const model = availableModels.find(item => item.model_name === modelName); if (bindingId && currentModel) void updateModel(currentModel.providerId, modelName, model?.default_reasoning_effort ?? null); else if (currentModel) setSelectedModelKey(`${currentModel.providerId}:${modelName}`); }} onEffortChange={effort => { if (bindingId && currentModel) void updateModel(currentModel.providerId, currentModel.modelName, effort || null); }}/>{bindingId && (running || paused) && <button type="button" className="agent-interrupt" aria-label={running ? '暂停侧边聊天 Agent' : '继续侧边聊天 Agent'} disabled={sending || expired} onClick={() => void control()}>{running ? <Square size={10} fill="currentColor"/> : <Play size={12} fill="currentColor"/>}</button>}<button type="button" className="agent-send" aria-label="发送侧边聊天消息" disabled={(!content.trim() && !attachments.length) || composerDisabled} onClick={() => void send()}>{sending ? <LoaderCircle className="conversation-activity-spin" size={15}/> : <Send size={16}/>}</button></div></footer>
       </div>
     </div>
   </section>;
