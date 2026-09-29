@@ -87,8 +87,8 @@ class Container:
         await self.audit_writer.close()
         await self.rate_limiter.close()
         await self.conversation_hydration_cache.close()
-        await self.http_transport.aclose()
-        unregister_http_transport(self.settings, self.http_transport)
+        # Executor work can still be using Runtime HTTP clients and SQL pools.
+        # Drain it before closing those process-wide resources.
         await asyncio.to_thread(
             self.blocking_executor.shutdown,
             wait=True,
@@ -149,6 +149,8 @@ class Container:
             wait=True,
             cancel_futures=True,
         )
+        await self.http_transport.aclose()
+        unregister_http_transport(self.settings, self.http_transport)
         await self.database.dispose()
 
 

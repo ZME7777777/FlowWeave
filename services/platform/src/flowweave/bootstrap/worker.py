@@ -149,6 +149,21 @@ _ALL_TASK_TYPES = (
 )
 
 
+async def _await_settled(task: asyncio.Future[Any]) -> bool:
+    """Wait through repeated caller cancellation without cancelling owned work."""
+
+    cancelled = False
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            cancelled = True
+        except Exception:
+            # The caller reads the final exception after resource cleanup.
+            break
+    return cancelled
+
+
 class LeaseHeartbeat:
     """Renew one task lease through independent AsyncSession transactions."""
 
@@ -329,25 +344,30 @@ class TaskWorker:
             )
             renewer.start()
             execution = asyncio.create_task(self._execute_claimed_task(task, lease))
+            cancelled = False
             try:
-                await asyncio.shield(execution)
-            except asyncio.CancelledError:
-                # A task handler is running in a thread and cannot be safely
-                # preempted. Keep its lease alive until that thread settles;
-                # a later worker must never run the same task concurrently.
+                # A handler running in an executor cannot be preempted. The
+                # heartbeat must cover its commit/rollback and failure record,
+                # even if shutdown cancels this coroutine more than once.
+                cancelled = await _await_settled(execution)
                 try:
-                    await execution
-                except Exception:
-                    pass
-                renewer.stop()
-                raise
-            except Exception as exc:
-                error = f"{exc.code}: {exc.message}" if isinstance(exc, DomainError) else str(exc)
-                renewer.stop()
-                if not renewer.lost.is_set():
-                    await self._fail_task(lease, task, error, exc)
-            else:
-                renewer.stop()
+                    execution.result()
+                except Exception as exc:
+                    if not renewer.lost.is_set():
+                        error = (
+                            f"{exc.code}: {exc.message}"
+                            if isinstance(exc, DomainError)
+                            else str(exc)
+                        )
+                        failure = asyncio.create_task(self._fail_task(lease, task, error, exc))
+                        cancelled |= await _await_settled(failure)
+                        failure.result()
+            finally:
+                stopping = asyncio.create_task(asyncio.to_thread(renewer.stop))
+                cancelled |= await _await_settled(stopping)
+                stopping.result()
+            if cancelled:
+                raise asyncio.CancelledError
             return True
 
     def _task_execution_resources(
@@ -404,11 +424,16 @@ class TaskWorker:
 
         async with slots:
             context = contextvars.copy_context()
-            return await asyncio.get_running_loop().run_in_executor(
+            completion = asyncio.get_running_loop().run_in_executor(
                 executor,
                 context.run,
                 execute,
             )
+            # Event-loop shutdown may cancel this task directly, bypassing
+            # run_once's shield. Retain the slot until the sync transaction and
+            # its commit/rollback callbacks have actually finished.
+            await _await_settled(completion)
+            return completion.result()
 
     async def _fail_task(
         self,
@@ -698,12 +723,19 @@ class TaskWorker:
         try:
             await self._stopping.wait()
         finally:
+            self.stop()
             # Let claimed work settle and stop its lease heartbeat before the
             # process disposes the bounded executor. The loops see _stopping
             # after the current task and do not claim another one.
-            await asyncio.gather(*workers, return_exceptions=True)
+            workers_done = asyncio.gather(*workers, return_exceptions=True)
+            cancelled = await _await_settled(workers_done)
+            workers_done.result()
             maintenance.cancel()
-            await asyncio.gather(maintenance, return_exceptions=True)
+            maintenance_done = asyncio.gather(maintenance, return_exceptions=True)
+            cancelled |= await _await_settled(maintenance_done)
+            maintenance_done.result()
+            if cancelled:
+                raise asyncio.CancelledError
 
 
 async def run_worker(settings: Settings) -> None:
@@ -715,7 +747,11 @@ async def run_worker(settings: Settings) -> None:
     try:
         await worker.run_until_stopped()
     finally:
-        await container.close()
+        closing = asyncio.create_task(container.close())
+        cancelled = await _await_settled(closing)
+        closing.result()
+        if cancelled:
+            raise asyncio.CancelledError
 
 
 def main() -> None:

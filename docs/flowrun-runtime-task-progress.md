@@ -7766,8 +7766,12 @@ OpenHands adapter 现为 context、activity 和 pending-confirmation 增加每 R
 
 验收：`tests/test_http.py -k 'not slow_request'` 为 `34 passed, 1 deselected`。新增／扩展覆盖 API 和 Worker 在 1、2、3、4、5、6、8、16 槽下预算守恒和 fallback 共享；两类真实路由进入线程后阻塞换模时，普通读取／确认准入、首屏、消息、工作区、历史和控制均可执行，request context 不丢失；排队取消不执行、执行中取消不提前释放、失败 rollback 和后续准入恢复；普通 read 全满仍能执行 lifecycle。将该反向阻塞测试改回共享 mutation helper，按预期复现 `RUNTIME_MUTATION_SATURATED`。所有受影响 Python py_compile、除 node router 外的精确 Ruff check/format、唯一 Alembic head `0137_conversation_message_order`、git diff --check 和状态唯一性通过。Node router 的 12 条既有 Ruff E501 诊断已逐条与 HEAD 对照，数量、错误码与说明不变；未将该文件完整 lint 记为通过，未混入附件路由格式化。未运行真实数据库／迁移、Runtime／线上负载或部署；没有 Web 变更。下一可执行切片为 FR-555C2。
 
-### FR-555C2 Worker 取消、租约与退出收尾验证 — READY
+### FR-555C2 Worker 取消、租约与退出收尾验证 — DONE
 
 依赖：FR-555C1。
 
 范围：Worker 已有辅助 executor／SQL pool 和 claim lane；进一步验证重复取消、线程实际 completion、租约持续续期与失败收口，复核容器退出时 HTTP transport、executor 和 SQL pool 的释放顺序。不得因 coroutine 取消而允许后台线程与下一次执行重复持有任务。以真实入口故障注入决定是否需要修复；不扩大队列或数据库预算。
+
+完成：通过 `TaskWorker.run_once` 和真实线程 executor 的故障注入，复现首次取消后再次取消可中断等待、使租约续期器在同步事务结束前失去收尾控制；直接取消执行 coroutine 也可能让仍在运行的线程提前释放 lane。现在对执行、失败记录、续期器停止及 Worker lane 排空使用可承受重复取消的 shield 等待，直到实际 completion 才释放槽位并停止租约；取消语义在资源收尾后继续向调用方传播。失败时在租约仍有效的条件下完成正式失败记录，租约已丢失时不使用旧 generation 写失败。`run_until_stopped` 排空 lane 后再退出，`run_worker` 等待容器关闭完成。容器先等待所有 executor 中的在途工作，再关闭 HTTP transport，最后释放 SQL pool，避免线程持有已关闭的 Runtime 连接。
+
+验收：不依赖数据库的 Worker／容器定向故障注入 `7 passed`，覆盖重复及直接取消、失败记录期间再次取消、续期继续与租约丢失、lane 排空和 transport／SQL 释放顺序；修复前重复取消与 transport 顺序两项按预期失败。受影响 Ruff format/check、`py_compile`、唯一 Alembic head `0137_conversation_message_order`、`git diff --check` 通过。定向 Pyright 仅剩 `container.py` 未修改的 `MockRuntime` 与 `RuntimePort` 协议不匹配诊断，未将其记为通过。本切片未运行真实数据库、迁移、Runtime 镜像、线上多用户负载或远端部署；不改队列／数据库容量。当前无已定义的下一切片。
