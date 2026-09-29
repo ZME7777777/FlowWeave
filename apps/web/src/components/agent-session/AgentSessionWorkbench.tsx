@@ -4599,6 +4599,34 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const pinnedStorageKey = workspace ? pinnedConversationStorageKey(host.id, workspace.id) : undefined;
   const runtimeQuery = useQuery({ queryKey: sessionQueryKey(host, 'runtime', workspace?.id), queryFn: () => api.runtime(workspace!.id), enabled: Boolean(workspace), refetchInterval: query => query.state.data?.state === 'RECOVERING' ? 5000 : false });
   const workDirectoriesQuery = useQuery({ queryKey: sessionQueryKey(host, 'work-directories', workspace?.id), queryFn: () => api.workDirectories(workspace!.id), enabled: Boolean(workspace && features.workDirectories) });
+  const workDirectoryOrderStorageKey = workspace ? `flowweave:work-directory-order:${host.id}:${workspace.id}` : undefined;
+  useEffect(() => {
+    if (!workDirectoryOrderStorageKey) {
+      setWorkDirectoryOrder([]);
+      return;
+    }
+    try {
+      const parsed = JSON.parse(localStorage.getItem(workDirectoryOrderStorageKey) ?? '[]');
+      setWorkDirectoryOrder(Array.isArray(parsed) && parsed.every(value => typeof value === 'string') ? parsed : []);
+    } catch {
+      setWorkDirectoryOrder([]);
+    }
+  }, [workDirectoryOrderStorageKey]);
+  const workDirectories = useMemo(() => {
+    const items = workDirectoriesQuery.data?.items ?? [];
+    const byId = new Map(items.map(item => [item.id, item]));
+    const ordered = workDirectoryOrder.flatMap(id => {
+      const item = byId.get(id);
+      return item ? [item] : [];
+    });
+    const known = new Set(ordered.map(item => item.id));
+    return [...ordered, ...items.filter(item => !known.has(item.id))];
+  }, [workDirectoriesQuery.data?.items, workDirectoryOrder]);
+  const persistWorkDirectoryOrder = useCallback((orderedIds: string[]) => {
+    setWorkDirectoryOrder(orderedIds);
+    if (!workDirectoryOrderStorageKey) return;
+    try { localStorage.setItem(workDirectoryOrderStorageKey, JSON.stringify(orderedIds)); } catch { /* browser preference only */ }
+  }, [workDirectoryOrderStorageKey]);
   const conversationScopes = useMemo(() => [
     { key: '__root__', workDirectoryId: undefined as string | undefined },
     ...(features.workDirectories ? (workDirectoriesQuery.data?.items ?? []).map(directory => ({ key: directory.id, workDirectoryId: directory.id })) : []),
@@ -7490,34 +7518,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     else if (composerControl.action === 'interrupt') interrupt.mutate();
     else if (composerControl.action === 'resume') resume.mutate();
   };
-  const workDirectoryOrderStorageKey = workspace ? `flowweave:work-directory-order:${host.id}:${workspace.id}` : undefined;
-  useEffect(() => {
-    if (!workDirectoryOrderStorageKey) {
-      setWorkDirectoryOrder([]);
-      return;
-    }
-    try {
-      const parsed = JSON.parse(localStorage.getItem(workDirectoryOrderStorageKey) ?? '[]');
-      setWorkDirectoryOrder(Array.isArray(parsed) && parsed.every(value => typeof value === 'string') ? parsed : []);
-    } catch {
-      setWorkDirectoryOrder([]);
-    }
-  }, [workDirectoryOrderStorageKey]);
-  const workDirectories = useMemo(() => {
-    const items = workDirectoriesQuery.data?.items ?? [];
-    const byId = new Map(items.map(item => [item.id, item]));
-    const ordered = workDirectoryOrder.flatMap(id => {
-      const item = byId.get(id);
-      return item ? [item] : [];
-    });
-    const known = new Set(ordered.map(item => item.id));
-    return [...ordered, ...items.filter(item => !known.has(item.id))];
-  }, [workDirectoriesQuery.data?.items, workDirectoryOrder]);
-  const persistWorkDirectoryOrder = useCallback((orderedIds: string[]) => {
-    setWorkDirectoryOrder(orderedIds);
-    if (!workDirectoryOrderStorageKey) return;
-    try { localStorage.setItem(workDirectoryOrderStorageKey, JSON.stringify(orderedIds)); } catch { /* browser preference only */ }
-  }, [workDirectoryOrderStorageKey]);
   // A conversation can predate the explicit work-directory binding while
   // still carrying its authoritative working_directory.  Prefer it over the
   // shared project root so paths in its transcript stay relative to the
