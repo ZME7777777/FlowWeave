@@ -93,6 +93,66 @@ test('Agent session hydrates the first screen without parallel Runtime snapshot 
   expect(fallbackReads).toBe(0);
 });
 
+test('Agent session keeps its conversation URL while refreshing a deep link', async ({ page }) => {
+  let authenticated = false;
+  let releaseConversation: (() => void) | undefined;
+  const conversationRead = new Promise<void>(resolve => { releaseConversation = resolve; });
+  const workspace = { id: 'deep-link-workspace', display_name: '深链工作区', desired_state: 'RUNNING', updated_at: now };
+  const listedConversation = {
+    id: 'another-conversation', display_title: '列表中的其他会话', title_state: 'MANUAL', lifecycle: 'ACTIVE',
+    streaming_callback_ready: true, write_available: true, execution_status: 'idle', created_at: now, updated_at: now,
+  };
+  const restoredConversation = {
+    id: 'refresh-target-conversation', display_title: '刷新后恢复的会话', title_state: 'MANUAL', lifecycle: 'ACTIVE',
+    streaming_callback_ready: true, write_available: true, execution_status: 'idle', created_at: now, updated_at: now,
+  };
+
+  await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path.endsWith('/auth/me')) return authenticated
+      ? json(route, user)
+      : json(route, { error: { code: 'AUTHENTICATION_REQUIRED', message: '请先登录' } }, 401);
+    if (path.endsWith('/auth/login') && request.method() === 'POST') { authenticated = true; return json(route, user); }
+    if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
+    if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
+    if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: [listedConversation], next_cursor: null });
+    if (path.endsWith('/conversations/refresh-target-conversation') && request.method() === 'GET') {
+      await conversationRead;
+      return json(route, restoredConversation);
+    }
+    if (path.endsWith('/hydration')) return json(route, {
+      events: {
+        events: [{ id: 'restored-agent-reply', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: '__root__', content: '已恢复刷新前的会话。', timestamp: now } }],
+        next_cursor: 'restored-agent-reply', history_cursor: null, result: { status: 'COMPLETED' },
+      },
+      context: { model_name: 'test-model', window_tokens: 128_000, used_tokens: 256, usage_current: true },
+      readiness: { ready: true, execution_status: 'idle' },
+    });
+    if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
+    if (path.endsWith('/work-directories')) return json(route, {
+      root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [],
+    });
+    if (path.endsWith('/workspace')) return json(route, {
+      root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' },
+      working_directory: '/runtime/workspace/project', work_directory: null, files: [], repositories: [],
+      runtime: {}, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '不可用', note: '' } },
+    });
+    if (path.endsWith('/model-providers') || path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
+    return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+  });
+
+  await page.goto('/');
+  await login(page);
+  await page.goto('/agent/conversations/refresh-target-conversation');
+  await expect(page.getByRole('button', { name: '列表中的其他会话', exact: true })).toBeVisible();
+  await expect(page).toHaveURL(/\/agent\/conversations\/refresh-target-conversation$/);
+  releaseConversation?.();
+  await expect(page.getByText('已恢复刷新前的会话。')).toBeVisible();
+  await expect(page).toHaveURL(/\/agent\/conversations\/refresh-target-conversation$/);
+});
+
 
 test('Accepted message reconciles its formal event without a second submission or reload', async ({ page }) => {
   let authenticated = false;
@@ -1108,9 +1168,14 @@ test('Sidebar chat tabs stay isolated to their source conversation', async ({ pa
   await page.goto('/');
   await login(page);
   await page.goto('/agent/conversations/sidebar-chat-scope-a');
-  await page.getByRole('button', { name: '打开侧边聊天', exact: true }).click();
+  await page.locator('.agent-workspace-summary').getByRole('button', { name: '侧边聊天', exact: true }).click();
   await expect(page.getByRole('region', { name: '侧边聊天' })).toBeVisible();
   await expect(page.getByText('向主会话追问', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '打开侧边聊天', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '删除会话', exact: true })).toHaveCount(0);
+  await page.getByLabel('关闭工作区工具').click();
+  await expect(page.getByRole('region', { name: '侧边聊天' })).toHaveCount(0);
+  await expect(page.getByText('环境信息', { exact: true })).toBeVisible();
 
   await page.getByRole('button', { name: '侧边聊天会话 B', exact: true }).click();
   await expect(page).toHaveURL(/\/agent\/conversations\/sidebar-chat-scope-b$/);
@@ -1118,8 +1183,7 @@ test('Sidebar chat tabs stay isolated to their source conversation', async ({ pa
 
   await page.getByRole('button', { name: '侧边聊天会话 A', exact: true }).click();
   await expect(page).toHaveURL(/\/agent\/conversations\/sidebar-chat-scope-a$/);
-  await expect(page.getByRole('region', { name: '侧边聊天' })).toBeVisible();
-  await expect(page.getByText('向主会话追问', { exact: true })).toBeVisible();
+  await expect(page.getByRole('region', { name: '侧边聊天' })).toHaveCount(0);
 });
 
 
@@ -1170,7 +1234,7 @@ test('Sidebar chat accepts selected and pasted attachments before its first mess
   await page.goto('/');
   await login(page);
   await page.goto(`/agent/conversations/${source.id}`);
-  await page.getByRole('button', { name: '打开侧边聊天', exact: true }).click();
+  await page.locator('.agent-workspace-summary').getByRole('button', { name: '侧边聊天', exact: true }).click();
   const sidebarPane = page.getByRole('region', { name: '侧边聊天' });
   await expect(sidebarPane.getByLabel('添加附件')).toBeEnabled();
   await sidebarPane.getByLabel('上传侧边聊天附件').setInputFiles({ name: 'selected.txt', mimeType: 'text/plain', buffer: Buffer.from('file') });

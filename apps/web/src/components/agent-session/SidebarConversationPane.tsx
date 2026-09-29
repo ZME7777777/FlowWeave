@@ -1,6 +1,6 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { CircleAlert, Clock3, FileText, LoaderCircle, MessageSquarePlus, Play, Plus, Quote, Send, Square } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { api, ApiError, randomId, subscribeToAgentWorkspaceStream } from '../../api/client';
 import { ConversationSurface } from '../ConversationSurface';
 import type { AgentAttachment, AgentConversationReference, ModelProvider, OpenHandsConversationEvent } from '../../types';
@@ -44,6 +44,7 @@ function transferredFiles(transfer: DataTransfer): File[] {
 export function SidebarConversationPane({ workspaceId, sourceBindingId, initialReference, sidebarBindingId, onBindingCreated, onPreviewAttachment }: SidebarConversationPaneProps) {
   const queryClient = useQueryClient();
   const attachmentInput = useRef<HTMLInputElement>(null);
+  const composerInput = useRef<HTMLTextAreaElement>(null);
   const removedPendingAttachmentIds = useRef(new Set<string>());
   const [bindingId, setBindingId] = useState<string | undefined>(sidebarBindingId);
   const bindingIdRef = useRef(bindingId);
@@ -218,6 +219,14 @@ export function SidebarConversationPane({ workspaceId, sourceBindingId, initialR
   const availableModels = provider?.models.filter(item => item.enabled) ?? [];
   const efforts = availableModels.find(item => item.model_name === currentModel?.modelName)?.supported_reasoning_efforts ?? [];
   const composerDisabled = expired || sending || !currentModel || running;
+  useLayoutEffect(() => {
+    const input = composerInput.current;
+    if (!input) return;
+    input.style.height = '0px';
+    const height = Math.min(Math.max(input.scrollHeight, 42), 240);
+    input.style.height = `${height}px`;
+    input.style.overflowY = input.scrollHeight > 240 ? 'auto' : 'hidden';
+  }, [content]);
   return <section className="agent-sidebar-conversation" aria-label="侧边聊天">
     <div className="agent-sidebar-chat-content">
       {hydrationQuery.isLoading && bindingId ? <div className="conversation-surface-empty"><LoaderCircle className="conversation-activity-spin" size={16}/><b>正在加载会话</b></div>
@@ -227,10 +236,12 @@ export function SidebarConversationPane({ workspaceId, sourceBindingId, initialR
       {error && <section className="agent-workbench-error" role="alert"><CircleAlert size={17}/><div><b>操作未完成</b><span>{error}</span></div></section>}
     </div>
     <div className="agent-sidebar-chat-composer">
-      <div className="agent-composer">
-        {reference && <div className="agent-attachments agent-conversation-references" aria-label="已添加的会话引用"><span><span className="agent-attachment-open" title={reference.content}><Quote size={14}/><em>会话引用</em></span><button type="button" className="agent-attachment-remove" onClick={() => setReference(undefined)} aria-label="移除引用">×</button></span></div>}
-        {(attachments.length > 0 || pendingAttachments.length > 0) && <div className="agent-attachments" aria-label="已添加的附件">{attachments.map(item => <span key={item.path}><button type="button" className="agent-attachment-open" title={`预览附件：${item.filename}`} onClick={() => onPreviewAttachment(item, bindingId)}>{item.image_data_url && <img src={item.image_data_url} alt=""/>}<em>{item.filename}</em></button><button type="button" className="agent-attachment-remove" aria-label={`移除附件 ${item.filename}`} onClick={() => setAttachments(current => current.filter(candidate => candidate.path !== item.path))}>×</button></span>)}{pendingAttachments.map(item => <span key={item.id} className={`agent-pending-attachment ${item.state}`} title={item.state === 'failed' ? '附件上传失败，请重试或删除。' : `正在上传 ${item.progress}%`}><span className="agent-attachment-open">{item.previewUrl ? <img src={item.previewUrl} alt=""/> : <FileText size={14}/>}<em>{item.file.name}</em>{item.state === 'uploading' && <small>{item.progress}%</small>}{item.state === 'failed' && <span className="agent-attachment-retry-overlay"><button type="button" onClick={() => retryPendingAttachment(item.id)}>重试</button></span>}</span>{item.state === 'uploading' && <i className="agent-attachment-progress" style={{ '--upload-progress': `${item.progress}%` } as CSSProperties}/>}<button type="button" className="agent-attachment-remove" aria-label={`移除附件 ${item.file.name}`} onClick={() => removePendingAttachment(item.id)}>×</button></span>)}</div>}
-        <textarea aria-label="发送侧边聊天消息" value={content} disabled={composerDisabled} placeholder={expired ? '侧边聊天会话已过期' : running ? '当前回复完成后可继续发送' : '向侧边聊天提问…'} onChange={event => setContent(event.target.value)} onPaste={event => {
+      <div className="agent-composer agent-sidebar-composer">
+        <div className="agent-composer-attachments">
+          {reference && <div className="agent-attachments agent-conversation-references" aria-label="已添加的会话引用"><span><span className="agent-attachment-open" title={reference.content}><Quote size={14}/><em>会话引用</em></span><button type="button" className="agent-attachment-remove" onClick={() => setReference(undefined)} aria-label="移除引用">×</button></span></div>}
+          {(attachments.length > 0 || pendingAttachments.length > 0) && <div className="agent-attachments" aria-label="已添加的附件">{attachments.map(item => <span key={item.path}><button type="button" className="agent-attachment-open" title={`预览附件：${item.filename}`} onClick={() => onPreviewAttachment(item, bindingId)}>{item.image_data_url && <img src={item.image_data_url} alt=""/>}<em>{item.filename}</em></button><button type="button" className="agent-attachment-remove" aria-label={`移除附件 ${item.filename}`} onClick={() => setAttachments(current => current.filter(candidate => candidate.path !== item.path))}>×</button></span>)}{pendingAttachments.map(item => <span key={item.id} className={`agent-pending-attachment ${item.state}`} title={item.state === 'failed' ? '附件上传失败，请重试或删除。' : `正在上传 ${item.progress}%`}><span className="agent-attachment-open">{item.previewUrl ? <img src={item.previewUrl} alt=""/> : <FileText size={14}/>}<em>{item.file.name}</em>{item.state === 'uploading' && <small>{item.progress}%</small>}{item.state === 'failed' && <span className="agent-attachment-retry-overlay"><button type="button" onClick={() => retryPendingAttachment(item.id)}>重试</button></span>}</span>{item.state === 'uploading' && <i className="agent-attachment-progress" style={{ '--upload-progress': `${item.progress}%` } as CSSProperties}/>}<button type="button" className="agent-attachment-remove" aria-label={`移除附件 ${item.file.name}`} onClick={() => removePendingAttachment(item.id)}>×</button></span>)}</div>}
+        </div>
+        <textarea ref={composerInput} aria-label="发送侧边聊天消息" value={content} disabled={composerDisabled} placeholder={expired ? '侧边聊天会话已过期' : running ? '当前回复完成后可继续发送' : '向侧边聊天提问…'} onChange={event => setContent(event.target.value)} onPaste={event => {
           const files = transferredFiles(event.clipboardData);
           if (!files.length) return;
           event.preventDefault();
