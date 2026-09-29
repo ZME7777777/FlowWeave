@@ -1585,6 +1585,14 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     ruler.style.removeProperty('height');
   });
   const firstMessageTick = messageRuler.getByRole('button', { name: '定位到用户消息：检查工作目录' });
+  const messageRulerBox = await messageRuler.boundingBox();
+  expect(messageRulerBox).not.toBeNull();
+  await page.mouse.click(messageRulerBox!.x + messageRulerBox!.width / 2, messageRulerBox!.y + 2);
+  await expect.poll(() => page.locator('[data-user-event-id="user-request"]').evaluate(message => {
+    const surface = message.closest('.conversation-surface');
+    if (!surface) throw new Error('Expected conversation surface');
+    return message.getBoundingClientRect().top - surface.getBoundingClientRect().top;
+  })).toBeLessThan(80);
   await firstMessageTick.hover();
   await expect(page.locator('#conversation-message-preview')).toContainText('检查工作目录');
   await expect(firstMessageTick.locator('.conversation-message-index-tick')).toHaveCSS('width', '15px');
