@@ -954,9 +954,10 @@ def node_session_activity(
         if activity_timestamp_is_stale(native_activity[item.openhands_conversation_id].updated_at)
     ]
     running_binding_ids = {item.id for item in running_bindings}
-    attention_binding_ids = set(possibly_stuck_binding_ids) | {
-        item.id for item in bindings if item.openhands_conversation_id in failed_native_ids
-    }
+    attention_binding_ids = (
+        set(possibly_stuck_binding_ids)
+        | {item.id for item in bindings if item.openhands_conversation_id in failed_native_ids}
+    ) - ({active_binding_id} if active_binding_id else set())
     for item in bindings:
         activity = native_activity.get(item.openhands_conversation_id)
         is_running = item.id in running_binding_ids
@@ -2556,7 +2557,10 @@ def _event_batch_dict(
             for usage in batch.task_usage
         ],
         "task_control": task_control_projection(db, binding.id),
-        "monitoring": build_activity_summary(batch.events),
+        "monitoring": build_activity_summary(
+            batch.events,
+            conversation_completed=bool(batch.result and batch.result.status == "COMPLETED"),
+        ),
     }
 
 

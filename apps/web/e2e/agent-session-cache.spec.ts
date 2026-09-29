@@ -2538,7 +2538,7 @@ test('Sending a new message clears an unread marker before the conversation rend
   await expect(row.locator('.agent-workspace-conversation-unread')).toHaveCount(0);
 });
 
-test('Conversation context menu keeps a normal-list unread marker until explicitly marked read', async ({ page }) => {
+test('Opening a normal-list unread conversation marks it read while activity preview remains read-only', async ({ page }) => {
   let authenticated = false;
   const workspace = { id: 'unread-workspace', display_name: '未读工作区', desired_state: 'RUNNING', updated_at: now };
   const conversations = ['unread-conversation-a', 'unread-conversation-b'].map((id, index) => ({
@@ -2599,15 +2599,13 @@ test('Conversation context menu keeps a normal-list unread marker until explicit
   await conversationB.click();
   await expect(page).toHaveURL(/\/agent\/conversations\/unread-conversation-b$/);
   await expect(unreadMarker).toBeVisible();
-  await page.reload();
-  await expect(unreadMarker).toBeVisible();
 
   await conversationA.click();
   await expect(page).toHaveURL(/\/agent\/conversations\/unread-conversation-a$/);
-  await page.mouse.move(1000, 200);
-  await expect(unreadMarker).toBeVisible();
+  await expect(unreadMarker).toHaveCount(0);
   await expect.poll(() => unreadWrites).toEqual([
     { id: 'unread-conversation-a', unread: true },
+    { id: 'unread-conversation-a', unread: false },
   ]);
 
   await conversationA.click({ button: 'right' });
@@ -2623,6 +2621,7 @@ test('Conversation context menu keeps a normal-list unread marker until explicit
   await expect(activityConversationA.locator('xpath=..').getByRole('img', { name: '会话已完成，有未读回复' })).toBeVisible();
   await expect.poll(() => unreadWrites).toEqual([
     { id: 'unread-conversation-a', unread: true },
+    { id: 'unread-conversation-a', unread: false },
     { id: 'unread-conversation-a', unread: true },
   ]);
 
@@ -2631,6 +2630,7 @@ test('Conversation context menu keeps a normal-list unread marker until explicit
   await expect(activityConversationA).toHaveCount(0);
   await expect.poll(() => unreadWrites).toEqual([
     { id: 'unread-conversation-a', unread: true },
+    { id: 'unread-conversation-a', unread: false },
     { id: 'unread-conversation-a', unread: true },
     { id: 'unread-conversation-a', unread: false },
   ]);
@@ -2647,6 +2647,7 @@ test('Conversation context menu keeps a normal-list unread marker until explicit
   await expect(unreadMarker).toHaveCount(0);
   await expect.poll(() => unreadWrites).toEqual([
     { id: 'unread-conversation-a', unread: true },
+    { id: 'unread-conversation-a', unread: false },
     { id: 'unread-conversation-a', unread: true },
     { id: 'unread-conversation-a', unread: false },
     { id: 'unread-conversation-a', unread: true },
@@ -2654,10 +2655,11 @@ test('Conversation context menu keeps a normal-list unread marker until explicit
   ]);
 });
 
-test('Opening a conversation keeps its unread marker when an older list request finishes later', async ({ page }) => {
+test('Opening an unread conversation keeps it read when an older list request finishes later', async ({ page }) => {
   let authenticated = false;
   let listReads = 0;
   let staleListDelivered = false;
+  const unreadWrites: Array<{ id: string; unread: boolean }> = [];
   const workspace = { id: 'stale-unread-workspace', display_name: '未读竞态工作区', desired_state: 'RUNNING', updated_at: now };
   const conversations = ['stale-unread-conversation-a', 'stale-unread-conversation-b'].map((id, index) => ({
     id, display_title: index === 0 ? '竞态会话 A' : '竞态会话 B', title_state: index === 0 ? 'PENDING' : 'MANUAL', lifecycle: 'ACTIVE',
@@ -2684,8 +2686,9 @@ test('Opening a conversation keeps its unread marker when an older list request 
     if (path.endsWith('/unread') && request.method() === 'PUT') {
       const id = path.split('/').at(-2)!;
       const conversation = conversations.find(item => item.id === id)!;
-      conversation.unread = (request.postDataJSON() as { unread: boolean }).unread;
-      await new Promise(resolve => setTimeout(resolve, 2_500));
+      const { unread } = request.postDataJSON() as { unread: boolean };
+      conversation.unread = unread;
+      unreadWrites.push({ id, unread });
       return json(route, conversation);
     }
     if (path.endsWith('/events')) return json(route, { events: [], next_cursor: null, history_cursor: null, result: { status: 'COMPLETED' } });
@@ -2715,11 +2718,14 @@ test('Opening a conversation keeps its unread marker when an older list request 
   await expect.poll(() => listReads).toBeGreaterThanOrEqual(2);
 
   await conversationA.click();
-  await page.mouse.move(1000, 200);
-  await expect(unreadMarker).toBeVisible();
+  await expect(page).toHaveURL(/\/agent\/conversations\/stale-unread-conversation-a$/);
+  await expect(unreadMarker).toHaveCount(0);
+  await expect.poll(() => unreadWrites).toEqual([
+    { id: 'stale-unread-conversation-a', unread: false },
+  ]);
   await conversationB.click();
   await expect.poll(() => staleListDelivered).toBe(true);
-  await expect(unreadMarker).toBeVisible();
+  await expect(unreadMarker).toHaveCount(0);
 });
 
 test('Conversation sidebar pins locally, orders activity, and reveals the selected source row', async ({ page }) => {
