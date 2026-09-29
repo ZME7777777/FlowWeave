@@ -69,8 +69,7 @@ def _native_progress_coverage(events: tuple[Any, ...] | list[Any]) -> dict[str, 
             payload["thought"].strip()
         )
         has_linked_think = (
-            isinstance(response_id, str)
-            and response_id in progress_response_ids
+            isinstance(response_id, str) and response_id in progress_response_ids
         ) or str(payload.get("parent_id") or "") in progress_event_ids
         batches[batch_id] = batches.get(batch_id, False) or has_action_progress or has_linked_think
 
@@ -81,6 +80,21 @@ def _native_progress_coverage(events: tuple[Any, ...] | list[Any]) -> dict[str, 
         "native_progress_covered_tool_batches": covered,
         "native_progress_uncovered_tool_batches": total - covered,
     }
+
+
+def activity_timestamp_is_stale(
+    timestamp: str,
+    *,
+    now: datetime | None = None,
+    stale_after_seconds: int = 60,
+) -> bool:
+    """Evaluate the native catalog's formal-event activity timestamp."""
+
+    parsed = _timestamp(timestamp)
+    if parsed is None:
+        return False
+    observed_at = (now or datetime.now(UTC)).astimezone(UTC)
+    return (observed_at - parsed).total_seconds() >= stale_after_seconds
 
 
 def build_activity_summary(
@@ -169,4 +183,4 @@ def build_activity_summary(
     }
 
 
-__all__ = ("build_activity_summary",)
+__all__ = ("activity_timestamp_is_stale", "build_activity_summary")

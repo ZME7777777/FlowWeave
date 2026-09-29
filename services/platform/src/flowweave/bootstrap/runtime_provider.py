@@ -11,8 +11,9 @@ import subprocess
 import threading
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
-from concurrent.futures import ThreadPoolExecutor, wait
+from concurrent.futures import Future, ThreadPoolExecutor, wait
 from contextlib import asynccontextmanager
+from contextvars import copy_context
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import PurePosixPath
@@ -66,11 +67,21 @@ _RELAY_MAX_HUBS = 128
 _RELAY_MAX_SUBSCRIBERS_PER_HUB = 8
 _RELAY_SUBSCRIBER_QUEUE_SIZE = 32
 _TERMINAL_SESSION_NAME = re.compile(r"[^a-z0-9_.-]+")
-_ADMIN_OBSERVABILITY_USAGE_WORKERS = 16
+_ADMIN_OBSERVABILITY_AGENT_WORKSPACE_USAGE_WORKERS = 4
+_ADMIN_OBSERVABILITY_FLOW_RUN_USAGE_WORKERS = 4
+_ADMIN_OBSERVABILITY_SERVICE_USAGE_WORKERS = 8
 _ADMIN_OBSERVABILITY_USAGE_BUDGET_SECONDS = 3.0
-_ADMIN_OBSERVABILITY_USAGE_EXECUTOR = ThreadPoolExecutor(
-    max_workers=_ADMIN_OBSERVABILITY_USAGE_WORKERS,
-    thread_name_prefix="flowweave-admin-usage",
+_ADMIN_OBSERVABILITY_AGENT_WORKSPACE_USAGE_EXECUTOR = ThreadPoolExecutor(
+    max_workers=_ADMIN_OBSERVABILITY_AGENT_WORKSPACE_USAGE_WORKERS,
+    thread_name_prefix="flowweave-admin-agent-workspace-usage",
+)
+_ADMIN_OBSERVABILITY_FLOW_RUN_USAGE_EXECUTOR = ThreadPoolExecutor(
+    max_workers=_ADMIN_OBSERVABILITY_FLOW_RUN_USAGE_WORKERS,
+    thread_name_prefix="flowweave-admin-flow-run-usage",
+)
+_ADMIN_OBSERVABILITY_SERVICE_USAGE_EXECUTOR = ThreadPoolExecutor(
+    max_workers=_ADMIN_OBSERVABILITY_SERVICE_USAGE_WORKERS,
+    thread_name_prefix="flowweave-admin-service-usage",
 )
 
 logger = logging.getLogger(__name__)
@@ -1448,6 +1459,9 @@ def _admin_managed_resource_usage(
 
 def _populate_admin_usage(
     samples: list[tuple[dict[str, Any], Callable[[], dict[str, Any] | None]]],
+    *,
+    executor: ThreadPoolExecutor,
+    budget_seconds: float = _ADMIN_OBSERVABILITY_USAGE_BUDGET_SECONDS,
 ) -> None:
     """Collect best-effort Docker usage without delaying the control-plane snapshot.
 
@@ -1459,17 +1473,17 @@ def _populate_admin_usage(
 
     if not samples:
         return
-    futures = {}
+    futures: dict[Future[dict[str, Any] | None], dict[str, Any]] = {}
     for row, reader in samples:
         try:
-            futures[_ADMIN_OBSERVABILITY_USAGE_EXECUTOR.submit(reader)] = row
+            futures[executor.submit(reader)] = row
         except RuntimeError:
             # Exhausted process resources must degrade only the individual sample,
             # never turn an observability read into a 500 response.
             row["usage"] = None
     if not futures:
         return
-    completed, pending = wait(futures, timeout=_ADMIN_OBSERVABILITY_USAGE_BUDGET_SECONDS)
+    completed, pending = wait(futures, timeout=budget_seconds)
     for future in completed:
         row = futures[future]
         try:
@@ -1485,10 +1499,43 @@ def _populate_admin_usage(
     # the Admin API deadline.
 
 
+def _populate_admin_usage_groups(
+    groups: list[
+        tuple[
+            list[tuple[dict[str, Any], Callable[[], dict[str, Any] | None]]],
+            ThreadPoolExecutor,
+        ]
+    ],
+    *,
+    budget_seconds: float = _ADMIN_OBSERVABILITY_USAGE_BUDGET_SECONDS,
+) -> None:
+    """Collect lower-priority sample classes in a shared bounded window."""
+
+    futures: dict[Future[dict[str, Any] | None], dict[str, Any]] = {}
+    for samples, executor in groups:
+        for row, reader in samples:
+            try:
+                futures[executor.submit(reader)] = row
+            except RuntimeError:
+                row["usage"] = None
+    if not futures:
+        return
+    completed, pending = wait(futures, timeout=budget_seconds)
+    for future in completed:
+        row = futures[future]
+        try:
+            row["usage"] = future.result()
+        except Exception:  # observability must not hide the Compose inventory
+            row["usage"] = None
+    for future in pending:
+        futures[future]["usage"] = None
+        future.cancel()
+
+
 def _admin_observability_snapshot(configured: Settings) -> dict[str, Any]:
     provider = DockerSandboxProvider(configured)
     service_rows: list[dict[str, Any]] = []
-    usage_samples: list[tuple[dict[str, Any], Callable[[], dict[str, Any] | None]]] = []
+    service_usage_samples: list[tuple[dict[str, Any], Callable[[], dict[str, Any] | None]]] = []
     try:
         raw_services = provider._run(  # pyright: ignore[reportPrivateUsage]
             [
@@ -1509,6 +1556,7 @@ def _admin_observability_snapshot(configured: Settings) -> dict[str, Any]:
                 continue
             if not isinstance(item, dict):
                 continue
+            item = cast(dict[str, object], item)
             container_id = str(item.get("ID") or "")
             if not container_id:
                 continue
@@ -1522,7 +1570,7 @@ def _admin_observability_snapshot(configured: Settings) -> dict[str, Any]:
             }
             service_rows.append(service)
             if str(item.get("State") or "").lower() == "running":
-                usage_samples.append(
+                service_usage_samples.append(
                     (
                         service,
                         lambda container_id=container_id: _admin_container_usage(
@@ -1534,6 +1582,10 @@ def _admin_observability_snapshot(configured: Settings) -> dict[str, Any]:
         service_rows = []
 
     managed_resources: list[dict[str, Any]] = []
+    agent_workspace_usage_samples: list[
+        tuple[dict[str, Any], Callable[[], dict[str, Any] | None]]
+    ] = []
+    flow_run_usage_samples: list[tuple[dict[str, Any], Callable[[], dict[str, Any] | None]]] = []
     try:
         for observation in provider.list_managed():
             resource = {
@@ -1548,18 +1600,53 @@ def _admin_observability_snapshot(configured: Settings) -> dict[str, Any]:
             }
             managed_resources.append(resource)
             if observation.labels.get("flowweave.kind") == "agent-runtime":
-                usage_samples.append(
-                    (
-                        resource,
-                        lambda resource_name=observation.resource_name,
-                        resource_id=observation.resource_id: _admin_managed_resource_usage(
-                            provider, resource_name, resource_id
-                        ),
-                    )
+                sample = (
+                    resource,
+                    lambda resource_name=observation.resource_name,
+                    resource_id=observation.resource_id: _admin_managed_resource_usage(
+                        provider, resource_name, resource_id
+                    ),
                 )
+                if observation.labels.get("flowweave.owner-type") == "AGENT_WORKSPACE":
+                    agent_workspace_usage_samples.append(sample)
+                else:
+                    flow_run_usage_samples.append(sample)
     except DomainError:
         managed_resources = []
-    _populate_admin_usage(usage_samples)
+    # Managed Agent Runtime containers can also appear in the Compose list.
+    # Sample them through their ownership-checked managed path only, rather
+    # than issuing a second stats+inspect pair for the same container.
+    managed_container_ids = {
+        str(item["container_id"])[:12]
+        for item in managed_resources
+        if isinstance(item.get("container_id"), str) and item["container_id"]
+    }
+    service_usage_samples = [
+        sample
+        for sample in service_usage_samples
+        if str(sample[0].get("container_id") or "")[:12] not in managed_container_ids
+    ]
+    # Docker may serialize concurrent stats reads internally.  Collect the
+    # independent Agent Workspace Runtime first so busy FlowRun and Compose
+    # samples cannot consume its only observation window; then spend only the
+    # remaining part of that same bounded window on lower-priority samples.
+    usage_started_at = time.monotonic()
+    _populate_admin_usage(
+        agent_workspace_usage_samples,
+        executor=_ADMIN_OBSERVABILITY_AGENT_WORKSPACE_USAGE_EXECUTOR,
+    )
+    remaining_budget_seconds = max(
+        0.0,
+        _ADMIN_OBSERVABILITY_USAGE_BUDGET_SECONDS - (time.monotonic() - usage_started_at),
+    )
+    if remaining_budget_seconds > 0:
+        _populate_admin_usage_groups(
+            [
+                (flow_run_usage_samples, _ADMIN_OBSERVABILITY_FLOW_RUN_USAGE_EXECUTOR),
+                (service_usage_samples, _ADMIN_OBSERVABILITY_SERVICE_USAGE_EXECUTOR),
+            ],
+            budget_seconds=remaining_budget_seconds,
+        )
     return {
         "available": True,
         "services": service_rows,
@@ -1620,18 +1707,51 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     relay_hubs = _RuntimeEventRelayHubs(configured)
     metrics = Metrics()
+    # Docker control, image/dependency builds and best-effort observation have
+    # materially different latency and failure modes. Never run them through
+    # asyncio's shared default executor.
+    control_executor = ThreadPoolExecutor(
+        max_workers=2, thread_name_prefix="flowweave-runtime-provider-control"
+    )
+    build_executor = ThreadPoolExecutor(
+        max_workers=1, thread_name_prefix="flowweave-runtime-provider-build"
+    )
+    observe_executor = ThreadPoolExecutor(
+        max_workers=2, thread_name_prefix="flowweave-runtime-provider-observe"
+    )
+
+    async def run_in_lane(
+        executor: ThreadPoolExecutor, call: Callable[..., Any], /, *args: Any, **kwargs: Any
+    ) -> Any:
+        # Controller routes bind Settings in a ContextVar. Executor threads do
+        # not inherit ContextVars, so snapshot the request context before
+        # submitting work; otherwise synchronous Docker helpers fail only when
+        # they call the compatibility get_settings() boundary in a lane.
+        context = copy_context()
+        return await asyncio.get_running_loop().run_in_executor(
+            executor, lambda: context.run(call, *args, **kwargs)
+        )
+
+    async def run_control(call: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Any:
+        return await run_in_lane(control_executor, call, *args, **kwargs)
+
+    async def run_build(call: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Any:
+        return await run_in_lane(build_executor, call, *args, **kwargs)
+
+    async def run_observe(call: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Any:
+        return await run_in_lane(observe_executor, call, *args, **kwargs)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         async def reaper() -> None:
             while True:
                 await asyncio.sleep(30)
-                await asyncio.to_thread(terminals.reap)
+                await run_control(terminals.reap)
 
         async def restore_runtime_client_networks() -> None:
             while True:
                 try:
-                    attached = await asyncio.to_thread(
+                    attached = await run_control(
                         DockerSandboxProvider(configured).reconcile_runtime_client_networks
                     )
                     if attached:
@@ -1652,6 +1772,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             await asyncio.gather(reaper_task, network_task, return_exceptions=True)
             await relay_hubs.close()
             await asyncio.to_thread(terminals.close_all)
+            await asyncio.to_thread(control_executor.shutdown, wait=True, cancel_futures=True)
+            await asyncio.to_thread(build_executor.shutdown, wait=True, cancel_futures=True)
+            await asyncio.to_thread(observe_executor.shutdown, wait=True, cancel_futures=True)
 
     app = FastAPI(title="FlowWeave Runtime Provider", version="1.0.0", lifespan=lifespan)
 
@@ -1804,7 +1927,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def admin_observability(request: Request) -> dict[str, Any]:
         if cast(str, request.state.controller_role) != "admin_observer":
             raise DomainError("CONTROLLER_FORBIDDEN", "Observer access is required", 403)
-        return await asyncio.to_thread(_admin_observability_snapshot, configured)
+        return await run_observe(_admin_observability_snapshot, configured)
 
     @app.post("/v1/sandboxes/ensure")
     async def ensure(request: Request, payload: SandboxResourceWrite) -> dict[str, Any]:
@@ -1829,7 +1952,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # off the ASGI loop is essential: a slow daemon operation for one
         # Runtime must not make this Provider fail its health check and take
         # unrelated Conversation or terminal requests down with it.
-        observation = await asyncio.to_thread(
+        observation = await run_control(
             DockerSandboxProvider(configured).ensure_running,
             _resource(payload),
             runtime_secret_key=runtime_secret_key,
@@ -1841,7 +1964,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         check_scope(payload.manager_scope)
         if not payload.resource_name.startswith("fw-sbx-"):
             raise DomainError("SANDBOX_NAME_INVALID", "Sandbox name is not allowed", 422)
-        observation = await asyncio.to_thread(
+        observation = await run_observe(
             DockerSandboxProvider(configured).inspect, payload.resource_name
         )
         return {"observation": _observation_dict(observation)}
@@ -1849,7 +1972,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/v1/sandboxes/usage")
     async def usage(payload: SandboxDeleteWrite) -> dict[str, Any]:
         check_scope(payload.manager_scope)
-        usage = await asyncio.to_thread(
+        usage = await run_observe(
             DockerSandboxProvider(configured).usage,
             payload.resource_name,
             str(payload.resource_id),
@@ -1859,7 +1982,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/v1/sandboxes/delete")
     async def delete(payload: SandboxDeleteWrite) -> dict[str, bool]:
         check_scope(payload.manager_scope)
-        await asyncio.to_thread(
+        await run_control(
             DockerSandboxProvider(configured).delete_expected,
             payload.resource_name,
             str(payload.resource_id),
@@ -1873,7 +1996,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/v1/runtime-networks/delete")
     async def delete_runtime_network(payload: RuntimeNetworkDeleteWrite) -> dict[str, bool]:
         check_scope(payload.manager_scope)
-        await asyncio.to_thread(
+        await run_control(
             DockerSandboxProvider(configured).delete_flow_run_runtime_network,
             str(payload.flow_run_id),
         )
@@ -1882,7 +2005,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/v1/sandboxes/drain")
     async def _drain(payload: SandboxDeleteWrite) -> dict[str, bool]:
         check_scope(payload.manager_scope)
-        result = await asyncio.to_thread(
+        result = await run_control(
             DockerSandboxProvider(configured).drain_expected,
             payload.resource_name,
             str(payload.resource_id),
@@ -1895,7 +2018,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {
             "observations": [
                 _observation_dict(item)
-                for item in await asyncio.to_thread(DockerSandboxProvider(configured).list_managed)
+                for item in await run_observe(DockerSandboxProvider(configured).list_managed)
             ]
         }
 
@@ -1904,7 +2027,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         check_scope(payload.manager_scope)
         if not payload.reference.startswith("flowweave/environment-"):
             raise DomainError("ENVIRONMENT_IMAGE_INVALID", "Image tag is not managed", 422)
-        await asyncio.to_thread(
+        await run_control(
             environments_docker.remove_image,
             payload.reference,
             expected_digest=payload.expected_digest,
@@ -1917,7 +2040,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/v1/environments/resolve-base-image")
     async def _resolve_base_image(payload: ResolveBaseImageWrite) -> dict[str, str]:
         check_scope(payload.manager_scope)
-        reference, digest = await asyncio.to_thread(
+        reference, digest = await run_observe(
             environments_docker.resolve_setup_image, payload.reference
         )
         return {"reference": reference, "digest": digest}
@@ -1925,7 +2048,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/v1/environments/remove-credentials")
     async def remove_credentials(payload: EnvironmentCredentialsWrite) -> dict[str, bool]:
         check_scope(payload.manager_scope)
-        await asyncio.to_thread(
+        await run_control(
             DockerSandboxProvider(configured).delete_environment_credentials,
             str(payload.environment_id),
         )
@@ -1934,7 +2057,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/v1/environments/remove-legacy")
     async def remove_legacy(payload: LegacyRemoveWrite) -> dict[str, bool]:
         check_scope(payload.manager_scope)
-        await asyncio.to_thread(
+        await run_control(
             environments_docker.remove_legacy_setup_container,
             payload.resource_name,
             environment_id=str(payload.environment_id),
@@ -1961,7 +2084,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 runtime_capabilities=tuple(payload.runtime_capabilities),
             )
 
-        image = await asyncio.to_thread(publish_image)
+        image = await run_build(publish_image)
         return {"reference": image.reference, "digest": image.digest, "manifest": image.manifest}
 
     @app.post("/v1/gates/execute")
@@ -1975,7 +2098,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             cleanup_grace_seconds=configured.sandbox_orphan_grace_seconds,
             storage_size=configured.sandbox_storage_size,
         )
-        result = await asyncio.to_thread(
+        result = await run_build(
             sandbox.execute,
             cast(Any, payload.language),
             payload.code,
@@ -2002,7 +2125,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             network_pool=configured.flowweave_runtime_network_pool,
             network_prefix=configured.flowweave_runtime_network_prefix,
         )
-        bundle = await asyncio.to_thread(builder.build, payload.dependencies)
+        bundle = await run_build(builder.build, payload.dependencies)
         return {
             "content_base64": base64.b64encode(bundle.content).decode(),
             "manifest": bundle.manifest,
@@ -2021,7 +2144,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             network_pool=configured.flowweave_runtime_network_pool,
             network_prefix=configured.flowweave_runtime_network_prefix,
         )
-        bundle = await asyncio.to_thread(
+        bundle = await run_build(
             resolver.resolve,
             PluginResolveRequest(payload.source, payload.commit, payload.repo_path),
         )
@@ -2052,7 +2175,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             network_pool=configured.flowweave_runtime_network_pool,
             network_prefix=configured.flowweave_runtime_network_prefix,
         )
-        bundle = await asyncio.to_thread(
+        bundle = await run_build(
             resolver.resolve_marketplace_plugin,
             MarketplacePluginResolveRequest(
                 payload.source, payload.commit, payload.repo_path, payload.plugin_name
@@ -2085,7 +2208,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             network_pool=configured.flowweave_runtime_network_pool,
             network_prefix=configured.flowweave_runtime_network_prefix,
         )
-        return await asyncio.to_thread(
+        return await run_build(
             resolver.list_marketplace,
             MarketplaceCatalogRequest(payload.source, payload.commit, payload.repo_path),
         )
@@ -2100,7 +2223,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def runtime_events(payload: RuntimeEventsWrite) -> StreamingResponse:
         check_scope(payload.manager_scope)
         try:
-            container_id = await asyncio.to_thread(
+            container_id = await run_observe(
                 inspect_owned_container,
                 configured.docker_binary,
                 payload.resource_name,
@@ -2160,7 +2283,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "The Plugin path does not belong to this validation",
                 422,
             )
-        return await asyncio.to_thread(
+        return await run_observe(
             validate_owned_runtime_plugin,
             configured,
             resource_name=payload.resource_name,

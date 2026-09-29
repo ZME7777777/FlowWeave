@@ -27,18 +27,20 @@ docker compose --env-file .env -f infra/compose.yaml build --no-cache web
 docker compose --env-file .env -f infra/compose.yaml up -d --no-deps --force-recreate web
 ```
 
-改动 `services/platform` 的共享代码或 Alembic 迁移时，Migration、Runtime Provider、API、stream-api 与 Worker 必须来自同一版本。先运行迁移，确认退出码为 0，再替换常驻进程：
+普通 Platform API、stream-api、Worker 代码或 Alembic 迁移变更，先运行迁移，确认退出码为 0，再仅替换这些常驻服务：
 
 ```bash
 docker compose --env-file .env -f infra/compose.yaml build --no-cache \
-  migration runtime-provider api stream-api worker
+  migration api stream-api worker
 docker compose --env-file .env -f infra/compose.yaml \
   up --no-deps --force-recreate migration
 docker compose --env-file .env -f infra/compose.yaml \
-  up -d --no-deps --force-recreate runtime-provider api stream-api worker
+  up -d --no-deps --force-recreate api stream-api worker
 ```
 
-更新 `infra/openhands/**` 后，新镜像只会影响之后创建或替换的 Runtime；已运行 Runtime 不会原地变更。发布新的 Environment Version 或通过正式 Runtime 生命周期替换 generation。
+**不要**因普通 Platform 发布重建 `runtime-provider`：它负责与正在运行的 Agent Workspace / FlowRun Runtime 的连接。只有修改 `runtime-provider`、Docker Provider、Runtime 协议，或 `infra/openhands/**` 时，才使用 `runtime` 范围；该范围先迁移，然后同步重建 `runtime-provider`、`api`、`stream-api` 与 `worker`。发布前必须确认没有不允许中断的活跃会话；即使已运行 Runtime 镜像不原地更新，Provider 重启也会短暂中断正在进行的工具调用。
+
+更新 `infra/openhands/**` 后，新镜像只会影响之后创建或正式 replacement 的 Runtime；已运行 Runtime 不会原地变更。发布新的 Environment Version 或通过正式 Runtime 生命周期替换 generation。
 
 ### 部署后验证
 
@@ -73,7 +75,7 @@ make remote-deploy-preflight REMOTE_DEPLOY_CONFIG=.local/remote-deploy.env \
   COMMIT=<commit-sha> SCOPE=<web|platform|runtime|other>
 ```
 
-预检先确认本地配置中的目标主机、部署目录、提交与范围；随后只读 SSH，检查部署根、构建/镜像目录、声明的 Compose/env 文件，运行 `docker compose config --quiet` 并确认本次范围所需服务。`platform` 必须验证 `migration`、`runtime-provider`、`api`、`worker` 和 `stream-api`；后者可在显式声明的独立 Compose 项目中。预检不会构建镜像、重建服务或改写服务器文件。
+预检先确认本地配置中的目标主机、部署目录、提交与范围；随后只读 SSH，检查部署根、构建/镜像目录、声明的 Compose/env 文件，运行 `docker compose config --quiet` 并确认本次范围所需服务。`platform` 验证 `migration`、`api`、`worker` 和 `stream-api`，且不得重建 `runtime-provider`；`runtime` 额外验证 `runtime-provider`，只用于 Provider、Docker Provider、Runtime 协议或固定 OpenHands Runtime 变更。`stream-api` 可在显式声明的独立 Compose 项目中。预检不会构建镜像、重建服务或改写服务器文件。
 
 不要猜测 SSH 别名、Compose 入口或 `stream-api` 所属项目，也不要使用本地 `infra/compose.yaml` 替换服务器 Compose 文件。若预检报缺少入口或服务契约，先修正本机受保护的 `.local/remote-deploy.env`，再重新预检。
 
@@ -86,7 +88,7 @@ make remote-deploy-preflight REMOTE_DEPLOY_CONFIG=.local/remote-deploy.env \
 1. 在本地确认 `git status --short --branch`、目标 commit 和受影响测试；运行 `git diff --check`。
 2. 从目标 commit 使用 `git archive` 创建不可变源码包，记录 SHA-256，传至已由预检验证的私有构建目录，并在服务器再次校验 SHA-256。
 3. 在服务器从该包构建所需 `linux/amd64` 镜像，检查 `docker image inspect` 输出为 `linux/amd64`。
-4. 验证远端 Compose，再按影响范围 force-recreate。更新平台镜像时，先运行 `migration`，随后同时更新 `runtime-provider`、`api`、`stream-api`、`worker`。仅更新 Web 时只更新 `web`。
+4. 验证远端 Compose，再按影响范围 force-recreate。普通 `platform` 变更先运行 `migration`，随后只更新 `api`、`stream-api`、`worker`；不得重建 `runtime-provider`。只有 `runtime` 变更才在迁移后同步更新 `runtime-provider`、`api`、`stream-api`、`worker`，且须先确认活跃会话的中断影响。仅更新 Web 时只更新 `web`。
 5. 检查服务健康、带 `/flowweave/` 前缀的 API/静态资源、Agent 深层路由及 FastGPT 根登录页。
 
 服务器的持久数据包括 PostgreSQL、Artifact volume 与 Workspace bind mount。普通发布绝不执行 `docker compose down -v`，不删除数据、不覆盖环境文件，也不使用 `--remove-orphans` 忽略或删除 `stream-api`。

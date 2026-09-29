@@ -22,6 +22,7 @@ from flowweave.modules.users.application.security import (
     tenant_bypass,
     tenant_user,
 )
+from flowweave.runtime.read_budget import hydration_time_left
 from flowweave.shared.application.transactions import (
     mark_uow_owned,
     run_commit_actions,
@@ -121,7 +122,67 @@ async def run_blocking(container: Container, operation: Callable[[Session], T]) 
         saturation_code="RUNTIME_READ_SATURATED",
         saturation_message="Agent Runtime reads are busy; retry shortly",
         lane_name="read",
-        active_limit=container.settings.blocking_pool_size,
+        active_limit=getattr(container, "blocking_capacity", container.settings.blocking_pool_size),
+    )
+
+
+async def run_blocking_mutation(container: Container, operation: Callable[[Session], T]) -> T:
+    """Offload a Runtime write without taking every interactive read slot."""
+
+    return await _run_blocking_lane(
+        container,
+        operation,
+        executor=container.blocking_executor,
+        slots=container.blocking_io_slots,
+        admission_slots=container.blocking_mutation_slots,
+        session_factory=container.database.blocking_sessions,
+        saturation_code="RUNTIME_MUTATION_SATURATED",
+        saturation_message="Agent Runtime writes are busy; retry shortly",
+        lane_name="mutation",
+        active_limit=min(2, max(1, container.blocking_capacity // 2))
+        if hasattr(container, "blocking_capacity")
+        else min(2, max(1, container.settings.blocking_pool_size // 2)),
+    )
+
+
+async def run_blocking_message(container: Container, operation: Callable[[Session], T]) -> T:
+    """Run latency-sensitive user message delivery on its reserved API lane."""
+
+    sessions = container.database.message_sessions or container.database.blocking_sessions
+    return await _run_blocking_lane(
+        container,
+        operation,
+        executor=container.message_executor,
+        slots=container.message_io_slots,
+        session_factory=sessions,
+        saturation_code="RUNTIME_MESSAGE_SATURATED",
+        saturation_message="Agent message delivery is busy; retry shortly",
+        lane_name="message",
+        active_limit=container.message_capacity or container.blocking_capacity,
+    )
+
+
+async def run_blocking_hydration(container: Container, operation: Callable[[Session], T]) -> T:
+    """Give cache-key lookup and formal first-screen reads reserved API capacity."""
+
+    def within_budget(session: Session) -> T:
+        hydration_time_left()
+        result = operation(session)
+        hydration_time_left()
+        return result
+
+    sessions = container.database.hydration_sessions or container.database.blocking_sessions
+    return await _run_blocking_lane(
+        container,
+        within_budget,
+        executor=container.hydration_executor,
+        slots=container.hydration_io_slots,
+        session_factory=sessions,
+        saturation_code="RUNTIME_READ_SATURATED",
+        saturation_message="Agent Runtime first-screen reads are busy; retry shortly",
+        lane_name="hydration",
+        active_limit=container.hydration_capacity or container.blocking_capacity,
+        wait_timeout=hydration_time_left(),
     )
 
 
@@ -147,7 +208,8 @@ async def run_blocking_history(container: Container, operation: Callable[[Sessio
     A browser may prefetch many historical OpenHands pages after it has painted
     the latest window. This lane is intentionally small and independently
     pooled: saturation drops the prefetch rather than delaying readiness or
-    confirmation reads for a running conversation.
+    confirmation reads for a running conversation. Workspace/Git operations
+    share this background capacity for the same reason.
     """
 
     return await _run_blocking_lane(
@@ -163,6 +225,100 @@ async def run_blocking_history(container: Container, operation: Callable[[Sessio
     )
 
 
+async def acquire_terminal_slot(container: Container) -> None:
+    """Reserve one bounded terminal stream slot for a WebSocket lifetime."""
+
+    try:
+        await asyncio.wait_for(
+            container.terminal_slots.acquire(),
+            timeout=container.settings.blocking_pool_timeout_seconds,
+        )
+    except TimeoutError as exc:
+        logger.warning(
+            "terminal stream pool saturated active_limit=%d",
+            container.settings.terminal_stream_pool_size,
+        )
+        raise DomainError(
+            "RUNTIME_TERMINAL_SATURATED",
+            "Terminal capacity is busy; retry shortly",
+            503,
+        ) from exc
+
+
+def release_terminal_slot(container: Container) -> None:
+    """Release a terminal stream slot after its terminal has been closed."""
+
+    container.terminal_slots.release()
+
+
+async def run_terminal_control(container: Container, operation: Callable[[], T]) -> T:
+    """Run short terminal setup/control I/O off the default asyncio executor."""
+
+    return await _run_executor_operation(container.terminal_control_executor, operation)
+
+
+async def run_terminal_stream(container: Container, operation: Callable[[], T]) -> T:
+    """Run a potentially blocking terminal read on its dedicated stream pool."""
+
+    return await _run_executor_operation(container.terminal_stream_executor, operation)
+
+
+async def _run_executor_operation(executor: ThreadPoolExecutor, operation: Callable[[], T]) -> T:
+    """Offload non-DB I/O while preserving request context in a named pool."""
+
+    context = contextvars.copy_context()
+    worker = asyncio.ensure_future(
+        asyncio.get_running_loop().run_in_executor(executor, context.run, operation)
+    )
+
+    def consume_exception(completed: asyncio.Future[T]) -> None:
+        if not completed.cancelled():
+            completed.exception()
+
+    worker.add_done_callback(consume_exception)
+    return await asyncio.shield(worker)
+
+
+async def run_blocking_admin(container: Container, operation: Callable[[Session], T]) -> T:
+    """Run an operator diagnostic/control database action on its own lane."""
+
+    admin_sessions = container.database.admin_sessions
+    if admin_sessions is None:
+        raise RuntimeError("Admin execution requires the API admin database pool")
+    return await _run_blocking_lane(
+        container,
+        operation,
+        executor=container.admin_executor,
+        slots=container.admin_io_slots,
+        session_factory=admin_sessions,
+        saturation_code="ADMIN_CONTROL_SATURATED",
+        saturation_message="Administrator control work is busy; retry shortly",
+        lane_name="admin",
+        active_limit=1,
+    )
+
+
+async def run_blocking_auxiliary(container: Container, operation: Callable[[Session], T]) -> T:
+    """Run workspace and Git I/O on the low-priority history lane.
+
+    These calls may perform filesystem scans or subprocess work. Sharing the
+    existing small background pool keeps them away from interactive hydration
+    without increasing the process's PostgreSQL connection budget.
+    """
+
+    return await _run_blocking_lane(
+        container,
+        operation,
+        executor=container.history_read_executor,
+        slots=container.history_read_slots,
+        session_factory=container.database.history_sessions,
+        saturation_code="RUNTIME_AUXILIARY_SATURATED",
+        saturation_message="Workspace operations are busy; retry shortly",
+        lane_name="auxiliary",
+        active_limit=container.settings.history_read_pool_size,
+    )
+
+
 async def _run_blocking_lane(
     container: Container,
     operation: Callable[[Session], T],
@@ -174,17 +330,32 @@ async def _run_blocking_lane(
     saturation_message: str,
     lane_name: str,
     active_limit: int,
+    admission_slots: asyncio.Semaphore | None = None,
+    wait_timeout: float | None = None,
 ) -> T:
+    admitted = False
     try:
+        if admission_slots is not None:
+            await asyncio.wait_for(
+                admission_slots.acquire(), timeout=container.settings.blocking_pool_timeout_seconds
+            )
+            admitted = True
         # Runtime reads are deliberately bounded, but ordinary concurrent
         # hydration must be allowed to wait for the configured DB/Runtime
         # budget.  A former fixed 250ms deadline bypassed
         # BLOCKING_POOL_TIMEOUT_SECONDS and turned normal short reads into
         # misleading 503 saturation responses.
         await asyncio.wait_for(
-            slots.acquire(), timeout=container.settings.blocking_pool_timeout_seconds
+            slots.acquire(),
+            timeout=min(container.settings.blocking_pool_timeout_seconds, wait_timeout)
+            if wait_timeout is not None
+            else container.settings.blocking_pool_timeout_seconds,
         )
     except TimeoutError as exc:
+        if admitted and admission_slots is not None:
+            admission_slots.release()
+        if wait_timeout is not None:
+            hydration_time_left()
         logger.warning(
             "blocking Runtime %s pool saturated active_limit=%d",
             lane_name,
@@ -195,6 +366,10 @@ async def _run_blocking_lane(
             saturation_message,
             503,
         ) from exc
+    except BaseException:
+        if admitted and admission_slots is not None:
+            admission_slots.release()
+        raise
 
     def execute() -> T:
         with session_factory() as session:
@@ -210,16 +385,24 @@ async def _run_blocking_lane(
             return result
 
     context = contextvars.copy_context()
-    worker = asyncio.ensure_future(
-        asyncio.get_running_loop().run_in_executor(
-            executor,
-            context.run,
-            execute,
+    try:
+        worker = asyncio.ensure_future(
+            asyncio.get_running_loop().run_in_executor(
+                executor,
+                context.run,
+                execute,
+            )
         )
-    )
+    except BaseException:
+        slots.release()
+        if admitted and admission_slots is not None:
+            admission_slots.release()
+        raise
 
     def release_slot(completed: asyncio.Future[T]) -> None:
         slots.release()
+        if admitted and admission_slots is not None:
+            admission_slots.release()
         # A disconnected HTTP client cancels the request coroutine, but Python
         # cannot stop an already-running thread. Consume its eventual exception
         # and release capacity only after its bounded Runtime call has exited.

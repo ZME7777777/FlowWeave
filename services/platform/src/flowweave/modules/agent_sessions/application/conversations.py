@@ -19,8 +19,10 @@ from sqlalchemy import Numeric, and_, cast, func, or_, select, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from flowweave.modules.agent_sessions.application import resumable_attachments
 from flowweave.modules.agent_sessions.application import usage as usage_projection
 from flowweave.modules.agent_sessions.application.condensation import (
+    condensation_task_failure_reason,
     enqueue_manual_condensation,
 )
 from flowweave.modules.agent_sessions.application.conversation_cache import ConversationCacheKey
@@ -42,7 +44,6 @@ from flowweave.modules.agent_sessions.application.draft_attachments import (
 from flowweave.modules.agent_sessions.application.event_branch import (
     complete_active_branch,
 )
-from flowweave.modules.agent_sessions.application import resumable_attachments
 from flowweave.modules.agent_sessions.application.runtime_config import (
     build_agent_spec,
     config_from_binding,
@@ -83,6 +84,7 @@ from flowweave.runtime.workspace import (
     materialize_agent_workspace_capability_marketplace,
 )
 from flowweave.shared.database import now
+from flowweave.shared.domain.event_monitoring import activity_timestamp_is_stale
 from flowweave.shared.errors import DomainError, not_found
 from flowweave.shared.models import BackgroundTask, TaskState
 from flowweave.shared.observability import current_metrics
@@ -96,7 +98,11 @@ _CONDENSER_CREDENTIAL_FAILURE_CODE = "NoCondensationAvailableException"
 _DYNAMIC_CAPABILITY_TYPES = frozenset({"SKILL", "MCP", "PLUGIN"})
 _CREATION_CAPABILITY_TYPES = _DYNAMIC_CAPABILITY_TYPES | {"CONTEXT", "AGENT_DEFINITION", "HOOK"}
 _UNREADY_EXECUTION_STATUSES = (
-    "starting", "running", "executing", "stopping", "waiting_for_confirmation",
+    "starting",
+    "running",
+    "executing",
+    "stopping",
+    "waiting_for_confirmation",
 )
 # A FlowRun Runtime physically mounts ``project`` but each product record is
 # rooted at ``project/<record-id>``.  Keep the older attempt-private root and
@@ -809,13 +815,15 @@ def conversation_activity(
     binding_ids = {item.id for item in bindings}
     runtime = get_runtime()
     handle = _handle(db, workspace, bindings[0])
-    running_native_ids = set().union(*(
-        runtime.conversation_ids_by_status(handle, status)
-        for status in _UNREADY_EXECUTION_STATUSES
-    ))
+    native_activity = runtime.conversation_activity_snapshot(handle)
     condensation_tasks = list(
         db.execute(
-            select(BackgroundTask.aggregate_id, BackgroundTask.id, BackgroundTask.state)
+            select(
+                BackgroundTask.aggregate_id,
+                BackgroundTask.id,
+                BackgroundTask.state,
+                BackgroundTask.last_error,
+            )
             .where(
                 BackgroundTask.task_type == "CONDENSE_AGENT_CONVERSATION",
                 BackgroundTask.aggregate_id.in_(binding_ids),
@@ -823,25 +831,29 @@ def conversation_activity(
             .order_by(BackgroundTask.created_at.desc())
         )
     )
-    latest_condensation_task: dict[str, tuple[str, str]] = {}
-    for binding_id, task_id, state in condensation_tasks:
-        latest_condensation_task.setdefault(binding_id, (task_id, state))
+    latest_condensation_task: dict[str, tuple[str, str, str | None]] = {}
+    for binding_id, task_id, state, last_error in condensation_tasks:
+        latest_condensation_task.setdefault(
+            binding_id,
+            (task_id, state, condensation_task_failure_reason(last_error)),
+        )
     running_bindings = [
-        item for item in bindings if item.openhands_conversation_id in running_native_ids
+        item
+        for item in bindings
+        if native_activity.get(item.openhands_conversation_id, None) is not None
+        and native_activity[item.openhands_conversation_id].execution_status
+        in _UNREADY_EXECUTION_STATUSES
     ]
-    failed_native_ids = runtime.conversation_ids_by_status(
-        handle, "error"
-    ) | runtime.conversation_ids_by_status(handle, "stuck")
-    possibly_stuck_binding_ids: list[str] = []
-    from flowweave.shared.domain.event_monitoring import build_activity_summary
-
-    for item in running_bindings:
-        try:
-            batch = runtime.read_active_events(_handle(db, workspace, item))
-        except DomainError:
-            continue
-        if build_activity_summary(batch.events)["possibly_stuck"]:
-            possibly_stuck_binding_ids.append(item.id)
+    failed_native_ids = {
+        conversation_id
+        for conversation_id, activity in native_activity.items()
+        if activity.execution_status in {"error", "stuck"}
+    }
+    possibly_stuck_binding_ids = [
+        item.id
+        for item in running_bindings
+        if activity_timestamp_is_stale(native_activity[item.openhands_conversation_id].updated_at)
+    ]
     running_binding_ids = {item.id for item in running_bindings}
     attention_binding_ids = set(possibly_stuck_binding_ids) | {
         item.id for item in bindings if item.openhands_conversation_id in failed_native_ids
@@ -873,19 +885,24 @@ def conversation_activity(
         "condensing_binding_ids": [
             item.id
             for item in bindings
-            if latest_condensation_task.get(item.id, (None, None))[1]
+            if latest_condensation_task.get(item.id, (None, None, None))[1]
             in {TaskState.PENDING, TaskState.RUNNING}
         ],
         "condensation_failed_binding_ids": [
             item.id
             for item in bindings
-            if latest_condensation_task.get(item.id, (None, None))[1] == TaskState.DEAD
+            if latest_condensation_task.get(item.id, (None, None, None))[1] == TaskState.DEAD
         ],
         "condensation_tasks": [
-            {"binding_id": item.id, "task_id": task_id, "state": state}
+            {
+                "binding_id": item.id,
+                "task_id": task_id,
+                "state": state,
+                "failure_reason": failure_reason,
+            }
             for item in bindings
             if (task := latest_condensation_task.get(item.id)) is not None
-            for task_id, state in [task]
+            for task_id, state, failure_reason in [task]
         ],
         "possibly_stuck_binding_ids": possibly_stuck_binding_ids,
         "failed_binding_ids": [
@@ -2034,9 +2051,19 @@ def events(
     started_at = time.monotonic()
     runtime = get_runtime()
     try:
-        batch = batch_override or runtime.read_active_events(
-            replace(handle, cursor=cursor, history_cursor=history_cursor)
-        )
+        if batch_override is None:
+            # Agent Workspace Runtime generations are replaceable.  A fresh
+            # Agent Server has the persisted Conversation directory mounted,
+            # but does not populate its in-memory service until the formal
+            # Conversation identity is loaded.  Reload the original UUID
+            # before reading events; this never creates a replacement
+            # Conversation or replays an interrupted action.
+            runtime.reload_conversation(handle)
+            batch = runtime.read_active_events(
+                replace(handle, cursor=cursor, history_cursor=history_cursor)
+            )
+        else:
+            batch = batch_override
     except Exception as exc:
         if metrics := current_metrics():
             metrics.observe_operation(
@@ -3228,7 +3255,9 @@ def create_resumable_attachment_upload(
     workspace = _workspace(db, workspace_id)
     if binding_id is None:
         owner_id = attachment_owner_id or ""
-        agent_workspace_host.conversation_work_directory_context(db, workspace.id, work_directory_id)
+        agent_workspace_host.conversation_work_directory_context(
+            db, workspace.id, work_directory_id
+        )
     else:
         owner_id = _binding(db, workspace_id, binding_id).id
     upload = resumable_attachments.create_upload(
@@ -3285,28 +3314,46 @@ def create_resumable_workspace_file_upload(
     return resumable_attachments.upload_status(upload, [])
 
 
-def _resumable_attachment_upload(db: Session, workspace_id: str, binding_id: str | None, upload_id: str):
+def _resumable_attachment_upload(
+    db: Session, workspace_id: str, binding_id: str | None, upload_id: str
+):
     _workspace(db, workspace_id)
     if binding_id is not None:
         _binding(db, workspace_id, binding_id)
     return resumable_attachments.upload_for_host(
-        db, upload_id, host_kind="AGENT_WORKSPACE", host_id=workspace_id, host_scope_id=None, binding_id=binding_id
+        db,
+        upload_id,
+        host_kind="AGENT_WORKSPACE",
+        host_id=workspace_id,
+        host_scope_id=None,
+        binding_id=binding_id,
     )
 
 
-def resumable_attachment_upload_status(db: Session, workspace_id: str, binding_id: str | None, upload_id: str) -> dict[str, object]:
+def resumable_attachment_upload_status(
+    db: Session, workspace_id: str, binding_id: str | None, upload_id: str
+) -> dict[str, object]:
     upload = _resumable_attachment_upload(db, workspace_id, binding_id, upload_id)
     return resumable_attachments.upload_status(upload, resumable_attachments.list_parts(db, upload))
 
 
-def upload_resumable_attachment_part(db: Session, workspace_id: str, binding_id: str | None, upload_id: str, part_number: int, content: bytes) -> dict[str, object]:
+def upload_resumable_attachment_part(
+    db: Session,
+    workspace_id: str,
+    binding_id: str | None,
+    upload_id: str,
+    part_number: int,
+    content: bytes,
+) -> dict[str, object]:
     upload = _resumable_attachment_upload(db, workspace_id, binding_id, upload_id)
     resumable_attachments.put_part(db, upload, part_number=part_number, content=content)
     db.flush()
     return resumable_attachments.upload_status(upload, resumable_attachments.list_parts(db, upload))
 
 
-def complete_resumable_attachment_upload(db: Session, workspace_id: str, binding_id: str | None, upload_id: str) -> dict[str, str | int | None]:
+def complete_resumable_attachment_upload(
+    db: Session, workspace_id: str, binding_id: str | None, upload_id: str
+) -> dict[str, str | int | None]:
     upload = _resumable_attachment_upload(db, workspace_id, binding_id, upload_id)
     content = resumable_attachments.assemble(db, upload)
     if upload.upload_kind == "WORKSPACE_FILE":
@@ -3330,14 +3377,22 @@ def complete_resumable_attachment_upload(db: Session, workspace_id: str, binding
         }
     else:
         result = upload_attachment(
-            db, workspace_id, binding_id, filename=upload.filename, content_type=upload.mime_type, content=content,
-            work_directory_id=upload.work_directory_id, attachment_owner_id=upload.attachment_owner_id,
+            db,
+            workspace_id,
+            binding_id,
+            filename=upload.filename,
+            content_type=upload.mime_type,
+            content=content,
+            work_directory_id=upload.work_directory_id,
+            attachment_owner_id=upload.attachment_owner_id,
         )
     resumable_attachments.close_upload(db, upload, status="COMPLETED")
     return result
 
 
-def cancel_resumable_attachment_upload(db: Session, workspace_id: str, binding_id: str | None, upload_id: str) -> None:
+def cancel_resumable_attachment_upload(
+    db: Session, workspace_id: str, binding_id: str | None, upload_id: str
+) -> None:
     upload = _resumable_attachment_upload(db, workspace_id, binding_id, upload_id)
     resumable_attachments.close_upload(db, upload, status="CANCELLED")
 
@@ -3372,30 +3427,18 @@ def _conversation_context_snapshot(
 
 
 def hydration_context_snapshot(
-    runtime: Any,
-    handle: RuntimeHandle,
     batch_context: dict[str, int | str | None] | None,
 ) -> dict[str, int | float | str | bool | None]:
-    """Merge formal current-View metrics into a native event-batch context.
+    """Project the cheap native event-batch state for first paint only.
 
-    ``read_active_events`` includes an efficient state-derived context snapshot,
-    but that snapshot deliberately has no exact current-View Token or event
-    count. Hydration must not mistake its presence for the separate OpenHands
-    ``/context`` contract, otherwise reloads of idle conversations render the
-    metrics as unknown.
+    ``read_active_events`` returns model and window state alongside the bounded
+    formal event window, but it intentionally does not promise exact
+    current-View token or event metrics. Those require the separate official
+    ``/context`` contract and must refresh after hydration rather than delay
+    events and readiness for a first screen.
     """
 
-    context: dict[str, int | float | str | bool | None] = dict(batch_context or {})
-    formal_context = _conversation_context_snapshot(runtime, handle)
-    if not context:
-        return formal_context
-    context.update(
-        {
-            field: formal_context.get(field)
-            for field in ("used_tokens", "view_event_count", "usage_current")
-        }
-    )
-    return context
+    return dict(batch_context or {})
 
 
 def conversation_cache_key(db: Session, workspace_id: str, binding_id: str) -> ConversationCacheKey:
@@ -3429,8 +3472,12 @@ def hydrate_conversation(db: Session, workspace_id: str, binding_id: str) -> dic
     started_at = time.monotonic()
     outcome = "error"
     try:
+        # See events(): after a managed Runtime generation replacement, load
+        # the persisted native Conversation before asking the new Agent Server
+        # for its initial event window or readiness snapshot.
+        runtime.reload_conversation(handle)
         batch = runtime.read_active_events(handle)
-        context = hydration_context_snapshot(runtime, handle, batch.context)
+        context = hydration_context_snapshot(batch.context)
         readiness = (
             runtime.input_readiness(handle).as_dict()
             if batch.readiness is None

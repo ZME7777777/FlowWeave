@@ -11,8 +11,62 @@ from types import SimpleNamespace
 import pytest
 
 from flowweave.bootstrap import api as api_module
+from flowweave.bootstrap.settings import Settings
+from flowweave.runtime.read_budget import hydration_read_budget
 from flowweave.shared.errors import DomainError
-from flowweave.shared.http import run_blocking, run_blocking_control, run_blocking_history
+from flowweave.shared.http import (
+    run_blocking,
+    run_blocking_control,
+    run_blocking_history,
+    run_blocking_hydration,
+    run_blocking_message,
+    run_blocking_mutation,
+)
+from flowweave.shared.infrastructure.database import Database
+
+
+@pytest.fixture(autouse=True)
+def database():
+    """These executor tests use in-memory session doubles, not PostgreSQL."""
+
+    yield
+
+
+@pytest.mark.asyncio
+async def test_hydration_pool_partitions_existing_blocking_database_budget() -> None:
+    resources = Database(Settings(blocking_pool_size=4, pool_max_overflow=0), hydration_pool_size=2)
+    try:
+        assert resources.blocking_engine.pool.size() == 2
+        assert resources.hydration_engine is not None
+        assert resources.hydration_engine.pool.size() == 2
+        assert (
+            resources.pool_metrics()["blocking"]["size"]
+            + resources.pool_metrics()["hydration"]["size"]
+            == 4
+        )
+    finally:
+        await resources.dispose()
+
+
+def test_message_pool_partitions_existing_blocking_database_budget() -> None:
+    resources = Database(
+        Settings(blocking_pool_size=4, pool_max_overflow=0),
+        hydration_pool_size=2,
+        message_pool_size=1,
+    )
+    try:
+        assert resources.blocking_engine.pool.size() == 1
+        assert resources.hydration_engine is not None
+        assert resources.hydration_engine.pool.size() == 2
+        assert resources.message_engine is not None
+        assert resources.message_engine.pool.size() == 1
+        metrics = resources.pool_metrics()
+        assert (
+            metrics["blocking"]["size"] + metrics["hydration"]["size"] + metrics["message"]["size"]
+            == 4
+        )
+    finally:
+        asyncio.run(resources.dispose())
 
 
 class _Session:
@@ -38,6 +92,119 @@ class _Database:
     @contextmanager
     def history_sessions(self):
         yield _Session()
+
+    @contextmanager
+    def hydration_sessions(self):
+        yield _Session()
+
+    @contextmanager
+    def message_sessions(self):
+        yield _Session()
+
+
+@pytest.mark.asyncio
+async def test_hydration_keeps_reserved_capacity_when_ordinary_read_is_stalled() -> None:
+    started = threading.Event()
+    release = threading.Event()
+
+    def ordinary(_session: _Session) -> str:
+        started.set()
+        assert release.wait(timeout=2)
+        return "ordinary"
+
+    with (
+        ThreadPoolExecutor(max_workers=1) as ordinary_executor,
+        ThreadPoolExecutor(max_workers=1) as hydration_executor,
+    ):
+        container = SimpleNamespace(
+            blocking_executor=ordinary_executor,
+            blocking_io_slots=asyncio.Semaphore(1),
+            hydration_executor=hydration_executor,
+            hydration_io_slots=asyncio.Semaphore(1),
+            hydration_capacity=1,
+            blocking_capacity=1,
+            database=_Database(),
+            settings=SimpleNamespace(blocking_pool_size=2, blocking_pool_timeout_seconds=0.05),
+        )
+        blocked = asyncio.create_task(run_blocking(container, ordinary))
+        assert await asyncio.to_thread(started.wait, 1)
+        try:
+            with hydration_read_budget(0.5):
+                assert await run_blocking_hydration(container, lambda _session: "first-screen") == (
+                    "first-screen"
+                )
+        finally:
+            release.set()
+        assert await blocked == "ordinary"
+
+
+@pytest.mark.asyncio
+async def test_cancelled_hydration_retains_slot_until_worker_exits() -> None:
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow(_session: _Session) -> str:
+        started.set()
+        assert release.wait(timeout=2)
+        return "finished"
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        container = SimpleNamespace(
+            hydration_executor=executor,
+            hydration_io_slots=asyncio.Semaphore(1),
+            hydration_capacity=1,
+            blocking_capacity=1,
+            database=_Database(),
+            settings=SimpleNamespace(blocking_pool_timeout_seconds=0.05),
+        )
+        with hydration_read_budget(0.5):
+            request = asyncio.create_task(run_blocking_hydration(container, slow))
+            assert await asyncio.to_thread(started.wait, 1)
+            request.cancel()
+            await asyncio.gather(request, return_exceptions=True)
+            with pytest.raises(DomainError) as caught:
+                await run_blocking_hydration(container, lambda _session: "incorrect")
+            assert caught.value.code == "RUNTIME_READ_SATURATED"
+            release.set()
+            for _ in range(100):
+                if not container.hydration_io_slots.locked():
+                    break
+                await asyncio.sleep(0.001)
+            assert await run_blocking_hydration(container, lambda _session: "ready") == "ready"
+
+
+@pytest.mark.asyncio
+async def test_message_delivery_keeps_capacity_when_mutation_is_stalled() -> None:
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow_mutation(_session: _Session) -> str:
+        started.set()
+        assert release.wait(timeout=2)
+        return "mutation"
+
+    with (
+        ThreadPoolExecutor(max_workers=1) as mutation_executor,
+        ThreadPoolExecutor(max_workers=1) as message_executor,
+    ):
+        container = SimpleNamespace(
+            blocking_executor=mutation_executor,
+            blocking_io_slots=asyncio.Semaphore(1),
+            blocking_mutation_slots=asyncio.Semaphore(1),
+            blocking_capacity=1,
+            message_executor=message_executor,
+            message_io_slots=asyncio.Semaphore(1),
+            message_capacity=1,
+            database=_Database(),
+            settings=SimpleNamespace(blocking_pool_size=2, blocking_pool_timeout_seconds=0.05),
+        )
+        blocked = asyncio.create_task(run_blocking_mutation(container, slow_mutation))
+        assert await asyncio.to_thread(started.wait, 1)
+        try:
+            assert await run_blocking_message(container, lambda _session: "message") == "message"
+        finally:
+            release.set()
+        assert await blocked == "mutation"
 
 
 @pytest.mark.asyncio
@@ -208,3 +375,38 @@ def test_api_slow_request_log_excludes_query_values(anonymous_client, monkeypatc
     assert "duration_ms=2000" in record.message
     assert "request_id=slow-request-1" in record.message
     assert "must-not-appear" not in record.message
+
+
+def test_all_user_message_routes_use_reserved_message_lane() -> None:
+    """Initial, normal, and rerun user messages cannot share slow mutations."""
+
+    import ast
+    from pathlib import Path
+
+    paths = (
+        Path("src/flowweave/modules/agent_workspaces/presentation/router.py"),
+        Path("src/flowweave/modules/agent_sessions/presentation/router.py"),
+    )
+    expected = {
+        "agent_workspaces": {
+            "create_agent_conversation",
+            "agent_message",
+            "agent_rerun_edited_message",
+        },
+        "agent_sessions": {"bootstrap_node_session", "node_session_message", "rerun_node_message"},
+    }
+    for path in paths:
+        module = ast.parse(path.read_text())
+        functions = {
+            node.name: node
+            for node in module.body
+            if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+        }
+        group = "agent_workspaces" if "agent_workspaces" in str(path) else "agent_sessions"
+        for name in expected[group]:
+            calls = [
+                call.func.id
+                for call in ast.walk(functions[name])
+                if isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
+            ]
+            assert "run_blocking_message" in calls

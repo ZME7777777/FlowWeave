@@ -428,6 +428,15 @@ class RuntimeWorkspaceFile:
 
 
 @dataclass(frozen=True, slots=True)
+class RuntimeConversationActivity:
+    """One native catalog activity projection, scoped to a Runtime generation."""
+
+    conversation_id: str
+    execution_status: str
+    updated_at: str
+
+
+@dataclass(frozen=True, slots=True)
 class RuntimeConversationIdentity:
     """Ephemeral OpenHands identity evidence used to verify an original-ID reload."""
 
@@ -515,6 +524,19 @@ class RuntimeEvent:
     cursor: str
     event_type: RuntimeEventType
     payload: dict[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeMessageSearchResult:
+    """Complete native full-text search result for one Conversation.
+
+    The current Runtime contract always exhausts native pagination.  The
+    ``truncated`` field remains only to deserialize searches created by the
+    prior bounded implementation; new searches must return ``False``.
+    """
+
+    events: tuple[RuntimeEvent, ...] = ()
+    truncated: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -683,9 +705,11 @@ class RuntimePort(Protocol):
 
     def read_event(self, handle: RuntimeHandle, event_id: str) -> RuntimeEvent | None: ...
 
+    def read_search_event(self, handle: RuntimeHandle, event_id: str) -> RuntimeEvent | None: ...
+
     def search_message_events(
         self, handle: RuntimeHandle, query: str
-    ) -> tuple[RuntimeEvent, ...]: ...
+    ) -> RuntimeMessageSearchResult: ...
 
     def stream_events(
         self, handle: RuntimeHandle, *, after_seq: int | None = None
@@ -715,6 +739,10 @@ class RuntimePort(Protocol):
     ) -> RuntimeConversationRuntime: ...
 
     def input_readiness(self, handle: RuntimeHandle) -> RuntimeInputReadiness: ...
+
+    def conversation_activity_snapshot(
+        self, handle: RuntimeHandle
+    ) -> dict[str, RuntimeConversationActivity]: ...
 
     def running_conversation_ids(self, handle: RuntimeHandle) -> set[str]: ...
 

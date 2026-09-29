@@ -30,7 +30,7 @@ from flowweave.modules.users.infrastructure.models import (
 from flowweave.runtime.base import RuntimeEventBatch, RuntimeInputReadiness
 from flowweave.runtime.dependencies import get_runtime
 from flowweave.shared.errors import DomainError
-from flowweave.shared.http import Db, run_sync
+from flowweave.shared.http import get_container, run_blocking_admin
 
 router = APIRouter(prefix="/internal/admin-control")
 AdminControlKey = Annotated[str | None, Header(alias="X-FlowWeave-Admin-Control-Key")]
@@ -93,28 +93,34 @@ def require_admin_control_key(request: Request, key: AdminControlKey) -> None:
 @router.post("/runtime-controls", status_code=202)
 async def control_runtime(
     payload: RuntimeControlRequest,
-    db: Db,
+    request: Request,
     _: Annotated[None, Depends(require_admin_control_key)],
 ) -> dict[str, Any]:
-    return await run_sync(db, lambda session: _control_runtime(session, payload))
+    return await run_blocking_admin(
+        get_container(request), lambda session: _control_runtime(session, payload)
+    )
 
 
 @router.post("/runtime-diagnostics")
 async def diagnose_runtime(
     payload: RuntimeDiagnosticRequest,
-    db: Db,
+    request: Request,
     _: Annotated[None, Depends(require_admin_control_key)],
 ) -> dict[str, object]:
-    return await run_sync(db, lambda session: _diagnose_runtime(session, payload))
+    return await run_blocking_admin(
+        get_container(request), lambda session: _diagnose_runtime(session, payload)
+    )
 
 
 @router.post("/alert-lifecycle")
 async def update_alert_lifecycle(
     payload: AlertLifecycleRequest,
-    db: Db,
+    request: Request,
     _: Annotated[None, Depends(require_admin_control_key)],
 ) -> dict[str, object]:
-    return await run_sync(db, lambda session: _update_alert_lifecycle(session, payload))
+    return await run_blocking_admin(
+        get_container(request), lambda session: _update_alert_lifecycle(session, payload)
+    )
 
 
 def _update_alert_lifecycle(session: Any, payload: AlertLifecycleRequest) -> dict[str, object]:

@@ -168,11 +168,23 @@ class AgentAttachmentUpload(Base):
 
     __tablename__ = "agent_attachment_uploads"
     __table_args__ = (
-        CheckConstraint("host_kind IN ('AGENT_WORKSPACE', 'FLOW_NODE')", name="ck_agent_attachment_upload_host_kind"),
-        CheckConstraint("upload_kind IN ('ATTACHMENT', 'WORKSPACE_FILE')", name="ck_agent_attachment_upload_kind"),
-        CheckConstraint("total_size > 0 AND total_size <= 104857600", name="ck_agent_attachment_upload_total_size"),
+        CheckConstraint(
+            "host_kind IN ('AGENT_WORKSPACE', 'FLOW_NODE')",
+            name="ck_agent_attachment_upload_host_kind",
+        ),
+        CheckConstraint(
+            "upload_kind IN ('ATTACHMENT', 'WORKSPACE_FILE')",
+            name="ck_agent_attachment_upload_kind",
+        ),
+        CheckConstraint(
+            "total_size > 0 AND total_size <= 104857600",
+            name="ck_agent_attachment_upload_total_size",
+        ),
         CheckConstraint("chunk_size = 262144", name="ck_agent_attachment_upload_chunk_size"),
-        CheckConstraint("status IN ('ACTIVE', 'COMPLETED', 'CANCELLED')", name="ck_agent_attachment_upload_status"),
+        CheckConstraint(
+            "status IN ('ACTIVE', 'COMPLETED', 'CANCELLED')",
+            name="ck_agent_attachment_upload_status",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
@@ -361,7 +373,17 @@ class AgentConversationSearch(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
     workspace_id: Mapped[str] = mapped_column(String(36), index=True)
     query: Mapped[str] = mapped_column(String(500))
+    # ``None`` means every work directory in the Agent Workspace. A concrete
+    # list freezes the user-selected directory groups for this durable job;
+    # historical bindings retain their original version but still belong to
+    # that stable group identity.
+    work_directory_ids: Mapped[list[str] | None] = mapped_column(JSON)
+    include_root: Mapped[bool] = mapped_column(Boolean, default=True)
     state: Mapped[str] = mapped_column(String(20), default="PENDING", index=True)
+    # A completed search may deliberately stop after its low-priority budget.
+    # This is a successful, newest-first partial result rather than a failure.
+    is_partial: Mapped[bool] = mapped_column(Boolean, default=False)
+    partial_summary: Mapped[str | None] = mapped_column(Text)
     failure_summary: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
@@ -382,6 +404,7 @@ class AgentConversationSearchHit(Base):
     search_id: Mapped[str] = mapped_column(String(36), index=True)
     binding_id: Mapped[str] = mapped_column(String(36), index=True)
     event_id: Mapped[str] = mapped_column(String(200))
+    occurred_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 

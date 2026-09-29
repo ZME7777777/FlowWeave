@@ -11,8 +11,8 @@ from typing import Any, cast
 
 OPENHANDS_VERSION = "1.49.5"
 OPENHANDS_UPSTREAM_BASE_COMMIT = "e21d77673b738f056676044600c4ad81c5a575c8"
-OPENHANDS_SOURCE_COMMIT = "7c432d8188ffe026ed15598683aba05bd72881f3"
-OPENHANDS_SOURCE_ARCHIVE_SHA256 = "8a1ad5a755bd8589861e02f763cb5642bac2693b5219adabaf7eb7e351bd7455"
+OPENHANDS_SOURCE_COMMIT = "b556fd8b0d62af2c8d7d63c63a532b74f8f7e168"
+OPENHANDS_SOURCE_ARCHIVE_SHA256 = "d2d172fc7393478d60a3ad42955d097cce01c5136712b59a96c9b5d4b03d835a"
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,6 +31,7 @@ CURRENT_OPENHANDS_SERVER_IDENTITY = OpenHandsServerIdentity(
 )
 
 FIXED_RUNTIME_TOOL_NAMES: tuple[str, ...] = (
+    "browser_tool_set",
     "file_editor",
     # ``task`` is the executor-backed child Tool returned by TaskToolSet and
     # is not a public factory: resolving it directly makes the SDK inject

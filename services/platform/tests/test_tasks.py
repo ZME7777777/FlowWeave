@@ -1,5 +1,6 @@
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from threading import Barrier, Thread
 from time import sleep
 
@@ -33,6 +34,17 @@ from flowweave.shared.models import (
     TaskState,
     TerminalEnvironment,
 )
+
+
+def test_background_task_claim_index_matches_ready_queue_query() -> None:
+    migration = Path("migrations/versions/0131_background_task_claim_index.py").read_text()
+    task_service = Path("src/flowweave/modules/tasks/application/service.py").read_text()
+
+    assert "ix_background_tasks_claim_ready" in migration
+    assert "state IN ('PENDING', 'RETRY')" in migration
+    assert '["available_at", "created_at"]' in migration
+    assert "BackgroundTask.state.in_([TaskState.PENDING, TaskState.RETRY])" in task_service
+    assert ".order_by(BackgroundTask.available_at, BackgroundTask.created_at)" in task_service
 
 
 def test_runtime_input_upload_uses_frozen_flow_run_generation_route(settings):

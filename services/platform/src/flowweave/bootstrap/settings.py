@@ -28,10 +28,15 @@ class Settings(BaseSettings):
     database_pool_timeout_seconds: float = Field(default=2.0, gt=0, le=30)
     blocking_pool_size: int = Field(default=4, ge=1, le=16)
     blocking_pool_timeout_seconds: float = Field(default=2.0, gt=0, le=30)
+    hydration_read_timeout_seconds: float = Field(default=10.0, gt=0, le=14)
     # Older conversation pages are best-effort browser prefetch. Keep them on
     # a separate, deliberately tiny lane so they cannot consume the Runtime
     # state-read connections that restore a live conversation after reload.
     history_read_pool_size: int = Field(default=1, ge=1, le=4)
+    # Terminal reads may block for the lifetime of a browser attachment. Keep
+    # them out of the default asyncio executor and cap them independently from
+    # interactive Runtime hydration and recovery controls.
+    terminal_stream_pool_size: int = Field(default=4, ge=1, le=32)
     statement_timeout_ms: int = Field(default=30_000, ge=100)
 
     credentials_master_key: str = ""
@@ -48,6 +53,16 @@ class Settings(BaseSettings):
     # the process-wide HTTP pool or blocking read lanes.
     runtime_read_per_runtime_concurrency: int = Field(default=2, ge=1, le=16)
     runtime_read_slot_timeout_seconds: float = Field(default=0.25, gt=0, le=5)
+    # Full-text conversation searches are background work. Keep at most one
+    # native scan active for one Runtime, yielding between pages whenever a
+    # hydration read is active. Each queue/page wait is bounded at five minutes.
+    runtime_background_search_per_runtime_concurrency: int = Field(default=1, ge=1, le=4)
+    runtime_background_search_slot_timeout_seconds: float = Field(default=300.0, gt=0, le=300)
+    runtime_background_search_page_timeout_seconds: float = Field(default=300.0, gt=0, le=300)
+    # Conversation search intentionally has no page, hit, or workspace-wide
+    # result cap. It progresses through the complete native EventLog at low
+    # priority; the per-Runtime bulkhead keeps that exhaustive work from
+    # competing with browser hydration.
     runtime_wakeup_timeout_seconds: float = Field(default=10.0, gt=0, le=25)
     runtime_wakeup_backoff_max_seconds: float = Field(default=30.0, gt=0, le=300)
     sse_event_batch_size: int = Field(default=100, ge=1, le=500)
@@ -114,12 +129,20 @@ class Settings(BaseSettings):
     seed_demo: bool = False
     worker_id: str = ""
     worker_concurrency: int = Field(default=8, ge=1, le=64)
+    # Optional title, search and capability preparation work has its own small
+    # executor and SQL connection lane in Worker processes. This preserves
+    # Runtime progression and recovery capacity when helpers are backlogged.
+    auxiliary_task_worker_concurrency: int = Field(default=1, ge=1, le=4)
     # Formal OpenHands polling can block on an unhealthy Runtime. Keep its
     # executor and database pool deliberately separate from Runtime control
     # work so one stalled read cannot consume provision/recovery capacity.
     runtime_poll_worker_concurrency: int = Field(default=2, ge=1, le=16)
     task_lease_seconds: int = Field(default=30, ge=5)
     task_heartbeat_seconds: int = Field(default=10, ge=1)
+    # Lease renewals use short, independent connections. Bound their global
+    # Worker concurrency so many stalled tasks cannot fan out into a database
+    # connection surge merely to retain their leases.
+    task_heartbeat_concurrency: int = Field(default=2, ge=1, le=16)
     # The task ledger is an execution/audit window, not an unbounded event
     # store. Keep terminal rows long enough for operational diagnosis, then
     # reclaim them in small maintenance batches. Active and leased work is
@@ -147,6 +170,11 @@ class Settings(BaseSettings):
     # The independent Agent Workspace resolves this platform-owned reference
     # to a digest at bootstrap, then Runtime generations use only that digest.
     agent_workspace_runtime_image: str = "flowweave-openhands-runtime:1"
+    # Keep the interactive Agent Workspace capacity independent from generic
+    # Environment/FlowRun defaults. Existing deployments retain their current
+    # capacity unless these dedicated settings are explicitly raised.
+    agent_workspace_runtime_memory: str = "4g"
+    agent_workspace_runtime_cpus: float = Field(default=3.0, gt=0, le=16)
     terminal_environment_session_ttl_seconds: int = Field(default=14_400, ge=300, le=86_400)
     terminal_environment_cleanup_seconds: int = Field(default=30, ge=5, le=3600)
     # OpenHands usage is an absolute, conversation-owned counter.  Reconcile it

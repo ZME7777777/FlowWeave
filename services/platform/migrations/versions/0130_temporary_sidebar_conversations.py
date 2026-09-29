@@ -1,6 +1,6 @@
 """Add temporary linked sidebar conversations.
 
-Revision ID: 0130_temporary_sidebar_conversations
+Revision ID: 0130_tmp_sidebar_convos
 Revises: 0129_runtime_business_obs
 """
 
@@ -9,7 +9,7 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0130_temporary_sidebar_conversations"
+revision = "0130_tmp_sidebar_convos"
 down_revision = "0129_runtime_business_obs"
 branch_labels = None
 depends_on = None

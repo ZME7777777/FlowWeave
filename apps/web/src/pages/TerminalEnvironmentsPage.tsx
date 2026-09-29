@@ -36,7 +36,7 @@ function PublishEnvironmentDialog({
 }) {
   useEscapeClose(onCancel);
   const [description, setDescription] = useState('');
-  const [selected, setSelected] = useState<string[]>([]);
+  const [selected, setSelected] = useState<string[]>(['browser']);
   const toggle = (key: string) => setSelected(current => current.includes(key)
     ? current.filter(item => item !== key)
     : [...current, key]);
@@ -47,7 +47,7 @@ function PublishEnvironmentDialog({
   }}>
     <header><div><span className="eyebrow">RUNTIME CAPABILITIES</span><h2>发布环境版本</h2><small>选择要写入下一不可变 Runtime 镜像的受治理能力。</small></div><button type="button" className="ghost" onClick={onCancel}><X size={16}/>关闭</button></header>
     <label className="environment-publish-description">版本说明（可选）<textarea value={description} maxLength={2000} placeholder="例如：增加内部 PyPI 镜像和数据处理依赖" onChange={event => setDescription(event.target.value)}/></label>
-    <fieldset className="environment-capability-options"><legend>Runtime 能力</legend><p>不选择时发布最小 Runtime。选择项会冻结到版本 manifest，之后不能修改。</p>{RUNTIME_CAPABILITIES.map(capability => <label key={capability.key}><input type="checkbox" checked={selected.includes(capability.key)} onChange={() => toggle(capability.key)}/><span><b>{capability.label}</b><small>{capability.detail}</small></span></label>)}</fieldset>
+    <fieldset className="environment-capability-options"><legend>Runtime 能力</legend><p>Browser 默认启用；取消全部选择才会发布最小 Runtime。选择项会冻结到版本 manifest，之后不能修改。</p>{RUNTIME_CAPABILITIES.map(capability => <label key={capability.key}><input type="checkbox" checked={selected.includes(capability.key)} onChange={() => toggle(capability.key)}/><span><b>{capability.label}</b><small>{capability.detail}</small></span></label>)}</fieldset>
     <footer><button type="button" className="ghost" onClick={onCancel}>取消</button><button className="primary" disabled={busy}><Save size={14}/>{busy ? '提交中…' : '开始发布'}</button></footer>
   </form></div>;
 }

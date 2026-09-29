@@ -8,6 +8,7 @@ from uuid import uuid4
 from flowweave.runtime.base import (
     RuntimeAskAgentResult,
     RuntimeCondenser,
+    RuntimeConversationActivity,
     RuntimeConversationIdentity,
     RuntimeEvent,
     RuntimeEventBatch,
@@ -21,6 +22,7 @@ from flowweave.runtime.base import (
     RuntimeMCPOAuthStatus,
     RuntimeMCPProbeRequest,
     RuntimeMCPProbeResult,
+    RuntimeMessageSearchResult,
     RuntimePendingConfirmation,
     RuntimePluginValidationRequest,
     RuntimePluginValidationResult,
@@ -222,13 +224,20 @@ class MockRuntime:
                 return event
         return None
 
-    def search_message_events(self, handle: RuntimeHandle, query: str) -> tuple[RuntimeEvent, ...]:
+    def read_search_event(self, handle: RuntimeHandle, event_id: str) -> RuntimeEvent | None:
+        return self.read_event(handle, event_id)
+
+    def search_message_events(
+        self, handle: RuntimeHandle, query: str
+    ) -> RuntimeMessageSearchResult:
         needle = query.casefold()
-        return tuple(
-            event
-            for event in self._events.get(handle.job_id, ())
-            if event.event_type == "MESSAGE"
-            and needle in str(event.payload.get("content") or "").casefold()
+        return RuntimeMessageSearchResult(
+            events=tuple(
+                event
+                for event in self._events.get(handle.job_id, ())
+                if event.event_type == "MESSAGE"
+                and needle in str(event.payload.get("content") or "").casefold()
+            )
         )
 
     def switch_model(self, handle: RuntimeHandle, provider: RuntimeProvider) -> None:
@@ -304,6 +313,19 @@ class MockRuntime:
         }:
             status = "running"
         return RuntimeInputReadiness(ready=ready, execution_status=status)
+
+    def conversation_activity_snapshot(
+        self, handle: RuntimeHandle
+    ) -> dict[str, RuntimeConversationActivity]:
+        del handle
+        return {
+            conversation_id: RuntimeConversationActivity(
+                conversation_id=conversation_id,
+                execution_status=result.status.casefold(),
+                updated_at="1970-01-01T00:00:00+00:00",
+            )
+            for conversation_id, result in self._results.items()
+        }
 
     def running_conversation_ids(self, handle: RuntimeHandle) -> set[str]:
         return self.conversation_ids_by_status(handle, "running")

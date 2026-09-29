@@ -780,6 +780,8 @@ export interface AgentConversationActivity {
     binding_id: string;
     task_id: string;
     state: 'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'RETRY' | 'DEAD';
+    /** Safe server-side category; raw Runtime errors are never exposed. */
+    failure_reason?: 'runtime_rate_limited' | 'runtime_service_unavailable' | 'runtime_auth_failed' | 'runtime_request_rejected' | 'runtime_response_invalid' | 'runtime_timeout_unknown' | 'runtime_connection_unknown' | 'runtime_unavailable_unknown' | 'runtime_unknown' | null;
   }>;
   /** Read-only formal-event projection; no conversation state is changed. */
   possibly_stuck_binding_ids?: string[];
@@ -797,11 +799,18 @@ export interface AgentConversationSearchHit {
 export interface AgentConversationSearch {
   id: string;
   query: string;
+  /** `null` means every workspace; otherwise only these work-directory groups. */
+  work_directory_ids?: string[] | null;
+  include_root?: boolean;
   state: 'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'FAILED';
+  /** Newest results are available, but the low-priority scan stopped at its safety budget. */
+  is_partial?: boolean;
+  partial_summary?: string | null;
   failure_summary?: string | null;
   created_at: string;
   completed_at?: string | null;
   hits?: AgentConversationSearchHit[];
+  next_cursor?: string | null;
 }
 export interface AgentSessionWorkDirectory {
   id: string;

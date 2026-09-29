@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 from dataclasses import replace
@@ -35,6 +36,7 @@ from flowweave.runtime.base import (
     RuntimeAgentSpec,
     RuntimeBudgets,
     RuntimeCondenser,
+    RuntimeConversationActivity,
     RuntimeConversationRuntime,
     RuntimeCritic,
     RuntimeHandle,
@@ -54,6 +56,7 @@ from flowweave.runtime.base import (
     StartAttemptRequest,
 )
 from flowweave.runtime.openhands import OpenHandsRuntime
+from flowweave.runtime.read_budget import hydration_read_budget
 from flowweave.runtime.request import build_runtime_request
 from flowweave.shared.errors import DomainError
 from flowweave.shared.infrastructure import docker_controller as docker_controller_module
@@ -63,6 +66,7 @@ from flowweave.shared.infrastructure.http_transport import (
     register_http_transport,
     unregister_http_transport,
 )
+from flowweave.shared.observability import Metrics, bind_metrics, reset_metrics
 from flowweave.shared.schemas import WebsiteCredentialWrite
 
 
@@ -891,6 +895,69 @@ def test_openhands_runtime_status_routes_are_discovered_and_reprovision_is_expli
     ]
 
 
+def test_openhands_activity_snapshot_paginates_and_normalizes_native_ids(
+    openhands_settings, monkeypatch
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    requests: list[dict[str, str | int]] = []
+    pages = iter(
+        (
+            {
+                "items": [
+                    {
+                        "id": "10000000000040008000000000000001",
+                        "execution_status": "RUNNING",
+                        "updated_at": "2026-09-28T00:00:00Z",
+                    }
+                ],
+                "next_page_id": "next-activity-page",
+            },
+            {
+                "items": [
+                    {
+                        "id": "invalid-native-id",
+                        "execution_status": "RUNNING",
+                        "updated_at": "2026-09-28T00:00:00Z",
+                    },
+                    {
+                        "id": "10000000-0000-4000-8000-000000000002",
+                        "execution_status": "ERROR",
+                        "updated_at": "2026-09-28T00:01:00+00:00",
+                    },
+                ],
+                "next_page_id": None,
+            },
+        )
+    )
+
+    def fake_request(method: str, path: str, **kwargs: object) -> dict[str, object]:
+        assert method == "GET"
+        assert path == "/api/conversations/activity"
+        params = kwargs.get("params")
+        assert isinstance(params, dict)
+        requests.append(params)
+        return next(pages)
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+
+    assert runtime.conversation_activity_snapshot(_handle()) == {
+        "10000000-0000-4000-8000-000000000001": RuntimeConversationActivity(
+            conversation_id="10000000-0000-4000-8000-000000000001",
+            execution_status="running",
+            updated_at="2026-09-28T00:00:00Z",
+        ),
+        "10000000-0000-4000-8000-000000000002": RuntimeConversationActivity(
+            conversation_id="10000000-0000-4000-8000-000000000002",
+            execution_status="error",
+            updated_at="2026-09-28T00:01:00+00:00",
+        ),
+    }
+    assert requests == [
+        {"limit": 100},
+        {"limit": 100, "page_id": "next-activity-page"},
+    ]
+
+
 def test_openhands_lists_every_native_running_conversation(openhands_settings, monkeypatch):
     runtime = OpenHandsRuntime(openhands_settings)
     requests: list[dict[str, str | int]] = []
@@ -929,6 +996,24 @@ def test_openhands_lists_every_native_running_conversation(openhands_settings, m
         {"status": "running", "limit": 100},
         {"status": "running", "limit": 100, "page_id": "next-running-page"},
     ]
+
+
+def test_runtime_provider_separates_control_build_and_observation_capacity() -> None:
+    source = Path("src/flowweave/bootstrap/runtime_provider.py").read_text()
+
+    for executor in ("control_executor", "build_executor", "observe_executor"):
+        assert executor in source
+    assert "context = copy_context()" in source
+    assert "context.run(call, *args, **kwargs)" in source
+    assert "return await run_observe(_admin_observability_snapshot, configured)" in source
+    assert "DockerSandboxProvider(configured).ensure_running" in source
+    assert "bundle = await run_build(builder.build, payload.dependencies)" in source
+    assert "managed_container_ids" in source
+    assert "[:12] not in managed_container_ids" in source
+    provider_routes = source[
+        source.index("async def ensure(") : source.index('@app.post("/v1/terminals/start")')
+    ]
+    assert "asyncio.to_thread" not in provider_routes
 
 
 def test_openhands_preserves_agent_workspace_selected_subdirectory(openhands_settings):
@@ -980,6 +1065,18 @@ async def test_openhands_uses_the_container_owned_http_transport(openhands_setti
         assert runtime._transport() is transport
     finally:
         unregister_http_transport(openhands_settings, transport)
+        await transport.aclose()
+
+
+@pytest.mark.asyncio
+async def test_openhands_background_search_uses_an_isolated_five_minute_transport():
+    transport = HttpTransportPool.build()
+    try:
+        assert transport.background is not transport.regular
+        assert transport.background.timeout.read == 300
+        assert transport.background.timeout.pool == 300
+        assert transport.background._transport._pool._max_connections == 4  # pyright: ignore[reportPrivateUsage]
+    finally:
         await transport.aclose()
 
 
@@ -1553,10 +1650,11 @@ def test_openhands_searches_native_message_events_with_body_pagination(
 
     monkeypatch.setattr(runtime, "_request", request)
 
-    events = runtime.search_message_events(_handle(), "opensdk")
+    result = runtime.search_message_events(_handle(), "opensdk")
 
-    assert [event.cursor for event in events] == ["assistant-hit", "user-hit"]
-    assert all(event.event_type == "MESSAGE" for event in events)
+    assert [event.cursor for event in result.events] == ["assistant-hit", "user-hit"]
+    assert not result.truncated
+    assert all(event.event_type == "MESSAGE" for event in result.events)
     assert calls[0]["params"] == {
         "body": "opensdk",
         "limit": 100,
@@ -1568,6 +1666,10 @@ def test_openhands_searches_native_message_events_with_body_pagination(
         "sort_order": "TIMESTAMP_DESC",
         "page_id": "older-page",
     }
+    assert [call["timeout"] for call in calls] == [
+        openhands_settings.runtime_background_search_page_timeout_seconds,
+        openhands_settings.runtime_background_search_page_timeout_seconds,
+    ]
 
 
 def test_openhands_rejects_event_by_id_identity_drift(openhands_settings, monkeypatch):
@@ -1602,6 +1704,54 @@ def test_openhands_returns_none_for_missing_event_by_id(openhands_settings, monk
     assert runtime.read_event(_handle(), "evicted-browser-event") is None
     assert len(calls) == 1
     assert calls[0]["missing_ok"] is True
+
+
+def test_openhands_reload_uses_latest_event_when_error_leaf_is_not_routable(
+    openhands_settings, monkeypatch
+):
+    """A persisted non-tree error leaf does not make its Conversation missing."""
+    runtime = OpenHandsRuntime(openhands_settings)
+    handle = _handle()
+    calls: list[str] = []
+    monkeypatch.setattr(
+        runtime,
+        "_conversation_state",
+        lambda _handle: {
+            "leaf_event_id": "error-leaf",
+            "workspace": {"working_dir": handle.workspace_root},
+            "persistence_dir": "/runtime/state/conversations/10000000000040008000000000000002",
+        },
+    )
+
+    def request(method, path, **_kwargs):
+        assert method == "GET"
+        calls.append(path)
+        if path.endswith("/events/error-leaf"):
+            raise DomainError(
+                "RUNTIME_CONVERSATION_MISSING",
+                "The original OpenHands Conversation is unavailable and cannot be replaced",
+                409,
+            )
+        assert path.endswith("/events/search")
+        return {
+            "items": [
+                {
+                    "id": "latest-formal-event",
+                    "parent_id": "prior-event",
+                }
+            ]
+        }
+
+    monkeypatch.setattr(runtime, "_request", request)
+
+    identity = runtime.reload_conversation(handle)
+
+    assert identity.conversation_id == handle.conversation_id
+    assert identity.event_id == "latest-formal-event"
+    assert calls == [
+        f"/api/conversations/{handle.conversation_id}/events/error-leaf",
+        f"/api/conversations/{handle.conversation_id}/events/search",
+    ]
 
 
 def test_openhands_maps_missing_delete_conversation_400_to_idempotent_missing(
@@ -6016,6 +6166,125 @@ def test_openhands_routes_agent_workspace_rename_and_delete(openhands_settings, 
         )
 
 
+def test_formal_reads_are_isolated_by_generation_and_preserve_one_peer_slot(
+    openhands_settings, monkeypatch
+):
+    configured = openhands_settings.model_copy(
+        update={
+            "runtime_read_per_runtime_concurrency": 2,
+            "runtime_read_slot_timeout_seconds": 0.05,
+        }
+    )
+    runtime = OpenHandsRuntime(configured)
+    handle_a = _handle()
+    handle_b = replace(handle_a, conversation_id="20000000-0000-4000-8000-000000000001")
+    handle_other_runtime = replace(handle_a, job_id="env-exec:fw-sbx-flow-run-2")
+    started_a = Event()
+    started_b = Event()
+    release = Event()
+    metrics = Metrics()
+
+    def runtime_url(handle: RuntimeHandle) -> str:
+        return f"http://{handle.job_id.removeprefix('env-exec:')}:8000"
+
+    monkeypatch.setattr(runtime, "_base_url_for_handle", runtime_url)
+
+    def blocked_read(handle: RuntimeHandle, started: Event) -> None:
+        token = bind_metrics(metrics)
+        try:
+            with runtime._formal_read_bulkhead(handle):  # pyright: ignore[reportPrivateUsage]
+                started.set()
+                assert release.wait(timeout=1)
+        finally:
+            reset_metrics(token)
+
+    token = bind_metrics(metrics)
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            blocked_a = executor.submit(blocked_read, handle_a, started_a)
+            blocked_b = executor.submit(blocked_read, handle_b, started_b)
+            assert started_a.wait(timeout=1)
+            assert started_b.wait(timeout=1)
+            # A and B occupy the two slots of one Runtime generation. A third
+            # read is rejected locally rather than queueing behind their stall.
+            with pytest.raises(DomainError) as caught:
+                with runtime._formal_read_bulkhead(handle_b):  # pyright: ignore[reportPrivateUsage]
+                    raise AssertionError("the Runtime bulkhead should reject the third read")
+            assert caught.value.code == "RUNTIME_READ_PER_RUNTIME_SATURATED"
+            # A different Runtime generation remains available despite A/B.
+            with runtime._formal_read_bulkhead(handle_other_runtime):  # pyright: ignore[reportPrivateUsage]
+                pass
+            release.set()
+            blocked_a.result(timeout=1)
+            blocked_b.result(timeout=1)
+    finally:
+        reset_metrics(token)
+
+    rendered = metrics.render()
+    assert "flowweave_runtime_formal_read_active 0" in rendered
+    assert "flowweave_runtime_formal_read_capacity 4" in rendered
+    assert "flowweave_runtime_formal_read_generations 2" in rendered
+
+
+def test_reload_reserves_same_generation_formal_read_slot(openhands_settings, monkeypatch):
+    runtime = OpenHandsRuntime(
+        openhands_settings.model_copy(
+            update={
+                "runtime_read_per_runtime_concurrency": 1,
+                "runtime_read_slot_timeout_seconds": 0.02,
+            }
+        )
+    )
+    handle = _handle()
+    started = Event()
+    release = Event()
+    monkeypatch.setattr(runtime, "_base_url_for_handle", lambda _handle: "http://runtime:8000")
+
+    def blocked_reload(_handle, *, expected=None):
+        started.set()
+        assert release.wait(timeout=1)
+        return None
+
+    monkeypatch.setattr(runtime, "_reload_conversation", blocked_reload)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(runtime.reload_conversation, handle)
+        assert started.wait(timeout=1)
+        try:
+            with pytest.raises(DomainError) as caught:
+                with runtime._formal_read_bulkhead(handle):  # pyright: ignore[reportPrivateUsage]
+                    pass
+            assert caught.value.code == "RUNTIME_READ_PER_RUNTIME_SATURATED"
+        finally:
+            release.set()
+        future.result(timeout=1)
+
+
+def test_hydration_deadline_is_shared_by_successive_native_requests(
+    openhands_settings, monkeypatch
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    timeouts: list[float] = []
+
+    class SlowClient:
+        def request(self, method, url, **kwargs):
+            timeouts.append(kwargs["timeout"])
+            time.sleep(0.05 if len(timeouts) == 1 else 0.12)
+            return httpx.Response(200, json={}, request=httpx.Request(method, url))
+
+    monkeypatch.setattr(runtime, "_transport", lambda: SimpleNamespace(regular=SlowClient()))
+    with hydration_read_budget(0.15):
+        runtime._request(  # pyright: ignore[reportPrivateUsage]
+            "GET", "/first", base_url="http://runtime:8000", session_api_key="test"
+        )
+        with pytest.raises(DomainError) as caught:
+            runtime._request(  # pyright: ignore[reportPrivateUsage]
+                "GET", "/second", base_url="http://runtime:8000", session_api_key="test"
+            )
+    assert caught.value.code == "RUNTIME_BUSINESS_READ_TIMEOUT"
+    assert len(timeouts) == 2
+    assert 0 < timeouts[1] < timeouts[0] <= 0.15
+
+
 def test_formal_reads_are_bounded_per_runtime_generation(openhands_settings, monkeypatch):
     configured = openhands_settings.model_copy(
         update={
@@ -6053,6 +6322,34 @@ def test_formal_reads_are_bounded_per_runtime_generation(openhands_settings, mon
         blocked.result(timeout=1)
 
 
+def test_background_search_yields_to_active_formal_reads(openhands_settings, monkeypatch):
+    runtime = OpenHandsRuntime(openhands_settings)
+    handle = _handle()
+    monkeypatch.setattr(runtime, "_base_url_for_handle", lambda _handle: "http://runtime:8000")
+    formal_started = Event()
+    release_formal = Event()
+    background_finished = Event()
+
+    def formal_read() -> None:
+        with runtime._formal_read_bulkhead(handle):  # pyright: ignore[reportPrivateUsage]
+            formal_started.set()
+            assert release_formal.wait(timeout=1)
+
+    def background_wait() -> None:
+        runtime._yield_background_search_to_formal_reads(handle)  # pyright: ignore[reportPrivateUsage]
+        background_finished.set()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        formal = executor.submit(formal_read)
+        assert formal_started.wait(timeout=1)
+        background = executor.submit(background_wait)
+        assert not background_finished.wait(timeout=0.1)
+        release_formal.set()
+        formal.result(timeout=1)
+        background.result(timeout=1)
+        assert background_finished.is_set()
+
+
 def test_formal_read_timeout_has_a_stable_business_code(openhands_settings, monkeypatch):
     runtime = OpenHandsRuntime(openhands_settings)
     handle = _handle()
@@ -6067,3 +6364,62 @@ def test_formal_read_timeout_has_a_stable_business_code(openhands_settings, monk
     with pytest.raises(DomainError) as caught:
         runtime.conversation_runtime(handle)
     assert caught.value.code == "RUNTIME_BUSINESS_READ_TIMEOUT"
+
+
+def test_openhands_background_search_reads_all_native_pages(openhands_settings, monkeypatch):
+    runtime = OpenHandsRuntime(openhands_settings)
+    calls: list[dict[str, object]] = []
+
+    def request(*_args, **kwargs):
+        calls.append(kwargs)
+        return {
+            "items": [],
+            "next_page_id": f"page-{len(calls)}" if len(calls) < 9 else None,
+        }
+
+    monkeypatch.setattr(runtime, "_request", request)
+    result = runtime.search_message_events(_handle(), "needle")
+
+    assert result.events == ()
+    assert not result.truncated
+    assert len(calls) == 9
+
+
+def test_openhands_background_search_returns_all_native_matches(openhands_settings, monkeypatch):
+    runtime = OpenHandsRuntime(openhands_settings)
+    items = [
+        {
+            "kind": "MessageEvent",
+            "id": f"event-{index}",
+            "source": "user",
+            "llm_message": {"role": "user", "content": f"needle {index}"},
+        }
+        for index in range(101)
+    ]
+    monkeypatch.setattr(
+        runtime,
+        "_request",
+        lambda *_args, **_kwargs: {
+            "items": items,
+            "next_page_id": None,
+        },
+    )
+
+    result = runtime.search_message_events(_handle(), "needle")
+
+    assert [event.cursor for event in result.events] == [f"event-{index}" for index in range(101)]
+    assert not result.truncated
+
+
+def test_openhands_background_search_finishes_when_native_pagination_ends(
+    openhands_settings, monkeypatch
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    monkeypatch.setattr(
+        runtime, "_request", lambda *_args, **_kwargs: {"items": [], "next_page_id": None}
+    )
+
+    result = runtime.search_message_events(_handle(), "needle")
+
+    assert result.events == ()
+    assert not result.truncated

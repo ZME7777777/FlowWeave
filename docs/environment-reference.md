@@ -29,7 +29,10 @@
 | 变量 | 用途 |
 | --- | --- |
 | `RUNTIME_ADAPTER` | 正常运行使用 `openhands`；`mock` 只用于明确的测试。 |
+| `RUNTIME_BACKGROUND_SEARCH_PER_RUNTIME_CONCURRENCY` / `RUNTIME_BACKGROUND_SEARCH_SLOT_TIMEOUT_SECONDS` / `RUNTIME_BACKGROUND_SEARCH_PAGE_TIMEOUT_SECONDS` | 会话全文搜索每个 Runtime 的后台并发、排队等待及单页请求最长时间；默认 `1`／`300`／`300` 秒。搜索使用独立 HTTP 连接池，不占用 hydration 的正式读取舱壁；hydration 活跃时搜索会在下一页前让出。 |
+| 会话搜索结果 | 搜索没有会话数、页数或命中数上限；它会以低优先级逐页遍历所选工作区的完整原生 EventLog，直到结果结束。每个 Runtime 同时只允许一个搜索，每页最多 `2` 秒且 hydration 活跃时先让出，因此搜索可能较慢，但不会因数量上限而遗漏较早结果。 |
 | `AGENT_WORKSPACE_RUNTIME_IMAGE` | Agent Workspace 使用的固定 Runtime image。 |
+| `AGENT_WORKSPACE_RUNTIME_MEMORY` / `AGENT_WORKSPACE_RUNTIME_CPUS` | Agent Workspace 专属内存／CPU 限额；默认分别为 `4g`、`3.0`，不影响 FlowRun 或 Environment Runtime。 |
 | `OPENHANDS_RUNTIME_BUILDER_IMAGE` | 发布 Environment Version 时用于官方 OpenHands 构建链的镜像。 |
 | `SANDBOX_MANAGER_SCOPE` | Runtime Provider 所管理资源的作用域标签。 |
 | `SANDBOX_RUNTIME_IDLE_TTL_SECONDS` / `SANDBOX_RUNTIME_HARD_TTL_SECONDS` | 可控 Runtime 的空闲/硬性存活上限。 |

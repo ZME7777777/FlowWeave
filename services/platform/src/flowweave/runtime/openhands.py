@@ -30,6 +30,7 @@ from flowweave.runtime.base import (
     RuntimeAskAgentResult,
     RuntimeCondenser,
     RuntimeContract,
+    RuntimeConversationActivity,
     RuntimeConversationIdentity,
     RuntimeConversationRuntime,
     RuntimeEvent,
@@ -46,6 +47,7 @@ from flowweave.runtime.base import (
     RuntimeMCPOAuthStatus,
     RuntimeMCPProbeRequest,
     RuntimeMCPProbeResult,
+    RuntimeMessageSearchResult,
     RuntimePendingAction,
     RuntimePendingConfirmation,
     RuntimePluginValidationRequest,
@@ -62,6 +64,7 @@ from flowweave.runtime.base import (
 )
 from flowweave.runtime.contract import OPTIONAL_HTTP_OPERATIONS
 from flowweave.runtime.model_catalog import declared_context_window
+from flowweave.runtime.read_budget import hydration_time_left
 from flowweave.shared.errors import DomainError
 from flowweave.shared.infrastructure.docker_controller import (
     DockerControllerClient,
@@ -90,6 +93,8 @@ _EVENT_HISTORY_PAGE_SIZE = 100
 # within its shared interactive read deadline. Older history remains available
 # through the explicit page endpoint and durable session replay.
 _EVENT_HISTORY_MAX_PAGES = 8
+# Activity polling is bounded even if a malformed native cursor keeps advancing.
+_CONVERSATION_ACTIVITY_MAX_PAGES = 8
 _CONVERSATION_STATE_PATH = re.compile(r"^/api/conversations/[^/]+$")
 _CONVERSATION_EVENTS_SEARCH_PATH = re.compile(r"^/api/conversations/[^/]+/events/search$")
 _CONVERSATION_EVENT_BY_ID_PATH = re.compile(r"^/api/conversations/[^/]+/events/[^/]+$")
@@ -347,6 +352,12 @@ class OpenHandsRuntime:
         self._formal_read_slots: dict[str, threading.BoundedSemaphore] = {}
         self._formal_read_slots_lock = threading.Lock()
         self._formal_read_depth = threading.local()
+        self._formal_read_active: dict[str, int] = {}
+        # Historical full-text scans are explicitly lower priority than formal
+        # browser reads. They use a separate one-at-a-time bulkhead and a
+        # short page timeout, rather than occupying the hydration bulkhead.
+        self._background_search_slots: dict[str, threading.BoundedSemaphore] = {}
+        self._background_search_slots_lock = threading.Lock()
 
     def _transport(self) -> HttpTransportPool:
         if self._http_transport is None:
@@ -762,6 +773,7 @@ class OpenHandsRuntime:
         path: str,
         *,
         missing_ok: bool = False,
+        background: bool = False,
         base_url: str,
         session_api_key: str,
         **kwargs: Any,
@@ -769,12 +781,17 @@ class OpenHandsRuntime:
         started_at = time.monotonic()
         outcome = "error"
         try:
-            response = self._transport().regular.request(
+            remaining = hydration_time_left()
+            if remaining is not None:
+                kwargs["timeout"] = min(float(kwargs.get("timeout", 30.0)), remaining)
+            client = self._transport().background if background else self._transport().regular
+            response = client.request(
                 method,
                 f"{base_url.rstrip('/')}{path}",
                 headers={"X-Session-API-Key": session_api_key},
                 **kwargs,
             )
+            hydration_time_left()
             if missing_ok and response.status_code == 404:
                 return {"_flowweave_missing": True}
             response.raise_for_status()
@@ -849,20 +866,20 @@ class OpenHandsRuntime:
                     "RUNTIME_BUSINESS_READ_TIMEOUT",
                     "OpenHands formal Runtime read exceeded its deadline",
                     504,
-                    {"outcome_unknown": True},
+                    {"outcome_unknown": True, "transport_failure": "timeout"},
                 ) from exc
             raise DomainError(
                 "EXECUTOR_UNAVAILABLE",
                 "OpenHands Agent Server request exceeded its deadline",
                 503,
-                {"outcome_unknown": True},
+                {"outcome_unknown": True, "transport_failure": "timeout"},
             ) from exc
         except httpx.HTTPError as exc:
             raise DomainError(
                 "EXECUTOR_UNAVAILABLE",
                 "OpenHands Agent Server connection was interrupted before a response",
                 503,
-                {"outcome_unknown": True},
+                {"outcome_unknown": True, "transport_failure": "connection"},
             ) from exc
         except ValueError as exc:
             raise DomainError(
@@ -2217,6 +2234,22 @@ class OpenHandsRuntime:
             cls._formal_identity(item.get("tool_call_id"), field="tool_call_id", required=False),
         )
 
+    def _record_formal_read_bulkhead_metrics(self) -> None:
+        """Publish aggregate bulkhead pressure without Runtime-identifying labels."""
+
+        metrics = current_metrics()
+        if metrics is None:
+            return
+        with self._formal_read_slots_lock:
+            active = sum(self._formal_read_active.values())
+            generations = len(self._formal_read_slots)
+        metrics.gauge("flowweave_runtime_formal_read_active", active)
+        metrics.gauge(
+            "flowweave_runtime_formal_read_capacity",
+            generations * self.settings.runtime_read_per_runtime_concurrency,
+        )
+        metrics.gauge("flowweave_runtime_formal_read_generations", generations)
+
     @contextmanager
     def _formal_read_bulkhead(self, handle: RuntimeHandle) -> Iterator[None]:
         """Bound formal state reads for one Runtime generation.
@@ -2254,9 +2287,15 @@ class OpenHandsRuntime:
                     self.settings.runtime_read_per_runtime_concurrency
                 )
                 self._formal_read_slots[key] = slot
-        if not slot.acquire(timeout=self.settings.runtime_read_slot_timeout_seconds):
+        remaining = hydration_time_left()
+        slot_timeout = self.settings.runtime_read_slot_timeout_seconds
+        if remaining is not None:
+            slot_timeout = min(slot_timeout, remaining)
+        if not slot.acquire(timeout=slot_timeout):
+            hydration_time_left()
             if metrics := current_metrics():
                 metrics.increment("flowweave_runtime_read_bulkhead_saturated_total")
+            self._record_formal_read_bulkhead_metrics()
             raise DomainError(
                 "RUNTIME_READ_PER_RUNTIME_SATURATED",
                 "This Runtime has too many active formal reads; retry shortly",
@@ -2264,11 +2303,63 @@ class OpenHandsRuntime:
                 {"outcome_unknown": False},
             )
         depths[key] = 1
+        with self._formal_read_slots_lock:
+            self._formal_read_active[key] = self._formal_read_active.get(key, 0) + 1
+        self._record_formal_read_bulkhead_metrics()
         try:
             yield
         finally:
             depths.pop(key, None)
+            with self._formal_read_slots_lock:
+                remaining_active = self._formal_read_active.get(key, 1) - 1
+                if remaining_active:
+                    self._formal_read_active[key] = remaining_active
+                else:
+                    self._formal_read_active.pop(key, None)
             slot.release()
+            self._record_formal_read_bulkhead_metrics()
+
+    @contextmanager
+    def _background_search_bulkhead(self, handle: RuntimeHandle) -> Iterator[None]:
+        """Allow one short, low-priority event search per Runtime generation."""
+
+        key = self._base_url_for_handle(handle)
+        with self._background_search_slots_lock:
+            slot = self._background_search_slots.get(key)
+            if slot is None:
+                slot = threading.BoundedSemaphore(
+                    self.settings.runtime_background_search_per_runtime_concurrency
+                )
+                self._background_search_slots[key] = slot
+        # A complete background scan queues behind the existing search rather
+        # than failing after the former 0.1-second deadline. It remains bounded
+        # so a lost Runtime request cannot strand the Worker indefinitely.
+        if not slot.acquire(timeout=self.settings.runtime_background_search_slot_timeout_seconds):
+            if metrics := current_metrics():
+                metrics.increment("flowweave_runtime_background_search_bulkhead_saturated_total")
+            raise DomainError(
+                "RUNTIME_BACKGROUND_SEARCH_QUEUE_TIMEOUT",
+                "Background conversation search waited too long for its Runtime",
+                503,
+                {"outcome_unknown": False},
+            )
+        try:
+            yield
+        finally:
+            slot.release()
+
+    def _yield_background_search_to_formal_reads(self, handle: RuntimeHandle) -> None:
+        """Keep the next low-priority search page behind active hydration reads."""
+
+        key = self._base_url_for_handle(handle)
+        while True:
+            with self._formal_read_slots_lock:
+                if not self._formal_read_active.get(key, 0):
+                    return
+            # At most one short search request is in flight. Once it returns,
+            # yield between pages until browser hydration drains instead of
+            # adding another native EventLog request.
+            time.sleep(0.025)
 
     def _conversation_state(
         self, handle: RuntimeHandle, *, timeout: float | None = None
@@ -2451,6 +2542,15 @@ class OpenHandsRuntime:
     ) -> RuntimeConversationIdentity:
         """Hydrate one persisted Conversation by its original OpenHands identity."""
 
+        with self._formal_read_bulkhead(handle):
+            return self._reload_conversation(handle, expected=expected)
+
+    def _reload_conversation(
+        self,
+        handle: RuntimeHandle,
+        *,
+        expected: RuntimeConversationIdentity | None = None,
+    ) -> RuntimeConversationIdentity:
         if expected is not None and expected.conversation_id != handle.conversation_id:
             raise DomainError(
                 "RUNTIME_RELOAD_IDENTITY_MISMATCH",
@@ -2469,20 +2569,33 @@ class OpenHandsRuntime:
         )
         event: dict[str, Any] | None = None
         if probe_event_id is not None:
-            event = self._request(
-                "GET",
-                f"/api/conversations/{handle.conversation_id}/events/{probe_event_id}",
-                base_url=self._base_url_for_handle(handle),
-                session_api_key=self._session_key_for_handle(handle),
-            )
-            if str(event.get("id") or "") != probe_event_id:
+            try:
+                event = self._request(
+                    "GET",
+                    f"/api/conversations/{handle.conversation_id}/events/{probe_event_id}",
+                    base_url=self._base_url_for_handle(handle),
+                    session_api_key=self._session_key_for_handle(handle),
+                )
+            except DomainError as exc:
+                # A restored Conversation can retain a non-tree terminal
+                # ConversationErrorEvent as ``leaf_event_id``.  The native
+                # state route has already loaded the Conversation, but that
+                # artifact is intentionally unavailable from the per-event
+                # route.  For ordinary history reads, use the latest formal
+                # event window instead of treating the whole Conversation as
+                # missing.  Strict callers that supplied an expected identity
+                # keep their fail-closed behavior.
+                if exc.code != "RUNTIME_CONVERSATION_MISSING" or expected is not None:
+                    raise
+                probe_event_id = None
+            if event is not None and str(event.get("id") or "") != probe_event_id:
                 raise DomainError(
                     "RUNTIME_EVENT_IDENTITY_DRIFT",
                     "OpenHands reloaded a different event identity",
                     409,
                     {"conversation_id": handle.conversation_id},
                 )
-        else:
+        if probe_event_id is None:
             page = self._request(
                 "GET",
                 f"/api/conversations/{handle.conversation_id}/events/search",
@@ -3925,7 +4038,14 @@ class OpenHandsRuntime:
             readiness=self._input_readiness_from_state(state) if state is not None else None,
         )
 
-    def read_event(self, handle: RuntimeHandle, event_id: str) -> RuntimeEvent | None:
+    def _read_event(
+        self,
+        handle: RuntimeHandle,
+        event_id: str,
+        *,
+        timeout: float | None = None,
+        background: bool = False,
+    ) -> RuntimeEvent | None:
         """Read one formal event identity without scanning a history window.
 
         OpenHands scopes this endpoint to the supplied Conversation, so the
@@ -3936,12 +4056,15 @@ class OpenHandsRuntime:
 
         validated_event_id = self._formal_identity(event_id, field="id", required=True)
         assert validated_event_id is not None
+        request_options: dict[str, Any] = {"timeout": timeout} if timeout is not None else {}
         item = self._request(
             "GET",
             f"/api/conversations/{handle.conversation_id}/events/{validated_event_id}",
             missing_ok=True,
+            background=background,
             base_url=self._base_url_for_handle(handle),
             session_api_key=self._session_key_for_handle(handle),
+            **request_options,
         )
         if item.get("_flowweave_missing") is True:
             return None
@@ -3957,7 +4080,26 @@ class OpenHandsRuntime:
             payload=self._event_payload(item),
         )
 
-    def search_message_events(self, handle: RuntimeHandle, query: str) -> tuple[RuntimeEvent, ...]:
+    def read_event(self, handle: RuntimeHandle, event_id: str) -> RuntimeEvent | None:
+        """Read one formal event for an interactive conversation operation."""
+
+        return self._read_event(handle, event_id)
+
+    def read_search_event(self, handle: RuntimeHandle, event_id: str) -> RuntimeEvent | None:
+        """Read a durable search hit without entering the interactive read lane."""
+
+        with self._background_search_bulkhead(handle):
+            self._yield_background_search_to_formal_reads(handle)
+            return self._read_event(
+                handle,
+                event_id,
+                background=True,
+                timeout=self.settings.runtime_background_search_page_timeout_seconds,
+            )
+
+    def search_message_events(
+        self, handle: RuntimeHandle, query: str
+    ) -> RuntimeMessageSearchResult:
         """Search one native EventLog without creating a FlowWeave transcript copy.
 
         The fixed Agent Server owns filtering and pagination. This is a
@@ -3967,68 +4109,72 @@ class OpenHandsRuntime:
 
         needle = query.strip()
         if not needle:
-            return ()
+            return RuntimeMessageSearchResult()
         base_url = self._base_url_for_handle(handle)
         session_api_key = self._session_key_for_handle(handle)
         page_id: str | None = None
         seen_page_ids: set[str] = set()
         seen_event_ids: set[str] = set()
         matches: list[RuntimeEvent] = []
-        while True:
-            if page_id is not None:
-                if page_id in seen_page_ids:
+        with self._background_search_bulkhead(handle):
+            while True:
+                self._yield_background_search_to_formal_reads(handle)
+                if page_id is not None:
+                    if page_id in seen_page_ids:
+                        raise DomainError(
+                            "RUNTIME_EVENT_IDENTITY_INVALID",
+                            "OpenHands returned a cyclic event-search continuation",
+                            502,
+                        )
+                    seen_page_ids.add(page_id)
+                params: dict[str, str | int] = {
+                    "body": needle,
+                    "limit": _EVENT_HISTORY_PAGE_SIZE,
+                    "sort_order": "TIMESTAMP_DESC",
+                }
+                if page_id is not None:
+                    params["page_id"] = page_id
+                page = self._request(
+                    "GET",
+                    f"/api/conversations/{handle.conversation_id}/events/search",
+                    background=True,
+                    base_url=base_url,
+                    session_api_key=session_api_key,
+                    params=params,
+                    timeout=self.settings.runtime_background_search_page_timeout_seconds,
+                )
+                raw_items = page.get("items", [])
+                if not isinstance(raw_items, list) or any(
+                    not isinstance(item, dict) for item in cast(list[object], raw_items)
+                ):
                     raise DomainError(
                         "RUNTIME_EVENT_IDENTITY_INVALID",
-                        "OpenHands returned a cyclic event-search continuation",
+                        "OpenHands returned an invalid event-search page",
                         502,
                     )
-                seen_page_ids.add(page_id)
-            params: dict[str, str | int] = {
-                "body": needle,
-                "limit": _EVENT_HISTORY_PAGE_SIZE,
-                "sort_order": "TIMESTAMP_DESC",
-            }
-            if page_id is not None:
-                params["page_id"] = page_id
-            page = self._request(
-                "GET",
-                f"/api/conversations/{handle.conversation_id}/events/search",
-                base_url=base_url,
-                session_api_key=session_api_key,
-                params=params,
-            )
-            raw_items = page.get("items", [])
-            if not isinstance(raw_items, list) or any(
-                not isinstance(item, dict) for item in cast(list[object], raw_items)
-            ):
-                raise DomainError(
-                    "RUNTIME_EVENT_IDENTITY_INVALID",
-                    "OpenHands returned an invalid event-search page",
-                    502,
-                )
-            for raw in cast(list[object], raw_items):
-                item = cast(dict[str, Any], raw)
-                event_id = self._event_identity(item)[0]
-                if event_id in seen_event_ids:
-                    continue
-                seen_event_ids.add(event_id)
-                event = RuntimeEvent(
-                    cursor=event_id,
-                    event_type=self._event_type(item),
-                    payload=self._event_payload(item),
-                )
-                source = str(event.payload.get("source") or "").lower()
-                content = str(event.payload.get("content") or "")
-                if (
-                    event.event_type == "MESSAGE"
-                    and source in {"user", "human", "agent", "assistant"}
-                    and needle.casefold() in content.casefold()
-                ):
-                    matches.append(event)
-            next_page_id = page.get("next_page_id")
-            if not isinstance(next_page_id, str) or not next_page_id:
-                return tuple(matches)
-            page_id = self._formal_identity(next_page_id, field="next_page_id", required=True)
+                for raw in cast(list[object], raw_items):
+                    item = cast(dict[str, Any], raw)
+                    event_id = self._event_identity(item)[0]
+                    if event_id in seen_event_ids:
+                        continue
+                    seen_event_ids.add(event_id)
+                    event = RuntimeEvent(
+                        cursor=event_id,
+                        event_type=self._event_type(item),
+                        payload=self._event_payload(item),
+                    )
+                    source = str(event.payload.get("source") or "").lower()
+                    content = str(event.payload.get("content") or "")
+                    if (
+                        event.event_type == "MESSAGE"
+                        and source in {"user", "human", "agent", "assistant"}
+                        and needle.casefold() in content.casefold()
+                    ):
+                        matches.append(event)
+                next_page_id = page.get("next_page_id")
+                if not isinstance(next_page_id, str) or not next_page_id:
+                    return RuntimeMessageSearchResult(events=tuple(matches))
+                page_id = self._formal_identity(next_page_id, field="next_page_id", required=True)
 
     @classmethod
     def _usage_snapshots(cls, state: dict[str, Any]) -> tuple[RuntimeUsageSnapshot, ...]:
@@ -5043,6 +5189,55 @@ class OpenHandsRuntime:
                 )
         state = self._conversation_state(handle, timeout=_INTERACTIVE_READ_TIMEOUT_SECONDS)
         return self._input_readiness_from_state(state)
+
+    def conversation_activity_snapshot(
+        self, handle: RuntimeHandle
+    ) -> dict[str, RuntimeConversationActivity]:
+        """Read bounded native catalog activity without per-conversation state reads."""
+
+        page_id: str | None = None
+        pages_read = 0
+        activity: dict[str, RuntimeConversationActivity] = {}
+        with self._formal_read_bulkhead(handle):
+            while pages_read < _CONVERSATION_ACTIVITY_MAX_PAGES:
+                params: dict[str, str | int] = {"limit": 100}
+                if page_id:
+                    params["page_id"] = page_id
+                page = self._request(
+                    "GET",
+                    "/api/conversations/activity",
+                    base_url=self._base_url_for_handle(handle),
+                    session_api_key=self._session_key_for_handle(handle),
+                    params=params,
+                    timeout=_INTERACTIVE_READ_TIMEOUT_SECONDS,
+                )
+                pages_read += 1
+                for item in page.get("items", []):
+                    if not isinstance(item, dict):
+                        continue
+                    conversation_id = item.get("id")
+                    status = item.get("execution_status")
+                    updated_at = item.get("updated_at")
+                    if not (
+                        isinstance(conversation_id, str)
+                        and isinstance(status, str)
+                        and isinstance(updated_at, str)
+                    ):
+                        continue
+                    try:
+                        canonical_conversation_id = str(UUID(conversation_id))
+                    except ValueError:
+                        continue
+                    activity[canonical_conversation_id] = RuntimeConversationActivity(
+                        conversation_id=canonical_conversation_id,
+                        execution_status=status.casefold(),
+                        updated_at=updated_at,
+                    )
+                next_page = page.get("next_page_id")
+                if not isinstance(next_page, str) or not next_page or next_page == page_id:
+                    return activity
+                page_id = next_page
+        return activity
 
     def running_conversation_ids(self, handle: RuntimeHandle) -> set[str]:
         """Read native RUNNING conversations through OpenHands' list API."""

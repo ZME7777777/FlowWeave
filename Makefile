@@ -87,5 +87,5 @@ infra-down:
 # make remote-deploy-preflight COMMIT=<sha> SCOPE=web
 remote-deploy-preflight:
 	@test -n "$(COMMIT)" || (echo "COMMIT is required, e.g. make remote-deploy-preflight COMMIT=abc123 SCOPE=web" >&2; exit 2)
-	@test -n "$(SCOPE)" || (echo "SCOPE is required: web, platform, runtime, or other" >&2; exit 2)
+	@test -n "$(SCOPE)" || (echo "SCOPE is required: web, platform, runtime, or other (platform excludes runtime-provider)" >&2; exit 2)
 	scripts/verify-remote-deploy.sh --config "$(REMOTE_DEPLOY_CONFIG)" --commit "$(COMMIT)" --scope "$(SCOPE)"

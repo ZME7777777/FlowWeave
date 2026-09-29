@@ -17,6 +17,7 @@ import pytest
 from sqlalchemy import select
 
 from flowweave.bootstrap.runtime_provider import RuntimeProviderResourceWrite
+from flowweave.modules.agent_sessions.application import search as conversation_search
 from flowweave.modules.agent_sessions.application.host import (
     READ_SESSIONS,
     AgentSessionHostContext,
@@ -53,12 +54,15 @@ from flowweave.modules.sandboxes.infrastructure.docker import (
     DockerSandboxProvider,
 )
 from flowweave.modules.tasks.public import Lease
+from flowweave.modules.users.application.security import user_runtime_project_root
 from flowweave.runtime.base import (
+    RuntimeConversationActivity,
     RuntimeConversationIdentity,
     RuntimeEvent,
     RuntimeEventBatch,
     RuntimeForkRecovery,
     RuntimeInputReadiness,
+    RuntimeMessageSearchResult,
     RuntimePendingAction,
     RuntimePendingConfirmation,
     RuntimeProvider,
@@ -850,10 +854,22 @@ def test_dead_workspace_runtime_task_retries_when_resource_is_not_healthy(
         assert recover_default_agent_workspace_runtime_task(db) is False
         assert task.state == TaskState.SUCCEEDED
 
+        # A Worker restart may observe a stale ERROR projection while the
+        # external active writer is still alive. Do not re-open provisioning
+        # merely because the control plane restarted; sandbox reconciliation
+        # must establish physical loss first.
+        healthy_resource.observed_state = "ERROR"
+        runtime.status = "ACTIVE"
+        db.flush()
+
+        assert recover_default_agent_workspace_runtime_task(db) is False
+        assert task.state == TaskState.SUCCEEDED
+
         # A no-cache deployment can change the pinned image after the old
         # physical writer disappeared. Re-open the latest terminal provision
         # command so desired-state recovery can create N+1.
         healthy_resource.observed_state = "ERROR"
+        runtime.status = "DEGRADED"
         db.flush()
 
         assert recover_default_agent_workspace_runtime_task(db) is True
@@ -1141,7 +1157,13 @@ def test_workspace_runtime_image_drift_replaces_the_old_generation(
 def test_agent_workspace_runtime_spec_matches_runtime_provider_contract(
     settings, db_session_factory, monkeypatch
 ):
-    configured = settings.model_copy(update={"terminal_environment_backend": "docker"})
+    configured = settings.model_copy(
+        update={
+            "terminal_environment_backend": "docker",
+            "agent_workspace_runtime_cpus": 3.0,
+            "agent_workspace_runtime_memory": "4g",
+        }
+    )
     captured: list[ManagedSandbox] = []
 
     def ensure_running(_self, resource, *, runtime_secret_key):
@@ -1176,6 +1198,8 @@ def test_agent_workspace_runtime_spec_matches_runtime_provider_contract(
             }
         )
         assert str(payload.spec.runtime_allocation_id) == resource.agent_workspace_allocation_id
+        assert payload.spec.cpu_limit == "3.0"
+        assert payload.spec.memory_limit == "4g"
 
 
 def _ready_workspace_for_conversation(db):
@@ -1217,6 +1241,127 @@ def _ready_workspace_for_conversation(db):
     )
     db.flush()
     return workspace
+
+
+def test_conversation_search_scopes_to_selected_work_directories_and_serializes_starts(
+    settings, db_session_factory, monkeypatch
+):
+    """A durable search may target root and multiple frozen directory groups."""
+
+    class ScopedSearchRuntime(MockRuntime):
+        def __init__(self) -> None:
+            super().__init__()
+            self.messages: dict[str, tuple[RuntimeEvent, ...]] = {}
+
+        def search_message_events(self, handle, query):
+            needle = query.casefold()
+            return RuntimeMessageSearchResult(
+                events=tuple(
+                    event
+                    for event in self.messages.get(handle.conversation_id, ())
+                    if needle in str(event.payload.get("content") or "").casefold()
+                )
+            )
+
+        def read_search_event(self, handle, event_id):
+            return next(
+                (
+                    event
+                    for event in self.messages.get(handle.conversation_id, ())
+                    if event.cursor == event_id
+                ),
+                None,
+            )
+
+    monkeypatch.setattr(
+        conversations,
+        "runtime_provider",
+        lambda _db, asset, **_kwargs: RuntimeProvider(
+            provider_id=asset["asset"]["executor"]["model_provider_id"],
+            base_url="https://models.example.test/v1",
+            model="test-model",
+            api_key="test-key",
+        ),
+    )
+    runtime = ScopedSearchRuntime()
+    with settings_context(settings), db_session_factory() as db, runtime_context(runtime):
+        item = _ready_workspace_for_conversation(db)
+        selected = work_directories.create_work_directory(db, item.id, "后端", ("backend",))
+        ignored = work_directories.create_work_directory(db, item.id, "前端", ("frontend",))
+        root = conversations.create_conversation(
+            db, item.id, "根目录", item.default_model_provider_id, "search-root"
+        )
+        selected_conversation = conversations.create_conversation(
+            db, item.id, "后端", item.default_model_provider_id, "search-selected"
+        )
+        ignored_conversation = conversations.create_conversation(
+            db, item.id, "前端", item.default_model_provider_id, "search-ignored"
+        )
+        for conversation, directory in (
+            (selected_conversation, selected),
+            (ignored_conversation, ignored),
+        ):
+            binding = db.get(AgentConversationBinding, conversation["id"])
+            assert binding is not None
+            binding.work_directory_version_id = directory["current_version"]["id"]
+        bindings = {
+            item.id: item
+            for item in db.scalars(
+                select(AgentConversationBinding).where(
+                    AgentConversationBinding.id.in_(
+                        (root["id"], selected_conversation["id"], ignored_conversation["id"])
+                    )
+                )
+            )
+        }
+        for binding_id, cursor in (
+            (root["id"], "root-event"),
+            (selected_conversation["id"], "selected-event"),
+            (ignored_conversation["id"], "ignored-event"),
+        ):
+            binding = bindings[binding_id]
+            runtime.messages[binding.openhands_conversation_id] = (
+                RuntimeEvent(
+                    cursor,
+                    "MESSAGE",
+                    {"source": "user", "content": "needle: scoped search"},
+                ),
+            )
+
+        started = conversation_search.start(
+            db,
+            item.id,
+            "needle",
+            work_directory_ids=[selected["id"]],
+            include_root=False,
+        )
+        assert started["work_directory_ids"] == [selected["id"]]
+        assert started["include_root"] is False
+        conversation_search.process(db, started["id"])
+        result = conversation_search.status(db, item.id, started["id"])
+        assert result["state"] == "SUCCEEDED"
+        assert result["is_partial"] is False
+        assert {hit["binding_id"] for hit in result["hits"]} == {selected_conversation["id"]}
+
+        with pytest.raises(DomainError) as invalid_scope:
+            conversation_search.start(
+                db, item.id, "needle", work_directory_ids=[], include_root=False
+            )
+        assert invalid_scope.value.code == "AGENT_CONVERSATION_SEARCH_SCOPE_INVALID"
+        with pytest.raises(DomainError) as unavailable_scope:
+            conversation_search.start(
+                db,
+                item.id,
+                "needle",
+                work_directory_ids=[str(uuid4())],
+                include_root=False,
+            )
+        assert unavailable_scope.value.code == "AGENT_CONVERSATION_SEARCH_SCOPE_INVALID"
+
+        conversation_search.start(db, item.id, "queued search")
+        with pytest.raises(DomainError) as already_running:
+            conversation_search.start(db, item.id, "another search")
+        assert already_running.value.code == "AGENT_CONVERSATION_SEARCH_IN_PROGRESS"
 
 
 def test_agent_workspace_conversation_create_is_idempotent_and_uses_external_identity(
@@ -1284,6 +1429,12 @@ def test_agent_workspace_projects_runtime_sandbox_images_for_the_browser(
     settings, db_session_factory, monkeypatch
 ):
     class ImageEventRuntime(MockRuntime):
+        reload_calls = 0
+
+        def reload_conversation(self, handle, *, expected=None):
+            self.reload_calls += 1
+            return super().reload_conversation(handle, expected=expected)
+
         def read_active_events(self, handle):
             del handle
             return RuntimeEventBatch(
@@ -1317,9 +1468,11 @@ def test_agent_workspace_projects_runtime_sandbox_images_for_the_browser(
         created = conversations.create_conversation(
             db, workspace.id, "二维码", workspace.default_model_provider_id, "image-event-key"
         )
+        runtime.reload_calls = 0
 
         event = conversations.events(db, workspace.id, created["id"], None)["events"][0]
 
+    assert runtime.reload_calls == 1
     assert event["payload"]["content"] == (
         "扫码：![二维码](/api/v1/agent-workspaces/"
         f"{workspace.id}/workspace/file?path=%2Fruntime%2Fworkspace%2Fproject%2F"
@@ -1856,7 +2009,6 @@ def test_discarding_agent_workspace_draft_refuses_a_created_conversation(
             conversations.delete_draft_attachments(db, item.id, created["id"])
 
         assert caught.value.code == "AGENT_DRAFT_ALREADY_CREATED"
-
 
 
 def test_deleting_work_directory_cascades_its_conversations(settings, db_session_factory):
@@ -3326,11 +3478,23 @@ def test_agent_workspace_conversation_activity_maps_native_unready_ids(
         calls = 0
         unready_id = ""
 
-        def conversation_ids_by_status(self, _handle, status):
+        def conversation_activity_snapshot(self, _handle):
             self.calls += 1
-            if status == "waiting_for_confirmation":
-                return {self.unready_id, "unbound-native-conversation"}
-            return set()
+            return {
+                self.unready_id: RuntimeConversationActivity(
+                    conversation_id=self.unready_id,
+                    execution_status="waiting_for_confirmation",
+                    updated_at="2999-01-01T00:00:00+00:00",
+                ),
+                "unbound-native-conversation": RuntimeConversationActivity(
+                    conversation_id="unbound-native-conversation",
+                    execution_status="waiting_for_confirmation",
+                    updated_at="2999-01-01T00:00:00+00:00",
+                ),
+            }
+
+        def read_active_events(self, _handle):
+            raise AssertionError("activity polling must not read per-conversation events")
 
     runtime = ActivityRuntime()
     with settings_context(settings), db_session_factory() as db, runtime_context(runtime):
@@ -3353,8 +3517,7 @@ def test_agent_workspace_conversation_activity_maps_native_unready_ids(
         "failed_binding_ids": [],
     }
     assert idle["id"] not in activity["running_binding_ids"]
-    assert runtime.calls == 7
-
+    assert runtime.calls == 1
 
 
 def test_agent_workspace_activity_persists_system_unread_and_honors_acknowledgement(
@@ -3375,17 +3538,28 @@ def test_agent_workspace_activity_persists_system_unread_and_honors_acknowledgem
     class ActivityRuntime(MockRuntime):
         failed_id = ""
 
-        def running_conversation_ids(self, _handle):
-            return set()
-
-        def conversation_ids_by_status(self, _handle, status):
-            return {self.failed_id} if status == "error" else set()
+        def conversation_activity_snapshot(self, _handle):
+            return (
+                {
+                    self.failed_id: RuntimeConversationActivity(
+                        conversation_id=self.failed_id,
+                        execution_status="error",
+                        updated_at="2999-01-01T00:00:00+00:00",
+                    )
+                }
+                if self.failed_id
+                else {}
+            )
 
     runtime = ActivityRuntime()
     with settings_context(settings), db_session_factory() as db, runtime_context(runtime):
         workspace = _ready_workspace_for_conversation(db)
         created = conversations.create_conversation(
-            db, workspace.id, "异常未读会话", workspace.default_model_provider_id, "activity-system-unread"
+            db,
+            workspace.id,
+            "异常未读会话",
+            workspace.default_model_provider_id,
+            "activity-system-unread",
         )
         binding = db.get(AgentConversationBinding, created["id"])
         assert binding is not None

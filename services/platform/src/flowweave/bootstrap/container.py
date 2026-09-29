@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Literal
@@ -52,12 +53,28 @@ class Container:
     audit_writer: AuditWriter
     blocking_executor: ThreadPoolExecutor
     blocking_io_slots: asyncio.Semaphore
+    blocking_mutation_slots: asyncio.Semaphore
+    message_executor: ThreadPoolExecutor
+    message_io_slots: asyncio.Semaphore
+    message_capacity: int
+    hydration_executor: ThreadPoolExecutor
+    hydration_io_slots: asyncio.Semaphore
+    hydration_capacity: int
+    blocking_capacity: int
+    auxiliary_executor: ThreadPoolExecutor
+    auxiliary_io_slots: asyncio.Semaphore
+    admin_executor: ThreadPoolExecutor
+    admin_io_slots: asyncio.Semaphore
     poll_executor: ThreadPoolExecutor
     poll_io_slots: asyncio.Semaphore
     history_read_executor: ThreadPoolExecutor
     history_read_slots: asyncio.Semaphore
+    terminal_stream_executor: ThreadPoolExecutor
+    terminal_control_executor: ThreadPoolExecutor
+    terminal_slots: asyncio.Semaphore
     blocking_control_executor: ThreadPoolExecutor
     blocking_control_slots: asyncio.Semaphore
+    heartbeat_slots: threading.BoundedSemaphore
 
     async def close(self) -> None:
         await self.run_event_listener.close()
@@ -71,6 +88,28 @@ class Container:
             wait=True,
             cancel_futures=True,
         )
+        if self.hydration_executor is not self.blocking_executor:
+            await asyncio.to_thread(
+                self.hydration_executor.shutdown,
+                wait=True,
+                cancel_futures=True,
+            )
+        if self.message_executor is not self.blocking_executor:
+            await asyncio.to_thread(
+                self.message_executor.shutdown,
+                wait=True,
+                cancel_futures=True,
+            )
+        await asyncio.to_thread(
+            self.auxiliary_executor.shutdown,
+            wait=True,
+            cancel_futures=True,
+        )
+        await asyncio.to_thread(
+            self.admin_executor.shutdown,
+            wait=True,
+            cancel_futures=True,
+        )
         await asyncio.to_thread(
             self.poll_executor.shutdown,
             wait=True,
@@ -78,6 +117,16 @@ class Container:
         )
         await asyncio.to_thread(
             self.history_read_executor.shutdown,
+            wait=True,
+            cancel_futures=True,
+        )
+        await asyncio.to_thread(
+            self.terminal_stream_executor.shutdown,
+            wait=True,
+            cancel_futures=True,
+        )
+        await asyncio.to_thread(
+            self.terminal_control_executor.shutdown,
             wait=True,
             cancel_futures=True,
         )
@@ -98,17 +147,49 @@ def build_container(settings: Settings, *, role: Literal["api", "worker"]) -> Co
         runtime = MockRuntime()
     else:
         raise ValueError(f"Unsupported runtime adapter: {settings.runtime_adapter}")
+    # Reserve two of the existing API blocking connections for first-screen
+    # reads. One-slot stream API configurations retain their existing lane.
+    hydration_capacity = min(2, settings.blocking_pool_size - 1) if role == "api" else 0
+    # Keep one of the remaining API slots for message delivery whenever the
+    # configured capacity can still leave an ordinary interactive slot.
+    message_capacity = (
+        1 if role == "api" and settings.blocking_pool_size - hydration_capacity >= 2 else 0
+    )
+    blocking_capacity = settings.blocking_pool_size - hydration_capacity - message_capacity
     database = Database(
         settings,
         poll_pool_size=settings.runtime_poll_worker_concurrency if role == "worker" else 0,
+        auxiliary_pool_size=(settings.auxiliary_task_worker_concurrency if role == "worker" else 0),
+        admin_pool_size=1 if role == "api" else 0,
+        hydration_pool_size=hydration_capacity,
+        message_pool_size=message_capacity,
     )
     metrics = Metrics()
-    blocking_workers = (
-        settings.worker_concurrency if role == "worker" else settings.blocking_pool_size
-    )
+    blocking_workers = settings.worker_concurrency if role == "worker" else blocking_capacity
     blocking_executor = ThreadPoolExecutor(
         max_workers=blocking_workers,
         thread_name_prefix=f"flowweave-{role}-blocking",
+    )
+    hydration_executor = (
+        ThreadPoolExecutor(
+            max_workers=hydration_capacity,
+            thread_name_prefix="flowweave-api-hydration",
+        )
+        if hydration_capacity
+        else blocking_executor
+    )
+    message_executor = (
+        ThreadPoolExecutor(max_workers=message_capacity, thread_name_prefix="flowweave-api-message")
+        if message_capacity
+        else blocking_executor
+    )
+    auxiliary_executor = ThreadPoolExecutor(
+        max_workers=settings.auxiliary_task_worker_concurrency,
+        thread_name_prefix=f"flowweave-{role}-auxiliary",
+    )
+    admin_executor = ThreadPoolExecutor(
+        max_workers=1,
+        thread_name_prefix=f"flowweave-{role}-admin",
     )
     poll_executor = ThreadPoolExecutor(
         max_workers=settings.runtime_poll_worker_concurrency,
@@ -117,6 +198,14 @@ def build_container(settings: Settings, *, role: Literal["api", "worker"]) -> Co
     history_read_executor = ThreadPoolExecutor(
         max_workers=settings.history_read_pool_size,
         thread_name_prefix=f"flowweave-{role}-history-read",
+    )
+    terminal_stream_executor = ThreadPoolExecutor(
+        max_workers=settings.terminal_stream_pool_size,
+        thread_name_prefix=f"flowweave-{role}-terminal-stream",
+    )
+    terminal_control_executor = ThreadPoolExecutor(
+        max_workers=settings.terminal_stream_pool_size,
+        thread_name_prefix=f"flowweave-{role}-terminal-control",
     )
     blocking_control_executor = ThreadPoolExecutor(
         max_workers=1,
@@ -144,10 +233,28 @@ def build_container(settings: Settings, *, role: Literal["api", "worker"]) -> Co
         audit_writer=AuditWriter(database.sessions),
         blocking_executor=blocking_executor,
         blocking_io_slots=asyncio.Semaphore(blocking_workers),
+        # Writes share the existing executor and DB pool, but cannot occupy
+        # every slot needed to hydrate an unrelated conversation.
+        blocking_mutation_slots=asyncio.Semaphore(min(2, max(1, blocking_capacity // 2))),
+        message_executor=message_executor,
+        message_io_slots=asyncio.Semaphore(message_capacity or blocking_workers),
+        message_capacity=message_capacity,
+        hydration_executor=hydration_executor,
+        hydration_io_slots=asyncio.Semaphore(hydration_capacity or blocking_workers),
+        hydration_capacity=hydration_capacity,
+        blocking_capacity=blocking_capacity,
+        auxiliary_executor=auxiliary_executor,
+        auxiliary_io_slots=asyncio.Semaphore(settings.auxiliary_task_worker_concurrency),
+        admin_executor=admin_executor,
+        admin_io_slots=asyncio.Semaphore(1),
         poll_executor=poll_executor,
         poll_io_slots=asyncio.Semaphore(settings.runtime_poll_worker_concurrency),
         history_read_executor=history_read_executor,
         history_read_slots=asyncio.Semaphore(settings.history_read_pool_size),
+        terminal_stream_executor=terminal_stream_executor,
+        terminal_control_executor=terminal_control_executor,
+        terminal_slots=asyncio.Semaphore(settings.terminal_stream_pool_size),
         blocking_control_executor=blocking_control_executor,
         blocking_control_slots=asyncio.Semaphore(1),
+        heartbeat_slots=threading.BoundedSemaphore(settings.task_heartbeat_concurrency),
     )

@@ -19,6 +19,7 @@ def test_every_agent_session_uses_the_same_complete_tool_set(tmp_path, settings)
         )
 
     assert tuple(tool.name for tool in spec.tools) == FIXED_RUNTIME_TOOL_NAMES
+    assert "browser_tool_set" in FIXED_RUNTIME_TOOL_NAMES
     assert "task" not in FIXED_RUNTIME_TOOL_NAMES
     assert "workflow" not in FIXED_RUNTIME_TOOL_NAMES
     assert "task_tool_set" in FIXED_RUNTIME_TOOL_NAMES

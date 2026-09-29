@@ -29,17 +29,26 @@ from flowweave.modules.agent_workspaces.application import work_directories, wor
 from flowweave.modules.environments import public as environments
 from flowweave.modules.users.application.security import current_principal
 from flowweave.runtime.dependencies import runtime_context
+from flowweave.runtime.read_budget import hydration_response_budget
 from flowweave.runtime.routing import runtime_for
 from flowweave.shared.errors import DomainError
 from flowweave.shared.http import (
     Db,
     IdempotencyKey,
+    acquire_terminal_slot,
     command_key,
     get_container,
+    release_terminal_slot,
     run_blocking,
+    run_blocking_auxiliary,
     run_blocking_control,
     run_blocking_history,
+    run_blocking_hydration,
+    run_blocking_message,
+    run_blocking_mutation,
     run_sync,
+    run_terminal_control,
+    run_terminal_stream,
 )
 from flowweave.shared.settings import bind_settings, reset_settings
 
@@ -86,6 +95,8 @@ class AgentConversationUnreadWrite(_Write):
 
 class AgentConversationSearchWrite(_Write):
     query: str = Field(min_length=1, max_length=500)
+    work_directory_ids: list[str] | None = Field(default=None, max_length=100)
+    include_root: bool = True
 
 
 class AgentConversationOrderWrite(_Write):
@@ -328,10 +339,10 @@ async def put_agent_workspace_capabilities(
 
 @router.post("/agent-workspaces/{workspace_id}/capabilities/{capability_version_id}/mcp-readiness")
 async def probe_agent_workspace_mcp_readiness(
-    workspace_id: str, capability_version_id: str, db: Db
+    workspace_id: str, capability_version_id: str, container: ContainerDep
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking(
+        container,
         lambda session: conversations.probe_workspace_mcp_readiness(
             session, workspace_id, capability_version_id
         ),
@@ -364,13 +375,13 @@ async def list_agent_work_directories(workspace_id: str, db: Db) -> dict[str, An
 @router.get("/agent-workspaces/{workspace_id}/workspace")
 async def get_agent_workspace_details(
     workspace_id: str,
-    db: Db,
+    container: ContainerDep,
     work_directory_id: str | None = Query(default=None),
     binding_id: str | None = Query(default=None),
     full_index: bool = Query(default=False),
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking_auxiliary(
+        container,
         lambda session: workspace.details(
             session,
             workspace_id,
@@ -384,15 +395,15 @@ async def get_agent_workspace_details(
 @router.get("/agent-workspaces/{workspace_id}/workspace/directory")
 async def list_agent_workspace_directory(
     workspace_id: str,
-    db: Db,
+    container: ContainerDep,
     parent_path: str | None = Query(default=None, max_length=500),
     cursor: str | None = Query(default=None, max_length=500),
     limit: int = Query(default=100, ge=1, le=250),
     work_directory_id: str | None = Query(default=None),
     binding_id: str | None = Query(default=None),
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking_auxiliary(
+        container,
         lambda session: workspace.list_directory(
             session,
             workspace_id,
@@ -408,12 +419,12 @@ async def list_agent_workspace_directory(
 @router.get("/agent-workspaces/{workspace_id}/workspace/git/repositories")
 async def list_agent_workspace_git_repositories(
     workspace_id: str,
-    db: Db,
+    container: ContainerDep,
     binding_id: str | None = Query(default=None),
     work_directory_id: str | None = Query(default=None),
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking_auxiliary(
+        container,
         lambda session: {
             "repositories": workspace.git_repositories(
                 session, workspace_id, binding_id, work_directory_id
@@ -425,7 +436,7 @@ async def list_agent_workspace_git_repositories(
 @router.get("/agent-workspaces/{workspace_id}/workspace/file")
 async def download_agent_workspace_file(
     workspace_id: str,
-    db: Db,
+    container: ContainerDep,
     path: str = Query(...),
     binding_id: str | None = Query(default=None),
     work_directory_id: str | None = Query(default=None),
@@ -433,8 +444,8 @@ async def download_agent_workspace_file(
     preview: bool = Query(default=False),
     offset: int = Query(default=0, ge=0),
 ) -> Response:
-    item = await run_sync(
-        db,
+    item = await run_blocking_auxiliary(
+        container,
         lambda session: workspace.download(
             session,
             workspace_id,
@@ -461,13 +472,13 @@ async def download_agent_workspace_file(
 @router.get("/agent-workspaces/{workspace_id}/workspace/git/log")
 async def agent_workspace_git_log(
     workspace_id: str,
-    db: Db,
+    container: ContainerDep,
     repository_path: str = Query(...),
     binding_id: str | None = Query(default=None),
     work_directory_id: str | None = Query(default=None),
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking_auxiliary(
+        container,
         lambda session: workspace.git_history(
             session, workspace_id, repository_path, binding_id, work_directory_id
         ),
@@ -477,13 +488,13 @@ async def agent_workspace_git_log(
 @router.post("/agent-workspaces/{workspace_id}/workspace/git/sync")
 async def sync_agent_workspace_git_repository(
     workspace_id: str,
-    db: Db,
+    container: ContainerDep,
     repository_path: str = Query(...),
     binding_id: str | None = Query(default=None),
     work_directory_id: str | None = Query(default=None),
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking_auxiliary(
+        container,
         lambda session: workspace.sync_git_repository(
             session, workspace_id, repository_path, binding_id, work_directory_id
         ),
@@ -493,13 +504,13 @@ async def sync_agent_workspace_git_repository(
 @router.get("/agent-workspaces/{workspace_id}/workspace/git/changes")
 async def agent_workspace_git_changes(
     workspace_id: str,
-    db: Db,
+    container: ContainerDep,
     repository_path: str = Query(...),
     binding_id: str | None = Query(default=None),
     work_directory_id: str | None = Query(default=None),
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking_auxiliary(
+        container,
         lambda session: workspace.git_changes(
             session, workspace_id, repository_path, binding_id, work_directory_id
         ),
@@ -509,15 +520,15 @@ async def agent_workspace_git_changes(
 @router.get("/agent-workspaces/{workspace_id}/workspace/git/working-diff")
 async def agent_workspace_git_working_diff(
     workspace_id: str,
-    db: Db,
+    container: ContainerDep,
     repository_path: str = Query(...),
     kind: str = Query(...),
     path: str = Query(...),
     binding_id: str | None = Query(default=None),
     work_directory_id: str | None = Query(default=None),
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking_auxiliary(
+        container,
         lambda session: workspace.git_change_file_diff(
             session, workspace_id, repository_path, kind, path, binding_id, work_directory_id
         ),
@@ -527,14 +538,14 @@ async def agent_workspace_git_working_diff(
 @router.get("/agent-workspaces/{workspace_id}/workspace/git/commit")
 async def agent_workspace_git_commit(
     workspace_id: str,
-    db: Db,
+    container: ContainerDep,
     repository_path: str = Query(...),
     commit: str = Query(...),
     binding_id: str | None = Query(default=None),
     work_directory_id: str | None = Query(default=None),
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking_auxiliary(
+        container,
         lambda session: workspace.git_commit_details(
             session, workspace_id, repository_path, commit, binding_id, work_directory_id
         ),
@@ -544,15 +555,15 @@ async def agent_workspace_git_commit(
 @router.get("/agent-workspaces/{workspace_id}/workspace/git/diff")
 async def agent_workspace_git_diff(
     workspace_id: str,
-    db: Db,
+    container: ContainerDep,
     repository_path: str = Query(...),
     commit: str = Query(...),
     path: str = Query(...),
     binding_id: str | None = Query(default=None),
     work_directory_id: str | None = Query(default=None),
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking_auxiliary(
+        container,
         lambda session: workspace.git_commit_file_diff(
             session, workspace_id, repository_path, commit, path, binding_id, work_directory_id
         ),
@@ -563,12 +574,12 @@ async def agent_workspace_git_diff(
 async def delete_agent_workspace_entries(
     workspace_id: str,
     payload: AgentWorkspaceEntriesDeleteWrite,
-    db: Db,
+    container: ContainerDep,
     binding_id: str | None = Query(default=None),
     work_directory_id: str | None = Query(default=None),
 ) -> dict[str, list[str]]:
-    deleted = await run_sync(
-        db,
+    deleted = await run_blocking_auxiliary(
+        container,
         lambda session: workspace.delete_entries(
             session, workspace_id, tuple(payload.paths), binding_id, work_directory_id
         ),
@@ -580,12 +591,12 @@ async def delete_agent_workspace_entries(
 async def create_agent_workspace_entry(
     workspace_id: str,
     payload: AgentWorkspaceEntryCreateWrite,
-    db: Db,
+    container: ContainerDep,
     binding_id: str | None = Query(default=None),
     work_directory_id: str | None = Query(default=None),
 ) -> Response:
-    await run_sync(
-        db,
+    await run_blocking_auxiliary(
+        container,
         lambda session: workspace.create_entry(
             session,
             workspace_id,
@@ -601,10 +612,10 @@ async def create_agent_workspace_entry(
 
 @router.post("/agent-workspaces/{workspace_id}/work-directories", status_code=201)
 async def create_agent_work_directory(
-    workspace_id: str, payload: AgentWorkDirectoryCreateWrite, db: Db
+    workspace_id: str, payload: AgentWorkDirectoryCreateWrite, container: ContainerDep
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking_auxiliary(
+        container,
         lambda session: work_directories.create_work_directory(
             session,
             workspace_id,
@@ -631,12 +642,12 @@ async def patch_agent_work_directory(
     workspace_id: str,
     work_directory_id: str,
     payload: AgentWorkDirectoryPatchWrite,
-    db: Db,
+    container: ContainerDep,
 ) -> dict[str, Any]:
     if payload.display_name is None and payload.selected_paths is None:
         raise DomainError("AGENT_WORK_DIRECTORY_PATCH_EMPTY", "工作目录修改内容不能为空", 422)
-    return await run_sync(
-        db,
+    return await run_blocking_auxiliary(
+        container,
         lambda session: work_directories.update_work_directory(
             session,
             workspace_id,
@@ -655,10 +666,10 @@ async def patch_agent_work_directory(
     response_class=Response,
 )
 async def delete_agent_work_directory(
-    workspace_id: str, work_directory_id: str, db: Db
+    workspace_id: str, work_directory_id: str, container: ContainerDep
 ) -> Response:
-    await run_sync(
-        db,
+    await run_blocking_auxiliary(
+        container,
         lambda session: work_directories.delete_work_directory(
             session, workspace_id, work_directory_id
         ),
@@ -686,7 +697,10 @@ async def agent_conversation_activity(
     workspace_id: str,
     container: ContainerDep,
     active_binding_id: str | None = Query(default=None, min_length=1, max_length=36),
-) -> dict[str, list[str]]:
+) -> dict[str, Any]:
+    # The activity projection includes `condensation_tasks`, a list of
+    # structured task records. Keep its response contract open to that
+    # documented mixed projection instead of coercing every value to str[].
     return await run_blocking_history(
         container,
         lambda session: conversations.conversation_activity(
@@ -699,7 +713,7 @@ async def agent_conversation_activity(
 async def create_agent_conversation(
     workspace_id: str,
     payload: AgentConversationBootstrapWrite,
-    db: Db,
+    container: ContainerDep,
     idempotency_key: IdempotencyKey = None,
 ) -> dict[str, Any]:
     if idempotency_key is None:
@@ -708,8 +722,8 @@ async def create_agent_conversation(
             "首条消息必须携带幂等请求标识",
             422,
         )
-    return await run_sync(
-        db,
+    return await run_blocking_message(
+        container,
         lambda session: conversations.bootstrap_conversation(
             session,
             workspace_id,
@@ -792,18 +806,23 @@ async def close_agent_sidebar_conversation(
 
 
 @router.get("/agent-workspaces/{workspace_id}/conversations/{binding_id}")
-async def get_agent_conversation(workspace_id: str, binding_id: str, db: Db) -> dict[str, Any]:
-    return await run_sync(
-        db, lambda session: conversations.get_conversation(session, workspace_id, binding_id)
+async def get_agent_conversation(
+    workspace_id: str, binding_id: str, container: ContainerDep
+) -> dict[str, Any]:
+    return await run_blocking(
+        container, lambda session: conversations.get_conversation(session, workspace_id, binding_id)
     )
 
 
 @router.patch("/agent-workspaces/{workspace_id}/conversations/{binding_id}")
 async def patch_agent_conversation(
-    workspace_id: str, binding_id: str, payload: AgentConversationPatchWrite, db: Db
+    workspace_id: str,
+    binding_id: str,
+    payload: AgentConversationPatchWrite,
+    container: ContainerDep,
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking_mutation(
+        container,
         lambda session: conversations.patch_conversation(
             session, workspace_id, binding_id, payload.title
         ),
@@ -859,10 +878,10 @@ async def add_agent_conversation_capability(
     workspace_id: str,
     binding_id: str,
     payload: AgentConversationCapabilityAddWrite,
-    db: Db,
+    container: ContainerDep,
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking_mutation(
+        container,
         lambda session: conversations.add_conversation_capability(
             session, workspace_id, binding_id, payload.capability_version_id
         ),
@@ -886,10 +905,10 @@ async def synchronize_agent_conversation_credentials(
     workspace_id: str,
     binding_id: str,
     payload: AgentConversationCredentialSyncWrite,
-    db: Db,
+    container: ContainerDep,
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking_mutation(
+        container,
         lambda session: conversations.synchronize_conversation_credentials(
             session, workspace_id, binding_id, tuple(payload.credential_ids)
         ),
@@ -904,11 +923,11 @@ async def synchronize_agent_conversation_credentials(
 async def delete_agent_conversation(
     workspace_id: str,
     binding_id: str,
-    db: Db,
+    container: ContainerDep,
     idempotency_key: IdempotencyKey = None,
 ) -> Response:
-    await run_sync(
-        db,
+    await run_blocking_mutation(
+        container,
         lambda session: conversations.delete_conversation(
             session,
             workspace_id,
@@ -965,7 +984,14 @@ async def start_agent_conversation_search(
     db: Db,
 ) -> dict[str, Any]:
     return await run_sync(
-        db, lambda session: conversation_search.start(session, workspace_id, payload.query)
+        db,
+        lambda session: conversation_search.start(
+            session,
+            workspace_id,
+            payload.query,
+            work_directory_ids=payload.work_directory_ids,
+            include_root=payload.include_root,
+        ),
     )
 
 
@@ -974,11 +1000,15 @@ async def agent_conversation_search_status(
     workspace_id: str,
     search_id: str,
     container: ContainerDep,
+    cursor: str | None = Query(default=None, max_length=500),
+    limit: int = Query(default=20, ge=1, le=50),
 ) -> dict[str, Any]:
     with runtime_context(container.runtime):
         return await run_blocking_history(
             container,
-            lambda session: conversation_search.status(session, workspace_id, search_id),
+            lambda session: conversation_search.status(
+                session, workspace_id, search_id, cursor=cursor, limit=limit
+            ),
         )
 
 
@@ -999,19 +1029,22 @@ async def agent_conversation_hydration(
         cached = await container.conversation_hydration_cache.get_current_for_scope(scope)
         if cached is not None:
             return cached
-        key = await run_blocking(
-            container,
-            lambda session: conversations.conversation_cache_key(session, workspace_id, binding_id),
-        )
-        return await container.conversation_hydration_cache.get_or_load(
-            key,
-            lambda: run_blocking(
+        async with hydration_response_budget(container.settings.hydration_read_timeout_seconds):
+            key = await run_blocking_hydration(
                 container,
-                lambda session: conversations.hydrate_conversation(
+                lambda session: conversations.conversation_cache_key(
                     session, workspace_id, binding_id
                 ),
-            ),
-        )
+            )
+            return await container.conversation_hydration_cache.get_or_load(
+                key,
+                lambda: run_blocking_hydration(
+                    container,
+                    lambda session: conversations.hydrate_conversation(
+                        session, workspace_id, binding_id
+                    ),
+                ),
+            )
     except DomainError as exc:
         if exc.code not in {
             "EXECUTOR_UNAVAILABLE",
@@ -1055,10 +1088,10 @@ async def agent_confirmation_decision(
     workspace_id: str,
     binding_id: str,
     payload: AgentConfirmationDecisionWrite,
-    db: Db,
+    container: ContainerDep,
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking_mutation(
+        container,
         lambda session: conversations.decide_confirmation(
             session,
             workspace_id,
@@ -1097,7 +1130,7 @@ async def agent_message(
             ),
         )[1],
     )
-    running_result = await run_blocking(
+    running_result = await run_blocking_message(
         container, lambda _session: conversations.dispatch_running_message(prepared)
     )
     if running_result is not None:
@@ -1107,8 +1140,8 @@ async def agent_message(
                 session, prepared, running_result
             ),
         )
-    return await run_sync(
-        db,
+    return await run_blocking_message(
+        container,
         lambda session: conversations.message(
             session,
             workspace_id,
@@ -1123,11 +1156,11 @@ async def agent_message(
     "/agent-workspaces/{workspace_id}/conversations/{binding_id}/attachments", status_code=201
 )
 async def agent_attachment(
-    workspace_id: str, binding_id: str, db: Db, file: Annotated[UploadFile, File()]
+    workspace_id: str, binding_id: str, container: ContainerDep, file: Annotated[UploadFile, File()]
 ) -> dict[str, Any]:
     content = await file.read(25 * 1024 * 1024 + 1)
-    return await run_sync(
-        db,
+    return await run_blocking_mutation(
+        container,
         lambda session: conversations.upload_attachment(
             session,
             workspace_id,
@@ -1250,14 +1283,14 @@ async def cancel_resumable_agent_workspace_attachment_upload(
 @router.post("/agent-workspaces/{workspace_id}/attachments", status_code=201)
 async def agent_workspace_attachment(
     workspace_id: str,
-    db: Db,
+    container: ContainerDep,
     file: Annotated[UploadFile, File()],
     work_directory_id: str | None = Query(default=None),
     conversation_id: str | None = Query(default=None, min_length=36, max_length=36),
 ) -> dict[str, Any]:
     content = await file.read(25 * 1024 * 1024 + 1)
-    return await run_sync(
-        db,
+    return await run_blocking_mutation(
+        container,
         lambda session: conversations.upload_attachment(
             session,
             workspace_id,
@@ -1277,11 +1310,11 @@ async def agent_workspace_attachment(
 async def delete_agent_workspace_draft_attachments(
     workspace_id: str,
     conversation_id: str,
-    db: Db,
+    container: ContainerDep,
     path: str | None = Query(default=None),
 ) -> Response:
-    await run_sync(
-        db,
+    await run_blocking_mutation(
+        container,
         lambda session: conversations.delete_draft_attachment(
             session, workspace_id, conversation_id, path
         )
@@ -1303,10 +1336,13 @@ async def agent_context(
 
 @router.post("/agent-workspaces/{workspace_id}/conversations/{binding_id}/model")
 async def agent_conversation_model(
-    workspace_id: str, binding_id: str, payload: AgentConversationModelWrite, db: Db
+    workspace_id: str,
+    binding_id: str,
+    payload: AgentConversationModelWrite,
+    container: ContainerDep,
 ) -> dict[str, str | None]:
-    return await run_sync(
-        db,
+    return await run_blocking_mutation(
+        container,
         lambda session: conversations.switch_conversation_model(
             session,
             workspace_id,
@@ -1326,11 +1362,11 @@ async def agent_streaming_migration(
     workspace_id: str,
     binding_id: str,
     payload: AgentStreamingMigrationWrite,
-    db: Db,
+    container: ContainerDep,
     idempotency_key: IdempotencyKey = None,
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking_mutation(
+        container,
         lambda session: conversations.migrate_streaming_conversation(
             session,
             workspace_id,
@@ -1348,11 +1384,11 @@ async def agent_fork_conversation(
     workspace_id: str,
     binding_id: str,
     payload: AgentConversationForkWrite,
-    db: Db,
+    container: ContainerDep,
     idempotency_key: IdempotencyKey = None,
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking_mutation(
+        container,
         lambda session: conversations.fork_conversation(
             session,
             workspace_id,
@@ -1416,10 +1452,10 @@ async def agent_rerun_edited_message(
     binding_id: str,
     event_id: str,
     payload: AgentMessageWrite,
-    db: Db,
+    container: ContainerDep,
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking_message(
+        container,
         lambda session: conversations.rewrite_message(
             session,
             workspace_id,
@@ -1435,9 +1471,11 @@ async def agent_rerun_edited_message(
 
 
 @router.post("/agent-workspaces/{workspace_id}/conversations/{binding_id}/resume", status_code=202)
-async def agent_resume(workspace_id: str, binding_id: str, db: Db) -> dict[str, Any]:
-    return await run_sync(
-        db, lambda session: conversations.resume(session, workspace_id, binding_id)
+async def agent_resume(
+    workspace_id: str, binding_id: str, container: ContainerDep
+) -> dict[str, Any]:
+    return await run_blocking_control(
+        container, lambda session: conversations.resume(session, workspace_id, binding_id)
     )
 
 
@@ -1491,6 +1529,7 @@ async def agent_workspace_terminal(
 ) -> None:
     settings_token = bind_settings(container.settings)
     terminal: environments.ManagedTerminal | None = None
+    terminal_slot_acquired = False
     try:
         try:
             rows = max(2, min(int(websocket.query_params.get("rows", "24")), 200))
@@ -1521,14 +1560,18 @@ async def agent_workspace_terminal(
             workspace_id, container_id, terminal_instance_id
         )
         try:
-            terminal = await asyncio.to_thread(
-                environments.open_managed_terminal,
-                resource_name,
-                resource_id=runtime_id,
-                session_name=session_name,
-                working_dir=working_directory,
-                rows=rows,
-                columns=columns,
+            await acquire_terminal_slot(container)
+            terminal_slot_acquired = True
+            terminal = await run_terminal_control(
+                container,
+                lambda: environments.open_managed_terminal(
+                    resource_name,
+                    resource_id=runtime_id,
+                    session_name=session_name,
+                    working_dir=working_directory,
+                    rows=rows,
+                    columns=columns,
+                ),
             )
         except DomainError as exc:
             await websocket.close(code=4409, reason=exc.message)
@@ -1537,7 +1580,7 @@ async def agent_workspace_terminal(
 
         async def forward_output() -> None:
             while True:
-                chunk, eof = await asyncio.to_thread(terminal.read)
+                chunk, eof = await run_terminal_stream(container, terminal.read)
                 if chunk:
                     await websocket.send_bytes(chunk)
                 if eof:
@@ -1557,19 +1600,27 @@ async def agent_workspace_terminal(
                 except json.JSONDecodeError:
                     value = {"type": "input", "data": text}
                 if value.get("type") == "resize":
-                    await asyncio.to_thread(
-                        terminal.resize,
-                        max(2, min(int(value.get("rows", 24)), 200)),
-                        max(20, min(int(value.get("columns", 80)), 400)),
+                    terminal_rows = max(2, min(int(value.get("rows", 24)), 200))
+                    terminal_columns = max(20, min(int(value.get("columns", 80)), 400))
+                    await run_terminal_control(
+                        container,
+                        lambda rows=terminal_rows, columns=terminal_columns: terminal.resize(
+                            rows, columns
+                        ),
                     )
                 elif value.get("type") == "input":
-                    await asyncio.to_thread(terminal.write, str(value.get("data", "")).encode())
+                    terminal_input = str(value.get("data", "")).encode()
+                    await run_terminal_control(
+                        container, lambda data=terminal_input: terminal.write(data)
+                    )
                 elif value.get("type") == "close-pane":
-                    await asyncio.to_thread(
-                        environments.kill_managed_terminal_pane,
-                        resource_name,
-                        resource_id=runtime_id,
-                        session_name=session_name,
+                    await run_terminal_control(
+                        container,
+                        lambda: environments.kill_managed_terminal_pane(
+                            resource_name,
+                            resource_id=runtime_id,
+                            session_name=session_name,
+                        ),
                     )
         except WebSocketDisconnect:
             pass
@@ -1577,9 +1628,13 @@ async def agent_workspace_terminal(
             output.cancel()
             await asyncio.gather(output, return_exceptions=True)
     finally:
-        if terminal is not None:
-            await asyncio.to_thread(terminal.close)
-        reset_settings(settings_token)
+        try:
+            if terminal is not None:
+                await run_terminal_control(container, terminal.close)
+        finally:
+            if terminal_slot_acquired:
+                release_terminal_slot(container)
+            reset_settings(settings_token)
 
 
 @router.delete("/agent-workspaces/{workspace_id}/terminals/{terminal_instance_id}", status_code=204)
@@ -1603,11 +1658,13 @@ async def close_agent_workspace_terminal(
                 )
             )
         session_name = workspace.terminal_session_name(workspace_id, container_id, instance_id)
-        await asyncio.to_thread(
-            environments.destroy_managed_terminal_session,
-            resource_name,
-            resource_id=runtime_id,
-            session_name=session_name,
+        await run_terminal_control(
+            container,
+            lambda: environments.destroy_managed_terminal_session(
+                resource_name,
+                resource_id=runtime_id,
+                session_name=session_name,
+            ),
         )
         return Response(status_code=204)
     finally:

@@ -212,7 +212,7 @@ test('environment publishing reopens as progress instead of reconnecting the ter
 test('environment publishing ignores IME confirmation before a separate Enter submits', async ({ page }) => {
   let terminalAttachments = 0;
   const terminalInputs: string[] = [];
-  const publishedDescriptions: string[] = [];
+  const publishedRequests: Array<{ description?: string; runtime_capabilities?: string[] }> = [];
   const environment = {
     id: 'environment-running', name: '持续连接终端环境', description: '', row_version: 1, versions: [],
     active_sessions: [{
@@ -228,7 +228,7 @@ test('environment publishing ignores IME confirmation before a separate Enter su
     body: JSON.stringify({ id: 'terminal-user', username: 'terminal-user', role: 'USER', is_super_admin: false }),
   }));
   await page.route('**/api/v1/environment-setup-sessions/*/publish', async route => {
-    publishedDescriptions.push((route.request().postDataJSON() as { description?: string }).description ?? '');
+    publishedRequests.push(route.request().postDataJSON() as { description?: string; runtime_capabilities?: string[] });
     await route.fulfill({ status: 202, contentType: 'application/json', body: '{}' });
   });
   await page.route('**/api/v1/terminal-environments**', async route => {
@@ -280,9 +280,9 @@ test('environment publishing ignores IME confirmation before a separate Enter su
   await publishDescription.dispatchEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 229, isComposing: true });
   await expect(publishDialog).toBeVisible();
   await expect(publishDescription).toHaveValue('cli');
-  expect(publishedDescriptions).toEqual([]);
+  expect(publishedRequests).toEqual([]);
   await publishDialog.getByRole('button', { name: '开始发布' }).click();
-  await expect.poll(() => publishedDescriptions).toEqual(['cli']);
+  await expect.poll(() => publishedRequests).toEqual([{ description: 'cli', runtime_capabilities: ['browser'] }]);
   await expect(publishDialog).toBeHidden();
   await expect(page.getByRole('heading', { name: '环境配置终端' })).toBeHidden();
 });

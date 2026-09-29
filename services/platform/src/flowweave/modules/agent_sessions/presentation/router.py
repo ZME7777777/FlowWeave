@@ -33,16 +33,26 @@ from flowweave.modules.agent_workspaces import public as agent_workspace_host
 from flowweave.modules.environments import public as environments
 from flowweave.modules.users.application.security import current_principal
 from flowweave.runtime.dependencies import runtime_context
+from flowweave.runtime.read_budget import hydration_response_budget
 from flowweave.runtime.routing import runtime_for
 from flowweave.shared.errors import DomainError
 from flowweave.shared.http import (
     Db,
     IdempotencyKey,
+    acquire_terminal_slot,
     command_key,
     get_container,
+    release_terminal_slot,
     run_blocking,
+    run_blocking_auxiliary,
+    run_blocking_control,
     run_blocking_history,
+    run_blocking_hydration,
+    run_blocking_message,
+    run_blocking_mutation,
     run_sync,
+    run_terminal_control,
+    run_terminal_stream,
 )
 from flowweave.shared.schemas import ConversationPatchWrite
 from flowweave.shared.settings import bind_settings, reset_settings
@@ -251,9 +261,12 @@ _BASE = "/flow-runs/{flow_run_id}/node-attempts/{attempt_id}/agent-sessions"
 
 
 @router.get(f"{_BASE}/host")
-async def node_session_host(flow_run_id: str, attempt_id: str, db: Db) -> dict[str, Any]:
-    return await run_sync(
-        db,
+async def node_session_host(
+    flow_run_id: str, attempt_id: str, container: ContainerDep
+) -> dict[str, Any]:
+    # Resolving a node host may provision its Attempt Runtime.
+    return await run_blocking_mutation(
+        container,
         lambda session: agent_sessions.flow_node_conversations.node_host_details(
             session, flow_run_id=flow_run_id, attempt_id=attempt_id
         ),
@@ -261,9 +274,12 @@ async def node_session_host(flow_run_id: str, attempt_id: str, db: Db) -> dict[s
 
 
 @router.get(f"{_BASE}/runtime")
-async def node_session_runtime(flow_run_id: str, attempt_id: str, db: Db) -> dict[str, Any]:
-    return await run_sync(
-        db,
+async def node_session_runtime(
+    flow_run_id: str, attempt_id: str, container: ContainerDep
+) -> dict[str, Any]:
+    # Existing sessions may also provision on a status lookup after recovery.
+    return await run_blocking_mutation(
+        container,
         lambda session: agent_sessions.flow_node_conversations.node_runtime_status(
             session, flow_run_id=flow_run_id, attempt_id=attempt_id
         ),
@@ -272,10 +288,10 @@ async def node_session_runtime(flow_run_id: str, attempt_id: str, db: Db) -> dic
 
 @router.post(f"{_BASE}/capabilities/{{capability_version_id}}/mcp-readiness")
 async def node_session_mcp_readiness(
-    flow_run_id: str, attempt_id: str, capability_version_id: str, db: Db
+    flow_run_id: str, attempt_id: str, capability_version_id: str, container: ContainerDep
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking(
+        container,
         lambda session: (
             agent_sessions.resolve_flow_node_session_host(
                 session,
@@ -298,10 +314,10 @@ async def add_node_session_capability(
     attempt_id: str,
     binding_id: str,
     payload: NodeCapabilityAddWrite,
-    db: Db,
+    container: ContainerDep,
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking_mutation(
+        container,
         lambda session: agent_sessions.flow_node_conversations.add_node_conversation_capability(
             session,
             flow_run_id=flow_run_id,
@@ -333,10 +349,10 @@ async def synchronize_node_session_credentials(
     attempt_id: str,
     binding_id: str,
     payload: NodeCredentialSyncWrite,
-    db: Db,
+    container: ContainerDep,
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking_mutation(
+        container,
         lambda session: agent_sessions.flow_node_conversations.synchronize_node_credentials(
             session,
             flow_run_id=flow_run_id,
@@ -373,7 +389,9 @@ async def node_session_activity(
     attempt_id: str,
     container: ContainerDep,
     active_binding_id: str | None = Query(default=None, min_length=1, max_length=36),
-) -> dict[str, list[str]]:
+) -> dict[str, Any]:
+    # The shared activity projection contains both binding-id lists and
+    # structured condensation task records.
     return await run_blocking_history(
         container,
         lambda session: agent_sessions.flow_node_conversations.node_session_activity(
@@ -390,7 +408,7 @@ async def create_node_session(
     flow_run_id: str,
     attempt_id: str,
     payload: NodeSessionCreateWrite,
-    db: Db,
+    container: ContainerDep,
     idempotency_key: IdempotencyKey = None,
 ) -> dict[str, Any]:
     def create(session: Any) -> dict[str, Any]:
@@ -415,7 +433,7 @@ async def create_node_session(
             binding_id=str(created["id"]),
         )
 
-    return await run_sync(db, create)
+    return await run_blocking_mutation(container, create)
 
 
 @router.post(f"{_BASE}/bootstrap", status_code=201)
@@ -423,7 +441,7 @@ async def bootstrap_node_session(
     flow_run_id: str,
     attempt_id: str,
     payload: NodeSessionBootstrapFullWrite,
-    db: Db,
+    container: ContainerDep,
     idempotency_key: IdempotencyKey = None,
 ) -> dict[str, Any]:
     legacy_image_urls: list[str] = []
@@ -445,8 +463,8 @@ async def bootstrap_node_session(
                     422,
                 )
             legacy_image_urls.append(f"data:{mime_type};base64,{encoded}")
-    return await run_sync(
-        db,
+    return await run_blocking_message(
+        container,
         lambda session: agent_sessions.flow_node_conversations.bootstrap_node_conversation(
             session,
             flow_run_id=flow_run_id,
@@ -477,13 +495,13 @@ async def bootstrap_node_session(
 async def node_session_workspace(
     flow_run_id: str,
     attempt_id: str,
-    db: Db,
+    container: ContainerDep,
     binding_id: str | None = Query(default=None),
     work_directory_id: str | None = Query(default=None),
     full_index: bool = Query(default=False),
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking_auxiliary(
+        container,
         lambda session: agent_sessions.flow_node_workspace.details(
             session,
             flow_run_id=flow_run_id,
@@ -499,15 +517,15 @@ async def node_session_workspace(
 async def node_session_workspace_directory(
     flow_run_id: str,
     attempt_id: str,
-    db: Db,
+    container: ContainerDep,
     parent_path: str | None = Query(default=None, max_length=500),
     cursor: str | None = Query(default=None, max_length=500),
     limit: int = Query(default=100, ge=1, le=250),
     binding_id: str | None = Query(default=None),
     work_directory_id: str | None = Query(default=None),
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking_auxiliary(
+        container,
         lambda session: agent_sessions.flow_node_workspace.list_directory(
             session,
             flow_run_id=flow_run_id,
@@ -525,12 +543,12 @@ async def node_session_workspace_directory(
 async def node_session_workspace_git_repositories(
     flow_run_id: str,
     attempt_id: str,
-    db: Db,
+    container: ContainerDep,
     binding_id: str | None = Query(default=None),
     work_directory_id: str | None = Query(default=None),
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking_auxiliary(
+        container,
         lambda session: {
             "repositories": agent_sessions.flow_node_workspace.git_repositories(
                 session,
@@ -547,7 +565,7 @@ async def node_session_workspace_git_repositories(
 async def node_session_workspace_file(
     flow_run_id: str,
     attempt_id: str,
-    db: Db,
+    container: ContainerDep,
     path: str = Query(...),
     binding_id: str | None = Query(default=None),
     work_directory_id: str | None = Query(default=None),
@@ -555,8 +573,8 @@ async def node_session_workspace_file(
     preview: bool = Query(default=False),
     offset: int = Query(default=0, ge=0),
 ) -> Response:
-    content, content_type, filename, total_size, next_offset = await run_sync(
-        db,
+    content, content_type, filename, total_size, next_offset = await run_blocking_auxiliary(
+        container,
         lambda session: agent_sessions.flow_node_workspace.read_file(
             session,
             flow_run_id=flow_run_id,
@@ -585,13 +603,13 @@ async def node_session_workspace_file(
 async def node_session_workspace_git_log(
     flow_run_id: str,
     attempt_id: str,
-    db: Db,
+    container: ContainerDep,
     repository_path: str = Query(...),
     binding_id: str | None = Query(default=None),
     work_directory_id: str | None = Query(default=None),
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking_auxiliary(
+        container,
         lambda session: agent_sessions.flow_node_workspace.git_history(
             session,
             flow_run_id=flow_run_id,
@@ -607,13 +625,13 @@ async def node_session_workspace_git_log(
 async def sync_node_session_workspace_git_repository(
     flow_run_id: str,
     attempt_id: str,
-    db: Db,
+    container: ContainerDep,
     repository_path: str = Query(...),
     binding_id: str | None = Query(default=None),
     work_directory_id: str | None = Query(default=None),
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking_auxiliary(
+        container,
         lambda session: agent_sessions.flow_node_workspace.sync_git_repository(
             session,
             flow_run_id=flow_run_id,
@@ -629,13 +647,13 @@ async def sync_node_session_workspace_git_repository(
 async def node_session_workspace_git_changes(
     flow_run_id: str,
     attempt_id: str,
-    db: Db,
+    container: ContainerDep,
     repository_path: str = Query(...),
     binding_id: str | None = Query(default=None),
     work_directory_id: str | None = Query(default=None),
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking_auxiliary(
+        container,
         lambda session: agent_sessions.flow_node_workspace.git_changes(
             session,
             flow_run_id=flow_run_id,
@@ -651,15 +669,15 @@ async def node_session_workspace_git_changes(
 async def node_session_workspace_git_working_diff(
     flow_run_id: str,
     attempt_id: str,
-    db: Db,
+    container: ContainerDep,
     repository_path: str = Query(...),
     kind: str = Query(...),
     path: str = Query(...),
     binding_id: str | None = Query(default=None),
     work_directory_id: str | None = Query(default=None),
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking_auxiliary(
+        container,
         lambda session: agent_sessions.flow_node_workspace.git_change_file_diff(
             session,
             flow_run_id=flow_run_id,
@@ -677,14 +695,14 @@ async def node_session_workspace_git_working_diff(
 async def node_session_workspace_git_commit(
     flow_run_id: str,
     attempt_id: str,
-    db: Db,
+    container: ContainerDep,
     repository_path: str = Query(...),
     commit: str = Query(...),
     binding_id: str | None = Query(default=None),
     work_directory_id: str | None = Query(default=None),
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking_auxiliary(
+        container,
         lambda session: agent_sessions.flow_node_workspace.git_commit_details(
             session,
             flow_run_id=flow_run_id,
@@ -701,15 +719,15 @@ async def node_session_workspace_git_commit(
 async def node_session_workspace_git_diff(
     flow_run_id: str,
     attempt_id: str,
-    db: Db,
+    container: ContainerDep,
     repository_path: str = Query(...),
     commit: str = Query(...),
     path: str = Query(...),
     binding_id: str | None = Query(default=None),
     work_directory_id: str | None = Query(default=None),
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking_auxiliary(
+        container,
         lambda session: agent_sessions.flow_node_workspace.git_commit_file_diff(
             session,
             flow_run_id=flow_run_id,
@@ -728,12 +746,12 @@ async def delete_node_session_workspace_entries(
     flow_run_id: str,
     attempt_id: str,
     payload: WorkspaceEntriesDeleteWrite,
-    db: Db,
+    container: ContainerDep,
     binding_id: str | None = Query(default=None),
     work_directory_id: str | None = Query(default=None),
 ) -> dict[str, list[str]]:
-    deleted = await run_sync(
-        db,
+    deleted = await run_blocking_auxiliary(
+        container,
         lambda session: agent_sessions.flow_node_workspace.delete_entries(
             session,
             flow_run_id=flow_run_id,
@@ -751,12 +769,12 @@ async def create_node_session_workspace_entry(
     flow_run_id: str,
     attempt_id: str,
     payload: WorkspaceEntryCreateWrite,
-    db: Db,
+    container: ContainerDep,
     binding_id: str | None = Query(default=None),
     work_directory_id: str | None = Query(default=None),
 ) -> Response:
-    await run_sync(
-        db,
+    await run_blocking_auxiliary(
+        container,
         lambda session: agent_sessions.flow_node_workspace.create_entry(
             session,
             flow_run_id=flow_run_id,
@@ -775,12 +793,12 @@ async def create_node_session_workspace_entry(
 async def node_session_candidate_output_file(
     flow_run_id: str,
     attempt_id: str,
-    db: Db,
+    container: ContainerDep,
     field_key: str = Query(...),
     path: str = Query(...),
 ) -> Response:
-    content, content_type, filename = await run_sync(
-        db,
+    content, content_type, filename = await run_blocking_auxiliary(
+        container,
         lambda session: agent_sessions.flow_node_workspace.read_candidate_output_file(
             session,
             flow_run_id=flow_run_id,
@@ -805,10 +823,10 @@ async def node_session_candidate_output_file(
 
 @router.get(f"{_BASE}/work-directories")
 async def list_flow_run_work_directories(
-    flow_run_id: str, attempt_id: str, db: Db
+    flow_run_id: str, attempt_id: str, container: ContainerDep
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking_auxiliary(
+        container,
         lambda session: (
             agent_sessions.resolve_flow_node_session_host(
                 session,
@@ -826,7 +844,7 @@ async def create_flow_run_work_directory(
     flow_run_id: str,
     attempt_id: str,
     payload: FlowRunWorkDirectoryCreateWrite,
-    db: Db,
+    container: ContainerDep,
 ) -> dict[str, Any]:
     def create(session: Any) -> dict[str, Any]:
         agent_sessions.resolve_flow_node_session_host(
@@ -843,15 +861,15 @@ async def create_flow_run_work_directory(
             tuple(payload.selected_paths),
         )
 
-    return await run_sync(db, create)
+    return await run_blocking_auxiliary(container, create)
 
 
 @router.delete(f"{_BASE}/work-directories/{{work_directory_id}}", status_code=204)
 async def delete_flow_run_work_directory(
-    flow_run_id: str, attempt_id: str, work_directory_id: str, db: Db
+    flow_run_id: str, attempt_id: str, work_directory_id: str, container: ContainerDep
 ) -> Response:
-    await run_sync(
-        db,
+    await run_blocking_auxiliary(
+        container,
         lambda session: (
             agent_sessions.resolve_flow_node_session_host(
                 session,
@@ -869,10 +887,10 @@ async def delete_flow_run_work_directory(
 
 @router.get(f"{_BASE}/{{binding_id}}")
 async def get_node_session(
-    flow_run_id: str, attempt_id: str, binding_id: str, db: Db
+    flow_run_id: str, attempt_id: str, binding_id: str, container: ContainerDep
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking(
+        container,
         lambda session: agent_sessions.flow_node_conversations.get_node_session_view(
             session, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
         ),
@@ -885,7 +903,7 @@ async def patch_node_session(
     attempt_id: str,
     binding_id: str,
     payload: ConversationPatchWrite,
-    db: Db,
+    container: ContainerDep,
 ) -> dict[str, Any]:
     def patch(session: Any) -> dict[str, Any]:
         agent_sessions.flow_node_conversations.patch_node_conversation(
@@ -902,7 +920,7 @@ async def patch_node_session(
             binding_id=binding_id,
         )
 
-    return await run_sync(db, patch)
+    return await run_blocking_mutation(container, patch)
 
 
 @router.put(f"{_BASE}/{{binding_id}}/unread")
@@ -928,10 +946,10 @@ async def set_node_session_unread(
 
 @router.delete(f"{_BASE}/{{binding_id}}", status_code=204)
 async def delete_node_session(
-    flow_run_id: str, attempt_id: str, binding_id: str, db: Db
+    flow_run_id: str, attempt_id: str, binding_id: str, container: ContainerDep
 ) -> Response:
-    await run_sync(
-        db,
+    await run_blocking_mutation(
+        container,
         lambda session: agent_sessions.flow_node_conversations.delete_node_conversation(
             session, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
         ),
@@ -983,27 +1001,29 @@ async def node_session_hydration(
     if cached is not None:
         return cached
     try:
-        key = await run_blocking(
-            container,
-            lambda session: agent_sessions.flow_node_conversations.node_conversation_cache_key(
-                session,
-                flow_run_id=flow_run_id,
-                attempt_id=attempt_id,
-                binding_id=binding_id,
-            ),
-        )
-        return await container.conversation_hydration_cache.get_or_load(
-            key,
-            lambda: run_blocking(
+        node_conversations = agent_sessions.flow_node_conversations
+        async with hydration_response_budget(container.settings.hydration_read_timeout_seconds):
+            key = await run_blocking_hydration(
                 container,
-                lambda session: agent_sessions.flow_node_conversations.hydrate_node_conversation(
+                lambda session: node_conversations.node_conversation_cache_key(
                     session,
                     flow_run_id=flow_run_id,
                     attempt_id=attempt_id,
                     binding_id=binding_id,
                 ),
-            ),
-        )
+            )
+            return await container.conversation_hydration_cache.get_or_load(
+                key,
+                lambda: run_blocking_hydration(
+                    container,
+                    lambda session: node_conversations.hydrate_node_conversation(
+                        session,
+                        flow_run_id=flow_run_id,
+                        attempt_id=attempt_id,
+                        binding_id=binding_id,
+                    ),
+                ),
+            )
     except DomainError as exc:
         if exc.code not in {
             "EXECUTOR_UNAVAILABLE",
@@ -1082,10 +1102,10 @@ async def decide_node_confirmation(
     attempt_id: str,
     binding_id: str,
     payload: NodeConfirmationDecisionWrite,
-    db: Db,
+    container: ContainerDep,
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking_mutation(
+        container,
         lambda session: agent_sessions.flow_node_conversations.decide_node_confirmation(
             session,
             flow_run_id=flow_run_id,
@@ -1104,10 +1124,10 @@ async def switch_node_session_model(
     attempt_id: str,
     binding_id: str,
     payload: NodeSessionModelWrite,
-    db: Db,
+    container: ContainerDep,
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking_mutation(
+        container,
         lambda session: agent_sessions.flow_node_conversations.switch_node_conversation_model(
             session,
             flow_run_id=flow_run_id,
@@ -1171,7 +1191,7 @@ async def node_session_message(
             **arguments,
         ),
     )
-    result, queued_during_turn, compacted = await run_blocking(
+    result, queued_during_turn, compacted = await run_blocking_message(
         container,
         lambda _session: agent_sessions.flow_node_conversations.dispatch_running_node_message(
             prepared
@@ -1196,10 +1216,10 @@ async def rerun_node_message(
     binding_id: str,
     event_id: str,
     payload: NodeSessionMessageWrite,
-    db: Db,
+    container: ContainerDep,
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking_message(
+        container,
         lambda session: agent_sessions.flow_node_conversations.rerun_node_message(
             session,
             flow_run_id=flow_run_id,
@@ -1224,11 +1244,11 @@ async def fork_node_session(
     attempt_id: str,
     binding_id: str,
     payload: NodeForkWrite,
-    db: Db,
+    container: ContainerDep,
     idempotency_key: IdempotencyKey = None,
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking_mutation(
+        container,
         lambda session: agent_sessions.flow_node_conversations.fork_node_conversation(
             session,
             flow_run_id=flow_run_id,
@@ -1247,13 +1267,13 @@ async def migrate_node_session(
     attempt_id: str,
     binding_id: str,
     payload: NodeSessionModelWrite,
-    db: Db,
+    container: ContainerDep,
 ) -> dict[str, Any]:
     # New node conversations already have the shared streaming callback.  The
     # route is retained for parity and returns the same scoped conversation.
     del payload
-    return await run_sync(
-        db,
+    return await run_blocking(
+        container,
         lambda session: agent_sessions.flow_node_conversations.get_node_session_view(
             session, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
         ),
@@ -1310,10 +1330,15 @@ async def cancel_resumable_node_attachment_upload(flow_run_id: str, attempt_id: 
 
 @router.post(f"{_BASE}/{{binding_id}}/attachments", status_code=201)
 async def upload_node_attachment(
-    flow_run_id: str, attempt_id: str, binding_id: str, db: Db, file: Annotated[UploadFile, File()]
+    flow_run_id: str,
+    attempt_id: str,
+    binding_id: str,
+    container: ContainerDep,
+    file: Annotated[UploadFile, File()],
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    content = await file.read(25 * 1024 * 1024 + 1)
+    return await run_blocking_mutation(
+        container,
         lambda session: agent_sessions.flow_node_conversations.upload_node_attachment(
             session,
             flow_run_id=flow_run_id,
@@ -1321,7 +1346,7 @@ async def upload_node_attachment(
             binding_id=binding_id,
             filename=file.filename or "attachment",
             content_type=file.content_type or "application/octet-stream",
-            content=file.file.read(25 * 1024 * 1024 + 1),
+            content=content,
         ),
     )
 
@@ -1330,15 +1355,15 @@ async def upload_node_attachment(
 async def upload_node_draft_attachment(
     flow_run_id: str,
     attempt_id: str,
-    db: Db,
+    container: ContainerDep,
     file: Annotated[UploadFile, File()],
     conversation_id: str | None = Query(default=None, min_length=36, max_length=36),
     work_directory_id: str | None = Query(default=None),
 ) -> dict[str, Any]:
     del work_directory_id
     content = await file.read(25 * 1024 * 1024 + 1)
-    return await run_sync(
-        db,
+    return await run_blocking_mutation(
+        container,
         lambda session: agent_sessions.flow_node_conversations.upload_node_attachment(
             session,
             flow_run_id=flow_run_id,
@@ -1356,11 +1381,11 @@ async def delete_node_draft_attachments(
     flow_run_id: str,
     attempt_id: str,
     conversation_id: str,
-    db: Db,
+    container: ContainerDep,
     path: str | None = Query(default=None),
 ) -> Response:
-    await run_sync(
-        db,
+    await run_blocking_mutation(
+        container,
         lambda session: agent_sessions.flow_node_conversations.delete_node_draft_attachment(
             session,
             flow_run_id=flow_run_id,
@@ -1381,10 +1406,10 @@ async def delete_node_draft_attachments(
 
 @router.post(f"{_BASE}/{{binding_id}}/interrupt", status_code=202)
 async def interrupt_node_session(
-    flow_run_id: str, attempt_id: str, binding_id: str, db: Db
+    flow_run_id: str, attempt_id: str, binding_id: str, container: ContainerDep
 ) -> dict[str, bool]:
-    return await run_sync(
-        db,
+    return await run_blocking_control(
+        container,
         lambda session: agent_sessions.flow_node_conversations.interrupt_node_conversation(
             session,
             flow_run_id=flow_run_id,
@@ -1396,10 +1421,10 @@ async def interrupt_node_session(
 
 @router.post(f"{_BASE}/{{binding_id}}/resume", status_code=202)
 async def resume_node_session(
-    flow_run_id: str, attempt_id: str, binding_id: str, db: Db
+    flow_run_id: str, attempt_id: str, binding_id: str, container: ContainerDep
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking_control(
+        container,
         lambda session: agent_sessions.flow_node_conversations.resume_node_conversation(
             session,
             flow_run_id=flow_run_id,
@@ -1411,10 +1436,10 @@ async def resume_node_session(
 
 @router.post(f"{_BASE}/{{binding_id}}/stop", status_code=202)
 async def stop_node_session(
-    flow_run_id: str, attempt_id: str, binding_id: str, db: Db
+    flow_run_id: str, attempt_id: str, binding_id: str, container: ContainerDep
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    return await run_blocking_control(
+        container,
         lambda session: agent_sessions.flow_node_conversations.stop_node_conversation(
             session, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
         ),
@@ -1479,6 +1504,7 @@ async def node_session_terminal(
 ) -> None:
     token = bind_settings(container.settings)
     terminal: environments.ManagedTerminal | None = None
+    terminal_slot_acquired = False
     try:
         try:
             rows = max(2, min(int(websocket.query_params.get("rows", "24")), 200))
@@ -1516,21 +1542,25 @@ async def node_session_terminal(
             except DomainError as exc:
                 await websocket.close(code=4409, reason=exc.message)
                 return
-        terminal = await asyncio.to_thread(
-            environments.open_managed_terminal,
-            resource_name,
-            resource_id=runtime_id,
-            session_name=f"flowweave-node-{binding_id or 'draft'}",
-            working_dir=working_directory,
-            rows=rows,
-            columns=columns,
+        await acquire_terminal_slot(container)
+        terminal_slot_acquired = True
+        terminal = await run_terminal_control(
+            container,
+            lambda: environments.open_managed_terminal(
+                resource_name,
+                resource_id=runtime_id,
+                session_name=f"flowweave-node-{binding_id or 'draft'}",
+                working_dir=working_directory,
+                rows=rows,
+                columns=columns,
+            ),
         )
         await websocket.accept()
 
         async def forward_output() -> None:
             assert terminal is not None
             while True:
-                chunk, eof = await asyncio.to_thread(terminal.read)
+                chunk, eof = await run_terminal_stream(container, terminal.read)
                 if chunk:
                     await websocket.send_bytes(chunk)
                 if eof:
@@ -1550,19 +1580,29 @@ async def node_session_terminal(
                 except json.JSONDecodeError:
                     value = {"type": "input", "data": text}
                 if value.get("type") == "resize":
-                    await asyncio.to_thread(
-                        terminal.resize,
-                        max(2, min(int(value.get("rows", 24)), 200)),
-                        max(20, min(int(value.get("columns", 80)), 400)),
+                    terminal_rows = max(2, min(int(value.get("rows", 24)), 200))
+                    terminal_columns = max(20, min(int(value.get("columns", 80)), 400))
+                    await run_terminal_control(
+                        container,
+                        lambda rows=terminal_rows, columns=terminal_columns: terminal.resize(
+                            rows, columns
+                        ),
                     )
                 elif value.get("type") == "input":
-                    await asyncio.to_thread(terminal.write, str(value.get("data", "")).encode())
+                    terminal_input = str(value.get("data", "")).encode()
+                    await run_terminal_control(
+                        container, lambda data=terminal_input: terminal.write(data)
+                    )
         except WebSocketDisconnect:
             pass
         finally:
             output.cancel()
             await asyncio.gather(output, return_exceptions=True)
     finally:
-        if terminal is not None:
-            await asyncio.to_thread(terminal.close)
-        reset_settings(token)
+        try:
+            if terminal is not None:
+                await run_terminal_control(container, terminal.close)
+        finally:
+            if terminal_slot_acquired:
+                release_terminal_slot(container)
+            reset_settings(token)

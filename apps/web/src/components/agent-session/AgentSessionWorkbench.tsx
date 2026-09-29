@@ -39,10 +39,19 @@ const HYDRATION_UI_DEADLINE_MS = 12_000;
 const MAX_UNAVAILABLE_HYDRATION_RETRIES = 2;
 const TERMINAL_CONVERSATION_CACHE_TTL_MS = 5 * 60 * 1000;
 const ACTIVE_CONVERSATION_CACHE_TTL_MS = 30_000;
-// A hydration response is a coherent native snapshot. Keep its three seeded
-// projections fresh long enough to prevent React Query from immediately
-// repeating the same Runtime reads as soon as the first screen has painted.
+// A hydration response seeds the coherent event and readiness projections.
+// Keep those snapshots fresh long enough to avoid repeating their Runtime
+// reads immediately after the first screen has painted; Context refreshes
+// independently because its exact metrics are intentionally deferred.
 const INITIAL_HYDRATION_STALE_TIME_MS = 30_000;
+// Older history is background-only. Limit each prefetch turn so it cannot
+// monopolize the dedicated backend history lane after a session is selected.
+const HISTORY_PREFETCH_MAX_PAGES = 2;
+const HISTORY_PREFETCH_MAX_TOTAL_PAGES = 8;
+const HISTORY_PREFETCH_DELAY_MS = 250;
+// Exact Context metrics are deferred from hydration. Merge bursts of event
+// reconciliation into one bounded refresh instead of invalidating per frame.
+const CONTEXT_REFRESH_MIN_INTERVAL_MS = 15_000;
 const WORKSPACE_PATH_COPIED_DURATION_MS = 1_500;
 const SESSION_PERFORMANCE_MARK_PREFIX = 'flowweave.agent-session.';
 // These are the frozen OpenHands/LiteLLM request settings applied by the
@@ -631,33 +640,93 @@ function conversationSearchSnippet(content: string, query: string): string {
   return (start ? '…' : '') + text.slice(start, end) + (end < text.length ? '…' : '');
 }
 
-function ConversationSearchDialog({ search, onClose, onSubmit, submitting, onOpenHit }: {
+function ConversationSearchDialog({ search, hits, hasMore, workDirectories, rootLabel, onClose, onSubmit, onLoadMore, submitting, loadingMore, onOpenHit }: {
   search?: AgentConversationSearch;
+  hits: AgentConversationSearch['hits'];
+  hasMore: boolean;
+  workDirectories: AgentSessionWorkDirectory[];
+  rootLabel: string;
   onClose: () => void;
-  onSubmit: (query: string) => void;
+  onSubmit: (query: string, scope: { workDirectoryIds?: string[]; includeRoot: boolean }) => void;
+  onLoadMore: () => void;
   submitting: boolean;
+  loadingMore: boolean;
   onOpenHit: (bindingId: string, eventId: string) => void;
 }) {
   const [query, setQuery] = useState(search?.query ?? '');
+  const [includeRoot, setIncludeRoot] = useState(true);
+  const [selectedWorkDirectoryIds, setSelectedWorkDirectoryIds] = useState<string[]>([]);
   useEscapeClose(onClose);
   useEffect(() => { setQuery(search?.query ?? ''); }, [search?.id, search?.query]);
+  useEffect(() => {
+    if (search?.work_directory_ids == null) {
+      setIncludeRoot(true);
+      setSelectedWorkDirectoryIds(workDirectories.map(item => item.id));
+      return;
+    }
+    setIncludeRoot(search.include_root ?? false);
+    setSelectedWorkDirectoryIds(search.work_directory_ids);
+  }, [search?.id, search?.include_root, search?.work_directory_ids, workDirectories]);
   const state = search?.state;
   const running = state === 'PENDING' || state === 'RUNNING';
+  const selectedCount = Number(includeRoot) + selectedWorkDirectoryIds.length;
+  const selectableCount = workDirectories.length + 1;
+  const allSelected = selectedCount === selectableCount;
+  const scopeLabel = allSelected
+    ? '全部工作区'
+    : selectedCount ? `已选择 ${selectedCount} 个工作区` : '未选择工作区';
+  const selectAll = () => {
+    setIncludeRoot(true);
+    setSelectedWorkDirectoryIds(workDirectories.map(item => item.id));
+  };
+  const clearAll = () => {
+    setIncludeRoot(false);
+    setSelectedWorkDirectoryIds([]);
+  };
+  const toggleDirectory = (id: string) => {
+    setSelectedWorkDirectoryIds(current => current.includes(id)
+      ? current.filter(item => item !== id)
+      : [...new Set([...current, id])]);
+  };
   return <div className="agent-conversation-search-backdrop" onPointerDown={event => { if (event.target === event.currentTarget) onClose(); }}>
     <section className="agent-conversation-search-dialog" role="dialog" aria-modal="true" aria-labelledby="agent-conversation-search-title">
-      <form onSubmit={event => { event.preventDefault(); if (query.trim() && !submitting) onSubmit(query.trim()); }}>
-        <Search size={21}/><input autoFocus aria-label="搜索会话内容" value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索全部工作区中的会话…"/><kbd>↵</kbd>
+      <form onSubmit={event => {
+        event.preventDefault();
+        if (!query.trim() || submitting || running || !selectedCount) return;
+        onSubmit(query.trim(), {
+          workDirectoryIds: allSelected ? undefined : selectedWorkDirectoryIds,
+          includeRoot,
+        });
+      }}>
+        <Search size={21}/><input autoFocus aria-label="搜索会话内容" value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索会话内容…"/><kbd>↵</kbd>
         <button type="button" aria-label="关闭搜索" onClick={onClose}><X size={17}/></button>
       </form>
-      <header><div><span className="eyebrow">CONVERSATION SEARCH</span><h2 id="agent-conversation-search-title">{search ? '“' + search.query + '”' : '搜索会话'}</h2></div>{running && <span className="agent-conversation-search-state running"><LoaderCircle size={13}/>后台搜索中</span>}{state === 'SUCCEEDED' && <span className="agent-conversation-search-state done"><Check size={13}/>已完成</span>}{state === 'FAILED' && <span className="agent-conversation-search-state failed">搜索失败</span>}</header>
+      <fieldset className="agent-conversation-search-scope" disabled={running || submitting}>
+        <legend>选择搜索工作区</legend>
+        <div className="agent-conversation-search-scope-header">
+          <div><b>搜索范围</b><small>默认全部选择；可点击单个工作区切换。</small></div>
+          <div className="agent-conversation-search-scope-actions"><button type="button" onClick={selectAll} disabled={allSelected}>全部选择</button><button type="button" onClick={clearAll} disabled={!selectedCount}>全部取消</button></div>
+        </div>
+        <div className="agent-conversation-search-scope-cards" role="group" aria-label="搜索工作区范围">
+          <button type="button" aria-pressed={includeRoot} className={`agent-conversation-search-scope-card${includeRoot ? ' selected' : ''}`} onClick={() => setIncludeRoot(current => !current)}><Check size={14}/><span><b>{rootLabel}</b></span></button>
+          {workDirectories.map(directory => {
+            const selectedDirectory = selectedWorkDirectoryIds.includes(directory.id);
+            return <button type="button" key={directory.id} aria-pressed={selectedDirectory} className={`agent-conversation-search-scope-card${selectedDirectory ? ' selected' : ''}`} onClick={() => toggleDirectory(directory.id)}><Check size={14}/><span><b>{directory.display_name}</b></span></button>;
+          })}
+        </div>
+        <small className="agent-conversation-search-scope-summary">当前：{scopeLabel}</small>
+      </fieldset>
+      <header><div><span className="eyebrow">CONVERSATION SEARCH</span><h2 id="agent-conversation-search-title">{search ? '“' + search.query + '”' : '搜索会话'}</h2></div>{running && <span className="agent-conversation-search-state running"><LoaderCircle size={13}/>后台搜索中</span>}{state === 'SUCCEEDED' && <span className="agent-conversation-search-state done"><Check size={13}/>{search?.is_partial ? '已返回最近结果' : '已完成'}</span>}{state === 'FAILED' && <span className="agent-conversation-search-state failed">搜索失败</span>}</header>
       <div className="agent-conversation-search-results">
         {!search && <p>输入关键词并按回车。关闭窗口不会取消后台搜索。</p>}
-        {running && <p>正在逐个搜索所有工作区会话的原生消息记录。你可以关闭窗口，完成后从左上角按钮重新打开结果。</p>}
+        {running && <p>正在逐个搜索所选工作区会话的原生消息记录。你可以关闭窗口，完成后从左上角按钮重新打开结果。</p>}
         {state === 'FAILED' && <p>{search?.failure_summary || '搜索无法完成，请重新搜索。'}</p>}
-        {state === 'SUCCEEDED' && !search?.hits?.length && <p>没有找到包含该内容的会话消息。</p>}
-        {search?.hits?.map(hit => <button type="button" className="agent-conversation-search-hit" key={hit.binding_id + ':' + hit.event_id} onClick={() => onOpenHit(hit.binding_id, hit.event_id)}>
-          <span><b>{hit.title}</b><small>{hit.source === 'user' || hit.source === 'human' ? '你的消息' : 'Agent 回复'}{hit.timestamp ? ' · ' + new Date(hit.timestamp).toLocaleString() : ''}</small></span><p>{conversationSearchSnippet(hit.content, search.query)}</p><ChevronRight size={16}/>
+        {state === 'SUCCEEDED' && search?.is_partial && <p>{search.partial_summary || '已按最新消息展示可扫描的结果；较早记录尚未扫描。'}</p>}
+        {state === 'SUCCEEDED' && !hits?.length && <p>没有找到包含该内容的会话消息。</p>}
+        {hits?.map(hit => <button type="button" className="agent-conversation-search-hit" key={hit.binding_id + ':' + hit.event_id} onClick={() => onOpenHit(hit.binding_id, hit.event_id)}>
+          <span><b>{hit.title}</b><small>{hit.source === 'user' || hit.source === 'human' ? '你的消息' : 'Agent 回复'}{hit.timestamp ? ' · ' + new Date(hit.timestamp).toLocaleString() : ''}</small></span><p>{conversationSearchSnippet(hit.content, search?.query ?? '')}</p><ChevronRight size={16}/>
         </button>)}
+        {state === 'SUCCEEDED' && hasMore && <button type="button" className="secondary" disabled={loadingMore} onClick={onLoadMore}>{loadingMore ? <LoaderCircle className="conversation-activity-spin" size={14}/> : null}加载更多结果</button>}
       </div>
     </section>
   </div>;
@@ -4372,6 +4441,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const [workspacePathCopied, setWorkspacePathCopied] = useState(false);
   const [conversationSearchOpen, setConversationSearchOpen] = useState(false);
   const [conversationSearchId, setConversationSearchId] = useState<string>();
+  const [conversationSearchCursor, setConversationSearchCursor] = useState<string>();
+  const [conversationSearchHits, setConversationSearchHits] = useState<NonNullable<AgentConversationSearch['hits']>>([]);
   const [conversationSearchTargetEventId, setConversationSearchTargetEventId] = useState<string>();
   const [sidebarListMode, setSidebarListMode] = useState<'workspaces' | 'activity'>('workspaces');
   const [activityPreviewBindingId, setActivityPreviewBindingId] = useState<string>();
@@ -4385,7 +4456,11 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const liveEventsFrame = useRef<number | undefined>(undefined);
   const deferredFormalUserEvents = useRef(new Map<string, ScopedConversationEvent>());
   const historyLoadingScopes = useRef(new Set<string>());
+  const historyAbortControllers = useRef(new Map<string, AbortController>());
   const historyFailedCursors = useRef(new Map<string, string>());
+  const historyPrefetchPagesByRootCursor = useRef(new Map<string, number>());
+  const contextRefreshTimers = useRef(new Map<string, number>());
+  const lastContextRefreshAt = useRef(new Map<string, number>());
   const exhaustedHistoryCursors = useRef(new Map<string, string>());
   const eventSynchronization = useRef<{
     scope?: string;
@@ -4398,6 +4473,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     inFlight?: Promise<AgentConversationInputReadiness>;
     lastRequestAt: number;
   }>({ lastRequestAt: 0 });
+  const hotReentryHydrationKey = useRef<string | undefined>(undefined);
   const historyPrependWaiters = useRef(new Map<number, {
     scope: string;
     capture?: (accepted: boolean) => void;
@@ -4416,6 +4492,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     setLocalMessageProjectionRevision(current => current + 1);
   }, []);
   useEffect(() => () => {
+    for (const controller of historyAbortControllers.current.values()) controller.abort();
+    historyAbortControllers.current.clear();
+    for (const timer of contextRefreshTimers.current.values()) window.clearTimeout(timer);
+    contextRefreshTimers.current.clear();
     for (const resource of [
       'conversation-hydration-request',
       'conversation-events',
@@ -4460,15 +4540,33 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const workspace = workspaceQuery.data;
   const conversationSearchSupported = Boolean(api.startConversationSearch && api.conversationSearch);
   const conversationSearchQuery = useQuery<AgentConversationSearch>({
-    queryKey: sessionQueryKey(host, 'conversation-search', workspace?.id, conversationSearchId),
-    queryFn: () => api.conversationSearch!(workspace!.id, conversationSearchId!),
+    queryKey: sessionQueryKey(host, 'conversation-search', workspace?.id, conversationSearchId, conversationSearchCursor),
+    queryFn: () => api.conversationSearch!(workspace!.id, conversationSearchId!, conversationSearchCursor),
     enabled: Boolean(workspace && conversationSearchId && api.conversationSearch),
+    // Running search polls metadata only; its native hit identities are read
+    // after completion in bounded pages below.
     refetchInterval: query => {
       const state = query.state.data?.state;
-      return state === 'PENDING' || state === 'RUNNING' ? 1_000 : false;
+      return conversationSearchCursor === undefined && (state === 'PENDING' || state === 'RUNNING') ? 1_000 : false;
     },
     retry: (count, error) => !(error instanceof ApiError && error.status < 500) && count < 2,
+    // Keep the visible results page while an explicit cursor fetches the next
+    // page, so loading more never clears the existing search result list.
+    placeholderData: previous => previous,
   });
+  useEffect(() => {
+    const page = conversationSearchQuery.data;
+    if (!page || conversationSearchCursor !== undefined) return;
+    setConversationSearchHits(page.hits ?? []);
+  }, [conversationSearchCursor, conversationSearchQuery.data]);
+  useEffect(() => {
+    const page = conversationSearchQuery.data;
+    if (!page || conversationSearchCursor === undefined) return;
+    setConversationSearchHits(current => {
+      const seen = new Set(current.map(hit => `${hit.binding_id}:${hit.event_id}`));
+      return [...current, ...(page.hits ?? []).filter(hit => !seen.has(`${hit.binding_id}:${hit.event_id}`))];
+    });
+  }, [conversationSearchCursor, conversationSearchQuery.data]);
   const draftRecoveryStorageKey = workspace && conversationDraft
     ? conversationDraftStorageKey(host.id, workspace.id, conversationDraft.workDirectoryId)
     : undefined;
@@ -4491,8 +4589,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     },
   });
   const conversationActivityQuery = useQuery({
-    queryKey: sessionQueryKey(host, 'conversation-activity', workspace?.id, selectedBindingId),
-    queryFn: () => api.conversationActivity(workspace!.id, selectedBindingId),
+    // A sidebar preview is not a formal route entry. Only the route binding may
+    // suppress the server-owned "completed in background" unread transition.
+    queryKey: sessionQueryKey(host, 'conversation-activity', workspace?.id, routeBindingId),
+    queryFn: () => api.conversationActivity(workspace!.id, routeBindingId),
     enabled: Boolean(workspace && pageVisible),
     refetchOnWindowFocus: true,
     refetchInterval: pageVisible ? 4_000 : false,
@@ -4519,9 +4619,12 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     [conversationActivityQuery.data],
   );
   useEffect(() => {
-    if (!workspace || !conversationsQuery.hasNextPage || conversationsQuery.isFetchingNextPage) return;
+    // A server-side page failure must not be retried by every render through
+    // automatic cursor chasing. Preserve successfully loaded pages and wait
+    // for an explicit invalidation/refresh instead.
+    if (!workspace || conversationsQuery.isError || conversationsQuery.isFetchNextPageError || !conversationsQuery.hasNextPage || conversationsQuery.isFetchingNextPage) return;
     void conversationsQuery.fetchNextPage();
-  }, [conversationsQuery.fetchNextPage, conversationsQuery.hasNextPage, conversationsQuery.isFetchingNextPage, workspace]);
+  }, [conversationsQuery.fetchNextPage, conversationsQuery.hasNextPage, conversationsQuery.isError, conversationsQuery.isFetchNextPageError, conversationsQuery.isFetchingNextPage, workspace]);
   const workDirectoriesQuery = useQuery({ queryKey: sessionQueryKey(host, 'work-directories', workspace?.id), queryFn: () => api.workDirectories(workspace!.id), enabled: Boolean(workspace && features.workDirectories) });
   const providersQuery = useQuery({ queryKey: ['model-providers'], queryFn: api.providers, enabled: Boolean(workspace && features.modelSelection) });
   const capabilityCatalogQuery = useQuery({ queryKey: sessionQueryKey(host, 'capability-catalog'), queryFn: api.capabilities, enabled: Boolean(workspace && features.capabilities) });
@@ -5044,7 +5147,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const runtimeWritable = Boolean(workspace && runtime?.write_available);
   const canOpenConversation = Boolean(workspace && (runtime?.write_available || runtime?.fork_available));
   const canBootstrap = Boolean(canOpenConversation && conversationDraft && (!features.modelSelection || (newConversationProviderId && newConversationModelName)));
-  const localTurnGenerating = turnState === 'running' || turnState === 'pausing' || turnState === 'resuming';
   const eventQueryKey = sessionQueryKey(host, 'conversation-events', workspace?.id, selected?.id);
   const inputReadinessQueryKey = sessionQueryKey(host, 'conversation-input-readiness', workspace?.id, selected?.id);
   const contextQueryKey = sessionQueryKey(host, 'conversation-context', workspace?.id, selected?.id);
@@ -5286,8 +5388,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       const cached = queryClient.getQueryData<AgentConversationInputReadiness>(inputReadinessQueryKey);
       if (cached) return Promise.resolve(cached);
     }
-    let request: Promise<AgentConversationInputReadiness>;
-    request = api.inputReadiness(workspaceId, scope).finally(() => {
+    const request = api.inputReadiness(workspaceId, scope).finally(() => {
       if (readinessSynchronization.current.scope === scope && readinessSynchronization.current.inFlight === request) {
         readinessSynchronization.current.inFlight = undefined;
       }
@@ -5311,15 +5412,11 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     initialDataUpdatedAt: hydrationData ? hydrationDataUpdatedAt : undefined,
     staleTime: INITIAL_HYDRATION_STALE_TIME_MS,
     refetchOnWindowFocus: false,
-    refetchInterval: query => {
-      const needsReadiness = turnState === 'pausing'
-        || turnState === 'resuming'
-        || queuedMessages.length > 0
-        || localTurnGenerating
-        || query.state.data?.ready === false;
-      if (!pageVisible || !needsReadiness) return false;
-      return Math.min(2000 * 2 ** query.state.fetchFailureCount, 10_000);
-    },
+    // Do not poll a per-conversation Runtime endpoint while a turn is
+    // running. The formal event coordinator and the batched activity snapshot
+    // own running presentation; readiness is refreshed on hydration, explicit
+    // controls, and a foreground recovery only.
+    refetchInterval: false,
     retry: (count, error) => !(error instanceof ApiError && error.status < 500) && count < 2,
   });
   const nativeExecutionStatus = inputReadinessQuery.data?.execution_status;
@@ -5328,28 +5425,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     && conversationHasReachedTerminalState(nativeExecutionStatus);
   const nativeTurnCompletedNormally = inputReadinessQuery.data?.ready === true
     && conversationHasCompletedNormally(nativeExecutionStatus);
-  // A message_complete stream frame identifies a completed streamed item, not
-  // the native Conversation lifecycle. Only formal input readiness can end
-  // the current page's active turn: the same conversation may continue with
-  // tool or subagent work after an assistant message is emitted.
-  const effectiveTurnState: TurnState = nativeTurnTerminal
-    ? 'idle'
-    : nativeExecutionStatus?.trim().toLowerCase() === 'paused'
-      ? 'paused'
-      : turnState === 'pausing' || turnState === 'resuming' || turnState === 'paused'
-        ? turnState
-      : nativeTurnRunning
-      ? 'running'
-        : turnState;
-  // The browser queue contains only messages that have not started delivery.
-  // Once a request starts, the optimistic conversation event owns its display.
-  const visibleQueuedMessages = queuedMessages.filter(message => message.scope === selected?.id);
-  const isGenerating = effectiveTurnState === 'running' || effectiveTurnState === 'pausing' || effectiveTurnState === 'resuming';
-  const streamEnabled = Boolean(
-    selected
-    && (runtime?.write_available || selected.write_available)
-    && (isGenerating || streamHold?.bindingId === selected.id),
-  );
   const eventsQuery = useQuery<OpenHandsConversationEventBatch>({
     queryKey: eventQueryKey,
     queryFn: async () => {
@@ -5389,6 +5464,23 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   useEffect(() => {
     if (selected && eventsQuery.data) markSessionPerformance('events-ready');
   }, [eventsQuery.data, selected]);
+  const scheduleContextRefresh = useCallback((workspaceId: string, bindingId: string) => {
+    const key = `${workspaceId}:${bindingId}`;
+    if (contextRefreshTimers.current.has(key)) return;
+    const elapsed = Date.now() - (lastContextRefreshAt.current.get(key) ?? 0);
+    const delay = Math.max(0, CONTEXT_REFRESH_MIN_INTERVAL_MS - elapsed);
+    const timer = window.setTimeout(() => {
+      contextRefreshTimers.current.delete(key);
+      lastContextRefreshAt.current.set(key, Date.now());
+      void queryClient.invalidateQueries({
+        queryKey: sessionQueryKey(host, 'conversation-context', workspaceId, bindingId),
+        exact: true,
+      });
+    }, delay);
+    contextRefreshTimers.current.set(key, timer);
+  }, [host, queryClient]);
+  const scheduleContextRefreshRef = useRef(scheduleContextRefresh);
+  scheduleContextRefreshRef.current = scheduleContextRefresh;
   const synchronizeConversationEvents = useCallback((preferLatest = false, diagnosticTrigger = 'scheduled'): Promise<void> => {
     if (!workspace || !selected) return Promise.resolve();
     const scope = selected.id;
@@ -5430,7 +5522,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
             })()
           : incoming,
         );
-        void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-context', workspace.id, scope) });
+        scheduleContextRefreshRef.current(workspace.id, scope);
       }).catch(() => {
         // The next scheduled reconciliation is sufficient. A transient read
         // failure must not clear already-rendered native events.
@@ -5452,8 +5544,15 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   }, [api, eventQueryKey, host, queryClient, selected, workspace]);
   useEffect(() => {
     if (!selected?.id || !trustedHydration?.running || selectedHydrationPhase !== 'ready') return;
+    // `synchronizeConversationEvents` is intentionally rebuilt as the event
+    // projection changes. Run this recovery once per successful hydration,
+    // rather than turning those normal renders into repeated latest-window
+    // reads (and indirect readiness refetches).
+    const hydrationKey = `${selected.id}:${trustedHydration.hydratedAt}`;
+    if (hotReentryHydrationKey.current === hydrationKey) return;
+    hotReentryHydrationKey.current = hydrationKey;
     void synchronizeConversationEvents(true, 'hot_reentry');
-  }, [selected?.id, selectedHydrationPhase, synchronizeConversationEvents, trustedHydration?.running]);
+  }, [selected?.id, selectedHydrationPhase, synchronizeConversationEvents, trustedHydration?.hydratedAt, trustedHydration?.running]);
   useEffect(() => {
     if (!foregroundRecoverySignal || !pageVisible || !workspace || !selected
       || foregroundRecoverySignal === handledForegroundRecoverySignal.current) return;
@@ -5472,27 +5571,41 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   // Let the latest native window paint before background history starts. This
   // makes the first visual state deterministic. History is a read-only
   // native projection and must keep loading while the current turn runs.
-  const historyPrefetchDelayMs = 100;
+  const historyPrefetchDelayMs = HISTORY_PREFETCH_DELAY_MS;
   const loadAllHistory = useCallback(async () => {
     if (!workspace || !selected || !eventsQuery.data?.history_cursor) return;
     const scope = selected.id;
     const scopeIsActive = () => activeHistoryScope.current === scope;
     if (historyLoadingScopes.current.has(scope)) return;
     historyLoadingScopes.current.add(scope);
+    const controller = new AbortController();
+    historyAbortControllers.current.set(scope, controller);
     setHistoryLoadingBindingId(scope);
-    let historyCursor: string | null | undefined = eventsQuery.data.history_cursor;
+    const historyRootCursor = eventsQuery.data.history_cursor;
+    const budgetKey = `${scope}:${historyRootCursor}`;
+    let historyCursor: string | null | undefined = historyRootCursor;
+    let pagesRead = 0;
     if (historyFailedCursors.current.get(scope) !== historyCursor) historyFailedCursors.current.delete(scope);
     const seenHistoryCursors = new Set<string>();
     try {
       // The first response is the native latest page. Prepend older pages only
       // after it has been positioned, yielding between pages so a long branch
       // never delays the initial conversation view.
-      while (historyCursor) {
+      while (
+        historyCursor
+        && pagesRead < HISTORY_PREFETCH_MAX_PAGES
+        && (historyPrefetchPagesByRootCursor.current.get(budgetKey) ?? 0) < HISTORY_PREFETCH_MAX_TOTAL_PAGES
+      ) {
         const cursor = historyCursor;
         if (seenHistoryCursors.has(cursor)) throw new Error('读取更早会话记录时，历史分页游标没有推进。');
         seenHistoryCursors.add(cursor);
-        const older = await api.conversationEvents(workspace.id, scope, undefined, cursor);
-        if (!scopeIsActive()) return;
+        const older = await api.conversationEvents(workspace.id, scope, undefined, cursor, undefined, controller.signal);
+        pagesRead += 1;
+        historyPrefetchPagesByRootCursor.current.set(
+          budgetKey,
+          (historyPrefetchPagesByRootCursor.current.get(budgetKey) ?? 0) + 1,
+        );
+        if (!scopeIsActive() || controller.signal.aborted) return;
         // This transaction captures the actual viewport immediately before
         // this exact page is inserted, then restores only after React has
         // rendered the matching page. It cannot leak into another session.
@@ -5520,17 +5633,31 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         setHistoryPrepend(current => current?.id === transaction.id ? undefined : current);
         historyCursor = older.history_cursor;
       }
-      if (eventsQuery.data.history_cursor) {
+      if (!historyCursor && eventsQuery.data.history_cursor) {
         exhaustedHistoryCursors.current.set(scope, eventsQuery.data.history_cursor);
       }
     } catch (error) {
+      if (controller.signal.aborted) return;
       if (historyCursor) historyFailedCursors.current.set(scope, historyCursor);
       reportOperationError(scope, error instanceof Error ? error : new Error('读取更早会话记录失败'));
     } finally {
       historyLoadingScopes.current.delete(scope);
+      historyAbortControllers.current.delete(scope);
       setHistoryLoadingBindingId(current => current === scope ? undefined : current);
     }
   }, [api, eventQueryKey, eventsQuery.data?.history_cursor, queryClient, reportOperationError, selected, workspace]);
+  useEffect(() => {
+    const activeBindingId = selected?.id;
+    for (const [bindingId, controller] of historyAbortControllers.current) {
+      if (bindingId !== activeBindingId) controller.abort();
+    }
+    for (const [key, timer] of contextRefreshTimers.current) {
+      if (!activeBindingId || !key.endsWith(`:${activeBindingId}`)) {
+        window.clearTimeout(timer);
+        contextRefreshTimers.current.delete(key);
+      }
+    }
+  }, [selected?.id]);
   useEffect(() => {
     const bindingId = selected?.id;
     const historyCursor = eventsQuery.data?.history_cursor;
@@ -5562,6 +5689,33 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     const visibleFormalEvents = currentFormalEvents.filter(event => !hiddenBranchIds.has(event.id));
     return projectLocalMessages(visibleFormalEvents, activeLocalMessageProjections);
   }, [activeLocalMessageProjections, currentFormalEvents, hiddenEventIds]);
+  const latestFormalUserEventId = [...currentFormalEvents].reverse().find(event => event.event_type === 'MESSAGE'
+    && ['user', 'human'].includes(String(event.payload.source ?? '').toLowerCase()))?.id;
+  // The selected conversation has the authoritative formal event tree in the
+  // browser. Once its latest user turn has a durable final reply / FinishAction
+  // / ERROR descendant, close the foreground controls immediately; do not wait
+  // for a later readiness poll or the sidebar's background activity sweep.
+  const selectedFormalTurnFinished = Boolean(
+    latestFormalUserEventId && hasFinishedTurn(currentFormalEvents, latestFormalUserEventId),
+  );
+  const effectiveTurnState: TurnState = nativeTurnTerminal
+    ? 'idle'
+    : nativeExecutionStatus?.trim().toLowerCase() === 'paused'
+      ? 'paused'
+      : turnState === 'pausing' || turnState === 'resuming' || turnState === 'paused'
+        ? turnState
+      : nativeTurnRunning
+      ? 'running'
+        : turnState;
+  // The browser queue contains only messages that have not started delivery.
+  // Once a request starts, the optimistic conversation event owns its display.
+  const visibleQueuedMessages = queuedMessages.filter(message => message.scope === selected?.id);
+  const isGenerating = effectiveTurnState === 'running' || effectiveTurnState === 'pausing' || effectiveTurnState === 'resuming';
+  const streamEnabled = Boolean(
+    selected
+    && (runtime?.write_available || selected.write_available)
+    && (isGenerating || streamHold?.bindingId === selected.id),
+  );
   useEffect(() => {
     if (!pendingSubmissionConfirmation) return;
     if (selected?.id !== pendingSubmissionConfirmation.bindingId
@@ -5603,8 +5757,27 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       && latestTask.state === 'DEAD');
     if (!hasNewTerminalEvent && !currentTaskFailed) return;
     setCondensationStatus(undefined);
-    if (!hasNewTerminalEvent) {
-      reportOperationError(selected.id, new Error('OpenHands 未能完成上下文压缩，请稍后重试。'));
+    const condensationFailureMessage: Record<string, string> = {
+      runtime_rate_limited: '上下文压缩请求被运行时限流，请稍后重试。',
+      runtime_service_unavailable: '上下文压缩运行时暂不可用，请稍后重试。',
+      runtime_auth_failed: '上下文压缩运行时认证失败，请检查运行时凭据后重试。',
+      runtime_request_rejected: '上下文压缩请求被运行时拒绝，未执行摘要。',
+      runtime_response_invalid: '上下文压缩运行时返回了无效响应，未执行摘要。',
+      runtime_timeout_unknown: '上下文压缩请求超时，结果未知；系统已避免自动重试，请先刷新事件后再决定是否重试。',
+      runtime_connection_unknown: '上下文压缩连接中断，结果未知；系统已避免自动重试，请先刷新事件后再决定是否重试。',
+      runtime_unavailable_unknown: '上下文压缩运行时不可用，结果未知；系统已避免自动重试，请先刷新事件后再决定是否重试。',
+      runtime_unknown: '上下文压缩运行时发生未知错误，请查看诊断日志后重试。',
+    };
+    const failureReason = latestTask?.failure_reason ?? '';
+    // A native terminal event can be deliberately generic to avoid exposing
+    // provider errors. Prefer the task's independently persisted safe reason
+    // whenever it is available, including beside that generic event.
+    const failureMessage = condensationFailureMessage[failureReason];
+    if (failureMessage || !hasNewTerminalEvent) {
+      reportOperationError(
+        selected.id,
+        new Error(failureMessage ?? 'OpenHands 未能完成上下文压缩，请稍后重试。'),
+      );
     }
     void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-activity', workspace?.id) });
     void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-context', workspace?.id, selected.id) });
@@ -5630,14 +5803,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     ? `${selected.id}:${unfinishedFormalTurnId}`
     : undefined;
   const terminalEventReconciliationActive = Boolean(terminalSyncTurnKey && terminalSyncTurnKey !== expiredTerminalSyncTurnKey);
-  const latestFormalUserEventId = [...displayedEvents].reverse().find(event => event.event_type === 'MESSAGE'
-    && ['user', 'human'].includes(String(event.payload.source ?? '').toLowerCase()))?.id;
-  // A durable OpenHands ERROR/Finish/assistant event is also authoritative
-  // while the exact readiness request is still loading or reconnecting.
-  // This is not a browser-side lifecycle guess: it is the native event tree.
-  const latestFormalTurnFinished = Boolean(
-    latestFormalUserEventId && hasFinishedTurn(displayedEvents, latestFormalUserEventId),
-  );
+  // Keep the presentation aliases near the task-plan logic below. The
+  // completed formal tree was already used above to close foreground controls.
+  const latestFormalTurnFinished = selectedFormalTurnFinished;
   const finalReplyAwaitingNativeCompletion = nativeTurnRunning
     && Boolean(activeNativeTurnId && hasAssistantReplyForTurn(displayedEvents, activeNativeTurnId));
   // Readiness owns interaction controls, but it may briefly report idle before
@@ -5792,10 +5960,16 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const contextQuery = useQuery({
     queryKey: contextQueryKey,
     queryFn: () => api.conversationContext(workspace!.id, selected!.id),
-    enabled: Boolean(workspace && selected && hydrationFallbackAllowed && trustedHydration?.running !== false),
+    // Every successful hydration seeds this query with only the cheap batch
+    // snapshot. Run the formal Context read for both terminal and running
+    // sessions once the first screen is available.
+    enabled: Boolean(workspace && selected && hydrationFallbackAllowed),
     initialData: hydrationData?.context,
     initialDataUpdatedAt: hydrationData ? hydrationDataUpdatedAt : undefined,
-    staleTime: INITIAL_HYDRATION_STALE_TIME_MS,
+    // Hydration carries only the inexpensive event-batch context. Exact
+    // current-View metrics come from the formal /context read, which starts
+    // after first paint instead of holding events and readiness hostage.
+    staleTime: CONTEXT_REFRESH_MIN_INTERVAL_MS,
     refetchOnWindowFocus: false,
   });
   const storedCurrentContext = useMemo(() => workspace && selected
@@ -5882,6 +6056,12 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const reconcileConversationProjection = useCallback(() => {
     void synchronizeConversationEvents(true);
     if (!workspace || !selected) return;
+    // A control action is an explicit state transition, so this is one of the
+    // few places permitted to refresh its exact Runtime readiness.
+    void queryClient.invalidateQueries({
+      queryKey: sessionQueryKey(host, 'conversation-input-readiness', workspace.id, selected.id),
+      exact: true,
+    });
     void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-confirmation', workspace.id, selected.id) });
   }, [host, queryClient, selected, synchronizeConversationEvents, workspace]);
   const appendLiveEvent = useCallback((scope: string, event: OpenHandsConversationEvent) => {
@@ -7352,13 +7532,21 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     window.addEventListener('pointercancel', end, true);
   }
   const conversationRow = (item: AgentConversation, group: AgentConversation[], options: { allowDrag?: boolean; workspaceName?: string; onSelect?: () => void; onDoubleClick?: () => void; onMarkRead?: () => void } = {}) => {
-    // Background rows use the independently fetched native running set, while
-    // the selected row keeps its more precise readiness and event projection.
-    // This keeps navigation reads free of Runtime calls without hiding active
-    // conversations or letting a delayed batch snapshot override a terminal row.
-    const running = item.id === selected?.id
-      ? conversationVisuallyActive
-      : runningConversationIds.has(item.id) || condensingConversationIds.has(item.id) || conversationIsRunning(item.execution_status);
+    // The batched native activity snapshot is the sidebar's authority for
+    // every row. A selected transcript may temporarily show its local send /
+    // pause / resume transition before that snapshot catches up, but a stale
+    // hydration readiness must never keep only the selected row spinning after
+    // the shared snapshot has observed completion.
+    const selectedHasFinalFormalReply = item.id === selected?.id
+      && selectedFormalTurnFinished;
+    const selectedLocalTransition = item.id === selected?.id
+      && !selectedHasFinalFormalReply
+      && (turnState === 'running' || turnState === 'pausing' || turnState === 'resuming');
+    const running = selectedHasFinalFormalReply
+      ? false
+      : runningConversationIds.has(item.id)
+        || condensingConversationIds.has(item.id)
+        || selectedLocalTransition;
     const possiblyStuck = item.id === selected?.id
       ? Boolean(eventsQuery.data?.monitoring?.possibly_stuck)
       : possiblyStuckConversationIds.has(item.id);
@@ -7419,10 +7607,12 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const activityWorkspaceName = (item: AgentConversation) => item.work_directory_id
     ? workDirectories.find(directory => directory.id === item.work_directory_id)?.display_name ?? '未知工作区'
     : workDirectoriesQuery.data?.root.display_name ?? '根工作区';
-  const startConversationSearch = (query: string) => {
+  const startConversationSearch = (query: string, scope: { workDirectoryIds?: string[]; includeRoot: boolean }) => {
     if (!workspace || !api.startConversationSearch) return;
-    void api.startConversationSearch(workspace.id, query).then(search => {
+    void api.startConversationSearch(workspace.id, query, scope.workDirectoryIds, scope.includeRoot).then(search => {
       setConversationSearchId(search.id);
+      setConversationSearchCursor(undefined);
+      setConversationSearchHits([]);
       setConversationSearchOpen(true);
     }).catch(reason => {
       setOperationError(reason instanceof Error ? reason : new Error('无法开始会话搜索'));
@@ -7475,7 +7665,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   };
   return <main className="agent-workbench-page" style={{ '--conversation-rail-width': `${conversationRailWidth}px` } as CSSProperties}>
     {selected && <ConversationStreamObserver workspaceId={workspace.id} bindingId={selected.id} enabled={streamEnabled} onEvent={onStreamEvent} onStatus={updateStreamStatus} onReconnect={onStreamReconnect}/>}
-    {conversationSearchOpen && <ConversationSearchDialog search={conversationSearchQuery.data} onClose={() => setConversationSearchOpen(false)} onSubmit={startConversationSearch} submitting={conversationSearchQuery.isFetching} onOpenHit={openConversationSearchHit}/>}
+    {conversationSearchOpen && <ConversationSearchDialog search={conversationSearchQuery.data} hits={conversationSearchHits} hasMore={Boolean(conversationSearchQuery.data?.next_cursor)} workDirectories={workDirectories} rootLabel={workDirectoriesQuery.data?.root.display_name ?? '根工作区'} onClose={() => setConversationSearchOpen(false)} onSubmit={startConversationSearch} onLoadMore={() => { if (conversationSearchQuery.data?.next_cursor) setConversationSearchCursor(conversationSearchQuery.data.next_cursor); }} submitting={conversationSearchQuery.isFetching && conversationSearchCursor === undefined} loadingMore={conversationSearchQuery.isFetching && conversationSearchCursor !== undefined} onOpenHit={openConversationSearchHit}/>}{/* Conversation search */}
     {filePreviewRequest && <ConversationFilePreviewDialog
       key={filePreviewRequest.key}
       request={filePreviewRequest}
