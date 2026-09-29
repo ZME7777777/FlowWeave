@@ -840,8 +840,8 @@ function WorkspaceConversationRow({
       <span><b>{conversationName(item)}</b>{workspaceName && <small title={workspaceName}><Folder size={11}/><span>{workspaceName}</span></small>}</span>
     </button>
     {showAlert && <button type="button" className={`agent-workspace-conversation-alert${alertIsRunning ? ' running' : ''}`} aria-label={failed ? '确认会话异常已读' : '确认会话长时间未产生进展已读'} title="标记为已读" onClick={event => { event.stopPropagation(); onAcknowledgeAlert?.(); }}><CircleAlert aria-hidden="true" size={14}/></button>}
-    {unread && !showAlert && <span className="agent-workspace-conversation-unread" role="img" aria-label={running ? '会话有未读回复' : '会话已完成，有未读回复'} title="会话有未读回复"/>}
-    {running && !showAlert && !unread && <LoaderCircle className="agent-workspace-conversation-running" role="img" aria-label="会话正在运行" size={14}/>}
+    {unread && !showAlert && !running && <span className="agent-workspace-conversation-unread" role="img" aria-label="会话已完成，有未读回复" title="会话有未读回复"/>}
+    {running && !showAlert && <LoaderCircle className="agent-workspace-conversation-running" role="img" aria-label="会话正在运行" size={14}/>}
     {orderSyncState === 'syncing' && !showAlert && !unread && !running && <span className="agent-workspace-conversation-sync" title="排序正在后台同步" aria-label="排序正在后台同步"><LoaderCircle size={12}/></span>}
     {orderSyncState === 'failed' && !showAlert && !unread && !running && <button type="button" className="agent-workspace-conversation-sync failed" title="排序暂未同步；点击重试。当前前端顺序已保留。" aria-label="排序暂未同步，点击重试" onClick={event => { event.stopPropagation(); onRetryOrder?.(); }}>!</button>}
     {onDelete && !running && !showAlert && <button type="button" className="agent-workspace-conversation-delete" aria-label={`删除会话 ${conversationName(item)}`} title={deleteDisabled ? '会话运行中，请先停止' : '删除会话'} disabled={!conversationWritable || deleteDisabled || removing} onClick={onDelete}><Trash2 size={13}/></button>}
@@ -5816,7 +5816,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const selectedFormalTurnFinished = Boolean(
     latestFormalUserEventId && hasFinishedTurn(currentFormalEvents, latestFormalUserEventId),
   );
-  const effectiveTurnState: TurnState = nativeTurnTerminal
+  const effectiveTurnState: TurnState = selectedFormalTurnFinished || nativeTurnTerminal
     ? 'idle'
     : nativeExecutionStatus?.trim().toLowerCase() === 'paused'
       ? 'paused'
@@ -7755,7 +7755,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         || condensingConversationIds.has(item.id)
         || selectedLocalTransition;
     const possiblyStuck = item.id === selected?.id
-      ? Boolean(eventsQuery.data?.monitoring?.possibly_stuck)
+      ? !selectedFormalTurnFinished && Boolean(eventsQuery.data?.monitoring?.possibly_stuck)
       : possiblyStuckConversationIds.has(item.id);
     const failed = failedConversationIds.has(item.id);
     // Unread is a user-isolated server projection. Activity only decides
@@ -7791,6 +7791,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const selectConversation = (bindingId: string) => {
     const outgoingScope = activeComposerScope.current;
     if (outgoingScope) persistComposerDraft(outgoingScope);
+    if (unreadConversationIds.has(bindingId)) markConversationRead(bindingId);
     setActivityPreviewBindingId(undefined);
     setConversationDraft(undefined);
     onNavigate(host.conversationPath(bindingId));
@@ -7808,7 +7809,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const openActivityConversation = (bindingId: string) => {
     setSidebarListMode('workspaces');
     setSidebarRevealBindingId(bindingId);
-    markConversationRead(bindingId);
     selectConversation(bindingId);
   };
   const activityWorkspaceName = (item: AgentConversation) => item.work_directory_id
