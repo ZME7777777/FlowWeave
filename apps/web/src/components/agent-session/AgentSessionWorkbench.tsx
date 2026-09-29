@@ -6323,8 +6323,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
 
   useEffect(() => {
     if (!conversationDraft && !routeBindingId && conversations.length) onNavigate(host.conversationPath(conversations[0].id), true);
-    if (routeBindingId && conversations.length && !selected && pendingCreatedId !== routeBindingId && !initialConversationQueries.some(query => query.isFetching)) onNavigate(host.rootPath, true);
-  }, [conversationDraft, conversations, host, initialConversationQueries, onNavigate, pendingCreatedId, routeBindingId, selected]);
+    if (routeBindingId && conversations.length && !selected && pendingCreatedId !== routeBindingId && !initialConversationQueries.some(query => query.isFetching) && selectedConversationQuery.isError) onNavigate(host.rootPath, true);
+  }, [conversationDraft, conversations, host, initialConversationQueries, onNavigate, pendingCreatedId, routeBindingId, selected, selectedConversationQuery.isError]);
   useEffect(() => { if (selected?.id === pendingCreatedId) setPendingCreatedId(undefined); }, [pendingCreatedId, selected?.id]);
   useLayoutEffect(() => {
     if (!composerScope || previousComposerScope.current === composerScope) return;
