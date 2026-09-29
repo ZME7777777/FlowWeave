@@ -858,9 +858,10 @@ def conversation_activity(
         if activity_timestamp_is_stale(native_activity[item.openhands_conversation_id].updated_at)
     ]
     running_binding_ids = {item.id for item in running_bindings}
-    attention_binding_ids = set(possibly_stuck_binding_ids) | {
-        item.id for item in bindings if item.openhands_conversation_id in failed_native_ids
-    }
+    attention_binding_ids = (
+        set(possibly_stuck_binding_ids)
+        | {item.id for item in bindings if item.openhands_conversation_id in failed_native_ids}
+    ) - ({active_binding_id} if active_binding_id else set())
     for item in bindings:
         activity = native_activity.get(item.openhands_conversation_id)
         is_running = item.id in running_binding_ids
@@ -947,9 +948,7 @@ def list_conversation_page(
         directory_versions = select(AgentWorkDirectoryVersion.id).where(
             AgentWorkDirectoryVersion.work_directory_id == work_directory_id,
             AgentWorkDirectoryVersion.work_directory_id.in_(
-                select(AgentWorkDirectory.id).where(
-                    AgentWorkDirectory.workspace_id == workspace_id
-                )
+                select(AgentWorkDirectory.id).where(AgentWorkDirectory.workspace_id == workspace_id)
             ),
         )
         query = query.where(
@@ -1085,11 +1084,7 @@ def reorder_conversation(
             while position < len(ordered) and ordered[position].id in manual_ids:
                 position += 1
             run = ordered[start:position]
-            upper = (
-                _default_sort_rank(ordered[start - 1].created_at)
-                if start
-                else None
-            )
+            upper = _default_sort_rank(ordered[start - 1].created_at) if start else None
             lower = (
                 _default_sort_rank(ordered[position].created_at)
                 if position < len(ordered)
@@ -1107,10 +1102,7 @@ def reorder_conversation(
             elif upper is not None:
                 ranks = [upper - Decimal(index + 1) for index in range(len(run))]
             else:
-                base = max(
-                    _default_sort_rank(candidate.created_at)
-                    for candidate in run
-                )
+                base = max(_default_sort_rank(candidate.created_at) for candidate in run)
                 ranks = [base + Decimal(len(run) - index) for index in range(len(run))]
             normalized = [rank.quantize(_SORT_RANK_QUANTUM) for rank in ranks]
             if (
@@ -2269,7 +2261,10 @@ def events(
             for usage in batch.task_usage
         ],
         "task_control": task_control_projection(db, binding.id),
-        "monitoring": build_activity_summary(batch.events),
+        "monitoring": build_activity_summary(
+            batch.events,
+            conversation_completed=bool(batch.result and batch.result.status == "COMPLETED"),
+        ),
     }
 
 

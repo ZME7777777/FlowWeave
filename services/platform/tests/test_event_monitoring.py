@@ -69,6 +69,27 @@ def test_monitor_marks_completed_task_and_terminal_conversation_not_stuck():
     assert result["subagent_count"] == 1
 
 
+def test_monitor_does_not_flag_a_completed_assistant_reply_as_stuck():
+    observed_at = datetime(2026, 9, 8, 12, 0, tzinfo=UTC)
+
+    result = build_activity_summary(
+        [
+            _event(
+                "assistant-final",
+                "MESSAGE",
+                observed_at - timedelta(seconds=120),
+                source="agent",
+                content="正常最终回复",
+            )
+        ],
+        conversation_completed=True,
+        now=observed_at,
+        stale_after_seconds=60,
+    )
+
+    assert result["possibly_stuck"] is False
+
+
 def test_monitor_measures_only_native_progress_for_formal_tool_batches():
     observed_at = datetime(2026, 9, 8, 12, 0, tzinfo=UTC)
     result = build_activity_summary(

@@ -94,10 +94,11 @@ test('Agent session hydrates the first screen without parallel Runtime snapshot 
 });
 
 
-test('Accepted message renders a local bubble before its formal event arrives', async ({ page }) => {
+test('Accepted message reconciles its formal event without a second submission or reload', async ({ page }) => {
   let authenticated = false;
   let messageAccepted = false;
   let formalMessageVisible = false;
+  let eventReadsAfterAcceptance = 0;
   let releaseMessageAcceptance: (() => void) | undefined;
   const messageAcceptance = new Promise<void>(resolve => { releaseMessageAcceptance = resolve; });
   const workspace = { id: 'stale-monitoring-workspace', display_name: '陈旧监控工作区', desired_state: 'RUNNING', updated_at: now };
@@ -111,7 +112,10 @@ test('Accepted message renders a local bubble before its formal event arrives', 
   };
   const events = () => [
     { id: 'prior-turn', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '上一轮请求', timestamp: '2026-09-12T09:28:00Z' } },
-    ...(formalMessageVisible ? [{ id: 'accepted-message', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'prior-turn', content: '刚发送的消息', timestamp: now } }] : []),
+    ...(formalMessageVisible ? [
+      { id: 'accepted-message', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'prior-turn', content: '刚发送的消息', timestamp: now } },
+      { id: 'accepted-error', event_type: 'ERROR', payload: { source: 'agent', parent_id: 'accepted-message', content: '模型服务暂不可用。', timestamp: now } },
+    ] : []),
   ];
 
   await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
@@ -132,9 +136,15 @@ test('Accepted message renders a local bubble before its formal event arrives', 
       context: { model_name: 'test-model', window_tokens: 128_000, used_tokens: 0, usage_current: true },
       readiness: { ready: !messageAccepted, execution_status: messageAccepted ? 'running' : 'idle' },
     });
-    if (path.endsWith('/events')) return json(route, {
-      events: events(), next_cursor: null, history_cursor: null, monitoring: staleMonitoring,
-    });
+    if (path.endsWith('/events')) {
+      if (messageAccepted) {
+        eventReadsAfterAcceptance += 1;
+        if (eventReadsAfterAcceptance >= 2) formalMessageVisible = true;
+      }
+      return json(route, {
+        events: events(), next_cursor: formalMessageVisible ? 'accepted-message' : 'prior-turn', history_cursor: null, monitoring: staleMonitoring,
+      });
+    }
     if (path.endsWith('/input-readiness')) return json(route, {
       ready: !messageAccepted, execution_status: messageAccepted ? 'running' : 'idle',
     });
@@ -171,14 +181,12 @@ test('Accepted message renders a local bubble before its formal event arrives', 
   await expect(page.locator('[data-user-event-id="accepted-message"]')).toHaveCount(0);
   await expect(page.getByText('正在提交消息', { exact: true })).toBeVisible();
   await expect(page.getByText('工作过程', { exact: true })).toHaveCount(0);
-  await expect(page.getByRole('img', { name: '会话正在运行但后台长时间未产生可确认进展' })).toHaveCount(0);
 
   releaseMessageAcceptance?.();
   await expect.poll(() => messageAccepted).toBe(true);
-  formalMessageVisible = true;
-  await page.reload();
-  await expect(page.locator('[data-user-event-id="accepted-message"]')).toHaveCount(1);
-  await expect(page.getByText('后台长时间未产生可确认进展。可暂停后继续以重新建立调用。', { exact: true })).toBeVisible();
+  await expect.poll(() => eventReadsAfterAcceptance).toBeGreaterThanOrEqual(2);
+  await expect(localMessage).toHaveCount(1);
+  await expect(page.locator('[aria-label="原始错误详情"]')).toContainText('模型服务暂不可用。');
 });
 
 
@@ -196,6 +204,9 @@ test('Generated conversation title updates both the sidebar and current header',
   const generatedConversation = {
     ...initialConversation, display_title: '自动生成的标题', title_state: 'GENERATED' as const,
   };
+  const alternateConversation = {
+    ...initialConversation, id: 'generated-title-alternate-conversation', display_title: '另一条会话', title_state: 'MANUAL' as const,
+  };
 
   await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
   await page.route('**/api/v1/**', async route => {
@@ -208,7 +219,7 @@ test('Generated conversation title updates both the sidebar and current header',
     if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
     if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
     if (path.endsWith('/conversations') && request.method() === 'GET') {
-      return json(route, { items: [generated ? generatedConversation : initialConversation], next_cursor: null });
+      return json(route, { items: [generated ? generatedConversation : initialConversation, alternateConversation], next_cursor: null });
     }
     if (path.endsWith('/hydration')) return json(route, {
       events: { events: [], next_cursor: null, history_cursor: null, result: { status: 'COMPLETED' } },
@@ -225,7 +236,8 @@ test('Generated conversation title updates both the sidebar and current header',
       runtime: {}, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '不可用', note: '' } },
     });
     if (path.endsWith('/model-providers') || path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
-    if (path.includes('/conversations/') && request.method() === 'GET') return json(route, initialConversation);
+    if (path.endsWith('/conversations/generated-title-conversation') && request.method() === 'GET') return json(route, generated ? generatedConversation : initialConversation);
+    if (path.endsWith('/conversations/generated-title-alternate-conversation') && request.method() === 'GET') return json(route, alternateConversation);
     return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
   });
 
@@ -239,6 +251,12 @@ test('Generated conversation title updates both the sidebar and current header',
 
   generated = true;
   await expect(sidebarConversation).toContainText('自动生成的标题', { timeout: 5_000 });
+  await expect(headerTitle).toHaveText('自动生成的标题');
+
+  await page.locator('[data-conversation-binding-id="generated-title-alternate-conversation"]').dblclick();
+  await expect(page.locator('.agent-session-title')).toHaveText('另一条会话');
+  await page.locator('[data-conversation-binding-id="generated-title-conversation"]').dblclick();
+  await expect(sidebarConversation).toContainText('自动生成的标题');
   await expect(headerTitle).toHaveText('自动生成的标题');
 });
 
@@ -2528,7 +2546,7 @@ test('Sending a new message clears an unread marker before the conversation rend
   await expect(row.locator('.agent-workspace-conversation-unread')).toHaveCount(0);
 });
 
-test('Conversation context menu keeps a normal-list unread marker until explicitly marked read', async ({ page }) => {
+test('Opening a normal-list unread conversation marks it read while activity preview remains read-only', async ({ page }) => {
   let authenticated = false;
   const workspace = { id: 'unread-workspace', display_name: '未读工作区', desired_state: 'RUNNING', updated_at: now };
   const conversations = ['unread-conversation-a', 'unread-conversation-b'].map((id, index) => ({
@@ -2589,15 +2607,13 @@ test('Conversation context menu keeps a normal-list unread marker until explicit
   await conversationB.click();
   await expect(page).toHaveURL(/\/agent\/conversations\/unread-conversation-b$/);
   await expect(unreadMarker).toBeVisible();
-  await page.reload();
-  await expect(unreadMarker).toBeVisible();
 
   await conversationA.click();
   await expect(page).toHaveURL(/\/agent\/conversations\/unread-conversation-a$/);
-  await page.mouse.move(1000, 200);
-  await expect(unreadMarker).toBeVisible();
+  await expect(unreadMarker).toHaveCount(0);
   await expect.poll(() => unreadWrites).toEqual([
     { id: 'unread-conversation-a', unread: true },
+    { id: 'unread-conversation-a', unread: false },
   ]);
 
   await conversationA.click({ button: 'right' });
@@ -2613,6 +2629,7 @@ test('Conversation context menu keeps a normal-list unread marker until explicit
   await expect(activityConversationA.locator('xpath=..').getByRole('img', { name: '会话已完成，有未读回复' })).toBeVisible();
   await expect.poll(() => unreadWrites).toEqual([
     { id: 'unread-conversation-a', unread: true },
+    { id: 'unread-conversation-a', unread: false },
     { id: 'unread-conversation-a', unread: true },
   ]);
 
@@ -2621,6 +2638,7 @@ test('Conversation context menu keeps a normal-list unread marker until explicit
   await expect(activityConversationA).toHaveCount(0);
   await expect.poll(() => unreadWrites).toEqual([
     { id: 'unread-conversation-a', unread: true },
+    { id: 'unread-conversation-a', unread: false },
     { id: 'unread-conversation-a', unread: true },
     { id: 'unread-conversation-a', unread: false },
   ]);
@@ -2637,6 +2655,7 @@ test('Conversation context menu keeps a normal-list unread marker until explicit
   await expect(unreadMarker).toHaveCount(0);
   await expect.poll(() => unreadWrites).toEqual([
     { id: 'unread-conversation-a', unread: true },
+    { id: 'unread-conversation-a', unread: false },
     { id: 'unread-conversation-a', unread: true },
     { id: 'unread-conversation-a', unread: false },
     { id: 'unread-conversation-a', unread: true },
@@ -2644,10 +2663,11 @@ test('Conversation context menu keeps a normal-list unread marker until explicit
   ]);
 });
 
-test('Opening a conversation keeps its unread marker when an older list request finishes later', async ({ page }) => {
+test('Opening an unread conversation keeps it read when an older list request finishes later', async ({ page }) => {
   let authenticated = false;
   let listReads = 0;
   let staleListDelivered = false;
+  const unreadWrites: Array<{ id: string; unread: boolean }> = [];
   const workspace = { id: 'stale-unread-workspace', display_name: '未读竞态工作区', desired_state: 'RUNNING', updated_at: now };
   const conversations = ['stale-unread-conversation-a', 'stale-unread-conversation-b'].map((id, index) => ({
     id, display_title: index === 0 ? '竞态会话 A' : '竞态会话 B', title_state: index === 0 ? 'PENDING' : 'MANUAL', lifecycle: 'ACTIVE',
@@ -2674,8 +2694,9 @@ test('Opening a conversation keeps its unread marker when an older list request 
     if (path.endsWith('/unread') && request.method() === 'PUT') {
       const id = path.split('/').at(-2)!;
       const conversation = conversations.find(item => item.id === id)!;
-      conversation.unread = (request.postDataJSON() as { unread: boolean }).unread;
-      await new Promise(resolve => setTimeout(resolve, 2_500));
+      const { unread } = request.postDataJSON() as { unread: boolean };
+      conversation.unread = unread;
+      unreadWrites.push({ id, unread });
       return json(route, conversation);
     }
     if (path.endsWith('/events')) return json(route, { events: [], next_cursor: null, history_cursor: null, result: { status: 'COMPLETED' } });
@@ -2705,15 +2726,19 @@ test('Opening a conversation keeps its unread marker when an older list request 
   await expect.poll(() => listReads).toBeGreaterThanOrEqual(2);
 
   await conversationA.click();
-  await page.mouse.move(1000, 200);
-  await expect(unreadMarker).toBeVisible();
+  await expect(page).toHaveURL(/\/agent\/conversations\/stale-unread-conversation-a$/);
+  await expect(unreadMarker).toHaveCount(0);
+  await expect.poll(() => unreadWrites).toEqual([
+    { id: 'stale-unread-conversation-a', unread: false },
+  ]);
   await conversationB.click();
   await expect.poll(() => staleListDelivered).toBe(true);
-  await expect(unreadMarker).toBeVisible();
+  await expect(unreadMarker).toHaveCount(0);
 });
 
 test('Conversation sidebar pins locally, orders activity, and reveals the selected source row', async ({ page }) => {
   let authenticated = false;
+  let runningConversationPossiblyStuck = true;
   const workspace = { id: 'sidebar-workspace', display_name: '侧栏工作区', desired_state: 'RUNNING', updated_at: now };
   const directory = {
     id: 'sidebar-directory', display_name: '归属工作区',
@@ -2762,7 +2787,7 @@ test('Conversation sidebar pins locally, orders activity, and reveals the select
     if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
     if (path.endsWith('/conversation-activity')) return json(route, {
       running_binding_ids: ['sidebar-directory-running'],
-      possibly_stuck_binding_ids: ['sidebar-directory-running'],
+      possibly_stuck_binding_ids: runningConversationPossiblyStuck ? ['sidebar-directory-running'] : [],
       failed_binding_ids: ['sidebar-root-unread'],
     });
     if (path.endsWith('/unread') && request.method() === 'PUT') {
@@ -2831,9 +2856,10 @@ test('Conversation sidebar pins locally, orders activity, and reveals the select
   await expect(acknowledgeAlert).toHaveCount(0);
   await expect.poll(() => unreadWrites).toEqual([{ id: 'sidebar-root-unread', unread: false }]);
   const runningRowInWorkspaceList = page.locator('[data-conversation-binding-id="sidebar-directory-running"]');
-  const runningAlertInWorkspaceList = runningRowInWorkspaceList.getByRole('button', { name: '确认会话长时间未产生进展已读' });
+  const runningAlertInWorkspaceList = runningRowInWorkspaceList.getByRole('img', { name: '会话正在运行但后台长时间未产生可确认进展' });
   await expect(runningAlertInWorkspaceList).toBeVisible();
   await expect(runningAlertInWorkspaceList).toHaveCSS('color', 'rgb(197, 63, 63)');
+  await expect(runningAlertInWorkspaceList).toHaveClass(/running/);
 
   await page.getByRole('button', { name: /查看活动会话/ }).click();
   const activity = page.getByRole('region', { name: '活动会话' });
@@ -2842,7 +2868,7 @@ test('Conversation sidebar pins locally, orders activity, and reveals the select
     'sidebar-directory-running',
   ]);
   const stalledRow = activity.locator('[data-conversation-binding-id="sidebar-directory-running"]');
-  const stalledAlert = stalledRow.getByRole('button', { name: '确认会话长时间未产生进展已读' });
+  const stalledAlert = stalledRow.getByRole('img', { name: '会话正在运行但后台长时间未产生可确认进展' });
   await expect(stalledAlert).toBeVisible();
   await expect(stalledAlert).toHaveCSS('color', 'rgb(197, 63, 63)');
   await expect(stalledAlert).toHaveClass(/running/);
@@ -2859,7 +2885,16 @@ test('Conversation sidebar pins locally, orders activity, and reveals the select
   await expect(activity).toHaveCount(0);
   const selectedRunningRow = page.locator('[data-conversation-binding-id="sidebar-directory-running"]');
   await expect(selectedRunningRow).toHaveClass(/sidebar-reveal/);
-  await expect(selectedRunningRow.getByRole('img', { name: '后台长时间未产生可确认进展' })).toHaveCount(0);
+  await expect(selectedRunningRow.getByRole('img', { name: '会话正在运行但后台长时间未产生可确认进展' })).toBeVisible();
+  await expect.poll(() => unreadWrites).toEqual([
+    { id: 'sidebar-root-unread', unread: false },
+    { id: 'sidebar-directory-running', unread: false },
+  ]);
+
+  runningConversationPossiblyStuck = false;
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await expect(selectedRunningRow.getByRole('img', { name: '会话正在运行但后台长时间未产生可确认进展' })).toHaveCount(0);
+  await expect(selectedRunningRow.getByRole('img', { name: '会话正在运行' })).toBeVisible();
 
   await page.getByRole('button', { name: '搜索会话' }).click();
   await page.getByLabel('搜索会话内容').fill('精准定位');

@@ -34,6 +34,8 @@ const ACTIVE_EVENT_RECOVERY_INTERVAL_MS = 4_000;
 const ACTIVE_EVENT_LATEST_RECHECK_INTERVAL_MS = 30_000;
 const INPUT_READINESS_MIN_REQUEST_INTERVAL_MS = 2_000;
 const SUBMISSION_EVENT_CONFIRMATION_TIMEOUT_MS = 60_000;
+const SUBMISSION_EVENT_CONFIRMATION_RETRY_WINDOW_MS = 5_000;
+const SUBMISSION_EVENT_CONFIRMATION_RETRY_INTERVAL_MS = 250;
 const CONVERSATION_HYDRATION_SELECTION_DELAY_MS = 120;
 const HYDRATION_UI_DEADLINE_MS = 12_000;
 const MAX_UNAVAILABLE_HYDRATION_RETRIES = 2;
@@ -817,8 +819,9 @@ function WorkspaceConversationRow({
   reveal?: boolean;
 }) {
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number }>();
-  const showAlert = unread && unreadOrigin === 'SYSTEM' && (possiblyStuck || failed);
-  const alertIsRunning = showAlert && possiblyStuck && running && !failed;
+  const showRunningAlert = possiblyStuck && running && !failed;
+  const showFailedUnreadAlert = unread && unreadOrigin === 'SYSTEM' && failed;
+  const showAlert = showRunningAlert || showFailedUnreadAlert;
   useEscapeClose(() => setContextMenu(undefined), Boolean(contextMenu));
   useEffect(() => {
     if (!contextMenu) return;
@@ -834,11 +837,12 @@ function WorkspaceConversationRow({
   }}>
     {onPointerDragStart && <button type="button" className="agent-workspace-conversation-drag" aria-label={`拖拽排序会话 ${conversationName(item)}`} title="拖拽调整当前工作区内的顺序" onClick={event => event.stopPropagation()} onPointerDown={onPointerDragStart}><GripVertical size={13}/></button>}
     <button type="button" className={`agent-workspace-conversation-select${selected ? ' active' : ''}`} aria-label={conversationName(item)} onClick={onSelect} onDoubleClick={onDoubleClick}>
-      <CircleDot size={13}/><span><b>{conversationName(item)}</b>{workspaceName && <small title={workspaceName}><Folder size={11}/><span>{workspaceName}</span></small>}</span>
+      <span><b>{conversationName(item)}</b>{workspaceName && <small title={workspaceName}><Folder size={11}/><span>{workspaceName}</span></small>}</span>
     </button>
-    {showAlert && <button type="button" className={`agent-workspace-conversation-alert${alertIsRunning ? ' running' : ''}`} aria-label={failed ? '确认会话异常已读' : '确认会话长时间未产生进展已读'} title="标记为已读" onClick={event => { event.stopPropagation(); onAcknowledgeAlert?.(); }}><CircleAlert aria-hidden="true" size={14}/></button>}
-    {unread && !showAlert && <span className="agent-workspace-conversation-unread" role="img" aria-label={running ? '会话有未读回复' : '会话已完成，有未读回复'} title="会话有未读回复"/>}
-    {running && !showAlert && !unread && <LoaderCircle className="agent-workspace-conversation-running" role="img" aria-label="会话正在运行" size={14}/>}
+    {showRunningAlert && <span className="agent-workspace-conversation-alert running" role="img" aria-label="会话正在运行但后台长时间未产生可确认进展" title="会话可能需要暂停后继续，但后续仍可能自行恢复"><CircleAlert aria-hidden="true" size={14}/></span>}
+    {showFailedUnreadAlert && <button type="button" className="agent-workspace-conversation-alert" aria-label="确认会话异常已读" title="标记为已读" onClick={event => { event.stopPropagation(); onAcknowledgeAlert?.(); }}><CircleAlert aria-hidden="true" size={14}/></button>}
+    {unread && !showAlert && !running && <span className="agent-workspace-conversation-unread" role="img" aria-label="会话已完成，有未读回复" title="会话有未读回复"/>}
+    {running && !showRunningAlert && <LoaderCircle className="agent-workspace-conversation-running" role="img" aria-label="会话正在运行" size={14}/>}
     {onDelete && !running && !showAlert && <button type="button" className="agent-workspace-conversation-delete" aria-label={`删除会话 ${conversationName(item)}`} title={deleteDisabled ? '会话运行中，请先停止' : '删除会话'} disabled={!conversationWritable || deleteDisabled || removing} onClick={onDelete}><Trash2 size={13}/></button>}
     {contextMenu && createPortal(<div className="agent-conversation-context-menu" role="menu" aria-label={`会话操作菜单：${conversationName(item)}`} style={{ left: contextMenu.x, top: contextMenu.y }} onPointerDown={event => event.stopPropagation()} onContextMenu={event => event.preventDefault()}>
       {pinned
@@ -3439,7 +3443,7 @@ function clampConversationRailWidth(value: number): number {
 
 
 type ConversationFilePreviewRequest =
-  | { key: string; kind: 'workspace'; path: string; filename: string; mimeType?: string; imageDataUrl?: string | null; attachment?: AgentAttachment }
+  | { key: string; kind: 'workspace'; path: string; filename: string; mimeType?: string; imageDataUrl?: string | null; attachment?: AgentAttachment; previewBindingId?: string }
   | { key: string; kind: 'candidate'; filename: string; url: string; fieldKey: string; relativePath: string }
   | { key: string; kind: 'image'; filename: string; url: string };
 
@@ -3464,10 +3468,11 @@ function ConversationFilePreviewDialog({ request, workspaceId, bindingId, workDi
   }, [request.key]);
 
   const workspaceRequest = request.kind === 'workspace' ? request : undefined;
+  const previewBindingId = workspaceRequest?.previewBindingId ?? bindingId;
   const textPreviewable = Boolean(workspaceRequest && isTextPreviewable(workspaceRequest.path, workspaceRequest.mimeType));
   const previewQuery = useQuery({
-    queryKey: sessionQueryKey(host, 'conversation-file-preview', workspaceId, bindingId, workspaceRequest?.path),
-    queryFn: ({ signal }) => api.filePreview(workspaceId, workspaceRequest!.path, { bindingId, workDirectoryId }, undefined, signal),
+    queryKey: sessionQueryKey(host, 'conversation-file-preview', workspaceId, previewBindingId, workspaceRequest?.path),
+    queryFn: ({ signal }) => api.filePreview(workspaceId, workspaceRequest!.path, { bindingId: previewBindingId, workDirectoryId }, undefined, signal),
     enabled: textPreviewable,
     retry: false,
   });
@@ -3482,7 +3487,7 @@ function ConversationFilePreviewDialog({ request, workspaceId, bindingId, workDi
     if (!workspaceRequest || previewState?.nextOffset === undefined || previewMoreLoading) return;
     setPreviewMoreLoading(true);
     try {
-      const next = await api.filePreview(workspaceId, workspaceRequest.path, { bindingId, workDirectoryId }, previewState.nextOffset);
+      const next = await api.filePreview(workspaceId, workspaceRequest.path, { bindingId: previewBindingId, workDirectoryId }, previewState.nextOffset);
       setPreviewState(current => current?.path === workspaceRequest.path ? {
         path: workspaceRequest.path,
         content: current.content + next.content,
@@ -3492,13 +3497,13 @@ function ConversationFilePreviewDialog({ request, workspaceId, bindingId, workDi
     } finally {
       setPreviewMoreLoading(false);
     }
-  }, [api, bindingId, previewMoreLoading, previewState, workDirectoryId, workspaceId, workspaceRequest]);
+  }, [api, previewBindingId, previewMoreLoading, previewState, workDirectoryId, workspaceId, workspaceRequest]);
 
   const path = request.kind === 'workspace' ? request.path : request.kind === 'candidate' ? request.relativePath : request.url;
   const sourceUrl = request.kind === 'workspace'
-    ? request.imageDataUrl || fileUrl(workspaceId, request.path, { bindingId, workDirectoryId, download: false })
+    ? request.imageDataUrl || fileUrl(workspaceId, request.path, { bindingId: previewBindingId, workDirectoryId, download: false })
     : request.url;
-  const downloadUrl = workspaceRequest ? fileUrl(workspaceId, workspaceRequest.path, { bindingId, workDirectoryId, download: true }) : undefined;
+  const downloadUrl = workspaceRequest ? fileUrl(workspaceId, workspaceRequest.path, { bindingId: previewBindingId, workDirectoryId, download: true }) : undefined;
   const canPreviewImage = Boolean(workspaceRequest && (workspaceRequest.mimeType?.startsWith('image/') || /\.(?:avif|gif|jpe?g|png|svg|webp)$/i.test(workspaceRequest.path)));
   const canPreviewPdf = Boolean(workspaceRequest && (workspaceRequest.mimeType === 'application/pdf' || /\.pdf$/i.test(workspaceRequest.path)));
   const lightweightPreview = Boolean(previewState && (previewState.totalBytes > 128 * 1024 || previewState.content.length > 128 * 1024));
@@ -3547,9 +3552,9 @@ function readWorkspaceToolState(storageKey: string): Record<string, WorkspaceToo
 }
 
 function WorkspaceDrawer({
-  open, onOpen, onClose, onAnnotateFileSelection, highlightedFileSelection, workspaceId, scopeKey, migrateFromScopeKey, bindingId, workDirectoryId, conversation, conversationCumulativeTokens, attachments, sources, attachmentRequest, candidatePreviewRequest, markdownFileRequest, reviewChanges = [], reviewRequestId, sessionChanges = [], onReviewChanges, runtimeAvailable, runtimeTasks, agentDefinitions, sessionStopped, sidebarQuestion, onSidebarBindingCreated, onOpenSidebarQuestion, onCloseSidebarQuestion,
+  open, onOpen, onClose, onAnnotateFileSelection, highlightedFileSelection, workspaceId, scopeKey, migrateFromScopeKey, bindingId, workDirectoryId, conversation, conversationCumulativeTokens, attachments, sources, attachmentRequest, candidatePreviewRequest, markdownFileRequest, reviewChanges = [], reviewRequestId, sessionChanges = [], onReviewChanges, runtimeAvailable, runtimeTasks, agentDefinitions, sessionStopped, sidebarQuestion, onSidebarBindingCreated, onOpenSidebarQuestion, onCloseSidebarQuestion, onPreviewAttachment,
 }: {
-  open: boolean; onOpen: () => void; onClose: () => void; onAnnotateFileSelection?: (path: string, selection: FileSelection, quote: string) => void; highlightedFileSelection?: { path: string; selection: FileSelection }; workspaceId: string; scopeKey: string; migrateFromScopeKey?: string; bindingId?: string; workDirectoryId?: string; conversation?: AgentConversation; conversationCumulativeTokens?: number | null; attachments: AgentAttachment[]; sources: ConversationSource[]; attachmentRequest?: { key: string; attachment: AgentAttachment }; candidatePreviewRequest?: CandidateFilePreviewRequest; markdownFileRequest?: MarkdownFileRequest; reviewChanges?: WorkspaceFileChange[]; reviewRequestId?: string; sessionChanges?: WorkspaceFileChange[]; onReviewChanges?: (changes: WorkspaceFileChange[]) => void; runtimeAvailable: boolean; runtimeTasks: RuntimeTaskProjection[]; agentDefinitions: CapabilityAsset[]; sessionStopped: boolean; sidebarQuestion?: { sourceBindingId: string; reference?: AgentConversationReference; sidebarBindingId?: string }; onSidebarBindingCreated: (sourceBindingId: string, sidebarBindingId: string) => void; onOpenSidebarQuestion?: () => void; onCloseSidebarQuestion: () => void;
+  open: boolean; onOpen: () => void; onClose: () => void; onAnnotateFileSelection?: (path: string, selection: FileSelection, quote: string) => void; highlightedFileSelection?: { path: string; selection: FileSelection }; workspaceId: string; scopeKey: string; migrateFromScopeKey?: string; bindingId?: string; workDirectoryId?: string; conversation?: AgentConversation; conversationCumulativeTokens?: number | null; attachments: AgentAttachment[]; sources: ConversationSource[]; attachmentRequest?: { key: string; attachment: AgentAttachment }; candidatePreviewRequest?: CandidateFilePreviewRequest; markdownFileRequest?: MarkdownFileRequest; reviewChanges?: WorkspaceFileChange[]; reviewRequestId?: string; sessionChanges?: WorkspaceFileChange[]; onReviewChanges?: (changes: WorkspaceFileChange[]) => void; runtimeAvailable: boolean; runtimeTasks: RuntimeTaskProjection[]; agentDefinitions: CapabilityAsset[]; sessionStopped: boolean; sidebarQuestion?: { sourceBindingId: string; reference?: AgentConversationReference; sidebarBindingId?: string }; onSidebarBindingCreated: (sourceBindingId: string, sidebarBindingId: string) => void; onOpenSidebarQuestion?: () => void; onCloseSidebarQuestion: () => void; onPreviewAttachment: (attachment: AgentAttachment, previewBindingId?: string) => void;
 }) {
   const { api, fileUrl } = useAgentSessionGateway();
   const host = useAgentSessionHost();
@@ -4311,7 +4316,7 @@ function WorkspaceDrawer({
           {scopeState.tabs.filter((tab): tab is Extract<WorkspaceToolTab, { kind: 'git' }> => tab.kind === 'git').map(tab => <div key={tab.id} className={`agent-changes-tab-panel agent-git-commit-tab ${scopeState.activeTabId === tab.id ? 'active' : ''}`}><WorkspaceGitCommitReview key={`${tab.details.commit.id}:${tab.diff.path}`} details={tab.details} initialDiff={tab.diff} loadDiff={path => api.gitDiff(workspaceId, tab.details.repository.path, tab.details.commit.id, path, gitOptions)} onOpenSource={openSourcePath}/></div>)}
           {scopeState.tabs.filter((tab): tab is Extract<WorkspaceToolTab, { kind: 'git-working' }> => tab.kind === 'git-working').map(tab => <div key={tab.id} className={`agent-changes-tab-panel agent-git-commit-tab ${scopeState.activeTabId === tab.id ? 'active' : ''}`}><WorkspaceGitWorkingDiffReview tab={tab} onOpenSource={openSourcePath} onSelectFile={(kind, file) => openGitWorkingDiff(tab.repository, kind, file, tab.changes)}/></div>)}
           {scopeState.tabs.some(tab => tab.kind === 'subagents') && <div className={`agent-subagent-tab-panel ${scopeState.activeTabId === 'subagents' ? 'active' : ''}`}><RuntimeTaskTab tasks={runtimeTasks} definitions={agentDefinitions} selectedTaskId={scopeState.selectedRuntimeTaskId} onSelect={taskId => updateScope(current => ({ ...current, selectedRuntimeTaskId: taskId }))} sessionStopped={sessionStopped}/></div>}
-          {sidebarQuestion && scopeState.tabs.some(tab => tab.kind === 'sidebar-chat') && <div className={`agent-sidebar-chat-tab-panel ${scopeState.activeTabId === 'sidebar-chat' ? 'active' : ''}`}><SidebarConversationPane key={sidebarQuestion.sourceBindingId} workspaceId={workspaceId} sourceBindingId={sidebarQuestion.sourceBindingId} initialReference={sidebarQuestion.reference} sidebarBindingId={sidebarQuestion.sidebarBindingId} onBindingCreated={sidebarBindingId => onSidebarBindingCreated(sidebarQuestion.sourceBindingId, sidebarBindingId)}/></div>}
+          {sidebarQuestion && scopeState.tabs.some(tab => tab.kind === 'sidebar-chat') && <div className={`agent-sidebar-chat-tab-panel ${scopeState.activeTabId === 'sidebar-chat' ? 'active' : ''}`}><SidebarConversationPane key={sidebarQuestion.sourceBindingId} workspaceId={workspaceId} sourceBindingId={sidebarQuestion.sourceBindingId} initialReference={sidebarQuestion.reference} sidebarBindingId={sidebarQuestion.sidebarBindingId} onBindingCreated={sidebarBindingId => onSidebarBindingCreated(sidebarQuestion.sourceBindingId, sidebarBindingId)} onPreviewAttachment={onPreviewAttachment}/></div>}
           {scopeState.tabs.filter((tab): tab is Extract<WorkspaceToolTab, { kind: 'terminal' }> => tab.kind === 'terminal').map(tab => <div key={tab.id} className={`agent-terminal-tab-panel ${scopeState.activeTabId === tab.id ? 'active' : ''}`}>{runtimeAvailable ? <WorkspaceTerminal workspaceId={workspaceId} terminalInstanceId={tab.terminalInstanceId} bindingId={bindingId} workDirectoryId={workDirectoryId} workingDirectory={details.working_directory}/> : <div className="agent-drawer-empty"><LoaderCircle className="agent-drawer-spinner" size={20}/><b>终端正在恢复</b><span>文件仍可使用；运行环境恢复后终端会自动可用。</span></div>}</div>)}
           {gitSidebarVisible && gitRepository && <WorkspaceGitSidebar details={details} repository={gitRepository} mode={scopeState.gitMode ?? 'history'} onModeChange={mode => updateScope(current => ({ ...current, gitMode: mode }))} selectedCommit={scopeState.selectedGitRepositoryPath === gitRepository.path ? scopeState.selectedGitCommit : undefined} onSelectCommit={commit => updateScope(current => ({
             ...current,
@@ -4377,6 +4382,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   });
   const [hiddenEventIds, setHiddenEventIds] = useState<Set<string>>(() => new Set());
   const [deferredRewriteUserEventIds, setDeferredRewriteUserEventIds] = useState<Set<string>>(() => new Set());
+  const [pauseDisplayFreeze, setPauseDisplayFreeze] = useState<{ bindingId: string; visibleEventIds: Set<string> }>();
   const [turnState, setTurnState] = useState<TurnState>('idle');
   const [activeTurnEventId, setActiveTurnEventId] = useState<string>();
   const [expiredTerminalSyncTurnKey, setExpiredTerminalSyncTurnKey] = useState<string>();
@@ -4632,6 +4638,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       enabled: Boolean(workspace),
       staleTime: Infinity,
       refetchOnWindowFocus: false,
+      refetchInterval: (query: { state: { data?: AgentConversationPage } }) => pageVisible && query.state.data?.items.some(item => item.title_state === 'PENDING') ? 1_000 : false,
       retry: false,
     })),
   });
@@ -4648,8 +4655,30 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       for (let index = 0; index < conversationScopes.length; index += 1) {
         const scope = conversationScopes[index];
         const page = initialConversationQueries[index]?.data;
-        if (page && !next[scope.key]) {
+        if (!page) continue;
+        const existing = next[scope.key];
+        if (!existing) {
           next[scope.key] = page;
+          changed = true;
+          continue;
+        }
+        const existingById = new Map(existing.items.map(item => [item.id, item]));
+        const refreshedIds = new Set(page.items.map(item => item.id));
+        const refreshedItems = [
+          ...page.items.map(item => {
+            const previous = existingById.get(item.id);
+            if (!previous) return item;
+            const merged = { ...previous, ...item };
+            return JSON.stringify(previous) === JSON.stringify(merged) ? previous : merged;
+          }),
+          ...existing.items.filter(item => !refreshedIds.has(item.id)),
+        ];
+        if (
+          refreshedItems.length !== existing.items.length
+          || refreshedItems.some((item, index) => item !== existing.items[index])
+          || page.next_cursor !== existing.next_cursor
+        ) {
+          next[scope.key] = { ...existing, next_cursor: page.next_cursor, items: refreshedItems };
           changed = true;
         }
       }
@@ -5574,7 +5603,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     });
     eventSynchronization.current.inFlight = synchronization;
     return synchronization;
-  }, [api, eventQueryKey, host, queryClient, selected, workspace]);
+  }, [api, eventQueryKey, queryClient, selected, workspace]);
+  const synchronizeConversationEventsRef = useRef(synchronizeConversationEvents);
+  synchronizeConversationEventsRef.current = synchronizeConversationEvents;
   useEffect(() => {
     if (!selected?.id || !trustedHydration?.running || selectedHydrationPhase !== 'ready') return;
     // `synchronizeConversationEvents` is intentionally rebuilt as the event
@@ -5656,15 +5687,15 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       historyAbortControllers.current.delete(scope);
       setHistoryLoadingBindingId(current => current === scope ? undefined : current);
     }
-  }, [api, eventsQuery.data?.history_cursor, reportOperationError, selected, workspace]);
-  const revealNextHistoryPage = useCallback(async () => {
-    if (!workspace || !selected || !eventsQuery.data?.history_cursor) return;
+  }, [api, eventsQuery.data?.history_cursor, historyPrefetchDelayMs, reportOperationError, selected, workspace]);
+  const revealNextHistoryPage = useCallback(async (): Promise<OpenHandsConversationEventBatch | undefined> => {
+    if (!workspace || !selected || !eventsQuery.data?.history_cursor) return undefined;
     const scope = selected.id;
     const cache = historyCacheByScope.current.get(scope);
-    if (!cache || cache.rootCursor !== eventsQuery.data.history_cursor || cache.expiresAt <= Date.now()) return;
+    if (!cache || cache.rootCursor !== eventsQuery.data.history_cursor || cache.expiresAt <= Date.now()) return undefined;
     const revealed = revealedHistoryPageCounts.current.get(scope) ?? 0;
     const older = cache.pages[revealed];
-    if (!older) return;
+    if (!older) return undefined;
     const transaction: ConversationHistoryPrepend = {
       id: ++nextHistoryPrependId.current,
       scope,
@@ -5674,7 +5705,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       historyPrependWaiters.current.set(transaction.id, { scope, capture: resolve });
     });
     setHistoryPrepend(transaction);
-    if (!await captured || activeHistoryScope.current !== scope) return;
+    if (!await captured || activeHistoryScope.current !== scope) return undefined;
     queryClient.setQueryData<OpenHandsConversationEventBatch>(eventQueryKey, current => current
       ? { ...current, events: mergeConversationEvents(older.events, current.events) }
       : older,
@@ -5687,9 +5718,28 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       else resolve(false);
     });
     setHistoryPrepend({ ...transaction, phase: 'restore' });
-    await restored;
+    const restoredSuccessfully = await restored;
     setHistoryPrepend(current => current?.id === transaction.id ? undefined : current);
+    return restoredSuccessfully ? older : undefined;
   }, [eventQueryKey, eventsQuery.data?.history_cursor, queryClient, selected, workspace]);
+  const revealHistoryThrough = useCallback(async (eventId: string): Promise<boolean> => {
+    if (!workspace || !selected || !eventsQuery.data?.history_cursor) return false;
+    const scope = selected.id;
+    const cache = historyCacheByScope.current.get(scope);
+    if (!cache || cache.rootCursor !== eventsQuery.data.history_cursor || cache.expiresAt <= Date.now()) return false;
+    const existing = queryClient.getQueryData<OpenHandsConversationEventBatch>(eventQueryKey);
+    if (existing?.events.some(event => event.id === eventId)) return true;
+    const targetPage = cache.pages.findIndex(page => page.events.some(event => event.id === eventId));
+    if (targetPage < 0) return false;
+    while ((revealedHistoryPageCounts.current.get(scope) ?? 0) <= targetPage) {
+      const revealed = await revealNextHistoryPage();
+      if (!revealed || activeHistoryScope.current !== scope) return false;
+    }
+    return true;
+  }, [eventQueryKey, eventsQuery.data?.history_cursor, queryClient, revealNextHistoryPage, selected, workspace]);
+  const requestNextHistoryPage = useCallback(async (): Promise<void> => {
+    await revealNextHistoryPage();
+  }, [revealNextHistoryPage]);
   useEffect(() => {
     const activeBindingId = selected?.id;
     for (const [bindingId, controller] of historyAbortControllers.current) {
@@ -5733,21 +5783,36 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   }, [conversationDraft?.id, eventsQuery.data?.events, scopedLiveEvents, selected?.id]);
   const displayedEvents = useMemo(() => {
     const hiddenBranchIds = eventBranchIdsFromRoots(currentFormalEvents, hiddenEventIds);
+    const pausedVisibleEventIds = pauseDisplayFreeze && pauseDisplayFreeze.bindingId === selected?.id
+      ? pauseDisplayFreeze.visibleEventIds
+      : undefined;
     const visibleFormalEvents = currentFormalEvents.filter(event => (
-      !hiddenBranchIds.has(event.id) && !deferredRewriteUserEventIds.has(event.id)
+      !hiddenBranchIds.has(event.id)
+      && !deferredRewriteUserEventIds.has(event.id)
+      && (!pausedVisibleEventIds || pausedVisibleEventIds.has(event.id))
     ));
     return projectLocalMessages(visibleFormalEvents, activeLocalMessageProjections);
-  }, [activeLocalMessageProjections, currentFormalEvents, deferredRewriteUserEventIds, hiddenEventIds]);
-  const cachedHistoryMarkerCount = useMemo(() => {
+  }, [activeLocalMessageProjections, currentFormalEvents, deferredRewriteUserEventIds, hiddenEventIds, pauseDisplayFreeze, selected?.id]);
+  const cachedHistoryUserEventIds = useMemo(() => {
     void historyCacheRevision;
-    if (!selected || !eventsQuery.data?.history_cursor) return 0;
+    if (!selected || !eventsQuery.data?.history_cursor) return [];
     const cache = historyCacheByScope.current.get(selected.id);
-    if (!cache || cache.rootCursor !== eventsQuery.data.history_cursor || cache.expiresAt <= Date.now()) return 0;
+    if (!cache || cache.rootCursor !== eventsQuery.data.history_cursor || cache.expiresAt <= Date.now()) return [];
     const revealed = revealedHistoryPageCounts.current.get(selected.id) ?? 0;
-    return cache.pages.slice(revealed).flatMap(page => page.events).filter(event => event.event_type === 'MESSAGE'
-      && ['user', 'human'].includes(String(event.payload.source ?? '').toLowerCase())).length;
+    return cache.pages.slice(revealed).reverse().flatMap(page => page.events).flatMap(event => (
+      event.event_type === 'MESSAGE' && ['user', 'human'].includes(String(event.payload.source ?? '').toLowerCase())
+        ? [event.id]
+        : []
+    ));
   }, [eventsQuery.data?.history_cursor, historyCacheRevision, selected]);
-  const hasCachedOlderHistory = cachedHistoryMarkerCount > 0;
+  const cachedHistoryMarkerCount = cachedHistoryUserEventIds.length;
+  const hasCachedOlderHistory = useMemo(() => {
+    void historyCacheRevision;
+    if (!selected || !eventsQuery.data?.history_cursor) return false;
+    const cache = historyCacheByScope.current.get(selected.id);
+    if (!cache || cache.rootCursor !== eventsQuery.data.history_cursor || cache.expiresAt <= Date.now()) return false;
+    return (revealedHistoryPageCounts.current.get(selected.id) ?? 0) < cache.pages.length;
+  }, [eventsQuery.data?.history_cursor, historyCacheRevision, selected]);
   const latestFormalUserEventId = [...currentFormalEvents].reverse().find(event => event.event_type === 'MESSAGE'
     && ['user', 'human'].includes(String(event.payload.source ?? '').toLowerCase()))?.id;
   // The selected conversation has the authoritative formal event tree in the
@@ -5757,7 +5822,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const selectedFormalTurnFinished = Boolean(
     latestFormalUserEventId && hasFinishedTurn(currentFormalEvents, latestFormalUserEventId),
   );
-  const effectiveTurnState: TurnState = nativeTurnTerminal
+  const effectiveTurnState: TurnState = selectedFormalTurnFinished || nativeTurnTerminal
     ? 'idle'
     : nativeExecutionStatus?.trim().toLowerCase() === 'paused'
       ? 'paused'
@@ -5793,6 +5858,28 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     return () => window.clearTimeout(timer);
   }, [currentFormalEvents, pendingSubmissionConfirmation, selected?.id]);
   const submissionConfirmationPending = pendingSubmissionConfirmation?.bindingId === selected?.id;
+  useEffect(() => {
+    if (!submissionConfirmationPending || !selected?.id || !pendingSubmissionConfirmation) return;
+    const retryDeadline = Math.min(
+      pendingSubmissionConfirmation.expiresAt,
+      Date.now() + SUBMISSION_EVENT_CONFIRMATION_RETRY_WINDOW_MS,
+    );
+    let cancelled = false;
+    let timer: number | undefined;
+    const reconcile = () => {
+      if (cancelled || Date.now() >= retryDeadline) return;
+      void synchronizeConversationEventsRef.current(true, 'submission_confirmation').finally(() => {
+        if (!cancelled && Date.now() < retryDeadline) {
+          timer = window.setTimeout(reconcile, SUBMISSION_EVENT_CONFIRMATION_RETRY_INTERVAL_MS);
+        }
+      });
+    };
+    reconcile();
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [pendingSubmissionConfirmation, selected?.id, submissionConfirmationPending]);
   const selectedCondensing = Boolean(selected && (
     condensationStatus?.bindingId === selected.id || condensingConversationIds.has(selected.id)
   ));
@@ -5974,7 +6061,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     }
     return [...byId.values()];
   }, [attachments, displayedEvents]);
-  const previewAttachment = useCallback((attachment: AgentAttachment) => {
+  const previewAttachment = useCallback((attachment: AgentAttachment, previewBindingId?: string) => {
     setFilePreviewRequest({
       key: randomId(),
       kind: 'workspace',
@@ -5983,6 +6070,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       mimeType: attachment.mime_type,
       imageDataUrl: attachment.image_data_url,
       attachment,
+      previewBindingId,
     });
   }, []);
   const previewWorkspaceReference = useCallback((reference: AgentWorkspaceReference) => {
@@ -6245,7 +6333,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       bootstrapTransitionScope.current = undefined;
       return;
     }
-    setEditing(false); setQueuedMessageMenuId(undefined); pendingLiveEvents.current = []; if (liveEventsFrame.current !== undefined) window.cancelAnimationFrame(liveEventsFrame.current); liveEventsFrame.current = undefined; setScopedLiveEvents(current => current.filter(item => item.scope === composerScope)); setLocalMessageProjectionRevision(current => current + 1); setHiddenEventIds(new Set()); setDeferredRewriteUserEventIds(new Set()); setActiveTurnEventId(undefined); setExpiredTerminalSyncTurnKey(undefined); setRequestStartedAt(undefined); setConfirmationReason(''); setTurnState('idle'); queuedMessagesRef.current = []; setQueuedMessages([]); setPendingRewrite(undefined);
+    setEditing(false); setQueuedMessageMenuId(undefined); pendingLiveEvents.current = []; if (liveEventsFrame.current !== undefined) window.cancelAnimationFrame(liveEventsFrame.current); liveEventsFrame.current = undefined; setScopedLiveEvents(current => current.filter(item => item.scope === composerScope)); setLocalMessageProjectionRevision(current => current + 1); setHiddenEventIds(new Set()); setDeferredRewriteUserEventIds(new Set()); setPauseDisplayFreeze(undefined); setActiveTurnEventId(undefined); setExpiredTerminalSyncTurnKey(undefined); setRequestStartedAt(undefined); setConfirmationReason(''); setTurnState('idle'); queuedMessagesRef.current = []; setQueuedMessages([]); setPendingRewrite(undefined);
     if (recoveredComposer && composerScope) {
       composerDraftsByScope.current.set(composerScope, recoveredComposer);
       replaceComposerDraft(recoveredComposer.content, composerScope);
@@ -6319,6 +6407,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   useEffect(() => {
     if (turnState === 'pausing' && nativeExecutionStatus?.toLowerCase() === 'paused') {
       setTurnState('paused');
+      setPauseDisplayFreeze(undefined);
     }
   }, [nativeExecutionStatus, turnState]);
   useEffect(() => {
@@ -6959,10 +7048,22 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       reportOperationError(request.bindingId, error);
     },
   });
-  const interrupt = useMutation({ mutationFn: () => api.interruptConversation(workspace!.id, selected!.id), onMutate: () => setTurnState('pausing'), onSuccess: () => { reconcileConversationProjection(); onHostStateChanged?.(); }, onError: error => {
-    setTurnState('running');
-    reportOperationError(selected?.id, error);
-  } });
+  const interrupt = useMutation({
+    mutationFn: () => api.interruptConversation(workspace!.id, selected!.id),
+    onMutate: () => {
+      setPauseDisplayFreeze(selected ? {
+        bindingId: selected.id,
+        visibleEventIds: new Set(currentFormalEvents.map(event => event.id)),
+      } : undefined);
+      setTurnState('pausing');
+    },
+    onSuccess: () => { reconcileConversationProjection(); onHostStateChanged?.(); },
+    onError: error => {
+      setPauseDisplayFreeze(undefined);
+      setTurnState('running');
+      reportOperationError(selected?.id, error);
+    },
+  });
   const resume = useMutation({ mutationFn: () => api.resumeConversation(workspace!.id, selected!.id), onMutate: () => setTurnState('resuming'), onSuccess: value => {
     if (value.cursor) setActiveTurnEventId(value.cursor);
     setConversationUnread(selected!.id, false);
@@ -7448,21 +7549,21 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       ? 'read-only'
       : conversationInitialLoading
         ? 'reconciling'
-        : interruptableActiveTurn
-          ? 'running'
-          : selected && !canWrite
-            ? 'read-only'
-            : effectiveTurnState === 'running'
-              ? 'reconciling'
-            : effectiveTurnState === 'pausing'
-              ? 'pausing'
-              : effectiveTurnState === 'paused'
-                ? 'paused'
-                : effectiveTurnState === 'resuming'
-                  ? 'resuming'
-                  : conversationVisuallyActive
-                    ? 'reconciling'
-                    : 'idle';
+        : effectiveTurnState === 'pausing'
+          ? 'pausing'
+          : interruptableActiveTurn
+            ? 'running'
+            : selected && !canWrite
+              ? 'read-only'
+              : effectiveTurnState === 'running'
+                ? 'reconciling'
+                : effectiveTurnState === 'paused'
+                  ? 'paused'
+                  : effectiveTurnState === 'resuming'
+                    ? 'resuming'
+                    : conversationVisuallyActive
+                      ? 'reconciling'
+                      : 'idle';
   const composerControl = (() => {
     const actionBlocked = Boolean(pendingConfirmation)
       || bootstrap.isPending
@@ -7474,7 +7575,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       case 'paused':
         return { label: '继续当前 Agent', disabled: actionBlocked, editable: canWrite && !actionBlocked, action: 'resume' as const };
       case 'pausing':
-        return { label: '正在暂停 Agent', disabled: true, editable: false, action: 'none' as const };
+        return { label: '暂停请求已发送', disabled: true, editable: false, action: 'none' as const };
       case 'resuming':
         return { label: '正在继续 Agent', disabled: true, editable: false, action: 'none' as const };
       case 'reconciling':
@@ -7684,8 +7785,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       : runningConversationIds.has(item.id)
         || condensingConversationIds.has(item.id)
         || selectedLocalTransition;
+    const selectedPossiblyStuck = eventsQuery.data?.monitoring?.possibly_stuck;
     const possiblyStuck = item.id === selected?.id
-      ? Boolean(eventsQuery.data?.monitoring?.possibly_stuck)
+      ? !selectedFormalTurnFinished && (selectedPossiblyStuck ?? possiblyStuckConversationIds.has(item.id))
       : possiblyStuckConversationIds.has(item.id);
     const failed = failedConversationIds.has(item.id);
     // Unread is a user-isolated server projection. Activity only decides
@@ -7720,6 +7822,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const selectConversation = (bindingId: string) => {
     const outgoingScope = activeComposerScope.current;
     if (outgoingScope) persistComposerDraft(outgoingScope);
+    if (unreadConversationIds.has(bindingId)) markConversationRead(bindingId);
     setActivityPreviewBindingId(undefined);
     setConversationDraft(undefined);
     onNavigate(host.conversationPath(bindingId));
@@ -7737,7 +7840,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const openActivityConversation = (bindingId: string) => {
     setSidebarListMode('workspaces');
     setSidebarRevealBindingId(bindingId);
-    markConversationRead(bindingId);
     selectConversation(bindingId);
   };
   const activityWorkspaceName = (item: AgentConversation) => item.work_directory_id
@@ -7842,8 +7944,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         modelRetryStatus={modelRetryStatus}
         historyPending={Boolean(selected && historyLoadingBindingId === selected.id)}
         cachedHistoryMarkerCount={cachedHistoryMarkerCount}
+        cachedHistoryUserEventIds={cachedHistoryUserEventIds}
         hasCachedOlderHistory={hasCachedOlderHistory}
-        onRequestOlderHistory={revealNextHistoryPage}
+        onRequestOlderHistory={requestNextHistoryPage}
+        onRevealHistoryThrough={revealHistoryThrough}
         conversationScope={selected?.id ?? conversationDraft?.id}
         historyPrepend={historyPrepend}
         onHistoryAnchorCaptured={onHistoryAnchorCaptured}
@@ -7940,7 +8044,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
           </div>
           <div className="agent-composer-actions">
             {features.modelSelection && (selected ? <ComposerModelMenu providers={connectedProviders} providerId={conversationProviderId} modelName={activeConversationModelName} models={availableConversationModels} efforts={supportedEfforts} effort={reasoningEffort ?? selected.reasoning_effort ?? contextQuery.data?.reasoning_effort ?? conversationModel?.default_reasoning_effort ?? ''} disabled={!canWrite || conversationActivity.active || queuedMessages.length > 0 || Boolean(pendingConfirmation) || persistModel.isPending || migrateStreaming.isPending || Boolean(pendingMigratedSend)} onProviderChange={providerId => { const provider = connectedProviders.find(item => item.id === providerId); const model = provider?.models.find(item => item.enabled && item.is_default); if (!provider || !model) return; const effort = model.default_reasoning_effort ?? null; setConversationProviderId(providerId); setConversationModelName(model.model_name); setReasoningEffort(effort); persistModel.mutate({ providerId, modelName: model.model_name, effort }); }} onModelChange={modelName => { const model = availableConversationModels.find(item => item.model_name === modelName); const effort = model?.default_reasoning_effort ?? null; setConversationModelName(modelName); setReasoningEffort(effort); persistModel.mutate({ providerId: conversationProviderId, modelName, effort }); }} onEffortChange={effort => { const nextEffort = effort || null; setReasoningEffort(nextEffort); persistModel.mutate({ providerId: conversationProviderId, modelName: activeConversationModelName, effort }); }}/> : <ComposerModelMenu providers={connectedProviders} providerId={newConversationProviderId} modelName={newConversationModelName} models={availableDraftModels} efforts={supportedDraftEfforts} effort={newConversationReasoningEffort ?? draftConversationModel?.default_reasoning_effort ?? ''} disabled={!canOpenConversation || bootstrap.isPending} onProviderChange={providerId => { const provider = connectedProviders.find(item => item.id === providerId); const model = provider?.models.find(item => item.enabled && item.is_default); if (!provider || !model) return; setNewConversationProviderId(providerId); setNewConversationModelName(model.model_name); setNewConversationReasoningEffort(model.default_reasoning_effort ?? null); }} onModelChange={modelName => { const model = availableDraftModels.find(item => item.model_name === modelName); setNewConversationModelName(modelName); setNewConversationReasoningEffort(model?.default_reasoning_effort ?? null); }} onEffortChange={effort => setNewConversationReasoningEffort(effort || null)}/>) }
-            <button type="button" className={`agent-send${composerControl.action === 'resume' ? ' resume' : ''}`} aria-label={composerControl.label} disabled={composerControl.disabled} onClick={runComposerAction}>{pendingConfirmation ? <ShieldAlert size={14}/> : composerControl.action === 'send' ? <Send size={16}/> : composerControl.action === 'resume' ? <Play size={12} fill="currentColor"/> : composerControlMode === 'read-only' ? <CircleAlert size={15}/> : composerControl.action === 'interrupt' ? <Square size={10} fill="currentColor"/> : <LoaderCircle className="conversation-activity-spin" size={15}/>}</button>
+            <button type="button" className={`agent-send${composerControl.action === 'resume' || composerControlMode === 'pausing' ? ' resume' : ''}`} aria-label={composerControl.label} disabled={composerControl.disabled} onClick={runComposerAction}>{pendingConfirmation ? <ShieldAlert size={14}/> : composerControl.action === 'send' ? <Send size={16}/> : composerControl.action === 'resume' || composerControlMode === 'pausing' ? <Play size={12} fill="currentColor"/> : composerControlMode === 'read-only' ? <CircleAlert size={15}/> : composerControl.action === 'interrupt' ? <Square size={10} fill="currentColor"/> : <LoaderCircle className="conversation-activity-spin" size={15}/>}</button>
           </div>
         </footer>
         </div>
@@ -7980,6 +8084,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       sidebarQuestion={sidebarQuestions[selected?.id ?? pendingCreatedId ?? conversationDraft?.id ?? 'workspace-root']}
       onSidebarBindingCreated={(sourceBindingId, sidebarBindingId) => setSidebarQuestions(current => current[sourceBindingId] ? { ...current, [sourceBindingId]: { ...current[sourceBindingId], sidebarBindingId } } : current)}
       onOpenSidebarQuestion={selected ? () => setSidebarQuestions(current => ({ ...current, [selected.id]: { sourceBindingId: selected.id } })) : undefined}
+      onPreviewAttachment={previewAttachment}
       onCloseSidebarQuestion={() => {
         const scopeKey = selected?.id ?? pendingCreatedId ?? conversationDraft?.id ?? 'workspace-root';
         setSidebarQuestions(current => {

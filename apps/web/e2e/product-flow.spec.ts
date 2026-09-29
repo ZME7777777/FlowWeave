@@ -446,6 +446,9 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   let transientIdleReadiness = false;
   let readinessReportsIdle = false;
   let interrupted = false;
+  let pauseReadinessGate: Promise<void> | undefined;
+  let releasePauseReadiness: (() => void) | undefined;
+  let pauseBufferedEvent = false;
   let backfilledTaskAction = false;
   let incompleteLiveToolProjection = false;
   let parentTurnFailed = false;
@@ -831,6 +834,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
             ...(emptyResponseFollowup ? [{ id: 'empty-response-followup', event_type: 'THOUGHT', payload: { source: 'agent', parent_id: 'empty-response-nudge', content: '已恢复，继续检查工作区。', thought: '已恢复，继续检查工作区。', timestamp: new Date().toISOString() } }] : []),
           ] : []),
           ...(interrupted ? [{ id: 'paused-tool-error', event_type: 'ERROR', payload: { source_type: 'AgentErrorEvent', parent_id: 'running-user', content: 'Tool call interrupted before completion. The conversation was paused.' } }] : []),
+          ...(pauseBufferedEvent ? [{ id: 'pause-buffered-event', event_type: 'THOUGHT', payload: { source: 'agent', parent_id: 'running-user', content: '暂停请求确认前到达的正式事件。', thought: '暂停请求确认前到达的正式事件。', timestamp: new Date().toISOString() } }] : []),
           ...(parentTurnFailed ? [{ id: 'running-parent-error', event_type: 'ERROR', payload: { source_type: 'ConversationErrorEvent', source: 'environment', parent_id: backfilledTaskAction ? 'recovered-task-action' : 'running-user', content: '模型服务暂时不可用，本轮已停止', error_code: 'LLMServiceUnavailableError', timestamp: new Date().toISOString() } }] : []),
           ...(recoverableAgentError ? [
             { id: 'recoverable-tool', event_type: 'TOOL_CALL', payload: { source: 'agent', parent_id: 'running-user', action_id: 'recoverable-tool', tool_call_id: 'recoverable-tool-call', event_name: 'TerminalAction', details: { command: 'fetch deployment state' }, timestamp: new Date().toISOString() } },
@@ -953,6 +957,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
         await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ready: true, execution_status: 'idle' }) });
         return;
       }
+      if (interrupted && pauseReadinessGate) await pauseReadinessGate;
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
         ready: !modelIsResponding || interrupted,
         execution_status: modelIsResponding ? (interrupted ? 'paused' : 'running') : 'idle',
@@ -2307,7 +2312,15 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(activeProcess.locator(':scope > summary .conversation-activity-spin')).toBeVisible();
   await expect(taskPlan).toHaveAttribute('data-stability-marker', 'live-task-plan');
   await expect.poll(() => taskPlan.evaluate(element => element.getBoundingClientRect().top)).toBe(stableTaskPlanTop);
+  pauseReadinessGate = new Promise<void>(resolve => { releasePauseReadiness = resolve; });
   await page.getByRole('button', { name: '暂停当前 Agent' }).click();
+  await expect(page.getByRole('button', { name: '暂停请求已发送' })).toBeDisabled();
+  pauseBufferedEvent = true;
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await expect(page.getByText('暂停请求确认前到达的正式事件。')).toHaveCount(0);
+  releasePauseReadiness?.();
+  pauseReadinessGate = undefined;
+  await expect(page.getByText('暂停请求确认前到达的正式事件。')).toBeVisible();
   await expect(page.getByRole('button', { name: '继续当前 Agent' })).toBeVisible();
   await expect(activeProcess.getByText('已暂停，结果未返回')).toBeVisible();
   await expect(activeProcess).toHaveJSProperty('open', true);
@@ -2334,9 +2347,9 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.getByLabel('工具执行确认')).toHaveCount(0);
   await expect(page.locator('.agent-composer-actions .agent-send')).toHaveCount(1);
   await expect(page.getByText('Agent 正在处理上一条消息或停止请求，请稍候')).toHaveCount(0);
-  // A rendered assistant reply is not itself a terminal state. OpenHands may
-  // still be finishing the same native Agent loop, so every visible control
-  // must retain the one formal execution-state interpretation until idle.
+  // A durable agent MessageEvent is a formal final reply. It must close every
+  // foreground running indicator immediately, even while Runtime readiness
+  // still catches up to the native idle state.
   agentStream!.send(JSON.stringify({ type: 'delta', item_id: 'live-reply-before-idle', content: '回复已经生成，原生会话仍在收尾。' }));
   agentStream!.send(JSON.stringify({ type: 'message_complete' }));
   await expect(page.getByLabel('正在生成的回复')).toHaveCount(0);
@@ -2346,11 +2359,10 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     event: { id: 'live-reply-before-idle', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'live-tool-result', content: '回复已经生成，原生会话仍在收尾。', timestamp: new Date().toISOString() } },
   }));
   await expect(page.locator('.conversation-message.assistant').filter({ hasText: '回复已经生成，原生会话仍在收尾。' })).toBeVisible();
-  await expect(page.getByText('回复已生成，正在收尾')).toBeVisible();
-  await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toBeVisible();
-  await expect(page.locator('.agent-workspace-conversation-running')).toHaveCount(1);
-  modelIsResponding = false;
-  interrupted = false;
+  await expect(page.getByRole('button', { name: '发送消息' })).toBeVisible();
+  await expect(page.getByText('回复已生成，正在收尾')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toHaveCount(0);
+  await expect(page.locator('.agent-workspace-conversation-running')).toHaveCount(0);
   agentStream!.send(JSON.stringify({
     type: 'event',
     event: { id: 'live-finish', event_type: 'COMPLETED', payload: { source: 'agent', parent_id: 'live-tool-result', event_name: 'FinishAction', content: longFinalReply, thought: '核对已经完成，下面给出最终结果。', summary: '整理最终结果', timestamp: new Date().toISOString() } },
@@ -2359,7 +2371,6 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.getByText('核对已经完成，下面给出最终结果。')).toHaveCount(1);
   await expect(page.getByText(/最终回复第 1 段/)).toHaveCount(1);
   await expect(page.getByRole('button', { name: '发送消息' })).toBeVisible();
-  await expect(page.getByText('回复已生成，正在收尾')).toHaveCount(0);
   await expect(activeProcess.getByText('分析中', { exact: true })).toHaveCount(0);
   await expect(activeProcess).toHaveJSProperty('open', true);
   await expect(page.locator('.conversation-turn-status')).toHaveCount(0);
@@ -3111,6 +3122,8 @@ test('Agent new session keeps full capabilities and can create an explicit works
   await expect(environmentSummary.getByRole('button', { name: '复制 SSH 与目录', exact: true })).toBeVisible();
   expect(workspaceScopeRequests.at(-1)).toEqual({ bindingId: null, workDirectoryId: 'fr58-frontend' });
   await expect(page.getByText('2fae71c74c89', { exact: true })).toBeVisible();
+  await page.locator('.agent-workspace-drawer').evaluate(drawer => { drawer.style.width = '294px'; });
+  await expect(environmentSummary.getByRole('button', { name: '新终端', exact: true })).toBeVisible();
   await page.getByRole('button', { name: '新终端', exact: true }).click();
   await page.getByLabel('新增工作区工具').click();
   await expect(page.getByRole('menu')).toBeVisible();

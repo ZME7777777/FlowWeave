@@ -647,11 +647,7 @@ def _decode_node_session_page_cursor(cursor: str) -> tuple[datetime, str]:
         padded = cursor + "=" * (-len(cursor) % 4)
         value = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")))
         version, created_at, binding_id = value
-        if (
-            version != "v2"
-            or not isinstance(created_at, str)
-            or not isinstance(binding_id, str)
-        ):
+        if version != "v2" or not isinstance(created_at, str) or not isinstance(binding_id, str):
             raise ValueError("invalid cursor values")
         return datetime.fromisoformat(created_at), binding_id
     except (TypeError, ValueError, binascii.Error, json.JSONDecodeError) as exc:
@@ -949,9 +945,10 @@ def node_session_activity(
         if activity_timestamp_is_stale(native_activity[item.openhands_conversation_id].updated_at)
     ]
     running_binding_ids = {item.id for item in running_bindings}
-    attention_binding_ids = set(possibly_stuck_binding_ids) | {
-        item.id for item in bindings if item.openhands_conversation_id in failed_native_ids
-    }
+    attention_binding_ids = (
+        set(possibly_stuck_binding_ids)
+        | {item.id for item in bindings if item.openhands_conversation_id in failed_native_ids}
+    ) - ({active_binding_id} if active_binding_id else set())
     for item in bindings:
         activity = native_activity.get(item.openhands_conversation_id)
         is_running = item.id in running_binding_ids
@@ -2541,7 +2538,10 @@ def _event_batch_dict(
             for usage in batch.task_usage
         ],
         "task_control": task_control_projection(db, binding.id),
-        "monitoring": build_activity_summary(batch.events),
+        "monitoring": build_activity_summary(
+            batch.events,
+            conversation_completed=bool(batch.result and batch.result.status == "COMPLETED"),
+        ),
     }
 
 

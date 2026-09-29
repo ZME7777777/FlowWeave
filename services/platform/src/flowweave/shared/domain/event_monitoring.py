@@ -100,6 +100,7 @@ def activity_timestamp_is_stale(
 def build_activity_summary(
     events: tuple[Any, ...] | list[Any],
     *,
+    conversation_completed: bool = False,
     now: datetime | None = None,
     stale_after_seconds: int = 60,
 ) -> dict[str, Any]:
@@ -163,7 +164,7 @@ def build_activity_summary(
             item["seconds_since_event"] is not None
             and item["seconds_since_event"] >= stale_after_seconds
         )
-    terminal = getattr(latest_event, "event_type", None) in {
+    terminal = conversation_completed or getattr(latest_event, "event_type", None) in {
         "COMPLETED",
         "ERROR",
         "HUMAN_INPUT_REQUIRED",
