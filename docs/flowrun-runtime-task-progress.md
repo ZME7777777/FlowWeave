@@ -7725,6 +7725,8 @@ OpenHands adapter 现为 context、activity 和 pending-confirmation 增加每 R
 
 验收：OpenHands／HTTP／hydration 定向 pytest `44 passed, 183 deselected`；新增回归证明辅助读取不会占用正式 Runtime 容量，辅助自身同 Runtime 只允许一个请求；Ruff、`py_compile`、Web TypeScript 和 production build、Alembic head、`git diff --check` 通过。Web lint 仍被该文件原有 3 条 React Hook dependency warnings 以 `--max-warnings=0` 拒绝，本切片未新增 lint error。未在本切片运行全量 Runtime 负载或浏览器 E2E。
 
+修正（2026-09-29）：B2B 后发现将自动 cursor 分页整体关闭会使左侧栏只保留首批会话，不能接受。已恢复完整自动分页，但每次只在可见页面后台串行加载一页、间隔 1.5 秒；页面隐藏即暂停。首次会话页仍走交互通道，带 cursor 的后续页走独立 history executor 和 SQL pool，避免其与 hydration、消息派发和正式事件恢复共用资源。
+
 ### FR-555C 慢生命周期变更与后台任务通道 — READY
 
 依赖：FR-555B2B。

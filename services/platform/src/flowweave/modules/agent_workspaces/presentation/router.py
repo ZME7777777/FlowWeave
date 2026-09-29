@@ -680,12 +680,17 @@ async def delete_agent_work_directory(
 @router.get("/agent-workspaces/{workspace_id}/conversations")
 async def list_agent_conversations(
     workspace_id: str,
-    db: Db,
+    container: ContainerDep,
     cursor: str | None = Query(default=None, max_length=200),
     limit: int = Query(default=5, ge=1, le=5),
 ) -> dict[str, Any]:
-    return await run_sync(
-        db,
+    # The first page paints the sidebar; later cursor pages reconstruct its
+    # full history in a quiet background lane. Do not inject an AsyncSession
+    # here: FastAPI would reserve an ordinary pool connection even when the
+    # cursor branch correctly selects the isolated history SQL pool.
+    execute = run_blocking_history if cursor is not None else run_blocking
+    return await execute(
+        container,
         lambda session: conversations.list_conversation_page(
             session, workspace_id, cursor=cursor, limit=limit
         ),
@@ -793,9 +798,7 @@ async def get_agent_sidebar_conversation(
     status_code=204,
     response_class=Response,
 )
-async def close_agent_sidebar_conversation(
-    workspace_id: str, binding_id: str, db: Db
-) -> Response:
+async def close_agent_sidebar_conversation(workspace_id: str, binding_id: str, db: Db) -> Response:
     await run_sync(
         db,
         lambda session: sidebar_conversations.close_sidebar_conversation(
@@ -1172,8 +1175,6 @@ async def agent_attachment(
     )
 
 
-
-
 class ResumableAttachmentUploadWrite(_Write):
     filename: str = Field(min_length=1, max_length=240)
     mime_type: str = Field(default="application/octet-stream", max_length=200)
@@ -1196,7 +1197,6 @@ async def _resumable_attachment_part(file: UploadFile) -> bytes:
     if len(content) > 256 * 1024:
         raise HTTPException(status_code=422, detail="附件分片不能超过 256 KiB")
     return content
-
 
 
 @router.post("/agent-workspaces/{workspace_id}/workspace/uploads", status_code=201)
@@ -1227,21 +1227,33 @@ async def create_resumable_agent_workspace_attachment_upload(
     return await run_sync(
         db,
         lambda session: conversations.create_resumable_attachment_upload(
-            session, workspace_id, None, filename=payload.filename, content_type=payload.mime_type,
-            total_size=payload.total_size, work_directory_id=payload.work_directory_id,
+            session,
+            workspace_id,
+            None,
+            filename=payload.filename,
+            content_type=payload.mime_type,
+            total_size=payload.total_size,
+            work_directory_id=payload.work_directory_id,
             attachment_owner_id=payload.conversation_id,
         ),
     )
 
 
-@router.post("/agent-workspaces/{workspace_id}/conversations/{binding_id}/attachments/uploads", status_code=201)
+@router.post(
+    "/agent-workspaces/{workspace_id}/conversations/{binding_id}/attachments/uploads",
+    status_code=201,
+)
 async def create_resumable_agent_attachment_upload(
     workspace_id: str, binding_id: str, payload: ResumableAttachmentUploadWrite, db: Db
 ) -> dict[str, Any]:
     return await run_sync(
         db,
         lambda session: conversations.create_resumable_attachment_upload(
-            session, workspace_id, binding_id, filename=payload.filename, content_type=payload.mime_type,
+            session,
+            workspace_id,
+            binding_id,
+            filename=payload.filename,
+            content_type=payload.mime_type,
             total_size=payload.total_size,
         ),
     )
@@ -1252,24 +1264,48 @@ async def create_resumable_agent_attachment_upload(
 async def resumable_agent_workspace_attachment_upload_status(
     workspace_id: str, upload_id: str, db: Db, binding_id: str | None = Query(default=None)
 ) -> dict[str, Any]:
-    return await run_sync(db, lambda session: conversations.resumable_attachment_upload_status(session, workspace_id, binding_id, upload_id))
+    return await run_sync(
+        db,
+        lambda session: conversations.resumable_attachment_upload_status(
+            session, workspace_id, binding_id, upload_id
+        ),
+    )
 
 
 @router.put("/agent-workspaces/{workspace_id}/workspace/uploads/{upload_id}/parts/{part_number}")
 @router.put("/agent-workspaces/{workspace_id}/attachments/uploads/{upload_id}/parts/{part_number}")
 async def upload_resumable_agent_workspace_attachment_part(
-    workspace_id: str, upload_id: str, part_number: int, db: Db, file: Annotated[UploadFile, File()], binding_id: str | None = Query(default=None)
+    workspace_id: str,
+    upload_id: str,
+    part_number: int,
+    db: Db,
+    file: Annotated[UploadFile, File()],
+    binding_id: str | None = Query(default=None),
 ) -> dict[str, Any]:
     content = await _resumable_attachment_part(file)
-    return await run_sync(db, lambda session: conversations.upload_resumable_attachment_part(session, workspace_id, binding_id, upload_id, part_number, content))
+    return await run_sync(
+        db,
+        lambda session: conversations.upload_resumable_attachment_part(
+            session, workspace_id, binding_id, upload_id, part_number, content
+        ),
+    )
 
 
-@router.post("/agent-workspaces/{workspace_id}/workspace/uploads/{upload_id}/complete", status_code=201)
-@router.post("/agent-workspaces/{workspace_id}/attachments/uploads/{upload_id}/complete", status_code=201)
+@router.post(
+    "/agent-workspaces/{workspace_id}/workspace/uploads/{upload_id}/complete", status_code=201
+)
+@router.post(
+    "/agent-workspaces/{workspace_id}/attachments/uploads/{upload_id}/complete", status_code=201
+)
 async def complete_resumable_agent_workspace_attachment_upload(
     workspace_id: str, upload_id: str, db: Db, binding_id: str | None = Query(default=None)
 ) -> dict[str, Any]:
-    return await run_sync(db, lambda session: conversations.complete_resumable_attachment_upload(session, workspace_id, binding_id, upload_id))
+    return await run_sync(
+        db,
+        lambda session: conversations.complete_resumable_attachment_upload(
+            session, workspace_id, binding_id, upload_id
+        ),
+    )
 
 
 @router.delete("/agent-workspaces/{workspace_id}/workspace/uploads/{upload_id}", status_code=204)
@@ -1277,8 +1313,14 @@ async def complete_resumable_agent_workspace_attachment_upload(
 async def cancel_resumable_agent_workspace_attachment_upload(
     workspace_id: str, upload_id: str, db: Db, binding_id: str | None = Query(default=None)
 ) -> Response:
-    await run_sync(db, lambda session: conversations.cancel_resumable_attachment_upload(session, workspace_id, binding_id, upload_id))
+    await run_sync(
+        db,
+        lambda session: conversations.cancel_resumable_attachment_upload(
+            session, workspace_id, binding_id, upload_id
+        ),
+    )
     return Response(status_code=204)
+
 
 @router.post("/agent-workspaces/{workspace_id}/attachments", status_code=201)
 async def agent_workspace_attachment(

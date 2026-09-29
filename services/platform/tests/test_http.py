@@ -410,3 +410,38 @@ def test_all_user_message_routes_use_reserved_message_lane() -> None:
                 if isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
             ]
             assert "run_blocking_message" in calls
+
+
+def test_cursor_conversation_pages_use_background_history_lane() -> None:
+    """Sidebar history pagination must not share the interactive DB lane."""
+
+    import ast
+    from pathlib import Path
+
+    module = ast.parse(
+        Path("src/flowweave/modules/agent_workspaces/presentation/router.py").read_text()
+    )
+    route = next(
+        node
+        for node in module.body
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "list_agent_conversations"
+    )
+    assignments = [
+        node
+        for node in ast.walk(route)
+        if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == "execute" for target in node.targets)
+    ]
+    assert len(assignments) == 1
+    lane_choice = assignments[0].value
+    assert isinstance(lane_choice, ast.IfExp)
+    assert isinstance(lane_choice.body, ast.Name)
+    assert isinstance(lane_choice.orelse, ast.Name)
+    assert lane_choice.body.id == "run_blocking_history"
+    assert lane_choice.orelse.id == "run_blocking"
+    assert not any(
+        isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Name)
+        and call.func.id == "run_sync"
+        for call in ast.walk(route)
+    )

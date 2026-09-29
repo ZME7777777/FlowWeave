@@ -4620,10 +4620,35 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     () => new Set(conversationActivityQuery.data?.failed_binding_ids ?? []),
     [conversationActivityQuery.data],
   );
-  // Do not automatically chase every cursor page. An Agent Workspace can own
-  // hundreds of bindings; repeatedly fetching its complete history turns one
-  // route entry into a request storm that competes with the selected session's
-  // hydration. Additional pages are requested only by the explicit list UI.
+  useEffect(() => {
+    // The sidebar must eventually contain every authorized conversation, but
+    // cursor pages are background work. Schedule exactly one page after a
+    // short yield so route hydration, message delivery and formal event reads
+    // get first access to their dedicated lanes. Leaving the page cancels the
+    // queued background page; returning resumes from the saved cursor.
+    if (
+      !workspace
+      || !pageVisible
+      || conversationsQuery.isError
+      || conversationsQuery.isFetchNextPageError
+      || !conversationsQuery.hasNextPage
+      || conversationsQuery.isFetchingNextPage
+    ) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      void conversationsQuery.fetchNextPage();
+    }, 1_500);
+    return () => window.clearTimeout(timer);
+  }, [
+    conversationsQuery.fetchNextPage,
+    conversationsQuery.hasNextPage,
+    conversationsQuery.isError,
+    conversationsQuery.isFetchNextPageError,
+    conversationsQuery.isFetchingNextPage,
+    pageVisible,
+    workspace,
+  ]);
   const workDirectoriesQuery = useQuery({ queryKey: sessionQueryKey(host, 'work-directories', workspace?.id), queryFn: () => api.workDirectories(workspace!.id), enabled: Boolean(workspace && features.workDirectories) });
   const providersQuery = useQuery({ queryKey: ['model-providers'], queryFn: api.providers, enabled: Boolean(workspace && features.modelSelection) });
   const capabilityCatalogQuery = useQuery({ queryKey: sessionQueryKey(host, 'capability-catalog'), queryFn: api.capabilities, enabled: Boolean(workspace && features.capabilities) });
