@@ -1658,7 +1658,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
     element?: HTMLElement;
     offset?: number;
   } | undefined>(undefined);
-  const previousContentSignal = useRef('');
+  const previousContentSignal = useRef<ReadonlyArray<readonly [string, string]>>([]);
   const copyResetTimer = useRef<number | undefined>(undefined);
   const referenceHighlightTimer = useRef<number | undefined>(undefined);
   const referenceLocationPending = useRef(false);
@@ -1711,8 +1711,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
     setRevealEventIds(newlyRendered);
   }, [conversationScope, liveTextReveal, visibleEventSignature]);
   const turns = useMemo(() => turnsFor(visibleEvents), [visibleEvents]);
-  const visibleEventIds = useMemo(() => visibleEvents.map(event => event.id).join('\u001f'), [visibleEvents]);
-  const contentGrowthSignal = visibleEventIds;
+  const contentGrowthSignal = visibleEventSignature;
   const avatarSlots = useMemo(() => subagentAvatarSlots(visibleEvents), [visibleEvents]);
   const userMessageNavigation = useMemo<UserMessageNavigationItem[]>(() => [
     ...Array.from({ length: cachedHistoryMarkerCount }, (_, index) => ({
@@ -2149,19 +2148,28 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
     historyAnchor.current = undefined;
     onHistoryAnchorRestored?.(historyPrepend);
   }, [alignWithLatest, conversationScope, historyPrepend, onHistoryAnchorCaptured, onHistoryAnchorRestored]);
-  // A REST reconciliation may replace event objects without adding visible
-  // content. Only new formal event identities may move the viewport: status
-  // text and live elapsed counters resize independently while a turn runs.
+  // Formal event rows are committed before this layout effect runs. Correct
+  // their bottom offset synchronously so the browser cannot paint one frame at
+  // the old scrollTop and then visibly snap to the latest content. Include the
+  // visible text in the signal because OpenHands may enrich an existing event
+  // without assigning a new id. Elapsed labels and CSS animations remain out of
+  // the signal and therefore cannot drive transcript scrolling.
   useLayoutEffect(() => {
-    const contentChanged = previousContentSignal.current !== contentGrowthSignal;
+    const previous = previousContentSignal.current;
+    const contentChanged = previous.length !== contentGrowthSignal.length
+      || contentGrowthSignal.some((entry, index) => (
+        entry[0] !== previous[index]?.[0]
+        || entry[1] !== previous[index]?.[1]
+      ));
     previousContentSignal.current = contentGrowthSignal;
     if (!initialPositioned.current && (turns.length || isGenerating)) {
       initialPositioned.current = true;
       alignWithLatest();
-    } else if (contentChanged) {
-      scheduleLatestAlignment();
+    } else if (contentChanged && followLatest.current && !userScrolledAway.current) {
+      alignWithLatest();
     }
-  }, [alignWithLatest, contentGrowthSignal, isGenerating, scheduleLatestAlignment, turns.length]);
+  }, [alignWithLatest, contentGrowthSignal, isGenerating, turns.length]);
+
 
   useEffect(() => () => {
     if (copyResetTimer.current) window.clearTimeout(copyResetTimer.current);

@@ -7727,6 +7727,15 @@ OpenHands adapter 现为 context、activity 和 pending-confirmation 增加每 R
 
 修正（2026-09-29）：B2B 后发现将自动 cursor 分页整体关闭会使左侧栏只保留首批会话，不能接受。已恢复完整自动分页，但每次只在可见页面后台串行加载一页、间隔 1.5 秒；页面隐藏即暂停。首次会话页仍走交互通道，带 cursor 的后续页走独立 history executor 和 SQL pool，避免其与 hydration、消息派发和正式事件恢复共用资源。
 
+
+### FR-555B2C 会话运行态底部视觉稳定 — DONE
+
+依赖：FR-555B2B。
+
+完成：运行中 Thought／Tool 正式事件不再通过逐字增加 DOM 节点模拟打字；正文从首次提交即占据最终布局高度，仅保留不改变几何尺寸的淡入视觉。`ConversationSurface` 将正式事件的可见 `content`／`thought` 纳入增长签名，同一 event id 的正式正文补全也会在 layout effect 中于浏览器绘制前贴底；纯轮询字段、耗时计数和 CSS 动画不触发滚动。贴底继续服从用户滚动意图，用户主动向上阅读后，新事件不会抢回底部。
+
+验收：新增独立 Playwright 回归 `conversation-scroll-stability.spec.ts`，覆盖同 ID 的 24 段 Thought 正文扩展、新 Tool 正式事件和用户上滚后的 Tool Result，`1 passed`；Web TypeScript、production build 与 `git diff --check` 通过。Web lint 仍被原有 3 条 React Hook dependency warning 以 `--max-warnings=0` 拒绝，本切片未新增 lint error。既有综合滚动／历史分页场景的滚动阶段通过，随后在未修改的历史预取夹具等待“第一历史页”超时，未将该综合场景记为通过。未修改 Runtime、数据库 schema 或远端环境。下一可执行切片仍为 FR-555C。
+
 ### FR-555C 慢生命周期变更与后台任务通道 — READY
 
 依赖：FR-555B2B。
