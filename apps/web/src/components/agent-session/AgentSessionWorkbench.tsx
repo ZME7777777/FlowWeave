@@ -4691,8 +4691,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     const serverOrder = (Object.values(conversationPagesByScope).flatMap(page => page.items) ?? [])
       .filter(item => !optimisticallyRemovedConversationIds.has(item.id))
       .sort(
-      (left, right) => (Number(right.sort_key) || Date.parse(right.created_at))
-        - (Number(left.sort_key) || Date.parse(left.created_at))
+      (left, right) => (Number(right.sort_key) || Date.parse(right.updated_at))
+        - (Number(left.sort_key) || Date.parse(left.updated_at))
         || right.id.localeCompare(left.id),
       );
     const groups = new Map<string, AgentConversation[]>();

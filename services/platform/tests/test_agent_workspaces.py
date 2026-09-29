@@ -3366,6 +3366,44 @@ def test_agent_workspace_conversation_page_is_bounded_and_cursor_stable(
         )
 
 
+def test_agent_workspace_conversation_page_uses_latest_update_for_default_order(
+    settings, db_session_factory, monkeypatch
+):
+    monkeypatch.setattr(
+        conversations,
+        "runtime_provider",
+        lambda _db, asset, **kwargs: RuntimeProvider(
+            provider_id=asset["asset"]["executor"]["model_provider_id"],
+            base_url="https://models.example.test/v1",
+            model=kwargs.get("model_name") or "test-model",
+            api_key="x",
+            reasoning_effort=kwargs.get("reasoning_effort"),
+        ),
+    )
+    with settings_context(settings), db_session_factory() as db, runtime_context(MockRuntime()):
+        workspace = _ready_workspace_for_conversation(db)
+        older = conversations.create_conversation(
+            db, workspace.id, "较早创建", workspace.default_model_provider_id, "updated-order-older"
+        )
+        newer = conversations.create_conversation(
+            db, workspace.id, "较晚创建", workspace.default_model_provider_id, "updated-order-newer"
+        )
+        baseline = datetime.now(UTC) - timedelta(days=1)
+        older_binding = db.get(AgentConversationBinding, older["id"])
+        newer_binding = db.get(AgentConversationBinding, newer["id"])
+        assert older_binding is not None and newer_binding is not None
+        older_binding.created_at = baseline
+        newer_binding.created_at = baseline + timedelta(hours=1)
+        older_binding.updated_at = baseline + timedelta(hours=2)
+        newer_binding.updated_at = baseline + timedelta(hours=1)
+        db.flush()
+
+        page = conversations.list_conversation_page(db, workspace.id, limit=2)
+
+        assert [item["id"] for item in page["items"]] == [older["id"], newer["id"]]
+        assert Decimal(page["items"][0]["sort_key"]) > Decimal(page["items"][1]["sort_key"])
+
+
 def test_agent_workspace_unread_state_persists_in_conversation_projection(
     settings, db_session_factory, monkeypatch
 ):

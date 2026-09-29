@@ -298,18 +298,20 @@ def _dict(
     }
 
 
-def _creation_sort_rank(created_at: datetime) -> Decimal:
-    return Decimal(str(created_at.timestamp()))
+def _default_sort_rank(updated_at: datetime) -> Decimal:
+    """Rank unpinned conversations by their latest durable activity."""
+
+    return Decimal(str(updated_at.timestamp()))
 
 
 def _conversation_sort_key(item: AgentConversationBinding) -> Decimal:
-    return item.manual_sort_rank or _creation_sort_rank(item.created_at)
+    return item.manual_sort_rank or _default_sort_rank(item.updated_at)
 
 
 def _conversation_sort_expression():
     return func.coalesce(
         AgentConversationBinding.manual_sort_rank,
-        cast(func.extract("epoch", AgentConversationBinding.created_at), Numeric(30, 12)),
+        cast(func.extract("epoch", AgentConversationBinding.updated_at), Numeric(30, 12)),
     )
 
 
@@ -1067,9 +1069,9 @@ def reorder_conversation(
             while position < len(ordered) and ordered[position].id in manual_ids:
                 position += 1
             run = ordered[start:position]
-            upper = _creation_sort_rank(ordered[start - 1].created_at) if start else None
+            upper = _default_sort_rank(ordered[start - 1].updated_at) if start else None
             lower = (
-                _creation_sort_rank(ordered[position].created_at)
+                _default_sort_rank(ordered[position].updated_at)
                 if position < len(ordered)
                 else None
             )
@@ -1085,7 +1087,7 @@ def reorder_conversation(
             elif upper is not None:
                 ranks = [upper - Decimal(index + 1) for index in range(len(run))]
             else:
-                base = max(_creation_sort_rank(candidate.created_at) for candidate in run)
+                base = max(_default_sort_rank(candidate.updated_at) for candidate in run)
                 ranks = [base + Decimal(len(run) - index) for index in range(len(run))]
             normalized = [rank.quantize(_SORT_RANK_QUANTUM) for rank in ranks]
             if (
