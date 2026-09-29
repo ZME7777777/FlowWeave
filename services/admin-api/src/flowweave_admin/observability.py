@@ -17,6 +17,12 @@ _INTERESTING_METRICS = {
     "flowweave_runtime_relay_hubs",
     "flowweave_runtime_relay_subscribers",
     "flowweave_runtime_relay_hub_capacity",
+    "flowweave_runtime_formal_read_active",
+    "flowweave_runtime_formal_read_capacity",
+    "flowweave_runtime_formal_read_generations",
+    "flowweave_runtime_read_bulkhead_saturated_total",
+    "flowweave_runtime_auxiliary_read_saturated_total",
+    "flowweave_runtime_background_search_bulkhead_saturated_total",
     "flowweave_terminal_attachments",
     "flowweave_terminal_sessions",
 }
@@ -444,6 +450,15 @@ def admin_operations(
                  action.request_id, action.created_at, 'RECORDED'::text AS status,
                  action.silenced_until
           FROM admin_alert_actions AS action
+          UNION ALL
+          SELECT operation.id, operation.action, 'RESOURCE_CLEANUP'::text AS target_kind,
+                 'background_tasks'::text AS target_id,
+                 ('retention=' || operation.retention_days || 'd; batch=' || operation.batch_size
+                  || '; deleted=' || operation.deleted_count) AS target_detail,
+                 operation.actor_user_id, operation.actor_username, operation.reason,
+                 operation.request_id, operation.created_at, 'RECORDED'::text AS status,
+                 NULL::timestamptz AS silenced_until
+          FROM admin_resource_cleanup_operations AS operation
         )
         SELECT * FROM operations
         WHERE (%s::text IS NULL OR action = %s)

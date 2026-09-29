@@ -154,10 +154,22 @@ export type RuntimeOperation = {
   replacement_status: 'SUBMITTED' | 'RECOVERING' | 'RECOVERED' | 'FAILED';
 };
 
+export type ResourceCleanupResult = {
+  deleted_count: number;
+  operation: {
+    id: string;
+    action: 'CLEANUP_EXPIRED_TASKS';
+    retention_days: number;
+    batch_size: number;
+    deleted_count: number;
+    idempotent_replay: boolean;
+  };
+};
+
 export type AdminOperation = {
   id: string;
-  action: 'REPLACE_RUNTIME' | 'ISOLATE_RUNTIME' | 'RESUME_RUNTIME' | 'ACKNOWLEDGE' | 'SILENCE';
-  target_kind: 'RUNTIME' | 'ALERT';
+  action: 'REPLACE_RUNTIME' | 'ISOLATE_RUNTIME' | 'RESUME_RUNTIME' | 'ACKNOWLEDGE' | 'SILENCE' | 'CLEANUP_EXPIRED_TASKS';
+  target_kind: 'RUNTIME' | 'ALERT' | 'RESOURCE_CLEANUP';
   target_id: string;
   target_detail: string | null;
   actor_user_id: string;
@@ -296,6 +308,11 @@ export const adminApi = {
   runtimeDetail: (runtimeSessionId: string) => request<RuntimeDetail>(`/v1/admin/runtimes/${encodeURIComponent(runtimeSessionId)}`),
   conversations: () => request<{ items: Conversation[] }>('/v1/admin/conversations'),
   backgroundTasks: () => request<{ summary: BackgroundTaskSummary; items: BackgroundTask[] }>('/v1/admin/background-tasks'),
+  cleanupExpiredTasks: (input: { reason: string; idempotency_key: string }) => request<ResourceCleanupResult>('/v1/admin/resource-cleanups', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'CLEANUP_EXPIRED_TASKS', ...input }),
+  }),
   runtimeOperations: () => request<{ items: RuntimeOperation[] }>('/v1/admin/runtime-operations'),
   operations: () => request<{ items: AdminOperation[] }>('/v1/admin/operations'),
   diagnoseRuntime: (input: {
