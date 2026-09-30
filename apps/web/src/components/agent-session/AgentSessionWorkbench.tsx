@@ -4812,6 +4812,21 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       setLoadingConversationScope(current => current === scopeKey ? undefined : current);
     }
   }, [api, conversationPagesByScope, conversationScopes, loadingConversationScope, workspace]);
+  useEffect(() => {
+    if (loadingConversationScope) return;
+    for (const scope of conversationScopes) {
+      const page = conversationPagesByScope[scope.key];
+      if (!page?.next_cursor) continue;
+      const unpinnedCount = page.items.filter(
+        item => !(pendingPinnedUpdates.current.get(item.id)?.pinned ?? item.pinned),
+      ).length;
+      if (unpinnedCount < 3) {
+        void loadMoreConversations(scope.key);
+        return;
+      }
+    }
+  }, [conversationPagesByScope, conversationScopes, loadMoreConversations, loadingConversationScope]);
+
   const conversationActivityQuery = useQuery({
     // A sidebar preview is not a formal route entry. Only the route binding may
     // suppress the server-owned "completed in background" unread transition.
