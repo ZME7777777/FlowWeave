@@ -1482,8 +1482,12 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     return Boolean(process && reply && (process.compareDocumentPosition(reply) & Node.DOCUMENT_POSITION_FOLLOWING));
   })).toBe(true);
   await expect(page.getByText('工作区已就绪。')).toHaveCount(1);
-  await expect(completedTurn.getByRole('button', { name: '已编辑 1 个文件' })).toBeVisible();
-  await expect(completedTurn.getByText('root-owned.ts', { exact: true })).toBeVisible();
+  const conversationChanges = page.getByRole('button', { name: '本会话已编辑 2 个文件' });
+  await expect(conversationChanges).toBeVisible();
+  await expect(page.getByText('config.ts', { exact: true })).toBeVisible();
+  await expect(page.getByText('root-owned.ts', { exact: true })).toBeVisible();
+  await expect(conversationChanges).toContainText('+2');
+  await expect(conversationChanges).toContainText('-2');
   const reportLink = page.getByRole('link', { name: '期权异动接口批量查询代码审查报告.md' });
   await expect(reportLink).toBeVisible();
   const urlBeforeReportPreview = page.url();
@@ -1512,7 +1516,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(fileDetail.getByText('const mode = "old"', { exact: true })).toBeVisible();
   await expect(fileDetail.getByText('const mode = "new"', { exact: true })).toBeVisible();
   await expect(fileDetail.getByText('The file was edited successfully.', { exact: true })).toBeVisible();
-  await page.locator('.conversation-file-changes > button').first().click();
+  await conversationChanges.click();
   await expect(page.getByRole('button', { name: '查看源文件' })).toBeVisible();
   await page.getByRole('button', { name: '查看源文件' }).click();
   await expect(page.getByText('workspace file preview', { exact: true })).toBeVisible();

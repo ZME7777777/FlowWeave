@@ -530,20 +530,6 @@ function turnsFor(events: OpenHandsConversationEvent[]): Turn[] {
   return turns;
 }
 
-function fileChangesForTurn(
-  events: OpenHandsConversationEvent[],
-  turn: Turn,
-): WorkspaceFileChange[] {
-  if (!turn.user) return workspaceFileChanges(turn.activity.map(item => item.event));
-  const byId = new Map(events.map(event => [event.id, event]));
-  // A tool result can arrive after the main reply or after a nested task's
-  // events have been projected. Its formal parent chain is the durable source
-  // of turn ownership; the rendered activity list is only a presentation
-  // order and must not determine whether a completed reply shows its changes.
-  const ownedEvents = events.filter(event => userAncestorId(event, byId) === turn.user!.event.id);
-  return workspaceFileChanges(ownedEvents.length ? ownedEvents : turn.activity.map(item => item.event));
-}
-
 function detailText(value: unknown): string {
   return typeof value === 'string' ? value.trim().slice(0, 500) : '';
 }
@@ -1403,14 +1389,24 @@ function AnnotationReplyContent({ content, reveal = false, annotations, onLocate
   </>;
 }
 
-function AgentReply({ event, content, reveal = false, changes = [], onFork, onPreviewCandidateFile, onReviewChanges, onOpenWorkspaceFile, onOpenImage, workspaceRoot, annotations = [], onLocateAnnotation }: {
+function ConversationFileChanges({ changes, onReviewChanges, workspaceRoot }: {
+  changes: WorkspaceFileChange[];
+  onReviewChanges?: (changes: WorkspaceFileChange[]) => void;
+  workspaceRoot?: string | null;
+}) {
+  if (!changes.length) return null;
+  return <section className="conversation-file-changes" aria-label={`本会话编辑了 ${changes.length} 个文件`}>
+    <button type="button" onClick={() => onReviewChanges?.(changes)}><FileText size={15}/><span><b>{`本会话已编辑 ${changes.length} 个文件`}</b><small><ins>{`+${changes.reduce((total, change) => total + change.additions, 0)}`}</ins><del>{`-${changes.reduce((total, change) => total + change.deletions, 0)}`}</del></small></span><PanelRightOpen size={14}/></button>
+    <div>{changes.map(change => <button type="button" key={change.id} onClick={() => onReviewChanges?.([change])}><span title={workspaceRelativePath(change.path, workspaceRoot)}>{workspaceRelativePath(change.path, workspaceRoot)}</span><ins>{`+${change.additions}`}</ins><del>{`-${change.deletions}`}</del></button>)}</div>
+  </section>;
+}
+
+function AgentReply({ event, content, reveal = false, onFork, onPreviewCandidateFile, onOpenWorkspaceFile, onOpenImage, workspaceRoot, annotations = [], onLocateAnnotation }: {
   event: OpenHandsConversationEvent;
   content: string;
   reveal?: boolean;
-  changes?: WorkspaceFileChange[];
   onFork?: () => void;
   onPreviewCandidateFile?: (fieldKey: string, relativePath: string) => void;
-  onReviewChanges?: (changes: WorkspaceFileChange[]) => void;
   onOpenWorkspaceFile?: (href: string) => boolean;
   onOpenImage?: (src: string, alt?: string) => void;
   workspaceRoot?: string | null;
@@ -1430,10 +1426,6 @@ function AgentReply({ event, content, reveal = false, changes = [], onFork, onPr
     {candidateMessage.businessConclusion ? <AnnotationReplyContent content={candidateMessage.businessConclusion} reveal={reveal} annotations={annotations} onLocateAnnotation={onLocateAnnotation} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenImage={onOpenImage}/> : !candidateMessage.outputs && content ? <MessageMarkdown reveal={reveal} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenImage={onOpenImage}>{content}</MessageMarkdown> : null}
     {candidateMessage.outputs && <CandidateOutputReply outputs={candidateMessage.outputs} onPreviewFile={onPreviewCandidateFile ? output => onPreviewCandidateFile(output.fieldKey, output.value) : undefined}/>}
     {!candidateMessage.businessConclusion && !candidateMessage.outputs && !content && <span className="conversation-typing"><i/><i/><i/></span>}
-    {changes.length > 0 && <section className="conversation-file-changes" aria-label={`本轮编辑了 ${changes.length} 个文件`}>
-      <button type="button" onClick={() => onReviewChanges?.(changes)}><FileText size={15}/><span><b>{`已编辑 ${changes.length} 个文件`}</b><small><ins>{`+${changes.reduce((total, change) => total + change.additions, 0)}`}</ins><del>{`-${changes.reduce((total, change) => total + change.deletions, 0)}`}</del></small></span><PanelRightOpen size={14}/></button>
-      <div>{changes.map(change => <button type="button" key={change.id} onClick={() => onReviewChanges?.([change])}><span title={workspaceRelativePath(change.path, workspaceRoot)}>{workspaceRelativePath(change.path, workspaceRoot)}</span><ins>{`+${change.additions}`}</ins><del>{`-${change.deletions}`}</del></button>)}</div>
-    </section>}
     {(timestamp || onFork) && <footer className="conversation-message-meta assistant">
       {timestamp && <time dateTime={typeof event.payload.timestamp === 'string' ? event.payload.timestamp : undefined}>{timestamp}</time>}
       {onFork && <button type="button" className="conversation-message-fork" onClick={onFork}><GitFork size={12}/>从此处分叉会话</button>}
@@ -1745,6 +1737,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
     setRevealEventIds(newlyRendered);
   }, [conversationScope, liveTextReveal, visibleEventSignature]);
   const turns = useMemo(() => turnsFor(visibleEvents), [visibleEvents]);
+  const conversationFileChanges = useMemo(() => workspaceFileChanges(visibleEvents), [visibleEvents]);
   const contentGrowthSignal = visibleEventSignature;
   const avatarSlots = useMemo(() => subagentAvatarSlots(visibleEvents), [visibleEvents]);
   const userMessageNavigation = useMemo<UserMessageNavigationItem[]>(() => [
@@ -2396,7 +2389,6 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
           isCurrent && !turn.assistant && !failures.length,
         );
         const completionConfirmed = !isGenerating && Boolean(turn.assistant || failures.length);
-        const fileChanges = fileChangesForTurn(events, turn);
         const userMessages = turn.user ? [turn.user, ...turn.continuations] : [];
         return <section className="conversation-turn" key={turn.renderKey} data-conversation-turn={turn.id}>
           {userMessages.map((message, messageIndex) => {
@@ -2442,10 +2434,11 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
             <CurrentTurnStatus items={turn.activity} requestSubmitting={requestSubmitting} statusOverride={emptyResponseRecoveryActive ? '模型返回空响应，OpenHands 正在自动重试' : undefined} modelRetryStatus={modelRetryStatus} monitoring={monitoring} connectionState={connectionState}/>
           )}
           {processBlocks.length > 0 && turn.assistant && <div className="conversation-process-divider" role="separator" aria-label="工作过程结束"/>}
-          {turn.assistant && <AgentReply event={turn.assistant.event} content={turn.assistant.content} reveal={revealEventIds.has(turn.assistant.event.id)} changes={fileChanges} onFork={!isGenerating ? () => onFork?.(turn.assistant!.event.id) : undefined} onPreviewCandidateFile={onPreviewCandidateFile} onReviewChanges={onReviewChanges} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenImage={onOpenImage} workspaceRoot={workspaceRoot} annotations={annotations} onLocateAnnotation={locateAnnotation}/>}
+          {turn.assistant && <AgentReply event={turn.assistant.event} content={turn.assistant.content} reveal={revealEventIds.has(turn.assistant.event.id)} onFork={!isGenerating ? () => onFork?.(turn.assistant!.event.id) : undefined} onPreviewCandidateFile={onPreviewCandidateFile} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenImage={onOpenImage} workspaceRoot={workspaceRoot} annotations={annotations} onLocateAnnotation={locateAnnotation}/>}
           {failures.map(item => <ConversationFailure key={item.event.id} item={item} taskControl={taskControl} retryStatus={isLatest ? modelRetryStatus : undefined}/>)}
         </section>;
       })}
+      {conversationFileChanges.length > 0 && <ConversationFileChanges changes={conversationFileChanges} onReviewChanges={onReviewChanges} workspaceRoot={workspaceRoot}/>}
       {turns.length === 0 && isGenerating && !condensationPending && <><ActivityGroup items={[]} active revealEventIds={revealEventIds} startedAt={requestStartedAt} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/><CurrentTurnStatus items={[]} requestSubmitting={requestSubmitting} statusOverride={emptyResponseRecoveryActive ? '模型返回空响应，OpenHands 正在自动重试' : undefined} modelRetryStatus={modelRetryStatus} monitoring={monitoring} connectionState={connectionState}/></>}
 
       {condensationPending && <article className="conversation-condensation-progress" role="status" aria-label="正在压缩上下文">
