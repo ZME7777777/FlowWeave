@@ -2778,6 +2778,9 @@ test('selected conversation text is sent and rendered as a compact reference car
       annotations.push(annotation);
       return route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify(annotation) });
     }
+    if (path.includes('/attachments/uploads') && request.method() === 'POST' && !path.endsWith('/complete')) return route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify({ upload_id: 'reference-upload', chunk_size: 262_144, uploaded_parts: [] }) });
+    if (path.includes('/attachments/uploads') && request.method() === 'PUT') return route.fulfill({ status: 200 });
+    if (path.includes('/attachments/uploads') && path.endsWith('/complete') && request.method() === 'POST') return route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify({ filename: '参考图.png', mime_type: 'image/png', byte_size: 8, path: '/runtime/workspace/project/uploads/参考图.png' }) });
     if (path.endsWith('/input-readiness')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ready: true, execution_status: 'idle' }) });
     if (path.endsWith('/work-directories')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [] }) });
     if (path.endsWith('/workspace')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: '/runtime/workspace/project', work_directory: null, files: [], repositories: [], runtime: { container_id: 'single-runtime' }, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '未配置', note: '' } } }) });
@@ -2815,6 +2818,12 @@ test('selected conversation text is sent and rendered as a compact reference car
   });
   await expect(page.getByRole('button', { name: '添加到会话' })).toBeVisible();
   await page.getByRole('button', { name: '添加到会话' }).click();
+  await page.getByLabel('上传附件').setInputFiles({ name: '参考图.png', mimeType: 'image/png', buffer: Buffer.from('image') });
+  const resourceTags = page.getByLabel('已添加的附件和会话引用');
+  await expect(resourceTags).toHaveCount(1);
+  await expect(resourceTags.getByText('参考图.png', { exact: true })).toBeVisible();
+  await expect(resourceTags.getByRole('button', { name: '会话引用 1', exact: true })).toBeVisible();
+  await expect(resourceTags.evaluate(element => getComputedStyle(element).paddingBottom)).resolves.toBe('4px');
   await expect(page.getByLabel('已添加的引用 1 条')).toContainText('会话引用 1');
   await page.getByRole('button', { name: '定位原文' }).click();
   await expect(source).toBeInViewport();
