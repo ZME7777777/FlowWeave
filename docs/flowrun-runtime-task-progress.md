@@ -7909,6 +7909,12 @@ Web 发布恢复：首轮公网浏览器检查发现 FR-563 准备的 Web 镜像
 
 后续限制：修复后的完整空库链通过 0092，随后在 0093 因 `flow_runs.schedule_id` 已存在以 DuplicateColumn／42701 失败；未将它吞掉或记为 head 通过，独立处理留给 FR-567。受影响 Ruff check／format、AST 解析、当前分支唯一 head `0138_admin_resource_cleanup_operations`、任务状态唯一性、git diff --check 和 staged diff 复核通过。主工作区在实施中同期合入其他变更并新增迁移到 0143，本切片在基于 `02255894` 的独立工作树与 `codex/fr566-node-run-migration` 分支完成，验证证据仅对应本切片基线；未提交或覆盖同期合并内容。未部署、未替换 Runtime、未启动本地服务。下一可执行切片为 FR-567。
 
+合并与发布补记：用户授权“合并并部署”后，将独立提交 `2764afdf` 合入 `feat/refactor`，合并提交 `8c4b3f26d33b538b039c9e553d5562f2cd6edac7`。主工作区中同一修复的未提交副本和旧 CURRENT 标记先保存在专用 stash，没有混入其他变更；此次合并包含的正式基线 head 为 `0143_user_model_providers`。重新完整读取部署说明，按该已提交版本分别通过 platform／web 预检，从最小 git archive 构建上下文（SHA-256 `e910ed30a4e4c626c3677b08fea184c15e6181cc2a5b6936768982db31a81048`）在远端构建 linux/amd64 平台与 Web 镜像，均以 OCI revision 标签关联同一提交。平台镜像 ID `sha256:c15e967afdc30c76e5b9f3a2453bce11cad1994c8b76906bcceaf93aee26beeb`，Web 镜像 ID `sha256:082d0e7d3042f1cd5c7a3364d62061f411cda1ebd441baa345b696bd2239cc4e`；Web 使用 VITE_BASE_PATH=/flowweave/、空 VITE_API_BASE_URL。
+
+发布验证：只读确认远端数据库在此次发布前已到达 0143，并在服务器内保留受保护的正式数据库备份。将备份恢复到内部隔离网络／tmpfs 的临时 PostgreSQL，使用此次实际平台镜像执行真实 FR-566 七项回归均通过；克隆库重跑 current head 后，98 张表、2,713,826 条原记录的完整行摘要逐表保持，未修改生产数据库。仅在验证通过后保留旧 image ID 和 rollback tags，正式 migration 服务退出码 0，再同步 recreate api、stream-api、worker 和 web；两 API 为 healthy，Worker／Web 为 running，服务 image ID 与 OCI commit 均匹配发布计划。部署前后 271 条原活动 binding 的 ID、owner、Runtime Session、OpenHands Conversation 和工作目录逐项一致，Runtime generation／allocation 与 Provider 容器身份保持；远端 Compose／env 文件摘要不变，未 recreate Provider 或 replacement Runtime。
+
+公网验收：使用本机已有浏览器工具访问实际远端页面，没有启动本地服务。新登录上下文的既有 Agent 深层路由、静态资源和正式 hydration 均 200，连续 3 次刷新通过，无根路径 API 请求或脚本错误；首轮 hydration 约 2.017 秒，4 路并发正式 events API 全部 200，总耗时约 0.174 秒，FastGPT 根入口正常。未向生产会话发送合成消息，不将此样本外推为所有负载性能。隔离测试容器／网络已按此次资产身份回收，备份与回滚镜像保留在服务器；发布脚本 AST、唯一 0143 head、状态唯一性和 git diff --check／staged diff 复核通过。此次发布未修复完整空库链的 0093 独立阻塞，下一可执行切片仍为 FR-567。
+
 ### FR-567 空库 0093 调度字段重复迁移修复 — READY
 
 依赖：FR-566。
