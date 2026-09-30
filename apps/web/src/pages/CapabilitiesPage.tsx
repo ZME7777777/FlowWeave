@@ -662,7 +662,7 @@ function McpEditorDialog(props: McpEditorDialogProps) {
     const command = extension === 'py' ? 'python' : extension === 'sh' ? 'sh' : 'node';
     onUpdateServer({ command, args: [`scripts/${filename}`] });
   };
-  return <div className="modal-backdrop"><section className="modal capability-source-editor mcp-editor" role="dialog" aria-modal="true" aria-label={editing ? '编辑 MCP' : '新建 MCP'}>
+  return <div className="modal-backdrop mcp-editor-backdrop"><section className="modal capability-source-editor mcp-editor" role="dialog" aria-modal="true" aria-label={editing ? '编辑 MCP' : '新建 MCP'}>
     <header><div><span className="eyebrow">{editing ? 'EDIT MCP' : 'NEW MCP'}</span><h2>{editing ? '编辑 MCP Server' : '新建 MCP Server'}</h2></div><button className="ghost" onClick={onClose}>关闭</button></header>
     <p>{editing ? '保存会发布新的不可变 MCP 版本；Server 名称保持不变，已有会话和 Run Snapshot 继续引用原版本。' : '选择远程或本地连接形态后填写对应配置。表单和 JSON 是同一份单 Server 配置的两种视图。'}</p>
     <div className="mcp-mode-tabs" role="tablist"><button type="button" role="tab" aria-selected={mode === 'FORM'} className={mode === 'FORM' ? 'active' : ''} onClick={() => onModeChange('FORM')}>表单配置</button><button type="button" role="tab" aria-selected={mode === 'JSON'} className={mode === 'JSON' ? 'active' : ''} onClick={() => onModeChange('JSON')}>JSON 配置</button></div>
