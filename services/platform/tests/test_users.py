@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+import pytest
 from sqlalchemy import select
 
-from flowweave.modules.agent_workspaces.infrastructure.models import (
-    AgentWorkspacePreference,
-)
+from flowweave.modules.credentials.infrastructure.models import WebsiteCredential
+from flowweave.modules.runs.infrastructure.models import FlowRun
 from flowweave.modules.users.application.security import (
     FLOWWEAVE_USER_ID,
     USER_USER_ID,
@@ -49,9 +49,7 @@ def test_login_me_and_logout(anonymous_client, settings):
 
 
 def test_business_resources_are_shared_between_users(client, user_client):
-    admin_directory = client.post(
-        "/api/v1/node-directories", json={"name": "共享目录"}
-    )
+    admin_directory = client.post("/api/v1/node-directories", json={"name": "共享目录"})
     assert admin_directory.status_code == 201, admin_directory.text
 
     admin_items = client.get("/api/v1/node-directories")
@@ -62,37 +60,47 @@ def test_business_resources_are_shared_between_users(client, user_client):
     assert {item["id"] for item in user_items.json()} == {admin_directory.json()["id"]}
 
 
-def test_independent_agent_preferences_remain_user_isolated(db_session_factory):
-    workspace_id = "00000000-0000-0000-0000-000000000099"
+def test_credentials_and_flow_runs_are_user_isolated(db_session_factory):
     with db_session_factory() as db:
         with tenant_user(FLOWWEAVE_USER_ID):
-            db.add(
-                AgentWorkspacePreference(
-                    workspace_id=workspace_id,
-                    default_model_provider_id="provider-admin",
-                )
+            credential = WebsiteCredential(
+                name="admin-token",
+                target_host="example.com",
+                target_path="/",
+                include_subdomains=False,
+                auth_type="TOKEN",
+                encrypted_username=None,
+                encrypted_secret=b"encrypted",
+                secret_hint="ened",
             )
+            run = FlowRun(
+                flow_definition_id="shared-flow",
+                run_no=1,
+                name="admin-run",
+            )
+            db.add_all((credential, run))
             db.commit()
 
         with tenant_user(USER_USER_ID):
-            assert db.scalar(
-                select(AgentWorkspacePreference).where(
-                    AgentWorkspacePreference.workspace_id == workspace_id
+            assert db.scalars(select(WebsiteCredential)).all() == []
+            assert db.scalars(select(FlowRun)).all() == []
+            with pytest.raises(RuntimeError, match="Cross-user record creation"):
+                db.add(
+                    WebsiteCredential(
+                        name="forbidden-token",
+                        target_host="example.com",
+                        target_path="/",
+                        include_subdomains=False,
+                        auth_type="TOKEN",
+                        encrypted_username=None,
+                        encrypted_secret=b"encrypted",
+                        secret_hint="ened",
+                        owner_user_id=FLOWWEAVE_USER_ID,
+                    )
                 )
-            ) is None
-            db.add(
-                AgentWorkspacePreference(
-                    workspace_id=workspace_id,
-                    default_model_provider_id="provider-user",
-                )
-            )
-            db.commit()
+                db.flush()
+            db.rollback()
 
         with tenant_user(FLOWWEAVE_USER_ID):
-            preference = db.scalar(
-                select(AgentWorkspacePreference).where(
-                    AgentWorkspacePreference.workspace_id == workspace_id
-                )
-            )
-            assert preference is not None
-            assert preference.default_model_provider_id == "provider-admin"
+            assert [item.id for item in db.scalars(select(WebsiteCredential))] == [credential.id]
+            assert [item.id for item in db.scalars(select(FlowRun))] == [run.id]
