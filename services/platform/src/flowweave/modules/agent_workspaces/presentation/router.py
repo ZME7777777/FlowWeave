@@ -48,6 +48,7 @@ from flowweave.shared.http import (
     run_blocking_lifecycle,
     run_blocking_message,
     run_blocking_mutation,
+    run_formal_events,
     run_hydration_runtime,
     run_sync,
     run_terminal_control,
@@ -965,8 +966,7 @@ async def agent_events(
     try:
         # ``history_cursor`` is a best-effort older-page prefetch. Reserve the
         # normal Runtime-read lane for current events and execution status.
-        execute = run_blocking_history if history_cursor and not cursor else run_blocking
-        return await execute(
+        return await run_formal_events(
             container,
             lambda session: conversations.events(
                 session,
@@ -976,6 +976,7 @@ async def agent_events(
                 history_cursor,
                 diagnostic_trigger=diagnostic_trigger,
             ),
+            history=bool(history_cursor and not cursor),
         )
     except DomainError as exc:
         if exc.code not in {

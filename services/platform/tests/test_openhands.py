@@ -6456,3 +6456,121 @@ def test_openhands_background_search_finishes_when_native_pagination_ends(
 
     assert result.events == ()
     assert not result.truncated
+
+
+def test_nested_formal_read_budget_never_renews_parent(monkeypatch):
+    from flowweave.runtime import read_budget
+
+    now = [100.0]
+    monkeypatch.setattr(read_budget, "monotonic", lambda: now[0])
+    with read_budget.hydration_read_budget(10):
+        now[0] += 3
+        with read_budget.formal_read_budget(8):
+            assert read_budget.hydration_time_left() == 7
+            now[0] += 6
+            with read_budget.formal_read_budget(8):
+                assert read_budget.hydration_time_left() == 1
+                now[0] += 2
+                with pytest.raises(DomainError, match="exceeded its deadline"):
+                    read_budget.hydration_time_left()
+            with pytest.raises(DomainError):
+                read_budget.hydration_time_left()
+    assert read_budget.hydration_time_left() is None
+
+
+def test_native_formal_operation_bounds_serial_default_http_calls(openhands_settings, monkeypatch):
+    from flowweave.runtime import read_budget
+
+    runtime = OpenHandsRuntime(openhands_settings)
+    now = [100.0]
+    timeouts: list[float] = []
+    monkeypatch.setattr(read_budget, "monotonic", lambda: now[0])
+    monkeypatch.setattr(runtime, "_base_url_for_handle", lambda _handle: "http://runtime:8000")
+
+    class Client:
+        def request(self, method, url, **kwargs):
+            timeouts.append(kwargs["timeout"])
+            now[0] += 3
+            return httpx.Response(200, json={}, request=httpx.Request(method, url))
+
+    monkeypatch.setattr(runtime, "_transport", lambda: SimpleNamespace(regular=Client()))
+
+    def reload(_handle, *, expected=None):
+        for _ in range(4):
+            # Readiness/availability may re-enter; none may renew the deadline.
+            with runtime._formal_read_bulkhead(_handle):
+                runtime._request(
+                    "GET", "/events/test", base_url="http://runtime:8000", session_api_key="test"
+                )
+
+    monkeypatch.setattr(runtime, "_reload_conversation", reload)
+    with pytest.raises(DomainError) as caught:
+        runtime.reload_conversation(_handle())
+    assert caught.value.code == "RUNTIME_BUSINESS_READ_TIMEOUT"
+    assert timeouts == [8, 5, 2]
+    with read_budget.formal_read_budget(1):
+        now[0] += 2
+        with pytest.raises(DomainError):
+            runtime._request(
+                "GET", "/events/test", base_url="http://runtime:8000", session_api_key="test"
+            )
+    assert timeouts == [8, 5, 2]
+    assert runtime._formal_read_active == {}
+    assert read_budget.hydration_time_left() is None
+
+
+def test_formal_slot_wait_consumes_http_budget_and_records_pressure(
+    openhands_settings, monkeypatch
+):
+    runtime = OpenHandsRuntime(
+        openhands_settings.model_copy(update={"runtime_read_per_runtime_concurrency": 1})
+    )
+    handle = _handle()
+    started = Event()
+    release = Event()
+    timeouts: list[float] = []
+    metrics = Metrics()
+    monkeypatch.setattr(runtime, "_base_url_for_handle", lambda _handle: "http://runtime:8000")
+
+    class Client:
+        def request(self, method, url, **kwargs):
+            timeouts.append(kwargs["timeout"])
+            return httpx.Response(200, json={}, request=httpx.Request(method, url))
+
+    monkeypatch.setattr(runtime, "_transport", lambda: SimpleNamespace(regular=Client()))
+
+    def occupy():
+        with runtime._formal_read_bulkhead(handle):
+            started.set()
+            assert release.wait(2)
+
+    token = bind_metrics(metrics)
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            occupied = executor.submit(occupy)
+            assert started.wait(1)
+
+            def unblock():
+                time.sleep(0.05)
+                release.set()
+
+            unblocker = executor.submit(unblock)
+            with hydration_read_budget(0.3):
+                with runtime._formal_read_bulkhead(handle):
+                    runtime._request(
+                        "GET",
+                        "/events/test",
+                        base_url="http://runtime:8000",
+                        session_api_key="test",
+                    )
+            occupied.result(1)
+            unblocker.result(1)
+        assert len(timeouts) == 1
+        assert 0 < timeouts[0] < 0.27
+        rendered = metrics.render()
+        assert 'operation="runtime.formal_read.admission_wait"' in rendered
+        assert 'operation="runtime.formal_read.slot_duration"' in rendered
+        assert "http://runtime" not in rendered
+    finally:
+        release.set()
+        reset_metrics(token)

@@ -5,6 +5,7 @@ import contextvars
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
+from time import monotonic
 from typing import Annotated, TypeVar, cast
 
 from fastapi import Depends, Header, WebSocket, WebSocketException
@@ -22,7 +23,7 @@ from flowweave.modules.users.application.security import (
     tenant_bypass,
     tenant_user,
 )
-from flowweave.runtime.read_budget import hydration_time_left
+from flowweave.runtime.read_budget import formal_response_budget, hydration_time_left
 from flowweave.shared.application.transactions import (
     mark_uow_owned,
     run_commit_actions,
@@ -241,6 +242,9 @@ async def run_hydration_runtime(container: Container, operation: Callable[[], T]
     projects the returned formal events after revalidating the frozen identity.
     """
 
+    started_at = monotonic()
+    metrics = getattr(container, "metrics", None)
+    outcome = "error"
     try:
         remaining = hydration_time_left()
         await asyncio.wait_for(
@@ -249,6 +253,7 @@ async def run_hydration_runtime(container: Container, operation: Callable[[], T]
             if remaining is not None
             else container.settings.blocking_pool_timeout_seconds,
         )
+        outcome = "ok"
     except TimeoutError as exc:
         hydration_time_left()
         logger.warning(
@@ -260,12 +265,38 @@ async def run_hydration_runtime(container: Container, operation: Callable[[], T]
             "Agent Runtime first-screen reads are busy; retry shortly",
             503,
         ) from exc
+    finally:
+        if metrics is not None:
+            metrics.observe_operation(
+                "runtime_api.hydration_runtime.admission_wait",
+                monotonic() - started_at,
+                outcome=outcome,
+            )
+
+    submitted_at = monotonic()
 
     def execute() -> T:
-        hydration_time_left()
-        result = operation()
-        hydration_time_left()
-        return result
+        started_at = monotonic()
+        outcome = "error"
+        if metrics is not None:
+            metrics.observe_operation(
+                "runtime_api.hydration_runtime.executor_wait",
+                started_at - submitted_at,
+                outcome="ok",
+            )
+        try:
+            hydration_time_left()
+            result = operation()
+            hydration_time_left()
+            outcome = "ok"
+            return result
+        finally:
+            if metrics is not None:
+                metrics.observe_operation(
+                    "runtime_api.hydration_runtime.worker_duration",
+                    monotonic() - started_at,
+                    outcome=outcome,
+                )
 
     context = contextvars.copy_context()
     try:
@@ -326,6 +357,31 @@ async def run_blocking_history(container: Container, operation: Callable[[Sessio
         lane_name="history",
         active_limit=container.settings.history_read_pool_size,
     )
+
+
+async def run_formal_events(
+    container: Container, operation: Callable[[Session], T], *, history: bool
+) -> T:
+    """Bound event recovery from admission until response; workers drain safely."""
+
+    started_at = monotonic()
+    outcome = "error"
+    try:
+        async with formal_response_budget(container.settings.runtime_event_read_timeout_seconds):
+            execute = run_blocking_history if history else run_blocking
+            result = await execute(container, operation)
+            outcome = "ok"
+            return result
+    finally:
+        metrics = getattr(container, "metrics", None)
+        if metrics is not None:
+            metrics.observe_operation(
+                "agent_session.events.history_response"
+                if history
+                else "agent_session.events.response",
+                monotonic() - started_at,
+                outcome=outcome,
+            )
 
 
 async def acquire_terminal_slot(container: Container) -> None:
@@ -438,28 +494,34 @@ async def _run_blocking_lane(
     wait_timeout: float | None = None,
 ) -> T:
     admitted = False
+    metrics = getattr(container, "metrics", None)
+
+    async def acquire(semaphore: asyncio.Semaphore) -> None:
+        remaining = hydration_time_left()
+        timeout = container.settings.blocking_pool_timeout_seconds
+        if wait_timeout is not None:
+            timeout = min(timeout, wait_timeout)
+        if remaining is not None:
+            timeout = min(timeout, remaining)
+        await asyncio.wait_for(semaphore.acquire(), timeout=timeout)
+
+    started_at = monotonic()
+    admission_outcome = "error"
     try:
         if admission_slots is not None:
-            await asyncio.wait_for(
-                admission_slots.acquire(), timeout=container.settings.blocking_pool_timeout_seconds
-            )
+            await acquire(admission_slots)
             admitted = True
         # Runtime reads are deliberately bounded, but ordinary concurrent
         # hydration must be allowed to wait for the configured DB/Runtime
         # budget.  A former fixed 250ms deadline bypassed
         # BLOCKING_POOL_TIMEOUT_SECONDS and turned normal short reads into
         # misleading 503 saturation responses.
-        await asyncio.wait_for(
-            slots.acquire(),
-            timeout=min(container.settings.blocking_pool_timeout_seconds, wait_timeout)
-            if wait_timeout is not None
-            else container.settings.blocking_pool_timeout_seconds,
-        )
+        await acquire(slots)
+        admission_outcome = "ok"
     except TimeoutError as exc:
         if admitted and admission_slots is not None:
             admission_slots.release()
-        if wait_timeout is not None:
-            hydration_time_left()
+        hydration_time_left()
         logger.warning(
             "blocking Runtime %s pool saturated active_limit=%d",
             lane_name,
@@ -474,19 +536,45 @@ async def _run_blocking_lane(
         if admitted and admission_slots is not None:
             admission_slots.release()
         raise
+    finally:
+        if metrics is not None:
+            metrics.observe_operation(
+                f"runtime_api.{lane_name}.admission_wait",
+                monotonic() - started_at,
+                outcome=admission_outcome,
+            )
+
+    submitted_at = monotonic()
 
     def execute() -> T:
-        with session_factory() as session:
-            mark_uow_owned(session)
-            try:
-                result = operation(session)
-                session.commit()
-            except BaseException:
-                session.rollback()
-                run_rollback_actions(session)
-                raise
-            run_commit_actions(session)
-            return result
+        started_at = monotonic()
+        outcome = "error"
+        if metrics is not None:
+            metrics.observe_operation(
+                f"runtime_api.{lane_name}.executor_wait", started_at - submitted_at, outcome="ok"
+            )
+        try:
+            hydration_time_left()
+            with session_factory() as session:
+                mark_uow_owned(session)
+                try:
+                    result = operation(session)
+                    hydration_time_left()
+                    session.commit()
+                except BaseException:
+                    session.rollback()
+                    run_rollback_actions(session)
+                    raise
+                run_commit_actions(session)
+                outcome = "ok"
+                return result
+        finally:
+            if metrics is not None:
+                metrics.observe_operation(
+                    f"runtime_api.{lane_name}.worker_duration",
+                    monotonic() - started_at,
+                    outcome=outcome,
+                )
 
     context = contextvars.copy_context()
     try:

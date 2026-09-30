@@ -1,4 +1,4 @@
-"""Request-scoped deadline for first-screen OpenHands reads."""
+"""Shared deadline for API admission and successive formal OpenHands reads."""
 
 from __future__ import annotations
 
@@ -10,37 +10,45 @@ from time import monotonic
 
 from flowweave.shared.errors import DomainError
 
-_deadline: ContextVar[float | None] = ContextVar("hydration_read_deadline", default=None)
+_deadline: ContextVar[float | None] = ContextVar("runtime_read_deadline", default=None)
 
 
 def _expired() -> DomainError:
     return DomainError(
         "RUNTIME_BUSINESS_READ_TIMEOUT",
-        "OpenHands hydration exceeded its deadline",
+        "OpenHands formal read exceeded its deadline",
         504,
         {"outcome_unknown": False},
     )
 
 
 @contextmanager
-def hydration_read_budget(seconds: float) -> Iterator[None]:
-    token = _deadline.set(monotonic() + seconds)
+def formal_read_budget(seconds: float) -> Iterator[None]:
+    parent = _deadline.get()
+    deadline = monotonic() + seconds
+    token = _deadline.set(min(parent, deadline) if parent is not None else deadline)
     try:
+        hydration_time_left()
         yield
     finally:
         _deadline.reset(token)
 
 
 @asynccontextmanager
-async def hydration_response_budget(seconds: float) -> AsyncIterator[None]:
+async def formal_response_budget(seconds: float) -> AsyncIterator[None]:
     """Bound the API response while an uncancellable worker drains separately."""
 
-    with hydration_read_budget(seconds):
+    with formal_read_budget(seconds):
         try:
-            async with asyncio.timeout(seconds):
+            async with asyncio.timeout(hydration_time_left()):
                 yield
         except TimeoutError as exc:
             raise _expired() from exc
+
+
+# Keep the hydration callers on the same deadline, including nested adapters.
+hydration_read_budget = formal_read_budget
+hydration_response_budget = formal_response_budget
 
 
 def hydration_time_left() -> float | None:

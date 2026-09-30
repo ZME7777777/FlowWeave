@@ -28,7 +28,9 @@ class Settings(BaseSettings):
     database_pool_timeout_seconds: float = Field(default=2.0, gt=0, le=30)
     blocking_pool_size: int = Field(default=4, ge=1, le=16)
     blocking_pool_timeout_seconds: float = Field(default=2.0, gt=0, le=30)
+    # Whole API response budgets include admission and all sequential reads.
     hydration_read_timeout_seconds: float = Field(default=10.0, gt=0, le=14)
+    runtime_event_read_timeout_seconds: float = Field(default=8.0, gt=0, le=14)
     # Older conversation pages are best-effort browser prefetch. Keep them on
     # a separate, deliberately tiny lane so they cannot consume the Runtime
     # state-read connections that restore a live conversation after reload.
@@ -52,7 +54,9 @@ class Settings(BaseSettings):
     # formal state/event/readiness reads per generation before they consume
     # the process-wide HTTP pool or blocking read lanes.
     runtime_read_per_runtime_concurrency: int = Field(default=2, ge=1, le=16)
-    runtime_read_slot_timeout_seconds: float = Field(default=0.25, gt=0, le=5)
+    runtime_read_slot_timeout_seconds: float = Field(default=1.0, gt=0, le=5)
+    # Display reads keep their shorter wait when formal recovery waits longer.
+    runtime_auxiliary_read_slot_timeout_seconds: float = Field(default=0.25, gt=0, le=5)
     # Full-text conversation searches are background work. Keep at most one
     # native scan active for one Runtime, yielding between pages whenever a
     # hydration read is active. Each queue/page wait is bounded at five minutes.

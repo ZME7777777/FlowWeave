@@ -409,3 +409,28 @@ FR-01–FR-11 每个切片只实现一个独立代码边界，完成时只对受
 - 本任务不修改 OpenHands 源码。若后续需要中央 Server/远程纯 Workspace、显式 lease handoff 或其他
   正式契约，必须单独授权 OpenHands fork，并冻结 upstream base、fork commit、source digest 和兼容测试。
 - FR-00 只冻结设计、迁移顺序和任务跟踪，不修改数据库、API、Runtime 或 UI 实现。
+
+## 14. 单用户正式读取预算（FR-561）
+
+Agent Workspace 与 Flow Node 的事件恢复（最新窗口、cursor 增量、history_cursor 分页）共用
+`runtime_event_read_timeout_seconds`，默认 8 秒；首屏 hydration 的总预算仍为 10 秒。
+预算从 API 准入之前开始，经 ContextVar 传入同步线程；排队、Runtime generation 槽位等待以及
+所有串行 OpenHands HTTP 请求共同消耗剩余预算。嵌套读取只取较早的 deadline，禁止逐步续期。
+Runtime adapter 的独立正式读取也建立默认 8 秒预算，并服从上层更短的剩余期限。
+
+每 API worker 的 Runtime generation 正式读取容量保持 2。正式槽位等待默认从 250 毫秒调整为
+1 秒，并取剩余预算的较小值；辅助展示读取使用独立配置，仍默认等待 250 毫秒。
+历史分页继续使用独立低优先级 history lane，不增加线程或数据库连接预算。
+
+API 响应受异步总期限约束；HTTP 各阶段 timeout 取剩余预算，不再给每次调用完整 30 秒。
+Python 同步线程及已经发出的 HTTP 请求不能通过取消请求协程强制停止，数据库等待、HTTP 多阶段
+或持续分块响应也可能晚于 API 响应退出。取消与超时不得释放尚在执行的线程／Runtime 槽位：
+API slot 只在 worker completion 回调释放，Runtime slot 只在线程实际离开读取边界时释放。
+已过期的排队任务在开始数据库／Runtime 工作前拒绝执行；迟到结果不得作为正常读取成功返回。
+
+低基数 operation histogram 区分 `runtime_api.<lane>.admission_wait`、`executor_wait`、
+`worker_duration`（hydration 无 DB Runtime 阶段使用 `hydration_runtime` lane），
+`runtime.formal_read.admission_wait`、`slot_duration` 及 `agent_session.events.response`／
+`history_response`；外部 HTTP 继续使用既有归一 operation。指标不含用户、会话、Runtime URL 或
+事件 ID，worker 耗时必须记录实际 completion，不能用浏览器断开时间替代。
+这些指标区分平台排队与外部读取耗时，不声称测得 OpenHands 内部锁、磁盘或序列化耗时。

@@ -64,7 +64,7 @@ from flowweave.runtime.base import (
 )
 from flowweave.runtime.contract import OPTIONAL_HTTP_OPERATIONS
 from flowweave.runtime.model_catalog import declared_context_window
-from flowweave.runtime.read_budget import hydration_time_left
+from flowweave.runtime.read_budget import formal_read_budget, hydration_time_left
 from flowweave.shared.errors import DomainError
 from flowweave.shared.infrastructure.docker_controller import (
     DockerControllerClient,
@@ -2259,6 +2259,14 @@ class OpenHandsRuntime:
 
     @contextmanager
     def _formal_read_bulkhead(self, handle: RuntimeHandle) -> Iterator[None]:
+        # A native-only caller also gets one total budget. Nested calls cannot
+        # renew the API deadline or the enclosing formal operation's deadline.
+        with formal_read_budget(self.settings.runtime_event_read_timeout_seconds):
+            with self._formal_read_admission(handle):
+                yield
+
+    @contextmanager
+    def _formal_read_admission(self, handle: RuntimeHandle) -> Iterator[None]:
         """Bound formal state reads for one Runtime generation.
 
         The key is the generation-scoped Runtime URL, never a Conversation ID,
@@ -2298,7 +2306,15 @@ class OpenHandsRuntime:
         slot_timeout = self.settings.runtime_read_slot_timeout_seconds
         if remaining is not None:
             slot_timeout = min(slot_timeout, remaining)
-        if not slot.acquire(timeout=slot_timeout):
+        wait_started = time.monotonic()
+        acquired = slot.acquire(timeout=slot_timeout)
+        if metrics := current_metrics():
+            metrics.observe_operation(
+                "runtime.formal_read.admission_wait",
+                time.monotonic() - wait_started,
+                outcome="ok" if acquired else "saturated",
+            )
+        if not acquired:
             hydration_time_left()
             if metrics := current_metrics():
                 metrics.increment("flowweave_runtime_read_bulkhead_saturated_total")
@@ -2313,8 +2329,13 @@ class OpenHandsRuntime:
         with self._formal_read_slots_lock:
             self._formal_read_active[key] = self._formal_read_active.get(key, 0) + 1
         self._record_formal_read_bulkhead_metrics()
+        started_at = time.monotonic()
+        outcome = "error"
         try:
+            hydration_time_left()
             yield
+            hydration_time_left()
+            outcome = "ok"
         finally:
             depths.pop(key, None)
             with self._formal_read_slots_lock:
@@ -2325,6 +2346,12 @@ class OpenHandsRuntime:
                     self._formal_read_active.pop(key, None)
             slot.release()
             self._record_formal_read_bulkhead_metrics()
+            if metrics := current_metrics():
+                metrics.observe_operation(
+                    "runtime.formal_read.slot_duration",
+                    time.monotonic() - started_at,
+                    outcome=outcome,
+                )
 
     @contextmanager
     def _auxiliary_read_bulkhead(self, handle: RuntimeHandle) -> Iterator[None]:
@@ -2357,7 +2384,7 @@ class OpenHandsRuntime:
             if slot is None:
                 slot = threading.BoundedSemaphore(1)
                 self._auxiliary_read_slots[key] = slot
-        if not slot.acquire(timeout=self.settings.runtime_read_slot_timeout_seconds):
+        if not slot.acquire(timeout=self.settings.runtime_auxiliary_read_slot_timeout_seconds):
             if metrics := current_metrics():
                 metrics.increment("flowweave_runtime_auxiliary_read_saturated_total")
             raise DomainError(

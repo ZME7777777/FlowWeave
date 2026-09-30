@@ -7826,13 +7826,17 @@ OpenHands adapter 现为 context、activity 和 pending-confirmation 增加每 R
 
 验收：配置／deferred init／真实服务并发与隔离 pytest `43 passed`，真实 FastAPI HTTP 单用户回归 `1 passed`；后者同时阻塞 2 个 Context 和 7 个正式事件读取，仍可读取第 8 个事件、会话详情和健康探针。恢复旧两线程实现时，live／reloaded 的八并发回归均按预期失败（2 failed、2 passed）；取消读取不提前释放实际线程的回归通过。安全解包不可变归档后，确认四包源码版本 1.49.5、实际导入归档源码并重跑相同 43 项与 HTTP 回归均通过；镜像行为探针的独立函数在归档源码上通过，未将其记为实际镜像验收。平台 Runtime 合同 pytest `11 passed`；两个不依赖数据库的来源架构函数直接调用通过，lock／provenance／归档 SHA／平台／探针身份一致。受影响 Native Ruff／format／Pyright（0 errors）、FlowWeave Ruff／format／编译、唯一 Alembic head `0138_admin_resource_cleanup_operations`、git diff --check 与 staged diff 复核通过；contract_check.py 的既有 E402 import-layout 诊断未处理，忽略 E402 后其余 lint 通过。未构建实际 Runtime 镜像、未实跑迁移、未做线上负载、远端部署或 replacement；未声称页面已恢复。下一可执行切片为 FR-561。
 
-### FR-561 正式事件读取总预算与占槽取证 — READY
+### FR-561 正式事件读取总预算与占槽取证 — DONE
 
 依赖：FR-560。
 
 范围：正式事件恢复的全链路总预算、准入等待、线程实际 completion 释放及低基数等待／耗时取证；不混入数据库连接解耦或消息写语义。
 
-### FR-561B 普通正式读取与数据库连接解耦 — TODO
+完成：Workspace／Flow Node 的最新窗口、cursor 增量与 history_cursor 分页统一使用 `runtime_event_read_timeout_seconds`（默认 8 秒）的 API 总预算；hydration 保持默认 10 秒。ContextVar deadline 覆盖 API 准入、执行器排队、Runtime generation 槽位等待和串行 HTTP，嵌套只取较早期限；adapter 独立正式读取也建立 8 秒预算，原默认 30 秒 HTTP 调用按剩余期限裁剪。正式槽位默认等待 1 秒并受剩余预算约束，辅助展示读取拆出独立默认 250 毫秒配置。API 超时／客户端取消继续 shield 同步线程，API slot 只由 worker completion 释放、Runtime slot 只在同步读取退出时释放；已过期排队任务不得开始 DB／Runtime 工作，迟到结果不得正常返回。增加 API admission／executor wait／真实 worker duration、Runtime admission／真实 slot duration 与事件 API response 的低基数 operation histogram；不声称取证 OpenHands 内部锁、磁盘或序列化。历史低优先级 lane、每 worker 的 2 槽与数据库连接预算不变。
+
+验收：受影响 HTTP helper／两类宿主路由／OpenHands adapter 回归 `272 passed, 1 deselected`，新增预算／实际 completion／低基数指标回归包含在内；最终新增过期前不发请求断言与 hydration helper 定向复核 `3 passed`。覆盖嵌套预算不续期、串行默认 HTTP timeout 8→5→2、到期不继续 HTTP、Runtime 槽位等待消耗预算、排队到期不执行、超时响应后实际线程仍占槽且后续请求不能突破容量、取消隔离与两类宿主当前／增量／历史 lane。修正既有 slow-model 路由测试向无 DB hydration helper 传递必选 DB 参数的测试回调错误，两宿主回归均通过。首次模块回归另有依赖 Docker 的 slow-request logging 测试在 Testcontainers 初始化前失败（本机 Docker socket 不可用），随后明确排除，未记为通过。受影响 Ruff check／format、Node router import check、Python 编译、核心 budget／HTTP／settings Pyright（0 errors）、唯一 Alembic head `0138_admin_resource_cleanup_operations`、任务状态及 git diff --check／staged diff 复核通过；adapter／两 router 的 Pyright 仍有 23 条既有诊断，与 HEAD 文件副本按文件／rule／message 对比完全一致、无新增；Node router 既有附件代码格式／长行未纳入本次修复。同步 HTTP 多阶段、持续分块响应或 DB 等待仍可能晚于 API 响应结束，保留槽位到真实 completion，不宣称线程可强制中止。未实跑迁移、镜像构建、真实 Runtime／浏览器负载、远端部署或 replacement，未声称线上页面已恢复。下一可执行切片为 FR-561B。
+
+### FR-561B 普通正式读取与数据库连接解耦 — READY
 
 依赖：FR-561。
 

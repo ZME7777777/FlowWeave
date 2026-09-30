@@ -52,6 +52,7 @@ from flowweave.shared.http import (
     run_blocking_lifecycle,
     run_blocking_message,
     run_blocking_mutation,
+    run_formal_events,
     run_hydration_runtime,
     run_sync,
     run_terminal_control,
@@ -972,21 +973,35 @@ async def node_session_events(
     history_cursor: str | None = Query(default=None, max_length=200),
     diagnostic_trigger: str | None = Query(default=None, max_length=40),
 ) -> dict[str, Any]:
-    # The latest-window route is interactive. Older pages are browser prefetch
-    # and must not occupy its Runtime/DB lane while a live turn is recovering.
-    execute = run_blocking_history if history_cursor and not cursor else run_blocking
-    return await execute(
-        container,
-        lambda session: agent_sessions.flow_node_conversations.read_node_conversation_events(
-            session,
-            flow_run_id=flow_run_id,
-            attempt_id=attempt_id,
-            binding_id=binding_id,
-            cursor=cursor,
-            history_cursor=history_cursor,
-            diagnostic_trigger=diagnostic_trigger,
-        ),
-    )
+    try:
+        # The latest-window route is interactive. Older pages are browser prefetch
+        # and must not occupy its Runtime/DB lane while a live turn is recovering.
+        return await run_formal_events(
+            container,
+            lambda session: agent_sessions.flow_node_conversations.read_node_conversation_events(
+                session,
+                flow_run_id=flow_run_id,
+                attempt_id=attempt_id,
+                binding_id=binding_id,
+                cursor=cursor,
+                history_cursor=history_cursor,
+                diagnostic_trigger=diagnostic_trigger,
+            ),
+            history=bool(history_cursor and not cursor),
+        )
+    except DomainError as exc:
+        if exc.code not in {
+            "EXECUTOR_UNAVAILABLE",
+            "RUNTIME_READ_SATURATED",
+            "RUNTIME_READ_PER_RUNTIME_SATURATED",
+            "RUNTIME_BUSINESS_READ_TIMEOUT",
+        }:
+            raise
+        raise DomainError(
+            "AGENT_RUNTIME_UNAVAILABLE",
+            "Agent 运行环境暂时不可读取，请稍后重试；FlowWeave 未自动修改会话或运行环境",
+            503,
+        ) from exc
 
 
 @router.get(f"{_BASE}/{{binding_id}}/hydration")

@@ -398,3 +398,68 @@ async def test_both_hydration_hosts_end_response_after_budget(
     assert caught.value.code == "AGENT_RUNTIME_UNAVAILABLE"
     assert isinstance(caught.value.__cause__, DomainError)
     assert caught.value.__cause__.code == "RUNTIME_BUSINESS_READ_TIMEOUT"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("host", ["workspace", "node"])
+@pytest.mark.parametrize(
+    ("cursor", "history_cursor", "expected_history"),
+    [(None, None, False), ("event-1", "older-1", False), (None, "older-1", True)],
+)
+async def test_event_hosts_share_deadline_and_preserve_history_lane(
+    monkeypatch, host, cursor, history_cursor, expected_history
+):
+    from flowweave.shared import http
+
+    module = workspace_router if host == "workspace" else node_router
+    calls: list[bool] = []
+
+    async def interactive(_container, _operation):
+        calls.append(False)
+        assert 0 < hydration_time_left() <= 0.02
+        await asyncio.sleep(1)
+
+    async def history(_container, _operation):
+        calls.append(True)
+        assert 0 < hydration_time_left() <= 0.02
+        await asyncio.sleep(1)
+
+    monkeypatch.setattr(http, "run_blocking", interactive)
+    monkeypatch.setattr(http, "run_blocking_history", history)
+    container = SimpleNamespace(settings=SimpleNamespace(runtime_event_read_timeout_seconds=0.02))
+    with pytest.raises(DomainError) as caught:
+        if host == "workspace":
+            await module.agent_events(
+                "workspace",
+                "binding",
+                container,
+                cursor=cursor,
+                history_cursor=history_cursor,
+                diagnostic_trigger=None,
+            )
+        else:
+            await module.node_session_events(
+                "run",
+                "attempt",
+                "binding",
+                container,
+                cursor=cursor,
+                history_cursor=history_cursor,
+                diagnostic_trigger=None,
+            )
+    assert calls == [expected_history]
+    assert caught.value.code == "AGENT_RUNTIME_UNAVAILABLE"
+    assert caught.value.__cause__.code == "RUNTIME_BUSINESS_READ_TIMEOUT"
+
+
+@pytest.mark.asyncio
+async def test_nested_response_budget_respects_shorter_parent():
+    from flowweave.runtime.read_budget import formal_response_budget, hydration_response_budget
+
+    before = asyncio.get_running_loop().time()
+    with pytest.raises(DomainError) as caught:
+        async with hydration_response_budget(0.02):
+            async with formal_response_budget(1):
+                await asyncio.sleep(1)
+    assert caught.value.code == "RUNTIME_BUSINESS_READ_TIMEOUT"
+    assert asyncio.get_running_loop().time() - before < 0.5

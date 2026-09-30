@@ -634,7 +634,9 @@ async def test_slow_model_route_keeps_interactive_routes_available(host, monkeyp
             run_blocking_history,
             run_blocking_control,
         ):
-            assert await asyncio.wait_for(execute(container, lambda _db: "ready"), 0.5) == "ready"
+            assert (
+                await asyncio.wait_for(execute(container, lambda _db=None: "ready"), 0.5) == "ready"
+            )
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
         # Cancelled HTTP response leaves the accepted write running exactly once.
@@ -785,3 +787,107 @@ async def test_lifecycle_can_execute_when_all_ordinary_read_slots_are_occupied()
         await asyncio.gather(*tasks, return_exceptions=True)
         container.database = resources
         await container.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("history", [False, True])
+async def test_event_response_deadline_retains_real_slot_and_bounds_waiters(history) -> None:
+    from time import monotonic
+
+    from flowweave.shared.http import run_formal_events
+    from flowweave.shared.observability import Metrics
+
+    started = threading.Event()
+    release = threading.Event()
+    calls: list[str] = []
+    metrics = Metrics()
+
+    def stalled(_session):
+        calls.append("worker")
+        started.set()
+        assert release.wait(2)
+        return "late"
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        slots = asyncio.Semaphore(1)
+        container = SimpleNamespace(
+            blocking_executor=executor,
+            blocking_io_slots=slots,
+            history_read_executor=executor,
+            history_read_slots=slots,
+            database=_Database(),
+            metrics=metrics,
+            settings=SimpleNamespace(
+                runtime_event_read_timeout_seconds=0.04,
+                blocking_pool_timeout_seconds=1,
+                blocking_pool_size=1,
+                history_read_pool_size=1,
+            ),
+        )
+        try:
+            before = monotonic()
+            with pytest.raises(DomainError) as caught:
+                await run_formal_events(container, stalled, history=history)
+            assert started.is_set()
+            assert caught.value.code == "RUNTIME_BUSINESS_READ_TIMEOUT"
+            assert monotonic() - before < 0.5
+            assert slots.locked()
+            with pytest.raises(DomainError) as waiting:
+                await run_formal_events(
+                    container, lambda _session: calls.append("unexpected"), history=history
+                )
+            assert waiting.value.code == "RUNTIME_BUSINESS_READ_TIMEOUT"
+            assert slots.locked()
+            assert calls == ["worker"]
+            # Response timing is available while the actual worker is still running.
+            assert 'operation="runtime_api.' in metrics.render()
+            assert '.worker_duration"' not in metrics.render()
+        finally:
+            release.set()
+            for _ in range(200):
+                if not slots.locked():
+                    break
+                await asyncio.sleep(0.001)
+        assert not slots.locked()
+        rendered = metrics.render()
+        lane = "history" if history else "read"
+        for phase in ("admission_wait", "executor_wait", "worker_duration"):
+            assert f'operation="runtime_api.{lane}.{phase}"' in rendered
+        assert 'operation="agent_session.events.' in rendered
+
+
+@pytest.mark.asyncio
+async def test_event_executor_queue_cannot_start_work_after_deadline() -> None:
+    from flowweave.shared.http import run_formal_events
+
+    release = threading.Event()
+    calls: list[str] = []
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        blocker = executor.submit(release.wait, 2)
+        slots = asyncio.Semaphore(1)
+        container = SimpleNamespace(
+            blocking_executor=executor,
+            blocking_io_slots=slots,
+            database=_Database(),
+            settings=SimpleNamespace(
+                runtime_event_read_timeout_seconds=0.02,
+                blocking_pool_timeout_seconds=1,
+                blocking_pool_size=1,
+            ),
+        )
+        try:
+            with pytest.raises(DomainError) as caught:
+                await run_formal_events(
+                    container, lambda _session: calls.append("unexpected"), history=False
+                )
+            assert caught.value.code == "RUNTIME_BUSINESS_READ_TIMEOUT"
+            assert slots.locked()
+        finally:
+            release.set()
+            blocker.result(1)
+            for _ in range(200):
+                if not slots.locked():
+                    break
+                await asyncio.sleep(0.001)
+        assert not slots.locked()
+        assert calls == []
