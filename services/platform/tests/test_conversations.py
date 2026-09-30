@@ -323,17 +323,27 @@ def test_node_workspace_generated_images_project_svg_and_preserve_untrusted_path
     )
 
 
-def test_attachment_only_message_bypasses_context_envelope() -> None:
+def test_attachment_aliases_are_hidden_from_message_body() -> None:
     attachment_path = (
         "/runtime/workspace/project/uploads/"
         "00000000-0000-0000-0000-000000000001-0123456789abcdef0123456789abcdef--notes.txt"
     )
     prompt, _image_urls = session_conversations.message_payload(
-        "请阅读附件", ({"path": attachment_path},), ()
+        "请阅读 @附件1", ({"path": attachment_path, "filename": "notes.txt"},), ()
     )
 
-    assert session_conversations._MESSAGE_CONTEXT_V5_MARKER not in prompt
-    assert prompt == f"请阅读附件\n\n已上传到共享工作区的附件：\n- {attachment_path}"
+    payload = json.loads(prompt.rpartition(session_conversations._MESSAGE_CONTEXT_V5_MARKER)[2])
+    assert payload["attachment_aliases"] == [
+        {"alias": "@附件1", "filename": "notes.txt", "path": attachment_path}
+    ]
+    display_content, references, workspace_references, annotations = (
+        session_conversations.project_conversation_references(prompt)
+    )
+    assert display_content == "请阅读 @附件1"
+    assert attachment_path not in display_content
+    assert references == ()
+    assert workspace_references == ()
+    assert annotations == ()
 
 
 def test_conversation_references_are_resolved_by_formal_native_event_id() -> None:
@@ -727,7 +737,8 @@ def test_conversation_reference_projection_composes_with_attachment_context() ->
     display_content, references, workspace_references, annotations = (
         session_conversations.project_conversation_references(prompt)
     )
-    assert display_content == f"请查看已上传到共享工作区的附件：\n- {attachment_path}"
+    assert display_content == ""
+    assert attachment_path not in display_content
     assert references == ({"event_id": "assistant-event-2", "content": "不要展开此引用"},)
     assert workspace_references == ()
 

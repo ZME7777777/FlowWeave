@@ -4241,10 +4241,13 @@ def test_agent_workspace_uses_native_attachments_context_and_model_switch(
                 },
             ),
         )
-        assert runtime.sent == (
-            f"请查看已上传到共享工作区的附件：\n- {attachment['path']}",
-            ("data:image/png;base64,aW1hZ2UtYnl0ZXM=",),
-        )
+        prompt, image_urls = runtime.sent
+        payload = json.loads(prompt.rpartition(conversations._MESSAGE_CONTEXT_V5_MARKER)[2])
+        assert payload["current_user_request"] == {"content": ""}
+        assert payload["attachment_aliases"] == [
+            {"alias": "@附件1", "filename": "diagram.png", "path": attachment["path"]}
+        ]
+        assert image_urls == ("data:image/png;base64,aW1hZ2UtYnl0ZXM=",)
         pdf = conversations.upload_attachment(
             db,
             workspace.id,
@@ -4256,10 +4259,13 @@ def test_agent_workspace_uses_native_attachments_context_and_model_switch(
         assert pdf["mime_type"] == "application/pdf"
         assert pdf["image_data_url"] is None
         conversations.message(db, workspace.id, created["id"], "", ({"path": str(pdf["path"])},))
-        assert runtime.sent == (
-            f"请查看已上传到共享工作区的附件：\n- {pdf['path']}",
-            (),
-        )
+        prompt, image_urls = runtime.sent
+        payload = json.loads(prompt.rpartition(conversations._MESSAGE_CONTEXT_V5_MARKER)[2])
+        assert payload["current_user_request"] == {"content": ""}
+        assert payload["attachment_aliases"] == [
+            {"alias": "@附件1", "filename": "requirements.pdf", "path": pdf["path"]}
+        ]
+        assert image_urls == ()
         selected = conversations.switch_conversation_model(
             db,
             workspace.id,
@@ -5307,10 +5313,13 @@ def test_agent_workspace_rewrite_preserves_own_root_attachment_after_pause(
         )
 
     assert result["accepted"] is True
-    assert runtime.sent == (
-        f"after\n\n已上传到共享工作区的附件：\n- {attachment_path}",
-        ("data:image/png;base64,aW1hZ2U=",),
-    )
+    prompt, image_urls = runtime.sent
+    payload = json.loads(prompt.rpartition(conversations._MESSAGE_CONTEXT_V5_MARKER)[2])
+    assert payload["current_user_request"] == {"content": "after"}
+    assert payload["attachment_aliases"] == [
+        {"alias": "@附件1", "filename": "image.png", "path": attachment_path}
+    ]
+    assert image_urls == ("data:image/png;base64,aW1hZ2U=",)
 
 
 def test_agent_workspace_rewrite_uses_the_formal_head_not_event_window_order(

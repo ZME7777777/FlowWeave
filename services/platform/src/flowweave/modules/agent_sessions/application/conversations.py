@@ -2782,9 +2782,9 @@ def _message_payload(
 ) -> tuple[str, tuple[str, ...]]:
     if len(attachments) > 10:
         raise DomainError("AGENT_ATTACHMENT_INVALID", "附件引用无效，请重新上传", 422)
-    paths: list[str] = []
     image_urls: list[str] = []
-    for item in attachments:
+    attachment_aliases: list[dict[str, str]] = []
+    for index, item in enumerate(attachments, start=1):
         path = item.get("path")
         image_data_url = item.get("image_data_url")
         if (
@@ -2799,19 +2799,23 @@ def _message_payload(
             )
         ):
             raise DomainError("AGENT_ATTACHMENT_INVALID", "附件引用无效，请重新上传", 422)
-        paths.append(path)
+        filename = item.get("filename")
+        attachment_aliases.append(
+            {
+                "alias": f"@附件{index}",
+                "filename": filename if isinstance(filename, str) and filename else _attachment_filename(path),
+                "path": path,
+            }
+        )
         if isinstance(image_data_url, str):
             image_urls.append(image_data_url)
     prompt = content.strip()
-    if paths:
-        prompt += (
-            "\n\n已上传到共享工作区的附件：\n" if prompt else "请查看已上传到共享工作区的附件：\n"
-        ) + "\n".join(f"- {path}" for path in paths)
     normalized_references = _validated_conversation_references(references)
     normalized_workspace_references = _validated_workspace_references(workspace_references)
-    # Keep ordinary messages native. A structured envelope is only needed when
-    # the turn carries background material or a workspace selection.
-    if not normalized_references and not normalized_workspace_references and not annotations:
+    # Attachments need the same hidden transport envelope as other contextual
+    # material: the Runtime receives stable aliases and paths, while history
+    # continues to render only the user's original text and attachment cards.
+    if not attachment_aliases and not normalized_references and not normalized_workspace_references and not annotations:
         return prompt, tuple(image_urls)
     prompt = (
         _MESSAGE_CONTEXT_V5_PREFIX
@@ -2822,6 +2826,7 @@ def _message_payload(
                 "reference_materials": normalized_references,
                 "workspace_references": normalized_workspace_references,
                 "collaboration_annotations": annotations,
+                "attachment_aliases": attachment_aliases,
                 "current_user_request": {"content": prompt},
             },
             ensure_ascii=False,

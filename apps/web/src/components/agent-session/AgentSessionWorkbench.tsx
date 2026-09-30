@@ -1169,6 +1169,7 @@ function stringValues(value: unknown): string[] {
 
 interface ComposerHandle {
   replace: (value: string) => void;
+  insert: (value: string) => void;
   value: () => string;
   focus: () => void;
 }
@@ -1203,11 +1204,25 @@ const ComposerCapabilityAutocomplete = forwardRef<ComposerHandle, {
     replaceDraft(value);
     onDraftChange(scope, value);
   }, [onDraftChange, replaceDraft, scope]);
+  const insertDraft = useCallback((value: string) => {
+    const textarea = input.current;
+    const current = draftRef.current;
+    const start = textarea?.selectionStart ?? current.length;
+    const end = textarea?.selectionEnd ?? start;
+    const next = `${current.slice(0, start)}${value}${current.slice(end)}`;
+    updateDraft(next);
+    requestAnimationFrame(() => {
+      textarea?.focus();
+      const cursor = start + value.length;
+      textarea?.setSelectionRange(cursor, cursor);
+    });
+  }, [updateDraft]);
   useImperativeHandle(ref, () => ({
     replace: replaceDraft,
+    insert: insertDraft,
     value: () => draftRef.current,
     focus: () => input.current?.focus(),
-  }), [replaceDraft]);
+  }), [insertDraft, replaceDraft]);
   useLayoutEffect(() => {
     if (previousScope.current === scope) return;
     previousScope.current = scope;
@@ -4483,6 +4498,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const [conversationModelName, setConversationModelName] = useState('');
   const [reasoningEffort, setReasoningEffort] = useState<string | null>(null);
   const [attachments, setAttachments] = useState<AgentAttachment[]>(() => initialBootstrapRecovery.current?.message.items ?? initialConversationDraft.current?.attachments ?? []);
+  const attachmentAliasClickTimer = useRef<number | undefined>(undefined);
   const [pendingAttachments, setPendingAttachments] = useState<PendingComposerAttachment[]>([]);
   const [references, setReferences] = useState<ConversationReference[]>(() => initialBootstrapRecovery.current?.message.references ?? initialConversationDraft.current?.references ?? []);
   const [workspaceReferences, setWorkspaceReferences] = useState<AgentWorkspaceReference[]>(() => initialBootstrapRecovery.current?.message.workspaceReferences ?? initialConversationDraft.current?.workspaceReferences ?? []);
@@ -6235,6 +6251,28 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       attachment,
       previewBindingId,
     });
+  }, []);
+  const insertAttachmentAlias = useCallback((attachment: AgentAttachment) => {
+    const index = attachments.findIndex(item => item.path === attachment.path);
+    if (index < 0) return;
+    composerRef.current?.insert(`@附件${index + 1}`);
+  }, [attachments]);
+  const scheduleAttachmentAliasInsertion = useCallback((attachment: AgentAttachment) => {
+    if (attachmentAliasClickTimer.current !== undefined) window.clearTimeout(attachmentAliasClickTimer.current);
+    attachmentAliasClickTimer.current = window.setTimeout(() => {
+      attachmentAliasClickTimer.current = undefined;
+      insertAttachmentAlias(attachment);
+    }, 220);
+  }, [insertAttachmentAlias]);
+  const previewComposerAttachment = useCallback((attachment: AgentAttachment) => {
+    if (attachmentAliasClickTimer.current !== undefined) {
+      window.clearTimeout(attachmentAliasClickTimer.current);
+      attachmentAliasClickTimer.current = undefined;
+    }
+    previewAttachment(attachment);
+  }, [previewAttachment]);
+  useEffect(() => () => {
+    if (attachmentAliasClickTimer.current !== undefined) window.clearTimeout(attachmentAliasClickTimer.current);
   }, []);
   const previewWorkspaceReference = useCallback((reference: AgentWorkspaceReference) => {
     setFilePreviewRequest({
@@ -8331,7 +8369,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         </section>}
                   <ComposerCapabilityAutocomplete key={composerScope ?? 'composer'} ref={composerRef} initialDraft={composerDraftRef.current} scope={composerScope} suggestions={visibleComposerSuggestions} placeholder={pendingConfirmation ? '请先处理上方工具确认…' : composerControlMode === 'condensing' ? '可继续输入，发送后将排队…' : composerControlMode === 'reconciling' ? '正在同步 Agent 状态…' : composerControlMode === 'read-only' ? '当前会话不可编辑…' : '给 Agent 发消息…'} disabled={!composerControl.editable} onDraftChange={setComposerDraft} onContentPresenceChange={onComposerContentPresenceChange} onDraftPersist={persistComposerDraft} onPaste={event => { if (!features.attachments) return; const files = transferredFiles(event.clipboardData); if (!files.length) return; event.preventDefault(); files.forEach(startAttachmentUpload); }} onDropFiles={features.attachments && composerScope ? files => files.forEach(startAttachmentUpload) : undefined} onDropWorkspaceFiles={paths => setWorkspaceReferences(current => [...current, ...paths.flatMap(path => current.some(reference => reference.path === path) ? [] : [{ path, kind: 'file' as const, display_name: path.split('/').filter(Boolean).pop() ?? path }])])} onSubmit={enqueueDraft} onDirectSubmit={sendDraftDirectly} onManageCapabilities={features.capabilities && (selected || features.draftCapabilitySelection) ? () => setCapabilityManagerOpen(true) : undefined} onNativeAction={action => { if (action === 'CONDENSE' && canCondense && !condense.isPending && workspace && selected) condense.mutate({ workspaceId: workspace.id, bindingId: selected.id }); }} onWorkspaceReferenceSelected={() => { setWorkspaceReferenceQuery(''); setWorkspaceReferencePickerOpen(true); }}/>
         <div className="agent-composer-attachments">
-        {(features.attachments && (attachments.length > 0 || pendingAttachments.some(item => item.scope === composerScope)) || references.length > 0 || composerAnnotations.length > 0) && <div className="agent-attachments" aria-label="已添加的附件和会话引用">{features.attachments && <>{attachments.map(item => <span key={item.path}><button type="button" className="agent-attachment-open" title={`预览附件：${item.filename}`} onClick={() => previewAttachment(item)}>{item.image_data_url && <img src={item.image_data_url} alt=""/>}<em>{item.filename}</em></button><button type="button" className="agent-attachment-remove" aria-label={`移除附件 ${item.filename}`} onClick={() => { setAttachments(all => all.filter(candidate => candidate.path !== item.path)); if (conversationDraft && workspace) void api.deleteDraftAttachments(workspace.id, conversationDraft.id, item.path).catch(() => undefined); }}>×</button></span>)}{pendingAttachments.filter(item => item.scope === composerScope).map(item => <span key={item.id} className={`agent-pending-attachment ${item.state}`} title={item.state === 'failed' ? '附件上传失败，请重试或删除。' : `正在上传 ${item.progress}%`}><span className="agent-attachment-open">{item.previewUrl ? <img src={item.previewUrl} alt=""/> : <FileText size={14}/>}<em>{item.filename}</em>{item.state === 'uploading' && <small>{item.progress}%</small>}{item.state === 'failed' && <span className="agent-attachment-retry-overlay"><button type="button" onClick={() => retryPendingAttachment(item.id)}>重试</button></span>}</span>{item.state === 'uploading' && <i className="agent-attachment-progress" style={{ '--upload-progress': `${item.progress}%` } as CSSProperties}/>}<button type="button" className="agent-attachment-remove" aria-label={`移除附件 ${item.filename}`} onClick={() => removePendingAttachment(item.id)}>×</button></span>)}</>}{references.map((reference, index) => <span key={`${reference.eventId}:${reference.content}`}><span className="agent-attachment-open" title={reference.content}><Quote size={14}/><em>{`会话引用 ${index + 1}`}</em></span><button type="button" className="agent-attachment-remove" aria-label={`移除会话引用 ${index + 1}`} onClick={() => setReferences(current => current.filter(item => item !== reference))}>×</button></span>)}{(selected || conversationDraft) && <ComposerAnnotationList annotations={composerAnnotations} onLocate={locateAnnotation} onRemove={annotation => setComposerAnnotations(current => current.filter(item => item.id !== annotation.id))} onUpdate={(annotation, comment) => void updateAnnotation(annotation, comment)}/>}</div>}
+        {(features.attachments && (attachments.length > 0 || pendingAttachments.some(item => item.scope === composerScope)) || references.length > 0 || composerAnnotations.length > 0) && <div className="agent-attachments" aria-label="已添加的附件和会话引用">{features.attachments && <>{attachments.map((item, index) => <span key={item.path}><button type="button" className="agent-attachment-open" title={`单击插入 @附件${index + 1}；双击预览附件：${item.filename}`} onClick={() => scheduleAttachmentAliasInsertion(item)} onDoubleClick={() => previewComposerAttachment(item)}>{item.image_data_url && <img src={item.image_data_url} alt=""/>}<em><b>{`@附件${index + 1}`}</b>{item.filename}</em></button><button type="button" className="agent-attachment-remove" aria-label={`移除附件 ${item.filename}`} onClick={() => { setAttachments(all => all.filter(candidate => candidate.path !== item.path)); if (conversationDraft && workspace) void api.deleteDraftAttachments(workspace.id, conversationDraft.id, item.path).catch(() => undefined); }}>×</button></span>)}{pendingAttachments.filter(item => item.scope === composerScope).map(item => <span key={item.id} className={`agent-pending-attachment ${item.state}`} title={item.state === 'failed' ? '附件上传失败，请重试或删除。' : `正在上传 ${item.progress}%`}><span className="agent-attachment-open">{item.previewUrl ? <img src={item.previewUrl} alt=""/> : <FileText size={14}/>}<em>{item.filename}</em>{item.state === 'uploading' && <small>{item.progress}%</small>}{item.state === 'failed' && <span className="agent-attachment-retry-overlay"><button type="button" onClick={() => retryPendingAttachment(item.id)}>重试</button></span>}</span>{item.state === 'uploading' && <i className="agent-attachment-progress" style={{ '--upload-progress': `${item.progress}%` } as CSSProperties}/>}<button type="button" className="agent-attachment-remove" aria-label={`移除附件 ${item.filename}`} onClick={() => removePendingAttachment(item.id)}>×</button></span>)}</>}{references.map((reference, index) => <span key={`${reference.eventId}:${reference.content}`}><span className="agent-attachment-open" title={reference.content}><Quote size={14}/><em>{`会话引用 ${index + 1}`}</em></span><button type="button" className="agent-attachment-remove" aria-label={`移除会话引用 ${index + 1}`} onClick={() => setReferences(current => current.filter(item => item !== reference))}>×</button></span>)}{(selected || conversationDraft) && <ComposerAnnotationList annotations={composerAnnotations} onLocate={locateAnnotation} onRemove={annotation => setComposerAnnotations(current => current.filter(item => item.id !== annotation.id))} onUpdate={(annotation, comment) => void updateAnnotation(annotation, comment)}/>}</div>}
         {workspaceReferences.length > 0 && <div className="agent-attachments agent-workspace-references" aria-label="已添加的工作区引用">{workspaceReferences.map(reference => <span key={workspaceReferenceKey(reference)} title={reference.path}><span className="agent-attachment-open">{reference.kind === 'directory' ? <Folder size={14}/> : <FileCode2 size={14}/>}<em><b>{reference.display_name}</b><small>{workspaceReferenceLabel(reference)}</small></em></span><button type="button" className="agent-attachment-remove" aria-label={'移除工作区引用 ' + reference.display_name} onClick={() => setWorkspaceReferences(current => current.filter(item => workspaceReferenceKey(item) !== workspaceReferenceKey(reference)))}>×</button></span>)}</div>}
         </div>
         <footer>
