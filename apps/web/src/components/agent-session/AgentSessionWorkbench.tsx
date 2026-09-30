@@ -7171,7 +7171,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     idPrefix = 'pending-user',
     state: LocalMessageProjectionState = 'submitting',
     localOnly = false,
-    continuationParentId?: string,
   ): string => {
     const existing = localMessageProjections.current.get(message.id);
     if (existing) {
@@ -7189,7 +7188,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
             conversation_references: message.references.map(item => ({ event_id: item.eventId, content: item.content })),
             workspace_references: message.workspaceReferences,
             collaboration_annotations: message.annotations,
-            ...(continuationParentId ? { parent_id: continuationParentId } : {}),
           },
         },
       }));
@@ -7206,7 +7204,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         conversation_references: message.references.map(item => ({ event_id: item.eventId, content: item.content })),
         workspace_references: message.workspaceReferences,
         collaboration_annotations: message.annotations,
-        ...(continuationParentId ? { parent_id: continuationParentId } : {}),
         timestamp: new Date().toISOString(),
       },
     };
@@ -7308,14 +7305,12 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const dispatchMessage = useCallback((message: BoundQueuedMessage, immediate = false) => {
     if (sendingMessageIds.current.has(message.id)) return;
     sendingMessageIds.current.add(message.id);
-    const continuationParentId = !message.nativeGuidance
-      ? latestUnfinishedUserEventId(displayedEvents)
-      : undefined;
     const showLocalMessage = () => {
       if (!message.nativeGuidance) setForegroundTurn({ submissionId: message.id, bindingId: message.bindingId });
-      // The current page owns its submitted user bubble. The native event only
-      // anchors subsequent process/reply events and suppresses its duplicate.
-      showOptimisticUserBubble(message, 'pending-user', 'submitting', true, continuationParentId);
+      // The current page owns its submitted user bubble. Its event relationship
+      // is only known once the formal OpenHands event is available, so never
+      // infer a parent from a potentially stale browser event window.
+      showOptimisticUserBubble(message, 'pending-user', 'submitting', true);
       if (!message.nativeGuidance) {
         setActiveTurnEventId(undefined);
         setRequestStartedAt(current => current ?? Date.now());
@@ -7329,7 +7324,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     }
     if (immediate) window.setTimeout(() => send.mutate(message), 0);
     else send.mutate(message);
-  }, [commitQueuedMessages, displayedEvents, send, showOptimisticUserBubble]);
+  }, [commitQueuedMessages, send, showOptimisticUserBubble]);
   const migrateStreaming = useMutation({
     mutationFn: (_message: QueuedMessage) => {
       void _message;
