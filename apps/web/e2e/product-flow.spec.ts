@@ -448,6 +448,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   let interrupted = false;
   let pauseReadinessGate: Promise<void> | undefined;
   let releasePauseReadiness: (() => void) | undefined;
+  let pauseReadinessReturnsIdle = false;
   let pauseBufferedEvent = false;
   let backfilledTaskAction = false;
   let incompleteLiveToolProjection = false;
@@ -962,7 +963,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
       if (interrupted && pauseReadinessGate) await pauseReadinessGate;
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
         ready: !modelIsResponding || interrupted,
-        execution_status: modelIsResponding ? (interrupted ? 'paused' : 'running') : 'idle',
+        execution_status: pauseReadinessReturnsIdle ? 'idle' : modelIsResponding ? (interrupted ? 'paused' : 'running') : 'idle',
       }) });
       return;
     }
@@ -2354,10 +2355,13 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   pauseBufferedEvent = true;
   await page.evaluate(() => window.dispatchEvent(new Event('focus')));
   await expect(page.getByText('暂停请求确认前到达的正式事件。')).toHaveCount(0);
+  pauseReadinessReturnsIdle = true;
   releasePauseReadiness?.();
   pauseReadinessGate = undefined;
   await expect(page.getByText('暂停请求确认前到达的正式事件。')).toBeVisible();
   await expect(page.getByRole('button', { name: '继续当前 Agent' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '发送消息' })).toHaveCount(0);
+  pauseReadinessReturnsIdle = false;
   await expect(activeProcess.getByText('已暂停，结果未返回')).toBeVisible();
   await expect(activeProcess).toHaveJSProperty('open', true);
   await expect(activeProcess.getByText('子智能体 · 已暂停，结果未返回')).toBeVisible();

@@ -6036,17 +6036,17 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   );
   const effectiveTurnState: TurnState = idleUncreatedConversationDraft
     ? 'idle'
-    : currentFormalTurnFinished
-      ? 'idle'
-    : nativeExecutionStatus?.trim().toLowerCase() === 'paused'
-      ? 'paused'
-      : turnState === 'pausing' || turnState === 'resuming' || turnState === 'paused'
-        ? turnState
-      : foregroundTurnStillRunning || nativeTurnRunning
-        ? 'running'
-        : nativeTurnTerminal
-          ? 'idle'
-          : turnState;
+    : turnState === 'pausing' || turnState === 'resuming' || turnState === 'paused'
+      ? turnState
+      : currentFormalTurnFinished
+        ? 'idle'
+      : nativeExecutionStatus?.trim().toLowerCase() === 'paused'
+        ? 'paused'
+        : foregroundTurnStillRunning || nativeTurnRunning
+          ? 'running'
+          : nativeTurnTerminal
+            ? 'idle'
+            : turnState;
   // The browser queue contains only messages that have not started delivery.
   // Once a request starts, the optimistic conversation event owns its display.
   const visibleQueuedMessages = queuedMessages.filter(message => message.scope === selected?.id);
@@ -7536,8 +7536,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       const request = pendingRewrite;
       setPendingRewrite(undefined);
       rewrite.mutate(request);
-    } else setTurnState(nativeTurnTerminal ? 'idle' : 'paused');
-  }, [inputReadinessQuery.data?.ready, nativeTurnTerminal, pendingRewrite, rewrite, turnState]);
+    } else setTurnState('paused');
+  }, [inputReadinessQuery.data?.ready, pendingRewrite, rewrite, turnState]);
   const requestRewrite = useCallback((eventId: string, content: string) => {
     const original = displayedEvents.find(event => event.id === eventId);
     const request: RewriteRequest = {
@@ -7789,9 +7789,11 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   );
   const currentSessionControlState: TurnState = foregroundSubmissionAwaitingFormalEvent
     ? 'running'
-    : currentFormalTurnFinished
-      ? 'idle'
-      : effectiveTurnState;
+    : effectiveTurnState === 'pausing' || effectiveTurnState === 'paused' || effectiveTurnState === 'resuming'
+      ? effectiveTurnState
+      : currentFormalTurnFinished
+        ? 'idle'
+        : effectiveTurnState;
   const interruptableActiveTurn = canInterrupt && currentSessionControlState === 'running';
   const composerControlMode: ComposerControlMode = uncreatedConversationDraft
     ? 'idle'
