@@ -7719,10 +7719,12 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const conversationInitialLoading = Boolean(
     selected && (selectedHydrationPhase === 'loading' || fallbackHydrationPending),
   );
-  const interruptableActiveTurn = canInterrupt && (
-    effectiveTurnState === 'running'
-    || (conversationVisuallyActive && hasUnfinishedFormalTurn)
-  );
+  const currentSessionControlState: TurnState = foregroundSubmissionAwaitingFormalEvent
+    ? 'running'
+    : currentFormalTurnFinished
+      ? 'idle'
+      : effectiveTurnState;
+  const interruptableActiveTurn = canInterrupt && currentSessionControlState === 'running';
   const composerControlMode: ComposerControlMode = uncreatedConversationDraft
     ? 'idle'
     : selectedCondensing
@@ -7731,21 +7733,19 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         ? 'read-only'
         : conversationInitialLoading
         ? 'reconciling'
-        : effectiveTurnState === 'pausing'
+        : currentSessionControlState === 'pausing'
           ? 'pausing'
           : interruptableActiveTurn
             ? 'running'
             : selected && !canWrite
               ? 'read-only'
-              : effectiveTurnState === 'running'
+              : currentSessionControlState === 'running'
                 ? 'reconciling'
-                : effectiveTurnState === 'paused'
+                : currentSessionControlState === 'paused'
                   ? 'paused'
-                  : effectiveTurnState === 'resuming'
+                  : currentSessionControlState === 'resuming'
                     ? 'resuming'
-                    : conversationVisuallyActive
-                      ? 'reconciling'
-                      : 'idle';
+                    : 'idle';
   const queueDispatchReady = composerControlMode === 'idle';
   useEffect(() => {
     if (!selected || !queueModeEnabled || !queueDispatchReady) return;

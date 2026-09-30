@@ -2273,6 +2273,78 @@ test('A dropped running-session stream immediately reconciles formal events', as
 });
 
 
+test('A formal final reply releases the shared composer state for queued delivery', async ({ page }) => {
+  let authenticated = false;
+  let stream: WebSocketRoute | undefined;
+  let queuedPosts = 0;
+  const workspace = { id: 'final-reply-queue-workspace', display_name: '最终回复队列工作区', desired_state: 'RUNNING', updated_at: now };
+  const conversation = {
+    id: 'final-reply-queue-conversation', display_title: '最终回复队列会话', title_state: 'MANUAL', lifecycle: 'ACTIVE',
+    streaming_callback_ready: true, write_available: true, execution_status: 'running', created_at: now, updated_at: now,
+  };
+  const runningEvents = {
+    events: [
+      { id: 'final-reply-queue-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '请完成当前回复', timestamp: now } },
+      { id: 'final-reply-queue-action', event_type: 'TOOL_CALL', payload: { parent_id: 'final-reply-queue-user', action_id: 'final-reply-queue-action', tool_call_id: 'final-reply-queue-call', tool_name: 'terminal', event_name: 'TerminalAction', details: { command: 'pwd' }, timestamp: now } },
+    ],
+    next_cursor: 'final-reply-queue-action', history_cursor: null, result: { status: 'RUNNING' },
+  };
+
+  await page.routeWebSocket('**/agent-workspaces/**/stream', route => { stream = route; });
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path.endsWith('/auth/me')) return authenticated ? json(route, user) : json(route, { error: { code: 'AUTHENTICATION_REQUIRED', message: '请先登录' } }, 401);
+    if (path.endsWith('/auth/login') && request.method() === 'POST') { authenticated = true; return json(route, user); }
+    if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
+    if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
+    if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: [conversation], next_cursor: null });
+    if (path.endsWith('/conversation-activity')) return json(route, { running_binding_ids: [conversation.id] });
+    if (path.endsWith('/hydration')) return json(route, {
+      events: runningEvents,
+      context: { model_name: 'queue-model', window_tokens: 128_000, used_tokens: 1_024, usage_current: true },
+      readiness: { ready: false, execution_status: 'running' },
+    });
+    if (path.endsWith('/events')) return json(route, runningEvents);
+    if (path.endsWith('/input-readiness')) return json(route, { ready: false, execution_status: 'running' });
+    if (path.endsWith('/messages') && request.method() === 'POST') {
+      queuedPosts += 1;
+      return json(route, { accepted: true, cursor: 'final-reply-queued-user' }, 202);
+    }
+    if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
+    if (path.endsWith('/work-directories')) return json(route, { root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [] });
+    if (path.endsWith('/workspace')) return json(route, { root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: '/runtime/workspace/project', work_directory: null, files: [], repositories: [], runtime: {}, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '不可用', note: '' } } });
+    if (path.endsWith('/context')) return json(route, { model_name: 'queue-model', window_tokens: 128_000, used_tokens: 1_024, usage_current: true });
+    if (path.endsWith('/model-providers')) return json(route, [{ id: 'queue-provider', name: '队列模型', connection_state: 'CONNECTED', models: [{ model_name: 'queue-model', enabled: true, is_default: true }] }]);
+    if (path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
+    if (path.includes('/conversations/') && request.method() === 'GET') return json(route, conversation);
+    return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+  });
+
+  await page.goto('/');
+  await login(page);
+  await page.goto('/agent/conversations/final-reply-queue-conversation');
+  const composer = page.getByLabel('发送 Agent 消息');
+  await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toBeVisible();
+  await expect.poll(() => stream).toBeTruthy();
+
+  await composer.fill('最终回复后自动发送');
+  await composer.press('Enter');
+  await expect(page.getByLabel('消息投递队列').getByText('最终回复后自动发送')).toBeVisible();
+  expect(queuedPosts).toBe(0);
+
+  stream!.send(JSON.stringify({
+    type: 'event',
+    event: { id: 'final-reply-queue-reply', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'final-reply-queue-action', content: '当前轮已经完成。', timestamp: now } },
+  }));
+
+  await expect(page.getByText('当前轮已经完成。')).toBeVisible();
+  await expect.poll(() => queuedPosts).toBe(1);
+  await expect(page.getByLabel('消息投递队列')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toBeVisible();
+});
+
+
 test('Stream message completion keeps a native running conversation active', async ({ page }) => {
   let authenticated = false;
   let stream: WebSocketRoute | undefined;
