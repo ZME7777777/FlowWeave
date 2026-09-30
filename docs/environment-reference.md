@@ -23,7 +23,7 @@
 | `LDAP_URL` / `LDAP_BASE_DN` | LDAP 服务地址和搜索根，必须通过受保护的部署配置显式提供，不设私有默认值。生产应优先使用 LDAPS 或启用 StartTLS。 |
 | `LDAP_SEARCH_BIND_DN` / `LDAP_SEARCH_BIND_PASSWORD` | 只读搜索账号。LDAP 模式必填；密码只能存放在受保护的部署 Secret 中。 |
 | `LDAP_USER_SEARCH_FILTER` / `LDAP_USER_LIST_FILTER` | 登录时按 `uid` 搜索的筛选器和用户管理页目录列表筛选器；前者必须包含 `{uid}`。 |
-| `LDAP_START_TLS` / `LDAP_TLS_CA_CERT_FILE` | `ldap://` 连接强制 StartTLS；可配置受信 CA 证书文件。 |
+| `LDAP_START_TLS` / `LDAP_TLS_CA_CERT_FILE` | `ldap://` 默认启用 StartTLS；可配置受信 CA 证书文件。受管内部目录经明确授权可设置 `LDAP_START_TLS=false` 使用明文连接；`ldaps://` 始终使用并校验 TLS。 |
 | `FLOWWEAVE_BIND_ADDRESS` | Compose 暴露服务的绑定地址；默认 `127.0.0.1`。 |
 | `POSTGRES_PORT` | 宿主机 PostgreSQL 端口；默认 `55432`。 |
 

@@ -330,8 +330,6 @@ class Settings(BaseSettings):
                 raise ValueError("LDAP_BASE_DN and LDAP_USER_SEARCH_FILTER with {uid} are required")
             if not self.ldap_search_bind_dn or not self.ldap_search_bind_password:
                 raise ValueError("LDAP search bind credentials are required when LDAP is enabled")
-            if self.ldap_url.startswith("ldap://") and not self.ldap_start_tls:
-                raise ValueError("LDAP_START_TLS must be enabled for ldap:// connections")
         if self.rate_limit_redis_url and not self.rate_limit_redis_url.startswith(
             ("redis://", "rediss://")
         ):

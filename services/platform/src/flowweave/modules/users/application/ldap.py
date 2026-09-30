@@ -39,16 +39,21 @@ class LdapDirectory:
     def list_users(self) -> list[LdapIdentity]:
         connection = self._service_connection()
         try:
-            if not connection.search(
+            entries = connection.extend.standard.paged_search(
                 self._settings.ldap_base_dn,
                 self._settings.ldap_user_list_filter,
                 search_scope=SUBTREE,
                 attributes=["uid", "cn", "mail", "entryUUID"],
-            ):
-                return []
+                paged_size=500,
+                paged_criticality=True,
+                generator=False,
+            )
+            if not connection.result or connection.result["result"] != 0:
+                raise DomainError("LDAP_UNAVAILABLE", "LDAP 目录当前不可用，请稍后重试", 503)
             users = [
-                self._identity(entry.entry_dn, entry.entry_attributes_as_dict)
-                for entry in connection.entries
+                self._identity(entry["dn"], entry["raw_attributes"])
+                for entry in entries
+                if entry["type"] == "searchResEntry"
             ]
             return sorted(
                 users,
@@ -78,7 +83,7 @@ class LdapDirectory:
             if len(connection.entries) != 1:
                 raise self._authentication_failed()
             entry = connection.entries[0]
-            return entry.entry_dn, self._identity(entry.entry_dn, entry.entry_attributes_as_dict)
+            return entry.entry_dn, self._identity(entry.entry_dn, entry.entry_raw_attributes)
         except LDAPException as error:
             raise DomainError("LDAP_UNAVAILABLE", "LDAP 目录当前不可用，请稍后重试", 503) from error
         finally:
@@ -118,12 +123,14 @@ class LdapDirectory:
             raise_exceptions=False,
         )
         try:
-            if not connection.open():
+            # ldap3's synchronous open() returns None even on success.
+            connection.open()
+            if connection.closed:
                 raise DomainError("LDAP_UNAVAILABLE", "LDAP 目录当前不可用，请稍后重试", 503)
             requires_start_tls = parsed.scheme == "ldap" and self._settings.ldap_start_tls
             if requires_start_tls and not connection.start_tls():
                 raise DomainError("LDAP_UNAVAILABLE", "LDAP 目录当前不可用，请稍后重试", 503)
-        except LDAPException as error:
+        except (LDAPException, DomainError) as error:
             connection.unbind()
             raise DomainError("LDAP_UNAVAILABLE", "LDAP 目录当前不可用，请稍后重试", 503) from error
         return connection
@@ -134,6 +141,13 @@ class LdapDirectory:
             raw = attributes.get(name)
             if isinstance(raw, list):
                 raw = raw[0] if raw else None
+            if isinstance(raw, bytes):
+                try:
+                    raw = raw.decode("utf-8")
+                except UnicodeDecodeError as error:
+                    raise DomainError(
+                        "LDAP_DIRECTORY_INVALID", "LDAP 用户目录身份属性编码无效", 503
+                    ) from error
             return str(raw).strip() if raw is not None and str(raw).strip() else None
 
         username = value("uid")
