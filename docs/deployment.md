@@ -108,7 +108,20 @@ cd services/platform
 uv run python scripts/migration_version_check.py --metadata-only
 ```
 
-`--metadata-only` 使用无操作的 0137 前置 fixture、原样 0138 与正式迁移 env，验证空 Alembic 元数据、旧 32 字符列、失败回滚／重试、锁等待和既有宽列。这不等于完整业务迁移链验收；去掉该参数会执行真实完整迁移链。FR-565 的 PostgreSQL 16.9 实跑发现完整空库链在到达 0138 前因 0092 重复添加 `node_runs.name` 失败，未修改平台镜像也复现；此独立历史 schema 问题由 FR-566 修复，不能声称完整空库初始化已通过。
+`--metadata-only` 使用无操作的 0137 前置 fixture、原样 0138 与正式迁移 env，验证空 Alembic 元数据、旧 32 字符列、失败回滚／重试、锁等待和既有宽列。这不等于完整业务迁移链验收；去掉该参数会执行真实完整迁移链。
+
+### 历史空库迁移检查
+
+FR-566 将 0003 中 `node_runs` 的定义固定为引入 `name` 前的结构，避免读取当前 ORM 提前创建未来字段；0092 仍正常添加可空 `VARCHAR(220)`。已经执行 0003 的数据库不会重跑该建表代码，revision 和现有表不变。使用独立 TEST_DATABASE_URL 执行真实迁移链与回滚／记录保留专项：
+
+```bash
+cd services/platform
+uv run python scripts/migration_node_run_check.py
+# 另外从独立空库向 head 验证；后续失败会以非零退出码返回
+uv run python scripts/migration_node_run_check.py --probe-head
+```
+
+FR-566 的 PostgreSQL 16.9 实跑已通过真实空库到 0092、0092 故障回滚／重试与旧记录保留。但完整空库链随后在 0093 因重复添加 `flow_runs.schedule_id` 失败，由 FR-567 单独修复；仍不能声称完整空库初始化已通过。上述脚本只创建／迁移／移除自己的唯一临时数据库，不连接生产库执行迁移，也不启动本地服务。
 
 ## 回滚与容量维护
 
