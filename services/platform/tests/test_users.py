@@ -1,15 +1,20 @@
 from __future__ import annotations
 
 import pytest
+from fastapi.testclient import TestClient
 from sqlalchemy import select
 
+from flowweave.bootstrap.api import create_app
 from flowweave.modules.credentials.infrastructure.models import WebsiteCredential
 from flowweave.modules.runs.infrastructure.models import FlowRun
+from flowweave.modules.users.application.ldap import LdapIdentity
 from flowweave.modules.users.application.security import (
     FLOWWEAVE_USER_ID,
     USER_USER_ID,
     tenant_user,
 )
+from flowweave.modules.users.infrastructure.models import UserSession
+from flowweave.shared.errors import DomainError
 
 
 def test_business_api_requires_login(anonymous_client):
@@ -46,6 +51,50 @@ def test_login_me_and_logout(anonymous_client, settings):
     logged_out = anonymous_client.post("/api/v1/auth/logout")
     assert logged_out.status_code == 204
     assert anonymous_client.get("/api/v1/auth/me").status_code == 401
+
+
+def test_ldap_users_are_authorized_before_login_and_revoked_sessions(db_session_factory):
+    identity = LdapIdentity(
+        external_subject="ldap-employee-1",
+        username="employee",
+        display_name="Employee One",
+        email="employee@example.com",
+    )
+    from flowweave.modules.users.application import service
+
+    with db_session_factory() as db:
+        with pytest.raises(DomainError, match="用户名或密码错误") as rejected:
+            service.login_ldap(db, identity)
+        assert rejected.value.code == "AUTHENTICATION_FAILED"
+
+        enabled = service.set_ldap_user_enabled(db, identity, enabled=True)
+        assert enabled["enabled"] is True
+        first_login = service.login_ldap(db, identity)
+        assert first_login.principal.username == "employee"
+
+        disabled = service.set_ldap_user_enabled(db, identity, enabled=False)
+        assert disabled["enabled"] is False
+        assert (
+            db.scalar(
+                select(UserSession).where(UserSession.user_id == first_login.principal.user_id)
+            )
+            is None
+        )
+        with pytest.raises(DomainError, match="用户名或密码错误") as revoked:
+            service.login_ldap(db, identity)
+        assert revoked.value.code == "AUTHENTICATION_FAILED"
+
+
+def test_ldap_user_management_requires_super_admin(settings):
+    with TestClient(create_app(settings)) as ordinary_client:
+        ordinary_login = ordinary_client.post(
+            "/api/v1/auth/login",
+            json={"username": "user", "password": settings.flowweave_user_password},
+        )
+        assert ordinary_login.status_code == 200
+        forbidden = ordinary_client.get("/api/v1/auth/ldap-users")
+        assert forbidden.status_code == 403
+        assert forbidden.json()["error"]["code"] == "AUTHORIZATION_REQUIRED"
 
 
 def test_business_resources_are_shared_between_users(client, user_client):

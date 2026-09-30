@@ -42,6 +42,17 @@ class Settings(BaseSettings):
     credentials_master_key: str = ""
     flowweave_admin_password: str = ""
     flowweave_user_password: str = ""
+    auth_provider: str = "local"
+    ldap_url: str = "ldap://192.168.90.159:389"
+    ldap_base_dn: str = "dc=aicai,dc=com"
+    ldap_search_bind_dn: str = ""
+    ldap_search_bind_password: str = ""
+    ldap_user_search_filter: str = "(uid={uid})"
+    ldap_user_list_filter: str = "(uid=*)"
+    ldap_start_tls: bool = True
+    ldap_tls_ca_cert_file: str = ""
+    ldap_connect_timeout_seconds: float = Field(default=5.0, gt=0, le=30)
+    ldap_receive_timeout_seconds: float = Field(default=5.0, gt=0, le=30)
     lark_api_base_url: str = "https://open.feishu.cn"
 
     runtime_adapter: str = "openhands"
@@ -306,6 +317,17 @@ class Settings(BaseSettings):
             raise ValueError("ADMIN_CONTROL_API_KEY must be dedicated to the Admin API")
         if self.runtime_adapter not in {"openhands", "mock"}:
             raise ValueError("RUNTIME_ADAPTER must be openhands or mock")
+        if self.auth_provider not in {"local", "ldap"}:
+            raise ValueError("AUTH_PROVIDER must be local or ldap")
+        if self.auth_provider == "ldap":
+            if not self.ldap_url.startswith(("ldap://", "ldaps://")):
+                raise ValueError("LDAP_URL must use ldap:// or ldaps://")
+            if not self.ldap_base_dn or "{uid}" not in self.ldap_user_search_filter:
+                raise ValueError("LDAP_BASE_DN and LDAP_USER_SEARCH_FILTER with {uid} are required")
+            if not self.ldap_search_bind_dn or not self.ldap_search_bind_password:
+                raise ValueError("LDAP search bind credentials are required when LDAP is enabled")
+            if self.ldap_url.startswith("ldap://") and not self.ldap_start_tls:
+                raise ValueError("LDAP_START_TLS must be enabled for ldap:// connections")
         if self.rate_limit_redis_url and not self.rate_limit_redis_url.startswith(
             ("redis://", "rediss://")
         ):
@@ -321,8 +343,8 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "FLOWWEAVE_ADMIN_PASSWORD must contain at least 12 characters in production"
                 )
-            if len(self.flowweave_user_password) < 12:
+            if self.auth_provider == "local" and len(self.flowweave_user_password) < 12:
                 raise ValueError(
-                    "FLOWWEAVE_USER_PASSWORD must contain at least 12 characters in production"
+                    "FLOWWEAVE_USER_PASSWORD must contain at least 12 characters in local auth mode"
                 )
         return self

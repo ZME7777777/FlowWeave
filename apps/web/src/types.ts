@@ -1,4 +1,4 @@
-export type ViewName = 'nodes' | 'capabilities' | 'environments' | 'credentials' | 'models' | 'flows' | 'runs' | 'schedules' | 'workbench' | 'agent-workbench';
+export type ViewName = 'nodes' | 'capabilities' | 'environments' | 'credentials' | 'models' | 'ldap-users' | 'flows' | 'runs' | 'schedules' | 'workbench' | 'agent-workbench';
 
 export interface NodeDirectory {
   id: string; parent_id?: string | null; name: string; position: number; row_version: number;
@@ -940,4 +940,12 @@ export interface AuthUser {
   username: string;
   role: 'SUPER_ADMIN' | 'USER';
   is_super_admin: boolean;
+}
+
+export interface LdapUser {
+  external_subject: string;
+  username: string;
+  display_name: string;
+  email?: string | null;
+  enabled: boolean;
 }
