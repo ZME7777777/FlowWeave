@@ -456,3 +456,28 @@ projection 重新创建短 session、复核原入口授权，并以 Session／Co
 浏览器恢复协调与 hydration cache 的身份／epoch／current 指针不变；事件、cursor、附件及公开 API
 schema 不变。遗留同步 application helper 供已有直接调用方使用，HTTP 入口只走上述分阶段边界；
 消息写入、Worker 后台读取与其他投影的数据库边界不属于本切片。
+
+## 16. 单用户浏览器读取协调（FR-562）
+
+hydration 的禁用 Query observer 在同一宿主内保持稳定，仅作为串行请求的传输状态；正式
+events／readiness／context 快照仍按宿主、workspace 与 binding 写入各自 Query cache。
+切换 binding 不取消在途 hydration 或清空其单飞标志：保留原读取，120 毫秒合并选择，
+完成后只追赶最后选中的、尚需 hydration 的 binding。回到正在 hydration 的 binding 时直接
+消费该次完成，不再次读取。迟到结果只能写原 binding 的缓存，错误不能删除新选中的 binding。
+已有可信快照的短期复用契约不变；首次加载仍以当前 binding 的正式 hydration 为展示门禁。
+
+前台 visibility／focus 恢复信号继续合并；若发生于 hydration 门禁期间，保留信号，待首屏
+正式快照就绪后再补读无 cursor 最新窗口与 readiness。流重连等恢复入口也不得绕过此门禁。
+既有事件协调器保留串行增量及 pending-latest 语义：增量请求期间的强制最新窗口信号必须
+补读，不能由 in-flight 去重吞掉。历史预取在每页开始前等待前台事件协调器完成，再恢复
+既有低优先级分页；不减少历史范围、改写正式事件身份或改变耗尽入口游标的记忆。
+
+两个宿主的事件／历史传输均透传 AbortSignal，并使用既有 15 秒浏览器交互传输期限，
+避免代理／响应体挂起永久卡住协调器。Query 事件读取由 Query signal 取消，直接恢复读取
+由宿主生命周期 controller 在卸载时取消；迟到完成及递归补读必须检查该 signal。
+hydration 的 12 秒 UI 门禁期限与显式重试保持不变。浏览器取消不代表同步服务端线程完成，
+API／Runtime 的真实槽位仍遵循 FR-561 的 completion 释放契约。
+
+验收使用真实 Chromium 页面与受控 API／WebSocket 响应，覆盖 Workspace 和 Flow Node 的
+首屏、前台恢复、增量期间强制补读、历史退让、卸载取消与旧 binding 隔离。
+这验证浏览器请求编排与页面状态，不替代真实 OpenHands 镜像、服务端并发负载或线上恢复验收。

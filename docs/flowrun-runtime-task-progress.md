@@ -7846,13 +7846,18 @@ OpenHands adapter 现为 context、activity 和 pending-confirmation 增加每 R
 
 验收：39 项新增三阶段回归与既有 HTTP／hydration／OpenHands adapter 回归合计 `311 passed, 1 deselected`；明确排除依赖不可用 Docker socket 的 slow-request logging 测试，未记为通过。真实 SQLAlchemy 单连接／无 overflow 的 SQLite pool 在 Runtime 阶段 blocked 时 checked-out=0，另一查询可借用同一 pool；同时真实 API 槽位仍占用，超时／重复取消不能让后续请求突破容量。覆盖两个 lane 的成功、超时、取消、Runtime 失败、projection fence 失败、两段 session 的 commit／rollback 回调、期限外不再投影、不可变 locator、不再授权／Session／Conversation／generation／resource／root／host drift 拒绝，以及三个入口的最新／增量／历史参数和正式 event／parent ID、cursor、正文、附件、Task／monitoring 投影保持。SQLite 仅验证连接生命周期，不替代 PostgreSQL RLS 或生产负载验收。OpenAPI 与独立 HEAD 源码快照完全相同且匹配仓库 v1 contract；受影响 Ruff check／format、Node import check、Python 编译、HTTP helper Pyright（0 errors）、唯一 Alembic head `0138_admin_resource_cleanup_operations`、任务状态、git diff --check 与 staged diff 复核通过。六个受影响模块的 Pyright 与完全独立 HEAD 源码按文件／rule／message 对比同为 56 条既有诊断、无新增；Node router Ruff 同为 13 条既有诊断，未混入附件格式修复。未实跑 PostgreSQL 迁移／RLS、实际 Runtime 镜像／浏览器负载、远端发布或 replacement，未声称线上页面已恢复。下一可执行切片为 FR-562。
 
-### FR-562 单用户浏览器读取协调验收 — READY
+### FR-562 单用户浏览器读取协调验收 — DONE
 
 依赖：FR-561B。
 
 范围：真实浏览器验证首屏、事件恢复、快速切换、前台恢复及历史预取的单飞／退让；仅修复未满足现有契约的请求放大，不减少完整历史或改变正式事件事实源。
 
-### FR-563 单用户实际镜像与受控恢复验收 — TODO
+完成：真实 Chromium 复现切换期间取消 A 的 hydration 后、A 受控服务端响应尚未结束就开始 C 的请求放大。hydration observer 改为同宿主稳定的传输 Query，保留在途请求及单飞标志，120 毫秒合并选择后在完成时仅追赶最后 binding；返回正在读取的 binding 消费原完成，不重复 hydration。正式三项快照仍按原 binding 独立写缓存，信号取消后拒绝发布，迟到缺失错误不误删当前 binding。前台恢复信号在 hydration 门禁期间保留而不发起独立 events/readiness，正式快照就绪后再补读；流／定时恢复亦服从该门禁。历史预取每页开始前等待前台事件协调器完成，保留完整分页、隐藏退让与耗尽入口记忆。两宿主 events/history 增加既有 15 秒交互传输期限；补齐 Flow Node 的 AbortSignal 透传，Query signal／宿主 controller 分别取消 Query 和直接恢复读取，取消后不发布结果或递归追赶。12 秒 hydration UI 期限和显式重试不变，浏览器取消不改变服务端 completion 释放槽位的契约。
+
+验收：新增真实 Chromium 专项 `9 passed`，覆盖两宿主首屏前台信号不穿透、visibility/focus 合并、增量期间只排队一个无 cursor 最新窗口、历史等待与恢复、宿主卸载 AbortSignal、快速 A→B→C 仅 A/C 两次 hydration、迟到 404 隔离，以及 A→B→A 不重复读取；既有定向回归 `17 passed, 3 failed`，通过项含首次／刷新 hydration、可信终态／运行态复用、显式超时重试、迟到消息、断流／message_complete、缺失 binding 停止重试、完整三页历史恢复／耗尽记忆与滚动稳定。该 3 条失败（历史页面要求预取后立即可见、原始错误详情默认展开、后台普通未读写入）均在独立未修改 HEAD `ddc6badd` 页面以相同断言复现；扩大回归还遇到 4 条既有失败（终态前台恢复不得新增请求的旧断言、删除按钮旧定位器、附件定位器歧义、文件引用旧定位器），也逐条在同一 HEAD 复现。扩大回归因既有长时间定位器等待中止，不记为完整通过；这 7 条失败未修复、未记为通过，保留 `.tmp/fr562-*` 对照截图／trace。专项取消测试以浏览器 fetch 的真实组合 signal 监听验证，受控路由拦截期间不能用 Playwright requestfailed 事件作为取消证据。Web lint、typecheck、production build（保留既有 chunk-size 提示）、唯一 Alembic head `0138_admin_resource_cleanup_operations`、任务状态及 git diff --check／staged diff 复核通过。本切片无数据库变更；API／WebSocket 使用受控响应，不是真实 OpenHands 负载。未构建 Runtime 镜像、远端发布或 replacement，未声称线上页面已恢复。下一可执行切片为 FR-563。
+
+
+### FR-563 单用户实际镜像与受控恢复验收 — READY
 
 依赖：FR-562。
 

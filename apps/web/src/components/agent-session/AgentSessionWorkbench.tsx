@@ -4553,6 +4553,12 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     pendingLatest: boolean;
     lastLatestReadAt: number;
   }>({ pendingLatest: false, lastLatestReadAt: 0 });
+  const eventReadAbortController = useRef(new AbortController());
+  useEffect(() => {
+    const controller = new AbortController();
+    eventReadAbortController.current = controller;
+    return () => controller.abort();
+  }, [host]);
   const reconciledMissingConversationIds = useRef(new Set<string>());
   const reconcileMissingConversationRef = useRef<(bindingId: string) => void>(() => undefined);
   const readinessSynchronization = useRef<{
@@ -5301,7 +5307,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     hydratedAt: number;
     running: boolean;
   }>());
-  const hydrationQueryKey = sessionQueryKey(host, 'conversation-hydration-request', workspace?.id, selected?.id);
+  // Keep the observer mounted across binding changes: cancelling a browser
+  // fetch does not release the backend's synchronous read worker.
+  const hydrationQueryKey = sessionQueryKey(host, 'conversation-hydration-request');
   const hydrationQuery = useQuery({
     queryKey: hydrationQueryKey,
     queryFn: async ({ signal }) => {
@@ -5309,6 +5317,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       if (!request) throw new Error('Conversation hydration selection is unavailable');
       const { workspaceId, bindingId } = request;
       const hydration = await api.conversationHydration(workspaceId, bindingId, signal);
+      signal.throwIfAborted();
       // Publish the coherent snapshot together. The presentation gate remains
       // closed until this request resolves, so none of these cache writes can
       // expose an older or partially refreshed transcript.
@@ -5340,12 +5349,14 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   });
   const refreshConversationHydration = hydrationQuery.refetch;
   const hydrationRequestInFlight = useRef(false);
+  const hydrationPendingSelection = useRef(false);
   const hydrationAttemptCount = useRef(0);
   const hydrationSelectionTimer = useRef<number | undefined>(undefined);
   const hydrationRetryTimer = useRef<number | undefined>(undefined);
   const hydrationRequestGeneration = useRef(0);
   const runSelectedHydration = useCallback(async () => {
     if (hydrationRequestInFlight.current) return;
+    hydrationPendingSelection.current = false;
     const request = hydrationSelection.current;
     if (!request) return;
     hydrationRequestInFlight.current = true;
@@ -5364,11 +5375,14 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     if (hydrationRequestGeneration.current !== requestGeneration) return;
     const current = hydrationSelection.current;
     if (!current || current.workspaceId !== request.workspaceId || current.bindingId !== request.bindingId) {
-      // The latest selection owns its own debounce timer. Do not let a
-      // cancelled, stale request bypass that timer and start an intermediate
-      // conversation hydration while the user is still switching sessions.
+      // Chase only the last settled selection, after the previous read has
+      // completed. A still-pending debounce retains ownership of that start.
+      if (hydrationPendingSelection.current && hydrationSelectionTimer.current === undefined) {
+        void runSelectedHydrationRef.current();
+      }
       return;
     }
+    hydrationPendingSelection.current = false;
     if (result.isSuccess) {
       setHydrationPhase({ bindingId: request.bindingId, state: 'ready' });
       return;
@@ -5412,12 +5426,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       setHydrationPhase(undefined);
       return;
     }
-    void queryClient.cancelQueries({
-      queryKey: sessionQueryKey(host, 'conversation-hydration-request'),
-      exact: false,
-    });
-    hydrationRequestInFlight.current = false;
-    hydrationRequestGeneration.current += 1;
     hydrationSelection.current = { workspaceId, bindingId };
     hydrationAttemptCount.current = 0;
     const trusted = trustedHydrations.current.get(bindingId);
@@ -5431,10 +5439,12 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       && queryClient.getQueryData(sessionQueryKey(host, 'conversation-input-readiness', workspaceId, bindingId))
       && queryClient.getQueryData(sessionQueryKey(host, 'conversation-context', workspaceId, bindingId)),
     );
+    hydrationPendingSelection.current = !reusable;
     setHydrationPhase({ bindingId, state: reusable ? 'ready' : 'loading' });
 
     if (hydrationSelectionTimer.current !== undefined) {
       window.clearTimeout(hydrationSelectionTimer.current);
+      hydrationSelectionTimer.current = undefined;
     }
     if (hydrationRetryTimer.current !== undefined) {
       window.clearTimeout(hydrationRetryTimer.current);
@@ -5449,11 +5459,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     }
     hydrationSelectionTimer.current = window.setTimeout(() => {
       hydrationSelectionTimer.current = undefined;
-      void runSelectedHydrationRef.current();
+      if (hydrationPendingSelection.current) void runSelectedHydrationRef.current();
     }, CONVERSATION_HYDRATION_SELECTION_DELAY_MS);
-  // The execution callback changes with the per-binding query key. Keep this
-  // selection effect scoped to the selection itself so a refetch identity
-  // change cannot restart an intermediate hydration during rapid navigation.
+  // Only an actual selection change schedules hydration. Query notifications
+  // must not restart an intermediate binding during rapid navigation.
   }, [host, queryClient, selected?.id, workspace?.id]);
   useEffect(() => () => {
     hydrationSelection.current = undefined;
@@ -5484,7 +5493,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       hydrationRequestGeneration.current += 1;
       hydrationRequestInFlight.current = false;
       void queryClient.cancelQueries({
-        queryKey: sessionQueryKey(host, 'conversation-hydration-request', workspaceId, bindingId),
+        queryKey: sessionQueryKey(host, 'conversation-hydration-request'),
         exact: true,
       });
       setHydrationPhase({
@@ -5567,8 +5576,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     && conversationHasReachedTerminalState(nativeExecutionStatus);
   const eventsQuery = useQuery<OpenHandsConversationEventBatch>({
     queryKey: eventQueryKey,
-    queryFn: async () => {
-      const latest = await api.conversationEvents(workspace!.id, selected!.id);
+    queryFn: async ({ signal }) => {
+      const latest = await api.conversationEvents(workspace!.id, selected!.id, undefined, undefined, undefined, signal);
+      signal.throwIfAborted();
       if (eventSynchronization.current.scope !== selected!.id) {
         eventSynchronization.current = { scope: selected!.id, pendingLatest: false, lastLatestReadAt: Date.now() };
       } else {
@@ -5619,8 +5629,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const scheduleContextRefreshRef = useRef(scheduleContextRefresh);
   scheduleContextRefreshRef.current = scheduleContextRefresh;
   const synchronizeConversationEvents = useCallback((preferLatest = false, diagnosticTrigger = 'scheduled'): Promise<void> => {
-    if (!workspace || !selected) return Promise.resolve();
+    if (!workspace || !selected || !hydrationFallbackAllowed) return Promise.resolve();
     const scope = selected.id;
+    const signal = eventReadAbortController.current.signal;
+    if (signal.aborted) return Promise.resolve();
     // Recovery callbacks can outlive the route that scheduled them. Once a
     // binding is authoritatively gone, never let an old closure restart REST
     // reconciliation for it after the visible session has already changed.
@@ -5640,8 +5652,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       const cursor = forceLatest || latestWindowDue ? undefined : current?.next_cursor ?? undefined;
       if (!cursor) eventSynchronization.current.lastLatestReadAt = Date.now();
 
-      return api.conversationEvents(workspace.id, scope, cursor, undefined, diagnosticTrigger).then(incoming => {
-        if (eventSynchronization.current.scope !== scope) return;
+      return api.conversationEvents(workspace.id, scope, cursor, undefined, diagnosticTrigger, signal).then(incoming => {
+        if (signal.aborted || eventSynchronization.current.scope !== scope) return;
         queryClient.setQueryData<OpenHandsConversationEventBatch>(eventQueryKey, existing => existing
           ? (() => {
               // A stream frame or another reconciliation may have advanced the
@@ -5664,6 +5676,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         );
         scheduleContextRefreshRef.current(workspace.id, scope);
       }).catch(error => {
+        if (signal.aborted) return;
         if (isMissingConversationError(error)) {
           // This path bypasses React Query while a hot-reentry, stream-close,
           // or foreground reconciliation is in flight. It must still treat an
@@ -5675,7 +5688,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         // The next scheduled reconciliation is sufficient. A transient read
         // failure must not clear already-rendered native events.
       }).then(async () => {
-        if (eventSynchronization.current.scope !== scope || !eventSynchronization.current.pendingLatest) return;
+        if (signal.aborted || eventSynchronization.current.scope !== scope || !eventSynchronization.current.pendingLatest) return;
         eventSynchronization.current.pendingLatest = false;
         await run(true);
       });
@@ -5689,7 +5702,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     });
     eventSynchronization.current.inFlight = synchronization;
     return synchronization;
-  }, [api, eventQueryKey, queryClient, selected, workspace]);
+  }, [api, eventQueryKey, hydrationFallbackAllowed, queryClient, selected, workspace]);
   const synchronizeConversationEventsRef = useRef(synchronizeConversationEvents);
   synchronizeConversationEventsRef.current = synchronizeConversationEvents;
   useEffect(() => {
@@ -5704,7 +5717,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     void synchronizeConversationEvents(true, 'hot_reentry');
   }, [selected?.id, selectedHydrationPhase, synchronizeConversationEvents, trustedHydration?.hydratedAt, trustedHydration?.running]);
   useEffect(() => {
-    if (!foregroundRecoverySignal || !pageVisible || !workspace || !selected
+    if (!foregroundRecoverySignal || !pageVisible || !workspace || !selected || !hydrationFallbackAllowed
       || foregroundRecoverySignal === handledForegroundRecoverySignal.current) return;
     handledForegroundRecoverySignal.current = foregroundRecoverySignal;
 
@@ -5716,7 +5729,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-activity', workspace.id) });
     void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-input-readiness', workspace.id, selected.id) });
     void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-confirmation', workspace.id, selected.id) });
-  }, [foregroundRecoverySignal, host, pageVisible, queryClient, selected, synchronizeConversationEvents, workspace]);
+  }, [foregroundRecoverySignal, host, hydrationFallbackAllowed, pageVisible, queryClient, selected, synchronizeConversationEvents, workspace]);
   // Older native pages are loaded once into volatile browser memory. They do
   // not enter the rendered event projection until the reader reaches the top.
   const historyPrefetchDelayMs = HISTORY_PREFETCH_DELAY_MS;
@@ -5751,6 +5764,12 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       // transcript responsive while retaining the complete history in RAM.
       while (historyCursor && Date.now() < cache.expiresAt) {
         if (!scopeIsActive() || controller.signal.aborted || document.visibilityState !== 'visible') return;
+        // A low-priority page must wait for foreground event recovery; do not
+        // launch more history reads while that formal request is stalled.
+        while (eventSynchronization.current.inFlight) {
+          await eventSynchronization.current.inFlight;
+          if (!scopeIsActive() || controller.signal.aborted || document.visibilityState !== 'visible') return;
+        }
         const cursor = historyCursor;
         if (seenHistoryCursors.has(cursor)) throw new Error('读取更早会话记录时，历史分页游标没有推进。');
         seenHistoryCursors.add(cursor);
@@ -6130,7 +6149,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       && !latestFormalTurnFinished
     )
     || (
-      !hydrationQuery.isPending
+      hydrationFallbackAllowed
       && effectiveTurnState !== 'paused'
       && hasUnfinishedFormalTurn
       && (!nativeTurnTerminal || terminalEventReconciliationActive)
@@ -6356,7 +6375,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     selectedConversationQuery.error,
     activeWorkspaceDetailsQuery.error,
     workspaceReferenceIndexQuery.error,
-    hydrationQuery.error,
+    hydrationExecution.current?.bindingId === selectedBindingId ? hydrationQuery.error : null,
     inputReadinessQuery.error,
     eventsQuery.error,
   ].find(isMissingConversationError);

@@ -654,11 +654,14 @@ test('Rapid conversation switching hydrates only the settled selection', async (
 
   await page.getByRole('button', { name: '快速切换会话 B', exact: true }).click();
   await page.getByRole('button', { name: '快速切换会话 C', exact: true }).click();
+  // Changing selection must not cancel-and-replace a still occupied server read.
+  await page.waitForTimeout(500);
+  expect(hydrationReads).toEqual(['rapid-switch-a']);
+  await expect(page.getByText('回复 rapid-switch-a', { exact: true })).toHaveCount(0);
+  releaseFirstHydration?.();
   await expect(page.getByText('回复 rapid-switch-c', { exact: true })).toBeVisible();
-  expect(hydrationReads).toContain('rapid-switch-c');
-  // Do not release A: the selected conversation must not wait for an abandoned
-  // hydration request that can be stalled by a proxy or disconnected Runtime.
-  expect(releaseFirstHydration).toBeDefined();
+  expect(hydrationReads).toEqual(['rapid-switch-a', 'rapid-switch-c']);
+  await expect(page.getByText('回复 rapid-switch-a', { exact: true })).toHaveCount(0);
 });
 
 

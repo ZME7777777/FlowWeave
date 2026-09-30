@@ -494,7 +494,7 @@ export const api = {
     if (cursor) query.set('cursor', cursor);
     if (historyCursor) query.set('history_cursor', historyCursor);
     if (diagnosticTrigger) query.set('diagnostic_trigger', diagnosticTrigger);
-    return request<OpenHandsConversationEventBatch>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/events${query.size ? `?${query}` : ''}`, { signal });
+    return request<OpenHandsConversationEventBatch>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/events${query.size ? `?${query}` : ''}`, { signal, timeoutMs: INTERACTIVE_REQUEST_TIMEOUT_MS });
   },
   agentConversationHydration: (workspaceId: string, bindingId: string, signal?: AbortSignal) =>
     request<import('../types').AgentConversationHydration>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/hydration`, { signal, timeoutMs: INTERACTIVE_REQUEST_TIMEOUT_MS }),
@@ -1027,12 +1027,12 @@ export const nodeSessionApi = {
     request<import('../types').AgentConversation>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}`, json('PATCH', { title })),
   setUnread: (flowRunId: string, attemptId: string, bindingId: string, unread: boolean, unread_origin?: 'MANUAL' | 'SYSTEM') =>
     request<import('../types').AgentConversation>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/unread`, json('PUT', { unread, unread_origin })),
-  events: (flowRunId: string, attemptId: string, bindingId: string, cursor?: string, historyCursor?: string, diagnosticTrigger?: string) => {
+  events: (flowRunId: string, attemptId: string, bindingId: string, cursor?: string, historyCursor?: string, diagnosticTrigger?: string, signal?: AbortSignal) => {
     const query = new URLSearchParams();
     if (cursor) query.set('cursor', cursor);
     if (historyCursor) query.set('history_cursor', historyCursor);
     if (diagnosticTrigger) query.set('diagnostic_trigger', diagnosticTrigger);
-    return request<import('../types').OpenHandsConversationEventBatch>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/events${query.size ? `?${query}` : ''}`);
+    return request<import('../types').OpenHandsConversationEventBatch>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/events${query.size ? `?${query}` : ''}`, { signal, timeoutMs: INTERACTIVE_REQUEST_TIMEOUT_MS });
   },
   hydration: (flowRunId: string, attemptId: string, bindingId: string, signal?: AbortSignal) =>
     request<import('../types').AgentConversationHydration>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/hydration`, { signal, timeoutMs: INTERACTIVE_REQUEST_TIMEOUT_MS }),
