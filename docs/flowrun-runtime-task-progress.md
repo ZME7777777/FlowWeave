@@ -7795,3 +7795,13 @@ OpenHands adapter 现为 context、activity 和 pending-confirmation 增加每 R
 完成：Admin Web 新增“内部通道”Tab，按服务对数据库池聚合 `size`、`checked_out`、`overflow` 为单一卡片，展示已借出／基础容量、利用率、额外连接和明确的通道用途（包括 hydration、message、workspace、lifecycle、history、control 等）。负 overflow 解释为基础池存在空闲连接，额外连接仅显示正值。Runtime 正式读取、Relay／终端及辅助／后台搜索拒绝独立展示；正式读取卡片明确是当前采样 API worker 的本地值，不能误作多 worker 或同一 Runtime generation 的全局并发。原始 Prometheus 标签移入可展开核验区。
 
 验收：`pnpm --dir apps/admin-web typecheck`、`pnpm --dir apps/admin-web lint`、`pnpm --dir apps/admin-web build` 与 `git diff --check` 通过。未运行浏览器 E2E：Admin Web 未安装 Playwright，本机桌面自动化亦因本地 Codex 认证配置不可用而无法访问预览；未修改 Admin API、数据库、Runtime、采集器、Docker 或远端环境。
+
+### FR-558 Admin SPA Shell 缓存收口 — DONE
+
+依赖：FR-557。
+
+范围：修复 Admin-only 发布后浏览器仍可复用旧 `/flowweave/admin/` SPA HTML shell、因而继续加载已打开页面的旧 JavaScript bundle。仅修改 `admin-web` 内部 Nginx 的 `/admin/` SPA fallback 缓存响应头；不改变 Admin API、产品 Web、Runtime、数据库、采集器或代理拓扑。
+
+完成：`/admin/` fallback 现在强制 `Cache-Control: no-store, no-cache, must-revalidate`、`Pragma: no-cache` 和过期时间；content-hashed assets 继续 immutable。这样 Admin-only 镜像替换后，下一次页面导航或刷新会取得新的 HTML shell，不再让旧 shell 引用旧 bundle。
+
+验收：`pnpm --dir apps/admin-web typecheck`、`pnpm --dir apps/admin-web lint`、`pnpm --dir apps/admin-web build` 与 `git diff --check` 通过。已只读核验 FR-557 部署后服务器内部 `web → admin-web` 代理及公网下载的 Admin JS 均包含“内部通道”；缓存头修复尚待本切片提交后替换 `admin-web` 验证。未修改 Admin API、数据库、Runtime、Docker Compose 或远端环境文件。
