@@ -448,6 +448,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   let interrupted = false;
   let pauseReadinessGate: Promise<void> | undefined;
   let releasePauseReadiness: (() => void) | undefined;
+  let pauseReadinessRefreshStarted = false;
   let pauseReadinessReturnsIdle = false;
   let pauseBufferedEvent = false;
   let backfilledTaskAction = false;
@@ -960,7 +961,10 @@ test('top-level Agent workspace creates a direct conversation and restores its U
         await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ready: true, execution_status: 'idle' }) });
         return;
       }
-      if (interrupted && pauseReadinessGate) await pauseReadinessGate;
+      if (interrupted && pauseReadinessGate) {
+        pauseReadinessRefreshStarted = true;
+        await pauseReadinessGate;
+      }
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
         ready: !modelIsResponding || interrupted,
         execution_status: pauseReadinessReturnsIdle ? 'idle' : modelIsResponding ? (interrupted ? 'paused' : 'running') : 'idle',
@@ -2353,6 +2357,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   pauseReadinessGate = new Promise<void>(resolve => { releasePauseReadiness = resolve; });
   await page.getByRole('button', { name: '暂停当前 Agent' }).click();
   await expect(page.getByRole('button', { name: '暂停请求已发送' })).toBeDisabled();
+  await expect.poll(() => pauseReadinessRefreshStarted).toBe(true);
   pauseBufferedEvent = true;
   await page.evaluate(() => window.dispatchEvent(new Event('focus')));
   await expect(page.getByText('暂停请求确认前到达的正式事件。')).toHaveCount(0);

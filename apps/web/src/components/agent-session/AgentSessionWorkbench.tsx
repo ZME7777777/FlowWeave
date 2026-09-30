@@ -4598,6 +4598,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     inFlight?: Promise<AgentConversationInputReadiness>;
     lastRequestAt: number;
   }>({ lastRequestAt: 0 });
+  const forceReadinessRefresh = useRef(false);
   const hotReentryHydrationKey = useRef<string | undefined>(undefined);
   const historyPrependWaiters = useRef(new Map<number, {
     scope: string;
@@ -5608,7 +5609,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     const now = Date.now();
     const synchronization = readinessSynchronization.current;
     if (synchronization.scope === scope && synchronization.inFlight) return synchronization.inFlight;
-    if (synchronization.scope === scope && now - synchronization.lastRequestAt < INPUT_READINESS_MIN_REQUEST_INTERVAL_MS) {
+    const forceRefresh = forceReadinessRefresh.current;
+    forceReadinessRefresh.current = false;
+    if (!forceRefresh && synchronization.scope === scope && now - synchronization.lastRequestAt < INPUT_READINESS_MIN_REQUEST_INTERVAL_MS) {
       const cached = queryClient.getQueryData<AgentConversationInputReadiness>(inputReadinessQueryKey);
       if (cached) return Promise.resolve(cached);
     }
@@ -6590,8 +6593,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const reconcileConversationProjection = useCallback(() => {
     void synchronizeConversationEvents(true);
     if (!workspace || !selected) return;
-    // A control action is an explicit state transition, so this is one of the
-    // few places permitted to refresh its exact Runtime readiness.
+    // A control action is an explicit state transition, so it must not reuse
+    // the pre-action readiness snapshot from the normal read throttle.
+    forceReadinessRefresh.current = true;
     void queryClient.invalidateQueries({
       queryKey: sessionQueryKey(host, 'conversation-input-readiness', workspace.id, selected.id),
       exact: true,
