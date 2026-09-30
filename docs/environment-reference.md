@@ -62,7 +62,14 @@ API blocking 预算小于 `5` 时没有额外预留空间，工作区仍与 hist
 
 `RUNTIME_AUXILIARY_SATURATED` 表示 API 工作区通道排队超时；
 `RUNTIME_AUXILIARY_READ_SATURATED` 则表示适配器的每 Runtime 展示性读取通道饱和，两者不能混淆。
-当前固定 OpenHands 的无过滤事件窗口共用两个 read executor 线程；浏览器历史预取每页至少间隔 `1.5` 秒，
+固定 OpenHands 的会话详情、按 ID 读取事件及无过滤事件窗口共用独立 read executor，默认 `8` 线程。
+服务配置 `max_concurrent_reads`（或 Agent Server 启动环境 `OH_MAX_CONCURRENT_READS`）允许 `1`–`32`，
+与后台搜索／Context 的两个线程及控制／生命周期通道隔离，deferred init 保留启动配置。
+该配置属于 Agent Server；只写入平台 `.env` 不会调整已运行 Runtime。平台的
+`RUNTIME_READ_PER_RUNTIME_CONCURRENCY` 仍默认每 API worker、每 generation `2`，四 worker 最多
+提供 `8` 个正式读取工作单元，不应随 Runtime 线程数同时放大为每 worker `8`。线程扩容不增加数据库预算，
+也不消除同会话原生锁等待；新来源版本须构建镜像并通过正式 Runtime 生命周期生效。
+浏览器历史预取每页至少间隔 `1.5` 秒，
 隐藏页面时停止并取消浏览器在途请求，恢复可见后从已加载的下一页继续。同入口游标完成后不自动重复扫描，
 新入口游标仍可加载；这些措施不限制完整历史条数。取消浏览器请求不会提前释放仍在执行的后端线程。
 

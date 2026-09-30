@@ -7815,3 +7815,37 @@ OpenHands adapter 现为 context、activity 和 pending-confirmation 增加每 R
 完成：两类宿主均以不可变 prepared locator 冻结授权后的 binding、Runtime Session、OpenHands conversation ID、Runtime generation/resource 与 cache identity；随后通过新的 `run_hydration_runtime` 在无 SQLAlchemy session 的 hydration executor 上执行 reload/active-events/readiness，最后重新短借 hydration DB pool 复核 binding Runtime Session、conversation ID 和 generation/resource，并仅在 fence 仍匹配时投影附件、任务控制、监控与诊断。Runtime 阶段保留原 deadline、线程槽和 Runtime bulkhead，不因提前释放 DB 而增加实际 OpenHands 并发。新增低基数 operation 指标 `agent_session.hydration.prepare_db`、`runtime_read`、`project_db`，用于区分 DB 定位、Runtime 读取和控制面投影耗时；不以用户、binding、workspace 或事件 ID 作为标签。
 
 验收：无数据库 fixture 的 hydration／executor 定向 pytest `20 passed, 31 deselected`，覆盖 Workspace/Node prepare → runtime → project 顺序、Runtime-phase saturation 的既有 `AGENT_RUNTIME_UNAVAILABLE` 归一、无 DB session 的 Runtime helper、取消后槽位持续占用到线程退出、generation identity drift fence 与 phase 指标低基数。受影响 Ruff check（Node router 仅运行 import check；其 12 条既有附件路由 E501 未格式化或记为通过）、Ruff format（Node router 除外）、`py_compile`、唯一 Alembic head `0138_admin_resource_cleanup_operations` 与 `git diff --check` 通过。`tests/test_conversations.py -k hydration` 已尝试但本机 Docker socket 不可用，Testcontainers fixture 在断言前失败，未记为通过；未运行数据库迁移、真实 Runtime、线上负载、远端或部署。下一切片应分别审计 current events/history/activity 与写路径的 intent/finalize 解耦，不能与本切片混合。
+
+### FR-560 单用户 Runtime 正式读取容量 — DONE
+
+依赖：FR-555A、FR-559（均 DONE）。
+
+范围：在固定 OpenHands `baseline` 扩展中将正式读取池容量变为受校验的服务配置，默认 8，支持配置文件、环境与 deferred init，并经服务工厂传递到所有 live／reload／persisted reader 共用的读取池。保留后台、控制、生命周期、运行和租约池的既有隔离；平台每 API worker 的正式读取准入仍为 2，不扩大数据库预算。更新不可变源码归档、source lock、provenance 和镜像契约探针，验证配置与实际并发／隔离，不能以包版本或静态线程数替代行为证据。本切片不做远端部署、运行中 Runtime replacement、读取 deadline 或 Web 请求调度变更。
+
+完成：OpenHands `baseline` commit `d3a9a1f99b144d8799df170c1e1ee9ca0bf4b19d` 新增服务配置 `max_concurrent_reads`，默认 8、合法范围 1–32；配置文件与 `OH_MAX_CONCURRENT_READS` 环境覆盖经正式服务工厂进入独立读取池，deferred init 保留启动配置，不新增会话参数或 REST 字段。所有 live／reload／persisted reader 继续使用服务拥有的同一读取池。平台每 worker 的 2 槽准入与数据库预算不变；背景／控制／生命周期／运行／租约容量不变。新增镜像内行为探针在两个后台线程阻塞时确认八个正式读取线程可同时执行，第九个等待实际 completion；同时检查正式事件路由仍使用读取池，避免仅凭四包版本误判扩展已生效。不可变归档 `infra/openhands/vendor/openhands-source-d3a9a1f99b144d8799df170c1e1ee9ca0bf4b19d.tar.gz` SHA-256 为 `7d2acc7d0191a7d69367f081d74f57c8a42a802c39feb19016c622f86e430ea3`，source lock、provenance、Dockerfile、探针预期、平台身份与来源架构断言同步冻结。
+
+验收：配置／deferred init／真实服务并发与隔离 pytest `43 passed`，真实 FastAPI HTTP 单用户回归 `1 passed`；后者同时阻塞 2 个 Context 和 7 个正式事件读取，仍可读取第 8 个事件、会话详情和健康探针。恢复旧两线程实现时，live／reloaded 的八并发回归均按预期失败（2 failed、2 passed）；取消读取不提前释放实际线程的回归通过。安全解包不可变归档后，确认四包源码版本 1.49.5、实际导入归档源码并重跑相同 43 项与 HTTP 回归均通过；镜像行为探针的独立函数在归档源码上通过，未将其记为实际镜像验收。平台 Runtime 合同 pytest `11 passed`；两个不依赖数据库的来源架构函数直接调用通过，lock／provenance／归档 SHA／平台／探针身份一致。受影响 Native Ruff／format／Pyright（0 errors）、FlowWeave Ruff／format／编译、唯一 Alembic head `0138_admin_resource_cleanup_operations`、git diff --check 与 staged diff 复核通过；contract_check.py 的既有 E402 import-layout 诊断未处理，忽略 E402 后其余 lint 通过。未构建实际 Runtime 镜像、未实跑迁移、未做线上负载、远端部署或 replacement；未声称页面已恢复。下一可执行切片为 FR-561。
+
+### FR-561 正式事件读取总预算与占槽取证 — READY
+
+依赖：FR-560。
+
+范围：正式事件恢复的全链路总预算、准入等待、线程实际 completion 释放及低基数等待／耗时取证；不混入数据库连接解耦或消息写语义。
+
+### FR-561B 普通正式读取与数据库连接解耦 — TODO
+
+依赖：FR-561。
+
+范围：单独审计普通 events/history 读路径，按 prepare／无 DB Runtime read／projection fence 解耦；保持现有授权、缓存身份、generation fence 和连接预算。
+
+### FR-562 单用户浏览器读取协调验收 — TODO
+
+依赖：FR-561B。
+
+范围：真实浏览器验证首屏、事件恢复、快速切换、前台恢复及历史预取的单飞／退让；仅修复未满足现有契约的请求放大，不减少完整历史或改变正式事件事实源。
+
+### FR-563 单用户实际镜像与受控恢复验收 — TODO
+
+依赖：FR-562。
+
+范围：固定镜像契约、单用户运行与读取并发故障注入、来源身份与性能目标；远端发布／既有 Runtime replacement 另按部署预检与活跃会话影响规则执行，不将本地测试伪记为页面恢复。

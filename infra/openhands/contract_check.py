@@ -15,7 +15,7 @@ from importlib.metadata import distribution, version
 from inspect import getsource, signature
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from threading import Event, Thread
+from threading import Barrier, Event, Thread
 from types import SimpleNamespace
 from unittest.mock import patch
 from uuid import uuid4
@@ -151,9 +151,9 @@ from openhands.tools.task.manager import Task, TaskManager, TaskStatus
 
 EXPECTED_VERSION = "1.49.5"
 EXPECTED_UPSTREAM_BASE = "e21d77673b738f056676044600c4ad81c5a575c8"
-EXPECTED_SOURCE_COMMIT = "b556fd8b0d62af2c8d7d63c63a532b74f8f7e168"
+EXPECTED_SOURCE_COMMIT = "d3a9a1f99b144d8799df170c1e1ee9ca0bf4b19d"
 EXPECTED_SOURCE_ARCHIVE_SHA256 = (
-    "d2d172fc7393478d60a3ad42955d097cce01c5136712b59a96c9b5d4b03d835a"
+    "7d2acc7d0191a7d69367f081d74f57c8a42a802c39feb19016c622f86e430ea3"
 )
 PACKAGES = (
     "openhands-agent-server",
@@ -223,6 +223,57 @@ REQUIRED_START_FIELDS = {
 
 def _field_default(model: type[object], name: str) -> object:
     return model.model_fields[name].default  # type: ignore[attr-defined]
+
+
+async def _assert_formal_read_capacity_contract() -> None:
+    """Exercise installed native pools, rather than trusting package versions."""
+
+    from openhands.agent_server.config import Config
+
+    assert Config().max_concurrent_reads == 8
+    assert "_run_read" in getsource(EventService.get_event)
+    assert "_run_read" in getsource(EventService.search_events)
+    assert "max_concurrent_reads=config.max_concurrent_reads" in getsource(
+        ConversationService.get_instance
+    )
+    with TemporaryDirectory() as directory:
+        async with ConversationService(
+            conversations_dir=Path(directory),
+            max_concurrent_runs=4,
+            max_concurrent_reads=8,
+        ) as service:
+            release = Event()
+            background_entered = Barrier(3)
+            reads_entered = Barrier(9)
+
+            def blocked(barrier: Barrier) -> None:
+                barrier.wait(timeout=5)
+                assert release.wait(timeout=15)
+
+            background = [
+                asyncio.create_task(
+                    service._run_background(blocked, background_entered)
+                )
+                for _ in range(2)
+            ]
+            reads: list[asyncio.Task[None]] = []
+            queued: asyncio.Task[bool] | None = None
+            try:
+                await asyncio.to_thread(background_entered.wait, 5)
+                reads = [
+                    asyncio.create_task(service._run_read(blocked, reads_entered))
+                    for _ in range(8)
+                ]
+                await asyncio.to_thread(reads_entered.wait, 5)
+                queued = asyncio.create_task(service._run_read(lambda: True))
+                completed, _ = await asyncio.wait({queued}, timeout=0.1)
+                assert not completed, "the installed read pool exceeded eight threads"
+                assert not any(task.done() for task in background + reads)
+            finally:
+                release.set()
+                await asyncio.gather(*background, *reads)
+                if queued is not None:
+                    assert await asyncio.wait_for(queued, timeout=2)
 
 
 class _RecordingSubscriber(Subscriber[OpenHandsEvent]):
@@ -536,6 +587,7 @@ def main() -> None:
     )
     assert _WebSocketSubscriber.receives_streaming_deltas is True
     asyncio.run(_assert_targeted_streaming_delta_delivery())
+    asyncio.run(_assert_formal_read_capacity_contract())
     _assert_durable_event_log_sequence()
     _assert_async_turn_and_stream_idle_contract()
     _assert_profile_provider_secret_and_condenser_behavior()
