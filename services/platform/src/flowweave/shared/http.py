@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import logging
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
 from typing import Annotated, TypeVar, cast
 
@@ -211,6 +211,82 @@ async def run_blocking_hydration(container: Container, operation: Callable[[Sess
         active_limit=container.hydration_capacity or container.blocking_capacity,
         wait_timeout=hydration_time_left(),
     )
+
+
+async def observe_hydration_phase(container: Container, phase: str, operation: Awaitable[T]) -> T:
+    """Record one bounded hydration phase without high-cardinality labels."""
+
+    started_at = asyncio.get_running_loop().time()
+    outcome = "error"
+    try:
+        result = await operation
+        outcome = "ok"
+        return result
+    finally:
+        metrics = getattr(container, "metrics", None)
+        if metrics is not None:
+            metrics.observe_operation(
+                f"agent_session.hydration.{phase}",
+                asyncio.get_running_loop().time() - started_at,
+                outcome=outcome,
+            )
+
+
+async def run_hydration_runtime(container: Container, operation: Callable[[], T]) -> T:
+    """Run a formal hydration Runtime read without retaining a DB connection.
+
+    Hydration first resolves and fences the binding in a short database phase.
+    The potentially slow OpenHands read then retains only the hydration executor
+    slot, Runtime bulkhead, and request deadline. A second short DB phase
+    projects the returned formal events after revalidating the frozen identity.
+    """
+
+    try:
+        remaining = hydration_time_left()
+        await asyncio.wait_for(
+            container.hydration_io_slots.acquire(),
+            timeout=min(container.settings.blocking_pool_timeout_seconds, remaining)
+            if remaining is not None
+            else container.settings.blocking_pool_timeout_seconds,
+        )
+    except TimeoutError as exc:
+        hydration_time_left()
+        logger.warning(
+            "hydration Runtime executor saturated active_limit=%d",
+            container.hydration_capacity or container.blocking_capacity,
+        )
+        raise DomainError(
+            "RUNTIME_READ_SATURATED",
+            "Agent Runtime first-screen reads are busy; retry shortly",
+            503,
+        ) from exc
+
+    def execute() -> T:
+        hydration_time_left()
+        result = operation()
+        hydration_time_left()
+        return result
+
+    context = contextvars.copy_context()
+    try:
+        worker = asyncio.ensure_future(
+            asyncio.get_running_loop().run_in_executor(
+                container.hydration_executor,
+                context.run,
+                execute,
+            )
+        )
+    except BaseException:
+        container.hydration_io_slots.release()
+        raise
+
+    def release_slot(completed: asyncio.Future[T]) -> None:
+        container.hydration_io_slots.release()
+        if not completed.cancelled():
+            completed.exception()
+
+    worker.add_done_callback(release_slot)
+    return await asyncio.shield(worker)
 
 
 async def run_blocking_control(container: Container, operation: Callable[[Session], T]) -> T:

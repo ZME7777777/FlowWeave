@@ -38,6 +38,7 @@ from flowweave.shared.http import (
     acquire_terminal_slot,
     command_key,
     get_container,
+    observe_hydration_phase,
     release_terminal_slot,
     run_blocking,
     run_blocking_auxiliary,
@@ -47,6 +48,7 @@ from flowweave.shared.http import (
     run_blocking_lifecycle,
     run_blocking_message,
     run_blocking_mutation,
+    run_hydration_runtime,
     run_sync,
     run_terminal_control,
     run_terminal_stream,
@@ -1043,21 +1045,38 @@ async def agent_conversation_hydration(
         if cached is not None:
             return cached
         async with hydration_response_budget(container.settings.hydration_read_timeout_seconds):
-            key = await run_blocking_hydration(
+            prepared = await observe_hydration_phase(
                 container,
-                lambda session: conversations.conversation_cache_key(
-                    session, workspace_id, binding_id
-                ),
-            )
-            return await container.conversation_hydration_cache.get_or_load(
-                key,
-                lambda: run_blocking_hydration(
+                "prepare_db",
+                run_blocking_hydration(
                     container,
-                    lambda session: conversations.hydrate_conversation(
+                    lambda session: conversations.prepare_conversation_hydration(
                         session, workspace_id, binding_id
                     ),
                 ),
             )
+
+            async def load() -> dict[str, Any]:
+                snapshot = await observe_hydration_phase(
+                    container,
+                    "runtime_read",
+                    run_hydration_runtime(
+                        container,
+                        lambda: conversations.read_prepared_conversation_hydration(prepared),
+                    ),
+                )
+                return await observe_hydration_phase(
+                    container,
+                    "project_db",
+                    run_blocking_hydration(
+                        container,
+                        lambda session: conversations.project_prepared_conversation_hydration(
+                            session, prepared, snapshot
+                        ),
+                    ),
+                )
+
+            return await container.conversation_hydration_cache.get_or_load(prepared.key, load)
     except DomainError as exc:
         if exc.code not in {
             "EXECUTOR_UNAVAILABLE",

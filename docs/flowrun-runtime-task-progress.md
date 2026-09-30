@@ -7805,3 +7805,13 @@ OpenHands adapter 现为 context、activity 和 pending-confirmation 增加每 R
 完成：`/admin/` fallback 现在强制 `Cache-Control: no-store, no-cache, must-revalidate`、`Pragma: no-cache` 和过期时间；content-hashed assets 继续 immutable。这样 Admin-only 镜像替换后，下一次页面导航或刷新会取得新的 HTML shell，不再让旧 shell 引用旧 bundle。
 
 验收：`pnpm --dir apps/admin-web typecheck`、`pnpm --dir apps/admin-web lint`、`pnpm --dir apps/admin-web build` 与 `git diff --check` 通过。已只读核验 FR-557 部署后服务器内部 `web → admin-web` 代理及公网下载的 Admin JS 均包含“内部通道”；缓存头修复尚待本切片提交后替换 `admin-web` 验证。未修改 Admin API、数据库、Runtime、Docker Compose 或远端环境文件。
+
+### FR-559 Hydration Runtime 读取与数据库连接解耦 — DONE
+
+依赖：FR-555B1、FR-557（均 DONE）。
+
+范围：只重构 Agent Workspace 与 Flow Node 的 `/hydration` 读链路。将既有“持有 hydration 数据库 session 后调用 OpenHands”的长工作单元拆为短 DB prepare、无 DB Runtime 正式读取、短 DB projection/fence 三阶段。Runtime executor 槽位和 OpenHands formal-read bulkhead 在外部读取期间必须继续持有；不扩大连接池、线程池或 Runtime 并发，不修改普通 events/history/activity 读取或任何外部写入语义。
+
+完成：两类宿主均以不可变 prepared locator 冻结授权后的 binding、Runtime Session、OpenHands conversation ID、Runtime generation/resource 与 cache identity；随后通过新的 `run_hydration_runtime` 在无 SQLAlchemy session 的 hydration executor 上执行 reload/active-events/readiness，最后重新短借 hydration DB pool 复核 binding Runtime Session、conversation ID 和 generation/resource，并仅在 fence 仍匹配时投影附件、任务控制、监控与诊断。Runtime 阶段保留原 deadline、线程槽和 Runtime bulkhead，不因提前释放 DB 而增加实际 OpenHands 并发。新增低基数 operation 指标 `agent_session.hydration.prepare_db`、`runtime_read`、`project_db`，用于区分 DB 定位、Runtime 读取和控制面投影耗时；不以用户、binding、workspace 或事件 ID 作为标签。
+
+验收：无数据库 fixture 的 hydration／executor 定向 pytest `20 passed, 31 deselected`，覆盖 Workspace/Node prepare → runtime → project 顺序、Runtime-phase saturation 的既有 `AGENT_RUNTIME_UNAVAILABLE` 归一、无 DB session 的 Runtime helper、取消后槽位持续占用到线程退出、generation identity drift fence 与 phase 指标低基数。受影响 Ruff check（Node router 仅运行 import check；其 12 条既有附件路由 E501 未格式化或记为通过）、Ruff format（Node router 除外）、`py_compile`、唯一 Alembic head `0138_admin_resource_cleanup_operations` 与 `git diff --check` 通过。`tests/test_conversations.py -k hydration` 已尝试但本机 Docker socket 不可用，Testcontainers fixture 在断言前失败，未记为通过；未运行数据库迁移、真实 Runtime、线上负载、远端或部署。下一切片应分别审计 current events/history/activity 与写路径的 intent/finalize 解耦，不能与本切片混合。

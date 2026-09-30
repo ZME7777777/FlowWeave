@@ -28,6 +28,7 @@ from flowweave.shared.http import (
     run_blocking_lifecycle,
     run_blocking_message,
     run_blocking_mutation,
+    run_hydration_runtime,
 )
 from flowweave.shared.infrastructure.database import Database
 
@@ -182,6 +183,20 @@ async def test_cancelled_hydration_retains_slot_until_worker_exits() -> None:
                     break
                 await asyncio.sleep(0.001)
             assert await run_blocking_hydration(container, lambda _session: "ready") == "ready"
+
+
+@pytest.mark.asyncio
+async def test_hydration_runtime_read_needs_no_database_session() -> None:
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        container = SimpleNamespace(
+            hydration_executor=executor,
+            hydration_io_slots=asyncio.Semaphore(1),
+            hydration_capacity=1,
+            blocking_capacity=1,
+            settings=SimpleNamespace(blocking_pool_timeout_seconds=0.05),
+        )
+        with hydration_read_budget(0.5):
+            assert await run_hydration_runtime(container, lambda: "runtime-only") == "runtime-only"
 
 
 @pytest.mark.asyncio
@@ -614,6 +629,7 @@ async def test_slow_model_route_keeps_interactive_routes_available(host, monkeyp
             run_blocking,
             run_blocking_message,
             run_blocking_hydration,
+            run_hydration_runtime,
             run_blocking_auxiliary,
             run_blocking_history,
             run_blocking_control,

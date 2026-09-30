@@ -3496,12 +3496,30 @@ def hydration_context_snapshot(
     return dict(batch_context or {})
 
 
-def conversation_cache_key(db: Session, workspace_id: str, binding_id: str) -> ConversationCacheKey:
+@dataclass(frozen=True, slots=True)
+class PreparedConversationHydration:
+    """A DB-authorized hydration locator safe to carry across Runtime I/O.
+
+    It contains no event payload or secret. The projection phase resolves the
+    binding again and compares this identity before exposing the Runtime result.
+    """
+
+    workspace_id: str
+    binding_id: str
+    key: ConversationCacheKey
+    handle: RuntimeHandle
+
+
+def prepare_conversation_hydration(
+    db: Session, workspace_id: str, binding_id: str
+) -> PreparedConversationHydration:
+    """Resolve one hydration locator in a short database transaction."""
+
     workspace = _workspace(db, workspace_id)
     binding = _binding(db, workspace_id, binding_id)
     handle = _handle(db, workspace, binding)
     principal = current_principal()
-    return ConversationCacheKey(
+    key = ConversationCacheKey(
         user_id=principal.user_id if principal is not None else binding.owner_user_id,
         host_kind=binding.host_kind,
         host_id=workspace.id,
@@ -3510,50 +3528,134 @@ def conversation_cache_key(db: Session, workspace_id: str, binding_id: str) -> C
         runtime_generation=handle.runtime_resource_id,
         conversation_id=binding.openhands_conversation_id,
     )
+    return PreparedConversationHydration(
+        workspace_id=workspace.id,
+        binding_id=binding.id,
+        key=key,
+        handle=handle,
+    )
 
 
-def hydrate_conversation(db: Session, workspace_id: str, binding_id: str) -> dict[str, Any]:
-    """Return the latest formal event window and current native snapshots.
+def _assert_prepared_conversation_hydration_current(
+    db: Session, prepared: PreparedConversationHydration
+) -> tuple[AgentWorkspace, AgentConversationBinding]:
+    """Fence a Runtime result against deletion or generation replacement."""
 
-    Initial rendering only needs the bounded HEAD window. Older pages remain
-    available through ``history_cursor`` and are fetched by the browser's
-    background history lane after the current state is visible.
-    """
+    workspace = _workspace(db, prepared.workspace_id)
+    binding = _binding(db, prepared.workspace_id, prepared.binding_id)
+    current = _handle(db, workspace, binding)
+    if (
+        binding.runtime_session_id != prepared.key.runtime_session_id
+        or binding.openhands_conversation_id != prepared.key.conversation_id
+        or current.conversation_id != prepared.handle.conversation_id
+        or current.runtime_resource_id != prepared.handle.runtime_resource_id
+        or current.runtime_resource_name != prepared.handle.runtime_resource_name
+    ):
+        raise DomainError(
+            "AGENT_RUNTIME_REPLACEMENT_FENCED",
+            "Agent Runtime generation 已变化，请重新读取会话",
+            409,
+        )
+    return workspace, binding
 
-    workspace = _workspace(db, workspace_id)
-    binding = _binding(db, workspace_id, binding_id)
-    handle = _handle(db, workspace, binding)
+
+def read_prepared_conversation_hydration(
+    prepared: PreparedConversationHydration,
+) -> tuple[RuntimeEventBatch, dict[str, int | float | str | bool | None], dict[str, bool | str]]:
+    """Read formal OpenHands state without a FlowWeave DB session."""
+
     runtime = get_runtime()
-    started_at = time.monotonic()
-    outcome = "error"
     try:
-        # See events(): after a managed Runtime generation replacement, load
-        # the persisted native Conversation before asking the new Agent Server
-        # for its initial event window or readiness snapshot.
-        runtime.reload_conversation(handle)
-        batch = runtime.read_active_events(handle)
+        runtime.reload_conversation(prepared.handle)
+        batch = runtime.read_active_events(prepared.handle)
         context = hydration_context_snapshot(batch.context)
         readiness = (
-            runtime.input_readiness(handle).as_dict()
+            runtime.input_readiness(prepared.handle).as_dict()
             if batch.readiness is None
             else batch.readiness.as_dict()
         )
-        projected = events(
-            db,
-            workspace_id,
-            binding_id,
-            None,
-            batch_override=batch,
-        )
+        return batch, context, readiness
+    except ValueError as exc:
         log_conversation_diagnostic(
             operation="hydration",
             host_kind="agent_workspace",
-            binding_id=binding_id,
-            workspace_id=workspace_id,
-            batch=batch,
-            readiness=readiness,
+            binding_id=prepared.binding_id,
+            workspace_id=prepared.workspace_id,
+            outcome="error",
+            error_kind=type(exc).__name__,
+            force=True,
+        )
+        raise DomainError(
+            "RUNTIME_ACTIVE_BRANCH_INCONSISTENT",
+            "OpenHands returned an inconsistent active branch during hydration",
+            409,
+        ) from exc
+    except Exception as exc:
+        log_conversation_diagnostic(
+            operation="hydration",
+            host_kind="agent_workspace",
+            binding_id=prepared.binding_id,
+            workspace_id=prepared.workspace_id,
+            outcome="error",
+            error_kind=type(exc).__name__,
+            force=True,
+        )
+        raise
+
+
+def project_prepared_conversation_hydration(
+    db: Session,
+    prepared: PreparedConversationHydration,
+    snapshot: tuple[
+        RuntimeEventBatch,
+        dict[str, int | float | str | bool | None],
+        dict[str, bool | str],
+    ],
+) -> dict[str, Any]:
+    """Fence and project an already-read formal event batch in a short DB phase."""
+
+    workspace, _binding = _assert_prepared_conversation_hydration_current(db, prepared)
+    batch, context, readiness = snapshot
+    projected = events(
+        db,
+        workspace.id,
+        prepared.binding_id,
+        None,
+        batch_override=batch,
+    )
+    log_conversation_diagnostic(
+        operation="hydration",
+        host_kind="agent_workspace",
+        binding_id=prepared.binding_id,
+        workspace_id=workspace.id,
+        batch=batch,
+        readiness=readiness,
+    )
+    return {"events": projected, "context": context, "readiness": readiness}
+
+
+def conversation_cache_key(db: Session, workspace_id: str, binding_id: str) -> ConversationCacheKey:
+    return prepare_conversation_hydration(db, workspace_id, binding_id).key
+
+
+def hydrate_conversation(db: Session, workspace_id: str, binding_id: str) -> dict[str, Any]:
+    """Legacy single-session helper retained for direct callers and unit tests.
+
+    HTTP hydration uses the three explicit phases above so its Runtime read does
+    not retain this session. Direct callers should prefer those phases as well.
+    """
+
+    prepared = prepare_conversation_hydration(db, workspace_id, binding_id)
+    started_at = time.monotonic()
+    outcome = "error"
+    try:
+        result = project_prepared_conversation_hydration(
+            db,
+            prepared,
+            read_prepared_conversation_hydration(prepared),
         )
         outcome = "ok"
+        return result
     except ValueError as exc:
         log_conversation_diagnostic(
             operation="hydration",
@@ -3585,7 +3687,6 @@ def hydrate_conversation(db: Session, workspace_id: str, binding_id: str) -> dic
             metrics.observe_operation(
                 "agent_session.hydration", time.monotonic() - started_at, outcome=outcome
             )
-    return {"events": projected, "context": context, "readiness": readiness}
 
 
 def switch_conversation_model(

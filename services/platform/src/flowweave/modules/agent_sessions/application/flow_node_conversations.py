@@ -2319,9 +2319,26 @@ def read_node_conversation_events(
     )
 
 
-def node_conversation_cache_key(
-    db: Session, *, flow_run_id: str, attempt_id: str, binding_id: str
-) -> ConversationCacheKey:
+@dataclass(frozen=True, slots=True)
+class PreparedNodeConversationHydration:
+    """A node-session hydration locator that survives a DB-free Runtime read."""
+
+    flow_run_id: str
+    attempt_id: str
+    binding_id: str
+    key: ConversationCacheKey
+    handle: RuntimeHandle
+
+
+def prepare_node_conversation_hydration(
+    db: Session,
+    *,
+    flow_run_id: str,
+    attempt_id: str,
+    binding_id: str,
+) -> PreparedNodeConversationHydration:
+    """Authorize and locate a node session in a short DB transaction."""
+
     _binding_for_attempt(
         db,
         flow_run_id=flow_run_id,
@@ -2331,7 +2348,7 @@ def node_conversation_cache_key(
     binding = _binding_for_run(db, flow_run_id, binding_id)
     handle = _flow_run_handle(db, flow_run_id, binding_id)
     principal = current_principal()
-    return ConversationCacheKey(
+    key = ConversationCacheKey(
         user_id=principal.user_id if principal is not None else binding.owner_user_id,
         host_kind=binding.host_kind,
         host_id=attempt_id,
@@ -2340,6 +2357,109 @@ def node_conversation_cache_key(
         runtime_generation=handle.runtime_resource_id,
         conversation_id=binding.openhands_conversation_id,
     )
+    return PreparedNodeConversationHydration(
+        flow_run_id=flow_run_id,
+        attempt_id=attempt_id,
+        binding_id=binding.id,
+        key=key,
+        handle=handle,
+    )
+
+
+def _assert_prepared_node_conversation_hydration_current(
+    db: Session, prepared: PreparedNodeConversationHydration
+) -> AgentConversationBinding:
+    """Fence a node Runtime result against binding or generation drift."""
+
+    binding = _binding_for_attempt(
+        db,
+        flow_run_id=prepared.flow_run_id,
+        attempt_id=prepared.attempt_id,
+        binding_id=prepared.binding_id,
+    )
+    current = _flow_run_handle(db, prepared.flow_run_id, prepared.binding_id)
+    if (
+        binding.runtime_session_id != prepared.key.runtime_session_id
+        or binding.openhands_conversation_id != prepared.key.conversation_id
+        or current.conversation_id != prepared.handle.conversation_id
+        or current.runtime_resource_id != prepared.handle.runtime_resource_id
+        or current.runtime_resource_name != prepared.handle.runtime_resource_name
+    ):
+        raise DomainError(
+            "AGENT_RUNTIME_REPLACEMENT_FENCED",
+            "Agent Runtime generation 已变化，请重新读取会话",
+            409,
+        )
+    return binding
+
+
+def read_prepared_node_conversation_hydration(
+    prepared: PreparedNodeConversationHydration,
+) -> tuple[RuntimeEventBatch, dict[str, int | float | str | bool | None], dict[str, bool | str]]:
+    """Read the node OpenHands event window without holding a DB session."""
+
+    runtime = get_runtime()
+    try:
+        batch = runtime.read_active_events(prepared.handle)
+        context = hydration_context_snapshot(batch.context)
+        readiness = (
+            batch.readiness.as_dict()
+            if batch.readiness is not None
+            else runtime.input_readiness(prepared.handle).as_dict()
+        )
+        return batch, context, readiness
+    except Exception as exc:
+        log_conversation_diagnostic(
+            operation="hydration",
+            host_kind="flow_node",
+            binding_id=prepared.binding_id,
+            flow_run_id=prepared.flow_run_id,
+            attempt_id=prepared.attempt_id,
+            outcome="error",
+            error_kind=type(exc).__name__,
+            force=True,
+        )
+        raise
+
+
+def project_prepared_node_conversation_hydration(
+    db: Session,
+    prepared: PreparedNodeConversationHydration,
+    snapshot: tuple[
+        RuntimeEventBatch,
+        dict[str, int | float | str | bool | None],
+        dict[str, bool | str],
+    ],
+) -> dict[str, Any]:
+    """Fence and project a node batch after the DB-free Runtime read."""
+
+    binding = _assert_prepared_node_conversation_hydration_current(db, prepared)
+    batch, context, readiness = snapshot
+    log_conversation_diagnostic(
+        operation="hydration",
+        host_kind="flow_node",
+        binding_id=prepared.binding_id,
+        flow_run_id=prepared.flow_run_id,
+        attempt_id=prepared.attempt_id,
+        batch=batch,
+        readiness=readiness,
+    )
+    return {
+        "events": _event_batch_dict(db, binding, batch),
+        "context": context,
+        "readiness": readiness,
+    }
+
+
+def node_conversation_cache_key(
+    db: Session, *, flow_run_id: str, attempt_id: str, binding_id: str
+) -> ConversationCacheKey:
+    return prepare_node_conversation_hydration(
+        db,
+        flow_run_id=flow_run_id,
+        attempt_id=attempt_id,
+        binding_id=binding_id,
+    ).key
 
 
 def hydrate_node_conversation(
@@ -2349,33 +2469,19 @@ def hydrate_node_conversation(
     attempt_id: str,
     binding_id: str,
 ) -> dict[str, Any]:
-    """Hydrate one node session from its latest formal OpenHands event window."""
+    """Legacy direct helper; HTTP hydration uses the explicit three phases."""
 
-    _binding_for_attempt(db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id)
-    binding = _binding_for_run(db, flow_run_id, binding_id)
-    runtime = get_runtime()
-    handle = _flow_run_handle(db, flow_run_id, binding_id)
-    batch = runtime.read_active_events(handle)
-    context = hydration_context_snapshot(batch.context)
-    readiness = (
-        batch.readiness.as_dict()
-        if batch.readiness is not None
-        else runtime.input_readiness(handle).as_dict()
-    )
-    log_conversation_diagnostic(
-        operation="hydration",
-        host_kind="flow_node",
-        binding_id=binding_id,
+    prepared = prepare_node_conversation_hydration(
+        db,
         flow_run_id=flow_run_id,
         attempt_id=attempt_id,
-        batch=batch,
-        readiness=readiness,
+        binding_id=binding_id,
     )
-    return {
-        "events": _event_batch_dict(db, binding, batch),
-        "context": context,
-        "readiness": readiness,
-    }
+    return project_prepared_node_conversation_hydration(
+        db,
+        prepared,
+        read_prepared_node_conversation_hydration(prepared),
+    )
 
 
 def node_conversation_head(
