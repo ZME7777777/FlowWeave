@@ -538,6 +538,16 @@ function detailContent(value: unknown): string {
   return typeof value === 'string' ? value.trim().slice(0, 12_000) : '';
 }
 
+function fileLineLocation(details: Record<string, unknown>, resultDetails: Record<string, unknown>): string | undefined {
+  const viewRange = details.view_range ?? resultDetails.view_range;
+  if (Array.isArray(viewRange) && viewRange.length === 2 && viewRange.every(value => typeof value === 'number' && Number.isInteger(value) && value > 0)) {
+    const [start, end] = viewRange;
+    return start === end ? `第 ${start} 行` : `第 ${start}–${end} 行`;
+  }
+  const insertLine = details.insert_line ?? resultDetails.insert_line;
+  return typeof insertLine === 'number' && Number.isInteger(insertLine) && insertLine > 0 ? `第 ${insertLine} 行` : undefined;
+}
+
 function eventRevealSignature(event: OpenHandsConversationEvent): string {
   const { content, thought, summary, event_name: eventName, tool_name: toolName, details, runtime_skill: runtimeSkill, runtime_task: runtimeTask } = event.payload;
   return JSON.stringify({ content, thought, summary, eventName, toolName, details, runtimeSkill, runtimeTask });
@@ -787,8 +797,9 @@ function activityPresentation(entry: ActivityEntry, active: boolean, workspaceRo
           : ['str_replace', 'insert', 'append'].includes(operation) ? (failed ? '编辑失败' : completed ? '已编辑' : '正在编辑')
             : failed ? '文件操作失败' : completed ? '已完成文件操作' : '正在处理文件';
     const displayPath = path ? workspacePath(path, workspaceRoot) : '';
+    const lineLocation = fileLineLocation(details, resultDetails);
     return {
-      title: displayPath ? `${verb} ${displayPath}` : actionTitle(verb),
+      title: displayPath ? `${verb} ${displayPath}${lineLocation ? ` · ${lineLocation}` : ''}` : actionTitle(verb),
       status: failed ? '文件编辑器 · 失败' : completed ? '文件编辑器 · 已完成' : '文件编辑器',
       path: displayPath || undefined, operation: workspaceRelativeText(command, workspaceRoot) || undefined, fileOperation, fileKind, thought, actionDetails: details, resultDetails,
     };
