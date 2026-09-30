@@ -448,6 +448,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   let interrupted = false;
   let pauseReadinessGate: Promise<void> | undefined;
   let releasePauseReadiness: (() => void) | undefined;
+  let pauseReadinessReturnsIdle = false;
   let pauseBufferedEvent = false;
   let backfilledTaskAction = false;
   let incompleteLiveToolProjection = false;
@@ -595,7 +596,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
       workspaceGitRepositoryRequests += 1;
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
         repositories: [
-          { path: '/runtime/workspace/project', remote: 'https://example.test/repo.git', branch: 'main', head: '1234567890ab' },
+          { path: '/runtime/workspace/project', remote: 'https://example.test/repo.git', branch: 'main', head: '1234567890ab', upstream: 'origin/main', ahead: 2, behind: 1 },
           { path: '/runtime/workspace/project/backend', remote: 'https://example.test/backend.git', branch: 'main', head: '1234567890ab' },
         ],
       }) });
@@ -851,8 +852,8 @@ test('top-level Agent workspace creates a direct conversation and restores its U
           { id: 'file-action', event_type: 'TOOL_CALL', payload: { parent_id: 'tool-result', action_id: 'file-action', tool_call_id: 'file-call', llm_response_id: 'response-progress-1', tool_name: 'file_editor', event_name: 'FileEditorAction', summary: '更新运行配置', details: { command: 'str_replace', path: '/runtime/workspace/project/src/config.ts', old_str: 'const mode = "old"', new_str: 'const mode = "new"' }, timestamp: '2026-08-26T10:00:03.200Z' } },
           { id: 'file-result', event_type: 'TOOL_RESULT', payload: { parent_id: 'file-action', action_id: 'file-action', tool_call_id: 'file-call', tool_name: 'file_editor', event_name: 'FileEditorObservation', content: 'The file was edited successfully.', details: { command: 'str_replace', path: '/runtime/workspace/project/src/config.ts', is_error: false }, timestamp: '2026-08-26T10:00:03.500Z' } },
           { id: 'progress-note-next', event_type: 'THOUGHT', payload: { source: 'agent', parent_id: 'file-result', llm_response_id: 'response-progress-2', content: '接下来检查不同类型的文件。', thought: '接下来检查不同类型的文件。', timestamp: '2026-08-26T10:00:03.510Z' } },
-          { id: 'java-read-action', event_type: 'TOOL_CALL', payload: { parent_id: 'progress-note-next', action_id: 'java-read-action', tool_call_id: 'java-read-call', llm_response_id: 'response-progress-2', tool_name: 'file_editor', event_name: 'FileEditorAction', details: { command: 'view', path: '/runtime/workspace/project/src/Main.java' }, timestamp: '2026-08-26T10:00:03.520Z' } },
-          { id: 'java-read-result', event_type: 'TOOL_RESULT', payload: { parent_id: 'java-read-action', action_id: 'java-read-action', tool_call_id: 'java-read-call', tool_name: 'file_editor', event_name: 'FileEditorObservation', content: 'class Main {}', details: { command: 'view', path: '/runtime/workspace/project/src/Main.java', is_error: false }, timestamp: '2026-08-26T10:00:03.540Z' } },
+          { id: 'java-read-action', event_type: 'TOOL_CALL', payload: { parent_id: 'progress-note-next', action_id: 'java-read-action', tool_call_id: 'java-read-call', llm_response_id: 'response-progress-2', tool_name: 'file_editor', event_name: 'FileEditorAction', details: { command: 'view', path: '/runtime/workspace/project/src/Main.java', view_range: [12, 36] }, timestamp: '2026-08-26T10:00:03.520Z' } },
+          { id: 'java-read-result', event_type: 'TOOL_RESULT', payload: { parent_id: 'java-read-action', action_id: 'java-read-action', tool_call_id: 'java-read-call', tool_name: 'file_editor', event_name: 'FileEditorObservation', content: 'class Main {}', details: { command: 'view', path: '/runtime/workspace/project/src/Main.java', view_range: [12, 36], is_error: false }, timestamp: '2026-08-26T10:00:03.540Z' } },
           { id: 'properties-read-action', event_type: 'TOOL_CALL', payload: { parent_id: 'java-read-result', action_id: 'properties-read-action', tool_call_id: 'properties-read-call', tool_name: 'file_editor', event_name: 'FileEditorAction', details: { command: 'view', path: '/runtime/workspace/project/config/application.properties' }, timestamp: '2026-08-26T10:00:03.560Z' } },
           { id: 'properties-read-result', event_type: 'TOOL_RESULT', payload: { parent_id: 'properties-read-action', action_id: 'properties-read-action', tool_call_id: 'properties-read-call', tool_name: 'file_editor', event_name: 'FileEditorObservation', content: 'server.port=8080', details: { command: 'view', path: '/runtime/workspace/project/config/application.properties', is_error: false }, timestamp: '2026-08-26T10:00:03.580Z' } },
           { id: 'markdown-create-action', event_type: 'TOOL_CALL', payload: { parent_id: 'properties-read-result', action_id: 'markdown-create-action', tool_call_id: 'markdown-create-call', tool_name: 'file_editor', event_name: 'FileEditorAction', details: { command: 'create', path: '/runtime/workspace/project/README.md', file_text: '# Project' }, timestamp: '2026-08-26T10:00:03.600Z' } },
@@ -911,7 +912,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     if (path.endsWith('/attachments') && request.method() === 'POST') {
       await route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify({
         filename: '即时附件.png', mime_type: 'image/png', byte_size: 174 * 1024,
-        path: '/runtime/workspace/project/uploads/instant-attachment.png', image_data_url: 'data:image/png;base64,iVBORw==',
+        path: '/runtime/workspace/project/uploads/instant-attachment.png', image_data_url: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLzwwAAAABJRU5ErkJggg==',
       }) });
       return;
     }
@@ -962,7 +963,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
       if (interrupted && pauseReadinessGate) await pauseReadinessGate;
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
         ready: !modelIsResponding || interrupted,
-        execution_status: modelIsResponding ? (interrupted ? 'paused' : 'running') : 'idle',
+        execution_status: pauseReadinessReturnsIdle ? 'idle' : modelIsResponding ? (interrupted ? 'paused' : 'running') : 'idle',
       }) });
       return;
     }
@@ -1125,11 +1126,23 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect.poll(() => compactConversationItem.evaluate(element => element.getBoundingClientRect().height)).toBeLessThanOrEqual(40);
   await expect(page.getByText('工作区已就绪。')).toBeVisible();
   await expect(page.getByText('需要部署 Gateway', { exact: true })).toBeVisible();
+  const gitSummary = page.locator('.agent-workspace-git-summary');
+  await expect(gitSummary).toContainText('Git 信息');
+  await expect(gitSummary).toContainText('main');
+  await expect(gitSummary).toContainText('3 个文件已改动');
+  await expect(gitSummary).toContainText('本地 +2');
+  await expect(gitSummary).toContainText('远端 +1');
+  await gitSummary.getByRole('button').click();
+  await expect(page.getByLabel('全屏工作区工具')).toBeVisible();
+  await expect(page.getByRole('complementary', { name: 'Git' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '本地改动', exact: true })).toHaveClass(/active/);
+  await page.getByLabel('退出全屏').click();
+  await page.getByLabel('关闭工作区工具').click();
   await page.getByRole('button', { name: '文件', exact: true }).click();
   await expect(page.getByText('README.md', { exact: true })).toBeVisible();
   await expect(page.locator('.agent-file-tree input[type=checkbox]')).toHaveCount(0);
   await page.getByLabel('全屏查看工作区工具').click();
-  await expect.poll(() => workspaceGitRepositoryRequests).toBe(1);
+  await expect.poll(() => workspaceGitRepositoryRequests).toBe(2);
   const gitSidebar = page.getByRole('complementary', { name: 'Git' });
   await expect(gitSidebar).toBeVisible();
   await page.getByLabel('全部展开目录').click();
@@ -1153,7 +1166,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(gitSidebar).toBeVisible();
   const repositoryDirectory = page.locator('.agent-file-tree-row').filter({ hasText: 'backend' });
   await repositoryDirectory.locator('.agent-file-tree-item.directory').click();
-  await expect.poll(() => workspaceGitRepositoryRequests).toBe(2);
+  await expect.poll(() => workspaceGitRepositoryRequests).toBe(3);
   await expect(gitSidebar).toBeVisible();
   await expect(gitSidebar.getByRole('region', { name: '分支同步状态' })).toContainText('2 个提交待推送');
   await expect(gitSidebar.getByText('待推送', { exact: true })).toHaveCount(2);
@@ -1458,7 +1471,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(firstProgressGroup.getByText('已读取 工作区/src/Main.java')).toHaveCount(0);
   await expect(nextProgressGroup.locator(':scope > summary')).toContainText('接下来检查不同类型的文件。');
   await nextProgressGroup.locator(':scope > summary').click();
-  await expect(nextProgressGroup.getByText('已读取 工作区/src/Main.java')).toBeVisible();
+  await expect(nextProgressGroup.getByText('已读取 工作区/src/Main.java · 第 12–36 行')).toBeVisible();
   await expect(nextProgressGroup.getByText('已读取 工作区/config/application.properties')).toBeVisible();
   await expect(nextProgressGroup.getByText('已创建 工作区/README.md')).toBeVisible();
   await expect(nextProgressGroup.locator('.tool-skill')).toHaveCount(0);
@@ -1470,8 +1483,12 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     return Boolean(process && reply && (process.compareDocumentPosition(reply) & Node.DOCUMENT_POSITION_FOLLOWING));
   })).toBe(true);
   await expect(page.getByText('工作区已就绪。')).toHaveCount(1);
-  await expect(completedTurn.getByRole('button', { name: '已编辑 1 个文件' })).toBeVisible();
-  await expect(completedTurn.getByText('root-owned.ts', { exact: true })).toBeVisible();
+  const conversationChanges = page.getByRole('button', { name: '本会话已编辑 2 个文件' });
+  await expect(conversationChanges).toBeVisible();
+  await expect(page.getByText('config.ts', { exact: true })).toBeVisible();
+  await expect(page.getByText('root-owned.ts', { exact: true })).toBeVisible();
+  await expect(conversationChanges).toContainText('+2');
+  await expect(conversationChanges).toContainText('-2');
   const reportLink = page.getByRole('link', { name: '期权异动接口批量查询代码审查报告.md' });
   await expect(reportLink).toBeVisible();
   const urlBeforeReportPreview = page.url();
@@ -1500,7 +1517,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(fileDetail.getByText('const mode = "old"', { exact: true })).toBeVisible();
   await expect(fileDetail.getByText('const mode = "new"', { exact: true })).toBeVisible();
   await expect(fileDetail.getByText('The file was edited successfully.', { exact: true })).toBeVisible();
-  await page.locator('.conversation-file-changes > button').first().click();
+  await conversationChanges.click();
   await expect(page.getByRole('button', { name: '查看源文件' })).toBeVisible();
   await page.getByRole('button', { name: '查看源文件' }).click();
   await expect(page.getByText('workspace file preview', { exact: true })).toBeVisible();
@@ -2165,10 +2182,12 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   runningDirectFormalEventPersisted = true;
   agentStream!.send(JSON.stringify({
     type: 'event',
-    event: { id: 'running-direct-stream-user', event_type: 'MESSAGE', payload: { source: 'user', content: 'FLOWWEAVE_MESSAGE_CONTEXT_V5:{"current_user_request":{"content":"运行中直接发送消息"}}', display_content: '运行中直接发送消息', timestamp: new Date().toISOString().replace(/Z$/, '') } },
+    event: { id: 'running-direct-stream-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'running-user', content: 'FLOWWEAVE_MESSAGE_CONTEXT_V5:{"current_user_request":{"content":"运行中直接发送消息"}}', display_content: '运行中直接发送消息', timestamp: new Date().toISOString().replace(/Z$/, '') } },
   }));
   await expect(runningDirectMessage).toHaveCount(1);
   await expect(runningDirectMessage).toHaveAttribute('data-optimistic-identity', 'stable');
+  await expect(page.locator('.conversation-turn')).toHaveCount(1);
+  await expect(page.locator('.conversation-activity-group.active')).toHaveCount(1);
   releaseRunningDirectDelivery?.();
   await expect(runningDirectMessage).toHaveCount(1);
   await expect(runningDirectMessage).toHaveAttribute('data-optimistic-identity', 'stable');
@@ -2281,6 +2300,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   const optimisticAttachment = optimisticAmbiguousMessage.locator('.conversation-message-attachment').filter({ hasText: '即时附件.png' });
   await expect(optimisticAttachment).toBeVisible();
   await expect(optimisticAttachment).toContainText('image/png · 174 KB');
+  await expect(optimisticAttachment.locator('.conversation-message-attachment-thumbnail')).toBeVisible();
   const attachmentBeforeContent = await optimisticAmbiguousMessage.evaluate(message => {
     const attachments = message.querySelector(':scope > .conversation-message-attachments');
     const content = message.querySelector(':scope > .conversation-message-content');
@@ -2335,10 +2355,13 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   pauseBufferedEvent = true;
   await page.evaluate(() => window.dispatchEvent(new Event('focus')));
   await expect(page.getByText('暂停请求确认前到达的正式事件。')).toHaveCount(0);
+  pauseReadinessReturnsIdle = true;
   releasePauseReadiness?.();
   pauseReadinessGate = undefined;
   await expect(page.getByText('暂停请求确认前到达的正式事件。')).toBeVisible();
   await expect(page.getByRole('button', { name: '继续当前 Agent' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '发送消息' })).toHaveCount(0);
+  pauseReadinessReturnsIdle = false;
   await expect(activeProcess.getByText('已暂停，结果未返回')).toBeVisible();
   await expect(activeProcess).toHaveJSProperty('open', true);
   await expect(activeProcess.getByText('子智能体 · 已暂停，结果未返回')).toBeVisible();
@@ -2776,6 +2799,9 @@ test('selected conversation text is sent and rendered as a compact reference car
       annotations.push(annotation);
       return route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify(annotation) });
     }
+    if (path.includes('/attachments/uploads') && request.method() === 'POST' && !path.endsWith('/complete')) return route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify({ upload_id: 'reference-upload', chunk_size: 262_144, uploaded_parts: [] }) });
+    if (path.includes('/attachments/uploads') && request.method() === 'PUT') return route.fulfill({ status: 200 });
+    if (path.includes('/attachments/uploads') && path.endsWith('/complete') && request.method() === 'POST') return route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify({ filename: '参考图.png', mime_type: 'image/png', byte_size: 8, path: '/runtime/workspace/project/uploads/参考图.png' }) });
     if (path.endsWith('/input-readiness')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ready: true, execution_status: 'idle' }) });
     if (path.endsWith('/work-directories')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [] }) });
     if (path.endsWith('/workspace')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: '/runtime/workspace/project', work_directory: null, files: [], repositories: [], runtime: { container_id: 'single-runtime' }, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '未配置', note: '' } } }) });
@@ -2813,6 +2839,12 @@ test('selected conversation text is sent and rendered as a compact reference car
   });
   await expect(page.getByRole('button', { name: '添加到会话' })).toBeVisible();
   await page.getByRole('button', { name: '添加到会话' }).click();
+  await page.getByLabel('上传附件').setInputFiles({ name: '参考图.png', mimeType: 'image/png', buffer: Buffer.from('image') });
+  const resourceTags = page.getByLabel('已添加的附件和会话引用');
+  await expect(resourceTags).toHaveCount(1);
+  await expect(resourceTags.getByText('参考图.png', { exact: true })).toBeVisible();
+  await expect(resourceTags.getByRole('button', { name: '会话引用 1', exact: true })).toBeVisible();
+  await expect(resourceTags.evaluate(element => getComputedStyle(element).paddingBottom)).resolves.toBe('4px');
   await expect(page.getByLabel('已添加的引用 1 条')).toContainText('会话引用 1');
   await page.getByRole('button', { name: '定位原文' }).click();
   await expect(source).toBeInViewport();

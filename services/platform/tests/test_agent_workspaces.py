@@ -3547,6 +3547,46 @@ def test_agent_workspace_unread_state_persists_in_conversation_projection(
         assert conversations.get_conversation(db, workspace.id, created["id"])["unread"] is False
 
 
+def test_agent_workspace_pinned_state_persists_in_conversation_projection(
+    settings, db_session_factory, monkeypatch
+):
+    monkeypatch.setattr(
+        conversations,
+        "runtime_provider",
+        lambda _db, asset, **kwargs: RuntimeProvider(
+            provider_id=asset["asset"]["executor"]["model_provider_id"],
+            base_url="https://models.example.test/v1",
+            model=kwargs.get("model_name") or "test-model",
+            api_key="x",
+            reasoning_effort=kwargs.get("reasoning_effort"),
+        ),
+    )
+    with settings_context(settings), db_session_factory() as db, runtime_context(MockRuntime()):
+        workspace = _ready_workspace_for_conversation(db)
+        created = conversations.create_conversation(
+            db,
+            workspace.id,
+            "持久化置顶会话",
+            workspace.default_model_provider_id,
+            "pinned-persistence",
+        )
+
+        pinned = conversations.set_conversation_pinned(
+            db, workspace.id, created["id"], pinned=True
+        )
+        page = conversations.list_conversation_page(db, workspace.id)
+
+        assert pinned["pinned"] is True
+        assert page["items"][0]["pinned"] is True
+        assert conversations.get_conversation(db, workspace.id, created["id"])["pinned"] is True
+
+        unpinned = conversations.set_conversation_pinned(
+            db, workspace.id, created["id"], pinned=False
+        )
+        assert unpinned["pinned"] is False
+        assert conversations.list_conversation_page(db, workspace.id)["items"][0]["pinned"] is False
+
+
 def test_agent_workspace_conversation_page_never_reads_native_runtime_state(
     settings, db_session_factory, monkeypatch
 ):
@@ -3663,10 +3703,13 @@ def test_agent_workspace_activity_marks_background_unread_only_after_formal_fina
 
     class ActivityRuntime(MockRuntime):
         conversation_id = ""
+        visible = True
         status = "running"
         final_result: RuntimeResult | None = None
 
         def conversation_activity_snapshot(self, _handle):
+            if not self.visible:
+                return {}
             return {
                 self.conversation_id: RuntimeConversationActivity(
                     conversation_id=self.conversation_id,
@@ -3695,11 +3738,11 @@ def test_agent_workspace_activity_marks_background_unread_only_after_formal_fina
         conversations.conversation_activity(db, workspace.id)
         assert binding.activity_was_running is True
 
-        runtime.status = "finished"
+        runtime.visible = False
         conversations.conversation_activity(db, workspace.id)
         assert binding.unread is False
+        assert binding.terminal_reconciliation_pending is True
 
-        binding.activity_was_running = True
         runtime.final_result = RuntimeResult(
             status="COMPLETED",
             final_message="正式最终回复",
@@ -3709,6 +3752,12 @@ def test_agent_workspace_activity_marks_background_unread_only_after_formal_fina
         conversations.conversation_activity(db, workspace.id)
         assert binding.unread is True
         assert binding.unread_origin == "MANUAL"
+        assert binding.terminal_reconciliation_pending is False
+        assert binding.last_notified_completion_event_id == "assistant-final"
+
+        conversations.set_conversation_unread(db, workspace.id, binding.id, unread=False)
+        conversations.conversation_activity(db, workspace.id)
+        assert binding.unread is False
 
 
 def test_agent_workspace_activity_ignores_missing_snapshot_for_running_conversation(
@@ -4241,10 +4290,13 @@ def test_agent_workspace_uses_native_attachments_context_and_model_switch(
                 },
             ),
         )
-        assert runtime.sent == (
-            f"请查看已上传到共享工作区的附件：\n- {attachment['path']}",
-            ("data:image/png;base64,aW1hZ2UtYnl0ZXM=",),
-        )
+        prompt, image_urls = runtime.sent
+        payload = json.loads(prompt.rpartition(conversations._MESSAGE_CONTEXT_V5_MARKER)[2])
+        assert payload["current_user_request"] == {"content": ""}
+        assert payload["attachment_aliases"] == [
+            {"alias": "@附件1", "filename": "diagram.png", "path": attachment["path"]}
+        ]
+        assert image_urls == ("data:image/png;base64,aW1hZ2UtYnl0ZXM=",)
         pdf = conversations.upload_attachment(
             db,
             workspace.id,
@@ -4256,10 +4308,13 @@ def test_agent_workspace_uses_native_attachments_context_and_model_switch(
         assert pdf["mime_type"] == "application/pdf"
         assert pdf["image_data_url"] is None
         conversations.message(db, workspace.id, created["id"], "", ({"path": str(pdf["path"])},))
-        assert runtime.sent == (
-            f"请查看已上传到共享工作区的附件：\n- {pdf['path']}",
-            (),
-        )
+        prompt, image_urls = runtime.sent
+        payload = json.loads(prompt.rpartition(conversations._MESSAGE_CONTEXT_V5_MARKER)[2])
+        assert payload["current_user_request"] == {"content": ""}
+        assert payload["attachment_aliases"] == [
+            {"alias": "@附件1", "filename": "requirements.pdf", "path": pdf["path"]}
+        ]
+        assert image_urls == ()
         selected = conversations.switch_conversation_model(
             db,
             workspace.id,
@@ -5307,10 +5362,13 @@ def test_agent_workspace_rewrite_preserves_own_root_attachment_after_pause(
         )
 
     assert result["accepted"] is True
-    assert runtime.sent == (
-        f"after\n\n已上传到共享工作区的附件：\n- {attachment_path}",
-        ("data:image/png;base64,aW1hZ2U=",),
-    )
+    prompt, image_urls = runtime.sent
+    payload = json.loads(prompt.rpartition(conversations._MESSAGE_CONTEXT_V5_MARKER)[2])
+    assert payload["current_user_request"] == {"content": "after"}
+    assert payload["attachment_aliases"] == [
+        {"alias": "@附件1", "filename": "image.png", "path": attachment_path}
+    ]
+    assert image_urls == ("data:image/png;base64,aW1hZ2U=",)
 
 
 def test_agent_workspace_rewrite_uses_the_formal_head_not_event_window_order(

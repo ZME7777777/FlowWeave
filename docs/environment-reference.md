@@ -18,7 +18,12 @@
 | `POSTGRES_DB` / `POSTGRES_USER` / `POSTGRES_PASSWORD` | PostgreSQL 数据库和账号。共享或生产环境必须替换示例密码。 |
 | `CREDENTIALS_MASTER_KEY` | 加密保存的模型服务凭据主密钥；生产必须设置安全随机值。 |
 | `OPENHANDS_SESSION_API_KEY` | Runtime 会话访问密钥；生产必须替换示例值。 |
-| `FLOWWEAVE_ADMIN_PASSWORD` / `FLOWWEAVE_USER_PASSWORD` | 可选的本地/受控部署账号配置。 |
+| `FLOWWEAVE_ADMIN_PASSWORD` / `FLOWWEAVE_USER_PASSWORD` | 本地认证账号配置。LDAP 模式仍保留 `flowweave` 超级管理员密码；普通用户由 LDAP 验证。 |
+| `AUTH_PROVIDER` | `local`（默认）或 `ldap`。LDAP 模式下仅本地 `flowweave` 超级管理员可进入用户管理并授权目录用户。 |
+| `LDAP_URL` / `LDAP_BASE_DN` | LDAP 服务地址和搜索根，必须通过受保护的部署配置显式提供，不设私有默认值。生产应优先使用 LDAPS 或启用 StartTLS。 |
+| `LDAP_SEARCH_BIND_DN` / `LDAP_SEARCH_BIND_PASSWORD` | 只读搜索账号。LDAP 模式必填；密码只能存放在受保护的部署 Secret 中。 |
+| `LDAP_USER_SEARCH_FILTER` / `LDAP_USER_LIST_FILTER` | 登录时按 `uid` 搜索的筛选器和用户管理页目录列表筛选器；前者必须包含 `{uid}`。 |
+| `LDAP_START_TLS` / `LDAP_TLS_CA_CERT_FILE` | `ldap://` 连接强制 StartTLS；可配置受信 CA 证书文件。 |
 | `FLOWWEAVE_BIND_ADDRESS` | Compose 暴露服务的绑定地址；默认 `127.0.0.1`。 |
 | `POSTGRES_PORT` | 宿主机 PostgreSQL 端口；默认 `55432`。 |
 

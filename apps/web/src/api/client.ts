@@ -1,5 +1,5 @@
 import type {
-  AuthUser,
+  AuthUser, LdapUser,
   AgentProfileVersion, ArtifactInput, ArtifactVersion, ArtifactVersionPage, RuntimeArtifactAuditPage, CapabilityAsset, CapabilityImportResult, FlowDefinition, FlowRun, FlowRunAutomaticRecord, FlowRunAutomaticRecordUpdate, FlowRunAutomaticRecordWrite, FlowRunConversation, FlowRunRuntimeOverview, FlowRunRuntimeResource, FlowRunSummary, FlowWrite, MessageAttachmentInput, OpenHandsConversationEventBatch, McpSource, SkillSource,
   BlockedNodeDelete, BulkDeleteResult, CapabilityBulkDeleteResult, CodexDeviceAuthorization, CodexOAuthStatus, GateRemediationResult, ModelProvider, ModelProviderDiscoveryWrite, ModelProviderUsage, ModelProviderWrite, NodeAsset, NodeAssetWrite, NodeAttempt, FlowRunAutomaticRecordSummary, ProviderBulkDeleteResult,
   AgentAttachment, AgentConversation, AgentConversationAnnotation, AgentConversationContext, AgentConversationHead, AgentConversationInputReadiness, AgentConversationReference, AgentPendingConfirmation, AgentWorkDirectory, AgentWorkDirectoryList, AgentWorkspace, AgentWorkspaceCapability, AgentWorkspaceDetails, AgentWorkspaceMcpReadiness, AgentWorkspaceReference, AgentWorkspaceRuntime, AutomaticRecordConfigDocument, CapabilityCollection, CapabilityCollectionWrite, ContextBundleManifest, MarketplaceCatalog, NodeDirectory, NodeRun, OpenHandsConversationEvent, PluginSourceResolution, RunEvent, RuntimeConfirmationBatch, TerminalEnvironment, TerminalEnvironmentWrite, EnvironmentSetupSession, GatePolicy, WebsiteCredential, WebsiteCredentialWrite, FlowRunSchedule, FlowRunScheduleOccurrencePage, FlowRunScheduleWrite, FlowRunScheduleTemplate, FlowRunStepwiseRecord, FlowRunStepwiseRecordWrite, StepwiseNodeDraft, StepwiseRecordConfigDocument,
@@ -340,6 +340,9 @@ export const api = {
   login: (username: string, password: string) =>
     request<AuthUser>('/auth/login', json('POST', { username, password })),
   logout: () => request<void>('/auth/logout', json('POST')),
+  ldapUsers: () => request<LdapUser[]>('/auth/ldap-users'),
+  setLdapUserEnabled: (external_subject: string, enabled: boolean) =>
+    request<LdapUser>('/auth/ldap-users/enabled', json('PUT', { external_subject, enabled })),
   defaultAgentWorkspace: (signal?: AbortSignal) => request<AgentWorkspace>('/agent-workspaces/default', { signal, timeoutMs: INTERACTIVE_REQUEST_TIMEOUT_MS }),
   agentWorkspace: (id: string) => request<AgentWorkspace>(`/agent-workspaces/${encodeURIComponent(id)}`),
   agentWorkspaceCapabilities: (id: string) =>
@@ -483,6 +486,8 @@ export const api = {
     request<AgentConversation>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}`),
   updateAgentConversation: (workspaceId: string, bindingId: string, title: string) =>
     request<AgentConversation>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}`, json('PATCH', { title })),
+  setAgentConversationPinned: (workspaceId: string, bindingId: string, pinned: boolean) =>
+    request<AgentConversation>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/pinned`, json('PUT', { pinned })),
   setAgentConversationUnread: (workspaceId: string, bindingId: string, unread: boolean, unread_origin?: 'MANUAL' | 'SYSTEM') =>
     request<AgentConversation>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/unread`, json('PUT', { unread, unread_origin })),
   reorderAgentConversation: (workspaceId: string, bindingId: string, ordered_binding_ids: string[]) =>
@@ -1025,6 +1030,8 @@ export const nodeSessionApi = {
     request<import('../types').AgentConversation>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}`),
   update: (flowRunId: string, attemptId: string, bindingId: string, title: string) =>
     request<import('../types').AgentConversation>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}`, json('PATCH', { title })),
+  setPinned: (flowRunId: string, attemptId: string, bindingId: string, pinned: boolean) =>
+    request<import('../types').AgentConversation>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/pinned`, json('PUT', { pinned })),
   setUnread: (flowRunId: string, attemptId: string, bindingId: string, unread: boolean, unread_origin?: 'MANUAL' | 'SYSTEM') =>
     request<import('../types').AgentConversation>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/unread`, json('PUT', { unread, unread_origin })),
   events: (flowRunId: string, attemptId: string, bindingId: string, cursor?: string, historyCursor?: string, diagnosticTrigger?: string, signal?: AbortSignal) => {

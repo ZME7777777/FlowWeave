@@ -230,7 +230,7 @@ export function SidebarConversationPane({ workspaceId, sourceBindingId, initialR
   return <section className="agent-sidebar-conversation" aria-label="侧边聊天">
     <div className="agent-sidebar-chat-content">
       {hydrationQuery.isLoading && bindingId ? <div className="conversation-surface-empty"><LoaderCircle className="conversation-activity-spin" size={16}/><b>正在加载会话</b></div>
-        : bindingId ? <ConversationSurface events={events} isGenerating={running} liveTextReveal={running} isPaused={paused} conversationScope={bindingId} requestSubmitting={sending} taskControl={hydrationQuery.data?.events.task_control} monitoring={hydrationQuery.data?.events.monitoring} connectionState={hydrationQuery.isError ? 'unavailable' : 'connected'}/>
+        : bindingId ? <ConversationSurface events={events} isGenerating={running} isPaused={paused} conversationScope={bindingId} requestSubmitting={sending} taskControl={hydrationQuery.data?.events.task_control} monitoring={hydrationQuery.data?.events.monitoring} connectionState={hydrationQuery.isError ? 'unavailable' : 'connected'}/>
           : <div className="agent-workbench-empty"><MessageSquarePlus size={28}/><b>向主会话追问</b><span>这是临时聊天：关闭后会删除，最长保留一小时。</span></div>}
       {expired && <section className="agent-sidebar-expired" role="status"><Clock3 size={16}/><span>侧边聊天会话已过期。已显示的内容仍可阅读，但不能继续发送消息。</span></section>}
       {error && <section className="agent-workbench-error" role="alert"><CircleAlert size={17}/><div><b>操作未完成</b><span>{error}</span></div></section>}

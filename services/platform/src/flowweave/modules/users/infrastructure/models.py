@@ -11,14 +11,21 @@ from flowweave.shared.database import Base, now, uid
 
 class User(Base):
     __tablename__ = "users"
-    __table_args__ = (CheckConstraint("role IN ('SUPER_ADMIN', 'USER')", name="ck_user_role"),)
+    __table_args__ = (
+        CheckConstraint("role IN ('SUPER_ADMIN', 'USER')", name="ck_user_role"),
+        CheckConstraint("auth_source IN ('LOCAL', 'LDAP')", name="ck_user_auth_source"),
+    )
     __tenant_scoped__ = False
     owner_user_id: ClassVar[None] = None
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
     username: Mapped[str] = mapped_column(String(80), unique=True, index=True)
-    password_hash: Mapped[str] = mapped_column(String(300))
+    password_hash: Mapped[str] = mapped_column(String(300), default="")
     role: Mapped[str] = mapped_column(String(20), index=True)
+    auth_source: Mapped[str] = mapped_column(String(20), default="LOCAL", index=True)
+    external_subject: Mapped[str | None] = mapped_column(String(200), unique=True, nullable=True)
+    display_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    email: Mapped[str | None] = mapped_column(String(320), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)

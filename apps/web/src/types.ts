@@ -1,4 +1,4 @@
-export type ViewName = 'nodes' | 'capabilities' | 'environments' | 'credentials' | 'models' | 'flows' | 'runs' | 'schedules' | 'workbench' | 'agent-workbench';
+export type ViewName = 'nodes' | 'capabilities' | 'environments' | 'credentials' | 'models' | 'ldap-users' | 'flows' | 'runs' | 'schedules' | 'workbench' | 'agent-workbench';
 
 export interface NodeDirectory {
   id: string; parent_id?: string | null; name: string; position: number; row_version: number;
@@ -758,6 +758,7 @@ export interface AgentConversation {
   /** A detached native Fork is independently writable even when its source node has completed. */
   write_available?: boolean;
   execution_status?: string | null;
+  pinned?: boolean;
   unread?: boolean;
   unread_origin?: 'MANUAL' | 'SYSTEM' | null;
   lifecycle: 'PROVISIONING' | 'ACTIVE' | 'DELETE_PENDING' | 'FAILED';
@@ -837,7 +838,7 @@ export interface AgentSessionWorkspaceDetails {
   working_directory: string;
   work_directory?: AgentSessionWorkDirectory | null;
   files: Array<{ path: string; kind: 'file' | 'directory'; size: number }>;
-  repositories: Array<{ path: string; remote?: string; branch?: string; head?: string }>;
+  repositories: WorkspaceGitRepository[];
   runtime: { container_id?: string | null; state?: string; write_available?: boolean };
   ide: {
     workspace_path: string;
@@ -939,4 +940,12 @@ export interface AuthUser {
   username: string;
   role: 'SUPER_ADMIN' | 'USER';
   is_super_admin: boolean;
+}
+
+export interface LdapUser {
+  external_subject: string;
+  username: string;
+  display_name: string;
+  email?: string | null;
+  enabled: boolean;
 }

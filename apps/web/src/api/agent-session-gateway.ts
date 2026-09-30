@@ -127,6 +127,7 @@ export interface AgentSessionApi {
   readonly closeTerminal: (hostId: AgentSessionHostId, terminalInstanceId: string, options?: Omit<AgentSessionFileOptions, 'download'>) => Promise<void>;
   readonly bootstrapConversation: (hostId: AgentSessionHostId, conversationId: string, modelProviderId: string, modelName: string, reasoningEffort: string | null, content: string, attachments?: AgentAttachment[], references?: AgentConversationReference[], workspaceReferences?: AgentWorkspaceReference[], workDirectoryId?: AgentSessionWorkDirectoryId, capabilityVersionIds?: string[], idempotencyKey?: string, annotations?: AgentConversationAnnotation[]) => Promise<{ conversation: AgentConversation; accepted: boolean; cursor?: string | null }>;
   readonly updateConversation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, title: string) => Promise<AgentConversation>;
+  readonly setConversationPinned: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, pinned: boolean) => Promise<AgentConversation>;
   readonly setConversationUnread: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, unread: boolean, unreadOrigin?: 'MANUAL' | 'SYSTEM') => Promise<AgentConversation>;
   /** Node-session hosts intentionally omit this workspace-local presentation control. */
   readonly reorderConversation?: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, orderedBindingIds: AgentSessionBindingId[]) => Promise<AgentConversation>;
@@ -189,6 +190,8 @@ export const agentWorkspaceSessionGateway: AgentSessionGateway = {
     conversationSearch: (_hostId, searchId, cursor) =>
       api.agentConversationSearch(_hostId, searchId, cursor),
     conversation: api.agentConversation,
+    setConversationPinned: (_hostId, bindingId, pinned) =>
+      api.setAgentConversationPinned(_hostId, bindingId, pinned),
     setConversationUnread: (_hostId, bindingId, unread, unreadOrigin) =>
       api.setAgentConversationUnread(_hostId, bindingId, unread, unreadOrigin),
     workDirectories: api.agentWorkDirectories,
@@ -326,6 +329,8 @@ export function flowNodeSessionGateway(
       },
       updateConversation: (_hostId, bindingId, title) =>
         nodeSessionApi.update(flowRunId, attemptId, bindingId, title),
+      setConversationPinned: (_hostId, bindingId, pinned) =>
+        nodeSessionApi.setPinned(flowRunId, attemptId, bindingId, pinned),
       setConversationUnread: (_hostId, bindingId, unread, unreadOrigin) =>
         nodeSessionApi.setUnread(flowRunId, attemptId, bindingId, unread, unreadOrigin),
       deleteConversation: (_hostId, bindingId) => nodeSessionApi.remove(flowRunId, attemptId, bindingId),

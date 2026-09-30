@@ -194,6 +194,134 @@ test('capability repository exposes module-specific menus and actions', async ({
   await expect(page.locator('.capability-tools')).toHaveCount(0);
 });
 
+test('capability editors overlay the top navigation without clipping their headings', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
+  const capabilities = [
+    {
+      id: 'skill-version', lineage_id: 'skill-lineage', revision_number: 1, is_latest: true,
+      capability_type: 'SKILL', capability_key: 'layout-skill', description: 'Skill editor layout fixture',
+      version: '1.0.0', filename: 'SKILL.md', content_hash: '1'.repeat(64), byte_size: 128,
+      import_id: 'skill-import', created_at: '2026-09-02T00:00:00Z', reference_count: 0,
+      is_builtin: false, document: {}, dependencies: {}, dependency_build_state: 'NOT_REQUIRED',
+      dependency_build_error: null,
+    },
+    {
+      id: 'mcp-version', lineage_id: 'mcp-lineage', revision_number: 1, is_latest: true,
+      capability_type: 'MCP', capability_key: 'layout-mcp', description: 'MCP editor layout fixture',
+      version: '1.0.0', filename: 'mcp.json', content_hash: '2'.repeat(64), byte_size: 128,
+      import_id: 'mcp-import', created_at: '2026-09-02T00:00:00Z', reference_count: 0,
+      is_builtin: false, document: {}, dependencies: {}, dependency_build_state: 'NOT_REQUIRED',
+      dependency_build_error: null,
+    },
+  ];
+  await page.route('**/api/v1/capabilities', route => route.fulfill({
+    status: 200, contentType: 'application/json', body: JSON.stringify(capabilities),
+  }));
+  await page.route('**/api/v1/capability-collections', route => route.fulfill({
+    status: 200, contentType: 'application/json', body: '[]',
+  }));
+  await page.route('**/api/v1/capabilities/skill-version/source', route => route.fulfill({
+    status: 200, contentType: 'application/json', body: JSON.stringify({ content: '# Layout skill' }),
+  }));
+  await page.route('**/api/v1/capabilities/mcp-version/mcp-source', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({
+      capability_key: 'layout-mcp',
+      content: JSON.stringify({ layoutMcp: { url: 'https://mcp.example.com', transport: 'streamable-http' } }),
+      mcp_scripts: [],
+    }),
+  }));
+
+  await page.goto('/');
+  await page.getByRole('button', { name: '能力仓库' }).click();
+
+  const verifyEditor = async (dialogName: string, headingName: string) => {
+    const backdrop = page.locator('.capability-editor-backdrop');
+    const dialog = page.getByRole('dialog', { name: dialogName });
+    const bounds = await dialog.evaluate(element => {
+      const heading = element.querySelector('h2');
+      const dialogBounds = element.getBoundingClientRect();
+      const headingBounds = heading?.getBoundingClientRect();
+      return { dialogBounds, headingBounds };
+    });
+
+    await expect(backdrop).toHaveCSS('z-index', '60');
+    expect(bounds.dialogBounds.top).toBeGreaterThanOrEqual(0);
+    expect(bounds.headingBounds?.top).toBeGreaterThanOrEqual(bounds.dialogBounds.top);
+    expect(bounds.headingBounds?.bottom).toBeLessThanOrEqual(bounds.dialogBounds.bottom);
+    await expect(dialog.getByRole('heading', { name: headingName })).toBeVisible();
+    await expect(dialog.getByRole('button', { name: '关闭' })).toBeVisible();
+  };
+
+  await page.getByRole('button', { name: /编辑/ }).first().click();
+  await verifyEditor('编辑 Skill layout-skill', '编辑 layout-skill');
+  await page.getByRole('dialog', { name: '编辑 Skill layout-skill' }).getByRole('button', { name: '关闭' }).click();
+
+  await page.getByRole('navigation', { name: '能力模块' }).getByRole('button', { name: /MCP/ }).click();
+  await page.getByRole('button', { name: /编辑/ }).first().click();
+  await verifyEditor('编辑 MCP', '编辑 MCP Server');
+});
+
+test('Skill collection editor keeps its heading and actions visible while only skills scroll', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 640 });
+  const skills = Array.from({ length: 20 }, (_, index) => ({
+    id: `skill-${index + 1}`,
+    lineage_id: `skill-lineage-${index + 1}`,
+    revision_number: 1,
+    is_latest: true,
+    capability_type: 'SKILL',
+    capability_key: `collection-skill-${index + 1}`,
+    description: `Skill ${index + 1} for collection layout coverage`,
+    version: '1.0.0',
+    filename: `collection-skill-${index + 1}.zip`,
+    content_hash: `${index + 1}`.padStart(64, '0'),
+    byte_size: 128,
+    import_id: `skill-import-${index + 1}`,
+    created_at: '2026-09-02T00:00:00Z',
+    reference_count: 0,
+    is_builtin: false,
+    document: {},
+    dependencies: {},
+    dependency_build_state: 'NOT_REQUIRED',
+    dependency_build_error: null,
+  }));
+  await page.route('**/api/v1/capabilities', route => route.fulfill({
+    status: 200, contentType: 'application/json', body: JSON.stringify(skills),
+  }));
+  await page.route('**/api/v1/capability-collections', route => route.fulfill({
+    status: 200, contentType: 'application/json', body: '[]',
+  }));
+
+  await page.goto('/');
+  await page.getByRole('button', { name: '能力仓库' }).click();
+  await page.getByRole('button', { name: '新建 Skill 组合' }).click();
+
+  const editor = page.locator('form.capability-collection-editor');
+  const members = editor.locator('.capability-collection-members');
+  const memberList = members.locator(':scope > div');
+  const bounds = await editor.evaluate(dialog => {
+    const header = dialog.querySelector('header');
+    const footer = dialog.querySelector('footer');
+    const memberList = dialog.querySelector('.capability-collection-members > div');
+    return {
+      dialog: dialog.getBoundingClientRect(),
+      header: header?.getBoundingClientRect(),
+      footer: footer?.getBoundingClientRect(),
+      memberList: memberList ? {
+        clientHeight: memberList.clientHeight,
+        scrollHeight: memberList.scrollHeight,
+      } : null,
+    };
+  });
+
+  expect(bounds.header?.top).toBeGreaterThanOrEqual(0);
+  expect(bounds.footer?.bottom).toBeLessThanOrEqual(640);
+  expect(bounds.memberList?.scrollHeight).toBeGreaterThan(bounds.memberList?.clientHeight ?? 0);
+  await expect(memberList.locator('label').first()).toBeVisible();
+  await expect(editor.getByRole('button', { name: '保存组合' })).toBeVisible();
+});
+
 test('Skill collections use a compact paged grid', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 480 });
   const collections = ['需求分析', '研发交付', '质量验证', '发布运营'].map((name, index) => ({

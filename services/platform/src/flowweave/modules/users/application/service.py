@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
+from flowweave.modules.users.application.ldap import LdapIdentity
 from flowweave.modules.users.application.security import (
     FLOWWEAVE_USER_ID,
     USER_USER_ID,
@@ -28,9 +29,7 @@ class LoginResult:
     token: str
 
 
-def ensure_builtin_users(
-    db: Session, *, admin_password: str, user_password: str
-) -> None:
+def ensure_builtin_users(db: Session, *, admin_password: str, user_password: str) -> None:
     """Idempotently provision the two deployment-owned login principals."""
 
     configured = (
@@ -64,11 +63,7 @@ def _principal(user: User) -> Principal:
     return Principal(user_id=user.id, username=user.username, role=user.role)
 
 
-def login(db: Session, username: str, password: str) -> LoginResult:
-    normalized = username.strip()
-    user = db.scalar(select(User).where(User.username == normalized))
-    if user is None or not user.is_active or not verify_password(password, user.password_hash):
-        raise DomainError("AUTHENTICATION_FAILED", "用户名或密码错误", 401)
+def _create_session(db: Session, user: User) -> LoginResult:
     token = secrets.token_urlsafe(48)
     db.add(
         UserSession(
@@ -79,6 +74,111 @@ def login(db: Session, username: str, password: str) -> LoginResult:
     )
     db.flush()
     return LoginResult(_principal(user), token)
+
+
+def _verified_local_user(db: Session, username: str, password: str) -> User | None:
+    user = db.scalar(
+        select(User).where(User.username == username.strip(), User.auth_source == "LOCAL")
+    )
+    if user is None or not user.is_active or not verify_password(password, user.password_hash):
+        return None
+    return user
+
+
+def local_user_id_for_login(db: Session, username: str, password: str) -> str | None:
+    user = _verified_local_user(db, username, password)
+    return user.id if user is not None else None
+
+
+def login_local(db: Session, username: str, password: str) -> LoginResult:
+    user = _verified_local_user(db, username, password)
+    if user is None:
+        raise DomainError("AUTHENTICATION_FAILED", "用户名或密码错误", 401)
+    return _create_session(db, user)
+
+
+def login_ldap(db: Session, identity: LdapIdentity) -> LoginResult:
+    user = db.scalar(
+        select(User).where(
+            User.auth_source == "LDAP", User.external_subject == identity.external_subject
+        )
+    )
+    if user is None or not user.is_active:
+        raise DomainError("AUTHENTICATION_FAILED", "用户名或密码错误", 401)
+    user.username = identity.username
+    user.display_name = identity.display_name
+    user.email = identity.email
+    user.updated_at = datetime.now(UTC)
+    return _create_session(db, user)
+
+
+def list_ldap_users(db: Session, identities: list[LdapIdentity]) -> list[dict[str, object]]:
+    enabled = {
+        item.external_subject: item
+        for item in db.scalars(select(User).where(User.auth_source == "LDAP"))
+    }
+    return [
+        {
+            "external_subject": identity.external_subject,
+            "username": identity.username,
+            "display_name": identity.display_name,
+            "email": identity.email,
+            "enabled": (
+                identity.external_subject in enabled
+                and enabled[identity.external_subject].is_active
+            ),
+        }
+        for identity in identities
+    ]
+
+
+def set_ldap_user_enabled(
+    db: Session, identity: LdapIdentity, *, enabled: bool
+) -> dict[str, object]:
+    user = db.scalar(
+        select(User).where(
+            User.auth_source == "LDAP", User.external_subject == identity.external_subject
+        )
+    )
+    if user is None:
+        username_owner = db.scalar(select(User).where(User.username == identity.username))
+        if username_owner is not None:
+            raise DomainError(
+                "LDAP_USERNAME_CONFLICT",
+                "LDAP 用户名与现有 FlowWeave 账号冲突，无法授权",
+                409,
+            )
+        user = User(
+            username=identity.username,
+            password_hash="",
+            role="USER",
+            auth_source="LDAP",
+            external_subject=identity.external_subject,
+            display_name=identity.display_name,
+            email=identity.email,
+            is_active=enabled,
+        )
+        db.add(user)
+    else:
+        user.username = identity.username
+        user.display_name = identity.display_name
+        user.email = identity.email
+        user.is_active = enabled
+        user.updated_at = datetime.now(UTC)
+        if not enabled:
+            db.execute(delete(UserSession).where(UserSession.user_id == user.id))
+    db.flush()
+    return {
+        "external_subject": identity.external_subject,
+        "username": identity.username,
+        "display_name": identity.display_name,
+        "email": identity.email,
+        "enabled": enabled,
+    }
+
+
+def login(db: Session, username: str, password: str) -> LoginResult:
+    return login_local(db, username, password)
 
 
 def authenticate(db: Session, token: str | None) -> Principal | None:
@@ -104,9 +204,7 @@ def authenticate(db: Session, token: str | None) -> Principal | None:
 def logout(db: Session, token: str | None) -> None:
     if token:
         db.execute(
-            delete(UserSession).where(
-                UserSession.token_digest == digest_session_token(token)
-            )
+            delete(UserSession).where(UserSession.token_digest == digest_session_token(token))
         )
 
 

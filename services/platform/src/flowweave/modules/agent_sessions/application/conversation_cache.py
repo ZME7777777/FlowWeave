@@ -129,6 +129,22 @@ class ConversationHydrationCache:
                 self._inflight[key] = task
         return copy.deepcopy(await asyncio.shield(task))
 
+    async def refresh(
+        self,
+        key: ConversationCacheKey,
+        loader: Callable[[], Awaitable[dict[str, Any]]],
+    ) -> dict[str, Any]:
+        """Read current Runtime state; retain immutable history and epoch fencing."""
+
+        async with self._lock:
+            self._current.pop(key, None)
+            task = self._inflight.get(key)
+            if task is None:
+                epoch = self._epochs.get(key.scope, 0)
+                task = asyncio.create_task(self._load(key, epoch, loader))
+                self._inflight[key] = task
+        return copy.deepcopy(await asyncio.shield(task))
+
     async def invalidate_current(self, scope: ConversationCacheScope) -> None:
         async with self._lock:
             self._invalidate_current_locked(scope)

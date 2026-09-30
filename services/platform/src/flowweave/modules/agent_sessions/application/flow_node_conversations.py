@@ -601,6 +601,7 @@ def _node_session_dict(db: Session, item: AgentConversationBinding) -> dict[str,
         # read-only while its detached native Fork is a normal writable
         # conversation.
         "write_available": _node_session_write_available(db, item),
+        "pinned": item.pinned,
         "unread": item.unread,
         "unread_origin": item.unread_origin,
         "lifecycle": item.lifecycle,
@@ -723,6 +724,7 @@ def _node_session_page_dicts(
             # delete permission visible there as well.
             "write_available": _node_session_write_available(db, item),
             "execution_status": "unknown",
+            "pinned": item.pinned,
             "unread": item.unread,
             "unread_origin": item.unread_origin,
             "lifecycle": item.lifecycle,
@@ -952,13 +954,15 @@ def node_session_activity(
     for item in bindings:
         activity = native_activity.get(item.openhands_conversation_id)
         is_running = item.id in running_binding_ids
-        completed_in_background = (
-            item.activity_was_running
-            and activity is not None
-            and activity.execution_status == "finished"
-            and item.id != active_binding_id
-        )
-        if completed_in_background:
+        is_background = item.id != active_binding_id
+        if is_running:
+            item.terminal_reconciliation_pending = False
+        elif item.activity_was_running:
+            if is_background:
+                item.terminal_reconciliation_pending = True
+            else:
+                item.activity_was_running = False
+        if item.terminal_reconciliation_pending and is_background and not is_running:
             result = runtime.read_active_events(_handle(db, item)).result
             if (
                 result is not None
@@ -966,10 +970,19 @@ def node_session_activity(
                 and result.completion_event_kind == "ASSISTANT_MESSAGE"
                 and result.completion_event_id is not None
                 and result.final_message
-                and not item.unread
             ):
-                item.unread = True
-                item.unread_origin = "MANUAL"
+                item.terminal_reconciliation_pending = False
+                item.activity_was_running = False
+                if item.last_notified_completion_event_id != result.completion_event_id:
+                    item.unread = True
+                    item.unread_origin = "MANUAL"
+                    item.last_notified_completion_event_id = result.completion_event_id
+            elif result is not None and result.status in {"COMPLETED", "FAILED", "PAUSED"}:
+                item.terminal_reconciliation_pending = False
+                item.activity_was_running = False
+            elif activity is not None and activity.execution_status in {"paused", "error", "stuck"}:
+                item.terminal_reconciliation_pending = False
+                item.activity_was_running = False
         if item.id in attention_binding_ids:
             # Preserve MANUAL unread and an explicit SYSTEM acknowledgement
             # (SYSTEM + unread=False). Otherwise an active native abnormality
@@ -1097,6 +1110,26 @@ def get_node_session_view(
         db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
     )
     _capture_binding_usage(db, item)
+    return _node_session_dict(db, item)
+
+
+def set_node_session_pinned(
+    db: Session,
+    *,
+    flow_run_id: str,
+    attempt_id: str,
+    binding_id: str,
+    pinned: bool,
+) -> dict[str, Any]:
+    item = _binding_for_attempt(
+        db,
+        flow_run_id=flow_run_id,
+        attempt_id=attempt_id,
+        binding_id=binding_id,
+        lock=True,
+    )
+    item.pinned = pinned
+    db.flush()
     return _node_session_dict(db, item)
 
 

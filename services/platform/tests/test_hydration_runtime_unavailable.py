@@ -27,10 +27,7 @@ def database():
 
 
 class _EmptyHydrationCache:
-    async def get_current_for_scope(self, _scope: object) -> None:
-        return None
-
-    async def get_or_load(self, _key: object, loader: object) -> object:
+    async def refresh(self, _key: object, loader: object) -> object:
         return await loader()
 
 

@@ -27,7 +27,6 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from flowweave.bootstrap.container import Container
 from flowweave.modules.agent_sessions import public as agent_sessions
-from flowweave.modules.agent_sessions.application.conversation_cache import ConversationCacheScope
 from flowweave.modules.agent_sessions.application.runtime_config import resolve_session_config
 from flowweave.modules.agent_workspaces import public as agent_workspace_host
 from flowweave.modules.environments import public as environments
@@ -80,6 +79,10 @@ class NodeSessionCreateWrite(_Write):
 class NodeSessionUnreadWrite(_Write):
     unread: bool
     unread_origin: Literal["MANUAL", "SYSTEM"] | None = None
+
+
+class NodeSessionPinnedWrite(_Write):
+    pinned: bool
 
 
 class NodeAttachmentReference(_Write):
@@ -929,6 +932,26 @@ async def patch_node_session(
     return await run_blocking_mutation(container, patch)
 
 
+@router.put(f"{_BASE}/{{binding_id}}/pinned")
+async def set_node_session_pinned(
+    flow_run_id: str,
+    attempt_id: str,
+    binding_id: str,
+    payload: NodeSessionPinnedWrite,
+    db: Db,
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: agent_sessions.flow_node_conversations.set_node_session_pinned(
+            session,
+            flow_run_id=flow_run_id,
+            attempt_id=attempt_id,
+            binding_id=binding_id,
+            pinned=payload.pinned,
+        ),
+    )
+
+
 @router.put(f"{_BASE}/{{binding_id}}/unread")
 async def set_node_session_unread(
     flow_run_id: str,
@@ -1014,15 +1037,6 @@ async def node_session_hydration(
     principal = current_principal()
     if principal is None:
         raise DomainError("AUTHENTICATION_REQUIRED", "请先登录", 401)
-    scope = ConversationCacheScope(
-        user_id=principal.user_id,
-        host_kind="FLOW_NODE",
-        host_id=attempt_id,
-        binding_id=binding_id,
-    )
-    cached = await container.conversation_hydration_cache.get_current_for_scope(scope)
-    if cached is not None:
-        return cached
     try:
         node_conversations = agent_sessions.flow_node_conversations
         async with hydration_response_budget(container.settings.hydration_read_timeout_seconds):
@@ -1062,7 +1076,7 @@ async def node_session_hydration(
                     ),
                 )
 
-            return await container.conversation_hydration_cache.get_or_load(prepared.key, load)
+            return await container.conversation_hydration_cache.refresh(prepared.key, load)
     except DomainError as exc:
         if exc.code not in {
             "EXECUTOR_UNAVAILABLE",

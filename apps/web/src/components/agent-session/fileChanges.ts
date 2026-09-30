@@ -56,9 +56,30 @@ export function workspaceRelativeText(value: string, workingDirectory?: string |
 }
 
 type PendingPatch = { id: string; path: string; lines: FileChangeLine[] };
+type PendingFileEdit = { id: string; path: string; before: string; after: string };
 
 function detailString(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined;
+}
+
+function fileEditorActionChange(event: OpenHandsConversationEvent): PendingFileEdit | undefined {
+  if (event.event_type !== 'TOOL_CALL' || event.payload.event_name !== 'FileEditorAction') return undefined;
+  const details = event.payload.details ?? {};
+  const command = String(details.command ?? '').toLowerCase();
+  const path = detailString(details.path);
+  if (!path || !['create', 'str_replace', 'insert'].includes(command)) return undefined;
+  if (command === 'create') {
+    const after = detailString(details.file_text);
+    return after === undefined ? undefined : { id: event.id, path, before: '', after };
+  }
+  const after = detailString(details.new_content) ?? detailString(details.new_str);
+  if (after === undefined) return undefined;
+  return {
+    id: event.id,
+    path,
+    before: command === 'str_replace' ? detailString(details.old_content) ?? detailString(details.old_str) ?? '' : '',
+    after,
+  };
 }
 
 function editableFileOperation(event: OpenHandsConversationEvent): boolean {
@@ -155,26 +176,58 @@ function numberPatchLines(lines: FileChangeLine[]): FileChangeLine[] {
   });
 }
 
+function changeFromSnapshot(change: PendingFileEdit): WorkspaceFileChange {
+  const lines = fileChangeLines(change.before, change.after);
+  return {
+    ...change,
+    additions: lines.filter(line => line.kind === 'addition').length,
+    deletions: lines.filter(line => line.kind === 'deletion').length,
+    lines,
+  };
+}
+
+function appendChange(changes: Map<string, WorkspaceFileChange>, change: WorkspaceFileChange) {
+  const existing = changes.get(change.path);
+  if (!existing) {
+    changes.set(change.path, change);
+    return;
+  }
+  const lines = [...existing.lines, ...change.lines];
+  changes.set(change.path, {
+    ...change,
+    id: existing.id,
+    before: existing.before,
+    additions: existing.additions + change.additions,
+    deletions: existing.deletions + change.deletions,
+    lines,
+  });
+}
+
 export function workspaceFileChanges(events: OpenHandsConversationEvent[]): WorkspaceFileChange[] {
-  const changes = new Map<string, { id: string; path: string; before: string; after: string }>();
   const patchActions = new Map<string, PendingPatch[]>();
-  const patchChangesByPath = new Map<string, WorkspaceFileChange>();
+  const fileEditorActions = new Map<string, PendingFileEdit>();
+  const changesByPath = new Map<string, WorkspaceFileChange>();
   for (const event of events) {
     const patches = patchChanges(event);
     if (patches.length) patchActions.set(event.id, patches);
+    const fileEditorChange = fileEditorActionChange(event);
+    if (fileEditorChange) {
+      for (const id of [event.id, detailString(event.payload.action_id), detailString(event.payload.tool_call_id)]) {
+        if (id) fileEditorActions.set(id, fileEditorChange);
+      }
+    }
     if (appliedPatchOperation(event)) {
       const actionId = detailString(event.payload.action_id);
       for (const patchChange of actionId ? patchActions.get(actionId) ?? [] : []) {
         const lines = numberPatchLines(patchChange.lines);
-        const existing = patchChangesByPath.get(patchChange.path);
-        const combined = existing ? [...existing.lines, ...lines] : lines;
-        patchChangesByPath.set(patchChange.path, {
-          id: existing?.id ?? patchChange.id, path: patchChange.path,
-          before: combined.filter(line => line.kind !== 'addition').map(line => line.text).join('\n'),
-          after: combined.filter(line => line.kind !== 'deletion').map(line => line.text).join('\n'),
-          additions: combined.filter(line => line.kind === 'addition').length,
-          deletions: combined.filter(line => line.kind === 'deletion').length,
-          lines: combined,
+        appendChange(changesByPath, {
+          id: patchChange.id,
+          path: patchChange.path,
+          before: lines.filter(line => line.kind !== 'addition').map(line => line.text).join('\n'),
+          after: lines.filter(line => line.kind !== 'deletion').map(line => line.text).join('\n'),
+          additions: lines.filter(line => line.kind === 'addition').length,
+          deletions: lines.filter(line => line.kind === 'deletion').length,
+          lines,
         });
       }
     }
@@ -182,22 +235,23 @@ export function workspaceFileChanges(events: OpenHandsConversationEvent[]): Work
     const details = event.payload.details ?? {};
     const path = detailString(details.path);
     const after = detailString(details.new_content);
-    if (!path || after === undefined) continue;
-    const before = detailString(details.old_content) ?? '';
-    const existing = changes.get(path);
-    changes.set(path, existing ? { ...existing, after } : { id: event.id, path, before, after });
+    if (path && after !== undefined) {
+      appendChange(changesByPath, changeFromSnapshot({
+        id: event.id,
+        path,
+        before: detailString(details.old_content) ?? '',
+        after,
+      }));
+      continue;
+    }
+    const actionId = detailString(event.payload.action_id);
+    const toolCallId = detailString(event.payload.tool_call_id);
+    const parentId = detailString(event.payload.parent_id);
+    const actionChange = [actionId, toolCallId, parentId]
+      .filter((id): id is string => Boolean(id))
+      .map(id => fileEditorActions.get(id))
+      .find((change): change is PendingFileEdit => Boolean(change));
+    if (actionChange) appendChange(changesByPath, changeFromSnapshot(actionChange));
   }
-  const fileEditorChanges = [...changes.values()].map(change => {
-    const lines = fileChangeLines(change.before, change.after);
-    return {
-      ...change,
-      additions: lines.filter(line => line.kind === 'addition').length,
-      deletions: lines.filter(line => line.kind === 'deletion').length,
-      lines,
-    };
-  });
-  // FileEditor observations contain a whole-file before/after snapshot, so
-  // they take precedence when both native tools touch one path in a turn.
-  for (const change of fileEditorChanges) patchChangesByPath.set(change.path, change);
-  return [...patchChangesByPath.values()];
+  return [...changesByPath.values()];
 }

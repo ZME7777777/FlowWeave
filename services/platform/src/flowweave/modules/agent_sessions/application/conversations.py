@@ -288,6 +288,7 @@ def _dict(
         ],
         "streaming_callback_ready": item.streaming_callback_ready,
         "write_available": write_available,
+        "pinned": item.pinned,
         "unread": item.unread,
         "unread_origin": item.unread_origin,
         "lifecycle": item.lifecycle,
@@ -408,6 +409,7 @@ def _page_dicts(
             "streaming_callback_ready": item.streaming_callback_ready,
             "write_available": write_available,
             "execution_status": "unknown",
+            "pinned": item.pinned,
             "unread": item.unread,
             "unread_origin": item.unread_origin,
             "lifecycle": item.lifecycle,
@@ -865,13 +867,15 @@ def conversation_activity(
     for item in bindings:
         activity = native_activity.get(item.openhands_conversation_id)
         is_running = item.id in running_binding_ids
-        completed_in_background = (
-            item.activity_was_running
-            and activity is not None
-            and activity.execution_status == "finished"
-            and item.id != active_binding_id
-        )
-        if completed_in_background:
+        is_background = item.id != active_binding_id
+        if is_running:
+            item.terminal_reconciliation_pending = False
+        elif item.activity_was_running:
+            if is_background:
+                item.terminal_reconciliation_pending = True
+            else:
+                item.activity_was_running = False
+        if item.terminal_reconciliation_pending and is_background and not is_running:
             result = runtime.read_active_events(_handle(db, workspace, item)).result
             if (
                 result is not None
@@ -879,10 +883,19 @@ def conversation_activity(
                 and result.completion_event_kind == "ASSISTANT_MESSAGE"
                 and result.completion_event_id is not None
                 and result.final_message
-                and not item.unread
             ):
-                item.unread = True
-                item.unread_origin = "MANUAL"
+                item.terminal_reconciliation_pending = False
+                item.activity_was_running = False
+                if item.last_notified_completion_event_id != result.completion_event_id:
+                    item.unread = True
+                    item.unread_origin = "MANUAL"
+                    item.last_notified_completion_event_id = result.completion_event_id
+            elif result is not None and result.status in {"COMPLETED", "FAILED", "PAUSED"}:
+                item.terminal_reconciliation_pending = False
+                item.activity_was_running = False
+            elif activity is not None and activity.execution_status in {"paused", "error", "stuck"}:
+                item.terminal_reconciliation_pending = False
+                item.activity_was_running = False
         if item.id in attention_binding_ids:
             # Preserve MANUAL unread and an explicit SYSTEM acknowledgement
             # (SYSTEM + unread=False). Otherwise an active native abnormality
@@ -1984,6 +1997,15 @@ def patch_conversation(
     return _dict(db, item)
 
 
+def set_conversation_pinned(
+    db: Session, workspace_id: str, binding_id: str, *, pinned: bool
+) -> dict[str, Any]:
+    item = _binding(db, workspace_id, binding_id, lock=True)
+    item.pinned = pinned
+    db.flush()
+    return _dict(db, item)
+
+
 def set_conversation_unread(
     db: Session,
     workspace_id: str,
@@ -2244,11 +2266,6 @@ def _project_conversation_events(
             "user",
             "human",
         }:
-            payload["display_content"] = display_content
-        elif event.event_type == "MESSAGE" and str(payload.get("source") or "").lower() in {
-            "user",
-            "human",
-        }:
             # Before attachment metadata was projected, OpenHands persisted a
             # product-generated path suffix in the native message body.  Keep
             # that old history readable without teaching the browser to parse
@@ -2257,8 +2274,8 @@ def _project_conversation_events(
             display_content, legacy_paths = _legacy_message_attachments(
                 str(payload.get("content") or "")
             )
+            payload["display_content"] = display_content
             if legacy_paths:
-                payload["display_content"] = display_content
                 payload["attachments"] = [
                     {
                         "filename": _attachment_filename(path),
@@ -2818,9 +2835,9 @@ def _message_payload(
 ) -> tuple[str, tuple[str, ...]]:
     if len(attachments) > 10:
         raise DomainError("AGENT_ATTACHMENT_INVALID", "附件引用无效，请重新上传", 422)
-    paths: list[str] = []
     image_urls: list[str] = []
-    for item in attachments:
+    attachment_aliases: list[dict[str, str]] = []
+    for index, item in enumerate(attachments, start=1):
         path = item.get("path")
         image_data_url = item.get("image_data_url")
         if (
@@ -2835,19 +2852,23 @@ def _message_payload(
             )
         ):
             raise DomainError("AGENT_ATTACHMENT_INVALID", "附件引用无效，请重新上传", 422)
-        paths.append(path)
+        filename = item.get("filename")
+        attachment_aliases.append(
+            {
+                "alias": f"@附件{index}",
+                "filename": filename if isinstance(filename, str) and filename else _attachment_filename(path),
+                "path": path,
+            }
+        )
         if isinstance(image_data_url, str):
             image_urls.append(image_data_url)
     prompt = content.strip()
-    if paths:
-        prompt += (
-            "\n\n已上传到共享工作区的附件：\n" if prompt else "请查看已上传到共享工作区的附件：\n"
-        ) + "\n".join(f"- {path}" for path in paths)
     normalized_references = _validated_conversation_references(references)
     normalized_workspace_references = _validated_workspace_references(workspace_references)
-    # Keep ordinary messages native. A structured envelope is only needed when
-    # the turn carries background material or a workspace selection.
-    if not normalized_references and not normalized_workspace_references and not annotations:
+    # Attachments need the same hidden transport envelope as other contextual
+    # material: the Runtime receives stable aliases and paths, while history
+    # continues to render only the user's original text and attachment cards.
+    if not attachment_aliases and not normalized_references and not normalized_workspace_references and not annotations:
         return prompt, tuple(image_urls)
     prompt = (
         _MESSAGE_CONTEXT_V5_PREFIX
@@ -2858,6 +2879,7 @@ def _message_payload(
                 "reference_materials": normalized_references,
                 "workspace_references": normalized_workspace_references,
                 "collaboration_annotations": annotations,
+                "attachment_aliases": attachment_aliases,
                 "current_user_request": {"content": prompt},
             },
             ensure_ascii=False,

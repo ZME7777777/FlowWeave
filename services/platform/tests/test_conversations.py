@@ -323,17 +323,27 @@ def test_node_workspace_generated_images_project_svg_and_preserve_untrusted_path
     )
 
 
-def test_attachment_only_message_bypasses_context_envelope() -> None:
+def test_attachment_aliases_are_hidden_from_message_body() -> None:
     attachment_path = (
         "/runtime/workspace/project/uploads/"
         "00000000-0000-0000-0000-000000000001-0123456789abcdef0123456789abcdef--notes.txt"
     )
     prompt, _image_urls = session_conversations.message_payload(
-        "请阅读附件", ({"path": attachment_path},), ()
+        "请阅读 @附件1", ({"path": attachment_path, "filename": "notes.txt"},), ()
     )
 
-    assert session_conversations._MESSAGE_CONTEXT_V5_MARKER not in prompt
-    assert prompt == f"请阅读附件\n\n已上传到共享工作区的附件：\n- {attachment_path}"
+    payload = json.loads(prompt.rpartition(session_conversations._MESSAGE_CONTEXT_V5_MARKER)[2])
+    assert payload["attachment_aliases"] == [
+        {"alias": "@附件1", "filename": "notes.txt", "path": attachment_path}
+    ]
+    display_content, references, workspace_references, annotations = (
+        session_conversations.project_conversation_references(prompt)
+    )
+    assert display_content == "请阅读 @附件1"
+    assert attachment_path not in display_content
+    assert references == ()
+    assert workspace_references == ()
+    assert annotations == ()
 
 
 def test_conversation_references_are_resolved_by_formal_native_event_id() -> None:
@@ -727,7 +737,8 @@ def test_conversation_reference_projection_composes_with_attachment_context() ->
     display_content, references, workspace_references, annotations = (
         session_conversations.project_conversation_references(prompt)
     )
-    assert display_content == f"请查看已上传到共享工作区的附件：\n- {attachment_path}"
+    assert display_content == ""
+    assert attachment_path not in display_content
     assert references == ({"event_id": "assistant-event-2", "content": "不要展开此引用"},)
     assert workspace_references == ()
 
@@ -2621,6 +2632,95 @@ def test_node_session_activity_maps_native_unready_ids(
     }
     assert bindings[0].id not in activity["running_binding_ids"]
     assert runtime.calls == 1
+
+
+
+def test_node_session_activity_marks_unread_after_missing_terminal_snapshot(
+    db_session_factory: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with db_session_factory() as db:
+        flow_run_id, runtime_session_id, attempt_id = _node_session_context(db)
+        attempt = db.get(NodeAttempt, attempt_id)
+        assert attempt is not None
+        binding = AgentConversationBinding(
+            workspace_id=None,
+            host_kind="FLOW_NODE",
+            host_id=flow_run_id,
+            conversation_scope_id=attempt_id,
+            flow_run_id=flow_run_id,
+            node_run_id=attempt.node_run_id,
+            node_attempt_id=attempt_id,
+            runtime_session_id=runtime_session_id,
+            working_directory=attempt.workspace_ref,
+            openhands_conversation_id="node-final-reply-unread",
+            display_title="节点后台完成会话",
+            lifecycle="ACTIVE",
+            create_idempotency_key="node-final-reply-unread",
+        )
+        db.add(binding)
+        db.flush()
+        monkeypatch.setattr(
+            flow_node_conversations.agent_sessions,
+            "resolve_flow_node_session_host",
+            lambda *_args, **_kwargs: SimpleNamespace(),
+        )
+        monkeypatch.setattr(
+            flow_node_conversations,
+            "_node_handle",
+            lambda *_args, **_kwargs: RuntimeHandle(job_id="job", conversation_id=""),
+        )
+        monkeypatch.setattr(
+            flow_node_conversations,
+            "_handle",
+            lambda *_args, **_kwargs: RuntimeHandle(job_id="job", conversation_id=""),
+        )
+
+        class ActivityRuntime:
+            visible = True
+            final_result: RuntimeResult | None = None
+
+            def conversation_activity_snapshot(self, _handle):
+                if not self.visible:
+                    return {}
+                return {
+                    binding.openhands_conversation_id: RuntimeConversationActivity(
+                        conversation_id=binding.openhands_conversation_id,
+                        execution_status="running",
+                        updated_at="2999-01-01T00:00:00+00:00",
+                    )
+                }
+
+            def read_active_events(self, _handle):
+                return RuntimeEventBatch(result=self.final_result)
+
+        runtime = ActivityRuntime()
+        monkeypatch.setattr(flow_node_conversations, "get_runtime", lambda: runtime)
+
+        flow_node_conversations.node_session_activity(
+            db, flow_run_id=flow_run_id, attempt_id=attempt_id
+        )
+        assert binding.activity_was_running is True
+
+        runtime.visible = False
+        flow_node_conversations.node_session_activity(
+            db, flow_run_id=flow_run_id, attempt_id=attempt_id
+        )
+        assert binding.terminal_reconciliation_pending is True
+        assert binding.unread is False
+
+        runtime.final_result = RuntimeResult(
+            status="COMPLETED",
+            final_message="节点正式最终回复",
+            completion_event_id="node-assistant-final",
+            completion_event_kind="ASSISTANT_MESSAGE",
+        )
+        flow_node_conversations.node_session_activity(
+            db, flow_run_id=flow_run_id, attempt_id=attempt_id
+        )
+        assert binding.unread is True
+        assert binding.unread_origin == "MANUAL"
+        assert binding.terminal_reconciliation_pending is False
+        assert binding.last_notified_completion_event_id == "node-assistant-final"
 
 
 def test_node_session_unread_state_persists_in_conversation_projection(
