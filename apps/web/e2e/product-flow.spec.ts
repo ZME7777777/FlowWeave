@@ -448,6 +448,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   let interrupted = false;
   let pauseReadinessGate: Promise<void> | undefined;
   let releasePauseReadiness: (() => void) | undefined;
+  let pauseReadinessRefreshStarted = false;
   let pauseReadinessReturnsIdle = false;
   let pauseBufferedEvent = false;
   let backfilledTaskAction = false;
@@ -960,7 +961,10 @@ test('top-level Agent workspace creates a direct conversation and restores its U
         await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ready: true, execution_status: 'idle' }) });
         return;
       }
-      if (interrupted && pauseReadinessGate) await pauseReadinessGate;
+      if (interrupted && pauseReadinessGate) {
+        pauseReadinessRefreshStarted = true;
+        await pauseReadinessGate;
+      }
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
         ready: !modelIsResponding || interrupted,
         execution_status: pauseReadinessReturnsIdle ? 'idle' : modelIsResponding ? (interrupted ? 'paused' : 'running') : 'idle',
@@ -1483,12 +1487,13 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     return Boolean(process && reply && (process.compareDocumentPosition(reply) & Node.DOCUMENT_POSITION_FOLLOWING));
   })).toBe(true);
   await expect(page.getByText('工作区已就绪。')).toHaveCount(1);
-  const conversationChanges = page.getByRole('button', { name: '本会话已编辑 2 个文件' });
-  await expect(conversationChanges).toBeVisible();
-  await expect(page.getByText('config.ts', { exact: true })).toBeVisible();
-  await expect(page.getByText('root-owned.ts', { exact: true })).toBeVisible();
-  await expect(conversationChanges).toContainText('+2');
-  await expect(conversationChanges).toContainText('-2');
+  const replyChanges = completedTurn.getByRole('button', { name: '已编辑 2 个文件' });
+  await expect(replyChanges).toBeVisible();
+  await expect(page.getByRole('button', { name: '已编辑 2 个文件' })).toHaveCount(1);
+  await expect(completedTurn.getByText('config.ts', { exact: true })).toBeVisible();
+  await expect(completedTurn.getByText('root-owned.ts', { exact: true })).toBeVisible();
+  await expect(replyChanges).toContainText('+2');
+  await expect(replyChanges).toContainText('-2');
   const reportLink = page.getByRole('link', { name: '期权异动接口批量查询代码审查报告.md' });
   await expect(reportLink).toBeVisible();
   const urlBeforeReportPreview = page.url();
@@ -1517,7 +1522,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(fileDetail.getByText('const mode = "old"', { exact: true })).toBeVisible();
   await expect(fileDetail.getByText('const mode = "new"', { exact: true })).toBeVisible();
   await expect(fileDetail.getByText('The file was edited successfully.', { exact: true })).toBeVisible();
-  await conversationChanges.click();
+  await replyChanges.click();
   await expect(page.getByRole('button', { name: '查看源文件' })).toBeVisible();
   await page.getByRole('button', { name: '查看源文件' }).click();
   await expect(page.getByText('workspace file preview', { exact: true })).toBeVisible();
@@ -2352,6 +2357,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   pauseReadinessGate = new Promise<void>(resolve => { releasePauseReadiness = resolve; });
   await page.getByRole('button', { name: '暂停当前 Agent' }).click();
   await expect(page.getByRole('button', { name: '暂停请求已发送' })).toBeDisabled();
+  await expect.poll(() => pauseReadinessRefreshStarted).toBe(true);
   pauseBufferedEvent = true;
   await page.evaluate(() => window.dispatchEvent(new Event('focus')));
   await expect(page.getByText('暂停请求确认前到达的正式事件。')).toHaveCount(0);

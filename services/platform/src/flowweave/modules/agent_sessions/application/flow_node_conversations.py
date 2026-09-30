@@ -893,6 +893,7 @@ def node_session_activity(
     )
     if not bindings:
         return {
+            "conversations": [],
             "running_binding_ids": [],
             "condensing_binding_ids": [],
             "condensation_failed_binding_ids": [],
@@ -995,19 +996,26 @@ def node_session_activity(
         if activity is not None and item.activity_was_running != is_running:
             item.activity_was_running = is_running
     db.flush()
+    condensing_binding_ids = [
+        item.id
+        for item in bindings
+        if latest_condensation_task.get(item.id, (None, None, None))[1]
+        in {TaskState.PENDING, TaskState.RUNNING}
+    ]
+    condensation_failed_binding_ids = [
+        item.id
+        for item in bindings
+        if latest_condensation_task.get(item.id, (None, None, None))[1] == TaskState.DEAD
+    ]
+    activity_binding_ids = running_binding_ids | set(condensing_binding_ids)
+    activity_bindings = [
+        item for item in bindings if item.id in activity_binding_ids or item.unread
+    ]
     return {
+        "conversations": [_node_session_dict(db, item) for item in activity_bindings],
         "running_binding_ids": [item.id for item in running_bindings],
-        "condensing_binding_ids": [
-            item.id
-            for item in bindings
-            if latest_condensation_task.get(item.id, (None, None, None))[1]
-            in {TaskState.PENDING, TaskState.RUNNING}
-        ],
-        "condensation_failed_binding_ids": [
-            item.id
-            for item in bindings
-            if latest_condensation_task.get(item.id, (None, None, None))[1] == TaskState.DEAD
-        ],
+        "condensing_binding_ids": condensing_binding_ids,
+        "condensation_failed_binding_ids": condensation_failed_binding_ids,
         "condensation_tasks": [
             {
                 "binding_id": item.id,

@@ -4,10 +4,12 @@ import '@xterm/xterm/css/xterm.css';
 import { type InfiniteData, useQueries, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import hljs from 'highlight.js/lib/common';
 import { ArrowLeft, ArrowUp, Bell, Bot, Boxes, Check, ChevronDown, ChevronRight, CircleAlert, CircleDot, Copy, CornerDownRight, Download, Ellipsis, FileCode2, FileText, Folder, FolderOpen, FolderPlus, GitBranch, GripVertical, ImageIcon, Layers3, Link2, ListRestart, LoaderCircle, Maximize2, Minimize2, MonitorCog, PanelRightOpen, Pencil, Pin, PinOff, Play, Plus, Quote, RefreshCw, Search, Send, ShieldAlert, Square, Trash2, X } from 'lucide-react';
-import { createContext, forwardRef, isValidElement, useCallback, useContext, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type ComponentPropsWithoutRef, type CSSProperties, type DragEvent as ReactDragEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type WheelEvent as ReactWheelEvent } from 'react';
+import { createContext, isValidElement, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type WheelEvent as ReactWheelEvent } from 'react';
 import { createPortal, flushSync } from 'react-dom';
 import ReactMarkdown from 'react-markdown';
 import { ComposerModelMenu } from './ComposerModelMenu';
+import { AgentComposerInput, type ComposerSuggestion } from './AgentComposerInput';
+import { WORKSPACE_FILE_TRANSFER_TYPE, transferredFiles, type ComposerHandle } from './agentComposerInputUtils';
 import remarkGfm from 'remark-gfm';
 import { api as agentWorkspaceApi, ApiError, randomId, type AgentStreamEvent } from '../../api/client';
 import { agentWorkspaceSessionGateway, type AgentSessionGateway } from '../../api/agent-session-gateway';
@@ -25,11 +27,10 @@ import { selectCapabilityVersion, selectCapabilityVersions } from '../../utils/c
 import { SubagentAvatar } from '../SubagentAvatar';
 import { subagentAvatarSlots, type SubagentAvatarSlot } from '../../utils/subagentAvatar';
 import { workspaceFileChanges, workspaceRelativePath, type WorkspaceFileChange } from './fileChanges';
-import type { AgentAttachment, AgentConversation, AgentConversationAnnotation, AgentConversationContext, AgentConversationCredentialSyncEntry, AgentConversationInputReadiness, AgentConversationPage, AgentConversationReference, AgentConversationSearch, AgentPendingConfirmationAction, AgentSessionCapability, AgentSessionMcpReadiness, AgentSessionWorkDirectory, AgentSessionWorkDirectoryList, AgentSessionWorkspaceDetails, AgentWorkspaceReference, CapabilityAsset, CapabilityCollection, ModelProvider, OpenHandsConversationEvent, OpenHandsConversationEventBatch, RuntimeTaskControlSnapshot, RuntimeTaskUsageSnapshot, WorkspaceGitChangeKind, WorkspaceGitChangedFile, WorkspaceGitChanges, WorkspaceGitCommitDetails, WorkspaceGitFileDiff } from '../../types';
+import type { AgentAttachment, AgentConversation, AgentConversationActivity, AgentConversationAnnotation, AgentConversationContext, AgentConversationCredentialSyncEntry, AgentConversationInputReadiness, AgentConversationPage, AgentConversationReference, AgentConversationSearch, AgentPendingConfirmationAction, AgentSessionCapability, AgentSessionMcpReadiness, AgentSessionWorkDirectory, AgentSessionWorkDirectoryList, AgentSessionWorkspaceDetails, AgentWorkspaceReference, CapabilityAsset, CapabilityCollection, ModelProvider, OpenHandsConversationEvent, OpenHandsConversationEventBatch, RuntimeTaskControlSnapshot, RuntimeTaskUsageSnapshot, WorkspaceGitChangeKind, WorkspaceGitChangedFile, WorkspaceGitChanges, WorkspaceGitCommitDetails, WorkspaceGitFileDiff } from '../../types';
 import '../../pages/agent-workbench.css';
 import '../../pages/agent-workbench-layout.css';
 
-const WORKSPACE_FILE_TRANSFER_TYPE = 'application/x-flowweave-workspace-file-path';
 const ACTIVE_EVENT_RECOVERY_INTERVAL_MS = 4_000;
 const ACTIVE_EVENT_LATEST_RECHECK_INTERVAL_MS = 30_000;
 const INPUT_READINESS_MIN_REQUEST_INTERVAL_MS = 2_000;
@@ -39,6 +40,7 @@ const SUBMISSION_EVENT_CONFIRMATION_RETRY_INTERVAL_MS = 250;
 const CONVERSATION_HYDRATION_SELECTION_DELAY_MS = 120;
 const HYDRATION_UI_DEADLINE_MS = 12_000;
 const MAX_UNAVAILABLE_HYDRATION_RETRIES = 2;
+const EMPTY_TASK_CONTROL: RuntimeTaskControlSnapshot[] = [];
 const TERMINAL_CONVERSATION_CACHE_TTL_MS = 5 * 60 * 1000;
 const ACTIVE_CONVERSATION_CACHE_TTL_MS = 30_000;
 // A hydration response seeds the coherent event and readiness projections.
@@ -1088,20 +1090,6 @@ function writeConversationComposerDraft(storageKey: string | undefined, value: C
   }
 }
 
-function transferredFiles(transfer: DataTransfer): File[] {
-  const files = Array.from(transfer.files);
-  if (files.length) return files;
-  return Array.from(transfer.items)
-    .filter(item => item.kind === 'file')
-    .map(item => item.getAsFile())
-    .filter((file): file is File => file !== null);
-}
-
-function transferredWorkspacePaths(transfer: DataTransfer): string[] {
-  if (!transfer.types.includes(WORKSPACE_FILE_TRANSFER_TYPE)) return [];
-  return transfer.getData(WORKSPACE_FILE_TRANSFER_TYPE).split('\n').map(path => path.trim()).filter(Boolean);
-}
-
 function isBootstrapAmbiguous(error: Error): boolean {
   return [
     'AGENT_BOOTSTRAP_CREATION_AMBIGUOUS',
@@ -1120,243 +1108,10 @@ function isHydrationRequestTimeout(error: unknown): boolean {
 }
 
 type AgentCapabilityType = 'SKILL' | 'MCP' | 'PLUGIN' | 'CONTEXT' | 'AGENT_DEFINITION' | 'HOOK';
-type ComposerSuggestionKind = 'SKILL' | 'COMMAND' | 'MCP' | 'NATIVE' | 'REFERENCE';
-type NativeComposerAction = 'CONDENSE';
-interface ComposerSuggestion {
-  id: string;
-  kind: ComposerSuggestionKind;
-  token: string;
-  label: string;
-  detail: string;
-  available?: boolean;
-  nativeAction?: NativeComposerAction;
-}
-
-function composerTrigger(value: string): { sigil: '$' | '/' | '@'; query: string; start: number } | undefined {
-  const match = /(?:^|\s)([$/@])([^\s]*)$/.exec(value);
-  if (!match) return undefined;
-  return { sigil: match[1] as '$' | '/' | '@', query: match[2], start: value.length - match[0].length + (match[0].startsWith(' ') ? 1 : 0) };
-}
 
 function stringValues(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0) : [];
 }
-
-interface ComposerHandle {
-  replace: (value: string) => void;
-  insert: (value: string) => void;
-  value: () => string;
-  focus: () => void;
-}
-
-const COMPOSER_DRAFT_PERSIST_DELAY_MS = 400;
-const EMPTY_TASK_CONTROL: RuntimeTaskControlSnapshot[] = [];
-
-const ComposerCapabilityAutocomplete = forwardRef<ComposerHandle, {
-  initialDraft: string; scope?: string; suggestions: ComposerSuggestion[]; disabled: boolean; placeholder: string;
-  onDraftChange: (scope: string | undefined, value: string) => void; onContentPresenceChange: (hasContent: boolean) => void; onDraftPersist: (scope: string | undefined) => void; onPaste: (event: ReactClipboardEvent<HTMLTextAreaElement>) => void; onDropFiles?: (files: File[]) => void; onDropWorkspaceFiles?: (paths: string[]) => void; onSubmit: (content: string) => void;
-  onDirectSubmit?: (content: string) => void;
-  onManageCapabilities?: () => void;
-  onNativeAction?: (action: NativeComposerAction) => void;
-  onWorkspaceReferenceSelected?: () => void;
-}>(function ComposerCapabilityAutocomplete({
-  initialDraft, scope, suggestions, disabled, placeholder, onDraftChange, onContentPresenceChange, onDraftPersist, onPaste, onDropFiles, onDropWorkspaceFiles, onSubmit, onDirectSubmit, onManageCapabilities, onNativeAction, onWorkspaceReferenceSelected,
-}, ref) {
-  const input = useRef<HTMLTextAreaElement>(null);
-  const dragDepth = useRef(0);
-  const draftRef = useRef(initialDraft);
-  const previousScope = useRef(scope);
-  const persistDraftRef = useRef(onDraftPersist);
-  const [draft, setDraft] = useState(initialDraft);
-  const [activeIndex, setActiveIndex] = useState(0);
-  const [fileDragActive, setFileDragActive] = useState(false);
-  const [inputOverflowing, setInputOverflowing] = useState(false);
-  const replaceDraft = useCallback((value: string) => {
-    draftRef.current = value;
-    setDraft(current => current === value ? current : value);
-  }, []);
-  const updateDraft = useCallback((value: string) => {
-    replaceDraft(value);
-    onDraftChange(scope, value);
-  }, [onDraftChange, replaceDraft, scope]);
-  const insertDraft = useCallback((value: string) => {
-    const textarea = input.current;
-    const current = draftRef.current;
-    const start = textarea?.selectionStart ?? current.length;
-    const end = textarea?.selectionEnd ?? start;
-    const next = `${current.slice(0, start)}${value}${current.slice(end)}`;
-    updateDraft(next);
-    requestAnimationFrame(() => {
-      textarea?.focus();
-      const cursor = start + value.length;
-      textarea?.setSelectionRange(cursor, cursor);
-    });
-  }, [updateDraft]);
-  useImperativeHandle(ref, () => ({
-    replace: replaceDraft,
-    insert: insertDraft,
-    value: () => draftRef.current,
-    focus: () => input.current?.focus(),
-  }), [insertDraft, replaceDraft]);
-  useLayoutEffect(() => {
-    if (previousScope.current === scope) return;
-    previousScope.current = scope;
-    replaceDraft(initialDraft);
-  }, [initialDraft, replaceDraft, scope]);
-  const hasText = Boolean(draft.trim());
-  useEffect(() => { onContentPresenceChange(hasText); }, [hasText, onContentPresenceChange]);
-  useEffect(() => {
-    persistDraftRef.current = onDraftPersist;
-  }, [onDraftPersist]);
-  useEffect(() => {
-    const scopeForPersist = scope;
-    const timer = window.setTimeout(() => persistDraftRef.current(scopeForPersist), COMPOSER_DRAFT_PERSIST_DELAY_MS);
-    return () => window.clearTimeout(timer);
-  }, [draft, onDraftPersist, scope]);
-  const resizeInput = useCallback(() => {
-    const textarea = input.current;
-    if (!textarea) return;
-    // The first layout pass can run while the composer is still being sized.
-    // Avoid treating that transient zero-width box as a long, wrapped draft.
-    if (textarea.getBoundingClientRect().width <= 0) return;
-    const styles = window.getComputedStyle(textarea);
-    const lineHeight = Number.parseFloat(styles.lineHeight);
-    const verticalPadding = Number.parseFloat(styles.paddingTop) + Number.parseFloat(styles.paddingBottom);
-    const minHeight = Math.max(Number.parseFloat(styles.minHeight), lineHeight + verticalPadding);
-    const maxHeight = lineHeight * 10 + verticalPadding;
-    // Measure text in a standalone element rather than another textarea. A
-    // cloned textarea may retain its old scroll-box state and report an
-    // inflated scrollHeight after a long draft is shortened.
-    const measurement = document.createElement('div');
-    measurement.textContent = textarea.value || ' ';
-    measurement.setAttribute('aria-hidden', 'true');
-    measurement.style.setProperty('position', 'fixed', 'important');
-    measurement.style.setProperty('visibility', 'hidden', 'important');
-    measurement.style.setProperty('pointer-events', 'none', 'important');
-    measurement.style.setProperty('box-sizing', 'content-box', 'important');
-    measurement.style.setProperty('width', `${Math.max(0, textarea.clientWidth - verticalPadding)}px`, 'important');
-    measurement.style.setProperty('margin', '0', 'important');
-    measurement.style.setProperty('padding', '0', 'important');
-    measurement.style.setProperty('border', '0', 'important');
-    measurement.style.setProperty('font', styles.font, 'important');
-    measurement.style.setProperty('font-kerning', styles.fontKerning, 'important');
-    measurement.style.setProperty('letter-spacing', styles.letterSpacing, 'important');
-    measurement.style.setProperty('line-height', styles.lineHeight, 'important');
-    measurement.style.setProperty('white-space', 'pre-wrap', 'important');
-    measurement.style.setProperty('overflow-wrap', 'anywhere', 'important');
-    measurement.style.setProperty('word-break', 'break-word', 'important');
-    document.body.append(measurement);
-    const contentHeight = measurement.getBoundingClientRect().height + verticalPadding;
-    measurement.remove();
-    const height = Math.min(Math.max(contentHeight, minHeight), maxHeight);
-    textarea.style.height = `${height}px`;
-    textarea.style.setProperty('overflow-y', contentHeight > maxHeight + 1 ? 'auto' : 'hidden', 'important');
-    setInputOverflowing(current => {
-      const next = contentHeight > maxHeight + 1;
-      return current === next ? current : next;
-    });
-  }, []);
-  useLayoutEffect(() => { resizeInput(); }, [draft, resizeInput]);
-  useEffect(() => {
-    window.addEventListener('resize', resizeInput);
-    const observer = typeof ResizeObserver === 'undefined' ? undefined : new ResizeObserver(resizeInput);
-    if (input.current?.parentElement) observer?.observe(input.current.parentElement);
-    const layoutFrame = requestAnimationFrame(resizeInput);
-    return () => {
-      window.removeEventListener('resize', resizeInput);
-      observer?.disconnect();
-      cancelAnimationFrame(layoutFrame);
-    };
-  }, [resizeInput]);
-  const trigger = composerTrigger(draft);
-  const visible = useMemo(() => {
-    if (!trigger) return [];
-    const needle = trigger.query.toLocaleLowerCase();
-    if (trigger.sigil === '@') {
-      const reference: ComposerSuggestion = {
-        id: 'reference:workspace-files',
-        kind: 'REFERENCE',
-        token: '@文件和目录',
-        label: '文件和目录',
-        detail: '引用当前容器工作区中的文件或目录',
-      };
-      return !needle || `${reference.token} ${reference.label} ${reference.detail}`.toLocaleLowerCase().includes(needle)
-        ? [reference]
-        : [];
-    }
-    return suggestions.filter(item => (trigger.sigil === '$' ? item.kind === 'SKILL' : item.kind !== 'SKILL')
-      && (!needle || `${item.token} ${item.label} ${item.detail}`.toLocaleLowerCase().includes(needle)));
-  }, [suggestions, trigger]);
-  useEffect(() => setActiveIndex(0), [draft]);
-  const select = (item: ComposerSuggestion) => {
-    if (!trigger || item.available === false) return;
-    if (item.kind === 'NATIVE' && item.nativeAction) {
-      updateDraft(`${draft.slice(0, trigger.start)}${draft.slice(trigger.start + trigger.query.length + 1)}`);
-      onNativeAction?.(item.nativeAction);
-      return;
-    }
-    if (item.kind === 'REFERENCE') {
-      updateDraft(`${draft.slice(0, trigger.start)}${draft.slice(trigger.start + trigger.query.length + 1)}`);
-      onWorkspaceReferenceSelected?.();
-      return;
-    }
-    updateDraft(`${draft.slice(0, trigger.start)}${item.token} ${draft.slice(trigger.start + trigger.query.length + 1)}`);
-    requestAnimationFrame(() => input.current?.focus());
-  };
-  const hasSuggestions = visible.length > 0;
-  // A slash is an explicit request for a command or MCP.  Keep the picker
-  // available for a draft before it has a native Conversation binding too.
-  const showCapabilityManager = Boolean(trigger && trigger.sigil !== '@' && onManageCapabilities);
-  const hasMenu = Boolean(trigger && (hasSuggestions || showCapabilityManager));
-  const hasNativeSuggestions = suggestions.some(item => item.kind === 'NATIVE');
-  const acceptsFileDrag = (event: ReactDragEvent<HTMLElement>) => event.dataTransfer.types.includes('Files');
-  const acceptsWorkspaceFileDrag = (event: ReactDragEvent<HTMLElement>) => event.dataTransfer.types.includes(WORKSPACE_FILE_TRANSFER_TYPE);
-  const acceptsAttachmentDrag = (event: ReactDragEvent<HTMLElement>) => (Boolean(onDropFiles) && acceptsFileDrag(event)) || (Boolean(onDropWorkspaceFiles) && acceptsWorkspaceFileDrag(event));
-  const clearFileDrag = () => { dragDepth.current = 0; setFileDragActive(false); };
-  return <div className={`agent-composer-input${fileDragActive ? ' file-drag-active' : ''}`} onDragEnter={event => {
-    if (disabled || !acceptsAttachmentDrag(event)) return;
-    event.preventDefault();
-    dragDepth.current += 1;
-    setFileDragActive(true);
-  }} onDragOver={event => {
-    if (disabled || !acceptsAttachmentDrag(event)) return;
-    event.preventDefault();
-    event.dataTransfer.dropEffect = 'copy';
-  }} onDragLeave={() => {
-    if (!fileDragActive) return;
-    dragDepth.current -= 1;
-    if (dragDepth.current <= 0) clearFileDrag();
-  }} onDrop={event => {
-    if (!acceptsAttachmentDrag(event)) return;
-    event.preventDefault();
-    const workspacePaths = disabled ? [] : transferredWorkspacePaths(event.dataTransfer);
-    const files = disabled ? [] : transferredFiles(event.dataTransfer);
-    clearFileDrag();
-    if (workspacePaths.length) onDropWorkspaceFiles?.(workspacePaths);
-    if (files.length) onDropFiles?.(files);
-  }}>
-    <textarea ref={input} data-overflowing={inputOverflowing || undefined} aria-label="发送 Agent 消息" aria-autocomplete="list" aria-controls={hasMenu ? 'agent-composer-capabilities' : undefined} aria-expanded={hasMenu} value={draft} maxLength={200_000} placeholder={placeholder} disabled={disabled} onChange={event => updateDraft(event.target.value)} onPaste={onPaste} onKeyDown={event => {
-      if (isImeComposition(event)) return;
-      if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !event.shiftKey) {
-        event.preventDefault();
-        onDirectSubmit?.(draftRef.current);
-        return;
-      }
-      if (hasMenu && event.key === 'Escape') { updateDraft(draft.slice(0, -trigger!.query.length - 1)); return; }
-      if (hasSuggestions && ['ArrowDown', 'ArrowUp', 'Enter', 'Tab'].includes(event.key)) {
-        event.preventDefault();
-        if (event.key === 'ArrowDown') { setActiveIndex(index => (index + 1) % visible.length); return; }
-        if (event.key === 'ArrowUp') { setActiveIndex(index => (index - 1 + visible.length) % visible.length); return; }
-        select(visible[activeIndex] ?? visible[0]);
-        return;
-      }
-      if (hasMenu && ['Enter', 'Tab'].includes(event.key)) { event.preventDefault(); return; }
-      if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); onSubmit(draftRef.current); }
-    }}/>
-    {fileDragActive && <div className="agent-composer-file-drop" aria-live="polite">松开以添加附件</div>}
-    {hasMenu && <div id="agent-composer-capabilities" className="agent-composer-capability-menu" role="listbox" aria-label={trigger!.sigil === '$' ? '选择技能' : trigger!.sigil === '@' ? '选择引用类型' : hasNativeSuggestions ? '选择 OpenHands 原生能力、命令或 MCP' : '选择命令或 MCP'}>{hasSuggestions ? <>{visible.map((item, index) => <div className="agent-composer-capability-option" key={item.id}>{trigger!.sigil === '@' && index === 0 && <div className="agent-composer-capability-section">引用类型</div>}{trigger!.sigil === '/' && item.kind === 'NATIVE' && (index === 0 || visible[index - 1]?.kind !== 'NATIVE') && <div className="agent-composer-capability-section">OpenHands 原生能力</div>}{trigger!.sigil === '/' && item.kind !== 'NATIVE' && (index === 0 || visible[index - 1]?.kind === 'NATIVE') && <div className="agent-composer-capability-section">MCP 与命令</div>}<button type="button" role="option" aria-selected={index === activeIndex} aria-disabled={item.available === false || undefined} disabled={item.available === false} className={`${index === activeIndex ? 'active' : ''}${item.available === false ? ' unavailable' : ''}`} onMouseDown={event => event.preventDefault()} onMouseEnter={() => setActiveIndex(index)} onClick={() => select(item)}><code>{item.token}</code><span><b>{item.label}</b><small>{item.detail}</small></span><em>{item.kind === 'SKILL' ? '技能' : item.kind === 'COMMAND' ? '命令' : item.kind === 'NATIVE' ? '原生' : item.kind === 'REFERENCE' ? '引用' : 'MCP'}</em></button></div>)}</> : <div className="agent-composer-capability-empty"><span><b>{trigger!.sigil === '@' ? '当前没有匹配的引用类型' : !suggestions.length ? trigger!.sigil === '$' ? '当前会话还没有加载 Skill' : '当前会话还没有加载命令或 MCP' : '当前会话没有匹配的能力'}</b><small>{trigger!.sigil === '@' ? '调整输入关键词以筛选引用类型。' : !suggestions.length ? `先为此会话加载能力，随后可在这里用 ${trigger!.sigil} 选择并插入。` : '调整输入关键词，或管理当前会话能力。'}</small></span></div>}{showCapabilityManager && <div className="agent-composer-capability-manage"><span>管理当前会话能力</span><button type="button" onMouseDown={event => event.preventDefault()} onClick={onManageCapabilities}>管理</button></div>}</div>}
-  </div>;
-});
 
 function CapabilityManager({ workspaceId, bindingId, conversationCapabilities, draftCapabilityIds, onClose, onCreateEnhancedConversation }: {
   workspaceId: string; bindingId?: string; conversationCapabilities?: AgentSessionCapability[]; onClose: () => void;
@@ -1545,10 +1300,6 @@ function configuredModelName(provider: ModelProvider | undefined, runtimeModel: 
   return provider.models.find(model => model.enabled && (
     model.model_name === runtimeModel || `openai/${model.model_name}` === runtimeModel
   ))?.model_name;
-}
-
-function isImeComposition(event: ReactKeyboardEvent<HTMLTextAreaElement>): boolean {
-  return event.nativeEvent.isComposing || event.keyCode === 229;
 }
 
 function conversationName(conversation: AgentConversation) {
@@ -4598,6 +4349,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     inFlight?: Promise<AgentConversationInputReadiness>;
     lastRequestAt: number;
   }>({ lastRequestAt: 0 });
+  const forceReadinessRefresh = useRef(false);
   const hotReentryHydrationKey = useRef<string | undefined>(undefined);
   const historyPrependWaiters = useRef(new Map<number, {
     scope: string;
@@ -4812,6 +4564,21 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       setLoadingConversationScope(current => current === scopeKey ? undefined : current);
     }
   }, [api, conversationPagesByScope, conversationScopes, loadingConversationScope, workspace]);
+  useEffect(() => {
+    if (loadingConversationScope) return;
+    for (const scope of conversationScopes) {
+      const page = conversationPagesByScope[scope.key];
+      if (!page?.next_cursor) continue;
+      const unpinnedCount = page.items.filter(
+        item => !(pendingPinnedUpdates.current.get(item.id)?.pinned ?? item.pinned),
+      ).length;
+      if (unpinnedCount < 3) {
+        void loadMoreConversations(scope.key);
+        return;
+      }
+    }
+  }, [conversationPagesByScope, conversationScopes, loadMoreConversations, loadingConversationScope]);
+
   const conversationActivityQuery = useQuery({
     // A sidebar preview is not a formal route entry. Only the route binding may
     // suppress the server-owned "completed in background" unread transition.
@@ -4822,17 +4589,15 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     enabled: Boolean(workspace && pageVisible),
     refetchOnWindowFocus: false,
     refetchInterval: pageVisible ? 15_000 : false,
+    placeholderData: previous => previous,
     retry: false,
   });
-  useEffect(() => {
-    if (!workspace || !conversationActivityQuery.data) return;
-    void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversations', workspace.id) });
-  }, [conversationActivityQuery.data, host, queryClient, workspace]);
   const runningConversationIds = useMemo(
     () => new Set(conversationActivityQuery.data?.running_binding_ids ?? []),
     [conversationActivityQuery.data],
   );
   useEffect(() => {
+    if (!conversationActivityQuery.data || conversationActivityQuery.isPlaceholderData) return;
     const previous = previousRunningConversationIds.current;
     const completedInBackground = [...previous].some(
       bindingId => !runningConversationIds.has(bindingId) && bindingId !== routeBindingId,
@@ -4841,7 +4606,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     if (!completedInBackground || !workspace) return;
     void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-activity', workspace.id) });
     void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversations', workspace.id) });
-  }, [host, queryClient, routeBindingId, runningConversationIds, workspace]);
+  }, [conversationActivityQuery.data, conversationActivityQuery.isPlaceholderData, host, queryClient, routeBindingId, runningConversationIds, workspace]);
   const condensingConversationIds = useMemo(
     () => new Set(conversationActivityQuery.data?.condensing_binding_ids ?? []),
     [conversationActivityQuery.data],
@@ -4901,13 +4666,18 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const unpinnedConversations = conversations.filter(
     item => !(pendingPinnedUpdates.current.get(item.id)?.pinned ?? item.pinned),
   );
-  const activityConversations = useMemo(() => conversations
-    .filter(item => runningConversationIds.has(item.id) || condensingConversationIds.has(item.id) || conversationIsRunning(item.execution_status) || unreadConversationIds.has(item.id))
-    .sort((left, right) => {
-      const leftUpdatedAt = Date.parse(left.updated_at) || Date.parse(left.created_at) || 0;
-      const rightUpdatedAt = Date.parse(right.updated_at) || Date.parse(right.created_at) || 0;
-      return rightUpdatedAt - leftUpdatedAt || right.id.localeCompare(left.id);
-    }), [condensingConversationIds, conversations, runningConversationIds, unreadConversationIds]);
+  const activityConversations = useMemo(() => {
+    const byId = new Map<string, AgentConversation>();
+    for (const item of conversations) byId.set(item.id, item);
+    for (const item of conversationActivityQuery.data?.conversations ?? []) byId.set(item.id, item);
+    return [...byId.values()]
+      .filter(item => runningConversationIds.has(item.id) || condensingConversationIds.has(item.id) || conversationIsRunning(item.execution_status) || unreadConversationIds.has(item.id) || Boolean(item.unread))
+      .sort((left, right) => {
+        const leftUpdatedAt = Date.parse(left.updated_at) || Date.parse(left.created_at) || 0;
+        const rightUpdatedAt = Date.parse(right.updated_at) || Date.parse(right.created_at) || 0;
+        return rightUpdatedAt - leftUpdatedAt || right.id.localeCompare(left.id);
+      });
+  }, [condensingConversationIds, conversationActivityQuery.data?.conversations, conversations, runningConversationIds, unreadConversationIds]);
   const revealedUnpinnedConversation = sidebarRevealBindingId && !conversations.find(item => item.id === sidebarRevealBindingId)?.pinned
     ? conversations.find(item => item.id === sidebarRevealBindingId)
     : undefined;
@@ -5101,6 +4871,15 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       updateCachedConversation(unread);
     });
     updateCachedConversation(unread, unreadOrigin);
+    queryClient.setQueriesData<AgentConversationActivity>(
+      { queryKey: sessionQueryKey(host, 'conversation-activity', workspace.id) },
+      current => current ? {
+        ...current,
+        conversations: current.conversations?.map(item => item.id === bindingId
+          ? { ...item, unread, unread_origin: unread ? unreadOrigin ?? item.unread_origin ?? 'MANUAL' : unreadOrigin ?? null }
+          : item),
+      } : current,
+    );
     updateUnreadConversationIds(unread);
     void api.setConversationUnread(workspace.id, bindingId, unread, unreadOrigin).then(updated => {
       const pending = pendingUnreadUpdates.current.get(bindingId);
@@ -5593,7 +5372,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     const now = Date.now();
     const synchronization = readinessSynchronization.current;
     if (synchronization.scope === scope && synchronization.inFlight) return synchronization.inFlight;
-    if (synchronization.scope === scope && now - synchronization.lastRequestAt < INPUT_READINESS_MIN_REQUEST_INTERVAL_MS) {
+    const forceRefresh = forceReadinessRefresh.current;
+    forceReadinessRefresh.current = false;
+    if (!forceRefresh && synchronization.scope === scope && now - synchronization.lastRequestAt < INPUT_READINESS_MIN_REQUEST_INTERVAL_MS) {
       const cached = queryClient.getQueryData<AgentConversationInputReadiness>(inputReadinessQueryKey);
       if (cached) return Promise.resolve(cached);
     }
@@ -6575,8 +6356,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const reconcileConversationProjection = useCallback(() => {
     void synchronizeConversationEvents(true);
     if (!workspace || !selected) return;
-    // A control action is an explicit state transition, so this is one of the
-    // few places permitted to refresh its exact Runtime readiness.
+    // A control action is an explicit state transition, so it must not reuse
+    // the pre-action readiness snapshot from the normal read throttle.
+    forceReadinessRefresh.current = true;
     void queryClient.invalidateQueries({
       queryKey: sessionQueryKey(host, 'conversation-input-readiness', workspace.id, selected.id),
       exact: true,
@@ -7152,7 +6934,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     idPrefix = 'pending-user',
     state: LocalMessageProjectionState = 'submitting',
     localOnly = false,
-    continuationParentId?: string,
   ): string => {
     const existing = localMessageProjections.current.get(message.id);
     if (existing) {
@@ -7170,7 +6951,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
             conversation_references: message.references.map(item => ({ event_id: item.eventId, content: item.content })),
             workspace_references: message.workspaceReferences,
             collaboration_annotations: message.annotations,
-            ...(continuationParentId ? { parent_id: continuationParentId } : {}),
           },
         },
       }));
@@ -7187,7 +6967,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         conversation_references: message.references.map(item => ({ event_id: item.eventId, content: item.content })),
         workspace_references: message.workspaceReferences,
         collaboration_annotations: message.annotations,
-        ...(continuationParentId ? { parent_id: continuationParentId } : {}),
         timestamp: new Date().toISOString(),
       },
     };
@@ -7289,14 +7068,12 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const dispatchMessage = useCallback((message: BoundQueuedMessage, immediate = false) => {
     if (sendingMessageIds.current.has(message.id)) return;
     sendingMessageIds.current.add(message.id);
-    const continuationParentId = !message.nativeGuidance
-      ? latestUnfinishedUserEventId(displayedEvents)
-      : undefined;
     const showLocalMessage = () => {
       if (!message.nativeGuidance) setForegroundTurn({ submissionId: message.id, bindingId: message.bindingId });
-      // The current page owns its submitted user bubble. The native event only
-      // anchors subsequent process/reply events and suppresses its duplicate.
-      showOptimisticUserBubble(message, 'pending-user', 'submitting', true, continuationParentId);
+      // The current page owns its submitted user bubble. Its event relationship
+      // is only known once the formal OpenHands event is available, so never
+      // infer a parent from a potentially stale browser event window.
+      showOptimisticUserBubble(message, 'pending-user', 'submitting', true);
       if (!message.nativeGuidance) {
         setActiveTurnEventId(undefined);
         setRequestStartedAt(current => current ?? Date.now());
@@ -7310,7 +7087,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     }
     if (immediate) window.setTimeout(() => send.mutate(message), 0);
     else send.mutate(message);
-  }, [commitQueuedMessages, displayedEvents, send, showOptimisticUserBubble]);
+  }, [commitQueuedMessages, send, showOptimisticUserBubble]);
   const migrateStreaming = useMutation({
     mutationFn: (_message: QueuedMessage) => {
       void _message;
@@ -8178,7 +7955,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     const failed = failedConversationIds.has(item.id);
     // Unread is a user-isolated server projection. Activity only decides
     // whether a persisted SYSTEM unread record is an alert right now.
-    const unread = unreadConversationIds.has(item.id);
+    const unread = unreadConversationIds.has(item.id) || Boolean(item.unread);
     const unreadOrigin = item.unread_origin;
     const conversationWritable = Boolean(item.write_available);
     return <WorkspaceConversationRow key={item.id} item={item} selectedBindingId={selectedBindingId} workspaceName={options.workspaceName} running={running} possiblyStuck={possiblyStuck} failed={failed} unread={unread} unreadOrigin={unreadOrigin} pinned={Boolean(item.pinned)} conversationWritable={conversationWritable} removing={remove.isPending} deleteDisabled={running} dragging={options.allowDrag !== false && draggedBindingId === item.id} dropPosition={options.allowDrag !== false && dragTarget?.bindingId === item.id ? (dragTarget.after ? 'after' : 'before') : undefined} onPointerDragStart={options.allowDrag === false ? undefined : event => startPointerConversationDrag(event, item, group)} onSelect={options.onSelect ?? (() => selectConversation(item.id))} onDoubleClick={options.onDoubleClick} onTogglePin={() => toggleConversationPin(item.id)} onMarkUnread={() => markConversationUnread(item.id)} onMarkRead={options.onMarkRead} onAcknowledgeAlert={() => markConversationRead(item.id)} onDelete={features.conversationDeletion && conversationWritable ? () => void confirmDeletion('会话', conversationName(item)).then(ok => { if (ok) remove.mutate(item.id); }) : undefined} reveal={sidebarListMode === 'workspaces' && sidebarRevealBindingId === item.id}/>;
@@ -8208,7 +7985,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const selectConversation = (bindingId: string) => {
     const outgoingScope = activeComposerScope.current;
     if (outgoingScope) persistComposerDraft(outgoingScope);
-    if (unreadConversationIds.has(bindingId)) markConversationRead(bindingId);
+    if (unreadConversationIds.has(bindingId) || conversationsById.get(bindingId)?.unread || activityConversations.some(item => item.id === bindingId && item.unread)) markConversationRead(bindingId);
     setActivityPreviewBindingId(undefined);
     setConversationDraft(undefined);
     onNavigate(host.conversationPath(bindingId));
@@ -8418,9 +8195,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
             </article>;
           })}
         </section>}
-                  <ComposerCapabilityAutocomplete key={composerScope ?? 'composer'} ref={composerRef} initialDraft={composerDraftRef.current} scope={composerScope} suggestions={visibleComposerSuggestions} placeholder={pendingConfirmation ? '请先处理上方工具确认…' : composerControlMode === 'condensing' ? '可继续输入，发送后将排队…' : composerControlMode === 'reconciling' ? '正在同步 Agent 状态…' : composerControlMode === 'read-only' ? '当前会话不可编辑…' : '给 Agent 发消息…'} disabled={!composerControl.editable} onDraftChange={setComposerDraft} onContentPresenceChange={onComposerContentPresenceChange} onDraftPersist={persistComposerDraft} onPaste={event => { if (!features.attachments) return; const files = transferredFiles(event.clipboardData); if (!files.length) return; event.preventDefault(); files.forEach(startAttachmentUpload); }} onDropFiles={features.attachments && composerScope ? files => files.forEach(startAttachmentUpload) : undefined} onDropWorkspaceFiles={paths => setWorkspaceReferences(current => [...current, ...paths.flatMap(path => current.some(reference => reference.path === path) ? [] : [{ path, kind: 'file' as const, display_name: path.split('/').filter(Boolean).pop() ?? path }])])} onSubmit={enqueueDraft} onDirectSubmit={sendDraftDirectly} onManageCapabilities={features.capabilities && (selected || features.draftCapabilitySelection) ? () => setCapabilityManagerOpen(true) : undefined} onNativeAction={action => { if (action === 'CONDENSE' && canCondense && !condense.isPending && workspace && selected) condense.mutate({ workspaceId: workspace.id, bindingId: selected.id }); }} onWorkspaceReferenceSelected={() => { setWorkspaceReferenceQuery(''); setWorkspaceReferencePickerOpen(true); }}/>
+                  <AgentComposerInput key={composerScope ?? 'composer'} ref={composerRef} initialDraft={composerDraftRef.current} scope={composerScope} suggestions={visibleComposerSuggestions} placeholder={pendingConfirmation ? '请先处理上方工具确认…' : composerControlMode === 'condensing' ? '可继续输入，发送后将排队…' : composerControlMode === 'reconciling' ? '正在同步 Agent 状态…' : composerControlMode === 'read-only' ? '当前会话不可编辑…' : '给 Agent 发消息…'} disabled={!composerControl.editable} onDraftChange={setComposerDraft} onContentPresenceChange={onComposerContentPresenceChange} onDraftPersist={persistComposerDraft} onPaste={event => { if (!features.attachments) return; const files = transferredFiles(event.clipboardData); if (!files.length) return; event.preventDefault(); files.forEach(startAttachmentUpload); }} onDropFiles={features.attachments && composerScope ? files => files.forEach(startAttachmentUpload) : undefined} onDropWorkspaceFiles={paths => setWorkspaceReferences(current => [...current, ...paths.flatMap(path => current.some(reference => reference.path === path) ? [] : [{ path, kind: 'file' as const, display_name: path.split('/').filter(Boolean).pop() ?? path }])])} onSubmit={enqueueDraft} onDirectSubmit={sendDraftDirectly} onManageCapabilities={features.capabilities && (selected || features.draftCapabilitySelection) ? () => setCapabilityManagerOpen(true) : undefined} onNativeAction={action => { if (action === 'CONDENSE' && canCondense && !condense.isPending && workspace && selected) condense.mutate({ workspaceId: workspace.id, bindingId: selected.id }); }} onWorkspaceReferenceSelected={() => { setWorkspaceReferenceQuery(''); setWorkspaceReferencePickerOpen(true); }}/>
         <div className="agent-composer-attachments">
-        {(features.attachments && (attachments.length > 0 || pendingAttachments.some(item => item.scope === composerScope)) || references.length > 0 || composerAnnotations.length > 0) && <div className="agent-attachments" aria-label="已添加的附件和会话引用">{features.attachments && <>{attachments.map((item, index) => <span key={item.path}><button type="button" className="agent-attachment-open" title={`单击插入 @附件${index + 1}；双击预览附件：${item.filename}`} onClick={() => scheduleAttachmentAliasInsertion(item)} onDoubleClick={() => previewComposerAttachment(item)}>{item.image_data_url && <img src={item.image_data_url} alt=""/>}<em><b>{`@附件${index + 1}`}</b>{item.filename}</em></button><button type="button" className="agent-attachment-remove" aria-label={`移除附件 ${item.filename}`} onClick={() => { setAttachments(all => all.filter(candidate => candidate.path !== item.path)); if (conversationDraft && workspace) void api.deleteDraftAttachments(workspace.id, conversationDraft.id, item.path).catch(() => undefined); }}>×</button></span>)}{pendingAttachments.filter(item => item.scope === composerScope).map(item => <span key={item.id} className={`agent-pending-attachment ${item.state}`} title={item.state === 'failed' ? '附件上传失败，请重试或删除。' : `正在上传 ${item.progress}%`}><span className="agent-attachment-open">{item.previewUrl ? <img src={item.previewUrl} alt=""/> : <FileText size={14}/>}<em>{item.filename}</em>{item.state === 'uploading' && <small>{item.progress}%</small>}{item.state === 'failed' && <span className="agent-attachment-retry-overlay"><button type="button" onClick={() => retryPendingAttachment(item.id)}>重试</button></span>}</span>{item.state === 'uploading' && <i className="agent-attachment-progress" style={{ '--upload-progress': `${item.progress}%` } as CSSProperties}/>}<button type="button" className="agent-attachment-remove" aria-label={`移除附件 ${item.filename}`} onClick={() => removePendingAttachment(item.id)}>×</button></span>)}</>}{references.map((reference, index) => <span key={`${reference.eventId}:${reference.content}`}><span className="agent-attachment-open" title={reference.content}><Quote size={14}/><em>{`会话引用 ${index + 1}`}</em></span><button type="button" className="agent-attachment-remove" aria-label={`移除会话引用 ${index + 1}`} onClick={() => setReferences(current => current.filter(item => item !== reference))}>×</button></span>)}{(selected || conversationDraft) && <ComposerAnnotationList annotations={composerAnnotations} onLocate={locateAnnotation} onRemove={annotation => setComposerAnnotations(current => current.filter(item => item.id !== annotation.id))} onUpdate={(annotation, comment) => void updateAnnotation(annotation, comment)}/>}</div>}
+        {(features.attachments && (attachments.length > 0 || pendingAttachments.some(item => item.scope === composerScope)) || references.length > 0 || composerAnnotations.length > 0) && <div className="agent-attachments" aria-label="已添加的附件和会话引用">{features.attachments && <>{attachments.map((item, index) => <span key={item.path}><button type="button" className="agent-attachment-open" title={`单击插入 @附件${index + 1}；双击预览附件：${item.filename}`} onClick={() => scheduleAttachmentAliasInsertion(item)} onDoubleClick={() => previewComposerAttachment(item)}>{item.image_data_url && <img src={item.image_data_url} alt=""/>}<em>{item.filename}</em></button><button type="button" className="agent-attachment-remove" aria-label={`移除附件 ${item.filename}`} onClick={() => { setAttachments(all => all.filter(candidate => candidate.path !== item.path)); if (conversationDraft && workspace) void api.deleteDraftAttachments(workspace.id, conversationDraft.id, item.path).catch(() => undefined); }}>×</button></span>)}{pendingAttachments.filter(item => item.scope === composerScope).map(item => <span key={item.id} className={`agent-pending-attachment ${item.state}`} title={item.state === 'failed' ? '附件上传失败，请重试或删除。' : `正在上传 ${item.progress}%`}><span className="agent-attachment-open">{item.previewUrl ? <img src={item.previewUrl} alt=""/> : <FileText size={14}/>}<em>{item.filename}</em>{item.state === 'uploading' && <small>{item.progress}%</small>}{item.state === 'failed' && <span className="agent-attachment-retry-overlay"><button type="button" onClick={() => retryPendingAttachment(item.id)}>重试</button></span>}</span>{item.state === 'uploading' && <i className="agent-attachment-progress" style={{ '--upload-progress': `${item.progress}%` } as CSSProperties}/>}<button type="button" className="agent-attachment-remove" aria-label={`移除附件 ${item.filename}`} onClick={() => removePendingAttachment(item.id)}>×</button></span>)}</>}{references.map((reference, index) => <span key={`${reference.eventId}:${reference.content}`}><span className="agent-attachment-open" title={reference.content}><Quote size={14}/><em>{`会话引用 ${index + 1}`}</em></span><button type="button" className="agent-attachment-remove" aria-label={`移除会话引用 ${index + 1}`} onClick={() => setReferences(current => current.filter(item => item !== reference))}>×</button></span>)}{(selected || conversationDraft) && <ComposerAnnotationList annotations={composerAnnotations} onLocate={locateAnnotation} onRemove={annotation => setComposerAnnotations(current => current.filter(item => item.id !== annotation.id))} onUpdate={(annotation, comment) => void updateAnnotation(annotation, comment)}/>}</div>}
         {workspaceReferences.length > 0 && <div className="agent-attachments agent-workspace-references" aria-label="已添加的工作区引用">{workspaceReferences.map(reference => <span key={workspaceReferenceKey(reference)} title={reference.path}><span className="agent-attachment-open">{reference.kind === 'directory' ? <Folder size={14}/> : <FileCode2 size={14}/>}<em><b>{reference.display_name}</b><small>{workspaceReferenceLabel(reference)}</small></em></span><button type="button" className="agent-attachment-remove" aria-label={'移除工作区引用 ' + reference.display_name} onClick={() => setWorkspaceReferences(current => current.filter(item => workspaceReferenceKey(item) !== workspaceReferenceKey(reference)))}>×</button></span>)}</div>}
         </div>
         <footer>
