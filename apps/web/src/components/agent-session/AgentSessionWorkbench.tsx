@@ -4413,7 +4413,7 @@ export function AgentSessionWorkbench({
 }
 
 function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStateChanged, autoOpenDraft = false, hideDraftTitle = false }: Omit<AgentSessionWorkbenchProps, 'gateway' | 'host'>) {
-  const { api, features, candidateOutputUrl } = useAgentSessionGateway();
+  const { api, features, candidateOutputUrl, fileUrl } = useAgentSessionGateway();
   const dialog = useProductDialog();
   const host = useAgentSessionHost();
   const queryClient = useQueryClient();
@@ -8256,6 +8256,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         onRewrite={selected && canWrite && features.rewrite ? requestRewrite : undefined}
         onFork={canFork ? eventId => { if (fork.isPending) return; const directoryName = selected?.work_directory_id ? workDirectories.find(directory => directory.id === selected.work_directory_id)?.display_name ?? '当前工作区' : '节点工作目录'; void dialog.confirm({ title: '从此处分叉会话？', message: `将保留当前会话在“${directoryName}”中的工作目录和截至此回复的历史记录，创建一条可独立继续的新会话。源会话不会被修改。`, confirmLabel: '创建分叉会话' }).then(confirmed => { if (confirmed) fork.mutate(eventId); }); } : undefined}
         onOpenAttachment={features.attachments ? previewAttachment : undefined}
+        attachmentImageUrl={attachment => workspace && selected
+          ? fileUrl(workspace.id, attachment.path, { bindingId: selected.id, download: false })
+          : undefined}
         onOpenWorkspaceReference={previewWorkspaceReference}
         onPreviewCandidateFile={candidateOutputUrl && workspace ? previewCandidateFile : undefined}
         onReviewChanges={openChangesReview}

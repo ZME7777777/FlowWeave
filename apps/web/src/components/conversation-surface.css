@@ -63,6 +63,7 @@
 .conversation-message-attachment{display:flex;min-width:0;max-width:min(100%,300px);align-items:center;gap:5px;border:1px solid #dde5df;border-radius:7px;background:#fff;padding:4px 6px;color:#425047;text-align:left;cursor:pointer}
 .conversation-message-attachment:hover{border-color:#b8cdbd;background:#f8fbf8}
 .conversation-message-attachment>svg:first-child{flex:0 0 auto;width:13px;height:13px;color:#4c8060}
+.conversation-message-attachment-thumbnail{width:22px;height:22px;flex:0 0 22px;border:1px solid #d9e3dc;border-radius:4px;background:#f3f6f4;object-fit:cover}
 .conversation-message-attachment>span{display:flex;min-width:0;align-items:baseline;gap:4px}
 .conversation-message-attachment b{overflow:hidden;color:#3c4840;font-size:10px;font-weight:600;text-overflow:ellipsis;white-space:nowrap}
 .conversation-message-attachment small{overflow:hidden;color:#839087;font-size:9px;text-overflow:ellipsis;white-space:nowrap}

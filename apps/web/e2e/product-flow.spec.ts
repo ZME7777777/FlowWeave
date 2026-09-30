@@ -911,7 +911,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     if (path.endsWith('/attachments') && request.method() === 'POST') {
       await route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify({
         filename: '即时附件.png', mime_type: 'image/png', byte_size: 174 * 1024,
-        path: '/runtime/workspace/project/uploads/instant-attachment.png', image_data_url: 'data:image/png;base64,iVBORw==',
+        path: '/runtime/workspace/project/uploads/instant-attachment.png', image_data_url: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLzwwAAAABJRU5ErkJggg==',
       }) });
       return;
     }
@@ -2283,6 +2283,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   const optimisticAttachment = optimisticAmbiguousMessage.locator('.conversation-message-attachment').filter({ hasText: '即时附件.png' });
   await expect(optimisticAttachment).toBeVisible();
   await expect(optimisticAttachment).toContainText('image/png · 174 KB');
+  await expect(optimisticAttachment.locator('.conversation-message-attachment-thumbnail')).toBeVisible();
   const attachmentBeforeContent = await optimisticAmbiguousMessage.evaluate(message => {
     const attachments = message.querySelector(':scope > .conversation-message-attachments');
     const content = message.querySelector(':scope > .conversation-message-content');

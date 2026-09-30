@@ -262,7 +262,18 @@ function annotationFileLabel(annotation: AgentConversationAnnotation): string | 
   return `${filename} · ${range.start_line}:${range.start_column}–${range.end_line}:${range.end_column}`;
 }
 
-function MessageAttachments({ attachments, references = [], workspaceReferences = [], annotations = [], onOpen, onOpenReference, onOpenWorkspaceReference, onOpenAnnotation }: {
+function isImageAttachment(attachment: AgentAttachment): boolean {
+  return attachment.mime_type.startsWith('image/') || /\.(?:avif|gif|jpe?g|png|svg|webp)$/i.test(attachment.filename);
+}
+
+function MessageAttachmentThumbnail({ attachment, imageUrl }: { attachment: AgentAttachment; imageUrl?: string }) {
+  const [failed, setFailed] = useState(false);
+  const source = attachment.image_data_url || imageUrl;
+  if (!isImageAttachment(attachment) || !source || failed) return <FileText size={16}/>;
+  return <img className="conversation-message-attachment-thumbnail" src={source} alt="" onError={() => setFailed(true)}/>;
+}
+
+function MessageAttachments({ attachments, references = [], workspaceReferences = [], annotations = [], onOpen, onOpenReference, onOpenWorkspaceReference, onOpenAnnotation, imageUrl }: {
   attachments: AgentAttachment[];
   references?: AgentConversationReference[];
   workspaceReferences?: AgentWorkspaceReference[];
@@ -271,17 +282,18 @@ function MessageAttachments({ attachments, references = [], workspaceReferences 
   onOpenReference?: (reference: AgentConversationReference) => void;
   onOpenWorkspaceReference?: (reference: AgentWorkspaceReference) => void;
   onOpenAnnotation?: (annotation: AgentConversationAnnotation) => void;
+  imageUrl?: (attachment: AgentAttachment) => string | undefined;
 }) {
   if (!attachments.length && !references.length && !workspaceReferences.length && !annotations.length) return null;
   return <div className="conversation-message-attachments" aria-label="消息附件">
     {attachments.map(attachment => <button
       type="button"
       key={attachment.path}
-      className="conversation-message-attachment"
+      className={`conversation-message-attachment${isImageAttachment(attachment) ? ' image' : ''}`}
       title={`查看附件：${attachment.filename}`}
       onClick={() => onOpen?.(attachment)}
     >
-      <FileText size={16}/><span><b>{attachment.filename}</b><small>{attachment.mime_type || '文件'}{attachmentSize(attachment.byte_size) ? ` · ${attachmentSize(attachment.byte_size)}` : ''}</small></span><Eye size={13}/>
+      <MessageAttachmentThumbnail attachment={attachment} imageUrl={imageUrl?.(attachment)}/><span><b>{attachment.filename}</b><small>{attachment.mime_type || '文件'}{attachmentSize(attachment.byte_size) ? ` · ${attachmentSize(attachment.byte_size)}` : ''}</small></span><Eye size={13}/>
     </button>)}
     {references.map((reference, index) => <button type="button" key={`${reference.event_id}:${reference.content}`} className="conversation-message-attachment conversation-message-reference" aria-label={`查看会话引用 ${index + 1}`} title="查看引用内容" onClick={() => onOpenReference?.(reference)}>
       <Quote size={16}/><span><b>{`会话引用 ${index + 1}`}</b><small>已添加到本条消息</small></span>
@@ -1595,7 +1607,7 @@ export interface ConversationHistoryPrepend {
   phase: 'capture' | 'restore';
 }
 
-export const ConversationSurface = memo(function ConversationSurface({ events, isGenerating, liveTextReveal = false, isPaused = false, emptyResponseRecoveryActive = false, modelRetryStatus, historyPending = false, cachedHistoryMarkerCount = 0, cachedHistoryUserEventIds = [], hasCachedOlderHistory = false, onRequestOlderHistory, onRevealHistoryThrough, conversationScope, historyPrepend, onHistoryAnchorCaptured, onHistoryAnchorRestored, requestStartedAt, requestSubmitting = false, rewritePending = false, condensationPending = false, condensationStartedAt, onRewrite, onFork, onOpenAttachment, onOpenWorkspaceReference, onPreviewCandidateFile, onReviewChanges, onOpenWorkspaceFile, onOpenImage, workspaceRoot, annotations = [], onCreateAnnotation, onSidebarQuestion, onLocateAnnotation, taskControl = [], monitoring, connectionState }: {
+export const ConversationSurface = memo(function ConversationSurface({ events, isGenerating, liveTextReveal = false, isPaused = false, emptyResponseRecoveryActive = false, modelRetryStatus, historyPending = false, cachedHistoryMarkerCount = 0, cachedHistoryUserEventIds = [], hasCachedOlderHistory = false, onRequestOlderHistory, onRevealHistoryThrough, conversationScope, historyPrepend, onHistoryAnchorCaptured, onHistoryAnchorRestored, requestStartedAt, requestSubmitting = false, rewritePending = false, condensationPending = false, condensationStartedAt, onRewrite, onFork, onOpenAttachment, attachmentImageUrl, onOpenWorkspaceReference, onPreviewCandidateFile, onReviewChanges, onOpenWorkspaceFile, onOpenImage, workspaceRoot, annotations = [], onCreateAnnotation, onSidebarQuestion, onLocateAnnotation, taskControl = [], monitoring, connectionState }: {
   events: OpenHandsConversationEvent[];
   isGenerating: boolean;
   /** Strict native running state; unlike visual activity it never animates history reconciliation. */
@@ -1630,6 +1642,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
   onRewrite?: (eventId: string, content: string) => void;
   onFork?: (eventId: string) => void;
   onOpenAttachment?: (attachment: AgentAttachment) => void;
+  attachmentImageUrl?: (attachment: AgentAttachment) => string | undefined;
   onOpenWorkspaceReference?: (reference: AgentWorkspaceReference) => void;
   onPreviewCandidateFile?: (fieldKey: string, relativePath: string) => void;
   onReviewChanges?: (changes: WorkspaceFileChange[]) => void;
