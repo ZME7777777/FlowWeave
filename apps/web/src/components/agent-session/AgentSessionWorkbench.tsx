@@ -7864,7 +7864,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       || Boolean(pendingMigratedSend);
     switch (composerControlMode) {
       case 'running':
-        return { label: '暂停当前 Agent', disabled: actionBlocked || !canInterrupt, editable: canWrite && !actionBlocked, action: 'interrupt' as const };
+        return composerActionSends
+          ? { label: '发送消息', disabled: actionBlocked || !canWrite, editable: canWrite && !actionBlocked, action: 'send' as const }
+          : { label: '暂停当前 Agent', disabled: actionBlocked || !canInterrupt, editable: canWrite && !actionBlocked, action: 'interrupt' as const };
       case 'paused':
         return { label: '继续当前 Agent', disabled: actionBlocked, editable: canWrite && !actionBlocked, action: 'resume' as const };
       case 'pausing':
