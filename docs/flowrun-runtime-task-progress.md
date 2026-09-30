@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`IN PROGRESS`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`FR-566`
+> 下一可执行切片：`FR-567`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -7897,8 +7897,20 @@ Web 发布恢复：首轮公网浏览器检查发现 FR-563 准备的 Web 镜像
 
 完整空库限制：首次真实完整链在 0092 以 DuplicateColumn／42701 失败，尚未执行 0138；未修改平台镜像的完整链负对照也在同一位置失败。最小链的 0137 仅是 Alembic 元数据 fixture，不代表真实全部 0137 业务 schema；专项通过不替代完整空库业务链或生产旧库升级验收。该独立历史迁移错误保留为 FR-566，不混入本切片的业务表变更。离线 0137→head SQL 验证事务及扩宽／建表／版本记录顺序，受影响 Ruff check／format、AST 解析、唯一 head `0138_admin_resource_cleanup_operations`、任务状态唯一性、git diff --check 与 staged diff 复核通过。未部署修复、未替换 Runtime、未启动本地服务。下一可执行切片为 FR-566。
 
-### FR-566 空库 0092 重复列迁移修复 — READY
+### FR-566 空库 0092 重复列迁移修复 — DONE
 
 依赖：FR-565。
 
 范围：取证完整空库链在 0092 重复添加 `node_runs.name` 的来源，以最小正式迁移修复历史 schema 与后续增量迁移的兼容；保持既有数据库业务 schema 和 revision 身份，不手工 stamp 或删除业务数据。重新验证真实空库链通过 0092，并继续到 head 取证；如发现其他独立历史迁移阻塞，另拆切片，不以修改测试 fixture 冒充完整链通过。继续遵守不在本地部署和远端隔离验收约束。
+
+完成：重复列来自 0003 通过 `Base.metadata.tables["node_runs"]` 读取当前 ORM；当前 ORM 的 name 由 0092 引入。以 `f7826e66` 的直接父版本 NodeRun 和当前增量链为证据，将 0003 的这张表固定为引入 name 前的八字段、原有主键、sequence 唯一约束和 flow_run_id 索引；对应 downgrade 仍删除该表。0092、其他表、当前 ORM 与所有 revision 身份不变。既有数据库已经执行 0003 时不会重跑建表。新增可复现 `scripts/migration_node_run_check.py`，复用唯一临时数据库生命周期，显式要求独立 TEST_DATABASE_URL；默认执行真实 0003／0091／0092 链和数据回归，`--probe-head` 另外用独立空库向 head 验证，后续失败保留为非零退出码。没有合成前置 revision、stamp 或测试 schema 补丁。
+
+验收：重新完整读取部署入口说明，并通过已提交 `02255894`／other 范围只读预检；在远端内部隔离网络、PostgreSQL 16.9 与已核验平台镜像的临时副本中，仅通过 tmpfs 加载当前迁移／脚本源码，不挂载生产数据、不发布端口、不改常驻服务。真实专项 `7 passed`：0003 八字段与原约束／索引；0003 降级到 0002 再升级；完整空库链到 0091 不含未来 name；0092 已执行 ADD COLUMN 后、记录版本前注入故障，列及 revision 原子回滚且原记录全字段保留；0091→0092 重试成功，name 为可空 VARCHAR(220)，旧记录 ID／定位／状态／时间戳保持且初始 name 为 NULL；current 0092 重跑保留已写 name；0092 降级再升级保留其余原字段。标准 downgrade 删除 name，其值不承诺在降级后保留。未修改 0003 的同镜像完整链负对照仍在 0092 以 DuplicateColumn／42701 失败。临时容器、网络和测试数据库均已按本次资产身份回收。
+
+后续限制：修复后的完整空库链通过 0092，随后在 0093 因 `flow_runs.schedule_id` 已存在以 DuplicateColumn／42701 失败；未将它吞掉或记为 head 通过，独立处理留给 FR-567。受影响 Ruff check／format、AST 解析、当前分支唯一 head `0138_admin_resource_cleanup_operations`、任务状态唯一性、git diff --check 和 staged diff 复核通过。主工作区在实施中同期合入其他变更并新增迁移到 0143，本切片在基于 `02255894` 的独立工作树与 `codex/fr566-node-run-migration` 分支完成，验证证据仅对应本切片基线；未提交或覆盖同期合并内容。未部署、未替换 Runtime、未启动本地服务。下一可执行切片为 FR-567。
+
+### FR-567 空库 0093 调度字段重复迁移修复 — READY
+
+依赖：FR-566。
+
+范围：取证 0003 的 live FlowRun schema 提前包含 0093 调度字段的来源，固定此表的历史定义并验证真实空库通过 0093、既有升级和数据保留；不改已记录 revision，不删除业务数据，不将其他独立历史迁移错误混入。继续向 head 取证，遇到其他独立阻塞另拆切片，遵守不在本地部署和远端隔离验收约束。

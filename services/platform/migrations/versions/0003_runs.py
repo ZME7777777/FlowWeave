@@ -15,8 +15,25 @@ down_revision = "0002_flows"
 branch_labels = None
 depends_on = None
 TABLES_BEFORE_SNAPSHOT = ["flow_runs"]
-TABLES_BEFORE_ATTEMPT = ["node_runs"]
 TABLES_AFTER_ATTEMPT = ["human_actions"]
+
+
+def _create_node_run() -> None:
+    # Freeze the schema before 0092 adds name. Reading the live ORM here
+    # creates future columns early and breaks the incremental migration chain.
+    op.create_table(
+        "node_runs",
+        sa.Column("id", sa.String(36), primary_key=True),
+        sa.Column("flow_run_id", sa.String(36), nullable=False),
+        sa.Column("flow_node_snapshot_key", sa.String(100), nullable=False),
+        sa.Column("sequence_no", sa.Integer(), nullable=False),
+        sa.Column("state", sa.String(20), nullable=False),
+        sa.Column("accepted_attempt_id", sa.String(36), nullable=True),
+        sa.Column("created_from", sa.String(30), nullable=False),
+        sa.Column("activated_at", sa.DateTime(timezone=True), nullable=False),
+        sa.UniqueConstraint("flow_run_id", "sequence_no", name="uq_run_node_sequence"),
+    )
+    op.create_index("ix_node_runs_flow_run_id", "node_runs", ["flow_run_id"])
 
 
 def _create_run_snapshot() -> None:
@@ -100,8 +117,7 @@ def upgrade():
     for name in TABLES_BEFORE_SNAPSHOT:
         Base.metadata.tables[name].create(bind, checkfirst=True)
     _create_run_snapshot()
-    for name in TABLES_BEFORE_ATTEMPT:
-        Base.metadata.tables[name].create(bind, checkfirst=True)
+    _create_node_run()
     _create_node_attempt()
     for name in TABLES_AFTER_ATTEMPT:
         Base.metadata.tables[name].create(bind, checkfirst=True)
@@ -112,8 +128,7 @@ def downgrade():
     for name in reversed(TABLES_AFTER_ATTEMPT):
         Base.metadata.tables[name].drop(bind, checkfirst=True)
     op.drop_table("node_attempts")
-    for name in reversed(TABLES_BEFORE_ATTEMPT):
-        Base.metadata.tables[name].drop(bind, checkfirst=True)
+    op.drop_table("node_runs")
     op.drop_table("run_snapshots")
     for name in reversed(TABLES_BEFORE_SNAPSHOT):
         Base.metadata.tables[name].drop(bind, checkfirst=True)
