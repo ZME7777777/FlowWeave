@@ -93,7 +93,13 @@ make remote-deploy-preflight REMOTE_DEPLOY_CONFIG=.local/remote-deploy.env \
 
 服务器的持久数据包括 PostgreSQL、Artifact volume 与 Workspace bind mount。普通发布绝不执行 `docker compose down -v`，不删除数据、不覆盖环境文件，也不使用 `--remove-orphans` 忽略或删除 `stream-api`。
 
-公网前缀部署还须在全新浏览器上下文确认 Network 请求使用 `/flowweave/api/v1/...`，而不是被 FastGPT 接管的根路径 `/api/v1/...`。
+公网前缀部署还须在全新浏览器上下文确认 Network 请求使用 `/flowweave/api/v1/...`，而不是被 FastGPT 接管的根路径 `/api/v1/...`。Web 客户端自行追加 `/api/v1`；`VITE_API_BASE_URL` 只能配置 origin／部署前缀，不能包含 `/api/v1`。标准前缀构建使用 `VITE_BASE_PATH=/flowweave/`、空 `VITE_API_BASE_URL`，由客户端采用部署前缀。
+
+### Alembic 版本号容量检查
+
+Alembic 默认的 `alembic_version.version_num` 是 `VARCHAR(32)`。`0138_admin_resource_cleanup_operations` 的编号为 38 个字符，尚未扩宽元数据列的数据库执行该迁移会以 `StringDataRightTruncation` 失败，并回滚此次迁移事务。正式发布前检查版本号列容量；若仍为 32，在同一经过预检的数据库上以有界锁等待将该列扩为 `VARCHAR(128)`，再重跑正式 migration 服务。不得修改已有 revision 值、手动 stamp head 或删除业务表代替迁移。
+
+该兼容操作只扩宽迁移元数据，保留当前版本值及业务数据。`FR-564` 已在受管发布中实跑此步骤；新的数据库初始化仍须遵守该前提，迁移源码的自动兼容收口由 `FR-565` 跟踪。
 
 ## 回滚与容量维护
 

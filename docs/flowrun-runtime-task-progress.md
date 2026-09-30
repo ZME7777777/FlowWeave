@@ -7869,8 +7869,24 @@ OpenHands adapter 现为 context、activity 和 pending-confirmation 增加每 R
 
 发布准备：同一 `040c2a42` 提交的 API／Web 隔离发布镜像也已在远端构建为 linux/amd64，平台镜像 ID `sha256:bc3531810a94ce08b19ef878b8c4041ed98982898d0a748910232b8a713ffe78`，Web 镜像 ID `sha256:c4988f0226363546c12be69ae01eee3e7e54f1a4071056e600be573a56da5080`；最小源码包 SHA-256 `1dbd2151e36617480eb2a34bf1ee69fccb56ed5923d9bbb73c490086cffbb49e`。生产只读核查期间观察到 1–2 个活跃会话；两个旧 Runtime 的 `/activity` 被路由为 UUID 参数并返回 422，经校验正式错误的 `path/conversation_id` 定位后改用原生 `/search`，最终三个 Runtime 全部读成功、当次 running 为 0。此快照不保证发布时仍无活跃会话；数据库仍为 `0137_conversation_message_order`，正式更新必须先迁移。未替换现有镜像标签、未 recreate 正式服务、未执行 Runtime replacement、未更改远端 Compose／env 或持久数据。下一可执行切片为 FR-564；实际发布前须再次核查活跃会话并确认中断影响。
 
-### FR-564 单用户优化远端发布与既有 Runtime 恢复 — READY
+### FR-564 单用户优化远端发布与既有 Runtime 恢复 — DONE
 
 依赖：FR-563。
 
 范围：使用通过预检的唯一远端入口和已提交版本，在核实活跃会话影响后完成 rollback 镜像保留、迁移、api／stream-api／worker／runtime-provider 同版本更新与 Web 发布；通过平台正式生命周期替换默认 Agent Workspace Runtime generation，保留原工作区、Secret Reference、会话和正式事件 ID。复核来源身份、健康、前缀路由和运行中会话的页面恢复；不得将隔离测试结果冒充线上恢复，禁止直接修改数据库 generation 或删除持久数据。
+
+完成：在用户明确授权“开始部署和替换”后，重新读取部署约束，针对已提交 `040c2a42` 分别通过 runtime／web 范围预检，并只读确认三个原生 Runtime 均无 running 会话。复用 FR-563 已按该提交构建、核对 linux/amd64 与 image ID 的三个不可变镜像；保留原 image ID 与时间戳 rollback tags，再仅更新声明的 migration／api／worker／runtime-provider／stream-api／web。API 与 stream-api 使用同一平台 image ID；部署入口、远端 Compose／env 的 SHA-256 始终保持一致。未启动本地服务，也未更新无关 Environment／FlowRun Runtime。
+
+迁移恢复：首次 `0137` → `0138_admin_resource_cleanup_operations` 因 Alembic 默认版本号列 `VARCHAR(32)` 无法保存 38 字符 revision，以 `StringDataRightTruncation`／DataError 失败。保留原始日志和错误状态后恢复旧镜像标签，正式常驻服务尚未切换；确认 schema head 仍为 `0137_conversation_message_order`，新增审计表不存在，失败事务已回滚。仅将 Alembic 元数据 `version_num` 扩为 `VARCHAR(128)`（锁等待上限 5 秒），保留 revision 值和业务表；重跑正式 migration 服务退出码 0，实际 head 达到唯一 `0138_admin_resource_cleanup_operations`。未手工 stamp、未删除表或持久数据；部署说明补记该前提，源码自动兼容收口留给 FR-565。
+
+Runtime 恢复：经正常登录和公共 `POST /api/v1/agent-workspaces/{workspace_id}/runtime/replacements` 提交 Idempotency-Key，服务返回 202；由平台 Worker／Provider 正式生命周期将默认 Agent Workspace generation 从 49 推进到 50，状态 ACTIVE 且 write_available=true。只读确认旧 writer 已停止，新容器使用 FR-563 核验镜像 `sha256:712050922eaf54c2361338d1b23c89c8ddfc0c385e2c600f3d173ec496702aba`；固定 baseline `d3a9a1f99b144d8799df170c1e1ee9ca0bf4b19d`、四包 1.49.5 与正式配置 max_concurrent_reads=8。257 条原会话绑定的 ID、owner、Runtime Session、OpenHands Conversation 和工作目录逐项一致；3 个正式事件按原 ID 读取后的完整内容 digest 一致，6 个持久挂载、allocation 和稳定 OH_SECRET_KEY 的 digest 保持。未直接更新数据库 generation、未创建空会话替代恢复、未泄露或落盘明文密钥。
+
+最终检查：API、stream-api 与 Runtime Provider 为 healthy，Worker／Web 为 running，migration 为 exited/0，实际服务 image ID 与发布计划一致；旧 Runtime writer 停止、远端配置文件 SHA-256 未变。公网浏览器验收通过：已有 Playwright／Chromium 工具以全新登录上下文访问实际远端页面，深层 Agent 路由、静态资源与 hydration 均返回 200，连续 3 次真实页面刷新完成正式 hydration，未出现根路径 `/api/v1/` 请求或页面脚本错误，FastGPT 根入口保持正常。首轮 hydration 约 1.996 秒；同一会话 4 个并发正式 events API 读取全部 200，总耗时约 0.125 秒。远端临时浏览器依赖下载超时的容器已按精确镜像／命令身份停止；随后只在本机运行已有浏览器工具访问远端，没有本地部署或服务启动。未向生产会话发送合成消息或注入阻塞；运行态隔离行为沿用 FR-563 同镜像证据，不将此小样本外推为所有会话／所有负载的性能。部署脚本 AST、浏览器脚本 node --check、唯一 Alembic head、任务状态唯一性、git diff --check 与 staged diff 复核通过。下一可执行切片为 FR-565。
+
+Web 发布恢复：首轮公网浏览器检查发现 FR-563 准备的 Web 镜像错误地将 `/flowweave/api/v1` 作为 VITE_API_BASE_URL，而客户端自身追加 `/api/v1`，导致重复路径和 auth/me 404。立即仅回滚 Web 到已保留的旧镜像；保持 API／Runtime 和会话数据不变。从同一 `040c2a42` 归档重新构建 Web，使用 VITE_BASE_PATH=/flowweave/、空 VITE_API_BASE_URL，修正镜像 ID 为 `sha256:44c94801264cae0eccf153c5939cf0f0770bccdeb195be43724c9f9dfd753f59`；仅重新替换 Web，Compose／env 未改，补记客户端自行追加 API ROOT 的构建约束。
+
+### FR-565 Alembic 长版本号自动兼容 — READY
+
+依赖：FR-564。
+
+范围：将 FR-564 已实跑的版本号容量前提收口到正式迁移源码，覆盖空 PostgreSQL 初始化和从既有 VARCHAR(32)／0137 升级，确保 0138 的长 revision 可持久化且失败事务与重试保持原子性。不修改业务表、Runtime generation 或已部署会话，不手工 stamp 或改写已记录 revision。
