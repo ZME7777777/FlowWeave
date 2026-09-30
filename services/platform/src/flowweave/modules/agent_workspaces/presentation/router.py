@@ -23,7 +23,6 @@ from pydantic import BaseModel, ConfigDict, Field
 from flowweave.bootstrap.container import Container
 from flowweave.modules.agent_sessions.application import search as conversation_search
 from flowweave.modules.agent_sessions.application import sidebar_conversations
-from flowweave.modules.agent_sessions.application.conversation_cache import ConversationCacheScope
 from flowweave.modules.agent_sessions.public import conversations
 from flowweave.modules.agent_workspaces.application import work_directories, workspace
 from flowweave.modules.environments import public as environments
@@ -1052,15 +1051,6 @@ async def agent_conversation_hydration(
         principal = current_principal()
         if principal is None:
             raise DomainError("AUTHENTICATION_REQUIRED", "请先登录", 401)
-        scope = ConversationCacheScope(
-            user_id=principal.user_id,
-            host_kind="AGENT_WORKSPACE",
-            host_id=workspace_id,
-            binding_id=binding_id,
-        )
-        cached = await container.conversation_hydration_cache.get_current_for_scope(scope)
-        if cached is not None:
-            return cached
         async with hydration_response_budget(container.settings.hydration_read_timeout_seconds):
             key = await run_blocking_hydration(
                 container,
@@ -1068,7 +1058,7 @@ async def agent_conversation_hydration(
                     session, workspace_id, binding_id
                 ),
             )
-            return await container.conversation_hydration_cache.get_or_load(
+            return await container.conversation_hydration_cache.refresh(
                 key,
                 lambda: run_blocking_hydration(
                     container,
