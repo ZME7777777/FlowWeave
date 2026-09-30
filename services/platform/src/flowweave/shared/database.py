@@ -17,6 +17,41 @@ from sqlalchemy.orm import (
 
 from flowweave.bootstrap.settings import Settings
 
+_SHARED_OWNER_TABLES = frozenset(
+    {
+        "capability_collection_items",
+        "capability_collections",
+        "capability_dependencies",
+        "capability_imports",
+        "capability_packages",
+        "capability_validations",
+        "capability_versions",
+        "environment_setup_sessions",
+        "environment_versions",
+        "event_trigger_actions",
+        "event_trigger_deliveries",
+        "event_trigger_versions",
+        "flow_definitions",
+        "flow_edges",
+        "flow_nodes",
+        "flow_port_mappings",
+        "gate_policies",
+        "mcp_oauth_authorizations",
+        "mcp_oauth_secret_audits",
+        "mcp_oauth_secret_references",
+        "memory_source_version_references",
+        "memory_source_versions",
+        "memory_sources",
+        "node_assets",
+        "node_context_capabilities",
+        "node_directories",
+        "node_executor_configs",
+        "node_io_fields",
+        "plugin_source_resolutions",
+        "terminal_environments",
+    }
+)
+
 _USER_ISOLATED_TABLES = frozenset(
     {
         "agent_conversation_bindings",
@@ -79,7 +114,13 @@ class Base(DeclarativeBase):
             String(36),
             nullable=False,
             index=True,
-            default=lambda: current_user_id(default=FLOWWEAVE_USER_ID),
+            # Shared catalog/flow definitions keep one stable owner without
+            # replacing the request tenant or bypassing private-resource reads.
+            default=lambda: (
+                FLOWWEAVE_USER_ID
+                if getattr(cls, "__tablename__", None) in _SHARED_OWNER_TABLES
+                else current_user_id(default=FLOWWEAVE_USER_ID)
+            ),
         )
 
 
