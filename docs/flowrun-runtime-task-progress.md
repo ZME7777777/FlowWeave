@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`IN PROGRESS`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`NONE`
+> 下一可执行切片：`FR-566`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -7885,8 +7885,20 @@ Runtime 恢复：经正常登录和公共 `POST /api/v1/agent-workspaces/{worksp
 
 Web 发布恢复：首轮公网浏览器检查发现 FR-563 准备的 Web 镜像错误地将 `/flowweave/api/v1` 作为 VITE_API_BASE_URL，而客户端自身追加 `/api/v1`，导致重复路径和 auth/me 404。立即仅回滚 Web 到已保留的旧镜像；保持 API／Runtime 和会话数据不变。从同一 `040c2a42` 归档重新构建 Web，使用 VITE_BASE_PATH=/flowweave/、空 VITE_API_BASE_URL，修正镜像 ID 为 `sha256:44c94801264cae0eccf153c5939cf0f0770bccdeb195be43724c9f9dfd753f59`；仅重新替换 Web，Compose／env 未改，补记客户端自行追加 API ROOT 的构建约束。
 
-### FR-565 Alembic 长版本号自动兼容 — READY
+### FR-565 Alembic 长版本号自动兼容 — DONE
 
 依赖：FR-564。
 
 范围：将 FR-564 已实跑的版本号容量前提收口到正式迁移源码，覆盖空 PostgreSQL 初始化和从既有 VARCHAR(32)／0137 升级，确保 0138 的长 revision 可持久化且失败事务与重试保持原子性。不修改业务表、Runtime generation 或已部署会话，不手工 stamp 或改写已记录 revision。
+
+完成：0138 在原有审计表 DDL 前，按 PostgreSQL 实际列类型与容量仅将不足 128 字符的有界 VARCHAR 扩为 VARCHAR(128)；保留更宽／无界 VARCHAR 和 TEXT，不改已记录 revision。扩宽、原有 DDL 与 Alembic 版本更新属于同一迁移事务；扩宽使用 5 秒 lock_timeout，成功后恢复原设置，降级保留容量。没有新增 head，也没有更改迁移 env 的旧 lineage bridge、业务表定义、Runtime 或消息读写。新增可复现 `scripts/migration_version_check.py`，显式要求 TEST_DATABASE_URL，只创建／迁移／删除自己的唯一测试数据库；默认验证完整迁移链，`--metadata-only` 使用无操作 0137 fixture、原样 0138 和正式 env 隔离版本元数据行为，不用 stamp 或私有 Alembic API。
+
+验收：遵守不在本地部署的限制，重新读取部署约束并通过已提交 `7610eee5`／other 范围只读预检。仅在远端内部隔离网络运行 PostgreSQL 16.9 和已核验平台镜像的临时测试副本，通过 tmpfs 加载当前 0138 与脚本，不挂载生产文件、不发布端口、不读取生产数据库／环境文件。容量专项 `8 passed`：空 Alembic 元数据到长 head；降级保留容量；在确认扩宽与建表已执行后、写入 revision 前故障注入，实际回滚到 0137／VARCHAR(32) 且新表不存在；真实 EXCLUSIVE 锁触发约 5 秒的 55P03，并可释放后重试；32 列升级重试成功且原 17 秒 timeout 恢复；已有 VARCHAR(128)、VARCHAR(256)、TEXT 的升级和 current head 重跑均保持。未修改 0138 的同镜像负对照在相同最小迁移链以 22001／DataError 失败。两次隔离执行后均按此次资产身份移除临时容器与网络，测试数据库／文件不持久化。
+
+完整空库限制：首次真实完整链在 0092 以 DuplicateColumn／42701 失败，尚未执行 0138；未修改平台镜像的完整链负对照也在同一位置失败。最小链的 0137 仅是 Alembic 元数据 fixture，不代表真实全部 0137 业务 schema；专项通过不替代完整空库业务链或生产旧库升级验收。该独立历史迁移错误保留为 FR-566，不混入本切片的业务表变更。离线 0137→head SQL 验证事务及扩宽／建表／版本记录顺序，受影响 Ruff check／format、AST 解析、唯一 head `0138_admin_resource_cleanup_operations`、任务状态唯一性、git diff --check 与 staged diff 复核通过。未部署修复、未替换 Runtime、未启动本地服务。下一可执行切片为 FR-566。
+
+### FR-566 空库 0092 重复列迁移修复 — READY
+
+依赖：FR-565。
+
+范围：取证完整空库链在 0092 重复添加 `node_runs.name` 的来源，以最小正式迁移修复历史 schema 与后续增量迁移的兼容；保持既有数据库业务 schema 和 revision 身份，不手工 stamp 或删除业务数据。重新验证真实空库链通过 0092，并继续到 head 取证；如发现其他独立历史迁移阻塞，另拆切片，不以修改测试 fixture 冒充完整链通过。继续遵守不在本地部署和远端隔离验收约束。

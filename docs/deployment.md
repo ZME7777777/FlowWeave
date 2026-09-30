@@ -97,9 +97,18 @@ make remote-deploy-preflight REMOTE_DEPLOY_CONFIG=.local/remote-deploy.env \
 
 ### Alembic 版本号容量检查
 
-Alembic 默认的 `alembic_version.version_num` 是 `VARCHAR(32)`。`0138_admin_resource_cleanup_operations` 的编号为 38 个字符，尚未扩宽元数据列的数据库执行该迁移会以 `StringDataRightTruncation` 失败，并回滚此次迁移事务。正式发布前检查版本号列容量；若仍为 32，在同一经过预检的数据库上以有界锁等待将该列扩为 `VARCHAR(128)`，再重跑正式 migration 服务。不得修改已有 revision 值、手动 stamp head 或删除业务表代替迁移。
+Alembic 默认的 `alembic_version.version_num` 是 `VARCHAR(32)`，而 `0138_admin_resource_cleanup_operations` 的编号为 38 个字符。FR-565 的源码在 0138 开头自动将不足 128 字符的有界 VARCHAR 列扩为 `VARCHAR(128)`，随后才执行原有建表和版本记录；已有更宽 VARCHAR、无界 VARCHAR 或 TEXT 保持不变。扩宽与本次迁移同一事务，失败整体回滚，可直接重跑正式 migration 服务。扩宽锁等待上限为 5 秒，成功后恢复调用方原有 lock_timeout；降级不缩窄元数据列。
 
-该兼容操作只扩宽迁移元数据，保留当前版本值及业务数据。`FR-564` 已在受管发布中实跑此步骤；新的数据库初始化仍须遵守该前提，迁移源码的自动兼容收口由 `FR-565` 跟踪。
+此兼容仅在包含 FR-565 源码的迁移入口执行。尚未包含修复的旧镜像仍须先检查容量，并在经过预检的目标上以有界锁等待扩为 `VARCHAR(128)`，再重跑；FR-564 已实跑该操作。不得改写已有 revision、手动 stamp head 或删除业务表代替迁移。已到达 0138 的数据库不会重执行该迁移。
+
+可复现容量回归要求通过 `TEST_DATABASE_URL` 提供独立测试 PostgreSQL，并允许创建临时数据库；脚本仅迁移及移除自己创建的唯一数据库，不启动本地服务：
+
+```bash
+cd services/platform
+uv run python scripts/migration_version_check.py --metadata-only
+```
+
+`--metadata-only` 使用无操作的 0137 前置 fixture、原样 0138 与正式迁移 env，验证空 Alembic 元数据、旧 32 字符列、失败回滚／重试、锁等待和既有宽列。这不等于完整业务迁移链验收；去掉该参数会执行真实完整迁移链。FR-565 的 PostgreSQL 16.9 实跑发现完整空库链在到达 0138 前因 0092 重复添加 `node_runs.name` 失败，未修改平台镜像也复现；此独立历史 schema 问题由 FR-566 修复，不能声称完整空库初始化已通过。
 
 ## 回滚与容量维护
 

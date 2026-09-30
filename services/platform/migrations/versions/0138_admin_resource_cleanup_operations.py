@@ -16,6 +16,29 @@ depends_on = None
 
 
 def upgrade() -> None:
+    # Alembic writes this 38-character revision after upgrade() returns. Widen
+    # its default VARCHAR(32) in the same transaction, including on fresh DBs.
+    # Preserve larger/unbounded columns and the caller's lock timeout.
+    op.execute(
+        """
+        DO $$
+        DECLARE previous_lock_timeout text := current_setting('lock_timeout');
+        BEGIN
+            IF EXISTS (
+                SELECT 1 FROM pg_attribute
+                WHERE attrelid = 'alembic_version'::regclass
+                  AND attname = 'version_num'
+                  AND atttypid = 'varchar'::regtype
+                  AND atttypmod > 4 AND atttypmod < 132
+            ) THEN
+                PERFORM set_config('lock_timeout', '5s', true);
+                ALTER TABLE alembic_version ALTER COLUMN version_num TYPE VARCHAR(128);
+                PERFORM set_config('lock_timeout', previous_lock_timeout, true);
+            END IF;
+        END
+        $$;
+        """
+    )
     op.create_table(
         "admin_resource_cleanup_operations",
         sa.Column("id", sa.String(length=36), nullable=False),
