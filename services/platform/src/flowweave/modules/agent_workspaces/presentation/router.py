@@ -94,6 +94,10 @@ class AgentConversationUnreadWrite(_Write):
     unread_origin: Literal["MANUAL", "SYSTEM"] | None = None
 
 
+class AgentConversationPinnedWrite(_Write):
+    pinned: bool
+
+
 class AgentConversationSearchWrite(_Write):
     query: str = Field(min_length=1, max_length=500)
     work_directory_ids: list[str] | None = Field(default=None, max_length=100)
@@ -838,6 +842,21 @@ async def patch_agent_conversation(
         container,
         lambda session: conversations.patch_conversation(
             session, workspace_id, binding_id, payload.title
+        ),
+    )
+
+
+@router.put("/agent-workspaces/{workspace_id}/conversations/{binding_id}/pinned")
+async def set_agent_conversation_pinned(
+    workspace_id: str,
+    binding_id: str,
+    payload: AgentConversationPinnedWrite,
+    db: Db,
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: conversations.set_conversation_pinned(
+            session, workspace_id, binding_id, pinned=payload.pinned
         ),
     )
 

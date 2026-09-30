@@ -73,7 +73,6 @@ interface OptimisticConversationRemoval {
   conversations?: InfiniteData<AgentConversationPage>;
   conversationPages?: ConversationPagesByScope;
   conversation?: AgentConversation;
-  pinnedConversationIds: Set<string>;
   unreadConversationIds: Set<string>;
 }
 interface RewriteRequest {
@@ -577,30 +576,6 @@ function conversationHasReachedTerminalState(executionStatus: string | null | un
   return ['idle', 'completed', 'stopped', 'finished', 'error', 'stuck'].includes(
     executionStatus?.trim().toLowerCase() ?? '',
   );
-}
-
-function pinnedConversationStorageKey(hostId: string, workspaceId: string): string {
-  return `flowweave:agent-workspace-pinned:${hostId}:${workspaceId}`;
-}
-
-function readPinnedConversationIds(storageKey: string | undefined): Set<string> {
-  if (!storageKey) return new Set();
-  try {
-    const stored = window.localStorage.getItem(storageKey);
-    const values: unknown = stored ? JSON.parse(stored) : [];
-    return new Set(Array.isArray(values) ? values.filter((value): value is string => typeof value === 'string') : []);
-  } catch {
-    return new Set();
-  }
-}
-
-function writePinnedConversationIds(storageKey: string | undefined, conversationIds: Set<string>) {
-  if (!storageKey) return;
-  try {
-    window.localStorage.setItem(storageKey, JSON.stringify([...conversationIds]));
-  } catch {
-    // Pinning is browser-local presentation state.
-  }
 }
 
 const MAX_BOOTSTRAP_RECONCILIATION_ATTEMPTS = 3;
@@ -4669,7 +4644,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const nextUnreadUpdateId = useRef(0);
   const [unreadConversationIds, setUnreadConversationIds] = useState<Set<string>>(() => new Set());
   const previousRunningConversationIds = useRef<Set<string>>(new Set());
-  const [pinnedConversationIds, setPinnedConversationIds] = useState<Set<string>>(() => new Set());
+  const pendingPinnedUpdates = useRef(new Map<string, { id: number; pinned: boolean }>());
+  const nextPinnedUpdateId = useRef(0);
   // A FlowRun may briefly report a recoverable 409 while its Attempt and
   // Runtime records are being published.  Do not leave the node workbench
   // permanently stuck on the first transient response.
@@ -4713,7 +4689,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const draftRecoveryStorageKey = workspace && conversationDraft
     ? conversationDraftStorageKey(host.id, workspace.id, conversationDraft.workDirectoryId)
     : undefined;
-  const pinnedStorageKey = workspace ? pinnedConversationStorageKey(host.id, workspace.id) : undefined;
   const runtimeQuery = useQuery({ queryKey: sessionQueryKey(host, 'runtime', workspace?.id), queryFn: () => api.runtime(workspace!.id), enabled: Boolean(workspace), refetchInterval: query => query.state.data?.state === 'RECOVERING' ? 5000 : false });
   const workDirectoriesQuery = useQuery({ queryKey: sessionQueryKey(host, 'work-directories', workspace?.id), queryFn: () => api.workDirectories(workspace!.id), enabled: Boolean(workspace && features.workDirectories) });
   const workDirectoryOrderStorageKey = workspace ? `flowweave:work-directory-order:${host.id}:${workspace.id}` : undefined;
@@ -4880,8 +4855,11 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const providersQuery = useQuery({ queryKey: ['model-providers'], queryFn: api.providers, enabled: Boolean(workspace && features.modelSelection) });
   const capabilityCatalogQuery = useQuery({ queryKey: sessionQueryKey(host, 'capability-catalog'), queryFn: api.capabilities, enabled: Boolean(workspace && features.capabilities) });
   const conversations = useMemo(() => {
-    const serverOrder = (Object.values(conversationPagesByScope).flatMap(page => page.items) ?? [])
-      .filter(item => !optimisticallyRemovedConversationIds.has(item.id))
+    const uniqueConversations = new Map<string, AgentConversation>();
+    for (const item of Object.values(conversationPagesByScope).flatMap(page => page.items)) {
+      if (!optimisticallyRemovedConversationIds.has(item.id)) uniqueConversations.set(item.id, item);
+    }
+    const serverOrder = [...uniqueConversations.values()]
       .sort(
       (left, right) => (Number(right.sort_key) || Date.parse(right.created_at))
         - (Number(left.sort_key) || Date.parse(left.created_at))
@@ -4907,14 +4885,16 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       return group.map(item => locallyOrderedIds.has(item.id) ? locallyOrdered[localIndex++] : item);
     });
   }, [conversationOrder, conversationPagesByScope, optimisticallyRemovedConversationIds]);
-  const pinnedConversations = useMemo(() => {
-    const conversationsById = new Map(conversations.map(item => [item.id, item]));
-    return [...pinnedConversationIds].flatMap(bindingId => {
-      const item = conversationsById.get(bindingId);
-      return item ? [item] : [];
-    });
-  }, [conversations, pinnedConversationIds]);
-  const unpinnedConversations = conversations.filter(item => !pinnedConversationIds.has(item.id));
+  const conversationsById = useMemo(
+    () => new Map(conversations.map(item => [item.id, item])),
+    [conversations],
+  );
+  const pinnedConversations = [...conversationsById.values()].filter(
+    item => pendingPinnedUpdates.current.get(item.id)?.pinned ?? item.pinned,
+  );
+  const unpinnedConversations = conversations.filter(
+    item => !(pendingPinnedUpdates.current.get(item.id)?.pinned ?? item.pinned),
+  );
   const activityConversations = useMemo(() => conversations
     .filter(item => runningConversationIds.has(item.id) || condensingConversationIds.has(item.id) || conversationIsRunning(item.execution_status) || unreadConversationIds.has(item.id))
     .sort((left, right) => {
@@ -4922,7 +4902,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       const rightUpdatedAt = Date.parse(right.updated_at) || Date.parse(right.created_at) || 0;
       return rightUpdatedAt - leftUpdatedAt || right.id.localeCompare(left.id);
     }), [condensingConversationIds, conversations, runningConversationIds, unreadConversationIds]);
-  const revealedUnpinnedConversation = sidebarRevealBindingId && !pinnedConversationIds.has(sidebarRevealBindingId)
+  const revealedUnpinnedConversation = sidebarRevealBindingId && !conversations.find(item => item.id === sidebarRevealBindingId)?.pinned
     ? conversations.find(item => item.id === sidebarRevealBindingId)
     : undefined;
   useEffect(() => {
@@ -5148,24 +5128,50 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     // the binding was already unread, restoring the ordinary blue marker.
     setConversationUnread(bindingId, true, 'MANUAL');
   }, [setConversationUnread]);
-  const updatePinnedConversationIds = useCallback((update: (current: Set<string>) => Set<string>) => {
-    setPinnedConversationIds(current => {
-      const next = update(current);
-      writePinnedConversationIds(pinnedStorageKey, next);
-      return next;
-    });
-  }, [pinnedStorageKey]);
   const toggleConversationPin = useCallback((bindingId: string) => {
-    updatePinnedConversationIds(current => {
-      const next = new Set(current);
-      if (next.has(bindingId)) next.delete(bindingId);
-      else next.add(bindingId);
-      return next;
+    if (!workspace) return;
+    const queryKey = sessionQueryKey(host, 'conversations', workspace.id);
+    const currentPinned = conversations.find(item => item.id === bindingId)?.pinned ?? false;
+    const pinned = !currentPinned;
+    const updateId = nextPinnedUpdateId.current += 1;
+    const updateCachedConversation = (value: boolean) => {
+      setConversationPagesByScope(current => Object.fromEntries(Object.entries(current).map(([scope, page]) => [scope, {
+        ...page,
+        items: page.items.map(item => item.id === bindingId ? { ...item, pinned: value } : item),
+      }])));
+      queryClient.setQueryData<InfiniteData<AgentConversationPage>>(
+        queryKey,
+        current => current ? {
+          ...current,
+          pages: current.pages.map(page => ({
+            ...page,
+            items: page.items.map(item => item.id === bindingId ? { ...item, pinned: value } : item),
+          })),
+        } : current,
+      );
+    };
+    pendingPinnedUpdates.current.set(bindingId, { id: updateId, pinned });
+    void queryClient.cancelQueries({ queryKey }).then(() => {
+      if (pendingPinnedUpdates.current.get(bindingId)?.id !== updateId) return;
+      updateCachedConversation(pinned);
     });
-  }, [updatePinnedConversationIds]);
-  useEffect(() => {
-    setPinnedConversationIds(readPinnedConversationIds(pinnedStorageKey));
-  }, [pinnedStorageKey]);
+    updateCachedConversation(pinned);
+    void api.setConversationPinned(workspace.id, bindingId, pinned).then(updated => {
+      if (pendingPinnedUpdates.current.get(bindingId)?.id !== updateId) return;
+      const persistedPinned = Boolean(updated.pinned);
+      updateCachedConversation(persistedPinned);
+      void queryClient.invalidateQueries({ queryKey }).catch(() => undefined).then(() => {
+        if (pendingPinnedUpdates.current.get(bindingId)?.id !== updateId) return;
+        pendingPinnedUpdates.current.delete(bindingId);
+      });
+    }).catch(reason => {
+      if (pendingPinnedUpdates.current.get(bindingId)?.id !== updateId) return;
+      pendingPinnedUpdates.current.delete(bindingId);
+      updateCachedConversation(currentPinned);
+      const error = reason instanceof Error ? reason : new Error('置顶状态保存失败');
+      console.error('conversation-pinned', error);
+    });
+  }, [api, conversations, host, queryClient, workspace]);
   useEffect(() => {
     setUnreadConversationIds(current => {
       const next = new Set<string>();
@@ -5177,14 +5183,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       return next;
     });
   }, [conversations]);
-  useEffect(() => {
-    if (Object.keys(conversationPagesByScope).length === 0) return;
-    const present = new Set(conversations.map(item => item.id));
-    const next = new Set([...pinnedConversationIds].filter(bindingId => present.has(bindingId)));
-    if (next.size === pinnedConversationIds.size) return;
-    setPinnedConversationIds(next);
-    writePinnedConversationIds(pinnedStorageKey, next);
-  }, [conversationPagesByScope, conversations, pinnedConversationIds, pinnedStorageKey]);
   useEffect(() => {
     const recoverOnForeground = () => {
       const visible = document.visibilityState === 'visible';
@@ -6419,13 +6417,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       items: page.items.filter(item => item.id !== bindingId),
     }])));
     setOptimisticallyRemovedConversationIds(current => new Set(current).add(bindingId));
-    setPinnedConversationIds(current => {
-      if (!current.has(bindingId)) return current;
-      const next = new Set(current);
-      next.delete(bindingId);
-      writePinnedConversationIds(pinnedStorageKey, next);
-      return next;
-    });
     setUnreadConversationIds(current => {
       if (!current.has(bindingId)) return current;
       const next = new Set(current);
@@ -6440,7 +6431,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     }
     void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversations', workspace.id) });
     void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-activity', workspace.id) });
-  }, [activityPreviewBindingId, conversations, host, onNavigate, pinnedStorageKey, queryClient, selectedBindingId, updateLocalMessageProjections, workspace]);
+  }, [activityPreviewBindingId, conversations, host, onNavigate, queryClient, selectedBindingId, updateLocalMessageProjections, workspace]);
   reconcileMissingConversationRef.current = reconcileMissingConversation;
   const missingConversationError = [
     selectedConversationQuery.error,
@@ -7034,10 +7025,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const remove = useMutation<void, Error, string, OptimisticConversationRemoval>({
     mutationFn: bindingId => api.deleteConversation(workspace!.id, bindingId),
     onMutate: async bindingId => {
-      if (!workspace) return {
-        pinnedConversationIds: new Set(),
-        unreadConversationIds: new Set(),
-      };
+      if (!workspace) return { unreadConversationIds: new Set() };
       const conversationsKey = sessionQueryKey(host, 'conversations', workspace.id);
       const conversationKey = sessionQueryKey(host, 'conversation', workspace.id, bindingId);
       await Promise.all([
@@ -7048,7 +7036,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         conversations: queryClient.getQueryData<InfiniteData<AgentConversationPage>>(conversationsKey),
         conversationPages: conversationPagesByScope,
         conversation: queryClient.getQueryData<AgentConversation>(conversationKey),
-        pinnedConversationIds: new Set(pinnedConversationIds),
         unreadConversationIds: new Set(unreadConversationIds),
       };
       // Remove the item and choose its visible neighbour before issuing the
@@ -7071,13 +7058,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         items: page.items.filter(item => item.id !== bindingId),
       }])));
       queryClient.removeQueries({ queryKey: conversationKey, exact: true });
-      setPinnedConversationIds(current => {
-        if (!current.has(bindingId)) return current;
-        const next = new Set(current);
-        next.delete(bindingId);
-        writePinnedConversationIds(pinnedStorageKey, next);
-        return next;
-      });
       setUnreadConversationIds(current => {
         if (!current.has(bindingId)) return current;
         const next = new Set(current);
@@ -7118,8 +7098,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         if (context.conversationPages) setConversationPagesByScope(context.conversationPages);
         if (context.conversation) queryClient.setQueryData(conversationKey, context.conversation);
         else queryClient.removeQueries({ queryKey: conversationKey, exact: true });
-        setPinnedConversationIds(context.pinnedConversationIds);
-        writePinnedConversationIds(pinnedStorageKey, context.pinnedConversationIds);
         setUnreadConversationIds(context.unreadConversationIds);
       }
       setOptimisticallyRemovedConversationIds(current => {
@@ -8182,7 +8160,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     const unread = unreadConversationIds.has(item.id);
     const unreadOrigin = item.unread_origin;
     const conversationWritable = Boolean(item.write_available);
-    return <WorkspaceConversationRow key={item.id} item={item} selectedBindingId={selectedBindingId} workspaceName={options.workspaceName} running={running} possiblyStuck={possiblyStuck} failed={failed} unread={unread} unreadOrigin={unreadOrigin} pinned={pinnedConversationIds.has(item.id)} conversationWritable={conversationWritable} removing={remove.isPending} deleteDisabled={running} dragging={options.allowDrag !== false && draggedBindingId === item.id} dropPosition={options.allowDrag !== false && dragTarget?.bindingId === item.id ? (dragTarget.after ? 'after' : 'before') : undefined} onPointerDragStart={options.allowDrag === false ? undefined : event => startPointerConversationDrag(event, item, group)} onSelect={options.onSelect ?? (() => selectConversation(item.id))} onDoubleClick={options.onDoubleClick} onTogglePin={() => toggleConversationPin(item.id)} onMarkUnread={() => markConversationUnread(item.id)} onMarkRead={options.onMarkRead} onAcknowledgeAlert={() => markConversationRead(item.id)} onDelete={features.conversationDeletion && conversationWritable ? () => void confirmDeletion('会话', conversationName(item)).then(ok => { if (ok) remove.mutate(item.id); }) : undefined} reveal={sidebarListMode === 'workspaces' && sidebarRevealBindingId === item.id}/>;
+    return <WorkspaceConversationRow key={item.id} item={item} selectedBindingId={selectedBindingId} workspaceName={options.workspaceName} running={running} possiblyStuck={possiblyStuck} failed={failed} unread={unread} unreadOrigin={unreadOrigin} pinned={Boolean(item.pinned)} conversationWritable={conversationWritable} removing={remove.isPending} deleteDisabled={running} dragging={options.allowDrag !== false && draggedBindingId === item.id} dropPosition={options.allowDrag !== false && dragTarget?.bindingId === item.id ? (dragTarget.after ? 'after' : 'before') : undefined} onPointerDragStart={options.allowDrag === false ? undefined : event => startPointerConversationDrag(event, item, group)} onSelect={options.onSelect ?? (() => selectConversation(item.id))} onDoubleClick={options.onDoubleClick} onTogglePin={() => toggleConversationPin(item.id)} onMarkUnread={() => markConversationUnread(item.id)} onMarkRead={options.onMarkRead} onAcknowledgeAlert={() => markConversationRead(item.id)} onDelete={features.conversationDeletion && conversationWritable ? () => void confirmDeletion('会话', conversationName(item)).then(ok => { if (ok) remove.mutate(item.id); }) : undefined} reveal={sidebarListMode === 'workspaces' && sidebarRevealBindingId === item.id}/>;
   };
   const pendingBootstrapItem = pendingBootstrap
     ? <button className={pendingBootstrap.draft.id === conversationDraft?.id ? 'active' : ''} aria-current={pendingBootstrap.draft.id === conversationDraft?.id ? 'page' : undefined} aria-label={`${pendingConversationName(pendingBootstrap.message)}，正在创建会话`}><LoaderCircle className="conversation-activity-spin" size={13}/><span><b>{pendingConversationName(pendingBootstrap.message)}</b><small>正在创建会话</small></span><ChevronRight size={13}/></button>

@@ -758,6 +758,7 @@ export interface AgentConversation {
   /** A detached native Fork is independently writable even when its source node has completed. */
   write_available?: boolean;
   execution_status?: string | null;
+  pinned?: boolean;
   unread?: boolean;
   unread_origin?: 'MANUAL' | 'SYSTEM' | null;
   lifecycle: 'PROVISIONING' | 'ACTIVE' | 'DELETE_PENDING' | 'FAILED';

@@ -288,6 +288,7 @@ def _dict(
         ],
         "streaming_callback_ready": item.streaming_callback_ready,
         "write_available": write_available,
+        "pinned": item.pinned,
         "unread": item.unread,
         "unread_origin": item.unread_origin,
         "lifecycle": item.lifecycle,
@@ -408,6 +409,7 @@ def _page_dicts(
             "streaming_callback_ready": item.streaming_callback_ready,
             "write_available": write_available,
             "execution_status": "unknown",
+            "pinned": item.pinned,
             "unread": item.unread,
             "unread_origin": item.unread_origin,
             "lifecycle": item.lifecycle,
@@ -1991,6 +1993,15 @@ def patch_conversation(
     item.title_generation += 1
     item.updated_at = now()
     command.state = "SUCCEEDED"
+    db.flush()
+    return _dict(db, item)
+
+
+def set_conversation_pinned(
+    db: Session, workspace_id: str, binding_id: str, *, pinned: bool
+) -> dict[str, Any]:
+    item = _binding(db, workspace_id, binding_id, lock=True)
+    item.pinned = pinned
     db.flush()
     return _dict(db, item)
 

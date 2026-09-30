@@ -79,6 +79,10 @@ class NodeSessionUnreadWrite(_Write):
     unread_origin: Literal["MANUAL", "SYSTEM"] | None = None
 
 
+class NodeSessionPinnedWrite(_Write):
+    pinned: bool
+
+
 class NodeAttachmentReference(_Write):
     path: str = Field(min_length=1, max_length=300)
     image_data_url: str | None = Field(default=None, max_length=35_000_000)
@@ -924,6 +928,26 @@ async def patch_node_session(
         )
 
     return await run_blocking_mutation(container, patch)
+
+
+@router.put(f"{_BASE}/{{binding_id}}/pinned")
+async def set_node_session_pinned(
+    flow_run_id: str,
+    attempt_id: str,
+    binding_id: str,
+    payload: NodeSessionPinnedWrite,
+    db: Db,
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: agent_sessions.flow_node_conversations.set_node_session_pinned(
+            session,
+            flow_run_id=flow_run_id,
+            attempt_id=attempt_id,
+            binding_id=binding_id,
+            pinned=payload.pinned,
+        ),
+    )
 
 
 @router.put(f"{_BASE}/{{binding_id}}/unread")

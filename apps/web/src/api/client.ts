@@ -483,6 +483,8 @@ export const api = {
     request<AgentConversation>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}`),
   updateAgentConversation: (workspaceId: string, bindingId: string, title: string) =>
     request<AgentConversation>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}`, json('PATCH', { title })),
+  setAgentConversationPinned: (workspaceId: string, bindingId: string, pinned: boolean) =>
+    request<AgentConversation>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/pinned`, json('PUT', { pinned })),
   setAgentConversationUnread: (workspaceId: string, bindingId: string, unread: boolean, unread_origin?: 'MANUAL' | 'SYSTEM') =>
     request<AgentConversation>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/unread`, json('PUT', { unread, unread_origin })),
   reorderAgentConversation: (workspaceId: string, bindingId: string, ordered_binding_ids: string[]) =>
@@ -1025,6 +1027,8 @@ export const nodeSessionApi = {
     request<import('../types').AgentConversation>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}`),
   update: (flowRunId: string, attemptId: string, bindingId: string, title: string) =>
     request<import('../types').AgentConversation>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}`, json('PATCH', { title })),
+  setPinned: (flowRunId: string, attemptId: string, bindingId: string, pinned: boolean) =>
+    request<import('../types').AgentConversation>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/pinned`, json('PUT', { pinned })),
   setUnread: (flowRunId: string, attemptId: string, bindingId: string, unread: boolean, unread_origin?: 'MANUAL' | 'SYSTEM') =>
     request<import('../types').AgentConversation>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/unread`, json('PUT', { unread, unread_origin })),
   events: (flowRunId: string, attemptId: string, bindingId: string, cursor?: string, historyCursor?: string, diagnosticTrigger?: string) => {

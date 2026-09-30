@@ -3547,6 +3547,46 @@ def test_agent_workspace_unread_state_persists_in_conversation_projection(
         assert conversations.get_conversation(db, workspace.id, created["id"])["unread"] is False
 
 
+def test_agent_workspace_pinned_state_persists_in_conversation_projection(
+    settings, db_session_factory, monkeypatch
+):
+    monkeypatch.setattr(
+        conversations,
+        "runtime_provider",
+        lambda _db, asset, **kwargs: RuntimeProvider(
+            provider_id=asset["asset"]["executor"]["model_provider_id"],
+            base_url="https://models.example.test/v1",
+            model=kwargs.get("model_name") or "test-model",
+            api_key="x",
+            reasoning_effort=kwargs.get("reasoning_effort"),
+        ),
+    )
+    with settings_context(settings), db_session_factory() as db, runtime_context(MockRuntime()):
+        workspace = _ready_workspace_for_conversation(db)
+        created = conversations.create_conversation(
+            db,
+            workspace.id,
+            "持久化置顶会话",
+            workspace.default_model_provider_id,
+            "pinned-persistence",
+        )
+
+        pinned = conversations.set_conversation_pinned(
+            db, workspace.id, created["id"], pinned=True
+        )
+        page = conversations.list_conversation_page(db, workspace.id)
+
+        assert pinned["pinned"] is True
+        assert page["items"][0]["pinned"] is True
+        assert conversations.get_conversation(db, workspace.id, created["id"])["pinned"] is True
+
+        unpinned = conversations.set_conversation_pinned(
+            db, workspace.id, created["id"], pinned=False
+        )
+        assert unpinned["pinned"] is False
+        assert conversations.list_conversation_page(db, workspace.id)["items"][0]["pinned"] is False
+
+
 def test_agent_workspace_conversation_page_never_reads_native_runtime_state(
     settings, db_session_factory, monkeypatch
 ):

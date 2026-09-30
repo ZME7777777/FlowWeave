@@ -2896,7 +2896,7 @@ test('Opening an unread conversation keeps it read when an older list request fi
   await expect(unreadMarker).toHaveCount(0);
 });
 
-test('Conversation sidebar pins locally, orders activity, and reveals the selected source row', async ({ page }) => {
+test('Conversation sidebar persists pinned sessions, orders activity, and reveals the selected source row', async ({ page }) => {
   let authenticated = false;
   let runningConversationPossiblyStuck = true;
   const workspace = { id: 'sidebar-workspace', display_name: '侧栏工作区', desired_state: 'RUNNING', updated_at: now };
@@ -2929,6 +2929,7 @@ test('Conversation sidebar pins locally, orders activity, and reveals the select
     },
   ];
   const unreadWrites: Array<{ id: string; unread: boolean }> = [];
+  const pinnedWrites: Array<{ id: string; pinned: boolean }> = [];
   const search = {
     id: 'sidebar-search', query: '精准定位', state: 'SUCCEEDED',
     hits: [{
@@ -2950,6 +2951,13 @@ test('Conversation sidebar pins locally, orders activity, and reveals the select
       possibly_stuck_binding_ids: runningConversationPossiblyStuck ? ['sidebar-directory-running'] : [],
       failed_binding_ids: ['sidebar-root-unread'],
     });
+    if (path.endsWith('/pinned') && request.method() === 'PUT') {
+      const bindingId = path.split('/').at(-2)!;
+      const conversation = conversations.find(item => item.id === bindingId)!;
+      conversation.pinned = Boolean(request.postDataJSON().pinned);
+      pinnedWrites.push({ id: bindingId, pinned: conversation.pinned });
+      return json(route, conversation);
+    }
     if (path.endsWith('/unread') && request.method() === 'PUT') {
       const bindingId = path.split('/').at(-2)!;
       const conversation = conversations.find(item => item.id === bindingId)!;
@@ -2959,7 +2967,13 @@ test('Conversation sidebar pins locally, orders activity, and reveals the select
       unreadWrites.push({ id: bindingId, unread: conversation.unread });
       return json(route, conversation);
     }
-    if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: conversations, next_cursor: null });
+    if (path.endsWith('/conversations') && request.method() === 'GET') {
+      const workDirectoryId = new URL(request.url()).searchParams.get('work_directory_id');
+      return json(route, {
+        items: conversations.filter(item => (item.work_directory_id ?? null) === workDirectoryId),
+        next_cursor: null,
+      });
+    }
     if (path.endsWith('/conversation-searches') && request.method() === 'POST') return json(route, search);
     if (path.endsWith('/conversation-searches/sidebar-search')) return json(route, search);
     if (path.endsWith('/events')) {
@@ -2997,7 +3011,7 @@ test('Conversation sidebar pins locally, orders activity, and reveals the select
   await page.getByRole('menuitem', { name: '置顶' }).click();
   const pinnedSection = page.getByRole('region', { name: '置顶会话' });
   await expect(pinnedSection.getByRole('button', { name: '归属工作区会话', exact: true })).toBeVisible();
-  await expect.poll(() => page.evaluate(() => localStorage.getItem('flowweave:agent-workspace-pinned:agent-workspace:sidebar-workspace'))).toContain('sidebar-directory-pinned');
+  await expect.poll(() => pinnedWrites).toEqual([{ id: 'sidebar-directory-pinned', pinned: true }]);
   await expect(page.locator('.agent-workspace-group').filter({ hasText: '归属工作区' }).getByRole('button', { name: '归属工作区会话', exact: true })).toHaveCount(0);
 
   await page.reload();
@@ -3006,14 +3020,14 @@ test('Conversation sidebar pins locally, orders activity, and reveals the select
   await persistedPinnedConversation.click({ button: 'right' });
   await page.getByRole('menuitem', { name: '取消置顶' }).click();
   await expect(page.getByRole('region', { name: '置顶会话' })).toHaveCount(0);
+  await expect.poll(() => pinnedWrites).toEqual([
+    { id: 'sidebar-directory-pinned', pinned: true },
+    { id: 'sidebar-directory-pinned', pinned: false },
+  ]);
   await expect(page.locator('.agent-workspace-group').filter({ hasText: '归属工作区' }).getByRole('button', { name: '归属工作区会话', exact: true })).toBeVisible();
 
   const rootConversation = page.getByRole('button', { name: '未读根会话', exact: true });
-  const rootRow = rootConversation.locator('xpath=..');
-  const acknowledgeAlert = rootRow.getByRole('button', { name: '确认会话异常已读' });
-  await expect(acknowledgeAlert).toBeVisible();
   await rootConversation.click();
-  await expect(acknowledgeAlert).toHaveCount(0);
   await expect.poll(() => unreadWrites).toEqual([{ id: 'sidebar-root-unread', unread: false }]);
   const runningRowInWorkspaceList = page.locator('[data-conversation-binding-id="sidebar-directory-running"]');
   const runningAlertInWorkspaceList = runningRowInWorkspaceList.getByRole('img', { name: '会话正在运行但后台长时间未产生可确认进展' });

@@ -601,6 +601,7 @@ def _node_session_dict(db: Session, item: AgentConversationBinding) -> dict[str,
         # read-only while its detached native Fork is a normal writable
         # conversation.
         "write_available": _node_session_write_available(db, item),
+        "pinned": item.pinned,
         "unread": item.unread,
         "unread_origin": item.unread_origin,
         "lifecycle": item.lifecycle,
@@ -723,6 +724,7 @@ def _node_session_page_dicts(
             # delete permission visible there as well.
             "write_available": _node_session_write_available(db, item),
             "execution_status": "unknown",
+            "pinned": item.pinned,
             "unread": item.unread,
             "unread_origin": item.unread_origin,
             "lifecycle": item.lifecycle,
@@ -1108,6 +1110,26 @@ def get_node_session_view(
         db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
     )
     _capture_binding_usage(db, item)
+    return _node_session_dict(db, item)
+
+
+def set_node_session_pinned(
+    db: Session,
+    *,
+    flow_run_id: str,
+    attempt_id: str,
+    binding_id: str,
+    pinned: bool,
+) -> dict[str, Any]:
+    item = _binding_for_attempt(
+        db,
+        flow_run_id=flow_run_id,
+        attempt_id=attempt_id,
+        binding_id=binding_id,
+        lock=True,
+    )
+    item.pinned = pinned
+    db.flush()
     return _node_session_dict(db, item)
 
 
