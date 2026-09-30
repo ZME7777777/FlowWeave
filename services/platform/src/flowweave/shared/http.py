@@ -34,6 +34,8 @@ from flowweave.shared.errors import DomainError
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
+P = TypeVar("P")
+R = TypeVar("R")
 
 
 def get_container(connection: HTTPConnection) -> Container:
@@ -360,16 +362,57 @@ async def run_blocking_history(container: Container, operation: Callable[[Sessio
 
 
 async def run_formal_events(
-    container: Container, operation: Callable[[Session], T], *, history: bool
+    container: Container,
+    prepare: Callable[[Session], P],
+    read: Callable[[P], R],
+    project: Callable[[Session, P, R], T],
+    *,
+    history: bool,
 ) -> T:
-    """Bound event recovery from admission until response; workers drain safely."""
+    """Keep one real worker slot, but close DB sessions during Runtime I/O."""
+
+    session_factory = (
+        container.database.history_sessions if history else container.database.blocking_sessions
+    )
+
+    def execute() -> T:
+        prepared = _observe_event_phase(
+            container, "prepare_db", lambda: _run_session_operation(session_factory, prepare)
+        )
+        snapshot = _observe_event_phase(container, "runtime_read", lambda: read(prepared))
+        # Cancellation cannot stop the thread. Its copied deadline must reject
+        # late snapshots before opening another DB session or projecting them.
+        hydration_time_left()
+        return _observe_event_phase(
+            container,
+            "project_db",
+            lambda: _run_session_operation(
+                session_factory, lambda session: project(session, prepared, snapshot)
+            ),
+        )
 
     started_at = monotonic()
     outcome = "error"
     try:
         async with formal_response_budget(container.settings.runtime_event_read_timeout_seconds):
-            execute = run_blocking_history if history else run_blocking
-            result = await execute(container, operation)
+            result = await _run_blocking_operation(
+                container,
+                execute,
+                executor=container.history_read_executor
+                if history
+                else container.blocking_executor,
+                slots=container.history_read_slots if history else container.blocking_io_slots,
+                saturation_code="RUNTIME_HISTORY_READ_SATURATED"
+                if history
+                else "RUNTIME_READ_SATURATED",
+                saturation_message="Conversation history is being loaded; retry shortly"
+                if history
+                else "Agent Runtime reads are busy; retry shortly",
+                lane_name="history" if history else "read",
+                active_limit=container.settings.history_read_pool_size
+                if history
+                else getattr(container, "blocking_capacity", container.settings.blocking_pool_size),
+            )
             outcome = "ok"
             return result
     finally:
@@ -381,6 +424,23 @@ async def run_formal_events(
                 else "agent_session.events.response",
                 monotonic() - started_at,
                 outcome=outcome,
+            )
+
+
+def _observe_event_phase(container: Container, phase: str, operation: Callable[[], T]) -> T:
+    started_at = monotonic()
+    outcome = "error"
+    try:
+        hydration_time_left()
+        result = operation()
+        hydration_time_left()
+        outcome = "ok"
+        return result
+    finally:
+        metrics = getattr(container, "metrics", None)
+        if metrics is not None:
+            metrics.observe_operation(
+                f"agent_session.events.{phase}", monotonic() - started_at, outcome=outcome
             )
 
 
@@ -493,6 +553,51 @@ async def _run_blocking_lane(
     admission_slots: asyncio.Semaphore | None = None,
     wait_timeout: float | None = None,
 ) -> T:
+    return await _run_blocking_operation(
+        container,
+        lambda: _run_session_operation(session_factory, operation),
+        executor=executor,
+        slots=slots,
+        saturation_code=saturation_code,
+        saturation_message=saturation_message,
+        lane_name=lane_name,
+        active_limit=active_limit,
+        admission_slots=admission_slots,
+        wait_timeout=wait_timeout,
+    )
+
+
+def _run_session_operation(
+    session_factory: Callable[[], Session], operation: Callable[[Session], T]
+) -> T:
+    hydration_time_left()
+    with session_factory() as session:
+        mark_uow_owned(session)
+        try:
+            result = operation(session)
+            hydration_time_left()
+            session.commit()
+        except BaseException:
+            session.rollback()
+            run_rollback_actions(session)
+            raise
+        run_commit_actions(session)
+        return result
+
+
+async def _run_blocking_operation(
+    container: Container,
+    operation: Callable[[], T],
+    *,
+    executor: ThreadPoolExecutor,
+    slots: asyncio.Semaphore,
+    saturation_code: str,
+    saturation_message: str,
+    lane_name: str,
+    active_limit: int,
+    admission_slots: asyncio.Semaphore | None = None,
+    wait_timeout: float | None = None,
+) -> T:
     admitted = False
     metrics = getattr(container, "metrics", None)
 
@@ -555,19 +660,10 @@ async def _run_blocking_lane(
             )
         try:
             hydration_time_left()
-            with session_factory() as session:
-                mark_uow_owned(session)
-                try:
-                    result = operation(session)
-                    hydration_time_left()
-                    session.commit()
-                except BaseException:
-                    session.rollback()
-                    run_rollback_actions(session)
-                    raise
-                run_commit_actions(session)
-                outcome = "ok"
-                return result
+            result = operation()
+            hydration_time_left()
+            outcome = "ok"
+            return result
         finally:
             if metrics is not None:
                 metrics.observe_operation(

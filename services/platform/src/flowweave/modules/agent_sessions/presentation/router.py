@@ -974,11 +974,12 @@ async def node_session_events(
     diagnostic_trigger: str | None = Query(default=None, max_length=40),
 ) -> dict[str, Any]:
     try:
+        node_conversations = agent_sessions.flow_node_conversations
         # The latest-window route is interactive. Older pages are browser prefetch
         # and must not occupy its Runtime/DB lane while a live turn is recovering.
         return await run_formal_events(
             container,
-            lambda session: agent_sessions.flow_node_conversations.read_node_conversation_events(
+            lambda session: node_conversations.prepare_flow_run_conversation_events(
                 session,
                 flow_run_id=flow_run_id,
                 attempt_id=attempt_id,
@@ -987,6 +988,8 @@ async def node_session_events(
                 history_cursor=history_cursor,
                 diagnostic_trigger=diagnostic_trigger,
             ),
+            node_conversations.read_prepared_flow_run_conversation_events,
+            node_conversations.project_prepared_flow_run_conversation_events,
             history=bool(history_cursor and not cursor),
         )
     except DomainError as exc:

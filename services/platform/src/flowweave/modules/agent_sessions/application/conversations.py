@@ -2097,21 +2097,44 @@ def events(
     binding = _binding(db, workspace_id, binding_id)
     handle = _handle(db, workspace, binding)
     started_at = time.monotonic()
+    batch = batch_override
+    if batch is None:
+        batch = _read_conversation_events(
+            handle, workspace_id, binding_id, cursor, history_cursor, diagnostic_trigger
+        )
+    elif metrics := current_metrics():
+        metrics.observe_operation(
+            "agent_session.events",
+            time.monotonic() - started_at,
+            outcome="ok",
+            items=len(batch.events),
+        )
+    return _project_conversation_events(db, workspace, binding, batch)
+
+
+def _read_conversation_events(
+    handle: RuntimeHandle,
+    workspace_id: str,
+    binding_id: str,
+    cursor: str | None,
+    history_cursor: str | None,
+    diagnostic_trigger: str | None,
+) -> RuntimeEventBatch:
+    """Read and diagnose formal events using only a frozen Runtime locator."""
+
+    started_at = time.monotonic()
     runtime = get_runtime()
     try:
-        if batch_override is None:
-            # Agent Workspace Runtime generations are replaceable.  A fresh
-            # Agent Server has the persisted Conversation directory mounted,
-            # but does not populate its in-memory service until the formal
-            # Conversation identity is loaded.  Reload the original UUID
-            # before reading events; this never creates a replacement
-            # Conversation or replays an interrupted action.
-            runtime.reload_conversation(handle)
-            batch = runtime.read_active_events(
-                replace(handle, cursor=cursor, history_cursor=history_cursor)
-            )
-        else:
-            batch = batch_override
+        # Agent Workspace Runtime generations are replaceable.  A fresh
+        # Agent Server has the persisted Conversation directory mounted,
+        # but does not populate its in-memory service until the formal
+        # Conversation identity is loaded.  Reload the original UUID
+        # before reading events; this never creates a replacement
+        # Conversation or replays an interrupted action.
+        runtime.reload_conversation(handle)
+        batch = runtime.read_active_events(
+            replace(handle, cursor=cursor, history_cursor=history_cursor)
+        )
     except Exception as exc:
         if metrics := current_metrics():
             metrics.observe_operation(
@@ -2137,17 +2160,25 @@ def events(
             outcome="ok",
             items=len(batch.events),
         )
-    if batch_override is None:
-        log_conversation_diagnostic(
-            operation="events",
-            host_kind="agent_workspace",
-            binding_id=binding_id,
-            workspace_id=workspace_id,
-            batch=batch,
-            request_cursor=cursor,
-            history_cursor=history_cursor,
-            trigger=diagnostic_trigger,
-        )
+    log_conversation_diagnostic(
+        operation="events",
+        host_kind="agent_workspace",
+        binding_id=binding_id,
+        workspace_id=workspace_id,
+        batch=batch,
+        request_cursor=cursor,
+        history_cursor=history_cursor,
+        trigger=diagnostic_trigger,
+    )
+    return batch
+
+
+def _project_conversation_events(
+    db: Session,
+    workspace: AgentWorkspace,
+    binding: AgentConversationBinding,
+    batch: RuntimeEventBatch,
+) -> dict[str, Any]:
     # A native Task blocks its parent and has no wall-clock timeout. Register
     # one durable watchdog from formal event identities while this normal REST
     # recovery read already owns a transaction. No Conversation state is
@@ -3508,6 +3539,59 @@ class PreparedConversationHydration:
     binding_id: str
     key: ConversationCacheKey
     handle: RuntimeHandle
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedConversationEvents:
+    locator: PreparedConversationHydration
+    cursor: str | None
+    history_cursor: str | None
+    diagnostic_trigger: str | None
+
+
+def prepare_conversation_events(
+    db: Session,
+    workspace_id: str,
+    binding_id: str,
+    cursor: str | None,
+    history_cursor: str | None = None,
+    *,
+    diagnostic_trigger: str | None = None,
+) -> PreparedConversationEvents:
+    return PreparedConversationEvents(
+        locator=prepare_conversation_hydration(db, workspace_id, binding_id),
+        cursor=cursor,
+        history_cursor=history_cursor,
+        diagnostic_trigger=diagnostic_trigger,
+    )
+
+
+def read_prepared_conversation_events(prepared: PreparedConversationEvents) -> RuntimeEventBatch:
+    locator = prepared.locator
+    return _read_conversation_events(
+        locator.handle,
+        locator.workspace_id,
+        locator.binding_id,
+        prepared.cursor,
+        prepared.history_cursor,
+        prepared.diagnostic_trigger,
+    )
+
+
+def project_prepared_conversation_events(
+    db: Session, prepared: PreparedConversationEvents, batch: RuntimeEventBatch
+) -> dict[str, Any]:
+    workspace, binding = _assert_prepared_conversation_hydration_current(db, prepared.locator)
+    if (
+        binding.host_kind != prepared.locator.key.host_kind
+        or _handle(db, workspace, binding).workspace_root != prepared.locator.handle.workspace_root
+    ):
+        raise DomainError(
+            "AGENT_RUNTIME_REPLACEMENT_FENCED",
+            "Agent Runtime generation 已变化，请重新读取会话",
+            409,
+        )
+    return _project_conversation_events(db, workspace, binding, batch)
 
 
 def prepare_conversation_hydration(

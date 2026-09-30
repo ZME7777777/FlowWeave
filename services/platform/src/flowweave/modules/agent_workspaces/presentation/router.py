@@ -968,7 +968,7 @@ async def agent_events(
         # normal Runtime-read lane for current events and execution status.
         return await run_formal_events(
             container,
-            lambda session: conversations.events(
+            lambda session: conversations.prepare_conversation_events(
                 session,
                 workspace_id,
                 binding_id,
@@ -976,6 +976,8 @@ async def agent_events(
                 history_cursor,
                 diagnostic_trigger=diagnostic_trigger,
             ),
+            conversations.read_prepared_conversation_events,
+            conversations.project_prepared_conversation_events,
             history=bool(history_cursor and not cursor),
         )
     except DomainError as exc:

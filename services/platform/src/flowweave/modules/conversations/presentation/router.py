@@ -14,7 +14,14 @@ from flowweave.modules.sandboxes import public as sandboxes
 from flowweave.runtime.dependencies import runtime_context
 from flowweave.runtime.routing import runtime_for
 from flowweave.shared.errors import DomainError
-from flowweave.shared.http import Db, IdempotencyKey, command_key, get_container, run_sync
+from flowweave.shared.http import (
+    Db,
+    IdempotencyKey,
+    command_key,
+    get_container,
+    run_formal_events,
+    run_sync,
+)
 from flowweave.shared.schemas import (
     ConversationPatchWrite,
     ConversationQuestionWrite,
@@ -127,21 +134,24 @@ async def label_flow_run_conversation(
 async def live_conversation_events(
     flow_run_id: str,
     binding_id: str,
-    db: Db,
+    container: ContainerDep,
     cursor: str | None = Query(default=None, max_length=200),
     history_cursor: str | None = Query(default=None, max_length=200),
 ) -> dict[str, Any]:
     """Return live OpenHands events without persisting a platform cursor."""
 
-    return await run_sync(
-        db,
-        lambda session: conversations.read_flow_run_conversation_events(
+    return await run_formal_events(
+        container,
+        lambda session: conversations.prepare_flow_run_conversation_events(
             session,
             flow_run_id,
             binding_id,
             cursor=cursor,
             history_cursor=history_cursor,
         ),
+        conversations.read_prepared_flow_run_conversation_events,
+        conversations.project_prepared_flow_run_conversation_events,
+        history=bool(history_cursor and not cursor),
     )
 
 

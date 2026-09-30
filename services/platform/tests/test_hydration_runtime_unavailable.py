@@ -414,19 +414,22 @@ async def test_event_hosts_share_deadline_and_preserve_history_lane(
     module = workspace_router if host == "workspace" else node_router
     calls: list[bool] = []
 
-    async def interactive(_container, _operation):
-        calls.append(False)
+    async def dispatch(_container, _operation, *, lane_name, **_kwargs):
+        calls.append(lane_name == "history")
         assert 0 < hydration_time_left() <= 0.02
         await asyncio.sleep(1)
 
-    async def history(_container, _operation):
-        calls.append(True)
-        assert 0 < hydration_time_left() <= 0.02
-        await asyncio.sleep(1)
-
-    monkeypatch.setattr(http, "run_blocking", interactive)
-    monkeypatch.setattr(http, "run_blocking_history", history)
-    container = SimpleNamespace(settings=SimpleNamespace(runtime_event_read_timeout_seconds=0.02))
+    monkeypatch.setattr(http, "_run_blocking_operation", dispatch)
+    container = SimpleNamespace(
+        settings=SimpleNamespace(
+            runtime_event_read_timeout_seconds=0.02, blocking_pool_size=1, history_read_pool_size=1
+        ),
+        database=SimpleNamespace(blocking_sessions=None, history_sessions=None),
+        blocking_executor=None,
+        history_read_executor=None,
+        blocking_io_slots=None,
+        history_read_slots=None,
+    )
     with pytest.raises(DomainError) as caught:
         if host == "workspace":
             await module.agent_events(

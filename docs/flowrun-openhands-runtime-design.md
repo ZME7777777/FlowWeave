@@ -434,3 +434,25 @@ API slot 只在 worker completion 回调释放，Runtime slot 只在线程实际
 `history_response`；外部 HTTP 继续使用既有归一 operation。指标不含用户、会话、Runtime URL 或
 事件 ID，worker 耗时必须记录实际 completion，不能用浏览器断开时间替代。
 这些指标区分平台排队与外部读取耗时，不声称测得 OpenHands 内部锁、磁盘或序列化耗时。
+
+## 15. 普通事件读取的数据库边界（FR-561B）
+
+Workspace、Flow Node 及兼容 FlowRun REST 事件入口均按 prepare → Runtime read → projection
+执行；最新窗口、cursor 增量与 history_cursor 分页共用该边界。一次请求只取得一次原有 read／history
+执行器槽位，同一同步 worker 持有它直到全部阶段实际完成，不增加线程、数据库连接或 Runtime 并发。
+
+prepare 在短 session 中完成原入口授权及定位，冻结用户／宿主／binding、Runtime Session、generation、
+OpenHands Conversation、workspace root 和请求 cursor；传入 Runtime 阶段的只读 DTO 不携带 ORM 实体。
+prepare 的 commit／回调和 session close 完成后才开始外部读取。Runtime 阶段使用既有正式接口，
+不持有 SQLAlchemy session；Workspace 仍先 reload 原 Conversation，Node／FlowRun 保持既有读语义。
+
+projection 重新创建短 session、复核原入口授权，并以 Session／Conversation／generation／resource、
+宿主类型及 workspace root 拒绝漂移结果，然后使用既有附件、Task 和 monitoring 投影。
+两段数据库操作各自执行既有 commit／rollback 回调；Runtime 失败不进入 projection。
+请求的 8 秒总预算覆盖全部阶段，过期结果在再次借数据库连接前拒绝；客户端取消不能强制停止线程，
+仍在期限内的读取可完成授权后的投影，但不能提前释放实际 worker 槽位。
+
+新增 `agent_session.events.prepare_db`／`runtime_read`／`project_db` 的低基数耗时指标。
+浏览器恢复协调与 hydration cache 的身份／epoch／current 指针不变；事件、cursor、附件及公开 API
+schema 不变。遗留同步 application helper 供已有直接调用方使用，HTTP 入口只走上述分阶段边界；
+消息写入、Worker 后台读取与其他投影的数据库边界不属于本切片。

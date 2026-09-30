@@ -827,14 +827,24 @@ async def test_event_response_deadline_retains_real_slot_and_bounds_waiters(hist
         try:
             before = monotonic()
             with pytest.raises(DomainError) as caught:
-                await run_formal_events(container, stalled, history=history)
+                await run_formal_events(
+                    container,
+                    lambda _session: "locator",
+                    stalled,
+                    lambda _session, _prepared, snapshot: snapshot,
+                    history=history,
+                )
             assert started.is_set()
             assert caught.value.code == "RUNTIME_BUSINESS_READ_TIMEOUT"
             assert monotonic() - before < 0.5
             assert slots.locked()
             with pytest.raises(DomainError) as waiting:
                 await run_formal_events(
-                    container, lambda _session: calls.append("unexpected"), history=history
+                    container,
+                    lambda _session: calls.append("unexpected"),
+                    lambda prepared: prepared,
+                    lambda _session, _prepared, snapshot: snapshot,
+                    history=history,
                 )
             assert waiting.value.code == "RUNTIME_BUSINESS_READ_TIMEOUT"
             assert slots.locked()
@@ -878,7 +888,11 @@ async def test_event_executor_queue_cannot_start_work_after_deadline() -> None:
         try:
             with pytest.raises(DomainError) as caught:
                 await run_formal_events(
-                    container, lambda _session: calls.append("unexpected"), history=False
+                    container,
+                    lambda _session: calls.append("unexpected"),
+                    lambda prepared: prepared,
+                    lambda _session, _prepared, snapshot: snapshot,
+                    history=False,
                 )
             assert caught.value.code == "RUNTIME_BUSINESS_READ_TIMEOUT"
             assert slots.locked()

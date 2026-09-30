@@ -2320,6 +2320,122 @@ def read_node_conversation_events(
 
 
 @dataclass(frozen=True, slots=True)
+class PreparedFlowRunConversationEvents:
+    flow_run_id: str
+    attempt_id: str | None
+    binding_id: str
+    key: ConversationCacheKey
+    handle: RuntimeHandle
+    diagnostic_trigger: str | None
+
+
+def prepare_flow_run_conversation_events(
+    db: Session,
+    flow_run_id: str,
+    binding_id: str,
+    *,
+    cursor: str | None = None,
+    history_cursor: str | None = None,
+    diagnostic_trigger: str | None = None,
+    attempt_id: str | None = None,
+) -> PreparedFlowRunConversationEvents:
+    binding = (
+        _binding_for_attempt(
+            db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
+        )
+        if attempt_id is not None
+        else _binding_for_run(db, flow_run_id, binding_id)
+    )
+    handle = _flow_run_handle(
+        db, flow_run_id, binding_id, cursor=cursor, history_cursor=history_cursor
+    )
+    principal = current_principal()
+    return PreparedFlowRunConversationEvents(
+        flow_run_id=flow_run_id,
+        attempt_id=attempt_id,
+        binding_id=binding.id,
+        key=ConversationCacheKey(
+            user_id=principal.user_id if principal is not None else binding.owner_user_id,
+            host_kind=binding.host_kind,
+            host_id=attempt_id if attempt_id is not None else flow_run_id,
+            binding_id=binding.id,
+            runtime_session_id=binding.runtime_session_id,
+            runtime_generation=handle.runtime_resource_id,
+            conversation_id=binding.openhands_conversation_id,
+        ),
+        handle=handle,
+        diagnostic_trigger=diagnostic_trigger,
+    )
+
+
+def read_prepared_flow_run_conversation_events(
+    prepared: PreparedFlowRunConversationEvents,
+) -> RuntimeEventBatch:
+    try:
+        batch = get_runtime().read_active_events(prepared.handle)
+    except Exception as exc:
+        log_conversation_diagnostic(
+            operation="events",
+            host_kind="flow_node",
+            binding_id=prepared.binding_id,
+            flow_run_id=prepared.flow_run_id,
+            attempt_id=prepared.attempt_id,
+            request_cursor=prepared.handle.cursor,
+            history_cursor=prepared.handle.history_cursor,
+            trigger=prepared.diagnostic_trigger,
+            outcome="error",
+            error_kind=type(exc).__name__,
+            force=True,
+        )
+        raise
+    log_conversation_diagnostic(
+        operation="events",
+        host_kind="flow_node",
+        binding_id=prepared.binding_id,
+        flow_run_id=prepared.flow_run_id,
+        attempt_id=prepared.attempt_id,
+        batch=batch,
+        request_cursor=prepared.handle.cursor,
+        history_cursor=prepared.handle.history_cursor,
+        trigger=prepared.diagnostic_trigger,
+    )
+    return batch
+
+
+def project_prepared_flow_run_conversation_events(
+    db: Session, prepared: PreparedFlowRunConversationEvents, batch: RuntimeEventBatch
+) -> dict[str, Any]:
+    # Repeat the exact route authorization after I/O, before any attachments,
+    # task controls or other product-owned projections are exposed.
+    binding = (
+        _binding_for_attempt(
+            db,
+            flow_run_id=prepared.flow_run_id,
+            attempt_id=prepared.attempt_id,
+            binding_id=prepared.binding_id,
+        )
+        if prepared.attempt_id is not None
+        else _binding_for_run(db, prepared.flow_run_id, prepared.binding_id)
+    )
+    current = _flow_run_handle(db, prepared.flow_run_id, prepared.binding_id)
+    if (
+        binding.runtime_session_id != prepared.key.runtime_session_id
+        or binding.openhands_conversation_id != prepared.key.conversation_id
+        or binding.host_kind != prepared.key.host_kind
+        or current.conversation_id != prepared.handle.conversation_id
+        or current.runtime_resource_id != prepared.handle.runtime_resource_id
+        or current.runtime_resource_name != prepared.handle.runtime_resource_name
+        or current.workspace_root != prepared.handle.workspace_root
+    ):
+        raise DomainError(
+            "AGENT_RUNTIME_REPLACEMENT_FENCED",
+            "Agent Runtime generation 已变化，请重新读取会话",
+            409,
+        )
+    return _event_batch_dict(db, binding, batch)
+
+
+@dataclass(frozen=True, slots=True)
 class PreparedNodeConversationHydration:
     """A node-session hydration locator that survives a DB-free Runtime read."""
 

@@ -7836,13 +7836,17 @@ OpenHands adapter 现为 context、activity 和 pending-confirmation 增加每 R
 
 验收：受影响 HTTP helper／两类宿主路由／OpenHands adapter 回归 `272 passed, 1 deselected`，新增预算／实际 completion／低基数指标回归包含在内；最终新增过期前不发请求断言与 hydration helper 定向复核 `3 passed`。覆盖嵌套预算不续期、串行默认 HTTP timeout 8→5→2、到期不继续 HTTP、Runtime 槽位等待消耗预算、排队到期不执行、超时响应后实际线程仍占槽且后续请求不能突破容量、取消隔离与两类宿主当前／增量／历史 lane。修正既有 slow-model 路由测试向无 DB hydration helper 传递必选 DB 参数的测试回调错误，两宿主回归均通过。首次模块回归另有依赖 Docker 的 slow-request logging 测试在 Testcontainers 初始化前失败（本机 Docker socket 不可用），随后明确排除，未记为通过。受影响 Ruff check／format、Node router import check、Python 编译、核心 budget／HTTP／settings Pyright（0 errors）、唯一 Alembic head `0138_admin_resource_cleanup_operations`、任务状态及 git diff --check／staged diff 复核通过；adapter／两 router 的 Pyright 仍有 23 条既有诊断，与 HEAD 文件副本按文件／rule／message 对比完全一致、无新增；Node router 既有附件代码格式／长行未纳入本次修复。同步 HTTP 多阶段、持续分块响应或 DB 等待仍可能晚于 API 响应结束，保留槽位到真实 completion，不宣称线程可强制中止。未实跑迁移、镜像构建、真实 Runtime／浏览器负载、远端部署或 replacement，未声称线上页面已恢复。下一可执行切片为 FR-561B。
 
-### FR-561B 普通正式读取与数据库连接解耦 — READY
+### FR-561B 普通正式读取与数据库连接解耦 — DONE
 
 依赖：FR-561。
 
 范围：单独审计普通 events/history 读路径，按 prepare／无 DB Runtime read／projection fence 解耦；保持现有授权、缓存身份、generation fence 和连接预算。
 
-### FR-562 单用户浏览器读取协调验收 — TODO
+完成：Workspace、Flow Node 及兼容 FlowRun REST events 入口统一走 prepare → 无 DB Runtime read → projection。一次请求继续在原 read／history executor 中持有同一个真实 worker 槽位；仅将短数据库 session 分别包住 prepare 与 projection，外部读取期间没有 SQLAlchemy session，不增加线程、数据库连接或 Runtime 并发。prepare DTO 仅携带不可变身份、定位与请求 cursor，不携带 ORM 实体；Workspace 复用 hydration cache identity／fence 并保留原 UUID reload，Node／FlowRun 保留原入口的 Run／Attempt 授权边界。projection 再次授权，并对 Runtime Session、OpenHands Conversation、generation／resource、host kind 和 workspace root 漂移 fail closed 后复用正式事件、附件、Task、monitoring 投影。兼容 FlowRun 入口同时移出 `AsyncSession.run_sync`，防止同步 Runtime HTTP 阻塞 ASGI loop。两段 DB 操作保留独立 commit／rollback 回调，Runtime 失败和期限外迟到结果不再打开 projection session；取消仍 shield 真实线程并保留槽位到 completion。新增低基数 `agent_session.events.prepare_db`／`runtime_read`／`project_db` 指标；保持 8 秒总预算、历史低优先级 lane、公开 API 与 hydration cache epoch／current 指针不变，未改消息写入语义或 Worker 后台读取。
+
+验收：39 项新增三阶段回归与既有 HTTP／hydration／OpenHands adapter 回归合计 `311 passed, 1 deselected`；明确排除依赖不可用 Docker socket 的 slow-request logging 测试，未记为通过。真实 SQLAlchemy 单连接／无 overflow 的 SQLite pool 在 Runtime 阶段 blocked 时 checked-out=0，另一查询可借用同一 pool；同时真实 API 槽位仍占用，超时／重复取消不能让后续请求突破容量。覆盖两个 lane 的成功、超时、取消、Runtime 失败、projection fence 失败、两段 session 的 commit／rollback 回调、期限外不再投影、不可变 locator、不再授权／Session／Conversation／generation／resource／root／host drift 拒绝，以及三个入口的最新／增量／历史参数和正式 event／parent ID、cursor、正文、附件、Task／monitoring 投影保持。SQLite 仅验证连接生命周期，不替代 PostgreSQL RLS 或生产负载验收。OpenAPI 与独立 HEAD 源码快照完全相同且匹配仓库 v1 contract；受影响 Ruff check／format、Node import check、Python 编译、HTTP helper Pyright（0 errors）、唯一 Alembic head `0138_admin_resource_cleanup_operations`、任务状态、git diff --check 与 staged diff 复核通过。六个受影响模块的 Pyright 与完全独立 HEAD 源码按文件／rule／message 对比同为 56 条既有诊断、无新增；Node router Ruff 同为 13 条既有诊断，未混入附件格式修复。未实跑 PostgreSQL 迁移／RLS、实际 Runtime 镜像／浏览器负载、远端发布或 replacement，未声称线上页面已恢复。下一可执行切片为 FR-562。
+
+### FR-562 单用户浏览器读取协调验收 — READY
 
 依赖：FR-561B。
 
