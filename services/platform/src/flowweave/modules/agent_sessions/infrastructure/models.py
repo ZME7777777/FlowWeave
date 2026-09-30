@@ -111,6 +111,8 @@ class AgentConversationBinding(Base):
     # workspace-local explicit rank that later messages preserve.
     manual_sort_rank: Mapped[Decimal | None] = mapped_column(Numeric(30, 12))
     activity_was_running: Mapped[bool] = mapped_column(Boolean, default=False)
+    terminal_reconciliation_pending: Mapped[bool] = mapped_column(Boolean, default=False)
+    last_notified_completion_event_id: Mapped[str | None] = mapped_column(String(200))
     unread: Mapped[bool] = mapped_column(Boolean, default=False)
     # The unread bit remains the server-owned fact. SYSTEM with unread=False
     # records that the user acknowledged the current abnormality.

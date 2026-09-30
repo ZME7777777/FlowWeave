@@ -4668,6 +4668,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const pendingUnreadUpdates = useRef(new Map<string, { id: number; unread: boolean; unreadOrigin?: AgentConversation['unread_origin'] }>());
   const nextUnreadUpdateId = useRef(0);
   const [unreadConversationIds, setUnreadConversationIds] = useState<Set<string>>(() => new Set());
+  const previousRunningConversationIds = useRef<Set<string>>(new Set());
   const [pinnedConversationIds, setPinnedConversationIds] = useState<Set<string>>(() => new Set());
   // A FlowRun may briefly report a recoverable 409 while its Attempt and
   // Runtime records are being published.  Do not leave the node workbench
@@ -4850,6 +4851,16 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     () => new Set(conversationActivityQuery.data?.running_binding_ids ?? []),
     [conversationActivityQuery.data],
   );
+  useEffect(() => {
+    const previous = previousRunningConversationIds.current;
+    const completedInBackground = [...previous].some(
+      bindingId => !runningConversationIds.has(bindingId) && bindingId !== routeBindingId,
+    );
+    previousRunningConversationIds.current = runningConversationIds;
+    if (!completedInBackground || !workspace) return;
+    void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-activity', workspace.id) });
+    void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversations', workspace.id) });
+  }, [host, queryClient, routeBindingId, runningConversationIds, workspace]);
   const condensingConversationIds = useMemo(
     () => new Set(conversationActivityQuery.data?.condensing_binding_ids ?? []),
     [conversationActivityQuery.data],

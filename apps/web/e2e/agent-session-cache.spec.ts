@@ -2507,9 +2507,14 @@ test('A normal background conversation completion persists a regular unread mark
     if (path.endsWith('/auth/login') && request.method() === 'POST') { authenticated = true; return json(route, user); }
     if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
     if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
-    if (path.endsWith('/conversation-activity')) return json(route, {
-      running_binding_ids: completed ? [] : ['completed-unread-background'],
-    });
+    if (path.endsWith('/conversation-activity')) {
+      if (completed) {
+        const conversation = conversations.find(item => item.id === 'completed-unread-background')!;
+        conversation.unread = true;
+        conversation.unread_origin = 'MANUAL';
+      }
+      return json(route, { running_binding_ids: completed ? [] : ['completed-unread-background'] });
+    }
     if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: conversations, next_cursor: null });
     if (path.endsWith('/unread') && request.method() === 'PUT') {
       const id = path.split('/').at(-2)!;
@@ -2554,14 +2559,11 @@ test('A normal background conversation completion persists a regular unread mark
   await expect(backgroundRow.locator('.agent-workspace-conversation-running')).toHaveCount(0);
   await expect(backgroundRow.getByRole('img', { name: '会话已完成，有未读回复' })).toBeVisible();
   await expect(backgroundRow.locator('.agent-workspace-conversation-alert')).toHaveCount(0);
-  await expect.poll(() => unreadWrites).toEqual([
-    { id: 'completed-unread-background', unread: true, unread_origin: 'MANUAL' },
-  ]);
 
   await page.reload();
   await expect(page.locator('[data-conversation-binding-id="completed-unread-background"]')
     .getByRole('img', { name: '会话已完成，有未读回复' })).toBeVisible();
-  expect(unreadWrites).toHaveLength(1);
+  expect(unreadWrites).toHaveLength(0);
 });
 
 

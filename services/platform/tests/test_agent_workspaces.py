@@ -3663,10 +3663,13 @@ def test_agent_workspace_activity_marks_background_unread_only_after_formal_fina
 
     class ActivityRuntime(MockRuntime):
         conversation_id = ""
+        visible = True
         status = "running"
         final_result: RuntimeResult | None = None
 
         def conversation_activity_snapshot(self, _handle):
+            if not self.visible:
+                return {}
             return {
                 self.conversation_id: RuntimeConversationActivity(
                     conversation_id=self.conversation_id,
@@ -3695,11 +3698,11 @@ def test_agent_workspace_activity_marks_background_unread_only_after_formal_fina
         conversations.conversation_activity(db, workspace.id)
         assert binding.activity_was_running is True
 
-        runtime.status = "finished"
+        runtime.visible = False
         conversations.conversation_activity(db, workspace.id)
         assert binding.unread is False
+        assert binding.terminal_reconciliation_pending is True
 
-        binding.activity_was_running = True
         runtime.final_result = RuntimeResult(
             status="COMPLETED",
             final_message="正式最终回复",
@@ -3709,6 +3712,12 @@ def test_agent_workspace_activity_marks_background_unread_only_after_formal_fina
         conversations.conversation_activity(db, workspace.id)
         assert binding.unread is True
         assert binding.unread_origin == "MANUAL"
+        assert binding.terminal_reconciliation_pending is False
+        assert binding.last_notified_completion_event_id == "assistant-final"
+
+        conversations.set_conversation_unread(db, workspace.id, binding.id, unread=False)
+        conversations.conversation_activity(db, workspace.id)
+        assert binding.unread is False
 
 
 def test_agent_workspace_activity_ignores_missing_snapshot_for_running_conversation(
