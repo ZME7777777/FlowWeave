@@ -2625,11 +2625,10 @@ def test_node_session_activity_maps_native_unready_ids(
             db, flow_run_id=flow_run_id, attempt_id=attempt_id
         )
 
-    assert activity == {
-        "running_binding_ids": [bindings[1].id],
-        "possibly_stuck_binding_ids": [],
-        "failed_binding_ids": [],
-    }
+    assert activity["running_binding_ids"] == [bindings[1].id]
+    assert activity["possibly_stuck_binding_ids"] == []
+    assert activity["failed_binding_ids"] == []
+    assert [item["id"] for item in activity["conversations"]] == [bindings[1].id]
     assert bindings[0].id not in activity["running_binding_ids"]
     assert runtime.calls == 1
 

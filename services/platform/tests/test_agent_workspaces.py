@@ -18,6 +18,7 @@ from sqlalchemy import select
 
 from flowweave.bootstrap.runtime_provider import RuntimeProviderResourceWrite
 from flowweave.modules.agent_sessions.application import search as conversation_search
+from flowweave.modules.agent_sessions.application import sidebar_conversations
 from flowweave.modules.agent_sessions.application.host import (
     READ_SESSIONS,
     AgentSessionHostContext,
@@ -2324,6 +2325,78 @@ def test_agent_workspace_bootstrap_creates_only_on_first_message_and_freezes_dir
         assert len(conversations.list_conversations(db, workspace.id)) == 1
 
 
+def test_sidebar_conversation_inherits_source_configuration_and_appends_context(
+    settings, db_session_factory, monkeypatch
+):
+    class CapturingRuntime(MockRuntime):
+        requests = []
+
+        def create_conversation(self, request):
+            self.requests.append(request)
+            return super().create_conversation(request)
+
+    monkeypatch.setattr(
+        conversations,
+        "runtime_provider",
+        lambda _db, asset, **kwargs: RuntimeProvider(
+            provider_id=asset["asset"]["executor"]["model_provider_id"],
+            base_url="https://models.example.test/v1",
+            model=kwargs.get("model_name") or "test-model",
+            api_key="x",
+            reasoning_effort=kwargs.get("reasoning_effort"),
+        ),
+    )
+    runtime = CapturingRuntime()
+    with settings_context(settings), db_session_factory() as db, runtime_context(runtime):
+        workspace = _ready_workspace_for_conversation(db)
+        source = conversations.bootstrap_conversation(
+            db,
+            workspace.id,
+            work_directory_id=None,
+            model_provider_id=workspace.default_model_provider_id,
+            model_name="test-model",
+            reasoning_effort="high",
+            fallback_models=(
+                {
+                    "model_provider_id": str(workspace.default_model_provider_id),
+                    "model_name": "fallback-model",
+                    "reasoning_effort": "low",
+                },
+            ),
+            content="主会话消息",
+            idempotency_key="sidebar-source",
+        )["conversation"]
+
+        created = sidebar_conversations.create_sidebar_conversation(
+            db,
+            workspace.id,
+            source_binding_id=source["id"],
+            conversation_id=str(uuid4()),
+            content="侧边追问",
+            attachments=(),
+            references=(),
+            idempotency_key="sidebar-child",
+        )["conversation"]
+        child = db.get(AgentConversationBinding, created["id"])
+
+        assert child is not None
+        assert child.model_provider_id == source["model_provider_id"]
+        assert child.model_name == source["model_name"]
+        assert child.reasoning_effort == source["reasoning_effort"]
+        assert child.fallback_models_json == [
+            {
+                "model_provider_id": str(workspace.default_model_provider_id),
+                "model_name": "fallback-model",
+                "reasoning_effort": "low",
+            }
+        ]
+        assert child.working_directory == source["working_directory"]
+        assert len(runtime.requests) == 2
+        suffix = runtime.requests[-1].agent_spec.agent_context.system_message_suffix
+        assert "这是一个临时侧边聊天会话" in suffix
+        assert f"主会话绑定标识：{source['id']}" in suffix
+
+
 def _title_task_lease(task: BackgroundTask) -> Lease:
     task.state = TaskState.RUNNING
     task.lease_owner = "title-test-worker"
@@ -3677,11 +3750,10 @@ def test_agent_workspace_conversation_activity_maps_native_unready_ids(
 
         activity = conversations.conversation_activity(db, workspace.id)
 
-    assert activity == {
-        "running_binding_ids": [running["id"]],
-        "possibly_stuck_binding_ids": [],
-        "failed_binding_ids": [],
-    }
+    assert activity["running_binding_ids"] == [running["id"]]
+    assert activity["possibly_stuck_binding_ids"] == []
+    assert activity["failed_binding_ids"] == []
+    assert [item["id"] for item in activity["conversations"]] == [running["id"]]
     assert idle["id"] not in activity["running_binding_ids"]
     assert runtime.calls == 1
 

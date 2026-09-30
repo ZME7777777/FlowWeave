@@ -1247,6 +1247,7 @@ test('Sidebar chat accepts selected and pasted attachments before its first mess
   await expect.poll(() => uploadRequests).toHaveLength(3);
   await expect(sidebarPane.getByText('selected.txt', { exact: true })).toBeVisible();
   const sidebarInput = sidebarPane.getByRole('textbox', { name: '发送侧边聊天消息' });
+  await expect(sidebarInput.locator('xpath=..')).toHaveClass(/agent-composer-input/);
   await sidebarInput.evaluate(element => {
     const clipboardData = new DataTransfer();
     clipboardData.items.add(new File(['png'], 'pasted.png', { type: 'image/png' }));
@@ -1256,10 +1257,14 @@ test('Sidebar chat accepts selected and pasted attachments before its first mess
   await expect(sidebarPane.getByText('pasted.png', { exact: true })).toBeVisible();
   await sidebarInput.fill('请分析两个附件');
   await sidebarPane.getByRole('button', { name: '发送侧边聊天消息' }).click();
+  await expect(sidebarPane.locator('.conversation-message.user')).toContainText('请分析两个附件');
   await expect.poll(() => firstMessage).toMatchObject({
     content: '请分析两个附件',
     attachments: [{ filename: 'selected.txt' }, { filename: 'pasted.png' }],
   });
+  expect(firstMessage).not.toHaveProperty('model_provider_id');
+  expect(firstMessage).not.toHaveProperty('model_name');
+  expect(firstMessage).not.toHaveProperty('reasoning_effort');
 });
 
 

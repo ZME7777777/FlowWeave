@@ -811,6 +811,7 @@ def conversation_activity(
     )
     if not bindings:
         return {
+            "conversations": [],
             "running_binding_ids": [],
             "condensing_binding_ids": [],
             "condensation_failed_binding_ids": [],
@@ -908,19 +909,30 @@ def conversation_activity(
         if activity is not None and item.activity_was_running != is_running:
             item.activity_was_running = is_running
     db.flush()
+    condensing_binding_ids = [
+        item.id
+        for item in bindings
+        if latest_condensation_task.get(item.id, (None, None, None))[1]
+        in {TaskState.PENDING, TaskState.RUNNING}
+    ]
+    condensation_failed_binding_ids = [
+        item.id
+        for item in bindings
+        if latest_condensation_task.get(item.id, (None, None, None))[1] == TaskState.DEAD
+    ]
+    activity_binding_ids = running_binding_ids | set(condensing_binding_ids)
+    activity_bindings = [
+        item for item in bindings if item.id in activity_binding_ids or item.unread
+    ]
     return {
+        "conversations": _page_dicts(
+            db,
+            activity_bindings,
+            write_available=_workspace_write_available(db, workspace),
+        ),
         "running_binding_ids": [item.id for item in running_bindings],
-        "condensing_binding_ids": [
-            item.id
-            for item in bindings
-            if latest_condensation_task.get(item.id, (None, None, None))[1]
-            in {TaskState.PENDING, TaskState.RUNNING}
-        ],
-        "condensation_failed_binding_ids": [
-            item.id
-            for item in bindings
-            if latest_condensation_task.get(item.id, (None, None, None))[1] == TaskState.DEAD
-        ],
+        "condensing_binding_ids": condensing_binding_ids,
+        "condensation_failed_binding_ids": condensation_failed_binding_ids,
         "condensation_tasks": [
             {
                 "binding_id": item.id,
@@ -1720,9 +1732,10 @@ def bootstrap_conversation(
     work_directory_id: str | None,
     conversation_id: str | None = None,
     model_provider_id: str | None,
+    content: str,
     model_name: str | None = None,
     reasoning_effort: str | None = None,
-    content: str,
+    fallback_models: tuple[dict[str, str | None], ...] = (),
     attachments: tuple[dict[str, str | int], ...] = (),
     references: tuple[dict[str, str], ...] = (),
     workspace_references: tuple[dict[str, str], ...] = (),
@@ -1817,6 +1830,7 @@ def bootstrap_conversation(
             model_provider_id=provider.provider_id,
             model_name=provider.model,
             reasoning_effort=provider.reasoning_effort,
+            fallback_models_json=[dict(item) for item in fallback_models],
             streaming_callback_ready=True,
             openhands_conversation_id=str(uuid4()),
             create_idempotency_key=idempotency_key,

@@ -774,6 +774,8 @@ export interface AgentConversationPage {
   next_cursor?: string | null;
 }
 export interface AgentConversationActivity {
+  /** Complete summaries for every binding that belongs in the activity panel. */
+  conversations?: AgentConversation[];
   running_binding_ids: string[];
   condensing_binding_ids?: string[];
   condensation_failed_binding_ids?: string[];
