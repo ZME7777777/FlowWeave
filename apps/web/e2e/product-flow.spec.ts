@@ -2165,10 +2165,12 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   runningDirectFormalEventPersisted = true;
   agentStream!.send(JSON.stringify({
     type: 'event',
-    event: { id: 'running-direct-stream-user', event_type: 'MESSAGE', payload: { source: 'user', content: 'FLOWWEAVE_MESSAGE_CONTEXT_V5:{"current_user_request":{"content":"运行中直接发送消息"}}', display_content: '运行中直接发送消息', timestamp: new Date().toISOString().replace(/Z$/, '') } },
+    event: { id: 'running-direct-stream-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'running-user', content: 'FLOWWEAVE_MESSAGE_CONTEXT_V5:{"current_user_request":{"content":"运行中直接发送消息"}}', display_content: '运行中直接发送消息', timestamp: new Date().toISOString().replace(/Z$/, '') } },
   }));
   await expect(runningDirectMessage).toHaveCount(1);
   await expect(runningDirectMessage).toHaveAttribute('data-optimistic-identity', 'stable');
+  await expect(page.locator('.conversation-turn')).toHaveCount(1);
+  await expect(page.locator('.conversation-activity-group.active')).toHaveCount(1);
   releaseRunningDirectDelivery?.();
   await expect(runningDirectMessage).toHaveCount(1);
   await expect(runningDirectMessage).toHaveAttribute('data-optimistic-identity', 'stable');

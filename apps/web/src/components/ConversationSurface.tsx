@@ -22,6 +22,7 @@ interface Turn {
   id: string;
   renderKey: string;
   user?: Item;
+  continuations: Item[];
   assistant?: Item;
   activity: Item[];
 }
@@ -481,21 +482,33 @@ function isHistoricalAutoTitleError(
 
 function turnsFor(events: OpenHandsConversationEvent[]): Turn[] {
   const turns: Turn[] = [];
+  const turnsByUserId = new Map<string, Turn>();
   let current: Turn | undefined;
   const ordered = orderOpenHandsConversationEvents(events);
+  const byId = new Map(ordered.map(event => [event.id, event]));
   for (const event of ordered) {
     if (isHistoricalAutoTitleError(event, ordered)) continue;
     for (const item of itemsFor(event)) {
       if (item.kind === 'user') {
+        const parentId = typeof item.event.payload.parent_id === 'string'
+          ? userAncestorId(byId.get(item.event.payload.parent_id) ?? item.event, byId)
+          : undefined;
+        const continuation = parentId ? turnsByUserId.get(parentId) : undefined;
+        if (continuation && !continuation.assistant) {
+          continuation.continuations.push(item);
+          current = continuation;
+          continue;
+        }
         const renderKey = typeof item.event.payload._flowweave_render_key === 'string'
           ? item.event.payload._flowweave_render_key
           : item.event.id;
-        current = { id: item.event.id, renderKey, user: item, activity: [] };
+        current = { id: item.event.id, renderKey, user: item, continuations: [], activity: [] };
         turns.push(current);
+        turnsByUserId.set(item.event.id, current);
         continue;
       }
       if (!current) {
-        current = { id: item.event.id, renderKey: item.event.id, activity: [] };
+        current = { id: item.event.id, renderKey: item.event.id, continuations: [], activity: [] };
         turns.push(current);
       }
       if (item.kind === 'assistant') current.assistant = item;
@@ -2371,30 +2384,34 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
         );
         const completionConfirmed = !isGenerating && Boolean(turn.assistant || failures.length);
         const fileChanges = fileChangesForTurn(events, turn);
-        const userTimestamp = turn.user ? formatMessageTime(turn.user.event.payload.timestamp) : undefined;
-        const projectionState = turn.user?.event.payload._flowweave_projection_state;
-        const userDeliveryStatus = projectionState === 'queued'
-          ? '等待发送'
-          : projectionState === 'ambiguous'
-            ? '发送结果待确认'
-            : turn.user && typeof turn.user.event.payload._flowweave_delivery_status === 'string'
-              ? turn.user.event.payload._flowweave_delivery_status
-              : undefined;
+        const userMessages = turn.user ? [turn.user, ...turn.continuations] : [];
         return <section className="conversation-turn" key={turn.renderKey} data-conversation-turn={turn.id}>
-          {turn.user && <div className="conversation-user-message">{editingEventId === turn.user.event.id
-            ? <form className="conversation-message-edit" onSubmit={event => { event.preventDefault(); if (editingContent.trim()) onRewrite?.(turn.user!.event.id, editingContent.trim()); }}><textarea ref={rewriteEditor} aria-label="编辑已发送消息" value={editingContent} disabled={rewritePending} onChange={event => setEditingContent(event.target.value)} onKeyDown={event => {
-              if (event.nativeEvent.isComposing || event.keyCode === 229) return;
-              if (event.key === 'Escape') {
+          {userMessages.map((message, messageIndex) => {
+            const isContinuation = messageIndex > 0;
+            const messageTimestamp = formatMessageTime(message.event.payload.timestamp);
+            const messageProjectionState = message.event.payload._flowweave_projection_state;
+            const messageDeliveryStatus = messageProjectionState === 'queued'
+              ? '等待发送'
+              : messageProjectionState === 'ambiguous'
+                ? '发送结果待确认'
+                : typeof message.event.payload._flowweave_delivery_status === 'string'
+                  ? message.event.payload._flowweave_delivery_status
+                  : undefined;
+            return <div key={message.event.id} className={`conversation-user-message${isContinuation ? ' continuation' : ''}`}>{editingEventId === message.event.id
+              ? <form className="conversation-message-edit" onSubmit={event => { event.preventDefault(); if (editingContent.trim()) onRewrite?.(message.event.id, editingContent.trim()); }}><textarea ref={rewriteEditor} aria-label="编辑已发送消息" value={editingContent} disabled={rewritePending} onChange={event => setEditingContent(event.target.value)} onKeyDown={event => {
+                if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+                if (event.key === 'Escape') {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  setEditingEventId(undefined);
+                  return;
+                }
+                if (event.key !== 'Enter' || event.shiftKey) return;
                 event.preventDefault();
-                event.stopPropagation();
-                setEditingEventId(undefined);
-                return;
-              }
-              if (event.key !== 'Enter' || event.shiftKey) return;
-              event.preventDefault();
-              event.currentTarget.form?.requestSubmit();
-            }}/><footer><button type="button" onClick={() => setEditingEventId(undefined)}>取消</button><button type="submit" disabled={!editingContent.trim() || rewritePending}>重新思考</button></footer></form>
-            : <article data-user-event-id={turn.user.event.id} data-conversation-event-id={turn.user.event.id} className="conversation-message user"><MessageAttachments attachments={eventAttachments(turn.user.event)} references={turn.user.event.payload.conversation_references} workspaceReferences={turn.user.event.payload.workspace_references} annotations={eventAnnotations(turn.user.event)} onOpen={onOpenAttachment} onOpenReference={setViewingReference} onOpenWorkspaceReference={onOpenWorkspaceReference} onOpenAnnotation={locateAnnotation}/>{turn.user.content && <div className="conversation-message-content"><MessageMarkdown>{turn.user.content}</MessageMarkdown></div>}<footer className="conversation-message-meta user">{userDeliveryStatus && <small className="conversation-message-delivery-status" role="status">{userDeliveryStatus}</small>}{userTimestamp && <time dateTime={typeof turn.user.event.payload.timestamp === 'string' ? turn.user.event.payload.timestamp : undefined}>{userTimestamp}</time>}<div className={`conversation-message-actions${lastUserEventId === turn.user.event.id ? ' can-rewrite' : ''}`}><button type="button" className="conversation-message-copy" aria-label={copiedEventId === turn.user.event.id ? '消息已复制' : '复制消息'} title={copiedEventId === turn.user.event.id ? '已复制' : '复制消息'} onClick={() => copyUserMessage(turn.user!.event.id, turn.user!.content)}>{copiedEventId === turn.user.event.id ? <Check size={13}/> : <Copy size={13}/>}</button>{lastUserEventId === turn.user.event.id && <button type="button" className="conversation-message-rewrite" aria-label="编辑并重新思考" title="编辑并重新思考" onClick={() => { setEditingEventId(turn.user!.event.id); setEditingContent(turn.user!.content); }}><Pencil size={13}/></button>}</div></footer></article>}</div>}
+                event.currentTarget.form?.requestSubmit();
+              }}/><footer><button type="button" onClick={() => setEditingEventId(undefined)}>取消</button><button type="submit" disabled={!editingContent.trim() || rewritePending}>重新思考</button></footer></form>
+              : <article data-user-event-id={message.event.id} data-conversation-event-id={message.event.id} className="conversation-message user"><MessageAttachments attachments={eventAttachments(message.event)} references={message.event.payload.conversation_references} workspaceReferences={message.event.payload.workspace_references} annotations={eventAnnotations(message.event)} onOpen={onOpenAttachment} onOpenReference={setViewingReference} onOpenWorkspaceReference={onOpenWorkspaceReference} onOpenAnnotation={locateAnnotation}/>{message.content && <div className="conversation-message-content"><MessageMarkdown>{message.content}</MessageMarkdown></div>}<footer className="conversation-message-meta user">{messageDeliveryStatus && <small className="conversation-message-delivery-status" role="status">{messageDeliveryStatus}</small>}{messageTimestamp && <time dateTime={typeof message.event.payload.timestamp === 'string' ? message.event.payload.timestamp : undefined}>{messageTimestamp}</time>}<div className={`conversation-message-actions${lastUserEventId === message.event.id ? ' can-rewrite' : ''}`}><button type="button" className="conversation-message-copy" aria-label={copiedEventId === message.event.id ? '消息已复制' : '复制消息'} title={copiedEventId === message.event.id ? '已复制' : '复制消息'} onClick={() => copyUserMessage(message.event.id, message.content)}>{copiedEventId === message.event.id ? <Check size={13}/> : <Copy size={13}/>}</button>{lastUserEventId === message.event.id && <button type="button" className="conversation-message-rewrite" aria-label="编辑并重新思考" title="编辑并重新思考" onClick={() => { setEditingEventId(message.event.id); setEditingContent(message.content); }}><Pencil size={13}/></button>}</div></footer></article>}</div>;
+          })}
           {processBlocks.map(block => <ActivityGroup
             key={block.id}
             items={block.items}

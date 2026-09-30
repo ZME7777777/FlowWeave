@@ -2213,11 +2213,6 @@ def events(
             "user",
             "human",
         }:
-            payload["display_content"] = display_content
-        elif event.event_type == "MESSAGE" and str(payload.get("source") or "").lower() in {
-            "user",
-            "human",
-        }:
             # Before attachment metadata was projected, OpenHands persisted a
             # product-generated path suffix in the native message body.  Keep
             # that old history readable without teaching the browser to parse
@@ -2226,8 +2221,8 @@ def events(
             display_content, legacy_paths = _legacy_message_attachments(
                 str(payload.get("content") or "")
             )
+            payload["display_content"] = display_content
             if legacy_paths:
-                payload["display_content"] = display_content
                 payload["attachments"] = [
                     {
                         "filename": _attachment_filename(path),
