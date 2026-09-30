@@ -7857,8 +7857,20 @@ OpenHands adapter 现为 context、activity 和 pending-confirmation 增加每 R
 验收：新增真实 Chromium 专项 `9 passed`，覆盖两宿主首屏前台信号不穿透、visibility/focus 合并、增量期间只排队一个无 cursor 最新窗口、历史等待与恢复、宿主卸载 AbortSignal、快速 A→B→C 仅 A/C 两次 hydration、迟到 404 隔离，以及 A→B→A 不重复读取；既有定向回归 `17 passed, 3 failed`，通过项含首次／刷新 hydration、可信终态／运行态复用、显式超时重试、迟到消息、断流／message_complete、缺失 binding 停止重试、完整三页历史恢复／耗尽记忆与滚动稳定。该 3 条失败（历史页面要求预取后立即可见、原始错误详情默认展开、后台普通未读写入）均在独立未修改 HEAD `ddc6badd` 页面以相同断言复现；扩大回归还遇到 4 条既有失败（终态前台恢复不得新增请求的旧断言、删除按钮旧定位器、附件定位器歧义、文件引用旧定位器），也逐条在同一 HEAD 复现。扩大回归因既有长时间定位器等待中止，不记为完整通过；这 7 条失败未修复、未记为通过，保留 `.tmp/fr562-*` 对照截图／trace。专项取消测试以浏览器 fetch 的真实组合 signal 监听验证，受控路由拦截期间不能用 Playwright requestfailed 事件作为取消证据。Web lint、typecheck、production build（保留既有 chunk-size 提示）、唯一 Alembic head `0138_admin_resource_cleanup_operations`、任务状态及 git diff --check／staged diff 复核通过。本切片无数据库变更；API／WebSocket 使用受控响应，不是真实 OpenHands 负载。未构建 Runtime 镜像、远端发布或 replacement，未声称线上页面已恢复。下一可执行切片为 FR-563。
 
 
-### FR-563 单用户实际镜像与受控恢复验收 — READY
+### FR-563 单用户实际镜像与受控恢复验收 — DONE
 
 依赖：FR-562。
 
 范围：固定镜像契约、单用户运行与读取并发故障注入、来源身份与性能目标；远端发布／既有 Runtime replacement 另按部署预检与活跃会话影响规则执行，不将本地测试伪记为页面恢复。
+
+完成：遵循用户“不要在本地部署”的限制，仅在通过 `040c2a42`／runtime 范围预检的远端构建并运行隔离验收。构建上下文来自已提交版本的最小 `git archive`，没有传输本机私有配置、未提交源码或历史 SDK 归档。实际 linux/amd64 Runtime 镜像 ID 为 `sha256:712050922eaf54c2361338d1b23c89c8ddfc0c385e2c600f3d173ec496702aba`，上下文 SHA-256 为 `d1e75979e78b1e1255423ae428b78e010c6c60e97547085b28141e27223edd40`。镜像内完整契约探针通过，核对 baseline `d3a9a1f99b144d8799df170c1e1ee9ca0bf4b19d`、归档 SHA-256 `7d2acc7d0191a7d69367f081d74f57c8a42a802c39feb19016c622f86e430ea3`、四包 1.49.5 和独立正式读取池的实际容量。新增可复现 `infra/openhands/read_capacity_check.py`，通过 stdin 在实际安装镜像内执行；不修改镜像或 SDK 源码，测试进程内注入阻塞与确定性 LLM 响应。隔离容器禁用外部网络、限制 2 CPU／3 GiB、不发布端口、不挂载生产文件；原生 HTTP 服务与测试持久目录都属于此次临时容器。
+
+验收：真实 TCP HTTP 会话处于 running、两个后台 Context 读取和七个正式事件读取同时阻塞时，第八个正式事件、最新窗口、详情、健康与 interrupt 均满足逐请求两秒目标；原生 interrupt 将会话转为 paused。取消八个原生读取 coroutine 后，后续 HTTP 窗口继续等待、实际读取线程不突破八个，健康／详情仍响应；释放真实工作后窗口恢复。原生 run 至 finished、正式 prepare-for-sandbox-pause／原 ID reload，以及同一测试进程内重建 HTTP 服务与服务 owner 后，完整正式事件、原 conversation ID 和终态均保持。两个独立临时容器执行均通过；最终一次测量 50 个响应，P95 `0.0539s`、最大 `0.1303s`。这只是受控原生 HTTP 样本，不代表真实模型、平台 API／PostgreSQL／浏览器全链路性能；HTTP 服务重建不等于跨容器 generation replacement。原线上底层锁／磁盘／序列化原因未证明，页面恢复未宣称。新增脚本 Ruff check／format、AST 解析、唯一 Alembic head `0138_admin_resource_cleanup_operations`、任务状态唯一性、git diff --check 和 staged diff 复核通过。
+
+发布准备：同一 `040c2a42` 提交的 API／Web 隔离发布镜像也已在远端构建为 linux/amd64，平台镜像 ID `sha256:bc3531810a94ce08b19ef878b8c4041ed98982898d0a748910232b8a713ffe78`，Web 镜像 ID `sha256:c4988f0226363546c12be69ae01eee3e7e54f1a4071056e600be573a56da5080`；最小源码包 SHA-256 `1dbd2151e36617480eb2a34bf1ee69fccb56ed5923d9bbb73c490086cffbb49e`。生产只读核查期间观察到 1–2 个活跃会话；两个旧 Runtime 的 `/activity` 被路由为 UUID 参数并返回 422，经校验正式错误的 `path/conversation_id` 定位后改用原生 `/search`，最终三个 Runtime 全部读成功、当次 running 为 0。此快照不保证发布时仍无活跃会话；数据库仍为 `0137_conversation_message_order`，正式更新必须先迁移。未替换现有镜像标签、未 recreate 正式服务、未执行 Runtime replacement、未更改远端 Compose／env 或持久数据。下一可执行切片为 FR-564；实际发布前须再次核查活跃会话并确认中断影响。
+
+### FR-564 单用户优化远端发布与既有 Runtime 恢复 — READY
+
+依赖：FR-563。
+
+范围：使用通过预检的唯一远端入口和已提交版本，在核实活跃会话影响后完成 rollback 镜像保留、迁移、api／stream-api／worker／runtime-provider 同版本更新与 Web 发布；通过平台正式生命周期替换默认 Agent Workspace Runtime generation，保留原工作区、Secret Reference、会话和正式事件 ID。复核来源身份、健康、前缀路由和运行中会话的页面恢复；不得将隔离测试结果冒充线上恢复，禁止直接修改数据库 generation 或删除持久数据。

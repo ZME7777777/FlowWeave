@@ -481,3 +481,21 @@ API／Runtime 的真实槽位仍遵循 FR-561 的 completion 释放契约。
 验收使用真实 Chromium 页面与受控 API／WebSocket 响应，覆盖 Workspace 和 Flow Node 的
 首屏、前台恢复、增量期间强制补读、历史退让、卸载取消与旧 binding 隔离。
 这验证浏览器请求编排与页面状态，不替代真实 OpenHands 镜像、服务端并发负载或线上恢复验收。
+
+## 17. 单用户实际镜像验收（FR-563）
+
+`infra/openhands/read_capacity_check.py` 在锁定镜像内启动真实 Uvicorn TCP 服务，
+只创建临时会话与持久目录。测试进程内替换 LLM 响应并注入阻塞，不修改安装的
+OpenHands 源码。执行容器不挂载宿主数据、不发布端口、不接入生产网络，也不调用外部模型。
+
+验收必须同时阻塞两个后台 Context 读取、七个正式事件读取，并保持原生会话处于
+running；剩余正式事件、最新窗口、详情、健康及 interrupt HTTP 请求各自须在两秒内完成。
+另外取消八个原生读取 coroutine，确认实际线程仍占满读取池、后续 HTTP 窗口继续等待，
+直到阻塞工作真正完成；等待期间详情与健康仍可响应。随后通过正式 run、
+prepare-for-sandbox-pause、原 ID reload 和 HTTP 服务重建核对同一完整事件及终态。
+HTTP 服务重建使用同一测试进程内的新服务 owner；它不替代跨容器 generation replacement 验收。
+
+镜像的来源身份由独立 `contract_check.py` 验证。上述两秒阈值与样本 P95 只描述
+受控原生 HTTP 请求，不能外推为生产模型延迟、API／PostgreSQL／浏览器全链路性能，
+也不能据此声称原线上锁等待原因已查明或页面已恢复。正式发布必须使用已提交版本，
+同步更新 api／stream-api，并先核实 Provider 重启和既有 Runtime replacement 的活跃会话影响。
