@@ -38,10 +38,25 @@ def install_directory(monkeypatch: pytest.MonkeyPatch, count: int = 1) -> list[C
         connection.strategy.add_entry(
             "cn=reader,dc=example,dc=test", {"userPassword": "test-reader-password"}
         )
+        for dn, name in (
+            ("ou=People,dc=example,dc=test", "People"),
+            ("ou=Engineering,dc=example,dc=test", "Engineering"),
+            ("ou=Platform,ou=Engineering,dc=example,dc=test", "Platform"),
+            ("ou=Research,dc=example,dc=test", "Research"),
+        ):
+            connection.strategy.add_entry(
+                dn,
+                {"objectClass": ["top", "organizationalUnit"], "ou": name},
+            )
         for index in range(count):
             username = f"employee-{index:04d}"
+            organization_dn = (
+                "ou=Platform,ou=Engineering,dc=example,dc=test"
+                if index == 0
+                else "ou=People,dc=example,dc=test"
+            )
             connection.strategy.add_entry(
-                f"uid={username},dc=example,dc=test",
+                f"uid={username},{organization_dn}",
                 {
                     "objectClass": "inetOrgPerson",
                     "uid": username,
@@ -85,6 +100,23 @@ def test_paged_catalog_retains_more_than_server_page_limit(monkeypatch) -> None:
     assert len({item.external_subject for item in identities}) == 1205
     assert identities[0].username == "employee-0000"
     assert identities[-1].username == "employee-1204"
+    assert connections[0].closed
+
+
+def test_directory_snapshot_preserves_nested_and_empty_organization_units(monkeypatch) -> None:
+    connections = install_directory(monkeypatch, count=2)
+    snapshot = ldap.LdapDirectory(settings()).directory_snapshot()
+
+    organizations = {item.name: item for item in snapshot.organizations}
+    assert set(organizations) == {"People", "Engineering", "Platform", "Research"}
+    assert organizations["People"].parent_id is None
+    assert organizations["Research"].parent_id is None
+    assert organizations["Platform"].parent_id == organizations["Engineering"].id
+    assert {item.username: item.organization_id for item in snapshot.users} == {
+        "employee-0000": organizations["Platform"].id,
+        "employee-0001": organizations["People"].id,
+    }
+    assert all("dc=" not in item.id for item in snapshot.organizations)
     assert connections[0].closed
 
 

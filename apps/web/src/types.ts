@@ -949,5 +949,17 @@ export interface LdapUser {
   username: string;
   display_name: string;
   email?: string | null;
+  organization_id?: string | null;
   enabled: boolean;
+}
+
+export interface LdapOrganization {
+  id: string;
+  parent_id?: string | null;
+  name: string;
+}
+
+export interface LdapDirectory {
+  organizations: LdapOrganization[];
+  users: LdapUser[];
 }

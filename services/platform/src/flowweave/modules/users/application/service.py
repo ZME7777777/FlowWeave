@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from flowweave.modules.users.application.ldap import LdapIdentity
+from flowweave.modules.users.application.ldap import LdapDirectorySnapshot, LdapIdentity
 from flowweave.modules.users.application.security import (
     FLOWWEAVE_USER_ID,
     USER_USER_ID,
@@ -123,6 +123,7 @@ def list_ldap_users(db: Session, identities: list[LdapIdentity]) -> list[dict[st
             "username": identity.username,
             "display_name": identity.display_name,
             "email": identity.email,
+            "organization_id": identity.organization_id,
             "enabled": (
                 identity.external_subject in enabled
                 and enabled[identity.external_subject].is_active
@@ -130,6 +131,16 @@ def list_ldap_users(db: Session, identities: list[LdapIdentity]) -> list[dict[st
         }
         for identity in identities
     ]
+
+
+def ldap_directory(db: Session, snapshot: LdapDirectorySnapshot) -> dict[str, object]:
+    return {
+        "organizations": [
+            {"id": item.id, "parent_id": item.parent_id, "name": item.name}
+            for item in snapshot.organizations
+        ],
+        "users": list_ldap_users(db, snapshot.users),
+    }
 
 
 def set_ldap_user_enabled(
@@ -173,6 +184,7 @@ def set_ldap_user_enabled(
         "username": identity.username,
         "display_name": identity.display_name,
         "email": identity.email,
+        "organization_id": identity.organization_id,
         "enabled": enabled,
     }
 

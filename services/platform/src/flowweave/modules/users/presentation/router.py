@@ -90,10 +90,10 @@ async def login(
 
 
 @router.get("/ldap-users")
-async def ldap_users(db: Db, container: ContainerDep) -> list[dict[str, object]]:
+async def ldap_users(db: Db, container: ContainerDep) -> dict[str, object]:
     _require_super_admin()
-    identities = await asyncio.to_thread(_ldap_directory(container).list_users)
-    return await run_sync(db, lambda session: service.list_ldap_users(session, identities))
+    snapshot = await asyncio.to_thread(_ldap_directory(container).directory_snapshot)
+    return await run_sync(db, lambda session: service.ldap_directory(session, snapshot))
 
 
 @router.put("/ldap-users/enabled")
