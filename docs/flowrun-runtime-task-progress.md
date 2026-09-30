@@ -7785,3 +7785,13 @@ OpenHands adapter 现为 context、activity 和 pending-confirmation 增加每 R
 完成：将 `contracts/openapi-v1.json` 更新至当前 251 条路径的应用生成契约，覆盖新增的可恢复工作区／会话附件上传、草稿附件清理、临时侧栏会话、Agent Runtime replacement 和逐步节点草稿／启动等公共接口。CLI 发布版本升至 `0.6.0`，新增 Agent Runtime replacement、临时侧栏创建／读取／关闭和 FlowRun 逐步草稿保存／启动快捷命令；replacement、侧栏首条消息及草稿启动强制调用方提供 `Idempotency-Key`，草稿保存保持乐观锁请求体且不创建 Attempt。可恢复分片上传继续经通用 JSON／multipart 入口，并在顶层 Skill、Agent Workspace Skill、FlowRun 工作台 Skill 与 CLI README 中明确创建、读取状态、按响应分片上传、完成／明确取消的边界。同步记录了新接口不会授权绕过用户确认、平台返回的身份或 Runtime 生命周期。
 
 验收：CLI `npm test` 为 `14 passed`，`npm run lint`（`node --check`）和 `npm pack --dry-run` 通过；应用工厂生成 OpenAPI 与更新的 `contracts/openapi-v1.json` 完全相同（251 paths）；12 个 FlowWeave Skill frontmatter 校验与 `uv run alembic heads`（唯一 `0138_admin_resource_cleanup_operations`）通过；`git diff --check` 通过。`tests/contract/test_contracts.py` 已尝试但本机没有 Docker socket，Testcontainers PostgreSQL fixture 在测试断言前失败，故未记为通过；用不依赖数据库的应用工厂比较替代验证 OpenAPI 基线。无迁移实跑、Runtime 镜像、远端或生产操作。当前无已定义的下一切片。
+
+### FR-557 Admin 内部通道可解释视图 — DONE
+
+依赖：无（独立 Admin Web 可观测性切片）。
+
+范围：将 Admin 现有服务页平铺的 Prometheus 内部池标签拆分为独立的只读“内部通道”页面；仅消费现有 Admin overview 指标，不新增数据库表、Runtime 调用、采集权限、控制操作或部署配置。服务页保留容器资源快照。不得将缺失指标、跨 API worker 的局部读取容量或 SQLAlchemy 的负 `overflow` 误判为服务异常。
+
+完成：Admin Web 新增“内部通道”Tab，按服务对数据库池聚合 `size`、`checked_out`、`overflow` 为单一卡片，展示已借出／基础容量、利用率、额外连接和明确的通道用途（包括 hydration、message、workspace、lifecycle、history、control 等）。负 overflow 解释为基础池存在空闲连接，额外连接仅显示正值。Runtime 正式读取、Relay／终端及辅助／后台搜索拒绝独立展示；正式读取卡片明确是当前采样 API worker 的本地值，不能误作多 worker 或同一 Runtime generation 的全局并发。原始 Prometheus 标签移入可展开核验区。
+
+验收：`pnpm --dir apps/admin-web typecheck`、`pnpm --dir apps/admin-web lint`、`pnpm --dir apps/admin-web build` 与 `git diff --check` 通过。未运行浏览器 E2E：Admin Web 未安装 Playwright，本机桌面自动化亦因本地 Codex 认证配置不可用而无法访问预览；未修改 Admin API、数据库、Runtime、采集器、Docker 或远端环境。

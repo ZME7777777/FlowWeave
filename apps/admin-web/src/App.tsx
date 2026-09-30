@@ -2,7 +2,7 @@ import { Activity, Boxes, Database, MessageSquare, RefreshCw, RotateCw, Server, 
 import { useCallback, useEffect, useState } from 'react';
 import { AdminRequestError, adminApi, type AdminOperation, type Alert, type BackgroundTask, type BackgroundTaskSummary, type Conversation, type MetricHistoryPoint, type Overview, type Runtime, type RuntimeDetail, type RuntimeDiagnostic, type Usage } from './api';
 
-type Tab = 'overview' | 'alerts' | 'services' | 'runtimes' | 'conversations' | 'tasks' | 'operations';
+type Tab = 'overview' | 'alerts' | 'services' | 'channels' | 'runtimes' | 'conversations' | 'tasks' | 'operations';
 
 type AdminData = {
   overview: Overview;
@@ -70,27 +70,128 @@ function ResourceUsage({ usage }: { usage: Usage | null }) {
 }
 
 
-const poolMetricLabels: Record<string, string> = {
-  flowweave_database_pool_connections: '数据库连接池',
-  flowweave_runtime_formal_read_active: 'Runtime 正式读取并发',
-  flowweave_runtime_formal_read_capacity: 'Runtime 正式读取容量',
-  flowweave_runtime_formal_read_generations: 'Runtime 读取 generation',
-  flowweave_runtime_read_bulkhead_saturated_total: 'Runtime 读取饱和次数',
-  flowweave_runtime_auxiliary_read_saturated_total: '辅助读取饱和次数',
-  flowweave_runtime_background_search_bulkhead_saturated_total: '后台搜索饱和次数',
-  flowweave_runtime_relay_hubs: 'Runtime Relay Hub',
-  flowweave_runtime_relay_subscribers: 'Runtime Relay 订阅',
-  flowweave_runtime_relay_hub_capacity: 'Runtime Relay 容量',
+type ServiceMetrics = Overview['services'][string]['metrics'];
+
+type DatabasePool = {
+  name: string;
+  size?: number;
+  checkedOut?: number;
+  overflow?: number;
+};
+
+const poolDescriptions: Record<string, string> = {
+  async: '异步 API 请求与短控制面读取。',
+  blocking: '常规同步 Runtime/数据库读取；不是 hydration 专用槽。',
+  hydration: '会话首屏 hydration 的保留数据库与线程通道。',
+  message: '用户消息派发的保留通道。',
+  workspace: '工作区文件与 Git 操作的独立通道。',
+  lifecycle: '模型、能力、Fork、删除等慢生命周期操作。',
+  history: '低优先级历史事件与分页读取。',
+  control: 'Runtime 暂停、恢复与替换等恢复控制。',
+  auxiliary: '非关键辅助投影与后台辅助任务。',
+  admin: '管理员控制和观测的独立数据库通道。',
+  poll: 'Worker Runtime 轮询通道。',
+};
+
+const channelMetricLabels: Record<string, string> = {
+  flowweave_runtime_formal_read_active: '正式读取并发',
+  flowweave_runtime_formal_read_capacity: '正式读取容量',
+  flowweave_runtime_formal_read_generations: '已观察 generation',
+  flowweave_runtime_read_bulkhead_saturated_total: '正式读取被拒绝',
+  flowweave_runtime_auxiliary_read_saturated_total: '辅助读取被拒绝',
+  flowweave_runtime_background_search_bulkhead_saturated_total: '后台搜索被拒绝',
+  flowweave_runtime_relay_hubs: 'Relay Hub',
+  flowweave_runtime_relay_subscribers: 'Relay 订阅者',
+  flowweave_runtime_relay_hub_capacity: 'Relay Hub 容量',
   flowweave_terminal_attachments: '终端连接',
   flowweave_terminal_sessions: '终端会话',
 };
 
-function ServicePoolMetrics({ metrics }: { metrics: Overview['services'][string]['metrics'] }) {
-  const entries = Object.entries(metrics).filter(([name]) => poolMetricLabels[name]);
-  if (!entries.length) return <small className="muted">服务暂未暴露池指标</small>;
-  return <div className="pool-metrics">{entries.flatMap(([name, values]) => values.map((item, index) => <small key={`${name}-${index}`}><b>{poolMetricLabels[name]}</b> {item.value}{item.labels ? ` · ${item.labels}` : ''}</small>))}</div>;
+const numericValue = (value: string | undefined) => {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : undefined;
+};
+
+const labelsOf = (raw: string) => Object.fromEntries(
+  [...raw.matchAll(/([a-z_]+)="([^"]*)"/g)].map(([, key, value]) => [key, value]),
+);
+
+const metricTotal = (metrics: ServiceMetrics, name: string) => {
+  const values = metrics[name] ?? [];
+  const numbers = values.map(item => numericValue(item.value)).filter((value): value is number => value !== undefined);
+  return numbers.length ? numbers.reduce((total, value) => total + value, 0) : undefined;
+};
+
+function databasePools(metrics: ServiceMetrics): DatabasePool[] {
+  const states = metrics.flowweave_database_pool_connections ?? [];
+  const byPool = new Map<string, DatabasePool>();
+  for (const item of states) {
+    const labels = labelsOf(item.labels);
+    const name = labels.pool;
+    const state = labels.state;
+    const value = numericValue(item.value);
+    if (!name || !state || value === undefined) continue;
+    const pool = byPool.get(name) ?? { name };
+    if (state === 'size') pool.size = value;
+    if (state === 'checked_out') pool.checkedOut = value;
+    if (state === 'overflow') pool.overflow = value;
+    byPool.set(name, pool);
+  }
+  return [...byPool.values()].sort((left, right) => left.name.localeCompare(right.name));
 }
 
+function poolState(pool: DatabasePool): { label: string; tone: 'healthy' | 'warning' | 'critical' | 'unknown' } {
+  if (pool.size === undefined || pool.checkedOut === undefined || pool.size <= 0) return { label: '未完整上报', tone: 'unknown' };
+  const ratio = pool.checkedOut / pool.size;
+  if (ratio >= 1) return { label: '基线容量已用尽', tone: 'critical' };
+  if (ratio >= .8) return { label: '接近基线容量', tone: 'warning' };
+  return { label: '可用', tone: 'healthy' };
+}
+
+function DatabasePoolCard({ pool }: { pool: DatabasePool }) {
+  const state = poolState(pool);
+  const utilization = pool.size && pool.checkedOut !== undefined
+    ? Math.min(100, Math.round(pool.checkedOut / pool.size * 100))
+    : undefined;
+  // SQLAlchemy QueuePool reports a negative overflow while its base pool has
+  // idle capacity. It is not an error and must not be rendered as one.
+  const extraConnections = pool.overflow !== undefined ? Math.max(0, pool.overflow) : undefined;
+  return <article className="channel-card database-pool-card">
+    <header><div><b>{pool.name}</b><small>{poolDescriptions[pool.name] ?? '服务公开的数据库连接通道。'}</small></div><span className={`channel-state ${state.tone}`}>{state.label}</span></header>
+    <div className="channel-values"><span><small>已借出</small><b>{pool.checkedOut ?? '—'} / {pool.size ?? '—'}</b></span><span><small>利用率</small><b>{utilization === undefined ? '—' : `${utilization}%`}</b></span><span><small>额外连接</small><b>{extraConnections ?? '—'}</b></span></div>
+    <div className="channel-meter" aria-label={`${pool.name} 数据库连接池利用率`}><i style={{ width: `${utilization ?? 0}%` }}/></div>
+    <small className="channel-note">“额外连接”仅显示超过基础池的正值；指标中的负 overflow 表示基础连接池仍有空闲连接，不是负载或错误。</small>
+  </article>;
+}
+
+function RuntimeReadCard({ metrics }: { metrics: ServiceMetrics }) {
+  const active = metricTotal(metrics, 'flowweave_runtime_formal_read_active');
+  const capacity = metricTotal(metrics, 'flowweave_runtime_formal_read_capacity');
+  const generations = metricTotal(metrics, 'flowweave_runtime_formal_read_generations');
+  const saturation = metricTotal(metrics, 'flowweave_runtime_read_bulkhead_saturated_total');
+  const utilization = active !== undefined && capacity !== undefined && capacity > 0 ? Math.min(100, Math.round(active / capacity * 100)) : undefined;
+  const state = active === undefined || capacity === undefined ? '未上报' : active >= capacity ? '当前已满' : active / capacity >= .8 ? '接近容量' : '可用';
+  const tone = state === '当前已满' ? 'critical' : state === '接近容量' ? 'warning' : state === '可用' ? 'healthy' : 'unknown';
+  return <article className="channel-card runtime-read-card"><header><div><b>Runtime 正式读取</b><small>hydration、正式事件、readiness 等 OpenHands 状态读取使用的进程内 bulkhead。</small></div><span className={`channel-state ${tone}`}>{state}</span></header><div className="channel-values"><span><small>并发</small><b>{active ?? '—'} / {capacity ?? '—'}</b></span><span><small>已观察 generation</small><b>{generations ?? '—'}</b></span><span><small>累计拒绝</small><b>{saturation ?? '—'}</b></span></div><div className="channel-meter" aria-label="Runtime 正式读取利用率"><i style={{ width: `${utilization ?? 0}%` }}/></div><small className="channel-note">这是当前采样 API 进程的本地快照。多 API worker 时不能把它当作某个 Runtime generation 的全局并发总量；“累计拒绝”大于 0 表示本进程自启动以来至少发生过 bulkhead 饱和。</small></article>;
+}
+
+function RuntimeCapacityCard({ metrics }: { metrics: ServiceMetrics }) {
+  const relayHubs = metricTotal(metrics, 'flowweave_runtime_relay_hubs');
+  const relaySubscribers = metricTotal(metrics, 'flowweave_runtime_relay_subscribers');
+  const relayCapacity = metricTotal(metrics, 'flowweave_runtime_relay_hub_capacity');
+  const terminals = metricTotal(metrics, 'flowweave_terminal_attachments');
+  const sessions = metricTotal(metrics, 'flowweave_terminal_sessions');
+  const auxiliarySaturation = metricTotal(metrics, 'flowweave_runtime_auxiliary_read_saturated_total');
+  const searchSaturation = metricTotal(metrics, 'flowweave_runtime_background_search_bulkhead_saturated_total');
+  const relayUtilization = relayHubs !== undefined && relayCapacity !== undefined && relayCapacity > 0 ? Math.min(100, Math.round(relayHubs / relayCapacity * 100)) : undefined;
+  return <article className="channel-card runtime-capacity-card"><header><div><b>Relay、终端与低优先级读取</b><small>用于判断浏览器实时订阅、终端附件和后台扫描是否正在抢占 Runtime 容量。</small></div><span className={`channel-state ${relayUtilization !== undefined && relayUtilization >= 100 ? 'critical' : relayUtilization !== undefined && relayUtilization >= 80 ? 'warning' : 'healthy'}`}>{relayUtilization === undefined ? '部分未上报' : relayUtilization >= 100 ? 'Relay 已满' : relayUtilization >= 80 ? 'Relay 接近容量' : '可用'}</span></header><div className="channel-values"><span><small>Relay Hub</small><b>{relayHubs ?? '—'} / {relayCapacity ?? '—'}</b></span><span><small>Relay 订阅</small><b>{relaySubscribers ?? '—'}</b></span><span><small>终端连接 / 会话</small><b>{terminals ?? '—'} / {sessions ?? '—'}</b></span><span><small>辅助 / 搜索拒绝</small><b>{auxiliarySaturation ?? '—'} / {searchSaturation ?? '—'}</b></span></div><div className="channel-meter" aria-label="Runtime Relay 容量利用率"><i style={{ width: `${relayUtilization ?? 0}%` }}/></div><small className="channel-note">辅助与后台搜索饱和应优先降低背景请求；它们不等同于用户会话失败。终端指标不含未建立 PTY 的普通工作区浏览。</small></article>;
+}
+
+function InternalChannels({ metrics }: { metrics: Overview['services'] }) {
+  const services = Object.entries(metrics).sort(([left], [right]) => left.localeCompare(right));
+  if (!services.length) return <section className="table-panel"><p className="empty">尚未收到任何服务的内部指标；请检查服务的 <code>/metrics</code> 入口与管理 API 读取状态。</p></section>;
+  return <section className="channels-panel"><header><div><span className="eyebrow">INTERNAL CONCURRENCY CHANNELS</span><h2>服务内部通道</h2></div><p>按服务读取当前采样实例暴露的池与并发通道。这里的容量是局部观测值，不把缺失指标、负 overflow 或多进程未聚合值误判为服务异常。</p></header><section className="channels-guide"><b>排障顺序</b><span>先看 hydration / 正式读取是否已满或有拒绝，再看对应数据库池已借出量；若两者都空闲，则使用请求 ID 检查 Runtime transport、reload 或 OpenHands 侧失败。</span></section>{services.map(([name, service]) => { const pools = databasePools(service.metrics); return <section className="service-channel-section" key={name}><header><div><h3>{name}</h3><small>健康探针：{service.health}</small></div><span>{pools.length} 个数据库池 · {Object.keys(service.metrics).length} 类内部指标</span></header><div className="channel-grid">{pools.map(pool => <DatabasePoolCard key={pool.name} pool={pool}/>)}{Object.keys(service.metrics).some(metric => metric.startsWith('flowweave_runtime_')) && <RuntimeReadCard metrics={service.metrics}/>} {Object.keys(service.metrics).some(metric => ['flowweave_runtime_relay_hubs', 'flowweave_terminal_attachments'].includes(metric)) && <RuntimeCapacityCard metrics={service.metrics}/>}</div><details className="raw-metrics"><summary>查看原始指标与标签</summary><div>{Object.entries(service.metrics).filter(([metric]) => metric !== 'flowweave_database_pool_connections').flatMap(([metric, samples]) => samples.map((sample, index) => <code key={`${metric}-${index}`}>{channelMetricLabels[metric] ?? metric} = {sample.value}{sample.labels ? ` · ${sample.labels}` : ''}</code>))}</div></details></section>; })}</section>;
+}
 
 function MetricCount({ label, values }: { label: string; values: Array<{ value: string }> | undefined }) {
   const total = (values ?? []).reduce((sum, item) => sum + Number(item.value), 0);
@@ -394,7 +495,8 @@ export function App() {
 
   const visibleContent = () => {
     if (!data) return null;
-    if (tab === 'services') return <section className="table-panel"><header><div><span className="eyebrow">CONTROL PLANE</span><h2>服务、容器与内部池</h2></div><p>服务行显示 Docker 资源快照；下方展示服务实际暴露的数据库连接池、Runtime 读取池、Relay 与终端容量，不以缺失指标推断健康。</p></header><div className="table"><div className="table-head"><span>服务</span><span>状态</span><span>CPU / 内存</span><span>容器</span><span>镜像</span></div>{services.map(service => <div className="table-row" key={service.container_id}><span><b>{service.service}</b><small>{service.status || '—'}</small></span><span className={`state ${service.state.toLowerCase()}`}>{service.state}</span><ResourceUsage usage={service.usage}/><span><code>{compact(service.container_id)}</code></span><span><button className="history-button" onClick={() => setHistoryTarget({ scope: 'SERVICE', subject: service.service, title: service.service })}>趋势</button><small>{service.image}</small></span></div>)}{!services.length && <p className="empty">Runtime Provider 尚未返回 Compose 容器资源快照。</p>}</div><section className="service-pools"><h3>服务内部池与并发通道</h3>{Object.entries(metrics ?? {}).map(([name, service]) => <article key={name}><b>{name}</b><ServicePoolMetrics metrics={service.metrics}/></article>)}</section></section>;
+    if (tab === 'services') return <section className="table-panel"><header><div><span className="eyebrow">CONTROL PLANE</span><h2>服务与容器</h2></div><p>服务行仅展示 Runtime Provider 返回的 Docker 资源快照。数据库池、Runtime 读取、Relay 和终端等内部通道已移至“内部通道”页，避免原始标签淹没资源状态。</p></header><div className="table"><div className="table-head"><span>服务</span><span>状态</span><span>CPU / 内存</span><span>容器</span><span>镜像</span></div>{services.map(service => <div className="table-row" key={service.container_id}><span><b>{service.service}</b><small>{service.status || '—'}</small></span><span className={`state ${service.state.toLowerCase()}`}>{service.state}</span><ResourceUsage usage={service.usage}/><span><code>{compact(service.container_id)}</code></span><span><button className="history-button" onClick={() => setHistoryTarget({ scope: 'SERVICE', subject: service.service, title: service.service })}>趋势</button><small>{service.image}</small></span></div>)}{!services.length && <p className="empty">Runtime Provider 尚未返回 Compose 容器资源快照。</p>}</div></section>;
+    if (tab === 'channels') return <InternalChannels metrics={metrics ?? {}}/>;
     if (tab === 'runtimes') return <section className="table-panel"><header><div><span className="eyebrow">OPENHANDS EXECUTION</span><h2>Runtime 与容器</h2></div><p>Runtime Session 是管理身份；容器仅是可替换 generation 的载体。列表仅展示控制面事实，不把未执行的业务探针显示为健康。</p></header><div className="resource-filter"><input value={runtimeFilter} placeholder="按 Runtime、FlowRun、节点或工作区定位" onChange={event => setRuntimeFilter(event.target.value)}/>{runtimeFilter && <button className="secondary" onClick={() => setRuntimeFilter('')}>清除定位</button>}</div><div className="table wide"><div className="table-head runtime-head"><span>Runtime</span><span>状态</span><span>会话</span><span>容器资源</span><span>活动</span><span>诊断</span><span>操作</span></div>{filteredRuntimes.map(runtime => <div className="table-row runtime-head" key={runtime.runtime_session_id}><span><b>{runtime.runtime_kind}</b><small>{runtimeOwnerLabel(runtime)}</small><small>{runtimeExecutionLabel(runtime)}</small><small title={runtime.runtime_session_id}>Session {compact(runtime.runtime_session_id)} · Owner {compact(runtime.owner_id)} · Gen {runtime.active_generation ?? '—'}</small></span><span><b className={`state ${runtime.status.toLowerCase()}`}>{runtime.status}</b><small>{runtime.generation_state ?? '未分配'} · {runtime.observed_state ?? '—'}</small></span><span><b>{runtime.active_conversation_count} / {runtime.conversation_count}</b><small>活跃 / 关联</small></span><ResourceUsage usage={runtime.usage}/><span><code>{compact(runtime.container_id)}</code><small>{runtime.last_activity_at ? new Date(runtime.last_activity_at).toLocaleString() : '无活动记录'}</small></span><span><b>{runtime.business_diagnostic_status ? `业务 ${runtime.business_diagnostic_status}` : runtime.failure_code || runtime.last_error_code || '未见控制面错误'}</b><small>{runtime.business_diagnostic_status ? `${runtime.business_impacted_bindings ?? 0} 个绑定 · ${runtime.business_observed_at ? new Date(runtime.business_observed_at).toLocaleString() : '刚刚诊断'}` : runtime.failure_summary || runtime.last_error_detail || '未执行业务探针'}</small></span><span><button className="history-button" onClick={() => setHistoryTarget({ scope: 'RUNTIME', subject: runtime.managed_sandbox_id || runtime.runtime_session_id, title: `Runtime ${compact(runtime.runtime_session_id)}` })}>趋势</button><button className="locator-button" onClick={() => setDetailTarget(runtime)}>详情</button><button className="locator-button" onClick={() => locateConversations(runtime.runtime_session_id)}>会话</button><button className="locator-button" onClick={() => locateOperations(runtime.runtime_session_id)}>审计</button><button className="replace-button" disabled={runtime.active_generation === null || !['ACTIVE', 'DEGRADED'].includes(runtime.status)} onClick={() => setReplacementTarget(runtime)}><RotateCw size={14}/>替换</button></span></div>)}{!filteredRuntimes.length && <p className="empty">没有符合当前定位条件的 Runtime。</p>}</div></section>;
     if (tab === 'alerts') return <section className="table-panel"><header><div><span className="eyebrow">LIVE HEALTH SIGNALS</span><h2>实时健康告警</h2></div><p>基于当前服务、容器、Runtime、数据库连接和任务积压快照计算；此处不发送外部通知。</p></header><div className="alert-summary"><b className="critical-count">{data.alertSummary.critical} 严重</b><b className="warning-count">{data.alertSummary.warning} 警告</b><small>阈值由 Admin API 环境配置控制。</small></div><div className="table wide"><div className="table-head alert-head"><span>级别</span><span>来源</span><span>告警</span><span>详情</span><span>操作</span></div>{visibleAlerts.map(alert => <div className="table-row alert-head" key={alert.key}><span><b className={`alert-severity ${alert.severity.toLowerCase()}`}>{alert.severity}</b></span><span><b>{alert.source}</b></span><span>{alert.title}<small>{alert.lifecycle?.acknowledged_by_username ? `已由 ${alert.lifecycle.acknowledged_by_username} 确认` : '未确认'}</small></span><span><small className="reason">{alert.detail}</small></span><span><button className="history-button" onClick={() => setAlertTarget(alert)}>确认 / 静默</button><button className="locator-button" onClick={() => locateOperations(alert.key)}>审计</button>{runtimeIdFromAlert(alert.key) && <button className="locator-button" onClick={() => locateRuntime(runtimeIdFromAlert(alert.key)!)}>Runtime</button>}</span></div>)}{!visibleAlerts.length && <p className="empty">当前没有未静默的实时健康告警。</p>}</div></section>;
 
@@ -407,5 +509,5 @@ export function App() {
 
   };
 
-  return <><main><header className="topbar"><div><span className="brand-mark"><Server size={18}/></span><b>FlowWeave 管理中心</b><small>独立运维入口</small></div><nav>{([['overview', '总览'], ['alerts', '实时告警'], ['services', '服务'], ['runtimes', 'Runtime'], ['conversations', '会话'], ['tasks', '后台任务'], ['operations', '操作审计']] as const).map(([value, label]) => <button className={tab === value ? 'active' : ''} key={value} onClick={() => setTab(value)}>{label}</button>)}</nav><button className="refresh" disabled={loading} onClick={() => void refresh()}><RefreshCw size={15} className={loading ? 'spin' : ''}/>{loading ? '刷新中' : '刷新'}</button></header><div className="content">{updatedAt && <p className="updated">最近刷新：{updatedAt.toLocaleTimeString()} · 每 15 秒自动更新</p>}{failures.length > 0 && <section className="partial-error"><h2>{failures.length === 6 ? '管理数据暂时不可用' : '部分管理数据暂时不可用'}</h2><p>其余数据会保留并继续刷新；请使用下列错误码和请求 ID 查询服务端日志。</p>{failures.map(failure => <div key={failure.section}><b>{sectionLabels[failure.section]}</b><span>{failure.message}</span><code>{failure.code}{failure.status !== null ? ` · HTTP ${failure.status}` : ''}{failure.requestId ? ` · 请求 ${compact(failure.requestId)}` : ''}</code></div>)}<button onClick={() => void refresh()}>重新尝试</button></section>}{loading && !data ? <section className="loading"><Activity className="spin" size={28}/><p>正在读取独立管理数据…</p></section> : visibleContent()}</div>{replacementTarget && <RuntimeReplacementDialog runtime={replacementTarget} onClose={() => setReplacementTarget(undefined)} onSubmitted={refresh}/>}</main>{detailTarget && <RuntimeDetailDialog runtime={detailTarget} onClose={() => setDetailTarget(undefined)} onSubmitted={refresh}/>} {historyTarget && <HistoryDialog {...historyTarget} onClose={() => setHistoryTarget(undefined)}/>} {alertTarget && <AlertLifecycleDialog alert={alertTarget} onClose={() => setAlertTarget(undefined)} onSubmitted={refresh}/>} {resourceCleanupOpen && <ResourceCleanupDialog candidateCount={expiredTerminalCount} retentionDays={data?.taskSummary.retention_days ?? 0} onClose={() => setResourceCleanupOpen(false)} onSubmitted={refresh}/>}</>;
+  return <><main><header className="topbar"><div><span className="brand-mark"><Server size={18}/></span><b>FlowWeave 管理中心</b><small>独立运维入口</small></div><nav>{([['overview', '总览'], ['alerts', '实时告警'], ['services', '服务'], ['channels', '内部通道'], ['runtimes', 'Runtime'], ['conversations', '会话'], ['tasks', '后台任务'], ['operations', '操作审计']] as const).map(([value, label]) => <button className={tab === value ? 'active' : ''} key={value} onClick={() => setTab(value)}>{label}</button>)}</nav><button className="refresh" disabled={loading} onClick={() => void refresh()}><RefreshCw size={15} className={loading ? 'spin' : ''}/>{loading ? '刷新中' : '刷新'}</button></header><div className="content">{updatedAt && <p className="updated">最近刷新：{updatedAt.toLocaleTimeString()} · 每 15 秒自动更新</p>}{failures.length > 0 && <section className="partial-error"><h2>{failures.length === 6 ? '管理数据暂时不可用' : '部分管理数据暂时不可用'}</h2><p>其余数据会保留并继续刷新；请使用下列错误码和请求 ID 查询服务端日志。</p>{failures.map(failure => <div key={failure.section}><b>{sectionLabels[failure.section]}</b><span>{failure.message}</span><code>{failure.code}{failure.status !== null ? ` · HTTP ${failure.status}` : ''}{failure.requestId ? ` · 请求 ${compact(failure.requestId)}` : ''}</code></div>)}<button onClick={() => void refresh()}>重新尝试</button></section>}{loading && !data ? <section className="loading"><Activity className="spin" size={28}/><p>正在读取独立管理数据…</p></section> : visibleContent()}</div>{replacementTarget && <RuntimeReplacementDialog runtime={replacementTarget} onClose={() => setReplacementTarget(undefined)} onSubmitted={refresh}/>}</main>{detailTarget && <RuntimeDetailDialog runtime={detailTarget} onClose={() => setDetailTarget(undefined)} onSubmitted={refresh}/>} {historyTarget && <HistoryDialog {...historyTarget} onClose={() => setHistoryTarget(undefined)}/>} {alertTarget && <AlertLifecycleDialog alert={alertTarget} onClose={() => setAlertTarget(undefined)} onSubmitted={refresh}/>} {resourceCleanupOpen && <ResourceCleanupDialog candidateCount={expiredTerminalCount} retentionDays={data?.taskSummary.retention_days ?? 0} onClose={() => setResourceCleanupOpen(false)} onSubmitted={refresh}/>}</>;
 }
