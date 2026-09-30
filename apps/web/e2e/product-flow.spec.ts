@@ -595,7 +595,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
       workspaceGitRepositoryRequests += 1;
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
         repositories: [
-          { path: '/runtime/workspace/project', remote: 'https://example.test/repo.git', branch: 'main', head: '1234567890ab' },
+          { path: '/runtime/workspace/project', remote: 'https://example.test/repo.git', branch: 'main', head: '1234567890ab', upstream: 'origin/main', ahead: 2, behind: 1 },
           { path: '/runtime/workspace/project/backend', remote: 'https://example.test/backend.git', branch: 'main', head: '1234567890ab' },
         ],
       }) });
@@ -1125,11 +1125,23 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect.poll(() => compactConversationItem.evaluate(element => element.getBoundingClientRect().height)).toBeLessThanOrEqual(40);
   await expect(page.getByText('工作区已就绪。')).toBeVisible();
   await expect(page.getByText('需要部署 Gateway', { exact: true })).toBeVisible();
+  const gitSummary = page.locator('.agent-workspace-git-summary');
+  await expect(gitSummary).toContainText('Git 信息');
+  await expect(gitSummary).toContainText('main');
+  await expect(gitSummary).toContainText('3 个文件已改动');
+  await expect(gitSummary).toContainText('本地 +2');
+  await expect(gitSummary).toContainText('远端 +1');
+  await gitSummary.getByRole('button').click();
+  await expect(page.getByLabel('全屏工作区工具')).toBeVisible();
+  await expect(page.getByRole('complementary', { name: 'Git' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '本地改动', exact: true })).toHaveClass(/active/);
+  await page.getByLabel('退出全屏').click();
+  await page.getByLabel('关闭工作区工具').click();
   await page.getByRole('button', { name: '文件', exact: true }).click();
   await expect(page.getByText('README.md', { exact: true })).toBeVisible();
   await expect(page.locator('.agent-file-tree input[type=checkbox]')).toHaveCount(0);
   await page.getByLabel('全屏查看工作区工具').click();
-  await expect.poll(() => workspaceGitRepositoryRequests).toBe(1);
+  await expect.poll(() => workspaceGitRepositoryRequests).toBe(2);
   const gitSidebar = page.getByRole('complementary', { name: 'Git' });
   await expect(gitSidebar).toBeVisible();
   await page.getByLabel('全部展开目录').click();
@@ -1153,7 +1165,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(gitSidebar).toBeVisible();
   const repositoryDirectory = page.locator('.agent-file-tree-row').filter({ hasText: 'backend' });
   await repositoryDirectory.locator('.agent-file-tree-item.directory').click();
-  await expect.poll(() => workspaceGitRepositoryRequests).toBe(2);
+  await expect.poll(() => workspaceGitRepositoryRequests).toBe(3);
   await expect(gitSidebar).toBeVisible();
   await expect(gitSidebar.getByRole('region', { name: '分支同步状态' })).toContainText('2 个提交待推送');
   await expect(gitSidebar.getByText('待推送', { exact: true })).toHaveCount(2);

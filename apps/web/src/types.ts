@@ -837,7 +837,7 @@ export interface AgentSessionWorkspaceDetails {
   working_directory: string;
   work_directory?: AgentSessionWorkDirectory | null;
   files: Array<{ path: string; kind: 'file' | 'directory'; size: number }>;
-  repositories: Array<{ path: string; remote?: string; branch?: string; head?: string }>;
+  repositories: WorkspaceGitRepository[];
   runtime: { container_id?: string | null; state?: string; write_available?: boolean };
   ide: {
     workspace_path: string;

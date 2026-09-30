@@ -2937,6 +2937,15 @@ function selectedGitRepository(repositories: AgentSessionWorkspaceDetails['repos
     .sort((left, right) => right.path.length - left.path.length)[0];
 }
 
+function workspaceRootGitRepository(repositories: AgentSessionWorkspaceDetails['repositories'], workingDirectory?: string) {
+  const root = workingDirectory?.replace(/\/+$/, '');
+  return root ? repositories.find(repository => repository.path.replace(/\/+$/, '') === root) : undefined;
+}
+
+function gitChangedFileCount(changes?: WorkspaceGitChanges) {
+  return new Set([...(changes?.staged ?? []), ...(changes?.unstaged ?? [])].map(file => file.path)).size;
+}
+
 function WorkspaceGitSidebar({ details, repository, mode, onModeChange, selectedCommit, onSelectCommit, syncRepository, loadLog, loadCommit, loadDiff, loadChanges, onOpenFileDiff, onOpenWorkingDiff, closedDiffEpoch }: {
   details: AgentSessionWorkspaceDetails;
   repository: AgentSessionWorkspaceDetails['repositories'][number];
@@ -4018,6 +4027,19 @@ function WorkspaceDrawer({
     if (!gitContextPath) return;
     setGitSidebarRequested(true);
   }, [gitContextPath]);
+  const openGitSummary = useCallback(() => {
+    if (!details?.working_directory) return;
+    setGitContextPath(details.working_directory);
+    setGitSidebarRequested(true);
+    updateScope(current => ({
+      ...current,
+      tabs: current.tabs.some(tab => tab.kind === 'files') ? current.tabs : [{ id: 'files', kind: 'files' }, ...current.tabs],
+      activeTabId: 'files',
+      gitMode: 'changes',
+    }));
+    setFullScreen(true);
+    onOpen();
+  }, [details?.working_directory, onOpen, updateScope]);
   useEffect(() => {
     // A review request is a one-shot navigation command.  Its data remains
     // available for the user to reopen review manually, but an unrelated
@@ -4329,6 +4351,24 @@ function WorkspaceDrawer({
   const gitRepository = useMemo(() => selectedGitRepository(gitRepositoriesQuery.data?.repositories ?? [], gitContextPath), [gitContextPath, gitRepositoriesQuery.data?.repositories]);
   const gitSidebarVisible = fullScreen && filesTabIsActive && gitSidebarRequested && Boolean(gitRepository);
   const gitOptions = { bindingId, workDirectoryId };
+  const workspaceGitRepositoriesQuery = useQuery({
+    queryKey: sessionQueryKey(host, 'workspace-git-summary-repositories', workspaceId, bindingId, workDirectoryId),
+    queryFn: () => api.gitRepositories(workspaceId, gitOptions),
+    enabled: Boolean(details?.working_directory),
+    staleTime: 15_000,
+    retry: (count, error) => !(error instanceof ApiError && (error.status < 500 || error.status === 503)) && count < 2,
+  });
+  const workspaceGitRepository = useMemo(
+    () => workspaceRootGitRepository(workspaceGitRepositoriesQuery.data?.repositories ?? [], details?.working_directory),
+    [details?.working_directory, workspaceGitRepositoriesQuery.data?.repositories],
+  );
+  const workspaceGitChangesQuery = useQuery({
+    queryKey: sessionQueryKey(host, 'workspace-git-summary-changes', workspaceId, bindingId, workDirectoryId, workspaceGitRepository?.path),
+    queryFn: () => api.gitChanges(workspaceId, workspaceGitRepository!.path, gitOptions),
+    enabled: Boolean(workspaceGitRepository),
+    staleTime: 5_000,
+    retry: (count, error) => !(error instanceof ApiError && (error.status < 500 || error.status === 503)) && count < 2,
+  });
   const sshRemoteReady = Boolean(
     details?.ide.gateway.supported
     && details.ide.gateway.host
@@ -4344,6 +4384,7 @@ function WorkspaceDrawer({
   const visibleSources = sources.slice(0, 3);
   const summary = details && <section className="agent-workspace-overview">
     {conversation && <article className="agent-workspace-conversation-config"><Bot size={16}/><div><small>会话用量</small><p className="agent-workspace-usage-line"><span>{`累计 ${conversationTotalTokens.toLocaleString('zh-CN')} Token`}</span><span>{`$${(conversationUsage?.accumulated_cost ?? 0).toFixed(6)}`}</span></p></div></article>}
+    {workspaceGitRepository && <article className="agent-workspace-git-summary"><GitBranch size={16}/><div><small>Git 信息</small><button type="button" onClick={openGitSummary} title="在全屏文件栏中查看 Git 信息"><span><b>{workspaceGitRepository.branch || '未命名分支'}</b><em>{workspaceGitChangesQuery.isLoading ? '正在读取本地改动…' : `${gitChangedFileCount(workspaceGitChangesQuery.data)} 个文件已改动`}</em></span><ChevronRight size={13}/></button><p>{workspaceGitRepository.upstream ? <><span>{`本地 +${workspaceGitRepository.ahead ?? 0}`}</span><span>{`远端 +${workspaceGitRepository.behind ?? 0}`}</span></> : '未设置远程跟踪分支'}</p></div></article>}
     {conversation && <article className="agent-workspace-changes"><FileText size={16}/><div><small>变更</small><button type="button" disabled={!sessionChanges.length} onClick={() => onReviewChanges?.(sessionChanges)}><span><b>{sessionChanges.length ? `${sessionChanges.length} 个文件已更改` : '暂无变更'}</b>{sessionChanges.length > 0 && <em><ins>{`+${sessionChangeAdditions}`}</ins><del>{`-${sessionChangeDeletions}`}</del></em>}</span><ChevronRight size={13}/></button></div></article>}
     {runtimeTasks.length > 0 && <article className="agent-workspace-subagents"><Bot size={16}/><div><small>子智能体</small><button type="button" onClick={() => openRuntimeTasks()}><b>{runtimeTasks.filter(task => runtimeTaskIsActive(task, sessionStopped)).length ? `${runtimeTasks.filter(task => runtimeTaskIsActive(task, sessionStopped)).length} 个运行中` : `${runtimeTasks.length} 个任务`}</b><ChevronRight size={13}/></button><div className="agent-workspace-subagent-glyphs" aria-label={`${runtimeTasks.length} 个子智能体任务`}>{runtimeTasks.slice(0, 5).map((task, index) => <button type="button" key={task.id} aria-label={`查看第 ${index + 1} 个子智能体任务：${runtimeTaskStatus(task, sessionStopped)}`} onClick={() => openRuntimeTasks(task.id)}><RuntimeTaskGlyph task={task} sessionStopped={sessionStopped}/></button>)}{runtimeTasks.length > 5 && <button type="button" className="agent-subagent-overflow" aria-label={`查看其余 ${runtimeTasks.length - 5} 个子智能体任务`} onClick={() => openRuntimeTasks()}>+{runtimeTasks.length - 5}</button>}</div></div></article>}
     {/*
