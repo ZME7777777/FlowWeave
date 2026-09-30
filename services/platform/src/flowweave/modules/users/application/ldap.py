@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ssl
 from dataclasses import dataclass
+from math import ceil
 from urllib.parse import urlsplit
 
 from ldap3 import NONE, SUBTREE, Connection, Server, Tls
@@ -119,7 +120,8 @@ class LdapDirectory:
             server,
             user=user,
             password=password,
-            receive_timeout=self._settings.ldap_receive_timeout_seconds,
+            # ldap3 packs this timeout into a timeval requiring whole seconds.
+            receive_timeout=ceil(self._settings.ldap_receive_timeout_seconds),
             raise_exceptions=False,
         )
         try:

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import ssl
+from socket import socket
+from threading import Thread
 from uuid import UUID
 
 import pytest
@@ -110,3 +112,33 @@ def test_failed_search_does_not_return_partial_catalog(monkeypatch) -> None:
         directory.list_users()
     assert failure.value.code == "LDAP_UNAVAILABLE"
     assert connections[0].closed
+
+
+def test_real_socket_accepts_configured_fractional_receive_timeout() -> None:
+    with socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        listener.settimeout(5)
+
+        def accept() -> None:
+            with listener.accept()[0] as client:
+                client.settimeout(5)
+                while client.recv(1024):
+                    pass
+
+        thread = Thread(target=accept, daemon=True)
+        thread.start()
+        directory = ldap.LdapDirectory(
+            settings(
+                ldap_url=f"ldap://127.0.0.1:{listener.getsockname()[1]}",
+                ldap_receive_timeout_seconds=0.5,
+            )
+        )
+        connection = directory._connection(user="test-reader", password="test-password")
+        try:
+            assert not connection.closed
+            assert connection.receive_timeout == 1
+        finally:
+            connection.unbind()
+            thread.join(timeout=5)
+        assert not thread.is_alive()
