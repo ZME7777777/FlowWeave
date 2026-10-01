@@ -362,6 +362,38 @@ def test_shared_flow_control_plane_and_private_execution_records(isolated_http):
             db.commit()
             private_ids[user_id] = (record.id, snapshot.id, node_run.id, artifact.id)
 
+    with tenant_user(FLOWWEAVE_USER_ID), Session(engine) as db:
+        nested_secret = FlowRunRuntimeSecretReference(
+            id="nested-secret",
+            encrypted_secret_key=b"nested-encrypted",
+            secret_digest="nested-secret-digest",
+        )
+        nested_allocation = FlowRunRuntimeAllocation(
+            id="nested-allocation",
+            flow_run_id="admin-record",
+            node_attempt_id=None,
+            secret_reference_id=nested_secret.id,
+            relative_root=".flow-run-runtimes/admin-record",
+        )
+        nested_runtime = FlowRunRuntime(
+            id="nested-runtime",
+            flow_run_id="admin-record",
+            node_attempt_id=None,
+            environment_version_id="shared-environment",
+            runtime_image_digest=f"sha256:{'2' * 64}",
+            workspace_allocation_id=nested_allocation.id,
+            active_generation=1,
+        )
+        nested_generation = RuntimeGeneration(
+            id="nested-generation",
+            runtime_session_id=nested_runtime.id,
+            generation=1,
+            runtime_image_digest=nested_runtime.runtime_image_digest,
+            fence_token="nested-fence",
+        )
+        db.add_all((nested_secret, nested_allocation, nested_runtime, nested_generation))
+        db.commit()
+
     for user_id in (FLOWWEAVE_USER_ID, employee_id):
         with tenant_user(user_id), Session(engine) as db:
             assert db.get(FlowRun, "shared-run") is not None
@@ -382,6 +414,17 @@ def test_shared_flow_control_plane_and_private_execution_records(isolated_http):
             assert db.get(RunSnapshot, private_ids[other_user_id][1]) is None
             assert db.get(NodeRun, private_ids[other_user_id][2]) is None
             assert db.get(ArtifactVersion, private_ids[other_user_id][3]) is None
+            nested_models = (
+                (FlowRunRuntimeSecretReference, "nested-secret"),
+                (FlowRunRuntimeAllocation, "nested-allocation"),
+                (FlowRunRuntime, "nested-runtime"),
+                (RuntimeGeneration, "nested-generation"),
+            )
+            for model, item_id in nested_models:
+                if user_id == FLOWWEAVE_USER_ID:
+                    assert db.get(model, item_id) is not None
+                else:
+                    assert db.get(model, item_id) is None
 
 
 def test_ldap_created_private_records_belong_to_ldap_user(isolated_http):

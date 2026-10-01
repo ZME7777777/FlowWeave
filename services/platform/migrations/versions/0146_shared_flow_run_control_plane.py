@@ -110,24 +110,32 @@ def upgrade() -> None:
     for table in ("flow_run_runtime_allocations", "flow_run_runtimes"):
         op.execute(
             sa.text(
-                f'UPDATE "{table}" SET owner_user_id = :owner WHERE node_attempt_id IS NULL'
+                f'UPDATE "{table}" AS runtime SET owner_user_id = :owner '
+                "FROM flow_runs AS run "
+                "WHERE runtime.flow_run_id = run.id "
+                "AND runtime.node_attempt_id IS NULL "
+                "AND run.parent_flow_run_id IS NULL"
             ).bindparams(owner=_FLOWWEAVE_USER_ID)
         )
     op.execute(
         sa.text(
             "UPDATE runtime_generations AS generation SET owner_user_id = :owner "
-            "FROM flow_run_runtimes AS runtime "
+            "FROM flow_run_runtimes AS runtime, flow_runs AS run "
             "WHERE generation.runtime_session_id = runtime.id "
-            "AND runtime.node_attempt_id IS NULL"
+            "AND runtime.flow_run_id = run.id "
+            "AND runtime.node_attempt_id IS NULL "
+            "AND run.parent_flow_run_id IS NULL"
         ).bindparams(owner=_FLOWWEAVE_USER_ID)
     )
     op.execute(
         sa.text(
             "UPDATE flow_run_runtime_secret_references AS secret "
             "SET owner_user_id = :owner "
-            "FROM flow_run_runtime_allocations AS allocation "
+            "FROM flow_run_runtime_allocations AS allocation, flow_runs AS run "
             "WHERE secret.id = allocation.secret_reference_id "
-            "AND allocation.node_attempt_id IS NULL"
+            "AND allocation.flow_run_id = run.id "
+            "AND allocation.node_attempt_id IS NULL "
+            "AND run.parent_flow_run_id IS NULL"
         ).bindparams(owner=_FLOWWEAVE_USER_ID)
     )
     op.create_index(
@@ -162,14 +170,19 @@ def upgrade() -> None:
     for table in ("flow_run_runtime_allocations", "flow_run_runtimes"):
         _replace_policy(
             table,
-            f"{bypass} OR {current} OR ({shared_owner} AND node_attempt_id IS NULL)",
+            f"{bypass} OR {current} OR ({shared_owner} AND node_attempt_id IS NULL "
+            "AND EXISTS (SELECT 1 FROM flow_runs AS shared_run "
+            f'WHERE shared_run.id = "{table}".flow_run_id '
+            "AND shared_run.parent_flow_run_id IS NULL))",
         )
     _replace_policy(
         "runtime_generations",
         f"{bypass} OR {current} OR ({shared_owner} AND EXISTS ("
         "SELECT 1 FROM flow_run_runtimes AS shared_runtime "
+        "JOIN flow_runs AS shared_run ON shared_run.id = shared_runtime.flow_run_id "
         "WHERE shared_runtime.id = runtime_generations.runtime_session_id "
-        "AND shared_runtime.node_attempt_id IS NULL))",
+        "AND shared_runtime.node_attempt_id IS NULL "
+        "AND shared_run.parent_flow_run_id IS NULL))",
     )
     _replace_policy(
         "flow_run_runtime_secret_references",
@@ -177,7 +190,10 @@ def upgrade() -> None:
         "SELECT 1 FROM flow_run_runtime_allocations AS shared_allocation "
         "WHERE shared_allocation.secret_reference_id = "
         "flow_run_runtime_secret_references.id "
-        "AND shared_allocation.node_attempt_id IS NULL))",
+        "AND shared_allocation.node_attempt_id IS NULL "
+        "AND EXISTS (SELECT 1 FROM flow_runs AS shared_run "
+        "WHERE shared_run.id = shared_allocation.flow_run_id "
+        "AND shared_run.parent_flow_run_id IS NULL)))",
     )
 
 

@@ -125,12 +125,26 @@ def _tenant_read_criterion(model: type[Any], user_id: str) -> Any:
             )
         )
     elif table in {"flow_run_runtime_allocations", "flow_run_runtimes"}:
-        shared = model.node_attempt_id.is_(None)
+        shared = and_(
+            model.node_attempt_id.is_(None),
+            model.flow_run_id.in_(
+                select(FlowRun.id).where(
+                    FlowRun.parent_flow_run_id.is_(None),
+                    FlowRun.owner_user_id == FLOWWEAVE_USER_ID,
+                )
+            ),
+        )
     elif table == "runtime_generations":
         shared = model.runtime_session_id.in_(
             select(FlowRunRuntime.id).where(
                 FlowRunRuntime.node_attempt_id.is_(None),
                 FlowRunRuntime.owner_user_id == FLOWWEAVE_USER_ID,
+                FlowRunRuntime.flow_run_id.in_(
+                    select(FlowRun.id).where(
+                        FlowRun.parent_flow_run_id.is_(None),
+                        FlowRun.owner_user_id == FLOWWEAVE_USER_ID,
+                    )
+                ),
             )
         )
     elif table == "flow_run_runtime_secret_references":
@@ -138,6 +152,12 @@ def _tenant_read_criterion(model: type[Any], user_id: str) -> Any:
             select(FlowRunRuntimeAllocation.secret_reference_id).where(
                 FlowRunRuntimeAllocation.node_attempt_id.is_(None),
                 FlowRunRuntimeAllocation.owner_user_id == FLOWWEAVE_USER_ID,
+                FlowRunRuntimeAllocation.flow_run_id.in_(
+                    select(FlowRun.id).where(
+                        FlowRun.parent_flow_run_id.is_(None),
+                        FlowRun.owner_user_id == FLOWWEAVE_USER_ID,
+                    )
+                ),
             )
         )
     else:
@@ -171,7 +191,20 @@ def _is_shared_flowrun_item(session: Session, item: Any) -> bool:
                 run = session.get(FlowRun, item.flow_run_id)
         return run is not None and run.parent_flow_run_id is None
     if table in {"flow_run_runtime_allocations", "flow_run_runtimes"}:
-        return item.node_attempt_id is None
+        if item.node_attempt_id is not None:
+            return False
+        run = next(
+            (
+                candidate
+                for candidate in session.new
+                if isinstance(candidate, FlowRun) and candidate.id == item.flow_run_id
+            ),
+            None,
+        )
+        if run is None:
+            with session.no_autoflush:
+                run = session.get(FlowRun, item.flow_run_id)
+        return run is not None and run.parent_flow_run_id is None
     if table == "runtime_generations":
         runtime = next(
             (
@@ -184,7 +217,7 @@ def _is_shared_flowrun_item(session: Session, item: Any) -> bool:
         if runtime is None:
             with session.no_autoflush:
                 runtime = session.get(FlowRunRuntime, item.runtime_session_id)
-        return runtime is not None and runtime.node_attempt_id is None
+        return runtime is not None and _is_shared_flowrun_item(session, runtime)
     if table == "flow_run_runtime_secret_references":
         allocation = next(
             (
@@ -203,7 +236,7 @@ def _is_shared_flowrun_item(session: Session, item: Any) -> bool:
                         FlowRunRuntimeAllocation.secret_reference_id == item.id
                     )
                 )
-        return allocation is not None and allocation.node_attempt_id is None
+        return allocation is not None and _is_shared_flowrun_item(session, allocation)
     return False
 
 
