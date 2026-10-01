@@ -78,6 +78,7 @@ interface OptimisticConversationRemoval {
   unreadConversationIds: Set<string>;
 }
 interface RewriteRequest {
+  bindingId: string;
   eventId: string;
   content: string;
   attachments?: AgentAttachment[];
@@ -4081,7 +4082,8 @@ function WorkspaceDrawer({
     queryKey: sessionQueryKey(host, 'workspace-git-summary-repositories', workspaceId, bindingId, workDirectoryId),
     queryFn: () => api.gitRepositories(workspaceId, gitOptions),
     enabled: Boolean(details?.working_directory),
-    staleTime: 15_000,
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
     retry: (count, error) => !(error instanceof ApiError && (error.status < 500 || error.status === 503)) && count < 2,
   });
   const workspaceGitRepository = useMemo(
@@ -4092,9 +4094,28 @@ function WorkspaceDrawer({
     queryKey: sessionQueryKey(host, 'workspace-git-summary-changes', workspaceId, bindingId, workDirectoryId, workspaceGitRepository?.path),
     queryFn: () => api.gitChanges(workspaceId, workspaceGitRepository!.path, gitOptions),
     enabled: Boolean(workspaceGitRepository),
-    staleTime: 5_000,
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
     retry: (count, error) => !(error instanceof ApiError && (error.status < 500 || error.status === 503)) && count < 2,
   });
+  const [gitSummaryRefreshError, setGitSummaryRefreshError] = useState('');
+  const [gitSummaryRefreshing, setGitSummaryRefreshing] = useState(false);
+  const refreshGitSummary = async () => {
+    if (!workspaceGitRepository || gitSummaryRefreshing) return;
+    setGitSummaryRefreshError('');
+    setGitSummaryRefreshing(true);
+    try {
+      await api.syncGitRepository(workspaceId, workspaceGitRepository.path, gitOptions);
+      await Promise.all([
+        workspaceGitRepositoriesQuery.refetch(),
+        workspaceGitChangesQuery.refetch(),
+      ]);
+    } catch (error) {
+      setGitSummaryRefreshError(error instanceof Error ? error.message : 'Git 状态刷新失败，请重试。');
+    } finally {
+      setGitSummaryRefreshing(false);
+    }
+  };
   const sshRemoteReady = Boolean(
     details?.ide.gateway.supported
     && details.ide.gateway.host
@@ -4110,7 +4131,7 @@ function WorkspaceDrawer({
   const visibleSources = sources.slice(0, 3);
   const summary = details && <section className="agent-workspace-overview">
     {conversation && <article className="agent-workspace-conversation-config"><Bot size={16}/><div><small>会话用量</small><p className="agent-workspace-usage-line"><span>{`累计 ${conversationTotalTokens.toLocaleString('zh-CN')} Token`}</span><span>{`$${(conversationUsage?.accumulated_cost ?? 0).toFixed(6)}`}</span></p></div></article>}
-    {workspaceGitRepository && <article className="agent-workspace-git-summary"><GitBranch size={16}/><div><small>Git 信息</small><button type="button" onClick={openGitSummary} title="在全屏文件栏中查看 Git 信息"><span><b>{workspaceGitRepository.branch || '未命名分支'}</b><em>{workspaceGitChangesQuery.isLoading ? '正在读取本地改动…' : `${gitChangedFileCount(workspaceGitChangesQuery.data)} 个文件已改动`}</em></span><ChevronRight size={13}/></button><p>{workspaceGitRepository.upstream ? <><span>{`本地 +${workspaceGitRepository.ahead ?? 0}`}</span><span>{`远端 +${workspaceGitRepository.behind ?? 0}`}</span></> : '未设置远程跟踪分支'}</p></div></article>}
+    {workspaceGitRepository && <article className="agent-workspace-git-summary"><GitBranch size={16}/><div><span className="agent-workspace-git-summary-title"><small>Git 信息</small><button type="button" className="agent-workspace-git-summary-refresh" aria-label="刷新 Git 信息" title="刷新本地改动、提交和远端状态" disabled={gitSummaryRefreshing} onClick={() => void refreshGitSummary()}><RefreshCw className={gitSummaryRefreshing ? 'spin' : undefined} size={12}/></button></span><button type="button" onClick={openGitSummary} title="在全屏文件栏中查看 Git 信息"><span><b>{workspaceGitRepository.branch || '未命名分支'}</b><em>{workspaceGitChangesQuery.isLoading || gitSummaryRefreshing ? '正在刷新本地改动…' : `${gitChangedFileCount(workspaceGitChangesQuery.data)} 个文件已改动`}</em></span><ChevronRight size={13}/></button><p>{workspaceGitRepository.upstream ? <><span>{`本地 +${workspaceGitRepository.ahead ?? 0}`}</span><span>{`远端 +${workspaceGitRepository.behind ?? 0}`}</span></> : '未设置远程跟踪分支'}</p>{gitSummaryRefreshError && <p className="agent-workspace-git-summary-error" role="alert">{gitSummaryRefreshError}</p>}</div></article>}
     {conversation && <article className="agent-workspace-changes"><FileText size={16}/><div><small>变更</small><button type="button" disabled={!sessionChanges.length} onClick={() => onReviewChanges?.(sessionChanges)}><span><b>{sessionChanges.length ? `${sessionChanges.length} 个文件已更改` : '暂无变更'}</b>{sessionChanges.length > 0 && <em><ins>{`+${sessionChangeAdditions}`}</ins><del>{`-${sessionChangeDeletions}`}</del></em>}</span><ChevronRight size={13}/></button></div></article>}
     {runtimeTasks.length > 0 && <article className="agent-workspace-subagents"><Bot size={16}/><div><small>子智能体</small><button type="button" onClick={() => openRuntimeTasks()}><b>{runtimeTasks.filter(task => runtimeTaskIsActive(task, sessionStopped)).length ? `${runtimeTasks.filter(task => runtimeTaskIsActive(task, sessionStopped)).length} 个运行中` : `${runtimeTasks.length} 个任务`}</b><ChevronRight size={13}/></button><div className="agent-workspace-subagent-glyphs" aria-label={`${runtimeTasks.length} 个子智能体任务`}>{runtimeTasks.slice(0, 5).map((task, index) => <button type="button" key={task.id} aria-label={`查看第 ${index + 1} 个子智能体任务：${runtimeTaskStatus(task, sessionStopped)}`} onClick={() => openRuntimeTasks(task.id)}><RuntimeTaskGlyph task={task} sessionStopped={sessionStopped}/></button>)}{runtimeTasks.length > 5 && <button type="button" className="agent-subagent-overflow" aria-label={`查看其余 ${runtimeTasks.length - 5} 个子智能体任务`} onClick={() => openRuntimeTasks()}>+{runtimeTasks.length - 5}</button>}</div></div></article>}
     {/*
@@ -5128,6 +5149,33 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       reasoningEffort: newConversationReasoningEffort,
     });
   }, [conversationDraft, draftRecoveryStorageKey, newConversationModelName, newConversationProviderId, newConversationReasoningEffort]);
+  useEffect(() => {
+    if (composerScope) persistComposerDraft(composerScope);
+  }, [attachments, composerAnnotations, composerScope, persistComposerDraft, references, workspaceReferences]);
+  useEffect(() => {
+    if (!conversationDraft || !draftRecoveryStorageKey) return;
+    if (pendingBootstrap?.draft.id === conversationDraft.id || bootstrapRecovery?.draft.id === conversationDraft.id) return;
+    const recovery = {
+      draft: conversationDraft,
+      content: composerDraftRef.current,
+      attachments,
+      references,
+      workspaceReferences,
+      annotations: composerAnnotations,
+      providerId: newConversationProviderId,
+      modelName: newConversationModelName,
+      reasoningEffort: newConversationReasoningEffort,
+    };
+    writeConversationDraft(draftRecoveryStorageKey, conversationDraftHasContent(recovery) ? recovery : undefined);
+    const draftKey = conversationDraft.workDirectoryId ?? 'root';
+    setRecoverableConversationDrafts(current => {
+      if (conversationDraftHasContent(recovery)) return { ...current, [draftKey]: recovery };
+      if (!current[draftKey]) return current;
+      const updated = { ...current };
+      delete updated[draftKey];
+      return updated;
+    });
+  }, [attachments, bootstrapRecovery, composerAnnotations, conversationDraft, draftRecoveryStorageKey, newConversationModelName, newConversationProviderId, newConversationReasoningEffort, pendingBootstrap?.draft.id, references, workspaceReferences]);
   const runtime = runtimeQuery.data;
   const runtimeWritable = Boolean(workspace && runtime?.write_available);
   const canOpenConversation = Boolean(workspace && (runtime?.write_available || runtime?.fork_available));
@@ -7142,11 +7190,13 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       if (workspace && !request.bindingId) void api.deleteDraftAttachments(workspace.id, request.scope, value.path).catch(() => undefined);
       return;
     }
-    if (activeComposerScope.current === request.scope) setAttachments(items => [...items, value]);
-    else {
-      const snapshot = composerDraftsByScope.current.get(request.scope);
-      if (snapshot) composerDraftsByScope.current.set(request.scope, { ...snapshot, attachments: [...snapshot.attachments, value] });
-    }
+    const snapshot = composerDraftsByScope.current.get(request.scope);
+    if (snapshot) {
+      const attachments = [...snapshot.attachments, value];
+      composerDraftsByScope.current.set(request.scope, { ...snapshot, attachments });
+      if (activeComposerScope.current === request.scope) setAttachments(attachments);
+      persistComposerDraft(request.scope);
+    } else if (activeComposerScope.current === request.scope) setAttachments(items => [...items, value]);
   }, onError: (_error, request) => {
     if (removedPendingAttachmentIds.current.delete(request.id) || discardedDraftScopes.current.has(request.scope)) return;
     setPendingAttachments(current => current.map(item => item.id === request.id ? { ...item, state: 'failed', progress: 100 } : item));
@@ -7218,7 +7268,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       reportOperationError(selected?.id, error);
     },
   });
-  const resume = useMutation({ mutationFn: () => api.resumeConversation(workspace!.id, selected!.id), onMutate: () => setTurnState('resuming'), onSuccess: value => {
+  const resume = useMutation({ mutationFn: () => api.resumeConversation(workspace!.id, selected!.id), onMutate: () => {
+    setPauseDisplayFreeze(undefined);
+    setTurnState('resuming');
+  }, onSuccess: value => {
     if (value.cursor) setActiveTurnEventId(value.cursor);
     setConversationUnread(selected!.id, false);
     setTurnState('running');
@@ -7239,11 +7292,11 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     onError: error => reportOperationError(selected?.id, error),
   });
   const rewrite = useMutation({
-    mutationFn: ({ eventId, content, attachments, references, workspaceReferences, annotations }: RewriteRequest) => api.rerunMessage(
-      workspace!.id, selected!.id, eventId, content, attachments, references, workspaceReferences, annotations,
+    mutationFn: ({ bindingId, eventId, content, attachments, references, workspaceReferences, annotations }: RewriteRequest) => api.rerunMessage(
+      workspace!.id, bindingId, eventId, content, attachments, references, workspaceReferences, annotations,
     ),
     onMutate: request => {
-      const scope = selected!.id;
+      const scope = request.bindingId;
       const optimisticEventId = `pending-rewrite:${randomId()}`;
       const branch = eventBranchIds(displayedEvents, request.eventId);
       const branchSubmissionIds = new Set(displayedEvents.flatMap(event => {
@@ -7298,7 +7351,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         setDeferredRewriteUserEventIds(current => new Set([...current, cursor]));
         releaseDeferredFormalUserEvents(context.scope);
       }
-      refresh();
+      refresh(context?.scope);
     },
     onError: (error, _request, context) => {
       if (context) {
@@ -7328,6 +7381,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   }, [dispatchMessage, pendingMigratedSend, selected?.id, send.isPending]);
   useEffect(() => {
     if (turnState !== 'pausing' || !inputReadinessQuery.data?.ready) return;
+    setPauseDisplayFreeze(undefined);
     if (pendingRewrite) {
       const request = pendingRewrite;
       setPendingRewrite(undefined);
@@ -7335,8 +7389,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     } else setTurnState('paused');
   }, [inputReadinessQuery.data?.ready, pendingRewrite, rewrite, turnState]);
   const requestRewrite = useCallback((eventId: string, content: string) => {
+    if (!selected) return;
     const original = displayedEvents.find(event => event.id === eventId);
     const request: RewriteRequest = {
+      bindingId: selected.id,
       eventId,
       content,
       attachments: original?.payload.attachments,
@@ -7354,7 +7410,14 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       return;
     }
     if (effectiveTurnState === 'idle' || effectiveTurnState === 'paused') rewrite.mutate(request);
-  }, [displayedEvents, effectiveTurnState, interrupt, rewrite]);
+  }, [displayedEvents, effectiveTurnState, interrupt, rewrite, selected]);
+  const currentConversationSubmitting = (
+    send.isPending && send.variables?.bindingId === selected?.id
+  ) || (
+    rewrite.isPending && rewrite.variables?.bindingId === selected?.id
+  ) || (
+    bootstrap.isPending && pendingBootstrap?.draft.id === conversationDraft?.id
+  ) || submissionConfirmationPending;
   const openConversationDraft = useCallback((next: Omit<ConversationDraft, 'id'>, options: { restoreRecovery?: boolean } = {}) => {
     const outgoingScope = activeComposerScope.current;
     if (outgoingScope) persistComposerDraft(outgoingScope);
@@ -8116,7 +8179,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         onHistoryAnchorCaptured={onHistoryAnchorCaptured}
         onHistoryAnchorRestored={onHistoryAnchorRestored}
         requestStartedAt={requestStartedAt}
-        requestSubmitting={send.isPending || bootstrap.isPending || rewrite.isPending || submissionConfirmationPending}
+        requestSubmitting={currentConversationSubmitting}
         condensationPending={selectedCondensing}
         condensationStartedAt={condensationStatus?.bindingId === selected?.id ? condensationStatus?.startedAt : undefined}
         onRewrite={selected && canWrite && features.rewrite ? requestRewrite : undefined}
