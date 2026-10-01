@@ -78,6 +78,7 @@ interface OptimisticConversationRemoval {
   unreadConversationIds: Set<string>;
 }
 interface RewriteRequest {
+  bindingId: string;
   eventId: string;
   content: string;
   attachments?: AgentAttachment[];
@@ -4606,7 +4607,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     if (!completedInBackground || !workspace) return;
     void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-activity', workspace.id) });
     void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversations', workspace.id) });
-  }, [conversationActivityQuery.data, host, queryClient, routeBindingId, runningConversationIds, workspace]);
+  }, [conversationActivityQuery.data, conversationActivityQuery.isPlaceholderData, host, queryClient, routeBindingId, runningConversationIds, workspace]);
   const condensingConversationIds = useMemo(
     () => new Set(conversationActivityQuery.data?.condensing_binding_ids ?? []),
     [conversationActivityQuery.data],
@@ -5128,6 +5129,33 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       reasoningEffort: newConversationReasoningEffort,
     });
   }, [conversationDraft, draftRecoveryStorageKey, newConversationModelName, newConversationProviderId, newConversationReasoningEffort]);
+  useEffect(() => {
+    if (composerScope) persistComposerDraft(composerScope);
+  }, [attachments, composerAnnotations, composerScope, persistComposerDraft, references, workspaceReferences]);
+  useEffect(() => {
+    if (!conversationDraft || !draftRecoveryStorageKey) return;
+    if (pendingBootstrap?.draft.id === conversationDraft.id || bootstrapRecovery?.draft.id === conversationDraft.id) return;
+    const recovery = {
+      draft: conversationDraft,
+      content: composerDraftRef.current,
+      attachments,
+      references,
+      workspaceReferences,
+      annotations: composerAnnotations,
+      providerId: newConversationProviderId,
+      modelName: newConversationModelName,
+      reasoningEffort: newConversationReasoningEffort,
+    };
+    writeConversationDraft(draftRecoveryStorageKey, conversationDraftHasContent(recovery) ? recovery : undefined);
+    const draftKey = conversationDraft.workDirectoryId ?? 'root';
+    setRecoverableConversationDrafts(current => {
+      if (conversationDraftHasContent(recovery)) return { ...current, [draftKey]: recovery };
+      if (!current[draftKey]) return current;
+      const updated = { ...current };
+      delete updated[draftKey];
+      return updated;
+    });
+  }, [attachments, bootstrapRecovery, composerAnnotations, conversationDraft, draftRecoveryStorageKey, newConversationModelName, newConversationProviderId, newConversationReasoningEffort, pendingBootstrap?.draft.id, references, workspaceReferences]);
   const runtime = runtimeQuery.data;
   const runtimeWritable = Boolean(workspace && runtime?.write_available);
   const canOpenConversation = Boolean(workspace && (runtime?.write_available || runtime?.fork_available));
@@ -7142,11 +7170,13 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       if (workspace && !request.bindingId) void api.deleteDraftAttachments(workspace.id, request.scope, value.path).catch(() => undefined);
       return;
     }
-    if (activeComposerScope.current === request.scope) setAttachments(items => [...items, value]);
-    else {
-      const snapshot = composerDraftsByScope.current.get(request.scope);
-      if (snapshot) composerDraftsByScope.current.set(request.scope, { ...snapshot, attachments: [...snapshot.attachments, value] });
-    }
+    const snapshot = composerDraftsByScope.current.get(request.scope);
+    if (snapshot) {
+      const attachments = [...snapshot.attachments, value];
+      composerDraftsByScope.current.set(request.scope, { ...snapshot, attachments });
+      if (activeComposerScope.current === request.scope) setAttachments(attachments);
+      persistComposerDraft(request.scope);
+    } else if (activeComposerScope.current === request.scope) setAttachments(items => [...items, value]);
   }, onError: (_error, request) => {
     if (removedPendingAttachmentIds.current.delete(request.id) || discardedDraftScopes.current.has(request.scope)) return;
     setPendingAttachments(current => current.map(item => item.id === request.id ? { ...item, state: 'failed', progress: 100 } : item));
@@ -7218,7 +7248,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       reportOperationError(selected?.id, error);
     },
   });
-  const resume = useMutation({ mutationFn: () => api.resumeConversation(workspace!.id, selected!.id), onMutate: () => setTurnState('resuming'), onSuccess: value => {
+  const resume = useMutation({ mutationFn: () => api.resumeConversation(workspace!.id, selected!.id), onMutate: () => {
+    setPauseDisplayFreeze(undefined);
+    setTurnState('resuming');
+  }, onSuccess: value => {
     if (value.cursor) setActiveTurnEventId(value.cursor);
     setConversationUnread(selected!.id, false);
     setTurnState('running');
@@ -7239,11 +7272,11 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     onError: error => reportOperationError(selected?.id, error),
   });
   const rewrite = useMutation({
-    mutationFn: ({ eventId, content, attachments, references, workspaceReferences, annotations }: RewriteRequest) => api.rerunMessage(
-      workspace!.id, selected!.id, eventId, content, attachments, references, workspaceReferences, annotations,
+    mutationFn: ({ bindingId, eventId, content, attachments, references, workspaceReferences, annotations }: RewriteRequest) => api.rerunMessage(
+      workspace!.id, bindingId, eventId, content, attachments, references, workspaceReferences, annotations,
     ),
     onMutate: request => {
-      const scope = selected!.id;
+      const scope = request.bindingId;
       const optimisticEventId = `pending-rewrite:${randomId()}`;
       const branch = eventBranchIds(displayedEvents, request.eventId);
       const branchSubmissionIds = new Set(displayedEvents.flatMap(event => {
@@ -7298,7 +7331,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         setDeferredRewriteUserEventIds(current => new Set([...current, cursor]));
         releaseDeferredFormalUserEvents(context.scope);
       }
-      refresh();
+      refresh(context?.scope);
     },
     onError: (error, _request, context) => {
       if (context) {
@@ -7328,6 +7361,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   }, [dispatchMessage, pendingMigratedSend, selected?.id, send.isPending]);
   useEffect(() => {
     if (turnState !== 'pausing' || !inputReadinessQuery.data?.ready) return;
+    setPauseDisplayFreeze(undefined);
     if (pendingRewrite) {
       const request = pendingRewrite;
       setPendingRewrite(undefined);
@@ -7335,8 +7369,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     } else setTurnState('paused');
   }, [inputReadinessQuery.data?.ready, pendingRewrite, rewrite, turnState]);
   const requestRewrite = useCallback((eventId: string, content: string) => {
+    if (!selected) return;
     const original = displayedEvents.find(event => event.id === eventId);
     const request: RewriteRequest = {
+      bindingId: selected.id,
       eventId,
       content,
       attachments: original?.payload.attachments,
@@ -7354,7 +7390,14 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       return;
     }
     if (effectiveTurnState === 'idle' || effectiveTurnState === 'paused') rewrite.mutate(request);
-  }, [displayedEvents, effectiveTurnState, interrupt, rewrite]);
+  }, [displayedEvents, effectiveTurnState, interrupt, rewrite, selected]);
+  const currentConversationSubmitting = (
+    send.isPending && send.variables?.bindingId === selected?.id
+  ) || (
+    rewrite.isPending && rewrite.variables?.bindingId === selected?.id
+  ) || (
+    bootstrap.isPending && pendingBootstrap?.draft.id === conversationDraft?.id
+  ) || submissionConfirmationPending;
   const openConversationDraft = useCallback((next: Omit<ConversationDraft, 'id'>, options: { restoreRecovery?: boolean } = {}) => {
     const outgoingScope = activeComposerScope.current;
     if (outgoingScope) persistComposerDraft(outgoingScope);
@@ -8116,7 +8159,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         onHistoryAnchorCaptured={onHistoryAnchorCaptured}
         onHistoryAnchorRestored={onHistoryAnchorRestored}
         requestStartedAt={requestStartedAt}
-        requestSubmitting={send.isPending || bootstrap.isPending || rewrite.isPending || submissionConfirmationPending}
+        requestSubmitting={currentConversationSubmitting}
         condensationPending={selectedCondensing}
         condensationStartedAt={condensationStatus?.bindingId === selected?.id ? condensationStatus?.startedAt : undefined}
         onRewrite={selected && canWrite && features.rewrite ? requestRewrite : undefined}

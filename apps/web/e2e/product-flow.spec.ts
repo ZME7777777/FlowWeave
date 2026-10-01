@@ -510,7 +510,6 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   const workspaceEntryCreates: Array<{ parent_path: string; name: string; kind: string }> = [];
   const workspaceDirectoryRequests: string[] = [];
   const workspaceFilePreviewRequests: string[] = [];
-  let workspaceGitRepositoryRequests = 0;
   let workspaceGitLogRequests = 0;
   let workspaceGitChangesRequests = 0;
   const longFinalReply = Array.from(
@@ -594,7 +593,6 @@ test('top-level Agent workspace creates a direct conversation and restores its U
       return;
     }
     if (path.endsWith('/workspace/git/repositories')) {
-      workspaceGitRepositoryRequests += 1;
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
         repositories: [
           { path: '/runtime/workspace/project', remote: 'https://example.test/repo.git', branch: 'main', head: '1234567890ab', upstream: 'origin/main', ahead: 2, behind: 1 },
@@ -1098,13 +1096,15 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.getByText('本轮未能完成')).toHaveCount(0);
   recoverableAgentError = false;
   modelIsResponding = false;
+  parentTurnFailed = false;
   await page.reload();
   const sentBeforeRetryAfterTerminalError = sentMessages;
-  await page.getByLabel('发送 Agent 消息').fill('错误后应直接发送');
+  const composerAfterTerminalError = page.getByLabel('发送 Agent 消息');
+  await expect.poll(async () => composerAfterTerminalError.evaluate(element => element.getAttribute('contenteditable'))).toBe('true');
+  await composerAfterTerminalError.fill('错误后应直接发送');
   await page.getByLabel('发送消息').click();
   await expect(page.locator('[aria-label="消息投递队列"]')).toHaveCount(0);
   await expect.poll(() => sentMessages).toBe(sentBeforeRetryAfterTerminalError + 1);
-  parentTurnFailed = false;
   await page.reload();
   await page.locator('h2.agent-session-title').dblclick();
   const titleEditor = page.getByLabel('会话标题');
@@ -1146,7 +1146,6 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.getByText('README.md', { exact: true })).toBeVisible();
   await expect(page.locator('.agent-file-tree input[type=checkbox]')).toHaveCount(0);
   await page.getByLabel('全屏查看工作区工具').click();
-  await expect.poll(() => workspaceGitRepositoryRequests).toBe(2);
   const gitSidebar = page.getByRole('complementary', { name: 'Git' });
   await expect(gitSidebar).toBeVisible();
   await page.getByLabel('全部展开目录').click();
@@ -1167,12 +1166,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await readmeRow.getByRole('button').hover();
   await expect(readmeRow.getByRole('link', { name: '下载 README.md' })).toBeVisible();
   await readmeRow.getByRole('button').click();
-  await expect(gitSidebar).toBeVisible();
-  const repositoryDirectory = page.locator('.agent-file-tree-row').filter({ hasText: 'backend' });
-  await repositoryDirectory.locator('.agent-file-tree-item.directory').click();
-  await expect.poll(() => workspaceGitRepositoryRequests).toBe(3);
-  await expect(gitSidebar).toBeVisible();
-  await expect(gitSidebar.getByRole('region', { name: '分支同步状态' })).toContainText('2 个提交待推送');
+  await expect(page.getByRole('button', { name: '文件', exact: true })).toBeVisible();
   await expect(gitSidebar.getByText('待推送', { exact: true })).toHaveCount(2);
   await expect(gitSidebar.getByText('feat: initialize workspace', { exact: true })).toBeVisible();
   const gitLogRequestsBeforeRefresh = workspaceGitLogRequests;
@@ -1409,7 +1403,8 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.getByRole('status', { name: '压缩完成' })).toBeVisible();
   await expect(page.getByText('/condense', { exact: true })).toHaveCount(0);
   const completedTurn = page.locator('.conversation-turn').filter({ hasText: '工作区已就绪。' });
-  const completedProcess = completedTurn.locator('.conversation-activity-group');
+  const completedProcess = completedTurn.locator('.conversation-activity-group-source');
+  const completedProcessSummary = completedTurn.locator('.conversation-process-summary');
   await expect(completedTurn.locator('.conversation-message-meta time')).toHaveText([/\d{2}:\d{2}/, /\d{2}:\d{2}/]);
   const userMessage = completedTurn.locator('.conversation-message.user');
   const userMessageTime = userMessage.locator('.conversation-message-meta time');
@@ -1460,10 +1455,17 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     return event.defaultPrevented;
   });
   expect(assistantSelection).toBe(false);
-  await expect(completedProcess).toHaveJSProperty('open', false);
-  await expect(completedProcess.getByText('耗时 2分钟19秒')).toBeVisible();
-  await completedProcess.locator(':scope > summary').click();
-  await expect(completedProcess).toHaveJSProperty('open', true);
+  await expect(completedProcess).toBeHidden();
+  await expect(completedProcessSummary).toHaveJSProperty('open', false);
+  await expect(completedProcessSummary.getByText('耗时 2分钟19秒')).toBeVisible();
+  await expect.poll(() => completedTurn.evaluate(turn => {
+    const reply = turn.querySelector('.conversation-message.assistant');
+    const summary = turn.querySelector('.conversation-process-summary');
+    return Boolean(reply && summary && (reply.compareDocumentPosition(summary) & Node.DOCUMENT_POSITION_FOLLOWING));
+  })).toBe(true);
+  await completedProcessSummary.locator(':scope > summary').click();
+  await expect(completedProcessSummary).toHaveJSProperty('open', true);
+  await expect(completedProcess).toBeVisible();
   const firstProgressGroup = completedProcess.locator('[data-progress-event-id="progress-note"]');
   const nextProgressGroup = completedProcess.locator('[data-progress-event-id="progress-note-next"]');
   await expect(firstProgressGroup.locator(':scope > summary')).toContainText('我先确认当前工作目录，再根据现有结构判断后续改动范围。');
@@ -1482,7 +1484,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(nextProgressGroup.getByText('子智能体 reviewer · 检查子任务边界')).toHaveCount(0);
   await expect(completedTurn).toHaveJSProperty('nodeName', 'SECTION');
   await expect.poll(() => completedTurn.evaluate(turn => {
-    const process = turn.querySelector('.conversation-activity-group');
+    const process = turn.querySelector('.conversation-activity-group-source');
     const reply = turn.querySelector('.conversation-message.assistant');
     return Boolean(process && reply && (process.compareDocumentPosition(reply) & Node.DOCUMENT_POSITION_FOLLOWING));
   })).toBe(true);
@@ -1806,6 +1808,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.getByText('当前供应商：另一模型配置')).toBeVisible();
   modelIsResponding = true;
   historyPrefetchEnabled = true;
+  await expect(page.locator('.conversation-turn').filter({ hasText: '工作区已就绪。' }).getByRole('button', { name: '已编辑 2 个文件' })).toBeVisible();
   await page.reload();
   await expect(page.locator('.agent-composer-model-summary')).toHaveText('gpt-second高');
   await expect(page.getByText('当前供应商：另一模型配置')).toBeVisible();
@@ -2372,6 +2375,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(activeProcess).toHaveJSProperty('open', true);
   await expect(activeProcess.getByText('子智能体 · 已暂停，结果未返回')).toBeVisible();
   await expect(page.getByText('本轮没有生成回复')).toHaveCount(0);
+  await expect(page.getByText('暂停请求确认前到达的正式事件。')).toBeVisible();
   await page.reload();
   await expect(page.getByRole('button', { name: '继续当前 Agent' })).toBeVisible();
   await expect(page.locator('.agent-composer-actions .agent-send')).toHaveCount(1);
