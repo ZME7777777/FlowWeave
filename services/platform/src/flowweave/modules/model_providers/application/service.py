@@ -532,10 +532,8 @@ def provider_connection_snapshot(db: Session, provider_id: str) -> ProviderConne
     """Read and decrypt provider connection data inside a short transaction."""
 
     item = get_provider(db, provider_id)
-    if item.auth_type != "API_KEY":
-        raise ValueError(
-            "Only OpenAI-compatible API-key providers expose an OpenAI model-list endpoint"
-        )
+    if item.auth_type not in {"API_KEY", "ANTHROPIC_API_KEY"}:
+        raise ValueError("Only API-key providers expose a model-list endpoint")
     return ProviderConnectionSnapshot(
         provider_id=item.id,
         base_url=item.base_url.rstrip("/"),
@@ -601,8 +599,8 @@ def preview_provider_connection_snapshot(
         headers["Authorization"] = f"Bearer {api_key}"
     elif payload.provider_id:
         item = get_provider(db, payload.provider_id)
-        if item.auth_type != "API_KEY":
-            raise conflict("model discovery preview requires an API key provider")
+        if item.auth_type not in {"API_KEY", "ANTHROPIC_API_KEY"}:
+            raise conflict("model discovery preview requires an API-key provider")
         headers = provider_auth_headers(item)
     return ProviderConnectionSnapshot(
         provider_id=payload.provider_id or "preview",
