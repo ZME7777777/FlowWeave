@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 from uuid import uuid4
 
-from sqlalchemy import Engine, String, create_engine, event, text
+from sqlalchemy import Engine, String, and_, create_engine, event, or_, select, text
 from sqlalchemy.orm import (
     DeclarativeBase,
     Mapped,
@@ -98,6 +98,115 @@ def _is_user_isolated_model(model: type[Any]) -> bool:
     return table is not None and table.name in _USER_ISOLATED_TABLES
 
 
+def _tenant_read_criterion(model: type[Any], user_id: str) -> Any:
+    """Keep top-level FlowRun control-plane resources shared.
+
+    A top-level FlowRun owns the shared container. Nested FlowRuns and all
+    execution records remain private to the user that created them.
+    """
+
+    from flowweave.modules.runs.infrastructure.models import FlowRun
+    from flowweave.modules.sandboxes.infrastructure.models import (
+        FlowRunRuntime,
+        FlowRunRuntimeAllocation,
+    )
+    from flowweave.modules.users.application.security import FLOWWEAVE_USER_ID
+
+    table = model.__table__.name
+    private = model.owner_user_id == user_id
+    shared_owner = model.owner_user_id == FLOWWEAVE_USER_ID
+    if table == "flow_runs":
+        shared = model.parent_flow_run_id.is_(None)
+    elif table == "run_snapshots":
+        shared = model.flow_run_id.in_(
+            select(FlowRun.id).where(
+                FlowRun.parent_flow_run_id.is_(None),
+                FlowRun.owner_user_id == FLOWWEAVE_USER_ID,
+            )
+        )
+    elif table in {"flow_run_runtime_allocations", "flow_run_runtimes"}:
+        shared = model.node_attempt_id.is_(None)
+    elif table == "runtime_generations":
+        shared = model.runtime_session_id.in_(
+            select(FlowRunRuntime.id).where(
+                FlowRunRuntime.node_attempt_id.is_(None),
+                FlowRunRuntime.owner_user_id == FLOWWEAVE_USER_ID,
+            )
+        )
+    elif table == "flow_run_runtime_secret_references":
+        shared = model.id.in_(
+            select(FlowRunRuntimeAllocation.secret_reference_id).where(
+                FlowRunRuntimeAllocation.node_attempt_id.is_(None),
+                FlowRunRuntimeAllocation.owner_user_id == FLOWWEAVE_USER_ID,
+            )
+        )
+    else:
+        return private
+    return or_(private, and_(shared_owner, shared))
+
+
+def _is_shared_flowrun_item(session: Session, item: Any) -> bool:
+    """Return whether an ORM row belongs to the shared top-level FlowRun."""
+
+    from flowweave.modules.runs.infrastructure.models import FlowRun
+    from flowweave.modules.sandboxes.infrastructure.models import (
+        FlowRunRuntime,
+        FlowRunRuntimeAllocation,
+    )
+
+    table = item.__table__.name
+    if table == "flow_runs":
+        return item.parent_flow_run_id is None
+    if table == "run_snapshots":
+        run = next(
+            (
+                candidate
+                for candidate in session.new
+                if isinstance(candidate, FlowRun) and candidate.id == item.flow_run_id
+            ),
+            None,
+        )
+        if run is None:
+            with session.no_autoflush:
+                run = session.get(FlowRun, item.flow_run_id)
+        return run is not None and run.parent_flow_run_id is None
+    if table in {"flow_run_runtime_allocations", "flow_run_runtimes"}:
+        return item.node_attempt_id is None
+    if table == "runtime_generations":
+        runtime = next(
+            (
+                candidate
+                for candidate in session.new
+                if isinstance(candidate, FlowRunRuntime) and candidate.id == item.runtime_session_id
+            ),
+            None,
+        )
+        if runtime is None:
+            with session.no_autoflush:
+                runtime = session.get(FlowRunRuntime, item.runtime_session_id)
+        return runtime is not None and runtime.node_attempt_id is None
+    if table == "flow_run_runtime_secret_references":
+        allocation = next(
+            (
+                candidate
+                for candidate in session.new
+                if getattr(getattr(candidate, "__table__", None), "name", None)
+                == "flow_run_runtime_allocations"
+                and candidate.secret_reference_id == item.id
+            ),
+            None,
+        )
+        if allocation is None:
+            with session.no_autoflush:
+                allocation = session.scalar(
+                    select(FlowRunRuntimeAllocation).where(
+                        FlowRunRuntimeAllocation.secret_reference_id == item.id
+                    )
+                )
+        return allocation is not None and allocation.node_attempt_id is None
+    return False
+
+
 class Base(DeclarativeBase):
     """Shared declarative registry; mappings are owned by module infrastructure packages."""
 
@@ -133,7 +242,9 @@ def now() -> datetime:
 
 
 @event.listens_for(Session, "after_begin")
-def _bind_tenant_context(session: Session, _transaction: object, connection: object) -> None:
+def _bind_tenant_context(  # pyright: ignore[reportUnusedFunction]
+    session: Session, _transaction: object, connection: object
+) -> None:
     """Set transaction-local PostgreSQL RLS identity for every ORM session."""
 
     from flowweave.modules.users.application.security import (
@@ -155,7 +266,9 @@ def _bind_tenant_context(session: Session, _transaction: object, connection: obj
 
 
 @event.listens_for(Session, "before_flush")
-def _enforce_tenant_writes(session: Session, _flush_context: object, _instances: object) -> None:
+def _enforce_tenant_writes(  # pyright: ignore[reportUnusedFunction]
+    session: Session, _flush_context: object, _instances: object
+) -> None:
     """Assign ownership and reject cross-user ORM writes before SQL is emitted."""
 
     from flowweave.modules.users.application.security import (
@@ -164,11 +277,18 @@ def _enforce_tenant_writes(session: Session, _flush_context: object, _instances:
         tenant_filter_bypassed,
     )
 
-    if tenant_filter_bypassed():
-        return
     user_id = current_user_id(default=FLOWWEAVE_USER_ID)
     for item in session.new:
-        if _is_user_isolated_model(type(item)):
+        item_type = cast(type[Any], type(item))
+        if _is_user_isolated_model(item_type) and _is_shared_flowrun_item(session, item):
+            item.owner_user_id = FLOWWEAVE_USER_ID
+    if tenant_filter_bypassed():
+        return
+    for item in session.new:
+        item_type = cast(type[Any], type(item))
+        if _is_user_isolated_model(item_type):
+            if _is_shared_flowrun_item(session, item):
+                continue
             tenant_item = item  # keep the dynamic ownership mixin local to persistence
             owner = tenant_item.owner_user_id  # type: ignore[attr-defined]
             if owner in {None, ""}:
@@ -176,14 +296,19 @@ def _enforce_tenant_writes(session: Session, _flush_context: object, _instances:
             elif owner != user_id:
                 raise RuntimeError("Cross-user record creation is forbidden")
     for item in session.dirty.union(session.deleted):
+        item_type = cast(type[Any], type(item))
         if (
-            _is_user_isolated_model(type(item)) and item.owner_user_id != user_id  # type: ignore[attr-defined]
+            _is_user_isolated_model(item_type)
+            and not _is_shared_flowrun_item(session, item)
+            and item.owner_user_id != user_id  # type: ignore[attr-defined]
         ):
             raise RuntimeError("Cross-user record mutation is forbidden")
 
 
 @event.listens_for(Session, "do_orm_execute")
-def _enforce_tenant_reads(execute_state: Any) -> None:
+def _enforce_tenant_reads(  # pyright: ignore[reportUnusedFunction]
+    execute_state: Any,
+) -> None:
     """Apply tenant criteria even when PostgreSQL is reached through its owner role."""
 
     from flowweave.modules.users.application.security import (
@@ -204,7 +329,7 @@ def _enforce_tenant_reads(execute_state: Any) -> None:
             statement = statement.options(
                 with_loader_criteria(
                     model,
-                    model.owner_user_id == user_id,
+                    _tenant_read_criterion(model, user_id),
                     include_aliases=True,
                 )
             )
@@ -214,7 +339,7 @@ def _enforce_tenant_reads(execute_state: Any) -> None:
         mapper = execute_state.bind_arguments.get("mapper")
         if mapper is not None and _is_user_isolated_model(mapper.class_):
             execute_state.statement = execute_state.statement.where(
-                mapper.class_.owner_user_id == user_id
+                _tenant_read_criterion(mapper.class_, user_id)
             )
 
 

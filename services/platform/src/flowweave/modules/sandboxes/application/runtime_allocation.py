@@ -22,6 +22,7 @@ from flowweave.modules.sandboxes.infrastructure.models import (
     FlowRunRuntimeSecretReference,
     ManagedSandbox,
 )
+from flowweave.modules.users.application.security import FLOWWEAVE_USER_ID
 from flowweave.shared.application.transactions import (
     register_commit_action,
     register_rollback_action,
@@ -528,6 +529,9 @@ def allocate_flow_run_runtime(db: Session, flow_run_id: str) -> RuntimeStorageAl
             secret_digest=hashlib.sha256(secret_key.encode("ascii")).hexdigest(),
         )
         db.add(secret_reference)
+        # The secret must exist before its FK-backed allocation. It is private
+        # for this first insert, then becomes shared only after the top-level
+        # allocation gives the RLS policy a durable ownership proof.
         db.flush()
         allocation = FlowRunRuntimeAllocation(
             id=allocation_id,
@@ -536,6 +540,8 @@ def allocate_flow_run_runtime(db: Session, flow_run_id: str) -> RuntimeStorageAl
             relative_root=relative.as_posix(),
         )
         db.add(allocation)
+        db.flush()
+        secret_reference.owner_user_id = FLOWWEAVE_USER_ID
         db.flush()
         _verify_layout(allocation)
     except BaseException:

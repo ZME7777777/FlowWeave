@@ -7932,3 +7932,11 @@ Web 发布恢复：首轮公网浏览器检查发现 FR-563 准备的 Web 镜像
 本地验收：Ruff format/check、受影响源码 Pyright、Web ESLint/typecheck/production build、`unit_tests/test_http_user_isolation.py`（9 passed）、共享流程入口定向 Playwright（1 passed）、`git diff --check` 和唯一 Alembic head `0145_tenant_flow_run_numbers` 通过。后端集成用例覆盖两个用户看到同一流程、各自创建 `Run #1`、运行列表与详情互不可见、普通用户 Agent Workspace 返回 403、本人 FlowRun 节点会话返回 200。`tests/test_users.py` 未在本机执行：本机没有 Docker socket，testcontainers 在 fixture setup 阶段无法创建 PostgreSQL；不是业务断言失败，PostgreSQL 迁移与租户验证改在远端生产备份克隆库完成。
 
 发布验收：重新按提交 `7c616cb3` 通过 platform／web 预检，从 commit-bound git archive 构建并校验 linux/amd64 镜像；平台镜像 ID `sha256:2f063c5cbe315ccfcb26ee28e157e9c4d7a81d91a96bc9c5e1f919889f6807cf`，Web 镜像 ID `sha256:c6e65deec3f4d1d212baceb23bc22050df3d87d533ed1b4a80541934b2adeab7`，两者 source commit 标签均为 `7c616cb33807edd8562f72dca0bd0f04e8a0987e`。服务器侧保留迁移前和迁移后的受保护数据库备份及旧镜像 rollback tags；正式切换使用的备份 SHA-256 为 `36793e6c99decb17d7e3d419787f82e4376f12b69d583992d5c12bf82cb13dab`。迁移前备份克隆库真实执行 0144→0145、唯一键列顺序、两个 owner 同一 flow/run_no、临时 `NOBYPASSRLS` 角色的三用户 RLS 投影、应用 ORM 租户投影及 0145→0144→0145 往返，全部通过；临时角色和克隆库均已清理。正式 migration 退出成功，数据库 head 为 `0145_tenant_flow_run_numbers`；api、stream-api 健康，worker、web 运行，公网 `/flowweave/`、实际静态资源、带前缀认证 API、FlowRun 深层路由和 FastGPT 根入口验证通过。生产只读双用户投影确认流程集合相同，顶层及嵌套 FlowRun ID 集合互不相交；未创建或修改生产运行记录。Runtime Provider 容器和镜像在发布前后保持不变，未重启或替换。
+
+### FR-569 共享 FlowRun 控制面与用户执行记录隔离纠偏 — CURRENT
+
+依赖：FR-568 与生产 head 0145。
+
+范围：纠正 FR-568 对产品边界的误解。顶层 FlowRun、冻结快照、物理 Runtime allocation/session/generation、容器和全局终端属于共享控制面，所有登录用户看到并进入同一 FlowRun；逐步运行、连续运行和直接启动产生的子 FlowRun／NodeRun／Attempt／事件／产物／会话／记录工作目录继续按用户隔离。新顶层 FlowRun 使用稳定共享 owner 和全局运行编号；子记录继续使用用户 owner 与用户内编号，NodeRun 序号和产物版本号也必须在共享 FlowRun 内按用户独立计数。独立 Agent Workspace 授权保持不变。
+
+验收：两个用户的 FlowRun 列表与详情返回同一顶层 ID、快照和 Runtime；各自在同一 FlowRun 下创建的逐步／连续／直接 NodeRun 只对本人可见，跨用户 ID 返回 404；真实 PostgreSQL RLS 与 ORM owner 过滤边界一致。完成迁移升降级、后端定向测试、Web lint/typecheck/build、定向 Playwright、唯一 Alembic head、`git diff --check` 和 staged diff 复核后提交并部署到已授权受管服务器；发布后只读验证现有两个顶层 FlowRun 对 LDAP 用户可见，而七条历史嵌套记录仍只归 `flowweave`。

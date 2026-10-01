@@ -13,6 +13,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -24,11 +25,22 @@ class FlowRun(Base):
     __tablename__ = "flow_runs"
     __table_args__ = (
         CheckConstraint("run_mode IN ('MANUAL', 'AUTOMATIC')", name="ck_flow_runs_run_mode"),
-        UniqueConstraint(
+        Index(
+            "uq_flow_run_number",
+            "flow_definition_id",
+            "run_no",
+            unique=True,
+            postgresql_where=text("parent_flow_run_id IS NULL"),
+            sqlite_where=text("parent_flow_run_id IS NULL"),
+        ),
+        Index(
+            "uq_flow_run_record_number",
             "owner_user_id",
             "flow_definition_id",
             "run_no",
-            name="uq_flow_run_number",
+            unique=True,
+            postgresql_where=text("parent_flow_run_id IS NOT NULL"),
+            sqlite_where=text("parent_flow_run_id IS NOT NULL"),
         ),
     )
 
@@ -138,7 +150,14 @@ class RunSnapshot(Base):
 
 class NodeRun(Base):
     __tablename__ = "node_runs"
-    __table_args__ = (UniqueConstraint("flow_run_id", "sequence_no", name="uq_run_node_sequence"),)
+    __table_args__ = (
+        UniqueConstraint(
+            "owner_user_id",
+            "flow_run_id",
+            "sequence_no",
+            name="uq_run_node_sequence",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
     flow_run_id: Mapped[str] = mapped_column(String(36), index=True)
@@ -191,7 +210,11 @@ class ArtifactVersion(Base):
     __tablename__ = "artifact_versions"
     __table_args__ = (
         UniqueConstraint(
-            "flow_run_id", "field_key", "version_no", name="uq_artifact_field_version"
+            "owner_user_id",
+            "flow_run_id",
+            "field_key",
+            "version_no",
+            name="uq_artifact_field_version",
         ),
         UniqueConstraint(
             "producer_attempt_id",

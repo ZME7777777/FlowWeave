@@ -109,7 +109,7 @@ const runningAutomatic = {
   },
 };
 
-test('shared flow entry remains visible when the current user has no runs or direct Agent access', async ({ page }) => {
+test('shared FlowRun remains visible without direct Agent access', async ({ page }) => {
   await page.route('**/api/v1/**', async route => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
@@ -121,7 +121,7 @@ test('shared flow entry remains visible when the current user has no runs or dir
       is_super_admin: false,
       can_use_agent_sessions: false,
     });
-    if (path === '/api/v1/flow-runs' && request.method() === 'GET') return respond([]);
+    if (path === '/api/v1/flow-runs' && request.method() === 'GET') return respond([run]);
     if (path === '/api/v1/flows' && request.method() === 'GET') return respond([definition]);
     if (path === '/api/v1/terminal-environments') return respond([]);
     return respond({ error: { code: 'RESOURCE_NOT_FOUND', message: path, details: {} } }, 404);
@@ -131,10 +131,11 @@ test('shared flow entry remains visible when the current user has no runs or dir
   await expect(page.getByRole('navigation').getByRole('button', { name: 'Agent 会话' })).toHaveCount(0);
   await page.getByRole('button', { name: '流程运行', exact: true }).click();
 
-  await expect(page.getByText('当前账号暂无运行记录', { exact: true })).toBeVisible();
+  await expect(page.getByText('1 个流程 · 1 个运行', { exact: true })).toBeVisible();
   const sharedFlow = page.locator('.run-group').filter({ hasText: definition.name });
   await expect(sharedFlow).toBeVisible();
-  await expect(sharedFlow).toContainText('0 个运行');
+  await expect(sharedFlow).toContainText('1 个运行');
+  await expect(sharedFlow).toContainText(`Run #${run.run_no} · ${run.name}`);
   await expect(sharedFlow.getByRole('button', { name: '启动', exact: true })).toBeEnabled();
 });
 

@@ -458,6 +458,23 @@ def _run(db: Session, run_id: str) -> FlowRun:
     return item
 
 
+def _next_flow_run_number(db: Session, flow_definition_id: str, *, top_level: bool) -> int:
+    scope = (
+        FlowRun.parent_flow_run_id.is_(None)
+        if top_level
+        else FlowRun.parent_flow_run_id.is_not(None)
+    )
+    return (
+        db.scalar(
+            select(func.max(FlowRun.run_no)).where(
+                FlowRun.flow_definition_id == flow_definition_id,
+                scope,
+            )
+        )
+        or 0
+    ) + 1
+
+
 def _locked_run(db: Session, run_id: str) -> FlowRun:
     item = db.scalar(select(FlowRun).where(FlowRun.id == run_id).with_for_update())
     if not item:
@@ -3269,14 +3286,7 @@ def _materialize_scheduled_run(
     readiness = cast(dict[str, Any], plan.get("readiness") or {})
     if not readiness.get("ready") or not snapshot_template:
         raise DomainError("SCHEDULE_TEMPLATE_INVALID", "Frozen schedule master is incomplete", 409)
-    run_no = (
-        db.scalar(
-            select(func.max(FlowRun.run_no)).where(
-                FlowRun.flow_definition_id == schedule.flow_definition_id
-            )
-        )
-        or 0
-    ) + 1
+    run_no = _next_flow_run_number(db, schedule.flow_definition_id, top_level=False)
     run = FlowRun(
         flow_definition_id=schedule.flow_definition_id,
         run_no=run_no,
@@ -3917,10 +3927,7 @@ def start_flow(
             {"environment_version_id": payload.environment_version_id},
         )
     definition = _snapshot_definition(db, flow_id, environment_version_id=environment.id)
-    run_no = (
-        db.scalar(select(func.max(FlowRun.run_no)).where(FlowRun.flow_definition_id == flow_id))
-        or 0
-    ) + 1
+    run_no = _next_flow_run_number(db, flow_id, top_level=True)
     run_name = payload.name or f"{flow.name} · Run #{run_no}"
     run = FlowRun(
         flow_definition_id=flow_id,
@@ -4066,14 +4073,7 @@ def _create_nested_stepwise_run_record(
             {"environment_version_id": parent.environment_version_id},
         )
     source_snapshot = _active_snapshot(db, parent)
-    run_no = (
-        db.scalar(
-            select(func.max(FlowRun.run_no)).where(
-                FlowRun.flow_definition_id == parent.flow_definition_id
-            )
-        )
-        or 0
-    ) + 1
+    run_no = _next_flow_run_number(db, parent.flow_definition_id, top_level=False)
     record = FlowRun(
         flow_definition_id=parent.flow_definition_id,
         run_no=run_no,
@@ -4722,10 +4722,7 @@ def create_automatic_run_draft(
         )
     validate_runtime_manifest(environment.manifest_json, environment_version_id=environment.id)
     definition = _snapshot_definition(db, flow_id, environment_version_id=environment.id)
-    run_no = (
-        db.scalar(select(func.max(FlowRun.run_no)).where(FlowRun.flow_definition_id == flow_id))
-        or 0
-    ) + 1
+    run_no = _next_flow_run_number(db, flow_id, top_level=parent_flow_run_id is None)
     run = FlowRun(
         flow_definition_id=flow_id,
         run_no=run_no,
@@ -4974,14 +4971,11 @@ def copy_automatic_run_draft(
     source_plan = copy.deepcopy(dict(source.automation_plan_json or {}))
     if not source_plan.get("start_node_key"):
         raise DomainError("AUTOMATION_PLAN_INVALID", "automatic plan is missing a start node", 409)
-    run_no = (
-        db.scalar(
-            select(func.max(FlowRun.run_no)).where(
-                FlowRun.flow_definition_id == source.flow_definition_id
-            )
-        )
-        or 0
-    ) + 1
+    run_no = _next_flow_run_number(
+        db,
+        source.flow_definition_id,
+        top_level=source.parent_flow_run_id is None,
+    )
     copied = FlowRun(
         flow_definition_id=source.flow_definition_id,
         run_no=run_no,

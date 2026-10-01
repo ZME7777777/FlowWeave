@@ -18,6 +18,13 @@ from flowweave.bootstrap import api as bootstrap
 from flowweave.bootstrap.settings import Settings
 from flowweave.modules.model_providers.application import service as providers
 from flowweave.modules.orchestration.application import service as orchestration
+from flowweave.modules.runs.infrastructure.models import ArtifactVersion, NodeRun, RunSnapshot
+from flowweave.modules.sandboxes.infrastructure.models import (
+    FlowRunRuntime,
+    FlowRunRuntimeAllocation,
+    FlowRunRuntimeSecretReference,
+    RuntimeGeneration,
+)
 from flowweave.modules.users.application import service as users
 from flowweave.modules.users.application.ldap import (
     LdapDirectorySnapshot,
@@ -70,6 +77,13 @@ def isolated_http(monkeypatch):
         ModelProvider,
         ProviderModel,
         FlowRun,
+        RunSnapshot,
+        NodeRun,
+        ArtifactVersion,
+        FlowRunRuntimeSecretReference,
+        FlowRunRuntimeAllocation,
+        FlowRunRuntime,
+        RuntimeGeneration,
         NodeDirectory,
         FlowDefinition,
     ):
@@ -147,17 +161,18 @@ def isolated_http(monkeypatch):
                         ProviderModel(
                             provider_id=f"{prefix}-provider", model_name=f"{prefix}-model"
                         ),
-                        FlowRun(
-                            id=f"{prefix}-run",
-                            name=f"{prefix}-run",
-                            flow_definition_id="shared-flow",
-                            # Run numbers are scoped to the user. Both users
-                            # can therefore own Run #1 for the shared flow.
-                            run_no=1,
-                        ),
                     ]
                 )
                 db.flush()
+        with tenant_user(FLOWWEAVE_USER_ID):
+            db.add(
+                FlowRun(
+                    id="shared-run",
+                    name="shared-run",
+                    flow_definition_id="shared-flow",
+                    run_no=1,
+                )
+            )
         db.commit()
     app = bootstrap.create_app(settings)
     # No lifespan: external services and startup migrations are unnecessary.
@@ -190,7 +205,6 @@ def test_ldap_http_lists_and_account_switch_respect_record_ownership(isolated_ht
         for path, suffix in (
             ("website-credentials", "credential"),
             ("model-providers", "provider"),
-            ("flow-runs", "run"),
         ):
             response = client.get(f"/api/v1/{path}")
             assert response.status_code == 200, response.text
@@ -199,6 +213,9 @@ def test_ldap_http_lists_and_account_switch_respect_record_ownership(isolated_ht
                 assert [row["model_name"] for row in response.json()[0]["models"]] == [
                     f"{prefix}-model"
                 ]
+        runs = client.get("/api/v1/flow-runs")
+        assert runs.status_code == 200, runs.text
+        assert [row["id"] for row in runs.json()] == ["shared-run"]
         assert client.post("/api/v1/auth/logout").status_code == 204
 
 
@@ -216,20 +233,155 @@ def test_ldap_cannot_delete_another_users_records_by_id(isolated_http, path):
     assert len(response.json()) == 1
 
 
-def test_ldap_user_without_private_records_gets_empty_http_lists(isolated_http):
+def test_ldap_user_without_private_records_still_sees_shared_flow_run(isolated_http):
     client, engine, employee_id = isolated_http
     with tenant_user(employee_id), Session(engine) as db:
-        for model in (WebsiteCredential, ProviderModel, ModelProvider, FlowRun):
+        for model in (WebsiteCredential, ProviderModel, ModelProvider):
             db.execute(delete(model))
         db.commit()
     login(client, "employee")
-    for path in ("website-credentials", "model-providers", "flow-runs"):
+    for path in ("website-credentials", "model-providers"):
         response = client.get(f"/api/v1/{path}")
         assert response.status_code == 200, response.text
         assert response.json() == []
+    runs = client.get("/api/v1/flow-runs")
+    assert runs.status_code == 200, runs.text
+    assert [row["id"] for row in runs.json()] == ["shared-run"]
     login(client, "flowweave")
     assert len(client.get("/api/v1/website-credentials").json()) == 1
     assert len(client.get("/api/v1/model-providers").json()) == 1
+
+
+def test_shared_flow_control_plane_and_private_execution_records(isolated_http):
+    _client, engine, employee_id = isolated_http
+    with tenant_user(employee_id), Session(engine, expire_on_commit=False) as db:
+        shared_snapshot = RunSnapshot(
+            id="shared-snapshot",
+            flow_run_id="shared-run",
+            version=1,
+            schema_version=2,
+            definition_json={},
+            definition_hash="shared-definition",
+            runtime_manifest_json={},
+            runtime_manifest_hash="shared-manifest",
+            environment_version_id="shared-environment",
+        )
+        shared_secret = FlowRunRuntimeSecretReference(
+            id="shared-secret",
+            encrypted_secret_key=b"encrypted",
+            secret_digest="shared-secret-digest",
+        )
+        db.add_all((shared_snapshot, shared_secret))
+        db.flush()
+        assert shared_snapshot.owner_user_id == FLOWWEAVE_USER_ID
+        assert shared_secret.owner_user_id == employee_id
+        shared_allocation = FlowRunRuntimeAllocation(
+            id="shared-allocation",
+            flow_run_id="shared-run",
+            node_attempt_id=None,
+            secret_reference_id=shared_secret.id,
+            relative_root=".flow-run-runtimes/shared-run",
+        )
+        db.add(shared_allocation)
+        db.flush()
+        shared_secret.owner_user_id = FLOWWEAVE_USER_ID
+        db.flush()
+        shared_runtime = FlowRunRuntime(
+            id="shared-runtime",
+            flow_run_id="shared-run",
+            node_attempt_id=None,
+            environment_version_id="shared-environment",
+            runtime_image_digest=f"sha256:{'1' * 64}",
+            workspace_allocation_id=shared_allocation.id,
+            active_generation=1,
+        )
+        shared_generation = RuntimeGeneration(
+            id="shared-generation",
+            runtime_session_id=shared_runtime.id,
+            generation=1,
+            runtime_image_digest=shared_runtime.runtime_image_digest,
+            fence_token="shared-fence",
+        )
+        db.add_all((shared_runtime, shared_generation))
+        db.commit()
+        assert {
+            shared_snapshot.owner_user_id,
+            shared_secret.owner_user_id,
+            shared_allocation.owner_user_id,
+            shared_runtime.owner_user_id,
+            shared_generation.owner_user_id,
+        } == {FLOWWEAVE_USER_ID}
+
+    private_ids = {}
+    for user_id, prefix in ((FLOWWEAVE_USER_ID, "admin"), (employee_id, "employee")):
+        with tenant_user(user_id), Session(engine, expire_on_commit=False) as db:
+            record = FlowRun(
+                id=f"{prefix}-record",
+                name=f"{prefix}-record",
+                flow_definition_id="shared-flow",
+                parent_flow_run_id="shared-run",
+                run_no=1,
+            )
+            db.add(record)
+            db.flush()
+            snapshot = RunSnapshot(
+                id=f"{prefix}-record-snapshot",
+                flow_run_id=record.id,
+                version=1,
+                schema_version=2,
+                definition_json={},
+                definition_hash=f"{prefix}-definition",
+                runtime_manifest_json={},
+                runtime_manifest_hash=f"{prefix}-manifest",
+                environment_version_id="shared-environment",
+            )
+            db.add(snapshot)
+            node_run = NodeRun(
+                id=f"{prefix}-node-run",
+                flow_run_id="shared-run",
+                flow_node_snapshot_key="shared-node",
+                sequence_no=1,
+            )
+            artifact = ArtifactVersion(
+                id=f"{prefix}-artifact",
+                flow_run_id="shared-run",
+                producer_attempt_id=None,
+                consumer_node_key="shared-node",
+                field_key="result",
+                version_no=1,
+                runtime_completion_event_id=None,
+                artifact_type="URL",
+                storage_key=None,
+                uri=f"https://example.com/{prefix}",
+                inline_content=None,
+                content_hash=f"{prefix}-hash",
+                byte_size=0,
+                source="HUMAN",
+            )
+            db.add_all((node_run, artifact))
+            db.commit()
+            private_ids[user_id] = (record.id, snapshot.id, node_run.id, artifact.id)
+
+    for user_id in (FLOWWEAVE_USER_ID, employee_id):
+        with tenant_user(user_id), Session(engine) as db:
+            assert db.get(FlowRun, "shared-run") is not None
+            assert db.get(RunSnapshot, "shared-snapshot") is not None
+            assert db.get(FlowRunRuntimeSecretReference, "shared-secret") is not None
+            assert db.get(FlowRunRuntimeAllocation, "shared-allocation") is not None
+            assert db.get(FlowRunRuntime, "shared-runtime") is not None
+            assert db.get(RuntimeGeneration, "shared-generation") is not None
+            visible_records = list(
+                db.scalars(select(FlowRun).where(FlowRun.parent_flow_run_id.is_not(None)))
+            )
+            assert [item.id for item in visible_records] == [private_ids[user_id][0]]
+            assert db.get(RunSnapshot, private_ids[user_id][1]) is not None
+            assert db.get(NodeRun, private_ids[user_id][2]) is not None
+            assert db.get(ArtifactVersion, private_ids[user_id][3]) is not None
+            other_user_id = employee_id if user_id == FLOWWEAVE_USER_ID else FLOWWEAVE_USER_ID
+            assert db.get(FlowRun, private_ids[other_user_id][0]) is None
+            assert db.get(RunSnapshot, private_ids[other_user_id][1]) is None
+            assert db.get(NodeRun, private_ids[other_user_id][2]) is None
+            assert db.get(ArtifactVersion, private_ids[other_user_id][3]) is None
 
 
 def test_ldap_created_private_records_belong_to_ldap_user(isolated_http):
