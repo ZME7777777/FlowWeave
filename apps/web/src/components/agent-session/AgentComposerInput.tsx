@@ -27,79 +27,8 @@ function composerTrigger(value: string): { sigil: '$' | '/' | '@'; query: string
   return { sigil: match[1] as '$' | '/' | '@', query: match[2], start: value.length - match[0].length + (match[0].startsWith(' ') ? 1 : 0) };
 }
 
-function isImeComposition(event: ReactKeyboardEvent<HTMLElement>): boolean {
+function isImeComposition(event: ReactKeyboardEvent<HTMLTextAreaElement>): boolean {
   return event.nativeEvent.isComposing || event.keyCode === 229;
-}
-
-const ATTACHMENT_ALIAS_PATTERN = /(@附件\d+)/g;
-
-function composerNodeText(node: Node): string {
-  if (node.nodeType === Node.TEXT_NODE) return node.textContent ?? '';
-  if (node.nodeType !== Node.ELEMENT_NODE && node.nodeType !== Node.DOCUMENT_FRAGMENT_NODE) return '';
-  const element = node as Element;
-  const alias = element.getAttribute?.('data-composer-attachment-alias');
-  if (alias) return alias;
-  if (element.tagName === 'BR') return '\n';
-  return Array.from(node.childNodes).map(composerNodeText).join('') + (element.tagName === 'DIV' ? '\n' : '');
-}
-
-function selectionOffset(root: HTMLElement, container: Node, offset: number): number {
-  const range = document.createRange();
-  range.selectNodeContents(root);
-  range.setEnd(container, offset);
-  return composerNodeText(range.cloneContents()).length;
-}
-
-function composerSelection(root: HTMLElement): { start: number; end: number } | undefined {
-  const selection = window.getSelection();
-  if (!selection?.rangeCount) return undefined;
-  const range = selection.getRangeAt(0);
-  if (!root.contains(range.startContainer) || !root.contains(range.endContainer)) return undefined;
-  return {
-    start: selectionOffset(root, range.startContainer, range.startOffset),
-    end: selectionOffset(root, range.endContainer, range.endOffset),
-  };
-}
-
-function placeComposerCaret(root: HTMLElement, offset: number) {
-  const range = document.createRange();
-  let remaining = offset;
-  for (const node of root.childNodes) {
-    const length = composerNodeText(node).length;
-    if (remaining > length) {
-      remaining -= length;
-      continue;
-    }
-    if (node.nodeType === Node.TEXT_NODE) {
-      range.setStart(node, Math.min(remaining, node.textContent?.length ?? 0));
-    } else if (remaining === 0) {
-      range.setStartBefore(node);
-    } else {
-      range.setStartAfter(node);
-    }
-    range.collapse(true);
-    const selection = window.getSelection();
-    selection?.removeAllRanges();
-    selection?.addRange(range);
-    return;
-  }
-  range.selectNodeContents(root);
-  range.collapse(false);
-  const selection = window.getSelection();
-  selection?.removeAllRanges();
-  selection?.addRange(range);
-}
-
-function attachmentAliasNodes(draft: string, onRemove: (start: number, length: number) => void) {
-  const parts = draft.split(ATTACHMENT_ALIAS_PATTERN);
-  let offset = 0;
-  return parts.map((part, index) => {
-    const start = offset;
-    offset += part.length;
-    return /^@附件\d+$/.test(part)
-      ? <span key={`${start}:${part}`} className="agent-composer-attachment-alias" data-composer-attachment-alias={part} contentEditable={false} aria-label={`附件别名 ${part}`}><span>{part}</span><button type="button" tabIndex={-1} aria-label={`移除 ${part}`} onMouseDown={event => event.preventDefault()} onClick={() => onRemove(start, part.length)}>×</button></span>
-      : <span key={index}>{part}</span>;
-  });
 }
 
 export const AgentComposerInput = forwardRef<ComposerHandle, {
@@ -112,7 +41,7 @@ export const AgentComposerInput = forwardRef<ComposerHandle, {
   onDraftChange: (scope: string | undefined, value: string) => void;
   onContentPresenceChange: (hasContent: boolean) => void;
   onDraftPersist: (scope: string | undefined) => void;
-  onPaste: (event: ReactClipboardEvent<HTMLElement>) => void;
+  onPaste: (event: ReactClipboardEvent<HTMLTextAreaElement>) => void;
   onDropFiles?: (files: File[]) => void;
   onDropWorkspaceFiles?: (paths: string[]) => void;
   onSubmit: (content: string) => void;
@@ -123,7 +52,7 @@ export const AgentComposerInput = forwardRef<ComposerHandle, {
 }>(function AgentComposerInput({
   ariaLabel = '发送 Agent 消息', initialDraft, scope, suggestions, disabled, placeholder, onDraftChange, onContentPresenceChange, onDraftPersist, onPaste, onDropFiles, onDropWorkspaceFiles, onSubmit, onDirectSubmit, onManageCapabilities, onNativeAction, onWorkspaceReferenceSelected,
 }, ref) {
-  const input = useRef<HTMLDivElement>(null);
+  const input = useRef<HTMLTextAreaElement>(null);
   const dragDepth = useRef(0);
   const draftRef = useRef(initialDraft);
   const previousScope = useRef(scope);
@@ -140,28 +69,19 @@ export const AgentComposerInput = forwardRef<ComposerHandle, {
     replaceDraft(value);
     onDraftChange(scope, value);
   }, [onDraftChange, replaceDraft, scope]);
-  const updateDraftFromInput = useCallback(() => {
-    const value = input.current ? composerNodeText(input.current).replace(/\n$/, '') : draftRef.current;
-    updateDraft(value);
-  }, [updateDraft]);
-  const updateDraftWithCaret = useCallback((value: string, caret: number) => {
-    updateDraft(value);
+  const insertDraft = useCallback((value: string) => {
+    const textarea = input.current;
+    const current = draftRef.current;
+    const start = textarea?.selectionStart ?? current.length;
+    const end = textarea?.selectionEnd ?? start;
+    const next = `${current.slice(0, start)}${value}${current.slice(end)}`;
+    updateDraft(next);
     requestAnimationFrame(() => {
-      input.current?.focus();
-      if (input.current) placeComposerCaret(input.current, caret);
+      textarea?.focus();
+      const cursor = start + value.length;
+      textarea?.setSelectionRange(cursor, cursor);
     });
   }, [updateDraft]);
-  const insertDraft = useCallback((value: string) => {
-    const current = draftRef.current;
-    const selection = input.current ? composerSelection(input.current) : undefined;
-    const start = selection?.start ?? current.length;
-    const end = selection?.end ?? start;
-    updateDraftWithCaret(`${current.slice(0, start)}${value}${current.slice(end)}`, start + value.length);
-  }, [updateDraftWithCaret]);
-  const removeAttachmentAlias = useCallback((start: number, length: number) => {
-    const current = draftRef.current;
-    updateDraftWithCaret(`${current.slice(0, start)}${current.slice(start + length)}`, start);
-  }, [updateDraftWithCaret]);
   useImperativeHandle(ref, () => ({
     replace: replaceDraft,
     insert: insertDraft,
@@ -182,18 +102,37 @@ export const AgentComposerInput = forwardRef<ComposerHandle, {
     return () => window.clearTimeout(timer);
   }, [draft, scope]);
   const resizeInput = useCallback(() => {
-    const editor = input.current;
-    if (!editor || editor.getBoundingClientRect().width <= 0) return;
-    const styles = window.getComputedStyle(editor);
+    const textarea = input.current;
+    if (!textarea || textarea.getBoundingClientRect().width <= 0) return;
+    const styles = window.getComputedStyle(textarea);
     const lineHeight = Number.parseFloat(styles.lineHeight);
     const verticalPadding = Number.parseFloat(styles.paddingTop) + Number.parseFloat(styles.paddingBottom);
     const minHeight = Math.max(Number.parseFloat(styles.minHeight), lineHeight + verticalPadding);
     const maxHeight = lineHeight * 10 + verticalPadding;
-    editor.style.height = 'auto';
-    const contentHeight = editor.scrollHeight;
+    const measurement = document.createElement('div');
+    measurement.textContent = textarea.value || ' ';
+    measurement.setAttribute('aria-hidden', 'true');
+    measurement.style.setProperty('position', 'fixed', 'important');
+    measurement.style.setProperty('visibility', 'hidden', 'important');
+    measurement.style.setProperty('pointer-events', 'none', 'important');
+    measurement.style.setProperty('box-sizing', 'content-box', 'important');
+    measurement.style.setProperty('width', `${Math.max(0, textarea.clientWidth - verticalPadding)}px`, 'important');
+    measurement.style.setProperty('margin', '0', 'important');
+    measurement.style.setProperty('padding', '0', 'important');
+    measurement.style.setProperty('border', '0', 'important');
+    measurement.style.setProperty('font', styles.font, 'important');
+    measurement.style.setProperty('font-kerning', styles.fontKerning, 'important');
+    measurement.style.setProperty('letter-spacing', styles.letterSpacing, 'important');
+    measurement.style.setProperty('line-height', styles.lineHeight, 'important');
+    measurement.style.setProperty('white-space', 'pre-wrap', 'important');
+    measurement.style.setProperty('overflow-wrap', 'anywhere', 'important');
+    measurement.style.setProperty('word-break', 'break-word', 'important');
+    document.body.append(measurement);
+    const contentHeight = measurement.getBoundingClientRect().height + verticalPadding;
+    measurement.remove();
     const height = Math.min(Math.max(contentHeight, minHeight), maxHeight);
-    editor.style.height = `${height}px`;
-    editor.style.setProperty('overflow-y', contentHeight > maxHeight + 1 ? 'auto' : 'hidden', 'important');
+    textarea.style.height = `${height}px`;
+    textarea.style.setProperty('overflow-y', contentHeight > maxHeight + 1 ? 'auto' : 'hidden', 'important');
     const overflowing = contentHeight > maxHeight + 1;
     setInputOverflowing(current => current === overflowing ? current : overflowing);
   }, []);
@@ -274,7 +213,7 @@ export const AgentComposerInput = forwardRef<ComposerHandle, {
     if (workspacePaths.length) onDropWorkspaceFiles?.(workspacePaths);
     if (files.length) onDropFiles?.(files);
   }}>
-    <div ref={input} className="agent-composer-editor" data-overflowing={inputOverflowing || undefined} data-placeholder={placeholder} aria-label={ariaLabel} aria-autocomplete="list" aria-controls={hasMenu ? 'agent-composer-capabilities' : undefined} aria-expanded={hasMenu} aria-multiline="true" contentEditable={!disabled} role="textbox" suppressContentEditableWarning onInput={updateDraftFromInput} onPaste={onPaste} onKeyDown={event => {
+    <textarea ref={input} data-overflowing={inputOverflowing || undefined} aria-label={ariaLabel} aria-autocomplete="list" aria-controls={hasMenu ? 'agent-composer-capabilities' : undefined} aria-expanded={hasMenu} value={draft} maxLength={200_000} placeholder={placeholder} disabled={disabled} onChange={event => updateDraft(event.target.value)} onPaste={onPaste} onKeyDown={event => {
       if (isImeComposition(event)) return;
       if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !event.shiftKey) { event.preventDefault(); onDirectSubmit?.(draftRef.current); return; }
       if (hasMenu && event.key === 'Escape') { updateDraft(draft.slice(0, -trigger!.query.length - 1)); return; }
@@ -287,7 +226,7 @@ export const AgentComposerInput = forwardRef<ComposerHandle, {
       }
       if (hasMenu && ['Enter', 'Tab'].includes(event.key)) { event.preventDefault(); return; }
       if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); onSubmit(draftRef.current); }
-    }}>{attachmentAliasNodes(draft, removeAttachmentAlias)}</div>
+    }}/>
     {fileDragActive && <div className="agent-composer-file-drop" aria-live="polite">松开以添加附件</div>}
     {hasMenu && <div id="agent-composer-capabilities" className="agent-composer-capability-menu" role="listbox" aria-label={trigger!.sigil === '$' ? '选择技能' : trigger!.sigil === '@' ? '选择引用类型' : hasNativeSuggestions ? '选择 OpenHands 原生能力、命令或 MCP' : '选择命令或 MCP'}>{hasSuggestions ? <>{visible.map((item, index) => <div className="agent-composer-capability-option" key={item.id}>{trigger!.sigil === '@' && index === 0 && <div className="agent-composer-capability-section">引用类型</div>}{trigger!.sigil === '/' && item.kind === 'NATIVE' && (index === 0 || visible[index - 1]?.kind !== 'NATIVE') && <div className="agent-composer-capability-section">OpenHands 原生能力</div>}{trigger!.sigil === '/' && item.kind !== 'NATIVE' && (index === 0 || visible[index - 1]?.kind === 'NATIVE') && <div className="agent-composer-capability-section">MCP 与命令</div>}<button type="button" role="option" aria-selected={index === activeIndex} aria-disabled={item.available === false || undefined} disabled={item.available === false} className={`${index === activeIndex ? 'active' : ''}${item.available === false ? ' unavailable' : ''}`} onMouseDown={event => event.preventDefault()} onMouseEnter={() => setActiveIndex(index)} onClick={() => select(item)}><code>{item.token}</code><span><b>{item.label}</b><small>{item.detail}</small></span><em>{item.kind === 'SKILL' ? '技能' : item.kind === 'COMMAND' ? '命令' : item.kind === 'NATIVE' ? '原生' : item.kind === 'REFERENCE' ? '引用' : 'MCP'}</em></button></div>)}</> : <div className="agent-composer-capability-empty"><span><b>{trigger!.sigil === '@' ? '当前没有匹配的引用类型' : !suggestions.length ? trigger!.sigil === '$' ? '当前会话还没有加载 Skill' : '当前会话还没有加载命令或 MCP' : '当前会话没有匹配的能力'}</b><small>{trigger!.sigil === '@' ? '调整输入关键词以筛选引用类型。' : !suggestions.length ? `先为此会话加载能力，随后可在这里用 ${trigger!.sigil} 选择并插入。` : '调整输入关键词，或管理当前会话能力。'}</small></span></div>}{showCapabilityManager && <div className="agent-composer-capability-manage"><span>管理当前会话能力</span><button type="button" onMouseDown={event => event.preventDefault()} onClick={onManageCapabilities}>管理</button></div>}</div>}
   </div>;
