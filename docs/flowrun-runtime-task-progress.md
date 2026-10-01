@@ -7921,10 +7921,14 @@ Web 发布恢复：首轮公网浏览器检查发现 FR-563 准备的 Web 镜像
 
 范围：取证 0003 的 live FlowRun schema 提前包含 0093 调度字段的来源，固定此表的历史定义并验证真实空库通过 0093、既有升级和数据保留；不改已记录 revision，不删除业务数据，不将其他独立历史迁移错误混入。继续向 head 取证，遇到其他独立阻塞另拆切片，遵守不在本地部署和远端隔离验收约束。
 
-### FR-568 共享流程入口与用户运行隔离收口 — CURRENT
+### FR-568 共享流程入口与用户运行隔离收口 — DONE
 
 依赖：0144 Agent 会话访问授权与 0139 FlowRun 用户隔离已完成并部署；不依赖 FR-567 的独立空库历史迁移修复。
 
 范围：保持流程定义、流程图和启动入口共享，保持 FlowRun、连续／逐步记录、NodeRun、Attempt、Runtime 资源和节点会话按当前用户隔离；将 FlowRun 运行编号唯一性改为用户内唯一，使不同用户可以从同一共享流程各自创建 `Run #1`。独立 Agent 会话授权只保护 Agent Workspace，不影响流程运行菜单、启动共享流程或当前用户自己的 FlowRun 节点会话。Web 在当前用户没有运行记录但存在共享流程时明确展示可启动的共享入口，不再将该状态误报为平台没有流程运行能力。
 
-验收：后端定向测试覆盖同一共享流程下两个用户各自创建同号运行、列表与详情跨用户不可见、未授权独立 Agent 会话的用户仍可访问自己的 FlowRun 节点会话；Agent Workspace 仍返回 403。验证新迁移升级／降级与唯一 Alembic head，Web ESLint、typecheck、build、定向 Playwright、`git diff --check` 和任务状态唯一性通过。完成后提交独立 commit，并按 platform／web 范围预检和发布到已授权受管服务器；线上以两个用户只读验证共享流程入口和运行记录隔离，不创建或修改生产运行记录。
+完成：提交 `366947af724f7ea71d9b5309e51a3788c26c9d4b` 新增迁移 `0145_tenant_flow_run_numbers`，将 `flow_runs` 运行编号唯一键从 `(flow_definition_id, run_no)` 收口为 `(owner_user_id, flow_definition_id, run_no)`，同步 ORM 约束；两个用户可以从同一共享流程分别创建自己的 `Run #1`。共享流程定义、流程图和启动入口继续对所有登录用户可见，FlowRun 顶层／连续／逐步记录及其 NodeRun、Attempt、Runtime 资源和节点会话继续按当前用户隔离。Runs 页面在当前账号没有运行记录时仍显示共享流程、`0 个运行` 和启动入口。独立 Agent Workspace 的授权门禁保持 403，不挂到用户自己的 FlowRun 节点会话。提交 `7c616cb33807edd8562f72dca0bd0f04e8a0987e` 将 platform 镜像的 Debian APT 源恢复为远端可访问的官方 HTTPS 源；未改变产品或 Runtime 契约。
+
+本地验收：Ruff format/check、受影响源码 Pyright、Web ESLint/typecheck/production build、`unit_tests/test_http_user_isolation.py`（9 passed）、共享流程入口定向 Playwright（1 passed）、`git diff --check` 和唯一 Alembic head `0145_tenant_flow_run_numbers` 通过。后端集成用例覆盖两个用户看到同一流程、各自创建 `Run #1`、运行列表与详情互不可见、普通用户 Agent Workspace 返回 403、本人 FlowRun 节点会话返回 200。`tests/test_users.py` 未在本机执行：本机没有 Docker socket，testcontainers 在 fixture setup 阶段无法创建 PostgreSQL；不是业务断言失败，PostgreSQL 迁移与租户验证改在远端生产备份克隆库完成。
+
+发布验收：重新按提交 `7c616cb3` 通过 platform／web 预检，从 commit-bound git archive 构建并校验 linux/amd64 镜像；平台镜像 ID `sha256:2f063c5cbe315ccfcb26ee28e157e9c4d7a81d91a96bc9c5e1f919889f6807cf`，Web 镜像 ID `sha256:c6e65deec3f4d1d212baceb23bc22050df3d87d533ed1b4a80541934b2adeab7`，两者 source commit 标签均为 `7c616cb33807edd8562f72dca0bd0f04e8a0987e`。服务器侧保留迁移前和迁移后的受保护数据库备份及旧镜像 rollback tags；正式切换使用的备份 SHA-256 为 `36793e6c99decb17d7e3d419787f82e4376f12b69d583992d5c12bf82cb13dab`。迁移前备份克隆库真实执行 0144→0145、唯一键列顺序、两个 owner 同一 flow/run_no、临时 `NOBYPASSRLS` 角色的三用户 RLS 投影、应用 ORM 租户投影及 0145→0144→0145 往返，全部通过；临时角色和克隆库均已清理。正式 migration 退出成功，数据库 head 为 `0145_tenant_flow_run_numbers`；api、stream-api 健康，worker、web 运行，公网 `/flowweave/`、实际静态资源、带前缀认证 API、FlowRun 深层路由和 FastGPT 根入口验证通过。生产只读双用户投影确认流程集合相同，顶层及嵌套 FlowRun ID 集合互不相交；未创建或修改生产运行记录。Runtime Provider 容器和镜像在发布前后保持不变，未重启或替换。
