@@ -26,9 +26,21 @@ class User(Base):
     external_subject: Mapped[str | None] = mapped_column(String(200), unique=True, nullable=True)
     display_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
     email: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    agent_sessions_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    ldap_organization_ids: Mapped[list[str]] = mapped_column(JSON, default=list)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
+class LdapAgentSessionOrganizationGrant(Base):
+    __tablename__ = "ldap_agent_session_organization_grants"
+    __tenant_scoped__ = False
+    owner_user_id: ClassVar[None] = None  # pyright: ignore[reportIncompatibleVariableOverride]
+
+    organization_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    created_by_user_id: Mapped[str] = mapped_column(String(36), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
 class UserSession(Base):
@@ -213,6 +225,7 @@ __all__ = (
     "AdminAlertState",
     "AdminResourceCleanupOperation",
     "AdminRuntimeOperation",
+    "LdapAgentSessionOrganizationGrant",
     "RuntimeBusinessObservation",
     "User",
     "UserOperationLog",

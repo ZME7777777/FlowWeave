@@ -19,11 +19,16 @@ from flowweave.bootstrap.settings import Settings
 from flowweave.modules.model_providers.application import service as providers
 from flowweave.modules.orchestration.application import service as orchestration
 from flowweave.modules.users.application import service as users
-from flowweave.modules.users.application.ldap import LdapIdentity
+from flowweave.modules.users.application.ldap import (
+    LdapDirectorySnapshot,
+    LdapIdentity,
+    LdapOrganization,
+)
 from flowweave.modules.users.application.security import FLOWWEAVE_USER_ID, tenant_user
 from flowweave.shared.models import (
     FlowDefinition,
     FlowRun,
+    LdapAgentSessionOrganizationGrant,
     ModelProvider,
     NodeDirectory,
     ProviderModel,
@@ -59,6 +64,7 @@ def isolated_http(monkeypatch):
 
     for model in (
         User,
+        LdapAgentSessionOrganizationGrant,
         UserSession,
         WebsiteCredential,
         ModelProvider,
@@ -79,7 +85,14 @@ def isolated_http(monkeypatch):
         async with session_scope() as session:
             yield SimpleNamespace(session=session)
 
-    identity = LdapIdentity("directory-subject", "employee", "Employee", None)
+    identity = LdapIdentity(
+        "directory-subject",
+        "employee",
+        "Employee",
+        None,
+        "ldap-org-team",
+        ("ldap-org-team", "ldap-org-parent"),
+    )
     settings = Settings(
         _env_file=None,
         auth_provider="ldap",
@@ -269,3 +282,118 @@ def test_shared_directory_writes_keep_stable_owner_and_are_visible_to_admin(isol
         assert db.get(NodeDirectory, shared_id).owner_user_id == FLOWWEAVE_USER_ID
     login(client, "flowweave")
     assert [row["id"] for row in client.get("/api/v1/node-directories").json()] == [shared_id]
+
+
+def test_agent_workspace_access_requires_user_or_organization_grant(isolated_http):
+    client, engine, employee_id = isolated_http
+    principal = login(client, "employee")
+    assert principal["can_use_agent_sessions"] is False
+    denied = client.get("/api/v1/agent-workspaces/default")
+    assert denied.status_code == 403
+    assert denied.json()["error"]["code"] == "AGENT_SESSION_ACCESS_REQUIRED"
+
+    with Session(engine) as db:
+        user = db.get(User, employee_id)
+        user.agent_sessions_enabled = True
+        db.commit()
+    principal = client.get("/api/v1/auth/me").json()
+    assert principal["can_use_agent_sessions"] is True
+
+    with Session(engine) as db:
+        user = db.get(User, employee_id)
+        user.agent_sessions_enabled = False
+        db.add(
+            LdapAgentSessionOrganizationGrant(
+                organization_id="ldap-org-parent",
+                created_by_user_id=FLOWWEAVE_USER_ID,
+            )
+        )
+        db.commit()
+    principal = client.get("/api/v1/auth/me").json()
+    assert principal["can_use_agent_sessions"] is True
+
+    login(client, "flowweave")
+    assert client.get("/api/v1/auth/me").json()["can_use_agent_sessions"] is True
+
+
+def test_ldap_directory_projects_direct_and_inherited_agent_access(isolated_http):
+    _client, engine, _employee_id = isolated_http
+    identity = LdapIdentity(
+        "directory-subject",
+        "employee",
+        "Employee",
+        None,
+        "ldap-org-team",
+        ("ldap-org-team", "ldap-org-parent"),
+    )
+    snapshot = LdapDirectorySnapshot(
+        users=[identity],
+        organizations=[
+            LdapOrganization("ldap-org-parent", None, "Parent"),
+            LdapOrganization("ldap-org-team", "ldap-org-parent", "Team"),
+        ],
+    )
+    with Session(engine) as db:
+        initial = users.ldap_directory(db, snapshot)
+        assert initial["users"][0]["agent_session_access"] is False
+        users.set_ldap_organization_agent_session_access(
+            db,
+            "ldap-org-parent",
+            enabled=True,
+            actor_user_id=FLOWWEAVE_USER_ID,
+            identities=snapshot.users,
+        )
+        inherited = users.ldap_directory(db, snapshot)
+        assert inherited["organizations"][0]["agent_session_direct_access"] is True
+        assert inherited["organizations"][1]["agent_session_access"] is True
+        assert inherited["users"][0]["agent_session_inherited_access"] is True
+        assert inherited["users"][0]["agent_session_access"] is True
+
+
+def test_admin_manages_agent_access_by_ldap_user_and_organization(isolated_http, monkeypatch):
+    client, _engine, _employee_id = isolated_http
+    identity = LdapIdentity(
+        "directory-subject",
+        "employee",
+        "Employee",
+        None,
+        "ldap-org-team",
+        ("ldap-org-team", "ldap-org-parent"),
+    )
+    snapshot = LdapDirectorySnapshot(
+        users=[identity],
+        organizations=[
+            LdapOrganization("ldap-org-parent", None, "Parent"),
+            LdapOrganization("ldap-org-team", "ldap-org-parent", "Team"),
+        ],
+    )
+    monkeypatch.setattr(
+        "flowweave.modules.users.presentation.router._ldap_directory",
+        lambda _container: SimpleNamespace(directory_snapshot=lambda: snapshot),
+    )
+    login(client, "flowweave")
+
+    direct = client.put(
+        "/api/v1/auth/ldap-users/agent-session-access",
+        json={"external_subject": identity.external_subject, "enabled": True},
+    )
+    assert direct.status_code == 200, direct.text
+    assert direct.json()["agent_session_direct_access"] is True
+
+    organization = client.put(
+        "/api/v1/auth/ldap-organizations/agent-session-access",
+        json={"organization_id": "ldap-org-parent", "enabled": True},
+    )
+    assert organization.status_code == 204, organization.text
+    direct = client.put(
+        "/api/v1/auth/ldap-users/agent-session-access",
+        json={"external_subject": identity.external_subject, "enabled": False},
+    )
+    assert direct.status_code == 200, direct.text
+    assert direct.json()["agent_session_direct_access"] is False
+    assert direct.json()["agent_session_inherited_access"] is True
+
+    directory = client.get("/api/v1/auth/ldap-users")
+    assert directory.status_code == 200, directory.text
+    assert directory.json()["organizations"][0]["agent_session_direct_access"] is True
+    assert directory.json()["users"][0]["agent_session_access"] is True

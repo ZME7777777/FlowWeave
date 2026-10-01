@@ -31,6 +31,20 @@ class LdapUserEnabledWrite(BaseModel):
     enabled: bool
 
 
+class LdapAgentSessionUserAccessWrite(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    external_subject: str = Field(min_length=1, max_length=200)
+    enabled: bool
+
+
+class LdapAgentSessionOrganizationAccessWrite(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    organization_id: str = Field(min_length=1, max_length=64)
+    enabled: bool
+
+
 def _require_super_admin() -> None:
     principal = current_principal()
     if principal is None or not principal.is_super_admin:
@@ -114,6 +128,53 @@ async def set_ldap_user_enabled(
         db,
         lambda session: service.set_ldap_user_enabled(session, identity, enabled=payload.enabled),
     )
+
+
+@router.put("/ldap-users/agent-session-access")
+async def set_ldap_user_agent_session_access(
+    payload: LdapAgentSessionUserAccessWrite,
+    db: Db,
+    container: ContainerDep,
+) -> dict[str, object]:
+    _require_super_admin()
+    snapshot = await asyncio.to_thread(_ldap_directory(container).directory_snapshot)
+    identity = next(
+        (item for item in snapshot.users if item.external_subject == payload.external_subject),
+        None,
+    )
+    if identity is None:
+        raise DomainError("LDAP_USER_NOT_FOUND", "LDAP 用户不存在或已无法读取", 404)
+    return await run_sync(
+        db,
+        lambda session: service.set_ldap_user_agent_session_access(
+            session, identity, enabled=payload.enabled
+        ),
+    )
+
+
+@router.put("/ldap-organizations/agent-session-access", status_code=204)
+async def set_ldap_organization_agent_session_access(
+    payload: LdapAgentSessionOrganizationAccessWrite,
+    db: Db,
+    container: ContainerDep,
+) -> Response:
+    _require_super_admin()
+    principal = current_principal()
+    assert principal is not None
+    snapshot = await asyncio.to_thread(_ldap_directory(container).directory_snapshot)
+    if not any(item.id == payload.organization_id for item in snapshot.organizations):
+        raise DomainError("LDAP_ORGANIZATION_NOT_FOUND", "LDAP 组织不存在或已无法读取", 404)
+    await run_sync(
+        db,
+        lambda session: service.set_ldap_organization_agent_session_access(
+            session,
+            payload.organization_id,
+            enabled=payload.enabled,
+            actor_user_id=principal.user_id,
+            identities=snapshot.users,
+        ),
+    )
+    return Response(status_code=204)
 
 
 @router.post("/logout", status_code=204)

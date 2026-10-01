@@ -67,6 +67,16 @@ async def require_authenticated_connection(
         reset_principal(principal_token)
 
 
+async def require_agent_session_access(connection: HTTPConnection) -> None:
+    principal = current_principal()
+    if principal is not None and (principal.is_super_admin or principal.can_use_agent_sessions):
+        return
+    if connection.scope["type"] == "websocket":
+        await cast(WebSocket, connection).accept()
+        raise WebSocketException(code=4403, reason="当前账号未开通 Agent 会话")
+    raise DomainError("AGENT_SESSION_ACCESS_REQUIRED", "当前账号未开通 Agent 会话", 403)
+
+
 async def get_db(
     container: Annotated[Container, Depends(get_container)],
 ) -> AsyncIterator[AsyncSession]:

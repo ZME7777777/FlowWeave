@@ -25,6 +25,7 @@ class Principal:
     user_id: str
     username: str
     role: str
+    can_use_agent_sessions: bool = False
 
     @property
     def is_super_admin(self) -> bool:
@@ -99,10 +100,7 @@ def user_runtime_project_root(workspace_id: str | None = None) -> str:
     """
 
     del workspace_id
-    return (
-        f"{_RUNTIME_WORKSPACE_ROOT}/project/users/"
-        f"{current_user_id(default=FLOWWEAVE_USER_ID)}"
-    )
+    return f"{_RUNTIME_WORKSPACE_ROOT}/project/users/{current_user_id(default=FLOWWEAVE_USER_ID)}"
 
 
 @contextmanager

@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Building2,
+  Bot,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
@@ -18,6 +19,7 @@ type OrganizationNode = LdapOrganization & {
   directUsers: number;
   totalUsers: number;
   enabledUsers: number;
+  agentSessionUsers: number;
 };
 
 const EMPTY_USERS: LdapUser[] = [];
@@ -26,7 +28,7 @@ const EMPTY_ORGANIZATIONS: LdapOrganization[] = [];
 function buildOrganizationTree(organizations: LdapOrganization[], users: LdapUser[]) {
   const nodes = new Map<string, OrganizationNode>();
   for (const item of organizations) {
-    nodes.set(item.id, { ...item, children: [], directUsers: 0, totalUsers: 0, enabledUsers: 0 });
+    nodes.set(item.id, { ...item, children: [], directUsers: 0, totalUsers: 0, enabledUsers: 0, agentSessionUsers: 0 });
   }
   for (const user of users) {
     const node = user.organization_id ? nodes.get(user.organization_id) : undefined;
@@ -34,6 +36,7 @@ function buildOrganizationTree(organizations: LdapOrganization[], users: LdapUse
       node.directUsers += 1;
       node.totalUsers += 1;
       if (user.enabled) node.enabledUsers += 1;
+      if (user.agent_session_access) node.agentSessionUsers += 1;
     }
   }
   const roots: OrganizationNode[] = [];
@@ -52,6 +55,7 @@ function buildOrganizationTree(organizations: LdapOrganization[], users: LdapUse
       aggregate(child, nextPath);
       node.totalUsers += child.totalUsers;
       node.enabledUsers += child.enabledUsers;
+      node.agentSessionUsers += child.agentSessionUsers;
     }
   };
   roots.sort(order);
@@ -66,6 +70,8 @@ function OrganizationTreeNode({
   expanded,
   onSelect,
   onToggle,
+  onAgentSessionAccessChange,
+  agentSessionAccessPending,
 }: {
   node: OrganizationNode;
   depth: number;
@@ -73,15 +79,18 @@ function OrganizationTreeNode({
   expanded: Set<string>;
   onSelect: (id: string) => void;
   onToggle: (id: string) => void;
+  onAgentSessionAccessChange: (id: string, enabled: boolean) => void;
+  agentSessionAccessPending: boolean;
 }) {
   const hasChildren = node.children.length > 0;
   const isExpanded = expanded.has(node.id);
   return <li>
     <div className={`ldap-org-row${selectedId === node.id ? ' selected' : ''}`} style={{ paddingLeft: 8 + depth * 16 }}>
       {hasChildren ? <button className="ldap-org-expander" type="button" aria-label={`${isExpanded ? '收起' : '展开'} ${node.name}`} aria-expanded={isExpanded} onClick={() => onToggle(node.id)}>{isExpanded ? <ChevronDown size={14}/> : <ChevronRight size={14}/>}</button> : <span className="ldap-org-expander-spacer"/>}
-      <button className="ldap-org-select" type="button" onClick={() => onSelect(node.id)} title={node.name}><Building2 size={14}/><span>{node.name}</span><small>{node.totalUsers}</small>{node.enabledUsers > 0 && <i>{node.enabledUsers}</i>}</button>
+      <button className="ldap-org-select" type="button" onClick={() => onSelect(node.id)} title={node.name}><Building2 size={14}/><span>{node.name}</span><small>{node.totalUsers}</small>{node.agent_session_access && !node.agent_session_direct_access && <em>继承</em>}</button>
+      <label className="ldap-org-agent-toggle" title={`允许 ${node.name} 及其下级组织使用 Agent 会话`}><Bot size={12}/><input type="checkbox" aria-label={`允许 ${node.name} 组织使用 Agent 会话`} checked={node.agent_session_direct_access} disabled={agentSessionAccessPending} onChange={event => onAgentSessionAccessChange(node.id, event.target.checked)}/><span/></label>
     </div>
-    {hasChildren && isExpanded && <ul>{node.children.map(child => <OrganizationTreeNode key={child.id} node={child} depth={depth + 1} selectedId={selectedId} expanded={expanded} onSelect={onSelect} onToggle={onToggle}/>)}</ul>}
+    {hasChildren && isExpanded && <ul>{node.children.map(child => <OrganizationTreeNode key={child.id} node={child} depth={depth + 1} selectedId={selectedId} expanded={expanded} onSelect={onSelect} onToggle={onToggle} onAgentSessionAccessChange={onAgentSessionAccessChange} agentSessionAccessPending={agentSessionAccessPending}/>)}</ul>}
   </li>;
 }
 
@@ -91,9 +100,19 @@ export function LdapUsersPage() {
   const [selectedOrganizationId, setSelectedOrganizationId] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const directory = useQuery({ queryKey: ['ldap-directory'], queryFn: api.ldapDirectory });
-  const update = useMutation({
+  const loginUpdate = useMutation({
     mutationFn: ({ externalSubject, enabled }: { externalSubject: string; enabled: boolean }) =>
       api.setLdapUserEnabled(externalSubject, enabled),
+    onSuccess: async () => { await client.invalidateQueries({ queryKey: ['ldap-directory'] }); },
+  });
+  const userAgentSessionUpdate = useMutation({
+    mutationFn: ({ externalSubject, enabled }: { externalSubject: string; enabled: boolean }) =>
+      api.setLdapUserAgentSessionAccess(externalSubject, enabled),
+    onSuccess: async () => { await client.invalidateQueries({ queryKey: ['ldap-directory'] }); },
+  });
+  const organizationAgentSessionUpdate = useMutation({
+    mutationFn: ({ organizationId, enabled }: { organizationId: string; enabled: boolean }) =>
+      api.setLdapOrganizationAgentSessionAccess(organizationId, enabled),
     onSuccess: async () => { await client.invalidateQueries({ queryKey: ['ldap-directory'] }); },
   });
   const users = directory.data?.users ?? EMPTY_USERS;
@@ -144,6 +163,7 @@ export function LdapUsersPage() {
     });
   }, [descendantIds, organizationPaths, query, users]);
   const enabledCount = users.filter(item => item.enabled).length;
+  const agentSessionCount = users.filter(item => item.enabled && item.agent_session_access).length;
   const selectedOrganization = selectedOrganizationId ? tree.nodes.get(selectedOrganizationId) : undefined;
   const toggleExpanded = (id: string) => setExpanded(current => {
     const next = new Set(current);
@@ -153,24 +173,25 @@ export function LdapUsersPage() {
 
   return <section className="page ldap-users-page">
     <header className="ldap-users-header">
-      <div><span className="eyebrow">LDAP USER ACCESS</span><h1>用户管理</h1><p>按 LDAP 组织架构浏览用户。仅已授权用户可使用公司账号登录 FlowWeave。</p></div>
-      <div className="ldap-users-metrics"><span><ShieldCheck size={15}/>{enabledCount} 个已授权</span><button className="secondary" disabled={directory.isFetching} onClick={() => void directory.refetch()}><RefreshCw size={14} className={directory.isFetching ? 'spin' : ''}/>刷新目录</button></div>
+      <div><span className="eyebrow">LDAP USER ACCESS</span><h1>用户管理</h1><p>分别控制平台登录和 Agent 会话访问，可按用户或组织授权。</p></div>
+      <div className="ldap-users-metrics"><span><ShieldCheck size={15}/>{enabledCount} 个可登录</span><span><Bot size={15}/>{agentSessionCount} 个可用 Agent</span><button className="secondary" disabled={directory.isFetching} onClick={() => void directory.refetch()}><RefreshCw size={14} className={directory.isFetching ? 'spin' : ''}/>刷新目录</button></div>
     </header>
-    <div className="ldap-users-notice"><ShieldCheck size={17}/><span>登录仍由 LDAP 验证；本页面只管理 FlowWeave 的访问授权。取消授权会立即撤销该用户现有会话。</span></div>
+    <div className="ldap-users-notice"><ShieldCheck size={17}/><span>“允许登录”控制平台账号；Agent 会话需单独授权。组织授权自动覆盖该组织及全部下级组织，服务端接口也会校验权限。</span></div>
     {directory.isLoading ? <div className="empty">正在读取 LDAP 组织目录…</div> : directory.isError ? <div className="empty error">{directory.error.message}</div> : <div className="ldap-directory-layout">
       <aside className="ldap-org-panel">
-        <div className="ldap-org-panel-title"><FolderTree size={16}/><b>组织架构</b><span>{organizations.length}</span></div>
+        <div className="ldap-org-panel-title"><FolderTree size={16}/><b>组织架构</b><small>右侧开关授权 Agent</small><span>{organizations.length}</span></div>
         <div className={`ldap-org-row ldap-org-all${selectedOrganizationId === null ? ' selected' : ''}`}><span className="ldap-org-expander-spacer"/><button className="ldap-org-select" type="button" onClick={() => setSelectedOrganizationId(null)}><UsersRound size={14}/><span>全部用户</span><small>{users.length}</small>{enabledCount > 0 && <i>{enabledCount}</i>}</button></div>
-        <div className="ldap-org-tree-scroll"><ul className="ldap-org-tree">{tree.roots.map(node => <OrganizationTreeNode key={node.id} node={node} depth={0} selectedId={selectedOrganizationId} expanded={expanded} onSelect={setSelectedOrganizationId} onToggle={toggleExpanded}/>)}</ul></div>
+        <div className="ldap-org-tree-scroll"><ul className="ldap-org-tree">{tree.roots.map(node => <OrganizationTreeNode key={node.id} node={node} depth={0} selectedId={selectedOrganizationId} expanded={expanded} onSelect={setSelectedOrganizationId} onToggle={toggleExpanded} onAgentSessionAccessChange={(organizationId, enabled) => organizationAgentSessionUpdate.mutate({ organizationId, enabled })} agentSessionAccessPending={organizationAgentSessionUpdate.isPending}/>)}</ul></div>
       </aside>
       <div className="ldap-user-panel">
         <div className="ldap-users-toolbar"><div><b>{selectedOrganization?.name ?? '全部用户'}</b><span>{selectedOrganization ? `包含下级组织 · ${selectedOrganization.totalUsers} 人` : `${users.length} 个目录用户`}</span></div><label>搜索目录用户<input value={query} onChange={event => setQuery(event.target.value)} placeholder="按账号、姓名、邮箱或组织搜索"/></label></div>
-        <div className="ldap-user-table-wrap"><table className="ldap-user-table"><thead><tr><th>允许登录</th><th>账号</th><th>姓名</th><th>组织</th><th>邮箱</th><th>状态</th></tr></thead><tbody>{visible.map(item => {
-          const changing = update.isPending && update.variables?.externalSubject === item.external_subject;
-          return <tr key={item.external_subject}><td><label className="ldap-user-toggle"><input type="checkbox" aria-label={`允许 ${item.username} 登录`} checked={item.enabled} disabled={changing} onChange={event => update.mutate({ externalSubject: item.external_subject, enabled: event.target.checked })}/><span/></label></td><td><b>{item.username}</b></td><td>{item.display_name}</td><td className="ldap-user-organization" title={item.organization_id ? organizationPaths.get(item.organization_id) : undefined}>{item.organization_id ? organizationPaths.get(item.organization_id) ?? '未归类' : '未归类'}</td><td>{item.email ?? '—'}</td><td><span className={item.enabled ? 'ldap-access granted' : 'ldap-access'}>{item.enabled ? <><CheckCircle2 size={13}/>已授权</> : '未授权'}</span></td></tr>;
+        <div className="ldap-user-table-wrap"><table className="ldap-user-table"><thead><tr><th>允许登录</th><th>Agent 会话</th><th>账号</th><th>姓名</th><th>组织</th><th>邮箱</th><th>状态</th></tr></thead><tbody>{visible.map(item => {
+          const loginChanging = loginUpdate.isPending && loginUpdate.variables?.externalSubject === item.external_subject;
+          const agentChanging = userAgentSessionUpdate.isPending && userAgentSessionUpdate.variables?.externalSubject === item.external_subject;
+          return <tr key={item.external_subject}><td><label className="ldap-user-toggle"><input type="checkbox" aria-label={`允许 ${item.username} 登录`} checked={item.enabled} disabled={loginChanging} onChange={event => loginUpdate.mutate({ externalSubject: item.external_subject, enabled: event.target.checked })}/><span/></label></td><td><div className="ldap-agent-access-cell"><label className="ldap-user-toggle"><input type="checkbox" aria-label={`单独允许 ${item.username} 使用 Agent 会话`} checked={item.agent_session_direct_access} disabled={agentChanging} onChange={event => userAgentSessionUpdate.mutate({ externalSubject: item.external_subject, enabled: event.target.checked })}/><span/></label><small>{item.agent_session_direct_access && item.agent_session_inherited_access ? '单独＋组织' : item.agent_session_inherited_access ? '组织授权' : item.agent_session_access ? '单独授权' : '未授权'}</small></div></td><td><b>{item.username}</b></td><td>{item.display_name}</td><td className="ldap-user-organization" title={item.organization_id ? organizationPaths.get(item.organization_id) : undefined}>{item.organization_id ? organizationPaths.get(item.organization_id) ?? '未归类' : '未归类'}</td><td>{item.email ?? '—'}</td><td><span className={item.enabled ? 'ldap-access granted' : 'ldap-access'}>{item.enabled ? <><CheckCircle2 size={13}/>可登录</> : '未开通'}</span></td></tr>;
         })}</tbody></table>{visible.length === 0 && <div className="empty compact"><UsersRound size={24}/><b>当前组织没有匹配用户</b><span>选择其他组织或调整搜索条件。</span></div>}</div>
       </div>
     </div>}
-    {update.isError && <p className="notice error">{update.error.message}</p>}
+    {(loginUpdate.isError || userAgentSessionUpdate.isError || organizationAgentSessionUpdate.isError) && <p className="notice error">{loginUpdate.error?.message ?? userAgentSessionUpdate.error?.message ?? organizationAgentSessionUpdate.error?.message}</p>}
   </section>;
 }

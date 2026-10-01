@@ -24,6 +24,7 @@ class LdapIdentity:
     display_name: str
     email: str | None
     organization_id: str | None = None
+    organization_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,6 +87,11 @@ class LdapDirectory:
                             item.organization_id
                             if item.organization_id in organization_ids
                             else None
+                        ),
+                        organization_ids=tuple(
+                            organization_id
+                            for organization_id in item.organization_ids
+                            if organization_id in organization_ids
                         ),
                     )
                     for item in users
@@ -233,6 +239,7 @@ class LdapDirectory:
             display_name=value("cn") or username,
             email=value("mail"),
             organization_id=LdapDirectory._organization_id(LdapDirectory._parent_dn(dn)),
+            organization_ids=LdapDirectory._organization_ids(dn),
         )
 
     @staticmethod
@@ -288,6 +295,19 @@ class LdapDirectory:
         if not dn:
             return None
         return "ldap-org-" + sha256(dn.casefold().encode("utf-8")).hexdigest()[:24]
+
+    @staticmethod
+    def _organization_ids(dn: str) -> tuple[str, ...]:
+        result: list[str] = []
+        current = LdapDirectory._parent_dn(dn)
+        visited: set[str] = set()
+        while current and current.casefold() not in visited:
+            visited.add(current.casefold())
+            organization_id = LdapDirectory._organization_id(current)
+            if organization_id is not None:
+                result.append(organization_id)
+            current = LdapDirectory._parent_dn(current)
+        return tuple(result)
 
     @staticmethod
     def _authentication_failed() -> DomainError:

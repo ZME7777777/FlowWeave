@@ -942,6 +942,7 @@ export interface AuthUser {
   username: string;
   role: 'SUPER_ADMIN' | 'USER';
   is_super_admin: boolean;
+  can_use_agent_sessions?: boolean;
 }
 
 export interface LdapUser {
@@ -951,12 +952,17 @@ export interface LdapUser {
   email?: string | null;
   organization_id?: string | null;
   enabled: boolean;
+  agent_session_access: boolean;
+  agent_session_direct_access: boolean;
+  agent_session_inherited_access: boolean;
 }
 
 export interface LdapOrganization {
   id: string;
   parent_id?: string | null;
   name: string;
+  agent_session_access: boolean;
+  agent_session_direct_access: boolean;
 }
 
 export interface LdapDirectory {

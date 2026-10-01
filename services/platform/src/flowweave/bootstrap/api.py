@@ -40,7 +40,7 @@ from flowweave.modules.users.presentation.router import router as users_router
 from flowweave.runtime.dependencies import bind_runtime, reset_runtime
 from flowweave.shared.artifact_store import bind_artifact_store, reset_artifact_store
 from flowweave.shared.errors import DomainError
-from flowweave.shared.http import require_authenticated_connection
+from flowweave.shared.http import require_agent_session_access, require_authenticated_connection
 from flowweave.shared.observability import bind_metrics, reset_metrics
 from flowweave.shared.plugin_resolver import bind_plugin_resolver, reset_plugin_resolver
 from flowweave.shared.sandbox import bind_sandbox, reset_sandbox
@@ -370,7 +370,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(
         agent_workspaces_router,
         prefix="/api/v1",
-        dependencies=[Depends(require_authenticated_connection)],
+        dependencies=[
+            Depends(require_authenticated_connection),
+            Depends(require_agent_session_access),
+        ],
     )
 
     for router in (

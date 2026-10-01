@@ -343,6 +343,10 @@ export const api = {
   ldapDirectory: () => request<LdapDirectory>('/auth/ldap-users'),
   setLdapUserEnabled: (external_subject: string, enabled: boolean) =>
     request<LdapUser>('/auth/ldap-users/enabled', json('PUT', { external_subject, enabled })),
+  setLdapUserAgentSessionAccess: (external_subject: string, enabled: boolean) =>
+    request<LdapUser>('/auth/ldap-users/agent-session-access', json('PUT', { external_subject, enabled })),
+  setLdapOrganizationAgentSessionAccess: (organization_id: string, enabled: boolean) =>
+    request<void>('/auth/ldap-organizations/agent-session-access', json('PUT', { organization_id, enabled })),
   defaultAgentWorkspace: (signal?: AbortSignal) => request<AgentWorkspace>('/agent-workspaces/default', { signal, timeoutMs: INTERACTIVE_REQUEST_TIMEOUT_MS }),
   agentWorkspace: (id: string) => request<AgentWorkspace>(`/agent-workspaces/${encodeURIComponent(id)}`),
   agentWorkspaceCapabilities: (id: string) =>

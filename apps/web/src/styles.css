@@ -989,6 +989,7 @@ body:has(.login-page){min-width:0}
 .ldap-org-panel{display:flex;flex-direction:column;overflow:hidden}
 .ldap-org-panel-title{display:flex;align-items:center;gap:7px;border-bottom:1px solid #e5ebe7;background:#f3f7f4;padding:12px 13px;color:var(--green);font-size:12px}
 .ldap-org-panel-title span{margin-left:auto;border-radius:10px;background:#e3ede6;padding:2px 7px;color:#567262;font-size:9px}
+.ldap-org-panel-title small{color:#7b8b81;font-size:8px;font-weight:500}
 .ldap-org-tree-scroll{min-height:0;overflow:auto;padding:4px 0 9px}
 .ldap-org-tree,.ldap-org-tree ul{margin:0;padding:0;list-style:none}
 .ldap-org-all{margin-top:5px}
@@ -1001,6 +1002,8 @@ body:has(.login-page){min-width:0}
 .ldap-org-select>span{overflow:hidden;color:#33483b;font-size:11px;font-weight:650;text-overflow:ellipsis;white-space:nowrap}
 .ldap-org-select small{color:#829087;font:9px 'DM Mono',ui-monospace,monospace}
 .ldap-org-select i{border-radius:8px;background:#d8eedf;padding:2px 5px;color:#26744a;font-size:8px;font-style:normal;font-weight:700}
+.ldap-org-select em{border-radius:8px;background:#e7efe9;padding:2px 5px;color:#607267;font-size:8px;font-style:normal;white-space:nowrap}
+.ldap-org-agent-toggle{display:flex;flex:0 0 auto;align-items:center;gap:4px;padding:0 4px;color:#6d8275;cursor:pointer}.ldap-org-agent-toggle input{position:absolute;opacity:0;pointer-events:none}.ldap-org-agent-toggle>span{position:relative;width:24px;height:14px;border-radius:9px;background:#cbd5ce;transition:background .15s}.ldap-org-agent-toggle>span::after{position:absolute;top:2px;left:2px;width:10px;height:10px;border-radius:50%;background:#fff;box-shadow:0 1px 2px #17332233;content:'';transition:transform .15s}.ldap-org-agent-toggle input:checked+span{background:#347551}.ldap-org-agent-toggle input:checked+span::after{transform:translateX(10px)}.ldap-org-agent-toggle:has(input:disabled){cursor:wait;opacity:.55}
 .ldap-user-panel{display:flex;min-width:0;flex-direction:column;overflow:hidden}
 .ldap-user-panel .ldap-users-toolbar{align-items:center;border-bottom:1px solid #e5ebe7;background:#fafcfb;padding:11px 13px}
 .ldap-users-toolbar>div{display:grid;gap:3px}
@@ -1009,10 +1012,11 @@ body:has(.login-page){min-width:0}
 .ldap-user-panel .ldap-users-toolbar label{display:flex;align-items:center;gap:8px}
 .ldap-user-panel .ldap-users-toolbar input{width:min(330px,34vw)}
 .ldap-user-panel .ldap-user-table-wrap{min-height:0;flex:1;overflow:auto;border:0;border-radius:0}
-.ldap-user-panel .ldap-user-table{min-width:820px}
+.ldap-user-panel .ldap-user-table{min-width:940px}
 .ldap-user-panel .ldap-user-table thead{position:sticky;z-index:1;top:0}
-.ldap-user-panel .ldap-user-table td:nth-child(4),.ldap-user-panel .ldap-user-table td:nth-child(5){color:var(--muted)}
+.ldap-user-panel .ldap-user-table td:nth-child(5),.ldap-user-panel .ldap-user-table td:nth-child(6){color:var(--muted)}
 .ldap-user-organization{max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ldap-agent-access-cell{display:flex;align-items:center;gap:7px}.ldap-agent-access-cell small{color:#718078;font-size:8px;white-space:nowrap}
 @media(max-width:900px){.ldap-users-page{overflow:auto}.ldap-directory-layout{display:flex;min-height:720px;flex-direction:column}.ldap-org-panel{min-height:260px;max-height:360px}.ldap-user-panel{min-height:460px}.ldap-user-panel .ldap-users-toolbar{align-items:stretch;flex-direction:column}.ldap-user-panel .ldap-users-toolbar label{display:grid}.ldap-user-panel .ldap-users-toolbar input{width:100%}}
 
 /* Keep the side panel an index. Gate definitions and execution history open only on demand. */

@@ -116,6 +116,10 @@ def test_directory_snapshot_preserves_nested_and_empty_organization_units(monkey
         "employee-0000": organizations["Platform"].id,
         "employee-0001": organizations["People"].id,
     }
+    assert snapshot.users[0].organization_ids == (
+        organizations["Platform"].id,
+        organizations["Engineering"].id,
+    )
     assert all("dc=" not in item.id for item in snapshot.organizations)
     assert connections[0].closed
 
