@@ -1467,7 +1467,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect.poll(() => completedTurn.evaluate(turn => {
     const reply = turn.querySelector('.conversation-message.assistant');
     const summary = turn.querySelector('.conversation-process-summary');
-    return Boolean(reply && summary && (reply.compareDocumentPosition(summary) & Node.DOCUMENT_POSITION_FOLLOWING));
+    return Boolean(reply && summary && (summary.compareDocumentPosition(reply) & Node.DOCUMENT_POSITION_FOLLOWING));
   })).toBe(true);
   await completedProcessSummary.locator(':scope > summary').click();
   await expect(completedProcessSummary).toHaveJSProperty('open', true);

@@ -2533,7 +2533,6 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
             <CurrentTurnStatus items={turn.activity} requestSubmitting={requestSubmitting} statusOverride={emptyResponseRecoveryActive ? '模型返回空响应，OpenHands 正在自动重试' : undefined} modelRetryStatus={modelRetryStatus} monitoring={monitoring} connectionState={connectionState}/>
           )}
           {processBlocks.length > 0 && turn.assistant && <div className="conversation-process-divider" role="separator" aria-label="工作过程结束"/>}
-          {turn.assistant && <AgentReply event={turn.assistant.event} content={turn.assistant.content} reveal={revealEventIds.has(turn.assistant.event.id)} changes={fileChanges} onFork={!isGenerating ? () => onFork?.(turn.assistant!.event.id) : undefined} onPreviewCandidateFile={onPreviewCandidateFile} onReviewChanges={onReviewChanges} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenImage={onOpenImage} workspaceRoot={workspaceRoot} annotations={annotations} onLocateAnnotation={locateAnnotation}/>}
           {completionConfirmed && processBlocks.map(block => <ActivityGroup
             key={`${block.id}:summary`}
             items={block.items}
@@ -2550,6 +2549,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
             open={completedProcessExpanded}
             onOpenChange={setCompletedProcessExpanded}
           />)}
+          {turn.assistant && <AgentReply event={turn.assistant.event} content={turn.assistant.content} reveal={revealEventIds.has(turn.assistant.event.id)} changes={fileChanges} onFork={!isGenerating ? () => onFork?.(turn.assistant!.event.id) : undefined} onPreviewCandidateFile={onPreviewCandidateFile} onReviewChanges={onReviewChanges} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenImage={onOpenImage} workspaceRoot={workspaceRoot} annotations={annotations} onLocateAnnotation={locateAnnotation}/>}
           {failures.map(item => <ConversationFailure key={item.event.id} item={item} taskControl={taskControl} retryStatus={isLatest ? modelRetryStatus : undefined}/>)}
         </section>;
       })}
