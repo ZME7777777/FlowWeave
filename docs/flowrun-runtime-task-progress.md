@@ -7933,10 +7933,16 @@ Web 发布恢复：首轮公网浏览器检查发现 FR-563 准备的 Web 镜像
 
 发布验收：重新按提交 `7c616cb3` 通过 platform／web 预检，从 commit-bound git archive 构建并校验 linux/amd64 镜像；平台镜像 ID `sha256:2f063c5cbe315ccfcb26ee28e157e9c4d7a81d91a96bc9c5e1f919889f6807cf`，Web 镜像 ID `sha256:c6e65deec3f4d1d212baceb23bc22050df3d87d533ed1b4a80541934b2adeab7`，两者 source commit 标签均为 `7c616cb33807edd8562f72dca0bd0f04e8a0987e`。服务器侧保留迁移前和迁移后的受保护数据库备份及旧镜像 rollback tags；正式切换使用的备份 SHA-256 为 `36793e6c99decb17d7e3d419787f82e4376f12b69d583992d5c12bf82cb13dab`。迁移前备份克隆库真实执行 0144→0145、唯一键列顺序、两个 owner 同一 flow/run_no、临时 `NOBYPASSRLS` 角色的三用户 RLS 投影、应用 ORM 租户投影及 0145→0144→0145 往返，全部通过；临时角色和克隆库均已清理。正式 migration 退出成功，数据库 head 为 `0145_tenant_flow_run_numbers`；api、stream-api 健康，worker、web 运行，公网 `/flowweave/`、实际静态资源、带前缀认证 API、FlowRun 深层路由和 FastGPT 根入口验证通过。生产只读双用户投影确认流程集合相同，顶层及嵌套 FlowRun ID 集合互不相交；未创建或修改生产运行记录。Runtime Provider 容器和镜像在发布前后保持不变，未重启或替换。
 
-### FR-569 共享 FlowRun 控制面与用户执行记录隔离纠偏 — CURRENT
+### FR-569 共享 FlowRun 控制面与用户执行记录隔离纠偏 — DONE
 
 依赖：FR-568 与生产 head 0145。
 
 范围：纠正 FR-568 对产品边界的误解。顶层 FlowRun、冻结快照、物理 Runtime allocation/session/generation、容器和全局终端属于共享控制面，所有登录用户看到并进入同一 FlowRun；逐步运行、连续运行和直接启动产生的子 FlowRun／NodeRun／Attempt／事件／产物／会话／记录工作目录继续按用户隔离。新顶层 FlowRun 使用稳定共享 owner 和全局运行编号；子记录继续使用用户 owner 与用户内编号，NodeRun 序号和产物版本号也必须在共享 FlowRun 内按用户独立计数。独立 Agent Workspace 授权保持不变。
 
-验收：两个用户的 FlowRun 列表与详情返回同一顶层 ID、快照和 Runtime；各自在同一 FlowRun 下创建的逐步／连续／直接 NodeRun 只对本人可见，跨用户 ID 返回 404；真实 PostgreSQL RLS 与 ORM owner 过滤边界一致。完成迁移升降级、后端定向测试、Web lint/typecheck/build、定向 Playwright、唯一 Alembic head、`git diff --check` 和 staged diff 复核后提交并部署到已授权受管服务器；发布后只读验证现有两个顶层 FlowRun 对 LDAP 用户可见，而七条历史嵌套记录仍只归 `flowweave`。
+完成：提交 `90ba545a2c27728a0bb2a8784554ac22754ebd8c` 新增迁移 `0146_shared_flow_runs` 并将顶层 FlowRun、快照和物理 Runtime 控制面迁移到稳定共享 owner；ORM 与 PostgreSQL RLS 允许所有用户读取同一顶层 FlowRun、allocation、session、generation 和 secret reference，子 FlowRun、NodeRun、Attempt、事件、产物及会话仍按用户隔离。顶层 FlowRun 使用全局编号，子记录继续按用户编号；NodeRun 序号与 Artifact 版本唯一键加入 `owner_user_id`，允许不同用户在同一共享 FlowRun 内独立计数。提交 `bae4a2a10ff461eb732ccb3bd7073f3d7ab64890` 进一步要求 `node_attempt_id IS NULL` 的历史 Runtime 必须关联顶层 FlowRun 才能共享，避免旧嵌套记录的 allocation、session、generation 或 secret 被误开放。远端分支新增的五个提交通过合并提交 `ab3545ab` 纳入发布，合并无文本冲突。
+
+本地验收：`unit_tests/test_http_user_isolation.py` 10 passed，覆盖两用户共享顶层 FlowRun／快照／Runtime、共享 FlowRun 内私有 NodeRun 与 Artifact，以及嵌套 FlowRun 上 `node_attempt_id IS NULL` 的历史 Runtime 仍不可跨用户读取；受影响 Ruff format/check 与定向 Pyright 0 errors，Web ESLint、TypeScript typecheck 和 production build 通过。当前源码 Vite 上共享 FlowRun 权限定向 Playwright 1 passed，远端合入的会话暂停／恢复定向 Playwright 1 passed；唯一 Alembic head 为 `0146_shared_flow_runs`，`git diff --check` 和 staged diff 复核通过。
+
+发布验收：提交 `bae4a2a1` 的 platform／web 远端预检通过，commit-bound archive SHA-256 为 `f0c7364e3bcb849781c5d450f5d1f861effcf18525bd848b6a3a7ffa06c03401`。远端构建并校验 linux/amd64 平台镜像 `sha256:e835d472a154211cae4ff76d956d5a6c3898044038665f7311a24faf280146b4` 与 Web 镜像 `sha256:fecd2a6659c3410df2e2df0bedbd85dd1e2603a17091368c0da950983ad3e4ba`，两者 source commit 均为完整提交 `bae4a2a10ff461eb732ccb3bd7073f3d7ab64890`；Web 使用 `/flowweave/` base path 和空 API base URL。发布前创建受保护生产数据库备份，SHA-256 为 `417938ed1dfa393bc4af3c8eda573718d194b4285f80c51d7b5e50fea83a62e5`，并保留旧镜像 rollback tags。
+
+迁移前备份克隆库真实执行 0145→0146，确认两个 partial FlowRun 唯一索引、NodeRun／Artifact 新唯一键、全部受影响表行数保持、临时 `NOBYPASSRLS` 角色下两用户顶层 FlowRun 与顶层 Runtime 集合一致、嵌套记录及嵌套 Runtime 不跨用户可见；0146→0145→0146 往返后 head 与行数仍一致，临时角色和克隆库已清理。正式 migration 退出成功，生产 head 为 `0146_shared_flow_runs`；api、stream-api 健康，worker 与 web 运行，带前缀页面、静态资源、认证 API、FlowRun 深层路由和 FastGPT 根入口通过。生产只读投影确认两个用户看到相同 2 个顶层 FlowRun 和 2 个顶层 Runtime Session，`flowweave` 的 7 条历史嵌套记录仍只归本人，LDAP 用户看到 0 条。Runtime Provider 容器和镜像发布前后不变，未重启或替换；未删除 volume、Workspace 或持久数据。
