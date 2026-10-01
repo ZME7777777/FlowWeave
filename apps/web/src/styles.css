@@ -40,6 +40,7 @@ html{-webkit-text-size-adjust:100%;text-rendering:optimizeLegibility}body{font-s
 
 /* Resource selection and bulk deletion */
 .notice.success{background:#e8f4eb;color:var(--green)}
+.run-shared-entry-notice{display:flex;align-items:center;gap:10px;border:1px solid #cfe0d5;background:#f1f7f3;color:var(--green)}.run-shared-entry-notice span{color:var(--muted)}
 .bulk-actions{display:flex;align-items:center;gap:8px}.bulk-actions button:disabled,.flow-list-actions button:disabled,.run-delete:disabled,.run-lifecycle:disabled{cursor:not-allowed;opacity:.48}
 .resource-check{display:inline-flex!important;flex-direction:row!important;align-items:center!important;gap:8px!important;margin:0!important;color:inherit!important}.resource-check input{width:16px;height:16px;margin:0;accent-color:var(--green)}
 .product-card.selected{border-color:#67a17f;box-shadow:0 0 0 2px #dcebe1}.product-card .resource-check .node-icon{margin-left:5px}

@@ -153,3 +153,84 @@ def test_credentials_and_flow_runs_are_user_isolated(db_session_factory):
         with tenant_user(FLOWWEAVE_USER_ID):
             assert [item.id for item in db.scalars(select(WebsiteCredential))] == [credential.id]
             assert [item.id for item in db.scalars(select(FlowRun))] == [run.id]
+
+
+def test_shared_flow_allows_each_user_own_run_number_and_node_sessions(client, user_client):
+    asset_response = client.post(
+        "/api/v1/node-assets",
+        json={
+            "name": "共享运行节点",
+            "description": "",
+            "inputs": [],
+            "outputs": [],
+            "executor": {"startup_prompt": "执行共享流程", "context_prompt": ""},
+        },
+    )
+    assert asset_response.status_code == 201, asset_response.text
+    flow_response = client.post(
+        "/api/v1/flows",
+        json={
+            "name": "共享流程 A",
+            "description": "所有用户使用同一流程入口",
+            "default_entry_key": "shared_node",
+            "nodes": [
+                {
+                    "instance_key": "shared_node",
+                    "node_asset_id": asset_response.json()["id"],
+                    "alias": "共享节点",
+                    "position_x": 0,
+                    "position_y": 0,
+                    "gates": [],
+                }
+            ],
+            "edges": [],
+            "port_mappings": [],
+        },
+    )
+    assert flow_response.status_code == 201, flow_response.text
+    flow = flow_response.json()
+
+    user_flows = user_client.get("/api/v1/flows")
+    assert user_flows.status_code == 200, user_flows.text
+    assert {item["id"] for item in user_flows.json()} == {flow["id"]}
+
+    admin_run_response = client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={"environment_version_id": client.environment_version_id},
+    )
+    user_run_response = user_client.post(
+        f"/api/v1/flows/{flow['id']}/runs",
+        json={"environment_version_id": user_client.environment_version_id},
+    )
+    assert admin_run_response.status_code == 201, admin_run_response.text
+    assert user_run_response.status_code == 201, user_run_response.text
+    admin_run = admin_run_response.json()
+    user_run = user_run_response.json()
+    assert admin_run["run_no"] == user_run["run_no"] == 1
+
+    assert [item["id"] for item in client.get("/api/v1/flow-runs").json()] == [admin_run["id"]]
+    assert [item["id"] for item in user_client.get("/api/v1/flow-runs").json()] == [user_run["id"]]
+    assert user_client.get(f"/api/v1/flow-runs/{admin_run['id']}").status_code == 404
+    assert client.get(f"/api/v1/flow-runs/{user_run['id']}").status_code == 404
+
+    node_response = user_client.post(
+        f"/api/v1/flow-runs/{user_run['id']}/nodes/shared_node/runs",
+        json={
+            "agent_preset": {
+                "capability_version_ids": [],
+                "node_context_enabled": False,
+            }
+        },
+    )
+    assert node_response.status_code == 201, node_response.text
+    attempt_id = node_response.json()["attempts"][-1]["id"]
+
+    direct_agent = user_client.get("/api/v1/agent-workspaces/default")
+    assert direct_agent.status_code == 403, direct_agent.text
+    assert direct_agent.json()["error"]["code"] == "AGENT_SESSION_ACCESS_REQUIRED"
+
+    flow_node_sessions = user_client.get(
+        f"/api/v1/flow-runs/{user_run['id']}/node-attempts/{attempt_id}/agent-sessions"
+    )
+    assert flow_node_sessions.status_code == 200, flow_node_sessions.text
+    assert flow_node_sessions.json() == {"items": [], "next_cursor": None}

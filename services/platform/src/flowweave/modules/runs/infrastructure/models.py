@@ -24,7 +24,12 @@ class FlowRun(Base):
     __tablename__ = "flow_runs"
     __table_args__ = (
         CheckConstraint("run_mode IN ('MANUAL', 'AUTOMATIC')", name="ck_flow_runs_run_mode"),
-        UniqueConstraint("flow_definition_id", "run_no", name="uq_flow_run_number"),
+        UniqueConstraint(
+            "owner_user_id",
+            "flow_definition_id",
+            "run_no",
+            name="uq_flow_run_number",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)

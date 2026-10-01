@@ -151,7 +151,9 @@ def isolated_http(monkeypatch):
                             id=f"{prefix}-run",
                             name=f"{prefix}-run",
                             flow_definition_id="shared-flow",
-                            run_no=1 if prefix == "admin" else 2,
+                            # Run numbers are scoped to the user. Both users
+                            # can therefore own Run #1 for the shared flow.
+                            run_no=1,
                         ),
                     ]
                 )
