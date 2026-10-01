@@ -595,7 +595,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     if (path.endsWith('/workspace/git/repositories')) {
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
         repositories: [
-          { path: '/runtime/workspace/project', remote: 'https://example.test/repo.git', branch: 'main', head: '1234567890ab', upstream: 'origin/main', ahead: 2, behind: 1 },
+          { path: '/runtime/workspace/project', remote: 'https://example.test/repo.git', branch: 'main', head: '1234567890ab', upstream: 'origin/main', ahead: gitSynchronizesToRemote ? 0 : 2, behind: gitSynchronizesToRemote ? 0 : 1 },
           { path: '/runtime/workspace/project/backend', remote: 'https://example.test/backend.git', branch: 'main', head: '1234567890ab' },
         ],
       }) });
@@ -1136,7 +1136,13 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(gitSummary).toContainText('3 个文件已改动');
   await expect(gitSummary).toContainText('本地 +2');
   await expect(gitSummary).toContainText('远端 +1');
-  await gitSummary.getByRole('button').click();
+  const gitSummaryChangesRequestsBeforeRefresh = workspaceGitChangesRequests;
+  await gitSummary.getByRole('button', { name: '刷新 Git 信息' }).click();
+  await expect.poll(() => gitSyncRequests).toBe(1);
+  await expect.poll(() => workspaceGitChangesRequests).toBe(gitSummaryChangesRequestsBeforeRefresh + 1);
+  await expect(gitSummary).toContainText('本地 +0');
+  await expect(gitSummary).toContainText('远端 +0');
+  await gitSummary.getByRole('button', { name: '在全屏文件栏中查看 Git 信息' }).click();
   await expect(page.getByLabel('全屏工作区工具')).toBeVisible();
   await expect(page.getByRole('complementary', { name: 'Git' })).toBeVisible();
   await expect(page.getByRole('button', { name: '本地改动', exact: true })).toHaveClass(/active/);

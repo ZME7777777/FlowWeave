@@ -4082,7 +4082,8 @@ function WorkspaceDrawer({
     queryKey: sessionQueryKey(host, 'workspace-git-summary-repositories', workspaceId, bindingId, workDirectoryId),
     queryFn: () => api.gitRepositories(workspaceId, gitOptions),
     enabled: Boolean(details?.working_directory),
-    staleTime: 15_000,
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
     retry: (count, error) => !(error instanceof ApiError && (error.status < 500 || error.status === 503)) && count < 2,
   });
   const workspaceGitRepository = useMemo(
@@ -4093,9 +4094,28 @@ function WorkspaceDrawer({
     queryKey: sessionQueryKey(host, 'workspace-git-summary-changes', workspaceId, bindingId, workDirectoryId, workspaceGitRepository?.path),
     queryFn: () => api.gitChanges(workspaceId, workspaceGitRepository!.path, gitOptions),
     enabled: Boolean(workspaceGitRepository),
-    staleTime: 5_000,
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
     retry: (count, error) => !(error instanceof ApiError && (error.status < 500 || error.status === 503)) && count < 2,
   });
+  const [gitSummaryRefreshError, setGitSummaryRefreshError] = useState('');
+  const [gitSummaryRefreshing, setGitSummaryRefreshing] = useState(false);
+  const refreshGitSummary = async () => {
+    if (!workspaceGitRepository || gitSummaryRefreshing) return;
+    setGitSummaryRefreshError('');
+    setGitSummaryRefreshing(true);
+    try {
+      await api.syncGitRepository(workspaceId, workspaceGitRepository.path, gitOptions);
+      await Promise.all([
+        workspaceGitRepositoriesQuery.refetch(),
+        workspaceGitChangesQuery.refetch(),
+      ]);
+    } catch (error) {
+      setGitSummaryRefreshError(error instanceof Error ? error.message : 'Git 状态刷新失败，请重试。');
+    } finally {
+      setGitSummaryRefreshing(false);
+    }
+  };
   const sshRemoteReady = Boolean(
     details?.ide.gateway.supported
     && details.ide.gateway.host
@@ -4111,7 +4131,7 @@ function WorkspaceDrawer({
   const visibleSources = sources.slice(0, 3);
   const summary = details && <section className="agent-workspace-overview">
     {conversation && <article className="agent-workspace-conversation-config"><Bot size={16}/><div><small>会话用量</small><p className="agent-workspace-usage-line"><span>{`累计 ${conversationTotalTokens.toLocaleString('zh-CN')} Token`}</span><span>{`$${(conversationUsage?.accumulated_cost ?? 0).toFixed(6)}`}</span></p></div></article>}
-    {workspaceGitRepository && <article className="agent-workspace-git-summary"><GitBranch size={16}/><div><small>Git 信息</small><button type="button" onClick={openGitSummary} title="在全屏文件栏中查看 Git 信息"><span><b>{workspaceGitRepository.branch || '未命名分支'}</b><em>{workspaceGitChangesQuery.isLoading ? '正在读取本地改动…' : `${gitChangedFileCount(workspaceGitChangesQuery.data)} 个文件已改动`}</em></span><ChevronRight size={13}/></button><p>{workspaceGitRepository.upstream ? <><span>{`本地 +${workspaceGitRepository.ahead ?? 0}`}</span><span>{`远端 +${workspaceGitRepository.behind ?? 0}`}</span></> : '未设置远程跟踪分支'}</p></div></article>}
+    {workspaceGitRepository && <article className="agent-workspace-git-summary"><GitBranch size={16}/><div><span className="agent-workspace-git-summary-title"><small>Git 信息</small><button type="button" className="agent-workspace-git-summary-refresh" aria-label="刷新 Git 信息" title="刷新本地改动、提交和远端状态" disabled={gitSummaryRefreshing} onClick={() => void refreshGitSummary()}><RefreshCw className={gitSummaryRefreshing ? 'spin' : undefined} size={12}/></button></span><button type="button" onClick={openGitSummary} title="在全屏文件栏中查看 Git 信息"><span><b>{workspaceGitRepository.branch || '未命名分支'}</b><em>{workspaceGitChangesQuery.isLoading || gitSummaryRefreshing ? '正在刷新本地改动…' : `${gitChangedFileCount(workspaceGitChangesQuery.data)} 个文件已改动`}</em></span><ChevronRight size={13}/></button><p>{workspaceGitRepository.upstream ? <><span>{`本地 +${workspaceGitRepository.ahead ?? 0}`}</span><span>{`远端 +${workspaceGitRepository.behind ?? 0}`}</span></> : '未设置远程跟踪分支'}</p>{gitSummaryRefreshError && <p className="agent-workspace-git-summary-error" role="alert">{gitSummaryRefreshError}</p>}</div></article>}
     {conversation && <article className="agent-workspace-changes"><FileText size={16}/><div><small>变更</small><button type="button" disabled={!sessionChanges.length} onClick={() => onReviewChanges?.(sessionChanges)}><span><b>{sessionChanges.length ? `${sessionChanges.length} 个文件已更改` : '暂无变更'}</b>{sessionChanges.length > 0 && <em><ins>{`+${sessionChangeAdditions}`}</ins><del>{`-${sessionChangeDeletions}`}</del></em>}</span><ChevronRight size={13}/></button></div></article>}
     {runtimeTasks.length > 0 && <article className="agent-workspace-subagents"><Bot size={16}/><div><small>子智能体</small><button type="button" onClick={() => openRuntimeTasks()}><b>{runtimeTasks.filter(task => runtimeTaskIsActive(task, sessionStopped)).length ? `${runtimeTasks.filter(task => runtimeTaskIsActive(task, sessionStopped)).length} 个运行中` : `${runtimeTasks.length} 个任务`}</b><ChevronRight size={13}/></button><div className="agent-workspace-subagent-glyphs" aria-label={`${runtimeTasks.length} 个子智能体任务`}>{runtimeTasks.slice(0, 5).map((task, index) => <button type="button" key={task.id} aria-label={`查看第 ${index + 1} 个子智能体任务：${runtimeTaskStatus(task, sessionStopped)}`} onClick={() => openRuntimeTasks(task.id)}><RuntimeTaskGlyph task={task} sessionStopped={sessionStopped}/></button>)}{runtimeTasks.length > 5 && <button type="button" className="agent-subagent-overflow" aria-label={`查看其余 ${runtimeTasks.length - 5} 个子智能体任务`} onClick={() => openRuntimeTasks()}>+{runtimeTasks.length - 5}</button>}</div></div></article>}
     {/*
