@@ -3,8 +3,7 @@ FROM docker:29.6.1-cli@sha256:862099ada15c669000bef53aa4cb9d821262829f45b0dda215
 FROM python:3.12.11-slim-bookworm@sha256:519591d6871b7bc437060736b9f7456b8731f1499a57e22e6c285135ae657bf7 AS builder
 WORKDIR /app
 RUN sed -i \
-      -e 's|http://deb.debian.org|https://mirrors.tuna.tsinghua.edu.cn|g' \
-      -e 's|https://deb.debian.org|https://mirrors.tuna.tsinghua.edu.cn|g' \
+      -e 's|http://deb.debian.org|https://deb.debian.org|g' \
       /etc/apt/sources.list.d/debian.sources \
  && apt-get -o Acquire::Retries=5 update \
  && apt-get -o Acquire::Retries=5 install -y --no-install-recommends build-essential ca-certificates \
@@ -16,8 +15,7 @@ RUN uv sync --frozen --no-dev
 FROM python:3.12.11-slim-bookworm@sha256:519591d6871b7bc437060736b9f7456b8731f1499a57e22e6c285135ae657bf7 AS runtime
 WORKDIR /app
 RUN sed -i \
-      -e 's|http://deb.debian.org|https://mirrors.tuna.tsinghua.edu.cn|g' \
-      -e 's|https://deb.debian.org|https://mirrors.tuna.tsinghua.edu.cn|g' \
+      -e 's|http://deb.debian.org|https://deb.debian.org|g' \
       /etc/apt/sources.list.d/debian.sources \
  && apt-get -o Acquire::Retries=5 update \
  && apt-get -o Acquire::Retries=5 install -y --no-install-recommends curl ca-certificates git vim \
