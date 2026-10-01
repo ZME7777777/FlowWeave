@@ -4240,7 +4240,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   });
   const [hiddenEventIds, setHiddenEventIds] = useState<Set<string>>(() => new Set());
   const [deferredRewriteUserEventIds, setDeferredRewriteUserEventIds] = useState<Set<string>>(() => new Set());
-  const [pauseDisplayFreeze, setPauseDisplayFreeze] = useState<{ bindingId: string; visibleEventIds: Set<string> }>();
   const [turnState, setTurnState] = useState<TurnState>('idle');
   const [activeTurnEventId, setActiveTurnEventId] = useState<string>();
   const [expiredTerminalSyncTurnKey, setExpiredTerminalSyncTurnKey] = useState<string>();
@@ -5789,16 +5788,12 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   }, [conversationDraft?.id, eventsQuery.data?.events, scopedLiveEvents, selected?.id]);
   const displayedEvents = useMemo(() => {
     const hiddenBranchIds = eventBranchIdsFromRoots(currentFormalEvents, hiddenEventIds);
-    const pausedVisibleEventIds = pauseDisplayFreeze && pauseDisplayFreeze.bindingId === selected?.id
-      ? pauseDisplayFreeze.visibleEventIds
-      : undefined;
     const visibleFormalEvents = currentFormalEvents.filter(event => (
       !hiddenBranchIds.has(event.id)
       && !deferredRewriteUserEventIds.has(event.id)
-      && (!pausedVisibleEventIds || pausedVisibleEventIds.has(event.id))
     ));
     return projectLocalMessages(visibleFormalEvents, activeLocalMessageProjections);
-  }, [activeLocalMessageProjections, currentFormalEvents, deferredRewriteUserEventIds, hiddenEventIds, pauseDisplayFreeze, selected?.id]);
+  }, [activeLocalMessageProjections, currentFormalEvents, deferredRewriteUserEventIds, hiddenEventIds]);
   const cachedHistoryUserEventIds = useMemo(() => {
     void historyCacheRevision;
     if (!selected || !eventsQuery.data?.history_cursor) return [];
@@ -6523,7 +6518,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       bootstrapTransitionScope.current = undefined;
       return;
     }
-    setEditing(false); setQueuedMessageMenuId(undefined); pendingLiveEvents.current = []; if (liveEventsFrame.current !== undefined) window.cancelAnimationFrame(liveEventsFrame.current); liveEventsFrame.current = undefined; setScopedLiveEvents(current => current.filter(item => item.scope === composerScope)); setLocalMessageProjectionRevision(current => current + 1); setHiddenEventIds(new Set()); setDeferredRewriteUserEventIds(new Set()); setPauseDisplayFreeze(undefined); setActiveTurnEventId(undefined); setForegroundTurn(undefined); setExpiredTerminalSyncTurnKey(undefined); setRequestStartedAt(undefined); setConfirmationReason(''); setTurnState('idle'); queuedMessagesRef.current = []; setQueuedMessages([]); setPendingRewrite(undefined);
+    setEditing(false); setQueuedMessageMenuId(undefined); pendingLiveEvents.current = []; if (liveEventsFrame.current !== undefined) window.cancelAnimationFrame(liveEventsFrame.current); liveEventsFrame.current = undefined; setScopedLiveEvents(current => current.filter(item => item.scope === composerScope)); setLocalMessageProjectionRevision(current => current + 1); setHiddenEventIds(new Set()); setDeferredRewriteUserEventIds(new Set()); setActiveTurnEventId(undefined); setForegroundTurn(undefined); setExpiredTerminalSyncTurnKey(undefined); setRequestStartedAt(undefined); setConfirmationReason(''); setTurnState('idle'); queuedMessagesRef.current = []; setQueuedMessages([]); setPendingRewrite(undefined);
     if (recoveredComposer && composerScope) {
       composerDraftsByScope.current.set(composerScope, recoveredComposer);
       replaceComposerDraft(recoveredComposer.content, composerScope);
@@ -6597,7 +6592,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   useEffect(() => {
     if (turnState === 'pausing' && nativeExecutionStatus?.toLowerCase() === 'paused') {
       setTurnState('paused');
-      setPauseDisplayFreeze(undefined);
     }
   }, [nativeExecutionStatus, turnState]);
   useEffect(() => {
@@ -7254,22 +7248,14 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   });
   const interrupt = useMutation({
     mutationFn: () => api.interruptConversation(workspace!.id, selected!.id),
-    onMutate: () => {
-      setPauseDisplayFreeze(selected ? {
-        bindingId: selected.id,
-        visibleEventIds: new Set(currentFormalEvents.map(event => event.id)),
-      } : undefined);
-      setTurnState('pausing');
-    },
+    onMutate: () => setTurnState('pausing'),
     onSuccess: () => { reconcileConversationProjection(); onHostStateChanged?.(); },
     onError: error => {
-      setPauseDisplayFreeze(undefined);
       setTurnState('running');
       reportOperationError(selected?.id, error);
     },
   });
   const resume = useMutation({ mutationFn: () => api.resumeConversation(workspace!.id, selected!.id), onMutate: () => {
-    setPauseDisplayFreeze(undefined);
     setTurnState('resuming');
   }, onSuccess: value => {
     if (value.cursor) setActiveTurnEventId(value.cursor);
@@ -7381,7 +7367,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   }, [dispatchMessage, pendingMigratedSend, selected?.id, send.isPending]);
   useEffect(() => {
     if (turnState !== 'pausing' || !inputReadinessQuery.data?.ready) return;
-    setPauseDisplayFreeze(undefined);
     if (pendingRewrite) {
       const request = pendingRewrite;
       setPendingRewrite(undefined);

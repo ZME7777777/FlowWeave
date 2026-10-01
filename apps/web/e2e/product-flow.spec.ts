@@ -2369,11 +2369,12 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect.poll(() => pauseReadinessRefreshStarted).toBe(true);
   pauseBufferedEvent = true;
   await page.evaluate(() => window.dispatchEvent(new Event('focus')));
-  await expect(page.getByText('暂停请求确认前到达的正式事件。')).toHaveCount(0);
+  // Pausing only waits for the Runtime control state to settle. Formal events
+  // remain authoritative and must not disappear while that confirmation is in flight.
+  await expect(page.getByText('暂停请求确认前到达的正式事件。')).toBeVisible();
   pauseReadinessReturnsIdle = true;
   releasePauseReadiness?.();
   pauseReadinessGate = undefined;
-  await expect(page.getByText('暂停请求确认前到达的正式事件。')).toBeVisible();
   await expect(page.getByRole('button', { name: '继续当前 Agent' })).toBeVisible();
   await expect(page.getByRole('button', { name: '发送消息' })).toHaveCount(0);
   pauseReadinessReturnsIdle = false;
