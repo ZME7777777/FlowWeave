@@ -6,7 +6,7 @@ import { MarkdownCodeBlock, MermaidDiagram } from './MermaidDiagram';
 import { ConversationTextReveal } from './ConversationTextReveal';
 import { isMermaidDiagram, markdownCodeText, normalizeNestedMarkdownFences } from './markdownCodeBlock';
 
-const MARKDOWN_SYNTAX = /(^|\n)\s{0,3}(?:#{1,6}\s|[-*+]\s|\d+[.)]\s|>|```)|[`*_~]|!?\[[^\]]*\]\([^)]*\)|\|/;
+const MARKDOWN_SYNTAX = /(^|\n)\s{0,3}(?:#{1,6}\s|[-*+]\s|\d+[.)]\s|>|```)|[`*_~]|!?\[[^\]]*\]\([^)]*\)|\||https?:\/\/[^\s<]+/i;
 
 
 function MarkdownImage({ src, alt, onOpenImage, ...props }: ComponentPropsWithoutRef<'img'> & { onOpenImage?: (src: string, alt?: string) => void }) {
