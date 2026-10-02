@@ -1062,6 +1062,12 @@ test('run projection stays neutral until record selection and automatic save rep
   await page.mouse.up();
   await expect.poll(async () => (await draggableNode.boundingBox())?.x ?? 0).toBeGreaterThan(beforeDrag!.x + 50);
   await expect(page.locator('.node-record-list > article.active')).toHaveCount(1);
+  const sidePanel = page.locator('.run-side-panel');
+  const sidePanelBox = await sidePanel.boundingBox();
+  expect(sidePanelBox).not.toBeNull();
+  await page.mouse.click(sidePanelBox!.x + sidePanelBox!.width - 12, sidePanelBox!.y + sidePanelBox!.height - 12);
+  await expect(page.locator('.node-record-list > article.active')).toHaveCount(1);
+  await expect(sidePanel).toBeVisible();
   await page.locator('.run-main').click({ position: { x: 8, y: 8 } });
   await expect(page.locator('.node-record-list > article.active')).toHaveCount(0);
   await expect(page.locator('.run-side-panel')).toHaveCount(0);

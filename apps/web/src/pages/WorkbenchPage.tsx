@@ -271,7 +271,7 @@ function isInteractiveClick(target: EventTarget | null): boolean {
 
 function isFlowInternalClick(target: EventTarget | null): boolean {
   return target instanceof Element && Boolean(target.closest(
-    'button, a, input, textarea, select, [role="button"], .react-flow__node, .react-flow__edge, .react-flow__controls',
+    'button, a, input, textarea, select, [role="button"], .react-flow__node, .react-flow__edge, .react-flow__controls, .run-side-panel',
   ));
 }
 
