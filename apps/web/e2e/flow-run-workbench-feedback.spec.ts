@@ -330,11 +330,20 @@ test('step configuration is saved before start and direct launch has its own tab
   const consolePanel = page.locator('.node-console');
   await expect(consolePanel).toBeVisible();
   await expect(consolePanel.locator('.node-console-mode-summary')).toContainText('逐步运行');
+  await consolePanel.getByRole('button', { name: '编辑' }).click();
+  const promptDialog = page.getByRole('dialog', { name: '编辑启动提示词' });
+  await promptDialog.getByRole('textbox', { name: '节点启动提示词' }).fill('取消选中后仍应保留的前端草稿');
+  await promptDialog.getByRole('button', { name: '取消' }).click();
+  await page.locator('.run-main').click({ position: { x: 8, y: 8 } });
+  await expect(page.locator('.node-console')).toHaveCount(0);
+  await page.locator('.node-record-list').getByRole('button', { name: '运行中 测试逐步记录' }).click();
+  await expect(consolePanel).toContainText('取消选中后仍应保留的前端草稿');
+  expect(savedBody).toBeUndefined();
   await consolePanel.getByRole('button', { name: '保存配置' }).click();
   await expect.poll(() => savedBody).toBeTruthy();
   expect(savedBody).toEqual(expect.objectContaining({
     startup_mode: 'PROMPT',
-    startup_prompt: '读取流程输入并完成节点工作。',
+    startup_prompt: '取消选中后仍应保留的前端草稿',
   }));
   expect(startBody).toBeUndefined();
 
