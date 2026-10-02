@@ -147,7 +147,7 @@ def _host_path(
         not runtime_path.startswith(runtime_root + "/")
         or parsed.as_posix() != runtime_path
         or ".." in parsed.parts
-        or any(part.startswith(".") for part in parsed.parts)
+        or any(part.startswith(".") and part != ".tmp" for part in parsed.parts)
     ):
         raise DomainError("AGENT_WORKSPACE_PATH_INVALID", "文件路径不在工作区范围内", 422)
     relative = parsed.relative_to(PurePosixPath(runtime_root))

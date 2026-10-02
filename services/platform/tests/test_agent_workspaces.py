@@ -1759,6 +1759,21 @@ def test_agent_workspace_files_and_terminal_revalidate_draft_directory(
             work_directory_id=directory["id"],
         )
         assert downloaded.content == b"mock workspace file\n"
+        (project_root / ".tmp").mkdir()
+        (project_root / ".tmp/attachment-interaction-preview.svg").write_bytes(b"<svg/>")
+        generated_image = workspace.download(
+            db,
+            item.id,
+            f"{user_runtime_project_root(item.id)}/.tmp/attachment-interaction-preview.svg",
+        )
+        assert generated_image.content == b"<svg/>"
+        with pytest.raises(DomainError, match="工作区范围"):
+            workspace.download(
+                db,
+                item.id,
+                f"{user_runtime_project_root(item.id)}/.openhands/secret.txt",
+            )
+
         with pytest.raises(DomainError, match="当前工作目录范围"):
             workspace.download(
                 db,
