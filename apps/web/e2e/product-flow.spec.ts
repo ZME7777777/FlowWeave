@@ -850,7 +850,8 @@ test('top-level Agent workspace creates a direct conversation and restores its U
           { id: 'tool-result', event_type: 'TOOL_RESULT', payload: { parent_id: 'unrelated-file-action', action_id: 'tool-request', tool_call_id: 'terminal-call', tool_name: 'terminal', event_name: 'TerminalObservation', content: '/workspace', details: { command: 'pwd', exit_code: 0, is_error: false }, timestamp: '2026-08-26T10:00:03Z' } },
           { id: 'file-action', event_type: 'TOOL_CALL', payload: { parent_id: 'tool-result', action_id: 'file-action', tool_call_id: 'file-call', llm_response_id: 'response-progress-1', tool_name: 'file_editor', event_name: 'FileEditorAction', summary: '更新运行配置', details: { command: 'str_replace', path: '/runtime/workspace/project/src/config.ts', old_str: 'const mode = "old"', new_str: 'const mode = "new"' }, timestamp: '2026-08-26T10:00:03.200Z' } },
           { id: 'file-result', event_type: 'TOOL_RESULT', payload: { parent_id: 'file-action', action_id: 'file-action', tool_call_id: 'file-call', tool_name: 'file_editor', event_name: 'FileEditorObservation', content: 'The file was edited successfully.', details: { command: 'str_replace', path: '/runtime/workspace/project/src/config.ts', is_error: false }, timestamp: '2026-08-26T10:00:03.500Z' } },
-          { id: 'progress-note-next', event_type: 'THOUGHT', payload: { source: 'agent', parent_id: 'file-result', llm_response_id: 'response-progress-2', content: '接下来检查不同类型的文件。', thought: '接下来检查不同类型的文件。', timestamp: '2026-08-26T10:00:03.510Z' } },
+          { id: 'unchanged-file-result', event_type: 'TOOL_RESULT', payload: { parent_id: 'file-result', action_id: 'unchanged-file-action', tool_call_id: 'unchanged-file-call', tool_name: 'file_editor', event_name: 'FileEditorObservation', details: { command: 'str_replace', path: '/runtime/workspace/project/src/unchanged.ts', old_content: 'export const unchanged = true;', new_content: 'export const unchanged = true;', is_error: false }, timestamp: '2026-08-26T10:00:03.505Z' } },
+          { id: 'progress-note-next', event_type: 'THOUGHT', payload: { source: 'agent', parent_id: 'unchanged-file-result', llm_response_id: 'response-progress-2', content: '接下来检查不同类型的文件。', thought: '接下来检查不同类型的文件。', timestamp: '2026-08-26T10:00:03.510Z' } },
           { id: 'java-read-action', event_type: 'TOOL_CALL', payload: { parent_id: 'progress-note-next', action_id: 'java-read-action', tool_call_id: 'java-read-call', llm_response_id: 'response-progress-2', tool_name: 'file_editor', event_name: 'FileEditorAction', details: { command: 'view', path: '/runtime/workspace/project/src/Main.java', view_range: [12, 36] }, timestamp: '2026-08-26T10:00:03.520Z' } },
           { id: 'java-read-result', event_type: 'TOOL_RESULT', payload: { parent_id: 'java-read-action', action_id: 'java-read-action', tool_call_id: 'java-read-call', tool_name: 'file_editor', event_name: 'FileEditorObservation', content: 'class Main {}', details: { command: 'view', path: '/runtime/workspace/project/src/Main.java', view_range: [12, 36], is_error: false }, timestamp: '2026-08-26T10:00:03.540Z' } },
           { id: 'properties-read-action', event_type: 'TOOL_CALL', payload: { parent_id: 'java-read-result', action_id: 'properties-read-action', tool_call_id: 'properties-read-call', tool_name: 'file_editor', event_name: 'FileEditorAction', details: { command: 'view', path: '/runtime/workspace/project/config/application.properties' }, timestamp: '2026-08-26T10:00:03.560Z' } },
@@ -1500,6 +1501,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.getByRole('button', { name: '已编辑 2 个文件' })).toHaveCount(1);
   await expect(completedTurn.getByText('config.ts', { exact: true })).toBeVisible();
   await expect(completedTurn.getByText('root-owned.ts', { exact: true })).toBeVisible();
+  await expect(completedTurn.getByText('unchanged.ts', { exact: true })).toHaveCount(0);
   await expect(replyChanges).toContainText('+2');
   await expect(replyChanges).toContainText('-2');
   const reportLink = page.getByRole('link', { name: '期权异动接口批量查询代码审查报告.md' });
@@ -1531,6 +1533,9 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(fileDetail.getByText('const mode = "new"', { exact: true })).toBeVisible();
   await expect(fileDetail.getByText('The file was edited successfully.', { exact: true })).toBeVisible();
   await replyChanges.click();
+  await expect(page.getByRole('button', { name: '上一处改动' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '下一处改动' })).toBeVisible();
+  expect(await page.locator('.agent-changes-diff .agent-diff-line').filter({ hasText: 'const mode = "new"' }).first().evaluate(element => element.tagName)).toBe('DIV');
   await expect(page.getByRole('button', { name: '查看源文件' })).toBeVisible();
   await page.getByRole('button', { name: '查看源文件' }).click();
   await expect(page.getByText('workspace file preview', { exact: true })).toBeVisible();
@@ -2792,11 +2797,12 @@ test('editing the latest user message locally replaces only its active branch', 
 test('selected conversation text is sent and rendered as a compact reference card', async ({ page }) => {
   const now = new Date().toISOString();
   const selectedText = '这段内容只能作为会话引用卡片显示';
+  const generatedImageLabel = '附件交互示意图';
   let sentPayload: Record<string, unknown> | undefined;
   const annotations: Array<Record<string, unknown>> = [];
   const events = () => [
     { id: 'reference-source-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '请给出可引用的建议', timestamp: now } },
-    { id: 'reference-source-assistant', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'reference-source-user', content: selectedText, timestamp: now } },
+    { id: 'reference-source-assistant', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'reference-source-user', content: `${selectedText}\n\n[${generatedImageLabel}](assets/attachment-interaction-preview.svg)`, timestamp: now } },
     ...(sentPayload ? [{ id: 'reference-target-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'reference-source-assistant', content: '请据此继续', collaboration_annotations: sentPayload.annotations, timestamp: now } }] : []),
   ];
   await page.route('**/api/v1/auth/me', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ id: 'reference-user', username: 'tester', role: 'USER', is_super_admin: false }) }));
@@ -2820,6 +2826,7 @@ test('selected conversation text is sent and rendered as a compact reference car
     if (path.includes('/attachments/uploads') && request.method() === 'PUT') return route.fulfill({ status: 200 });
     if (path.includes('/attachments/uploads') && path.endsWith('/complete') && request.method() === 'POST') return route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify({ filename: '参考图.png', mime_type: 'image/png', byte_size: 8, path: '/runtime/workspace/project/uploads/参考图.png' }) });
     if (path.endsWith('/input-readiness')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ready: true, execution_status: 'idle' }) });
+    if (path.endsWith('/workspace/file')) return route.fulfill({ status: 200, contentType: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg" width="48" height="32"><rect width="48" height="32" fill="#4d9a68"/></svg>' });
     if (path.endsWith('/work-directories')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [] }) });
     if (path.endsWith('/workspace')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: '/runtime/workspace/project', work_directory: null, files: [], repositories: [], runtime: { container_id: 'single-runtime' }, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '未配置', note: '' } } }) });
     if (path.endsWith('/context')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ model_name: null, reasoning_effort: null }) });
@@ -2844,8 +2851,14 @@ test('selected conversation text is sent and rendered as a compact reference car
   await page.goto('/agent/conversations/reference-conversation');
   const source = page.locator('[data-conversation-event-id="reference-source-assistant"]');
   await expect(source).toContainText(selectedText);
-  await source.evaluate(element => {
-    const content = element.querySelector('p');
+  const generatedImage = source.getByRole('button', { name: `预览图片：${generatedImageLabel}` });
+  await expect(generatedImage).toBeVisible();
+  await expect(generatedImage.locator('img')).toHaveAttribute('src', /workspace\/file/);
+  await generatedImage.click();
+  await expect(page.getByRole('dialog', { name: '文件预览' })).toBeVisible();
+  await page.getByRole('button', { name: '关闭文件预览' }).click();
+  await source.evaluate((element, text) => {
+    const content = [...element.querySelectorAll('p')].find(item => item.textContent === text);
     if (!content) throw new Error('Expected assistant message content');
     const selection = window.getSelection();
     const range = document.createRange();
@@ -2853,7 +2866,7 @@ test('selected conversation text is sent and rendered as a compact reference car
     selection?.removeAllRanges();
     selection?.addRange(range);
     content.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
-  });
+  }, selectedText);
   await expect(page.getByRole('button', { name: '添加到会话' })).toBeVisible();
   await page.getByRole('button', { name: '添加到会话' }).click();
   await page.getByLabel('上传附件').setInputFiles({ name: '参考图.png', mimeType: 'image/png', buffer: Buffer.from('image') });
@@ -2861,8 +2874,14 @@ test('selected conversation text is sent and rendered as a compact reference car
   await expect(resourceTags).toHaveCount(1);
   await expect(resourceTags.getByText('参考图.png', { exact: true })).toBeVisible();
   await expect(resourceTags.getByRole('button', { name: '会话引用 1', exact: true })).toBeVisible();
+  await resourceTags.getByRole('button', { name: '参考图.png', exact: true }).click();
+  await expect(page.getByRole('dialog', { name: '文件预览' })).toBeVisible();
+  await page.getByRole('button', { name: '关闭文件预览' }).click();
+  await resourceTags.getByRole('button', { name: '引用附件 1', exact: true }).click();
+  await expect(page.getByLabel('发送 Agent 消息')).toHaveValue('@附件1');
   await expect(resourceTags.evaluate(element => getComputedStyle(element).paddingBottom)).resolves.toBe('4px');
   await expect(page.getByLabel('已添加的引用 1 条')).toContainText('会话引用 1');
+  await resourceTags.getByRole('button', { name: '会话引用 1', exact: true }).click();
   await page.getByRole('button', { name: '定位原文' }).click();
   await expect(source).toBeInViewport();
   await expect.poll(() => source.evaluate(element => getComputedStyle(element, '::selection').backgroundColor)).toBe('rgb(183, 223, 255)');

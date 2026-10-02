@@ -31,10 +31,30 @@ function MarkdownImage({ src, alt, onOpenImage, ...props }: ComponentPropsWithou
     : image;
 }
 
-function MarkdownLink({ href, onClick, onOpenWorkspaceFile, ...props }: ComponentPropsWithoutRef<'a'> & {
+function workspaceImageLink(href: string): boolean {
+  if (/\.(?:avif|gif|jpe?g|png|svg|webp)(?:[?#].*)?$/i.test(href)) return true;
+  try {
+    const url = new URL(href, window.location.origin);
+    return url.origin === window.location.origin
+      && url.pathname.startsWith('/api/v1/')
+      && url.pathname.endsWith('/workspace/file')
+      && /\.(?:avif|gif|jpe?g|png|svg|webp)$/i.test(url.searchParams.get('path') ?? '');
+  } catch {
+    return false;
+  }
+}
+
+function MarkdownLink({ href, onClick, onOpenWorkspaceFile, onOpenImage, workspaceImageUrl, children, ...props }: ComponentPropsWithoutRef<'a'> & {
   onOpenWorkspaceFile?: (href: string) => boolean;
+  onOpenImage?: (src: string, alt?: string) => void;
+  workspaceImageUrl?: (href: string) => string | undefined;
 }) {
   const isExternal = typeof href === 'string' && /^(?:https?:\/\/|mailto:)/i.test(href);
+  const imageUrl = typeof href === 'string' && workspaceImageLink(href)
+    ? workspaceImageUrl?.(href)
+    : undefined;
+  const label = typeof children === 'string' ? children : undefined;
+  if (imageUrl) return <MarkdownImage src={imageUrl} alt={label} onOpenImage={() => onOpenImage?.(href!, label)} />;
   return <a {...props} href={href} {...(isExternal ? { target: '_blank', rel: 'noopener noreferrer' } : {})} onClick={event => {
     onClick?.(event);
     if (event.defaultPrevented || !href) return;
@@ -42,7 +62,7 @@ function MarkdownLink({ href, onClick, onOpenWorkspaceFile, ...props }: Componen
       event.preventDefault();
       return;
     }
-  }}/>;
+  }}>{children}</a>;
 }
 
 function MarkdownPre({ children, node: _node, ...props }: ComponentPropsWithoutRef<'pre'> & { node?: unknown }) {
@@ -61,12 +81,12 @@ function MarkdownTable({ children, node: _node, ...props }: ComponentPropsWithou
   return <div className="conversation-markdown-table-scroll"><table {...props}>{children}</table></div>;
 }
 
-export function ConversationMarkdown({ children, reveal = false, onOpenWorkspaceFile, onOpenImage }: { children: string; reveal?: boolean; onOpenWorkspaceFile?: (href: string) => boolean; onOpenImage?: (src: string, alt?: string) => void }) {
+export function ConversationMarkdown({ children, reveal = false, onOpenWorkspaceFile, onOpenImage, workspaceImageUrl }: { children: string; reveal?: boolean; onOpenWorkspaceFile?: (href: string) => boolean; onOpenImage?: (src: string, alt?: string) => void; workspaceImageUrl?: (href: string) => string | undefined }) {
   const markdown = useMemo(() => normalizeNestedMarkdownFences(children), [children]);
   if (!MARKDOWN_SYNTAX.test(markdown)) return <p><ConversationTextReveal reveal={reveal}>{markdown}</ConversationTextReveal></p>;
   return <div key={reveal ? markdown : undefined} className={reveal ? 'conversation-text-reveal-block' : undefined}>
     <ReactMarkdown remarkPlugins={[remarkGfm]} components={{
-      a: props => <MarkdownLink {...props} onOpenWorkspaceFile={onOpenWorkspaceFile}/>,
+      a: props => <MarkdownLink {...props} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenImage={onOpenImage} workspaceImageUrl={workspaceImageUrl}/>,
       img: props => <MarkdownImage {...props} onOpenImage={onOpenImage}/>, pre: MarkdownPre, table: MarkdownTable,
     }}>{markdown}</ReactMarkdown>
   </div>;

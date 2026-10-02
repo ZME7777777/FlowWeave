@@ -3,7 +3,7 @@ import { Terminal as XTerm } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
 import { type InfiniteData, useQueries, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import hljs from 'highlight.js/lib/common';
-import { ArrowLeft, ArrowUp, Bell, Bot, Boxes, Check, ChevronDown, ChevronRight, CircleAlert, CircleDot, Copy, CornerDownRight, Download, Ellipsis, FileCode2, FileText, Folder, FolderOpen, FolderPlus, GitBranch, GripVertical, ImageIcon, Layers3, Link2, ListRestart, LoaderCircle, Maximize2, Minimize2, MonitorCog, PanelRightOpen, Pencil, Pin, PinOff, Play, Plus, Quote, RefreshCw, Search, Send, ShieldAlert, Square, Trash2, X } from 'lucide-react';
+import { ArrowDown, ArrowLeft, ArrowUp, Bell, Bot, Boxes, Check, ChevronDown, ChevronRight, CircleAlert, CircleDot, Copy, CornerDownRight, Download, Ellipsis, FileCode2, FileText, Folder, FolderOpen, FolderPlus, GitBranch, GripVertical, ImageIcon, Layers3, Link2, ListRestart, LoaderCircle, Maximize2, Minimize2, MonitorCog, PanelRightOpen, Pencil, Pin, PinOff, Play, Plus, Quote, RefreshCw, Search, Send, ShieldAlert, Square, Trash2, X } from 'lucide-react';
 import { createContext, isValidElement, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type WheelEvent as ReactWheelEvent } from 'react';
 import { createPortal, flushSync } from 'react-dom';
 import ReactMarkdown from 'react-markdown';
@@ -13,7 +13,7 @@ import { WORKSPACE_FILE_TRANSFER_TYPE, transferredFiles, type ComposerHandle } f
 import remarkGfm from 'remark-gfm';
 import { api as agentWorkspaceApi, ApiError, randomId, type AgentStreamEvent } from '../../api/client';
 import { agentWorkspaceSessionGateway, type AgentSessionGateway } from '../../api/agent-session-gateway';
-import { withoutDeploymentBase } from '../../deploymentPath';
+import { deploymentBasePath, withoutDeploymentBase } from '../../deploymentPath';
 import { agentWorkspaceSessionHost, type AgentSessionHost } from './session-host';
 import { SidebarConversationPane } from './SidebarConversationPane';
 import { clearConversationSnapshots, readConversationContextSnapshot, writeConversationContextSnapshot } from './conversation-cache';
@@ -2218,8 +2218,28 @@ function SharedSplitDiff({ before, after, resetKey }: { before: ReactNode; after
   </div>;
 }
 
+function diffChangeStartIndexes<T extends { kind: 'context' | 'addition' | 'deletion' }>(lines: T[]): number[] {
+  return lines.flatMap((line, index) => line.kind !== 'context' && (index === 0 || lines[index - 1].kind === 'context') ? [index] : []);
+}
+
+function DiffChangeNavigation({ rootRef, resetKey, changeIndexes }: { rootRef: React.RefObject<HTMLElement | null>; resetKey: string; changeIndexes: number[] }) {
+  const activeChange = useRef(-1);
+  useEffect(() => { activeChange.current = -1; }, [resetKey]);
+  const move = (direction: -1 | 1) => {
+    if (!changeIndexes.length) return;
+    activeChange.current = (activeChange.current + direction + changeIndexes.length) % changeIndexes.length;
+    const target = rootRef.current?.querySelector<HTMLElement>(`[data-diff-change-index="${changeIndexes[activeChange.current]}"]`);
+    target?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  };
+  return <div className="agent-diff-change-navigation" aria-label="改动位置导航">
+    <button type="button" aria-label="上一处改动" title="上一处改动" disabled={!changeIndexes.length} onClick={() => move(-1)}><ArrowUp size={14}/></button>
+    <button type="button" aria-label="下一处改动" title="下一处改动" disabled={!changeIndexes.length} onClick={() => move(1)}><ArrowDown size={14}/></button>
+  </div>;
+}
+
 function WorkspaceChangesReview({ changes, selectedId, onSelect, onOpenSource, workspaceRoot }: { changes: WorkspaceFileChange[]; selectedId?: string; onSelect: (id: string) => void; onOpenSource: (change: WorkspaceFileChange, line: number) => void; workspaceRoot?: string }) {
   const [mode, setMode] = useState<'unified' | 'split'>('split');
+  const diffRootRef = useRef<HTMLElement>(null);
   const selected = changes.find(change => change.id === selectedId) ?? changes[0];
   useEffect(() => { if (selected && selected.id !== selectedId) onSelect(selected.id); }, [onSelect, selected, selectedId]);
   const stopDiffOverscroll = (event: ReactWheelEvent<HTMLElement>) => {
@@ -2242,11 +2262,12 @@ function WorkspaceChangesReview({ changes, selectedId, onSelect, onOpenSource, w
   };
   if (!selected) return <div className="agent-changes-empty"><b>没有可审查的文件改动</b><span>仅显示 OpenHands FileEditor 已成功写入、且带有原始前后内容的改动。</span></div>;
   const splitLines = splitDiffRows(selected.lines);
+  const changeIndexes = diffChangeStartIndexes(selected.lines);
   const renderSplitLine = (entry: SplitDiffRow<WorkspaceFileChange['lines'][number]>['before'], side: 'before' | 'after', rowIndex: number) => {
     if (!entry) return <div key={`${side}:${rowIndex}`} className="agent-diff-line empty" aria-hidden="true"/>;
     const { line, index } = entry;
     const number = side === 'before' ? line.oldLine : line.newLine;
-    return <button type="button" className={`agent-diff-line ${line.kind}`} key={`${side}:${rowIndex}:${line.oldLine ?? ''}:${line.newLine ?? ''}:${line.text}`} title={`打开源文件第 ${sourceLineForDiffLine(selected.lines, index)} 行`} onClick={() => onOpenSource(selected, sourceLineForDiffLine(selected.lines, index))}><i>{number ?? ''}</i><HighlightedDiffCode path={selected.path} value={line.text || ' '}/></button>;
+    return <div className={`agent-diff-line ${line.kind}`} data-diff-change-index={changeIndexes.includes(index) ? index : undefined} key={`${side}:${rowIndex}:${line.oldLine ?? ''}:${line.newLine ?? ''}:${line.text}`} title={`双击打开源文件第 ${sourceLineForDiffLine(selected.lines, index)} 行`} onDoubleClick={() => onOpenSource(selected, sourceLineForDiffLine(selected.lines, index))}><i>{number ?? ''}</i><HighlightedDiffCode path={selected.path} value={line.text || ' '}/></div>;
   };
   return <section className="agent-changes-review">
     <ChangedFilesTree
@@ -2257,10 +2278,10 @@ function WorkspaceChangesReview({ changes, selectedId, onSelect, onOpenSource, w
       onSelect={change => onSelect(change.id)}
       renderMeta={change => <em><ins>{`+${change.additions}`}</ins><del>{`-${change.deletions}`}</del></em>}
     />
-    <article className="agent-changes-diff">
-      <header><div><b title={workspaceRelativePath(selected.path, workspaceRoot)}>{workspaceRelativePath(selected.path, workspaceRoot)}</b><small><ins>{`+${selected.additions}`}</ins><del>{`-${selected.deletions}`}</del></small></div><div className="agent-changes-diff-actions"><button type="button" className="agent-open-source-file" onClick={() => onOpenSource(selected, sourceLineForDiffLine(selected.lines, selected.lines.findIndex(line => line.kind !== 'deletion')))}><FileCode2 size={12}/>查看源文件</button><div className="agent-diff-mode"><button type="button" className={mode === 'unified' ? 'active' : ''} onClick={() => setMode('unified')}>统一</button><button type="button" className={mode === 'split' ? 'active' : ''} onClick={() => setMode('split')}>并排</button></div></div></header>
+    <article ref={diffRootRef} className="agent-changes-diff">
+      <header><div><b title={workspaceRelativePath(selected.path, workspaceRoot)}>{workspaceRelativePath(selected.path, workspaceRoot)}</b><small><ins>{`+${selected.additions}`}</ins><del>{`-${selected.deletions}`}</del></small></div><div className="agent-changes-diff-actions"><DiffChangeNavigation rootRef={diffRootRef} resetKey={selected.id} changeIndexes={changeIndexes}/><button type="button" className="agent-open-source-file" onClick={() => onOpenSource(selected, sourceLineForDiffLine(selected.lines, selected.lines.findIndex(line => line.kind !== 'deletion')))}><FileCode2 size={12}/>查看源文件</button><div className="agent-diff-mode"><button type="button" className={mode === 'unified' ? 'active' : ''} onClick={() => setMode('unified')}>统一</button><button type="button" className={mode === 'split' ? 'active' : ''} onClick={() => setMode('split')}>并排</button></div></div></header>
       {mode === 'unified'
-        ? <pre className="agent-diff-unified" onWheelCapture={stopDiffOverscroll}>{selected.lines.map((line, index) => <button type="button" className={`agent-diff-line ${line.kind}`} key={`${line.oldLine ?? ''}:${line.newLine ?? ''}:${line.text}`} title={`打开源文件第 ${sourceLineForDiffLine(selected.lines, index)} 行`} onClick={() => onOpenSource(selected, sourceLineForDiffLine(selected.lines, index))}><i>{line.oldLine ?? line.newLine ?? ''}</i><strong>{line.kind === 'addition' ? '+' : line.kind === 'deletion' ? '-' : ' '}</strong><HighlightedDiffCode path={selected.path} value={line.text || ' '}/></button>)}</pre>
+        ? <pre className="agent-diff-unified" onWheelCapture={stopDiffOverscroll}>{selected.lines.map((line, index) => <div className={`agent-diff-line ${line.kind}`} data-diff-change-index={changeIndexes.includes(index) ? index : undefined} key={`${line.oldLine ?? ''}:${line.newLine ?? ''}:${line.text}`} title={`双击打开源文件第 ${sourceLineForDiffLine(selected.lines, index)} 行`} onDoubleClick={() => onOpenSource(selected, sourceLineForDiffLine(selected.lines, index))}><i>{line.oldLine ?? line.newLine ?? ''}</i><strong>{line.kind === 'addition' ? '+' : line.kind === 'deletion' ? '-' : ' '}</strong><HighlightedDiffCode path={selected.path} value={line.text || ' '}/></div>)}</pre>
         : <SharedSplitDiff resetKey={selected.id} before={splitLines.map((row, index) => renderSplitLine(row.before, 'before', index))} after={splitLines.map((row, index) => renderSplitLine(row.after, 'after', index))}/>
       }
     </article>
@@ -3095,8 +3116,10 @@ function gitDiffLines(value: string): GitDiffLine[] {
 
 function WorkspaceGitFileDiffReview({ details, diff, onOpenSource }: { details: WorkspaceGitCommitDetails; diff: WorkspaceGitFileDiff; onOpenSource: (path: string, line: number) => void }) {
   const [mode, setMode] = useState<'unified' | 'split'>('split');
+  const diffRootRef = useRef<HTMLElement>(null);
   const lines = useMemo(() => gitDiffLines(diff.diff), [diff.diff]);
   const splitLines = useMemo(() => splitDiffRows(lines, (previous, next) => previous.hunk !== next.hunk), [lines]);
+  const changeIndexes = diffChangeStartIndexes(lines);
   // Git diff paths are always relative to the repository root, whereas the
   // shared workspace navigator expects a path in the current work-directory
   // coordinate system. Keep the Git root here so every navigation affordance
@@ -3121,12 +3144,12 @@ function WorkspaceGitFileDiffReview({ details, diff, onOpenSource }: { details: 
     if (!entry) return <div key={`${side}:${rowIndex}`} className="agent-diff-line empty" aria-hidden="true"/>;
     const { line, index } = entry;
     const number = side === 'before' ? line.oldLine : line.newLine;
-    return <button type="button" className={`agent-diff-line ${line.kind}`} key={`${side}:${rowIndex}:${line.oldLine ?? ''}:${line.newLine ?? ''}:${line.text}`} title={`打开源文件第 ${sourceLineForGitDiffLine(lines, index)} 行`} onClick={() => onOpenSource(sourcePath, sourceLineForGitDiffLine(lines, index))}><i>{number ?? ''}</i><HighlightedDiffCode path={diff.path} value={line.text || ' '}/></button>;
+    return <div className={`agent-diff-line ${line.kind}`} data-diff-change-index={changeIndexes.includes(index) ? index : undefined} key={`${side}:${rowIndex}:${line.oldLine ?? ''}:${line.newLine ?? ''}:${line.text}`} title={`双击打开源文件第 ${sourceLineForGitDiffLine(lines, index)} 行`} onDoubleClick={() => onOpenSource(sourcePath, sourceLineForGitDiffLine(lines, index))}><i>{number ?? ''}</i><HighlightedDiffCode path={diff.path} value={line.text || ' '}/></div>;
   };
-  return <section className="agent-git-file-diff-review">
-    <header><div><b title={diff.path}>{diff.path}</b><small><code>{details.commit.short_id}</code><span title={details.commit.subject}>{details.commit.subject || '（无提交说明）'}</span>{diff.truncated && <em>已截断</em>}</small></div><div className="agent-changes-diff-actions"><button type="button" className="agent-open-source-file" onClick={() => onOpenSource(sourcePath, sourceLineForGitDiffLine(lines, lines.findIndex(line => line.kind !== 'deletion')))}><FileCode2 size={12}/>查看源文件</button>{lines.length > 0 && <div className="agent-diff-mode"><button type="button" className={mode === 'unified' ? 'active' : ''} onClick={() => setMode('unified')}>统一</button><button type="button" className={mode === 'split' ? 'active' : ''} onClick={() => setMode('split')}>并排</button></div>}</div></header>
+  return <section ref={diffRootRef} className="agent-git-file-diff-review">
+    <header><div><b title={diff.path}>{diff.path}</b><small><code>{details.commit.short_id}</code><span title={details.commit.subject}>{details.commit.subject || '（无提交说明）'}</span>{diff.truncated && <em>已截断</em>}</small></div><div className="agent-changes-diff-actions"><DiffChangeNavigation rootRef={diffRootRef} resetKey={`${details.commit.id}:${diff.path}`} changeIndexes={changeIndexes}/><button type="button" className="agent-open-source-file" onClick={() => onOpenSource(sourcePath, sourceLineForGitDiffLine(lines, lines.findIndex(line => line.kind !== 'deletion')))}><FileCode2 size={12}/>查看源文件</button>{lines.length > 0 && <div className="agent-diff-mode"><button type="button" className={mode === 'unified' ? 'active' : ''} onClick={() => setMode('unified')}>统一</button><button type="button" className={mode === 'split' ? 'active' : ''} onClick={() => setMode('split')}>并排</button></div>}</div></header>
     {!lines.length ? <p className="agent-git-file-diff-empty">{diff.diff ? '该文件没有可展示的文本行级 Diff。' : '该文件没有可显示的文本 Diff。'}</p> : mode === 'unified'
-      ? <pre className="agent-diff-unified" onWheelCapture={stopDiffOverscroll}>{lines.map((line, index) => <button type="button" className={`agent-diff-line ${line.kind}`} key={`${line.oldLine ?? ''}:${line.newLine ?? ''}:${line.text}`} title={`打开源文件第 ${sourceLineForGitDiffLine(lines, index)} 行`} onClick={() => onOpenSource(sourcePath, sourceLineForGitDiffLine(lines, index))}><i>{line.oldLine ?? line.newLine ?? ''}</i><strong>{line.kind === 'addition' ? '+' : line.kind === 'deletion' ? '-' : ' '}</strong><HighlightedDiffCode path={diff.path} value={line.text || ' '}/></button>)}</pre>
+      ? <pre className="agent-diff-unified" onWheelCapture={stopDiffOverscroll}>{lines.map((line, index) => <div className={`agent-diff-line ${line.kind}`} data-diff-change-index={changeIndexes.includes(index) ? index : undefined} key={`${line.oldLine ?? ''}:${line.newLine ?? ''}:${line.text}`} title={`双击打开源文件第 ${sourceLineForGitDiffLine(lines, index)} 行`} onDoubleClick={() => onOpenSource(sourcePath, sourceLineForGitDiffLine(lines, index))}><i>{line.oldLine ?? line.newLine ?? ''}</i><strong>{line.kind === 'addition' ? '+' : line.kind === 'deletion' ? '-' : ' '}</strong><HighlightedDiffCode path={diff.path} value={line.text || ' '}/></div>)}</pre>
       : <SharedSplitDiff resetKey={diff.path} before={splitLines.map((row, index) => renderSplitLine(row.before, 'before', index))} after={splitLines.map((row, index) => renderSplitLine(row.after, 'after', index))}/>
     }
   </section>;
@@ -4285,7 +4308,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const [conversationModelName, setConversationModelName] = useState('');
   const [reasoningEffort, setReasoningEffort] = useState<string | null>(null);
   const [attachments, setAttachments] = useState<AgentAttachment[]>(() => initialBootstrapRecovery.current?.message.items ?? initialConversationDraft.current?.attachments ?? []);
-  const attachmentAliasClickTimer = useRef<number | undefined>(undefined);
   const [pendingAttachments, setPendingAttachments] = useState<PendingComposerAttachment[]>([]);
   const [references, setReferences] = useState<ConversationReference[]>(() => initialBootstrapRecovery.current?.message.references ?? initialConversationDraft.current?.references ?? []);
   const [workspaceReferences, setWorkspaceReferences] = useState<AgentWorkspaceReference[]>(() => initialBootstrapRecovery.current?.message.workspaceReferences ?? initialConversationDraft.current?.workspaceReferences ?? []);
@@ -6150,23 +6172,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     if (index < 0) return;
     composerRef.current?.insert(`@附件${index + 1}`);
   }, [attachments]);
-  const scheduleAttachmentAliasInsertion = useCallback((attachment: AgentAttachment) => {
-    if (attachmentAliasClickTimer.current !== undefined) window.clearTimeout(attachmentAliasClickTimer.current);
-    attachmentAliasClickTimer.current = window.setTimeout(() => {
-      attachmentAliasClickTimer.current = undefined;
-      insertAttachmentAlias(attachment);
-    }, 220);
-  }, [insertAttachmentAlias]);
-  const previewComposerAttachment = useCallback((attachment: AgentAttachment) => {
-    if (attachmentAliasClickTimer.current !== undefined) {
-      window.clearTimeout(attachmentAliasClickTimer.current);
-      attachmentAliasClickTimer.current = undefined;
-    }
-    previewAttachment(attachment);
-  }, [previewAttachment]);
-  useEffect(() => () => {
-    if (attachmentAliasClickTimer.current !== undefined) window.clearTimeout(attachmentAliasClickTimer.current);
-  }, []);
   const previewWorkspaceReference = useCallback((reference: AgentWorkspaceReference) => {
     setFilePreviewRequest({
       key: randomId(),
@@ -7847,6 +7852,17 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       key: randomId(), kind: 'image', filename: alt || '会话图片', url: src,
     });
   };
+  const workspaceMarkdownImageUrl = (href: string) => {
+    if (href.startsWith('/api/v1/')) {
+      return `${import.meta.env.VITE_API_BASE_URL || deploymentBasePath}${href}`;
+    }
+    const path = workspaceMarkdownImagePath(href, activeWorkspaceRoot);
+    return workspace && path ? fileUrl(workspace.id, path, {
+      bindingId: selected?.id,
+      workDirectoryId: selected ? undefined : conversationDraft?.workDirectoryId,
+      download: false,
+    }) : undefined;
+  };
   const currentWorkspaceName = activeWorkspaceDetailsQuery.data?.scope.display_name
     ?? (selected?.work_directory_id
       ? workDirectories.find(directory => directory.id === selected.work_directory_id)?.display_name
@@ -8178,6 +8194,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         onReviewChanges={openChangesReview}
         onOpenWorkspaceFile={openWorkspaceFileLink}
         onOpenImage={previewMarkdownImage}
+        workspaceImageUrl={workspaceMarkdownImageUrl}
         workspaceRoot={activeWorkspaceRoot}
         annotations={messageAnnotations}
         onCreateAnnotation={selected && canWrite ? anchor => void createAnnotation('CONVERSATION_TEXT', anchor) : undefined}
@@ -8245,7 +8262,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         </section>}
                   <AgentComposerInput key={composerScope ?? 'composer'} ref={composerRef} initialDraft={composerDraftRef.current} scope={composerScope} suggestions={visibleComposerSuggestions} placeholder={pendingConfirmation ? '请先处理上方工具确认…' : composerControlMode === 'condensing' ? '可继续输入，发送后将排队…' : composerControlMode === 'reconciling' ? '正在同步 Agent 状态…' : composerControlMode === 'read-only' ? '当前会话不可编辑…' : '给 Agent 发消息…'} disabled={!composerControl.editable} onDraftChange={setComposerDraft} onContentPresenceChange={onComposerContentPresenceChange} onDraftPersist={persistComposerDraft} onPaste={event => { if (!features.attachments) return; const files = transferredFiles(event.clipboardData); if (!files.length) return; event.preventDefault(); files.forEach(startAttachmentUpload); }} onDropFiles={features.attachments && composerScope ? files => files.forEach(startAttachmentUpload) : undefined} onDropWorkspaceFiles={paths => setWorkspaceReferences(current => [...current, ...paths.flatMap(path => current.some(reference => reference.path === path) ? [] : [{ path, kind: 'file' as const, display_name: path.split('/').filter(Boolean).pop() ?? path }])])} onSubmit={enqueueDraft} onDirectSubmit={sendDraftDirectly} onManageCapabilities={features.capabilities && (selected || features.draftCapabilitySelection) ? () => setCapabilityManagerOpen(true) : undefined} onNativeAction={action => { if (action === 'CONDENSE' && canCondense && !condense.isPending && workspace && selected) condense.mutate({ workspaceId: workspace.id, bindingId: selected.id }); }} onWorkspaceReferenceSelected={() => { setWorkspaceReferenceQuery(''); setWorkspaceReferencePickerOpen(true); }}/>
         <div className="agent-composer-attachments">
-        {(features.attachments && (attachments.length > 0 || pendingAttachments.some(item => item.scope === composerScope)) || references.length > 0 || composerAnnotations.length > 0) && <div className="agent-attachments" aria-label="已添加的附件和会话引用">{features.attachments && <>{attachments.map((item, index) => <span key={item.path}><button type="button" className="agent-attachment-open" title={`单击插入 @附件${index + 1}；双击预览附件：${item.filename}`} onClick={() => scheduleAttachmentAliasInsertion(item)} onDoubleClick={() => previewComposerAttachment(item)}>{item.image_data_url && <img src={item.image_data_url} alt=""/>}<em>{item.filename}</em></button><button type="button" className="agent-attachment-remove" aria-label={`移除附件 ${item.filename}`} onClick={() => { setAttachments(all => all.filter(candidate => candidate.path !== item.path)); if (conversationDraft && workspace) void api.deleteDraftAttachments(workspace.id, conversationDraft.id, item.path).catch(() => undefined); }}>×</button></span>)}{pendingAttachments.filter(item => item.scope === composerScope).map(item => <span key={item.id} className={`agent-pending-attachment ${item.state}`} title={item.state === 'failed' ? '附件上传失败，请重试或删除。' : `正在上传 ${item.progress}%`}><span className="agent-attachment-open">{item.previewUrl ? <img src={item.previewUrl} alt=""/> : <FileText size={14}/>}<em>{item.filename}</em>{item.state === 'uploading' && <small>{item.progress}%</small>}{item.state === 'failed' && <span className="agent-attachment-retry-overlay"><button type="button" onClick={() => retryPendingAttachment(item.id)}>重试</button></span>}</span>{item.state === 'uploading' && <i className="agent-attachment-progress" style={{ '--upload-progress': `${item.progress}%` } as CSSProperties}/>}<button type="button" className="agent-attachment-remove" aria-label={`移除附件 ${item.filename}`} onClick={() => removePendingAttachment(item.id)}>×</button></span>)}</>}{references.map((reference, index) => <span key={`${reference.eventId}:${reference.content}`}><span className="agent-attachment-open" title={reference.content}><Quote size={14}/><em>{`会话引用 ${index + 1}`}</em></span><button type="button" className="agent-attachment-remove" aria-label={`移除会话引用 ${index + 1}`} onClick={() => setReferences(current => current.filter(item => item !== reference))}>×</button></span>)}{(selected || conversationDraft) && <ComposerAnnotationList annotations={composerAnnotations} onLocate={locateAnnotation} onRemove={annotation => setComposerAnnotations(current => current.filter(item => item.id !== annotation.id))} onUpdate={(annotation, comment) => void updateAnnotation(annotation, comment)}/>}</div>}
+        {(features.attachments && (attachments.length > 0 || pendingAttachments.some(item => item.scope === composerScope)) || references.length > 0 || composerAnnotations.length > 0) && <div className="agent-attachments" aria-label="已添加的附件和会话引用">{features.attachments && <>{attachments.map((item, index) => <span key={item.path}><button type="button" className="agent-attachment-open" title={`预览附件：${item.filename}`} onClick={() => previewAttachment(item)}>{item.image_data_url && <img src={item.image_data_url} alt=""/>}<em>{item.filename}</em></button><button type="button" className="agent-attachment-alias" aria-label={`引用附件 ${index + 1}`} title={`插入 @附件${index + 1}`} onClick={() => insertAttachmentAlias(item)}>@</button><button type="button" className="agent-attachment-remove" aria-label={`移除附件 ${item.filename}`} onClick={() => { setAttachments(all => all.filter(candidate => candidate.path !== item.path)); if (conversationDraft && workspace) void api.deleteDraftAttachments(workspace.id, conversationDraft.id, item.path).catch(() => undefined); }}>×</button></span>)}{pendingAttachments.filter(item => item.scope === composerScope).map(item => <span key={item.id} className={`agent-pending-attachment ${item.state}`} title={item.state === 'failed' ? '附件上传失败，请重试或删除。' : `正在上传 ${item.progress}%`}><span className="agent-attachment-open">{item.previewUrl ? <img src={item.previewUrl} alt=""/> : <FileText size={14}/>}<em>{item.filename}</em>{item.state === 'uploading' && <small>{item.progress}%</small>}{item.state === 'failed' && <span className="agent-attachment-retry-overlay"><button type="button" onClick={() => retryPendingAttachment(item.id)}>重试</button></span>}</span>{item.state === 'uploading' && <i className="agent-attachment-progress" style={{ '--upload-progress': `${item.progress}%` } as CSSProperties}/>}<button type="button" className="agent-attachment-remove" aria-label={`移除附件 ${item.filename}`} onClick={() => removePendingAttachment(item.id)}>×</button></span>)}</>}{references.map((reference, index) => <span key={`${reference.eventId}:${reference.content}`}><span className="agent-attachment-open" title={reference.content}><Quote size={14}/><em>{`会话引用 ${index + 1}`}</em></span><button type="button" className="agent-attachment-remove" aria-label={`移除会话引用 ${index + 1}`} onClick={() => setReferences(current => current.filter(item => item !== reference))}>×</button></span>)}{(selected || conversationDraft) && <ComposerAnnotationList annotations={composerAnnotations} onLocate={locateAnnotation} onRemove={annotation => setComposerAnnotations(current => current.filter(item => item.id !== annotation.id))} onUpdate={(annotation, comment) => void updateAnnotation(annotation, comment)}/>}</div>}
         {workspaceReferences.length > 0 && <div className="agent-attachments agent-workspace-references" aria-label="已添加的工作区引用">{workspaceReferences.map(reference => <span key={workspaceReferenceKey(reference)} title={reference.path}><span className="agent-attachment-open">{reference.kind === 'directory' ? <Folder size={14}/> : <FileCode2 size={14}/>}<em><b>{reference.display_name}</b><small>{workspaceReferenceLabel(reference)}</small></em></span><button type="button" className="agent-attachment-remove" aria-label={'移除工作区引用 ' + reference.display_name} onClick={() => setWorkspaceReferences(current => current.filter(item => workspaceReferenceKey(item) !== workspaceReferenceKey(reference)))}>×</button></span>)}</div>}
         </div>
         <footer>

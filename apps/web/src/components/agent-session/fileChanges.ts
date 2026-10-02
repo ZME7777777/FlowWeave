@@ -253,5 +253,5 @@ export function workspaceFileChanges(events: OpenHandsConversationEvent[]): Work
       .find((change): change is PendingFileEdit => Boolean(change));
     if (actionChange) appendChange(changesByPath, changeFromSnapshot(actionChange));
   }
-  return [...changesByPath.values()];
+  return [...changesByPath.values()].filter(change => change.additions > 0 || change.deletions > 0);
 }
