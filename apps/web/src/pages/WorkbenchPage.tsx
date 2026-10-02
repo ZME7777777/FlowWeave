@@ -1010,7 +1010,11 @@ function NodeConsole({ run, node, startupMode, stepwiseDraft, initialBindings, l
   const [agentPreset, setAgentPreset] = useState<AgentPreset>({ capability_version_ids: [], node_context_enabled: false, node_context_prompt: node.asset.executor?.context_prompt ?? '' });
   const [prompt, setPrompt] = useState(node.asset.executor?.startup_prompt ?? '');
   const skipDraftSync = useRef(true);
+  const initializedDraftScope = useRef<string | undefined>(undefined);
   useEffect(() => {
+    const scope = `${run.id}:${node.instance_key}:${startupMode}`;
+    if (initializedDraftScope.current === scope) return;
+    initializedDraftScope.current = scope;
     skipDraftSync.current = true;
     setPromptTab('inputs');
     setInputDialogOpen(false);
@@ -1020,7 +1024,7 @@ function NodeConsole({ run, node, startupMode, stepwiseDraft, initialBindings, l
     setGates(localDraft?.gates ?? stepwiseDraft?.gates ?? []);
     setAgentPreset(localDraft?.agentPreset ?? stepwiseDraft?.agent_preset ?? { capability_version_ids: [], node_context_enabled: false, node_context_prompt: node.asset.executor?.context_prompt ?? '' });
     setPrompt(localDraft?.prompt ?? stepwiseDraft?.startup_prompt ?? node.asset.executor?.startup_prompt ?? '');
-  }, [node.instance_key, startupMode]);
+  }, [inheritedBindingsJson, localDraft?.agentPreset, localDraft?.bindings, localDraft?.gates, localDraft?.inputArtifacts, localDraft?.prompt, node.asset.executor?.context_prompt, node.asset.executor?.startup_prompt, node.instance_key, run.artifacts, run.id, startupMode, stepwiseDraft?.agent_preset, stepwiseDraft?.gates, stepwiseDraft?.startup_prompt]);
   useEffect(() => setInputArtifacts(current => mergeArtifacts(current, run.artifacts)), [run.artifacts]);
   const onDraftChangeRef = useRef(onDraftChange);
   useEffect(() => { onDraftChangeRef.current = onDraftChange; }, [onDraftChange]);
