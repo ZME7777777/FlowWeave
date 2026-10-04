@@ -1666,10 +1666,13 @@ export function WorkbenchPage() {
   const selectedStepwiseRecord = mode === 'MANUAL' && selectedStepwise && selectedStepwise.parent_flow_run_id
     ? selectedStepwise as FlowRunStepwiseRecord
     : undefined;
-  const selectedStepwiseDraft = mode === 'MANUAL' && selectedStepwiseRecord && selectedNodeKey
+  const savedStepwiseDraft = mode === 'MANUAL' && selectedStepwiseRecord && selectedNodeKey
     ? selectedStepwiseRecord.stepwise_node_drafts?.[selectedNodeKey]
-      ?? { row_version: 1, startup_mode: 'PROMPT' as const, gates: [], input_bindings: [] }
     : undefined;
+  const selectedStepwiseDraft = savedStepwiseDraft
+    ?? (mode === 'MANUAL' && selectedStepwiseRecord && selectedNodeKey
+      ? { row_version: 1, startup_mode: 'PROMPT' as const, gates: [], input_bindings: [] }
+      : undefined);
   const inheritedTransitionBindings = (() => {
     if (pendingConfigurationNodeRun || !snapshot || !selectedNodeKey) return undefined;
     // Resolve inherited inputs from this record's durable accepted path, not
@@ -2208,8 +2211,8 @@ export function WorkbenchPage() {
   const stepwiseLaunch = mode === 'MANUAL' && selectedStepwise
     ? selectedExecutionNodeRun && selectedExecutionAttempt?.state === 'WAITING_START_CONFIRMATION'
       ? { recordId: selectedStepwise.id, ready: true, busy: manualBusyId === selectedExecutionNodeRun.id, onStart: () => startStepwiseNode(selectedExecutionNodeRun) }
-      : selectedNode && selectedNodeKey && selectedStepwiseDraft
-        ? { recordId: selectedStepwise.id, ready: stepwiseDraftReady(selectedNode, selectedStepwiseDraft), busy: manualBusyId === selectedNodeKey, onStart: () => startStepwiseDraft(selectedNodeKey, selectedStepwiseDraft) }
+      : selectedNode && selectedNodeKey && savedStepwiseDraft && stepwiseDraftReady(selectedNode, savedStepwiseDraft)
+        ? { recordId: selectedStepwise.id, ready: true, busy: manualBusyId === selectedNodeKey, onStart: () => startStepwiseDraft(selectedNodeKey, savedStepwiseDraft) }
         : undefined
     : undefined;
   const executionDetailPanel = selectedExecutionRecord && selectedExecutionNodeRun && selectedExecutionAttempt

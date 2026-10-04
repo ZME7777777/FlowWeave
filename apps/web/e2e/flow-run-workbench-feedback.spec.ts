@@ -339,6 +339,7 @@ test('step configuration is saved before start and direct launch has its own tab
   await page.locator('.node-record-list').getByRole('button', { name: '运行中 测试逐步记录' }).click();
   await expect(consolePanel).toContainText('取消选中后仍应保留的前端草稿');
   expect(savedBody).toBeUndefined();
+  await expect(page.getByRole('button', { name: '启动逐步运行 测试逐步记录' })).toHaveCount(0);
   await consolePanel.getByRole('button', { name: '保存配置' }).click();
   await expect.poll(() => savedBody).toBeTruthy();
   expect(savedBody).toEqual(expect.objectContaining({
