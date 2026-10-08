@@ -474,6 +474,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   let gitSyncRequests = 0;
   let gitSynchronizesToRemote = false;
   let pausedDirectMessagePosts = 0;
+  let pausedAnnotationMessagePosts = 0;
   let releaseRunningDirectDelivery: (() => void) | undefined;
   const runningDirectDeliveryGate = new Promise<void>(resolve => { releaseRunningDirectDelivery = resolve; });
   let queuedDispatchPosts = 0;
@@ -934,6 +935,10 @@ test('top-level Agent workspace creates a direct conversation and restores its U
       }
       if (payload.content === '暂停后直接发送消息') {
         pausedDirectMessagePosts += 1;
+      }
+      if (payload.content === '') {
+        const messagePayload = JSON.parse(request.postData() ?? '{}') as { annotations?: unknown[] };
+        if (Array.isArray(messagePayload.annotations) && messagePayload.annotations.length) pausedAnnotationMessagePosts += 1;
       }
       if (payload.content === '已编辑的排队消息') {
         queuedDispatchPosts += 1;
@@ -2393,10 +2398,25 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.getByRole('button', { name: '继续当前 Agent' })).toBeVisible();
   await expect(page.locator('.agent-composer-actions .agent-send')).toHaveCount(1);
   await composer.fill('暂停后直接发送消息');
-  await composer.press('Enter');
+  await expect(page.getByRole('button', { name: '发送消息' })).toBeVisible();
+  await page.getByRole('button', { name: '发送消息' }).click();
   await expect(page.locator('.conversation-message.user').filter({ hasText: '暂停后直接发送消息' })).toBeVisible();
   await expect(page.getByLabel('消息投递队列').getByText('暂停后直接发送消息')).toHaveCount(0);
   await expect.poll(() => pausedDirectMessagePosts).toBe(1);
+  const pausedMessageContent = page.locator('.conversation-message.user').filter({ hasText: '暂停后直接发送消息' }).locator('.conversation-message-content');
+  await pausedMessageContent.evaluate(element => {
+    const selection = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    element.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
+  });
+  await expect(page.getByRole('button', { name: '添加到会话' })).toBeVisible();
+  await page.getByRole('button', { name: '添加到会话' }).click();
+  await expect(page.getByRole('button', { name: '发送消息' })).toBeVisible();
+  await page.getByRole('button', { name: '发送消息' }).click();
+  await expect.poll(() => pausedAnnotationMessagePosts).toBe(1);
   await page.getByRole('button', { name: '继续当前 Agent' }).click();
   await expect(page.getByLabel('工具执行确认')).toBeVisible();
   await expect(page.getByRole('button', { name: '等待工具确认' })).toBeDisabled();

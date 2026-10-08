@@ -5084,16 +5084,19 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const composerScope = selected?.id ?? conversationDraft?.id;
   const activeComposerScope = useRef<string | undefined>(undefined);
   activeComposerScope.current = composerScope;
-  const updateComposerText = useCallback((scope: string | undefined, content: string) => {
-    if (!scope || scope !== activeComposerScope.current) return;
+  const updateComposerText = useCallback((scope: string | undefined, content: string): boolean => {
+    if (!scope || scope !== activeComposerScope.current) return false;
     composerDraftRef.current = content;
     const current = composerDraftsByScope.current.get(scope);
     composerDraftsByScope.current.set(scope, current
       ? { ...current, content }
       : { content, attachments: [], references: [], workspaceReferences: [], annotations: [] });
+    return true;
   }, []);
   const setComposerDraft = useCallback((scope: string | undefined, value: string) => {
-    updateComposerText(scope, value);
+    if (!updateComposerText(scope, value)) return;
+    const hasText = Boolean(value.trim());
+    setComposerHasText(current => current === hasText ? current : hasText);
   }, [updateComposerText]);
   const replaceComposerDraft = useCallback((value: string, scope = activeComposerScope.current) => {
     composerDraftRef.current = value;
@@ -7800,7 +7803,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
           ? { label: '发送消息', disabled: actionBlocked || !canWrite, editable: canWrite && !actionBlocked, action: 'send' as const }
           : { label: '暂停当前 Agent', disabled: actionBlocked || !canInterrupt, editable: canWrite && !actionBlocked, action: 'interrupt' as const };
       case 'paused':
-        return { label: '继续当前 Agent', disabled: actionBlocked, editable: canWrite && !actionBlocked, action: 'resume' as const };
+        return composerActionSends
+          ? { label: '发送消息', disabled: actionBlocked || !canWrite, editable: canWrite && !actionBlocked, action: 'send' as const }
+          : { label: '继续当前 Agent', disabled: actionBlocked, editable: canWrite && !actionBlocked, action: 'resume' as const };
       case 'pausing':
         return { label: '暂停请求已发送', disabled: true, editable: false, action: 'none' as const };
       case 'resuming':
