@@ -2207,6 +2207,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(runningDirectMessage).toHaveAttribute('data-optimistic-identity', 'stable');
   await expect(page.locator('.conversation-turn')).toHaveCount(1);
   await expect(page.locator('.conversation-activity-group.active')).toHaveCount(1);
+  await expect(page.locator('.conversation-activity-group')).toHaveCount(1);
   releaseRunningDirectDelivery?.();
   await expect(runningDirectMessage).toHaveCount(1);
   await expect(runningDirectMessage).toHaveAttribute('data-optimistic-identity', 'stable');
@@ -2880,9 +2881,21 @@ test('selected conversation text is sent and rendered as a compact reference car
   await resourceTags.getByRole('button', { name: '引用附件 1', exact: true }).click();
   await expect(page.getByLabel('发送 Agent 消息')).toHaveValue('@附件1');
   await expect(resourceTags.evaluate(element => getComputedStyle(element).paddingBottom)).resolves.toBe('4px');
-  await expect(page.getByLabel('已添加的引用 1 条')).toContainText('会话引用 1');
+  const annotationList = page.getByLabel('已添加的引用 1 条');
+  await expect(annotationList).toContainText('会话引用 1');
   await resourceTags.getByRole('button', { name: '会话引用 1', exact: true }).click();
-  await page.getByRole('button', { name: '定位原文' }).click();
+  const annotationCard = page.getByRole('dialog', { name: '会话引用 1 详情' });
+  const locateSource = annotationCard.getByRole('button', { name: '定位原文' });
+  await expect(annotationCard).toBeVisible();
+  await expect.poll(() => locateSource.evaluate(button => {
+    const rect = button.getBoundingClientRect();
+    return rect.width > rect.height && rect.width > 45 && rect.height > 20;
+  })).toBe(true);
+  await expect(annotationCard.locator('header > span')).toHaveCSS('max-width', 'none');
+  const quote = annotationCard.locator('blockquote');
+  await expect(quote).toHaveCSS('overflow-y', 'auto');
+  await expect.poll(() => quote.evaluate(element => element.getBoundingClientRect().width)).toBeGreaterThan(300);
+  await locateSource.click();
   await expect(source).toBeInViewport();
   await expect.poll(() => source.evaluate(element => getComputedStyle(element, '::selection').backgroundColor)).toBe('rgb(183, 223, 255)');
   await expect.poll(() => source.evaluate(() => window.getSelection()?.toString())).toBe(selectedText);
