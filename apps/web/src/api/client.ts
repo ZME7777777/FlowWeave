@@ -334,7 +334,14 @@ const attachmentReferences = (attachments: AgentAttachment[]) => attachments.map
 const workspaceReferencePayload = (references: AgentWorkspaceReference[]) => references.map(({ path, kind, display_name, selection }) => ({ path, kind, display_name, ...(selection ? { selection } : {}) }));
 /** Reference text is display-only state. The API resolves the selected native
  * event again so a browser cannot substitute different material for an ID. */
-const conversationReferencePayload = (references: AgentConversationReference[]) => references.map(({ event_id }) => ({ event_id }));
+const conversationReferencePayload = (references: AgentConversationReference[]) => references.map(({ event_id, source_binding_id, selection }) => {
+  if (!source_binding_id) throw new Error('会话引用缺少来源会话');
+  return {
+    source_binding_id,
+    ...(event_id ? { source_event_id: event_id } : {}),
+    ...(selection ? { selection } : {}),
+  };
+});
 export const api = {
   authMe: () => request<AuthUser>('/auth/me'),
   login: (username: string, password: string) =>

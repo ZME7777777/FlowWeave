@@ -179,7 +179,7 @@ export function SidebarConversationPane({ workspaceId, sourceBindingId, initialR
         });
         await invalidate(result.conversation.id);
       } else {
-        const result = await api.sendAgentMessage(workspaceId, bindingId, message, attachments, [], [], [], submissionId);
+        const result = await api.sendAgentMessage(workspaceId, bindingId, message, attachments, reference ? [reference] : [], [], [], submissionId);
         acknowledgeOptimisticMessage(submissionId, result.cursor);
         setContent('');
         composerInput.current?.replace('');

@@ -1754,10 +1754,14 @@ def bootstrap_conversation(
     """
 
     message_text = content.strip()
-    if references and sidebar_source_binding_id is None:
+    if (
+        references
+        and sidebar_source_binding_id is None
+        and any(not isinstance(item.get("source_binding_id"), str) for item in references)
+    ):
         raise DomainError(
             "AGENT_CONVERSATION_REFERENCE_UNAVAILABLE",
-            "新会话首条消息不能引用尚未存在的会话内容",
+            "新会话首条消息只能引用已授权的来源会话",
             422,
         )
     if (
@@ -1861,12 +1865,13 @@ def bootstrap_conversation(
         binding_id=binding.id,
         allow_provisioning=True,
     )
-    source_references: tuple[dict[str, str], ...] = ()
-    if sidebar_source_binding_id is not None:
-        source = _binding(db, workspace.id, sidebar_source_binding_id)
-        source_references = _resolve_conversation_references(
-            get_runtime(), _handle(db, workspace, source), references
-        )
+    source_references = _resolve_message_references(
+        db,
+        workspace,
+        binding,
+        references,
+        default_source_binding_id=sidebar_source_binding_id,
+    )
     prompt, image_urls = _message_payload(
         message_text, attachments, source_references, normalized_workspace_references, annotations
     )
@@ -2496,6 +2501,7 @@ def prepare_running_message(
             409,
             {"binding_id": binding.id},
         )
+    resolved_references = _resolve_message_references(db, workspace, binding, references)
     return PreparedRunningMessage(
         workspace_id=workspace_id,
         binding_id=binding.id,
@@ -2503,7 +2509,7 @@ def prepare_running_message(
         handle=handle,
         content=content,
         attachments=attachments,
-        references=references,
+        references=resolved_references,
         workspace_references=validated_workspace_references,
         annotations=annotations,
     )
@@ -2525,11 +2531,10 @@ def dispatch_running_message(prepared: PreparedRunningMessage) -> RuntimeResult 
         return None
     if readiness.execution_status not in {"running", "executing"}:
         raise DomainError("AGENT_CONVERSATION_BUSY", "Agent 正在处理停止或确认请求，请稍候", 409)
-    references = _resolve_conversation_references(runtime, prepared.handle, prepared.references)
     prompt, image_urls = _message_payload(
         prepared.content,
         prepared.attachments,
-        references,
+        prepared.references,
         prepared.workspace_references,
         prepared.annotations,
     )
@@ -2632,7 +2637,7 @@ def message(
         _validated_workspace_references(workspace_references),
         binding_id=binding.id,
     )
-    references = _resolve_conversation_references(get_runtime(), handle, references)
+    references = _resolve_message_references(db, workspace, binding, references)
     prompt, image_urls = _message_payload(
         content, attachments, references, workspace_references, annotations
     )
@@ -3003,6 +3008,130 @@ def _resolve_conversation_references(
         )
         resolved.append({"event_id": event_id, "content": visible.strip()})
     return _validated_conversation_references(tuple(resolved))
+
+
+def _selected_reference_text(content: str, selection: dict[str, Any] | None) -> str | None:
+    if selection is None:
+        return content
+    start = selection.get("compact_start")
+    end = selection.get("compact_end")
+    if not isinstance(start, int) or not isinstance(end, int) or start < 0 or end <= start:
+        return None
+    compact_index = 0
+    start_offset: int | None = None
+    end_offset: int | None = None
+    for offset, character in enumerate(content):
+        if character.isspace():
+            continue
+        if compact_index == start:
+            start_offset = offset
+        if compact_index == end - 1:
+            end_offset = offset + 1
+            break
+        compact_index += 1
+    if start_offset is None or end_offset is None:
+        return None
+    return content[start_offset:end_offset].strip()
+
+
+def _resolve_source_conversation_reference(
+    db: Session,
+    workspace: AgentWorkspace,
+    source_binding_id: str,
+    source_event_id: str | None,
+    selection: dict[str, Any] | None,
+) -> dict[str, str]:
+    """Resolve a source binding through its persisted OpenHands identity."""
+
+    source = _binding(db, workspace.id, source_binding_id)
+    runtime = get_runtime()
+    source_handle = _handle(db, workspace, source)
+    if source_event_id is not None:
+        event = runtime.read_event(source_handle, source_event_id)
+        content = _referenceable_event_text(event)
+        if content is None:
+            raise DomainError(
+                "AGENT_CONVERSATION_REFERENCE_UNAVAILABLE",
+                "引用事件不在来源会话中或已不可读取，请重新选择",
+                422,
+            )
+        visible = _project_conversation_references(content)[0] if event and event.event_type == "MESSAGE" else content
+        selected = _selected_reference_text(visible, selection)
+        if not selected:
+            raise DomainError("AGENT_CONVERSATION_REFERENCE_INVALID", "会话选区无效，请重新选择", 422)
+        return {"event_id": source_event_id, "content": selected}
+    if selection is not None:
+        raise DomainError("AGENT_CONVERSATION_REFERENCE_INVALID", "会话选区缺少来源事件", 422)
+    try:
+        branch = complete_active_branch(runtime.read_active_events, source_handle)
+    except (DomainError, ValueError) as exc:
+        raise DomainError(
+            "AGENT_CONVERSATION_REFERENCE_UNAVAILABLE",
+            "引用会话暂时不可读取，请稍后重试",
+            422,
+        ) from exc
+    selected: list[str] = []
+    size = 0
+    for event in reversed(branch.events):
+        content = _referenceable_event_text(event)
+        if content is None:
+            continue
+        visible = _project_conversation_references(content)[0] if event.event_type == "MESSAGE" else content
+        if not visible:
+            continue
+        remaining = 10_000 - size
+        if remaining <= 0:
+            break
+        selected.append(visible[-remaining:])
+        size += len(selected[-1])
+    if not selected:
+        raise DomainError(
+            "AGENT_CONVERSATION_REFERENCE_UNAVAILABLE",
+            "引用会话没有可供引用的消息",
+            422,
+        )
+    return {
+        "event_id": branch.cursor or source.openhands_conversation_id,
+        "content": "\n\n".join(reversed(selected)),
+    }
+
+
+def _resolve_message_references(
+    db: Session,
+    workspace: AgentWorkspace,
+    target: AgentConversationBinding,
+    references: tuple[dict[str, Any], ...],
+    *,
+    default_source_binding_id: str | None = None,
+) -> tuple[dict[str, str], ...]:
+    """Resolve browser IDs before native delivery; never accept reference text."""
+
+    resolved: list[dict[str, str]] = []
+    for reference in references:
+        source_binding_id = reference.get("source_binding_id")
+        source_event_id = reference.get("source_event_id")
+        selection = reference.get("selection")
+        if (
+            not isinstance(source_binding_id, str)
+            or not source_binding_id.strip()
+            or source_event_id is not None
+            and (not isinstance(source_event_id, str) or not source_event_id.strip())
+            or selection is not None and not isinstance(selection, dict)
+        ):
+            raise DomainError("AGENT_CONVERSATION_REFERENCE_INVALID", "会话引用无效，请重新选择", 422)
+        resolved.append(
+            _resolve_source_conversation_reference(
+                db,
+                workspace,
+                source_binding_id.strip(),
+                source_event_id.strip() if isinstance(source_event_id, str) else None,
+                selection,
+            )
+        )
+    if default_source_binding_id is not None and not resolved:
+        resolved.append(_resolve_source_conversation_reference(db, workspace, default_source_binding_id, None, None))
+    return _validated_conversation_references(tuple(resolved))
+
 
 
 def _referenceable_event_text(event: RuntimeEvent | None) -> str | None:
@@ -4181,7 +4310,7 @@ def rewrite_message(
     # narrower directory.  Keep the binding-owner check, but validate against
     # the same project root used by uploads and ordinary message sends.
     _validate_attachment_owners(binding.id, attachments, workspace_root=handle.workspace_root)
-    resolved_references = _resolve_conversation_references(runtime, handle, references)
+    resolved_references = _resolve_message_references(db, workspace, binding, references)
     resolved_workspace_references = agent_workspace_host.validate_message_workspace_references(
         db,
         workspace.id,

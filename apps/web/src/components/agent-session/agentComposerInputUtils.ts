@@ -1,4 +1,5 @@
 export const WORKSPACE_FILE_TRANSFER_TYPE = 'application/x-flowweave-workspace-file-path';
+export const CONVERSATION_REFERENCE_TRANSFER_TYPE = 'application/x-flowweave-conversation-reference';
 
 export interface ComposerHandle {
   replace: (value: string) => void;

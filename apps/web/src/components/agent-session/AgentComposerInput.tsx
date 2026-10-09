@@ -1,5 +1,5 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type DragEvent as ReactDragEvent, type KeyboardEvent as ReactKeyboardEvent } from 'react';
-import { WORKSPACE_FILE_TRANSFER_TYPE, transferredFiles, type ComposerHandle } from './agentComposerInputUtils';
+import { CONVERSATION_REFERENCE_TRANSFER_TYPE, WORKSPACE_FILE_TRANSFER_TYPE, transferredFiles, type ComposerHandle } from './agentComposerInputUtils';
 
 const COMPOSER_DRAFT_PERSIST_DELAY_MS = 400;
 
@@ -44,13 +44,14 @@ export const AgentComposerInput = forwardRef<ComposerHandle, {
   onPaste: (event: ReactClipboardEvent<HTMLTextAreaElement>) => void;
   onDropFiles?: (files: File[]) => void;
   onDropWorkspaceFiles?: (paths: string[]) => void;
+  onDropConversationReference?: (reference: { bindingId: string; eventId: string; title: string }) => void;
   onSubmit: (content: string) => void;
   onDirectSubmit?: (content: string) => void;
   onManageCapabilities?: () => void;
   onNativeAction?: (action: NativeComposerAction) => void;
   onWorkspaceReferenceSelected?: () => void;
 }>(function AgentComposerInput({
-  ariaLabel = '发送 Agent 消息', initialDraft, scope, suggestions, disabled, placeholder, onDraftChange, onContentPresenceChange, onDraftPersist, onPaste, onDropFiles, onDropWorkspaceFiles, onSubmit, onDirectSubmit, onManageCapabilities, onNativeAction, onWorkspaceReferenceSelected,
+  ariaLabel = '发送 Agent 消息', initialDraft, scope, suggestions, disabled, placeholder, onDraftChange, onContentPresenceChange, onDraftPersist, onPaste, onDropFiles, onDropWorkspaceFiles, onDropConversationReference, onSubmit, onDirectSubmit, onManageCapabilities, onNativeAction, onWorkspaceReferenceSelected,
 }, ref) {
   const input = useRef<HTMLTextAreaElement>(null);
   const dragDepth = useRef(0);
@@ -189,7 +190,8 @@ export const AgentComposerInput = forwardRef<ComposerHandle, {
   const hasNativeSuggestions = suggestions.some(item => item.kind === 'NATIVE');
   const acceptsFileDrag = (event: ReactDragEvent<HTMLElement>) => event.dataTransfer.types.includes('Files');
   const acceptsWorkspaceFileDrag = (event: ReactDragEvent<HTMLElement>) => event.dataTransfer.types.includes(WORKSPACE_FILE_TRANSFER_TYPE);
-  const acceptsAttachmentDrag = (event: ReactDragEvent<HTMLElement>) => (Boolean(onDropFiles) && acceptsFileDrag(event)) || (Boolean(onDropWorkspaceFiles) && acceptsWorkspaceFileDrag(event));
+  const acceptsConversationReferenceDrag = (event: ReactDragEvent<HTMLElement>) => event.dataTransfer.types.includes(CONVERSATION_REFERENCE_TRANSFER_TYPE);
+  const acceptsAttachmentDrag = (event: ReactDragEvent<HTMLElement>) => (Boolean(onDropFiles) && acceptsFileDrag(event)) || (Boolean(onDropWorkspaceFiles) && acceptsWorkspaceFileDrag(event)) || (Boolean(onDropConversationReference) && acceptsConversationReferenceDrag(event));
   const clearFileDrag = () => { dragDepth.current = 0; setFileDragActive(false); };
   return <div className={`agent-composer-input${fileDragActive ? ' file-drag-active' : ''}`} onDragEnter={event => {
     if (disabled || !acceptsAttachmentDrag(event)) return;
@@ -209,7 +211,18 @@ export const AgentComposerInput = forwardRef<ComposerHandle, {
     event.preventDefault();
     const workspacePaths = disabled ? [] : transferredWorkspacePaths(event.dataTransfer);
     const files = disabled ? [] : transferredFiles(event.dataTransfer);
+    const rawConversationReference = disabled ? '' : event.dataTransfer.getData(CONVERSATION_REFERENCE_TRANSFER_TYPE);
     clearFileDrag();
+    if (rawConversationReference) {
+      try {
+        const value = JSON.parse(rawConversationReference) as { bindingId?: unknown; eventId?: unknown; title?: unknown };
+        if (typeof value.bindingId === 'string' && typeof value.eventId === 'string' && typeof value.title === 'string') {
+          onDropConversationReference?.({ bindingId: value.bindingId, eventId: value.eventId, title: value.title });
+        }
+      } catch {
+        // Drag payloads are untrusted browser input; invalid payloads are ignored.
+      }
+    }
     if (workspacePaths.length) onDropWorkspaceFiles?.(workspacePaths);
     if (files.length) onDropFiles?.(files);
   }}>

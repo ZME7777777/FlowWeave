@@ -58,6 +58,9 @@ const HISTORY_REVEAL_WINDOW_VIEWPORT_RATIO = 0.75;
 export interface ConversationReference {
   eventId: string;
   content: string;
+  sourceBindingId: string;
+  compactStart?: number;
+  compactEnd?: number;
 }
 
 interface ConversationAnnotationReference extends ConversationReference {
@@ -1537,7 +1540,7 @@ function AgentReply({ event, content, reveal = false, changes = [], onFork, onPr
   </article>;
 }
 
-function conversationAnnotationForSelection(selection: Selection, surface: HTMLElement): ConversationAnnotationReference | undefined {
+function conversationAnnotationForSelection(selection: Selection, surface: HTMLElement, sourceBindingId: string | undefined): ConversationAnnotationReference | undefined {
   if (!selection.rangeCount) return undefined;
   const content = selection.toString().trim();
   if (!content) return undefined;
@@ -1547,7 +1550,7 @@ function conversationAnnotationForSelection(selection: Selection, surface: HTMLE
   const message = start?.closest<HTMLElement>('[data-conversation-event-id]');
   if (!message || !end || !surface.contains(message) || !message.contains(range.startContainer) || !message.contains(range.endContainer)) return undefined;
   const eventId = message.dataset.conversationEventId;
-  if (!eventId) return undefined;
+  if (!eventId || !sourceBindingId) return undefined;
   // Keep this positional hint in the native user-message metadata alongside
   // the quote. Unlike a DOM node or rendered element index it remains stable
   // across syntax / Markdown spans, and the quote remains the compatibility
@@ -1555,7 +1558,14 @@ function conversationAnnotationForSelection(selection: Selection, surface: HTMLE
   const before = document.createRange();
   before.selectNodeContents(message);
   before.setEnd(range.startContainer, range.startOffset);
-  return { eventId, content, compactStart: before.toString().replace(/\s+/g, '').length };
+  const compactStart = before.toString().replace(/\s+/g, '').length;
+  return {
+    eventId,
+    content,
+    sourceBindingId,
+    compactStart,
+    compactEnd: compactStart + content.replace(/\s+/g, '').length,
+  };
 }
 
 function conversationHighlightRects(range: Range, root: HTMLElement): ConversationHighlightRect[] {
@@ -2391,7 +2401,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
         setSelectedReference(undefined);
         return;
       }
-      const reference = conversationAnnotationForSelection(currentSelection, currentSurface);
+      const reference = conversationAnnotationForSelection(currentSelection, currentSurface, conversationScope);
       if (!reference || pointerMessageId !== reference.eventId) {
         setSelectedReference(undefined);
         return;
@@ -2407,7 +2417,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
         top: Math.min(bounds.bottom + 8, Math.max(12, window.innerHeight - 44)),
       });
     });
-  }, [onCreateAnnotation]);
+  }, [conversationScope, onCreateAnnotation]);
   const locateReferenceSource = useCallback(() => {
     if (!viewingReference || !surface.current) return;
     stopFollowingLatest();

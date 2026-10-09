@@ -133,7 +133,9 @@ class AgentAttachmentReference(_Write):
 
 
 class AgentConversationReference(_Write):
-    event_id: str = Field(min_length=1, max_length=200)
+    source_binding_id: str = Field(min_length=1, max_length=36)
+    source_event_id: str | None = Field(default=None, min_length=1, max_length=200)
+    selection: dict[str, int] | None = None
 
 
 class AgentWorkspaceReference(_Write):
@@ -751,7 +753,7 @@ async def create_agent_conversation(
             reasoning_effort=payload.reasoning_effort,
             content=payload.content,
             attachments=tuple(item.model_dump(exclude_none=True) for item in payload.attachments),
-            references=tuple(item.model_dump() for item in payload.references),
+            references=tuple(item.model_dump(exclude_none=True) for item in payload.references),
             workspace_references=tuple(item.model_dump() for item in payload.workspace_references),
             annotations=tuple(payload.annotations),
             capability_version_ids=tuple(payload.capability_version_ids),
@@ -785,7 +787,7 @@ async def create_agent_sidebar_conversation(
             conversation_id=payload.conversation_id,
             content=payload.content,
             attachments=tuple(item.model_dump(exclude_none=True) for item in payload.attachments),
-            references=tuple(item.model_dump() for item in payload.references),
+            references=tuple(item.model_dump(exclude_none=True) for item in payload.references),
             idempotency_key=idempotency_key,
         ),
     )
@@ -1155,7 +1157,7 @@ async def agent_message(
     del idempotency_key
     arguments = {
         "attachments": tuple(item.model_dump(exclude_none=True) for item in payload.attachments),
-        "references": tuple(item.model_dump() for item in payload.references),
+        "references": tuple(item.model_dump(exclude_none=True) for item in payload.references),
         "workspace_references": tuple(item.model_dump() for item in payload.workspace_references),
         "annotations": tuple(payload.annotations),
     }
@@ -1540,7 +1542,7 @@ async def agent_rerun_edited_message(
             event_id,
             payload.content,
             attachments=tuple(item.model_dump(exclude_none=True) for item in payload.attachments),
-            references=tuple(item.model_dump() for item in payload.references),
+            references=tuple(item.model_dump(exclude_none=True) for item in payload.references),
             workspace_references=tuple(item.model_dump() for item in payload.workspace_references),
             annotations=tuple(payload.annotations),
         ),

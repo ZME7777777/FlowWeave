@@ -728,6 +728,10 @@ export interface AgentWorkspaceReference {
 export interface AgentConversationReference {
   event_id: string;
   content: string;
+  /** Server-authorized FlowWeave binding; required for new requests, absent only in legacy history. */
+  source_binding_id?: string;
+  /** Whitespace-normalized offsets within the referenced formal event. */
+  selection?: { compact_start: number; compact_end: number };
 }
 export interface AgentConversationAnnotation {
   id: string;
