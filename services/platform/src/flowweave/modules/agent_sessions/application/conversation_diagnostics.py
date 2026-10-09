@@ -13,7 +13,7 @@ _logger = logging.getLogger("flowweave.agent_conversation_diagnostics")
 _HEARTBEAT_SECONDS = 60.0
 _MAX_TRACKED_SNAPSHOTS = 2048
 _ALLOWED_TRIGGERS = frozenset(
-    {"scheduled", "foreground", "message_complete", "stream_closed", "stream_reconnect"}
+    {"scheduled", "foreground", "stream_closed", "stream_reconnect"}
 )
 _snapshot_lock = threading.Lock()
 _snapshots: OrderedDict[tuple[str, str, str, str | None], tuple[str, float]] = OrderedDict()

@@ -304,8 +304,6 @@ class _TransientStreamProjection:
         if item_id is None or item_id not in self._slots:
             return frames
         del self._slots[item_id]
-        if any(frame.get("type") == "message_complete" for frame in frames):
-            return frames
         return (*frames, {"type": "stream_closed", "item_id": item_id})
 
     def close_all(self) -> tuple[dict[str, Any], ...]:
@@ -4747,16 +4745,7 @@ class OpenHandsRuntime:
             "event_type": cls._event_type(raw),
             "payload": cls._event_payload(raw),
         }
-        frames: tuple[dict[str, Any], ...] = ({"type": "event", "event": projected},)
-        raw_action = event.get("action")
-        action_kind = (
-            str(cast(dict[str, object], raw_action).get("kind") or "")
-            if isinstance(raw_action, dict)
-            else ""
-        )
-        if kind in {"MessageEvent", "ConversationErrorEvent"} or action_kind == "FinishAction":
-            return (*frames, {"type": "message_complete"})
-        return frames
+        return ({"type": "event", "event": projected},)
 
     def inspect(self, handle: RuntimeHandle) -> RuntimeResult:
         base_url = self._base_url_for_handle(handle)

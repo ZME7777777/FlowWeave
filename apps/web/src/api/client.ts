@@ -831,7 +831,7 @@ export function flowRunTerminalUrl(runId: string, rows = 24, columns = 80): stri
 }
 
 export interface AgentStreamEvent {
-  type: 'delta' | 'event' | 'message_complete' | 'stream_reset' | 'stream_closed' | 'durable_cursor' | 'model_retry';
+  type: 'delta' | 'event' | 'stream_reset' | 'stream_closed' | 'durable_cursor' | 'model_retry';
   content?: string;
   item_id?: string;
   event?: OpenHandsConversationEvent;
@@ -898,8 +898,6 @@ export function subscribeToConversationStream(
           const seq = event.seq as number;
           afterSeq = afterSeq === undefined ? seq : Math.max(afterSeq, seq);
           onEvent({ type: 'durable_cursor', seq: afterSeq });
-        } else if (event.type === 'message_complete') {
-          onEvent({ type: 'message_complete' });
         } else {
           const retryEvent = modelRetryEvent(event);
           if (retryEvent) onEvent(retryEvent);
@@ -987,7 +985,6 @@ export function subscribeToAgentWorkspaceStream(
           afterSeq = afterSeq === undefined ? seq : Math.max(afterSeq, seq);
           onEvent({ type: 'durable_cursor', seq: afterSeq });
         }
-        else if (event.type === 'message_complete') onEvent({ type: 'message_complete' });
         else {
           const retryEvent = modelRetryEvent(event);
           if (retryEvent) onEvent(retryEvent);
@@ -1220,7 +1217,6 @@ export function subscribeToNodeSessionStream(
         afterSeq = afterSeq === undefined ? seq : Math.max(afterSeq, seq);
         onEvent({ type: 'durable_cursor', seq: afterSeq });
       }
-      else if (event.type === 'message_complete') onEvent({ type: 'message_complete' });
       else {
         const retryEvent = modelRetryEvent(event);
         if (retryEvent) onEvent(retryEvent);

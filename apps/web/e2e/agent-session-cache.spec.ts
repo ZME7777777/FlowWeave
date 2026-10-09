@@ -2483,18 +2483,21 @@ test('Stream message completion immediately ends only the active conversation vi
   await expect.poll(() => stream).toBeTruthy();
   await expect(page.locator('[data-conversation-binding-id="message-complete-background"] .agent-workspace-conversation-running')).toBeVisible();
 
-  stream!.send(JSON.stringify({ type: 'message_complete' }));
+  stream!.send(JSON.stringify({
+    type: 'event',
+    event: { id: 'message-complete-reply', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'message-complete-plan-result', content: '正式回复结束当前会话运行态。', timestamp: now } },
+  }));
 
+  await expect(page.getByText('正式回复结束当前会话运行态。')).toBeVisible();
   await expect(page.getByRole('button', { name: '发送消息' })).toBeVisible();
   await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toHaveCount(0);
-  await expect(page.getByLabel('任务：0 / 1 已完成')).toBeVisible();
-  await expect(page.getByLabel('任务：0 / 1 已完成').locator('.conversation-live-task-plan-summary')).not.toHaveClass(/active/);
+  await expect(page.getByLabel('任务：0 / 1 已完成')).toHaveCount(0);
   await expect(page.locator('[data-conversation-binding-id="message-complete-active"] .agent-workspace-conversation-running')).toHaveCount(0);
   await expect(page.locator('[data-conversation-binding-id="message-complete-background"] .agent-workspace-conversation-running')).toBeVisible();
 });
 
 
-test('Stream completion reconciles a delayed durable reply for an existing conversation', async ({ page }) => {
+test('Submission reconciliation renders a delayed durable reply for an existing conversation', async ({ page }) => {
   let authenticated = false;
   let stream: WebSocketRoute | undefined;
   let accepted = false;
@@ -2562,16 +2565,14 @@ test('Stream completion reconciles a delayed durable reply for an existing conve
   await login(page);
   await page.goto('/agent/conversations/completion-reconciliation-conversation');
   await expect(page.getByText('上一轮回复')).toBeVisible();
-  await expect.poll(() => stream).toBeTruthy();
 
   await page.getByLabel('发送 Agent 消息').fill('继续处理这个问题');
   await page.getByLabel('发送消息').click();
   await expect.poll(() => accepted).toBeTruthy();
-  stream!.send(JSON.stringify({ type: 'message_complete' }));
 
-  await expect(page.getByRole('button', { name: '发送消息' })).toBeVisible();
   await expect.poll(() => latestReadsAfterCompletion).toBeGreaterThanOrEqual(3);
   await expect(page.getByText('完成帧后的正式回复无需刷新即可显示。')).toBeVisible();
+  await expect(page.getByRole('button', { name: '发送消息' })).toBeVisible();
 });
 
 

@@ -582,7 +582,6 @@ function conversationHasReachedTerminalState(executionStatus: string | null | un
 }
 
 const MAX_BOOTSTRAP_RECONCILIATION_ATTEMPTS = 3;
-const STREAM_IDLE_GRACE_MS = 5 * 60 * 1000;
 const TERMINAL_EVENT_RECONCILIATION_MS = 8_000;
 const TERMINAL_EVENT_RETRY_INTERVAL_MS = 250;
 
@@ -4355,9 +4354,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const [operationError, setOperationError] = useState<Error>();
   const [historyLoadingBindingId, setHistoryLoadingBindingId] = useState<string>();
   const [historyPrepend, setHistoryPrepend] = useState<ConversationHistoryPrepend>();
-  const [streamHold, setStreamHold] = useState<{ bindingId: string; expiresAt: number }>();
-  const [streamCompletionVisualBindingId, setStreamCompletionVisualBindingId] = useState<string>();
-  const [streamCompletionReconciliation, setStreamCompletionReconciliation] = useState<{ bindingId: string; expiresAt: number }>();
   const [condensationStatus, setCondensationStatus] = useState<{
     bindingId: string;
     startedAt: number;
@@ -5933,19 +5929,17 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   );
   const effectiveTurnState: TurnState = idleUncreatedConversationDraft
     ? 'idle'
-    : streamCompletionVisualBindingId === selected?.id
-      ? 'idle'
-      : turnState === 'pausing' || turnState === 'resuming' || turnState === 'paused'
-        ? turnState
-        : currentFormalTurnFinished
-          ? 'idle'
-          : nativeExecutionStatus?.trim().toLowerCase() === 'paused'
-            ? 'paused'
-            : foregroundTurnStillRunning || nativeTurnRunning
-              ? 'running'
-              : nativeTurnTerminal
-                ? 'idle'
-                : turnState;
+    : turnState === 'pausing' || turnState === 'resuming' || turnState === 'paused'
+      ? turnState
+      : currentFormalTurnFinished
+        ? 'idle'
+        : nativeExecutionStatus?.trim().toLowerCase() === 'paused'
+          ? 'paused'
+          : foregroundTurnStillRunning || nativeTurnRunning
+            ? 'running'
+            : nativeTurnTerminal
+              ? 'idle'
+              : turnState;
   // The browser queue contains only messages that have not started delivery.
   // Once a request starts, the optimistic conversation event owns its display.
   const visibleQueuedMessages = queuedMessages.filter(message => message.scope === selected?.id);
@@ -5953,7 +5947,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const streamEnabled = Boolean(
     selected
     && (runtime?.write_available || selected.write_available)
-    && (isGenerating || streamHold?.bindingId === selected.id),
+    && isGenerating,
   );
   useEffect(() => {
     if (!pendingSubmissionConfirmation) return;
@@ -6087,8 +6081,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         state: selectedCondensing ? 'running' as const : effectiveTurnState,
         active: selectedCondensing || effectiveTurnState === 'running' || effectiveTurnState === 'pausing' || effectiveTurnState === 'resuming',
       }, [effectiveTurnState, selectedCondensing, uncreatedConversationDraft]);
-  const streamCompletionVisualOverride = streamCompletionVisualBindingId === selected?.id;
-  const conversationVisuallyActive = !uncreatedConversationDraft && !streamCompletionVisualOverride && (
+  const conversationVisuallyActive = !uncreatedConversationDraft && (
     conversationActivity.active
     || (
       !nativeTurnTerminal
@@ -6515,24 +6508,20 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       });
     }
     if (event.type === 'event' && event.event) {
-      if (event.event.event_type === 'MESSAGE' && ['user', 'human'].includes(String(event.event.payload.source ?? '').toLowerCase())) setModelRetryStatus(undefined);
-      appendLiveEvent(scope, event.event);
-    }
-    if (event.type === 'message_complete') {
-      // The current page has received the native completion boundary. End its
-      // local running presentation immediately while REST reconciliation loads
-      // the durable terminal event; background bindings retain their server
-      // activity projection.
-      setStreamCompletionVisualBindingId(scope);
-      setStreamCompletionReconciliation({
-        bindingId: scope,
-        expiresAt: Date.now() + TERMINAL_EVENT_RECONCILIATION_MS,
-      });
-      setForegroundTurn(current => current?.bindingId === scope ? undefined : current);
-      setActiveTurnEventId(undefined);
-      setRequestStartedAt(undefined);
-      setTurnState(current => current === 'running' || current === 'resuming' ? 'idle' : current);
-      void synchronizeConversationEvents(true, 'message_complete');
+      const formalEvent = event.event;
+      if (formalEvent.event_type === 'MESSAGE' && ['user', 'human'].includes(String(formalEvent.payload.source ?? '').toLowerCase())) setModelRetryStatus(undefined);
+      appendLiveEvent(scope, formalEvent);
+      const terminal = formalEvent.event_type === 'ERROR'
+        || (formalEvent.event_type === 'COMPLETED' && formalEvent.payload.event_name === 'FinishAction')
+        || isOpenHandsAgentReply(formalEvent);
+      if (terminal) {
+        setForegroundTurn(undefined);
+        setPendingSubmissionConfirmation(undefined);
+        setActiveTurnEventId(undefined);
+        setRequestStartedAt(undefined);
+        setTurnState(current => current === 'running' || current === 'resuming' ? 'idle' : current);
+        void synchronizeConversationEvents(true, 'foreground');
+      }
     }
   }, [appendLiveEvent, synchronizeConversationEvents]);
   const onStreamReconnect = useCallback((scope: string) => {
@@ -6568,7 +6557,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       bootstrapTransitionScope.current = undefined;
       return;
     }
-    setEditing(false); setQueuedMessageMenuId(undefined); pendingLiveEvents.current = []; if (liveEventsFrame.current !== undefined) window.cancelAnimationFrame(liveEventsFrame.current); liveEventsFrame.current = undefined; setScopedLiveEvents(current => current.filter(item => item.scope === composerScope)); setLocalMessageProjectionRevision(current => current + 1); setHiddenEventIds(new Set()); setDeferredRewriteUserEventIds(new Set()); setActiveTurnEventId(undefined); setForegroundTurn(undefined); setStreamCompletionVisualBindingId(undefined); setStreamCompletionReconciliation(undefined); setExpiredTerminalSyncTurnKey(undefined); setRequestStartedAt(undefined); setConfirmationReason(''); setTurnState('idle'); queuedMessagesRef.current = []; setQueuedMessages([]); setPendingRewrite(undefined);
+    setEditing(false); setQueuedMessageMenuId(undefined); pendingLiveEvents.current = []; if (liveEventsFrame.current !== undefined) window.cancelAnimationFrame(liveEventsFrame.current); liveEventsFrame.current = undefined; setScopedLiveEvents(current => current.filter(item => item.scope === composerScope)); setLocalMessageProjectionRevision(current => current + 1); setHiddenEventIds(new Set()); setDeferredRewriteUserEventIds(new Set()); setActiveTurnEventId(undefined); setForegroundTurn(undefined); setExpiredTerminalSyncTurnKey(undefined); setRequestStartedAt(undefined); setConfirmationReason(''); setTurnState('idle'); queuedMessagesRef.current = []; setQueuedMessages([]); setPendingRewrite(undefined);
     if (recoveredComposer && composerScope) {
       composerDraftsByScope.current.set(composerScope, recoveredComposer);
       replaceComposerDraft(recoveredComposer.content, composerScope);
@@ -6670,29 +6659,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       if (retryTimer !== undefined) window.clearTimeout(retryTimer);
     };
   }, [synchronizeConversationEvents, terminalEventReconciliationActive, terminalSyncTurnKey]);
-  const streamCompletionReconciliationActive = streamCompletionReconciliation?.bindingId === selected?.id;
-  useEffect(() => {
-    if (!streamCompletionReconciliationActive || !streamCompletionReconciliation) return;
-    let cancelled = false;
-    let retryTimer: number | undefined;
-    const reconcile = async () => {
-      await synchronizeConversationEvents(true, 'message_complete');
-      if (!cancelled && Date.now() < streamCompletionReconciliation.expiresAt) {
-        retryTimer = window.setTimeout(() => { void reconcile(); }, TERMINAL_EVENT_RETRY_INTERVAL_MS);
-      }
-    };
-    void reconcile();
-    const expiryTimer = window.setTimeout(() => {
-      setStreamCompletionReconciliation(current => (
-        current?.bindingId === streamCompletionReconciliation.bindingId ? undefined : current
-      ));
-    }, Math.max(0, streamCompletionReconciliation.expiresAt - Date.now()));
-    return () => {
-      cancelled = true;
-      window.clearTimeout(expiryTimer);
-      if (retryTimer !== undefined) window.clearTimeout(retryTimer);
-    };
-  }, [streamCompletionReconciliation, streamCompletionReconciliationActive, synchronizeConversationEvents]);
   useEffect(() => {
     if (!selected || !latestFormalTurnFinished) return;
 
@@ -6701,10 +6667,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     setActiveTurnEventId(undefined);
     setRequestStartedAt(undefined);
     setTurnState(current => current === 'running' || current === 'resuming' ? 'idle' : current);
-    setStreamCompletionReconciliation(current => (
-      current?.bindingId === selected.id ? undefined : current
-    ));
-    setStreamHold({ bindingId: selected.id, expiresAt: Date.now() + STREAM_IDLE_GRACE_MS });
   }, [latestFormalTurnFinished, selected]);
   useEffect(() => {
     // Do not infer "thinking" while the initial native state is still loading.
@@ -6731,29 +6693,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         setActiveTurnEventId(undefined);
         setRequestStartedAt(undefined);
         setTurnState('idle');
-        if (selected?.id) {
-          setStreamHold({ bindingId: selected.id, expiresAt: Date.now() + STREAM_IDLE_GRACE_MS });
-        }
       }
       refresh();
     }
-  }, [activeTurnEventId, displayedEvents, nativeTurnTerminal, refresh, selected?.id, turnState]);
-  useEffect(() => {
-    if (turnState !== 'paused' || !selected?.id) return;
-    setStreamHold({ bindingId: selected.id, expiresAt: Date.now() + STREAM_IDLE_GRACE_MS });
-  }, [selected?.id, turnState]);
-  useEffect(() => {
-    if (!streamHold) return;
-    const remaining = streamHold.expiresAt - Date.now();
-    if (remaining <= 0) {
-      setStreamHold(undefined);
-      return;
-    }
-    const timer = window.setTimeout(() => setStreamHold(current => (
-      current?.bindingId === streamHold.bindingId ? undefined : current
-    )), remaining);
-    return () => window.clearTimeout(timer);
-  }, [streamHold]);
+  }, [activeTurnEventId, displayedEvents, nativeTurnTerminal, refresh, turnState]);
 
   const bootstrap = useMutation({ mutationFn: (message: QueuedMessage) => api.bootstrapConversation(
     workspace!.id,
@@ -7188,7 +7131,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     sendingMessageIds.current.add(message.id);
     const showLocalMessage = () => {
       if (!message.nativeGuidance) {
-        setStreamCompletionVisualBindingId(current => current === message.bindingId ? undefined : current);
         setForegroundTurn({ submissionId: message.id, bindingId: message.bindingId });
       }
       // The current page owns its submitted user bubble. Its event relationship
@@ -7310,7 +7252,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         startedAt: Date.now(),
         existingEventIds: new Set(displayedEvents.map(event => event.id)),
       });
-      setStreamHold({ bindingId: request.bindingId, expiresAt: Date.now() + STREAM_IDLE_GRACE_MS });
     },
     onSuccess: (value, request) => {
       setCondensationStatus(current => current?.bindingId === request.bindingId
@@ -8078,14 +8019,12 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     // pause / resume transition before that snapshot catches up, but a stale
     // hydration readiness must never keep only the selected row spinning after
     // the shared snapshot has observed completion.
-    const selectedHasCompletedStream = item.id === streamCompletionVisualBindingId;
     const selectedHasFinalFormalReply = item.id === selected?.id
       && selectedFormalTurnFinished;
     const selectedLocalTransition = item.id === selected?.id
-      && !selectedHasCompletedStream
       && !selectedHasFinalFormalReply
-      && (turnState === 'running' || turnState === 'pausing' || turnState === 'resuming');
-    const running = selectedHasCompletedStream || selectedHasFinalFormalReply
+      && conversationActivity.active;
+    const running = selectedHasFinalFormalReply
       ? false
       : runningConversationIds.has(item.id)
         || condensingConversationIds.has(item.id)

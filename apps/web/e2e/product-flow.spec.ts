@@ -1064,7 +1064,6 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toBeVisible();
   await expect(page.locator('.agent-composer-status')).toHaveAttribute('aria-hidden', 'true');
   await expect(page.locator('.agent-composer-status')).not.toHaveText('正在处理');
-  await expect(page.locator('.agent-workspace-conversation-running')).toHaveCount(1);
   emptyResponseFollowup = true;
   await page.reload();
   await expect(page.getByText('已恢复，继续检查工作区。', { exact: true })).toBeVisible();
@@ -1078,7 +1077,10 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   expect(formalTerminalQueuePosts).toBe(0);
   modelIsResponding = false;
   parentTurnFailed = true;
-  agentStream!.send(JSON.stringify({ type: 'message_complete' }));
+  agentStream!.send(JSON.stringify({
+    type: 'event',
+    event: { id: 'running-parent-error', event_type: 'ERROR', payload: { source_type: 'ConversationErrorEvent', source: 'environment', parent_id: 'running-user', content: '模型服务暂时不可用，本轮已停止', error_code: 'LLMServiceUnavailableError', timestamp: new Date().toISOString() } },
+  }));
   const runningFailureDetail = page.locator('.conversation-model-retry.final').filter({ hasText: '模型服务暂不可用' });
   await expect(runningFailureDetail).toHaveCount(1);
   await expect(runningFailureDetail.locator('summary')).toHaveText('模型服务暂不可用');
@@ -1389,7 +1391,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await eventProgress.evaluate(element => { (element as HTMLElement).dataset.stabilityMarker = 'event-progress'; });
   const contextRequestsBeforeTransientGap = contextRequests;
   contextMetricsTemporarilyUnavailable = true;
-  agentStream!.send(JSON.stringify({ type: 'message_complete' }));
+  agentStream!.send(JSON.stringify({ type: 'stream_closed', item_id: 'context-reconciliation' }));
   await expect.poll(() => contextRequests).toBeGreaterThan(contextRequestsBeforeTransientGap);
   await expect(tokenProgress).toHaveAttribute('data-stability-marker', 'token-progress');
   await expect(tokenProgress).toContainText('Token6,380 / 512,000');
@@ -1922,11 +1924,11 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   // WebSocket is silently quiet, the current-event reconciliation must reveal
   // new child work without using Pause/Resume as a manual refresh button.
   cursorlessEventRecovery = true;
-  agentStream!.send(JSON.stringify({ type: 'message_complete' }));
+  agentStream!.send(JSON.stringify({ type: 'stream_closed', item_id: 'cursorless-recovery' }));
   await expect(activeProcess.getByText('子智能体 reviewer · 汇总子任务返回')).toBeVisible();
   cursorlessEventRecovery = false;
   readinessReportsIdle = false;
-  agentStream!.send(JSON.stringify({ type: 'message_complete' }));
+  agentStream!.send(JSON.stringify({ type: 'stream_closed', item_id: 'readiness-recovery' }));
   await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toBeVisible();
   await expectViewportAtLatest();
   await expect(activeProcess.locator(':scope > summary')).toContainText(/已耗时 \d+秒/);
@@ -2013,7 +2015,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   // includes the stream projection's command and commentary. The visible tool
   // must remain intact instead of flashing into an empty process card.
   incompleteLiveToolProjection = true;
-  agentStream!.send(JSON.stringify({ type: 'message_complete' }));
+  agentStream!.send(JSON.stringify({ type: 'stream_closed', item_id: 'incomplete-tool-reconciliation' }));
   await expect(activeProcess.getByText('范围已扩为终端与文件操作；现在做静态验证。')).toBeVisible();
   await expect(activeProcess.getByText('正在运行 pwd')).toBeVisible();
   incompleteLiveToolProjection = false;
@@ -2233,7 +2235,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   // The current page keeps its own sent bubble. A delayed native user event
   // must not replace it, and its eventual reply must still join the transcript.
   runningDirectAssistantReplyPersisted = true;
-  agentStream!.send(JSON.stringify({ type: 'message_complete' }));
+  agentStream!.send(JSON.stringify({ type: 'stream_closed', item_id: 'direct-reply-reconciliation' }));
   await expect(page.getByText('延迟事件到达后仍应正常显示这条回复。', { exact: true })).toBeVisible();
   await expect(runningDirectMessage).toHaveCount(1);
   await expect(runningDirectMessage).toHaveAttribute('data-optimistic-identity', 'stable');
@@ -2446,8 +2448,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   // foreground running indicator immediately, even while Runtime readiness
   // still catches up to the native idle state.
   agentStream!.send(JSON.stringify({ type: 'delta', item_id: 'live-reply-before-idle', content: '回复已经生成，原生会话仍在收尾。' }));
-  agentStream!.send(JSON.stringify({ type: 'message_complete' }));
-  await expect(page.getByLabel('正在生成的回复')).toHaveCount(0);
+  await expect(page.getByLabel('正在生成的回复')).toBeVisible();
   await expect(page.locator('.conversation-message.assistant').filter({ hasText: '回复已经生成，原生会话仍在收尾。' })).toHaveCount(0);
   agentStream!.send(JSON.stringify({
     type: 'event',
@@ -2462,7 +2463,6 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     type: 'event',
     event: { id: 'live-finish', event_type: 'COMPLETED', payload: { source: 'agent', parent_id: 'live-tool-result', event_name: 'FinishAction', content: longFinalReply, thought: '核对已经完成，下面给出最终结果。', summary: '整理最终结果', timestamp: new Date().toISOString() } },
   }));
-  agentStream!.send(JSON.stringify({ type: 'message_complete' }));
   await expect(page.getByText('核对已经完成，下面给出最终结果。')).toHaveCount(1);
   await expect(page.getByText(/最终回复第 1 段/)).toHaveCount(1);
   await expect(page.getByRole('button', { name: '发送消息' })).toBeVisible();

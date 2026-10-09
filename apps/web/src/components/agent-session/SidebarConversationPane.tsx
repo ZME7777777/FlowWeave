@@ -132,7 +132,7 @@ export function SidebarConversationPane({ workspaceId, sourceBindingId, initialR
   useEffect(() => {
     if (!bindingId || expired) return;
     return subscribeToAgentWorkspaceStream(workspaceId, bindingId, event => {
-      if (event.type === 'event' || event.type === 'message_complete') {
+      if (event.type === 'event') {
         void queryClient.invalidateQueries({ queryKey: ['agent-session', 'sidebar-hydration', workspaceId, bindingId] });
       }
     });

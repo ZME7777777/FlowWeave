@@ -3612,7 +3612,6 @@ def test_openhands_public_stream_exposes_text_but_not_reasoning():
                 },
             },
         },
-        {"type": "message_complete"},
     )
 
 
@@ -3719,7 +3718,18 @@ def test_openhands_stream_projection_tracks_formal_attempts_orders_and_terminal_
             },
         },
         OpenHandsRuntime._visible_stream_event,
-    )[-1] == {"type": "message_complete"}
+    ) == (
+        {"type": "durable_cursor", "seq": 4},
+        {
+            "type": "event",
+            "event": {
+                "id": "stream-2",
+                "event_type": "MESSAGE",
+                "payload": {"source_type": "MessageEvent", "source": "agent", "content": "durable"},
+            },
+        },
+        {"type": "stream_closed", "item_id": "stream-2"},
+    )
     assert projection.close_all() == ()
 
 
@@ -3866,7 +3876,6 @@ async def test_openhands_isolated_stream_uses_controller_and_filters_reasoning(
                 },
             },
         },
-        {"type": "message_complete"},
     ]
     assert observed == {
         "resource_name": "fw-sbx-runtime",
@@ -3931,7 +3940,6 @@ async def test_openhands_isolated_session_socket_replays_durable_events_with_cur
                 },
             },
         },
-        {"type": "message_complete"},
     ]
 
 
