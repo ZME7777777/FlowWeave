@@ -2265,6 +2265,11 @@ def _project_conversation_events(
         if annotations:
             payload["collaboration_annotations"] = list(annotations)
         attachments = attachments_by_event.get(event.cursor, [])
+        if event.event_type == "MESSAGE" and str(payload.get("source") or "").lower() in {
+            "user",
+            "human",
+        }:
+            payload["display_content"] = display_content
         if attachments:
             payload["display_content"] = attachments[0].content
             payload["attachments"] = [

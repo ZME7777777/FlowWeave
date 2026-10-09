@@ -707,6 +707,37 @@ def test_message_context_v3_is_hidden_from_existing_user_messages() -> None:
     assert workspace_references == ()
 
 
+def test_message_context_v5_projects_visible_content_and_reference_cards() -> None:
+    reference = {"event_id": "assistant-event-1", "content": "仅作为引用背景"}
+    workspace_reference = {
+        "path": "/runtime/workspace/project/src",
+        "kind": "directory",
+        "display_name": "src",
+    }
+    annotation = {
+        "id": "annotation-1",
+        "anchor_kind": "CONVERSATION_TEXT",
+        "anchor": {"event_id": "assistant-event-1", "quote": "仅作为引用背景"},
+        "comment": "请核对这段内容",
+    }
+    prompt, _image_urls = session_conversations.message_payload(
+        "请据此继续处理",
+        (),
+        (reference,),
+        (workspace_reference,),
+        (annotation,),
+    )
+
+    display_content, references, workspace_references, annotations = (
+        session_conversations.project_conversation_references(prompt)
+    )
+
+    assert display_content == "请据此继续处理"
+    assert references == (reference,)
+    assert workspace_references == (workspace_reference,)
+    assert annotations == (annotation,)
+
+
 def test_conversation_reference_projection_supports_legacy_suffix_format() -> None:
     prompt = (
         "请基于引用继续处理"

@@ -18,13 +18,20 @@ interface Item {
   content: string;
 }
 
+interface ProcessSegment {
+  items: Item[];
+  messageIndex: number;
+  startedBy: Item;
+  interruptedBy?: OpenHandsConversationEvent;
+}
+
 interface Turn {
   id: string;
   renderKey: string;
   user?: Item;
   continuations: Item[];
-  /** Activity segments stay paired with the original message and every append. */
-  activitySegments: Item[][];
+  /** Wall-clock periods split only after a formal interruption. */
+  processSegments: ProcessSegment[];
   assistant?: Item;
   activity: Item[];
 }
@@ -399,6 +406,10 @@ function isConversationTerminalError(event: OpenHandsConversationEvent): boolean
   return event.event_type === 'ERROR' && !isPauseInterruptionEvent(event);
 }
 
+function isProcessInterruptionEvent(event: OpenHandsConversationEvent): boolean {
+  return isPauseInterruptionEvent(event) || isConversationTerminalError(event);
+}
+
 function itemsFor(event: OpenHandsConversationEvent): Item[] {
   const content = typeof event.payload.content === 'string' ? event.payload.content : '';
   const thought = typeof event.payload.thought === 'string' ? event.payload.thought : '';
@@ -511,7 +522,7 @@ function isHistoricalAutoTitleError(
 
 function turnsFor(events: OpenHandsConversationEvent[]): Turn[] {
   const turns: Turn[] = [];
-  const turnsByUserId = new Map<string, { turn: Turn; segmentIndex: number }>();
+  const turnsByUserId = new Map<string, { turn: Turn; messageIndex: number }>();
   const orphanTurnsByEventId = new Map<string, Turn>();
   const ordered = orderOpenHandsConversationEvents(events);
   const byId = new Map(ordered.map(event => [event.id, event]));
@@ -520,6 +531,11 @@ function turnsFor(events: OpenHandsConversationEvent[]): Turn[] {
   const actionsByToolCallId = new Map(actionEvents.flatMap(event => typeof event.payload.tool_call_id === 'string' ? [[event.payload.tool_call_id, event] as const] : []));
   for (const event of ordered) {
     if (isHistoricalAutoTitleError(event, ordered)) continue;
+    if (isProcessInterruptionEvent(event)) {
+      const ownerUserId = itemUserAncestorId(event, byId, actionsById, actionsByToolCallId);
+      const processSegment = ownerUserId ? turnsByUserId.get(ownerUserId)?.turn.processSegments.at(-1) : undefined;
+      if (processSegment) processSegment.interruptedBy = event;
+    }
     for (const item of itemsFor(event)) {
       if (item.kind === 'user') {
         const parentUserId = typeof item.event.payload.parent_id === 'string'
@@ -527,18 +543,26 @@ function turnsFor(events: OpenHandsConversationEvent[]): Turn[] {
           : undefined;
         const continuation = parentUserId ? turnsByUserId.get(parentUserId) : undefined;
         if (continuation && !continuation.turn.assistant) {
-          const segmentIndex = continuation.turn.activitySegments.length;
+          const messageIndex = continuation.turn.continuations.length + 1;
           continuation.turn.continuations.push(item);
-          continuation.turn.activitySegments.push([]);
-          turnsByUserId.set(item.event.id, { turn: continuation.turn, segmentIndex });
+          const lastProcessSegment = continuation.turn.processSegments.at(-1);
+          if (lastProcessSegment?.interruptedBy) continuation.turn.processSegments.push({ items: [], messageIndex, startedBy: item });
+          turnsByUserId.set(item.event.id, { turn: continuation.turn, messageIndex });
           continue;
         }
         const renderKey = typeof item.event.payload._flowweave_render_key === 'string'
           ? item.event.payload._flowweave_render_key
           : item.event.id;
-        const turn: Turn = { id: item.event.id, renderKey, user: item, continuations: [], activitySegments: [[]], activity: [] };
+        const turn: Turn = {
+          id: item.event.id,
+          renderKey,
+          user: item,
+          continuations: [],
+          processSegments: [{ items: [], messageIndex: 0, startedBy: item }],
+          activity: [],
+        };
         turns.push(turn);
-        turnsByUserId.set(item.event.id, { turn, segmentIndex: 0 });
+        turnsByUserId.set(item.event.id, { turn, messageIndex: 0 });
         continue;
       }
 
@@ -548,7 +572,13 @@ function turnsFor(events: OpenHandsConversationEvent[]): Turn[] {
       const ownerUserId = itemUserAncestorId(item.event, byId, actionsById, actionsByToolCallId);
       const owner = ownerUserId ? turnsByUserId.get(ownerUserId) : undefined;
       const turn = owner?.turn ?? orphanTurnsByEventId.get(item.event.id) ?? (() => {
-        const orphan: Turn = { id: item.event.id, renderKey: item.event.id, continuations: [], activitySegments: [[]], activity: [] };
+        const orphan: Turn = {
+          id: item.event.id,
+          renderKey: item.event.id,
+          continuations: [],
+          processSegments: [{ items: [], messageIndex: 0, startedBy: item }],
+          activity: [],
+        };
         turns.push(orphan);
         orphanTurnsByEventId.set(item.event.id, orphan);
         return orphan;
@@ -556,7 +586,7 @@ function turnsFor(events: OpenHandsConversationEvent[]): Turn[] {
       if (item.kind === 'assistant') turn.assistant = item;
       else {
         turn.activity.push(item);
-        turn.activitySegments[owner?.segmentIndex ?? 0]?.push(item);
+        turn.processSegments.at(-1)?.items.push(item);
       }
     }
   }
@@ -1029,6 +1059,15 @@ function turnProcessBlocks(
 ): TurnProcessBlock[] {
   if (!items.length) return [];
   return [{ kind: 'activity', id: 'activity-0', items, startedAt, finishedAt, active }];
+}
+
+function processBlocksForSegment(segment: ProcessSegment, active: boolean, completedAt?: number): TurnProcessBlock[] {
+  return turnProcessBlocks(
+    segment.items.filter(item => item.kind !== 'error'),
+    eventTime(segment.startedBy),
+    parsedEventTime(segment.interruptedBy?.payload.timestamp) ?? completedAt,
+    active,
+  );
 }
 
 /** Format the wall-clock time attached to an actual OpenHands message event. */
@@ -1790,12 +1829,9 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
   }, [editingEventId]);
 
   // Pausing a tool makes OpenHands emit one synthetic AgentErrorEvent. Keep
-  // the authoritative event for recovery and audit, but it is neither an
-  // execution failure nor useful conversation content.
-  const visibleEvents = useMemo(
-    () => events.filter(event => !isPauseInterruptionEvent(event)),
-    [events],
-  );
+  // it as a formal process boundary, but itemsFor() suppresses its redundant
+  // error row from the transcript.
+  const visibleEvents = events;
   const visibleEventSignature = useMemo(
     () => visibleEvents.map(event => [event.id, eventRevealSignature(event)] as const),
     [visibleEvents],
@@ -2455,20 +2491,13 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
         const recoveredErrorEventIds = new Set(turn.assistant ? errors.map(item => item.event.id) : []);
         const failures = errors.filter(item => !recoveredErrorEventIds.has(item.event.id));
         const parentFailed = failures.length > 0;
-        // A submitted turn can render before its formal OpenHands user event
-        // replaces the prior active branch. During that bounded hand-off the
-        // browser submission time is the only truthful current-turn anchor;
-        // never briefly inherit a much older user event's timestamp.
-        const startedAt = isCurrent && requestStartedAt !== undefined
-          ? requestStartedAt
-          : eventTime(turn.user);
         const finishedAt = eventTime(turn.assistant ?? failures.at(-1));
-        const processBlocks = turnProcessBlocks(
-          turn.activity.filter(item => item.kind !== 'error'),
-          startedAt,
+        const processSegments = turn.processSegments;
+        const processBlocks = processSegments.flatMap((segment, segmentIndex) => processBlocksForSegment(
+          segment,
+          isCurrent && segmentIndex === processSegments.length - 1 && !turn.assistant && !failures.length,
           finishedAt,
-          isCurrent && !turn.assistant && !failures.length,
-        );
+        ).map(block => ({ ...block, id: `activity-${segmentIndex}` })));
         // A formal reply or terminal error closes this turn even if Runtime
         // readiness is still reconciling a later global state transition.
         const completionConfirmed = Boolean(turn.assistant || failures.length);
@@ -2494,12 +2523,13 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
                 : typeof message.event.payload._flowweave_delivery_status === 'string'
                   ? message.event.payload._flowweave_delivery_status
                   : undefined;
-            const segmentBlocks = turnProcessBlocks(
-              turn.activitySegments[messageIndex] ?? [],
-              startedAt,
-              finishedAt,
-              isCurrent && messageIndex === userMessages.length - 1 && !turn.assistant && !failures.length,
-            );
+            const segmentBlocks = processSegments
+              .filter(segment => segment.messageIndex === messageIndex)
+              .flatMap(segment => processBlocksForSegment(
+                segment,
+                isCurrent && messageIndex === userMessages.length - 1 && !turn.assistant && !failures.length,
+                finishedAt,
+              ));
             return <Fragment key={message.event.id}>
               <div className={`conversation-user-message${isContinuation ? ' continuation' : ''}`}>{editingEventId === message.event.id
                 ? <form className="conversation-message-edit" onSubmit={event => { event.preventDefault(); if (editingContent.trim()) onRewrite?.(message.event.id, editingContent.trim()); }}><textarea ref={rewriteEditor} aria-label="编辑已发送消息" value={editingContent} disabled={rewritePending} onChange={event => setEditingContent(event.target.value)} onKeyDown={event => {

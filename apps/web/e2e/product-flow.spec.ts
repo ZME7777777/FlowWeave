@@ -474,6 +474,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   let gitSyncRequests = 0;
   let gitSynchronizesToRemote = false;
   let pausedDirectMessagePosts = 0;
+  let pausedAnnotationMessagePosts = 0;
   let releaseRunningDirectDelivery: (() => void) | undefined;
   const runningDirectDeliveryGate = new Promise<void>(resolve => { releaseRunningDirectDelivery = resolve; });
   let queuedDispatchPosts = 0;
@@ -934,6 +935,10 @@ test('top-level Agent workspace creates a direct conversation and restores its U
       }
       if (payload.content === '暂停后直接发送消息') {
         pausedDirectMessagePosts += 1;
+      }
+      if (payload.content === '') {
+        const messagePayload = JSON.parse(request.postData() ?? '{}') as { annotations?: unknown[] };
+        if (Array.isArray(messagePayload.annotations) && messagePayload.annotations.length) pausedAnnotationMessagePosts += 1;
       }
       if (payload.content === '已编辑的排队消息') {
         queuedDispatchPosts += 1;
@@ -2207,6 +2212,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(runningDirectMessage).toHaveAttribute('data-optimistic-identity', 'stable');
   await expect(page.locator('.conversation-turn')).toHaveCount(1);
   await expect(page.locator('.conversation-activity-group.active')).toHaveCount(1);
+  await expect(page.locator('.conversation-activity-group')).toHaveCount(1);
   releaseRunningDirectDelivery?.();
   await expect(runningDirectMessage).toHaveCount(1);
   await expect(runningDirectMessage).toHaveAttribute('data-optimistic-identity', 'stable');
@@ -2392,10 +2398,25 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.getByRole('button', { name: '继续当前 Agent' })).toBeVisible();
   await expect(page.locator('.agent-composer-actions .agent-send')).toHaveCount(1);
   await composer.fill('暂停后直接发送消息');
-  await composer.press('Enter');
+  await expect(page.getByRole('button', { name: '发送消息' })).toBeVisible();
+  await page.getByRole('button', { name: '发送消息' }).click();
   await expect(page.locator('.conversation-message.user').filter({ hasText: '暂停后直接发送消息' })).toBeVisible();
   await expect(page.getByLabel('消息投递队列').getByText('暂停后直接发送消息')).toHaveCount(0);
   await expect.poll(() => pausedDirectMessagePosts).toBe(1);
+  const pausedMessageContent = page.locator('.conversation-message.user').filter({ hasText: '暂停后直接发送消息' }).locator('.conversation-message-content');
+  await pausedMessageContent.evaluate(element => {
+    const selection = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    element.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
+  });
+  await expect(page.getByRole('button', { name: '添加到会话' })).toBeVisible();
+  await page.getByRole('button', { name: '添加到会话' }).click();
+  await expect(page.getByRole('button', { name: '发送消息' })).toBeVisible();
+  await page.getByRole('button', { name: '发送消息' }).click();
+  await expect.poll(() => pausedAnnotationMessagePosts).toBe(1);
   await page.getByRole('button', { name: '继续当前 Agent' }).click();
   await expect(page.getByLabel('工具执行确认')).toBeVisible();
   await expect(page.getByRole('button', { name: '等待工具确认' })).toBeDisabled();
@@ -2880,9 +2901,21 @@ test('selected conversation text is sent and rendered as a compact reference car
   await resourceTags.getByRole('button', { name: '引用附件 1', exact: true }).click();
   await expect(page.getByLabel('发送 Agent 消息')).toHaveValue('@附件1');
   await expect(resourceTags.evaluate(element => getComputedStyle(element).paddingBottom)).resolves.toBe('4px');
-  await expect(page.getByLabel('已添加的引用 1 条')).toContainText('会话引用 1');
+  const annotationList = page.getByLabel('已添加的引用 1 条');
+  await expect(annotationList).toContainText('会话引用 1');
   await resourceTags.getByRole('button', { name: '会话引用 1', exact: true }).click();
-  await page.getByRole('button', { name: '定位原文' }).click();
+  const annotationCard = page.getByRole('dialog', { name: '会话引用 1 详情' });
+  const locateSource = annotationCard.getByRole('button', { name: '定位原文' });
+  await expect(annotationCard).toBeVisible();
+  await expect.poll(() => locateSource.evaluate(button => {
+    const rect = button.getBoundingClientRect();
+    return rect.width > rect.height && rect.width > 45 && rect.height > 20;
+  })).toBe(true);
+  await expect(annotationCard.locator('header > span')).toHaveCSS('max-width', 'none');
+  const quote = annotationCard.locator('blockquote');
+  await expect(quote).toHaveCSS('overflow-y', 'auto');
+  await expect.poll(() => quote.evaluate(element => element.getBoundingClientRect().width)).toBeGreaterThan(300);
+  await locateSource.click();
   await expect(source).toBeInViewport();
   await expect.poll(() => source.evaluate(element => getComputedStyle(element, '::selection').backgroundColor)).toBe('rgb(183, 223, 255)');
   await expect.poll(() => source.evaluate(() => window.getSelection()?.toString())).toBe(selectedText);

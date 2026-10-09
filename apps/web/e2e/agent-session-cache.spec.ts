@@ -2366,7 +2366,7 @@ test('A formal final reply releases the shared composer state for queued deliver
 });
 
 
-test('Stream message completion keeps a native running conversation active', async ({ page }) => {
+test('Stream message completion immediately ends only the active conversation visual state', async ({ page }) => {
   let authenticated = false;
   let stream: WebSocketRoute | undefined;
   const workspace = { id: 'message-complete-workspace', display_name: '完成事件工作区', desired_state: 'RUNNING', updated_at: now };
@@ -2423,9 +2423,11 @@ test('Stream message completion keeps a native running conversation active', asy
 
   stream!.send(JSON.stringify({ type: 'message_complete' }));
 
-  await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '发送消息' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toHaveCount(0);
   await expect(page.getByLabel('任务：0 / 1 已完成')).toBeVisible();
-  await expect(page.locator('[data-conversation-binding-id="message-complete-active"] .agent-workspace-conversation-running')).toBeVisible();
+  await expect(page.getByLabel('任务：0 / 1 已完成').locator('.conversation-live-task-plan-summary')).not.toHaveClass(/active/);
+  await expect(page.locator('[data-conversation-binding-id="message-complete-active"] .agent-workspace-conversation-running')).toHaveCount(0);
   await expect(page.locator('[data-conversation-binding-id="message-complete-background"] .agent-workspace-conversation-running')).toBeVisible();
 });
 
