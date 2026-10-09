@@ -175,6 +175,34 @@ def test_credential_sync_schema_guard_requires_credential_sync_owner() -> None:
     ]
 
 
+def test_credential_sync_state_distinguishes_new_and_modified_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    binding = SimpleNamespace(
+        id="binding-1",
+        credential_sync_initialized_at=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+    credentials = [
+        {"id": "current", "row_version": 1},
+        {"id": "modified", "row_version": 2},
+        {"id": "new", "row_version": 1},
+    ]
+    synced = {
+        "current": SimpleNamespace(credential_row_version=1),
+        "modified": SimpleNamespace(credential_row_version=1),
+    }
+    monkeypatch.setattr(credential_sync, "list_credentials", lambda _db: credentials)
+    monkeypatch.setattr(credential_sync, "_sync_rows", lambda _db, _binding_id: synced)
+
+    state = credential_sync.list_credential_sync_state(SimpleNamespace(), binding)  # type: ignore[arg-type]
+
+    assert [item["sync_state"] for item in state["credentials"]] == [
+        "CURRENT",
+        "MODIFIED",
+        "NEW",
+    ]
+
+
 def test_conversation_reference_projection_hides_selected_text_from_message_body() -> None:
     selected_text = "这段引用只能以附件卡片显示"
     prompt, image_urls = session_conversations.message_payload(
