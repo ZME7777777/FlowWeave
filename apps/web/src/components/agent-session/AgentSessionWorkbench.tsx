@@ -4343,6 +4343,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const [historyPrepend, setHistoryPrepend] = useState<ConversationHistoryPrepend>();
   const [streamHold, setStreamHold] = useState<{ bindingId: string; expiresAt: number }>();
   const [streamCompletionVisualBindingId, setStreamCompletionVisualBindingId] = useState<string>();
+  const [streamCompletionReconciliation, setStreamCompletionReconciliation] = useState<{ bindingId: string; expiresAt: number }>();
   const [condensationStatus, setCondensationStatus] = useState<{
     bindingId: string;
     startedAt: number;
@@ -6509,6 +6510,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       // the durable terminal event; background bindings retain their server
       // activity projection.
       setStreamCompletionVisualBindingId(scope);
+      setStreamCompletionReconciliation({
+        bindingId: scope,
+        expiresAt: Date.now() + TERMINAL_EVENT_RECONCILIATION_MS,
+      });
       setForegroundTurn(current => current?.bindingId === scope ? undefined : current);
       setActiveTurnEventId(undefined);
       setRequestStartedAt(undefined);
@@ -6549,7 +6554,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       bootstrapTransitionScope.current = undefined;
       return;
     }
-    setEditing(false); setQueuedMessageMenuId(undefined); pendingLiveEvents.current = []; if (liveEventsFrame.current !== undefined) window.cancelAnimationFrame(liveEventsFrame.current); liveEventsFrame.current = undefined; setScopedLiveEvents(current => current.filter(item => item.scope === composerScope)); setLocalMessageProjectionRevision(current => current + 1); setHiddenEventIds(new Set()); setDeferredRewriteUserEventIds(new Set()); setActiveTurnEventId(undefined); setForegroundTurn(undefined); setStreamCompletionVisualBindingId(undefined); setExpiredTerminalSyncTurnKey(undefined); setRequestStartedAt(undefined); setConfirmationReason(''); setTurnState('idle'); queuedMessagesRef.current = []; setQueuedMessages([]); setPendingRewrite(undefined);
+    setEditing(false); setQueuedMessageMenuId(undefined); pendingLiveEvents.current = []; if (liveEventsFrame.current !== undefined) window.cancelAnimationFrame(liveEventsFrame.current); liveEventsFrame.current = undefined; setScopedLiveEvents(current => current.filter(item => item.scope === composerScope)); setLocalMessageProjectionRevision(current => current + 1); setHiddenEventIds(new Set()); setDeferredRewriteUserEventIds(new Set()); setActiveTurnEventId(undefined); setForegroundTurn(undefined); setStreamCompletionVisualBindingId(undefined); setStreamCompletionReconciliation(undefined); setExpiredTerminalSyncTurnKey(undefined); setRequestStartedAt(undefined); setConfirmationReason(''); setTurnState('idle'); queuedMessagesRef.current = []; setQueuedMessages([]); setPendingRewrite(undefined);
     if (recoveredComposer && composerScope) {
       composerDraftsByScope.current.set(composerScope, recoveredComposer);
       replaceComposerDraft(recoveredComposer.content, composerScope);
@@ -6651,6 +6656,29 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       if (retryTimer !== undefined) window.clearTimeout(retryTimer);
     };
   }, [synchronizeConversationEvents, terminalEventReconciliationActive, terminalSyncTurnKey]);
+  const streamCompletionReconciliationActive = streamCompletionReconciliation?.bindingId === selected?.id;
+  useEffect(() => {
+    if (!streamCompletionReconciliationActive || !streamCompletionReconciliation) return;
+    let cancelled = false;
+    let retryTimer: number | undefined;
+    const reconcile = async () => {
+      await synchronizeConversationEvents(true, 'message_complete');
+      if (!cancelled && Date.now() < streamCompletionReconciliation.expiresAt) {
+        retryTimer = window.setTimeout(() => { void reconcile(); }, TERMINAL_EVENT_RETRY_INTERVAL_MS);
+      }
+    };
+    void reconcile();
+    const expiryTimer = window.setTimeout(() => {
+      setStreamCompletionReconciliation(current => (
+        current?.bindingId === streamCompletionReconciliation.bindingId ? undefined : current
+      ));
+    }, Math.max(0, streamCompletionReconciliation.expiresAt - Date.now()));
+    return () => {
+      cancelled = true;
+      window.clearTimeout(expiryTimer);
+      if (retryTimer !== undefined) window.clearTimeout(retryTimer);
+    };
+  }, [streamCompletionReconciliation, streamCompletionReconciliationActive, synchronizeConversationEvents]);
   useEffect(() => {
     if (!selected || !latestFormalTurnFinished) return;
 
@@ -6659,6 +6687,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     setActiveTurnEventId(undefined);
     setRequestStartedAt(undefined);
     setTurnState(current => current === 'running' || current === 'resuming' ? 'idle' : current);
+    setStreamCompletionReconciliation(current => (
+      current?.bindingId === selected.id ? undefined : current
+    ));
     setStreamHold({ bindingId: selected.id, expiresAt: Date.now() + STREAM_IDLE_GRACE_MS });
   }, [latestFormalTurnFinished, selected]);
   useEffect(() => {
