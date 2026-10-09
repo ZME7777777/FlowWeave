@@ -1268,6 +1268,68 @@ test('Sidebar chat accepts selected and pasted attachments before its first mess
 });
 
 
+test('Sidebar chat recognizes its optimistic message and reuses the send button for controls', async ({ page }) => {
+  let authenticated = false;
+  let sidebarCreated = false;
+  let paused = false;
+  const workspace = { id: 'sidebar-behavior-workspace', display_name: '侧边交互工作区', desired_state: 'RUNNING', updated_at: now };
+  const source = {
+    id: 'sidebar-behavior-source', display_title: '主会话', title_state: 'MANUAL', lifecycle: 'ACTIVE', streaming_callback_ready: true, write_available: true,
+    execution_status: 'idle', created_at: now, updated_at: now,
+  };
+  const sidebar = { ...source, id: 'sidebar-behavior-sidebar', display_title: '侧边临时聊天' };
+  const sidebarHydration = () => ({
+    events: {
+      events: sidebarCreated ? [{ id: 'sidebar-first-event', event_type: 'MESSAGE', payload: { source: 'user', content: '你好', timestamp: now } }] : [],
+      next_cursor: sidebarCreated ? 'sidebar-first-event' : null, history_cursor: null, result: { status: 'COMPLETED' },
+    },
+    context: { model_name: 'test-model', window_tokens: 128_000, used_tokens: 0, usage_current: true },
+    readiness: { ready: true, execution_status: paused ? 'paused' : sidebarCreated ? 'running' : 'idle' },
+  });
+
+  await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path.endsWith('/auth/me')) return authenticated ? json(route, user) : json(route, { error: { code: 'AUTHENTICATION_REQUIRED', message: '请先登录' } }, 401);
+    if (path.endsWith('/auth/login') && request.method() === 'POST') { authenticated = true; return json(route, user); }
+    if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
+    if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
+    if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: [source], next_cursor: null });
+    if (path.endsWith('/model-providers')) return json(route, [{ id: 'test-provider', name: '测试模型', connection_state: 'CONNECTED', models: [{ model_name: 'test-model', enabled: true, is_default: true, supported_reasoning_efforts: [] }] }]);
+    if (path.endsWith('/hydration')) return json(route, path.includes(sidebar.id) ? sidebarHydration() : { events: { events: [], next_cursor: null, history_cursor: null, result: { status: 'COMPLETED' } }, context: { model_name: 'test-model', window_tokens: 128_000, used_tokens: 0, usage_current: true }, readiness: { ready: true, execution_status: 'idle' } });
+    if (path.endsWith('/work-directories')) return json(route, { root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [] });
+    if (path.endsWith('/workspace')) return json(route, { root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: '/runtime/workspace/project', work_directory: null, files: [], repositories: [], runtime: {}, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '不可用', note: '' } } });
+    if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
+    if (path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
+    if (path.endsWith('/sidebar') && request.method() === 'POST') {
+      sidebarCreated = true;
+      return json(route, { conversation: sidebar, accepted: true, cursor: 'sidebar-first-event', expires_at: new Date(Date.now() + 3_600_000).toISOString() }, 201);
+    }
+    if (path.endsWith('/interrupt') && request.method() === 'POST') {
+      paused = true;
+      return json(route, { accepted: true });
+    }
+    if (path.includes('/sidebars/')) return json(route, { binding_id: sidebar.id, source_binding_id: source.id, expires_at: new Date(Date.now() + 3_600_000).toISOString(), expired: false });
+    if (path.includes('/conversations/') && request.method() === 'GET') return json(route, path.includes(sidebar.id) ? sidebar : source);
+    return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+  });
+
+  await page.goto('/');
+  await login(page);
+  await page.goto(`/agent/conversations/${source.id}`);
+  await page.locator('.agent-workspace-summary').getByRole('button', { name: '侧边聊天', exact: true }).click();
+  const sidebarPane = page.getByRole('region', { name: '侧边聊天' });
+  await sidebarPane.getByRole('textbox', { name: '发送侧边聊天消息' }).fill('你好');
+  await sidebarPane.getByRole('button', { name: '发送侧边聊天消息' }).click();
+
+  await expect(sidebarPane.locator('.conversation-message.user')).toHaveCount(1);
+  await expect(sidebarPane.getByRole('button', { name: '发送侧边聊天消息' })).toHaveCount(0);
+  await sidebarPane.getByRole('button', { name: '暂停侧边聊天 Agent' }).click();
+  await expect(sidebarPane.getByRole('button', { name: '继续侧边聊天 Agent' })).toBeVisible();
+});
+
+
 test('Conversation attachments open in a preview dialog before the file sidebar', async ({ page }) => {
   let authenticated = false;
   const workspace = { id: 'attachment-preview-workspace', display_name: '附件预览工作区', desired_state: 'RUNNING', updated_at: now };
