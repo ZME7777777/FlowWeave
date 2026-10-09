@@ -29,7 +29,6 @@ interface Turn {
   id: string;
   renderKey: string;
   user?: Item;
-  continuations: Item[];
   /** Wall-clock periods split only after a formal interruption. */
   processSegments: ProcessSegment[];
   assistant?: Item;
@@ -538,18 +537,6 @@ function turnsFor(events: OpenHandsConversationEvent[]): Turn[] {
     }
     for (const item of itemsFor(event)) {
       if (item.kind === 'user') {
-        const parentUserId = typeof item.event.payload.parent_id === 'string'
-          ? userAncestorId(byId.get(item.event.payload.parent_id) ?? item.event, byId)
-          : undefined;
-        const continuation = parentUserId ? turnsByUserId.get(parentUserId) : undefined;
-        if (continuation && !continuation.turn.assistant) {
-          const messageIndex = continuation.turn.continuations.length + 1;
-          continuation.turn.continuations.push(item);
-          const lastProcessSegment = continuation.turn.processSegments.at(-1);
-          if (lastProcessSegment?.interruptedBy) continuation.turn.processSegments.push({ items: [], messageIndex, startedBy: item });
-          turnsByUserId.set(item.event.id, { turn: continuation.turn, messageIndex });
-          continue;
-        }
         const renderKey = typeof item.event.payload._flowweave_render_key === 'string'
           ? item.event.payload._flowweave_render_key
           : item.event.id;
@@ -557,7 +544,6 @@ function turnsFor(events: OpenHandsConversationEvent[]): Turn[] {
           id: item.event.id,
           renderKey,
           user: item,
-          continuations: [],
           processSegments: [{ items: [], messageIndex: 0, startedBy: item }],
           activity: [],
         };
@@ -575,7 +561,6 @@ function turnsFor(events: OpenHandsConversationEvent[]): Turn[] {
         const orphan: Turn = {
           id: item.event.id,
           renderKey: item.event.id,
-          continuations: [],
           processSegments: [{ items: [], messageIndex: 0, startedBy: item }],
           activity: [],
         };
@@ -2491,18 +2476,19 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
         const recoveredErrorEventIds = new Set(turn.assistant ? errors.map(item => item.event.id) : []);
         const failures = errors.filter(item => !recoveredErrorEventIds.has(item.event.id));
         const parentFailed = failures.length > 0;
-        const finishedAt = eventTime(turn.assistant ?? failures.at(-1));
+        const supersededAt = index < turns.length - 1 ? eventTime(turns[index + 1]?.user) : undefined;
+        const finishedAt = eventTime(turn.assistant ?? failures.at(-1)) ?? supersededAt;
         const processSegments = turn.processSegments;
         const processBlocks = processSegments.flatMap((segment, segmentIndex) => processBlocksForSegment(
           segment,
           isCurrent && segmentIndex === processSegments.length - 1 && !turn.assistant && !failures.length,
           finishedAt,
         ).map(block => ({ ...block, id: `activity-${segmentIndex}` })));
-        // A formal reply or terminal error closes this turn even if Runtime
-        // readiness is still reconciling a later global state transition.
-        const completionConfirmed = Boolean(turn.assistant || failures.length);
+        // A formal reply, terminal error, or later user message closes this
+        // process even if Runtime readiness is still reconciling globally.
+        const completionConfirmed = Boolean(turn.assistant || failures.length || supersededAt !== undefined);
         const fileChanges = fileChangesForTurn(events, turn);
-        const userMessages = turn.user ? [turn.user, ...turn.continuations] : [];
+        const userMessages = turn.user ? [turn.user] : [];
         const completedProcessKey = `${conversationScope ?? 'conversation'}:${turn.renderKey}`;
         const completedProcessExpanded = expandedCompletedProcesses.has(completedProcessKey);
         const setCompletedProcessExpanded = (open: boolean) => setExpandedCompletedProcesses(current => {

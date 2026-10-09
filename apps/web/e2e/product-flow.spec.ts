@@ -2208,11 +2208,23 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     type: 'event',
     event: { id: 'running-direct-stream-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'running-user', content: 'FLOWWEAVE_MESSAGE_CONTEXT_V5:{"current_user_request":{"content":"运行中直接发送消息"}}', display_content: '运行中直接发送消息', timestamp: new Date().toISOString().replace(/Z$/, '') } },
   }));
+  agentStream!.send(JSON.stringify({
+    type: 'event',
+    event: { id: 'running-direct-tool', event_type: 'TOOL_CALL', payload: { parent_id: 'running-direct-stream-user', action_id: 'running-direct-tool', tool_call_id: 'running-direct-call', tool_name: 'terminal', event_name: 'TerminalAction', details: { command: 'git status --short' }, timestamp: new Date().toISOString() } },
+  }));
   await expect(runningDirectMessage).toHaveCount(1);
   await expect(runningDirectMessage).toHaveAttribute('data-optimistic-identity', 'stable');
-  await expect(page.locator('.conversation-turn')).toHaveCount(1);
+  await expect(page.locator('.conversation-turn')).toHaveCount(2);
   await expect(page.locator('.conversation-activity-group.active')).toHaveCount(1);
-  await expect(page.locator('.conversation-activity-group')).toHaveCount(1);
+  const priorProcess = page.locator('.conversation-turn').filter({ has: page.locator('[data-user-event-id="running-user"]') }).locator('.conversation-activity-group');
+  const continuedProcess = page.locator('.conversation-turn').filter({ has: page.locator('[data-user-event-id="running-direct-stream-user"]') }).locator('.conversation-activity-group');
+  await expect(priorProcess).toHaveCount(1);
+  await expect(continuedProcess).toHaveCount(1);
+  await expect(priorProcess).toHaveJSProperty('open', false);
+  await expect(continuedProcess).toHaveJSProperty('open', true);
+  await continuedProcess.locator(':scope > summary').click();
+  await expect(continuedProcess).toHaveJSProperty('open', false);
+  await expect(priorProcess).toHaveJSProperty('open', false);
   releaseRunningDirectDelivery?.();
   await expect(runningDirectMessage).toHaveCount(1);
   await expect(runningDirectMessage).toHaveAttribute('data-optimistic-identity', 'stable');
