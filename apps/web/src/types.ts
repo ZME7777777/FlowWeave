@@ -131,7 +131,7 @@ export interface WebsiteCredentialWrite {
   row_version?: number | null;
 }
 export interface AgentConversationCredentialSyncEntry extends WebsiteCredential {
-  sync_state: 'CURRENT' | 'NEEDS_SYNC' | 'UNRECORDED';
+  sync_state: 'CURRENT' | 'NEW' | 'MODIFIED' | 'UNRECORDED';
 }
 export interface AgentConversationCredentialSyncState {
   initialized_at?: string | null;

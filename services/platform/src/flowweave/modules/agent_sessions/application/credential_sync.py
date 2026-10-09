@@ -100,7 +100,7 @@ def list_credential_sync_state(db: Session, binding: AgentConversationBinding) -
                         "CURRENT"
                         if (record := synced.get(str(credential["id"])))
                         and record.credential_row_version == credential["row_version"]
-                        else "NEEDS_SYNC"
+                        else "MODIFIED" if record else "NEW"
                     )
                 ),
             }
