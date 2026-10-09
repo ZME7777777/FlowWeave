@@ -604,8 +604,10 @@ function WorkspaceConversationGroup({ groupId, label, children, conversationCoun
   const previousConversationCount = useRef(conversationCount);
   const contentId = `agent-workspace-group-${groupId}`;
   useEffect(() => {
-    if (forceExpanded) setCollapsed(false);
-  }, [forceExpanded]);
+    if (!forceExpanded) return;
+    setCollapsed(false);
+    setVisibleCount(current => Math.max(current, conversationCount));
+  }, [conversationCount, forceExpanded]);
   useEffect(() => {
     if (!initializedItemCount.current) {
       if (conversationCount > 0) initializedItemCount.current = true;

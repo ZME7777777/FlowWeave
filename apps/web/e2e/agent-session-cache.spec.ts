@@ -3080,7 +3080,7 @@ test('Conversation sidebar persists pinned sessions, orders activity, and reveal
     {
       id: 'sidebar-directory-pinned', display_title: '归属工作区会话', title_state: 'MANUAL', lifecycle: 'ACTIVE',
       streaming_callback_ready: true, write_available: true, execution_status: 'idle', work_directory_id: directory.id,
-      created_at: '2026-09-12T09:20:00Z', updated_at: '2026-09-12T09:20:00Z',
+      created_at: '2026-09-12T10:03:00Z', updated_at: '2026-09-12T10:03:00Z',
     },
     {
       id: 'sidebar-directory-running', display_title: '运行中目标会话', title_state: 'MANUAL', lifecycle: 'ACTIVE',
@@ -3088,6 +3088,11 @@ test('Conversation sidebar persists pinned sessions, orders activity, and reveal
       unread: true, unread_origin: 'SYSTEM',
       created_at: '2026-09-12T09:30:00Z', updated_at: '2026-09-12T09:50:00Z',
     },
+    ...['第一条较新会话', '第二条较新会话', '第三条较新会话'].map((display_title, index) => ({
+      id: `sidebar-directory-newer-${index}`, display_title, title_state: 'MANUAL' as const, lifecycle: 'ACTIVE' as const,
+      streaming_callback_ready: true, write_available: true, execution_status: 'idle', work_directory_id: directory.id,
+      created_at: `2026-09-12T10:0${index}:00Z`, updated_at: `2026-09-12T10:0${index}:00Z`,
+    })),
     {
       id: 'sidebar-search-target', display_title: '搜索目标会话', title_state: 'MANUAL', lifecycle: 'ACTIVE',
       streaming_callback_ready: true, write_available: true, execution_status: 'idle',
@@ -3192,14 +3197,12 @@ test('Conversation sidebar persists pinned sessions, orders activity, and reveal
   ]);
   await expect(page.locator('.agent-workspace-group').filter({ hasText: '归属工作区' }).getByRole('button', { name: '归属工作区会话', exact: true })).toBeVisible();
 
+  await page.reload();
   const rootConversation = page.getByRole('button', { name: '未读根会话', exact: true });
   await rootConversation.click();
   await expect.poll(() => unreadWrites).toEqual([{ id: 'sidebar-root-unread', unread: false }]);
   const runningRowInWorkspaceList = page.locator('[data-conversation-binding-id="sidebar-directory-running"]');
-  const runningAlertInWorkspaceList = runningRowInWorkspaceList.getByRole('img', { name: '会话正在运行但后台长时间未产生可确认进展' });
-  await expect(runningAlertInWorkspaceList).toBeVisible();
-  await expect(runningAlertInWorkspaceList).toHaveCSS('color', 'rgb(197, 63, 63)');
-  await expect(runningAlertInWorkspaceList).toHaveClass(/running/);
+  await expect(runningRowInWorkspaceList).toHaveCount(0);
 
   await page.getByRole('button', { name: /查看活动会话/ }).click();
   const activity = page.getByRole('region', { name: '活动会话' });
@@ -3225,6 +3228,7 @@ test('Conversation sidebar persists pinned sessions, orders activity, and reveal
   await expect(activity).toHaveCount(0);
   const selectedRunningRow = page.locator('[data-conversation-binding-id="sidebar-directory-running"]');
   await expect(selectedRunningRow).toHaveClass(/sidebar-reveal/);
+  await expect(selectedRunningRow.getByRole('button', { name: '运行中目标会话', exact: true })).toHaveClass(/active/);
   await expect(selectedRunningRow.getByRole('img', { name: '会话正在运行但后台长时间未产生可确认进展' })).toBeVisible();
   await expect.poll(() => unreadWrites).toEqual([
     { id: 'sidebar-root-unread', unread: false },
