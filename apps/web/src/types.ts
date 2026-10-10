@@ -575,6 +575,8 @@ export interface OpenHandsConversationEvent {
     conversation_references?: AgentConversationReference[];
     workspace_references?: AgentWorkspaceReference[];
     collaboration_annotations?: AgentConversationAnnotation[];
+    /** Native FinishTool structured output, validated against the originating user message. */
+    collaboration_annotation_ids?: string[];
     [key: string]: unknown;
   };
 }

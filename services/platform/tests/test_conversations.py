@@ -226,11 +226,14 @@ def test_conversation_reference_projection_hides_selected_text_from_message_body
     assert annotations == ()
 
 
-def test_annotation_rule_is_system_context_and_message_contains_no_reply_validation() -> None:
-    assert (
-        '::flowweave-annotation{id="<annotation_id>"}'
-        in runtime_config.COLLABORATION_ANNOTATION_CONTEXT
+def test_annotation_rule_uses_structured_finish_output() -> None:
+    assert "collaboration_annotation_ids" in runtime_config.COLLABORATION_ANNOTATION_CONTEXT
+    assert "不要在回复正文写注释标记" in runtime_config.COLLABORATION_ANNOTATION_CONTEXT
+    assert runtime_config.TOOLS[-1].name == "FinishTool"
+    assert runtime_config.TOOLS[-1].params["response_schema"] == (
+        runtime_config.COLLABORATION_ANNOTATION_FINISH_SCHEMA
     )
+    assert "FinishTool" not in runtime_config.runtime_contract_tool_names()
     assert "逐条给出与每条相关注释对应的具体回应" in runtime_config.COLLABORATION_ANNOTATION_CONTEXT
     prompt, _image_urls = session_conversations.message_payload(
         "请开始修改",
@@ -262,6 +265,41 @@ def test_annotation_rule_is_system_context_and_message_contains_no_reply_validat
             "comment": "用户评论",
         },
     )
+
+
+def test_structured_reply_annotations_use_only_owning_user_annotation_ids() -> None:
+    user_content, _image_urls = session_conversations.message_payload(
+        "请修改这里",
+        (),
+        annotations=(
+            {
+                "id": "annotation-1",
+                "anchor_kind": "CONVERSATION_TEXT",
+                "anchor": {"event_id": "source", "quote": "选中内容"},
+                "comment": "请调整",
+            },
+        ),
+    )
+    events = (
+        RuntimeEvent(
+            cursor="user-1",
+            event_type="MESSAGE",
+            payload={"source": "user", "content": user_content},
+        ),
+        RuntimeEvent(
+            cursor="finish-1",
+            event_type="COMPLETED",
+            payload={
+                "parent_id": "user-1",
+                "collaboration_annotation_ids": ["unknown", "annotation-1", "annotation-1"],
+            },
+        ),
+    )
+
+    resolved = session_conversations._structured_reply_annotations(events)
+
+    assert [item["id"] for item in resolved["finish-1"]] == ["annotation-1"]
+
 
 
 def test_plain_message_bypasses_context_envelope() -> None:

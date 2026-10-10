@@ -1952,6 +1952,20 @@ class OpenHandsRuntime:
                 "Every FlowRun must use a published Environment Runtime allocation",
                 500,
             )
+        configured_tools = [
+            {"name": tool.name, "params": dict(tool.params)} for tool in spec.tools
+        ]
+        structured_finish = next(
+            (tool for tool in configured_tools if tool["name"] == "FinishTool"), None
+        )
+        if structured_finish is not None and not isinstance(
+            structured_finish["params"].get("response_schema"), dict
+        ):
+            raise DomainError(
+                "RUNTIME_AGENT_SPEC_INVALID",
+                "FinishTool structured response schema is invalid",
+                409,
+            )
         agent: dict[str, Any] = {
             "kind": "Agent",
             "llm": self._llm_payload(
@@ -1963,9 +1977,13 @@ class OpenHandsRuntime:
                 ),
             ),
             "condenser": self._condenser_payload(spec.condenser, spec.condenser_provider),
-            "tools": [{"name": tool.name, "params": dict(tool.params)} for tool in spec.tools],
+            "tools": configured_tools,
             "tool_concurrency_limit": spec.tool_concurrency_limit,
         }
+        if structured_finish is not None:
+            # FinishTool is a native default. Replacing it with an explicit
+            # structured schema requires omitting the default copy.
+            agent["include_default_tools"] = ["ThinkTool"]
         if spec.critic is not None:
             critic: dict[str, Any] = {
                 "kind": spec.critic.kind,
@@ -2090,7 +2108,11 @@ class OpenHandsRuntime:
         target_session_key = self._session_key_for_resource(request.runtime_resource_name)
         self._negotiate_runtime_contract(
             spec.runtime_contract,
-            required_tools=tuple(tool.name for tool in spec.tools),
+            required_tools=(
+                tuple(tool.name for tool in spec.tools if tool.name != "FinishTool")
+                if spec.runtime_contract is not None
+                else tuple(tool.name for tool in spec.tools)
+            ),
             base_url=target_base_url,
             session_api_key=target_session_key,
         )
@@ -2971,6 +2993,33 @@ class OpenHandsRuntime:
             "retryable": False,
         }
 
+    @staticmethod
+    def _structured_finish_annotation_ids(item: dict[str, Any]) -> list[str] | None:
+        tool_call = item.get("tool_call")
+        if not isinstance(tool_call, dict):
+            return None
+        arguments = tool_call.get("arguments")
+        if isinstance(arguments, str):
+            try:
+                arguments = json.loads(arguments)
+            except json.JSONDecodeError:
+                return None
+        if not isinstance(arguments, dict):
+            return None
+        raw_ids = arguments.get("collaboration_annotation_ids")
+        if not isinstance(raw_ids, list):
+            return None
+        annotation_ids: list[str] = []
+        for value in raw_ids:
+            if not isinstance(value, str):
+                return None
+            annotation_id = value.strip()
+            if not annotation_id or len(annotation_id) > 200:
+                return None
+            if annotation_id not in annotation_ids:
+                annotation_ids.append(annotation_id)
+        return annotation_ids
+
     @classmethod
     def _event_payload(cls, item: dict[str, Any]) -> dict[str, Any]:
         kind = str(item.get("kind") or "UNKNOWN")
@@ -3096,6 +3145,10 @@ class OpenHandsRuntime:
             payload["details"] = cls._safe_event_detail(
                 {key: value for key, value in detail.items() if key not in private_detail_fields}
             )
+            if kind == "ActionEvent" and event_name == "FinishAction":
+                annotation_ids = cls._structured_finish_annotation_ids(item)
+                if annotation_ids is not None:
+                    payload["collaboration_annotation_ids"] = annotation_ids
             if kind == "ActionEvent" and event_name == "TaskAction":
                 payload["runtime_task"] = {
                     "phase": "REQUESTED",

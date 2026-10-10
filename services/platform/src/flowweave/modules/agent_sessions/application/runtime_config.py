@@ -51,7 +51,31 @@ from flowweave.shared.settings import get_settings
 AgentWorkspace = agent_workspace_host.AgentWorkspace
 AgentWorkspaceCapability = agent_workspace_host.AgentWorkspaceCapability
 
-TOOLS = tuple(RuntimeTool(name=name) for name in FIXED_RUNTIME_TOOL_NAMES)
+COLLABORATION_ANNOTATION_FINISH_SCHEMA: dict[str, object] = {
+    "type": "object",
+    "properties": {
+        "collaboration_annotation_ids": {
+            "type": "array",
+            "items": {"type": "string", "minLength": 1, "maxLength": 200},
+            "maxItems": 100,
+            "description": "IDs of the current user annotations substantively addressed by this reply.",
+        }
+    },
+    "required": ["collaboration_annotation_ids"],
+    "additionalProperties": False,
+}
+TOOLS = tuple(RuntimeTool(name=name) for name in FIXED_RUNTIME_TOOL_NAMES) + (
+    RuntimeTool(
+        name="FinishTool",
+        params={"response_schema": COLLABORATION_ANNOTATION_FINISH_SCHEMA},
+    ),
+)
+
+
+def runtime_contract_tool_names() -> tuple[str, ...]:
+    """Return only server-registered tools required by the runtime contract."""
+
+    return FIXED_RUNTIME_TOOL_NAMES
 PROJECT_ROOT = "/runtime/workspace/project"
 # Event-count pressure is a complementary native guard for many small Tool
 # events; token pressure remains governed by ``NATIVE_CONDENSER_MAX_TOKENS``.
@@ -101,12 +125,10 @@ COLLABORATION_ANNOTATION_CONTEXT = "\n".join(
         ),
         "当 current_user_request 涉及协作注释时，逐条给出与每条相关注释对应的具体回应；",
         (
-            "不要把多条注释合并成无法对应的笼统回应。若回复实质回应了某条注释，"
-            "请在对应回复段落的末尾原样追加 "
-            '::flowweave-annotation{id="<annotation_id>"}。'
+            "最终调用 FinishTool 时，必须在 collaboration_annotation_ids 中列出本回复实质回应的"
+            "全部且仅有的当前消息注释 ID；这是一项结构化输出，不要在回复正文写注释标记。"
         ),
-        ("必须使用消息中提供的 id，不能改写、猜测或生成新的 ID；同一段落可以关联多条注释。"),
-        "没有回应某条注释时，不要为它输出标记。不要把标记放在代码块、链接 URL 或表格单元格中。",
+        "只能使用当前消息中提供的 id；不确定或未回应的注释不要列出。",
     )
 )
 CONVERSATION_COLLABORATION_CONTEXT = "\n".join(
@@ -784,10 +806,10 @@ def build_agent_spec(
         agent_definitions=frozen_agent_definitions(config.capabilities),
         runtime_contract=(
             runtime_contract_for_server_identity(
-                tuple(tool.name for tool in TOOLS), runtime_server_identity
+                runtime_contract_tool_names(), runtime_server_identity
             )
             if runtime_server_identity is not None
-            else agent_workspace_runtime_contract(tuple(tool.name for tool in TOOLS))
+            else agent_workspace_runtime_contract(runtime_contract_tool_names())
         ),
     )
 

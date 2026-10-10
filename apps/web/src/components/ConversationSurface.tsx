@@ -1458,37 +1458,46 @@ const ActivityGroup = memo(function ActivityGroup({ items, active, revealEventId
   && sameActivityItems(previous.items, next.items)
 ));
 
-function AnnotationReplyContent({ content, reveal = false, annotations, onLocateAnnotation, onOpenWorkspaceFile, onOpenImage, workspaceImageUrl }: {
+function AnnotationReplyContent({ content, reveal = false, annotations, structured = false, onLocateAnnotation, onOpenWorkspaceFile, onOpenImage, workspaceImageUrl }: {
   content: string;
   reveal?: boolean;
   annotations: AgentConversationAnnotation[];
+  structured?: boolean;
   onLocateAnnotation?: (annotation: AgentConversationAnnotation) => void;
   onOpenWorkspaceFile?: (href: string) => boolean;
   onOpenImage?: (src: string, alt?: string) => void;
   workspaceImageUrl?: (href: string) => string | undefined;
 }) {
   const annotationById = useMemo(() => new Map(annotations.map(annotation => [annotation.id, annotation])), [annotations]);
-  const parts = useMemo(() => {
-    const marker = /::flowweave-annotation\{id="([^"]+)"\}/g;
-    const values: Array<{ content: string; annotation?: AgentConversationAnnotation }> = [];
-    let cursor = 0;
-    for (let matched = marker.exec(content); matched; matched = marker.exec(content)) {
-      if (matched.index > cursor) values.push({ content: content.slice(cursor, matched.index) });
-      const annotation = annotationById.get(matched[1]);
-      values.push(annotation ? { content: '', annotation } : { content: matched[0] });
-      cursor = matched.index + matched[0].length;
-    }
-    if (cursor < content.length) values.push({ content: content.slice(cursor) });
-    return values;
-  }, [annotationById, content]);
+  const marker = /::flowweave-annotation\{id="([^"]+)"\}/g;
+  const markerLikeText = /::flowweave-annotation\{id=(?:"[^"\s}]*"?|[^}\s]*)\}?/g;
+  const markerButton = (annotation: AgentConversationAnnotation, index: number) => <button
+    key={`${annotation.id}:${index}`}
+    type="button"
+    className="conversation-annotation-marker"
+    onPointerUp={event => event.stopPropagation()}
+    onClick={() => onLocateAnnotation?.(annotation)}
+  ><Quote size={12}/><span>注释 {annotations.findIndex(candidate => candidate.id === annotation.id) + 1}</span></button>;
+  if (structured) {
+    const visibleContent = content.replace(markerLikeText, '');
+    return <>
+      {visibleContent && <MessageMarkdown reveal={reveal} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenImage={onOpenImage} workspaceImageUrl={workspaceImageUrl}>{visibleContent}</MessageMarkdown>}
+      {annotations.map(markerButton)}
+    </>;
+  }
+  const parts: Array<{ content: string; annotation?: AgentConversationAnnotation }> = [];
+  let cursor = 0;
+  for (let matched = marker.exec(content); matched; matched = marker.exec(content)) {
+    if (matched.index > cursor) parts.push({ content: content.slice(cursor, matched.index) });
+    const annotation = annotationById.get(matched[1]);
+    parts.push(annotation ? { content: '', annotation } : { content: matched[0] });
+    cursor = matched.index + matched[0].length;
+  }
+  if (cursor < content.length) parts.push({ content: content.slice(cursor) });
   return <>
-    {parts.map((part, index) => part.annotation ? <button
-      key={`${part.annotation.id}:${index}`}
-      type="button"
-      className="conversation-annotation-marker"
-      onPointerUp={event => event.stopPropagation()}
-      onClick={() => onLocateAnnotation?.(part.annotation!)}
-    ><Quote size={12}/><span>注释 {annotations.findIndex(annotation => annotation.id === part.annotation!.id) + 1}</span></button> : part.content && <MessageMarkdown key={index} reveal={reveal} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenImage={onOpenImage} workspaceImageUrl={workspaceImageUrl}>{part.content}</MessageMarkdown>)}
+    {parts.map((part, index) => part.annotation
+      ? markerButton(part.annotation, index)
+      : part.content && <MessageMarkdown key={index} reveal={reveal} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenImage={onOpenImage} workspaceImageUrl={workspaceImageUrl}>{part.content}</MessageMarkdown>)}
   </>;
 }
 
@@ -1528,8 +1537,9 @@ function AgentReply({ event, content, reveal = false, changes = [], onFork, onPr
   // layer separately verifies the native completion identity before
   // registering an Artifact.
   const candidateMessage = candidateOutputMessage(content);
+  const structuredAnnotations = event.payload.collaboration_annotation_ids !== undefined;
   return <article className="conversation-message assistant" data-conversation-event-id={eventId} data-turn-terminal="true" data-event-id={eventId}>
-    {candidateMessage.businessConclusion ? <AnnotationReplyContent content={candidateMessage.businessConclusion} reveal={reveal} annotations={annotations} onLocateAnnotation={onLocateAnnotation} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenImage={onOpenImage} workspaceImageUrl={workspaceImageUrl}/> : !candidateMessage.outputs && content ? <MessageMarkdown reveal={reveal} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenImage={onOpenImage} workspaceImageUrl={workspaceImageUrl}>{content}</MessageMarkdown> : null}
+    {candidateMessage.businessConclusion ? <AnnotationReplyContent content={candidateMessage.businessConclusion} reveal={reveal} annotations={annotations} structured={structuredAnnotations} onLocateAnnotation={onLocateAnnotation} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenImage={onOpenImage} workspaceImageUrl={workspaceImageUrl}/> : !candidateMessage.outputs && content ? <MessageMarkdown reveal={reveal} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenImage={onOpenImage} workspaceImageUrl={workspaceImageUrl}>{content}</MessageMarkdown> : null}
     {candidateMessage.outputs && <CandidateOutputReply outputs={candidateMessage.outputs} onPreviewFile={onPreviewCandidateFile ? output => onPreviewCandidateFile(output.fieldKey, output.value) : undefined}/>}
     {!candidateMessage.businessConclusion && !candidateMessage.outputs && !content && <span className="conversation-typing"><i/><i/><i/></span>}
     <ConversationFileChanges changes={changes} onReviewChanges={onReviewChanges} workspaceRoot={workspaceRoot}/>

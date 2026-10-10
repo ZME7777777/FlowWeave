@@ -2214,6 +2214,64 @@ def _read_conversation_events(
     return batch
 
 
+def _structured_reply_annotations(
+    events: tuple[RuntimeEvent, ...],
+) -> dict[str, tuple[dict[str, Any], ...]]:
+    """Resolve FinishTool annotations only against the owning user message."""
+
+    event_by_id = {event.cursor: event for event in events}
+    user_annotations_by_event: dict[str, tuple[dict[str, Any], ...]] = {}
+    for event in events:
+        if event.event_type != "MESSAGE" or str(event.payload.get("source") or "").lower() not in {
+            "user",
+            "human",
+        }:
+            continue
+        annotations = _project_conversation_references(
+            str(event.payload.get("content") or "")
+        )[3]
+        valid = tuple(
+            annotation
+            for annotation in annotations
+            if isinstance(annotation.get("id"), str)
+            and isinstance(annotation.get("anchor_kind"), str)
+            and isinstance(annotation.get("anchor"), dict)
+            and isinstance(annotation.get("comment"), str)
+        )
+        if valid:
+            user_annotations_by_event[event.cursor] = valid
+
+    resolved: dict[str, tuple[dict[str, Any], ...]] = {}
+    for event in events:
+        requested = event.payload.get("collaboration_annotation_ids")
+        if not isinstance(requested, list):
+            continue
+        parent_id = event.payload.get("parent_id")
+        visited: set[str] = set()
+        while isinstance(parent_id, str) and parent_id not in visited:
+            visited.add(parent_id)
+            candidates = user_annotations_by_event.get(parent_id)
+            if candidates is not None:
+                allowed = {annotation["id"]: annotation for annotation in candidates}
+                accepted_ids: set[str] = set()
+                accepted: list[dict[str, Any]] = []
+                for annotation_id in requested:
+                    if (
+                        isinstance(annotation_id, str)
+                        and annotation_id in allowed
+                        and annotation_id not in accepted_ids
+                    ):
+                        accepted_ids.add(annotation_id)
+                        accepted.append(allowed[annotation_id])
+                if accepted:
+                    resolved[event.cursor] = tuple(accepted)
+                break
+            parent = event_by_id.get(parent_id)
+            parent_id = parent.payload.get("parent_id") if parent is not None else None
+    return resolved
+
+
+
 def _project_conversation_events(
     db: Session,
     workspace: AgentWorkspace,
@@ -2248,6 +2306,8 @@ def _project_conversation_events(
     for attachment in stored:
         attachments_by_event.setdefault(attachment.event_id, []).append(attachment)
 
+    reply_annotations_by_event = _structured_reply_annotations(batch.events)
+
     def projected_event(event: Any) -> dict[str, Any]:
         payload = dict(event.payload)
         content = payload.get("content")
@@ -2269,6 +2329,9 @@ def _project_conversation_events(
             payload["workspace_references"] = list(workspace_references)
         if annotations:
             payload["collaboration_annotations"] = list(annotations)
+        reply_annotations = reply_annotations_by_event.get(event.cursor, ())
+        if reply_annotations:
+            payload["collaboration_annotations"] = list(reply_annotations)
         attachments = attachments_by_event.get(event.cursor, [])
         if event.event_type == "MESSAGE" and str(payload.get("source") or "").lower() in {
             "user",

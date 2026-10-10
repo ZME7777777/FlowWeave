@@ -1259,6 +1259,7 @@ def test_openhands_starts_real_agent_with_selected_provider_and_skill(
     assert payload["agent"]["condenser"] == {"kind": "NoOpCondenser"}
     assert payload["agent"]["tool_concurrency_limit"] == 1
     assert "ask_oracle" not in [tool["name"] for tool in payload["agent"]["tools"]]
+    assert "include_default_tools" not in payload["agent"]
     assert requests == [("POST", "/api/conversations")]
     initial_text = payload["initial_message"]["content"][0]["text"]
     assert initial_text.startswith("生成技术方案\n\n本次节点输入：")
@@ -3614,6 +3615,48 @@ def test_openhands_public_stream_exposes_text_but_not_reasoning():
         },
     )
 
+
+
+
+def test_openhands_projects_structured_finish_annotation_ids() -> None:
+    event = {
+        "kind": "ActionEvent",
+        "id": "finish-annotation-1",
+        "source": "agent",
+        "parent_id": "user-annotation-1",
+        "tool_call": {
+            "name": "FinishTool",
+            "arguments": json.dumps(
+                {
+                    "message": "已逐条处理。",
+                    "collaboration_annotation_ids": ["annotation-1", "annotation-1", "annotation-2"],
+                }
+            ),
+        },
+        "action": {"kind": "FinishAction", "message": "已逐条处理。"},
+    }
+
+    payload = OpenHandsRuntime._event_payload(event)
+
+    assert payload["event_name"] == "FinishAction"
+    assert payload["collaboration_annotation_ids"] == ["annotation-1", "annotation-2"]
+
+
+def test_openhands_ignores_invalid_structured_finish_annotation_ids() -> None:
+    event = {
+        "kind": "ActionEvent",
+        "id": "finish-annotation-invalid",
+        "source": "agent",
+        "tool_call": {
+            "name": "FinishTool",
+            "arguments": {"collaboration_annotation_ids": ["annotation-1", 3]},
+        },
+        "action": {"kind": "FinishAction", "message": "已处理。"},
+    }
+
+    payload = OpenHandsRuntime._event_payload(event)
+
+    assert "collaboration_annotation_ids" not in payload
 
 def test_openhands_stream_projection_tracks_formal_attempts_orders_and_terminal_ids():
     projection = openhands_module._TransientStreamProjection()
