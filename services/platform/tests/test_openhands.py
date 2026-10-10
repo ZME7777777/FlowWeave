@@ -3616,8 +3616,6 @@ def test_openhands_public_stream_exposes_text_but_not_reasoning():
     )
 
 
-
-
 def test_openhands_projects_structured_finish_annotation_ids() -> None:
     event = {
         "kind": "ActionEvent",
@@ -3629,7 +3627,11 @@ def test_openhands_projects_structured_finish_annotation_ids() -> None:
             "arguments": json.dumps(
                 {
                     "message": "已逐条处理。",
-                    "collaboration_annotation_ids": ["annotation-1", "annotation-1", "annotation-2"],
+                    "collaboration_annotation_ids": [
+                        "annotation-1",
+                        "annotation-1",
+                        "annotation-2",
+                    ],
                 }
             ),
         },
@@ -3657,6 +3659,7 @@ def test_openhands_ignores_invalid_structured_finish_annotation_ids() -> None:
     payload = OpenHandsRuntime._event_payload(event)
 
     assert "collaboration_annotation_ids" not in payload
+
 
 def test_openhands_stream_projection_tracks_formal_attempts_orders_and_terminal_ids():
     projection = openhands_module._TransientStreamProjection()

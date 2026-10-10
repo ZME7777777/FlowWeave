@@ -2499,7 +2499,6 @@ test('Stream message completion immediately ends only the active conversation vi
 
 test('Submission reconciliation renders a delayed durable reply for an existing conversation', async ({ page }) => {
   let authenticated = false;
-  let stream: WebSocketRoute | undefined;
   let accepted = false;
   let latestReadsAfterCompletion = 0;
   const workspace = {
@@ -2510,7 +2509,7 @@ test('Submission reconciliation renders a delayed durable reply for an existing 
     streaming_callback_ready: true, write_available: true, execution_status: 'idle', created_at: now, updated_at: now,
   };
 
-  await page.routeWebSocket('**/agent-workspaces/**/stream', route => { stream = route; });
+  await page.routeWebSocket('**/agent-workspaces/**/stream', () => {});
   await page.route('**/api/v1/**', async route => {
     const request = route.request();
     const path = new URL(request.url()).pathname;

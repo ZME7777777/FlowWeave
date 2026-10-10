@@ -1952,7 +1952,7 @@ class OpenHandsRuntime:
                 "Every FlowRun must use a published Environment Runtime allocation",
                 500,
             )
-        configured_tools = [
+        configured_tools: list[dict[str, Any]] = [
             {"name": tool.name, "params": dict(tool.params)} for tool in spec.tools
         ]
         structured_finish = next(
@@ -2998,7 +2998,7 @@ class OpenHandsRuntime:
         tool_call = item.get("tool_call")
         if not isinstance(tool_call, dict):
             return None
-        arguments = tool_call.get("arguments")
+        arguments: Any = cast(dict[str, Any], tool_call).get("arguments")
         if isinstance(arguments, str):
             try:
                 arguments = json.loads(arguments)
@@ -3006,11 +3006,11 @@ class OpenHandsRuntime:
                 return None
         if not isinstance(arguments, dict):
             return None
-        raw_ids = arguments.get("collaboration_annotation_ids")
+        raw_ids: Any = cast(dict[str, Any], arguments).get("collaboration_annotation_ids")
         if not isinstance(raw_ids, list):
             return None
         annotation_ids: list[str] = []
-        for value in raw_ids:
+        for value in cast(list[Any], raw_ids):
             if not isinstance(value, str):
                 return None
             annotation_id = value.strip()

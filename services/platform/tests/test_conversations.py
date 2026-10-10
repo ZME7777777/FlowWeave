@@ -301,7 +301,6 @@ def test_structured_reply_annotations_use_only_owning_user_annotation_ids() -> N
     assert [item["id"] for item in resolved["finish-1"]] == ["annotation-1"]
 
 
-
 def test_plain_message_bypasses_context_envelope() -> None:
     prompt, _image_urls = session_conversations.message_payload("开始实现代码", (), ())
 

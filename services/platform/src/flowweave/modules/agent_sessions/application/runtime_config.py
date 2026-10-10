@@ -58,7 +58,9 @@ COLLABORATION_ANNOTATION_FINISH_SCHEMA: dict[str, object] = {
             "type": "array",
             "items": {"type": "string", "minLength": 1, "maxLength": 200},
             "maxItems": 100,
-            "description": "IDs of the current user annotations substantively addressed by this reply.",
+            "description": (
+                "IDs of the current user annotations substantively addressed by this reply."
+            ),
         }
     },
     "required": ["collaboration_annotation_ids"],
@@ -76,6 +78,8 @@ def runtime_contract_tool_names() -> tuple[str, ...]:
     """Return only server-registered tools required by the runtime contract."""
 
     return FIXED_RUNTIME_TOOL_NAMES
+
+
 PROJECT_ROOT = "/runtime/workspace/project"
 # Event-count pressure is a complementary native guard for many small Tool
 # events; token pressure remains governed by ``NATIVE_CONDENSER_MAX_TOKENS``.
@@ -158,7 +162,8 @@ CONVERSATION_COLLABORATION_CONTEXT = "\n".join(
             "只有内容完全重复、同一批可并行操作尚未结束，或单个动作简单到说明不会增加任何理解时，才可以省略。"
         ),
         (
-            "一次 ThinkTool 可以概括刚完成的一条命令或一组目标一致的并行调用，并说明接下来要做什么；"
+            "一次 ThinkTool 可以概括刚完成的一条命令或一组目标一致的并行调用，"
+            "并说明接下来要做什么；"
             "但不要用一条早期进展覆盖多个需要根据前序结果决定方向的串行步骤。"
             "较长任务中，通常每完成一至数个紧密相关的工具动作就应产生一次有信息量的进展更新；"
             "不要为了增加进展文本而延迟、拆散或打断必要执行。"

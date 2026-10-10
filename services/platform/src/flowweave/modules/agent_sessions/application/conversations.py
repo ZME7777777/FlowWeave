@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
+from typing import cast as typing_cast
 from urllib.parse import urlencode
 from uuid import UUID, uuid4, uuid5
 
@@ -2227,9 +2228,7 @@ def _structured_reply_annotations(
             "human",
         }:
             continue
-        annotations = _project_conversation_references(
-            str(event.payload.get("content") or "")
-        )[3]
+        annotations = _project_conversation_references(str(event.payload.get("content") or ""))[3]
         valid = tuple(
             annotation
             for annotation in annotations
@@ -2255,7 +2254,7 @@ def _structured_reply_annotations(
                 allowed = {annotation["id"]: annotation for annotation in candidates}
                 accepted_ids: set[str] = set()
                 accepted: list[dict[str, Any]] = []
-                for annotation_id in requested:
+                for annotation_id in typing_cast(list[Any], requested):
                     if (
                         isinstance(annotation_id, str)
                         and annotation_id in allowed
@@ -2269,7 +2268,6 @@ def _structured_reply_annotations(
             parent = event_by_id.get(parent_id)
             parent_id = parent.payload.get("parent_id") if parent is not None else None
     return resolved
-
 
 
 def _project_conversation_events(
@@ -3118,11 +3116,17 @@ def _resolve_source_conversation_reference(
                 "引用事件不在来源会话中或已不可读取，请重新选择",
                 422,
             )
-        visible = _project_conversation_references(content)[0] if event and event.event_type == "MESSAGE" else content
-        selected = _selected_reference_text(visible, selection)
-        if not selected:
-            raise DomainError("AGENT_CONVERSATION_REFERENCE_INVALID", "会话选区无效，请重新选择", 422)
-        return {"event_id": source_event_id, "content": selected}
+        visible = (
+            _project_conversation_references(content)[0]
+            if event and event.event_type == "MESSAGE"
+            else content
+        )
+        selected_text = _selected_reference_text(visible, selection)
+        if not selected_text:
+            raise DomainError(
+                "AGENT_CONVERSATION_REFERENCE_INVALID", "会话选区无效，请重新选择", 422
+            )
+        return {"event_id": source_event_id, "content": selected_text}
     if selection is not None:
         raise DomainError("AGENT_CONVERSATION_REFERENCE_INVALID", "会话选区缺少来源事件", 422)
     try:
@@ -3139,7 +3143,11 @@ def _resolve_source_conversation_reference(
         content = _referenceable_event_text(event)
         if content is None:
             continue
-        visible = _project_conversation_references(content)[0] if event.event_type == "MESSAGE" else content
+        visible = (
+            _project_conversation_references(content)[0]
+            if event.event_type == "MESSAGE"
+            else content
+        )
         if not visible:
             continue
         remaining = 10_000 - size
@@ -3179,22 +3187,28 @@ def _resolve_message_references(
             or not source_binding_id.strip()
             or source_event_id is not None
             and (not isinstance(source_event_id, str) or not source_event_id.strip())
-            or selection is not None and not isinstance(selection, dict)
+            or selection is not None
+            and not isinstance(selection, dict)
         ):
-            raise DomainError("AGENT_CONVERSATION_REFERENCE_INVALID", "会话引用无效，请重新选择", 422)
+            raise DomainError(
+                "AGENT_CONVERSATION_REFERENCE_INVALID", "会话引用无效，请重新选择", 422
+            )
         resolved.append(
             _resolve_source_conversation_reference(
                 db,
                 workspace,
                 source_binding_id.strip(),
                 source_event_id.strip() if isinstance(source_event_id, str) else None,
-                selection,
+                typing_cast(dict[str, Any] | None, selection),
             )
         )
     if default_source_binding_id is not None and not resolved:
-        resolved.append(_resolve_source_conversation_reference(db, workspace, default_source_binding_id, None, None))
+        resolved.append(
+            _resolve_source_conversation_reference(
+                db, workspace, default_source_binding_id, None, None
+            )
+        )
     return _validated_conversation_references(tuple(resolved))
-
 
 
 def _referenceable_event_text(event: RuntimeEvent | None) -> str | None:
