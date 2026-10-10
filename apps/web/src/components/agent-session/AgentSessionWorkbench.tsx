@@ -135,7 +135,40 @@ function annotationFileDisplay(annotation: AgentConversationAnnotation): { filen
 }
 
 function annotationReferenceName(annotation: AgentConversationAnnotation, index: number): string {
+  if (annotation.anchor_kind === 'CONVERSATION_TEXT' && typeof annotation.anchor.conversation_title === 'string') return annotation.anchor.conversation_title;
   return annotationFileDisplay(annotation)?.filename ?? `会话引用 ${index + 1}`;
+}
+
+function conversationReferenceAnnotations(references: ConversationReference[]): AgentConversationAnnotation[] {
+  return references.flatMap(reference => reference.comment?.trim() && reference.commentId ? [{
+    id: reference.commentId,
+    anchor_kind: 'CONVERSATION_TEXT' as const,
+    anchor: {
+      event_id: reference.eventId,
+      source_binding_id: reference.sourceBindingId,
+      conversation_title: reference.title ?? reference.content,
+      quote: reference.content,
+    },
+    comment: reference.comment.trim(),
+  }] : []);
+}
+
+function ComposerConversationReferenceList({ references, onOpen, onRemove, onUpdate }: {
+  references: ConversationReference[];
+  onOpen: (reference: ConversationReference) => void;
+  onRemove: (reference: ConversationReference) => void;
+  onUpdate: (reference: ConversationReference, comment: string) => void;
+}) {
+  const [openedReference, setOpenedReference] = useState<ConversationReference>();
+  const [comment, setComment] = useState('');
+  if (!references.length) return null;
+  const close = () => {
+    if (openedReference) onUpdate(openedReference, comment);
+    setOpenedReference(undefined);
+  };
+  return <>{references.map(reference => <span key={`${reference.sourceBindingId}:${reference.eventId}`}><button type="button" className="agent-attachment-open" title={`打开会话：${reference.title ?? reference.content}`} onClick={() => onOpen(reference)}><Quote size={14}/><em>{reference.title ?? reference.content}</em></button><button type="button" className="agent-attachment-alias" aria-label={`评论会话 ${reference.title ?? reference.content}`} title="添加评论" onClick={() => { setOpenedReference(reference); setComment(reference.comment ?? ''); }}><Quote size={13}/></button><button type="button" className="agent-attachment-remove" aria-label={`移除会话 ${reference.title ?? reference.content}`} onClick={() => onRemove(reference)}>×</button></span>)}
+    {openedReference && <article className="agent-composer-annotation-card" role="dialog" aria-label={`${openedReference.title ?? openedReference.content} 评论`}><header><span><Quote size={13}/>{openedReference.title ?? openedReference.content}</span><button type="button" aria-label="关闭会话评论" onClick={close}>×</button></header><small>会话引用</small><textarea className="agent-composer-annotation-comment" aria-label="编辑会话评论" placeholder="可选：写下你的评论…" value={comment} onChange={event => { setComment(event.target.value); onUpdate(openedReference, event.target.value); }}/><footer><button type="button" onClick={() => { onUpdate(openedReference, comment); onOpen(openedReference); }}>打开会话</button></footer></article>}
+  </>;
 }
 
 function ComposerAnnotationList({ annotations, onLocate, onRemove, onUpdate }: {
@@ -4844,9 +4877,19 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const createAnnotation = useCallback((anchorKind: 'CONVERSATION_TEXT' | 'WORKSPACE_FILE_RANGE', anchor: Record<string, unknown>) => {
     if (!selected && !conversationDraft) return;
     setComposerAnnotations(current => [...current, {
-      id: randomId(), anchor_kind: anchorKind, anchor, comment: '',
+      id: randomId(),
+      anchor_kind: anchorKind,
+      anchor: anchorKind === 'CONVERSATION_TEXT' && selected
+        ? { ...anchor, source_binding_id: selected.id, conversation_title: conversationName(selected) }
+        : anchor,
+      comment: '',
     }]);
   }, [conversationDraft, selected]);
+  const updateConversationReference = useCallback((reference: ConversationReference, comment: string) => {
+    setReferences(current => current.map(item => item === reference
+      ? { ...item, comment, commentId: comment.trim() ? item.commentId ?? randomId() : undefined }
+      : item));
+  }, []);
   const updateAnnotation = useCallback((annotation: AgentConversationAnnotation, comment: string) => {
     setComposerAnnotations(current => current.map(item => item.id === annotation.id
       ? { ...item, comment: comment.trim() }
@@ -4854,6 +4897,11 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   }, []);
   const locateAnnotation = useCallback((annotation: AgentConversationAnnotation) => {
     if (annotation.anchor_kind === 'CONVERSATION_TEXT') {
+      const sourceBindingId = annotation.anchor.source_binding_id;
+      if (typeof sourceBindingId === 'string' && sourceBindingId && sourceBindingId !== selected?.id) {
+        onNavigate(host.conversationPath(sourceBindingId));
+        return;
+      }
       window.dispatchEvent(new CustomEvent('flowweave:locate-conversation-annotation', { detail: annotation }));
       return;
     }
@@ -4863,7 +4911,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     // annotation repeatedly, and each click must re-open/reveal its range.
     setFileSelectionReference({ path: file.path, selection: { ...file.selection } });
     setDrawerOpen(true);
-  }, []);
+  }, [host, onNavigate, selected?.id]);
   useEffect(() => {
     const listener = (event: Event) => void createAnnotation('CONVERSATION_TEXT', (event as CustomEvent<Record<string, unknown>>).detail);
     window.addEventListener('flowweave:create-conversation-annotation', listener);
@@ -6711,7 +6759,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     conversationDraft?.workDirectoryId,
     conversationDraft?.capabilityVersionIds ?? [],
     conversationDraft!.id,
-    message.annotations,
+    [...message.annotations, ...conversationReferenceAnnotations(message.references)],
   ), onSuccess: (value, message) => {
     if (!workspace) return;
     const conversation = value.conversation;
@@ -7011,7 +7059,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
             attachments: message.items,
             conversation_references: message.references.map(item => ({ event_id: item.eventId, content: item.content, source_binding_id: item.sourceBindingId, ...(item.compactStart !== undefined && item.compactEnd !== undefined ? { selection: { compact_start: item.compactStart, compact_end: item.compactEnd } } : {}) })),
             workspace_references: message.workspaceReferences,
-            collaboration_annotations: message.annotations,
+            collaboration_annotations: [...message.annotations, ...conversationReferenceAnnotations(message.references)],
           },
         },
       }));
@@ -7027,7 +7075,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         attachments: message.items,
         conversation_references: message.references.map(item => ({ event_id: item.eventId, content: item.content, source_binding_id: item.sourceBindingId, ...(item.compactStart !== undefined && item.compactEnd !== undefined ? { selection: { compact_start: item.compactStart, compact_end: item.compactEnd } } : {}) })),
         workspace_references: message.workspaceReferences,
-        collaboration_annotations: message.annotations,
+        collaboration_annotations: [...message.annotations, ...conversationReferenceAnnotations(message.references)],
         timestamp: new Date().toISOString(),
       },
     };
@@ -7043,7 +7091,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     return renderKey;
   }, [eventsQuery.data?.events, updateLocalMessageProjections]);
   const send = useMutation({
-    mutationFn: (message: BoundQueuedMessage) => api.sendMessage(workspace!.id, message.bindingId, message.content, message.items, message.references.map(item => ({ event_id: item.eventId, content: item.content, source_binding_id: item.sourceBindingId, ...(item.compactStart !== undefined && item.compactEnd !== undefined ? { selection: { compact_start: item.compactStart, compact_end: item.compactEnd } } : {}) })), message.workspaceReferences ?? [], message.annotations, message.id),
+    mutationFn: (message: BoundQueuedMessage) => api.sendMessage(workspace!.id, message.bindingId, message.content, message.items, message.references.map(item => ({ event_id: item.eventId, content: item.content, source_binding_id: item.sourceBindingId, ...(item.compactStart !== undefined && item.compactEnd !== undefined ? { selection: { compact_start: item.compactStart, compact_end: item.compactEnd } } : {}) })), message.workspaceReferences ?? [], [...message.annotations, ...conversationReferenceAnnotations(message.references)], message.id),
     onMutate: message => ({
       optimisticEventId: localMessageProjections.current.get(message.id)?.renderKey,
       nativeGuidance: message.nativeGuidance === true,
@@ -7269,7 +7317,11 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const interrupt = useMutation({
     mutationFn: () => api.interruptConversation(workspace!.id, selected!.id),
     onMutate: () => setTurnState('pausing'),
-    onSuccess: () => { reconcileConversationProjection(); onHostStateChanged?.(); },
+    onSuccess: () => {
+      setTurnState('paused');
+      reconcileConversationProjection();
+      onHostStateChanged?.();
+    },
     onError: error => {
       setTurnState('running');
       reportOperationError(selected?.id, error);
@@ -8219,6 +8271,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         workspaceImageUrl={workspaceMarkdownImageUrl}
         workspaceRoot={activeWorkspaceRoot}
         annotations={messageAnnotations}
+        conversationName={bindingId => bindingId ? conversationsById.get(bindingId)?.display_title ?? (bindingId === selected?.id ? conversationName(selected) : undefined) : undefined}
+        onOpenConversationReference={reference => {
+          if (reference.source_binding_id) onNavigate(host.conversationPath(reference.source_binding_id));
+        }}
         onCreateAnnotation={selected && canWrite ? anchor => void createAnnotation('CONVERSATION_TEXT', anchor) : undefined}
         onSidebarQuestion={selected ? reference => setSidebarQuestions(current => ({
           ...current,
@@ -8289,9 +8345,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
             </article>;
           })}
         </section>}
-                  <AgentComposerInput key={composerScope ?? 'composer'} ref={composerRef} initialDraft={composerDraftRef.current} scope={composerScope} suggestions={visibleComposerSuggestions} placeholder={pendingConfirmation ? '请先处理上方工具确认…' : composerControlMode === 'condensing' ? '可继续输入，发送后将排队…' : composerControlMode === 'reconciling' ? '正在同步 Agent 状态…' : composerControlMode === 'read-only' ? '当前会话不可编辑…' : '给 Agent 发消息…'} disabled={!composerControl.editable} onDraftChange={setComposerDraft} onContentPresenceChange={onComposerContentPresenceChange} onDraftPersist={persistComposerDraft} onPaste={event => { if (!features.attachments) return; const files = transferredFiles(event.clipboardData); if (!files.length) return; event.preventDefault(); files.forEach(startAttachmentUpload); }} onDropFiles={features.attachments && composerScope ? files => files.forEach(startAttachmentUpload) : undefined} onDropWorkspaceFiles={paths => setWorkspaceReferences(current => [...current, ...paths.flatMap(path => current.some(reference => reference.path === path) ? [] : [{ path, kind: 'file' as const, display_name: path.split('/').filter(Boolean).pop() ?? path }])])} onDropConversationReference={({ bindingId, eventId, title }) => setReferences(current => current.some(reference => reference.sourceBindingId === bindingId) ? current : [...current, { eventId, content: title, sourceBindingId: bindingId }])} onSubmit={enqueueDraft} onDirectSubmit={sendDraftDirectly} onManageCapabilities={features.capabilities && (selected || features.draftCapabilitySelection) ? () => setCapabilityManagerOpen(true) : undefined} onNativeAction={action => { if (action === 'CONDENSE' && canCondense && !condense.isPending && workspace && selected) condense.mutate({ workspaceId: workspace.id, bindingId: selected.id }); }} onWorkspaceReferenceSelected={() => { setWorkspaceReferenceQuery(''); setWorkspaceReferencePickerOpen(true); }}/>
+                  <AgentComposerInput key={composerScope ?? 'composer'} ref={composerRef} initialDraft={composerDraftRef.current} scope={composerScope} suggestions={visibleComposerSuggestions} placeholder={pendingConfirmation ? '请先处理上方工具确认…' : composerControlMode === 'condensing' ? '可继续输入，发送后将排队…' : composerControlMode === 'reconciling' ? '正在同步 Agent 状态…' : composerControlMode === 'read-only' ? '当前会话不可编辑…' : '给 Agent 发消息…'} disabled={!composerControl.editable} onDraftChange={setComposerDraft} onContentPresenceChange={onComposerContentPresenceChange} onDraftPersist={persistComposerDraft} onPaste={event => { if (!features.attachments) return; const files = transferredFiles(event.clipboardData); if (!files.length) return; event.preventDefault(); files.forEach(startAttachmentUpload); }} onDropFiles={features.attachments && composerScope ? files => files.forEach(startAttachmentUpload) : undefined} onDropWorkspaceFiles={paths => setWorkspaceReferences(current => [...current, ...paths.flatMap(path => current.some(reference => reference.path === path) ? [] : [{ path, kind: 'file' as const, display_name: path.split('/').filter(Boolean).pop() ?? path }])])} onDropConversationReference={({ bindingId, eventId, title }) => setReferences(current => current.some(reference => reference.sourceBindingId === bindingId) ? current : [...current, { eventId, content: title, sourceBindingId: bindingId, title }])} onSubmit={enqueueDraft} onDirectSubmit={sendDraftDirectly} onManageCapabilities={features.capabilities && (selected || features.draftCapabilitySelection) ? () => setCapabilityManagerOpen(true) : undefined} onNativeAction={action => { if (action === 'CONDENSE' && canCondense && !condense.isPending && workspace && selected) condense.mutate({ workspaceId: workspace.id, bindingId: selected.id }); }} onWorkspaceReferenceSelected={() => { setWorkspaceReferenceQuery(''); setWorkspaceReferencePickerOpen(true); }}/>
         <div className="agent-composer-attachments">
-        {(features.attachments && (attachments.length > 0 || pendingAttachments.some(item => item.scope === composerScope)) || references.length > 0 || composerAnnotations.length > 0) && <div className="agent-attachments" aria-label="已添加的附件和会话引用">{features.attachments && <>{attachments.map((item, index) => <span key={item.path}><button type="button" className="agent-attachment-open" title={`预览附件：${item.filename}`} onClick={() => previewAttachment(item)}>{item.image_data_url && <img src={item.image_data_url} alt=""/>}<em>{item.filename}</em></button><button type="button" className="agent-attachment-alias" aria-label={`引用附件 ${index + 1}`} title={`插入 @附件${index + 1}`} onClick={() => insertAttachmentAlias(item)}>@</button><button type="button" className="agent-attachment-remove" aria-label={`移除附件 ${item.filename}`} onClick={() => { setAttachments(all => all.filter(candidate => candidate.path !== item.path)); if (conversationDraft && workspace) void api.deleteDraftAttachments(workspace.id, conversationDraft.id, item.path).catch(() => undefined); }}>×</button></span>)}{pendingAttachments.filter(item => item.scope === composerScope).map(item => <span key={item.id} className={`agent-pending-attachment ${item.state}`} title={item.state === 'failed' ? '附件上传失败，请重试或删除。' : `正在上传 ${item.progress}%`}><span className="agent-attachment-open">{item.previewUrl ? <img src={item.previewUrl} alt=""/> : <FileText size={14}/>}<em>{item.filename}</em>{item.state === 'uploading' && <small>{item.progress}%</small>}{item.state === 'failed' && <span className="agent-attachment-retry-overlay"><button type="button" onClick={() => retryPendingAttachment(item.id)}>重试</button></span>}</span>{item.state === 'uploading' && <i className="agent-attachment-progress" style={{ '--upload-progress': `${item.progress}%` } as CSSProperties}/>}<button type="button" className="agent-attachment-remove" aria-label={`移除附件 ${item.filename}`} onClick={() => removePendingAttachment(item.id)}>×</button></span>)}</>}{references.map((reference, index) => <span key={`${reference.eventId}:${reference.content}`}><span className="agent-attachment-open" title={reference.content}><Quote size={14}/><em>{`会话引用 ${index + 1}`}</em></span><button type="button" className="agent-attachment-remove" aria-label={`移除会话引用 ${index + 1}`} onClick={() => setReferences(current => current.filter(item => item !== reference))}>×</button></span>)}{(selected || conversationDraft) && <ComposerAnnotationList annotations={composerAnnotations} onLocate={locateAnnotation} onRemove={annotation => setComposerAnnotations(current => current.filter(item => item.id !== annotation.id))} onUpdate={(annotation, comment) => void updateAnnotation(annotation, comment)}/>}</div>}
+        {(features.attachments && (attachments.length > 0 || pendingAttachments.some(item => item.scope === composerScope)) || references.length > 0 || composerAnnotations.length > 0) && <div className="agent-attachments" aria-label="已添加的附件和会话引用">{features.attachments && <>{attachments.map((item, index) => <span key={item.path}><button type="button" className="agent-attachment-open" title={`预览附件：${item.filename}`} onClick={() => previewAttachment(item)}>{item.image_data_url && <img src={item.image_data_url} alt=""/>}<em>{item.filename}</em></button><button type="button" className="agent-attachment-alias" aria-label={`引用附件 ${index + 1}`} title={`插入 @附件${index + 1}`} onClick={() => insertAttachmentAlias(item)}>@</button><button type="button" className="agent-attachment-remove" aria-label={`移除附件 ${item.filename}`} onClick={() => { setAttachments(all => all.filter(candidate => candidate.path !== item.path)); if (conversationDraft && workspace) void api.deleteDraftAttachments(workspace.id, conversationDraft.id, item.path).catch(() => undefined); }}>×</button></span>)}{pendingAttachments.filter(item => item.scope === composerScope).map(item => <span key={item.id} className={`agent-pending-attachment ${item.state}`} title={item.state === 'failed' ? '附件上传失败，请重试或删除。' : `正在上传 ${item.progress}%`}><span className="agent-attachment-open">{item.previewUrl ? <img src={item.previewUrl} alt=""/> : <FileText size={14}/>}<em>{item.filename}</em>{item.state === 'uploading' && <small>{item.progress}%</small>}{item.state === 'failed' && <span className="agent-attachment-retry-overlay"><button type="button" onClick={() => retryPendingAttachment(item.id)}>重试</button></span>}</span>{item.state === 'uploading' && <i className="agent-attachment-progress" style={{ '--upload-progress': `${item.progress}%` } as CSSProperties}/>}<button type="button" className="agent-attachment-remove" aria-label={`移除附件 ${item.filename}`} onClick={() => removePendingAttachment(item.id)}>×</button></span>)}</>}<ComposerConversationReferenceList references={references} onOpen={reference => onNavigate(host.conversationPath(reference.sourceBindingId))} onRemove={reference => setReferences(current => current.filter(item => item !== reference))} onUpdate={updateConversationReference}/>{(selected || conversationDraft) && <ComposerAnnotationList annotations={composerAnnotations} onLocate={locateAnnotation} onRemove={annotation => setComposerAnnotations(current => current.filter(item => item.id !== annotation.id))} onUpdate={(annotation, comment) => void updateAnnotation(annotation, comment)}/>}</div>}
         {workspaceReferences.length > 0 && <div className="agent-attachments agent-workspace-references" aria-label="已添加的工作区引用">{workspaceReferences.map(reference => <span key={workspaceReferenceKey(reference)} title={reference.path}><span className="agent-attachment-open">{reference.kind === 'directory' ? <Folder size={14}/> : <FileCode2 size={14}/>}<em><b>{reference.display_name}</b><small>{workspaceReferenceLabel(reference)}</small></em></span><button type="button" className="agent-attachment-remove" aria-label={'移除工作区引用 ' + reference.display_name} onClick={() => setWorkspaceReferences(current => current.filter(item => workspaceReferenceKey(item) !== workspaceReferenceKey(reference)))}>×</button></span>)}</div>}
         </div>
         <footer>

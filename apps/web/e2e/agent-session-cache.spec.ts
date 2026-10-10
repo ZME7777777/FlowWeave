@@ -3698,9 +3698,10 @@ test('A binding confirmed missing by background event synchronization clears its
 });
 
 
-test('Pausing and resuming keeps the event stream visible without reloading', async ({ page }) => {
+test('Pausing immediately updates the controls before the readiness projection catches up', async ({ page }) => {
   let authenticated = false;
   let paused = false;
+  let pauseProjectionAvailable = false;
   let resumed = false;
   let stream: WebSocketRoute | undefined;
   const workspace = { id: 'pause-resume-workspace', display_name: '暂停继续工作区', desired_state: 'RUNNING', updated_at: now };
@@ -3717,7 +3718,7 @@ test('Pausing and resuming keeps the event stream visible without reloading', as
   await page.route('**/api/v1/**', async route => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
-    const status = resumed ? 'running' : paused ? 'idle' : 'running';
+    const status = resumed ? 'running' : paused && pauseProjectionAvailable ? 'paused' : 'running';
     if (path.endsWith('/auth/me')) return authenticated ? json(route, user) : json(route, { error: { code: 'AUTHENTICATION_REQUIRED', message: '请先登录' } }, 401);
     if (path.endsWith('/auth/login') && request.method() === 'POST') { authenticated = true; return json(route, user); }
     if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
@@ -3754,6 +3755,7 @@ test('Pausing and resuming keeps the event stream visible without reloading', as
   await page.getByRole('button', { name: '暂停当前 Agent' }).click();
   await expect(page.getByRole('button', { name: '继续当前 Agent' })).toBeVisible();
 
+  pauseProjectionAvailable = true;
   await page.getByRole('button', { name: '继续当前 Agent' }).click();
   await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toBeVisible();
   stream!.send(JSON.stringify({

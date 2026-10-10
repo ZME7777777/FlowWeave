@@ -2906,41 +2906,19 @@ test('selected conversation text is sent and rendered as a compact reference car
   const resourceTags = page.getByLabel('已添加的附件和会话引用');
   await expect(resourceTags).toHaveCount(1);
   await expect(resourceTags.getByText('参考图.png', { exact: true })).toBeVisible();
-  await expect(resourceTags.getByRole('button', { name: '会话引用 1', exact: true })).toBeVisible();
+  await expect(resourceTags.getByRole('button', { name: '引用会话', exact: true })).toBeVisible();
   await resourceTags.getByRole('button', { name: '参考图.png', exact: true }).click();
   await expect(page.getByRole('dialog', { name: '文件预览' })).toBeVisible();
   await page.getByRole('button', { name: '关闭文件预览' }).click();
   await resourceTags.getByRole('button', { name: '引用附件 1', exact: true }).click();
   await expect(page.getByLabel('发送 Agent 消息')).toHaveValue('@附件1');
   await expect(resourceTags.evaluate(element => getComputedStyle(element).paddingBottom)).resolves.toBe('4px');
-  const annotationList = page.getByLabel('已添加的引用 1 条');
-  await expect(annotationList).toContainText('会话引用 1');
-  await resourceTags.getByRole('button', { name: '会话引用 1', exact: true }).click();
-  const annotationCard = page.getByRole('dialog', { name: '会话引用 1 详情' });
-  const locateSource = annotationCard.getByRole('button', { name: '定位原文' });
-  await expect(annotationCard).toBeVisible();
-  await expect.poll(() => locateSource.evaluate(button => {
-    const rect = button.getBoundingClientRect();
-    return rect.width > rect.height && rect.width > 45 && rect.height > 20;
-  })).toBe(true);
-  await expect(annotationCard.locator('header > span')).toHaveCSS('max-width', 'none');
-  const quote = annotationCard.locator('blockquote');
-  await expect(quote).toHaveCSS('overflow-y', 'auto');
-  await expect.poll(() => quote.evaluate(element => element.getBoundingClientRect().width)).toBeGreaterThan(300);
-  await locateSource.click();
-  await expect(source).toBeInViewport();
-  await expect.poll(() => source.evaluate(element => getComputedStyle(element, '::selection').backgroundColor)).toBe('rgb(183, 223, 255)');
-  await expect.poll(() => source.evaluate(() => window.getSelection()?.toString())).toBe(selectedText);
-  await expect.poll(() => source.evaluate(element => {
-    const selection = window.getSelection();
-    return Boolean(selection?.rangeCount && element.contains(selection.getRangeAt(0).startContainer) && element.contains(selection.getRangeAt(0).endContainer));
-  })).toBe(true);
-  const referenceHighlights = page.locator('.conversation-reference-highlights i');
-  await expect(referenceHighlights).not.toHaveCount(0);
-  await page.evaluate(() => window.getSelection()?.removeAllRanges());
-  await expect(referenceHighlights).not.toHaveCount(0);
-  await expect(referenceHighlights.first()).toHaveCSS('background-color', 'rgba(183, 223, 255, 0.85)');
-  await expect(referenceHighlights).toHaveCount(0, { timeout: 2_000 });
+  await resourceTags.getByRole('button', { name: '评论会话 引用会话', exact: true }).click();
+  const commentCard = page.getByRole('dialog', { name: '引用会话 评论' });
+  await expect(commentCard).toBeVisible();
+  await commentCard.getByLabel('编辑会话评论').fill('请重点核对这段建议');
+  await commentCard.getByRole('button', { name: '打开会话' }).click();
+  await expect(page).toHaveURL(/\/agent\/conversations\/reference-conversation$/);
   await page.getByLabel('发送 Agent 消息').fill('请据此继续');
   await page.getByRole('button', { name: '发送消息' }).click();
   await expect.poll(() => sentPayload).toMatchObject({
@@ -2948,7 +2926,7 @@ test('selected conversation text is sent and rendered as a compact reference car
   });
   const sentMessage = page.locator('[data-user-event-id="reference-target-user"]');
   await expect(sentMessage).toContainText('请据此继续');
-  await expect(sentMessage).toContainText('会话引用 1');
+  await expect(sentMessage).toContainText('引用会话');
 });
 
 test('Agent workspace groups toggle their conversation lists', async ({ page }) => {

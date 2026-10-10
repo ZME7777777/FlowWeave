@@ -192,11 +192,13 @@ export const AgentComposerInput = forwardRef<ComposerHandle, {
   const acceptsWorkspaceFileDrag = (event: ReactDragEvent<HTMLElement>) => event.dataTransfer.types.includes(WORKSPACE_FILE_TRANSFER_TYPE);
   const acceptsConversationReferenceDrag = (event: ReactDragEvent<HTMLElement>) => event.dataTransfer.types.includes(CONVERSATION_REFERENCE_TRANSFER_TYPE);
   const acceptsAttachmentDrag = (event: ReactDragEvent<HTMLElement>) => (Boolean(onDropFiles) && acceptsFileDrag(event)) || (Boolean(onDropWorkspaceFiles) && acceptsWorkspaceFileDrag(event)) || (Boolean(onDropConversationReference) && acceptsConversationReferenceDrag(event));
-  const clearFileDrag = () => { dragDepth.current = 0; setFileDragActive(false); };
+  const [dragKind, setDragKind] = useState<'attachment' | 'conversation'>('attachment');
+  const clearFileDrag = () => { dragDepth.current = 0; setFileDragActive(false); setDragKind('attachment'); };
   return <div className={`agent-composer-input${fileDragActive ? ' file-drag-active' : ''}`} onDragEnter={event => {
     if (disabled || !acceptsAttachmentDrag(event)) return;
     event.preventDefault();
     dragDepth.current += 1;
+    setDragKind(acceptsConversationReferenceDrag(event) ? 'conversation' : 'attachment');
     setFileDragActive(true);
   }} onDragOver={event => {
     if (disabled || !acceptsAttachmentDrag(event)) return;
@@ -240,7 +242,7 @@ export const AgentComposerInput = forwardRef<ComposerHandle, {
       if (hasMenu && ['Enter', 'Tab'].includes(event.key)) { event.preventDefault(); return; }
       if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); onSubmit(draftRef.current); }
     }}/>
-    {fileDragActive && <div className="agent-composer-file-drop" aria-live="polite">松开以添加附件</div>}
+    {fileDragActive && <div className="agent-composer-file-drop" aria-live="polite">{dragKind === 'conversation' ? '松开以添加会话' : '松开以添加附件'}</div>}
     {hasMenu && <div id="agent-composer-capabilities" className="agent-composer-capability-menu" role="listbox" aria-label={trigger!.sigil === '$' ? '选择技能' : trigger!.sigil === '@' ? '选择引用类型' : hasNativeSuggestions ? '选择 OpenHands 原生能力、命令或 MCP' : '选择命令或 MCP'}>{hasSuggestions ? <>{visible.map((item, index) => <div className="agent-composer-capability-option" key={item.id}>{trigger!.sigil === '@' && index === 0 && <div className="agent-composer-capability-section">引用类型</div>}{trigger!.sigil === '/' && item.kind === 'NATIVE' && (index === 0 || visible[index - 1]?.kind !== 'NATIVE') && <div className="agent-composer-capability-section">OpenHands 原生能力</div>}{trigger!.sigil === '/' && item.kind !== 'NATIVE' && (index === 0 || visible[index - 1]?.kind === 'NATIVE') && <div className="agent-composer-capability-section">MCP 与命令</div>}<button type="button" role="option" aria-selected={index === activeIndex} aria-disabled={item.available === false || undefined} disabled={item.available === false} className={`${index === activeIndex ? 'active' : ''}${item.available === false ? ' unavailable' : ''}`} onMouseDown={event => event.preventDefault()} onMouseEnter={() => setActiveIndex(index)} onClick={() => select(item)}><code>{item.token}</code><span><b>{item.label}</b><small>{item.detail}</small></span><em>{item.kind === 'SKILL' ? '技能' : item.kind === 'COMMAND' ? '命令' : item.kind === 'NATIVE' ? '原生' : item.kind === 'REFERENCE' ? '引用' : 'MCP'}</em></button></div>)}</> : <div className="agent-composer-capability-empty"><span><b>{trigger!.sigil === '@' ? '当前没有匹配的引用类型' : !suggestions.length ? trigger!.sigil === '$' ? '当前会话还没有加载 Skill' : '当前会话还没有加载命令或 MCP' : '当前会话没有匹配的能力'}</b><small>{trigger!.sigil === '@' ? '调整输入关键词以筛选引用类型。' : !suggestions.length ? `先为此会话加载能力，随后可在这里用 ${trigger!.sigil} 选择并插入。` : '调整输入关键词，或管理当前会话能力。'}</small></span></div>}{showCapabilityManager && <div className="agent-composer-capability-manage"><span>管理当前会话能力</span><button type="button" onMouseDown={event => event.preventDefault()} onClick={onManageCapabilities}>管理</button></div>}</div>}
   </div>;
 });

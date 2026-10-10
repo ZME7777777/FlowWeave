@@ -59,6 +59,9 @@ export interface ConversationReference {
   eventId: string;
   content: string;
   sourceBindingId: string;
+  title?: string;
+  comment?: string;
+  commentId?: string;
   compactStart?: number;
   compactEnd?: number;
 }
@@ -284,7 +287,7 @@ function MessageAttachmentThumbnail({ attachment, imageUrl }: { attachment: Agen
   return <img className="conversation-message-attachment-thumbnail" src={source} alt="" onError={() => setFailed(true)}/>;
 }
 
-function MessageAttachments({ attachments, references = [], workspaceReferences = [], annotations = [], onOpen, onOpenReference, onOpenWorkspaceReference, onOpenAnnotation, imageUrl }: {
+function MessageAttachments({ attachments, references = [], workspaceReferences = [], annotations = [], onOpen, onOpenReference, onOpenWorkspaceReference, onOpenAnnotation, conversationName, imageUrl }: {
   attachments: AgentAttachment[];
   references?: AgentConversationReference[];
   workspaceReferences?: AgentWorkspaceReference[];
@@ -293,9 +296,14 @@ function MessageAttachments({ attachments, references = [], workspaceReferences 
   onOpenReference?: (reference: AgentConversationReference) => void;
   onOpenWorkspaceReference?: (reference: AgentWorkspaceReference) => void;
   onOpenAnnotation?: (annotation: AgentConversationAnnotation) => void;
+  conversationName?: (bindingId: string | undefined) => string | undefined;
   imageUrl?: (attachment: AgentAttachment) => string | undefined;
 }) {
   if (!attachments.length && !references.length && !workspaceReferences.length && !annotations.length) return null;
+  const annotationTitle = (annotation: AgentConversationAnnotation, index: number) => annotation.anchor_kind === 'CONVERSATION_TEXT'
+    && typeof annotation.anchor.conversation_title === 'string'
+    ? annotation.anchor.conversation_title
+    : annotationFileLabel(annotation) ?? `会话引用 ${index + 1}`;
   return <div className="conversation-message-attachments" aria-label="消息附件">
     {attachments.map(attachment => <button
       type="button"
@@ -306,34 +314,38 @@ function MessageAttachments({ attachments, references = [], workspaceReferences 
     >
       <MessageAttachmentThumbnail attachment={attachment} imageUrl={imageUrl?.(attachment)}/><span><b>{attachment.filename}</b><small>{attachment.mime_type || '文件'}{attachmentSize(attachment.byte_size) ? ` · ${attachmentSize(attachment.byte_size)}` : ''}</small></span><Eye size={13}/>
     </button>)}
-    {references.map((reference, index) => <button type="button" key={`${reference.event_id}:${reference.content}`} className="conversation-message-attachment conversation-message-reference" aria-label={`查看会话引用 ${index + 1}`} title="查看引用内容" onClick={() => onOpenReference?.(reference)}>
-      <Quote size={16}/><span><b>{`会话引用 ${index + 1}`}</b><small>已添加到本条消息</small></span>
-      <PanelRightOpen size={13}/>
-    </button>)}
+    {references.map((reference, index) => {
+      const title = conversationName?.(reference.source_binding_id) ?? `会话引用 ${index + 1}`;
+      return <button type="button" key={`${reference.event_id}:${reference.content}`} className="conversation-message-attachment conversation-message-reference" aria-label={`打开会话 ${title}`} title={`打开会话：${title}`} onClick={() => onOpenReference?.(reference)}>
+        <Quote size={16}/><span><b>{title}</b><small>已添加到本条消息</small></span>
+        <PanelRightOpen size={13}/>
+      </button>;
+    })}
     {workspaceReferences.map(reference => <button type="button" key={`${reference.path}:${JSON.stringify(reference.selection ?? {})}`} className="conversation-message-attachment conversation-message-workspace-reference" title={reference.path} onClick={() => onOpenWorkspaceReference?.(reference)}>
       <FileText size={16}/><span><b>{reference.display_name}</b><small>{workspaceReferenceLabel(reference)}</small></span>
     </button>)}
     {annotations.map((annotation, index) => {
       const fileLabel = annotationFileLabel(annotation);
-      const label = fileLabel ?? `会话引用 ${index + 1}`;
-      return <button type="button" key={annotation.id} className="conversation-message-attachment conversation-message-annotation" title={fileLabel ?? '查看会话注释'} onClick={() => onOpenAnnotation?.(annotation)}>
+      const label = annotationTitle(annotation, index);
+      return <button type="button" key={annotation.id} className="conversation-message-attachment conversation-message-annotation" title={fileLabel ?? `查看${label}的评论`} onClick={() => onOpenAnnotation?.(annotation)}>
         {fileLabel ? <FileText size={16}/> : <Quote size={16}/>}<span><b>{label}</b><small>{annotation.comment || (fileLabel ? '文件内容注释' : '会话文本注释')}</small></span><PanelRightOpen size={13}/>
       </button>;
     })}
   </div>;
 }
 
-function ConversationReferencePreview({ reference, onClose, onLocate }: {
+function ConversationReferencePreview({ reference, title, onClose, onLocate }: {
   reference: AgentConversationReference;
+  title?: string;
   onClose: () => void;
   onLocate: () => void;
 }) {
   useEscapeClose(onClose);
   return <div className="conversation-reference-preview-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}>
     <section className="conversation-reference-preview" role="dialog" aria-modal="true" aria-label="会话引用内容">
-      <header><div><span className="eyebrow">CONVERSATION REFERENCE</span><h2>所选文本</h2></div><button type="button" className="ghost" aria-label="关闭会话引用内容" onClick={onClose}>关闭</button></header>
+      <header><div><span className="eyebrow">CONVERSATION REFERENCE</span><h2>{title ?? '所选文本'}</h2></div><button type="button" className="ghost" aria-label="关闭会话引用内容" onClick={onClose}>关闭</button></header>
       <pre>{reference.content || '引用内容不可用'}</pre>
-      <footer><button type="button" className="secondary" onClick={onLocate}>定位原消息</button><button type="button" className="primary" onClick={onClose}>完成</button></footer>
+      <footer><button type="button" className="secondary" onClick={onLocate}>{title ? '打开会话' : '定位原消息'}</button><button type="button" className="primary" onClick={onClose}>完成</button></footer>
     </section>
   </div>;
 }
@@ -1723,7 +1735,7 @@ export interface ConversationHistoryPrepend {
   phase: 'capture' | 'restore';
 }
 
-export const ConversationSurface = memo(function ConversationSurface({ events, isGenerating, liveTextReveal = false, isPaused = false, emptyResponseRecoveryActive = false, modelRetryStatus, historyPending = false, cachedHistoryMarkerCount = 0, cachedHistoryUserEventIds = [], hasCachedOlderHistory = false, onRequestOlderHistory, onRevealHistoryThrough, conversationScope, historyPrepend, onHistoryAnchorCaptured, onHistoryAnchorRestored, requestStartedAt, requestSubmitting = false, rewritePending = false, condensationPending = false, condensationStartedAt, onRewrite, onFork, onOpenAttachment, onOpenWorkspaceReference, onPreviewCandidateFile, onReviewChanges, onOpenWorkspaceFile, onOpenImage, workspaceImageUrl, workspaceRoot, annotations = [], onCreateAnnotation, onSidebarQuestion, onLocateAnnotation, taskControl = [], monitoring, connectionState }: {
+export const ConversationSurface = memo(function ConversationSurface({ events, isGenerating, liveTextReveal = false, isPaused = false, emptyResponseRecoveryActive = false, modelRetryStatus, historyPending = false, cachedHistoryMarkerCount = 0, cachedHistoryUserEventIds = [], hasCachedOlderHistory = false, onRequestOlderHistory, onRevealHistoryThrough, conversationScope, historyPrepend, onHistoryAnchorCaptured, onHistoryAnchorRestored, requestStartedAt, requestSubmitting = false, rewritePending = false, condensationPending = false, condensationStartedAt, onRewrite, onFork, onOpenAttachment, onOpenWorkspaceReference, onPreviewCandidateFile, onReviewChanges, onOpenWorkspaceFile, onOpenImage, workspaceImageUrl, workspaceRoot, annotations = [], onCreateAnnotation, onSidebarQuestion, onLocateAnnotation, conversationName, onOpenConversationReference, taskControl = [], monitoring, connectionState }: {
   events: OpenHandsConversationEvent[];
   isGenerating: boolean;
   /** Strict native running state; unlike visual activity it never animates history reconciliation. */
@@ -1771,6 +1783,8 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
   onCreateAnnotation?: (anchor: { event_id: string; quote: string; compact_start: number }) => void;
   onSidebarQuestion?: (reference: ConversationReference) => void;
   onLocateAnnotation?: (annotation: AgentConversationAnnotation) => void;
+  conversationName?: (bindingId: string | undefined) => string | undefined;
+  onOpenConversationReference?: (reference: AgentConversationReference) => void;
   taskControl?: RuntimeTaskControlSnapshot[];
   monitoring?: AgentActivitySummary;
   connectionState?: ConversationConnectionState;
@@ -2550,7 +2564,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
                   event.preventDefault();
                   event.currentTarget.form?.requestSubmit();
                 }}/><footer><button type="button" onClick={() => setEditingEventId(undefined)}>取消</button><button type="submit" disabled={!editingContent.trim() || rewritePending}>重新思考</button></footer></form>
-                : <article data-user-event-id={message.event.id} data-conversation-event-id={message.event.id} className="conversation-message user"><MessageAttachments attachments={eventAttachments(message.event)} references={message.event.payload.conversation_references} workspaceReferences={message.event.payload.workspace_references} annotations={eventAnnotations(message.event)} onOpen={onOpenAttachment} onOpenReference={setViewingReference} onOpenWorkspaceReference={onOpenWorkspaceReference} onOpenAnnotation={locateAnnotation}/>{message.content && <div className="conversation-message-content"><MessageMarkdown>{message.content}</MessageMarkdown></div>}<footer className="conversation-message-meta user">{messageDeliveryStatus && <small className="conversation-message-delivery-status" role="status">{messageDeliveryStatus}</small>}{messageTimestamp && <time dateTime={typeof message.event.payload.timestamp === 'string' ? message.event.payload.timestamp : undefined}>{messageTimestamp}</time>}<div className={`conversation-message-actions${lastUserEventId === message.event.id ? ' can-rewrite' : ''}`}><button type="button" className="conversation-message-copy" aria-label={copiedEventId === message.event.id ? '消息已复制' : '复制消息'} title={copiedEventId === message.event.id ? '已复制' : '复制消息'} onClick={() => copyUserMessage(message.event.id, message.content)}>{copiedEventId === message.event.id ? <Check size={13}/> : <Copy size={13}/>}</button>{lastUserEventId === message.event.id && <button type="button" className="conversation-message-rewrite" aria-label="编辑并重新思考" title="编辑并重新思考" onClick={() => { setEditingEventId(message.event.id); setEditingContent(message.content); }}><Pencil size={13}/></button>}</div></footer></article>}</div>
+                : <article data-user-event-id={message.event.id} data-conversation-event-id={message.event.id} className="conversation-message user"><MessageAttachments attachments={eventAttachments(message.event)} references={message.event.payload.conversation_references} workspaceReferences={message.event.payload.workspace_references} annotations={eventAnnotations(message.event)} onOpen={onOpenAttachment} onOpenReference={reference => { if (onOpenConversationReference) onOpenConversationReference(reference); else setViewingReference(reference); }} onOpenWorkspaceReference={onOpenWorkspaceReference} onOpenAnnotation={locateAnnotation} conversationName={conversationName}/>{message.content && <div className="conversation-message-content"><MessageMarkdown>{message.content}</MessageMarkdown></div>}<footer className="conversation-message-meta user">{messageDeliveryStatus && <small className="conversation-message-delivery-status" role="status">{messageDeliveryStatus}</small>}{messageTimestamp && <time dateTime={typeof message.event.payload.timestamp === 'string' ? message.event.payload.timestamp : undefined}>{messageTimestamp}</time>}<div className={`conversation-message-actions${lastUserEventId === message.event.id ? ' can-rewrite' : ''}`}><button type="button" className="conversation-message-copy" aria-label={copiedEventId === message.event.id ? '消息已复制' : '复制消息'} title={copiedEventId === message.event.id ? '已复制' : '复制消息'} onClick={() => copyUserMessage(message.event.id, message.content)}>{copiedEventId === message.event.id ? <Check size={13}/> : <Copy size={13}/>}</button>{lastUserEventId === message.event.id && <button type="button" className="conversation-message-rewrite" aria-label="编辑并重新思考" title="编辑并重新思考" onClick={() => { setEditingEventId(message.event.id); setEditingContent(message.content); }}><Pencil size={13}/></button>}</div></footer></article>}</div>
               {segmentBlocks.map(block => <ActivityGroup
                 key={`${message.event.id}:${block.id}`}
                 items={block.items}
