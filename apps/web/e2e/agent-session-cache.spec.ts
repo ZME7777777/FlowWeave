@@ -2193,11 +2193,18 @@ test('A new conversation stays first after an existing conversation was reordere
   await login(page);
   await page.getByRole('button', { name: 'Agent 会话' }).click();
   const source = page.getByRole('button', { name: '拖拽排序会话 已有会话 B' });
+  const referenceSource = page.getByRole('button', { name: '已有会话 B', exact: true });
   const target = page.locator('[data-conversation-binding-id="new-order-a"]');
+  await expect(source).toHaveAttribute('data-drag-zone', 'conversation-order');
+  await expect(referenceSource).toHaveAttribute('data-drag-zone', 'conversation-reference');
+  await expect(referenceSource).toHaveAttribute('draggable', 'true');
   const sourceBox = await source.boundingBox();
+  const referenceBox = await referenceSource.boundingBox();
   const targetBox = await target.boundingBox();
   expect(sourceBox).not.toBeNull();
+  expect(referenceBox).not.toBeNull();
   expect(targetBox).not.toBeNull();
+  expect(sourceBox!.x + sourceBox!.width).toBeLessThanOrEqual(referenceBox!.x);
   await page.mouse.move(sourceBox!.x + sourceBox!.width / 2, sourceBox!.y + sourceBox!.height / 2);
   await page.mouse.down();
   await page.mouse.move(targetBox!.x + targetBox!.width / 2, targetBox!.y + 2, { steps: 5 });
