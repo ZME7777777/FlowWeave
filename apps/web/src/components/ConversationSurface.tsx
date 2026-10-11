@@ -256,14 +256,21 @@ function workspaceReferenceLabel(reference: AgentWorkspaceReference): string {
 
 function eventAnnotations(event: OpenHandsConversationEvent): AgentConversationAnnotation[] {
   const raw = event.payload.collaboration_annotations;
-  return Array.isArray(raw) ? raw.filter((item): item is AgentConversationAnnotation => Boolean(
-    item
-    && typeof item === 'object'
-    && typeof (item as AgentConversationAnnotation).id === 'string'
-    && typeof (item as AgentConversationAnnotation).anchor_kind === 'string'
-    && typeof (item as AgentConversationAnnotation).anchor === 'object'
-    && typeof (item as AgentConversationAnnotation).comment === 'string',
-  )) : [];
+  if (!Array.isArray(raw)) return [];
+  const seen = new Set<string>();
+  return raw.flatMap(item => {
+    if (!item || typeof item !== 'object') return [];
+    const annotation = item as AgentConversationAnnotation;
+    if (
+      typeof annotation.id !== 'string'
+      || seen.has(annotation.id)
+      || typeof annotation.anchor_kind !== 'string'
+      || typeof annotation.anchor !== 'object'
+      || typeof annotation.comment !== 'string'
+    ) return [];
+    seen.add(annotation.id);
+    return [annotation];
+  });
 }
 
 function annotationFileLabel(annotation: AgentConversationAnnotation): string | undefined {
@@ -1711,7 +1718,7 @@ export interface ConversationHistoryPrepend {
   phase: 'capture' | 'restore';
 }
 
-export const ConversationSurface = memo(function ConversationSurface({ events, isGenerating, liveTextReveal = false, isPaused = false, emptyResponseRecoveryActive = false, modelRetryStatus, historyPending = false, cachedHistoryMarkerCount = 0, cachedHistoryUserEventIds = [], hasCachedOlderHistory = false, onRequestOlderHistory, onRevealHistoryThrough, conversationScope, historyPrepend, onHistoryAnchorCaptured, onHistoryAnchorRestored, requestStartedAt, requestSubmitting = false, rewritePending = false, condensationPending = false, condensationStartedAt, onRewrite, onFork, onOpenAttachment, onOpenWorkspaceReference, onPreviewCandidateFile, onReviewChanges, onOpenWorkspaceFile, onOpenImage, workspaceImageUrl, workspaceRoot, annotations = [], onCreateAnnotation, onSidebarQuestion, onLocateAnnotation, conversationName, onOpenConversationReference, taskControl = [], monitoring, connectionState }: {
+export const ConversationSurface = memo(function ConversationSurface({ events, isGenerating, liveTextReveal = false, isPaused = false, emptyResponseRecoveryActive = false, modelRetryStatus, historyPending = false, cachedHistoryMarkerCount = 0, cachedHistoryUserEventIds = [], hasCachedOlderHistory = false, onRequestOlderHistory, onRevealHistoryThrough, conversationScope, historyPrepend, onHistoryAnchorCaptured, onHistoryAnchorRestored, requestStartedAt, requestSubmitting = false, rewritePending = false, condensationPending = false, condensationStartedAt, onRewrite, onFork, onOpenAttachment, onOpenWorkspaceReference, onPreviewCandidateFile, onReviewChanges, onOpenWorkspaceFile, onOpenImage, workspaceImageUrl, workspaceRoot, onCreateAnnotation, onSidebarQuestion, onLocateAnnotation, conversationName, onOpenConversationReference, taskControl = [], monitoring, connectionState }: {
   events: OpenHandsConversationEvent[];
   isGenerating: boolean;
   /** Strict native running state; unlike visual activity it never animates history reconciliation. */
@@ -1755,7 +1762,6 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
   onOpenImage?: (src: string, alt?: string) => void;
   workspaceImageUrl?: (href: string) => string | undefined;
   workspaceRoot?: string | null;
-  annotations?: AgentConversationAnnotation[];
   onCreateAnnotation?: (anchor: { event_id: string; quote: string; compact_start: number }) => void;
   onSidebarQuestion?: (reference: ConversationReference) => void;
   onLocateAnnotation?: (annotation: AgentConversationAnnotation) => void;
@@ -2578,7 +2584,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
             open={completedProcessExpanded}
             onOpenChange={setCompletedProcessExpanded}
           />)}
-          {turn.assistant && <AgentReply event={turn.assistant.event} content={turn.assistant.content} reveal={revealEventIds.has(turn.assistant.event.id)} changes={fileChanges} onFork={!isGenerating ? () => onFork?.(turn.assistant!.event.id) : undefined} onPreviewCandidateFile={onPreviewCandidateFile} onReviewChanges={onReviewChanges} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenImage={onOpenImage} workspaceImageUrl={workspaceImageUrl} workspaceRoot={workspaceRoot} annotations={annotations} onLocateAnnotation={locateAnnotation}/>}
+          {turn.assistant && <AgentReply event={turn.assistant.event} content={turn.assistant.content} reveal={revealEventIds.has(turn.assistant.event.id)} changes={fileChanges} onFork={!isGenerating ? () => onFork?.(turn.assistant!.event.id) : undefined} onPreviewCandidateFile={onPreviewCandidateFile} onReviewChanges={onReviewChanges} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenImage={onOpenImage} workspaceImageUrl={workspaceImageUrl} workspaceRoot={workspaceRoot} annotations={turn.assistant.event.payload.collaboration_annotation_ids !== undefined ? eventAnnotations(turn.assistant.event) : turn.user ? eventAnnotations(turn.user.event) : []} onLocateAnnotation={locateAnnotation}/>}
           {failures.map(item => <ConversationFailure key={item.event.id} item={item} taskControl={taskControl} retryStatus={isLatest ? modelRetryStatus : undefined}/>)}
         </section>;
       })}

@@ -153,6 +153,14 @@ function conversationReferenceAnnotations(references: ConversationReference[]): 
   }] : []);
 }
 
+function messageAnnotations(
+  annotations: AgentConversationAnnotation[],
+  references: ConversationReference[],
+): AgentConversationAnnotation[] {
+  const merged = [...annotations, ...conversationReferenceAnnotations(references)];
+  return [...new Map(merged.map(annotation => [annotation.id, annotation])).values()];
+}
+
 function ComposerConversationReferenceList({ references, onOpen, onRemove, onUpdate }: {
   references: ConversationReference[];
   onOpen: (reference: ConversationReference) => void;
@@ -6181,17 +6189,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       if (timer !== undefined) window.clearTimeout(timer);
     };
   }, [eventsQuery.data?.next_cursor, hasUnfinishedFormalTurn, isGenerating, latestFormalTurnFinished, nativeTurnTerminal, pageVisible, selected, selectedCondensing, synchronizeConversationEvents, terminalEventReconciliationActive, workspace]);
-  const messageAnnotations = useMemo(() => displayedEvents.flatMap(event => {
-    const raw = event.payload.collaboration_annotations;
-    return Array.isArray(raw) ? raw.filter((item): item is AgentConversationAnnotation => Boolean(
-      item
-      && typeof item === 'object'
-      && typeof (item as AgentConversationAnnotation).id === 'string'
-      && typeof (item as AgentConversationAnnotation).anchor_kind === 'string'
-      && typeof (item as AgentConversationAnnotation).anchor === 'object'
-      && typeof (item as AgentConversationAnnotation).comment === 'string',
-    )) : [];
-  }), [displayedEvents]);
   const sessionFileChanges = useMemo(() => workspaceFileChanges(displayedEvents), [displayedEvents]);
   const openChangesReview = useCallback((changes: WorkspaceFileChange[]) => {
     if (!changes.length) return;
@@ -6759,7 +6756,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     conversationDraft?.workDirectoryId,
     conversationDraft?.capabilityVersionIds ?? [],
     conversationDraft!.id,
-    [...message.annotations, ...conversationReferenceAnnotations(message.references)],
+    messageAnnotations(message.annotations, message.references),
   ), onSuccess: (value, message) => {
     if (!workspace) return;
     const conversation = value.conversation;
@@ -7059,7 +7056,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
             attachments: message.items,
             conversation_references: message.references.map(item => ({ event_id: item.eventId, content: item.content, source_binding_id: item.sourceBindingId, ...(item.compactStart !== undefined && item.compactEnd !== undefined ? { selection: { compact_start: item.compactStart, compact_end: item.compactEnd } } : {}) })),
             workspace_references: message.workspaceReferences,
-            collaboration_annotations: [...message.annotations, ...conversationReferenceAnnotations(message.references)],
+            collaboration_annotations: messageAnnotations(message.annotations, message.references),
           },
         },
       }));
@@ -7075,7 +7072,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         attachments: message.items,
         conversation_references: message.references.map(item => ({ event_id: item.eventId, content: item.content, source_binding_id: item.sourceBindingId, ...(item.compactStart !== undefined && item.compactEnd !== undefined ? { selection: { compact_start: item.compactStart, compact_end: item.compactEnd } } : {}) })),
         workspace_references: message.workspaceReferences,
-        collaboration_annotations: [...message.annotations, ...conversationReferenceAnnotations(message.references)],
+        collaboration_annotations: messageAnnotations(message.annotations, message.references),
         timestamp: new Date().toISOString(),
       },
     };
@@ -7091,7 +7088,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     return renderKey;
   }, [eventsQuery.data?.events, updateLocalMessageProjections]);
   const send = useMutation({
-    mutationFn: (message: BoundQueuedMessage) => api.sendMessage(workspace!.id, message.bindingId, message.content, message.items, message.references.map(item => ({ event_id: item.eventId, content: item.content, source_binding_id: item.sourceBindingId, ...(item.compactStart !== undefined && item.compactEnd !== undefined ? { selection: { compact_start: item.compactStart, compact_end: item.compactEnd } } : {}) })), message.workspaceReferences ?? [], [...message.annotations, ...conversationReferenceAnnotations(message.references)], message.id),
+    mutationFn: (message: BoundQueuedMessage) => api.sendMessage(workspace!.id, message.bindingId, message.content, message.items, message.references.map(item => ({ event_id: item.eventId, content: item.content, source_binding_id: item.sourceBindingId, ...(item.compactStart !== undefined && item.compactEnd !== undefined ? { selection: { compact_start: item.compactStart, compact_end: item.compactEnd } } : {}) })), message.workspaceReferences ?? [], messageAnnotations(message.annotations, message.references), message.id),
     onMutate: message => ({
       optimisticEventId: localMessageProjections.current.get(message.id)?.renderKey,
       nativeGuidance: message.nativeGuidance === true,
@@ -8270,7 +8267,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         onOpenImage={previewMarkdownImage}
         workspaceImageUrl={workspaceMarkdownImageUrl}
         workspaceRoot={activeWorkspaceRoot}
-        annotations={messageAnnotations}
         conversationName={bindingId => bindingId ? conversationsById.get(bindingId)?.display_title ?? (bindingId === selected?.id ? conversationName(selected) : undefined) : undefined}
         onOpenConversationReference={reference => {
           if (reference.source_binding_id) onNavigate(host.conversationPath(reference.source_binding_id));
