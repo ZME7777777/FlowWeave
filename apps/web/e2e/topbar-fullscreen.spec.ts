@@ -15,6 +15,7 @@ test('double-clicking topbar whitespace toggles fullscreen without affecting nav
   await page.goto('/');
 
   const topbar = page.locator('.topbar');
+  await expect(topbar).toHaveCSS('user-select', 'none');
   await topbar.dblclick({ position: { x: 8, y: 32 } });
   await expect.poll(() => page.evaluate(() => document.fullscreenElement === document.documentElement)).toBe(true);
 

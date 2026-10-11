@@ -59,6 +59,9 @@ export interface ConversationReference {
   eventId: string;
   content: string;
   sourceBindingId: string;
+  title?: string;
+  comment?: string;
+  commentId?: string;
   compactStart?: number;
   compactEnd?: number;
 }
@@ -253,14 +256,21 @@ function workspaceReferenceLabel(reference: AgentWorkspaceReference): string {
 
 function eventAnnotations(event: OpenHandsConversationEvent): AgentConversationAnnotation[] {
   const raw = event.payload.collaboration_annotations;
-  return Array.isArray(raw) ? raw.filter((item): item is AgentConversationAnnotation => Boolean(
-    item
-    && typeof item === 'object'
-    && typeof (item as AgentConversationAnnotation).id === 'string'
-    && typeof (item as AgentConversationAnnotation).anchor_kind === 'string'
-    && typeof (item as AgentConversationAnnotation).anchor === 'object'
-    && typeof (item as AgentConversationAnnotation).comment === 'string',
-  )) : [];
+  if (!Array.isArray(raw)) return [];
+  const seen = new Set<string>();
+  return raw.flatMap(item => {
+    if (!item || typeof item !== 'object') return [];
+    const annotation = item as AgentConversationAnnotation;
+    if (
+      typeof annotation.id !== 'string'
+      || seen.has(annotation.id)
+      || typeof annotation.anchor_kind !== 'string'
+      || typeof annotation.anchor !== 'object'
+      || typeof annotation.comment !== 'string'
+    ) return [];
+    seen.add(annotation.id);
+    return [annotation];
+  });
 }
 
 function annotationFileLabel(annotation: AgentConversationAnnotation): string | undefined {
@@ -284,7 +294,7 @@ function MessageAttachmentThumbnail({ attachment, imageUrl }: { attachment: Agen
   return <img className="conversation-message-attachment-thumbnail" src={source} alt="" onError={() => setFailed(true)}/>;
 }
 
-function MessageAttachments({ attachments, references = [], workspaceReferences = [], annotations = [], onOpen, onOpenReference, onOpenWorkspaceReference, onOpenAnnotation, imageUrl }: {
+function MessageAttachments({ attachments, references = [], workspaceReferences = [], annotations = [], onOpen, onOpenReference, onOpenWorkspaceReference, onOpenAnnotation, conversationName, imageUrl }: {
   attachments: AgentAttachment[];
   references?: AgentConversationReference[];
   workspaceReferences?: AgentWorkspaceReference[];
@@ -293,9 +303,14 @@ function MessageAttachments({ attachments, references = [], workspaceReferences 
   onOpenReference?: (reference: AgentConversationReference) => void;
   onOpenWorkspaceReference?: (reference: AgentWorkspaceReference) => void;
   onOpenAnnotation?: (annotation: AgentConversationAnnotation) => void;
+  conversationName?: (bindingId: string | undefined) => string | undefined;
   imageUrl?: (attachment: AgentAttachment) => string | undefined;
 }) {
   if (!attachments.length && !references.length && !workspaceReferences.length && !annotations.length) return null;
+  const annotationTitle = (annotation: AgentConversationAnnotation, index: number) => annotation.anchor_kind === 'CONVERSATION_TEXT'
+    && typeof annotation.anchor.conversation_title === 'string'
+    ? annotation.anchor.conversation_title
+    : annotationFileLabel(annotation) ?? `会话引用 ${index + 1}`;
   return <div className="conversation-message-attachments" aria-label="消息附件">
     {attachments.map(attachment => <button
       type="button"
@@ -306,34 +321,38 @@ function MessageAttachments({ attachments, references = [], workspaceReferences 
     >
       <MessageAttachmentThumbnail attachment={attachment} imageUrl={imageUrl?.(attachment)}/><span><b>{attachment.filename}</b><small>{attachment.mime_type || '文件'}{attachmentSize(attachment.byte_size) ? ` · ${attachmentSize(attachment.byte_size)}` : ''}</small></span><Eye size={13}/>
     </button>)}
-    {references.map((reference, index) => <button type="button" key={`${reference.event_id}:${reference.content}`} className="conversation-message-attachment conversation-message-reference" aria-label={`查看会话引用 ${index + 1}`} title="查看引用内容" onClick={() => onOpenReference?.(reference)}>
-      <Quote size={16}/><span><b>{`会话引用 ${index + 1}`}</b><small>已添加到本条消息</small></span>
-      <PanelRightOpen size={13}/>
-    </button>)}
+    {references.map((reference, index) => {
+      const title = conversationName?.(reference.source_binding_id) ?? `会话引用 ${index + 1}`;
+      return <button type="button" key={`${reference.event_id}:${reference.content}`} className="conversation-message-attachment conversation-message-reference" aria-label={`打开会话 ${title}`} title={`打开会话：${title}`} onClick={() => onOpenReference?.(reference)}>
+        <Quote size={16}/><span><b>{title}</b><small>已添加到本条消息</small></span>
+        <PanelRightOpen size={13}/>
+      </button>;
+    })}
     {workspaceReferences.map(reference => <button type="button" key={`${reference.path}:${JSON.stringify(reference.selection ?? {})}`} className="conversation-message-attachment conversation-message-workspace-reference" title={reference.path} onClick={() => onOpenWorkspaceReference?.(reference)}>
       <FileText size={16}/><span><b>{reference.display_name}</b><small>{workspaceReferenceLabel(reference)}</small></span>
     </button>)}
     {annotations.map((annotation, index) => {
       const fileLabel = annotationFileLabel(annotation);
-      const label = fileLabel ?? `会话引用 ${index + 1}`;
-      return <button type="button" key={annotation.id} className="conversation-message-attachment conversation-message-annotation" title={fileLabel ?? '查看会话注释'} onClick={() => onOpenAnnotation?.(annotation)}>
+      const label = annotationTitle(annotation, index);
+      return <button type="button" key={annotation.id} className="conversation-message-attachment conversation-message-annotation" title={fileLabel ?? `查看${label}的评论`} onClick={() => onOpenAnnotation?.(annotation)}>
         {fileLabel ? <FileText size={16}/> : <Quote size={16}/>}<span><b>{label}</b><small>{annotation.comment || (fileLabel ? '文件内容注释' : '会话文本注释')}</small></span><PanelRightOpen size={13}/>
       </button>;
     })}
   </div>;
 }
 
-function ConversationReferencePreview({ reference, onClose, onLocate }: {
+function ConversationReferencePreview({ reference, title, onClose, onLocate }: {
   reference: AgentConversationReference;
+  title?: string;
   onClose: () => void;
   onLocate: () => void;
 }) {
   useEscapeClose(onClose);
   return <div className="conversation-reference-preview-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}>
     <section className="conversation-reference-preview" role="dialog" aria-modal="true" aria-label="会话引用内容">
-      <header><div><span className="eyebrow">CONVERSATION REFERENCE</span><h2>所选文本</h2></div><button type="button" className="ghost" aria-label="关闭会话引用内容" onClick={onClose}>关闭</button></header>
+      <header><div><span className="eyebrow">CONVERSATION REFERENCE</span><h2>{title ?? '所选文本'}</h2></div><button type="button" className="ghost" aria-label="关闭会话引用内容" onClick={onClose}>关闭</button></header>
       <pre>{reference.content || '引用内容不可用'}</pre>
-      <footer><button type="button" className="secondary" onClick={onLocate}>定位原消息</button><button type="button" className="primary" onClick={onClose}>完成</button></footer>
+      <footer><button type="button" className="secondary" onClick={onLocate}>{title ? '打开会话' : '定位原消息'}</button><button type="button" className="primary" onClick={onClose}>完成</button></footer>
     </section>
   </div>;
 }
@@ -1330,38 +1349,14 @@ function ProgressActivity({ group, active, revealEventIds, paused, parentFailed,
   avatarSlots: ReadonlyMap<string, SubagentAvatarSlot>;
   workspaceRoot?: string | null;
 }) {
-  const pendingEntries = group.entries.filter(entry => entry.action && entry.results.length === 0);
-  const running = active && pendingEntries.length > 0;
-  const [open, setOpen] = useState(false);
-  const wasRunning = useRef(running);
-  useLayoutEffect(() => {
-    if (wasRunning.current && !running) setOpen(false);
-    wasRunning.current = running;
-  }, [running]);
-  const currentEntry = pendingEntries.at(-1);
-  const currentTitle = currentEntry
-    ? activityPresentation(currentEntry, true, workspaceRoot, paused, parentFailed).title
-    : undefined;
-  const operationIcons = group.entries.flatMap(entry => {
-    const operation = entry.action;
-    if (!operation) return [];
-    const presentation = activityPresentation(entry, active, workspaceRoot, paused, parentFailed);
-    const visual = toolVisualPresentation(String(operation.event.payload.event_name ?? ''), detailText(operation.event.payload.tool_name));
-    const OperationIcon = visual === 'terminal' ? SquareTerminal : visual === 'file' ? fileToolIcon(presentation) : visual === 'browser' ? PanelTop : visual === 'mcp' ? PlugZap : visual === 'workflow' ? Workflow : Wrench;
-    return [{ id: entry.id, Icon: OperationIcon, label: presentation.title }];
-  });
-  const visibleOperationIcons = operationIcons.slice(0, 3);
-  const hiddenOperationCount = operationIcons.length - visibleOperationIcons.length;
-  const label = progressText(group.progress);
-  const summaryLabel = currentTitle ? `${label}，${currentTitle}` : label;
-  return <details className={`conversation-progress-group${running ? ' active' : ''}`} open={open} onToggle={event => setOpen(event.currentTarget.open)} data-progress-event-id={group.progress.event.id}>
-    <summary aria-label={`查看执行过程：${summaryLabel}`}>
-      <span className="conversation-progress-summary-content"><b>{label}</b>{running && currentTitle && <small className="conversation-progress-current" role="status">{currentTitle}</small>}<span className="conversation-progress-tail"><span className="conversation-progress-icons" aria-label={`包含 ${operationIcons.length} 个操作`}>{visibleOperationIcons.map(({ id, Icon: OperationIcon, label: operationLabel }) => <OperationIcon key={id} size={12} aria-label={operationLabel}/>)}{hiddenOperationCount > 0 && <small className="conversation-progress-overflow" aria-label={`另有 ${hiddenOperationCount} 个操作`}>{`+${hiddenOperationCount}`}</small>}</span><ChevronRight className="conversation-expand-arrow" size={12}/></span></span>
-    </summary>
+  return <section className="conversation-progress-group" data-progress-event-id={group.progress.event.id}>
+    <article className="conversation-activity-row thought native-think">
+      <MessageMarkdown reveal={revealEventIds.has(group.progress.event.id)}>{progressText(group.progress)}</MessageMarkdown>
+    </article>
     <div className="conversation-progress-group-list">
-      {group.entries.map((entry, index) => <ActivityEntryRow key={entry.id} entry={entry} active={active} reveal={entryHasRevealedText(entry, revealEventIds)} paused={paused} parentFailed={parentFailed} hideThought={index === 0 && entry.action?.event.id === group.progress.event.id} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/>)}
+      {group.entries.map(entry => <ActivityEntryRow key={entry.id} entry={entry} active={active} reveal={entryHasRevealedText(entry, revealEventIds)} paused={paused} parentFailed={parentFailed} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/>)}
     </div>
-  </details>;
+  </section>;
 }
 
 interface ActivityGroupProps {
@@ -1507,9 +1502,10 @@ function ConversationFileChanges({ changes, onReviewChanges, workspaceRoot }: {
   workspaceRoot?: string | null;
 }) {
   if (!changes.length) return null;
+  const exactChanges = changes.filter(change => !change.contentUnavailable);
   return <section className="conversation-file-changes" aria-label={`本轮编辑了 ${changes.length} 个文件`}>
-    <button type="button" onClick={() => onReviewChanges?.(changes)}><FileText size={15}/><span><b>{`已编辑 ${changes.length} 个文件`}</b><small><ins>{`+${changes.reduce((total, change) => total + change.additions, 0)}`}</ins><del>{`-${changes.reduce((total, change) => total + change.deletions, 0)}`}</del></small></span><PanelRightOpen size={14}/></button>
-    <div>{changes.map(change => <button type="button" key={change.id} onClick={() => onReviewChanges?.([change])}><span title={workspaceRelativePath(change.path, workspaceRoot)}>{workspaceRelativePath(change.path, workspaceRoot)}</span><ins>{`+${change.additions}`}</ins><del>{`-${change.deletions}`}</del></button>)}</div>
+    <button type="button" onClick={() => onReviewChanges?.(changes)}><FileText size={15}/><span><b>{`已编辑 ${changes.length} 个文件`}</b><small><ins>{`+${exactChanges.reduce((total, change) => total + change.additions, 0)}`}</ins><del>{`-${exactChanges.reduce((total, change) => total + change.deletions, 0)}`}</del></small></span><PanelRightOpen size={14}/></button>
+    <div>{changes.map(change => <button type="button" key={change.id} onClick={() => onReviewChanges?.([change])}><span title={workspaceRelativePath(change.path, workspaceRoot)}>{workspaceRelativePath(change.path, workspaceRoot)}</span>{change.contentUnavailable ? <em>已确认</em> : <><ins>{`+${change.additions}`}</ins><del>{`-${change.deletions}`}</del></>}</button>)}</div>
   </section>;
 }
 
@@ -1723,7 +1719,7 @@ export interface ConversationHistoryPrepend {
   phase: 'capture' | 'restore';
 }
 
-export const ConversationSurface = memo(function ConversationSurface({ events, isGenerating, liveTextReveal = false, isPaused = false, emptyResponseRecoveryActive = false, modelRetryStatus, historyPending = false, cachedHistoryMarkerCount = 0, cachedHistoryUserEventIds = [], hasCachedOlderHistory = false, onRequestOlderHistory, onRevealHistoryThrough, conversationScope, historyPrepend, onHistoryAnchorCaptured, onHistoryAnchorRestored, requestStartedAt, requestSubmitting = false, rewritePending = false, condensationPending = false, condensationStartedAt, onRewrite, onFork, onOpenAttachment, onOpenWorkspaceReference, onPreviewCandidateFile, onReviewChanges, onOpenWorkspaceFile, onOpenImage, workspaceImageUrl, workspaceRoot, annotations = [], onCreateAnnotation, onSidebarQuestion, onLocateAnnotation, taskControl = [], monitoring, connectionState }: {
+export const ConversationSurface = memo(function ConversationSurface({ events, isGenerating, liveTextReveal = false, isPaused = false, emptyResponseRecoveryActive = false, modelRetryStatus, historyPending = false, cachedHistoryMarkerCount = 0, cachedHistoryUserEventIds = [], hasCachedOlderHistory = false, onRequestOlderHistory, onRevealHistoryThrough, conversationScope, historyPrepend, onHistoryAnchorCaptured, onHistoryAnchorRestored, requestStartedAt, requestSubmitting = false, rewritePending = false, condensationPending = false, condensationStartedAt, onRewrite, onFork, onOpenAttachment, onOpenWorkspaceReference, onPreviewCandidateFile, onReviewChanges, onOpenWorkspaceFile, onOpenImage, workspaceImageUrl, workspaceRoot, onCreateAnnotation, onSidebarQuestion, onLocateAnnotation, conversationName, onOpenConversationReference, taskControl = [], monitoring, connectionState }: {
   events: OpenHandsConversationEvent[];
   isGenerating: boolean;
   /** Strict native running state; unlike visual activity it never animates history reconciliation. */
@@ -1767,10 +1763,11 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
   onOpenImage?: (src: string, alt?: string) => void;
   workspaceImageUrl?: (href: string) => string | undefined;
   workspaceRoot?: string | null;
-  annotations?: AgentConversationAnnotation[];
   onCreateAnnotation?: (anchor: { event_id: string; quote: string; compact_start: number }) => void;
   onSidebarQuestion?: (reference: ConversationReference) => void;
   onLocateAnnotation?: (annotation: AgentConversationAnnotation) => void;
+  conversationName?: (bindingId: string | undefined) => string | undefined;
+  onOpenConversationReference?: (reference: AgentConversationReference) => void;
   taskControl?: RuntimeTaskControlSnapshot[];
   monitoring?: AgentActivitySummary;
   connectionState?: ConversationConnectionState;
@@ -2550,7 +2547,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
                   event.preventDefault();
                   event.currentTarget.form?.requestSubmit();
                 }}/><footer><button type="button" onClick={() => setEditingEventId(undefined)}>取消</button><button type="submit" disabled={!editingContent.trim() || rewritePending}>重新思考</button></footer></form>
-                : <article data-user-event-id={message.event.id} data-conversation-event-id={message.event.id} className="conversation-message user"><MessageAttachments attachments={eventAttachments(message.event)} references={message.event.payload.conversation_references} workspaceReferences={message.event.payload.workspace_references} annotations={eventAnnotations(message.event)} onOpen={onOpenAttachment} onOpenReference={setViewingReference} onOpenWorkspaceReference={onOpenWorkspaceReference} onOpenAnnotation={locateAnnotation}/>{message.content && <div className="conversation-message-content"><MessageMarkdown>{message.content}</MessageMarkdown></div>}<footer className="conversation-message-meta user">{messageDeliveryStatus && <small className="conversation-message-delivery-status" role="status">{messageDeliveryStatus}</small>}{messageTimestamp && <time dateTime={typeof message.event.payload.timestamp === 'string' ? message.event.payload.timestamp : undefined}>{messageTimestamp}</time>}<div className={`conversation-message-actions${lastUserEventId === message.event.id ? ' can-rewrite' : ''}`}><button type="button" className="conversation-message-copy" aria-label={copiedEventId === message.event.id ? '消息已复制' : '复制消息'} title={copiedEventId === message.event.id ? '已复制' : '复制消息'} onClick={() => copyUserMessage(message.event.id, message.content)}>{copiedEventId === message.event.id ? <Check size={13}/> : <Copy size={13}/>}</button>{lastUserEventId === message.event.id && <button type="button" className="conversation-message-rewrite" aria-label="编辑并重新思考" title="编辑并重新思考" onClick={() => { setEditingEventId(message.event.id); setEditingContent(message.content); }}><Pencil size={13}/></button>}</div></footer></article>}</div>
+                : <article data-user-event-id={message.event.id} data-conversation-event-id={message.event.id} className="conversation-message user"><MessageAttachments attachments={eventAttachments(message.event)} references={message.event.payload.conversation_references} workspaceReferences={message.event.payload.workspace_references} annotations={eventAnnotations(message.event)} onOpen={onOpenAttachment} onOpenReference={reference => { if (onOpenConversationReference) onOpenConversationReference(reference); else setViewingReference(reference); }} onOpenWorkspaceReference={onOpenWorkspaceReference} onOpenAnnotation={locateAnnotation} conversationName={conversationName}/>{message.content && <div className="conversation-message-content"><MessageMarkdown>{message.content}</MessageMarkdown></div>}<footer className="conversation-message-meta user">{messageDeliveryStatus && <small className="conversation-message-delivery-status" role="status">{messageDeliveryStatus}</small>}{messageTimestamp && <time dateTime={typeof message.event.payload.timestamp === 'string' ? message.event.payload.timestamp : undefined}>{messageTimestamp}</time>}<div className={`conversation-message-actions${lastUserEventId === message.event.id ? ' can-rewrite' : ''}`}><button type="button" className="conversation-message-copy" aria-label={copiedEventId === message.event.id ? '消息已复制' : '复制消息'} title={copiedEventId === message.event.id ? '已复制' : '复制消息'} onClick={() => copyUserMessage(message.event.id, message.content)}>{copiedEventId === message.event.id ? <Check size={13}/> : <Copy size={13}/>}</button>{lastUserEventId === message.event.id && <button type="button" className="conversation-message-rewrite" aria-label="编辑并重新思考" title="编辑并重新思考" onClick={() => { setEditingEventId(message.event.id); setEditingContent(message.content); }}><Pencil size={13}/></button>}</div></footer></article>}</div>
               {segmentBlocks.map(block => <ActivityGroup
                 key={`${message.event.id}:${block.id}`}
                 items={block.items}
@@ -2588,7 +2585,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
             open={completedProcessExpanded}
             onOpenChange={setCompletedProcessExpanded}
           />)}
-          {turn.assistant && <AgentReply event={turn.assistant.event} content={turn.assistant.content} reveal={revealEventIds.has(turn.assistant.event.id)} changes={fileChanges} onFork={!isGenerating ? () => onFork?.(turn.assistant!.event.id) : undefined} onPreviewCandidateFile={onPreviewCandidateFile} onReviewChanges={onReviewChanges} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenImage={onOpenImage} workspaceImageUrl={workspaceImageUrl} workspaceRoot={workspaceRoot} annotations={annotations} onLocateAnnotation={locateAnnotation}/>}
+          {turn.assistant && <AgentReply event={turn.assistant.event} content={turn.assistant.content} reveal={revealEventIds.has(turn.assistant.event.id)} changes={fileChanges} onFork={!isGenerating ? () => onFork?.(turn.assistant!.event.id) : undefined} onPreviewCandidateFile={onPreviewCandidateFile} onReviewChanges={onReviewChanges} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenImage={onOpenImage} workspaceImageUrl={workspaceImageUrl} workspaceRoot={workspaceRoot} annotations={turn.assistant.event.payload.collaboration_annotation_ids !== undefined ? eventAnnotations(turn.assistant.event) : turn.user ? eventAnnotations(turn.user.event) : []} onLocateAnnotation={locateAnnotation}/>}
           {failures.map(item => <ConversationFailure key={item.event.id} item={item} taskControl={taskControl} retryStatus={isLatest ? modelRetryStatus : undefined}/>)}
         </section>;
       })}

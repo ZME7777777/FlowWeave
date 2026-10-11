@@ -77,6 +77,75 @@ def complete_active_branch(
     raise ValueError("OpenHands active branch hydration encountered a cursor cycle")
 
 
+def complete_latest_user_turn(
+    read_active_events: Callable[[RuntimeHandle], RuntimeEventBatch],
+    handle: RuntimeHandle,
+) -> RuntimeEventBatch:
+    """Read enough native history to render the formal HEAD's latest user turn.
+
+    Hydration remains bounded to the current OpenHands event window unless a
+    long-running turn places its user message behind that window. In that case,
+    follow only the official active-branch continuation until the nearest user
+    message is present, leaving older history paged for the browser.
+    """
+
+    pages: list[RuntimeEventBatch] = []
+    events_by_id: dict[str, RuntimeEvent] = {}
+    leaf_event_id: str | None = None
+    history_cursor: str | None = None
+    visited_history_cursors: set[str] = set()
+
+    while len(events_by_id) < _MAX_ACTIVE_BRANCH_EVENTS:
+        batch = read_active_events(
+            replace(
+                handle,
+                history_cursor=history_cursor,
+                active_branch_leaf_event_id=leaf_event_id if history_cursor else None,
+            )
+        )
+        if leaf_event_id is None:
+            leaf_event_id = batch.cursor
+        elif batch.cursor != leaf_event_id:
+            raise ValueError("OpenHands active branch changed during hydration")
+        for event in batch.events:
+            existing = events_by_id.get(event.cursor)
+            if existing is not None and existing != event:
+                raise ValueError("OpenHands returned conflicting event identities")
+            events_by_id[event.cursor] = event
+        pages.append(batch)
+
+        if (
+            not events_by_id
+            or latest_user_message_on_active_branch(tuple(events_by_id.values()), leaf_event_id)
+            is not None
+            or not batch.history_cursor
+        ):
+            if len(pages) > 1:
+                verified = read_active_events(handle)
+                if verified.cursor != leaf_event_id:
+                    raise ValueError("OpenHands active branch changed during hydration")
+            events = tuple(event for page in reversed(pages) for event in page.events)
+            newest = pages[0]
+            return RuntimeEventBatch(
+                events=events,
+                cursor=leaf_event_id,
+                result=newest.result,
+                cursor_anchor_found=newest.cursor_anchor_found,
+                task_usage=newest.task_usage,
+                usage=newest.usage,
+                context=newest.context,
+                readiness=newest.readiness,
+                history_cursor=batch.history_cursor,
+            )
+
+        history_cursor = batch.history_cursor
+        if history_cursor in visited_history_cursors:
+            break
+        visited_history_cursors.add(history_cursor)
+
+    raise ValueError("OpenHands latest user turn exceeds the bounded hydration read budget")
+
+
 def latest_user_message_on_active_branch(
     events: tuple[RuntimeEvent, ...], leaf_event_id: str | None
 ) -> RuntimeEvent | None:

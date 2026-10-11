@@ -53,7 +53,10 @@ from flowweave.modules.agent_sessions.application.draft_attachments import (
     delete_owned_attachment_files,
     enqueue_draft_attachment_cleanup,
 )
-from flowweave.modules.agent_sessions.application.event_branch import complete_active_branch
+from flowweave.modules.agent_sessions.application.event_branch import (
+    complete_active_branch,
+    complete_latest_user_turn,
+)
 from flowweave.modules.agent_sessions.application.flow_node_locator import (
     active_runtime_handle,
     bind_openhands_conversation,
@@ -2557,7 +2560,7 @@ def read_prepared_node_conversation_hydration(
 
     runtime = get_runtime()
     try:
-        batch = runtime.read_active_events(prepared.handle)
+        batch = complete_latest_user_turn(runtime.read_active_events, prepared.handle)
         context = hydration_context_snapshot(batch.context)
         readiness = (
             batch.readiness.as_dict()

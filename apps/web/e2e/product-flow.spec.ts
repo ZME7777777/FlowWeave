@@ -888,6 +888,12 @@ test('top-level Agent workspace creates a direct conversation and restores its U
           // that first completed reply rather than follow arrival order.
           { id: 'late-root-file-action', event_type: 'TOOL_CALL', payload: { source: 'agent', parent_id: 'user-request', action_id: 'late-root-file-action', tool_call_id: 'late-root-file-call', tool_name: 'file_editor', event_name: 'FileEditorAction', details: { command: 'str_replace', path: '/runtime/workspace/project/src/root-owned.ts', old_content: 'export const owner = "old";', new_content: 'export const owner = "root";' }, timestamp: '2026-08-26T10:05:03Z' } },
           { id: 'late-root-file-result', event_type: 'TOOL_RESULT', payload: { source: 'environment', parent_id: 'late-root-file-action', action_id: 'late-root-file-action', tool_call_id: 'late-root-file-call', tool_name: 'file_editor', event_name: 'FileEditorObservation', details: { command: 'str_replace', path: '/runtime/workspace/project/src/root-owned.ts', old_content: 'export const owner = "old";', new_content: 'export const owner = "root";', is_error: false }, timestamp: '2026-08-26T10:05:04Z' } },
+          { id: 'late-root-terminal-action', event_type: 'TOOL_CALL', payload: { source: 'agent', parent_id: 'user-request', action_id: 'late-root-terminal-action', tool_call_id: 'late-root-terminal-call', tool_name: 'terminal', event_name: 'TerminalAction', details: { command: 'touch /runtime/workspace/project/src/generated.ts' }, timestamp: '2026-08-26T10:05:05Z' } },
+          { id: 'late-root-terminal-result', event_type: 'TOOL_RESULT', payload: { source: 'environment', parent_id: 'late-root-terminal-action', action_id: 'late-root-terminal-action', tool_call_id: 'late-root-terminal-call', tool_name: 'terminal', event_name: 'TerminalObservation', details: { command: 'touch /runtime/workspace/project/src/generated.ts', exit_code: 0, is_error: false }, timestamp: '2026-08-26T10:05:06Z' } },
+          { id: 'late-root-unknown-terminal-action', event_type: 'TOOL_CALL', payload: { source: 'agent', parent_id: 'user-request', action_id: 'late-root-unknown-terminal-action', tool_call_id: 'late-root-unknown-terminal-call', tool_name: 'terminal', event_name: 'TerminalAction', details: { command: 'python scripts/generate.py' }, timestamp: '2026-08-26T10:05:07Z' } },
+          { id: 'late-root-unknown-terminal-result', event_type: 'TOOL_RESULT', payload: { source: 'environment', parent_id: 'late-root-unknown-terminal-action', action_id: 'late-root-unknown-terminal-action', tool_call_id: 'late-root-unknown-terminal-call', tool_name: 'terminal', event_name: 'TerminalObservation', details: { command: 'python scripts/generate.py', exit_code: 0, is_error: false }, timestamp: '2026-08-26T10:05:08Z' } },
+          { id: 'late-root-failed-terminal-action', event_type: 'TOOL_CALL', payload: { source: 'agent', parent_id: 'user-request', action_id: 'late-root-failed-terminal-action', tool_call_id: 'late-root-failed-terminal-call', tool_name: 'terminal', event_name: 'TerminalAction', details: { command: 'touch /runtime/workspace/project/src/failed.ts' }, timestamp: '2026-08-26T10:05:09Z' } },
+          { id: 'late-root-failed-terminal-result', event_type: 'TOOL_RESULT', payload: { source: 'environment', parent_id: 'late-root-failed-terminal-action', action_id: 'late-root-failed-terminal-action', tool_call_id: 'late-root-failed-terminal-call', tool_name: 'terminal', event_name: 'TerminalObservation', details: { command: 'touch /runtime/workspace/project/src/failed.ts', exit_code: 1, is_error: true }, timestamp: '2026-08-26T10:05:10Z' } },
           ...(manualCondensations ? [
             { id: 'manual-condensation-request', event_type: 'CONDENSATION_REQUESTED', payload: { source: 'agent', parent_id: 'failure-event', timestamp: '2026-08-26T10:05:10Z' } },
             ...(manualCondensationCompleted ? [
@@ -1108,7 +1114,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await page.reload();
   const sentBeforeRetryAfterTerminalError = sentMessages;
   const composerAfterTerminalError = page.getByLabel('发送 Agent 消息');
-  await expect.poll(async () => composerAfterTerminalError.evaluate(element => element.getAttribute('contenteditable'))).toBe('true');
+  await expect(composerAfterTerminalError).toBeEditable();
   await composerAfterTerminalError.fill('错误后应直接发送');
   await page.getByLabel('发送消息').click();
   await expect(page.locator('[aria-label="消息投递队列"]')).toHaveCount(0);
@@ -1150,7 +1156,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect.poll(() => workspaceGitChangesRequests).toBe(gitSummaryChangesRequestsBeforeRefresh + 1);
   await expect(gitSummary).toContainText('本地 +0');
   await expect(gitSummary).toContainText('远端 +0');
-  await gitSummary.getByRole('button', { name: '在全屏文件栏中查看 Git 信息' }).click();
+  await gitSummary.getByTitle('在全屏文件栏中查看 Git 信息').click();
   await expect(page.getByLabel('全屏工作区工具')).toBeVisible();
   await expect(page.getByRole('complementary', { name: 'Git' })).toBeVisible();
   await expect(page.getByRole('button', { name: '本地改动', exact: true })).toHaveClass(/active/);
@@ -1482,15 +1488,13 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(completedProcess).toBeVisible();
   const firstProgressGroup = completedProcess.locator('[data-progress-event-id="progress-note"]');
   const nextProgressGroup = completedProcess.locator('[data-progress-event-id="progress-note-next"]');
-  await expect(firstProgressGroup.locator(':scope > summary')).toContainText('我先确认当前工作目录，再根据现有结构判断后续改动范围。');
-  await expect(firstProgressGroup).toHaveJSProperty('open', false);
-  await expect(firstProgressGroup.getByText('已运行 pwd')).toBeHidden();
-  await firstProgressGroup.locator(':scope > summary').click();
+  await expect(firstProgressGroup).toContainText('我先确认当前工作目录，再根据现有结构判断后续改动范围。');
+  await expect(firstProgressGroup.locator(':scope > summary')).toHaveCount(0);
   await expect(firstProgressGroup.getByText('已运行 pwd')).toBeVisible();
   await expect(firstProgressGroup.getByText('已编辑 工作区/src/config.ts')).toBeVisible();
   await expect(firstProgressGroup.getByText('已读取 工作区/src/Main.java')).toHaveCount(0);
-  await expect(nextProgressGroup.locator(':scope > summary')).toContainText('接下来检查不同类型的文件。');
-  await nextProgressGroup.locator(':scope > summary').click();
+  await expect(nextProgressGroup).toContainText('接下来检查不同类型的文件。');
+  await expect(nextProgressGroup.locator(':scope > summary')).toHaveCount(0);
   await expect(nextProgressGroup.getByText('已读取 工作区/src/Main.java · 第 12–36 行')).toBeVisible();
   await expect(nextProgressGroup.getByText('已读取 工作区/config/application.properties')).toBeVisible();
   await expect(nextProgressGroup.getByText('已创建 工作区/README.md')).toBeVisible();
@@ -1503,12 +1507,15 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     return Boolean(process && reply && (process.compareDocumentPosition(reply) & Node.DOCUMENT_POSITION_FOLLOWING));
   })).toBe(true);
   await expect(page.getByText('工作区已就绪。')).toHaveCount(1);
-  const replyChanges = completedTurn.getByRole('button', { name: '已编辑 2 个文件' });
+  const replyChanges = completedTurn.getByRole('button', { name: '已编辑 3 个文件' });
   await expect(replyChanges).toBeVisible();
-  await expect(page.getByRole('button', { name: '已编辑 2 个文件' })).toHaveCount(1);
+  await expect(page.getByRole('button', { name: '已编辑 3 个文件' })).toHaveCount(1);
   await expect(completedTurn.getByText('config.ts', { exact: true })).toBeVisible();
   await expect(completedTurn.getByText('root-owned.ts', { exact: true })).toBeVisible();
+  await expect(completedTurn.getByText('generated.ts', { exact: true })).toBeVisible();
+  await expect(completedTurn.getByText('已确认', { exact: true })).toBeVisible();
   await expect(completedTurn.getByText('unchanged.ts', { exact: true })).toHaveCount(0);
+  await expect(completedTurn.getByText('failed.ts', { exact: true })).toHaveCount(0);
   await expect(replyChanges).toContainText('+2');
   await expect(replyChanges).toContainText('-2');
   const reportLink = page.getByRole('link', { name: '期权异动接口批量查询代码审查报告.md' });
@@ -1543,6 +1550,9 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.getByRole('button', { name: '上一处改动' })).toBeVisible();
   await expect(page.getByRole('button', { name: '下一处改动' })).toBeVisible();
   expect(await page.locator('.agent-changes-diff .agent-diff-line').filter({ hasText: 'const mode = "new"' }).first().evaluate(element => element.tagName)).toBe('DIV');
+  await page.getByText('generated.ts', { exact: true }).last().click();
+  await expect(page.getByText('未捕获行级差异', { exact: true })).toBeVisible();
+  await expect(page.getByText('该文件由已成功的终端命令明确指定；为避免猜测，未根据工作区状态补全内容。', { exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: '查看源文件' })).toBeVisible();
   await page.getByRole('button', { name: '查看源文件' }).click();
   await expect(page.getByText('workspace file preview', { exact: true })).toBeVisible();
@@ -2906,49 +2916,29 @@ test('selected conversation text is sent and rendered as a compact reference car
   const resourceTags = page.getByLabel('已添加的附件和会话引用');
   await expect(resourceTags).toHaveCount(1);
   await expect(resourceTags.getByText('参考图.png', { exact: true })).toBeVisible();
-  await expect(resourceTags.getByRole('button', { name: '会话引用 1', exact: true })).toBeVisible();
+  await expect(resourceTags.getByRole('button', { name: '引用会话', exact: true })).toBeVisible();
   await resourceTags.getByRole('button', { name: '参考图.png', exact: true }).click();
   await expect(page.getByRole('dialog', { name: '文件预览' })).toBeVisible();
   await page.getByRole('button', { name: '关闭文件预览' }).click();
   await resourceTags.getByRole('button', { name: '引用附件 1', exact: true }).click();
   await expect(page.getByLabel('发送 Agent 消息')).toHaveValue('@附件1');
   await expect(resourceTags.evaluate(element => getComputedStyle(element).paddingBottom)).resolves.toBe('4px');
-  const annotationList = page.getByLabel('已添加的引用 1 条');
-  await expect(annotationList).toContainText('会话引用 1');
-  await resourceTags.getByRole('button', { name: '会话引用 1', exact: true }).click();
-  const annotationCard = page.getByRole('dialog', { name: '会话引用 1 详情' });
-  const locateSource = annotationCard.getByRole('button', { name: '定位原文' });
-  await expect(annotationCard).toBeVisible();
-  await expect.poll(() => locateSource.evaluate(button => {
-    const rect = button.getBoundingClientRect();
-    return rect.width > rect.height && rect.width > 45 && rect.height > 20;
-  })).toBe(true);
-  await expect(annotationCard.locator('header > span')).toHaveCSS('max-width', 'none');
-  const quote = annotationCard.locator('blockquote');
-  await expect(quote).toHaveCSS('overflow-y', 'auto');
-  await expect.poll(() => quote.evaluate(element => element.getBoundingClientRect().width)).toBeGreaterThan(300);
-  await locateSource.click();
+  await resourceTags.getByRole('button', { name: '引用会话', exact: true }).click();
+  const commentCard = page.getByRole('dialog', { name: '引用会话 详情' });
+  await expect(commentCard).toBeVisible();
+  await commentCard.getByRole('button', { name: '双击添加评论', exact: true }).dblclick();
+  await commentCard.getByLabel('编辑注释评论').fill('请重点核对这段建议');
+  await commentCard.getByRole('button', { name: '定位原文' }).click();
   await expect(source).toBeInViewport();
-  await expect.poll(() => source.evaluate(element => getComputedStyle(element, '::selection').backgroundColor)).toBe('rgb(183, 223, 255)');
-  await expect.poll(() => source.evaluate(() => window.getSelection()?.toString())).toBe(selectedText);
-  await expect.poll(() => source.evaluate(element => {
-    const selection = window.getSelection();
-    return Boolean(selection?.rangeCount && element.contains(selection.getRangeAt(0).startContainer) && element.contains(selection.getRangeAt(0).endContainer));
-  })).toBe(true);
-  const referenceHighlights = page.locator('.conversation-reference-highlights i');
-  await expect(referenceHighlights).not.toHaveCount(0);
-  await page.evaluate(() => window.getSelection()?.removeAllRanges());
-  await expect(referenceHighlights).not.toHaveCount(0);
-  await expect(referenceHighlights.first()).toHaveCSS('background-color', 'rgba(183, 223, 255, 0.85)');
-  await expect(referenceHighlights).toHaveCount(0, { timeout: 2_000 });
   await page.getByLabel('发送 Agent 消息').fill('请据此继续');
   await page.getByRole('button', { name: '发送消息' }).click();
   await expect.poll(() => sentPayload).toMatchObject({
     content: '请据此继续',
   });
-  const sentMessage = page.locator('[data-user-event-id="reference-target-user"]');
+  const sentMessage = page.locator('.conversation-message.user').filter({ hasText: '请据此继续' });
+  await expect(sentMessage).toHaveCount(1);
   await expect(sentMessage).toContainText('请据此继续');
-  await expect(sentMessage).toContainText('会话引用 1');
+  await expect(sentMessage).toContainText('引用会话');
 });
 
 test('Agent workspace groups toggle their conversation lists', async ({ page }) => {

@@ -17,6 +17,8 @@ export interface WorkspaceFileChange {
   additions: number;
   deletions: number;
   lines: FileChangeLine[];
+  /** A terminal command confirmed the target path but did not expose file content. */
+  contentUnavailable?: boolean;
 }
 
 function normalizedWorkspacePath(path: string): string {
@@ -92,6 +94,52 @@ function editableFileOperation(event: OpenHandsConversationEvent): boolean {
 function appliedPatchOperation(event: OpenHandsConversationEvent): boolean {
   if (event.event_type !== 'TOOL_RESULT' || event.payload.event_name !== 'ApplyPatchObservation') return false;
   return event.payload.details?.is_error !== true;
+}
+
+function terminalCommand(event: OpenHandsConversationEvent): string | undefined {
+  if (event.event_type !== 'TOOL_CALL' || event.payload.event_name !== 'TerminalAction') return undefined;
+  return detailString(event.payload.details?.command)?.trim();
+}
+
+function successfulTerminalOperation(event: OpenHandsConversationEvent): boolean {
+  if (event.event_type !== 'TOOL_RESULT' || event.payload.event_name !== 'TerminalObservation') return false;
+  const details = event.payload.details ?? {};
+  return details.is_error !== true && details.exit_code === 0;
+}
+
+function shellPath(value: string): string | undefined {
+  const path = value.trim();
+  if (!path || /[\s|&;<>`$*?{}()[\]\\]/.test(path) || path === '-' || path.startsWith('-')) return undefined;
+  if (path.split('/').includes('..')) return undefined;
+  if (path.startsWith('/') && !path.startsWith('/runtime/workspace/project/')) return undefined;
+  return path;
+}
+
+function terminalWritePaths(command: string): string[] {
+  // Only recognize a single simple command. Shell compound commands and expansion
+  // can write arbitrary locations, so they intentionally remain uncounted.
+  if (/[|;&`$]/.test(command) || /\r|\n/.test(command)) return [];
+  const redirect = /(?:^|\s)(?:\d?>>|\d?>)(?:\s*)([^\s]+)/g;
+  const paths = new Set<string>();
+  for (let match = redirect.exec(command); match; match = redirect.exec(command)) {
+    const path = shellPath(match[1]);
+    if (path) paths.add(path);
+  }
+  if (paths.size) return [...paths];
+
+  const parts = command.trim().split(/\s+/);
+  const name = parts[0];
+  if (!['touch', 'rm', 'sed', 'cp', 'mv'].includes(name)) return [];
+  if (name === 'sed') {
+    const match = /^sed\s+-i\S*\s+(?:'[^']*'|"[^"]*"|[^\s]+)\s+([^\s]+)$/.exec(command);
+    const path = match ? shellPath(match[1]) : undefined;
+    return path ? [path] : [];
+  }
+  if (parts.length < 2 || parts.slice(1).some(part => part.startsWith('-'))) return [];
+  const operands = parts.slice(1).map(shellPath);
+  if (operands.some(path => !path)) return [];
+  if (name === 'touch' || name === 'rm') return operands as string[];
+  return operands.length === 2 ? [(operands as string[])[1]] : [];
 }
 
 function splitLines(value: string): string[] {
@@ -192,6 +240,11 @@ function appendChange(changes: Map<string, WorkspaceFileChange>, change: Workspa
     changes.set(change.path, change);
     return;
   }
+  if (change.contentUnavailable) return;
+  if (existing.contentUnavailable) {
+    changes.set(change.path, { ...change, id: existing.id });
+    return;
+  }
   const lines = [...existing.lines, ...change.lines];
   changes.set(change.path, {
     ...change,
@@ -203,9 +256,23 @@ function appendChange(changes: Map<string, WorkspaceFileChange>, change: Workspa
   });
 }
 
+function terminalChange(id: string, path: string): WorkspaceFileChange {
+  return {
+    id: `${id}:${path}`,
+    path,
+    before: '',
+    after: '',
+    additions: 0,
+    deletions: 0,
+    lines: [],
+    contentUnavailable: true,
+  };
+}
+
 export function workspaceFileChanges(events: OpenHandsConversationEvent[]): WorkspaceFileChange[] {
   const patchActions = new Map<string, PendingPatch[]>();
   const fileEditorActions = new Map<string, PendingFileEdit>();
+  const terminalActions = new Map<string, string>();
   const changesByPath = new Map<string, WorkspaceFileChange>();
   for (const event of events) {
     const patches = patchChanges(event);
@@ -214,6 +281,12 @@ export function workspaceFileChanges(events: OpenHandsConversationEvent[]): Work
     if (fileEditorChange) {
       for (const id of [event.id, detailString(event.payload.action_id), detailString(event.payload.tool_call_id)]) {
         if (id) fileEditorActions.set(id, fileEditorChange);
+      }
+    }
+    const command = terminalCommand(event);
+    if (command) {
+      for (const id of [event.id, detailString(event.payload.action_id), detailString(event.payload.tool_call_id)]) {
+        if (id) terminalActions.set(id, command);
       }
     }
     if (appliedPatchOperation(event)) {
@@ -230,6 +303,13 @@ export function workspaceFileChanges(events: OpenHandsConversationEvent[]): Work
           lines,
         });
       }
+    }
+    if (successfulTerminalOperation(event)) {
+      const command = [detailString(event.payload.action_id), detailString(event.payload.tool_call_id), detailString(event.payload.parent_id)]
+        .filter((id): id is string => Boolean(id))
+        .map(id => terminalActions.get(id))
+        .find((value): value is string => Boolean(value));
+      if (command) terminalWritePaths(command).forEach(path => appendChange(changesByPath, terminalChange(event.id, path)));
     }
     if (!editableFileOperation(event)) continue;
     const details = event.payload.details ?? {};
@@ -253,5 +333,7 @@ export function workspaceFileChanges(events: OpenHandsConversationEvent[]): Work
       .find((change): change is PendingFileEdit => Boolean(change));
     if (actionChange) appendChange(changesByPath, changeFromSnapshot(actionChange));
   }
-  return [...changesByPath.values()].filter(change => change.additions > 0 || change.deletions > 0);
+  return [...changesByPath.values()].filter(change => (
+    change.contentUnavailable || change.additions > 0 || change.deletions > 0
+  ));
 }

@@ -2193,11 +2193,18 @@ test('A new conversation stays first after an existing conversation was reordere
   await login(page);
   await page.getByRole('button', { name: 'Agent 会话' }).click();
   const source = page.getByRole('button', { name: '拖拽排序会话 已有会话 B' });
+  const referenceSource = page.getByRole('button', { name: '已有会话 B', exact: true });
   const target = page.locator('[data-conversation-binding-id="new-order-a"]');
+  await expect(source).toHaveAttribute('data-drag-zone', 'conversation-order');
+  await expect(referenceSource).toHaveAttribute('data-drag-zone', 'conversation-reference');
+  await expect(referenceSource).toHaveAttribute('draggable', 'true');
   const sourceBox = await source.boundingBox();
+  const referenceBox = await referenceSource.boundingBox();
   const targetBox = await target.boundingBox();
   expect(sourceBox).not.toBeNull();
+  expect(referenceBox).not.toBeNull();
   expect(targetBox).not.toBeNull();
+  expect(sourceBox!.x + sourceBox!.width).toBeLessThanOrEqual(referenceBox!.x);
   await page.mouse.move(sourceBox!.x + sourceBox!.width / 2, sourceBox!.y + sourceBox!.height / 2);
   await page.mouse.down();
   await page.mouse.move(targetBox!.x + targetBox!.width / 2, targetBox!.y + 2, { steps: 5 });
@@ -3697,9 +3704,10 @@ test('A binding confirmed missing by background event synchronization clears its
 });
 
 
-test('Pausing and resuming keeps the event stream visible without reloading', async ({ page }) => {
+test('Pausing immediately updates the controls before the readiness projection catches up', async ({ page }) => {
   let authenticated = false;
   let paused = false;
+  let pauseProjectionAvailable = false;
   let resumed = false;
   let stream: WebSocketRoute | undefined;
   const workspace = { id: 'pause-resume-workspace', display_name: '暂停继续工作区', desired_state: 'RUNNING', updated_at: now };
@@ -3716,7 +3724,7 @@ test('Pausing and resuming keeps the event stream visible without reloading', as
   await page.route('**/api/v1/**', async route => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
-    const status = resumed ? 'running' : paused ? 'idle' : 'running';
+    const status = resumed ? 'running' : paused && pauseProjectionAvailable ? 'paused' : 'running';
     if (path.endsWith('/auth/me')) return authenticated ? json(route, user) : json(route, { error: { code: 'AUTHENTICATION_REQUIRED', message: '请先登录' } }, 401);
     if (path.endsWith('/auth/login') && request.method() === 'POST') { authenticated = true; return json(route, user); }
     if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
@@ -3753,6 +3761,7 @@ test('Pausing and resuming keeps the event stream visible without reloading', as
   await page.getByRole('button', { name: '暂停当前 Agent' }).click();
   await expect(page.getByRole('button', { name: '继续当前 Agent' })).toBeVisible();
 
+  pauseProjectionAvailable = true;
   await page.getByRole('button', { name: '继续当前 Agent' }).click();
   await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toBeVisible();
   stream!.send(JSON.stringify({
