@@ -819,7 +819,7 @@ function ConversationStreamObserver({
 }
 
 function WorkspaceConversationRow({
-  item, selectedBindingId, workspaceName, running, possiblyStuck, failed, unread, unreadOrigin, pinned, conversationWritable, removing, deleteDisabled, dragging, dropPosition, onPointerDragStart, onSelect, onDoubleClick, onTogglePin, onMarkUnread, onMarkRead, onAcknowledgeAlert, onDelete, reveal, onDragConversationReference,
+  item, selectedBindingId, workspaceName, running, possiblyStuck, failed, unread, unreadOrigin, pinned, conversationWritable, removing, deleteDisabled, dragging, dropPosition, onDragStart, onDragOver, onDrop, onDragEnd, onSelect, onDoubleClick, onTogglePin, onMarkUnread, onMarkRead, onAcknowledgeAlert, onDelete, reveal,
 }: {
   item: AgentConversation;
   selectedBindingId?: string;
@@ -835,7 +835,10 @@ function WorkspaceConversationRow({
   deleteDisabled: boolean;
   dragging?: boolean;
   dropPosition?: 'before' | 'after';
-  onPointerDragStart?: (event: React.PointerEvent<HTMLButtonElement>) => void;
+  onDragStart?: (event: React.DragEvent<HTMLButtonElement>) => void;
+  onDragOver?: (event: React.DragEvent<HTMLDivElement>) => void;
+  onDrop?: (event: React.DragEvent<HTMLDivElement>) => void;
+  onDragEnd?: () => void;
   onSelect: () => void;
   onDoubleClick?: () => void;
   onTogglePin: () => void;
@@ -844,7 +847,6 @@ function WorkspaceConversationRow({
   onAcknowledgeAlert?: () => void;
   onDelete?: () => void;
   reveal?: boolean;
-  onDragConversationReference?: (item: AgentConversation, event: React.DragEvent<HTMLButtonElement>) => void;
 }) {
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number }>();
   const showRunningAlert = possiblyStuck && running && !failed;
@@ -859,12 +861,11 @@ function WorkspaceConversationRow({
     return () => { window.removeEventListener('pointerdown', close); window.removeEventListener('resize', close); };
   }, [contextMenu]);
   const selected = item.id === selectedBindingId;
-  return <div data-conversation-binding-id={item.id} data-drag-partition="conversation-row" className={`agent-workspace-conversation${selected ? ' active' : ''}${dragging ? ' dragging' : ''}${dropPosition ? ` drop-${dropPosition}` : ''}${reveal ? ' sidebar-reveal' : ''}`} onContextMenu={event => {
+  return <div data-conversation-binding-id={item.id} className={`agent-workspace-conversation${selected ? ' active' : ''}${dragging ? ' dragging' : ''}${dropPosition ? ` drop-${dropPosition}` : ''}${reveal ? ' sidebar-reveal' : ''}`} onDragOver={onDragOver} onDrop={onDrop} onContextMenu={event => {
     event.preventDefault();
     setContextMenu({ x: Math.min(event.clientX, window.innerWidth - 180), y: Math.min(event.clientY, window.innerHeight - 52) });
   }}>
-    {onPointerDragStart && <button type="button" data-drag-zone="conversation-order" className="agent-workspace-conversation-drag" aria-label={`拖拽排序会话 ${conversationName(item)}`} title="拖拽调整当前工作区内的顺序" onClick={event => event.stopPropagation()} onDragStart={event => event.preventDefault()} onPointerDown={event => { event.stopPropagation(); onPointerDragStart(event); }}><GripVertical size={13}/></button>}
-    <button type="button" data-drag-zone="conversation-reference" draggable={Boolean(onDragConversationReference)} className={`agent-workspace-conversation-select${selected ? ' active' : ''}`} aria-label={conversationName(item)} title={onDragConversationReference ? '拖入发送框以引用此会话' : undefined} onPointerDown={event => event.stopPropagation()} onDragStart={event => onDragConversationReference?.(item, event)} onClick={onSelect} onDoubleClick={onDoubleClick}>
+    <button type="button" draggable={Boolean(onDragStart)} className={`agent-workspace-conversation-select${selected ? ' active' : ''}`} aria-label={conversationName(item)} title={onDragStart ? '拖入发送框以引用此会话，或拖到其他会话以调整顺序' : undefined} onDragStart={onDragStart} onDragEnd={onDragEnd} onClick={onSelect} onDoubleClick={onDoubleClick}>
       <span><b>{conversationName(item)}</b>{workspaceName && <small title={workspaceName}><Folder size={11}/><span>{workspaceName}</span></small>}</span>
     </button>
     {showRunningAlert && <span className="agent-workspace-conversation-alert running" role="img" aria-label="会话正在运行但后台长时间未产生可确认进展" title="会话可能需要暂停后继续，但后续仍可能自行恢复"><CircleAlert aria-hidden="true" size={14}/></span>}
@@ -8006,20 +8007,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     window.addEventListener('pointerup', end, true);
     window.addEventListener('pointercancel', end, true);
   }
-  function previewPointerConversationDrop(clientX: number, clientY: number) {
-    const target = document.elementFromPoint(clientX, clientY)
-      ?.closest<HTMLElement>('[data-conversation-binding-id]');
-    const bindingId = target?.dataset.conversationBindingId;
-    const group = pointerDragGroupRef.current;
-    const draggedId = draggedConversationRef.current;
-    if (!target || !bindingId || !group || !draggedId || bindingId === draggedId) return;
-    const candidate = group.find(item => item.id === bindingId);
-    if (!candidate) return;
-    const after = clientY >= target.getBoundingClientRect().top + target.getBoundingClientRect().height / 2;
-    const next = { bindingId, after };
-    dragTargetRef.current = next;
-    setDragTarget(current => current?.bindingId === bindingId && current.after === after ? current : next);
-  }
   function commitConversationDrop(draggedId: string | undefined, target: AgentConversation | undefined, after: boolean, group: AgentConversation[]) {
     if (!draggedId || !target || draggedId === target.id) return;
     const reordered = moveConversationInGroup(group, draggedId, target.id, after);
@@ -8033,36 +8020,40 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     }));
     synchronizeConversationOrder(draggedId, reordered.map(candidate => candidate.id));
   }
-  function endPointerConversationDrag() {
-    const draggedId = draggedConversationRef.current;
-    const target = dragTargetRef.current;
-    const group = pointerDragGroupRef.current;
-    const targetItem = target && group ? group.find(item => item.id === target.bindingId) : undefined;
-    commitConversationDrop(draggedId, targetItem, target?.after ?? false, group ?? []);
+  function clearConversationDrag() {
     draggedConversationRef.current = undefined;
     dragTargetRef.current = undefined;
     pointerDragGroupRef.current = undefined;
     setDraggedBindingId(undefined);
     setDragTarget(undefined);
   }
-  function startPointerConversationDrag(event: React.PointerEvent<HTMLButtonElement>, item: AgentConversation, group: AgentConversation[]) {
-    event.preventDefault();
-    event.currentTarget.setPointerCapture(event.pointerId);
+  function startConversationDrag(event: React.DragEvent<HTMLButtonElement>, item: AgentConversation, group: AgentConversation[]) {
     draggedConversationRef.current = item.id;
-    dragTargetRef.current = undefined;
     pointerDragGroupRef.current = group;
     setDraggedBindingId(item.id);
     setDragTarget(undefined);
-    const move = (pointerEvent: PointerEvent) => previewPointerConversationDrop(pointerEvent.clientX, pointerEvent.clientY);
-    const end = () => {
-      window.removeEventListener('pointermove', move, true);
-      window.removeEventListener('pointerup', end, true);
-      window.removeEventListener('pointercancel', end, true);
-      endPointerConversationDrag();
-    };
-    window.addEventListener('pointermove', move, true);
-    window.addEventListener('pointerup', end, true);
-    window.addEventListener('pointercancel', end, true);
+    const anchorEventId = item.id === selected?.id ? displayedEvents.at(-1)?.id : undefined;
+    event.dataTransfer.effectAllowed = 'copyMove';
+    event.dataTransfer.setData(CONVERSATION_REFERENCE_TRANSFER_TYPE, JSON.stringify({ bindingId: item.id, eventId: anchorEventId || '', title: conversationName(item) }));
+    event.dataTransfer.setData('text/plain', conversationName(item));
+  }
+  function previewConversationDrop(event: React.DragEvent<HTMLDivElement>, target: AgentConversation, group: AgentConversation[]) {
+    const draggedId = draggedConversationRef.current;
+    if (!draggedId || !group.some(item => item.id === draggedId) || draggedId === target.id) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'move';
+    const bounds = event.currentTarget.getBoundingClientRect();
+    const after = event.clientY >= bounds.top + bounds.height / 2;
+    const next = { bindingId: target.id, after };
+    dragTargetRef.current = next;
+    setDragTarget(current => current?.bindingId === target.id && current.after === after ? current : next);
+  }
+  function dropConversation(event: React.DragEvent<HTMLDivElement>, target: AgentConversation, group: AgentConversation[]) {
+    if (!draggedConversationRef.current) return;
+    event.preventDefault();
+    const dragTarget = dragTargetRef.current;
+    commitConversationDrop(draggedConversationRef.current, dragTarget?.bindingId === target.id ? target : undefined, dragTarget?.after ?? false, group);
+    clearConversationDrag();
   }
   const conversationRow = (item: AgentConversation, group: AgentConversation[], options: { allowDrag?: boolean; workspaceName?: string; onSelect?: () => void; onDoubleClick?: () => void; onMarkRead?: () => void } = {}) => {
     // The batched native activity snapshot is the sidebar's authority for
@@ -8090,12 +8081,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     const unread = unreadConversationIds.has(item.id) || Boolean(item.unread);
     const unreadOrigin = item.unread_origin;
     const conversationWritable = Boolean(item.write_available);
-    return <WorkspaceConversationRow key={item.id} item={item} selectedBindingId={selectedBindingId} workspaceName={options.workspaceName} running={running} possiblyStuck={possiblyStuck} failed={failed} unread={unread} unreadOrigin={unreadOrigin} pinned={Boolean(item.pinned)} conversationWritable={conversationWritable} removing={remove.isPending} deleteDisabled={running} dragging={options.allowDrag !== false && draggedBindingId === item.id} dropPosition={options.allowDrag !== false && dragTarget?.bindingId === item.id ? (dragTarget.after ? 'after' : 'before') : undefined} onPointerDragStart={options.allowDrag === false ? undefined : event => startPointerConversationDrag(event, item, group)} onSelect={options.onSelect ?? (() => selectConversation(item.id))} onDoubleClick={options.onDoubleClick} onTogglePin={() => toggleConversationPin(item.id)} onMarkUnread={() => markConversationUnread(item.id)} onMarkRead={options.onMarkRead} onAcknowledgeAlert={() => markConversationRead(item.id)} onDelete={features.conversationDeletion && conversationWritable ? () => void confirmDeletion('会话', conversationName(item)).then(ok => { if (ok) remove.mutate(item.id); }) : undefined} reveal={sidebarListMode === 'workspaces' && sidebarRevealBindingId === item.id} onDragConversationReference={selected || conversationDraft ? (dragged, event) => {
-      const anchorEventId = dragged.id === selected?.id ? displayedEvents.at(-1)?.id : undefined;
-      event.dataTransfer.effectAllowed = 'copy';
-      event.dataTransfer.setData(CONVERSATION_REFERENCE_TRANSFER_TYPE, JSON.stringify({ bindingId: dragged.id, eventId: anchorEventId || '', title: conversationName(dragged) }));
-      event.dataTransfer.setData('text/plain', conversationName(dragged));
-    } : undefined}/>;
+    const draggable = options.allowDrag !== false;
+    return <WorkspaceConversationRow key={item.id} item={item} selectedBindingId={selectedBindingId} workspaceName={options.workspaceName} running={running} possiblyStuck={possiblyStuck} failed={failed} unread={unread} unreadOrigin={unreadOrigin} pinned={Boolean(item.pinned)} conversationWritable={conversationWritable} removing={remove.isPending} deleteDisabled={running} dragging={draggable && draggedBindingId === item.id} dropPosition={draggable && dragTarget?.bindingId === item.id ? (dragTarget.after ? 'after' : 'before') : undefined} onDragStart={draggable ? event => startConversationDrag(event, item, group) : undefined} onDragOver={draggable ? event => previewConversationDrop(event, item, group) : undefined} onDrop={draggable ? event => dropConversation(event, item, group) : undefined} onDragEnd={draggable ? clearConversationDrag : undefined} onSelect={options.onSelect ?? (() => selectConversation(item.id))} onDoubleClick={options.onDoubleClick} onTogglePin={() => toggleConversationPin(item.id)} onMarkUnread={() => markConversationUnread(item.id)} onMarkRead={options.onMarkRead} onAcknowledgeAlert={() => markConversationRead(item.id)} onDelete={features.conversationDeletion && conversationWritable ? () => void confirmDeletion('会话', conversationName(item)).then(ok => { if (ok) remove.mutate(item.id); }) : undefined} reveal={sidebarListMode === 'workspaces' && sidebarRevealBindingId === item.id}/>;
   };
   const pendingBootstrapItem = pendingBootstrap
     ? <button className={pendingBootstrap.draft.id === conversationDraft?.id ? 'active' : ''} aria-current={pendingBootstrap.draft.id === conversationDraft?.id ? 'page' : undefined} aria-label={`${pendingConversationName(pendingBootstrap.message)}，正在创建会话`}><LoaderCircle className="conversation-activity-spin" size={13}/><span><b>{pendingConversationName(pendingBootstrap.message)}</b><small>正在创建会话</small></span><ChevronRight size={13}/></button>
