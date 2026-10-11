@@ -1502,9 +1502,10 @@ function ConversationFileChanges({ changes, onReviewChanges, workspaceRoot }: {
   workspaceRoot?: string | null;
 }) {
   if (!changes.length) return null;
+  const exactChanges = changes.filter(change => !change.contentUnavailable);
   return <section className="conversation-file-changes" aria-label={`本轮编辑了 ${changes.length} 个文件`}>
-    <button type="button" onClick={() => onReviewChanges?.(changes)}><FileText size={15}/><span><b>{`已编辑 ${changes.length} 个文件`}</b><small><ins>{`+${changes.reduce((total, change) => total + change.additions, 0)}`}</ins><del>{`-${changes.reduce((total, change) => total + change.deletions, 0)}`}</del></small></span><PanelRightOpen size={14}/></button>
-    <div>{changes.map(change => <button type="button" key={change.id} onClick={() => onReviewChanges?.([change])}><span title={workspaceRelativePath(change.path, workspaceRoot)}>{workspaceRelativePath(change.path, workspaceRoot)}</span><ins>{`+${change.additions}`}</ins><del>{`-${change.deletions}`}</del></button>)}</div>
+    <button type="button" onClick={() => onReviewChanges?.(changes)}><FileText size={15}/><span><b>{`已编辑 ${changes.length} 个文件`}</b><small><ins>{`+${exactChanges.reduce((total, change) => total + change.additions, 0)}`}</ins><del>{`-${exactChanges.reduce((total, change) => total + change.deletions, 0)}`}</del></small></span><PanelRightOpen size={14}/></button>
+    <div>{changes.map(change => <button type="button" key={change.id} onClick={() => onReviewChanges?.([change])}><span title={workspaceRelativePath(change.path, workspaceRoot)}>{workspaceRelativePath(change.path, workspaceRoot)}</span>{change.contentUnavailable ? <em>已确认</em> : <><ins>{`+${change.additions}`}</ins><del>{`-${change.deletions}`}</del></>}</button>)}</div>
   </section>;
 }
 

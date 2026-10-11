@@ -888,6 +888,12 @@ test('top-level Agent workspace creates a direct conversation and restores its U
           // that first completed reply rather than follow arrival order.
           { id: 'late-root-file-action', event_type: 'TOOL_CALL', payload: { source: 'agent', parent_id: 'user-request', action_id: 'late-root-file-action', tool_call_id: 'late-root-file-call', tool_name: 'file_editor', event_name: 'FileEditorAction', details: { command: 'str_replace', path: '/runtime/workspace/project/src/root-owned.ts', old_content: 'export const owner = "old";', new_content: 'export const owner = "root";' }, timestamp: '2026-08-26T10:05:03Z' } },
           { id: 'late-root-file-result', event_type: 'TOOL_RESULT', payload: { source: 'environment', parent_id: 'late-root-file-action', action_id: 'late-root-file-action', tool_call_id: 'late-root-file-call', tool_name: 'file_editor', event_name: 'FileEditorObservation', details: { command: 'str_replace', path: '/runtime/workspace/project/src/root-owned.ts', old_content: 'export const owner = "old";', new_content: 'export const owner = "root";', is_error: false }, timestamp: '2026-08-26T10:05:04Z' } },
+          { id: 'late-root-terminal-action', event_type: 'TOOL_CALL', payload: { source: 'agent', parent_id: 'user-request', action_id: 'late-root-terminal-action', tool_call_id: 'late-root-terminal-call', tool_name: 'terminal', event_name: 'TerminalAction', details: { command: 'touch /runtime/workspace/project/src/generated.ts' }, timestamp: '2026-08-26T10:05:05Z' } },
+          { id: 'late-root-terminal-result', event_type: 'TOOL_RESULT', payload: { source: 'environment', parent_id: 'late-root-terminal-action', action_id: 'late-root-terminal-action', tool_call_id: 'late-root-terminal-call', tool_name: 'terminal', event_name: 'TerminalObservation', details: { command: 'touch /runtime/workspace/project/src/generated.ts', exit_code: 0, is_error: false }, timestamp: '2026-08-26T10:05:06Z' } },
+          { id: 'late-root-unknown-terminal-action', event_type: 'TOOL_CALL', payload: { source: 'agent', parent_id: 'user-request', action_id: 'late-root-unknown-terminal-action', tool_call_id: 'late-root-unknown-terminal-call', tool_name: 'terminal', event_name: 'TerminalAction', details: { command: 'python scripts/generate.py' }, timestamp: '2026-08-26T10:05:07Z' } },
+          { id: 'late-root-unknown-terminal-result', event_type: 'TOOL_RESULT', payload: { source: 'environment', parent_id: 'late-root-unknown-terminal-action', action_id: 'late-root-unknown-terminal-action', tool_call_id: 'late-root-unknown-terminal-call', tool_name: 'terminal', event_name: 'TerminalObservation', details: { command: 'python scripts/generate.py', exit_code: 0, is_error: false }, timestamp: '2026-08-26T10:05:08Z' } },
+          { id: 'late-root-failed-terminal-action', event_type: 'TOOL_CALL', payload: { source: 'agent', parent_id: 'user-request', action_id: 'late-root-failed-terminal-action', tool_call_id: 'late-root-failed-terminal-call', tool_name: 'terminal', event_name: 'TerminalAction', details: { command: 'touch /runtime/workspace/project/src/failed.ts' }, timestamp: '2026-08-26T10:05:09Z' } },
+          { id: 'late-root-failed-terminal-result', event_type: 'TOOL_RESULT', payload: { source: 'environment', parent_id: 'late-root-failed-terminal-action', action_id: 'late-root-failed-terminal-action', tool_call_id: 'late-root-failed-terminal-call', tool_name: 'terminal', event_name: 'TerminalObservation', details: { command: 'touch /runtime/workspace/project/src/failed.ts', exit_code: 1, is_error: true }, timestamp: '2026-08-26T10:05:10Z' } },
           ...(manualCondensations ? [
             { id: 'manual-condensation-request', event_type: 'CONDENSATION_REQUESTED', payload: { source: 'agent', parent_id: 'failure-event', timestamp: '2026-08-26T10:05:10Z' } },
             ...(manualCondensationCompleted ? [
@@ -1501,12 +1507,15 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     return Boolean(process && reply && (process.compareDocumentPosition(reply) & Node.DOCUMENT_POSITION_FOLLOWING));
   })).toBe(true);
   await expect(page.getByText('工作区已就绪。')).toHaveCount(1);
-  const replyChanges = completedTurn.getByRole('button', { name: '已编辑 2 个文件' });
+  const replyChanges = completedTurn.getByRole('button', { name: '已编辑 3 个文件' });
   await expect(replyChanges).toBeVisible();
-  await expect(page.getByRole('button', { name: '已编辑 2 个文件' })).toHaveCount(1);
+  await expect(page.getByRole('button', { name: '已编辑 3 个文件' })).toHaveCount(1);
   await expect(completedTurn.getByText('config.ts', { exact: true })).toBeVisible();
   await expect(completedTurn.getByText('root-owned.ts', { exact: true })).toBeVisible();
+  await expect(completedTurn.getByText('generated.ts', { exact: true })).toBeVisible();
+  await expect(completedTurn.getByText('已确认', { exact: true })).toBeVisible();
   await expect(completedTurn.getByText('unchanged.ts', { exact: true })).toHaveCount(0);
+  await expect(completedTurn.getByText('failed.ts', { exact: true })).toHaveCount(0);
   await expect(replyChanges).toContainText('+2');
   await expect(replyChanges).toContainText('-2');
   const reportLink = page.getByRole('link', { name: '期权异动接口批量查询代码审查报告.md' });
@@ -1541,6 +1550,9 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.getByRole('button', { name: '上一处改动' })).toBeVisible();
   await expect(page.getByRole('button', { name: '下一处改动' })).toBeVisible();
   expect(await page.locator('.agent-changes-diff .agent-diff-line').filter({ hasText: 'const mode = "new"' }).first().evaluate(element => element.tagName)).toBe('DIV');
+  await page.getByText('generated.ts', { exact: true }).last().click();
+  await expect(page.getByText('未捕获行级差异', { exact: true })).toBeVisible();
+  await expect(page.getByText('该文件由已成功的终端命令明确指定；为避免猜测，未根据工作区状态补全内容。', { exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: '查看源文件' })).toBeVisible();
   await page.getByRole('button', { name: '查看源文件' }).click();
   await expect(page.getByText('workspace file preview', { exact: true })).toBeVisible();

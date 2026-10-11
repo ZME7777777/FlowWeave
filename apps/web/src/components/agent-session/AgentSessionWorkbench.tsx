@@ -2327,7 +2327,7 @@ function WorkspaceChangesReview({ changes, selectedId, onSelect, onOpenSource, w
       pane.scrollLeft = Math.min(maxLeft, Math.max(0, pane.scrollLeft + event.deltaX));
     }
   };
-  if (!selected) return <div className="agent-changes-empty"><b>没有可审查的文件改动</b><span>仅显示 OpenHands FileEditor 已成功写入、且带有原始前后内容的改动。</span></div>;
+  if (!selected) return <div className="agent-changes-empty"><b>没有可审查的文件改动</b><span>仅显示 OpenHands 已确认的文件写入操作。</span></div>;
   const splitLines = splitDiffRows(selected.lines);
   const changeIndexes = diffChangeStartIndexes(selected.lines);
   const renderSplitLine = (entry: SplitDiffRow<WorkspaceFileChange['lines'][number]>['before'], side: 'before' | 'after', rowIndex: number) => {
@@ -2343,13 +2343,15 @@ function WorkspaceChangesReview({ changes, selectedId, onSelect, onOpenSource, w
       items={changes.map(change => ({ path: workspaceRelativePath(change.path, workspaceRoot), value: change }))}
       selectedPath={workspaceRelativePath(selected.path, workspaceRoot)}
       onSelect={change => onSelect(change.id)}
-      renderMeta={change => <em><ins>{`+${change.additions}`}</ins><del>{`-${change.deletions}`}</del></em>}
+      renderMeta={change => change.contentUnavailable ? <em>已确认</em> : <em><ins>{`+${change.additions}`}</ins><del>{`-${change.deletions}`}</del></em>}
     />
     <article ref={diffRootRef} className="agent-changes-diff">
-      <header><div><b title={workspaceRelativePath(selected.path, workspaceRoot)}>{workspaceRelativePath(selected.path, workspaceRoot)}</b><small><ins>{`+${selected.additions}`}</ins><del>{`-${selected.deletions}`}</del></small></div><div className="agent-changes-diff-actions"><DiffChangeNavigation rootRef={diffRootRef} resetKey={selected.id} changeIndexes={changeIndexes}/><button type="button" className="agent-open-source-file" onClick={() => onOpenSource(selected, sourceLineForDiffLine(selected.lines, selected.lines.findIndex(line => line.kind !== 'deletion')))}><FileCode2 size={12}/>查看源文件</button><div className="agent-diff-mode"><button type="button" className={mode === 'unified' ? 'active' : ''} onClick={() => setMode('unified')}>统一</button><button type="button" className={mode === 'split' ? 'active' : ''} onClick={() => setMode('split')}>并排</button></div></div></header>
-      {mode === 'unified'
-        ? <pre className="agent-diff-unified" onWheelCapture={stopDiffOverscroll}>{selected.lines.map((line, index) => <div className={`agent-diff-line ${line.kind}`} data-diff-change-index={changeIndexes.includes(index) ? index : undefined} key={`${line.oldLine ?? ''}:${line.newLine ?? ''}:${line.text}`} title={`双击打开源文件第 ${sourceLineForDiffLine(selected.lines, index)} 行`} onDoubleClick={() => onOpenSource(selected, sourceLineForDiffLine(selected.lines, index))}><i>{line.oldLine ?? line.newLine ?? ''}</i><strong>{line.kind === 'addition' ? '+' : line.kind === 'deletion' ? '-' : ' '}</strong><HighlightedDiffCode path={selected.path} value={line.text || ' '}/></div>)}</pre>
-        : <SharedSplitDiff resetKey={selected.id} before={splitLines.map((row, index) => renderSplitLine(row.before, 'before', index))} after={splitLines.map((row, index) => renderSplitLine(row.after, 'after', index))}/>
+      <header><div><b title={workspaceRelativePath(selected.path, workspaceRoot)}>{workspaceRelativePath(selected.path, workspaceRoot)}</b>{selected.contentUnavailable ? <small>已确认文件操作；未捕获行级差异</small> : <small><ins>{`+${selected.additions}`}</ins><del>{`-${selected.deletions}`}</del></small>}</div><div className="agent-changes-diff-actions">{!selected.contentUnavailable && <DiffChangeNavigation rootRef={diffRootRef} resetKey={selected.id} changeIndexes={changeIndexes}/>}<button type="button" className="agent-open-source-file" onClick={() => onOpenSource(selected, sourceLineForDiffLine(selected.lines, selected.lines.findIndex(line => line.kind !== 'deletion')))}><FileCode2 size={12}/>查看源文件</button>{!selected.contentUnavailable && <div className="agent-diff-mode"><button type="button" className={mode === 'unified' ? 'active' : ''} onClick={() => setMode('unified')}>统一</button><button type="button" className={mode === 'split' ? 'active' : ''} onClick={() => setMode('split')}>并排</button></div>}</div></header>
+      {selected.contentUnavailable
+        ? <div className="agent-changes-empty"><b>未捕获行级差异</b><span>该文件由已成功的终端命令明确指定；为避免猜测，未根据工作区状态补全内容。</span></div>
+        : mode === 'unified'
+          ? <pre className="agent-diff-unified" onWheelCapture={stopDiffOverscroll}>{selected.lines.map((line, index) => <div className={`agent-diff-line ${line.kind}`} data-diff-change-index={changeIndexes.includes(index) ? index : undefined} key={`${line.oldLine ?? ''}:${line.newLine ?? ''}:${line.text}`} title={`双击打开源文件第 ${sourceLineForDiffLine(selected.lines, index)} 行`} onDoubleClick={() => onOpenSource(selected, sourceLineForDiffLine(selected.lines, index))}><i>{line.oldLine ?? line.newLine ?? ''}</i><strong>{line.kind === 'addition' ? '+' : line.kind === 'deletion' ? '-' : ' '}</strong><HighlightedDiffCode path={selected.path} value={line.text || ' '}/></div>)}</pre>
+          : <SharedSplitDiff resetKey={selected.id} before={splitLines.map((row, index) => renderSplitLine(row.before, 'before', index))} after={splitLines.map((row, index) => renderSplitLine(row.after, 'after', index))}/>
       }
     </article>
   </section>;
