@@ -7946,3 +7946,16 @@ Web 发布恢复：首轮公网浏览器检查发现 FR-563 准备的 Web 镜像
 发布验收：提交 `bae4a2a1` 的 platform／web 远端预检通过，commit-bound archive SHA-256 为 `f0c7364e3bcb849781c5d450f5d1f861effcf18525bd848b6a3a7ffa06c03401`。远端构建并校验 linux/amd64 平台镜像 `sha256:e835d472a154211cae4ff76d956d5a6c3898044038665f7311a24faf280146b4` 与 Web 镜像 `sha256:fecd2a6659c3410df2e2df0bedbd85dd1e2603a17091368c0da950983ad3e4ba`，两者 source commit 均为完整提交 `bae4a2a10ff461eb732ccb3bd7073f3d7ab64890`；Web 使用 `/flowweave/` base path 和空 API base URL。发布前创建受保护生产数据库备份，SHA-256 为 `417938ed1dfa393bc4af3c8eda573718d194b4285f80c51d7b5e50fea83a62e5`，并保留旧镜像 rollback tags。
 
 迁移前备份克隆库真实执行 0145→0146，确认两个 partial FlowRun 唯一索引、NodeRun／Artifact 新唯一键、全部受影响表行数保持、临时 `NOBYPASSRLS` 角色下两用户顶层 FlowRun 与顶层 Runtime 集合一致、嵌套记录及嵌套 Runtime 不跨用户可见；0146→0145→0146 往返后 head 与行数仍一致，临时角色和克隆库已清理。正式 migration 退出成功，生产 head 为 `0146_shared_flow_runs`；api、stream-api 健康，worker 与 web 运行，带前缀页面、静态资源、认证 API、FlowRun 深层路由和 FastGPT 根入口通过。生产只读投影确认两个用户看到相同 2 个顶层 FlowRun 和 2 个顶层 Runtime Session，`flowweave` 的 7 条历史嵌套记录仍只归本人，LDAP 用户看到 0 条。Runtime Provider 容器和镜像发布前后不变，未重启或替换；未删除 volume、Workspace 或持久数据。
+
+
+### FR-570 逐步启动 Runtime 独立事务自阻塞修复 — DONE
+
+依赖：FR-569；独立于 FR-567 的空库历史迁移修复。
+
+范围：修复逐步启动事务先锁定共享父 FlowRun，随后 confirm-start 同步调用独立 Runtime 控制事务再次请求同一行锁，最终 PostgreSQL statement timeout 返回 500 的阻塞。启动命令只在原事务校验并预留逻辑 Runtime Session、Attempt、FlowNode binding 与 START_RUNTIME 任务；物理 generation 在提交后的既有 Worker 生命周期准备。保留交互会话的 active generation 校验、历史 Attempt Runtime 路由、幂等及原子回滚，不提前提交草稿，不增加超时，不修改 schema 或部署配置。
+
+完成：confirm-start 显式使用延迟物理 provisioning 的宿主解析路径，在原 Session 内验证不可变环境／allocation 并取得逻辑 Runtime Session，原子保存 Attempt、PROVISIONING binding 和 START_RUNTIME outbox。保留稳定 binding ID、正式 Conversation 预分配 ID、记录工作目录、历史 Attempt-owned allocation 和交互 active generation fence；既有 Worker 在提交后承担物理 Runtime 准备。没有提前提交草稿、平台自建执行器、数据库迁移、超时放宽或生产部署。
+
+验收：真实 PostgreSQL 16.9 专项 7 passed，覆盖 ACTIVE／STARTING／RECONNECTING 父 Runtime 的启动预留、同一幂等键只生成一个 Attempt／binding／任务、陈旧草稿版本拒绝、配置失败和外层 UoW 整体回滚。行锁用例先由调用方持有父 FlowRun 的 FOR UPDATE，另一独立连接请求同一锁确实触发 57014／statement timeout；保持该锁时，修复后的正式逐步启动函数仍完成并预留会话。专项使用临时独立 PostgreSQL 容器、内部隔离网络和 tmpfs，未发布端口、挂载或读取生产数据；本机仅通过 SSH 转发运行当前源码测试，没有启动本地平台服务。专项夹具仅替换模型选择、事件触发器投递和完整展示投影；禁止物理 Provider／active generation I/O，验证的是启动事务，不替代真实 OpenHands／LLM 或浏览器 E2E。临时数据库容器及网络已按本次标签与名称回收。
+
+既有用户隔离定向回归 10 passed；受影响 Ruff check／format、AST、唯一 Alembic head 0146_shared_flow_runs、任务状态唯一性和 git diff --check 通过。宿主模块 Pyright 0 errors；编排文件定向 Pyright 存在 129 个基线错误，与 HEAD 归档逐项比较后仍为相同 129 个、本次新增 0 个，未宣称整体类型检查通过。代码及进度独立提交；尚未部署或重启生产服务。下一可执行切片为 FR-567。

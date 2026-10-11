@@ -5918,6 +5918,7 @@ def confirm_start(
         flow_run_id=current_node_run.flow_run_id,
         attempt_id=current.id,
         require_start_permission=True,
+        defer_runtime_provisioning=True,
     )
     preset = current.agent_preset_json
     session_config = agent_sessions.resolve_session_config(

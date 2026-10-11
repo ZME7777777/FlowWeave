@@ -128,13 +128,15 @@ def resolve_flow_node_session_host(
     attempt_id: str,
     require_start_permission: bool,
     ensure_startable_runtime: bool = False,
+    defer_runtime_provisioning: bool = False,
 ) -> FlowNodeSessionHost:
     """Resolve one node host without treating a FlowRun as an Agent Workspace.
 
     An existing session remains readable after an Attempt moves forward, so
-    only new-session entry passes ``require_start_permission=True``. Every
-    path still resolves the active FlowRun Runtime session afresh, which keeps
-    generation replacement fenced at the existing Runtime boundary.
+    only new-session entry passes ``require_start_permission=True``.
+    Interactive paths resolve the active Runtime generation afresh. Attempt
+    confirmation reserves only the logical Session in its own transaction;
+    START_RUNTIME provisions the physical generation after that commit.
     """
 
     run = db.get(FlowRun, flow_run_id)
@@ -213,31 +215,58 @@ def resolve_flow_node_session_host(
             or existing_session_needs_runtime
         )
     ) or (not workspace.attempt_owned and (require_start_permission or ensure_startable_runtime))
-    if should_ensure_runtime:
+    if defer_runtime_provisioning:
+        if not require_start_permission or ensure_startable_runtime:
+            raise ValueError("Only Attempt start confirmation may defer Runtime provisioning")
         if workspace.attempt_owned:
-            sandboxes.ensure_node_attempt_runtime(
+            allocation = sandboxes.runtime_allocation_for_node_attempt(
+                db, flow_run_id=run.id, node_attempt_id=attempt.id
+            )
+            runtime_session = sandboxes.ensure_node_attempt_runtime_session(
                 db,
                 flow_run_id=run.id,
                 node_attempt_id=attempt.id,
-                image=environment.image_digest,
-                environment_id=environment.environment_id,
                 environment_version_id=environment.id,
-                environment_version_no=environment.version_no,
-                runtime_server_identity=server_identity,
+                runtime_image_digest=environment.image_digest,
+                workspace_allocation=allocation,
             )
         else:
-            sandboxes.ensure_flow_run_runtime(
+            runtime_owner_id = sandboxes.runtime_owner_flow_run_id(db, run.id)
+            allocation = sandboxes.runtime_allocation_for_flow_run(db, runtime_owner_id)
+            runtime_session = sandboxes.ensure_flow_run_runtime_session(
                 db,
-                flow_run_id=run.id,
-                image=environment.image_digest,
-                environment_id=environment.environment_id,
+                flow_run_id=runtime_owner_id,
                 environment_version_id=environment.id,
-                environment_version_no=environment.version_no,
-                runtime_server_identity=server_identity,
+                runtime_image_digest=environment.image_digest,
+                workspace_allocation=allocation,
             )
-    runtime_session_id = sandboxes.active_node_runtime_connection(
-        db, flow_run_id=run.id, node_attempt_id=attempt.id
-    ).runtime_session_id
+        runtime_session_id = runtime_session.id
+    else:
+        if should_ensure_runtime:
+            if workspace.attempt_owned:
+                sandboxes.ensure_node_attempt_runtime(
+                    db,
+                    flow_run_id=run.id,
+                    node_attempt_id=attempt.id,
+                    image=environment.image_digest,
+                    environment_id=environment.environment_id,
+                    environment_version_id=environment.id,
+                    environment_version_no=environment.version_no,
+                    runtime_server_identity=server_identity,
+                )
+            else:
+                sandboxes.ensure_flow_run_runtime(
+                    db,
+                    flow_run_id=run.id,
+                    image=environment.image_digest,
+                    environment_id=environment.environment_id,
+                    environment_version_id=environment.id,
+                    environment_version_no=environment.version_no,
+                    runtime_server_identity=server_identity,
+                )
+        runtime_session_id = sandboxes.active_node_runtime_connection(
+            db, flow_run_id=run.id, node_attempt_id=attempt.id
+        ).runtime_session_id
     node = runtime_node(
         definition=snapshot.definition_json,
         manifest=snapshot.runtime_manifest_json or {},
