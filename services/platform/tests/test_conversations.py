@@ -23,7 +23,10 @@ from flowweave.modules.agent_sessions.application import (
     runtime_config,
 )
 from flowweave.modules.agent_sessions.application import usage as usage_projection
-from flowweave.modules.agent_sessions.application.event_branch import complete_active_branch
+from flowweave.modules.agent_sessions.application.event_branch import (
+    complete_active_branch,
+    complete_latest_user_turn,
+)
 from flowweave.modules.agent_sessions.application.host import (
     ACCESS_TERMINAL,
     CREATE_SESSIONS,
@@ -566,6 +569,77 @@ def test_complete_active_branch_rejects_head_drift_between_pages() -> None:
 
     with pytest.raises(ValueError, match="active branch changed"):
         complete_active_branch(read, RuntimeHandle(job_id="job", conversation_id="conversation"))
+
+
+def test_complete_latest_user_turn_stitches_only_the_missing_turn_ancestor() -> None:
+    calls: list[tuple[str | None, str | None]] = []
+
+    def read(handle: RuntimeHandle) -> RuntimeEventBatch:
+        calls.append((handle.history_cursor, handle.active_branch_leaf_event_id))
+        if handle.history_cursor == "prior-page":
+            return RuntimeEventBatch(
+                events=(
+                    RuntimeEvent(
+                        "older-user", "MESSAGE", {"parent_id": "__root__", "source": "user"}
+                    ),
+                    RuntimeEvent(
+                        "prior-user", "MESSAGE", {"parent_id": "older-user", "source": "user"}
+                    ),
+                ),
+                cursor="latest-reply",
+                history_cursor="older-page",
+            )
+        return RuntimeEventBatch(
+            events=(
+                RuntimeEvent("latest-action", "TOOL_CALL", {"parent_id": "prior-user"}),
+                RuntimeEvent(
+                    "latest-reply", "MESSAGE", {"parent_id": "latest-action", "source": "agent"}
+                ),
+            ),
+            cursor="latest-reply",
+            history_cursor="prior-page",
+            result=RuntimeResult(status="COMPLETED"),
+        )
+
+    hydrated = complete_latest_user_turn(
+        read, RuntimeHandle(job_id="job", conversation_id="conversation")
+    )
+
+    assert calls == [(None, None), ("prior-page", "latest-reply"), (None, None)]
+    assert [event.cursor for event in hydrated.events] == [
+        "older-user", "prior-user", "latest-action", "latest-reply"
+    ]
+    assert hydrated.cursor == "latest-reply"
+    assert hydrated.history_cursor == "older-page"
+    assert hydrated.result == RuntimeResult(status="COMPLETED")
+
+
+def test_complete_latest_user_turn_keeps_one_page_when_the_turn_is_complete() -> None:
+    calls: list[tuple[str | None, str | None]] = []
+
+    def read(handle: RuntimeHandle) -> RuntimeEventBatch:
+        calls.append((handle.history_cursor, handle.active_branch_leaf_event_id))
+        return RuntimeEventBatch(
+            events=(
+                RuntimeEvent(
+                    "current-user", "MESSAGE", {"parent_id": "__root__", "source": "user"}
+                ),
+                RuntimeEvent(
+                    "current-reply", "MESSAGE", {"parent_id": "current-user", "source": "agent"}
+                ),
+            ),
+            cursor="current-reply",
+            history_cursor="older-page",
+        )
+
+    hydrated = complete_latest_user_turn(
+        read, RuntimeHandle(job_id="job", conversation_id="conversation")
+    )
+
+    assert calls == [(None, None)]
+    assert [event.cursor for event in hydrated.events] == ["current-user", "current-reply"]
+    assert hydrated.history_cursor == "older-page"
+
 
 
 def test_hydration_defers_formal_current_view_metrics_until_context_refresh(

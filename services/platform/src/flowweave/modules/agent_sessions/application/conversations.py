@@ -43,6 +43,7 @@ from flowweave.modules.agent_sessions.application.draft_attachments import (
 )
 from flowweave.modules.agent_sessions.application.event_branch import (
     complete_active_branch,
+    complete_latest_user_turn,
 )
 from flowweave.modules.agent_sessions.application.runtime_config import (
     build_agent_spec,
@@ -3891,7 +3892,7 @@ def read_prepared_conversation_hydration(
     runtime = get_runtime()
     try:
         runtime.reload_conversation(prepared.handle)
-        batch = runtime.read_active_events(prepared.handle)
+        batch = complete_latest_user_turn(runtime.read_active_events, prepared.handle)
         context = hydration_context_snapshot(batch.context)
         readiness = (
             runtime.input_readiness(prepared.handle).as_dict()
