@@ -5,6 +5,9 @@ FROM opensandbox/server@sha256:91717d1821ffdc698fb0885aab58173c4100ea137b98650df
 ARG INSTALL_ACP_PROVIDERS=""
 USER root
 WORKDIR /runtime
+# Dependency downloads are disposable; do not bake them into image layers or
+# copy them into each Environment HOME when the Runtime is first provisioned.
+ENV UV_NO_CACHE=1 PIP_NO_CACHE_DIR=1
 COPY --from=node_runtime /usr/local/ /usr/local/
 COPY --from=docker_cli /usr/local/bin/docker /usr/local/bin/docker
 COPY --from=docker_cli /usr/local/libexec/docker/cli-plugins/ /usr/local/libexec/docker/cli-plugins/

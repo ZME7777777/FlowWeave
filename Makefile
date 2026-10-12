@@ -1,4 +1,4 @@
-.PHONY: install dev check web-check api-check migration-check compose-check platform-image-check sandbox-images dependency-builder-image openhands-image openhands-image-provenance openhands-contract-check openhands-smoke sandbox-smoke web-dev api-dev worker-dev e2e infra-up rebuild-deploy infra-down remote-deploy-preflight
+.PHONY: install dev check web-check api-check migration-check compose-check platform-image-check sandbox-images dependency-builder-image openhands-image openhands-image-provenance openhands-contract-check openhands-smoke sandbox-smoke web-dev api-dev worker-dev e2e infra-up rebuild-deploy infra-down remote-deploy-preflight remote-release-prepare remote-release-finish remote-release-audit
 
 COMPOSE = docker compose --env-file .env -f infra/compose.yaml
 REMOTE_DEPLOY_CONFIG ?= .local/remote-deploy.env
@@ -89,3 +89,15 @@ remote-deploy-preflight:
 	@test -n "$(COMMIT)" || (echo "COMMIT is required, e.g. make remote-deploy-preflight COMMIT=abc123 SCOPE=web" >&2; exit 2)
 	@test -n "$(SCOPE)" || (echo "SCOPE is required: web, platform, runtime, or other (platform excludes runtime-provider)" >&2; exit 2)
 	scripts/verify-remote-deploy.sh --config "$(REMOTE_DEPLOY_CONFIG)" --commit "$(COMMIT)" --scope "$(SCOPE)"
+
+# Ordinary web/platform releases use one immutable, minimal context per commit
+# and scope. Build/update services using the verified server entrypoint between
+# prepare and finish; finish checks health/provenance before bounded retention.
+remote-release-prepare:
+	python3 scripts/remote-release.py --config "$(REMOTE_DEPLOY_CONFIG)" --commit "$(COMMIT)" --scope "$(SCOPE)" --action prepare
+
+remote-release-finish:
+	python3 scripts/remote-release.py --config "$(REMOTE_DEPLOY_CONFIG)" --commit "$(COMMIT)" --scope "$(SCOPE)" --action finish --apply --confirm DELETE_FLOWWEAVE_RELEASE_CONTEXTS
+
+remote-release-audit:
+	python3 scripts/remote-release.py --config "$(REMOTE_DEPLOY_CONFIG)" --commit "$(COMMIT)" --scope "$(SCOPE)" --action audit

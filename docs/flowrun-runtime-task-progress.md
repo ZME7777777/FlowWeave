@@ -124,6 +124,7 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 | OPS-03 | 多 rollback tag image 的安全回收 | DONE | 改为逐 tag、重查 Container 引用、不使用 `--force` 的回收路径。 |
 | OPS-04 | 管理中心服务快照被串行 Docker 资源采样拖至请求超时 | DONE | Runtime Provider 将 Compose 与受管 Runtime 的资源采样改为最多 16 路并发、3 秒有界的 best-effort 收集；服务清单始终返回，超时样本仅显示为空。 |
 | OPS-05 | 管理页并发读取导致 Agent Workspace 资源快照相互竞争 | DONE | Runtime Provider 在同一 3 秒只读窗口内优先采集 Agent Workspace，随后才用剩余预算采集 FlowRun 与 Compose 服务；独立有界线程池隔离工作容量，Docker daemon 串行部分 stats 请求时也不会让较低优先级样本挤掉 Agent Workspace 指标。 |
+| OPS-06 | 发布上下文与环境 HOME 下载缓存持续堆积 | DONE | 按授权回收 76 个旧发布资产及 uv／闲置 IDE 缓存，现有 HOME 启用 uv 临时缓存，新增最小源码上下文与健康／引用门禁后的发布保留收尾。 |
 
 ### 模型调用重试与终态诊断（2026-09-23）
 
@@ -7963,3 +7964,50 @@ Web 发布恢复：首轮公网浏览器检查发现 FR-563 准备的 Web 镜像
 发布补记：用户授权继续后，从已提交修复 `7d45ff24e0d168efc7fd18a879c7bf355260da9b` 完成 platform 预检；发布前确认平台现用 revision `620b59e52ec6886d69db14a7906c4d5915cd9e3f` 是目标提交的祖先。从最小不可变 git archive 构建 linux/amd64 平台镜像，归档 SHA-256 `3f152d6281c896c0e0c11b2a90372e1c66db6cad2e00ec202a6077d33d33620f`，镜像 ID `sha256:572960555b0934873c1af82ca3bad413cb649303c5da4f0b6cd2e777c2e87a81`，OCI revision 与修复提交一致。服务器侧保留权限受限的数据库备份和旧镜像回滚标签，迁移退出码为 0，数据库仍为唯一 head `0146_shared_flow_runs`；API、stream-api、Worker 同步更新到该镜像，API／stream-api healthy、Worker running。Runtime Provider 的容器和镜像身份不变，远端 Compose／环境文件摘要不变；本次没有更新 Web 或重启既有 Runtime。
 
 发布验收：健康与 readiness 均 200，实际平台源码包含 confirm-start 的延迟物理 provisioning 调用及宿主参数；340 个既有会话的 binding／owner／Runtime Session／正式 Conversation／工作目录身份摘要一致。既有租户 RLS 与会话字段检查通过。公网登录、Agent 深层路由、静态资源、正式 hydration／events、活动目录与根应用均通过；本机已有浏览器在全新登录上下文完成 3 次刷新恢复，API 请求均使用部署前缀，页面脚本错误为 0，4 路并发 events 读取均 200。该样本首轮 hydration 约 1.078 秒，并发读取约 0.273 秒，不外推为所有负载性能。没有启动生产逐步节点或向生产会话发送合成消息；启动行锁／原子预留的行为结论仍以本切片真实 PostgreSQL 专项为依据，实际业务启动由用户重试确认。发布脚本语法、任务状态唯一性、git diff --check 与 staged diff 复核通过。FR-570 已部署；下一可执行切片仍为 FR-567，本轮不开始该切片。
+
+
+### OPS-06 发布上下文与环境 HOME 缓存容量治理 — DONE
+
+依赖：OPS-03；本次用户明确授权先清理再优化代码和发布流程，不启动独立的 FR-567 空库迁移修复。
+
+清理：完整读取部署说明后以已提交版本、other 范围通过唯一私有目标预检。当前服务器与截图不同：
+旧构建 sibling 历史副本仅约 0.27 GiB，现有回滚镜像候选为 0；主要积累来自构建根内几十份独立
+上下文、uv 下载缓存及闲置 JetBrains 缓存。只读盘点保护所有容器镜像 revision、最近回滚版本、
+挂载／进程 cwd／打开文件引用，以及七天内的发布资产；没有活动包安装、Docker build 或 IDE 进程，
+安装目录没有 symlink 依赖 uv 缓存。第一次执行前发现容器身份变化，删除前安全停止；重新盘点确认
+76 个候选不变，重新冻结容器与配置摘要后执行。删除 76 个过期构建上下文／源码归档／staging
+资产（候选占用 5,090,488,320 bytes），通过原生 uv cache clean 回收三个 HOME 的下载缓存，清理
+闲置 IDE 缓存。首次 uv 助手直接挂载缓存根，在内容清空后因挂载点不能删除而返回非零；改为挂载
+缓存父目录后再次执行全部成功，未扩大删除范围。实际文件系统可用空间从 97,186,263,040 增至
+116,849,328,128 bytes，约释放 18.31 GiB。所有既有容器 ID／image ID、卷清单、Compose／环境文件
+摘要一致；api／stream-api／Runtime Provider／PostgreSQL healthy，worker／web running。没有删除
+卷、工作区、会话、数据库备份或共享 Docker 存储，也没有重启生产服务。
+
+即时默认值：为三个此前没有自定义 uv 配置的环境 HOME 添加权限受限的 no-cache=true；设置由原生
+uv 配置解析器在隔离容器中验证，两个运行中的 HOME 原生 uv cache dir 均返回临时目录。没有改写
+已有工具设置、Compose 或环境文件；旧的下载缓存不会因普通 uv 使用继续落回 HOME。
+
+代码：固定 Runtime 镜像构建默认关闭 uv／pip 缓存，平台镜像依赖同步也不保存 uv 下载缓存；
+Environment HOME 初始化只排除已知包下载缓存，保留浏览器、已安装工具、既有认证及 HOME 内容。
+新建 Setup／Agent Runtime 将 npm cache 放入 1 GiB 上限的临时 tmpfs，并显式注入 uv／pip 无缓存
+默认值。已有 Runtime 不因此被 replacement；这些新建容器／固定镜像默认值在后续正式 runtime
+发布后生效，本轮未构建或发布平台／Runtime 镜像。
+
+发布流程：新增仓库 dockerignore 和标准 prepare／finish／audit Make 入口。prepare 只从提交取
+Dockerfile 所需输入，经 SSH archive 流直接解包，不留下远端 tar 包；同 commit／scope 的上下文
+不可覆盖，以受保护 marker 记录源摘要和状态。finish 在相关服务 linux/amd64、同一 OCI revision、
+健康及 readiness 校验后才标记成功，保留每个 scope 最近三份成功上下文及当前／容器／回滚／路径
+引用版本；未完成上下文至少保留七天，保护集合含无 revision 的旧镜像时继续保护所有未完成目录。
+未知旧版目录不自动删除。每次删除前重新读取引用并核对目录身份，单次超过 100 个目录拒绝；随后
+使用既有精确 rollback tag 保留工具，未加入共享 BuildKit prune 或数据清理。AGENTS 与部署说明
+要求普通发布在路由验收后执行此收尾，Runtime 发布保持独立门禁。
+
+验收：9 项无 DB／Docker 依赖的专项测试通过，覆盖双 scope 保留、引用／迟到引用保护、未知／
+符号链接／失败上下文、健康失败前不得标记或删除、最小 Git archive 与路径穿越拒绝、真实 Shell
+HOME 复制后的浏览器／工具／既有凭据保留和包缓存排除、Setup／Runtime 临时下载边界。实际 Linux
+隔离助手通过 HOME／uv 配置行为探针；服务器原生 Python 3.9.25 成功解包 785,533 bytes 的平台
+最小源码流，临时测试目录已回收；Web 源码流为 512,391 bytes。新工具真实只读 audit 成功且候选
+为空，未把旧目录自动纳入。Ruff check／format、Python 解析、git diff --check 与任务唯一性通过。
+受影响 Docker provider 的 Pyright 为 16 条既有诊断，与独立 HEAD 文件逐项按 rule／message 比较
+一致，新增 0，不声称整体类型检查通过。正式源码 Alembic 唯一 head 仍为 0146_shared_flow_runs。
+未运行本次无关的数据库迁移、完整构建或业务 E2E；下一可执行重构切片仍为 FR-567。

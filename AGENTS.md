@@ -28,6 +28,8 @@ scripts/verify-remote-deploy.sh --config .local/remote-deploy.env \
 
 远程 Compose、环境文件、持久数据路径和私有入口均为服务器侧资产，不得复制进仓库。更新 API 时，必须从同一已提交版本同步更新并 recreate `stream-api`；不得以 orphan 或 `--remove-orphans` 忽略它。发生故障时先保留日志和数据库错误状态，再仅回滚受影响服务；禁止使用删除 volume、清空 Workspace、`reset --hard` 或 `clean -f` 代替回滚。
 
+普通 `web`／`platform` 发布必须按 `docs/deployment.md` 使用 `make remote-release-prepare` 的 commit-bound 最小上下文，并在健康、版本与路由验收后执行 `make remote-release-finish`，保留最近三份成功上下文和所有引用版本，避免继续创建无人管理的源码副本和 tar 包。该收尾只回收受管发布上下文与精确 rollback image tags，不得扩大为共享 BuildKit、卷、Workspace 或数据库备份清理；Runtime 发布继续遵守独立预检与活跃会话门禁。
+
 ## OpenHands-first 架构原则
 
 - FlowWeave 的产品设计、用户流程和业务边界是需求来源；OpenHands 是 Agent 执行能力的实现依赖，不是产品能力清单。

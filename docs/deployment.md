@@ -91,6 +91,44 @@ make remote-deploy-preflight REMOTE_DEPLOY_CONFIG=.local/remote-deploy.env \
 4. 验证远端 Compose，再按影响范围 force-recreate。普通 `platform` 变更先运行 `migration`，随后只更新 `api`、`stream-api`、`worker`；不得重建 `runtime-provider`。只有 `runtime` 变更才在迁移后同步更新 `runtime-provider`、`api`、`stream-api`、`worker`，且须先确认活跃会话的中断影响。仅更新 Web 时只更新 `web`。
 5. 检查服务健康、带 `/flowweave/` 前缀的 API/静态资源、Agent 深层路由及 FastGPT 根登录页。
 
+### 普通发布的容量收尾
+
+普通 `web`／`platform` 发布统一用受管最小上下文，替代在构建根中不断复制完整仓库或创建临时 release
+目录。以下命令仍使用本机受保护配置；工具不会输出私有目标或服务器路径，也不替换服务或服务器配置：
+
+```bash
+make remote-release-prepare COMMIT=<已提交 SHA> SCOPE=<web|platform>
+```
+
+工具先执行正式部署预检，再以目标 commit 的 `git archive` 流直接解包到声明构建根内的
+`release-<完整 SHA>-<scope>`；只包含该服务 Dockerfile 所需的构建输入，不包含历史 SDK 归档、测试、
+文档或其他服务源码。没有中间远端 tar 包。同一 commit／scope 的目录不可覆盖；状态、源归档 SHA-256
+及时间记录在权限受限的 `.flowweave-release.json` 中。仓库 `.dockerignore` 另外排除本机私有配置、
+临时产物、依赖目录、缓存和测试输出，防止普通 Docker build 上传这些内容。
+
+从该上下文按前述步骤构建镜像，必须添加
+`--label org.opencontainers.image.revision=<完整 SHA>`，检查 linux/amd64，保留旧镜像 rollback tag，
+再通过已验证 Compose/env 迁移和定向更新；普通 platform 仍同步更新 api／stream-api／worker，
+不重建 Runtime Provider。完成前述路由、静态资源及真实页面验收后，发布必须以容量收尾结束：
+
+```bash
+make remote-release-finish COMMIT=<同一已提交 SHA> SCOPE=<web|platform>
+```
+
+该命令显式授权本次受管发布资产回收：先复核相关服务均运行同一 commit 的 linux/amd64 镜像，
+api／stream-api 的 health、readiness 和 Web 容器 HTTP 入口通过后才标记发布成功。然后打印候选并
+回收超过每个 scope 最近三份成功上下文的旧目录；当前镜像、任何运行或退出容器和最近三个 rollback
+镜像的 revision，以及被挂载／进程 cwd／打开文件引用的目录始终保留。每次删除前重新读取引用并核对
+目录身份；未知、无 marker、旧版目录和符号链接不自动删除。失败／未完成上下文至少保留七天，仍被
+引用的上下文不删除；保护集合中存在缺少 revision 的旧镜像时，所有失败／未完成上下文继续保留。
+成功上下文必须已通过 finish 的镜像身份门禁，其相关镜像必有 revision，不受旧无标签镜像影响。
+最后用现有镜像保留脚本执行只读候选核验和精确 rollback tag 回收，不清理共享
+BuildKit 缓存、容器、卷或 Workspace。单次超过 100 个目录会在删除前拒绝。
+
+只读审计使用 `make remote-release-audit COMMIT=<SHA> SCOPE=<web|platform>`。
+Runtime 镜像／Provider 发布继续走独立 `runtime` 预检与活跃会话门禁；本工具不将其降级为普通发布。
+历史目录需单独只读盘点和授权，不能因文件名相似将其纳入自动删除。
+
 服务器的持久数据包括 PostgreSQL、Artifact volume 与 Workspace bind mount。普通发布绝不执行 `docker compose down -v`，不删除数据、不覆盖环境文件，也不使用 `--remove-orphans` 忽略或删除 `stream-api`。
 
 公网前缀部署还须在全新浏览器上下文确认 Network 请求使用 `/flowweave/api/v1/...`，而不是被 FastGPT 接管的根路径 `/api/v1/...`。Web 客户端自行追加 `/api/v1`；`VITE_API_BASE_URL` 只能配置 origin／部署前缀，不能包含 `/api/v1`。标准前缀构建使用 `VITE_BASE_PATH=/flowweave/`、空 `VITE_API_BASE_URL`，由客户端采用部署前缀。
@@ -134,3 +172,15 @@ scripts/maintain-remote-docker-retention.sh --config .local/remote-deploy.env
 ```
 
 任何删除操作需要明确授权、先审阅 dry-run，并遵循脚本的确认参数。不要使用 `docker system prune`、`docker image prune -a`、强制删除镜像或清理 volume/Workspace 作为日常维护手段。
+
+### 环境 HOME 缓存边界
+
+固定 Runtime 镜像构建及新建 Runtime／环境配置终端默认关闭 uv、pip 的持久下载缓存，npm 下载缓存
+写入有 1 GiB 上限的 `/tmp` tmpfs。HOME 初始化只排除已知的 uv／pip／pnpm／node 下载缓存和
+`.npm`，仍保留认证、配置、已安装工具以及 `.cache/ms-playwright` 中的浏览器。已有 HOME 不因初始化
+被清空；现有会话不为启用该默认值强制 replacement。用户仍可显式启用下载缓存；此时缓存生命周期
+由其环境用途决定，不能与会话、附件、工作区或已安装依赖混为一类。
+
+已有 uv 缓存维护前须确认没有包安装进程、没有安装目录以 symlink 依赖缓存；用原生 `uv cache clean`
+回收下载缓存并检查实际可用空间。容器维护助手应挂载缓存的父目录，避免直接挂载 cache root 导致
+删除挂载点时返回 EBUSY。JetBrains 缓存只在相关进程和文件引用均不存在时处理，配置与项目保留。

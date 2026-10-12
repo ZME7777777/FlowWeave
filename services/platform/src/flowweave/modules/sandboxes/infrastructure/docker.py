@@ -329,7 +329,8 @@ class DockerSandboxProvider:
         migrate that recognizable layout into ``~/.lark-cli`` before the volume
         becomes a complete HOME. Files already present in the published image's
         root HOME (for example ``.ssh`` or ``.config/gh`` from an old release)
-        are copied only when absent, preserving newer volume state.
+        are copied only when absent, preserving newer volume state. Download
+        caches are excluded; browser installations under .cache remain usable.
         """
 
         script = r"""
@@ -348,7 +349,26 @@ if [ -f "$target/config.json" ] && [ ! -e "$target/.lark-cli/config.json" ] \
   done
 fi
 if [ -d /root ]; then
-  cp -a -n /root/. "$target/"
+  for entry in /root/.[!.]* /root/..?* /root/*; do
+    [ -e "$entry" ] || [ -L "$entry" ] || continue
+    name=${entry##*/}
+    case "$name" in
+      .npm) continue ;;
+      .cache)
+        # Playwright browsers and other application assets can live here.
+        # Skip only known package download caches, never installed tools.
+        [ ! -L "$entry" ] || continue
+        [ ! -L "$target/.cache" ] || continue
+        mkdir -p "$target/.cache"
+        for cache in "$entry"/.[!.]* "$entry"/..?* "$entry"/*; do
+          [ -e "$cache" ] || [ -L "$cache" ] || continue
+          case "${cache##*/}" in uv|pip|pnpm|node) continue ;; esac
+          cp -a -n "$cache" "$target/.cache/"
+        done
+        ;;
+      *) cp -a -n "$entry" "$target/" ;;
+    esac
+  done
 fi
 chown -R 10001:10001 "$target"
 chmod 0700 "$target"
@@ -1248,6 +1268,8 @@ chmod 0700 "$target"
                 [
                     "--interactive",
                     "--tty",
+                    "--tmpfs",
+                    "/tmp:rw,nosuid,nodev,size=1g,mode=1777",
                     "--network",
                     self._runtime_network_name(self._network_resource_id(resource)),
                     "--cap-add",
@@ -1267,6 +1289,12 @@ chmod 0700 "$target"
                     "HOME=/root",
                     "-e",
                     "NPM_CONFIG_PREFIX=/root/.local",
+                    "-e",
+                    "UV_NO_CACHE=1",
+                    "-e",
+                    "PIP_NO_CACHE_DIR=1",
+                    "-e",
+                    "NPM_CONFIG_CACHE=/tmp/flowweave-package-cache/npm",
                     "-e",
                     self._maven_args_environment(),
                     verified_image_reference,
@@ -1378,6 +1406,12 @@ chmod 0700 "$target"
                 "HOME=/home/flowweave",
                 "-e",
                 "NPM_CONFIG_PREFIX=/home/flowweave/.local",
+                "-e",
+                "UV_NO_CACHE=1",
+                "-e",
+                "PIP_NO_CACHE_DIR=1",
+                "-e",
+                "NPM_CONFIG_CACHE=/tmp/flowweave-package-cache/npm",
                 "-e",
                 self._maven_args_environment(),
                 "-e",
