@@ -46,4 +46,19 @@ maintenance.timer；不要使用 Docker 或数据清理替代停用。
 
 ## OPS-07 验收记录
 
-实现专项与服务器安装验收完成后在此更新结果；FR-567 的并行迁移修复另行管理。
+OPS-07 已完成。18 项无 DB／Docker 依赖专项、Ruff check／format 和 diff 检查通过。
+另修复进程 cwd 为 `/`／构建根祖先时误保护全部上下文的问题；真实文件引用与容器挂载祖先仍保护。
+安装首次尝试发现远程源码入口分隔错误，原生 systemd 初装又发现未加载 unit 的 reset-failed 不适用；
+两项均已修正并固定提交，失败阶段没有启用定时器，已触及 unit 均按安装回滚逻辑恢复。
+
+服务器从 `2759ae4b3561b6d9d2cfb41ca478c059905d898c` 安装成功，重复安装同提交也通过。
+脚本和 unit 的 SHA-256 与固定提交逐项一致；路径配置为 owner-only。timer 为 enabled／active，
+首次及重复安装的实际服务均 Result=success、ExecMainStatus=0；计数报告明确为 apply，而非跳过。
+当前正式上下文与回滚镜像候选均为零，没有重复计算 OPS-06 已释放空间。下一次触发为北京时间
+2026-10-13 03:30:55；后续每天 03:30 起随机错峰。
+
+原生 Linux／Python 3.9 隔离目录测试创建五份受管上下文，只读审计选出两份，实际仅删除最旧两份、
+保留最近三份；该测试屏蔽真实镜像删除，仍使用真实 Docker revision、挂载与 /proc 引用保护，测试目录
+已回收。全部生产容器 ID／image ID、卷清单和 Compose／env 摘要前后一致；API、stream-api、
+Runtime Provider、PostgreSQL 健康，Worker／Web 运行，两 API health／readiness 通过。
+没有发布或重启生产服务，没有删除持久数据；下一独立重构切片为 FR-571，本次没有开始。

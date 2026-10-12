@@ -182,6 +182,13 @@ scripts/maintain-remote-docker-retention.sh --config .local/remote-deploy.env
 
 任何删除操作需要明确授权、先审阅 dry-run，并遵循脚本的确认参数。不要使用 `docker system prune`、`docker image prune -a`、强制删除镜像或清理 volume/Workspace 作为日常维护手段。
 
+### 原生 Linux 定时容量维护
+
+需要持续回收受管发布上下文与精确 rollback tags 时，使用[定时维护说明](storage-maintenance.md)
+安装固定提交的 systemd 服务／timer；安装先预检、审计并实际运行一次，再启用每日北京时间 03:30
+任务。它与发布收尾共用锁，保留当前／容器引用及最近三个回滚版本，不清理共享 BuildKit、HOME、
+卷、Workspace 或备份，不重启生产服务。
+
 ### 环境 HOME 缓存边界
 
 固定 Runtime 镜像构建及新建 Runtime／环境配置终端默认关闭 uv、pip 的持久下载缓存，npm 下载缓存

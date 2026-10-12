@@ -8025,10 +8025,20 @@ HOME 复制后的浏览器／工具／既有凭据保留和包缓存排除、Set
 范围：取证早期 live ArtifactVersion schema 提前引入 owner_user_id、导致 0095 重复建列的来源，固定其历史表结构并验证空库通过 0095、失败回滚和既有记录保留。不改已记录 revision，不将后续其他独立历史迁移错误混入；继续向 head 取证，新的独立阻塞另拆切片，沿用远端隔离验收、不在本地部署的约束。
 
 
-### OPS-07 原生 Linux 定时容量维护 — CURRENT
+### OPS-07 原生 Linux 定时容量维护 — DONE
 
 依赖：OPS-06。本次用户明确要求在服务器安装定时清理；与历史迁移修复独立。
 
 范围：固定提交的服务器本地 systemd 每日清理受管发布上下文和精确 rollback tags，复用现有路径／
 版本引用保护及发布锁；不清理 HOME、共享 BuildKit、卷、工作区、会话或备份，不重启生产服务。
-实现及无 DB／Docker 依赖专项已完成，待 commit-bound 安装、首轮执行、定时状态与生产不变性验收。
+完成：固定实现提交 `2759ae4b3561b6d9d2cfb41ca478c059905d898c` 的原生 systemd 服务及每日
+Asia/Shanghai 03:30 timer 已安装并 enabled／active；首次和同提交重复安装的真实服务均成功，
+apply 报告候选为零。脚本与 unit SHA-256 匹配提交，owner-only 路径配置不含连接凭据。
+修复旧引用规则将 cwd `/`／构建根祖先当作全部上下文引用的问题，保留真实文件和挂载保护；
+安装入口分隔与原生 systemd 初装 reset-failed 两项兼容问题已修正，失败阶段恢复此次任务并未启用。
+
+验收：18 项定向无 DB／Docker 依赖测试、Ruff check／format、diff 与任务唯一性通过；服务器
+原生 Python 3.9 在独立五目录 fixture 中审计出两份并实际仅删除最旧两份、保留最近三份，测试资产
+已回收。所有生产容器／镜像身份、卷清单、Compose／env 摘要一致，常驻服务运行／健康，两 API
+health／readiness 通过。未发布平台或 Runtime 镜像、未重启生产服务、未删除持久数据或共享缓存。
+详细范围及安装复验见 docs/storage-maintenance.md；下一独立重构切片 FR-571，本次不开始。
