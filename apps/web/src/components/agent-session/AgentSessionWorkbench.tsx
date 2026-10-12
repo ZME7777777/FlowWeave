@@ -8049,10 +8049,12 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     setDragTarget(current => current?.bindingId === target.id && current.after === after ? current : next);
   }
   function dropConversation(event: React.DragEvent<HTMLDivElement>, target: AgentConversation, group: AgentConversation[]) {
-    if (!draggedConversationRef.current) return;
+    const draggedId = draggedConversationRef.current;
+    if (!draggedId) return;
     event.preventDefault();
-    const dragTarget = dragTargetRef.current;
-    commitConversationDrop(draggedConversationRef.current, dragTarget?.bindingId === target.id ? target : undefined, dragTarget?.after ?? false, group);
+    const bounds = event.currentTarget.getBoundingClientRect();
+    const after = event.clientY >= bounds.top + bounds.height / 2;
+    commitConversationDrop(draggedId, target, after, group);
     clearConversationDrag();
   }
   const conversationRow = (item: AgentConversation, group: AgentConversation[], options: { allowDrag?: boolean; workspaceName?: string; onSelect?: () => void; onDoubleClick?: () => void; onMarkRead?: () => void } = {}) => {
