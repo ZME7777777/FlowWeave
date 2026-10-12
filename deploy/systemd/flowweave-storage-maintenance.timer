@@ -1,0 +1,13 @@
+# Managed by FlowWeave storage maintenance installer; schema=1
+[Unit]
+Description=Daily FlowWeave release storage retention
+
+[Timer]
+OnCalendar=*-*-* 03:30:00 Asia/Shanghai
+RandomizedDelaySec=10min
+AccuracySec=1min
+Persistent=true
+Unit=flowweave-storage-maintenance.service
+
+[Install]
+WantedBy=timers.target

@@ -130,7 +130,9 @@ def test_finish_checks_health_before_marking_or_removing(tmp_path, monkeypatch):
         raise ValueError("unhealthy")
 
     monkeypatch.setattr(release, "check_release_services", unhealthy)
-    monkeypatch.setattr(release, "docker_protection", lambda: pytest.fail("must not plan removal"))
+    monkeypatch.setattr(
+        release, "docker_protection", lambda *_args: pytest.fail("must not plan removal")
+    )
     with pytest.raises(ValueError, match="unhealthy"):
         release.remote_main(
             {
@@ -155,7 +157,7 @@ def test_late_reference_prevents_directory_removal(tmp_path, monkeypatch):
         context(build, number)
     calls = 0
 
-    def references():
+    def references(*_args):
         nonlocal calls
         calls += 1
         return ({f"{1:040x}"} if calls > 1 else set()), []
@@ -218,3 +220,29 @@ def test_commit_archive_omits_unrelated_tracked_assets(tmp_path, monkeypatch):
             assert not any(p.startswith("apps/") for p in names)
         else:
             assert not any(p.startswith("services/") for p in names)
+
+
+def test_process_ancestor_cwd_does_not_protect_all_contexts(tmp_path):
+    build = tmp_path / "build"
+    build.mkdir()
+    old = context(build, 1)
+    for number in (2, 3, 4):
+        context(build, number)
+    proc = tmp_path / "proc"
+    pid = proc / "123"
+    (pid / "fd").mkdir(parents=True)
+    (pid / "cwd").symlink_to("/")
+    (pid / "fd/1").symlink_to(build)
+    assert release.process_references(proc, build) == []
+    assert release.select_cleanup(
+        build, set(), release.process_references(proc, build), keep=3, now=1_000_000
+    ) == [old]
+    (pid / "fd/2").symlink_to(old / "source-file")
+    assert (
+        release.select_cleanup(
+            build, set(), release.process_references(proc, build), keep=3, now=1_000_000
+        )
+        == []
+    )
+    # A container mounting an ancestor still references its descendant tree.
+    assert release.select_cleanup(build, set(), [tmp_path], keep=3, now=1_000_000) == []

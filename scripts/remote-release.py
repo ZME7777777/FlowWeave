@@ -150,7 +150,7 @@ def select_cleanup(
     return sorted(result)
 
 
-def docker_protection() -> tuple[set[str], list[Path]]:
+def docker_protection(process_root: Path | None = None) -> tuple[set[str], list[Path]]:
     ids = run(["docker", "ps", "-aq"]).split()
     containers = json.loads(run(["docker", "inspect", *ids])) if ids else []
     images = {c["Image"] for c in containers}
@@ -206,7 +206,13 @@ def docker_protection() -> tuple[set[str], list[Path]]:
         for m in c.get("Mounts", [])
         if m.get("Source")
     ]
-    for pid in Path("/proc").iterdir():
+    paths.extend(process_references(Path("/proc"), process_root))
+    return protected, paths
+
+
+def process_references(proc: Path, build: Path | None) -> list[Path]:
+    paths = []
+    for pid in proc.iterdir():
         if not pid.name.isdigit():
             continue
         try:
@@ -214,12 +220,20 @@ def docker_protection() -> tuple[set[str], list[Path]]:
                 try:
                     value = os.readlink(link)
                     if value.startswith("/"):
-                        paths.append(Path(value))
+                        referenced = Path(value)
+                        # A process at / (including systemd) or the build root
+                        # does not reference every descendant context. Container
+                        # mount ancestors remain protected separately above.
+                        if build is not None and (
+                            referenced == build or referenced in build.parents
+                        ):
+                            continue
+                        paths.append(referenced)
                 except OSError:
                     pass
         except OSError:
             pass
-    return protected, paths
+    return paths
 
 
 def checked_root(root: Path, relative: str) -> Path:
@@ -305,7 +319,7 @@ def remote_main(payload: dict) -> None:
     build = checked_root(root, config["FLOWWEAVE_REMOTE_BUILD_ROOT"])
     directory = build / release_id(payload["commit"], payload["scope"])
     if payload["action"] == "audit":
-        protected, used = docker_protection()
+        protected, used = docker_protection(build)
         candidates = select_cleanup(build, protected, used, keep=3, now=time.time())
         print(
             json.dumps(
@@ -379,7 +393,7 @@ def remote_main(payload: dict) -> None:
                 raise ValueError("Release context is not governed by this tool")
             data.update(state="succeeded", finished_at=time.time())
             write_marker(directory, data)
-        protected, used = docker_protection()
+        protected, used = docker_protection(build)
         candidates = select_cleanup(build, protected, used, keep=3, now=time.time())
         reviewed = {p: p.stat() for p in candidates}
         print(
@@ -396,7 +410,7 @@ def remote_main(payload: dict) -> None:
                 raise ValueError("Deletion plan exceeds 100 release contexts")
             # Re-read every reference before each destructive operation.
             for path in candidates:
-                protected, used = docker_protection()
+                protected, used = docker_protection(build)
                 current = select_cleanup(
                     build, protected, used, keep=3, now=time.time()
                 )

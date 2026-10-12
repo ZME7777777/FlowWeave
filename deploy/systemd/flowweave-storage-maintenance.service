@@ -1,0 +1,21 @@
+# Managed by FlowWeave storage maintenance installer; schema=1
+[Unit]
+Description=Bounded FlowWeave release storage retention
+After=docker.service
+ConditionPathExists=/etc/flowweave-storage-maintenance.json
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/lib/flowweave-storage-maintenance/current/storage-maintenance.py --config /etc/flowweave-storage-maintenance.json --apply --confirm DELETE_GOVERNED_FLOWWEAVE_STORAGE
+TimeoutStartSec=20min
+Nice=10
+IOSchedulingClass=idle
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=full
+PrivateTmp=true
+Environment=PYTHONDONTWRITEBYTECODE=1
+LogRateLimitIntervalSec=1h
+LogRateLimitBurst=20
+StandardOutput=journal
+StandardError=journal
