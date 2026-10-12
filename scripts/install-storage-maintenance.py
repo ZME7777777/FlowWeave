@@ -219,6 +219,16 @@ def install_server(payload):
         install_locked(payload)
 
 
+def server_program(source):
+    program = source.rsplit('if __name__ == "__main__":', 1)[0] + (
+        "\ntry:\n install_server(json.load(sys.stdin))\nexcept Exception as error:\n"
+        ' print(json.dumps({"status":"failed","error_type":type(error).__name__}), file=sys.stderr)\n'
+        " sys.exit(1)\n"
+    )
+    compile(program, "<server-installer>", "exec")
+    return program
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, required=True)
@@ -262,10 +272,7 @@ def main():
         check=True,
         capture_output=True,
     ).stdout.decode()
-    program = (
-        source.split('if __name__ == "__main__":')[0]
-        + '\ntry:\n install_server(json.load(sys.stdin))\nexcept Exception as error:\n print(json.dumps({"status":"failed","error_type":type(error).__name__}), file=sys.stderr)\n sys.exit(1)\n'
-    )
+    program = server_program(source)
     command = "python3 -c " + shlex.quote(
         "import base64;exec(base64.b64decode("
         + repr(base64.b64encode(program.encode()).decode())

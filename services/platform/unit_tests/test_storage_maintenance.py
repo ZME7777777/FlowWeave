@@ -151,3 +151,16 @@ def test_exact_multi_tag_removal_rechecks_remaining_tags(tmp_path, monkeypatch):
     result = maintenance.maintain({"root": str(tmp_path), "build": "build"}, True)
     assert result["removed_images"] == 1
     assert [c for c in commands if "rm" in c] == [["docker", "image", "rm", tag] for tag in tags]
+
+
+def test_remote_installer_program_handles_its_own_entrypoint_literal():
+    spec = importlib.util.spec_from_file_location(
+        "installer", REPO / "scripts/install-storage-maintenance.py"
+    )
+    installer = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(installer)
+    source = (REPO / "scripts/install-storage-maintenance.py").read_text()
+    program = installer.server_program(source)
+    compile(program, "<test-remote-installer>", "exec")
+    assert program.rstrip().endswith("sys.exit(1)")
+    assert "def install_server(payload):" in program
