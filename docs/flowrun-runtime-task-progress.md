@@ -8042,3 +8042,13 @@ apply 报告候选为零。脚本与 unit SHA-256 匹配提交，owner-only 路�
 已回收。所有生产容器／镜像身份、卷清单、Compose／env 摘要一致，常驻服务运行／健康，两 API
 health／readiness 通过。未发布平台或 Runtime 镜像、未重启生产服务、未删除持久数据或共享缓存。
 详细范围及安装复验见 docs/storage-maintenance.md；下一独立重构切片 FR-571，本次不开始。
+
+### FR-573 已有会话续发正式用户身份认领 — DONE
+
+依赖：现有正式 cursor／parent_id 协议；与 FR-572 的历史迁移工作独立。
+
+范围：修复已创建会话将正式用户事件 suppression 后造成的渲染父链断开。保留提交 ID、正式 event.id 和稳定 renderKey，不重复气泡、不按正文猜关联；覆盖正式事件早于 POST 确认与晚于确认，以及 WebSocket／REST 回补和刷新后的同轮过程／最终回复归属。仅 Web，不混入事件回补节奏、服务端或 Runtime 改动。
+
+完成：已创建会话不再把当前页用户气泡设为永久 localOnly，也不 suppression 正式用户事件。POST 返回 cursor 后按提交 ID 与 binding 认领正式 event.id；原 renderKey 同时用于轮次和用户 Fragment，使正式事件补全时保留同一气泡 DOM。正式用户事件早于 POST 确认时，REST 和 WebSocket 同样暂缓展示尚未认领的用户气泡，确认后恢复正式父链，不按重复正文猜关联。提交交接期间，上一轮完成事件不得提前关闭新轮次的运行展示与流订阅。
+
+验收：新增三项真实 Chromium／Playwright 定向回归覆盖 stream-before-ack、rest-before-ack 和 rest-after-ack，包含前后两轮相同正文、单次 POST、用户气泡／轮次 DOM 不重建、同轮 Tool／Result／MESSAGE、丢失最终 WS 帧及 stream_closed 后的 REST 正式回补，以及刷新后相同归属。旧源码先在正式用户身份断言真实失败；修复后新增三项、既有接受确认／跨会话迟到响应／首条消息路由三项均通过（六项累计）。更新旧测试将永久 pending-user 预期改为正式身份认领；提交期间保持暂停入口而非上一轮发送入口。受影响 ESLint、Web TypeScript typecheck、git diff --check、任务状态唯一性及源码 Alembic 唯一 head 0146_shared_flow_runs 通过。API／Runtime 与模型调用由测试路由替身提供，该验收不等于真实 LLM 或线上发布验收；未部署或重启生产服务。回补调度节奏与 TaskTracker 提示分类不纳入本切片。原暂存历史迁移改动保留，本切片独立提交后停止；下一独立历史迁移切片仍为 FR-572。

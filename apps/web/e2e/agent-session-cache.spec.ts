@@ -244,7 +244,8 @@ test('Accepted message reconciles its formal event without a second submission o
   await expect(localMessage).toHaveCount(1);
   await expect(localMessage).toContainText('刚发送的消息');
   await expect(page.locator('[data-user-event-id="accepted-message"]')).toHaveCount(0);
-  await expect(page.getByRole('button', { name: '发送消息' })).toBeDisabled();
+  await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '发送消息' })).toHaveCount(0);
 
   releaseMessageAcceptance?.();
   await expect.poll(() => messageAccepted).toBe(true);
@@ -262,7 +263,9 @@ test('Accepted message reconciles its formal event without a second submission o
   // stale terminal readiness must still not collapse this active formal branch.
   await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toBeVisible();
   await expect(page.getByRole('button', { name: '发送消息' })).toHaveCount(0);
-  await expect(localMessage).toHaveCount(1);
+  await expect(localMessage).toHaveCount(0);
+  await expect(page.locator('[data-user-event-id="accepted-message"]')).toHaveCount(1);
+  await expect(page.locator('.conversation-message.user')).toHaveCount(2);
 });
 
 

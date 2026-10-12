@@ -2533,7 +2533,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
                 isCurrent && messageIndex === userMessages.length - 1 && !turn.assistant && !failures.length,
                 finishedAt,
               ));
-            return <Fragment key={message.event.id}>
+            return <Fragment key={turn.renderKey}>
               <div className={`conversation-user-message${isContinuation ? ' continuation' : ''}`}>{editingEventId === message.event.id
                 ? <form className="conversation-message-edit" onSubmit={event => { event.preventDefault(); if (editingContent.trim()) onRewrite?.(message.event.id, editingContent.trim()); }}><textarea ref={rewriteEditor} aria-label="编辑已发送消息" value={editingContent} disabled={rewritePending} onChange={event => setEditingContent(event.target.value)} onKeyDown={event => {
                   if (event.nativeEvent.isComposing || event.keyCode === 229) return;

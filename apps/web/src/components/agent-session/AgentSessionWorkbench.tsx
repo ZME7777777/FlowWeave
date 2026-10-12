@@ -289,8 +289,6 @@ interface LocalMessageProjection {
   scope: string;
   renderKey: string;
   canonicalEventId?: string;
-  suppressedFormalEventId?: string;
-  localOnly?: boolean;
   state: LocalMessageProjectionState;
   event: OpenHandsConversationEvent;
   formalEventIdsAtSubmission: Set<string>;
@@ -1486,13 +1484,16 @@ function projectLocalMessages(
   formalEvents: OpenHandsConversationEvent[],
   projections: LocalMessageProjection[],
 ): OpenHandsConversationEvent[] {
-  const suppressedFormalEventIds = new Set(
-    projections.flatMap(item => item.localOnly && item.suppressedFormalEventId ? [item.suppressedFormalEventId] : []),
-  );
-  const projected = formalEvents.filter(event => !suppressedFormalEventIds.has(event.id));
+  const pendingProjections = projections.filter(item => item.state === 'submitting' && !item.canonicalEventId);
+  // REST can expose the formal user event before its POST acknowledgement.
+  // Defer unclaimed user bubbles just as the live stream does; the returned
+  // cursor will claim the exact identity without matching message text.
+  const projected = formalEvents.filter(event => !(event.event_type === 'MESSAGE'
+    && ['user', 'human'].includes(String(event.payload.source ?? '').toLowerCase())
+    && pendingProjections.some(item => !item.formalEventIdsAtSubmission.has(event.id))));
 
   for (const local of projections) {
-    const formalIndex = local.localOnly || !local.canonicalEventId
+    const formalIndex = !local.canonicalEventId
       ? -1
       : projected.findIndex(event => event.id === local.canonicalEventId);
     const formalEvent = formalIndex >= 0 ? projected[formalIndex] : undefined;
@@ -1514,7 +1515,7 @@ function projectLocalMessages(
       projected[formalIndex] = localEvent;
       continue;
     }
-    const formalAnchorId = local.canonicalEventId ?? local.suppressedFormalEventId;
+    const formalAnchorId = local.canonicalEventId;
     const childIndex = formalAnchorId
       ? projected.findIndex(event => event.payload.parent_id === formalAnchorId)
       : -1;
@@ -5957,9 +5958,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const activeFormalTurnUnfinished = Boolean(
     activeFormalTurnId && !activeFormalTurnFinished,
   );
-  const currentFormalTurnFinished = activeFormalTurnId
+  const currentFormalTurnFinished = !foregroundSubmissionAwaitingFormalEvent && (activeFormalTurnId
     ? activeFormalTurnFinished
-    : selectedFormalTurnFinished;
+    : selectedFormalTurnFinished);
   const activeFormalTurnHasRuntimeActivity = Boolean(
     activeFormalTurnId && hasNonTerminalRuntimeActivityForTurn(currentFormalEvents, activeFormalTurnId),
   );
@@ -7042,7 +7043,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     message: QueuedMessage,
     idPrefix = 'pending-user',
     state: LocalMessageProjectionState = 'submitting',
-    localOnly = false,
   ): string => {
     const existing = localMessageProjections.current.get(message.id);
     if (existing) {
@@ -7050,7 +7050,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         ...existing,
         scope: message.scope,
         state,
-        localOnly: existing.localOnly || localOnly,
         event: {
           ...existing.event,
           payload: {
@@ -7084,7 +7083,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       scope: message.scope,
       renderKey,
       state,
-      localOnly,
       event,
       formalEventIdsAtSubmission: new Set((eventsQuery.data?.events ?? []).map(item => item.id)),
     }));
@@ -7116,10 +7114,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       if (cursor && context?.optimisticEventId) {
         updateLocalMessageProjections(current => {
           const projection = current.get(message.id);
-          if (!projection) return;
-          current.set(message.id, projection.localOnly
-            ? { ...projection, suppressedFormalEventId: cursor, state: 'accepted' }
-            : { ...projection, canonicalEventId: cursor, state: 'accepted' });
+          if (!projection || projection.scope !== message.bindingId) return;
+          current.set(message.id, { ...projection, canonicalEventId: cursor, state: 'accepted' });
         });
         releaseDeferredFormalUserEvents(message.bindingId);
       }
@@ -7184,7 +7180,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       // The current page owns its submitted user bubble. Its event relationship
       // is only known once the formal OpenHands event is available, so never
       // infer a parent from a potentially stale browser event window.
-      showOptimisticUserBubble(message, 'pending-user', 'submitting', true);
+      showOptimisticUserBubble(message, 'pending-user', 'submitting');
       if (!message.nativeGuidance) {
         setActiveTurnEventId(undefined);
         setRequestStartedAt(current => current ?? Date.now());
