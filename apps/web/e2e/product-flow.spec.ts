@@ -1486,6 +1486,8 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await completedProcessSummary.locator(':scope > summary').click();
   await expect(completedProcessSummary).toHaveJSProperty('open', true);
   await expect(completedProcess).toBeVisible();
+  await expect(completedProcess).not.toHaveJSProperty('nodeName', 'DETAILS');
+  await expect(completedProcess.locator(':scope > summary')).toHaveCount(0);
   const firstProgressGroup = completedProcess.locator('[data-progress-event-id="progress-note"]');
   const nextProgressGroup = completedProcess.locator('[data-progress-event-id="progress-note-next"]');
   await expect(firstProgressGroup).toContainText('我先确认当前工作目录，再根据现有结构判断后续改动范围。');

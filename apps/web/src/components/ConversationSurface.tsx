@@ -1423,13 +1423,13 @@ const ActivityGroup = memo(function ActivityGroup({ items, active, revealEventId
   if (display === 'summary') return <details className="conversation-process-summary" open={open} onToggle={event => setOpen(event.currentTarget.open)}>
     <summary aria-label={`${open ? '收起' : '展开'}工作过程`}>{summary}</summary>
   </details>;
-  if (display === 'source') return <details className="conversation-activity-group conversation-activity-group-source" open={open} hidden={!open}>
+  if (display === 'source') return <div className="conversation-activity-group conversation-activity-group-source" hidden={!open}>
     <div className="conversation-activity-list">
       {rows.map(row => row.kind === 'progress-group'
         ? <ProgressActivity key={row.group.id} group={row.group} active={active} revealEventIds={revealEventIds} paused={paused} parentFailed={parentFailed} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/>
         : <ActivityEntryRow key={row.entry.id} entry={row.entry} active={active} reveal={entryHasRevealedText(row.entry, revealEventIds)} paused={paused} parentFailed={parentFailed} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/>) }
     </div>
-  </details>;
+  </div>;
   return <details className={`conversation-activity-group${active ? ' active' : ''}`} open={open} onToggle={event => setOpen(event.currentTarget.open)}>
     <summary>{summary}</summary>
     <div className="conversation-activity-list">
