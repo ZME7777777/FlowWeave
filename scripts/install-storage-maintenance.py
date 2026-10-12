@@ -138,7 +138,6 @@ def install_locked(payload):
             )
             atomic(path, data, 0o644)
         run(["systemctl", "daemon-reload"])
-        run(["systemctl", "reset-failed", units[0].name])
         run(["systemctl", "start", units[0].name])
         state = run(
             [
