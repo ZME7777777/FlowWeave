@@ -1047,9 +1047,9 @@ test('Deleting the selected conversation immediately hides it and opens its neig
   const deletingRow = page.locator('[data-conversation-binding-id="optimistic-delete-a"]');
   await deletingRow.hover();
   await expect(deletingRow.getByRole('button', { name: '删除会话 待删除会话' })).toBeVisible();
-  await expect(deletingRow.locator('.agent-workspace-conversation-drag')).toBeVisible();
+  await expect(deletingRow.getByRole('button', { name: '待删除会话', exact: true })).toHaveAttribute('draggable', 'true');
   await expect(deletingRow.locator('.agent-workspace-conversation-select svg')).toBeHidden();
-  await page.getByRole('button', { name: '删除会话', exact: true }).click();
+  await deletingRow.getByRole('button', { name: '删除会话 待删除会话', exact: true }).click();
   const dialog = page.getByRole('alertdialog');
   await dialog.getByRole('button', { name: '确认删除', exact: true }).click();
 
@@ -2120,7 +2120,7 @@ test('First message keeps the new conversation visible while its routed read is 
 test('A new conversation stays first after an existing conversation was reordered', async ({ page }) => {
   let authenticated = false;
   let created = false;
-  let reordered = false;
+  let orderRequests = 0;
   const workspace = { id: 'new-order-workspace', display_name: '会话排序工作区', desired_state: 'RUNNING', updated_at: now };
   const existing = [
     {
@@ -2161,7 +2161,7 @@ test('A new conversation stays first after an existing conversation was reordere
       return json(route, { conversation: createdConversation, accepted: true, cursor: 'new-order-user-event' }, 201);
     }
     if (path.endsWith('/order') && request.method() === 'POST') {
-      reordered = true;
+      orderRequests += 1;
       return json(route, existing[1]);
     }
     if (path.endsWith('/events')) return json(route, {
@@ -2192,27 +2192,19 @@ test('A new conversation stays first after an existing conversation was reordere
   await page.goto('/');
   await login(page);
   await page.getByRole('button', { name: 'Agent 会话' }).click();
-  const source = page.getByRole('button', { name: '拖拽排序会话 已有会话 B' });
-  const referenceSource = page.getByRole('button', { name: '已有会话 B', exact: true });
+  const source = page.getByRole('button', { name: '已有会话 B', exact: true });
   const target = page.locator('[data-conversation-binding-id="new-order-a"]');
-  await expect(source).toHaveAttribute('data-drag-zone', 'conversation-order');
-  await expect(referenceSource).toHaveAttribute('data-drag-zone', 'conversation-reference');
-  await expect(referenceSource).toHaveAttribute('draggable', 'true');
-  const sourceBox = await source.boundingBox();
-  const referenceBox = await referenceSource.boundingBox();
-  const targetBox = await target.boundingBox();
-  expect(sourceBox).not.toBeNull();
-  expect(referenceBox).not.toBeNull();
-  expect(targetBox).not.toBeNull();
-  expect(sourceBox!.x + sourceBox!.width).toBeLessThanOrEqual(referenceBox!.x);
-  await page.mouse.move(sourceBox!.x + sourceBox!.width / 2, sourceBox!.y + sourceBox!.height / 2);
-  await page.mouse.down();
-  await page.mouse.move(targetBox!.x + targetBox!.width / 2, targetBox!.y + 2, { steps: 5 });
-  await page.mouse.up();
-  await expect.poll(() => reordered).toBe(true);
+  await expect(source).toHaveAttribute('draggable', 'true');
+  await expect(source).toHaveAttribute('title', '拖入发送框以引用此会话，或拖到其他会话以调整顺序');
+  await source.dragTo(target, { targetPosition: { x: 10, y: 2 } });
+  await expect.poll(() => orderRequests).toBe(1);
 
   await page.getByRole('button', { name: '在根工作区中新建会话' }).click();
   const composer = page.getByLabel('发送 Agent 消息');
+  await source.dragTo(composer);
+  await expect(page.getByRole('button', { name: '移除会话 已有会话 B', exact: true })).toBeVisible();
+  expect(orderRequests).toBe(1);
+  await page.getByRole('button', { name: '移除会话 已有会话 B', exact: true }).click();
   await composer.fill('创建最新会话');
   await page.getByLabel('发送消息').click();
   await expect.poll(() => created).toBe(true);
@@ -2222,6 +2214,7 @@ test('A new conversation stays first after an existing conversation was reordere
   await expect.poll(() => rootRows.evaluateAll(rows => rows.map(row => row.getAttribute('data-conversation-binding-id')))).toEqual([
     'new-order-created', 'new-order-b', 'new-order-a',
   ]);
+
 });
 
 
