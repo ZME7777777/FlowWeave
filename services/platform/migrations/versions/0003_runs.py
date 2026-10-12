@@ -14,8 +14,32 @@ revision = "0003_runs"
 down_revision = "0002_flows"
 branch_labels = None
 depends_on = None
-TABLES_BEFORE_SNAPSHOT = ["flow_runs"]
 TABLES_AFTER_ATTEMPT = ["human_actions"]
+
+
+def _create_flow_run() -> None:
+    # This is the original 0003 schema. Later revisions own environment,
+    # Lark, automation, scheduling and tenancy fields; never read the live ORM.
+    op.create_table(
+        "flow_runs",
+        sa.Column("id", sa.String(36), primary_key=True),
+        sa.Column(
+            "flow_definition_id",
+            sa.String(36),
+            sa.ForeignKey("flow_definitions.id", ondelete="RESTRICT"),
+            nullable=False,
+        ),
+        sa.Column("run_no", sa.Integer(), nullable=False),
+        sa.Column("name", sa.String(220), nullable=False),
+        sa.Column("state", sa.String(30), nullable=False),
+        sa.Column("active_snapshot_id", sa.String(36), nullable=True),
+        sa.Column("row_version", sa.Integer(), nullable=False),
+        sa.Column("completion_mode", sa.String(10), nullable=True),
+        sa.Column("started_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("finished_at", sa.DateTime(timezone=True), nullable=True),
+        sa.UniqueConstraint("flow_definition_id", "run_no", name="uq_flow_run_number"),
+    )
+    op.create_index("ix_flow_runs_flow_definition_id", "flow_runs", ["flow_definition_id"])
 
 
 def _create_node_run() -> None:
@@ -114,8 +138,7 @@ def _create_node_attempt() -> None:
 
 def upgrade():
     bind = op.get_bind()
-    for name in TABLES_BEFORE_SNAPSHOT:
-        Base.metadata.tables[name].create(bind, checkfirst=True)
+    _create_flow_run()
     _create_run_snapshot()
     _create_node_run()
     _create_node_attempt()
@@ -130,5 +153,4 @@ def downgrade():
     op.drop_table("node_attempts")
     op.drop_table("node_runs")
     op.drop_table("run_snapshots")
-    for name in reversed(TABLES_BEFORE_SNAPSHOT):
-        Base.metadata.tables[name].drop(bind, checkfirst=True)
+    op.drop_table("flow_runs")

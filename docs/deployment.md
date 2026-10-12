@@ -159,7 +159,16 @@ uv run python scripts/migration_node_run_check.py
 uv run python scripts/migration_node_run_check.py --probe-head
 ```
 
-FR-566 的 PostgreSQL 16.9 实跑已通过真实空库到 0092、0092 故障回滚／重试与旧记录保留。但完整空库链随后在 0093 因重复添加 `flow_runs.schedule_id` 失败，由 FR-567 单独修复；仍不能声称完整空库初始化已通过。上述脚本只创建／迁移／移除自己的唯一临时数据库，不连接生产库执行迁移，也不启动本地服务。
+FR-566 的 PostgreSQL 16.9 实跑已通过真实空库到 0092、0092 故障回滚／重试与旧记录保留。FR-567 进一步将 0003 的 `flow_runs` 固定为初始十字段及历史约束，让后续迁移顺序引入环境、Lark、自动运行和调度字段；0093 仍正常添加两个可空调度标识及索引。已经执行 0003 的数据库不会重跑建表，已有 revision 不变。调度专项：
+
+```bash
+cd services/platform
+uv run python scripts/migration_flow_run_check.py
+# 完整链仍会以非零退出码报告后续独立阻塞
+uv run python scripts/migration_flow_run_check.py --probe-head
+```
+
+FR-567 远端隔离 PostgreSQL 实跑七项通过，覆盖真实链到 0093、失败回滚／重试和既有运行／调度记录保留；FR-566 七项回归也通过。完整空库链继续在 0095 因 `artifact_versions.owner_user_id` 重复添加失败，由 FR-571 独立处理；仍不能声称完整空库初始化已通过。上述脚本只创建／迁移／移除自己的唯一临时数据库，不连接生产库执行迁移，也不启动本地服务。
 
 ## 回滚与容量维护
 
