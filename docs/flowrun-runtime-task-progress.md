@@ -8122,8 +8122,19 @@ health／readiness 通过。未发布平台或 Runtime 镜像、未重启生产�
 
 完整链边界：未修复 0005 的对照真实复现 0095 gate_evaluations.owner_user_id 重复；修复后同一真实全链越过该表，在 gate_policies.owner_user_id 以 DuplicateColumn／42701 失败，独立登记 FR-578。专项的 0095 成功结论只限单独调用原样 GateEvaluation _add_owner，不记录／stamp 0095，不替代完整 revision／空库 head；--probe-head 仍执行真实链并传播后续错误。Ruff check／format、AST、唯一 Alembic head `0146_shared_flow_runs`、任务状态唯一性及 diff／staged diff 复核通过。本切片独立提交，未构建或发布生产镜像；下一可执行切片 FR-578。
 
-### FR-578 空库 0095 GatePolicy 租户字段重复迁移修复 — READY
+### FR-578 空库 0095 GatePolicy 租户字段重复迁移修复 — DONE
 
 依赖：FR-577。
 
 范围：取证 0002 的 live GatePolicy schema 提前引入 owner_user_id 的来源，固定 gate_policies 历史结构，验证门禁配置／唯一位置／超时约束保留与正式租户回填、RLS、失败回滚。继续探测真实全链，其他独立历史表漂移另拆；部分 DDL 不代替完整 0095／head，不改已记录 revision，沿用远端隔离验收且不在本地部署。
+
+
+完成：GatePolicy 固定为初始 `bac0516a` 的九字段、唯一位置、timeout_seconds > 0 检查、FlowNode CASCADE FK 和 flow_node_id 索引；0002 全部表至此均使用历史 DDL，移除其 live ORM 导入。不改 revision／down_revision，0095 仍原样添加 owner。用户本轮要求完成全部切片后停止，后续仍逐项独立提交后继续。
+
+验收：基线 `291a114c` 的 other 预检通过，远端独立内部网络／tmpfs PostgreSQL 九项专项通过：0002 故障回滚、九字段／FK／索引、降级／升级、实际 UPDATE timeout=0 被约束拒绝、真实链至 0094 的两条配置／启用标记／位置／timeout／嵌套 JSON 保留、原样 0095 owner 回填／RLS 的失败回滚和重试、NOBYPASSRLS owner 隔离／bypass、既有 0002 不重放。既有六十二项回归通过，总计七十一项。对照复现 gate_policies.owner_user_id 重复；修复后全链继续在 human_actions.owner_user_id 重复处以 42701 失败，拆 FR-579。专项只执行该表原样 _add_owner，不记录或 stamp 0095，不宣称全链通过。临时库／角色／容器／网络回收，无生产挂载／端口／数据库连接／服务重启。Ruff、AST、唯一 0146 head、状态唯一性及 diff／staged diff 通过；未发布生产镜像。
+
+### FR-579 空库 0095 HumanAction 租户字段与幂等约束历史修复 — READY
+
+依赖：FR-578。
+
+范围：固定 0003 HumanAction 原始结构、全局幂等唯一键和历史 FK；验证原样 0095 owner 回填及用户内幂等唯一键切换、RLS、失败回滚与审计记录保留。其他独立表漂移另拆，继续探测真实全链，部分 DDL 不代替完整 revision／head；隔离验证且不在本地部署。

@@ -3,13 +3,6 @@
 import sqlalchemy as sa
 from alembic import op
 
-from flowweave.modules.catalog.infrastructure import models as catalog_models  # noqa: F401
-from flowweave.modules.flows.infrastructure import models as flow_models  # noqa: F401
-from flowweave.modules.model_providers.infrastructure import models as provider_models  # noqa: F401
-from flowweave.modules.runs.infrastructure import models as run_models  # noqa: F401
-from flowweave.modules.tasks.infrastructure import models as task_models  # noqa: F401
-from flowweave.shared.database import Base
-
 revision = "0002_flows"
 down_revision = "0001_catalog"
 branch_labels = None
@@ -79,8 +72,30 @@ def _create_flow_edge() -> None:
     op.create_index("ix_flow_edges_flow_id", "flow_edges", ["flow_id"])
 
 
+def _create_gate_policy() -> None:
+    op.create_table(
+        "gate_policies",
+        sa.Column("id", sa.String(36), primary_key=True),
+        sa.Column(
+            "flow_node_id",
+            sa.String(36),
+            sa.ForeignKey("flow_nodes.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
+        sa.Column("stage", sa.String(10), nullable=False),
+        sa.Column("position", sa.Integer(), nullable=False),
+        sa.Column("gate_type", sa.String(20), nullable=False),
+        sa.Column("enabled", sa.Boolean(), nullable=False),
+        sa.Column("timeout_seconds", sa.Integer(), nullable=False),
+        sa.Column("config", sa.JSON(), nullable=False),
+        sa.Column("content_hash", sa.String(64), nullable=False),
+        sa.UniqueConstraint("flow_node_id", "stage", "position", name="uq_gate_stage_position"),
+        sa.CheckConstraint("timeout_seconds > 0", name="ck_gate_timeout_positive"),
+    )
+    op.create_index("ix_gate_policies_flow_node_id", "gate_policies", ["flow_node_id"])
+
+
 def upgrade():
-    bind = op.get_bind()
     # Keep the historical baseline independent from current ORM fields.  In
     # particular, FR-01 adds the Environment FK in 0052, after the referenced
     # table is introduced by 0014.
@@ -101,14 +116,10 @@ def upgrade():
         elif name == "flow_edges":
             _create_flow_edge()
         else:
-            Base.metadata.tables[name].create(bind, checkfirst=True)
+            _create_gate_policy()
 
 
 def downgrade():
-    bind = op.get_bind()
     for name in reversed(TABLES):
-        if name in ("flow_nodes", "flow_edges"):
-            op.drop_table(name)
-        else:
-            Base.metadata.tables[name].drop(bind, checkfirst=True)
+        op.drop_table(name)
     op.drop_table("flow_definitions")
