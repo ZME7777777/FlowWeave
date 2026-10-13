@@ -3672,6 +3672,48 @@ def test_agent_workspace_pinned_state_persists_in_conversation_projection(
         assert conversations.list_conversation_page(db, workspace.id)["items"][0]["pinned"] is False
 
 
+def test_agent_workspace_pinned_projection_includes_conversations_beyond_first_page(
+    settings, db_session_factory, monkeypatch
+):
+    monkeypatch.setattr(
+        conversations,
+        "runtime_provider",
+        lambda _db, asset, **kwargs: RuntimeProvider(
+            provider_id=asset["asset"]["executor"]["model_provider_id"],
+            base_url="https://models.example.test/v1",
+            model=kwargs.get("model_name") or "test-model",
+            api_key="x",
+            reasoning_effort=kwargs.get("reasoning_effort"),
+        ),
+    )
+    with settings_context(settings), db_session_factory() as db, runtime_context(MockRuntime()):
+        workspace = _ready_workspace_for_conversation(db)
+        created = [
+            conversations.create_conversation(
+                db,
+                workspace.id,
+                f"置顶投影会话 {index}",
+                workspace.default_model_provider_id,
+                f"pinned-projection-{index}",
+            )
+            for index in range(4)
+        ]
+        baseline = datetime.now(UTC) - timedelta(days=1)
+        for index, item in enumerate(created):
+            binding = db.get(AgentConversationBinding, item["id"])
+            assert binding is not None
+            binding.created_at = baseline + timedelta(minutes=index)
+        conversations.set_conversation_pinned(db, workspace.id, created[0]["id"], pinned=True)
+        db.flush()
+
+        first_page = conversations.list_conversation_page(db, workspace.id, limit=3)
+        pinned = conversations.list_pinned_conversations(db, workspace.id)
+
+        assert created[0]["id"] not in [item["id"] for item in first_page["items"]]
+        assert [item["id"] for item in pinned] == [created[0]["id"]]
+        assert pinned[0]["pinned"] is True
+
+
 def test_agent_workspace_conversation_page_never_reads_native_runtime_state(
     settings, db_session_factory, monkeypatch
 ):

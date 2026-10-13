@@ -793,6 +793,37 @@ def list_conversations(db: Session, workspace_id: str) -> list[dict[str, Any]]:
     ]
 
 
+def list_pinned_conversations(
+    db: Session, workspace_id: str, *, limit: int = 50
+) -> list[dict[str, Any]]:
+    """Read the bounded workspace-wide projection used by the pinned rail."""
+
+    workspace = _workspace(db, workspace_id)
+    items = list(
+        db.scalars(
+            select(AgentConversationBinding)
+            .where(
+                AgentConversationBinding.workspace_id == workspace_id,
+                AgentConversationBinding.lifecycle == "ACTIVE",
+                AgentConversationBinding.pinned.is_(True),
+                ~AgentConversationBinding.id.in_(
+                    select(AgentSidebarConversation.sidebar_binding_id)
+                ),
+            )
+            .order_by(
+                _conversation_sort_expression().desc(),
+                AgentConversationBinding.id.desc(),
+            )
+            .limit(limit)
+        )
+    )
+    return _page_dicts(
+        db,
+        items,
+        write_available=_workspace_write_available(db, workspace),
+    )
+
+
 def conversation_activity(
     db: Session, workspace_id: str, *, active_binding_id: str | None = None
 ) -> dict[str, Any]:

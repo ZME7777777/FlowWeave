@@ -711,6 +711,16 @@ async def list_agent_conversations(
     )
 
 
+@router.get("/agent-workspaces/{workspace_id}/pinned-conversations")
+async def list_agent_pinned_conversations(
+    workspace_id: str, container: ContainerDep
+) -> list[dict[str, Any]]:
+    return await run_blocking(
+        container,
+        lambda session: conversations.list_pinned_conversations(session, workspace_id),
+    )
+
+
 @router.get("/agent-workspaces/{workspace_id}/conversation-activity")
 async def agent_conversation_activity(
     workspace_id: str,

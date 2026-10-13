@@ -4689,6 +4689,15 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       }
     }
   }, [conversationPagesByScope, conversationScopes, loadMoreConversations, loadingConversationScope]);
+  const pinnedConversationsQueryKey = sessionQueryKey(host, 'pinned-conversations', workspace?.id);
+  const pinnedConversationsQuery = useQuery({
+    queryKey: pinnedConversationsQueryKey,
+    queryFn: () => api.pinnedConversations!(workspace!.id),
+    enabled: Boolean(workspace && api.pinnedConversations),
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+    retry: false,
+  });
 
   const conversationActivityQuery = useQuery({
     // A sidebar preview is not a formal route entry. Only the route binding may
@@ -4771,9 +4780,12 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     () => new Map(conversations.map(item => [item.id, item])),
     [conversations],
   );
-  const pinnedConversations = [...conversationsById.values()].filter(
+  const pagedPinnedConversations = [...conversationsById.values()].filter(
     item => pendingPinnedUpdates.current.get(item.id)?.pinned ?? item.pinned,
   );
+  const pinnedConversations = api.pinnedConversations
+    ? pinnedConversationsQuery.data ?? pagedPinnedConversations
+    : pagedPinnedConversations;
   const unpinnedConversations = conversations.filter(
     item => !(pendingPinnedUpdates.current.get(item.id)?.pinned ?? item.pinned),
   );
@@ -5042,10 +5054,13 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const toggleConversationPin = useCallback((bindingId: string) => {
     if (!workspace) return;
     const queryKey = sessionQueryKey(host, 'conversations', workspace.id);
-    const currentPinned = conversations.find(item => item.id === bindingId)?.pinned ?? false;
+    const pinnedQueryKey = sessionQueryKey(host, 'pinned-conversations', workspace.id);
+    const knownConversation = pinnedConversations.find(item => item.id === bindingId)
+      ?? conversations.find(item => item.id === bindingId);
+    const currentPinned = Boolean(knownConversation?.pinned);
     const pinned = !currentPinned;
     const updateId = nextPinnedUpdateId.current += 1;
-    const updateCachedConversation = (value: boolean) => {
+    const updateCachedConversation = (value: boolean, updated?: AgentConversation) => {
       setConversationPagesByScope(current => Object.fromEntries(Object.entries(current).map(([scope, page]) => [scope, {
         ...page,
         items: page.items.map(item => item.id === bindingId ? { ...item, pinned: value } : item),
@@ -5060,6 +5075,15 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
           })),
         } : current,
       );
+      queryClient.setQueryData<AgentConversation[]>(pinnedQueryKey, current => {
+        const item = updated ?? knownConversation;
+        if (!value) return (current ?? []).filter(candidate => candidate.id !== bindingId);
+        if (!item) return current;
+        const next = { ...item, pinned: true };
+        return (current ?? []).some(candidate => candidate.id === bindingId)
+          ? (current ?? []).map(candidate => candidate.id === bindingId ? next : candidate)
+          : [...(current ?? []), next];
+      });
     };
     pendingPinnedUpdates.current.set(bindingId, { id: updateId, pinned });
     void queryClient.cancelQueries({ queryKey }).then(() => {
@@ -5070,8 +5094,11 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     void api.setConversationPinned(workspace.id, bindingId, pinned).then(updated => {
       if (pendingPinnedUpdates.current.get(bindingId)?.id !== updateId) return;
       const persistedPinned = Boolean(updated.pinned);
-      updateCachedConversation(persistedPinned);
-      void queryClient.invalidateQueries({ queryKey }).catch(() => undefined).then(() => {
+      updateCachedConversation(persistedPinned, updated);
+      void Promise.all([
+        queryClient.invalidateQueries({ queryKey }),
+        queryClient.invalidateQueries({ queryKey: pinnedQueryKey }),
+      ]).catch(() => undefined).then(() => {
         if (pendingPinnedUpdates.current.get(bindingId)?.id !== updateId) return;
         pendingPinnedUpdates.current.delete(bindingId);
       });
@@ -5079,10 +5106,11 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       if (pendingPinnedUpdates.current.get(bindingId)?.id !== updateId) return;
       pendingPinnedUpdates.current.delete(bindingId);
       updateCachedConversation(currentPinned);
+      void queryClient.invalidateQueries({ queryKey: pinnedQueryKey }).catch(() => undefined);
       const error = reason instanceof Error ? reason : new Error('置顶状态保存失败');
       console.error('conversation-pinned', error);
     });
-  }, [api, conversations, host, queryClient, workspace]);
+  }, [api, conversations, host, pinnedConversations, queryClient, workspace]);
   useEffect(() => {
     setUnreadConversationIds(current => {
       const next = new Set<string>();
