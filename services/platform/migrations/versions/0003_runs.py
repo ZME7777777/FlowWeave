@@ -3,18 +3,10 @@
 import sqlalchemy as sa
 from alembic import op
 
-from flowweave.modules.catalog.infrastructure import models as catalog_models  # noqa: F401
-from flowweave.modules.flows.infrastructure import models as flow_models  # noqa: F401
-from flowweave.modules.model_providers.infrastructure import models as provider_models  # noqa: F401
-from flowweave.modules.runs.infrastructure import models as run_models  # noqa: F401
-from flowweave.modules.tasks.infrastructure import models as task_models  # noqa: F401
-from flowweave.shared.database import Base
-
 revision = "0003_runs"
 down_revision = "0002_flows"
 branch_labels = None
 depends_on = None
-TABLES_AFTER_ATTEMPT = ["human_actions"]
 
 
 def _create_flow_run() -> None:
@@ -136,20 +128,47 @@ def _create_node_attempt() -> None:
     )
 
 
+def _create_human_action() -> None:
+    op.create_table(
+        "human_actions",
+        sa.Column("id", sa.String(36), primary_key=True),
+        sa.Column(
+            "flow_run_id",
+            sa.String(36),
+            sa.ForeignKey("flow_runs.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
+        sa.Column(
+            "node_run_id",
+            sa.String(36),
+            sa.ForeignKey("node_runs.id", ondelete="CASCADE"),
+            nullable=True,
+        ),
+        sa.Column(
+            "attempt_id",
+            sa.String(36),
+            sa.ForeignKey("node_attempts.id", ondelete="CASCADE"),
+            nullable=True,
+        ),
+        sa.Column("action_type", sa.String(60), nullable=False),
+        sa.Column("idempotency_key", sa.String(160), nullable=False, unique=True),
+        sa.Column("payload_json", sa.JSON(), nullable=False),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    )
+    for column in ("flow_run_id", "node_run_id", "attempt_id"):
+        op.create_index(f"ix_human_actions_{column}", "human_actions", [column])
+
+
 def upgrade():
-    bind = op.get_bind()
     _create_flow_run()
     _create_run_snapshot()
     _create_node_run()
     _create_node_attempt()
-    for name in TABLES_AFTER_ATTEMPT:
-        Base.metadata.tables[name].create(bind, checkfirst=True)
+    _create_human_action()
 
 
 def downgrade():
-    bind = op.get_bind()
-    for name in reversed(TABLES_AFTER_ATTEMPT):
-        Base.metadata.tables[name].drop(bind, checkfirst=True)
+    op.drop_table("human_actions")
     op.drop_table("node_attempts")
     op.drop_table("node_runs")
     op.drop_table("run_snapshots")

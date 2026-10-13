@@ -8133,8 +8133,19 @@ health／readiness 通过。未发布平台或 Runtime 镜像、未重启生产�
 
 验收：基线 `291a114c` 的 other 预检通过，远端独立内部网络／tmpfs PostgreSQL 九项专项通过：0002 故障回滚、九字段／FK／索引、降级／升级、实际 UPDATE timeout=0 被约束拒绝、真实链至 0094 的两条配置／启用标记／位置／timeout／嵌套 JSON 保留、原样 0095 owner 回填／RLS 的失败回滚和重试、NOBYPASSRLS owner 隔离／bypass、既有 0002 不重放。既有六十二项回归通过，总计七十一项。对照复现 gate_policies.owner_user_id 重复；修复后全链继续在 human_actions.owner_user_id 重复处以 42701 失败，拆 FR-579。专项只执行该表原样 _add_owner，不记录或 stamp 0095，不宣称全链通过。临时库／角色／容器／网络回收，无生产挂载／端口／数据库连接／服务重启。Ruff、AST、唯一 0146 head、状态唯一性及 diff／staged diff 通过；未发布生产镜像。
 
-### FR-579 空库 0095 HumanAction 租户字段与幂等约束历史修复 — READY
+### FR-579 空库 0095 HumanAction 租户字段与幂等约束历史修复 — DONE
 
 依赖：FR-578。
 
 范围：固定 0003 HumanAction 原始结构、全局幂等唯一键和历史 FK；验证原样 0095 owner 回填及用户内幂等唯一键切换、RLS、失败回滚与审计记录保留。其他独立表漂移另拆，继续探测真实全链，部分 DDL 不代替完整 revision／head；隔离验证且不在本地部署。
+
+
+完成：HumanAction 固定为初始 `bac0516a` 八字段、三个 CASCADE FK／索引和原始 human_actions_idempotency_key_key，0003 不再导入 live ORM。0095 正式添加 owner 并将全局幂等转换为 uq_human_action_owner_key；不改 revision，不提前带入租户约束。
+
+验收：`8b6b2fb7` 的 other 预检通过，隔离 PostgreSQL 九项专项及既有七十一项回归通过（总计八十项）。覆盖 0003 故障回滚／历史结构／往返、真实空链至 0094、原样 _add_owner 及 _scope_business_uniques 中 HumanAction 元数据子集的回填／唯一键转换／RLS 回滚和重试、审计八字段保持、普通角色 owner 隔离、同 owner 重复幂等键拒绝／另一 owner 同键允许、既有 0003 不重放。样本在 0094 植入；唯一键 helper 仅临时选择该表原样元数据并恢复，不改 migration 或记录／stamp 0095，不等同完整 revision 验收。未修复对照复现 human_actions.owner_user_id 重复，修复后真实全链继续在 run_events.owner_user_id 以 42701 失败，拆 FR-580。测试资产全部回收，无生产连接／挂载／端口或服务重启；Ruff、AST、唯一 0146 head、状态唯一性、diff／staged diff 通过，未部署生产。
+
+### FR-580 空库 0095 RunEvent 租户字段历史修复 — READY
+
+依赖：FR-579。
+
+范围：固定 0005 RunEvent 原始结构、BIGSERIAL cursor 和索引，验证事件审计记录／cursor 保留、原样 0095 owner 回填／RLS／故障回滚；继续探测真实全链，其他独立表漂移另拆。隔离数据库验证，不改 revision，不用部分 DDL 代替完整 head。
