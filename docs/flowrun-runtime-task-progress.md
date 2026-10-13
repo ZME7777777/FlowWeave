@@ -8048,11 +8048,17 @@ apply 报告候选为零。脚本与 unit SHA-256 匹配提交，owner-only 路�
 health／readiness 通过。未发布平台或 Runtime 镜像、未重启生产服务、未删除持久数据或共享缓存。
 详细范围及安装复验见 docs/storage-maintenance.md；下一独立重构切片 FR-571，本次不开始。
 
-### FR-572 空库 0095 CapabilityImport 租户字段重复迁移修复 — READY
+### FR-572 空库 0095 CapabilityImport 租户字段重复迁移修复 — DONE
 
 依赖：FR-571。
 
 范围：取证 capability_imports 的早期 live ORM 建表提前引入 owner_user_id 的来源，固定该历史结构，验证正式租户回填、失败回滚与既有记录保留；继续探测空库全链，遇到其他独立历史表漂移继续拆分。不得将部分 DDL 成功宣称为完整 0095／head 通过，不改已记录 revision，沿用远端隔离验收且不在本地部署。
+
+完成：对照初始提交 `bac0516a` 的 CapabilityImport，将 0006 从 live ORM metadata 建表改为显式十二字段历史 DDL，保留 state 检查、主键、唯一 token_digest 索引及 content_hash／state／expires_at 索引；0095 仍负责原样添加 owner_user_id、回填固定历史 owner、设置非空／索引和强制 RLS。不修改 revision／down_revision，不让租户迁移静默跳过重复字段，已执行 0006 的数据库不会重放建表。
+
+验收：以已提交基线 `af923c42`、other 范围通过远端预检，在无生产挂载／无发布端口的独立内部网络与 tmpfs PostgreSQL 执行当前源码。新 migration_capability_import_check.py 八项通过：0006 写 revision 前故障的表／版本整体回滚、历史结构、降级／升级、真实链到 0094 保留 VALIDATED／EXPIRED 两类导入全部原字段（非空 JSON、consumed_at、token 和时间戳）、原样 0095 _add_owner 的失败回滚及重试、固定 owner 回填／非空／索引／强制 RLS、NOBYPASSRLS 角色下本人可读／其他 owner 不可读／控制 bypass 可读，以及已执行 0006 后不重放建表。FR-566／FR-567／FR-571 的二十二项回归同样通过，总计三十项。该导入样本不覆盖 COMMITTED 内容重编译，不将其外推为所有能力导入迁移。临时数据库／角色和此次标签的容器／网络均已回收；未连接生产数据库、启动本地服务或重启生产服务。
+
+完整链边界：未修复 0006 的对照真实复现 0095 capability_imports.owner_user_id 重复；修复后同一真实全链越过该表，在 flow_edges.owner_user_id 以 DuplicateColumn／42701 失败，独立登记 FR-574。本专项对 0095 成功的结论仅限原样 _add_owner 的 CapabilityImport DDL，不记录／stamp 0095；--probe-head 仍执行完整真实链并传播失败，不能声称空库到 head 通过。Ruff check／format、AST、唯一 Alembic head `0146_shared_flow_runs`、任务状态唯一性及 diff／staged diff 复核通过。本切片独立提交，未构建或发布生产镜像；下一可执行切片 FR-574。
 
 ### FR-573 已有会话续发正式用户身份认领 — DONE
 
@@ -8067,3 +8073,9 @@ health／readiness 通过。未发布平台或 Runtime 镜像、未重启生产�
 发布补记（2026-10-13）：用户授权后，以固定源码提交 `f81ea367fc70b84673d46dd9e7d3b98cbb44ba25` 完成 web 预检与受管最小上下文 prepare；归档 SHA-256 为 `c9e0c79a4e712c31fdcbb71894a3de5cfaacc22edf92590b82a0c145da47666f`。构建并核验 linux/amd64 Web 镜像 `sha256:5f38840c93d769bfe05a1e5e4f1d2b90e4d82d8a4627cd0110a6df581a60188d`，OCI revision 与修复提交一致，旧镜像保留回滚标签。首次辅助脚本错误地捕获成功 SystemExit 并触发回滚；公网资源复核发现仍为旧 bundle 后，将异常分支限定为 Exception，重新核验唯一目标、配置和服务身份，再从同一已构建镜像完成切换。脚本退出后的独立服务器检查与公网 HTML 均确认新资源 `index-BGffAp2w.js`，未将第一次脚本的成功输出当作最终发布证据。
 
 公网页面、Agent 深层路由、实际静态资源、认证 API 和根应用均通过；全新 Chrome 验收窗口加载新 bundle，观测到 25 个带部署前缀 API 请求、0 个无前缀请求。API 与 stream-api 的 health／readiness 均为 200。独立测试会话连续两轮真实续发无需刷新即可显示最终回复，第二轮结束后发送入口恢复；首轮按 POST cursor 核验同轮用户气泡／过程组／正式回复各一个、pending-user 为零、页面错误为零。第二轮以实际页面正文与发送控件恢复验收，未外推全部模型／会话场景。API、stream-api、Worker、Runtime Provider 的容器／镜像身份与服务器 Compose／环境摘要保持一致。remote-release-finish 成功，保留每 scope 最近三份成功上下文及引用版本，本次回收候选为空；未进行数据库迁移、Runtime 发布或数据清理。本次仅发布 Web；原暂存历史迁移改动保留。
+
+### FR-574 空库 0095 FlowEdge 租户字段重复迁移修复 — READY
+
+依赖：FR-572。
+
+范围：取证 0002 的 live FlowEdge schema 提前包含 owner_user_id 的来源，固定 flow_edges 历史结构，验证正式租户回填、失败回滚、原控制边身份与记录保留。继续探测真实空库全链，其他独立历史表漂移另拆切片；部分 DDL 验收不代替完整 0095／head，通过远端隔离数据库验证且不在本地部署。
