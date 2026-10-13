@@ -8144,8 +8144,19 @@ health／readiness 通过。未发布平台或 Runtime 镜像、未重启生产�
 
 验收：`8b6b2fb7` 的 other 预检通过，隔离 PostgreSQL 九项专项及既有七十一项回归通过（总计八十项）。覆盖 0003 故障回滚／历史结构／往返、真实空链至 0094、原样 _add_owner 及 _scope_business_uniques 中 HumanAction 元数据子集的回填／唯一键转换／RLS 回滚和重试、审计八字段保持、普通角色 owner 隔离、同 owner 重复幂等键拒绝／另一 owner 同键允许、既有 0003 不重放。样本在 0094 植入；唯一键 helper 仅临时选择该表原样元数据并恢复，不改 migration 或记录／stamp 0095，不等同完整 revision 验收。未修复对照复现 human_actions.owner_user_id 重复，修复后真实全链继续在 run_events.owner_user_id 以 42701 失败，拆 FR-580。测试资产全部回收，无生产连接／挂载／端口或服务重启；Ruff、AST、唯一 0146 head、状态唯一性、diff／staged diff 通过，未部署生产。
 
-### FR-580 空库 0095 RunEvent 租户字段历史修复 — READY
+### FR-580 空库 0095 RunEvent 租户字段历史修复 — DONE
 
 依赖：FR-579。
 
 范围：固定 0005 RunEvent 原始结构、BIGSERIAL cursor 和索引，验证事件审计记录／cursor 保留、原样 0095 owner 回填／RLS／故障回滚；继续探测真实全链，其他独立表漂移另拆。隔离数据库验证，不改 revision，不用部分 DDL 代替完整 head。
+
+
+完成：RunEvent 固定为初始 `bac0516a` 七字段、BIGSERIAL cursor、flow CASCADE FK 和原四个查询索引，0095 owner 不再提前创建。其余 BackgroundTask 本轮不改，revision／down_revision 不变。
+
+验收：`70e92695` other 预检通过，隔离 PostgreSQL 九项专项与既有八十项回归通过（八十九项）。验证 0005 回滚／结构／往返／真实空链至 0094、原样 owner 回填／RLS／故障回滚、两条事件七字段／cursor／JSON／时间戳保持、新插入由实际数据库 sequence 生成大于既有 cursor 的值、原迁移不重放。样本在 0094 植入，不记录／stamp 0095、不伪造 cursor。对照复现 run_events owner 重复，修复后真实全链在 background_tasks.owner_user_id 以 42701 失败，拆 FR-581。测试资产已回收，无生产连接／挂载／端口或重启；Ruff、AST、唯一 0146 head、状态与 diff／staged diff 通过，未部署生产。
+
+### FR-581 空库 0095 BackgroundTask 租户字段与队列索引历史修复 — READY
+
+依赖：FR-580。
+
+范围：固定 0005 BackgroundTask 原字段、幂等唯一键、lease／attempt 检查及原索引，后续 owner／用户内幂等与 0113／0131 队列索引归其正式迁移。验证真实 0094→0095、回滚／重试／任务记录保留和全链至 head；若其他独立阻塞另拆。禁止给全局 Worker 任务账本错误加 RLS，不改 revision，隔离验证且不在本地部署。
