@@ -17,6 +17,33 @@ depends_on = None
 TABLES = ["flow_nodes", "flow_edges", "gate_policies"]
 
 
+def _create_flow_node() -> None:
+    # Original node instance fields; tenant ownership belongs to 0095.
+    op.create_table(
+        "flow_nodes",
+        sa.Column("id", sa.String(36), primary_key=True),
+        sa.Column(
+            "flow_id",
+            sa.String(36),
+            sa.ForeignKey("flow_definitions.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
+        sa.Column("instance_key", sa.String(100), nullable=False),
+        sa.Column(
+            "node_asset_id",
+            sa.String(36),
+            sa.ForeignKey("node_assets.id", ondelete="RESTRICT"),
+            nullable=False,
+        ),
+        sa.Column("alias", sa.String(200), nullable=True),
+        sa.Column("position_x", sa.Integer(), nullable=False),
+        sa.Column("position_y", sa.Integer(), nullable=False),
+        sa.Column("config_override", sa.JSON(), nullable=False),
+        sa.UniqueConstraint("flow_id", "instance_key", name="uq_flow_instance_key"),
+    )
+    op.create_index("ix_flow_nodes_flow_id", "flow_nodes", ["flow_id"])
+
+
 def _create_flow_edge() -> None:
     # Freeze the original control edge; 0095 owns its tenant column.
     op.create_table(
@@ -69,7 +96,9 @@ def upgrade():
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
     )
     for name in TABLES:
-        if name == "flow_edges":
+        if name == "flow_nodes":
+            _create_flow_node()
+        elif name == "flow_edges":
             _create_flow_edge()
         else:
             Base.metadata.tables[name].create(bind, checkfirst=True)
@@ -78,8 +107,8 @@ def upgrade():
 def downgrade():
     bind = op.get_bind()
     for name in reversed(TABLES):
-        if name == "flow_edges":
-            op.drop_table("flow_edges")
+        if name in ("flow_nodes", "flow_edges"):
+            op.drop_table(name)
         else:
             Base.metadata.tables[name].drop(bind, checkfirst=True)
     op.drop_table("flow_definitions")

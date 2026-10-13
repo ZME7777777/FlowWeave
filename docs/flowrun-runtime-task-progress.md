@@ -8086,8 +8086,20 @@ health／readiness 通过。未发布平台或 Runtime 镜像、未重启生产�
 
 完整链边界：未修复 0002 的对照真实复现 0095 flow_edges.owner_user_id 重复；修复后同一真实全链越过 FlowEdge，继续在 flow_nodes.owner_user_id 以 DuplicateColumn／42701 失败，独立登记 FR-575。专项仅单独调用原样 0095 FlowEdge _add_owner，不记录／stamp 0095，不能代替完整 revision／空库 head 验收；--probe-head 仍执行真实链并传播后续错误。Ruff check／format、AST、唯一 Alembic head `0146_shared_flow_runs`、任务状态唯一性及 diff／staged diff 复核通过。本切片独立提交，未构建或发布生产镜像；下一可执行切片为 FR-575。
 
-### FR-575 空库 0095 FlowNode 租户字段重复迁移修复 — READY
+### FR-575 空库 0095 FlowNode 租户字段重复迁移修复 — DONE
 
 依赖：FR-574。
 
 范围：取证 0002 的 live FlowNode schema 提前引入 owner_user_id 的来源，固定 flow_nodes 历史结构，验证节点身份／配置／位置保留与正式租户回填、RLS、失败回滚。更新受影响的 FlowEdge 专项夹具适配历史节点结构；继续探测全链，其他独立历史表错误另拆切片。部分 DDL 验收不能替代完整 0095／head，不改已记录 revision，沿用远端隔离验收且不在本地部署。
+
+完成：对照初始提交 `bac0516a`，将 0002 的 FlowNode 改用显式八字段历史 DDL，保留节点实例唯一键、flow_id 索引、Flow Definition CASCADE 和 NodeAsset RESTRICT FK；flow_nodes／flow_edges 仍按原顺序建表和反序降级，剩余 GatePolicy 本轮不改。0095 继续原样添加 owner，0088 继续正式移除业务外键，不修改 revision／down_revision。FlowEdge 夹具不再依赖提前创建的节点 owner，改为先创建真实 NodeAsset，再以原始节点字段和正式 FK 插入两端节点；没有跳过或伪造历史外键。
+
+验收：以已提交基线 `5f82eb89`、other 范围通过远端预检，独立内部网络／tmpfs PostgreSQL 实跑新 migration_flow_node_check.py 八项通过，覆盖 0002 写 revision 前故障的建表与版本回滚、FlowNode 八字段／索引／两个历史 FK、降级／升级、真实链到 0094 保留节点身份／资产引用／alias／坐标（13、-7）／嵌套 JSON、原样 0095 _add_owner 故障回滚／重试、固定 owner 非空回填／索引／强制 RLS、NOBYPASSRLS 角色的用户隔离与控制 bypass，以及既有 0002 不重放建表。更新后的 FlowEdge 八项回归及其余三十项回归通过，总计四十六项。临时数据库／角色和此次标签的容器／网络全部回收，无生产目录挂载／发布端口，未连接生产数据库、启动本地服务或重启生产服务。
+
+完整链边界：未修复 0002 的对照真实复现 0095 flow_nodes.owner_user_id 重复；修复后同一真实全链越过 FlowNode，继续在 flow_port_mappings.owner_user_id 以 DuplicateColumn／42701 失败，独立登记 FR-576。本专项只单独调用原样 0095 FlowNode _add_owner，不记录／stamp 0095，不能替代完整 revision／空库 head 验收；--probe-head 仍真实执行全链并传播失败。Ruff check／format、AST、唯一 Alembic head `0146_shared_flow_runs`、任务状态唯一性及 diff／staged diff 复核通过。本切片独立提交，未构建或发布生产镜像；下一可执行切片为 FR-576。
+
+### FR-576 空库 0095 FlowPortMapping 租户字段重复迁移修复 — READY
+
+依赖：FR-575。
+
+范围：取证 flow_port_mappings 的历史 live ORM 建表提前引入 owner_user_id 的来源，固定原始端口映射结构，验证映射身份／字段／版本配置保留及正式租户回填、RLS、失败回滚。继续探测真实空库全链，其他独立历史表错误另拆；部分 DDL 不替代完整 0095／head，不改已记录 revision，沿用远端隔离验收且不在本地部署。

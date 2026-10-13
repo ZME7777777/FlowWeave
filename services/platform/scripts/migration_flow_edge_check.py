@@ -98,13 +98,18 @@ def seed(connection) -> None:
         "VALUES (%s,'edge fixture','keep','https://example.invalid/root',1,now(),now())",
         (flow,),
     )
-    # The other live 0002 table still carries its future owner column. This
-    # fixture reflects that current historical schema, without repairing it.
+    asset = str(uuid4())
+    connection.execute(
+        "INSERT INTO node_assets "
+        "(id,name,description,icon_kind,icon_value,row_version,created_at,updated_at) "
+        "VALUES (%s,'edge fixture asset','keep','TEXT','N',1,now(),now())",
+        (asset,),
+    )
     for ident, key in ((source, "source"), (target, "target")):
         connection.execute(
             "INSERT INTO flow_nodes (id,flow_id,instance_key,node_asset_id,position_x,position_y,"
-            "config_override,owner_user_id) VALUES (%s,%s,%s,%s,0,0,'{}',%s)",
-            (ident, flow, key, str(uuid4()), LEGACY_OWNER),
+            "config_override) VALUES (%s,%s,%s,%s,0,0,'{}')",
+            (ident, flow, key, asset),
         )
     for position in (2, 7):
         connection.execute(
