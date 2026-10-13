@@ -8074,8 +8074,20 @@ health／readiness 通过。未发布平台或 Runtime 镜像、未重启生产�
 
 公网页面、Agent 深层路由、实际静态资源、认证 API 和根应用均通过；全新 Chrome 验收窗口加载新 bundle，观测到 25 个带部署前缀 API 请求、0 个无前缀请求。API 与 stream-api 的 health／readiness 均为 200。独立测试会话连续两轮真实续发无需刷新即可显示最终回复，第二轮结束后发送入口恢复；首轮按 POST cursor 核验同轮用户气泡／过程组／正式回复各一个、pending-user 为零、页面错误为零。第二轮以实际页面正文与发送控件恢复验收，未外推全部模型／会话场景。API、stream-api、Worker、Runtime Provider 的容器／镜像身份与服务器 Compose／环境摘要保持一致。remote-release-finish 成功，保留每 scope 最近三份成功上下文及引用版本，本次回收候选为空；未进行数据库迁移、Runtime 发布或数据清理。本次仅发布 Web；原暂存历史迁移改动保留。
 
-### FR-574 空库 0095 FlowEdge 租户字段重复迁移修复 — READY
+### FR-574 空库 0095 FlowEdge 租户字段重复迁移修复 — DONE
 
 依赖：FR-572。
 
 范围：取证 0002 的 live FlowEdge schema 提前包含 owner_user_id 的来源，固定 flow_edges 历史结构，验证正式租户回填、失败回滚、原控制边身份与记录保留。继续探测真实空库全链，其他独立历史表漂移另拆切片；部分 DDL 验收不代替完整 0095／head，通过远端隔离数据库验证且不在本地部署。
+
+完成：对照初始提交 `bac0516a`，0002 的 FlowEdge 改用显式五字段历史 DDL，保留 flow_id 索引、flow／source／target／position 唯一键，以及原 Flow Definition／两端 FlowNode 的 CASCADE FK。保留原表创建／删除顺序，其余 0002 表本轮不改变；0088 继续按正式历史移除业务外键，0095 继续原样添加租户字段。不修改 revision／down_revision，不放宽租户重复字段检查，已执行 0002 的数据库不会重放历史建表。
+
+验收：以已提交基线 `27256495`、other 范围通过远端预检，在独立内部网络／tmpfs PostgreSQL 上执行当前源码，无生产目录挂载和发布端口。新 migration_flow_edge_check.py 八项通过：0002 写 revision 前故障的表／版本原子回滚、FlowEdge 五字段／索引／三个 FK 历史结构、降级／升级、真实链到 0094 保留两条控制边全部身份及 position（2、7）、原样 0095 _add_owner 故障整体回滚／重试、固定 owner 非空回填／索引／强制 RLS、NOBYPASSRLS 角色的 owner 隔离与控制 bypass，以及已执行 0002 后不重放建表。既有四组回归三十项通过，总计三十八项。夹具为仍保持 live schema 的 FlowNode 显式提供其既有 owner，不修改该表或跨过正式迁移；早期插入的控制边在完整真实历史迁移到 0094 后逐字段保持。临时数据库／角色和本次标签的容器／网络全部回收，未连接生产数据库、启动本地服务或重启生产服务。
+
+完整链边界：未修复 0002 的对照真实复现 0095 flow_edges.owner_user_id 重复；修复后同一真实全链越过 FlowEdge，继续在 flow_nodes.owner_user_id 以 DuplicateColumn／42701 失败，独立登记 FR-575。专项仅单独调用原样 0095 FlowEdge _add_owner，不记录／stamp 0095，不能代替完整 revision／空库 head 验收；--probe-head 仍执行真实链并传播后续错误。Ruff check／format、AST、唯一 Alembic head `0146_shared_flow_runs`、任务状态唯一性及 diff／staged diff 复核通过。本切片独立提交，未构建或发布生产镜像；下一可执行切片为 FR-575。
+
+### FR-575 空库 0095 FlowNode 租户字段重复迁移修复 — READY
+
+依赖：FR-574。
+
+范围：取证 0002 的 live FlowNode schema 提前引入 owner_user_id 的来源，固定 flow_nodes 历史结构，验证节点身份／配置／位置保留与正式租户回填、RLS、失败回滚。更新受影响的 FlowEdge 专项夹具适配历史节点结构；继续探测全链，其他独立历史表错误另拆切片。部分 DDL 验收不能替代完整 0095／head，不改已记录 revision，沿用远端隔离验收且不在本地部署。
