@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`IN PROGRESS`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`FR-567`
+> 下一可执行切片：`FR-582`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -8155,8 +8155,19 @@ health／readiness 通过。未发布平台或 Runtime 镜像、未重启生产�
 
 验收：`70e92695` other 预检通过，隔离 PostgreSQL 九项专项与既有八十项回归通过（八十九项）。验证 0005 回滚／结构／往返／真实空链至 0094、原样 owner 回填／RLS／故障回滚、两条事件七字段／cursor／JSON／时间戳保持、新插入由实际数据库 sequence 生成大于既有 cursor 的值、原迁移不重放。样本在 0094 植入，不记录／stamp 0095、不伪造 cursor。对照复现 run_events owner 重复，修复后真实全链在 background_tasks.owner_user_id 以 42701 失败，拆 FR-581。测试资产已回收，无生产连接／挂载／端口或重启；Ruff、AST、唯一 0146 head、状态与 diff／staged diff 通过，未部署生产。
 
-### FR-581 空库 0095 BackgroundTask 租户字段与队列索引历史修复 — READY
+### FR-581 空库 0095 BackgroundTask 租户字段与队列索引历史修复 — DONE
 
 依赖：FR-580。
 
 范围：固定 0005 BackgroundTask 原字段、幂等唯一键、lease／attempt 检查及原索引，后续 owner／用户内幂等与 0113／0131 队列索引归其正式迁移。验证真实 0094→0095、回滚／重试／任务记录保留和全链至 head；若其他独立阻塞另拆。禁止给全局 Worker 任务账本错误加 RLS，不改 revision，隔离验证且不在本地部署。
+
+
+完成：BackgroundTask 使用初始 `bac0516a` 十六字段、全局幂等唯一键、非负 lease_generation／attempts 检查及四个索引，0005 完全脱离 live ORM。0095 owner／用户内幂等、0113 terminal_updated_at 和 0131 claim_ready 由原正式迁移创建，不提前带入；全局 Worker 账本不加 RLS。revision 不变。
+
+验收：`0889d2cf` other 预检通过，隔离 PostgreSQL 十二项专项、既有八十九项回归和独立空库 head 共 102 项通过。包括 0005 三表／revision 故障原子回滚、十六字段／索引／约束、往返、实际负计数拒绝、从早期植入 PENDING／RUNNING 任务实跑至 0094 的全字段保持、完整正式 0094→0095 写 revision 前故障回滚（users、owner 回填、唯一键均撤回）、完整重试及 downgrade／upgrade、同 owner 同键拒绝／跨 owner 同键允许、NOBYPASSRLS 角色在不同当前用户下仍全局可读且无 RLS、有任务库到真实 head 后原十六字段保持且两项后期索引按原迁移生成、当前 head 重跑保持。未修复对照复现 background_tasks owner 重复，修复后独立空库真实完整链至 `0146_shared_flow_runs` 成功，无新阻塞。不 stamp、不跳迁移、不捕获独立失败为通过。测试资产全部回收，无生产连接／挂载／端口或重启；Ruff、AST、唯一 head、状态与 diff／staged diff 通过，未部署生产。
+
+### FR-582 历史迁移完整链与跨表审计记录保留最终验收 — READY
+
+依赖：FR-566、FR-567、FR-571、FR-572、FR-574 至 FR-581 全部 DONE。
+
+范围：将节点／映射／能力导入／产物／人工操作／事件／门禁／任务样本合并到同一隔离 0094 数据库，真实完整 0095 故障回滚／重试／降级升级及到当前 head，逐字段核对全部既有业务与审计记录；独立空库到 head，对账全部剩余切片状态。验证不改产品源码，不使用生产克隆数据，不代替 Runtime／LLM／浏览器 E2E。

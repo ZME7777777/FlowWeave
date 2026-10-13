@@ -3,13 +3,6 @@
 import sqlalchemy as sa
 from alembic import op
 
-from flowweave.modules.catalog.infrastructure import models as catalog_models  # noqa: F401
-from flowweave.modules.flows.infrastructure import models as flow_models  # noqa: F401
-from flowweave.modules.model_providers.infrastructure import models as provider_models  # noqa: F401
-from flowweave.modules.runs.infrastructure import models as run_models  # noqa: F401
-from flowweave.modules.tasks.infrastructure import models as task_models  # noqa: F401
-from flowweave.shared.database import Base
-
 revision = "0005_execution"
 down_revision = "0004_artifacts"
 branch_labels = None
@@ -71,21 +64,42 @@ def _create_run_event() -> None:
     op.create_index("ix_run_event_cursor", "run_events", ["flow_run_id", "cursor"])
 
 
+def _create_background_task() -> None:
+    op.create_table(
+        "background_tasks",
+        sa.Column("id", sa.String(36), primary_key=True),
+        sa.Column("task_type", sa.String(60), nullable=False),
+        sa.Column("aggregate_type", sa.String(30), nullable=False),
+        sa.Column("aggregate_id", sa.String(36), nullable=False),
+        sa.Column("idempotency_key", sa.String(180), nullable=False, unique=True),
+        sa.Column("payload_json", sa.JSON(), nullable=False),
+        sa.Column("state", sa.String(20), nullable=False),
+        sa.Column("available_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("lease_owner", sa.String(100), nullable=True),
+        sa.Column("lease_until", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("lease_generation", sa.Integer(), nullable=False),
+        sa.Column("attempts", sa.Integer(), nullable=False),
+        sa.Column("max_attempts", sa.Integer(), nullable=False),
+        sa.Column("last_error", sa.Text(), nullable=True),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+        sa.CheckConstraint("lease_generation >= 0", name="ck_task_generation_nonnegative"),
+        sa.CheckConstraint("attempts >= 0", name="ck_task_attempts_nonnegative"),
+    )
+    for column in ("task_type", "aggregate_id", "state", "available_at"):
+        op.create_index(f"ix_background_tasks_{column}", "background_tasks", [column])
+
+
 def upgrade():
-    bind = op.get_bind()
     for name in TABLES:
         if name == "gate_evaluations":
             _create_gate_evaluation()
         elif name == "run_events":
             _create_run_event()
         else:
-            Base.metadata.tables[name].create(bind, checkfirst=True)
+            _create_background_task()
 
 
 def downgrade():
-    bind = op.get_bind()
     for name in reversed(TABLES):
-        if name in ("gate_evaluations", "run_events"):
-            op.drop_table(name)
-        else:
-            Base.metadata.tables[name].drop(bind, checkfirst=True)
+        op.drop_table(name)

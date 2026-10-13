@@ -168,7 +168,7 @@ uv run python scripts/migration_flow_run_check.py
 uv run python scripts/migration_flow_run_check.py --probe-head
 ```
 
-FR-567 远端隔离 PostgreSQL 实跑七项通过，覆盖真实链到 0093、失败回滚／重试和既有运行／调度记录保留；FR-566 七项回归也通过。FR-571 已固定 0004 的产物／绑定历史结构，消除提前引入的租户与 Runtime 字段；FR-572 进一步固定 0006 的 CapabilityImport 历史结构。FR-574／FR-575 已固定 0002 的 FlowEdge／FlowNode 历史结构。FR-576 已固定 0010 的端口映射历史结构。FR-577 已固定 0005 的门禁审计历史结构。FR-578 已固定 GatePolicy。FR-579 已固定 HumanAction 并验证用户内幂等转换。FR-580 已固定 RunEvent。完整链继续在 0095 的 `background_tasks.owner_user_id` 重复添加处失败，由 FR-581 独立处理，仍不能声称完整空库初始化已通过。上述脚本只创建／迁移／移除自己的唯一临时数据库，不连接生产库执行迁移，也不启动本地服务。
+FR-567 远端隔离 PostgreSQL 实跑七项通过，覆盖真实链到 0093、失败回滚／重试和既有运行／调度记录保留；FR-566 七项回归也通过。FR-571 已固定 0004 的产物／绑定历史结构，消除提前引入的租户与 Runtime 字段；FR-572 进一步固定 0006 的 CapabilityImport 历史结构。FR-574／FR-575 已固定 0002 的 FlowEdge／FlowNode 历史结构。FR-576 已固定 0010 的端口映射历史结构。FR-577 已固定 0005 的门禁审计历史结构。FR-578 已固定 GatePolicy。FR-579 已固定 HumanAction 并验证用户内幂等转换。FR-580 已固定 RunEvent。FR-581 已固定 BackgroundTask；当前源码的真实独立空库完整链已通过 `0146_shared_flow_runs`，且完整 0094→0095 任务数据矩阵通过。跨表最终验收由 FR-582 记录。上述脚本只创建／迁移／移除自己的唯一临时数据库，不连接生产库执行迁移，也不启动本地服务。
 
 Artifact 专项入口：
 
@@ -269,3 +269,6 @@ HumanAction 专项：`uv run python scripts/migration_human_action_check.py`（s
 
 
 RunEvent 专项：`uv run python scripts/migration_run_event_check.py`（services/platform）；追加 `--probe-head` 执行真实全链。九项专项与八十项回归通过，数据库 cursor sequence 继续递增、事件七字段保持；仅该表 owner DDL 不代替完整 0095，当前 BackgroundTask 阻塞仍存在。
+
+
+BackgroundTask 专项：`uv run python scripts/migration_background_task_check.py --probe-head`（services/platform）。本专项执行完整正式 0095 迁移、故障回滚／重试／往返、用户内幂等、无 RLS 全局读取，并验证 populated tasks 与独立空库均到 head，后期队列索引保持正确。十二项专项加八十九项回归与空库 head 共 102 项通过；没有连接生产库或部署镜像。
