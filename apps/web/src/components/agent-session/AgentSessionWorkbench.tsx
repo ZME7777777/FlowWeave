@@ -6134,18 +6134,22 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   }, [condensationStatus, condensationTasks, host, latestCondensationEvent, queryClient, reportOperationError, selected?.id, workspace?.id]);
   useEffect(() => {
     if (!conversationSearchTargetEventId || !selected) return;
+    const targetEventId = conversationSearchTargetEventId;
     const target = Array.from(document.querySelectorAll<HTMLElement>('[data-conversation-event-id]')).find(
-      item => item.dataset.conversationEventId === conversationSearchTargetEventId,
+      item => item.dataset.conversationEventId === targetEventId,
     );
     const surface = target?.closest<HTMLElement>('.conversation-surface');
-    if (!target || !surface) return;
+    if (!target || !surface) {
+      void revealHistoryThrough(targetEventId);
+      return;
+    }
     const top = target.getBoundingClientRect().top - surface.getBoundingClientRect().top + surface.scrollTop - 28;
     surface.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
     target.classList.add('conversation-search-target');
     const timer = window.setTimeout(() => target.classList.remove('conversation-search-target'), 2_600);
     setConversationSearchTargetEventId(undefined);
     return () => window.clearTimeout(timer);
-  }, [conversationSearchTargetEventId, displayedEvents, selected]);
+  }, [conversationSearchTargetEventId, displayedEvents, historyCacheRevision, revealHistoryThrough, selected]);
   // A draft has no OpenHands Conversation or event branch yet. It must never
   // inherit execution/readiness state from the previously selected binding.
   // The sole exception is its own first-message bootstrap, which explicitly
