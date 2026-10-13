@@ -168,7 +168,7 @@ uv run python scripts/migration_flow_run_check.py
 uv run python scripts/migration_flow_run_check.py --probe-head
 ```
 
-FR-567 远端隔离 PostgreSQL 实跑七项通过，覆盖真实链到 0093、失败回滚／重试和既有运行／调度记录保留；FR-566 七项回归也通过。FR-571 已固定 0004 的产物／绑定历史结构，消除提前引入的租户与 Runtime 字段；FR-572 进一步固定 0006 的 CapabilityImport 历史结构。FR-574／FR-575 已固定 0002 的 FlowEdge／FlowNode 历史结构。完整链继续在 0095 的 `flow_port_mappings.owner_user_id` 重复添加处失败，由 FR-576 独立处理，仍不能声称完整空库初始化已通过。上述脚本只创建／迁移／移除自己的唯一临时数据库，不连接生产库执行迁移，也不启动本地服务。
+FR-567 远端隔离 PostgreSQL 实跑七项通过，覆盖真实链到 0093、失败回滚／重试和既有运行／调度记录保留；FR-566 七项回归也通过。FR-571 已固定 0004 的产物／绑定历史结构，消除提前引入的租户与 Runtime 字段；FR-572 进一步固定 0006 的 CapabilityImport 历史结构。FR-574／FR-575 已固定 0002 的 FlowEdge／FlowNode 历史结构。FR-576 已固定 0010 的端口映射历史结构。完整链继续在 0095 的 `gate_evaluations.owner_user_id` 重复添加处失败，由 FR-577 独立处理，仍不能声称完整空库初始化已通过。上述脚本只创建／迁移／移除自己的唯一临时数据库，不连接生产库执行迁移，也不启动本地服务。
 
 Artifact 专项入口：
 
@@ -188,7 +188,7 @@ uv run python scripts/migration_capability_import_check.py
 uv run python scripts/migration_capability_import_check.py --probe-head
 ```
 
-FR-572 八项验证历史十二字段、索引、0006 原子回滚／重试、真实链至 0094 的导入记录保留，以及原样 0095 导入表 owner 回填／RLS 隔离；不记录或 stamp 0095。导入夹具覆盖 VALIDATED／EXPIRED，不覆盖 COMMITTED 内容重编译。既有三组回归共二十二项通过；完整链仍有后续端口映射阻塞，不能以部分 DDL 成功代替完整 revision 验收。脚本只使用独立 TEST_DATABASE_URL，移除自身唯一临时数据库和角色，不启动服务。
+FR-572 八项验证历史十二字段、索引、0006 原子回滚／重试、真实链至 0094 的导入记录保留，以及原样 0095 导入表 owner 回填／RLS 隔离；不记录或 stamp 0095。导入夹具覆盖 VALIDATED／EXPIRED，不覆盖 COMMITTED 内容重编译。既有三组回归共二十二项通过；完整链仍有后续门禁审计阻塞，不能以部分 DDL 成功代替完整 revision 验收。脚本只使用独立 TEST_DATABASE_URL，移除自身唯一临时数据库和角色，不启动服务。
 
 FlowEdge 专项入口：
 
@@ -198,7 +198,7 @@ uv run python scripts/migration_flow_edge_check.py
 uv run python scripts/migration_flow_edge_check.py --probe-head
 ```
 
-FR-574 八项验证历史控制边结构、0002 回滚／重试、真实链至 0094 的身份和顺序保留，以及原样 0095 FlowEdge owner 回填／RLS；不记录或 stamp 0095。FR-575 已将夹具调整为真实 NodeAsset 和不带 owner 的历史节点，通过原始 FK 创建控制边。既有四组回归三十项通过；完整链仍在端口映射重复租户字段阻塞。脚本只使用独立 TEST_DATABASE_URL 和唯一临时数据库／角色，不启动服务。
+FR-574 八项验证历史控制边结构、0002 回滚／重试、真实链至 0094 的身份和顺序保留，以及原样 0095 FlowEdge owner 回填／RLS；不记录或 stamp 0095。FR-575 已将夹具调整为真实 NodeAsset 和不带 owner 的历史节点，通过原始 FK 创建控制边。既有四组回归三十项通过；完整链仍在门禁审计重复租户字段阻塞。脚本只使用独立 TEST_DATABASE_URL 和唯一临时数据库／角色，不启动服务。
 
 FlowNode 专项入口：
 
@@ -208,7 +208,17 @@ uv run python scripts/migration_flow_node_check.py
 uv run python scripts/migration_flow_node_check.py --probe-head
 ```
 
-FR-575 八项验证历史节点八字段、索引和 FK、0002 回滚／重试、真实链至 0094 的节点身份／配置／坐标保留，以及原样 0095 FlowNode owner 回填／RLS，不记录或 stamp 0095。更新后的 FlowEdge 及其他专项共三十八项回归通过；完整链仍在 FlowPortMapping 阻塞。只使用独立 TEST_DATABASE_URL 和自身唯一临时数据库／角色，不启动服务。
+FR-575 八项验证历史节点八字段、索引和 FK、0002 回滚／重试、真实链至 0094 的节点身份／配置／坐标保留，以及原样 0095 FlowNode owner 回填／RLS，不记录或 stamp 0095。更新后的 FlowEdge 及其他专项共三十八项回归通过；完整链仍在 GateEvaluation 阻塞。只使用独立 TEST_DATABASE_URL 和自身唯一临时数据库／角色，不启动服务。
+
+FlowPortMapping 专项入口：
+
+```bash
+cd services/platform
+uv run python scripts/migration_flow_port_mapping_check.py
+uv run python scripts/migration_flow_port_mapping_check.py --probe-head
+```
+
+FR-576 八项验证 0010 历史六字段、唯一目标输入键／索引／FK、原子回滚及真实链至 0094 的映射保留，以及原样 0095 owner 回填／RLS；不记录或 stamp 0095。既有回归四十六项通过；完整链仍在 GateEvaluation 阻塞。只使用独立 TEST_DATABASE_URL 和自身唯一临时数据库／角色，不启动服务。
 
 ## 回滚与容量维护
 

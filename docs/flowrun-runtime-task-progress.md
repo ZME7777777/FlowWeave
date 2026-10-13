@@ -8098,8 +8098,20 @@ health／readiness 通过。未发布平台或 Runtime 镜像、未重启生产�
 
 完整链边界：未修复 0002 的对照真实复现 0095 flow_nodes.owner_user_id 重复；修复后同一真实全链越过 FlowNode，继续在 flow_port_mappings.owner_user_id 以 DuplicateColumn／42701 失败，独立登记 FR-576。本专项只单独调用原样 0095 FlowNode _add_owner，不记录／stamp 0095，不能替代完整 revision／空库 head 验收；--probe-head 仍真实执行全链并传播失败。Ruff check／format、AST、唯一 Alembic head `0146_shared_flow_runs`、任务状态唯一性及 diff／staged diff 复核通过。本切片独立提交，未构建或发布生产镜像；下一可执行切片为 FR-576。
 
-### FR-576 空库 0095 FlowPortMapping 租户字段重复迁移修复 — READY
+### FR-576 空库 0095 FlowPortMapping 租户字段重复迁移修复 — DONE
 
 依赖：FR-575。
 
 范围：取证 flow_port_mappings 的历史 live ORM 建表提前引入 owner_user_id 的来源，固定原始端口映射结构，验证映射身份／字段／版本配置保留及正式租户回填、RLS、失败回滚。继续探测真实空库全链，其他独立历史表错误另拆；部分 DDL 不替代完整 0095／head，不改已记录 revision，沿用远端隔离验收且不在本地部署。
+
+完成：对照引入 0010 的提交 `76fa89dc`，FlowPortMapping 改为显式六字段历史 DDL，保留目标输入唯一键、flow_id 索引、Flow Definition／两端 FlowNode 的 CASCADE FK。0010 的其余历史动作和 downgrade 保持，0095 仍原样添加 owner；不修改 revision／down_revision，不静默跳过重复字段，已执行 0010 的数据库不会重放建表。该表历史上没有独立版本配置列，本切片按真实六字段验证映射身份和输入输出字段。
+
+验收：以已提交基线 `f1b72052`、other 范围通过远端预检，在无生产挂载／发布端口的独立内部网络／tmpfs PostgreSQL 执行当前源码。新 migration_flow_port_mapping_check.py 八项通过，覆盖 0010 写 revision 前故障的表／版本原子回滚、六字段／索引／三个历史 FK、降级／升级、真实链至 0094 保留两条映射的 id／flow／两端节点／输出输入字段、原样 0095 _add_owner 回滚／重试、固定 owner 非空回填／索引／强制 RLS、NOBYPASSRLS owner 隔离及控制 bypass、已执行 0010 后不重放建表。既有六组四十六项回归通过，总计五十四项。夹具沿用真实 NodeAsset／FlowNode／FlowEdge 插入映射，临时数据库／角色和此次标签容器／网络全部回收；未连接生产数据库、启动本地服务或重启生产服务。
+
+完整链边界：未修复 0010 的对照真实复现 0095 flow_port_mappings.owner_user_id 重复；修复后同一真实全链越过该表，在 gate_evaluations.owner_user_id 以 DuplicateColumn／42701 失败，独立登记 FR-577。专项对 0095 的成功结论仅限单独调用原样 FlowPortMapping _add_owner，不记录／stamp 0095，不替代完整 revision／空库 head；--probe-head 仍真实执行全链并传播后续错误。Ruff check／format、AST、唯一 Alembic head `0146_shared_flow_runs`、任务状态唯一性和 diff／staged diff 复核通过。本切片独立提交，未构建或发布生产镜像；下一可执行切片 FR-577。
+
+### FR-577 空库 0095 GateEvaluation 租户字段重复迁移修复 — READY
+
+依赖：FR-576。
+
+范围：取证 0005 的 live GateEvaluation schema 提前引入 owner_user_id 的来源，固定 gate_evaluations 历史结构，验证门禁审计身份／决策／结果保留和正式租户回填、RLS、失败回滚。继续探测全链，其他独立表漂移另拆；部分 DDL 不代替完整 0095／head，不改已记录 revision，沿用远端隔离验收且不在本地部署。
