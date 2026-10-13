@@ -8110,8 +8110,20 @@ health／readiness 通过。未发布平台或 Runtime 镜像、未重启生产�
 
 完整链边界：未修复 0010 的对照真实复现 0095 flow_port_mappings.owner_user_id 重复；修复后同一真实全链越过该表，在 gate_evaluations.owner_user_id 以 DuplicateColumn／42701 失败，独立登记 FR-577。专项对 0095 的成功结论仅限单独调用原样 FlowPortMapping _add_owner，不记录／stamp 0095，不替代完整 revision／空库 head；--probe-head 仍真实执行全链并传播后续错误。Ruff check／format、AST、唯一 Alembic head `0146_shared_flow_runs`、任务状态唯一性和 diff／staged diff 复核通过。本切片独立提交，未构建或发布生产镜像；下一可执行切片 FR-577。
 
-### FR-577 空库 0095 GateEvaluation 租户字段重复迁移修复 — READY
+### FR-577 空库 0095 GateEvaluation 租户字段重复迁移修复 — DONE
 
 依赖：FR-576。
 
 范围：取证 0005 的 live GateEvaluation schema 提前引入 owner_user_id 的来源，固定 gate_evaluations 历史结构，验证门禁审计身份／决策／结果保留和正式租户回填、RLS、失败回滚。继续探测全链，其他独立表漂移另拆；部分 DDL 不代替完整 0095／head，不改已记录 revision，沿用远端隔离验收且不在本地部署。
+
+完成：对照初始提交 `bac0516a`，0005 的 GateEvaluation 使用显式十三字段历史 DDL，保留 attempt_id 索引、attempt／policy／stage／evaluation_attempt 唯一键和 NodeAttempt CASCADE FK；0095 owner 与 0104 candidate_output_set_id 不再提前创建。保留其余 BackgroundTask／RunEvent live 建表边界和原表顺序，本轮不改；0088 继续正式移除业务外键，0095／0104 仍按正式迁移引入字段。不修改 revision／down_revision，不跳过重复字段；已执行 0005 的数据库不会重放建表。
+
+验收：以已提交基线 `dee05684`、other 范围通过远端预检，在独立内部网络／tmpfs PostgreSQL 使用当前源码实跑新 migration_gate_evaluation_check.py 八项通过：0005 写 revision 前故障的表／版本原子回滚、十三字段／唯一键／索引／FK 历史结构、降级／升级、真实空链至 0094 不提前含 owner／候选输出字段、原样 0095 _add_owner 的失败回滚／重试、非空固定 owner 回填／索引／强制 RLS、NOBYPASSRLS 角色的 owner 隔离与控制 bypass、既有 0005 不重放建表。审计夹具在正式 0094 schema 植入关联合法 Attempt 的 FAIL／PASS 两条记录，完整比较十三个历史字段，包括决策、嵌套结果 JSON、日志、非空错误码和创建时间；不将此夹具外推为有审计记录的完整早期历史链迁移。既有七组五十四项回归通过，总计六十二项。临时数据库／角色及此次标签容器／网络全部回收，无生产挂载／发布端口，未连接生产数据库、启动本地服务或重启生产服务。
+
+完整链边界：未修复 0005 的对照真实复现 0095 gate_evaluations.owner_user_id 重复；修复后同一真实全链越过该表，在 gate_policies.owner_user_id 以 DuplicateColumn／42701 失败，独立登记 FR-578。专项的 0095 成功结论只限单独调用原样 GateEvaluation _add_owner，不记录／stamp 0095，不替代完整 revision／空库 head；--probe-head 仍执行真实链并传播后续错误。Ruff check／format、AST、唯一 Alembic head `0146_shared_flow_runs`、任务状态唯一性及 diff／staged diff 复核通过。本切片独立提交，未构建或发布生产镜像；下一可执行切片 FR-578。
+
+### FR-578 空库 0095 GatePolicy 租户字段重复迁移修复 — READY
+
+依赖：FR-577。
+
+范围：取证 0002 的 live GatePolicy schema 提前引入 owner_user_id 的来源，固定 gate_policies 历史结构，验证门禁配置／唯一位置／超时约束保留与正式租户回填、RLS、失败回滚。继续探测真实全链，其他独立历史表漂移另拆；部分 DDL 不代替完整 0095／head，不改已记录 revision，沿用远端隔离验收且不在本地部署。
