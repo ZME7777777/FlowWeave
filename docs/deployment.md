@@ -168,7 +168,17 @@ uv run python scripts/migration_flow_run_check.py
 uv run python scripts/migration_flow_run_check.py --probe-head
 ```
 
-FR-567 远端隔离 PostgreSQL 实跑七项通过，覆盖真实链到 0093、失败回滚／重试和既有运行／调度记录保留；FR-566 七项回归也通过。完整空库链继续在 0095 因 `artifact_versions.owner_user_id` 重复添加失败，由 FR-571 独立处理；仍不能声称完整空库初始化已通过。上述脚本只创建／迁移／移除自己的唯一临时数据库，不连接生产库执行迁移，也不启动本地服务。
+FR-567 远端隔离 PostgreSQL 实跑七项通过，覆盖真实链到 0093、失败回滚／重试和既有运行／调度记录保留；FR-566 七项回归也通过。FR-571 已固定 0004 的产物／绑定历史结构，消除提前引入的租户与 Runtime 字段；完整链继续在 0095 的 `capability_imports.owner_user_id` 重复添加处失败，由 FR-572 独立处理，仍不能声称完整空库初始化已通过。上述脚本只创建／迁移／移除自己的唯一临时数据库，不连接生产库执行迁移，也不启动本地服务。
+
+Artifact 专项入口：
+
+```bash
+cd services/platform
+uv run python scripts/migration_artifact_check.py
+uv run python scripts/migration_artifact_check.py --probe-head
+```
+
+该专项真实迁移空库至 0094，然后单独执行原样 0095 的 Artifact／Binding 租户 DDL，验证回填、强制 RLS、事务失败回滚与记录保留；不写入或 stamp 0095，不能替代完整 revision 验收。FR-571 八项通过，FR-566／FR-567 共十四项回归通过；`--probe-head` 的完整链仍会传播 CapabilityImport 阻塞。只使用独立 TEST_DATABASE_URL、唯一临时数据库及临时角色。
 
 ## 回滚与容量维护
 

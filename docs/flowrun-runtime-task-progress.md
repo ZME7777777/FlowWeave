@@ -8018,12 +8018,17 @@ HOME 复制后的浏览器／工具／既有凭据保留和包缓存排除、Set
 一致，新增 0，不声称整体类型检查通过。正式源码 Alembic 唯一 head 仍为 0146_shared_flow_runs。
 未运行本次无关的数据库迁移、完整构建或业务 E2E；下一可执行重构切片仍为 FR-567。
 
-### FR-571 空库 0095 Artifact 租户字段重复迁移修复 — READY
+### FR-571 空库 0095 Artifact 租户字段重复迁移修复 — DONE
 
 依赖：FR-567。
 
 范围：取证早期 live ArtifactVersion schema 提前引入 owner_user_id、导致 0095 重复建列的来源，固定其历史表结构并验证空库通过 0095、失败回滚和既有记录保留。不改已记录 revision，不将后续其他独立历史迁移错误混入；继续向 head 取证，新的独立阻塞另拆切片，沿用远端隔离验收、不在本地部署的约束。
 
+完成：对照初始提交 `bac0516a`，将 0004 的 artifact_versions 与 attempt_input_bindings 两张表固定为原始十五／五字段、唯一键、内容／大小检查、索引和原始 FK；不再通过 live ORM 提前创建 0082 consumer_node_key、0095 owner_user_id、0103 runtime_completion_event_id 或未来用户内唯一键。保留 0082／0095／0103 原正式迁移入口，0088 仍按正式架构移除业务外键。不修改 revision／down_revision、不放宽 0095 的重复字段检查、不处理其他能力表。
+
+验收：以已提交基线 `766a4b33`、other 范围通过远端预检，使用现有平台依赖、当前源码与独立内部网络／tmpfs PostgreSQL 执行新 migration_artifact_check.py，八项通过。覆盖 0004 写 revision 前失败的两表／版本原子回滚、空库原始结构、0004 降级／升级、真实链到 0094 不提前含租户／Runtime 字段、原样 0095 Artifact／Binding _add_owner 的回填／索引／强制 RLS 故障回滚和重试、NOBYPASSRLS 临时角色下本人可读／另一 owner 不可读／控制 bypass 可读，以及已执行 0004 后不会重放建表并保留原产物／绑定全部历史字段、非空 JSON 和 node locator。FR-566 与 FR-567 各七项回归同样通过，总计二十二项。夹具按真实 0094 结构植入样本，未改其他迁移来迁就测试；历史外键断言区分原始 0004 和 0088 的正式移除。临时数据库／角色、容器和网络均已回收，未发布端口、挂载生产目录或连接生产数据库，未启动本地服务／重启现有生产服务。
+
+验收边界：未修复 0004 的对照真实复现 0095 artifact_versions.owner_user_id 重复；修复后真实全链越过 Artifact／Binding，继续在同一 0095 的 capability_imports.owner_user_id 以 DuplicateColumn／42701 失败。因其他表存在独立历史漂移，本切片的 0095 成功验证明确只针对原样正式 _add_owner 的两个表 DDL，未记录／stamp 0095，不能替代完整 revision 或空库 head 验收；原要求的完整链通过条件由后续独立 FR-572 继续处理。本次新脚本 --probe-head 仍真实执行全链并传播失败。Ruff check／format、AST、唯一 Alembic head `0146_shared_flow_runs`、任务状态唯一性、diff 与 staged diff 复核通过。本切片独立提交，未构建／发布生产镜像；下一可执行切片为 FR-572。
 
 ### OPS-07 原生 Linux 定时容量维护 — DONE
 
@@ -8042,6 +8047,12 @@ apply 报告候选为零。脚本与 unit SHA-256 匹配提交，owner-only 路�
 已回收。所有生产容器／镜像身份、卷清单、Compose／env 摘要一致，常驻服务运行／健康，两 API
 health／readiness 通过。未发布平台或 Runtime 镜像、未重启生产服务、未删除持久数据或共享缓存。
 详细范围及安装复验见 docs/storage-maintenance.md；下一独立重构切片 FR-571，本次不开始。
+
+### FR-572 空库 0095 CapabilityImport 租户字段重复迁移修复 — READY
+
+依赖：FR-571。
+
+范围：取证 capability_imports 的早期 live ORM 建表提前引入 owner_user_id 的来源，固定该历史结构，验证正式租户回填、失败回滚与既有记录保留；继续探测空库全链，遇到其他独立历史表漂移继续拆分。不得将部分 DDL 成功宣称为完整 0095／head 通过，不改已记录 revision，沿用远端隔离验收且不在本地部署。
 
 ### FR-573 已有会话续发正式用户身份认领 — DONE
 

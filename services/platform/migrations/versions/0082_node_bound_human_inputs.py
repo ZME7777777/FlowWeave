@@ -14,12 +14,11 @@ depends_on = None
 
 
 def upgrade() -> None:
-    # ``0004_artifacts`` creates its table from current ORM metadata for a
-    # fresh install.  Keep this historical upgrade safe for both that path and
-    # already deployed databases that need the new ownership column.
+    # Older 0004 builds copied live ORM metadata and could include this column
+    # early. Keep their upgrade compatible while the frozen 0004 definition
+    # lets this revision introduce the node locator on a fresh install.
     op.execute(
-        "ALTER TABLE artifact_versions "
-        "ADD COLUMN IF NOT EXISTS consumer_node_key VARCHAR(100)"
+        "ALTER TABLE artifact_versions ADD COLUMN IF NOT EXISTS consumer_node_key VARCHAR(100)"
     )
     op.execute(
         "CREATE INDEX IF NOT EXISTS ix_artifact_versions_consumer_node_key "
