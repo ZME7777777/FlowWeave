@@ -1,9 +1,9 @@
 # FlowRun OpenHands Runtime 重构进度
 
 > 创建日期：2026-08-21
-> 状态：`IN PROGRESS`
+> 状态：`ALL SLICES DONE`（本轮历史迁移链验收通过）
 > 当前执行切片：`NONE`
-> 下一可执行切片：`FR-582`
+> 下一可执行切片：`NONE`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -8166,8 +8166,15 @@ health／readiness 通过。未发布平台或 Runtime 镜像、未重启生产�
 
 验收：`0889d2cf` other 预检通过，隔离 PostgreSQL 十二项专项、既有八十九项回归和独立空库 head 共 102 项通过。包括 0005 三表／revision 故障原子回滚、十六字段／索引／约束、往返、实际负计数拒绝、从早期植入 PENDING／RUNNING 任务实跑至 0094 的全字段保持、完整正式 0094→0095 写 revision 前故障回滚（users、owner 回填、唯一键均撤回）、完整重试及 downgrade／upgrade、同 owner 同键拒绝／跨 owner 同键允许、NOBYPASSRLS 角色在不同当前用户下仍全局可读且无 RLS、有任务库到真实 head 后原十六字段保持且两项后期索引按原迁移生成、当前 head 重跑保持。未修复对照复现 background_tasks owner 重复，修复后独立空库真实完整链至 `0146_shared_flow_runs` 成功，无新阻塞。不 stamp、不跳迁移、不捕获独立失败为通过。测试资产全部回收，无生产连接／挂载／端口或重启；Ruff、AST、唯一 head、状态与 diff／staged diff 通过，未部署生产。
 
-### FR-582 历史迁移完整链与跨表审计记录保留最终验收 — READY
+### FR-582 历史迁移完整链与跨表审计记录保留最终验收 — DONE
 
 依赖：FR-566、FR-567、FR-571、FR-572、FR-574 至 FR-581 全部 DONE。
 
 范围：将节点／映射／能力导入／产物／人工操作／事件／门禁／任务样本合并到同一隔离 0094 数据库，真实完整 0095 故障回滚／重试／降级升级及到当前 head，逐字段核对全部既有业务与审计记录；独立空库到 head，对账全部剩余切片状态。验证不改产品源码，不使用生产克隆数据，不代替 Runtime／LLM／浏览器 E2E。
+
+
+完成与验收：以固定基线 `bf113d5c`、other 范围通过预检，远端独立内部网络／tmpfs PostgreSQL 实跑新 migration_chain_check.py 七项通过。单库同时植入 17 张业务／审计表（Flow Definition／Run／Snapshot、NodeRun／Attempt、NodeAsset／FlowNode／Edge／PortMapping／GatePolicy、Artifact／Binding、HumanAction／RunEvent／GateEvaluation、CapabilityImport、BackgroundTask）的非空样本，冻结其真实 0094 全部原字段与行快照。完整正式 0095 写 revision 前注入故障后所有 17 表原列类型／默认值／索引／约束／RLS／策略／行和 revision 恢复，users 表撤回；完整重试后所有原字段逐项一致，NOBYPASSRLS 角色下本人全部可读、其他 owner 均不可读（全局 BackgroundTask 仍可读），控制 bypass 可读。完整 0095 downgrade／upgrade 后原字段继续保持；含混合样本的真实链至 `0146_shared_flow_runs` 后 17 表所有原字段逐项一致，Alembic 容量为 128，当前 head 重跑保持。另一个独立空库经原始完整链到同一 head 成功。未用 helper 子集、stamp、伪 revision 或绕过失败。
+
+首轮最终夹具复用仅供早期 0002 的 FlowEdge seed，因真实 0094 已移除 lark_root_folder_url 而失败；最终脚本改为按正式 0094 schema 植入节点／边，没有修改迁移来迁就夹具，重跑七项全部通过。临时数据库／角色和本次标签的容器／网络已回收，无生产挂载／发布端口／生产数据库连接／服务重启。此前 FR-581 的十二项、八十九项回归及独立空库 head 共 102 项已通过，本轮增加七项跨表最终验收；证据只对应历史迁移与数据库契约，不代替 Runtime／模型／浏览器 E2E，也没有发布生产镜像。
+
+收尾：受影响 Ruff check／format、Python AST、唯一 Alembic head、git diff --check、staged diff 和任务状态清点通过。当前清单 177 个表格状态均 DONE，552 个带状态切片标题均 DONE，无 CURRENT／READY／PENDING／BLOCKED；前部下一切片指针收口为 NONE。用户要求全部切片实现后停止，本轮 FR-578 至 FR-582 分别独立提交，至此无下一可执行切片；不自动部署或开始其他产品工作。
