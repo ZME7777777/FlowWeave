@@ -683,13 +683,18 @@ test('a stepwise record keeps completed nodes readable while the next node is co
     ...nodeRun, id: 'waiting-node-run-2', flow_node_snapshot_key: 'second', sequence_no: 2,
     state: 'ACTIVE', created_from: 'FLOW_TRANSITION', attempts: [waitingAttempt],
   };
-  const configuredAttempt = { ...waitingAttempt, state: 'WAITING_START_CONFIRMATION', state_version: 2, startup_prompt: asset.executor.startup_prompt };
-  const configuredNodeRun = { ...waitingNodeRun, attempts: [configuredAttempt] };
   let currentRecord = {
     ...run, id: 'stepwise-record-1', name: '批次异常收集', parent_flow_run_id: run.id,
     current_node_key: 'second', current_node_name: '测试节点2', current_attempt_state: 'WAITING_INPUT',
     active_snapshot_id: transitionSnapshot.id, snapshots: [transitionSnapshot],
     progress: { accepted: 1, terminal: 1, active: 1 }, node_runs: [acceptedNodeRun, waitingNodeRun], artifacts: [mappedArtifact],
+    stepwise_node_drafts: {
+      second: {
+        row_version: 2, startup_mode: 'PROMPT', startup_prompt: asset.executor.startup_prompt,
+        agent_preset: { capability_version_ids: [], node_context_enabled: false }, gates: [], context_ids: [],
+        input_bindings: [{ input_field_key: 'input_1', artifact_version_id: mappedArtifact.id, binding_source: 'PORT_MAPPING' }],
+      },
+    },
   };
   const parentRun = { ...run, node_runs: [], artifacts: [], progress: { accepted: 0, terminal: 0, active: 0 } };
   let savedBody: Record<string, unknown> | undefined;
@@ -712,10 +717,15 @@ test('a stepwise record keeps completed nodes readable while the next node is co
       return respond(currentRecord);
     }
     if (path === `/api/v1/flow-runs/${run.id}/automatic-runs`) return respond([]);
-    if (path === `/api/v1/flow-runs/${currentRecord.id}/nodes/second/runs` && request.method() === 'POST') {
+    if (path === `/api/v1/flow-runs/${currentRecord.id}/stepwise-node-drafts/second` && request.method() === 'PUT') {
       savedBody = request.postDataJSON() as Record<string, unknown>;
-      currentRecord = { ...currentRecord, current_attempt_state: 'WAITING_START_CONFIRMATION', node_runs: [acceptedNodeRun, configuredNodeRun] };
-      return respond(configuredNodeRun, 201);
+      const savedDraft = {
+        row_version: 3, startup_mode: 'PROMPT', startup_prompt: savedBody.startup_prompt,
+        agent_preset: savedBody.agent_preset, gates: savedBody.gates, context_ids: [],
+        input_bindings: [{ input_field_key: 'input_1', artifact_version_id: mappedArtifact.id, binding_source: 'PORT_MAPPING' }],
+      };
+      currentRecord = { ...currentRecord, stepwise_node_drafts: { second: savedDraft } };
+      return respond(savedDraft);
     }
     return respond({ error: { code: 'RESOURCE_NOT_FOUND', message: `未配置测试路由：${path}`, details: {} } }, 404);
   });
@@ -751,7 +761,7 @@ test('a stepwise record keeps completed nodes readable while the next node is co
 
   await consolePanel.getByRole('button', { name: '保存配置' }).click();
   await expect.poll(() => savedBody).toEqual(expect.objectContaining({ artifact_ids: { input_1: mappedArtifact.id } }));
-  await expect(page.getByRole('button', { name: '启动逐步运行 测试节点2' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '启动逐步运行 批次异常收集' })).toBeVisible();
 });
 
 test('accepting a stepwise node focuses its reached successor and allows returning to neutral', async ({ page }) => {
