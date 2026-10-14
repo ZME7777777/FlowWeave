@@ -92,6 +92,8 @@ interface ActivityEntry {
   item: Item;
   action?: Item;
   results: Item[];
+  /** The same user-visible text is already the immediately preceding Think. */
+  hideThought?: boolean;
 }
 
 interface ProgressActivityGroup {
@@ -743,9 +745,22 @@ function actionBelongsToProgress(entry: ActivityEntry, progress: Item, ownedEven
 }
 
 function activityRows(entries: ActivityEntry[]): ActivityRow[] {
+  // ThinkObservation is intentionally excluded from the transcript. In an
+  // OpenHands event tree it can still sit between ThinkAction and the next
+  // tool action, with a fresh llm_response_id. Compare adjacent *visible*
+  // entries as well, so that protocol-only frames cannot defeat the exact
+  // duplicate-text safeguard.
+  const visibleEntries = entries.map((entry, index) => {
+    const previous = entries[index - 1];
+    const actionText = entry.action?.content ?? '';
+    const isRepeatedPreamble = previous?.item.kind === 'thought'
+      && entry.action?.kind === 'tool'
+      && isSameVisibleProgressText(progressText(previous.item), actionText);
+    return isRepeatedPreamble ? { ...entry, hideThought: true } : entry;
+  });
   const rows: ActivityRow[] = [];
-  for (let index = 0; index < entries.length;) {
-    const entry = entries[index];
+  for (let index = 0; index < visibleEntries.length;) {
+    const entry = visibleEntries[index];
     if (!entryHasProgress(entry)) {
       rows.push({ kind: 'entry', entry });
       index += 1;
@@ -756,8 +771,8 @@ function activityRows(entries: ActivityEntry[]): ActivityRow[] {
     const grouped: ActivityEntry[] = [];
     const ownedEventIds = new Set([progress.event.id]);
     let cursor = entry.item.kind === 'thought' ? index + 1 : index;
-    while (cursor < entries.length) {
-      const candidate = entries[cursor];
+    while (cursor < visibleEntries.length) {
+      const candidate = visibleEntries[cursor];
       if (candidate.item.kind === 'thought' || !actionBelongsToProgress(candidate, progress, ownedEventIds)) break;
       grouped.push(candidate);
       ownedEventIds.add(candidate.action!.event.id);
@@ -1365,9 +1380,9 @@ function ProgressActivity({ group, active, revealEventIds, paused, parentFailed,
         // events. Keep the action card, but avoid showing the exact same
         // user-visible text twice when a model has emitted it in both places.
         const actionText = entry.action?.content ?? '';
-        const hideThought = group.progress.kind === 'thought'
+        const hideThought = entry.hideThought || (group.progress.kind === 'thought'
           && group.progress.event.id !== entry.action?.event.id
-          && isSameVisibleProgressText(progressText(group.progress), actionText);
+          && isSameVisibleProgressText(progressText(group.progress), actionText));
         return <ActivityEntryRow key={entry.id} entry={entry} active={active} reveal={entryHasRevealedText(entry, revealEventIds)} paused={paused} parentFailed={parentFailed} hideThought={hideThought} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/>;
       })}
     </div>
@@ -1442,7 +1457,7 @@ const ActivityGroup = memo(function ActivityGroup({ items, active, revealEventId
     <div className="conversation-activity-list">
       {rows.map(row => row.kind === 'progress-group'
         ? <ProgressActivity key={row.group.id} group={row.group} active={active} revealEventIds={revealEventIds} paused={paused} parentFailed={parentFailed} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/>
-        : <ActivityEntryRow key={row.entry.id} entry={row.entry} active={active} reveal={entryHasRevealedText(row.entry, revealEventIds)} paused={paused} parentFailed={parentFailed} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/>) }
+        : <ActivityEntryRow key={row.entry.id} entry={row.entry} active={active} reveal={entryHasRevealedText(row.entry, revealEventIds)} paused={paused} parentFailed={parentFailed} hideThought={row.entry.hideThought} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/>) }
     </div>
   </div>;
   return <details className={`conversation-activity-group${active ? ' active' : ''}`} open={open} onToggle={event => setOpen(event.currentTarget.open)}>
@@ -1450,7 +1465,7 @@ const ActivityGroup = memo(function ActivityGroup({ items, active, revealEventId
     <div className="conversation-activity-list">
       {rows.map(row => row.kind === 'progress-group'
         ? <ProgressActivity key={row.group.id} group={row.group} active={active} revealEventIds={revealEventIds} paused={paused} parentFailed={parentFailed} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/>
-        : <ActivityEntryRow key={row.entry.id} entry={row.entry} active={active} reveal={entryHasRevealedText(row.entry, revealEventIds)} paused={paused} parentFailed={parentFailed} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/>) }
+        : <ActivityEntryRow key={row.entry.id} entry={row.entry} active={active} reveal={entryHasRevealedText(row.entry, revealEventIds)} paused={paused} parentFailed={parentFailed} hideThought={row.entry.hideThought} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/>) }
     </div>
   </details>;
 }, (previous, next) => (

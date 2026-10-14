@@ -106,8 +106,9 @@ def test_agent_context_is_compiled_only_into_openhands_system_suffix(settings):
     assert "不能为同一件事生成两次相同或近义的说明" in suffix
     assert "ThinkTool 不是下一次工具调用的前导" in suffix
     assert "不得复述紧邻 ThinkTool 的内容" in suffix
-    assert "仅当有新的阶段结论、决策或方向变化时才调用 ThinkTool" in suffix
-    assert "不要为普通的连续读取、搜索、编辑或验证逐条调用" in suffix
+    assert "ThinkTool 默认不调用" in suffix
+    assert "不得在开始执行、工具调用之前、用户消息之后立即调用" in suffix
+    assert "多个连续动作只在获得一个可向用户解释的共同结论后汇总一次" in suffix
     assert "当前身份已切换；此前读取失败源于旧身份未获授权" in suffix
     assert "现在读取仪表盘目录，确认可访问的表与字段" in suffix
     assert "ThinkTool 内容必须是 1–3 句、面向用户、可公开的阶段摘要" in suffix
