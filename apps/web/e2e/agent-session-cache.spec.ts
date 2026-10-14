@@ -2199,7 +2199,11 @@ test('A new conversation stays first after an existing conversation was reordere
   const target = page.locator('[data-conversation-binding-id="new-order-a"]');
   await expect(source).toHaveAttribute('draggable', 'true');
   await expect(source).toHaveAttribute('title', '拖入发送框以引用此会话，或拖到其他会话以调整顺序');
-  await source.dragTo(target, { targetPosition: { x: 10, y: 2 } });
+  const dataTransfer = await page.evaluateHandle(() => new DataTransfer());
+  const targetBounds = await target.boundingBox();
+  await source.dispatchEvent('dragstart', { dataTransfer });
+  await target.dispatchEvent('drop', { dataTransfer, clientY: targetBounds!.y + 2 });
+  await dataTransfer.dispose();
   await expect.poll(() => orderRequests).toBe(1);
 
   await page.getByRole('button', { name: '在根工作区中新建会话' }).click();

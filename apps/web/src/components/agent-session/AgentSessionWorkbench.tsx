@@ -4690,6 +4690,15 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       }
     }
   }, [conversationPagesByScope, conversationScopes, loadMoreConversations, loadingConversationScope]);
+  const pinnedConversationsQueryKey = sessionQueryKey(host, 'pinned-conversations', workspace?.id);
+  const pinnedConversationsQuery = useQuery({
+    queryKey: pinnedConversationsQueryKey,
+    queryFn: () => api.pinnedConversations!(workspace!.id),
+    enabled: Boolean(workspace && api.pinnedConversations),
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+    retry: false,
+  });
 
   const conversationActivityQuery = useQuery({
     // A sidebar preview is not a formal route entry. Only the route binding may
@@ -4772,9 +4781,12 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     () => new Map(conversations.map(item => [item.id, item])),
     [conversations],
   );
-  const pinnedConversations = [...conversationsById.values()].filter(
+  const pagedPinnedConversations = [...conversationsById.values()].filter(
     item => pendingPinnedUpdates.current.get(item.id)?.pinned ?? item.pinned,
   );
+  const pinnedConversations = api.pinnedConversations
+    ? pinnedConversationsQuery.data ?? pagedPinnedConversations
+    : pagedPinnedConversations;
   const unpinnedConversations = conversations.filter(
     item => !(pendingPinnedUpdates.current.get(item.id)?.pinned ?? item.pinned),
   );
@@ -5043,10 +5055,13 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const toggleConversationPin = useCallback((bindingId: string) => {
     if (!workspace) return;
     const queryKey = sessionQueryKey(host, 'conversations', workspace.id);
-    const currentPinned = conversations.find(item => item.id === bindingId)?.pinned ?? false;
+    const pinnedQueryKey = sessionQueryKey(host, 'pinned-conversations', workspace.id);
+    const knownConversation = pinnedConversations.find(item => item.id === bindingId)
+      ?? conversations.find(item => item.id === bindingId);
+    const currentPinned = Boolean(knownConversation?.pinned);
     const pinned = !currentPinned;
     const updateId = nextPinnedUpdateId.current += 1;
-    const updateCachedConversation = (value: boolean) => {
+    const updateCachedConversation = (value: boolean, updated?: AgentConversation) => {
       setConversationPagesByScope(current => Object.fromEntries(Object.entries(current).map(([scope, page]) => [scope, {
         ...page,
         items: page.items.map(item => item.id === bindingId ? { ...item, pinned: value } : item),
@@ -5061,6 +5076,15 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
           })),
         } : current,
       );
+      queryClient.setQueryData<AgentConversation[]>(pinnedQueryKey, current => {
+        const item = updated ?? knownConversation;
+        if (!value) return (current ?? []).filter(candidate => candidate.id !== bindingId);
+        if (!item) return current;
+        const next = { ...item, pinned: true };
+        return (current ?? []).some(candidate => candidate.id === bindingId)
+          ? (current ?? []).map(candidate => candidate.id === bindingId ? next : candidate)
+          : [...(current ?? []), next];
+      });
     };
     pendingPinnedUpdates.current.set(bindingId, { id: updateId, pinned });
     void queryClient.cancelQueries({ queryKey }).then(() => {
@@ -5071,8 +5095,11 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     void api.setConversationPinned(workspace.id, bindingId, pinned).then(updated => {
       if (pendingPinnedUpdates.current.get(bindingId)?.id !== updateId) return;
       const persistedPinned = Boolean(updated.pinned);
-      updateCachedConversation(persistedPinned);
-      void queryClient.invalidateQueries({ queryKey }).catch(() => undefined).then(() => {
+      updateCachedConversation(persistedPinned, updated);
+      void Promise.all([
+        queryClient.invalidateQueries({ queryKey }),
+        queryClient.invalidateQueries({ queryKey: pinnedQueryKey }),
+      ]).catch(() => undefined).then(() => {
         if (pendingPinnedUpdates.current.get(bindingId)?.id !== updateId) return;
         pendingPinnedUpdates.current.delete(bindingId);
       });
@@ -5080,10 +5107,11 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       if (pendingPinnedUpdates.current.get(bindingId)?.id !== updateId) return;
       pendingPinnedUpdates.current.delete(bindingId);
       updateCachedConversation(currentPinned);
+      void queryClient.invalidateQueries({ queryKey: pinnedQueryKey }).catch(() => undefined);
       const error = reason instanceof Error ? reason : new Error('置顶状态保存失败');
       console.error('conversation-pinned', error);
     });
-  }, [api, conversations, host, queryClient, workspace]);
+  }, [api, conversations, host, pinnedConversations, queryClient, workspace]);
   useEffect(() => {
     setUnreadConversationIds(current => {
       const next = new Set<string>();
@@ -6107,18 +6135,22 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   }, [condensationStatus, condensationTasks, host, latestCondensationEvent, queryClient, reportOperationError, selected?.id, workspace?.id]);
   useEffect(() => {
     if (!conversationSearchTargetEventId || !selected) return;
+    const targetEventId = conversationSearchTargetEventId;
     const target = Array.from(document.querySelectorAll<HTMLElement>('[data-conversation-event-id]')).find(
-      item => item.dataset.conversationEventId === conversationSearchTargetEventId,
+      item => item.dataset.conversationEventId === targetEventId,
     );
     const surface = target?.closest<HTMLElement>('.conversation-surface');
-    if (!target || !surface) return;
+    if (!target || !surface) {
+      void revealHistoryThrough(targetEventId);
+      return;
+    }
     const top = target.getBoundingClientRect().top - surface.getBoundingClientRect().top + surface.scrollTop - 28;
     surface.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
     target.classList.add('conversation-search-target');
     const timer = window.setTimeout(() => target.classList.remove('conversation-search-target'), 2_600);
     setConversationSearchTargetEventId(undefined);
     return () => window.clearTimeout(timer);
-  }, [conversationSearchTargetEventId, displayedEvents, selected]);
+  }, [conversationSearchTargetEventId, displayedEvents, historyCacheRevision, revealHistoryThrough, selected]);
   // A draft has no OpenHands Conversation or event branch yet. It must never
   // inherit execution/readiness state from the previously selected binding.
   // The sole exception is its own first-message bootstrap, which explicitly
@@ -8045,10 +8077,12 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     setDragTarget(current => current?.bindingId === target.id && current.after === after ? current : next);
   }
   function dropConversation(event: React.DragEvent<HTMLDivElement>, target: AgentConversation, group: AgentConversation[]) {
-    if (!draggedConversationRef.current) return;
+    const draggedId = draggedConversationRef.current;
+    if (!draggedId) return;
     event.preventDefault();
-    const dragTarget = dragTargetRef.current;
-    commitConversationDrop(draggedConversationRef.current, dragTarget?.bindingId === target.id ? target : undefined, dragTarget?.after ?? false, group);
+    const bounds = event.currentTarget.getBoundingClientRect();
+    const after = event.clientY >= bounds.top + bounds.height / 2;
+    commitConversationDrop(draggedId, target, after, group);
     clearConversationDrag();
   }
   const conversationRow = (item: AgentConversation, group: AgentConversation[], options: { allowDrag?: boolean; workspaceName?: string; onSelect?: () => void; onDoubleClick?: () => void; onMarkRead?: () => void } = {}) => {

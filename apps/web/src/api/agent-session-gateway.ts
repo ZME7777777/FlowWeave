@@ -98,6 +98,8 @@ export interface AgentSessionApi {
   readonly defaultHost: (signal?: AbortSignal) => Promise<AgentSessionHostDetails>;
   readonly runtime: (hostId: AgentSessionHostId) => Promise<AgentSessionRuntime>;
   readonly conversations: (hostId: AgentSessionHostId, cursor?: string, limit?: number, workDirectoryId?: string) => Promise<AgentConversationPage>;
+  /** Workspace-wide pinned summaries independent of each group's cursor pages. */
+  readonly pinnedConversations?: (hostId: AgentSessionHostId) => Promise<AgentConversation[]>;
   readonly conversationActivity: (hostId: AgentSessionHostId, activeBindingId?: AgentSessionBindingId) => Promise<AgentConversationActivity>;
   readonly startConversationSearch?: (hostId: AgentSessionHostId, query: string, workDirectoryIds?: string[], includeRoot?: boolean) => Promise<AgentConversationSearch>;
   readonly conversationSearch?: (hostId: AgentSessionHostId, searchId: string, cursor?: string) => Promise<AgentConversationSearch>;
@@ -185,6 +187,7 @@ export const agentWorkspaceSessionGateway: AgentSessionGateway = {
     defaultHost: api.defaultAgentWorkspace,
     runtime: api.agentWorkspaceRuntime,
     conversations: api.agentConversations,
+    pinnedConversations: api.pinnedAgentConversations,
     conversationActivity: api.agentConversationActivity,
     startConversationSearch: api.startAgentConversationSearch,
     conversationSearch: (_hostId, searchId, cursor) =>

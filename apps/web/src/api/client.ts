@@ -472,6 +472,8 @@ export const api = {
     if (workDirectoryId) query.set('work_directory_id', workDirectoryId);
     return request<import('../types').AgentConversationPage>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations?${query}`);
   },
+  pinnedAgentConversations: (workspaceId: string) =>
+    request<import('../types').AgentConversation[]>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/pinned-conversations`),
   agentConversationActivity: (workspaceId: string, activeBindingId?: string) => {
     const query = activeBindingId ? `?active_binding_id=${encodeURIComponent(activeBindingId)}` : '';
     return request<import('../types').AgentConversationActivity>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-activity${query}`);
