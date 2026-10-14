@@ -1376,11 +1376,14 @@ function ProgressActivity({ group, active, revealEventIds, paused, parentFailed,
     </article>
     <div className="conversation-progress-group-list">
       {group.entries.map(entry => {
-        // ThinkAction and the following native action are distinct formal
-        // events. Keep the action card, but avoid showing the exact same
-        // user-visible text twice when a model has emitted it in both places.
+        // The group header can be either a native Think or the first native
+        // action with a preamble. Keep the action card, but do not show the
+        // same formal action's preamble again inside that card. When the
+        // header is a Think, retain the exact-text safeguard for the distinct
+        // following action as well.
         const actionText = entry.action?.content ?? '';
-        const hideThought = entry.hideThought || (group.progress.kind === 'thought'
+        const isProgressAction = group.progress.event.id === entry.action?.event.id;
+        const hideThought = entry.hideThought || isProgressAction || (group.progress.kind === 'thought'
           && group.progress.event.id !== entry.action?.event.id
           && isSameVisibleProgressText(progressText(group.progress), actionText));
         return <ActivityEntryRow key={entry.id} entry={entry} active={active} reveal={entryHasRevealedText(entry, revealEventIds)} paused={paused} parentFailed={parentFailed} hideThought={hideThought} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/>;
