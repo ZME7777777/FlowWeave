@@ -2089,7 +2089,7 @@ test('workspace Markdown links open the referenced node-session file without nav
       if (url.searchParams.get('preview') === 'true') {
         previewPaths.push(requestedPath);
         const content = requestedPath === sourcePath
-          ? '# 筛选后业务异常日志汇总\n\n```mermaid\nflowchart LR\n  A[开始] --> B[结束]\n```\n\n[越界路径](../outside.md)\n\n| 文档 |\n| --- |\n| [hq-admin](filtered_business_exception_reports/hq-admin.md) |'
+          ? '# 筛选后业务异常日志汇总\n\n```mermaid\nflowchart LR\n  A[开始] --> B[结束]\n```\n\n[越界路径](../../outside.md)\n\n| 文档 |\n| --- |\n| [hq-admin](filtered_business_exception_reports/hq-admin.md) |'
           : requestedPath === targetPath ? '# HQ Admin report\n\n已正确打开目标文件。' : 'unexpected file';
         return route.fulfill({
           status: 200,
@@ -2102,7 +2102,7 @@ test('workspace Markdown links open the referenced node-session file without nav
     if (path === `${sessionBase}/${conversation.id}/events`) return respond({
       events: [
         { id: 'markdown-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '查看异常报告', timestamp: now } },
-        { id: 'markdown-agent', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'markdown-user', content: '[打开汇总](filtered_business_exceptions.md)\n\n![会话图片](/api/v1/flow-runs/markdown-link-run/node-attempts/markdown-link-attempt/agent-sessions/workspace/file?path=%2Fruntime%2Fworkspace%2Fproject%2F.tmp%2Fpanel-top-preview.png&binding_id=markdown-link-conversation)', timestamp: now } },
+        { id: 'markdown-agent', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'markdown-user', content: '[打开汇总](filtered_business_exceptions.md) · [打开工作目录](.)\n\n![会话图片](/api/v1/flow-runs/markdown-link-run/node-attempts/markdown-link-attempt/agent-sessions/workspace/file?path=%2Fruntime%2Fworkspace%2Fproject%2F.tmp%2Fpanel-top-preview.png&binding_id=markdown-link-conversation)', timestamp: now } },
       ],
       next_cursor: 'markdown-agent', history_cursor: null, result: { status: 'COMPLETED' },
     });
@@ -2117,9 +2117,9 @@ test('workspace Markdown links open the referenced node-session file without nav
   await expect(conversationImage.locator('img')).toBeVisible();
   await conversationImage.click();
   await expect(page.getByRole('dialog', { name: '文件预览' })).toContainText('会话图片');
-  await page.getByRole('button', { name: '关闭' }).click();
+  await page.getByRole('dialog', { name: '文件预览' }).getByRole('button', { name: '关闭', exact: true }).click();
   await page.getByRole('link', { name: '打开汇总' }).click();
-  await expect(page.locator('.agent-file-preview > header')).toContainText('filtered_business_exceptions.md');
+  await expect(page.getByRole('dialog', { name: '文件预览' }).getByRole('banner')).toContainText('filtered_business_exceptions.md');
   await expect(page).toHaveURL(new RegExp(`${sessionPath}$`));
   const diagram = page.getByLabel('Mermaid 图表');
   await expect(diagram.locator('.conversation-mermaid-svg svg')).toBeVisible();
@@ -2130,18 +2130,30 @@ test('workspace Markdown links open the referenced node-session file without nav
   await expect(page.getByRole('dialog', { name: 'Mermaid 图表全屏预览' })).toBeVisible();
   await page.keyboard.press('Escape');
   await expect(page.getByRole('dialog', { name: 'Mermaid 图表全屏预览' })).toHaveCount(0);
+  // Escape also closes the containing file dialog. Reopen the source file
+  // before exercising links rendered inside its Markdown preview.
+  await page.getByRole('link', { name: '打开汇总' }).click();
+  await expect(page.getByRole('dialog', { name: '文件预览' })).toBeVisible();
 
   await page.locator('.agent-file-markdown-preview').getByRole('link', { name: '越界路径' }).click();
   await expect(page.getByRole('alert')).toContainText('链接目标不在当前工作目录中');
-  await expect(page.locator('.agent-file-preview > header')).toContainText('filtered_business_exceptions.md');
+  await expect(page.getByRole('dialog', { name: '文件预览' }).getByRole('banner')).toContainText('filtered_business_exceptions.md');
   await expect(page).toHaveURL(new RegExp(`${sessionPath}$`));
-  await page.getByRole('button', { name: '关闭错误提示' }).click();
 
   await page.locator('.agent-file-markdown-preview').getByRole('link', { name: 'hq-admin' }).click();
-  await expect(page.locator('.agent-file-preview > header')).toContainText('hq-admin.md');
+  await expect(page.getByRole('dialog', { name: '文件预览' }).getByRole('banner')).toContainText('hq-admin.md');
   await expect(page.locator('.agent-file-markdown-preview')).toContainText('已正确打开目标文件');
   await expect(page).toHaveURL(new RegExp(`${sessionPath}$`));
-  expect(previewPaths).toEqual([sourcePath, targetPath]);
+
+  await page.getByRole('dialog', { name: '文件预览' }).getByRole('button', { name: '关闭', exact: true }).click();
+  await page.getByRole('link', { name: '打开工作目录' }).click();
+  const directoryPreview = page.getByRole('dialog', { name: '文件预览' });
+  await expect(directoryPreview).toContainText('此链接指向工作目录，不是文件，因此无法预览。');
+  await directoryPreview.getByRole('button', { name: '在文件栏查看目录' }).click();
+  await expect(page.locator('.agent-workspace-drawer')).toHaveClass(/tools-open/);
+  expect(previewPaths).toContain(sourcePath);
+  expect(previewPaths).toContain(targetPath);
+  expect(previewPaths).not.toContain(root);
 });
 
 test('completed continuous node sessions can create and fork writable conversations', async ({ page }) => {

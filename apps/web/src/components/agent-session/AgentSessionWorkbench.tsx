@@ -3329,16 +3329,18 @@ function clampConversationRailWidth(value: number): number {
 
 type ConversationFilePreviewRequest =
   | { key: string; kind: 'workspace'; path: string; filename: string; mimeType?: string; imageDataUrl?: string | null; attachment?: AgentAttachment; previewBindingId?: string }
+  | { key: string; kind: 'directory'; path: string; filename: string }
   | { key: string; kind: 'candidate'; filename: string; url: string; fieldKey: string; relativePath: string }
   | { key: string; kind: 'image'; filename: string; url: string };
 
-function ConversationFilePreviewDialog({ request, workspaceId, bindingId, workDirectoryId, onClose, onOpenInFiles }: {
+function ConversationFilePreviewDialog({ request, workspaceId, bindingId, workDirectoryId, onClose, onOpenInFiles, onOpenWorkspaceFile }: {
   request: ConversationFilePreviewRequest;
   workspaceId: string;
   bindingId?: string;
   workDirectoryId?: string;
   onClose: () => void;
   onOpenInFiles: (request: ConversationFilePreviewRequest) => void;
+  onOpenWorkspaceFile: (href: string, sourcePath: string) => boolean;
 }) {
   const { api, fileUrl } = useAgentSessionGateway();
   const host = useAgentSessionHost();
@@ -3384,10 +3386,10 @@ function ConversationFilePreviewDialog({ request, workspaceId, bindingId, workDi
     }
   }, [api, previewBindingId, previewMoreLoading, previewState, workDirectoryId, workspaceId, workspaceRequest]);
 
-  const path = request.kind === 'workspace' ? request.path : request.kind === 'candidate' ? request.relativePath : request.url;
+  const path = request.kind === 'workspace' || request.kind === 'directory' ? request.path : request.kind === 'candidate' ? request.relativePath : request.url;
   const sourceUrl = request.kind === 'workspace'
     ? request.imageDataUrl || fileUrl(workspaceId, request.path, { bindingId: previewBindingId, workDirectoryId, download: false })
-    : request.url;
+    : request.kind === 'directory' ? '' : request.url;
   const downloadUrl = workspaceRequest ? fileUrl(workspaceId, workspaceRequest.path, { bindingId: previewBindingId, workDirectoryId, download: true }) : undefined;
   const canPreviewImage = Boolean(workspaceRequest && (workspaceRequest.mimeType?.startsWith('image/') || /\.(?:avif|gif|jpe?g|png|svg|webp)$/i.test(workspaceRequest.path)));
   const canPreviewPdf = Boolean(workspaceRequest && (workspaceRequest.mimeType === 'application/pdf' || /\.pdf$/i.test(workspaceRequest.path)));
@@ -3404,7 +3406,9 @@ function ConversationFilePreviewDialog({ request, workspaceId, bindingId, workDi
         </div>
       </header>
       <div className="agent-file-preview-dialog-content">
-        {request.kind === 'candidate'
+        {request.kind === 'directory'
+          ? <p>此链接指向工作目录，不是文件，因此无法预览。请在文件栏中选择具体文件查看。</p>
+          : request.kind === 'candidate'
           ? <iframe className="agent-file-media-preview" sandbox="" title={`${request.filename} 候选文件预览`} src={sourceUrl}/>
           : request.kind === 'image'
             ? <img className="agent-file-media-preview" src={sourceUrl} alt={request.filename}/>
@@ -3418,11 +3422,11 @@ function ConversationFilePreviewDialog({ request, workspaceId, bindingId, workDi
                   : previewQuery.isError
                     ? <p>文件预览不可用，请在文件栏中查看或下载。</p>
                     : previewState
-                      ? <div className="agent-file-preview-paged"><WorkspaceTextPreview path={previewState.path} content={previewState.content} lightweight={lightweightPreview}/>{previewState.nextOffset !== undefined && <footer><span>已加载 {formatFileSize(previewState.nextOffset)} / {formatFileSize(previewState.totalBytes)}</span><button type="button" onClick={() => void loadMorePreview()} disabled={previewMoreLoading}>{previewMoreLoading ? '正在加载…' : '加载更多'}</button></footer>}</div>
+                      ? <div className="agent-file-preview-paged"><WorkspaceTextPreview path={previewState.path} content={previewState.content} lightweight={lightweightPreview} onOpenWorkspaceFile={href => onOpenWorkspaceFile(href, previewState.path)}/>{previewState.nextOffset !== undefined && <footer><span>已加载 {formatFileSize(previewState.nextOffset)} / {formatFileSize(previewState.totalBytes)}</span><button type="button" onClick={() => void loadMorePreview()} disabled={previewMoreLoading}>{previewMoreLoading ? '正在加载…' : '加载更多'}</button></footer>}</div>
                       : null
                 : <p>此文件不提供浏览器预览，请在文件栏中查看或下载。</p>}
       </div>
-      <footer><button type="button" className="secondary" onClick={onClose}>关闭</button>{request.kind !== 'image' && <button type="button" className="primary" onClick={() => onOpenInFiles(request)}><PanelRightOpen size={14}/>在文件栏打开</button>}</footer>
+      <footer><button type="button" className="secondary" onClick={onClose}>关闭</button>{request.kind !== 'image' && <button type="button" className="primary" onClick={() => onOpenInFiles(request)}><PanelRightOpen size={14}/>{request.kind === 'directory' ? '在文件栏查看目录' : '在文件栏打开'}</button>}</footer>
     </section>
   </div>, document.body);
 }
@@ -3439,7 +3443,7 @@ function readWorkspaceToolState(storageKey: string): Record<string, WorkspaceToo
 function WorkspaceDrawer({
   open, onOpen, onClose, onAnnotateFileSelection, highlightedFileSelection, workspaceId, scopeKey, migrateFromScopeKey, bindingId, workDirectoryId, conversation, conversationCumulativeTokens, attachments, sources, attachmentRequest, candidatePreviewRequest, markdownFileRequest, reviewChanges = [], reviewRequestId, sessionChanges = [], onReviewChanges, runtimeAvailable, runtimeTasks, agentDefinitions, sessionStopped, sidebarQuestion, onSidebarBindingCreated, onOpenSidebarQuestion, onCloseSidebarQuestion, onPreviewAttachment,
 }: {
-  open: boolean; onOpen: () => void; onClose: () => void; onAnnotateFileSelection?: (path: string, selection: FileSelection, quote: string) => void; highlightedFileSelection?: { path: string; selection: FileSelection }; workspaceId: string; scopeKey: string; migrateFromScopeKey?: string; bindingId?: string; workDirectoryId?: string; conversation?: AgentConversation; conversationCumulativeTokens?: number | null; attachments: AgentAttachment[]; sources: ConversationSource[]; attachmentRequest?: { key: string; attachment: AgentAttachment }; candidatePreviewRequest?: CandidateFilePreviewRequest; markdownFileRequest?: MarkdownFileRequest; reviewChanges?: WorkspaceFileChange[]; reviewRequestId?: string; sessionChanges?: WorkspaceFileChange[]; onReviewChanges?: (changes: WorkspaceFileChange[]) => void; runtimeAvailable: boolean; runtimeTasks: RuntimeTaskProjection[]; agentDefinitions: CapabilityAsset[]; sessionStopped: boolean; sidebarQuestion?: { sourceBindingId: string; reference?: AgentConversationReference; sidebarBindingId?: string }; onSidebarBindingCreated: (sourceBindingId: string, sidebarBindingId: string) => void; onOpenSidebarQuestion?: () => void; onCloseSidebarQuestion: () => void; onPreviewAttachment: (attachment: AgentAttachment, previewBindingId?: string) => void;
+  open: boolean; onOpen: () => void; onClose: () => void; onAnnotateFileSelection?: (path: string, selection: FileSelection, quote: string) => void; highlightedFileSelection?: { path: string; selection: FileSelection }; workspaceId: string; scopeKey: string; migrateFromScopeKey?: string; bindingId?: string; workDirectoryId?: string; conversation?: AgentConversation; conversationCumulativeTokens?: number | null; attachments: AgentAttachment[]; sources: ConversationSource[]; attachmentRequest?: { key: string; attachment?: AgentAttachment }; candidatePreviewRequest?: CandidateFilePreviewRequest; markdownFileRequest?: MarkdownFileRequest; reviewChanges?: WorkspaceFileChange[]; reviewRequestId?: string; sessionChanges?: WorkspaceFileChange[]; onReviewChanges?: (changes: WorkspaceFileChange[]) => void; runtimeAvailable: boolean; runtimeTasks: RuntimeTaskProjection[]; agentDefinitions: CapabilityAsset[]; sessionStopped: boolean; sidebarQuestion?: { sourceBindingId: string; reference?: AgentConversationReference; sidebarBindingId?: string }; onSidebarBindingCreated: (sourceBindingId: string, sidebarBindingId: string) => void; onOpenSidebarQuestion?: () => void; onCloseSidebarQuestion: () => void; onPreviewAttachment: (attachment: AgentAttachment, previewBindingId?: string) => void;
 }) {
   const { api, fileUrl } = useAgentSessionGateway();
   const host = useAgentSessionHost();
@@ -3876,7 +3880,7 @@ function WorkspaceDrawer({
     if (!attachmentRequest || handledAttachmentRequestKey.current === attachmentRequest.key) return;
     handledAttachmentRequestKey.current = attachmentRequest.key;
     setCandidatePreview(undefined);
-    openFiles(attachmentRequest.attachment.path);
+    openFiles(attachmentRequest.attachment?.path);
   }, [attachmentRequest, openFiles]);
   useEffect(() => {
     if (!candidatePreviewRequest || handledCandidatePreviewRequestKey.current === candidatePreviewRequest.key) return;
@@ -4388,7 +4392,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const [workspaceReferencePickerOpen, setWorkspaceReferencePickerOpen] = useState(false);
   const [workspaceReferenceQuery, setWorkspaceReferenceQuery] = useState('');
   const [filePreviewRequest, setFilePreviewRequest] = useState<ConversationFilePreviewRequest>();
-  const [attachmentRequest, setAttachmentRequest] = useState<{ key: string; attachment: AgentAttachment }>();
+  const [attachmentRequest, setAttachmentRequest] = useState<{ key: string; attachment?: AgentAttachment }>();
   const [fileSelectionReference, setFileSelectionReference] = useState<{ path: string; selection: FileSelection }>();
   const [candidatePreviewRequest, setCandidatePreviewRequest] = useState<CandidateFilePreviewRequest>();
   const [sidebarQuestions, setSidebarQuestions] = useState<Record<string, { sourceBindingId: string; reference?: AgentConversationReference; sidebarBindingId?: string }>>({});
@@ -6305,6 +6309,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     setFilePreviewRequest(undefined);
     if (request.kind === 'candidate') {
       setCandidatePreviewRequest({ key: randomId(), filename: request.filename, url: request.url });
+    } else if (request.kind === 'directory') {
+      setAttachmentRequest({ key: randomId() });
     } else {
       setAttachmentRequest(request.attachment
         ? { key: randomId(), attachment: request.attachment }
@@ -7930,12 +7936,23 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       : undefined)
     ?? workDirectoriesQuery.data?.root.working_directory;
   const rootWorkspaceDirectory = workDirectoriesQuery.data?.root.working_directory;
-  const openWorkspaceFileLink = (href: string) => {
-    const path = workspaceMarkdownLinkPath(href, activeWorkspaceRoot);
-    if (!path) return false;
+  const openWorkspaceFileLink = (href: string, sourcePath?: string) => {
+    if (!workspaceMarkdownFileHref(href)) return false;
+    const path = workspaceMarkdownLinkPath(href, activeWorkspaceRoot, sourcePath);
+    if (!path) {
+      // Do not let a relative Markdown URL escape into browser routing.  It
+      // may look harmless in an Agent reply, but it is not an authorized
+      // workspace target.
+      setOperationError(new Error('链接目标不在当前工作目录中。'));
+      return true;
+    }
     setFilePreviewRequest({
       key: randomId(),
-      kind: 'workspace',
+      // Agent replies are free-form Markdown: its visible label is not a
+      // trustworthy file identity.  A bare relative link (for example `.`)
+      // resolves to the authorized working directory, which must be treated
+      // as a directory instead of falling through to the file preview guard.
+      kind: path === activeWorkspaceRoot ? 'directory' : 'workspace',
       path,
       filename: path.split('/').filter(Boolean).at(-1) || path,
     });
@@ -8229,6 +8246,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       workDirectoryId={selected ? undefined : conversationDraft?.workDirectoryId}
       onClose={() => setFilePreviewRequest(undefined)}
       onOpenInFiles={openPreviewInFiles}
+      onOpenWorkspaceFile={openWorkspaceFileLink}
     />}
     <aside className="agent-workbench-rail">
       <div className="agent-conversation-rail-resizer" role="separator" aria-label="调整会话列表宽度" aria-orientation="vertical" onPointerDown={startConversationRailResize}/>
