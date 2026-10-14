@@ -7262,7 +7262,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       onNavigate(host.conversationPath(value.id));
     },
     onError: (error, message) => {
-      commitQueuedMessages(current => current.filter(item => item.id !== message.id));
+      // A failed streaming migration never proves delivery. Keep the browser
+      // intent in its original scope so the user can select a provider, edit,
+      // or explicitly retry it; only a successful migration moves it to a
+      // new binding.
       reportOperationError(message.scope, error);
     },
   });

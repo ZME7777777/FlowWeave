@@ -249,7 +249,7 @@ test('step configuration is saved before start and direct launch has its own tab
       return respond([importedRecord], 201);
     }
     if (path === `/api/v1/flow-runs/${run.id}/stepwise-runs/stepwise-record-1` && request.method() === 'GET') return respond(currentStepRecord);
-    if (path === `/api/v1/flow-runs/${run.id}/automatic-runs`) return respond([]);
+    if (path === `/api/v1/flow-runs/${run.id}/automatic-runs/summaries`) return respond([]);
     if (path === '/api/v1/flow-runs/stepwise-record-1/stepwise-node-drafts/second' && request.method() === 'PUT') {
       savedBody = request.postDataJSON() as Record<string, unknown>;
       const draft = {
@@ -361,6 +361,20 @@ test('step configuration is saved before start and direct launch has its own tab
 
 test('stepwise record copy reuses the record selection and first-node configuration', async ({ page }) => {
   const parentRun = { ...run, node_runs: [] };
+  const copiedInitialArtifacts = [
+    {
+      id: 'copied-input-url', flow_run_id: 'copied-stepwise-record', producer_attempt_id: null, consumer_node_key: 'first',
+      field_key: 'input_1', version_no: 1, artifact_type: 'URL', storage_key: null,
+      uri: 'https://example.com/copied-input', inline_content: null, content_hash: 'copied-input-url-hash', byte_size: 32,
+      mime_type: 'text/uri-list', source: 'STEPWISE_DRAFT_COPY', metadata: { display_name: '复制的 URL 输入' }, created_at: now,
+    },
+    {
+      id: 'copied-input-file', flow_run_id: 'copied-stepwise-record', producer_attempt_id: null, consumer_node_key: 'first',
+      field_key: 'input_2', version_no: 1, artifact_type: 'FILE', storage_key: 'copied-input.md',
+      uri: null, inline_content: null, content_hash: 'copied-input-file-hash', byte_size: 18,
+      mime_type: 'text/markdown', source: 'STEPWISE_DRAFT_COPY', metadata: { filename: 'copied-input.md' }, created_at: now,
+    },
+  ];
   const sourceAttempt = {
     ...attempt,
     id: 'source-stepwise-attempt',
@@ -426,6 +440,7 @@ test('stepwise record copy reuses the record selection and first-node configurat
         id: 'copied-stepwise-record',
         name: copyBody.name,
         node_runs: [],
+        artifacts: copiedInitialArtifacts,
         stepwise_node_drafts: {
           first: {
             row_version: 1,
@@ -434,7 +449,10 @@ test('stepwise record copy reuses the record selection and first-node configurat
             agent_preset: sourceAttempt.agent_preset,
             gates: [],
             context_ids: [],
-            input_bindings: [],
+            input_bindings: [
+              { input_field_key: 'input_1', artifact_version_id: 'copied-input-url', binding_source: 'HUMAN_START' },
+              { input_field_key: 'input_2', artifact_version_id: 'copied-input-file', binding_source: 'HUMAN_START' },
+            ],
           },
         },
       };
@@ -442,7 +460,7 @@ test('stepwise record copy reuses the record selection and first-node configurat
       return respond(copied, 201);
     }
     if (path === '/api/v1/flow-runs/run-1/stepwise-runs/copied-stepwise-record' && request.method() === 'GET') return respond(records[0]);
-    if (path === `/api/v1/flow-runs/${run.id}/automatic-runs`) return respond([]);
+    if (path === `/api/v1/flow-runs/${run.id}/automatic-runs/summaries`) return respond([]);
     return respond({ error: { code: 'RESOURCE_NOT_FOUND', message: `未配置测试路由：${path}`, details: {} } }, 404);
   });
 
@@ -501,7 +519,7 @@ test('created attempts keep their inputs read-only after a start gate blocks the
     if (path === `/api/v1/flows/${definition.id}`) return respond(definition);
     if (path === `/api/v1/flow-runs/${parentRun.id}/stepwise-runs` && request.method() === 'GET') return respond([blockedRun]);
     if (path === `/api/v1/flow-runs/${parentRun.id}/stepwise-runs/${blockedRun.id}` && request.method() === 'GET') return respond(blockedRun);
-    if (path === `/api/v1/flow-runs/${parentRun.id}/automatic-runs`) return respond([]);
+    if (path === `/api/v1/flow-runs/${parentRun.id}/automatic-runs/summaries`) return respond([]);
     return respond({ error: { code: 'RESOURCE_NOT_FOUND', message: path, details: {} } }, 404);
   });
 
@@ -716,7 +734,7 @@ test('a stepwise record keeps completed nodes readable while the next node is co
       await stepwiseDetailReady;
       return respond(currentRecord);
     }
-    if (path === `/api/v1/flow-runs/${run.id}/automatic-runs`) return respond([]);
+    if (path === `/api/v1/flow-runs/${run.id}/automatic-runs/summaries`) return respond([]);
     if (path === `/api/v1/flow-runs/${currentRecord.id}/stepwise-node-drafts/second` && request.method() === 'PUT') {
       savedBody = request.postDataJSON() as Record<string, unknown>;
       const savedDraft = {
@@ -797,7 +815,7 @@ test('accepting a stepwise node focuses its reached successor and allows returni
       record = { ...record, node_runs: [acceptedNodeRun, waitingNodeRun] };
       return respond(record);
     }
-    if (path === `/api/v1/flow-runs/${run.id}/automatic-runs`) return respond([]);
+    if (path === `/api/v1/flow-runs/${run.id}/automatic-runs/summaries`) return respond([]);
     return respond({ error: { code: 'RESOURCE_NOT_FOUND', message: path, details: {} } }, 404);
   });
 
@@ -837,19 +855,19 @@ test('an accepted legacy step remains readable before configuring its missing do
       ...attempt, id: 'legacy-accepted-attempt', state: 'ACCEPTED', state_version: 3, artifacts: [mappedArtifact],
     }],
   };
-  const configuredNodeRun = {
-    ...nodeRun, id: 'legacy-configured-n2', flow_node_snapshot_key: 'second', sequence_no: 2,
-    created_from: 'HUMAN_START', attempts: [{
-      ...attempt, id: 'legacy-configured-attempt', node_run_id: 'legacy-configured-n2', state: 'WAITING_START_CONFIRMATION',
-      state_version: 1, runtime_phase: null, input_bindings: [{ id: 'legacy-binding', input_field_key: 'input_1', artifact_version_id: mappedArtifact.id, binding_source: 'HUMAN_START' }],
-    }],
-  };
   const parentRun = { ...run, node_runs: [], artifacts: [], progress: { accepted: 0, terminal: 0, active: 0 } };
   let currentRun = {
     ...run, id: 'legacy-stepwise-record', name: '历史逐步记录', parent_flow_run_id: run.id,
     active_snapshot_id: transitionSnapshot.id, snapshots: [transitionSnapshot],
     current_node_key: 'first', current_node_name: '测试节点', current_attempt_state: 'ACCEPTED',
     progress: { accepted: 1, terminal: 1, active: 0 }, node_runs: [acceptedNodeRun], artifacts: [mappedArtifact],
+    stepwise_node_drafts: {
+      second: {
+        row_version: 2, startup_mode: 'PROMPT', startup_prompt: asset.executor.startup_prompt,
+        agent_preset: { capability_version_ids: [], node_context_enabled: false }, gates: [], context_ids: [],
+        input_bindings: [{ input_field_key: 'input_1', artifact_version_id: mappedArtifact.id, binding_source: 'PORT_MAPPING' }],
+      },
+    },
   };
   let savedBody: Record<string, unknown> | undefined;
   await page.route('**/api/v1/**', async route => {
@@ -865,11 +883,16 @@ test('an accepted legacy step remains readable before configuring its missing do
     if (path === `/api/v1/flows/${definition.id}`) return respond(transitionDefinition);
     if (path === `/api/v1/flow-runs/${run.id}/stepwise-runs` && request.method() === 'GET') return respond([currentRun]);
     if (path === `/api/v1/flow-runs/${run.id}/stepwise-runs/${currentRun.id}` && request.method() === 'GET') return respond(currentRun);
-    if (path === `/api/v1/flow-runs/${run.id}/automatic-runs`) return respond([]);
-    if (path === `/api/v1/flow-runs/${currentRun.id}/nodes/second/runs` && request.method() === 'POST') {
+    if (path === `/api/v1/flow-runs/${run.id}/automatic-runs/summaries`) return respond([]);
+    if (path === `/api/v1/flow-runs/${currentRun.id}/stepwise-node-drafts/second` && request.method() === 'PUT') {
       savedBody = request.postDataJSON() as Record<string, unknown>;
-      currentRun = { ...currentRun, current_node_key: 'second', current_node_name: '测试节点2', current_attempt_state: 'WAITING_START_CONFIRMATION', progress: { accepted: 1, terminal: 1, active: 1 }, node_runs: [acceptedNodeRun, configuredNodeRun] };
-      return respond(configuredNodeRun, 201);
+      const savedDraft = {
+        row_version: 3, startup_mode: 'PROMPT', startup_prompt: savedBody.startup_prompt,
+        agent_preset: savedBody.agent_preset, gates: savedBody.gates, context_ids: [],
+        input_bindings: [{ input_field_key: 'input_1', artifact_version_id: mappedArtifact.id, binding_source: 'PORT_MAPPING' }],
+      };
+      currentRun = { ...currentRun, stepwise_node_drafts: { second: savedDraft } };
+      return respond(savedDraft);
     }
     return respond({ error: { code: 'RESOURCE_NOT_FOUND', message: `未配置测试路由：${path}`, details: {} } }, 404);
   });
@@ -890,7 +913,7 @@ test('an accepted legacy step remains readable before configuring its missing do
   await expect(consolePanel.getByRole('link', { name: 'https://example.com/legacy-n1-output' })).toBeVisible();
   await consolePanel.getByRole('button', { name: '保存配置' }).click();
   await expect.poll(() => savedBody).toEqual(expect.objectContaining({ artifact_ids: { input_1: mappedArtifact.id } }));
-  await expect(page.getByRole('button', { name: '启动逐步运行 测试节点2' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '启动逐步运行 历史逐步记录' })).toBeVisible();
 });
 
 test('run rail keeps its controls fixed and pages records five at a time', async ({ page }) => {
@@ -1209,6 +1232,15 @@ test('run projection stays neutral until record selection and automatic save rep
 test('FR-130 running automatic records show execution facts and chat attempts submit explicit outputs', async ({ page }) => {
   let currentRun = chatRun;
   let submittedOutputs: unknown;
+  const runningAutomaticSummary = {
+    id: runningAutomatic.id, flow_run_id: run.id, run_no: runningAutomatic.run_no, name: runningAutomatic.name,
+    state: runningAutomatic.state, row_version: runningAutomatic.row_version,
+    schedule_id: null, schedule_name: null, schedule_occurrence_id: null,
+    started_at: now, finished_at: null,
+    plan: { start_node_key: 'first', reachable_node_count: 2, configured_node_count: 2, readiness: { ready: true, issue_count: 0 } },
+    progress: { node_runs: 1, accepted: 0, terminal: 0, active: 1 },
+    usage: { total_tokens: 0, accumulated_cost: 0, currency: 'USD' },
+  };
   await page.route('**/api/v1/**', async route => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
@@ -1219,7 +1251,8 @@ test('FR-130 running automatic records show execution facts and chat attempts su
     if (path === '/api/v1/terminal-environments') return respond([]);
     if (path === `/api/v1/flow-runs/${run.id}`) return respond(currentRun);
     if (path === `/api/v1/flows/${definition.id}`) return respond(definition);
-    if (path === `/api/v1/flow-runs/${run.id}/automatic-runs` && request.method() === 'GET') return respond([runningAutomatic]);
+    if (path === `/api/v1/flow-runs/${run.id}/automatic-runs/summaries` && request.method() === 'GET') return respond([runningAutomaticSummary]);
+    if (path === `/api/v1/flow-runs/${run.id}/automatic-runs/${runningAutomatic.id}` && request.method() === 'GET') return respond(runningAutomatic);
     if (path === '/api/v1/capabilities' || path === '/api/v1/capability-collections' || path === '/api/v1/model-providers') return respond([]);
     if (path === `/api/v1/node-attempts/${chatAttempt.id}/manual-outputs` && request.method() === 'POST') {
       submittedOutputs = request.postDataJSON();
@@ -1347,9 +1380,19 @@ test('continuous record defaults to its final flowed node even after that node f
 });
 
 test('returning from an automatic node session preserves the selected automatic record', async ({ page }) => {
+  const runningAutomaticSummary = {
+    id: runningAutomatic.id, flow_run_id: run.id, run_no: runningAutomatic.run_no, name: runningAutomatic.name,
+    state: runningAutomatic.state, row_version: runningAutomatic.row_version,
+    schedule_id: null, schedule_name: null, schedule_occurrence_id: null,
+    started_at: now, finished_at: null,
+    plan: { start_node_key: 'first', reachable_node_count: 2, configured_node_count: 2, readiness: { ready: true, issue_count: 0 } },
+    progress: { node_runs: 1, accepted: 0, terminal: 0, active: 1 },
+    usage: { total_tokens: 0, accumulated_cost: 0, currency: 'USD' },
+  };
   const conversation = {
     id: 'automatic-conversation-1', display_title: '自动运行会话', title_state: 'MANUAL', lifecycle: 'ACTIVE',
-    model_provider_id: null, model_name: null, reasoning_effort: null, streaming_callback_ready: true,
+    model_provider_id: null, model_name: null, reasoning_effort: null, work_directory_id: null, streaming_callback_ready: true,
+    write_available: true, execution_status: 'idle',
     created_at: now, updated_at: now, last_connected_at: now, capabilities: [],
   };
   await page.routeWebSocket('**/api/v1/flow-runs/**/node-attempts/**/agent-sessions/**/stream', () => undefined);
@@ -1366,7 +1409,8 @@ test('returning from an automatic node session preserves the selected automatic 
       || path === '/api/v1/capability-collections' || path === '/api/v1/model-providers') return respond([]);
     if (path === `/api/v1/flow-runs/${run.id}`) return respond(run);
     if (path === `/api/v1/flows/${definition.id}`) return respond(definition);
-    if (path === `/api/v1/flow-runs/${run.id}/automatic-runs`) return respond([runningAutomatic]);
+    if (path === `/api/v1/flow-runs/${run.id}/automatic-runs/summaries`) return respond([runningAutomaticSummary]);
+    if (path === `/api/v1/flow-runs/${run.id}/automatic-runs/${runningAutomatic.id}`) return respond(runningAutomatic);
 
     const sessionBase = `/api/v1/flow-runs/${runningAutomatic.id}/node-attempts/${automaticAttempt.id}/agent-sessions`;
     if (path === `${sessionBase}/host`) return respond({
@@ -1375,7 +1419,8 @@ test('returning from an automatic node session preserves the selected automatic 
     if (path === `${sessionBase}/runtime`) return respond({
       state: 'ACTIVE', write_available: true, message: null, updated_at: now,
     });
-    if (path === sessionBase && request.method() === 'GET') return respond([conversation]);
+    if (path === sessionBase && request.method() === 'GET') return respond({ items: [conversation], next_cursor: null });
+    if (path === `${sessionBase}/${conversation.id}` && request.method() === 'GET') return respond(conversation);
     if (path === `${sessionBase}/work-directories`) return respond({
       root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [],
     });
@@ -1429,7 +1474,7 @@ test('active direct-launch records can be deleted through background cancellatio
     if (path === '/api/v1/terminal-environments') return respond([]);
     if (path === `/api/v1/flow-runs/${run.id}` && request.method() === 'GET') return respond(currentRun);
     if (path === `/api/v1/flows/${definition.id}`) return respond(definition);
-    if (path === `/api/v1/flow-runs/${run.id}/automatic-runs`) return respond([]);
+    if (path === `/api/v1/flow-runs/${run.id}/automatic-runs/summaries`) return respond([]);
     if (path === '/api/v1/capabilities' || path === '/api/v1/capability-collections' || path === '/api/v1/model-providers') return respond([]);
     if (path === `/api/v1/node-attempts/${attempt.id}/cancel` && request.method() === 'POST') {
       const cancelledAttempt = { ...attempt, state: 'CANCELLED', state_version: 2, runtime_phase: 'CANCELLED' };
@@ -1492,7 +1537,7 @@ test('waiting-input direct-launch records can be deleted without cancellation', 
     if (path === '/api/v1/terminal-environments') return respond([]);
     if (path === `/api/v1/flow-runs/${run.id}` && request.method() === 'GET') return respond(currentRun);
     if (path === `/api/v1/flows/${definition.id}`) return respond(definition);
-    if (path === `/api/v1/flow-runs/${run.id}/automatic-runs`) return respond([]);
+    if (path === `/api/v1/flow-runs/${run.id}/automatic-runs/summaries`) return respond([]);
     if (path === '/api/v1/capabilities' || path === '/api/v1/capability-collections' || path === '/api/v1/model-providers') return respond([]);
     if (path === `/api/v1/flow-runs/${run.id}/nodes/${nodeRun.id}` && request.method() === 'DELETE') {
       currentRun = { ...currentRun, node_runs: [], progress: { accepted: 0, terminal: 0, active: 0 } };
@@ -1530,7 +1575,7 @@ test('unstarted chat records can be deleted without a cancellation round trip', 
     if (path === '/api/v1/terminal-environments') return respond([]);
     if (path === `/api/v1/flow-runs/${run.id}` && request.method() === 'GET') return respond(currentRun);
     if (path === `/api/v1/flows/${definition.id}`) return respond(definition);
-    if (path === `/api/v1/flow-runs/${run.id}/automatic-runs`) return respond([]);
+    if (path === `/api/v1/flow-runs/${run.id}/automatic-runs/summaries`) return respond([]);
     if (path === '/api/v1/capabilities' || path === '/api/v1/capability-collections' || path === '/api/v1/model-providers') return respond([]);
     if (path === `/api/v1/flow-runs/${run.id}/nodes/${chatNodeRun.id}` && request.method() === 'DELETE') {
       currentRun = { ...currentRun, state: 'ACTIVE', progress: { accepted: 0, terminal: 0, active: 0 }, node_runs: [] };
@@ -1793,7 +1838,7 @@ test('the step graph keeps the full persisted path while selecting node details'
     if (path === `/api/v1/flows/${definition.id}`) return respond(definition);
     if (path === `/api/v1/flow-runs/${run.id}/stepwise-runs` && request.method() === 'GET') return respond([stepwiseRecord]);
     if (path === `/api/v1/flow-runs/${run.id}/stepwise-runs/${stepwiseRecord.id}` && request.method() === 'GET') return respond(stepwiseRecord);
-    if (path === `/api/v1/flow-runs/${run.id}/automatic-runs`) return respond([]);
+    if (path === `/api/v1/flow-runs/${run.id}/automatic-runs/summaries`) return respond([]);
     return route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ error: { code: 'RESOURCE_NOT_FOUND', message: path, details: {} } }) });
   });
 
@@ -1964,6 +2009,23 @@ test('gate review conversation stays compact and remediation enters the created 
     ...run, snapshots: [gateSnapshot], node_runs: [gateNodeRun],
     current_attempt_state: 'END_BLOCKED', progress: { accepted: 0, terminal: 1, active: 1 },
   };
+  const gateAutomaticRecord = {
+    ...gateRun, id: 'gate-automatic-record', run_no: 2, name: '测试节点门禁连续记录', run_mode: 'AUTOMATIC',
+    parent_flow_run_id: gateRun.id, runtime_status: 'ACTIVE', runtime_write_available: true,
+    node_runs: [{ ...gateNodeRun, flow_run_id: 'gate-automatic-record' }],
+    automation_plan: {
+      ...frozenAutomaticBase.automation_plan, status: 'FROZEN',
+      readiness: { ready: true, issues: [] },
+    },
+  };
+  const gateAutomaticSummary = {
+    id: gateAutomaticRecord.id, flow_run_id: gateRun.id, run_no: gateAutomaticRecord.run_no, name: gateAutomaticRecord.name,
+    state: gateAutomaticRecord.state, row_version: gateAutomaticRecord.row_version,
+    schedule_id: null, schedule_name: null, schedule_occurrence_id: null,
+    started_at: gateAutomaticRecord.started_at, finished_at: gateAutomaticRecord.finished_at,
+    plan: { start_node_key: 'first', reachable_node_count: 2, configured_node_count: 1, readiness: { ready: true, issue_count: 0 } },
+    progress: gateAutomaticRecord.progress, usage: { total_tokens: 0, accumulated_cost: 0, currency: 'USD' },
+  };
   const question = `${'请逐项审查本轮交付内容。'.repeat(12)}提问全文结束标记`;
   const answer = `${'本轮交付缺少可复现的验证证据。'.repeat(12)}回复全文结束标记`;
   const conversationEvents = [
@@ -1985,7 +2047,8 @@ test('gate review conversation stays compact and remediation enters the created 
       || path === '/api/v1/capability-collections' || path === '/api/v1/model-providers') return respond([]);
     if (path === `/api/v1/flow-runs/${gateRun.id}`) return respond(gateRun);
     if (path === `/api/v1/flows/${gateDefinition.id}`) return respond(gateDefinition);
-    if (path === `/api/v1/flow-runs/${gateRun.id}/automatic-runs`) return respond([]);
+    if (path === `/api/v1/flow-runs/${gateRun.id}/automatic-runs/summaries`) return respond([gateAutomaticSummary]);
+    if (path === `/api/v1/flow-runs/${gateRun.id}/automatic-runs/${gateAutomaticRecord.id}`) return respond(gateAutomaticRecord);
     if (path === `/api/v1/node-attempts/${gateAttempt.id}/gate-evaluations/${gateEvaluation.id}/conversation/events`) {
       return respond({ events: conversationEvents, next_cursor: null, history_cursor: null });
     }
@@ -1999,7 +2062,8 @@ test('gate review conversation stays compact and remediation enters the created 
   await page.goto('/');
   await page.getByRole('button', { name: '流程运行', exact: true }).click();
   await page.locator('.run-open').click();
-  await page.locator('.node-record-list .automatic-record-select').filter({ hasText: '测试节点' }).click();
+  await page.getByRole('tab', { name: '连续运行' }).click();
+  await page.locator('.automatic-record-select').filter({ hasText: '测试节点' }).click();
   const attemptPanel = page.locator('.attempt-control');
   await attemptPanel.getByRole('button', { name: '门禁结果', exact: true }).click();
   await attemptPanel.locator('.gate-overview-row').filter({ hasText: '门禁 1' }).click();
@@ -2256,7 +2320,7 @@ test('completed continuous node sessions can create and fork writable conversati
   await expect(page.getByLabel('发送 Agent 消息')).toBeEnabled();
 });
 
-test('node sessions bound terminal reconciliation when the formal result is missing', async ({ page }) => {
+test('node sessions keep terminal reconciliation non-blocking when the formal result is missing', async ({ page }) => {
   const flowRunId = 'missing-terminal-run';
   const nodeRunId = 'missing-terminal-node';
   const attemptId = 'missing-terminal-attempt';
@@ -2313,14 +2377,12 @@ test('node sessions bound terminal reconciliation when the formal result is miss
 
   terminal = true;
   await page.reload();
-  await expect(page.getByRole('button', { name: '正在同步会话结束' })).toBeDisabled();
-  await page.waitForTimeout(500);
-  await page.reload();
-  await expect(page.getByRole('button', { name: '发送消息' })).toBeVisible({ timeout: 12_000 });
+  await expect(page.getByRole('button', { name: '发送消息' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '正在同步会话结束' })).toHaveCount(0);
   await expect(page.getByText('OpenHands 已结束，本轮未返回正式结果。你可以继续发送消息；同步期间排队的消息需要确认后重新编辑。')).toHaveCount(0);
   await expect(composer).toBeEnabled();
   await expect(page.locator('.agent-workspace-conversation-running')).toHaveCount(0);
-  await expect(page.getByLabel('消息投递队列')).toHaveCount(0);
-  await expect(page.locator('.conversation-message.user').filter({ hasText: '节点同步期间不得自动发送' })).toBeVisible();
-  await expect.poll(() => messagePosts).toBe(1);
+  await expect(page.getByLabel('消息投递队列').getByText('节点同步期间不得自动发送')).toBeVisible();
+  await expect(page.locator('.conversation-message.user').filter({ hasText: '节点同步期间不得自动发送' })).toHaveCount(0);
+  await expect.poll(() => messagePosts).toBe(0);
 });

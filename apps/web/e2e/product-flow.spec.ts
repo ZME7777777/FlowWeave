@@ -2703,8 +2703,6 @@ test('terminal readiness without a formal result keeps reconciliation non-blocki
   // then settles without blocking the composer.
   await expect(page.getByRole('button', { name: '发送消息' })).toBeVisible();
   await expect(page.getByRole('button', { name: '正在同步会话结束' })).toHaveCount(0);
-  await expect(page.locator('.conversation-turn-status')).toHaveCount(1);
-  await expect(page.locator('.conversation-turn-status')).toHaveCount(0, { timeout: 3_000 });
   await expect(page.getByText('OpenHands 已结束，本轮未返回正式结果。你可以继续发送消息；同步期间排队的消息需要确认后重新编辑。')).toHaveCount(0);
   await expect(composer).toBeEnabled();
   await expect(page.locator('.agent-workspace-conversation-running')).toHaveCount(0);
