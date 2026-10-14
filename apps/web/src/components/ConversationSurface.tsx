@@ -717,6 +717,12 @@ function progressText(item: Item): string {
   return item.content.trim().slice(0, 2_000);
 }
 
+function isSameVisibleProgressText(left: string, right: string): boolean {
+  const normalize = (text: string) => text.normalize('NFC').trim().replace(/\s+/gu, ' ');
+  const normalizedLeft = normalize(left);
+  return Boolean(normalizedLeft) && normalizedLeft === normalize(right);
+}
+
 function isNativeOperation(entry: ActivityEntry): boolean {
   return ['TerminalAction', 'FileEditorAction'].includes(String(entry.action?.event.payload.event_name ?? ''));
 }
@@ -1354,7 +1360,16 @@ function ProgressActivity({ group, active, revealEventIds, paused, parentFailed,
       <MessageMarkdown reveal={revealEventIds.has(group.progress.event.id)}>{progressText(group.progress)}</MessageMarkdown>
     </article>
     <div className="conversation-progress-group-list">
-      {group.entries.map(entry => <ActivityEntryRow key={entry.id} entry={entry} active={active} reveal={entryHasRevealedText(entry, revealEventIds)} paused={paused} parentFailed={parentFailed} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/>)}
+      {group.entries.map(entry => {
+        // ThinkAction and the following native action are distinct formal
+        // events. Keep the action card, but avoid showing the exact same
+        // user-visible text twice when a model has emitted it in both places.
+        const actionText = entry.action?.content ?? '';
+        const hideThought = group.progress.kind === 'thought'
+          && group.progress.event.id !== entry.action?.event.id
+          && isSameVisibleProgressText(progressText(group.progress), actionText);
+        return <ActivityEntryRow key={entry.id} entry={entry} active={active} reveal={entryHasRevealedText(entry, revealEventIds)} paused={paused} parentFailed={parentFailed} hideThought={hideThought} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot}/>;
+      })}
     </div>
   </section>;
 }

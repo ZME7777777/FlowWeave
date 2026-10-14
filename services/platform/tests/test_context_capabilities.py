@@ -102,21 +102,21 @@ def test_agent_context_is_compiled_only_into_openhands_system_suffix(settings):
     assert spec.condenser is not None
     assert spec.condenser.max_size == 500
     assert spec.condenser.max_tokens == 409_600
-    assert "工具调用前导与 ThinkTool 的用途不同" in suffix
-    assert "ThinkTool 本身也是工具调用" in suffix
-    assert "应主动、持续使用 ThinkTool 向用户同步进展" in suffix
-    assert "完成一条重要命令或一组目标一致的工具调用后" in suffix
-    assert "准备进入下一组存在结果依赖的操作前" in suffix
-    assert "普通的读取、搜索、编辑和验证也可以触发 ThinkTool" in suffix
-    assert "通常每完成一至数个紧密相关的工具动作就应产生一次有信息量的进展更新" in suffix
+    assert "文本职责必须严格分开" in suffix
+    assert "不能为同一件事生成两次相同或近义的说明" in suffix
+    assert "ThinkTool 不是下一次工具调用的前导" in suffix
+    assert "不得复述紧邻 ThinkTool 的内容" in suffix
+    assert "仅当有新的阶段结论、决策或方向变化时才调用 ThinkTool" in suffix
+    assert "不要为普通的连续读取、搜索、编辑或验证逐条调用" in suffix
+    assert "当前身份已切换；此前读取失败源于旧身份未获授权" in suffix
+    assert "现在读取仪表盘目录，确认可访问的表与字段" in suffix
     assert "ThinkTool 内容必须是 1–3 句、面向用户、可公开的阶段摘要" in suffix
     assert "不得输出完整私密推理链、敏感信息、凭据" in suffix
     assert "不要用 ThinkTool 代替最终答复" in suffix
-    assert "仅在开始实质性、多步骤或高影响的工作阶段" not in suffix
+    assert "ThinkTool 本身也是工具调用" not in suffix
+    assert "应主动、持续使用 ThinkTool 向用户同步进展" not in suffix
     assert "外层必须使用比所有内层更长的围栏" in suffix
     assert "不得让外层 Markdown 源码块与其中的代码块共用三个反引号" in suffix
-    assert "普通且连续的工具调用不必逐条说明" not in suffix
-    assert "一条进展可以引导为完成同一阶段而连续进行的多个原生工具动作" not in suffix
 
 
 def test_agent_context_is_allowed_only_during_conversation_creation(monkeypatch):
