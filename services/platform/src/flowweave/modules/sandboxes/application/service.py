@@ -38,6 +38,10 @@ from flowweave.modules.sandboxes.infrastructure.models import (
     ManagedSandbox,
     RuntimeGeneration,
 )
+from flowweave.runtime.protocol_profiles import (
+    FlowRunProtocolProfile,
+    require_flow_run_protocol_profile,
+)
 from flowweave.shared.application.transactions import register_rollback_action
 from flowweave.shared.database import uid
 from flowweave.shared.domain.openhands import OpenHandsServerIdentity
@@ -210,6 +214,7 @@ def _create_managed_runtime(
     environment_version_id: str,
     environment_version_no: int,
     runtime_server_identity: OpenHandsServerIdentity,
+    runtime_protocol_profile: FlowRunProtocolProfile | str | None = None,
     workspace_relative: str = "",
 ) -> RuntimeProviderAllocation:
     settings = get_settings()
@@ -217,11 +222,23 @@ def _create_managed_runtime(
     provider.require_enabled()
     flow_run_runtime = owner_type == "FLOW_RUN"
     node_attempt_runtime = owner_type == "FLOW_NODE_ATTEMPT"
+    protocol_profile = (
+        require_flow_run_protocol_profile(runtime_protocol_profile)
+        if runtime_protocol_profile is not None
+        else None
+    )
     if (flow_run_runtime or node_attempt_runtime) != (flow_run_id is not None):
         raise DomainError(
             "RUNTIME_PROVIDER_OWNER_INVALID",
             "Persistent Runtime ownership must include exactly one FlowRun allocation",
             422,
+            {"owner_type": owner_type, "owner_id": owner_id},
+        )
+    if (flow_run_runtime or node_attempt_runtime) and protocol_profile is None:
+        raise DomainError(
+            "RUNTIME_PROTOCOL_PROFILE_REQUIRED",
+            "Persistent FlowRun Runtimes require a frozen protocol profile",
+            409,
             {"owner_type": owner_type, "owner_id": owner_id},
         )
     if flow_run_runtime and owner_id != flow_run_id:
@@ -323,6 +340,7 @@ def _create_managed_runtime(
                         environment_version_id=environment_version_id,
                         runtime_image_digest=image,
                         workspace_allocation=flow_run_allocation,
+                        protocol_profile=protocol_profile,
                     )
                 elif flow_run_id is not None and flow_run_allocation is not None:
                     logical_session = ensure_flow_run_runtime_session(
@@ -331,6 +349,7 @@ def _create_managed_runtime(
                         environment_version_id=environment_version_id,
                         runtime_image_digest=image,
                         workspace_allocation=flow_run_allocation,
+                        protocol_profile=protocol_profile,
                     )
                 else:
                     logical_session = None
@@ -561,6 +580,7 @@ def ensure_flow_run_runtime(
     environment_version_id: str,
     environment_version_no: int,
     runtime_server_identity: OpenHandsServerIdentity,
+    runtime_protocol_profile: FlowRunProtocolProfile | str,
 ) -> RuntimeProviderAllocation:
     """Return the single physical Runtime Provider allocation for one FlowRun."""
     flow_run_id = runtime_owner_flow_run_id(db, flow_run_id)
@@ -575,6 +595,7 @@ def ensure_flow_run_runtime(
         environment_version_id=environment_version_id,
         environment_version_no=environment_version_no,
         runtime_server_identity=runtime_server_identity,
+        runtime_protocol_profile=runtime_protocol_profile,
     )
 
 
@@ -588,6 +609,7 @@ def ensure_node_attempt_runtime(
     environment_version_id: str,
     environment_version_no: int,
     runtime_server_identity: OpenHandsServerIdentity,
+    runtime_protocol_profile: FlowRunProtocolProfile | str,
 ) -> RuntimeProviderAllocation:
     """Provision or reuse the one durable Runtime for a node Attempt.
 
@@ -607,6 +629,7 @@ def ensure_node_attempt_runtime(
         environment_version_id=environment_version_id,
         environment_version_no=environment_version_no,
         runtime_server_identity=runtime_server_identity,
+        runtime_protocol_profile=runtime_protocol_profile,
     )
 
 

@@ -34,10 +34,12 @@ from flowweave.modules.sandboxes.infrastructure.docker import (
     DockerSandboxProvider,
 )
 from flowweave.modules.sandboxes.infrastructure.models import FlowRunRuntime, RuntimeGeneration
+from flowweave.runtime.protocol_profiles import DEFAULT_FLOW_RUN_PROTOCOL_PROFILE
 from flowweave.shared.application.transactions import (
     mark_uow_owned,
     run_rollback_actions,
 )
+from flowweave.shared.domain.openhands import CURRENT_OPENHANDS_SERVER_IDENTITY
 from flowweave.shared.errors import DomainError
 from flowweave.shared.infrastructure import docker_control
 from flowweave.shared.infrastructure.docker_control import (
@@ -2302,6 +2304,8 @@ def test_initial_flow_run_provision_reuses_generation_after_transient_provider_f
                 environment_id="environment-1",
                 environment_version_id="33333333-3333-4333-8333-333333333333",
                 environment_version_no=1,
+                runtime_server_identity=CURRENT_OPENHANDS_SERVER_IDENTITY,
+                runtime_protocol_profile=DEFAULT_FLOW_RUN_PROTOCOL_PROFILE,
             )
         assert caught.value.code == "SANDBOX_BACKEND_UNAVAILABLE"
 
@@ -2332,6 +2336,8 @@ def test_initial_flow_run_provision_reuses_generation_after_transient_provider_f
                 environment_id="environment-1",
                 environment_version_id="33333333-3333-4333-8333-333333333333",
                 environment_version_no=1,
+                runtime_server_identity=CURRENT_OPENHANDS_SERVER_IDENTITY,
+                runtime_protocol_profile=DEFAULT_FLOW_RUN_PROTOCOL_PROFILE,
             )
 
         db.expire_all()
@@ -2363,6 +2369,8 @@ def test_initial_flow_run_provision_reuses_generation_after_transient_provider_f
                 environment_id="environment-1",
                 environment_version_id="33333333-3333-4333-8333-333333333333",
                 environment_version_no=1,
+                runtime_server_identity=CURRENT_OPENHANDS_SERVER_IDENTITY,
+                runtime_protocol_profile=DEFAULT_FLOW_RUN_PROTOCOL_PROFILE,
             )
 
         db.expire_all()

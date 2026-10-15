@@ -23,7 +23,7 @@ from sqlalchemy import Engine, event, make_url
 
 PREVIOUS = "0094_attempt_owned_runtimes"
 TARGET = "0095_user_tenancy"
-HEAD = "0147_flow_run_runtime_protocol_profile"
+HEAD = "0148_environment_runtime_protocol_profile"
 OWNER = "00000000-0000-0000-0000-000000000001"
 TABLES = (
     "flow_definitions",

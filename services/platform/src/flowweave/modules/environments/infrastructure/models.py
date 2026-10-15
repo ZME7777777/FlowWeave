@@ -3,18 +3,17 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import JSON, DateTime, Integer, String, Text, UniqueConstraint
+from sqlalchemy import JSON, CheckConstraint, DateTime, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
+from flowweave.runtime.protocol_profiles import DEFAULT_FLOW_RUN_PROTOCOL_PROFILE
 from flowweave.shared.database import Base, now, uid
 
 
 class TerminalEnvironment(Base):
     __tablename__ = "terminal_environments"
     __table_args__ = (
-        UniqueConstraint(
-            "owner_user_id", "name", name="uq_terminal_environment_owner_name"
-        ),
+        UniqueConstraint("owner_user_id", "name", name="uq_terminal_environment_owner_name"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
@@ -37,6 +36,10 @@ class EnvironmentVersion(Base):
     __tablename__ = "environment_versions"
     __table_args__ = (
         UniqueConstraint("environment_id", "version_no", name="uq_environment_version"),
+        CheckConstraint(
+            "runtime_protocol_profile IN ('OH_FW_V1')",
+            name="ck_environment_version_runtime_protocol_profile",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
@@ -49,6 +52,12 @@ class EnvironmentVersion(Base):
     base_image_digest: Mapped[str] = mapped_column(String(100), default="")
     image_reference: Mapped[str] = mapped_column(String(500), default="")
     image_digest: Mapped[str] = mapped_column(String(100), default="")
+    # This selects a compiled FlowRun adapter family. Exact image/source
+    # provenance remains in the frozen manifest and image digest.
+    runtime_protocol_profile: Mapped[str] = mapped_column(
+        String(40),
+        default=DEFAULT_FLOW_RUN_PROTOCOL_PROFILE.value,
+    )
     # A governed product selection, frozen before the OpenHands image build.
     # It is deliberately not an arbitrary Docker build-args document.
     runtime_capabilities: Mapped[list[str]] = mapped_column(JSON, default=list)

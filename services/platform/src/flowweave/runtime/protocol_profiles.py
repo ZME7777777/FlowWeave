@@ -1,3 +1,14 @@
+"""Static FlowRun protocol routing for frozen OpenHands Runtime images.
+
+``FlowRunProtocolProfile`` selects compiled adapter code, not an image tag or
+source commit. The exact OpenHands baseline remains the immutable provenance
+of the Environment Version selected by the FlowRun.
+
+Adding a profile is additive: register a new adapter and migration-backed
+allow-list entries for Environment Version, Runtime Session, and Runtime
+Generation. Never change an existing adapter or published profile record.
+"""
+
 from __future__ import annotations
 
 from enum import StrEnum

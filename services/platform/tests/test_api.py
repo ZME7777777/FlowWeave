@@ -20,6 +20,7 @@ from flowweave.modules.sandboxes.infrastructure.docker import DockerSandboxProvi
 from flowweave.runtime.base import RuntimeEvent, RuntimeEventBatch
 from flowweave.runtime.dependencies import runtime_context
 from flowweave.runtime.mock import MockRuntime
+from flowweave.runtime.protocol_profiles import DEFAULT_FLOW_RUN_PROTOCOL_PROFILE
 from flowweave.shared.artifact_store import artifact_store_context
 from flowweave.shared.errors import DomainError
 from flowweave.shared.models import (
@@ -537,9 +538,13 @@ def test_flow_run_can_start_empty_and_activate_any_node_later(
     assert run["lark_folder_token"] is None
     assert run["lark_folder_url"] is None
     with db_session_factory() as db:
-        runtime_session_id = db.scalar(
-            select(FlowRunRuntime.id).where(FlowRunRuntime.flow_run_id == run["id"])
-        )
+        runtime = db.scalar(select(FlowRunRuntime).where(FlowRunRuntime.flow_run_id == run["id"]))
+        environment = db.get(EnvironmentVersion, client.environment_version_id)
+        assert runtime is not None
+        assert environment is not None
+        assert environment.runtime_protocol_profile == DEFAULT_FLOW_RUN_PROTOCOL_PROFILE.value
+        assert runtime.protocol_profile == environment.runtime_protocol_profile
+        runtime_session_id = runtime.id
     monkeypatch.setattr(
         conversation_service.sandboxes,
         "active_flow_run_runtime_connection",

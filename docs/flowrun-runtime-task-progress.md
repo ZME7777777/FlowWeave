@@ -8203,3 +8203,30 @@ Alembic head `0147_flow_run_runtime_protocol_profile`、`git diff --check` 和�
 阻断：本机 Docker socket 不存在，测试未进入断言，未记为通过。未执行迁移 upgrade/downgrade、未部署、
 未构建镜像或运行 Runtime。完整 Runtime 路由调用点迁移、V2 适配器和新 Runtime Release 到 profile 的
 显式选择留待后续独立切片。
+
+### FR-584 Environment Version 协议档位冻结 — DONE
+
+依赖：FR-583。
+
+范围：将 FlowRun Runtime protocol profile 冻结到不可变的 Environment Version，并使新建 FlowRun、
+自动运行、节点会话预留、Runtime 供应与恢复路径显式从该 Version 传入 profile。历史 Environment
+Version 回填为 `OH_FW_V1`。本切片不改变任何 Conversation HTTP 调用点，不新增 V2 adapter，不从
+manifest 或全局 source commit 猜测 profile，也不部署或构建镜像。
+
+完成：`EnvironmentVersion.runtime_protocol_profile` 现在是不可变的、受数据库 V1 allow-list 约束的
+静态 adapter family 选择；发布新 Environment Version 时显式冻结当前支持的 `OH_FW_V1`，历史 Version
+由 `0148_environment_runtime_protocol_profile` 回填为相同值。Environment Version DTO 会投影该字段，
+READY Version 引用和重复发布均 fail-closed 校验其支持性。所有新建 FlowRun、自动运行、节点会话预留与
+Runtime 供应入口显式从 Environment Version 传入 profile；已有 Runtime Session 的观测／恢复路径继续
+使用自身已冻结的 profile，因此旧 FlowRun 后续创建 NodeRun 或替换 Runtime 时不会转向控制面的最新
+默认值。Runtime Provider 拒绝没有 profile 的持久 FlowRun／Node Attempt Runtime；临时 Runtime 不受
+影响。新增 API 回归断言 Environment Version 与首个 FlowRun Runtime Session 的 profile 一致，并让
+既有 Provider retry 回归显式传入冻结的 Runtime identity/profile。
+
+验收：受影响 Python `py_compile`、Ruff format/check、Environment Version → Runtime Session/Provider
+静态 profile 传递断言、唯一 Alembic head `0148_environment_runtime_protocol_profile`、`git diff --check`
+与任务状态唯一性通过。定向 `pytest`（静态 profile、空 FlowRun 后启动节点、Provider transient retry）
+均在仓库全局 autouse Testcontainers PostgreSQL fixture 初始化阶段因本机 Docker socket 不存在而失败，
+未进入测试断言，未记为通过；未执行迁移 upgrade/downgrade、未部署、未构建镜像或运行 Runtime。
+Conversation HTTP 调用点通过 `runtime_for_flow_run_protocol_profile(session.protocol_profile, runtime)` 的
+实际适配、V2 adapter/兼容矩阵，以及数据库迁移实跑和全链 Runtime/E2E 留待后续独立切片。

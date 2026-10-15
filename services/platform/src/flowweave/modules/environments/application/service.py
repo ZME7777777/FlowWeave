@@ -10,6 +10,10 @@ from sqlalchemy.orm import Session
 from flowweave.modules.environments.infrastructure import docker
 from flowweave.modules.sandboxes import public as sandboxes
 from flowweave.modules.tasks.public import Lease, enqueue, lease_is_current
+from flowweave.runtime.protocol_profiles import (
+    DEFAULT_FLOW_RUN_PROTOCOL_PROFILE,
+    require_flow_run_protocol_profile,
+)
 from flowweave.shared.application.transactions import finish
 from flowweave.shared.domain.openhands import OpenHandsServerIdentity
 from flowweave.shared.domain.runtime_capabilities import (
@@ -55,6 +59,7 @@ def _version_dict(
         "base_image_digest": item.base_image_digest,
         "image_reference": item.image_reference,
         "image_digest": item.image_digest,
+        "runtime_protocol_profile": item.runtime_protocol_profile,
         "runtime_capabilities": list(item.runtime_capabilities or []),
         "manifest": item.manifest_json or {},
         "error_detail": item.error_detail,
@@ -659,6 +664,7 @@ def lock_referenceable_version(db: Session, version_id: str) -> EnvironmentVersi
     )
     if version is None or version.state != "READY" or not version.image_digest:
         return None
+    require_flow_run_protocol_profile(version.runtime_protocol_profile)
     return version
 
 
@@ -937,6 +943,9 @@ def publish_setup_session(
                         EnvironmentVersion, item.published_version_id
                     )
                     if published_version is not None and published_version.state == "READY":
+                        require_flow_run_protocol_profile(
+                            published_version.runtime_protocol_profile
+                        )
                         if requested_capabilities != normalize_runtime_capabilities(
                             published_version.runtime_capabilities or []
                         ):
@@ -961,6 +970,7 @@ def publish_setup_session(
                     frozen_capabilities = normalize_runtime_capabilities(
                         version.runtime_capabilities or []
                     )
+                    require_flow_run_protocol_profile(version.runtime_protocol_profile)
                     if requested_capabilities != frozen_capabilities:
                         raise DomainError(
                             "ENVIRONMENT_RUNTIME_CAPABILITIES_IMMUTABLE",
@@ -1035,6 +1045,7 @@ def publish_setup_session(
                             state="PUBLISHING",
                             base_image_reference=item.base_image_reference,
                             base_image_digest=item.base_image_digest,
+                            runtime_protocol_profile=DEFAULT_FLOW_RUN_PROTOCOL_PROFILE.value,
                             runtime_capabilities=list(requested_capabilities),
                         )
                         control_db.add(version)
@@ -1044,6 +1055,7 @@ def publish_setup_session(
                         frozen_capabilities = normalize_runtime_capabilities(
                             version.runtime_capabilities or []
                         )
+                        require_flow_run_protocol_profile(version.runtime_protocol_profile)
                         if requested_capabilities != frozen_capabilities:
                             raise DomainError(
                                 "ENVIRONMENT_RUNTIME_CAPABILITIES_IMMUTABLE",

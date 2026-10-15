@@ -229,6 +229,7 @@ def resolve_flow_node_session_host(
                 environment_version_id=environment.id,
                 runtime_image_digest=environment.image_digest,
                 workspace_allocation=allocation,
+                protocol_profile=environment.runtime_protocol_profile,
             )
         else:
             runtime_owner_id = sandboxes.runtime_owner_flow_run_id(db, run.id)
@@ -239,6 +240,7 @@ def resolve_flow_node_session_host(
                 environment_version_id=environment.id,
                 runtime_image_digest=environment.image_digest,
                 workspace_allocation=allocation,
+                protocol_profile=environment.runtime_protocol_profile,
             )
         runtime_session_id = runtime_session.id
     else:
@@ -253,6 +255,7 @@ def resolve_flow_node_session_host(
                     environment_version_id=environment.id,
                     environment_version_no=environment.version_no,
                     runtime_server_identity=server_identity,
+                    runtime_protocol_profile=environment.runtime_protocol_profile,
                 )
             else:
                 sandboxes.ensure_flow_run_runtime(
@@ -263,6 +266,7 @@ def resolve_flow_node_session_host(
                     environment_version_id=environment.id,
                     environment_version_no=environment.version_no,
                     runtime_server_identity=server_identity,
+                    runtime_protocol_profile=environment.runtime_protocol_profile,
                 )
         runtime_session_id = sandboxes.active_node_runtime_connection(
             db, flow_run_id=run.id, node_attempt_id=attempt.id

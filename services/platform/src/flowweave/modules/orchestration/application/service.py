@@ -3467,6 +3467,7 @@ def process_start_automatic_run(db: Session, run_id: str, *, commit: bool = True
         environment_version_id=environment.id,
         runtime_image_digest=environment.image_digest,
         workspace_allocation=allocation,
+        protocol_profile=environment.runtime_protocol_profile,
     )
     if get_settings().runtime_adapter != "mock" and runtime_owner_id == run.id:
         task = enqueue(
@@ -3974,6 +3975,7 @@ def start_flow(
         environment_version_id=environment.id,
         runtime_image_digest=environment.image_digest,
         workspace_allocation=runtime_allocation,
+        protocol_profile=environment.runtime_protocol_profile,
     )
     if get_settings().runtime_adapter != "mock":
         task = enqueue(
@@ -4043,6 +4045,7 @@ def _create_stepwise_record_runtime(
         environment_version_id=environment.id,
         runtime_image_digest=environment.image_digest,
         workspace_allocation=allocation,
+        protocol_profile=environment.runtime_protocol_profile,
     )
     if get_settings().runtime_adapter != "mock" and runtime_owner_id == run.id:
         task = enqueue(
@@ -5699,6 +5702,7 @@ def process_provision_flow_run_runtime(
         environment_version_id=environment_version_id,
         environment_version_no=environment_version_no,
         runtime_server_identity=server_identity,
+        runtime_protocol_profile=environment.runtime_protocol_profile,
     )
     if not lease_is_current(db, lease):
         raise RuntimeError("task lease was lost during Runtime provisioning")
@@ -6713,6 +6717,7 @@ def _ensure_attempt_runtime_for_native_observation(db: Session, attempt: NodeAtt
             runtime_server_identity=runtime_server_identity(
                 environment.manifest_json, environment_version_id=environment.id
             ),
+            runtime_protocol_profile=session.protocol_profile,
         )
         return
     sandboxes.ensure_flow_run_runtime(
@@ -6725,6 +6730,7 @@ def _ensure_attempt_runtime_for_native_observation(db: Session, attempt: NodeAtt
         runtime_server_identity=runtime_server_identity(
             environment.manifest_json, environment_version_id=environment.id
         ),
+        runtime_protocol_profile=session.protocol_profile,
     )
 
 
@@ -6939,6 +6945,7 @@ def process_start_runtime(
                 environment_version_id=request.environment_version_id,
                 environment_version_no=request.environment_version_no,
                 runtime_server_identity=server_identity,
+                runtime_protocol_profile=environment.runtime_protocol_profile,
             )
             if workspace.attempt_owned
             else sandboxes.ensure_flow_run_runtime(
@@ -6949,6 +6956,7 @@ def process_start_runtime(
                 environment_version_id=request.environment_version_id,
                 environment_version_no=request.environment_version_no,
                 runtime_server_identity=server_identity,
+                runtime_protocol_profile=environment.runtime_protocol_profile,
             )
         )
         request = replace(
@@ -9933,6 +9941,7 @@ def sync_snapshot(
         environment_version_id=environment.id,
         runtime_image_digest=environment.image_digest,
         workspace_allocation=runtime_allocation,
+        protocol_profile=environment.runtime_protocol_profile,
     )
     hold_snapshot_memory_references(
         db,
