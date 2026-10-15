@@ -17,7 +17,7 @@ import { deploymentBasePath, withoutDeploymentBase } from '../../deploymentPath'
 import { agentWorkspaceSessionHost, type AgentSessionHost } from './session-host';
 import { SidebarConversationPane } from './SidebarConversationPane';
 import { clearConversationSnapshots, readConversationContextSnapshot, writeConversationContextSnapshot } from './conversation-cache';
-import { ConversationSurface, ConversationTaskPlan, type ConversationHistoryPrepend, type ConversationReference, type ModelRetryStatus } from '../ConversationSurface';
+import { ConversationSurface, ConversationTaskPlan, type ConversationHistoryPrepend, type ConversationReference, type ConversationScrollSnapshot, type ModelRetryStatus } from '../ConversationSurface';
 import { isOpenHandsAgentReply, isOpenHandsEmptyResponseRecovery, orderOpenHandsConversationEvents } from '../conversationEvents';
 import { useProductDialog } from '../ProductDialogContext';
 import { useEscapeClose } from '../useEscapeClose';
@@ -4442,6 +4442,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const historyAbortControllers = useRef(new Map<string, AbortController>());
   const historyFailedCursors = useRef(new Map<string, string>());
   const historyCacheByScope = useRef(new Map<string, { rootCursor: string; expiresAt: number; pages: OpenHandsConversationEventBatch[]; complete: boolean }>());
+  const conversationScrollSnapshots = useRef(new Map<string, ConversationScrollSnapshot>());
+  const updateConversationScrollSnapshot = useCallback((scope: string, snapshot: ConversationScrollSnapshot) => {
+    conversationScrollSnapshots.current.set(scope, snapshot);
+  }, []);
   const revealedHistoryPageCounts = useRef(new Map<string, number>());
   const [historyCacheRevision, setHistoryCacheRevision] = useState(0);
   const contextRefreshTimers = useRef(new Map<string, number>());
@@ -6360,6 +6364,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     historyLoadingScopes.current.delete(bindingId);
     historyFailedCursors.current.delete(bindingId);
     historyCacheByScope.current.delete(bindingId);
+    conversationScrollSnapshots.current.delete(bindingId);
     revealedHistoryPageCounts.current.delete(bindingId);
     trustedHydrations.current.delete(bindingId);
     composerDraftsByScope.current.delete(bindingId);
@@ -8288,6 +8293,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         onRequestOlderHistory={requestNextHistoryPage}
         onRevealHistoryThrough={revealHistoryThrough}
         conversationScope={selected?.id ?? conversationDraft?.id}
+        initialScrollSnapshot={conversationScrollSnapshots.current.get(selected?.id ?? conversationDraft?.id ?? '')}
+        onScrollSnapshotChange={updateConversationScrollSnapshot}
         historyPrepend={historyPrepend}
         onHistoryAnchorCaptured={onHistoryAnchorCaptured}
         onHistoryAnchorRestored={onHistoryAnchorRestored}

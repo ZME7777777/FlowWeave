@@ -1758,7 +1758,14 @@ export interface ConversationHistoryPrepend {
   phase: 'capture' | 'restore';
 }
 
-export const ConversationSurface = memo(function ConversationSurface({ events, isGenerating, liveTextReveal = false, isPaused = false, pausing = false, emptyResponseRecoveryActive = false, modelRetryStatus, historyPending = false, cachedHistoryMarkerCount = 0, cachedHistoryUserEventIds = [], hasCachedOlderHistory = false, onRequestOlderHistory, onRevealHistoryThrough, conversationScope, historyPrepend, onHistoryAnchorCaptured, onHistoryAnchorRestored, requestStartedAt, requestSubmitting = false, rewritePending = false, condensationPending = false, condensationStartedAt, onRewrite, onFork, onOpenAttachment, onOpenWorkspaceReference, onPreviewCandidateFile, onReviewChanges, onOpenWorkspaceFile, onOpenImage, workspaceImageUrl, workspaceRoot, onCreateAnnotation, onSidebarQuestion, onLocateAnnotation, conversationName, onOpenConversationReference, taskControl = [], monitoring, connectionState }: {
+export interface ConversationScrollSnapshot {
+  scrollTop: number;
+  bottomOffset: number;
+  followLatest: boolean;
+  savedAt: number;
+}
+
+export const ConversationSurface = memo(function ConversationSurface({ events, isGenerating, liveTextReveal = false, isPaused = false, pausing = false, emptyResponseRecoveryActive = false, modelRetryStatus, historyPending = false, cachedHistoryMarkerCount = 0, cachedHistoryUserEventIds = [], hasCachedOlderHistory = false, onRequestOlderHistory, onRevealHistoryThrough, conversationScope, initialScrollSnapshot, onScrollSnapshotChange, historyPrepend, onHistoryAnchorCaptured, onHistoryAnchorRestored, requestStartedAt, requestSubmitting = false, rewritePending = false, condensationPending = false, condensationStartedAt, onRewrite, onFork, onOpenAttachment, onOpenWorkspaceReference, onPreviewCandidateFile, onReviewChanges, onOpenWorkspaceFile, onOpenImage, workspaceImageUrl, workspaceRoot, onCreateAnnotation, onSidebarQuestion, onLocateAnnotation, conversationName, onOpenConversationReference, taskControl = [], monitoring, connectionState }: {
   events: OpenHandsConversationEvent[];
   isGenerating: boolean;
   /** Strict native running state; unlike visual activity it never animates history reconciliation. */
@@ -1783,6 +1790,9 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
   onRevealHistoryThrough?: (eventId: string) => Promise<boolean>;
   /** Binding identity that owns this transcript viewport. */
   conversationScope?: string;
+  /** In-memory reading position captured before this scoped viewport unmounted. */
+  initialScrollSnapshot?: ConversationScrollSnapshot;
+  onScrollSnapshotChange?: (scope: string, snapshot: ConversationScrollSnapshot) => void;
   /** Explicitly brackets one scoped historical prepend. */
   historyPrepend?: ConversationHistoryPrepend;
   onHistoryAnchorCaptured?: (transaction: ConversationHistoryPrepend) => void;
@@ -1820,6 +1830,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
   const followLatest = useRef(true);
   const userScrolledAway = useRef(false);
   const scrollInteractionStartY = useRef<number | null>(null);
+  const scrollSnapshotFrame = useRef<number | undefined>(undefined);
   const scrollInteractionTowardLatest = useRef(false);
   const scrollbarVisibilityTimer = useRef<number | undefined>(undefined);
   const automaticScrollFrame = useRef<number | undefined>(undefined);
@@ -2302,10 +2313,32 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
   useEffect(() => () => {
     if (scrollbarVisibilityTimer.current !== undefined) window.clearTimeout(scrollbarVisibilityTimer.current);
   }, []);
+  const captureScrollSnapshot = useCallback(() => {
+    const element = surface.current;
+    if (!conversationScope || !element) return;
+    onScrollSnapshotChange?.(conversationScope, {
+      scrollTop: element.scrollTop,
+      bottomOffset: element.scrollHeight - element.scrollTop,
+      followLatest: followLatest.current && !userScrolledAway.current,
+      savedAt: Date.now(),
+    });
+  }, [conversationScope, onScrollSnapshotChange]);
+  const scheduleScrollSnapshot = useCallback(() => {
+    if (!conversationScope || !onScrollSnapshotChange || scrollSnapshotFrame.current !== undefined) return;
+    scrollSnapshotFrame.current = window.requestAnimationFrame(() => {
+      scrollSnapshotFrame.current = undefined;
+      captureScrollSnapshot();
+    });
+  }, [captureScrollSnapshot, conversationScope, onScrollSnapshotChange]);
+  useLayoutEffect(() => () => {
+    if (scrollSnapshotFrame.current !== undefined) window.cancelAnimationFrame(scrollSnapshotFrame.current);
+    captureScrollSnapshot();
+  }, [captureScrollSnapshot]);
   const handleScroll = useCallback(() => {
     updateScrollPosition();
     scrollInteractionTowardLatest.current = false;
-  }, [updateScrollPosition]);
+    scheduleScrollSnapshot();
+  }, [scheduleScrollSnapshot, updateScrollPosition]);
   const scheduleLatestAlignment = useCallback(() => {
     if (!followLatest.current || userScrolledAway.current || automaticScrollFrame.current !== undefined) return;
     automaticScrollFrame.current = window.requestAnimationFrame(() => {
@@ -2362,6 +2395,23 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
     historyAnchor.current = undefined;
     onHistoryAnchorRestored?.(historyPrepend);
   }, [alignWithLatest, conversationScope, historyPrepend, onHistoryAnchorCaptured, onHistoryAnchorRestored]);
+  useLayoutEffect(() => {
+    const element = surface.current;
+    if (!element || initialPositioned.current || !initialScrollSnapshot || !(turns.length || isGenerating)) return;
+    initialPositioned.current = true;
+    if (initialScrollSnapshot.followLatest) {
+      followLatest.current = true;
+      userScrolledAway.current = false;
+      setIsAtLatest(true);
+      alignWithLatest();
+      return;
+    }
+    followLatest.current = false;
+    userScrolledAway.current = true;
+    setIsAtLatest(false);
+    const maxTop = Math.max(0, element.scrollHeight - element.clientHeight);
+    element.scrollTop = Math.min(maxTop, Math.max(0, initialScrollSnapshot.scrollTop));
+  }, [alignWithLatest, initialScrollSnapshot, isGenerating, turns.length]);
   // Formal event rows are committed before this layout effect runs. Correct
   // their bottom offset synchronously so the browser cannot paint one frame at
   // the old scrollTop and then visibly snap to the latest content. Include the
