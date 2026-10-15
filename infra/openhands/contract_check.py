@@ -48,7 +48,7 @@ if _PINNED_SOURCE_ROOT.is_dir():
     os.chdir(_PROBE_CWD)
 
 from openhands.agent_server.conversation_router import get_conversation_context
-from openhands.agent_server.event_service import EventService
+from openhands.agent_server.event_service import EventService, RunSlot
 from openhands.agent_server.mcp_router import (
     MCPOAuthCallbackRequest,
     MCPOAuthStartResponse,
@@ -103,6 +103,7 @@ from openhands.sdk.event import ActionEvent, MessageEvent
 from openhands.sdk.event import Event as OpenHandsEvent
 from openhands.sdk.event.condenser import Condensation, CondensationRequest
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
+from openhands.sdk.event.security import SecurityAnalysisEvent
 from openhands.sdk.event.streaming_delta import StreamingDeltaEvent
 from openhands.sdk.git.git_changes import get_git_changes
 from openhands.sdk.io import InMemoryFileStore
@@ -117,6 +118,7 @@ from openhands.sdk.llm.utils.metrics import Metrics
 from openhands.sdk.marketplace.registration import MarketplaceRegistration
 from openhands.sdk.marketplace.registry import MarketplaceRegistry
 from openhands.sdk.mcp.config import MCPOAuthAuthCredential, MCPOAuthState
+from openhands.sdk.mcp.utils import MCPToolProvider
 from openhands.sdk.plugin import Plugin, PluginFetchError, fetch_plugin_with_resolution
 from openhands.sdk.plugin.types import PluginSource
 from openhands.sdk.profiles import (
@@ -148,12 +150,13 @@ from openhands.tools.preset.default import AgentDefinition
 from openhands.tools.task import TaskAction, TaskObservation, TaskToolSet
 from openhands.tools.task.impl import TaskExecutor
 from openhands.tools.task.manager import Task, TaskManager, TaskStatus
+from openhands.tools.terminal.terminal.tmux_terminal import _new_owned_session
 
-EXPECTED_VERSION = "1.49.5"
-EXPECTED_UPSTREAM_BASE = "e21d77673b738f056676044600c4ad81c5a575c8"
-EXPECTED_SOURCE_COMMIT = "d3a9a1f99b144d8799df170c1e1ee9ca0bf4b19d"
+EXPECTED_VERSION = "1.54.0"
+EXPECTED_UPSTREAM_BASE = "f0206428306db687ac9c8d833ece4fb82b015eba"
+EXPECTED_SOURCE_COMMIT = "ae178d86f4e0e268cf31f8f9c5deda892f4ebf12"
 EXPECTED_SOURCE_ARCHIVE_SHA256 = (
-    "7d2acc7d0191a7d69367f081d74f57c8a42a802c39feb19016c622f86e430ea3"
+    "cb6e47a264d2704c0ab56b89277a6665de25050e9d4bc113a0237f8918fc99d3"
 )
 PACKAGES = (
     "openhands-agent-server",
@@ -161,7 +164,7 @@ PACKAGES = (
     "openhands-tools",
     "openhands-workspace",
 )
-EXPECTED_BINARYORNOT_VERSION = "0.4.4"
+EXPECTED_BINARYORNOT_VERSION = "0.6.0"
 MINIMUM_FASTMCP_VERSION = (3, 2)
 REQUIRED_PATHS = {
     "/ready",
@@ -330,7 +333,7 @@ def _assert_async_turn_and_stream_idle_contract() -> None:
     it neither owns the run loop nor emits a synthetic activity signal.
     """
 
-    run_source = getsource(LocalConversation.arun)
+    run_source = getsource(LocalConversation._arun)
     assert "last_user_message_id = self._state.last_user_message_id" in run_source
     assert "new_message_arrived = (" in run_source
     assert "self._state.last_user_message_id != last_user_message_id" in run_source
@@ -341,6 +344,40 @@ def _assert_async_turn_and_stream_idle_contract() -> None:
     assert "_last_stream_activity_signal" in event_service_source
     assert "self._signal_stream_activity()" in event_service_source
     assert "update_last_execution_time()" in stream_signal_source
+    llm_source = getsource(LLM)
+    assert "stream_idle_timeout: float | None" in llm_source
+    assert "d[\"stream_idle_timeout\"] = d.get(\"timeout\", 300)" in llm_source
+    assert "asyncio.timeout(self.timeout)" in llm_source
+    assert "asyncio.timeout(timeout)" in llm_source
+
+
+def _assert_merged_main_capability_contract() -> None:
+    """Keep the adopted upstream primitives available to later V2 slices."""
+
+    run_slot_source = getsource(RunSlot)
+    assert "class RunSlot" in run_slot_source
+    assert "Conversation run limit reached. Retry the request later." in run_slot_source
+    assert "def share(self) -> \"RunSlot\"" in run_slot_source
+
+    condenser_source = getsource(LLMSummarizingCondenser)
+    assert "SystemPromptEvent" in condenser_source
+    assert "_leading_system_prompt_index(view.events)" in condenser_source
+    assert "Message(role=\"system\"" in condenser_source
+    assert "Message(role=\"user\"" in condenser_source
+
+    tmux_source = getsource(_new_owned_session)
+    assert "_socket_creation_lock()" in tmux_source
+    assert "TMUX_SOCKET_NAME" in tmux_source
+    assert "mark_socket_owner(server)" in tmux_source
+
+    security_event = SecurityAnalysisEvent(
+        analyzer="flowweave-contract",
+        policy="NeverConfirm",
+        risks={},
+    )
+    assert security_event.source == "environment"
+    assert security_event.risks == {}
+    assert "Runtime-only MCP tool materializer." in (MCPToolProvider.__doc__ or "")
 
 
 def _assert_memory_launch_contract() -> None:
@@ -357,11 +394,10 @@ def _assert_memory_launch_contract() -> None:
         "load_memory = bool(stored_context and stored_context.load_memory)"
         in service_source
     )
-    assert "request = request.model_copy(" in service_source
-    assert 'update={"agent": _with_load_memory(request.agent)}' in service_source
-    assert service_source.index(
-        "Profile resolution and the load_memory stamp"
-    ) < service_source.index("request_data")
+    assert "load_memory=load_memory" in service_source
+    assert service_source.index("load_memory=load_memory") < service_source.index(
+        "request_data"
+    )
 
     conversation_source = getsource(LocalConversation)
     assert (
@@ -409,7 +445,7 @@ def _assert_profile_provider_secret_and_condenser_behavior() -> None:
         }
     )
     assert isinstance(migrated, OpenHandsAgentProfile)
-    assert migrated.schema_version == AGENT_PROFILE_SCHEMA_VERSION == 2
+    assert migrated.schema_version == AGENT_PROFILE_SCHEMA_VERSION == 3
     assert migrated.disabled_skills == []
 
     with TemporaryDirectory() as directory:
@@ -590,6 +626,7 @@ def main() -> None:
     asyncio.run(_assert_formal_read_capacity_contract())
     _assert_durable_event_log_sequence()
     _assert_async_turn_and_stream_idle_contract()
+    _assert_merged_main_capability_contract()
     _assert_profile_provider_secret_and_condenser_behavior()
     _assert_mcp_oauth_and_subscription_preflight_contract()
     _assert_runtime_capability_build_contract()
@@ -939,7 +976,7 @@ def main() -> None:
     registered_finish_usability = tool_registry._USABILITY_REG.pop(
         finish_tool_name, None
     )
-    registered_finish_module = tool_registry._MODULE_QUALNAMES.pop(
+    registered_finish_class = tool_registry._TOOL_CLASSES.pop(
         finish_tool_name, None
     )
     try:
@@ -955,8 +992,8 @@ def main() -> None:
             tool_registry._REG[finish_tool_name] = registered_finish
         if registered_finish_usability is not None:
             tool_registry._USABILITY_REG[finish_tool_name] = registered_finish_usability
-        if registered_finish_module is not None:
-            tool_registry._MODULE_QUALNAMES[finish_tool_name] = registered_finish_module
+        if registered_finish_class is not None:
+            tool_registry._TOOL_CLASSES[finish_tool_name] = registered_finish_class
     assert isinstance(structured_finish, FinishTool)
     assert structured_finish.response_schema == response_schema
     assert "outcome" in structured_finish._get_tool_schema()["properties"]
@@ -1182,8 +1219,13 @@ def main() -> None:
     blocking_thread.join(timeout=5)
     assert not blocking_thread.is_alive()
     task_tool_create = signature(TaskToolSet.create).parameters
-    assert list(task_tool_create) == ["conv_state", "confirmation_handler"]
+    assert list(task_tool_create) == [
+        "conv_state",
+        "confirmation_handler",
+        "sub_agent_scope",
+    ]
     assert task_tool_create["confirmation_handler"].default is None
+    assert task_tool_create["sub_agent_scope"].default is None
     # Agent Server resolves the governed, serializable Tool spec through the
     # public registry. With no private params, that exact production path calls
     # TaskToolSet.create(conv_state=...) and therefore creates a manager with no

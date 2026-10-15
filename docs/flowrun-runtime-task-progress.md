@@ -1,9 +1,9 @@
 # FlowRun OpenHands Runtime 重构进度
 
 > 创建日期：2026-08-21
-> 状态：`ALL SLICES DONE`（本轮历史迁移链验收通过）
+> 状态：`UPSTREAM BASELINE ADOPTION IN PROGRESS`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`NONE`
+> 下一可执行切片：`FR-586`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 
@@ -16,7 +16,7 @@
 “当前行为”的审计对象；是否保留必须重新按照本设计、固定 OpenHands 源码和真实运行证据判断。
 
 OpenHands `baseline` 是持续合并上游 `main` 后承载 FlowWeave Runtime 扩展的基线分支。当前上游锚点为
-`e21d77673b738f056676044600c4ad81c5a575c8`，四个发布包版本均为 `1.49.5`；每个切片的实际 Runtime
+`f0206428306db687ac9c8d833ece4fb82b015eba`，四个发布包版本均为 `1.54.0`；每个切片的实际 Runtime
 源码身份由对应的固定 `baseline` commit、归档 SHA-256 与 source lock 共同决定。
 此前完成记录中的旧版本号继续表示当时实际验收的历史基线，不做追溯改写。
 
@@ -8230,3 +8230,119 @@ Runtime 供应入口显式从 Environment Version 传入 profile；已有 Runtim
 未进入测试断言，未记为通过；未执行迁移 upgrade/downgrade、未部署、未构建镜像或运行 Runtime。
 Conversation HTTP 调用点通过 `runtime_for_flow_run_protocol_profile(session.protocol_profile, runtime)` 的
 实际适配、V2 adapter/兼容矩阵，以及数据库迁移实跑和全链 Runtime/E2E 留待后续独立切片。
+
+### OpenHands 1.54 上游基线采用（2026-10-15）
+
+以下切片采用已经合并 upstream `main` 至 `f0206428306db687ac9c8d833ece4fb82b015eba` 的 FlowWeave
+`baseline` commit `ae178d86f4e0e268cf31f8f9c5deda892f4ebf12`。既有 `OH_FW_V1`、已发布
+Environment Version、Runtime Session 和 Generation 必须继续按其冻结契约运行；所有新行为以附加的
+`OH_FW_V2` 及受版本冻结的 Environment Version 显式选择，不能通过“最新 Runtime”或 source commit
+猜测。每个切片完成后独立提交，下一切片只在前一切片提交成功后开始。
+
+### FR-585 冻结 OpenHands 1.54 基线来源身份 — DONE
+
+依赖：FR-584。
+
+范围：以 `ae178d86f4e0e268cf31f8f9c5deda892f4ebf12` 生成可复现、单根目录的不可变源码归档，冻结其
+SHA-256、upstream parent `f0206428306db687ac9c8d833ece4fb82b015eba` 与四个 `1.54.0` 包版本。原子更新
+source lock、provenance、Runtime Docker 构建输入、依赖锁、contract identity、平台共享身份、smoke
+版本与来源架构断言；不得改变 V1 适配、Conversation 路由、产品行为或部署。
+
+验收：安全 source fetch 能从锁定 archive 解包并校验四包版本；source lock/provenance/archive、Docker、
+domain identity、依赖锁和静态断言互相一致；受影响 Python/JSON/Docker/lock 文件可解析、`git diff
+--check` 及唯一切片状态核对通过。实际镜像 contract、数据库迁移、Runtime 或 E2E 留待后续验收切片。
+
+完成：从 FlowWeave `baseline` merge commit `ae178d86f4e0e268cf31f8f9c5deda892f4ebf12` 以固定 prefix
+归档得到 `infra/openhands/vendor/openhands-source-ae178d86f4e0e268cf31f8f9c5deda892f4ebf12.tar.gz`，SHA-256
+为 `cb6e47a264d2704c0ab56b89277a6665de25050e9d4bc113a0237f8918fc99d3`。source lock、provenance、Docker
+build identity、四包 1.54.0 依赖锁、共享 domain identity、smoke、plugin report 与架构断言均改为此固定
+身份。contract probe 适配了 1.54 的 Profile schema v3、`LocalConversation._arun()`、Tool registry
+`_TOOL_CLASSES` 与 `TaskToolSet.sub_agent_scope`，并额外锁定 run-slot、系统提示词压缩、LLM hard/idle
+timeout、tmux socket owner、`MCPToolProvider` 与 `SecurityAnalysisEvent` 的上游可用性；产品 V1/V2 路由未变。
+
+验收：本地 file URL 安全解包与四包版本核验通过；锁定源码树的 `contract_check.py` 通过；source supply
+和来源架构定向测试 `5 passed`；受影响 Python `py_compile`、平台 Ruff check/format、基础 infra Ruff
+E/F、`uv lock --check`、JSON 解析、`git diff --check` 与切片状态核对通过。平台本地 `uv run ruff` 与
+Alembic CLI 均因当前环境未安装相应可执行文件不可用，未记为通过；未构建镜像、未运行迁移、Runtime 或
+E2E，亦未部署。
+
+### FR-586 增加 OH_FW_V2 静态适配档位 — READY
+
+依赖：FR-585。
+
+范围：在编译期注册 `OH_FW_V2`，为 1.54 正式路由和类型建立独立 adapter contract，并让新发布的
+Environment Version 可显式冻结 V2；V1 的注册、请求形状和已持久化 Runtime 路由不得改变。禁止使用
+动态 URL、数据库请求模板或“最高版本”回退。
+
+### FR-587 run-slot 429 的消息确认与受控重试 — PENDING
+
+依赖：FR-586。
+
+范围：将上游 run-slot admission 的 HTTP 429 接入 V2 投递协议。若正式用户事件已经保存而仅 `/run`
+被拒绝，FlowWeave 只能保留确认的 event/cursor/renderKey 并重试原生 `/run`，绝不重新 append 相同用户
+消息或创建第二个气泡；未确认写入维持现有失败/恢复语义。
+
+### FR-588 MCP OAuth 刷新治理持久化 — PENDING
+
+依赖：FR-586。
+
+范围：复用上游 OAuth metadata discovery、刷新与可恢复 MCP 建连行为，但将刷新后的授权状态通过
+FlowWeave OAuth 授权记录、Secret Reference、版本/Runtime/MCP server URL 校验及审计工作流持久化。
+禁止将上游 webhook 写回或 Runtime 内部存储作为 FlowWeave 授权、Secret 或审计事实源。
+
+### FR-589 原生压缩与系统提示词保留契约 — PENDING
+
+依赖：FR-586。
+
+范围：在 V2 contract 中验证系统提示词跨普通压缩与 hard reset 保留、摘要指令/事件负载的 system/user
+角色分离，以及前端只以正式 `CONDENSATION_REQUESTED` / `CONDENSATION_COMPLETED` 收口。不得以平台消息、
+摘要文本或私有事件代替 OpenHands condensation 生命周期。
+
+### FR-590 异步 LLM 硬超时与流空闲超时治理 — PENDING
+
+依赖：FR-586。
+
+范围：将上游 async hard timeout 与 `stream_idle_timeout` 作为 Runtime Manifest/Agent Spec 的冻结配置，
+通过 V2 adapter 和 contract probe 传递并验证停滞流可终止；活动态、watchdog 和恢复投影只读取正式
+OpenHands 状态/事件，不能以浏览器计时器伪造终态。
+
+### FR-591 tmux 隔离与 Runtime replacement 安全 — PENDING
+
+依赖：FR-586。
+
+范围：在 V2 Runtime 验收中覆盖每个 terminal 的独立 tmux socket、跨进程创建锁、owner PID 清理与
+generation 交接，防止并发 Agent Server 清理存活 sibling 或旧 terminal 句柄串线。不得改变 FlowWeave
+的 Runtime Provider 所有权、持久工作区或 Conversation identity。
+
+### FR-592 子 Agent MCP 继承边界 — PENDING
+
+依赖：FR-586。
+
+范围：冻结子 Agent 对父 Conversation MCP servers 的精确继承，并允许上游定义的 conversation-local
+工具不触发越权判定；将 FlowWeave Agent Definition/Task 的允许能力集与 V2 实际请求做差异验证，未
+冻结 MCP 不得自行进入子 Agent。
+
+### FR-593 SecurityAnalysisEvent 正式安全投影 — PENDING
+
+依赖：FR-586。
+
+范围：将上游正式 `SecurityAnalysisEvent` 以 event id/parent id/action id 关联投影到既有安全审计和
+会话过程视图，保留脱敏、用户隔离和 NeverConfirm 行为；不得根据文本、事件顺序或模型输出推断风险，
+不得把风险详情或 Secret 写入普通会话内容。
+
+### FR-594 全量 Runtime 兼容、安全与恢复验收 — PENDING
+
+依赖：FR-587、FR-588、FR-589、FR-590、FR-591、FR-592、FR-593。
+
+范围：构建固定 1.54 Runtime image，执行实际 image contract、429、OAuth、condense、timeout、tmux、
+sub-agent、安全事件、generation replacement、数据库迁移及浏览器 E2E 验收；记录不可用本地能力的
+真实阻断，不以 mock 或静态结论替代。
+
+### FR-595 受控发布与既有 Runtime 恢复 — PENDING
+
+依赖：FR-594。
+
+范围：仅在用户明确确认目标为其受管内部服务器并授权本次发布后，完整读取部署说明、对已提交 commit
+执行对应 scope 的远端预检、核对活跃会话影响、按 commit-bound 最小上下文发布并同步更新 stream-api，
+最后验证健康、版本、路由及既有 Runtime/Conversation 恢复。未满足远端配置或预检条件时停止，不猜测
+目标、SSH、Compose/env 或部署入口。

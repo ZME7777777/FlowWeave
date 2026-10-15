@@ -19,7 +19,7 @@ from uuid import uuid4
 IMAGE = "flowweave-openhands-runtime:1"
 SESSION_KEY = "flowweave-smoke-key"
 SECRET_KEY = "flowweave-smoke-persistent-secret"
-EXPECTED_VERSION = "1.49.5"
+EXPECTED_VERSION = "1.54.0"
 REPOSITORY = Path(__file__).resolve().parents[3]
 FAKE_MODEL = REPOSITORY / "services/platform/scripts/openhands_fake_llm.py"
 

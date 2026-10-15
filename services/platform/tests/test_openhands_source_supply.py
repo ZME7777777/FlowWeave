@@ -28,6 +28,16 @@ def _lock() -> dict[str, object]:
     return json.loads(SOURCE_LOCK.read_text(encoding="utf-8"))
 
 
+def _network_lock(tmp_path: Path) -> Path:
+    """Use an HTTP URL so transport failures are testable outside the image."""
+
+    lock = _lock()
+    lock["archive_url"] = "https://example.test/openhands-source.tar.gz"
+    path = tmp_path / "source.lock.json"
+    path.write_text(json.dumps(lock), encoding="utf-8")
+    return path
+
+
 def test_source_lock_rejects_floating_archive(tmp_path: Path) -> None:
     module = _module()
     lock = copy.deepcopy(_lock())
@@ -60,7 +70,7 @@ def test_source_fetch_rejects_archive_digest_mismatch(
 
     with pytest.raises(RuntimeError, match="source archive digest mismatch"):
         module.fetch_source(
-            SOURCE_LOCK,
+            _network_lock(tmp_path),
             destination,
             tmp_path / "provenance.json",
             [],
@@ -87,7 +97,7 @@ def test_source_fetch_retries_transient_download_failure(
 
     with pytest.raises(RuntimeError, match="source archive digest mismatch"):
         module.fetch_source(
-            SOURCE_LOCK,
+            _network_lock(tmp_path),
             tmp_path / "source",
             tmp_path / "provenance.json",
             [],
