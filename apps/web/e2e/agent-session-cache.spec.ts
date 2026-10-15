@@ -1997,6 +1997,31 @@ test('New conversation draft remains isolated and can be resumed after switching
   await expect(composer).toHaveText('只属于新会话的未发送草稿');
   await expect(draftAttachment).toBeVisible();
 
+  const draftReference = {
+    eventId: 'draft-race-reference-event',
+    content: '查看竞态会话 B 的上下文',
+    sourceBindingId: 'draft-race-b',
+    title: '竞态会话 B',
+  };
+  await page.evaluate(reference => {
+    const key = Object.keys(localStorage).find(item => item.startsWith('flowweave:agent-conversation-draft:v2:agent-workspace:draft-race-workspace:root'));
+    if (!key) throw new Error('Expected new-conversation draft recovery');
+    const recovery = JSON.parse(localStorage.getItem(key) ?? '{}');
+    recovery.references = [reference];
+    localStorage.setItem(key, JSON.stringify(recovery));
+  }, draftReference);
+  await page.reload();
+  await recoverDraft.click();
+  const resourceTags = page.getByLabel('已添加的附件和会话引用');
+  await expect(resourceTags.getByRole('button', { name: '竞态会话 B', exact: true })).toBeVisible();
+  await resourceTags.getByRole('button', { name: '竞态会话 B', exact: true }).click();
+  await expect(page).toHaveURL(/\/agent\/conversations\/draft-race-b$/);
+  await expect(recoverDraft).toBeVisible();
+  await recoverDraft.click();
+  await expect(composer).toHaveText('只属于新会话的未发送草稿');
+  await expect(draftAttachment).toBeVisible();
+  await expect(resourceTags.getByRole('button', { name: '竞态会话 B', exact: true })).toBeVisible();
+
   await page.getByRole('button', { name: '在根工作区中新建会话' }).click();
   await expect(page.getByRole('heading', { name: '新会话' })).toBeVisible();
   await expect(composer).toHaveText('');
