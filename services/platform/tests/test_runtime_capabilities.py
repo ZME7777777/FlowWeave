@@ -7,10 +7,12 @@ import pytest
 
 from flowweave.modules.environments.application import service
 from flowweave.modules.environments.infrastructure import docker
+from flowweave.modules.orchestration.application import service as orchestration_service
 from flowweave.runtime.manifest import runtime_manifest_hash, runtime_node
 from flowweave.shared.domain.openhands import (
     OPENHANDS_SOURCE_ARCHIVE_SHA256,
     OPENHANDS_SOURCE_COMMIT,
+    OpenHandsServerIdentity,
 )
 from flowweave.shared.domain.runtime_capabilities import (
     normalize_runtime_capabilities,
@@ -192,3 +194,23 @@ def test_snapshot_node_identity_ignores_openhands_version_metadata() -> None:
     kwargs["expected_hash"] = runtime_manifest_hash(manifest)
     with pytest.raises(DomainError, match="retired Agent Tool Policy"):
         runtime_node(**kwargs)
+
+
+def test_flow_snapshot_manifest_uses_selected_environment_server_identity() -> None:
+    manifest = orchestration_service._compile_runtime_manifest(  # pyright: ignore[reportPrivateUsage]
+        {
+            "nodes": [
+                {
+                    "instance_key": "node-1",
+                    "node_asset_id": "asset-1",
+                    "asset": {"id": "asset-1"},
+                }
+            ]
+        },
+        server_identity=OpenHandsServerIdentity("1.47.0", "a" * 40, "b" * 40),
+    )
+
+    assert manifest["openhands_version"] == "1.47.0"
+    assert manifest["source_commit"] == "a" * 40
+    assert manifest["source_ref"] == "b" * 40
+    assert manifest["nodes"] == {"node-1": {"node_asset_id": "asset-1"}}

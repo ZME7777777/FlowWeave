@@ -79,7 +79,7 @@ from flowweave.shared.application.transactions import (
     register_rollback_action,
 )
 from flowweave.shared.artifact_store import get_artifact_store
-from flowweave.shared.domain.openhands import OPENHANDS_VERSION
+from flowweave.shared.domain.openhands import OpenHandsServerIdentity
 from flowweave.shared.errors import DomainError, conflict, illegal, not_found
 from flowweave.shared.models import (
     ArtifactVersion,
@@ -146,7 +146,9 @@ def _hash(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, default=str).encode()).hexdigest()
 
 
-def _compile_runtime_manifest(definition: dict[str, Any]) -> dict[str, Any]:
+def _compile_runtime_manifest(
+    definition: dict[str, Any], *, server_identity: OpenHandsServerIdentity
+) -> dict[str, Any]:
     """Freeze only Flow-owned node identity.
 
     Agent model, capabilities and OpenHands policy are frozen on each shared
@@ -172,7 +174,13 @@ def _compile_runtime_manifest(definition: dict[str, Any]) -> dict[str, Any]:
         nodes[instance_key] = {"node_asset_id": asset_id}
     return {
         "schema_version": 3,
-        "openhands_version": OPENHANDS_VERSION,
+        # This is provenance for the Environment Version selected by this
+        # FlowRun, not the current control-plane baseline.  A Run must never
+        # claim it was frozen against a newer Agent Server than its immutable
+        # Runtime image actually contains.
+        "openhands_version": server_identity.package_version,
+        "source_commit": server_identity.source_commit,
+        "source_ref": server_identity.source_ref,
         "nodes": nodes,
     }
 
@@ -3926,6 +3934,9 @@ def start_flow(
             422,
             {"environment_version_id": payload.environment_version_id},
         )
+    server_identity = runtime_server_identity(
+        environment.manifest_json, environment_version_id=environment.id
+    )
     definition = _snapshot_definition(db, flow_id, environment_version_id=environment.id)
     run_no = _next_flow_run_number(db, flow_id, top_level=True)
     run_name = payload.name or f"{flow.name} · Run #{run_no}"
@@ -3940,7 +3951,7 @@ def start_flow(
     )
     db.add(run)
     db.flush()
-    runtime_manifest = _compile_runtime_manifest(definition)
+    runtime_manifest = _compile_runtime_manifest(definition, server_identity=server_identity)
     snapshot = RunSnapshot(
         flow_run_id=run.id,
         version=1,
@@ -4720,7 +4731,9 @@ def create_automatic_run_draft(
             422,
             {"environment_version_id": payload.environment_version_id},
         )
-    validate_runtime_manifest(environment.manifest_json, environment_version_id=environment.id)
+    server_identity = runtime_server_identity(
+        environment.manifest_json, environment_version_id=environment.id
+    )
     definition = _snapshot_definition(db, flow_id, environment_version_id=environment.id)
     run_no = _next_flow_run_number(db, flow_id, top_level=parent_flow_run_id is None)
     run = FlowRun(
@@ -4741,7 +4754,7 @@ def create_automatic_run_draft(
         start_node_key=payload.start_node_key,
         node_plans=payload.node_plans,
     )
-    runtime_manifest = _compile_runtime_manifest(definition)
+    runtime_manifest = _compile_runtime_manifest(definition, server_identity=server_identity)
     snapshot = RunSnapshot(
         flow_run_id=run.id,
         version=1,
@@ -9885,7 +9898,9 @@ def sync_snapshot(
             409,
             {"environment_version_id": run.environment_version_id},
         )
-    validate_runtime_manifest(environment.manifest_json, environment_version_id=environment.id)
+    server_identity = runtime_server_identity(
+        environment.manifest_json, environment_version_id=environment.id
+    )
     definition = _snapshot_definition(
         db,
         run.flow_definition_id,
@@ -9894,7 +9909,7 @@ def sync_snapshot(
     if _hash(definition) == current.definition_hash:
         return run_detail(db, run.id)
     action = _action(db, run.id, "SYNC_SNAPSHOT", idempotency_key)
-    runtime_manifest = _compile_runtime_manifest(definition)
+    runtime_manifest = _compile_runtime_manifest(definition, server_identity=server_identity)
     snapshot = RunSnapshot(
         flow_run_id=run.id,
         version=current.version + 1,
