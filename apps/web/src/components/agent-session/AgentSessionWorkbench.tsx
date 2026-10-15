@@ -18,7 +18,7 @@ import { agentWorkspaceSessionHost, type AgentSessionHost } from './session-host
 import { SidebarConversationPane } from './SidebarConversationPane';
 import { clearConversationSnapshots, readConversationContextSnapshot, writeConversationContextSnapshot } from './conversation-cache';
 import { ConversationSurface, ConversationTaskPlan, type ConversationHistoryPrepend, type ConversationReference, type ConversationScrollSnapshot, type ModelRetryStatus } from '../ConversationSurface';
-import { isOpenHandsAgentReply, isOpenHandsEmptyResponseRecovery, orderOpenHandsConversationEvents } from '../conversationEvents';
+import { isOpenHandsAgentReply, isOpenHandsConversationTerminalError, isOpenHandsEmptyResponseRecovery, orderOpenHandsConversationEvents } from '../conversationEvents';
 import { useProductDialog } from '../ProductDialogContext';
 import { useEscapeClose } from '../useEscapeClose';
 import { MermaidDiagram } from '../MermaidDiagram';
@@ -1571,7 +1571,7 @@ function hasFinishedTurn(events: OpenHandsConversationEvent[], userEventId: stri
     return false;
   };
   return events.some(event => {
-    const isTerminal = event.event_type === 'ERROR'
+    const isTerminal = isOpenHandsConversationTerminalError(event)
       || (event.event_type === 'COMPLETED' && event.payload.event_name === 'FinishAction')
       || isOpenHandsAgentReply(event);
     return isTerminal && descendsFromActiveUser(event);
@@ -1596,7 +1596,7 @@ function hasAssistantReplyForTurn(events: OpenHandsConversationEvent[], userEven
 function hasNonTerminalRuntimeActivityForTurn(events: OpenHandsConversationEvent[], userEventId: string): boolean {
   const byId = new Map(events.map(event => [event.id, event]));
   return events.some(event => {
-    if (event.id === userEventId || isOpenHandsAgentReply(event) || event.event_type === 'ERROR'
+    if (event.id === userEventId || isOpenHandsAgentReply(event) || isOpenHandsConversationTerminalError(event)
       || (event.event_type === 'COMPLETED' && event.payload.event_name === 'FinishAction')) return false;
     const visited = new Set<string>();
     let parentId = event.payload.parent_id;
@@ -6603,7 +6603,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       const formalEvent = event.event;
       if (formalEvent.event_type === 'MESSAGE' && ['user', 'human'].includes(String(formalEvent.payload.source ?? '').toLowerCase())) setModelRetryStatus(undefined);
       appendLiveEvent(scope, formalEvent);
-      const terminal = formalEvent.event_type === 'ERROR'
+      const terminal = isOpenHandsConversationTerminalError(formalEvent)
         || (formalEvent.event_type === 'COMPLETED' && formalEvent.payload.event_name === 'FinishAction')
         || isOpenHandsAgentReply(formalEvent);
       if (terminal) {

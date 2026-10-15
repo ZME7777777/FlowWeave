@@ -46,6 +46,11 @@ export function isOpenHandsAgentReply(event: OpenHandsConversationEvent): boolea
     && event.payload.content.trim().length > 0;
 }
 
+export function isOpenHandsConversationTerminalError(event: OpenHandsConversationEvent): boolean {
+  return event.event_type === 'ERROR'
+    && String(event.payload.source_type ?? '') === 'ConversationErrorEvent';
+}
+
 export function isOpenHandsEmptyResponseRecovery(event: OpenHandsConversationEvent): boolean {
   return event.event_type === 'MESSAGE'
     && String(event.payload.source ?? '').trim().toLowerCase() === 'environment'

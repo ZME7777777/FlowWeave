@@ -6,7 +6,7 @@ import { ConversationTextReveal } from './ConversationTextReveal';
 import { useEscapeClose } from './useEscapeClose';
 import { subagentAvatarSlotForEvent, subagentAvatarSlots, type SubagentAvatarSlot } from '../utils/subagentAvatar';
 import { workspaceFileChanges, workspaceRelativePath, type WorkspaceFileChange } from './agent-session/fileChanges';
-import { isOpenHandsAgentReply, isOpenHandsEmptyResponseRecovery, orderOpenHandsConversationEvents, parseOpenHandsEventTime } from './conversationEvents';
+import { isOpenHandsAgentReply, isOpenHandsConversationTerminalError, isOpenHandsEmptyResponseRecovery, orderOpenHandsConversationEvents, parseOpenHandsEventTime } from './conversationEvents';
 import './conversation-surface.css';
 
 type ItemKind = 'user' | 'assistant' | 'thought' | 'tool' | 'error' | 'condensation';
@@ -422,11 +422,7 @@ function isPauseInterruptionEvent(event: OpenHandsConversationEvent): boolean {
 }
 
 function isConversationTerminalError(event: OpenHandsConversationEvent): boolean {
-  // AgentErrorEvent is often recoverable, but OpenHands does not emit a
-  // separate ConversationErrorEvent when it is the last formal event in a
-  // turn. Keep every non-pause ERROR in the transcript; turnsFor() later
-  // suppresses it when a formal assistant reply proves recovery.
-  return event.event_type === 'ERROR' && !isPauseInterruptionEvent(event);
+  return isOpenHandsConversationTerminalError(event);
 }
 
 function isProcessInterruptionEvent(event: OpenHandsConversationEvent): boolean {

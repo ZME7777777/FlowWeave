@@ -455,6 +455,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   let incompleteLiveToolProjection = false;
   let parentTurnFailed = false;
   let recoverableAgentError = false;
+  let recoverableTaskResumeError = false;
   let historyPrefetchEnabled = false;
   let cursorlessEventRecovery = false;
   let emptyResponseRecovery = false;
@@ -831,7 +832,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
         return;
       }
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
-        events: (modelIsResponding || parentTurnFailed || recoverableAgentError) ? [
+        events: (modelIsResponding || parentTurnFailed || recoverableAgentError || recoverableTaskResumeError) ? [
           ...(!cursor ? [{ id: 'running-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'agent-reply', content: '正在处理的请求', timestamp: runningUserTimestamp } }] : []),
           ...(runningDirectFormalEventPersisted && !cursor ? [{ id: 'running-direct-stream-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'running-user', content: 'FLOWWEAVE_MESSAGE_CONTEXT_V5:{"current_user_request":{"content":"运行中直接发送消息"}}', display_content: '运行中直接发送消息', timestamp: new Date().toISOString() } }] : []),
           ...(runningDirectAssistantReplyPersisted && !cursor ? [{ id: 'running-direct-stream-reply', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'running-direct-stream-user', content: '延迟事件到达后仍应正常显示这条回复。', timestamp: new Date().toISOString() } }] : []),
@@ -850,6 +851,12 @@ test('top-level Agent workspace creates a direct conversation and restores its U
             { id: 'recoverable-tool', event_type: 'TOOL_CALL', payload: { source: 'agent', parent_id: 'running-user', action_id: 'recoverable-tool', tool_call_id: 'recoverable-tool-call', event_name: 'TerminalAction', details: { command: 'fetch deployment state' }, timestamp: new Date().toISOString() } },
             { id: 'recoverable-agent-error', event_type: 'ERROR', payload: { source_type: 'AgentErrorEvent', source: 'agent', parent_id: 'recoverable-tool', tool_call_id: 'recoverable-tool-call', content: 'Temporary upstream error; retrying the operation.', timestamp: new Date().toISOString() } },
             { id: 'recoverable-agent-reply', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'recoverable-agent-error', content: '已恢复并完成部署状态查询。', timestamp: new Date().toISOString() } },
+          ] : []),
+          ...(recoverableTaskResumeError ? [
+            { id: 'resume-validation-action', event_type: 'TOOL_CALL', payload: { source: 'agent', parent_id: 'running-user', action_id: 'resume-validation-action', tool_call_id: 'resume-validation-call', event_name: 'TaskAction', timestamp: new Date().toISOString() } },
+            { id: 'resume-validation-error', event_type: 'ERROR', payload: { source_type: 'AgentErrorEvent', source: 'agent', parent_id: 'resume-validation-action', content: "Error validating tool 'task': TaskAction prompt is required", timestamp: new Date().toISOString() } },
+            { id: 'resumed-task-action', event_type: 'TOOL_CALL', payload: { source: 'agent', parent_id: 'resume-validation-error', action_id: 'resumed-task-action', tool_call_id: 'resumed-task-call', event_name: 'TaskAction', runtime_task: { phase: 'REQUESTED', action_event_id: 'resumed-task-action', tool_call_id: 'resumed-task-call', subagent_type: 'code-explorer', description: '继续汇总接口调研', resume_task_id: 'task_00000001' }, timestamp: new Date().toISOString() } },
+            { id: 'resumed-task-result', event_type: 'TOOL_RESULT', payload: { source: 'environment', parent_id: 'resumed-task-action', action_id: 'resumed-task-action', tool_call_id: 'resumed-task-call', event_name: 'TaskObservation', runtime_task: { phase: 'COMPLETED', action_event_id: 'resumed-task-action', observation_event_id: 'resumed-task-result', tool_call_id: 'resumed-task-call', task_id: 'task_00000001', subagent_type: 'code-explorer', status: 'completed', outcome: { is_error: false, content: [{ type: 'text', text: '已恢复任务。' }] } }, timestamp: new Date().toISOString() } },
           ] : []),
         ] : conversations.length ? [
           { id: 'last-week-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '上周的消息', timestamp: lastWeekTimestamp(10) } },
@@ -1126,6 +1133,14 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.getByText('Temporary upstream error; retrying the operation.')).toHaveCount(0);
   await expect(page.getByText('本轮未能完成')).toHaveCount(0);
   recoverableAgentError = false;
+  recoverableTaskResumeError = true;
+  await page.reload();
+  await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toBeVisible();
+  await expect(page.locator('.agent-workspace-conversation-running')).toHaveCount(1);
+  await expect(page.getByText('子智能体 code-explorer · 继续汇总接口调研')).toBeVisible();
+  await expect(page.getByText('本轮执行失败')).toHaveCount(0);
+  await expect(page.getByText("Error validating tool 'task': TaskAction prompt is required")).toHaveCount(0);
+  recoverableTaskResumeError = false;
   modelIsResponding = false;
   parentTurnFailed = false;
   await page.reload();
