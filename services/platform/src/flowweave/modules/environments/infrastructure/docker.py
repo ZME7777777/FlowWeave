@@ -74,6 +74,23 @@ _TERMINAL_TMUX_SCRIPT = (
     'exec tmux attach-session -t "$session"'
 )
 
+# Publishing is a single synchronous controller request, but its formal
+# pipeline has several independently bounded Docker phases: flattening the
+# setup filesystem, building the OpenHands Runtime, labelling that image, and
+# stamping fixed provenance. Giving the HTTP request only one phase's timeout
+# lets the client abandon a still-running controller build.
+_PUBLISH_CONTROLLER_PHASE_COUNT = 4
+_PUBLISH_CONTROLLER_FINALIZATION_SECONDS = 300
+
+
+def _publish_controller_timeout_seconds(settings: Any) -> int:
+    """Return a whole-pipeline timeout for the remote publish controller."""
+
+    phase_timeout = int(settings.terminal_environment_publish_timeout_seconds)
+    return (
+        phase_timeout * _PUBLISH_CONTROLLER_PHASE_COUNT + _PUBLISH_CONTROLLER_FINALIZATION_SECONDS
+    )
+
 
 def validate_image(value: str) -> str:
     image = value.strip()
@@ -1853,7 +1870,7 @@ def publish_setup_container(
                         normalize_runtime_capabilities(runtime_capabilities)
                     ),
                 },
-                timeout=settings.terminal_environment_publish_timeout_seconds + 30,
+                timeout=_publish_controller_timeout_seconds(settings),
             )
         except DockerControllerError as exc:
             raise DomainError(

@@ -78,6 +78,45 @@ def test_platform_setup_image_tag_is_frozen_to_content_digest(monkeypatch):
     )
 
 
+def test_remote_publish_waits_for_the_full_formal_pipeline(monkeypatch):
+    captured: dict[str, object] = {}
+    settings = SimpleNamespace(
+        docker_controller_mode="remote",
+        terminal_environment_publish_timeout_seconds=60,
+    )
+
+    class Controller:
+        def __init__(self, _settings):
+            pass
+
+        def post(self, path, payload, *, timeout):
+            captured.update(path=path, payload=payload, timeout=timeout)
+            return {
+                "reference": "flowweave/environment:test",
+                "digest": "sha256:" + "a" * 64,
+                "manifest": {},
+            }
+
+    monkeypatch.setattr(environment_docker, "get_settings", lambda: settings)
+    monkeypatch.setattr(environment_docker, "require_backend", lambda: None)
+    monkeypatch.setattr(environment_docker, "controller_is_remote", lambda _settings: True)
+    monkeypatch.setattr(environment_docker, "DockerControllerClient", Controller)
+
+    published = environment_docker.publish_setup_container(
+        "setup-resource",
+        sandbox_id="sandbox-1",
+        environment_id="environment-1",
+        version_id="version-1",
+        version_no=1,
+        base_image_reference="flowweave-openhands-runtime:1",
+        base_image_digest="sha256:" + "b" * 64,
+    )
+
+    assert published.reference == "flowweave/environment:test"
+    assert captured["path"] == "/v1/environments/publish"
+    assert captured["timeout"] == 540
+
+
 def test_docker_maps_ghcr_tls_timeout_to_stable_public_error():
     error = environment_docker._docker_command_failed(
         'Head "https://ghcr.io/v2/astral-sh/uv/manifests/0.11.6": net/http: TLS handshake timeout'
