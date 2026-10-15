@@ -385,7 +385,7 @@ function isTaskSpecificAgentError(event: OpenHandsConversationEvent): boolean {
   if (event.event_type !== 'ERROR') return false;
   const isAgentError = event.payload.event_name === 'AgentErrorEvent'
     || event.payload.source_type === 'AgentErrorEvent';
-  return isAgentError && typeof event.payload.tool_call_id === 'string' && event.payload.tool_call_id.length > 0;
+  return isAgentError;
 }
 
 /**
@@ -397,6 +397,7 @@ function runtimeTasksFromEvents(events: OpenHandsConversationEvent[], usageSnaps
   const avatarSlots = subagentAvatarSlots(events);
   const byEventId = new Map(events.map(event => [event.id, event]));
   const tasks = new Map<string, RuntimeTaskProjection>();
+  const byTaskAction = new Map<string, RuntimeTaskProjection>();
   const byToolCall = new Map<string, RuntimeTaskProjection>();
   for (const event of events) {
     const task = event.payload.runtime_task;
@@ -415,6 +416,11 @@ function runtimeTasksFromEvents(events: OpenHandsConversationEvent[], usageSnaps
       lastEventSummary: task.description || `调用 ${task.subagent_type || 'general-purpose'} 子智能体`,
     };
     tasks.set(actionEventId, item);
+    byTaskAction.set(actionEventId, item);
+    byTaskAction.set(event.id, item);
+    if (typeof event.payload.action_id === 'string' && event.payload.action_id) {
+      byTaskAction.set(event.payload.action_id, item);
+    }
     if (item.toolCallId) byToolCall.set(item.toolCallId, item);
   }
   for (const event of events) {
@@ -436,16 +442,20 @@ function runtimeTasksFromEvents(events: OpenHandsConversationEvent[], usageSnaps
       : task.status ? `Task ${task.status}` : '子智能体已返回结果';
   }
   for (const event of events) {
-    if (event.event_type !== 'ERROR' || event.payload.event_name !== 'AgentErrorEvent') continue;
+    if (!isTaskSpecificAgentError(event)) continue;
     const toolCallId = typeof event.payload.tool_call_id === 'string' ? event.payload.tool_call_id : '';
-    const item = toolCallId ? byToolCall.get(toolCallId) : undefined;
+    const parentId = typeof event.payload.parent_id === 'string' ? event.payload.parent_id : '';
+    const actionId = typeof event.payload.action_id === 'string' ? event.payload.action_id : '';
+    const item = (parentId ? byTaskAction.get(parentId) : undefined)
+      ?? (actionId ? byTaskAction.get(actionId) : undefined)
+      ?? (toolCallId ? byToolCall.get(toolCallId) : undefined);
     if (!item) continue;
     item.status = 'ERROR';
     item.finishedAt = typeof event.payload.timestamp === 'string' ? event.payload.timestamp : item.finishedAt;
     item.outcome = { is_error: true, content: event.payload.content };
     item.lastEventType = 'AgentErrorEvent';
     item.lastEventAt = item.finishedAt;
-    item.lastEventSummary = String(event.payload.content || '子智能体执行失败').trim().slice(0, 240);
+    item.lastEventSummary = '子任务调用失败，Agent 正在重试';
   }
   const usageByTaskId = new Map(usageSnapshots.map(snapshot => [snapshot.task_id, snapshot]));
   const controlByAction = new Map(controlSnapshots.map(snapshot => [snapshot.action_event_id, snapshot]));

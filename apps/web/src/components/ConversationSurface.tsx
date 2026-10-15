@@ -425,11 +425,37 @@ function isConversationTerminalError(event: OpenHandsConversationEvent): boolean
   return isOpenHandsConversationTerminalError(event);
 }
 
+function isAgentErrorEvent(event: OpenHandsConversationEvent): boolean {
+  return event.event_type === 'ERROR'
+    && (
+      String(event.payload.event_name ?? '') === 'AgentErrorEvent'
+      || String(event.payload.source_type ?? '') === 'AgentErrorEvent'
+    );
+}
+
+function taskActionForAgentError(
+  event: OpenHandsConversationEvent,
+  taskActionsById: ReadonlyMap<string, OpenHandsConversationEvent>,
+  taskActionsByToolCallId: ReadonlyMap<string, OpenHandsConversationEvent>,
+): OpenHandsConversationEvent | undefined {
+  if (!isAgentErrorEvent(event)) return undefined;
+  for (const actionId of [event.payload.parent_id, event.payload.action_id]) {
+    if (typeof actionId === 'string' && actionId) {
+      const action = taskActionsById.get(actionId);
+      if (action) return action;
+    }
+  }
+  const toolCallId = event.payload.tool_call_id;
+  return typeof toolCallId === 'string' && toolCallId
+    ? taskActionsByToolCallId.get(toolCallId)
+    : undefined;
+}
+
 function isProcessInterruptionEvent(event: OpenHandsConversationEvent): boolean {
   return isPauseInterruptionEvent(event) || isConversationTerminalError(event);
 }
 
-function itemsFor(event: OpenHandsConversationEvent): Item[] {
+function itemsFor(event: OpenHandsConversationEvent, taskRetryError = false): Item[] {
   const content = typeof event.payload.content === 'string' ? event.payload.content : '';
   const thought = typeof event.payload.thought === 'string' ? event.payload.thought : '';
   const eventName = String(event.payload.event_name || event.event_type);
@@ -461,6 +487,12 @@ function itemsFor(event: OpenHandsConversationEvent): Item[] {
   if (event.event_type === 'TOOL_RESULT' && eventName === 'ThinkObservation') return [];
   if (event.event_type === 'TOOL_RESULT') return [{ event, kind: 'tool', title: eventName, content }];
   if (event.event_type === 'ERROR') {
+    // A TaskAction validation/runtime failure is scoped to its native child
+    // invocation. It does not end the parent Conversation, which may issue a
+    // corrected TaskAction immediately afterwards.
+    if (taskRetryError) {
+      return [{ event, kind: 'thought', title: '', content: '子任务调用失败，Agent 正在重试。' }];
+    }
     if (!isConversationTerminalError(event)) return [];
     return [{ event, kind: 'error', title: '本轮未能完成', content }];
   }
@@ -545,6 +577,18 @@ function turnsFor(events: OpenHandsConversationEvent[]): Turn[] {
   const actionEvents = ordered.filter(event => event.event_type === 'TOOL_CALL');
   const actionsById = new Map(actionEvents.flatMap(event => typeof event.payload.action_id === 'string' ? [[event.payload.action_id, event] as const] : []));
   const actionsByToolCallId = new Map(actionEvents.flatMap(event => typeof event.payload.tool_call_id === 'string' ? [[event.payload.tool_call_id, event] as const] : []));
+  const taskActionsById = new Map<string, OpenHandsConversationEvent>();
+  const taskActionsByToolCallId = new Map<string, OpenHandsConversationEvent>();
+  for (const event of actionEvents) {
+    if (String(event.payload.event_name ?? '') !== 'TaskAction') continue;
+    taskActionsById.set(event.id, event);
+    if (typeof event.payload.action_id === 'string' && event.payload.action_id) {
+      taskActionsById.set(event.payload.action_id, event);
+    }
+    if (typeof event.payload.tool_call_id === 'string' && event.payload.tool_call_id) {
+      taskActionsByToolCallId.set(event.payload.tool_call_id, event);
+    }
+  }
   for (const event of ordered) {
     if (isHistoricalAutoTitleError(event, ordered)) continue;
     if (isProcessInterruptionEvent(event)) {
@@ -552,7 +596,10 @@ function turnsFor(events: OpenHandsConversationEvent[]): Turn[] {
       const processSegment = ownerUserId ? turnsByUserId.get(ownerUserId)?.turn.processSegments.at(-1) : undefined;
       if (processSegment) processSegment.interruptedBy = event;
     }
-    for (const item of itemsFor(event)) {
+    const taskRetryError = Boolean(
+      taskActionForAgentError(event, taskActionsById, taskActionsByToolCallId),
+    );
+    for (const item of itemsFor(event, taskRetryError)) {
       if (item.kind === 'user') {
         const renderKey = typeof item.event.payload._flowweave_render_key === 'string'
           ? item.event.payload._flowweave_render_key

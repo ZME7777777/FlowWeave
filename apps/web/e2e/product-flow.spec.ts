@@ -681,6 +681,20 @@ test('top-level Agent workspace creates a direct conversation and restores its U
       await route.fulfill({ status: 201, contentType: 'application/json', body: '' });
       return;
     }
+    if (path.endsWith('/conversation-activity')) {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          running_binding_ids: modelIsResponding ? ['agent-conversation-1'] : [],
+          condensing_binding_ids: [],
+          condensation_failed_binding_ids: [],
+          possibly_stuck_binding_ids: [],
+          failed_binding_ids: [],
+        }),
+      });
+      return;
+    }
     if (path.endsWith('/conversations') && request.method() === 'GET') {
       await route.fulfill({
         status: 200,
@@ -853,7 +867,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
             { id: 'recoverable-agent-reply', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'recoverable-agent-error', content: '已恢复并完成部署状态查询。', timestamp: new Date().toISOString() } },
           ] : []),
           ...(recoverableTaskResumeError ? [
-            { id: 'resume-validation-action', event_type: 'TOOL_CALL', payload: { source: 'agent', parent_id: 'running-user', action_id: 'resume-validation-action', tool_call_id: 'resume-validation-call', event_name: 'TaskAction', timestamp: new Date().toISOString() } },
+            { id: 'resume-validation-action', event_type: 'TOOL_CALL', payload: { source: 'agent', parent_id: 'running-user', action_id: 'resume-validation-action', tool_call_id: 'resume-validation-call', event_name: 'TaskAction', runtime_task: { phase: 'REQUESTED', action_event_id: 'resume-validation-action', tool_call_id: 'resume-validation-call', subagent_type: 'code-explorer', description: '继续汇总接口调研', resume_task_id: 'task_00000001' }, timestamp: new Date().toISOString() } },
             { id: 'resume-validation-error', event_type: 'ERROR', payload: { source_type: 'AgentErrorEvent', source: 'agent', parent_id: 'resume-validation-action', content: "Error validating tool 'task': TaskAction prompt is required", timestamp: new Date().toISOString() } },
             { id: 'resumed-task-action', event_type: 'TOOL_CALL', payload: { source: 'agent', parent_id: 'resume-validation-error', action_id: 'resumed-task-action', tool_call_id: 'resumed-task-call', event_name: 'TaskAction', runtime_task: { phase: 'REQUESTED', action_event_id: 'resumed-task-action', tool_call_id: 'resumed-task-call', subagent_type: 'code-explorer', description: '继续汇总接口调研', resume_task_id: 'task_00000001' }, timestamp: new Date().toISOString() } },
             { id: 'resumed-task-result', event_type: 'TOOL_RESULT', payload: { source: 'environment', parent_id: 'resumed-task-action', action_id: 'resumed-task-action', tool_call_id: 'resumed-task-call', event_name: 'TaskObservation', runtime_task: { phase: 'COMPLETED', action_event_id: 'resumed-task-action', observation_event_id: 'resumed-task-result', tool_call_id: 'resumed-task-call', task_id: 'task_00000001', subagent_type: 'code-explorer', status: 'completed', outcome: { is_error: false, content: [{ type: 'text', text: '已恢复任务。' }] } }, timestamp: new Date().toISOString() } },
@@ -933,7 +947,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
           last_event_at: new Date(Date.now() - 90_000).toISOString(),
           seconds_since_event: 90,
           stale_after_seconds: 60,
-          possibly_stuck: true,
+          possibly_stuck: !recoverableTaskResumeError,
           subagent_count: 0,
           active_subagents: [],
         } : undefined,
@@ -1124,6 +1138,9 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await page.waitForTimeout(250);
   expect(formalTerminalQueuePosts).toBe(1);
   await expect(page.getByLabel('消息投递队列')).toHaveCount(0);
+  // Start the recoverable-error cases from a non-terminal native event tree.
+  // The preceding ConversationErrorEvent intentionally remains terminal.
+  parentTurnFailed = false;
   recoverableAgentError = true;
   modelIsResponding = true;
   await page.reload();
@@ -1137,7 +1154,8 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await page.reload();
   await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toBeVisible();
   await expect(page.locator('.agent-workspace-conversation-running')).toHaveCount(1);
-  await expect(page.getByText('子智能体 code-explorer · 继续汇总接口调研')).toBeVisible();
+  await expect(page.getByText('子智能体 code-explorer · 继续汇总接口调研', { exact: true })).toBeVisible();
+  await expect(page.getByText('子任务调用失败，Agent 正在重试。')).toBeVisible();
   await expect(page.getByText('本轮执行失败')).toHaveCount(0);
   await expect(page.getByText("Error validating tool 'task': TaskAction prompt is required")).toHaveCount(0);
   recoverableTaskResumeError = false;
