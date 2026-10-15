@@ -442,7 +442,6 @@ test('terminal environment deletion preserves setup sessions when a FlowRun uses
 });
 
 test('top-level Agent workspace creates a direct conversation and restores its URL', async ({ page }) => {
-  await page.clock.setFixedTime(new Date('2026-08-26T10:05:00Z'));
   let modelIsResponding = false;
   let transientIdleReadiness = false;
   let readinessReportsIdle = false;
@@ -463,6 +462,14 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   let historyPageRequests = 0;
   let releaseHistoryPage: (() => void) | undefined;
   const historyPageGate = new Promise<void>(resolve => { releaseHistoryPage = resolve; });
+  const now = new Date();
+  const todayTimestamp = (hour: number, minute = 0) => new Date(now.getFullYear(), now.getMonth(), now.getDate(), hour, minute).toISOString();
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const startOfWeek = new Date(startOfToday);
+  startOfWeek.setDate(startOfToday.getDate() - ((startOfToday.getDay() + 6) % 7));
+  const thisWeekDayOffset = startOfToday.getTime() === startOfWeek.getTime() ? 1 : 0;
+  const thisWeekTimestamp = (dayOffset: number, hour: number, minute = 0) => new Date(startOfWeek.getFullYear(), startOfWeek.getMonth(), startOfWeek.getDate() + dayOffset, hour, minute).toISOString();
+  const lastWeekTimestamp = (hour: number, minute = 0) => new Date(startOfWeek.getFullYear(), startOfWeek.getMonth(), startOfWeek.getDate() - 1, hour, minute).toISOString();
   const runningUserTimestamp = new Date(Date.now() - 12_000).toISOString().replace(/Z$/, '');
   let agentStream: WebSocketRoute | undefined;
   let terminalSocket: WebSocketRoute | undefined;
@@ -845,9 +852,9 @@ test('top-level Agent workspace creates a direct conversation and restores its U
             { id: 'recoverable-agent-reply', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'recoverable-agent-error', content: '已恢复并完成部署状态查询。', timestamp: new Date().toISOString() } },
           ] : []),
         ] : conversations.length ? [
-          { id: 'last-week-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '上周的消息', timestamp: '2026-08-17T10:00:00Z' } },
-          { id: 'this-week-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'last-week-user', content: '本周早些时候的消息', timestamp: '2026-08-25T10:00:00Z' } },
-          { id: 'user-request', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'this-week-user', content: '检查工作目录', attachments: [{ filename: '最早来源.png', mime_type: 'image/png', byte_size: 96, path: '/runtime/workspace/project/uploads/earliest-source.png', image_data_url: 'data:image/png;base64,iVBORw==' }], timestamp: '2026-08-26T10:00:00Z' } },
+          { id: 'last-week-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '上周的消息', timestamp: lastWeekTimestamp(10) } },
+          { id: 'this-week-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'last-week-user', content: '本周早些时候的消息', timestamp: thisWeekTimestamp(thisWeekDayOffset, 10) } },
+          { id: 'user-request', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'this-week-user', content: '检查工作目录', attachments: [{ filename: '最早来源.png', mime_type: 'image/png', byte_size: 96, path: '/runtime/workspace/project/uploads/earliest-source.png', image_data_url: 'data:image/png;base64,iVBORw==' }], timestamp: todayTimestamp(10) } },
           { id: 'progress-note', event_type: 'THOUGHT', payload: { source: 'agent', parent_id: 'user-request', llm_response_id: 'response-progress-1', content: '我先确认当前工作目录，再根据现有结构判断后续改动范围。', thought: '我先确认当前工作目录，再根据现有结构判断后续改动范围。', timestamp: '2026-08-26T10:00:01Z' } },
           { id: 'progress-note-observation', event_type: 'TOOL_RESULT', payload: { source: 'environment', parent_id: 'progress-note', event_name: 'ThinkObservation', content: 'Your thought has been logged.', timestamp: '2026-08-26T10:00:01.100Z' } },
           { id: 'tool-request', event_type: 'TOOL_CALL', payload: { parent_id: 'progress-note-observation', action_id: 'tool-request', tool_call_id: 'terminal-call', llm_response_id: 'response-tool-1', tool_name: 'terminal', event_name: 'TerminalAction', content: '我先确认当前工作目录，再根据现有结构判断后续改动范围。', thought: '我先确认当前工作目录，再根据现有结构判断后续改动范围。', summary: '检查当前工作目录', details: { command: 'pwd' }, timestamp: '2026-08-26T10:00:02Z' } },
@@ -1433,9 +1440,15 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   const completedTurn = page.locator('.conversation-turn').filter({ hasText: '工作区已就绪。' });
   const completedProcess = completedTurn.locator('details.conversation-process-summary');
   const completedProcessSummary = completedProcess;
-  await expect(completedTurn.locator('.conversation-message-meta time')).toHaveText(['18:00', '18:02']);
-  await expect(page.locator('[data-user-event-id="last-week-user"] .conversation-message-meta time')).toHaveText('2026年8月17日 18:00');
-  await expect(page.locator('[data-user-event-id="this-week-user"] .conversation-message-meta time')).toHaveText('星期一 18:00');
+  const time = new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', hour: '2-digit', minute: '2-digit', hour12: false });
+  const todayTime = time.format(new Date(todayTimestamp(10)));
+  const lastWeekTime = time.format(new Date(lastWeekTimestamp(10)));
+  const thisWeekTime = time.format(new Date(thisWeekTimestamp(thisWeekDayOffset, 10)));
+  const date = new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', year: 'numeric', month: 'numeric', day: 'numeric' }).format(new Date(lastWeekTimestamp(10))).replaceAll('/', '年').replace(/年(\d+)$/, '月$1日');
+  const weekday = new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', weekday: 'long' }).format(new Date(thisWeekTimestamp(thisWeekDayOffset, 10)));
+  await expect(completedTurn.locator('.conversation-message-meta time')).toHaveText([todayTime, /^\d+年\d+月\d+日 \d{2}:\d{2}$/]);
+  await expect(page.locator('[data-user-event-id="last-week-user"] .conversation-message-meta time')).toHaveText(`${date} ${lastWeekTime}`);
+  await expect(page.locator('[data-user-event-id="this-week-user"] .conversation-message-meta time')).toHaveText(`${weekday} ${thisWeekTime}`);
   const userMessage = completedTurn.locator('.conversation-message.user');
   const userMessageTime = userMessage.locator('.conversation-message-meta time');
   const userMessageActions = userMessage.locator('.conversation-message-actions');
