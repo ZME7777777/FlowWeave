@@ -442,6 +442,7 @@ test('terminal environment deletion preserves setup sessions when a FlowRun uses
 });
 
 test('top-level Agent workspace creates a direct conversation and restores its URL', async ({ page }) => {
+  await page.clock.setFixedTime(new Date('2026-08-26T10:05:00Z'));
   let modelIsResponding = false;
   let transientIdleReadiness = false;
   let readinessReportsIdle = false;
@@ -844,7 +845,9 @@ test('top-level Agent workspace creates a direct conversation and restores its U
             { id: 'recoverable-agent-reply', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'recoverable-agent-error', content: '已恢复并完成部署状态查询。', timestamp: new Date().toISOString() } },
           ] : []),
         ] : conversations.length ? [
-          { id: 'user-request', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '检查工作目录', attachments: [{ filename: '最早来源.png', mime_type: 'image/png', byte_size: 96, path: '/runtime/workspace/project/uploads/earliest-source.png', image_data_url: 'data:image/png;base64,iVBORw==' }], timestamp: '2026-08-26T10:00:00Z' } },
+          { id: 'last-week-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '上周的消息', timestamp: '2026-08-17T10:00:00Z' } },
+          { id: 'this-week-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'last-week-user', content: '本周早些时候的消息', timestamp: '2026-08-25T10:00:00Z' } },
+          { id: 'user-request', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'this-week-user', content: '检查工作目录', attachments: [{ filename: '最早来源.png', mime_type: 'image/png', byte_size: 96, path: '/runtime/workspace/project/uploads/earliest-source.png', image_data_url: 'data:image/png;base64,iVBORw==' }], timestamp: '2026-08-26T10:00:00Z' } },
           { id: 'progress-note', event_type: 'THOUGHT', payload: { source: 'agent', parent_id: 'user-request', llm_response_id: 'response-progress-1', content: '我先确认当前工作目录，再根据现有结构判断后续改动范围。', thought: '我先确认当前工作目录，再根据现有结构判断后续改动范围。', timestamp: '2026-08-26T10:00:01Z' } },
           { id: 'progress-note-observation', event_type: 'TOOL_RESULT', payload: { source: 'environment', parent_id: 'progress-note', event_name: 'ThinkObservation', content: 'Your thought has been logged.', timestamp: '2026-08-26T10:00:01.100Z' } },
           { id: 'tool-request', event_type: 'TOOL_CALL', payload: { parent_id: 'progress-note-observation', action_id: 'tool-request', tool_call_id: 'terminal-call', llm_response_id: 'response-tool-1', tool_name: 'terminal', event_name: 'TerminalAction', content: '我先确认当前工作目录，再根据现有结构判断后续改动范围。', thought: '我先确认当前工作目录，再根据现有结构判断后续改动范围。', summary: '检查当前工作目录', details: { command: 'pwd' }, timestamp: '2026-08-26T10:00:02Z' } },
@@ -1428,9 +1431,11 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.getByRole('status', { name: '压缩完成' })).toBeVisible();
   await expect(page.getByText('/condense', { exact: true })).toHaveCount(0);
   const completedTurn = page.locator('.conversation-turn').filter({ hasText: '工作区已就绪。' });
-  const completedProcess = completedTurn.locator('.conversation-activity-group-source');
-  const completedProcessSummary = completedTurn.locator('.conversation-process-summary');
-  await expect(completedTurn.locator('.conversation-message-meta time')).toHaveText([/\d{2}:\d{2}/, /\d{2}:\d{2}/]);
+  const completedProcess = completedTurn.locator('details.conversation-process-summary');
+  const completedProcessSummary = completedProcess;
+  await expect(completedTurn.locator('.conversation-message-meta time')).toHaveText(['18:00', '18:02']);
+  await expect(page.locator('[data-user-event-id="last-week-user"] .conversation-message-meta time')).toHaveText('2026年8月17日 18:00');
+  await expect(page.locator('[data-user-event-id="this-week-user"] .conversation-message-meta time')).toHaveText('星期一 18:00');
   const userMessage = completedTurn.locator('.conversation-message.user');
   const userMessageTime = userMessage.locator('.conversation-message-meta time');
   const userMessageActions = userMessage.locator('.conversation-message-actions');
@@ -1480,19 +1485,19 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     return event.defaultPrevented;
   });
   expect(assistantSelection).toBe(false);
-  await expect(completedProcess).toBeHidden();
-  await expect(completedProcessSummary).toHaveJSProperty('open', false);
+  await expect(completedProcess).toHaveJSProperty('open', false);
   await expect(completedProcessSummary.getByText('耗时 2分钟19秒')).toBeVisible();
+  await expect(completedProcess.locator('.conversation-activity-list')).toBeHidden();
   await expect.poll(() => completedTurn.evaluate(turn => {
     const reply = turn.querySelector('.conversation-message.assistant');
-    const summary = turn.querySelector('.conversation-process-summary');
+    const summary = turn.querySelector('details.conversation-process-summary');
     return Boolean(reply && summary && (summary.compareDocumentPosition(reply) & Node.DOCUMENT_POSITION_FOLLOWING));
   })).toBe(true);
   await completedProcessSummary.locator(':scope > summary').click();
   await expect(completedProcessSummary).toHaveJSProperty('open', true);
-  await expect(completedProcess).toBeVisible();
-  await expect(completedProcess).not.toHaveJSProperty('nodeName', 'DETAILS');
-  await expect(completedProcess.locator(':scope > summary')).toHaveCount(0);
+  await expect(completedProcess.locator('.conversation-activity-list')).toBeVisible();
+  await expect(completedProcess).toHaveJSProperty('nodeName', 'DETAILS');
+  await expect(completedProcess.locator(':scope > summary')).toHaveCount(1);
   const firstProgressGroup = completedProcess.locator('[data-progress-event-id="progress-note"]');
   const nextProgressGroup = completedProcess.locator('[data-progress-event-id="progress-note-next"]');
   await expect(firstProgressGroup).toContainText('我先确认当前工作目录，再根据现有结构判断后续改动范围。');
@@ -1509,10 +1514,11 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(nextProgressGroup.locator('.tool-skill')).toHaveCount(0);
   await expect(nextProgressGroup.getByText('子智能体 reviewer · 检查子任务边界')).toHaveCount(0);
   await expect(completedTurn).toHaveJSProperty('nodeName', 'SECTION');
+  await expect(completedTurn.locator('.conversation-activity-group-source')).toHaveCount(0);
   await expect.poll(() => completedTurn.evaluate(turn => {
-    const process = turn.querySelector('.conversation-activity-group-source');
+    const process = turn.querySelector('details.conversation-process-summary');
     const reply = turn.querySelector('.conversation-message.assistant');
-    return Boolean(process && reply && (process.compareDocumentPosition(reply) & Node.DOCUMENT_POSITION_FOLLOWING));
+    return Boolean(process && reply && process.contains(process.querySelector('.conversation-activity-list')) && (process.compareDocumentPosition(reply) & Node.DOCUMENT_POSITION_FOLLOWING));
   })).toBe(true);
   await expect(page.getByText('工作区已就绪。')).toHaveCount(1);
   const replyChanges = completedTurn.getByRole('button', { name: '已编辑 3 个文件' });
@@ -2481,7 +2487,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     type: 'event',
     event: { id: 'live-finish', event_type: 'COMPLETED', payload: { source: 'agent', parent_id: 'live-tool-result', event_name: 'FinishAction', content: longFinalReply, thought: '核对已经完成，下面给出最终结果。', summary: '整理最终结果', timestamp: new Date().toISOString() } },
   }));
-  await expect(page.getByText('核对已经完成，下面给出最终结果。')).toHaveCount(1);
+  await expect(page.getByText('核对已经完成，下面给出最终结果。')).toHaveCount(0);
   await expect(page.getByText(/最终回复第 1 段/)).toHaveCount(1);
   await expect(page.getByRole('button', { name: '发送消息' })).toBeVisible();
   await expect(activeProcess.getByText('分析中', { exact: true })).toHaveCount(0);

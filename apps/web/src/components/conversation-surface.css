@@ -19,7 +19,7 @@
 .conversation-surface-empty span{font-size:12px}
 .conversation-turn{width:100%;max-width:100%;min-width:0;margin-bottom:28px}
 .conversation-process-divider{height:1px;margin:3px 0 20px;background:#e8ece9}
-.conversation-process-summary{display:flex;max-width:100%;min-width:0;width:fit-content;margin:16px 0 0;border:0;color:#59665e}
+.conversation-process-summary{display:block;max-width:100%;min-width:0;width:100%;margin:16px 0 0;border:0;color:#59665e}
 .conversation-process-summary>summary{display:flex;align-items:center;gap:7px;max-width:100%;min-width:0;width:fit-content;list-style:none;cursor:pointer;font-size:14px;line-height:1.78;transition:color .15s ease}
 .conversation-process-summary>summary::-webkit-details-marker{display:none}
 .conversation-process-summary>summary:hover,.conversation-process-summary>summary:focus-visible{color:#39473e}
